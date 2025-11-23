@@ -13,6 +13,7 @@ import (
 
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
+	"github.com/giantswarm/mcp-oauth/storage"
 )
 
 // Handler is a thin HTTP adapter for the OAuth Server.
@@ -52,7 +53,7 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 					h.server.auditor.LogRateLimitExceeded(clientIP, "")
 				}
 				w.Header().Set("Retry-After", "60")
-				h.writeError(w, "rate_limit_exceeded", "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
+				h.writeError(w, ErrorCodeRateLimitExceeded, "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
 				return
 			}
 		}
@@ -60,14 +61,14 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 		// Extract token from Authorization header
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			h.writeError(w, "missing_token", "Missing Authorization header", http.StatusUnauthorized)
+			h.writeError(w, ErrorCodeInvalidToken, "Missing Authorization header", http.StatusUnauthorized)
 			return
 		}
 
 		// Parse Bearer token
 		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-			h.writeError(w, "invalid_token", "Invalid Authorization header format", http.StatusUnauthorized)
+			h.writeError(w, ErrorCodeInvalidToken, "Invalid Authorization header format", http.StatusUnauthorized)
 			return
 		}
 
@@ -80,7 +81,7 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 			h.logger.Warn("Token validation failed", "ip", clientIP, "error", err)
 			// SECURITY: Don't leak internal error details to client
 			// Log detailed error but return generic message
-			h.writeError(w, "invalid_token", "Token validation failed", http.StatusUnauthorized)
+			h.writeError(w, ErrorCodeInvalidToken, "Token validation failed", http.StatusUnauthorized)
 			return
 		}
 
@@ -151,13 +152,13 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	codeChallengeMethod := r.URL.Query().Get("code_challenge_method")
 
 	if clientID == "" {
-		h.writeError(w, "invalid_request", "client_id is required", http.StatusBadRequest)
+		h.writeError(w, ErrorCodeInvalidRequest, "client_id is required", http.StatusBadRequest)
 		return
 	}
 
 	// CRITICAL SECURITY: State parameter is required for CSRF protection
 	if state == "" {
-		h.writeError(w, "invalid_request", "state parameter is required for CSRF protection", http.StatusBadRequest)
+		h.writeError(w, ErrorCodeInvalidRequest, "state parameter is required for CSRF protection", http.StatusBadRequest)
 		return
 	}
 
@@ -165,7 +166,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	authURL, err := h.server.StartAuthorizationFlow(clientID, redirectURI, scope, codeChallenge, codeChallengeMethod, state)
 	if err != nil {
 		h.logger.Error("Failed to start authorization flow", "error", err)
-		h.writeError(w, "server_error", "Failed to start authorization flow", http.StatusInternalServerError)
+		h.writeError(w, ErrorCodeServerError, "Failed to start authorization flow", http.StatusInternalServerError)
 		return
 	}
 
@@ -194,7 +195,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if state == "" || code == "" {
-		h.writeError(w, "invalid_request", "state and code are required", http.StatusBadRequest)
+		h.writeError(w, ErrorCodeInvalidRequest, "state and code are required", http.StatusBadRequest)
 		return
 	}
 
@@ -202,7 +203,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	authCode, clientState, err := h.server.HandleProviderCallback(r.Context(), state, code)
 	if err != nil {
 		h.logger.Error("Failed to handle callback", "error", err)
-		h.writeError(w, "server_error", "Authorization failed", http.StatusInternalServerError)
+		h.writeError(w, ErrorCodeServerError, "Authorization failed", http.StatusInternalServerError)
 		return
 	}
 
@@ -221,7 +222,7 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 
 	// Parse form data
 	if err := r.ParseForm(); err != nil {
-		h.writeError(w, "invalid_request", "Failed to parse request", http.StatusBadRequest)
+		h.writeError(w, ErrorCodeInvalidRequest, "Failed to parse request", http.StatusBadRequest)
 		return
 	}
 
@@ -233,7 +234,7 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 	case "refresh_token":
 		h.handleRefreshTokenGrant(w, r)
 	default:
-		h.writeError(w, "unsupported_grant_type", fmt.Sprintf("Grant type %s not supported", grantType), http.StatusBadRequest)
+		h.writeError(w, ErrorCodeUnsupportedGrantType, fmt.Sprintf("Grant type %s not supported", grantType), http.StatusBadRequest)
 	}
 }
 
@@ -246,61 +247,34 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	redirectURI := r.FormValue("redirect_uri")
 	codeVerifier := r.FormValue("code_verifier")
 
-	// Get client credentials from Authorization header (if present)
-	authClientID, authClientSecret := h.parseBasicAuth(r)
-	if authClientID != "" {
-		clientID = authClientID
-	}
-
-	if code == "" || clientID == "" {
-		h.writeError(w, "invalid_request", "Required parameters missing", http.StatusBadRequest)
+	if code == "" {
+		h.writeError(w, ErrorCodeInvalidRequest, "Required parameter 'code' missing", http.StatusBadRequest)
 		return
 	}
 
-	// SECURITY: Fetch client and enforce authentication based on client type
-	client, err := h.server.GetClient(clientID)
+	// Authenticate client
+	client, err := h.authenticateClient(r, clientID, clientIP)
 	if err != nil {
-		h.logger.Warn("Unknown client", "client_id", clientID, "ip", clientIP)
-		if h.server.auditor != nil {
-			h.server.auditor.LogAuthFailure("", clientID, clientIP, "invalid_client")
+		// authenticateClient returns OAuthError, extract details
+		if oauthErr, ok := err.(*OAuthError); ok {
+			h.writeError(w, oauthErr.Code, oauthErr.Description, oauthErr.Status)
+		} else {
+			h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
 		}
-		h.writeError(w, "invalid_client", "Client authentication failed", http.StatusUnauthorized)
 		return
-	}
-
-	// CRITICAL SECURITY: Confidential clients MUST authenticate
-	if client.ClientType == ClientTypeConfidential {
-		if authClientSecret == "" {
-			h.logger.Warn("Confidential client missing credentials", "client_id", clientID, "ip", clientIP)
-			if h.server.auditor != nil {
-				h.server.auditor.LogAuthFailure("", clientID, clientIP, "confidential_client_auth_required")
-			}
-			h.writeError(w, "invalid_client", "Client authentication required", http.StatusUnauthorized)
-			return
-		}
-
-		// Validate client credentials
-		if err := h.server.ValidateClientCredentials(clientID, authClientSecret); err != nil {
-			h.logger.Warn("Client authentication failed", "client_id", clientID, "ip", clientIP, "error", err)
-			if h.server.auditor != nil {
-				h.server.auditor.LogAuthFailure("", clientID, clientIP, "client_authentication_failed")
-			}
-			h.writeError(w, "invalid_client", "Client authentication failed", http.StatusUnauthorized)
-			return
-		}
 	}
 
 	// Exchange authorization code for tokens
-	tokenResponse, scope, err := h.server.ExchangeAuthorizationCode(r.Context(), code, clientID, redirectURI, codeVerifier)
+	tokenResponse, scope, err := h.server.ExchangeAuthorizationCode(r.Context(), code, client.ClientID, redirectURI, codeVerifier)
 	if err != nil {
-		h.logger.Error("Failed to exchange authorization code", "client_id", clientID, "ip", clientIP, "error", err)
+		h.logger.Error("Failed to exchange authorization code", "client_id", client.ClientID, "ip", clientIP, "error", err)
 		// SECURITY: Don't leak internal error details to client
 		// Audit logging is done in ExchangeAuthorizationCode
-		h.writeError(w, "invalid_grant", "Authorization code is invalid or expired", http.StatusBadRequest)
+		h.writeError(w, ErrorCodeInvalidGrant, "Authorization code is invalid or expired", http.StatusBadRequest)
 		return
 	}
 
-	h.logger.Info("Token exchange successful", "client_id", clientID, "ip", clientIP)
+	h.logger.Info("Token exchange successful", "client_id", client.ClientID, "ip", clientIP)
 
 	// Return tokens
 	h.writeTokenResponse(w, tokenResponse, scope)
@@ -313,6 +287,11 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	refreshToken := r.FormValue("refresh_token")
 	clientID := r.FormValue("client_id")
 
+	if refreshToken == "" {
+		h.writeError(w, ErrorCodeInvalidRequest, "refresh_token is required", http.StatusBadRequest)
+		return
+	}
+
 	// Get client credentials from Authorization header (if present)
 	if authClientID, authClientSecret := h.parseBasicAuth(r); authClientID != "" {
 		clientID = authClientID
@@ -322,14 +301,9 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 			if h.server.auditor != nil {
 				h.server.auditor.LogAuthFailure("", clientID, clientIP, "client_authentication_failed")
 			}
-			h.writeError(w, "invalid_client", "Client authentication failed", http.StatusUnauthorized)
+			h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
 			return
 		}
-	}
-
-	if refreshToken == "" {
-		h.writeError(w, "invalid_request", "refresh_token is required", http.StatusBadRequest)
-		return
 	}
 
 	// Refresh token
@@ -338,7 +312,7 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 		h.logger.Error("Failed to refresh token", "client_id", clientID, "ip", clientIP, "error", err)
 		// SECURITY: Don't leak internal error details to client
 		// Audit logging is already done in RefreshAccessToken
-		h.writeError(w, "invalid_grant", "Refresh token is invalid or expired", http.StatusBadRequest)
+		h.writeError(w, ErrorCodeInvalidGrant, "Refresh token is invalid or expired", http.StatusBadRequest)
 		return
 	}
 
@@ -357,12 +331,17 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 
 	// Parse form data
 	if err := r.ParseForm(); err != nil {
-		h.writeError(w, "invalid_request", "Failed to parse request", http.StatusBadRequest)
+		h.writeError(w, ErrorCodeInvalidRequest, "Failed to parse request", http.StatusBadRequest)
 		return
 	}
 
 	token := r.FormValue("token")
 	clientID := r.FormValue("client_id")
+
+	if token == "" {
+		h.writeError(w, ErrorCodeInvalidRequest, "token is required", http.StatusBadRequest)
+		return
+	}
 
 	// Get client credentials from Authorization header (if present)
 	if authClientID, authClientSecret := h.parseBasicAuth(r); authClientID != "" {
@@ -373,14 +352,9 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 			if h.server.auditor != nil {
 				h.server.auditor.LogAuthFailure("", clientID, clientIP, "revocation_auth_failed")
 			}
-			h.writeError(w, "invalid_client", "Client authentication failed", http.StatusUnauthorized)
+			h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
 			return
 		}
-	}
-
-	if token == "" {
-		h.writeError(w, "invalid_request", "token is required", http.StatusBadRequest)
-		return
 	}
 
 	// Revoke token
@@ -419,7 +393,7 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.writeError(w, "invalid_request", "Invalid JSON", http.StatusBadRequest)
+		h.writeError(w, ErrorCodeInvalidRequest, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
@@ -430,12 +404,12 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 		if strings.Contains(err.Error(), "registration limit") {
 			h.logger.Warn("Client registration limit exceeded", "ip", clientIP, "error", err)
 			// SECURITY: Generic error message to prevent enumeration
-			h.writeError(w, "invalid_request", "Client registration limit exceeded", http.StatusTooManyRequests)
+			h.writeError(w, ErrorCodeInvalidRequest, "Client registration limit exceeded", http.StatusTooManyRequests)
 			return
 		}
 		h.logger.Error("Failed to register client", "ip", clientIP, "error", err)
 		// SECURITY: Don't leak internal error details
-		h.writeError(w, "server_error", "Failed to register client", http.StatusInternalServerError)
+		h.writeError(w, ErrorCodeServerError, "Failed to register client", http.StatusInternalServerError)
 		return
 	}
 
@@ -465,6 +439,52 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 func (h *Handler) parseBasicAuth(r *http.Request) (username, password string) {
 	username, password, _ = r.BasicAuth()
 	return
+}
+
+// authenticateClient validates client credentials from either Basic Auth or form parameters
+// Returns the validated client or an error with the OAuth error code
+func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string) (*storage.Client, error) {
+	// Get client credentials from Authorization header (if present)
+	authClientID, authClientSecret := h.parseBasicAuth(r)
+	if authClientID != "" {
+		clientID = authClientID
+	}
+
+	if clientID == "" {
+		return nil, ErrInvalidRequest("client_id is required")
+	}
+
+	// Fetch client
+	client, err := h.server.GetClient(clientID)
+	if err != nil {
+		h.logger.Warn("Unknown client", "client_id", clientID, "ip", clientIP)
+		if h.server.auditor != nil {
+			h.server.auditor.LogAuthFailure("", clientID, clientIP, ErrorCodeInvalidClient)
+		}
+		return nil, ErrInvalidClient("Client authentication failed")
+	}
+
+	// CRITICAL SECURITY: Confidential clients MUST authenticate
+	if client.ClientType == ClientTypeConfidential {
+		if authClientSecret == "" {
+			h.logger.Warn("Confidential client missing credentials", "client_id", clientID, "ip", clientIP)
+			if h.server.auditor != nil {
+				h.server.auditor.LogAuthFailure("", clientID, clientIP, "confidential_client_auth_required")
+			}
+			return nil, ErrInvalidClient("Client authentication required")
+		}
+
+		// Validate client credentials
+		if err := h.server.ValidateClientCredentials(clientID, authClientSecret); err != nil {
+			h.logger.Warn("Client authentication failed", "client_id", clientID, "ip", clientIP, "error", err)
+			if h.server.auditor != nil {
+				h.server.auditor.LogAuthFailure("", clientID, clientIP, "client_authentication_failed")
+			}
+			return nil, ErrInvalidClient("Client authentication failed")
+		}
+	}
+
+	return client, nil
 }
 
 func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *oauth2.Token, scope string) {
@@ -520,13 +540,13 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 
 	// Parse form data
 	if err := r.ParseForm(); err != nil {
-		h.writeError(w, "invalid_request", "Failed to parse request", http.StatusBadRequest)
+		h.writeError(w, ErrorCodeInvalidRequest, "Failed to parse request", http.StatusBadRequest)
 		return
 	}
 
 	token := r.FormValue("token")
 	if token == "" {
-		h.writeError(w, "invalid_request", "token parameter is required", http.StatusBadRequest)
+		h.writeError(w, ErrorCodeInvalidRequest, "token parameter is required", http.StatusBadRequest)
 		return
 	}
 
@@ -539,7 +559,7 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 		// Validate client credentials
 		if err := h.server.ValidateClientCredentials(clientID, authClientSecret); err != nil {
 			h.logger.Warn("Client authentication failed for introspection", "client_id", clientID, "ip", clientIP)
-			h.writeError(w, "invalid_client", "Client authentication failed", http.StatusUnauthorized)
+			h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
 			return
 		}
 	}
