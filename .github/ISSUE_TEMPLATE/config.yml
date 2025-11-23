@@ -1,0 +1,12 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or Discussion
+    url: https://github.com/giantswarm/mcp-oauth/discussions
+    about: Ask questions and discuss ideas with the community
+  - name: Security Vulnerability
+    url: https://github.com/giantswarm/mcp-oauth/security/advisories/new
+    about: Report a security vulnerability (private)
+  - name: Documentation
+    url: https://pkg.go.dev/github.com/giantswarm/mcp-oauth
+    about: Read the API documentation
+

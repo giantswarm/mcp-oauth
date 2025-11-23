@@ -1,0 +1,18 @@
+# Code owners for mcp-oauth
+# These users will be automatically requested for review when PRs are opened
+
+# Default owners for everything in the repo
+* @teemow
+
+# GitHub Actions workflows
+/.github/ @teemow
+
+# Documentation
+*.md @teemow
+/examples/ @teemow
+
+# Security-related files
+SECURITY.md @teemow
+/security*.go @teemow
+/encryption*.go @teemow
+
