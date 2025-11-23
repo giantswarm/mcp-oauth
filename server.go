@@ -116,9 +116,12 @@ func NewServer(
 func (s *Server) SetEncryptor(enc *security.Encryptor) {
 	s.encryptor = enc
 
-	// Also set encryptor on storage if it supports it
-	if memStore, ok := s.tokenStore.(*memory.Store); ok {
-		memStore.SetEncryptor(enc)
+	// Also set encryptor on storage if it's a memory store
+	type encryptorSetter interface {
+		SetEncryptor(*security.Encryptor)
+	}
+	if setter, ok := s.tokenStore.(encryptorSetter); ok {
+		setter.SetEncryptor(enc)
 	}
 }
 

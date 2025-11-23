@@ -6,12 +6,11 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/crypto/bcrypt"
-	"golang.org/x/oauth2"
-
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
+	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/oauth2"
 )
 
 // RefreshTokenFamily tracks a family of refresh tokens for reuse detection (OAuth 2.1)
@@ -25,7 +24,7 @@ type RefreshTokenFamily struct {
 }
 
 // Store is an in-memory implementation of all storage interfaces.
-// It implements TokenStore, ClientStore, and FlowStore.
+// It implements TokenStore, ClientStore, FlowStore, and RefreshTokenFamilyStore.
 type Store struct {
 	mu sync.RWMutex
 
@@ -110,8 +109,7 @@ func (s *Store) Stop() {
 // TokenStore Implementation
 // ============================================================
 
-// SaveToken saves a token for a user with optional encryption
-// Now works with oauth2.Token directly
+// SaveToken saves an oauth2.Token for a user with optional encryption
 func (s *Store) SaveToken(userID string, token *oauth2.Token) error {
 	if userID == "" {
 		return fmt.Errorf("userID cannot be empty")
@@ -161,8 +159,7 @@ func (s *Store) SaveToken(userID string, token *oauth2.Token) error {
 	return nil
 }
 
-// GetToken retrieves a token for a user and decrypts if necessary
-// Now works with oauth2.Token directly
+// GetToken retrieves an oauth2.Token for a user and decrypts if necessary
 func (s *Store) GetToken(userID string) (*oauth2.Token, error) {
 	s.mu.RLock()
 	encryptor := s.encryptor
