@@ -96,17 +96,9 @@ func (s *Server) SetUserRateLimiter(rl *security.RateLimiter) {
 	s.UserRateLimiter = rl
 }
 
-// generateRandomToken generates a cryptographically secure random token
-// For PKCE verifiers, use oauth2.GenerateVerifier() instead
+// generateRandomToken generates a cryptographically secure random token.
+// This is an alias for oauth2.GenerateVerifier() which produces a URL-safe,
+// base64-encoded random string suitable for tokens, state parameters, etc.
 func generateRandomToken() string {
-	// Uses same method as oauth2.GenerateVerifier() for consistency
 	return oauth2.GenerateVerifier()
-}
-
-// minInt returns the minimum of two integers
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

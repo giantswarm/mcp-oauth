@@ -58,6 +58,14 @@ type Store struct {
 	logger          *slog.Logger
 }
 
+// Compile-time interface checks to ensure Store implements all storage interfaces
+var (
+	_ storage.TokenStore               = (*Store)(nil)
+	_ storage.ClientStore              = (*Store)(nil)
+	_ storage.FlowStore                = (*Store)(nil)
+	_ storage.RefreshTokenFamilyStore  = (*Store)(nil)
+)
+
 // New creates a new in-memory store with default cleanup interval (1 minute)
 func New() *Store {
 	return NewWithInterval(time.Minute)
@@ -366,7 +374,7 @@ func (s *Store) SaveRefreshTokenWithFamily(refreshToken, userID, clientID, famil
 
 	s.logger.Debug("Saved refresh token with family tracking",
 		"user_id", userID,
-		"family_id", familyID[:minInt(8, len(familyID))],
+		"family_id", familyID[:min(8, len(familyID))],
 		"generation", generation,
 		"expires_at", expiresAt)
 	return nil
@@ -415,7 +423,7 @@ func (s *Store) RevokeRefreshTokenFamily(familyID string) error {
 
 	if revokedCount > 0 {
 		s.logger.Warn("Revoked refresh token family due to reuse detection",
-			"family_id", familyID[:minInt(8, len(familyID))],
+			"family_id", familyID[:min(8, len(familyID))],
 			"tokens_revoked", revokedCount)
 	}
 
@@ -548,7 +556,7 @@ func (s *Store) SaveAuthorizationState(state *storage.AuthorizationState) error 
 	// ProviderState is used when validating provider callbacks
 	s.authStates[state.StateID] = state
 	s.authStates[state.ProviderState] = state
-	s.logger.Debug("Saved authorization state", "state_id", state.StateID, "provider_state_prefix", state.ProviderState[:minInt(8, len(state.ProviderState))])
+	s.logger.Debug("Saved authorization state", "state_id", state.StateID, "provider_state_prefix", state.ProviderState[:min(8, len(state.ProviderState))])
 	return nil
 }
 
@@ -620,7 +628,7 @@ func (s *Store) SaveAuthorizationCode(code *storage.AuthorizationCode) error {
 	defer s.mu.Unlock()
 
 	s.authCodes[code.Code] = code
-	s.logger.Debug("Saved authorization code", "code_prefix", code.Code[:minInt(8, len(code.Code))])
+	s.logger.Debug("Saved authorization code", "code_prefix", code.Code[:min(8, len(code.Code))])
 	return nil
 }
 
@@ -650,7 +658,7 @@ func (s *Store) GetAuthorizationCode(code string) (*storage.AuthorizationCode, e
 	// Atomically delete the code to prevent replay attacks
 	// This eliminates the race condition window between check and use
 	delete(s.authCodes, code)
-	s.logger.Debug("Authorization code consumed (one-time use)", "code_prefix", code[:minInt(8, len(code))])
+	s.logger.Debug("Authorization code consumed (one-time use)", "code_prefix", code[:min(8, len(code))])
 
 	return authCode, nil
 }
@@ -739,9 +747,3 @@ func (s *Store) cleanup() {
 	}
 }
 
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

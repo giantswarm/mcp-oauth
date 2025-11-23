@@ -13,7 +13,10 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
-// OAuth error codes
+// OAuth 2.0 error codes from RFC 6749.
+// Note: These are intentionally duplicated from errors.go to avoid circular imports
+// (root package imports server for type aliases, server can't import root).
+// Keep these in sync with errors.go.
 const (
 	ErrorCodeInvalidClient      = "invalid_client"
 	ErrorCodeInvalidRequest     = "invalid_request"
@@ -148,7 +151,7 @@ func (s *Server) StartAuthorizationFlow(clientID, redirectURI, scope, codeChalle
 		CodeChallengeMethod: codeChallengeMethod,
 		ProviderState:       providerState, // Our state for provider callback
 		CreatedAt:           time.Now(),
-		ExpiresAt:           time.Now().Add(10 * time.Minute), // 10 minute expiry
+		ExpiresAt:           time.Now().Add(time.Duration(s.Config.AuthorizationCodeTTL) * time.Second),
 	}
 	if err := s.flowStore.SaveAuthorizationState(authState); err != nil {
 		return "", fmt.Errorf("failed to save authorization state: %w", err)
@@ -363,7 +366,7 @@ func (s *Server) ExchangeAuthorizationCode(_ context.Context, code, clientID, re
 		} else {
 			s.Logger.Debug("Created new refresh token family",
 				"user_id", authCode.UserID,
-				"family_id", familyID[:minInt(8, len(familyID))])
+				"family_id", familyID[:min(8, len(familyID))])
 		}
 	} else {
 		// Fallback to basic tracking
@@ -409,7 +412,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 				}
 				s.Logger.Error("Attempted use of revoked token family",
 					"user_id", family.UserID,
-					"family_id", family.FamilyID[:minInt(8, len(family.FamilyID))])
+					"family_id", family.FamilyID[:min(8, len(family.FamilyID))])
 				return nil, fmt.Errorf("refresh token has been revoked")
 			}
 		}

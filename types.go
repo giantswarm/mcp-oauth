@@ -18,33 +18,6 @@ type ProtectedResourceMetadata struct {
 	ScopesSupported []string `json:"scopes_supported,omitempty"`
 }
 
-// GoogleUserInfo represents the user information from Google's userinfo endpoint
-type GoogleUserInfo struct {
-	// Sub is the unique Google user ID
-	Sub string `json:"sub"`
-
-	// Email is the user's email address
-	Email string `json:"email"`
-
-	// EmailVerified indicates if the email is verified
-	EmailVerified bool `json:"email_verified"`
-
-	// Name is the user's full name
-	Name string `json:"name"`
-
-	// Picture is the URL of the user's profile picture
-	Picture string `json:"picture"`
-
-	// GivenName is the user's first name
-	GivenName string `json:"given_name"`
-
-	// FamilyName is the user's last name
-	FamilyName string `json:"family_name"`
-
-	// Locale is the user's preferred locale
-	Locale string `json:"locale"`
-}
-
 // ErrorResponse represents an OAuth error response
 type ErrorResponse struct {
 	// Error is the error code
@@ -154,96 +127,6 @@ type ClientRegistrationResponse struct {
 
 	// ClientType indicates if this is a "public" or "confidential" client
 	ClientType string `json:"client_type,omitempty"`
-}
-
-// RegisteredClient represents a registered OAuth client in storage
-type RegisteredClient struct {
-	ClientID                string
-	ClientSecret            string
-	ClientSecretHash        string // bcrypt hash of client_secret
-	ClientIDIssuedAt        int64
-	ClientSecretExpiresAt   int64
-	RedirectURIs            []string
-	TokenEndpointAuthMethod string
-	GrantTypes              []string
-	ResponseTypes           []string
-	ClientName              string
-	Scope                   string
-	ClientType              string // "public" or "confidential" (default: confidential)
-}
-
-// ==================== OAuth Flow Types ====================
-
-// AuthorizationState represents the state of an ongoing authorization flow
-type AuthorizationState struct {
-	// State is the OAuth state parameter
-	State string
-
-	// ClientID is the client requesting authorization
-	ClientID string
-
-	// RedirectURI is where to redirect after authorization
-	RedirectURI string
-
-	// Scope is the requested scope
-	Scope string
-
-	// CodeChallenge is the PKCE code challenge
-	CodeChallenge string
-
-	// CodeChallengeMethod is the PKCE challenge method (S256 or plain)
-	CodeChallengeMethod string
-
-	// GoogleState is the state parameter we sent to Google
-	GoogleState string
-
-	// CreatedAt is when this state was created
-	CreatedAt int64
-
-	// ExpiresAt is when this state expires
-	ExpiresAt int64
-}
-
-// AuthorizationCode represents an issued authorization code
-type AuthorizationCode struct {
-	// Code is the authorization code value
-	Code string
-
-	// ClientID is the client this code was issued to
-	ClientID string
-
-	// RedirectURI is the redirect_uri used in the authorization request
-	RedirectURI string
-
-	// Scope is the authorized scope
-	Scope string
-
-	// CodeChallenge is the PKCE code challenge
-	CodeChallenge string
-
-	// CodeChallengeMethod is the PKCE challenge method
-	CodeChallengeMethod string
-
-	// GoogleAccessToken is the Google access token we obtained
-	GoogleAccessToken string
-
-	// GoogleRefreshToken is the Google refresh token we obtained
-	GoogleRefreshToken string
-
-	// GoogleTokenExpiry is when the Google token expires
-	GoogleTokenExpiry int64
-
-	// UserEmail is the email of the authenticated user
-	UserEmail string
-
-	// CreatedAt is when this code was created
-	CreatedAt int64
-
-	// ExpiresAt is when this code expires
-	ExpiresAt int64
-
-	// Used indicates if this code has been used
-	Used bool
 }
 
 // TokenResponse represents an OAuth 2.0 token response

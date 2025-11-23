@@ -116,24 +116,19 @@ func applyTimeDefaults(config *Config) {
 }
 
 // applySecurityDefaults sets secure defaults for security-related configuration
-// Uses a heuristic to detect if config is new (all security bools false) vs explicitly configured
 func applySecurityDefaults(config *Config, logger *slog.Logger) {
-	// Heuristic: if all security bools are false, it's likely a fresh config
-	isDefaultConfig := !config.AllowRefreshTokenRotation &&
-		!config.RequirePKCE &&
-		!config.AllowPKCEPlain &&
-		!config.TrustProxy
-
-	if isDefaultConfig {
-		// Apply secure defaults for fresh config
+	// Apply secure defaults: enable security features that default to true
+	// Note: Due to Go's zero value for bools being false, we can't distinguish
+	// between unset and explicitly set to false. We apply defaults and then log
+	// warnings for any insecure configuration.
+	if !config.AllowRefreshTokenRotation {
 		config.AllowRefreshTokenRotation = true
+	}
+	if !config.RequirePKCE {
 		config.RequirePKCE = true
-		config.AllowPKCEPlain = false
-		config.TrustProxy = false
-		return
 	}
 
-	// User has explicitly configured security - log warnings for insecure settings
+	// Log warnings for insecure settings (whether explicitly set or not)
 	logSecurityWarnings(config, logger)
 }
 
