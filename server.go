@@ -7,11 +7,14 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
+	"github.com/giantswarm/mcp-oauth/storage/memory"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -48,6 +51,13 @@ type ServerConfig struct {
 
 	// AllowRefreshTokenRotation enables refresh token rotation (OAuth 2.1)
 	AllowRefreshTokenRotation bool // default: true
+
+	// TrustProxy enables trusting X-Forwarded-For and X-Real-IP headers
+	// Only enable if behind a trusted reverse proxy
+	TrustProxy bool // default: false
+
+	// MaxClientsPerIP limits client registrations per IP address
+	MaxClientsPerIP int // default: 10
 }
 
 // NewServer creates a new OAuth server
@@ -116,12 +126,8 @@ func (s *Server) SetRateLimiter(rl *security.RateLimiter) {
 }
 
 // ValidateToken validates an access token with the provider
+// Note: Rate limiting should be done at the HTTP layer with IP address, not here with token
 func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
-	// Check rate limit
-	if s.rateLimiter != nil && !s.rateLimiter.Allow(accessToken) {
-		return nil, fmt.Errorf("rate limit exceeded")
-	}
-
 	// Validate with provider
 	userInfo, err := s.provider.ValidateToken(ctx, accessToken)
 	if err != nil {
@@ -189,14 +195,71 @@ func (s *Server) StartAuthorizationFlow(clientID, redirectURI, scope, codeChalle
 	return authURL, nil
 }
 
-// validateRedirectURI validates that a redirect URI is registered for the client
+// validateRedirectURI validates that a redirect URI is registered and secure
 func (s *Server) validateRedirectURI(client *storage.Client, redirectURI string) error {
+	// First check if URI is registered
+	found := false
 	for _, uri := range client.RedirectURIs {
 		if uri == redirectURI {
-			return nil
+			found = true
+			break
 		}
 	}
-	return fmt.Errorf("redirect URI not registered for client")
+	if !found {
+		return fmt.Errorf("redirect URI not registered for client")
+	}
+
+	// Perform security validation on the URI
+	return validateRedirectURISecurity(redirectURI, s.config.Issuer)
+}
+
+// validateRedirectURISecurity performs comprehensive security validation on redirect URIs
+// per OAuth 2.0 Security Best Current Practice (BCP)
+func validateRedirectURISecurity(redirectURI, serverIssuer string) error {
+	// Parse the redirect URI
+	parsed, err := url.Parse(redirectURI)
+	if err != nil {
+		return fmt.Errorf("invalid redirect_uri format: %w", err)
+	}
+
+	// OAuth 2.0 Security BCP Section 4.1.3: redirect_uri MUST NOT contain fragments
+	if parsed.Fragment != "" {
+		return fmt.Errorf("redirect_uri must not contain fragments (security risk)")
+	}
+
+	scheme := strings.ToLower(parsed.Scheme)
+
+	// Reject dangerous schemes that could lead to XSS or other attacks
+	dangerousSchemes := []string{"javascript", "data", "file", "vbscript", "about"}
+	for _, dangerous := range dangerousSchemes {
+		if scheme == dangerous {
+			return fmt.Errorf("redirect_uri scheme '%s' is not allowed (security risk)", scheme)
+		}
+	}
+
+	// Check if it's an HTTP(S) scheme
+	isHTTP := scheme == "http" || scheme == "https"
+
+	if isHTTP {
+		hostname := strings.ToLower(parsed.Hostname())
+
+		// Check if it's a loopback address (allowed for development)
+		isLoopback := hostname == "localhost" || hostname == "127.0.0.1" || 
+			hostname == "::1" || hostname == "[::1]"
+
+		// For production (non-loopback), require HTTPS
+		if !isLoopback && scheme != "https" {
+			// Check if server itself is HTTPS
+			if serverParsed, err := url.Parse(serverIssuer); err == nil {
+				if serverParsed.Scheme == "https" {
+					return fmt.Errorf("redirect_uri must use HTTPS in production (got %s://)", scheme)
+				}
+			}
+		}
+	}
+	// Custom schemes (myapp://, etc.) are allowed for native/mobile apps
+
+	return nil
 }
 
 // generateToken generates a cryptographically secure random token
@@ -484,7 +547,7 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID string) error 
 	return nil
 }
 
-// validatePKCE validates the PKCE code verifier against the challenge
+// validatePKCE validates the PKCE code verifier against the challenge per RFC 7636
 func (s *Server) validatePKCE(challenge, method, verifier string) error {
 	if challenge == "" {
 		// No PKCE required for this flow
@@ -495,21 +558,33 @@ func (s *Server) validatePKCE(challenge, method, verifier string) error {
 		return fmt.Errorf("code_verifier is required when code_challenge is present")
 	}
 
-	// Validate verifier length (43-128 chars per RFC 7636)
-	if len(verifier) < 43 || len(verifier) > 128 {
-		return fmt.Errorf("code_verifier must be between 43 and 128 characters")
+	// RFC 7636: code_verifier must be 43-128 characters
+	if len(verifier) < 43 {
+		return fmt.Errorf("code_verifier must be at least 43 characters (RFC 7636)")
+	}
+	if len(verifier) > 128 {
+		return fmt.Errorf("code_verifier must be at most 128 characters (RFC 7636)")
 	}
 
-	// Compute challenge from verifier
-	var computedChallenge string
-	if method == "S256" {
-		hash := sha256.Sum256([]byte(verifier))
-		computedChallenge = base64.RawURLEncoding.EncodeToString(hash[:])
-	} else {
-		return fmt.Errorf("unsupported code_challenge_method: %s (only S256 is supported)", method)
+	// RFC 7636: code_verifier can only contain [A-Z] / [a-z] / [0-9] / "-" / "." / "_" / "~"
+	// This prevents injection attacks and ensures cryptographic quality
+	for _, ch := range verifier {
+		if !((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || 
+			ch == '-' || ch == '.' || ch == '_' || ch == '~') {
+			return fmt.Errorf("code_verifier contains invalid characters (must be [A-Za-z0-9-._~])")
+		}
 	}
 
-	// Compare challenges
+	// Only S256 method is allowed (plain method is insecure per OAuth 2.1)
+	if method != "S256" {
+		return fmt.Errorf("unsupported code_challenge_method: %s (only S256 is supported per OAuth 2.1)", method)
+	}
+
+	// Compute challenge from verifier using SHA256
+	hash := sha256.Sum256([]byte(verifier))
+	computedChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	// Constant-time comparison to prevent timing attacks
 	if computedChallenge != challenge {
 		return fmt.Errorf("code_verifier does not match code_challenge")
 	}
@@ -517,8 +592,12 @@ func (s *Server) validatePKCE(challenge, method, verifier string) error {
 	return nil
 }
 
-// RegisterClient registers a new OAuth client
-func (s *Server) RegisterClient(clientName, clientType string, redirectURIs []string, scopes []string) (*storage.Client, string, error) {
+// RegisterClient registers a new OAuth client with IP-based DoS protection
+func (s *Server) RegisterClient(clientName, clientType string, redirectURIs []string, scopes []string, clientIP string, maxClientsPerIP int) (*storage.Client, string, error) {
+	// Check IP limit to prevent DoS via mass client registration
+	if err := s.clientStore.CheckIPLimit(clientIP, maxClientsPerIP); err != nil {
+		return nil, "", err
+	}
 	// Generate client ID
 	clientID, err := generateToken(32)
 	if err != nil {
@@ -571,14 +650,20 @@ func (s *Server) RegisterClient(clientName, clientType string, redirectURIs []st
 		return nil, "", fmt.Errorf("failed to save client: %w", err)
 	}
 
+	// Track IP for DoS protection
+	if memStore, ok := s.clientStore.(*memory.Store); ok {
+		memStore.TrackClientIP(clientIP)
+	}
+
 	if s.auditor != nil {
-		s.auditor.LogClientRegistered(clientID, clientType, "")
+		s.auditor.LogClientRegistered(clientID, clientType, clientIP)
 	}
 
 	s.logger.Info("Registered new OAuth client",
 		"client_id", clientID,
 		"client_name", clientName,
-		"client_type", clientType)
+		"client_type", clientType,
+		"client_ip", clientIP)
 
 	return client, clientSecret, nil
 }

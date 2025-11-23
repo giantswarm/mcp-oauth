@@ -38,6 +38,9 @@ type ClientStore interface {
 
 	// ListClients lists all registered clients (for admin purposes)
 	ListClients() ([]*Client, error)
+
+	// CheckIPLimit checks if an IP has reached the client registration limit
+	CheckIPLimit(ip string, maxClientsPerIP int) error
 }
 
 // FlowStore defines the interface for managing OAuth authorization flows.

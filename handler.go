@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/giantswarm/mcp-oauth/providers"
+	"github.com/giantswarm/mcp-oauth/security"
 )
 
 // Handler is a thin HTTP adapter for the OAuth Server.
@@ -33,6 +34,20 @@ func NewHandler(server *Server, logger *slog.Logger) *Handler {
 // ValidateToken is middleware that validates OAuth tokens
 func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Apply IP-based rate limiting BEFORE token validation
+		if h.server.rateLimiter != nil {
+			clientIP := security.GetClientIP(r, h.server.config.TrustProxy)
+			if !h.server.rateLimiter.Allow(clientIP) {
+				h.logger.Warn("Rate limit exceeded", "ip", clientIP)
+				if h.server.auditor != nil {
+					h.server.auditor.LogRateLimitExceeded(clientIP, "")
+				}
+				w.Header().Set("Retry-After", "60")
+				h.writeError(w, "rate_limit_exceeded", "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
+				return
+			}
+		}
+
 		// Extract token from Authorization header
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
@@ -57,6 +72,10 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 			return
 		}
 
+		// Apply per-user rate limiting AFTER authentication
+		// This is a separate, higher limit for authenticated users
+		// (Placeholder for future per-user rate limiting)
+
 		// Store user info in context
 		ctx := context.WithValue(r.Context(), userInfoKey, userInfo)
 		next.ServeHTTP(w, r.WithContext(ctx))
@@ -70,6 +89,7 @@ func (h *Handler) ServeProtectedResourceMetadata(w http.ResponseWriter, r *http.
 		return
 	}
 
+	security.SetSecurityHeaders(w, h.server.config.Issuer)
 	metadata := map[string]any{
 		"resource": h.server.config.Issuer,
 		"authorization_servers": []string{
@@ -89,6 +109,7 @@ func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 		return
 	}
 
+	security.SetSecurityHeaders(w, h.server.config.Issuer)
 	metadata := map[string]any{
 		"issuer":                h.server.config.Issuer,
 		"authorization_endpoint": h.server.config.Issuer + "/oauth/authorize",
@@ -303,6 +324,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Return success (per RFC 7009)
+	security.SetSecurityHeaders(w, h.server.config.Issuer)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -311,6 +333,15 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
+	}
+
+	// Get client IP for DoS protection
+	clientIP := security.GetClientIP(r, h.server.config.TrustProxy)
+
+	// Check per-IP registration limit to prevent DoS attacks
+	maxClients := h.server.config.MaxClientsPerIP
+	if maxClients == 0 {
+		maxClients = 10 // Default limit
 	}
 
 	// Parse registration request
@@ -326,15 +357,22 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Register client
-	client, clientSecret, err := h.server.RegisterClient(req.ClientName, req.ClientType, req.RedirectURIs, req.Scopes)
+	// Register client with IP tracking
+	client, clientSecret, err := h.server.RegisterClient(req.ClientName, req.ClientType, req.RedirectURIs, req.Scopes, clientIP, maxClients)
 	if err != nil {
+		// Check if it's a rate limit error
+		if strings.Contains(err.Error(), "registration limit") {
+			h.logger.Warn("Client registration limit exceeded", "ip", clientIP)
+			h.writeError(w, "invalid_request", err.Error(), http.StatusTooManyRequests)
+			return
+		}
 		h.logger.Error("Failed to register client", "error", err)
 		h.writeError(w, "server_error", err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	// Build response
+	security.SetSecurityHeaders(w, h.server.config.Issuer)
 	response := map[string]any{
 		"client_id":                  client.ClientID,
 		"client_name":                client.ClientName,
@@ -362,6 +400,8 @@ func (h *Handler) parseBasicAuth(r *http.Request) (username, password string) {
 }
 
 func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *providers.TokenResponse, scope string) {
+	security.SetSecurityHeaders(w, h.server.config.Issuer)
+	
 	expiresIn := int64(token.ExpiresAt.Sub(time.Now()).Seconds())
 	if expiresIn < 0 {
 		expiresIn = 3600
@@ -388,6 +428,7 @@ func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *providers.Tok
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, code, description string, status int) {
+	security.SetSecurityHeaders(w, h.server.config.Issuer)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(map[string]string{

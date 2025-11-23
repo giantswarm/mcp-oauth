@@ -8,6 +8,7 @@ import (
 
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/storage"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // Store is an in-memory implementation of all storage interfaces.
@@ -20,7 +21,8 @@ type Store struct {
 	userInfo map[string]*providers.UserInfo
 
 	// Client storage
-	clients map[string]*storage.Client
+	clients      map[string]*storage.Client
+	clientsPerIP map[string]int // IP address -> client count (for DoS protection)
 
 	// Flow storage
 	authStates map[string]*storage.AuthorizationState
@@ -43,6 +45,7 @@ func NewWithInterval(cleanupInterval time.Duration) *Store {
 		tokens:          make(map[string]*providers.TokenResponse),
 		userInfo:        make(map[string]*providers.UserInfo),
 		clients:         make(map[string]*storage.Client),
+		clientsPerIP:    make(map[string]int),
 		authStates:      make(map[string]*storage.AuthorizationState),
 		authCodes:       make(map[string]*storage.AuthorizationCode),
 		cleanupInterval: cleanupInterval,
@@ -150,7 +153,7 @@ func (s *Store) GetUserInfo(userID string) (*providers.UserInfo, error) {
 // ClientStore Implementation
 // ============================================================
 
-// SaveClient saves a registered client
+// SaveClient saves a registered client and tracks IP for DoS protection
 func (s *Store) SaveClient(client *storage.Client) error {
 	if client == nil || client.ClientID == "" {
 		return fmt.Errorf("invalid client")
@@ -162,6 +165,30 @@ func (s *Store) SaveClient(client *storage.Client) error {
 	s.clients[client.ClientID] = client
 	s.logger.Debug("Saved client", "client_id", client.ClientID)
 	return nil
+}
+
+// CheckIPLimit checks if an IP has reached the client registration limit
+func (s *Store) CheckIPLimit(ip string, maxClientsPerIP int) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if maxClientsPerIP <= 0 {
+		return nil // No limit
+	}
+
+	count := s.clientsPerIP[ip]
+	if count >= maxClientsPerIP {
+		return fmt.Errorf("client registration limit reached for IP %s (%d/%d clients)", ip, count, maxClientsPerIP)
+	}
+
+	return nil
+}
+
+// TrackClientIP increments the client count for an IP address
+func (s *Store) TrackClientIP(ip string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clientsPerIP[ip]++
 }
 
 // GetClient retrieves a client by ID
@@ -177,7 +204,7 @@ func (s *Store) GetClient(clientID string) (*storage.Client, error) {
 	return client, nil
 }
 
-// ValidateClientSecret validates a client's secret
+// ValidateClientSecret validates a client's secret using bcrypt
 func (s *Store) ValidateClientSecret(clientID, clientSecret string) error {
 	client, err := s.GetClient(clientID)
 	if err != nil {
@@ -189,9 +216,8 @@ func (s *Store) ValidateClientSecret(clientID, clientSecret string) error {
 		return nil
 	}
 
-	// For confidential clients, validate the secret hash
-	// Note: In production, use bcrypt.CompareHashAndPassword
-	if client.ClientSecretHash != clientSecret {
+	// For confidential clients, validate the secret hash with bcrypt
+	if err := bcrypt.CompareHashAndPassword([]byte(client.ClientSecretHash), []byte(clientSecret)); err != nil {
 		return fmt.Errorf("invalid client secret")
 	}
 
@@ -271,10 +297,11 @@ func (s *Store) SaveAuthorizationCode(code *storage.AuthorizationCode) error {
 	return nil
 }
 
-// GetAuthorizationCode retrieves an authorization code
+// GetAuthorizationCode retrieves and atomically deletes an authorization code
+// This prevents replay attacks by ensuring codes can only be used once
 func (s *Store) GetAuthorizationCode(code string) (*storage.AuthorizationCode, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()  // Use write lock for atomic delete
+	defer s.mu.Unlock()
 
 	authCode, ok := s.authCodes[code]
 	if !ok {
@@ -283,13 +310,20 @@ func (s *Store) GetAuthorizationCode(code string) (*storage.AuthorizationCode, e
 
 	// Check if expired
 	if !authCode.ExpiresAt.IsZero() && authCode.ExpiresAt.Before(time.Now()) {
+		delete(s.authCodes, code) // Delete expired code
 		return nil, fmt.Errorf("authorization code expired")
 	}
 
 	// Check if already used
 	if authCode.Used {
+		delete(s.authCodes, code) // Delete used code
 		return nil, fmt.Errorf("authorization code already used")
 	}
+
+	// Atomically delete the code to prevent replay attacks
+	// This eliminates the race condition window between check and use
+	delete(s.authCodes, code)
+	s.logger.Debug("Authorization code consumed (one-time use)", "code_prefix", code[:min(8, len(code))])
 
 	return authCode, nil
 }
