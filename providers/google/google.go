@@ -10,10 +10,9 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/giantswarm/mcp-oauth/providers"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
-
-	"github.com/giantswarm/mcp-oauth/providers"
 )
 
 // Provider implements the providers.Provider interface for Google OAuth.
@@ -75,7 +74,7 @@ func (p *Provider) Name() string {
 // Accepts pre-computed PKCE challenge from client
 func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string) string {
 	var opts []oauth2.AuthCodeOption
-
+	
 	// Add PKCE if challenge provided (already computed by client)
 	if codeChallenge != "" {
 		opts = append(opts,
@@ -83,18 +82,18 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 			oauth2.SetAuthURLParam("code_challenge_method", codeChallengeMethod),
 		)
 	}
-
+	
 	// Request offline access to get refresh token
 	opts = append(opts, oauth2.AccessTypeOffline)
-
-	return p.Config.AuthCodeURL(state, opts...)
+	
+	return p.AuthCodeURL(state, opts...)
 }
 
 // ExchangeCode exchanges an authorization code for tokens
 // Returns standard oauth2.Token directly
 func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier string) (*oauth2.Token, error) {
 	var opts []oauth2.AuthCodeOption
-
+	
 	// PKCE code verifier
 	if verifier != "" {
 		opts = append(opts, oauth2.VerifierOption(verifier))
@@ -104,7 +103,7 @@ func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier strin
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)
 
 	// Exchange code for token - returns oauth2.Token directly
-	token, err := p.Config.Exchange(ctx, code, opts...)
+	token, err := p.Exchange(ctx, code, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to exchange code: %w", err)
 	}
@@ -119,7 +118,7 @@ func (p *Provider) ValidateToken(ctx context.Context, accessToken string) (*prov
 		AccessToken: accessToken,
 		TokenType:   "Bearer",
 	}
-	client := p.Config.Client(ctx, token)
+	client := p.Client(ctx, token)
 
 	// Call Google's userinfo endpoint
 	resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
@@ -170,7 +169,7 @@ func (p *Provider) RefreshToken(ctx context.Context, refreshToken string) (*oaut
 	token := &oauth2.Token{
 		RefreshToken: refreshToken,
 	}
-	tokenSource := p.Config.TokenSource(ctx, token)
+	tokenSource := p.TokenSource(ctx, token)
 
 	// Get fresh token - returns oauth2.Token directly
 	newToken, err := tokenSource.Token()
@@ -199,3 +198,4 @@ func (p *Provider) RevokeToken(_ context.Context, token string) error {
 
 	return nil
 }
+

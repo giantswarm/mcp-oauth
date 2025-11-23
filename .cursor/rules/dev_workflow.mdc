@@ -31,8 +31,6 @@ All work, from new features to bug fixes, follows this fundamental three-phase c
     -   Commit your work using a structured, conventional commit message.
     -   Close the corresponding issue.
 
----
-
 ## Phase 1: Planning & Alignment
 
 Before writing a single line of implementation code, you must have a clear plan and be working on the correct branch.
@@ -74,8 +72,6 @@ This is a critical step to ensure your implementation is well-considered.
 2.  **Consider Backward Compatibility:** This is a library used by other projects. Will your changes break existing functionality? Do you need to version the change?
 3.  **Formulate a Detailed Plan:** Based on your exploration, create a precise implementation plan. What is the exact diff you intend to apply? What potential challenges do you foresee? This plan will be logged in the next step.
 
----
-
 ## Phase 2: Iterative Implementation & Logging
 
 This cycle is the heart of the workflow. It's designed to build a rich, contextual history of the implementation, which is invaluable for debugging, collaboration, and future reference.
@@ -95,8 +91,6 @@ This cycle is the heart of the workflow. It's designed to build a rich, contextu
     -   ❌ **What Didn't Work:** Dead ends, failed experiments, and why.
     -   ⚙️ **Specifics:** Successful code snippets, configurations, or commands.
     -   🗣️ **Decisions:** Any choices made, especially if confirmed with the user.
-
----
 
 ## Phase 3: Finalization & Committing
 
@@ -198,8 +192,6 @@ Closes #65
 5.  **Create Pull Request:** Use `gh pr create` to create a PR targeting the `main` branch
 6.  **Mark Issue Done:** Set the task status to `done`.
 7.  **Announce Completion:** Inform the user that your changes have been pushed to a branch and a PR has been created.
-
----
 
 ## Library-Specific Considerations
 
