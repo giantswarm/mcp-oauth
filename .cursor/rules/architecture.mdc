@@ -1,0 +1,73 @@
+---
+description: 
+globs: **/*
+alwaysApply: true
+---
+# Architecture Principles
+
+This document outlines the fundamental architectural principles and patterns for the `mcp-oauth` library. Adherence to these guidelines is **mandatory** to maintain a clean, decoupled, and testable OAuth 2.1 implementation.
+
+---
+
+## 1. Testing Standards
+
+-   **Minimum Coverage:** All new code **MUST** achieve at least **80% unit test coverage**.
+-   **No Flaky Tests:** Tests **MUST** be deterministic. Do not use `time.Sleep` or other mechanisms that can lead to race conditions. Use dependency injection for things like clocks or timers to make code testable.
+-   **Provider Testing:** Mock providers are preferred for testing over live OAuth provider calls. Use the `providers.Provider` interface for dependency injection.
+-   **Storage Testing:** All storage implementations **MUST** be testable with mock storage that implements the storage interfaces.
+
+---
+
+## 2. Go Development & Style
+
+-   **Formatting:** Before **every commit**, run:
+    ```bash
+    goimports -w .
+    go fmt ./...
+    ```
+-   **Dependencies:** Before adding a new dependency with `go get`, search the web to find its latest stable version. This is a must!
+-   **Error Handling:** Wrap errors with `fmt.Errorf("context: %w", err)` to preserve context.
+-   **File Size:** Keep files focused and under **500 lines**. Refactor larger files.
+-   **Nil Safety:** Always check for nil pointers before dereferencing, especially when dealing with optional configuration or dependencies.
+
+---
+
+## 3. Documentation
+
+-   **Packages:** Every package **MUST** have a `doc.go` file explaining its purpose.
+-   **Exported Members:** Every exported function, type, and variable **MUST** have a GoDoc comment.
+-   **Examples:** Complex features **SHOULD** have runnable examples in the `examples/` directory.
+-   **README Updates:** New features or breaking changes require updates to README.md.
+
+---
+
+## 4. Library Design Principles
+
+-   **Provider Abstraction:** The core library **MUST** remain provider-agnostic. All provider-specific code belongs in the `providers/` package.
+-   **Storage Abstraction:** Never assume a specific storage backend. All storage operations **MUST** go through the defined storage interfaces (`TokenStore`, `ClientStore`, `FlowStore`).
+-   **Separation of Concerns:**
+    -   `Handler`: HTTP layer only (request/response handling)
+    -   `Server`: Business logic (OAuth flows, token management)
+    -   `Provider`: Identity provider integration (Google, GitHub, etc.)
+    -   `Storage`: Persistence layer
+-   **Security by Default:** Security features (encryption, rate limiting, audit logging) **SHOULD** be easy to enable but **MUST NOT** break existing functionality when disabled.
+-   **Backward Compatibility:** This is a library used by other projects. Breaking changes **MUST** be clearly documented and ideally versioned (v1, v2, etc.).
+
+---
+
+## 5. Security Standards
+
+-   **Token Encryption:** All sensitive tokens **SHOULD** be encrypted at rest when using the encryption features.
+-   **PKCE Enforcement:** All OAuth flows **MUST** enforce PKCE (Proof Key for Code Exchange) with S256 method only.
+-   **Secure Defaults:** Default configurations **MUST** be secure. Insecure options (if any) should be opt-in.
+-   **Audit Logging:** All security-relevant events (token issuance, failures, rate limits) **SHOULD** be loggable through the auditor interface.
+-   **No Hardcoded Secrets:** Never commit credentials, API keys, or secrets to the repository. Use environment variables in examples.
+
+---
+
+## 6. Example Code
+
+-   **Working Examples:** All examples in the `examples/` directory **MUST** be runnable with minimal setup.
+-   **README per Example:** Each example directory **SHOULD** have its own README.md explaining what it demonstrates.
+-   **Environment Variables:** Examples that require secrets **MUST** clearly document which environment variables are needed.
+-   **Go Modules:** Each major example **SHOULD** have its own `go.mod` to demonstrate proper dependency management.

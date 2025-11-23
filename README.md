@@ -1,21 +1,16 @@
-# mcp-oauth v2 - Decoupled OAuth 2.1 Library
+# mcp-oauth - OAuth 2.1 Authorization Server
 
-A **provider-agnostic** OAuth 2.1 library for [Model Context Protocol (MCP)](https://modelcontextprotocol.io) servers with support for multiple identity providers.
+A **provider-agnostic** library for implementing OAuth 2.1 Authorization Servers for [Model Context Protocol (MCP)](https://modelcontextprotocol.io) servers, with support for multiple identity providers.
 
 ## ✨ Key Features
 
 ### 🔌 Provider Abstraction
 - ✅ **Google OAuth** (built-in)
-- ✅ **GitHub** (coming soon)
-- ✅ **Microsoft** (coming soon)
-- ✅ **Generic OIDC** (coming soon)
 - ✅ Easy to add custom providers
 
 ### 🗄️ Storage Abstraction
 - ✅ **In-memory** (built-in, production-ready)
-- ✅ **Redis** (bring your own implementation)
-- ✅ **PostgreSQL/MySQL** (bring your own implementation)
-- ✅ Simple interface to implement
+- ✅ Simple interface to implement custom storage
 
 ### 🔒 Security Features
 - Token encryption at rest (AES-256-GCM)
@@ -48,10 +43,12 @@ A **provider-agnostic** OAuth 2.1 library for [Model Context Protocol (MCP)](htt
 **Clean Separation:**
 - **Handler**: HTTP request/response handling
 - **Server**: OAuth business logic (provider-agnostic)
-- **Provider**: Identity provider integration (Google, GitHub, etc.)
-- **Storage**: Token/client/flow storage (in-memory, Redis, DB)
+- **Provider**: Identity provider integration (Google, or custom)
+- **Storage**: Token/client/flow storage (in-memory, or custom)
 
 ## 🚀 Quick Start
+
+Build an OAuth 2.1 Authorization Server for your MCP server:
 
 ```go
 package main
@@ -92,7 +89,7 @@ func main() {
     )
 
     // 4. Create HTTP handler
-    handler := oauth.NewHandlerV2(server, nil)
+    handler := oauth.NewHandler(server, nil)
 
     // 5. Setup routes
     http.HandleFunc("/.well-known/oauth-protected-resource",
@@ -106,7 +103,7 @@ func main() {
 ## 📦 Installation
 
 ```bash
-go get github.com/giantswarm/mcp-oauth/v2
+go get github.com/giantswarm/mcp-oauth
 ```
 
 ## 🔌 Providers
@@ -125,18 +122,6 @@ provider, err := google.NewProvider(&google.Config{
         "email",
         "https://www.googleapis.com/auth/gmail.readonly",
     },
-})
-```
-
-### GitHub (Coming Soon)
-
-```go
-import "github.com/giantswarm/mcp-oauth/providers/github"
-
-provider, err := github.NewProvider(&github.Config{
-    ClientID:     "your-client-id",
-    ClientSecret: "your-client-secret",
-    Scopes:       []string{"user:email", "read:user"},
 })
 ```
 
@@ -190,21 +175,6 @@ type TokenStore interface {
 }
 ```
 
-Example Redis implementation:
-
-```go
-type RedisTokenStore struct {
-    client *redis.Client
-}
-
-func (r *RedisTokenStore) SaveToken(userID string, token *providers.TokenResponse) error {
-    data, _ := json.Marshal(token)
-    return r.client.Set(ctx, "token:"+userID, data, token.ExpiresAt.Sub(time.Now())).Err()
-}
-
-// Implement other methods...
-```
-
 ## 🔒 Security
 
 ### Token Encryption
@@ -242,56 +212,16 @@ rateLimiter := security.NewRateLimiter(
 server.SetRateLimiter(rateLimiter)
 ```
 
-## 🎯 Migration from v1
-
-### Before (v1 - Coupled to Google)
-
-```go
-handler, err := oauth.NewHandler(&oauth.Config{
-    Resource: "https://mcp.example.com",
-    GoogleAuth: oauth.GoogleAuthConfig{
-        ClientID:     googleClientID,
-        ClientSecret: googleClientSecret,
-    },
-})
-```
-
-### After (v2 - Decoupled)
-
-```go
-// 1. Create provider explicitly
-provider, _ := google.NewProvider(&google.Config{
-    ClientID:     googleClientID,
-    ClientSecret: googleClientSecret,
-})
-
-// 2. Create storage explicitly
-store := memory.New()
-
-// 3. Create server with provider and storage
-server, _ := oauth.NewServer(provider, store, store, store, config, logger)
-
-// 4. Create HTTP handler
-handler := oauth.NewHandlerV2(server, logger)
-```
-
-**Benefits:**
-- ✅ Easy to switch providers
-- ✅ Easy to customize storage
-- ✅ Better testability
-- ✅ Clearer architecture
-
 ## 📚 Examples
 
 See the [examples](./examples) directory:
 
-- **[basic-v2](./examples/basic-v2)**: Simple setup with Google
-- **[decoupled](./examples/decoupled)**: Shows provider abstraction
+- **[basic](./examples/basic)**: Simple setup with Google
 - **[production](./examples/production)**: Full security features
 
 ## 🧪 Testing
 
-The decoupled architecture makes testing easy:
+The architecture makes testing easy:
 
 ```go
 // Create a mock provider
@@ -315,7 +245,7 @@ Apache License 2.0
 ## 🤝 Contributing
 
 Contributions welcome! Especially:
-- New provider implementations (GitHub, Microsoft, OIDC)
-- Storage implementations (Redis, PostgreSQL)
+- New provider implementations
+- Storage implementations
 - Bug fixes and improvements
 
