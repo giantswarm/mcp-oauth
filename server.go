@@ -2,8 +2,8 @@ package oauth
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
 	"log/slog"
@@ -16,6 +16,7 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/oauth2"
 )
 
 // Server implements the OAuth 2.1 server logic (provider-agnostic).
@@ -151,7 +152,16 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 }
 
 // StartAuthorizationFlow starts a new OAuth authorization flow
-func (s *Server) StartAuthorizationFlow(clientID, redirectURI, scope, codeChallenge, codeChallengeMethod string) (string, error) {
+// clientState is the state parameter from the client (REQUIRED for CSRF protection)
+func (s *Server) StartAuthorizationFlow(clientID, redirectURI, scope, codeChallenge, codeChallengeMethod, clientState string) (string, error) {
+	// CRITICAL SECURITY: Require state parameter from client for CSRF protection
+	if clientState == "" {
+		if s.auditor != nil {
+			s.auditor.LogAuthFailure("", clientID, "", "missing_state_parameter")
+		}
+		return "", fmt.Errorf("state parameter is required for CSRF protection (OAuth 2.0 Security BCP)")
+	}
+
 	// Validate client
 	client, err := s.clientStore.GetClient(clientID)
 	if err != nil {
@@ -182,39 +192,31 @@ func (s *Server) StartAuthorizationFlow(clientID, redirectURI, scope, codeChalle
 		})
 	}
 
-	// Generate state
-	state, err := generateToken(32)
-	if err != nil {
-		return "", fmt.Errorf("failed to generate state: %w", err)
-	}
-
-	// Generate provider state
-	providerState, err := generateToken(32)
-	if err != nil {
-		return "", fmt.Errorf("failed to generate provider state: %w", err)
-	}
+	// Generate provider state (different from client state for defense in depth)
+	// This allows us to track the provider callback independently
+	providerState := generateRandomToken()
 
 	// Save authorization state
+	// StateID = client's state (for CSRF validation when redirecting back to client)
+	// ProviderState = our state sent to provider (for validating provider callback)
 	authState := &storage.AuthorizationState{
-		StateID:             state,
+		StateID:             clientState,     // Client's state for CSRF protection
 		ClientID:            clientID,
 		RedirectURI:         redirectURI,
 		Scope:               scope,
 		CodeChallenge:       codeChallenge,
 		CodeChallengeMethod: codeChallengeMethod,
-		ProviderState:       providerState,
+		ProviderState:       providerState,   // Our state for provider callback
+		CreatedAt:           time.Now(),
+		ExpiresAt:           time.Now().Add(10 * time.Minute), // 10 minute expiry
 	}
 	if err := s.flowStore.SaveAuthorizationState(authState); err != nil {
 		return "", fmt.Errorf("failed to save authorization state: %w", err)
 	}
 
 	// Generate authorization URL with provider
-	authURL := s.provider.AuthorizationURL(providerState, &providers.AuthOptions{
-		Scopes:              parseScopes(scope),
-		RedirectURI:         redirectURI,
-		CodeChallenge:       codeChallenge,
-		CodeChallengeMethod: codeChallengeMethod,
-	})
+	// Pass the code challenge from client (already computed)
+	authURL := s.provider.AuthorizationURL(providerState, codeChallenge, codeChallengeMethod)
 
 	return authURL, nil
 }
@@ -286,13 +288,11 @@ func validateRedirectURISecurity(redirectURI, serverIssuer string) error {
 	return nil
 }
 
-// generateToken generates a cryptographically secure random token
-func generateToken(length int) (string, error) {
-	bytes := make([]byte, length)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
-	return base64.URLEncoding.EncodeToString(bytes), nil
+// generateRandomToken generates a cryptographically secure random token
+// For PKCE verifiers, use oauth2.GenerateVerifier() instead
+func generateRandomToken() string {
+	// Uses same method as oauth2.GenerateVerifier() for consistency
+	return oauth2.GenerateVerifier()
 }
 
 // parseScopes parses a space-separated scope string into a slice
@@ -320,29 +320,58 @@ func parseScopes(scope string) []string {
 }
 
 // HandleProviderCallback handles the callback from the OAuth provider
-func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code string) (*storage.AuthorizationCode, error) {
-	// Get authorization state
-	authState, err := s.flowStore.GetAuthorizationState(providerState)
+// Returns: (authorizationCode, clientState, error)
+// clientState is the original state parameter from the client for CSRF validation
+func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code string) (*storage.AuthorizationCode, string, error) {
+	// CRITICAL SECURITY: Validate provider state to prevent callback injection
+	// We must lookup by providerState (not client state) since that's what the provider returns
+	authState, err := s.flowStore.GetAuthorizationStateByProviderState(providerState)
 	if err != nil {
-		return nil, fmt.Errorf("invalid state: %w", err)
+		if s.auditor != nil {
+			s.auditor.LogEvent(security.Event{
+				Type: "invalid_provider_callback",
+				Details: map[string]any{
+					"reason": "state_not_found",
+				},
+			})
+		}
+		return nil, "", fmt.Errorf("invalid state parameter: %w", err)
 	}
 
+	// CRITICAL SECURITY: Validate the provider state matches (constant-time comparison)
+	// This prevents timing attacks on state validation
+	if subtle.ConstantTimeCompare([]byte(authState.ProviderState), []byte(providerState)) != 1 {
+		if s.auditor != nil {
+			s.auditor.LogEvent(security.Event{
+				Type:     "provider_state_mismatch",
+				ClientID: authState.ClientID,
+				Details: map[string]any{
+					"severity": "critical",
+				},
+			})
+		}
+		return nil, "", fmt.Errorf("state parameter mismatch")
+	}
+
+	// Save the client's original state before deletion
+	clientState := authState.StateID
+
 	// Delete authorization state (one-time use)
+	// Use providerState for deletion since that's our lookup key
 	s.flowStore.DeleteAuthorizationState(providerState)
 
 	// Exchange code with provider
-	providerToken, err := s.provider.ExchangeCode(ctx, code, &providers.ExchangeOptions{
-		RedirectURI:  authState.RedirectURI,
-		CodeVerifier: "", // PKCE verification happens at token endpoint
-	})
+	// Note: We don't pass code_verifier here because PKCE verification
+	// happens when the client exchanges their authorization code with us
+	providerToken, err := s.provider.ExchangeCode(ctx, code, "")
 	if err != nil {
-		return nil, fmt.Errorf("failed to exchange code with provider: %w", err)
+		return nil, "", fmt.Errorf("failed to exchange code with provider: %w", err)
 	}
 
 	// Get user info from provider
 	userInfo, err := s.provider.ValidateToken(ctx, providerToken.AccessToken)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get user info: %w", err)
+		return nil, "", fmt.Errorf("failed to get user info: %w", err)
 	}
 
 	// Save user info and token
@@ -353,11 +382,8 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 		s.logger.Warn("Failed to save provider token", "error", err)
 	}
 
-	// Generate authorization code
-	authCode, err := generateToken(48)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate authorization code: %w", err)
-	}
+	// Generate authorization code using oauth2.GenerateVerifier (same quality)
+	authCode := generateRandomToken()
 
 	// Create authorization code object
 	authCodeObj := &storage.AuthorizationCode{
@@ -376,7 +402,7 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 
 	// Save authorization code
 	if err := s.flowStore.SaveAuthorizationCode(authCodeObj); err != nil {
-		return nil, fmt.Errorf("failed to save authorization code: %w", err)
+		return nil, "", fmt.Errorf("failed to save authorization code: %w", err)
 	}
 
 	if s.auditor != nil {
@@ -386,15 +412,18 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 			ClientID: authState.ClientID,
 			Details: map[string]any{
 				"scope": authState.Scope,
+				"client_state_returned": true,
 			},
 		})
 	}
 
-	return authCodeObj, nil
+	// Return both the authorization code and the client's original state
+	return authCodeObj, clientState, nil
 }
 
 // ExchangeAuthorizationCode exchanges an authorization code for tokens
-func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, redirectURI, codeVerifier string) (*providers.TokenResponse, string, error) {
+// Returns oauth2.Token directly
+func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, redirectURI, codeVerifier string) (*oauth2.Token, string, error) {
 	// Get authorization code
 	authCode, err := s.flowStore.GetAuthorizationCode(code)
 	if err != nil {
@@ -457,24 +486,17 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 	authCode.Used = true
 	s.flowStore.SaveAuthorizationCode(authCode)
 
-	// Generate new access token
-	accessToken, err := generateToken(48)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to generate access token: %w", err)
-	}
+	// Generate new access token using oauth2.GenerateVerifier (same quality)
+	accessToken := generateRandomToken()
 
 	// Generate refresh token
-	refreshToken, err := generateToken(48)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to generate refresh token: %w", err)
-	}
+	refreshToken := generateRandomToken()
 
-	// Create token response
-	tokenResponse := &providers.TokenResponse{
+	// Create token response using oauth2.Token
+	tokenResponse := &oauth2.Token{
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
-		ExpiresAt:    time.Now().Add(time.Duration(s.config.AccessTokenTTL) * time.Second),
-		Scopes:       parseScopes(authCode.Scope),
+		Expiry:       time.Now().Add(time.Duration(s.config.AccessTokenTTL) * time.Second),
 		TokenType:    "Bearer",
 	}
 
@@ -489,9 +511,23 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 	}
 
 	// Track refresh token with expiry (OAuth 2.1 security)
+	// Use family tracking if storage supports it (for reuse detection)
 	refreshTokenExpiry := time.Now().Add(time.Duration(s.config.RefreshTokenTTL) * time.Second)
-	if err := s.tokenStore.SaveRefreshToken(refreshToken, authCode.UserID, refreshTokenExpiry); err != nil {
-		s.logger.Warn("Failed to track refresh token", "error", err)
+	if familyStore, ok := s.tokenStore.(storage.RefreshTokenFamilyStore); ok {
+		// Create new token family (generation 0)
+		familyID := generateRandomToken()
+		if err := familyStore.SaveRefreshTokenWithFamily(refreshToken, authCode.UserID, clientID, familyID, 0, refreshTokenExpiry); err != nil {
+			s.logger.Warn("Failed to track refresh token with family", "error", err)
+		} else {
+			s.logger.Debug("Created new refresh token family", 
+				"user_id", authCode.UserID,
+				"family_id", familyID[:min(8, len(familyID))])
+		}
+	} else {
+		// Fallback to basic tracking
+		if err := s.tokenStore.SaveRefreshToken(refreshToken, authCode.UserID, refreshTokenExpiry); err != nil {
+			s.logger.Warn("Failed to track refresh token", "error", err)
+		}
 	}
 
 	// Delete authorization code (one-time use)
@@ -505,7 +541,38 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 }
 
 // RefreshAccessToken refreshes an access token using a refresh token with OAuth 2.1 rotation
-func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID string) (*providers.TokenResponse, error) {
+// Returns oauth2.Token directly
+// Implements OAuth 2.1 refresh token reuse detection for enhanced security
+func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID string) (*oauth2.Token, error) {
+	// Check if storage supports token family tracking (OAuth 2.1 reuse detection)
+	familyStore, supportsFamilies := s.tokenStore.(storage.RefreshTokenFamilyStore)
+	
+	// OAUTH 2.1 SECURITY: Check for refresh token reuse (token theft detection)
+	if supportsFamilies {
+		family, err := familyStore.GetRefreshTokenFamily(refreshToken)
+		if err == nil {
+			// Check if this token family has been revoked due to reuse
+			if family.Revoked {
+				if s.auditor != nil {
+					s.auditor.LogEvent(security.Event{
+						Type:     "revoked_token_family_reuse_attempt",
+						UserID:   family.UserID,
+						ClientID: clientID,
+						Details: map[string]any{
+							"severity":    "critical",
+							"family_id":   family.FamilyID,
+							"description": "Attempted use of token from revoked family (prior reuse detected)",
+						},
+					})
+				}
+				s.logger.Error("Attempted use of revoked token family", 
+					"user_id", family.UserID,
+					"family_id", family.FamilyID[:min(8, len(family.FamilyID))])
+				return nil, fmt.Errorf("refresh token has been revoked")
+			}
+		}
+	}
+	
 	// Validate refresh token and get user ID
 	userID, err := s.tokenStore.GetRefreshTokenInfo(refreshToken)
 	if err != nil {
@@ -533,21 +600,29 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		return nil, fmt.Errorf("failed to refresh token with provider: %w", err)
 	}
 
-	// Generate new access token
-	newAccessToken, err := generateToken(48)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate access token: %w", err)
-	}
+	// Generate new access token using oauth2.GenerateVerifier (same quality)
+	newAccessToken := generateRandomToken()
 
-	// OAuth 2.1: Refresh Token Rotation
-	// Generate new refresh token and invalidate old one
+	// OAuth 2.1: Refresh Token Rotation with Reuse Detection
 	var newRefreshToken string
 	var rotated bool
 	
 	if s.config.AllowRefreshTokenRotation {
-		newRefreshToken, err = generateToken(48)
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate refresh token: %w", err)
+		newRefreshToken = generateRandomToken()
+		
+		// Get family info for rotation (if supported)
+		var familyID string
+		var generation int
+		if supportsFamilies {
+			family, err := familyStore.GetRefreshTokenFamily(refreshToken)
+			if err == nil {
+				familyID = family.FamilyID
+				generation = family.Generation + 1 // Increment generation
+			} else {
+				// First time seeing this token, create new family
+				familyID = generateRandomToken()
+				generation = 1
+			}
 		}
 		
 		// Invalidate old refresh token (OAuth 2.1 security requirement)
@@ -559,7 +634,22 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		}
 		
 		rotated = true
-		s.logger.Info("Refresh token rotated (OAuth 2.1)", "user_id", userID)
+		s.logger.Info("Refresh token rotated (OAuth 2.1)", 
+			"user_id", userID, 
+			"generation", generation,
+			"family_tracking", supportsFamilies)
+			
+		// Save with family tracking if supported
+		refreshTokenExpiry := time.Now().Add(time.Duration(s.config.RefreshTokenTTL) * time.Second)
+		if supportsFamilies && familyID != "" {
+			if err := familyStore.SaveRefreshTokenWithFamily(newRefreshToken, userID, clientID, familyID, generation, refreshTokenExpiry); err != nil {
+				s.logger.Warn("Failed to save refresh token with family", "error", err)
+			}
+		} else {
+			if err := s.tokenStore.SaveRefreshToken(newRefreshToken, userID, refreshTokenExpiry); err != nil {
+				s.logger.Warn("Failed to track new refresh token", "error", err)
+			}
+		}
 	} else {
 		// Reuse old refresh token (not recommended, but allowed for backward compatibility)
 		newRefreshToken = refreshToken
@@ -567,12 +657,11 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		s.logger.Warn("Refresh token reused (rotation disabled)", "user_id", userID)
 	}
 
-	// Create token response
-	tokenResponse := &providers.TokenResponse{
+	// Create token response using oauth2.Token
+	tokenResponse := &oauth2.Token{
 		AccessToken:  newAccessToken,
 		RefreshToken: newRefreshToken,
-		ExpiresAt:    time.Now().Add(time.Duration(s.config.AccessTokenTTL) * time.Second),
-		Scopes:       newProviderToken.Scopes,
+		Expiry:       time.Now().Add(time.Duration(s.config.AccessTokenTTL) * time.Second),
 		TokenType:    "Bearer",
 	}
 
@@ -584,12 +673,6 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	// Store new refresh token -> provider token mapping
 	if err := s.tokenStore.SaveToken(newRefreshToken, newProviderToken); err != nil {
 		s.logger.Warn("Failed to save new refresh token", "error", err)
-	}
-
-	// Track new refresh token with expiry
-	refreshTokenExpiry := time.Now().Add(time.Duration(s.config.RefreshTokenTTL) * time.Second)
-	if err := s.tokenStore.SaveRefreshToken(newRefreshToken, userID, refreshTokenExpiry); err != nil {
-		s.logger.Warn("Failed to track new refresh token", "error", err)
 	}
 
 	if s.auditor != nil {
@@ -667,7 +750,8 @@ func (s *Server) validatePKCE(challenge, method, verifier string) error {
 	computedChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	// Constant-time comparison to prevent timing attacks
-	if computedChallenge != challenge {
+	// Using subtle.ConstantTimeCompare to prevent side-channel attacks
+	if subtle.ConstantTimeCompare([]byte(computedChallenge), []byte(challenge)) != 1 {
 		return fmt.Errorf("code_verifier does not match code_challenge")
 	}
 
@@ -680,11 +764,8 @@ func (s *Server) RegisterClient(clientName, clientType string, redirectURIs []st
 	if err := s.clientStore.CheckIPLimit(clientIP, maxClientsPerIP); err != nil {
 		return nil, "", err
 	}
-	// Generate client ID
-	clientID, err := generateToken(32)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to generate client ID: %w", err)
-	}
+	// Generate client ID using oauth2.GenerateVerifier (same quality)
+	clientID := generateRandomToken()
 
 	// Generate client secret for confidential clients
 	var clientSecret string
@@ -695,10 +776,7 @@ func (s *Server) RegisterClient(clientName, clientType string, redirectURIs []st
 	}
 
 	if clientType == "confidential" {
-		clientSecret, err = generateToken(48)
-		if err != nil {
-			return nil, "", fmt.Errorf("failed to generate client secret: %w", err)
-		}
+		clientSecret = generateRandomToken()
 		
 		// Hash the secret for storage
 		hash, err := bcrypt.GenerateFromPassword([]byte(clientSecret), bcrypt.DefaultCost)

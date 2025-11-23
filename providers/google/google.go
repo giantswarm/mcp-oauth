@@ -14,8 +14,9 @@ import (
 )
 
 // Provider implements the providers.Provider interface for Google OAuth.
+// Embeds oauth2.Config directly to avoid duplication.
 type Provider struct {
-	config     *oauth2.Config
+	*oauth2.Config
 	httpClient *http.Client
 }
 
@@ -51,7 +52,7 @@ func NewProvider(cfg *Config) (*Provider, error) {
 	}
 
 	return &Provider{
-		config: &oauth2.Config{
+		Config: &oauth2.Config{
 			ClientID:     cfg.ClientID,
 			ClientSecret: cfg.ClientSecret,
 			RedirectURL:  cfg.RedirectURL,
@@ -68,89 +69,54 @@ func (p *Provider) Name() string {
 }
 
 // AuthorizationURL generates the Google OAuth authorization URL
-func (p *Provider) AuthorizationURL(state string, opts *providers.AuthOptions) string {
-	if opts == nil {
-		opts = &providers.AuthOptions{}
-	}
-
-	// Build OAuth2 options
-	var oauth2Opts []oauth2.AuthCodeOption
-
-	// PKCE support
-	if opts.CodeChallenge != "" {
-		oauth2Opts = append(oauth2Opts,
-			oauth2.SetAuthURLParam("code_challenge", opts.CodeChallenge),
-			oauth2.SetAuthURLParam("code_challenge_method", opts.CodeChallengeMethod),
+// Accepts pre-computed PKCE challenge from client
+func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string) string {
+	var opts []oauth2.AuthCodeOption
+	
+	// Add PKCE if challenge provided (already computed by client)
+	if codeChallenge != "" {
+		opts = append(opts,
+			oauth2.SetAuthURLParam("code_challenge", codeChallenge),
+			oauth2.SetAuthURLParam("code_challenge_method", codeChallengeMethod),
 		)
 	}
-
-	// Nonce for OIDC
-	if opts.Nonce != "" {
-		oauth2Opts = append(oauth2Opts,
-			oauth2.SetAuthURLParam("nonce", opts.Nonce),
-		)
-	}
-
-	// Override redirect URI if provided
-	if opts.RedirectURI != "" {
-		tempConfig := *p.config
-		tempConfig.RedirectURL = opts.RedirectURI
-		return tempConfig.AuthCodeURL(state, oauth2Opts...)
-	}
-
-	// Override scopes if provided
-	if len(opts.Scopes) > 0 {
-		tempConfig := *p.config
-		tempConfig.Scopes = opts.Scopes
-		return tempConfig.AuthCodeURL(state, oauth2Opts...)
-	}
-
-	return p.config.AuthCodeURL(state, oauth2Opts...)
+	
+	// Request offline access to get refresh token
+	opts = append(opts, oauth2.AccessTypeOffline)
+	
+	return p.Config.AuthCodeURL(state, opts...)
 }
 
 // ExchangeCode exchanges an authorization code for tokens
-func (p *Provider) ExchangeCode(ctx context.Context, code string, opts *providers.ExchangeOptions) (*providers.TokenResponse, error) {
-	if opts == nil {
-		opts = &providers.ExchangeOptions{}
-	}
-
-	// Build exchange options
-	var oauth2Opts []oauth2.AuthCodeOption
-
+// Returns standard oauth2.Token directly
+func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier string) (*oauth2.Token, error) {
+	var opts []oauth2.AuthCodeOption
+	
 	// PKCE code verifier
-	if opts.CodeVerifier != "" {
-		oauth2Opts = append(oauth2Opts,
-			oauth2.SetAuthURLParam("code_verifier", opts.CodeVerifier),
-		)
+	if verifier != "" {
+		opts = append(opts, oauth2.VerifierOption(verifier))
 	}
 
 	// Use custom HTTP client
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)
 
-	// Exchange code for token
-	token, err := p.config.Exchange(ctx, code, oauth2Opts...)
+	// Exchange code for token - returns oauth2.Token directly
+	token, err := p.Config.Exchange(ctx, code, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to exchange code: %w", err)
 	}
 
-	return &providers.TokenResponse{
-		AccessToken:  token.AccessToken,
-		RefreshToken: token.RefreshToken,
-		ExpiresAt:    token.Expiry,
-		TokenType:    token.TokenType,
-		// Note: golang.org/x/oauth2 doesn't expose scopes easily
-		Scopes: p.config.Scopes,
-	}, nil
+	return token, nil
 }
 
 // ValidateToken validates an access token by calling Google's userinfo endpoint
 func (p *Provider) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
-	// Create HTTP client with the token
+	// Create HTTP client with the token using oauth2.Config.Client
 	token := &oauth2.Token{
 		AccessToken: accessToken,
 		TokenType:   "Bearer",
 	}
-	client := p.config.Client(ctx, token)
+	client := p.Config.Client(ctx, token)
 
 	// Call Google's userinfo endpoint
 	resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
@@ -192,7 +158,8 @@ func (p *Provider) ValidateToken(ctx context.Context, accessToken string) (*prov
 }
 
 // RefreshToken refreshes an expired token
-func (p *Provider) RefreshToken(ctx context.Context, refreshToken string) (*providers.TokenResponse, error) {
+// Returns standard oauth2.Token directly
+func (p *Provider) RefreshToken(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
 	// Use custom HTTP client
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)
 
@@ -200,21 +167,15 @@ func (p *Provider) RefreshToken(ctx context.Context, refreshToken string) (*prov
 	token := &oauth2.Token{
 		RefreshToken: refreshToken,
 	}
-	tokenSource := p.config.TokenSource(ctx, token)
+	tokenSource := p.Config.TokenSource(ctx, token)
 
-	// Get fresh token
+	// Get fresh token - returns oauth2.Token directly
 	newToken, err := tokenSource.Token()
 	if err != nil {
 		return nil, fmt.Errorf("failed to refresh token: %w", err)
 	}
 
-	return &providers.TokenResponse{
-		AccessToken:  newToken.AccessToken,
-		RefreshToken: newToken.RefreshToken,
-		ExpiresAt:    newToken.Expiry,
-		TokenType:    newToken.TokenType,
-		Scopes:       p.config.Scopes,
-	}, nil
+	return newToken, nil
 }
 
 // RevokeToken revokes a token at Google's revocation endpoint

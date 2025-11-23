@@ -10,7 +10,18 @@ import (
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/oauth2"
 )
+
+// RefreshTokenFamily tracks a family of refresh tokens for reuse detection (OAuth 2.1)
+type RefreshTokenFamily struct {
+	FamilyID   string    // Unique identifier for this token family
+	UserID     string    // User who owns this family
+	ClientID   string    // Client who owns this family
+	Generation int       // Increments with each rotation
+	IssuedAt   time.Time // When this generation was issued
+	Revoked    bool      // True if family has been revoked due to reuse detection
+}
 
 // Store is an in-memory implementation of all storage interfaces.
 // It implements TokenStore, ClientStore, and FlowStore.
@@ -18,12 +29,14 @@ type Store struct {
 	mu sync.RWMutex
 
 	// Token storage (encrypted at rest if encryptor is set)
-	tokens   map[string]*providers.TokenResponse
+	// Now uses oauth2.Token directly
+	tokens   map[string]*oauth2.Token
 	userInfo map[string]*providers.UserInfo
 
 	// Refresh token tracking (for rotation and security)
 	refreshTokens        map[string]string    // refresh token -> user ID
 	refreshTokenExpiries map[string]time.Time // refresh token -> expiry time
+	refreshTokenFamilies map[string]*RefreshTokenFamily // refresh token -> family metadata
 
 	// Client storage
 	clients      map[string]*storage.Client
@@ -50,10 +63,11 @@ func New() *Store {
 // NewWithInterval creates a new in-memory store with custom cleanup interval
 func NewWithInterval(cleanupInterval time.Duration) *Store {
 	s := &Store{
-		tokens:               make(map[string]*providers.TokenResponse),
+		tokens:               make(map[string]*oauth2.Token),
 		userInfo:             make(map[string]*providers.UserInfo),
 		refreshTokens:        make(map[string]string),
 		refreshTokenExpiries: make(map[string]time.Time),
+		refreshTokenFamilies: make(map[string]*RefreshTokenFamily),
 		clients:              make(map[string]*storage.Client),
 		clientsPerIP:         make(map[string]int),
 		authStates:           make(map[string]*storage.AuthorizationState),
@@ -96,7 +110,8 @@ func (s *Store) Stop() {
 // ============================================================
 
 // SaveToken saves a token for a user with optional encryption
-func (s *Store) SaveToken(userID string, token *providers.TokenResponse) error {
+// Now works with oauth2.Token directly
+func (s *Store) SaveToken(userID string, token *oauth2.Token) error {
 	if userID == "" {
 		return fmt.Errorf("userID cannot be empty")
 	}
@@ -110,11 +125,10 @@ func (s *Store) SaveToken(userID string, token *providers.TokenResponse) error {
 	// Encrypt sensitive token fields if encryptor is configured
 	if s.encryptor != nil && s.encryptor.IsEnabled() {
 		// Create a copy to avoid modifying the original
-		encryptedToken := &providers.TokenResponse{
+		encryptedToken := &oauth2.Token{
 			AccessToken:  token.AccessToken,
 			RefreshToken: token.RefreshToken,
-			ExpiresAt:    token.ExpiresAt,
-			Scopes:       token.Scopes,
+			Expiry:       token.Expiry,
 			TokenType:    token.TokenType,
 		}
 
@@ -147,7 +161,8 @@ func (s *Store) SaveToken(userID string, token *providers.TokenResponse) error {
 }
 
 // GetToken retrieves a token for a user and decrypts if necessary
-func (s *Store) GetToken(userID string) (*providers.TokenResponse, error) {
+// Now works with oauth2.Token directly
+func (s *Store) GetToken(userID string) (*oauth2.Token, error) {
 	s.mu.RLock()
 	encryptor := s.encryptor
 	s.mu.RUnlock()
@@ -162,18 +177,17 @@ func (s *Store) GetToken(userID string) (*providers.TokenResponse, error) {
 
 	// Check if expired with clock skew grace period (and no refresh token)
 	// This prevents false expiration errors due to time synchronization issues
-	if security.IsTokenExpired(token.ExpiresAt) && token.RefreshToken == "" {
+	if security.IsTokenExpired(token.Expiry) && token.RefreshToken == "" {
 		return nil, fmt.Errorf("token expired for user: %s", userID)
 	}
 
 	// Decrypt if encryptor is configured
 	if encryptor != nil && encryptor.IsEnabled() {
 		// Create a copy to avoid modifying the stored version
-		decryptedToken := &providers.TokenResponse{
+		decryptedToken := &oauth2.Token{
 			AccessToken:  token.AccessToken,
 			RefreshToken: token.RefreshToken,
-			ExpiresAt:    token.ExpiresAt,
-			Scopes:       token.Scopes,
+			Expiry:       token.Expiry,
 			TokenType:    token.TokenType,
 		}
 
@@ -287,6 +301,7 @@ func (s *Store) TrackClientIP(ip string) {
 // ============================================================
 
 // SaveRefreshToken saves a refresh token mapping to user ID with expiry
+// For OAuth 2.1 compliance, also tracks token family for reuse detection
 func (s *Store) SaveRefreshToken(refreshToken, userID string, expiresAt time.Time) error {
 	if refreshToken == "" {
 		return fmt.Errorf("refresh token cannot be empty")
@@ -301,6 +316,94 @@ func (s *Store) SaveRefreshToken(refreshToken, userID string, expiresAt time.Tim
 	s.refreshTokens[refreshToken] = userID
 	s.refreshTokenExpiries[refreshToken] = expiresAt
 	s.logger.Debug("Saved refresh token", "user_id", userID, "expires_at", expiresAt)
+	return nil
+}
+
+// SaveRefreshTokenWithFamily saves a refresh token with family tracking for reuse detection
+// This is the OAuth 2.1 compliant version that enables token theft detection
+func (s *Store) SaveRefreshTokenWithFamily(refreshToken, userID, clientID, familyID string, generation int, expiresAt time.Time) error {
+	if refreshToken == "" {
+		return fmt.Errorf("refresh token cannot be empty")
+	}
+	if userID == "" {
+		return fmt.Errorf("userID cannot be empty")
+	}
+	if familyID == "" {
+		return fmt.Errorf("family ID cannot be empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Save basic refresh token info
+	s.refreshTokens[refreshToken] = userID
+	s.refreshTokenExpiries[refreshToken] = expiresAt
+	
+	// Save family metadata for reuse detection
+	s.refreshTokenFamilies[refreshToken] = &RefreshTokenFamily{
+		FamilyID:   familyID,
+		UserID:     userID,
+		ClientID:   clientID,
+		Generation: generation,
+		IssuedAt:   time.Now(),
+		Revoked:    false,
+	}
+	
+	s.logger.Debug("Saved refresh token with family tracking", 
+		"user_id", userID, 
+		"family_id", familyID[:min(8, len(familyID))],
+		"generation", generation,
+		"expires_at", expiresAt)
+	return nil
+}
+
+// GetRefreshTokenFamily retrieves family metadata for a refresh token
+func (s *Store) GetRefreshTokenFamily(refreshToken string) (*storage.RefreshTokenFamilyMetadata, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	family, ok := s.refreshTokenFamilies[refreshToken]
+	if !ok {
+		return nil, fmt.Errorf("refresh token family not found")
+	}
+
+	// Convert internal type to interface type
+	return &storage.RefreshTokenFamilyMetadata{
+		FamilyID:   family.FamilyID,
+		UserID:     family.UserID,
+		ClientID:   family.ClientID,
+		Generation: family.Generation,
+		IssuedAt:   family.IssuedAt,
+		Revoked:    family.Revoked,
+	}, nil
+}
+
+// RevokeRefreshTokenFamily revokes all tokens in a family (for reuse detection)
+// This is called when token reuse is detected (OAuth 2.1 security requirement)
+func (s *Store) RevokeRefreshTokenFamily(familyID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	revokedCount := 0
+	
+	// Find and revoke all tokens in this family
+	for token, family := range s.refreshTokenFamilies {
+		if family.FamilyID == familyID {
+			family.Revoked = true
+			// Also delete the token to prevent any further use
+			delete(s.refreshTokens, token)
+			delete(s.refreshTokenExpiries, token)
+			delete(s.tokens, token) // Also delete provider token mapping
+			revokedCount++
+		}
+	}
+	
+	if revokedCount > 0 {
+		s.logger.Warn("Revoked refresh token family due to reuse detection",
+			"family_id", familyID[:min(8, len(familyID))],
+			"tokens_revoked", revokedCount)
+	}
+	
 	return nil
 }
 
@@ -350,22 +453,48 @@ func (s *Store) GetClient(clientID string) (*storage.Client, error) {
 }
 
 // ValidateClientSecret validates a client's secret using bcrypt
+// Uses constant-time operations to prevent timing attacks
 func (s *Store) ValidateClientSecret(clientID, clientSecret string) error {
+	// SECURITY: Always perform the same operations to prevent timing attacks
+	// that could reveal whether a client exists or not
+	
+	// Pre-computed dummy hash for non-existent clients (bcrypt hash of empty string)
+	// This ensures we always perform a bcrypt comparison even if client doesn't exist
+	dummyHash := "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
+	
 	client, err := s.GetClient(clientID)
-	if err != nil {
-		return err
+	
+	// Determine which hash to use (real or dummy)
+	hashToCompare := dummyHash
+	isPublicClient := false
+	
+	if err == nil {
+		if client.ClientType == "public" {
+			isPublicClient = true
+		} else if client.ClientSecretHash != "" {
+			hashToCompare = client.ClientSecretHash
+		}
 	}
-
-	// For public clients, no secret validation needed
-	if client.ClientType == "public" {
+	
+	// ALWAYS perform bcrypt comparison (constant-time by design)
+	// This prevents timing attacks based on whether we skip the comparison
+	bcryptErr := bcrypt.CompareHashAndPassword([]byte(hashToCompare), []byte(clientSecret))
+	
+	// For public clients, authentication always succeeds
+	if isPublicClient && err == nil {
 		return nil
 	}
-
-	// For confidential clients, validate the secret hash with bcrypt
-	if err := bcrypt.CompareHashAndPassword([]byte(client.ClientSecretHash), []byte(clientSecret)); err != nil {
-		return fmt.Errorf("invalid client secret")
+	
+	// If client lookup failed, return error (but only after bcrypt comparison)
+	if err != nil {
+		return fmt.Errorf("invalid client credentials")
 	}
-
+	
+	// If bcrypt comparison failed, return error
+	if bcryptErr != nil {
+		return fmt.Errorf("invalid client credentials")
+	}
+	
 	return nil
 }
 
@@ -387,20 +516,28 @@ func (s *Store) ListClients() ([]*storage.Client, error) {
 // ============================================================
 
 // SaveAuthorizationState saves the state of an ongoing authorization flow
+// Stores by both client state (StateID) and provider state (ProviderState) for dual lookup
 func (s *Store) SaveAuthorizationState(state *storage.AuthorizationState) error {
 	if state == nil || state.StateID == "" {
 		return fmt.Errorf("invalid authorization state")
+	}
+	if state.ProviderState == "" {
+		return fmt.Errorf("provider state is required")
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Store by both StateID and ProviderState for dual lookup
+	// StateID is used when validating client requests
+	// ProviderState is used when validating provider callbacks
 	s.authStates[state.StateID] = state
-	s.logger.Debug("Saved authorization state", "state_id", state.StateID)
+	s.authStates[state.ProviderState] = state
+	s.logger.Debug("Saved authorization state", "state_id", state.StateID, "provider_state_prefix", state.ProviderState[:min(8, len(state.ProviderState))])
 	return nil
 }
 
-// GetAuthorizationState retrieves an authorization state
+// GetAuthorizationState retrieves an authorization state by client state
 func (s *Store) GetAuthorizationState(stateID string) (*storage.AuthorizationState, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -418,13 +555,43 @@ func (s *Store) GetAuthorizationState(stateID string) (*storage.AuthorizationSta
 	return state, nil
 }
 
+// GetAuthorizationStateByProviderState retrieves an authorization state by provider state
+// This is used during provider callback validation (separate from client state)
+func (s *Store) GetAuthorizationStateByProviderState(providerState string) (*storage.AuthorizationState, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	state, ok := s.authStates[providerState]
+	if !ok {
+		return nil, fmt.Errorf("authorization state not found for provider state")
+	}
+
+	// Check if expired with clock skew grace period
+	if security.IsTokenExpired(state.ExpiresAt) {
+		return nil, fmt.Errorf("authorization state expired")
+	}
+
+	return state, nil
+}
+
 // DeleteAuthorizationState removes an authorization state
+// Removes both client state and provider state entries
 func (s *Store) DeleteAuthorizationState(stateID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	delete(s.authStates, stateID)
-	s.logger.Debug("Deleted authorization state", "state_id", stateID)
+	// Get the state first to find both keys
+	state, ok := s.authStates[stateID]
+	if ok {
+		// Delete both the client state and provider state entries
+		delete(s.authStates, state.StateID)
+		delete(s.authStates, state.ProviderState)
+		s.logger.Debug("Deleted authorization state (both entries)", "state_id", state.StateID)
+	} else {
+		// stateID might be the provider state, try direct delete
+		delete(s.authStates, stateID)
+		s.logger.Debug("Deleted authorization state", "state_id", stateID)
+	}
 	return nil
 }
 
@@ -509,7 +676,7 @@ func (s *Store) cleanup() {
 
 	// Cleanup expired tokens (with clock skew grace period)
 	for userID, token := range s.tokens {
-		if security.IsTokenExpired(token.ExpiresAt) && token.RefreshToken == "" {
+		if security.IsTokenExpired(token.Expiry) && token.RefreshToken == "" {
 			delete(s.tokens, userID)
 			delete(s.userInfo, userID)
 			cleaned++
@@ -537,6 +704,17 @@ func (s *Store) cleanup() {
 		if security.IsTokenExpired(expiresAt) {
 			delete(s.refreshTokens, refreshToken)
 			delete(s.refreshTokenExpiries, refreshToken)
+			delete(s.refreshTokenFamilies, refreshToken) // Also cleanup family metadata
+			cleaned++
+		}
+	}
+
+	// Cleanup revoked token families (keep metadata for a while for forensics, then cleanup)
+	// Revoked families older than 7 days can be removed
+	revokedFamilyCleanupThreshold := time.Now().Add(-7 * 24 * time.Hour)
+	for refreshToken, family := range s.refreshTokenFamilies {
+		if family.Revoked && family.IssuedAt.Before(revokedFamilyCleanupThreshold) {
+			delete(s.refreshTokenFamilies, refreshToken)
 			cleaned++
 		}
 	}

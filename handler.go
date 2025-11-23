@@ -11,6 +11,7 @@ import (
 
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
+	"golang.org/x/oauth2"
 )
 
 // Handler is a thin HTTP adapter for the OAuth Server.
@@ -76,8 +77,9 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 	if err != nil {
 		clientIP := security.GetClientIP(r, h.server.config.TrustProxy)
 		h.logger.Warn("Token validation failed", "ip", clientIP, "error", err)
-		// Audit logging is already done in ValidateToken
-		h.writeError(w, "invalid_token", fmt.Sprintf("Token validation failed: %v", err), http.StatusUnauthorized)
+		// SECURITY: Don't leak internal error details to client
+		// Log detailed error but return generic message
+		h.writeError(w, "invalid_token", "Token validation failed", http.StatusUnauthorized)
 		return
 	}
 
@@ -143,6 +145,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	clientID := r.URL.Query().Get("client_id")
 	redirectURI := r.URL.Query().Get("redirect_uri")
 	scope := r.URL.Query().Get("scope")
+	state := r.URL.Query().Get("state")
 	codeChallenge := r.URL.Query().Get("code_challenge")
 	codeChallengeMethod := r.URL.Query().Get("code_challenge_method")
 
@@ -151,11 +154,17 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Start authorization flow
-	authURL, err := h.server.StartAuthorizationFlow(clientID, redirectURI, scope, codeChallenge, codeChallengeMethod)
+	// CRITICAL SECURITY: State parameter is required for CSRF protection
+	if state == "" {
+		h.writeError(w, "invalid_request", "state parameter is required for CSRF protection", http.StatusBadRequest)
+		return
+	}
+
+	// Start authorization flow with client state
+	authURL, err := h.server.StartAuthorizationFlow(clientID, redirectURI, scope, codeChallenge, codeChallengeMethod, state)
 	if err != nil {
 		h.logger.Error("Failed to start authorization flow", "error", err)
-		h.writeError(w, "server_error", err.Error(), http.StatusInternalServerError)
+		h.writeError(w, "server_error", "Failed to start authorization flow", http.StatusInternalServerError)
 		return
 	}
 
@@ -188,16 +197,17 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Handle callback
-	authCode, err := h.server.HandleProviderCallback(r.Context(), state, code)
+	// Handle callback (state here is the provider state, not client state)
+	authCode, clientState, err := h.server.HandleProviderCallback(r.Context(), state, code)
 	if err != nil {
 		h.logger.Error("Failed to handle callback", "error", err)
-		h.writeError(w, "server_error", err.Error(), http.StatusInternalServerError)
+		h.writeError(w, "server_error", "Authorization failed", http.StatusInternalServerError)
 		return
 	}
 
-	// Redirect back to client with authorization code
-	redirectURL := fmt.Sprintf("%s?code=%s&state=%s", authCode.RedirectURI, authCode.Code, state)
+	// CRITICAL SECURITY: Redirect back to client with their original state parameter
+	// This allows the client to verify the callback is for their original request (CSRF protection)
+	redirectURL := fmt.Sprintf("%s?code=%s&state=%s", authCode.RedirectURI, authCode.Code, clientState)
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
@@ -258,8 +268,9 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	tokenResponse, scope, err := h.server.ExchangeAuthorizationCode(r.Context(), code, clientID, redirectURI, codeVerifier)
 	if err != nil {
 		h.logger.Error("Failed to exchange authorization code", "client_id", clientID, "ip", clientIP, "error", err)
+		// SECURITY: Don't leak internal error details to client
 		// Audit logging is done in ExchangeAuthorizationCode
-		h.writeError(w, "invalid_grant", err.Error(), http.StatusBadRequest)
+		h.writeError(w, "invalid_grant", "Authorization code is invalid or expired", http.StatusBadRequest)
 		return
 	}
 
@@ -299,8 +310,9 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	tokenResponse, err := h.server.RefreshAccessToken(r.Context(), refreshToken, clientID)
 	if err != nil {
 		h.logger.Error("Failed to refresh token", "client_id", clientID, "ip", clientIP, "error", err)
+		// SECURITY: Don't leak internal error details to client
 		// Audit logging is already done in RefreshAccessToken
-		h.writeError(w, "invalid_grant", err.Error(), http.StatusBadRequest)
+		h.writeError(w, "invalid_grant", "Refresh token is invalid or expired", http.StatusBadRequest)
 		return
 	}
 
@@ -390,12 +402,14 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		// Check if it's a rate limit error
 		if strings.Contains(err.Error(), "registration limit") {
-			h.logger.Warn("Client registration limit exceeded", "ip", clientIP)
-			h.writeError(w, "invalid_request", err.Error(), http.StatusTooManyRequests)
+			h.logger.Warn("Client registration limit exceeded", "ip", clientIP, "error", err)
+			// SECURITY: Generic error message to prevent enumeration
+			h.writeError(w, "invalid_request", "Client registration limit exceeded", http.StatusTooManyRequests)
 			return
 		}
-		h.logger.Error("Failed to register client", "error", err)
-		h.writeError(w, "server_error", err.Error(), http.StatusInternalServerError)
+		h.logger.Error("Failed to register client", "ip", clientIP, "error", err)
+		// SECURITY: Don't leak internal error details
+		h.writeError(w, "server_error", "Failed to register client", http.StatusInternalServerError)
 		return
 	}
 
@@ -427,17 +441,22 @@ func (h *Handler) parseBasicAuth(r *http.Request) (username, password string) {
 	return
 }
 
-func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *providers.TokenResponse, scope string) {
+func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *oauth2.Token, scope string) {
 	security.SetSecurityHeaders(w, h.server.config.Issuer)
 	
-	expiresIn := int64(token.ExpiresAt.Sub(time.Now()).Seconds())
+	expiresIn := int64(token.Expiry.Sub(time.Now()).Seconds())
 	if expiresIn < 0 {
 		expiresIn = 3600
 	}
 
+	tokenType := token.TokenType
+	if tokenType == "" {
+		tokenType = "Bearer"
+	}
+
 	response := map[string]any{
 		"access_token": token.AccessToken,
-		"token_type":   token.TokenType,
+		"token_type":   tokenType,
 		"expires_in":   expiresIn,
 	}
 
@@ -447,8 +466,6 @@ func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *providers.Tok
 
 	if scope != "" {
 		response["scope"] = scope
-	} else if len(token.Scopes) > 0 {
-		response["scope"] = strings.Join(token.Scopes, " ")
 	}
 
 	w.Header().Set("Content-Type", "application/json")

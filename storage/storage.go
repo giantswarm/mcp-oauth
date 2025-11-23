@@ -4,16 +4,18 @@ import (
 	"time"
 
 	"github.com/giantswarm/mcp-oauth/providers"
+	"golang.org/x/oauth2"
 )
 
 // TokenStore defines the interface for storing and retrieving tokens.
 // This allows using in-memory, Redis, database, or other storage backends.
+// Now uses golang.org/x/oauth2.Token directly.
 type TokenStore interface {
 	// SaveToken saves a token for a user
-	SaveToken(userID string, token *providers.TokenResponse) error
+	SaveToken(userID string, token *oauth2.Token) error
 
 	// GetToken retrieves a token for a user
-	GetToken(userID string) (*providers.TokenResponse, error)
+	GetToken(userID string) (*oauth2.Token, error)
 
 	// DeleteToken removes a token for a user
 	DeleteToken(userID string) error
@@ -32,6 +34,29 @@ type TokenStore interface {
 
 	// DeleteRefreshToken removes a refresh token
 	DeleteRefreshToken(refreshToken string) error
+}
+
+// RefreshTokenFamily tracks a family of refresh tokens for reuse detection (OAuth 2.1)
+// This is optional - only implemented by stores that support reuse detection
+type RefreshTokenFamilyStore interface {
+	// SaveRefreshTokenWithFamily saves a refresh token with family tracking
+	SaveRefreshTokenWithFamily(refreshToken, userID, clientID, familyID string, generation int, expiresAt time.Time) error
+
+	// GetRefreshTokenFamily retrieves family metadata for a refresh token
+	GetRefreshTokenFamily(refreshToken string) (*RefreshTokenFamilyMetadata, error)
+
+	// RevokeRefreshTokenFamily revokes all tokens in a family
+	RevokeRefreshTokenFamily(familyID string) error
+}
+
+// RefreshTokenFamilyMetadata contains metadata about a token family
+type RefreshTokenFamilyMetadata struct {
+	FamilyID   string
+	UserID     string
+	ClientID   string
+	Generation int
+	IssuedAt   time.Time
+	Revoked    bool
 }
 
 // ClientStore defines the interface for managing OAuth client registrations.
@@ -57,8 +82,12 @@ type FlowStore interface {
 	// SaveAuthorizationState saves the state of an ongoing authorization flow
 	SaveAuthorizationState(state *AuthorizationState) error
 
-	// GetAuthorizationState retrieves an authorization state
+	// GetAuthorizationState retrieves an authorization state by client state
 	GetAuthorizationState(stateID string) (*AuthorizationState, error)
+
+	// GetAuthorizationStateByProviderState retrieves an authorization state by provider state
+	// This is used during provider callback validation
+	GetAuthorizationStateByProviderState(providerState string) (*AuthorizationState, error)
 
 	// DeleteAuthorizationState removes an authorization state
 	DeleteAuthorizationState(stateID string) error
@@ -89,14 +118,14 @@ type Client struct {
 
 // AuthorizationState represents the state of an ongoing authorization flow
 type AuthorizationState struct {
-	StateID                 string
+	StateID                 string // Client's state parameter (for CSRF protection)
 	ClientID                string
 	RedirectURI             string
 	Scope                   string
 	CodeChallenge           string
 	CodeChallengeMethod     string
 	Nonce                   string
-	ProviderState           string // State parameter sent to the provider
+	ProviderState           string // State parameter sent to the provider (different from StateID)
 	CreatedAt               time.Time
 	ExpiresAt               time.Time
 }
@@ -110,7 +139,7 @@ type AuthorizationCode struct {
 	CodeChallenge           string
 	CodeChallengeMethod     string
 	UserID                  string
-	ProviderToken           *providers.TokenResponse
+	ProviderToken           *oauth2.Token  // Now uses oauth2.Token directly
 	CreatedAt               time.Time
 	ExpiresAt               time.Time
 	Used                    bool
