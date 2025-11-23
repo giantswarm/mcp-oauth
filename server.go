@@ -714,8 +714,8 @@ func (s *Server) validatePKCE(challenge, method, verifier string) error {
 	// RFC 7636: code_verifier can only contain [A-Z] / [a-z] / [0-9] / "-" / "." / "_" / "~"
 	// This prevents injection attacks and ensures cryptographic quality
 	for _, ch := range verifier {
-		if !((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
-			ch == '-' || ch == '.' || ch == '_' || ch == '~') {
+		if (ch < 'A' || ch > 'Z') && (ch < 'a' || ch > 'z') && (ch < '0' || ch > '9') &&
+			ch != '-' && ch != '.' && ch != '_' && ch != '~' {
 			return fmt.Errorf("code_verifier contains invalid characters (must be [A-Za-z0-9-._~])")
 		}
 	}
