@@ -1,6 +1,3 @@
-// Package main demonstrates basic OAuth 2.1 setup for MCP servers.
-//
-// This example shows minimal configuration to get started with OAuth authentication.
 package main
 
 import (
@@ -11,79 +8,114 @@ import (
 	"os"
 
 	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/providers/google"
+	"github.com/giantswarm/mcp-oauth/security"
+	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
 func main() {
-	// Basic configuration with required fields only
-	config := &oauth.Config{
-		// Resource identifier for your MCP server
-		Resource: getEnvOrDefault("MCP_RESOURCE", "http://localhost:8080"),
-
-		// Google API scopes your MCP server needs
-		SupportedScopes: []string{
+	// 1. Create a provider (Google in this case)
+	googleProvider, err := google.NewProvider(&google.Config{
+		ClientID:     getEnvOrFail("GOOGLE_CLIENT_ID"),
+		ClientSecret: getEnvOrFail("GOOGLE_CLIENT_SECRET"),
+		RedirectURL:  "http://localhost:8080/oauth/callback",
+		Scopes: []string{
+			"openid",
+			"email",
+			"profile",
 			"https://www.googleapis.com/auth/gmail.readonly",
-			"https://www.googleapis.com/auth/userinfo.email",
-			"https://www.googleapis.com/auth/userinfo.profile",
 		},
-
-		// Google OAuth credentials from environment
-		GoogleAuth: oauth.GoogleAuthConfig{
-			ClientID:     getEnvOrFail("GOOGLE_CLIENT_ID"),
-			ClientSecret: getEnvOrFail("GOOGLE_CLIENT_SECRET"),
-			// RedirectURL defaults to {Resource}/oauth/google/callback
-		},
-
-		// Optional: Use custom logger
-		Logger: slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-			Level: slog.LevelInfo,
-		})),
-	}
-
-	// Create OAuth handler
-	handler, err := oauth.NewHandler(config)
+	})
 	if err != nil {
-		log.Fatalf("Failed to create OAuth handler: %v", err)
+		log.Fatal(err)
 	}
 
-	// Setup HTTP routes
-	setupRoutes(handler)
+	// 2. Create storage (in-memory for simplicity)
+	store := memory.New()
+	defer store.Stop()
 
-	// Start server
-	addr := ":8080"
-	log.Printf("Starting MCP server on %s", addr)
-	log.Printf("OAuth endpoints:")
-	log.Printf("  - Authorization: http://localhost:8080/oauth/authorize")
-	log.Printf("  - Token: http://localhost:8080/oauth/token")
-	log.Printf("  - Register: http://localhost:8080/oauth/register")
-	log.Printf("  - Metadata: http://localhost:8080/.well-known/oauth-protected-resource")
-	log.Fatal(http.ListenAndServe(addr, nil))
-}
+	// 3. Create logger
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
 
-func setupRoutes(handler *oauth.Handler) {
-	// OAuth metadata endpoints (RFC 9728, RFC 8414)
-	http.HandleFunc("/.well-known/oauth-protected-resource",
-		handler.ServeProtectedResourceMetadata)
-	http.HandleFunc("/.well-known/oauth-authorization-server",
-		handler.ServeAuthorizationServerMetadata)
+	// 4. Create OAuth server
+	server, err := oauth.NewServer(
+		googleProvider,
+		store, // TokenStore
+		store, // ClientStore  
+		store, // FlowStore
+		&oauth.ServerConfig{
+			Issuer:                        "http://localhost:8080",
+			RequirePKCE:                   true,
+			AllowRefreshTokenRotation:     true,
+		},
+		logger,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	// OAuth endpoints
+	// 5. Optional: Add security features
+	encKeyB64 := os.Getenv("OAUTH_ENCRYPTION_KEY")
+	if encKeyB64 != "" {
+		encKey, err := security.KeyFromBase64(encKeyB64)
+		if err != nil {
+			log.Fatalf("Invalid encryption key: %v", err)
+		}
+		encryptor, _ := security.NewEncryptor(encKey)
+		server.SetEncryptor(encryptor)
+		logger.Info("Token encryption enabled")
+	}
+
+	auditor := security.NewAuditor(logger, true)
+	server.SetAuditor(auditor)
+
+	rateLimiter := security.NewRateLimiter(10, 20, logger)
+	server.SetRateLimiter(rateLimiter)
+
+	// 6. Create HTTP handler
+	handler := oauth.NewHandler(server, logger)
+
+	// 7. Setup routes
+	
+	// OAuth Metadata Endpoints (RFC 8414, RFC 9728)
+	http.HandleFunc("/.well-known/oauth-protected-resource", handler.ServeProtectedResourceMetadata)
+	http.HandleFunc("/.well-known/oauth-authorization-server", handler.ServeAuthorizationServerMetadata)
+	
+	// OAuth Flow Endpoints
 	http.HandleFunc("/oauth/authorize", handler.ServeAuthorization)
+	http.HandleFunc("/oauth/callback", handler.ServeCallback)
 	http.HandleFunc("/oauth/token", handler.ServeToken)
-	http.HandleFunc("/oauth/google/callback", handler.ServeGoogleCallback)
-	http.HandleFunc("/oauth/register", handler.ServeClientRegistration)
 	http.HandleFunc("/oauth/revoke", handler.ServeTokenRevocation)
-
+	http.HandleFunc("/oauth/register", handler.ServeClientRegistration)
+	
 	// Protected MCP endpoint
-	http.Handle("/mcp", handler.ValidateGoogleToken(mcpHandler()))
+	http.Handle("/mcp", handler.ValidateToken(mcpHandler()))
 
 	// Health check
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		fmt.Fprintf(w, "OK - Provider: %s\n", googleProvider.Name())
 	})
+
+	// Start server
+	addr := ":8080"
+	log.Printf("🚀 Starting MCP OAuth Server on %s", addr)
+	log.Printf("📦 Provider: %s", googleProvider.Name())
+	log.Printf("🔐 Security: encryption=%v, audit=%v, ratelimit=%v",
+		encKeyB64 != "", true, true)
+	log.Printf("\nEndpoints:")
+	log.Printf("  Metadata:      /.well-known/oauth-protected-resource")
+	log.Printf("  Authorization: /oauth/authorize")
+	log.Printf("  Token:         /oauth/token")
+	log.Printf("  Callback:      /oauth/callback")
+	log.Printf("  Register:      /oauth/register")
+	log.Printf("  Revoke:        /oauth/revoke")
+	log.Printf("  Protected MCP: /mcp")
+	log.Fatal(http.ListenAndServe(addr, nil))
 }
 
-// mcpHandler is your MCP endpoint handler
 func mcpHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Get authenticated user info from context
@@ -97,18 +129,16 @@ func mcpHandler() http.Handler {
 		response := fmt.Sprintf(`{
   "message": "Welcome to MCP server",
   "user": {
+    "id": "%s",
     "email": "%s",
-    "name": "%s",
-    "id": "%s"
+    "name": "%s"
   }
-}`, userInfo.Email, userInfo.Name, userInfo.Sub)
+}`, userInfo.ID, userInfo.Email, userInfo.Name)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(response))
 	})
 }
-
-// Helper functions
 
 func getEnvOrFail(key string) string {
 	value := os.Getenv(key)
@@ -117,11 +147,3 @@ func getEnvOrFail(key string) string {
 	}
 	return value
 }
-
-func getEnvOrDefault(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
-

@@ -1,384 +1,409 @@
 package oauth
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
+	"strings"
 	"time"
 
-	"golang.org/x/oauth2"
-	oauth2google "golang.org/x/oauth2/google"
+	"github.com/giantswarm/mcp-oauth/providers"
 )
 
-// Note: Config is now defined in config.go
-
-// Handler implements OAuth 2.1 endpoints for the MCP server
-// It acts as both an OAuth 2.1 Authorization Server (proxying to Google)
-// and an OAuth 2.1 Resource Server (validating tokens)
+// Handler is a thin HTTP adapter for the OAuth Server.
+// It handles HTTP requests and delegates to the Server for business logic.
 type Handler struct {
-	config          *Config
-	store           *Store         // Token store for resource server functionality
-	clientStore     *ClientStore   // Client registration store for authorization server
-	flowStore       *FlowStore     // OAuth flow state management
-	rateLimiter     *RateLimiter   // Optional IP-based rate limiter for protecting endpoints
-	userRateLimiter *RateLimiter   // Optional user-based rate limiter for authenticated requests
-	googleConfig    *oauth2.Config // Google OAuth config for proxying to Google
-	httpClient      *http.Client   // Custom HTTP client for OAuth requests
-	logger          *slog.Logger
-	auditLogger     *AuditLogger     // Security audit logger
-	encryption      *TokenEncryption // Token encryption for at-rest security
+	server *Server
+	logger *slog.Logger
 }
 
-// NewHandler creates a new OAuth handler
-func NewHandler(config *Config) (*Handler, error) {
-	if config.Resource == "" {
-		return nil, fmt.Errorf("resource is required")
-	}
-
-	// Validate Resource URL and enforce HTTPS in production
-	parsedURL, err := url.Parse(config.Resource)
-	if err != nil {
-		return nil, fmt.Errorf("invalid resource URL: %w", err)
-	}
-
-	// Allow HTTP only for localhost/loopback addresses (development)
-	// Require HTTPS for all other addresses (production)
-	if parsedURL.Scheme != "https" {
-		hostname := parsedURL.Hostname()
-		if hostname != "localhost" &&
-			hostname != "127.0.0.1" &&
-			hostname != "::1" &&
-			hostname != "[::1]" {
-			return nil, fmt.Errorf("resource must use HTTPS in production (got %s://)", parsedURL.Scheme)
-		}
-	}
-
-	// Set default scopes if none provided
-	if len(config.SupportedScopes) == 0 {
-		config.SupportedScopes = []string{"openid", "email"}
-	}
-
-	// Set default cleanup interval if not specified
-	if config.CleanupInterval == 0 {
-		config.CleanupInterval = DefaultCleanupInterval
-	}
-
-	// Set default logger if not provided
-	logger := config.Logger
+// NewHandler creates a new HTTP handler
+func NewHandler(server *Server, logger *slog.Logger) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-
-	// ============================================================
-	// Set Secure Defaults for Security Configuration
-	// ============================================================
-
-	// Refresh token TTL defaults to 90 days (security vs usability balance)
-	if config.Security.RefreshTokenTTL == 0 {
-		config.Security.RefreshTokenTTL = DefaultRefreshTokenTTL
-	}
-
-	// Max clients per IP defaults to 10 to prevent DoS
-	if config.Security.MaxClientsPerIP == 0 {
-		config.Security.MaxClientsPerIP = DefaultMaxClientsPerIP
-	}
-
-	// AllowCustomRedirectSchemes defaults to true for native app support
-	// Note: Go bool zero value is false, so we need explicit check
-	// If not explicitly set to false in a previous version, we allow custom schemes
-	// This is safe because AllowedCustomSchemes provides validation
-	if config.Security.AllowedCustomSchemes == nil {
-		config.Security.AllowCustomRedirectSchemes = true // Explicit default for clarity
-		config.Security.AllowedCustomSchemes = DefaultRFC3986SchemePattern
-	}
-
-	// Log security configuration warnings
-	if config.Security.AllowInsecureAuthWithoutState {
-		logger.Warn("⚠️  SECURITY WARNING: State parameter is OPTIONAL (CSRF protection weakened)",
-			"recommendation", "Set Security.AllowInsecureAuthWithoutState=false for production")
-	}
-	if config.Security.DisableRefreshTokenRotation {
-		logger.Warn("⚠️  SECURITY WARNING: Refresh token rotation is DISABLED",
-			"recommendation", "Set Security.DisableRefreshTokenRotation=false for production")
-	}
-	if config.Security.AllowPublicClientRegistration {
-		logger.Warn("⚠️  SECURITY WARNING: Public client registration is ENABLED (DoS risk)",
-			"recommendation", "Set Security.AllowPublicClientRegistration=false and use RegistrationAccessToken")
-	}
-
-	// Create IP-based rate limiter if configured
-	var rateLimiter *RateLimiter
-	if config.RateLimit.Rate > 0 {
-		burst := config.RateLimit.Burst
-		if burst == 0 {
-			burst = config.RateLimit.Rate * 2 // Default burst is 2x rate
-		}
-		cleanupInterval := config.RateLimit.CleanupInterval
-		if cleanupInterval == 0 {
-			cleanupInterval = DefaultRateLimitCleanupInterval
-		}
-		rateLimiter = NewRateLimiter(config.RateLimit.Rate, burst, config.RateLimit.TrustProxy, cleanupInterval, logger)
-		logger.Info("IP-based rate limiting enabled",
-			"rate", config.RateLimit.Rate,
-			"burst", burst)
-	}
-
-	// Create user-based rate limiter if configured
-	var userRateLimiter *RateLimiter
-	if config.RateLimit.UserRate > 0 {
-		burst := config.RateLimit.UserBurst
-		if burst == 0 {
-			burst = config.RateLimit.UserRate * 2 // Default burst is 2x rate
-		}
-		cleanupInterval := config.RateLimit.CleanupInterval
-		if cleanupInterval == 0 {
-			cleanupInterval = DefaultRateLimitCleanupInterval
-		}
-		// User rate limiter doesn't need TrustProxy since it uses email addresses
-		userRateLimiter = NewRateLimiter(config.RateLimit.UserRate, burst, false, cleanupInterval, logger)
-		logger.Info("User-based rate limiting enabled",
-			"rate", config.RateLimit.UserRate,
-			"burst", burst)
-	}
-
-	// Create Google OAuth config for OAuth proxy
-	// This is REQUIRED for OAuth proxy mode
-	var googleConfig *oauth2.Config
-	if config.GoogleAuth.ClientID != "" && config.GoogleAuth.ClientSecret != "" {
-		// Set default redirect URL if not specified
-		redirectURL := config.GoogleAuth.RedirectURL
-		if redirectURL == "" {
-			redirectURL = config.Resource + "/oauth/google/callback"
-		}
-
-		googleConfig = &oauth2.Config{
-			ClientID:     config.GoogleAuth.ClientID,
-			ClientSecret: config.GoogleAuth.ClientSecret,
-			Endpoint:     oauth2google.Endpoint,
-			Scopes:       config.SupportedScopes,
-			RedirectURL:  redirectURL,
-		}
-		logger.Info("OAuth proxy mode enabled with Google credentials",
-			"redirect_url", redirectURL)
-	} else {
-		logger.Warn("OAuth proxy disabled: Google OAuth credentials not provided")
-	}
-
-	store := NewStoreWithInterval(config.CleanupInterval)
-	store.SetLogger(logger)
-
-	// Create client store for Dynamic Client Registration
-	clientStore := NewClientStore(logger)
-
-	// Create flow store for OAuth authorization flows
-	flowStore := NewFlowStore(logger)
-
-	// Initialize audit logger if enabled
-	var auditLogger *AuditLogger
-	if config.Security.EnableAuditLogging {
-		auditLogger = NewAuditLogger(logger)
-		logger.Info("Security audit logging enabled")
-	}
-
-	// Initialize token encryption if key provided
-	encryption, err := NewTokenEncryption(config.Security.EncryptionKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize encryption: %w", err)
-	}
-	if encryption.enabled {
-		logger.Info("Token encryption at rest enabled (AES-256-GCM)")
-	} else {
-		logger.Warn("⚠️  SECURITY WARNING: Token encryption is DISABLED - tokens stored in plaintext",
-			"recommendation", "Set Security.EncryptionKey to enable encryption")
-	}
-
-	// Use custom HTTP client if provided, otherwise use default
-	httpClient := config.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{
-			Timeout: 30 * time.Second,
-		}
-	}
-
 	return &Handler{
-		config:          config,
-		store:           store,
-		clientStore:     clientStore,
-		flowStore:       flowStore,
-		rateLimiter:     rateLimiter,
-		userRateLimiter: userRateLimiter,
-		googleConfig:    googleConfig,
-		httpClient:      httpClient,
-		logger:          logger,
-		auditLogger:     auditLogger,
-		encryption:      encryption,
-	}, nil
+		server: server,
+		logger: logger,
+	}
 }
 
-// GetStore returns the underlying store (for testing and token management)
-func (h *Handler) GetStore() *Store {
-	return h.store
+// ValidateToken is middleware that validates OAuth tokens
+func (h *Handler) ValidateToken(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Extract token from Authorization header
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			h.writeError(w, "missing_token", "Missing Authorization header", http.StatusUnauthorized)
+			return
+		}
+
+		// Parse Bearer token
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+			h.writeError(w, "invalid_token", "Invalid Authorization header format", http.StatusUnauthorized)
+			return
+		}
+
+		accessToken := parts[1]
+
+		// Validate token with server
+		userInfo, err := h.server.ValidateToken(r.Context(), accessToken)
+		if err != nil {
+			h.logger.Warn("Token validation failed", "error", err)
+			h.writeError(w, "invalid_token", fmt.Sprintf("Token validation failed: %v", err), http.StatusUnauthorized)
+			return
+		}
+
+		// Store user info in context
+		ctx := context.WithValue(r.Context(), userInfoKey, userInfo)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
-// GetConfig returns the OAuth configuration
-func (h *Handler) GetConfig() *Config {
-	return h.config
-}
-
-// CanRefreshTokens returns true if the handler can refresh tokens
-func (h *Handler) CanRefreshTokens() bool {
-	return h.googleConfig != nil && h.googleConfig.ClientID != ""
-}
-
-// ServeProtectedResourceMetadata serves the OAuth 2.0 Protected Resource Metadata (RFC 9728)
-// This endpoint tells MCP clients where to find the authorization server
-//
-// The MCP client will:
-// 1. Make an unauthenticated request to the MCP server
-// 2. Receive a 401 with WWW-Authenticate header pointing to this endpoint
-// 3. Fetch this metadata to discover the authorization server
-// 4. Optionally use Dynamic Client Registration to register
-// 5. Use the OAuth 2.1 flow (which proxies to Google) to obtain an access token
-// 6. Include the token in subsequent requests to the MCP server
+// ServeProtectedResourceMetadata serves RFC 9728 Protected Resource Metadata
 func (h *Handler) ServeProtectedResourceMetadata(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Point to the MCP server as the authorization server (OAuth proxy mode)
-	// MCP clients will use the authorization server metadata endpoint
-	// which will then proxy the OAuth flow to Google
-	metadata := ProtectedResourceMetadata{
-		Resource: h.config.Resource,
-		AuthorizationServers: []string{
-			h.config.Resource, // Point to ourselves as the authorization server
+	metadata := map[string]any{
+		"resource": h.server.config.Issuer,
+		"authorization_servers": []string{
+			h.server.config.Issuer,
 		},
-		BearerMethodsSupported: []string{
-			"header", // Authorization: Bearer <token>
-		},
-		ScopesSupported: h.config.SupportedScopes,
+		"bearer_methods_supported": []string{"header"},
 	}
 
-	h.setSecurityHeaders(w)
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(metadata); err != nil {
-		h.logger.Error("Failed to encode metadata", "error", err)
-		http.Error(w, "Failed to encode metadata", http.StatusInternalServerError)
-	}
+	json.NewEncoder(w).Encode(metadata)
 }
 
-// setSecurityHeaders sets security headers on HTTP responses
-func (h *Handler) setSecurityHeaders(w http.ResponseWriter) {
-	// Prevent clickjacking attacks
-	w.Header().Set("X-Frame-Options", "DENY")
-
-	// Prevent MIME type sniffing
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-
-	// Enable XSS protection in browsers
-	w.Header().Set("X-XSS-Protection", "1; mode=block")
-
-	// Content Security Policy - restrict resource loading
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
-
-	// Referrer policy - don't leak referrer information
-	w.Header().Set("Referrer-Policy", "no-referrer")
-
-	// For HTTPS resources, enforce HTTPS for 1 year
-	// Only set HSTS if the current request is HTTPS
-	if h.config.Resource != "" {
-		parsedURL, err := url.Parse(h.config.Resource)
-		if err == nil && parsedURL.Scheme == "https" {
-			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-		}
+// ServeAuthorizationServerMetadata serves RFC 8414 Authorization Server Metadata
+func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
-}
 
-// writeError is a helper to write OAuth error responses
-func (h *Handler) writeError(w http.ResponseWriter, errorCode, description string, statusCode int) {
-	h.logger.Debug("OAuth error", "code", errorCode, "description", description, "status", statusCode)
-	h.setSecurityHeaders(w)
+	metadata := map[string]any{
+		"issuer":                h.server.config.Issuer,
+		"authorization_endpoint": h.server.config.Issuer + "/oauth/authorize",
+		"token_endpoint":        h.server.config.Issuer + "/oauth/token",
+		"response_types_supported": []string{"code"},
+		"grant_types_supported": []string{"authorization_code", "refresh_token"},
+		"code_challenge_methods_supported": []string{"S256"},
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(ErrorResponse{
-		Error:            errorCode,
-		ErrorDescription: description,
-	})
+	json.NewEncoder(w).Encode(metadata)
 }
 
-// RevokeToken revokes a Google OAuth token for a specific user
-// This revokes the token at Google and removes it from the store, forcing re-authentication
-func (h *Handler) RevokeToken(email string) error {
-	h.logger.Info("Revoking token", "email", email)
-
-	// Get the Google token first so we can revoke it at Google
-	token, err := h.store.GetGoogleToken(email)
-	if err == nil && token != nil && token.AccessToken != "" {
-		// Revoke at Google's revocation endpoint
-		revokeURL := "https://oauth2.googleapis.com/revoke"
-		data := url.Values{}
-		data.Set("token", token.AccessToken)
-
-		resp, revokeErr := h.httpClient.PostForm(revokeURL, data)
-		if revokeErr != nil {
-			h.logger.Warn("Failed to revoke token at Google",
-				"email", email,
-				"error", revokeErr)
-			// Continue with local deletion even if Google revocation fails
-		} else {
-			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				h.logger.Warn("Google token revocation returned non-OK status",
-					"email", email,
-					"status", resp.StatusCode)
-			} else {
-				h.logger.Info("Successfully revoked token at Google", "email", email)
-			}
-		}
+// ServeAuthorization handles OAuth authorization requests
+func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
 
-	// Delete from local store
-	return h.store.DeleteGoogleToken(email)
+	// Parse query parameters
+	clientID := r.URL.Query().Get("client_id")
+	redirectURI := r.URL.Query().Get("redirect_uri")
+	scope := r.URL.Query().Get("scope")
+	codeChallenge := r.URL.Query().Get("code_challenge")
+	codeChallengeMethod := r.URL.Query().Get("code_challenge_method")
+
+	if clientID == "" {
+		h.writeError(w, "invalid_request", "client_id is required", http.StatusBadRequest)
+		return
+	}
+
+	// Start authorization flow
+	authURL, err := h.server.StartAuthorizationFlow(clientID, redirectURI, scope, codeChallenge, codeChallengeMethod)
+	if err != nil {
+		h.logger.Error("Failed to start authorization flow", "error", err)
+		h.writeError(w, "server_error", err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Redirect to provider
+	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
-// ServeRevoke handles token revocation requests
-// POST /oauth/revoke with {"email": "user@example.com"}
-func (h *Handler) ServeRevoke(w http.ResponseWriter, r *http.Request) {
+// ServeCallback handles the OAuth provider callback
+func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse callback parameters
+	state := r.URL.Query().Get("state")
+	code := r.URL.Query().Get("code")
+	errorParam := r.URL.Query().Get("error")
+
+	// Check for provider errors
+	if errorParam != "" {
+		errorDesc := r.URL.Query().Get("error_description")
+		h.logger.Warn("Provider returned error", "error", errorParam, "description", errorDesc)
+		h.writeError(w, errorParam, errorDesc, http.StatusBadRequest)
+		return
+	}
+
+	if state == "" || code == "" {
+		h.writeError(w, "invalid_request", "state and code are required", http.StatusBadRequest)
+		return
+	}
+
+	// Handle callback
+	authCode, err := h.server.HandleProviderCallback(r.Context(), state, code)
+	if err != nil {
+		h.logger.Error("Failed to handle callback", "error", err)
+		h.writeError(w, "server_error", err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Redirect back to client with authorization code
+	redirectURL := fmt.Sprintf("%s?code=%s&state=%s", authCode.RedirectURI, authCode.Code, state)
+	http.Redirect(w, r, redirectURL, http.StatusFound)
+}
+
+// ServeToken handles the OAuth token endpoint
+func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Parse request body
-	var req struct {
-		Email string `json:"email"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.writeError(w, "invalid_request", "Invalid request body", http.StatusBadRequest)
+	// Parse form data
+	if err := r.ParseForm(); err != nil {
+		h.writeError(w, "invalid_request", "Failed to parse request", http.StatusBadRequest)
 		return
 	}
 
-	if req.Email == "" {
-		h.writeError(w, "invalid_request", "Email is required", http.StatusBadRequest)
+	grantType := r.FormValue("grant_type")
+
+	switch grantType {
+	case "authorization_code":
+		h.handleAuthorizationCodeGrant(w, r)
+	case "refresh_token":
+		h.handleRefreshTokenGrant(w, r)
+	default:
+		h.writeError(w, "unsupported_grant_type", fmt.Sprintf("Grant type %s not supported", grantType), http.StatusBadRequest)
+	}
+}
+
+func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Request) {
+	// Parse parameters
+	code := r.FormValue("code")
+	clientID := r.FormValue("client_id")
+	redirectURI := r.FormValue("redirect_uri")
+	codeVerifier := r.FormValue("code_verifier")
+
+	// Get client credentials from Authorization header (if present)
+	if authClientID, authClientSecret := h.parseBasicAuth(r); authClientID != "" {
+		clientID = authClientID
+		// Validate client credentials
+		if err := h.server.ValidateClientCredentials(clientID, authClientSecret); err != nil {
+			h.logger.Warn("Client authentication failed", "client_id", clientID, "error", err)
+			h.writeError(w, "invalid_client", "Client authentication failed", http.StatusUnauthorized)
+			return
+		}
+	}
+
+	if code == "" || clientID == "" {
+		h.writeError(w, "invalid_request", "code and client_id are required", http.StatusBadRequest)
 		return
 	}
 
-	// Revoke the token
-	if err := h.RevokeToken(req.Email); err != nil {
-		h.writeError(w, "server_error", fmt.Sprintf("Failed to revoke token: %v", err), http.StatusInternalServerError)
+	// Exchange authorization code for tokens
+	tokenResponse, scope, err := h.server.ExchangeAuthorizationCode(r.Context(), code, clientID, redirectURI, codeVerifier)
+	if err != nil {
+		h.logger.Error("Failed to exchange authorization code", "error", err)
+		h.writeError(w, "invalid_grant", err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Return success
-	h.setSecurityHeaders(w)
-	w.Header().Set("Content-Type", "application/json")
+	// Return tokens
+	h.writeTokenResponse(w, tokenResponse, scope)
+}
+
+func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request) {
+	// Parse parameters
+	refreshToken := r.FormValue("refresh_token")
+	clientID := r.FormValue("client_id")
+
+	// Get client credentials from Authorization header (if present)
+	if authClientID, authClientSecret := h.parseBasicAuth(r); authClientID != "" {
+		clientID = authClientID
+		// Validate client credentials
+		if err := h.server.ValidateClientCredentials(clientID, authClientSecret); err != nil {
+			h.logger.Warn("Client authentication failed", "client_id", clientID, "error", err)
+			h.writeError(w, "invalid_client", "Client authentication failed", http.StatusUnauthorized)
+			return
+		}
+	}
+
+	if refreshToken == "" {
+		h.writeError(w, "invalid_request", "refresh_token is required", http.StatusBadRequest)
+		return
+	}
+
+	// Refresh token
+	tokenResponse, err := h.server.RefreshAccessToken(r.Context(), refreshToken, clientID)
+	if err != nil {
+		h.logger.Error("Failed to refresh token", "error", err)
+		h.writeError(w, "invalid_grant", err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Return tokens
+	h.writeTokenResponse(w, tokenResponse, "")
+}
+
+// ServeTokenRevocation handles the RFC 7009 token revocation endpoint
+func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse form data
+	if err := r.ParseForm(); err != nil {
+		h.writeError(w, "invalid_request", "Failed to parse request", http.StatusBadRequest)
+		return
+	}
+
+	token := r.FormValue("token")
+	clientID := r.FormValue("client_id")
+
+	// Get client credentials from Authorization header (if present)
+	if authClientID, authClientSecret := h.parseBasicAuth(r); authClientID != "" {
+		clientID = authClientID
+		// Validate client credentials
+		if err := h.server.ValidateClientCredentials(clientID, authClientSecret); err != nil {
+			h.logger.Warn("Client authentication failed for revocation", "client_id", clientID)
+			h.writeError(w, "invalid_client", "Client authentication failed", http.StatusUnauthorized)
+			return
+		}
+	}
+
+	if token == "" {
+		h.writeError(w, "invalid_request", "token is required", http.StatusBadRequest)
+		return
+	}
+
+	// Revoke token
+	if err := h.server.RevokeToken(r.Context(), token, clientID); err != nil {
+		h.logger.Error("Failed to revoke token", "error", err)
+		// Per RFC 7009, return 200 even if revocation fails
+	}
+
+	// Return success (per RFC 7009)
 	w.WriteHeader(http.StatusOK)
+}
+
+// ServeClientRegistration handles dynamic client registration (RFC 7591)
+func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse registration request
+	var req struct {
+		ClientName   string   `json:"client_name"`
+		ClientType   string   `json:"client_type"`
+		RedirectURIs []string `json:"redirect_uris"`
+		Scopes       []string `json:"scopes"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, "invalid_request", "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Register client
+	client, clientSecret, err := h.server.RegisterClient(req.ClientName, req.ClientType, req.RedirectURIs, req.Scopes)
+	if err != nil {
+		h.logger.Error("Failed to register client", "error", err)
+		h.writeError(w, "server_error", err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Build response
+	response := map[string]any{
+		"client_id":                  client.ClientID,
+		"client_name":                client.ClientName,
+		"client_type":                client.ClientType,
+		"redirect_uris":              client.RedirectURIs,
+		"token_endpoint_auth_method": client.TokenEndpointAuthMethod,
+		"grant_types":                client.GrantTypes,
+		"response_types":             client.ResponseTypes,
+	}
+
+	if clientSecret != "" {
+		response["client_secret"] = clientSecret
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(response)
+}
+
+// Helper methods
+
+func (h *Handler) parseBasicAuth(r *http.Request) (username, password string) {
+	username, password, _ = r.BasicAuth()
+	return
+}
+
+func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *providers.TokenResponse, scope string) {
+	expiresIn := int64(token.ExpiresAt.Sub(time.Now()).Seconds())
+	if expiresIn < 0 {
+		expiresIn = 3600
+	}
+
+	response := map[string]any{
+		"access_token": token.AccessToken,
+		"token_type":   token.TokenType,
+		"expires_in":   expiresIn,
+	}
+
+	if token.RefreshToken != "" {
+		response["refresh_token"] = token.RefreshToken
+	}
+
+	if scope != "" {
+		response["scope"] = scope
+	} else if len(token.Scopes) > 0 {
+		response["scope"] = strings.Join(token.Scopes, " ")
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func (h *Handler) writeError(w http.ResponseWriter, code, description string, status int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(map[string]string{
-		"status":  "success",
-		"message": fmt.Sprintf("Token revoked for %s", req.Email),
+		"error":             code,
+		"error_description": description,
 	})
 }
+
+// Context key for user info
+type contextKey string
+
+const userInfoKey contextKey = "user_info"
+
+// UserInfoFromContext retrieves user info from the request context
+func UserInfoFromContext(ctx context.Context) (*providers.UserInfo, bool) {
+	userInfo, ok := ctx.Value(userInfoKey).(*providers.UserInfo)
+	return userInfo, ok
+}
+
