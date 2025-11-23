@@ -179,6 +179,50 @@ type TokenStore interface {
 
 ## 🔒 Security
 
+### 🛡️ Secure by Default
+
+This library follows the **secure-by-default** principle. All security features are enabled out of the box:
+
+✅ **PKCE Required** - Mandatory PKCE (S256 only) for all authorization flows (OAuth 2.1)  
+✅ **Refresh Token Rotation** - Automatic token rotation with reuse detection (OAuth 2.1)  
+✅ **S256 Only** - Rejects insecure 'plain' PKCE method  
+✅ **No Proxy Trust** - Doesn't trust X-Forwarded-For headers by default  
+✅ **Rate Limiting** - Built-in protection against abuse
+
+**No configuration needed for secure defaults!** Just create your server:
+
+```go
+server, _ := oauth.NewServer(
+    provider, tokenStore, clientStore, flowStore,
+    &oauth.ServerConfig{
+        Issuer: "https://your-domain.com",
+        // All security features enabled by default!
+    },
+    logger,
+)
+```
+
+### 🔧 Supporting Legacy Clients
+
+If you need to support older clients that don't support PKCE or S256:
+
+```go
+server, _ := oauth.NewServer(
+    provider, tokenStore, clientStore, flowStore,
+    &oauth.ServerConfig{
+        Issuer: "https://your-domain.com",
+        
+        // ⚠️  WARNING: Only enable for backward compatibility
+        RequirePKCE: false,        // Allow clients without PKCE
+        AllowPKCEPlain: true,      // Allow 'plain' method (not recommended)
+    },
+    logger,
+)
+// The server will log security warnings when you use less secure options
+```
+
+**Important**: The server logs clear warnings when security features are weakened.
+
 ### Token Encryption
 
 ```go
@@ -201,6 +245,7 @@ server.SetAuditor(auditor)
 // - Token issued/refreshed/revoked
 // - Authentication failures
 // - Rate limit violations
+// - Security configuration warnings
 ```
 
 ### Rate Limiting
@@ -213,6 +258,20 @@ rateLimiter := security.NewRateLimiter(
 )
 server.SetRateLimiter(rateLimiter)
 ```
+
+### Proxy Configuration
+
+When running behind a reverse proxy (nginx, HAProxy, etc.):
+
+```go
+&oauth.ServerConfig{
+    TrustProxy: true,         // Enable proxy header trust
+    TrustedProxyCount: 2,     // Number of proxies (e.g., CloudFlare + nginx)
+    // Extracts client IP from: ips[len(ips) - TrustedProxyCount - 1]
+}
+```
+
+**Security Note**: Only enable `TrustProxy` when behind a properly configured trusted reverse proxy.
 
 ## 📚 Examples
 

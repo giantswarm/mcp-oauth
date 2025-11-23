@@ -103,16 +103,30 @@ Before **every** commit, you **MUST** perform these checks:
     goimports -w .
     go fmt ./...
     ```
-2.  **Run All Tests:**
+
+2.  **Lint Code:**
+    ```bash
+    make lint
+    ```
+    -   **CRITICAL:** Fix ALL linter errors before committing
+    -   Linter failures in CI will block your PR from being merged
+    -   Common issues to watch for:
+        - Unused variables or imports
+        - Boolean comparisons (`use !x` not `x == false`)
+        - Repeated strings that should be constants
+        - Security issues flagged by `gosec`
+
+3.  **Run All Tests:**
     ```bash
     make test
     ```
     -   **DO NOT** commit if any tests are failing. Fix the tests first.
     -   Code must meet the test coverage minimums defined in [architecture.mdc](mdc:.cursor/rules/architecture.mdc).
-3.  **Check Examples:** If you modified any interfaces or core functionality, verify that examples still work:
+
+4.  **Check Examples:** If you modified any interfaces or core functionality, verify that examples still work:
     ```bash
-    cd examples/basic-v2
-    go run main.go --help  # Should run without errors
+    cd examples/basic
+    go build
     ```
 
 ### 3.2. Review & Update Rules
@@ -179,19 +193,114 @@ Closes #65
 **⚠️ VERIFICATION: Before committing, ensure you are NOT on the `main` branch!**
 
 1.  **Verify Branch:** Run `git branch --show-current` - it MUST NOT be `main`
+
 2.  **Commit Changes:**
     ```bash
     git add .
     git commit -m "..."
     ```
+
 3.  **Never Amend Commits**: Amend is very difficult to handle with multiple people and with gitops. So avoid using this.
+
 4.  **Push Branch:**
     ```bash
     git push -u origin <your-branch-name>
     ```
+
 5.  **Create Pull Request:** Use `gh pr create` to create a PR targeting the `main` branch
+
 6.  **Mark Issue Done:** Set the task status to `done`.
+
 7.  **Announce Completion:** Inform the user that your changes have been pushed to a branch and a PR has been created.
+
+### 3.5. Monitor CI Checks (MANDATORY)
+
+After creating a PR or pushing new commits to an existing PR, you **MUST** actively monitor the CI checks:
+
+1.  **Wait for Checks to Start:**
+    ```bash
+    # Wait 20-30 seconds for checks to initialize
+    sleep 20
+    gh pr checks
+    ```
+
+2.  **Monitor Until All Checks Pass:**
+    - **DO NOT** walk away after pushing
+    - Check status every 30-60 seconds until all checks complete
+    - Exit code 8 means checks are still running (this is normal)
+    - Exit code 1 means checks failed (action required)
+    - Exit code 0 means all checks passed (success!)
+
+3.  **If Checks Fail - Immediate Action Required:**
+    ```bash
+    # View failed check logs
+    gh pr checks
+    gh run view <run-id> --log-failed
+    ```
+    
+    **Common Failures:**
+    - **Lint failures:** Run `make lint` locally, fix issues, commit, push
+    - **Build failures:** Run `go build ./...` locally, fix, commit, push
+    - **Test failures:** Run `make test` locally, fix, commit, push
+    - **Example build failures:** Test examples locally, fix, commit, push
+
+4.  **Fix and Re-push:**
+    ```bash
+    # Fix the issue locally
+    make lint  # or whatever failed
+    
+    # Commit the fix
+    git add .
+    git commit -m "fix(ci): resolve <check-name> failure"
+    
+    # Push and monitor again
+    git push
+    sleep 20
+    gh pr checks
+    ```
+
+5.  **Keep Monitoring:** After fixing, continue monitoring until ALL checks are green ✅
+
+**Why This Matters:**
+- Failed CI checks block PR merges
+- Quick fixes prevent blocking other developers
+- Demonstrates professional development practices
+- Ensures code quality before review
+
+**Example Monitoring Session:**
+```bash
+# After pushing
+git push
+
+# Wait for checks to start
+sleep 30
+
+# Check status
+gh pr checks
+
+# If failures, investigate immediately
+gh run view <run-id> --log-failed
+
+# Fix, commit, push
+# ... fixes ...
+git push
+
+# Monitor again until green
+sleep 30
+gh pr checks
+```
+
+**NEVER:**
+- ❌ Push and walk away without checking CI
+- ❌ Leave failing checks for others to discover
+- ❌ Assume checks will pass because local tests passed
+- ❌ Wait for PR review before fixing obvious CI failures
+
+**ALWAYS:**
+- ✅ Monitor checks immediately after pushing
+- ✅ Fix CI failures within minutes, not hours
+- ✅ Re-check after every fix until all green
+- ✅ Only request review when all checks pass
 
 ## Library-Specific Considerations
 

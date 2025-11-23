@@ -54,19 +54,49 @@ func main() {
 	store := memory.NewWithInterval(1 * time.Minute)
 	defer store.Stop()
 
-	// 3. Create OAuth server
+	// 3. Create OAuth server with production-grade security configuration
+	// SECURITY: This demonstrates secure-by-default configuration.
+	// All security features are enabled by default and can be selectively
+	// disabled ONLY if needed for backward compatibility with legacy clients.
 	server, err := oauth.NewServer(
 		googleProvider,
 		store, // TokenStore
 		store, // ClientStore
 		store, // FlowStore
 		&oauth.ServerConfig{
-			Issuer:                    getEnvOrDefault("MCP_RESOURCE", "https://mcp.example.com"),
-			RequirePKCE:               true,
-			AllowRefreshTokenRotation: true,
-			TrustProxy:                getBoolEnv("TRUST_PROXY", false),
-			MaxClientsPerIP:           10,
-			RefreshTokenTTL:           90 * 24 * 60 * 60, // 90 days in seconds
+			Issuer: getEnvOrDefault("MCP_RESOURCE", "https://mcp.example.com"),
+
+			// Secure defaults (enabled automatically):
+			// RequirePKCE: true              - Mandatory PKCE for all clients (OAuth 2.1)
+			// AllowPKCEPlain: false          - Only S256 method allowed
+			// AllowRefreshTokenRotation: true - Token rotation (OAuth 2.1)
+			// TrustProxy: false              - Don't trust proxy headers by default
+
+			// Optional: Override defaults for backward compatibility
+			// ONLY enable these if you have legacy clients that don't support PKCE
+			// RequirePKCE: getBoolEnv("OAUTH_REQUIRE_PKCE", true),
+			// AllowPKCEPlain: getBoolEnv("OAUTH_ALLOW_PKCE_PLAIN", false),
+
+			// Proxy configuration (only enable if behind trusted reverse proxy)
+			TrustProxy:        getBoolEnv("TRUST_PROXY", false), // Secure by default
+			TrustedProxyCount: getIntEnv("TRUSTED_PROXY_COUNT", 1),
+
+			// Token lifetimes
+			RefreshTokenTTL:      90 * 24 * 60 * 60, // 90 days in seconds
+			ClockSkewGracePeriod: 5,                 // 5 seconds grace period
+
+			// Rate limiting
+			MaxClientsPerIP: 10,
+
+			// Scope validation (optional)
+			SupportedScopes: []string{
+				"openid",
+				"email",
+				"profile",
+				"https://www.googleapis.com/auth/gmail.readonly",
+				"https://www.googleapis.com/auth/drive.readonly",
+				"https://www.googleapis.com/auth/calendar.readonly",
+			},
 		},
 		logger,
 	)
@@ -106,11 +136,14 @@ func main() {
 	}
 
 	// Log startup information
-	logger.Info("Starting MCP server",
+	logger.Info("Starting MCP server with enhanced security",
 		"addr", httpServer.Addr,
 		"encryption", "enabled",
 		"audit_logging", "enabled",
 		"rate_limiting", "enabled",
+		"pkce_enforced", "true",
+		"refresh_token_rotation", "enabled",
+		"token_introspection", "enabled",
 		"provider", googleProvider.Name(),
 	)
 
@@ -145,6 +178,8 @@ func setupRoutes(handler *oauth.Handler, logger *slog.Logger) *http.ServeMux {
 		logRequest(logger, handler.ServeClientRegistration))
 	mux.HandleFunc("/oauth/revoke",
 		logRequest(logger, handler.ServeTokenRevocation))
+	mux.HandleFunc("/oauth/introspect",
+		logRequest(logger, handler.ServeTokenIntrospection))
 
 	// Protected MCP endpoint
 	mux.Handle("/mcp", handler.ValidateToken(mcpHandler(logger)))
@@ -300,6 +335,18 @@ func getBoolEnv(key string, defaultValue bool) bool {
 		return defaultValue
 	}
 	return value == "true" || value == "1" || value == "yes"
+}
+
+func getIntEnv(key string, defaultValue int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+	var intVal int
+	if _, err := fmt.Sscanf(value, "%d", &intVal); err == nil {
+		return intVal
+	}
+	return defaultValue
 }
 
 func logRequest(logger *slog.Logger, handler http.HandlerFunc) http.HandlerFunc {

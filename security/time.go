@@ -3,7 +3,7 @@ package security
 import "time"
 
 const (
-	// ClockSkewGracePeriod is the grace period for token expiration checks
+	// DefaultClockSkewGracePeriod is the default grace period for token expiration checks
 	// This prevents false expiration errors due to time synchronization issues
 	// between different systems (client, server, provider).
 	//
@@ -16,17 +16,22 @@ const (
 	//   - Allows tokens to be used up to 5 seconds beyond their true expiration
 	//   - This is acceptable for most use cases and improves reliability
 	//   - For high-security scenarios, this can be reduced or disabled
-	ClockSkewGracePeriod = 5 * time.Second
+	DefaultClockSkewGracePeriod = 5 * time.Second
 )
 
-// IsTokenExpired checks if a token is expired with clock skew grace period
+// IsTokenExpired checks if a token is expired with default clock skew grace period
 func IsTokenExpired(expiresAt time.Time) bool {
+	return IsTokenExpiredWithGracePeriod(expiresAt, DefaultClockSkewGracePeriod)
+}
+
+// IsTokenExpiredWithGracePeriod checks if a token is expired with custom clock skew grace period
+func IsTokenExpiredWithGracePeriod(expiresAt time.Time, gracePeriod time.Duration) bool {
 	if expiresAt.IsZero() {
 		return false // No expiration
 	}
 
 	// Apply grace period: token is only expired if it's been expired for more than grace period
-	return time.Now().After(expiresAt.Add(ClockSkewGracePeriod))
+	return time.Now().After(expiresAt.Add(gracePeriod))
 }
 
 // IsTokenExpiringSoon checks if a token will expire within the given threshold

@@ -48,18 +48,50 @@ type ServerConfig struct {
 	// RefreshTokenTTL is how long refresh tokens are valid
 	RefreshTokenTTL int64 // seconds, default: 7776000 (90 days)
 
-	// RequirePKCE enforces PKCE for all clients
-	RequirePKCE bool // default: true
-
 	// AllowRefreshTokenRotation enables refresh token rotation (OAuth 2.1)
+	// Default: true (secure by default)
 	AllowRefreshTokenRotation bool // default: true
 
 	// TrustProxy enables trusting X-Forwarded-For and X-Real-IP headers
-	// Only enable if behind a trusted reverse proxy
+	// WARNING: Only enable if behind a trusted reverse proxy (nginx, HAProxy, etc.)
+	// When false, uses direct connection IP (secure by default)
+	// Default: false
 	TrustProxy bool // default: false
 
+	// TrustedProxyCount is the number of trusted proxies in front of this server
+	// Used with TrustProxy to correctly extract client IP from X-Forwarded-For
+	// Example: If you have 2 proxies (CloudFlare + nginx), set this to 2
+	// The client IP will be extracted as: ips[len(ips) - TrustedProxyCount - 1]
+	// Default: 1
+	TrustedProxyCount int // default: 1
+
 	// MaxClientsPerIP limits client registrations per IP address
+	// Prevents DoS via mass client registration
+	// Default: 10
 	MaxClientsPerIP int // default: 10
+
+	// ClockSkewGracePeriod is the grace period for token expiration checks (in seconds)
+	// This prevents false expiration errors due to time synchronization issues
+	// Default: 5 seconds
+	ClockSkewGracePeriod int64 // seconds, default: 5
+
+	// SupportedScopes lists the scopes that are allowed for clients
+	// If empty, all scopes are allowed
+	SupportedScopes []string
+
+	// AllowPKCEPlain allows the 'plain' code_challenge_method (NOT RECOMMENDED)
+	// WARNING: The 'plain' method is insecure and deprecated in OAuth 2.1
+	// Only enable for backward compatibility with legacy clients
+	// When false, only S256 method is accepted (secure by default)
+	// Default: false
+	AllowPKCEPlain bool // default: false
+
+	// RequirePKCE enforces PKCE for all authorization requests
+	// WARNING: Disabling this significantly weakens security
+	// Only disable for backward compatibility with very old clients
+	// When true, code_challenge parameter is mandatory (secure by default)
+	// Default: true
+	RequirePKCE bool // default: true
 }
 
 // NewServer creates a new OAuth server
@@ -87,20 +119,12 @@ func NewServer(
 		config = &ServerConfig{}
 	}
 
-	// Set defaults
-	if config.AuthorizationCodeTTL == 0 {
-		config.AuthorizationCodeTTL = 600 // 10 minutes
-	}
-	if config.AccessTokenTTL == 0 {
-		config.AccessTokenTTL = 3600 // 1 hour
-	}
-	if config.RefreshTokenTTL == 0 {
-		config.RefreshTokenTTL = 7776000 // 90 days
-	}
-
 	if logger == nil {
 		logger = slog.Default()
 	}
+
+	// Apply secure defaults
+	config = applySecureDefaults(config, logger)
 
 	return &Server{
 		provider:    provider,
@@ -110,6 +134,68 @@ func NewServer(
 		config:      config,
 		logger:      logger,
 	}, nil
+}
+
+// applySecureDefaults applies secure-by-default configuration values
+// This follows the principle: secure by default, opt-in for less secure options
+func applySecureDefaults(config *ServerConfig, logger *slog.Logger) *ServerConfig {
+	// Time-based defaults
+	if config.AuthorizationCodeTTL == 0 {
+		config.AuthorizationCodeTTL = 600 // 10 minutes
+	}
+	if config.AccessTokenTTL == 0 {
+		config.AccessTokenTTL = 3600 // 1 hour
+	}
+	if config.RefreshTokenTTL == 0 {
+		config.RefreshTokenTTL = 7776000 // 90 days
+	}
+	if config.TrustedProxyCount == 0 {
+		config.TrustedProxyCount = 1 // Default to 1 trusted proxy
+	}
+	if config.ClockSkewGracePeriod == 0 {
+		config.ClockSkewGracePeriod = 5 // 5 seconds default
+	}
+	if config.MaxClientsPerIP == 0 {
+		config.MaxClientsPerIP = 10 // Default limit
+	}
+
+	// Security defaults
+	// For boolean fields, we need a way to distinguish "not set" from "explicitly set to false"
+	// We use a simple heuristic: if the struct is new (has all zeros), apply secure defaults
+	// If any security field is explicitly configured, we respect the user's choice
+	isDefaultConfig := !config.AllowRefreshTokenRotation &&
+		!config.RequirePKCE &&
+		!config.AllowPKCEPlain
+
+	if isDefaultConfig {
+		// Apply secure defaults when config is fresh
+		config.AllowRefreshTokenRotation = true // OAuth 2.1 security best practice
+		config.RequirePKCE = true               // OAuth 2.1 security best practice
+		config.AllowPKCEPlain = false           // Reject insecure 'plain' method
+		config.TrustProxy = false               // Don't trust proxy headers by default
+	} else {
+		// User has explicitly configured security settings - log warnings if insecure
+		if !config.RequirePKCE {
+			logger.Warn("⚠️  SECURITY WARNING: PKCE is DISABLED",
+				"risk", "Authorization code interception attacks",
+				"recommendation", "Set RequirePKCE=true for OAuth 2.1 compliance",
+				"learn_more", "https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-10#section-7.6")
+		}
+		if config.AllowPKCEPlain {
+			logger.Warn("⚠️  SECURITY WARNING: Plain PKCE method is ALLOWED",
+				"risk", "Weak code challenge protection",
+				"recommendation", "Set AllowPKCEPlain=false to require S256",
+				"learn_more", "https://datatracker.ietf.org/doc/html/rfc7636#section-4.2")
+		}
+		if config.TrustProxy {
+			logger.Warn("⚠️  SECURITY NOTICE: Trusting proxy headers",
+				"risk", "IP spoofing if proxy is not properly configured",
+				"recommendation", "Only enable behind trusted reverse proxies",
+				"config", "TrustedProxyCount should match your proxy chain length")
+		}
+	}
+
+	return config
 }
 
 // SetEncryptor sets the token encryptor for server and storage
@@ -166,21 +252,70 @@ func (s *Server) StartAuthorizationFlow(clientID, redirectURI, scope, codeChalle
 		return "", fmt.Errorf("state parameter is required for CSRF protection (OAuth 2.0 Security BCP)")
 	}
 
+	// PKCE validation (secure by default, configurable for backward compatibility)
+	if s.config.RequirePKCE {
+		// PKCE is required (default, recommended for OAuth 2.1)
+		if codeChallenge == "" || codeChallengeMethod == "" {
+			if s.auditor != nil {
+				s.auditor.LogAuthFailure("", clientID, "", "missing_pkce_parameters")
+			}
+			return "", fmt.Errorf("PKCE is required: code_challenge and code_challenge_method parameters are mandatory (OAuth 2.1)")
+		}
+	}
+
+	// Validate PKCE method if provided
+	if codeChallenge != "" {
+		if codeChallengeMethod == "" {
+			if s.auditor != nil {
+				s.auditor.LogAuthFailure("", clientID, "", "missing_code_challenge_method")
+			}
+			return "", fmt.Errorf("code_challenge_method is required when code_challenge is provided")
+		}
+
+		// Validate challenge method
+		if codeChallengeMethod == PKCEMethodPlain && !s.config.AllowPKCEPlain {
+			if s.auditor != nil {
+				s.auditor.LogAuthFailure("", clientID, "", "plain_pkce_not_allowed")
+			}
+			return "", fmt.Errorf("'plain' code_challenge_method is not allowed (only S256 is supported for security)")
+		}
+
+		if codeChallengeMethod != PKCEMethodS256 && codeChallengeMethod != PKCEMethodPlain {
+			if s.auditor != nil {
+				s.auditor.LogAuthFailure("", clientID, "", fmt.Sprintf("invalid_pkce_method: %s", codeChallengeMethod))
+			}
+			return "", fmt.Errorf("unsupported code_challenge_method: %s (supported: S256%s)", codeChallengeMethod, func() string {
+				if s.config.AllowPKCEPlain {
+					return ", plain"
+				}
+				return ""
+			}())
+		}
+	}
+
 	// Validate client
 	client, err := s.clientStore.GetClient(clientID)
 	if err != nil {
 		if s.auditor != nil {
-			s.auditor.LogAuthFailure("", clientID, "", fmt.Sprintf("client_not_found: %v", err))
+			s.auditor.LogAuthFailure("", clientID, "", "invalid_client")
 		}
-		return "", fmt.Errorf("invalid client: %w", err)
+		return "", fmt.Errorf("invalid_request")
 	}
 
 	// Validate redirect URI
 	if err := s.validateRedirectURI(client, redirectURI); err != nil {
 		if s.auditor != nil {
-			s.auditor.LogAuthFailure("", clientID, "", fmt.Sprintf("invalid_redirect_uri: %v", err))
+			s.auditor.LogAuthFailure("", clientID, "", "invalid_redirect_uri")
 		}
-		return "", err
+		return "", fmt.Errorf("invalid_request")
+	}
+
+	// Validate scopes
+	if err := s.validateScopes(scope); err != nil {
+		if s.auditor != nil {
+			s.auditor.LogAuthFailure("", clientID, "", fmt.Sprintf("invalid_scope: %v", err))
+		}
+		return "", fmt.Errorf("invalid_scope")
 	}
 
 	// Log authorization flow start
@@ -268,7 +403,7 @@ func validateRedirectURISecurity(redirectURI, serverIssuer string) error {
 	}
 
 	// Check if it's an HTTP(S) scheme
-	isHTTP := scheme == "http" || scheme == "https"
+	isHTTP := scheme == SchemeHTTP || scheme == SchemeHTTPS
 
 	if isHTTP {
 		hostname := strings.ToLower(parsed.Hostname())
@@ -278,10 +413,10 @@ func validateRedirectURISecurity(redirectURI, serverIssuer string) error {
 			hostname == "::1" || hostname == "[::1]"
 
 		// For production (non-loopback), require HTTPS
-		if !isLoopback && scheme != "https" {
+		if !isLoopback && scheme != SchemeHTTPS {
 			// Check if server itself is HTTPS
 			if serverParsed, err := url.Parse(serverIssuer); err == nil {
-				if serverParsed.Scheme == "https" {
+				if serverParsed.Scheme == SchemeHTTPS {
 					return fmt.Errorf("redirect_uri must use HTTPS in production (got %s://)", scheme)
 				}
 			}
@@ -290,6 +425,42 @@ func validateRedirectURISecurity(redirectURI, serverIssuer string) error {
 	// Custom schemes (myapp://, etc.) are allowed for native/mobile apps
 
 	return nil
+}
+
+// validateScopes validates that requested scopes are allowed
+func (s *Server) validateScopes(scope string) error {
+	// If no scopes configured, allow all
+	if len(s.config.SupportedScopes) == 0 {
+		return nil
+	}
+
+	if scope == "" {
+		return nil // Empty scope is allowed
+	}
+
+	// Split scope string into individual scopes
+	requestedScopes := strings.Fields(scope)
+
+	// Check each requested scope against supported scopes
+	for _, reqScope := range requestedScopes {
+		found := false
+		for _, supportedScope := range s.config.SupportedScopes {
+			if reqScope == supportedScope {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("unsupported scope: %s", reqScope)
+		}
+	}
+
+	return nil
+}
+
+// GetClient retrieves a client by ID (for use by handler)
+func (s *Server) GetClient(clientID string) (*storage.Client, error) {
+	return s.clientStore.GetClient(clientID)
 }
 
 // generateRandomToken generates a cryptographically secure random token
@@ -720,14 +891,32 @@ func (s *Server) validatePKCE(challenge, method, verifier string) error {
 		}
 	}
 
-	// Only S256 method is allowed (plain method is insecure per OAuth 2.1)
-	if method != "S256" {
-		return fmt.Errorf("unsupported code_challenge_method: %s (only S256 is supported per OAuth 2.1)", method)
-	}
+	var computedChallenge string
 
-	// Compute challenge from verifier using SHA256
-	hash := sha256.Sum256([]byte(verifier))
-	computedChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+	// Compute challenge based on method
+	switch method {
+	case PKCEMethodS256:
+		// Recommended: SHA256 hash of verifier
+		hash := sha256.Sum256([]byte(verifier))
+		computedChallenge = base64.RawURLEncoding.EncodeToString(hash[:])
+
+	case PKCEMethodPlain:
+		// Deprecated but allowed if configured for backward compatibility
+		if !s.config.AllowPKCEPlain {
+			return fmt.Errorf("'%s' code_challenge_method is not allowed (configure AllowPKCEPlain=true if needed for legacy clients)", PKCEMethodPlain)
+		}
+		computedChallenge = verifier
+		s.logger.Warn("Using insecure 'plain' PKCE method",
+			"recommendation", "Upgrade client to use S256")
+
+	default:
+		return fmt.Errorf("unsupported code_challenge_method: %s (supported: S256%s)", method, func() string {
+			if s.config.AllowPKCEPlain {
+				return ", plain"
+			}
+			return ""
+		}())
+	}
 
 	// Constant-time comparison to prevent timing attacks
 	// Using subtle.ConstantTimeCompare to prevent side-channel attacks
@@ -752,10 +941,10 @@ func (s *Server) RegisterClient(clientName, clientType string, redirectURIs []st
 	var clientSecretHash string
 
 	if clientType == "" {
-		clientType = "confidential"
+		clientType = ClientTypeConfidential
 	}
 
-	if clientType == "confidential" {
+	if clientType == ClientTypeConfidential {
 		clientSecret = generateRandomToken()
 
 		// Hash the secret for storage
@@ -781,7 +970,7 @@ func (s *Server) RegisterClient(clientName, clientType string, redirectURIs []st
 	}
 
 	// Public clients use "none" auth method
-	if clientType == "public" {
+	if clientType == ClientTypePublic {
 		client.TokenEndpointAuthMethod = "none"
 	}
 

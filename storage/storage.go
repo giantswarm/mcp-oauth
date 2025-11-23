@@ -127,7 +127,6 @@ type AuthorizationState struct {
 	Scope               string
 	CodeChallenge       string
 	CodeChallengeMethod string
-	Nonce               string
 	ProviderState       string // State parameter sent to the provider (different from StateID)
 	CreatedAt           time.Time
 	ExpiresAt           time.Time
