@@ -163,9 +163,9 @@ func applySecureDefaults(config *ServerConfig, logger *slog.Logger) *ServerConfi
 	// For boolean fields, we need a way to distinguish "not set" from "explicitly set to false"
 	// We use a simple heuristic: if the struct is new (has all zeros), apply secure defaults
 	// If any security field is explicitly configured, we respect the user's choice
-	isDefaultConfig := config.AllowRefreshTokenRotation == false &&
-		config.RequirePKCE == false &&
-		config.AllowPKCEPlain == false
+	isDefaultConfig := !config.AllowRefreshTokenRotation &&
+		!config.RequirePKCE &&
+		!config.AllowPKCEPlain
 
 	if isDefaultConfig {
 		// Apply secure defaults when config is fresh
@@ -273,14 +273,14 @@ func (s *Server) StartAuthorizationFlow(clientID, redirectURI, scope, codeChalle
 		}
 
 		// Validate challenge method
-		if codeChallengeMethod == "plain" && !s.config.AllowPKCEPlain {
+		if codeChallengeMethod == PKCEMethodPlain && !s.config.AllowPKCEPlain {
 			if s.auditor != nil {
 				s.auditor.LogAuthFailure("", clientID, "", "plain_pkce_not_allowed")
 			}
 			return "", fmt.Errorf("'plain' code_challenge_method is not allowed (only S256 is supported for security)")
 		}
 
-		if codeChallengeMethod != "S256" && codeChallengeMethod != "plain" {
+		if codeChallengeMethod != PKCEMethodS256 && codeChallengeMethod != PKCEMethodPlain {
 			if s.auditor != nil {
 				s.auditor.LogAuthFailure("", clientID, "", fmt.Sprintf("invalid_pkce_method: %s", codeChallengeMethod))
 			}
@@ -403,7 +403,7 @@ func validateRedirectURISecurity(redirectURI, serverIssuer string) error {
 	}
 
 	// Check if it's an HTTP(S) scheme
-	isHTTP := scheme == "http" || scheme == "https"
+	isHTTP := scheme == SchemeHTTP || scheme == SchemeHTTPS
 
 	if isHTTP {
 		hostname := strings.ToLower(parsed.Hostname())
@@ -413,10 +413,10 @@ func validateRedirectURISecurity(redirectURI, serverIssuer string) error {
 			hostname == "::1" || hostname == "[::1]"
 
 		// For production (non-loopback), require HTTPS
-		if !isLoopback && scheme != "https" {
+		if !isLoopback && scheme != SchemeHTTPS {
 			// Check if server itself is HTTPS
 			if serverParsed, err := url.Parse(serverIssuer); err == nil {
-				if serverParsed.Scheme == "https" {
+				if serverParsed.Scheme == SchemeHTTPS {
 					return fmt.Errorf("redirect_uri must use HTTPS in production (got %s://)", scheme)
 				}
 			}
@@ -895,15 +895,15 @@ func (s *Server) validatePKCE(challenge, method, verifier string) error {
 
 	// Compute challenge based on method
 	switch method {
-	case "S256":
+	case PKCEMethodS256:
 		// Recommended: SHA256 hash of verifier
 		hash := sha256.Sum256([]byte(verifier))
 		computedChallenge = base64.RawURLEncoding.EncodeToString(hash[:])
 
-	case "plain":
+	case PKCEMethodPlain:
 		// Deprecated but allowed if configured for backward compatibility
 		if !s.config.AllowPKCEPlain {
-			return fmt.Errorf("'plain' code_challenge_method is not allowed (configure AllowPKCEPlain=true if needed for legacy clients)")
+			return fmt.Errorf("'%s' code_challenge_method is not allowed (configure AllowPKCEPlain=true if needed for legacy clients)", PKCEMethodPlain)
 		}
 		computedChallenge = verifier
 		s.logger.Warn("Using insecure 'plain' PKCE method",
@@ -941,10 +941,10 @@ func (s *Server) RegisterClient(clientName, clientType string, redirectURIs []st
 	var clientSecretHash string
 
 	if clientType == "" {
-		clientType = "confidential"
+		clientType = ClientTypeConfidential
 	}
 
-	if clientType == "confidential" {
+	if clientType == ClientTypeConfidential {
 		clientSecret = generateRandomToken()
 
 		// Hash the secret for storage
@@ -970,7 +970,7 @@ func (s *Server) RegisterClient(clientName, clientType string, redirectURIs []st
 	}
 
 	// Public clients use "none" auth method
-	if clientType == "public" {
+	if clientType == ClientTypePublic {
 		client.TokenEndpointAuthMethod = "none"
 	}
 

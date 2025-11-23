@@ -111,3 +111,30 @@ var (
 	// SupportedTokenAuthMethods are the supported token endpoint auth methods
 	SupportedTokenAuthMethods = []string{"client_secret_basic", "client_secret_post", "none"}
 )
+
+// OAuth client types
+const (
+	// ClientTypeConfidential represents a confidential OAuth client
+	ClientTypeConfidential = "confidential"
+
+	// ClientTypePublic represents a public OAuth client
+	ClientTypePublic = "public"
+)
+
+// PKCE code challenge methods
+const (
+	// PKCEMethodS256 is the SHA256 code challenge method (recommended, OAuth 2.1)
+	PKCEMethodS256 = "S256"
+
+	// PKCEMethodPlain is the plain code challenge method (deprecated, insecure)
+	PKCEMethodPlain = "plain"
+)
+
+// URI schemes
+const (
+	// SchemeHTTP is the HTTP URI scheme
+	SchemeHTTP = "http"
+
+	// SchemeHTTPS is the HTTPS URI scheme
+	SchemeHTTPS = "https"
+)

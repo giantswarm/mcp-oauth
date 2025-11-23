@@ -269,7 +269,7 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	}
 
 	// CRITICAL SECURITY: Confidential clients MUST authenticate
-	if client.ClientType == "confidential" {
+	if client.ClientType == ClientTypeConfidential {
 		if authClientSecret == "" {
 			h.logger.Warn("Confidential client missing credentials", "client_id", clientID, "ip", clientIP)
 			if h.server.auditor != nil {
