@@ -12,33 +12,27 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
-// PKCE validation constants
+// Note: PKCE and URI validation constants are intentionally duplicated from constants.go
+// to avoid circular imports (root package imports server, server can't import root).
+// Keep these in sync with constants.go.
+
+// PKCE validation constants (RFC 7636)
 const (
-	// MinCodeVerifierLength is the minimum length for PKCE code_verifier (RFC 7636)
 	MinCodeVerifierLength = 43
-
-	// MaxCodeVerifierLength is the maximum length for PKCE code_verifier (RFC 7636)
 	MaxCodeVerifierLength = 128
-
-	// PKCEMethodS256 is the SHA256 code challenge method (recommended, OAuth 2.1)
-	PKCEMethodS256 = "S256"
-
-	// PKCEMethodPlain is the plain code challenge method (deprecated, insecure)
-	PKCEMethodPlain = "plain"
+	PKCEMethodS256        = "S256"
+	PKCEMethodPlain       = "plain"
 )
 
-// Redirect URI validation constants
+// URI scheme constants
 const (
-	// SchemeHTTP is the HTTP URI scheme
-	SchemeHTTP = "http"
-
-	// SchemeHTTPS is the HTTPS URI scheme
+	SchemeHTTP  = "http"
 	SchemeHTTPS = "https"
 )
 
 var (
 	// AllowedHTTPSchemes lists allowed HTTP-based redirect URI schemes
-	AllowedHTTPSchemes = []string{"http", "https"}
+	AllowedHTTPSchemes = []string{SchemeHTTP, SchemeHTTPS}
 
 	// DangerousSchemes lists URI schemes that must never be allowed for security
 	DangerousSchemes = []string{"javascript", "data", "file", "vbscript", "about"}

@@ -40,103 +40,78 @@ type Config struct {
 
 // GoogleAuthConfig holds Google OAuth proxy configuration
 type GoogleAuthConfig struct {
-	// ClientID is the Google OAuth Client ID
-	// REQUIRED for OAuth proxy mode - used to authenticate with Google
+	// ClientID is the Google OAuth Client ID (required).
 	ClientID string
 
-	// ClientSecret is the Google OAuth Client Secret
-	// REQUIRED for OAuth proxy mode - used to authenticate with Google
+	// ClientSecret is the Google OAuth Client Secret (required).
 	ClientSecret string
 
-	// RedirectURL is the callback URL for Google OAuth flow
-	// This is where Google redirects after user authentication
-	// Default: {Resource}/oauth/google/callback
+	// RedirectURL is where Google redirects after authentication.
 	RedirectURL string
 }
 
 // RateLimitConfig holds rate limiting configuration
 type RateLimitConfig struct {
-	// Rate is the number of requests per second allowed per IP (0 = no limit)
+	// Rate is requests per second allowed per IP. Zero disables limiting.
 	Rate int
 
-	// Burst is the maximum burst size allowed per IP
+	// Burst is the maximum burst size allowed per IP.
 	Burst int
 
-	// CleanupInterval is how often to cleanup inactive rate limiters
-	// Default: 5 minutes
+	// CleanupInterval is how often to cleanup inactive rate limiters.
 	CleanupInterval time.Duration
 
-	// UserRate is the number of requests per second allowed per authenticated user (0 = no limit)
-	// This is in addition to IP-based rate limiting
+	// UserRate is requests per second allowed per authenticated user.
+	// Applied in addition to IP-based limiting. Zero disables.
 	UserRate int
 
-	// UserBurst is the maximum burst size allowed per authenticated user
+	// UserBurst is the maximum burst size per authenticated user.
 	UserBurst int
 
-	// TrustProxy indicates whether to trust X-Forwarded-For and X-Real-IP headers
-	// Only set to true if the server is behind a trusted proxy
-	// Default: false (secure by default)
+	// TrustProxy enables trusting X-Forwarded-For and X-Real-IP headers.
+	// Only enable behind a trusted reverse proxy.
 	TrustProxy bool
 }
 
 // SecurityConfig holds OAuth security settings (secure by default)
 type SecurityConfig struct {
-	// AllowInsecureAuthWithoutState allows authorization requests without state parameter
-	// WARNING: Disabling this weakens CSRF protection and is NOT recommended
-	// Only enable if you have clients that don't support state parameter
-	// Default: false (state is REQUIRED for security)
+	// AllowInsecureAuthWithoutState permits auth requests without state parameter.
+	// WARNING: Weakens CSRF protection. Only for legacy clients.
 	AllowInsecureAuthWithoutState bool
 
-	// DisableRefreshTokenRotation disables automatic refresh token rotation
-	// WARNING: Disabling this violates OAuth 2.1 security best practices
-	// Stolen refresh tokens can be used indefinitely without rotation
-	// Default: false (rotation is ENABLED for security)
+	// DisableRefreshTokenRotation disables automatic refresh token rotation.
+	// WARNING: Violates OAuth 2.1. Stolen tokens remain valid indefinitely.
 	DisableRefreshTokenRotation bool
 
-	// AllowPublicClientRegistration allows unauthenticated dynamic client registration
-	// WARNING: This can lead to DoS attacks via unlimited client registration
-	// When false, client registration requires a registration access token
-	// Default: false (authentication REQUIRED for security)
+	// AllowPublicClientRegistration permits unauthenticated client registration.
+	// WARNING: Can enable DoS via mass registration.
 	AllowPublicClientRegistration bool
 
-	// RegistrationAccessToken is the token required for client registration
-	// Only checked if AllowPublicClientRegistration is false
-	// Generate a secure random token and share it only with trusted client developers
+	// RegistrationAccessToken is required for client registration when
+	// AllowPublicClientRegistration is false.
 	RegistrationAccessToken string
 
-	// RefreshTokenTTL is the time-to-live for refresh tokens (0 = never expire)
-	// Recommended: 30-90 days for security vs usability balance
-	// Default: 90 days
+	// RefreshTokenTTL is how long refresh tokens remain valid.
+	// Recommended: 30-90 days. Zero means never expire.
 	RefreshTokenTTL time.Duration
 
-	// MaxClientsPerIP limits the number of clients that can be registered per IP
-	// Prevents DoS attacks via mass client registration
-	// 0 = no limit (not recommended)
-	// Default: 10
+	// MaxClientsPerIP limits registrations per IP to prevent DoS.
+	// Zero means no limit (not recommended).
 	MaxClientsPerIP int
 
-	// AllowCustomRedirectSchemes allows non-http/https redirect URIs (e.g., myapp://)
-	// When false, only http/https schemes are allowed
-	// When true, custom schemes are validated against AllowedCustomSchemes pattern
-	// Default: true (for native app support)
+	// AllowCustomRedirectSchemes permits non-http/https URIs (e.g., myapp://).
+	// Custom schemes are validated against AllowedCustomSchemes patterns.
 	AllowCustomRedirectSchemes bool
 
-	// AllowedCustomSchemes is a list of allowed custom scheme patterns (regex)
-	// Only used if AllowCustomRedirectSchemes is true
-	// Default: ["^[a-z][a-z0-9+.-]*$"] (RFC 3986 compliant schemes)
+	// AllowedCustomSchemes lists allowed custom URI scheme regex patterns.
+	// Default: RFC 3986 compliant schemes.
 	AllowedCustomSchemes []string
 
-	// EncryptionKey is the AES-256 key for encrypting tokens at rest (32 bytes)
-	// If nil or empty, tokens are stored unencrypted in memory
-	// For production, provide a 32-byte key from secure storage (KMS, Vault, etc.)
-	// Use oauth.GenerateEncryptionKey() to create a new key
-	// Use oauth.EncryptionKeyFromBase64() to load from env var
-	// Default: nil (encryption disabled)
+	// EncryptionKey is the AES-256 key (32 bytes) for token encryption at rest.
+	// Nil disables encryption. Generate with oauth.GenerateEncryptionKey().
 	EncryptionKey []byte
 
-	// EnableAuditLogging enables comprehensive security audit logging
-	// Logs authentication events, token operations, and security violations
-	// All sensitive data is hashed before logging
-	// Default: true (enabled for security)
+	// EnableAuditLogging enables security audit logging.
+	// Logs auth events, token operations, and violations (sensitive data hashed).
 	EnableAuditLogging bool
 }
