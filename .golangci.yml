@@ -1,9 +1,7 @@
-run:
-  timeout: 5m
-  tests: true
-  modules-download-mode: readonly
+version: "2"
 
 linters:
+  default: none
   enable:
     - errcheck
     - govet
@@ -13,6 +11,8 @@ linters:
     - misspell
     - unconvert
     - unparam
+    - gosimple
+    - typecheck
     - gosec
     - gocritic
     - revive
@@ -24,67 +24,76 @@ linters:
     - noctx
     - rowserrcheck
     - sqlclosecheck
-    - shadow
-
-linters-settings:
-  errcheck:
-    check-type-assertions: true
-    check-blank: true
-  
-  govet:
-    enable-all: true
-  
-  gofmt:
-    simplify: true
-  
-  goimports:
-    local-prefixes: github.com/giantswarm/mcp-oauth
-  
-  misspell:
-    locale: US
-  
-  gosec:
-    excludes:
-      - G104
-  
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - performance
-      - style
-  
-  revive:
+    - copyloopvar
+    - dupl
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    
+    govet:
+      enable-all: true
+      settings:
+        shadow:
+          strict: true
+    
+    gofmt:
+      simplify: true
+    
+    goimports:
+      local-prefixes: github.com/giantswarm/mcp-oauth
+    
+    misspell:
+      locale: US
+    
+    gosec:
+      excludes:
+        - G104
+    
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+    
+    revive:
+      rules:
+        - name: exported
+          arguments:
+            - "checkPrivateReceivers"
+            - "sayRepetitiveInsteadOfStutters"
+        - name: comment-spacings
+    
+    gocyclo:
+      min-complexity: 15
+    
+    nestif:
+      min-complexity: 5
+  exclusions:
     rules:
-      - name: exported
-        arguments:
-          - "checkPrivateReceivers"
-          - "sayRepetitiveInsteadOfStutters"
-  
-  gocyclo:
-    min-complexity: 15
-  
-  nestif:
-    min-complexity: 5
+      - linters:
+          - gocyclo
+          - errcheck
+          - gosec
+          - goconst
+        path: _test\.go
+      
+      - linters:
+          - gosec
+        text: "G404: Use of weak random number generator"
+        path: _test\.go
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
 
 issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gocyclo
-        - errcheck
-        - gosec
-        - goconst
-    
-    - text: "G404: Use of weak random number generator"
-      linters:
-        - gosec
-      path: _test\.go
-  
   max-issues-per-linter: 0
   max-same-issues: 0
 
-output:
-  format: colored-line-number
-  print-issued-lines: true
-  print-linter-name: true
-  sort-results: true
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+  allow-parallel-runners: true
