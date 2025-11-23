@@ -23,6 +23,15 @@ type TokenStore interface {
 
 	// GetUserInfo retrieves user information
 	GetUserInfo(userID string) (*providers.UserInfo, error)
+
+	// SaveRefreshToken saves a refresh token mapping to user ID with expiry
+	SaveRefreshToken(refreshToken, userID string, expiresAt time.Time) error
+
+	// GetRefreshTokenInfo retrieves the user ID for a refresh token
+	GetRefreshTokenInfo(refreshToken string) (string, error)
+
+	// DeleteRefreshToken removes a refresh token
+	DeleteRefreshToken(refreshToken string) error
 }
 
 // ClientStore defines the interface for managing OAuth client registrations.

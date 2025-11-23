@@ -110,9 +110,14 @@ func NewServer(
 	}, nil
 }
 
-// SetEncryptor sets the token encryptor
+// SetEncryptor sets the token encryptor for server and storage
 func (s *Server) SetEncryptor(enc *security.Encryptor) {
 	s.encryptor = enc
+	
+	// Also set encryptor on storage if it supports it
+	if memStore, ok := s.tokenStore.(*memory.Store); ok {
+		memStore.SetEncryptor(enc)
+	}
 }
 
 // SetAuditor sets the security auditor
@@ -150,12 +155,31 @@ func (s *Server) StartAuthorizationFlow(clientID, redirectURI, scope, codeChalle
 	// Validate client
 	client, err := s.clientStore.GetClient(clientID)
 	if err != nil {
+		if s.auditor != nil {
+			s.auditor.LogAuthFailure("", clientID, "", fmt.Sprintf("client_not_found: %v", err))
+		}
 		return "", fmt.Errorf("invalid client: %w", err)
 	}
 
 	// Validate redirect URI
 	if err := s.validateRedirectURI(client, redirectURI); err != nil {
+		if s.auditor != nil {
+			s.auditor.LogAuthFailure("", clientID, "", fmt.Sprintf("invalid_redirect_uri: %v", err))
+		}
 		return "", err
+	}
+
+	// Log authorization flow start
+	if s.auditor != nil {
+		s.auditor.LogEvent(security.Event{
+			Type:     "authorization_flow_started",
+			ClientID: clientID,
+			Details: map[string]any{
+				"redirect_uri":          redirectURI,
+				"scope":                 scope,
+				"code_challenge_method": codeChallengeMethod,
+			},
+		})
 	}
 
 	// Generate state
@@ -383,6 +407,16 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 	// Validate authorization code hasn't been used
 	if authCode.Used {
 		if s.auditor != nil {
+			// Authorization code reuse is a critical security event (token theft indicator)
+			s.auditor.LogEvent(security.Event{
+				Type:     "authorization_code_reuse_detected",
+				UserID:   authCode.UserID,
+				ClientID: clientID,
+				Details: map[string]any{
+					"severity": "critical",
+					"action":   "code_deleted_tokens_revoked",
+				},
+			})
 			s.auditor.LogAuthFailure(authCode.UserID, clientID, "", "authorization_code_reuse")
 		}
 		// Delete the code and revoke associated tokens (security measure)
@@ -404,6 +438,15 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 	if authCode.CodeChallenge != "" {
 		if err := s.validatePKCE(authCode.CodeChallenge, authCode.CodeChallengeMethod, codeVerifier); err != nil {
 			if s.auditor != nil {
+				// This is a security event - log it separately
+				s.auditor.LogEvent(security.Event{
+					Type:     "pkce_validation_failed",
+					UserID:   authCode.UserID,
+					ClientID: clientID,
+					Details: map[string]any{
+						"reason": err.Error(),
+					},
+				})
 				s.auditor.LogAuthFailure(authCode.UserID, clientID, "", fmt.Sprintf("pkce_validation_failed: %v", err))
 			}
 			return nil, "", fmt.Errorf("PKCE validation failed: %w", err)
@@ -440,9 +483,15 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 		s.logger.Warn("Failed to save access token mapping", "error", err)
 	}
 
-	// Store refresh token -> user mapping (for refresh flow)
+	// Store refresh token -> provider token mapping (for refresh flow)
 	if err := s.tokenStore.SaveToken(refreshToken, authCode.ProviderToken); err != nil {
 		s.logger.Warn("Failed to save refresh token", "error", err)
+	}
+
+	// Track refresh token with expiry (OAuth 2.1 security)
+	refreshTokenExpiry := time.Now().Add(time.Duration(s.config.RefreshTokenTTL) * time.Second)
+	if err := s.tokenStore.SaveRefreshToken(refreshToken, authCode.UserID, refreshTokenExpiry); err != nil {
+		s.logger.Warn("Failed to track refresh token", "error", err)
 	}
 
 	// Delete authorization code (one-time use)
@@ -455,22 +504,31 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 	return tokenResponse, authCode.Scope, nil
 }
 
-// RefreshAccessToken refreshes an access token using a refresh token
+// RefreshAccessToken refreshes an access token using a refresh token with OAuth 2.1 rotation
 func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID string) (*providers.TokenResponse, error) {
-	// Get provider token using refresh token
-	providerToken, err := s.tokenStore.GetToken(refreshToken)
+	// Validate refresh token and get user ID
+	userID, err := s.tokenStore.GetRefreshTokenInfo(refreshToken)
 	if err != nil {
 		if s.auditor != nil {
 			s.auditor.LogAuthFailure("", clientID, "", "invalid_refresh_token")
 		}
-		return nil, fmt.Errorf("invalid refresh token")
+		return nil, fmt.Errorf("invalid refresh token: %w", err)
+	}
+
+	// Get provider token using refresh token
+	providerToken, err := s.tokenStore.GetToken(refreshToken)
+	if err != nil {
+		if s.auditor != nil {
+			s.auditor.LogAuthFailure(userID, clientID, "", "refresh_token_not_found")
+		}
+		return nil, fmt.Errorf("refresh token not found")
 	}
 
 	// Refresh token with provider
 	newProviderToken, err := s.provider.RefreshToken(ctx, providerToken.RefreshToken)
 	if err != nil {
 		if s.auditor != nil {
-			s.auditor.LogAuthFailure("", clientID, "", fmt.Sprintf("provider_refresh_failed: %v", err))
+			s.auditor.LogAuthFailure(userID, clientID, "", fmt.Sprintf("provider_refresh_failed: %v", err))
 		}
 		return nil, fmt.Errorf("failed to refresh token with provider: %w", err)
 	}
@@ -481,17 +539,32 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		return nil, fmt.Errorf("failed to generate access token: %w", err)
 	}
 
-	// Generate new refresh token (rotation per OAuth 2.1)
+	// OAuth 2.1: Refresh Token Rotation
+	// Generate new refresh token and invalidate old one
 	var newRefreshToken string
+	var rotated bool
+	
 	if s.config.AllowRefreshTokenRotation {
 		newRefreshToken, err = generateToken(48)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate refresh token: %w", err)
 		}
-		// Invalidate old refresh token
-		s.tokenStore.DeleteToken(refreshToken)
+		
+		// Invalidate old refresh token (OAuth 2.1 security requirement)
+		if err := s.tokenStore.DeleteRefreshToken(refreshToken); err != nil {
+			s.logger.Warn("Failed to delete old refresh token", "error", err)
+		}
+		if err := s.tokenStore.DeleteToken(refreshToken); err != nil {
+			s.logger.Warn("Failed to delete old refresh token mapping", "error", err)
+		}
+		
+		rotated = true
+		s.logger.Info("Refresh token rotated (OAuth 2.1)", "user_id", userID)
 	} else {
+		// Reuse old refresh token (not recommended, but allowed for backward compatibility)
 		newRefreshToken = refreshToken
+		rotated = false
+		s.logger.Warn("Refresh token reused (rotation disabled)", "user_id", userID)
 	}
 
 	// Create token response
@@ -503,23 +576,31 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		TokenType:    "Bearer",
 	}
 
-	// Store new tokens
+	// Store new access token -> provider token mapping
 	if err := s.tokenStore.SaveToken(newAccessToken, newProviderToken); err != nil {
 		s.logger.Warn("Failed to save new access token", "error", err)
 	}
+
+	// Store new refresh token -> provider token mapping
 	if err := s.tokenStore.SaveToken(newRefreshToken, newProviderToken); err != nil {
 		s.logger.Warn("Failed to save new refresh token", "error", err)
 	}
 
+	// Track new refresh token with expiry
+	refreshTokenExpiry := time.Now().Add(time.Duration(s.config.RefreshTokenTTL) * time.Second)
+	if err := s.tokenStore.SaveRefreshToken(newRefreshToken, userID, refreshTokenExpiry); err != nil {
+		s.logger.Warn("Failed to track new refresh token", "error", err)
+	}
+
 	if s.auditor != nil {
-		s.auditor.LogTokenRefreshed("", clientID, "", s.config.AllowRefreshTokenRotation)
+		s.auditor.LogTokenRefreshed(userID, clientID, "", rotated)
 	}
 
 	return tokenResponse, nil
 }
 
 // RevokeToken revokes a token (access or refresh)
-func (s *Server) RevokeToken(ctx context.Context, token, clientID string) error {
+func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP string) error {
 	// Get provider token
 	providerToken, err := s.tokenStore.GetToken(token)
 	if err != nil {
@@ -541,9 +622,10 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID string) error 
 	}
 
 	if s.auditor != nil {
-		s.auditor.LogTokenRevoked("", clientID, "", "access_or_refresh")
+		s.auditor.LogTokenRevoked("", clientID, clientIP, "access_or_refresh")
 	}
 
+	s.logger.Info("Token revoked", "client_id", clientID, "ip", clientIP)
 	return nil
 }
 

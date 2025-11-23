@@ -39,9 +39,16 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 			clientIP := security.GetClientIP(r, h.server.config.TrustProxy)
 			if !h.server.rateLimiter.Allow(clientIP) {
 				h.logger.Warn("Rate limit exceeded", "ip", clientIP)
-				if h.server.auditor != nil {
-					h.server.auditor.LogRateLimitExceeded(clientIP, "")
-				}
+		if h.server.auditor != nil {
+			h.server.auditor.LogEvent(security.Event{
+				Type:      "rate_limit_exceeded",
+				IPAddress: clientIP,
+				Details: map[string]any{
+					"endpoint": r.URL.Path,
+				},
+			})
+			h.server.auditor.LogRateLimitExceeded(clientIP, "")
+		}
 				w.Header().Set("Retry-After", "60")
 				h.writeError(w, "rate_limit_exceeded", "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
 				return
@@ -64,13 +71,15 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 
 		accessToken := parts[1]
 
-		// Validate token with server
-		userInfo, err := h.server.ValidateToken(r.Context(), accessToken)
-		if err != nil {
-			h.logger.Warn("Token validation failed", "error", err)
-			h.writeError(w, "invalid_token", fmt.Sprintf("Token validation failed: %v", err), http.StatusUnauthorized)
-			return
-		}
+	// Validate token with server
+	userInfo, err := h.server.ValidateToken(r.Context(), accessToken)
+	if err != nil {
+		clientIP := security.GetClientIP(r, h.server.config.TrustProxy)
+		h.logger.Warn("Token validation failed", "ip", clientIP, "error", err)
+		// Audit logging is already done in ValidateToken
+		h.writeError(w, "invalid_token", fmt.Sprintf("Token validation failed: %v", err), http.StatusUnauthorized)
+		return
+	}
 
 		// Apply per-user rate limiting AFTER authentication
 		// This is a separate, higher limit for authenticated users
@@ -218,6 +227,8 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Request) {
+	clientIP := security.GetClientIP(r, h.server.config.TrustProxy)
+	
 	// Parse parameters
 	code := r.FormValue("code")
 	clientID := r.FormValue("client_id")
@@ -229,7 +240,10 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 		clientID = authClientID
 		// Validate client credentials
 		if err := h.server.ValidateClientCredentials(clientID, authClientSecret); err != nil {
-			h.logger.Warn("Client authentication failed", "client_id", clientID, "error", err)
+			h.logger.Warn("Client authentication failed", "client_id", clientID, "ip", clientIP, "error", err)
+			if h.server.auditor != nil {
+				h.server.auditor.LogAuthFailure("", clientID, clientIP, "client_authentication_failed")
+			}
 			h.writeError(w, "invalid_client", "Client authentication failed", http.StatusUnauthorized)
 			return
 		}
@@ -243,16 +257,21 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	// Exchange authorization code for tokens
 	tokenResponse, scope, err := h.server.ExchangeAuthorizationCode(r.Context(), code, clientID, redirectURI, codeVerifier)
 	if err != nil {
-		h.logger.Error("Failed to exchange authorization code", "error", err)
+		h.logger.Error("Failed to exchange authorization code", "client_id", clientID, "ip", clientIP, "error", err)
+		// Audit logging is done in ExchangeAuthorizationCode
 		h.writeError(w, "invalid_grant", err.Error(), http.StatusBadRequest)
 		return
 	}
+
+	h.logger.Info("Token exchange successful", "client_id", clientID, "ip", clientIP)
 
 	// Return tokens
 	h.writeTokenResponse(w, tokenResponse, scope)
 }
 
 func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request) {
+	clientIP := security.GetClientIP(r, h.server.config.TrustProxy)
+	
 	// Parse parameters
 	refreshToken := r.FormValue("refresh_token")
 	clientID := r.FormValue("client_id")
@@ -262,7 +281,10 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 		clientID = authClientID
 		// Validate client credentials
 		if err := h.server.ValidateClientCredentials(clientID, authClientSecret); err != nil {
-			h.logger.Warn("Client authentication failed", "client_id", clientID, "error", err)
+			h.logger.Warn("Client authentication failed", "client_id", clientID, "ip", clientIP, "error", err)
+			if h.server.auditor != nil {
+				h.server.auditor.LogAuthFailure("", clientID, clientIP, "client_authentication_failed")
+			}
 			h.writeError(w, "invalid_client", "Client authentication failed", http.StatusUnauthorized)
 			return
 		}
@@ -276,7 +298,8 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	// Refresh token
 	tokenResponse, err := h.server.RefreshAccessToken(r.Context(), refreshToken, clientID)
 	if err != nil {
-		h.logger.Error("Failed to refresh token", "error", err)
+		h.logger.Error("Failed to refresh token", "client_id", clientID, "ip", clientIP, "error", err)
+		// Audit logging is already done in RefreshAccessToken
 		h.writeError(w, "invalid_grant", err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -292,6 +315,8 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	clientIP := security.GetClientIP(r, h.server.config.TrustProxy)
+
 	// Parse form data
 	if err := r.ParseForm(); err != nil {
 		h.writeError(w, "invalid_request", "Failed to parse request", http.StatusBadRequest)
@@ -306,7 +331,10 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 		clientID = authClientID
 		// Validate client credentials
 		if err := h.server.ValidateClientCredentials(clientID, authClientSecret); err != nil {
-			h.logger.Warn("Client authentication failed for revocation", "client_id", clientID)
+			h.logger.Warn("Client authentication failed for revocation", "client_id", clientID, "ip", clientIP)
+			if h.server.auditor != nil {
+				h.server.auditor.LogAuthFailure("", clientID, clientIP, "revocation_auth_failed")
+			}
 			h.writeError(w, "invalid_client", "Client authentication failed", http.StatusUnauthorized)
 			return
 		}
@@ -318,8 +346,8 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Revoke token
-	if err := h.server.RevokeToken(r.Context(), token, clientID); err != nil {
-		h.logger.Error("Failed to revoke token", "error", err)
+	if err := h.server.RevokeToken(r.Context(), token, clientID, clientIP); err != nil {
+		h.logger.Error("Failed to revoke token", "client_id", clientID, "ip", clientIP, "error", err)
 		// Per RFC 7009, return 200 even if revocation fails
 	}
 
