@@ -124,4 +124,3 @@ func KeyFromBase64(s string) ([]byte, error) {
 func KeyToBase64(key []byte) string {
 	return base64.StdEncoding.EncodeToString(key)
 }
-

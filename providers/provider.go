@@ -59,4 +59,3 @@ type UserInfo struct {
 	// Locale is the user's preferred locale
 	Locale string
 }
-

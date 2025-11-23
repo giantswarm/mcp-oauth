@@ -20,7 +20,7 @@ func GetClientIP(r *http.Request, trustProxy bool) string {
 		// SECURITY: Take FIRST IP from X-Forwarded-For (original client)
 		// Format: "client-ip, proxy1-ip, proxy2-ip"
 		// The leftmost IP is the original client, subsequent IPs are added by proxies
-		// 
+		//
 		// Example:
 		//   Client (1.2.3.4) -> Proxy1 -> Proxy2 (trusted)
 		//   X-Forwarded-For: "1.2.3.4, proxy1-ip"
@@ -52,4 +52,3 @@ func GetClientIP(r *http.Request, trustProxy bool) string {
 	}
 	return host
 }
-

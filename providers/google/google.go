@@ -123,7 +123,7 @@ func (p *Provider) ValidateToken(ctx context.Context, accessToken string) (*prov
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user info: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("userinfo request failed with status %d", resp.StatusCode)
@@ -188,7 +188,7 @@ func (p *Provider) RevokeToken(ctx context.Context, token string) error {
 	if err != nil {
 		return fmt.Errorf("failed to revoke token: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("token revocation failed with status %d", resp.StatusCode)

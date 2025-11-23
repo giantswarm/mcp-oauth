@@ -1,3 +1,5 @@
+version: 2
+
 run:
   timeout: 5m
   tests: true
@@ -6,22 +8,17 @@ run:
 linters:
   enable:
     - errcheck
-    - gosimple
     - govet
     - ineffassign
     - staticcheck
     - unused
-    - gofmt
-    - goimports
     - misspell
     - unconvert
     - unparam
     - gosec
     - gocritic
     - revive
-    - stylecheck
     - exhaustive
-    - exportloopref
     - goconst
     - gocyclo
     - nestif
@@ -29,7 +26,11 @@ linters:
     - noctx
     - rowserrcheck
     - sqlclosecheck
-    - wastedassign
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
 
 linters-settings:
   errcheck:
@@ -65,9 +66,6 @@ linters-settings:
         arguments:
           - "checkPrivateReceivers"
           - "sayRepetitiveInsteadOfStutters"
-  
-  stylecheck:
-    checks: ["all", "-ST1000", "-ST1003"]
   
   gocyclo:
     min-complexity: 15

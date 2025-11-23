@@ -11,12 +11,13 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/oauth2"
+
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
-	"golang.org/x/crypto/bcrypt"
-	"golang.org/x/oauth2"
 )
 
 // Server implements the OAuth 2.1 server logic (provider-agnostic).
@@ -114,7 +115,7 @@ func NewServer(
 // SetEncryptor sets the token encryptor for server and storage
 func (s *Server) SetEncryptor(enc *security.Encryptor) {
 	s.encryptor = enc
-	
+
 	// Also set encryptor on storage if it supports it
 	if memStore, ok := s.tokenStore.(*memory.Store); ok {
 		memStore.SetEncryptor(enc)
@@ -200,13 +201,13 @@ func (s *Server) StartAuthorizationFlow(clientID, redirectURI, scope, codeChalle
 	// StateID = client's state (for CSRF validation when redirecting back to client)
 	// ProviderState = our state sent to provider (for validating provider callback)
 	authState := &storage.AuthorizationState{
-		StateID:             clientState,     // Client's state for CSRF protection
+		StateID:             clientState, // Client's state for CSRF protection
 		ClientID:            clientID,
 		RedirectURI:         redirectURI,
 		Scope:               scope,
 		CodeChallenge:       codeChallenge,
 		CodeChallengeMethod: codeChallengeMethod,
-		ProviderState:       providerState,   // Our state for provider callback
+		ProviderState:       providerState, // Our state for provider callback
 		CreatedAt:           time.Now(),
 		ExpiresAt:           time.Now().Add(10 * time.Minute), // 10 minute expiry
 	}
@@ -270,7 +271,7 @@ func validateRedirectURISecurity(redirectURI, serverIssuer string) error {
 		hostname := strings.ToLower(parsed.Hostname())
 
 		// Check if it's a loopback address (allowed for development)
-		isLoopback := hostname == "localhost" || hostname == "127.0.0.1" || 
+		isLoopback := hostname == "localhost" || hostname == "127.0.0.1" ||
 			hostname == "::1" || hostname == "[::1]"
 
 		// For production (non-loopback), require HTTPS
@@ -358,7 +359,7 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 
 	// Delete authorization state (one-time use)
 	// Use providerState for deletion since that's our lookup key
-	s.flowStore.DeleteAuthorizationState(providerState)
+	_ = s.flowStore.DeleteAuthorizationState(providerState)
 
 	// Exchange code with provider
 	// Note: We don't pass code_verifier here because PKCE verification
@@ -411,7 +412,7 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 			UserID:   userInfo.ID,
 			ClientID: authState.ClientID,
 			Details: map[string]any{
-				"scope": authState.Scope,
+				"scope":                 authState.Scope,
 				"client_state_returned": true,
 			},
 		})
@@ -449,7 +450,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 			s.auditor.LogAuthFailure(authCode.UserID, clientID, "", "authorization_code_reuse")
 		}
 		// Delete the code and revoke associated tokens (security measure)
-		s.flowStore.DeleteAuthorizationCode(code)
+		_ = s.flowStore.DeleteAuthorizationCode(code)
 		return nil, "", fmt.Errorf("authorization code already used")
 	}
 
@@ -484,7 +485,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 
 	// Mark code as used
 	authCode.Used = true
-	s.flowStore.SaveAuthorizationCode(authCode)
+	_ = s.flowStore.SaveAuthorizationCode(authCode)
 
 	// Generate new access token using oauth2.GenerateVerifier (same quality)
 	accessToken := generateRandomToken()
@@ -519,7 +520,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 		if err := familyStore.SaveRefreshTokenWithFamily(refreshToken, authCode.UserID, clientID, familyID, 0, refreshTokenExpiry); err != nil {
 			s.logger.Warn("Failed to track refresh token with family", "error", err)
 		} else {
-			s.logger.Debug("Created new refresh token family", 
+			s.logger.Debug("Created new refresh token family",
 				"user_id", authCode.UserID,
 				"family_id", familyID[:min(8, len(familyID))])
 		}
@@ -531,7 +532,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 	}
 
 	// Delete authorization code (one-time use)
-	s.flowStore.DeleteAuthorizationCode(code)
+	_ = s.flowStore.DeleteAuthorizationCode(code)
 
 	if s.auditor != nil {
 		s.auditor.LogTokenIssued(authCode.UserID, clientID, "", authCode.Scope)
@@ -546,7 +547,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID string) (*oauth2.Token, error) {
 	// Check if storage supports token family tracking (OAuth 2.1 reuse detection)
 	familyStore, supportsFamilies := s.tokenStore.(storage.RefreshTokenFamilyStore)
-	
+
 	// OAUTH 2.1 SECURITY: Check for refresh token reuse (token theft detection)
 	if supportsFamilies {
 		family, err := familyStore.GetRefreshTokenFamily(refreshToken)
@@ -565,14 +566,14 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 						},
 					})
 				}
-				s.logger.Error("Attempted use of revoked token family", 
+				s.logger.Error("Attempted use of revoked token family",
 					"user_id", family.UserID,
 					"family_id", family.FamilyID[:min(8, len(family.FamilyID))])
 				return nil, fmt.Errorf("refresh token has been revoked")
 			}
 		}
 	}
-	
+
 	// Validate refresh token and get user ID
 	userID, err := s.tokenStore.GetRefreshTokenInfo(refreshToken)
 	if err != nil {
@@ -606,10 +607,10 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	// OAuth 2.1: Refresh Token Rotation with Reuse Detection
 	var newRefreshToken string
 	var rotated bool
-	
+
 	if s.config.AllowRefreshTokenRotation {
 		newRefreshToken = generateRandomToken()
-		
+
 		// Get family info for rotation (if supported)
 		var familyID string
 		var generation int
@@ -624,7 +625,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 				generation = 1
 			}
 		}
-		
+
 		// Invalidate old refresh token (OAuth 2.1 security requirement)
 		if err := s.tokenStore.DeleteRefreshToken(refreshToken); err != nil {
 			s.logger.Warn("Failed to delete old refresh token", "error", err)
@@ -632,13 +633,13 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		if err := s.tokenStore.DeleteToken(refreshToken); err != nil {
 			s.logger.Warn("Failed to delete old refresh token mapping", "error", err)
 		}
-		
+
 		rotated = true
-		s.logger.Info("Refresh token rotated (OAuth 2.1)", 
-			"user_id", userID, 
+		s.logger.Info("Refresh token rotated (OAuth 2.1)",
+			"user_id", userID,
 			"generation", generation,
 			"family_tracking", supportsFamilies)
-			
+
 		// Save with family tracking if supported
 		refreshTokenExpiry := time.Now().Add(time.Duration(s.config.RefreshTokenTTL) * time.Second)
 		if supportsFamilies && familyID != "" {
@@ -734,7 +735,7 @@ func (s *Server) validatePKCE(challenge, method, verifier string) error {
 	// RFC 7636: code_verifier can only contain [A-Z] / [a-z] / [0-9] / "-" / "." / "_" / "~"
 	// This prevents injection attacks and ensures cryptographic quality
 	for _, ch := range verifier {
-		if !((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || 
+		if !((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
 			ch == '-' || ch == '.' || ch == '_' || ch == '~') {
 			return fmt.Errorf("code_verifier contains invalid characters (must be [A-Za-z0-9-._~])")
 		}
@@ -770,14 +771,14 @@ func (s *Server) RegisterClient(clientName, clientType string, redirectURIs []st
 	// Generate client secret for confidential clients
 	var clientSecret string
 	var clientSecretHash string
-	
+
 	if clientType == "" {
 		clientType = "confidential"
 	}
 
 	if clientType == "confidential" {
 		clientSecret = generateRandomToken()
-		
+
 		// Hash the secret for storage
 		hash, err := bcrypt.GenerateFromPassword([]byte(clientSecret), bcrypt.DefaultCost)
 		if err != nil {
@@ -832,4 +833,3 @@ func (s *Server) RegisterClient(clientName, clientType string, redirectURIs []st
 func (s *Server) ValidateClientCredentials(clientID, clientSecret string) error {
 	return s.clientStore.ValidateClientSecret(clientID, clientSecret)
 }
-

@@ -3,8 +3,9 @@ package storage
 import (
 	"time"
 
-	"github.com/giantswarm/mcp-oauth/providers"
 	"golang.org/x/oauth2"
+
+	"github.com/giantswarm/mcp-oauth/providers"
 )
 
 // TokenStore defines the interface for storing and retrieving tokens.
@@ -118,30 +119,29 @@ type Client struct {
 
 // AuthorizationState represents the state of an ongoing authorization flow
 type AuthorizationState struct {
-	StateID                 string // Client's state parameter (for CSRF protection)
-	ClientID                string
-	RedirectURI             string
-	Scope                   string
-	CodeChallenge           string
-	CodeChallengeMethod     string
-	Nonce                   string
-	ProviderState           string // State parameter sent to the provider (different from StateID)
-	CreatedAt               time.Time
-	ExpiresAt               time.Time
+	StateID             string // Client's state parameter (for CSRF protection)
+	ClientID            string
+	RedirectURI         string
+	Scope               string
+	CodeChallenge       string
+	CodeChallengeMethod string
+	Nonce               string
+	ProviderState       string // State parameter sent to the provider (different from StateID)
+	CreatedAt           time.Time
+	ExpiresAt           time.Time
 }
 
 // AuthorizationCode represents an issued authorization code
 type AuthorizationCode struct {
-	Code                    string
-	ClientID                string
-	RedirectURI             string
-	Scope                   string
-	CodeChallenge           string
-	CodeChallengeMethod     string
-	UserID                  string
-	ProviderToken           *oauth2.Token  // Now uses oauth2.Token directly
-	CreatedAt               time.Time
-	ExpiresAt               time.Time
-	Used                    bool
+	Code                string
+	ClientID            string
+	RedirectURI         string
+	Scope               string
+	CodeChallenge       string
+	CodeChallengeMethod string
+	UserID              string
+	ProviderToken       *oauth2.Token // Now uses oauth2.Token directly
+	CreatedAt           time.Time
+	ExpiresAt           time.Time
+	Used                bool
 }
-

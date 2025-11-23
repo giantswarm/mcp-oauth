@@ -9,9 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/oauth2"
+
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
-	"golang.org/x/oauth2"
 )
 
 // Handler is a thin HTTP adapter for the OAuth Server.
@@ -40,16 +41,16 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 			clientIP := security.GetClientIP(r, h.server.config.TrustProxy)
 			if !h.server.rateLimiter.Allow(clientIP) {
 				h.logger.Warn("Rate limit exceeded", "ip", clientIP)
-		if h.server.auditor != nil {
-			h.server.auditor.LogEvent(security.Event{
-				Type:      "rate_limit_exceeded",
-				IPAddress: clientIP,
-				Details: map[string]any{
-					"endpoint": r.URL.Path,
-				},
-			})
-			h.server.auditor.LogRateLimitExceeded(clientIP, "")
-		}
+				if h.server.auditor != nil {
+					h.server.auditor.LogEvent(security.Event{
+						Type:      "rate_limit_exceeded",
+						IPAddress: clientIP,
+						Details: map[string]any{
+							"endpoint": r.URL.Path,
+						},
+					})
+					h.server.auditor.LogRateLimitExceeded(clientIP, "")
+				}
 				w.Header().Set("Retry-After", "60")
 				h.writeError(w, "rate_limit_exceeded", "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
 				return
@@ -72,16 +73,16 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 
 		accessToken := parts[1]
 
-	// Validate token with server
-	userInfo, err := h.server.ValidateToken(r.Context(), accessToken)
-	if err != nil {
-		clientIP := security.GetClientIP(r, h.server.config.TrustProxy)
-		h.logger.Warn("Token validation failed", "ip", clientIP, "error", err)
-		// SECURITY: Don't leak internal error details to client
-		// Log detailed error but return generic message
-		h.writeError(w, "invalid_token", "Token validation failed", http.StatusUnauthorized)
-		return
-	}
+		// Validate token with server
+		userInfo, err := h.server.ValidateToken(r.Context(), accessToken)
+		if err != nil {
+			clientIP := security.GetClientIP(r, h.server.config.TrustProxy)
+			h.logger.Warn("Token validation failed", "ip", clientIP, "error", err)
+			// SECURITY: Don't leak internal error details to client
+			// Log detailed error but return generic message
+			h.writeError(w, "invalid_token", "Token validation failed", http.StatusUnauthorized)
+			return
+		}
 
 		// Apply per-user rate limiting AFTER authentication
 		// This is a separate, higher limit for authenticated users
@@ -110,7 +111,7 @@ func (h *Handler) ServeProtectedResourceMetadata(w http.ResponseWriter, r *http.
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(metadata)
+	_ = json.NewEncoder(w).Encode(metadata)
 }
 
 // ServeAuthorizationServerMetadata serves RFC 8414 Authorization Server Metadata
@@ -122,16 +123,16 @@ func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 
 	security.SetSecurityHeaders(w, h.server.config.Issuer)
 	metadata := map[string]any{
-		"issuer":                h.server.config.Issuer,
-		"authorization_endpoint": h.server.config.Issuer + "/oauth/authorize",
-		"token_endpoint":        h.server.config.Issuer + "/oauth/token",
-		"response_types_supported": []string{"code"},
-		"grant_types_supported": []string{"authorization_code", "refresh_token"},
+		"issuer":                           h.server.config.Issuer,
+		"authorization_endpoint":           h.server.config.Issuer + "/oauth/authorize",
+		"token_endpoint":                   h.server.config.Issuer + "/oauth/token",
+		"response_types_supported":         []string{"code"},
+		"grant_types_supported":            []string{"authorization_code", "refresh_token"},
 		"code_challenge_methods_supported": []string{"S256"},
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(metadata)
+	_ = json.NewEncoder(w).Encode(metadata)
 }
 
 // ServeAuthorization handles OAuth authorization requests
@@ -238,7 +239,7 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Request) {
 	clientIP := security.GetClientIP(r, h.server.config.TrustProxy)
-	
+
 	// Parse parameters
 	code := r.FormValue("code")
 	clientID := r.FormValue("client_id")
@@ -282,7 +283,7 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 
 func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request) {
 	clientIP := security.GetClientIP(r, h.server.config.TrustProxy)
-	
+
 	// Parse parameters
 	refreshToken := r.FormValue("refresh_token")
 	clientID := r.FormValue("client_id")
@@ -431,7 +432,7 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // Helper methods
@@ -443,8 +444,8 @@ func (h *Handler) parseBasicAuth(r *http.Request) (username, password string) {
 
 func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *oauth2.Token, scope string) {
 	security.SetSecurityHeaders(w, h.server.config.Issuer)
-	
-	expiresIn := int64(token.Expiry.Sub(time.Now()).Seconds())
+
+	expiresIn := int64(time.Until(token.Expiry).Seconds())
 	if expiresIn < 0 {
 		expiresIn = 3600
 	}
@@ -469,14 +470,14 @@ func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *oauth2.Token,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, code, description string, status int) {
 	security.SetSecurityHeaders(w, h.server.config.Issuer)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]string{
+	_ = json.NewEncoder(w).Encode(map[string]string{
 		"error":             code,
 		"error_description": description,
 	})
@@ -492,4 +493,3 @@ func UserInfoFromContext(ctx context.Context) (*providers.UserInfo, bool) {
 	userInfo, ok := ctx.Value(userInfoKey).(*providers.UserInfo)
 	return userInfo, ok
 }
-

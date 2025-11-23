@@ -34,4 +34,3 @@ func SetSecurityHeaders(w http.ResponseWriter, serverURL string) {
 	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, private")
 	w.Header().Set("Pragma", "no-cache")
 }
-

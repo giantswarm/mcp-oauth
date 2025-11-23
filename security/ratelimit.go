@@ -52,4 +52,3 @@ func (rl *RateLimiter) Cleanup(inactiveThreshold time.Duration) {
 	// For simplicity, we just keep all limiters for now
 	// This is fine for in-memory storage
 }
-

@@ -6,11 +6,12 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/oauth2"
+
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
-	"golang.org/x/crypto/bcrypt"
-	"golang.org/x/oauth2"
 )
 
 // RefreshTokenFamily tracks a family of refresh tokens for reuse detection (OAuth 2.1)
@@ -34,8 +35,8 @@ type Store struct {
 	userInfo map[string]*providers.UserInfo
 
 	// Refresh token tracking (for rotation and security)
-	refreshTokens        map[string]string    // refresh token -> user ID
-	refreshTokenExpiries map[string]time.Time // refresh token -> expiry time
+	refreshTokens        map[string]string              // refresh token -> user ID
+	refreshTokenExpiries map[string]time.Time           // refresh token -> expiry time
 	refreshTokenFamilies map[string]*RefreshTokenFamily // refresh token -> family metadata
 
 	// Client storage
@@ -338,7 +339,7 @@ func (s *Store) SaveRefreshTokenWithFamily(refreshToken, userID, clientID, famil
 	// Save basic refresh token info
 	s.refreshTokens[refreshToken] = userID
 	s.refreshTokenExpiries[refreshToken] = expiresAt
-	
+
 	// Save family metadata for reuse detection
 	s.refreshTokenFamilies[refreshToken] = &RefreshTokenFamily{
 		FamilyID:   familyID,
@@ -348,9 +349,9 @@ func (s *Store) SaveRefreshTokenWithFamily(refreshToken, userID, clientID, famil
 		IssuedAt:   time.Now(),
 		Revoked:    false,
 	}
-	
-	s.logger.Debug("Saved refresh token with family tracking", 
-		"user_id", userID, 
+
+	s.logger.Debug("Saved refresh token with family tracking",
+		"user_id", userID,
 		"family_id", familyID[:min(8, len(familyID))],
 		"generation", generation,
 		"expires_at", expiresAt)
@@ -385,7 +386,7 @@ func (s *Store) RevokeRefreshTokenFamily(familyID string) error {
 	defer s.mu.Unlock()
 
 	revokedCount := 0
-	
+
 	// Find and revoke all tokens in this family
 	for token, family := range s.refreshTokenFamilies {
 		if family.FamilyID == familyID {
@@ -397,13 +398,13 @@ func (s *Store) RevokeRefreshTokenFamily(familyID string) error {
 			revokedCount++
 		}
 	}
-	
+
 	if revokedCount > 0 {
 		s.logger.Warn("Revoked refresh token family due to reuse detection",
 			"family_id", familyID[:min(8, len(familyID))],
 			"tokens_revoked", revokedCount)
 	}
-	
+
 	return nil
 }
 
@@ -457,17 +458,17 @@ func (s *Store) GetClient(clientID string) (*storage.Client, error) {
 func (s *Store) ValidateClientSecret(clientID, clientSecret string) error {
 	// SECURITY: Always perform the same operations to prevent timing attacks
 	// that could reveal whether a client exists or not
-	
+
 	// Pre-computed dummy hash for non-existent clients (bcrypt hash of empty string)
 	// This ensures we always perform a bcrypt comparison even if client doesn't exist
 	dummyHash := "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
-	
+
 	client, err := s.GetClient(clientID)
-	
+
 	// Determine which hash to use (real or dummy)
 	hashToCompare := dummyHash
 	isPublicClient := false
-	
+
 	if err == nil {
 		if client.ClientType == "public" {
 			isPublicClient = true
@@ -475,26 +476,26 @@ func (s *Store) ValidateClientSecret(clientID, clientSecret string) error {
 			hashToCompare = client.ClientSecretHash
 		}
 	}
-	
+
 	// ALWAYS perform bcrypt comparison (constant-time by design)
 	// This prevents timing attacks based on whether we skip the comparison
 	bcryptErr := bcrypt.CompareHashAndPassword([]byte(hashToCompare), []byte(clientSecret))
-	
+
 	// For public clients, authentication always succeeds
 	if isPublicClient && err == nil {
 		return nil
 	}
-	
+
 	// If client lookup failed, return error (but only after bcrypt comparison)
 	if err != nil {
 		return fmt.Errorf("invalid client credentials")
 	}
-	
+
 	// If bcrypt comparison failed, return error
 	if bcryptErr != nil {
 		return fmt.Errorf("invalid client credentials")
 	}
-	
+
 	return nil
 }
 
@@ -612,7 +613,7 @@ func (s *Store) SaveAuthorizationCode(code *storage.AuthorizationCode) error {
 // GetAuthorizationCode retrieves and atomically deletes an authorization code
 // This prevents replay attacks by ensuring codes can only be used once
 func (s *Store) GetAuthorizationCode(code string) (*storage.AuthorizationCode, error) {
-	s.mu.Lock()  // Use write lock for atomic delete
+	s.mu.Lock() // Use write lock for atomic delete
 	defer s.mu.Unlock()
 
 	authCode, ok := s.authCodes[code]
@@ -730,4 +731,3 @@ func min(a, b int) int {
 	}
 	return b
 }
-

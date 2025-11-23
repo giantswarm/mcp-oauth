@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
+
+	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/google"
@@ -37,30 +40,27 @@ func main() {
 
 func demonstrateProviderInterface(provider providers.Provider) {
 	fmt.Printf("Provider: %s\n", provider.Name())
-	
-	// Generate authorization URL
-	authURL := provider.AuthorizationURL("random-state", &providers.AuthOptions{
-		Scopes:      []string{"openid", "email"},
-		RedirectURI: "http://localhost:8080/callback",
-		CodeChallenge: "example-challenge",
-		CodeChallengeMethod: "S256",
-	})
-	
+
+	// Generate authorization URL (with PKCE)
+	authURL := provider.AuthorizationURL("random-state", "example-challenge", "S256")
+
 	fmt.Printf("Authorization URL: %s\n", authURL)
 }
 
 func demonstrateStorage(store *memory.Store, provider providers.Provider) {
-	// The store works with any provider's token response
-	token := &providers.TokenResponse{
+	// The store works with any provider's token (oauth2.Token)
+	token := &oauth2.Token{
 		AccessToken:  "example-access-token",
 		RefreshToken: "example-refresh-token",
+		Expiry:       time.Now().Add(time.Hour),
+		TokenType:    "Bearer",
 	}
-	
+
 	// Save token
 	if err := store.SaveToken("user-123", token); err != nil {
 		log.Printf("Error saving token: %v", err)
 	}
-	
+
 	// Retrieve token
 	retrieved, err := store.GetToken("user-123")
 	if err != nil {
@@ -69,4 +69,3 @@ func demonstrateStorage(store *memory.Store, provider providers.Provider) {
 		fmt.Printf("Retrieved token for user-123: %s\n", retrieved.AccessToken)
 	}
 }
-

@@ -133,4 +133,3 @@ func hashForLogging(sensitive string) string {
 	hash := sha256.Sum256([]byte(sensitive))
 	return hex.EncodeToString(hash[:])[:16]
 }
-

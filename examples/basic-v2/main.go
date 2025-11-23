@@ -94,9 +94,9 @@ func main() {
 	http.Handle("/mcp", handler.ValidateToken(mcpHandler()))
 
 	// Health check
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "OK - Provider: %s\n", googleProvider.Name())
+		_, _ = fmt.Fprintf(w, "OK - Provider: %s\n", googleProvider.Name())
 	})
 
 	// Start server
@@ -136,7 +136,7 @@ func mcpHandler() http.Handler {
 }`, userInfo.ID, userInfo.Email, userInfo.Name)
 
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(response))
+		_, _ = w.Write([]byte(response))
 	})
 }
 

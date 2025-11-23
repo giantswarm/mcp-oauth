@@ -24,7 +24,7 @@ func IsTokenExpired(expiresAt time.Time) bool {
 	if expiresAt.IsZero() {
 		return false // No expiration
 	}
-	
+
 	// Apply grace period: token is only expired if it's been expired for more than grace period
 	return time.Now().After(expiresAt.Add(ClockSkewGracePeriod))
 }
@@ -34,7 +34,6 @@ func IsTokenExpiringSoon(expiresAt time.Time, threshold time.Duration) bool {
 	if expiresAt.IsZero() {
 		return false
 	}
-	
+
 	return time.Now().Add(threshold).After(expiresAt)
 }
-
