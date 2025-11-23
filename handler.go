@@ -38,21 +38,21 @@ func NewHandler(server *Server, logger *slog.Logger) *Handler {
 func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Get client IP for rate limiting and logging
-		clientIP := security.GetClientIP(r, h.server.config.TrustProxy, h.server.config.TrustedProxyCount)
+		clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
 		// Apply IP-based rate limiting BEFORE token validation
-		if h.server.rateLimiter != nil {
-			if !h.server.rateLimiter.Allow(clientIP) {
+		if h.server.RateLimiter != nil {
+			if !h.server.RateLimiter.Allow(clientIP) {
 				h.logger.Warn("Rate limit exceeded", "ip", clientIP)
-				if h.server.auditor != nil {
-					h.server.auditor.LogEvent(security.Event{
+				if h.server.Auditor != nil {
+					h.server.Auditor.LogEvent(security.Event{
 						Type:      "rate_limit_exceeded",
 						IPAddress: clientIP,
 						Details: map[string]any{
 							"endpoint": r.URL.Path,
 						},
 					})
-					h.server.auditor.LogRateLimitExceeded(clientIP, "")
+					h.server.Auditor.LogRateLimitExceeded(clientIP, "")
 				}
 				w.Header().Set("Retry-After", "60")
 				h.writeError(w, ErrorCodeRateLimitExceeded, "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
@@ -88,11 +88,11 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 
 		// Apply per-user rate limiting AFTER authentication
 		// This is a separate, higher limit for authenticated users
-		if h.server.userRateLimiter != nil {
-			if !h.server.userRateLimiter.Allow(userInfo.ID) {
+		if h.server.UserRateLimiter != nil {
+			if !h.server.UserRateLimiter.Allow(userInfo.ID) {
 				h.logger.Warn("User rate limit exceeded", "user_id", userInfo.ID, "ip", clientIP)
-				if h.server.auditor != nil {
-					h.server.auditor.LogRateLimitExceeded(clientIP, userInfo.ID)
+				if h.server.Auditor != nil {
+					h.server.Auditor.LogRateLimitExceeded(clientIP, userInfo.ID)
 				}
 				w.Header().Set("Retry-After", "60")
 				h.writeError(w, ErrorCodeRateLimitExceeded, "Rate limit exceeded for user. Please try again later.", http.StatusTooManyRequests)
@@ -113,11 +113,11 @@ func (h *Handler) ServeProtectedResourceMetadata(w http.ResponseWriter, r *http.
 		return
 	}
 
-	security.SetSecurityHeaders(w, h.server.config.Issuer)
+	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	metadata := map[string]any{
-		"resource": h.server.config.Issuer,
+		"resource": h.server.Config.Issuer,
 		"authorization_servers": []string{
-			h.server.config.Issuer,
+			h.server.Config.Issuer,
 		},
 		"bearer_methods_supported": []string{"header"},
 	}
@@ -133,11 +133,11 @@ func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 		return
 	}
 
-	security.SetSecurityHeaders(w, h.server.config.Issuer)
+	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	metadata := map[string]any{
-		"issuer":                           h.server.config.Issuer,
-		"authorization_endpoint":           h.server.config.Issuer + "/oauth/authorize",
-		"token_endpoint":                   h.server.config.Issuer + "/oauth/token",
+		"issuer":                           h.server.Config.Issuer,
+		"authorization_endpoint":           h.server.Config.Issuer + "/oauth/authorize",
+		"token_endpoint":                   h.server.Config.Issuer + "/oauth/token",
 		"response_types_supported":         []string{"code"},
 		"grant_types_supported":            []string{"authorization_code", "refresh_token"},
 		"code_challenge_methods_supported": []string{"S256"},
@@ -250,7 +250,7 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Request) {
-	clientIP := security.GetClientIP(r, h.server.config.TrustProxy, h.server.config.TrustedProxyCount)
+	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
 	// Parse parameters
 	code := r.FormValue("code")
@@ -292,7 +292,7 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 }
 
 func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request) {
-	clientIP := security.GetClientIP(r, h.server.config.TrustProxy, h.server.config.TrustedProxyCount)
+	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
 	// Parse parameters
 	refreshToken := r.FormValue("refresh_token")
@@ -309,8 +309,8 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 		// Validate client credentials
 		if err := h.server.ValidateClientCredentials(clientID, authClientSecret); err != nil {
 			h.logger.Warn("Client authentication failed", "client_id", clientID, "ip", clientIP, "error", err)
-			if h.server.auditor != nil {
-				h.server.auditor.LogAuthFailure("", clientID, clientIP, "client_authentication_failed")
+			if h.server.Auditor != nil {
+				h.server.Auditor.LogAuthFailure("", clientID, clientIP, "client_authentication_failed")
 			}
 			h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
 			return
@@ -338,7 +338,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clientIP := security.GetClientIP(r, h.server.config.TrustProxy, h.server.config.TrustedProxyCount)
+	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
 	// Parse form data
 	if err := r.ParseForm(); err != nil {
@@ -360,8 +360,8 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 		// Validate client credentials
 		if err := h.server.ValidateClientCredentials(clientID, authClientSecret); err != nil {
 			h.logger.Warn("Client authentication failed for revocation", "client_id", clientID, "ip", clientIP)
-			if h.server.auditor != nil {
-				h.server.auditor.LogAuthFailure("", clientID, clientIP, "revocation_auth_failed")
+			if h.server.Auditor != nil {
+				h.server.Auditor.LogAuthFailure("", clientID, clientIP, "revocation_auth_failed")
 			}
 			h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
 			return
@@ -375,7 +375,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Return success (per RFC 7009)
-	security.SetSecurityHeaders(w, h.server.config.Issuer)
+	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -387,11 +387,11 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	}
 
 	// Get client IP for DoS protection
-	clientIP := security.GetClientIP(r, h.server.config.TrustProxy, h.server.config.TrustedProxyCount)
+	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
 	// OAuth 2.1: Require authentication for client registration (secure by default)
 	// Only allow unauthenticated registration if explicitly configured
-	if !h.server.config.AllowPublicClientRegistration {
+	if !h.server.Config.AllowPublicClientRegistration {
 		// Check for registration access token
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
@@ -417,7 +417,7 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 
 		// Validate registration access token
 		providedToken := parts[1]
-		if h.server.config.RegistrationAccessToken == "" {
+		if h.server.Config.RegistrationAccessToken == "" {
 			h.logger.Error("RegistrationAccessToken not configured but AllowPublicClientRegistration=false")
 			h.writeError(w, ErrorCodeServerError,
 				"Server configuration error: registration token not configured",
@@ -425,7 +425,7 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 			return
 		}
 
-		if providedToken != h.server.config.RegistrationAccessToken {
+		if providedToken != h.server.Config.RegistrationAccessToken {
 			h.logger.Warn("Client registration rejected: invalid registration token",
 				"client_ip", clientIP)
 			h.writeError(w, ErrorCodeInvalidToken, "Invalid registration access token", http.StatusUnauthorized)
@@ -439,7 +439,7 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	}
 
 	// Check per-IP registration limit to prevent DoS attacks
-	maxClients := h.server.config.MaxClientsPerIP
+	maxClients := h.server.Config.MaxClientsPerIP
 	if maxClients == 0 {
 		maxClients = 10 // Default limit
 	}
@@ -474,7 +474,7 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	}
 
 	// Build response
-	security.SetSecurityHeaders(w, h.server.config.Issuer)
+	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	response := map[string]any{
 		"client_id":                  client.ClientID,
 		"client_name":                client.ClientName,
@@ -518,8 +518,8 @@ func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string)
 	client, err := h.server.GetClient(clientID)
 	if err != nil {
 		h.logger.Warn("Unknown client", "client_id", clientID, "ip", clientIP)
-		if h.server.auditor != nil {
-			h.server.auditor.LogAuthFailure("", clientID, clientIP, ErrorCodeInvalidClient)
+		if h.server.Auditor != nil {
+			h.server.Auditor.LogAuthFailure("", clientID, clientIP, ErrorCodeInvalidClient)
 		}
 		return nil, ErrInvalidClient("Client authentication failed")
 	}
@@ -528,8 +528,8 @@ func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string)
 	if client.ClientType == ClientTypeConfidential {
 		if authClientSecret == "" {
 			h.logger.Warn("Confidential client missing credentials", "client_id", clientID, "ip", clientIP)
-			if h.server.auditor != nil {
-				h.server.auditor.LogAuthFailure("", clientID, clientIP, "confidential_client_auth_required")
+			if h.server.Auditor != nil {
+				h.server.Auditor.LogAuthFailure("", clientID, clientIP, "confidential_client_auth_required")
 			}
 			return nil, ErrInvalidClient("Client authentication required")
 		}
@@ -537,8 +537,8 @@ func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string)
 		// Validate client credentials
 		if err := h.server.ValidateClientCredentials(clientID, authClientSecret); err != nil {
 			h.logger.Warn("Client authentication failed", "client_id", clientID, "ip", clientIP, "error", err)
-			if h.server.auditor != nil {
-				h.server.auditor.LogAuthFailure("", clientID, clientIP, "client_authentication_failed")
+			if h.server.Auditor != nil {
+				h.server.Auditor.LogAuthFailure("", clientID, clientIP, "client_authentication_failed")
 			}
 			return nil, ErrInvalidClient("Client authentication failed")
 		}
@@ -548,7 +548,7 @@ func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string)
 }
 
 func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *oauth2.Token, scope string) {
-	security.SetSecurityHeaders(w, h.server.config.Issuer)
+	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 
 	expiresIn := int64(time.Until(token.Expiry).Seconds())
 	if expiresIn < 0 {
@@ -579,7 +579,7 @@ func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *oauth2.Token,
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, code, description string, status int) {
-	security.SetSecurityHeaders(w, h.server.config.Issuer)
+	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{
@@ -597,7 +597,7 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	clientIP := security.GetClientIP(r, h.server.config.TrustProxy, h.server.config.TrustedProxyCount)
+	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
 	// Parse form data
 	if err := r.ParseForm(); err != nil {
@@ -620,8 +620,8 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 		// Validate client credentials
 		if err := h.server.ValidateClientCredentials(clientID, authClientSecret); err != nil {
 			h.logger.Warn("Client authentication failed for introspection", "client_id", clientID, "ip", clientIP)
-			if h.server.auditor != nil {
-				h.server.auditor.LogAuthFailure("", clientID, clientIP, "introspection_auth_failed")
+			if h.server.Auditor != nil {
+				h.server.Auditor.LogAuthFailure("", clientID, clientIP, "introspection_auth_failed")
 			}
 			h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
 			return
@@ -632,16 +632,16 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 		if clientID == "" {
 			// No client authentication provided - reject per RFC 7662 security considerations
 			h.logger.Warn("Token introspection rejected: missing client authentication", "ip", clientIP)
-			if h.server.auditor != nil {
-				h.server.auditor.LogAuthFailure("", "", clientIP, "introspection_missing_auth")
+			if h.server.Auditor != nil {
+				h.server.Auditor.LogAuthFailure("", "", clientIP, "introspection_missing_auth")
 			}
 			h.writeError(w, ErrorCodeInvalidClient, "Client authentication required for token introspection", http.StatusUnauthorized)
 			return
 		}
 		// Client ID provided but no credentials - also reject
 		h.logger.Warn("Token introspection rejected: client_id without credentials", "client_id", clientID, "ip", clientIP)
-		if h.server.auditor != nil {
-			h.server.auditor.LogAuthFailure("", clientID, clientIP, "introspection_missing_credentials")
+		if h.server.Auditor != nil {
+			h.server.Auditor.LogAuthFailure("", clientID, clientIP, "introspection_missing_credentials")
 		}
 		h.writeError(w, ErrorCodeInvalidClient, "Client authentication required for token introspection", http.StatusUnauthorized)
 		return
@@ -676,7 +676,7 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 	}
 
 	// Always return 200 OK per RFC 7662
-	security.SetSecurityHeaders(w, h.server.config.Issuer)
+	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(response)
