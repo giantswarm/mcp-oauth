@@ -3,7 +3,6 @@ package oauth
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"strconv"
 )
 
 // hashForLogging creates a SHA256 hash of sensitive data for safe logging.
@@ -27,15 +26,10 @@ func HashForDisplay(sensitive string) string {
 	return hashForLogging(sensitive)
 }
 
-// min returns the smaller of two integers.
-func min(a, b int) int {
+// minInt returns the smaller of two integers.
+func minInt(a, b int) int {
 	if a < b {
 		return a
 	}
 	return b
-}
-
-// boolToString converts a boolean to its string representation.
-func boolToString(b bool) string {
-	return strconv.FormatBool(b)
 }

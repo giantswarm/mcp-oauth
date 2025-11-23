@@ -1,3 +1,5 @@
+// Package storage defines interfaces for persisting OAuth tokens, clients, and authorization flows.
+// It supports various backend implementations including in-memory, Redis, and databases.
 package storage
 
 import (
@@ -37,8 +39,8 @@ type TokenStore interface {
 	DeleteRefreshToken(refreshToken string) error
 }
 
-// RefreshTokenFamily tracks a family of refresh tokens for reuse detection (OAuth 2.1)
-// This is optional - only implemented by stores that support reuse detection
+// RefreshTokenFamilyStore tracks a family of refresh tokens for reuse detection (OAuth 2.1).
+// This is optional - only implemented by stores that support reuse detection.
 type RefreshTokenFamilyStore interface {
 	// SaveRefreshTokenWithFamily saves a refresh token with family tracking
 	SaveRefreshTokenWithFamily(refreshToken, userID, clientID, familyID string, generation int, expiresAt time.Time) error

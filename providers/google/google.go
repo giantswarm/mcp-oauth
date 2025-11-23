@@ -1,3 +1,5 @@
+// Package google implements the OAuth provider interface for Google OAuth 2.0.
+// It supports user authentication, token exchange, and access to Google APIs.
 package google
 
 import (
@@ -8,9 +10,10 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/giantswarm/mcp-oauth/providers"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+
+	"github.com/giantswarm/mcp-oauth/providers"
 )
 
 // Provider implements the providers.Provider interface for Google OAuth.
@@ -179,7 +182,7 @@ func (p *Provider) RefreshToken(ctx context.Context, refreshToken string) (*oaut
 }
 
 // RevokeToken revokes a token at Google's revocation endpoint
-func (p *Provider) RevokeToken(ctx context.Context, token string) error {
+func (p *Provider) RevokeToken(_ context.Context, token string) error {
 	revokeURL := "https://oauth2.googleapis.com/revoke"
 	data := url.Values{}
 	data.Set("token", token)

@@ -1,3 +1,5 @@
+// Package providers defines the interface for OAuth identity providers and implements
+// provider-specific logic for Google, GitHub, Microsoft, and other OAuth/OIDC providers.
 package providers
 
 import (

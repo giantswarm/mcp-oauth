@@ -1,3 +1,5 @@
+// Package security provides security features for OAuth including encryption,
+// rate limiting, audit logging, and secure header management.
 package security
 
 import (

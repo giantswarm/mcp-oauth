@@ -1,3 +1,4 @@
+// Package main demonstrates how to use the mcp-oauth library components separately.
 package main
 
 import (
@@ -47,7 +48,7 @@ func demonstrateProviderInterface(provider providers.Provider) {
 	fmt.Printf("Authorization URL: %s\n", authURL)
 }
 
-func demonstrateStorage(store *memory.Store, provider providers.Provider) {
+func demonstrateStorage(store *memory.Store, _ providers.Provider) {
 	// The store works with any provider's token (oauth2.Token)
 	token := &oauth2.Token{
 		AccessToken:  "example-access-token",

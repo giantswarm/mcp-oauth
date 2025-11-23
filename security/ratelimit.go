@@ -44,7 +44,7 @@ func (rl *RateLimiter) Allow(identifier string) bool {
 }
 
 // Cleanup removes inactive limiters (called periodically)
-func (rl *RateLimiter) Cleanup(inactiveThreshold time.Duration) {
+func (rl *RateLimiter) Cleanup(_ time.Duration) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 

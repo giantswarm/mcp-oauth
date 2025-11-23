@@ -299,30 +299,6 @@ func generateRandomToken() string {
 	return oauth2.GenerateVerifier()
 }
 
-// parseScopes parses a space-separated scope string into a slice
-func parseScopes(scope string) []string {
-	if scope == "" {
-		return nil
-	}
-	// Simple split by space
-	var scopes []string
-	current := ""
-	for _, ch := range scope {
-		if ch == ' ' {
-			if current != "" {
-				scopes = append(scopes, current)
-				current = ""
-			}
-		} else {
-			current += string(ch)
-		}
-	}
-	if current != "" {
-		scopes = append(scopes, current)
-	}
-	return scopes
-}
-
 // HandleProviderCallback handles the callback from the OAuth provider
 // Returns: (authorizationCode, clientState, error)
 // clientState is the original state parameter from the client for CSRF validation
@@ -427,7 +403,7 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 
 // ExchangeAuthorizationCode exchanges an authorization code for tokens
 // Returns oauth2.Token directly
-func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, redirectURI, codeVerifier string) (*oauth2.Token, string, error) {
+func (s *Server) ExchangeAuthorizationCode(_ context.Context, code, clientID, redirectURI, codeVerifier string) (*oauth2.Token, string, error) {
 	// Get authorization code
 	authCode, err := s.flowStore.GetAuthorizationCode(code)
 	if err != nil {
@@ -525,7 +501,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 		} else {
 			s.logger.Debug("Created new refresh token family",
 				"user_id", authCode.UserID,
-				"family_id", familyID[:min(8, len(familyID))])
+				"family_id", familyID[:minInt(8, len(familyID))])
 		}
 	} else {
 		// Fallback to basic tracking
@@ -571,7 +547,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 				}
 				s.logger.Error("Attempted use of revoked token family",
 					"user_id", family.UserID,
-					"family_id", family.FamilyID[:min(8, len(family.FamilyID))])
+					"family_id", family.FamilyID[:minInt(8, len(family.FamilyID))])
 				return nil, fmt.Errorf("refresh token has been revoked")
 			}
 		}
