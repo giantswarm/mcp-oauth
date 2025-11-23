@@ -54,7 +54,7 @@ func main() {
 	store := memory.NewWithInterval(1 * time.Minute)
 	defer store.Stop()
 
-	// 3. Create OAuth server
+	// 3. Create OAuth server with enhanced security configuration
 	server, err := oauth.NewServer(
 		googleProvider,
 		store, // TokenStore
@@ -62,11 +62,20 @@ func main() {
 		store, // FlowStore
 		&oauth.ServerConfig{
 			Issuer:                    getEnvOrDefault("MCP_RESOURCE", "https://mcp.example.com"),
-			RequirePKCE:               true,
-			AllowRefreshTokenRotation: true,
-			TrustProxy:                getBoolEnv("TRUST_PROXY", false),
+			AllowRefreshTokenRotation: true,                                // OAuth 2.1 security
+			TrustProxy:                getBoolEnv("TRUST_PROXY", false),    // Only enable behind trusted proxy
+			TrustedProxyCount:         getIntEnv("TRUSTED_PROXY_COUNT", 1), // Number of trusted proxies
 			MaxClientsPerIP:           10,
 			RefreshTokenTTL:           90 * 24 * 60 * 60, // 90 days in seconds
+			ClockSkewGracePeriod:      5,                 // 5 seconds grace period
+			SupportedScopes: []string{
+				"openid",
+				"email",
+				"profile",
+				"https://www.googleapis.com/auth/gmail.readonly",
+				"https://www.googleapis.com/auth/drive.readonly",
+				"https://www.googleapis.com/auth/calendar.readonly",
+			},
 		},
 		logger,
 	)
@@ -106,11 +115,14 @@ func main() {
 	}
 
 	// Log startup information
-	logger.Info("Starting MCP server",
+	logger.Info("Starting MCP server with enhanced security",
 		"addr", httpServer.Addr,
 		"encryption", "enabled",
 		"audit_logging", "enabled",
 		"rate_limiting", "enabled",
+		"pkce_enforced", "true",
+		"refresh_token_rotation", "enabled",
+		"token_introspection", "enabled",
 		"provider", googleProvider.Name(),
 	)
 
@@ -145,6 +157,8 @@ func setupRoutes(handler *oauth.Handler, logger *slog.Logger) *http.ServeMux {
 		logRequest(logger, handler.ServeClientRegistration))
 	mux.HandleFunc("/oauth/revoke",
 		logRequest(logger, handler.ServeTokenRevocation))
+	mux.HandleFunc("/oauth/introspect",
+		logRequest(logger, handler.ServeTokenIntrospection))
 
 	// Protected MCP endpoint
 	mux.Handle("/mcp", handler.ValidateToken(mcpHandler(logger)))
@@ -300,6 +314,18 @@ func getBoolEnv(key string, defaultValue bool) bool {
 		return defaultValue
 	}
 	return value == "true" || value == "1" || value == "yes"
+}
+
+func getIntEnv(key string, defaultValue int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+	var intVal int
+	if _, err := fmt.Sscanf(value, "%d", &intVal); err == nil {
+		return intVal
+	}
+	return defaultValue
 }
 
 func logRequest(logger *slog.Logger, handler http.HandlerFunc) http.HandlerFunc {

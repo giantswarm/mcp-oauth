@@ -74,7 +74,7 @@ func (p *Provider) Name() string {
 // Accepts pre-computed PKCE challenge from client
 func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string) string {
 	var opts []oauth2.AuthCodeOption
-	
+
 	// Add PKCE if challenge provided (already computed by client)
 	if codeChallenge != "" {
 		opts = append(opts,
@@ -82,10 +82,10 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 			oauth2.SetAuthURLParam("code_challenge_method", codeChallengeMethod),
 		)
 	}
-	
+
 	// Request offline access to get refresh token
 	opts = append(opts, oauth2.AccessTypeOffline)
-	
+
 	return p.AuthCodeURL(state, opts...)
 }
 
@@ -93,7 +93,7 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 // Returns standard oauth2.Token directly
 func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier string) (*oauth2.Token, error) {
 	var opts []oauth2.AuthCodeOption
-	
+
 	// PKCE code verifier
 	if verifier != "" {
 		opts = append(opts, oauth2.VerifierOption(verifier))
@@ -198,4 +198,3 @@ func (p *Provider) RevokeToken(_ context.Context, token string) error {
 
 	return nil
 }
-

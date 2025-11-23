@@ -12,24 +12,36 @@ import (
 // SECURITY CONSIDERATIONS:
 // - Only enable trustProxy when behind a trusted reverse proxy (nginx, haproxy, etc.)
 // - X-Forwarded-For format: "client, proxy1, proxy2, ..."
-// - We take the FIRST IP (leftmost) as it's the original client IP
-// - The rightmost IPs are added by proxies and could be spoofed if multiple proxies exist
-// - For production with multiple proxies, configure the number of trusted proxies
-func GetClientIP(r *http.Request, trustProxy bool) string {
+// - trustedProxyCount specifies how many proxies to trust from the right
+// - This prevents X-Forwarded-For spoofing in multi-proxy setups
+func GetClientIP(r *http.Request, trustProxy bool, trustedProxyCount int) string {
 	if trustProxy {
-		// SECURITY: Take FIRST IP from X-Forwarded-For (original client)
-		// Format: "client-ip, proxy1-ip, proxy2-ip"
-		// The leftmost IP is the original client, subsequent IPs are added by proxies
+		// SECURITY: Extract client IP accounting for trusted proxies
+		// Format: "client-ip, untrusted-proxy, trusted-proxy2, trusted-proxy1"
+		// The rightmost IPs are the trusted proxies we control
 		//
-		// Example:
-		//   Client (1.2.3.4) -> Proxy1 -> Proxy2 (trusted)
-		//   X-Forwarded-For: "1.2.3.4, proxy1-ip"
-		//   We want: 1.2.3.4
+		// Example with trustedProxyCount=2:
+		//   Client (1.2.3.4) -> UntrustedProxy -> TrustedProxy2 -> TrustedProxy1 (us)
+		//   X-Forwarded-For: "1.2.3.4, untrusted-ip, proxy2-ip"
+		//   We extract: ips[len(ips) - trustedProxyCount - 1] = ips[0] = "1.2.3.4"
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			ips := strings.Split(xff, ",")
 			if len(ips) > 0 {
-				// Get the first IP (original client)
-				clientIP := strings.TrimSpace(ips[0])
+				// Calculate client IP index accounting for trusted proxies
+				// If trustedProxyCount=0, default to 1 (assume 1 trusted proxy)
+				proxyCount := trustedProxyCount
+				if proxyCount == 0 {
+					proxyCount = 1
+				}
+
+				// Client IP is at: len(ips) - proxyCount - 1
+				// But if we don't have enough IPs, take the first one
+				clientIndex := len(ips) - proxyCount - 1
+				if clientIndex < 0 {
+					clientIndex = 0 // Not enough proxies, take leftmost IP
+				}
+
+				clientIP := strings.TrimSpace(ips[clientIndex])
 				if ip := net.ParseIP(clientIP); ip != nil {
 					return clientIP
 				}

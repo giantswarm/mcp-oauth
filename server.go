@@ -48,9 +48,6 @@ type ServerConfig struct {
 	// RefreshTokenTTL is how long refresh tokens are valid
 	RefreshTokenTTL int64 // seconds, default: 7776000 (90 days)
 
-	// RequirePKCE enforces PKCE for all clients
-	RequirePKCE bool // default: true
-
 	// AllowRefreshTokenRotation enables refresh token rotation (OAuth 2.1)
 	AllowRefreshTokenRotation bool // default: true
 
@@ -58,8 +55,23 @@ type ServerConfig struct {
 	// Only enable if behind a trusted reverse proxy
 	TrustProxy bool // default: false
 
+	// TrustedProxyCount is the number of trusted proxies in front of this server
+	// Used with TrustProxy to correctly extract client IP from X-Forwarded-For
+	// Example: If you have 2 proxies (CloudFlare + nginx), set this to 2
+	// The client IP will be extracted as: ips[len(ips) - TrustedProxyCount - 1]
+	TrustedProxyCount int // default: 1
+
 	// MaxClientsPerIP limits client registrations per IP address
 	MaxClientsPerIP int // default: 10
+
+	// ClockSkewGracePeriod is the grace period for token expiration checks (in seconds)
+	// This prevents false expiration errors due to time synchronization issues
+	// Default: 5 seconds
+	ClockSkewGracePeriod int64 // seconds, default: 5
+
+	// SupportedScopes lists the scopes that are allowed for clients
+	// If empty, all scopes are allowed
+	SupportedScopes []string
 }
 
 // NewServer creates a new OAuth server
@@ -96,6 +108,12 @@ func NewServer(
 	}
 	if config.RefreshTokenTTL == 0 {
 		config.RefreshTokenTTL = 7776000 // 90 days
+	}
+	if config.TrustedProxyCount == 0 {
+		config.TrustedProxyCount = 1 // Default to 1 trusted proxy
+	}
+	if config.ClockSkewGracePeriod == 0 {
+		config.ClockSkewGracePeriod = 5 // 5 seconds default
 	}
 
 	if logger == nil {
@@ -166,21 +184,45 @@ func (s *Server) StartAuthorizationFlow(clientID, redirectURI, scope, codeChalle
 		return "", fmt.Errorf("state parameter is required for CSRF protection (OAuth 2.0 Security BCP)")
 	}
 
+	// CRITICAL SECURITY: Enforce PKCE for OAuth 2.1 compliance (no opt-out)
+	if codeChallenge == "" || codeChallengeMethod == "" {
+		if s.auditor != nil {
+			s.auditor.LogAuthFailure("", clientID, "", "missing_pkce_parameters")
+		}
+		return "", fmt.Errorf("PKCE is required: code_challenge and code_challenge_method parameters are mandatory (OAuth 2.1)")
+	}
+
+	// Validate PKCE method
+	if codeChallengeMethod != "S256" {
+		if s.auditor != nil {
+			s.auditor.LogAuthFailure("", clientID, "", fmt.Sprintf("invalid_pkce_method: %s", codeChallengeMethod))
+		}
+		return "", fmt.Errorf("only S256 code_challenge_method is supported (OAuth 2.1)")
+	}
+
 	// Validate client
 	client, err := s.clientStore.GetClient(clientID)
 	if err != nil {
 		if s.auditor != nil {
-			s.auditor.LogAuthFailure("", clientID, "", fmt.Sprintf("client_not_found: %v", err))
+			s.auditor.LogAuthFailure("", clientID, "", "invalid_client")
 		}
-		return "", fmt.Errorf("invalid client: %w", err)
+		return "", fmt.Errorf("invalid_request")
 	}
 
 	// Validate redirect URI
 	if err := s.validateRedirectURI(client, redirectURI); err != nil {
 		if s.auditor != nil {
-			s.auditor.LogAuthFailure("", clientID, "", fmt.Sprintf("invalid_redirect_uri: %v", err))
+			s.auditor.LogAuthFailure("", clientID, "", "invalid_redirect_uri")
 		}
-		return "", err
+		return "", fmt.Errorf("invalid_request")
+	}
+
+	// Validate scopes
+	if err := s.validateScopes(scope); err != nil {
+		if s.auditor != nil {
+			s.auditor.LogAuthFailure("", clientID, "", fmt.Sprintf("invalid_scope: %v", err))
+		}
+		return "", fmt.Errorf("invalid_scope")
 	}
 
 	// Log authorization flow start
@@ -290,6 +332,42 @@ func validateRedirectURISecurity(redirectURI, serverIssuer string) error {
 	// Custom schemes (myapp://, etc.) are allowed for native/mobile apps
 
 	return nil
+}
+
+// validateScopes validates that requested scopes are allowed
+func (s *Server) validateScopes(scope string) error {
+	// If no scopes configured, allow all
+	if len(s.config.SupportedScopes) == 0 {
+		return nil
+	}
+
+	if scope == "" {
+		return nil // Empty scope is allowed
+	}
+
+	// Split scope string into individual scopes
+	requestedScopes := strings.Fields(scope)
+
+	// Check each requested scope against supported scopes
+	for _, reqScope := range requestedScopes {
+		found := false
+		for _, supportedScope := range s.config.SupportedScopes {
+			if reqScope == supportedScope {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("unsupported scope: %s", reqScope)
+		}
+	}
+
+	return nil
+}
+
+// GetClient retrieves a client by ID (for use by handler)
+func (s *Server) GetClient(clientID string) (*storage.Client, error) {
+	return s.clientStore.GetClient(clientID)
 }
 
 // generateRandomToken generates a cryptographically secure random token

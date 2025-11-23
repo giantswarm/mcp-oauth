@@ -202,9 +202,6 @@ type AuthorizationState struct {
 
 	// ExpiresAt is when this state expires
 	ExpiresAt int64
-
-	// Nonce is the OIDC nonce parameter (optional)
-	Nonce string
 }
 
 // AuthorizationCode represents an issued authorization code

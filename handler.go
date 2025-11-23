@@ -38,7 +38,7 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Apply IP-based rate limiting BEFORE token validation
 		if h.server.rateLimiter != nil {
-			clientIP := security.GetClientIP(r, h.server.config.TrustProxy)
+			clientIP := security.GetClientIP(r, h.server.config.TrustProxy, h.server.config.TrustedProxyCount)
 			if !h.server.rateLimiter.Allow(clientIP) {
 				h.logger.Warn("Rate limit exceeded", "ip", clientIP)
 				if h.server.auditor != nil {
@@ -76,7 +76,7 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 		// Validate token with server
 		userInfo, err := h.server.ValidateToken(r.Context(), accessToken)
 		if err != nil {
-			clientIP := security.GetClientIP(r, h.server.config.TrustProxy)
+			clientIP := security.GetClientIP(r, h.server.config.TrustProxy, h.server.config.TrustedProxyCount)
 			h.logger.Warn("Token validation failed", "ip", clientIP, "error", err)
 			// SECURITY: Don't leak internal error details to client
 			// Log detailed error but return generic message
@@ -238,7 +238,7 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Request) {
-	clientIP := security.GetClientIP(r, h.server.config.TrustProxy)
+	clientIP := security.GetClientIP(r, h.server.config.TrustProxy, h.server.config.TrustedProxyCount)
 
 	// Parse parameters
 	code := r.FormValue("code")
@@ -247,8 +247,38 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	codeVerifier := r.FormValue("code_verifier")
 
 	// Get client credentials from Authorization header (if present)
-	if authClientID, authClientSecret := h.parseBasicAuth(r); authClientID != "" {
+	authClientID, authClientSecret := h.parseBasicAuth(r)
+	if authClientID != "" {
 		clientID = authClientID
+	}
+
+	if code == "" || clientID == "" {
+		h.writeError(w, "invalid_request", "Required parameters missing", http.StatusBadRequest)
+		return
+	}
+
+	// SECURITY: Fetch client and enforce authentication based on client type
+	client, err := h.server.GetClient(clientID)
+	if err != nil {
+		h.logger.Warn("Unknown client", "client_id", clientID, "ip", clientIP)
+		if h.server.auditor != nil {
+			h.server.auditor.LogAuthFailure("", clientID, clientIP, "invalid_client")
+		}
+		h.writeError(w, "invalid_client", "Client authentication failed", http.StatusUnauthorized)
+		return
+	}
+
+	// CRITICAL SECURITY: Confidential clients MUST authenticate
+	if client.ClientType == "confidential" {
+		if authClientSecret == "" {
+			h.logger.Warn("Confidential client missing credentials", "client_id", clientID, "ip", clientIP)
+			if h.server.auditor != nil {
+				h.server.auditor.LogAuthFailure("", clientID, clientIP, "confidential_client_auth_required")
+			}
+			h.writeError(w, "invalid_client", "Client authentication required", http.StatusUnauthorized)
+			return
+		}
+
 		// Validate client credentials
 		if err := h.server.ValidateClientCredentials(clientID, authClientSecret); err != nil {
 			h.logger.Warn("Client authentication failed", "client_id", clientID, "ip", clientIP, "error", err)
@@ -258,11 +288,6 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 			h.writeError(w, "invalid_client", "Client authentication failed", http.StatusUnauthorized)
 			return
 		}
-	}
-
-	if code == "" || clientID == "" {
-		h.writeError(w, "invalid_request", "code and client_id are required", http.StatusBadRequest)
-		return
 	}
 
 	// Exchange authorization code for tokens
@@ -282,7 +307,7 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 }
 
 func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request) {
-	clientIP := security.GetClientIP(r, h.server.config.TrustProxy)
+	clientIP := security.GetClientIP(r, h.server.config.TrustProxy, h.server.config.TrustedProxyCount)
 
 	// Parse parameters
 	refreshToken := r.FormValue("refresh_token")
@@ -328,7 +353,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clientIP := security.GetClientIP(r, h.server.config.TrustProxy)
+	clientIP := security.GetClientIP(r, h.server.config.TrustProxy, h.server.config.TrustedProxyCount)
 
 	// Parse form data
 	if err := r.ParseForm(); err != nil {
@@ -377,7 +402,7 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	}
 
 	// Get client IP for DoS protection
-	clientIP := security.GetClientIP(r, h.server.config.TrustProxy)
+	clientIP := security.GetClientIP(r, h.server.config.TrustProxy, h.server.config.TrustedProxyCount)
 
 	// Check per-IP registration limit to prevent DoS attacks
 	maxClients := h.server.config.MaxClientsPerIP
@@ -481,6 +506,77 @@ func (h *Handler) writeError(w http.ResponseWriter, code, description string, st
 		"error":             code,
 		"error_description": description,
 	})
+}
+
+// ServeTokenIntrospection handles the RFC 7662 token introspection endpoint
+// This allows resource servers to validate access tokens
+func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	clientIP := security.GetClientIP(r, h.server.config.TrustProxy, h.server.config.TrustedProxyCount)
+
+	// Parse form data
+	if err := r.ParseForm(); err != nil {
+		h.writeError(w, "invalid_request", "Failed to parse request", http.StatusBadRequest)
+		return
+	}
+
+	token := r.FormValue("token")
+	if token == "" {
+		h.writeError(w, "invalid_request", "token parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	// Optional: Authenticate the resource server
+	// For now, we allow any authenticated client to introspect tokens
+	clientID := r.FormValue("client_id")
+	authClientID, authClientSecret := h.parseBasicAuth(r)
+	if authClientID != "" {
+		clientID = authClientID
+		// Validate client credentials
+		if err := h.server.ValidateClientCredentials(clientID, authClientSecret); err != nil {
+			h.logger.Warn("Client authentication failed for introspection", "client_id", clientID, "ip", clientIP)
+			h.writeError(w, "invalid_client", "Client authentication failed", http.StatusUnauthorized)
+			return
+		}
+	}
+
+	// Validate the token
+	userInfo, err := h.server.ValidateToken(r.Context(), token)
+
+	// Build introspection response per RFC 7662
+	response := map[string]interface{}{
+		"active": false,
+	}
+
+	if err == nil && userInfo != nil {
+		// Token is valid and active
+		response["active"] = true
+		response["sub"] = userInfo.ID
+		response["email"] = userInfo.Email
+		response["email_verified"] = userInfo.EmailVerified
+
+		// Optional claims
+		if userInfo.Name != "" {
+			response["name"] = userInfo.Name
+		}
+		if clientID != "" {
+			response["client_id"] = clientID
+		}
+		response["token_type"] = "Bearer"
+	} else {
+		// Token is invalid or expired
+		h.logger.Debug("Token introspection failed", "error", err, "ip", clientIP)
+	}
+
+	// Always return 200 OK per RFC 7662
+	security.SetSecurityHeaders(w, h.server.config.Issuer)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // Context key for user info
