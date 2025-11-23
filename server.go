@@ -139,7 +139,17 @@ func NewServer(
 // applySecureDefaults applies secure-by-default configuration values
 // This follows the principle: secure by default, opt-in for less secure options
 func applySecureDefaults(config *ServerConfig, logger *slog.Logger) *ServerConfig {
-	// Time-based defaults
+	// Apply time-based defaults
+	applyTimeDefaults(config)
+
+	// Apply security defaults and log warnings for insecure settings
+	applySecurityDefaults(config, logger)
+
+	return config
+}
+
+// applyTimeDefaults sets default values for time-based configuration
+func applyTimeDefaults(config *ServerConfig) {
 	if config.AuthorizationCodeTTL == 0 {
 		config.AuthorizationCodeTTL = 600 // 10 minutes
 	}
@@ -150,52 +160,58 @@ func applySecureDefaults(config *ServerConfig, logger *slog.Logger) *ServerConfi
 		config.RefreshTokenTTL = 7776000 // 90 days
 	}
 	if config.TrustedProxyCount == 0 {
-		config.TrustedProxyCount = 1 // Default to 1 trusted proxy
+		config.TrustedProxyCount = 1
 	}
 	if config.ClockSkewGracePeriod == 0 {
-		config.ClockSkewGracePeriod = 5 // 5 seconds default
+		config.ClockSkewGracePeriod = 5
 	}
 	if config.MaxClientsPerIP == 0 {
-		config.MaxClientsPerIP = 10 // Default limit
+		config.MaxClientsPerIP = 10
 	}
+}
 
-	// Security defaults
-	// For boolean fields, we need a way to distinguish "not set" from "explicitly set to false"
-	// We use a simple heuristic: if the struct is new (has all zeros), apply secure defaults
-	// If any security field is explicitly configured, we respect the user's choice
+// applySecurityDefaults sets secure defaults for security-related configuration
+// Uses a heuristic to detect if config is new (all security bools false) vs explicitly configured
+func applySecurityDefaults(config *ServerConfig, logger *slog.Logger) {
+	// Heuristic: if all security bools are false, it's likely a fresh config
 	isDefaultConfig := !config.AllowRefreshTokenRotation &&
 		!config.RequirePKCE &&
-		!config.AllowPKCEPlain
+		!config.AllowPKCEPlain &&
+		!config.TrustProxy
 
 	if isDefaultConfig {
-		// Apply secure defaults when config is fresh
-		config.AllowRefreshTokenRotation = true // OAuth 2.1 security best practice
-		config.RequirePKCE = true               // OAuth 2.1 security best practice
-		config.AllowPKCEPlain = false           // Reject insecure 'plain' method
-		config.TrustProxy = false               // Don't trust proxy headers by default
-	} else {
-		// User has explicitly configured security settings - log warnings if insecure
-		if !config.RequirePKCE {
-			logger.Warn("⚠️  SECURITY WARNING: PKCE is DISABLED",
-				"risk", "Authorization code interception attacks",
-				"recommendation", "Set RequirePKCE=true for OAuth 2.1 compliance",
-				"learn_more", "https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-10#section-7.6")
-		}
-		if config.AllowPKCEPlain {
-			logger.Warn("⚠️  SECURITY WARNING: Plain PKCE method is ALLOWED",
-				"risk", "Weak code challenge protection",
-				"recommendation", "Set AllowPKCEPlain=false to require S256",
-				"learn_more", "https://datatracker.ietf.org/doc/html/rfc7636#section-4.2")
-		}
-		if config.TrustProxy {
-			logger.Warn("⚠️  SECURITY NOTICE: Trusting proxy headers",
-				"risk", "IP spoofing if proxy is not properly configured",
-				"recommendation", "Only enable behind trusted reverse proxies",
-				"config", "TrustedProxyCount should match your proxy chain length")
-		}
+		// Apply secure defaults for fresh config
+		config.AllowRefreshTokenRotation = true
+		config.RequirePKCE = true
+		config.AllowPKCEPlain = false
+		config.TrustProxy = false
+		return
 	}
 
-	return config
+	// User has explicitly configured security - log warnings for insecure settings
+	logSecurityWarnings(config, logger)
+}
+
+// logSecurityWarnings logs warnings for insecure configuration settings
+func logSecurityWarnings(config *ServerConfig, logger *slog.Logger) {
+	if !config.RequirePKCE {
+		logger.Warn("⚠️  SECURITY WARNING: PKCE is DISABLED",
+			"risk", "Authorization code interception attacks",
+			"recommendation", "Set RequirePKCE=true for OAuth 2.1 compliance",
+			"learn_more", "https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-10#section-7.6")
+	}
+	if config.AllowPKCEPlain {
+		logger.Warn("⚠️  SECURITY WARNING: Plain PKCE method is ALLOWED",
+			"risk", "Weak code challenge protection",
+			"recommendation", "Set AllowPKCEPlain=false to require S256",
+			"learn_more", "https://datatracker.ietf.org/doc/html/rfc7636#section-4.2")
+	}
+	if config.TrustProxy {
+		logger.Warn("⚠️  SECURITY NOTICE: Trusting proxy headers",
+			"risk", "IP spoofing if proxy is not properly configured",
+			"recommendation", "Only enable behind trusted reverse proxies",
+			"config", "TrustedProxyCount should match your proxy chain length")
+	}
 }
 
 // SetEncryptor sets the token encryptor for server and storage
@@ -297,25 +313,25 @@ func (s *Server) StartAuthorizationFlow(clientID, redirectURI, scope, codeChalle
 	client, err := s.clientStore.GetClient(clientID)
 	if err != nil {
 		if s.auditor != nil {
-			s.auditor.LogAuthFailure("", clientID, "", "invalid_client")
+			s.auditor.LogAuthFailure("", clientID, "", ErrorCodeInvalidClient)
 		}
-		return "", fmt.Errorf("invalid_request")
+		return "", fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
 	}
 
 	// Validate redirect URI
 	if err := s.validateRedirectURI(client, redirectURI); err != nil {
 		if s.auditor != nil {
-			s.auditor.LogAuthFailure("", clientID, "", "invalid_redirect_uri")
+			s.auditor.LogAuthFailure("", clientID, "", ErrorCodeInvalidRedirectURI)
 		}
-		return "", fmt.Errorf("invalid_request")
+		return "", fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
 	}
 
 	// Validate scopes
 	if err := s.validateScopes(scope); err != nil {
 		if s.auditor != nil {
-			s.auditor.LogAuthFailure("", clientID, "", fmt.Sprintf("invalid_scope: %v", err))
+			s.auditor.LogAuthFailure("", clientID, "", fmt.Sprintf("%s: %v", ErrorCodeInvalidScope, err))
 		}
-		return "", fmt.Errorf("invalid_scope")
+		return "", fmt.Errorf("%s: %w", ErrorCodeInvalidScope, err)
 	}
 
 	// Log authorization flow start
@@ -581,7 +597,7 @@ func (s *Server) ExchangeAuthorizationCode(_ context.Context, code, clientID, re
 		if s.auditor != nil {
 			s.auditor.LogAuthFailure("", clientID, "", "invalid_authorization_code")
 		}
-		return nil, "", fmt.Errorf("invalid authorization code")
+		return nil, "", fmt.Errorf("%s: authorization code not found", ErrorCodeInvalidGrant)
 	}
 
 	// Validate authorization code hasn't been used
@@ -601,17 +617,17 @@ func (s *Server) ExchangeAuthorizationCode(_ context.Context, code, clientID, re
 		}
 		// Delete the code and revoke associated tokens (security measure)
 		_ = s.flowStore.DeleteAuthorizationCode(code)
-		return nil, "", fmt.Errorf("authorization code already used")
+		return nil, "", fmt.Errorf("%s: authorization code already used", ErrorCodeInvalidGrant)
 	}
 
 	// Validate client ID matches
 	if authCode.ClientID != clientID {
-		return nil, "", fmt.Errorf("client ID mismatch")
+		return nil, "", fmt.Errorf("%s: client ID mismatch", ErrorCodeInvalidGrant)
 	}
 
 	// Validate redirect URI matches
 	if authCode.RedirectURI != redirectURI {
-		return nil, "", fmt.Errorf("redirect URI mismatch")
+		return nil, "", fmt.Errorf("%s: redirect URI mismatch", ErrorCodeInvalidGrant)
 	}
 
 	// Validate PKCE if present
@@ -730,7 +746,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		if s.auditor != nil {
 			s.auditor.LogAuthFailure("", clientID, "", "invalid_refresh_token")
 		}
-		return nil, fmt.Errorf("invalid refresh token: %w", err)
+		return nil, fmt.Errorf("%s: %w", ErrorCodeInvalidGrant, err)
 	}
 
 	// Get provider token using refresh token
@@ -739,7 +755,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		if s.auditor != nil {
 			s.auditor.LogAuthFailure(userID, clientID, "", "refresh_token_not_found")
 		}
-		return nil, fmt.Errorf("refresh token not found")
+		return nil, fmt.Errorf("%s: refresh token not found", ErrorCodeInvalidGrant)
 	}
 
 	// Refresh token with provider

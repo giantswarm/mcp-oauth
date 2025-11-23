@@ -124,51 +124,91 @@ func (s *Store) SaveToken(userID string, token *oauth2.Token) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Encrypt sensitive token fields if encryptor is configured
+	// Encrypt token if encryptor is configured
+	storedToken := token
 	if s.encryptor != nil && s.encryptor.IsEnabled() {
-		// Create a copy to avoid modifying the original
-		encryptedToken := &oauth2.Token{
-			AccessToken:  token.AccessToken,
-			RefreshToken: token.RefreshToken,
-			Expiry:       token.Expiry,
-			TokenType:    token.TokenType,
+		encrypted, err := s.encryptToken(token)
+		if err != nil {
+			return err
 		}
-
-		// Encrypt access token
-		if encryptedToken.AccessToken != "" {
-			encrypted, err := s.encryptor.Encrypt(encryptedToken.AccessToken)
-			if err != nil {
-				return fmt.Errorf("failed to encrypt access token: %w", err)
-			}
-			encryptedToken.AccessToken = encrypted
-		}
-
-		// Encrypt refresh token
-		if encryptedToken.RefreshToken != "" {
-			encrypted, err := s.encryptor.Encrypt(encryptedToken.RefreshToken)
-			if err != nil {
-				return fmt.Errorf("failed to encrypt refresh token: %w", err)
-			}
-			encryptedToken.RefreshToken = encrypted
-		}
-
-		s.tokens[userID] = encryptedToken
+		storedToken = encrypted
 		s.logger.Debug("Saved encrypted token", "user_id", userID)
 	} else {
-		s.tokens[userID] = token
 		s.logger.Debug("Saved token", "user_id", userID)
 	}
 
+	s.tokens[userID] = storedToken
 	return nil
+}
+
+// encryptToken encrypts sensitive fields in an oauth2.Token
+// Returns a new token with encrypted fields, leaving the original unchanged
+func (s *Store) encryptToken(token *oauth2.Token) (*oauth2.Token, error) {
+	// Create a copy to avoid modifying the original
+	encrypted := &oauth2.Token{
+		AccessToken:  token.AccessToken,
+		RefreshToken: token.RefreshToken,
+		Expiry:       token.Expiry,
+		TokenType:    token.TokenType,
+	}
+
+	// Encrypt access token
+	if encrypted.AccessToken != "" {
+		enc, err := s.encryptor.Encrypt(encrypted.AccessToken)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encrypt access token: %w", err)
+		}
+		encrypted.AccessToken = enc
+	}
+
+	// Encrypt refresh token
+	if encrypted.RefreshToken != "" {
+		enc, err := s.encryptor.Encrypt(encrypted.RefreshToken)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encrypt refresh token: %w", err)
+		}
+		encrypted.RefreshToken = enc
+	}
+
+	return encrypted, nil
+}
+
+// decryptToken decrypts sensitive fields in an oauth2.Token
+// Returns a new token with decrypted fields, leaving the original unchanged
+func (s *Store) decryptToken(token *oauth2.Token, encryptor *security.Encryptor) (*oauth2.Token, error) {
+	// Create a copy to avoid modifying the stored version
+	decrypted := &oauth2.Token{
+		AccessToken:  token.AccessToken,
+		RefreshToken: token.RefreshToken,
+		Expiry:       token.Expiry,
+		TokenType:    token.TokenType,
+	}
+
+	// Decrypt access token
+	if decrypted.AccessToken != "" {
+		dec, err := encryptor.Decrypt(decrypted.AccessToken)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decrypt access token: %w", err)
+		}
+		decrypted.AccessToken = dec
+	}
+
+	// Decrypt refresh token
+	if decrypted.RefreshToken != "" {
+		dec, err := encryptor.Decrypt(decrypted.RefreshToken)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decrypt refresh token: %w", err)
+		}
+		decrypted.RefreshToken = dec
+	}
+
+	return decrypted, nil
 }
 
 // GetToken retrieves an oauth2.Token for a user and decrypts if necessary
 func (s *Store) GetToken(userID string) (*oauth2.Token, error) {
 	s.mu.RLock()
 	encryptor := s.encryptor
-	s.mu.RUnlock()
-
-	s.mu.RLock()
 	token, ok := s.tokens[userID]
 	s.mu.RUnlock()
 
@@ -184,33 +224,7 @@ func (s *Store) GetToken(userID string) (*oauth2.Token, error) {
 
 	// Decrypt if encryptor is configured
 	if encryptor != nil && encryptor.IsEnabled() {
-		// Create a copy to avoid modifying the stored version
-		decryptedToken := &oauth2.Token{
-			AccessToken:  token.AccessToken,
-			RefreshToken: token.RefreshToken,
-			Expiry:       token.Expiry,
-			TokenType:    token.TokenType,
-		}
-
-		// Decrypt access token
-		if decryptedToken.AccessToken != "" {
-			decrypted, err := encryptor.Decrypt(decryptedToken.AccessToken)
-			if err != nil {
-				return nil, fmt.Errorf("failed to decrypt access token: %w", err)
-			}
-			decryptedToken.AccessToken = decrypted
-		}
-
-		// Decrypt refresh token
-		if decryptedToken.RefreshToken != "" {
-			decrypted, err := encryptor.Decrypt(decryptedToken.RefreshToken)
-			if err != nil {
-				return nil, fmt.Errorf("failed to decrypt refresh token: %w", err)
-			}
-			decryptedToken.RefreshToken = decrypted
-		}
-
-		return decryptedToken, nil
+		return s.decryptToken(token, encryptor)
 	}
 
 	return token, nil
