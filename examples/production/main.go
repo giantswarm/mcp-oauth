@@ -9,8 +9,6 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/base64"
 	"fmt"
 	"log"
 	"log/slog"
@@ -19,6 +17,9 @@ import (
 	"time"
 
 	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/providers/google"
+	"github.com/giantswarm/mcp-oauth/security"
+	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
 func main() {
@@ -31,91 +32,72 @@ func main() {
 		log.Fatalf("Failed to load encryption key: %v", err)
 	}
 
-	// Generate secure registration token
-	registrationToken := getEnvOrGenerate("OAUTH_REGISTRATION_TOKEN")
-
-	// Production configuration with all security features
-	config := &oauth.Config{
-		// Resource identifier (must be HTTPS in production)
-		Resource: getEnvOrDefault("MCP_RESOURCE", "https://mcp.example.com"),
-
-		// Google API scopes
-		SupportedScopes: []string{
+	// 1. Create provider (Google in this case)
+	googleProvider, err := google.NewProvider(&google.Config{
+		ClientID:     getEnvOrFail("GOOGLE_CLIENT_ID"),
+		ClientSecret: getEnvOrFail("GOOGLE_CLIENT_SECRET"),
+		RedirectURL:  getEnvOrDefault("GOOGLE_REDIRECT_URL", "http://localhost:8443/oauth/callback"),
+		Scopes: []string{
+			"openid",
+			"email",
+			"profile",
 			"https://www.googleapis.com/auth/gmail.readonly",
 			"https://www.googleapis.com/auth/drive.readonly",
 			"https://www.googleapis.com/auth/calendar.readonly",
-			"https://www.googleapis.com/auth/userinfo.email",
-			"https://www.googleapis.com/auth/userinfo.profile",
 		},
-
-		// Google OAuth credentials
-		GoogleAuth: oauth.GoogleAuthConfig{
-			ClientID:     getEnvOrFail("GOOGLE_CLIENT_ID"),
-			ClientSecret: getEnvOrFail("GOOGLE_CLIENT_SECRET"),
-			RedirectURL:  getEnvOrDefault("GOOGLE_REDIRECT_URL", ""),
-		},
-
-		// Rate limiting configuration
-		RateLimit: oauth.RateLimitConfig{
-			Rate:            10,  // 10 requests/second per IP
-			Burst:           20,  // Allow bursts up to 20
-			UserRate:        100, // 100 requests/second per authenticated user
-			UserBurst:       200, // Allow user bursts up to 200
-			TrustProxy:      getBoolEnv("TRUST_PROXY", false),
-			CleanupInterval: 5 * time.Minute,
-		},
-
-		// Security configuration (production-ready)
-		Security: oauth.SecurityConfig{
-			// Enable token encryption at rest
-			EncryptionKey: encryptionKey,
-
-			// Enable comprehensive audit logging
-			EnableAuditLogging: true,
-
-			// Enable refresh token rotation (OAuth 2.1)
-			DisableRefreshTokenRotation: false,
-
-			// Require authentication for client registration
-			AllowPublicClientRegistration: false,
-			RegistrationAccessToken:       registrationToken,
-
-			// Token TTL settings
-			RefreshTokenTTL: 90 * 24 * time.Hour, // 90 days
-
-			// Security limits
-			MaxClientsPerIP: 10,
-
-			// Allow custom redirect schemes for native apps
-			AllowCustomRedirectSchemes: true,
-
-			// State parameter required (CSRF protection)
-			AllowInsecureAuthWithoutState: false,
-		},
-
-		// Token cleanup interval
-		CleanupInterval: 1 * time.Minute,
-
-		// Structured logger
-		Logger: logger,
-
-		// Custom HTTP client with timeouts
-		HTTPClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-	}
-
-	// Create OAuth handler
-	handler, err := oauth.NewHandler(config)
+	})
 	if err != nil {
-		log.Fatalf("Failed to create OAuth handler: %v", err)
+		log.Fatalf("Failed to create Google provider: %v", err)
 	}
+
+	// 2. Create storage (in-memory with custom cleanup interval for production)
+	store := memory.NewWithInterval(1 * time.Minute)
+	defer store.Stop()
+
+	// 3. Create OAuth server
+	server, err := oauth.NewServer(
+		googleProvider,
+		store, // TokenStore
+		store, // ClientStore
+		store, // FlowStore
+		&oauth.ServerConfig{
+			Issuer:                    getEnvOrDefault("MCP_RESOURCE", "https://mcp.example.com"),
+			RequirePKCE:               true,
+			AllowRefreshTokenRotation: true,
+			TrustProxy:                getBoolEnv("TRUST_PROXY", false),
+			MaxClientsPerIP:           10,
+			RefreshTokenTTL:           90 * 24 * 60 * 60, // 90 days in seconds
+		},
+		logger,
+	)
+	if err != nil {
+		log.Fatalf("Failed to create OAuth server: %v", err)
+	}
+
+	// 4. Add security features
+	// Enable token encryption
+	encryptor, err := security.NewEncryptor(encryptionKey)
+	if err != nil {
+		log.Fatalf("Failed to create encryptor: %v", err)
+	}
+	server.SetEncryptor(encryptor)
+
+	// Enable audit logging
+	auditor := security.NewAuditor(logger, true)
+	server.SetAuditor(auditor)
+
+	// Enable rate limiting
+	rateLimiter := security.NewRateLimiter(10, 20, logger) // 10 req/s per IP, burst 20
+	server.SetRateLimiter(rateLimiter)
+
+	// 5. Create HTTP handler
+	handler := oauth.NewHandler(server, logger)
 
 	// Setup HTTP routes
 	mux := setupRoutes(handler, logger)
 
 	// HTTP server configuration
-	server := &http.Server{
+	httpServer := &http.Server{
 		Addr:         getEnvOrDefault("LISTEN_ADDR", ":8443"),
 		Handler:      mux,
 		ReadTimeout:  15 * time.Second,
@@ -125,21 +107,21 @@ func main() {
 
 	// Log startup information
 	logger.Info("Starting MCP server",
-		"addr", server.Addr,
+		"addr", httpServer.Addr,
 		"encryption", "enabled",
 		"audit_logging", "enabled",
 		"rate_limiting", "enabled",
-		"registration_token", registrationToken[:8]+"...",
+		"provider", googleProvider.Name(),
 	)
 
 	// Start server (use TLS in production)
 	if tlsCert := os.Getenv("TLS_CERT_FILE"); tlsCert != "" {
 		tlsKey := getEnvOrFail("TLS_KEY_FILE")
 		logger.Info("Starting HTTPS server", "cert", tlsCert)
-		log.Fatal(server.ListenAndServeTLS(tlsCert, tlsKey))
+		log.Fatal(httpServer.ListenAndServeTLS(tlsCert, tlsKey))
 	} else {
 		logger.Warn("Starting HTTP server - use HTTPS in production!")
-		log.Fatal(server.ListenAndServe())
+		log.Fatal(httpServer.ListenAndServe())
 	}
 }
 
@@ -157,15 +139,15 @@ func setupRoutes(handler *oauth.Handler, logger *slog.Logger) *http.ServeMux {
 		logRequest(logger, handler.ServeAuthorization))
 	mux.HandleFunc("/oauth/token",
 		logRequest(logger, handler.ServeToken))
-	mux.HandleFunc("/oauth/google/callback",
-		logRequest(logger, handler.ServeGoogleCallback))
+	mux.HandleFunc("/oauth/callback",
+		logRequest(logger, handler.ServeCallback))
 	mux.HandleFunc("/oauth/register",
 		logRequest(logger, handler.ServeClientRegistration))
 	mux.HandleFunc("/oauth/revoke",
 		logRequest(logger, handler.ServeTokenRevocation))
 
 	// Protected MCP endpoint
-	mux.Handle("/mcp", handler.ValidateGoogleToken(mcpHandler(logger)))
+	mux.Handle("/mcp", handler.ValidateToken(mcpHandler(logger)))
 
 	// Health and readiness checks
 	mux.HandleFunc("/health", healthHandler)
@@ -200,7 +182,7 @@ func mcpHandler(logger *slog.Logger) http.Handler {
 			"user": map[string]string{
 				"email": userInfo.Email,
 				"name":  userInfo.Name,
-				"id":    userInfo.Sub,
+				"id":    userInfo.ID,
 			},
 			"timestamp": time.Now().Unix(),
 		}
@@ -211,7 +193,7 @@ func mcpHandler(logger *slog.Logger) http.Handler {
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
 
 		fmt.Fprintf(w, `{"message":"%s","user":{"email":"%s","name":"%s","id":"%s"}}`,
-			response["message"], userInfo.Email, userInfo.Name, userInfo.Sub)
+			response["message"], userInfo.Email, userInfo.Name, userInfo.ID)
 	})
 }
 
@@ -272,7 +254,7 @@ func getLogLevel() slog.Level {
 func loadEncryptionKey() ([]byte, error) {
 	// Try to load from environment (base64 encoded)
 	if keyStr := os.Getenv("OAUTH_ENCRYPTION_KEY"); keyStr != "" {
-		return oauth.EncryptionKeyFromBase64(keyStr)
+		return security.KeyFromBase64(keyStr)
 	}
 
 	// Try to load from file
@@ -281,19 +263,19 @@ func loadEncryptionKey() ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read key file: %w", err)
 		}
-		return oauth.EncryptionKeyFromBase64(string(data))
+		return security.KeyFromBase64(string(data))
 	}
 
 	// Generate new key (development only!)
 	log.Println("WARNING: Generating new encryption key - tokens won't persist across restarts")
 	log.Println("For production, set OAUTH_ENCRYPTION_KEY environment variable")
 
-	key, err := oauth.GenerateEncryptionKey()
+	key, err := security.GenerateKey()
 	if err != nil {
 		return nil, err
 	}
 
-	log.Printf("Generated encryption key: %s", oauth.EncryptionKeyToBase64(key))
+	log.Printf("Generated encryption key: %s", security.KeyToBase64(key))
 	return key, nil
 }
 
@@ -310,24 +292,6 @@ func getEnvOrDefault(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
-}
-
-func getEnvOrGenerate(key string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-
-	// Generate secure random token
-	token := make([]byte, 32)
-	if _, err := rand.Read(token); err != nil {
-		log.Fatalf("Failed to generate token: %v", err)
-	}
-
-	generated := base64.URLEncoding.EncodeToString(token)
-	log.Printf("Generated %s: %s", key, generated)
-	log.Printf("Set this in your environment to persist: export %s='%s'", key, generated)
-
-	return generated
 }
 
 func getBoolEnv(key string, defaultValue bool) bool {

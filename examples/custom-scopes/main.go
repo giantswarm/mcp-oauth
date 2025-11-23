@@ -15,60 +15,79 @@ import (
 	"os"
 
 	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/providers/google"
+	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
 func main() {
-	// Configuration with multiple Google API scopes
-	config := &oauth.Config{
-		Resource: getEnvOrDefault("MCP_RESOURCE", "http://localhost:8080"),
-
-		// Multiple Google API scopes
-		// Each scope grants access to specific Google services
-		SupportedScopes: []string{
-			// Gmail scopes
-			"https://www.googleapis.com/auth/gmail.readonly",
-			"https://www.googleapis.com/auth/gmail.modify",
-			"https://www.googleapis.com/auth/gmail.labels",
-			"https://www.googleapis.com/auth/gmail.metadata",
-
-			// Google Drive scopes
-			"https://www.googleapis.com/auth/drive.readonly",
-			"https://www.googleapis.com/auth/drive.file",
-			"https://www.googleapis.com/auth/drive.metadata.readonly",
-
-			// Google Calendar scopes
-			"https://www.googleapis.com/auth/calendar.readonly",
-			"https://www.googleapis.com/auth/calendar.events.readonly",
-
-			// Google Contacts scopes
-			"https://www.googleapis.com/auth/contacts.readonly",
-
-			// User info scopes
-			"https://www.googleapis.com/auth/userinfo.email",
-			"https://www.googleapis.com/auth/userinfo.profile",
-		},
-
-		GoogleAuth: oauth.GoogleAuthConfig{
-			ClientID:     getEnvOrFail("GOOGLE_CLIENT_ID"),
-			ClientSecret: getEnvOrFail("GOOGLE_CLIENT_SECRET"),
-		},
-
-		Logger: slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-			Level: slog.LevelInfo,
-		})),
+	// Multiple Google API scopes
+	// Each scope grants access to specific Google services
+	scopes := []string{
+		"openid",
+		"email",
+		"profile",
+		// Gmail scopes
+		"https://www.googleapis.com/auth/gmail.readonly",
+		"https://www.googleapis.com/auth/gmail.modify",
+		"https://www.googleapis.com/auth/gmail.labels",
+		"https://www.googleapis.com/auth/gmail.metadata",
+		// Google Drive scopes
+		"https://www.googleapis.com/auth/drive.readonly",
+		"https://www.googleapis.com/auth/drive.file",
+		"https://www.googleapis.com/auth/drive.metadata.readonly",
+		// Google Calendar scopes
+		"https://www.googleapis.com/auth/calendar.readonly",
+		"https://www.googleapis.com/auth/calendar.events.readonly",
+		// Google Contacts scopes
+		"https://www.googleapis.com/auth/contacts.readonly",
 	}
 
-	handler, err := oauth.NewHandler(config)
+	// 1. Create provider
+	googleProvider, err := google.NewProvider(&google.Config{
+		ClientID:     getEnvOrFail("GOOGLE_CLIENT_ID"),
+		ClientSecret: getEnvOrFail("GOOGLE_CLIENT_SECRET"),
+		RedirectURL:  "http://localhost:8080/oauth/callback",
+		Scopes:       scopes,
+	})
 	if err != nil {
-		log.Fatalf("Failed to create OAuth handler: %v", err)
+		log.Fatal(err)
 	}
+
+	// 2. Create storage
+	store := memory.New()
+	defer store.Stop()
+
+	// 3. Create logger
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	// 4. Create OAuth server
+	server, err := oauth.NewServer(
+		googleProvider,
+		store, // TokenStore
+		store, // ClientStore
+		store, // FlowStore
+		&oauth.ServerConfig{
+			Issuer:                    getEnvOrDefault("MCP_RESOURCE", "http://localhost:8080"),
+			RequirePKCE:               true,
+			AllowRefreshTokenRotation: true,
+		},
+		logger,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// 5. Create HTTP handler
+	handler := oauth.NewHandler(server, logger)
 
 	setupRoutes(handler)
 
 	addr := ":8080"
 	log.Printf("Starting MCP server on %s", addr)
 	log.Printf("Supported scopes:")
-	for _, scope := range config.SupportedScopes {
+	for _, scope := range scopes {
 		log.Printf("  - %s", scope)
 	}
 	log.Fatal(http.ListenAndServe(addr, nil))
@@ -84,18 +103,18 @@ func setupRoutes(handler *oauth.Handler) {
 	// OAuth endpoints
 	http.HandleFunc("/oauth/authorize", handler.ServeAuthorization)
 	http.HandleFunc("/oauth/token", handler.ServeToken)
-	http.HandleFunc("/oauth/google/callback", handler.ServeGoogleCallback)
+	http.HandleFunc("/oauth/callback", handler.ServeCallback)
 	http.HandleFunc("/oauth/register", handler.ServeClientRegistration)
 	http.HandleFunc("/oauth/revoke", handler.ServeTokenRevocation)
 
 	// Protected endpoints demonstrating different scopes
-	http.Handle("/api/gmail", handler.ValidateGoogleToken(gmailHandler()))
-	http.Handle("/api/drive", handler.ValidateGoogleToken(driveHandler()))
-	http.Handle("/api/calendar", handler.ValidateGoogleToken(calendarHandler()))
-	http.Handle("/api/contacts", handler.ValidateGoogleToken(contactsHandler()))
+	http.Handle("/api/gmail", handler.ValidateToken(gmailHandler()))
+	http.Handle("/api/drive", handler.ValidateToken(driveHandler()))
+	http.Handle("/api/calendar", handler.ValidateToken(calendarHandler()))
+	http.Handle("/api/contacts", handler.ValidateToken(contactsHandler()))
 
 	// General MCP endpoint
-	http.Handle("/mcp", handler.ValidateGoogleToken(mcpHandler()))
+	http.Handle("/mcp", handler.ValidateToken(mcpHandler()))
 
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -181,7 +200,7 @@ func mcpHandler() http.Handler {
 			"user": map[string]string{
 				"email": userInfo.Email,
 				"name":  userInfo.Name,
-				"id":    userInfo.Sub,
+				"id":    userInfo.ID,
 			},
 			"available_apis": []string{
 				"/api/gmail",
