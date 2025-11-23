@@ -250,14 +250,79 @@ server.SetAuditor(auditor)
 
 ### Rate Limiting
 
+#### IP-Based Rate Limiting
+
+Protects against brute force attacks and DoS from specific IPs:
+
 ```go
-rateLimiter := security.NewRateLimiter(
-    10,    // 10 requests/second
+ipRateLimiter := security.NewRateLimiter(
+    10,    // 10 requests/second per IP
     20,    // burst of 20
     logger,
 )
-server.SetRateLimiter(rateLimiter)
+server.SetRateLimiter(ipRateLimiter)
 ```
+
+#### User-Based Rate Limiting
+
+Additional rate limiting for authenticated users (applies after authentication):
+
+```go
+userRateLimiter := security.NewRateLimiter(
+    100,   // 100 requests/second per user (higher than IP limit)
+    200,   // burst of 200
+    logger,
+)
+server.SetUserRateLimiter(userRateLimiter)
+```
+
+**Security Benefits:**
+- IP-based limiting prevents unauthenticated abuse
+- User-based limiting prevents authenticated abuse
+- Layered defense: both limits are enforced independently
+
+### Client Registration Protection
+
+Protect against DoS via mass client registration:
+
+```go
+&oauth.ServerConfig{
+    // Require authentication for client registration (secure by default)
+    AllowPublicClientRegistration: false,
+    
+    // Registration access token (share only with trusted developers)
+    RegistrationAccessToken: "your-secure-token-here", // Use crypto/rand
+    
+    // Limit registrations per IP
+    MaxClientsPerIP: 10,
+}
+```
+
+Clients must include the registration token when registering:
+
+```bash
+curl -X POST https://your-server.com/oauth/register \
+  -H "Authorization: Bearer your-registration-token" \
+  -H "Content-Type: application/json" \
+  -d '{"client_name": "My App", "redirect_uris": ["https://myapp.com/callback"]}'
+```
+
+### Custom Redirect URI Schemes
+
+Support for native/mobile apps with custom URI schemes:
+
+```go
+&oauth.ServerConfig{
+    // Allow custom schemes for native apps
+    AllowedCustomSchemes: []string{
+        "^myapp$",                  // Exact: myapp://
+        "^com\\.example\\.",        // Prefix: com.example.*://
+        "^[a-z][a-z0-9+.-]*$",      // RFC 3986 (default)
+    },
+}
+```
+
+**Security**: Dangerous schemes (javascript, data, file) are always blocked.
 
 ### Proxy Configuration
 
@@ -303,10 +368,55 @@ server, _ := oauth.NewServer(&MockProvider{}, mockStore, ...)
 
 Apache License 2.0
 
+## 🛡️ Security Best Practices
+
+### Production Deployment Checklist
+
+Before deploying to production, ensure:
+
+- ✅ **HTTPS Required**: Set `Issuer` to HTTPS URL
+- ✅ **Token Encryption**: Set `EncryptionKey` (32 bytes from secure source)
+- ✅ **Audit Logging**: Enable security audit logging
+- ✅ **Rate Limiting**: Configure both IP and user rate limits
+- ✅ **PKCE Enforced**: Keep `RequirePKCE=true` (default)
+- ✅ **S256 Only**: Keep `AllowPKCEPlain=false` (default)
+- ✅ **Token Rotation**: Keep `AllowRefreshTokenRotation=true` (default)
+- ✅ **Registration Protected**: Set `RegistrationAccessToken` or disable registration
+- ✅ **Proxy Configured**: Set `TrustProxy` and `TrustedProxyCount` if behind proxy
+
+### Security Warnings
+
+The library logs clear warnings when security is weakened:
+
+```
+⚠️  SECURITY WARNING: PKCE is DISABLED
+⚠️  SECURITY WARNING: Plain PKCE method is ALLOWED
+⚠️  SECURITY WARNING: Public client registration is ENABLED
+```
+
+**Always investigate and address security warnings before production deployment.**
+
+### OAuth 2.1 Compliance
+
+This library implements OAuth 2.1 security best practices:
+
+- **PKCE Required**: Mandatory for all flows (prevents code interception)
+- **Refresh Token Rotation**: Automatic token rotation with reuse detection
+- **S256 Only**: Rejects insecure 'plain' PKCE method
+- **State Required**: CSRF protection via state parameter
+- **HTTPS Required**: Production deployments must use HTTPS
+
+### Vulnerability Reporting
+
+Report security vulnerabilities privately via GitHub Security Advisories or email:
+- See [SECURITY.md](./SECURITY.md) for details
+- **Do not** file public issues for security vulnerabilities
+
 ## 🤝 Contributing
 
 Contributions welcome! Especially:
 - New provider implementations
 - Storage implementations
 - Bug fixes and improvements
+- Security enhancements
 

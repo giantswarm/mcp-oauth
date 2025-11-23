@@ -37,9 +37,11 @@ func NewHandler(server *Server, logger *slog.Logger) *Handler {
 // ValidateToken is middleware that validates OAuth tokens
 func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Get client IP for rate limiting and logging
+		clientIP := security.GetClientIP(r, h.server.config.TrustProxy, h.server.config.TrustedProxyCount)
+
 		// Apply IP-based rate limiting BEFORE token validation
 		if h.server.rateLimiter != nil {
-			clientIP := security.GetClientIP(r, h.server.config.TrustProxy, h.server.config.TrustedProxyCount)
 			if !h.server.rateLimiter.Allow(clientIP) {
 				h.logger.Warn("Rate limit exceeded", "ip", clientIP)
 				if h.server.auditor != nil {
@@ -77,7 +79,6 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 		// Validate token with server
 		userInfo, err := h.server.ValidateToken(r.Context(), accessToken)
 		if err != nil {
-			clientIP := security.GetClientIP(r, h.server.config.TrustProxy, h.server.config.TrustedProxyCount)
 			h.logger.Warn("Token validation failed", "ip", clientIP, "error", err)
 			// SECURITY: Don't leak internal error details to client
 			// Log detailed error but return generic message
@@ -87,7 +88,17 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 
 		// Apply per-user rate limiting AFTER authentication
 		// This is a separate, higher limit for authenticated users
-		// (Placeholder for future per-user rate limiting)
+		if h.server.userRateLimiter != nil {
+			if !h.server.userRateLimiter.Allow(userInfo.ID) {
+				h.logger.Warn("User rate limit exceeded", "user_id", userInfo.ID, "ip", clientIP)
+				if h.server.auditor != nil {
+					h.server.auditor.LogRateLimitExceeded(clientIP, userInfo.ID)
+				}
+				w.Header().Set("Retry-After", "60")
+				h.writeError(w, ErrorCodeRateLimitExceeded, "Rate limit exceeded for user. Please try again later.", http.StatusTooManyRequests)
+				return
+			}
+		}
 
 		// Store user info in context
 		ctx := context.WithValue(r.Context(), userInfoKey, userInfo)
@@ -378,6 +389,55 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	// Get client IP for DoS protection
 	clientIP := security.GetClientIP(r, h.server.config.TrustProxy, h.server.config.TrustedProxyCount)
 
+	// OAuth 2.1: Require authentication for client registration (secure by default)
+	// Only allow unauthenticated registration if explicitly configured
+	if !h.server.config.AllowPublicClientRegistration {
+		// Check for registration access token
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			h.logger.Warn("Client registration rejected: missing authorization",
+				"client_ip", clientIP)
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			h.writeError(w, ErrorCodeInvalidToken,
+				"Registration access token required. "+
+					"Set AllowPublicClientRegistration=true to disable authentication (NOT recommended).",
+				http.StatusUnauthorized)
+			return
+		}
+
+		// Verify Bearer token
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+			h.logger.Warn("Client registration rejected: invalid authorization header",
+				"client_ip", clientIP)
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			h.writeError(w, ErrorCodeInvalidToken, "Invalid Authorization header format", http.StatusUnauthorized)
+			return
+		}
+
+		// Validate registration access token
+		providedToken := parts[1]
+		if h.server.config.RegistrationAccessToken == "" {
+			h.logger.Error("RegistrationAccessToken not configured but AllowPublicClientRegistration=false")
+			h.writeError(w, ErrorCodeServerError,
+				"Server configuration error: registration token not configured",
+				http.StatusInternalServerError)
+			return
+		}
+
+		if providedToken != h.server.config.RegistrationAccessToken {
+			h.logger.Warn("Client registration rejected: invalid registration token",
+				"client_ip", clientIP)
+			h.writeError(w, ErrorCodeInvalidToken, "Invalid registration access token", http.StatusUnauthorized)
+			return
+		}
+
+		h.logger.Info("Client registration authenticated with valid token")
+	} else {
+		h.logger.Warn("⚠️  Unauthenticated client registration (DoS risk)",
+			"client_ip", clientIP)
+	}
+
 	// Check per-IP registration limit to prevent DoS attacks
 	maxClients := h.server.config.MaxClientsPerIP
 	if maxClients == 0 {
@@ -530,6 +590,7 @@ func (h *Handler) writeError(w http.ResponseWriter, code, description string, st
 
 // ServeTokenIntrospection handles the RFC 7662 token introspection endpoint
 // This allows resource servers to validate access tokens
+// Security: Requires client authentication to prevent token scanning attacks
 func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -550,18 +611,40 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Optional: Authenticate the resource server
-	// For now, we allow any authenticated client to introspect tokens
-	clientID := r.FormValue("client_id")
+	// SECURITY: Require client authentication to prevent token scanning attacks
+	// Per RFC 7662 Section 2.1: the authorization server MUST authenticate the client
 	authClientID, authClientSecret := h.parseBasicAuth(r)
+	var clientID string
 	if authClientID != "" {
 		clientID = authClientID
 		// Validate client credentials
 		if err := h.server.ValidateClientCredentials(clientID, authClientSecret); err != nil {
 			h.logger.Warn("Client authentication failed for introspection", "client_id", clientID, "ip", clientIP)
+			if h.server.auditor != nil {
+				h.server.auditor.LogAuthFailure("", clientID, clientIP, "introspection_auth_failed")
+			}
 			h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
 			return
 		}
+	} else {
+		// Try form parameter as fallback (but still require authentication)
+		clientID = r.FormValue("client_id")
+		if clientID == "" {
+			// No client authentication provided - reject per RFC 7662 security considerations
+			h.logger.Warn("Token introspection rejected: missing client authentication", "ip", clientIP)
+			if h.server.auditor != nil {
+				h.server.auditor.LogAuthFailure("", "", clientIP, "introspection_missing_auth")
+			}
+			h.writeError(w, ErrorCodeInvalidClient, "Client authentication required for token introspection", http.StatusUnauthorized)
+			return
+		}
+		// Client ID provided but no credentials - also reject
+		h.logger.Warn("Token introspection rejected: client_id without credentials", "client_id", clientID, "ip", clientIP)
+		if h.server.auditor != nil {
+			h.server.auditor.LogAuthFailure("", clientID, clientIP, "introspection_missing_credentials")
+		}
+		h.writeError(w, ErrorCodeInvalidClient, "Client authentication required for token introspection", http.StatusUnauthorized)
+		return
 	}
 
 	// Validate the token

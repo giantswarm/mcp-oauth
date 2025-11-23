@@ -16,6 +16,7 @@ All work, from new features to bug fixes, follows this fundamental three-phase c
 
 1.  **Phase 1: Planning & Alignment**
     -   Select an issue from the backlog.
+    -   Switch to the `main` branch and pull the latest changes
     -   **Create a dedicated feature branch from `main`** (NEVER work directly on `main`).
     -   Explore the codebase to create a detailed implementation strategy.
 
@@ -28,8 +29,7 @@ All work, from new features to bug fixes, follows this fundamental three-phase c
     -   Write and pass all required tests.
     -   Format your code according to project standards.
     -   Update any relevant project rules based on your changes.
-    -   Commit your work using a structured, conventional commit message.
-    -   Close the corresponding issue.
+    -   Commit your work using a structured, conventional commit message. Push your branch and create a PR.
 
 ## Phase 1: Planning & Alignment
 
@@ -57,6 +57,7 @@ The repository uses `main` as the default branch (NOT `master`). All work MUST b
 5.  **Example:** `git checkout -b feature/issue-42-add-github-provider`
 
 **Workflow Summary:**
+- ✅ Switch to `main` and pull latest changes
 - ✅ Always create a branch from `main`
 - ✅ Make all commits to your feature branch
 - ✅ Push your branch and create a Pull Request

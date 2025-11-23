@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -23,15 +24,16 @@ import (
 // Server implements the OAuth 2.1 server logic (provider-agnostic).
 // It coordinates the OAuth flow using a Provider and storage backends.
 type Server struct {
-	provider    providers.Provider
-	tokenStore  storage.TokenStore
-	clientStore storage.ClientStore
-	flowStore   storage.FlowStore
-	encryptor   *security.Encryptor
-	auditor     *security.Auditor
-	rateLimiter *security.RateLimiter
-	logger      *slog.Logger
-	config      *ServerConfig
+	provider        providers.Provider
+	tokenStore      storage.TokenStore
+	clientStore     storage.ClientStore
+	flowStore       storage.FlowStore
+	encryptor       *security.Encryptor
+	auditor         *security.Auditor
+	rateLimiter     *security.RateLimiter // IP-based rate limiter
+	userRateLimiter *security.RateLimiter // User-based rate limiter (authenticated requests)
+	logger          *slog.Logger
+	config          *ServerConfig
 }
 
 // ServerConfig holds OAuth server configuration
@@ -92,6 +94,23 @@ type ServerConfig struct {
 	// When true, code_challenge parameter is mandatory (secure by default)
 	// Default: true
 	RequirePKCE bool // default: true
+
+	// AllowPublicClientRegistration allows unauthenticated dynamic client registration
+	// WARNING: This can lead to DoS attacks via unlimited client registration
+	// When false, client registration requires a registration access token
+	// Default: false (authentication REQUIRED for security)
+	AllowPublicClientRegistration bool // default: false
+
+	// RegistrationAccessToken is the token required for client registration
+	// Only checked if AllowPublicClientRegistration is false
+	// Generate a secure random token and share it only with trusted client developers
+	RegistrationAccessToken string
+
+	// AllowedCustomSchemes is a list of allowed custom URI scheme patterns (regex)
+	// Used for validating custom redirect URIs (e.g., myapp://, com.example.app://)
+	// Empty list allows all RFC 3986 compliant schemes
+	// Default: ["^[a-z][a-z0-9+.-]*$"] (RFC 3986 compliant schemes)
+	AllowedCustomSchemes []string
 }
 
 // NewServer creates a new OAuth server
@@ -212,6 +231,16 @@ func logSecurityWarnings(config *ServerConfig, logger *slog.Logger) {
 			"recommendation", "Only enable behind trusted reverse proxies",
 			"config", "TrustedProxyCount should match your proxy chain length")
 	}
+	if config.AllowPublicClientRegistration {
+		logger.Warn("⚠️  SECURITY WARNING: Public client registration is ENABLED",
+			"risk", "DoS attacks via unlimited client registration",
+			"recommendation", "Set AllowPublicClientRegistration=false and use RegistrationAccessToken")
+	}
+	if !config.AllowPublicClientRegistration && config.RegistrationAccessToken == "" {
+		logger.Warn("⚠️  CONFIGURATION WARNING: RegistrationAccessToken not configured",
+			"risk", "Client registration will fail",
+			"recommendation", "Set RegistrationAccessToken or enable AllowPublicClientRegistration")
+	}
 }
 
 // SetEncryptor sets the token encryptor for server and storage
@@ -232,9 +261,14 @@ func (s *Server) SetAuditor(aud *security.Auditor) {
 	s.auditor = aud
 }
 
-// SetRateLimiter sets the rate limiter
+// SetRateLimiter sets the IP-based rate limiter
 func (s *Server) SetRateLimiter(rl *security.RateLimiter) {
 	s.rateLimiter = rl
+}
+
+// SetUserRateLimiter sets the user-based rate limiter for authenticated requests
+func (s *Server) SetUserRateLimiter(rl *security.RateLimiter) {
+	s.userRateLimiter = rl
 }
 
 // ValidateToken validates an access token with the provider
@@ -390,57 +424,8 @@ func (s *Server) validateRedirectURI(client *storage.Client, redirectURI string)
 		return fmt.Errorf("redirect URI not registered for client")
 	}
 
-	// Perform security validation on the URI
-	return validateRedirectURISecurity(redirectURI, s.config.Issuer)
-}
-
-// validateRedirectURISecurity performs comprehensive security validation on redirect URIs
-// per OAuth 2.0 Security Best Current Practice (BCP)
-func validateRedirectURISecurity(redirectURI, serverIssuer string) error {
-	// Parse the redirect URI
-	parsed, err := url.Parse(redirectURI)
-	if err != nil {
-		return fmt.Errorf("invalid redirect_uri format: %w", err)
-	}
-
-	// OAuth 2.0 Security BCP Section 4.1.3: redirect_uri MUST NOT contain fragments
-	if parsed.Fragment != "" {
-		return fmt.Errorf("redirect_uri must not contain fragments (security risk)")
-	}
-
-	scheme := strings.ToLower(parsed.Scheme)
-
-	// Reject dangerous schemes that could lead to XSS or other attacks
-	dangerousSchemes := []string{"javascript", "data", "file", "vbscript", "about"}
-	for _, dangerous := range dangerousSchemes {
-		if scheme == dangerous {
-			return fmt.Errorf("redirect_uri scheme '%s' is not allowed (security risk)", scheme)
-		}
-	}
-
-	// Check if it's an HTTP(S) scheme
-	isHTTP := scheme == SchemeHTTP || scheme == SchemeHTTPS
-
-	if isHTTP {
-		hostname := strings.ToLower(parsed.Hostname())
-
-		// Check if it's a loopback address (allowed for development)
-		isLoopback := hostname == "localhost" || hostname == "127.0.0.1" ||
-			hostname == "::1" || hostname == "[::1]"
-
-		// For production (non-loopback), require HTTPS
-		if !isLoopback && scheme != SchemeHTTPS {
-			// Check if server itself is HTTPS
-			if serverParsed, err := url.Parse(serverIssuer); err == nil {
-				if serverParsed.Scheme == SchemeHTTPS {
-					return fmt.Errorf("redirect_uri must use HTTPS in production (got %s://)", scheme)
-				}
-			}
-		}
-	}
-	// Custom schemes (myapp://, etc.) are allowed for native/mobile apps
-
-	return nil
+	// Perform security validation on the URI with custom scheme support
+	return validateRedirectURISecurityEnhanced(redirectURI, s.config.Issuer, s.config.AllowedCustomSchemes)
 }
 
 // validateScopes validates that requested scopes are allowed
@@ -891,18 +876,20 @@ func (s *Server) validatePKCE(challenge, method, verifier string) error {
 	}
 
 	// RFC 7636: code_verifier must be 43-128 characters
-	if len(verifier) < 43 {
-		return fmt.Errorf("code_verifier must be at least 43 characters (RFC 7636)")
+	if len(verifier) < MinCodeVerifierLength {
+		return fmt.Errorf("code_verifier must be at least %d characters (RFC 7636)", MinCodeVerifierLength)
 	}
-	if len(verifier) > 128 {
-		return fmt.Errorf("code_verifier must be at most 128 characters (RFC 7636)")
+	if len(verifier) > MaxCodeVerifierLength {
+		return fmt.Errorf("code_verifier must be at most %d characters (RFC 7636)", MaxCodeVerifierLength)
 	}
 
 	// RFC 7636: code_verifier can only contain [A-Z] / [a-z] / [0-9] / "-" / "." / "_" / "~"
 	// This prevents injection attacks and ensures cryptographic quality
+	// Security: Also prevents null bytes, control characters, or Unicode that could cause issues
 	for _, ch := range verifier {
-		if (ch < 'A' || ch > 'Z') && (ch < 'a' || ch > 'z') && (ch < '0' || ch > '9') &&
-			ch != '-' && ch != '.' && ch != '_' && ch != '~' {
+		isValid := (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
+			ch == '-' || ch == '.' || ch == '_' || ch == '~'
+		if !isValid {
 			return fmt.Errorf("code_verifier contains invalid characters (must be [A-Za-z0-9-._~])")
 		}
 	}
@@ -1016,4 +1003,114 @@ func (s *Server) RegisterClient(clientName, clientType string, redirectURIs []st
 // ValidateClientCredentials validates client credentials for token endpoint
 func (s *Server) ValidateClientCredentials(clientID, clientSecret string) error {
 	return s.clientStore.ValidateClientSecret(clientID, clientSecret)
+}
+
+// validateCustomScheme validates a custom URI scheme against allowed patterns
+// Returns error if the scheme is dangerous or not in the allowed list
+func validateCustomScheme(scheme string, allowedSchemes []string) error {
+	schemeLower := strings.ToLower(scheme)
+
+	// Check against dangerous schemes first
+	for _, dangerous := range DangerousSchemes {
+		if schemeLower == dangerous {
+			return fmt.Errorf("redirect_uri scheme '%s' is not allowed for security reasons", scheme)
+		}
+	}
+
+	// If no allowed schemes configured, allow all RFC 3986 compliant schemes
+	if len(allowedSchemes) == 0 {
+		// Default RFC 3986 pattern: scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
+		allowedSchemes = DefaultRFC3986SchemePattern
+	}
+
+	// Validate against allowed patterns
+	for _, pattern := range allowedSchemes {
+		// Use regex pattern matching
+		matched, err := regexp.MatchString(pattern, schemeLower)
+		if err != nil {
+			return fmt.Errorf("invalid scheme pattern '%s': %w", pattern, err)
+		}
+		if matched {
+			return nil // Scheme is valid
+		}
+	}
+
+	return fmt.Errorf("redirect_uri scheme '%s' does not match allowed patterns (must match one of: %v)",
+		scheme, allowedSchemes)
+}
+
+// isLoopbackAddress checks if a hostname is a loopback address
+func isLoopbackAddress(hostname string) bool {
+	// Normalize hostname (remove brackets for IPv6)
+	hostname = strings.Trim(hostname, "[]")
+	hostname = strings.TrimSpace(hostname)
+
+	// Check against recognized loopback addresses
+	for _, loopback := range LoopbackAddresses {
+		if hostname == loopback {
+			return true
+		}
+	}
+
+	// Also check for 127.x.x.x range and localhost with port
+	return strings.HasPrefix(hostname, "127.") || strings.HasPrefix(hostname, "localhost:")
+}
+
+// validateRedirectURISecurityEnhanced performs comprehensive security validation on redirect URIs
+// per OAuth 2.0 Security Best Current Practice (BCP) with enhanced custom scheme support
+func validateRedirectURISecurityEnhanced(redirectURI, serverIssuer string, allowedCustomSchemes []string) error {
+	// Parse the redirect URI
+	parsed, err := url.Parse(redirectURI)
+	if err != nil {
+		return fmt.Errorf("invalid redirect_uri format: %w", err)
+	}
+
+	// OAuth 2.0 Security BCP Section 4.1.3: redirect_uri MUST NOT contain fragments
+	if parsed.Fragment != "" {
+		return fmt.Errorf("redirect_uri must not contain fragments (security risk)")
+	}
+
+	scheme := strings.ToLower(parsed.Scheme)
+
+	// Check if it's an HTTP(S) scheme
+	isHTTP := false
+	for _, httpScheme := range AllowedHTTPSchemes {
+		if scheme == httpScheme {
+			isHTTP = true
+			break
+		}
+	}
+
+	if isHTTP {
+		// HTTP/HTTPS redirect URI validation
+		hostname := strings.ToLower(parsed.Hostname())
+
+		// Check if it's a loopback address (allowed for development)
+		isLoopback := isLoopbackAddress(hostname)
+
+		// For production (non-loopback), require HTTPS
+		if !isLoopback && scheme != SchemeHTTPS {
+			// Check if server itself is HTTPS
+			if serverParsed, err := url.Parse(serverIssuer); err == nil {
+				if serverParsed.Scheme == SchemeHTTPS {
+					return fmt.Errorf("redirect_uri must use HTTPS in production (got %s://)", scheme)
+				}
+			}
+		}
+	} else {
+		// Custom scheme (for native/mobile apps)
+		if err := validateCustomScheme(scheme, allowedCustomSchemes); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// minInt returns the minimum of two integers
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

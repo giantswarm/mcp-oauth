@@ -127,6 +127,57 @@ func (a *Auditor) LogClientRegistered(clientID, clientType, ipAddress string) {
 	})
 }
 
+// LogInvalidPKCE logs when PKCE validation fails
+func (a *Auditor) LogInvalidPKCE(clientID, ipAddress, reason string) {
+	a.LogEvent(Event{
+		Type:      "invalid_pkce",
+		ClientID:  clientID,
+		IPAddress: ipAddress,
+		Details: map[string]any{
+			"reason": reason,
+		},
+	})
+}
+
+// LogTokenReuse logs when refresh token reuse is detected (security event)
+func (a *Auditor) LogTokenReuse(userID, ipAddress string) {
+	a.LogEvent(Event{
+		Type:      "token_reuse_detected",
+		UserID:    userID,
+		IPAddress: ipAddress,
+		Details: map[string]any{
+			"severity": "critical",
+			"action":   "all_tokens_revoked",
+		},
+	})
+}
+
+// LogSuspiciousActivity logs suspicious activity
+func (a *Auditor) LogSuspiciousActivity(userID, clientID, ipAddress, description string) {
+	a.LogEvent(Event{
+		Type:      "suspicious_activity",
+		UserID:    userID,
+		ClientID:  clientID,
+		IPAddress: ipAddress,
+		Details: map[string]any{
+			"description": description,
+		},
+	})
+}
+
+// LogInvalidRedirect logs invalid redirect URI attempts
+func (a *Auditor) LogInvalidRedirect(clientID, ipAddress, uri, reason string) {
+	a.LogEvent(Event{
+		Type:      "invalid_redirect",
+		ClientID:  clientID,
+		IPAddress: ipAddress,
+		Details: map[string]any{
+			"uri":    uri,
+			"reason": reason,
+		},
+	})
+}
+
 // hashForLogging creates a SHA256 hash of sensitive data for logging
 func hashForLogging(sensitive string) string {
 	if sensitive == "" {
