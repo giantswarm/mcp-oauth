@@ -49,19 +49,25 @@ type ServerConfig struct {
 	RefreshTokenTTL int64 // seconds, default: 7776000 (90 days)
 
 	// AllowRefreshTokenRotation enables refresh token rotation (OAuth 2.1)
+	// Default: true (secure by default)
 	AllowRefreshTokenRotation bool // default: true
 
 	// TrustProxy enables trusting X-Forwarded-For and X-Real-IP headers
-	// Only enable if behind a trusted reverse proxy
+	// WARNING: Only enable if behind a trusted reverse proxy (nginx, HAProxy, etc.)
+	// When false, uses direct connection IP (secure by default)
+	// Default: false
 	TrustProxy bool // default: false
 
 	// TrustedProxyCount is the number of trusted proxies in front of this server
 	// Used with TrustProxy to correctly extract client IP from X-Forwarded-For
 	// Example: If you have 2 proxies (CloudFlare + nginx), set this to 2
 	// The client IP will be extracted as: ips[len(ips) - TrustedProxyCount - 1]
+	// Default: 1
 	TrustedProxyCount int // default: 1
 
 	// MaxClientsPerIP limits client registrations per IP address
+	// Prevents DoS via mass client registration
+	// Default: 10
 	MaxClientsPerIP int // default: 10
 
 	// ClockSkewGracePeriod is the grace period for token expiration checks (in seconds)
@@ -72,6 +78,20 @@ type ServerConfig struct {
 	// SupportedScopes lists the scopes that are allowed for clients
 	// If empty, all scopes are allowed
 	SupportedScopes []string
+
+	// AllowPKCEPlain allows the 'plain' code_challenge_method (NOT RECOMMENDED)
+	// WARNING: The 'plain' method is insecure and deprecated in OAuth 2.1
+	// Only enable for backward compatibility with legacy clients
+	// When false, only S256 method is accepted (secure by default)
+	// Default: false
+	AllowPKCEPlain bool // default: false
+
+	// RequirePKCE enforces PKCE for all authorization requests
+	// WARNING: Disabling this significantly weakens security
+	// Only disable for backward compatibility with very old clients
+	// When true, code_challenge parameter is mandatory (secure by default)
+	// Default: true
+	RequirePKCE bool // default: true
 }
 
 // NewServer creates a new OAuth server
@@ -99,7 +119,27 @@ func NewServer(
 		config = &ServerConfig{}
 	}
 
-	// Set defaults
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	// Apply secure defaults
+	config = applySecureDefaults(config, logger)
+
+	return &Server{
+		provider:    provider,
+		tokenStore:  tokenStore,
+		clientStore: clientStore,
+		flowStore:   flowStore,
+		config:      config,
+		logger:      logger,
+	}, nil
+}
+
+// applySecureDefaults applies secure-by-default configuration values
+// This follows the principle: secure by default, opt-in for less secure options
+func applySecureDefaults(config *ServerConfig, logger *slog.Logger) *ServerConfig {
+	// Time-based defaults
 	if config.AuthorizationCodeTTL == 0 {
 		config.AuthorizationCodeTTL = 600 // 10 minutes
 	}
@@ -115,19 +155,47 @@ func NewServer(
 	if config.ClockSkewGracePeriod == 0 {
 		config.ClockSkewGracePeriod = 5 // 5 seconds default
 	}
-
-	if logger == nil {
-		logger = slog.Default()
+	if config.MaxClientsPerIP == 0 {
+		config.MaxClientsPerIP = 10 // Default limit
 	}
 
-	return &Server{
-		provider:    provider,
-		tokenStore:  tokenStore,
-		clientStore: clientStore,
-		flowStore:   flowStore,
-		config:      config,
-		logger:      logger,
-	}, nil
+	// Security defaults
+	// For boolean fields, we need a way to distinguish "not set" from "explicitly set to false"
+	// We use a simple heuristic: if the struct is new (has all zeros), apply secure defaults
+	// If any security field is explicitly configured, we respect the user's choice
+	isDefaultConfig := config.AllowRefreshTokenRotation == false &&
+		config.RequirePKCE == false &&
+		config.AllowPKCEPlain == false
+
+	if isDefaultConfig {
+		// Apply secure defaults when config is fresh
+		config.AllowRefreshTokenRotation = true // OAuth 2.1 security best practice
+		config.RequirePKCE = true               // OAuth 2.1 security best practice
+		config.AllowPKCEPlain = false           // Reject insecure 'plain' method
+		config.TrustProxy = false               // Don't trust proxy headers by default
+	} else {
+		// User has explicitly configured security settings - log warnings if insecure
+		if !config.RequirePKCE {
+			logger.Warn("⚠️  SECURITY WARNING: PKCE is DISABLED",
+				"risk", "Authorization code interception attacks",
+				"recommendation", "Set RequirePKCE=true for OAuth 2.1 compliance",
+				"learn_more", "https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-10#section-7.6")
+		}
+		if config.AllowPKCEPlain {
+			logger.Warn("⚠️  SECURITY WARNING: Plain PKCE method is ALLOWED",
+				"risk", "Weak code challenge protection",
+				"recommendation", "Set AllowPKCEPlain=false to require S256",
+				"learn_more", "https://datatracker.ietf.org/doc/html/rfc7636#section-4.2")
+		}
+		if config.TrustProxy {
+			logger.Warn("⚠️  SECURITY NOTICE: Trusting proxy headers",
+				"risk", "IP spoofing if proxy is not properly configured",
+				"recommendation", "Only enable behind trusted reverse proxies",
+				"config", "TrustedProxyCount should match your proxy chain length")
+		}
+	}
+
+	return config
 }
 
 // SetEncryptor sets the token encryptor for server and storage
@@ -184,20 +252,45 @@ func (s *Server) StartAuthorizationFlow(clientID, redirectURI, scope, codeChalle
 		return "", fmt.Errorf("state parameter is required for CSRF protection (OAuth 2.0 Security BCP)")
 	}
 
-	// CRITICAL SECURITY: Enforce PKCE for OAuth 2.1 compliance (no opt-out)
-	if codeChallenge == "" || codeChallengeMethod == "" {
-		if s.auditor != nil {
-			s.auditor.LogAuthFailure("", clientID, "", "missing_pkce_parameters")
+	// PKCE validation (secure by default, configurable for backward compatibility)
+	if s.config.RequirePKCE {
+		// PKCE is required (default, recommended for OAuth 2.1)
+		if codeChallenge == "" || codeChallengeMethod == "" {
+			if s.auditor != nil {
+				s.auditor.LogAuthFailure("", clientID, "", "missing_pkce_parameters")
+			}
+			return "", fmt.Errorf("PKCE is required: code_challenge and code_challenge_method parameters are mandatory (OAuth 2.1)")
 		}
-		return "", fmt.Errorf("PKCE is required: code_challenge and code_challenge_method parameters are mandatory (OAuth 2.1)")
 	}
 
-	// Validate PKCE method
-	if codeChallengeMethod != "S256" {
-		if s.auditor != nil {
-			s.auditor.LogAuthFailure("", clientID, "", fmt.Sprintf("invalid_pkce_method: %s", codeChallengeMethod))
+	// Validate PKCE method if provided
+	if codeChallenge != "" {
+		if codeChallengeMethod == "" {
+			if s.auditor != nil {
+				s.auditor.LogAuthFailure("", clientID, "", "missing_code_challenge_method")
+			}
+			return "", fmt.Errorf("code_challenge_method is required when code_challenge is provided")
 		}
-		return "", fmt.Errorf("only S256 code_challenge_method is supported (OAuth 2.1)")
+
+		// Validate challenge method
+		if codeChallengeMethod == "plain" && !s.config.AllowPKCEPlain {
+			if s.auditor != nil {
+				s.auditor.LogAuthFailure("", clientID, "", "plain_pkce_not_allowed")
+			}
+			return "", fmt.Errorf("'plain' code_challenge_method is not allowed (only S256 is supported for security)")
+		}
+
+		if codeChallengeMethod != "S256" && codeChallengeMethod != "plain" {
+			if s.auditor != nil {
+				s.auditor.LogAuthFailure("", clientID, "", fmt.Sprintf("invalid_pkce_method: %s", codeChallengeMethod))
+			}
+			return "", fmt.Errorf("unsupported code_challenge_method: %s (supported: S256%s)", codeChallengeMethod, func() string {
+				if s.config.AllowPKCEPlain {
+					return ", plain"
+				}
+				return ""
+			}())
+		}
 	}
 
 	// Validate client
@@ -798,14 +891,32 @@ func (s *Server) validatePKCE(challenge, method, verifier string) error {
 		}
 	}
 
-	// Only S256 method is allowed (plain method is insecure per OAuth 2.1)
-	if method != "S256" {
-		return fmt.Errorf("unsupported code_challenge_method: %s (only S256 is supported per OAuth 2.1)", method)
-	}
+	var computedChallenge string
 
-	// Compute challenge from verifier using SHA256
-	hash := sha256.Sum256([]byte(verifier))
-	computedChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+	// Compute challenge based on method
+	switch method {
+	case "S256":
+		// Recommended: SHA256 hash of verifier
+		hash := sha256.Sum256([]byte(verifier))
+		computedChallenge = base64.RawURLEncoding.EncodeToString(hash[:])
+
+	case "plain":
+		// Deprecated but allowed if configured for backward compatibility
+		if !s.config.AllowPKCEPlain {
+			return fmt.Errorf("'plain' code_challenge_method is not allowed (configure AllowPKCEPlain=true if needed for legacy clients)")
+		}
+		computedChallenge = verifier
+		s.logger.Warn("Using insecure 'plain' PKCE method",
+			"recommendation", "Upgrade client to use S256")
+
+	default:
+		return fmt.Errorf("unsupported code_challenge_method: %s (supported: S256%s)", method, func() string {
+			if s.config.AllowPKCEPlain {
+				return ", plain"
+			}
+			return ""
+		}())
+	}
 
 	// Constant-time comparison to prevent timing attacks
 	// Using subtle.ConstantTimeCompare to prevent side-channel attacks

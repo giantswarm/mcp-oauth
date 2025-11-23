@@ -40,15 +40,20 @@ func main() {
 	}))
 
 	// 4. Create OAuth server
-	// Note: PKCE is now mandatory for all clients (OAuth 2.1)
+	// Security: Secure by default! PKCE (S256 only) is enabled by default.
+	// All security settings follow OAuth 2.1 best practices.
 	server, err := oauth.NewServer(
 		googleProvider,
 		store, // TokenStore
 		store, // ClientStore
 		store, // FlowStore
 		&oauth.ServerConfig{
-			Issuer:                    "http://localhost:8080",
-			AllowRefreshTokenRotation: true,
+			Issuer: "http://localhost:8080",
+			// Secure defaults (applied automatically if not set):
+			// - RequirePKCE: true (mandatory PKCE)
+			// - AllowPKCEPlain: false (only S256 method)
+			// - AllowRefreshTokenRotation: true (token rotation)
+			// - TrustProxy: false (don't trust proxy headers)
 		},
 		logger,
 	)
