@@ -19,7 +19,7 @@ type Encryptor struct {
 // If key is nil or empty, encryption is disabled.
 // The key must be exactly 32 bytes for AES-256.
 func NewEncryptor(key []byte) (*Encryptor, error) {
-	if key == nil || len(key) == 0 {
+	if len(key) == 0 {
 		return &Encryptor{enabled: false}, nil
 	}
 

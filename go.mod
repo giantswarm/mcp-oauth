@@ -1,6 +1,6 @@
 module github.com/giantswarm/mcp-oauth
 
-go 1.25.4
+go 1.24.0
 
 require (
 	golang.org/x/crypto v0.45.0

@@ -3,11 +3,10 @@ description:
 globs: **/*
 alwaysApply: true
 ---
+
 # Architecture Principles
 
 This document outlines the fundamental architectural principles and patterns for the `mcp-oauth` library. Adherence to these guidelines is **mandatory** to maintain a clean, decoupled, and testable OAuth 2.1 implementation.
-
----
 
 ## 1. Testing Standards
 
@@ -15,8 +14,6 @@ This document outlines the fundamental architectural principles and patterns for
 -   **No Flaky Tests:** Tests **MUST** be deterministic. Do not use `time.Sleep` or other mechanisms that can lead to race conditions. Use dependency injection for things like clocks or timers to make code testable.
 -   **Provider Testing:** Mock providers are preferred for testing over live OAuth provider calls. Use the `providers.Provider` interface for dependency injection.
 -   **Storage Testing:** All storage implementations **MUST** be testable with mock storage that implements the storage interfaces.
-
----
 
 ## 2. Go Development & Style
 
@@ -30,16 +27,12 @@ This document outlines the fundamental architectural principles and patterns for
 -   **File Size:** Keep files focused and under **500 lines**. Refactor larger files.
 -   **Nil Safety:** Always check for nil pointers before dereferencing, especially when dealing with optional configuration or dependencies.
 
----
-
 ## 3. Documentation
 
 -   **Packages:** Every package **MUST** have a `doc.go` file explaining its purpose.
 -   **Exported Members:** Every exported function, type, and variable **MUST** have a GoDoc comment.
 -   **Examples:** Complex features **SHOULD** have runnable examples in the `examples/` directory.
 -   **README Updates:** New features or breaking changes require updates to README.md.
-
----
 
 ## 4. Library Design Principles
 
@@ -53,8 +46,6 @@ This document outlines the fundamental architectural principles and patterns for
 -   **Security by Default:** Security features (encryption, rate limiting, audit logging) **SHOULD** be easy to enable but **MUST NOT** break existing functionality when disabled.
 -   **Backward Compatibility:** This is a library used by other projects. Breaking changes **MUST** be clearly documented and ideally versioned (v1, v2, etc.).
 
----
-
 ## 5. Security Standards
 
 -   **Token Encryption:** All sensitive tokens **SHOULD** be encrypted at rest when using the encryption features.
@@ -62,8 +53,6 @@ This document outlines the fundamental architectural principles and patterns for
 -   **Secure Defaults:** Default configurations **MUST** be secure. Insecure options (if any) should be opt-in.
 -   **Audit Logging:** All security-relevant events (token issuance, failures, rate limits) **SHOULD** be loggable through the auditor interface.
 -   **No Hardcoded Secrets:** Never commit credentials, API keys, or secrets to the repository. Use environment variables in examples.
-
----
 
 ## 6. Example Code
 
