@@ -167,9 +167,11 @@ server, _ := oauth.NewServer(
 Implement the storage interfaces:
 
 ```go
+import "golang.org/x/oauth2"
+
 type TokenStore interface {
-    SaveToken(userID string, token *providers.TokenResponse) error
-    GetToken(userID string) (*providers.TokenResponse, error)
+    SaveToken(userID string, token *oauth2.Token) error
+    GetToken(userID string) (*oauth2.Token, error)
     DeleteToken(userID string) error
     // ... more methods
 }
