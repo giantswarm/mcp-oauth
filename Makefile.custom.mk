@@ -2,8 +2,11 @@
 
 ##@ Library Development
 
-.PHONY: test test-coverage test-race test-all
-test: ## Run tests
+# NOTE: 'make test' is defined in Makefile.gen.go.mk and runs with -race (slow but thorough)
+# For faster local iteration, use 'make test-fast' instead
+
+.PHONY: test-fast test-coverage test-race test-all
+test-fast: ## Run tests (fast, no race detector) - RECOMMENDED for local dev
 	@echo "====> $@"
 	go test -v ./...
 
