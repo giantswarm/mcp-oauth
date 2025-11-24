@@ -61,6 +61,11 @@ func NewClientRegistrationRateLimiter(logger *slog.Logger) *ClientRegistrationRa
 
 // NewClientRegistrationRateLimiterWithConfig creates a new client registration rate limiter with custom configuration
 func NewClientRegistrationRateLimiterWithConfig(maxPerWindow int, window time.Duration, maxEntries int, logger *slog.Logger) *ClientRegistrationRateLimiter {
+	return newClientRegistrationRateLimiterWithCleanupInterval(maxPerWindow, window, maxEntries, DefaultRegistrationCleanupInterval, logger)
+}
+
+// newClientRegistrationRateLimiterWithCleanupInterval creates a rate limiter with custom cleanup interval (for testing)
+func newClientRegistrationRateLimiterWithCleanupInterval(maxPerWindow int, window time.Duration, maxEntries int, cleanupInterval time.Duration, logger *slog.Logger) *ClientRegistrationRateLimiter {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -76,6 +81,10 @@ func NewClientRegistrationRateLimiterWithConfig(maxPerWindow int, window time.Du
 		maxEntries = DefaultMaxRegistrationEntries
 		logger.Warn("Invalid maxEntries, using default", "maxEntries", maxEntries)
 	}
+	if cleanupInterval <= 0 {
+		cleanupInterval = DefaultRegistrationCleanupInterval
+		logger.Warn("Invalid cleanupInterval, using default", "cleanupInterval", cleanupInterval)
+	}
 
 	rl := &ClientRegistrationRateLimiter{
 		entries:         make(map[string]*list.Element),
@@ -84,7 +93,7 @@ func NewClientRegistrationRateLimiterWithConfig(maxPerWindow int, window time.Du
 		window:          window,
 		maxEntries:      maxEntries,
 		logger:          logger,
-		cleanupInterval: DefaultRegistrationCleanupInterval,
+		cleanupInterval: cleanupInterval,
 		stopCleanup:     make(chan struct{}),
 	}
 

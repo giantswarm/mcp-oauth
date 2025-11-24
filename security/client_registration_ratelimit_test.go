@@ -255,16 +255,15 @@ func TestClientRegistrationRateLimiter_Cleanup(t *testing.T) {
 func TestClientRegistrationRateLimiter_CleanupLoop(t *testing.T) {
 	logger := slog.Default()
 	window := 50 * time.Millisecond
-	rl := NewClientRegistrationRateLimiterWithConfig(5, window, 10, logger)
-	// Override cleanup interval for faster testing
-	rl.cleanupInterval = 100 * time.Millisecond
+	cleanupInterval := 100 * time.Millisecond
+	rl := newClientRegistrationRateLimiterWithCleanupInterval(5, window, 10, cleanupInterval, logger)
 	defer rl.Stop()
 
 	// Create an entry
 	rl.Allow("192.168.1.1")
 
 	// Wait for cleanup loop to run (cleanup interval + 2x window)
-	time.Sleep(rl.cleanupInterval + window*2 + 100*time.Millisecond)
+	time.Sleep(cleanupInterval + window*2 + 100*time.Millisecond)
 
 	// Entry should be cleaned up automatically
 	stats := rl.GetStats()
