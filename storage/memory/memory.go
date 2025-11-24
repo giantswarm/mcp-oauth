@@ -503,7 +503,7 @@ func (s *Store) RevokeRefreshTokenFamily(familyID string) error {
 
 	if revokedCount > 0 {
 		s.logger.Warn("Revoked refresh token family due to reuse detection",
-			"family_id", familyID[:min(tokenIDLogLength, len(familyID))],
+			"family_id", safeTruncate(familyID, tokenIDLogLength),
 			"tokens_revoked", revokedCount)
 	}
 
@@ -680,7 +680,7 @@ func (s *Store) SaveAuthorizationState(state *storage.AuthorizationState) error 
 	// ProviderState is used when validating provider callbacks
 	s.authStates[state.StateID] = state
 	s.authStates[state.ProviderState] = state
-	s.logger.Debug("Saved authorization state", "state_id", state.StateID, "provider_state_prefix", state.ProviderState[:min(tokenIDLogLength, len(state.ProviderState))])
+	s.logger.Debug("Saved authorization state", "state_id", state.StateID, "provider_state_prefix", safeTruncate(state.ProviderState, tokenIDLogLength))
 	return nil
 }
 
@@ -752,7 +752,7 @@ func (s *Store) SaveAuthorizationCode(code *storage.AuthorizationCode) error {
 	defer s.mu.Unlock()
 
 	s.authCodes[code.Code] = code
-	s.logger.Debug("Saved authorization code", "code_prefix", code.Code[:min(tokenIDLogLength, len(code.Code))])
+	s.logger.Debug("Saved authorization code", "code_prefix", safeTruncate(code.Code, tokenIDLogLength))
 	return nil
 }
 
@@ -817,7 +817,7 @@ func (s *Store) AtomicCheckAndMarkAuthCodeUsed(code string) (*storage.Authorizat
 	// Mark as used atomically
 	authCode.Used = true
 	s.logger.Debug("Marked authorization code as used",
-		"code_prefix", code[:min(tokenIDLogLength, len(code))])
+		"code_prefix", safeTruncate(code, tokenIDLogLength))
 
 	// Return the code for token issuance
 	return authCode, nil
@@ -1023,8 +1023,8 @@ func (s *Store) RevokeAllTokensForUserClient(userID, clientID string) (int, erro
 				s.logger.Debug("Revoked token from family",
 					"user_id", userID,
 					"client_id", clientID,
-					"token_id", tokenID[:min(tokenIDLogLength, len(tokenID))],
-					"family_id", familyID[:min(tokenIDLogLength, len(familyID))],
+					"token_id", safeTruncate(tokenID, tokenIDLogLength),
+					"family_id", safeTruncate(familyID, tokenIDLogLength),
 					"generation", family.Generation)
 			}
 		}
@@ -1033,7 +1033,7 @@ func (s *Store) RevokeAllTokensForUserClient(userID, clientID string) (int, erro
 			s.logger.Info("Revoked entire refresh token family",
 				"user_id", userID,
 				"client_id", clientID,
-				"family_id", familyID[:min(tokenIDLogLength, len(familyID))],
+				"family_id", safeTruncate(familyID, tokenIDLogLength),
 				"tokens_revoked", familyRevokedCount,
 				"reason", "authorization_code_reuse_detected")
 		}
@@ -1054,7 +1054,7 @@ func (s *Store) RevokeAllTokensForUserClient(userID, clientID string) (int, erro
 		s.logger.Debug("Revoked access token",
 			"user_id", userID,
 			"client_id", clientID,
-			"token_id", tokenID[:min(tokenIDLogLength, len(tokenID))])
+			"token_id", safeTruncate(tokenID, tokenIDLogLength))
 	}
 
 	if revokedCount > 0 {

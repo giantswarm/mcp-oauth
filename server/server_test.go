@@ -126,7 +126,7 @@ func TestServer_SetEncryptor(t *testing.T) {
 
 	provider := mock.NewMockProvider()
 
-	srv, err := New(provider, store, store, store, &Config{Issuer: "test"}, nil)
+	srv, err := New(provider, store, store, store, &Config{Issuer: "https://test.example.com"}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -154,7 +154,7 @@ func TestServer_SetAuditor(t *testing.T) {
 
 	provider := mock.NewMockProvider()
 
-	srv, err := New(provider, store, store, store, &Config{Issuer: "test"}, nil)
+	srv, err := New(provider, store, store, store, &Config{Issuer: "https://test.example.com"}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -173,7 +173,7 @@ func TestServer_SetRateLimiter(t *testing.T) {
 
 	provider := mock.NewMockProvider()
 
-	srv, err := New(provider, store, store, store, &Config{Issuer: "test"}, nil)
+	srv, err := New(provider, store, store, store, &Config{Issuer: "https://test.example.com"}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -194,7 +194,7 @@ func TestServer_SetUserRateLimiter(t *testing.T) {
 
 	provider := mock.NewMockProvider()
 
-	srv, err := New(provider, store, store, store, &Config{Issuer: "test"}, nil)
+	srv, err := New(provider, store, store, store, &Config{Issuer: "https://test.example.com"}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -215,7 +215,7 @@ func TestServer_SetSecurityEventRateLimiter(t *testing.T) {
 
 	provider := mock.NewMockProvider()
 
-	srv, err := New(provider, store, store, store, &Config{Issuer: "test"}, nil)
+	srv, err := New(provider, store, store, store, &Config{Issuer: "https://test.example.com"}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

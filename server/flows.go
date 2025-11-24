@@ -691,6 +691,21 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP stri
 //
 // SECURITY: This function revokes tokens at BOTH the provider (Google/GitHub) and locally.
 // The storage backend MUST implement TokenRevocationStore for OAuth 2.1 compliance.
+//
+// Provider Revocation Behavior:
+// - Attempts to revoke all tokens at the OAuth provider (Google/GitHub/etc) FIRST before local revocation
+// - Uses exponential backoff retry logic (configurable via ProviderRevocationMaxRetries)
+// - Individual token failures are logged but don't stop the process
+// - If provider revocation failures exceed ProviderRevocationFailureThreshold (default 50%), returns error
+// - If ALL provider revocations fail (100% failure rate), returns error and logs critical alert
+// - Tokens are ALWAYS revoked locally, even if provider revocation fails
+// - This ensures defense-in-depth: tokens become invalid locally while operators investigate provider issues
+//
+// Error Handling:
+// - Returns error if storage doesn't support TokenRevocationStore (OAuth 2.1 compliance failure)
+// - Returns error if provider revocation failure rate exceeds threshold
+// - Returns error if local revocation fails
+// - Logs detailed information about partial failures for operator investigation
 func (s *Server) RevokeAllTokensForUserClient(ctx context.Context, userID, clientID string) error {
 	// Check if storage supports token revocation
 	revocationStore, supportsRevocation := s.tokenStore.(storage.TokenRevocationStore)

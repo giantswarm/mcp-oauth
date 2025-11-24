@@ -19,6 +19,11 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
+const (
+	testTokenTypeBearer  = "Bearer"
+	testClientRemoteAddr = "192.168.1.100:12345"
+)
+
 func setupTestHandler(t *testing.T) (*Handler, *memory.Store) {
 	t.Helper()
 
@@ -269,8 +274,8 @@ func TestHandler_writeTokenResponse(t *testing.T) {
 		t.Errorf("AccessToken = %q, want %q", tokenResp.AccessToken, token.AccessToken)
 	}
 
-	if tokenResp.TokenType != "Bearer" {
-		t.Errorf("TokenType = %q, want %q", tokenResp.TokenType, "Bearer")
+	if tokenResp.TokenType != testTokenTypeBearer {
+		t.Errorf("TokenType = %q, want %q", tokenResp.TokenType, testTokenTypeBearer)
 	}
 }
 
@@ -575,8 +580,8 @@ func TestHandler_ServeToken_AuthorizationCode(t *testing.T) {
 		t.Error("RefreshToken should not be empty")
 	}
 
-	if tokenResp.TokenType != "Bearer" {
-		t.Errorf("TokenType = %q, want %q", tokenResp.TokenType, "Bearer")
+	if tokenResp.TokenType != testTokenTypeBearer {
+		t.Errorf("TokenType = %q, want %q", tokenResp.TokenType, testTokenTypeBearer)
 	}
 }
 
@@ -599,7 +604,7 @@ func TestHandler_ServeClientRegistration_Success(t *testing.T) {
 	body, _ := json.Marshal(regReq)
 	req := httptest.NewRequest(http.MethodPost, "/register", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.RemoteAddr = "192.168.1.100:12345"
+	req.RemoteAddr = testClientRemoteAddr
 	w := httptest.NewRecorder()
 
 	handler.ServeClientRegistration(w, req)
@@ -657,7 +662,7 @@ func TestHandler_ServeToken_InvalidClient(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(formData.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.SetBasicAuth(client.ClientID, "wrong-secret")
-	req.RemoteAddr = "192.168.1.100:12345"
+	req.RemoteAddr = testClientRemoteAddr
 	w := httptest.NewRecorder()
 
 	handler.ServeToken(w, req)
@@ -690,7 +695,7 @@ func TestHandler_ServeToken_UnsupportedGrantType(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(formData.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.SetBasicAuth(client.ClientID, secret)
-	req.RemoteAddr = "192.168.1.100:12345"
+	req.RemoteAddr = testClientRemoteAddr
 	w := httptest.NewRecorder()
 
 	handler.ServeToken(w, req)
@@ -708,7 +713,7 @@ func TestHandler_ServeClientRegistration_InvalidJSON(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader("invalid json"))
 	req.Header.Set("Content-Type", "application/json")
-	req.RemoteAddr = "192.168.1.100:12345"
+	req.RemoteAddr = testClientRemoteAddr
 	w := httptest.NewRecorder()
 
 	handler.ServeClientRegistration(w, req)
