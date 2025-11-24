@@ -91,6 +91,70 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 		s.Logger.Debug("Token passed local expiry validation",
 			"expiry", storedToken.Expiry,
 			"grace_period_seconds", s.Config.ClockSkewGracePeriod)
+
+		// PROACTIVE REFRESH: Check if token is near expiry and should be refreshed
+		// This improves UX by preventing validation failures when refresh is available
+		refreshThreshold := time.Duration(s.Config.TokenRefreshThreshold) * time.Second
+		timeUntilExpiry := time.Until(storedToken.Expiry)
+
+		if timeUntilExpiry > 0 && timeUntilExpiry <= refreshThreshold {
+			// Token is near expiry - attempt proactive refresh if refresh token available
+			if storedToken.RefreshToken != "" {
+				s.Logger.Debug("Token near expiry, attempting proactive refresh",
+					"expiry", storedToken.Expiry,
+					"time_until_expiry", timeUntilExpiry,
+					"refresh_threshold", refreshThreshold,
+					"token_prefix", safeTruncate(accessToken, 8))
+
+				// Attempt to refresh the provider token
+				newProviderToken, err := s.provider.RefreshToken(ctx, storedToken.RefreshToken)
+				if err != nil {
+					// Refresh failed - log warning but continue with validation (graceful degradation)
+					s.Logger.Warn("Proactive token refresh failed, falling back to validation",
+						"error", err,
+						"token_prefix", safeTruncate(accessToken, 8),
+						"time_until_expiry", timeUntilExpiry)
+
+					if s.Auditor != nil {
+						s.Auditor.LogEvent(security.Event{
+							Type: "proactive_refresh_failed",
+							Details: map[string]any{
+								"error":             err.Error(),
+								"time_until_expiry": timeUntilExpiry.String(),
+								"fallback":          "validation",
+							},
+						})
+					}
+				} else {
+					// Refresh succeeded - update stored token
+					if err := s.tokenStore.SaveToken(accessToken, newProviderToken); err != nil {
+						s.Logger.Warn("Failed to save refreshed token",
+							"error", err,
+							"token_prefix", safeTruncate(accessToken, 8))
+					} else {
+						s.Logger.Info("Token proactively refreshed",
+							"old_expiry", storedToken.Expiry,
+							"new_expiry", newProviderToken.Expiry,
+							"token_prefix", safeTruncate(accessToken, 8))
+
+						if s.Auditor != nil {
+							s.Auditor.LogEvent(security.Event{
+								Type: "token_proactively_refreshed",
+								Details: map[string]any{
+									"old_expiry": storedToken.Expiry,
+									"new_expiry": newProviderToken.Expiry,
+									"threshold":  refreshThreshold.String(),
+								},
+							})
+						}
+					}
+				}
+			} else {
+				s.Logger.Debug("Token near expiry but no refresh token available",
+					"expiry", storedToken.Expiry,
+					"time_until_expiry", timeUntilExpiry)
+			}
+		}
 	}
 	// If token not found, proceed with provider validation
 	// (token might be from a different instance or storage backend)

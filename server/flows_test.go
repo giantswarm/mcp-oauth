@@ -19,6 +19,10 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
+const (
+	testUserID = "user-123"
+)
+
 func setupFlowTestServer(t *testing.T) (*Server, *memory.Store, *mock.MockProvider) {
 	t.Helper()
 
@@ -1183,6 +1187,350 @@ func TestServer_ValidateToken_ClockSkewScenarios(t *testing.T) {
 			t.Fatal("ValidateToken() returned nil userInfo")
 		}
 	})
+}
+
+// TestServer_ValidateToken_ProactiveRefresh tests proactive token refresh when token is near expiry
+func TestServer_ValidateToken_ProactiveRefresh(t *testing.T) {
+	srv, store, provider := setupFlowTestServer(t)
+
+	// Configure refresh threshold (5 minutes)
+	srv.Config.TokenRefreshThreshold = 300 // 5 minutes
+
+	// Track refresh calls
+	var refreshCalled bool
+	var refreshCalledWith string
+
+	// Configure provider refresh function
+	provider.RefreshTokenFunc = func(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+		refreshCalled = true
+		refreshCalledWith = refreshToken
+		return &oauth2.Token{
+			AccessToken:  "new-access-token",
+			RefreshToken: "new-refresh-token",
+			Expiry:       time.Now().Add(1 * time.Hour),
+			TokenType:    "Bearer",
+		}, nil
+	}
+
+	// Provider always validates successfully
+	provider.ValidateTokenFunc = func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+		return &providers.UserInfo{
+			ID:    testUserID,
+			Email: "test@example.com",
+			Name:  "Test User",
+		}, nil
+	}
+
+	tests := []struct {
+		name              string
+		accessToken       string
+		tokenExpiry       time.Time
+		hasRefreshToken   bool
+		refreshTokenValue string
+		wantRefreshCalled bool
+		wantErr           bool
+		expectNewToken    bool
+	}{
+		{
+			name:              "token near expiry with refresh token - should refresh",
+			accessToken:       "near-expiry-token",
+			tokenExpiry:       time.Now().Add(4 * time.Minute), // Within 5 minute threshold
+			hasRefreshToken:   true,
+			refreshTokenValue: "valid-refresh-token",
+			wantRefreshCalled: true,
+			wantErr:           false,
+			expectNewToken:    true,
+		},
+		{
+			name:              "token expiring in 2 minutes - should refresh",
+			accessToken:       "very-near-expiry",
+			tokenExpiry:       time.Now().Add(2 * time.Minute),
+			hasRefreshToken:   true,
+			refreshTokenValue: "refresh-token-2min",
+			wantRefreshCalled: true,
+			wantErr:           false,
+			expectNewToken:    true,
+		},
+		{
+			name:              "token expiring in 30 seconds - should refresh",
+			accessToken:       "imminent-expiry",
+			tokenExpiry:       time.Now().Add(30 * time.Second),
+			hasRefreshToken:   true,
+			refreshTokenValue: "refresh-token-30s",
+			wantRefreshCalled: true,
+			wantErr:           false,
+			expectNewToken:    true,
+		},
+		{
+			name:              "token not near expiry - should not refresh",
+			accessToken:       "far-expiry-token",
+			tokenExpiry:       time.Now().Add(10 * time.Minute), // Beyond threshold
+			hasRefreshToken:   true,
+			refreshTokenValue: "unused-refresh-token",
+			wantRefreshCalled: false,
+			wantErr:           false,
+			expectNewToken:    false,
+		},
+		{
+			name:              "token near expiry but no refresh token - should not refresh",
+			accessToken:       "near-expiry-no-refresh",
+			tokenExpiry:       time.Now().Add(4 * time.Minute),
+			hasRefreshToken:   false,
+			refreshTokenValue: "",
+			wantRefreshCalled: false,
+			wantErr:           false,
+			expectNewToken:    false,
+		},
+		{
+			name:              "token expiring in 6 minutes - at threshold boundary",
+			accessToken:       "threshold-boundary",
+			tokenExpiry:       time.Now().Add(6 * time.Minute), // Just beyond 5 minute threshold
+			hasRefreshToken:   true,
+			refreshTokenValue: "boundary-refresh",
+			wantRefreshCalled: false,
+			wantErr:           false,
+			expectNewToken:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Reset refresh tracking
+			refreshCalled = false
+			refreshCalledWith = ""
+
+			// Save token to storage
+			token := &oauth2.Token{
+				AccessToken: "provider-token-" + tt.accessToken,
+				Expiry:      tt.tokenExpiry,
+				TokenType:   "Bearer",
+			}
+			if tt.hasRefreshToken {
+				token.RefreshToken = tt.refreshTokenValue
+			}
+
+			err := store.SaveToken(tt.accessToken, token)
+			if err != nil {
+				t.Fatalf("SaveToken() error = %v", err)
+			}
+
+			// Validate token (should trigger proactive refresh if conditions met)
+			userInfo, err := srv.ValidateToken(context.Background(), tt.accessToken)
+
+			// Check error expectation
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateToken() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			// Check if refresh was called as expected
+			if refreshCalled != tt.wantRefreshCalled {
+				t.Errorf("RefreshToken called = %v, want %v", refreshCalled, tt.wantRefreshCalled)
+			}
+
+			// If refresh was expected, verify it was called with correct refresh token
+			if tt.wantRefreshCalled && refreshCalledWith != tt.refreshTokenValue {
+				t.Errorf("RefreshToken called with %q, want %q", refreshCalledWith, tt.refreshTokenValue)
+			}
+
+			// Verify user info was returned
+			if !tt.wantErr {
+				if userInfo == nil {
+					t.Fatal("ValidateToken() returned nil userInfo")
+				}
+				if userInfo.ID != testUserID {
+					t.Errorf("userInfo.ID = %q, want %q", userInfo.ID, testUserID)
+				}
+			}
+
+			// If refresh was called, verify the new token was saved
+			if tt.expectNewToken {
+				savedToken, err := store.GetToken(tt.accessToken)
+				if err != nil {
+					t.Errorf("Failed to get saved token: %v", err)
+				} else {
+					if savedToken.AccessToken != "new-access-token" {
+						t.Errorf("Saved token AccessToken = %q, want %q", savedToken.AccessToken, "new-access-token")
+					}
+					if savedToken.RefreshToken != "new-refresh-token" {
+						t.Errorf("Saved token RefreshToken = %q, want %q", savedToken.RefreshToken, "new-refresh-token")
+					}
+					// Verify new expiry is later than old expiry
+					if !savedToken.Expiry.After(tt.tokenExpiry) {
+						t.Errorf("New token expiry %v should be after old expiry %v", savedToken.Expiry, tt.tokenExpiry)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestServer_ValidateToken_ProactiveRefresh_Failure tests graceful fallback when proactive refresh fails
+func TestServer_ValidateToken_ProactiveRefresh_Failure(t *testing.T) {
+	srv, store, provider := setupFlowTestServer(t)
+
+	// Configure refresh threshold
+	srv.Config.TokenRefreshThreshold = 300 // 5 minutes
+
+	// Configure provider refresh to fail
+	provider.RefreshTokenFunc = func(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+		return nil, fmt.Errorf("provider refresh failed: network error")
+	}
+
+	// Provider validation still succeeds (graceful fallback)
+	validationCalled := false
+	provider.ValidateTokenFunc = func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+		validationCalled = true
+		return &providers.UserInfo{
+			ID:    "user-fallback",
+			Email: "fallback@example.com",
+			Name:  "Fallback User",
+		}, nil
+	}
+
+	// Save token near expiry with refresh token
+	accessToken := "near-expiry-refresh-fails" // nolint:gosec // G101: False positive - test token, not credentials
+	oldExpiry := time.Now().Add(4 * time.Minute)
+	token := &oauth2.Token{
+		AccessToken:  "provider-token",
+		RefreshToken: "failing-refresh-token",
+		Expiry:       oldExpiry,
+		TokenType:    "Bearer",
+	}
+
+	err := store.SaveToken(accessToken, token)
+	if err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+
+	// Validate token - refresh should fail but validation should succeed (graceful fallback)
+	userInfo, err := srv.ValidateToken(context.Background(), accessToken)
+
+	// Should NOT error - graceful fallback to validation
+	if err != nil {
+		t.Errorf("ValidateToken() error = %v, want nil (should fallback to validation)", err)
+	}
+
+	// Validation should have been called
+	if !validationCalled {
+		t.Error("Provider validation not called after refresh failure")
+	}
+
+	// User info should be returned from validation
+	if userInfo == nil {
+		t.Fatal("ValidateToken() returned nil userInfo")
+	}
+	if userInfo.ID != "user-fallback" {
+		t.Errorf("userInfo.ID = %q, want %q", userInfo.ID, "user-fallback")
+	}
+
+	// Original token should still be in storage (refresh failed)
+	savedToken, err := store.GetToken(accessToken)
+	if err != nil {
+		t.Errorf("Failed to get saved token: %v", err)
+	} else {
+		// Token expiry should be unchanged (refresh failed)
+		if !savedToken.Expiry.Equal(oldExpiry) {
+			t.Errorf("Token expiry changed after failed refresh: got %v, want %v", savedToken.Expiry, oldExpiry)
+		}
+	}
+}
+
+// TestServer_ValidateToken_ProactiveRefresh_CustomThreshold tests configurable refresh threshold
+func TestServer_ValidateToken_ProactiveRefresh_CustomThreshold(t *testing.T) {
+	srv, store, provider := setupFlowTestServer(t)
+
+	tests := []struct {
+		name              string
+		refreshThreshold  int64 // seconds
+		tokenExpiry       time.Duration
+		wantRefreshCalled bool
+	}{
+		{
+			name:              "10 minute threshold - token expiring in 9 minutes - should refresh",
+			refreshThreshold:  600, // 10 minutes
+			tokenExpiry:       9 * time.Minute,
+			wantRefreshCalled: true,
+		},
+		{
+			name:              "10 minute threshold - token expiring in 11 minutes - should not refresh",
+			refreshThreshold:  600, // 10 minutes
+			tokenExpiry:       11 * time.Minute,
+			wantRefreshCalled: false,
+		},
+		{
+			name:              "1 minute threshold - token expiring in 30 seconds - should refresh",
+			refreshThreshold:  60, // 1 minute
+			tokenExpiry:       30 * time.Second,
+			wantRefreshCalled: true,
+		},
+		{
+			name:              "1 minute threshold - token expiring in 2 minutes - should not refresh",
+			refreshThreshold:  60, // 1 minute
+			tokenExpiry:       2 * time.Minute,
+			wantRefreshCalled: false,
+		},
+		{
+			name:              "15 minute threshold - token expiring in 14 minutes - should refresh",
+			refreshThreshold:  900, // 15 minutes
+			tokenExpiry:       14 * time.Minute,
+			wantRefreshCalled: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Set custom threshold
+			srv.Config.TokenRefreshThreshold = tt.refreshThreshold
+
+			// Track refresh calls
+			refreshCalled := false
+			provider.RefreshTokenFunc = func(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+				refreshCalled = true
+				return &oauth2.Token{
+					AccessToken:  "new-token",
+					RefreshToken: "new-refresh",
+					Expiry:       time.Now().Add(1 * time.Hour),
+					TokenType:    "Bearer",
+				}, nil
+			}
+
+			// Provider validates successfully
+			provider.ValidateTokenFunc = func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+				return &providers.UserInfo{
+					ID:    "user-custom-threshold",
+					Email: "custom@example.com",
+					Name:  "Custom Threshold User",
+				}, nil
+			}
+
+			// Save token with specific expiry
+			accessToken := "custom-threshold-token-" + tt.name
+			token := &oauth2.Token{
+				AccessToken:  "provider-token",
+				RefreshToken: "refresh-token",
+				Expiry:       time.Now().Add(tt.tokenExpiry),
+				TokenType:    "Bearer",
+			}
+
+			err := store.SaveToken(accessToken, token)
+			if err != nil {
+				t.Fatalf("SaveToken() error = %v", err)
+			}
+
+			// Validate token
+			_, err = srv.ValidateToken(context.Background(), accessToken)
+			if err != nil {
+				t.Errorf("ValidateToken() error = %v", err)
+			}
+
+			// Check if refresh was called as expected
+			if refreshCalled != tt.wantRefreshCalled {
+				t.Errorf("RefreshToken called = %v, want %v (threshold=%ds, expiry=%v)",
+					refreshCalled, tt.wantRefreshCalled, tt.refreshThreshold, tt.tokenExpiry)
+			}
+		})
+	}
 }
 
 // TestServer_RefreshTokenRotation tests basic refresh token rotation without reuse

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Proactive token refresh during validation to prevent expiry failures (#27)**
+  - Added `TokenRefreshThreshold` configuration (default: 300 seconds = 5 minutes)
+  - `ValidateToken()` now checks if provider token will expire within threshold
+  - Automatically refreshes token with provider if refresh token is available
+  - Graceful fallback: continues with validation if refresh fails (no user-facing error)
+  - Benefits:
+    - Improved UX: prevents "token expired" errors when refresh is possible
+    - Reduces failed validation attempts and provider API calls
+    - Configurable threshold for different deployment scenarios
+  - Comprehensive test coverage:
+    - Proactive refresh when token near expiry (multiple time windows)
+    - Graceful fallback when refresh fails
+    - Custom threshold configuration (1 min, 5 min, 10 min, 15 min)
+    - No refresh when threshold not reached or refresh token unavailable
+  - Audit logging for refresh events (`token_proactively_refreshed`, `proactive_refresh_failed`)
+  - **Impact**: No breaking changes - backward compatible, opt-in via configuration
+  - **Performance**: Reduces provider API errors and improves token validation reliability
+
 ### Security
 
 - **Implemented LRU eviction in rate limiter to prevent memory exhaustion (#23)**
