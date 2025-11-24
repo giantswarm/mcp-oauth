@@ -400,7 +400,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 		} else {
 			s.Logger.Debug("Created new refresh token family",
 				"user_id", authCode.UserID,
-				"family_id", familyID[:min(8, len(familyID))])
+				"family_id", safeTruncate(familyID, 8))
 		}
 	} else {
 		// Fallback to basic tracking
@@ -450,7 +450,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 				}
 				s.Logger.Error("Attempted use of revoked token family",
 					"user_id", family.UserID,
-					"family_id", family.FamilyID[:min(8, len(family.FamilyID))])
+					"family_id", safeTruncate(family.FamilyID, 8))
 				return nil, fmt.Errorf("refresh token has been revoked")
 			}
 
@@ -466,7 +466,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 					s.Logger.Error("Refresh token reuse detected - token was rotated but still being used",
 						"user_id", family.UserID,
 						"client_id", clientID,
-						"family_id", family.FamilyID[:min(8, len(family.FamilyID))],
+						"family_id", safeTruncate(family.FamilyID, 8),
 						"generation", family.Generation,
 						"oauth_spec", "OAuth 2.1 Refresh Token Rotation")
 				}
@@ -695,11 +695,23 @@ func (s *Server) RevokeAllTokensForUserClient(ctx context.Context, userID, clien
 	defer cancel()
 
 	revokedAtProvider := 0
-	for _, tokenID := range tokens {
+providerRevocationLoop:
+	for i, tokenID := range tokens {
+		// SECURITY: Check if context is already cancelled to avoid wasting cycles after timeout
+		select {
+		case <-providerCtx.Done():
+			s.Logger.Warn("Provider revocation cancelled - timeout reached",
+				"revoked_count", revokedAtProvider,
+				"remaining", len(tokens)-i,
+				"timeout_seconds", s.Config.ProviderRevocationTimeout)
+			break providerRevocationLoop
+		default:
+		}
+
 		providerToken, err := s.tokenStore.GetToken(tokenID)
 		if err != nil {
 			s.Logger.Warn("Could not get provider token for revocation",
-				"token_id", tokenID[:min(8, len(tokenID))],
+				"token_id", safeTruncate(tokenID, 8),
 				"error", err)
 			continue
 		}

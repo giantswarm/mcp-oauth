@@ -11,6 +11,16 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
+// safeTruncate safely truncates a string to maxLen characters without panicking.
+// Returns the original string if it's shorter than maxLen, otherwise returns
+// the first maxLen characters. This prevents index out of bounds errors when logging.
+func safeTruncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen]
+}
+
 // Server implements the OAuth 2.1 server logic (provider-agnostic).
 // It coordinates the OAuth flow using a Provider and storage backends.
 type Server struct {

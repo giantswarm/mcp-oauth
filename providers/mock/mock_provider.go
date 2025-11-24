@@ -84,6 +84,9 @@ func (m *MockProvider) Name() string {
 	m.CallCounts["Name"]++
 	fn := m.NameFunc
 	m.mu.Unlock()
+	if fn == nil {
+		return "mock" // Safe default
+	}
 	return fn()
 }
 
@@ -93,6 +96,9 @@ func (m *MockProvider) AuthorizationURL(state string, codeChallenge string, code
 	m.CallCounts["AuthorizationURL"]++
 	fn := m.AuthorizationURLFunc
 	m.mu.Unlock()
+	if fn == nil {
+		return "https://mock.example.com/authorize?state=" + state // Safe default
+	}
 	return fn(state, codeChallenge, codeChallengeMethod)
 }
 
@@ -102,6 +108,9 @@ func (m *MockProvider) ExchangeCode(ctx context.Context, code string, codeVerifi
 	m.CallCounts["ExchangeCode"]++
 	fn := m.ExchangeCodeFunc
 	m.mu.Unlock()
+	if fn == nil {
+		return nil, fmt.Errorf("ExchangeCodeFunc not configured")
+	}
 	return fn(ctx, code, codeVerifier)
 }
 
@@ -111,6 +120,9 @@ func (m *MockProvider) ValidateToken(ctx context.Context, accessToken string) (*
 	m.CallCounts["ValidateToken"]++
 	fn := m.ValidateTokenFunc
 	m.mu.Unlock()
+	if fn == nil {
+		return nil, fmt.Errorf("ValidateTokenFunc not configured")
+	}
 	return fn(ctx, accessToken)
 }
 
@@ -120,6 +132,9 @@ func (m *MockProvider) RefreshToken(ctx context.Context, refreshToken string) (*
 	m.CallCounts["RefreshToken"]++
 	fn := m.RefreshTokenFunc
 	m.mu.Unlock()
+	if fn == nil {
+		return nil, fmt.Errorf("RefreshTokenFunc not configured")
+	}
 	return fn(ctx, refreshToken)
 }
 
@@ -129,6 +144,9 @@ func (m *MockProvider) RevokeToken(ctx context.Context, token string) error {
 	m.CallCounts["RevokeToken"]++
 	fn := m.RevokeTokenFunc
 	m.mu.Unlock()
+	if fn == nil {
+		return fmt.Errorf("RevokeTokenFunc not configured")
+	}
 	return fn(ctx, token)
 }
 

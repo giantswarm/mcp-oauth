@@ -20,7 +20,21 @@ const (
 	// tokenIDLogLength is the number of characters to include when logging token IDs
 	// This provides enough uniqueness for debugging while keeping logs secure
 	tokenIDLogLength = 8
+
+	// maxFamilyMetadataEntries is the threshold for warning about excessive family metadata
+	// This helps detect potential memory exhaustion attacks
+	maxFamilyMetadataEntries = 10000
 )
+
+// safeTruncate safely truncates a string to maxLen characters without panicking.
+// Returns the original string if it's shorter than maxLen, otherwise returns
+// the first maxLen characters. This prevents index out of bounds errors.
+func safeTruncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen]
+}
 
 // RefreshTokenFamily tracks a family of refresh tokens for reuse detection (OAuth 2.1)
 type RefreshTokenFamily struct {
@@ -417,7 +431,7 @@ func (s *Store) SaveRefreshTokenWithFamily(refreshToken, userID, clientID, famil
 
 	s.logger.Debug("Saved refresh token with family tracking",
 		"user_id", userID,
-		"family_id", familyID[:min(tokenIDLogLength, len(familyID))],
+		"family_id", safeTruncate(familyID, tokenIDLogLength),
 		"generation", generation,
 		"expires_at", expiresAt)
 	return nil
@@ -881,6 +895,9 @@ func (s *Store) cleanup() {
 	}
 
 	// Cleanup orphaned token metadata (tokens that no longer exist)
+	// SECURITY NOTE: Orphaned metadata can occur if the process crashes between deletes.
+	// This is expected for in-memory storage. For production use with persistent storage,
+	// implement proper transaction support to prevent orphaning.
 	for tokenID := range s.tokenMetadata {
 		// Check if token still exists (either as a regular token or refresh token)
 		if _, existsAsToken := s.tokens[tokenID]; !existsAsToken {
@@ -891,8 +908,18 @@ func (s *Store) cleanup() {
 		}
 	}
 
+	// SECURITY MONITORING: Check for excessive family metadata growth
+	// This could indicate a memory exhaustion attack via repeated token reuse
+	familyCount := len(s.refreshTokenFamilies)
+	if familyCount > maxFamilyMetadataEntries {
+		s.logger.Warn("Refresh token family metadata approaching limit - possible memory exhaustion attack",
+			"current_count", familyCount,
+			"max_threshold", maxFamilyMetadataEntries,
+			"recommendation", "Review security logs for repeated token reuse attempts")
+	}
+
 	if cleaned > 0 {
-		s.logger.Debug("Cleaned up expired entries", "count", cleaned)
+		s.logger.Debug("Cleaned up expired entries", "count", cleaned, "family_metadata_count", familyCount)
 	}
 }
 
