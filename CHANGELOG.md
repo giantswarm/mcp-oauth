@@ -27,6 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Impact**: No breaking changes - backward compatible, opt-in via configuration
   - **Performance**: Reduces provider API errors and improves token validation reliability
 
+### Changed
+
+- **Refactored proactive refresh implementation for better maintainability**
+  - Extracted nested refresh logic into dedicated helper functions (`shouldProactivelyRefresh`, `attemptProactiveRefresh`)
+  - Improved test isolation by moving mock setup into per-test closures
+  - Added descriptive test constants for better code clarity
+  - **Impact**: Internal refactoring only - no functional changes or breaking changes
+  - **Benefit**: Reduced cyclomatic complexity, improved testability and code readability
+
 ### Security
 
 - **Implemented LRU eviction in rate limiter to prevent memory exhaustion (#23)**

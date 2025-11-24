@@ -20,7 +20,9 @@ import (
 )
 
 const (
-	testUserID = "user-123"
+	testUserID    = "user-123"
+	testUserEmail = "test@example.com"
+	testUserName  = "Test User"
 )
 
 func setupFlowTestServer(t *testing.T) (*Server, *memory.Store, *mock.MockProvider) {
@@ -1196,31 +1198,6 @@ func TestServer_ValidateToken_ProactiveRefresh(t *testing.T) {
 	// Configure refresh threshold (5 minutes)
 	srv.Config.TokenRefreshThreshold = 300 // 5 minutes
 
-	// Track refresh calls
-	var refreshCalled bool
-	var refreshCalledWith string
-
-	// Configure provider refresh function
-	provider.RefreshTokenFunc = func(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
-		refreshCalled = true
-		refreshCalledWith = refreshToken
-		return &oauth2.Token{
-			AccessToken:  "new-access-token",
-			RefreshToken: "new-refresh-token",
-			Expiry:       time.Now().Add(1 * time.Hour),
-			TokenType:    "Bearer",
-		}, nil
-	}
-
-	// Provider always validates successfully
-	provider.ValidateTokenFunc = func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
-		return &providers.UserInfo{
-			ID:    testUserID,
-			Email: "test@example.com",
-			Name:  "Test User",
-		}, nil
-	}
-
 	tests := []struct {
 		name              string
 		accessToken       string
@@ -1295,9 +1272,30 @@ func TestServer_ValidateToken_ProactiveRefresh(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Reset refresh tracking
-			refreshCalled = false
-			refreshCalledWith = ""
+			// Track refresh calls (per-test variables avoid test pollution)
+			var refreshCalled bool
+			var refreshCalledWith string
+
+			// Configure provider refresh function
+			provider.RefreshTokenFunc = func(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+				refreshCalled = true
+				refreshCalledWith = refreshToken
+				return &oauth2.Token{
+					AccessToken:  "new-access-token",
+					RefreshToken: "new-refresh-token",
+					Expiry:       time.Now().Add(1 * time.Hour),
+					TokenType:    "Bearer",
+				}, nil
+			}
+
+			// Provider always validates successfully
+			provider.ValidateTokenFunc = func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+				return &providers.UserInfo{
+					ID:    testUserID,
+					Email: testUserEmail,
+					Name:  testUserName,
+				}, nil
+			}
 
 			// Save token to storage
 			token := &oauth2.Token{
