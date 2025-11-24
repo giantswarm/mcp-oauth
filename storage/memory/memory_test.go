@@ -16,6 +16,7 @@ import (
 const (
 	testUserID       = "test-user"
 	testRefreshToken = "test-refresh-token"
+	testSecret       = "test-secret"
 )
 
 // ============================================================
@@ -440,7 +441,7 @@ func TestStore_ValidateClientSecret(t *testing.T) {
 	defer store.Stop()
 
 	// Hash a test secret
-	secret := "test-secret"
+	secret := testSecret
 	hash, err := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
 	if err != nil {
 		t.Fatalf("bcrypt.GenerateFromPassword() error = %v", err)
@@ -476,6 +477,238 @@ func TestStore_ValidateClientSecret_ClientNotFound(t *testing.T) {
 	if err == nil {
 		t.Error("ValidateClientSecret() for nonexistent client should return error")
 	}
+}
+
+// ============================================================
+// Timing Attack Protection Tests (Security)
+// ============================================================
+
+// TestValidateClientSecret_TimingAttackProtection verifies that bcrypt comparison
+// is ALWAYS performed, regardless of whether the client exists or not.
+// This prevents timing attacks that could enumerate valid client IDs.
+func TestValidateClientSecret_TimingAttackProtection(t *testing.T) {
+	store := New()
+	defer store.Stop()
+
+	// Create a confidential client with known secret
+	secret := testSecret
+	hash, err := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("bcrypt.GenerateFromPassword() error = %v", err)
+	}
+
+	client := &storage.Client{
+		ClientID:         "existing-client",
+		ClientType:       "confidential",
+		ClientSecretHash: string(hash),
+	}
+
+	if err := store.SaveClient(client); err != nil {
+		t.Fatalf("SaveClient() error = %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		clientID string
+		secret   string
+		wantErr  bool
+		desc     string
+	}{
+		{
+			name:     "existent_client_correct_secret",
+			clientID: "existing-client",
+			secret:   secret,
+			wantErr:  false,
+			desc:     "Should succeed for valid client + secret",
+		},
+		{
+			name:     "existent_client_wrong_secret",
+			clientID: "existing-client",
+			secret:   "wrong-secret",
+			wantErr:  true,
+			desc:     "Should fail for valid client + wrong secret",
+		},
+		{
+			name:     "nonexistent_client",
+			clientID: "nonexistent-client",
+			secret:   secret,
+			wantErr:  true,
+			desc:     "Should fail for non-existent client (but still perform bcrypt)",
+		},
+		{
+			name:     "nonexistent_client_empty_secret",
+			clientID: "nonexistent-client-2",
+			secret:   "",
+			wantErr:  true,
+			desc:     "Should fail for non-existent client with empty secret",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// All these operations should take roughly the same time
+			// because bcrypt comparison always happens
+			start := time.Now()
+			err := store.ValidateClientSecret(tt.clientID, tt.secret)
+			duration := time.Since(start)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("%s: ValidateClientSecret() error = %v, wantErr %v", tt.desc, err, tt.wantErr)
+			}
+
+			// bcrypt comparison should always take at least a few milliseconds
+			// If it's too fast (< 1ms), it likely didn't perform bcrypt comparison
+			if duration < time.Millisecond {
+				t.Errorf("%s: validation completed too quickly (%v), suggesting bcrypt comparison was skipped", tt.desc, duration)
+			}
+
+			t.Logf("%s: duration = %v", tt.name, duration)
+		})
+	}
+}
+
+// TestValidateClientSecret_ConstantTimeStatistical performs statistical timing analysis
+// to verify that the timing difference between existent and non-existent clients
+// is negligible (within the expected variance of bcrypt operations).
+func TestValidateClientSecret_ConstantTimeStatistical(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping statistical timing test in short mode")
+	}
+
+	store := New()
+	defer store.Stop()
+
+	// Create a test client
+	secret := testSecret
+	hash, err := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("bcrypt.GenerateFromPassword() error = %v", err)
+	}
+
+	client := &storage.Client{
+		ClientID:         "timing-test-client",
+		ClientType:       "confidential",
+		ClientSecretHash: string(hash),
+	}
+
+	if err := store.SaveClient(client); err != nil {
+		t.Fatalf("SaveClient() error = %v", err)
+	}
+
+	// Perform multiple trials for statistical significance
+	const trials = 50
+	existentDurations := make([]time.Duration, trials)
+	nonExistentDurations := make([]time.Duration, trials)
+
+	// Test existent client with wrong secret
+	for i := 0; i < trials; i++ {
+		start := time.Now()
+		_ = store.ValidateClientSecret("timing-test-client", "wrong-secret")
+		existentDurations[i] = time.Since(start)
+	}
+
+	// Test non-existent client
+	for i := 0; i < trials; i++ {
+		start := time.Now()
+		_ = store.ValidateClientSecret("nonexistent-client", "some-secret")
+		nonExistentDurations[i] = time.Since(start)
+	}
+
+	// Calculate means
+	var existentTotal, nonExistentTotal time.Duration
+	for i := 0; i < trials; i++ {
+		existentTotal += existentDurations[i]
+		nonExistentTotal += nonExistentDurations[i]
+	}
+	existentMean := existentTotal / time.Duration(trials)
+	nonExistentMean := nonExistentTotal / time.Duration(trials)
+
+	t.Logf("Existent client mean: %v", existentMean)
+	t.Logf("Non-existent client mean: %v", nonExistentMean)
+
+	// Calculate the percentage difference
+	diff := existentMean - nonExistentMean
+	if diff < 0 {
+		diff = -diff
+	}
+	percentDiff := float64(diff) / float64(existentMean) * 100
+
+	t.Logf("Timing difference: %v (%.2f%%)", diff, percentDiff)
+
+	// The timing difference should be very small (< 10% due to bcrypt variance)
+	// If the difference is large (> 20%), it suggests timing attack vulnerability
+	if percentDiff > 20.0 {
+		t.Errorf("Timing difference between existent and non-existent clients is too large: %.2f%% (should be < 20%%)", percentDiff)
+		t.Errorf("This suggests a potential timing attack vulnerability")
+	}
+}
+
+// TestValidateClientSecret_PublicClientTiming verifies that public clients
+// also perform bcrypt comparison (even though they don't require secrets).
+// This ensures consistent timing across all client types.
+func TestValidateClientSecret_PublicClientTiming(t *testing.T) {
+	store := New()
+	defer store.Stop()
+
+	// Create a public client (no secret required)
+	publicClient := &storage.Client{
+		ClientID:   "public-client",
+		ClientType: "public",
+	}
+
+	if err := store.SaveClient(publicClient); err != nil {
+		t.Fatalf("SaveClient() error = %v", err)
+	}
+
+	// Public client authentication should succeed with any secret
+	start := time.Now()
+	err := store.ValidateClientSecret("public-client", "any-secret")
+	duration := time.Since(start)
+
+	if err != nil {
+		t.Errorf("ValidateClientSecret() for public client error = %v, want nil", err)
+	}
+
+	// Even for public clients, bcrypt comparison should happen (for constant timing)
+	if duration < time.Millisecond {
+		t.Errorf("public client validation completed too quickly (%v), suggesting bcrypt comparison was skipped", duration)
+	}
+
+	t.Logf("Public client validation duration: %v", duration)
+}
+
+// TestValidateClientSecret_EmptySecretHash verifies behavior when client has empty secret hash
+func TestValidateClientSecret_EmptySecretHash(t *testing.T) {
+	store := New()
+	defer store.Stop()
+
+	// Create a confidential client with empty secret hash (misconfigured)
+	client := &storage.Client{
+		ClientID:         "empty-hash-client",
+		ClientType:       "confidential",
+		ClientSecretHash: "", // Empty hash
+	}
+
+	if err := store.SaveClient(client); err != nil {
+		t.Fatalf("SaveClient() error = %v", err)
+	}
+
+	// Should still perform timing-safe validation
+	start := time.Now()
+	err := store.ValidateClientSecret("empty-hash-client", "some-secret")
+	duration := time.Since(start)
+
+	// Should fail because hash is empty
+	if err == nil {
+		t.Error("ValidateClientSecret() for client with empty hash should return error")
+	}
+
+	// Should still take time (bcrypt comparison with dummy hash)
+	if duration < time.Millisecond {
+		t.Errorf("validation completed too quickly (%v), suggesting bcrypt comparison was skipped", duration)
+	}
+
+	t.Logf("Empty hash validation duration: %v", duration)
 }
 
 func TestStore_ListClients(t *testing.T) {
