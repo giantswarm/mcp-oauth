@@ -2,15 +2,20 @@ package oauth
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/server"
+	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
@@ -323,5 +328,343 @@ func TestHandler_ServeTokenRevocation_InvalidMethod(t *testing.T) {
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestHandler_ServeAuthorization_CompleteFlow(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Register a client first
+	client, _, err := handler.server.RegisterClient(
+		"Test Client",
+		"confidential",
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	// Generate valid PKCE challenge
+	verifier := testutil.GenerateRandomString(50)
+	hash := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	// Test authorization request
+	req := httptest.NewRequest(http.MethodGet,
+		"/authorize?client_id="+client.ClientID+
+			"&redirect_uri=https://example.com/callback"+
+			"&scope=openid+email"+
+			"&response_type=code"+
+			"&code_challenge="+challenge+
+			"&code_challenge_method=S256"+
+			"&state=test-state-123",
+		nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeAuthorization(w, req)
+
+	// Should redirect to provider
+	if w.Code != http.StatusFound && w.Code != http.StatusSeeOther {
+		t.Errorf("status = %d, want redirect status", w.Code)
+	}
+
+	location := w.Header().Get("Location")
+	if location == "" {
+		t.Error("Location header should be set for redirect")
+	}
+}
+
+func TestHandler_ServeCallback(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Register a client
+	client, _, err := handler.server.RegisterClient(
+		"Test Client",
+		"confidential",
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	// Create authorization state
+	verifier := testutil.GenerateRandomString(50)
+	hash := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	authURL, err := handler.server.StartAuthorizationFlow(
+		client.ClientID,
+		"https://example.com/callback",
+		"openid email",
+		challenge,
+		"S256",
+		"client-state-123",
+	)
+	if err != nil {
+		t.Fatalf("StartAuthorizationFlow() error = %v", err)
+	}
+
+	// Extract provider state from auth URL
+	if authURL == "" {
+		t.Fatal("authURL is empty")
+	}
+
+	// Get auth state to find provider state
+	authState, err := store.GetAuthorizationState("client-state-123")
+	if err != nil {
+		t.Fatalf("GetAuthorizationState() error = %v", err)
+	}
+
+	// Test callback with valid state
+	req := httptest.NewRequest(http.MethodGet,
+		"/oauth/callback?state="+authState.ProviderState+"&code=provider-auth-code",
+		nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeCallback(w, req)
+
+	// Should redirect to client with authorization code
+	if w.Code != http.StatusFound && w.Code != http.StatusSeeOther {
+		t.Errorf("status = %d, want redirect status", w.Code)
+	}
+
+	location := w.Header().Get("Location")
+	if location == "" {
+		t.Error("Location header should be set")
+	}
+
+	// Verify location contains code and state
+	if !strings.Contains(location, "code=") {
+		t.Error("Location should contain authorization code")
+	}
+	if !strings.Contains(location, "state=client-state-123") {
+		t.Error("Location should contain original client state")
+	}
+}
+
+func TestHandler_ServeCallback_InvalidState(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/oauth/callback?state=invalid-state&code=provider-auth-code",
+		nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeCallback(w, req)
+
+	// Handler returns 500 for invalid state (internal error)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestHandler_ServeCallback_MissingParams(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{
+			name: "missing state",
+			url:  "/oauth/callback?code=test-code",
+		},
+		{
+			name: "missing code",
+			url:  "/oauth/callback?state=test-state",
+		},
+		{
+			name: "missing all params",
+			url:  "/oauth/callback",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
+			w := httptest.NewRecorder()
+
+			handler.ServeCallback(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+			}
+		})
+	}
+}
+
+func TestHandler_ServeToken_AuthorizationCode(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Register a client
+	client, secret, err := handler.server.RegisterClient(
+		"Test Client",
+		"confidential",
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	// Create an authorization code
+	verifier := testutil.GenerateRandomString(50)
+	hash := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	authCode := &storage.AuthorizationCode{
+		Code:                testutil.GenerateRandomString(32),
+		ClientID:            client.ClientID,
+		RedirectURI:         "https://example.com/callback",
+		Scope:               "openid email",
+		CodeChallenge:       challenge,
+		CodeChallengeMethod: "S256",
+		UserID:              "test-user-123",
+		ProviderToken:       testutil.GenerateTestToken(),
+		CreatedAt:           time.Now(),
+		ExpiresAt:           time.Now().Add(10 * time.Minute),
+		Used:                false,
+	}
+
+	err = store.SaveAuthorizationCode(authCode)
+	if err != nil {
+		t.Fatalf("SaveAuthorizationCode() error = %v", err)
+	}
+
+	// Create token request
+	formData := url.Values{}
+	formData.Set("grant_type", "authorization_code")
+	formData.Set("code", authCode.Code)
+	formData.Set("redirect_uri", "https://example.com/callback")
+	formData.Set("code_verifier", verifier)
+
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(formData.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(client.ClientID, secret)
+	w := httptest.NewRecorder()
+
+	handler.ServeToken(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var tokenResp TokenResponse
+	if err := json.NewDecoder(w.Body).Decode(&tokenResp); err != nil {
+		t.Fatalf("failed to decode token response: %v", err)
+	}
+
+	if tokenResp.AccessToken == "" {
+		t.Error("AccessToken should not be empty")
+	}
+
+	if tokenResp.RefreshToken == "" {
+		t.Error("RefreshToken should not be empty")
+	}
+
+	if tokenResp.TokenType != "Bearer" {
+		t.Errorf("TokenType = %q, want %q", tokenResp.TokenType, "Bearer")
+	}
+}
+
+func TestHandler_ServeToken_RefreshToken_NotImplementedYet(t *testing.T) {
+	// This test is a placeholder - refresh token flow needs proper family tracking setup
+	t.Skip("Refresh token test requires complex family tracking setup")
+}
+
+func TestHandler_ServeTokenRevocation_Success(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Register a client
+	client, secret, err := handler.server.RegisterClient(
+		"Test Client",
+		"confidential",
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	// Create a refresh token
+	refreshToken := testutil.GenerateRandomString(32)
+	err = store.SaveRefreshToken(refreshToken, "test-user-123", time.Now().Add(90*24*time.Hour))
+	if err != nil {
+		t.Fatalf("SaveRefreshToken() error = %v", err)
+	}
+
+	// Revoke the token
+	formData := url.Values{}
+	formData.Set("token", refreshToken)
+	formData.Set("token_type_hint", "refresh_token")
+
+	req := httptest.NewRequest(http.MethodPost, "/revoke", strings.NewReader(formData.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(client.ClientID, secret)
+	w := httptest.NewRecorder()
+
+	handler.ServeTokenRevocation(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestHandler_ServeTokenIntrospection(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Register a client
+	client, secret, err := handler.server.RegisterClient(
+		"Test Client",
+		"confidential",
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	// Test introspection with invalid method
+	req := httptest.NewRequest(http.MethodGet, "/introspect", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeTokenIntrospection(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
+	}
+
+	// Test introspection with POST but missing token - should return error
+	formData := url.Values{}
+
+	req = httptest.NewRequest(http.MethodPost, "/introspect", strings.NewReader(formData.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(client.ClientID, secret)
+	w = httptest.NewRecorder()
+
+	handler.ServeTokenIntrospection(w, req)
+
+	// Missing token parameter returns 400
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
 }
