@@ -207,9 +207,83 @@ func TestRateLimiter_Stop(t *testing.T) {
 	// Stop should not panic
 	rl.Stop()
 
-	// Calling Stop again should not panic
-	// (although it will close an already closed channel, which panics)
-	// So we won't test double-stop
+	// Calling Stop again should not panic (now safe to call multiple times)
+	rl.Stop()
+	rl.Stop() // Third time for good measure
+}
+
+// Test concurrent Stop() calls don't cause race conditions or panics
+func TestRateLimiter_Stop_Concurrent(t *testing.T) {
+	rl := NewRateLimiter(10, 20, slog.Default())
+
+	const numGoroutines = 100
+	done := make(chan bool, numGoroutines)
+
+	// Launch many goroutines all trying to Stop() simultaneously
+	for i := 0; i < numGoroutines; i++ {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("Stop() panicked: %v", r)
+				}
+				done <- true
+			}()
+			rl.Stop()
+		}()
+	}
+
+	// Wait for all goroutines to complete
+	for i := 0; i < numGoroutines; i++ {
+		<-done
+	}
+
+	// Verify cleanup goroutine actually stopped by checking channel is closed
+	select {
+	case <-rl.stopCleanup:
+		// Channel is closed, as expected
+	default:
+		t.Error("stopCleanup channel should be closed")
+	}
+}
+
+// Test Stop() is safe even while rate limiter is actively processing requests
+func TestRateLimiter_Stop_WhileActive(t *testing.T) {
+	rl := NewRateLimiter(100, 100, slog.Default())
+
+	const numWorkers = 50
+	done := make(chan bool, numWorkers)
+	stop := make(chan bool)
+
+	// Workers continuously making requests
+	for i := 0; i < numWorkers; i++ {
+		go func(id int) {
+			identifier := "worker-" + string(rune('0'+id))
+			for {
+				select {
+				case <-stop:
+					done <- true
+					return
+				default:
+					rl.Allow(identifier)
+				}
+			}
+		}(i)
+	}
+
+	// Let workers run for a bit
+	time.Sleep(50 * time.Millisecond)
+
+	// Stop the rate limiter while workers are active
+	rl.Stop()
+
+	// Stop workers
+	close(stop)
+	for i := 0; i < numWorkers; i++ {
+		<-done
+	}
+
+	// Should be able to call Stop() again without panic
+	rl.Stop()
 }
 
 // Test max entries configuration
@@ -233,9 +307,9 @@ func TestNewRateLimiterWithConfig(t *testing.T) {
 			shouldWarn:  false,
 		},
 		{
-			name:        "negative max entries defaults to 10000",
+			name:        "negative max entries defaults to DefaultMaxEntries",
 			maxEntries:  -1,
-			expectedMax: 10000,
+			expectedMax: DefaultMaxEntries,
 			shouldWarn:  true,
 		},
 	}

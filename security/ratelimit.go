@@ -9,6 +9,17 @@ import (
 	"golang.org/x/time/rate"
 )
 
+const (
+	// DefaultMaxEntries is the default maximum number of tracked identifiers
+	DefaultMaxEntries = 10000
+
+	// DefaultCleanupInterval is how often the cleanup goroutine runs
+	DefaultCleanupInterval = 5 * time.Minute
+
+	// DefaultIdleTimeout is how long an entry can be idle before cleanup
+	DefaultIdleTimeout = 30 * time.Minute
+)
+
 // rateLimiterEntry tracks a rate limiter and its last access time
 type rateLimiterEntry struct {
 	identifier string
@@ -28,6 +39,7 @@ type RateLimiter struct {
 	logger          *slog.Logger
 	cleanupInterval time.Duration
 	stopCleanup     chan struct{}
+	stopOnce        sync.Once // Ensures Stop() is called exactly once
 
 	// Statistics
 	totalEvictions int64
@@ -37,7 +49,7 @@ type RateLimiter struct {
 // NewRateLimiter creates a new rate limiter with automatic cleanup and LRU eviction.
 // Default max entries is 10,000. Use NewRateLimiterWithConfig for custom max entries.
 func NewRateLimiter(requestsPerSecond, burst int, logger *slog.Logger) *RateLimiter {
-	return NewRateLimiterWithConfig(requestsPerSecond, burst, 10000, logger)
+	return NewRateLimiterWithConfig(requestsPerSecond, burst, DefaultMaxEntries, logger)
 }
 
 // NewRateLimiterWithConfig creates a new rate limiter with custom max entries configuration.
@@ -49,7 +61,7 @@ func NewRateLimiterWithConfig(requestsPerSecond, burst, maxEntries int, logger *
 		logger = slog.Default()
 	}
 	if maxEntries < 0 {
-		maxEntries = 10000
+		maxEntries = DefaultMaxEntries
 		logger.Warn("Invalid maxEntries, using default", "maxEntries", maxEntries)
 	}
 
@@ -60,10 +72,8 @@ func NewRateLimiterWithConfig(requestsPerSecond, burst, maxEntries int, logger *
 		burst:           burst,
 		maxEntries:      maxEntries,
 		logger:          logger,
-		cleanupInterval: 5 * time.Minute,
+		cleanupInterval: DefaultCleanupInterval,
 		stopCleanup:     make(chan struct{}),
-		totalEvictions:  0,
-		totalCleanups:   0,
 	}
 
 	// Start background cleanup goroutine
@@ -139,7 +149,7 @@ func (rl *RateLimiter) cleanupLoop() {
 	for {
 		select {
 		case <-ticker.C:
-			rl.Cleanup(30 * time.Minute) // Remove limiters idle for 30 minutes
+			rl.Cleanup(DefaultIdleTimeout)
 		case <-rl.stopCleanup:
 			return
 		}
@@ -177,9 +187,13 @@ func (rl *RateLimiter) Cleanup(maxIdleTime time.Duration) {
 	}
 }
 
-// Stop gracefully stops the cleanup goroutine
+// Stop gracefully stops the cleanup goroutine.
+// Safe to call multiple times concurrently.
+// Uses sync.Once to guarantee exactly-once execution and prevent race conditions.
 func (rl *RateLimiter) Stop() {
-	close(rl.stopCleanup)
+	rl.stopOnce.Do(func() {
+		close(rl.stopCleanup)
+	})
 }
 
 // Stats holds rate limiter statistics for monitoring
