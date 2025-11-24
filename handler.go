@@ -113,6 +113,9 @@ func (h *Handler) ServeProtectedResourceMetadata(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// Set CORS headers for browser-based clients
+	h.setCORSHeaders(w, r)
+
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	metadata := map[string]any{
 		"resource": h.server.Config.Issuer,
@@ -132,6 +135,9 @@ func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Set CORS headers for browser-based clients
+	h.setCORSHeaders(w, r)
 
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	metadata := map[string]any{
@@ -153,6 +159,9 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Set CORS headers for browser-based clients
+	h.setCORSHeaders(w, r)
 
 	// Parse query parameters
 	clientID := r.URL.Query().Get("client_id")
@@ -196,6 +205,9 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Set CORS headers for browser-based clients
+	h.setCORSHeaders(w, r)
 
 	// Parse callback parameters
 	state := r.URL.Query().Get("state")
@@ -242,6 +254,9 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Set CORS headers for browser-based clients
+	h.setCORSHeaders(w, r)
 
 	// Parse form data
 	if err := r.ParseForm(); err != nil {
@@ -350,6 +365,9 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set CORS headers for browser-based clients
+	h.setCORSHeaders(w, r)
+
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
 	// Parse form data
@@ -397,6 +415,9 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Set CORS headers for browser-based clients
+	h.setCORSHeaders(w, r)
 
 	// Get client IP for DoS protection
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
@@ -578,6 +599,7 @@ func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string)
 }
 
 func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *oauth2.Token, scope string) {
+	// Note: CORS headers already set by ServeToken before calling this helper
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 
 	expiresIn := int64(time.Until(token.Expiry).Seconds())
@@ -609,6 +631,7 @@ func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *oauth2.Token,
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, code, description string, status int) {
+	// Note: CORS headers already set by the calling handler before calling writeError
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -626,6 +649,9 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Set CORS headers for browser-based clients
+	h.setCORSHeaders(w, r)
 
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
@@ -721,4 +747,102 @@ const userInfoKey contextKey = "user_info"
 func UserInfoFromContext(ctx context.Context) (*providers.UserInfo, bool) {
 	userInfo, ok := ctx.Value(userInfoKey).(*providers.UserInfo)
 	return userInfo, ok
+}
+
+// setCORSHeaders sets CORS headers on the response if CORS is configured and the origin is allowed.
+// This enables browser-based MCP clients to make cross-origin requests to the OAuth server.
+// CORS is only applied if:
+// 1. CORS configuration is present (AllowedOrigins is not empty)
+// 2. The request includes an Origin header
+// 3. The origin is in the allowed list (or wildcard "*" is configured)
+func (h *Handler) setCORSHeaders(w http.ResponseWriter, r *http.Request) {
+	// Skip CORS if not configured (backward compatible default)
+	if len(h.server.Config.CORS.AllowedOrigins) == 0 {
+		return
+	}
+
+	// Get origin from request
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		// No Origin header means this is not a browser CORS request
+		// (could be a server-to-server request or same-origin request)
+		return
+	}
+
+	// Check if origin is allowed
+	if !h.isAllowedOrigin(origin) {
+		// Origin not allowed - don't set CORS headers
+		// Browser will block the response
+		h.logger.Debug("CORS request from disallowed origin", "origin", origin)
+		return
+	}
+
+	// Set CORS headers for allowed origin
+	// We echo back the specific origin rather than using "*" when credentials are allowed
+	w.Header().Set("Access-Control-Allow-Origin", origin)
+
+	// Allow credentials (cookies, authorization headers) if configured
+	maxAge := h.server.Config.CORS.MaxAge
+	if maxAge == 0 {
+		maxAge = 3600 // 1 hour default
+	}
+
+	// Set credentials header based on configuration
+	// Note: For OAuth flows, credentials (Bearer tokens, cookies) are typically needed
+	// We only omit this header if explicitly disabled in config
+	if h.server.Config.CORS.AllowCredentials {
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+	}
+
+	// Set allowed methods for preflight requests
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+
+	// Set allowed headers for preflight requests
+	// Authorization: for Bearer tokens
+	// Content-Type: for POST request bodies
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+
+	// Set max age for preflight cache
+	w.Header().Set("Access-Control-Max-Age", fmt.Sprintf("%d", maxAge))
+}
+
+// isAllowedOrigin checks if the given origin is in the allowed origins list.
+// Supports exact matching and wildcard "*" for development.
+func (h *Handler) isAllowedOrigin(origin string) bool {
+	// Check for wildcard (allow all origins)
+	for _, allowed := range h.server.Config.CORS.AllowedOrigins {
+		if allowed == "*" {
+			h.logger.Warn("⚠️  CORS: Wildcard origin (*) allows ALL origins",
+				"risk", "CSRF attacks possible from any website",
+				"recommendation", "Use specific origins in production")
+			return true
+		}
+
+		// Exact match (case-sensitive per CORS spec)
+		if allowed == origin {
+			return true
+		}
+	}
+
+	return false
+}
+
+// ServePreflightRequest handles CORS preflight (OPTIONS) requests.
+// Browsers send OPTIONS requests before actual requests to check if CORS is allowed.
+// This is required for "non-simple" requests (POST with JSON, custom headers, etc.)
+func (h *Handler) ServePreflightRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodOptions {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Set CORS headers
+	h.setCORSHeaders(w, r)
+
+	// Preflight responses should not include security headers that might interfere
+	// But we still want basic security
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	// Return 204 No Content for successful preflight
+	w.WriteHeader(http.StatusNoContent)
 }

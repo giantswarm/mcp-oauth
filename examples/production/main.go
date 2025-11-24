@@ -97,6 +97,17 @@ func main() {
 				"https://www.googleapis.com/auth/drive.readonly",
 				"https://www.googleapis.com/auth/calendar.readonly",
 			},
+
+			// CORS configuration (optional, only for browser-based clients)
+			// Uncomment and configure if you have browser-based MCP clients
+			// CORS: oauth.CORSConfig{
+			// 	AllowedOrigins: []string{
+			// 		"https://app.example.com",
+			// 		"https://dashboard.example.com",
+			// 	},
+			// 	AllowCredentials: true,  // Required for OAuth with credentials
+			// 	MaxAge:           3600,  // 1 hour preflight cache
+			// },
 		},
 		logger,
 	)
@@ -203,6 +214,16 @@ func setupRoutes(handler *oauth.Handler, logger *slog.Logger) *http.ServeMux {
 		logRequest(logger, handler.ServeTokenRevocation))
 	mux.HandleFunc("/oauth/introspect",
 		logRequest(logger, handler.ServeTokenIntrospection))
+
+	// NOTE: If CORS is enabled, you need to handle OPTIONS preflight requests:
+	// mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
+	// 	if r.Method == http.MethodOptions {
+	// 		handler.ServePreflightRequest(w, r)
+	// 		return
+	// 	}
+	// 	handler.ServeToken(w, r)
+	// })
+	// Repeat for other endpoints that browser clients will call
 
 	// Protected MCP endpoint
 	mux.Handle("/mcp", handler.ValidateToken(mcpHandler(logger)))

@@ -25,6 +25,9 @@ type Config struct {
 	// Security settings (secure by default)
 	Security SecurityConfig
 
+	// CORS settings for browser-based clients
+	CORS CORSConfig
+
 	// CleanupInterval is how often to cleanup expired tokens
 	// Default: 1 minute
 	CleanupInterval time.Duration
@@ -114,4 +117,23 @@ type SecurityConfig struct {
 	// EnableAuditLogging enables security audit logging.
 	// Logs auth events, token operations, and violations (sensitive data hashed).
 	EnableAuditLogging bool
+}
+
+// CORSConfig holds CORS (Cross-Origin Resource Sharing) configuration for browser-based clients
+// CORS is disabled by default for security. Only enable for browser-based MCP clients.
+type CORSConfig struct {
+	// AllowedOrigins is a list of allowed origin URLs for CORS requests.
+	// Examples: ["https://app.example.com", "https://dashboard.example.com"]
+	// Use "*" to allow all origins (NOT RECOMMENDED for production).
+	// Empty list means CORS is disabled (default, secure).
+	AllowedOrigins []string
+
+	// AllowCredentials enables the Access-Control-Allow-Credentials header.
+	// Required if your browser client needs to send cookies or authentication.
+	// Default: true (when CORS is enabled)
+	AllowCredentials bool
+
+	// MaxAge is the maximum time (in seconds) browsers can cache preflight responses.
+	// Default: 3600 (1 hour)
+	MaxAge int
 }
