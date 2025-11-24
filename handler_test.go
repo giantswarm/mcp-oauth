@@ -408,13 +408,15 @@ func TestHandler_ServeCallback(t *testing.T) {
 	hash := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
+	// State must be at least 32 characters for security
+	clientState := testutil.GenerateRandomString(43)
 	authURL, err := handler.server.StartAuthorizationFlow(
 		client.ClientID,
 		"https://example.com/callback",
 		"openid email",
 		challenge,
 		"S256",
-		"client-state-123",
+		clientState,
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -426,7 +428,7 @@ func TestHandler_ServeCallback(t *testing.T) {
 	}
 
 	// Get auth state to find provider state
-	authState, err := store.GetAuthorizationState("client-state-123")
+	authState, err := store.GetAuthorizationState(clientState)
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -453,7 +455,7 @@ func TestHandler_ServeCallback(t *testing.T) {
 	if !strings.Contains(location, "code=") {
 		t.Error("Location should contain authorization code")
 	}
-	if !strings.Contains(location, "state=client-state-123") {
+	if !strings.Contains(location, "state="+clientState) {
 		t.Error("Location should contain original client state")
 	}
 }

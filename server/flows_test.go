@@ -81,7 +81,7 @@ func TestServer_StartAuthorizationFlow(t *testing.T) {
 			scope:               "openid email",
 			codeChallenge:       validChallenge,
 			codeChallengeMethod: PKCEMethodS256,
-			clientState:         "client-state-" + testutil.GenerateRandomString(10),
+			clientState:         testutil.GenerateRandomString(43),
 			wantErr:             false,
 		},
 		{
@@ -101,7 +101,7 @@ func TestServer_StartAuthorizationFlow(t *testing.T) {
 			scope:               "openid",
 			codeChallenge:       "",
 			codeChallengeMethod: "",
-			clientState:         "state-" + testutil.GenerateRandomString(10),
+			clientState:         testutil.GenerateRandomString(43),
 			wantErr:             true,
 		},
 		{
@@ -111,7 +111,7 @@ func TestServer_StartAuthorizationFlow(t *testing.T) {
 			scope:               "openid",
 			codeChallenge:       validChallenge,
 			codeChallengeMethod: PKCEMethodS256,
-			clientState:         "state-" + testutil.GenerateRandomString(10),
+			clientState:         testutil.GenerateRandomString(43),
 			wantErr:             true,
 		},
 		{
@@ -121,7 +121,7 @@ func TestServer_StartAuthorizationFlow(t *testing.T) {
 			scope:               "openid",
 			codeChallenge:       validChallenge,
 			codeChallengeMethod: PKCEMethodS256,
-			clientState:         "state-" + testutil.GenerateRandomString(10),
+			clientState:         testutil.GenerateRandomString(43),
 			wantErr:             true,
 		},
 		{
@@ -131,7 +131,7 @@ func TestServer_StartAuthorizationFlow(t *testing.T) {
 			scope:               "invalid-scope",
 			codeChallenge:       validChallenge,
 			codeChallengeMethod: PKCEMethodS256,
-			clientState:         "state-" + testutil.GenerateRandomString(10),
+			clientState:         testutil.GenerateRandomString(43),
 			wantErr:             true,
 		},
 		{
@@ -141,7 +141,7 @@ func TestServer_StartAuthorizationFlow(t *testing.T) {
 			scope:               "openid",
 			codeChallenge:       validVerifier,
 			codeChallengeMethod: PKCEMethodPlain,
-			clientState:         "state-" + testutil.GenerateRandomString(10),
+			clientState:         testutil.GenerateRandomString(43),
 			wantErr:             true,
 		},
 	}
@@ -203,7 +203,7 @@ func TestServer_HandleProviderCallback(t *testing.T) {
 	validVerifier := testutil.GenerateRandomString(50)
 	hash := sha256.Sum256([]byte(validVerifier))
 	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
-	clientState := "client-state-" + testutil.GenerateRandomString(10)
+	clientState := testutil.GenerateRandomString(43)
 
 	// Start authorization flow
 	_, err = srv.StartAuthorizationFlow(
@@ -564,7 +564,7 @@ func TestServer_RefreshTokenRotation(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	// Start auth flow and get tokens
-	clientState := "client-state-" + testutil.GenerateRandomString(10)
+	clientState := testutil.GenerateRandomString(43)
 	_, err = srv.StartAuthorizationFlow(
 		clientID,
 		"https://example.com/callback",
@@ -692,7 +692,7 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	// Start auth flow and get initial tokens
-	clientState := "client-state-" + testutil.GenerateRandomString(10)
+	clientState := testutil.GenerateRandomString(43)
 	_, err = srv.StartAuthorizationFlow(
 		clientID,
 		"https://example.com/callback",
@@ -897,7 +897,7 @@ func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	// Get initial tokens
-	clientState := "client-state-" + testutil.GenerateRandomString(10)
+	clientState := testutil.GenerateRandomString(43)
 	_, err = srv.StartAuthorizationFlow(
 		clientID,
 		"https://example.com/callback",
@@ -1020,7 +1020,7 @@ func TestServer_ConcurrentRefreshTokenReuse(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	// Get initial tokens
-	clientState := "client-state-" + testutil.GenerateRandomString(10)
+	clientState := testutil.GenerateRandomString(43)
 	_, err = srv.StartAuthorizationFlow(
 		clientID,
 		"https://example.com/callback",
@@ -1161,7 +1161,7 @@ func TestServer_ConcurrentAuthorizationCodeReuse(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	// Get authorization code
-	clientState := "client-state-" + testutil.GenerateRandomString(10)
+	clientState := testutil.GenerateRandomString(43)
 	_, err = srv.StartAuthorizationFlow(
 		clientID,
 		"https://example.com/callback",
@@ -1309,7 +1309,7 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	// Start authorization flow
-	clientState := "client-state-" + testutil.GenerateRandomString(10)
+	clientState := testutil.GenerateRandomString(43)
 	_, err = srv.StartAuthorizationFlow(
 		clientID,
 		"https://example.com/callback",
@@ -1448,7 +1448,7 @@ func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	// Start authorization flow
-	clientState := "state-" + testutil.GenerateRandomString(10)
+	clientState := testutil.GenerateRandomString(43)
 	_, err = srv.StartAuthorizationFlow(
 		clientID,
 		"https://example.com/callback",
@@ -1800,7 +1800,7 @@ func TestServer_ConcurrentReuseAndRevocation(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	// Get initial tokens
-	clientState := "client-state-" + testutil.GenerateRandomString(10)
+	clientState := testutil.GenerateRandomString(43)
 	_, err = srv.StartAuthorizationFlow(
 		clientID,
 		"https://example.com/callback",
@@ -2366,7 +2366,7 @@ func TestServer_GenericErrorMessagesNoInfoLeakage(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	// Get a valid authorization code
-	clientState := "client-state-" + testutil.GenerateRandomString(10)
+	clientState := testutil.GenerateRandomString(43)
 	_, err = srv.StartAuthorizationFlow(
 		clientID,
 		"https://example.com/callback",
@@ -2596,7 +2596,7 @@ func TestServer_AuthCodeReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	// Get authorization code
-	clientState := "client-state-" + testutil.GenerateRandomString(10)
+	clientState := testutil.GenerateRandomString(43)
 	_, err = srv.StartAuthorizationFlow(
 		clientID,
 		"https://example.com/callback",
@@ -2683,7 +2683,7 @@ func TestServer_RefreshTokenReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	// Get initial tokens
-	clientState := "client-state-" + testutil.GenerateRandomString(10)
+	clientState := testutil.GenerateRandomString(43)
 	_, err = srv.StartAuthorizationFlow(
 		clientID,
 		"https://example.com/callback",

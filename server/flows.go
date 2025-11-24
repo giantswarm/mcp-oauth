@@ -49,12 +49,13 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 // StartAuthorizationFlow starts a new OAuth authorization flow
 // clientState is the state parameter from the client (REQUIRED for CSRF protection)
 func (s *Server) StartAuthorizationFlow(clientID, redirectURI, scope, codeChallenge, codeChallengeMethod, clientState string) (string, error) {
-	// CRITICAL SECURITY: Require state parameter from client for CSRF protection
-	if clientState == "" {
+	// CRITICAL SECURITY: Validate state parameter from client for CSRF protection
+	// This includes minimum length validation to prevent timing attacks
+	if err := s.validateStateParameter(clientState); err != nil {
 		if s.Auditor != nil {
-			s.Auditor.LogAuthFailure("", clientID, "", "missing_state_parameter")
+			s.Auditor.LogAuthFailure("", clientID, "", "invalid_state_parameter")
 		}
-		return "", fmt.Errorf("state parameter is required for CSRF protection (OAuth 2.0 Security BCP)")
+		return "", fmt.Errorf("%w (OAuth 2.0 Security BCP)", err)
 	}
 
 	// PKCE validation (secure by default, configurable for backward compatibility)
@@ -169,6 +170,20 @@ func (s *Server) StartAuthorizationFlow(clientID, redirectURI, scope, codeChalle
 // Returns: (authorizationCode, clientState, error)
 // clientState is the original state parameter from the client for CSRF validation
 func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code string) (*storage.AuthorizationCode, string, error) {
+	// CRITICAL SECURITY: Validate provider state parameter
+	// Defense in depth: validate even though we generated it
+	if err := s.validateStateParameter(providerState); err != nil {
+		if s.Auditor != nil {
+			s.Auditor.LogEvent(security.Event{
+				Type: "invalid_provider_callback",
+				Details: map[string]any{
+					"reason": "invalid_state_format",
+				},
+			})
+		}
+		return nil, "", fmt.Errorf("invalid state parameter: %w", err)
+	}
+
 	// CRITICAL SECURITY: Validate provider state to prevent callback injection
 	// We must lookup by providerState (not client state) since that's what the provider returns
 	authState, err := s.flowStore.GetAuthorizationStateByProviderState(providerState)

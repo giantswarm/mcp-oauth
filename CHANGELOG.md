@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Constant-time comparison already in place for state value validation
   - Added comprehensive tests for timing attack resistance
   - Updated all tests to use secure state parameters
+  - Refactored validation logic to follow DRY principle and architectural patterns
+  - State validation now centralized in server layer with handler doing input validation
+  - Added compile-time test to ensure constant synchronization between packages
   - **Impact**: Short state parameters (< 32 chars) are now rejected
   - **Migration**: Ensure client applications generate state parameters with at least 32 characters
 - **[BREAKING]** Added runtime HTTPS enforcement for OAuth server (#18, #49)

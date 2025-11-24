@@ -225,7 +225,7 @@ func (s *Server) validateScopes(scope string) error {
 //
 // The constant-time comparison of state values happens later in the flow
 // (see server/flows.go HandleProviderCallback) using subtle.ConstantTimeCompare.
-func validateStateParameter(state string) error {
+func (s *Server) validateStateParameter(state string) error {
 	if state == "" {
 		return fmt.Errorf("state parameter is required for CSRF protection")
 	}

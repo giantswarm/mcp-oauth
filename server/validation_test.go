@@ -474,6 +474,15 @@ func TestHTTPSEnforcement_WithPort(t *testing.T) {
 }
 
 func TestValidateStateParameter(t *testing.T) {
+	setup := newTestServerSetup(false)
+	srv, err := setup.createServer(&Config{
+		RequirePKCE:    true,
+		AllowPKCEPlain: false,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+
 	tests := []struct {
 		name    string
 		state   string
@@ -533,7 +542,7 @@ func TestValidateStateParameter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateStateParameter(tt.state)
+			err := srv.validateStateParameter(tt.state)
 
 			if tt.wantErr {
 				if err == nil {
@@ -557,6 +566,15 @@ func TestValidateStateParameter(t *testing.T) {
 // This test verifies that the validation enforces minimum length requirements
 // which is the first line of defense against timing attacks.
 func TestValidateStateParameter_TimingAttackResistance(t *testing.T) {
+	setup := newTestServerSetup(false)
+	srv, err := setup.createServer(&Config{
+		RequirePKCE:    true,
+		AllowPKCEPlain: false,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+
 	// Test that very short states (which could be brute-forced quickly) are rejected
 	shortStates := []string{
 		"a",
@@ -569,7 +587,7 @@ func TestValidateStateParameter_TimingAttackResistance(t *testing.T) {
 	}
 
 	for _, state := range shortStates {
-		err := validateStateParameter(state)
+		err := srv.validateStateParameter(state)
 		if err == nil {
 			t.Errorf("validateStateParameter(%q) expected error for short state (len=%d) but got none", state, len(state))
 		}
@@ -585,9 +603,23 @@ func TestValidateStateParameter_TimingAttackResistance(t *testing.T) {
 	}
 
 	for _, state := range validStates {
-		err := validateStateParameter(state)
+		err := srv.validateStateParameter(state)
 		if err != nil {
 			t.Errorf("validateStateParameter(%q) unexpected error for valid state (len=%d): %v", state[:10]+"...", len(state), err)
 		}
+	}
+}
+
+// TestMinStateLength_ConstantSync ensures server.MinStateLength stays in sync with oauth.MinStateLength.
+// This test will fail if the constants drift out of sync.
+// The constants are duplicated to avoid circular imports (root package imports server).
+// IMPORTANT: If this test fails, update BOTH constants.go AND server/validation.go
+func TestMinStateLength_ConstantSync(t *testing.T) {
+	// Expected value must match oauth.MinStateLength in constants.go
+	const expectedMinStateLength = 32
+
+	if MinStateLength != expectedMinStateLength {
+		t.Errorf("server.MinStateLength (%d) != expected (%d) - constants out of sync! Update BOTH constants.go and server/validation.go",
+			MinStateLength, expectedMinStateLength)
 	}
 }
