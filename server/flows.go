@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"fmt"
+	"math"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -314,22 +315,52 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 		}
 
 		// Other error (not found, expired, etc.)
+		// SECURITY: Log detailed internal error for debugging, but return generic error to client
+		s.Logger.Debug("Authorization code validation failed",
+			"reason", err.Error(),
+			"client_id", clientID,
+			"code_prefix", safeTruncate(code, 8))
+
 		if s.Auditor != nil {
 			s.Auditor.LogAuthFailure("", clientID, "", "invalid_authorization_code")
 		}
-		return nil, "", fmt.Errorf("%s: %w", ErrorCodeInvalidGrant, err)
+		// Return generic error per RFC 6749 (don't reveal details to attacker)
+		return nil, "", fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 	}
 
 	// Code is now atomically marked as used - no other request can use it
 
 	// Validate client ID matches
 	if authCode.ClientID != clientID {
-		return nil, "", fmt.Errorf("%s: client ID mismatch", ErrorCodeInvalidGrant)
+		// SECURITY: Log detailed internal error for debugging, but return generic error to client
+		s.Logger.Debug("Authorization code validation failed",
+			"reason", "client_id_mismatch",
+			"expected_client_id", authCode.ClientID,
+			"provided_client_id", clientID,
+			"code_prefix", safeTruncate(code, 8))
+
+		if s.Auditor != nil {
+			s.Auditor.LogAuthFailure("", clientID, "", "client_id_mismatch")
+		}
+		// Return generic error per RFC 6749 (don't reveal details to attacker)
+		return nil, "", fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 	}
 
 	// Validate redirect URI matches
 	if authCode.RedirectURI != redirectURI {
-		return nil, "", fmt.Errorf("%s: redirect URI mismatch", ErrorCodeInvalidGrant)
+		// SECURITY: Log detailed internal error for debugging, but return generic error to client
+		s.Logger.Debug("Authorization code validation failed",
+			"reason", "redirect_uri_mismatch",
+			"expected_uri", authCode.RedirectURI,
+			"provided_uri", redirectURI,
+			"client_id", clientID,
+			"code_prefix", safeTruncate(code, 8))
+
+		if s.Auditor != nil {
+			s.Auditor.LogAuthFailure("", clientID, "", "redirect_uri_mismatch")
+		}
+		// Return generic error per RFC 6749 (don't reveal details to attacker)
+		return nil, "", fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 	}
 
 	// Validate PKCE if present
@@ -509,10 +540,17 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		}
 
 		// Token not found and no family metadata - regular invalid token error
+		// SECURITY: Log detailed internal error for debugging, but return generic error to client
+		s.Logger.Debug("Refresh token validation failed",
+			"reason", err.Error(),
+			"client_id", clientID,
+			"token_prefix", safeTruncate(refreshToken, 8))
+
 		if s.Auditor != nil {
 			s.Auditor.LogAuthFailure("", clientID, "", "invalid_refresh_token")
 		}
-		return nil, fmt.Errorf("%s: %w", ErrorCodeInvalidGrant, err)
+		// Return generic error per RFC 6749 (don't reveal details to attacker)
+		return nil, fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 	}
 
 	// Token is now atomically deleted - no other request can use it
@@ -684,26 +722,13 @@ func (s *Server) RevokeAllTokensForUserClient(ctx context.Context, userID, clien
 		return fmt.Errorf("failed to get tokens for revocation: %w", err)
 	}
 
-	// SECURITY: Revoke at provider FIRST (with configurable timeout)
+	// SECURITY: Revoke at provider FIRST with retry logic
 	// This ensures tokens are invalid at Google/GitHub/etc, not just locally
-	// Timeout is configurable to handle slow networks, rate limits, or unreachable providers
-	providerCtx, cancel := context.WithTimeout(ctx, time.Duration(s.Config.ProviderRevocationTimeout)*time.Second)
-	defer cancel()
-
 	revokedAtProvider := 0
-providerRevocationLoop:
-	for i, tokenID := range tokens {
-		// SECURITY: Check if context is already cancelled to avoid wasting cycles after timeout
-		select {
-		case <-providerCtx.Done():
-			s.Logger.Warn("Provider revocation cancelled - timeout reached",
-				"revoked_count", revokedAtProvider,
-				"remaining", len(tokens)-i,
-				"timeout_seconds", s.Config.ProviderRevocationTimeout)
-			break providerRevocationLoop
-		default:
-		}
+	failedAtProvider := 0
+	totalTokensToRevoke := 0
 
+	for _, tokenID := range tokens {
 		providerToken, err := s.tokenStore.GetToken(tokenID)
 		if err != nil {
 			s.Logger.Warn("Could not get provider token for revocation",
@@ -712,14 +737,18 @@ providerRevocationLoop:
 			continue
 		}
 
-		// Revoke access token at provider
+		// Count tokens that need revocation
 		if providerToken.AccessToken != "" {
-			if err := s.provider.RevokeToken(providerCtx, providerToken.AccessToken); err != nil {
-				s.Logger.Warn("Failed to revoke access token at provider",
-					"user_id", userID,
-					"client_id", clientID,
-					"error", err)
-				// Continue - don't fail entire operation if provider revocation fails
+			totalTokensToRevoke++
+		}
+		if providerToken.RefreshToken != "" {
+			totalTokensToRevoke++
+		}
+
+		// Revoke access token at provider with retry logic
+		if providerToken.AccessToken != "" {
+			if err := s.revokeTokenWithRetry(ctx, providerToken.AccessToken, "access", userID, clientID); err != nil {
+				failedAtProvider++
 			} else {
 				revokedAtProvider++
 			}
@@ -727,28 +756,68 @@ providerRevocationLoop:
 
 		// Also revoke refresh token at provider if present
 		if providerToken.RefreshToken != "" {
-			if err := s.provider.RevokeToken(providerCtx, providerToken.RefreshToken); err != nil {
-				s.Logger.Warn("Failed to revoke refresh token at provider",
-					"user_id", userID,
-					"client_id", clientID,
-					"error", err)
+			if err := s.revokeTokenWithRetry(ctx, providerToken.RefreshToken, "refresh", userID, clientID); err != nil {
+				failedAtProvider++
+			} else {
+				revokedAtProvider++
 			}
 		}
 	}
 
-	s.Logger.Info("Revoked tokens at provider",
+	// Calculate failure rate
+	failureRate := 0.0
+	if totalTokensToRevoke > 0 {
+		failureRate = float64(failedAtProvider) / float64(totalTokensToRevoke)
+	}
+
+	s.Logger.Info("Provider revocation complete",
 		"user_id", userID,
 		"client_id", clientID,
 		"revoked_at_provider", revokedAtProvider,
-		"total_tokens", len(tokens))
+		"failed_at_provider", failedAtProvider,
+		"total_tokens", totalTokensToRevoke,
+		"failure_rate", fmt.Sprintf("%.2f%%", failureRate*100))
 
-	// SECURITY: Alert if ALL provider revocations failed
-	// This means tokens remain valid at the provider (Google/GitHub/etc)
-	if revokedAtProvider == 0 && len(tokens) > 0 {
+	// SECURITY: Check failure threshold - fail hard if too many provider revocations failed
+	// This ensures we don't proceed when tokens remain valid at the provider
+	if totalTokensToRevoke > 0 && failureRate > s.Config.ProviderRevocationFailureThreshold {
+		s.Logger.Error("CRITICAL: Provider revocation failure rate exceeds threshold",
+			"user_id", userID,
+			"client_id", clientID,
+			"failure_rate", fmt.Sprintf("%.2f%%", failureRate*100),
+			"threshold", fmt.Sprintf("%.2f%%", s.Config.ProviderRevocationFailureThreshold*100),
+			"failed_count", failedAtProvider,
+			"total_count", totalTokensToRevoke)
+
+		if s.Auditor != nil {
+			s.Auditor.LogEvent(security.Event{
+				Type:     "provider_revocation_threshold_exceeded",
+				UserID:   userID,
+				ClientID: clientID,
+				Details: map[string]any{
+					"severity":       "critical",
+					"impact":         "Too many tokens remain valid at provider",
+					"failure_rate":   failureRate,
+					"threshold":      s.Config.ProviderRevocationFailureThreshold,
+					"failed_count":   failedAtProvider,
+					"total_count":    totalTokensToRevoke,
+					"oauth_spec":     "OAuth 2.1 Section 4.1.2",
+					"action":         "Manual provider-side revocation REQUIRED",
+					"recommendation": "Check provider API status and network connectivity",
+				},
+			})
+		}
+
+		return fmt.Errorf("provider revocation failure rate %.2f%% exceeds threshold %.2f%% (%d/%d failed) - tokens may remain valid at provider",
+			failureRate*100, s.Config.ProviderRevocationFailureThreshold*100, failedAtProvider, totalTokensToRevoke)
+	}
+
+	// SECURITY: Alert if ALL provider revocations failed (100% failure)
+	if revokedAtProvider == 0 && totalTokensToRevoke > 0 {
 		s.Logger.Error("CRITICAL: All provider revocations failed - tokens still valid at provider!",
 			"user_id", userID,
 			"client_id", clientID,
-			"token_count", len(tokens))
+			"token_count", totalTokensToRevoke)
 
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
@@ -757,14 +826,16 @@ providerRevocationLoop:
 				ClientID: clientID,
 				Details: map[string]any{
 					"severity":    "critical",
-					"impact":      "tokens remain valid at provider",
-					"token_count": len(tokens),
+					"impact":      "All tokens remain valid at provider",
+					"token_count": totalTokensToRevoke,
 					"oauth_spec":  "OAuth 2.1 Section 4.1.2",
-					"mitigation":  "tokens revoked locally but may still be usable at provider",
-					"action":      "manual provider-side revocation may be required",
+					"mitigation":  "Tokens revoked locally but still usable at provider",
+					"action":      "Immediate manual provider-side revocation REQUIRED",
 				},
 			})
 		}
+
+		return fmt.Errorf("all provider revocations failed (0/%d succeeded) - tokens remain valid at provider", totalTokensToRevoke)
 	}
 
 	// Now revoke locally
@@ -801,4 +872,69 @@ providerRevocationLoop:
 	}
 
 	return nil
+}
+
+// revokeTokenWithRetry attempts to revoke a token at the provider with exponential backoff retry logic.
+// Returns nil if revocation succeeds within the retry limit, or an error if all attempts fail.
+// Implements exponential backoff: 100ms, 200ms, 400ms, 800ms, 1600ms between retries.
+func (s *Server) revokeTokenWithRetry(ctx context.Context, token, tokenType, userID, clientID string) error {
+	maxRetries := s.Config.ProviderRevocationMaxRetries
+	timeout := time.Duration(s.Config.ProviderRevocationTimeout) * time.Second
+
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// Create per-attempt timeout context
+		attemptCtx, cancel := context.WithTimeout(ctx, timeout)
+
+		// Attempt revocation
+		err := s.provider.RevokeToken(attemptCtx, token)
+		cancel() // Clean up context immediately after attempt
+
+		if err == nil {
+			// Success - log if this wasn't the first attempt
+			if attempt > 0 {
+				s.Logger.Info("Provider token revocation succeeded after retry",
+					"token_type", tokenType,
+					"attempt", attempt+1,
+					"max_retries", maxRetries,
+					"user_id", userID,
+					"client_id", clientID)
+			}
+			return nil
+		}
+
+		lastErr = err
+
+		// Check if we should retry (not on last attempt)
+		if attempt < maxRetries {
+			// Exponential backoff: 100ms * 2^attempt
+			backoffDuration := time.Duration(100*math.Pow(2, float64(attempt))) * time.Millisecond
+
+			// Don't log transient failures at high severity - only on final failure
+			s.Logger.Debug("Provider token revocation failed, retrying",
+				"token_type", tokenType,
+				"attempt", attempt+1,
+				"max_retries", maxRetries,
+				"backoff_ms", backoffDuration.Milliseconds(),
+				"error", err)
+
+			// Wait before retry (check for context cancellation)
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("revocation cancelled during backoff: %w", ctx.Err())
+			case <-time.After(backoffDuration):
+				// Continue to next retry
+			}
+		}
+	}
+
+	// All attempts failed
+	s.Logger.Warn("Provider token revocation failed after all retries",
+		"token_type", tokenType,
+		"attempts", maxRetries+1,
+		"user_id", userID,
+		"client_id", clientID,
+		"final_error", lastErr)
+
+	return fmt.Errorf("provider revocation failed after %d attempts: %w", maxRetries+1, lastErr)
 }
