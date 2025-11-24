@@ -788,10 +788,10 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 		t.Fatal("Reuse of rotated refresh token should have failed")
 	}
 
-	// Verify error message indicates reuse
+	// Verify error message is generic (per RFC 6749 - don't reveal security details)
 	errStr := err.Error()
-	if !containsString(errStr, "reuse") {
-		t.Errorf("Error should mention 'reuse', got: %v", err)
+	if !containsString(errStr, "invalid") {
+		t.Errorf("Error should be generic 'invalid grant', got: %v", err)
 	}
 
 	// CRITICAL: Verify family was revoked
@@ -940,9 +940,9 @@ func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
 		t.Fatal("Reuse of old refresh token should have failed")
 	}
 
-	// Verify error indicates reuse
-	if !containsString(err.Error(), "reuse") {
-		t.Errorf("Error should mention 'reuse', got: %v", err)
+	// Verify error is generic (per RFC 6749 - don't reveal security details)
+	if !containsString(err.Error(), "invalid") {
+		t.Errorf("Error should be generic 'invalid grant', got: %v", err)
 	}
 
 	// Verify ALL tokens were revoked
@@ -1121,20 +1121,10 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 	}
 
 	// Check error message
+	// Verify error message is generic (per RFC 6749 - don't reveal security details to attackers)
 	errStr := err.Error()
-	if len(errStr) < 10 { // Basic sanity check
-		t.Errorf("Error message is too short: %v", err)
-	}
-	foundAlreadyUsed := false
-	searchStr := "already used"
-	for i := 0; i <= len(errStr)-len(searchStr); i++ {
-		if errStr[i:i+len(searchStr)] == searchStr {
-			foundAlreadyUsed = true
-			break
-		}
-	}
-	if !foundAlreadyUsed {
-		t.Errorf("ExchangeAuthorizationCode() error = %v, want error containing 'already used'", err)
+	if !containsString(errStr, "invalid_grant") && !containsString(errStr, "invalid grant") {
+		t.Errorf("ExchangeAuthorizationCode() error = %v, want generic 'invalid grant' error", err)
 	}
 
 	// Verify all tokens were revoked
@@ -1334,7 +1324,7 @@ func TestServer_RevokeAllTokensForUserClient(t *testing.T) {
 	}
 
 	// Revoke all tokens for user+client
-	err = srv.RevokeAllTokensForUserClient(userID, clientID)
+	err = srv.RevokeAllTokensForUserClient(context.Background(), userID, clientID)
 	if err != nil {
 		t.Fatalf("RevokeAllTokensForUserClient() error = %v", err)
 	}

@@ -268,51 +268,56 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 
 // ExchangeAuthorizationCode exchanges an authorization code for tokens
 // Returns oauth2.Token directly
-func (s *Server) ExchangeAuthorizationCode(_ context.Context, code, clientID, redirectURI, codeVerifier string) (*oauth2.Token, string, error) {
-	// Get authorization code
-	authCode, err := s.flowStore.GetAuthorizationCode(code)
+func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, redirectURI, codeVerifier string) (*oauth2.Token, string, error) {
+	// SECURITY: Atomically check and mark authorization code as used
+	// This prevents race conditions where multiple concurrent requests could use the same code
+	authCode, err := s.flowStore.AtomicCheckAndMarkAuthCodeUsed(code)
 	if err != nil {
+		// Check if this is a reuse attempt (code already used)
+		if authCode != nil && authCode.Used {
+			// CRITICAL SECURITY: Authorization code reuse detected - this indicates a potential token theft attack
+			// OAuth 2.1 requires revoking ALL tokens for this user+client when code reuse is detected
+			s.Logger.Error("Authorization code reuse detected - revoking all tokens",
+				"user_id", authCode.UserID,
+				"client_id", clientID,
+				"oauth_spec", "OAuth 2.1 Section 4.1.2")
+
+			// Revoke all tokens for this user+client (OAuth 2.1 requirement)
+			if err := s.RevokeAllTokensForUserClient(ctx, authCode.UserID, clientID); err != nil {
+				s.Logger.Error("Failed to revoke tokens after code reuse detection", "error", err)
+				// Continue with deletion even if revocation failed
+			}
+
+			if s.Auditor != nil {
+				// Log the critical security event
+				s.Auditor.LogEvent(security.Event{
+					Type:     "authorization_code_reuse_detected",
+					UserID:   authCode.UserID,
+					ClientID: clientID,
+					Details: map[string]any{
+						"severity":   "critical",
+						"action":     "all_tokens_revoked",
+						"oauth_spec": "OAuth 2.1 Section 4.1.2",
+					},
+				})
+				s.Auditor.LogAuthFailure(authCode.UserID, clientID, "", "authorization_code_reuse")
+			}
+
+			// Delete the authorization code
+			_ = s.flowStore.DeleteAuthorizationCode(code)
+
+			// Return generic error per RFC 6749 (don't reveal details to attacker)
+			return nil, "", fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+		}
+
+		// Other error (not found, expired, etc.)
 		if s.Auditor != nil {
 			s.Auditor.LogAuthFailure("", clientID, "", "invalid_authorization_code")
 		}
-		return nil, "", fmt.Errorf("%s: authorization code not found", ErrorCodeInvalidGrant)
+		return nil, "", fmt.Errorf("%s: %w", ErrorCodeInvalidGrant, err)
 	}
 
-	// Validate authorization code hasn't been used
-	if authCode.Used {
-		// CRITICAL SECURITY: Authorization code reuse detected - this indicates a potential token theft attack
-		// OAuth 2.1 requires revoking ALL tokens for this user+client when code reuse is detected
-		s.Logger.Error("Authorization code reuse detected - revoking all tokens",
-			"user_id", authCode.UserID,
-			"client_id", clientID,
-			"oauth_spec", "OAuth 2.1 Section 4.1.2")
-
-		// Revoke all tokens for this user+client (OAuth 2.1 requirement)
-		if err := s.RevokeAllTokensForUserClient(authCode.UserID, clientID); err != nil {
-			s.Logger.Error("Failed to revoke tokens after code reuse detection", "error", err)
-			// Continue with deletion even if revocation failed
-		}
-
-		if s.Auditor != nil {
-			// Log the critical security event
-			s.Auditor.LogEvent(security.Event{
-				Type:     "authorization_code_reuse_detected",
-				UserID:   authCode.UserID,
-				ClientID: clientID,
-				Details: map[string]any{
-					"severity":   "critical",
-					"action":     "all_tokens_revoked",
-					"oauth_spec": "OAuth 2.1 Section 4.1.2",
-				},
-			})
-			s.Auditor.LogAuthFailure(authCode.UserID, clientID, "", "authorization_code_reuse")
-		}
-
-		// Delete the authorization code
-		_ = s.flowStore.DeleteAuthorizationCode(code)
-
-		return nil, "", fmt.Errorf("%s: authorization code already used - all tokens revoked", ErrorCodeInvalidGrant)
-	}
+	// Code is now atomically marked as used - no other request can use it
 
 	// Validate client ID matches
 	if authCode.ClientID != clientID {
@@ -342,10 +347,6 @@ func (s *Server) ExchangeAuthorizationCode(_ context.Context, code, clientID, re
 			return nil, "", fmt.Errorf("PKCE validation failed: %w", err)
 		}
 	}
-
-	// Mark code as used
-	authCode.Used = true
-	_ = s.flowStore.SaveAuthorizationCode(authCode)
 
 	// Generate new access token using oauth2.GenerateVerifier (same quality)
 	accessToken := generateRandomToken()
@@ -377,6 +378,11 @@ func (s *Server) ExchangeAuthorizationCode(_ context.Context, code, clientID, re
 	}); ok {
 		if err := metadataStore.SaveTokenMetadata(accessToken, authCode.UserID, clientID, "access"); err != nil {
 			s.Logger.Warn("Failed to save access token metadata", "error", err)
+		}
+		// CRITICAL: Also save refresh token metadata for revocation
+		// This ensures refresh tokens can be found and revoked during code reuse detection
+		if err := metadataStore.SaveTokenMetadata(refreshToken, authCode.UserID, clientID, "refresh"); err != nil {
+			s.Logger.Warn("Failed to save refresh token metadata", "error", err)
 		}
 	}
 
@@ -466,7 +472,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 				}
 
 				// Step 2: Revoke all tokens for this user+client (defense in depth)
-				if err := s.RevokeAllTokensForUserClient(family.UserID, family.ClientID); err != nil {
+				if err := s.RevokeAllTokensForUserClient(ctx, family.UserID, family.ClientID); err != nil {
 					s.Logger.Error("Failed to revoke user tokens", "error", err)
 					// Continue - log error but still return security error to client
 				}
@@ -489,29 +495,25 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 					s.Auditor.LogTokenReuse(family.UserID, clientID)
 				}
 
-				// Return error indicating reuse and revocation
-				return nil, fmt.Errorf("%s: refresh token reuse detected - all tokens revoked for security", ErrorCodeInvalidGrant)
+				// Return generic error per RFC 6749 (don't reveal security details to attacker)
+				return nil, fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 			}
 		}
 	}
 
-	// Validate refresh token and get user ID
-	userID, err := s.tokenStore.GetRefreshTokenInfo(refreshToken)
+	// SECURITY: Atomically get and delete refresh token to prevent race conditions
+	// This ensures only ONE concurrent request can use the token (critical for rotation)
+	userID, providerToken, err := s.tokenStore.AtomicGetAndDeleteRefreshToken(refreshToken)
 	if err != nil {
+		// Token not found - check if this might be reuse of already-rotated token
+		// (Family check above should have caught this, but defense in depth)
 		if s.Auditor != nil {
 			s.Auditor.LogAuthFailure("", clientID, "", "invalid_refresh_token")
 		}
 		return nil, fmt.Errorf("%s: %w", ErrorCodeInvalidGrant, err)
 	}
 
-	// Get provider token using refresh token
-	providerToken, err := s.tokenStore.GetToken(refreshToken)
-	if err != nil {
-		if s.Auditor != nil {
-			s.Auditor.LogAuthFailure(userID, clientID, "", "refresh_token_not_found")
-		}
-		return nil, fmt.Errorf("%s: refresh token not found", ErrorCodeInvalidGrant)
-	}
+	// Token is now atomically deleted - no other request can use it
 
 	// Refresh token with provider
 	newProviderToken, err := s.provider.RefreshToken(ctx, providerToken.RefreshToken)
@@ -644,18 +646,20 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP stri
 }
 
 // RevokeAllTokensForUserClient revokes all tokens (access + refresh) for a specific user+client combination.
-// This is called when authorization code reuse is detected (OAuth 2.1 security requirement).
+// This is called when authorization code or refresh token reuse is detected (OAuth 2.1 security requirement).
 // It provides defense against token theft by invalidating all tokens when an attack is detected.
-func (s *Server) RevokeAllTokensForUserClient(userID, clientID string) error {
+//
+// SECURITY: This function revokes tokens at BOTH the provider (Google/GitHub) and locally.
+// The storage backend MUST implement TokenRevocationStore for OAuth 2.1 compliance.
+func (s *Server) RevokeAllTokensForUserClient(ctx context.Context, userID, clientID string) error {
 	// Check if storage supports token revocation
 	revocationStore, supportsRevocation := s.tokenStore.(storage.TokenRevocationStore)
 
 	if !supportsRevocation {
-		// Log warning but don't fail - storage doesn't support bulk revocation
-		s.Logger.Warn("Token storage does not support bulk revocation",
+		// SECURITY: Fail hard - this is a critical security feature required for OAuth 2.1
+		s.Logger.Error("CRITICAL: Token storage does not support TokenRevocationStore - OAuth 2.1 NOT compliant",
 			"user_id", userID,
-			"client_id", clientID,
-			"recommendation", "Consider using a storage backend that implements TokenRevocationStore")
+			"client_id", clientID)
 
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
@@ -663,31 +667,83 @@ func (s *Server) RevokeAllTokensForUserClient(userID, clientID string) error {
 				UserID:   userID,
 				ClientID: clientID,
 				Details: map[string]any{
-					"severity": "warning",
-					"message":  "Storage backend does not support bulk token revocation",
+					"severity": "critical",
+					"message":  "Storage backend does not support bulk token revocation - OAuth 2.1 compliance FAILED",
 				},
 			})
 		}
 
-		return nil
+		return fmt.Errorf("storage backend must implement TokenRevocationStore for OAuth 2.1 compliance")
 	}
 
-	// Revoke all tokens for this user+client
+	// Get list of tokens BEFORE revoking locally (so we can revoke at provider)
+	tokens, err := revocationStore.GetTokensByUserClient(userID, clientID)
+	if err != nil {
+		return fmt.Errorf("failed to get tokens for revocation: %w", err)
+	}
+
+	// SECURITY: Revoke at provider FIRST (with timeout)
+	// This ensures tokens are invalid at Google/GitHub/etc, not just locally
+	providerCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	revokedAtProvider := 0
+	for _, tokenID := range tokens {
+		providerToken, err := s.tokenStore.GetToken(tokenID)
+		if err != nil {
+			s.Logger.Warn("Could not get provider token for revocation",
+				"token_id", tokenID[:min(8, len(tokenID))],
+				"error", err)
+			continue
+		}
+
+		// Revoke access token at provider
+		if providerToken.AccessToken != "" {
+			if err := s.provider.RevokeToken(providerCtx, providerToken.AccessToken); err != nil {
+				s.Logger.Warn("Failed to revoke access token at provider",
+					"user_id", userID,
+					"client_id", clientID,
+					"error", err)
+				// Continue - don't fail entire operation if provider revocation fails
+			} else {
+				revokedAtProvider++
+			}
+		}
+
+		// Also revoke refresh token at provider if present
+		if providerToken.RefreshToken != "" {
+			if err := s.provider.RevokeToken(providerCtx, providerToken.RefreshToken); err != nil {
+				s.Logger.Warn("Failed to revoke refresh token at provider",
+					"user_id", userID,
+					"client_id", clientID,
+					"error", err)
+			}
+		}
+	}
+
+	s.Logger.Info("Revoked tokens at provider",
+		"user_id", userID,
+		"client_id", clientID,
+		"revoked_at_provider", revokedAtProvider,
+		"total_tokens", len(tokens))
+
+	// Now revoke locally
 	revokedCount, err := revocationStore.RevokeAllTokensForUserClient(userID, clientID)
 	if err != nil {
-		s.Logger.Error("Failed to revoke tokens for user+client",
+		s.Logger.Error("Failed to revoke tokens locally",
 			"user_id", userID,
 			"client_id", clientID,
 			"error", err)
-		return fmt.Errorf("failed to revoke tokens: %w", err)
+		return fmt.Errorf("failed to revoke tokens locally: %w", err)
 	}
 
 	// Log the revocation
 	s.Logger.Warn("Revoked all tokens for user+client due to security event",
 		"user_id", userID,
 		"client_id", clientID,
-		"tokens_revoked", revokedCount,
-		"reason", "authorization_code_reuse_detected")
+		"tokens_revoked_locally", revokedCount,
+		"tokens_revoked_at_provider", revokedAtProvider,
+		"reason", "reuse_detection")
 
 	if s.Auditor != nil {
 		s.Auditor.LogEvent(security.Event{
@@ -695,10 +751,11 @@ func (s *Server) RevokeAllTokensForUserClient(userID, clientID string) error {
 			UserID:   userID,
 			ClientID: clientID,
 			Details: map[string]any{
-				"severity":       "critical",
-				"tokens_revoked": revokedCount,
-				"reason":         "authorization_code_reuse_detected",
-				"oauth_spec":     "OAuth 2.1 Section 4.1.2",
+				"severity":                "critical",
+				"tokens_revoked_local":    revokedCount,
+				"tokens_revoked_provider": revokedAtProvider,
+				"reason":                  "authorization_code_reuse_detected",
+				"oauth_spec":              "OAuth 2.1 Section 4.1.2",
 			},
 		})
 	}

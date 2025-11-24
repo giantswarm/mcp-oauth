@@ -16,6 +16,12 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
+const (
+	// tokenIDLogLength is the number of characters to include when logging token IDs
+	// This provides enough uniqueness for debugging while keeping logs secure
+	tokenIDLogLength = 8
+)
+
 // RefreshTokenFamily tracks a family of refresh tokens for reuse detection (OAuth 2.1)
 type RefreshTokenFamily struct {
 	FamilyID   string    // Unique identifier for this token family
@@ -483,6 +489,45 @@ func (s *Store) DeleteRefreshToken(refreshToken string) error {
 	return nil
 }
 
+// AtomicGetAndDeleteRefreshToken atomically retrieves and deletes a refresh token.
+// This prevents race conditions in refresh token rotation and reuse detection.
+// Returns the userID and provider token if successful.
+//
+// SECURITY: This operation is atomic - only ONE concurrent request can succeed.
+// All other concurrent requests will receive a "token not found" error.
+func (s *Store) AtomicGetAndDeleteRefreshToken(refreshToken string) (string, *oauth2.Token, error) {
+	s.mu.Lock() // MUST use write lock for atomic get-and-delete
+	defer s.mu.Unlock()
+
+	// Get user ID
+	userID, ok := s.refreshTokens[refreshToken]
+	if !ok {
+		return "", nil, fmt.Errorf("refresh token not found or already used")
+	}
+
+	// Check if expired with clock skew grace period
+	if expiresAt, hasExpiry := s.refreshTokenExpiries[refreshToken]; hasExpiry {
+		if security.IsTokenExpired(expiresAt) {
+			return "", nil, fmt.Errorf("refresh token expired")
+		}
+	}
+
+	// Get provider token
+	providerToken, ok := s.tokens[refreshToken]
+	if !ok {
+		return "", nil, fmt.Errorf("provider token not found")
+	}
+
+	// ATOMIC DELETE - ensures only one request succeeds
+	delete(s.refreshTokens, refreshToken)
+	delete(s.refreshTokenExpiries, refreshToken)
+
+	s.logger.Debug("Atomically retrieved and deleted refresh token",
+		"user_id", userID)
+
+	return userID, providerToken, nil
+}
+
 // GetClient retrieves a client by ID
 func (s *Store) GetClient(clientID string) (*storage.Client, error) {
 	s.mu.RLock()
@@ -653,11 +698,15 @@ func (s *Store) SaveAuthorizationCode(code *storage.AuthorizationCode) error {
 	return nil
 }
 
-// GetAuthorizationCode retrieves and atomically deletes an authorization code
-// This prevents replay attacks by ensuring codes can only be used once
+// GetAuthorizationCode retrieves an authorization code without modifying it.
+// The code is kept marked as "Used" to detect reuse attempts (OAuth 2.1 requirement).
+// Expired/used codes are cleaned up by the background cleanup goroutine.
+//
+// NOTE: For actual code exchange, use AtomicCheckAndMarkAuthCodeUsed instead
+// to prevent race conditions.
 func (s *Store) GetAuthorizationCode(code string) (*storage.AuthorizationCode, error) {
-	s.mu.RLock() // Use read lock since we're not deleting anymore
-	defer s.mu.RUnlock()
+	s.mu.Lock() // Use write lock to ensure consistent read
+	defer s.mu.Unlock()
 
 	authCode, ok := s.authCodes[code]
 	if !ok {
@@ -669,10 +718,43 @@ func (s *Store) GetAuthorizationCode(code string) (*storage.AuthorizationCode, e
 		return nil, fmt.Errorf("authorization code expired")
 	}
 
-	// Return the code even if it's used - the caller will handle reuse detection
-	// This is required for OAuth 2.1 security: we need to detect code reuse and revoke tokens
-	// The code will be deleted by the cleanup goroutine after it expires
+	// Return a COPY to prevent caller from modifying our stored version
+	codeCopy := *authCode
+	return &codeCopy, nil
+}
 
+// AtomicCheckAndMarkAuthCodeUsed atomically checks if a code is unused and marks it as used.
+// This prevents race conditions in authorization code reuse detection.
+// Returns the auth code if successful, or an error if code is already used.
+//
+// SECURITY: This operation is atomic - only ONE concurrent request can succeed.
+// All other concurrent requests will receive an "already used" error.
+func (s *Store) AtomicCheckAndMarkAuthCodeUsed(code string) (*storage.AuthorizationCode, error) {
+	s.mu.Lock() // MUST use write lock for atomic check-and-set
+	defer s.mu.Unlock()
+
+	authCode, ok := s.authCodes[code]
+	if !ok {
+		return nil, fmt.Errorf("authorization code not found")
+	}
+
+	// Check if expired with clock skew grace period
+	if security.IsTokenExpired(authCode.ExpiresAt) {
+		return nil, fmt.Errorf("authorization code expired")
+	}
+
+	// ATOMIC check-and-set: Only one thread can pass this check
+	if authCode.Used {
+		// Code already used - return it for reuse detection handling
+		return authCode, fmt.Errorf("authorization code already used")
+	}
+
+	// Mark as used atomically
+	authCode.Used = true
+	s.logger.Debug("Marked authorization code as used",
+		"code_prefix", code[:min(8, len(code))])
+
+	// Return the code for token issuance
 	return authCode, nil
 }
 
@@ -813,51 +895,73 @@ func (s *Store) RevokeAllTokensForUserClient(userID, clientID string) (int, erro
 
 	revokedCount := 0
 
-	// Find all tokens for this user+client combination
+	// Step 1: Identify all token families to revoke
+	familiesToRevoke := make(map[string]bool)
 	tokensToRevoke := make([]string, 0)
+
 	for tokenID, metadata := range s.tokenMetadata {
 		if metadata.UserID == userID && metadata.ClientID == clientID {
 			tokensToRevoke = append(tokensToRevoke, tokenID)
+
+			// Track family IDs that need complete revocation
+			if family, hasFam := s.refreshTokenFamilies[tokenID]; hasFam {
+				familiesToRevoke[family.FamilyID] = true
+			}
 		}
 	}
 
-	// Revoke each token
-	for _, tokenID := range tokensToRevoke {
-		// Delete the token itself
-		if _, exists := s.tokens[tokenID]; exists {
-			delete(s.tokens, tokenID)
-			revokedCount++
-			s.logger.Debug("Revoked access token",
-				"user_id", userID,
-				"client_id", clientID,
-				"token_id", tokenID[:min(8, len(tokenID))])
-		}
-
-		// Delete refresh token if it exists
-		if _, exists := s.refreshTokens[tokenID]; exists {
-			delete(s.refreshTokens, tokenID)
-			delete(s.refreshTokenExpiries, tokenID)
-
-			// If this is a refresh token with a family, revoke the entire family
-			if family, hasFam := s.refreshTokenFamilies[tokenID]; hasFam {
-				// Mark the family as revoked
+	// Step 2: Revoke ENTIRE token families (finds ALL family members, not just tracked ones)
+	for familyID := range familiesToRevoke {
+		familyRevokedCount := 0
+		for tokenID, family := range s.refreshTokenFamilies {
+			if family.FamilyID == familyID {
+				// Mark family as revoked (keeps metadata for forensics/detection)
 				family.Revoked = true
-				s.logger.Info("Revoked refresh token family due to authorization code reuse",
+
+				// Delete the actual tokens
+				delete(s.refreshTokens, tokenID)
+				delete(s.refreshTokenExpiries, tokenID)
+				delete(s.tokens, tokenID)
+				delete(s.tokenMetadata, tokenID)
+
+				revokedCount++
+				familyRevokedCount++
+
+				s.logger.Debug("Revoked token from family",
 					"user_id", userID,
 					"client_id", clientID,
-					"family_id", family.FamilyID[:min(8, len(family.FamilyID))],
+					"token_id", tokenID[:min(tokenIDLogLength, len(tokenID))],
+					"family_id", familyID[:min(tokenIDLogLength, len(familyID))],
 					"generation", family.Generation)
 			}
-			delete(s.refreshTokenFamilies, tokenID)
-			revokedCount++
-			s.logger.Debug("Revoked refresh token",
-				"user_id", userID,
-				"client_id", clientID,
-				"token_id", tokenID[:min(8, len(tokenID))])
 		}
 
-		// Delete metadata
+		if familyRevokedCount > 0 {
+			s.logger.Info("Revoked entire refresh token family",
+				"user_id", userID,
+				"client_id", clientID,
+				"family_id", familyID[:min(tokenIDLogLength, len(familyID))],
+				"tokens_revoked", familyRevokedCount,
+				"reason", "authorization_code_reuse_detected")
+		}
+	}
+
+	// Step 3: Revoke remaining tokens (access tokens, tokens without families)
+	for _, tokenID := range tokensToRevoke {
+		// Skip if already deleted as part of family revocation
+		if _, exists := s.tokens[tokenID]; !exists {
+			continue
+		}
+
+		// Delete the token itself
+		delete(s.tokens, tokenID)
 		delete(s.tokenMetadata, tokenID)
+		revokedCount++
+
+		s.logger.Debug("Revoked access token",
+			"user_id", userID,
+			"client_id", clientID,
+			"token_id", tokenID[:min(tokenIDLogLength, len(tokenID))])
 	}
 
 	if revokedCount > 0 {
