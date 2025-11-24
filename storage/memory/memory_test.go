@@ -13,6 +13,11 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
+const (
+	testUserID       = "test-user"
+	testRefreshToken = "test-refresh-token"
+)
+
 // ============================================================
 // TokenStore Tests
 // ============================================================
@@ -22,7 +27,7 @@ func TestStore_SaveToken(t *testing.T) {
 	defer store.Stop()
 
 	token := testutil.GenerateTestToken()
-	userID := "test-user"
+	userID := testUserID
 
 	err := store.SaveToken(userID, token)
 	if err != nil {
@@ -83,7 +88,7 @@ func TestStore_GetToken_Expired(t *testing.T) {
 		Expiry:      time.Now().Add(-10 * time.Minute), // 10 minutes ago
 	}
 
-	userID := "test-user"
+	userID := testUserID
 	err := store.SaveToken(userID, expiredToken)
 	if err != nil {
 		t.Fatalf("SaveToken() error = %v", err)
@@ -108,7 +113,7 @@ func TestStore_GetToken_ExpiredWithRefreshToken(t *testing.T) {
 		Expiry:       time.Now().Add(-10 * time.Minute),
 	}
 
-	userID := "test-user"
+	userID := testUserID
 	err := store.SaveToken(userID, expiredToken)
 	if err != nil {
 		t.Fatalf("SaveToken() error = %v", err)
@@ -130,7 +135,7 @@ func TestStore_DeleteToken(t *testing.T) {
 	defer store.Stop()
 
 	token := testutil.GenerateTestToken()
-	userID := "test-user"
+	userID := testUserID
 
 	// Save token
 	if err := store.SaveToken(userID, token); err != nil {
@@ -154,7 +159,7 @@ func TestStore_SaveUserInfo(t *testing.T) {
 	defer store.Stop()
 
 	userInfo := testutil.GenerateTestUserInfo()
-	userID := "test-user"
+	userID := testUserID
 
 	err := store.SaveUserInfo(userID, userInfo)
 	if err != nil {
@@ -212,8 +217,8 @@ func TestStore_SaveRefreshToken(t *testing.T) {
 	store := New()
 	defer store.Stop()
 
-	refreshToken := "test-refresh-token"
-	userID := "test-user"
+	refreshToken := testRefreshToken
+	userID := testUserID
 	expiresAt := time.Now().Add(90 * 24 * time.Hour)
 
 	err := store.SaveRefreshToken(refreshToken, userID, expiresAt)
@@ -256,8 +261,8 @@ func TestStore_GetRefreshTokenInfo_Expired(t *testing.T) {
 	store := New()
 	defer store.Stop()
 
-	refreshToken := "test-refresh-token"
-	userID := "test-user"
+	refreshToken := testRefreshToken
+	userID := testUserID
 	expiresAt := time.Now().Add(-1 * time.Hour) // Expired
 
 	if err := store.SaveRefreshToken(refreshToken, userID, expiresAt); err != nil {
@@ -275,8 +280,8 @@ func TestStore_DeleteRefreshToken(t *testing.T) {
 	store := New()
 	defer store.Stop()
 
-	refreshToken := "test-refresh-token"
-	userID := "test-user"
+	refreshToken := testRefreshToken
+	userID := testUserID
 	expiresAt := time.Now().Add(90 * 24 * time.Hour)
 
 	// Save refresh token
@@ -304,8 +309,8 @@ func TestStore_SaveRefreshTokenWithFamily(t *testing.T) {
 	store := New()
 	defer store.Stop()
 
-	refreshToken := "test-refresh-token"
-	userID := "test-user"
+	refreshToken := testRefreshToken
+	userID := testUserID
 	clientID := "test-client"
 	familyID := "test-family"
 	generation := 1
@@ -755,7 +760,7 @@ func TestStore_TokenEncryption(t *testing.T) {
 	// Save token
 	token := testutil.GenerateTestToken()
 	originalAccessToken := token.AccessToken
-	userID := "test-user"
+	userID := testUserID
 
 	err = store.SaveToken(userID, token)
 	if err != nil {

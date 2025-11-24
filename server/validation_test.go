@@ -259,17 +259,44 @@ func TestIsLocalhostHostname(t *testing.T) {
 		hostname string
 		want     bool
 	}{
+		// Localhost hostname
 		{"localhost", true},
+
+		// IPv4 loopback - standard
 		{"127.0.0.1", true},
+
+		// IPv4 loopback - entire 127.0.0.0/8 range (RFC 1122)
+		{"127.0.0.0", true},
+		{"127.0.0.2", true},
+		{"127.1.2.3", true},
+		{"127.255.255.255", true},
+
+		// IPv6 loopback
 		{"::1", true},
 		{"[::1]", true},
+
+		// IPv4-mapped IPv6 loopback
+		{"::ffff:127.0.0.1", true},
+		{"[::ffff:127.0.0.1]", true},
+
+		// Special: 0.0.0.0 (bind-all, used in development)
 		{"0.0.0.0", true},
+
+		// Non-loopback addresses
 		{"example.com", false},
 		{"192.168.1.1", false},
 		{"203.0.113.1", false},
+		{"10.0.0.1", false},
+		{"172.16.0.1", false},
+
+		// Not localhost despite name similarity
 		{"oauth.localhost.com", false},
 		{"localhost.example.com", false},
+
+		// Edge cases
 		{"", false},
+		{"localhost.", false}, // Trailing dot (FQDN)
+		{"notlocalhost", false},
 	}
 
 	for _, tt := range tests {
@@ -277,6 +304,45 @@ func TestIsLocalhostHostname(t *testing.T) {
 			got := isLocalhostHostname(tt.hostname)
 			if got != tt.want {
 				t.Errorf("isLocalhostHostname(%q) = %v, want %v", tt.hostname, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestValidateHTTPSEnforcement_LoopbackRange verifies that the entire
+// 127.0.0.0/8 loopback range is correctly recognized as localhost
+func TestValidateHTTPSEnforcement_LoopbackRange(t *testing.T) {
+	loopbackAddresses := []string{
+		"127.0.0.2",
+		"127.1.2.3",
+		"127.255.255.255",
+	}
+
+	for _, addr := range loopbackAddresses {
+		t.Run("HTTP_"+addr, func(t *testing.T) {
+			provider := mock.NewMockProvider()
+			memStore := memory.New()
+
+			var logBuf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+			config := &Config{
+				Issuer:            "http://" + addr + ":8080",
+				AllowInsecureHTTP: false,
+			}
+
+			srv, err := New(provider, memStore, memStore, memStore, config, logger)
+			if err != nil {
+				t.Fatalf("Expected no error for loopback address %s, got: %v", addr, err)
+			}
+			if srv == nil {
+				t.Fatal("Expected server to be created")
+			}
+
+			// Verify warning was logged (since it's localhost without AllowInsecureHTTP=true)
+			logOutput := logBuf.String()
+			if !strings.Contains(logOutput, "DEVELOPMENT WARNING") {
+				t.Errorf("Expected warning log for HTTP on loopback %s, got: %s", addr, logOutput)
 			}
 		})
 	}

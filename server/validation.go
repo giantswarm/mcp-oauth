@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
+	"net"
 	"net/url"
 	"regexp"
 	"strings"
@@ -118,14 +119,32 @@ func (s *Server) validateHTTPSEnforcement() error {
 }
 
 // isLocalhostHostname checks if a hostname refers to the local machine.
-// This includes IPv4 loopback, IPv6 loopback, and localhost hostname.
+// This includes IPv4 loopback (entire 127.0.0.0/8 range per RFC 1122),
+// IPv6 loopback (::1), localhost hostname, and 0.0.0.0 (bind-all in dev).
 // Used to determine if HTTP is acceptable for development purposes.
 func isLocalhostHostname(hostname string) bool {
-	return hostname == "localhost" ||
-		hostname == "127.0.0.1" ||
-		hostname == "::1" ||
-		hostname == "0.0.0.0" ||
-		hostname == "[::1]" // IPv6 with brackets
+	// Direct hostname checks
+	if hostname == "localhost" || hostname == "0.0.0.0" {
+		return true
+	}
+
+	// Strip brackets from IPv6 addresses for parsing
+	// net.ParseIP doesn't handle brackets, but url.Hostname() may include them
+	cleanHostname := hostname
+	if len(hostname) > 2 && hostname[0] == '[' && hostname[len(hostname)-1] == ']' {
+		cleanHostname = hostname[1 : len(hostname)-1]
+	}
+
+	// Parse as IP and check if it's a loopback address
+	// This correctly handles:
+	// - 127.0.0.1 through 127.255.255.255 (entire 127.0.0.0/8 range)
+	// - ::1 (IPv6 loopback)
+	// - ::ffff:127.0.0.1 (IPv4-mapped IPv6 loopback)
+	if ip := net.ParseIP(cleanHostname); ip != nil {
+		return ip.IsLoopback()
+	}
+
+	return false
 }
 
 // validateRedirectURI validates that a redirect URI is registered and secure

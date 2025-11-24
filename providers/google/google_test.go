@@ -13,6 +13,10 @@ import (
 	"golang.org/x/oauth2"
 )
 
+const (
+	testTokenEndpoint = "/token"
+)
+
 func TestNewProvider(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -165,7 +169,7 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 func TestProvider_ExchangeCode(t *testing.T) {
 	// Create mock Google token endpoint
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/token" {
+		if r.URL.Path != testTokenEndpoint {
 			http.NotFound(w, r)
 			return
 		}
@@ -225,7 +229,7 @@ func TestProvider_ExchangeCode(t *testing.T) {
 func TestProvider_ExchangeCode_WithPKCE(t *testing.T) {
 	// Create mock Google token endpoint
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/token" {
+		if r.URL.Path != testTokenEndpoint {
 			http.NotFound(w, r)
 			return
 		}
@@ -364,7 +368,7 @@ func TestProvider_ValidateToken_InvalidToken(t *testing.T) {
 func TestProvider_RefreshToken(t *testing.T) {
 	// Create mock Google token endpoint
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/token" {
+		if r.URL.Path != testTokenEndpoint {
 			http.NotFound(w, r)
 			return
 		}
