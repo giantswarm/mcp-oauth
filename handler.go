@@ -16,6 +16,10 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
+const (
+	defaultCORSMaxAge = 3600 // 1 hour default for preflight cache
+)
+
 // Handler is a thin HTTP adapter for the OAuth Server.
 // It handles HTTP requests and delegates to the Server for business logic.
 type Handler struct {
@@ -599,7 +603,6 @@ func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string)
 }
 
 func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *oauth2.Token, scope string) {
-	// Note: CORS headers already set by ServeToken before calling this helper
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 
 	expiresIn := int64(time.Until(token.Expiry).Seconds())
@@ -631,7 +634,6 @@ func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *oauth2.Token,
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, code, description string, status int) {
-	// Note: CORS headers already set by the calling handler before calling writeError
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -749,49 +751,40 @@ func UserInfoFromContext(ctx context.Context) (*providers.UserInfo, bool) {
 	return userInfo, ok
 }
 
-// setCORSHeaders sets CORS headers on the response if CORS is configured and the origin is allowed.
-// This enables browser-based MCP clients to make cross-origin requests to the OAuth server.
-// CORS is only applied if:
-// 1. CORS configuration is present (AllowedOrigins is not empty)
-// 2. The request includes an Origin header
-// 3. The origin is in the allowed list (or wildcard "*" is configured)
+// setCORSHeaders sets CORS headers if configured and the origin is allowed.
+// Enables browser-based MCP clients to make cross-origin requests.
+// Only applies if AllowedOrigins is configured, Origin header is present, and origin is allowed.
 func (h *Handler) setCORSHeaders(w http.ResponseWriter, r *http.Request) {
-	// Skip CORS if not configured (backward compatible default)
+	// Skip if CORS not configured
 	if len(h.server.Config.CORS.AllowedOrigins) == 0 {
 		return
 	}
 
-	// Get origin from request
+	// Skip if not a browser CORS request (no Origin header)
 	origin := r.Header.Get("Origin")
 	if origin == "" {
-		// No Origin header means this is not a browser CORS request
-		// (could be a server-to-server request or same-origin request)
 		return
 	}
 
-	// Check if origin is allowed
+	// Skip if origin not allowed
 	if !h.isAllowedOrigin(origin) {
-		// Origin not allowed - don't set CORS headers
-		// Browser will block the response
 		h.logger.Debug("CORS request from disallowed origin", "origin", origin)
 		return
 	}
 
 	// Set CORS headers for allowed origin
-	// We echo back the specific origin rather than using "*" when credentials are allowed
+	// Echo back the specific origin rather than using "*" for security
 	w.Header().Set("Access-Control-Allow-Origin", origin)
 
-	// Allow credentials (cookies, authorization headers) if configured
-	maxAge := h.server.Config.CORS.MaxAge
-	if maxAge == 0 {
-		maxAge = 3600 // 1 hour default
-	}
-
-	// Set credentials header based on configuration
-	// Note: For OAuth flows, credentials (Bearer tokens, cookies) are typically needed
-	// We only omit this header if explicitly disabled in config
+	// Set credentials header if enabled (required for Bearer tokens)
 	if h.server.Config.CORS.AllowCredentials {
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
+	}
+
+	// Set preflight cache duration
+	maxAge := h.server.Config.CORS.MaxAge
+	if maxAge == 0 {
+		maxAge = defaultCORSMaxAge
 	}
 
 	// Set allowed methods for preflight requests
@@ -828,21 +821,14 @@ func (h *Handler) isAllowedOrigin(origin string) bool {
 }
 
 // ServePreflightRequest handles CORS preflight (OPTIONS) requests.
-// Browsers send OPTIONS requests before actual requests to check if CORS is allowed.
-// This is required for "non-simple" requests (POST with JSON, custom headers, etc.)
+// Required for non-simple requests (POST with JSON, custom headers, etc.).
 func (h *Handler) ServePreflightRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodOptions {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Set CORS headers
 	h.setCORSHeaders(w, r)
-
-	// Preflight responses should not include security headers that might interfere
-	// But we still want basic security
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-
-	// Return 204 No Content for successful preflight
 	w.WriteHeader(http.StatusNoContent)
 }

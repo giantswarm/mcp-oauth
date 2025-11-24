@@ -157,9 +157,9 @@ type CORSConfig struct {
 	AllowedOrigins []string
 
 	// AllowCredentials enables the Access-Control-Allow-Credentials header.
-	// Required if your browser client needs to send cookies or authentication.
-	// Set to true to enable credentials support for CORS requests.
-	// Default: false (must be explicitly enabled)
+	// Required if your browser client needs to send cookies or authorization headers.
+	// Must be true for OAuth flows that require Bearer tokens.
+	// Default: false
 	AllowCredentials bool
 
 	// MaxAge is the maximum time (in seconds) browsers can cache preflight responses.
