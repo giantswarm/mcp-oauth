@@ -1776,3 +1776,174 @@ func TestServer_RevokeAllTokensProviderTimeout(t *testing.T) {
 
 	t.Logf("Provider timeout test passed: operation completed in %v (timeout was %ds)", elapsed, srv.Config.ProviderRevocationTimeout)
 }
+
+// TestServer_ConcurrentReuseAndRevocation tests that concurrent token reuse attempts
+// during revocation are handled safely without races, panics, or deadlocks.
+// This test verifies the TOCTOU fix in refresh token reuse detection.
+func TestServer_ConcurrentReuseAndRevocation(t *testing.T) {
+	srv, store, provider := setupFlowTestServer(t)
+
+	// Enable refresh token rotation
+	srv.Config.AllowRefreshTokenRotation = true
+	srv.Config.RefreshTokenTTL = 86400
+
+	// Register a client
+	client, _, err := srv.RegisterClient(
+		"Test Client",
+		ClientTypeConfidential,
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+	clientID := client.ClientID
+
+	// Generate PKCE
+	codeVerifier := testutil.GenerateRandomString(50)
+	hash := sha256.Sum256([]byte(codeVerifier))
+	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	// Get initial tokens
+	clientState := "client-state-" + testutil.GenerateRandomString(10)
+	_, err = srv.StartAuthorizationFlow(
+		clientID,
+		"https://example.com/callback",
+		"openid email",
+		codeChallenge,
+		PKCEMethodS256,
+		clientState,
+	)
+	if err != nil {
+		t.Fatalf("StartAuthorizationFlow() error = %v", err)
+	}
+
+	authState, err := store.GetAuthorizationState(clientState)
+	if err != nil {
+		t.Fatalf("GetAuthorizationState() error = %v", err)
+	}
+
+	authCodeObj, _, err := srv.HandleProviderCallback(
+		context.Background(),
+		authState.ProviderState,
+		"provider-code-"+testutil.GenerateRandomString(10),
+	)
+	if err != nil {
+		t.Fatalf("HandleProviderCallback() error = %v", err)
+	}
+
+	token, _, err := srv.ExchangeAuthorizationCode(
+		context.Background(),
+		authCodeObj.Code,
+		clientID,
+		"https://example.com/callback",
+		codeVerifier,
+	)
+	if err != nil {
+		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
+	}
+
+	firstRefreshToken := token.RefreshToken
+
+	// Configure mock provider for refresh
+	provider.RefreshTokenFunc = func(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+		return &oauth2.Token{
+			AccessToken:  "rotated-provider-access-token",
+			RefreshToken: "rotated-provider-refresh-token",
+			Expiry:       time.Now().Add(1 * time.Hour),
+		}, nil
+	}
+
+	// Perform one legitimate refresh (rotation happens)
+	token2, err := srv.RefreshAccessToken(context.Background(), firstRefreshToken, clientID)
+	if err != nil {
+		t.Fatalf("Legitimate RefreshAccessToken() error = %v", err)
+	}
+
+	// Now firstRefreshToken is rotated out (deleted), but family metadata exists
+	// This is the perfect state to test concurrent reuse detection
+
+	// Launch 20 goroutines: 10 trying to reuse the old token, 10 trying to use valid token
+	const numReuse = 10
+	const numValid = 10
+	const totalGoroutines = numReuse + numValid
+
+	type result struct {
+		success  bool
+		err      error
+		isReuse  bool
+		threadID int
+	}
+	results := make(chan result, totalGoroutines)
+
+	// Start all goroutines roughly at the same time
+	// Half will try to reuse the OLD token (should trigger revocation)
+	// Half will try to use the VALID token (should fail due to revocation)
+	for i := 0; i < numReuse; i++ {
+		go func(id int) {
+			_, err := srv.RefreshAccessToken(context.Background(), firstRefreshToken, clientID)
+			results <- result{success: err == nil, err: err, isReuse: true, threadID: id}
+		}(i)
+	}
+
+	// Small delay to let reuse attempts start first
+	time.Sleep(10 * time.Millisecond)
+
+	for i := 0; i < numValid; i++ {
+		go func(id int) {
+			_, err := srv.RefreshAccessToken(context.Background(), token2.RefreshToken, clientID)
+			results <- result{success: err == nil, err: err, isReuse: false, threadID: numReuse + id}
+		}(i)
+	}
+
+	// Collect results
+	reuseSuccessCount := 0
+	reuseFailCount := 0
+	validSuccessCount := 0
+	validFailCount := 0
+
+	for i := 0; i < totalGoroutines; i++ {
+		res := <-results
+		if res.isReuse {
+			if res.success {
+				reuseSuccessCount++
+				t.Errorf("Thread %d: Reuse attempt succeeded - should have failed!", res.threadID)
+			} else {
+				reuseFailCount++
+				// Verify error is generic
+				if !strings.Contains(res.err.Error(), "invalid") && !strings.Contains(res.err.Error(), "revoked") {
+					t.Errorf("Thread %d: Error should indicate security failure, got: %v", res.threadID, res.err)
+				}
+			}
+		} else {
+			if res.success {
+				validSuccessCount++
+				// This is possible if the goroutine ran before revocation completed
+				t.Logf("Thread %d: Valid token succeeded (ran before revocation)", res.threadID)
+			} else {
+				validFailCount++
+				// Expected - token revoked or already used
+			}
+		}
+	}
+
+	// CRITICAL: ALL reuse attempts should fail
+	if reuseSuccessCount > 0 {
+		t.Errorf("SECURITY FAILURE: %d reuse attempts succeeded, expected 0", reuseSuccessCount)
+	}
+
+	// Verify ALL tokens were eventually revoked
+	tokens, err := store.GetTokensByUserClient("mock-user-123", clientID)
+	if err != nil {
+		t.Fatalf("GetTokensByUserClient() error = %v", err)
+	}
+	if len(tokens) != 0 {
+		t.Errorf("ALL tokens should have been revoked, but found %d", len(tokens))
+	}
+
+	t.Logf("Concurrent reuse+revocation test passed: %d/%d reuse attempts failed, %d valid attempts, %d/%d valid attempts failed",
+		reuseFailCount, numReuse, numValid, validFailCount, numValid)
+	t.Logf("This test verifies the TOCTOU fix - no races, panics, or deadlocks occurred")
+}

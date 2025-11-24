@@ -24,6 +24,12 @@ const (
 	// maxFamilyMetadataEntries is the threshold for warning about excessive family metadata
 	// This helps detect potential memory exhaustion attacks
 	maxFamilyMetadataEntries = 10000
+
+	// hardMaxFamilyMetadataEntries is the hard limit for family metadata entries
+	// Exceeding this limit will cause SaveRefreshTokenWithFamily to fail
+	// This prevents memory exhaustion attacks via repeated token rotation
+	// Set to 5x the warning threshold for safety margin
+	hardMaxFamilyMetadataEntries = 50000
 )
 
 // safeTruncate safely truncates a string to maxLen characters without panicking.
@@ -49,10 +55,10 @@ type RefreshTokenFamily struct {
 
 // TokenMetadata tracks ownership information for a token (for revocation by user+client)
 type TokenMetadata struct {
-	UserID    string    // User who owns this token
-	ClientID  string    // Client who owns this token
-	IssuedAt  time.Time // When this token was issued
-	TokenType string    // "access" or "refresh"
+	UserID   string    // User who owns this token
+	ClientID string    // Client who owns this token
+	IssuedAt time.Time // When this token was issued
+	TokenType string   // "access" or "refresh"
 }
 
 // Store is an in-memory implementation of all storage interfaces.
@@ -85,10 +91,10 @@ type Store struct {
 	encryptor *security.Encryptor // Token encryption at rest (optional)
 
 	// Cleanup
-	cleanupInterval            time.Duration
-	revokedFamilyRetentionDays int64 // configurable retention period for revoked families
-	stopCleanup                chan struct{}
-	logger                     *slog.Logger
+	cleanupInterval             time.Duration
+	revokedFamilyRetentionDays  int64 // configurable retention period for revoked families
+	stopCleanup                 chan struct{}
+	logger                      *slog.Logger
 }
 
 // Compile-time interface checks to ensure Store implements all storage interfaces
@@ -406,6 +412,20 @@ func (s *Store) SaveRefreshTokenWithFamily(refreshToken, userID, clientID, famil
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// SECURITY: Enforce hard limit on family metadata to prevent memory exhaustion attacks
+	// Check if we're adding a NEW family entry (not updating existing)
+	if _, exists := s.refreshTokenFamilies[refreshToken]; !exists {
+		currentCount := len(s.refreshTokenFamilies)
+		if currentCount >= hardMaxFamilyMetadataEntries {
+			s.logger.Error("CRITICAL: Refresh token family metadata limit exceeded - blocking save to prevent memory exhaustion",
+				"current_count", currentCount,
+				"hard_limit", hardMaxFamilyMetadataEntries,
+				"user_id", userID,
+				"client_id", clientID)
+			return fmt.Errorf("refresh token family metadata limit exceeded (%d entries) - possible memory exhaustion attack", currentCount)
+		}
+	}
 
 	// Save basic refresh token info
 	s.refreshTokens[refreshToken] = userID
@@ -968,11 +988,11 @@ func (s *Store) RevokeAllTokensForUserClient(userID, clientID string) (int, erro
 	// Step 1: Identify all token families to revoke
 	familiesToRevoke := make(map[string]bool)
 	tokensToRevoke := make([]string, 0)
-
+	
 	for tokenID, metadata := range s.tokenMetadata {
 		if metadata.UserID == userID && metadata.ClientID == clientID {
 			tokensToRevoke = append(tokensToRevoke, tokenID)
-
+			
 			// Track family IDs that need complete revocation
 			if family, hasFam := s.refreshTokenFamilies[tokenID]; hasFam {
 				familiesToRevoke[family.FamilyID] = true
@@ -990,16 +1010,16 @@ func (s *Store) RevokeAllTokensForUserClient(userID, clientID string) (int, erro
 				// CRITICAL: Must update the map entry directly, not the loop copy
 				s.refreshTokenFamilies[tokenID].Revoked = true
 				s.refreshTokenFamilies[tokenID].RevokedAt = now
-
+				
 				// Delete the actual tokens
 				delete(s.refreshTokens, tokenID)
 				delete(s.refreshTokenExpiries, tokenID)
 				delete(s.tokens, tokenID)
 				delete(s.tokenMetadata, tokenID)
-
+				
 				revokedCount++
 				familyRevokedCount++
-
+				
 				s.logger.Debug("Revoked token from family",
 					"user_id", userID,
 					"client_id", clientID,
@@ -1008,7 +1028,7 @@ func (s *Store) RevokeAllTokensForUserClient(userID, clientID string) (int, erro
 					"generation", family.Generation)
 			}
 		}
-
+		
 		if familyRevokedCount > 0 {
 			s.logger.Info("Revoked entire refresh token family",
 				"user_id", userID,
@@ -1025,12 +1045,12 @@ func (s *Store) RevokeAllTokensForUserClient(userID, clientID string) (int, erro
 		if _, exists := s.tokens[tokenID]; !exists {
 			continue
 		}
-
+		
 		// Delete the token itself
 		delete(s.tokens, tokenID)
 		delete(s.tokenMetadata, tokenID)
 		revokedCount++
-
+		
 		s.logger.Debug("Revoked access token",
 			"user_id", userID,
 			"client_id", clientID,

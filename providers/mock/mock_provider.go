@@ -80,10 +80,15 @@ func NewMockProvider() *MockProvider {
 
 // Name returns the provider name
 func (m *MockProvider) Name() string {
+	// LOCK PATTERN: Lock only to update counter and read function reference
+	// Release lock BEFORE calling user function to prevent deadlocks
+	// (user function might call other mock methods)
 	m.mu.Lock()
 	m.CallCounts["Name"]++
 	fn := m.NameFunc
 	m.mu.Unlock()
+
+	// Call user function WITHOUT holding lock (deadlock prevention)
 	if fn == nil {
 		return "mock" // Safe default
 	}

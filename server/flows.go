@@ -428,38 +428,40 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	// Check if storage supports token family tracking (OAuth 2.1 reuse detection)
 	familyStore, supportsFamilies := s.tokenStore.(storage.RefreshTokenFamilyStore)
 
-	// OAUTH 2.1 SECURITY: Check for refresh token reuse (token theft detection)
-	// CRITICAL: Check family status FIRST before validating token
-	// This enables detection of deleted/rotated token reuse
-	if supportsFamilies {
-		family, err := familyStore.GetRefreshTokenFamily(refreshToken)
-		if err == nil {
-			// Check if this token family has been revoked due to prior reuse
-			if family.Revoked {
-				if s.Auditor != nil {
-					s.Auditor.LogEvent(security.Event{
-						Type:     "revoked_token_family_reuse_attempt",
-						UserID:   family.UserID,
-						ClientID: clientID,
-						Details: map[string]any{
-							"severity":    "critical",
-							"family_id":   family.FamilyID,
-							"description": "Attempted use of token from revoked family (prior reuse detected)",
-						},
-					})
-				}
-				s.Logger.Error("Attempted use of revoked token family",
-					"user_id", family.UserID,
-					"family_id", safeTruncate(family.FamilyID, 8))
-				return nil, fmt.Errorf("refresh token has been revoked")
-			}
+	// OAUTH 2.1 SECURITY: Atomically get and delete refresh token FIRST
+	// This is the synchronization point - only ONE concurrent request can succeed
+	// After this, we check family metadata to detect reuse of already-rotated tokens
+	userID, providerToken, err := s.tokenStore.AtomicGetAndDeleteRefreshToken(refreshToken)
 
-			// CRITICAL SECURITY: Detect refresh token reuse
-			// When a token is rotated, it's deleted from refreshTokens but family metadata persists
-			// If token is deleted but family exists and not revoked → REUSE DETECTED
-			_, tokenErr := s.tokenStore.GetRefreshTokenInfo(refreshToken)
-			if tokenErr != nil {
-				// Token is deleted but family exists and not revoked → REUSE DETECTED!
+	if err != nil {
+		// Token not found or already deleted - check if this is a reuse attempt
+		// SECURITY FIX: Check family AFTER atomic delete to eliminate TOCTOU vulnerability
+		if supportsFamilies {
+			family, famErr := familyStore.GetRefreshTokenFamily(refreshToken)
+			if famErr == nil {
+				// Family exists but token was already deleted/rotated → REUSE DETECTED!
+				// Check if family was previously revoked
+				if family.Revoked {
+					// Attempted use of token from previously revoked family
+					if s.Auditor != nil {
+						s.Auditor.LogEvent(security.Event{
+							Type:     "revoked_token_family_reuse_attempt",
+							UserID:   family.UserID,
+							ClientID: clientID,
+							Details: map[string]any{
+								"severity":    "critical",
+								"family_id":   family.FamilyID,
+								"description": "Attempted use of token from revoked family (prior reuse detected)",
+							},
+						})
+					}
+					s.Logger.Error("Attempted use of revoked token family",
+						"user_id", family.UserID,
+						"family_id", safeTruncate(family.FamilyID, 8))
+					return nil, fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+				}
+
+				// Token is deleted but family exists and NOT revoked → FRESH REUSE DETECTED!
 				// This means someone is trying to use an old (rotated) refresh token
 				// Rate limit logging to prevent DoS via log flooding
 				if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(family.UserID+":"+clientID) {
@@ -505,14 +507,8 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 				return nil, fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 			}
 		}
-	}
 
-	// SECURITY: Atomically get and delete refresh token to prevent race conditions
-	// This ensures only ONE concurrent request can use the token (critical for rotation)
-	userID, providerToken, err := s.tokenStore.AtomicGetAndDeleteRefreshToken(refreshToken)
-	if err != nil {
-		// Token not found - check if this might be reuse of already-rotated token
-		// (Family check above should have caught this, but defense in depth)
+		// Token not found and no family metadata - regular invalid token error
 		if s.Auditor != nil {
 			s.Auditor.LogAuthFailure("", clientID, "", "invalid_refresh_token")
 		}
