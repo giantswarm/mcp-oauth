@@ -3,6 +3,7 @@ package testutil
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"net/http"
@@ -140,6 +141,16 @@ func GenerateRandomString(length int) string {
 		panic(fmt.Sprintf("failed to generate random string: %v", err))
 	}
 	return base64.RawURLEncoding.EncodeToString(b)[:length]
+}
+
+// GeneratePKCEPair generates a valid PKCE challenge and verifier pair for testing.
+// Returns (challenge, verifier) where challenge is the S256 hash of the verifier.
+// This is a convenience helper to reduce code duplication in PKCE tests.
+func GeneratePKCEPair() (challenge, verifier string) {
+	verifier = GenerateRandomString(50)
+	hash := sha256.Sum256([]byte(verifier))
+	challenge = base64.RawURLEncoding.EncodeToString(hash[:])
+	return challenge, verifier
 }
 
 // AssertNoError fails the test if err is not nil

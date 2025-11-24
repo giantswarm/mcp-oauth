@@ -26,6 +26,29 @@ const (
 	ErrorCodeInvalidGrant       = "invalid_grant"
 )
 
+// OAuthSpecVersion is the OAuth specification version this library implements.
+// Note: This is intentionally duplicated from constants.go to avoid circular imports.
+// Keep in sync with constants.go.
+const OAuthSpecVersion = "OAuth 2.1"
+
+// logAuthCodeValidationFailure logs authorization code validation failures with
+// consistent formatting and returns a generic error per RFC 6749.
+// This helper reduces code duplication and ensures consistent error handling.
+func (s *Server) logAuthCodeValidationFailure(reason, clientID, userID, codePrefix string) error {
+	s.Logger.Debug("Authorization code validation failed",
+		"reason", reason,
+		"client_id", clientID,
+		"user_id", userID,
+		"code_prefix", codePrefix)
+
+	if s.Auditor != nil {
+		s.Auditor.LogAuthFailure(userID, clientID, "", reason)
+	}
+
+	// Return generic error per RFC 6749 (don't reveal details to attacker)
+	return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+}
+
 // ValidateToken validates an access token with the provider
 // Note: Rate limiting should be done at the HTTP layer with IP address, not here with token
 func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
@@ -330,69 +353,26 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 		}
 
 		// Other error (not found, expired, etc.)
-		// SECURITY: Log detailed internal error for debugging, but return generic error to client
-		s.Logger.Debug("Authorization code validation failed",
-			"reason", err.Error(),
-			"client_id", clientID,
-			"code_prefix", safeTruncate(code, 8))
-
-		if s.Auditor != nil {
-			s.Auditor.LogAuthFailure("", clientID, "", "invalid_authorization_code")
-		}
-		// Return generic error per RFC 6749 (don't reveal details to attacker)
-		return nil, "", fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+		return nil, "", s.logAuthCodeValidationFailure("invalid_authorization_code: "+err.Error(), clientID, "", safeTruncate(code, 8))
 	}
 
 	// Code is now atomically marked as used - no other request can use it
 
 	// Validate client ID matches
 	if authCode.ClientID != clientID {
-		// SECURITY: Log detailed internal error for debugging, but return generic error to client
-		s.Logger.Debug("Authorization code validation failed",
-			"reason", "client_id_mismatch",
-			"expected_client_id", authCode.ClientID,
-			"provided_client_id", clientID,
-			"code_prefix", safeTruncate(code, 8))
-
-		if s.Auditor != nil {
-			s.Auditor.LogAuthFailure("", clientID, "", "client_id_mismatch")
-		}
-		// Return generic error per RFC 6749 (don't reveal details to attacker)
-		return nil, "", fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+		return nil, "", s.logAuthCodeValidationFailure("client_id_mismatch", clientID, "", safeTruncate(code, 8))
 	}
 
 	// Validate redirect URI matches
 	if authCode.RedirectURI != redirectURI {
-		// SECURITY: Log detailed internal error for debugging, but return generic error to client
-		s.Logger.Debug("Authorization code validation failed",
-			"reason", "redirect_uri_mismatch",
-			"expected_uri", authCode.RedirectURI,
-			"provided_uri", redirectURI,
-			"client_id", clientID,
-			"code_prefix", safeTruncate(code, 8))
-
-		if s.Auditor != nil {
-			s.Auditor.LogAuthFailure("", clientID, "", "redirect_uri_mismatch")
-		}
-		// Return generic error per RFC 6749 (don't reveal details to attacker)
-		return nil, "", fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+		return nil, "", s.logAuthCodeValidationFailure("redirect_uri_mismatch", clientID, "", safeTruncate(code, 8))
 	}
 
 	// CRITICAL SECURITY: Fetch client to check if PKCE is required (OAuth 2.1)
 	// Public clients (mobile apps, SPAs) MUST use PKCE to prevent authorization code theft
 	client, err := s.clientStore.GetClient(clientID)
 	if err != nil {
-		// SECURITY: Log detailed internal error for debugging, but return generic error to client
-		s.Logger.Debug("Authorization code validation failed",
-			"reason", "client_not_found",
-			"client_id", clientID,
-			"code_prefix", safeTruncate(code, 8))
-
-		if s.Auditor != nil {
-			s.Auditor.LogAuthFailure("", clientID, "", "client_not_found")
-		}
-		// Return generic error per RFC 6749 (don't reveal details to attacker)
-		return nil, "", fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+		return nil, "", s.logAuthCodeValidationFailure("client_not_found", clientID, "", safeTruncate(code, 8))
 	}
 
 	// CRITICAL SECURITY: Public clients MUST use PKCE (OAuth 2.1 requirement)
@@ -404,7 +384,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 			"client_id", clientID,
 			"user_id", authCode.UserID,
 			"client_type", client.ClientType,
-			"oauth_spec", "OAuth 2.1",
+			"oauth_spec", OAuthSpecVersion,
 			"code_prefix", safeTruncate(code, 8))
 
 		if s.Auditor != nil {
@@ -415,7 +395,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 				Details: map[string]any{
 					"severity":    "high",
 					"client_type": client.ClientType,
-					"oauth_spec":  "OAuth 2.1",
+					"oauth_spec":  OAuthSpecVersion,
 					"reason":      "Public clients must use PKCE to prevent authorization code theft",
 				},
 			})
