@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Implemented LRU eviction in rate limiter to prevent memory exhaustion (#23)**
+  - Added configurable `MaxEntries` limit (default: 10,000 unique identifiers)
+  - Implemented LRU (Least Recently Used) eviction strategy using `container/list`
+  - When limit reached, automatically evicts least recently used entries
+  - Added `NewRateLimiterWithConfig()` for custom max entries configuration
+  - Added `GetStats()` method for monitoring:
+    - `CurrentEntries`: Number of tracked identifiers
+    - `MaxEntries`: Configured limit (0 = unlimited)
+    - `TotalEvictions`: Number of LRU evictions performed
+    - `TotalCleanups`: Number of cleanup operations completed
+    - `MemoryPressure`: Percentage of max capacity used (0-100)
+  - Enhanced cleanup to maintain consistency between map and LRU list
+  - Added comprehensive test suite covering:
+    - Max entries enforcement
+    - LRU eviction order correctness
+    - Concurrent access with eviction
+    - Memory bounds under high load (500+ unique identifiers)
+    - Unlimited mode (maxEntries = 0) for backward compatibility
+    - Stats reporting accuracy
+  - Added benchmarks for large-scale usage (10k+ entries)
+  - Created security package documentation (doc.go) with:
+    - Memory management behavior explanation
+    - Monitoring and alerting guidelines
+    - Security considerations and best practices
+    - Example usage patterns
+  - **Impact**: No breaking changes - backward compatible with safe defaults
+  - **Security**: Prevents memory exhaustion from distributed attacks while maintaining rate limiting effectiveness
 - **Added client-specific scope validation to prevent scope escalation attacks (#26)**
   - Implemented `validateClientScopes()` to validate requested scopes against client's allowed scopes
   - Validation occurs at TWO points for defense-in-depth:
