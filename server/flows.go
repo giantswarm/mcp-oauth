@@ -57,6 +57,78 @@ func (s *Server) isTokenExpiredLocally(token *oauth2.Token) bool {
 	return time.Now().After(expiryWithGrace)
 }
 
+// shouldProactivelyRefresh determines if a token should be proactively refreshed based on
+// expiry threshold and refresh token availability.
+func (s *Server) shouldProactivelyRefresh(token *oauth2.Token) bool {
+	if token.RefreshToken == "" {
+		return false
+	}
+
+	refreshThreshold := time.Duration(s.Config.TokenRefreshThreshold) * time.Second
+	timeUntilExpiry := time.Until(token.Expiry)
+
+	return timeUntilExpiry > 0 && timeUntilExpiry <= refreshThreshold
+}
+
+// attemptProactiveRefresh attempts to refresh a token that is near expiry.
+// This is a graceful operation - failures are logged but don't affect the validation flow.
+func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string, storedToken *oauth2.Token) {
+	refreshThreshold := time.Duration(s.Config.TokenRefreshThreshold) * time.Second
+	timeUntilExpiry := time.Until(storedToken.Expiry)
+
+	s.Logger.Debug("Token near expiry, attempting proactive refresh",
+		"expiry", storedToken.Expiry,
+		"time_until_expiry", timeUntilExpiry,
+		"refresh_threshold", refreshThreshold,
+		"token_prefix", safeTruncate(accessToken, 8))
+
+	// Attempt to refresh the provider token
+	newProviderToken, err := s.provider.RefreshToken(ctx, storedToken.RefreshToken)
+	if err != nil {
+		// Refresh failed - log warning but continue with validation (graceful degradation)
+		s.Logger.Warn("Proactive token refresh failed, falling back to validation",
+			"error", err,
+			"token_prefix", safeTruncate(accessToken, 8),
+			"time_until_expiry", timeUntilExpiry)
+
+		if s.Auditor != nil {
+			s.Auditor.LogEvent(security.Event{
+				Type: "proactive_refresh_failed",
+				Details: map[string]any{
+					"error":             err.Error(),
+					"time_until_expiry": timeUntilExpiry.String(),
+					"fallback":          "validation",
+				},
+			})
+		}
+		return
+	}
+
+	// Refresh succeeded - update stored token
+	if err := s.tokenStore.SaveToken(accessToken, newProviderToken); err != nil {
+		s.Logger.Warn("Failed to save refreshed token",
+			"error", err,
+			"token_prefix", safeTruncate(accessToken, 8))
+		return
+	}
+
+	s.Logger.Info("Token proactively refreshed",
+		"old_expiry", storedToken.Expiry,
+		"new_expiry", newProviderToken.Expiry,
+		"token_prefix", safeTruncate(accessToken, 8))
+
+	if s.Auditor != nil {
+		s.Auditor.LogEvent(security.Event{
+			Type: "token_proactively_refreshed",
+			Details: map[string]any{
+				"old_expiry": storedToken.Expiry,
+				"new_expiry": newProviderToken.Expiry,
+				"threshold":  refreshThreshold.String(),
+			},
+		})
+	}
+}
+
 // ValidateToken validates an access token with local expiry check and provider validation.
 // This implements defense-in-depth by checking token expiry locally BEFORE delegating to
 // the provider, preventing expired tokens from being accepted due to clock skew.
@@ -91,6 +163,12 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 		s.Logger.Debug("Token passed local expiry validation",
 			"expiry", storedToken.Expiry,
 			"grace_period_seconds", s.Config.ClockSkewGracePeriod)
+
+		// PROACTIVE REFRESH: Check if token is near expiry and should be refreshed
+		// This improves UX by preventing validation failures when refresh is available
+		if s.shouldProactivelyRefresh(storedToken) {
+			s.attemptProactiveRefresh(ctx, accessToken, storedToken)
+		}
 	}
 	// If token not found, proceed with provider validation
 	// (token might be from a different instance or storage backend)

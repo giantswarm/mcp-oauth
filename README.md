@@ -248,6 +248,51 @@ server.SetAuditor(auditor)
 // - Security configuration warnings
 ```
 
+### Token Validation & Proactive Refresh
+
+The server can proactively refresh provider tokens when they're near expiry, preventing validation failures and improving user experience:
+
+```go
+&oauth.ServerConfig{
+    // Proactive token refresh threshold (default: 300 seconds = 5 minutes)
+    // When a token will expire within this window and has a refresh token,
+    // ValidateToken will attempt to refresh it before validation
+    TokenRefreshThreshold: 300,
+    
+    // Clock skew grace period (default: 5 seconds)
+    // Prevents false expiration errors due to clock synchronization issues
+    ClockSkewGracePeriod: 5,
+}
+```
+
+**How Proactive Refresh Works:**
+
+1. During token validation, if the token will expire within `TokenRefreshThreshold`
+2. AND the token has a refresh token available
+3. The server attempts to refresh it with the provider (Google, GitHub, etc.)
+4. On success: Updated token is saved, validation continues seamlessly
+5. On failure: Gracefully falls back to normal validation (no error to user)
+
+**Benefits:**
+
+- **Better UX**: Users don't see "token expired" errors when refresh is possible
+- **Fewer API calls**: Reduces failed validation attempts
+- **Configurable**: Adjust threshold based on your token lifetimes and usage patterns
+- **Graceful fallback**: Refresh failures don't break the validation flow
+
+**Example scenarios:**
+
+```go
+// Default 5 minute threshold - good for most use cases
+TokenRefreshThreshold: 300
+
+// Longer threshold for high-security apps (more frequent refresh)
+TokenRefreshThreshold: 600  // 10 minutes
+
+// Shorter threshold for low-latency requirements
+TokenRefreshThreshold: 60   // 1 minute
+```
+
 ### Rate Limiting
 
 #### IP-Based Rate Limiting

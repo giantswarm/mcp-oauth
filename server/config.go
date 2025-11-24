@@ -55,6 +55,14 @@ type Config struct {
 	// Default: 5 seconds
 	ClockSkewGracePeriod int64 // seconds, default: 5
 
+	// TokenRefreshThreshold is the time before token expiry (in seconds) when proactive
+	// refresh should be attempted during token validation. If a token will expire within
+	// this threshold and has a refresh token available, ValidateToken will attempt to
+	// refresh it proactively to avoid validation failures.
+	// This improves user experience by preventing expired token errors when refresh is possible.
+	// Default: 300 seconds (5 minutes)
+	TokenRefreshThreshold int64 // seconds, default: 300
+
 	// ProviderRevocationTimeout is the timeout PER TOKEN for revoking tokens at the provider (Google/GitHub/etc)
 	// during security events (code reuse, token reuse detection).
 	// This prevents blocking indefinitely if the provider is slow or unreachable.
@@ -167,6 +175,9 @@ func applyTimeDefaults(config *Config) {
 	}
 	if config.ClockSkewGracePeriod == 0 {
 		config.ClockSkewGracePeriod = 5
+	}
+	if config.TokenRefreshThreshold == 0 {
+		config.TokenRefreshThreshold = 300 // 5 minutes
 	}
 	if config.ProviderRevocationTimeout == 0 {
 		config.ProviderRevocationTimeout = 10 // 10 seconds per token (allows retries within reasonable time)
