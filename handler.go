@@ -450,6 +450,24 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 			"client_ip", clientIP)
 	}
 
+	// SECURITY: Check time-windowed rate limit BEFORE processing request
+	// This prevents resource exhaustion through repeated registration/deletion cycles
+	if h.server.ClientRegistrationRateLimiter != nil {
+		if !h.server.ClientRegistrationRateLimiter.Allow(clientIP) {
+			h.logger.Warn("Client registration rate limit exceeded",
+				"ip", clientIP,
+				"max_per_window", h.server.Config.MaxRegistrationsPerHour,
+				"window", h.server.Config.RegistrationRateLimitWindow)
+			if h.server.Auditor != nil {
+				h.server.Auditor.LogClientRegistrationRateLimitExceeded(clientIP)
+			}
+			h.writeError(w, ErrorCodeInvalidRequest,
+				"Client registration rate limit exceeded. Please try again later.",
+				http.StatusTooManyRequests)
+			return
+		}
+	}
+
 	// Check per-IP registration limit to prevent DoS attacks
 	maxClients := h.server.Config.MaxClientsPerIP
 	if maxClients == 0 {
