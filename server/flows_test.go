@@ -645,6 +645,160 @@ func TestServer_ExchangeAuthorizationCode_PublicClient_PKCEEnforcement(t *testin
 	}
 }
 
+// TestServer_ExchangeAuthorizationCode_AllowPublicClientsWithoutPKCE tests
+// the legacy compatibility mode where public clients can authenticate without PKCE.
+// This tests the AllowPublicClientsWithoutPKCE config option.
+func TestServer_ExchangeAuthorizationCode_AllowPublicClientsWithoutPKCE(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	tests := []struct {
+		name                          string
+		allowPublicClientsWithoutPKCE bool
+		includeCodeChallenge          bool
+		wantErr                       bool
+		wantErrContains               string
+		description                   string
+	}{
+		{
+			name:                          "default secure config - public client without PKCE should fail",
+			allowPublicClientsWithoutPKCE: false,
+			includeCodeChallenge:          false,
+			wantErr:                       true,
+			wantErrContains:               "invalid_grant",
+			description:                   "Default secure config requires PKCE for public clients",
+		},
+		{
+			name:                          "insecure config - public client without PKCE should succeed",
+			allowPublicClientsWithoutPKCE: true,
+			includeCodeChallenge:          false,
+			wantErr:                       false,
+			description:                   "Legacy mode allows public clients without PKCE (insecure)",
+		},
+		{
+			name:                          "secure config - public client with PKCE should succeed",
+			allowPublicClientsWithoutPKCE: false,
+			includeCodeChallenge:          true,
+			wantErr:                       false,
+			description:                   "Public clients with PKCE work regardless of config",
+		},
+		{
+			name:                          "insecure config - public client with PKCE should succeed",
+			allowPublicClientsWithoutPKCE: true,
+			includeCodeChallenge:          true,
+			wantErr:                       false,
+			description:                   "Public clients with PKCE work even in legacy mode",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create server with specific config
+			config := &Config{
+				Issuer:                        "https://auth.example.com",
+				AllowPublicClientsWithoutPKCE: tt.allowPublicClientsWithoutPKCE,
+			}
+
+			srv, err := New(provider, store, store, store, config, nil)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+
+			// Register a public client
+			publicClient, _, err := srv.RegisterClient(
+				"Test Public Client",
+				ClientTypePublic,
+				[]string{"https://example.com/callback"},
+				[]string{"openid", "email"},
+				"192.168.1.100",
+				10,
+			)
+			if err != nil {
+				t.Fatalf("RegisterClient() error = %v", err)
+			}
+
+			var codeChallenge string
+			var codeChallengeMethod string
+			var codeVerifier string
+
+			if tt.includeCodeChallenge {
+				codeVerifier = testutil.GenerateRandomString(50)
+				hash := sha256.Sum256([]byte(codeVerifier))
+				codeChallenge = base64.RawURLEncoding.EncodeToString(hash[:])
+				codeChallengeMethod = PKCEMethodS256
+			}
+
+			// Create authorization code
+			authCode := &storage.AuthorizationCode{
+				Code:                testutil.GenerateRandomString(32),
+				ClientID:            publicClient.ClientID,
+				RedirectURI:         "https://example.com/callback",
+				Scope:               "openid email",
+				CodeChallenge:       codeChallenge,
+				CodeChallengeMethod: codeChallengeMethod,
+				UserID:              "test-user-legacy-" + testutil.GenerateRandomString(8),
+				ProviderToken: &oauth2.Token{
+					AccessToken:  "provider-access-token-" + testutil.GenerateRandomString(16),
+					RefreshToken: "provider-refresh-token-" + testutil.GenerateRandomString(16),
+					Expiry:       time.Now().Add(1 * time.Hour),
+				},
+				CreatedAt: time.Now(),
+				ExpiresAt: time.Now().Add(10 * time.Minute),
+				Used:      false,
+			}
+
+			err = store.SaveAuthorizationCode(authCode)
+			if err != nil {
+				t.Fatalf("SaveAuthorizationCode() error = %v", err)
+			}
+
+			// Attempt token exchange
+			token, scope, err := srv.ExchangeAuthorizationCode(
+				context.Background(),
+				authCode.Code,
+				publicClient.ClientID,
+				"https://example.com/callback",
+				codeVerifier,
+			)
+
+			// Verify error behavior
+			if (err != nil) != tt.wantErr {
+				t.Errorf("%s: ExchangeAuthorizationCode() error = %v, wantErr %v", tt.description, err, tt.wantErr)
+				return
+			}
+
+			if tt.wantErr {
+				if tt.wantErrContains != "" && !strings.Contains(err.Error(), tt.wantErrContains) {
+					t.Errorf("%s: error should contain %q, got %q", tt.description, tt.wantErrContains, err.Error())
+				}
+				t.Logf("%s: Correctly rejected with error: %v", tt.description, err)
+			} else {
+				// Success case - verify token issuance
+				if token == nil {
+					t.Fatalf("%s: ExchangeAuthorizationCode() returned nil token", tt.description)
+				}
+
+				if token.AccessToken == "" {
+					t.Errorf("%s: Access token is empty", tt.description)
+				}
+
+				if token.RefreshToken == "" {
+					t.Errorf("%s: Refresh token is empty", tt.description)
+				}
+
+				if scope == "" {
+					t.Errorf("%s: Scope is empty", tt.description)
+				}
+
+				t.Logf("%s: Token exchange successful (config: AllowPublicClientsWithoutPKCE=%v, PKCE=%v)",
+					tt.description, tt.allowPublicClientsWithoutPKCE, tt.includeCodeChallenge)
+			}
+		})
+	}
+}
+
 // TestServer_ExchangeAuthorizationCode_PublicClient_ReuseDetection ensures
 // that when a public client attempts to reuse an authorization code (potential
 // token theft attack), all tokens for that user+client are revoked per OAuth 2.1.

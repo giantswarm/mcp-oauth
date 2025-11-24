@@ -375,35 +375,62 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 		return nil, "", s.logAuthCodeValidationFailure("client_not_found", clientID, "", safeTruncate(code, 8))
 	}
 
-	// CRITICAL SECURITY: Public clients MUST use PKCE (OAuth 2.1 requirement)
+	// CRITICAL SECURITY: Public clients SHOULD use PKCE (OAuth 2.1 requirement)
 	// This prevents authorization code theft attacks where a malicious public client
 	// could use another client's authorization code if intercepted
 	if client.ClientType == ClientTypePublic && authCode.CodeChallenge == "" {
-		// SECURITY: Log detailed internal error for security monitoring
-		s.Logger.Error("Public client attempted token exchange without PKCE",
+		// Check if insecure public clients are explicitly allowed for legacy compatibility
+		if !s.Config.AllowPublicClientsWithoutPKCE {
+			// SECURITY: Log detailed internal error for security monitoring
+			s.Logger.Error("Public client attempted token exchange without PKCE",
+				"client_id", clientID,
+				"user_id", authCode.UserID,
+				"client_type", client.ClientType,
+				"oauth_spec", OAuthSpecVersion,
+				"code_prefix", safeTruncate(code, 8))
+
+			if s.Auditor != nil {
+				s.Auditor.LogEvent(security.Event{
+					Type:     "pkce_required_for_public_client",
+					UserID:   authCode.UserID,
+					ClientID: clientID,
+					Details: map[string]any{
+						"severity":    "high",
+						"client_type": client.ClientType,
+						"oauth_spec":  OAuthSpecVersion,
+						"reason":      "Public clients must use PKCE to prevent authorization code theft",
+					},
+				})
+				s.Auditor.LogAuthFailure(authCode.UserID, clientID, "", "pkce_required_for_public_client")
+			}
+
+			// Return generic error per RFC 6749 (don't reveal security details to attacker)
+			return nil, "", fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+		}
+
+		// WARNING: Proceeding without PKCE for public client (insecure configuration)
+		s.Logger.Warn("INSECURE: Public client token exchange without PKCE allowed by configuration",
 			"client_id", clientID,
 			"user_id", authCode.UserID,
 			"client_type", client.ClientType,
-			"oauth_spec", OAuthSpecVersion,
-			"code_prefix", safeTruncate(code, 8))
+			"security_risk", "authorization_code_theft",
+			"oauth_spec_violation", OAuthSpecVersion+" Section 7.6",
+			"recommendation", "Update client to support PKCE or set AllowPublicClientsWithoutPKCE=false")
 
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
-				Type:     "pkce_required_for_public_client",
+				Type:     "insecure_public_client_without_pkce",
 				UserID:   authCode.UserID,
 				ClientID: clientID,
 				Details: map[string]any{
-					"severity":    "high",
+					"severity":    "warning",
 					"client_type": client.ClientType,
 					"oauth_spec":  OAuthSpecVersion,
-					"reason":      "Public clients must use PKCE to prevent authorization code theft",
+					"risk":        "authorization_code_theft",
+					"config":      "AllowPublicClientsWithoutPKCE=true",
 				},
 			})
-			s.Auditor.LogAuthFailure(authCode.UserID, clientID, "", "pkce_required_for_public_client")
 		}
-
-		// Return generic error per RFC 6749 (don't reveal security details to attacker)
-		return nil, "", fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 	}
 
 	// Validate PKCE if present
