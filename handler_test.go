@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -359,6 +360,8 @@ func TestHandler_ServeAuthorization_CompleteFlow(t *testing.T) {
 	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	// Test authorization request
+	// State must be at least 32 characters for security
+	validState := testutil.GenerateRandomString(43) // Use PKCE verifier length for state
 	req := httptest.NewRequest(http.MethodGet,
 		"/authorize?client_id="+client.ClientID+
 			"&redirect_uri=https://example.com/callback"+
@@ -366,7 +369,7 @@ func TestHandler_ServeAuthorization_CompleteFlow(t *testing.T) {
 			"&response_type=code"+
 			"&code_challenge="+challenge+
 			"&code_challenge_method=S256"+
-			"&state=test-state-123",
+			"&state="+validState,
 		nil)
 	w := httptest.NewRecorder()
 
@@ -405,13 +408,15 @@ func TestHandler_ServeCallback(t *testing.T) {
 	hash := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
+	// State must be at least 32 characters for security
+	clientState := testutil.GenerateRandomString(43)
 	authURL, err := handler.server.StartAuthorizationFlow(
 		client.ClientID,
 		"https://example.com/callback",
 		"openid email",
 		challenge,
 		"S256",
-		"client-state-123",
+		clientState,
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -423,7 +428,7 @@ func TestHandler_ServeCallback(t *testing.T) {
 	}
 
 	// Get auth state to find provider state
-	authState, err := store.GetAuthorizationState("client-state-123")
+	authState, err := store.GetAuthorizationState(clientState)
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -450,7 +455,7 @@ func TestHandler_ServeCallback(t *testing.T) {
 	if !strings.Contains(location, "code=") {
 		t.Error("Location should contain authorization code")
 	}
-	if !strings.Contains(location, "state=client-state-123") {
+	if !strings.Contains(location, "state="+clientState) {
 		t.Error("Location should contain original client state")
 	}
 }
@@ -459,8 +464,10 @@ func TestHandler_ServeCallback_InvalidState(t *testing.T) {
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
+	// Use a state with valid length but not in storage (will fail at lookup)
+	validLengthButInvalidState := testutil.GenerateRandomString(43)
 	req := httptest.NewRequest(http.MethodGet,
-		"/oauth/callback?state=invalid-state&code=provider-auth-code",
+		"/oauth/callback?state="+validLengthButInvalidState+"&code=provider-auth-code",
 		nil)
 	w := httptest.NewRecorder()
 
@@ -486,7 +493,7 @@ func TestHandler_ServeCallback_MissingParams(t *testing.T) {
 		},
 		{
 			name: "missing code",
-			url:  "/oauth/callback?state=test-state",
+			url:  "/oauth/callback?state=" + testutil.GenerateRandomString(43),
 		},
 		{
 			name: "missing all params",
@@ -503,6 +510,123 @@ func TestHandler_ServeCallback_MissingParams(t *testing.T) {
 
 			if w.Code != http.StatusBadRequest {
 				t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+			}
+		})
+	}
+}
+
+func TestHandler_ServeAuthorization_StateLength(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Register a test client
+	client, _, err := handler.server.RegisterClient(
+		"Test Client",
+		"confidential",
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		state      string
+		wantStatus int
+		wantError  bool
+	}{
+		{
+			name:       "state too short (1 char)",
+			state:      "x",
+			wantStatus: http.StatusBadRequest,
+			wantError:  true,
+		},
+		{
+			name:       "state too short (10 chars)",
+			state:      "0123456789",
+			wantStatus: http.StatusBadRequest,
+			wantError:  true,
+		},
+		{
+			name:       "state too short (31 chars, just under minimum)",
+			state:      "0123456789012345678901234567890",
+			wantStatus: http.StatusBadRequest,
+			wantError:  true,
+		},
+		{
+			name:       "state exactly minimum length (32 chars)",
+			state:      "01234567890123456789012345678901",
+			wantStatus: http.StatusFound,
+			wantError:  false,
+		},
+		{
+			name:       "state above minimum length (64 chars)",
+			state:      "0123456789012345678901234567890123456789012345678901234567890123",
+			wantStatus: http.StatusFound,
+			wantError:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			url := fmt.Sprintf("/authorize?client_id=%s&redirect_uri=https://example.com/callback&scope=openid&state=%s&code_challenge=test-challenge&code_challenge_method=S256",
+				client.ClientID, tt.state)
+			req := httptest.NewRequest(http.MethodGet, url, nil)
+			w := httptest.NewRecorder()
+
+			handler.ServeAuthorization(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+		})
+	}
+}
+
+func TestHandler_ServeCallback_StateLength(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	tests := []struct {
+		name       string
+		state      string
+		wantStatus int
+	}{
+		{
+			name:       "state too short (1 char)",
+			state:      "x",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "state too short (10 chars)",
+			state:      "0123456789",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "state too short (31 chars)",
+			state:      "0123456789012345678901234567890",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "state exactly minimum length (32 chars) - will fail with invalid state since not in storage",
+			state:      "01234567890123456789012345678901",
+			wantStatus: http.StatusInternalServerError, // Will fail at state lookup, but passed length validation
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			url := fmt.Sprintf("/oauth/callback?state=%s&code=test-code", tt.state)
+			req := httptest.NewRequest(http.MethodGet, url, nil)
+			w := httptest.NewRecorder()
+
+			handler.ServeCallback(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
 			}
 		})
 	}

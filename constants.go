@@ -79,6 +79,12 @@ const (
 
 	// StateTokenLength is the length of generated state parameters
 	StateTokenLength = 32
+
+	// MinStateLength is the minimum length for state parameters to prevent
+	// timing attacks and ensure sufficient entropy for CSRF protection.
+	// OAuth 2.1 recommends at least 128 bits (16 bytes) of entropy.
+	// This value is used as the default for server.Config.MinStateLength.
+	MinStateLength = 32
 )
 
 // Redirect URI validation constants

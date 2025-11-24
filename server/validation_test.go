@@ -472,3 +472,141 @@ func TestHTTPSEnforcement_WithPort(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateStateParameter(t *testing.T) {
+	setup := newTestServerSetup(false)
+	srv, err := setup.createServer(&Config{
+		RequirePKCE:    true,
+		AllowPKCEPlain: false,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		state   string
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "empty state",
+			state:   "",
+			wantErr: true,
+			errMsg:  "state parameter is required for CSRF protection",
+		},
+		{
+			name:    "state too short - 1 character",
+			state:   "x",
+			wantErr: true,
+			errMsg:  "state parameter must be at least 32 characters for security",
+		},
+		{
+			name:    "state too short - 10 characters",
+			state:   "0123456789",
+			wantErr: true,
+			errMsg:  "state parameter must be at least 32 characters for security",
+		},
+		{
+			name:    "state too short - 31 characters (just under minimum)",
+			state:   "0123456789012345678901234567890",
+			wantErr: true,
+			errMsg:  "state parameter must be at least 32 characters for security",
+		},
+		{
+			name:    "state exactly minimum length - 32 characters",
+			state:   "01234567890123456789012345678901",
+			wantErr: false,
+		},
+		{
+			name:    "state above minimum - 43 characters (PKCE verifier length)",
+			state:   "0123456789012345678901234567890123456789012",
+			wantErr: false,
+		},
+		{
+			name:    "state above minimum - 64 characters",
+			state:   "0123456789012345678901234567890123456789012345678901234567890123",
+			wantErr: false,
+		},
+		{
+			name:    "state with special characters and minimum length",
+			state:   "abcdef-GHIJKL_mnopqr.stuvwxyz",
+			wantErr: true, // This is 31 chars
+		},
+		{
+			name:    "state with base64url characters and minimum length",
+			state:   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef", // 32 chars
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := srv.validateStateParameter(tt.state)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("validateStateParameter() expected error but got none")
+					return
+				}
+				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("validateStateParameter() error = %v, want error containing %q", err, tt.errMsg)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("validateStateParameter() unexpected error = %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestValidateStateParameter_TimingAttackResistance ensures that state validation
+// combined with constant-time comparison provides timing attack resistance.
+// This test verifies that the validation enforces minimum length requirements
+// which is the first line of defense against timing attacks.
+func TestValidateStateParameter_TimingAttackResistance(t *testing.T) {
+	setup := newTestServerSetup(false)
+	srv, err := setup.createServer(&Config{
+		RequirePKCE:    true,
+		AllowPKCEPlain: false,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+
+	// Test that very short states (which could be brute-forced quickly) are rejected
+	shortStates := []string{
+		"a",
+		"ab",
+		"abc",
+		"abcd",
+		"12345",
+		"0123456789",           // 10 chars
+		"01234567890123456789", // 20 chars
+	}
+
+	for _, state := range shortStates {
+		err := srv.validateStateParameter(state)
+		if err == nil {
+			t.Errorf("validateStateParameter(%q) expected error for short state (len=%d) but got none", state, len(state))
+		}
+	}
+
+	// Test that states meeting minimum length are accepted
+	// This ensures sufficient entropy for CSRF protection and timing attack resistance
+	validStates := []string{
+		strings.Repeat("a", 32),  // Exactly minimum
+		strings.Repeat("b", 43),  // PKCE verifier length
+		strings.Repeat("c", 64),  // Double minimum
+		strings.Repeat("d", 128), // Very long
+	}
+
+	for _, state := range validStates {
+		err := srv.validateStateParameter(state)
+		if err != nil {
+			t.Errorf("validateStateParameter(%q) unexpected error for valid state (len=%d): %v", state[:10]+"...", len(state), err)
+		}
+	}
+}
+

@@ -168,12 +168,17 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// CRITICAL SECURITY: State parameter is required for CSRF protection
+	// Input validation at HTTP layer to return proper status codes
 	if state == "" {
 		h.writeError(w, ErrorCodeInvalidRequest, "state parameter is required for CSRF protection", http.StatusBadRequest)
 		return
 	}
+	if len(state) < MinStateLength {
+		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at least %d characters for security", MinStateLength), http.StatusBadRequest)
+		return
+	}
 
-	// Start authorization flow with client state
+	// Start authorization flow with client state (server also validates for defense in depth)
 	authURL, err := h.server.StartAuthorizationFlow(clientID, redirectURI, scope, codeChallenge, codeChallengeMethod, state)
 	if err != nil {
 		h.logger.Error("Failed to start authorization flow", "error", err)
@@ -205,12 +210,19 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// CRITICAL SECURITY: Validate state and code parameters
+	// Input validation at HTTP layer to return proper status codes
 	if state == "" || code == "" {
 		h.writeError(w, ErrorCodeInvalidRequest, "state and code are required", http.StatusBadRequest)
 		return
 	}
+	if len(state) < MinStateLength {
+		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at least %d characters for security", MinStateLength), http.StatusBadRequest)
+		return
+	}
 
 	// Handle callback (state here is the provider state, not client state)
+	// Server also validates state length for defense in depth
 	authCode, clientState, err := h.server.HandleProviderCallback(r.Context(), state, code)
 	if err != nil {
 		h.logger.Error("Failed to handle callback", "error", err)

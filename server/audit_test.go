@@ -82,7 +82,7 @@ func TestServer_AuditLoggingClientIDMismatch(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	// Get authorization code
-	clientState := "client-state-" + testutil.GenerateRandomString(10)
+	clientState := testutil.GenerateRandomString(43)
 	_, err = srv.StartAuthorizationFlow(
 		clientID,
 		"https://example.com/callback",
@@ -176,7 +176,7 @@ func TestServer_AuditLoggingRedirectURIMismatch(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	// Get authorization code
-	clientState := "client-state-" + testutil.GenerateRandomString(10)
+	clientState := testutil.GenerateRandomString(43)
 	_, err = srv.StartAuthorizationFlow(
 		clientID,
 		"https://example.com/callback",
@@ -416,7 +416,7 @@ func TestServer_AuditEventAuthorizationCodeReuse(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	// Get authorization code
-	clientState := "client-state-" + testutil.GenerateRandomString(10)
+	clientState := testutil.GenerateRandomString(43)
 	_, err = srv.StartAuthorizationFlow(
 		clientID,
 		"https://example.com/callback",
