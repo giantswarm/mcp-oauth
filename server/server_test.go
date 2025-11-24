@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/base64"
 	"log/slog"
 	"testing"
 
@@ -331,4 +332,108 @@ func TestServer_RevokedFamilyRetentionPropagation(t *testing.T) {
 
 	// If we get here without panic, the type assertion and call succeeded
 	t.Log("Retention period propagation test passed - no error during setup")
+}
+
+// TestGenerateRandomToken_Length validates that generated tokens meet minimum length requirements
+// This ensures sufficient entropy for security-critical tokens.
+func TestGenerateRandomToken_Length(t *testing.T) {
+	token := generateRandomToken()
+
+	// 32 bytes base64url-encoded (no padding) = 43 characters
+	if len(token) < 43 {
+		t.Errorf("generateRandomToken() length = %d, want >= 43", len(token))
+	}
+
+	t.Logf("Generated token length: %d characters", len(token))
+}
+
+// TestGenerateRandomToken_Base64URLEncoding validates proper encoding
+func TestGenerateRandomToken_Base64URLEncoding(t *testing.T) {
+	token := generateRandomToken()
+
+	// Verify it's valid base64url (no padding)
+	// Should decode without error
+	decoded, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		t.Errorf("generateRandomToken() produced invalid base64url: %v", err)
+	}
+
+	// Should decode to exactly MinTokenBytes bytes
+	if len(decoded) != MinTokenBytes {
+		t.Errorf("decoded token length = %d bytes, want %d", len(decoded), MinTokenBytes)
+	}
+
+	// Verify no padding characters (base64url without padding)
+	if token[len(token)-1] == '=' {
+		t.Error("generateRandomToken() should use base64url WITHOUT padding")
+	}
+
+	t.Logf("Token: %s", token)
+	t.Logf("Decoded to %d bytes", len(decoded))
+}
+
+// TestGenerateRandomToken_Uniqueness validates that tokens are unique
+func TestGenerateRandomToken_Uniqueness(t *testing.T) {
+	const numTokens = 10000
+	tokens := make(map[string]bool, numTokens)
+
+	for i := 0; i < numTokens; i++ {
+		token := generateRandomToken()
+
+		if tokens[token] {
+			t.Errorf("generateRandomToken() produced duplicate token: %s", token)
+			break
+		}
+
+		tokens[token] = true
+	}
+
+	t.Logf("Generated %d unique tokens out of %d attempts", len(tokens), numTokens)
+
+	if len(tokens) != numTokens {
+		t.Errorf("Expected %d unique tokens, got %d", numTokens, len(tokens))
+	}
+}
+
+// TestGenerateRandomToken_Entropy validates statistical randomness properties
+func TestGenerateRandomToken_Entropy(t *testing.T) {
+	const numSamples = 1000
+
+	// Collect samples
+	charCounts := make(map[rune]int)
+	for i := 0; i < numSamples; i++ {
+		token := generateRandomToken()
+		for _, ch := range token {
+			charCounts[ch]++
+		}
+	}
+
+	// Verify we see a good distribution of characters
+	// With 1000 samples * 43 chars = 43,000 characters
+	// Base64 has 64 possible characters
+	// We just verify we have variety (at least 50 different chars)
+	if len(charCounts) < 50 {
+		t.Errorf("Low character variety in tokens: %d unique chars, expected > 50", len(charCounts))
+	}
+
+	t.Logf("Token entropy check: %d unique characters observed across %d tokens", len(charCounts), numSamples)
+
+	// Verify all characters are valid base64url (optimized with map lookup)
+	validChars := make(map[rune]bool)
+	for _, ch := range "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" {
+		validChars[ch] = true
+	}
+
+	for ch := range charCounts {
+		if !validChars[ch] {
+			t.Errorf("Invalid character in token: %c (U+%04X)", ch, ch)
+		}
+	}
+}
+
+// BenchmarkGenerateRandomToken measures token generation performance
+func BenchmarkGenerateRandomToken(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		_ = generateRandomToken()
+	}
 }

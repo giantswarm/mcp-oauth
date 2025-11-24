@@ -1,10 +1,10 @@
 package server
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
-
-	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -128,9 +128,31 @@ func (s *Server) SetSecurityEventRateLimiter(rl *security.RateLimiter) {
 	s.SecurityEventRateLimiter = rl
 }
 
+const (
+	// MinTokenBytes is the minimum number of random bytes required for secure tokens.
+	// 32 bytes = 256 bits of entropy, which exceeds NIST recommendations for
+	// cryptographic keys and is sufficient to prevent brute-force attacks.
+	// Base64url encoding without padding produces 43 characters from 32 bytes.
+	MinTokenBytes = 32
+)
+
 // generateRandomToken generates a cryptographically secure random token.
-// This is an alias for oauth2.GenerateVerifier() which produces a URL-safe,
-// base64-encoded random string suitable for tokens, state parameters, etc.
+// It uses crypto/rand to generate 32 bytes (256 bits) of entropy and
+// encodes them as a 43-character base64url string without padding.
+//
+// This function is used for all security-critical tokens:
+//   - Authorization codes, access tokens, refresh tokens
+//   - Token family IDs (for refresh token rotation)
+//   - Provider state values (CSRF protection)
+//   - Client IDs and secrets
+//
+// The function panics if the system's random number generator fails,
+// which indicates a critical system-level security failure.
 func generateRandomToken() string {
-	return oauth2.GenerateVerifier()
+	b := make([]byte, MinTokenBytes)
+	if _, err := rand.Read(b); err != nil {
+		// CRITICAL: System RNG failure - cannot generate secure tokens
+		panic(fmt.Sprintf("crypto/rand.Read failed: %v", err))
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
 }

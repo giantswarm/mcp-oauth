@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Implemented explicit entropy validation for token generation (#21)**
+  - Replaced `oauth2.GenerateVerifier()` with `crypto/rand` for better control
+  - Generates 32 bytes (256 bits) of cryptographically secure entropy
+  - Base64url encoding produces 43-character tokens (RFC 4648)
+  - Panics on RNG failure to prevent weak token generation
+  - Affects all security-critical tokens (auth codes, access/refresh tokens, state values, client credentials)
+  - Added comprehensive test suite and benchmarks
+  - **Impact**: No breaking changes - same format, improved security guarantee
 - **Fixed timing attack vulnerability in state parameter validation (#19)**
   - Added minimum length validation (32 characters) for state parameters
   - State validation now enforces sufficient entropy for CSRF protection
