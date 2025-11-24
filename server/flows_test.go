@@ -573,3 +573,360 @@ func TestServer_RevokeToken(t *testing.T) {
 		t.Error("Token family should have been revoked")
 	}
 }
+
+// TestServer_AuthorizationCodeReuseRevokesTokens tests that when an authorization code is reused,
+// all tokens for that user+client are revoked (OAuth 2.1 requirement)
+func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
+	srv, store, _ := setupFlowTestServer(t)
+
+	// Register a client
+	client, _, err := srv.RegisterClient(
+		"Test Client",
+		ClientTypeConfidential,
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+	clientID := client.ClientID
+
+	// Generate PKCE challenge
+	codeVerifier := testutil.GenerateRandomString(50)
+	hash := sha256.Sum256([]byte(codeVerifier))
+	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	// Start authorization flow
+	clientState := "client-state-" + testutil.GenerateRandomString(10)
+	_, err = srv.StartAuthorizationFlow(
+		clientID,
+		"https://example.com/callback",
+		"openid email",
+		codeChallenge,
+		PKCEMethodS256,
+		clientState,
+	)
+	if err != nil {
+		t.Fatalf("StartAuthorizationFlow() error = %v", err)
+	}
+
+	// Get provider state from stored auth state
+	authState, err := store.GetAuthorizationState(clientState)
+	if err != nil {
+		t.Fatalf("GetAuthorizationState() error = %v", err)
+	}
+	providerState := authState.ProviderState
+
+	// Simulate provider callback
+	authCodeObj, returnedState, err := srv.HandleProviderCallback(
+		context.Background(),
+		providerState,
+		"provider-code-"+testutil.GenerateRandomString(10),
+	)
+	if err != nil {
+		t.Fatalf("HandleProviderCallback() error = %v", err)
+	}
+	if returnedState != clientState {
+		t.Errorf("HandleProviderCallback() returned state = %v, want %v", returnedState, clientState)
+	}
+
+	authCode := authCodeObj.Code
+
+	// First exchange - should succeed
+	token1, scope, err := srv.ExchangeAuthorizationCode(
+		context.Background(),
+		authCode,
+		clientID,
+		"https://example.com/callback",
+		codeVerifier,
+	)
+	if err != nil {
+		t.Fatalf("First ExchangeAuthorizationCode() error = %v", err)
+	}
+	if scope != "openid email" {
+		t.Errorf("ExchangeAuthorizationCode() scope = %v, want %v", scope, "openid email")
+	}
+
+	accessToken1 := token1.AccessToken
+	refreshToken1 := token1.RefreshToken
+
+	// Verify tokens are stored
+	if _, err := store.GetToken(accessToken1); err != nil {
+		t.Errorf("Access token not found in storage after first exchange")
+	}
+	if _, err := store.GetRefreshTokenInfo(refreshToken1); err != nil {
+		t.Errorf("Refresh token not found in storage after first exchange")
+	}
+
+	// Verify token metadata is stored (using mock user ID from mock provider)
+	tokens, err := store.GetTokensByUserClient("mock-user-123", clientID)
+	if err != nil {
+		t.Fatalf("GetTokensByUserClient() error = %v", err)
+	}
+	initialTokenCount := len(tokens)
+	if initialTokenCount < 2 {
+		t.Errorf("Expected at least 2 tokens (access + refresh), got %d", initialTokenCount)
+	}
+
+	// Second exchange with same code - should fail and revoke ALL tokens
+	_, _, err = srv.ExchangeAuthorizationCode(
+		context.Background(),
+		authCode,
+		clientID,
+		"https://example.com/callback",
+		codeVerifier,
+	)
+	if err == nil {
+		t.Fatal("Second ExchangeAuthorizationCode() should have failed due to code reuse")
+	}
+
+	// Check error message
+	errStr := err.Error()
+	if len(errStr) < 10 { // Basic sanity check
+		t.Errorf("Error message is too short: %v", err)
+	}
+	foundAlreadyUsed := false
+	searchStr := "already used"
+	for i := 0; i <= len(errStr)-len(searchStr); i++ {
+		if errStr[i:i+len(searchStr)] == searchStr {
+			foundAlreadyUsed = true
+			break
+		}
+	}
+	if !foundAlreadyUsed {
+		t.Errorf("ExchangeAuthorizationCode() error = %v, want error containing 'already used'", err)
+	}
+
+	// Verify all tokens were revoked
+	tokens, err = store.GetTokensByUserClient("mock-user-123", clientID)
+	if err != nil {
+		t.Fatalf("GetTokensByUserClient() error = %v", err)
+	}
+	if len(tokens) != 0 {
+		t.Errorf("Expected all tokens to be revoked, but found %d tokens", len(tokens))
+	}
+
+	// Verify access token was deleted
+	if _, err := store.GetToken(accessToken1); err == nil {
+		t.Error("Access token should have been revoked")
+	}
+
+	// Verify refresh token was deleted
+	if _, err := store.GetRefreshTokenInfo(refreshToken1); err == nil {
+		t.Error("Refresh token should have been revoked")
+	}
+}
+
+// TestServer_AuthorizationCodeReuseRevokesMultipleTokens tests that code reuse revokes
+// all tokens including those from previous refresh operations
+func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
+	srv, store, _ := setupFlowTestServer(t)
+
+	// Enable refresh token rotation
+	srv.Config.AllowRefreshTokenRotation = true
+	srv.Config.RefreshTokenTTL = 86400 // 24 hours
+
+	// Register a client
+	client, _, err := srv.RegisterClient(
+		"Test Client 2",
+		ClientTypeConfidential,
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.101",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+	clientID := client.ClientID
+
+	// Generate PKCE challenge
+	codeVerifier := testutil.GenerateRandomString(50)
+	hash := sha256.Sum256([]byte(codeVerifier))
+	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	// Start authorization flow
+	clientState := "state-" + testutil.GenerateRandomString(10)
+	_, err = srv.StartAuthorizationFlow(
+		clientID,
+		"https://example.com/callback",
+		"openid email",
+		codeChallenge,
+		PKCEMethodS256,
+		clientState,
+	)
+	if err != nil {
+		t.Fatalf("StartAuthorizationFlow() error = %v", err)
+	}
+
+	// Get provider state
+	authState, err := store.GetAuthorizationState(clientState)
+	if err != nil {
+		t.Fatalf("GetAuthorizationState() error = %v", err)
+	}
+	providerState := authState.ProviderState
+
+	authCodeObj, _, err := srv.HandleProviderCallback(
+		context.Background(),
+		providerState,
+		"provider-code-"+testutil.GenerateRandomString(10),
+	)
+	if err != nil {
+		t.Fatalf("HandleProviderCallback() error = %v", err)
+	}
+	authCode := authCodeObj.Code
+
+	// Exchange the authorization code
+	token1, _, err := srv.ExchangeAuthorizationCode(
+		context.Background(),
+		authCode,
+		clientID,
+		"https://example.com/callback",
+		codeVerifier,
+	)
+	if err != nil {
+		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
+	}
+
+	// Refresh the token multiple times to create multiple tokens
+	token2, err := srv.RefreshAccessToken(context.Background(), token1.RefreshToken, clientID)
+	if err != nil {
+		t.Fatalf("RefreshAccessToken() error = %v", err)
+	}
+
+	token3, err := srv.RefreshAccessToken(context.Background(), token2.RefreshToken, clientID)
+	if err != nil {
+		t.Fatalf("Second RefreshAccessToken() error = %v", err)
+	}
+
+	// Verify we have multiple tokens (using mock user ID)
+	tokens, err := store.GetTokensByUserClient("mock-user-123", clientID)
+	if err != nil {
+		t.Fatalf("GetTokensByUserClient() error = %v", err)
+	}
+	if len(tokens) < 2 {
+		t.Logf("Warning: Expected multiple tokens, got %d", len(tokens))
+	}
+
+	// Now attempt to reuse the original authorization code
+	_, _, err = srv.ExchangeAuthorizationCode(
+		context.Background(),
+		authCode,
+		clientID,
+		"https://example.com/callback",
+		codeVerifier,
+	)
+	if err == nil {
+		t.Fatal("Code reuse should have been detected")
+	}
+
+	// Verify ALL tokens were revoked (including the refreshed ones)
+	tokens, err = store.GetTokensByUserClient("mock-user-123", clientID)
+	if err != nil {
+		t.Fatalf("GetTokensByUserClient() error = %v", err)
+	}
+	if len(tokens) != 0 {
+		t.Errorf("Expected all tokens to be revoked, but found %d tokens remaining", len(tokens))
+	}
+
+	// Verify the latest access token is invalid
+	if _, err := store.GetToken(token3.AccessToken); err == nil {
+		t.Error("Latest access token should have been revoked")
+	}
+}
+
+// TestServer_RevokeAllTokensForUserClient tests the bulk revocation method directly
+func TestServer_RevokeAllTokensForUserClient(t *testing.T) {
+	srv, store, _ := setupFlowTestServer(t)
+
+	userID := "test_user_789"
+	clientID := "test_client_123"
+
+	// Save some test tokens with metadata
+	token1 := &oauth2.Token{
+		AccessToken:  "access_token_1",
+		RefreshToken: "refresh_token_1",
+		Expiry:       time.Now().Add(time.Hour),
+		TokenType:    "Bearer",
+	}
+	token2 := &oauth2.Token{
+		AccessToken:  "access_token_2",
+		RefreshToken: "refresh_token_2",
+		Expiry:       time.Now().Add(time.Hour),
+		TokenType:    "Bearer",
+	}
+
+	if err := store.SaveToken("access_token_1", token1); err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+	if err := store.SaveToken("access_token_2", token2); err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+
+	// Save metadata
+	if err := store.SaveTokenMetadata("access_token_1", userID, clientID, "access"); err != nil {
+		t.Fatalf("SaveTokenMetadata() error = %v", err)
+	}
+	if err := store.SaveTokenMetadata("access_token_2", userID, clientID, "access"); err != nil {
+		t.Fatalf("SaveTokenMetadata() error = %v", err)
+	}
+
+	// Save a token for a different client (should not be revoked)
+	token3 := &oauth2.Token{
+		AccessToken: "access_token_3",
+		Expiry:      time.Now().Add(time.Hour),
+		TokenType:   "Bearer",
+	}
+	if err := store.SaveToken("access_token_3", token3); err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+	if err := store.SaveTokenMetadata("access_token_3", userID, "different_client", "access"); err != nil {
+		t.Fatalf("SaveTokenMetadata() error = %v", err)
+	}
+
+	// Verify tokens exist
+	tokens, err := store.GetTokensByUserClient(userID, clientID)
+	if err != nil {
+		t.Fatalf("GetTokensByUserClient() error = %v", err)
+	}
+	if len(tokens) != 2 {
+		t.Errorf("Expected 2 tokens before revocation, got %d", len(tokens))
+	}
+
+	// Revoke all tokens for user+client
+	err = srv.RevokeAllTokensForUserClient(userID, clientID)
+	if err != nil {
+		t.Fatalf("RevokeAllTokensForUserClient() error = %v", err)
+	}
+
+	// Verify tokens were revoked
+	tokens, err = store.GetTokensByUserClient(userID, clientID)
+	if err != nil {
+		t.Fatalf("GetTokensByUserClient() error = %v", err)
+	}
+	if len(tokens) != 0 {
+		t.Errorf("Expected 0 tokens after revocation, got %d", len(tokens))
+	}
+
+	// Verify tokens are actually deleted from storage
+	if _, err := store.GetToken("access_token_1"); err == nil {
+		t.Error("Token 1 should have been deleted")
+	}
+	if _, err := store.GetToken("access_token_2"); err == nil {
+		t.Error("Token 2 should have been deleted")
+	}
+
+	// Verify the different client's token still exists
+	if _, err := store.GetToken("access_token_3"); err != nil {
+		t.Error("Token for different client should not have been deleted")
+	}
+	differentClientTokens, err := store.GetTokensByUserClient(userID, "different_client")
+	if err != nil {
+		t.Fatalf("GetTokensByUserClient() error = %v", err)
+	}
+	if len(differentClientTokens) != 1 {
+		t.Errorf("Expected 1 token for different client, got %d", len(differentClientTokens))
+	}
+}

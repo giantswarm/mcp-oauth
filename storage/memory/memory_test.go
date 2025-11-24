@@ -694,10 +694,17 @@ func TestStore_GetAuthorizationCode_Used(t *testing.T) {
 		t.Fatalf("SaveAuthorizationCode() error = %v", err)
 	}
 
-	// Should return error for used code
-	_, err := store.GetAuthorizationCode(code.Code)
-	if err == nil {
-		t.Error("GetAuthorizationCode() should return error for used code")
+	// Should return the code even if used (for OAuth 2.1 reuse detection)
+	// The caller is responsible for checking the Used flag and revoking tokens
+	retrievedCode, err := store.GetAuthorizationCode(code.Code)
+	if err != nil {
+		t.Errorf("GetAuthorizationCode() error = %v, want nil (should return used code for reuse detection)", err)
+	}
+	if retrievedCode == nil {
+		t.Fatal("GetAuthorizationCode() returned nil code")
+	}
+	if !retrievedCode.Used {
+		t.Error("Retrieved code should have Used=true")
 	}
 }
 

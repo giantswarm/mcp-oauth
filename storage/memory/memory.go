@@ -26,8 +26,16 @@ type RefreshTokenFamily struct {
 	Revoked    bool      // True if family has been revoked due to reuse detection
 }
 
+// TokenMetadata tracks ownership information for a token (for revocation by user+client)
+type TokenMetadata struct {
+	UserID    string    // User who owns this token
+	ClientID  string    // Client who owns this token
+	IssuedAt  time.Time // When this token was issued
+	TokenType string    // "access" or "refresh"
+}
+
 // Store is an in-memory implementation of all storage interfaces.
-// It implements TokenStore, ClientStore, FlowStore, and RefreshTokenFamilyStore.
+// It implements TokenStore, ClientStore, FlowStore, RefreshTokenFamilyStore, and TokenRevocationStore.
 type Store struct {
 	mu sync.RWMutex
 
@@ -40,6 +48,9 @@ type Store struct {
 	refreshTokens        map[string]string              // refresh token -> user ID
 	refreshTokenExpiries map[string]time.Time           // refresh token -> expiry time
 	refreshTokenFamilies map[string]*RefreshTokenFamily // refresh token -> family metadata
+
+	// Token metadata tracking (for revocation by user+client)
+	tokenMetadata map[string]*TokenMetadata // token ID (access or refresh) -> metadata
 
 	// Client storage
 	clients      map[string]*storage.Client
@@ -64,6 +75,7 @@ var (
 	_ storage.ClientStore             = (*Store)(nil)
 	_ storage.FlowStore               = (*Store)(nil)
 	_ storage.RefreshTokenFamilyStore = (*Store)(nil)
+	_ storage.TokenRevocationStore    = (*Store)(nil)
 )
 
 // New creates a new in-memory store with default cleanup interval (1 minute)
@@ -79,6 +91,7 @@ func NewWithInterval(cleanupInterval time.Duration) *Store {
 		refreshTokens:        make(map[string]string),
 		refreshTokenExpiries: make(map[string]time.Time),
 		refreshTokenFamilies: make(map[string]*RefreshTokenFamily),
+		tokenMetadata:        make(map[string]*TokenMetadata),
 		clients:              make(map[string]*storage.Client),
 		clientsPerIP:         make(map[string]int),
 		authStates:           make(map[string]*storage.AuthorizationState),
@@ -372,6 +385,14 @@ func (s *Store) SaveRefreshTokenWithFamily(refreshToken, userID, clientID, famil
 		Revoked:    false,
 	}
 
+	// Save token metadata for revocation tracking (OAuth 2.1 code reuse detection)
+	s.tokenMetadata[refreshToken] = &TokenMetadata{
+		UserID:    userID,
+		ClientID:  clientID,
+		IssuedAt:  time.Now(),
+		TokenType: "refresh",
+	}
+
 	s.logger.Debug("Saved refresh token with family tracking",
 		"user_id", userID,
 		"family_id", familyID[:min(8, len(familyID))],
@@ -635,8 +656,8 @@ func (s *Store) SaveAuthorizationCode(code *storage.AuthorizationCode) error {
 // GetAuthorizationCode retrieves and atomically deletes an authorization code
 // This prevents replay attacks by ensuring codes can only be used once
 func (s *Store) GetAuthorizationCode(code string) (*storage.AuthorizationCode, error) {
-	s.mu.Lock() // Use write lock for atomic delete
-	defer s.mu.Unlock()
+	s.mu.RLock() // Use read lock since we're not deleting anymore
+	defer s.mu.RUnlock()
 
 	authCode, ok := s.authCodes[code]
 	if !ok {
@@ -645,20 +666,12 @@ func (s *Store) GetAuthorizationCode(code string) (*storage.AuthorizationCode, e
 
 	// Check if expired with clock skew grace period
 	if security.IsTokenExpired(authCode.ExpiresAt) {
-		delete(s.authCodes, code) // Delete expired code
 		return nil, fmt.Errorf("authorization code expired")
 	}
 
-	// Check if already used
-	if authCode.Used {
-		delete(s.authCodes, code) // Delete used code
-		return nil, fmt.Errorf("authorization code already used")
-	}
-
-	// Atomically delete the code to prevent replay attacks
-	// This eliminates the race condition window between check and use
-	delete(s.authCodes, code)
-	s.logger.Debug("Authorization code consumed (one-time use)", "code_prefix", code[:min(8, len(code))])
+	// Return the code even if it's used - the caller will handle reuse detection
+	// This is required for OAuth 2.1 security: we need to detect code reuse and revoke tokens
+	// The code will be deleted by the cleanup goroutine after it expires
 
 	return authCode, nil
 }
@@ -742,7 +755,138 @@ func (s *Store) cleanup() {
 		}
 	}
 
+	// Cleanup orphaned token metadata (tokens that no longer exist)
+	for tokenID := range s.tokenMetadata {
+		// Check if token still exists (either as a regular token or refresh token)
+		if _, existsAsToken := s.tokens[tokenID]; !existsAsToken {
+			if _, existsAsRefresh := s.refreshTokens[tokenID]; !existsAsRefresh {
+				delete(s.tokenMetadata, tokenID)
+				cleaned++
+			}
+		}
+	}
+
 	if cleaned > 0 {
 		s.logger.Debug("Cleaned up expired entries", "count", cleaned)
 	}
+}
+
+// ============================================================
+// TokenRevocationStore Implementation (OAuth 2.1 Security)
+// ============================================================
+
+// SaveTokenMetadata saves metadata for a token (for revocation tracking)
+// This should be called whenever a token is issued to a user for a client
+func (s *Store) SaveTokenMetadata(tokenID, userID, clientID, tokenType string) error {
+	if tokenID == "" || userID == "" || clientID == "" {
+		return fmt.Errorf("tokenID, userID, and clientID cannot be empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.tokenMetadata[tokenID] = &TokenMetadata{
+		UserID:    userID,
+		ClientID:  clientID,
+		IssuedAt:  time.Now(),
+		TokenType: tokenType,
+	}
+
+	s.logger.Debug("Saved token metadata",
+		"token_type", tokenType,
+		"user_id", userID,
+		"client_id", clientID)
+
+	return nil
+}
+
+// RevokeAllTokensForUserClient revokes all tokens (access + refresh) for a specific user+client combination.
+// This implements the OAuth 2.1 requirement for authorization code reuse detection.
+// Returns the number of tokens revoked and any error encountered.
+func (s *Store) RevokeAllTokensForUserClient(userID, clientID string) (int, error) {
+	if userID == "" || clientID == "" {
+		return 0, fmt.Errorf("userID and clientID cannot be empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	revokedCount := 0
+
+	// Find all tokens for this user+client combination
+	tokensToRevoke := make([]string, 0)
+	for tokenID, metadata := range s.tokenMetadata {
+		if metadata.UserID == userID && metadata.ClientID == clientID {
+			tokensToRevoke = append(tokensToRevoke, tokenID)
+		}
+	}
+
+	// Revoke each token
+	for _, tokenID := range tokensToRevoke {
+		// Delete the token itself
+		if _, exists := s.tokens[tokenID]; exists {
+			delete(s.tokens, tokenID)
+			revokedCount++
+			s.logger.Debug("Revoked access token",
+				"user_id", userID,
+				"client_id", clientID,
+				"token_id", tokenID[:min(8, len(tokenID))])
+		}
+
+		// Delete refresh token if it exists
+		if _, exists := s.refreshTokens[tokenID]; exists {
+			delete(s.refreshTokens, tokenID)
+			delete(s.refreshTokenExpiries, tokenID)
+
+			// If this is a refresh token with a family, revoke the entire family
+			if family, hasFam := s.refreshTokenFamilies[tokenID]; hasFam {
+				// Mark the family as revoked
+				family.Revoked = true
+				s.logger.Info("Revoked refresh token family due to authorization code reuse",
+					"user_id", userID,
+					"client_id", clientID,
+					"family_id", family.FamilyID[:min(8, len(family.FamilyID))],
+					"generation", family.Generation)
+			}
+			delete(s.refreshTokenFamilies, tokenID)
+			revokedCount++
+			s.logger.Debug("Revoked refresh token",
+				"user_id", userID,
+				"client_id", clientID,
+				"token_id", tokenID[:min(8, len(tokenID))])
+		}
+
+		// Delete metadata
+		delete(s.tokenMetadata, tokenID)
+	}
+
+	if revokedCount > 0 {
+		s.logger.Warn("Revoked all tokens for user+client",
+			"user_id", userID,
+			"client_id", clientID,
+			"tokens_revoked", revokedCount,
+			"reason", "authorization_code_reuse_detected")
+	}
+
+	return revokedCount, nil
+}
+
+// GetTokensByUserClient retrieves all token IDs for a user+client combination.
+// This is primarily for testing and debugging purposes.
+func (s *Store) GetTokensByUserClient(userID, clientID string) ([]string, error) {
+	if userID == "" || clientID == "" {
+		return nil, fmt.Errorf("userID and clientID cannot be empty")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	tokens := make([]string, 0)
+	for tokenID, metadata := range s.tokenMetadata {
+		if metadata.UserID == userID && metadata.ClientID == clientID {
+			tokens = append(tokens, tokenID)
+		}
+	}
+
+	return tokens, nil
 }

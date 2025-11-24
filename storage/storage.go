@@ -62,6 +62,19 @@ type RefreshTokenFamilyMetadata struct {
 	Revoked    bool
 }
 
+// TokenRevocationStore supports bulk token revocation operations (OAuth 2.1 security).
+// This is optional - only implemented by stores that support token revocation.
+// Used for critical security scenarios like authorization code reuse detection.
+type TokenRevocationStore interface {
+	// RevokeAllTokensForUserClient revokes all tokens (access + refresh) for a specific user+client combination.
+	// This is called when authorization code reuse is detected (OAuth 2.1 requirement).
+	// Returns the number of tokens revoked and any error encountered.
+	RevokeAllTokensForUserClient(userID, clientID string) (int, error)
+
+	// GetTokensByUserClient retrieves all token IDs for a user+client combination (for testing/debugging).
+	GetTokensByUserClient(userID, clientID string) ([]string, error)
+}
+
 // ClientStore defines the interface for managing OAuth client registrations.
 type ClientStore interface {
 	// SaveClient saves a registered client

@@ -280,22 +280,38 @@ func (s *Server) ExchangeAuthorizationCode(_ context.Context, code, clientID, re
 
 	// Validate authorization code hasn't been used
 	if authCode.Used {
+		// CRITICAL SECURITY: Authorization code reuse detected - this indicates a potential token theft attack
+		// OAuth 2.1 requires revoking ALL tokens for this user+client when code reuse is detected
+		s.Logger.Error("Authorization code reuse detected - revoking all tokens",
+			"user_id", authCode.UserID,
+			"client_id", clientID,
+			"oauth_spec", "OAuth 2.1 Section 4.1.2")
+
+		// Revoke all tokens for this user+client (OAuth 2.1 requirement)
+		if err := s.RevokeAllTokensForUserClient(authCode.UserID, clientID); err != nil {
+			s.Logger.Error("Failed to revoke tokens after code reuse detection", "error", err)
+			// Continue with deletion even if revocation failed
+		}
+
 		if s.Auditor != nil {
-			// Authorization code reuse is a critical security event (token theft indicator)
+			// Log the critical security event
 			s.Auditor.LogEvent(security.Event{
 				Type:     "authorization_code_reuse_detected",
 				UserID:   authCode.UserID,
 				ClientID: clientID,
 				Details: map[string]any{
-					"severity": "critical",
-					"action":   "code_deleted_tokens_revoked",
+					"severity":   "critical",
+					"action":     "all_tokens_revoked",
+					"oauth_spec": "OAuth 2.1 Section 4.1.2",
 				},
 			})
 			s.Auditor.LogAuthFailure(authCode.UserID, clientID, "", "authorization_code_reuse")
 		}
-		// Delete the code and revoke associated tokens (security measure)
+
+		// Delete the authorization code
 		_ = s.flowStore.DeleteAuthorizationCode(code)
-		return nil, "", fmt.Errorf("%s: authorization code already used", ErrorCodeInvalidGrant)
+
+		return nil, "", fmt.Errorf("%s: authorization code already used - all tokens revoked", ErrorCodeInvalidGrant)
 	}
 
 	// Validate client ID matches
@@ -355,6 +371,15 @@ func (s *Server) ExchangeAuthorizationCode(_ context.Context, code, clientID, re
 		s.Logger.Warn("Failed to save refresh token", "error", err)
 	}
 
+	// Track access token metadata for revocation (OAuth 2.1 code reuse detection)
+	if metadataStore, ok := s.tokenStore.(interface {
+		SaveTokenMetadata(tokenID, userID, clientID, tokenType string) error
+	}); ok {
+		if err := metadataStore.SaveTokenMetadata(accessToken, authCode.UserID, clientID, "access"); err != nil {
+			s.Logger.Warn("Failed to save access token metadata", "error", err)
+		}
+	}
+
 	// Track refresh token with expiry (OAuth 2.1 security)
 	// Use family tracking if storage supports it (for reuse detection)
 	refreshTokenExpiry := time.Now().Add(time.Duration(s.Config.RefreshTokenTTL) * time.Second)
@@ -375,8 +400,10 @@ func (s *Server) ExchangeAuthorizationCode(_ context.Context, code, clientID, re
 		}
 	}
 
-	// Delete authorization code (one-time use)
-	_ = s.flowStore.DeleteAuthorizationCode(code)
+	// NOTE: We do NOT delete the authorization code immediately (OAuth 2.1 security)
+	// Instead, we keep it marked as "Used" to detect reuse attempts (token theft indicator)
+	// The cleanup goroutine will delete expired/used codes after the TTL expires
+	// This is critical for the code reuse detection security feature
 
 	if s.Auditor != nil {
 		s.Auditor.LogTokenIssued(authCode.UserID, clientID, "", authCode.Scope)
@@ -520,6 +547,15 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		s.Logger.Warn("Failed to save new refresh token", "error", err)
 	}
 
+	// Track new access token metadata for revocation (OAuth 2.1 code reuse detection)
+	if metadataStore, ok := s.tokenStore.(interface {
+		SaveTokenMetadata(tokenID, userID, clientID, tokenType string) error
+	}); ok {
+		if err := metadataStore.SaveTokenMetadata(newAccessToken, userID, clientID, "access"); err != nil {
+			s.Logger.Warn("Failed to save access token metadata", "error", err)
+		}
+	}
+
 	if s.Auditor != nil {
 		s.Auditor.LogTokenRefreshed(userID, clientID, "", rotated)
 	}
@@ -554,5 +590,68 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP stri
 	}
 
 	s.Logger.Info("Token revoked", "client_id", clientID, "ip", clientIP)
+	return nil
+}
+
+// RevokeAllTokensForUserClient revokes all tokens (access + refresh) for a specific user+client combination.
+// This is called when authorization code reuse is detected (OAuth 2.1 security requirement).
+// It provides defense against token theft by invalidating all tokens when an attack is detected.
+func (s *Server) RevokeAllTokensForUserClient(userID, clientID string) error {
+	// Check if storage supports token revocation
+	revocationStore, supportsRevocation := s.tokenStore.(storage.TokenRevocationStore)
+
+	if !supportsRevocation {
+		// Log warning but don't fail - storage doesn't support bulk revocation
+		s.Logger.Warn("Token storage does not support bulk revocation",
+			"user_id", userID,
+			"client_id", clientID,
+			"recommendation", "Consider using a storage backend that implements TokenRevocationStore")
+
+		if s.Auditor != nil {
+			s.Auditor.LogEvent(security.Event{
+				Type:     "token_revocation_not_supported",
+				UserID:   userID,
+				ClientID: clientID,
+				Details: map[string]any{
+					"severity": "warning",
+					"message":  "Storage backend does not support bulk token revocation",
+				},
+			})
+		}
+
+		return nil
+	}
+
+	// Revoke all tokens for this user+client
+	revokedCount, err := revocationStore.RevokeAllTokensForUserClient(userID, clientID)
+	if err != nil {
+		s.Logger.Error("Failed to revoke tokens for user+client",
+			"user_id", userID,
+			"client_id", clientID,
+			"error", err)
+		return fmt.Errorf("failed to revoke tokens: %w", err)
+	}
+
+	// Log the revocation
+	s.Logger.Warn("Revoked all tokens for user+client due to security event",
+		"user_id", userID,
+		"client_id", clientID,
+		"tokens_revoked", revokedCount,
+		"reason", "authorization_code_reuse_detected")
+
+	if s.Auditor != nil {
+		s.Auditor.LogEvent(security.Event{
+			Type:     "all_tokens_revoked",
+			UserID:   userID,
+			ClientID: clientID,
+			Details: map[string]any{
+				"severity":       "critical",
+				"tokens_revoked": revokedCount,
+				"reason":         "authorization_code_reuse_detected",
+				"oauth_spec":     "OAuth 2.1 Section 4.1.2",
+			},
+		})
+	}
+
 	return nil
 }
