@@ -85,7 +85,7 @@ func (s *Server) validateHTTPSEnforcement() error {
 					"risk", "Credentials exposed on local network",
 					"recommendation", "Use HTTPS even in development for production-like testing",
 					"to_suppress", "Set AllowInsecureHTTP=true in Config",
-					"learn_more", "https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-10#section-4.1.1")
+					"learn_more", oauth21SecurityBestPracticesURL)
 			}
 			return nil
 		}
@@ -109,7 +109,7 @@ func (s *Server) validateHTTPSEnforcement() error {
 			"risk", "All tokens and credentials exposed to network sniffing and MITM attacks",
 			"action_required", "Switch to HTTPS immediately",
 			"compliance", "OAuth 2.1 requires HTTPS for all production endpoints",
-			"learn_more", "https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-10#section-4.1.1")
+			"learn_more", oauth21SecurityBestPracticesURL)
 
 		return nil
 	}
@@ -117,6 +117,10 @@ func (s *Server) validateHTTPSEnforcement() error {
 	// Unknown scheme (not http or https)
 	return fmt.Errorf("invalid issuer URL scheme: %s (must be http or https)", issuerURL.Scheme)
 }
+
+const (
+	oauth21SecurityBestPracticesURL = "https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-10#section-4.1.1"
+)
 
 // isLocalhostHostname checks if a hostname refers to the local machine.
 // This includes IPv4 loopback (entire 127.0.0.0/8 range per RFC 1122),

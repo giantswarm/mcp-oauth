@@ -107,8 +107,8 @@ type Config struct {
 	// WARNING: OAuth over HTTP exposes all tokens and credentials to network interception
 	// This should ONLY be enabled for local development (localhost, 127.0.0.1)
 	// When false (default), the server enforces HTTPS for non-localhost deployments
-	// Default: false (HTTPS required for security)
-	AllowInsecureHTTP bool // default: false
+	// Security: must be explicitly enabled to allow HTTP
+	AllowInsecureHTTP bool
 }
 
 // applySecureDefaults applies secure-by-default configuration values

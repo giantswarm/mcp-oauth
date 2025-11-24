@@ -10,6 +10,44 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
+// testServerSetup holds common test dependencies
+type testServerSetup struct {
+	provider *mock.MockProvider
+	store    *memory.Store
+	logger   *slog.Logger
+	logBuf   *bytes.Buffer
+}
+
+// newTestServerSetup creates a test server setup with optional custom logger
+func newTestServerSetup(customLogger bool) *testServerSetup {
+	setup := &testServerSetup{
+		provider: mock.NewMockProvider(),
+		store:    memory.New(),
+	}
+
+	if customLogger {
+		setup.logBuf = &bytes.Buffer{}
+		setup.logger = slog.New(slog.NewTextHandler(setup.logBuf, nil))
+	} else {
+		setup.logger = slog.Default()
+	}
+
+	return setup
+}
+
+// createServer creates a server with the given config
+func (s *testServerSetup) createServer(config *Config) (*Server, error) {
+	return New(s.provider, s.store, s.store, s.store, config, s.logger)
+}
+
+// getLogs returns the captured log output (only if custom logger was used)
+func (s *testServerSetup) getLogs() string {
+	if s.logBuf == nil {
+		return ""
+	}
+	return s.logBuf.String()
+}
+
 func TestValidateHTTPSEnforcement_HTTPS(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -35,15 +73,13 @@ func TestValidateHTTPSEnforcement_HTTPS(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			provider := mock.NewMockProvider()
-			memStore := memory.New()
-
+			setup := newTestServerSetup(false)
 			config := &Config{
 				Issuer:            tt.issuer,
 				AllowInsecureHTTP: false,
 			}
 
-			srv, err := New(provider, memStore, memStore, memStore, config, slog.Default())
+			srv, err := setup.createServer(config)
 			if err != nil {
 				t.Fatalf("Expected no error for HTTPS URL, got: %v", err)
 			}
@@ -65,18 +101,13 @@ func TestValidateHTTPSEnforcement_HTTPLocalhost(t *testing.T) {
 
 	for _, host := range localhosts {
 		t.Run("HTTP_"+host, func(t *testing.T) {
-			provider := mock.NewMockProvider()
-			memStore := memory.New()
-
-			var logBuf bytes.Buffer
-			logger := slog.New(slog.NewTextHandler(&logBuf, nil))
-
+			setup := newTestServerSetup(true)
 			config := &Config{
 				Issuer:            "http://" + host + ":8080",
 				AllowInsecureHTTP: false,
 			}
 
-			srv, err := New(provider, memStore, memStore, memStore, config, logger)
+			srv, err := setup.createServer(config)
 			if err != nil {
 				t.Fatalf("Expected no error for localhost HTTP, got: %v", err)
 			}
@@ -85,7 +116,7 @@ func TestValidateHTTPSEnforcement_HTTPLocalhost(t *testing.T) {
 			}
 
 			// Verify warning was logged
-			logOutput := logBuf.String()
+			logOutput := setup.getLogs()
 			if !strings.Contains(logOutput, "DEVELOPMENT WARNING") {
 				t.Errorf("Expected warning log for HTTP localhost, got: %s", logOutput)
 			}
@@ -97,18 +128,13 @@ func TestValidateHTTPSEnforcement_HTTPLocalhost(t *testing.T) {
 }
 
 func TestValidateHTTPSEnforcement_HTTPLocalhostWithFlag(t *testing.T) {
-	provider := mock.NewMockProvider()
-	memStore := memory.New()
-
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
-
+	setup := newTestServerSetup(true)
 	config := &Config{
 		Issuer:            "http://localhost:8080",
 		AllowInsecureHTTP: true,
 	}
 
-	srv, err := New(provider, memStore, memStore, memStore, config, logger)
+	srv, err := setup.createServer(config)
 	if err != nil {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
@@ -117,7 +143,7 @@ func TestValidateHTTPSEnforcement_HTTPLocalhostWithFlag(t *testing.T) {
 	}
 
 	// With AllowInsecureHTTP=true, should not log development warning
-	logOutput := logBuf.String()
+	logOutput := setup.getLogs()
 	if strings.Contains(logOutput, "DEVELOPMENT WARNING") {
 		t.Errorf("Should not log development warning when AllowInsecureHTTP=true")
 	}
@@ -148,15 +174,13 @@ func TestValidateHTTPSEnforcement_HTTPNonLocalhostBlocked(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			provider := mock.NewMockProvider()
-			memStore := memory.New()
-
+			setup := newTestServerSetup(false)
 			config := &Config{
 				Issuer:            tt.issuer,
 				AllowInsecureHTTP: false,
 			}
 
-			srv, err := New(provider, memStore, memStore, memStore, config, slog.Default())
+			srv, err := setup.createServer(config)
 			if err == nil {
 				t.Fatalf("Expected error for non-localhost HTTP, but got none")
 			}
@@ -180,18 +204,13 @@ func TestValidateHTTPSEnforcement_HTTPNonLocalhostBlocked(t *testing.T) {
 }
 
 func TestValidateHTTPSEnforcement_HTTPNonLocalhostWithFlag(t *testing.T) {
-	provider := mock.NewMockProvider()
-	memStore := memory.New()
-
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
-
+	setup := newTestServerSetup(true)
 	config := &Config{
 		Issuer:            "http://oauth.example.com",
 		AllowInsecureHTTP: true,
 	}
 
-	srv, err := New(provider, memStore, memStore, memStore, config, logger)
+	srv, err := setup.createServer(config)
 	if err != nil {
 		t.Fatalf("Expected no error with AllowInsecureHTTP=true, got: %v", err)
 	}
@@ -200,7 +219,7 @@ func TestValidateHTTPSEnforcement_HTTPNonLocalhostWithFlag(t *testing.T) {
 	}
 
 	// Verify critical security warning was logged
-	logOutput := logBuf.String()
+	logOutput := setup.getLogs()
 	if !strings.Contains(logOutput, "CRITICAL SECURITY WARNING") {
 		t.Errorf("Expected critical warning for non-localhost HTTP, got: %s", logOutput)
 	}
@@ -213,15 +232,13 @@ func TestValidateHTTPSEnforcement_HTTPNonLocalhostWithFlag(t *testing.T) {
 }
 
 func TestValidateHTTPSEnforcement_InvalidScheme(t *testing.T) {
-	provider := mock.NewMockProvider()
-	memStore := memory.New()
-
+	setup := newTestServerSetup(false)
 	config := &Config{
 		Issuer:            "ftp://oauth.example.com",
 		AllowInsecureHTTP: false,
 	}
 
-	srv, err := New(provider, memStore, memStore, memStore, config, slog.Default())
+	srv, err := setup.createServer(config)
 	if err == nil {
 		t.Fatalf("Expected error for invalid scheme, but got none")
 	}
@@ -237,15 +254,13 @@ func TestValidateHTTPSEnforcement_InvalidScheme(t *testing.T) {
 }
 
 func TestValidateHTTPSEnforcement_InvalidURL(t *testing.T) {
-	provider := mock.NewMockProvider()
-	memStore := memory.New()
-
+	setup := newTestServerSetup(false)
 	config := &Config{
 		Issuer:            "://invalid-url",
 		AllowInsecureHTTP: false,
 	}
 
-	srv, err := New(provider, memStore, memStore, memStore, config, slog.Default())
+	srv, err := setup.createServer(config)
 	if err == nil {
 		t.Fatalf("Expected error for invalid URL, but got none")
 	}
@@ -320,18 +335,13 @@ func TestValidateHTTPSEnforcement_LoopbackRange(t *testing.T) {
 
 	for _, addr := range loopbackAddresses {
 		t.Run("HTTP_"+addr, func(t *testing.T) {
-			provider := mock.NewMockProvider()
-			memStore := memory.New()
-
-			var logBuf bytes.Buffer
-			logger := slog.New(slog.NewTextHandler(&logBuf, nil))
-
+			setup := newTestServerSetup(true)
 			config := &Config{
 				Issuer:            "http://" + addr + ":8080",
 				AllowInsecureHTTP: false,
 			}
 
-			srv, err := New(provider, memStore, memStore, memStore, config, logger)
+			srv, err := setup.createServer(config)
 			if err != nil {
 				t.Fatalf("Expected no error for loopback address %s, got: %v", addr, err)
 			}
@@ -340,7 +350,7 @@ func TestValidateHTTPSEnforcement_LoopbackRange(t *testing.T) {
 			}
 
 			// Verify warning was logged (since it's localhost without AllowInsecureHTTP=true)
-			logOutput := logBuf.String()
+			logOutput := setup.getLogs()
 			if !strings.Contains(logOutput, "DEVELOPMENT WARNING") {
 				t.Errorf("Expected warning log for HTTP on loopback %s, got: %s", addr, logOutput)
 			}
@@ -351,19 +361,17 @@ func TestValidateHTTPSEnforcement_LoopbackRange(t *testing.T) {
 // TestConfigSecurityWarning_AllowInsecureHTTP verifies that the config
 // security warning is logged when AllowInsecureHTTP is enabled
 func TestConfigSecurityWarning_AllowInsecureHTTP(t *testing.T) {
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
-
+	setup := newTestServerSetup(true)
 	config := &Config{
 		Issuer:            "https://oauth.example.com",
 		AllowInsecureHTTP: true,
 	}
 
 	// Apply secure defaults (which includes logging warnings)
-	_ = applySecureDefaults(config, logger)
+	_ = applySecureDefaults(config, setup.logger)
 
 	// Verify critical security warning was logged
-	logOutput := logBuf.String()
+	logOutput := setup.getLogs()
 	if !strings.Contains(logOutput, "CRITICAL SECURITY WARNING") {
 		t.Errorf("Expected critical warning in config, got: %s", logOutput)
 	}
@@ -378,8 +386,7 @@ func TestConfigSecurityWarning_AllowInsecureHTTP(t *testing.T) {
 // TestHTTPSEnforcement_IntegrationWithStorage ensures HTTPS enforcement
 // works correctly with different storage implementations
 func TestHTTPSEnforcement_IntegrationWithStorage(t *testing.T) {
-	provider := mock.NewMockProvider()
-	memStore := memory.New()
+	setup := newTestServerSetup(false)
 
 	// Test that HTTPS enforcement happens before any storage operations
 	config := &Config{
@@ -387,7 +394,7 @@ func TestHTTPSEnforcement_IntegrationWithStorage(t *testing.T) {
 		AllowInsecureHTTP: false,
 	}
 
-	srv, err := New(provider, memStore, memStore, memStore, config, slog.Default())
+	srv, err := setup.createServer(config)
 	if err == nil {
 		t.Fatal("Expected error for HTTP without flag")
 	}
@@ -442,15 +449,13 @@ func TestHTTPSEnforcement_WithPort(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			provider := mock.NewMockProvider()
-			memStore := memory.New()
-
+			setup := newTestServerSetup(false)
 			config := &Config{
 				Issuer:            tt.issuer,
 				AllowInsecureHTTP: tt.allowHTTP,
 			}
 
-			srv, err := New(provider, memStore, memStore, memStore, config, slog.Default())
+			srv, err := setup.createServer(config)
 
 			if tt.wantErr && err == nil {
 				t.Fatalf("Expected error but got none")

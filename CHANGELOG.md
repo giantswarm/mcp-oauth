@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **[BREAKING]** Added runtime HTTPS enforcement for OAuth server (#18, #49)
+  - New `AllowInsecureHTTP` config flag (default: `false`)
+  - Production deployments now require HTTPS by default
+  - HTTP allowed only on localhost (127.0.0.0/8, ::1, 0.0.0.0) for development
+  - Non-localhost HTTP deployments blocked unless explicitly allowed
+  - Clear error messages guide developers to secure configuration
+  - OAuth 2.1 compliance: HTTPS required for all production endpoints
+  - **Migration**: 
+    - For localhost development: Add `AllowInsecureHTTP: true` to suppress warnings
+    - For production HTTP (not recommended): Add `AllowInsecureHTTP: true` and review security risks
+    - **Recommended**: Switch to HTTPS for all environments
+
 ### Added
 - Initial open-source release
 - Comprehensive README with usage examples
