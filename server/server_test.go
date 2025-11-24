@@ -1,8 +1,10 @@
 package server
 
 import (
+	"encoding/base64"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -331,4 +333,179 @@ func TestServer_RevokedFamilyRetentionPropagation(t *testing.T) {
 
 	// If we get here without panic, the type assertion and call succeeded
 	t.Log("Retention period propagation test passed - no error during setup")
+}
+
+// TestGenerateRandomToken_Length validates that generated tokens meet minimum length requirements
+// This ensures sufficient entropy for security-critical tokens.
+func TestGenerateRandomToken_Length(t *testing.T) {
+	token := generateRandomToken()
+
+	// 32 bytes base64url-encoded (no padding) = 43 characters
+	if len(token) < 43 {
+		t.Errorf("generateRandomToken() length = %d, want >= 43", len(token))
+	}
+
+	t.Logf("Generated token length: %d characters", len(token))
+}
+
+// TestGenerateRandomToken_Base64URLEncoding validates proper encoding
+func TestGenerateRandomToken_Base64URLEncoding(t *testing.T) {
+	token := generateRandomToken()
+
+	// Verify it's valid base64url (no padding)
+	// Should decode without error
+	decoded, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		t.Errorf("generateRandomToken() produced invalid base64url: %v", err)
+	}
+
+	// Should decode to exactly MinTokenBytes bytes
+	if len(decoded) != MinTokenBytes {
+		t.Errorf("decoded token length = %d bytes, want %d", len(decoded), MinTokenBytes)
+	}
+
+	// Verify no padding characters (base64url without padding)
+	if token[len(token)-1] == '=' {
+		t.Error("generateRandomToken() should use base64url WITHOUT padding")
+	}
+
+	t.Logf("Token: %s", token)
+	t.Logf("Decoded to %d bytes", len(decoded))
+}
+
+// TestGenerateRandomToken_Uniqueness validates that tokens are unique
+func TestGenerateRandomToken_Uniqueness(t *testing.T) {
+	const numTokens = 10000
+	tokens := make(map[string]bool, numTokens)
+
+	for i := 0; i < numTokens; i++ {
+		token := generateRandomToken()
+
+		if tokens[token] {
+			t.Errorf("generateRandomToken() produced duplicate token: %s", token)
+			break
+		}
+
+		tokens[token] = true
+	}
+
+	t.Logf("Generated %d unique tokens out of %d attempts", len(tokens), numTokens)
+
+	if len(tokens) != numTokens {
+		t.Errorf("Expected %d unique tokens, got %d", numTokens, len(tokens))
+	}
+}
+
+// TestGenerateRandomToken_Entropy validates statistical randomness properties
+func TestGenerateRandomToken_Entropy(t *testing.T) {
+	const numSamples = 1000
+
+	// Collect samples
+	samples := make([]string, numSamples)
+	for i := 0; i < numSamples; i++ {
+		samples[i] = generateRandomToken()
+	}
+
+	// Validate character distribution
+	// Base64url alphabet: A-Z, a-z, 0-9, -, _
+	charCounts := make(map[rune]int)
+
+	for _, token := range samples {
+		for _, ch := range token {
+			charCounts[ch]++
+		}
+	}
+
+	// Verify we see a good distribution of characters
+	// With 1000 samples * 43 chars = 43,000 characters
+	// Base64 has 64 possible characters
+	// Expected ~671 occurrences per character (43000/64)
+	// We just verify we have variety (at least 50 different chars)
+	if len(charCounts) < 50 {
+		t.Errorf("Low character variety in tokens: %d unique chars, expected > 50", len(charCounts))
+	}
+
+	t.Logf("Token entropy check: %d unique characters observed across %d tokens", len(charCounts), numSamples)
+
+	// Verify all characters are valid base64url
+	validChars := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	for ch := range charCounts {
+		found := false
+		for _, validCh := range validChars {
+			if ch == validCh {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Invalid character in token: %c (U+%04X)", ch, ch)
+		}
+	}
+}
+
+// TestGenerateRandomToken_NoBitwisePatterns validates no obvious patterns in binary representation
+func TestGenerateRandomToken_NoBitwisePatterns(t *testing.T) {
+	const numSamples = 100
+
+	allZeros := 0
+	allOnes := 0
+
+	for i := 0; i < numSamples; i++ {
+		token := generateRandomToken()
+		decoded, err := base64.RawURLEncoding.DecodeString(token)
+		if err != nil {
+			t.Fatalf("Failed to decode token: %v", err)
+		}
+
+		// Check each byte
+		for _, b := range decoded {
+			if b == 0x00 {
+				allZeros++
+			}
+			if b == 0xFF {
+				allOnes++
+			}
+		}
+	}
+
+	totalBytes := numSamples * MinTokenBytes
+
+	// With good randomness, we expect ~0.4% of bytes to be 0x00 or 0xFF (1/256)
+	// Allow up to 2% before flagging as suspicious
+	maxExpected := totalBytes * 2 / 100
+
+	if allZeros > maxExpected {
+		t.Errorf("Suspicious number of 0x00 bytes: %d out of %d (%.2f%%), expected < 2%%",
+			allZeros, totalBytes, float64(allZeros)*100/float64(totalBytes))
+	}
+
+	if allOnes > maxExpected {
+		t.Errorf("Suspicious number of 0xFF bytes: %d out of %d (%.2f%%), expected < 2%%",
+			allOnes, totalBytes, float64(allOnes)*100/float64(totalBytes))
+	}
+
+	t.Logf("Bitwise pattern check: 0x00=%d (%.2f%%), 0xFF=%d (%.2f%%) out of %d bytes",
+		allZeros, float64(allZeros)*100/float64(totalBytes),
+		allOnes, float64(allOnes)*100/float64(totalBytes),
+		totalBytes)
+}
+
+// TestGenerateRandomToken_PerformanceBenchmark validates token generation is fast enough
+func TestGenerateRandomToken_PerformanceBenchmark(t *testing.T) {
+	const numIterations = 1000
+
+	start := time.Now()
+	for i := 0; i < numIterations; i++ {
+		_ = generateRandomToken()
+	}
+	duration := time.Since(start)
+
+	avgPerToken := duration / numIterations
+
+	// Token generation should be very fast (< 1ms per token)
+	if avgPerToken > time.Millisecond {
+		t.Errorf("Token generation too slow: %v per token (expected < 1ms)", avgPerToken)
+	}
+
+	t.Logf("Generated %d tokens in %v (avg %v per token)", numIterations, duration, avgPerToken)
 }

@@ -1,10 +1,10 @@
 package server
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
-
-	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -128,9 +128,66 @@ func (s *Server) SetSecurityEventRateLimiter(rl *security.RateLimiter) {
 	s.SecurityEventRateLimiter = rl
 }
 
-// generateRandomToken generates a cryptographically secure random token.
-// This is an alias for oauth2.GenerateVerifier() which produces a URL-safe,
-// base64-encoded random string suitable for tokens, state parameters, etc.
+const (
+	// MinTokenBytes is the minimum number of random bytes required for secure tokens.
+	// 32 bytes = 256 bits of entropy, which exceeds NIST recommendations for
+	// cryptographic keys and is sufficient to prevent brute-force attacks.
+	// Base64url encoding without padding produces 43 characters from 32 bytes.
+	MinTokenBytes = 32
+)
+
+// generateRandomToken generates a cryptographically secure random token with
+// explicit entropy validation. This function is used for all security-critical
+// tokens including:
+//   - Authorization codes (one-time use codes)
+//   - Access tokens and refresh tokens
+//   - Token family IDs (for refresh token rotation tracking)
+//   - Provider state values (CSRF protection)
+//   - Client IDs and client secrets
+//
+// Security Properties:
+//   - Uses crypto/rand.Read() for cryptographically secure randomness
+//   - Generates exactly 32 bytes (256 bits) of entropy
+//   - Base64url encodes without padding (RFC 4648) producing 43 characters
+//   - Panics if crypto/rand fails (indicates system-level security failure)
+//
+// The function panics rather than returning an error because token generation
+// failure represents a critical security failure that should halt execution
+// immediately rather than risk generating weak or predictable tokens.
+//
+// Returns: A 43-character base64url-encoded string (no padding)
 func generateRandomToken() string {
-	return oauth2.GenerateVerifier()
+	// Allocate buffer for random bytes
+	b := make([]byte, MinTokenBytes)
+
+	// Read cryptographically secure random bytes
+	// crypto/rand.Read only returns an error if the system's random number
+	// generator fails, which indicates a severe system-level problem
+	n, err := rand.Read(b)
+	if err != nil {
+		// CRITICAL: System random number generator failed
+		// This is a security-critical failure - we must not proceed
+		panic(fmt.Sprintf("CRITICAL SECURITY FAILURE: crypto/rand.Read failed: %v", err))
+	}
+
+	// Validate that we got the expected number of bytes
+	// This should never happen (rand.Read guarantees to fill the buffer or return error),
+	// but we validate to ensure we have sufficient entropy
+	if n != MinTokenBytes {
+		panic(fmt.Sprintf("CRITICAL SECURITY FAILURE: crypto/rand.Read returned %d bytes, expected %d", n, MinTokenBytes))
+	}
+
+	// Encode using base64url without padding (RFC 4648)
+	// This produces a 43-character URL-safe string from 32 bytes
+	token := base64.RawURLEncoding.EncodeToString(b)
+
+	// Validate encoded token length
+	// 32 bytes base64url-encoded (no padding) = 43 characters
+	// ceil(32 * 8 / 6) = ceil(42.67) = 43
+	if len(token) < 43 {
+		// This should never happen with correct base64 encoding
+		panic(fmt.Sprintf("CRITICAL SECURITY FAILURE: generated token has insufficient length: %d chars (expected 43+)", len(token)))
+	}
+
+	return token
 }
