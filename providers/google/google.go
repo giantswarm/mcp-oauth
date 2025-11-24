@@ -100,15 +100,22 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	return p.AuthCodeURL(state, opts...)
 }
 
+// ensureContextTimeout ensures the context has a deadline, adding one if needed.
+// Returns a new context with timeout and a cancel function that should be deferred.
+// If the context already has a deadline, returns the original context with a no-op cancel.
+func (p *Provider) ensureContextTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, hasDeadline := ctx.Deadline(); hasDeadline {
+		// Context already has deadline, return no-op cancel
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, p.requestTimeout)
+}
+
 // ExchangeCode exchanges an authorization code for tokens
 // Returns standard oauth2.Token directly
 func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier string) (*oauth2.Token, error) {
-	// Enforce timeout if not already set
-	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, p.requestTimeout)
-		defer cancel()
-	}
+	ctx, cancel := p.ensureContextTimeout(ctx)
+	defer cancel()
 
 	var opts []oauth2.AuthCodeOption
 
@@ -131,12 +138,8 @@ func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier strin
 
 // ValidateToken validates an access token by calling Google's userinfo endpoint
 func (p *Provider) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
-	// Enforce timeout if not already set
-	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, p.requestTimeout)
-		defer cancel()
-	}
+	ctx, cancel := p.ensureContextTimeout(ctx)
+	defer cancel()
 
 	// Create HTTP client with the token using oauth2.Config.Client
 	token := &oauth2.Token{
@@ -187,12 +190,8 @@ func (p *Provider) ValidateToken(ctx context.Context, accessToken string) (*prov
 // RefreshToken refreshes an expired token
 // Returns standard oauth2.Token directly
 func (p *Provider) RefreshToken(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
-	// Enforce timeout if not already set
-	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, p.requestTimeout)
-		defer cancel()
-	}
+	ctx, cancel := p.ensureContextTimeout(ctx)
+	defer cancel()
 
 	// Use custom HTTP client
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)
@@ -214,12 +213,8 @@ func (p *Provider) RefreshToken(ctx context.Context, refreshToken string) (*oaut
 
 // RevokeToken revokes a token at Google's revocation endpoint
 func (p *Provider) RevokeToken(ctx context.Context, token string) error {
-	// Enforce timeout if not already set
-	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, p.requestTimeout)
-		defer cancel()
-	}
+	ctx, cancel := p.ensureContextTimeout(ctx)
+	defer cancel()
 
 	revokeURL := "https://oauth2.googleapis.com/revoke"
 	data := url.Values{}
@@ -229,7 +224,7 @@ func (p *Provider) RevokeToken(ctx context.Context, token string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create revoke request: %w", err)
 	}
-	
+
 	// Set content type for form data
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
@@ -248,8 +243,12 @@ func (p *Provider) RevokeToken(ctx context.Context, token string) error {
 
 // HealthCheck verifies that Google's OAuth endpoints are reachable.
 // It performs a lightweight check by fetching the OpenID Connect discovery document.
+// Uses the provided context for timeout and cancellation. If context has no deadline,
+// uses provider's default request timeout.
 func (p *Provider) HealthCheck(ctx context.Context) error {
-	// Use context with timeout
+	ctx, cancel := p.ensureContextTimeout(ctx)
+	defer cancel()
+
 	req, err := http.NewRequestWithContext(ctx, "GET", "https://accounts.google.com/.well-known/openid-configuration", nil)
 	if err != nil {
 		return fmt.Errorf("failed to create health check request: %w", err)

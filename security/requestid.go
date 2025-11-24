@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 )
 
@@ -13,12 +14,19 @@ type requestIDContextKey struct{}
 // RequestIDHeader is the HTTP header for request IDs
 const RequestIDHeader = "X-Request-ID"
 
-// GenerateRequestID generates a unique request ID
+// GenerateRequestID generates a cryptographically secure random request ID.
+// It uses crypto/rand to generate 16 bytes (128 bits) of entropy and
+// encodes them as a 22-character base64url string without padding.
+//
+// Request IDs are used for audit trails, security correlation, and debugging.
+// The function panics if the system's random number generator fails,
+// which indicates a critical system-level security failure.
 func GenerateRequestID() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		// Fallback to empty string if crypto/rand fails
-		return ""
+		// CRITICAL: System RNG failure - cannot generate secure request IDs
+		// This should never happen in normal operation
+		panic(fmt.Sprintf("crypto/rand.Read failed: %v", err))
 	}
 	return base64.RawURLEncoding.EncodeToString(b)
 }
