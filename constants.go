@@ -136,6 +136,12 @@ const (
 	PKCEMethodPlain = "plain"
 )
 
+// OAuth specification version
+const (
+	// OAuthSpecVersion is the OAuth specification version this library implements
+	OAuthSpecVersion = "OAuth 2.1"
+)
+
 // URI schemes
 const (
 	// SchemeHTTP is the HTTP URI scheme

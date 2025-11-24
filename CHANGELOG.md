@@ -39,6 +39,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - For localhost development: Add `AllowInsecureHTTP: true` to suppress warnings
     - For production HTTP (not recommended): Add `AllowInsecureHTTP: true` and review security risks
     - **Recommended**: Switch to HTTPS for all environments
+- **Enforced mandatory PKCE for public clients to prevent authorization code theft (#22)**
+  - Public clients (mobile apps, SPAs) now MUST use PKCE per OAuth 2.1 specification by default
+  - Authorization code exchange fails for public clients without PKCE (secure by default)
+  - Confidential clients can still optionally use PKCE (backward compatible)
+  - Prevents authorization code interception attacks on public clients
+  - Added comprehensive security event logging for PKCE enforcement failures
+  - Added extensive test coverage for public and confidential client scenarios
+  - **New Config Option**: `AllowPublicClientsWithoutPKCE` (default: `false`)
+    - Set to `true` to allow legacy public clients without PKCE support
+    - **WARNING**: Enabling this creates authorization code theft vulnerability
+    - Only use for backward compatibility with unmaintained legacy clients
+    - Logs warning events when public clients authenticate without PKCE
+  - **Impact**: Public clients without PKCE will receive `invalid_grant` error by default
+  - **Migration**: Ensure all public clients (mobile apps, SPAs) implement PKCE with S256 method
+  - **Legacy Compatibility**: Set `AllowPublicClientsWithoutPKCE: true` if you cannot update legacy clients
+  - **Security Rationale**: Public clients cannot securely store credentials, making PKCE essential for binding authorization codes to specific client instances
 
 ### Added
 - Initial open-source release

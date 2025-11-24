@@ -86,6 +86,15 @@ type Config struct {
 	// Default: true
 	RequirePKCE bool // default: true
 
+	// AllowPublicClientsWithoutPKCE allows public clients to authenticate without PKCE
+	// WARNING: This creates a significant security vulnerability to authorization code theft attacks
+	// Public clients (mobile apps, SPAs) cannot securely store credentials, making them vulnerable
+	// to authorization code interception if PKCE is not used (OAuth 2.1 Section 7.6)
+	// Only enable this for backward compatibility with legacy clients that cannot be updated
+	// SECURITY: Even when RequirePKCE=false, public clients MUST use PKCE unless this is explicitly enabled
+	// Default: false (PKCE is REQUIRED for public clients per OAuth 2.1)
+	AllowPublicClientsWithoutPKCE bool // default: false
+
 	// MinStateLength is the minimum length for state parameters to prevent
 	// timing attacks and ensure sufficient entropy for CSRF protection.
 	// OAuth 2.1 recommends at least 128 bits (16 bytes) of entropy.
