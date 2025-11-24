@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -790,7 +792,7 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 
 	// Verify error message is generic (per RFC 6749 - don't reveal security details)
 	errStr := err.Error()
-	if !containsString(errStr, "invalid") {
+	if !strings.Contains(errStr, "invalid") {
 		t.Errorf("Error should be generic 'invalid grant', got: %v", err)
 	}
 
@@ -837,6 +839,33 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 	if err == nil {
 		t.Error("Second refresh token should have been revoked")
 	}
+
+	// CRITICAL TEST: Verify Revoked flag persists in family metadata
+	// This is essential for preventing reuse of other tokens in the same family
+	// Try to get family metadata for both tokens (they should both be revoked or deleted)
+	checkFamilyRevoked := func(token string) {
+		family, err := store.GetRefreshTokenFamily(token)
+		if err != nil {
+			// Family metadata might be deleted - acceptable
+			t.Logf("Family metadata for token deleted (acceptable): %v", err)
+		} else {
+			// If family metadata exists, it MUST be marked as revoked
+			if !family.Revoked {
+				t.Errorf("Family should have Revoked=true, got false for family %s", family.FamilyID[:8])
+			}
+			if family.RevokedAt.IsZero() {
+				t.Error("RevokedAt timestamp should be set when family is revoked")
+			}
+			if family.FamilyID != familyID {
+				t.Errorf("Family ID mismatch: got %s, want %s", family.FamilyID[:8], familyID[:8])
+			}
+			t.Logf("Family metadata retained for forensics with Revoked=true and RevokedAt=%v", family.RevokedAt)
+		}
+	}
+
+	// Check both tokens in the family
+	checkFamilyRevoked(firstRefreshToken)
+	checkFamilyRevoked(secondRefreshToken)
 }
 
 // TestServer_RefreshTokenReuseMultipleRotations tests reuse detection after multiple rotations
@@ -941,7 +970,7 @@ func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
 	}
 
 	// Verify error is generic (per RFC 6749 - don't reveal security details)
-	if !containsString(err.Error(), "invalid") {
+	if !strings.Contains(err.Error(), "invalid") {
 		t.Errorf("Error should be generic 'invalid grant', got: %v", err)
 	}
 
@@ -961,18 +990,260 @@ func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
 	}
 }
 
-// Helper function to check if a string contains a substring
-func containsString(s, substr string) bool {
-	return len(s) >= len(substr) && findSubstring(s, substr)
-}
+// TestServer_ConcurrentRefreshTokenReuse tests that concurrent token reuse attempts are properly handled
+// This is a CRITICAL security test - only ONE request should succeed, rest should fail
+func TestServer_ConcurrentRefreshTokenReuse(t *testing.T) {
+	srv, store, provider := setupFlowTestServer(t)
 
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
+	// Enable refresh token rotation
+	srv.Config.AllowRefreshTokenRotation = true
+	srv.Config.RefreshTokenTTL = 86400
+
+	// Register a client
+	client, _, err := srv.RegisterClient(
+		"Test Client",
+		ClientTypeConfidential,
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+	clientID := client.ClientID
+
+	// Generate PKCE
+	codeVerifier := testutil.GenerateRandomString(50)
+	hash := sha256.Sum256([]byte(codeVerifier))
+	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	// Get initial tokens
+	clientState := "client-state-" + testutil.GenerateRandomString(10)
+	_, err = srv.StartAuthorizationFlow(
+		clientID,
+		"https://example.com/callback",
+		"openid email",
+		codeChallenge,
+		PKCEMethodS256,
+		clientState,
+	)
+	if err != nil {
+		t.Fatalf("StartAuthorizationFlow() error = %v", err)
+	}
+
+	authState, err := store.GetAuthorizationState(clientState)
+	if err != nil {
+		t.Fatalf("GetAuthorizationState() error = %v", err)
+	}
+
+	authCodeObj, _, err := srv.HandleProviderCallback(
+		context.Background(),
+		authState.ProviderState,
+		"provider-code-"+testutil.GenerateRandomString(10),
+	)
+	if err != nil {
+		t.Fatalf("HandleProviderCallback() error = %v", err)
+	}
+
+	token, _, err := srv.ExchangeAuthorizationCode(
+		context.Background(),
+		authCodeObj.Code,
+		clientID,
+		"https://example.com/callback",
+		codeVerifier,
+	)
+	if err != nil {
+		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
+	}
+
+	firstRefreshToken := token.RefreshToken
+
+	// Configure mock provider
+	provider.RefreshTokenFunc = func(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+		return &oauth2.Token{
+			AccessToken:  "new-provider-access-token",
+			RefreshToken: "new-provider-refresh-token",
+			Expiry:       time.Now().Add(1 * time.Hour),
+		}, nil
+	}
+
+	// Perform one legitimate refresh (rotation happens)
+	token2, err := srv.RefreshAccessToken(context.Background(), firstRefreshToken, clientID)
+	if err != nil {
+		t.Fatalf("Legitimate RefreshAccessToken() error = %v", err)
+	}
+
+	// Now the firstRefreshToken is rotated out (deleted)
+	// Launch 10 concurrent attempts to reuse the old token
+	const numConcurrent = 10
+	type result struct {
+		success bool
+		err     error
+	}
+	results := make(chan result, numConcurrent)
+
+	// All goroutines start roughly at the same time
+	for i := 0; i < numConcurrent; i++ {
+		go func() {
+			_, err := srv.RefreshAccessToken(context.Background(), firstRefreshToken, clientID)
+			results <- result{success: err == nil, err: err}
+		}()
+	}
+
+	// Collect results
+	successCount := 0
+	failCount := 0
+	for i := 0; i < numConcurrent; i++ {
+		res := <-results
+		if res.success {
+			successCount++
+			t.Error("Concurrent reuse attempt succeeded - should have failed!")
+		} else {
+			failCount++
+			// Verify error is security-related (either "invalid" or "revoked")
+			errStr := res.err.Error()
+			if !strings.Contains(errStr, "invalid") && !strings.Contains(errStr, "revoked") {
+				t.Errorf("Error should indicate security failure, got: %v", res.err)
+			}
 		}
 	}
-	return false
+
+	// CRITICAL: ALL attempts should fail (token was already rotated)
+	if successCount > 0 {
+		t.Errorf("SECURITY FAILURE: %d concurrent reuse attempts succeeded, expected 0", successCount)
+	}
+	if failCount != numConcurrent {
+		t.Errorf("Expected all %d attempts to fail, but only %d failed", numConcurrent, failCount)
+	}
+
+	// Verify ALL tokens were revoked (reuse detection triggered)
+	tokens, err := store.GetTokensByUserClient("mock-user-123", clientID)
+	if err != nil {
+		t.Fatalf("GetTokensByUserClient() error = %v", err)
+	}
+	if len(tokens) != 0 {
+		t.Errorf("ALL tokens should have been revoked, but found %d", len(tokens))
+	}
+
+	// Verify the second token (legitimate one) is also revoked
+	_, err = store.GetRefreshTokenInfo(token2.RefreshToken)
+	if err == nil {
+		t.Error("Second refresh token should have been revoked after reuse detection")
+	}
+
+	t.Logf("Concurrent reuse test passed: %d/%d attempts correctly failed", failCount, numConcurrent)
+}
+
+// TestServer_ConcurrentAuthorizationCodeReuse tests concurrent auth code reuse
+// This verifies atomic code exchange - only ONE request should succeed
+func TestServer_ConcurrentAuthorizationCodeReuse(t *testing.T) {
+	srv, store, _ := setupFlowTestServer(t)
+
+	// Register a client
+	client, _, err := srv.RegisterClient(
+		"Test Client",
+		ClientTypeConfidential,
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+	clientID := client.ClientID
+
+	// Generate PKCE
+	codeVerifier := testutil.GenerateRandomString(50)
+	hash := sha256.Sum256([]byte(codeVerifier))
+	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	// Get authorization code
+	clientState := "client-state-" + testutil.GenerateRandomString(10)
+	_, err = srv.StartAuthorizationFlow(
+		clientID,
+		"https://example.com/callback",
+		"openid email",
+		codeChallenge,
+		PKCEMethodS256,
+		clientState,
+	)
+	if err != nil {
+		t.Fatalf("StartAuthorizationFlow() error = %v", err)
+	}
+
+	authState, err := store.GetAuthorizationState(clientState)
+	if err != nil {
+		t.Fatalf("GetAuthorizationState() error = %v", err)
+	}
+
+	authCodeObj, _, err := srv.HandleProviderCallback(
+		context.Background(),
+		authState.ProviderState,
+		"provider-code-"+testutil.GenerateRandomString(10),
+	)
+	if err != nil {
+		t.Fatalf("HandleProviderCallback() error = %v", err)
+	}
+
+	authCode := authCodeObj.Code
+
+	// Launch 10 concurrent attempts to exchange the SAME authorization code
+	const numConcurrent = 10
+	type result struct {
+		success bool
+		token   *oauth2.Token
+		err     error
+	}
+	results := make(chan result, numConcurrent)
+
+	// All goroutines start roughly at the same time
+	for i := 0; i < numConcurrent; i++ {
+		go func() {
+			token, _, err := srv.ExchangeAuthorizationCode(
+				context.Background(),
+				authCode,
+				clientID,
+				"https://example.com/callback",
+				codeVerifier,
+			)
+			results <- result{success: err == nil, token: token, err: err}
+		}()
+	}
+
+	// Collect results
+	successCount := 0
+	failCount := 0
+	var successfulToken *oauth2.Token
+	for i := 0; i < numConcurrent; i++ {
+		res := <-results
+		if res.success {
+			successCount++
+			successfulToken = res.token
+		} else {
+			failCount++
+			// Verify error is generic
+			if !strings.Contains(res.err.Error(), "invalid") {
+				t.Errorf("Error should contain 'invalid', got: %v", res.err)
+			}
+		}
+	}
+
+	// CRITICAL: Exactly ONE attempt should succeed (atomic operation)
+	if successCount != 1 {
+		t.Errorf("SECURITY FAILURE: Expected exactly 1 success, got %d", successCount)
+	}
+	if failCount != numConcurrent-1 {
+		t.Errorf("Expected %d failures, got %d", numConcurrent-1, failCount)
+	}
+
+	// The one successful token should be valid
+	if successCount == 1 && successfulToken == nil {
+		t.Error("Successful exchange should return a token")
+	}
+
+	t.Logf("Concurrent auth code test passed: 1 succeeded, %d correctly failed", failCount)
 }
 
 func TestServer_RevokeToken(t *testing.T) {
@@ -1123,7 +1394,7 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 	// Check error message
 	// Verify error message is generic (per RFC 6749 - don't reveal security details to attackers)
 	errStr := err.Error()
-	if !containsString(errStr, "invalid_grant") && !containsString(errStr, "invalid grant") {
+	if !strings.Contains(errStr, "invalid_grant") && !strings.Contains(errStr, "invalid grant") {
 		t.Errorf("ExchangeAuthorizationCode() error = %v, want generic 'invalid grant' error", err)
 	}
 
@@ -1357,4 +1628,151 @@ func TestServer_RevokeAllTokensForUserClient(t *testing.T) {
 	if len(differentClientTokens) != 1 {
 		t.Errorf("Expected 1 token for different client, got %d", len(differentClientTokens))
 	}
+}
+
+// TestServer_RevokeAllTokensProviderFailure tests that local revocation continues even if provider revocation fails
+func TestServer_RevokeAllTokensProviderFailure(t *testing.T) {
+	srv, store, provider := setupFlowTestServer(t)
+
+	userID := "test_user_789"
+	clientID := "test_client_123"
+
+	// Configure mock provider to fail revocation
+	revokeCallCount := 0
+	provider.RevokeTokenFunc = func(ctx context.Context, token string) error {
+		revokeCallCount++
+		return fmt.Errorf("provider revocation failed: network timeout")
+	}
+
+	// Save some test tokens with metadata
+	token1 := &oauth2.Token{
+		AccessToken:  "access_token_1",
+		RefreshToken: "refresh_token_1",
+		Expiry:       time.Now().Add(time.Hour),
+		TokenType:    "Bearer",
+	}
+	token2 := &oauth2.Token{
+		AccessToken:  "access_token_2",
+		RefreshToken: "refresh_token_2",
+		Expiry:       time.Now().Add(time.Hour),
+		TokenType:    "Bearer",
+	}
+
+	if err := store.SaveToken("access_token_1", token1); err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+	if err := store.SaveToken("access_token_2", token2); err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+
+	// Save metadata
+	if err := store.SaveTokenMetadata("access_token_1", userID, clientID, "access"); err != nil {
+		t.Fatalf("SaveTokenMetadata() error = %v", err)
+	}
+	if err := store.SaveTokenMetadata("access_token_2", userID, clientID, "access"); err != nil {
+		t.Fatalf("SaveTokenMetadata() error = %v", err)
+	}
+
+	// Verify tokens exist before revocation
+	tokens, err := store.GetTokensByUserClient(userID, clientID)
+	if err != nil {
+		t.Fatalf("GetTokensByUserClient() error = %v", err)
+	}
+	if len(tokens) != 2 {
+		t.Errorf("Expected 2 tokens before revocation, got %d", len(tokens))
+	}
+
+	// CRITICAL: Revoke all tokens - should succeed locally despite provider failure
+	err = srv.RevokeAllTokensForUserClient(context.Background(), userID, clientID)
+	if err != nil {
+		t.Fatalf("RevokeAllTokensForUserClient() should succeed locally even if provider fails, got error: %v", err)
+	}
+
+	// Verify provider revocation was attempted
+	if revokeCallCount < 2 {
+		t.Errorf("Expected at least 2 provider revocation attempts (access + refresh tokens), got %d", revokeCallCount)
+	}
+
+	// CRITICAL: Verify local revocation succeeded despite provider failure
+	tokens, err = store.GetTokensByUserClient(userID, clientID)
+	if err != nil {
+		t.Fatalf("GetTokensByUserClient() error = %v", err)
+	}
+	if len(tokens) != 0 {
+		t.Errorf("Expected 0 tokens after local revocation, got %d (provider failure should not prevent local revocation)", len(tokens))
+	}
+
+	// Verify tokens are actually deleted from storage
+	if _, err := store.GetToken("access_token_1"); err == nil {
+		t.Error("Token 1 should have been deleted locally")
+	}
+	if _, err := store.GetToken("access_token_2"); err == nil {
+		t.Error("Token 2 should have been deleted locally")
+	}
+
+	t.Logf("Provider revocation test passed: %d provider calls made, local revocation succeeded", revokeCallCount)
+}
+
+// TestServer_RevokeAllTokensProviderTimeout tests that revocation continues after provider timeout
+func TestServer_RevokeAllTokensProviderTimeout(t *testing.T) {
+	srv, store, provider := setupFlowTestServer(t)
+
+	// Set a short timeout for testing (1 second)
+	srv.Config.ProviderRevocationTimeout = 1
+
+	userID := "test_user_timeout"
+	clientID := "test_client_timeout"
+
+	// Configure mock provider to block (simulate slow provider)
+	provider.RevokeTokenFunc = func(ctx context.Context, token string) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Second):
+			return nil
+		}
+	}
+
+	// Save a test token
+	token1 := &oauth2.Token{
+		AccessToken: "access_token_timeout",
+		Expiry:      time.Now().Add(time.Hour),
+		TokenType:   "Bearer",
+	}
+
+	if err := store.SaveToken("access_token_timeout", token1); err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+
+	if err := store.SaveTokenMetadata("access_token_timeout", userID, clientID, "access"); err != nil {
+		t.Fatalf("SaveTokenMetadata() error = %v", err)
+	}
+
+	// Start timer to verify timeout is respected
+	startTime := time.Now()
+
+	// Revoke - should timeout at provider but succeed locally
+	err := srv.RevokeAllTokensForUserClient(context.Background(), userID, clientID)
+
+	elapsed := time.Since(startTime)
+
+	if err != nil {
+		t.Fatalf("RevokeAllTokensForUserClient() error = %v", err)
+	}
+
+	// Verify it didn't wait the full 10 seconds (should timeout after ~1 second)
+	if elapsed > 5*time.Second {
+		t.Errorf("Revocation took too long (%v), timeout not respected", elapsed)
+	}
+
+	// Verify local revocation succeeded
+	tokens, err := store.GetTokensByUserClient(userID, clientID)
+	if err != nil {
+		t.Fatalf("GetTokensByUserClient() error = %v", err)
+	}
+	if len(tokens) != 0 {
+		t.Errorf("Expected 0 tokens after revocation, got %d", len(tokens))
+	}
+
+	t.Logf("Provider timeout test passed: operation completed in %v (timeout was %ds)", elapsed, srv.Config.ProviderRevocationTimeout)
 }

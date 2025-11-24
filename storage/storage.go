@@ -68,6 +68,7 @@ type RefreshTokenFamilyMetadata struct {
 	Generation int
 	IssuedAt   time.Time
 	Revoked    bool
+	RevokedAt  time.Time // When this family was revoked (for forensics and cleanup)
 }
 
 // TokenRevocationStore supports bulk token revocation operations (OAuth 2.1 security).

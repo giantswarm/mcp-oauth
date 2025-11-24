@@ -426,6 +426,7 @@ func (s *Store) GetRefreshTokenFamily(refreshToken string) (*storage.RefreshToke
 		Generation: family.Generation,
 		IssuedAt:   family.IssuedAt,
 		Revoked:    family.Revoked,
+		RevokedAt:  family.RevokedAt,
 	}, nil
 }
 
@@ -939,8 +940,9 @@ func (s *Store) RevokeAllTokensForUserClient(userID, clientID string) (int, erro
 		for tokenID, family := range s.refreshTokenFamilies {
 			if family.FamilyID == familyID {
 				// Mark family as revoked (keeps metadata for forensics/detection)
-				family.Revoked = true
-				family.RevokedAt = now // Track when revoked for cleanup purposes
+				// CRITICAL: Must update the map entry directly, not the loop copy
+				s.refreshTokenFamilies[tokenID].Revoked = true
+				s.refreshTokenFamilies[tokenID].RevokedAt = now
 
 				// Delete the actual tokens
 				delete(s.refreshTokens, tokenID)

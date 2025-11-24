@@ -4,6 +4,7 @@ package mock
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"golang.org/x/oauth2"
 
@@ -32,6 +33,9 @@ type MockProvider struct {
 
 	// CallCounts tracks how many times each method was called
 	CallCounts map[string]int
+
+	// mu protects CallCounts from concurrent access
+	mu sync.RWMutex
 }
 
 // NewMockProvider creates a new mock provider with default implementations
@@ -76,46 +80,62 @@ func NewMockProvider() *MockProvider {
 
 // Name returns the provider name
 func (m *MockProvider) Name() string {
+	m.mu.Lock()
 	m.CallCounts["Name"]++
+	m.mu.Unlock()
 	return m.NameFunc()
 }
 
 // AuthorizationURL generates the URL to redirect users for authentication
 func (m *MockProvider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string) string {
+	m.mu.Lock()
 	m.CallCounts["AuthorizationURL"]++
+	m.mu.Unlock()
 	return m.AuthorizationURLFunc(state, codeChallenge, codeChallengeMethod)
 }
 
 // ExchangeCode exchanges an authorization code for tokens
 func (m *MockProvider) ExchangeCode(ctx context.Context, code string, codeVerifier string) (*oauth2.Token, error) {
+	m.mu.Lock()
 	m.CallCounts["ExchangeCode"]++
+	m.mu.Unlock()
 	return m.ExchangeCodeFunc(ctx, code, codeVerifier)
 }
 
 // ValidateToken validates an access token and returns user information
 func (m *MockProvider) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+	m.mu.Lock()
 	m.CallCounts["ValidateToken"]++
+	m.mu.Unlock()
 	return m.ValidateTokenFunc(ctx, accessToken)
 }
 
 // RefreshToken refreshes an expired token using a refresh token
 func (m *MockProvider) RefreshToken(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+	m.mu.Lock()
 	m.CallCounts["RefreshToken"]++
+	m.mu.Unlock()
 	return m.RefreshTokenFunc(ctx, refreshToken)
 }
 
 // RevokeToken revokes a token at the provider
 func (m *MockProvider) RevokeToken(ctx context.Context, token string) error {
+	m.mu.Lock()
 	m.CallCounts["RevokeToken"]++
+	m.mu.Unlock()
 	return m.RevokeTokenFunc(ctx, token)
 }
 
 // ResetCallCounts resets all call counters
 func (m *MockProvider) ResetCallCounts() {
+	m.mu.Lock()
 	m.CallCounts = make(map[string]int)
+	m.mu.Unlock()
 }
 
 // GetCallCount returns the number of times a method was called
 func (m *MockProvider) GetCallCount(method string) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.CallCounts[method]
 }
