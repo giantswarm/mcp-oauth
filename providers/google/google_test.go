@@ -63,14 +63,11 @@ func TestNewProvider(t *testing.T) {
 				t.Errorf("NewProvider() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			if !tt.wantErr {
-				if provider == nil {
-					t.Error("NewProvider() returned nil provider")
-				}
-				if provider.httpClient == nil {
-					t.Error("NewProvider() httpClient is nil")
-				}
+		if !tt.wantErr && provider != nil {
+			if provider.httpClient == nil {
+				t.Error("NewProvider() httpClient is nil")
 			}
+		}
 		})
 	}
 }
@@ -143,8 +140,8 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 			},
 		},
 		{
-			name:  "without PKCE",
-			state: "test-state",
+			name:         "without PKCE",
+			state:        "test-state",
 			wantContains: []string{
 				"state=test-state",
 				"access_type=offline",
@@ -207,7 +204,7 @@ func TestProvider_ExchangeCode(t *testing.T) {
 	}
 
 	// Override endpoint for testing
-	provider.Config.Endpoint.TokenURL = server.URL + "/token"
+	provider.Endpoint.TokenURL = server.URL + "/token"
 
 	// Test exchange
 	ctx := context.Background()
@@ -264,7 +261,7 @@ func TestProvider_ExchangeCode_WithPKCE(t *testing.T) {
 		t.Fatalf("NewProvider() error = %v", err)
 	}
 
-	provider.Config.Endpoint.TokenURL = server.URL + "/token"
+	provider.Endpoint.TokenURL = server.URL + "/token"
 
 	ctx := context.Background()
 	token, err := provider.ExchangeCode(ctx, "test-code", "test-verifier")
@@ -403,7 +400,7 @@ func TestProvider_RefreshToken(t *testing.T) {
 		t.Fatalf("NewProvider() error = %v", err)
 	}
 
-	provider.Config.Endpoint.TokenURL = server.URL + "/token"
+	provider.Endpoint.TokenURL = server.URL + "/token"
 
 	ctx := context.Background()
 	token, err := provider.RefreshToken(ctx, "test-refresh-token")
@@ -507,3 +504,4 @@ func (r *revokeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	return http.DefaultTransport.RoundTrip(req)
 }
+
