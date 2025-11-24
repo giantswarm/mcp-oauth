@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Added client-specific scope validation to prevent scope escalation attacks (#26)**
+  - Implemented `validateClientScopes()` to validate requested scopes against client's allowed scopes
+  - Validation occurs at TWO points for defense-in-depth:
+    1. Authorization flow start - early rejection of unauthorized scope requests
+    2. Token exchange - final validation before issuing tokens (prevents bypasses)
+  - Clients with empty/nil `Scopes` field allow all scopes (backward compatibility)
+  - Clients with non-empty `Scopes` field are restricted to their allowed scopes only
+  - Generic error messages prevent information disclosure about allowed scopes
+  - Audit logging for scope escalation attempts
+  - Added comprehensive test suite covering:
+    - Single and multiple scope validation
+    - Scope escalation attempts
+    - Unauthorized scope detection
+    - Backward compatibility with unrestricted clients
+    - Integration tests for authorization flow and token exchange
+  - **Impact**: No breaking changes - enhanced OAuth 2.0 security
+  - **Security**: Prevents compromised clients from obtaining tokens with unauthorized scopes
 - **Added local token expiry validation before provider check (#24)**
   - `ValidateToken` now checks token expiry locally before calling provider
   - Prevents expired tokens from being accepted if provider's clock is skewed

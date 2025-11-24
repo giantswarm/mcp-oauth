@@ -200,6 +200,58 @@ func (s *Server) validateScopes(scope string) error {
 	return nil
 }
 
+// validateClientScopes validates that requested scopes are allowed for the specific client.
+// This provides client-level scope restriction on top of server-level scope validation.
+//
+// OAuth 2.0 Security: Clients should only be granted tokens with scopes they are authorized
+// to request. This prevents scope escalation attacks where a compromised client could obtain
+// unauthorized access to resources.
+//
+// Behavior:
+// - If client.Scopes is empty or nil: Allow all scopes (backward compatibility)
+// - If client.Scopes is non-empty: Requested scopes MUST be a subset of allowed scopes
+// - Empty requested scope string is always allowed
+//
+// Example:
+//
+//	client.Scopes = ["read:user", "write:user"]
+//	validateClientScopes("read:user", client.Scopes)           // OK
+//	validateClientScopes("read:user write:user", client.Scopes) // OK
+//	validateClientScopes("admin:all", client.Scopes)           // ERROR
+func (s *Server) validateClientScopes(requestedScope string, clientScopes []string) error {
+	// If client has no scope restrictions, allow all scopes
+	// This maintains backward compatibility with clients registered without scope restrictions
+	if len(clientScopes) == 0 {
+		return nil
+	}
+
+	// Empty scope request is always allowed
+	if requestedScope == "" {
+		return nil
+	}
+
+	// Split requested scope string into individual scopes
+	requestedScopes := strings.Fields(requestedScope)
+
+	// Validate each requested scope against client's allowed scopes
+	for _, reqScope := range requestedScopes {
+		found := false
+		for _, allowedScope := range clientScopes {
+			if reqScope == allowedScope {
+				found = true
+				break
+			}
+		}
+		if !found {
+			// SECURITY: Don't reveal which scopes the client is allowed to request
+			// Return generic error to prevent information disclosure
+			return fmt.Errorf("client is not authorized for requested scope: %s", reqScope)
+		}
+	}
+
+	return nil
+}
+
 // validateStateParameter validates the state parameter for security requirements.
 // This function enforces:
 // 1. Minimum length to ensure sufficient entropy and prevent timing attacks

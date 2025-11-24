@@ -609,3 +609,247 @@ func TestValidateStateParameter_TimingAttackResistance(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateClientScopes(t *testing.T) {
+	setup := newTestServerSetup(false)
+	srv, err := setup.createServer(&Config{
+		RequirePKCE:    true,
+		AllowPKCEPlain: false,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+
+	tests := []struct {
+		name           string
+		requestedScope string
+		clientScopes   []string
+		wantErr        bool
+		errMsg         string
+	}{
+		{
+			name:           "empty client scopes allows all",
+			requestedScope: "openid profile email",
+			clientScopes:   []string{},
+			wantErr:        false,
+		},
+		{
+			name:           "nil client scopes allows all",
+			requestedScope: "openid profile email",
+			clientScopes:   nil,
+			wantErr:        false,
+		},
+		{
+			name:           "empty requested scope is always allowed",
+			requestedScope: "",
+			clientScopes:   []string{"openid"},
+			wantErr:        false,
+		},
+		{
+			name:           "single scope - authorized",
+			requestedScope: "openid",
+			clientScopes:   []string{"openid", "profile", "email"},
+			wantErr:        false,
+		},
+		{
+			name:           "single scope - unauthorized",
+			requestedScope: "admin",
+			clientScopes:   []string{"openid", "profile"},
+			wantErr:        true,
+			errMsg:         "client is not authorized for requested scope: admin",
+		},
+		{
+			name:           "multiple scopes - all authorized",
+			requestedScope: "openid profile",
+			clientScopes:   []string{"openid", "profile", "email"},
+			wantErr:        false,
+		},
+		{
+			name:           "multiple scopes - all authorized (different order)",
+			requestedScope: "profile openid",
+			clientScopes:   []string{"openid", "profile", "email"},
+			wantErr:        false,
+		},
+		{
+			name:           "multiple scopes - one unauthorized",
+			requestedScope: "openid admin",
+			clientScopes:   []string{"openid", "profile"},
+			wantErr:        true,
+			errMsg:         "client is not authorized for requested scope: admin",
+		},
+		{
+			name:           "multiple scopes - multiple unauthorized",
+			requestedScope: "openid admin superuser",
+			clientScopes:   []string{"openid", "profile"},
+			wantErr:        true,
+			errMsg:         "client is not authorized for requested scope",
+		},
+		{
+			name:           "scope escalation attempt",
+			requestedScope: "read:user write:user admin:all",
+			clientScopes:   []string{"read:user", "write:user"},
+			wantErr:        true,
+			errMsg:         "client is not authorized for requested scope: admin:all",
+		},
+		{
+			name:           "exact match - single scope",
+			requestedScope: "openid",
+			clientScopes:   []string{"openid"},
+			wantErr:        false,
+		},
+		{
+			name:           "client restricted to subset",
+			requestedScope: "openid",
+			clientScopes:   []string{"openid", "profile"},
+			wantErr:        false,
+		},
+		{
+			name:           "request all client scopes",
+			requestedScope: "openid profile email",
+			clientScopes:   []string{"openid", "profile", "email"},
+			wantErr:        false,
+		},
+		{
+			name:           "custom scopes - authorized",
+			requestedScope: "read:api write:api",
+			clientScopes:   []string{"read:api", "write:api", "delete:api"},
+			wantErr:        false,
+		},
+		{
+			name:           "custom scopes - unauthorized",
+			requestedScope: "read:api delete:api",
+			clientScopes:   []string{"read:api", "write:api"},
+			wantErr:        true,
+			errMsg:         "client is not authorized for requested scope: delete:api",
+		},
+		{
+			name:           "scope with special characters - authorized",
+			requestedScope: "https://www.googleapis.com/auth/userinfo.email",
+			clientScopes:   []string{"https://www.googleapis.com/auth/userinfo.email", "openid"},
+			wantErr:        false,
+		},
+		{
+			name:           "scope with special characters - unauthorized",
+			requestedScope: "https://www.googleapis.com/auth/admin.directory",
+			clientScopes:   []string{"https://www.googleapis.com/auth/userinfo.email"},
+			wantErr:        true,
+			errMsg:         "client is not authorized for requested scope",
+		},
+		{
+			name:           "case sensitive scope check",
+			requestedScope: "OpenID",
+			clientScopes:   []string{"openid"},
+			wantErr:        true,
+			errMsg:         "client is not authorized for requested scope: OpenID",
+		},
+		{
+			name:           "whitespace handling - single space",
+			requestedScope: "openid profile",
+			clientScopes:   []string{"openid", "profile"},
+			wantErr:        false,
+		},
+		{
+			name:           "whitespace handling - multiple spaces",
+			requestedScope: "openid  profile   email",
+			clientScopes:   []string{"openid", "profile", "email"},
+			wantErr:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := srv.validateClientScopes(tt.requestedScope, tt.clientScopes)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("validateClientScopes() expected error but got none")
+					return
+				}
+				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("validateClientScopes() error = %v, want error containing %q", err, tt.errMsg)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("validateClientScopes() unexpected error = %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestValidateClientScopes_SecurityScenarios tests real-world security scenarios
+// to ensure proper scope validation prevents unauthorized access
+func TestValidateClientScopes_SecurityScenarios(t *testing.T) {
+	setup := newTestServerSetup(false)
+	srv, err := setup.createServer(&Config{
+		RequirePKCE:    true,
+		AllowPKCEPlain: false,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+
+	t.Run("read-only client attempts write", func(t *testing.T) {
+		err := srv.validateClientScopes("read:api write:api", []string{"read:api"})
+		if err == nil {
+			t.Error("Expected error when read-only client requests write scope")
+		}
+		if !strings.Contains(err.Error(), "write:api") {
+			t.Errorf("Error should mention unauthorized scope, got: %v", err)
+		}
+	})
+
+	t.Run("mobile app attempts admin escalation", func(t *testing.T) {
+		// Mobile app registered with basic scopes attempts to get admin access
+		err := srv.validateClientScopes("openid profile admin:users", []string{"openid", "profile", "email"})
+		if err == nil {
+			t.Error("Expected error when mobile app attempts admin escalation")
+		}
+		if !strings.Contains(err.Error(), "admin:users") {
+			t.Errorf("Error should mention unauthorized scope, got: %v", err)
+		}
+	})
+
+	t.Run("compromised client with limited scopes", func(t *testing.T) {
+		// Even if client is compromised, it can only get scopes it's authorized for
+		clientScopes := []string{"read:public"}
+		unauthorizedRequests := []string{
+			"read:private",
+			"write:public",
+			"delete:public",
+			"admin:all",
+		}
+
+		for _, scope := range unauthorizedRequests {
+			err := srv.validateClientScopes(scope, clientScopes)
+			if err == nil {
+				t.Errorf("Expected error for unauthorized scope: %s", scope)
+			}
+		}
+	})
+
+	t.Run("backward compatibility - unrestricted clients", func(t *testing.T) {
+		// Clients registered before scope restrictions were added (nil/empty scopes)
+		// should still work with any requested scope for backward compatibility
+		requests := []string{
+			"openid",
+			"openid profile email",
+			"admin:all",
+			"custom:scope",
+		}
+
+		for _, scope := range requests {
+			// Empty client scopes
+			err := srv.validateClientScopes(scope, []string{})
+			if err != nil {
+				t.Errorf("Expected no error for unrestricted client (empty scopes), scope=%s, got: %v", scope, err)
+			}
+
+			// Nil client scopes
+			err = srv.validateClientScopes(scope, nil)
+			if err != nil {
+				t.Errorf("Expected no error for unrestricted client (nil scopes), scope=%s, got: %v", scope, err)
+			}
+		}
+	})
+}

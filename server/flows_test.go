@@ -3585,3 +3585,332 @@ func TestServer_ConcurrentProviderRevocationCalls(t *testing.T) {
 
 	t.Log("Concurrent provider revocation test passed - no race conditions detected")
 }
+
+// TestStartAuthorizationFlow_ClientScopeValidation tests that scope validation
+// against client's allowed scopes happens during authorization flow start
+func TestStartAuthorizationFlow_ClientScopeValidation(t *testing.T) {
+	srv, _, _ := setupFlowTestServer(t)
+
+	// Register client with limited scopes
+	client, _, err := srv.RegisterClient(
+		"Limited Client",
+		ClientTypePublic,
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "profile"}, // Only openid and profile allowed
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	validVerifier := testutil.GenerateRandomString(50)
+	hash := sha256.Sum256([]byte(validVerifier))
+	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+	validState := testutil.GenerateRandomString(43)
+
+	tests := []struct {
+		name        string
+		scope       string
+		wantErr     bool
+		errContains string
+		description string
+	}{
+		{
+			name:        "authorized single scope",
+			scope:       "openid",
+			wantErr:     false,
+			description: "Client requests scope it's authorized for",
+		},
+		{
+			name:        "authorized multiple scopes",
+			scope:       "openid profile",
+			wantErr:     false,
+			description: "Client requests multiple scopes it's authorized for",
+		},
+		{
+			name:        "authorized scopes - different order",
+			scope:       "profile openid",
+			wantErr:     false,
+			description: "Order of scopes shouldn't matter",
+		},
+		{
+			name:        "unauthorized single scope",
+			scope:       "email",
+			wantErr:     true,
+			errContains: ErrorCodeInvalidScope,
+			description: "Client requests scope it's not authorized for",
+		},
+		{
+			name:        "unauthorized scope in mix",
+			scope:       "openid email",
+			wantErr:     true,
+			errContains: ErrorCodeInvalidScope,
+			description: "Client requests mix of authorized and unauthorized scopes",
+		},
+		{
+			name:        "scope escalation attempt",
+			scope:       "admin",
+			wantErr:     true,
+			errContains: ErrorCodeInvalidScope,
+			description: "Client attempts to escalate to admin scope",
+		},
+		{
+			name:        "multiple unauthorized scopes",
+			scope:       "email admin write:all",
+			wantErr:     true,
+			errContains: ErrorCodeInvalidScope,
+			description: "Client requests multiple unauthorized scopes",
+		},
+		{
+			name:        "empty scope allowed",
+			scope:       "",
+			wantErr:     false,
+			description: "Empty scope should be allowed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authURL, err := srv.StartAuthorizationFlow(
+				client.ClientID,
+				"https://example.com/callback",
+				tt.scope,
+				validChallenge,
+				PKCEMethodS256,
+				validState,
+			)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("StartAuthorizationFlow() expected error but got none (test: %s)", tt.description)
+					return
+				}
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("StartAuthorizationFlow() error = %v, want error containing %q (test: %s)", err, tt.errContains, tt.description)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("StartAuthorizationFlow() unexpected error = %v (test: %s)", err, tt.description)
+					return
+				}
+				if authURL == "" {
+					t.Errorf("StartAuthorizationFlow() returned empty auth URL (test: %s)", tt.description)
+				}
+			}
+		})
+	}
+}
+
+// TestExchangeAuthorizationCode_ClientScopeValidation tests that scope validation
+// happens during token exchange as defense-in-depth
+func TestExchangeAuthorizationCode_ClientScopeValidation(t *testing.T) {
+	srv, store, provider := setupFlowTestServer(t)
+	ctx := context.Background()
+
+	// Register client with limited scopes
+	client, _, err := srv.RegisterClient(
+		"Limited Client",
+		ClientTypeConfidential,
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "profile"}, // Only openid and profile allowed
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	// Setup provider responses by setting the mock functions
+	provider.ExchangeCodeFunc = func(ctx context.Context, code string, codeVerifier string) (*oauth2.Token, error) {
+		return &oauth2.Token{
+			AccessToken:  "mock-provider-token",
+			RefreshToken: "mock-refresh-token",
+			Expiry:       time.Now().Add(time.Hour),
+		}, nil
+	}
+	provider.ValidateTokenFunc = func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+		return &providers.UserInfo{
+			ID:    "test-user-123",
+			Email: "test@example.com",
+			Name:  "Test User",
+		}, nil
+	}
+
+	validVerifier := testutil.GenerateRandomString(50)
+	hash := sha256.Sum256([]byte(validVerifier))
+	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	tests := []struct {
+		name        string
+		scope       string
+		wantErr     bool
+		errContains string
+		description string
+	}{
+		{
+			name:        "authorized scope in token exchange",
+			scope:       "openid",
+			wantErr:     false,
+			description: "Token exchange succeeds for authorized scope",
+		},
+		{
+			name:        "authorized multiple scopes in token exchange",
+			scope:       "openid profile",
+			wantErr:     false,
+			description: "Token exchange succeeds for multiple authorized scopes",
+		},
+		{
+			name:        "unauthorized scope in token exchange",
+			scope:       "email",
+			wantErr:     true,
+			errContains: ErrorCodeInvalidGrant,
+			description: "Token exchange fails for unauthorized scope (defense-in-depth)",
+		},
+		{
+			name:        "scope escalation in token exchange",
+			scope:       "admin",
+			wantErr:     true,
+			errContains: ErrorCodeInvalidGrant,
+			description: "Token exchange prevents scope escalation attack",
+		},
+		{
+			name:        "mix of authorized and unauthorized in token exchange",
+			scope:       "openid admin",
+			wantErr:     true,
+			errContains: ErrorCodeInvalidGrant,
+			description: "Token exchange fails if any scope is unauthorized",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create authorization code directly in storage with the test scope
+			// This simulates a scenario where authorization flow validation was bypassed
+			// and we're testing the defense-in-depth validation in token exchange
+			authCode := &storage.AuthorizationCode{
+				Code:                testutil.GenerateRandomString(32),
+				ClientID:            client.ClientID,
+				RedirectURI:         "https://example.com/callback",
+				Scope:               tt.scope, // Test different scopes
+				CodeChallenge:       validChallenge,
+				CodeChallengeMethod: PKCEMethodS256,
+				UserID:              "test-user-123",
+				ProviderToken: &oauth2.Token{
+					AccessToken:  "mock-provider-token",
+					RefreshToken: "mock-refresh-token",
+					Expiry:       time.Now().Add(time.Hour),
+				},
+				CreatedAt: time.Now(),
+				ExpiresAt: time.Now().Add(10 * time.Minute),
+				Used:      false,
+			}
+
+			if err := store.SaveAuthorizationCode(authCode); err != nil {
+				t.Fatalf("SaveAuthorizationCode() error = %v", err)
+			}
+
+			// Attempt token exchange
+			token, scope, err := srv.ExchangeAuthorizationCode(
+				ctx,
+				authCode.Code,
+				client.ClientID,
+				"https://example.com/callback",
+				validVerifier,
+			)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("ExchangeAuthorizationCode() expected error but got none (test: %s)", tt.description)
+					return
+				}
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("ExchangeAuthorizationCode() error = %v, want error containing %q (test: %s)", err, tt.errContains, tt.description)
+				}
+				// Verify token was not issued
+				if token != nil {
+					t.Errorf("ExchangeAuthorizationCode() should not return token on error (test: %s)", tt.description)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("ExchangeAuthorizationCode() unexpected error = %v (test: %s)", err, tt.description)
+					return
+				}
+				if token == nil {
+					t.Errorf("ExchangeAuthorizationCode() returned nil token (test: %s)", tt.description)
+					return
+				}
+				if token.AccessToken == "" {
+					t.Errorf("ExchangeAuthorizationCode() returned empty access token (test: %s)", tt.description)
+				}
+				if scope != tt.scope {
+					t.Errorf("ExchangeAuthorizationCode() scope = %v, want %v (test: %s)", scope, tt.scope, tt.description)
+				}
+			}
+		})
+	}
+}
+
+// TestClientScopeValidation_UnrestrictedClient tests backward compatibility
+// with clients that have no scope restrictions
+func TestClientScopeValidation_UnrestrictedClient(t *testing.T) {
+	srv, _, _ := setupFlowTestServer(t)
+
+	// Register client with NO scope restrictions (empty scopes array)
+	client, _, err := srv.RegisterClient(
+		"Unrestricted Client",
+		ClientTypePublic,
+		[]string{"https://example.com/callback"},
+		[]string{}, // Empty scopes = no restrictions (backward compatibility)
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	validVerifier := testutil.GenerateRandomString(50)
+	hash := sha256.Sum256([]byte(validVerifier))
+	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+	validState := testutil.GenerateRandomString(43)
+
+	// Unrestricted client should be able to request any scope
+	testScopes := []string{
+		"openid",
+		"openid profile email",
+		"admin",
+		"read:all write:all delete:all",
+		"custom:scope",
+	}
+
+	for _, scope := range testScopes {
+		t.Run("unrestricted_"+scope, func(t *testing.T) {
+			authURL, err := srv.StartAuthorizationFlow(
+				client.ClientID,
+				"https://example.com/callback",
+				scope,
+				validChallenge,
+				PKCEMethodS256,
+				validState,
+			)
+
+			if err != nil {
+				// Check if error is due to server's SupportedScopes, not client scopes
+				if strings.Contains(err.Error(), "unsupported scope") {
+					// This is expected - server-level validation
+					t.Logf("Server-level scope validation rejected scope (expected): %v", err)
+					return
+				}
+				// If error mentions client authorization, that's a problem
+				if strings.Contains(err.Error(), "client is not authorized") {
+					t.Errorf("Unrestricted client should not get client authorization error, got: %v", err)
+					return
+				}
+			}
+
+			if err == nil && authURL == "" {
+				t.Error("StartAuthorizationFlow() returned empty auth URL")
+			}
+		})
+	}
+}
