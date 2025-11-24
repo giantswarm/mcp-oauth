@@ -952,18 +952,23 @@ func TestServer_ValidateToken(t *testing.T) {
 	}
 }
 
-// TestServer_ValidateToken_LocalExpiry tests local token expiry validation before provider check
-func TestServer_ValidateToken_LocalExpiry(t *testing.T) {
-	srv, store, provider := setupFlowTestServer(t)
-
-	// Set up provider to always return valid user info
-	provider.ValidateTokenFunc = func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+// setupValidTokenProvider returns a provider function that always validates tokens successfully
+func setupValidTokenProvider() func(context.Context, string) (*providers.UserInfo, error) {
+	return func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
 		return &providers.UserInfo{
 			ID:    "user-123",
 			Email: "test@example.com",
 			Name:  "Test User",
 		}, nil
 	}
+}
+
+// TestServer_ValidateToken_LocalExpiry tests local token expiry validation before provider check
+func TestServer_ValidateToken_LocalExpiry(t *testing.T) {
+	srv, store, provider := setupFlowTestServer(t)
+
+	// Set up provider to always return valid user info
+	provider.ValidateTokenFunc = setupValidTokenProvider()
 
 	tests := []struct {
 		name           string
@@ -996,7 +1001,7 @@ func TestServer_ValidateToken_LocalExpiry(t *testing.T) {
 			saveToken:      true,
 			clockSkewGrace: 5,
 			wantErr:        true,
-			wantErrMsg:     "access token expired",
+			wantErrMsg:     "access token expired (local validation)",
 		},
 		{
 			name:           "token expired but within grace period",
@@ -1021,7 +1026,7 @@ func TestServer_ValidateToken_LocalExpiry(t *testing.T) {
 			saveToken:      true,
 			clockSkewGrace: 5,
 			wantErr:        true,
-			wantErrMsg:     "access token expired",
+			wantErrMsg:     "access token expired (local validation)",
 		},
 		{
 			name:           "zero grace period - strict expiry check",
@@ -1030,7 +1035,7 @@ func TestServer_ValidateToken_LocalExpiry(t *testing.T) {
 			saveToken:      true,
 			clockSkewGrace: 0,
 			wantErr:        true,
-			wantErrMsg:     "access token expired",
+			wantErrMsg:     "access token expired (local validation)",
 		},
 		{
 			name:           "large grace period - expired token still valid",
@@ -1044,6 +1049,12 @@ func TestServer_ValidateToken_LocalExpiry(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Save original config and restore after test
+			originalGrace := srv.Config.ClockSkewGracePeriod
+			t.Cleanup(func() {
+				srv.Config.ClockSkewGracePeriod = originalGrace
+			})
+
 			// Set clock skew grace period for this test
 			srv.Config.ClockSkewGracePeriod = tt.clockSkewGrace
 
@@ -1100,6 +1111,12 @@ func TestServer_ValidateToken_ClockSkewScenarios(t *testing.T) {
 			Name:  "Clock Skew User",
 		}, nil
 	}
+
+	// Save original config and restore after all subtests
+	originalGrace := srv.Config.ClockSkewGracePeriod
+	t.Cleanup(func() {
+		srv.Config.ClockSkewGracePeriod = originalGrace
+	})
 
 	// Configure grace period
 	srv.Config.ClockSkewGracePeriod = 5
