@@ -11,19 +11,30 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
+// safeTruncate safely truncates a string to maxLen characters without panicking.
+// Returns the original string if it's shorter than maxLen, otherwise returns
+// the first maxLen characters. This prevents index out of bounds errors when logging.
+func safeTruncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen]
+}
+
 // Server implements the OAuth 2.1 server logic (provider-agnostic).
 // It coordinates the OAuth flow using a Provider and storage backends.
 type Server struct {
-	provider        providers.Provider
-	tokenStore      storage.TokenStore
-	clientStore     storage.ClientStore
-	flowStore       storage.FlowStore
-	Encryptor       *security.Encryptor
-	Auditor         *security.Auditor
-	RateLimiter     *security.RateLimiter // IP-based rate limiter
-	UserRateLimiter *security.RateLimiter // User-based rate limiter (authenticated requests)
-	Logger          *slog.Logger
-	Config          *Config
+	provider                 providers.Provider
+	tokenStore               storage.TokenStore
+	clientStore              storage.ClientStore
+	flowStore                storage.FlowStore
+	Encryptor                *security.Encryptor
+	Auditor                  *security.Auditor
+	RateLimiter              *security.RateLimiter // IP-based rate limiter
+	UserRateLimiter          *security.RateLimiter // User-based rate limiter (authenticated requests)
+	SecurityEventRateLimiter *security.RateLimiter // Rate limiter for security event logging (DoS prevention)
+	Logger                   *slog.Logger
+	Config                   *Config
 }
 
 // New creates a new OAuth server
@@ -58,14 +69,24 @@ func New(
 	// Apply secure defaults
 	config = applySecureDefaults(config, logger)
 
-	return &Server{
+	srv := &Server{
 		provider:    provider,
 		tokenStore:  tokenStore,
 		clientStore: clientStore,
 		flowStore:   flowStore,
 		Config:      config,
 		Logger:      logger,
-	}, nil
+	}
+
+	// Configure storage retention if storage supports it
+	type retentionSetter interface {
+		SetRevokedFamilyRetentionDays(days int64)
+	}
+	if setter, ok := tokenStore.(retentionSetter); ok {
+		setter.SetRevokedFamilyRetentionDays(config.RevokedFamilyRetentionDays)
+	}
+
+	return srv, nil
 }
 
 // SetEncryptor sets the token encryptor for server and storage
@@ -94,6 +115,12 @@ func (s *Server) SetRateLimiter(rl *security.RateLimiter) {
 // SetUserRateLimiter sets the user-based rate limiter for authenticated requests
 func (s *Server) SetUserRateLimiter(rl *security.RateLimiter) {
 	s.UserRateLimiter = rl
+}
+
+// SetSecurityEventRateLimiter sets the rate limiter for security event logging
+// This prevents DoS attacks via log flooding from repeated security events
+func (s *Server) SetSecurityEventRateLimiter(rl *security.RateLimiter) {
+	s.SecurityEventRateLimiter = rl
 }
 
 // generateRandomToken generates a cryptographically secure random token.

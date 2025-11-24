@@ -4,6 +4,7 @@ package mock
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"golang.org/x/oauth2"
 
@@ -32,6 +33,9 @@ type MockProvider struct {
 
 	// CallCounts tracks how many times each method was called
 	CallCounts map[string]int
+
+	// mu protects CallCounts from concurrent access
+	mu sync.RWMutex
 }
 
 // NewMockProvider creates a new mock provider with default implementations
@@ -76,46 +80,91 @@ func NewMockProvider() *MockProvider {
 
 // Name returns the provider name
 func (m *MockProvider) Name() string {
+	// LOCK PATTERN: Lock only to update counter and read function reference
+	// Release lock BEFORE calling user function to prevent deadlocks
+	// (user function might call other mock methods)
+	m.mu.Lock()
 	m.CallCounts["Name"]++
-	return m.NameFunc()
+	fn := m.NameFunc
+	m.mu.Unlock()
+
+	// Call user function WITHOUT holding lock (deadlock prevention)
+	if fn == nil {
+		return "mock" // Safe default
+	}
+	return fn()
 }
 
 // AuthorizationURL generates the URL to redirect users for authentication
 func (m *MockProvider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string) string {
+	m.mu.Lock()
 	m.CallCounts["AuthorizationURL"]++
-	return m.AuthorizationURLFunc(state, codeChallenge, codeChallengeMethod)
+	fn := m.AuthorizationURLFunc
+	m.mu.Unlock()
+	if fn == nil {
+		return "https://mock.example.com/authorize?state=" + state // Safe default
+	}
+	return fn(state, codeChallenge, codeChallengeMethod)
 }
 
 // ExchangeCode exchanges an authorization code for tokens
 func (m *MockProvider) ExchangeCode(ctx context.Context, code string, codeVerifier string) (*oauth2.Token, error) {
+	m.mu.Lock()
 	m.CallCounts["ExchangeCode"]++
-	return m.ExchangeCodeFunc(ctx, code, codeVerifier)
+	fn := m.ExchangeCodeFunc
+	m.mu.Unlock()
+	if fn == nil {
+		return nil, fmt.Errorf("ExchangeCodeFunc not configured")
+	}
+	return fn(ctx, code, codeVerifier)
 }
 
 // ValidateToken validates an access token and returns user information
 func (m *MockProvider) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+	m.mu.Lock()
 	m.CallCounts["ValidateToken"]++
-	return m.ValidateTokenFunc(ctx, accessToken)
+	fn := m.ValidateTokenFunc
+	m.mu.Unlock()
+	if fn == nil {
+		return nil, fmt.Errorf("ValidateTokenFunc not configured")
+	}
+	return fn(ctx, accessToken)
 }
 
 // RefreshToken refreshes an expired token using a refresh token
 func (m *MockProvider) RefreshToken(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+	m.mu.Lock()
 	m.CallCounts["RefreshToken"]++
-	return m.RefreshTokenFunc(ctx, refreshToken)
+	fn := m.RefreshTokenFunc
+	m.mu.Unlock()
+	if fn == nil {
+		return nil, fmt.Errorf("RefreshTokenFunc not configured")
+	}
+	return fn(ctx, refreshToken)
 }
 
 // RevokeToken revokes a token at the provider
 func (m *MockProvider) RevokeToken(ctx context.Context, token string) error {
+	m.mu.Lock()
 	m.CallCounts["RevokeToken"]++
-	return m.RevokeTokenFunc(ctx, token)
+	fn := m.RevokeTokenFunc
+	m.mu.Unlock()
+	if fn == nil {
+		return fmt.Errorf("RevokeTokenFunc not configured")
+	}
+	return fn(ctx, token)
 }
 
 // ResetCallCounts resets all call counters
 func (m *MockProvider) ResetCallCounts() {
+	m.mu.Lock()
 	m.CallCounts = make(map[string]int)
+	m.mu.Unlock()
 }
 
 // GetCallCount returns the number of times a method was called
 func (m *MockProvider) GetCallCount(method string) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.CallCounts[method]
 }

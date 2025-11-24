@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"fmt"
+	"math"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -268,60 +269,98 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 
 // ExchangeAuthorizationCode exchanges an authorization code for tokens
 // Returns oauth2.Token directly
-func (s *Server) ExchangeAuthorizationCode(_ context.Context, code, clientID, redirectURI, codeVerifier string) (*oauth2.Token, string, error) {
-	// Get authorization code
-	authCode, err := s.flowStore.GetAuthorizationCode(code)
+func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, redirectURI, codeVerifier string) (*oauth2.Token, string, error) {
+	// SECURITY: Atomically check and mark authorization code as used
+	// This prevents race conditions where multiple concurrent requests could use the same code
+	authCode, err := s.flowStore.AtomicCheckAndMarkAuthCodeUsed(code)
 	if err != nil {
+		// Check if this is a reuse attempt (code already used)
+		if authCode != nil && authCode.Used {
+			// CRITICAL SECURITY: Authorization code reuse detected - this indicates a potential token theft attack
+			// OAuth 2.1 requires revoking ALL tokens for this user+client when code reuse is detected
+			// Rate limit logging to prevent DoS via log flooding
+			if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(authCode.UserID+":"+clientID) {
+				s.Logger.Error("Authorization code reuse detected - revoking all tokens",
+					"user_id", authCode.UserID,
+					"client_id", clientID,
+					"oauth_spec", "OAuth 2.1 Section 4.1.2")
+			}
+
+			// Revoke all tokens for this user+client (OAuth 2.1 requirement)
+			if err := s.RevokeAllTokensForUserClient(ctx, authCode.UserID, clientID); err != nil {
+				s.Logger.Error("Failed to revoke tokens after code reuse detection", "error", err)
+				// Continue with deletion even if revocation failed
+			}
+
+			if s.Auditor != nil {
+				// Log the critical security event
+				s.Auditor.LogEvent(security.Event{
+					Type:     "authorization_code_reuse_detected",
+					UserID:   authCode.UserID,
+					ClientID: clientID,
+					Details: map[string]any{
+						"severity":   "critical",
+						"action":     "all_tokens_revoked",
+						"oauth_spec": "OAuth 2.1 Section 4.1.2",
+					},
+				})
+				s.Auditor.LogAuthFailure(authCode.UserID, clientID, "", "authorization_code_reuse")
+			}
+
+			// Delete the authorization code
+			_ = s.flowStore.DeleteAuthorizationCode(code)
+
+			// Return generic error per RFC 6749 (don't reveal details to attacker)
+			return nil, "", fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+		}
+
+		// Other error (not found, expired, etc.)
+		// SECURITY: Log detailed internal error for debugging, but return generic error to client
+		s.Logger.Debug("Authorization code validation failed",
+			"reason", err.Error(),
+			"client_id", clientID,
+			"code_prefix", safeTruncate(code, 8))
+
 		if s.Auditor != nil {
 			s.Auditor.LogAuthFailure("", clientID, "", "invalid_authorization_code")
 		}
-		return nil, "", fmt.Errorf("%s: authorization code not found", ErrorCodeInvalidGrant)
+		// Return generic error per RFC 6749 (don't reveal details to attacker)
+		return nil, "", fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 	}
 
-	// Validate authorization code hasn't been used
-	if authCode.Used {
-		// CRITICAL SECURITY: Authorization code reuse detected - this indicates a potential token theft attack
-		// OAuth 2.1 requires revoking ALL tokens for this user+client when code reuse is detected
-		s.Logger.Error("Authorization code reuse detected - revoking all tokens",
-			"user_id", authCode.UserID,
-			"client_id", clientID,
-			"oauth_spec", "OAuth 2.1 Section 4.1.2")
-
-		// Revoke all tokens for this user+client (OAuth 2.1 requirement)
-		if err := s.RevokeAllTokensForUserClient(authCode.UserID, clientID); err != nil {
-			s.Logger.Error("Failed to revoke tokens after code reuse detection", "error", err)
-			// Continue with deletion even if revocation failed
-		}
-
-		if s.Auditor != nil {
-			// Log the critical security event
-			s.Auditor.LogEvent(security.Event{
-				Type:     "authorization_code_reuse_detected",
-				UserID:   authCode.UserID,
-				ClientID: clientID,
-				Details: map[string]any{
-					"severity":   "critical",
-					"action":     "all_tokens_revoked",
-					"oauth_spec": "OAuth 2.1 Section 4.1.2",
-				},
-			})
-			s.Auditor.LogAuthFailure(authCode.UserID, clientID, "", "authorization_code_reuse")
-		}
-
-		// Delete the authorization code
-		_ = s.flowStore.DeleteAuthorizationCode(code)
-
-		return nil, "", fmt.Errorf("%s: authorization code already used - all tokens revoked", ErrorCodeInvalidGrant)
-	}
+	// Code is now atomically marked as used - no other request can use it
 
 	// Validate client ID matches
 	if authCode.ClientID != clientID {
-		return nil, "", fmt.Errorf("%s: client ID mismatch", ErrorCodeInvalidGrant)
+		// SECURITY: Log detailed internal error for debugging, but return generic error to client
+		s.Logger.Debug("Authorization code validation failed",
+			"reason", "client_id_mismatch",
+			"expected_client_id", authCode.ClientID,
+			"provided_client_id", clientID,
+			"code_prefix", safeTruncate(code, 8))
+
+		if s.Auditor != nil {
+			s.Auditor.LogAuthFailure("", clientID, "", "client_id_mismatch")
+		}
+		// Return generic error per RFC 6749 (don't reveal details to attacker)
+		return nil, "", fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 	}
 
 	// Validate redirect URI matches
 	if authCode.RedirectURI != redirectURI {
-		return nil, "", fmt.Errorf("%s: redirect URI mismatch", ErrorCodeInvalidGrant)
+		// SECURITY: Log detailed internal error for debugging, but return generic error to client
+		s.Logger.Debug("Authorization code validation failed",
+			"reason", "redirect_uri_mismatch",
+			"expected_uri", authCode.RedirectURI,
+			"provided_uri", redirectURI,
+			"client_id", clientID,
+			"code_prefix", safeTruncate(code, 8))
+
+		if s.Auditor != nil {
+			s.Auditor.LogAuthFailure("", clientID, "", "redirect_uri_mismatch")
+		}
+		// Return generic error per RFC 6749 (don't reveal details to attacker)
+		return nil, "", fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 	}
 
 	// Validate PKCE if present
@@ -342,10 +381,6 @@ func (s *Server) ExchangeAuthorizationCode(_ context.Context, code, clientID, re
 			return nil, "", fmt.Errorf("PKCE validation failed: %w", err)
 		}
 	}
-
-	// Mark code as used
-	authCode.Used = true
-	_ = s.flowStore.SaveAuthorizationCode(authCode)
 
 	// Generate new access token using oauth2.GenerateVerifier (same quality)
 	accessToken := generateRandomToken()
@@ -378,6 +413,11 @@ func (s *Server) ExchangeAuthorizationCode(_ context.Context, code, clientID, re
 		if err := metadataStore.SaveTokenMetadata(accessToken, authCode.UserID, clientID, "access"); err != nil {
 			s.Logger.Warn("Failed to save access token metadata", "error", err)
 		}
+		// CRITICAL: Also save refresh token metadata for revocation
+		// This ensures refresh tokens can be found and revoked during code reuse detection
+		if err := metadataStore.SaveTokenMetadata(refreshToken, authCode.UserID, clientID, "refresh"); err != nil {
+			s.Logger.Warn("Failed to save refresh token metadata", "error", err)
+		}
 	}
 
 	// Track refresh token with expiry (OAuth 2.1 security)
@@ -391,7 +431,7 @@ func (s *Server) ExchangeAuthorizationCode(_ context.Context, code, clientID, re
 		} else {
 			s.Logger.Debug("Created new refresh token family",
 				"user_id", authCode.UserID,
-				"family_id", familyID[:min(8, len(familyID))])
+				"family_id", safeTruncate(familyID, 8))
 		}
 	} else {
 		// Fallback to basic tracking
@@ -419,49 +459,101 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	// Check if storage supports token family tracking (OAuth 2.1 reuse detection)
 	familyStore, supportsFamilies := s.tokenStore.(storage.RefreshTokenFamilyStore)
 
-	// OAUTH 2.1 SECURITY: Check for refresh token reuse (token theft detection)
-	if supportsFamilies {
-		family, err := familyStore.GetRefreshTokenFamily(refreshToken)
-		if err == nil {
-			// Check if this token family has been revoked due to reuse
-			if family.Revoked {
+	// OAUTH 2.1 SECURITY: Atomically get and delete refresh token FIRST
+	// This is the synchronization point - only ONE concurrent request can succeed
+	// After this, we check family metadata to detect reuse of already-rotated tokens
+	userID, providerToken, err := s.tokenStore.AtomicGetAndDeleteRefreshToken(refreshToken)
+
+	if err != nil {
+		// Token not found or already deleted - check if this is a reuse attempt
+		// SECURITY FIX: Check family AFTER atomic delete to eliminate TOCTOU vulnerability
+		if supportsFamilies {
+			family, famErr := familyStore.GetRefreshTokenFamily(refreshToken)
+			if famErr == nil {
+				// Family exists but token was already deleted/rotated → REUSE DETECTED!
+				// Check if family was previously revoked
+				if family.Revoked {
+					// Attempted use of token from previously revoked family
+					if s.Auditor != nil {
+						s.Auditor.LogEvent(security.Event{
+							Type:     "revoked_token_family_reuse_attempt",
+							UserID:   family.UserID,
+							ClientID: clientID,
+							Details: map[string]any{
+								"severity":    "critical",
+								"family_id":   family.FamilyID,
+								"description": "Attempted use of token from revoked family (prior reuse detected)",
+							},
+						})
+					}
+					s.Logger.Error("Attempted use of revoked token family",
+						"user_id", family.UserID,
+						"family_id", safeTruncate(family.FamilyID, 8))
+					return nil, fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+				}
+
+				// Token is deleted but family exists and NOT revoked → FRESH REUSE DETECTED!
+				// This means someone is trying to use an old (rotated) refresh token
+				// Rate limit logging to prevent DoS via log flooding
+				if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(family.UserID+":"+clientID) {
+					s.Logger.Error("Refresh token reuse detected - token was rotated but still being used",
+						"user_id", family.UserID,
+						"client_id", clientID,
+						"family_id", safeTruncate(family.FamilyID, 8),
+						"generation", family.Generation,
+						"oauth_spec", "OAuth 2.1 Refresh Token Rotation")
+				}
+
+				// Step 1: Revoke entire token family (OAuth 2.1 requirement)
+				if err := familyStore.RevokeRefreshTokenFamily(family.FamilyID); err != nil {
+					s.Logger.Error("Failed to revoke token family", "error", err)
+					// Continue with user token revocation even if family revocation failed
+				}
+
+				// Step 2: Revoke all tokens for this user+client (defense in depth)
+				if err := s.RevokeAllTokensForUserClient(ctx, family.UserID, family.ClientID); err != nil {
+					s.Logger.Error("Failed to revoke user tokens", "error", err)
+					// Continue - log error but still return security error to client
+				}
+
+				// Step 3: Log critical security event for monitoring/alerting
 				if s.Auditor != nil {
 					s.Auditor.LogEvent(security.Event{
-						Type:     "revoked_token_family_reuse_attempt",
+						Type:     "refresh_token_reuse_detected",
 						UserID:   family.UserID,
 						ClientID: clientID,
 						Details: map[string]any{
-							"severity":    "critical",
-							"family_id":   family.FamilyID,
-							"description": "Attempted use of token from revoked family (prior reuse detected)",
+							"severity":   "critical",
+							"family_id":  family.FamilyID,
+							"generation": family.Generation,
+							"action":     "family_and_tokens_revoked",
+							"oauth_spec": "OAuth 2.1 Refresh Token Rotation",
+							"impact":     "All tokens for user+client revoked to prevent token theft",
 						},
 					})
+					s.Auditor.LogTokenReuse(family.UserID, clientID)
 				}
-				s.Logger.Error("Attempted use of revoked token family",
-					"user_id", family.UserID,
-					"family_id", family.FamilyID[:min(8, len(family.FamilyID))])
-				return nil, fmt.Errorf("refresh token has been revoked")
+
+				// Return generic error per RFC 6749 (don't reveal security details to attacker)
+				return nil, fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 			}
 		}
-	}
 
-	// Validate refresh token and get user ID
-	userID, err := s.tokenStore.GetRefreshTokenInfo(refreshToken)
-	if err != nil {
+		// Token not found and no family metadata - regular invalid token error
+		// SECURITY: Log detailed internal error for debugging, but return generic error to client
+		s.Logger.Debug("Refresh token validation failed",
+			"reason", err.Error(),
+			"client_id", clientID,
+			"token_prefix", safeTruncate(refreshToken, 8))
+
 		if s.Auditor != nil {
 			s.Auditor.LogAuthFailure("", clientID, "", "invalid_refresh_token")
 		}
-		return nil, fmt.Errorf("%s: %w", ErrorCodeInvalidGrant, err)
+		// Return generic error per RFC 6749 (don't reveal details to attacker)
+		return nil, fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 	}
 
-	// Get provider token using refresh token
-	providerToken, err := s.tokenStore.GetToken(refreshToken)
-	if err != nil {
-		if s.Auditor != nil {
-			s.Auditor.LogAuthFailure(userID, clientID, "", "refresh_token_not_found")
-		}
-		return nil, fmt.Errorf("%s: refresh token not found", ErrorCodeInvalidGrant)
-	}
+	// Token is now atomically deleted - no other request can use it
 
 	// Refresh token with provider
 	newProviderToken, err := s.provider.RefreshToken(ctx, providerToken.RefreshToken)
@@ -594,18 +686,20 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP stri
 }
 
 // RevokeAllTokensForUserClient revokes all tokens (access + refresh) for a specific user+client combination.
-// This is called when authorization code reuse is detected (OAuth 2.1 security requirement).
+// This is called when authorization code or refresh token reuse is detected (OAuth 2.1 security requirement).
 // It provides defense against token theft by invalidating all tokens when an attack is detected.
-func (s *Server) RevokeAllTokensForUserClient(userID, clientID string) error {
+//
+// SECURITY: This function revokes tokens at BOTH the provider (Google/GitHub) and locally.
+// The storage backend MUST implement TokenRevocationStore for OAuth 2.1 compliance.
+func (s *Server) RevokeAllTokensForUserClient(ctx context.Context, userID, clientID string) error {
 	// Check if storage supports token revocation
 	revocationStore, supportsRevocation := s.tokenStore.(storage.TokenRevocationStore)
 
 	if !supportsRevocation {
-		// Log warning but don't fail - storage doesn't support bulk revocation
-		s.Logger.Warn("Token storage does not support bulk revocation",
+		// SECURITY: Fail hard - this is a critical security feature required for OAuth 2.1
+		s.Logger.Error("CRITICAL: Token storage does not support TokenRevocationStore - OAuth 2.1 NOT compliant",
 			"user_id", userID,
-			"client_id", clientID,
-			"recommendation", "Consider using a storage backend that implements TokenRevocationStore")
+			"client_id", clientID)
 
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
@@ -613,31 +707,154 @@ func (s *Server) RevokeAllTokensForUserClient(userID, clientID string) error {
 				UserID:   userID,
 				ClientID: clientID,
 				Details: map[string]any{
-					"severity": "warning",
-					"message":  "Storage backend does not support bulk token revocation",
+					"severity": "critical",
+					"message":  "Storage backend does not support bulk token revocation - OAuth 2.1 compliance FAILED",
 				},
 			})
 		}
 
-		return nil
+		return fmt.Errorf("storage backend must implement TokenRevocationStore for OAuth 2.1 compliance")
 	}
 
-	// Revoke all tokens for this user+client
+	// Get list of tokens BEFORE revoking locally (so we can revoke at provider)
+	tokens, err := revocationStore.GetTokensByUserClient(userID, clientID)
+	if err != nil {
+		return fmt.Errorf("failed to get tokens for revocation: %w", err)
+	}
+
+	// SECURITY: Revoke at provider FIRST with retry logic
+	// This ensures tokens are invalid at Google/GitHub/etc, not just locally
+	revokedAtProvider := 0
+	failedAtProvider := 0
+	totalTokensToRevoke := 0
+
+	for _, tokenID := range tokens {
+		providerToken, err := s.tokenStore.GetToken(tokenID)
+		if err != nil {
+			s.Logger.Warn("Could not get provider token for revocation",
+				"token_id", safeTruncate(tokenID, 8),
+				"error", err)
+			continue
+		}
+
+		// Count tokens that need revocation
+		if providerToken.AccessToken != "" {
+			totalTokensToRevoke++
+		}
+		if providerToken.RefreshToken != "" {
+			totalTokensToRevoke++
+		}
+
+		// Revoke access token at provider with retry logic
+		if providerToken.AccessToken != "" {
+			if err := s.revokeTokenWithRetry(ctx, providerToken.AccessToken, "access", userID, clientID); err != nil {
+				failedAtProvider++
+			} else {
+				revokedAtProvider++
+			}
+		}
+
+		// Also revoke refresh token at provider if present
+		if providerToken.RefreshToken != "" {
+			if err := s.revokeTokenWithRetry(ctx, providerToken.RefreshToken, "refresh", userID, clientID); err != nil {
+				failedAtProvider++
+			} else {
+				revokedAtProvider++
+			}
+		}
+	}
+
+	// Calculate failure rate
+	failureRate := 0.0
+	if totalTokensToRevoke > 0 {
+		failureRate = float64(failedAtProvider) / float64(totalTokensToRevoke)
+	}
+
+	s.Logger.Info("Provider revocation complete",
+		"user_id", userID,
+		"client_id", clientID,
+		"revoked_at_provider", revokedAtProvider,
+		"failed_at_provider", failedAtProvider,
+		"total_tokens", totalTokensToRevoke,
+		"failure_rate", fmt.Sprintf("%.2f%%", failureRate*100))
+
+	// SECURITY: Check failure threshold - fail hard if too many provider revocations failed
+	// This ensures we don't proceed when tokens remain valid at the provider
+	if totalTokensToRevoke > 0 && failureRate > s.Config.ProviderRevocationFailureThreshold {
+		s.Logger.Error("CRITICAL: Provider revocation failure rate exceeds threshold",
+			"user_id", userID,
+			"client_id", clientID,
+			"failure_rate", fmt.Sprintf("%.2f%%", failureRate*100),
+			"threshold", fmt.Sprintf("%.2f%%", s.Config.ProviderRevocationFailureThreshold*100),
+			"failed_count", failedAtProvider,
+			"total_count", totalTokensToRevoke)
+
+		if s.Auditor != nil {
+			s.Auditor.LogEvent(security.Event{
+				Type:     "provider_revocation_threshold_exceeded",
+				UserID:   userID,
+				ClientID: clientID,
+				Details: map[string]any{
+					"severity":       "critical",
+					"impact":         "Too many tokens remain valid at provider",
+					"failure_rate":   failureRate,
+					"threshold":      s.Config.ProviderRevocationFailureThreshold,
+					"failed_count":   failedAtProvider,
+					"total_count":    totalTokensToRevoke,
+					"oauth_spec":     "OAuth 2.1 Section 4.1.2",
+					"action":         "Manual provider-side revocation REQUIRED",
+					"recommendation": "Check provider API status and network connectivity",
+				},
+			})
+		}
+
+		return fmt.Errorf("provider revocation failure rate %.2f%% exceeds threshold %.2f%% (%d/%d failed) - tokens may remain valid at provider",
+			failureRate*100, s.Config.ProviderRevocationFailureThreshold*100, failedAtProvider, totalTokensToRevoke)
+	}
+
+	// SECURITY: Alert if ALL provider revocations failed (100% failure)
+	if revokedAtProvider == 0 && totalTokensToRevoke > 0 {
+		s.Logger.Error("CRITICAL: All provider revocations failed - tokens still valid at provider!",
+			"user_id", userID,
+			"client_id", clientID,
+			"token_count", totalTokensToRevoke)
+
+		if s.Auditor != nil {
+			s.Auditor.LogEvent(security.Event{
+				Type:     "provider_revocation_complete_failure",
+				UserID:   userID,
+				ClientID: clientID,
+				Details: map[string]any{
+					"severity":    "critical",
+					"impact":      "All tokens remain valid at provider",
+					"token_count": totalTokensToRevoke,
+					"oauth_spec":  "OAuth 2.1 Section 4.1.2",
+					"mitigation":  "Tokens revoked locally but still usable at provider",
+					"action":      "Immediate manual provider-side revocation REQUIRED",
+				},
+			})
+		}
+
+		return fmt.Errorf("all provider revocations failed (0/%d succeeded) - tokens remain valid at provider", totalTokensToRevoke)
+	}
+
+	// Now revoke locally
 	revokedCount, err := revocationStore.RevokeAllTokensForUserClient(userID, clientID)
 	if err != nil {
-		s.Logger.Error("Failed to revoke tokens for user+client",
+		s.Logger.Error("Failed to revoke tokens locally",
 			"user_id", userID,
 			"client_id", clientID,
 			"error", err)
-		return fmt.Errorf("failed to revoke tokens: %w", err)
+		return fmt.Errorf("failed to revoke tokens locally: %w", err)
 	}
 
 	// Log the revocation
 	s.Logger.Warn("Revoked all tokens for user+client due to security event",
 		"user_id", userID,
 		"client_id", clientID,
-		"tokens_revoked", revokedCount,
-		"reason", "authorization_code_reuse_detected")
+		"tokens_revoked_locally", revokedCount,
+		"tokens_revoked_at_provider", revokedAtProvider,
+		"reason", "reuse_detection")
 
 	if s.Auditor != nil {
 		s.Auditor.LogEvent(security.Event{
@@ -645,13 +862,79 @@ func (s *Server) RevokeAllTokensForUserClient(userID, clientID string) error {
 			UserID:   userID,
 			ClientID: clientID,
 			Details: map[string]any{
-				"severity":       "critical",
-				"tokens_revoked": revokedCount,
-				"reason":         "authorization_code_reuse_detected",
-				"oauth_spec":     "OAuth 2.1 Section 4.1.2",
+				"severity":                "critical",
+				"tokens_revoked_local":    revokedCount,
+				"tokens_revoked_provider": revokedAtProvider,
+				"reason":                  "authorization_code_reuse_detected",
+				"oauth_spec":              "OAuth 2.1 Section 4.1.2",
 			},
 		})
 	}
 
 	return nil
+}
+
+// revokeTokenWithRetry attempts to revoke a token at the provider with exponential backoff retry logic.
+// Returns nil if revocation succeeds within the retry limit, or an error if all attempts fail.
+// Implements exponential backoff: 100ms, 200ms, 400ms, 800ms, 1600ms between retries.
+func (s *Server) revokeTokenWithRetry(ctx context.Context, token, tokenType, userID, clientID string) error {
+	maxRetries := s.Config.ProviderRevocationMaxRetries
+	timeout := time.Duration(s.Config.ProviderRevocationTimeout) * time.Second
+
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// Create per-attempt timeout context
+		attemptCtx, cancel := context.WithTimeout(ctx, timeout)
+
+		// Attempt revocation
+		err := s.provider.RevokeToken(attemptCtx, token)
+		cancel() // Clean up context immediately after attempt
+
+		if err == nil {
+			// Success - log if this wasn't the first attempt
+			if attempt > 0 {
+				s.Logger.Info("Provider token revocation succeeded after retry",
+					"token_type", tokenType,
+					"attempt", attempt+1,
+					"max_retries", maxRetries,
+					"user_id", userID,
+					"client_id", clientID)
+			}
+			return nil
+		}
+
+		lastErr = err
+
+		// Check if we should retry (not on last attempt)
+		if attempt < maxRetries {
+			// Exponential backoff: 100ms * 2^attempt
+			backoffDuration := time.Duration(100*math.Pow(2, float64(attempt))) * time.Millisecond
+
+			// Don't log transient failures at high severity - only on final failure
+			s.Logger.Debug("Provider token revocation failed, retrying",
+				"token_type", tokenType,
+				"attempt", attempt+1,
+				"max_retries", maxRetries,
+				"backoff_ms", backoffDuration.Milliseconds(),
+				"error", err)
+
+			// Wait before retry (check for context cancellation)
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("revocation cancelled during backoff: %w", ctx.Err())
+			case <-time.After(backoffDuration):
+				// Continue to next retry
+			}
+		}
+	}
+
+	// All attempts failed
+	s.Logger.Warn("Provider token revocation failed after all retries",
+		"token_type", tokenType,
+		"attempts", maxRetries+1,
+		"user_id", userID,
+		"client_id", clientID,
+		"final_error", lastErr)
+
+	return fmt.Errorf("provider revocation failed after %d attempts: %w", maxRetries+1, lastErr)
 }

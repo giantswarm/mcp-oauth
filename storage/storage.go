@@ -37,6 +37,14 @@ type TokenStore interface {
 
 	// DeleteRefreshToken removes a refresh token
 	DeleteRefreshToken(refreshToken string) error
+
+	// AtomicGetAndDeleteRefreshToken atomically retrieves and deletes a refresh token.
+	// This prevents race conditions in refresh token rotation and reuse detection.
+	// Returns the userID and provider token if successful, or an error if:
+	// - Token not found (may indicate already used/rotated)
+	// - Token expired
+	// SECURITY: This operation MUST be atomic to prevent concurrent token refresh attacks.
+	AtomicGetAndDeleteRefreshToken(refreshToken string) (userID string, providerToken *oauth2.Token, err error)
 }
 
 // RefreshTokenFamilyStore tracks a family of refresh tokens for reuse detection (OAuth 2.1).
@@ -60,6 +68,7 @@ type RefreshTokenFamilyMetadata struct {
 	Generation int
 	IssuedAt   time.Time
 	Revoked    bool
+	RevokedAt  time.Time // When this family was revoked (for forensics and cleanup)
 }
 
 // TokenRevocationStore supports bulk token revocation operations (OAuth 2.1 security).
@@ -113,6 +122,15 @@ type FlowStore interface {
 
 	// GetAuthorizationCode retrieves an authorization code
 	GetAuthorizationCode(code string) (*AuthorizationCode, error)
+
+	// AtomicCheckAndMarkAuthCodeUsed atomically checks if a code is unused and marks it as used.
+	// This prevents race conditions in authorization code reuse detection.
+	// Returns the auth code if successful, or an error if:
+	// - Code not found
+	// - Code expired
+	// - Code already used (reuse detected)
+	// SECURITY: This operation MUST be atomic to prevent concurrent code exchange attacks.
+	AtomicCheckAndMarkAuthCodeUsed(code string) (*AuthorizationCode, error)
 
 	// DeleteAuthorizationCode removes an authorization code
 	DeleteAuthorizationCode(code string) error

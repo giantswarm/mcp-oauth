@@ -45,6 +45,29 @@ type Config struct {
 	// Default: 5 seconds
 	ClockSkewGracePeriod int64 // seconds, default: 5
 
+	// ProviderRevocationTimeout is the timeout PER TOKEN for revoking tokens at the provider (Google/GitHub/etc)
+	// during security events (code reuse, token reuse detection).
+	// This prevents blocking indefinitely if the provider is slow or unreachable.
+	// Default: 10 seconds per token (allows for network latency and rate limits)
+	ProviderRevocationTimeout int64 // seconds, default: 10
+
+	// ProviderRevocationMaxRetries is the maximum number of retry attempts for provider revocation
+	// Retries use exponential backoff: 100ms, 200ms, 400ms, 800ms, 1600ms
+	// Default: 3 retries (total max time per token: ~10s + ~3s retries = ~13s)
+	ProviderRevocationMaxRetries int // default: 3
+
+	// ProviderRevocationFailureThreshold is the maximum acceptable failure rate (0.0 to 1.0)
+	// If more than this percentage of provider revocations fail, the entire operation fails
+	// to ensure tokens aren't left valid at the provider during security events.
+	// Default: 0.5 (50% - at least half must succeed)
+	ProviderRevocationFailureThreshold float64 // default: 0.5
+
+	// RevokedFamilyRetentionDays is the number of days to retain revoked token family metadata
+	// for forensics and security auditing. After this period, revoked family metadata is deleted.
+	// Longer retention enables better security incident investigation but uses more memory.
+	// Default: 90 days (recommended for security compliance and forensics)
+	RevokedFamilyRetentionDays int64 // days, default: 90
+
 	// SupportedScopes lists the scopes that are allowed for clients
 	// If empty, all scopes are allowed
 	SupportedScopes []string
@@ -84,6 +107,9 @@ type Config struct {
 // applySecureDefaults applies secure-by-default configuration values
 // This follows the principle: secure by default, opt-in for less secure options
 func applySecureDefaults(config *Config, logger *slog.Logger) *Config {
+	// Validate provider revocation config BEFORE applying defaults (to detect invalid values)
+	validateProviderRevocationConfig(config, logger)
+
 	// Apply time-based defaults
 	applyTimeDefaults(config)
 
@@ -110,8 +136,91 @@ func applyTimeDefaults(config *Config) {
 	if config.ClockSkewGracePeriod == 0 {
 		config.ClockSkewGracePeriod = 5
 	}
+	if config.ProviderRevocationTimeout == 0 {
+		config.ProviderRevocationTimeout = 10 // 10 seconds per token (allows retries within reasonable time)
+	} else if config.ProviderRevocationTimeout < 1 {
+		// Validate minimum timeout to prevent misconfiguration
+		config.ProviderRevocationTimeout = 5 // Minimum 5 seconds
+	}
+
+	if config.ProviderRevocationMaxRetries == 0 {
+		config.ProviderRevocationMaxRetries = 3 // 3 retries with exponential backoff
+	} else if config.ProviderRevocationMaxRetries < 0 {
+		// Negative retries don't make sense - use default
+		config.ProviderRevocationMaxRetries = 3
+	}
+
+	if config.ProviderRevocationFailureThreshold == 0 {
+		config.ProviderRevocationFailureThreshold = 0.5 // 50% must succeed
+	} else if config.ProviderRevocationFailureThreshold < 0.0 || config.ProviderRevocationFailureThreshold > 1.0 {
+		// Threshold must be between 0.0 and 1.0 - use safe default
+		config.ProviderRevocationFailureThreshold = 0.5
+	}
+
+	if config.RevokedFamilyRetentionDays == 0 {
+		config.RevokedFamilyRetentionDays = 90 // 90 days (recommended for security auditing and forensics)
+	} else if config.RevokedFamilyRetentionDays < 1 {
+		// Minimum 1 day retention for forensics
+		config.RevokedFamilyRetentionDays = 7 // Minimum 1 week
+	}
 	if config.MaxClientsPerIP == 0 {
 		config.MaxClientsPerIP = 10
+	}
+}
+
+// validateProviderRevocationConfig validates provider revocation configuration and logs warnings
+func validateProviderRevocationConfig(config *Config, logger *slog.Logger) {
+	// Capture original values for logging
+	origTimeout := config.ProviderRevocationTimeout
+	origRetries := config.ProviderRevocationMaxRetries
+	origThreshold := config.ProviderRevocationFailureThreshold
+	origRetention := config.RevokedFamilyRetentionDays
+
+	hasInvalidValues := false
+
+	// Validate and correct timeout
+	if origTimeout != 0 && origTimeout < 1 {
+		logger.Warn("⚠️  CONFIGURATION WARNING: Invalid ProviderRevocationTimeout corrected",
+			"provided_value", origTimeout,
+			"corrected_to", config.ProviderRevocationTimeout,
+			"reason", "timeout must be at least 1 second")
+		hasInvalidValues = true
+	}
+
+	// Validate and correct retries
+	if origRetries < 0 {
+		logger.Warn("⚠️  CONFIGURATION WARNING: Invalid ProviderRevocationMaxRetries corrected",
+			"provided_value", origRetries,
+			"corrected_to", config.ProviderRevocationMaxRetries,
+			"reason", "retries cannot be negative")
+		hasInvalidValues = true
+	}
+
+	// Validate and correct threshold
+	if origThreshold != 0 && (origThreshold < 0.0 || origThreshold > 1.0) {
+		logger.Warn("⚠️  CONFIGURATION WARNING: Invalid ProviderRevocationFailureThreshold corrected",
+			"provided_value", origThreshold,
+			"corrected_to", config.ProviderRevocationFailureThreshold,
+			"reason", "threshold must be between 0.0 and 1.0")
+		hasInvalidValues = true
+	}
+
+	// Validate and correct retention
+	if origRetention != 0 && origRetention < 1 {
+		logger.Warn("⚠️  CONFIGURATION WARNING: Invalid RevokedFamilyRetentionDays corrected",
+			"provided_value", origRetention,
+			"corrected_to", config.RevokedFamilyRetentionDays,
+			"reason", "retention must be at least 1 day")
+		hasInvalidValues = true
+	}
+
+	// Log final configuration if everything is valid
+	if !hasInvalidValues {
+		logger.Debug("Provider revocation configuration validated",
+			"timeout_seconds", config.ProviderRevocationTimeout,
+			"max_retries", config.ProviderRevocationMaxRetries,
+			"failure_threshold", config.ProviderRevocationFailureThreshold,
+			"retention_days", config.RevokedFamilyRetentionDays)
 	}
 }
 

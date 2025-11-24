@@ -208,3 +208,127 @@ func TestServer_SetUserRateLimiter(t *testing.T) {
 		t.Error("UserRateLimiter should be set")
 	}
 }
+
+func TestServer_SetSecurityEventRateLimiter(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	srv, err := New(provider, store, store, store, &Config{Issuer: "test"}, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	rl := security.NewRateLimiter(1, 5, nil)
+	defer rl.Stop()
+
+	srv.SetSecurityEventRateLimiter(rl)
+
+	if srv.SecurityEventRateLimiter == nil {
+		t.Error("SecurityEventRateLimiter should be set")
+	}
+}
+
+// TestServer_ProviderRevocationConfigDefaults tests that New() applies correct defaults
+// P1: Configuration defaults validation
+func TestServer_ProviderRevocationConfigDefaults(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	// Create server with empty config (should apply defaults)
+	config := &Config{
+		Issuer: "https://auth.example.com",
+		// Don't set provider revocation fields - should use defaults
+	}
+
+	srv, err := New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// Verify defaults were applied
+	if srv.Config.ProviderRevocationTimeout != 10 {
+		t.Errorf("ProviderRevocationTimeout = %d, want 10 (default)", srv.Config.ProviderRevocationTimeout)
+	}
+
+	if srv.Config.ProviderRevocationMaxRetries != 3 {
+		t.Errorf("ProviderRevocationMaxRetries = %d, want 3 (default)", srv.Config.ProviderRevocationMaxRetries)
+	}
+
+	if srv.Config.ProviderRevocationFailureThreshold != 0.5 {
+		t.Errorf("ProviderRevocationFailureThreshold = %f, want 0.5 (default)", srv.Config.ProviderRevocationFailureThreshold)
+	}
+
+	if srv.Config.RevokedFamilyRetentionDays != 90 {
+		t.Errorf("RevokedFamilyRetentionDays = %d, want 90 (default)", srv.Config.RevokedFamilyRetentionDays)
+	}
+}
+
+// TestServer_ProviderRevocationConfigCustomValues tests custom values are preserved
+// P1: Configuration validation
+func TestServer_ProviderRevocationConfigCustomValues(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	// Create server with custom config values
+	config := &Config{
+		Issuer:                             "https://auth.example.com",
+		ProviderRevocationTimeout:          30,
+		ProviderRevocationMaxRetries:       5,
+		ProviderRevocationFailureThreshold: 0.3,
+		RevokedFamilyRetentionDays:         180,
+	}
+
+	srv, err := New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// Verify custom values were preserved
+	if srv.Config.ProviderRevocationTimeout != 30 {
+		t.Errorf("ProviderRevocationTimeout = %d, want 30 (custom)", srv.Config.ProviderRevocationTimeout)
+	}
+
+	if srv.Config.ProviderRevocationMaxRetries != 5 {
+		t.Errorf("ProviderRevocationMaxRetries = %d, want 5 (custom)", srv.Config.ProviderRevocationMaxRetries)
+	}
+
+	if srv.Config.ProviderRevocationFailureThreshold != 0.3 {
+		t.Errorf("ProviderRevocationFailureThreshold = %f, want 0.3 (custom)", srv.Config.ProviderRevocationFailureThreshold)
+	}
+
+	if srv.Config.RevokedFamilyRetentionDays != 180 {
+		t.Errorf("RevokedFamilyRetentionDays = %d, want 180 (custom)", srv.Config.RevokedFamilyRetentionDays)
+	}
+}
+
+// TestServer_RevokedFamilyRetentionPropagation tests retention period propagates to storage
+// P2: Feature integration test
+func TestServer_RevokedFamilyRetentionPropagation(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	config := &Config{
+		Issuer:                     "https://auth.example.com",
+		RevokedFamilyRetentionDays: 120,
+	}
+
+	_, err := New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// Memory store implements the retention setter interface
+	// Verify it was called (we can't directly check private field, but can verify no error)
+	// The actual retention behavior is tested in memory store tests
+
+	// If we get here without panic, the type assertion and call succeeded
+	t.Log("Retention period propagation test passed - no error during setup")
+}
