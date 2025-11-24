@@ -26,15 +26,10 @@ const (
 )
 
 // State parameter validation constants
-// Note: These constants are intentionally duplicated from constants.go
-// to avoid circular imports (root package imports server, server can't import root).
-// Keep these in sync with constants.go.
-//
-// MinStateLength defines the minimum length for state parameters to prevent
-// timing attacks and ensure sufficient entropy for CSRF protection.
-// OAuth 2.1 recommends at least 128 bits (16 bytes) of entropy.
+// Note: This constant is intentionally duplicated from constants.go to avoid
+// circular imports. Synchronization is enforced by TestMinStateLength_ConstantSync.
 const (
-	MinStateLength = 32 // Minimum length in characters for state parameters (keep in sync with constants.go)
+	MinStateLength = 32 // Must match constants.MinStateLength (verified by test)
 )
 
 // URI scheme constants
