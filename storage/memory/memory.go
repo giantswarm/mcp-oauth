@@ -30,14 +30,15 @@ type RefreshTokenFamily struct {
 	Generation int       // Increments with each rotation
 	IssuedAt   time.Time // When this generation was issued
 	Revoked    bool      // True if family has been revoked due to reuse detection
+	RevokedAt  time.Time // When this family was revoked (for cleanup purposes)
 }
 
 // TokenMetadata tracks ownership information for a token (for revocation by user+client)
 type TokenMetadata struct {
-	UserID   string    // User who owns this token
-	ClientID string    // Client who owns this token
-	IssuedAt time.Time // When this token was issued
-	TokenType string   // "access" or "refresh"
+	UserID    string    // User who owns this token
+	ClientID  string    // Client who owns this token
+	IssuedAt  time.Time // When this token was issued
+	TokenType string    // "access" or "refresh"
 }
 
 // Store is an in-memory implementation of all storage interfaces.
@@ -401,7 +402,7 @@ func (s *Store) SaveRefreshTokenWithFamily(refreshToken, userID, clientID, famil
 
 	s.logger.Debug("Saved refresh token with family tracking",
 		"user_id", userID,
-		"family_id", familyID[:min(8, len(familyID))],
+		"family_id", familyID[:min(tokenIDLogLength, len(familyID))],
 		"generation", generation,
 		"expires_at", expiresAt)
 	return nil
@@ -435,11 +436,13 @@ func (s *Store) RevokeRefreshTokenFamily(familyID string) error {
 	defer s.mu.Unlock()
 
 	revokedCount := 0
+	now := time.Now()
 
 	// Find and revoke all tokens in this family
 	for token, family := range s.refreshTokenFamilies {
 		if family.FamilyID == familyID {
 			family.Revoked = true
+			family.RevokedAt = now // Track when revoked for cleanup purposes
 			// Also delete the token to prevent any further use
 			delete(s.refreshTokens, token)
 			delete(s.refreshTokenExpiries, token)
@@ -450,7 +453,7 @@ func (s *Store) RevokeRefreshTokenFamily(familyID string) error {
 
 	if revokedCount > 0 {
 		s.logger.Warn("Revoked refresh token family due to reuse detection",
-			"family_id", familyID[:min(8, len(familyID))],
+			"family_id", familyID[:min(tokenIDLogLength, len(familyID))],
 			"tokens_revoked", revokedCount)
 	}
 
@@ -521,6 +524,10 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(refreshToken string) (string, *oa
 	// ATOMIC DELETE - ensures only one request succeeds
 	delete(s.refreshTokens, refreshToken)
 	delete(s.refreshTokenExpiries, refreshToken)
+	delete(s.tokenMetadata, refreshToken) // Prevent metadata orphaning
+	// NOTE: We deliberately DON'T delete refreshTokenFamilies here!
+	// Family metadata must persist to enable reuse detection (OAuth 2.1 requirement).
+	// It will be cleaned up by the background cleanup goroutine after retention period.
 
 	s.logger.Debug("Atomically retrieved and deleted refresh token",
 		"user_id", userID)
@@ -622,7 +629,7 @@ func (s *Store) SaveAuthorizationState(state *storage.AuthorizationState) error 
 	// ProviderState is used when validating provider callbacks
 	s.authStates[state.StateID] = state
 	s.authStates[state.ProviderState] = state
-	s.logger.Debug("Saved authorization state", "state_id", state.StateID, "provider_state_prefix", state.ProviderState[:min(8, len(state.ProviderState))])
+	s.logger.Debug("Saved authorization state", "state_id", state.StateID, "provider_state_prefix", state.ProviderState[:min(tokenIDLogLength, len(state.ProviderState))])
 	return nil
 }
 
@@ -694,7 +701,7 @@ func (s *Store) SaveAuthorizationCode(code *storage.AuthorizationCode) error {
 	defer s.mu.Unlock()
 
 	s.authCodes[code.Code] = code
-	s.logger.Debug("Saved authorization code", "code_prefix", code.Code[:min(8, len(code.Code))])
+	s.logger.Debug("Saved authorization code", "code_prefix", code.Code[:min(tokenIDLogLength, len(code.Code))])
 	return nil
 }
 
@@ -729,30 +736,37 @@ func (s *Store) GetAuthorizationCode(code string) (*storage.AuthorizationCode, e
 //
 // SECURITY: This operation is atomic - only ONE concurrent request can succeed.
 // All other concurrent requests will receive an "already used" error.
+//
+// IMPORTANT: The authCode is ONLY returned on reuse errors (Used=true) to enable
+// detection and revocation. For other errors (not found, expired), nil is returned
+// to prevent information leakage.
 func (s *Store) AtomicCheckAndMarkAuthCodeUsed(code string) (*storage.AuthorizationCode, error) {
 	s.mu.Lock() // MUST use write lock for atomic check-and-set
 	defer s.mu.Unlock()
 
 	authCode, ok := s.authCodes[code]
 	if !ok {
+		// Not found - return nil to prevent information leakage
 		return nil, fmt.Errorf("authorization code not found")
 	}
 
 	// Check if expired with clock skew grace period
 	if security.IsTokenExpired(authCode.ExpiresAt) {
+		// Expired - return nil to prevent information leakage
 		return nil, fmt.Errorf("authorization code expired")
 	}
 
 	// ATOMIC check-and-set: Only one thread can pass this check
 	if authCode.Used {
-		// Code already used - return it for reuse detection handling
+		// SECURITY: Code already used - return authCode to enable reuse detection
+		// The caller needs userID/clientID for token revocation
 		return authCode, fmt.Errorf("authorization code already used")
 	}
 
 	// Mark as used atomically
 	authCode.Used = true
 	s.logger.Debug("Marked authorization code as used",
-		"code_prefix", code[:min(8, len(code))])
+		"code_prefix", code[:min(tokenIDLogLength, len(code))])
 
 	// Return the code for token issuance
 	return authCode, nil
@@ -828,12 +842,20 @@ func (s *Store) cleanup() {
 	}
 
 	// Cleanup revoked token families (keep metadata for a while for forensics, then cleanup)
-	// Revoked families older than 7 days can be removed
-	revokedFamilyCleanupThreshold := time.Now().Add(-7 * 24 * time.Hour)
+	// Revoked families older than 90 days can be removed
+	// This provides a long retention period for security audits and forensics
+	revokedFamilyCleanupThreshold := time.Now().Add(-90 * 24 * time.Hour)
 	for refreshToken, family := range s.refreshTokenFamilies {
-		if family.Revoked && family.IssuedAt.Before(revokedFamilyCleanupThreshold) {
-			delete(s.refreshTokenFamilies, refreshToken)
-			cleaned++
+		if family.Revoked {
+			// Use RevokedAt if available, otherwise fall back to IssuedAt
+			revokedTime := family.RevokedAt
+			if revokedTime.IsZero() {
+				revokedTime = family.IssuedAt
+			}
+			if revokedTime.Before(revokedFamilyCleanupThreshold) {
+				delete(s.refreshTokenFamilies, refreshToken)
+				cleaned++
+			}
 		}
 	}
 
@@ -898,11 +920,11 @@ func (s *Store) RevokeAllTokensForUserClient(userID, clientID string) (int, erro
 	// Step 1: Identify all token families to revoke
 	familiesToRevoke := make(map[string]bool)
 	tokensToRevoke := make([]string, 0)
-	
+
 	for tokenID, metadata := range s.tokenMetadata {
 		if metadata.UserID == userID && metadata.ClientID == clientID {
 			tokensToRevoke = append(tokensToRevoke, tokenID)
-			
+
 			// Track family IDs that need complete revocation
 			if family, hasFam := s.refreshTokenFamilies[tokenID]; hasFam {
 				familiesToRevoke[family.FamilyID] = true
@@ -911,22 +933,24 @@ func (s *Store) RevokeAllTokensForUserClient(userID, clientID string) (int, erro
 	}
 
 	// Step 2: Revoke ENTIRE token families (finds ALL family members, not just tracked ones)
+	now := time.Now()
 	for familyID := range familiesToRevoke {
 		familyRevokedCount := 0
 		for tokenID, family := range s.refreshTokenFamilies {
 			if family.FamilyID == familyID {
 				// Mark family as revoked (keeps metadata for forensics/detection)
 				family.Revoked = true
-				
+				family.RevokedAt = now // Track when revoked for cleanup purposes
+
 				// Delete the actual tokens
 				delete(s.refreshTokens, tokenID)
 				delete(s.refreshTokenExpiries, tokenID)
 				delete(s.tokens, tokenID)
 				delete(s.tokenMetadata, tokenID)
-				
+
 				revokedCount++
 				familyRevokedCount++
-				
+
 				s.logger.Debug("Revoked token from family",
 					"user_id", userID,
 					"client_id", clientID,
@@ -935,7 +959,7 @@ func (s *Store) RevokeAllTokensForUserClient(userID, clientID string) (int, erro
 					"generation", family.Generation)
 			}
 		}
-		
+
 		if familyRevokedCount > 0 {
 			s.logger.Info("Revoked entire refresh token family",
 				"user_id", userID,
@@ -952,12 +976,12 @@ func (s *Store) RevokeAllTokensForUserClient(userID, clientID string) (int, erro
 		if _, exists := s.tokens[tokenID]; !exists {
 			continue
 		}
-		
+
 		// Delete the token itself
 		delete(s.tokens, tokenID)
 		delete(s.tokenMetadata, tokenID)
 		revokedCount++
-		
+
 		s.logger.Debug("Revoked access token",
 			"user_id", userID,
 			"client_id", clientID,

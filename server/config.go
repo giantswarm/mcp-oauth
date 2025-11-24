@@ -45,6 +45,12 @@ type Config struct {
 	// Default: 5 seconds
 	ClockSkewGracePeriod int64 // seconds, default: 5
 
+	// ProviderRevocationTimeout is the timeout for revoking tokens at the provider (Google/GitHub/etc)
+	// during security events (code reuse, token reuse detection).
+	// This prevents blocking indefinitely if the provider is slow or unreachable.
+	// Default: 30 seconds (conservative for network latency and provider rate limits)
+	ProviderRevocationTimeout int64 // seconds, default: 30
+
 	// SupportedScopes lists the scopes that are allowed for clients
 	// If empty, all scopes are allowed
 	SupportedScopes []string
@@ -109,6 +115,9 @@ func applyTimeDefaults(config *Config) {
 	}
 	if config.ClockSkewGracePeriod == 0 {
 		config.ClockSkewGracePeriod = 5
+	}
+	if config.ProviderRevocationTimeout == 0 {
+		config.ProviderRevocationTimeout = 30 // 30 seconds (conservative for network/provider latency)
 	}
 	if config.MaxClientsPerIP == 0 {
 		config.MaxClientsPerIP = 10

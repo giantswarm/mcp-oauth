@@ -14,16 +14,17 @@ import (
 // Server implements the OAuth 2.1 server logic (provider-agnostic).
 // It coordinates the OAuth flow using a Provider and storage backends.
 type Server struct {
-	provider        providers.Provider
-	tokenStore      storage.TokenStore
-	clientStore     storage.ClientStore
-	flowStore       storage.FlowStore
-	Encryptor       *security.Encryptor
-	Auditor         *security.Auditor
-	RateLimiter     *security.RateLimiter // IP-based rate limiter
-	UserRateLimiter *security.RateLimiter // User-based rate limiter (authenticated requests)
-	Logger          *slog.Logger
-	Config          *Config
+	provider                 providers.Provider
+	tokenStore               storage.TokenStore
+	clientStore              storage.ClientStore
+	flowStore                storage.FlowStore
+	Encryptor                *security.Encryptor
+	Auditor                  *security.Auditor
+	RateLimiter              *security.RateLimiter // IP-based rate limiter
+	UserRateLimiter          *security.RateLimiter // User-based rate limiter (authenticated requests)
+	SecurityEventRateLimiter *security.RateLimiter // Rate limiter for security event logging (DoS prevention)
+	Logger                   *slog.Logger
+	Config                   *Config
 }
 
 // New creates a new OAuth server
@@ -94,6 +95,12 @@ func (s *Server) SetRateLimiter(rl *security.RateLimiter) {
 // SetUserRateLimiter sets the user-based rate limiter for authenticated requests
 func (s *Server) SetUserRateLimiter(rl *security.RateLimiter) {
 	s.UserRateLimiter = rl
+}
+
+// SetSecurityEventRateLimiter sets the rate limiter for security event logging
+// This prevents DoS attacks via log flooding from repeated security events
+func (s *Server) SetSecurityEventRateLimiter(rl *security.RateLimiter) {
+	s.SecurityEventRateLimiter = rl
 }
 
 // generateRandomToken generates a cryptographically secure random token.

@@ -277,10 +277,13 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 		if authCode != nil && authCode.Used {
 			// CRITICAL SECURITY: Authorization code reuse detected - this indicates a potential token theft attack
 			// OAuth 2.1 requires revoking ALL tokens for this user+client when code reuse is detected
-			s.Logger.Error("Authorization code reuse detected - revoking all tokens",
-				"user_id", authCode.UserID,
-				"client_id", clientID,
-				"oauth_spec", "OAuth 2.1 Section 4.1.2")
+			// Rate limit logging to prevent DoS via log flooding
+			if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(authCode.UserID+":"+clientID) {
+				s.Logger.Error("Authorization code reuse detected - revoking all tokens",
+					"user_id", authCode.UserID,
+					"client_id", clientID,
+					"oauth_spec", "OAuth 2.1 Section 4.1.2")
+			}
 
 			// Revoke all tokens for this user+client (OAuth 2.1 requirement)
 			if err := s.RevokeAllTokensForUserClient(ctx, authCode.UserID, clientID); err != nil {
@@ -458,12 +461,15 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 			if tokenErr != nil {
 				// Token is deleted but family exists and not revoked → REUSE DETECTED!
 				// This means someone is trying to use an old (rotated) refresh token
-				s.Logger.Error("Refresh token reuse detected - token was rotated but still being used",
-					"user_id", family.UserID,
-					"client_id", clientID,
-					"family_id", family.FamilyID[:min(8, len(family.FamilyID))],
-					"generation", family.Generation,
-					"oauth_spec", "OAuth 2.1 Refresh Token Rotation")
+				// Rate limit logging to prevent DoS via log flooding
+				if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(family.UserID+":"+clientID) {
+					s.Logger.Error("Refresh token reuse detected - token was rotated but still being used",
+						"user_id", family.UserID,
+						"client_id", clientID,
+						"family_id", family.FamilyID[:min(8, len(family.FamilyID))],
+						"generation", family.Generation,
+						"oauth_spec", "OAuth 2.1 Refresh Token Rotation")
+				}
 
 				// Step 1: Revoke entire token family (OAuth 2.1 requirement)
 				if err := familyStore.RevokeRefreshTokenFamily(family.FamilyID); err != nil {
@@ -682,9 +688,10 @@ func (s *Server) RevokeAllTokensForUserClient(ctx context.Context, userID, clien
 		return fmt.Errorf("failed to get tokens for revocation: %w", err)
 	}
 
-	// SECURITY: Revoke at provider FIRST (with timeout)
+	// SECURITY: Revoke at provider FIRST (with configurable timeout)
 	// This ensures tokens are invalid at Google/GitHub/etc, not just locally
-	providerCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	// Timeout is configurable to handle slow networks, rate limits, or unreachable providers
+	providerCtx, cancel := context.WithTimeout(ctx, time.Duration(s.Config.ProviderRevocationTimeout)*time.Second)
 	defer cancel()
 
 	revokedAtProvider := 0
