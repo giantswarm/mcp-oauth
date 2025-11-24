@@ -77,6 +77,135 @@ When using this library in production:
    - Alert on security events (rate limits, token reuse, failed auth)
    - Review logs regularly for suspicious activity
 
+8. **Monitor Scope Validation Failures**:
+   - Track repeated scope validation failures from the same client (potential attack indicator)
+   - Set up alerts for `scope_escalation_attempt` events (high severity)
+   - Monitor for patterns of unauthorized scope requests across multiple clients
+   - Review clients requesting scopes they're not authorized for
+   - Example alert queries:
+     ```
+     # Alert on scope escalation attempts
+     event_type:"scope_escalation_attempt" AND severity:"high"
+     
+     # Alert on repeated failures from same client
+     COUNT(event_type:"scope_validation_failed" by client_id) > 5 in 1h
+     ```
+
+## Security Monitoring
+
+### Critical Security Events to Monitor
+
+The library logs the following security events through the audit interface. Set up monitoring and alerting for:
+
+#### Scope Validation Events
+
+| Event Type | Severity | Description | Recommended Action |
+|------------|----------|-------------|-------------------|
+| `scope_escalation_attempt` | HIGH | Client attempted to obtain tokens with unauthorized scopes | Investigate client activity; possible compromise |
+| `scope_validation_failed` | MEDIUM | Scope validation failed during auth flow | Review if legitimate misconfiguration or attack |
+
+**Monitoring Recommendations**:
+
+1. **Alert Thresholds**:
+   - Single `scope_escalation_attempt`: Immediate alert (possible attack)
+   - 3+ `scope_validation_failed` from same client in 1 hour: Warning
+   - 10+ `scope_validation_failed` from same IP in 1 hour: Critical alert
+
+2. **Log Analysis**:
+   ```go
+   // Audit events include these fields for correlation:
+   {
+       "type": "scope_escalation_attempt",
+       "user_id": "user-123",
+       "client_id": "client-456",
+       "details": {
+           "severity": "high",
+           "requested_scope": "admin:all read:api",
+           "reason": "client not authorized for requested scopes"
+       }
+   }
+   ```
+
+3. **Response Procedures**:
+   - **Scope escalation attempt**: 
+     - Review client registration details
+     - Check if client credentials are compromised
+     - Consider temporarily disabling the client
+     - Investigate user account for compromise
+   - **Repeated validation failures**:
+     - May indicate misconfiguration
+     - Check if client's allowed scopes need updating
+     - Verify client application is requesting correct scopes
+
+4. **Metrics to Track**:
+   - Count of scope validation failures per client (hourly)
+   - Count of scope escalation attempts (daily)
+   - Most frequently requested unauthorized scopes
+   - Clients with highest scope validation failure rates
+
+### Extracting Metrics from Audit Logs
+
+The library logs all security events through structured logging (slog). You can extract metrics from these logs using various tools:
+
+#### Using Prometheus with Log-based Metrics
+
+If using Grafana Loki or similar:
+
+```promql
+# Count scope escalation attempts
+count_over_time({job="oauth-server"} |= "scope_escalation_attempt" [1h])
+
+# Scope validation failures by client
+sum by (client_id) (
+  count_over_time({job="oauth-server"} |= "scope_validation_failed" [1h])
+)
+
+# High severity security events
+rate({job="oauth-server"} |= "scope_escalation_attempt" [5m])
+```
+
+#### Using ELK Stack
+
+Create visualizations and alerts based on:
+
+```json
+{
+  "query": {
+    "bool": {
+      "must": [
+        { "match": { "event_type": "scope_escalation_attempt" } },
+        { "match": { "details.severity": "high" } }
+      ]
+    }
+  }
+}
+```
+
+#### Custom Metrics Collector
+
+You can implement a custom auditor that also exports Prometheus metrics:
+
+```go
+type MetricsAuditor struct {
+    *security.Auditor
+    scopeValidationFailures *prometheus.CounterVec
+    scopeEscalationAttempts prometheus.Counter
+}
+
+func (m *MetricsAuditor) LogEvent(event security.Event) {
+    // Call original auditor
+    m.Auditor.LogEvent(event)
+    
+    // Export metrics
+    switch event.Type {
+    case "scope_escalation_attempt":
+        m.scopeEscalationAttempts.Inc()
+    case "scope_validation_failed":
+        m.scopeValidationFailures.WithLabelValues(event.ClientID).Inc()
+    }
+}
+```
+
 ## Reporting a Vulnerability
 
 **Please do not report security vulnerabilities through public GitHub issues.**

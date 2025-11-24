@@ -243,9 +243,10 @@ func (s *Server) validateClientScopes(requestedScope string, clientScopes []stri
 			}
 		}
 		if !found {
-			// SECURITY: Don't reveal which scopes the client is allowed to request
-			// Return generic error to prevent information disclosure
-			return fmt.Errorf("client is not authorized for requested scope: %s", reqScope)
+			// SECURITY: Don't reveal which specific scopes are unauthorized to prevent enumeration
+			// Return completely generic error per OAuth 2.0 Security Best Practices (RFC 6749)
+			// This prevents attackers from fingerprinting allowed scopes
+			return fmt.Errorf("client is not authorized for one or more requested scopes")
 		}
 	}
 

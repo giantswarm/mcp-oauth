@@ -3901,8 +3901,8 @@ func TestClientScopeValidation_UnrestrictedClient(t *testing.T) {
 					t.Logf("Server-level scope validation rejected scope (expected): %v", err)
 					return
 				}
-				// If error mentions client authorization, that's a problem
-				if strings.Contains(err.Error(), "client is not authorized") {
+				// If error mentions client authorization, that's a problem for unrestricted clients
+				if strings.Contains(err.Error(), "client is not authorized for one or more requested scopes") {
 					t.Errorf("Unrestricted client should not get client authorization error, got: %v", err)
 					return
 				}

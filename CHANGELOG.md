@@ -16,14 +16,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     2. Token exchange - final validation before issuing tokens (prevents bypasses)
   - Clients with empty/nil `Scopes` field allow all scopes (backward compatibility)
   - Clients with non-empty `Scopes` field are restricted to their allowed scopes only
-  - Generic error messages prevent information disclosure about allowed scopes
-  - Audit logging for scope escalation attempts
+  - **Security hardening**: Fully generic error messages prevent scope enumeration attacks
+    - Error messages do NOT reveal specific unauthorized scope names
+    - Prevents attackers from fingerprinting allowed scopes
+    - Consistent with RFC 6749 and OAuth 2.0 Security Best Practices
+  - Comprehensive audit logging for security monitoring:
+    - `scope_escalation_attempt` events (high severity) for unauthorized scope requests
+    - `scope_validation_failed` events for tracking validation failures
+    - Detailed event metadata for incident response and forensics
+  - Added security monitoring documentation in SECURITY.md:
+    - Alert thresholds and recommended response procedures
+    - Example queries for log aggregation systems (Prometheus, ELK)
+    - Guidance on extracting metrics from audit logs
+    - Custom metrics collector implementation examples
   - Added comprehensive test suite covering:
     - Single and multiple scope validation
     - Scope escalation attempts
     - Unauthorized scope detection
     - Backward compatibility with unrestricted clients
     - Integration tests for authorization flow and token exchange
+    - Security scenario testing (read-only client escalation, admin attempts)
   - **Impact**: No breaking changes - enhanced OAuth 2.0 security
   - **Security**: Prevents compromised clients from obtaining tokens with unauthorized scopes
 - **Added local token expiry validation before provider check (#24)**

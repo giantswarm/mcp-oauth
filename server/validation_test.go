@@ -656,7 +656,7 @@ func TestValidateClientScopes(t *testing.T) {
 			requestedScope: "admin",
 			clientScopes:   []string{"openid", "profile"},
 			wantErr:        true,
-			errMsg:         "client is not authorized for requested scope: admin",
+			errMsg:         "client is not authorized for one or more requested scopes",
 		},
 		{
 			name:           "multiple scopes - all authorized",
@@ -675,21 +675,21 @@ func TestValidateClientScopes(t *testing.T) {
 			requestedScope: "openid admin",
 			clientScopes:   []string{"openid", "profile"},
 			wantErr:        true,
-			errMsg:         "client is not authorized for requested scope: admin",
+			errMsg:         "client is not authorized for one or more requested scopes",
 		},
 		{
 			name:           "multiple scopes - multiple unauthorized",
 			requestedScope: "openid admin superuser",
 			clientScopes:   []string{"openid", "profile"},
 			wantErr:        true,
-			errMsg:         "client is not authorized for requested scope",
+			errMsg:         "client is not authorized for one or more requested scopes",
 		},
 		{
 			name:           "scope escalation attempt",
 			requestedScope: "read:user write:user admin:all",
 			clientScopes:   []string{"read:user", "write:user"},
 			wantErr:        true,
-			errMsg:         "client is not authorized for requested scope: admin:all",
+			errMsg:         "client is not authorized for one or more requested scopes",
 		},
 		{
 			name:           "exact match - single scope",
@@ -720,7 +720,7 @@ func TestValidateClientScopes(t *testing.T) {
 			requestedScope: "read:api delete:api",
 			clientScopes:   []string{"read:api", "write:api"},
 			wantErr:        true,
-			errMsg:         "client is not authorized for requested scope: delete:api",
+			errMsg:         "client is not authorized for one or more requested scopes",
 		},
 		{
 			name:           "scope with special characters - authorized",
@@ -733,14 +733,14 @@ func TestValidateClientScopes(t *testing.T) {
 			requestedScope: "https://www.googleapis.com/auth/admin.directory",
 			clientScopes:   []string{"https://www.googleapis.com/auth/userinfo.email"},
 			wantErr:        true,
-			errMsg:         "client is not authorized for requested scope",
+			errMsg:         "client is not authorized for one or more requested scopes",
 		},
 		{
 			name:           "case sensitive scope check",
 			requestedScope: "OpenID",
 			clientScopes:   []string{"openid"},
 			wantErr:        true,
-			errMsg:         "client is not authorized for requested scope: OpenID",
+			errMsg:         "client is not authorized for one or more requested scopes",
 		},
 		{
 			name:           "whitespace handling - single space",
@@ -794,8 +794,9 @@ func TestValidateClientScopes_SecurityScenarios(t *testing.T) {
 		if err == nil {
 			t.Error("Expected error when read-only client requests write scope")
 		}
-		if !strings.Contains(err.Error(), "write:api") {
-			t.Errorf("Error should mention unauthorized scope, got: %v", err)
+		// Verify error is generic (doesn't reveal specific unauthorized scope)
+		if !strings.Contains(err.Error(), "client is not authorized for one or more requested scopes") {
+			t.Errorf("Error should be generic security message, got: %v", err)
 		}
 	})
 
@@ -805,8 +806,9 @@ func TestValidateClientScopes_SecurityScenarios(t *testing.T) {
 		if err == nil {
 			t.Error("Expected error when mobile app attempts admin escalation")
 		}
-		if !strings.Contains(err.Error(), "admin:users") {
-			t.Errorf("Error should mention unauthorized scope, got: %v", err)
+		// Verify error is generic (doesn't reveal specific unauthorized scope)
+		if !strings.Contains(err.Error(), "client is not authorized for one or more requested scopes") {
+			t.Errorf("Error should be generic security message, got: %v", err)
 		}
 	})
 
