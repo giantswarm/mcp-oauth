@@ -337,39 +337,60 @@ func generateSecureToken(length int) (string, error) {
 
 ---
 
-### 🟠 HIGH-04: Missing Authorization Code Binding to Client
+### ✅ HIGH-04: Missing Authorization Code Binding to Client [RESOLVED]
 
-**Location:** `server/flows.go:269-310`
+**Location:** `server/flows.go:269-310`  
+**Status:** ✅ **RESOLVED** (PR #52, Issue #22)  
+**Resolution Date:** November 24, 2025
 
 **Description:**  
 While client ID is validated, there's no check that the authorization code was issued to the same client instance. A malicious public client could potentially use another client's authorization code if they can guess or intercept it.
 
-**Current Validation:**
-```go
-// Validate client ID matches
-if authCode.ClientID != clientID {
-    return nil, "", fmt.Errorf("%s: client ID mismatch", ErrorCodeInvalidGrant)
-}
-```
-
-**Issue:**  
+**Original Issue:**  
 For public clients (mobile apps, SPAs), multiple instances may use the same client ID. Without binding to a specific client instance (via PKCE), authorization code theft is possible.
 
-**Recommendation:**  
-The current PKCE implementation helps with this, but it should be **mandatory for public clients**:
+**Implemented Solution:**  
+PKCE is now **mandatory for all public clients** per OAuth 2.1 specification:
 
 ```go
-// Before PKCE validation
-client, err := s.GetClient(clientID)
+// CRITICAL SECURITY: Fetch client to check if PKCE is required (OAuth 2.1)
+client, err := s.clientStore.GetClient(clientID)
 if err != nil {
-    return nil, "", err
+    return nil, "", fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 }
 
-// CRITICAL: Public clients MUST use PKCE (OAuth 2.1 requirement)
+// CRITICAL SECURITY: Public clients MUST use PKCE (OAuth 2.1 requirement)
 if client.ClientType == ClientTypePublic && authCode.CodeChallenge == "" {
-    return nil, "", fmt.Errorf("PKCE is required for public clients (OAuth 2.1)")
+    s.Logger.Error("Public client attempted token exchange without PKCE",
+        "client_id", clientID,
+        "oauth_spec", "OAuth 2.1")
+    
+    // Log security event for monitoring
+    s.Auditor.LogEvent(security.Event{
+        Type: "pkce_required_for_public_client",
+        // ...
+    })
+    
+    return nil, "", fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 }
 ```
+
+**Security Improvements:**
+- ✅ Public clients (mobile apps, SPAs) now MUST use PKCE
+- ✅ Authorization code binding to specific client instance enforced
+- ✅ Comprehensive security event logging for violations
+- ✅ Generic error messages to clients (OAuth 2.0 best practice)
+- ✅ Backward compatible: confidential clients can still work without PKCE
+- ✅ Extensive test coverage added for all client type scenarios
+
+**Test Coverage:**
+- `TestServer_ExchangeAuthorizationCode_PublicClient_PKCEEnforcement`
+- `TestServer_ExchangeAuthorizationCode_PublicClient_ReuseDetection`
+- Tests for public clients with/without PKCE
+- Tests for confidential clients with/without PKCE
+
+**Impact:**  
+Public clients without PKCE will receive `invalid_grant` error. Confidential clients remain unaffected (backward compatible).
 
 ---
 

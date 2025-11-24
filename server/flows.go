@@ -378,6 +378,54 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 		return nil, "", fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 	}
 
+	// CRITICAL SECURITY: Fetch client to check if PKCE is required (OAuth 2.1)
+	// Public clients (mobile apps, SPAs) MUST use PKCE to prevent authorization code theft
+	client, err := s.clientStore.GetClient(clientID)
+	if err != nil {
+		// SECURITY: Log detailed internal error for debugging, but return generic error to client
+		s.Logger.Debug("Authorization code validation failed",
+			"reason", "client_not_found",
+			"client_id", clientID,
+			"code_prefix", safeTruncate(code, 8))
+
+		if s.Auditor != nil {
+			s.Auditor.LogAuthFailure("", clientID, "", "client_not_found")
+		}
+		// Return generic error per RFC 6749 (don't reveal details to attacker)
+		return nil, "", fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+	}
+
+	// CRITICAL SECURITY: Public clients MUST use PKCE (OAuth 2.1 requirement)
+	// This prevents authorization code theft attacks where a malicious public client
+	// could use another client's authorization code if intercepted
+	if client.ClientType == ClientTypePublic && authCode.CodeChallenge == "" {
+		// SECURITY: Log detailed internal error for security monitoring
+		s.Logger.Error("Public client attempted token exchange without PKCE",
+			"client_id", clientID,
+			"user_id", authCode.UserID,
+			"client_type", client.ClientType,
+			"oauth_spec", "OAuth 2.1",
+			"code_prefix", safeTruncate(code, 8))
+
+		if s.Auditor != nil {
+			s.Auditor.LogEvent(security.Event{
+				Type:     "pkce_required_for_public_client",
+				UserID:   authCode.UserID,
+				ClientID: clientID,
+				Details: map[string]any{
+					"severity":    "high",
+					"client_type": client.ClientType,
+					"oauth_spec":  "OAuth 2.1",
+					"reason":      "Public clients must use PKCE to prevent authorization code theft",
+				},
+			})
+			s.Auditor.LogAuthFailure(authCode.UserID, clientID, "", "pkce_required_for_public_client")
+		}
+
+		// Return generic error per RFC 6749 (don't reveal security details to attacker)
+		return nil, "", fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+	}
+
 	// Validate PKCE if present
 	if authCode.CodeChallenge != "" {
 		if err := s.validatePKCE(authCode.CodeChallenge, authCode.CodeChallengeMethod, codeVerifier); err != nil {
