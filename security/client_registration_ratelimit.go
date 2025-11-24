@@ -30,6 +30,16 @@ type registrationEntry struct {
 
 // ClientRegistrationRateLimiter provides time-windowed rate limiting for client registrations
 // to prevent resource exhaustion through repeated registration/deletion cycles.
+//
+// Lifecycle Management:
+//
+// The rate limiter starts a background cleanup goroutine when created. Always call Stop()
+// when shutting down to prevent goroutine leaks:
+//
+//	rl := security.NewClientRegistrationRateLimiter(logger)
+//	defer rl.Stop() // Critical: prevents goroutine leak
+//
+// The Stop() method is safe to call multiple times and can be called concurrently.
 type ClientRegistrationRateLimiter struct {
 	entries         map[string]*list.Element // IP -> list element
 	lruList         *list.List               // LRU list of *registrationEntry
@@ -42,14 +52,22 @@ type ClientRegistrationRateLimiter struct {
 	stopCleanup     chan struct{}
 	stopOnce        sync.Once
 
-	// Statistics
+	// Statistics (monotonically increasing counters)
+	// Note: int64 counters can theoretically overflow after 2^63 operations.
+	// At 1 million requests/second, this would take ~292 million years.
+	// In practice, overflow is not a concern for production deployments.
 	totalBlocked   int64 // total registrations blocked
 	totalAllowed   int64 // total registrations allowed
 	totalEvictions int64 // total LRU evictions
 	totalCleanups  int64 // total cleanup operations
 }
 
-// NewClientRegistrationRateLimiter creates a new client registration rate limiter with default settings
+// NewClientRegistrationRateLimiter creates a new client registration rate limiter with default settings.
+//
+// The rate limiter starts a background cleanup goroutine. Always call Stop() when done:
+//
+//	rl := security.NewClientRegistrationRateLimiter(logger)
+//	defer rl.Stop() // Important: cleanup background goroutine
 func NewClientRegistrationRateLimiter(logger *slog.Logger) *ClientRegistrationRateLimiter {
 	return NewClientRegistrationRateLimiterWithConfig(
 		DefaultMaxRegistrationsPerHour,
@@ -59,7 +77,12 @@ func NewClientRegistrationRateLimiter(logger *slog.Logger) *ClientRegistrationRa
 	)
 }
 
-// NewClientRegistrationRateLimiterWithConfig creates a new client registration rate limiter with custom configuration
+// NewClientRegistrationRateLimiterWithConfig creates a new client registration rate limiter with custom configuration.
+//
+// The rate limiter starts a background cleanup goroutine. Always call Stop() when done:
+//
+//	rl := security.NewClientRegistrationRateLimiterWithConfig(10, time.Hour, 10000, logger)
+//	defer rl.Stop() // Important: cleanup background goroutine
 func NewClientRegistrationRateLimiterWithConfig(maxPerWindow int, window time.Duration, maxEntries int, logger *slog.Logger) *ClientRegistrationRateLimiter {
 	return newClientRegistrationRateLimiterWithCleanupInterval(maxPerWindow, window, maxEntries, DefaultRegistrationCleanupInterval, logger)
 }
@@ -246,8 +269,16 @@ func (rl *ClientRegistrationRateLimiter) Cleanup() {
 	}
 }
 
-// Stop gracefully stops the cleanup goroutine
-// Safe to call multiple times concurrently
+// Stop gracefully stops the cleanup goroutine and releases resources.
+//
+// This method MUST be called when shutting down to prevent goroutine leaks.
+// It is safe to call multiple times and can be called concurrently from
+// multiple goroutines (uses sync.Once internally).
+//
+// Best practice: Use defer immediately after creating the rate limiter:
+//
+//	rl := security.NewClientRegistrationRateLimiter(logger)
+//	defer rl.Stop()
 func (rl *ClientRegistrationRateLimiter) Stop() {
 	rl.stopOnce.Do(func() {
 		close(rl.stopCleanup)
