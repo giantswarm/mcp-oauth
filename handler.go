@@ -457,7 +457,7 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 			h.logger.Warn("Client registration rate limit exceeded",
 				"ip", clientIP,
 				"max_per_window", h.server.Config.MaxRegistrationsPerHour,
-				"window", h.server.Config.RegistrationRateLimitWindow)
+				"window", time.Duration(h.server.Config.RegistrationRateLimitWindow)*time.Second)
 			if h.server.Auditor != nil {
 				h.server.Auditor.LogClientRegistrationRateLimitExceeded(clientIP)
 			}

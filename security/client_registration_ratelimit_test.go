@@ -1,6 +1,7 @@
 package security
 
 import (
+	"fmt"
 	"log/slog"
 	"sync"
 	"testing"
@@ -195,7 +196,7 @@ func TestClientRegistrationRateLimiter_LRUEviction(t *testing.T) {
 
 	// Fill up to max capacity
 	for i := 1; i <= 3; i++ {
-		ip := "192.168.1." + string(rune('0'+i))
+		ip := fmt.Sprintf("192.168.1.%d", i)
 		if !rl.Allow(ip) {
 			t.Errorf("IP %s should be allowed", ip)
 		}
@@ -364,7 +365,7 @@ func TestClientRegistrationRateLimiter_MemoryPressure(t *testing.T) {
 
 	// Fill up half the capacity
 	for i := 1; i <= 5; i++ {
-		ip := "192.168.1." + string(rune('0'+i))
+		ip := fmt.Sprintf("192.168.1.%d", i)
 		rl.Allow(ip)
 	}
 
@@ -376,7 +377,7 @@ func TestClientRegistrationRateLimiter_MemoryPressure(t *testing.T) {
 
 	// Fill to capacity
 	for i := 6; i <= 10; i++ {
-		ip := "192.168.1." + string(rune('0'+i))
+		ip := fmt.Sprintf("192.168.1.%d", i)
 		rl.Allow(ip)
 	}
 
@@ -395,7 +396,7 @@ func TestClientRegistrationRateLimiter_ZeroMaxEntries(t *testing.T) {
 
 	// Should be able to add many entries without eviction
 	for i := 1; i <= 100; i++ {
-		ip := "192.168.1." + string(rune('0'+i))
+		ip := fmt.Sprintf("192.168.1.%d", i)
 		if !rl.Allow(ip) {
 			t.Errorf("IP %s should be allowed", ip)
 		}

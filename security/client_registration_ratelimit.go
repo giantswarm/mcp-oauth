@@ -124,14 +124,15 @@ func (rl *ClientRegistrationRateLimiter) Allow(ip string) bool {
 		entry := elem.Value.(*registrationEntry)
 		entry.lastAccess = now
 
-		// Clean old timestamps outside the window
-		var recentRegistrations []time.Time
+		// Clean old timestamps outside the window (in-place filtering)
+		n := 0
 		for _, t := range entry.registrations {
 			if t.After(windowStart) {
-				recentRegistrations = append(recentRegistrations, t)
+				entry.registrations[n] = t
+				n++
 			}
 		}
-		entry.registrations = recentRegistrations
+		entry.registrations = entry.registrations[:n]
 
 		// Check if limit exceeded
 		if len(entry.registrations) >= rl.maxPerWindow {
