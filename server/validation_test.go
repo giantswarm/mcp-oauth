@@ -609,4 +609,3 @@ func TestValidateStateParameter_TimingAttackResistance(t *testing.T) {
 		}
 	}
 }
-

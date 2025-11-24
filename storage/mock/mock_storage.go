@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/providers"
@@ -211,15 +212,48 @@ func NewMockClientStore() *MockClientStore {
 	}
 
 	m.ValidateSecretFunc = func(clientID, clientSecret string) error {
+		// SECURITY: Always perform constant-time operations to prevent timing attacks
+		// that could reveal whether a client ID exists or not
+
+		// Pre-computed dummy hash for non-existent clients (bcrypt hash of "test")
+		// This ensures we always perform a bcrypt comparison even if client doesn't exist
+		dummyHash := "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
+
 		m.mu.RLock()
-		defer m.mu.RUnlock()
 		client, ok := m.clients[clientID]
+		m.mu.RUnlock()
+
+		// Determine which hash to use (real or dummy)
+		hashToCompare := dummyHash
+		isPublicClient := false
+
+		if ok {
+			if client.ClientType == "public" {
+				isPublicClient = true
+			} else if client.ClientSecretHash != "" {
+				hashToCompare = client.ClientSecretHash
+			}
+		}
+
+		// ALWAYS perform bcrypt comparison (constant-time by design)
+		// This prevents timing attacks based on whether we skip the comparison
+		bcryptErr := bcrypt.CompareHashAndPassword([]byte(hashToCompare), []byte(clientSecret))
+
+		// For public clients, authentication always succeeds
+		if isPublicClient && ok {
+			return nil
+		}
+
+		// If client lookup failed, return error (but only after bcrypt comparison)
 		if !ok {
-			return fmt.Errorf("client not found")
+			return fmt.Errorf("invalid client credentials")
 		}
-		if client.ClientSecretHash != clientSecret {
-			return fmt.Errorf("invalid client secret")
+
+		// If bcrypt comparison failed, return error
+		if bcryptErr != nil {
+			return fmt.Errorf("invalid client credentials")
 		}
+
 		return nil
 	}
 

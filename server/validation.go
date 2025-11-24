@@ -25,7 +25,6 @@ const (
 	PKCEMethodPlain       = "plain"
 )
 
-
 // URI scheme constants
 const (
 	SchemeHTTP  = "http"
