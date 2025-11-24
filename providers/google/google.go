@@ -10,9 +10,10 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/giantswarm/mcp-oauth/providers"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+
+	"github.com/giantswarm/mcp-oauth/providers"
 )
 
 // Provider implements the providers.Provider interface for Google OAuth.

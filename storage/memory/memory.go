@@ -60,10 +60,10 @@ type Store struct {
 
 // Compile-time interface checks to ensure Store implements all storage interfaces
 var (
-	_ storage.TokenStore               = (*Store)(nil)
-	_ storage.ClientStore              = (*Store)(nil)
-	_ storage.FlowStore                = (*Store)(nil)
-	_ storage.RefreshTokenFamilyStore  = (*Store)(nil)
+	_ storage.TokenStore              = (*Store)(nil)
+	_ storage.ClientStore             = (*Store)(nil)
+	_ storage.FlowStore               = (*Store)(nil)
+	_ storage.RefreshTokenFamilyStore = (*Store)(nil)
 )
 
 // New creates a new in-memory store with default cleanup interval (1 minute)
@@ -746,4 +746,3 @@ func (s *Store) cleanup() {
 		s.logger.Debug("Cleaned up expired entries", "count", cleaned)
 	}
 }
-
