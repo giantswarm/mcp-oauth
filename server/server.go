@@ -1,10 +1,13 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"sync"
+	"time"
 
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -36,6 +39,7 @@ type Server struct {
 	ClientRegistrationRateLimiter *security.ClientRegistrationRateLimiter // Time-windowed rate limiter for client registrations
 	Logger                        *slog.Logger
 	Config                        *Config
+	shutdownOnce                  sync.Once // Ensures Shutdown is called only once
 }
 
 // New creates a new OAuth server
@@ -162,4 +166,88 @@ func generateRandomToken() string {
 		panic(fmt.Sprintf("crypto/rand.Read failed: %v", err))
 	}
 	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// Shutdown gracefully shuts down the server and all its components.
+// It stops rate limiters, closes storage connections, and cleans up resources.
+// Safe to call multiple times - only the first call will execute shutdown.
+//
+// The context parameter controls the shutdown timeout. If the context is cancelled
+// or times out before shutdown completes, Shutdown returns the context error.
+//
+// Example usage:
+//
+//	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+//	defer cancel()
+//	if err := server.Shutdown(ctx); err != nil {
+//	    log.Printf("Shutdown error: %v", err)
+//	}
+func (s *Server) Shutdown(ctx context.Context) error {
+	var shutdownErr error
+
+	s.shutdownOnce.Do(func() {
+		s.Logger.Info("Starting graceful shutdown...")
+
+		// Create a channel to signal when shutdown is complete
+		done := make(chan struct{})
+
+		go func() {
+			defer close(done)
+
+			// Stop rate limiters
+			if s.RateLimiter != nil {
+				s.Logger.Debug("Stopping IP rate limiter...")
+				s.RateLimiter.Stop()
+			}
+			if s.UserRateLimiter != nil {
+				s.Logger.Debug("Stopping user rate limiter...")
+				s.UserRateLimiter.Stop()
+			}
+			if s.SecurityEventRateLimiter != nil {
+				s.Logger.Debug("Stopping security event rate limiter...")
+				s.SecurityEventRateLimiter.Stop()
+			}
+			if s.ClientRegistrationRateLimiter != nil {
+				s.Logger.Debug("Stopping client registration rate limiter...")
+				s.ClientRegistrationRateLimiter.Stop()
+			}
+
+			// Stop storage cleanup goroutines if the store supports it
+			type stoppableStore interface {
+				Stop()
+			}
+			if store, ok := s.tokenStore.(stoppableStore); ok {
+				s.Logger.Debug("Stopping storage cleanup...")
+				store.Stop()
+			}
+
+			s.Logger.Info("Graceful shutdown completed")
+		}()
+
+		// Wait for shutdown to complete or context to be cancelled
+		select {
+		case <-done:
+			// Shutdown completed successfully
+		case <-ctx.Done():
+			// Context cancelled or timed out
+			shutdownErr = fmt.Errorf("shutdown cancelled: %w", ctx.Err())
+			s.Logger.Warn("Shutdown timed out or was cancelled", "error", shutdownErr)
+		}
+	})
+
+	return shutdownErr
+}
+
+// ShutdownWithTimeout is a convenience wrapper around Shutdown that creates
+// a context with the specified timeout.
+//
+// Example usage:
+//
+//	if err := server.ShutdownWithTimeout(30 * time.Second); err != nil {
+//	    log.Printf("Shutdown error: %v", err)
+//	}
+func (s *Server) ShutdownWithTimeout(timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return s.Shutdown(ctx)
 }

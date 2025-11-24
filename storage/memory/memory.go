@@ -124,8 +124,13 @@ func (s *Store) SetRevokedFamilyRetentionDays(days int64) {
 		"retention_days", days)
 }
 
-// NewWithInterval creates a new in-memory store with custom cleanup interval
+// NewWithInterval creates a new in-memory store with custom cleanup interval.
+// If cleanupInterval is 0 or negative, uses default of 1 minute.
 func NewWithInterval(cleanupInterval time.Duration) *Store {
+	if cleanupInterval <= 0 {
+		cleanupInterval = time.Minute
+	}
+
 	s := &Store{
 		tokens:                     make(map[string]*oauth2.Token),
 		userInfo:                   make(map[string]*providers.UserInfo),

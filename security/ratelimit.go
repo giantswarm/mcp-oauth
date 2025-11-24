@@ -57,12 +57,25 @@ func NewRateLimiter(requestsPerSecond, burst int, logger *slog.Logger) *RateLimi
 // When limit is reached, least recently used entries are evicted.
 // Set maxEntries to 0 for unlimited (not recommended for production).
 func NewRateLimiterWithConfig(requestsPerSecond, burst, maxEntries int, logger *slog.Logger) *RateLimiter {
+	return NewRateLimiterWithFullConfig(requestsPerSecond, burst, maxEntries, DefaultCleanupInterval, logger)
+}
+
+// NewRateLimiterWithFullConfig creates a new rate limiter with custom configuration including cleanup interval.
+// maxEntries controls the maximum number of unique identifiers tracked simultaneously.
+// cleanupInterval controls how often idle entries are cleaned up.
+// When maxEntries limit is reached, least recently used entries are evicted.
+// Set maxEntries to 0 for unlimited (not recommended for production).
+// Set cleanupInterval to 0 to use default (5 minutes).
+func NewRateLimiterWithFullConfig(requestsPerSecond, burst, maxEntries int, cleanupInterval time.Duration, logger *slog.Logger) *RateLimiter {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if maxEntries < 0 {
 		maxEntries = DefaultMaxEntries
 		logger.Warn("Invalid maxEntries, using default", "maxEntries", maxEntries)
+	}
+	if cleanupInterval <= 0 {
+		cleanupInterval = DefaultCleanupInterval
 	}
 
 	rl := &RateLimiter{
@@ -72,7 +85,7 @@ func NewRateLimiterWithConfig(requestsPerSecond, burst, maxEntries int, logger *
 		burst:           burst,
 		maxEntries:      maxEntries,
 		logger:          logger,
-		cleanupInterval: DefaultCleanupInterval,
+		cleanupInterval: cleanupInterval,
 		stopCleanup:     make(chan struct{}),
 	}
 

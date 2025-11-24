@@ -31,6 +31,9 @@ type MockProvider struct {
 	// RevokeTokenFunc is called when RevokeToken() is invoked
 	RevokeTokenFunc func(ctx context.Context, token string) error
 
+	// HealthCheckFunc is called when HealthCheck() is invoked
+	HealthCheckFunc func(ctx context.Context) error
+
 	// CallCounts tracks how many times each method was called
 	CallCounts map[string]int
 
@@ -74,6 +77,9 @@ func NewMockProvider() *MockProvider {
 		},
 		RevokeTokenFunc: func(ctx context.Context, token string) error {
 			return nil
+		},
+		HealthCheckFunc: func(ctx context.Context) error {
+			return nil // Healthy by default
 		},
 	}
 }
@@ -153,6 +159,18 @@ func (m *MockProvider) RevokeToken(ctx context.Context, token string) error {
 		return fmt.Errorf("RevokeTokenFunc not configured")
 	}
 	return fn(ctx, token)
+}
+
+// HealthCheck verifies that the provider is reachable and functioning correctly
+func (m *MockProvider) HealthCheck(ctx context.Context) error {
+	m.mu.Lock()
+	m.CallCounts["HealthCheck"]++
+	fn := m.HealthCheckFunc
+	m.mu.Unlock()
+	if fn == nil {
+		return nil // Healthy by default
+	}
+	return fn(ctx)
 }
 
 // ResetCallCounts resets all call counters

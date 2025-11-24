@@ -32,6 +32,8 @@ type Event struct {
 	UserID    string
 	ClientID  string
 	IPAddress string
+	UserAgent string // User-Agent header for detecting automated attacks
+	RequestID string // Unique request ID for correlating log entries
 	Details   map[string]any
 	Timestamp time.Time
 }
@@ -49,6 +51,8 @@ func (a *Auditor) LogEvent(event Event) {
 		"user_id_hash", hashForLogging(event.UserID),
 		"client_id", event.ClientID,
 		"ip_address", event.IPAddress,
+		"user_agent", event.UserAgent,
+		"request_id", event.RequestID,
 		"details", event.Details,
 		"timestamp", event.Timestamp,
 	)
