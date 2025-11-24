@@ -34,10 +34,10 @@ type RefreshTokenFamily struct {
 
 // TokenMetadata tracks ownership information for a token (for revocation by user+client)
 type TokenMetadata struct {
-	UserID    string    // User who owns this token
-	ClientID  string    // Client who owns this token
-	IssuedAt  time.Time // When this token was issued
-	TokenType string    // "access" or "refresh"
+	UserID   string    // User who owns this token
+	ClientID string    // Client who owns this token
+	IssuedAt time.Time // When this token was issued
+	TokenType string   // "access" or "refresh"
 }
 
 // Store is an in-memory implementation of all storage interfaces.
@@ -898,11 +898,11 @@ func (s *Store) RevokeAllTokensForUserClient(userID, clientID string) (int, erro
 	// Step 1: Identify all token families to revoke
 	familiesToRevoke := make(map[string]bool)
 	tokensToRevoke := make([]string, 0)
-
+	
 	for tokenID, metadata := range s.tokenMetadata {
 		if metadata.UserID == userID && metadata.ClientID == clientID {
 			tokensToRevoke = append(tokensToRevoke, tokenID)
-
+			
 			// Track family IDs that need complete revocation
 			if family, hasFam := s.refreshTokenFamilies[tokenID]; hasFam {
 				familiesToRevoke[family.FamilyID] = true
@@ -917,16 +917,16 @@ func (s *Store) RevokeAllTokensForUserClient(userID, clientID string) (int, erro
 			if family.FamilyID == familyID {
 				// Mark family as revoked (keeps metadata for forensics/detection)
 				family.Revoked = true
-
+				
 				// Delete the actual tokens
 				delete(s.refreshTokens, tokenID)
 				delete(s.refreshTokenExpiries, tokenID)
 				delete(s.tokens, tokenID)
 				delete(s.tokenMetadata, tokenID)
-
+				
 				revokedCount++
 				familyRevokedCount++
-
+				
 				s.logger.Debug("Revoked token from family",
 					"user_id", userID,
 					"client_id", clientID,
@@ -935,7 +935,7 @@ func (s *Store) RevokeAllTokensForUserClient(userID, clientID string) (int, erro
 					"generation", family.Generation)
 			}
 		}
-
+		
 		if familyRevokedCount > 0 {
 			s.logger.Info("Revoked entire refresh token family",
 				"user_id", userID,
@@ -952,12 +952,12 @@ func (s *Store) RevokeAllTokensForUserClient(userID, clientID string) (int, erro
 		if _, exists := s.tokens[tokenID]; !exists {
 			continue
 		}
-
+		
 		// Delete the token itself
 		delete(s.tokens, tokenID)
 		delete(s.tokenMetadata, tokenID)
 		revokedCount++
-
+		
 		s.logger.Debug("Revoked access token",
 			"user_id", userID,
 			"client_id", clientID,
