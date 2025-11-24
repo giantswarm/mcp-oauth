@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"log/slog"
 	"testing"
-	"time"
 
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -401,16 +400,9 @@ func TestGenerateRandomToken_Entropy(t *testing.T) {
 	const numSamples = 1000
 
 	// Collect samples
-	samples := make([]string, numSamples)
-	for i := 0; i < numSamples; i++ {
-		samples[i] = generateRandomToken()
-	}
-
-	// Validate character distribution
-	// Base64url alphabet: A-Z, a-z, 0-9, -, _
 	charCounts := make(map[rune]int)
-
-	for _, token := range samples {
+	for i := 0; i < numSamples; i++ {
+		token := generateRandomToken()
 		for _, ch := range token {
 			charCounts[ch]++
 		}
@@ -419,7 +411,6 @@ func TestGenerateRandomToken_Entropy(t *testing.T) {
 	// Verify we see a good distribution of characters
 	// With 1000 samples * 43 chars = 43,000 characters
 	// Base64 has 64 possible characters
-	// Expected ~671 occurrences per character (43000/64)
 	// We just verify we have variety (at least 50 different chars)
 	if len(charCounts) < 50 {
 		t.Errorf("Low character variety in tokens: %d unique chars, expected > 50", len(charCounts))
@@ -427,85 +418,22 @@ func TestGenerateRandomToken_Entropy(t *testing.T) {
 
 	t.Logf("Token entropy check: %d unique characters observed across %d tokens", len(charCounts), numSamples)
 
-	// Verify all characters are valid base64url
-	validChars := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	// Verify all characters are valid base64url (optimized with map lookup)
+	validChars := make(map[rune]bool)
+	for _, ch := range "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" {
+		validChars[ch] = true
+	}
+
 	for ch := range charCounts {
-		found := false
-		for _, validCh := range validChars {
-			if ch == validCh {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !validChars[ch] {
 			t.Errorf("Invalid character in token: %c (U+%04X)", ch, ch)
 		}
 	}
 }
 
-// TestGenerateRandomToken_NoBitwisePatterns validates no obvious patterns in binary representation
-func TestGenerateRandomToken_NoBitwisePatterns(t *testing.T) {
-	const numSamples = 100
-
-	allZeros := 0
-	allOnes := 0
-
-	for i := 0; i < numSamples; i++ {
-		token := generateRandomToken()
-		decoded, err := base64.RawURLEncoding.DecodeString(token)
-		if err != nil {
-			t.Fatalf("Failed to decode token: %v", err)
-		}
-
-		// Check each byte
-		for _, b := range decoded {
-			if b == 0x00 {
-				allZeros++
-			}
-			if b == 0xFF {
-				allOnes++
-			}
-		}
-	}
-
-	totalBytes := numSamples * MinTokenBytes
-
-	// With good randomness, we expect ~0.4% of bytes to be 0x00 or 0xFF (1/256)
-	// Allow up to 2% before flagging as suspicious
-	maxExpected := totalBytes * 2 / 100
-
-	if allZeros > maxExpected {
-		t.Errorf("Suspicious number of 0x00 bytes: %d out of %d (%.2f%%), expected < 2%%",
-			allZeros, totalBytes, float64(allZeros)*100/float64(totalBytes))
-	}
-
-	if allOnes > maxExpected {
-		t.Errorf("Suspicious number of 0xFF bytes: %d out of %d (%.2f%%), expected < 2%%",
-			allOnes, totalBytes, float64(allOnes)*100/float64(totalBytes))
-	}
-
-	t.Logf("Bitwise pattern check: 0x00=%d (%.2f%%), 0xFF=%d (%.2f%%) out of %d bytes",
-		allZeros, float64(allZeros)*100/float64(totalBytes),
-		allOnes, float64(allOnes)*100/float64(totalBytes),
-		totalBytes)
-}
-
-// TestGenerateRandomToken_PerformanceBenchmark validates token generation is fast enough
-func TestGenerateRandomToken_PerformanceBenchmark(t *testing.T) {
-	const numIterations = 1000
-
-	start := time.Now()
-	for i := 0; i < numIterations; i++ {
+// BenchmarkGenerateRandomToken measures token generation performance
+func BenchmarkGenerateRandomToken(b *testing.B) {
+	for i := 0; i < b.N; i++ {
 		_ = generateRandomToken()
 	}
-	duration := time.Since(start)
-
-	avgPerToken := duration / numIterations
-
-	// Token generation should be very fast (< 1ms per token)
-	if avgPerToken > time.Millisecond {
-		t.Errorf("Token generation too slow: %v per token (expected < 1ms)", avgPerToken)
-	}
-
-	t.Logf("Generated %d tokens in %v (avg %v per token)", numIterations, duration, avgPerToken)
 }

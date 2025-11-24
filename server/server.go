@@ -136,58 +136,23 @@ const (
 	MinTokenBytes = 32
 )
 
-// generateRandomToken generates a cryptographically secure random token with
-// explicit entropy validation. This function is used for all security-critical
-// tokens including:
-//   - Authorization codes (one-time use codes)
-//   - Access tokens and refresh tokens
-//   - Token family IDs (for refresh token rotation tracking)
+// generateRandomToken generates a cryptographically secure random token.
+// It uses crypto/rand to generate 32 bytes (256 bits) of entropy and
+// encodes them as a 43-character base64url string without padding.
+//
+// This function is used for all security-critical tokens:
+//   - Authorization codes, access tokens, refresh tokens
+//   - Token family IDs (for refresh token rotation)
 //   - Provider state values (CSRF protection)
-//   - Client IDs and client secrets
+//   - Client IDs and secrets
 //
-// Security Properties:
-//   - Uses crypto/rand.Read() for cryptographically secure randomness
-//   - Generates exactly 32 bytes (256 bits) of entropy
-//   - Base64url encodes without padding (RFC 4648) producing 43 characters
-//   - Panics if crypto/rand fails (indicates system-level security failure)
-//
-// The function panics rather than returning an error because token generation
-// failure represents a critical security failure that should halt execution
-// immediately rather than risk generating weak or predictable tokens.
-//
-// Returns: A 43-character base64url-encoded string (no padding)
+// The function panics if the system's random number generator fails,
+// which indicates a critical system-level security failure.
 func generateRandomToken() string {
-	// Allocate buffer for random bytes
 	b := make([]byte, MinTokenBytes)
-
-	// Read cryptographically secure random bytes
-	// crypto/rand.Read only returns an error if the system's random number
-	// generator fails, which indicates a severe system-level problem
-	n, err := rand.Read(b)
-	if err != nil {
-		// CRITICAL: System random number generator failed
-		// This is a security-critical failure - we must not proceed
-		panic(fmt.Sprintf("CRITICAL SECURITY FAILURE: crypto/rand.Read failed: %v", err))
+	if _, err := rand.Read(b); err != nil {
+		// CRITICAL: System RNG failure - cannot generate secure tokens
+		panic(fmt.Sprintf("crypto/rand.Read failed: %v", err))
 	}
-
-	// Validate that we got the expected number of bytes
-	// This should never happen (rand.Read guarantees to fill the buffer or return error),
-	// but we validate to ensure we have sufficient entropy
-	if n != MinTokenBytes {
-		panic(fmt.Sprintf("CRITICAL SECURITY FAILURE: crypto/rand.Read returned %d bytes, expected %d", n, MinTokenBytes))
-	}
-
-	// Encode using base64url without padding (RFC 4648)
-	// This produces a 43-character URL-safe string from 32 bytes
-	token := base64.RawURLEncoding.EncodeToString(b)
-
-	// Validate encoded token length
-	// 32 bytes base64url-encoded (no padding) = 43 characters
-	// ceil(32 * 8 / 6) = ceil(42.67) = 43
-	if len(token) < 43 {
-		// This should never happen with correct base64 encoding
-		panic(fmt.Sprintf("CRITICAL SECURITY FAILURE: generated token has insufficient length: %d chars (expected 43+)", len(token)))
-	}
-
-	return token
+	return base64.RawURLEncoding.EncodeToString(b)
 }
