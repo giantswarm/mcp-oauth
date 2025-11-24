@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Added local token expiry validation before provider check (#24)**
+  - `ValidateToken` now checks token expiry locally before calling provider
+  - Prevents expired tokens from being accepted if provider's clock is skewed
+  - Respects `ClockSkewGracePeriod` configuration (default 5 seconds)
+  - Defense in depth: checks expiry locally before external API call
+  - Falls back to provider validation if token not found locally
+  - Added comprehensive test suite for expiry validation and clock skew scenarios
+  - **Impact**: No breaking changes - enhanced security validation
 - **Implemented explicit entropy validation for token generation (#21)**
   - Replaced `oauth2.GenerateVerifier()` with `crypto/rand` for better control
   - Generates 32 bytes (256 bits) of cryptographically secure entropy
