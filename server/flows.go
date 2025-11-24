@@ -182,8 +182,17 @@ func (s *Server) StartAuthorizationFlow(clientID, redirectURI, scope, codeChalle
 		return "", fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
 	}
 
-	// Validate scopes
+	// Validate scopes against server configuration
 	if err := s.validateScopes(scope); err != nil {
+		if s.Auditor != nil {
+			s.Auditor.LogAuthFailure("", clientID, "", fmt.Sprintf("%s: %v", ErrorCodeInvalidScope, err))
+		}
+		return "", fmt.Errorf("%s: %w", ErrorCodeInvalidScope, err)
+	}
+
+	// SECURITY: Validate scopes against client's allowed scopes (OAuth 2.0 Security)
+	// This prevents scope escalation where a client requests scopes it's not authorized for
+	if err := s.validateClientScopes(scope, client.Scopes); err != nil {
 		if s.Auditor != nil {
 			s.Auditor.LogAuthFailure("", clientID, "", fmt.Sprintf("%s: %v", ErrorCodeInvalidScope, err))
 		}
@@ -416,6 +425,35 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 	client, err := s.clientStore.GetClient(clientID)
 	if err != nil {
 		return nil, "", s.logAuthCodeValidationFailure("client_not_found", clientID, "", safeTruncate(code, 8))
+	}
+
+	// SECURITY: Validate scopes against client's allowed scopes (OAuth 2.0 Security)
+	// This is the final validation before issuing tokens - defense in depth
+	// Even if authorization flow validation was bypassed, we validate again here
+	if err := s.validateClientScopes(authCode.Scope, client.Scopes); err != nil {
+		s.Logger.Debug("Client scope validation failed during token exchange",
+			"reason", err.Error(),
+			"client_id", clientID,
+			"user_id", authCode.UserID,
+			"requested_scope", authCode.Scope,
+			"code_prefix", safeTruncate(code, 8))
+
+		if s.Auditor != nil {
+			s.Auditor.LogEvent(security.Event{
+				Type:     "scope_escalation_attempt",
+				UserID:   authCode.UserID,
+				ClientID: clientID,
+				Details: map[string]any{
+					"severity":        "high",
+					"requested_scope": authCode.Scope,
+					"reason":          "client not authorized for requested scopes",
+				},
+			})
+			s.Auditor.LogAuthFailure(authCode.UserID, clientID, "", fmt.Sprintf("scope_validation_failed: %v", err))
+		}
+
+		// Return generic error per RFC 6749 (don't reveal details to attacker)
+		return nil, "", fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 	}
 
 	// CRITICAL SECURITY: Public clients SHOULD use PKCE (OAuth 2.1 requirement)
