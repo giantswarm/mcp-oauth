@@ -276,6 +276,145 @@ func TestApplySecureDefaults(t *testing.T) {
 	}
 }
 
+func TestValidateProviderRevocationConfig(t *testing.T) {
+	tests := []struct {
+		name                  string
+		config                *Config
+		expectWarning         bool
+		expectedWarningText   string
+		expectedTimeout       int64
+		expectedRetries       int
+		expectedThreshold     float64
+		expectedRetentionDays int64
+	}{
+		{
+			name: "valid configuration - no warnings",
+			config: &Config{
+				ProviderRevocationTimeout:          10,
+				ProviderRevocationMaxRetries:       3,
+				ProviderRevocationFailureThreshold: 0.5,
+				RevokedFamilyRetentionDays:         90,
+			},
+			expectWarning:         false,
+			expectedTimeout:       10,
+			expectedRetries:       3,
+			expectedThreshold:     0.5,
+			expectedRetentionDays: 90,
+		},
+		{
+			name: "invalid timeout - too low",
+			config: &Config{
+				ProviderRevocationTimeout:          -5,
+				ProviderRevocationMaxRetries:       3,
+				ProviderRevocationFailureThreshold: 0.5,
+				RevokedFamilyRetentionDays:         90,
+			},
+			expectWarning:         true,
+			expectedWarningText:   "Invalid ProviderRevocationTimeout",
+			expectedTimeout:       -5, // Should be caught and corrected later by applyTimeDefaults
+			expectedRetries:       3,
+			expectedThreshold:     0.5,
+			expectedRetentionDays: 90,
+		},
+		{
+			name: "invalid retries - negative",
+			config: &Config{
+				ProviderRevocationTimeout:          10,
+				ProviderRevocationMaxRetries:       -1,
+				ProviderRevocationFailureThreshold: 0.5,
+				RevokedFamilyRetentionDays:         90,
+			},
+			expectWarning:         true,
+			expectedWarningText:   "Invalid ProviderRevocationMaxRetries",
+			expectedTimeout:       10,
+			expectedRetries:       -1,
+			expectedThreshold:     0.5,
+			expectedRetentionDays: 90,
+		},
+		{
+			name: "invalid threshold - too high",
+			config: &Config{
+				ProviderRevocationTimeout:          10,
+				ProviderRevocationMaxRetries:       3,
+				ProviderRevocationFailureThreshold: 1.5,
+				RevokedFamilyRetentionDays:         90,
+			},
+			expectWarning:         true,
+			expectedWarningText:   "Invalid ProviderRevocationFailureThreshold",
+			expectedTimeout:       10,
+			expectedRetries:       3,
+			expectedThreshold:     1.5,
+			expectedRetentionDays: 90,
+		},
+		{
+			name: "invalid threshold - negative",
+			config: &Config{
+				ProviderRevocationTimeout:          10,
+				ProviderRevocationMaxRetries:       3,
+				ProviderRevocationFailureThreshold: -0.5,
+				RevokedFamilyRetentionDays:         90,
+			},
+			expectWarning:         true,
+			expectedWarningText:   "Invalid ProviderRevocationFailureThreshold",
+			expectedTimeout:       10,
+			expectedRetries:       3,
+			expectedThreshold:     -0.5,
+			expectedRetentionDays: 90,
+		},
+		{
+			name: "invalid retention - negative",
+			config: &Config{
+				ProviderRevocationTimeout:          10,
+				ProviderRevocationMaxRetries:       3,
+				ProviderRevocationFailureThreshold: 0.5,
+				RevokedFamilyRetentionDays:         -10,
+			},
+			expectWarning:         true,
+			expectedWarningText:   "Invalid RevokedFamilyRetentionDays",
+			expectedTimeout:       10,
+			expectedRetries:       3,
+			expectedThreshold:     0.5,
+			expectedRetentionDays: -10,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+			validateProviderRevocationConfig(tt.config, logger)
+
+			logOutput := buf.String()
+
+			if tt.expectWarning {
+				if !strings.Contains(logOutput, tt.expectedWarningText) {
+					t.Errorf("Expected warning containing %q, but got: %s", tt.expectedWarningText, logOutput)
+				}
+			} else {
+				if strings.Contains(logOutput, "CONFIGURATION WARNING") {
+					t.Errorf("Did not expect warning, but got: %s", logOutput)
+				}
+			}
+
+			// Note: Values are not corrected in validateProviderRevocationConfig
+			// They are corrected later in applyTimeDefaults
+			if tt.config.ProviderRevocationTimeout != tt.expectedTimeout {
+				t.Errorf("ProviderRevocationTimeout = %d, want %d", tt.config.ProviderRevocationTimeout, tt.expectedTimeout)
+			}
+			if tt.config.ProviderRevocationMaxRetries != tt.expectedRetries {
+				t.Errorf("ProviderRevocationMaxRetries = %d, want %d", tt.config.ProviderRevocationMaxRetries, tt.expectedRetries)
+			}
+			if tt.config.ProviderRevocationFailureThreshold != tt.expectedThreshold {
+				t.Errorf("ProviderRevocationFailureThreshold = %f, want %f", tt.config.ProviderRevocationFailureThreshold, tt.expectedThreshold)
+			}
+			if tt.config.RevokedFamilyRetentionDays != tt.expectedRetentionDays {
+				t.Errorf("RevokedFamilyRetentionDays = %d, want %d", tt.config.RevokedFamilyRetentionDays, tt.expectedRetentionDays)
+			}
+		})
+	}
+}
+
 func TestConfig_Fields(t *testing.T) {
 	// Test that all config fields can be set
 	config := &Config{
