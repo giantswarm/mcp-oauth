@@ -482,3 +482,260 @@ func TestConfig_Fields(t *testing.T) {
 		t.Errorf("len(AllowedCustomSchemes) = %d, want 1", len(config.AllowedCustomSchemes))
 	}
 }
+
+// CORS validation tests
+
+func TestValidateCORSConfig_Disabled(t *testing.T) {
+	// CORS disabled (no origins) should not panic or warn
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	config := &Config{
+		CORS: CORSConfig{
+			AllowedOrigins:   []string{}, // Empty = disabled
+			AllowCredentials: true,
+		},
+	}
+
+	// Should not panic
+	validateCORSConfig(config, logger)
+
+	logOutput := buf.String()
+	if strings.Contains(logOutput, "CORS") {
+		t.Error("Should not log CORS warnings when CORS is disabled")
+	}
+}
+
+func TestValidateCORSConfig_WildcardWithCredentials(t *testing.T) {
+	// Wildcard with credentials should panic (violates CORS spec)
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	config := &Config{
+		CORS: CORSConfig{
+			AllowedOrigins:   []string{"*"},
+			AllowCredentials: true,
+		},
+	}
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Error("Expected panic for wildcard with credentials, but got none")
+		}
+		panicMsg := r.(string)
+		if !strings.Contains(panicMsg, "wildcard") || !strings.Contains(panicMsg, "AllowCredentials") {
+			t.Errorf("Panic message should mention wildcard and credentials, got: %s", panicMsg)
+		}
+	}()
+
+	validateCORSConfig(config, logger)
+}
+
+func TestValidateCORSConfig_WildcardWithoutCredentials(t *testing.T) {
+	// Wildcard without credentials should warn but not panic
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	config := &Config{
+		CORS: CORSConfig{
+			AllowedOrigins:   []string{"*"},
+			AllowCredentials: false,
+		},
+	}
+
+	// Should not panic
+	validateCORSConfig(config, logger)
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "Wildcard origin") {
+		t.Error("Should log warning for wildcard origin")
+	}
+}
+
+func TestValidateCORSConfig_InvalidOriginFormat(t *testing.T) {
+	tests := []struct {
+		name          string
+		origin        string
+		expectedError string
+	}{
+		{
+			name:          "no scheme",
+			origin:        "example.com",
+			expectedError: "invalid origin format",
+		},
+		{
+			name:          "no host",
+			origin:        "https://",
+			expectedError: "invalid origin format",
+		},
+		{
+			name:          "not a url",
+			origin:        "not-a-url",
+			expectedError: "invalid origin format",
+		},
+		{
+			name:          "trailing slash",
+			origin:        "https://app.example.com/",
+			expectedError: "should not have trailing slash",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+			config := &Config{
+				CORS: CORSConfig{
+					AllowedOrigins:   []string{tt.origin},
+					AllowCredentials: false,
+				},
+			}
+
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Errorf("Expected panic for invalid origin %q, but got none", tt.origin)
+					return
+				}
+				panicMsg := r.(string)
+				if !strings.Contains(panicMsg, tt.expectedError) {
+					t.Errorf("Expected panic containing %q, got: %s", tt.expectedError, panicMsg)
+				}
+			}()
+
+			validateCORSConfig(config, logger)
+		})
+	}
+}
+
+func TestValidateCORSConfig_HTTPOriginRejected(t *testing.T) {
+	// HTTP origin (non-localhost) should be rejected when AllowInsecureHTTP=false
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	config := &Config{
+		AllowInsecureHTTP: false,
+		CORS: CORSConfig{
+			AllowedOrigins:   []string{"http://app.example.com"},
+			AllowCredentials: false,
+		},
+	}
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Error("Expected panic for HTTP origin without AllowInsecureHTTP, but got none")
+			return
+		}
+		panicMsg := r.(string)
+		if !strings.Contains(panicMsg, "HTTP origin") {
+			t.Errorf("Expected panic about HTTP origin, got: %s", panicMsg)
+		}
+	}()
+
+	validateCORSConfig(config, logger)
+}
+
+func TestValidateCORSConfig_HTTPLocalhostAllowed(t *testing.T) {
+	// HTTP localhost should be allowed for development
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	localhostOrigins := []string{
+		"http://localhost:3000",
+		"http://127.0.0.1:8080",
+		"http://localhost",
+	}
+
+	for _, origin := range localhostOrigins {
+		t.Run(origin, func(t *testing.T) {
+			config := &Config{
+				AllowInsecureHTTP: false,
+				CORS: CORSConfig{
+					AllowedOrigins:   []string{origin},
+					AllowCredentials: false,
+				},
+			}
+
+			// Should not panic
+			validateCORSConfig(config, logger)
+
+			logOutput := buf.String()
+			if !strings.Contains(logOutput, "localhost/development") {
+				t.Error("Should log warning for HTTP localhost")
+			}
+		})
+	}
+}
+
+func TestValidateCORSConfig_HTTPAllowedWithFlag(t *testing.T) {
+	// HTTP origin should be allowed when AllowInsecureHTTP=true
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	config := &Config{
+		AllowInsecureHTTP: true,
+		CORS: CORSConfig{
+			AllowedOrigins:   []string{"http://app.example.com"},
+			AllowCredentials: false,
+		},
+	}
+
+	// Should not panic
+	validateCORSConfig(config, logger)
+}
+
+func TestValidateCORSConfig_ValidOrigins(t *testing.T) {
+	// Valid origins should pass without panic
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	config := &Config{
+		CORS: CORSConfig{
+			AllowedOrigins: []string{
+				"https://app.example.com",
+				"https://dashboard.example.com:8443",
+				"https://api.example.com",
+			},
+			AllowCredentials: true,
+		},
+	}
+
+	// Should not panic
+	validateCORSConfig(config, logger)
+
+	logOutput := buf.String()
+	// Check that no warnings or errors were logged (only debug message)
+	if strings.Contains(logOutput, "WARNING") || strings.Contains(logOutput, "ERROR") {
+		t.Errorf("Should not log warnings or errors for valid config, got: %s", logOutput)
+	}
+}
+
+func TestValidateCORSConfig_MultipleOrigins(t *testing.T) {
+	// Multiple valid origins should all be validated
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	config := &Config{
+		CORS: CORSConfig{
+			AllowedOrigins: []string{
+				"https://app1.example.com",
+				"https://app2.example.com",
+				"https://app3.example.com",
+			},
+			AllowCredentials: true,
+			MaxAge:           7200,
+		},
+	}
+
+	// Should not panic
+	validateCORSConfig(config, logger)
+
+	// Check that validation succeeded by checking for debug log
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "CORS configuration validated") || !strings.Contains(logOutput, "allowed_origins_count=3") {
+		t.Errorf("Should log correct origin count in debug message, got: %s", logOutput)
+	}
+}

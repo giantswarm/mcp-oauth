@@ -1065,6 +1065,10 @@ func TestCORS_AllowedOrigin(t *testing.T) {
 				if w.Header().Get("Access-Control-Allow-Methods") == "" {
 					t.Error("Access-Control-Allow-Methods should be set")
 				}
+				// SECURITY: Verify Vary: Origin header is set for proper caching
+				if w.Header().Get("Vary") != "Origin" {
+					t.Errorf("Vary header = %q, want %q", w.Header().Get("Vary"), "Origin")
+				}
 			} else {
 				if allowOrigin != "" {
 					t.Errorf("Access-Control-Allow-Origin should not be set for disallowed origin, got %q", allowOrigin)
@@ -1075,8 +1079,27 @@ func TestCORS_AllowedOrigin(t *testing.T) {
 }
 
 func TestCORS_WildcardOrigin(t *testing.T) {
-	handler, store := setupTestHandlerWithCORS(t, []string{"*"})
+	// Wildcard with credentials is invalid per CORS spec, so test without credentials
+	store := memory.New()
 	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	config := &server.Config{
+		Issuer: "https://auth.example.com",
+		CORS: server.CORSConfig{
+			AllowedOrigins:   []string{"*"},
+			AllowCredentials: false, // Must be false with wildcard
+			MaxAge:           3600,
+		},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
 
 	origins := []string{
 		"https://app.example.com",
@@ -1145,6 +1168,10 @@ func TestCORS_PreflightRequest(t *testing.T) {
 	}
 	if w.Header().Get("Access-Control-Max-Age") == "" {
 		t.Error("Access-Control-Max-Age should be set")
+	}
+	// SECURITY: Verify Vary: Origin header for proper cache control
+	if w.Header().Get("Vary") != "Origin" {
+		t.Errorf("Vary header = %q, want %q", w.Header().Get("Vary"), "Origin")
 	}
 }
 

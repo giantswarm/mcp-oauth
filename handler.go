@@ -776,6 +776,10 @@ func (h *Handler) setCORSHeaders(w http.ResponseWriter, r *http.Request) {
 	// Echo back the specific origin rather than using "*" for security
 	w.Header().Set("Access-Control-Allow-Origin", origin)
 
+	// Set Vary header to ensure proper caching by browsers and CDNs
+	// This prevents serving cached responses with wrong CORS headers to different origins
+	w.Header().Add("Vary", "Origin")
+
 	// Set credentials header if enabled (required for Bearer tokens)
 	if h.server.Config.CORS.AllowCredentials {
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
