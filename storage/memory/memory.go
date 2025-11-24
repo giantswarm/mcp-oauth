@@ -605,7 +605,7 @@ func (s *Store) ValidateClientSecret(clientID, clientSecret string) error {
 	// SECURITY: Always perform the same operations to prevent timing attacks
 	// that could reveal whether a client exists or not
 
-	// Pre-computed dummy hash for non-existent clients (bcrypt hash of empty string)
+	// Pre-computed dummy hash for non-existent clients (bcrypt hash of "test")
 	// This ensures we always perform a bcrypt comparison even if client doesn't exist
 	dummyHash := "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
 
