@@ -40,6 +40,16 @@ type Config struct {
 	// Default: 10
 	MaxClientsPerIP int // default: 10
 
+	// MaxRegistrationsPerHour limits client registrations per IP address per hour
+	// This is a time-windowed rate limit that prevents resource exhaustion
+	// through repeated registration/deletion cycles
+	// Default: 10
+	MaxRegistrationsPerHour int // default: 10
+
+	// RegistrationRateLimitWindow is the time window for client registration rate limiting
+	// Default: 1 hour
+	RegistrationRateLimitWindow int64 // seconds, default: 3600 (1 hour)
+
 	// ClockSkewGracePeriod is the grace period for token expiration checks (in seconds)
 	// This prevents false expiration errors due to time synchronization issues
 	// Default: 5 seconds
@@ -187,6 +197,12 @@ func applyTimeDefaults(config *Config) {
 	}
 	if config.MaxClientsPerIP == 0 {
 		config.MaxClientsPerIP = 10
+	}
+	if config.MaxRegistrationsPerHour == 0 {
+		config.MaxRegistrationsPerHour = 10
+	}
+	if config.RegistrationRateLimitWindow == 0 {
+		config.RegistrationRateLimitWindow = 3600 // 1 hour
 	}
 }
 

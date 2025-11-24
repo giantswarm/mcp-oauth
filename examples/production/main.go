@@ -119,17 +119,27 @@ func main() {
 	// Enable rate limiting (multi-layered approach)
 	// 1. IP-based rate limiting (prevents DoS from external sources)
 	rateLimiter := security.NewRateLimiter(10, 20, logger) // 10 req/s per IP, burst 20
+	defer rateLimiter.Stop()                               // Important: cleanup background goroutines
 	server.SetRateLimiter(rateLimiter)
 
 	// 2. User-based rate limiting (prevents abuse from authenticated users)
 	userRateLimiter := security.NewRateLimiter(100, 200, logger) // 100 req/s per user, burst 200
+	defer userRateLimiter.Stop()                                 // Important: cleanup background goroutines
 	server.SetUserRateLimiter(userRateLimiter)
 
 	// 3. Security event rate limiting (prevents log flooding from attack attempts)
 	// This limits logging of security events like code reuse, token reuse detection
 	// to prevent attackers from causing DoS via excessive logging
 	securityEventRateLimiter := security.NewRateLimiter(1, 5, logger) // 1 event/s per user+client, burst 5
+	defer securityEventRateLimiter.Stop()                             // Important: cleanup background goroutines
 	server.SetSecurityEventRateLimiter(securityEventRateLimiter)
+
+	// 4. Client registration rate limiting (prevents registration/deletion cycle DoS)
+	// Time-windowed rate limiting to prevent resource exhaustion through
+	// repeated client registration/deletion cycles
+	clientRegRateLimiter := security.NewClientRegistrationRateLimiter(logger) // 10 registrations per hour per IP
+	defer clientRegRateLimiter.Stop()                                         // Important: cleanup background goroutines
+	server.SetClientRegistrationRateLimiter(clientRegRateLimiter)
 
 	// 5. Create HTTP handler
 	handler := oauth.NewHandler(server, logger)
@@ -151,7 +161,7 @@ func main() {
 		"addr", httpServer.Addr,
 		"encryption", "enabled",
 		"audit_logging", "enabled",
-		"rate_limiting", "enabled (IP, user, security events)",
+		"rate_limiting", "enabled (IP, user, security events, client registration)",
 		"pkce_enforced", "true",
 		"refresh_token_rotation", "enabled",
 		"token_introspection", "enabled",

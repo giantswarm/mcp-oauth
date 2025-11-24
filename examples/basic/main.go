@@ -78,6 +78,7 @@ func main() {
 	server.SetAuditor(auditor)
 
 	rateLimiter := security.NewRateLimiter(10, 20, logger)
+	defer rateLimiter.Stop() // Important: cleanup background goroutines
 	server.SetRateLimiter(rateLimiter)
 
 	// 6. Create HTTP handler

@@ -260,6 +260,7 @@ ipRateLimiter := security.NewRateLimiter(
     20,    // burst of 20
     logger,
 )
+defer ipRateLimiter.Stop() // Important: cleanup background goroutines
 server.SetRateLimiter(ipRateLimiter)
 ```
 
@@ -273,13 +274,59 @@ userRateLimiter := security.NewRateLimiter(
     200,   // burst of 200
     logger,
 )
+defer userRateLimiter.Stop() // Important: cleanup background goroutines
 server.SetUserRateLimiter(userRateLimiter)
+```
+
+#### Client Registration Rate Limiting
+
+Prevents resource exhaustion through repeated client registration/deletion cycles:
+
+```go
+clientRegRateLimiter := security.NewClientRegistrationRateLimiter(logger)
+defer clientRegRateLimiter.Stop() // Important: cleanup background goroutines
+server.SetClientRegistrationRateLimiter(clientRegRateLimiter)
+
+// Or with custom configuration:
+clientRegRateLimiter := security.NewClientRegistrationRateLimiterWithConfig(
+    10,              // max registrations per window
+    time.Hour,       // time window
+    10000,           // max IPs to track (memory bound)
+    logger,
+)
+defer clientRegRateLimiter.Stop()
+server.SetClientRegistrationRateLimiter(clientRegRateLimiter)
+```
+
+**Rate Limiter Configuration via Server Config:**
+
+```go
+&oauth.ServerConfig{
+    // Time-windowed client registration limits
+    MaxRegistrationsPerHour: 10,        // default: 10 per IP per hour
+    RegistrationRateLimitWindow: 3600,  // default: 3600 seconds (1 hour)
+    
+    // Static limit (complementary to rate limiting)
+    MaxClientsPerIP: 10,                // max total active clients per IP
+}
 ```
 
 **Security Benefits:**
 - IP-based limiting prevents unauthenticated abuse
 - User-based limiting prevents authenticated abuse
-- Layered defense: both limits are enforced independently
+- Client registration limiting prevents registration/deletion cycle DoS
+- Layered defense: all limits are enforced independently
+- Time-windowed tracking prevents circumvention via deletion
+
+**Important Lifecycle Management:**
+All rate limiters run background cleanup goroutines. Always call `Stop()` when shutting down:
+
+```go
+// Proper cleanup prevents goroutine leaks
+defer ipRateLimiter.Stop()
+defer userRateLimiter.Stop()
+defer clientRegRateLimiter.Stop()
+```
 
 ### Client Registration Protection
 
@@ -336,7 +383,23 @@ When running behind a reverse proxy (nginx, HAProxy, etc.):
 }
 ```
 
-**Security Note**: Only enable `TrustProxy` when behind a properly configured trusted reverse proxy.
+**Security Notes:**
+- Only enable `TrustProxy` when behind a properly configured trusted reverse proxy
+- **Critical for Rate Limiting**: IP-based rate limiting (including client registration limits) depends on accurate client IP extraction
+- Without proper proxy configuration, attackers can spoof X-Forwarded-For headers to bypass rate limits
+- Ensure your reverse proxy (nginx, HAProxy, CloudFlare, etc.) is configured to set X-Forwarded-For correctly
+
+**Example nginx configuration:**
+```nginx
+location / {
+    proxy_pass http://oauth-server:8080;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Real-IP $remote_addr;
+}
+```
+
+**Rate Limiting Effectiveness:**
+Rate limiting is only as secure as your IP extraction. If `TrustProxy=false` (default), the library uses the direct connection IP, which is most secure but may not work behind proxies. If `TrustProxy=true`, ensure your proxy infrastructure is properly configured and trusted.
 
 ## 📚 Examples
 
@@ -377,12 +440,14 @@ Before deploying to production, ensure:
 - ✅ **HTTPS Required**: Set `Issuer` to HTTPS URL
 - ✅ **Token Encryption**: Set `EncryptionKey` (32 bytes from secure source)
 - ✅ **Audit Logging**: Enable security audit logging
-- ✅ **Rate Limiting**: Configure both IP and user rate limits
+- ✅ **Rate Limiting**: Configure IP, user, and client registration rate limits
+- ✅ **Rate Limiter Cleanup**: Call `Stop()` on all rate limiters during shutdown
 - ✅ **PKCE Enforced**: Keep `RequirePKCE=true` (default)
 - ✅ **S256 Only**: Keep `AllowPKCEPlain=false` (default)
 - ✅ **Token Rotation**: Keep `AllowRefreshTokenRotation=true` (default)
 - ✅ **Registration Protected**: Set `RegistrationAccessToken` or disable registration
 - ✅ **Proxy Configured**: Set `TrustProxy` and `TrustedProxyCount` if behind proxy
+- ✅ **Proxy Headers**: Verify reverse proxy correctly sets X-Forwarded-For (critical for rate limiting)
 
 ### Security Warnings
 

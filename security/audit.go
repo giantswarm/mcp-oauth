@@ -115,6 +115,18 @@ func (a *Auditor) LogRateLimitExceeded(ipAddress, userID string) {
 	})
 }
 
+// LogClientRegistrationRateLimitExceeded logs when client registration rate limit is exceeded
+func (a *Auditor) LogClientRegistrationRateLimitExceeded(ipAddress string) {
+	a.LogEvent(Event{
+		Type:      "client_registration_rate_limit_exceeded",
+		IPAddress: ipAddress,
+		Details: map[string]any{
+			"severity": "medium",
+			"action":   "registration_denied",
+		},
+	})
+}
+
 // LogClientRegistered logs when a new client is registered
 func (a *Auditor) LogClientRegistered(clientID, clientType, ipAddress string) {
 	a.LogEvent(Event{
