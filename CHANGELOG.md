@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Fixed timing attack vulnerability in state parameter validation (#19)**
+  - Added minimum length validation (32 characters) for state parameters
+  - State validation now enforces sufficient entropy for CSRF protection
+  - Constant-time comparison already in place for state value validation
+  - Added comprehensive tests for timing attack resistance
+  - Updated all tests to use secure state parameters
+  - **Impact**: Short state parameters (< 32 chars) are now rejected
+  - **Migration**: Ensure client applications generate state parameters with at least 32 characters
 - **[BREAKING]** Added runtime HTTPS enforcement for OAuth server (#18, #49)
   - New `AllowInsecureHTTP` config flag (default: `false`)
   - Production deployments now require HTTPS by default

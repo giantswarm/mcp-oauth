@@ -25,6 +25,18 @@ const (
 	PKCEMethodPlain       = "plain"
 )
 
+// State parameter validation constants
+// Note: These constants are intentionally duplicated from constants.go
+// to avoid circular imports (root package imports server, server can't import root).
+// Keep these in sync with constants.go.
+//
+// MinStateLength defines the minimum length for state parameters to prevent
+// timing attacks and ensure sufficient entropy for CSRF protection.
+// OAuth 2.1 recommends at least 128 bits (16 bytes) of entropy.
+const (
+	MinStateLength = 32 // Minimum length in characters for state parameters (keep in sync with constants.go)
+)
+
 // URI scheme constants
 const (
 	SchemeHTTP  = "http"
@@ -195,6 +207,31 @@ func (s *Server) validateScopes(scope string) error {
 		if !found {
 			return fmt.Errorf("unsupported scope: %s", reqScope)
 		}
+	}
+
+	return nil
+}
+
+// validateStateParameter validates the state parameter for security requirements.
+// This function enforces:
+// 1. Minimum length to ensure sufficient entropy and prevent timing attacks
+// 2. Non-empty validation
+//
+// SECURITY: The minimum length requirement helps prevent timing attacks by
+// ensuring state parameters have sufficient entropy. Short state values could
+// be brute-forced using timing side-channels. By enforcing a minimum length,
+// we ensure that even if timing information leaks, the search space is large
+// enough to make attacks infeasible.
+//
+// The constant-time comparison of state values happens later in the flow
+// (see server/flows.go HandleProviderCallback) using subtle.ConstantTimeCompare.
+func validateStateParameter(state string) error {
+	if state == "" {
+		return fmt.Errorf("state parameter is required for CSRF protection")
+	}
+
+	if len(state) < MinStateLength {
+		return fmt.Errorf("state parameter must be at least %d characters for security", MinStateLength)
 	}
 
 	return nil

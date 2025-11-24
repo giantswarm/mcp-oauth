@@ -168,8 +168,13 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// CRITICAL SECURITY: State parameter is required for CSRF protection
+	// Enforce minimum length to prevent timing attacks and ensure sufficient entropy
 	if state == "" {
 		h.writeError(w, ErrorCodeInvalidRequest, "state parameter is required for CSRF protection", http.StatusBadRequest)
+		return
+	}
+	if len(state) < MinStateLength {
+		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at least %d characters for security", MinStateLength), http.StatusBadRequest)
 		return
 	}
 
@@ -205,8 +210,14 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// CRITICAL SECURITY: Validate state and code parameters
+	// State must meet minimum length requirements to prevent timing attacks
 	if state == "" || code == "" {
 		h.writeError(w, ErrorCodeInvalidRequest, "state and code are required", http.StatusBadRequest)
+		return
+	}
+	if len(state) < MinStateLength {
+		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at least %d characters for security", MinStateLength), http.StatusBadRequest)
 		return
 	}
 
