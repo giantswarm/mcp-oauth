@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CORS (Cross-Origin Resource Sharing) support for browser-based clients (#28)**
+  - Added `CORSConfig` to server configuration with `AllowedOrigins`, `AllowCredentials`, and `MaxAge` settings
+  - Implemented `setCORSHeaders()` method to apply CORS headers to all HTTP responses
+  - Added `isAllowedOrigin()` helper for origin validation with exact matching
+  - Implemented `ServePreflightRequest()` handler for OPTIONS preflight requests
+  - CORS headers automatically applied to all OAuth endpoints:
+    - Authorization server metadata, protected resource metadata
+    - Authorization, callback, token endpoints
+    - Token revocation, client registration, token introspection
+  - Features:
+    - Opt-in by default (disabled when `AllowedOrigins` is empty) for backward compatibility
+    - Support for multiple allowed origins with exact matching (case-sensitive)
+    - Wildcard `*` support with security warning for development
+    - Configurable credentials support for OAuth flows
+    - Configurable preflight cache duration
+  - Security considerations:
+    - Only echoes back allowed origins (no arbitrary reflection)
+    - Logs security warning when wildcard `*` is used
+    - Respects CORS specification for credentials and preflight requests
+  - Comprehensive test coverage:
+    - CORS disabled by default
+    - Allowed/disallowed origin validation
+    - Wildcard origin support
+    - Preflight request handling
+    - Credentials configuration
+    - Custom max age
+  - **Impact**: No breaking changes - CORS is opt-in and disabled by default
+  - **Documentation**: Added CORS configuration guide to README with security best practices
+  - **Example**: Updated production example with commented CORS configuration
+
 - **Proactive token refresh during validation to prevent expiry failures (#27)**
   - Added `TokenRefreshThreshold` configuration (default: 300 seconds = 5 minutes)
   - `ValidateToken()` now checks if provider token will expire within threshold

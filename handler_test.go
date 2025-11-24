@@ -23,6 +23,7 @@ import (
 const (
 	testTokenTypeBearer  = "Bearer"
 	testClientRemoteAddr = "192.168.1.100:12345"
+	testOriginApp        = "https://app.example.com"
 )
 
 func setupTestHandler(t *testing.T) (*Handler, *memory.Store) {
@@ -33,6 +34,30 @@ func setupTestHandler(t *testing.T) (*Handler, *memory.Store) {
 
 	config := &server.Config{
 		Issuer: "https://auth.example.com",
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+	return handler, store
+}
+
+func setupTestHandlerWithCORS(t *testing.T, allowedOrigins []string) (*Handler, *memory.Store) {
+	t.Helper()
+
+	store := memory.New()
+	provider := mock.NewMockProvider()
+
+	config := &server.Config{
+		Issuer: "https://auth.example.com",
+		CORS: server.CORSConfig{
+			AllowedOrigins:   allowedOrigins,
+			AllowCredentials: true,
+			MaxAge:           3600,
+		},
 	}
 
 	srv, err := server.New(provider, store, store, store, config, nil)
@@ -960,5 +985,294 @@ func TestHandler_ServeTokenIntrospection(t *testing.T) {
 
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+// CORS Tests
+
+func TestCORS_Disabled(t *testing.T) {
+	// CORS should be disabled by default (empty AllowedOrigins)
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	req.Header.Set("Origin", "https://example.com")
+	w := httptest.NewRecorder()
+
+	handler.ServeAuthorizationServerMetadata(w, req)
+
+	// No CORS headers should be set
+	if w.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Error("CORS headers should not be set when CORS is disabled")
+	}
+}
+
+func TestCORS_AllowedOrigin(t *testing.T) {
+	handler, store := setupTestHandlerWithCORS(t, []string{testOriginApp, "https://dashboard.example.com"})
+	defer store.Stop()
+
+	tests := []struct {
+		name           string
+		origin         string
+		expectedOrigin string
+		shouldAllow    bool
+	}{
+		{
+			name:           "exact match first origin",
+			origin:         testOriginApp,
+			expectedOrigin: testOriginApp,
+			shouldAllow:    true,
+		},
+		{
+			name:           "exact match second origin",
+			origin:         "https://dashboard.example.com",
+			expectedOrigin: "https://dashboard.example.com",
+			shouldAllow:    true,
+		},
+		{
+			name:        "disallowed origin",
+			origin:      "https://evil.com",
+			shouldAllow: false,
+		},
+		{
+			name:        "case sensitive - wrong case",
+			origin:      "https://APP.example.com",
+			shouldAllow: false,
+		},
+		{
+			name:        "subdomain not allowed",
+			origin:      "https://sub.app.example.com",
+			shouldAllow: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+			req.Header.Set("Origin", tt.origin)
+			w := httptest.NewRecorder()
+
+			handler.ServeAuthorizationServerMetadata(w, req)
+
+			allowOrigin := w.Header().Get("Access-Control-Allow-Origin")
+			if tt.shouldAllow {
+				if allowOrigin != tt.expectedOrigin {
+					t.Errorf("Access-Control-Allow-Origin = %q, want %q", allowOrigin, tt.expectedOrigin)
+				}
+				if w.Header().Get("Access-Control-Allow-Credentials") != "true" {
+					t.Error("Access-Control-Allow-Credentials should be 'true'")
+				}
+				if w.Header().Get("Access-Control-Allow-Methods") == "" {
+					t.Error("Access-Control-Allow-Methods should be set")
+				}
+				// SECURITY: Verify Vary: Origin header is set for proper caching
+				if w.Header().Get("Vary") != "Origin" {
+					t.Errorf("Vary header = %q, want %q", w.Header().Get("Vary"), "Origin")
+				}
+			} else {
+				if allowOrigin != "" {
+					t.Errorf("Access-Control-Allow-Origin should not be set for disallowed origin, got %q", allowOrigin)
+				}
+			}
+		})
+	}
+}
+
+func TestCORS_WildcardOrigin(t *testing.T) {
+	// Wildcard with credentials is invalid per CORS spec, so test without credentials
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	config := &server.Config{
+		Issuer: "https://auth.example.com",
+		CORS: server.CORSConfig{
+			AllowedOrigins:   []string{"*"},
+			AllowCredentials: false, // Must be false with wildcard
+			MaxAge:           3600,
+		},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+
+	origins := []string{
+		"https://app.example.com",
+		"https://evil.com",
+		"http://localhost:3000",
+	}
+
+	for _, origin := range origins {
+		t.Run("origin_"+origin, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+			req.Header.Set("Origin", origin)
+			w := httptest.NewRecorder()
+
+			handler.ServeAuthorizationServerMetadata(w, req)
+
+			// Wildcard should allow any origin
+			if w.Header().Get("Access-Control-Allow-Origin") != origin {
+				t.Errorf("Access-Control-Allow-Origin = %q, want %q", w.Header().Get("Access-Control-Allow-Origin"), origin)
+			}
+		})
+	}
+}
+
+func TestCORS_NoOriginHeader(t *testing.T) {
+	handler, store := setupTestHandlerWithCORS(t, []string{testOriginApp})
+	defer store.Stop()
+
+	// Request without Origin header (non-browser request)
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeAuthorizationServerMetadata(w, req)
+
+	// No CORS headers should be set for non-browser requests
+	if w.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Error("CORS headers should not be set when Origin header is missing")
+	}
+}
+
+func TestCORS_PreflightRequest(t *testing.T) {
+	handler, store := setupTestHandlerWithCORS(t, []string{testOriginApp})
+	defer store.Stop()
+
+	req := httptest.NewRequest(http.MethodOptions, "/oauth/token", nil)
+	req.Header.Set("Origin", "https://app.example.com")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	req.Header.Set("Access-Control-Request-Headers", "Authorization, Content-Type")
+	w := httptest.NewRecorder()
+
+	handler.ServePreflightRequest(w, req)
+
+	// Should return 204 No Content
+	if w.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusNoContent)
+	}
+
+	// Check CORS headers
+	if w.Header().Get("Access-Control-Allow-Origin") != testOriginApp {
+		t.Errorf("Access-Control-Allow-Origin = %q, want %q", w.Header().Get("Access-Control-Allow-Origin"), testOriginApp)
+	}
+	if w.Header().Get("Access-Control-Allow-Methods") == "" {
+		t.Error("Access-Control-Allow-Methods should be set")
+	}
+	if w.Header().Get("Access-Control-Allow-Headers") == "" {
+		t.Error("Access-Control-Allow-Headers should be set")
+	}
+	if w.Header().Get("Access-Control-Max-Age") == "" {
+		t.Error("Access-Control-Max-Age should be set")
+	}
+	// SECURITY: Verify Vary: Origin header for proper cache control
+	if w.Header().Get("Vary") != "Origin" {
+		t.Errorf("Vary header = %q, want %q", w.Header().Get("Vary"), "Origin")
+	}
+}
+
+func TestCORS_PreflightRequest_DisallowedOrigin(t *testing.T) {
+	handler, store := setupTestHandlerWithCORS(t, []string{testOriginApp})
+	defer store.Stop()
+
+	req := httptest.NewRequest(http.MethodOptions, "/oauth/token", nil)
+	req.Header.Set("Origin", "https://evil.com")
+	w := httptest.NewRecorder()
+
+	handler.ServePreflightRequest(w, req)
+
+	// Should still return 204 but without CORS headers
+	if w.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusNoContent)
+	}
+
+	// No CORS headers for disallowed origin
+	if w.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Error("CORS headers should not be set for disallowed origin")
+	}
+}
+
+func TestCORS_AllEndpoints(t *testing.T) {
+	handler, store := setupTestHandlerWithCORS(t, []string{testOriginApp})
+	defer store.Stop()
+
+	// Test that CORS is applied to all endpoints
+	endpoints := []struct {
+		name    string
+		method  string
+		path    string
+		handler func(w http.ResponseWriter, r *http.Request)
+	}{
+		{"metadata", http.MethodGet, "/.well-known/oauth-authorization-server", handler.ServeAuthorizationServerMetadata},
+		{"protected-resource", http.MethodGet, "/.well-known/oauth-protected-resource", handler.ServeProtectedResourceMetadata},
+	}
+
+	for _, ep := range endpoints {
+		t.Run(ep.name, func(t *testing.T) {
+			req := httptest.NewRequest(ep.method, ep.path, nil)
+			req.Header.Set("Origin", "https://app.example.com")
+			w := httptest.NewRecorder()
+
+			ep.handler(w, req)
+
+			if w.Header().Get("Access-Control-Allow-Origin") != testOriginApp {
+				t.Errorf("endpoint %s: Access-Control-Allow-Origin not set correctly", ep.name)
+			}
+		})
+	}
+}
+
+func TestCORS_CredentialsDisabled(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Configure CORS with credentials disabled
+	handler.server.Config.CORS = server.CORSConfig{
+		AllowedOrigins:   []string{testOriginApp},
+		AllowCredentials: false,
+		MaxAge:           3600,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	req.Header.Set("Origin", "https://app.example.com")
+	w := httptest.NewRecorder()
+
+	handler.ServeAuthorizationServerMetadata(w, req)
+
+	// Origin should be set
+	if w.Header().Get("Access-Control-Allow-Origin") != testOriginApp {
+		t.Error("Access-Control-Allow-Origin should be set")
+	}
+
+	// But credentials should not be allowed
+	if w.Header().Get("Access-Control-Allow-Credentials") == "true" {
+		t.Error("Access-Control-Allow-Credentials should not be 'true' when disabled")
+	}
+}
+
+func TestCORS_CustomMaxAge(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Configure CORS with custom max age
+	handler.server.Config.CORS = server.CORSConfig{
+		AllowedOrigins:   []string{testOriginApp},
+		AllowCredentials: true,
+		MaxAge:           7200, // 2 hours
+	}
+
+	req := httptest.NewRequest(http.MethodOptions, "/oauth/token", nil)
+	req.Header.Set("Origin", "https://app.example.com")
+	w := httptest.NewRecorder()
+
+	handler.ServePreflightRequest(w, req)
+
+	maxAge := w.Header().Get("Access-Control-Max-Age")
+	if maxAge != "7200" {
+		t.Errorf("Access-Control-Max-Age = %q, want %q", maxAge, "7200")
 	}
 }

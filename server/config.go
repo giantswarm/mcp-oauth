@@ -1,7 +1,10 @@
 package server
 
 import (
+	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
 )
 
 // Config holds OAuth server configuration
@@ -142,6 +145,29 @@ type Config struct {
 	// When false (default), the server enforces HTTPS for non-localhost deployments
 	// Security: must be explicitly enabled to allow HTTP
 	AllowInsecureHTTP bool
+
+	// CORS settings for browser-based clients
+	CORS CORSConfig
+}
+
+// CORSConfig holds CORS (Cross-Origin Resource Sharing) configuration for browser-based clients
+// CORS is disabled by default for security. Only enable for browser-based MCP clients.
+type CORSConfig struct {
+	// AllowedOrigins is a list of allowed origin URLs for CORS requests.
+	// Examples: ["https://app.example.com", "https://dashboard.example.com"]
+	// Use "*" to allow all origins (NOT RECOMMENDED for production).
+	// Empty list means CORS is disabled (default, secure).
+	AllowedOrigins []string
+
+	// AllowCredentials enables the Access-Control-Allow-Credentials header.
+	// Required if your browser client needs to send cookies or authorization headers.
+	// Must be true for OAuth flows that require Bearer tokens.
+	// Default: false
+	AllowCredentials bool
+
+	// MaxAge is the maximum time (in seconds) browsers can cache preflight responses.
+	// Default: 3600 (1 hour)
+	MaxAge int
 }
 
 // applySecureDefaults applies secure-by-default configuration values
@@ -149,6 +175,9 @@ type Config struct {
 func applySecureDefaults(config *Config, logger *slog.Logger) *Config {
 	// Validate provider revocation config BEFORE applying defaults (to detect invalid values)
 	validateProviderRevocationConfig(config, logger)
+
+	// Validate CORS configuration BEFORE applying defaults (to detect invalid values)
+	validateCORSConfig(config, logger)
 
 	// Apply time-based defaults
 	applyTimeDefaults(config)
@@ -271,6 +300,63 @@ func validateProviderRevocationConfig(config *Config, logger *slog.Logger) {
 			"failure_threshold", config.ProviderRevocationFailureThreshold,
 			"retention_days", config.RevokedFamilyRetentionDays)
 	}
+}
+
+// validateCORSConfig validates CORS configuration for security and correctness
+func validateCORSConfig(config *Config, logger *slog.Logger) {
+	// Skip validation if CORS is not configured (secure default)
+	if len(config.CORS.AllowedOrigins) == 0 {
+		return
+	}
+
+	// CRITICAL SECURITY: Wildcard with credentials is invalid per CORS specification
+	// Browsers will reject this combination, so we should fail fast at startup
+	if config.CORS.AllowCredentials {
+		for _, origin := range config.CORS.AllowedOrigins {
+			if origin == "*" {
+				panic("CORS: cannot use wildcard '*' with AllowCredentials=true (violates CORS specification)")
+			}
+		}
+	}
+
+	// Validate each origin format
+	for _, origin := range config.CORS.AllowedOrigins {
+		// Wildcard is valid (though not recommended in production)
+		if origin == "*" {
+			logger.Warn("⚠️  CORS: Wildcard origin (*) configured",
+				"risk", "Allows ANY website to make requests to this server",
+				"recommendation", "Use specific origins (e.g., https://app.example.com) in production")
+			continue
+		}
+
+		// Must be a valid URL with scheme and host
+		u, err := url.Parse(origin)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			panic(fmt.Sprintf("CORS: invalid origin format '%s' (must be scheme://host, e.g., https://app.example.com)", origin))
+		}
+
+		// Warn about trailing slash (can cause matching issues)
+		if strings.HasSuffix(origin, "/") {
+			panic(fmt.Sprintf("CORS: origin '%s' should not have trailing slash (use %s)", origin, strings.TrimSuffix(origin, "/")))
+		}
+
+		// Enforce HTTPS in production (unless AllowInsecureHTTP is explicitly enabled)
+		if !config.AllowInsecureHTTP && u.Scheme == "http" {
+			hostname := u.Hostname()
+			// Allow localhost for development
+			if hostname != "localhost" && hostname != "127.0.0.1" && !strings.HasPrefix(hostname, "192.168.") && !strings.HasPrefix(hostname, "10.") {
+				panic(fmt.Sprintf("CORS: HTTP origin '%s' not allowed (use HTTPS or set AllowInsecureHTTP=true for development)", origin))
+			}
+			logger.Warn("⚠️  CORS: HTTP origin allowed for localhost/development",
+				"origin", origin,
+				"recommendation", "Use HTTPS origins in production")
+		}
+	}
+
+	logger.Debug("CORS configuration validated",
+		"allowed_origins_count", len(config.CORS.AllowedOrigins),
+		"allow_credentials", config.CORS.AllowCredentials,
+		"max_age", config.CORS.MaxAge)
 }
 
 // applySecurityDefaults sets secure defaults for security-related configuration

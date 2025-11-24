@@ -16,6 +16,10 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
+const (
+	defaultCORSMaxAge = 3600 // 1 hour default for preflight cache
+)
+
 // Handler is a thin HTTP adapter for the OAuth Server.
 // It handles HTTP requests and delegates to the Server for business logic.
 type Handler struct {
@@ -113,6 +117,9 @@ func (h *Handler) ServeProtectedResourceMetadata(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// Set CORS headers for browser-based clients
+	h.setCORSHeaders(w, r)
+
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	metadata := map[string]any{
 		"resource": h.server.Config.Issuer,
@@ -132,6 +139,9 @@ func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Set CORS headers for browser-based clients
+	h.setCORSHeaders(w, r)
 
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	metadata := map[string]any{
@@ -153,6 +163,9 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Set CORS headers for browser-based clients
+	h.setCORSHeaders(w, r)
 
 	// Parse query parameters
 	clientID := r.URL.Query().Get("client_id")
@@ -196,6 +209,9 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Set CORS headers for browser-based clients
+	h.setCORSHeaders(w, r)
 
 	// Parse callback parameters
 	state := r.URL.Query().Get("state")
@@ -242,6 +258,9 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Set CORS headers for browser-based clients
+	h.setCORSHeaders(w, r)
 
 	// Parse form data
 	if err := r.ParseForm(); err != nil {
@@ -350,6 +369,9 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set CORS headers for browser-based clients
+	h.setCORSHeaders(w, r)
+
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
 	// Parse form data
@@ -397,6 +419,9 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Set CORS headers for browser-based clients
+	h.setCORSHeaders(w, r)
 
 	// Get client IP for DoS protection
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
@@ -627,6 +652,9 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Set CORS headers for browser-based clients
+	h.setCORSHeaders(w, r)
+
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
 	// Parse form data
@@ -721,4 +749,90 @@ const userInfoKey contextKey = "user_info"
 func UserInfoFromContext(ctx context.Context) (*providers.UserInfo, bool) {
 	userInfo, ok := ctx.Value(userInfoKey).(*providers.UserInfo)
 	return userInfo, ok
+}
+
+// setCORSHeaders sets CORS headers if configured and the origin is allowed.
+// Enables browser-based MCP clients to make cross-origin requests.
+// Only applies if AllowedOrigins is configured, Origin header is present, and origin is allowed.
+func (h *Handler) setCORSHeaders(w http.ResponseWriter, r *http.Request) {
+	// Skip if CORS not configured
+	if len(h.server.Config.CORS.AllowedOrigins) == 0 {
+		return
+	}
+
+	// Skip if not a browser CORS request (no Origin header)
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return
+	}
+
+	// Skip if origin not allowed
+	if !h.isAllowedOrigin(origin) {
+		h.logger.Debug("CORS request from disallowed origin", "origin", origin)
+		return
+	}
+
+	// Set CORS headers for allowed origin
+	// Echo back the specific origin rather than using "*" for security
+	w.Header().Set("Access-Control-Allow-Origin", origin)
+
+	// Set Vary header to ensure proper caching by browsers and CDNs
+	// This prevents serving cached responses with wrong CORS headers to different origins
+	w.Header().Add("Vary", "Origin")
+
+	// Set credentials header if enabled (required for Bearer tokens)
+	if h.server.Config.CORS.AllowCredentials {
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+	}
+
+	// Set preflight cache duration
+	maxAge := h.server.Config.CORS.MaxAge
+	if maxAge == 0 {
+		maxAge = defaultCORSMaxAge
+	}
+
+	// Set allowed methods for preflight requests
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+
+	// Set allowed headers for preflight requests
+	// Authorization: for Bearer tokens
+	// Content-Type: for POST request bodies
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+
+	// Set max age for preflight cache
+	w.Header().Set("Access-Control-Max-Age", fmt.Sprintf("%d", maxAge))
+}
+
+// isAllowedOrigin checks if the given origin is in the allowed origins list.
+// Supports exact matching and wildcard "*" for development.
+func (h *Handler) isAllowedOrigin(origin string) bool {
+	// Check for wildcard (allow all origins)
+	for _, allowed := range h.server.Config.CORS.AllowedOrigins {
+		if allowed == "*" {
+			h.logger.Warn("⚠️  CORS: Wildcard origin (*) allows ALL origins",
+				"risk", "CSRF attacks possible from any website",
+				"recommendation", "Use specific origins in production")
+			return true
+		}
+
+		// Exact match (case-sensitive per CORS spec)
+		if allowed == origin {
+			return true
+		}
+	}
+
+	return false
+}
+
+// ServePreflightRequest handles CORS preflight (OPTIONS) requests.
+// Required for non-simple requests (POST with JSON, custom headers, etc.).
+func (h *Handler) ServePreflightRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodOptions {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	h.setCORSHeaders(w, r)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusNoContent)
 }

@@ -18,6 +18,7 @@ A **provider-agnostic** library for implementing OAuth 2.1 Authorization Servers
 - Rate limiting (token bucket algorithm)
 - PKCE enforcement (S256 only)
 - Refresh token rotation (OAuth 2.1)
+- CORS support for browser-based clients
 
 ## 🏗️ Architecture
 
@@ -292,6 +293,68 @@ TokenRefreshThreshold: 600  // 10 minutes
 // Shorter threshold for low-latency requirements
 TokenRefreshThreshold: 60   // 1 minute
 ```
+
+### CORS Support for Browser-Based Clients
+
+Enable CORS (Cross-Origin Resource Sharing) to allow browser-based MCP clients to use your OAuth server:
+
+```go
+server, _ := oauth.NewServer(
+    provider, tokenStore, clientStore, flowStore,
+    &oauth.ServerConfig{
+        Issuer: "https://your-domain.com",
+        
+        // Configure CORS for browser clients
+        CORS: server.CORSConfig{
+            // List of allowed origins
+            AllowedOrigins: []string{
+                "https://app.example.com",
+                "https://dashboard.example.com",
+            },
+            // Enable credentials (cookies, Bearer tokens)
+            AllowCredentials: true,
+            // Preflight cache duration (seconds)
+            MaxAge: 3600,
+        },
+    },
+    logger,
+)
+
+// Don't forget to handle OPTIONS preflight requests:
+http.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
+    if r.Method == http.MethodOptions {
+        handler.ServePreflightRequest(w, r)
+        return
+    }
+    handler.ServeToken(w, r)
+})
+```
+
+**CORS Configuration Options:**
+
+- `AllowedOrigins`: List of allowed origin URLs. Empty list disables CORS (default, secure).
+- `AllowCredentials`: Set to `true` to allow cookies and authorization headers (needed for OAuth).
+- `MaxAge`: How long (in seconds) browsers can cache preflight responses (default: 3600).
+
+**⚠️  Security Warning: Wildcard Origins**
+
+```go
+CORS: server.CORSConfig{
+    AllowedOrigins: []string{"*"},  // ⚠️  NOT RECOMMENDED for production!
+}
+```
+
+Using wildcard `*` allows **any** website to make requests to your OAuth server, enabling potential CSRF attacks. **Only use specific origins in production.**
+
+**How It Works:**
+
+1. Browser sends OPTIONS preflight request before actual request
+2. Server checks if origin is in `AllowedOrigins`
+3. If allowed, sets CORS headers (`Access-Control-Allow-Origin`, etc.)
+4. Browser proceeds with actual request
+5. Server sets CORS headers on actual response too
+
+**CORS is opt-in and disabled by default for security.** Only enable it if you have browser-based clients.
 
 ### Rate Limiting
 
