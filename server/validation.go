@@ -25,12 +25,6 @@ const (
 	PKCEMethodPlain       = "plain"
 )
 
-// State parameter validation constants
-// Note: This constant is intentionally duplicated from constants.go to avoid
-// circular imports. Synchronization is enforced by TestMinStateLength_ConstantSync.
-const (
-	MinStateLength = 32 // Must match constants.MinStateLength (verified by test)
-)
 
 // URI scheme constants
 const (
@@ -225,8 +219,8 @@ func (s *Server) validateStateParameter(state string) error {
 		return fmt.Errorf("state parameter is required for CSRF protection")
 	}
 
-	if len(state) < MinStateLength {
-		return fmt.Errorf("state parameter must be at least %d characters for security", MinStateLength)
+	if len(state) < s.Config.MinStateLength {
+		return fmt.Errorf("state parameter must be at least %d characters for security", s.Config.MinStateLength)
 	}
 
 	return nil

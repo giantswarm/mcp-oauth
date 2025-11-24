@@ -86,6 +86,12 @@ type Config struct {
 	// Default: true
 	RequirePKCE bool // default: true
 
+	// MinStateLength is the minimum length for state parameters to prevent
+	// timing attacks and ensure sufficient entropy for CSRF protection.
+	// OAuth 2.1 recommends at least 128 bits (16 bytes) of entropy.
+	// Default: 32 characters (192 bits of entropy)
+	MinStateLength int // default: 32
+
 	// AllowPublicClientRegistration allows unauthenticated dynamic client registration
 	// WARNING: This can lead to DoS attacks via unlimited client registration
 	// When false, client registration requires a registration access token
@@ -242,6 +248,9 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 	}
 	if !config.RequirePKCE {
 		config.RequirePKCE = true
+	}
+	if config.MinStateLength == 0 {
+		config.MinStateLength = 32 // OAuth 2.1: 128+ bits entropy recommended, 32 chars = 192 bits
 	}
 
 	// Log warnings for insecure settings (whether explicitly set or not)

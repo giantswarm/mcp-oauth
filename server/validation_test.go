@@ -610,16 +610,3 @@ func TestValidateStateParameter_TimingAttackResistance(t *testing.T) {
 	}
 }
 
-// TestMinStateLength_ConstantSync ensures server.MinStateLength stays in sync with oauth.MinStateLength.
-// This test will fail if the constants drift out of sync.
-// The constants are duplicated to avoid circular imports (root package imports server).
-// IMPORTANT: If this test fails, update BOTH constants.go AND server/validation.go
-func TestMinStateLength_ConstantSync(t *testing.T) {
-	// Expected value must match oauth.MinStateLength in constants.go
-	const expectedMinStateLength = 32
-
-	if MinStateLength != expectedMinStateLength {
-		t.Errorf("server.MinStateLength (%d) != expected (%d) - constants out of sync! Update BOTH constants.go and server/validation.go",
-			MinStateLength, expectedMinStateLength)
-	}
-}
