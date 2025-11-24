@@ -116,9 +116,20 @@ func main() {
 	auditor := security.NewAuditor(logger, true)
 	server.SetAuditor(auditor)
 
-	// Enable rate limiting
+	// Enable rate limiting (multi-layered approach)
+	// 1. IP-based rate limiting (prevents DoS from external sources)
 	rateLimiter := security.NewRateLimiter(10, 20, logger) // 10 req/s per IP, burst 20
 	server.SetRateLimiter(rateLimiter)
+
+	// 2. User-based rate limiting (prevents abuse from authenticated users)
+	userRateLimiter := security.NewRateLimiter(100, 200, logger) // 100 req/s per user, burst 200
+	server.SetUserRateLimiter(userRateLimiter)
+
+	// 3. Security event rate limiting (prevents log flooding from attack attempts)
+	// This limits logging of security events like code reuse, token reuse detection
+	// to prevent attackers from causing DoS via excessive logging
+	securityEventRateLimiter := security.NewRateLimiter(1, 5, logger) // 1 event/s per user+client, burst 5
+	server.SetSecurityEventRateLimiter(securityEventRateLimiter)
 
 	// 5. Create HTTP handler
 	handler := oauth.NewHandler(server, logger)
@@ -140,10 +151,12 @@ func main() {
 		"addr", httpServer.Addr,
 		"encryption", "enabled",
 		"audit_logging", "enabled",
-		"rate_limiting", "enabled",
+		"rate_limiting", "enabled (IP, user, security events)",
 		"pkce_enforced", "true",
 		"refresh_token_rotation", "enabled",
 		"token_introspection", "enabled",
+		"provider_revocation_timeout", "30s",
+		"revoked_family_retention", "90 days",
 		"provider", googleProvider.Name(),
 	)
 

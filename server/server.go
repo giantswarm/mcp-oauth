@@ -59,14 +59,24 @@ func New(
 	// Apply secure defaults
 	config = applySecureDefaults(config, logger)
 
-	return &Server{
+	srv := &Server{
 		provider:    provider,
 		tokenStore:  tokenStore,
 		clientStore: clientStore,
 		flowStore:   flowStore,
 		Config:      config,
 		Logger:      logger,
-	}, nil
+	}
+
+	// Configure storage retention if storage supports it
+	type retentionSetter interface {
+		SetRevokedFamilyRetentionDays(days int64)
+	}
+	if setter, ok := tokenStore.(retentionSetter); ok {
+		setter.SetRevokedFamilyRetentionDays(config.RevokedFamilyRetentionDays)
+	}
+
+	return srv, nil
 }
 
 // SetEncryptor sets the token encryptor for server and storage

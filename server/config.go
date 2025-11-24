@@ -51,6 +51,12 @@ type Config struct {
 	// Default: 30 seconds (conservative for network latency and provider rate limits)
 	ProviderRevocationTimeout int64 // seconds, default: 30
 
+	// RevokedFamilyRetentionDays is the number of days to retain revoked token family metadata
+	// for forensics and security auditing. After this period, revoked family metadata is deleted.
+	// Longer retention enables better security incident investigation but uses more memory.
+	// Default: 90 days (recommended for security compliance and forensics)
+	RevokedFamilyRetentionDays int64 // days, default: 90
+
 	// SupportedScopes lists the scopes that are allowed for clients
 	// If empty, all scopes are allowed
 	SupportedScopes []string
@@ -118,6 +124,9 @@ func applyTimeDefaults(config *Config) {
 	}
 	if config.ProviderRevocationTimeout == 0 {
 		config.ProviderRevocationTimeout = 30 // 30 seconds (conservative for network/provider latency)
+	}
+	if config.RevokedFamilyRetentionDays == 0 {
+		config.RevokedFamilyRetentionDays = 90 // 90 days (recommended for security auditing and forensics)
 	}
 	if config.MaxClientsPerIP == 0 {
 		config.MaxClientsPerIP = 10

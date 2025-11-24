@@ -71,9 +71,10 @@ type Store struct {
 	encryptor *security.Encryptor // Token encryption at rest (optional)
 
 	// Cleanup
-	cleanupInterval time.Duration
-	stopCleanup     chan struct{}
-	logger          *slog.Logger
+	cleanupInterval            time.Duration
+	revokedFamilyRetentionDays int64 // configurable retention period for revoked families
+	stopCleanup                chan struct{}
+	logger                     *slog.Logger
 }
 
 // Compile-time interface checks to ensure Store implements all storage interfaces
@@ -86,26 +87,40 @@ var (
 )
 
 // New creates a new in-memory store with default cleanup interval (1 minute)
+// and default revoked family retention (90 days)
 func New() *Store {
 	return NewWithInterval(time.Minute)
+}
+
+// SetRevokedFamilyRetentionDays sets the retention period for revoked token family metadata.
+// This should be called after New() and before starting the server.
+// The retention period is used for forensics and security auditing.
+// Default: 90 days (if not set)
+func (s *Store) SetRevokedFamilyRetentionDays(days int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.revokedFamilyRetentionDays = days
+	s.logger.Info("Set revoked family retention period",
+		"retention_days", days)
 }
 
 // NewWithInterval creates a new in-memory store with custom cleanup interval
 func NewWithInterval(cleanupInterval time.Duration) *Store {
 	s := &Store{
-		tokens:               make(map[string]*oauth2.Token),
-		userInfo:             make(map[string]*providers.UserInfo),
-		refreshTokens:        make(map[string]string),
-		refreshTokenExpiries: make(map[string]time.Time),
-		refreshTokenFamilies: make(map[string]*RefreshTokenFamily),
-		tokenMetadata:        make(map[string]*TokenMetadata),
-		clients:              make(map[string]*storage.Client),
-		clientsPerIP:         make(map[string]int),
-		authStates:           make(map[string]*storage.AuthorizationState),
-		authCodes:            make(map[string]*storage.AuthorizationCode),
-		cleanupInterval:      cleanupInterval,
-		stopCleanup:          make(chan struct{}),
-		logger:               slog.Default(),
+		tokens:                     make(map[string]*oauth2.Token),
+		userInfo:                   make(map[string]*providers.UserInfo),
+		refreshTokens:              make(map[string]string),
+		refreshTokenExpiries:       make(map[string]time.Time),
+		refreshTokenFamilies:       make(map[string]*RefreshTokenFamily),
+		tokenMetadata:              make(map[string]*TokenMetadata),
+		clients:                    make(map[string]*storage.Client),
+		clientsPerIP:               make(map[string]int),
+		authStates:                 make(map[string]*storage.AuthorizationState),
+		authCodes:                  make(map[string]*storage.AuthorizationCode),
+		cleanupInterval:            cleanupInterval,
+		revokedFamilyRetentionDays: 90, // default: 90 days for security auditing
+		stopCleanup:                make(chan struct{}),
+		logger:                     slog.Default(),
 	}
 
 	// Start background cleanup
@@ -526,6 +541,7 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(refreshToken string) (string, *oa
 	delete(s.refreshTokens, refreshToken)
 	delete(s.refreshTokenExpiries, refreshToken)
 	delete(s.tokenMetadata, refreshToken) // Prevent metadata orphaning
+	delete(s.tokens, refreshToken)        // CRITICAL: Also delete provider token to prevent memory leak
 	// NOTE: We deliberately DON'T delete refreshTokenFamilies here!
 	// Family metadata must persist to enable reuse detection (OAuth 2.1 requirement).
 	// It will be cleaned up by the background cleanup goroutine after retention period.
@@ -843,9 +859,13 @@ func (s *Store) cleanup() {
 	}
 
 	// Cleanup revoked token families (keep metadata for a while for forensics, then cleanup)
-	// Revoked families older than 90 days can be removed
-	// This provides a long retention period for security audits and forensics
-	revokedFamilyCleanupThreshold := time.Now().Add(-90 * 24 * time.Hour)
+	// Use configurable retention period (default: 90 days)
+	// This provides retention for security audits and forensics
+	retentionDays := s.revokedFamilyRetentionDays
+	if retentionDays == 0 {
+		retentionDays = 90 // fallback to default
+	}
+	revokedFamilyCleanupThreshold := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
 	for refreshToken, family := range s.refreshTokenFamilies {
 		if family.Revoked {
 			// Use RevokedAt if available, otherwise fall back to IssuedAt

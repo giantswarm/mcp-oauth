@@ -734,6 +734,31 @@ func (s *Server) RevokeAllTokensForUserClient(ctx context.Context, userID, clien
 		"revoked_at_provider", revokedAtProvider,
 		"total_tokens", len(tokens))
 
+	// SECURITY: Alert if ALL provider revocations failed
+	// This means tokens remain valid at the provider (Google/GitHub/etc)
+	if revokedAtProvider == 0 && len(tokens) > 0 {
+		s.Logger.Error("CRITICAL: All provider revocations failed - tokens still valid at provider!",
+			"user_id", userID,
+			"client_id", clientID,
+			"token_count", len(tokens))
+
+		if s.Auditor != nil {
+			s.Auditor.LogEvent(security.Event{
+				Type:     "provider_revocation_complete_failure",
+				UserID:   userID,
+				ClientID: clientID,
+				Details: map[string]any{
+					"severity":    "critical",
+					"impact":      "tokens remain valid at provider",
+					"token_count": len(tokens),
+					"oauth_spec":  "OAuth 2.1 Section 4.1.2",
+					"mitigation":  "tokens revoked locally but may still be usable at provider",
+					"action":      "manual provider-side revocation may be required",
+				},
+			})
+		}
+	}
+
 	// Now revoke locally
 	revokedCount, err := revocationStore.RevokeAllTokensForUserClient(userID, clientID)
 	if err != nil {

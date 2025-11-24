@@ -5,16 +5,17 @@ This example demonstrates a production-ready OAuth 2.1 setup with all security f
 ## Features
 
 - ✅ Token encryption at rest (AES-256-GCM)
-- ✅ Refresh token rotation
+- ✅ Refresh token rotation with reuse detection (OAuth 2.1)
 - ✅ Comprehensive audit logging
-- ✅ Rate limiting (per-IP and per-user)
+- ✅ Triple-layered rate limiting (IP, user, security events)
+- ✅ Provider-side token revocation (Google/GitHub/etc)
 - ✅ Secure client registration with access token
 - ✅ HTTPS/TLS support
 - ✅ Structured JSON logging
 - ✅ Health and readiness endpoints
 - ✅ Security headers
 - ✅ Request logging
-- ✅ Configurable timeouts
+- ✅ Configurable timeouts and retention periods
 
 ## Prerequisites
 
@@ -197,15 +198,40 @@ Share this token ONLY with trusted client developers.
 
 ### Rate Limiting
 
-Adjust based on your threat model and traffic:
+The production setup uses **three layers of rate limiting** for defense in depth:
 
+1. **IP-based Rate Limiting**: Prevents DoS attacks from external sources
+   ```go
+   rateLimiter := security.NewRateLimiter(10, 20, logger)
+   server.SetRateLimiter(rateLimiter)
+   ```
+
+2. **User-based Rate Limiting**: Prevents abuse from authenticated users
+   ```go
+   userRateLimiter := security.NewRateLimiter(100, 200, logger)
+   server.SetUserRateLimiter(userRateLimiter)
+   ```
+
+3. **Security Event Rate Limiting**: Prevents log flooding during attacks
+   ```go
+   // Limits logging of security events (code reuse, token reuse detection)
+   // Prevents attackers from causing DoS via excessive logging
+   securityEventRateLimiter := security.NewRateLimiter(1, 5, logger)
+   server.SetSecurityEventRateLimiter(securityEventRateLimiter)
+   ```
+
+**Why three layers?**
+- IP limiting stops attacks before authentication
+- User limiting prevents authenticated abuse
+- Security event limiting prevents log-based DoS attacks
+
+Adjust based on your threat model and traffic:
 ```go
-RateLimit: oauth.RateLimitConfig{
-    Rate:      10,   // Lower for stricter protection
-    Burst:     20,   // Allow some bursts
-    UserRate:  100,  // Higher for authenticated users
-    UserBurst: 200,
-}
+// More permissive (high-traffic production)
+rateLimiter := security.NewRateLimiter(100, 200, logger)
+
+// More restrictive (sensitive environments)
+rateLimiter := security.NewRateLimiter(5, 10, logger)
 ```
 
 Monitor rate limit violations in logs:
@@ -265,10 +291,26 @@ curl https://localhost:8443/metrics
 
 Set up alerts for:
 - High error rates
-- Rate limit violations
-- Token reuse detection
+- Rate limit violations (IP, user, or security event)
+- **Token reuse detection** (CRITICAL - indicates attack!)
+- **Authorization code reuse** (CRITICAL - indicates attack!)
+- **Provider revocation failures** (tokens remain valid at provider)
 - Failed authentication attempts
 - Unusual client registration activity
+
+**Critical Security Alerts:**
+```json
+{
+  "level": "error",
+  "event_type": "authorization_code_reuse_detected",
+  "severity": "critical",
+  "action": "all_tokens_revoked",
+  "user_id": "user@example.com",
+  "client_id": "abc123"
+}
+```
+
+These indicate potential token theft attacks and should trigger immediate investigation.
 
 ## Deployment
 
