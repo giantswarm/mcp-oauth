@@ -48,7 +48,8 @@ func main() {
 		store, // ClientStore
 		store, // FlowStore
 		&oauth.ServerConfig{
-			Issuer: "http://localhost:8080",
+			Issuer:            "http://localhost:8080",
+			AllowInsecureHTTP: true, // Required for HTTP on localhost (development only)
 			// Secure defaults (applied automatically if not set):
 			// - RequirePKCE: true (mandatory PKCE)
 			// - AllowPKCEPlain: false (only S256 method)

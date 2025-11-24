@@ -102,6 +102,13 @@ type Config struct {
 	// Empty list allows all RFC 3986 compliant schemes
 	// Default: ["^[a-z][a-z0-9+.-]*$"] (RFC 3986 compliant schemes)
 	AllowedCustomSchemes []string
+
+	// AllowInsecureHTTP allows running OAuth server over HTTP (INSECURE - development only)
+	// WARNING: OAuth over HTTP exposes all tokens and credentials to network interception
+	// This should ONLY be enabled for local development (localhost, 127.0.0.1)
+	// When false (default), the server enforces HTTPS for non-localhost deployments
+	// Default: false (HTTPS required for security)
+	AllowInsecureHTTP bool // default: false
 }
 
 // applySecureDefaults applies secure-by-default configuration values
@@ -270,5 +277,12 @@ func logSecurityWarnings(config *Config, logger *slog.Logger) {
 		logger.Warn("⚠️  CONFIGURATION WARNING: RegistrationAccessToken not configured",
 			"risk", "Client registration will fail",
 			"recommendation", "Set RegistrationAccessToken or enable AllowPublicClientRegistration")
+	}
+	if config.AllowInsecureHTTP {
+		logger.Error("🚨 CRITICAL SECURITY WARNING: HTTP is explicitly allowed",
+			"risk", "All OAuth tokens and credentials exposed to network interception",
+			"recommendation", "Use HTTPS in all environments",
+			"compliance", "OAuth 2.1 requires HTTPS for all endpoints",
+			"learn_more", "https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-10#section-4.1.1")
 	}
 }

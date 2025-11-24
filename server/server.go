@@ -78,6 +78,11 @@ func New(
 		Logger:      logger,
 	}
 
+	// Validate HTTPS enforcement (OAuth 2.1 security requirement)
+	if err := srv.validateHTTPSEnforcement(); err != nil {
+		return nil, err
+	}
+
 	// Configure storage retention if storage supports it
 	type retentionSetter interface {
 		SetRevokedFamilyRetentionDays(days int64)

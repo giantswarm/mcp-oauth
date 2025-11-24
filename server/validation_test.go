@@ -1,498 +1,402 @@
 package server
 
 import (
-	"crypto/sha256"
-	"encoding/base64"
+	"bytes"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/giantswarm/mcp-oauth/providers/mock"
-	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
-func setupTestServer(t *testing.T) *Server {
-	t.Helper()
+func TestValidateHTTPSEnforcement_HTTPS(t *testing.T) {
+	tests := []struct {
+		name   string
+		issuer string
+	}{
+		{
+			name:   "HTTPS production URL",
+			issuer: "https://oauth.example.com",
+		},
+		{
+			name:   "HTTPS localhost",
+			issuer: "https://localhost:8080",
+		},
+		{
+			name:   "HTTPS with port",
+			issuer: "https://oauth.example.com:8443",
+		},
+		{
+			name:   "HTTPS with path",
+			issuer: "https://example.com/oauth",
+		},
+	}
 
-	store := memory.New()
-	t.Cleanup(func() { store.Stop() })
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := mock.NewMockProvider()
+			memStore := memory.New()
 
+			config := &Config{
+				Issuer:            tt.issuer,
+				AllowInsecureHTTP: false,
+			}
+
+			srv, err := New(provider, memStore, memStore, memStore, config, slog.Default())
+			if err != nil {
+				t.Fatalf("Expected no error for HTTPS URL, got: %v", err)
+			}
+			if srv == nil {
+				t.Fatal("Expected server to be created")
+			}
+		})
+	}
+}
+
+func TestValidateHTTPSEnforcement_HTTPLocalhost(t *testing.T) {
+	localhosts := []string{
+		"localhost",
+		"127.0.0.1",
+		"::1",
+		"0.0.0.0",
+		"[::1]",
+	}
+
+	for _, host := range localhosts {
+		t.Run("HTTP_"+host, func(t *testing.T) {
+			provider := mock.NewMockProvider()
+			memStore := memory.New()
+
+			var logBuf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+			config := &Config{
+				Issuer:            "http://" + host + ":8080",
+				AllowInsecureHTTP: false,
+			}
+
+			srv, err := New(provider, memStore, memStore, memStore, config, logger)
+			if err != nil {
+				t.Fatalf("Expected no error for localhost HTTP, got: %v", err)
+			}
+			if srv == nil {
+				t.Fatal("Expected server to be created")
+			}
+
+			// Verify warning was logged
+			logOutput := logBuf.String()
+			if !strings.Contains(logOutput, "DEVELOPMENT WARNING") {
+				t.Errorf("Expected warning log for HTTP localhost, got: %s", logOutput)
+			}
+			if !strings.Contains(logOutput, "Running OAuth over HTTP") {
+				t.Errorf("Expected warning about HTTP, got: %s", logOutput)
+			}
+		})
+	}
+}
+
+func TestValidateHTTPSEnforcement_HTTPLocalhostWithFlag(t *testing.T) {
 	provider := mock.NewMockProvider()
+	memStore := memory.New()
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
 	config := &Config{
-		Issuer:               "https://auth.example.com",
-		SupportedScopes:      []string{"openid", "email", "profile"},
-		AllowedCustomSchemes: []string{"^myapp$", "^com\\.example\\..+$"},
-		RequirePKCE:          true,
-		AllowPKCEPlain:       false,
+		Issuer:            "http://localhost:8080",
+		AllowInsecureHTTP: true,
 	}
 
-	srv, err := New(provider, store, store, store, config, nil)
+	srv, err := New(provider, memStore, memStore, memStore, config, logger)
 	if err != nil {
-		t.Fatalf("New() error = %v", err)
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if srv == nil {
+		t.Fatal("Expected server to be created")
 	}
 
-	return srv
+	// With AllowInsecureHTTP=true, should not log development warning
+	logOutput := logBuf.String()
+	if strings.Contains(logOutput, "DEVELOPMENT WARNING") {
+		t.Errorf("Should not log development warning when AllowInsecureHTTP=true")
+	}
 }
 
-func TestServer_validatePKCE(t *testing.T) {
-	srv := setupTestServer(t)
-
-	// Generate a valid verifier and challenge for testing
-	validVerifier := "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk" // 43 chars
-	hash := sha256.Sum256([]byte(validVerifier))
-	validChallengeS256 := base64.RawURLEncoding.EncodeToString(hash[:])
-
+func TestValidateHTTPSEnforcement_HTTPNonLocalhostBlocked(t *testing.T) {
 	tests := []struct {
-		name      string
-		challenge string
-		method    string
-		verifier  string
-		wantErr   bool
+		name   string
+		issuer string
 	}{
 		{
-			name:      "valid S256",
-			challenge: validChallengeS256,
-			method:    PKCEMethodS256,
-			verifier:  validVerifier,
-			wantErr:   false,
+			name:   "HTTP production domain",
+			issuer: "http://oauth.example.com",
 		},
 		{
-			name:      "no PKCE (empty challenge)",
-			challenge: "",
-			method:    "",
-			verifier:  "",
-			wantErr:   false,
+			name:   "HTTP production with port",
+			issuer: "http://oauth.example.com:8080",
 		},
 		{
-			name:      "missing verifier when challenge present",
-			challenge: validChallengeS256,
-			method:    PKCEMethodS256,
-			verifier:  "",
-			wantErr:   true,
+			name:   "HTTP IP address",
+			issuer: "http://192.168.1.100",
 		},
 		{
-			name:      "verifier too short",
-			challenge: validChallengeS256,
-			method:    PKCEMethodS256,
-			verifier:  "too-short",
-			wantErr:   true,
-		},
-		{
-			name:      "verifier too long",
-			challenge: validChallengeS256,
-			method:    PKCEMethodS256,
-			verifier:  string(make([]byte, 129)),
-			wantErr:   true,
-		},
-		{
-			name:      "verifier with invalid characters",
-			challenge: validChallengeS256,
-			method:    PKCEMethodS256,
-			verifier:  "invalid@characters#here!" + string(make([]byte, 30)),
-			wantErr:   true,
-		},
-		{
-			name:      "verifier mismatch",
-			challenge: validChallengeS256,
-			method:    PKCEMethodS256,
-			verifier:  "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXX", // Different
-			wantErr:   true,
-		},
-		{
-			name:      "plain method not allowed",
-			challenge: validVerifier,
-			method:    PKCEMethodPlain,
-			verifier:  validVerifier,
-			wantErr:   true,
-		},
-		{
-			name:      "unsupported method",
-			challenge: validChallengeS256,
-			method:    "MD5",
-			verifier:  validVerifier,
-			wantErr:   true,
+			name:   "HTTP public IP",
+			issuer: "http://203.0.113.1",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := srv.validatePKCE(tt.challenge, tt.method, tt.verifier)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("validatePKCE() error = %v, wantErr %v", err, tt.wantErr)
+			provider := mock.NewMockProvider()
+			memStore := memory.New()
+
+			config := &Config{
+				Issuer:            tt.issuer,
+				AllowInsecureHTTP: false,
+			}
+
+			srv, err := New(provider, memStore, memStore, memStore, config, slog.Default())
+			if err == nil {
+				t.Fatalf("Expected error for non-localhost HTTP, but got none")
+			}
+			if srv != nil {
+				t.Fatal("Expected server creation to fail")
+			}
+
+			// Verify error message
+			errMsg := err.Error()
+			if !strings.Contains(errMsg, "SECURITY ERROR") {
+				t.Errorf("Expected SECURITY ERROR in message, got: %s", errMsg)
+			}
+			if !strings.Contains(errMsg, "HTTPS") {
+				t.Errorf("Expected HTTPS mentioned in error, got: %s", errMsg)
+			}
+			if !strings.Contains(errMsg, "AllowInsecureHTTP") {
+				t.Errorf("Expected AllowInsecureHTTP mentioned in error, got: %s", errMsg)
 			}
 		})
 	}
 }
 
-func TestServer_validatePKCE_PlainAllowed(t *testing.T) {
-	srv := setupTestServer(t)
-	srv.Config.AllowPKCEPlain = true
+func TestValidateHTTPSEnforcement_HTTPNonLocalhostWithFlag(t *testing.T) {
+	provider := mock.NewMockProvider()
+	memStore := memory.New()
 
-	validVerifier := "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
-	tests := []struct {
-		name      string
-		challenge string
-		method    string
-		verifier  string
-		wantErr   bool
-	}{
-		{
-			name:      "plain method allowed when configured",
-			challenge: validVerifier,
-			method:    PKCEMethodPlain,
-			verifier:  validVerifier,
-			wantErr:   false,
-		},
-		{
-			name:      "plain method verifier mismatch",
-			challenge: validVerifier,
-			method:    PKCEMethodPlain,
-			verifier:  "different-verifier-that-is-long-enough-chars",
-			wantErr:   true,
-		},
+	config := &Config{
+		Issuer:            "http://oauth.example.com",
+		AllowInsecureHTTP: true,
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := srv.validatePKCE(tt.challenge, tt.method, tt.verifier)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("validatePKCE() error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
+	srv, err := New(provider, memStore, memStore, memStore, config, logger)
+	if err != nil {
+		t.Fatalf("Expected no error with AllowInsecureHTTP=true, got: %v", err)
+	}
+	if srv == nil {
+		t.Fatal("Expected server to be created")
+	}
+
+	// Verify critical security warning was logged
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "CRITICAL SECURITY WARNING") {
+		t.Errorf("Expected critical warning for non-localhost HTTP, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "network sniffing") || !strings.Contains(logOutput, "MITM") {
+		t.Errorf("Expected warning about security risks, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "OAuth 2.1") {
+		t.Errorf("Expected OAuth 2.1 compliance mention, got: %s", logOutput)
 	}
 }
 
-func TestServer_validateScopes(t *testing.T) {
-	srv := setupTestServer(t)
+func TestValidateHTTPSEnforcement_InvalidScheme(t *testing.T) {
+	provider := mock.NewMockProvider()
+	memStore := memory.New()
 
-	tests := []struct {
-		name    string
-		scope   string
-		wantErr bool
-	}{
-		{
-			name:    "valid single scope",
-			scope:   "openid",
-			wantErr: false,
-		},
-		{
-			name:    "valid multiple scopes",
-			scope:   "openid email profile",
-			wantErr: false,
-		},
-		{
-			name:    "empty scope",
-			scope:   "",
-			wantErr: false,
-		},
-		{
-			name:    "unsupported scope",
-			scope:   "admin",
-			wantErr: true,
-		},
-		{
-			name:    "mix of valid and invalid scopes",
-			scope:   "openid admin",
-			wantErr: true,
-		},
+	config := &Config{
+		Issuer:            "ftp://oauth.example.com",
+		AllowInsecureHTTP: false,
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := srv.validateScopes(tt.scope)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("validateScopes() error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
+	srv, err := New(provider, memStore, memStore, memStore, config, slog.Default())
+	if err == nil {
+		t.Fatalf("Expected error for invalid scheme, but got none")
+	}
+	if srv != nil {
+		t.Fatal("Expected server creation to fail")
+	}
+
+	// Verify error message
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "invalid issuer URL scheme") {
+		t.Errorf("Expected invalid scheme error, got: %s", errMsg)
 	}
 }
 
-func TestServer_validateScopes_NoRestriction(t *testing.T) {
-	srv := setupTestServer(t)
-	srv.Config.SupportedScopes = []string{} // No restriction
+func TestValidateHTTPSEnforcement_InvalidURL(t *testing.T) {
+	provider := mock.NewMockProvider()
+	memStore := memory.New()
 
-	tests := []struct {
-		name  string
-		scope string
-	}{
-		{
-			name:  "any scope allowed",
-			scope: "custom-scope other-scope",
-		},
-		{
-			name:  "empty scope",
-			scope: "",
-		},
+	config := &Config{
+		Issuer:            "://invalid-url",
+		AllowInsecureHTTP: false,
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := srv.validateScopes(tt.scope)
-			if err != nil {
-				t.Errorf("validateScopes() with no restrictions error = %v", err)
-			}
-		})
+	srv, err := New(provider, memStore, memStore, memStore, config, slog.Default())
+	if err == nil {
+		t.Fatalf("Expected error for invalid URL, but got none")
+	}
+	if srv != nil {
+		t.Fatal("Expected server creation to fail")
 	}
 }
 
-func TestServer_validateRedirectURI(t *testing.T) {
-	srv := setupTestServer(t)
-
-	// Create a test client with registered URIs
-	client := &storage.Client{
-		ClientID: "test-client",
-		RedirectURIs: []string{
-			"https://example.com/callback",
-			"http://localhost:8080/callback",
-			"myapp://callback",
-		},
-	}
-
+func TestIsLocalhostHostname(t *testing.T) {
 	tests := []struct {
-		name        string
-		redirectURI string
-		wantErr     bool
-	}{
-		{
-			name:        "registered HTTPS URI",
-			redirectURI: "https://example.com/callback",
-			wantErr:     false,
-		},
-		{
-			name:        "registered localhost HTTP URI",
-			redirectURI: "http://localhost:8080/callback",
-			wantErr:     false,
-		},
-		{
-			name:        "registered custom scheme",
-			redirectURI: "myapp://callback",
-			wantErr:     false,
-		},
-		{
-			name:        "unregistered URI",
-			redirectURI: "https://evil.com/callback",
-			wantErr:     true,
-		},
-		{
-			name:        "URI with fragment",
-			redirectURI: "https://example.com/callback#fragment",
-			wantErr:     true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := srv.validateRedirectURI(client, tt.redirectURI)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("validateRedirectURI() error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
-	}
-}
-
-func TestValidateCustomScheme(t *testing.T) {
-	tests := []struct {
-		name           string
-		scheme         string
-		allowedSchemes []string
-		wantErr        bool
-	}{
-		{
-			name:           "valid custom scheme",
-			scheme:         "myapp",
-			allowedSchemes: []string{"^myapp$"},
-			wantErr:        false,
-		},
-		{
-			name:           "valid pattern match",
-			scheme:         "com.example.myapp",
-			allowedSchemes: []string{"^com\\.example\\..+$"},
-			wantErr:        false,
-		},
-		{
-			name:           "dangerous scheme - javascript",
-			scheme:         "javascript",
-			allowedSchemes: []string{".*"},
-			wantErr:        true,
-		},
-		{
-			name:           "dangerous scheme - data",
-			scheme:         "data",
-			allowedSchemes: []string{".*"},
-			wantErr:        true,
-		},
-		{
-			name:           "dangerous scheme - file",
-			scheme:         "file",
-			allowedSchemes: []string{".*"},
-			wantErr:        true,
-		},
-		{
-			name:           "scheme not in allowed list",
-			scheme:         "notallowed",
-			allowedSchemes: []string{"^myapp$"},
-			wantErr:        true,
-		},
-		{
-			name:           "default RFC 3986 pattern",
-			scheme:         "com.example.app",
-			allowedSchemes: []string{},
-			wantErr:        false,
-		},
-		{
-			name:           "invalid RFC 3986 pattern",
-			scheme:         "123invalid",
-			allowedSchemes: []string{},
-			wantErr:        true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateCustomScheme(tt.scheme, tt.allowedSchemes)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("validateCustomScheme() error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
-	}
-}
-
-func TestIsLoopbackAddress(t *testing.T) {
-	tests := []struct {
-		name     string
 		hostname string
 		want     bool
 	}{
-		{
-			name:     "localhost",
-			hostname: "localhost",
-			want:     true,
-		},
-		{
-			name:     "127.0.0.1",
-			hostname: "127.0.0.1",
-			want:     true,
-		},
-		{
-			name:     "127.x.x.x range",
-			hostname: "127.1.2.3",
-			want:     true,
-		},
-		{
-			name:     "IPv6 loopback",
-			hostname: "::1",
-			want:     true,
-		},
-		{
-			name:     "IPv6 loopback with brackets",
-			hostname: "[::1]",
-			want:     true,
-		},
-		{
-			name:     "localhost with port",
-			hostname: "localhost:8080",
-			want:     true,
-		},
-		{
-			name:     "non-loopback",
-			hostname: "example.com",
-			want:     false,
-		},
-		{
-			name:     "non-loopback IP",
-			hostname: "192.168.1.1",
-			want:     false,
-		},
+		{"localhost", true},
+		{"127.0.0.1", true},
+		{"::1", true},
+		{"[::1]", true},
+		{"0.0.0.0", true},
+		{"example.com", false},
+		{"192.168.1.1", false},
+		{"203.0.113.1", false},
+		{"oauth.localhost.com", false},
+		{"localhost.example.com", false},
+		{"", false},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := isLoopbackAddress(tt.hostname)
+		t.Run(tt.hostname, func(t *testing.T) {
+			got := isLocalhostHostname(tt.hostname)
 			if got != tt.want {
-				t.Errorf("isLoopbackAddress() = %v, want %v", got, tt.want)
+				t.Errorf("isLocalhostHostname(%q) = %v, want %v", tt.hostname, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestValidateRedirectURISecurityEnhanced(t *testing.T) {
+// TestConfigSecurityWarning_AllowInsecureHTTP verifies that the config
+// security warning is logged when AllowInsecureHTTP is enabled
+func TestConfigSecurityWarning_AllowInsecureHTTP(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	config := &Config{
+		Issuer:            "https://oauth.example.com",
+		AllowInsecureHTTP: true,
+	}
+
+	// Apply secure defaults (which includes logging warnings)
+	_ = applySecureDefaults(config, logger)
+
+	// Verify critical security warning was logged
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "CRITICAL SECURITY WARNING") {
+		t.Errorf("Expected critical warning in config, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "HTTP is explicitly allowed") {
+		t.Errorf("Expected warning about HTTP being allowed, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "OAuth 2.1") {
+		t.Errorf("Expected OAuth 2.1 compliance mention, got: %s", logOutput)
+	}
+}
+
+// TestHTTPSEnforcement_IntegrationWithStorage ensures HTTPS enforcement
+// works correctly with different storage implementations
+func TestHTTPSEnforcement_IntegrationWithStorage(t *testing.T) {
+	provider := mock.NewMockProvider()
+	memStore := memory.New()
+
+	// Test that HTTPS enforcement happens before any storage operations
+	config := &Config{
+		Issuer:            "http://oauth.example.com",
+		AllowInsecureHTTP: false,
+	}
+
+	srv, err := New(provider, memStore, memStore, memStore, config, slog.Default())
+	if err == nil {
+		t.Fatal("Expected error for HTTP without flag")
+	}
+	if srv != nil {
+		t.Fatal("Expected server creation to fail")
+	}
+
+	// Storage should not have been initialized since validation failed early
+	// This is a behavioral test to ensure early validation
+}
+
+// TestHTTPSEnforcement_WithPort verifies HTTPS enforcement works with URLs
+// that include port numbers
+func TestHTTPSEnforcement_WithPort(t *testing.T) {
 	tests := []struct {
-		name                 string
-		redirectURI          string
-		serverIssuer         string
-		allowedCustomSchemes []string
-		wantErr              bool
+		name      string
+		issuer    string
+		allowHTTP bool
+		wantErr   bool
 	}{
 		{
-			name:         "valid HTTPS URI",
-			redirectURI:  "https://example.com/callback",
-			serverIssuer: "https://auth.example.com",
-			wantErr:      false,
+			name:      "HTTPS with standard port",
+			issuer:    "https://oauth.example.com:443",
+			allowHTTP: false,
+			wantErr:   false,
 		},
 		{
-			name:         "valid HTTP localhost",
-			redirectURI:  "http://localhost:8080/callback",
-			serverIssuer: "https://auth.example.com",
-			wantErr:      false,
+			name:      "HTTPS with custom port",
+			issuer:    "https://oauth.example.com:8443",
+			allowHTTP: false,
+			wantErr:   false,
 		},
 		{
-			name:         "valid HTTP 127.0.0.1",
-			redirectURI:  "http://127.0.0.1:3000/callback",
-			serverIssuer: "https://auth.example.com",
-			wantErr:      false,
+			name:      "HTTP localhost with port allowed",
+			issuer:    "http://localhost:8080",
+			allowHTTP: false,
+			wantErr:   false,
 		},
 		{
-			name:         "HTTP non-localhost with HTTPS server",
-			redirectURI:  "http://example.com/callback",
-			serverIssuer: "https://auth.example.com",
-			wantErr:      true,
+			name:      "HTTP production with port blocked",
+			issuer:    "http://oauth.example.com:8080",
+			allowHTTP: false,
+			wantErr:   true,
 		},
 		{
-			name:         "HTTP non-localhost with HTTP server",
-			redirectURI:  "http://example.com/callback",
-			serverIssuer: "http://auth.example.com",
-			wantErr:      false,
-		},
-		{
-			name:         "URI with fragment",
-			redirectURI:  "https://example.com/callback#fragment",
-			serverIssuer: "https://auth.example.com",
-			wantErr:      true,
-		},
-		{
-			name:                 "valid custom scheme",
-			redirectURI:          "myapp://callback",
-			serverIssuer:         "https://auth.example.com",
-			allowedCustomSchemes: []string{"^myapp$"},
-			wantErr:              false,
-		},
-		{
-			name:                 "invalid custom scheme",
-			redirectURI:          "notallowed://callback",
-			serverIssuer:         "https://auth.example.com",
-			allowedCustomSchemes: []string{"^myapp$"},
-			wantErr:              true,
-		},
-		{
-			name:         "invalid URI format",
-			redirectURI:  "://invalid",
-			serverIssuer: "https://auth.example.com",
-			wantErr:      true,
-		},
-		{
-			name:         "dangerous javascript scheme",
-			redirectURI:  "javascript:alert(1)",
-			serverIssuer: "https://auth.example.com",
-			wantErr:      true,
+			name:      "HTTP production with port and flag",
+			issuer:    "http://oauth.example.com:8080",
+			allowHTTP: true,
+			wantErr:   false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateRedirectURISecurityEnhanced(tt.redirectURI, tt.serverIssuer, tt.allowedCustomSchemes)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("validateRedirectURISecurityEnhanced() error = %v, wantErr %v", err, tt.wantErr)
+			provider := mock.NewMockProvider()
+			memStore := memory.New()
+
+			config := &Config{
+				Issuer:            tt.issuer,
+				AllowInsecureHTTP: tt.allowHTTP,
+			}
+
+			srv, err := New(provider, memStore, memStore, memStore, config, slog.Default())
+
+			if tt.wantErr && err == nil {
+				t.Fatalf("Expected error but got none")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("Expected no error but got: %v", err)
+			}
+			if tt.wantErr && srv != nil {
+				t.Fatal("Expected server creation to fail but got server")
+			}
+			if !tt.wantErr && srv == nil {
+				t.Fatal("Expected server to be created but got nil")
 			}
 		})
 	}

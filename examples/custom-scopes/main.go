@@ -71,6 +71,7 @@ func main() {
 		store, // FlowStore
 		&oauth.ServerConfig{
 			Issuer:                    getEnvOrDefault("MCP_RESOURCE", "http://localhost:8080"),
+			AllowInsecureHTTP:         true, // Required for HTTP on localhost (development only)
 			AllowRefreshTokenRotation: true,
 			SupportedScopes:           scopes, // Validate requested scopes
 		},

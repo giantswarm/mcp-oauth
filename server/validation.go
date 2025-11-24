@@ -44,6 +44,90 @@ var (
 	LoopbackAddresses = []string{"localhost", "127.0.0.1", "::1", "[::1]"}
 )
 
+// validateHTTPSEnforcement ensures that the OAuth server is running over HTTPS
+// in production environments. This is a critical security requirement as OAuth
+// over HTTP exposes all tokens, authorization codes, and client credentials to
+// network interception and man-in-the-middle attacks.
+//
+// The validation logic:
+// - HTTPS URLs: Always allowed (secure)
+// - HTTP on localhost: Allowed with warning (development)
+// - HTTP on non-localhost: Blocked unless AllowInsecureHTTP=true (production)
+//
+// This follows OAuth 2.1 security requirements which mandate HTTPS for all
+// OAuth endpoints except localhost development.
+func (s *Server) validateHTTPSEnforcement() error {
+	// Skip validation if Issuer is empty (will fail elsewhere with more appropriate error)
+	if s.Config.Issuer == "" {
+		return nil
+	}
+
+	issuerURL, err := url.Parse(s.Config.Issuer)
+	if err != nil {
+		return fmt.Errorf("invalid issuer URL: %w", err)
+	}
+
+	// HTTPS is always secure - no validation needed
+	if issuerURL.Scheme == "https" {
+		return nil
+	}
+
+	// Check if using HTTP (insecure)
+	if issuerURL.Scheme == "http" {
+		hostname := issuerURL.Hostname()
+
+		// Allow localhost for development (with warning)
+		if isLocalhostHostname(hostname) {
+			if !s.Config.AllowInsecureHTTP {
+				s.Logger.Warn("⚠️  DEVELOPMENT WARNING: Running OAuth over HTTP on localhost",
+					"issuer", s.Config.Issuer,
+					"risk", "Credentials exposed on local network",
+					"recommendation", "Use HTTPS even in development for production-like testing",
+					"to_suppress", "Set AllowInsecureHTTP=true in Config",
+					"learn_more", "https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-10#section-4.1.1")
+			}
+			return nil
+		}
+
+		// Non-localhost HTTP is blocked unless explicitly allowed
+		if !s.Config.AllowInsecureHTTP {
+			return fmt.Errorf(
+				"SECURITY ERROR: Issuer must use HTTPS in production (got %s://%s). "+
+					"OAuth over HTTP exposes tokens and credentials to interception. "+
+					"To run on localhost for development, set AllowInsecureHTTP=true. "+
+					"For production, use HTTPS",
+				issuerURL.Scheme,
+				hostname,
+			)
+		}
+
+		// Log critical warning if HTTP is explicitly allowed on non-localhost
+		s.Logger.Error("🚨 CRITICAL SECURITY WARNING: Running OAuth server over HTTP",
+			"issuer", s.Config.Issuer,
+			"hostname", hostname,
+			"risk", "All tokens and credentials exposed to network sniffing and MITM attacks",
+			"action_required", "Switch to HTTPS immediately",
+			"compliance", "OAuth 2.1 requires HTTPS for all production endpoints",
+			"learn_more", "https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-10#section-4.1.1")
+
+		return nil
+	}
+
+	// Unknown scheme (not http or https)
+	return fmt.Errorf("invalid issuer URL scheme: %s (must be http or https)", issuerURL.Scheme)
+}
+
+// isLocalhostHostname checks if a hostname refers to the local machine.
+// This includes IPv4 loopback, IPv6 loopback, and localhost hostname.
+// Used to determine if HTTP is acceptable for development purposes.
+func isLocalhostHostname(hostname string) bool {
+	return hostname == "localhost" ||
+		hostname == "127.0.0.1" ||
+		hostname == "::1" ||
+		hostname == "0.0.0.0" ||
+		hostname == "[::1]" // IPv6 with brackets
+}
+
 // validateRedirectURI validates that a redirect URI is registered and secure
 func (s *Server) validateRedirectURI(client *storage.Client, redirectURI string) error {
 	// First check if URI is registered
