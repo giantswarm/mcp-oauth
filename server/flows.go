@@ -49,9 +49,52 @@ func (s *Server) logAuthCodeValidationFailure(reason, clientID, userID, codePref
 	return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 }
 
-// ValidateToken validates an access token with the provider
+// isTokenExpiredLocally checks if a token is expired considering clock skew grace period.
+// Returns true if the token is expired beyond the grace period.
+func (s *Server) isTokenExpiredLocally(token *oauth2.Token) bool {
+	gracePeriod := time.Duration(s.Config.ClockSkewGracePeriod) * time.Second
+	expiryWithGrace := token.Expiry.Add(gracePeriod)
+	return time.Now().After(expiryWithGrace)
+}
+
+// ValidateToken validates an access token with local expiry check and provider validation.
+// This implements defense-in-depth by checking token expiry locally BEFORE delegating to
+// the provider, preventing expired tokens from being accepted due to clock skew.
+//
+// Validation flow:
+// 1. Check if token exists in local storage
+// 2. If found, validate expiry locally (with ClockSkewGracePeriod)
+// 3. If expired locally, return error immediately (don't call provider)
+// 4. Validate with provider (external check)
+// 5. Store updated user info
+//
 // Note: Rate limiting should be done at the HTTP layer with IP address, not here with token
 func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+	// SECURITY: Check local token expiry BEFORE calling provider
+	// This prevents expired tokens from being accepted if provider's clock is skewed
+	storedToken, err := s.tokenStore.GetToken(accessToken)
+	if err == nil {
+		// Token found - validate expiry with grace period for clock skew
+		if s.isTokenExpiredLocally(storedToken) {
+			s.Logger.Debug("Token expired locally",
+				"expiry", storedToken.Expiry,
+				"grace_period_seconds", s.Config.ClockSkewGracePeriod,
+				"token_prefix", safeTruncate(accessToken, 8))
+
+			if s.Auditor != nil {
+				s.Auditor.LogAuthFailure("", "", "", "token_expired_locally")
+			}
+
+			return nil, fmt.Errorf("access token expired (local validation)")
+		}
+
+		s.Logger.Debug("Token passed local expiry validation",
+			"expiry", storedToken.Expiry,
+			"grace_period_seconds", s.Config.ClockSkewGracePeriod)
+	}
+	// If token not found, proceed with provider validation
+	// (token might be from a different instance or storage backend)
+
 	// Validate with provider
 	userInfo, err := s.provider.ValidateToken(ctx, accessToken)
 	if err != nil {

@@ -34,6 +34,7 @@ func setupFlowTestServer(t *testing.T) (*Server, *memory.Store, *mock.MockProvid
 		AccessTokenTTL:       3600,
 		RequirePKCE:          true,
 		AllowPKCEPlain:       false,
+		ClockSkewGracePeriod: 5, // 5 seconds grace period for testing
 	}
 
 	srv, err := New(provider, store, store, store, config, nil)
@@ -949,6 +950,239 @@ func TestServer_ValidateToken(t *testing.T) {
 			}
 		})
 	}
+}
+
+// setupValidTokenProvider returns a provider function that always validates tokens successfully
+func setupValidTokenProvider() func(context.Context, string) (*providers.UserInfo, error) {
+	return func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+		return &providers.UserInfo{
+			ID:    "user-123",
+			Email: "test@example.com",
+			Name:  "Test User",
+		}, nil
+	}
+}
+
+// TestServer_ValidateToken_LocalExpiry tests local token expiry validation before provider check
+func TestServer_ValidateToken_LocalExpiry(t *testing.T) {
+	srv, store, provider := setupFlowTestServer(t)
+
+	// Set up provider to always return valid user info
+	provider.ValidateTokenFunc = setupValidTokenProvider()
+
+	tests := []struct {
+		name           string
+		accessToken    string
+		tokenExpiry    time.Time
+		saveToken      bool
+		clockSkewGrace int64
+		wantErr        bool
+		wantErrMsg     string
+	}{
+		{
+			name:           "token not in storage - proceed to provider",
+			accessToken:    "not-stored-token",
+			saveToken:      false,
+			clockSkewGrace: 5,
+			wantErr:        false,
+		},
+		{
+			name:           "token valid - not expired",
+			accessToken:    "valid-token",
+			tokenExpiry:    time.Now().Add(10 * time.Minute),
+			saveToken:      true,
+			clockSkewGrace: 5,
+			wantErr:        false,
+		},
+		{
+			name:           "token expired - beyond grace period",
+			accessToken:    "expired-token",
+			tokenExpiry:    time.Now().Add(-10 * time.Minute),
+			saveToken:      true,
+			clockSkewGrace: 5,
+			wantErr:        true,
+			wantErrMsg:     "access token expired (local validation)",
+		},
+		{
+			name:           "token expired but within grace period",
+			accessToken:    "grace-period-token",
+			tokenExpiry:    time.Now().Add(-3 * time.Second),
+			saveToken:      true,
+			clockSkewGrace: 5,
+			wantErr:        false,
+		},
+		{
+			name:           "token just at grace period boundary",
+			accessToken:    "boundary-token",
+			tokenExpiry:    time.Now().Add(-4 * time.Second),
+			saveToken:      true,
+			clockSkewGrace: 5,
+			wantErr:        false,
+		},
+		{
+			name:           "token expired just beyond grace period",
+			accessToken:    "just-beyond-grace",
+			tokenExpiry:    time.Now().Add(-6 * time.Second),
+			saveToken:      true,
+			clockSkewGrace: 5,
+			wantErr:        true,
+			wantErrMsg:     "access token expired (local validation)",
+		},
+		{
+			name:           "zero grace period - strict expiry check",
+			accessToken:    "zero-grace-token",
+			tokenExpiry:    time.Now().Add(-1 * time.Second),
+			saveToken:      true,
+			clockSkewGrace: 0,
+			wantErr:        true,
+			wantErrMsg:     "access token expired (local validation)",
+		},
+		{
+			name:           "large grace period - expired token still valid",
+			accessToken:    "large-grace-token",
+			tokenExpiry:    time.Now().Add(-30 * time.Second),
+			saveToken:      true,
+			clockSkewGrace: 60,
+			wantErr:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Save original config and restore after test
+			originalGrace := srv.Config.ClockSkewGracePeriod
+			t.Cleanup(func() {
+				srv.Config.ClockSkewGracePeriod = originalGrace
+			})
+
+			// Set clock skew grace period for this test
+			srv.Config.ClockSkewGracePeriod = tt.clockSkewGrace
+
+			// Save token to storage if needed
+			if tt.saveToken {
+				token := &oauth2.Token{
+					AccessToken:  "provider-token-" + tt.accessToken,
+					RefreshToken: "provider-refresh-" + tt.accessToken,
+					Expiry:       tt.tokenExpiry,
+				}
+				err := store.SaveToken(tt.accessToken, token)
+				if err != nil {
+					t.Fatalf("SaveToken() error = %v", err)
+				}
+			}
+
+			// Validate token
+			userInfo, err := srv.ValidateToken(context.Background(), tt.accessToken)
+
+			// Check error expectation
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("ValidateToken() expected error but got none")
+					return
+				}
+				if tt.wantErrMsg != "" && !strings.Contains(err.Error(), tt.wantErrMsg) {
+					t.Errorf("ValidateToken() error = %q, want error containing %q", err.Error(), tt.wantErrMsg)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("ValidateToken() unexpected error = %v", err)
+					return
+				}
+				if userInfo == nil {
+					t.Fatal("ValidateToken() returned nil userInfo")
+				}
+				if userInfo.ID != "user-123" {
+					t.Errorf("userInfo.ID = %q, want %q", userInfo.ID, "user-123")
+				}
+			}
+		})
+	}
+}
+
+// TestServer_ValidateToken_ClockSkewScenarios tests clock skew handling
+func TestServer_ValidateToken_ClockSkewScenarios(t *testing.T) {
+	srv, store, provider := setupFlowTestServer(t)
+
+	// Provider always returns valid user info (simulating provider with skewed clock)
+	provider.ValidateTokenFunc = func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+		return &providers.UserInfo{
+			ID:    "user-clock-skew",
+			Email: "clockskew@example.com",
+			Name:  "Clock Skew User",
+		}, nil
+	}
+
+	// Save original config and restore after all subtests
+	originalGrace := srv.Config.ClockSkewGracePeriod
+	t.Cleanup(func() {
+		srv.Config.ClockSkewGracePeriod = originalGrace
+	})
+
+	// Configure grace period
+	srv.Config.ClockSkewGracePeriod = 5
+
+	t.Run("token expired locally but provider still accepts - local validation wins", func(t *testing.T) {
+		accessToken := "locally-expired-token"
+
+		// Save token with expiry 10 minutes in the past (beyond grace period)
+		token := &oauth2.Token{
+			AccessToken:  "provider-token",
+			RefreshToken: "provider-refresh",
+			Expiry:       time.Now().Add(-10 * time.Minute),
+		}
+		err := store.SaveToken(accessToken, token)
+		if err != nil {
+			t.Fatalf("SaveToken() error = %v", err)
+		}
+
+		// Try to validate - should fail locally before reaching provider
+		_, err = srv.ValidateToken(context.Background(), accessToken)
+		if err == nil {
+			t.Error("ValidateToken() expected error for locally expired token")
+		}
+		if !strings.Contains(err.Error(), "expired") {
+			t.Errorf("ValidateToken() error = %q, want error containing 'expired'", err.Error())
+		}
+	})
+
+	t.Run("token near expiry within grace period - should pass", func(t *testing.T) {
+		accessToken := "near-expiry-token" // nolint:gosec // G101: False positive - test token, not credentials
+
+		// Save token with expiry 3 seconds in the past (within 5 second grace period)
+		token := &oauth2.Token{
+			AccessToken:  "provider-token-near",
+			RefreshToken: "provider-refresh-near",
+			Expiry:       time.Now().Add(-3 * time.Second),
+		}
+		err := store.SaveToken(accessToken, token)
+		if err != nil {
+			t.Fatalf("SaveToken() error = %v", err)
+		}
+
+		// Should succeed (within grace period)
+		userInfo, err := srv.ValidateToken(context.Background(), accessToken)
+		if err != nil {
+			t.Errorf("ValidateToken() unexpected error = %v (token within grace period)", err)
+		}
+		if userInfo == nil {
+			t.Fatal("ValidateToken() returned nil userInfo")
+		}
+	})
+
+	t.Run("token not in local storage - provider validation proceeds", func(t *testing.T) {
+		accessToken := "only-at-provider-token"
+
+		// Don't save to local storage - simulating token from different instance
+		// Provider will validate it successfully
+
+		userInfo, err := srv.ValidateToken(context.Background(), accessToken)
+		if err != nil {
+			t.Errorf("ValidateToken() unexpected error = %v (token not in storage should proceed to provider)", err)
+		}
+		if userInfo == nil {
+			t.Fatal("ValidateToken() returned nil userInfo")
+		}
+	})
 }
 
 // TestServer_RefreshTokenRotation tests basic refresh token rotation without reuse
