@@ -420,10 +420,12 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	familyStore, supportsFamilies := s.tokenStore.(storage.RefreshTokenFamilyStore)
 
 	// OAUTH 2.1 SECURITY: Check for refresh token reuse (token theft detection)
+	// CRITICAL: Check family status FIRST before validating token
+	// This enables detection of deleted/rotated token reuse
 	if supportsFamilies {
 		family, err := familyStore.GetRefreshTokenFamily(refreshToken)
 		if err == nil {
-			// Check if this token family has been revoked due to reuse
+			// Check if this token family has been revoked due to prior reuse
 			if family.Revoked {
 				if s.Auditor != nil {
 					s.Auditor.LogEvent(security.Event{
@@ -441,6 +443,54 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 					"user_id", family.UserID,
 					"family_id", family.FamilyID[:min(8, len(family.FamilyID))])
 				return nil, fmt.Errorf("refresh token has been revoked")
+			}
+
+			// CRITICAL SECURITY: Detect refresh token reuse
+			// When a token is rotated, it's deleted from refreshTokens but family metadata persists
+			// If token is deleted but family exists and not revoked → REUSE DETECTED
+			_, tokenErr := s.tokenStore.GetRefreshTokenInfo(refreshToken)
+			if tokenErr != nil {
+				// Token is deleted but family exists and not revoked → REUSE DETECTED!
+				// This means someone is trying to use an old (rotated) refresh token
+				s.Logger.Error("Refresh token reuse detected - token was rotated but still being used",
+					"user_id", family.UserID,
+					"client_id", clientID,
+					"family_id", family.FamilyID[:min(8, len(family.FamilyID))],
+					"generation", family.Generation,
+					"oauth_spec", "OAuth 2.1 Refresh Token Rotation")
+
+				// Step 1: Revoke entire token family (OAuth 2.1 requirement)
+				if err := familyStore.RevokeRefreshTokenFamily(family.FamilyID); err != nil {
+					s.Logger.Error("Failed to revoke token family", "error", err)
+					// Continue with user token revocation even if family revocation failed
+				}
+
+				// Step 2: Revoke all tokens for this user+client (defense in depth)
+				if err := s.RevokeAllTokensForUserClient(family.UserID, family.ClientID); err != nil {
+					s.Logger.Error("Failed to revoke user tokens", "error", err)
+					// Continue - log error but still return security error to client
+				}
+
+				// Step 3: Log critical security event for monitoring/alerting
+				if s.Auditor != nil {
+					s.Auditor.LogEvent(security.Event{
+						Type:     "refresh_token_reuse_detected",
+						UserID:   family.UserID,
+						ClientID: clientID,
+						Details: map[string]any{
+							"severity":   "critical",
+							"family_id":  family.FamilyID,
+							"generation": family.Generation,
+							"action":     "family_and_tokens_revoked",
+							"oauth_spec": "OAuth 2.1 Refresh Token Rotation",
+							"impact":     "All tokens for user+client revoked to prevent token theft",
+						},
+					})
+					s.Auditor.LogTokenReuse(family.UserID, clientID)
+				}
+
+				// Return error indicating reuse and revocation
+				return nil, fmt.Errorf("%s: refresh token reuse detected - all tokens revoked for security", ErrorCodeInvalidGrant)
 			}
 		}
 	}

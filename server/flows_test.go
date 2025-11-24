@@ -533,8 +533,446 @@ func TestServer_ValidateToken(t *testing.T) {
 	}
 }
 
-func TestServer_RefreshAccessToken_Skipped(t *testing.T) {
-	t.Skip("RefreshAccessToken test requires complex family tracking setup")
+// TestServer_RefreshTokenRotation tests basic refresh token rotation without reuse
+func TestServer_RefreshTokenRotation(t *testing.T) {
+	srv, store, provider := setupFlowTestServer(t)
+
+	// Enable refresh token rotation
+	srv.Config.AllowRefreshTokenRotation = true
+	srv.Config.RefreshTokenTTL = 86400 // 24 hours
+
+	// Register a client
+	client, _, err := srv.RegisterClient(
+		"Test Client",
+		ClientTypeConfidential,
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+	clientID := client.ClientID
+
+	// Generate PKCE
+	codeVerifier := testutil.GenerateRandomString(50)
+	hash := sha256.Sum256([]byte(codeVerifier))
+	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	// Start auth flow and get tokens
+	clientState := "client-state-" + testutil.GenerateRandomString(10)
+	_, err = srv.StartAuthorizationFlow(
+		clientID,
+		"https://example.com/callback",
+		"openid email",
+		codeChallenge,
+		PKCEMethodS256,
+		clientState,
+	)
+	if err != nil {
+		t.Fatalf("StartAuthorizationFlow() error = %v", err)
+	}
+
+	authState, err := store.GetAuthorizationState(clientState)
+	if err != nil {
+		t.Fatalf("GetAuthorizationState() error = %v", err)
+	}
+
+	authCodeObj, _, err := srv.HandleProviderCallback(
+		context.Background(),
+		authState.ProviderState,
+		"provider-code-"+testutil.GenerateRandomString(10),
+	)
+	if err != nil {
+		t.Fatalf("HandleProviderCallback() error = %v", err)
+	}
+
+	token, _, err := srv.ExchangeAuthorizationCode(
+		context.Background(),
+		authCodeObj.Code,
+		clientID,
+		"https://example.com/callback",
+		codeVerifier,
+	)
+	if err != nil {
+		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
+	}
+
+	firstRefreshToken := token.RefreshToken
+
+	// Verify first token family exists
+	family1, err := store.GetRefreshTokenFamily(firstRefreshToken)
+	if err != nil {
+		t.Fatalf("GetRefreshTokenFamily() error = %v", err)
+	}
+	if family1.Generation != 0 {
+		t.Errorf("First token generation = %d, want 0", family1.Generation)
+	}
+	if family1.Revoked {
+		t.Error("First token family should not be revoked")
+	}
+
+	// Configure mock provider to return a new token on refresh
+	provider.RefreshTokenFunc = func(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+		return &oauth2.Token{
+			AccessToken:  "new-provider-access-token",
+			RefreshToken: "new-provider-refresh-token",
+			Expiry:       time.Now().Add(1 * time.Hour),
+		}, nil
+	}
+
+	// Refresh the token (should rotate)
+	token2, err := srv.RefreshAccessToken(context.Background(), firstRefreshToken, clientID)
+	if err != nil {
+		t.Fatalf("RefreshAccessToken() error = %v", err)
+	}
+
+	secondRefreshToken := token2.RefreshToken
+
+	// Verify rotation happened
+	if secondRefreshToken == firstRefreshToken {
+		t.Error("Refresh token should have been rotated")
+	}
+
+	// Verify second token has incremented generation
+	family2, err := store.GetRefreshTokenFamily(secondRefreshToken)
+	if err != nil {
+		t.Fatalf("GetRefreshTokenFamily() error = %v for second token", err)
+	}
+	if family2.Generation != 1 {
+		t.Errorf("Second token generation = %d, want 1", family2.Generation)
+	}
+	if family2.FamilyID != family1.FamilyID {
+		t.Errorf("Second token family ID = %s, want %s (same family)", family2.FamilyID, family1.FamilyID)
+	}
+
+	// Verify first token was deleted (rotated out)
+	_, err = store.GetRefreshTokenInfo(firstRefreshToken)
+	if err == nil {
+		t.Error("First refresh token should have been deleted after rotation")
+	}
+
+	// Verify second token is still valid
+	_, err = store.GetRefreshTokenInfo(secondRefreshToken)
+	if err != nil {
+		t.Errorf("Second refresh token should be valid, got error: %v", err)
+	}
+}
+
+// TestServer_RefreshTokenReuseDetection tests that refresh token reuse is detected and revokes all tokens
+// This is a CRITICAL OAuth 2.1 security feature
+func TestServer_RefreshTokenReuseDetection(t *testing.T) {
+	srv, store, provider := setupFlowTestServer(t)
+
+	// Enable refresh token rotation (required for reuse detection)
+	srv.Config.AllowRefreshTokenRotation = true
+	srv.Config.RefreshTokenTTL = 86400 // 24 hours
+
+	// Register a client
+	client, _, err := srv.RegisterClient(
+		"Test Client",
+		ClientTypeConfidential,
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+	clientID := client.ClientID
+
+	// Generate PKCE
+	codeVerifier := testutil.GenerateRandomString(50)
+	hash := sha256.Sum256([]byte(codeVerifier))
+	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	// Start auth flow and get initial tokens
+	clientState := "client-state-" + testutil.GenerateRandomString(10)
+	_, err = srv.StartAuthorizationFlow(
+		clientID,
+		"https://example.com/callback",
+		"openid email",
+		codeChallenge,
+		PKCEMethodS256,
+		clientState,
+	)
+	if err != nil {
+		t.Fatalf("StartAuthorizationFlow() error = %v", err)
+	}
+
+	authState, err := store.GetAuthorizationState(clientState)
+	if err != nil {
+		t.Fatalf("GetAuthorizationState() error = %v", err)
+	}
+
+	authCodeObj, _, err := srv.HandleProviderCallback(
+		context.Background(),
+		authState.ProviderState,
+		"provider-code-"+testutil.GenerateRandomString(10),
+	)
+	if err != nil {
+		t.Fatalf("HandleProviderCallback() error = %v", err)
+	}
+
+	token, _, err := srv.ExchangeAuthorizationCode(
+		context.Background(),
+		authCodeObj.Code,
+		clientID,
+		"https://example.com/callback",
+		codeVerifier,
+	)
+	if err != nil {
+		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
+	}
+
+	firstRefreshToken := token.RefreshToken
+	firstAccessToken := token.AccessToken
+
+	// Get family info for later verification
+	family1, err := store.GetRefreshTokenFamily(firstRefreshToken)
+	if err != nil {
+		t.Fatalf("GetRefreshTokenFamily() error = %v", err)
+	}
+	familyID := family1.FamilyID
+
+	// Verify tokens exist
+	tokens, err := store.GetTokensByUserClient("mock-user-123", clientID)
+	if err != nil {
+		t.Fatalf("GetTokensByUserClient() error = %v", err)
+	}
+	if len(tokens) < 2 {
+		t.Errorf("Expected at least 2 tokens initially, got %d", len(tokens))
+	}
+
+	// Configure mock provider for refresh
+	provider.RefreshTokenFunc = func(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+		return &oauth2.Token{
+			AccessToken:  "rotated-provider-access-token",
+			RefreshToken: "rotated-provider-refresh-token",
+			Expiry:       time.Now().Add(1 * time.Hour),
+		}, nil
+	}
+
+	// Legitimate user refreshes token (rotation happens)
+	token2, err := srv.RefreshAccessToken(context.Background(), firstRefreshToken, clientID)
+	if err != nil {
+		t.Fatalf("Legitimate RefreshAccessToken() error = %v", err)
+	}
+
+	secondRefreshToken := token2.RefreshToken
+	secondAccessToken := token2.AccessToken
+
+	// Verify rotation happened
+	if secondRefreshToken == firstRefreshToken {
+		t.Fatal("Refresh token should have been rotated")
+	}
+
+	// Verify first token was deleted
+	_, err = store.GetRefreshTokenInfo(firstRefreshToken)
+	if err == nil {
+		t.Error("First refresh token should have been deleted after rotation")
+	}
+
+	// Verify second token is valid
+	_, err = store.GetRefreshTokenInfo(secondRefreshToken)
+	if err != nil {
+		t.Errorf("Second refresh token should be valid, got error: %v", err)
+	}
+
+	// CRITICAL TEST: Attacker tries to reuse the old (rotated) token
+	// This should detect reuse and revoke ALL tokens
+	_, err = srv.RefreshAccessToken(context.Background(), firstRefreshToken, clientID)
+	if err == nil {
+		t.Fatal("Reuse of rotated refresh token should have failed")
+	}
+
+	// Verify error message indicates reuse
+	errStr := err.Error()
+	if !containsString(errStr, "reuse") {
+		t.Errorf("Error should mention 'reuse', got: %v", err)
+	}
+
+	// CRITICAL: Verify family was revoked
+	revokedFamily, err := store.GetRefreshTokenFamily(firstRefreshToken)
+	if err != nil {
+		t.Logf("Note: Family metadata for first token deleted (acceptable): %v", err)
+	} else if !revokedFamily.Revoked {
+		t.Error("Token family should have been revoked after reuse detection")
+	}
+
+	// Verify family is revoked when checking with second token
+	family2, err := store.GetRefreshTokenFamily(secondRefreshToken)
+	if err == nil {
+		if !family2.Revoked {
+			t.Error("Token family should be revoked after reuse detection")
+		}
+		if family2.FamilyID != familyID {
+			t.Errorf("Family ID changed: got %s, want %s", family2.FamilyID, familyID)
+		}
+	}
+
+	// CRITICAL: Verify ALL tokens for user+client were revoked
+	tokens, err = store.GetTokensByUserClient("mock-user-123", clientID)
+	if err != nil {
+		t.Fatalf("GetTokensByUserClient() error = %v", err)
+	}
+	if len(tokens) != 0 {
+		t.Errorf("ALL tokens should have been revoked, but found %d tokens: %v", len(tokens), tokens)
+	}
+
+	// Verify specific tokens were deleted
+	_, err = store.GetToken(firstAccessToken)
+	if err == nil {
+		t.Error("First access token should have been revoked")
+	}
+
+	_, err = store.GetToken(secondAccessToken)
+	if err == nil {
+		t.Error("Second access token should have been revoked")
+	}
+
+	_, err = store.GetRefreshTokenInfo(secondRefreshToken)
+	if err == nil {
+		t.Error("Second refresh token should have been revoked")
+	}
+}
+
+// TestServer_RefreshTokenReuseMultipleRotations tests reuse detection after multiple rotations
+func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
+	srv, store, provider := setupFlowTestServer(t)
+
+	// Enable refresh token rotation
+	srv.Config.AllowRefreshTokenRotation = true
+	srv.Config.RefreshTokenTTL = 86400
+
+	// Register a client
+	client, _, err := srv.RegisterClient(
+		"Test Client",
+		ClientTypeConfidential,
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+	clientID := client.ClientID
+
+	// Generate PKCE
+	codeVerifier := testutil.GenerateRandomString(50)
+	hash := sha256.Sum256([]byte(codeVerifier))
+	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	// Get initial tokens
+	clientState := "client-state-" + testutil.GenerateRandomString(10)
+	_, err = srv.StartAuthorizationFlow(
+		clientID,
+		"https://example.com/callback",
+		"openid email",
+		codeChallenge,
+		PKCEMethodS256,
+		clientState,
+	)
+	if err != nil {
+		t.Fatalf("StartAuthorizationFlow() error = %v", err)
+	}
+
+	authState, err := store.GetAuthorizationState(clientState)
+	if err != nil {
+		t.Fatalf("GetAuthorizationState() error = %v", err)
+	}
+
+	authCodeObj, _, err := srv.HandleProviderCallback(
+		context.Background(),
+		authState.ProviderState,
+		"provider-code-"+testutil.GenerateRandomString(10),
+	)
+	if err != nil {
+		t.Fatalf("HandleProviderCallback() error = %v", err)
+	}
+
+	token, _, err := srv.ExchangeAuthorizationCode(
+		context.Background(),
+		authCodeObj.Code,
+		clientID,
+		"https://example.com/callback",
+		codeVerifier,
+	)
+	if err != nil {
+		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
+	}
+
+	// Store all refresh tokens for reuse testing
+	refreshTokens := []string{token.RefreshToken}
+
+	// Configure mock provider
+	provider.RefreshTokenFunc = func(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+		return &oauth2.Token{
+			AccessToken:  "provider-access-token",
+			RefreshToken: "provider-refresh-token",
+			Expiry:       time.Now().Add(1 * time.Hour),
+		}, nil
+	}
+
+	// Perform 3 legitimate rotations
+	currentToken := token.RefreshToken
+	for i := 0; i < 3; i++ {
+		newToken, err := srv.RefreshAccessToken(context.Background(), currentToken, clientID)
+		if err != nil {
+			t.Fatalf("Rotation %d failed: %v", i+1, err)
+		}
+		refreshTokens = append(refreshTokens, newToken.RefreshToken)
+		currentToken = newToken.RefreshToken
+	}
+
+	// Verify we have 4 tokens (initial + 3 rotations)
+	if len(refreshTokens) != 4 {
+		t.Errorf("Expected 4 refresh tokens, got %d", len(refreshTokens))
+	}
+
+	// Try to reuse token from 2 rotations ago (generation 2, current is 3)
+	oldToken := refreshTokens[2]
+	_, err = srv.RefreshAccessToken(context.Background(), oldToken, clientID)
+	if err == nil {
+		t.Fatal("Reuse of old refresh token should have failed")
+	}
+
+	// Verify error indicates reuse
+	if !containsString(err.Error(), "reuse") {
+		t.Errorf("Error should mention 'reuse', got: %v", err)
+	}
+
+	// Verify ALL tokens were revoked
+	tokens, err := store.GetTokensByUserClient("mock-user-123", clientID)
+	if err != nil {
+		t.Fatalf("GetTokensByUserClient() error = %v", err)
+	}
+	if len(tokens) != 0 {
+		t.Errorf("ALL tokens should have been revoked, but found %d", len(tokens))
+	}
+
+	// Verify current token is also revoked
+	_, err = store.GetRefreshTokenInfo(currentToken)
+	if err == nil {
+		t.Error("Current refresh token should have been revoked after reuse detection")
+	}
+}
+
+// Helper function to check if a string contains a substring
+func containsString(s, substr string) bool {
+	return len(s) >= len(substr) && findSubstring(s, substr)
+}
+
+func findSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
 
 func TestServer_RevokeToken(t *testing.T) {
