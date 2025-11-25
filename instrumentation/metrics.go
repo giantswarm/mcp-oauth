@@ -78,6 +78,9 @@ type Metrics struct {
 	// Encryption Metrics
 	EncryptionOperationsTotal metric.Int64Counter
 	EncryptionDuration        metric.Float64Histogram
+
+	// Reference to parent instrumentation for config checks
+	instrumentation *Instrumentation
 }
 
 // createCounter is a helper to reduce repetition when creating counters
@@ -106,7 +109,9 @@ func createHistogram(meter metric.Meter, name, desc, unit string) (metric.Float6
 
 // newMetrics creates and registers all metric instruments
 func newMetrics(inst *Instrumentation) (*Metrics, error) {
-	m := &Metrics{}
+	m := &Metrics{
+		instrumentation: inst,
+	}
 	var err error
 
 	// Create meters for each layer
@@ -348,40 +353,53 @@ func (m *Metrics) RecordHTTPRequest(ctx context.Context, method, endpoint string
 
 // RecordAuthorizationStarted records an authorization flow start
 func (m *Metrics) RecordAuthorizationStarted(ctx context.Context, clientID string) {
-	m.AuthorizationStarted.Add(ctx, 1, metric.WithAttributes(
-		attribute.String(metricAttrClientID, clientID),
-	))
+	var attrs []attribute.KeyValue
+	if m.instrumentation != nil && m.instrumentation.ShouldIncludeClientIDInMetrics() && clientID != "" {
+		attrs = append(attrs, attribute.String(metricAttrClientID, clientID))
+	}
+	m.AuthorizationStarted.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
 // RecordCallbackProcessed records a provider callback processing
 func (m *Metrics) RecordCallbackProcessed(ctx context.Context, clientID string, success bool) {
-	m.CallbackProcessed.Add(ctx, 1, metric.WithAttributes(
-		attribute.String(metricAttrClientID, clientID),
+	attrs := []attribute.KeyValue{
 		attribute.Bool(metricAttrSuccess, success),
-	))
+	}
+	if m.instrumentation != nil && m.instrumentation.ShouldIncludeClientIDInMetrics() && clientID != "" {
+		attrs = append(attrs, attribute.String(metricAttrClientID, clientID))
+	}
+	m.CallbackProcessed.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
 // RecordCodeExchange records an authorization code exchange
 func (m *Metrics) RecordCodeExchange(ctx context.Context, clientID, pkceMethod string) {
-	m.CodeExchanged.Add(ctx, 1, metric.WithAttributes(
-		attribute.String(metricAttrClientID, clientID),
+	attrs := []attribute.KeyValue{
 		attribute.String(metricAttrPKCEMethod, pkceMethod),
-	))
+	}
+	if m.instrumentation != nil && m.instrumentation.ShouldIncludeClientIDInMetrics() && clientID != "" {
+		attrs = append(attrs, attribute.String(metricAttrClientID, clientID))
+	}
+	m.CodeExchanged.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
 // RecordTokenRefresh records a token refresh operation
 func (m *Metrics) RecordTokenRefresh(ctx context.Context, clientID string, rotated bool) {
-	m.TokenRefreshed.Add(ctx, 1, metric.WithAttributes(
-		attribute.String(metricAttrClientID, clientID),
+	attrs := []attribute.KeyValue{
 		attribute.Bool(metricAttrRotated, rotated),
-	))
+	}
+	if m.instrumentation != nil && m.instrumentation.ShouldIncludeClientIDInMetrics() && clientID != "" {
+		attrs = append(attrs, attribute.String(metricAttrClientID, clientID))
+	}
+	m.TokenRefreshed.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
 // RecordTokenRevocation records a token revocation
 func (m *Metrics) RecordTokenRevocation(ctx context.Context, clientID string) {
-	m.TokenRevoked.Add(ctx, 1, metric.WithAttributes(
-		attribute.String(metricAttrClientID, clientID),
-	))
+	var attrs []attribute.KeyValue
+	if m.instrumentation != nil && m.instrumentation.ShouldIncludeClientIDInMetrics() && clientID != "" {
+		attrs = append(attrs, attribute.String(metricAttrClientID, clientID))
+	}
+	m.TokenRevoked.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
 // RecordClientRegistration records a client registration

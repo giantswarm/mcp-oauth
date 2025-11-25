@@ -219,4 +219,105 @@
 //   - Document data collection in your privacy policy
 //
 // See the README.md "Privacy & Compliance" section for detailed guidance.
+//
+// # Metric Cardinality Management
+//
+// Cardinality refers to the number of unique time series created by metric labels.
+// High cardinality can cause serious performance and cost issues in metrics backends.
+//
+// ## The Problem
+//
+// Each unique combination of metric labels creates a new time series:
+//
+//	oauth.authorization.started{client_id="client1"} → time series 1
+//	oauth.authorization.started{client_id="client2"} → time series 2
+//	oauth.authorization.started{client_id="client3"} → time series 3
+//
+// With 10,000 clients, you have 10,000 time series just for this one metric.
+// With 20 metrics using client_id, that's 200,000 time series!
+//
+// ## Impact of High Cardinality
+//
+//   - Memory Pressure: Each time series consumes RAM in Prometheus and other backends
+//   - Query Performance: Slower queries as cardinality increases
+//   - Storage Costs: More disk space and higher cloud storage costs
+//   - System Instability: Metrics backends can crash or become unresponsive
+//
+// ## Mitigation Strategies
+//
+// ### Strategy 1: Disable client_id in Metrics (Recommended for >1000 clients)
+//
+// Set IncludeClientIDInMetrics: false in your configuration:
+//
+//	config := server.Config{
+//	    Instrumentation: server.InstrumentationConfig{
+//	        Enabled: true,
+//	        IncludeClientIDInMetrics: false, // Low cardinality mode
+//	        MetricsExporter: "prometheus",
+//	    },
+//	}
+//
+// This provides aggregate metrics across all clients while keeping cardinality low.
+// Use traces (not metrics) for per-client debugging.
+//
+// ### Strategy 2: Use Aggregations Instead of Labels
+//
+// Instead of labeling by client_id, group clients into categories:
+//
+//   - client_type: "public" vs "confidential"
+//   - tier: "free", "premium", "enterprise"
+//   - region: "us-east", "eu-west", "ap-south"
+//
+// This reduces cardinality while preserving useful segmentation.
+//
+// ### Strategy 3: Sampling for High-Cardinality Labels
+//
+// Only include client_id for specific clients you're debugging:
+//
+//	if clientID == "debug-client-123" {
+//	    // Include client_id in this case
+//	}
+//
+// Or use a hash-based sampling (e.g., 1% of clients):
+//
+//	if hash(clientID) % 100 < 1 {
+//	    // Include this client_id
+//	}
+//
+// ### Strategy 4: Use Traces for Per-Client Details
+//
+// Metrics are for aggregates, traces are for details:
+//
+//   - Metrics: Track overall success rates, latencies, and trends
+//   - Traces: Debug specific client issues with full context
+//
+// Traces support high cardinality attributes without backend pressure.
+//
+// ## Cardinality Guidelines by Scale
+//
+//	Clients     IncludeClientIDInMetrics    Strategy
+//	--------    ------------------------    ----------------------------------
+//	< 100       true                        Full per-client metrics
+//	100-1,000   true                        Monitor backend performance
+//	1,000-5,000 false                       Use traces for per-client debug
+//	> 5,000     false                       Aggregate metrics + sampling
+//
+// ## Monitoring Your Cardinality
+//
+// Prometheus provides cardinality metrics:
+//
+//	# Total time series
+//	prometheus_tsdb_head_series
+//
+//	# Per-metric cardinality
+//	count by (__name__) ({__name__=~".+"})
+//
+// Set up alerts when cardinality exceeds safe thresholds for your infrastructure.
+//
+// ## Security Note
+//
+// Disabling IncludeClientIDInMetrics also improves security:
+//   - Reduces exposure of client identifiers in metrics backends
+//   - Makes it harder to enumerate clients through metrics scraping
+//   - Limits information leakage if metrics are accidentally exposed
 package instrumentation

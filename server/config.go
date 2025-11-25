@@ -184,6 +184,16 @@ type InstrumentationConfig struct {
 	// legal basis and data protection measures in place.
 	LogClientIPs bool
 
+	// IncludeClientIDInMetrics controls whether client_id is included in metric labels
+	// When true, provides detailed per-client metrics but increases cardinality
+	// When false, reduces cardinality (recommended for >1000 clients)
+	// Default: true (include client_id for detailed metrics)
+	//
+	// Cardinality Warning: Each unique client_id creates a new time series.
+	// With 10,000+ clients, this can cause memory and performance issues.
+	// Set to false for high-scale deployments.
+	IncludeClientIDInMetrics bool
+
 	// MetricsExporter controls which metrics exporter to use
 	// Options: "prometheus", "stdout", "none" (default: "none")
 	// - "prometheus": Export metrics in Prometheus format (use inst.PrometheusExporter())
@@ -205,6 +215,13 @@ type InstrumentationConfig struct {
 	// Example: "localhost:4318" (default OTLP HTTP port)
 	// Default: "" (not set)
 	OTLPEndpoint string
+
+	// OTLPInsecure controls whether to use insecure HTTP for OTLP export
+	// When false (default), uses TLS for secure transport
+	// Set to true only for local development or testing
+	// Default: false (uses TLS)
+	// WARNING: Never use in production - traces contain user metadata
+	OTLPInsecure bool
 }
 
 // CORSConfig holds CORS (Cross-Origin Resource Sharing) configuration for browser-based clients

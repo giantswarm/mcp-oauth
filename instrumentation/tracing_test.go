@@ -434,3 +434,102 @@ func TestNilSafeHelpers_WithNilSpans(t *testing.T) {
 
 	// Should not panic
 }
+
+func TestSanitizeRedirectURI(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "clean URI without query or fragment",
+			input:    "https://example.com/callback",
+			expected: "https://example.com/callback",
+		},
+		{
+			name:     "URI with query parameters (should be removed)",
+			input:    "https://example.com/callback?secret=abc123&token=xyz",
+			expected: "https://example.com/callback",
+		},
+		{
+			name:     "URI with fragment (should be removed)",
+			input:    "https://example.com/callback#fragment",
+			expected: "https://example.com/callback",
+		},
+		{
+			name:     "URI with both query and fragment",
+			input:    "https://example.com/callback?secret=abc#fragment",
+			expected: "https://example.com/callback",
+		},
+		{
+			name:     "empty URI",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "malformed URI",
+			input:    "://invalid",
+			expected: "",
+		},
+		{
+			name:     "localhost URI with query params",
+			input:    "http://localhost:8080/callback?code=secret",
+			expected: "http://localhost:8080/callback",
+		},
+		{
+			name:     "URI with path and query",
+			input:    "https://example.com/auth/callback?state=sensitive",
+			expected: "https://example.com/auth/callback",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := SanitizeRedirectURI(tt.input)
+			if result != tt.expected {
+				t.Errorf("SanitizeRedirectURI(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestSanitizeRedirectURI_SecurityProperty ensures no sensitive data leaks
+func TestSanitizeRedirectURI_SecurityProperty(t *testing.T) {
+	sensitivePhrases := []string{
+		"secret",
+		"token",
+		"password",
+		"api_key",
+		"session",
+	}
+
+	testURI := "https://example.com/callback?secret=value&token=abc123#fragment"
+	sanitized := SanitizeRedirectURI(testURI)
+
+	// Ensure no sensitive phrases appear in sanitized output
+	for _, phrase := range sensitivePhrases {
+		if contains(sanitized, phrase) {
+			t.Errorf("Sanitized URI contains sensitive phrase %q: %s", phrase, sanitized)
+		}
+	}
+
+	// Ensure sanitized URI doesn't contain ? or #
+	if contains(sanitized, "?") {
+		t.Error("Sanitized URI contains query parameter marker '?'")
+	}
+	if contains(sanitized, "#") {
+		t.Error("Sanitized URI contains fragment marker '#'")
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) > 0 && len(substr) > 0 && len(s) >= len(substr) &&
+		func() bool {
+			for i := 0; i <= len(s)-len(substr); i++ {
+				if s[i:i+len(substr)] == substr {
+					return true
+				}
+			}
+			return false
+		}()
+}

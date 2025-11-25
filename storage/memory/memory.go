@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -100,6 +101,13 @@ type Store struct {
 	tracer          trace.Tracer
 	meter           metric.Meter
 
+	// Atomic counters for metrics (lock-free access during metric collection)
+	tokensCountAtomic        atomic.Int64
+	clientsCountAtomic       atomic.Int64
+	authStatesCountAtomic    atomic.Int64
+	familiesCountAtomic      atomic.Int64
+	refreshTokensCountAtomic atomic.Int64
+
 	// Cleanup
 	cleanupInterval            time.Duration
 	revokedFamilyRetentionDays int64 // configurable retention period for revoked families
@@ -184,41 +192,30 @@ func (s *Store) SetEncryptor(enc *security.Encryptor) {
 // SetInstrumentation sets OpenTelemetry instrumentation for the store
 func (s *Store) SetInstrumentation(inst *instrumentation.Instrumentation) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.instrumentation = inst
 	if inst != nil {
 		s.tracer = inst.Tracer("storage")
 		s.meter = inst.Meter("storage")
+	}
 
-		// Register storage size callbacks for gauge metrics
+	// Initialize atomic counters with current counts
+	s.tokensCountAtomic.Store(int64(len(s.tokens)))
+	s.clientsCountAtomic.Store(int64(len(s.clients)))
+	s.authStatesCountAtomic.Store(int64(len(s.authStates)))
+	s.familiesCountAtomic.Store(int64(len(s.refreshTokenFamilies)))
+	s.refreshTokensCountAtomic.Store(int64(len(s.refreshTokens)))
+	s.mu.Unlock()
+
+	if inst != nil {
+		// Register storage size callbacks using atomic counters (lock-free)
 		// These callbacks provide real-time visibility into storage size for
 		// capacity planning, memory leak detection, and DoS attack monitoring
 		err := inst.RegisterStorageSizeCallbacks(
-			func() int64 {
-				s.mu.RLock()
-				defer s.mu.RUnlock()
-				return int64(len(s.tokens))
-			},
-			func() int64 {
-				s.mu.RLock()
-				defer s.mu.RUnlock()
-				return int64(len(s.clients))
-			},
-			func() int64 {
-				s.mu.RLock()
-				defer s.mu.RUnlock()
-				return int64(len(s.authStates))
-			},
-			func() int64 {
-				s.mu.RLock()
-				defer s.mu.RUnlock()
-				return int64(len(s.refreshTokenFamilies))
-			},
-			func() int64 {
-				s.mu.RLock()
-				defer s.mu.RUnlock()
-				return int64(len(s.refreshTokens))
-			},
+			func() int64 { return s.tokensCountAtomic.Load() },
+			func() int64 { return s.clientsCountAtomic.Load() },
+			func() int64 { return s.authStatesCountAtomic.Load() },
+			func() int64 { return s.familiesCountAtomic.Load() },
+			func() int64 { return s.refreshTokensCountAtomic.Load() },
 		)
 		if err != nil {
 			s.logger.Warn("Failed to register storage size callbacks", "error", err)
@@ -258,6 +255,9 @@ func (s *Store) SaveToken(userID string, token *oauth2.Token) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Track if this is a new token (for atomic counter)
+	_, existed := s.tokens[userID]
+
 	// Encrypt token if encryptor is configured
 	storedToken := token
 	if s.encryptor != nil && s.encryptor.IsEnabled() {
@@ -272,6 +272,12 @@ func (s *Store) SaveToken(userID string, token *oauth2.Token) error {
 	}
 
 	s.tokens[userID] = storedToken
+
+	// Update atomic counter if this is a new token
+	if !existed {
+		s.tokensCountAtomic.Add(1)
+	}
+
 	return nil
 }
 
@@ -394,7 +400,16 @@ func (s *Store) DeleteToken(userID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Track if the token existed (for atomic counter)
+	_, existed := s.tokens[userID]
+
 	delete(s.tokens, userID)
+
+	// Update atomic counter if token was deleted
+	if existed {
+		s.tokensCountAtomic.Add(-1)
+	}
+
 	s.logger.Debug("Deleted token", "user_id", userID)
 	return nil
 }
@@ -451,7 +466,16 @@ func (s *Store) SaveClient(client *storage.Client) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Track if this is a new client (for atomic counter)
+	_, existed := s.clients[client.ClientID]
+
 	s.clients[client.ClientID] = client
+
+	// Update atomic counter if this is a new client
+	if !existed {
+		s.clientsCountAtomic.Add(1)
+	}
+
 	s.logger.Debug("Saved client", "client_id", client.ClientID)
 	return nil
 }

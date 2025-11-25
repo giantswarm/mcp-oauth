@@ -49,6 +49,19 @@ type Config struct {
 	// frameworks (e.g., GDPR in EU, CCPA in California).
 	LogClientIPs bool
 
+	// IncludeClientIDInMetrics controls whether client_id is included as a label in metrics
+	// When true, provides detailed per-client metrics but increases cardinality
+	// When false, reduces cardinality by omitting client_id (recommended for >1000 clients)
+	// Default: true (include client_id)
+	//
+	// Cardinality Warning: Each unique client_id creates a new metric time series.
+	// With 10,000+ clients, this can cause:
+	// - Memory pressure on metrics backends (Prometheus, etc.)
+	// - Slower query performance
+	// - Higher storage costs
+	// Set to false for high-scale deployments and use traces for per-client debugging.
+	IncludeClientIDInMetrics bool
+
 	// MetricsExporter controls which metrics exporter to use
 	// Options: "prometheus", "stdout", "none" (default: "none")
 	// - "prometheus": Export metrics in Prometheus format (use prometheus.Handler())
@@ -67,6 +80,14 @@ type Config struct {
 	// Required when TracesExporter="otlp"
 	// Example: "localhost:4318" (default OTLP HTTP port)
 	OTLPEndpoint string
+
+	// OTLPInsecure controls whether to use insecure HTTP for OTLP export
+	// When false (default), uses TLS for secure transport
+	// Set to true only for local development or testing with unencrypted endpoints
+	// Default: false (uses TLS)
+	// WARNING: Never use insecure transport in production - traces may contain
+	// user metadata and should be encrypted in transit
+	OTLPInsecure bool
 
 	// Resource allows custom resource attributes
 	// If nil, default resource is created with service name and version
@@ -194,6 +215,9 @@ func (i *Instrumentation) initializeMetricsProvider() error {
 		})
 
 	case "stdout":
+		// SECURITY WARNING: Stdout exporter is for development only
+		fmt.Fprintf(os.Stderr, "⚠️  [mcp-oauth] Metrics stdout exporter enabled - for development/debugging only, not for production\n")
+
 		// Create stdout exporter for development/debugging
 		exporter, err := stdoutmetric.New()
 		if err != nil {
@@ -233,11 +257,23 @@ func (i *Instrumentation) initializeTracesProvider() error {
 			return fmt.Errorf("OTLPEndpoint is required when TracesExporter is 'otlp'")
 		}
 
-		// Create OTLP HTTP exporter
+		// Create OTLP HTTP exporter with TLS by default
+		// Only use insecure if explicitly configured (for local dev/testing)
+		opts := []otlptracehttp.Option{
+			otlptracehttp.WithEndpoint(i.config.OTLPEndpoint),
+		}
+
+		if i.config.OTLPInsecure {
+			// SECURITY WARNING: Traces may contain user metadata
+			// Only use insecure transport for local development/testing
+			fmt.Fprintf(os.Stderr, "⚠️  [mcp-oauth] OTLP insecure transport enabled - traces will be sent unencrypted (HTTP). Use only for local development!\n")
+			opts = append(opts, otlptracehttp.WithInsecure())
+		}
+		// If not insecure, the exporter will use TLS by default
+
 		exporter, err := otlptracehttp.New(
 			context.Background(),
-			otlptracehttp.WithEndpoint(i.config.OTLPEndpoint),
-			otlptracehttp.WithInsecure(), // Use HTTP instead of HTTPS (can be configured via env vars)
+			opts...,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to create OTLP trace exporter: %w", err)
@@ -257,6 +293,9 @@ func (i *Instrumentation) initializeTracesProvider() error {
 		})
 
 	case "stdout":
+		// SECURITY WARNING: Stdout exporter is for development only
+		fmt.Fprintf(os.Stderr, "⚠️  [mcp-oauth] Traces stdout exporter enabled - for development/debugging only, not for production\n")
+
 		// Create stdout exporter for development/debugging
 		exporter, err := stdouttrace.New(
 			stdouttrace.WithWriter(os.Stdout),
@@ -343,6 +382,12 @@ func (i *Instrumentation) MeterProvider() metric.MeterProvider {
 // This respects the LogClientIPs configuration for privacy compliance
 func (i *Instrumentation) ShouldLogClientIPs() bool {
 	return i.config.LogClientIPs
+}
+
+// ShouldIncludeClientIDInMetrics returns whether client_id should be included in metric labels
+// This respects the IncludeClientIDInMetrics configuration for cardinality management
+func (i *Instrumentation) ShouldIncludeClientIDInMetrics() bool {
+	return i.config.IncludeClientIDInMetrics
 }
 
 // PrometheusExporter returns the Prometheus exporter if configured
