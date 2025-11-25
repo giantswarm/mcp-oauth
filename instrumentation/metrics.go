@@ -23,18 +23,14 @@ type Metrics struct {
 	ClientRegistered     metric.Int64Counter
 
 	// Security Metrics
-	RateLimitExceeded       metric.Int64Counter
-	PKCEValidationFailed    metric.Int64Counter
-	CodeReuseDetected       metric.Int64Counter
-	TokenReuseDetected      metric.Int64Counter
-	RateLimitActiveLimiters metric.Int64ObservableGauge
+	RateLimitExceeded    metric.Int64Counter
+	PKCEValidationFailed metric.Int64Counter
+	CodeReuseDetected    metric.Int64Counter
+	TokenReuseDetected   metric.Int64Counter
 
 	// Storage Metrics
 	StorageOperationTotal    metric.Int64Counter
 	StorageOperationDuration metric.Float64Histogram
-	StorageSizeTokens        metric.Int64ObservableGauge
-	StorageSizeClients       metric.Int64ObservableGauge
-	StorageSizeFlows         metric.Int64ObservableGauge
 
 	// Provider Metrics
 	ProviderAPICallsTotal metric.Int64Counter
@@ -49,167 +45,174 @@ type Metrics struct {
 	EncryptionDuration        metric.Float64Histogram
 }
 
+// createCounter is a helper to reduce repetition when creating counters
+func createCounter(meter metric.Meter, name, desc, unit string) (metric.Int64Counter, error) {
+	counter, err := meter.Int64Counter(name,
+		metric.WithDescription(desc),
+		metric.WithUnit(unit),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create %s counter: %w", name, err)
+	}
+	return counter, nil
+}
+
+// createHistogram is a helper to reduce repetition when creating histograms
+func createHistogram(meter metric.Meter, name, desc, unit string) (metric.Float64Histogram, error) {
+	hist, err := meter.Float64Histogram(name,
+		metric.WithDescription(desc),
+		metric.WithUnit(unit),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create %s histogram: %w", name, err)
+	}
+	return hist, nil
+}
+
 // newMetrics creates and registers all metric instruments
 func newMetrics(inst *Instrumentation) (*Metrics, error) {
 	m := &Metrics{}
+	var err error
 
 	// HTTP Layer Metrics
-	var err error
-	m.HTTPRequestsTotal, err = inst.httpMeter.Int64Counter(
+	m.HTTPRequestsTotal, err = createCounter(inst.httpMeter,
 		"oauth.http.requests.total",
-		metric.WithDescription("Total number of HTTP requests"),
-		metric.WithUnit("{request}"),
-	)
+		"Total number of HTTP requests",
+		"{request}")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create http.requests.total counter: %w", err)
+		return nil, err
 	}
 
-	m.HTTPRequestDuration, err = inst.httpMeter.Float64Histogram(
+	m.HTTPRequestDuration, err = createHistogram(inst.httpMeter,
 		"oauth.http.request.duration",
-		metric.WithDescription("HTTP request duration in milliseconds"),
-		metric.WithUnit("ms"),
-	)
+		"HTTP request duration in milliseconds",
+		"ms")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create http.request.duration histogram: %w", err)
+		return nil, err
 	}
 
 	// OAuth Flow Metrics
-	m.AuthorizationStarted, err = inst.serverMeter.Int64Counter(
+	m.AuthorizationStarted, err = createCounter(inst.serverMeter,
 		"oauth.authorization.started",
-		metric.WithDescription("Number of authorization flows started"),
-		metric.WithUnit("{flow}"),
-	)
+		"Number of authorization flows started",
+		"{flow}")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create authorization.started counter: %w", err)
+		return nil, err
 	}
 
-	m.CallbackProcessed, err = inst.serverMeter.Int64Counter(
+	m.CallbackProcessed, err = createCounter(inst.serverMeter,
 		"oauth.callback.processed",
-		metric.WithDescription("Number of provider callbacks processed"),
-		metric.WithUnit("{callback}"),
-	)
+		"Number of provider callbacks processed",
+		"{callback}")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create callback.processed counter: %w", err)
+		return nil, err
 	}
 
-	m.CodeExchanged, err = inst.serverMeter.Int64Counter(
+	m.CodeExchanged, err = createCounter(inst.serverMeter,
 		"oauth.code.exchanged",
-		metric.WithDescription("Number of authorization codes exchanged for tokens"),
-		metric.WithUnit("{exchange}"),
-	)
+		"Number of authorization codes exchanged for tokens",
+		"{exchange}")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create code.exchanged counter: %w", err)
+		return nil, err
 	}
 
-	m.TokenRefreshed, err = inst.serverMeter.Int64Counter(
+	m.TokenRefreshed, err = createCounter(inst.serverMeter,
 		"oauth.token.refreshed",
-		metric.WithDescription("Number of tokens refreshed"),
-		metric.WithUnit("{refresh}"),
-	)
+		"Number of tokens refreshed",
+		"{refresh}")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create token.refreshed counter: %w", err)
+		return nil, err
 	}
 
-	m.TokenRevoked, err = inst.serverMeter.Int64Counter(
+	m.TokenRevoked, err = createCounter(inst.serverMeter,
 		"oauth.token.revoked",
-		metric.WithDescription("Number of tokens revoked"),
-		metric.WithUnit("{revocation}"),
-	)
+		"Number of tokens revoked",
+		"{revocation}")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create token.revoked counter: %w", err)
+		return nil, err
 	}
 
-	m.ClientRegistered, err = inst.serverMeter.Int64Counter(
+	m.ClientRegistered, err = createCounter(inst.serverMeter,
 		"oauth.client.registered",
-		metric.WithDescription("Number of clients registered"),
-		metric.WithUnit("{client}"),
-	)
+		"Number of clients registered",
+		"{client}")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create client.registered counter: %w", err)
+		return nil, err
 	}
 
 	// Security Metrics
-	m.RateLimitExceeded, err = inst.securityMeter.Int64Counter(
+	m.RateLimitExceeded, err = createCounter(inst.securityMeter,
 		"oauth.rate_limit.exceeded",
-		metric.WithDescription("Number of rate limit violations"),
-		metric.WithUnit("{violation}"),
-	)
+		"Number of rate limit violations",
+		"{violation}")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create rate_limit.exceeded counter: %w", err)
+		return nil, err
 	}
 
-	m.PKCEValidationFailed, err = inst.securityMeter.Int64Counter(
+	m.PKCEValidationFailed, err = createCounter(inst.securityMeter,
 		"oauth.pkce.validation_failed",
-		metric.WithDescription("Number of PKCE validation failures"),
-		metric.WithUnit("{failure}"),
-	)
+		"Number of PKCE validation failures",
+		"{failure}")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create pkce.validation_failed counter: %w", err)
+		return nil, err
 	}
 
-	m.CodeReuseDetected, err = inst.securityMeter.Int64Counter(
+	m.CodeReuseDetected, err = createCounter(inst.securityMeter,
 		"oauth.code.reuse_detected",
-		metric.WithDescription("Number of authorization code reuse attempts detected"),
-		metric.WithUnit("{attempt}"),
-	)
+		"Number of authorization code reuse attempts detected",
+		"{attempt}")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create code.reuse_detected counter: %w", err)
+		return nil, err
 	}
 
-	m.TokenReuseDetected, err = inst.securityMeter.Int64Counter(
+	m.TokenReuseDetected, err = createCounter(inst.securityMeter,
 		"oauth.token.reuse_detected",
-		metric.WithDescription("Number of token reuse attempts detected"),
-		metric.WithUnit("{attempt}"),
-	)
+		"Number of token reuse attempts detected",
+		"{attempt}")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create token.reuse_detected counter: %w", err)
+		return nil, err
 	}
 
 	// Storage Metrics
-	m.StorageOperationTotal, err = inst.storageMeter.Int64Counter(
+	m.StorageOperationTotal, err = createCounter(inst.storageMeter,
 		"storage.operation.total",
-		metric.WithDescription("Total number of storage operations"),
-		metric.WithUnit("{operation}"),
-	)
+		"Total number of storage operations",
+		"{operation}")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create storage.operation.total counter: %w", err)
+		return nil, err
 	}
 
-	m.StorageOperationDuration, err = inst.storageMeter.Float64Histogram(
+	m.StorageOperationDuration, err = createHistogram(inst.storageMeter,
 		"storage.operation.duration",
-		metric.WithDescription("Storage operation duration in milliseconds"),
-		metric.WithUnit("ms"),
-	)
+		"Storage operation duration in milliseconds",
+		"ms")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create storage.operation.duration histogram: %w", err)
+		return nil, err
 	}
 
 	// Provider Metrics
-	m.ProviderAPICallsTotal, err = inst.providerMeter.Int64Counter(
+	m.ProviderAPICallsTotal, err = createCounter(inst.providerMeter,
 		"provider.api.calls.total",
-		metric.WithDescription("Total number of provider API calls"),
-		metric.WithUnit("{call}"),
-	)
+		"Total number of provider API calls",
+		"{call}")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create provider.api.calls.total counter: %w", err)
+		return nil, err
 	}
 
-	m.ProviderAPIDuration, err = inst.providerMeter.Float64Histogram(
+	m.ProviderAPIDuration, err = createHistogram(inst.providerMeter,
 		"provider.api.duration",
-		metric.WithDescription("Provider API call duration in milliseconds"),
-		metric.WithUnit("ms"),
-	)
+		"Provider API call duration in milliseconds",
+		"ms")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create provider.api.duration histogram: %w", err)
+		return nil, err
 	}
 
-	m.ProviderAPIErrors, err = inst.providerMeter.Int64Counter(
+	m.ProviderAPIErrors, err = createCounter(inst.providerMeter,
 		"provider.api.errors.total",
-		metric.WithDescription("Total number of provider API errors"),
-		metric.WithUnit("{error}"),
-	)
+		"Total number of provider API errors",
+		"{error}")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create provider.api.errors.total counter: %w", err)
+		return nil, err
 	}
 
 	// Audit Metrics

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sync"
 
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -140,12 +139,6 @@ func New(config Config) (*Instrumentation, error) {
 		return nil, fmt.Errorf("failed to create metrics: %w", err)
 	}
 
-	// Set global providers (optional, but recommended for libraries)
-	if config.Enabled {
-		otel.SetMeterProvider(inst.meterProvider)
-		otel.SetTracerProvider(inst.tracerProvider)
-	}
-
 	return inst, nil
 }
 
@@ -158,7 +151,7 @@ func (i *Instrumentation) initializeProviders() error {
 	i.tracerProvider = tracenoop.NewTracerProvider()
 
 	// TODO: Implement actual exporters based on config.MetricExporter and config.TraceExporter
-	// This will be done in a subsequent implementation phase
+	// Track this work in a follow-up issue for production-ready exporters
 
 	return nil
 }
