@@ -6,6 +6,7 @@ import (
 )
 
 func TestMetrics_RecordHTTPRequest(t *testing.T) {
+	ctx := context.Background()
 	inst, err := New(Config{
 		Enabled: true,
 	})
@@ -14,7 +15,6 @@ func TestMetrics_RecordHTTPRequest(t *testing.T) {
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	metrics := inst.Metrics()
 
 	// Test recording various HTTP requests
@@ -40,6 +40,7 @@ func TestMetrics_RecordHTTPRequest(t *testing.T) {
 }
 
 func TestMetrics_RecordAuthorizationFlow(t *testing.T) {
+	ctx := context.Background()
 	inst, err := New(Config{
 		Enabled: true,
 	})
@@ -48,7 +49,6 @@ func TestMetrics_RecordAuthorizationFlow(t *testing.T) {
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	metrics := inst.Metrics()
 
 	// Test authorization flow metrics
@@ -73,6 +73,7 @@ func TestMetrics_RecordAuthorizationFlow(t *testing.T) {
 }
 
 func TestMetrics_RecordSecurityEvents(t *testing.T) {
+	ctx := context.Background()
 	inst, err := New(Config{
 		Enabled: true,
 	})
@@ -81,7 +82,6 @@ func TestMetrics_RecordSecurityEvents(t *testing.T) {
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	metrics := inst.Metrics()
 
 	// Test security metrics
@@ -101,6 +101,7 @@ func TestMetrics_RecordSecurityEvents(t *testing.T) {
 }
 
 func TestMetrics_RecordStorageOperations(t *testing.T) {
+	ctx := context.Background()
 	inst, err := New(Config{
 		Enabled: true,
 	})
@@ -109,7 +110,6 @@ func TestMetrics_RecordStorageOperations(t *testing.T) {
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	metrics := inst.Metrics()
 
 	// Test storage metrics
@@ -122,6 +122,7 @@ func TestMetrics_RecordStorageOperations(t *testing.T) {
 }
 
 func TestMetrics_RecordProviderAPICalls(t *testing.T) {
+	ctx := context.Background()
 	inst, err := New(Config{
 		Enabled: true,
 	})
@@ -130,7 +131,6 @@ func TestMetrics_RecordProviderAPICalls(t *testing.T) {
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	metrics := inst.Metrics()
 
 	// Test provider metrics
@@ -156,6 +156,7 @@ func TestMetrics_RecordProviderAPICalls(t *testing.T) {
 }
 
 func TestMetrics_RecordAuditEvents(t *testing.T) {
+	ctx := context.Background()
 	inst, err := New(Config{
 		Enabled: true,
 	})
@@ -164,7 +165,6 @@ func TestMetrics_RecordAuditEvents(t *testing.T) {
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	metrics := inst.Metrics()
 
 	// Test audit metrics
@@ -177,6 +177,7 @@ func TestMetrics_RecordAuditEvents(t *testing.T) {
 }
 
 func TestMetrics_RecordEncryptionOperations(t *testing.T) {
+	ctx := context.Background()
 	inst, err := New(Config{
 		Enabled: true,
 	})
@@ -185,7 +186,6 @@ func TestMetrics_RecordEncryptionOperations(t *testing.T) {
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	metrics := inst.Metrics()
 
 	// Test encryption metrics
@@ -196,6 +196,7 @@ func TestMetrics_RecordEncryptionOperations(t *testing.T) {
 }
 
 func TestMetrics_ConcurrentRecording(t *testing.T) {
+	ctx := context.Background()
 	inst, err := New(Config{
 		Enabled: true,
 	})
@@ -204,7 +205,6 @@ func TestMetrics_ConcurrentRecording(t *testing.T) {
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	metrics := inst.Metrics()
 
 	// Test concurrent metric recording
@@ -232,6 +232,7 @@ func TestMetrics_ConcurrentRecording(t *testing.T) {
 }
 
 func TestMetrics_NoOpBehavior(t *testing.T) {
+	ctx := context.Background()
 	// Test that disabled instrumentation doesn't error on metric recording
 	inst, err := New(Config{
 		Enabled: false,
@@ -241,7 +242,6 @@ func TestMetrics_NoOpBehavior(t *testing.T) {
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	metrics := inst.Metrics()
 
 	// All these should be no-ops and not panic

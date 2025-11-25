@@ -104,6 +104,7 @@ func TestNew(t *testing.T) {
 }
 
 func TestInstrumentation_NoOpProviders(t *testing.T) {
+	ctx := context.Background()
 	// Test that disabled instrumentation uses no-op providers
 	inst, err := New(Config{
 		Enabled: false,
@@ -113,7 +114,6 @@ func TestInstrumentation_NoOpProviders(t *testing.T) {
 	}
 
 	// Verify that we can use meters and tracers without errors
-	ctx := context.Background()
 
 	// Test metrics recording (should be no-op)
 	inst.Metrics().RecordAuthorizationStarted(ctx, "test-client")
@@ -128,6 +128,7 @@ func TestInstrumentation_NoOpProviders(t *testing.T) {
 }
 
 func TestInstrumentation_ConcurrentAccess(t *testing.T) {
+	ctx := context.Background()
 	// Test concurrent access to instrumentation
 	inst, err := New(Config{
 		Enabled:        true,
@@ -141,7 +142,6 @@ func TestInstrumentation_ConcurrentAccess(t *testing.T) {
 
 	// Launch concurrent goroutines recording metrics
 	done := make(chan bool)
-	ctx := context.Background()
 
 	for i := 0; i < 10; i++ {
 		go func(id int) {
@@ -189,10 +189,10 @@ func TestConfig_Defaults(t *testing.T) {
 // Benchmark tests to measure instrumentation overhead
 
 func BenchmarkMetrics_RecordHTTPRequest(b *testing.B) {
+	ctx := context.Background()
 	inst, _ := New(Config{Enabled: true})
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	metrics := inst.Metrics()
 
 	b.ResetTimer()
@@ -202,10 +202,10 @@ func BenchmarkMetrics_RecordHTTPRequest(b *testing.B) {
 }
 
 func BenchmarkMetrics_RecordHTTPRequest_NoOp(b *testing.B) {
+	ctx := context.Background()
 	inst, _ := New(Config{Enabled: false})
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	metrics := inst.Metrics()
 
 	b.ResetTimer()
@@ -215,10 +215,10 @@ func BenchmarkMetrics_RecordHTTPRequest_NoOp(b *testing.B) {
 }
 
 func BenchmarkTracing_SpanCreation(b *testing.B) {
+	ctx := context.Background()
 	inst, _ := New(Config{Enabled: true})
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	tracer := inst.Tracer("server")
 
 	b.ResetTimer()
@@ -229,10 +229,10 @@ func BenchmarkTracing_SpanCreation(b *testing.B) {
 }
 
 func BenchmarkTracing_SpanCreation_NoOp(b *testing.B) {
+	ctx := context.Background()
 	inst, _ := New(Config{Enabled: false})
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	tracer := inst.Tracer("server")
 
 	b.ResetTimer()
@@ -243,10 +243,10 @@ func BenchmarkTracing_SpanCreation_NoOp(b *testing.B) {
 }
 
 func BenchmarkTracing_SpanWithAttributes(b *testing.B) {
+	ctx := context.Background()
 	inst, _ := New(Config{Enabled: true})
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	tracer := inst.Tracer("server")
 
 	b.ResetTimer()
@@ -260,10 +260,10 @@ func BenchmarkTracing_SpanWithAttributes(b *testing.B) {
 }
 
 func BenchmarkConcurrentMetrics(b *testing.B) {
+	ctx := context.Background()
 	inst, _ := New(Config{Enabled: true})
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	metrics := inst.Metrics()
 
 	b.ResetTimer()
@@ -275,10 +275,10 @@ func BenchmarkConcurrentMetrics(b *testing.B) {
 }
 
 func BenchmarkConcurrentSpans(b *testing.B) {
+	ctx := context.Background()
 	inst, _ := New(Config{Enabled: true})
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	tracer := inst.Tracer("server")
 
 	b.ResetTimer()
@@ -489,6 +489,7 @@ func TestNewWithMultipleExporters(t *testing.T) {
 }
 
 func TestShutdownWithExporters(t *testing.T) {
+	ctx := context.Background()
 	config := Config{
 		Enabled:         true,
 		ServiceName:     "test-service",
@@ -503,7 +504,6 @@ func TestShutdownWithExporters(t *testing.T) {
 	}
 
 	// Shutdown should succeed
-	ctx := context.Background()
 	if err := inst.Shutdown(ctx); err != nil {
 		t.Errorf("Shutdown() failed: %v", err)
 	}

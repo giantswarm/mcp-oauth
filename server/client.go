@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -20,9 +21,9 @@ const (
 )
 
 // RegisterClient registers a new OAuth client with IP-based DoS protection
-func (s *Server) RegisterClient(clientName, clientType string, redirectURIs []string, scopes []string, clientIP string, maxClientsPerIP int) (*storage.Client, string, error) {
+func (s *Server) RegisterClient(ctx context.Context, clientName, clientType string, redirectURIs []string, scopes []string, clientIP string, maxClientsPerIP int) (*storage.Client, string, error) {
 	// Check IP limit to prevent DoS via mass client registration
-	if err := s.clientStore.CheckIPLimit(clientIP, maxClientsPerIP); err != nil {
+	if err := s.clientStore.CheckIPLimit(ctx, clientIP, maxClientsPerIP); err != nil {
 		return nil, "", err
 	}
 	// Generate client ID using oauth2.GenerateVerifier (same quality)
@@ -67,7 +68,7 @@ func (s *Server) RegisterClient(clientName, clientType string, redirectURIs []st
 	}
 
 	// Save client
-	if err := s.clientStore.SaveClient(client); err != nil {
+	if err := s.clientStore.SaveClient(ctx, client); err != nil {
 		return nil, "", fmt.Errorf("failed to save client: %w", err)
 	}
 
@@ -90,11 +91,11 @@ func (s *Server) RegisterClient(clientName, clientType string, redirectURIs []st
 }
 
 // ValidateClientCredentials validates client credentials for token endpoint
-func (s *Server) ValidateClientCredentials(clientID, clientSecret string) error {
-	return s.clientStore.ValidateClientSecret(clientID, clientSecret)
+func (s *Server) ValidateClientCredentials(ctx context.Context, clientID, clientSecret string) error {
+	return s.clientStore.ValidateClientSecret(ctx, clientID, clientSecret)
 }
 
 // GetClient retrieves a client by ID (for use by handler)
-func (s *Server) GetClient(clientID string) (*storage.Client, error) {
-	return s.clientStore.GetClient(clientID)
+func (s *Server) GetClient(ctx context.Context, clientID string) (*storage.Client, error) {
+	return s.clientStore.GetClient(ctx, clientID)
 }

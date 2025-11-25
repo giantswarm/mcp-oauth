@@ -108,7 +108,7 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 	}
 
 	// Refresh succeeded - update stored token
-	if err := s.tokenStore.SaveToken(accessToken, newProviderToken); err != nil {
+	if err := s.tokenStore.SaveToken(ctx, accessToken, newProviderToken); err != nil {
 		s.Logger.Warn("Failed to save refreshed token",
 			"error", err,
 			"token_prefix", safeTruncate(accessToken, 8))
@@ -147,7 +147,7 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
 	// SECURITY: Check local token expiry BEFORE calling provider
 	// This prevents expired tokens from being accepted if provider's clock is skewed
-	storedToken, err := s.tokenStore.GetToken(accessToken)
+	storedToken, err := s.tokenStore.GetToken(ctx, accessToken)
 	if err == nil {
 		// Token found - validate expiry with grace period for clock skew
 		if s.isTokenExpiredLocally(storedToken) {
@@ -186,7 +186,7 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 	}
 
 	// Store user info
-	if err := s.tokenStore.SaveUserInfo(userInfo.ID, userInfo); err != nil {
+	if err := s.tokenStore.SaveUserInfo(ctx, userInfo.ID, userInfo); err != nil {
 		s.Logger.Warn("Failed to save user info", "error", err)
 	}
 
@@ -195,7 +195,7 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 
 // StartAuthorizationFlow starts a new OAuth authorization flow
 // clientState is the state parameter from the client (REQUIRED for CSRF protection)
-func (s *Server) StartAuthorizationFlow(clientID, redirectURI, scope, codeChallenge, codeChallengeMethod, clientState string) (string, error) {
+func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectURI, scope, codeChallenge, codeChallengeMethod, clientState string) (string, error) {
 	// CRITICAL SECURITY: Validate state parameter from client for CSRF protection
 	// This includes minimum length validation to prevent timing attacks
 	if err := s.validateStateParameter(clientState); err != nil {
@@ -247,7 +247,7 @@ func (s *Server) StartAuthorizationFlow(clientID, redirectURI, scope, codeChalle
 	}
 
 	// Validate client
-	client, err := s.clientStore.GetClient(clientID)
+	client, err := s.clientStore.GetClient(ctx, clientID)
 	if err != nil {
 		if s.Auditor != nil {
 			s.Auditor.LogAuthFailure("", clientID, "", ErrorCodeInvalidClient)
@@ -311,7 +311,7 @@ func (s *Server) StartAuthorizationFlow(clientID, redirectURI, scope, codeChalle
 		CreatedAt:           time.Now(),
 		ExpiresAt:           time.Now().Add(time.Duration(s.Config.AuthorizationCodeTTL) * time.Second),
 	}
-	if err := s.flowStore.SaveAuthorizationState(authState); err != nil {
+	if err := s.flowStore.SaveAuthorizationState(ctx, authState); err != nil {
 		return "", fmt.Errorf("failed to save authorization state: %w", err)
 	}
 
@@ -342,7 +342,7 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 
 	// CRITICAL SECURITY: Validate provider state to prevent callback injection
 	// We must lookup by providerState (not client state) since that's what the provider returns
-	authState, err := s.flowStore.GetAuthorizationStateByProviderState(providerState)
+	authState, err := s.flowStore.GetAuthorizationStateByProviderState(ctx, providerState)
 	if err != nil {
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
@@ -375,7 +375,7 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 
 	// Delete authorization state (one-time use)
 	// Use providerState for deletion since that's our lookup key
-	_ = s.flowStore.DeleteAuthorizationState(providerState)
+	_ = s.flowStore.DeleteAuthorizationState(ctx, providerState)
 
 	// Exchange code with provider
 	// Note: We don't pass code_verifier here because PKCE verification
@@ -392,10 +392,10 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 	}
 
 	// Save user info and token
-	if err := s.tokenStore.SaveUserInfo(userInfo.ID, userInfo); err != nil {
+	if err := s.tokenStore.SaveUserInfo(ctx, userInfo.ID, userInfo); err != nil {
 		s.Logger.Warn("Failed to save user info", "error", err)
 	}
-	if err := s.tokenStore.SaveToken(userInfo.ID, providerToken); err != nil {
+	if err := s.tokenStore.SaveToken(ctx, userInfo.ID, providerToken); err != nil {
 		s.Logger.Warn("Failed to save provider token", "error", err)
 	}
 
@@ -418,7 +418,7 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 	}
 
 	// Save authorization code
-	if err := s.flowStore.SaveAuthorizationCode(authCodeObj); err != nil {
+	if err := s.flowStore.SaveAuthorizationCode(ctx, authCodeObj); err != nil {
 		return nil, "", fmt.Errorf("failed to save authorization code: %w", err)
 	}
 
@@ -454,7 +454,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 
 	// SECURITY: Atomically check and mark authorization code as used
 	// This prevents race conditions where multiple concurrent requests could use the same code
-	authCode, err := s.flowStore.AtomicCheckAndMarkAuthCodeUsed(code)
+	authCode, err := s.flowStore.AtomicCheckAndMarkAuthCodeUsed(ctx, code)
 	if err != nil {
 		// Check if this is a reuse attempt (code already used)
 		if authCode != nil && authCode.Used {
@@ -504,7 +504,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 			}
 
 			// Delete the authorization code
-			_ = s.flowStore.DeleteAuthorizationCode(code)
+			_ = s.flowStore.DeleteAuthorizationCode(ctx, code)
 
 			// Return generic error per RFC 6749 (don't reveal details to attacker)
 			return nil, "", fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
@@ -528,7 +528,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 
 	// CRITICAL SECURITY: Fetch client to check if PKCE is required (OAuth 2.1)
 	// Public clients (mobile apps, SPAs) MUST use PKCE to prevent authorization code theft
-	client, err := s.clientStore.GetClient(clientID)
+	client, err := s.clientStore.GetClient(ctx, clientID)
 	if err != nil {
 		return nil, "", s.logAuthCodeValidationFailure("client_not_found", clientID, "", safeTruncate(code, 8))
 	}
@@ -668,12 +668,12 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 	}
 
 	// Store access token -> provider token mapping
-	if err := s.tokenStore.SaveToken(accessToken, authCode.ProviderToken); err != nil {
+	if err := s.tokenStore.SaveToken(ctx, accessToken, authCode.ProviderToken); err != nil {
 		s.Logger.Warn("Failed to save access token mapping", "error", err)
 	}
 
 	// Store refresh token -> provider token mapping (for refresh flow)
-	if err := s.tokenStore.SaveToken(refreshToken, authCode.ProviderToken); err != nil {
+	if err := s.tokenStore.SaveToken(ctx, refreshToken, authCode.ProviderToken); err != nil {
 		s.Logger.Warn("Failed to save refresh token", "error", err)
 	}
 
@@ -697,7 +697,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 	if familyStore, ok := s.tokenStore.(storage.RefreshTokenFamilyStore); ok {
 		// Create new token family (generation 0)
 		familyID := generateRandomToken()
-		if err := familyStore.SaveRefreshTokenWithFamily(refreshToken, authCode.UserID, clientID, familyID, 0, refreshTokenExpiry); err != nil {
+		if err := familyStore.SaveRefreshTokenWithFamily(ctx, refreshToken, authCode.UserID, clientID, familyID, 0, refreshTokenExpiry); err != nil {
 			s.Logger.Warn("Failed to track refresh token with family", "error", err)
 		} else {
 			s.Logger.Debug("Created new refresh token family",
@@ -706,7 +706,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 		}
 	} else {
 		// Fallback to basic tracking
-		if err := s.tokenStore.SaveRefreshToken(refreshToken, authCode.UserID, refreshTokenExpiry); err != nil {
+		if err := s.tokenStore.SaveRefreshToken(ctx, refreshToken, authCode.UserID, refreshTokenExpiry); err != nil {
 			s.Logger.Warn("Failed to track refresh token", "error", err)
 		}
 	}
@@ -742,13 +742,13 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	// OAUTH 2.1 SECURITY: Atomically get and delete refresh token FIRST
 	// This is the synchronization point - only ONE concurrent request can succeed
 	// After this, we check family metadata to detect reuse of already-rotated tokens
-	userID, providerToken, err := s.tokenStore.AtomicGetAndDeleteRefreshToken(refreshToken)
+	userID, providerToken, err := s.tokenStore.AtomicGetAndDeleteRefreshToken(ctx, refreshToken)
 
 	if err != nil {
 		// Token not found or already deleted - check if this is a reuse attempt
 		// SECURITY FIX: Check family AFTER atomic delete to eliminate TOCTOU vulnerability
 		if supportsFamilies {
-			family, famErr := familyStore.GetRefreshTokenFamily(refreshToken)
+			family, famErr := familyStore.GetRefreshTokenFamily(ctx, refreshToken)
 			if famErr == nil {
 				// Family exists but token was already deleted/rotated → REUSE DETECTED!
 				// Check if family was previously revoked
@@ -791,7 +791,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 				}
 
 				// Step 1: Revoke entire token family (OAuth 2.1 requirement)
-				if err := familyStore.RevokeRefreshTokenFamily(family.FamilyID); err != nil {
+				if err := familyStore.RevokeRefreshTokenFamily(ctx, family.FamilyID); err != nil {
 					s.Logger.Error("Failed to revoke token family", "error", err)
 					// Continue with user token revocation even if family revocation failed
 				}
@@ -864,7 +864,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		var familyID string
 		var generation int
 		if supportsFamilies {
-			family, err := familyStore.GetRefreshTokenFamily(refreshToken)
+			family, err := familyStore.GetRefreshTokenFamily(ctx, refreshToken)
 			if err == nil {
 				familyID = family.FamilyID
 				generation = family.Generation + 1 // Increment generation
@@ -876,10 +876,10 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		}
 
 		// Invalidate old refresh token (OAuth 2.1 security requirement)
-		if err := s.tokenStore.DeleteRefreshToken(refreshToken); err != nil {
+		if err := s.tokenStore.DeleteRefreshToken(ctx, refreshToken); err != nil {
 			s.Logger.Warn("Failed to delete old refresh token", "error", err)
 		}
-		if err := s.tokenStore.DeleteToken(refreshToken); err != nil {
+		if err := s.tokenStore.DeleteToken(ctx, refreshToken); err != nil {
 			s.Logger.Warn("Failed to delete old refresh token mapping", "error", err)
 		}
 
@@ -892,11 +892,11 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		// Save with family tracking if supported
 		refreshTokenExpiry := time.Now().Add(time.Duration(s.Config.RefreshTokenTTL) * time.Second)
 		if supportsFamilies && familyID != "" {
-			if err := familyStore.SaveRefreshTokenWithFamily(newRefreshToken, userID, clientID, familyID, generation, refreshTokenExpiry); err != nil {
+			if err := familyStore.SaveRefreshTokenWithFamily(ctx, newRefreshToken, userID, clientID, familyID, generation, refreshTokenExpiry); err != nil {
 				s.Logger.Warn("Failed to save refresh token with family", "error", err)
 			}
 		} else {
-			if err := s.tokenStore.SaveRefreshToken(newRefreshToken, userID, refreshTokenExpiry); err != nil {
+			if err := s.tokenStore.SaveRefreshToken(ctx, newRefreshToken, userID, refreshTokenExpiry); err != nil {
 				s.Logger.Warn("Failed to track new refresh token", "error", err)
 			}
 		}
@@ -916,12 +916,12 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	}
 
 	// Store new access token -> provider token mapping
-	if err := s.tokenStore.SaveToken(newAccessToken, newProviderToken); err != nil {
+	if err := s.tokenStore.SaveToken(ctx, newAccessToken, newProviderToken); err != nil {
 		s.Logger.Warn("Failed to save new access token", "error", err)
 	}
 
 	// Store new refresh token -> provider token mapping
-	if err := s.tokenStore.SaveToken(newRefreshToken, newProviderToken); err != nil {
+	if err := s.tokenStore.SaveToken(ctx, newRefreshToken, newProviderToken); err != nil {
 		s.Logger.Warn("Failed to save new refresh token", "error", err)
 	}
 
@@ -944,7 +944,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 // RevokeToken revokes a token (access or refresh)
 func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP string) error {
 	// Get provider token
-	providerToken, err := s.tokenStore.GetToken(token)
+	providerToken, err := s.tokenStore.GetToken(ctx, token)
 	if err != nil {
 		// Token not found, but revocation should succeed per RFC 7009
 		return nil
@@ -959,7 +959,7 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP stri
 	}
 
 	// Delete locally
-	if err := s.tokenStore.DeleteToken(token); err != nil {
+	if err := s.tokenStore.DeleteToken(ctx, token); err != nil {
 		s.Logger.Warn("Failed to delete token locally", "error", err)
 	}
 
@@ -1018,7 +1018,7 @@ func (s *Server) RevokeAllTokensForUserClient(ctx context.Context, userID, clien
 	}
 
 	// Get list of tokens BEFORE revoking locally (so we can revoke at provider)
-	tokens, err := revocationStore.GetTokensByUserClient(userID, clientID)
+	tokens, err := revocationStore.GetTokensByUserClient(ctx, userID, clientID)
 	if err != nil {
 		return fmt.Errorf("failed to get tokens for revocation: %w", err)
 	}
@@ -1030,7 +1030,7 @@ func (s *Server) RevokeAllTokensForUserClient(ctx context.Context, userID, clien
 	totalTokensToRevoke := 0
 
 	for _, tokenID := range tokens {
-		providerToken, err := s.tokenStore.GetToken(tokenID)
+		providerToken, err := s.tokenStore.GetToken(ctx, tokenID)
 		if err != nil {
 			s.Logger.Warn("Could not get provider token for revocation",
 				"token_id", safeTruncate(tokenID, 8),
@@ -1140,7 +1140,7 @@ func (s *Server) RevokeAllTokensForUserClient(ctx context.Context, userID, clien
 	}
 
 	// Now revoke locally
-	revokedCount, err := revocationStore.RevokeAllTokensForUserClient(userID, clientID)
+	revokedCount, err := revocationStore.RevokeAllTokensForUserClient(ctx, userID, clientID)
 	if err != nil {
 		s.Logger.Error("Failed to revoke tokens locally",
 			"user_id", userID,

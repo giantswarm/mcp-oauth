@@ -241,7 +241,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	)
 
 	// Start authorization flow with client state (server also validates for defense in depth)
-	authURL, err := h.server.StartAuthorizationFlow(clientID, redirectURI, scope, codeChallenge, codeChallengeMethod, state)
+	authURL, err := h.server.StartAuthorizationFlow(ctx, clientID, redirectURI, scope, codeChallenge, codeChallengeMethod, state)
 	if err != nil {
 		h.logger.Error("Failed to start authorization flow", "error", err)
 		h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusInternalServerError, startTime)
@@ -473,7 +473,7 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	if authClientID, authClientSecret := h.parseBasicAuth(r); authClientID != "" {
 		clientID = authClientID
 		// Validate client credentials
-		if err := h.server.ValidateClientCredentials(clientID, authClientSecret); err != nil {
+		if err := h.server.ValidateClientCredentials(ctx, clientID, authClientSecret); err != nil {
 			h.logger.Warn("Client authentication failed", "client_id", clientID, "ip", clientIP, "error", err)
 			if h.server.Auditor != nil {
 				h.server.Auditor.LogAuthFailure("", clientID, clientIP, "client_authentication_failed")
@@ -558,7 +558,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 	if authClientID, authClientSecret := h.parseBasicAuth(r); authClientID != "" {
 		clientID = authClientID
 		// Validate client credentials
-		if err := h.server.ValidateClientCredentials(clientID, authClientSecret); err != nil {
+		if err := h.server.ValidateClientCredentials(ctx, clientID, authClientSecret); err != nil {
 			h.logger.Warn("Client authentication failed for revocation", "client_id", clientID, "ip", clientIP)
 			if h.server.Auditor != nil {
 				h.server.Auditor.LogAuthFailure("", clientID, clientIP, "revocation_auth_failed")
@@ -705,7 +705,7 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	}
 
 	// Register client with IP tracking
-	client, clientSecret, err := h.server.RegisterClient(req.ClientName, req.ClientType, req.RedirectURIs, req.Scopes, clientIP, maxClients)
+	client, clientSecret, err := h.server.RegisterClient(ctx, req.ClientName, req.ClientType, req.RedirectURIs, req.Scopes, clientIP, maxClients)
 	if err != nil {
 		// Check if it's a rate limit error
 		if strings.Contains(err.Error(), "registration limit") {
@@ -767,6 +767,8 @@ func (h *Handler) parseBasicAuth(r *http.Request) (username, password string) {
 // authenticateClient validates client credentials from either Basic Auth or form parameters
 // Returns the validated client or an error with the OAuth error code
 func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string) (*storage.Client, error) {
+	ctx := r.Context()
+
 	// Get client credentials from Authorization header (if present)
 	authClientID, authClientSecret := h.parseBasicAuth(r)
 	if authClientID != "" {
@@ -778,7 +780,7 @@ func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string)
 	}
 
 	// Fetch client
-	client, err := h.server.GetClient(clientID)
+	client, err := h.server.GetClient(ctx, clientID)
 	if err != nil {
 		h.logger.Warn("Unknown client", "client_id", clientID, "ip", clientIP)
 		if h.server.Auditor != nil {
@@ -798,7 +800,7 @@ func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string)
 		}
 
 		// Validate client credentials
-		if err := h.server.ValidateClientCredentials(clientID, authClientSecret); err != nil {
+		if err := h.server.ValidateClientCredentials(ctx, clientID, authClientSecret); err != nil {
 			h.logger.Warn("Client authentication failed", "client_id", clientID, "ip", clientIP, "error", err)
 			if h.server.Auditor != nil {
 				h.server.Auditor.LogAuthFailure("", clientID, clientIP, "client_authentication_failed")
@@ -855,6 +857,8 @@ func (h *Handler) writeError(w http.ResponseWriter, code, description string, st
 // This allows resource servers to validate access tokens
 // Security: Requires client authentication to prevent token scanning attacks
 func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -884,7 +888,7 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 	if authClientID != "" {
 		clientID = authClientID
 		// Validate client credentials
-		if err := h.server.ValidateClientCredentials(clientID, authClientSecret); err != nil {
+		if err := h.server.ValidateClientCredentials(ctx, clientID, authClientSecret); err != nil {
 			h.logger.Warn("Client authentication failed for introspection", "client_id", clientID, "ip", clientIP)
 			if h.server.Auditor != nil {
 				h.server.Auditor.LogAuthFailure("", clientID, clientIP, "introspection_auth_failed")

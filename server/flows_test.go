@@ -52,10 +52,11 @@ func setupFlowTestServer(t *testing.T) (*Server, *memory.Store, *mock.MockProvid
 }
 
 func TestServer_StartAuthorizationFlow(t *testing.T) {
+	ctx := context.Background()
 	srv, store, _ := setupFlowTestServer(t)
 
 	// Register a test client
-	client, _, err := srv.RegisterClient(
+	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback"},
@@ -155,7 +156,7 @@ func TestServer_StartAuthorizationFlow(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			authURL, err := srv.StartAuthorizationFlow(
+			authURL, err := srv.StartAuthorizationFlow(ctx,
 				tt.clientID,
 				tt.redirectURI,
 				tt.scope,
@@ -175,7 +176,7 @@ func TestServer_StartAuthorizationFlow(t *testing.T) {
 				}
 
 				// Verify authorization state was saved
-				authState, err := store.GetAuthorizationState(tt.clientState)
+				authState, err := store.GetAuthorizationState(ctx, tt.clientState)
 				if err != nil {
 					t.Errorf("Authorization state not saved: %v", err)
 				} else {
@@ -192,10 +193,11 @@ func TestServer_StartAuthorizationFlow(t *testing.T) {
 }
 
 func TestServer_HandleProviderCallback(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Register a test client
-	client, _, err := srv.RegisterClient(
+	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback"},
@@ -213,7 +215,7 @@ func TestServer_HandleProviderCallback(t *testing.T) {
 	clientState := testutil.GenerateRandomString(43)
 
 	// Start authorization flow
-	_, err = srv.StartAuthorizationFlow(
+	_, err = srv.StartAuthorizationFlow(ctx,
 		client.ClientID,
 		"https://example.com/callback",
 		"openid email",
@@ -226,7 +228,7 @@ func TestServer_HandleProviderCallback(t *testing.T) {
 	}
 
 	// Get the provider state
-	authState, err := store.GetAuthorizationState(clientState)
+	authState, err := store.GetAuthorizationState(ctx, clientState)
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -295,10 +297,11 @@ func TestServer_HandleProviderCallback(t *testing.T) {
 }
 
 func TestServer_ExchangeAuthorizationCode(t *testing.T) {
+	ctx := context.Background()
 	srv, store, _ := setupFlowTestServer(t)
 
 	// Register a test client
-	client, _, err := srv.RegisterClient(
+	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback"},
@@ -333,7 +336,7 @@ func TestServer_ExchangeAuthorizationCode(t *testing.T) {
 		Used:      false,
 	}
 
-	err = store.SaveAuthorizationCode(authCode)
+	err = store.SaveAuthorizationCode(ctx, authCode)
 	if err != nil {
 		t.Fatalf("SaveAuthorizationCode() error = %v", err)
 	}
@@ -413,7 +416,7 @@ func TestServer_ExchangeAuthorizationCode(t *testing.T) {
 					freshCode.Code = authCode.Code
 				}
 				if tt.name != "invalid code" {
-					_ = store.SaveAuthorizationCode(freshCode)
+					_ = store.SaveAuthorizationCode(ctx, freshCode)
 					if tt.name == "wrong redirect URI" || tt.name == "invalid code verifier" {
 						tt := struct {
 							name         string
@@ -485,10 +488,11 @@ func TestServer_ExchangeAuthorizationCode(t *testing.T) {
 // that public clients MUST use PKCE (OAuth 2.1 requirement) while confidential
 // clients can optionally use PKCE for enhanced security.
 func TestServer_ExchangeAuthorizationCode_PublicClient_PKCEEnforcement(t *testing.T) {
+	ctx := context.Background()
 	srv, store, _ := setupFlowTestServer(t)
 
 	// Register a public client (mobile app, SPA)
-	publicClient, _, err := srv.RegisterClient(
+	publicClient, _, err := srv.RegisterClient(ctx,
 		"Public Mobile App",
 		ClientTypePublic,
 		[]string{"https://example.com/callback"},
@@ -501,7 +505,7 @@ func TestServer_ExchangeAuthorizationCode_PublicClient_PKCEEnforcement(t *testin
 	}
 
 	// Register a confidential client (server-side web app)
-	confidentialClient, _, err := srv.RegisterClient(
+	confidentialClient, _, err := srv.RegisterClient(ctx,
 		"Confidential Server App",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback"},
@@ -592,7 +596,7 @@ func TestServer_ExchangeAuthorizationCode_PublicClient_PKCEEnforcement(t *testin
 				Used:      false,
 			}
 
-			err := store.SaveAuthorizationCode(authCode)
+			err := store.SaveAuthorizationCode(ctx, authCode)
 			if err != nil {
 				t.Fatalf("SaveAuthorizationCode() error = %v", err)
 			}
@@ -639,7 +643,7 @@ func TestServer_ExchangeAuthorizationCode_PublicClient_PKCEEnforcement(t *testin
 				}
 
 				// Verify code was marked as used (OAuth 2.1 security)
-				usedCode, err := store.GetAuthorizationCode(authCode.Code)
+				usedCode, err := store.GetAuthorizationCode(ctx, authCode.Code)
 				if err != nil {
 					t.Logf("%s: Authorization code properly cleaned up (expected for one-time use)", tt.description)
 				} else if !usedCode.Used {
@@ -656,6 +660,7 @@ func TestServer_ExchangeAuthorizationCode_PublicClient_PKCEEnforcement(t *testin
 // the legacy compatibility mode where public clients can authenticate without PKCE.
 // This tests the AllowPublicClientsWithoutPKCE config option.
 func TestServer_ExchangeAuthorizationCode_AllowPublicClientsWithoutPKCE(t *testing.T) {
+	ctx := context.Background()
 	store := memory.New()
 	defer store.Stop()
 
@@ -714,7 +719,7 @@ func TestServer_ExchangeAuthorizationCode_AllowPublicClientsWithoutPKCE(t *testi
 			}
 
 			// Register a public client
-			publicClient, _, err := srv.RegisterClient(
+			publicClient, _, err := srv.RegisterClient(ctx,
 				"Test Public Client",
 				ClientTypePublic,
 				[]string{"https://example.com/callback"},
@@ -756,7 +761,7 @@ func TestServer_ExchangeAuthorizationCode_AllowPublicClientsWithoutPKCE(t *testi
 				Used:      false,
 			}
 
-			err = store.SaveAuthorizationCode(authCode)
+			err = store.SaveAuthorizationCode(ctx, authCode)
 			if err != nil {
 				t.Fatalf("SaveAuthorizationCode() error = %v", err)
 			}
@@ -810,10 +815,11 @@ func TestServer_ExchangeAuthorizationCode_AllowPublicClientsWithoutPKCE(t *testi
 // that when a public client attempts to reuse an authorization code (potential
 // token theft attack), all tokens for that user+client are revoked per OAuth 2.1.
 func TestServer_ExchangeAuthorizationCode_PublicClient_ReuseDetection(t *testing.T) {
+	ctx := context.Background()
 	srv, store, _ := setupFlowTestServer(t)
 
 	// Register a public client
-	publicClient, _, err := srv.RegisterClient(
+	publicClient, _, err := srv.RegisterClient(ctx,
 		"Public Mobile App",
 		ClientTypePublic,
 		[]string{"https://example.com/callback"},
@@ -848,7 +854,7 @@ func TestServer_ExchangeAuthorizationCode_PublicClient_ReuseDetection(t *testing
 		Used:      false,
 	}
 
-	err = store.SaveAuthorizationCode(authCode)
+	err = store.SaveAuthorizationCode(ctx, authCode)
 	if err != nil {
 		t.Fatalf("SaveAuthorizationCode() error = %v", err)
 	}
@@ -897,6 +903,7 @@ func TestServer_ExchangeAuthorizationCode_PublicClient_ReuseDetection(t *testing
 }
 
 func TestServer_ValidateToken(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Configure provider to return valid user info
@@ -947,7 +954,7 @@ func TestServer_ValidateToken(t *testing.T) {
 				}
 
 				// Verify user info was saved
-				savedInfo, err := store.GetUserInfo(userInfo.ID)
+				savedInfo, err := store.GetUserInfo(ctx, userInfo.ID)
 				if err != nil {
 					t.Errorf("User info not saved: %v", err)
 				} else if savedInfo.Email != userInfo.Email {
@@ -971,6 +978,7 @@ func setupValidTokenProvider() func(context.Context, string) (*providers.UserInf
 
 // TestServer_ValidateToken_LocalExpiry tests local token expiry validation before provider check
 func TestServer_ValidateToken_LocalExpiry(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Set up provider to always return valid user info
@@ -1071,7 +1079,7 @@ func TestServer_ValidateToken_LocalExpiry(t *testing.T) {
 					RefreshToken: "provider-refresh-" + tt.accessToken,
 					Expiry:       tt.tokenExpiry,
 				}
-				err := store.SaveToken(tt.accessToken, token)
+				err := store.SaveToken(ctx, tt.accessToken, token)
 				if err != nil {
 					t.Fatalf("SaveToken() error = %v", err)
 				}
@@ -1107,6 +1115,7 @@ func TestServer_ValidateToken_LocalExpiry(t *testing.T) {
 
 // TestServer_ValidateToken_ClockSkewScenarios tests clock skew handling
 func TestServer_ValidateToken_ClockSkewScenarios(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Provider always returns valid user info (simulating provider with skewed clock)
@@ -1136,7 +1145,7 @@ func TestServer_ValidateToken_ClockSkewScenarios(t *testing.T) {
 			RefreshToken: "provider-refresh",
 			Expiry:       time.Now().Add(-10 * time.Minute),
 		}
-		err := store.SaveToken(accessToken, token)
+		err := store.SaveToken(ctx, accessToken, token)
 		if err != nil {
 			t.Fatalf("SaveToken() error = %v", err)
 		}
@@ -1160,7 +1169,7 @@ func TestServer_ValidateToken_ClockSkewScenarios(t *testing.T) {
 			RefreshToken: "provider-refresh-near",
 			Expiry:       time.Now().Add(-3 * time.Second),
 		}
-		err := store.SaveToken(accessToken, token)
+		err := store.SaveToken(ctx, accessToken, token)
 		if err != nil {
 			t.Fatalf("SaveToken() error = %v", err)
 		}
@@ -1193,6 +1202,7 @@ func TestServer_ValidateToken_ClockSkewScenarios(t *testing.T) {
 
 // TestServer_ValidateToken_ProactiveRefresh tests proactive token refresh when token is near expiry
 func TestServer_ValidateToken_ProactiveRefresh(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Configure refresh threshold (5 minutes)
@@ -1307,7 +1317,7 @@ func TestServer_ValidateToken_ProactiveRefresh(t *testing.T) {
 				token.RefreshToken = tt.refreshTokenValue
 			}
 
-			err := store.SaveToken(tt.accessToken, token)
+			err := store.SaveToken(ctx, tt.accessToken, token)
 			if err != nil {
 				t.Fatalf("SaveToken() error = %v", err)
 			}
@@ -1343,7 +1353,7 @@ func TestServer_ValidateToken_ProactiveRefresh(t *testing.T) {
 
 			// If refresh was called, verify the new token was saved
 			if tt.expectNewToken {
-				savedToken, err := store.GetToken(tt.accessToken)
+				savedToken, err := store.GetToken(ctx, tt.accessToken)
 				if err != nil {
 					t.Errorf("Failed to get saved token: %v", err)
 				} else {
@@ -1365,6 +1375,7 @@ func TestServer_ValidateToken_ProactiveRefresh(t *testing.T) {
 
 // TestServer_ValidateToken_ProactiveRefresh_Failure tests graceful fallback when proactive refresh fails
 func TestServer_ValidateToken_ProactiveRefresh_Failure(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Configure refresh threshold
@@ -1396,7 +1407,7 @@ func TestServer_ValidateToken_ProactiveRefresh_Failure(t *testing.T) {
 		TokenType:    "Bearer",
 	}
 
-	err := store.SaveToken(accessToken, token)
+	err := store.SaveToken(ctx, accessToken, token)
 	if err != nil {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
@@ -1423,7 +1434,7 @@ func TestServer_ValidateToken_ProactiveRefresh_Failure(t *testing.T) {
 	}
 
 	// Original token should still be in storage (refresh failed)
-	savedToken, err := store.GetToken(accessToken)
+	savedToken, err := store.GetToken(ctx, accessToken)
 	if err != nil {
 		t.Errorf("Failed to get saved token: %v", err)
 	} else {
@@ -1436,6 +1447,7 @@ func TestServer_ValidateToken_ProactiveRefresh_Failure(t *testing.T) {
 
 // TestServer_ValidateToken_ProactiveRefresh_CustomThreshold tests configurable refresh threshold
 func TestServer_ValidateToken_ProactiveRefresh_CustomThreshold(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	tests := []struct {
@@ -1511,7 +1523,7 @@ func TestServer_ValidateToken_ProactiveRefresh_CustomThreshold(t *testing.T) {
 				TokenType:    "Bearer",
 			}
 
-			err := store.SaveToken(accessToken, token)
+			err := store.SaveToken(ctx, accessToken, token)
 			if err != nil {
 				t.Fatalf("SaveToken() error = %v", err)
 			}
@@ -1533,6 +1545,7 @@ func TestServer_ValidateToken_ProactiveRefresh_CustomThreshold(t *testing.T) {
 
 // TestServer_RefreshTokenRotation tests basic refresh token rotation without reuse
 func TestServer_RefreshTokenRotation(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Enable refresh token rotation
@@ -1540,7 +1553,7 @@ func TestServer_RefreshTokenRotation(t *testing.T) {
 	srv.Config.RefreshTokenTTL = 86400 // 24 hours
 
 	// Register a client
-	client, _, err := srv.RegisterClient(
+	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback"},
@@ -1560,7 +1573,7 @@ func TestServer_RefreshTokenRotation(t *testing.T) {
 
 	// Start auth flow and get tokens
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	_, err = srv.StartAuthorizationFlow(ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -1572,7 +1585,7 @@ func TestServer_RefreshTokenRotation(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(clientState)
+	authState, err := store.GetAuthorizationState(ctx, clientState)
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -1600,7 +1613,7 @@ func TestServer_RefreshTokenRotation(t *testing.T) {
 	firstRefreshToken := token.RefreshToken
 
 	// Verify first token family exists
-	family1, err := store.GetRefreshTokenFamily(firstRefreshToken)
+	family1, err := store.GetRefreshTokenFamily(ctx, firstRefreshToken)
 	if err != nil {
 		t.Fatalf("GetRefreshTokenFamily() error = %v", err)
 	}
@@ -1634,7 +1647,7 @@ func TestServer_RefreshTokenRotation(t *testing.T) {
 	}
 
 	// Verify second token has incremented generation
-	family2, err := store.GetRefreshTokenFamily(secondRefreshToken)
+	family2, err := store.GetRefreshTokenFamily(ctx, secondRefreshToken)
 	if err != nil {
 		t.Fatalf("GetRefreshTokenFamily() error = %v for second token", err)
 	}
@@ -1646,13 +1659,13 @@ func TestServer_RefreshTokenRotation(t *testing.T) {
 	}
 
 	// Verify first token was deleted (rotated out)
-	_, err = store.GetRefreshTokenInfo(firstRefreshToken)
+	_, err = store.GetRefreshTokenInfo(ctx, firstRefreshToken)
 	if err == nil {
 		t.Error("First refresh token should have been deleted after rotation")
 	}
 
 	// Verify second token is still valid
-	_, err = store.GetRefreshTokenInfo(secondRefreshToken)
+	_, err = store.GetRefreshTokenInfo(ctx, secondRefreshToken)
 	if err != nil {
 		t.Errorf("Second refresh token should be valid, got error: %v", err)
 	}
@@ -1661,6 +1674,7 @@ func TestServer_RefreshTokenRotation(t *testing.T) {
 // TestServer_RefreshTokenReuseDetection tests that refresh token reuse is detected and revokes all tokens
 // This is a CRITICAL OAuth 2.1 security feature
 func TestServer_RefreshTokenReuseDetection(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Enable refresh token rotation (required for reuse detection)
@@ -1668,7 +1682,7 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 	srv.Config.RefreshTokenTTL = 86400 // 24 hours
 
 	// Register a client
-	client, _, err := srv.RegisterClient(
+	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback"},
@@ -1688,7 +1702,7 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 
 	// Start auth flow and get initial tokens
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	_, err = srv.StartAuthorizationFlow(ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -1700,7 +1714,7 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(clientState)
+	authState, err := store.GetAuthorizationState(ctx, clientState)
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -1729,14 +1743,14 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 	firstAccessToken := token.AccessToken
 
 	// Get family info for later verification
-	family1, err := store.GetRefreshTokenFamily(firstRefreshToken)
+	family1, err := store.GetRefreshTokenFamily(ctx, firstRefreshToken)
 	if err != nil {
 		t.Fatalf("GetRefreshTokenFamily() error = %v", err)
 	}
 	familyID := family1.FamilyID
 
 	// Verify tokens exist
-	tokens, err := store.GetTokensByUserClient("mock-user-123", clientID)
+	tokens, err := store.GetTokensByUserClient(ctx, "mock-user-123", clientID)
 	if err != nil {
 		t.Fatalf("GetTokensByUserClient() error = %v", err)
 	}
@@ -1768,13 +1782,13 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 	}
 
 	// Verify first token was deleted
-	_, err = store.GetRefreshTokenInfo(firstRefreshToken)
+	_, err = store.GetRefreshTokenInfo(ctx, firstRefreshToken)
 	if err == nil {
 		t.Error("First refresh token should have been deleted after rotation")
 	}
 
 	// Verify second token is valid
-	_, err = store.GetRefreshTokenInfo(secondRefreshToken)
+	_, err = store.GetRefreshTokenInfo(ctx, secondRefreshToken)
 	if err != nil {
 		t.Errorf("Second refresh token should be valid, got error: %v", err)
 	}
@@ -1793,7 +1807,7 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 	}
 
 	// CRITICAL: Verify family was revoked
-	revokedFamily, err := store.GetRefreshTokenFamily(firstRefreshToken)
+	revokedFamily, err := store.GetRefreshTokenFamily(ctx, firstRefreshToken)
 	if err != nil {
 		t.Logf("Note: Family metadata for first token deleted (acceptable): %v", err)
 	} else if !revokedFamily.Revoked {
@@ -1801,7 +1815,7 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 	}
 
 	// Verify family is revoked when checking with second token
-	family2, err := store.GetRefreshTokenFamily(secondRefreshToken)
+	family2, err := store.GetRefreshTokenFamily(ctx, secondRefreshToken)
 	if err == nil {
 		if !family2.Revoked {
 			t.Error("Token family should be revoked after reuse detection")
@@ -1812,7 +1826,7 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 	}
 
 	// CRITICAL: Verify ALL tokens for user+client were revoked
-	tokens, err = store.GetTokensByUserClient("mock-user-123", clientID)
+	tokens, err = store.GetTokensByUserClient(ctx, "mock-user-123", clientID)
 	if err != nil {
 		t.Fatalf("GetTokensByUserClient() error = %v", err)
 	}
@@ -1821,17 +1835,17 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 	}
 
 	// Verify specific tokens were deleted
-	_, err = store.GetToken(firstAccessToken)
+	_, err = store.GetToken(ctx, firstAccessToken)
 	if err == nil {
 		t.Error("First access token should have been revoked")
 	}
 
-	_, err = store.GetToken(secondAccessToken)
+	_, err = store.GetToken(ctx, secondAccessToken)
 	if err == nil {
 		t.Error("Second access token should have been revoked")
 	}
 
-	_, err = store.GetRefreshTokenInfo(secondRefreshToken)
+	_, err = store.GetRefreshTokenInfo(ctx, secondRefreshToken)
 	if err == nil {
 		t.Error("Second refresh token should have been revoked")
 	}
@@ -1840,7 +1854,7 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 	// This is essential for preventing reuse of other tokens in the same family
 	// Try to get family metadata for both tokens (they should both be revoked or deleted)
 	checkFamilyRevoked := func(token string) {
-		family, err := store.GetRefreshTokenFamily(token)
+		family, err := store.GetRefreshTokenFamily(ctx, token)
 		if err != nil {
 			// Family metadata might be deleted - acceptable
 			t.Logf("Family metadata for token deleted (acceptable): %v", err)
@@ -1866,6 +1880,7 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 
 // TestServer_RefreshTokenReuseMultipleRotations tests reuse detection after multiple rotations
 func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Enable refresh token rotation
@@ -1873,7 +1888,7 @@ func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
 	srv.Config.RefreshTokenTTL = 86400
 
 	// Register a client
-	client, _, err := srv.RegisterClient(
+	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback"},
@@ -1893,7 +1908,7 @@ func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
 
 	// Get initial tokens
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	_, err = srv.StartAuthorizationFlow(ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -1905,7 +1920,7 @@ func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(clientState)
+	authState, err := store.GetAuthorizationState(ctx, clientState)
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -1971,7 +1986,7 @@ func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
 	}
 
 	// Verify ALL tokens were revoked
-	tokens, err := store.GetTokensByUserClient("mock-user-123", clientID)
+	tokens, err := store.GetTokensByUserClient(ctx, "mock-user-123", clientID)
 	if err != nil {
 		t.Fatalf("GetTokensByUserClient() error = %v", err)
 	}
@@ -1980,7 +1995,7 @@ func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
 	}
 
 	// Verify current token is also revoked
-	_, err = store.GetRefreshTokenInfo(currentToken)
+	_, err = store.GetRefreshTokenInfo(ctx, currentToken)
 	if err == nil {
 		t.Error("Current refresh token should have been revoked after reuse detection")
 	}
@@ -1989,6 +2004,7 @@ func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
 // TestServer_ConcurrentRefreshTokenReuse tests that concurrent token reuse attempts are properly handled
 // This is a CRITICAL security test - only ONE request should succeed, rest should fail
 func TestServer_ConcurrentRefreshTokenReuse(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Enable refresh token rotation
@@ -1996,7 +2012,7 @@ func TestServer_ConcurrentRefreshTokenReuse(t *testing.T) {
 	srv.Config.RefreshTokenTTL = 86400
 
 	// Register a client
-	client, _, err := srv.RegisterClient(
+	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback"},
@@ -2016,7 +2032,7 @@ func TestServer_ConcurrentRefreshTokenReuse(t *testing.T) {
 
 	// Get initial tokens
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	_, err = srv.StartAuthorizationFlow(ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -2028,7 +2044,7 @@ func TestServer_ConcurrentRefreshTokenReuse(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(clientState)
+	authState, err := store.GetAuthorizationState(ctx, clientState)
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -2114,7 +2130,7 @@ func TestServer_ConcurrentRefreshTokenReuse(t *testing.T) {
 	}
 
 	// Verify ALL tokens were revoked (reuse detection triggered)
-	tokens, err := store.GetTokensByUserClient("mock-user-123", clientID)
+	tokens, err := store.GetTokensByUserClient(ctx, "mock-user-123", clientID)
 	if err != nil {
 		t.Fatalf("GetTokensByUserClient() error = %v", err)
 	}
@@ -2123,7 +2139,7 @@ func TestServer_ConcurrentRefreshTokenReuse(t *testing.T) {
 	}
 
 	// Verify the second token (legitimate one) is also revoked
-	_, err = store.GetRefreshTokenInfo(token2.RefreshToken)
+	_, err = store.GetRefreshTokenInfo(ctx, token2.RefreshToken)
 	if err == nil {
 		t.Error("Second refresh token should have been revoked after reuse detection")
 	}
@@ -2134,10 +2150,11 @@ func TestServer_ConcurrentRefreshTokenReuse(t *testing.T) {
 // TestServer_ConcurrentAuthorizationCodeReuse tests concurrent auth code reuse
 // This verifies atomic code exchange - only ONE request should succeed
 func TestServer_ConcurrentAuthorizationCodeReuse(t *testing.T) {
+	ctx := context.Background()
 	srv, store, _ := setupFlowTestServer(t)
 
 	// Register a client
-	client, _, err := srv.RegisterClient(
+	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback"},
@@ -2157,7 +2174,7 @@ func TestServer_ConcurrentAuthorizationCodeReuse(t *testing.T) {
 
 	// Get authorization code
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	_, err = srv.StartAuthorizationFlow(ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -2169,7 +2186,7 @@ func TestServer_ConcurrentAuthorizationCodeReuse(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(clientState)
+	authState, err := store.GetAuthorizationState(ctx, clientState)
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -2243,6 +2260,7 @@ func TestServer_ConcurrentAuthorizationCodeReuse(t *testing.T) {
 }
 
 func TestServer_RevokeToken(t *testing.T) {
+	ctx := context.Background()
 	srv, store, _ := setupFlowTestServer(t)
 
 	userID := "test-user-123"
@@ -2256,12 +2274,12 @@ func TestServer_RevokeToken(t *testing.T) {
 		RefreshToken: "provider-refresh-token",
 		Expiry:       time.Now().Add(1 * time.Hour),
 	}
-	err := store.SaveToken(userID, providerToken)
+	err := store.SaveToken(ctx, userID, providerToken)
 	if err != nil {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
 
-	err = store.SaveRefreshTokenWithFamily(refreshToken, userID, clientID, familyID, 1, time.Now().Add(90*24*time.Hour))
+	err = store.SaveRefreshTokenWithFamily(ctx, refreshToken, userID, clientID, familyID, 1, time.Now().Add(90*24*time.Hour))
 	if err != nil {
 		t.Fatalf("SaveRefreshTokenWithFamily() error = %v", err)
 	}
@@ -2273,7 +2291,7 @@ func TestServer_RevokeToken(t *testing.T) {
 	}
 
 	// Verify token family was revoked (not just the individual token)
-	family, err := store.GetRefreshTokenFamily(familyID)
+	family, err := store.GetRefreshTokenFamily(ctx, familyID)
 	if err == nil && family != nil && !family.Revoked {
 		t.Error("Token family should have been revoked")
 	}
@@ -2282,10 +2300,11 @@ func TestServer_RevokeToken(t *testing.T) {
 // TestServer_AuthorizationCodeReuseRevokesTokens tests that when an authorization code is reused,
 // all tokens for that user+client are revoked (OAuth 2.1 requirement)
 func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
+	ctx := context.Background()
 	srv, store, _ := setupFlowTestServer(t)
 
 	// Register a client
-	client, _, err := srv.RegisterClient(
+	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback"},
@@ -2305,7 +2324,7 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 
 	// Start authorization flow
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	_, err = srv.StartAuthorizationFlow(ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -2318,7 +2337,7 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 	}
 
 	// Get provider state from stored auth state
-	authState, err := store.GetAuthorizationState(clientState)
+	authState, err := store.GetAuthorizationState(ctx, clientState)
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -2358,15 +2377,15 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 	refreshToken1 := token1.RefreshToken
 
 	// Verify tokens are stored
-	if _, err := store.GetToken(accessToken1); err != nil {
+	if _, err := store.GetToken(ctx, accessToken1); err != nil {
 		t.Errorf("Access token not found in storage after first exchange")
 	}
-	if _, err := store.GetRefreshTokenInfo(refreshToken1); err != nil {
+	if _, err := store.GetRefreshTokenInfo(ctx, refreshToken1); err != nil {
 		t.Errorf("Refresh token not found in storage after first exchange")
 	}
 
 	// Verify token metadata is stored (using mock user ID from mock provider)
-	tokens, err := store.GetTokensByUserClient("mock-user-123", clientID)
+	tokens, err := store.GetTokensByUserClient(ctx, "mock-user-123", clientID)
 	if err != nil {
 		t.Fatalf("GetTokensByUserClient() error = %v", err)
 	}
@@ -2395,7 +2414,7 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 	}
 
 	// Verify all tokens were revoked
-	tokens, err = store.GetTokensByUserClient("mock-user-123", clientID)
+	tokens, err = store.GetTokensByUserClient(ctx, "mock-user-123", clientID)
 	if err != nil {
 		t.Fatalf("GetTokensByUserClient() error = %v", err)
 	}
@@ -2404,12 +2423,12 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 	}
 
 	// Verify access token was deleted
-	if _, err := store.GetToken(accessToken1); err == nil {
+	if _, err := store.GetToken(ctx, accessToken1); err == nil {
 		t.Error("Access token should have been revoked")
 	}
 
 	// Verify refresh token was deleted
-	if _, err := store.GetRefreshTokenInfo(refreshToken1); err == nil {
+	if _, err := store.GetRefreshTokenInfo(ctx, refreshToken1); err == nil {
 		t.Error("Refresh token should have been revoked")
 	}
 }
@@ -2417,6 +2436,7 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 // TestServer_AuthorizationCodeReuseRevokesMultipleTokens tests that code reuse revokes
 // all tokens including those from previous refresh operations
 func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
+	ctx := context.Background()
 	srv, store, _ := setupFlowTestServer(t)
 
 	// Enable refresh token rotation
@@ -2424,7 +2444,7 @@ func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
 	srv.Config.RefreshTokenTTL = 86400 // 24 hours
 
 	// Register a client
-	client, _, err := srv.RegisterClient(
+	client, _, err := srv.RegisterClient(ctx,
 		"Test Client 2",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback"},
@@ -2444,7 +2464,7 @@ func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
 
 	// Start authorization flow
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	_, err = srv.StartAuthorizationFlow(ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -2457,7 +2477,7 @@ func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
 	}
 
 	// Get provider state
-	authState, err := store.GetAuthorizationState(clientState)
+	authState, err := store.GetAuthorizationState(ctx, clientState)
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -2497,7 +2517,7 @@ func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
 	}
 
 	// Verify we have multiple tokens (using mock user ID)
-	tokens, err := store.GetTokensByUserClient("mock-user-123", clientID)
+	tokens, err := store.GetTokensByUserClient(ctx, "mock-user-123", clientID)
 	if err != nil {
 		t.Fatalf("GetTokensByUserClient() error = %v", err)
 	}
@@ -2518,7 +2538,7 @@ func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
 	}
 
 	// Verify ALL tokens were revoked (including the refreshed ones)
-	tokens, err = store.GetTokensByUserClient("mock-user-123", clientID)
+	tokens, err = store.GetTokensByUserClient(ctx, "mock-user-123", clientID)
 	if err != nil {
 		t.Fatalf("GetTokensByUserClient() error = %v", err)
 	}
@@ -2527,13 +2547,14 @@ func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
 	}
 
 	// Verify the latest access token is invalid
-	if _, err := store.GetToken(token3.AccessToken); err == nil {
+	if _, err := store.GetToken(ctx, token3.AccessToken); err == nil {
 		t.Error("Latest access token should have been revoked")
 	}
 }
 
 // TestServer_RevokeAllTokensForUserClient tests the bulk revocation method directly
 func TestServer_RevokeAllTokensForUserClient(t *testing.T) {
+	ctx := context.Background()
 	srv, store, _ := setupFlowTestServer(t)
 
 	userID := "test_user_789"
@@ -2553,10 +2574,10 @@ func TestServer_RevokeAllTokensForUserClient(t *testing.T) {
 		TokenType:    "Bearer",
 	}
 
-	if err := store.SaveToken("access_token_1", token1); err != nil {
+	if err := store.SaveToken(ctx, "access_token_1", token1); err != nil {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
-	if err := store.SaveToken("access_token_2", token2); err != nil {
+	if err := store.SaveToken(ctx, "access_token_2", token2); err != nil {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
 
@@ -2574,7 +2595,7 @@ func TestServer_RevokeAllTokensForUserClient(t *testing.T) {
 		Expiry:      time.Now().Add(time.Hour),
 		TokenType:   "Bearer",
 	}
-	if err := store.SaveToken("access_token_3", token3); err != nil {
+	if err := store.SaveToken(ctx, "access_token_3", token3); err != nil {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
 	if err := store.SaveTokenMetadata("access_token_3", userID, "different_client", "access"); err != nil {
@@ -2582,7 +2603,7 @@ func TestServer_RevokeAllTokensForUserClient(t *testing.T) {
 	}
 
 	// Verify tokens exist
-	tokens, err := store.GetTokensByUserClient(userID, clientID)
+	tokens, err := store.GetTokensByUserClient(ctx, userID, clientID)
 	if err != nil {
 		t.Fatalf("GetTokensByUserClient() error = %v", err)
 	}
@@ -2597,7 +2618,7 @@ func TestServer_RevokeAllTokensForUserClient(t *testing.T) {
 	}
 
 	// Verify tokens were revoked
-	tokens, err = store.GetTokensByUserClient(userID, clientID)
+	tokens, err = store.GetTokensByUserClient(ctx, userID, clientID)
 	if err != nil {
 		t.Fatalf("GetTokensByUserClient() error = %v", err)
 	}
@@ -2606,18 +2627,18 @@ func TestServer_RevokeAllTokensForUserClient(t *testing.T) {
 	}
 
 	// Verify tokens are actually deleted from storage
-	if _, err := store.GetToken("access_token_1"); err == nil {
+	if _, err := store.GetToken(ctx, "access_token_1"); err == nil {
 		t.Error("Token 1 should have been deleted")
 	}
-	if _, err := store.GetToken("access_token_2"); err == nil {
+	if _, err := store.GetToken(ctx, "access_token_2"); err == nil {
 		t.Error("Token 2 should have been deleted")
 	}
 
 	// Verify the different client's token still exists
-	if _, err := store.GetToken("access_token_3"); err != nil {
+	if _, err := store.GetToken(ctx, "access_token_3"); err != nil {
 		t.Error("Token for different client should not have been deleted")
 	}
-	differentClientTokens, err := store.GetTokensByUserClient(userID, "different_client")
+	differentClientTokens, err := store.GetTokensByUserClient(ctx, userID, "different_client")
 	if err != nil {
 		t.Fatalf("GetTokensByUserClient() error = %v", err)
 	}
@@ -2629,6 +2650,7 @@ func TestServer_RevokeAllTokensForUserClient(t *testing.T) {
 // TestServer_RevokeAllTokensProviderFailure tests that operation fails when all provider revocations fail
 // (exceeds default 50% threshold)
 func TestServer_RevokeAllTokensProviderFailure(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Use default threshold (50%) - should fail when 100% of provider revocations fail
@@ -2658,10 +2680,10 @@ func TestServer_RevokeAllTokensProviderFailure(t *testing.T) {
 		TokenType:    "Bearer",
 	}
 
-	if err := store.SaveToken("access_token_1", token1); err != nil {
+	if err := store.SaveToken(ctx, "access_token_1", token1); err != nil {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
-	if err := store.SaveToken("access_token_2", token2); err != nil {
+	if err := store.SaveToken(ctx, "access_token_2", token2); err != nil {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
 
@@ -2674,7 +2696,7 @@ func TestServer_RevokeAllTokensProviderFailure(t *testing.T) {
 	}
 
 	// Verify tokens exist before revocation
-	tokens, err := store.GetTokensByUserClient(userID, clientID)
+	tokens, err := store.GetTokensByUserClient(ctx, userID, clientID)
 	if err != nil {
 		t.Fatalf("GetTokensByUserClient() error = %v", err)
 	}
@@ -2704,6 +2726,7 @@ func TestServer_RevokeAllTokensProviderFailure(t *testing.T) {
 // TestServer_RevokeAllTokensProviderTimeout tests that revocation fails when provider times out
 // (exceeds default 50% threshold)
 func TestServer_RevokeAllTokensProviderTimeout(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Set a short timeout for testing (1 second)
@@ -2730,7 +2753,7 @@ func TestServer_RevokeAllTokensProviderTimeout(t *testing.T) {
 		TokenType:   "Bearer",
 	}
 
-	if err := store.SaveToken("access_token_timeout", token1); err != nil {
+	if err := store.SaveToken(ctx, "access_token_timeout", token1); err != nil {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
 
@@ -2769,6 +2792,7 @@ func TestServer_RevokeAllTokensProviderTimeout(t *testing.T) {
 // during revocation are handled safely without races, panics, or deadlocks.
 // This test verifies the TOCTOU fix in refresh token reuse detection.
 func TestServer_ConcurrentReuseAndRevocation(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Enable refresh token rotation
@@ -2776,7 +2800,7 @@ func TestServer_ConcurrentReuseAndRevocation(t *testing.T) {
 	srv.Config.RefreshTokenTTL = 86400
 
 	// Register a client
-	client, _, err := srv.RegisterClient(
+	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback"},
@@ -2796,7 +2820,7 @@ func TestServer_ConcurrentReuseAndRevocation(t *testing.T) {
 
 	// Get initial tokens
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	_, err = srv.StartAuthorizationFlow(ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -2808,7 +2832,7 @@ func TestServer_ConcurrentReuseAndRevocation(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(clientState)
+	authState, err := store.GetAuthorizationState(ctx, clientState)
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -2923,7 +2947,7 @@ func TestServer_ConcurrentReuseAndRevocation(t *testing.T) {
 	}
 
 	// Verify ALL tokens were eventually revoked
-	tokens, err := store.GetTokensByUserClient("mock-user-123", clientID)
+	tokens, err := store.GetTokensByUserClient(ctx, "mock-user-123", clientID)
 	if err != nil {
 		t.Fatalf("GetTokensByUserClient() error = %v", err)
 	}
@@ -2938,6 +2962,7 @@ func TestServer_ConcurrentReuseAndRevocation(t *testing.T) {
 
 // TestServer_ProviderRevocationRetrySuccess tests that retry logic succeeds after transient failures
 func TestServer_ProviderRevocationRetrySuccess(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Configure retry settings
@@ -2966,7 +2991,7 @@ func TestServer_ProviderRevocationRetrySuccess(t *testing.T) {
 		TokenType:    "Bearer",
 	}
 
-	if err := store.SaveToken("access_token_retry", token1); err != nil {
+	if err := store.SaveToken(ctx, "access_token_retry", token1); err != nil {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
 	if err := store.SaveTokenMetadata("access_token_retry", userID, clientID, "access"); err != nil {
@@ -2994,7 +3019,7 @@ func TestServer_ProviderRevocationRetrySuccess(t *testing.T) {
 	}
 
 	// Verify local revocation succeeded
-	tokens, err := store.GetTokensByUserClient(userID, clientID)
+	tokens, err := store.GetTokensByUserClient(ctx, userID, clientID)
 	if err != nil {
 		t.Fatalf("GetTokensByUserClient() error = %v", err)
 	}
@@ -3007,6 +3032,7 @@ func TestServer_ProviderRevocationRetrySuccess(t *testing.T) {
 
 // TestServer_ProviderRevocationFailureThreshold tests that system fails when threshold is exceeded
 func TestServer_ProviderRevocationFailureThreshold(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Configure strict threshold: >50% must succeed
@@ -3036,7 +3062,7 @@ func TestServer_ProviderRevocationFailureThreshold(t *testing.T) {
 			Expiry:      time.Now().Add(time.Hour),
 			TokenType:   "Bearer",
 		}
-		if err := store.SaveToken(tokenID, token); err != nil {
+		if err := store.SaveToken(ctx, tokenID, token); err != nil {
 			t.Fatalf("SaveToken() error = %v", err)
 		}
 		if err := store.SaveTokenMetadata(tokenID, userID, clientID, "access"); err != nil {
@@ -3065,6 +3091,7 @@ func TestServer_ProviderRevocationFailureThreshold(t *testing.T) {
 
 // TestServer_ProviderRevocationWithinThreshold tests that system succeeds when within threshold
 func TestServer_ProviderRevocationWithinThreshold(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Configure threshold: >50% must succeed
@@ -3094,7 +3121,7 @@ func TestServer_ProviderRevocationWithinThreshold(t *testing.T) {
 			Expiry:      time.Now().Add(time.Hour),
 			TokenType:   "Bearer",
 		}
-		if err := store.SaveToken(tokenID, token); err != nil {
+		if err := store.SaveToken(ctx, tokenID, token); err != nil {
 			t.Fatalf("SaveToken() error = %v", err)
 		}
 		if err := store.SaveTokenMetadata(tokenID, userID, clientID, "access"); err != nil {
@@ -3114,7 +3141,7 @@ func TestServer_ProviderRevocationWithinThreshold(t *testing.T) {
 	}
 
 	// Verify local revocation succeeded
-	tokens, err := store.GetTokensByUserClient(userID, clientID)
+	tokens, err := store.GetTokensByUserClient(ctx, userID, clientID)
 	if err != nil {
 		t.Fatalf("GetTokensByUserClient() error = %v", err)
 	}
@@ -3127,6 +3154,7 @@ func TestServer_ProviderRevocationWithinThreshold(t *testing.T) {
 
 // TestServer_ProviderRevocationExponentialBackoff tests that backoff timing is correct
 func TestServer_ProviderRevocationExponentialBackoff(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Configure multiple retries to test backoff
@@ -3150,7 +3178,7 @@ func TestServer_ProviderRevocationExponentialBackoff(t *testing.T) {
 		Expiry:      time.Now().Add(time.Hour),
 		TokenType:   "Bearer",
 	}
-	if err := store.SaveToken("access_token_backoff", token1); err != nil {
+	if err := store.SaveToken(ctx, "access_token_backoff", token1); err != nil {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
 	if err := store.SaveTokenMetadata("access_token_backoff", userID, clientID, "access"); err != nil {
@@ -3200,6 +3228,7 @@ func TestServer_ProviderRevocationExponentialBackoff(t *testing.T) {
 // TestServer_ProviderRevocationContextCancellation tests that cancelling context stops retries
 // P0 CRITICAL: Prevents goroutine leaks and ensures proper shutdown
 func TestServer_ProviderRevocationContextCancellation(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	srv.Config.ProviderRevocationMaxRetries = 10 // Many retries
@@ -3221,7 +3250,7 @@ func TestServer_ProviderRevocationContextCancellation(t *testing.T) {
 		Expiry:      time.Now().Add(time.Hour),
 		TokenType:   "Bearer",
 	}
-	if err := store.SaveToken("access_token_cancel", token1); err != nil {
+	if err := store.SaveToken(ctx, "access_token_cancel", token1); err != nil {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
 	if err := store.SaveTokenMetadata("access_token_cancel", userID, clientID, "access"); err != nil {
@@ -3275,6 +3304,7 @@ func TestServer_ProviderRevocationContextCancellation(t *testing.T) {
 // TestServer_ProviderRevocationExactlyAtThreshold tests behavior at exact threshold boundary
 // P0 CRITICAL: Clarifies ambiguous behavior when failure rate equals threshold
 func TestServer_ProviderRevocationExactlyAtThreshold(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Set threshold to exactly 0.5 (50%)
@@ -3302,7 +3332,7 @@ func TestServer_ProviderRevocationExactlyAtThreshold(t *testing.T) {
 			Expiry:      time.Now().Add(time.Hour),
 			TokenType:   "Bearer",
 		}
-		if err := store.SaveToken(tokenID, token); err != nil {
+		if err := store.SaveToken(ctx, tokenID, token); err != nil {
 			t.Fatalf("SaveToken() error = %v", err)
 		}
 		if err := store.SaveTokenMetadata(tokenID, userID, clientID, "access"); err != nil {
@@ -3323,7 +3353,7 @@ func TestServer_ProviderRevocationExactlyAtThreshold(t *testing.T) {
 	}
 
 	// Verify local revocation succeeded
-	tokens, err := store.GetTokensByUserClient(userID, clientID)
+	tokens, err := store.GetTokensByUserClient(ctx, userID, clientID)
 	if err != nil {
 		t.Fatalf("GetTokensByUserClient() error = %v", err)
 	}
@@ -3337,10 +3367,11 @@ func TestServer_ProviderRevocationExactlyAtThreshold(t *testing.T) {
 // TestServer_GenericErrorMessagesNoInfoLeakage tests that all error paths return generic messages
 // P0 CRITICAL SECURITY: Prevents information leakage to attackers per RFC 6749
 func TestServer_GenericErrorMessagesNoInfoLeakage(t *testing.T) {
+	ctx := context.Background()
 	srv, store, _ := setupFlowTestServer(t)
 
 	// Register a client
-	client, _, err := srv.RegisterClient(
+	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback"},
@@ -3362,7 +3393,7 @@ func TestServer_GenericErrorMessagesNoInfoLeakage(t *testing.T) {
 
 	// Get a valid authorization code
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	_, err = srv.StartAuthorizationFlow(ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -3374,7 +3405,7 @@ func TestServer_GenericErrorMessagesNoInfoLeakage(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(clientState)
+	authState, err := store.GetAuthorizationState(ctx, clientState)
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -3484,6 +3515,7 @@ func TestServer_GenericErrorMessagesNoInfoLeakage(t *testing.T) {
 // TestServer_ProviderRevocationZeroTokens tests edge case with no tokens
 // P2: Edge case handling
 func TestServer_ProviderRevocationZeroTokens(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	userID := "test_user_zero"
@@ -3509,7 +3541,7 @@ func TestServer_ProviderRevocationZeroTokens(t *testing.T) {
 	}
 
 	// Verify still no tokens
-	tokens, err := store.GetTokensByUserClient(userID, clientID)
+	tokens, err := store.GetTokensByUserClient(ctx, userID, clientID)
 	if err != nil {
 		t.Fatalf("GetTokensByUserClient() error = %v", err)
 	}
@@ -3523,6 +3555,7 @@ func TestServer_ProviderRevocationZeroTokens(t *testing.T) {
 // TestServer_ProviderRevocationSingleTokenFailure tests 100% failure with single token
 // P0: Small numbers edge case
 func TestServer_ProviderRevocationSingleTokenFailure(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	srv.Config.ProviderRevocationMaxRetries = 0
@@ -3542,7 +3575,7 @@ func TestServer_ProviderRevocationSingleTokenFailure(t *testing.T) {
 		Expiry:      time.Now().Add(time.Hour),
 		TokenType:   "Bearer",
 	}
-	if err := store.SaveToken("access_token_single", token1); err != nil {
+	if err := store.SaveToken(ctx, "access_token_single", token1); err != nil {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
 	if err := store.SaveTokenMetadata("access_token_single", userID, clientID, "access"); err != nil {
@@ -3566,13 +3599,14 @@ func TestServer_ProviderRevocationSingleTokenFailure(t *testing.T) {
 // TestServer_AuthCodeReuseWithoutSecurityEventRateLimiter tests nil check works
 // P1: Verifies nil pointer safety
 func TestServer_AuthCodeReuseWithoutSecurityEventRateLimiter(t *testing.T) {
+	ctx := context.Background()
 	srv, store, _ := setupFlowTestServer(t)
 
 	// IMPORTANT: Don't set SecurityEventRateLimiter (leave as nil)
 	srv.SecurityEventRateLimiter = nil
 
 	// Register a client
-	client, _, err := srv.RegisterClient(
+	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback"},
@@ -3592,7 +3626,7 @@ func TestServer_AuthCodeReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 
 	// Get authorization code
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	_, err = srv.StartAuthorizationFlow(ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -3604,7 +3638,7 @@ func TestServer_AuthCodeReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(clientState)
+	authState, err := store.GetAuthorizationState(ctx, clientState)
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -3651,6 +3685,7 @@ func TestServer_AuthCodeReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 // TestServer_RefreshTokenReuseWithoutSecurityEventRateLimiter tests nil check works
 // P1: Verifies nil pointer safety
 func TestServer_RefreshTokenReuseWithoutSecurityEventRateLimiter(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	// IMPORTANT: Don't set SecurityEventRateLimiter (leave as nil)
@@ -3659,7 +3694,7 @@ func TestServer_RefreshTokenReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 	srv.Config.RefreshTokenTTL = 86400
 
 	// Register a client
-	client, _, err := srv.RegisterClient(
+	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback"},
@@ -3679,7 +3714,7 @@ func TestServer_RefreshTokenReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 
 	// Get initial tokens
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	_, err = srv.StartAuthorizationFlow(ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -3691,7 +3726,7 @@ func TestServer_RefreshTokenReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(clientState)
+	authState, err := store.GetAuthorizationState(ctx, clientState)
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -3746,6 +3781,7 @@ func TestServer_RefreshTokenReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 // TestServer_ProviderRevocationDifferentErrorTypes tests retry behavior with various errors
 // P2: Robustness testing
 func TestServer_ProviderRevocationDifferentErrorTypes(t *testing.T) {
+	ctx := context.Background()
 	tests := []struct {
 		name                string
 		errorSequence       []error
@@ -3816,7 +3852,7 @@ func TestServer_ProviderRevocationDifferentErrorTypes(t *testing.T) {
 				Expiry:      time.Now().Add(time.Hour),
 				TokenType:   "Bearer",
 			}
-			if err := store.SaveToken("access_token_errors", token1); err != nil {
+			if err := store.SaveToken(ctx, "access_token_errors", token1); err != nil {
 				t.Fatalf("SaveToken() error = %v", err)
 			}
 			if err := store.SaveTokenMetadata("access_token_errors", userID, clientID, "access"); err != nil {
@@ -3847,6 +3883,7 @@ func TestServer_ProviderRevocationDifferentErrorTypes(t *testing.T) {
 // TestServer_ConcurrentProviderRevocationCalls tests concurrent revocation calls
 // P2: Concurrency safety
 func TestServer_ConcurrentProviderRevocationCalls(t *testing.T) {
+	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	srv.Config.ProviderRevocationMaxRetries = 0
@@ -3875,7 +3912,7 @@ func TestServer_ConcurrentProviderRevocationCalls(t *testing.T) {
 				Expiry:      time.Now().Add(time.Hour),
 				TokenType:   "Bearer",
 			}
-			if err := store.SaveToken(tokenID, token); err != nil {
+			if err := store.SaveToken(ctx, tokenID, token); err != nil {
 				t.Fatalf("SaveToken() error = %v", err)
 			}
 			if err := store.SaveTokenMetadata(tokenID, userID, clientID, "access"); err != nil {
@@ -3920,7 +3957,7 @@ func TestServer_ConcurrentProviderRevocationCalls(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		userID := fmt.Sprintf("user_%d", i)
 		clientID := fmt.Sprintf("client_%d", i)
-		tokens, err := store.GetTokensByUserClient(userID, clientID)
+		tokens, err := store.GetTokensByUserClient(ctx, userID, clientID)
 		if err != nil {
 			t.Fatalf("GetTokensByUserClient() error = %v", err)
 		}
@@ -3935,10 +3972,11 @@ func TestServer_ConcurrentProviderRevocationCalls(t *testing.T) {
 // TestStartAuthorizationFlow_ClientScopeValidation tests that scope validation
 // against client's allowed scopes happens during authorization flow start
 func TestStartAuthorizationFlow_ClientScopeValidation(t *testing.T) {
+	ctx := context.Background()
 	srv, _, _ := setupFlowTestServer(t)
 
 	// Register client with limited scopes
-	client, _, err := srv.RegisterClient(
+	client, _, err := srv.RegisterClient(ctx,
 		"Limited Client",
 		ClientTypePublic,
 		[]string{"https://example.com/callback"},
@@ -4018,7 +4056,7 @@ func TestStartAuthorizationFlow_ClientScopeValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			authURL, err := srv.StartAuthorizationFlow(
+			authURL, err := srv.StartAuthorizationFlow(ctx,
 				client.ClientID,
 				"https://example.com/callback",
 				tt.scope,
@@ -4051,11 +4089,11 @@ func TestStartAuthorizationFlow_ClientScopeValidation(t *testing.T) {
 // TestExchangeAuthorizationCode_ClientScopeValidation tests that scope validation
 // happens during token exchange as defense-in-depth
 func TestExchangeAuthorizationCode_ClientScopeValidation(t *testing.T) {
-	srv, store, provider := setupFlowTestServer(t)
 	ctx := context.Background()
+	srv, store, provider := setupFlowTestServer(t)
 
 	// Register client with limited scopes
-	client, _, err := srv.RegisterClient(
+	client, _, err := srv.RegisterClient(ctx,
 		"Limited Client",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback"},
@@ -4152,7 +4190,7 @@ func TestExchangeAuthorizationCode_ClientScopeValidation(t *testing.T) {
 				Used:      false,
 			}
 
-			if err := store.SaveAuthorizationCode(authCode); err != nil {
+			if err := store.SaveAuthorizationCode(ctx, authCode); err != nil {
 				t.Fatalf("SaveAuthorizationCode() error = %v", err)
 			}
 
@@ -4200,10 +4238,11 @@ func TestExchangeAuthorizationCode_ClientScopeValidation(t *testing.T) {
 // TestClientScopeValidation_UnrestrictedClient tests backward compatibility
 // with clients that have no scope restrictions
 func TestClientScopeValidation_UnrestrictedClient(t *testing.T) {
+	ctx := context.Background()
 	srv, _, _ := setupFlowTestServer(t)
 
 	// Register client with NO scope restrictions (empty scopes array)
-	client, _, err := srv.RegisterClient(
+	client, _, err := srv.RegisterClient(ctx,
 		"Unrestricted Client",
 		ClientTypePublic,
 		[]string{"https://example.com/callback"},
@@ -4231,7 +4270,7 @@ func TestClientScopeValidation_UnrestrictedClient(t *testing.T) {
 
 	for _, scope := range testScopes {
 		t.Run("unrestricted_"+scope, func(t *testing.T) {
-			authURL, err := srv.StartAuthorizationFlow(
+			authURL, err := srv.StartAuthorizationFlow(ctx,
 				client.ClientID,
 				"https://example.com/callback",
 				scope,

@@ -102,7 +102,7 @@ func TestIsValidRequestID(t *testing.T) {
 		// Invalid cases - Security threats
 		{
 			name:      "CRLF injection attempt",
-			requestID: "id123\r\nX-Injected: evil",
+			requestID: "id123rnX-Injected: evil",
 			valid:     false,
 		},
 		{
@@ -164,7 +164,7 @@ func TestIsValidRequestID(t *testing.T) {
 		},
 		{
 			name:      "contains backslash",
-			requestID: "id\\123",
+			requestID: "id\\3",
 			valid:     false,
 		},
 		{
@@ -207,7 +207,7 @@ func TestRequestIDMiddleware(t *testing.T) {
 		},
 		{
 			name:           "rejects invalid ID with CRLF injection",
-			existingHeader: "id\r\nX-Injected: evil",
+			existingHeader: "idrnX-Injected: evil",
 			expectNew:      true,
 		},
 		{

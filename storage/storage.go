@@ -3,6 +3,7 @@
 package storage
 
 import (
+	"context"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -13,30 +14,31 @@ import (
 // TokenStore defines the interface for storing and retrieving tokens.
 // This allows using in-memory, Redis, database, or other storage backends.
 // Now uses golang.org/x/oauth2.Token directly.
+// All methods accept context.Context for tracing and cancellation.
 type TokenStore interface {
 	// SaveToken saves a token for a user
-	SaveToken(userID string, token *oauth2.Token) error
+	SaveToken(ctx context.Context, userID string, token *oauth2.Token) error
 
 	// GetToken retrieves a token for a user
-	GetToken(userID string) (*oauth2.Token, error)
+	GetToken(ctx context.Context, userID string) (*oauth2.Token, error)
 
 	// DeleteToken removes a token for a user
-	DeleteToken(userID string) error
+	DeleteToken(ctx context.Context, userID string) error
 
 	// SaveUserInfo saves user information
-	SaveUserInfo(userID string, info *providers.UserInfo) error
+	SaveUserInfo(ctx context.Context, userID string, info *providers.UserInfo) error
 
 	// GetUserInfo retrieves user information
-	GetUserInfo(userID string) (*providers.UserInfo, error)
+	GetUserInfo(ctx context.Context, userID string) (*providers.UserInfo, error)
 
 	// SaveRefreshToken saves a refresh token mapping to user ID with expiry
-	SaveRefreshToken(refreshToken, userID string, expiresAt time.Time) error
+	SaveRefreshToken(ctx context.Context, refreshToken, userID string, expiresAt time.Time) error
 
 	// GetRefreshTokenInfo retrieves the user ID for a refresh token
-	GetRefreshTokenInfo(refreshToken string) (string, error)
+	GetRefreshTokenInfo(ctx context.Context, refreshToken string) (string, error)
 
 	// DeleteRefreshToken removes a refresh token
-	DeleteRefreshToken(refreshToken string) error
+	DeleteRefreshToken(ctx context.Context, refreshToken string) error
 
 	// AtomicGetAndDeleteRefreshToken atomically retrieves and deletes a refresh token.
 	// This prevents race conditions in refresh token rotation and reuse detection.
@@ -44,20 +46,21 @@ type TokenStore interface {
 	// - Token not found (may indicate already used/rotated)
 	// - Token expired
 	// SECURITY: This operation MUST be atomic to prevent concurrent token refresh attacks.
-	AtomicGetAndDeleteRefreshToken(refreshToken string) (userID string, providerToken *oauth2.Token, err error)
+	AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken string) (userID string, providerToken *oauth2.Token, err error)
 }
 
 // RefreshTokenFamilyStore tracks a family of refresh tokens for reuse detection (OAuth 2.1).
 // This is optional - only implemented by stores that support reuse detection.
+// All methods accept context.Context for tracing and cancellation.
 type RefreshTokenFamilyStore interface {
 	// SaveRefreshTokenWithFamily saves a refresh token with family tracking
-	SaveRefreshTokenWithFamily(refreshToken, userID, clientID, familyID string, generation int, expiresAt time.Time) error
+	SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, userID, clientID, familyID string, generation int, expiresAt time.Time) error
 
 	// GetRefreshTokenFamily retrieves family metadata for a refresh token
-	GetRefreshTokenFamily(refreshToken string) (*RefreshTokenFamilyMetadata, error)
+	GetRefreshTokenFamily(ctx context.Context, refreshToken string) (*RefreshTokenFamilyMetadata, error)
 
 	// RevokeRefreshTokenFamily revokes all tokens in a family
-	RevokeRefreshTokenFamily(familyID string) error
+	RevokeRefreshTokenFamily(ctx context.Context, familyID string) error
 }
 
 // RefreshTokenFamilyMetadata contains metadata about a token family
@@ -74,32 +77,34 @@ type RefreshTokenFamilyMetadata struct {
 // TokenRevocationStore supports bulk token revocation operations (OAuth 2.1 security).
 // This is optional - only implemented by stores that support token revocation.
 // Used for critical security scenarios like authorization code reuse detection.
+// All methods accept context.Context for tracing and cancellation.
 type TokenRevocationStore interface {
 	// RevokeAllTokensForUserClient revokes all tokens (access + refresh) for a specific user+client combination.
 	// This is called when authorization code reuse is detected (OAuth 2.1 requirement).
 	// Returns the number of tokens revoked and any error encountered.
-	RevokeAllTokensForUserClient(userID, clientID string) (int, error)
+	RevokeAllTokensForUserClient(ctx context.Context, userID, clientID string) (int, error)
 
 	// GetTokensByUserClient retrieves all token IDs for a user+client combination (for testing/debugging).
-	GetTokensByUserClient(userID, clientID string) ([]string, error)
+	GetTokensByUserClient(ctx context.Context, userID, clientID string) ([]string, error)
 }
 
 // ClientStore defines the interface for managing OAuth client registrations.
+// All methods accept context.Context for tracing and cancellation.
 type ClientStore interface {
 	// SaveClient saves a registered client
-	SaveClient(client *Client) error
+	SaveClient(ctx context.Context, client *Client) error
 
 	// GetClient retrieves a client by ID
-	GetClient(clientID string) (*Client, error)
+	GetClient(ctx context.Context, clientID string) (*Client, error)
 
 	// ValidateClientSecret validates a client's secret
-	ValidateClientSecret(clientID, clientSecret string) error
+	ValidateClientSecret(ctx context.Context, clientID, clientSecret string) error
 
 	// ListClients lists all registered clients (for admin purposes)
-	ListClients() ([]*Client, error)
+	ListClients(ctx context.Context) ([]*Client, error)
 
 	// CheckIPLimit checks if an IP has reached the client registration limit
-	CheckIPLimit(ip string, maxClientsPerIP int) error
+	CheckIPLimit(ctx context.Context, ip string, maxClientsPerIP int) error
 }
 
 // FlowStore defines the interface for managing OAuth authorization flows.
@@ -132,28 +137,29 @@ type ClientStore interface {
 //  7. Client validates using their original state="client_csrf_token_123"
 //
 // This two-state system provides defense-in-depth against CSRF attacks at both layers.
+// All methods accept context.Context for tracing and cancellation.
 type FlowStore interface {
 	// SaveAuthorizationState saves the state of an ongoing authorization flow
-	SaveAuthorizationState(state *AuthorizationState) error
+	SaveAuthorizationState(ctx context.Context, state *AuthorizationState) error
 
 	// GetAuthorizationState retrieves an authorization state by client state (StateID).
 	// Use this method when validating client-initiated requests where the client
 	// provides their original state parameter for CSRF protection.
-	GetAuthorizationState(stateID string) (*AuthorizationState, error)
+	GetAuthorizationState(ctx context.Context, stateID string) (*AuthorizationState, error)
 
 	// GetAuthorizationStateByProviderState retrieves an authorization state by provider state.
 	// Use this method during provider callback validation when the OAuth provider
 	// (Google, GitHub, etc.) returns with the server-generated state parameter.
-	GetAuthorizationStateByProviderState(providerState string) (*AuthorizationState, error)
+	GetAuthorizationStateByProviderState(ctx context.Context, providerState string) (*AuthorizationState, error)
 
 	// DeleteAuthorizationState removes an authorization state
-	DeleteAuthorizationState(stateID string) error
+	DeleteAuthorizationState(ctx context.Context, stateID string) error
 
 	// SaveAuthorizationCode saves an issued authorization code
-	SaveAuthorizationCode(code *AuthorizationCode) error
+	SaveAuthorizationCode(ctx context.Context, code *AuthorizationCode) error
 
 	// GetAuthorizationCode retrieves an authorization code
-	GetAuthorizationCode(code string) (*AuthorizationCode, error)
+	GetAuthorizationCode(ctx context.Context, code string) (*AuthorizationCode, error)
 
 	// AtomicCheckAndMarkAuthCodeUsed atomically checks if a code is unused and marks it as used.
 	// This prevents race conditions in authorization code reuse detection.
@@ -162,10 +168,10 @@ type FlowStore interface {
 	// - Code expired
 	// - Code already used (reuse detected)
 	// SECURITY: This operation MUST be atomic to prevent concurrent code exchange attacks.
-	AtomicCheckAndMarkAuthCodeUsed(code string) (*AuthorizationCode, error)
+	AtomicCheckAndMarkAuthCodeUsed(ctx context.Context, code string) (*AuthorizationCode, error)
 
 	// DeleteAuthorizationCode removes an authorization code
-	DeleteAuthorizationCode(code string) error
+	DeleteAuthorizationCode(ctx context.Context, code string) error
 }
 
 // Client represents a registered OAuth client

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/crypto/bcrypt"
@@ -233,14 +234,16 @@ func (s *Store) Stop() {
 // ============================================================
 
 // SaveToken saves an oauth2.Token for a user with optional encryption
-func (s *Store) SaveToken(userID string, token *oauth2.Token) error {
+func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Token) error {
 	// Start span for tracing
-	ctx := s.startStorageSpan("save_token")
+	ctx, span := s.startStorageSpan(ctx, "save_token")
+	defer span.End()
+
 	startTime := time.Now()
 	var err error
 
 	defer func() {
-		s.recordStorageOperation(ctx, "save_token", err, startTime)
+		s.recordStorageOperation(ctx, span, "save_token", err, startTime)
 	}()
 
 	if userID == "" {
@@ -346,14 +349,16 @@ func (s *Store) decryptToken(token *oauth2.Token, encryptor *security.Encryptor)
 }
 
 // GetToken retrieves an oauth2.Token for a user and decrypts if necessary
-func (s *Store) GetToken(userID string) (*oauth2.Token, error) {
+func (s *Store) GetToken(ctx context.Context, userID string) (*oauth2.Token, error) {
 	// Start span and track metrics
-	ctx := s.startStorageSpan("get_token")
+	ctx, span := s.startStorageSpan(ctx, "get_token")
+	defer span.End()
+
 	startTime := time.Now()
 	var err error
 
 	defer func() {
-		s.recordStorageOperation(ctx, "get_token", err, startTime)
+		s.recordStorageOperation(ctx, span, "get_token", err, startTime)
 	}()
 
 	s.mu.RLock()
@@ -387,14 +392,16 @@ func (s *Store) GetToken(userID string) (*oauth2.Token, error) {
 }
 
 // DeleteToken removes a token for a user
-func (s *Store) DeleteToken(userID string) error {
+func (s *Store) DeleteToken(ctx context.Context, userID string) error {
 	// Start span and track metrics
-	ctx := s.startStorageSpan("delete_token")
+	ctx, span := s.startStorageSpan(ctx, "delete_token")
+	defer span.End()
+
 	startTime := time.Now()
 	var err error
 
 	defer func() {
-		s.recordStorageOperation(ctx, "delete_token", err, startTime)
+		s.recordStorageOperation(ctx, span, "delete_token", err, startTime)
 	}()
 
 	s.mu.Lock()
@@ -415,12 +422,24 @@ func (s *Store) DeleteToken(userID string) error {
 }
 
 // SaveUserInfo saves user information
-func (s *Store) SaveUserInfo(userID string, info *providers.UserInfo) error {
+func (s *Store) SaveUserInfo(ctx context.Context, userID string, info *providers.UserInfo) error {
+	ctx, span := s.startStorageSpan(ctx, "save_user_info")
+	defer span.End()
+
+	startTime := time.Now()
+	var err error
+
+	defer func() {
+		s.recordStorageOperation(ctx, span, "save_user_info", err, startTime)
+	}()
+
 	if userID == "" {
-		return fmt.Errorf("userID cannot be empty")
+		err = fmt.Errorf("userID cannot be empty")
+		return err
 	}
 	if info == nil {
-		return fmt.Errorf("userInfo cannot be nil")
+		err = fmt.Errorf("userInfo cannot be nil")
+		return err
 	}
 
 	s.mu.Lock()
@@ -431,13 +450,24 @@ func (s *Store) SaveUserInfo(userID string, info *providers.UserInfo) error {
 }
 
 // GetUserInfo retrieves user information
-func (s *Store) GetUserInfo(userID string) (*providers.UserInfo, error) {
+func (s *Store) GetUserInfo(ctx context.Context, userID string) (*providers.UserInfo, error) {
+	ctx, span := s.startStorageSpan(ctx, "get_user_info")
+	defer span.End()
+
+	startTime := time.Now()
+	var err error
+
+	defer func() {
+		s.recordStorageOperation(ctx, span, "get_user_info", err, startTime)
+	}()
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	info, ok := s.userInfo[userID]
 	if !ok {
-		return nil, fmt.Errorf("user info not found: %s", userID)
+		err = fmt.Errorf("user info not found: %s", userID)
+		return nil, err
 	}
 
 	return info, nil
@@ -448,14 +478,16 @@ func (s *Store) GetUserInfo(userID string) (*providers.UserInfo, error) {
 // ============================================================
 
 // SaveClient saves a registered client and tracks IP for DoS protection
-func (s *Store) SaveClient(client *storage.Client) error {
+func (s *Store) SaveClient(ctx context.Context, client *storage.Client) error {
 	// Start span and track metrics
-	ctx := s.startStorageSpan("save_client")
+	ctx, span := s.startStorageSpan(ctx, "save_client")
+	defer span.End()
+
 	startTime := time.Now()
 	var err error
 
 	defer func() {
-		s.recordStorageOperation(ctx, "save_client", err, startTime)
+		s.recordStorageOperation(ctx, span, "save_client", err, startTime)
 	}()
 
 	if client == nil || client.ClientID == "" {
@@ -481,7 +513,7 @@ func (s *Store) SaveClient(client *storage.Client) error {
 }
 
 // CheckIPLimit checks if an IP has reached the client registration limit
-func (s *Store) CheckIPLimit(ip string, maxClientsPerIP int) error {
+func (s *Store) CheckIPLimit(ctx context.Context, ip string, maxClientsPerIP int) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -510,7 +542,7 @@ func (s *Store) TrackClientIP(ip string) {
 
 // SaveRefreshToken saves a refresh token mapping to user ID with expiry
 // For OAuth 2.1 compliance, also tracks token family for reuse detection
-func (s *Store) SaveRefreshToken(refreshToken, userID string, expiresAt time.Time) error {
+func (s *Store) SaveRefreshToken(ctx context.Context, refreshToken, userID string, expiresAt time.Time) error {
 	if refreshToken == "" {
 		return fmt.Errorf("refresh token cannot be empty")
 	}
@@ -529,7 +561,7 @@ func (s *Store) SaveRefreshToken(refreshToken, userID string, expiresAt time.Tim
 
 // SaveRefreshTokenWithFamily saves a refresh token with family tracking for reuse detection
 // This is the OAuth 2.1 compliant version that enables token theft detection
-func (s *Store) SaveRefreshTokenWithFamily(refreshToken, userID, clientID, familyID string, generation int, expiresAt time.Time) error {
+func (s *Store) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, userID, clientID, familyID string, generation int, expiresAt time.Time) error {
 	if refreshToken == "" {
 		return fmt.Errorf("refresh token cannot be empty")
 	}
@@ -588,7 +620,7 @@ func (s *Store) SaveRefreshTokenWithFamily(refreshToken, userID, clientID, famil
 }
 
 // GetRefreshTokenFamily retrieves family metadata for a refresh token
-func (s *Store) GetRefreshTokenFamily(refreshToken string) (*storage.RefreshTokenFamilyMetadata, error) {
+func (s *Store) GetRefreshTokenFamily(ctx context.Context, refreshToken string) (*storage.RefreshTokenFamilyMetadata, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -611,7 +643,7 @@ func (s *Store) GetRefreshTokenFamily(refreshToken string) (*storage.RefreshToke
 
 // RevokeRefreshTokenFamily revokes all tokens in a family (for reuse detection)
 // This is called when token reuse is detected (OAuth 2.1 security requirement)
-func (s *Store) RevokeRefreshTokenFamily(familyID string) error {
+func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -642,7 +674,7 @@ func (s *Store) RevokeRefreshTokenFamily(familyID string) error {
 
 // GetRefreshTokenInfo retrieves the user ID for a refresh token
 // Returns error if token is not found or expired (with clock skew grace)
-func (s *Store) GetRefreshTokenInfo(refreshToken string) (string, error) {
+func (s *Store) GetRefreshTokenInfo(ctx context.Context, refreshToken string) (string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -662,7 +694,7 @@ func (s *Store) GetRefreshTokenInfo(refreshToken string) (string, error) {
 }
 
 // DeleteRefreshToken removes a refresh token (used for rotation)
-func (s *Store) DeleteRefreshToken(refreshToken string) error {
+func (s *Store) DeleteRefreshToken(ctx context.Context, refreshToken string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -678,7 +710,7 @@ func (s *Store) DeleteRefreshToken(refreshToken string) error {
 //
 // SECURITY: This operation is atomic - only ONE concurrent request can succeed.
 // All other concurrent requests will receive a "token not found" error.
-func (s *Store) AtomicGetAndDeleteRefreshToken(refreshToken string) (string, *oauth2.Token, error) {
+func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken string) (string, *oauth2.Token, error) {
 	s.mu.Lock() // MUST use write lock for atomic get-and-delete
 	defer s.mu.Unlock()
 
@@ -717,14 +749,16 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(refreshToken string) (string, *oa
 }
 
 // GetClient retrieves a client by ID
-func (s *Store) GetClient(clientID string) (*storage.Client, error) {
+func (s *Store) GetClient(ctx context.Context, clientID string) (*storage.Client, error) {
 	// Start span and track metrics
-	ctx := s.startStorageSpan("get_client")
+	ctx, span := s.startStorageSpan(ctx, "get_client")
+	defer span.End()
+
 	startTime := time.Now()
 	var err error
 
 	defer func() {
-		s.recordStorageOperation(ctx, "get_client", err, startTime)
+		s.recordStorageOperation(ctx, span, "get_client", err, startTime)
 	}()
 
 	s.mu.RLock()
@@ -741,7 +775,7 @@ func (s *Store) GetClient(clientID string) (*storage.Client, error) {
 
 // ValidateClientSecret validates a client's secret using bcrypt
 // Uses constant-time operations to prevent timing attacks
-func (s *Store) ValidateClientSecret(clientID, clientSecret string) error {
+func (s *Store) ValidateClientSecret(ctx context.Context, clientID, clientSecret string) error {
 	// SECURITY: Always perform the same operations to prevent timing attacks
 	// that could reveal whether a client exists or not
 
@@ -749,7 +783,7 @@ func (s *Store) ValidateClientSecret(clientID, clientSecret string) error {
 	// This ensures we always perform a bcrypt comparison even if client doesn't exist
 	dummyHash := "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
 
-	client, err := s.GetClient(clientID)
+	client, err := s.GetClient(ctx, clientID)
 
 	// Determine which hash to use (real or dummy)
 	hashToCompare := dummyHash
@@ -786,7 +820,7 @@ func (s *Store) ValidateClientSecret(clientID, clientSecret string) error {
 }
 
 // ListClients lists all registered clients
-func (s *Store) ListClients() ([]*storage.Client, error) {
+func (s *Store) ListClients(ctx context.Context) ([]*storage.Client, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -804,7 +838,7 @@ func (s *Store) ListClients() ([]*storage.Client, error) {
 
 // SaveAuthorizationState saves the state of an ongoing authorization flow
 // Stores by both client state (StateID) and provider state (ProviderState) for dual lookup
-func (s *Store) SaveAuthorizationState(state *storage.AuthorizationState) error {
+func (s *Store) SaveAuthorizationState(ctx context.Context, state *storage.AuthorizationState) error {
 	if state == nil || state.StateID == "" {
 		return fmt.Errorf("invalid authorization state")
 	}
@@ -825,7 +859,7 @@ func (s *Store) SaveAuthorizationState(state *storage.AuthorizationState) error 
 }
 
 // GetAuthorizationState retrieves an authorization state by client state
-func (s *Store) GetAuthorizationState(stateID string) (*storage.AuthorizationState, error) {
+func (s *Store) GetAuthorizationState(ctx context.Context, stateID string) (*storage.AuthorizationState, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -844,7 +878,7 @@ func (s *Store) GetAuthorizationState(stateID string) (*storage.AuthorizationSta
 
 // GetAuthorizationStateByProviderState retrieves an authorization state by provider state
 // This is used during provider callback validation (separate from client state)
-func (s *Store) GetAuthorizationStateByProviderState(providerState string) (*storage.AuthorizationState, error) {
+func (s *Store) GetAuthorizationStateByProviderState(ctx context.Context, providerState string) (*storage.AuthorizationState, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -863,7 +897,7 @@ func (s *Store) GetAuthorizationStateByProviderState(providerState string) (*sto
 
 // DeleteAuthorizationState removes an authorization state
 // Removes both client state and provider state entries
-func (s *Store) DeleteAuthorizationState(stateID string) error {
+func (s *Store) DeleteAuthorizationState(ctx context.Context, stateID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -883,14 +917,16 @@ func (s *Store) DeleteAuthorizationState(stateID string) error {
 }
 
 // SaveAuthorizationCode saves an issued authorization code
-func (s *Store) SaveAuthorizationCode(code *storage.AuthorizationCode) error {
+func (s *Store) SaveAuthorizationCode(ctx context.Context, code *storage.AuthorizationCode) error {
 	// Start span and track metrics
-	ctx := s.startStorageSpan("save_authorization_code")
+	ctx, span := s.startStorageSpan(ctx, "save_authorization_code")
+	defer span.End()
+
 	startTime := time.Now()
 	var err error
 
 	defer func() {
-		s.recordStorageOperation(ctx, "save_authorization_code", err, startTime)
+		s.recordStorageOperation(ctx, span, "save_authorization_code", err, startTime)
 	}()
 
 	if code == nil || code.Code == "" {
@@ -912,7 +948,7 @@ func (s *Store) SaveAuthorizationCode(code *storage.AuthorizationCode) error {
 //
 // NOTE: For actual code exchange, use AtomicCheckAndMarkAuthCodeUsed instead
 // to prevent race conditions.
-func (s *Store) GetAuthorizationCode(code string) (*storage.AuthorizationCode, error) {
+func (s *Store) GetAuthorizationCode(ctx context.Context, code string) (*storage.AuthorizationCode, error) {
 	s.mu.Lock() // Use write lock to ensure consistent read
 	defer s.mu.Unlock()
 
@@ -941,7 +977,7 @@ func (s *Store) GetAuthorizationCode(code string) (*storage.AuthorizationCode, e
 // IMPORTANT: The authCode is ONLY returned on reuse errors (Used=true) to enable
 // detection and revocation. For other errors (not found, expired), nil is returned
 // to prevent information leakage.
-func (s *Store) AtomicCheckAndMarkAuthCodeUsed(code string) (*storage.AuthorizationCode, error) {
+func (s *Store) AtomicCheckAndMarkAuthCodeUsed(ctx context.Context, code string) (*storage.AuthorizationCode, error) {
 	s.mu.Lock() // MUST use write lock for atomic check-and-set
 	defer s.mu.Unlock()
 
@@ -974,7 +1010,7 @@ func (s *Store) AtomicCheckAndMarkAuthCodeUsed(code string) (*storage.Authorizat
 }
 
 // DeleteAuthorizationCode removes an authorization code
-func (s *Store) DeleteAuthorizationCode(code string) error {
+func (s *Store) DeleteAuthorizationCode(ctx context.Context, code string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1125,7 +1161,7 @@ func (s *Store) SaveTokenMetadata(tokenID, userID, clientID, tokenType string) e
 // RevokeAllTokensForUserClient revokes all tokens (access + refresh) for a specific user+client combination.
 // This implements the OAuth 2.1 requirement for authorization code reuse detection.
 // Returns the number of tokens revoked and any error encountered.
-func (s *Store) RevokeAllTokensForUserClient(userID, clientID string) (int, error) {
+func (s *Store) RevokeAllTokensForUserClient(ctx context.Context, userID, clientID string) (int, error) {
 	if userID == "" || clientID == "" {
 		return 0, fmt.Errorf("userID and clientID cannot be empty")
 	}
@@ -1220,7 +1256,7 @@ func (s *Store) RevokeAllTokensForUserClient(userID, clientID string) (int, erro
 
 // GetTokensByUserClient retrieves all token IDs for a user+client combination.
 // This is primarily for testing and debugging purposes.
-func (s *Store) GetTokensByUserClient(userID, clientID string) ([]string, error) {
+func (s *Store) GetTokensByUserClient(ctx context.Context, userID, clientID string) ([]string, error) {
 	if userID == "" || clientID == "" {
 		return nil, fmt.Errorf("userID and clientID cannot be empty")
 	}
@@ -1243,26 +1279,22 @@ func (s *Store) GetTokensByUserClient(userID, clientID string) ([]string, error)
 // ============================================================
 
 // startStorageSpan starts a new span for a storage operation
-// Returns a context with the span attached
-func (s *Store) startStorageSpan(operation string) context.Context {
+// Returns a context with the span attached and the span itself
+func (s *Store) startStorageSpan(ctx context.Context, operation string) (context.Context, trace.Span) {
 	if s.tracer == nil {
-		return context.Background()
+		return ctx, trace.SpanFromContext(ctx)
 	}
 
-	ctx, span := s.tracer.Start(context.Background(), fmt.Sprintf("storage.%s", operation),
+	ctx, span := s.tracer.Start(ctx, fmt.Sprintf("storage.%s", operation),
 		trace.WithAttributes(
 			attribute.String("operation", operation),
 		))
 
-	// End span immediately since we're not passing context through
-	// This is a limitation of the current implementation
-	defer span.End()
-
-	return ctx
+	return ctx, span
 }
 
-// recordStorageOperation records metrics for a storage operation
-func (s *Store) recordStorageOperation(ctx context.Context, operation string, err error, startTime time.Time) {
+// recordStorageOperation records metrics for a storage operation and sets span status
+func (s *Store) recordStorageOperation(ctx context.Context, span trace.Span, operation string, err error, startTime time.Time) {
 	if s.instrumentation == nil {
 		return
 	}
@@ -1271,6 +1303,16 @@ func (s *Store) recordStorageOperation(ctx context.Context, operation string, er
 	result := "success"
 	if err != nil {
 		result = "error"
+		// Set span error status
+		if span != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+	} else {
+		// Set span success status
+		if span != nil {
+			span.SetStatus(codes.Ok, "")
+		}
 	}
 
 	// Record operation with count and duration

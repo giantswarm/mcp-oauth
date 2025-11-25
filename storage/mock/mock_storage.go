@@ -2,6 +2,7 @@
 package mock
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -19,14 +20,14 @@ type MockTokenStore struct {
 	tokens            map[string]*oauth2.Token
 	userInfo          map[string]*providers.UserInfo
 	refreshTokens     map[string]refreshTokenInfo
-	SaveTokenFunc     func(userID string, token *oauth2.Token) error
-	GetTokenFunc      func(userID string) (*oauth2.Token, error)
-	DeleteTokenFunc   func(userID string) error
-	SaveUserInfoFunc  func(userID string, info *providers.UserInfo) error
-	GetUserInfoFunc   func(userID string) (*providers.UserInfo, error)
-	SaveRefreshFunc   func(refreshToken, userID string, expiresAt time.Time) error
-	GetRefreshFunc    func(refreshToken string) (string, error)
-	DeleteRefreshFunc func(refreshToken string) error
+	SaveTokenFunc     func(ctx context.Context, userID string, token *oauth2.Token) error
+	GetTokenFunc      func(ctx context.Context, userID string) (*oauth2.Token, error)
+	DeleteTokenFunc   func(ctx context.Context, userID string) error
+	SaveUserInfoFunc  func(ctx context.Context, userID string, info *providers.UserInfo) error
+	GetUserInfoFunc   func(ctx context.Context, userID string) (*providers.UserInfo, error)
+	SaveRefreshFunc   func(ctx context.Context, refreshToken, userID string, expiresAt time.Time) error
+	GetRefreshFunc    func(ctx context.Context, refreshToken string) (string, error)
+	DeleteRefreshFunc func(ctx context.Context, refreshToken string) error
 	CallCounts        map[string]int
 }
 
@@ -45,14 +46,14 @@ func NewMockTokenStore() *MockTokenStore {
 	}
 
 	// Set default implementations
-	m.SaveTokenFunc = func(userID string, token *oauth2.Token) error {
+	m.SaveTokenFunc = func(ctx context.Context, userID string, token *oauth2.Token) error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		m.tokens[userID] = token
 		return nil
 	}
 
-	m.GetTokenFunc = func(userID string) (*oauth2.Token, error) {
+	m.GetTokenFunc = func(ctx context.Context, userID string) (*oauth2.Token, error) {
 		m.mu.RLock()
 		defer m.mu.RUnlock()
 		token, ok := m.tokens[userID]
@@ -62,21 +63,21 @@ func NewMockTokenStore() *MockTokenStore {
 		return token, nil
 	}
 
-	m.DeleteTokenFunc = func(userID string) error {
+	m.DeleteTokenFunc = func(ctx context.Context, userID string) error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		delete(m.tokens, userID)
 		return nil
 	}
 
-	m.SaveUserInfoFunc = func(userID string, info *providers.UserInfo) error {
+	m.SaveUserInfoFunc = func(ctx context.Context, userID string, info *providers.UserInfo) error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		m.userInfo[userID] = info
 		return nil
 	}
 
-	m.GetUserInfoFunc = func(userID string) (*providers.UserInfo, error) {
+	m.GetUserInfoFunc = func(ctx context.Context, userID string) (*providers.UserInfo, error) {
 		m.mu.RLock()
 		defer m.mu.RUnlock()
 		info, ok := m.userInfo[userID]
@@ -86,7 +87,7 @@ func NewMockTokenStore() *MockTokenStore {
 		return info, nil
 	}
 
-	m.SaveRefreshFunc = func(refreshToken, userID string, expiresAt time.Time) error {
+	m.SaveRefreshFunc = func(ctx context.Context, refreshToken, userID string, expiresAt time.Time) error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		m.refreshTokens[refreshToken] = refreshTokenInfo{
@@ -96,7 +97,7 @@ func NewMockTokenStore() *MockTokenStore {
 		return nil
 	}
 
-	m.GetRefreshFunc = func(refreshToken string) (string, error) {
+	m.GetRefreshFunc = func(ctx context.Context, refreshToken string) (string, error) {
 		m.mu.RLock()
 		defer m.mu.RUnlock()
 		info, ok := m.refreshTokens[refreshToken]
@@ -109,7 +110,7 @@ func NewMockTokenStore() *MockTokenStore {
 		return info.userID, nil
 	}
 
-	m.DeleteRefreshFunc = func(refreshToken string) error {
+	m.DeleteRefreshFunc = func(ctx context.Context, refreshToken string) error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		delete(m.refreshTokens, refreshToken)
@@ -120,51 +121,51 @@ func NewMockTokenStore() *MockTokenStore {
 }
 
 // SaveToken saves a token for a user
-func (m *MockTokenStore) SaveToken(userID string, token *oauth2.Token) error {
+func (m *MockTokenStore) SaveToken(ctx context.Context, userID string, token *oauth2.Token) error {
 	m.CallCounts["SaveToken"]++
-	return m.SaveTokenFunc(userID, token)
+	return m.SaveTokenFunc(ctx, userID, token)
 }
 
 // GetToken retrieves a token for a user
-func (m *MockTokenStore) GetToken(userID string) (*oauth2.Token, error) {
+func (m *MockTokenStore) GetToken(ctx context.Context, userID string) (*oauth2.Token, error) {
 	m.CallCounts["GetToken"]++
-	return m.GetTokenFunc(userID)
+	return m.GetTokenFunc(ctx, userID)
 }
 
 // DeleteToken removes a token for a user
-func (m *MockTokenStore) DeleteToken(userID string) error {
+func (m *MockTokenStore) DeleteToken(ctx context.Context, userID string) error {
 	m.CallCounts["DeleteToken"]++
-	return m.DeleteTokenFunc(userID)
+	return m.DeleteTokenFunc(ctx, userID)
 }
 
 // SaveUserInfo saves user information
-func (m *MockTokenStore) SaveUserInfo(userID string, info *providers.UserInfo) error {
+func (m *MockTokenStore) SaveUserInfo(ctx context.Context, userID string, info *providers.UserInfo) error {
 	m.CallCounts["SaveUserInfo"]++
-	return m.SaveUserInfoFunc(userID, info)
+	return m.SaveUserInfoFunc(ctx, userID, info)
 }
 
 // GetUserInfo retrieves user information
-func (m *MockTokenStore) GetUserInfo(userID string) (*providers.UserInfo, error) {
+func (m *MockTokenStore) GetUserInfo(ctx context.Context, userID string) (*providers.UserInfo, error) {
 	m.CallCounts["GetUserInfo"]++
-	return m.GetUserInfoFunc(userID)
+	return m.GetUserInfoFunc(ctx, userID)
 }
 
 // SaveRefreshToken saves a refresh token mapping to user ID with expiry
-func (m *MockTokenStore) SaveRefreshToken(refreshToken, userID string, expiresAt time.Time) error {
+func (m *MockTokenStore) SaveRefreshToken(ctx context.Context, refreshToken, userID string, expiresAt time.Time) error {
 	m.CallCounts["SaveRefreshToken"]++
-	return m.SaveRefreshFunc(refreshToken, userID, expiresAt)
+	return m.SaveRefreshFunc(ctx, refreshToken, userID, expiresAt)
 }
 
 // GetRefreshTokenInfo retrieves the user ID for a refresh token
-func (m *MockTokenStore) GetRefreshTokenInfo(refreshToken string) (string, error) {
+func (m *MockTokenStore) GetRefreshTokenInfo(ctx context.Context, refreshToken string) (string, error) {
 	m.CallCounts["GetRefreshTokenInfo"]++
-	return m.GetRefreshFunc(refreshToken)
+	return m.GetRefreshFunc(ctx, refreshToken)
 }
 
 // DeleteRefreshToken removes a refresh token
-func (m *MockTokenStore) DeleteRefreshToken(refreshToken string) error {
+func (m *MockTokenStore) DeleteRefreshToken(ctx context.Context, refreshToken string) error {
 	m.CallCounts["DeleteRefreshToken"]++
-	return m.DeleteRefreshFunc(refreshToken)
+	return m.DeleteRefreshFunc(ctx, refreshToken)
 }
 
 // ResetCallCounts resets all call counters
@@ -177,11 +178,11 @@ type MockClientStore struct {
 	mu                 sync.RWMutex
 	clients            map[string]*storage.Client
 	ipRegistrations    map[string]int
-	SaveClientFunc     func(client *storage.Client) error
-	GetClientFunc      func(clientID string) (*storage.Client, error)
-	ValidateSecretFunc func(clientID, clientSecret string) error
-	ListClientsFunc    func() ([]*storage.Client, error)
-	CheckIPLimitFunc   func(ip string, maxClientsPerIP int) error
+	SaveClientFunc     func(ctx context.Context, client *storage.Client) error
+	GetClientFunc      func(ctx context.Context, clientID string) (*storage.Client, error)
+	ValidateSecretFunc func(ctx context.Context, clientID, clientSecret string) error
+	ListClientsFunc    func(ctx context.Context) ([]*storage.Client, error)
+	CheckIPLimitFunc   func(ctx context.Context, ip string, maxClientsPerIP int) error
 	CallCounts         map[string]int
 }
 
@@ -194,14 +195,14 @@ func NewMockClientStore() *MockClientStore {
 	}
 
 	// Set default implementations
-	m.SaveClientFunc = func(client *storage.Client) error {
+	m.SaveClientFunc = func(ctx context.Context, client *storage.Client) error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		m.clients[client.ClientID] = client
 		return nil
 	}
 
-	m.GetClientFunc = func(clientID string) (*storage.Client, error) {
+	m.GetClientFunc = func(ctx context.Context, clientID string) (*storage.Client, error) {
 		m.mu.RLock()
 		defer m.mu.RUnlock()
 		client, ok := m.clients[clientID]
@@ -211,7 +212,7 @@ func NewMockClientStore() *MockClientStore {
 		return client, nil
 	}
 
-	m.ValidateSecretFunc = func(clientID, clientSecret string) error {
+	m.ValidateSecretFunc = func(ctx context.Context, clientID, clientSecret string) error {
 		// SECURITY: Always perform constant-time operations to prevent timing attacks
 		// that could reveal whether a client ID exists or not
 
@@ -257,7 +258,7 @@ func NewMockClientStore() *MockClientStore {
 		return nil
 	}
 
-	m.ListClientsFunc = func() ([]*storage.Client, error) {
+	m.ListClientsFunc = func(ctx context.Context) ([]*storage.Client, error) {
 		m.mu.RLock()
 		defer m.mu.RUnlock()
 		clients := make([]*storage.Client, 0, len(m.clients))
@@ -267,7 +268,7 @@ func NewMockClientStore() *MockClientStore {
 		return clients, nil
 	}
 
-	m.CheckIPLimitFunc = func(ip string, maxClientsPerIP int) error {
+	m.CheckIPLimitFunc = func(ctx context.Context, ip string, maxClientsPerIP int) error {
 		m.mu.RLock()
 		defer m.mu.RUnlock()
 		if count := m.ipRegistrations[ip]; count >= maxClientsPerIP {
@@ -280,33 +281,33 @@ func NewMockClientStore() *MockClientStore {
 }
 
 // SaveClient saves a registered client
-func (m *MockClientStore) SaveClient(client *storage.Client) error {
+func (m *MockClientStore) SaveClient(ctx context.Context, client *storage.Client) error {
 	m.CallCounts["SaveClient"]++
-	return m.SaveClientFunc(client)
+	return m.SaveClientFunc(ctx, client)
 }
 
 // GetClient retrieves a client by ID
-func (m *MockClientStore) GetClient(clientID string) (*storage.Client, error) {
+func (m *MockClientStore) GetClient(ctx context.Context, clientID string) (*storage.Client, error) {
 	m.CallCounts["GetClient"]++
-	return m.GetClientFunc(clientID)
+	return m.GetClientFunc(ctx, clientID)
 }
 
 // ValidateClientSecret validates a client's secret
-func (m *MockClientStore) ValidateClientSecret(clientID, clientSecret string) error {
+func (m *MockClientStore) ValidateClientSecret(ctx context.Context, clientID, clientSecret string) error {
 	m.CallCounts["ValidateClientSecret"]++
-	return m.ValidateSecretFunc(clientID, clientSecret)
+	return m.ValidateSecretFunc(ctx, clientID, clientSecret)
 }
 
 // ListClients lists all registered clients
-func (m *MockClientStore) ListClients() ([]*storage.Client, error) {
+func (m *MockClientStore) ListClients(ctx context.Context) ([]*storage.Client, error) {
 	m.CallCounts["ListClients"]++
-	return m.ListClientsFunc()
+	return m.ListClientsFunc(ctx)
 }
 
 // CheckIPLimit checks if an IP has reached the client registration limit
-func (m *MockClientStore) CheckIPLimit(ip string, maxClientsPerIP int) error {
+func (m *MockClientStore) CheckIPLimit(ctx context.Context, ip string, maxClientsPerIP int) error {
 	m.CallCounts["CheckIPLimit"]++
-	return m.CheckIPLimitFunc(ip, maxClientsPerIP)
+	return m.CheckIPLimitFunc(ctx, ip, maxClientsPerIP)
 }
 
 // ResetCallCounts resets all call counters
@@ -320,13 +321,13 @@ type MockFlowStore struct {
 	authStates                 map[string]*storage.AuthorizationState
 	authStatesByProvider       map[string]*storage.AuthorizationState
 	authCodes                  map[string]*storage.AuthorizationCode
-	SaveAuthStateFunc          func(state *storage.AuthorizationState) error
-	GetAuthStateFunc           func(stateID string) (*storage.AuthorizationState, error)
-	GetAuthStateByProviderFunc func(providerState string) (*storage.AuthorizationState, error)
-	DeleteAuthStateFunc        func(stateID string) error
-	SaveAuthCodeFunc           func(code *storage.AuthorizationCode) error
-	GetAuthCodeFunc            func(code string) (*storage.AuthorizationCode, error)
-	DeleteAuthCodeFunc         func(code string) error
+	SaveAuthStateFunc          func(ctx context.Context, state *storage.AuthorizationState) error
+	GetAuthStateFunc           func(ctx context.Context, stateID string) (*storage.AuthorizationState, error)
+	GetAuthStateByProviderFunc func(ctx context.Context, providerState string) (*storage.AuthorizationState, error)
+	DeleteAuthStateFunc        func(ctx context.Context, stateID string) error
+	SaveAuthCodeFunc           func(ctx context.Context, code *storage.AuthorizationCode) error
+	GetAuthCodeFunc            func(ctx context.Context, code string) (*storage.AuthorizationCode, error)
+	DeleteAuthCodeFunc         func(ctx context.Context, code string) error
 	CallCounts                 map[string]int
 }
 
@@ -340,7 +341,7 @@ func NewMockFlowStore() *MockFlowStore {
 	}
 
 	// Set default implementations
-	m.SaveAuthStateFunc = func(state *storage.AuthorizationState) error {
+	m.SaveAuthStateFunc = func(ctx context.Context, state *storage.AuthorizationState) error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		m.authStates[state.StateID] = state
@@ -348,7 +349,7 @@ func NewMockFlowStore() *MockFlowStore {
 		return nil
 	}
 
-	m.GetAuthStateFunc = func(stateID string) (*storage.AuthorizationState, error) {
+	m.GetAuthStateFunc = func(ctx context.Context, stateID string) (*storage.AuthorizationState, error) {
 		m.mu.RLock()
 		defer m.mu.RUnlock()
 		state, ok := m.authStates[stateID]
@@ -361,7 +362,7 @@ func NewMockFlowStore() *MockFlowStore {
 		return state, nil
 	}
 
-	m.GetAuthStateByProviderFunc = func(providerState string) (*storage.AuthorizationState, error) {
+	m.GetAuthStateByProviderFunc = func(ctx context.Context, providerState string) (*storage.AuthorizationState, error) {
 		m.mu.RLock()
 		defer m.mu.RUnlock()
 		state, ok := m.authStatesByProvider[providerState]
@@ -371,7 +372,7 @@ func NewMockFlowStore() *MockFlowStore {
 		return state, nil
 	}
 
-	m.DeleteAuthStateFunc = func(stateID string) error {
+	m.DeleteAuthStateFunc = func(ctx context.Context, stateID string) error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		if state, ok := m.authStates[stateID]; ok {
@@ -381,14 +382,14 @@ func NewMockFlowStore() *MockFlowStore {
 		return nil
 	}
 
-	m.SaveAuthCodeFunc = func(code *storage.AuthorizationCode) error {
+	m.SaveAuthCodeFunc = func(ctx context.Context, code *storage.AuthorizationCode) error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		m.authCodes[code.Code] = code
 		return nil
 	}
 
-	m.GetAuthCodeFunc = func(code string) (*storage.AuthorizationCode, error) {
+	m.GetAuthCodeFunc = func(ctx context.Context, code string) (*storage.AuthorizationCode, error) {
 		m.mu.RLock()
 		defer m.mu.RUnlock()
 		authCode, ok := m.authCodes[code]
@@ -401,7 +402,7 @@ func NewMockFlowStore() *MockFlowStore {
 		return authCode, nil
 	}
 
-	m.DeleteAuthCodeFunc = func(code string) error {
+	m.DeleteAuthCodeFunc = func(ctx context.Context, code string) error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		delete(m.authCodes, code)
@@ -412,45 +413,45 @@ func NewMockFlowStore() *MockFlowStore {
 }
 
 // SaveAuthorizationState saves the state of an ongoing authorization flow
-func (m *MockFlowStore) SaveAuthorizationState(state *storage.AuthorizationState) error {
+func (m *MockFlowStore) SaveAuthorizationState(ctx context.Context, state *storage.AuthorizationState) error {
 	m.CallCounts["SaveAuthorizationState"]++
-	return m.SaveAuthStateFunc(state)
+	return m.SaveAuthStateFunc(ctx, state)
 }
 
 // GetAuthorizationState retrieves an authorization state by client state
-func (m *MockFlowStore) GetAuthorizationState(stateID string) (*storage.AuthorizationState, error) {
+func (m *MockFlowStore) GetAuthorizationState(ctx context.Context, stateID string) (*storage.AuthorizationState, error) {
 	m.CallCounts["GetAuthorizationState"]++
-	return m.GetAuthStateFunc(stateID)
+	return m.GetAuthStateFunc(ctx, stateID)
 }
 
 // GetAuthorizationStateByProviderState retrieves an authorization state by provider state
-func (m *MockFlowStore) GetAuthorizationStateByProviderState(providerState string) (*storage.AuthorizationState, error) {
+func (m *MockFlowStore) GetAuthorizationStateByProviderState(ctx context.Context, providerState string) (*storage.AuthorizationState, error) {
 	m.CallCounts["GetAuthorizationStateByProviderState"]++
-	return m.GetAuthStateByProviderFunc(providerState)
+	return m.GetAuthStateByProviderFunc(ctx, providerState)
 }
 
 // DeleteAuthorizationState removes an authorization state
-func (m *MockFlowStore) DeleteAuthorizationState(stateID string) error {
+func (m *MockFlowStore) DeleteAuthorizationState(ctx context.Context, stateID string) error {
 	m.CallCounts["DeleteAuthorizationState"]++
-	return m.DeleteAuthStateFunc(stateID)
+	return m.DeleteAuthStateFunc(ctx, stateID)
 }
 
 // SaveAuthorizationCode saves an issued authorization code
-func (m *MockFlowStore) SaveAuthorizationCode(code *storage.AuthorizationCode) error {
+func (m *MockFlowStore) SaveAuthorizationCode(ctx context.Context, code *storage.AuthorizationCode) error {
 	m.CallCounts["SaveAuthorizationCode"]++
-	return m.SaveAuthCodeFunc(code)
+	return m.SaveAuthCodeFunc(ctx, code)
 }
 
 // GetAuthorizationCode retrieves an authorization code
-func (m *MockFlowStore) GetAuthorizationCode(code string) (*storage.AuthorizationCode, error) {
+func (m *MockFlowStore) GetAuthorizationCode(ctx context.Context, code string) (*storage.AuthorizationCode, error) {
 	m.CallCounts["GetAuthorizationCode"]++
-	return m.GetAuthCodeFunc(code)
+	return m.GetAuthCodeFunc(ctx, code)
 }
 
 // DeleteAuthorizationCode removes an authorization code
-func (m *MockFlowStore) DeleteAuthorizationCode(code string) error {
+func (m *MockFlowStore) DeleteAuthorizationCode(ctx context.Context, code string) error {
 	m.CallCounts["DeleteAuthorizationCode"]++
-	return m.DeleteAuthCodeFunc(code)
+	return m.DeleteAuthCodeFunc(ctx, code)
 }
 
 // ResetCallCounts resets all call counters

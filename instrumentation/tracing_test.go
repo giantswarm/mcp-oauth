@@ -10,6 +10,7 @@ import (
 )
 
 func TestRecordError(t *testing.T) {
+	ctx := context.Background()
 	inst, err := New(Config{
 		Enabled: true,
 	})
@@ -18,7 +19,6 @@ func TestRecordError(t *testing.T) {
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	_, span := inst.Tracer("server").Start(ctx, "test-span")
 	defer span.End()
 
@@ -30,6 +30,7 @@ func TestRecordError(t *testing.T) {
 }
 
 func TestSetSpanSuccess(t *testing.T) {
+	ctx := context.Background()
 	inst, err := New(Config{
 		Enabled: true,
 	})
@@ -38,7 +39,6 @@ func TestSetSpanSuccess(t *testing.T) {
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	_, span := inst.Tracer("server").Start(ctx, "test-span")
 	defer span.End()
 
@@ -49,6 +49,7 @@ func TestSetSpanSuccess(t *testing.T) {
 }
 
 func TestAddOAuthFlowAttributes(t *testing.T) {
+	ctx := context.Background()
 	inst, err := New(Config{
 		Enabled: true,
 	})
@@ -57,7 +58,6 @@ func TestAddOAuthFlowAttributes(t *testing.T) {
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	_, span := inst.Tracer("server").Start(ctx, "test-span")
 	defer span.End()
 
@@ -70,6 +70,7 @@ func TestAddOAuthFlowAttributes(t *testing.T) {
 }
 
 func TestAddPKCEAttributes(t *testing.T) {
+	ctx := context.Background()
 	inst, err := New(Config{
 		Enabled: true,
 	})
@@ -78,7 +79,6 @@ func TestAddPKCEAttributes(t *testing.T) {
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	_, span := inst.Tracer("server").Start(ctx, "test-span")
 	defer span.End()
 
@@ -91,6 +91,7 @@ func TestAddPKCEAttributes(t *testing.T) {
 }
 
 func TestAddTokenFamilyAttributes(t *testing.T) {
+	ctx := context.Background()
 	inst, err := New(Config{
 		Enabled: true,
 	})
@@ -99,7 +100,6 @@ func TestAddTokenFamilyAttributes(t *testing.T) {
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	_, span := inst.Tracer("server").Start(ctx, "test-span")
 	defer span.End()
 
@@ -112,6 +112,7 @@ func TestAddTokenFamilyAttributes(t *testing.T) {
 }
 
 func TestAddStorageAttributes(t *testing.T) {
+	ctx := context.Background()
 	inst, err := New(Config{
 		Enabled: true,
 	})
@@ -120,7 +121,6 @@ func TestAddStorageAttributes(t *testing.T) {
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	_, span := inst.Tracer("server").Start(ctx, "test-span")
 	defer span.End()
 
@@ -132,6 +132,7 @@ func TestAddStorageAttributes(t *testing.T) {
 }
 
 func TestAddProviderAttributes(t *testing.T) {
+	ctx := context.Background()
 	inst, err := New(Config{
 		Enabled: true,
 	})
@@ -140,7 +141,6 @@ func TestAddProviderAttributes(t *testing.T) {
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	_, span := inst.Tracer("server").Start(ctx, "test-span")
 	defer span.End()
 
@@ -152,6 +152,7 @@ func TestAddProviderAttributes(t *testing.T) {
 }
 
 func TestAddHTTPAttributes(t *testing.T) {
+	ctx := context.Background()
 	inst, err := New(Config{
 		Enabled: true,
 	})
@@ -160,7 +161,6 @@ func TestAddHTTPAttributes(t *testing.T) {
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	_, span := inst.Tracer("server").Start(ctx, "test-span")
 	defer span.End()
 
@@ -172,6 +172,7 @@ func TestAddHTTPAttributes(t *testing.T) {
 }
 
 func TestAddSecurityAttributes(t *testing.T) {
+	ctx := context.Background()
 	inst, err := New(Config{
 		Enabled: true,
 	})
@@ -180,7 +181,6 @@ func TestAddSecurityAttributes(t *testing.T) {
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	_, span := inst.Tracer("server").Start(ctx, "test-span")
 	defer span.End()
 
@@ -238,6 +238,7 @@ func TestShouldLogClientIPs(t *testing.T) {
 }
 
 func TestSpanLifecycle(t *testing.T) {
+	ctx := context.Background()
 	inst, err := New(Config{
 		Enabled: true,
 	})
@@ -245,8 +246,6 @@ func TestSpanLifecycle(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
-
-	ctx := context.Background()
 
 	// Test full span lifecycle with attributes and error
 	_, span := inst.Tracer("server").Start(ctx, "oauth.exchange_authorization_code")
@@ -267,6 +266,7 @@ func TestSpanLifecycle(t *testing.T) {
 }
 
 func TestSpanNesting(t *testing.T) {
+	ctx := context.Background()
 	inst, err := New(Config{
 		Enabled: true,
 	})
@@ -274,8 +274,6 @@ func TestSpanNesting(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
-
-	ctx := context.Background()
 
 	// Create nested spans
 	ctx, span1 := inst.Tracer("http").Start(ctx, "http.request")
@@ -299,6 +297,7 @@ func TestSpanNesting(t *testing.T) {
 }
 
 func TestSpanConcurrency(t *testing.T) {
+	ctx := context.Background()
 	inst, err := New(Config{
 		Enabled: true,
 	})
@@ -307,7 +306,6 @@ func TestSpanConcurrency(t *testing.T) {
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	done := make(chan bool)
 
 	// Create spans concurrently
@@ -333,6 +331,7 @@ func TestSpanConcurrency(t *testing.T) {
 }
 
 func TestNoOpSpans(t *testing.T) {
+	ctx := context.Background()
 	// Test that disabled instrumentation produces no-op spans
 	inst, err := New(Config{
 		Enabled: false,
@@ -341,8 +340,6 @@ func TestNoOpSpans(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
-
-	ctx := context.Background()
 
 	// Create and manipulate spans - should all be no-ops
 	_, span := inst.Tracer("server").Start(ctx, "test-span")
@@ -361,6 +358,7 @@ func TestNoOpSpans(t *testing.T) {
 }
 
 func TestSetSpanError(t *testing.T) {
+	ctx := context.Background()
 	inst, err := New(Config{
 		Enabled: true,
 	})
@@ -369,7 +367,6 @@ func TestSetSpanError(t *testing.T) {
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	_, span := inst.Tracer("server").Start(ctx, "test-span")
 	defer span.End()
 
@@ -387,6 +384,7 @@ func TestSetSpanError_NilSpan(t *testing.T) {
 }
 
 func TestSetSpanAttributes(t *testing.T) {
+	ctx := context.Background()
 	inst, err := New(Config{
 		Enabled: true,
 	})
@@ -395,7 +393,6 @@ func TestSetSpanAttributes(t *testing.T) {
 	}
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
-	ctx := context.Background()
 	_, span := inst.Tracer("server").Start(ctx, "test-span")
 	defer span.End()
 
