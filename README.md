@@ -587,6 +587,54 @@ http.request (from otelhttp)
 - Thread-safe concurrent access
 - Lock-free atomic operations for metrics
 
+### Privacy & Compliance
+
+**Data Collection:**
+
+When instrumentation is enabled, the following data may be collected in distributed traces and metrics:
+- **Client IPs** - For security monitoring and rate limit enforcement
+- **Client IDs and User IDs** - Non-sensitive identifiers for tracking OAuth flows
+- **OAuth Flow Metadata** - Scopes, PKCE methods, grant types, token types
+- **Timing Information** - Request durations, operation latencies
+- **Error Information** - Error codes and non-sensitive error descriptions
+
+**Security Guarantees:**
+
+✅ **Actual credentials are NEVER logged:**
+- Access tokens, refresh tokens, authorization codes are never included in traces
+- Client secrets are never logged
+- Only metadata about tokens (type, expiry, family ID) is recorded
+
+⚠️ **GDPR and Privacy Considerations:**
+- **Client IP addresses** may be considered Personally Identifiable Information (PII) in some jurisdictions
+- **User IDs** may be subject to privacy regulations depending on your implementation
+- Configure trace sampling and retention policies appropriately for your compliance requirements
+- Consider data minimization: disable instrumentation in regions with strict privacy laws if not needed
+
+**Recommendations:**
+1. Review your jurisdiction's privacy laws before enabling instrumentation in production
+2. Configure appropriate trace sampling rates (e.g., 1% for high-volume systems)
+3. Set reasonable retention periods for traces (7-30 days recommended)
+4. Implement access controls on your observability infrastructure
+5. Document data collection in your privacy policy
+6. Consider using trace scrubbing/redaction for sensitive attributes
+
+**Example - Minimal Data Collection:**
+
+```go
+// For privacy-sensitive environments, keep instrumentation disabled
+server, _ := oauth.NewServer(
+    provider, tokenStore, clientStore, flowStore,
+    &oauth.ServerConfig{
+        Issuer: "https://your-domain.com",
+        Instrumentation: oauth.InstrumentationConfig{
+            Enabled: false, // No data collection
+        },
+    },
+    logger,
+)
+```
+
 ### Future Integration
 
 The instrumentation infrastructure is in place and ready for layer-by-layer adoption:

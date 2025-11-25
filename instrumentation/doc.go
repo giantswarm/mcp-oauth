@@ -109,4 +109,27 @@
 // # Thread Safety
 //
 // All instrumentation operations are thread-safe and can be called concurrently from multiple goroutines.
+//
+// # Security Considerations
+//
+// IMPORTANT: This package is designed to collect observability data, not sensitive credentials.
+//
+// When instrumenting OAuth flows, you MUST:
+//   - NEVER log actual token values (access tokens, refresh tokens, authorization codes)
+//   - NEVER log client secrets or PKCE verifiers
+//   - ONLY log metadata (token types, expiry times, validation results, family IDs)
+//
+// Data collected in traces and metrics may be:
+//   - Persisted for extended periods in observability backends
+//   - Accessible to operations teams and potentially wider audiences
+//   - Subject to compliance requirements (GDPR, PCI-DSS, SOC 2, etc.)
+//   - Replicated across monitoring infrastructure
+//
+// Privacy considerations:
+//   - Client IP addresses may be considered PII in some jurisdictions
+//   - User IDs may be subject to privacy regulations
+//   - Configure appropriate retention policies and access controls
+//   - Document data collection in your privacy policy
+//
+// See the README.md "Privacy & Compliance" section for detailed guidance.
 package instrumentation

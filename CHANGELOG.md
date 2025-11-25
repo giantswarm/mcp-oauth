@@ -39,9 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - No-op provider verification
     - Metric recording correctness
     - Span lifecycle management
+  - **Security & Privacy:**
+    - Comprehensive security warnings against logging sensitive credentials
+    - GDPR/privacy compliance documentation
+    - Clear guidance on data collection and retention policies
+    - Reserved attribute constants to prevent credential leakage
+    - Security-reviewed implementation with no sensitive data logging
   - **Impact**: No breaking changes - instrumentation is opt-in and disabled by default
   - **Future work**: Layer-by-layer instrumentation adoption (HTTP, storage, provider, security)
-  - **Documentation**: Comprehensive package documentation with examples
+  - **Documentation**: Comprehensive package documentation with security best practices
 
 - **CORS (Cross-Origin Resource Sharing) support for browser-based clients (#28)**
   - Added `CORSConfig` to server configuration with `AllowedOrigins`, `AllowCredentials`, and `MaxAge` settings

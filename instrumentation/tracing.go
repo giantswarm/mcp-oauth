@@ -7,30 +7,46 @@ import (
 )
 
 // Common span attribute keys
+//
+// SECURITY WARNING: Never log actual sensitive values (access tokens, refresh tokens,
+// authorization codes, client secrets, etc.) in traces or metrics. Only log metadata
+// such as token types, expiry times, family IDs, and validation results.
+//
+// These constants define attribute key names for observability, not for logging
+// sensitive credential values. Logging actual credentials would create critical
+// security vulnerabilities as traces are often:
+//   - Persisted for extended periods
+//   - Accessible to wider audiences than production systems
+//   - Replicated across monitoring infrastructure
+//   - Subject to compliance requirements (GDPR, PCI-DSS, etc.)
 const (
-	// OAuth flow attributes
-	AttrClientID          = "oauth.client_id"
-	AttrUserID            = "oauth.user_id"
-	AttrScope             = "oauth.scope"
-	AttrPKCEMethod        = "oauth.pkce.method"
-	AttrTokenFamilyID     = "oauth.token.family_id"  //nolint:gosec // False positive: not a hardcoded credential
-	AttrTokenGeneration   = "oauth.token.generation" //nolint:gosec // False positive: not a hardcoded credential
-	AttrCodeReuse         = "oauth.code.reuse"
-	AttrTokenReuse        = "oauth.token.reuse"   //nolint:gosec // False positive: not a hardcoded credential
-	AttrTokenRotated      = "oauth.token.rotated" //nolint:gosec // False positive: not a hardcoded credential
-	AttrGrantType         = "oauth.grant_type"
-	AttrResponseType      = "oauth.response_type"
-	AttrClientType        = "oauth.client_type"
-	AttrRedirectURI       = "oauth.redirect_uri"
-	AttrState             = "oauth.state"
-	AttrProviderState     = "oauth.provider_state"
-	AttrAuthorizationCode = "oauth.authorization_code"
-	AttrAccessToken       = "oauth.access_token"  //nolint:gosec // False positive: not a hardcoded credential
-	AttrRefreshToken      = "oauth.refresh_token" //nolint:gosec // False positive: not a hardcoded credential
-	AttrTokenType         = "oauth.token_type"    //nolint:gosec // False positive: not a hardcoded credential
-	AttrExpiresIn         = "oauth.expires_in"
-	AttrError             = "oauth.error"
-	AttrErrorDescription  = "oauth.error_description"
+	// OAuth flow attributes - SAFE to use for metadata only
+	AttrClientID         = "oauth.client_id"         // Client identifier (non-secret)
+	AttrUserID           = "oauth.user_id"           // User identifier (non-secret)
+	AttrScope            = "oauth.scope"             // Requested scopes
+	AttrPKCEMethod       = "oauth.pkce.method"       // PKCE method used (S256, plain)
+	AttrTokenFamilyID    = "oauth.token.family_id"   //nolint:gosec // Token family identifier for rotation tracking
+	AttrTokenGeneration  = "oauth.token.generation"  //nolint:gosec // Token generation number
+	AttrCodeReuse        = "oauth.code.reuse"        // Whether code reuse was detected (boolean)
+	AttrTokenReuse       = "oauth.token.reuse"       //nolint:gosec // Whether token reuse was detected (boolean)
+	AttrTokenRotated     = "oauth.token.rotated"     //nolint:gosec // Whether token was rotated (boolean)
+	AttrGrantType        = "oauth.grant_type"        // OAuth grant type
+	AttrResponseType     = "oauth.response_type"     // OAuth response type
+	AttrClientType       = "oauth.client_type"       // Client type (public/confidential)
+	AttrRedirectURI      = "oauth.redirect_uri"      // Redirect URI (may contain sensitive data)
+	AttrState            = "oauth.state"             // OAuth state parameter
+	AttrProviderState    = "oauth.provider_state"    // Provider-specific state
+	AttrTokenType        = "oauth.token_type"        //nolint:gosec // Token type (Bearer, etc.) - NOT the actual token
+	AttrExpiresIn        = "oauth.expires_in"        // Token expiry duration
+	AttrError            = "oauth.error"             // Error code
+	AttrErrorDescription = "oauth.error_description" // Error description
+
+	// RESERVED - DO NOT USE: These are reserved for potential future metadata use only.
+	// NEVER set these attributes to actual credential values.
+	// Instead, use boolean flags like "token_present" or "code_validated".
+	AttrAuthorizationCode = "oauth.authorization_code" // RESERVED - use "code_present" or "code_length" instead
+	AttrAccessToken       = "oauth.access_token"       //nolint:gosec // RESERVED - use "token_type" or "token_present" instead
+	AttrRefreshToken      = "oauth.refresh_token"      //nolint:gosec // RESERVED - use "refresh_present" or "refresh_rotated" instead
 
 	// Storage attributes
 	AttrStorageOperation = "storage.operation"
