@@ -7,6 +7,9 @@ import (
 	"math"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/providers"
@@ -438,6 +441,17 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 // ExchangeAuthorizationCode exchanges an authorization code for tokens
 // Returns oauth2.Token directly
 func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, redirectURI, codeVerifier string) (*oauth2.Token, string, error) {
+	// Create span if tracing is enabled
+	var span trace.Span
+	if s.tracer != nil {
+		ctx, span = s.tracer.Start(ctx, "oauth.server.exchange_authorization_code")
+		defer span.End()
+
+		span.SetAttributes(
+			attribute.String("oauth.client_id", clientID),
+		)
+	}
+
 	// SECURITY: Atomically check and mark authorization code as used
 	// This prevents race conditions where multiple concurrent requests could use the same code
 	authCode, err := s.flowStore.AtomicCheckAndMarkAuthCodeUsed(code)
@@ -446,6 +460,20 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 		if authCode != nil && authCode.Used {
 			// CRITICAL SECURITY: Authorization code reuse detected - this indicates a potential token theft attack
 			// OAuth 2.1 requires revoking ALL tokens for this user+client when code reuse is detected
+
+			// Record code reuse detection metric
+			if s.Instrumentation != nil {
+				s.Instrumentation.Metrics().RecordCodeReuseDetected(ctx)
+			}
+
+			if span != nil {
+				span.SetAttributes(
+					attribute.String("oauth.user_id", authCode.UserID),
+					attribute.String("security.event", "code_reuse_detected"),
+				)
+				span.SetStatus(codes.Error, "authorization code reuse detected")
+			}
+
 			// Rate limit logging to prevent DoS via log flooding
 			if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(authCode.UserID+":"+clientID) {
 				s.Logger.Error("Authorization code reuse detected - revoking all tokens",
@@ -595,6 +623,20 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 	// Validate PKCE if present
 	if authCode.CodeChallenge != "" {
 		if err := s.validatePKCE(authCode.CodeChallenge, authCode.CodeChallengeMethod, codeVerifier); err != nil {
+			// Record PKCE validation failure metric
+			if s.Instrumentation != nil {
+				s.Instrumentation.Metrics().RecordPKCEValidationFailed(ctx, authCode.CodeChallengeMethod)
+			}
+
+			if span != nil {
+				span.SetAttributes(
+					attribute.String("oauth.pkce_method", authCode.CodeChallengeMethod),
+					attribute.String("security.event", "pkce_validation_failed"),
+				)
+				span.RecordError(err)
+				span.SetStatus(codes.Error, "PKCE validation failed")
+			}
+
 			if s.Auditor != nil {
 				// This is a security event - log it separately
 				s.Auditor.LogEvent(security.Event{
@@ -678,6 +720,15 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 		s.Auditor.LogTokenIssued(authCode.UserID, clientID, "", authCode.Scope)
 	}
 
+	// Record success in span
+	if span != nil {
+		span.SetAttributes(
+			attribute.String("oauth.user_id", authCode.UserID),
+			attribute.String("oauth.scope", authCode.Scope),
+		)
+		span.SetStatus(codes.Ok, "code exchanged successfully")
+	}
+
 	return tokenResponse, authCode.Scope, nil
 }
 
@@ -723,6 +774,12 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 
 				// Token is deleted but family exists and NOT revoked → FRESH REUSE DETECTED!
 				// This means someone is trying to use an old (rotated) refresh token
+
+				// Record token reuse detection metric
+				if s.Instrumentation != nil {
+					s.Instrumentation.Metrics().RecordTokenReuseDetected(ctx)
+				}
+
 				// Rate limit logging to prevent DoS via log flooding
 				if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(family.UserID+":"+clientID) {
 					s.Logger.Error("Refresh token reuse detected - token was rotated but still being used",

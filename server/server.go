@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -39,6 +41,7 @@ type Server struct {
 	SecurityEventRateLimiter      *security.RateLimiter                   // Rate limiter for security event logging (DoS prevention)
 	ClientRegistrationRateLimiter *security.ClientRegistrationRateLimiter // Time-windowed rate limiter for client registrations
 	Instrumentation               *instrumentation.Instrumentation        // OpenTelemetry instrumentation
+	tracer                        trace.Tracer                            // OpenTelemetry tracer for server operations
 	Logger                        *slog.Logger
 	Config                        *Config
 	shutdownOnce                  sync.Once // Ensures Shutdown is called only once
@@ -117,6 +120,7 @@ func New(
 			logger.Warn("Failed to initialize instrumentation, continuing without it", "error", err)
 		} else {
 			srv.Instrumentation = inst
+			srv.tracer = inst.Tracer("server")
 			logger.Info("Instrumentation initialized",
 				"service_name", instConfig.ServiceName,
 				"service_version", instConfig.ServiceVersion)
@@ -169,6 +173,9 @@ func (s *Server) SetClientRegistrationRateLimiter(rl *security.ClientRegistratio
 // SetInstrumentation sets the OpenTelemetry instrumentation
 func (s *Server) SetInstrumentation(inst *instrumentation.Instrumentation) {
 	s.Instrumentation = inst
+	if inst != nil {
+		s.tracer = inst.Tracer("server")
+	}
 }
 
 const (
