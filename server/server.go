@@ -9,6 +9,9 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
@@ -37,6 +40,8 @@ type Server struct {
 	UserRateLimiter               *security.RateLimiter                   // User-based rate limiter (authenticated requests)
 	SecurityEventRateLimiter      *security.RateLimiter                   // Rate limiter for security event logging (DoS prevention)
 	ClientRegistrationRateLimiter *security.ClientRegistrationRateLimiter // Time-windowed rate limiter for client registrations
+	Instrumentation               *instrumentation.Instrumentation        // OpenTelemetry instrumentation
+	tracer                        trace.Tracer                            // OpenTelemetry tracer for server operations
 	Logger                        *slog.Logger
 	Config                        *Config
 	shutdownOnce                  sync.Once // Ensures Shutdown is called only once
@@ -96,6 +101,53 @@ func New(
 		setter.SetRevokedFamilyRetentionDays(config.RevokedFamilyRetentionDays)
 	}
 
+	// Initialize instrumentation if enabled
+	if config.Instrumentation.Enabled {
+		instConfig := instrumentation.Config{
+			Enabled:                  true,
+			ServiceName:              config.Instrumentation.ServiceName,
+			ServiceVersion:           config.Instrumentation.ServiceVersion,
+			LogClientIPs:             config.Instrumentation.LogClientIPs,
+			IncludeClientIDInMetrics: config.Instrumentation.IncludeClientIDInMetrics,
+			MetricsExporter:          config.Instrumentation.MetricsExporter,
+			TracesExporter:           config.Instrumentation.TracesExporter,
+			OTLPEndpoint:             config.Instrumentation.OTLPEndpoint,
+			OTLPInsecure:             config.Instrumentation.OTLPInsecure,
+		}
+		if instConfig.ServiceName == "" {
+			instConfig.ServiceName = "mcp-oauth"
+		}
+		if instConfig.ServiceVersion == "" {
+			instConfig.ServiceVersion = "unknown"
+		}
+
+		inst, err := instrumentation.New(instConfig)
+		if err != nil {
+			logger.Warn("Failed to initialize instrumentation, continuing without it", "error", err)
+		} else {
+			srv.Instrumentation = inst
+			srv.tracer = inst.Tracer("server")
+
+			// Propagate instrumentation to storage layers
+			type instrumentationSetter interface {
+				SetInstrumentation(*instrumentation.Instrumentation)
+			}
+			if setter, ok := tokenStore.(instrumentationSetter); ok {
+				setter.SetInstrumentation(inst)
+			}
+			if setter, ok := clientStore.(instrumentationSetter); ok {
+				setter.SetInstrumentation(inst)
+			}
+			if setter, ok := flowStore.(instrumentationSetter); ok {
+				setter.SetInstrumentation(inst)
+			}
+
+			logger.Info("Instrumentation initialized",
+				"service_name", instConfig.ServiceName,
+				"service_version", instConfig.ServiceVersion)
+		}
+	}
+
 	return srv, nil
 }
 
@@ -137,6 +189,28 @@ func (s *Server) SetSecurityEventRateLimiter(rl *security.RateLimiter) {
 // This prevents resource exhaustion through repeated registration/deletion cycles
 func (s *Server) SetClientRegistrationRateLimiter(rl *security.ClientRegistrationRateLimiter) {
 	s.ClientRegistrationRateLimiter = rl
+}
+
+// SetInstrumentation sets the OpenTelemetry instrumentation for server and storage
+func (s *Server) SetInstrumentation(inst *instrumentation.Instrumentation) {
+	s.Instrumentation = inst
+	if inst != nil {
+		s.tracer = inst.Tracer("server")
+
+		// Also set instrumentation on storage if it supports it
+		type instrumentationSetter interface {
+			SetInstrumentation(*instrumentation.Instrumentation)
+		}
+		if setter, ok := s.tokenStore.(instrumentationSetter); ok {
+			setter.SetInstrumentation(inst)
+		}
+		if setter, ok := s.clientStore.(instrumentationSetter); ok {
+			setter.SetInstrumentation(inst)
+		}
+		if setter, ok := s.flowStore.(instrumentationSetter); ok {
+			setter.SetInstrumentation(inst)
+		}
+	}
 }
 
 const (
@@ -231,6 +305,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			if s.ClientRegistrationRateLimiter != nil {
 				s.Logger.Debug("Stopping client registration rate limiter...")
 				s.ClientRegistrationRateLimiter.Stop()
+			}
+
+			// Shutdown instrumentation
+			if s.Instrumentation != nil {
+				s.Logger.Debug("Shutting down instrumentation...")
+				if err := s.Instrumentation.Shutdown(ctx); err != nil {
+					s.Logger.Warn("Failed to shutdown instrumentation", "error", err)
+				}
 			}
 
 			// Stop storage cleanup goroutines if the store supports it

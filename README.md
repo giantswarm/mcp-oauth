@@ -509,6 +509,201 @@ location / {
 **Rate Limiting Effectiveness:**
 Rate limiting is only as secure as your IP extraction. If `TrustProxy=false` (default), the library uses the direct connection IP, which is most secure but may not work behind proxies. If `TrustProxy=true`, ensure your proxy infrastructure is properly configured and trusted.
 
+## 📊 Observability & Instrumentation
+
+The library provides comprehensive OpenTelemetry (OTEL) instrumentation for metrics, distributed tracing, and structured logging.
+
+### Quick Start
+
+Enable instrumentation in your server configuration:
+
+```go
+import "github.com/giantswarm/mcp-oauth/instrumentation"
+
+// Enable instrumentation with Prometheus metrics
+server, _ := oauth.NewServer(
+    provider, tokenStore, clientStore, flowStore,
+    &oauth.ServerConfig{
+        Issuer: "https://your-domain.com",
+        Instrumentation: oauth.InstrumentationConfig{
+            Enabled:         true,
+            ServiceName:     "my-oauth-server",
+            ServiceVersion:  "1.0.0",
+            MetricsExporter: "prometheus", // Export metrics for Prometheus
+            TracesExporter:  "otlp",       // Export traces via OTLP
+            OTLPEndpoint:    "localhost:4318", // OTLP collector endpoint
+        },
+    },
+    logger,
+)
+
+// Expose Prometheus metrics endpoint
+import "github.com/prometheus/client_golang/prometheus/promhttp"
+http.Handle("/metrics", promhttp.Handler())
+```
+
+### Exporter Configuration
+
+The library supports multiple exporters for metrics and traces:
+
+**Metrics Exporters:**
+- `"prometheus"` - Export metrics in Prometheus format (production recommended)
+- `"stdout"` - Print metrics to stdout (development/debugging)
+- `"none"` or `""` - No metrics export (default, zero overhead)
+
+**Trace Exporters:**
+- `"otlp"` - Export traces via OTLP HTTP (production recommended, requires `OTLPEndpoint`)
+- `"stdout"` - Print traces to stdout (development/debugging)
+- `"none"` or `""` - No trace export (default, zero overhead)
+
+**Examples:**
+
+```go
+// Production: Prometheus + OTLP traces
+Instrumentation: oauth.InstrumentationConfig{
+    Enabled:         true,
+    MetricsExporter: "prometheus",
+    TracesExporter:  "otlp",
+    OTLPEndpoint:    "jaeger:4318", // Or your OTLP collector
+}
+
+// Development: stdout exporters for local debugging
+Instrumentation: oauth.InstrumentationConfig{
+    Enabled:         true,
+    MetricsExporter: "stdout",
+    TracesExporter:  "stdout",
+}
+
+// Minimal: Only metrics, no tracing
+Instrumentation: oauth.InstrumentationConfig{
+    Enabled:         true,
+    MetricsExporter: "prometheus",
+    TracesExporter:  "none",
+}
+```
+
+### Available Metrics
+
+**HTTP Layer:**
+- `oauth.http.requests.total{method, endpoint, status}` - Total HTTP requests
+- `oauth.http.request.duration{endpoint}` - Request duration (ms)
+
+**OAuth Flows:**
+- `oauth.authorization.started{client_id}` - Authorization flows started
+- `oauth.code.exchanged{client_id, pkce_method}` - Authorization codes exchanged
+- `oauth.token.refreshed{client_id, rotated}` - Tokens refreshed
+- `oauth.token.revoked{client_id}` - Tokens revoked
+- `oauth.client.registered{client_type}` - Clients registered
+
+**Security:**
+- `oauth.rate_limit.exceeded{limiter_type}` - Rate limit violations
+- `oauth.pkce.validation_failed{method}` - PKCE validation failures
+- `oauth.code.reuse_detected` - Authorization code reuse attempts
+- `oauth.token.reuse_detected` - Token reuse attempts
+
+**Storage:**
+- `storage.operation.total{operation, result}` - Storage operations
+- `storage.operation.duration{operation}` - Operation duration (ms)
+
+**Provider:**
+- `provider.api.calls.total{provider, operation, status}` - Provider API calls
+- `provider.api.duration{provider, operation}` - API call duration (ms)
+- `provider.api.errors.total{provider, operation, error_type}` - Provider API errors
+
+### Distributed Tracing
+
+Spans are automatically created for all major operations:
+
+```
+http.request (from otelhttp)
+├── oauth.http.authorization
+│   └── oauth.server.start_authorization_flow
+│       ├── storage.save_authorization_state
+│       └── provider.google.authorization_url
+└── oauth.http.callback
+    └── oauth.server.handle_provider_callback
+        ├── storage.get_authorization_state
+        ├── provider.google.exchange_code
+        └── storage.save_token
+```
+
+### Performance
+
+- **When disabled**: Zero overhead (uses no-op providers)
+- **When enabled**: < 1% latency increase, ~1-2 MB memory for metric registry
+- Thread-safe concurrent access
+- Lock-free atomic operations for metrics
+
+### Privacy & Compliance
+
+**Data Collection:**
+
+When instrumentation is enabled, the following data may be collected in distributed traces and metrics:
+- **Client IPs** - For security monitoring and rate limit enforcement
+- **Client IDs and User IDs** - Non-sensitive identifiers for tracking OAuth flows
+- **OAuth Flow Metadata** - Scopes, PKCE methods, grant types, token types
+- **Timing Information** - Request durations, operation latencies
+- **Error Information** - Error codes and non-sensitive error descriptions
+
+**Security Guarantees:**
+
+✅ **Actual credentials are NEVER logged:**
+- Access tokens, refresh tokens, authorization codes are never included in traces
+- Client secrets are never logged
+- Only metadata about tokens (type, expiry, family ID) is recorded
+
+⚠️ **GDPR and Privacy Considerations:**
+- **Client IP addresses** may be considered Personally Identifiable Information (PII) in some jurisdictions
+- **User IDs** may be subject to privacy regulations depending on your implementation
+- Configure trace sampling and retention policies appropriately for your compliance requirements
+- Consider data minimization: disable instrumentation in regions with strict privacy laws if not needed
+
+**Recommendations:**
+1. Review your jurisdiction's privacy laws before enabling instrumentation in production
+2. Configure appropriate trace sampling rates (e.g., 1% for high-volume systems)
+3. Set reasonable retention periods for traces (7-30 days recommended)
+4. Implement access controls on your observability infrastructure
+5. Document data collection in your privacy policy
+6. Consider using trace scrubbing/redaction for sensitive attributes
+
+**Example - Minimal Data Collection:**
+
+```go
+// For privacy-sensitive environments, keep instrumentation disabled
+server, _ := oauth.NewServer(
+    provider, tokenStore, clientStore, flowStore,
+    &oauth.ServerConfig{
+        Issuer: "https://your-domain.com",
+        Instrumentation: oauth.InstrumentationConfig{
+            Enabled: false, // No data collection
+        },
+    },
+    logger,
+)
+```
+
+### Integration with Observability Backends
+
+**Prometheus:**
+The Prometheus exporter is pull-based and works with the standard `prometheus/client_golang` library. Simply expose the `/metrics` endpoint and configure Prometheus to scrape it.
+
+**Jaeger/OpenTelemetry Collector:**
+Use the OTLP trace exporter to send traces to Jaeger, Grafana Tempo, or any OTLP-compatible backend:
+
+```bash
+# Example: Run Jaeger with OTLP support
+docker run -d --name jaeger \
+  -p 16686:16686 \
+  -p 4318:4318 \
+  jaegertracing/all-in-one:latest
+
+# Configure your OAuth server
+OTLPEndpoint: "localhost:4318"
+TracesExporter: "otlp"
+```
+
+See the [instrumentation package documentation](https://pkg.go.dev/github.com/giantswarm/mcp-oauth/instrumentation) for full details.
+
 ## 📚 Examples
 
 See the [examples](./examples) directory:

@@ -55,6 +55,17 @@ func main() {
 			// - AllowPKCEPlain: false (only S256 method)
 			// - AllowRefreshTokenRotation: true (token rotation)
 			// - TrustProxy: false (don't trust proxy headers)
+
+			// Optional: Enable OpenTelemetry instrumentation for observability
+			// Uncomment to enable metrics and distributed tracing:
+			// Instrumentation: oauth.InstrumentationConfig{
+			//     Enabled:         true,
+			//     ServiceName:     "mcp-oauth-basic",
+			//     ServiceVersion:  "1.0.0",
+			//     MetricsExporter: "stdout",  // Options: "prometheus", "stdout", "none"
+			//     TracesExporter:  "stdout",  // Options: "otlp", "stdout", "none"
+			//     OTLPEndpoint:    "localhost:4318", // Required if TracesExporter="otlp"
+			// },
 		},
 		logger,
 	)

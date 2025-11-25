@@ -1,10 +1,13 @@
-module github.com/giantswarm/mcp-oauth/examples/production
+module github.com/giantswarm/mcp-oauth/examples/prometheus
 
 go 1.24.0
 
 replace github.com/giantswarm/mcp-oauth => ../..
 
-require github.com/giantswarm/mcp-oauth v0.1.9
+require (
+	github.com/giantswarm/mcp-oauth v0.0.0-00010101000000-000000000000
+	github.com/prometheus/client_golang v1.23.2
+)
 
 require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
@@ -16,7 +19,6 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.3 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.4 // indirect
 	github.com/prometheus/otlptranslator v1.0.0 // indirect

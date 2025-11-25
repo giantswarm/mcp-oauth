@@ -16,6 +16,10 @@ type Server = server.Server
 // Use server.Config for new code.
 type ServerConfig = server.Config
 
+// InstrumentationConfig is a type alias for backward compatibility.
+// Use server.InstrumentationConfig for new code.
+type InstrumentationConfig = server.InstrumentationConfig
+
 // NewServer creates a new OAuth server.
 // This is a convenience wrapper for server.New() to maintain backward compatibility.
 func NewServer(

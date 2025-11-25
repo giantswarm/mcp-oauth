@@ -43,6 +43,7 @@ func containsAuthFailure(logOutput, reason string) bool {
 // TestServer_AuditLoggingClientIDMismatch tests audit logging for client ID mismatch
 // P1: Security monitoring
 func TestServer_AuditLoggingClientIDMismatch(t *testing.T) {
+	ctx := context.Background()
 	store := memory.New()
 	defer store.Stop()
 
@@ -63,7 +64,7 @@ func TestServer_AuditLoggingClientIDMismatch(t *testing.T) {
 	srv.SetAuditor(auditor)
 
 	// Register a client
-	client, _, err := srv.RegisterClient(
+	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback"},
@@ -83,7 +84,7 @@ func TestServer_AuditLoggingClientIDMismatch(t *testing.T) {
 
 	// Get authorization code
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	_, err = srv.StartAuthorizationFlow(ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -95,7 +96,7 @@ func TestServer_AuditLoggingClientIDMismatch(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(clientState)
+	authState, err := store.GetAuthorizationState(ctx, clientState)
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -137,6 +138,7 @@ func TestServer_AuditLoggingClientIDMismatch(t *testing.T) {
 // TestServer_AuditLoggingRedirectURIMismatch tests audit logging for redirect URI mismatch
 // P1: Security monitoring
 func TestServer_AuditLoggingRedirectURIMismatch(t *testing.T) {
+	ctx := context.Background()
 	store := memory.New()
 	defer store.Stop()
 
@@ -157,7 +159,7 @@ func TestServer_AuditLoggingRedirectURIMismatch(t *testing.T) {
 	srv.SetAuditor(auditor)
 
 	// Register a client
-	client, _, err := srv.RegisterClient(
+	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback"},
@@ -177,7 +179,7 @@ func TestServer_AuditLoggingRedirectURIMismatch(t *testing.T) {
 
 	// Get authorization code
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	_, err = srv.StartAuthorizationFlow(ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -189,7 +191,7 @@ func TestServer_AuditLoggingRedirectURIMismatch(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(clientState)
+	authState, err := store.GetAuthorizationState(ctx, clientState)
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -231,6 +233,7 @@ func TestServer_AuditLoggingRedirectURIMismatch(t *testing.T) {
 // TestServer_AuditEventProviderRevocationThresholdExceeded tests audit event structure
 // P1: Security monitoring
 func TestServer_AuditEventProviderRevocationThresholdExceeded(t *testing.T) {
+	ctx := context.Background()
 	store := memory.New()
 	defer store.Stop()
 
@@ -268,7 +271,7 @@ func TestServer_AuditEventProviderRevocationThresholdExceeded(t *testing.T) {
 			Expiry:      time.Now().Add(time.Hour),
 			TokenType:   "Bearer",
 		}
-		if err := store.SaveToken(tokenID, token); err != nil {
+		if err := store.SaveToken(ctx, tokenID, token); err != nil {
 			t.Fatalf("SaveToken() error = %v", err)
 		}
 		if err := store.SaveTokenMetadata(tokenID, userID, clientID, "access"); err != nil {
@@ -307,6 +310,7 @@ func TestServer_AuditEventProviderRevocationThresholdExceeded(t *testing.T) {
 // TestServer_AuditEventProviderRevocationCompleteFailure tests 100% failure audit event
 // P1: Security monitoring
 func TestServer_AuditEventProviderRevocationCompleteFailure(t *testing.T) {
+	ctx := context.Background()
 	store := memory.New()
 	defer store.Stop()
 
@@ -343,7 +347,7 @@ func TestServer_AuditEventProviderRevocationCompleteFailure(t *testing.T) {
 			Expiry:      time.Now().Add(time.Hour),
 			TokenType:   "Bearer",
 		}
-		if err := store.SaveToken(tokenID, token); err != nil {
+		if err := store.SaveToken(ctx, tokenID, token); err != nil {
 			t.Fatalf("SaveToken() error = %v", err)
 		}
 		if err := store.SaveTokenMetadata(tokenID, userID, clientID, "access"); err != nil {
@@ -377,6 +381,7 @@ func TestServer_AuditEventProviderRevocationCompleteFailure(t *testing.T) {
 // TestServer_AuditEventAuthorizationCodeReuse tests audit logging for code reuse
 // P1: Security monitoring
 func TestServer_AuditEventAuthorizationCodeReuse(t *testing.T) {
+	ctx := context.Background()
 	store := memory.New()
 	defer store.Stop()
 
@@ -397,7 +402,7 @@ func TestServer_AuditEventAuthorizationCodeReuse(t *testing.T) {
 	srv.SetAuditor(auditor)
 
 	// Register a client
-	client, _, err := srv.RegisterClient(
+	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback"},
@@ -417,7 +422,7 @@ func TestServer_AuditEventAuthorizationCodeReuse(t *testing.T) {
 
 	// Get authorization code
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	_, err = srv.StartAuthorizationFlow(ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -429,7 +434,7 @@ func TestServer_AuditEventAuthorizationCodeReuse(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(clientState)
+	authState, err := store.GetAuthorizationState(ctx, clientState)
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}

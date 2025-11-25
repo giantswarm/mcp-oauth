@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"testing"
 
 	"golang.org/x/crypto/bcrypt"
@@ -10,6 +11,7 @@ import (
 )
 
 func TestServer_RegisterClient(t *testing.T) {
+	ctx := context.Background()
 	store := memory.New()
 	defer store.Stop()
 
@@ -68,7 +70,7 @@ func TestServer_RegisterClient(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client, secret, err := srv.RegisterClient(
+			client, secret, err := srv.RegisterClient(ctx,
 				tt.clientName,
 				tt.clientType,
 				tt.redirectURIs,
@@ -163,6 +165,7 @@ func TestServer_RegisterClient(t *testing.T) {
 }
 
 func TestServer_RegisterClient_IPLimit(t *testing.T) {
+	ctx := context.Background()
 	store := memory.New()
 	defer store.Stop()
 
@@ -181,7 +184,7 @@ func TestServer_RegisterClient_IPLimit(t *testing.T) {
 	maxPerIP := 2
 
 	// Register first client
-	_, _, err = srv.RegisterClient(
+	_, _, err = srv.RegisterClient(ctx,
 		"Client 1",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback1"},
@@ -194,7 +197,7 @@ func TestServer_RegisterClient_IPLimit(t *testing.T) {
 	}
 
 	// Register second client
-	_, _, err = srv.RegisterClient(
+	_, _, err = srv.RegisterClient(ctx,
 		"Client 2",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback2"},
@@ -207,7 +210,7 @@ func TestServer_RegisterClient_IPLimit(t *testing.T) {
 	}
 
 	// Third registration should fail (exceeds limit)
-	_, _, err = srv.RegisterClient(
+	_, _, err = srv.RegisterClient(ctx,
 		"Client 3",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback3"},
@@ -221,6 +224,7 @@ func TestServer_RegisterClient_IPLimit(t *testing.T) {
 }
 
 func TestServer_ValidateClientCredentials(t *testing.T) {
+	ctx := context.Background()
 	store := memory.New()
 	defer store.Stop()
 
@@ -236,7 +240,7 @@ func TestServer_ValidateClientCredentials(t *testing.T) {
 	}
 
 	// Register a client
-	client, secret, err := srv.RegisterClient(
+	client, secret, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback"},
@@ -282,7 +286,7 @@ func TestServer_ValidateClientCredentials(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := srv.ValidateClientCredentials(tt.clientID, tt.clientSecret)
+			err := srv.ValidateClientCredentials(ctx, tt.clientID, tt.clientSecret)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ValidateClientCredentials() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -291,6 +295,7 @@ func TestServer_ValidateClientCredentials(t *testing.T) {
 }
 
 func TestServer_GetClient(t *testing.T) {
+	ctx := context.Background()
 	store := memory.New()
 	defer store.Stop()
 
@@ -306,7 +311,7 @@ func TestServer_GetClient(t *testing.T) {
 	}
 
 	// Register a client
-	client, _, err := srv.RegisterClient(
+	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		[]string{"https://example.com/callback"},
@@ -337,7 +342,7 @@ func TestServer_GetClient(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := srv.GetClient(tt.clientID)
+			got, err := srv.GetClient(ctx, tt.clientID)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("GetClient() error = %v, wantErr %v", err, tt.wantErr)
 				return

@@ -167,6 +167,7 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 }
 
 func TestProvider_ExchangeCode(t *testing.T) {
+	ctx := context.Background()
 	// Create mock Google token endpoint
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != testTokenEndpoint {
@@ -211,7 +212,6 @@ func TestProvider_ExchangeCode(t *testing.T) {
 	provider.Endpoint.TokenURL = server.URL + "/token"
 
 	// Test exchange
-	ctx := context.Background()
 	token, err := provider.ExchangeCode(ctx, "test-code", "")
 	if err != nil {
 		t.Fatalf("ExchangeCode() error = %v", err)
@@ -227,6 +227,7 @@ func TestProvider_ExchangeCode(t *testing.T) {
 }
 
 func TestProvider_ExchangeCode_WithPKCE(t *testing.T) {
+	ctx := context.Background()
 	// Create mock Google token endpoint
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != testTokenEndpoint {
@@ -267,7 +268,6 @@ func TestProvider_ExchangeCode_WithPKCE(t *testing.T) {
 
 	provider.Endpoint.TokenURL = server.URL + "/token"
 
-	ctx := context.Background()
 	token, err := provider.ExchangeCode(ctx, "test-code", "test-verifier")
 	if err != nil {
 		t.Fatalf("ExchangeCode() error = %v", err)
@@ -366,6 +366,7 @@ func TestProvider_ValidateToken_InvalidToken(t *testing.T) {
 }
 
 func TestProvider_RefreshToken(t *testing.T) {
+	ctx := context.Background()
 	// Create mock Google token endpoint
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != testTokenEndpoint {
@@ -406,7 +407,6 @@ func TestProvider_RefreshToken(t *testing.T) {
 
 	provider.Endpoint.TokenURL = server.URL + "/token"
 
-	ctx := context.Background()
 	token, err := provider.RefreshToken(ctx, "test-refresh-token")
 	if err != nil {
 		t.Fatalf("RefreshToken() error = %v", err)
@@ -418,6 +418,7 @@ func TestProvider_RefreshToken(t *testing.T) {
 }
 
 func TestProvider_RevokeToken(t *testing.T) {
+	ctx := context.Background()
 	// Create mock Google revoke endpoint
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Parse form data
@@ -448,7 +449,6 @@ func TestProvider_RevokeToken(t *testing.T) {
 		t.Fatalf("NewProvider() error = %v", err)
 	}
 
-	ctx := context.Background()
 	err = provider.RevokeToken(ctx, "test-token")
 	if err != nil {
 		t.Fatalf("RevokeToken() error = %v", err)
@@ -456,6 +456,7 @@ func TestProvider_RevokeToken(t *testing.T) {
 }
 
 func TestProvider_RevokeToken_Failed(t *testing.T) {
+	ctx := context.Background()
 	// Create mock Google revoke endpoint that returns error
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "revocation failed", http.StatusBadRequest)
@@ -474,7 +475,6 @@ func TestProvider_RevokeToken_Failed(t *testing.T) {
 		t.Fatalf("NewProvider() error = %v", err)
 	}
 
-	ctx := context.Background()
 	err = provider.RevokeToken(ctx, "test-token")
 	if err == nil {
 		t.Error("RevokeToken() should return error on failure")

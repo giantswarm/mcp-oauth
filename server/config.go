@@ -153,6 +153,75 @@ type Config struct {
 
 	// CORS settings for browser-based clients
 	CORS CORSConfig
+
+	// Instrumentation settings for observability
+	Instrumentation InstrumentationConfig
+}
+
+// InstrumentationConfig holds configuration for OpenTelemetry instrumentation
+type InstrumentationConfig struct {
+	// Enabled controls whether instrumentation is active
+	// When false, uses no-op providers (zero overhead)
+	// Default: false (disabled)
+	Enabled bool
+
+	// ServiceName is the name of the service for telemetry
+	// Default: "mcp-oauth"
+	ServiceName string
+
+	// ServiceVersion is the version of the service for telemetry
+	// Default: "unknown"
+	ServiceVersion string
+
+	// LogClientIPs controls whether client IP addresses are included in traces and metrics
+	// When false, client IP attributes will be omitted from observability data
+	// This can help with GDPR and privacy compliance in strict jurisdictions
+	// Default: false (disabled for privacy by default)
+	//
+	// Privacy Note: Client IP addresses may be considered Personally Identifiable
+	// Information (PII) under GDPR and other privacy regulations. Enable IP
+	// logging only if required for security monitoring and you have appropriate
+	// legal basis and data protection measures in place.
+	LogClientIPs bool
+
+	// IncludeClientIDInMetrics controls whether client_id is included in metric labels
+	// When true, provides detailed per-client metrics but increases cardinality
+	// When false, reduces cardinality (recommended for >1000 clients)
+	// Default: true (include client_id for detailed metrics)
+	//
+	// Cardinality Warning: Each unique client_id creates a new time series.
+	// With 10,000+ clients, this can cause memory and performance issues.
+	// Set to false for high-scale deployments.
+	IncludeClientIDInMetrics bool
+
+	// MetricsExporter controls which metrics exporter to use
+	// Options: "prometheus", "stdout", "none" (default: "none")
+	// - "prometheus": Export metrics in Prometheus format (use inst.PrometheusExporter())
+	// - "stdout": Print metrics to stdout (useful for development/debugging)
+	// - "none": Use no-op provider (zero overhead)
+	// Default: "none" (disabled)
+	MetricsExporter string
+
+	// TracesExporter controls which traces exporter to use
+	// Options: "otlp", "stdout", "none" (default: "none")
+	// - "otlp": Export traces via OTLP HTTP (requires OTLPEndpoint)
+	// - "stdout": Print traces to stdout (useful for development/debugging)
+	// - "none": Use no-op provider (zero overhead)
+	// Default: "none" (disabled)
+	TracesExporter string
+
+	// OTLPEndpoint is the endpoint for OTLP trace export
+	// Required when TracesExporter="otlp"
+	// Example: "localhost:4318" (default OTLP HTTP port)
+	// Default: "" (not set)
+	OTLPEndpoint string
+
+	// OTLPInsecure controls whether to use insecure HTTP for OTLP export
+	// When false (default), uses TLS for secure transport
+	// Set to true only for local development or testing
+	// Default: false (uses TLS)
+	// WARNING: Never use in production - traces contain user metadata
+	OTLPInsecure bool
 }
 
 // CORSConfig holds CORS (Cross-Origin Resource Sharing) configuration for browser-based clients

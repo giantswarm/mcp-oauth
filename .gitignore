@@ -59,3 +59,4 @@ examples/*/go.sum
 examples/basic/basic
 examples/production/production
 examples/custom-scopes/custom-scopes
+examples/prometheus/prometheus

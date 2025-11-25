@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"log/slog"
 	"testing"
 	"time"
@@ -24,19 +25,20 @@ const (
 // ============================================================
 
 func TestStore_SaveToken(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
 	token := testutil.GenerateTestToken()
 	userID := testUserID
 
-	err := store.SaveToken(userID, token)
+	err := store.SaveToken(ctx, userID, token)
 	if err != nil {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
 
 	// Verify token was saved
-	got, err := store.GetToken(userID)
+	got, err := store.GetToken(ctx, userID)
 	if err != nil {
 		t.Fatalf("GetToken() error = %v", err)
 	}
@@ -47,38 +49,42 @@ func TestStore_SaveToken(t *testing.T) {
 }
 
 func TestStore_SaveToken_EmptyUserID(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
 	token := testutil.GenerateTestToken()
 
-	err := store.SaveToken("", token)
+	err := store.SaveToken(ctx, "", token)
 	if err == nil {
 		t.Error("SaveToken() with empty userID should return error")
 	}
 }
 
 func TestStore_SaveToken_NilToken(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
-	err := store.SaveToken("test-user", nil)
+	err := store.SaveToken(ctx, "test-user", nil)
 	if err == nil {
 		t.Error("SaveToken() with nil token should return error")
 	}
 }
 
 func TestStore_GetToken_NotFound(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
-	_, err := store.GetToken("nonexistent")
+	_, err := store.GetToken(ctx, "nonexistent")
 	if err == nil {
 		t.Error("GetToken() for nonexistent user should return error")
 	}
 }
 
 func TestStore_GetToken_Expired(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
@@ -90,19 +96,20 @@ func TestStore_GetToken_Expired(t *testing.T) {
 	}
 
 	userID := testUserID
-	err := store.SaveToken(userID, expiredToken)
+	err := store.SaveToken(ctx, userID, expiredToken)
 	if err != nil {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
 
 	// Should return error for expired token
-	_, err = store.GetToken(userID)
+	_, err = store.GetToken(ctx, userID)
 	if err == nil {
 		t.Error("GetToken() should return error for expired token")
 	}
 }
 
 func TestStore_GetToken_ExpiredWithRefreshToken(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
@@ -115,13 +122,13 @@ func TestStore_GetToken_ExpiredWithRefreshToken(t *testing.T) {
 	}
 
 	userID := testUserID
-	err := store.SaveToken(userID, expiredToken)
+	err := store.SaveToken(ctx, userID, expiredToken)
 	if err != nil {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
 
 	// Should succeed because refresh token is present
-	got, err := store.GetToken(userID)
+	got, err := store.GetToken(ctx, userID)
 	if err != nil {
 		t.Fatalf("GetToken() error = %v", err)
 	}
@@ -132,6 +139,7 @@ func TestStore_GetToken_ExpiredWithRefreshToken(t *testing.T) {
 }
 
 func TestStore_DeleteToken(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
@@ -139,36 +147,37 @@ func TestStore_DeleteToken(t *testing.T) {
 	userID := testUserID
 
 	// Save token
-	if err := store.SaveToken(userID, token); err != nil {
+	if err := store.SaveToken(ctx, userID, token); err != nil {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
 
 	// Delete token
-	if err := store.DeleteToken(userID); err != nil {
+	if err := store.DeleteToken(ctx, userID); err != nil {
 		t.Fatalf("DeleteToken() error = %v", err)
 	}
 
 	// Verify token is gone
-	_, err := store.GetToken(userID)
+	_, err := store.GetToken(ctx, userID)
 	if err == nil {
 		t.Error("GetToken() should return error after deletion")
 	}
 }
 
 func TestStore_SaveUserInfo(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
 	userInfo := testutil.GenerateTestUserInfo()
 	userID := testUserID
 
-	err := store.SaveUserInfo(userID, userInfo)
+	err := store.SaveUserInfo(ctx, userID, userInfo)
 	if err != nil {
 		t.Fatalf("SaveUserInfo() error = %v", err)
 	}
 
 	// Verify user info was saved
-	got, err := store.GetUserInfo(userID)
+	got, err := store.GetUserInfo(ctx, userID)
 	if err != nil {
 		t.Fatalf("GetUserInfo() error = %v", err)
 	}
@@ -179,32 +188,35 @@ func TestStore_SaveUserInfo(t *testing.T) {
 }
 
 func TestStore_SaveUserInfo_EmptyUserID(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
 	userInfo := testutil.GenerateTestUserInfo()
 
-	err := store.SaveUserInfo("", userInfo)
+	err := store.SaveUserInfo(ctx, "", userInfo)
 	if err == nil {
 		t.Error("SaveUserInfo() with empty userID should return error")
 	}
 }
 
 func TestStore_SaveUserInfo_Nil(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
-	err := store.SaveUserInfo("test-user", nil)
+	err := store.SaveUserInfo(ctx, "test-user", nil)
 	if err == nil {
 		t.Error("SaveUserInfo() with nil userInfo should return error")
 	}
 }
 
 func TestStore_GetUserInfo_NotFound(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
-	_, err := store.GetUserInfo("nonexistent")
+	_, err := store.GetUserInfo(ctx, "nonexistent")
 	if err == nil {
 		t.Error("GetUserInfo() for nonexistent user should return error")
 	}
@@ -215,6 +227,7 @@ func TestStore_GetUserInfo_NotFound(t *testing.T) {
 // ============================================================
 
 func TestStore_SaveRefreshToken(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
@@ -222,13 +235,13 @@ func TestStore_SaveRefreshToken(t *testing.T) {
 	userID := testUserID
 	expiresAt := time.Now().Add(90 * 24 * time.Hour)
 
-	err := store.SaveRefreshToken(refreshToken, userID, expiresAt)
+	err := store.SaveRefreshToken(ctx, refreshToken, userID, expiresAt)
 	if err != nil {
 		t.Fatalf("SaveRefreshToken() error = %v", err)
 	}
 
 	// Verify refresh token was saved
-	gotUserID, err := store.GetRefreshTokenInfo(refreshToken)
+	gotUserID, err := store.GetRefreshTokenInfo(ctx, refreshToken)
 	if err != nil {
 		t.Fatalf("GetRefreshTokenInfo() error = %v", err)
 	}
@@ -239,26 +252,29 @@ func TestStore_SaveRefreshToken(t *testing.T) {
 }
 
 func TestStore_SaveRefreshToken_EmptyToken(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
-	err := store.SaveRefreshToken("", "test-user", time.Now())
+	err := store.SaveRefreshToken(ctx, "", "test-user", time.Now())
 	if err == nil {
 		t.Error("SaveRefreshToken() with empty token should return error")
 	}
 }
 
 func TestStore_SaveRefreshToken_EmptyUserID(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
-	err := store.SaveRefreshToken("test-token", "", time.Now())
+	err := store.SaveRefreshToken(ctx, "test-token", "", time.Now())
 	if err == nil {
 		t.Error("SaveRefreshToken() with empty userID should return error")
 	}
 }
 
 func TestStore_GetRefreshTokenInfo_Expired(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
@@ -266,18 +282,19 @@ func TestStore_GetRefreshTokenInfo_Expired(t *testing.T) {
 	userID := testUserID
 	expiresAt := time.Now().Add(-1 * time.Hour) // Expired
 
-	if err := store.SaveRefreshToken(refreshToken, userID, expiresAt); err != nil {
+	if err := store.SaveRefreshToken(ctx, refreshToken, userID, expiresAt); err != nil {
 		t.Fatalf("SaveRefreshToken() error = %v", err)
 	}
 
 	// Should return error for expired token
-	_, err := store.GetRefreshTokenInfo(refreshToken)
+	_, err := store.GetRefreshTokenInfo(ctx, refreshToken)
 	if err == nil {
 		t.Error("GetRefreshTokenInfo() should return error for expired token")
 	}
 }
 
 func TestStore_DeleteRefreshToken(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
@@ -286,17 +303,17 @@ func TestStore_DeleteRefreshToken(t *testing.T) {
 	expiresAt := time.Now().Add(90 * 24 * time.Hour)
 
 	// Save refresh token
-	if err := store.SaveRefreshToken(refreshToken, userID, expiresAt); err != nil {
+	if err := store.SaveRefreshToken(ctx, refreshToken, userID, expiresAt); err != nil {
 		t.Fatalf("SaveRefreshToken() error = %v", err)
 	}
 
 	// Delete refresh token
-	if err := store.DeleteRefreshToken(refreshToken); err != nil {
+	if err := store.DeleteRefreshToken(ctx, refreshToken); err != nil {
 		t.Fatalf("DeleteRefreshToken() error = %v", err)
 	}
 
 	// Verify refresh token is gone
-	_, err := store.GetRefreshTokenInfo(refreshToken)
+	_, err := store.GetRefreshTokenInfo(ctx, refreshToken)
 	if err == nil {
 		t.Error("GetRefreshTokenInfo() should return error after deletion")
 	}
@@ -307,6 +324,7 @@ func TestStore_DeleteRefreshToken(t *testing.T) {
 // ============================================================
 
 func TestStore_SaveRefreshTokenWithFamily(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
@@ -317,13 +335,13 @@ func TestStore_SaveRefreshTokenWithFamily(t *testing.T) {
 	generation := 1
 	expiresAt := time.Now().Add(90 * 24 * time.Hour)
 
-	err := store.SaveRefreshTokenWithFamily(refreshToken, userID, clientID, familyID, generation, expiresAt)
+	err := store.SaveRefreshTokenWithFamily(ctx, refreshToken, userID, clientID, familyID, generation, expiresAt)
 	if err != nil {
 		t.Fatalf("SaveRefreshTokenWithFamily() error = %v", err)
 	}
 
 	// Verify family metadata
-	family, err := store.GetRefreshTokenFamily(refreshToken)
+	family, err := store.GetRefreshTokenFamily(ctx, refreshToken)
 	if err != nil {
 		t.Fatalf("GetRefreshTokenFamily() error = %v", err)
 	}
@@ -346,6 +364,7 @@ func TestStore_SaveRefreshTokenWithFamily(t *testing.T) {
 }
 
 func TestStore_RevokeRefreshTokenFamily(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
@@ -355,21 +374,21 @@ func TestStore_RevokeRefreshTokenFamily(t *testing.T) {
 	// Create multiple tokens in the same family
 	tokens := []string{"token1", "token2", "token3"}
 	for i, token := range tokens {
-		err := store.SaveRefreshTokenWithFamily(token, "test-user", "test-client", familyID, i+1, expiresAt)
+		err := store.SaveRefreshTokenWithFamily(ctx, token, "test-user", "test-client", familyID, i+1, expiresAt)
 		if err != nil {
 			t.Fatalf("SaveRefreshTokenWithFamily() error = %v", err)
 		}
 	}
 
 	// Revoke the family
-	err := store.RevokeRefreshTokenFamily(familyID)
+	err := store.RevokeRefreshTokenFamily(ctx, familyID)
 	if err != nil {
 		t.Fatalf("RevokeRefreshTokenFamily() error = %v", err)
 	}
 
 	// Verify all tokens in family are revoked
 	for _, token := range tokens {
-		_, err := store.GetRefreshTokenInfo(token)
+		_, err := store.GetRefreshTokenInfo(ctx, token)
 		if err == nil {
 			t.Errorf("Token %q should be revoked", token)
 		}
@@ -381,18 +400,19 @@ func TestStore_RevokeRefreshTokenFamily(t *testing.T) {
 // ============================================================
 
 func TestStore_SaveClient(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
 	client := testutil.GenerateTestClient()
 
-	err := store.SaveClient(client)
+	err := store.SaveClient(ctx, client)
 	if err != nil {
 		t.Fatalf("SaveClient() error = %v", err)
 	}
 
 	// Verify client was saved
-	got, err := store.GetClient(client.ClientID)
+	got, err := store.GetClient(ctx, client.ClientID)
 	if err != nil {
 		t.Fatalf("GetClient() error = %v", err)
 	}
@@ -403,16 +423,18 @@ func TestStore_SaveClient(t *testing.T) {
 }
 
 func TestStore_SaveClient_Nil(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
-	err := store.SaveClient(nil)
+	err := store.SaveClient(ctx, nil)
 	if err == nil {
 		t.Error("SaveClient() with nil client should return error")
 	}
 }
 
 func TestStore_SaveClient_EmptyID(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
@@ -420,23 +442,25 @@ func TestStore_SaveClient_EmptyID(t *testing.T) {
 		ClientID: "",
 	}
 
-	err := store.SaveClient(client)
+	err := store.SaveClient(ctx, client)
 	if err == nil {
 		t.Error("SaveClient() with empty ClientID should return error")
 	}
 }
 
 func TestStore_GetClient_NotFound(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
-	_, err := store.GetClient("nonexistent")
+	_, err := store.GetClient(ctx, "nonexistent")
 	if err == nil {
 		t.Error("GetClient() for nonexistent client should return error")
 	}
 }
 
 func TestStore_ValidateClientSecret(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
@@ -452,28 +476,29 @@ func TestStore_ValidateClientSecret(t *testing.T) {
 		ClientSecretHash: string(hash),
 	}
 
-	if err := store.SaveClient(client); err != nil {
+	if err := store.SaveClient(ctx, client); err != nil {
 		t.Fatalf("SaveClient() error = %v", err)
 	}
 
 	// Test valid secret
-	err = store.ValidateClientSecret(client.ClientID, secret)
+	err = store.ValidateClientSecret(ctx, client.ClientID, secret)
 	if err != nil {
 		t.Errorf("ValidateClientSecret() with correct secret error = %v", err)
 	}
 
 	// Test invalid secret
-	err = store.ValidateClientSecret(client.ClientID, "wrong-secret")
+	err = store.ValidateClientSecret(ctx, client.ClientID, "wrong-secret")
 	if err == nil {
 		t.Error("ValidateClientSecret() with wrong secret should return error")
 	}
 }
 
 func TestStore_ValidateClientSecret_ClientNotFound(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
-	err := store.ValidateClientSecret("nonexistent", "secret")
+	err := store.ValidateClientSecret(ctx, "nonexistent", "secret")
 	if err == nil {
 		t.Error("ValidateClientSecret() for nonexistent client should return error")
 	}
@@ -487,6 +512,7 @@ func TestStore_ValidateClientSecret_ClientNotFound(t *testing.T) {
 // is ALWAYS performed, regardless of whether the client exists or not.
 // This prevents timing attacks that could enumerate valid client IDs.
 func TestValidateClientSecret_TimingAttackProtection(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
@@ -503,7 +529,7 @@ func TestValidateClientSecret_TimingAttackProtection(t *testing.T) {
 		ClientSecretHash: string(hash),
 	}
 
-	if err := store.SaveClient(client); err != nil {
+	if err := store.SaveClient(ctx, client); err != nil {
 		t.Fatalf("SaveClient() error = %v", err)
 	}
 
@@ -549,7 +575,7 @@ func TestValidateClientSecret_TimingAttackProtection(t *testing.T) {
 			// All these operations should take roughly the same time
 			// because bcrypt comparison always happens
 			start := time.Now()
-			err := store.ValidateClientSecret(tt.clientID, tt.secret)
+			err := store.ValidateClientSecret(ctx, tt.clientID, tt.secret)
 			duration := time.Since(start)
 
 			if (err != nil) != tt.wantErr {
@@ -571,6 +597,7 @@ func TestValidateClientSecret_TimingAttackProtection(t *testing.T) {
 // to verify that the timing difference between existent and non-existent clients
 // is negligible (within the expected variance of bcrypt operations).
 func TestValidateClientSecret_ConstantTimeStatistical(t *testing.T) {
+	ctx := context.Background()
 	if testing.Short() {
 		t.Skip("skipping statistical timing test in short mode")
 	}
@@ -591,7 +618,7 @@ func TestValidateClientSecret_ConstantTimeStatistical(t *testing.T) {
 		ClientSecretHash: string(hash),
 	}
 
-	if err := store.SaveClient(client); err != nil {
+	if err := store.SaveClient(ctx, client); err != nil {
 		t.Fatalf("SaveClient() error = %v", err)
 	}
 
@@ -603,14 +630,14 @@ func TestValidateClientSecret_ConstantTimeStatistical(t *testing.T) {
 	// Test existent client with wrong secret
 	for i := 0; i < trials; i++ {
 		start := time.Now()
-		_ = store.ValidateClientSecret("timing-test-client", "wrong-secret")
+		_ = store.ValidateClientSecret(ctx, "timing-test-client", "wrong-secret")
 		existentDurations[i] = time.Since(start)
 	}
 
 	// Test non-existent client
 	for i := 0; i < trials; i++ {
 		start := time.Now()
-		_ = store.ValidateClientSecret("nonexistent-client", "some-secret")
+		_ = store.ValidateClientSecret(ctx, "nonexistent-client", "some-secret")
 		nonExistentDurations[i] = time.Since(start)
 	}
 
@@ -647,6 +674,7 @@ func TestValidateClientSecret_ConstantTimeStatistical(t *testing.T) {
 // also perform bcrypt comparison (even though they don't require secrets).
 // This ensures consistent timing across all client types.
 func TestValidateClientSecret_PublicClientTiming(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
@@ -656,13 +684,13 @@ func TestValidateClientSecret_PublicClientTiming(t *testing.T) {
 		ClientType: "public",
 	}
 
-	if err := store.SaveClient(publicClient); err != nil {
+	if err := store.SaveClient(ctx, publicClient); err != nil {
 		t.Fatalf("SaveClient() error = %v", err)
 	}
 
 	// Public client authentication should succeed with any secret
 	start := time.Now()
-	err := store.ValidateClientSecret("public-client", "any-secret")
+	err := store.ValidateClientSecret(ctx, "public-client", "any-secret")
 	duration := time.Since(start)
 
 	if err != nil {
@@ -679,6 +707,7 @@ func TestValidateClientSecret_PublicClientTiming(t *testing.T) {
 
 // TestValidateClientSecret_EmptySecretHash verifies behavior when client has empty secret hash
 func TestValidateClientSecret_EmptySecretHash(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
@@ -689,13 +718,13 @@ func TestValidateClientSecret_EmptySecretHash(t *testing.T) {
 		ClientSecretHash: "", // Empty hash
 	}
 
-	if err := store.SaveClient(client); err != nil {
+	if err := store.SaveClient(ctx, client); err != nil {
 		t.Fatalf("SaveClient() error = %v", err)
 	}
 
 	// Should still perform timing-safe validation
 	start := time.Now()
-	err := store.ValidateClientSecret("empty-hash-client", "some-secret")
+	err := store.ValidateClientSecret(ctx, "empty-hash-client", "some-secret")
 	duration := time.Since(start)
 
 	// Should fail because hash is empty
@@ -712,6 +741,7 @@ func TestValidateClientSecret_EmptySecretHash(t *testing.T) {
 }
 
 func TestStore_ListClients(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
@@ -719,15 +749,15 @@ func TestStore_ListClients(t *testing.T) {
 	client1 := &storage.Client{ClientID: "client1"}
 	client2 := &storage.Client{ClientID: "client2"}
 
-	if err := store.SaveClient(client1); err != nil {
+	if err := store.SaveClient(ctx, client1); err != nil {
 		t.Fatalf("SaveClient() error = %v", err)
 	}
-	if err := store.SaveClient(client2); err != nil {
+	if err := store.SaveClient(ctx, client2); err != nil {
 		t.Fatalf("SaveClient() error = %v", err)
 	}
 
 	// List clients
-	clients, err := store.ListClients()
+	clients, err := store.ListClients(ctx)
 	if err != nil {
 		t.Fatalf("ListClients() error = %v", err)
 	}
@@ -738,6 +768,7 @@ func TestStore_ListClients(t *testing.T) {
 }
 
 func TestStore_CheckIPLimit(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
@@ -745,7 +776,7 @@ func TestStore_CheckIPLimit(t *testing.T) {
 	maxClients := 3
 
 	// Should succeed initially
-	err := store.CheckIPLimit(ip, maxClients)
+	err := store.CheckIPLimit(ctx, ip, maxClients)
 	if err != nil {
 		t.Fatalf("CheckIPLimit() initial check error = %v", err)
 	}
@@ -756,18 +787,19 @@ func TestStore_CheckIPLimit(t *testing.T) {
 	}
 
 	// Should fail after reaching limit
-	err = store.CheckIPLimit(ip, maxClients)
+	err = store.CheckIPLimit(ctx, ip, maxClients)
 	if err == nil {
 		t.Error("CheckIPLimit() should return error after reaching limit")
 	}
 }
 
 func TestStore_CheckIPLimit_NoLimit(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
 	// With maxClientsPerIP = 0, should never fail
-	err := store.CheckIPLimit("192.168.1.1", 0)
+	err := store.CheckIPLimit(ctx, "192.168.1.1", 0)
 	if err != nil {
 		t.Errorf("CheckIPLimit() with no limit error = %v", err)
 	}
@@ -778,18 +810,19 @@ func TestStore_CheckIPLimit_NoLimit(t *testing.T) {
 // ============================================================
 
 func TestStore_SaveAuthorizationState(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
 	state := testutil.GenerateTestAuthorizationState()
 
-	err := store.SaveAuthorizationState(state)
+	err := store.SaveAuthorizationState(ctx, state)
 	if err != nil {
 		t.Fatalf("SaveAuthorizationState() error = %v", err)
 	}
 
 	// Verify state was saved
-	got, err := store.GetAuthorizationState(state.StateID)
+	got, err := store.GetAuthorizationState(ctx, state.StateID)
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -800,55 +833,59 @@ func TestStore_SaveAuthorizationState(t *testing.T) {
 }
 
 func TestStore_SaveAuthorizationState_Nil(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
-	err := store.SaveAuthorizationState(nil)
+	err := store.SaveAuthorizationState(ctx, nil)
 	if err == nil {
 		t.Error("SaveAuthorizationState() with nil state should return error")
 	}
 }
 
 func TestStore_GetAuthorizationState_NotFound(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
-	_, err := store.GetAuthorizationState("nonexistent")
+	_, err := store.GetAuthorizationState(ctx, "nonexistent")
 	if err == nil {
 		t.Error("GetAuthorizationState() for nonexistent state should return error")
 	}
 }
 
 func TestStore_GetAuthorizationState_Expired(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
 	state := testutil.GenerateTestAuthorizationState()
 	state.ExpiresAt = time.Now().Add(-1 * time.Minute) // Expired
 
-	if err := store.SaveAuthorizationState(state); err != nil {
+	if err := store.SaveAuthorizationState(ctx, state); err != nil {
 		t.Fatalf("SaveAuthorizationState() error = %v", err)
 	}
 
 	// Should return error for expired state
-	_, err := store.GetAuthorizationState(state.StateID)
+	_, err := store.GetAuthorizationState(ctx, state.StateID)
 	if err == nil {
 		t.Error("GetAuthorizationState() should return error for expired state")
 	}
 }
 
 func TestStore_GetAuthorizationStateByProviderState(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
 	state := testutil.GenerateTestAuthorizationState()
 
-	if err := store.SaveAuthorizationState(state); err != nil {
+	if err := store.SaveAuthorizationState(ctx, state); err != nil {
 		t.Fatalf("SaveAuthorizationState() error = %v", err)
 	}
 
 	// Get by provider state
-	got, err := store.GetAuthorizationStateByProviderState(state.ProviderState)
+	got, err := store.GetAuthorizationStateByProviderState(ctx, state.ProviderState)
 	if err != nil {
 		t.Fatalf("GetAuthorizationStateByProviderState() error = %v", err)
 	}
@@ -859,41 +896,43 @@ func TestStore_GetAuthorizationStateByProviderState(t *testing.T) {
 }
 
 func TestStore_DeleteAuthorizationState(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
 	state := testutil.GenerateTestAuthorizationState()
 
 	// Save state
-	if err := store.SaveAuthorizationState(state); err != nil {
+	if err := store.SaveAuthorizationState(ctx, state); err != nil {
 		t.Fatalf("SaveAuthorizationState() error = %v", err)
 	}
 
 	// Delete state
-	if err := store.DeleteAuthorizationState(state.StateID); err != nil {
+	if err := store.DeleteAuthorizationState(ctx, state.StateID); err != nil {
 		t.Fatalf("DeleteAuthorizationState() error = %v", err)
 	}
 
 	// Verify state is gone
-	_, err := store.GetAuthorizationState(state.StateID)
+	_, err := store.GetAuthorizationState(ctx, state.StateID)
 	if err == nil {
 		t.Error("GetAuthorizationState() should return error after deletion")
 	}
 }
 
 func TestStore_SaveAuthorizationCode(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
 	code := testutil.GenerateTestAuthorizationCode()
 
-	err := store.SaveAuthorizationCode(code)
+	err := store.SaveAuthorizationCode(ctx, code)
 	if err != nil {
 		t.Fatalf("SaveAuthorizationCode() error = %v", err)
 	}
 
 	// Verify code was saved
-	got, err := store.GetAuthorizationCode(code.Code)
+	got, err := store.GetAuthorizationCode(ctx, code.Code)
 	if err != nil {
 		t.Fatalf("GetAuthorizationCode() error = %v", err)
 	}
@@ -904,37 +943,39 @@ func TestStore_SaveAuthorizationCode(t *testing.T) {
 }
 
 func TestStore_GetAuthorizationCode_Expired(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
 	code := testutil.GenerateTestAuthorizationCode()
 	code.ExpiresAt = time.Now().Add(-1 * time.Minute) // Expired
 
-	if err := store.SaveAuthorizationCode(code); err != nil {
+	if err := store.SaveAuthorizationCode(ctx, code); err != nil {
 		t.Fatalf("SaveAuthorizationCode() error = %v", err)
 	}
 
 	// Should return error for expired code
-	_, err := store.GetAuthorizationCode(code.Code)
+	_, err := store.GetAuthorizationCode(ctx, code.Code)
 	if err == nil {
 		t.Error("GetAuthorizationCode() should return error for expired code")
 	}
 }
 
 func TestStore_GetAuthorizationCode_Used(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
 	code := testutil.GenerateTestAuthorizationCode()
 	code.Used = true
 
-	if err := store.SaveAuthorizationCode(code); err != nil {
+	if err := store.SaveAuthorizationCode(ctx, code); err != nil {
 		t.Fatalf("SaveAuthorizationCode() error = %v", err)
 	}
 
 	// Should return the code even if used (for OAuth 2.1 reuse detection)
 	// The caller is responsible for checking the Used flag and revoking tokens
-	retrievedCode, err := store.GetAuthorizationCode(code.Code)
+	retrievedCode, err := store.GetAuthorizationCode(ctx, code.Code)
 	if err != nil {
 		t.Errorf("GetAuthorizationCode() error = %v, want nil (should return used code for reuse detection)", err)
 	}
@@ -947,23 +988,24 @@ func TestStore_GetAuthorizationCode_Used(t *testing.T) {
 }
 
 func TestStore_DeleteAuthorizationCode(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
 	code := testutil.GenerateTestAuthorizationCode()
 
 	// Save code
-	if err := store.SaveAuthorizationCode(code); err != nil {
+	if err := store.SaveAuthorizationCode(ctx, code); err != nil {
 		t.Fatalf("SaveAuthorizationCode() error = %v", err)
 	}
 
 	// Delete code
-	if err := store.DeleteAuthorizationCode(code.Code); err != nil {
+	if err := store.DeleteAuthorizationCode(ctx, code.Code); err != nil {
 		t.Fatalf("DeleteAuthorizationCode() error = %v", err)
 	}
 
 	// Verify code is gone
-	_, err := store.GetAuthorizationCode(code.Code)
+	_, err := store.GetAuthorizationCode(ctx, code.Code)
 	if err == nil {
 		t.Error("GetAuthorizationCode() should return error after deletion")
 	}
@@ -974,6 +1016,7 @@ func TestStore_DeleteAuthorizationCode(t *testing.T) {
 // ============================================================
 
 func TestStore_TokenEncryption(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
@@ -995,13 +1038,13 @@ func TestStore_TokenEncryption(t *testing.T) {
 	originalAccessToken := token.AccessToken
 	userID := testUserID
 
-	err = store.SaveToken(userID, token)
+	err = store.SaveToken(ctx, userID, token)
 	if err != nil {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
 
 	// Get token back (should be decrypted)
-	got, err := store.GetToken(userID)
+	got, err := store.GetToken(ctx, userID)
 	if err != nil {
 		t.Fatalf("GetToken() error = %v", err)
 	}
@@ -1016,6 +1059,7 @@ func TestStore_TokenEncryption(t *testing.T) {
 // ============================================================
 
 func TestStore_ConcurrentTokenAccess(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
@@ -1027,7 +1071,7 @@ func TestStore_ConcurrentTokenAccess(t *testing.T) {
 		go func(id int) {
 			token := testutil.GenerateTestToken()
 			userID := testutil.GenerateRandomString(16)
-			if err := store.SaveToken(userID, token); err != nil {
+			if err := store.SaveToken(ctx, userID, token); err != nil {
 				t.Errorf("SaveToken() error = %v", err)
 			}
 			done <- true
@@ -1041,6 +1085,7 @@ func TestStore_ConcurrentTokenAccess(t *testing.T) {
 }
 
 func TestStore_ConcurrentClientAccess(t *testing.T) {
+	ctx := context.Background()
 	store := New()
 	defer store.Stop()
 
@@ -1052,7 +1097,7 @@ func TestStore_ConcurrentClientAccess(t *testing.T) {
 		go func(id int) {
 			client := testutil.GenerateTestClient()
 			client.ClientID = testutil.GenerateRandomString(16)
-			if err := store.SaveClient(client); err != nil {
+			if err := store.SaveClient(ctx, client); err != nil {
 				t.Errorf("SaveClient() error = %v", err)
 			}
 			done <- true
@@ -1070,6 +1115,7 @@ func TestStore_ConcurrentClientAccess(t *testing.T) {
 // ============================================================
 
 func TestStore_CleanupExpiredTokens(t *testing.T) {
+	ctx := context.Background()
 	// Use short cleanup interval for testing
 	store := NewWithInterval(100 * time.Millisecond)
 	defer store.Stop()
@@ -1077,7 +1123,7 @@ func TestStore_CleanupExpiredTokens(t *testing.T) {
 	// Save expired authorization code
 	code := testutil.GenerateTestAuthorizationCode()
 	code.ExpiresAt = time.Now().Add(-1 * time.Minute)
-	if err := store.SaveAuthorizationCode(code); err != nil {
+	if err := store.SaveAuthorizationCode(ctx, code); err != nil {
 		t.Fatalf("SaveAuthorizationCode() error = %v", err)
 	}
 
@@ -1085,7 +1131,7 @@ func TestStore_CleanupExpiredTokens(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Code should be cleaned up
-	_, err := store.GetAuthorizationCode(code.Code)
+	_, err := store.GetAuthorizationCode(ctx, code.Code)
 	if err == nil {
 		t.Error("Expired authorization code should be cleaned up")
 	}

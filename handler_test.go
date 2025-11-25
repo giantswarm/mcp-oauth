@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -363,11 +364,13 @@ func TestHandler_ServeTokenRevocation_InvalidMethod(t *testing.T) {
 }
 
 func TestHandler_ServeAuthorization_CompleteFlow(t *testing.T) {
+	ctx := context.Background()
+
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
 	// Register a client first
-	client, _, err := handler.server.RegisterClient(
+	client, _, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
 		[]string{"https://example.com/callback"},
@@ -412,11 +415,12 @@ func TestHandler_ServeAuthorization_CompleteFlow(t *testing.T) {
 }
 
 func TestHandler_ServeCallback(t *testing.T) {
+	ctx := context.Background()
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
 	// Register a client
-	client, _, err := handler.server.RegisterClient(
+	client, _, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
 		[]string{"https://example.com/callback"},
@@ -435,7 +439,7 @@ func TestHandler_ServeCallback(t *testing.T) {
 
 	// State must be at least 32 characters for security
 	clientState := testutil.GenerateRandomString(43)
-	authURL, err := handler.server.StartAuthorizationFlow(
+	authURL, err := handler.server.StartAuthorizationFlow(ctx,
 		client.ClientID,
 		"https://example.com/callback",
 		"openid email",
@@ -444,7 +448,7 @@ func TestHandler_ServeCallback(t *testing.T) {
 		clientState,
 	)
 	if err != nil {
-		t.Fatalf("StartAuthorizationFlow() error = %v", err)
+		t.Fatalf("StartAuthorizationFlow(ctx, ) error = %v", err)
 	}
 
 	// Extract provider state from auth URL
@@ -453,7 +457,7 @@ func TestHandler_ServeCallback(t *testing.T) {
 	}
 
 	// Get auth state to find provider state
-	authState, err := store.GetAuthorizationState(clientState)
+	authState, err := store.GetAuthorizationState(ctx, clientState)
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -541,11 +545,13 @@ func TestHandler_ServeCallback_MissingParams(t *testing.T) {
 }
 
 func TestHandler_ServeAuthorization_StateLength(t *testing.T) {
+	ctx := context.Background()
+
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
 	// Register a test client
-	client, _, err := handler.server.RegisterClient(
+	client, _, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
 		[]string{"https://example.com/callback"},
@@ -658,11 +664,12 @@ func TestHandler_ServeCallback_StateLength(t *testing.T) {
 }
 
 func TestHandler_ServeToken_AuthorizationCode(t *testing.T) {
+	ctx := context.Background()
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
 	// Register a client
-	client, secret, err := handler.server.RegisterClient(
+	client, secret, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
 		[]string{"https://example.com/callback"},
@@ -693,7 +700,7 @@ func TestHandler_ServeToken_AuthorizationCode(t *testing.T) {
 		Used:                false,
 	}
 
-	err = store.SaveAuthorizationCode(authCode)
+	err = store.SaveAuthorizationCode(ctx, authCode)
 	if err != nil {
 		t.Fatalf("SaveAuthorizationCode() error = %v", err)
 	}
@@ -788,11 +795,13 @@ func TestUserInfoFromContext(t *testing.T) {
 }
 
 func TestHandler_ServeToken_InvalidClient(t *testing.T) {
+	ctx := context.Background()
+
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
 	// Register a client
-	client, _, err := handler.server.RegisterClient(
+	client, _, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
 		[]string{"https://example.com/callback"},
@@ -823,10 +832,12 @@ func TestHandler_ServeToken_InvalidClient(t *testing.T) {
 }
 
 func TestHandler_ServeToken_UnsupportedGrantType(t *testing.T) {
+	ctx := context.Background()
+
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
-	client, secret, err := handler.server.RegisterClient(
+	client, secret, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
 		[]string{"https://example.com/callback"},
@@ -891,11 +902,13 @@ func TestHandler_ParseForm_Error(t *testing.T) {
 }
 
 func TestHandler_ServeTokenRevocation_Success(t *testing.T) {
+	ctx := context.Background()
+
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
 	// Register a client
-	client, secret, err := handler.server.RegisterClient(
+	client, secret, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
 		[]string{"https://example.com/callback"},
@@ -909,7 +922,7 @@ func TestHandler_ServeTokenRevocation_Success(t *testing.T) {
 
 	// Create a refresh token
 	refreshToken := testutil.GenerateRandomString(32)
-	err = store.SaveRefreshToken(refreshToken, "test-user-123", time.Now().Add(90*24*time.Hour))
+	err = store.SaveRefreshToken(ctx, refreshToken, "test-user-123", time.Now().Add(90*24*time.Hour))
 	if err != nil {
 		t.Fatalf("SaveRefreshToken() error = %v", err)
 	}
@@ -932,11 +945,13 @@ func TestHandler_ServeTokenRevocation_Success(t *testing.T) {
 }
 
 func TestHandler_ServeTokenIntrospection(t *testing.T) {
+	ctx := context.Background()
+
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
 	// Register a client
-	client, secret, err := handler.server.RegisterClient(
+	client, secret, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
 		[]string{"https://example.com/callback"},

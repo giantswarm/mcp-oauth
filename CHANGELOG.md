@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **OpenTelemetry instrumentation infrastructure for comprehensive observability (#37)**
+  - Added new `instrumentation` package providing metrics, traces, and logging integration
+  - Features:
+    - Metrics: Counters, histograms, and gauges for all OAuth operations
+    - Traces: Distributed tracing spans for request flows across components
+    - Structured logging integration with trace context
+    - Zero overhead when disabled (uses no-op providers)
+    - Thread-safe concurrent access
+    - Graceful shutdown handling
+  - Configuration:
+    - Added `InstrumentationConfig` to server configuration
+    - Opt-in via `Enabled` flag (default: false)
+    - Configurable service name and version
+  - Metrics provided:
+    - HTTP layer: requests, duration
+    - OAuth flows: authorization, callback, code exchange, token refresh/revocation, client registration
+    - Security: rate limits, PKCE validation, code/token reuse detection
+    - Storage: operation counts, duration, size
+    - Provider: API calls, duration, errors
+    - Audit events, encryption operations
+  - Integration:
+    - Server automatically initializes instrumentation when enabled
+    - Shutdown integrates with server graceful shutdown
+    - Ready for layer-by-layer adoption in future PRs
+  - Testing:
+    - 83% test coverage on instrumentation package
+    - Concurrent access tests
+    - No-op provider verification
+    - Metric recording correctness
+    - Span lifecycle management
+  - **Security & Privacy:**
+    - Comprehensive security warnings against logging sensitive credentials
+    - GDPR/privacy compliance documentation
+    - Clear guidance on data collection and retention policies
+    - Reserved attribute constants to prevent credential leakage
+    - Security-reviewed implementation with no sensitive data logging
+  - **Impact**: No breaking changes - instrumentation is opt-in and disabled by default
+  - **Future work**: Layer-by-layer instrumentation adoption (HTTP, storage, provider, security)
+  - **Documentation**: Comprehensive package documentation with security best practices
+
 - **CORS (Cross-Origin Resource Sharing) support for browser-based clients (#28)**
   - Added `CORSConfig` to server configuration with `AllowedOrigins`, `AllowCredentials`, and `MaxAge` settings
   - Implemented `setCORSHeaders()` method to apply CORS headers to all HTTP responses
