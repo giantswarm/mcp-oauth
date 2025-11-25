@@ -185,3 +185,108 @@ func TestConfig_Defaults(t *testing.T) {
 		t.Errorf("Default ServiceVersion = %q, want %q", inst.config.ServiceVersion, "unknown")
 	}
 }
+
+// Benchmark tests to measure instrumentation overhead
+
+func BenchmarkMetrics_RecordHTTPRequest(b *testing.B) {
+	inst, _ := New(Config{Enabled: true})
+	defer func() { _ = inst.Shutdown(context.Background()) }()
+
+	ctx := context.Background()
+	metrics := inst.Metrics()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		metrics.RecordHTTPRequest(ctx, "GET", "/oauth/authorize", 200, 123.45)
+	}
+}
+
+func BenchmarkMetrics_RecordHTTPRequest_NoOp(b *testing.B) {
+	inst, _ := New(Config{Enabled: false})
+	defer func() { _ = inst.Shutdown(context.Background()) }()
+
+	ctx := context.Background()
+	metrics := inst.Metrics()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		metrics.RecordHTTPRequest(ctx, "GET", "/oauth/authorize", 200, 123.45)
+	}
+}
+
+func BenchmarkTracing_SpanCreation(b *testing.B) {
+	inst, _ := New(Config{Enabled: true})
+	defer func() { _ = inst.Shutdown(context.Background()) }()
+
+	ctx := context.Background()
+	tracer := inst.Tracer("server")
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, span := tracer.Start(ctx, "test-operation")
+		span.End()
+	}
+}
+
+func BenchmarkTracing_SpanCreation_NoOp(b *testing.B) {
+	inst, _ := New(Config{Enabled: false})
+	defer func() { _ = inst.Shutdown(context.Background()) }()
+
+	ctx := context.Background()
+	tracer := inst.Tracer("server")
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, span := tracer.Start(ctx, "test-operation")
+		span.End()
+	}
+}
+
+func BenchmarkTracing_SpanWithAttributes(b *testing.B) {
+	inst, _ := New(Config{Enabled: true})
+	defer func() { _ = inst.Shutdown(context.Background()) }()
+
+	ctx := context.Background()
+	tracer := inst.Tracer("server")
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, span := tracer.Start(ctx, "test-operation")
+		AddOAuthFlowAttributes(span, "client-123", "user-456", "openid email")
+		AddPKCEAttributes(span, "S256")
+		SetSpanSuccess(span)
+		span.End()
+	}
+}
+
+func BenchmarkConcurrentMetrics(b *testing.B) {
+	inst, _ := New(Config{Enabled: true})
+	defer func() { _ = inst.Shutdown(context.Background()) }()
+
+	ctx := context.Background()
+	metrics := inst.Metrics()
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			metrics.RecordAuthorizationStarted(ctx, "client-123")
+		}
+	})
+}
+
+func BenchmarkConcurrentSpans(b *testing.B) {
+	inst, _ := New(Config{Enabled: true})
+	defer func() { _ = inst.Shutdown(context.Background()) }()
+
+	ctx := context.Background()
+	tracer := inst.Tracer("server")
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, span := tracer.Start(ctx, "concurrent-operation")
+			AddOAuthFlowAttributes(span, "client", "user", "scope")
+			span.End()
+		}
+	})
+}

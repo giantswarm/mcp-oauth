@@ -74,77 +74,95 @@ const (
 	AttrHTTPResponseSize = "http.response.size"
 )
 
-// RecordError records an error on a span with proper status codes
+// RecordError records an error on a span with proper status codes (nil-safe)
 func RecordError(span trace.Span, err error) {
-	if err != nil {
+	if span != nil && err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 	}
 }
 
-// SetSpanSuccess marks a span as successful
+// SetSpanSuccess marks a span as successful (nil-safe)
 func SetSpanSuccess(span trace.Span) {
-	span.SetStatus(codes.Ok, "")
+	if span != nil {
+		span.SetStatus(codes.Ok, "")
+	}
 }
 
-// AddOAuthFlowAttributes adds common OAuth flow attributes to a span
+// SetSpanError sets an error status on a span (nil-safe)
+// This is a convenience wrapper that safely handles nil spans
+func SetSpanError(span trace.Span, message string) {
+	if span != nil {
+		span.SetStatus(codes.Error, message)
+	}
+}
+
+// SetSpanAttributes sets attributes on a span (nil-safe)
+// This is a convenience wrapper that safely handles nil spans
+func SetSpanAttributes(span trace.Span, attrs ...attribute.KeyValue) {
+	if span != nil {
+		span.SetAttributes(attrs...)
+	}
+}
+
+// AddOAuthFlowAttributes adds common OAuth flow attributes to a span (nil-safe)
 func AddOAuthFlowAttributes(span trace.Span, clientID, userID, scope string) {
 	if clientID != "" {
-		span.SetAttributes(attribute.String(AttrClientID, clientID))
+		SetSpanAttributes(span, attribute.String(AttrClientID, clientID))
 	}
 	if userID != "" {
-		span.SetAttributes(attribute.String(AttrUserID, userID))
+		SetSpanAttributes(span, attribute.String(AttrUserID, userID))
 	}
 	if scope != "" {
-		span.SetAttributes(attribute.String(AttrScope, scope))
+		SetSpanAttributes(span, attribute.String(AttrScope, scope))
 	}
 }
 
-// AddPKCEAttributes adds PKCE-related attributes to a span
+// AddPKCEAttributes adds PKCE-related attributes to a span (nil-safe)
 func AddPKCEAttributes(span trace.Span, method string) {
 	if method != "" {
-		span.SetAttributes(attribute.String(AttrPKCEMethod, method))
+		SetSpanAttributes(span, attribute.String(AttrPKCEMethod, method))
 	}
 }
 
-// AddTokenFamilyAttributes adds token family tracking attributes to a span
+// AddTokenFamilyAttributes adds token family tracking attributes to a span (nil-safe)
 func AddTokenFamilyAttributes(span trace.Span, familyID string, generation int) {
 	if familyID != "" {
-		span.SetAttributes(
+		SetSpanAttributes(span,
 			attribute.String(AttrTokenFamilyID, familyID),
 			attribute.Int(AttrTokenGeneration, generation),
 		)
 	}
 }
 
-// AddStorageAttributes adds storage operation attributes to a span
+// AddStorageAttributes adds storage operation attributes to a span (nil-safe)
 func AddStorageAttributes(span trace.Span, operation, storageType string) {
-	span.SetAttributes(
+	SetSpanAttributes(span,
 		attribute.String(AttrStorageOperation, operation),
 		attribute.String(AttrStorageType, storageType),
 	)
 }
 
-// AddProviderAttributes adds provider attributes to a span
+// AddProviderAttributes adds provider attributes to a span (nil-safe)
 func AddProviderAttributes(span trace.Span, providerName, operation string) {
-	span.SetAttributes(
+	SetSpanAttributes(span,
 		attribute.String(AttrProviderName, providerName),
 		attribute.String(AttrProviderOperation, operation),
 	)
 }
 
-// AddHTTPAttributes adds HTTP request attributes to a span
+// AddHTTPAttributes adds HTTP request attributes to a span (nil-safe)
 func AddHTTPAttributes(span trace.Span, method, endpoint string, statusCode int) {
-	span.SetAttributes(
+	SetSpanAttributes(span,
 		attribute.String(AttrHTTPMethod, method),
 		attribute.String(AttrHTTPEndpoint, endpoint),
 		attribute.Int(AttrHTTPStatusCode, statusCode),
 	)
 }
 
-// AddSecurityAttributes adds security-related attributes to a span
+// AddSecurityAttributes adds security-related attributes to a span (nil-safe)
 func AddSecurityAttributes(span trace.Span, clientIP string) {
 	if clientIP != "" {
-		span.SetAttributes(attribute.String(AttrClientIP, clientIP))
+		SetSpanAttributes(span, attribute.String(AttrClientIP, clientIP))
 	}
 }

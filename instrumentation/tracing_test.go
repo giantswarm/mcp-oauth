@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 )
 
@@ -309,6 +310,81 @@ func TestNoOpSpans(t *testing.T) {
 	SetSpanSuccess(span)
 	span.SetStatus(codes.Ok, "")
 	span.End()
+
+	// Should not panic
+}
+
+func TestSetSpanError(t *testing.T) {
+	inst, err := New(Config{
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer func() { _ = inst.Shutdown(context.Background()) }()
+
+	ctx := context.Background()
+	_, span := inst.Tracer("server").Start(ctx, "test-span")
+	defer span.End()
+
+	// Test setting error on span
+	SetSpanError(span, "test error message")
+
+	// Should not panic
+}
+
+func TestSetSpanError_NilSpan(t *testing.T) {
+	// Test that nil-safe helper handles nil span
+	SetSpanError(nil, "test error message")
+
+	// Should not panic
+}
+
+func TestSetSpanAttributes(t *testing.T) {
+	inst, err := New(Config{
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer func() { _ = inst.Shutdown(context.Background()) }()
+
+	ctx := context.Background()
+	_, span := inst.Tracer("server").Start(ctx, "test-span")
+	defer span.End()
+
+	// Test setting attributes on span
+	SetSpanAttributes(span,
+		attribute.String("key1", "value1"),
+		attribute.Int("key2", 42),
+	)
+
+	// Should not panic
+}
+
+func TestSetSpanAttributes_NilSpan(t *testing.T) {
+	// Test that nil-safe helper handles nil span
+	SetSpanAttributes(nil,
+		attribute.String("key1", "value1"),
+		attribute.Int("key2", 42),
+	)
+
+	// Should not panic
+}
+
+func TestNilSafeHelpers_WithNilSpans(t *testing.T) {
+	// Test all nil-safe helpers with nil spans
+	SetSpanError(nil, "error")
+	SetSpanAttributes(nil, attribute.String("key", "value"))
+	RecordError(nil, errors.New("test"))
+	SetSpanSuccess(nil)
+	AddOAuthFlowAttributes(nil, "client", "user", "scope")
+	AddPKCEAttributes(nil, "S256")
+	AddTokenFamilyAttributes(nil, "family", 1)
+	AddStorageAttributes(nil, "save", "memory")
+	AddProviderAttributes(nil, "google", "exchange")
+	AddHTTPAttributes(nil, "GET", "/test", 200)
+	AddSecurityAttributes(nil, "192.168.1.1")
 
 	// Should not panic
 }
