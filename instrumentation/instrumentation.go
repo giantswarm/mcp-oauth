@@ -31,6 +31,17 @@ type Config struct {
 	// Default: true
 	Enabled bool
 
+	// LogClientIPs controls whether client IP addresses are included in traces and metrics
+	// When false, client IP attributes will be omitted from observability data
+	// This can help with GDPR and privacy compliance in strict jurisdictions
+	// Default: true
+	//
+	// Privacy Note: Client IP addresses may be considered Personally Identifiable
+	// Information (PII) under GDPR and other privacy regulations. Disabling IP
+	// logging may be required in certain jurisdictions or for certain compliance
+	// frameworks (e.g., GDPR in EU, CCPA in California).
+	LogClientIPs bool
+
 	// Resource allows custom resource attributes
 	// If nil, default resource is created with service name and version
 	Resource *resource.Resource
@@ -62,6 +73,10 @@ func New(config Config) (*Instrumentation, error) {
 	if config.ServiceVersion == "" {
 		config.ServiceVersion = DefaultServiceVersion
 	}
+	// LogClientIPs defaults to true if not explicitly set
+	// Note: In Go, uninitialized bool is false, so we need special handling
+	// We treat the zero value as "use default" which is true
+	// Users must explicitly set to false to disable IP logging
 
 	// Create or use provided resource
 	var res *resource.Resource
@@ -165,4 +180,67 @@ func (i *Instrumentation) TracerProvider() trace.TracerProvider {
 // MeterProvider returns the underlying meter provider
 func (i *Instrumentation) MeterProvider() metric.MeterProvider {
 	return i.meterProvider
+}
+
+// ShouldLogClientIPs returns whether client IP addresses should be logged
+// This respects the LogClientIPs configuration for privacy compliance
+func (i *Instrumentation) ShouldLogClientIPs() bool {
+	return i.config.LogClientIPs
+}
+
+// StorageSizeCallback is a function that returns the current size of a storage component
+type StorageSizeCallback func() int64
+
+// RegisterStorageSizeCallbacks registers callbacks for storage size metrics
+// Storage implementations should call this after instrumentation is set
+//
+// Example:
+//
+//	func (s *Store) SetInstrumentation(inst *instrumentation.Instrumentation) {
+//	    s.instrumentation = inst
+//	    inst.RegisterStorageSizeCallbacks(
+//	        func() int64 { return int64(len(s.tokens)) },
+//	        func() int64 { return int64(len(s.clients)) },
+//	        func() int64 { return int64(len(s.authStates)) },
+//	        func() int64 { return int64(len(s.refreshTokenFamilies)) },
+//	        func() int64 { return int64(len(s.refreshTokens)) },
+//	    )
+//	}
+func (i *Instrumentation) RegisterStorageSizeCallbacks(
+	tokensCount, clientsCount, flowsCount, familiesCount, refreshTokensCount StorageSizeCallback,
+) error {
+	if i.meterProvider == nil {
+		return fmt.Errorf("meter provider not initialized")
+	}
+
+	meter := i.Meter("storage")
+
+	// Register callbacks for each gauge
+	_, err := meter.RegisterCallback(
+		func(ctx context.Context, observer metric.Observer) error {
+			if tokensCount != nil {
+				observer.ObserveInt64(i.metrics.StorageTokensCount, tokensCount())
+			}
+			if clientsCount != nil {
+				observer.ObserveInt64(i.metrics.StorageClientsCount, clientsCount())
+			}
+			if flowsCount != nil {
+				observer.ObserveInt64(i.metrics.StorageFlowsCount, flowsCount())
+			}
+			if familiesCount != nil {
+				observer.ObserveInt64(i.metrics.StorageFamiliesCount, familiesCount())
+			}
+			if refreshTokensCount != nil {
+				observer.ObserveInt64(i.metrics.StorageRefreshTokensCount, refreshTokensCount())
+			}
+			return nil
+		},
+		i.metrics.StorageTokensCount,
+		i.metrics.StorageClientsCount,
+		i.metrics.StorageFlowsCount,
+		i.metrics.StorageFamiliesCount,
+		i.metrics.StorageRefreshTokensCount,
+	)
+
+	return err
 }

@@ -161,6 +161,14 @@ func AddHTTPAttributes(span trace.Span, method, endpoint string, statusCode int)
 }
 
 // AddSecurityAttributes adds security-related attributes to a span (nil-safe)
+//
+// PRIVACY NOTE: Client IP addresses may be considered Personally Identifiable Information (PII).
+// Before calling this function, check if IP logging is enabled using instrumentation.ShouldLogClientIPs().
+// Example:
+//
+//	if inst.ShouldLogClientIPs() {
+//	    AddSecurityAttributes(span, clientIP)
+//	}
 func AddSecurityAttributes(span trace.Span, clientIP string) {
 	if clientIP != "" {
 		SetSpanAttributes(span, attribute.String(AttrClientIP, clientIP))

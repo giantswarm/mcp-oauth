@@ -60,6 +60,12 @@ type Metrics struct {
 	// Storage Metrics
 	StorageOperationTotal    metric.Int64Counter
 	StorageOperationDuration metric.Float64Histogram
+	// Storage size gauges (observable) - updated via callbacks from storage implementations
+	StorageTokensCount        metric.Int64ObservableGauge
+	StorageClientsCount       metric.Int64ObservableGauge
+	StorageFlowsCount         metric.Int64ObservableGauge
+	StorageFamiliesCount      metric.Int64ObservableGauge
+	StorageRefreshTokensCount metric.Int64ObservableGauge
 
 	// Provider Metrics
 	ProviderAPICallsTotal metric.Int64Counter
@@ -226,6 +232,48 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 		return nil, err
 	}
 
+	// Storage Size Gauges (observable)
+	// These are populated via callbacks registered by storage implementations
+	m.StorageTokensCount, err = storageMeter.Int64ObservableGauge(
+		"storage.tokens.count",
+		metric.WithDescription("Current number of tokens in storage"),
+		metric.WithUnit("{token}"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create storage.tokens.count gauge: %w", err)
+	}
+
+	m.StorageClientsCount, err = storageMeter.Int64ObservableGauge(
+		"storage.clients.count",
+		metric.WithDescription("Current number of registered clients in storage"),
+		metric.WithUnit("{client}"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create storage.clients.count gauge: %w", err)
+	}
+
+	m.StorageFlowsCount, err = storageMeter.Int64ObservableGauge(
+		"storage.flows.count",
+		metric.WithDescription("Current number of active authorization flows in storage"),
+		metric.WithUnit("{flow}"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create storage.flows.count gauge: %w", err)
+	}
+
+	m.StorageFamiliesCount, err = storageMeter.Int64ObservableGauge(
+		"storage.families.count",
+		metric.WithDescription("Current number of token families in storage (includes revoked)"),
+		metric.WithUnit("{family}"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create storage.families.count gauge: %w", err)
+	}
+
+	m.StorageRefreshTokensCount, err = storageMeter.Int64ObservableGauge(
+		"storage.refresh_tokens.count",
+		metric.WithDescription("Current number of refresh tokens in storage"),
+		metric.WithUnit("{token}"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create storage.refresh_tokens.count gauge: %w", err)
+	}
+
 	// Provider Metrics
 	m.ProviderAPICallsTotal, err = createCounter(providerMeter,
 		"provider.api.calls.total",
@@ -281,6 +329,10 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 }
 
 // Helper methods for common metric recording patterns
+//
+// CARDINALITY WARNING: Many of these methods include client_id as a label.
+// In high-scale deployments (>10,000 clients), this can cause high cardinality.
+// See package documentation for cardinality management strategies.
 
 // RecordHTTPRequest records an HTTP request metric
 func (m *Metrics) RecordHTTPRequest(ctx context.Context, method, endpoint string, statusCode int, durationMs float64) {

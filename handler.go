@@ -563,9 +563,9 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 			if h.server.Auditor != nil {
 				h.server.Auditor.LogAuthFailure("", clientID, clientIP, "revocation_auth_failed")
 			}
-		h.recordHTTPMetrics("revoke", http.MethodPost, http.StatusUnauthorized, startTime)
-		instrumentation.RecordError(span, err)
-		instrumentation.SetSpanError(span, "client authentication failed")
+			h.recordHTTPMetrics("revoke", http.MethodPost, http.StatusUnauthorized, startTime)
+			instrumentation.RecordError(span, err)
+			instrumentation.SetSpanError(span, "client authentication failed")
 			h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
 			return
 		}
@@ -710,9 +710,9 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 		// Check if it's a rate limit error
 		if strings.Contains(err.Error(), "registration limit") {
 			h.logger.Warn("Client registration limit exceeded", "ip", clientIP, "error", err)
-		h.recordHTTPMetrics("register", http.MethodPost, http.StatusTooManyRequests, startTime)
-		instrumentation.RecordError(span, err)
-		instrumentation.SetSpanError(span, "registration limit exceeded")
+			h.recordHTTPMetrics("register", http.MethodPost, http.StatusTooManyRequests, startTime)
+			instrumentation.RecordError(span, err)
+			instrumentation.SetSpanError(span, "registration limit exceeded")
 			// SECURITY: Generic error message to prevent enumeration
 			h.writeError(w, ErrorCodeInvalidRequest, "Client registration limit exceeded", http.StatusTooManyRequests)
 			return

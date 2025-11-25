@@ -107,6 +107,7 @@ func New(
 			Enabled:        true,
 			ServiceName:    config.Instrumentation.ServiceName,
 			ServiceVersion: config.Instrumentation.ServiceVersion,
+			LogClientIPs:   config.Instrumentation.LogClientIPs,
 		}
 		if instConfig.ServiceName == "" {
 			instConfig.ServiceName = "mcp-oauth"

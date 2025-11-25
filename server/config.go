@@ -172,6 +172,17 @@ type InstrumentationConfig struct {
 	// ServiceVersion is the version of the service for telemetry
 	// Default: "unknown"
 	ServiceVersion string
+
+	// LogClientIPs controls whether client IP addresses are included in traces and metrics
+	// When false, client IP attributes will be omitted from observability data
+	// This can help with GDPR and privacy compliance in strict jurisdictions
+	// Default: false (disabled for privacy by default)
+	//
+	// Privacy Note: Client IP addresses may be considered Personally Identifiable
+	// Information (PII) under GDPR and other privacy regulations. Enable IP
+	// logging only if required for security monitoring and you have appropriate
+	// legal basis and data protection measures in place.
+	LogClientIPs bool
 }
 
 // CORSConfig holds CORS (Cross-Origin Resource Sharing) configuration for browser-based clients

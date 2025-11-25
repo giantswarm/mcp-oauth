@@ -191,6 +191,52 @@ func TestAddSecurityAttributes(t *testing.T) {
 	// Should not panic
 }
 
+func TestShouldLogClientIPs(t *testing.T) {
+	tests := []struct {
+		name   string
+		config Config
+		want   bool
+	}{
+		{
+			name: "LogClientIPs enabled explicitly",
+			config: Config{
+				Enabled:      true,
+				LogClientIPs: true,
+			},
+			want: true,
+		},
+		{
+			name: "LogClientIPs disabled explicitly",
+			config: Config{
+				Enabled:      true,
+				LogClientIPs: false,
+			},
+			want: false,
+		},
+		{
+			name: "LogClientIPs not set (default to false for privacy)",
+			config: Config{
+				Enabled: true,
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inst, err := New(tt.config)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			defer func() { _ = inst.Shutdown(context.Background()) }()
+
+			if got := inst.ShouldLogClientIPs(); got != tt.want {
+				t.Errorf("ShouldLogClientIPs() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSpanLifecycle(t *testing.T) {
 	inst, err := New(Config{
 		Enabled: true,

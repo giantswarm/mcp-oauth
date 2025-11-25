@@ -189,6 +189,40 @@ func (s *Store) SetInstrumentation(inst *instrumentation.Instrumentation) {
 	if inst != nil {
 		s.tracer = inst.Tracer("storage")
 		s.meter = inst.Meter("storage")
+
+		// Register storage size callbacks for gauge metrics
+		// These callbacks provide real-time visibility into storage size for
+		// capacity planning, memory leak detection, and DoS attack monitoring
+		err := inst.RegisterStorageSizeCallbacks(
+			func() int64 {
+				s.mu.RLock()
+				defer s.mu.RUnlock()
+				return int64(len(s.tokens))
+			},
+			func() int64 {
+				s.mu.RLock()
+				defer s.mu.RUnlock()
+				return int64(len(s.clients))
+			},
+			func() int64 {
+				s.mu.RLock()
+				defer s.mu.RUnlock()
+				return int64(len(s.authStates))
+			},
+			func() int64 {
+				s.mu.RLock()
+				defer s.mu.RUnlock()
+				return int64(len(s.refreshTokenFamilies))
+			},
+			func() int64 {
+				s.mu.RLock()
+				defer s.mu.RUnlock()
+				return int64(len(s.refreshTokens))
+			},
+		)
+		if err != nil {
+			s.logger.Warn("Failed to register storage size callbacks", "error", err)
+		}
 	}
 }
 
