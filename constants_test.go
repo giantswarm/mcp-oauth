@@ -124,12 +124,12 @@ func TestSliceConstants(t *testing.T) {
 	})
 
 	t.Run("SupportedCodeChallengeMethods", func(t *testing.T) {
-		expected := []string{"S256"}
+		expected := []string{PKCEMethodS256}
 		if len(SupportedCodeChallengeMethods) != len(expected) {
 			t.Errorf("len(SupportedCodeChallengeMethods) = %d, want %d", len(SupportedCodeChallengeMethods), len(expected))
 		}
-		if SupportedCodeChallengeMethods[0] != "S256" {
-			t.Errorf("SupportedCodeChallengeMethods[0] = %q, want %q", SupportedCodeChallengeMethods[0], "S256")
+		if SupportedCodeChallengeMethods[0] != PKCEMethodS256 {
+			t.Errorf("SupportedCodeChallengeMethods[0] = %q, want %q", SupportedCodeChallengeMethods[0], PKCEMethodS256)
 		}
 	})
 

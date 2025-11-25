@@ -121,6 +121,21 @@ func New(
 		} else {
 			srv.Instrumentation = inst
 			srv.tracer = inst.Tracer("server")
+
+			// Propagate instrumentation to storage layers
+			type instrumentationSetter interface {
+				SetInstrumentation(*instrumentation.Instrumentation)
+			}
+			if setter, ok := tokenStore.(instrumentationSetter); ok {
+				setter.SetInstrumentation(inst)
+			}
+			if setter, ok := clientStore.(instrumentationSetter); ok {
+				setter.SetInstrumentation(inst)
+			}
+			if setter, ok := flowStore.(instrumentationSetter); ok {
+				setter.SetInstrumentation(inst)
+			}
+
 			logger.Info("Instrumentation initialized",
 				"service_name", instConfig.ServiceName,
 				"service_version", instConfig.ServiceVersion)
@@ -170,11 +185,25 @@ func (s *Server) SetClientRegistrationRateLimiter(rl *security.ClientRegistratio
 	s.ClientRegistrationRateLimiter = rl
 }
 
-// SetInstrumentation sets the OpenTelemetry instrumentation
+// SetInstrumentation sets the OpenTelemetry instrumentation for server and storage
 func (s *Server) SetInstrumentation(inst *instrumentation.Instrumentation) {
 	s.Instrumentation = inst
 	if inst != nil {
 		s.tracer = inst.Tracer("server")
+
+		// Also set instrumentation on storage if it supports it
+		type instrumentationSetter interface {
+			SetInstrumentation(*instrumentation.Instrumentation)
+		}
+		if setter, ok := s.tokenStore.(instrumentationSetter); ok {
+			setter.SetInstrumentation(inst)
+		}
+		if setter, ok := s.clientStore.(instrumentationSetter); ok {
+			setter.SetInstrumentation(inst)
+		}
+		if setter, ok := s.flowStore.(instrumentationSetter); ok {
+			setter.SetInstrumentation(inst)
+		}
 	}
 }
 

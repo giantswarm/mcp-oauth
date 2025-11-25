@@ -98,6 +98,14 @@ func main() {
 				"https://www.googleapis.com/auth/calendar.readonly",
 			},
 
+			// OpenTelemetry instrumentation for observability (metrics and tracing)
+			// Enable this in production to monitor OAuth operations
+			Instrumentation: oauth.InstrumentationConfig{
+				Enabled:        getBoolEnv("ENABLE_INSTRUMENTATION", true),
+				ServiceName:    getEnvOrDefault("SERVICE_NAME", "mcp-oauth-production"),
+				ServiceVersion: getEnvOrDefault("SERVICE_VERSION", "1.0.0"),
+			},
+
 			// CORS configuration (optional, only for browser-based clients)
 			// Uncomment and configure if you have browser-based MCP clients
 			// CORS: oauth.CORSConfig{
