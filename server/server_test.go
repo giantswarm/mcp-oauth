@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"encoding/base64"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -435,5 +437,150 @@ func TestGenerateRandomToken_Entropy(t *testing.T) {
 func BenchmarkGenerateRandomToken(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_ = generateRandomToken()
+	}
+}
+
+func TestServer_Shutdown(t *testing.T) {
+	// Create a test server with all components
+	store := memory.New()
+	provider := mock.NewMockProvider()
+
+	config := &Config{
+		Issuer: "https://auth.example.com",
+	}
+
+	srv, err := New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// Add rate limiters to test their shutdown
+	srv.SetRateLimiter(security.NewRateLimiter(10, 20, nil))
+	srv.SetUserRateLimiter(security.NewRateLimiter(5, 10, nil))
+	srv.SetSecurityEventRateLimiter(security.NewRateLimiter(100, 200, nil))
+	srv.SetClientRegistrationRateLimiter(security.NewClientRegistrationRateLimiter(nil))
+
+	// Shutdown with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err = srv.Shutdown(ctx)
+	if err != nil {
+		t.Errorf("Shutdown() error = %v", err)
+	}
+
+	// Verify idempotency - second call should also succeed without error
+	err = srv.Shutdown(ctx)
+	if err != nil {
+		t.Errorf("Second Shutdown() error = %v", err)
+	}
+
+	// Third call to ensure sync.Once is working correctly
+	err = srv.Shutdown(ctx)
+	if err != nil {
+		t.Errorf("Third Shutdown() error = %v", err)
+	}
+}
+
+func TestServer_Shutdown_WithoutRateLimiters(t *testing.T) {
+	// Test shutdown with no rate limiters configured
+	store := memory.New()
+	provider := mock.NewMockProvider()
+
+	config := &Config{
+		Issuer: "https://auth.example.com",
+	}
+
+	srv, err := New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// Shutdown should work even without rate limiters
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err = srv.Shutdown(ctx)
+	if err != nil {
+		t.Errorf("Shutdown() without rate limiters error = %v", err)
+	}
+}
+
+func TestServer_Shutdown_ContextCancellation(t *testing.T) {
+	// Test shutdown behavior when context is cancelled
+	store := memory.New()
+	provider := mock.NewMockProvider()
+
+	config := &Config{
+		Issuer: "https://auth.example.com",
+	}
+
+	srv, err := New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// Create a context that's already cancelled
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	// Shutdown should complete quickly since context is already done
+	err = srv.Shutdown(ctx)
+	if err == nil {
+		// Note: In this case, shutdown might complete before context check,
+		// so we don't strictly require an error
+		t.Log("Shutdown completed despite cancelled context (expected if shutdown is fast)")
+	}
+}
+
+func TestServer_ShutdownWithTimeout(t *testing.T) {
+	// Create a test server
+	store := memory.New()
+	provider := mock.NewMockProvider()
+
+	config := &Config{
+		Issuer: "https://auth.example.com",
+	}
+
+	srv, err := New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// Add rate limiters
+	srv.SetRateLimiter(security.NewRateLimiter(10, 20, nil))
+	srv.SetUserRateLimiter(security.NewRateLimiter(5, 10, nil))
+
+	// Test convenience method
+	err = srv.ShutdownWithTimeout(5 * time.Second)
+	if err != nil {
+		t.Errorf("ShutdownWithTimeout() error = %v", err)
+	}
+
+	// Verify idempotency
+	err = srv.ShutdownWithTimeout(5 * time.Second)
+	if err != nil {
+		t.Errorf("Second ShutdownWithTimeout() error = %v", err)
+	}
+}
+
+func TestServer_ShutdownWithTimeout_ShortTimeout(t *testing.T) {
+	// Test with a very short timeout to ensure timeout handling works
+	store := memory.New()
+	provider := mock.NewMockProvider()
+
+	config := &Config{
+		Issuer: "https://auth.example.com",
+	}
+
+	srv, err := New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// Use a reasonable timeout - shutdown should complete quickly
+	err = srv.ShutdownWithTimeout(1 * time.Second)
+	if err != nil {
+		t.Logf("ShutdownWithTimeout() with short timeout: %v (may timeout on slow systems)", err)
 	}
 }

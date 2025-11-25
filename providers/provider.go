@@ -33,6 +33,15 @@ type Provider interface {
 
 	// RevokeToken revokes a token at the provider
 	RevokeToken(ctx context.Context, token string) error
+
+	// HealthCheck verifies that the provider is reachable and functioning correctly.
+	// This is useful for readiness/liveness probes and startup validation.
+	// Returns nil if the provider is healthy, or an error describing the issue.
+	//
+	// SECURITY WARNING: Do not expose error messages from this method to untrusted clients.
+	// Error details may contain information about provider state (HTTP status codes, network errors)
+	// that could be used for reconnaissance. Use this for internal monitoring only.
+	HealthCheck(ctx context.Context) error
 }
 
 // UserInfo represents user information from a provider

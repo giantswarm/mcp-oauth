@@ -481,7 +481,8 @@ func TestProvider_RevokeToken_Failed(t *testing.T) {
 	}
 }
 
-// mockTransport is a custom http.RoundTripper that redirects userinfo requests to our test server
+// mockTransport is a custom http.RoundTripper that redirects userinfo requests to our test server.
+// This allows testing the user info validation flow without making actual calls to Google's endpoints.
 type mockTransport struct {
 	server *httptest.Server
 }
@@ -495,7 +496,8 @@ func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return http.DefaultTransport.RoundTrip(req)
 }
 
-// revokeTransport is a custom http.RoundTripper that redirects revoke requests to our test server
+// revokeTransport is a custom http.RoundTripper that redirects revoke requests to our test server.
+// This allows testing the revoke flow without making actual calls to Google's endpoints.
 type revokeTransport struct {
 	server *httptest.Server
 }
@@ -504,6 +506,135 @@ func (r *revokeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Redirect revoke requests to our test server
 	if strings.Contains(req.URL.String(), "oauth2.googleapis.com/revoke") {
 		testURL, _ := url.Parse(r.server.URL)
+		req.URL = testURL
+	}
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+func TestProvider_HealthCheck(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		wantErr    bool
+	}{
+		{
+			name:       "healthy provider",
+			statusCode: http.StatusOK,
+			wantErr:    false,
+		},
+		{
+			name:       "unhealthy provider - internal server error",
+			statusCode: http.StatusInternalServerError,
+			wantErr:    true,
+		},
+		{
+			name:       "unhealthy provider - service unavailable",
+			statusCode: http.StatusServiceUnavailable,
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Verify it's requesting the discovery document
+				if !strings.Contains(r.URL.Path, ".well-known/openid-configuration") {
+					t.Errorf("Expected .well-known/openid-configuration request, got %s", r.URL.Path)
+				}
+				w.WriteHeader(tt.statusCode)
+			}))
+			defer server.Close()
+
+			provider, err := NewProvider(&Config{
+				ClientID:     "test-client-id",
+				ClientSecret: "test-client-secret",
+				HTTPClient: &http.Client{
+					Transport: &healthCheckTransport{server: server},
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewProvider() error = %v", err)
+			}
+
+			err = provider.HealthCheck(context.Background())
+			if (err != nil) != tt.wantErr {
+				t.Errorf("HealthCheck() error = %v, wantErr %v", err, tt.wantErr)
+			}
+
+			if tt.wantErr && err != nil {
+				// Verify error message is meaningful
+				if !strings.Contains(err.Error(), "google oauth provider") {
+					t.Errorf("HealthCheck() error should mention provider, got: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestProvider_HealthCheck_WithTimeout(t *testing.T) {
+	// Create a server that delays response to test timeout handling
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	provider, err := NewProvider(&Config{
+		ClientID:       "test-client-id",
+		ClientSecret:   "test-client-secret",
+		RequestTimeout: 10 * time.Millisecond, // Very short timeout
+		HTTPClient: &http.Client{
+			Transport: &healthCheckTransport{server: server},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+
+	// This should timeout
+	err = provider.HealthCheck(context.Background())
+	if err == nil {
+		t.Error("HealthCheck() should timeout with short deadline")
+	}
+}
+
+func TestProvider_HealthCheck_WithExistingDeadline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	provider, err := NewProvider(&Config{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		HTTPClient: &http.Client{
+			Transport: &healthCheckTransport{server: server},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+
+	// Create context with existing deadline
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err = provider.HealthCheck(ctx)
+	if err != nil {
+		t.Errorf("HealthCheck() with existing deadline failed: %v", err)
+	}
+}
+
+// healthCheckTransport is a custom http.RoundTripper that redirects health check requests to our test server.
+// This allows testing the health check flow without making actual calls to Google's endpoints.
+type healthCheckTransport struct {
+	server *httptest.Server
+}
+
+func (h *healthCheckTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Redirect health check requests to our test server
+	if strings.Contains(req.URL.String(), ".well-known/openid-configuration") {
+		testURL, _ := url.Parse(h.server.URL + "/.well-known/openid-configuration")
 		req.URL = testURL
 	}
 	return http.DefaultTransport.RoundTrip(req)

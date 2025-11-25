@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -20,16 +21,18 @@ import (
 // Embeds oauth2.Config directly to avoid duplication.
 type Provider struct {
 	*oauth2.Config
-	httpClient *http.Client
+	httpClient     *http.Client
+	requestTimeout time.Duration
 }
 
 // Config holds Google OAuth configuration
 type Config struct {
-	ClientID     string
-	ClientSecret string
-	RedirectURL  string
-	Scopes       []string
-	HTTPClient   *http.Client // Optional custom HTTP client
+	ClientID       string
+	ClientSecret   string
+	RedirectURL    string
+	Scopes         []string
+	HTTPClient     *http.Client  // Optional custom HTTP client
+	RequestTimeout time.Duration // Timeout for provider API calls (default: 30s)
 }
 
 // NewProvider creates a new Google OAuth provider
@@ -47,10 +50,16 @@ func NewProvider(cfg *Config) (*Provider, error) {
 		scopes = []string{"openid", "email", "profile"}
 	}
 
+	// Set request timeout (default: 30 seconds)
+	requestTimeout := cfg.RequestTimeout
+	if requestTimeout == 0 {
+		requestTimeout = 30 * time.Second
+	}
+
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: requestTimeout,
 		}
 	}
 
@@ -62,7 +71,8 @@ func NewProvider(cfg *Config) (*Provider, error) {
 			Scopes:       scopes,
 			Endpoint:     google.Endpoint,
 		},
-		httpClient: httpClient,
+		httpClient:     httpClient,
+		requestTimeout: requestTimeout,
 	}, nil
 }
 
@@ -90,9 +100,23 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	return p.AuthCodeURL(state, opts...)
 }
 
+// ensureContextTimeout ensures the context has a deadline, adding one if needed.
+// Returns a new context with timeout and a cancel function that should be deferred.
+// If the context already has a deadline, returns the original context with a no-op cancel.
+func (p *Provider) ensureContextTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, hasDeadline := ctx.Deadline(); hasDeadline {
+		// Context already has deadline, return no-op cancel
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, p.requestTimeout)
+}
+
 // ExchangeCode exchanges an authorization code for tokens
 // Returns standard oauth2.Token directly
 func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier string) (*oauth2.Token, error) {
+	ctx, cancel := p.ensureContextTimeout(ctx)
+	defer cancel()
+
 	var opts []oauth2.AuthCodeOption
 
 	// PKCE code verifier
@@ -114,6 +138,9 @@ func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier strin
 
 // ValidateToken validates an access token by calling Google's userinfo endpoint
 func (p *Provider) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+	ctx, cancel := p.ensureContextTimeout(ctx)
+	defer cancel()
+
 	// Create HTTP client with the token using oauth2.Config.Client
 	token := &oauth2.Token{
 		AccessToken: accessToken,
@@ -163,6 +190,9 @@ func (p *Provider) ValidateToken(ctx context.Context, accessToken string) (*prov
 // RefreshToken refreshes an expired token
 // Returns standard oauth2.Token directly
 func (p *Provider) RefreshToken(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+	ctx, cancel := p.ensureContextTimeout(ctx)
+	defer cancel()
+
 	// Use custom HTTP client
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)
 
@@ -182,12 +212,23 @@ func (p *Provider) RefreshToken(ctx context.Context, refreshToken string) (*oaut
 }
 
 // RevokeToken revokes a token at Google's revocation endpoint
-func (p *Provider) RevokeToken(_ context.Context, token string) error {
+func (p *Provider) RevokeToken(ctx context.Context, token string) error {
+	ctx, cancel := p.ensureContextTimeout(ctx)
+	defer cancel()
+
 	revokeURL := "https://oauth2.googleapis.com/revoke"
 	data := url.Values{}
 	data.Set("token", token)
 
-	resp, err := p.httpClient.PostForm(revokeURL, data)
+	req, err := http.NewRequestWithContext(ctx, "POST", revokeURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return fmt.Errorf("failed to create revoke request: %w", err)
+	}
+
+	// Set content type for form data
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := p.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to revoke token: %w", err)
 	}
@@ -195,6 +236,53 @@ func (p *Provider) RevokeToken(_ context.Context, token string) error {
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("token revocation failed with status %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+// HealthCheck verifies that Google's OAuth endpoints are reachable.
+// It performs a lightweight check by fetching the OpenID Connect discovery document.
+// Uses the provided context for timeout and cancellation. If context has no deadline,
+// uses provider's default request timeout.
+//
+// Security Considerations:
+//   - This method is designed for server-side health monitoring (k8s probes, monitoring systems)
+//   - DO NOT expose the returned error messages directly to untrusted clients
+//   - Error messages may contain HTTP status codes that could leak provider state information
+//   - For public health endpoints, return generic "healthy/unhealthy" status only
+//
+// Recommended usage:
+//
+//	// Internal monitoring - detailed errors OK
+//	if err := provider.HealthCheck(ctx); err != nil {
+//	    log.Error("Provider health check failed", "error", err)
+//	    return http.StatusInternalServerError
+//	}
+//
+//	// Public endpoint - hide error details
+//	if err := provider.HealthCheck(ctx); err != nil {
+//	    w.WriteHeader(http.StatusServiceUnavailable)
+//	    json.NewEncoder(w).Encode(map[string]string{"status": "unhealthy"})
+//	    return
+//	}
+func (p *Provider) HealthCheck(ctx context.Context) error {
+	ctx, cancel := p.ensureContextTimeout(ctx)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://accounts.google.com/.well-known/openid-configuration", nil)
+	if err != nil {
+		return fmt.Errorf("failed to create health check request: %w", err)
+	}
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("google oauth provider unreachable: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("google oauth provider health check failed with status %d", resp.StatusCode)
 	}
 
 	return nil

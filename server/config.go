@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // Config holds OAuth server configuration
@@ -146,6 +147,10 @@ type Config struct {
 	// Security: must be explicitly enabled to allow HTTP
 	AllowInsecureHTTP bool
 
+	// Storage and cleanup configuration
+	StorageCleanupInterval     time.Duration // How often to clean up expired tokens/codes (default: 1 minute)
+	RateLimiterCleanupInterval time.Duration // How often to clean up idle rate limiters (default: 5 minutes)
+
 	// CORS settings for browser-based clients
 	CORS CORSConfig
 }
@@ -243,6 +248,12 @@ func applyTimeDefaults(config *Config) {
 	}
 	if config.RegistrationRateLimitWindow == 0 {
 		config.RegistrationRateLimitWindow = 3600 // 1 hour
+	}
+	if config.StorageCleanupInterval == 0 {
+		config.StorageCleanupInterval = time.Minute // 1 minute
+	}
+	if config.RateLimiterCleanupInterval == 0 {
+		config.RateLimiterCleanupInterval = 5 * time.Minute // 5 minutes
 	}
 }
 
