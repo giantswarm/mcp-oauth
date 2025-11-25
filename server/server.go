@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
@@ -37,6 +38,7 @@ type Server struct {
 	UserRateLimiter               *security.RateLimiter                   // User-based rate limiter (authenticated requests)
 	SecurityEventRateLimiter      *security.RateLimiter                   // Rate limiter for security event logging (DoS prevention)
 	ClientRegistrationRateLimiter *security.ClientRegistrationRateLimiter // Time-windowed rate limiter for client registrations
+	Instrumentation               *instrumentation.Instrumentation        // OpenTelemetry instrumentation
 	Logger                        *slog.Logger
 	Config                        *Config
 	shutdownOnce                  sync.Once // Ensures Shutdown is called only once
@@ -96,6 +98,31 @@ func New(
 		setter.SetRevokedFamilyRetentionDays(config.RevokedFamilyRetentionDays)
 	}
 
+	// Initialize instrumentation if enabled
+	if config.Instrumentation.Enabled {
+		instConfig := instrumentation.Config{
+			Enabled:        true,
+			ServiceName:    config.Instrumentation.ServiceName,
+			ServiceVersion: config.Instrumentation.ServiceVersion,
+		}
+		if instConfig.ServiceName == "" {
+			instConfig.ServiceName = "mcp-oauth"
+		}
+		if instConfig.ServiceVersion == "" {
+			instConfig.ServiceVersion = "unknown"
+		}
+
+		inst, err := instrumentation.New(instConfig)
+		if err != nil {
+			logger.Warn("Failed to initialize instrumentation, continuing without it", "error", err)
+		} else {
+			srv.Instrumentation = inst
+			logger.Info("Instrumentation initialized",
+				"service_name", instConfig.ServiceName,
+				"service_version", instConfig.ServiceVersion)
+		}
+	}
+
 	return srv, nil
 }
 
@@ -137,6 +164,11 @@ func (s *Server) SetSecurityEventRateLimiter(rl *security.RateLimiter) {
 // This prevents resource exhaustion through repeated registration/deletion cycles
 func (s *Server) SetClientRegistrationRateLimiter(rl *security.ClientRegistrationRateLimiter) {
 	s.ClientRegistrationRateLimiter = rl
+}
+
+// SetInstrumentation sets the OpenTelemetry instrumentation
+func (s *Server) SetInstrumentation(inst *instrumentation.Instrumentation) {
+	s.Instrumentation = inst
 }
 
 const (
@@ -231,6 +263,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			if s.ClientRegistrationRateLimiter != nil {
 				s.Logger.Debug("Stopping client registration rate limiter...")
 				s.ClientRegistrationRateLimiter.Stop()
+			}
+
+			// Shutdown instrumentation
+			if s.Instrumentation != nil {
+				s.Logger.Debug("Shutting down instrumentation...")
+				if err := s.Instrumentation.Shutdown(ctx); err != nil {
+					s.Logger.Warn("Failed to shutdown instrumentation", "error", err)
+				}
 			}
 
 			// Stop storage cleanup goroutines if the store supports it

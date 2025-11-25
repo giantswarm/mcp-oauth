@@ -153,6 +153,25 @@ type Config struct {
 
 	// CORS settings for browser-based clients
 	CORS CORSConfig
+
+	// Instrumentation settings for observability
+	Instrumentation InstrumentationConfig
+}
+
+// InstrumentationConfig holds configuration for OpenTelemetry instrumentation
+type InstrumentationConfig struct {
+	// Enabled controls whether instrumentation is active
+	// When false, uses no-op providers (zero overhead)
+	// Default: false (disabled)
+	Enabled bool
+
+	// ServiceName is the name of the service for telemetry
+	// Default: "mcp-oauth"
+	ServiceName string
+
+	// ServiceVersion is the version of the service for telemetry
+	// Default: "unknown"
+	ServiceVersion string
 }
 
 // CORSConfig holds CORS (Cross-Origin Resource Sharing) configuration for browser-based clients
