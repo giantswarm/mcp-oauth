@@ -31,16 +31,6 @@ type Config struct {
 	// Default: true
 	Enabled bool
 
-	// MetricExporter specifies the metric exporter to use
-	// Options: "prometheus", "otlp", "stdout", "none"
-	// Default: "none" (no-op)
-	MetricExporter string
-
-	// TraceExporter specifies the trace exporter to use
-	// Options: "otlp", "stdout", "none"
-	// Default: "none" (no-op)
-	TraceExporter string
-
 	// Resource allows custom resource attributes
 	// If nil, default resource is created with service name and version
 	Resource *resource.Resource
@@ -51,27 +41,14 @@ type Instrumentation struct {
 	config   Config
 	resource *resource.Resource
 
-	// Providers
+	// Providers - these are used to create meters and tracers on demand
 	meterProvider  metric.MeterProvider
 	tracerProvider trace.TracerProvider
 
-	// Meters and tracers for different layers
-	httpMeter     metric.Meter
-	serverMeter   metric.Meter
-	storageMeter  metric.Meter
-	providerMeter metric.Meter
-	securityMeter metric.Meter
-
-	httpTracer     trace.Tracer
-	serverTracer   trace.Tracer
-	storageTracer  trace.Tracer
-	providerTracer trace.Tracer
-	securityTracer trace.Tracer
-
-	// Metrics holder
+	// Metrics holder provides pre-configured metric instruments
 	metrics *Metrics
 
-	// Shutdown function (called when instrumentation is no longer needed)
+	// Shutdown functions (must be registered during New() only, not thread-safe after initialization)
 	shutdownFuncs []func(context.Context) error
 	shutdownOnce  sync.Once
 }
@@ -120,20 +97,7 @@ func New(config Config) (*Instrumentation, error) {
 		inst.tracerProvider = tracenoop.NewTracerProvider()
 	}
 
-	// Create meters and tracers for each layer
-	inst.httpMeter = inst.meterProvider.Meter("github.com/giantswarm/mcp-oauth/http")
-	inst.serverMeter = inst.meterProvider.Meter("github.com/giantswarm/mcp-oauth/server")
-	inst.storageMeter = inst.meterProvider.Meter("github.com/giantswarm/mcp-oauth/storage")
-	inst.providerMeter = inst.meterProvider.Meter("github.com/giantswarm/mcp-oauth/provider")
-	inst.securityMeter = inst.meterProvider.Meter("github.com/giantswarm/mcp-oauth/security")
-
-	inst.httpTracer = inst.tracerProvider.Tracer("github.com/giantswarm/mcp-oauth/http")
-	inst.serverTracer = inst.tracerProvider.Tracer("github.com/giantswarm/mcp-oauth/server")
-	inst.storageTracer = inst.tracerProvider.Tracer("github.com/giantswarm/mcp-oauth/storage")
-	inst.providerTracer = inst.tracerProvider.Tracer("github.com/giantswarm/mcp-oauth/provider")
-	inst.securityTracer = inst.tracerProvider.Tracer("github.com/giantswarm/mcp-oauth/security")
-
-	// Initialize metrics
+	// Initialize metrics (creates meters internally as needed)
 	inst.metrics, err = newMetrics(inst)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create metrics: %w", err)
@@ -143,15 +107,13 @@ func New(config Config) (*Instrumentation, error) {
 }
 
 // initializeProviders initializes metric and trace providers based on configuration
+// Currently uses no-op providers. Future enhancement will add actual exporters
+// (Prometheus, OTLP, stdout) which can be implemented in a backward-compatible way.
 func (i *Instrumentation) initializeProviders() error {
-	// For now, we'll use no-op providers
-	// In a follow-up, we'll add actual exporters (Prometheus, OTLP, etc.)
-	// This allows the core structure to be in place while we implement exporters
+	// Use no-op providers for now
+	// TODO: Add actual exporters (Prometheus, OTLP, stdout) in follow-up PR
 	i.meterProvider = noop.NewMeterProvider()
 	i.tracerProvider = tracenoop.NewTracerProvider()
-
-	// TODO: Implement actual exporters based on config.MetricExporter and config.TraceExporter
-	// Track this work in a follow-up issue for production-ready exporters
 
 	return nil
 }
@@ -176,54 +138,18 @@ func (i *Instrumentation) Shutdown(ctx context.Context) error {
 	return shutdownErr
 }
 
-// HTTPMeter returns the meter for HTTP layer instrumentation
-func (i *Instrumentation) HTTPMeter() metric.Meter {
-	return i.httpMeter
+// Meter returns a named meter for the given scope
+// Scopes are typically layer names like "http", "server", "storage", "provider", "security"
+// The full name will be "github.com/giantswarm/mcp-oauth/{scope}"
+func (i *Instrumentation) Meter(scope string) metric.Meter {
+	return i.meterProvider.Meter("github.com/giantswarm/mcp-oauth/" + scope)
 }
 
-// ServerMeter returns the meter for server layer instrumentation
-func (i *Instrumentation) ServerMeter() metric.Meter {
-	return i.serverMeter
-}
-
-// StorageMeter returns the meter for storage layer instrumentation
-func (i *Instrumentation) StorageMeter() metric.Meter {
-	return i.storageMeter
-}
-
-// ProviderMeter returns the meter for provider layer instrumentation
-func (i *Instrumentation) ProviderMeter() metric.Meter {
-	return i.providerMeter
-}
-
-// SecurityMeter returns the meter for security layer instrumentation
-func (i *Instrumentation) SecurityMeter() metric.Meter {
-	return i.securityMeter
-}
-
-// HTTPTracer returns the tracer for HTTP layer instrumentation
-func (i *Instrumentation) HTTPTracer() trace.Tracer {
-	return i.httpTracer
-}
-
-// ServerTracer returns the tracer for server layer instrumentation
-func (i *Instrumentation) ServerTracer() trace.Tracer {
-	return i.serverTracer
-}
-
-// StorageTracer returns the tracer for storage layer instrumentation
-func (i *Instrumentation) StorageTracer() trace.Tracer {
-	return i.storageTracer
-}
-
-// ProviderTracer returns the tracer for provider layer instrumentation
-func (i *Instrumentation) ProviderTracer() trace.Tracer {
-	return i.providerTracer
-}
-
-// SecurityTracer returns the tracer for security layer instrumentation
-func (i *Instrumentation) SecurityTracer() trace.Tracer {
-	return i.securityTracer
+// Tracer returns a named tracer for the given scope
+// Scopes are typically layer names like "http", "server", "storage", "provider", "security"
+// The full name will be "github.com/giantswarm/mcp-oauth/{scope}"
+func (i *Instrumentation) Tracer(scope string) trace.Tracer {
+	return i.tracerProvider.Tracer("github.com/giantswarm/mcp-oauth/" + scope)
 }
 
 // Metrics returns the metrics holder for recording metric values

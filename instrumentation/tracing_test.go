@@ -18,7 +18,7 @@ func TestRecordError(t *testing.T) {
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
 	ctx := context.Background()
-	_, span := inst.ServerTracer().Start(ctx, "test-span")
+	_, span := inst.Tracer("server").Start(ctx, "test-span")
 	defer span.End()
 
 	// Test recording an error
@@ -38,7 +38,7 @@ func TestSetSpanSuccess(t *testing.T) {
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
 	ctx := context.Background()
-	_, span := inst.ServerTracer().Start(ctx, "test-span")
+	_, span := inst.Tracer("server").Start(ctx, "test-span")
 	defer span.End()
 
 	// Test setting span as successful
@@ -57,7 +57,7 @@ func TestAddOAuthFlowAttributes(t *testing.T) {
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
 	ctx := context.Background()
-	_, span := inst.ServerTracer().Start(ctx, "test-span")
+	_, span := inst.Tracer("server").Start(ctx, "test-span")
 	defer span.End()
 
 	// Test adding OAuth flow attributes
@@ -78,7 +78,7 @@ func TestAddPKCEAttributes(t *testing.T) {
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
 	ctx := context.Background()
-	_, span := inst.ServerTracer().Start(ctx, "test-span")
+	_, span := inst.Tracer("server").Start(ctx, "test-span")
 	defer span.End()
 
 	// Test adding PKCE attributes
@@ -99,7 +99,7 @@ func TestAddTokenFamilyAttributes(t *testing.T) {
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
 	ctx := context.Background()
-	_, span := inst.ServerTracer().Start(ctx, "test-span")
+	_, span := inst.Tracer("server").Start(ctx, "test-span")
 	defer span.End()
 
 	// Test adding token family attributes
@@ -120,7 +120,7 @@ func TestAddStorageAttributes(t *testing.T) {
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
 	ctx := context.Background()
-	_, span := inst.ServerTracer().Start(ctx, "test-span")
+	_, span := inst.Tracer("server").Start(ctx, "test-span")
 	defer span.End()
 
 	// Test adding storage attributes
@@ -140,7 +140,7 @@ func TestAddProviderAttributes(t *testing.T) {
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
 	ctx := context.Background()
-	_, span := inst.ServerTracer().Start(ctx, "test-span")
+	_, span := inst.Tracer("server").Start(ctx, "test-span")
 	defer span.End()
 
 	// Test adding provider attributes
@@ -160,7 +160,7 @@ func TestAddHTTPAttributes(t *testing.T) {
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
 	ctx := context.Background()
-	_, span := inst.ServerTracer().Start(ctx, "test-span")
+	_, span := inst.Tracer("server").Start(ctx, "test-span")
 	defer span.End()
 
 	// Test adding HTTP attributes
@@ -180,7 +180,7 @@ func TestAddSecurityAttributes(t *testing.T) {
 	defer func() { _ = inst.Shutdown(context.Background()) }()
 
 	ctx := context.Background()
-	_, span := inst.ServerTracer().Start(ctx, "test-span")
+	_, span := inst.Tracer("server").Start(ctx, "test-span")
 	defer span.End()
 
 	// Test adding security attributes
@@ -202,7 +202,7 @@ func TestSpanLifecycle(t *testing.T) {
 	ctx := context.Background()
 
 	// Test full span lifecycle with attributes and error
-	_, span := inst.ServerTracer().Start(ctx, "oauth.exchange_authorization_code")
+	_, span := inst.Tracer("server").Start(ctx, "oauth.exchange_authorization_code")
 
 	// Add attributes
 	AddOAuthFlowAttributes(span, "test-client", "test-user", "openid email")
@@ -231,13 +231,13 @@ func TestSpanNesting(t *testing.T) {
 	ctx := context.Background()
 
 	// Create nested spans
-	ctx, span1 := inst.HTTPTracer().Start(ctx, "http.request")
+	ctx, span1 := inst.Tracer("http").Start(ctx, "http.request")
 	AddHTTPAttributes(span1, "POST", "/oauth/token", 200)
 
-	ctx, span2 := inst.ServerTracer().Start(ctx, "oauth.exchange_code")
+	ctx, span2 := inst.Tracer("server").Start(ctx, "oauth.exchange_code")
 	AddOAuthFlowAttributes(span2, "test-client", "test-user", "openid")
 
-	_, span3 := inst.StorageTracer().Start(ctx, "storage.get_authorization_code")
+	_, span3 := inst.Tracer("storage").Start(ctx, "storage.get_authorization_code")
 	AddStorageAttributes(span3, "get_code", "memory")
 	SetSpanSuccess(span3)
 	span3.End()
@@ -267,7 +267,7 @@ func TestSpanConcurrency(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		go func(id int) {
 			for j := 0; j < 100; j++ {
-				_, span := inst.ServerTracer().Start(ctx, "concurrent-span")
+				_, span := inst.Tracer("server").Start(ctx, "concurrent-span")
 				AddOAuthFlowAttributes(span, "client", "user", "scope")
 				AddPKCEAttributes(span, "S256")
 				SetSpanSuccess(span)
@@ -298,7 +298,7 @@ func TestNoOpSpans(t *testing.T) {
 	ctx := context.Background()
 
 	// Create and manipulate spans - should all be no-ops
-	_, span := inst.ServerTracer().Start(ctx, "test-span")
+	_, span := inst.Tracer("server").Start(ctx, "test-span")
 	AddOAuthFlowAttributes(span, "client", "user", "scope")
 	AddPKCEAttributes(span, "S256")
 	AddHTTPAttributes(span, "GET", "/test", 200)

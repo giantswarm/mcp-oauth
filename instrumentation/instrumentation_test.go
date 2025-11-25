@@ -2,6 +2,7 @@ package instrumentation
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -54,38 +55,20 @@ func TestNew(t *testing.T) {
 					return
 				}
 
-				// Verify meters are not nil
-				if inst.HTTPMeter() == nil {
-					t.Error("HTTPMeter() returned nil")
+				// Verify meters can be created for different scopes
+				if inst.Meter("http") == nil {
+					t.Error("Meter('http') returned nil")
 				}
-				if inst.ServerMeter() == nil {
-					t.Error("ServerMeter() returned nil")
-				}
-				if inst.StorageMeter() == nil {
-					t.Error("StorageMeter() returned nil")
-				}
-				if inst.ProviderMeter() == nil {
-					t.Error("ProviderMeter() returned nil")
-				}
-				if inst.SecurityMeter() == nil {
-					t.Error("SecurityMeter() returned nil")
+				if inst.Meter("server") == nil {
+					t.Error("Meter('server') returned nil")
 				}
 
-				// Verify tracers are not nil
-				if inst.HTTPTracer() == nil {
-					t.Error("HTTPTracer() returned nil")
+				// Verify tracers can be created for different scopes
+				if inst.Tracer("http") == nil {
+					t.Error("Tracer('http') returned nil")
 				}
-				if inst.ServerTracer() == nil {
-					t.Error("ServerTracer() returned nil")
-				}
-				if inst.StorageTracer() == nil {
-					t.Error("StorageTracer() returned nil")
-				}
-				if inst.ProviderTracer() == nil {
-					t.Error("ProviderTracer() returned nil")
-				}
-				if inst.SecurityTracer() == nil {
-					t.Error("SecurityTracer() returned nil")
+				if inst.Tracer("server") == nil {
+					t.Error("Tracer('server') returned nil")
 				}
 
 				// Verify metrics holder is not nil
@@ -138,7 +121,7 @@ func TestInstrumentation_NoOpProviders(t *testing.T) {
 	inst.Metrics().RecordTokenRefresh(ctx, "test-client", true)
 
 	// Test span creation (should be no-op)
-	_, span := inst.ServerTracer().Start(ctx, "test-span")
+	_, span := inst.Tracer("server").Start(ctx, "test-span")
 	span.End()
 
 	// Should not panic or error
@@ -163,11 +146,12 @@ func TestInstrumentation_ConcurrentAccess(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		go func(id int) {
 			for j := 0; j < 100; j++ {
-				inst.Metrics().RecordAuthorizationStarted(ctx, "client-"+string(rune(id)))
-				inst.Metrics().RecordCodeExchange(ctx, "client-"+string(rune(id)), "S256")
+				clientID := fmt.Sprintf("client-%d", id)
+				inst.Metrics().RecordAuthorizationStarted(ctx, clientID)
+				inst.Metrics().RecordCodeExchange(ctx, clientID, "S256")
 
 				// Create and end spans
-				_, span := inst.ServerTracer().Start(ctx, "concurrent-span")
+				_, span := inst.Tracer("server").Start(ctx, "concurrent-span")
 				span.End()
 			}
 			done <- true
@@ -180,29 +164,6 @@ func TestInstrumentation_ConcurrentAccess(t *testing.T) {
 	}
 
 	// Should complete without panic or race conditions
-}
-
-func TestInstrumentation_ShutdownTimeout(t *testing.T) {
-	inst, err := New(Config{
-		Enabled: true,
-	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	// Create a context with immediate timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
-	defer cancel()
-
-	// Wait for context to expire
-	<-ctx.Done()
-
-	// Shutdown should handle timeout gracefully
-	// Note: With no-op providers, shutdown is instant, so this tests the mechanism
-	shutdownErr := inst.Shutdown(ctx)
-	// We don't expect an error with no-op providers, but if real providers were used,
-	// we'd expect context.DeadlineExceeded
-	_ = shutdownErr
 }
 
 func TestConfig_Defaults(t *testing.T) {

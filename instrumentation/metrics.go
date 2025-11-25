@@ -8,6 +8,35 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
+// Metric attribute keys - using constants for consistency and DRY
+const (
+	// Common attributes (reused across metrics)
+	metricAttrMethod    = "method"
+	metricAttrEndpoint  = "endpoint"
+	metricAttrStatus    = "status"
+	metricAttrOperation = "operation"
+
+	// OAuth flow attributes
+	metricAttrClientID   = "client_id"
+	metricAttrSuccess    = "success"
+	metricAttrPKCEMethod = "pkce_method"
+	metricAttrRotated    = "rotated"
+	metricAttrClientType = "client_type"
+
+	// Security attributes
+	metricAttrLimiterType = "limiter_type"
+
+	// Storage attributes
+	metricAttrResult = "result"
+
+	// Provider attributes
+	metricAttrProvider  = "provider"
+	metricAttrErrorType = "error_type"
+
+	// Audit attributes
+	metricAttrEventType = "event_type"
+)
+
 // Metrics holds all metric instruments for the OAuth library
 type Metrics struct {
 	// HTTP Layer Metrics
@@ -74,8 +103,15 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 	m := &Metrics{}
 	var err error
 
+	// Create meters for each layer
+	httpMeter := inst.Meter("http")
+	serverMeter := inst.Meter("server")
+	storageMeter := inst.Meter("storage")
+	providerMeter := inst.Meter("provider")
+	securityMeter := inst.Meter("security")
+
 	// HTTP Layer Metrics
-	m.HTTPRequestsTotal, err = createCounter(inst.httpMeter,
+	m.HTTPRequestsTotal, err = createCounter(httpMeter,
 		"oauth.http.requests.total",
 		"Total number of HTTP requests",
 		"{request}")
@@ -83,7 +119,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 		return nil, err
 	}
 
-	m.HTTPRequestDuration, err = createHistogram(inst.httpMeter,
+	m.HTTPRequestDuration, err = createHistogram(httpMeter,
 		"oauth.http.request.duration",
 		"HTTP request duration in milliseconds",
 		"ms")
@@ -92,7 +128,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 	}
 
 	// OAuth Flow Metrics
-	m.AuthorizationStarted, err = createCounter(inst.serverMeter,
+	m.AuthorizationStarted, err = createCounter(serverMeter,
 		"oauth.authorization.started",
 		"Number of authorization flows started",
 		"{flow}")
@@ -100,7 +136,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 		return nil, err
 	}
 
-	m.CallbackProcessed, err = createCounter(inst.serverMeter,
+	m.CallbackProcessed, err = createCounter(serverMeter,
 		"oauth.callback.processed",
 		"Number of provider callbacks processed",
 		"{callback}")
@@ -108,7 +144,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 		return nil, err
 	}
 
-	m.CodeExchanged, err = createCounter(inst.serverMeter,
+	m.CodeExchanged, err = createCounter(serverMeter,
 		"oauth.code.exchanged",
 		"Number of authorization codes exchanged for tokens",
 		"{exchange}")
@@ -116,7 +152,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 		return nil, err
 	}
 
-	m.TokenRefreshed, err = createCounter(inst.serverMeter,
+	m.TokenRefreshed, err = createCounter(serverMeter,
 		"oauth.token.refreshed",
 		"Number of tokens refreshed",
 		"{refresh}")
@@ -124,7 +160,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 		return nil, err
 	}
 
-	m.TokenRevoked, err = createCounter(inst.serverMeter,
+	m.TokenRevoked, err = createCounter(serverMeter,
 		"oauth.token.revoked",
 		"Number of tokens revoked",
 		"{revocation}")
@@ -132,7 +168,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 		return nil, err
 	}
 
-	m.ClientRegistered, err = createCounter(inst.serverMeter,
+	m.ClientRegistered, err = createCounter(serverMeter,
 		"oauth.client.registered",
 		"Number of clients registered",
 		"{client}")
@@ -141,7 +177,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 	}
 
 	// Security Metrics
-	m.RateLimitExceeded, err = createCounter(inst.securityMeter,
+	m.RateLimitExceeded, err = createCounter(securityMeter,
 		"oauth.rate_limit.exceeded",
 		"Number of rate limit violations",
 		"{violation}")
@@ -149,7 +185,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 		return nil, err
 	}
 
-	m.PKCEValidationFailed, err = createCounter(inst.securityMeter,
+	m.PKCEValidationFailed, err = createCounter(securityMeter,
 		"oauth.pkce.validation_failed",
 		"Number of PKCE validation failures",
 		"{failure}")
@@ -157,7 +193,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 		return nil, err
 	}
 
-	m.CodeReuseDetected, err = createCounter(inst.securityMeter,
+	m.CodeReuseDetected, err = createCounter(securityMeter,
 		"oauth.code.reuse_detected",
 		"Number of authorization code reuse attempts detected",
 		"{attempt}")
@@ -165,7 +201,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 		return nil, err
 	}
 
-	m.TokenReuseDetected, err = createCounter(inst.securityMeter,
+	m.TokenReuseDetected, err = createCounter(securityMeter,
 		"oauth.token.reuse_detected",
 		"Number of token reuse attempts detected",
 		"{attempt}")
@@ -174,7 +210,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 	}
 
 	// Storage Metrics
-	m.StorageOperationTotal, err = createCounter(inst.storageMeter,
+	m.StorageOperationTotal, err = createCounter(storageMeter,
 		"storage.operation.total",
 		"Total number of storage operations",
 		"{operation}")
@@ -182,7 +218,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 		return nil, err
 	}
 
-	m.StorageOperationDuration, err = createHistogram(inst.storageMeter,
+	m.StorageOperationDuration, err = createHistogram(storageMeter,
 		"storage.operation.duration",
 		"Storage operation duration in milliseconds",
 		"ms")
@@ -191,7 +227,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 	}
 
 	// Provider Metrics
-	m.ProviderAPICallsTotal, err = createCounter(inst.providerMeter,
+	m.ProviderAPICallsTotal, err = createCounter(providerMeter,
 		"provider.api.calls.total",
 		"Total number of provider API calls",
 		"{call}")
@@ -199,7 +235,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 		return nil, err
 	}
 
-	m.ProviderAPIDuration, err = createHistogram(inst.providerMeter,
+	m.ProviderAPIDuration, err = createHistogram(providerMeter,
 		"provider.api.duration",
 		"Provider API call duration in milliseconds",
 		"ms")
@@ -207,7 +243,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 		return nil, err
 	}
 
-	m.ProviderAPIErrors, err = createCounter(inst.providerMeter,
+	m.ProviderAPIErrors, err = createCounter(providerMeter,
 		"provider.api.errors.total",
 		"Total number of provider API errors",
 		"{error}")
@@ -216,7 +252,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 	}
 
 	// Audit Metrics
-	m.AuditEventsTotal, err = createCounter(inst.securityMeter,
+	m.AuditEventsTotal, err = createCounter(securityMeter,
 		"oauth.audit.events.total",
 		"Total number of audit events",
 		"{event}")
@@ -225,7 +261,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 	}
 
 	// Encryption Metrics
-	m.EncryptionOperationsTotal, err = createCounter(inst.securityMeter,
+	m.EncryptionOperationsTotal, err = createCounter(securityMeter,
 		"oauth.encryption.operations.total",
 		"Total number of encryption/decryption operations",
 		"{operation}")
@@ -233,7 +269,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 		return nil, err
 	}
 
-	m.EncryptionDuration, err = createHistogram(inst.securityMeter,
+	m.EncryptionDuration, err = createHistogram(securityMeter,
 		"oauth.encryption.duration",
 		"Encryption/decryption operation duration in milliseconds",
 		"ms")
@@ -249,71 +285,71 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 // RecordHTTPRequest records an HTTP request metric
 func (m *Metrics) RecordHTTPRequest(ctx context.Context, method, endpoint string, statusCode int, durationMs float64) {
 	attrs := []attribute.KeyValue{
-		attribute.String("method", method),
-		attribute.String("endpoint", endpoint),
-		attribute.Int("status", statusCode),
+		attribute.String(metricAttrMethod, method),
+		attribute.String(metricAttrEndpoint, endpoint),
+		attribute.Int(metricAttrStatus, statusCode),
 	}
 
 	m.HTTPRequestsTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
-	m.HTTPRequestDuration.Record(ctx, durationMs, metric.WithAttributes(attribute.String("endpoint", endpoint)))
+	m.HTTPRequestDuration.Record(ctx, durationMs, metric.WithAttributes(attribute.String(metricAttrEndpoint, endpoint)))
 }
 
 // RecordAuthorizationStarted records an authorization flow start
 func (m *Metrics) RecordAuthorizationStarted(ctx context.Context, clientID string) {
 	m.AuthorizationStarted.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("client_id", clientID),
+		attribute.String(metricAttrClientID, clientID),
 	))
 }
 
 // RecordCallbackProcessed records a provider callback processing
 func (m *Metrics) RecordCallbackProcessed(ctx context.Context, clientID string, success bool) {
 	m.CallbackProcessed.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("client_id", clientID),
-		attribute.Bool("success", success),
+		attribute.String(metricAttrClientID, clientID),
+		attribute.Bool(metricAttrSuccess, success),
 	))
 }
 
 // RecordCodeExchange records an authorization code exchange
 func (m *Metrics) RecordCodeExchange(ctx context.Context, clientID, pkceMethod string) {
 	m.CodeExchanged.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("client_id", clientID),
-		attribute.String("pkce_method", pkceMethod),
+		attribute.String(metricAttrClientID, clientID),
+		attribute.String(metricAttrPKCEMethod, pkceMethod),
 	))
 }
 
 // RecordTokenRefresh records a token refresh operation
 func (m *Metrics) RecordTokenRefresh(ctx context.Context, clientID string, rotated bool) {
 	m.TokenRefreshed.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("client_id", clientID),
-		attribute.Bool("rotated", rotated),
+		attribute.String(metricAttrClientID, clientID),
+		attribute.Bool(metricAttrRotated, rotated),
 	))
 }
 
 // RecordTokenRevocation records a token revocation
 func (m *Metrics) RecordTokenRevocation(ctx context.Context, clientID string) {
 	m.TokenRevoked.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("client_id", clientID),
+		attribute.String(metricAttrClientID, clientID),
 	))
 }
 
 // RecordClientRegistration records a client registration
 func (m *Metrics) RecordClientRegistration(ctx context.Context, clientType string) {
 	m.ClientRegistered.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("client_type", clientType),
+		attribute.String(metricAttrClientType, clientType),
 	))
 }
 
 // RecordRateLimitExceeded records a rate limit violation
 func (m *Metrics) RecordRateLimitExceeded(ctx context.Context, limiterType string) {
 	m.RateLimitExceeded.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("limiter_type", limiterType),
+		attribute.String(metricAttrLimiterType, limiterType),
 	))
 }
 
 // RecordPKCEValidationFailed records a PKCE validation failure
 func (m *Metrics) RecordPKCEValidationFailed(ctx context.Context, method string) {
 	m.PKCEValidationFailed.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("method", method),
+		attribute.String(metricAttrMethod, method),
 	))
 }
 
@@ -330,28 +366,28 @@ func (m *Metrics) RecordTokenReuseDetected(ctx context.Context) {
 // RecordStorageOperation records a storage operation
 func (m *Metrics) RecordStorageOperation(ctx context.Context, operation, result string, durationMs float64) {
 	attrs := []attribute.KeyValue{
-		attribute.String("operation", operation),
-		attribute.String("result", result),
+		attribute.String(metricAttrOperation, operation),
+		attribute.String(metricAttrResult, result),
 	}
 
 	m.StorageOperationTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
 	m.StorageOperationDuration.Record(ctx, durationMs, metric.WithAttributes(
-		attribute.String("operation", operation),
+		attribute.String(metricAttrOperation, operation),
 	))
 }
 
 // RecordProviderAPICall records a provider API call
 func (m *Metrics) RecordProviderAPICall(ctx context.Context, provider, operation string, statusCode int, durationMs float64, err error) {
 	attrs := []attribute.KeyValue{
-		attribute.String("provider", provider),
-		attribute.String("operation", operation),
-		attribute.Int("status", statusCode),
+		attribute.String(metricAttrProvider, provider),
+		attribute.String(metricAttrOperation, operation),
+		attribute.Int(metricAttrStatus, statusCode),
 	}
 
 	m.ProviderAPICallsTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
 	m.ProviderAPIDuration.Record(ctx, durationMs, metric.WithAttributes(
-		attribute.String("provider", provider),
-		attribute.String("operation", operation),
+		attribute.String(metricAttrProvider, provider),
+		attribute.String(metricAttrOperation, operation),
 	))
 
 	if err != nil {
@@ -363,9 +399,9 @@ func (m *Metrics) RecordProviderAPICall(ctx context.Context, provider, operation
 		}
 
 		m.ProviderAPIErrors.Add(ctx, 1, metric.WithAttributes(
-			attribute.String("provider", provider),
-			attribute.String("operation", operation),
-			attribute.String("error_type", errorType),
+			attribute.String(metricAttrProvider, provider),
+			attribute.String(metricAttrOperation, operation),
+			attribute.String(metricAttrErrorType, errorType),
 		))
 	}
 }
@@ -373,18 +409,18 @@ func (m *Metrics) RecordProviderAPICall(ctx context.Context, provider, operation
 // RecordAuditEvent records an audit event
 func (m *Metrics) RecordAuditEvent(ctx context.Context, eventType string) {
 	m.AuditEventsTotal.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("event_type", eventType),
+		attribute.String(metricAttrEventType, eventType),
 	))
 }
 
 // RecordEncryptionOperation records an encryption/decryption operation
 func (m *Metrics) RecordEncryptionOperation(ctx context.Context, operation string, durationMs float64) {
 	attrs := []attribute.KeyValue{
-		attribute.String("operation", operation),
+		attribute.String(metricAttrOperation, operation),
 	}
 
 	m.EncryptionOperationsTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
 	m.EncryptionDuration.Record(ctx, durationMs, metric.WithAttributes(
-		attribute.String("operation", operation),
+		attribute.String(metricAttrOperation, operation),
 	))
 }
