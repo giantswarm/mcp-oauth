@@ -175,7 +175,28 @@ func generateRandomToken() string {
 // The context parameter controls the shutdown timeout. If the context is cancelled
 // or times out before shutdown completes, Shutdown returns the context error.
 //
-// Example usage:
+// IMPORTANT: This method only stops background goroutines (rate limiters, cleanup tasks).
+// It does NOT handle in-flight HTTP requests. For production deployments, you should:
+//
+//  1. Stop accepting new connections (e.g., http.Server.Shutdown())
+//  2. Wait for in-flight requests to complete
+//  3. Call this method to clean up background processes
+//
+// Recommended production shutdown sequence:
+//
+//	// Step 1: Stop accepting new requests (with timeout)
+//	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+//	defer cancel()
+//	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+//	    log.Printf("HTTP server shutdown error: %v", err)
+//	}
+//
+//	// Step 2: Clean up OAuth server background processes
+//	if err := oauthServer.Shutdown(shutdownCtx); err != nil {
+//	    log.Printf("OAuth server shutdown error: %v", err)
+//	}
+//
+// Simple example for non-production use:
 //
 //	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 //	defer cancel()

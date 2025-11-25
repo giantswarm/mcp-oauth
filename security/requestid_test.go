@@ -47,6 +47,148 @@ func TestRequestIDContext(t *testing.T) {
 	}
 }
 
+func TestIsValidRequestID(t *testing.T) {
+	tests := []struct {
+		name      string
+		requestID string
+		valid     bool
+	}{
+		// Valid cases
+		{
+			name:      "valid alphanumeric",
+			requestID: "abc123",
+			valid:     true,
+		},
+		{
+			name:      "valid with hyphens",
+			requestID: "request-id-123",
+			valid:     true,
+		},
+		{
+			name:      "valid with underscores",
+			requestID: "request_id_123",
+			valid:     true,
+		},
+		{
+			name:      "valid mixed",
+			requestID: "req_ID-123_abc",
+			valid:     true,
+		},
+		{
+			name:      "valid AWS ALB format",
+			requestID: "Root=1-67891234-abcdef1234567890",
+			valid:     false, // Contains '=' which is not allowed
+		},
+		{
+			name:      "valid UUID format",
+			requestID: "550e8400-e29b-41d4-a716-446655440000",
+			valid:     true,
+		},
+		{
+			name:      "valid base64url",
+			requestID: "abc123_xyz-789",
+			valid:     true,
+		},
+		{
+			name:      "single character",
+			requestID: "a",
+			valid:     true,
+		},
+		{
+			name:      "max length 128",
+			requestID: "a123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456",
+			valid:     true,
+		},
+		// Invalid cases - Security threats
+		{
+			name:      "CRLF injection attempt",
+			requestID: "id123\r\nX-Injected: evil",
+			valid:     false,
+		},
+		{
+			name:      "newline injection",
+			requestID: "id123\nmalicious",
+			valid:     false,
+		},
+		{
+			name:      "carriage return injection",
+			requestID: "id123\rmalicious",
+			valid:     false,
+		},
+		{
+			name:      "space character",
+			requestID: "id 123",
+			valid:     false,
+		},
+		{
+			name:      "special characters",
+			requestID: "id@123",
+			valid:     false,
+		},
+		{
+			name:      "null byte",
+			requestID: "id\x00123",
+			valid:     false,
+		},
+		{
+			name:      "script injection attempt",
+			requestID: "<script>alert(1)</script>",
+			valid:     false,
+		},
+		{
+			name:      "SQL injection attempt",
+			requestID: "'; DROP TABLE users--",
+			valid:     false,
+		},
+		// Invalid cases - DoS attempts
+		{
+			name:      "exceeds max length 129",
+			requestID: "a12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678",
+			valid:     false,
+		},
+		{
+			name:      "empty string",
+			requestID: "",
+			valid:     false,
+		},
+		// Invalid cases - Common mistakes
+		{
+			name:      "contains equals sign",
+			requestID: "id=123",
+			valid:     false,
+		},
+		{
+			name:      "contains slash",
+			requestID: "id/123",
+			valid:     false,
+		},
+		{
+			name:      "contains backslash",
+			requestID: "id\\123",
+			valid:     false,
+		},
+		{
+			name:      "contains dot",
+			requestID: "id.123",
+			valid:     false,
+		},
+		{
+			name:      "contains plus",
+			requestID: "id+123",
+			valid:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isValidRequestID(tt.requestID)
+			if result != tt.valid {
+				t.Errorf("isValidRequestID(%q) = %v, want %v", tt.requestID, result, tt.valid)
+			}
+		})
+	}
+}
+
 func TestRequestIDMiddleware(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -59,9 +201,29 @@ func TestRequestIDMiddleware(t *testing.T) {
 			expectNew:      true,
 		},
 		{
-			name:           "preserves existing ID from upstream",
+			name:           "preserves valid existing ID from upstream",
 			existingHeader: "upstream-request-id-xyz",
 			expectNew:      false,
+		},
+		{
+			name:           "rejects invalid ID with CRLF injection",
+			existingHeader: "id\r\nX-Injected: evil",
+			expectNew:      true,
+		},
+		{
+			name:           "rejects invalid ID with spaces",
+			existingHeader: "id with spaces",
+			expectNew:      true,
+		},
+		{
+			name:           "rejects excessively long ID",
+			existingHeader: "a1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890",
+			expectNew:      true,
+		},
+		{
+			name:           "rejects ID with special characters",
+			existingHeader: "<script>alert(1)</script>",
+			expectNew:      true,
 		},
 	}
 

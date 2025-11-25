@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http"
+	"regexp"
 )
 
 // requestIDContextKey is the context key for storing request IDs
@@ -13,6 +14,12 @@ type requestIDContextKey struct{}
 
 // RequestIDHeader is the HTTP header for request IDs
 const RequestIDHeader = "X-Request-ID"
+
+// requestIDPattern validates request IDs to prevent header injection attacks.
+// Allows: alphanumeric, hyphens, underscores (1-128 chars).
+// This prevents malicious payloads while accepting common request ID formats
+// from upstream proxies (AWS, GCP, Cloudflare, etc.).
+var requestIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
 
 // GenerateRequestID generates a cryptographically secure random request ID.
 // It uses crypto/rand to generate 16 bytes (128 bits) of entropy and
@@ -44,13 +51,33 @@ func GetRequestID(ctx context.Context) string {
 	return ""
 }
 
-// RequestIDMiddleware is HTTP middleware that generates and propagates request IDs
+// isValidRequestID validates a request ID to prevent header injection attacks.
+// Returns true if the request ID contains only safe characters (alphanumeric, hyphens, underscores)
+// and is within acceptable length limits (1-128 characters).
+//
+// Security considerations:
+//   - Prevents newline injection (CRLF) attacks in HTTP headers
+//   - Prevents excessively long IDs that could cause DoS via memory exhaustion
+//   - Accepts standard formats from common proxies (AWS ALB, GCP Load Balancer, Cloudflare, etc.)
+func isValidRequestID(requestID string) bool {
+	return requestIDPattern.MatchString(requestID)
+}
+
+// RequestIDMiddleware is HTTP middleware that generates and propagates request IDs.
+//
+// Security behavior:
+//   - Preserves valid request IDs from upstream proxies for audit trail continuity
+//   - Validates upstream IDs to prevent header injection attacks (CRLF, DoS)
+//   - Generates new cryptographically secure ID if upstream ID is missing or invalid
+//   - Adds request ID to response headers for end-to-end correlation
 func RequestIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Check if request already has an ID from upstream proxy
 		requestID := r.Header.Get(RequestIDHeader)
-		if requestID == "" {
-			// Generate new request ID
+
+		// Validate upstream request ID for security
+		if requestID == "" || !isValidRequestID(requestID) {
+			// Generate new request ID if missing or invalid
 			requestID = GenerateRequestID()
 		}
 

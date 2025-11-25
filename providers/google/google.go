@@ -245,6 +245,27 @@ func (p *Provider) RevokeToken(ctx context.Context, token string) error {
 // It performs a lightweight check by fetching the OpenID Connect discovery document.
 // Uses the provided context for timeout and cancellation. If context has no deadline,
 // uses provider's default request timeout.
+//
+// Security Considerations:
+//   - This method is designed for server-side health monitoring (k8s probes, monitoring systems)
+//   - DO NOT expose the returned error messages directly to untrusted clients
+//   - Error messages may contain HTTP status codes that could leak provider state information
+//   - For public health endpoints, return generic "healthy/unhealthy" status only
+//
+// Recommended usage:
+//
+//	// Internal monitoring - detailed errors OK
+//	if err := provider.HealthCheck(ctx); err != nil {
+//	    log.Error("Provider health check failed", "error", err)
+//	    return http.StatusInternalServerError
+//	}
+//
+//	// Public endpoint - hide error details
+//	if err := provider.HealthCheck(ctx); err != nil {
+//	    w.WriteHeader(http.StatusServiceUnavailable)
+//	    json.NewEncoder(w).Encode(map[string]string{"status": "unhealthy"})
+//	    return
+//	}
 func (p *Provider) HealthCheck(ctx context.Context) error {
 	ctx, cancel := p.ensureContextTimeout(ctx)
 	defer cancel()
