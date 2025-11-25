@@ -23,6 +23,11 @@ import (
 const (
 	// DefaultServiceVersion is the default service version used when none is provided
 	DefaultServiceVersion = "unknown"
+
+	// Warning messages for development-only features
+	warnMetricsStdout = "⚠️  [mcp-oauth] Metrics stdout exporter enabled - for development/debugging only, not for production\n"
+	warnTracesStdout  = "⚠️  [mcp-oauth] Traces stdout exporter enabled - for development/debugging only, not for production\n"
+	warnOTLPInsecure  = "⚠️  [mcp-oauth] OTLP insecure transport enabled - traces will be sent unencrypted (HTTP). Use only for local development!\n"
 )
 
 // Config holds instrumentation configuration
@@ -34,32 +39,33 @@ type Config struct {
 	ServiceVersion string
 
 	// Enabled controls whether instrumentation is active
-	// When false, uses no-op providers (zero overhead)
-	// Default: true
+	// When false (zero value), uses no-op providers (zero overhead)
+	// When true, initializes exporters based on MetricsExporter and TracesExporter settings
+	// You must explicitly set this to true to enable instrumentation
 	Enabled bool
 
 	// LogClientIPs controls whether client IP addresses are included in traces and metrics
-	// When false, client IP attributes will be omitted from observability data
-	// This can help with GDPR and privacy compliance in strict jurisdictions
-	// Default: true
+	// Set to true to include client IP addresses in observability data
+	// Set to false (zero value/default) to omit client IP for GDPR/privacy compliance
 	//
 	// Privacy Note: Client IP addresses may be considered Personally Identifiable
-	// Information (PII) under GDPR and other privacy regulations. Disabling IP
-	// logging may be required in certain jurisdictions or for certain compliance
-	// frameworks (e.g., GDPR in EU, CCPA in California).
+	// Information (PII) under GDPR and other privacy regulations. The default
+	// behavior (false) omits IP addresses to be privacy-safe by default.
+	// Only enable this if your privacy policy and jurisdiction allow it.
 	LogClientIPs bool
 
 	// IncludeClientIDInMetrics controls whether client_id is included as a label in metrics
-	// When true, provides detailed per-client metrics but increases cardinality
-	// When false, reduces cardinality by omitting client_id (recommended for >1000 clients)
-	// Default: true (include client_id)
+	// Set to true to include client_id in metrics for detailed per-client visibility
+	// Set to false (zero value/default) to reduce cardinality for high-scale deployments
 	//
 	// Cardinality Warning: Each unique client_id creates a new metric time series.
 	// With 10,000+ clients, this can cause:
 	// - Memory pressure on metrics backends (Prometheus, etc.)
 	// - Slower query performance
 	// - Higher storage costs
-	// Set to false for high-scale deployments and use traces for per-client debugging.
+	//
+	// Default (false) is recommended for production deployments with many clients.
+	// Use traces with sampling for per-client debugging instead.
 	IncludeClientIDInMetrics bool
 
 	// MetricsExporter controls which metrics exporter to use
@@ -124,10 +130,6 @@ func New(config Config) (*Instrumentation, error) {
 	if config.ServiceVersion == "" {
 		config.ServiceVersion = DefaultServiceVersion
 	}
-	// LogClientIPs defaults to true if not explicitly set
-	// Note: In Go, uninitialized bool is false, so we need special handling
-	// We treat the zero value as "use default" which is true
-	// Users must explicitly set to false to disable IP logging
 
 	// Create or use provided resource
 	var res *resource.Resource
@@ -216,7 +218,7 @@ func (i *Instrumentation) initializeMetricsProvider() error {
 
 	case "stdout":
 		// SECURITY WARNING: Stdout exporter is for development only
-		fmt.Fprintf(os.Stderr, "⚠️  [mcp-oauth] Metrics stdout exporter enabled - for development/debugging only, not for production\n")
+		fmt.Fprint(os.Stderr, warnMetricsStdout)
 
 		// Create stdout exporter for development/debugging
 		exporter, err := stdoutmetric.New()
@@ -266,7 +268,7 @@ func (i *Instrumentation) initializeTracesProvider() error {
 		if i.config.OTLPInsecure {
 			// SECURITY WARNING: Traces may contain user metadata
 			// Only use insecure transport for local development/testing
-			fmt.Fprintf(os.Stderr, "⚠️  [mcp-oauth] OTLP insecure transport enabled - traces will be sent unencrypted (HTTP). Use only for local development!\n")
+			fmt.Fprint(os.Stderr, warnOTLPInsecure)
 			opts = append(opts, otlptracehttp.WithInsecure())
 		}
 		// If not insecure, the exporter will use TLS by default
@@ -294,7 +296,7 @@ func (i *Instrumentation) initializeTracesProvider() error {
 
 	case "stdout":
 		// SECURITY WARNING: Stdout exporter is for development only
-		fmt.Fprintf(os.Stderr, "⚠️  [mcp-oauth] Traces stdout exporter enabled - for development/debugging only, not for production\n")
+		fmt.Fprint(os.Stderr, warnTracesStdout)
 
 		// Create stdout exporter for development/debugging
 		exporter, err := stdouttrace.New(

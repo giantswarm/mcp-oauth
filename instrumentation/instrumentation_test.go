@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 func TestNew(t *testing.T) {
@@ -637,17 +639,201 @@ func TestMetricCardinalityControl(t *testing.T) {
 				t.Fatal("Metrics() returned nil")
 			}
 
-			// Test that the instrumentation reference is set
-			if metrics.instrumentation == nil {
-				t.Error("Metrics.instrumentation is nil")
-			}
-
-			// Test that ShouldIncludeClientIDInMetrics matches config
-			if metrics.instrumentation.ShouldIncludeClientIDInMetrics() != tt.includeClientIDInMetrics {
-				t.Errorf("ShouldIncludeClientIDInMetrics() = %v, want %v",
-					metrics.instrumentation.ShouldIncludeClientIDInMetrics(),
+			// Test that the includeClientIDInMetrics config value is properly set
+			if metrics.includeClientIDInMetrics != tt.includeClientIDInMetrics {
+				t.Errorf("includeClientIDInMetrics = %v, want %v",
+					metrics.includeClientIDInMetrics,
 					tt.includeClientIDInMetrics)
 			}
 		})
+	}
+}
+
+func TestRegisterStorageSizeCallbacks(t *testing.T) {
+	tests := []struct {
+		name           string
+		metricsEnabled bool
+		expectError    bool
+	}{
+		{
+			name:           "with prometheus exporter",
+			metricsEnabled: true,
+			expectError:    false,
+		},
+		{
+			name:           "with no-op provider",
+			metricsEnabled: false,
+			expectError:    false, // Should not error even with no-op
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := Config{
+				ServiceName:     "test-service",
+				ServiceVersion:  "1.0.0",
+				Enabled:         tt.metricsEnabled,
+				MetricsExporter: "prometheus",
+			}
+
+			inst, err := New(config)
+			if err != nil {
+				t.Fatalf("Failed to create instrumentation: %v", err)
+			}
+			defer func() {
+				if err := inst.Shutdown(context.Background()); err != nil {
+					t.Logf("Shutdown error: %v", err)
+				}
+			}()
+
+			// Create mock callbacks
+			tokensCount := func() int64 { return 100 }
+			clientsCount := func() int64 { return 50 }
+			flowsCount := func() int64 { return 10 }
+			familiesCount := func() int64 { return 75 }
+			refreshTokensCount := func() int64 { return 60 }
+
+			err = inst.RegisterStorageSizeCallbacks(
+				tokensCount,
+				clientsCount,
+				flowsCount,
+				familiesCount,
+				refreshTokensCount,
+			)
+
+			if tt.expectError && err == nil {
+				t.Error("Expected error but got none")
+			}
+			if !tt.expectError && err != nil {
+				t.Errorf("Unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestRegisterStorageSizeCallbacks_NilCallbacks(t *testing.T) {
+	config := Config{
+		ServiceName:     "test-service",
+		ServiceVersion:  "1.0.0",
+		Enabled:         true,
+		MetricsExporter: "prometheus",
+	}
+
+	inst, err := New(config)
+	if err != nil {
+		t.Fatalf("Failed to create instrumentation: %v", err)
+	}
+	defer func() {
+		if err := inst.Shutdown(context.Background()); err != nil {
+			t.Logf("Shutdown error: %v", err)
+		}
+	}()
+
+	// Test with nil callbacks - should not panic
+	err = inst.RegisterStorageSizeCallbacks(nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Errorf("Unexpected error with nil callbacks: %v", err)
+	}
+}
+
+func TestMetrics_AddClientIDIfEnabled(t *testing.T) {
+	tests := []struct {
+		name                     string
+		includeClientIDInMetrics bool
+		clientID                 string
+		expectClientIDAttr       bool
+	}{
+		{
+			name:                     "include client ID when enabled and clientID provided",
+			includeClientIDInMetrics: true,
+			clientID:                 "test-client",
+			expectClientIDAttr:       true,
+		},
+		{
+			name:                     "exclude client ID when disabled",
+			includeClientIDInMetrics: false,
+			clientID:                 "test-client",
+			expectClientIDAttr:       false,
+		},
+		{
+			name:                     "exclude client ID when empty string",
+			includeClientIDInMetrics: true,
+			clientID:                 "",
+			expectClientIDAttr:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := Config{
+				ServiceName:              "test-service",
+				ServiceVersion:           "1.0.0",
+				Enabled:                  true,
+				IncludeClientIDInMetrics: tt.includeClientIDInMetrics,
+				MetricsExporter:          "prometheus",
+			}
+
+			inst, err := New(config)
+			if err != nil {
+				t.Fatalf("Failed to create instrumentation: %v", err)
+			}
+			defer func() {
+				if err := inst.Shutdown(context.Background()); err != nil {
+					t.Logf("Shutdown error: %v", err)
+				}
+			}()
+
+			metrics := inst.Metrics()
+			var attrs []attribute.KeyValue
+			attrs = metrics.addClientIDIfEnabled(attrs, tt.clientID)
+
+			hasClientID := false
+			for _, attr := range attrs {
+				if string(attr.Key) == "client_id" {
+					hasClientID = true
+					if attr.Value.AsString() != tt.clientID {
+						t.Errorf("client_id value = %v, want %v", attr.Value.AsString(), tt.clientID)
+					}
+				}
+			}
+
+			if hasClientID != tt.expectClientIDAttr {
+				t.Errorf("hasClientID = %v, want %v", hasClientID, tt.expectClientIDAttr)
+			}
+		})
+	}
+}
+
+func TestShutdown_MultipleCallsSafe(t *testing.T) {
+	config := Config{
+		ServiceName:     "test-service",
+		ServiceVersion:  "1.0.0",
+		Enabled:         true,
+		MetricsExporter: "prometheus",
+	}
+
+	inst, err := New(config)
+	if err != nil {
+		t.Fatalf("Failed to create instrumentation: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// First shutdown
+	err1 := inst.Shutdown(ctx)
+	if err1 != nil {
+		t.Errorf("First shutdown failed: %v", err1)
+	}
+
+	// Second shutdown should be safe (no-op)
+	err2 := inst.Shutdown(ctx)
+	if err2 != nil {
+		t.Errorf("Second shutdown failed: %v", err2)
+	}
+
+	// Third shutdown should still be safe
+	err3 := inst.Shutdown(ctx)
+	if err3 != nil {
+		t.Errorf("Third shutdown failed: %v", err3)
 	}
 }

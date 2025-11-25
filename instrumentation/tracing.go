@@ -43,12 +43,13 @@ const (
 	AttrError            = "oauth.error"             // Error code
 	AttrErrorDescription = "oauth.error_description" // Error description
 
-	// RESERVED - DO NOT USE: These are reserved for potential future metadata use only.
-	// NEVER set these attributes to actual credential values.
+	// RESERVED - DO NOT USE: These constants exist only to prevent accidental use.
+	// The underscore prefix indicates these are internal/reserved and should not be used.
+	// NEVER set these attributes to actual credential values in traces or logs.
 	// Instead, use boolean flags like "token_present" or "code_validated".
-	AttrAuthorizationCode = "oauth.authorization_code" // RESERVED - use "code_present" or "code_length" instead
-	AttrAccessToken       = "oauth.access_token"       //nolint:gosec // RESERVED - use "token_type" or "token_present" instead
-	AttrRefreshToken      = "oauth.refresh_token"      //nolint:gosec // RESERVED - use "refresh_present" or "refresh_rotated" instead
+	_reservedAuthorizationCode = "oauth.authorization_code" //nolint:unused // RESERVED - use "code_present" or "code_length" instead
+	_reservedAccessToken       = "oauth.access_token"       //nolint:unused,gosec // RESERVED - use "token_type" or "token_present" instead
+	_reservedRefreshToken      = "oauth.refresh_token"      //nolint:unused,gosec // RESERVED - use "refresh_present" or "refresh_rotated" instead
 
 	// Storage attributes
 	AttrStorageOperation = "storage.operation"

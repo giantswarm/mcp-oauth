@@ -79,8 +79,8 @@ type Metrics struct {
 	EncryptionOperationsTotal metric.Int64Counter
 	EncryptionDuration        metric.Float64Histogram
 
-	// Reference to parent instrumentation for config checks
-	instrumentation *Instrumentation
+	// Configuration values (copied from instrumentation config to avoid circular dependency)
+	includeClientIDInMetrics bool
 }
 
 // createCounter is a helper to reduce repetition when creating counters
@@ -110,7 +110,7 @@ func createHistogram(meter metric.Meter, name, desc, unit string) (metric.Float6
 // newMetrics creates and registers all metric instruments
 func newMetrics(inst *Instrumentation) (*Metrics, error) {
 	m := &Metrics{
-		instrumentation: inst,
+		includeClientIDInMetrics: inst.config.IncludeClientIDInMetrics,
 	}
 	var err error
 
@@ -339,6 +339,20 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 // In high-scale deployments (>10,000 clients), this can cause high cardinality.
 // See package documentation for cardinality management strategies.
 
+// addClientIDIfEnabled conditionally adds client_id attribute based on config
+// This helper reduces code duplication for client ID attribute handling
+func (m *Metrics) addClientIDIfEnabled(attrs []attribute.KeyValue, clientID string) []attribute.KeyValue {
+	if m.shouldIncludeClientID() && clientID != "" {
+		return append(attrs, attribute.String(metricAttrClientID, clientID))
+	}
+	return attrs
+}
+
+// shouldIncludeClientID checks if client_id should be included in metrics
+func (m *Metrics) shouldIncludeClientID() bool {
+	return m.includeClientIDInMetrics
+}
+
 // RecordHTTPRequest records an HTTP request metric
 func (m *Metrics) RecordHTTPRequest(ctx context.Context, method, endpoint string, statusCode int, durationMs float64) {
 	attrs := []attribute.KeyValue{
@@ -354,9 +368,7 @@ func (m *Metrics) RecordHTTPRequest(ctx context.Context, method, endpoint string
 // RecordAuthorizationStarted records an authorization flow start
 func (m *Metrics) RecordAuthorizationStarted(ctx context.Context, clientID string) {
 	var attrs []attribute.KeyValue
-	if m.instrumentation != nil && m.instrumentation.ShouldIncludeClientIDInMetrics() && clientID != "" {
-		attrs = append(attrs, attribute.String(metricAttrClientID, clientID))
-	}
+	attrs = m.addClientIDIfEnabled(attrs, clientID)
 	m.AuthorizationStarted.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
@@ -365,9 +377,7 @@ func (m *Metrics) RecordCallbackProcessed(ctx context.Context, clientID string, 
 	attrs := []attribute.KeyValue{
 		attribute.Bool(metricAttrSuccess, success),
 	}
-	if m.instrumentation != nil && m.instrumentation.ShouldIncludeClientIDInMetrics() && clientID != "" {
-		attrs = append(attrs, attribute.String(metricAttrClientID, clientID))
-	}
+	attrs = m.addClientIDIfEnabled(attrs, clientID)
 	m.CallbackProcessed.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
@@ -376,9 +386,7 @@ func (m *Metrics) RecordCodeExchange(ctx context.Context, clientID, pkceMethod s
 	attrs := []attribute.KeyValue{
 		attribute.String(metricAttrPKCEMethod, pkceMethod),
 	}
-	if m.instrumentation != nil && m.instrumentation.ShouldIncludeClientIDInMetrics() && clientID != "" {
-		attrs = append(attrs, attribute.String(metricAttrClientID, clientID))
-	}
+	attrs = m.addClientIDIfEnabled(attrs, clientID)
 	m.CodeExchanged.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
@@ -387,18 +395,14 @@ func (m *Metrics) RecordTokenRefresh(ctx context.Context, clientID string, rotat
 	attrs := []attribute.KeyValue{
 		attribute.Bool(metricAttrRotated, rotated),
 	}
-	if m.instrumentation != nil && m.instrumentation.ShouldIncludeClientIDInMetrics() && clientID != "" {
-		attrs = append(attrs, attribute.String(metricAttrClientID, clientID))
-	}
+	attrs = m.addClientIDIfEnabled(attrs, clientID)
 	m.TokenRefreshed.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
 // RecordTokenRevocation records a token revocation
 func (m *Metrics) RecordTokenRevocation(ctx context.Context, clientID string) {
 	var attrs []attribute.KeyValue
-	if m.instrumentation != nil && m.instrumentation.ShouldIncludeClientIDInMetrics() && clientID != "" {
-		attrs = append(attrs, attribute.String(metricAttrClientID, clientID))
-	}
+	attrs = m.addClientIDIfEnabled(attrs, clientID)
 	m.TokenRevoked.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
