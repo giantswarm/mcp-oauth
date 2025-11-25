@@ -520,19 +520,66 @@ Enable instrumentation in your server configuration:
 ```go
 import "github.com/giantswarm/mcp-oauth/instrumentation"
 
-// Enable instrumentation
+// Enable instrumentation with Prometheus metrics
 server, _ := oauth.NewServer(
     provider, tokenStore, clientStore, flowStore,
     &oauth.ServerConfig{
         Issuer: "https://your-domain.com",
         Instrumentation: oauth.InstrumentationConfig{
-            Enabled:        true,
-            ServiceName:    "my-oauth-server",
-            ServiceVersion: "1.0.0",
+            Enabled:         true,
+            ServiceName:     "my-oauth-server",
+            ServiceVersion:  "1.0.0",
+            MetricsExporter: "prometheus", // Export metrics for Prometheus
+            TracesExporter:  "otlp",       // Export traces via OTLP
+            OTLPEndpoint:    "localhost:4318", // OTLP collector endpoint
         },
     },
     logger,
 )
+
+// Expose Prometheus metrics endpoint
+import "github.com/prometheus/client_golang/prometheus/promhttp"
+http.Handle("/metrics", promhttp.Handler())
+```
+
+### Exporter Configuration
+
+The library supports multiple exporters for metrics and traces:
+
+**Metrics Exporters:**
+- `"prometheus"` - Export metrics in Prometheus format (production recommended)
+- `"stdout"` - Print metrics to stdout (development/debugging)
+- `"none"` or `""` - No metrics export (default, zero overhead)
+
+**Trace Exporters:**
+- `"otlp"` - Export traces via OTLP HTTP (production recommended, requires `OTLPEndpoint`)
+- `"stdout"` - Print traces to stdout (development/debugging)
+- `"none"` or `""` - No trace export (default, zero overhead)
+
+**Examples:**
+
+```go
+// Production: Prometheus + OTLP traces
+Instrumentation: oauth.InstrumentationConfig{
+    Enabled:         true,
+    MetricsExporter: "prometheus",
+    TracesExporter:  "otlp",
+    OTLPEndpoint:    "jaeger:4318", // Or your OTLP collector
+}
+
+// Development: stdout exporters for local debugging
+Instrumentation: oauth.InstrumentationConfig{
+    Enabled:         true,
+    MetricsExporter: "stdout",
+    TracesExporter:  "stdout",
+}
+
+// Minimal: Only metrics, no tracing
+Instrumentation: oauth.InstrumentationConfig{
+    Enabled:         true,
+    MetricsExporter: "prometheus",
+    TracesExporter:  "none",
+}
 ```
 
 ### Available Metrics
@@ -635,13 +682,25 @@ server, _ := oauth.NewServer(
 )
 ```
 
-### Future Integration
+### Integration with Observability Backends
 
-The instrumentation infrastructure is in place and ready for layer-by-layer adoption:
-- HTTP layer instrumentation (planned)
-- Storage layer instrumentation (planned)
-- Provider layer instrumentation (planned)
-- Security layer instrumentation (planned)
+**Prometheus:**
+The Prometheus exporter is pull-based and works with the standard `prometheus/client_golang` library. Simply expose the `/metrics` endpoint and configure Prometheus to scrape it.
+
+**Jaeger/OpenTelemetry Collector:**
+Use the OTLP trace exporter to send traces to Jaeger, Grafana Tempo, or any OTLP-compatible backend:
+
+```bash
+# Example: Run Jaeger with OTLP support
+docker run -d --name jaeger \
+  -p 16686:16686 \
+  -p 4318:4318 \
+  jaegertracing/all-in-one:latest
+
+# Configure your OAuth server
+OTLPEndpoint: "localhost:4318"
+TracesExporter: "otlp"
+```
 
 See the [instrumentation package documentation](https://pkg.go.dev/github.com/giantswarm/mcp-oauth/instrumentation) for full details.
 

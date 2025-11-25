@@ -13,8 +13,10 @@
 //
 //	// Initialize instrumentation
 //	inst, err := instrumentation.New(instrumentation.Config{
-//		ServiceName:    "my-oauth-service",
-//		ServiceVersion: "1.0.0",
+//		ServiceName:     "my-oauth-service",
+//		ServiceVersion:  "1.0.0",
+//		MetricsExporter: "stdout",  // Print metrics to stdout
+//		TracesExporter:  "stdout",  // Print traces to stdout
 //	})
 //	if err != nil {
 //		log.Fatal(err)
@@ -24,7 +26,21 @@
 //	// Pass to server configuration
 //	server.SetInstrumentation(inst)
 //
-// # Prometheus Metrics
+// # Exporter Configuration
+//
+// The library supports multiple exporters for metrics and traces:
+//
+// Metrics Exporters:
+//   - "prometheus": Export metrics in Prometheus format (production recommended)
+//   - "stdout": Print metrics to stdout (development/debugging)
+//   - "none" or "": No metrics export (default, zero overhead)
+//
+// Trace Exporters:
+//   - "otlp": Export traces via OTLP HTTP (production recommended, requires OTLPEndpoint)
+//   - "stdout": Print traces to stdout (development/debugging)
+//   - "none" or "": No trace export (default, zero overhead)
+//
+// # Prometheus Metrics (Production)
 //
 // Export metrics to Prometheus:
 //
@@ -34,16 +50,43 @@
 //	)
 //
 //	inst, err := instrumentation.New(instrumentation.Config{
-//		ServiceName:    "my-oauth-service",
-//		ServiceVersion: "1.0.0",
-//		MetricExporter: "prometheus",
+//		ServiceName:     "my-oauth-service",
+//		ServiceVersion:  "1.0.0",
+//		MetricsExporter: "prometheus",
 //	})
 //	if err != nil {
 //		log.Fatal(err)
 //	}
 //
-//	// Expose /metrics endpoint
+//	// Expose /metrics endpoint for Prometheus to scrape
 //	http.Handle("/metrics", promhttp.Handler())
+//
+// # OTLP Traces (Production)
+//
+// Export traces to Jaeger, Grafana Tempo, or any OTLP-compatible backend:
+//
+//	inst, err := instrumentation.New(instrumentation.Config{
+//		ServiceName:     "my-oauth-service",
+//		ServiceVersion:  "1.0.0",
+//		MetricsExporter: "prometheus",
+//		TracesExporter:  "otlp",
+//		OTLPEndpoint:    "localhost:4318", // OTLP HTTP endpoint
+//	})
+//	if err != nil {
+//		log.Fatal(err)
+//	}
+//
+// # Zero Overhead (Default)
+//
+// When exporters are not configured, the library uses no-op providers with zero overhead:
+//
+//	inst, err := instrumentation.New(instrumentation.Config{
+//		ServiceName:     "my-oauth-service",
+//		ServiceVersion:  "1.0.0",
+//		// MetricsExporter defaults to "none"
+//		// TracesExporter defaults to "none"
+//	})
+//	// No metrics or traces exported, zero performance impact
 //
 // # Available Metrics
 //

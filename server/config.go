@@ -183,6 +183,28 @@ type InstrumentationConfig struct {
 	// logging only if required for security monitoring and you have appropriate
 	// legal basis and data protection measures in place.
 	LogClientIPs bool
+
+	// MetricsExporter controls which metrics exporter to use
+	// Options: "prometheus", "stdout", "none" (default: "none")
+	// - "prometheus": Export metrics in Prometheus format (use inst.PrometheusExporter())
+	// - "stdout": Print metrics to stdout (useful for development/debugging)
+	// - "none": Use no-op provider (zero overhead)
+	// Default: "none" (disabled)
+	MetricsExporter string
+
+	// TracesExporter controls which traces exporter to use
+	// Options: "otlp", "stdout", "none" (default: "none")
+	// - "otlp": Export traces via OTLP HTTP (requires OTLPEndpoint)
+	// - "stdout": Print traces to stdout (useful for development/debugging)
+	// - "none": Use no-op provider (zero overhead)
+	// Default: "none" (disabled)
+	TracesExporter string
+
+	// OTLPEndpoint is the endpoint for OTLP trace export
+	// Required when TracesExporter="otlp"
+	// Example: "localhost:4318" (default OTLP HTTP port)
+	// Default: "" (not set)
+	OTLPEndpoint string
 }
 
 // CORSConfig holds CORS (Cross-Origin Resource Sharing) configuration for browser-based clients

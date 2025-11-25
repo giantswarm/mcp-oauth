@@ -3,11 +3,18 @@ package instrumentation
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/exporters/prometheus"
+	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
+	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
@@ -42,6 +49,25 @@ type Config struct {
 	// frameworks (e.g., GDPR in EU, CCPA in California).
 	LogClientIPs bool
 
+	// MetricsExporter controls which metrics exporter to use
+	// Options: "prometheus", "stdout", "none" (default: "none")
+	// - "prometheus": Export metrics in Prometheus format (use prometheus.Handler())
+	// - "stdout": Print metrics to stdout (useful for development/debugging)
+	// - "none": Use no-op provider (zero overhead)
+	MetricsExporter string
+
+	// TracesExporter controls which traces exporter to use
+	// Options: "otlp", "stdout", "none" (default: "none")
+	// - "otlp": Export traces via OTLP HTTP (requires OTLPEndpoint)
+	// - "stdout": Print traces to stdout (useful for development/debugging)
+	// - "none": Use no-op provider (zero overhead)
+	TracesExporter string
+
+	// OTLPEndpoint is the endpoint for OTLP trace export
+	// Required when TracesExporter="otlp"
+	// Example: "localhost:4318" (default OTLP HTTP port)
+	OTLPEndpoint string
+
 	// Resource allows custom resource attributes
 	// If nil, default resource is created with service name and version
 	Resource *resource.Resource
@@ -55,6 +81,10 @@ type Instrumentation struct {
 	// Providers - these are used to create meters and tracers on demand
 	meterProvider  metric.MeterProvider
 	tracerProvider trace.TracerProvider
+
+	// prometheusExporter is stored separately to enable prometheus.Handler() access
+	// Only set when MetricsExporter="prometheus"
+	prometheusExporter *prometheus.Exporter
 
 	// Metrics holder provides pre-configured metric instruments
 	metrics *Metrics
@@ -122,13 +152,140 @@ func New(config Config) (*Instrumentation, error) {
 }
 
 // initializeProviders initializes metric and trace providers based on configuration
-// Currently uses no-op providers. Future enhancement will add actual exporters
-// (Prometheus, OTLP, stdout) which can be implemented in a backward-compatible way.
+// Supports multiple exporters: Prometheus, OTLP, stdout, or no-op (none)
 func (i *Instrumentation) initializeProviders() error {
-	// Use no-op providers for now
-	// TODO: Add actual exporters (Prometheus, OTLP, stdout) in follow-up PR
-	i.meterProvider = noop.NewMeterProvider()
-	i.tracerProvider = tracenoop.NewTracerProvider()
+	// Initialize metrics provider based on config
+	if err := i.initializeMetricsProvider(); err != nil {
+		return fmt.Errorf("failed to initialize metrics provider: %w", err)
+	}
+
+	// Initialize traces provider based on config
+	if err := i.initializeTracesProvider(); err != nil {
+		return fmt.Errorf("failed to initialize traces provider: %w", err)
+	}
+
+	return nil
+}
+
+// initializeMetricsProvider initializes the metrics provider based on configuration
+func (i *Instrumentation) initializeMetricsProvider() error {
+	switch i.config.MetricsExporter {
+	case "prometheus":
+		// Create Prometheus exporter
+		exporter, err := prometheus.New()
+		if err != nil {
+			return fmt.Errorf("failed to create Prometheus exporter: %w", err)
+		}
+
+		// Store exporter for prometheus.Handler() access
+		i.prometheusExporter = exporter
+
+		// Create meter provider with Prometheus exporter
+		provider := sdkmetric.NewMeterProvider(
+			sdkmetric.WithResource(i.resource),
+			sdkmetric.WithReader(exporter),
+		)
+
+		i.meterProvider = provider
+
+		// Register shutdown function
+		i.shutdownFuncs = append(i.shutdownFuncs, func(ctx context.Context) error {
+			return provider.Shutdown(ctx)
+		})
+
+	case "stdout":
+		// Create stdout exporter for development/debugging
+		exporter, err := stdoutmetric.New()
+		if err != nil {
+			return fmt.Errorf("failed to create stdout metrics exporter: %w", err)
+		}
+
+		// Create meter provider with periodic reader (exports every 10 seconds)
+		provider := sdkmetric.NewMeterProvider(
+			sdkmetric.WithResource(i.resource),
+			sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter)),
+		)
+
+		i.meterProvider = provider
+
+		// Register shutdown function
+		i.shutdownFuncs = append(i.shutdownFuncs, func(ctx context.Context) error {
+			return provider.Shutdown(ctx)
+		})
+
+	case "none", "":
+		// Use no-op provider (zero overhead)
+		i.meterProvider = noop.NewMeterProvider()
+
+	default:
+		return fmt.Errorf("unsupported metrics exporter: %s (supported: prometheus, stdout, none)", i.config.MetricsExporter)
+	}
+
+	return nil
+}
+
+// initializeTracesProvider initializes the traces provider based on configuration
+func (i *Instrumentation) initializeTracesProvider() error {
+	switch i.config.TracesExporter {
+	case "otlp":
+		// Validate OTLP endpoint is provided
+		if i.config.OTLPEndpoint == "" {
+			return fmt.Errorf("OTLPEndpoint is required when TracesExporter is 'otlp'")
+		}
+
+		// Create OTLP HTTP exporter
+		exporter, err := otlptracehttp.New(
+			context.Background(),
+			otlptracehttp.WithEndpoint(i.config.OTLPEndpoint),
+			otlptracehttp.WithInsecure(), // Use HTTP instead of HTTPS (can be configured via env vars)
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create OTLP trace exporter: %w", err)
+		}
+
+		// Create trace provider with batch span processor
+		provider := sdktrace.NewTracerProvider(
+			sdktrace.WithResource(i.resource),
+			sdktrace.WithBatcher(exporter),
+		)
+
+		i.tracerProvider = provider
+
+		// Register shutdown function
+		i.shutdownFuncs = append(i.shutdownFuncs, func(ctx context.Context) error {
+			return provider.Shutdown(ctx)
+		})
+
+	case "stdout":
+		// Create stdout exporter for development/debugging
+		exporter, err := stdouttrace.New(
+			stdouttrace.WithWriter(os.Stdout),
+			stdouttrace.WithPrettyPrint(),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create stdout trace exporter: %w", err)
+		}
+
+		// Create trace provider with simple span processor (immediate export)
+		provider := sdktrace.NewTracerProvider(
+			sdktrace.WithResource(i.resource),
+			sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)),
+		)
+
+		i.tracerProvider = provider
+
+		// Register shutdown function
+		i.shutdownFuncs = append(i.shutdownFuncs, func(ctx context.Context) error {
+			return provider.Shutdown(ctx)
+		})
+
+	case "none", "":
+		// Use no-op provider (zero overhead)
+		i.tracerProvider = tracenoop.NewTracerProvider()
+
+	default:
+		return fmt.Errorf("unsupported traces exporter: %s (supported: otlp, stdout, none)", i.config.TracesExporter)
+	}
 
 	return nil
 }
@@ -186,6 +343,20 @@ func (i *Instrumentation) MeterProvider() metric.MeterProvider {
 // This respects the LogClientIPs configuration for privacy compliance
 func (i *Instrumentation) ShouldLogClientIPs() bool {
 	return i.config.LogClientIPs
+}
+
+// PrometheusExporter returns the Prometheus exporter if configured
+// Returns nil if MetricsExporter is not "prometheus"
+//
+// Usage with prometheus/client_golang:
+//
+//	import "github.com/prometheus/client_golang/prometheus/promhttp"
+//
+//	if exporter := inst.PrometheusExporter(); exporter != nil {
+//	    http.Handle("/metrics", promhttp.Handler())
+//	}
+func (i *Instrumentation) PrometheusExporter() *prometheus.Exporter {
+	return i.prometheusExporter
 }
 
 // StorageSizeCallback is a function that returns the current size of a storage component

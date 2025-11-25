@@ -57,10 +57,11 @@ func main() {
 
 			// IMPORTANT: OpenTelemetry instrumentation with Prometheus metrics
 			Instrumentation: oauth.InstrumentationConfig{
-				Enabled:        true,
-				ServiceName:    "mcp-oauth-prometheus-example",
-				ServiceVersion: "1.0.0",
-				LogClientIPs:   getBoolEnv("LOG_CLIENT_IPS", false), // Privacy: disabled by default
+				Enabled:         true,
+				ServiceName:     "mcp-oauth-prometheus-example",
+				ServiceVersion:  "1.0.0",
+				LogClientIPs:    getBoolEnv("LOG_CLIENT_IPS", false), // Privacy: disabled by default
+				MetricsExporter: "prometheus",                        // Export metrics in Prometheus format
 			},
 		},
 		logger,

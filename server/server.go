@@ -104,10 +104,13 @@ func New(
 	// Initialize instrumentation if enabled
 	if config.Instrumentation.Enabled {
 		instConfig := instrumentation.Config{
-			Enabled:        true,
-			ServiceName:    config.Instrumentation.ServiceName,
-			ServiceVersion: config.Instrumentation.ServiceVersion,
-			LogClientIPs:   config.Instrumentation.LogClientIPs,
+			Enabled:         true,
+			ServiceName:     config.Instrumentation.ServiceName,
+			ServiceVersion:  config.Instrumentation.ServiceVersion,
+			LogClientIPs:    config.Instrumentation.LogClientIPs,
+			MetricsExporter: config.Instrumentation.MetricsExporter,
+			TracesExporter:  config.Instrumentation.TracesExporter,
+			OTLPEndpoint:    config.Instrumentation.OTLPEndpoint,
 		}
 		if instConfig.ServiceName == "" {
 			instConfig.ServiceName = "mcp-oauth"

@@ -290,3 +290,226 @@ func BenchmarkConcurrentSpans(b *testing.B) {
 		}
 	})
 }
+
+func TestNewWithPrometheusExporter(t *testing.T) {
+	config := Config{
+		Enabled:         true,
+		ServiceName:     "test-service",
+		ServiceVersion:  "1.0.0",
+		MetricsExporter: "prometheus",
+	}
+
+	inst, err := New(config)
+	if err != nil {
+		t.Fatalf("New() with prometheus exporter failed: %v", err)
+	}
+	defer func() {
+		if err := inst.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown() failed: %v", err)
+		}
+	}()
+
+	// Verify prometheus exporter is available
+	if inst.PrometheusExporter() == nil {
+		t.Error("PrometheusExporter() returned nil, expected exporter instance")
+	}
+
+	// Verify meter provider is not nil
+	if inst.MeterProvider() == nil {
+		t.Error("MeterProvider() returned nil")
+	}
+
+	// Test that metrics can be created
+	meter := inst.Meter("test")
+	counter, err := meter.Int64Counter("test.counter")
+	if err != nil {
+		t.Errorf("Failed to create counter: %v", err)
+	}
+	counter.Add(context.Background(), 1)
+}
+
+func TestNewWithStdoutMetricsExporter(t *testing.T) {
+	config := Config{
+		Enabled:         true,
+		ServiceName:     "test-service",
+		ServiceVersion:  "1.0.0",
+		MetricsExporter: "stdout",
+	}
+
+	inst, err := New(config)
+	if err != nil {
+		t.Fatalf("New() with stdout metrics exporter failed: %v", err)
+	}
+	defer func() {
+		if err := inst.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown() failed: %v", err)
+		}
+	}()
+
+	// Verify prometheus exporter is NOT available for stdout
+	if inst.PrometheusExporter() != nil {
+		t.Error("PrometheusExporter() should return nil for stdout exporter")
+	}
+
+	// Verify meter provider is not nil
+	if inst.MeterProvider() == nil {
+		t.Error("MeterProvider() returned nil")
+	}
+}
+
+func TestNewWithStdoutTracesExporter(t *testing.T) {
+	config := Config{
+		Enabled:        true,
+		ServiceName:    "test-service",
+		ServiceVersion: "1.0.0",
+		TracesExporter: "stdout",
+	}
+
+	inst, err := New(config)
+	if err != nil {
+		t.Fatalf("New() with stdout traces exporter failed: %v", err)
+	}
+	defer func() {
+		if err := inst.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown() failed: %v", err)
+		}
+	}()
+
+	// Verify tracer provider is not nil
+	if inst.TracerProvider() == nil {
+		t.Error("TracerProvider() returned nil")
+	}
+
+	// Create a span and verify it works
+	tracer := inst.Tracer("test")
+	ctx, span := tracer.Start(context.Background(), "test-span")
+	span.End()
+	if ctx == nil {
+		t.Error("Start() returned nil context")
+	}
+}
+
+func TestNewWithOTLPTracesExporter(t *testing.T) {
+	config := Config{
+		Enabled:        true,
+		ServiceName:    "test-service",
+		ServiceVersion: "1.0.0",
+		TracesExporter: "otlp",
+		OTLPEndpoint:   "localhost:4318",
+	}
+
+	inst, err := New(config)
+	if err != nil {
+		t.Fatalf("New() with OTLP traces exporter failed: %v", err)
+	}
+	defer func() {
+		if err := inst.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown() failed: %v", err)
+		}
+	}()
+
+	// Verify tracer provider is not nil
+	if inst.TracerProvider() == nil {
+		t.Error("TracerProvider() returned nil")
+	}
+}
+
+func TestNewWithOTLPMissingEndpoint(t *testing.T) {
+	config := Config{
+		Enabled:        true,
+		ServiceName:    "test-service",
+		ServiceVersion: "1.0.0",
+		TracesExporter: "otlp",
+		// OTLPEndpoint is intentionally missing
+	}
+
+	_, err := New(config)
+	if err == nil {
+		t.Error("New() should fail when TracesExporter=otlp but OTLPEndpoint is not set")
+	}
+}
+
+func TestNewWithInvalidMetricsExporter(t *testing.T) {
+	config := Config{
+		Enabled:         true,
+		ServiceName:     "test-service",
+		ServiceVersion:  "1.0.0",
+		MetricsExporter: "invalid-exporter",
+	}
+
+	_, err := New(config)
+	if err == nil {
+		t.Error("New() should fail with invalid metrics exporter")
+	}
+}
+
+func TestNewWithInvalidTracesExporter(t *testing.T) {
+	config := Config{
+		Enabled:        true,
+		ServiceName:    "test-service",
+		ServiceVersion: "1.0.0",
+		TracesExporter: "invalid-exporter",
+	}
+
+	_, err := New(config)
+	if err == nil {
+		t.Error("New() should fail with invalid traces exporter")
+	}
+}
+
+func TestNewWithMultipleExporters(t *testing.T) {
+	config := Config{
+		Enabled:         true,
+		ServiceName:     "test-service",
+		ServiceVersion:  "1.0.0",
+		MetricsExporter: "prometheus",
+		TracesExporter:  "stdout",
+	}
+
+	inst, err := New(config)
+	if err != nil {
+		t.Fatalf("New() with multiple exporters failed: %v", err)
+	}
+	defer func() {
+		if err := inst.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown() failed: %v", err)
+		}
+	}()
+
+	// Verify both providers are working
+	if inst.PrometheusExporter() == nil {
+		t.Error("PrometheusExporter() returned nil")
+	}
+	if inst.TracerProvider() == nil {
+		t.Error("TracerProvider() returned nil")
+	}
+	if inst.MeterProvider() == nil {
+		t.Error("MeterProvider() returned nil")
+	}
+}
+
+func TestShutdownWithExporters(t *testing.T) {
+	config := Config{
+		Enabled:         true,
+		ServiceName:     "test-service",
+		ServiceVersion:  "1.0.0",
+		MetricsExporter: "prometheus",
+		TracesExporter:  "stdout",
+	}
+
+	inst, err := New(config)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	// Shutdown should succeed
+	ctx := context.Background()
+	if err := inst.Shutdown(ctx); err != nil {
+		t.Errorf("Shutdown() failed: %v", err)
+	}
+
+	// Shutdown is idempotent - calling again should not error
+	if err := inst.Shutdown(ctx); err != nil {
+		t.Errorf("Second Shutdown() failed: %v", err)
+	}
+}
