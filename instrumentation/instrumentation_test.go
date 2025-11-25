@@ -101,20 +101,20 @@ func TestNew(t *testing.T) {
 					t.Error("MeterProvider() returned nil")
 				}
 
-			// Test shutdown
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+				// Test shutdown
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
 
-			shutdownErr := inst.Shutdown(ctx)
-			if shutdownErr != nil {
-				t.Errorf("Shutdown() error = %v", shutdownErr)
-			}
+				shutdownErr := inst.Shutdown(ctx)
+				if shutdownErr != nil {
+					t.Errorf("Shutdown() error = %v", shutdownErr)
+				}
 
-			// Verify shutdown is idempotent (can be called multiple times)
-			shutdownErr = inst.Shutdown(ctx)
-			if shutdownErr != nil {
-				t.Errorf("Second Shutdown() error = %v", shutdownErr)
-			}
+				// Verify shutdown is idempotent (can be called multiple times)
+				shutdownErr = inst.Shutdown(ctx)
+				if shutdownErr != nil {
+					t.Errorf("Second Shutdown() error = %v", shutdownErr)
+				}
 			}
 		})
 	}

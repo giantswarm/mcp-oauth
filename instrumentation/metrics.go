@@ -216,32 +216,29 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 	}
 
 	// Audit Metrics
-	m.AuditEventsTotal, err = inst.securityMeter.Int64Counter(
+	m.AuditEventsTotal, err = createCounter(inst.securityMeter,
 		"oauth.audit.events.total",
-		metric.WithDescription("Total number of audit events"),
-		metric.WithUnit("{event}"),
-	)
+		"Total number of audit events",
+		"{event}")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create audit.events.total counter: %w", err)
+		return nil, err
 	}
 
 	// Encryption Metrics
-	m.EncryptionOperationsTotal, err = inst.securityMeter.Int64Counter(
+	m.EncryptionOperationsTotal, err = createCounter(inst.securityMeter,
 		"oauth.encryption.operations.total",
-		metric.WithDescription("Total number of encryption/decryption operations"),
-		metric.WithUnit("{operation}"),
-	)
+		"Total number of encryption/decryption operations",
+		"{operation}")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create encryption.operations.total counter: %w", err)
+		return nil, err
 	}
 
-	m.EncryptionDuration, err = inst.securityMeter.Float64Histogram(
+	m.EncryptionDuration, err = createHistogram(inst.securityMeter,
 		"oauth.encryption.duration",
-		metric.WithDescription("Encryption/decryption operation duration in milliseconds"),
-		metric.WithUnit("ms"),
-	)
+		"Encryption/decryption operation duration in milliseconds",
+		"ms")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create encryption.duration histogram: %w", err)
+		return nil, err
 	}
 
 	return m, nil
