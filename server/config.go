@@ -94,6 +94,13 @@ type Config struct {
 	// If empty, all scopes are allowed
 	SupportedScopes []string
 
+	// DefaultChallengeScopes are the scopes to include in WWW-Authenticate challenges
+	// When a 401 Unauthorized response is returned, these scopes indicate what
+	// permissions would be needed to access the resource.
+	// Per MCP 2025-11-25, this helps clients determine which scopes to request.
+	// If empty, no scope parameter is included in WWW-Authenticate headers.
+	DefaultChallengeScopes []string
+
 	// AllowPKCEPlain allows the 'plain' code_challenge_method (NOT RECOMMENDED)
 	// WARNING: The 'plain' method is insecure and deprecated in OAuth 2.1
 	// Only enable for backward compatibility with legacy clients
@@ -291,6 +298,12 @@ func (c *Config) TokenEndpoint() string {
 // RegistrationEndpoint returns the full URL to the dynamic client registration endpoint
 func (c *Config) RegistrationEndpoint() string {
 	return c.Issuer + "/oauth/register"
+}
+
+// ProtectedResourceMetadataEndpoint returns the full URL to the RFC 9728 Protected Resource Metadata endpoint
+// This endpoint is used in WWW-Authenticate headers to help MCP clients discover authorization server information
+func (c *Config) ProtectedResourceMetadataEndpoint() string {
+	return c.Issuer + "/.well-known/oauth-protected-resource"
 }
 
 // applySecureDefaults applies secure-by-default configuration values

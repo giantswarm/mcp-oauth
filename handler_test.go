@@ -1686,3 +1686,329 @@ func TestCORS_CustomMaxAge(t *testing.T) {
 		t.Errorf("Access-Control-Max-Age = %q, want %q", maxAge, "7200")
 	}
 }
+
+// TestHandler_FormatWWWAuthenticate tests the formatWWWAuthenticate helper function
+func TestHandler_FormatWWWAuthenticate(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	tests := []struct {
+		name           string
+		scope          string
+		error          string
+		errorDesc      string
+		wantContain    []string
+		wantNotContain []string
+	}{
+		{
+			name:      "minimal (only resource_metadata)",
+			scope:     "",
+			error:     "",
+			errorDesc: "",
+			wantContain: []string{
+				"Bearer",
+				`resource_metadata="https://auth.example.com/.well-known/oauth-protected-resource"`,
+			},
+			wantNotContain: []string{"scope=", "error=", "error_description="},
+		},
+		{
+			name:      "with scope",
+			scope:     "files:read user:profile",
+			error:     "",
+			errorDesc: "",
+			wantContain: []string{
+				"Bearer",
+				`resource_metadata="https://auth.example.com/.well-known/oauth-protected-resource"`,
+				`scope="files:read user:profile"`,
+			},
+			wantNotContain: []string{"error=", "error_description="},
+		},
+		{
+			name:      "with error",
+			scope:     "",
+			error:     "invalid_token",
+			errorDesc: "",
+			wantContain: []string{
+				"Bearer",
+				`resource_metadata="https://auth.example.com/.well-known/oauth-protected-resource"`,
+				`error="invalid_token"`,
+			},
+			wantNotContain: []string{"scope=", "error_description="},
+		},
+		{
+			name:      "with error and description",
+			scope:     "",
+			error:     "invalid_token",
+			errorDesc: "Token has expired",
+			wantContain: []string{
+				"Bearer",
+				`resource_metadata="https://auth.example.com/.well-known/oauth-protected-resource"`,
+				`error="invalid_token"`,
+				`error_description="Token has expired"`,
+			},
+			wantNotContain: []string{"scope="},
+		},
+		{
+			name:      "with all parameters",
+			scope:     "files:read files:write",
+			error:     "insufficient_scope",
+			errorDesc: "Additional file write permission required",
+			wantContain: []string{
+				"Bearer",
+				`resource_metadata="https://auth.example.com/.well-known/oauth-protected-resource"`,
+				`scope="files:read files:write"`,
+				`error="insufficient_scope"`,
+				`error_description="Additional file write permission required"`,
+			},
+		},
+		{
+			name:      "error description with quotes (escaping test)",
+			scope:     "",
+			error:     "invalid_request",
+			errorDesc: `The "client_id" parameter is missing`,
+			wantContain: []string{
+				"Bearer",
+				`resource_metadata="https://auth.example.com/.well-known/oauth-protected-resource"`,
+				`error="invalid_request"`,
+				`error_description="The \"client_id\" parameter is missing"`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := handler.formatWWWAuthenticate(tt.scope, tt.error, tt.errorDesc)
+
+			// Verify all expected strings are present
+			for _, want := range tt.wantContain {
+				if !strings.Contains(result, want) {
+					t.Errorf("formatWWWAuthenticate() missing expected substring:\ngot:  %q\nwant: %q", result, want)
+				}
+			}
+
+			// Verify unwanted strings are not present
+			for _, notWant := range tt.wantNotContain {
+				if strings.Contains(result, notWant) {
+					t.Errorf("formatWWWAuthenticate() contains unexpected substring:\ngot:  %q\nshould not contain: %q", result, notWant)
+				}
+			}
+
+			// Verify Bearer scheme is at the start
+			if !strings.HasPrefix(result, "Bearer ") {
+				t.Errorf("formatWWWAuthenticate() should start with 'Bearer ', got: %q", result)
+			}
+
+			// Verify comma-space separation (RFC 6750 format)
+			if strings.Contains(result, ",,") || strings.Contains(result, ",  ") {
+				t.Errorf("formatWWWAuthenticate() has malformed comma separation: %q", result)
+			}
+		})
+	}
+}
+
+// TestHandler_WriteError401WithWWWAuthenticate tests that 401 responses include WWW-Authenticate header
+func TestHandler_WriteError401WithWWWAuthenticate(t *testing.T) {
+	tests := []struct {
+		name                   string
+		defaultChallengeScopes []string
+		status                 int
+		wantWWWAuthenticate    bool
+		wantScope              string
+	}{
+		{
+			name:                   "401 without scopes",
+			defaultChallengeScopes: nil,
+			status:                 http.StatusUnauthorized,
+			wantWWWAuthenticate:    true,
+			wantScope:              "",
+		},
+		{
+			name:                   "401 with scopes",
+			defaultChallengeScopes: []string{"files:read", "user:profile"},
+			status:                 http.StatusUnauthorized,
+			wantWWWAuthenticate:    true,
+			wantScope:              "files:read user:profile",
+		},
+		{
+			name:                   "400 should not have WWW-Authenticate",
+			defaultChallengeScopes: []string{"files:read"},
+			status:                 http.StatusBadRequest,
+			wantWWWAuthenticate:    false,
+			wantScope:              "",
+		},
+		{
+			name:                   "403 should not have WWW-Authenticate",
+			defaultChallengeScopes: []string{"files:read"},
+			status:                 http.StatusForbidden,
+			wantWWWAuthenticate:    false,
+			wantScope:              "",
+		},
+		{
+			name:                   "500 should not have WWW-Authenticate",
+			defaultChallengeScopes: []string{"files:read"},
+			status:                 http.StatusInternalServerError,
+			wantWWWAuthenticate:    false,
+			wantScope:              "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := memory.New()
+			defer store.Stop()
+
+			provider := mock.NewMockProvider()
+
+			config := &server.Config{
+				Issuer:                 "https://auth.example.com",
+				DefaultChallengeScopes: tt.defaultChallengeScopes,
+			}
+
+			srv, err := server.New(provider, store, store, store, config, nil)
+			if err != nil {
+				t.Fatalf("server.New() error = %v", err)
+			}
+
+			handler := NewHandler(srv, nil)
+
+			w := httptest.NewRecorder()
+			handler.writeError(w, "test_error", "Test error description", tt.status)
+
+			wwwAuth := w.Header().Get("WWW-Authenticate")
+
+			if tt.wantWWWAuthenticate {
+				if wwwAuth == "" {
+					t.Error("Expected WWW-Authenticate header, but it was not set")
+				} else {
+					// Verify it contains resource_metadata
+					if !strings.Contains(wwwAuth, `resource_metadata="https://auth.example.com/.well-known/oauth-protected-resource"`) {
+						t.Errorf("WWW-Authenticate missing resource_metadata:\ngot: %q", wwwAuth)
+					}
+
+					// Verify scope if expected
+					if tt.wantScope != "" {
+						expectedScope := fmt.Sprintf(`scope="%s"`, tt.wantScope)
+						if !strings.Contains(wwwAuth, expectedScope) {
+							t.Errorf("WWW-Authenticate missing expected scope:\ngot:  %q\nwant: %q", wwwAuth, expectedScope)
+						}
+					} else {
+						if strings.Contains(wwwAuth, "scope=") {
+							t.Errorf("WWW-Authenticate should not contain scope:\ngot: %q", wwwAuth)
+						}
+					}
+
+					// Verify error and error_description are included
+					if !strings.Contains(wwwAuth, `error="test_error"`) {
+						t.Errorf("WWW-Authenticate missing error code:\ngot: %q", wwwAuth)
+					}
+					if !strings.Contains(wwwAuth, `error_description="Test error description"`) {
+						t.Errorf("WWW-Authenticate missing error description:\ngot: %q", wwwAuth)
+					}
+				}
+			} else {
+				if wwwAuth != "" {
+					t.Errorf("Did not expect WWW-Authenticate header for status %d, but got: %q", tt.status, wwwAuth)
+				}
+			}
+		})
+	}
+}
+
+// TestHandler_ValidateToken401ResponseWithWWWAuthenticate tests that ValidateToken middleware returns proper WWW-Authenticate
+func TestHandler_ValidateToken401ResponseWithWWWAuthenticate(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	config := &server.Config{
+		Issuer:                 "https://auth.example.com",
+		DefaultChallengeScopes: []string{"mcp:access"},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+
+	// Create a test endpoint that requires authentication
+	testEndpoint := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("success"))
+	})
+
+	// Wrap with ValidateToken middleware
+	protectedEndpoint := handler.ValidateToken(testEndpoint)
+
+	tests := []struct {
+		name             string
+		authHeader       string
+		wantStatus       int
+		wantWWWAuth      bool
+		wantResourceMeta bool
+		wantScope        string
+	}{
+		{
+			name:             "missing authorization header",
+			authHeader:       "",
+			wantStatus:       http.StatusUnauthorized,
+			wantWWWAuth:      true,
+			wantResourceMeta: true,
+			wantScope:        "mcp:access",
+		},
+		{
+			name:             "invalid authorization header format",
+			authHeader:       "InvalidFormat",
+			wantStatus:       http.StatusUnauthorized,
+			wantWWWAuth:      true,
+			wantResourceMeta: true,
+			wantScope:        "mcp:access",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+			if tt.authHeader != "" {
+				req.Header.Set("Authorization", tt.authHeader)
+			}
+
+			w := httptest.NewRecorder()
+			protectedEndpoint.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("Status = %d, want %d", w.Code, tt.wantStatus)
+			}
+
+			wwwAuth := w.Header().Get("WWW-Authenticate")
+
+			if tt.wantWWWAuth {
+				if wwwAuth == "" {
+					t.Error("Expected WWW-Authenticate header, but it was not set")
+				} else {
+					// Verify Bearer scheme
+					if !strings.HasPrefix(wwwAuth, "Bearer ") {
+						t.Errorf("WWW-Authenticate should start with 'Bearer ':\ngot: %q", wwwAuth)
+					}
+
+					// Verify resource_metadata
+					if tt.wantResourceMeta {
+						if !strings.Contains(wwwAuth, `resource_metadata="https://auth.example.com/.well-known/oauth-protected-resource"`) {
+							t.Errorf("WWW-Authenticate missing resource_metadata:\ngot: %q", wwwAuth)
+						}
+					}
+
+					// Verify scope
+					if tt.wantScope != "" {
+						expectedScope := fmt.Sprintf(`scope="%s"`, tt.wantScope)
+						if !strings.Contains(wwwAuth, expectedScope) {
+							t.Errorf("WWW-Authenticate missing expected scope:\ngot:  %q\nwant: %q", wwwAuth, expectedScope)
+						}
+					}
+				}
+			}
+		})
+	}
+}

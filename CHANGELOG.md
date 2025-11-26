@@ -34,6 +34,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MCP 2025-11-25: WWW-Authenticate header with resource_metadata for discovery (#73)**
+  - Implemented MCP 2025-11-25 specification requirement for Protected Resource Metadata discovery
+  - **What changed**: All 401 Unauthorized responses now include enhanced WWW-Authenticate headers
+  - **Header format** (per RFC 6750 and RFC 9728):
+    ```http
+    WWW-Authenticate: Bearer resource_metadata="https://example.com/.well-known/oauth-protected-resource",
+                             scope="files:read user:profile",
+                             error="invalid_token",
+                             error_description="Token has expired"
+    ```
+  - **Discovery mechanism**: Helps MCP clients automatically discover:
+    - Authorization server location via `resource_metadata` URL
+    - Required scopes via optional `scope` parameter
+    - Error details for debugging and retry logic
+  - **Configuration**:
+    - `DefaultChallengeScopes`: Configure default scopes to include in WWW-Authenticate challenges
+    - Example: `config.DefaultChallengeScopes = []string{"mcp:access", "files:read"}`
+  - **Automatic behavior**:
+    - All existing 401 responses automatically get proper WWW-Authenticate headers
+    - No code changes needed in existing handlers
+    - Scope parameter only included if configured (optional)
+  - **Specification compliance**:
+    - MCP 2025-11-25: MUST include resource_metadata in WWW-Authenticate (✓)
+    - RFC 6750 Section 3: Bearer token challenge format (✓)
+    - RFC 9728: Protected Resource Metadata discovery (✓)
+  - **Testing**: Comprehensive unit tests for header formatting and integration
+
 - **OAuth 2.1 PKCE for provider leg - Enhanced security for confidential clients (#68)**
   - Implemented full OAuth 2.1 PKCE support on the OAuth server → Provider leg
   - **Why this matters**: OAuth 2.1 recommends PKCE for ALL client types (public AND confidential) to protect against Authorization Code Injection attacks

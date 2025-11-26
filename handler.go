@@ -633,7 +633,6 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 		if authHeader == "" {
 			h.logger.Warn("Client registration rejected: missing authorization",
 				"client_ip", clientIP)
-			w.Header().Set("WWW-Authenticate", "Bearer")
 			h.writeError(w, ErrorCodeInvalidToken,
 				"Registration access token required. "+
 					"Set AllowPublicClientRegistration=true to disable authentication (NOT recommended).",
@@ -646,7 +645,6 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
 			h.logger.Warn("Client registration rejected: invalid authorization header",
 				"client_ip", clientIP)
-			w.Header().Set("WWW-Authenticate", "Bearer")
 			h.writeError(w, ErrorCodeInvalidToken, "Invalid Authorization header format", http.StatusUnauthorized)
 			return
 		}
@@ -902,12 +900,68 @@ func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *oauth2.Token,
 
 func (h *Handler) writeError(w http.ResponseWriter, code, description string, status int) {
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+
+	// MCP 2025-11-25: Include WWW-Authenticate header with resource_metadata for 401 responses
+	// This helps clients discover the authorization server and required scopes
+	if status == http.StatusUnauthorized {
+		scope := ""
+		if len(h.server.Config.DefaultChallengeScopes) > 0 {
+			scope = strings.Join(h.server.Config.DefaultChallengeScopes, " ")
+		}
+		w.Header().Set("WWW-Authenticate", h.formatWWWAuthenticate(scope, code, description))
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"error":             code,
 		"error_description": description,
 	})
+}
+
+// formatWWWAuthenticate formats the WWW-Authenticate header value per RFC 6750 and RFC 9728
+// It includes the resource_metadata URL for MCP 2025-11-25 compliance, along with optional
+// scope, error, and error_description parameters.
+//
+// Parameters:
+//   - scope: Space-separated list of scopes required (e.g., "files:read user:profile")
+//   - error: OAuth error code (e.g., "invalid_token", "insufficient_scope")
+//   - errorDesc: Human-readable error description
+//
+// Example output:
+//
+//	Bearer resource_metadata="https://example.com/.well-known/oauth-protected-resource",
+//	       scope="files:read user:profile",
+//	       error="invalid_token",
+//	       error_description="Token has expired"
+func (h *Handler) formatWWWAuthenticate(scope, error, errorDesc string) string {
+	// Build the challenge parameters (excluding the Bearer scheme)
+	var params []string
+
+	// MUST: Include resource_metadata URL per MCP 2025-11-25
+	resourceMetadataURL := h.server.Config.ProtectedResourceMetadataEndpoint()
+	params = append(params, fmt.Sprintf(`resource_metadata="%s"`, resourceMetadataURL))
+
+	// Optional: Include scope if configured
+	if scope != "" {
+		params = append(params, fmt.Sprintf(`scope="%s"`, scope))
+	}
+
+	// Optional: Include error code if provided
+	if error != "" {
+		params = append(params, fmt.Sprintf(`error="%s"`, error))
+	}
+
+	// Optional: Include error description if provided
+	if errorDesc != "" {
+		// Escape quotes in error description for proper formatting
+		escapedDesc := strings.ReplaceAll(errorDesc, `"`, `\"`)
+		params = append(params, fmt.Sprintf(`error_description="%s"`, escapedDesc))
+	}
+
+	// Format: "Bearer param1="value1", param2="value2"" per RFC 6750 Section 3
+	// Note: Space after "Bearer", then comma-space between parameters
+	return "Bearer " + strings.Join(params, ", ")
 }
 
 // ServeTokenIntrospection handles the RFC 7662 token introspection endpoint
