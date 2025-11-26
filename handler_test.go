@@ -658,8 +658,10 @@ func TestHandler_ServeAuthorizationServerMetadata_EnhancedFields(t *testing.T) {
 	// Configure supported scopes
 	handler.server.Config.SupportedScopes = []string{"openid", "profile", "email", "files:read", "files:write"}
 
-	// Enable Client ID Metadata Documents
+	// Enable enhanced endpoints for testing
 	handler.server.Config.EnableClientIDMetadataDocuments = true
+	handler.server.Config.EnableRevocationEndpoint = true
+	handler.server.Config.EnableIntrospectionEndpoint = true
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
 	w := httptest.NewRecorder()
@@ -739,6 +741,43 @@ func TestHandler_ServeAuthorizationServerMetadata_EnhancedFields(t *testing.T) {
 	}
 }
 
+// TestHandler_ServeAuthorizationServerMetadata_DisabledEndpoints verifies that
+// revocation and introspection endpoints are NOT advertised when disabled
+func TestHandler_ServeAuthorizationServerMetadata_DisabledEndpoints(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Explicitly disable endpoints (though false is default)
+	handler.server.Config.EnableRevocationEndpoint = false
+	handler.server.Config.EnableIntrospectionEndpoint = false
+	handler.server.Config.EnableClientIDMetadataDocuments = false
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeAuthorizationServerMetadata(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var meta AuthorizationServerMetadata
+	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Verify endpoints are NOT included when disabled
+	if meta.RevocationEndpoint != "" {
+		t.Errorf("RevocationEndpoint should be empty when disabled, got %q", meta.RevocationEndpoint)
+	}
+	if meta.IntrospectionEndpoint != "" {
+		t.Errorf("IntrospectionEndpoint should be empty when disabled, got %q", meta.IntrospectionEndpoint)
+	}
+	if meta.ClientIDMetadataDocumentSupported {
+		t.Error("ClientIDMetadataDocumentSupported should be false when disabled")
+	}
+}
+
 // TestHandler_ServeAuthorizationServerMetadata_NoScopes verifies scopes_supported
 // is not included when no scopes are configured
 func TestHandler_ServeAuthorizationServerMetadata_NoScopes(t *testing.T) {
@@ -777,6 +816,8 @@ func TestHandler_ServeOpenIDConfiguration(t *testing.T) {
 	// Configure server with some settings
 	handler.server.Config.SupportedScopes = []string{"openid", "profile"}
 	handler.server.Config.EnableClientIDMetadataDocuments = true
+	handler.server.Config.EnableRevocationEndpoint = true
+	handler.server.Config.EnableIntrospectionEndpoint = true
 
 	// Request Authorization Server Metadata
 	reqAS := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)

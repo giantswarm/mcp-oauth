@@ -260,17 +260,12 @@ func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 		"code_challenge_methods_supported": []string{PKCEMethodS256},
 
 		// RFC 8414: Token endpoint authentication methods
+		// These methods are always supported for the authorization_code flow
 		"token_endpoint_auth_methods_supported": SupportedTokenAuthMethods,
-
-		// RFC 7009: Token revocation endpoint (always available)
-		"revocation_endpoint": h.server.Config.RevocationEndpoint(),
-
-		// RFC 7662: Token introspection endpoint (always available)
-		"introspection_endpoint": h.server.Config.IntrospectionEndpoint(),
 	}
 
 	// RFC 8414: scopes_supported is OPTIONAL but RECOMMENDED
-	// Only include if scopes are configured
+	// Only include if scopes are configured to avoid empty arrays
 	if len(h.server.Config.SupportedScopes) > 0 {
 		metadata["scopes_supported"] = h.server.Config.SupportedScopes
 	}
@@ -281,8 +276,21 @@ func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 		metadata["registration_endpoint"] = h.server.Config.RegistrationEndpoint()
 	}
 
+	// RFC 7009: Only advertise revocation_endpoint if the feature is enabled and implemented
+	// This prevents advertising capabilities that don't exist (security issue)
+	if h.server.Config.EnableRevocationEndpoint {
+		metadata["revocation_endpoint"] = h.server.Config.RevocationEndpoint()
+	}
+
+	// RFC 7662: Only advertise introspection_endpoint if the feature is enabled and implemented
+	// This prevents advertising capabilities that don't exist (security issue)
+	if h.server.Config.EnableIntrospectionEndpoint {
+		metadata["introspection_endpoint"] = h.server.Config.IntrospectionEndpoint()
+	}
+
 	// MCP 2025-11-25: Advertise Client ID Metadata Documents support
 	// Per draft-ietf-oauth-client-id-metadata-document-00
+	// Only advertise if actually enabled to avoid false capabilities
 	if h.server.Config.EnableClientIDMetadataDocuments {
 		metadata["client_id_metadata_document_supported"] = true
 	}

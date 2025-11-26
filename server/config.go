@@ -342,6 +342,22 @@ type Config struct {
 	// Default: 10 seconds
 	ClientMetadataFetchTimeout time.Duration
 
+	// EnableRevocationEndpoint controls whether the OAuth 2.0 Token Revocation endpoint (RFC 7009)
+	// is advertised in Authorization Server Metadata and available for use.
+	// When true: revocation_endpoint will be included in /.well-known/oauth-authorization-server
+	// When false: revocation_endpoint will NOT be advertised (endpoint not yet implemented)
+	// SECURITY: Only enable when you have implemented the actual revocation endpoint handler
+	// Default: false (not yet implemented)
+	EnableRevocationEndpoint bool
+
+	// EnableIntrospectionEndpoint controls whether the OAuth 2.0 Token Introspection endpoint (RFC 7662)
+	// is advertised in Authorization Server Metadata and available for use.
+	// When true: introspection_endpoint will be included in /.well-known/oauth-authorization-server
+	// When false: introspection_endpoint will NOT be advertised (endpoint not yet implemented)
+	// SECURITY: Only enable when you have implemented the actual introspection endpoint handler
+	// Default: false (not yet implemented)
+	EnableIntrospectionEndpoint bool
+
 	// ClientMetadataCacheTTL is how long to cache fetched client metadata
 	// Caching reduces latency and prevents repeated fetches for the same client
 	// HTTP Cache-Control headers may override this value
