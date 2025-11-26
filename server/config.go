@@ -230,6 +230,24 @@ type Config struct {
 	// Example: "https://mcp.example.com" or "https://api.example.com/mcp"
 	// Security: This prevents token theft and replay attacks to different resource servers
 	ResourceIdentifier string
+
+	// EnableClientIDMetadataDocuments enables URL-based client_id support per MCP 2025-11-25
+	// When enabled, clients can use HTTPS URLs as client identifiers, and the authorization
+	// server will fetch client metadata from that URL following draft-ietf-oauth-client-id-metadata-document-00
+	// This addresses the common MCP scenario where servers and clients have no pre-existing relationship.
+	// Default: false (disabled for backward compatibility)
+	EnableClientIDMetadataDocuments bool
+
+	// ClientMetadataFetchTimeout is the timeout for fetching client metadata from URL-based client_ids
+	// This prevents indefinite blocking if a metadata URL is slow or unresponsive
+	// Default: 10 seconds
+	ClientMetadataFetchTimeout time.Duration
+
+	// ClientMetadataCacheTTL is how long to cache fetched client metadata
+	// Caching reduces latency and prevents repeated fetches for the same client
+	// HTTP Cache-Control headers may override this value
+	// Default: 5 minutes
+	ClientMetadataCacheTTL time.Duration
 }
 
 // InstrumentationConfig holds configuration for OpenTelemetry instrumentation

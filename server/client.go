@@ -128,6 +128,7 @@ func (s *Server) ValidateClientCredentials(ctx context.Context, clientID, client
 }
 
 // GetClient retrieves a client by ID (for use by handler)
+// Supports both pre-registered clients and URL-based Client ID Metadata Documents (MCP 2025-11-25)
 func (s *Server) GetClient(ctx context.Context, clientID string) (*storage.Client, error) {
-	return s.clientStore.GetClient(ctx, clientID)
+	return s.getOrFetchClient(ctx, clientID)
 }

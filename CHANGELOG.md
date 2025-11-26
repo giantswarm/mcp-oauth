@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Client ID Metadata Documents Support (draft-ietf-oauth-client-id-metadata-document, MCP 2025-11-25)**
+  - **Feature**: Implemented URL-based client identifiers with automatic metadata fetching
+  - **MCP Compliance**: SHOULD requirement for MCP 2025-11-25 specification
+  - **Use Case**: Enables OAuth flows where servers and clients have no pre-existing relationship
+  - **Implementation**:
+    - URL detection: Automatically detects HTTPS URLs as client_id and fetches metadata
+    - Metadata fetching: HTTP client with configurable timeout (default: 10s) and 1MB size limit
+    - SSRF protection: Blocks private IP ranges (10.x, 172.16-31.x, 192.168.x), loopback, and link-local addresses
+    - Caching: In-memory LRU cache with TTL support (default: 5 minutes) and HTTP Cache-Control respect
+    - Validation: Ensures client_id in document matches URL exactly (security requirement)
+    - Integration: Transparent integration with existing authorization flow via `GetClient()`
+  - **Configuration**: 
+    - `EnableClientIDMetadataDocuments` - Enable feature (default: false for backward compatibility)
+    - `ClientMetadataFetchTimeout` - Timeout for metadata fetch (default: 10s)
+    - `ClientMetadataCacheTTL` - Cache TTL (default: 5m)
+  - **Discovery**: Authorization Server Metadata advertises support via `client_id_metadata_document_supported: true`
+  - **Security**:
+    - HTTPS-only enforcement for metadata URLs
+    - Comprehensive SSRF protection against internal network access
+    - Client_id validation prevents impersonation attacks
+    - Localhost redirect URI warnings per spec recommendations
+  - **Testing**: Comprehensive unit tests covering URL detection, SSRF protection, caching, and metadata validation
+  - **Performance**: LRU cache with configurable size (default: 1000 entries) prevents memory exhaustion
+
 - **Enhanced Protected Resource Metadata (RFC 9728, MCP 2025-11-25)**
   - **Feature**: Enhanced Protected Resource Metadata with `scopes_supported` field and sub-path discovery
   - **MCP Compliance**: High-priority enhancement for MCP 2025-11-25 specification

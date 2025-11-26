@@ -33,6 +33,7 @@ type Server struct {
 	ClientRegistrationRateLimiter *security.ClientRegistrationRateLimiter // Time-windowed rate limiter for client registrations
 	Instrumentation               *instrumentation.Instrumentation        // OpenTelemetry instrumentation
 	tracer                        trace.Tracer                            // OpenTelemetry tracer for server operations
+	metadataCache                 *clientMetadataCache                    // Cache for URL-based client metadata (MCP 2025-11-25)
 	Logger                        *slog.Logger
 	Config                        *Config
 	shutdownOnce                  sync.Once // Ensures Shutdown is called only once
@@ -71,12 +72,13 @@ func New(
 	config = applySecureDefaults(config, logger)
 
 	srv := &Server{
-		provider:    provider,
-		tokenStore:  tokenStore,
-		clientStore: clientStore,
-		flowStore:   flowStore,
-		Config:      config,
-		Logger:      logger,
+		provider:      provider,
+		tokenStore:    tokenStore,
+		clientStore:   clientStore,
+		flowStore:     flowStore,
+		Config:        config,
+		Logger:        logger,
+		metadataCache: newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
 	}
 
 	// Validate HTTPS enforcement (OAuth 2.1 security requirement)

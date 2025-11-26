@@ -260,6 +260,12 @@ func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 		metadata["registration_endpoint"] = h.server.Config.RegistrationEndpoint()
 	}
 
+	// MCP 2025-11-25: Advertise Client ID Metadata Documents support
+	// Per draft-ietf-oauth-client-id-metadata-document-00
+	if h.server.Config.EnableClientIDMetadataDocuments {
+		metadata["client_id_metadata_document_supported"] = true
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(metadata)
 }
