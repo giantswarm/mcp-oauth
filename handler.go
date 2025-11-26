@@ -905,15 +905,15 @@ func (h *Handler) writeError(w http.ResponseWriter, code, description string, st
 	// MCP 2025-11-25: Include WWW-Authenticate header for 401 responses
 	// This helps clients discover the authorization server and required scopes
 	if status == http.StatusUnauthorized {
-		if h.server.Config.EnableWWWAuthenticateMetadata {
-			// Full MCP 2025-11-25 compliant header with discovery metadata
+		if !h.server.Config.DisableWWWAuthenticateMetadata {
+			// Full MCP 2025-11-25 compliant header with discovery metadata (default)
 			scope := ""
 			if len(h.server.Config.DefaultChallengeScopes) > 0 {
 				scope = strings.Join(h.server.Config.DefaultChallengeScopes, " ")
 			}
 			w.Header().Set("WWW-Authenticate", h.formatWWWAuthenticate(scope, code, description))
 		} else {
-			// Minimal header for backward compatibility with legacy clients
+			// Minimal header for backward compatibility with legacy clients (opt-in)
 			w.Header().Set("WWW-Authenticate", tokenTypeBearer)
 		}
 	}

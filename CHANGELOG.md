@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **WWW-Authenticate metadata now defaults to enabled (secure by default)**
+  - **Problem**: Field naming made it unclear whether metadata was enabled or disabled by default
+  - **Impact**: Initial implementation had confusing semantics around defaults
+  - **Solution**: Renamed to `DisableWWWAuthenticateMetadata` following the library's "secure by default" principle
+  - **Field change**: `EnableWWWAuthenticateMetadata` → `DisableWWWAuthenticateMetadata` (inverted logic)
+  - **Default behavior**: 
+    - `DisableWWWAuthenticateMetadata: false` (default) → Full metadata ENABLED (secure by default)
+    - `DisableWWWAuthenticateMetadata: true` → Minimal headers for backward compatibility
+  - **Breaking Change**: 🔴 **YES** - Field renamed for clarity
+    - **Before**: `config.EnableWWWAuthenticateMetadata = false` to disable
+    - **After**: `config.DisableWWWAuthenticateMetadata = true` to disable
+    - **Migration**: Replace field name and invert boolean value
+  - **Why this matters**:
+    - Clear naming: "Disable" prefix indicates opt-out, not opt-in
+    - Consistent with library philosophy: secure by default
+    - MCP 2025-11-25 compliance out of the box
+    - Modern OAuth clients ignore unknown header parameters (safe for most clients)
+  - **Configuration changes**:
+    - Renamed field for clarity
+    - Added security warning log when feature is disabled
+    - Removed confusing default-forcing logic (zero value = enabled)
+  - **Testing**: All existing tests updated to use new field name
+
 - **Dynamic Client Registration (DCR) now respects `token_endpoint_auth_method` parameter (#70)**
   - **Problem**: DCR always created confidential clients with secrets, even when native/CLI apps requested public clients
   - **Solution**: Implement OAuth 2.1 / RFC 7591 compliant DCR that respects the `token_endpoint_auth_method` field
@@ -51,10 +74,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Configuration**:
     - `DefaultChallengeScopes`: Configure default scopes to include in WWW-Authenticate challenges
     - Example: `config.DefaultChallengeScopes = []string{"mcp:access", "files:read"}`
-    - `EnableWWWAuthenticateMetadata`: Control whether to include metadata (default: true)
+    - `DisableWWWAuthenticateMetadata`: Opt-out flag for backward compatibility (default: false = enabled)
   - **Backward compatibility**:
-    - Feature enabled by default for MCP 2025-11-25 compliance
-    - Can be disabled for legacy clients: `config.EnableWWWAuthenticateMetadata = false`
+    - Feature enabled by default for MCP 2025-11-25 compliance (secure by default)
+    - Can be disabled for legacy clients: `config.DisableWWWAuthenticateMetadata = true`
     - When disabled, returns minimal `WWW-Authenticate: Bearer` header
     - Standard HTTP behavior: clients ignore headers they don't understand
     - No breaking changes to existing client implementations
