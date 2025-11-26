@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/providers"
@@ -33,6 +34,11 @@ type Server struct {
 	ClientRegistrationRateLimiter *security.ClientRegistrationRateLimiter // Time-windowed rate limiter for client registrations
 	Instrumentation               *instrumentation.Instrumentation        // OpenTelemetry instrumentation
 	tracer                        trace.Tracer                            // OpenTelemetry tracer for server operations
+	metadataCache                 *clientMetadataCache                    // Cache for URL-based client metadata (MCP 2025-11-25)
+	metadataFetchGroup            singleflight.Group                      // Deduplicates concurrent metadata fetches (DoS protection)
+	metadataFetchRateLimiter      *security.RateLimiter                   // Per-domain rate limiter for metadata fetches
+	metadataCacheCleanupCtx       context.Context                         // Context for metadata cache cleanup goroutine
+	metadataCacheCleanupCancel    context.CancelFunc                      // Cancel function for cleanup goroutine
 	Logger                        *slog.Logger
 	Config                        *Config
 	shutdownOnce                  sync.Once // Ensures Shutdown is called only once
@@ -70,13 +76,19 @@ func New(
 	// Apply secure defaults
 	config = applySecureDefaults(config, logger)
 
+	// Create cleanup context for background goroutines
+	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
+
 	srv := &Server{
-		provider:    provider,
-		tokenStore:  tokenStore,
-		clientStore: clientStore,
-		flowStore:   flowStore,
-		Config:      config,
-		Logger:      logger,
+		provider:                   provider,
+		tokenStore:                 tokenStore,
+		clientStore:                clientStore,
+		flowStore:                  flowStore,
+		Config:                     config,
+		Logger:                     logger,
+		metadataCache:              newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
+		metadataCacheCleanupCtx:    cleanupCtx,
+		metadataCacheCleanupCancel: cleanupCancel,
 	}
 
 	// Validate HTTPS enforcement (OAuth 2.1 security requirement)
@@ -139,6 +151,22 @@ func New(
 		}
 	}
 
+	// Start background goroutine for metadata cache cleanup
+	// This prevents memory leaks from expired cache entries
+	if config.EnableClientIDMetadataDocuments {
+		// SECURITY: Initialize default rate limiter for metadata fetches (10 req/min per domain)
+		// This prevents DoS attacks via flooding with unique client_id URLs
+		// Each domain is tracked separately to prevent one attacker from blocking legitimate domains
+		srv.metadataFetchRateLimiter = security.NewRateLimiter(10, 20, logger)
+		logger.Info("Initialized metadata fetch rate limiter",
+			"rate", "10 requests/min per domain",
+			"burst", 20,
+			"purpose", "DoS protection")
+
+		go srv.metadataCacheCleanupLoop()
+		logger.Debug("Started metadata cache cleanup goroutine")
+	}
+
 	return srv, nil
 }
 
@@ -180,6 +208,13 @@ func (s *Server) SetSecurityEventRateLimiter(rl *security.RateLimiter) {
 // This prevents resource exhaustion through repeated registration/deletion cycles
 func (s *Server) SetClientRegistrationRateLimiter(rl *security.ClientRegistrationRateLimiter) {
 	s.ClientRegistrationRateLimiter = rl
+}
+
+// SetMetadataFetchRateLimiter sets the per-domain rate limiter for Client ID Metadata Document fetches
+// This prevents abuse and DoS attacks via repeated metadata fetches from different URLs
+// Recommended: 10 requests per minute per domain
+func (s *Server) SetMetadataFetchRateLimiter(rl *security.RateLimiter) {
+	s.metadataFetchRateLimiter = rl
 }
 
 // SetInstrumentation sets the OpenTelemetry instrumentation for server and storage
@@ -241,6 +276,29 @@ func generatePKCEPair() (challenge, verifier string) {
 	hash := sha256.Sum256([]byte(verifier))
 	challenge = base64.RawURLEncoding.EncodeToString(hash[:])
 	return challenge, verifier
+}
+
+// metadataCacheCleanupLoop runs in a background goroutine to periodically clean
+// expired entries from the metadata cache. This prevents memory leaks from
+// expired cache entries that haven't been naturally evicted by LRU.
+func (s *Server) metadataCacheCleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			removed := s.metadataCache.CleanupExpired()
+			if removed > 0 {
+				s.Logger.Debug("Cleaned expired metadata cache entries",
+					"count", removed,
+					"cache_size", s.metadataCache.Size())
+			}
+		case <-s.metadataCacheCleanupCtx.Done():
+			s.Logger.Debug("Metadata cache cleanup goroutine stopped")
+			return
+		}
+	}
 }
 
 // Shutdown gracefully shuts down the server and all its components.
@@ -306,6 +364,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			if s.ClientRegistrationRateLimiter != nil {
 				s.Logger.Debug("Stopping client registration rate limiter...")
 				s.ClientRegistrationRateLimiter.Stop()
+			}
+			if s.metadataFetchRateLimiter != nil {
+				s.Logger.Debug("Stopping metadata fetch rate limiter...")
+				s.metadataFetchRateLimiter.Stop()
+			}
+
+			// Stop metadata cache cleanup goroutine
+			if s.metadataCacheCleanupCancel != nil {
+				s.Logger.Debug("Stopping metadata cache cleanup goroutine...")
+				s.metadataCacheCleanupCancel()
 			}
 
 			// Shutdown instrumentation
