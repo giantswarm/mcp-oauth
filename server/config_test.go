@@ -418,39 +418,49 @@ func TestValidateProviderRevocationConfig(t *testing.T) {
 
 func TestConfig_EndpointHelpers(t *testing.T) {
 	tests := []struct {
-		name      string
-		issuer    string
-		wantAuth  string
-		wantToken string
-		wantReg   string
+		name           string
+		issuer         string
+		wantAuth       string
+		wantToken      string
+		wantReg        string
+		wantRevoke     string
+		wantIntrospect string
 	}{
 		{
-			name:      "standard HTTPS issuer",
-			issuer:    "https://auth.example.com",
-			wantAuth:  "https://auth.example.com/oauth/authorize",
-			wantToken: "https://auth.example.com/oauth/token",
-			wantReg:   "https://auth.example.com/oauth/register",
+			name:           "standard HTTPS issuer",
+			issuer:         "https://auth.example.com",
+			wantAuth:       "https://auth.example.com/oauth/authorize",
+			wantToken:      "https://auth.example.com/oauth/token",
+			wantReg:        "https://auth.example.com/oauth/register",
+			wantRevoke:     "https://auth.example.com/oauth/revoke",
+			wantIntrospect: "https://auth.example.com/oauth/introspect",
 		},
 		{
-			name:      "issuer with port",
-			issuer:    "https://auth.example.com:8443",
-			wantAuth:  "https://auth.example.com:8443/oauth/authorize",
-			wantToken: "https://auth.example.com:8443/oauth/token",
-			wantReg:   "https://auth.example.com:8443/oauth/register",
+			name:           "issuer with port",
+			issuer:         "https://auth.example.com:8443",
+			wantAuth:       "https://auth.example.com:8443/oauth/authorize",
+			wantToken:      "https://auth.example.com:8443/oauth/token",
+			wantReg:        "https://auth.example.com:8443/oauth/register",
+			wantRevoke:     "https://auth.example.com:8443/oauth/revoke",
+			wantIntrospect: "https://auth.example.com:8443/oauth/introspect",
 		},
 		{
-			name:      "localhost development",
-			issuer:    "http://localhost:3000",
-			wantAuth:  "http://localhost:3000/oauth/authorize",
-			wantToken: "http://localhost:3000/oauth/token",
-			wantReg:   "http://localhost:3000/oauth/register",
+			name:           "localhost development",
+			issuer:         "http://localhost:3000",
+			wantAuth:       "http://localhost:3000/oauth/authorize",
+			wantToken:      "http://localhost:3000/oauth/token",
+			wantReg:        "http://localhost:3000/oauth/register",
+			wantRevoke:     "http://localhost:3000/oauth/revoke",
+			wantIntrospect: "http://localhost:3000/oauth/introspect",
 		},
 		{
-			name:      "issuer with trailing slash",
-			issuer:    "https://auth.example.com/",
-			wantAuth:  "https://auth.example.com//oauth/authorize",
-			wantToken: "https://auth.example.com//oauth/token",
-			wantReg:   "https://auth.example.com//oauth/register",
+			name:           "issuer with trailing slash",
+			issuer:         "https://auth.example.com/",
+			wantAuth:       "https://auth.example.com//oauth/authorize",
+			wantToken:      "https://auth.example.com//oauth/token",
+			wantReg:        "https://auth.example.com//oauth/register",
+			wantRevoke:     "https://auth.example.com//oauth/revoke",
+			wantIntrospect: "https://auth.example.com//oauth/introspect",
 		},
 	}
 
@@ -470,6 +480,14 @@ func TestConfig_EndpointHelpers(t *testing.T) {
 
 			if got := config.RegistrationEndpoint(); got != tt.wantReg {
 				t.Errorf("RegistrationEndpoint() = %q, want %q", got, tt.wantReg)
+			}
+
+			if got := config.RevocationEndpoint(); got != tt.wantRevoke {
+				t.Errorf("RevocationEndpoint() = %q, want %q", got, tt.wantRevoke)
+			}
+
+			if got := config.IntrospectionEndpoint(); got != tt.wantIntrospect {
+				t.Errorf("IntrospectionEndpoint() = %q, want %q", got, tt.wantIntrospect)
 			}
 		})
 	}
