@@ -236,6 +236,13 @@ type Config struct {
 	// Default: 32 characters (192 bits of entropy)
 	MinStateLength int // default: 32
 
+	// AllowNoStateParameter allows authorization requests without the state parameter.
+	// WARNING: Disabling state parameter validation weakens CSRF protection!
+	// The state parameter is REQUIRED by OAuth 2.1 for CSRF attack prevention.
+	// Only enable this for compatibility with clients that don't support state (e.g., some MCP clients).
+	// Default: false (state is REQUIRED for security)
+	AllowNoStateParameter bool // default: false
+
 	// AllowPublicClientRegistration controls two security aspects of client registration:
 	// 1. Whether the DCR endpoint (/oauth/register) requires authentication (Bearer token)
 	// 2. Whether public clients (native apps, CLIs with token_endpoint_auth_method="none") can be registered
@@ -933,6 +940,11 @@ func logSecurityWarnings(config *Config, logger *slog.Logger) {
 		logger.Warn("⚠️  SECURITY WARNING: Public client registration is ENABLED",
 			"risk", "DoS attacks via unlimited client registration",
 			"recommendation", "Set AllowPublicClientRegistration=false and use RegistrationAccessToken")
+	}
+	if config.AllowNoStateParameter {
+		logger.Warn("⚠️  SECURITY WARNING: State parameter is NOT REQUIRED",
+			"risk", "CSRF attacks possible without state parameter",
+			"recommendation", "Set AllowNoStateParameter=false unless required for client compatibility")
 	}
 	if !config.AllowPublicClientRegistration && config.RegistrationAccessToken == "" {
 		logger.Warn("⚠️  CONFIGURATION WARNING: RegistrationAccessToken not configured",
