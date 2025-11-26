@@ -34,6 +34,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MCP 2025-11-25: WWW-Authenticate header with resource_metadata for discovery (#73)**
+  - Implemented MCP 2025-11-25 specification requirement for Protected Resource Metadata discovery
+  - **What changed**: All 401 Unauthorized responses now include enhanced WWW-Authenticate headers
+  - **Header format** (per RFC 6750 and RFC 9728):
+    ```http
+    WWW-Authenticate: Bearer resource_metadata="https://example.com/.well-known/oauth-protected-resource",
+                             scope="files:read user:profile",
+                             error="invalid_token",
+                             error_description="Token has expired"
+    ```
+  - **Discovery mechanism**: Helps MCP clients automatically discover:
+    - Authorization server location via `resource_metadata` URL
+    - Required scopes via optional `scope` parameter
+    - Error details for debugging and retry logic
+  - **Configuration**:
+    - `DefaultChallengeScopes`: Configure default scopes to include in WWW-Authenticate challenges
+    - Example: `config.DefaultChallengeScopes = []string{"mcp:access", "files:read"}`
+    - `EnableWWWAuthenticateMetadata`: Control whether to include metadata (default: true)
+  - **Backward compatibility**:
+    - Feature enabled by default for MCP 2025-11-25 compliance
+    - Can be disabled for legacy clients: `config.EnableWWWAuthenticateMetadata = false`
+    - When disabled, returns minimal `WWW-Authenticate: Bearer` header
+    - Standard HTTP behavior: clients ignore headers they don't understand
+    - No breaking changes to existing client implementations
+  - **Automatic behavior**:
+    - All existing 401 responses automatically get proper WWW-Authenticate headers
+    - No code changes needed in existing handlers
+    - Scope parameter only included if configured (optional)
+  - **Specification compliance**:
+    - MCP 2025-11-25: MUST include resource_metadata in WWW-Authenticate (✓)
+    - RFC 6750 Section 3: Bearer token challenge format (✓)
+    - RFC 9728: Protected Resource Metadata discovery (✓)
+  - **Security improvements**:
+    - Enhanced escaping in error descriptions: properly handles backslashes and quotes
+    - Follows RFC 2616/7230 quoted-string rules for HTTP header values
+    - Prevents header injection from malformed error messages
+  - **Code quality improvements**:
+    - Extracted repeated test strings to constants (DRY principle)
+    - Added edge case tests for long scope lists and special characters
+    - Improved test maintainability with test helper constants
+  - **Testing**: Comprehensive unit tests for header formatting, integration, backward compatibility mode, and security edge cases (100% coverage)
+  - **Configuration validation** (security hardening):
+    - Validates `DefaultChallengeScopes` for invalid characters (quotes, commas, backslashes)
+    - Warns when scope count exceeds 50 (HTTP header size limit protection)
+    - Defense-in-depth: validation complements existing escaping
+    - Comprehensive test coverage for validation edge cases
+  - **Documentation**:
+    - Added security considerations section to README
+    - Documents information disclosure policy (intentional per OAuth specs)
+    - Guidance on scope configuration best practices
+    - Clear warnings about header size limits
+
 - **OAuth 2.1 PKCE for provider leg - Enhanced security for confidential clients (#68)**
   - Implemented full OAuth 2.1 PKCE support on the OAuth server → Provider leg
   - **Why this matters**: OAuth 2.1 recommends PKCE for ALL client types (public AND confidential) to protect against Authorization Code Injection attacks

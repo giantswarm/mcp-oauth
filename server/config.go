@@ -94,6 +94,33 @@ type Config struct {
 	// If empty, all scopes are allowed
 	SupportedScopes []string
 
+	// DefaultChallengeScopes are the scopes to include in WWW-Authenticate challenges
+	// When a 401 Unauthorized response is returned, these scopes indicate what
+	// permissions would be needed to access the resource.
+	// Per MCP 2025-11-25, this helps clients determine which scopes to request.
+	// If empty, no scope parameter is included in WWW-Authenticate headers.
+	DefaultChallengeScopes []string
+
+	// EnableWWWAuthenticateMetadata controls whether 401 responses include
+	// resource_metadata and other discovery parameters in WWW-Authenticate headers.
+	// When true: Full MCP 2025-11-25 compliance with enhanced discovery support
+	//   - Includes resource_metadata URL for authorization server discovery
+	//   - Includes scope parameter (if DefaultChallengeScopes configured)
+	//   - Includes error and error_description parameters
+	// When false: Minimal WWW-Authenticate headers for backward compatibility
+	//   - Only includes "Bearer" scheme without parameters
+	//   - Compatible with older OAuth clients that may not expect parameters
+	// Default: false (opt-in for backward compatibility, set to true for MCP 2025-11-25)
+	//
+	// Recommendation: Set to true for new deployments and MCP 2025-11-25 compliance.
+	// Keep false only if you need compatibility with legacy clients.
+	//
+	// Use case for keeping disabled:
+	//   - Testing with legacy OAuth clients
+	//   - Gradual migration period for clients updating to MCP 2025-11-25
+	//   - Troubleshooting client compatibility issues
+	EnableWWWAuthenticateMetadata bool // default: false (opt-in)
+
 	// AllowPKCEPlain allows the 'plain' code_challenge_method (NOT RECOMMENDED)
 	// WARNING: The 'plain' method is insecure and deprecated in OAuth 2.1
 	// Only enable for backward compatibility with legacy clients
@@ -291,6 +318,12 @@ func (c *Config) TokenEndpoint() string {
 // RegistrationEndpoint returns the full URL to the dynamic client registration endpoint
 func (c *Config) RegistrationEndpoint() string {
 	return c.Issuer + "/oauth/register"
+}
+
+// ProtectedResourceMetadataEndpoint returns the full URL to the RFC 9728 Protected Resource Metadata endpoint
+// This endpoint is used in WWW-Authenticate headers to help MCP clients discover authorization server information
+func (c *Config) ProtectedResourceMetadataEndpoint() string {
+	return c.Issuer + "/.well-known/oauth-protected-resource"
 }
 
 // applySecureDefaults applies secure-by-default configuration values
@@ -508,6 +541,9 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 	if !config.RequirePKCE {
 		config.RequirePKCE = true
 	}
+	// Note: EnableWWWAuthenticateMetadata is intentionally NOT defaulted here
+	// to allow users to explicitly disable it for backward compatibility.
+	// The zero value (false) means disabled - users opt-in by setting to true.
 	if config.MinStateLength == 0 {
 		config.MinStateLength = 32 // OAuth 2.1: 128+ bits entropy recommended, 32 chars = 192 bits
 	}
@@ -529,6 +565,57 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 	logSecurityWarnings(config, logger)
 }
 
+// validateWWWAuthenticateConfig validates WWW-Authenticate header configuration
+// for security best practices
+func validateWWWAuthenticateConfig(config *Config, logger *slog.Logger) {
+	// Recommendation 1: Warn about very large scope lists (header size limits)
+	// Some proxies/servers have HTTP header size limits (typically 8KB)
+	const maxRecommendedScopes = 50
+	if len(config.DefaultChallengeScopes) > maxRecommendedScopes {
+		logger.Warn("⚠️  CONFIGURATION WARNING: Very large DefaultChallengeScopes configured",
+			"count", len(config.DefaultChallengeScopes),
+			"max_recommended", maxRecommendedScopes,
+			"risk", "May exceed HTTP header size limits in some proxies/servers",
+			"recommendation", "Consider reducing scope count or using broader scopes")
+	}
+
+	// Recommendation 3: Validate scope entries don't contain invalid characters
+	// This provides defense-in-depth (escaping already prevents injection)
+	for i, scope := range config.DefaultChallengeScopes {
+		if strings.Contains(scope, `"`) {
+			logger.Warn("⚠️  CONFIGURATION WARNING: Invalid character in DefaultChallengeScopes",
+				"index", i,
+				"scope", scope,
+				"invalid_char", `"`,
+				"risk", "Scope contains double-quote character",
+				"recommendation", "Use alphanumeric characters, hyphens, underscores, colons, and slashes only")
+		}
+		if strings.Contains(scope, ",") {
+			logger.Warn("⚠️  CONFIGURATION WARNING: Invalid character in DefaultChallengeScopes",
+				"index", i,
+				"scope", scope,
+				"invalid_char", ",",
+				"risk", "Scope contains comma character",
+				"recommendation", "Use alphanumeric characters, hyphens, underscores, colons, and slashes only")
+		}
+		if strings.Contains(scope, `\`) {
+			logger.Warn("⚠️  CONFIGURATION WARNING: Invalid character in DefaultChallengeScopes",
+				"index", i,
+				"scope", scope,
+				"invalid_char", `\`,
+				"risk", "Scope contains backslash character",
+				"recommendation", "Use alphanumeric characters, hyphens, underscores, colons, and slashes only")
+		}
+	}
+
+	// Log info about WWW-Authenticate metadata configuration
+	if config.EnableWWWAuthenticateMetadata && len(config.DefaultChallengeScopes) > 0 {
+		logger.Debug("WWW-Authenticate metadata enabled",
+			"challenge_scopes_count", len(config.DefaultChallengeScopes),
+			"resource_metadata_url", config.ProtectedResourceMetadataEndpoint())
+	}
+}
+
 // logSecurityWarnings logs warnings for insecure configuration settings
 func logSecurityWarnings(config *Config, logger *slog.Logger) {
 	if !config.RequirePKCE {
@@ -543,6 +630,8 @@ func logSecurityWarnings(config *Config, logger *slog.Logger) {
 			"recommendation", "Set AllowPKCEPlain=false to require S256",
 			"learn_more", "https://datatracker.ietf.org/doc/html/rfc7636#section-4.2")
 	}
+	// Validate WWW-Authenticate configuration
+	validateWWWAuthenticateConfig(config, logger)
 	if config.TrustProxy {
 		logger.Warn("⚠️  SECURITY NOTICE: Trusting proxy headers",
 			"risk", "IP spoofing if proxy is not properly configured",
