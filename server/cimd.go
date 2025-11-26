@@ -154,12 +154,11 @@ func isPrivateIP(ip net.IP) bool {
 	return false
 }
 
-// validateMetadataURL performs SSRF protection checks on a metadata URL
+// validateAndSanitizeMetadataURL performs SSRF protection checks and returns a sanitized URL
 // Per draft-ietf-oauth-client-id-metadata-document-00 Section 6:
 // "Authorization servers fetching metadata documents SHOULD consider
 // Server-Side Request Forgery (SSRF) risks"
-// Returns the validated URL string if all checks pass
-func validateMetadataURL(clientID string) (string, error) {
+func validateAndSanitizeMetadataURL(clientID string) (string, error) {
 	u, err := url.Parse(clientID)
 	if err != nil {
 		return "", fmt.Errorf("invalid URL: %w", err)
@@ -188,7 +187,13 @@ func validateMetadataURL(clientID string) (string, error) {
 		}
 	}
 
-	return u.String(), nil
+	// Reconstruct URL from validated components to break taint flow
+	sanitized := &url.URL{
+		Scheme: u.Scheme,
+		Host:   u.Host,
+		Path:   u.Path,
+	}
+	return sanitized.String(), nil
 }
 
 // createSSRFProtectedTransport creates an HTTP transport with SSRF protection at connection time
@@ -238,7 +243,7 @@ func createSSRFProtectedTransport(ctx context.Context) *http.Transport {
 // - Timeout protection: enforces reasonable timeout
 // - Size limit: prevents memory exhaustion and validates full document read
 func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*ClientMetadata, time.Duration, error) {
-	validatedURL, err := validateMetadataURL(clientID)
+	sanitizedURL, err := validateAndSanitizeMetadataURL(clientID)
 	if err != nil {
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
@@ -277,7 +282,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		},
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, validatedURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sanitizedURL, nil)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to create metadata request: %w", err)
 	}

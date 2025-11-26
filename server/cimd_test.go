@@ -225,24 +225,24 @@ func TestValidateMetadataURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			validatedURL, err := validateMetadataURL(tt.url)
+			sanitizedURL, err := validateAndSanitizeMetadataURL(tt.url)
 			if tt.wantErr {
 				if err == nil {
-					t.Errorf("validateMetadataURL(%q) expected error containing %q, got nil", tt.url, tt.errText)
+					t.Errorf("validateAndSanitizeMetadataURL(%q) expected error containing %q, got nil", tt.url, tt.errText)
 					return
 				}
 				if tt.errText != "" && !strings.Contains(err.Error(), tt.errText) {
-					t.Errorf("validateMetadataURL(%q) error = %v, want error containing %q", tt.url, err, tt.errText)
+					t.Errorf("validateAndSanitizeMetadataURL(%q) error = %v, want error containing %q", tt.url, err, tt.errText)
 				}
-				if validatedURL != "" {
-					t.Errorf("validateMetadataURL(%q) expected empty URL on error, got %q", tt.url, validatedURL)
+				if sanitizedURL != "" {
+					t.Errorf("validateAndSanitizeMetadataURL(%q) expected empty URL on error, got %q", tt.url, sanitizedURL)
 				}
 			} else {
 				if err != nil {
-					t.Errorf("validateMetadataURL(%q) unexpected error: %v", tt.url, err)
+					t.Errorf("validateAndSanitizeMetadataURL(%q) unexpected error: %v", tt.url, err)
 				}
-				if validatedURL == "" {
-					t.Errorf("validateMetadataURL(%q) expected non-empty URL, got empty", tt.url)
+				if sanitizedURL == "" {
+					t.Errorf("validateAndSanitizeMetadataURL(%q) expected non-empty URL, got empty", tt.url)
 				}
 			}
 		})
