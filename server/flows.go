@@ -513,12 +513,23 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 		return nil, "", fmt.Errorf("failed to get user info: %w", err)
 	}
 
-	// Save user info and token
+	// Save user info and token by ID
 	if err := s.tokenStore.SaveUserInfo(ctx, userInfo.ID, userInfo); err != nil {
 		s.Logger.Warn("Failed to save user info", "error", err)
 	}
 	if err := s.tokenStore.SaveToken(ctx, userInfo.ID, providerToken); err != nil {
 		s.Logger.Warn("Failed to save provider token", "error", err)
+	}
+
+	// Also save token by email for applications that look up by email address
+	// This is common in multi-account scenarios where email is the natural identifier
+	if userInfo.Email != "" && userInfo.Email != userInfo.ID {
+		if err := s.tokenStore.SaveUserInfo(ctx, userInfo.Email, userInfo); err != nil {
+			s.Logger.Warn("Failed to save user info by email", "error", err)
+		}
+		if err := s.tokenStore.SaveToken(ctx, userInfo.Email, providerToken); err != nil {
+			s.Logger.Warn("Failed to save provider token by email", "error", err)
+		}
 	}
 
 	// Generate authorization code using oauth2.GenerateVerifier (same quality)
