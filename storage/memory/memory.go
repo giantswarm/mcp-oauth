@@ -1128,6 +1128,12 @@ func (s *Store) SaveTokenMetadata(tokenID, userID, clientID, tokenType string) e
 // SaveTokenMetadataWithAudience saves metadata for a token including RFC 8707 audience
 // This should be called whenever a token is issued to a user for a client
 func (s *Store) SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenType, audience string) error {
+	return s.SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID, tokenType, audience, nil)
+}
+
+// SaveTokenMetadataWithScopesAndAudience saves metadata for a token including RFC 8707 audience and MCP 2025-11-25 scopes
+// This should be called whenever a token is issued to a user for a client
+func (s *Store) SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID, tokenType, audience string, scopes []string) error {
 	if tokenID == "" || userID == "" || clientID == "" {
 		return fmt.Errorf("tokenID, userID, and clientID cannot be empty")
 	}
@@ -1141,13 +1147,15 @@ func (s *Store) SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenTy
 		IssuedAt:  time.Now(),
 		TokenType: tokenType,
 		Audience:  audience,
+		Scopes:    scopes,
 	}
 
 	s.logger.Debug("Saved token metadata",
 		"token_type", tokenType,
 		"user_id", userID,
 		"client_id", clientID,
-		"audience", audience)
+		"audience", audience,
+		"scopes", scopes)
 
 	return nil
 }

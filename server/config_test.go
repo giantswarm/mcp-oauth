@@ -1073,3 +1073,203 @@ func TestConfig_ProtectedResourceMetadataEndpoint(t *testing.T) {
 		})
 	}
 }
+
+// Scope format validation tests (RFC 6749 Section 3.3)
+
+func TestValidateScopeFormat(t *testing.T) {
+	tests := []struct {
+		name      string
+		scope     string
+		wantError bool
+		errSubstr string
+	}{
+		{
+			name:      "valid simple scope",
+			scope:     "read",
+			wantError: false,
+		},
+		{
+			name:      "valid scope with colon",
+			scope:     "files:read",
+			wantError: false,
+		},
+		{
+			name:      "valid scope with hyphen",
+			scope:     "files-read",
+			wantError: false,
+		},
+		{
+			name:      "valid scope with underscore",
+			scope:     "files_read",
+			wantError: false,
+		},
+		{
+			name:      "valid scope with slash",
+			scope:     "api/v1",
+			wantError: false,
+		},
+		{
+			name:      "valid scope with dot",
+			scope:     "files.read",
+			wantError: false,
+		},
+		{
+			name:      "valid scope with multiple special chars",
+			scope:     "mcp:files-read_v1/api",
+			wantError: false,
+		},
+		{
+			name:      "empty scope",
+			scope:     "",
+			wantError: true,
+			errSubstr: "cannot be empty",
+		},
+		{
+			name:      "scope with space",
+			scope:     "files read",
+			wantError: true,
+			errSubstr: "cannot contain space",
+		},
+		{
+			name:      "scope with double quote",
+			scope:     `files:"read"`,
+			wantError: true,
+			errSubstr: "cannot contain double-quote",
+		},
+		{
+			name:      "scope with backslash",
+			scope:     `files:\read`,
+			wantError: true,
+			errSubstr: "cannot contain backslash",
+		},
+		{
+			name:      "scope with non-printable char",
+			scope:     "files\x00read",
+			wantError: true,
+			errSubstr: "invalid character",
+		},
+		{
+			name:      "scope with control char",
+			scope:     "files\x1fread",
+			wantError: true,
+			errSubstr: "invalid character",
+		},
+		{
+			name:      "scope with DEL char",
+			scope:     "files\x7fread",
+			wantError: true,
+			errSubstr: "invalid character",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateScopeFormat(tt.scope)
+
+			if tt.wantError {
+				if err == nil {
+					t.Errorf("Expected error for scope %q, got nil", tt.scope)
+				} else if tt.errSubstr != "" && !strings.Contains(err.Error(), tt.errSubstr) {
+					t.Errorf("Expected error containing %q, got: %s", tt.errSubstr, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error for scope %q: %s", tt.scope, err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateEndpointScopeRequirements(t *testing.T) {
+	tests := []struct {
+		name          string
+		pathScopes    map[string][]string
+		methodScopes  map[string]map[string][]string
+		expectWarning bool
+		warnSubstr    string
+	}{
+		{
+			name: "valid path scopes",
+			pathScopes: map[string][]string{
+				"/api/files/*": {"files:read", "files:write"},
+			},
+			expectWarning: false,
+		},
+		{
+			name: "valid method scopes",
+			methodScopes: map[string]map[string][]string{
+				"/api/files/*": {
+					"GET":  {"files:read"},
+					"POST": {"files:write"},
+				},
+			},
+			expectWarning: false,
+		},
+		{
+			name: "invalid scope in path scopes",
+			pathScopes: map[string][]string{
+				"/api/files/*": {"files:read", "files write"}, // space is invalid
+			},
+			expectWarning: true,
+			warnSubstr:    "Invalid scope format",
+		},
+		{
+			name: "invalid scope in method scopes",
+			methodScopes: map[string]map[string][]string{
+				"/api/files/*": {
+					"GET": {"files:read", `files:"write"`}, // double quote is invalid
+				},
+			},
+			expectWarning: true,
+			warnSubstr:    "Invalid scope format",
+		},
+		{
+			name: "lowercase method warning",
+			methodScopes: map[string]map[string][]string{
+				"/api/files/*": {
+					"get": {"files:read"}, // lowercase
+				},
+			},
+			expectWarning: true,
+			warnSubstr:    "should be uppercase",
+		},
+		{
+			name: "wildcard method is valid",
+			methodScopes: map[string]map[string][]string{
+				"/api/files/*": {
+					"*": {"files:read"},
+				},
+			},
+			expectWarning: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+			config := &Config{
+				EndpointScopeRequirements:       tt.pathScopes,
+				EndpointMethodScopeRequirements: tt.methodScopes,
+			}
+
+			validateEndpointScopeRequirements(config, logger)
+
+			logOutput := buf.String()
+			hasWarning := strings.Contains(logOutput, "Invalid scope format") ||
+				strings.Contains(logOutput, "should be uppercase")
+
+			if tt.expectWarning && !hasWarning {
+				t.Errorf("Expected warning but got none. Log: %s", logOutput)
+			}
+			if !tt.expectWarning && hasWarning {
+				t.Errorf("Did not expect warning but got one. Log: %s", logOutput)
+			}
+			if tt.expectWarning && tt.warnSubstr != "" && !strings.Contains(logOutput, tt.warnSubstr) {
+				t.Errorf("Expected warning containing %q, got: %s", tt.warnSubstr, logOutput)
+			}
+		})
+	}
+}

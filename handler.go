@@ -111,6 +111,12 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 			return
 		}
 
+		// MCP 2025-11-25: Validate token scopes against endpoint requirements
+		// This implements OAuth 2.0 scope-based access control for protected resources
+		if !h.validateTokenScopes(w, r, accessToken, userInfo, clientIP) {
+			return
+		}
+
 		// Apply per-user rate limiting AFTER authentication
 		// This is a separate, higher limit for authenticated users
 		if h.server.UserRateLimiter != nil {
@@ -1009,6 +1015,42 @@ func (h *Handler) writeError(w http.ResponseWriter, code, description string, st
 	})
 }
 
+// writeInsufficientScopeError writes a 403 Forbidden response with insufficient_scope error.
+// This implements MCP 2025-11-25 scope challenge handling for protected resources.
+// Per RFC 6750 Section 3.1, the response includes WWW-Authenticate header with:
+//   - error="insufficient_scope"
+//   - scope parameter listing required scopes
+//   - resource_metadata URL for discovery
+//
+// Example response:
+//
+//	HTTP/1.1 403 Forbidden
+//	WWW-Authenticate: Bearer error="insufficient_scope",
+//	                         scope="files:read files:write",
+//	                         resource_metadata="https://example.com/.well-known/oauth-protected-resource"
+//
+// Parameters:
+//   - w: HTTP response writer
+//   - requiredScopes: List of scopes needed to access the resource
+//   - description: Optional human-readable error description
+func (h *Handler) writeInsufficientScopeError(w http.ResponseWriter, requiredScopes []string, description string) {
+	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+
+	// Build scope string for WWW-Authenticate header
+	scope := strings.Join(requiredScopes, " ")
+
+	// Use formatWWWAuthenticate to build the header with error details
+	w.Header().Set("WWW-Authenticate", h.formatWWWAuthenticate(scope, ErrorCodeInsufficientScope, description))
+
+	// Write JSON error response body
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error":             ErrorCodeInsufficientScope,
+		"error_description": description,
+	})
+}
+
 // formatWWWAuthenticate formats the WWW-Authenticate header value per RFC 6750 and RFC 9728
 // It includes the resource_metadata URL for MCP 2025-11-25 compliance, along with optional
 // scope, error, and error_description parameters.
@@ -1164,6 +1206,227 @@ const userInfoKey contextKey = "user_info"
 func UserInfoFromContext(ctx context.Context) (*providers.UserInfo, bool) {
 	userInfo, ok := ctx.Value(userInfoKey).(*providers.UserInfo)
 	return userInfo, ok
+}
+
+// validateTokenScopes checks if the token has required scopes for the endpoint.
+// Returns true if validation passes, false if insufficient scopes (response already written).
+func (h *Handler) validateTokenScopes(w http.ResponseWriter, r *http.Request, accessToken string, userInfo *providers.UserInfo, clientIP string) bool {
+	requiredScopes := h.getRequiredScopes(r)
+	if len(requiredScopes) == 0 {
+		return true // No scopes required
+	}
+
+	tokenScopes := h.getTokenScopes(accessToken)
+
+	if hasRequiredScopes(tokenScopes, requiredScopes) {
+		return true
+	}
+
+	// Log and audit the failure
+	h.logger.Warn("Insufficient scope for endpoint",
+		"user_id", userInfo.ID,
+		"endpoint", r.URL.Path,
+		"method", r.Method,
+		"token_scopes", tokenScopes,
+		"required_scopes", requiredScopes,
+		"ip", clientIP)
+
+	if h.server.Auditor != nil {
+		h.server.Auditor.LogAuthFailure(userInfo.ID, "", clientIP, "insufficient_scope")
+	}
+
+	// Build error description based on configuration
+	var description string
+	if h.server.Config.HideEndpointPathInErrors {
+		// SECURITY: Hide endpoint path to prevent information disclosure
+		description = "Token lacks required scopes for this endpoint"
+	} else {
+		// SECURITY: Sanitize path in error message to prevent log injection
+		// Truncate very long paths to prevent log pollution
+		safePath := r.URL.Path
+		if len(safePath) > 100 {
+			safePath = safePath[:100] + "..."
+		}
+		description = fmt.Sprintf("Token lacks required scopes for endpoint %s", safePath)
+	}
+	h.writeInsufficientScopeError(w, requiredScopes, description)
+	return false
+}
+
+// getTokenScopes retrieves scopes from token metadata.
+// Returns nil if the store doesn't support metadata or if metadata cannot be retrieved.
+func (h *Handler) getTokenScopes(accessToken string) []string {
+	metadataStore, ok := h.server.TokenStore().(storage.TokenMetadataGetter)
+	if !ok {
+		return nil
+	}
+
+	metadata, err := metadataStore.GetTokenMetadata(accessToken)
+	if err != nil {
+		h.logger.Warn("Failed to retrieve token metadata for scope validation", "error", err)
+		return nil
+	}
+
+	if metadata == nil {
+		return nil
+	}
+
+	return metadata.Scopes
+}
+
+// getRequiredScopes returns the scopes required for accessing a given request path and method.
+// It checks both EndpointMethodScopeRequirements (method-aware) and EndpointScopeRequirements
+// (method-agnostic) configurations.
+//
+// Path matching supports:
+//   - Exact match: "/api/files" matches only "/api/files"
+//   - Prefix match: "/api/files/*" matches any path starting with "/api/files/"
+//   - Longest prefix wins when multiple wildcards match
+//
+// Method matching (EndpointMethodScopeRequirements only):
+//   - Exact method match (e.g., "GET", "POST")
+//   - Wildcard "*" matches any method (fallback)
+//
+// Precedence:
+//  1. EndpointMethodScopeRequirements with exact method match
+//  2. EndpointMethodScopeRequirements with "*" method (fallback)
+//  3. EndpointScopeRequirements (method-agnostic)
+//  4. No requirements (access allowed)
+//
+// SECURITY: Path is normalized using path.Clean() to prevent traversal bypasses
+// via double slashes, "..", etc.
+//
+// Returns an empty slice if no scope requirements are configured for the path.
+func (h *Handler) getRequiredScopes(r *http.Request) []string {
+	// Check if any scope requirements are configured
+	hasMethodScopes := h.server.Config.EndpointMethodScopeRequirements != nil
+	hasPathScopes := h.server.Config.EndpointScopeRequirements != nil
+
+	if !hasMethodScopes && !hasPathScopes {
+		return nil
+	}
+
+	// SECURITY: Normalize path to prevent bypass via path traversal
+	// This prevents attacks using:
+	// - Double slashes: /api//files
+	// - Path traversal: /api/files/../admin
+	// - Relative paths: /api/./files
+	normalizedPath := path.Clean("/" + r.URL.Path)
+	method := r.Method
+
+	// Priority 1: Check method-aware scope requirements
+	if hasMethodScopes {
+		if scopes := h.getMethodScopesForPath(normalizedPath, method); scopes != nil {
+			return scopes
+		}
+	}
+
+	// Priority 2: Fallback to method-agnostic scope requirements
+	if hasPathScopes {
+		return h.getPathScopes(normalizedPath)
+	}
+
+	return nil
+}
+
+// getMethodScopesForPath looks up scopes from EndpointMethodScopeRequirements.
+// Returns nil if no matching configuration is found.
+func (h *Handler) getMethodScopesForPath(normalizedPath, method string) []string {
+	// First, try exact path match
+	if methodMap, ok := h.server.Config.EndpointMethodScopeRequirements[normalizedPath]; ok {
+		// Try exact method match
+		if scopes, ok := methodMap[method]; ok {
+			return scopes
+		}
+		// Try wildcard method fallback
+		if scopes, ok := methodMap["*"]; ok {
+			return scopes
+		}
+	}
+
+	// Then try prefix matches (patterns ending with /*)
+	// Use longest-prefix-match to ensure most specific pattern wins
+	var longestPrefix string
+	var matchedMethodMap map[string][]string
+
+	for pattern, methodMap := range h.server.Config.EndpointMethodScopeRequirements {
+		if strings.HasSuffix(pattern, "/*") {
+			prefix := strings.TrimSuffix(pattern, "*")
+			if strings.HasPrefix(normalizedPath, prefix) && len(prefix) > len(longestPrefix) {
+				longestPrefix = prefix
+				matchedMethodMap = methodMap
+			}
+		}
+	}
+
+	if matchedMethodMap != nil {
+		// Try exact method match
+		if scopes, ok := matchedMethodMap[method]; ok {
+			return scopes
+		}
+		// Try wildcard method fallback
+		if scopes, ok := matchedMethodMap["*"]; ok {
+			return scopes
+		}
+	}
+
+	return nil
+}
+
+// getPathScopes looks up scopes from EndpointScopeRequirements (method-agnostic).
+// Returns nil if no matching configuration is found.
+func (h *Handler) getPathScopes(normalizedPath string) []string {
+	// First, try exact match
+	if scopes, ok := h.server.Config.EndpointScopeRequirements[normalizedPath]; ok {
+		return scopes
+	}
+
+	// Then try prefix matches (patterns ending with /*)
+	// Use longest-prefix-match to ensure most specific pattern wins
+	var longestPrefix string
+	var matchedScopes []string
+
+	for pattern, scopes := range h.server.Config.EndpointScopeRequirements {
+		if strings.HasSuffix(pattern, "/*") {
+			prefix := strings.TrimSuffix(pattern, "*")
+			// Check if this prefix matches and is longer than current match
+			if strings.HasPrefix(normalizedPath, prefix) && len(prefix) > len(longestPrefix) {
+				longestPrefix = prefix
+				matchedScopes = scopes
+			}
+		}
+	}
+
+	return matchedScopes
+}
+
+// hasRequiredScopes checks if the token has all required scopes.
+// Returns true if:
+//   - No required scopes (empty list)
+//   - Token has all required scopes
+//
+// Returns false if token is missing any required scope.
+// Scope matching is case-sensitive per OAuth 2.0 spec.
+func hasRequiredScopes(tokenScopes, requiredScopes []string) bool {
+	// If no scopes required, allow access
+	if len(requiredScopes) == 0 {
+		return true
+	}
+
+	// Build a set of token scopes for efficient lookup
+	tokenScopeSet := make(map[string]bool, len(tokenScopes))
+	for _, scope := range tokenScopes {
+		tokenScopeSet[scope] = true
+	}
+
+	// Check if all required scopes are present
+	for _, required := range requiredScopes {
+		if !tokenScopeSet[required] {
+			return false
+		}
+	}
+
+	return true
 }
 
 // isValidAuthMethod checks if the given token endpoint auth method is supported
