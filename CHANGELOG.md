@@ -112,9 +112,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Fixed missing `registration_endpoint` field in `/.well-known/oauth-authorization-server` response
   - OAuth clients can now automatically discover Dynamic Client Registration endpoint via RFC 8414 metadata
   - The `/oauth/register` endpoint was working but not advertised in metadata
+  - **Conditional Advertising**: Field is only included when client registration is actually available
+    - Included when `RegistrationAccessToken` is set OR `AllowPublicClientRegistration=true`
+    - Excluded when neither is configured (defense-in-depth)
   - **Impact**: Enables automatic client discovery for RFC 8414-compliant OAuth clients
   - **Standards**: Complies with RFC 8414 Section 3.1 requirement for `registration_endpoint` field
-  - **Testing**: Enhanced metadata test to verify field presence and correct URL format
+  - **Security**: Added comprehensive documentation explaining metadata security model
+  - **Testing**: Enhanced metadata tests to verify conditional inclusion/exclusion behavior
 
 ### Security
 

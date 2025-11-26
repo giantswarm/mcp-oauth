@@ -122,6 +122,9 @@ func TestHandler_ServeAuthorizationServerMetadata(t *testing.T) {
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
+	// Enable client registration by setting a registration access token
+	handler.server.Config.RegistrationAccessToken = "test-token"
+
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
 	w := httptest.NewRecorder()
 
@@ -191,6 +194,73 @@ func TestHandler_ServeAuthorizationServerMetadata(t *testing.T) {
 	}
 	if len(meta.CodeChallengeMethodsSupported) > 0 && meta.CodeChallengeMethodsSupported[0] != "S256" {
 		t.Errorf("CodeChallengeMethodsSupported[0] = %q, want %q", meta.CodeChallengeMethodsSupported[0], "S256")
+	}
+}
+
+func TestHandler_ServeAuthorizationServerMetadata_NoRegistration(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Ensure client registration is disabled (neither token nor public registration)
+	handler.server.Config.AllowPublicClientRegistration = false
+	handler.server.Config.RegistrationAccessToken = ""
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeAuthorizationServerMetadata(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var meta AuthorizationServerMetadata
+	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Verify registration_endpoint is NOT included when registration is disabled
+	if meta.RegistrationEndpoint != "" {
+		t.Errorf("registration_endpoint should be empty when registration is disabled, got %q", meta.RegistrationEndpoint)
+	}
+
+	// Verify required fields are still present
+	if meta.Issuer != "https://auth.example.com" {
+		t.Errorf("issuer = %q, want %q", meta.Issuer, "https://auth.example.com")
+	}
+	if meta.AuthorizationEndpoint != "https://auth.example.com/oauth/authorize" {
+		t.Errorf("authorization_endpoint = %q, want %q", meta.AuthorizationEndpoint, "https://auth.example.com/oauth/authorize")
+	}
+	if meta.TokenEndpoint != "https://auth.example.com/oauth/token" {
+		t.Errorf("token_endpoint = %q, want %q", meta.TokenEndpoint, "https://auth.example.com/oauth/token")
+	}
+}
+
+func TestHandler_ServeAuthorizationServerMetadata_PublicRegistration(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Enable public client registration (no token required)
+	handler.server.Config.AllowPublicClientRegistration = true
+	handler.server.Config.RegistrationAccessToken = ""
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeAuthorizationServerMetadata(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var meta AuthorizationServerMetadata
+	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Verify registration_endpoint IS included when public registration is enabled
+	if meta.RegistrationEndpoint != "https://auth.example.com/oauth/register" {
+		t.Errorf("registration_endpoint = %q, want %q", meta.RegistrationEndpoint, "https://auth.example.com/oauth/register")
 	}
 }
 

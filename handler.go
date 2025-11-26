@@ -172,10 +172,15 @@ func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 		"issuer":                           h.server.Config.Issuer,
 		"authorization_endpoint":           h.server.Config.AuthorizationEndpoint(),
 		"token_endpoint":                   h.server.Config.TokenEndpoint(),
-		"registration_endpoint":            h.server.Config.RegistrationEndpoint(),
 		"response_types_supported":         []string{"code"},
 		"grant_types_supported":            []string{"authorization_code", "refresh_token"},
 		"code_challenge_methods_supported": []string{PKCEMethodS256},
+	}
+
+	// Only advertise registration_endpoint if client registration is actually available
+	// RFC 8414: registration_endpoint is OPTIONAL and should only be included if supported
+	if h.server.Config.AllowPublicClientRegistration || h.server.Config.RegistrationAccessToken != "" {
+		metadata["registration_endpoint"] = h.server.Config.RegistrationEndpoint()
 	}
 
 	w.Header().Set("Content-Type", "application/json")
