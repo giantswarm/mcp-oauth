@@ -279,6 +279,15 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 		return "", fmt.Errorf("%w (OAuth 2.0 Security BCP)", err)
 	}
 
+	// Generate server-side state if client didn't provide one (when AllowNoStateParameter=true)
+	// This is needed for internal tracking even when client state is not required
+	internalState := clientState
+	if internalState == "" {
+		internalState = generateRandomToken()
+		s.Logger.Debug("Generated server-side state for client without state parameter",
+			"client_id", clientID)
+	}
+
 	// PKCE validation (secure by default, configurable for backward compatibility)
 	if s.Config.RequirePKCE {
 		// PKCE is required (default, recommended for OAuth 2.1)
@@ -404,8 +413,10 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 	providerCodeChallenge, providerCodeVerifier := generatePKCEPair()
 
 	// Save authorization state with both client and server PKCE parameters and resource binding
+	// Use internalState (which may be server-generated if client didn't provide state)
 	authState := &storage.AuthorizationState{
-		StateID:              clientState,
+		StateID:              internalState,
+		OriginalClientState:  clientState, // Empty if client didn't provide state
 		ClientID:             clientID,
 		RedirectURI:          redirectURI,
 		Scope:                scope,
@@ -480,7 +491,8 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 	}
 
 	// Save the client's original state before deletion
-	clientState := authState.StateID
+	// Use OriginalClientState which is empty if client didn't provide state
+	clientState := authState.OriginalClientState
 
 	// Save provider verifier before deleting state
 	providerVerifier := authState.ProviderCodeVerifier
@@ -820,17 +832,31 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 
 	// Track access token metadata for revocation (OAuth 2.1 code reuse detection)
 	// RFC 8707: Store audience binding with tokens for validation
-	// MCP 2025-11-25: Store scopes with tokens for scope validation
-
-	// Parse scopes from authorization code
-	tokenScopes := normalizeScopes(authCode.Scope)
-
-	// Store access token metadata (tries scopes+audience, audience-only, then basic)
-	s.saveTokenMetadata(accessToken, authCode.UserID, clientID, "access", authCode.Audience, tokenScopes)
-
-	// CRITICAL: Also save refresh token metadata for revocation
-	// Refresh tokens inherit the audience and scopes from the authorization code
-	s.saveTokenMetadata(refreshToken, authCode.UserID, clientID, "refresh", authCode.Audience, tokenScopes)
+	if metadataStoreWithAudience, ok := s.tokenStore.(interface {
+		SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenType, audience string) error
+	}); ok {
+		// Store access token with audience binding (RFC 8707)
+		if err := metadataStoreWithAudience.SaveTokenMetadataWithAudience(accessToken, authCode.UserID, clientID, "access", authCode.Audience); err != nil {
+			s.Logger.Warn("Failed to save access token metadata with audience", "error", err)
+		}
+		// CRITICAL: Also save refresh token metadata with audience for revocation
+		// Refresh tokens inherit the audience from the authorization code
+		if err := metadataStoreWithAudience.SaveTokenMetadataWithAudience(refreshToken, authCode.UserID, clientID, "refresh", authCode.Audience); err != nil {
+			s.Logger.Warn("Failed to save refresh token metadata with audience", "error", err)
+		}
+	} else if metadataStore, ok := s.tokenStore.(interface {
+		SaveTokenMetadata(tokenID, userID, clientID, tokenType string) error
+	}); ok {
+		// Fallback to basic metadata store without audience (backward compatibility)
+		if err := metadataStore.SaveTokenMetadata(accessToken, authCode.UserID, clientID, "access"); err != nil {
+			s.Logger.Warn("Failed to save access token metadata", "error", err)
+		}
+		// CRITICAL: Also save refresh token metadata for revocation
+		// This ensures refresh tokens can be found and revoked during code reuse detection
+		if err := metadataStore.SaveTokenMetadata(refreshToken, authCode.UserID, clientID, "refresh"); err != nil {
+			s.Logger.Warn("Failed to save refresh token metadata", "error", err)
+		}
+	}
 
 	// Track refresh token with expiry (OAuth 2.1 security)
 	// Use family tracking if storage supports it (for reuse detection)
