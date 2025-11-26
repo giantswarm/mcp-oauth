@@ -444,6 +444,16 @@ func (c *Config) ProtectedResourceMetadataEndpoint() string {
 	return c.Issuer + "/.well-known/oauth-protected-resource"
 }
 
+// RevocationEndpoint returns the full URL to the RFC 7009 token revocation endpoint
+func (c *Config) RevocationEndpoint() string {
+	return c.Issuer + "/oauth/revoke"
+}
+
+// IntrospectionEndpoint returns the full URL to the RFC 7662 token introspection endpoint
+func (c *Config) IntrospectionEndpoint() string {
+	return c.Issuer + "/oauth/introspect"
+}
+
 // GetResourceIdentifier returns the resource identifier for this server
 // If ResourceIdentifier is explicitly configured, returns that value
 // Otherwise, defaults to the Issuer value (secure default)

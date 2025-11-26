@@ -649,6 +649,185 @@ func TestHandler_ServeAuthorizationServerMetadata_PublicRegistration(t *testing.
 	}
 }
 
+// TestHandler_ServeAuthorizationServerMetadata_EnhancedFields tests the new metadata fields
+// added for MCP 2025-11-25 compliance (issue #78)
+func TestHandler_ServeAuthorizationServerMetadata_EnhancedFields(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Configure supported scopes
+	handler.server.Config.SupportedScopes = []string{"openid", "profile", "email", "files:read", "files:write"}
+
+	// Enable Client ID Metadata Documents
+	handler.server.Config.EnableClientIDMetadataDocuments = true
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeAuthorizationServerMetadata(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var meta AuthorizationServerMetadata
+	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Test new endpoint fields (RFC 7009, RFC 7662)
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{
+			name: "revocation_endpoint",
+			got:  meta.RevocationEndpoint,
+			want: "https://auth.example.com/oauth/revoke",
+		},
+		{
+			name: "introspection_endpoint",
+			got:  meta.IntrospectionEndpoint,
+			want: "https://auth.example.com/oauth/introspect",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Errorf("%s = %q, want %q", tt.name, tt.got, tt.want)
+			}
+		})
+	}
+
+	// Verify token_endpoint_auth_methods_supported
+	if len(meta.TokenEndpointAuthMethodsSupported) != 3 {
+		t.Errorf("len(TokenEndpointAuthMethodsSupported) = %d, want 3", len(meta.TokenEndpointAuthMethodsSupported))
+	}
+	expectedAuthMethods := map[string]bool{
+		"client_secret_basic": true,
+		"client_secret_post":  true,
+		"none":                true,
+	}
+	for _, method := range meta.TokenEndpointAuthMethodsSupported {
+		if !expectedAuthMethods[method] {
+			t.Errorf("unexpected auth method: %q", method)
+		}
+	}
+
+	// Verify scopes_supported
+	if len(meta.ScopesSupported) != 5 {
+		t.Errorf("len(ScopesSupported) = %d, want 5", len(meta.ScopesSupported))
+	}
+	expectedScopes := map[string]bool{
+		"openid":      true,
+		"profile":     true,
+		"email":       true,
+		"files:read":  true,
+		"files:write": true,
+	}
+	for _, scope := range meta.ScopesSupported {
+		if !expectedScopes[scope] {
+			t.Errorf("unexpected scope: %q", scope)
+		}
+	}
+
+	// Verify client_id_metadata_document_supported
+	if !meta.ClientIDMetadataDocumentSupported {
+		t.Error("ClientIDMetadataDocumentSupported should be true when enabled")
+	}
+}
+
+// TestHandler_ServeAuthorizationServerMetadata_NoScopes verifies scopes_supported
+// is not included when no scopes are configured
+func TestHandler_ServeAuthorizationServerMetadata_NoScopes(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Ensure no scopes are configured
+	handler.server.Config.SupportedScopes = nil
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeAuthorizationServerMetadata(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var meta AuthorizationServerMetadata
+	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Verify scopes_supported is not included (nil/empty)
+	if len(meta.ScopesSupported) > 0 {
+		t.Errorf("ScopesSupported should be empty when no scopes configured, got %v", meta.ScopesSupported)
+	}
+}
+
+// TestHandler_ServeOpenIDConfiguration verifies OpenID Connect Discovery endpoint
+// returns the same metadata as Authorization Server Metadata (RFC 8414 Section 5)
+func TestHandler_ServeOpenIDConfiguration(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Configure server with some settings
+	handler.server.Config.SupportedScopes = []string{"openid", "profile"}
+	handler.server.Config.EnableClientIDMetadataDocuments = true
+
+	// Request Authorization Server Metadata
+	reqAS := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	wAS := httptest.NewRecorder()
+	handler.ServeAuthorizationServerMetadata(wAS, reqAS)
+
+	// Request OpenID Configuration
+	reqOIDC := httptest.NewRequest(http.MethodGet, "/.well-known/openid-configuration", nil)
+	wOIDC := httptest.NewRecorder()
+	handler.ServeOpenIDConfiguration(wOIDC, reqOIDC)
+
+	// Both should return 200 OK
+	if wAS.Code != http.StatusOK {
+		t.Errorf("AS metadata status = %d, want %d", wAS.Code, http.StatusOK)
+	}
+	if wOIDC.Code != http.StatusOK {
+		t.Errorf("OIDC configuration status = %d, want %d", wOIDC.Code, http.StatusOK)
+	}
+
+	// Decode both responses
+	var metaAS, metaOIDC AuthorizationServerMetadata
+	if err := json.NewDecoder(wAS.Body).Decode(&metaAS); err != nil {
+		t.Fatalf("failed to decode AS metadata: %v", err)
+	}
+	if err := json.NewDecoder(wOIDC.Body).Decode(&metaOIDC); err != nil {
+		t.Fatalf("failed to decode OIDC configuration: %v", err)
+	}
+
+	// Verify key fields match
+	if metaAS.Issuer != metaOIDC.Issuer {
+		t.Errorf("issuer mismatch: AS=%q, OIDC=%q", metaAS.Issuer, metaOIDC.Issuer)
+	}
+	if metaAS.AuthorizationEndpoint != metaOIDC.AuthorizationEndpoint {
+		t.Errorf("authorization_endpoint mismatch: AS=%q, OIDC=%q", metaAS.AuthorizationEndpoint, metaOIDC.AuthorizationEndpoint)
+	}
+	if metaAS.TokenEndpoint != metaOIDC.TokenEndpoint {
+		t.Errorf("token_endpoint mismatch: AS=%q, OIDC=%q", metaAS.TokenEndpoint, metaOIDC.TokenEndpoint)
+	}
+	if metaAS.RevocationEndpoint != metaOIDC.RevocationEndpoint {
+		t.Errorf("revocation_endpoint mismatch: AS=%q, OIDC=%q", metaAS.RevocationEndpoint, metaOIDC.RevocationEndpoint)
+	}
+	if metaAS.IntrospectionEndpoint != metaOIDC.IntrospectionEndpoint {
+		t.Errorf("introspection_endpoint mismatch: AS=%q, OIDC=%q", metaAS.IntrospectionEndpoint, metaOIDC.IntrospectionEndpoint)
+	}
+
+	// Verify array lengths match
+	if len(metaAS.ScopesSupported) != len(metaOIDC.ScopesSupported) {
+		t.Errorf("scopes_supported length mismatch: AS=%d, OIDC=%d", len(metaAS.ScopesSupported), len(metaOIDC.ScopesSupported))
+	}
+}
+
 func TestHandler_ServeClientRegistration(t *testing.T) {
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
