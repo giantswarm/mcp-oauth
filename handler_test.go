@@ -1032,6 +1032,146 @@ func TestHandler_ServeClientRegistration_TokenEndpointAuthMethod(t *testing.T) {
 	}
 }
 
+func TestHandler_ServeClientRegistration_PublicClientPolicy(t *testing.T) {
+	// Test that public client registration is properly controlled by AllowPublicClientRegistration
+	const testRegistrationToken = "test-registration-token-12345"
+
+	tests := []struct {
+		name                          string
+		allowPublicClientRegistration bool
+		tokenEndpointAuthMethod       string
+		clientType                    string
+		wantStatus                    int
+		wantErrorContains             string
+	}{
+		{
+			name:                          "public client rejected when policy disabled (auth_method=none)",
+			allowPublicClientRegistration: false,
+			tokenEndpointAuthMethod:       "none",
+			clientType:                    "",
+			wantStatus:                    http.StatusBadRequest,
+			wantErrorContains:             "Public client registration is not enabled",
+		},
+		{
+			name:                          "public client rejected when policy disabled (client_type=public)",
+			allowPublicClientRegistration: false,
+			tokenEndpointAuthMethod:       "",
+			clientType:                    "public",
+			wantStatus:                    http.StatusBadRequest,
+			wantErrorContains:             "Public client registration is not enabled",
+		},
+		{
+			name:                          "public client rejected when policy disabled (both specified)",
+			allowPublicClientRegistration: false,
+			tokenEndpointAuthMethod:       "none",
+			clientType:                    "public",
+			wantStatus:                    http.StatusBadRequest,
+			wantErrorContains:             "Public client registration is not enabled",
+		},
+		{
+			name:                          "public client allowed when policy enabled (auth_method=none)",
+			allowPublicClientRegistration: true,
+			tokenEndpointAuthMethod:       "none",
+			clientType:                    "",
+			wantStatus:                    http.StatusCreated,
+		},
+		{
+			name:                          "public client allowed when policy enabled (client_type=public)",
+			allowPublicClientRegistration: true,
+			tokenEndpointAuthMethod:       "",
+			clientType:                    "public",
+			wantStatus:                    http.StatusCreated,
+		},
+		{
+			name:                          "confidential client allowed when policy disabled",
+			allowPublicClientRegistration: false,
+			tokenEndpointAuthMethod:       "client_secret_basic",
+			clientType:                    "",
+			wantStatus:                    http.StatusCreated,
+		},
+		{
+			name:                          "confidential client (default) allowed when policy disabled",
+			allowPublicClientRegistration: false,
+			tokenEndpointAuthMethod:       "",
+			clientType:                    "confidential",
+			wantStatus:                    http.StatusCreated,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler, store := setupTestHandler(t)
+			defer store.Stop()
+
+			// Configure the policy for this test
+			handler.server.Config.AllowPublicClientRegistration = tt.allowPublicClientRegistration
+			handler.server.Config.AllowPublicClientsWithoutPKCE = true // Not relevant for registration test
+
+			// Set registration token when authentication is required
+			if !tt.allowPublicClientRegistration {
+				handler.server.Config.RegistrationAccessToken = testRegistrationToken
+			}
+
+			regReq := ClientRegistrationRequest{
+				RedirectURIs:            []string{"https://example.com/callback"},
+				TokenEndpointAuthMethod: tt.tokenEndpointAuthMethod,
+				ClientType:              tt.clientType,
+				GrantTypes:              []string{"authorization_code"},
+				ResponseTypes:           []string{"code"},
+				ClientName:              "Test Client - " + tt.name,
+			}
+
+			body, _ := json.Marshal(regReq)
+			req := httptest.NewRequest(http.MethodPost, "/register", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.RemoteAddr = "192.168.1.100"
+
+			// Add authentication header when required
+			if !tt.allowPublicClientRegistration {
+				req.Header.Set("Authorization", "Bearer "+testRegistrationToken)
+			}
+
+			w := httptest.NewRecorder()
+
+			handler.ServeClientRegistration(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d, body: %s", w.Code, tt.wantStatus, w.Body.String())
+			}
+
+			if tt.wantStatus == http.StatusBadRequest && tt.wantErrorContains != "" {
+				body := w.Body.String()
+				if !strings.Contains(body, tt.wantErrorContains) {
+					t.Errorf("error response should contain %q, got: %s", tt.wantErrorContains, body)
+				}
+			}
+
+			if tt.wantStatus == http.StatusCreated {
+				var resp ClientRegistrationResponse
+				if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+					t.Fatalf("failed to decode response: %v", err)
+				}
+
+				if resp.ClientID == "" {
+					t.Error("ClientID should not be empty")
+				}
+
+				// Verify the client was created with correct type
+				expectedType := tt.clientType
+				if tt.tokenEndpointAuthMethod == "none" {
+					expectedType = "public"
+				} else if expectedType == "" {
+					expectedType = "confidential"
+				}
+
+				if resp.ClientType != expectedType {
+					t.Errorf("ClientType = %q, want %q", resp.ClientType, expectedType)
+				}
+			}
+		})
+	}
+}
+
 func TestUserInfoFromContext(t *testing.T) {
 	// Test with no user info in context
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)

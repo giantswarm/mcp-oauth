@@ -719,10 +719,12 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	if req.TokenEndpointAuthMethod != "" && !isValidAuthMethod(req.TokenEndpointAuthMethod) {
 		h.logger.Warn("Unsupported token_endpoint_auth_method requested",
 			"method", req.TokenEndpointAuthMethod,
+			"supported_methods", SupportedTokenAuthMethods,
 			"ip", clientIP)
+		// SECURITY: Don't reveal full list of supported methods in error response
+		// Supported methods are already advertised in /.well-known/oauth-authorization-server
 		h.writeError(w, ErrorCodeInvalidRequest,
-			fmt.Sprintf("Unsupported token_endpoint_auth_method: %s. Supported: %v",
-				req.TokenEndpointAuthMethod, SupportedTokenAuthMethods),
+			fmt.Sprintf("Unsupported token_endpoint_auth_method: %s", req.TokenEndpointAuthMethod),
 			http.StatusBadRequest)
 		return
 	}
@@ -731,10 +733,29 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	// When client requests "none" auth method, they're requesting a public client
 	// This is common for native/CLI apps that can't securely store secrets
 	if req.TokenEndpointAuthMethod == TokenEndpointAuthMethodNone || req.ClientType == ClientTypePublic {
-		// Note: We check the configuration that was validated at startup
-		// AllowPublicClientRegistration must be explicitly set for public clients
-		// The registration access token requirement is checked above
-		h.logger.Info("Public client registration requested",
+		// CRITICAL: Enforce AllowPublicClientRegistration policy
+		// Even with a valid registration access token, public client creation must be explicitly allowed
+		if !h.server.Config.AllowPublicClientRegistration {
+			h.logger.Warn("Public client registration rejected (not allowed by configuration)",
+				"token_endpoint_auth_method", req.TokenEndpointAuthMethod,
+				"client_type", req.ClientType,
+				"ip", clientIP,
+				"recommendation", "Set AllowPublicClientRegistration=true to enable public client registration")
+			h.recordHTTPMetrics("register", http.MethodPost, http.StatusBadRequest, startTime)
+			if span != nil {
+				instrumentation.SetSpanAttributes(span,
+					attribute.String("oauth.client_type", "public"),
+					attribute.String("security.event", "public_client_registration_denied"),
+				)
+				instrumentation.SetSpanError(span, "public client registration not allowed")
+			}
+			h.writeError(w, ErrorCodeInvalidRequest,
+				"Public client registration is not enabled on this server. Contact the server administrator.",
+				http.StatusBadRequest)
+			return
+		}
+
+		h.logger.Info("Public client registration authorized",
 			"token_endpoint_auth_method", req.TokenEndpointAuthMethod,
 			"client_type", req.ClientType,
 			"ip", clientIP)
