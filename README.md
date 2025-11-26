@@ -462,6 +462,20 @@ curl -X POST https://your-server.com/oauth/register \
   -d '{"client_name": "My App", "redirect_uris": ["https://myapp.com/callback"]}'
 ```
 
+**Metadata Discovery & Security:**
+
+The registration endpoint is advertised in RFC 8414 Authorization Server Metadata (`/.well-known/oauth-authorization-server`) when client registration is enabled:
+- **Included**: When `RegistrationAccessToken` is set OR `AllowPublicClientRegistration=true`
+- **Excluded**: When neither is configured (endpoint effectively disabled)
+
+This conditional advertising provides defense-in-depth:
+- RFC 8414-compliant clients can automatically discover the registration endpoint
+- The endpoint remains hidden in metadata when registration is disabled
+- Even if advertised, the endpoint enforces authentication via Bearer token
+- Multiple layers of protection: authentication, rate limiting, per-IP limits, and audit logging
+
+**Security Note:** Advertising the registration endpoint in metadata does NOT weaken security. The endpoint itself enforces strict authentication (when `AllowPublicClientRegistration=false`), rate limiting, and audit logging. This is analogous to advertising the token endpoint - it's public information about available functionality, but access is strictly controlled.
+
 ### Custom Redirect URI Schemes
 
 Support for native/mobile apps with custom URI schemes:

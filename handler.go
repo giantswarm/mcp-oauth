@@ -170,11 +170,17 @@ func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	metadata := map[string]any{
 		"issuer":                           h.server.Config.Issuer,
-		"authorization_endpoint":           h.server.Config.Issuer + "/oauth/authorize",
-		"token_endpoint":                   h.server.Config.Issuer + "/oauth/token",
+		"authorization_endpoint":           h.server.Config.AuthorizationEndpoint(),
+		"token_endpoint":                   h.server.Config.TokenEndpoint(),
 		"response_types_supported":         []string{"code"},
 		"grant_types_supported":            []string{"authorization_code", "refresh_token"},
-		"code_challenge_methods_supported": []string{"S256"},
+		"code_challenge_methods_supported": []string{PKCEMethodS256},
+	}
+
+	// Only advertise registration_endpoint if client registration is actually available
+	// RFC 8414: registration_endpoint is OPTIONAL and should only be included if supported
+	if h.server.Config.AllowPublicClientRegistration || h.server.Config.RegistrationAccessToken != "" {
+		metadata["registration_endpoint"] = h.server.Config.RegistrationEndpoint()
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -434,7 +440,7 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	// Record code exchanged metric
 	pkceMethod := ""
 	if codeVerifier != "" {
-		pkceMethod = "S256"
+		pkceMethod = PKCEMethodS256
 	}
 	h.recordCodeExchanged(client.ClientID, pkceMethod)
 
