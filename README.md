@@ -93,11 +93,15 @@ func main() {
     handler := oauth.NewHandler(server, nil)
 
     // 5. Setup routes
-    http.HandleFunc("/.well-known/oauth-protected-resource",
-        handler.ServeProtectedResourceMetadata)
-    http.Handle("/mcp", handler.ValidateToken(yourMCPHandler))
+    mux := http.NewServeMux()
+    
+    // Register Protected Resource Metadata endpoints (root + sub-path)
+    handler.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
+    
+    // Protected MCP endpoint
+    mux.Handle("/mcp", handler.ValidateToken(yourMCPHandler))
 
-    http.ListenAndServe(":8080", nil)
+    http.ListenAndServe(":8080", mux)
 }
 ```
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 
@@ -155,8 +156,82 @@ func (h *Handler) ServeProtectedResourceMetadata(w http.ResponseWriter, r *http.
 		"bearer_methods_supported": []string{"header"},
 	}
 
+	// Include scopes_supported if configured (MCP 2025-11-25)
+	if len(h.server.Config.SupportedScopes) > 0 {
+		metadata["scopes_supported"] = h.server.Config.SupportedScopes
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(metadata)
+}
+
+// RegisterProtectedResourceMetadataRoutes registers all Protected Resource Metadata discovery routes.
+// It registers both the root endpoint and optional sub-path endpoint if mcpPath is provided.
+//
+// Security: This function validates the mcpPath to prevent path traversal attacks and DoS through
+// excessively long paths. Invalid paths are logged and skipped.
+//
+// Example usage:
+//
+//	mux := http.NewServeMux()
+//	handler.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
+//	// This registers both:
+//	//   /.well-known/oauth-protected-resource
+//	//   /.well-known/oauth-protected-resource/mcp
+func (h *Handler) RegisterProtectedResourceMetadataRoutes(mux *http.ServeMux, mcpPath string) {
+	// Always register root metadata endpoint
+	mux.HandleFunc(MetadataPathProtectedResource, h.ServeProtectedResourceMetadata)
+
+	// Register sub-path metadata endpoint if MCP endpoint has a path
+	if mcpPath != "" && mcpPath != "/" {
+		// SECURITY: Validate path before registration to prevent attacks
+		if err := h.validateMetadataPath(mcpPath); err != nil {
+			h.logger.Warn("Rejecting invalid metadata path registration",
+				"path", mcpPath,
+				"error", err,
+				"security_event", "invalid_metadata_path")
+			return
+		}
+
+		// Clean and normalize the path
+		cleanPath := path.Clean("/" + strings.TrimPrefix(mcpPath, "/"))
+		subPath := MetadataPathProtectedResource + cleanPath
+
+		h.logger.Info("Registering metadata sub-path endpoint",
+			"path", subPath,
+			"original_mcp_path", mcpPath)
+
+		mux.HandleFunc(subPath, h.ServeProtectedResourceMetadata)
+	}
+}
+
+// validateMetadataPath validates a metadata path for security concerns.
+// It checks for path traversal attempts, excessive length, and other malicious patterns.
+func (h *Handler) validateMetadataPath(mcpPath string) error {
+	// SECURITY: Reject paths containing path traversal sequences
+	// Defense in depth: path.Clean() would normalize these, but explicit check prevents confusion
+	if strings.Contains(mcpPath, "..") {
+		return fmt.Errorf("path contains '..' sequence (path traversal attempt)")
+	}
+
+	// SECURITY: Prevent DoS through excessively long paths
+	// Long paths consume memory and can cause issues with storage, logging, and HTTP headers
+	if len(mcpPath) > MaxMetadataPathLength {
+		return fmt.Errorf("path exceeds maximum length of %d characters (DoS prevention)", MaxMetadataPathLength)
+	}
+
+	// SECURITY: Reject paths with suspicious patterns
+	// Null bytes can cause issues in some HTTP implementations
+	if strings.Contains(mcpPath, "\x00") {
+		return fmt.Errorf("path contains null byte")
+	}
+
+	// SECURITY: Reject paths with excessive slashes (potential DoS or confusion)
+	if strings.Count(mcpPath, "/") > 10 {
+		return fmt.Errorf("path contains too many segments (DoS prevention)")
+	}
+
+	return nil
 }
 
 // ServeAuthorizationServerMetadata serves RFC 8414 Authorization Server Metadata

@@ -96,23 +96,25 @@ func main() {
 	handler := oauth.NewHandler(server, logger)
 
 	// 7. Setup routes
+	mux := http.NewServeMux()
 
 	// OAuth Metadata Endpoints (RFC 8414, RFC 9728)
-	http.HandleFunc("/.well-known/oauth-protected-resource", handler.ServeProtectedResourceMetadata)
-	http.HandleFunc("/.well-known/oauth-authorization-server", handler.ServeAuthorizationServerMetadata)
+	// This registers both root and sub-path metadata endpoints
+	handler.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
+	mux.HandleFunc("/.well-known/oauth-authorization-server", handler.ServeAuthorizationServerMetadata)
 
 	// OAuth Flow Endpoints
-	http.HandleFunc("/oauth/authorize", handler.ServeAuthorization)
-	http.HandleFunc("/oauth/callback", handler.ServeCallback)
-	http.HandleFunc("/oauth/token", handler.ServeToken)
-	http.HandleFunc("/oauth/revoke", handler.ServeTokenRevocation)
-	http.HandleFunc("/oauth/register", handler.ServeClientRegistration)
+	mux.HandleFunc("/oauth/authorize", handler.ServeAuthorization)
+	mux.HandleFunc("/oauth/callback", handler.ServeCallback)
+	mux.HandleFunc("/oauth/token", handler.ServeToken)
+	mux.HandleFunc("/oauth/revoke", handler.ServeTokenRevocation)
+	mux.HandleFunc("/oauth/register", handler.ServeClientRegistration)
 
 	// Protected MCP endpoint
-	http.Handle("/mcp", handler.ValidateToken(mcpHandler()))
+	mux.Handle("/mcp", handler.ValidateToken(mcpHandler()))
 
 	// Health check
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "OK - Provider: %s\n", googleProvider.Name())
 	})
@@ -125,13 +127,14 @@ func main() {
 		encKeyB64 != "", true, true)
 	log.Printf("\nEndpoints:")
 	log.Printf("  Metadata:      /.well-known/oauth-protected-resource")
+	log.Printf("  Metadata:      /.well-known/oauth-protected-resource/mcp (sub-path)")
 	log.Printf("  Authorization: /oauth/authorize")
 	log.Printf("  Token:         /oauth/token")
 	log.Printf("  Callback:      /oauth/callback")
 	log.Printf("  Register:      /oauth/register")
 	log.Printf("  Revoke:        /oauth/revoke")
 	log.Printf("  Protected MCP: /mcp")
-	log.Fatal(http.ListenAndServe(addr, nil))
+	log.Fatal(http.ListenAndServe(addr, mux))
 }
 
 func mcpHandler() http.Handler {
