@@ -61,7 +61,7 @@ func (a *Auditor) LogEvent(event Event) {
 // LogTokenIssued logs when a token is issued
 func (a *Auditor) LogTokenIssued(userID, clientID, ipAddress, scope string) {
 	a.LogEvent(Event{
-		Type:      "token_issued",
+		Type:      EventTokenIssued,
 		UserID:    userID,
 		ClientID:  clientID,
 		IPAddress: ipAddress,
@@ -74,7 +74,7 @@ func (a *Auditor) LogTokenIssued(userID, clientID, ipAddress, scope string) {
 // LogTokenRefreshed logs when a token is refreshed
 func (a *Auditor) LogTokenRefreshed(userID, clientID, ipAddress string, rotated bool) {
 	a.LogEvent(Event{
-		Type:      "token_refreshed",
+		Type:      EventTokenRefreshed,
 		UserID:    userID,
 		ClientID:  clientID,
 		IPAddress: ipAddress,
@@ -87,7 +87,7 @@ func (a *Auditor) LogTokenRefreshed(userID, clientID, ipAddress string, rotated 
 // LogTokenRevoked logs when a token is revoked
 func (a *Auditor) LogTokenRevoked(userID, clientID, ipAddress, tokenType string) {
 	a.LogEvent(Event{
-		Type:      "token_revoked",
+		Type:      EventTokenRevoked,
 		UserID:    userID,
 		ClientID:  clientID,
 		IPAddress: ipAddress,
@@ -100,7 +100,7 @@ func (a *Auditor) LogTokenRevoked(userID, clientID, ipAddress, tokenType string)
 // LogAuthFailure logs an authentication failure
 func (a *Auditor) LogAuthFailure(userID, clientID, ipAddress, reason string) {
 	a.LogEvent(Event{
-		Type:      "auth_failure",
+		Type:      EventAuthFailure,
 		UserID:    userID,
 		ClientID:  clientID,
 		IPAddress: ipAddress,
@@ -113,7 +113,7 @@ func (a *Auditor) LogAuthFailure(userID, clientID, ipAddress, reason string) {
 // LogRateLimitExceeded logs a rate limit violation
 func (a *Auditor) LogRateLimitExceeded(ipAddress, userID string) {
 	a.LogEvent(Event{
-		Type:      "rate_limit_exceeded",
+		Type:      EventRateLimitExceeded,
 		UserID:    userID,
 		IPAddress: ipAddress,
 	})
@@ -122,7 +122,7 @@ func (a *Auditor) LogRateLimitExceeded(ipAddress, userID string) {
 // LogClientRegistrationRateLimitExceeded logs when client registration rate limit is exceeded
 func (a *Auditor) LogClientRegistrationRateLimitExceeded(ipAddress string) {
 	a.LogEvent(Event{
-		Type:      "client_registration_rate_limit_exceeded",
+		Type:      EventClientRegistrationRateLimitExceeded,
 		IPAddress: ipAddress,
 		Details: map[string]any{
 			"severity": "medium",
@@ -134,7 +134,7 @@ func (a *Auditor) LogClientRegistrationRateLimitExceeded(ipAddress string) {
 // LogClientRegistered logs when a new client is registered
 func (a *Auditor) LogClientRegistered(clientID, clientType, ipAddress string) {
 	a.LogEvent(Event{
-		Type:      "client_registered",
+		Type:      EventClientRegistered,
 		ClientID:  clientID,
 		IPAddress: ipAddress,
 		Details: map[string]any{
@@ -146,7 +146,7 @@ func (a *Auditor) LogClientRegistered(clientID, clientType, ipAddress string) {
 // LogInvalidPKCE logs when PKCE validation fails
 func (a *Auditor) LogInvalidPKCE(clientID, ipAddress, reason string) {
 	a.LogEvent(Event{
-		Type:      "invalid_pkce",
+		Type:      EventInvalidPKCE,
 		ClientID:  clientID,
 		IPAddress: ipAddress,
 		Details: map[string]any{
@@ -158,7 +158,7 @@ func (a *Auditor) LogInvalidPKCE(clientID, ipAddress, reason string) {
 // LogTokenReuse logs when refresh token reuse is detected (security event)
 func (a *Auditor) LogTokenReuse(userID, ipAddress string) {
 	a.LogEvent(Event{
-		Type:      "token_reuse_detected",
+		Type:      EventTokenReuseDetected,
 		UserID:    userID,
 		IPAddress: ipAddress,
 		Details: map[string]any{
@@ -171,7 +171,7 @@ func (a *Auditor) LogTokenReuse(userID, ipAddress string) {
 // LogSuspiciousActivity logs suspicious activity
 func (a *Auditor) LogSuspiciousActivity(userID, clientID, ipAddress, description string) {
 	a.LogEvent(Event{
-		Type:      "suspicious_activity",
+		Type:      EventSuspiciousActivity,
 		UserID:    userID,
 		ClientID:  clientID,
 		IPAddress: ipAddress,
@@ -184,7 +184,7 @@ func (a *Auditor) LogSuspiciousActivity(userID, clientID, ipAddress, description
 // LogInvalidRedirect logs invalid redirect URI attempts
 func (a *Auditor) LogInvalidRedirect(clientID, ipAddress, uri, reason string) {
 	a.LogEvent(Event{
-		Type:      "invalid_redirect",
+		Type:      EventInvalidRedirect,
 		ClientID:  clientID,
 		IPAddress: ipAddress,
 		Details: map[string]any{

@@ -18,6 +18,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
+	"github.com/giantswarm/mcp-oauth/internal/util"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
@@ -38,16 +39,6 @@ const (
 	// Set to 5x the warning threshold for safety margin
 	hardMaxFamilyMetadataEntries = 50000
 )
-
-// safeTruncate safely truncates a string to maxLen characters without panicking.
-// Returns the original string if it's shorter than maxLen, otherwise returns
-// the first maxLen characters. This prevents index out of bounds errors.
-func safeTruncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen]
-}
 
 // RefreshTokenFamily tracks a family of refresh tokens for reuse detection (OAuth 2.1)
 type RefreshTokenFamily struct {
@@ -613,7 +604,7 @@ func (s *Store) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, us
 
 	s.logger.Debug("Saved refresh token with family tracking",
 		"user_id", userID,
-		"family_id", safeTruncate(familyID, tokenIDLogLength),
+		"family_id", util.SafeTruncate(familyID, tokenIDLogLength),
 		"generation", generation,
 		"expires_at", expiresAt)
 	return nil
@@ -665,7 +656,7 @@ func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) e
 
 	if revokedCount > 0 {
 		s.logger.Warn("Revoked refresh token family due to reuse detection",
-			"family_id", safeTruncate(familyID, tokenIDLogLength),
+			"family_id", util.SafeTruncate(familyID, tokenIDLogLength),
 			"tokens_revoked", revokedCount)
 	}
 
@@ -854,7 +845,7 @@ func (s *Store) SaveAuthorizationState(ctx context.Context, state *storage.Autho
 	// ProviderState is used when validating provider callbacks
 	s.authStates[state.StateID] = state
 	s.authStates[state.ProviderState] = state
-	s.logger.Debug("Saved authorization state", "state_id", state.StateID, "provider_state_prefix", safeTruncate(state.ProviderState, tokenIDLogLength))
+	s.logger.Debug("Saved authorization state", "state_id", state.StateID, "provider_state_prefix", util.SafeTruncate(state.ProviderState, tokenIDLogLength))
 	return nil
 }
 
@@ -938,7 +929,7 @@ func (s *Store) SaveAuthorizationCode(ctx context.Context, code *storage.Authori
 	defer s.mu.Unlock()
 
 	s.authCodes[code.Code] = code
-	s.logger.Debug("Saved authorization code", "code_prefix", safeTruncate(code.Code, tokenIDLogLength))
+	s.logger.Debug("Saved authorization code", "code_prefix", util.SafeTruncate(code.Code, tokenIDLogLength))
 	return nil
 }
 
@@ -1003,7 +994,7 @@ func (s *Store) AtomicCheckAndMarkAuthCodeUsed(ctx context.Context, code string)
 	// Mark as used atomically
 	authCode.Used = true
 	s.logger.Debug("Marked authorization code as used",
-		"code_prefix", safeTruncate(code, tokenIDLogLength))
+		"code_prefix", util.SafeTruncate(code, tokenIDLogLength))
 
 	// Return the code for token issuance
 	return authCode, nil
@@ -1209,8 +1200,8 @@ func (s *Store) RevokeAllTokensForUserClient(ctx context.Context, userID, client
 				s.logger.Debug("Revoked token from family",
 					"user_id", userID,
 					"client_id", clientID,
-					"token_id", safeTruncate(tokenID, tokenIDLogLength),
-					"family_id", safeTruncate(familyID, tokenIDLogLength),
+					"token_id", util.SafeTruncate(tokenID, tokenIDLogLength),
+					"family_id", util.SafeTruncate(familyID, tokenIDLogLength),
 					"generation", family.Generation)
 			}
 		}
@@ -1219,7 +1210,7 @@ func (s *Store) RevokeAllTokensForUserClient(ctx context.Context, userID, client
 			s.logger.Info("Revoked entire refresh token family",
 				"user_id", userID,
 				"client_id", clientID,
-				"family_id", safeTruncate(familyID, tokenIDLogLength),
+				"family_id", util.SafeTruncate(familyID, tokenIDLogLength),
 				"tokens_revoked", familyRevokedCount,
 				"reason", "authorization_code_reuse_detected")
 		}
@@ -1240,7 +1231,7 @@ func (s *Store) RevokeAllTokensForUserClient(ctx context.Context, userID, client
 		s.logger.Debug("Revoked access token",
 			"user_id", userID,
 			"client_id", clientID,
-			"token_id", safeTruncate(tokenID, tokenIDLogLength))
+			"token_id", util.SafeTruncate(tokenID, tokenIDLogLength))
 	}
 
 	if revokedCount > 0 {
