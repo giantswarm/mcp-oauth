@@ -708,20 +708,23 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken
 	// Get user ID
 	userID, ok := s.refreshTokens[refreshToken]
 	if !ok {
-		return "", nil, fmt.Errorf("refresh token not found or already used")
+		// Use typed error to allow callers to distinguish "not found" from transient errors
+		return "", nil, fmt.Errorf("%w: refresh token not found or already used", storage.ErrTokenNotFound)
 	}
 
 	// Check if expired with clock skew grace period
 	if expiresAt, hasExpiry := s.refreshTokenExpiries[refreshToken]; hasExpiry {
 		if security.IsTokenExpired(expiresAt) {
-			return "", nil, fmt.Errorf("refresh token expired")
+			// Use typed error to distinguish expiry from not-found
+			return "", nil, fmt.Errorf("%w: refresh token expired", storage.ErrTokenExpired)
 		}
 	}
 
 	// Get provider token
 	providerToken, ok := s.tokens[refreshToken]
 	if !ok {
-		return "", nil, fmt.Errorf("provider token not found")
+		// Provider token missing is a not-found condition (token data incomplete)
+		return "", nil, fmt.Errorf("%w: provider token not found", storage.ErrTokenNotFound)
 	}
 
 	// ATOMIC DELETE - ensures only one request succeeds
@@ -757,7 +760,7 @@ func (s *Store) GetClient(ctx context.Context, clientID string) (*storage.Client
 
 	client, ok := s.clients[clientID]
 	if !ok {
-		err = fmt.Errorf("client not found: %s", clientID)
+		err = fmt.Errorf("%w: %s", storage.ErrClientNotFound, clientID)
 		return nil, err
 	}
 
@@ -856,12 +859,12 @@ func (s *Store) GetAuthorizationState(ctx context.Context, stateID string) (*sto
 
 	state, ok := s.authStates[stateID]
 	if !ok {
-		return nil, fmt.Errorf("authorization state not found: %s", stateID)
+		return nil, fmt.Errorf("%w: %s", storage.ErrAuthorizationStateNotFound, stateID)
 	}
 
 	// Check if expired with clock skew grace period
 	if security.IsTokenExpired(state.ExpiresAt) {
-		return nil, fmt.Errorf("authorization state expired")
+		return nil, fmt.Errorf("%w: authorization state expired", storage.ErrTokenExpired)
 	}
 
 	return state, nil
@@ -875,12 +878,12 @@ func (s *Store) GetAuthorizationStateByProviderState(ctx context.Context, provid
 
 	state, ok := s.authStates[providerState]
 	if !ok {
-		return nil, fmt.Errorf("authorization state not found for provider state")
+		return nil, fmt.Errorf("%w: provider state", storage.ErrAuthorizationStateNotFound)
 	}
 
 	// Check if expired with clock skew grace period
 	if security.IsTokenExpired(state.ExpiresAt) {
-		return nil, fmt.Errorf("authorization state expired")
+		return nil, fmt.Errorf("%w: authorization state expired", storage.ErrTokenExpired)
 	}
 
 	return state, nil
@@ -945,12 +948,12 @@ func (s *Store) GetAuthorizationCode(ctx context.Context, code string) (*storage
 
 	authCode, ok := s.authCodes[code]
 	if !ok {
-		return nil, fmt.Errorf("authorization code not found")
+		return nil, storage.ErrAuthorizationCodeNotFound
 	}
 
 	// Check if expired with clock skew grace period
 	if security.IsTokenExpired(authCode.ExpiresAt) {
-		return nil, fmt.Errorf("authorization code expired")
+		return nil, fmt.Errorf("%w: authorization code expired", storage.ErrTokenExpired)
 	}
 
 	// Return a COPY to prevent caller from modifying our stored version
@@ -975,20 +978,20 @@ func (s *Store) AtomicCheckAndMarkAuthCodeUsed(ctx context.Context, code string)
 	authCode, ok := s.authCodes[code]
 	if !ok {
 		// Not found - return nil to prevent information leakage
-		return nil, fmt.Errorf("authorization code not found")
+		return nil, storage.ErrAuthorizationCodeNotFound
 	}
 
 	// Check if expired with clock skew grace period
 	if security.IsTokenExpired(authCode.ExpiresAt) {
 		// Expired - return nil to prevent information leakage
-		return nil, fmt.Errorf("authorization code expired")
+		return nil, fmt.Errorf("%w: authorization code expired", storage.ErrTokenExpired)
 	}
 
 	// ATOMIC check-and-set: Only one thread can pass this check
 	if authCode.Used {
 		// SECURITY: Code already used - return authCode to enable reuse detection
 		// The caller needs userID/clientID for token revocation
-		return authCode, fmt.Errorf("authorization code already used")
+		return authCode, storage.ErrAuthorizationCodeUsed
 	}
 
 	// Mark as used atomically

@@ -1226,9 +1226,10 @@ func TestCORS_WildcardOrigin(t *testing.T) {
 	config := &server.Config{
 		Issuer: "https://auth.example.com",
 		CORS: server.CORSConfig{
-			AllowedOrigins:   []string{"*"},
-			AllowCredentials: false, // Must be false with wildcard
-			MaxAge:           3600,
+			AllowedOrigins:      []string{"*"},
+			AllowWildcardOrigin: true,  // Explicitly opt-in to wildcard origin
+			AllowCredentials:    false, // Must be false with wildcard
+			MaxAge:              3600,
 		},
 	}
 

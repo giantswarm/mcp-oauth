@@ -471,7 +471,8 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 	authCode, err := s.flowStore.AtomicCheckAndMarkAuthCodeUsed(ctx, code)
 	if err != nil {
 		// Check if this is a reuse attempt (code already used)
-		if authCode != nil && authCode.Used {
+		// Use typed error checking for explicit detection, with fallback to authCode.Used check
+		if storage.IsCodeReuseError(err) || (authCode != nil && authCode.Used) {
 			// CRITICAL SECURITY: Authorization code reuse detected - this indicates a potential token theft attack
 			// OAuth 2.1 requires revoking ALL tokens for this user+client when code reuse is detected
 
@@ -759,9 +760,14 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	userID, providerToken, err := s.tokenStore.AtomicGetAndDeleteRefreshToken(ctx, refreshToken)
 
 	if err != nil {
+		// SECURITY: Distinguish between "not found" errors (potential reuse) and transient errors
+		// Only check for reuse if the error indicates the token was not found or already deleted
+		// Transient errors (storage timeout, network issues) should not trigger reuse detection
+		isNotFoundOrExpired := storage.IsNotFoundError(err) || storage.IsExpiredError(err)
+
 		// Token not found or already deleted - check if this is a reuse attempt
 		// SECURITY FIX: Check family AFTER atomic delete to eliminate TOCTOU vulnerability
-		if supportsFamilies {
+		if isNotFoundOrExpired && supportsFamilies {
 			family, famErr := familyStore.GetRefreshTokenFamily(ctx, refreshToken)
 			if famErr == nil {
 				// Family exists but token was already deleted/rotated → REUSE DETECTED!
@@ -837,6 +843,30 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 				// Return generic error per RFC 6749 (don't reveal security details to attacker)
 				return nil, fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 			}
+		}
+
+		// Determine error type for appropriate logging and response
+		// Transient errors (storage timeouts, network issues) should be logged differently
+		// than "not found" errors which indicate invalid or reused tokens
+		if !isNotFoundOrExpired {
+			// Transient error - log as warning and return server error
+			s.Logger.Warn("Transient error during refresh token validation",
+				"error", err.Error(),
+				"client_id", clientID,
+				"token_prefix", util.SafeTruncate(refreshToken, 8))
+
+			if s.Auditor != nil {
+				s.Auditor.LogEvent(security.Event{
+					Type:     security.EventAuthFailure,
+					ClientID: clientID,
+					Details: map[string]any{
+						"reason":     "transient_storage_error",
+						"error_type": "transient",
+					},
+				})
+			}
+			// Return generic error - don't expose internal storage issues
+			return nil, fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 		}
 
 		// Token not found and no family metadata - regular invalid token error
