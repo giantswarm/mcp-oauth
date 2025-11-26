@@ -239,11 +239,18 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 			s.attemptProactiveRefresh(ctx, accessToken, storedToken)
 		}
 	}
-	// If token not found, proceed with provider validation
-	// (token might be from a different instance or storage backend)
+
+	// Determine which token to use for provider validation:
+	// - If we found a stored provider token, use its access token (the Google token)
+	// - If no stored token found, fall back to the input token (backward compatibility
+	//   for tokens from a different instance or direct provider tokens)
+	tokenForProviderValidation := accessToken
+	if storedToken != nil && storedToken.AccessToken != "" {
+		tokenForProviderValidation = storedToken.AccessToken
+	}
 
 	// Validate with provider
-	userInfo, err := s.provider.ValidateToken(ctx, accessToken)
+	userInfo, err := s.provider.ValidateToken(ctx, tokenForProviderValidation)
 	if err != nil {
 		if s.Auditor != nil {
 			s.Auditor.LogAuthFailure("", "", "", err.Error())
