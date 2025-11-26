@@ -311,13 +311,14 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 
 	// CRITICAL SECURITY: State parameter is required for CSRF protection
 	// Input validation at HTTP layer to return proper status codes
-	if state == "" {
+	// Can be disabled for clients that don't support state (e.g., some MCP clients)
+	if state == "" && !h.server.Config.AllowNoStateParameter {
 		h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "state missing")
 		h.writeError(w, ErrorCodeInvalidRequest, "state parameter is required for CSRF protection", http.StatusBadRequest)
 		return
 	}
-	if len(state) < MinStateLength {
+	if state != "" && len(state) < MinStateLength {
 		h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "state too short")
 		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at least %d characters for security", MinStateLength), http.StatusBadRequest)
