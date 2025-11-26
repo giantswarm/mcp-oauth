@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -660,7 +661,9 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 			return
 		}
 
-		if providedToken != h.server.Config.RegistrationAccessToken {
+		// SECURITY: Use constant-time comparison to prevent timing attacks
+		// that could allow guessing the registration token character by character
+		if subtle.ConstantTimeCompare([]byte(providedToken), []byte(h.server.Config.RegistrationAccessToken)) != 1 {
 			h.logger.Warn("Client registration rejected: invalid registration token",
 				"client_ip", clientIP)
 			h.writeError(w, ErrorCodeInvalidToken, "Invalid registration access token", http.StatusUnauthorized)

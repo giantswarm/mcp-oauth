@@ -229,13 +229,22 @@ type InstrumentationConfig struct {
 type CORSConfig struct {
 	// AllowedOrigins is a list of allowed origin URLs for CORS requests.
 	// Examples: ["https://app.example.com", "https://dashboard.example.com"]
-	// Use "*" to allow all origins (NOT RECOMMENDED for production).
+	// Use "*" to allow all origins (requires AllowWildcardOrigin=true).
 	// Empty list means CORS is disabled (default, secure).
 	AllowedOrigins []string
+
+	// AllowWildcardOrigin explicitly enables wildcard (*) origin support.
+	// WARNING: This allows ANY website to make cross-origin requests to your OAuth server.
+	// This creates significant CSRF attack surface and is NOT RECOMMENDED for production.
+	// Only enable for development or when you fully understand the security implications.
+	// Must be explicitly set to true when using "*" in AllowedOrigins.
+	// Default: false (wildcard origins are rejected)
+	AllowWildcardOrigin bool
 
 	// AllowCredentials enables the Access-Control-Allow-Credentials header.
 	// Required if your browser client needs to send cookies or authorization headers.
 	// Must be true for OAuth flows that require Bearer tokens.
+	// SECURITY: Cannot be used with wildcard origin (per CORS specification).
 	// Default: false
 	AllowCredentials bool
 
@@ -416,10 +425,18 @@ func validateCORSConfig(config *Config, logger *slog.Logger) {
 
 	// Validate each origin format
 	for _, origin := range config.CORS.AllowedOrigins {
-		// Wildcard is valid (though not recommended in production)
+		// SECURITY: Wildcard requires explicit opt-in via AllowWildcardOrigin
+		// This ensures operators consciously accept the security implications
 		if origin == "*" {
-			logger.Warn("⚠️  CORS: Wildcard origin (*) configured",
+			if !config.CORS.AllowWildcardOrigin {
+				panic("CORS: wildcard origin '*' requires AllowWildcardOrigin=true to be explicitly set. " +
+					"This allows ANY website to make cross-origin requests to your OAuth server. " +
+					"Set AllowWildcardOrigin=true only if you understand the security implications, " +
+					"or use specific origins (e.g., https://app.example.com) instead.")
+			}
+			logger.Warn("⚠️  CORS: Wildcard origin (*) enabled via AllowWildcardOrigin=true",
 				"risk", "Allows ANY website to make requests to this server",
+				"security_impact", "Increased CSRF attack surface",
 				"recommendation", "Use specific origins (e.g., https://app.example.com) in production")
 			continue
 		}
@@ -468,6 +485,19 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 	}
 	if config.MinStateLength == 0 {
 		config.MinStateLength = 32 // OAuth 2.1: 128+ bits entropy recommended, 32 chars = 192 bits
+	}
+
+	// SECURITY: Enforce absolute minimum state length to ensure CSRF protection entropy
+	// OAuth 2.1 recommends at least 128 bits (16 bytes) of entropy
+	// 16 characters in base64 = 96 bits, but this is an absolute floor
+	const absoluteMinStateLength = 16
+	if config.MinStateLength < absoluteMinStateLength {
+		logger.Warn("⚠️  SECURITY WARNING: MinStateLength below recommended minimum, enforcing floor",
+			"configured", config.MinStateLength,
+			"enforced_minimum", absoluteMinStateLength,
+			"recommended", 32,
+			"risk", "reduced CSRF protection entropy")
+		config.MinStateLength = absoluteMinStateLength
 	}
 
 	// Log warnings for insecure settings (whether explicitly set or not)

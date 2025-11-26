@@ -287,6 +287,39 @@ Subscribe to notifications:
 - Consider log encryption at rest
 - Implement log retention policies
 
+**Production Logging Configuration**:
+
+DEBUG-level logging may expose detailed error information that could aid attackers.
+Always disable DEBUG logging in production environments:
+
+```go
+// Production logging configuration
+import "log/slog"
+
+// Use INFO level or higher in production
+logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+    Level: slog.LevelInfo, // Use LevelWarn or LevelError for minimal logging
+}))
+
+// Pass to OAuth server
+server, err := oauth.NewServer(provider, store, store, store, config, logger)
+```
+
+**Recommended log levels by environment**:
+| Environment | Level | Rationale |
+|------------|-------|-----------|
+| Development | DEBUG | Full debugging information |
+| Staging | INFO | Operational insights without sensitive details |
+| Production | INFO or WARN | Minimize exposure; sensitive errors are logged internally |
+
+**Security-sensitive log entries** (DEBUG level only):
+- Token prefixes (first 8 characters)
+- PKCE validation details
+- Authorization state lookups
+- Refresh token rotation details
+
+These are logged at DEBUG level and will NOT appear when using INFO or higher.
+
 ### Network Security
 
 **HTTPS Required**:
@@ -384,6 +417,9 @@ Before deploying to production:
 - [ ] Regular security updates scheduled
 - [ ] Incident response plan documented
 - [ ] Backup and recovery procedures tested
+- [ ] Log level set to INFO or higher (DEBUG disabled)
+- [ ] CORS configured with specific origins (not wildcard)
+- [ ] MinStateLength at recommended default (32 characters)
 
 ## Dependencies
 

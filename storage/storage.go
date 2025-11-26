@@ -4,12 +4,70 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/providers"
 )
+
+// Storage error types for distinguishing between different failure modes.
+// These allow callers to differentiate between "not found" errors (which may indicate
+// reuse in refresh token scenarios) and transient errors (which should not trigger
+// security responses).
+var (
+	// ErrTokenNotFound indicates the token does not exist in storage.
+	// In refresh token scenarios, this may indicate the token was already rotated,
+	// potentially signaling a reuse attempt if family metadata exists.
+	ErrTokenNotFound = errors.New("token not found")
+
+	// ErrTokenExpired indicates the token exists but has expired.
+	// Expired tokens should be rejected without triggering reuse detection.
+	ErrTokenExpired = errors.New("token expired")
+
+	// ErrClientNotFound indicates the client does not exist in storage.
+	ErrClientNotFound = errors.New("client not found")
+
+	// ErrAuthorizationCodeNotFound indicates the authorization code does not exist.
+	ErrAuthorizationCodeNotFound = errors.New("authorization code not found")
+
+	// ErrAuthorizationCodeUsed indicates the authorization code has already been used.
+	// This is a security event that should trigger token revocation per OAuth 2.1.
+	ErrAuthorizationCodeUsed = errors.New("authorization code already used")
+
+	// ErrAuthorizationStateNotFound indicates the authorization state does not exist.
+	ErrAuthorizationStateNotFound = errors.New("authorization state not found")
+
+	// ErrUserInfoNotFound indicates the user info does not exist in storage.
+	ErrUserInfoNotFound = errors.New("user info not found")
+
+	// ErrRefreshTokenFamilyNotFound indicates the refresh token family does not exist.
+	// This is normal for tokens created before family tracking was enabled.
+	ErrRefreshTokenFamilyNotFound = errors.New("refresh token family not found")
+)
+
+// IsNotFoundError checks if an error indicates a "not found" condition.
+// This is useful for distinguishing between missing resources (which may indicate
+// security issues like token reuse) and transient errors (which should not).
+func IsNotFoundError(err error) bool {
+	return errors.Is(err, ErrTokenNotFound) ||
+		errors.Is(err, ErrClientNotFound) ||
+		errors.Is(err, ErrAuthorizationCodeNotFound) ||
+		errors.Is(err, ErrAuthorizationStateNotFound) ||
+		errors.Is(err, ErrUserInfoNotFound) ||
+		errors.Is(err, ErrRefreshTokenFamilyNotFound)
+}
+
+// IsExpiredError checks if an error indicates an expired token or code.
+func IsExpiredError(err error) bool {
+	return errors.Is(err, ErrTokenExpired)
+}
+
+// IsCodeReuseError checks if an error indicates authorization code reuse.
+func IsCodeReuseError(err error) bool {
+	return errors.Is(err, ErrAuthorizationCodeUsed)
+}
 
 // TokenStore defines the interface for storing and retrieving tokens.
 // This allows using in-memory, Redis, database, or other storage backends.

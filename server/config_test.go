@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"io"
 	"log/slog"
 	"strings"
 	"testing"
@@ -592,14 +593,15 @@ func TestValidateCORSConfig_WildcardWithCredentials(t *testing.T) {
 }
 
 func TestValidateCORSConfig_WildcardWithoutCredentials(t *testing.T) {
-	// Wildcard without credentials should warn but not panic
+	// Wildcard with AllowWildcardOrigin=true should warn but not panic
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 	config := &Config{
 		CORS: CORSConfig{
-			AllowedOrigins:   []string{"*"},
-			AllowCredentials: false,
+			AllowedOrigins:      []string{"*"},
+			AllowWildcardOrigin: true, // Must explicitly opt-in
+			AllowCredentials:    false,
 		},
 	}
 
@@ -610,6 +612,32 @@ func TestValidateCORSConfig_WildcardWithoutCredentials(t *testing.T) {
 	if !strings.Contains(logOutput, "Wildcard origin") {
 		t.Error("Should log warning for wildcard origin")
 	}
+}
+
+func TestValidateCORSConfig_WildcardWithoutOptIn(t *testing.T) {
+	// Wildcard without AllowWildcardOrigin=true should panic
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	config := &Config{
+		CORS: CORSConfig{
+			AllowedOrigins:      []string{"*"},
+			AllowWildcardOrigin: false, // Not opted-in
+			AllowCredentials:    false,
+		},
+	}
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("Expected panic for wildcard without AllowWildcardOrigin=true")
+		} else {
+			msg, ok := r.(string)
+			if !ok || !strings.Contains(msg, "AllowWildcardOrigin=true") {
+				t.Errorf("Unexpected panic message: %v", r)
+			}
+		}
+	}()
+
+	validateCORSConfig(config, logger)
 }
 
 func TestValidateCORSConfig_InvalidOriginFormat(t *testing.T) {
