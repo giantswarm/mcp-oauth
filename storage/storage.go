@@ -190,14 +190,19 @@ type Client struct {
 
 // AuthorizationState represents the state of an ongoing authorization flow
 type AuthorizationState struct {
-	StateID              string // Client's state parameter (for CSRF protection)
-	ClientID             string
-	RedirectURI          string
-	Scope                string
-	CodeChallenge        string // Client-to-Server PKCE challenge (from MCP client)
-	CodeChallengeMethod  string // Client-to-Server PKCE method (from MCP client)
-	ProviderState        string // State parameter sent to the provider (different from StateID)
-	ProviderCodeVerifier string // Server-to-Provider PKCE verifier (OAuth 2.1 security enhancement)
+	// Client's state parameter for CSRF protection
+	StateID     string
+	ClientID    string
+	RedirectURI string
+	Scope       string
+	// Client-to-Server PKCE challenge from MCP client
+	CodeChallenge string
+	// Client-to-Server PKCE method from MCP client
+	CodeChallengeMethod string
+	// State parameter sent to provider (different from StateID)
+	ProviderState string
+	// Server-to-Provider PKCE verifier (OAuth 2.1)
+	ProviderCodeVerifier string
 	CreatedAt            time.Time
 	ExpiresAt            time.Time
 }

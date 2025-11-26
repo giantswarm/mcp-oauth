@@ -81,29 +81,12 @@ func (p *Provider) Name() string {
 	return "google"
 }
 
-// AuthorizationURL generates the Google OAuth authorization URL
-//
-// OAuth 2.1 Security Enhancement: This implementation now supports PKCE on the
-// OAuth server -> Google leg for defense-in-depth against Authorization Code Injection.
-//
-// Two-layer PKCE architecture:
-//  1. MCP client -> OAuth server: Uses client-provided PKCE (handled separately)
-//  2. OAuth server -> Google: Uses server-generated PKCE (THIS implementation)
-//
-// Why PKCE on provider leg (OAuth 2.1 compliance):
-//   - Protects against Authorization Code Injection even for confidential clients
-//   - OAuth 2.1 recommends PKCE for ALL client types, not just public clients
-//   - Provides cryptographic binding between authorization and token exchange
-//   - Defense in depth: Even if state parameter is compromised, PKCE provides protection
-//
-// Security model:
-//   - Client secret provides server authentication to Google (confidential client)
-//   - PKCE provides authorization code binding (prevents code injection)
-//   - Both mechanisms work together for maximum security
+// AuthorizationURL generates the Google OAuth authorization URL with optional PKCE.
+// Supports OAuth 2.1 defense-in-depth. See SECURITY_ARCHITECTURE.md for details.
 func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string) string {
 	var opts []oauth2.AuthCodeOption
 
-	// Add PKCE if challenge provided (OAuth 2.1 security enhancement)
+	// Add PKCE parameters if provided
 	if codeChallenge != "" && codeChallengeMethod != "" {
 		opts = append(opts,
 			oauth2.SetAuthURLParam("code_challenge", codeChallenge),
@@ -128,25 +111,15 @@ func (p *Provider) ensureContextTimeout(ctx context.Context) (context.Context, c
 	return context.WithTimeout(ctx, p.requestTimeout)
 }
 
-// ExchangeCode exchanges an authorization code for tokens
-// Returns standard oauth2.Token directly
-//
-// OAuth 2.1 Security Enhancement: Now supports PKCE verification for defense-in-depth.
-//
-// The verifier parameter is the PKCE code_verifier for the OAuth server -> Google leg.
-// This is DIFFERENT from the MCP client's PKCE verifier (which is validated separately).
-//
-// Security model:
-//   - Client secret: Server authentication to Google (confidential client)
-//   - PKCE verifier: Authorization code binding (prevents code injection)
-//   - Both mechanisms provide layered security per OAuth 2.1
+// ExchangeCode exchanges an authorization code for tokens with optional PKCE verification.
+// Returns standard oauth2.Token. See SECURITY_ARCHITECTURE.md for security model details.
 func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier string) (*oauth2.Token, error) {
 	ctx, cancel := p.ensureContextTimeout(ctx)
 	defer cancel()
 
 	var opts []oauth2.AuthCodeOption
 
-	// PKCE code verifier (OAuth 2.1 security enhancement)
+	// Add PKCE verifier if provided
 	if verifier != "" {
 		opts = append(opts, oauth2.VerifierOption(verifier))
 	}
@@ -154,7 +127,7 @@ func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier strin
 	// Use custom HTTP client
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)
 
-	// Exchange code for token with PKCE verification
+	// Exchange code for token
 	token, err := p.Exchange(ctx, code, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to exchange code: %w", err)
