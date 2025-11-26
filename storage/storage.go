@@ -288,3 +288,13 @@ type AuthorizationCode struct {
 	ExpiresAt           time.Time
 	Used                bool
 }
+
+// TokenMetadata tracks ownership and audience information for a token (RFC 8707)
+// Used for revocation by user+client and audience validation
+type TokenMetadata struct {
+	UserID    string    // User who owns this token
+	ClientID  string    // Client who owns this token
+	IssuedAt  time.Time // When this token was issued
+	TokenType string    // "access" or "refresh"
+	Audience  string    // RFC 8707: Intended resource server identifier (for audience validation)
+}

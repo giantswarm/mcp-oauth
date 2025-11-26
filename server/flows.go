@@ -158,9 +158,10 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 // Validation flow:
 // 1. Check if token exists in local storage
 // 2. If found, validate expiry locally (with ClockSkewGracePeriod)
-// 3. If expired locally, return error immediately (don't call provider)
-// 4. Validate with provider (external check)
-// 5. Store updated user info
+// 3. RFC 8707: Validate audience binding (token intended for this resource server)
+// 4. If expired locally, return error immediately (don't call provider)
+// 5. Validate with provider (external check)
+// 6. Store updated user info
 //
 // Note: Rate limiting should be done at the HTTP layer with IP address, not here with token
 func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
@@ -185,6 +186,47 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 		s.Logger.Debug("Token passed local expiry validation",
 			"expiry", storedToken.Expiry,
 			"grace_period_seconds", s.Config.ClockSkewGracePeriod)
+
+		// RFC 8707: CRITICAL SECURITY - Validate token audience binding
+		// This prevents token theft and replay attacks across different resource servers
+		if metadataStore, ok := s.tokenStore.(interface {
+			GetTokenMetadata(tokenID string) (*storage.TokenMetadata, error)
+		}); ok {
+			metadata, err := metadataStore.GetTokenMetadata(accessToken)
+			if err == nil && metadata.Audience != "" {
+				// Token has audience binding - validate it matches this resource server
+				expectedAudience := s.Config.GetResourceIdentifier()
+				if metadata.Audience != expectedAudience {
+					s.Logger.Warn("Token audience mismatch - token not intended for this resource server",
+						"token_audience", metadata.Audience,
+						"server_identifier", expectedAudience,
+						"token_prefix", util.SafeTruncate(accessToken, 8),
+						"user_id", metadata.UserID,
+						"client_id", metadata.ClientID)
+
+					if s.Auditor != nil {
+						s.Auditor.LogEvent(security.Event{
+							Type:     security.EventResourceMismatch,
+							UserID:   metadata.UserID,
+							ClientID: metadata.ClientID,
+							Details: map[string]any{
+								"severity":          "critical",
+								"token_audience":    metadata.Audience,
+								"server_identifier": expectedAudience,
+								"attack_indicator":  "token_replay_to_wrong_resource_server",
+							},
+						})
+						s.Auditor.LogAuthFailure(metadata.UserID, metadata.ClientID, "", "audience_mismatch")
+					}
+
+					return nil, fmt.Errorf("token not intended for this resource server (RFC 8707 audience mismatch)")
+				}
+
+				s.Logger.Debug("Token audience validation passed",
+					"audience", metadata.Audience,
+					"token_prefix", util.SafeTruncate(accessToken, 8))
+			}
+		}
 
 		// PROACTIVE REFRESH: Check if token is near expiry and should be refreshed
 		// This improves UX by preventing validation failures when refresh is available
@@ -749,9 +791,23 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 	}
 
 	// Track access token metadata for revocation (OAuth 2.1 code reuse detection)
-	if metadataStore, ok := s.tokenStore.(interface {
+	// RFC 8707: Store audience binding with tokens for validation
+	if metadataStoreWithAudience, ok := s.tokenStore.(interface {
+		SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenType, audience string) error
+	}); ok {
+		// Store access token with audience binding (RFC 8707)
+		if err := metadataStoreWithAudience.SaveTokenMetadataWithAudience(accessToken, authCode.UserID, clientID, "access", authCode.Audience); err != nil {
+			s.Logger.Warn("Failed to save access token metadata with audience", "error", err)
+		}
+		// CRITICAL: Also save refresh token metadata with audience for revocation
+		// Refresh tokens inherit the audience from the authorization code
+		if err := metadataStoreWithAudience.SaveTokenMetadataWithAudience(refreshToken, authCode.UserID, clientID, "refresh", authCode.Audience); err != nil {
+			s.Logger.Warn("Failed to save refresh token metadata with audience", "error", err)
+		}
+	} else if metadataStore, ok := s.tokenStore.(interface {
 		SaveTokenMetadata(tokenID, userID, clientID, tokenType string) error
 	}); ok {
+		// Fallback to basic metadata store without audience (backward compatibility)
 		if err := metadataStore.SaveTokenMetadata(accessToken, authCode.UserID, clientID, "access"); err != nil {
 			s.Logger.Warn("Failed to save access token metadata", "error", err)
 		}

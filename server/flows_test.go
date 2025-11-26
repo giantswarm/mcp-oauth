@@ -4659,3 +4659,494 @@ func TestStartAuthorizationFlow_ScopeLengthValidation(t *testing.T) {
 	t.Log("✓ Scope length validation prevents DoS attacks")
 	t.Log("✓ Legitimate scopes within limits are accepted")
 }
+
+// TestResourceParameter_AudienceValidation tests RFC 8707 audience validation
+func TestResourceParameter_AudienceValidation(t *testing.T) {
+	ctx := context.Background()
+
+	// Setup server with resource identifier
+	mockProvider := mock.NewMockProvider()
+	// Configure mock to return tokens with valid expiry
+	mockProvider.ExchangeCodeFunc = func(ctx context.Context, code string, codeVerifier string) (*oauth2.Token, error) {
+		return &oauth2.Token{
+			AccessToken:  "mock-access-token-" + code,
+			TokenType:    "Bearer",
+			RefreshToken: "mock-refresh-token",
+			Expiry:       time.Now().Add(1 * time.Hour), // Valid for 1 hour
+		}, nil
+	}
+	mockProvider.ValidateTokenFunc = func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+		return &providers.UserInfo{
+			ID:    "user123",
+			Email: "user@example.com",
+			Name:  "Test User",
+		}, nil
+	}
+
+	store := memory.New()
+	defer store.Stop()
+
+	srv, err := New(
+		mockProvider,
+		store,
+		store,
+		store,
+		&Config{
+			Issuer:             "https://auth.example.com",
+			ResourceIdentifier: "https://mcp.example.com", // Explicit resource identifier
+			AccessTokenTTL:     3600,
+			RefreshTokenTTL:    86400,
+			RequirePKCE:        true,
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+
+	// Register a client using the proper API
+	client, _, err := srv.RegisterClient(ctx,
+		"Test Client",
+		ClientTypeConfidential,
+		"",
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("Failed to register client: %v", err)
+	}
+
+	// Test 1: Token with correct audience should be accepted
+	t.Run("CorrectAudience", func(t *testing.T) {
+		// Start authorization flow with resource parameter
+		codeChallenge, codeVerifier := generatePKCEPair()
+		clientState := generateRandomToken()
+
+		_, err := srv.StartAuthorizationFlow(
+			ctx,
+			client.ClientID,
+			client.RedirectURIs[0],
+			"openid email",
+			"https://mcp.example.com", // Resource matches server's identifier
+			codeChallenge,
+			PKCEMethodS256,
+			clientState,
+		)
+		if err != nil {
+			t.Fatalf("Failed to start authorization flow: %v", err)
+		}
+
+		// Extract provider state from auth state
+		authState, err := store.GetAuthorizationState(ctx, clientState)
+		if err != nil {
+			t.Fatalf("Failed to get authorization state: %v", err)
+		}
+		providerState := authState.ProviderState
+
+		// Simulate provider callback
+		authCodeObj, _, err := srv.HandleProviderCallback(ctx, providerState, "provider-code")
+		if err != nil {
+			t.Fatalf("Failed to handle provider callback: %v", err)
+		}
+
+		// Exchange authorization code for tokens (use authCodeObj.Code string)
+		tokenResponse, _, err := srv.ExchangeAuthorizationCode(
+			ctx,
+			authCodeObj.Code,
+			client.ClientID,
+			client.RedirectURIs[0],
+			"https://mcp.example.com", // Resource matches
+			codeVerifier,
+		)
+		if err != nil {
+			t.Fatalf("Failed to exchange authorization code: %v", err)
+		}
+
+		// Validate token with matching audience - should succeed
+		userInfo, err := srv.ValidateToken(ctx, tokenResponse.AccessToken)
+		if err != nil {
+			t.Fatalf("Token validation failed with correct audience: %v", err)
+		}
+
+		if userInfo.ID != "user123" {
+			t.Errorf("Expected user ID 'user123', got %q", userInfo.ID)
+		}
+
+		t.Log("✓ Token with correct audience passed validation")
+	})
+
+	// Test 2: Token with mismatched audience should be rejected
+	t.Run("MismatchedAudience", func(t *testing.T) {
+		// Create a second server instance representing a different resource server
+		srv2, err := New(
+			mockProvider,
+			store,
+			store,
+			store,
+			&Config{
+				Issuer:             "https://auth.example.com",
+				ResourceIdentifier: "https://different-mcp.example.com", // Different resource identifier
+				AccessTokenTTL:     3600,
+				RefreshTokenTTL:    86400,
+			},
+			nil,
+		)
+		if err != nil {
+			t.Fatalf("Failed to create second server: %v", err)
+		}
+
+		// Start authorization flow with original server's resource
+		codeChallenge, codeVerifier := generatePKCEPair()
+		clientState := generateRandomToken()
+
+		_, err = srv.StartAuthorizationFlow(
+			ctx,
+			client.ClientID,
+			client.RedirectURIs[0],
+			"openid email",
+			"https://mcp.example.com", // Resource for first server
+			codeChallenge,
+			PKCEMethodS256,
+			clientState,
+		)
+		if err != nil {
+			t.Fatalf("Failed to start authorization flow: %v", err)
+		}
+
+		// Extract provider state from auth state
+		authState, err := store.GetAuthorizationState(ctx, clientState)
+		if err != nil {
+			t.Fatalf("Failed to get authorization state: %v", err)
+		}
+		providerState := authState.ProviderState
+
+		// Complete flow with first server
+		authCodeObj, _, err := srv.HandleProviderCallback(ctx, providerState, "provider-code-2")
+		if err != nil {
+			t.Fatalf("Failed to handle provider callback: %v", err)
+		}
+
+		tokenResponse, _, err := srv.ExchangeAuthorizationCode(
+			ctx,
+			authCodeObj.Code,
+			client.ClientID,
+			client.RedirectURIs[0],
+			"https://mcp.example.com",
+			codeVerifier,
+		)
+		if err != nil {
+			t.Fatalf("Failed to exchange authorization code: %v", err)
+		}
+
+		// Try to validate token with second server (different audience) - should fail
+		_, err = srv2.ValidateToken(ctx, tokenResponse.AccessToken)
+		if err == nil {
+			t.Fatal("Expected audience mismatch error but validation succeeded")
+		}
+
+		if !strings.Contains(err.Error(), "audience mismatch") {
+			t.Errorf("Expected 'audience mismatch' error, got: %v", err)
+		}
+
+		t.Log("✓ Token with mismatched audience correctly rejected")
+		t.Logf("  Error: %v", err)
+	})
+
+	// Test 3: Token without audience (backward compatibility)
+	t.Run("NoAudience_BackwardCompatibility", func(t *testing.T) {
+		// Start authorization flow WITHOUT resource parameter
+		codeChallenge, codeVerifier := generatePKCEPair()
+		clientState := generateRandomToken()
+
+		_, err := srv.StartAuthorizationFlow(
+			ctx,
+			client.ClientID,
+			client.RedirectURIs[0],
+			"openid email",
+			"", // No resource parameter (backward compatibility)
+			codeChallenge,
+			PKCEMethodS256,
+			clientState,
+		)
+		if err != nil {
+			t.Fatalf("Failed to start authorization flow: %v", err)
+		}
+
+		// Extract provider state from auth state
+		authState, err := store.GetAuthorizationState(ctx, clientState)
+		if err != nil {
+			t.Fatalf("Failed to get authorization state: %v", err)
+		}
+		providerState := authState.ProviderState
+
+		authCodeObj, _, err := srv.HandleProviderCallback(ctx, providerState, "provider-code-3")
+		if err != nil {
+			t.Fatalf("Failed to handle provider callback: %v", err)
+		}
+
+		tokenResponse, _, err := srv.ExchangeAuthorizationCode(
+			ctx,
+			authCodeObj.Code,
+			client.ClientID,
+			client.RedirectURIs[0],
+			"", // No resource parameter
+			codeVerifier,
+		)
+		if err != nil {
+			t.Fatalf("Failed to exchange authorization code: %v", err)
+		}
+
+		// Validate token without audience - should succeed for backward compatibility
+		userInfo, err := srv.ValidateToken(ctx, tokenResponse.AccessToken)
+		if err != nil {
+			t.Fatalf("Token validation failed without audience: %v", err)
+		}
+
+		if userInfo.ID != "user123" {
+			t.Errorf("Expected user ID 'user123', got %q", userInfo.ID)
+		}
+
+		t.Log("✓ Token without audience passed validation (backward compatibility)")
+	})
+}
+
+// TestResourceParameter_ConsistencyValidation tests resource parameter consistency
+func TestResourceParameter_ConsistencyValidation(t *testing.T) {
+	ctx := context.Background()
+
+	mockProvider := mock.NewMockProvider()
+	// Configure mock to return tokens with valid expiry
+	mockProvider.ExchangeCodeFunc = func(ctx context.Context, code string, codeVerifier string) (*oauth2.Token, error) {
+		return &oauth2.Token{
+			AccessToken:  "mock-access-token-" + code,
+			TokenType:    "Bearer",
+			RefreshToken: "mock-refresh-token",
+			Expiry:       time.Now().Add(1 * time.Hour),
+		}, nil
+	}
+	mockProvider.ValidateTokenFunc = func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+		return &providers.UserInfo{
+			ID:    "user456",
+			Email: "user@example.com",
+			Name:  "Test User",
+		}, nil
+	}
+
+	store := memory.New()
+	defer store.Stop()
+
+	srv, err := New(
+		mockProvider,
+		store,
+		store,
+		store,
+		&Config{
+			Issuer:             "https://auth.example.com",
+			ResourceIdentifier: "https://mcp.example.com",
+			AccessTokenTTL:     3600,
+			RefreshTokenTTL:    86400,
+			RequirePKCE:        true,
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+
+	client, _, err := srv.RegisterClient(ctx,
+		"Test Client",
+		ClientTypeConfidential,
+		"",
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("Failed to register client: %v", err)
+	}
+
+	// Test: Resource parameter in token request must match authorization request
+	t.Run("ResourceMismatch_TokenRequest", func(t *testing.T) {
+		codeChallenge, codeVerifier := generatePKCEPair()
+		clientState := generateRandomToken()
+
+		// Authorization request with resource A
+		_, err := srv.StartAuthorizationFlow(
+			ctx,
+			client.ClientID,
+			client.RedirectURIs[0],
+			"openid email",
+			"https://mcp.example.com", // Resource A
+			codeChallenge,
+			PKCEMethodS256,
+			clientState,
+		)
+		if err != nil {
+			t.Fatalf("Failed to start authorization flow: %v", err)
+		}
+
+		// Extract provider state from auth state
+		authState, err := store.GetAuthorizationState(ctx, clientState)
+		if err != nil {
+			t.Fatalf("Failed to get authorization state: %v", err)
+		}
+		providerState := authState.ProviderState
+
+		authCodeObj, _, err := srv.HandleProviderCallback(ctx, providerState, "provider-code-4")
+		if err != nil {
+			t.Fatalf("Failed to handle provider callback: %v", err)
+		}
+
+		// Token request with different resource B - should fail
+		_, _, err = srv.ExchangeAuthorizationCode(
+			ctx,
+			authCodeObj.Code,
+			client.ClientID,
+			client.RedirectURIs[0],
+			"https://different-mcp.example.com", // Resource B (different!)
+			codeVerifier,
+		)
+		if err == nil {
+			t.Fatal("Expected resource mismatch error but exchange succeeded")
+		}
+
+		// The error is generic "invalid_grant" for security (doesn't leak details to attacker)
+		// but internally logs resource_mismatch for security monitoring
+		if !strings.Contains(err.Error(), "invalid_grant") {
+			t.Errorf("Expected 'invalid_grant' error, got: %v", err)
+		}
+
+		t.Log("✓ Resource parameter mismatch correctly detected and rejected as invalid_grant")
+		t.Logf("  Error: %v", err)
+	})
+}
+
+// TestResourceParameter_InvalidFormat tests resource parameter validation
+func TestResourceParameter_InvalidFormat(t *testing.T) {
+	ctx := context.Background()
+
+	mockProvider := mock.NewMockProvider()
+	store := memory.New()
+	defer store.Stop()
+
+	srv, err := New(
+		mockProvider,
+		store,
+		store,
+		store,
+		&Config{
+			Issuer:         "https://auth.example.com",
+			AccessTokenTTL: 3600,
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+
+	client, _, err := srv.RegisterClient(ctx,
+		"Test Client",
+		ClientTypePublic,
+		"",
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("Failed to register client: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		resource string
+		wantErr  string
+	}{
+		{
+			name:     "RelativeURI",
+			resource: "/api/resource",
+			wantErr:  "absolute URI",
+		},
+		{
+			name:     "WithFragment",
+			resource: "https://mcp.example.com/api#fragment",
+			wantErr:  "fragment",
+		},
+		{
+			name:     "HTTPNonLocalhost",
+			resource: "http://mcp.example.com",
+			wantErr:  "HTTPS",
+		},
+		{
+			name:     "InvalidScheme",
+			resource: "ftp://mcp.example.com",
+			wantErr:  "https://",
+		},
+		{
+			name:     "NoHost",
+			resource: "https://",
+			wantErr:  "host",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			codeChallenge, _ := generatePKCEPair()
+			clientState := generateRandomToken()
+
+			_, err := srv.StartAuthorizationFlow(
+				ctx,
+				client.ClientID,
+				client.RedirectURIs[0],
+				"openid email",
+				tt.resource,
+				codeChallenge,
+				PKCEMethodS256,
+				clientState,
+			)
+
+			if err == nil {
+				t.Fatalf("Expected error for invalid resource %q", tt.resource)
+			}
+
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("Expected error containing %q, got: %v", tt.wantErr, err)
+			}
+
+			t.Logf("✓ Invalid resource %q correctly rejected: %v", tt.resource, err)
+		})
+	}
+}
+
+// TestResourceParameter_DefaultsToIssuer tests that ResourceIdentifier defaults to Issuer
+func TestResourceParameter_DefaultsToIssuer(t *testing.T) {
+	config := &Config{
+		Issuer: "https://auth.example.com",
+		// ResourceIdentifier not set
+	}
+
+	identifier := config.GetResourceIdentifier()
+	if identifier != config.Issuer {
+		t.Errorf("Expected ResourceIdentifier to default to Issuer %q, got %q", config.Issuer, identifier)
+	}
+
+	t.Log("✓ ResourceIdentifier correctly defaults to Issuer when not explicitly set")
+}
+
+// TestResourceParameter_ExplicitIdentifier tests explicit ResourceIdentifier configuration
+func TestResourceParameter_ExplicitIdentifier(t *testing.T) {
+	config := &Config{
+		Issuer:             "https://auth.example.com",
+		ResourceIdentifier: "https://api.example.com/mcp",
+	}
+
+	identifier := config.GetResourceIdentifier()
+	if identifier != config.ResourceIdentifier {
+		t.Errorf("Expected ResourceIdentifier %q, got %q", config.ResourceIdentifier, identifier)
+	}
+
+	t.Log("✓ Explicit ResourceIdentifier configuration works correctly")
+}
