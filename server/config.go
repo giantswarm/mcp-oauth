@@ -14,6 +14,27 @@ const (
 	SchemeHTTPS = "https"
 )
 
+// OAuth endpoint paths
+const (
+	// EndpointPathAuthorize is the authorization endpoint path
+	EndpointPathAuthorize = "/oauth/authorize"
+
+	// EndpointPathToken is the token endpoint path
+	EndpointPathToken = "/oauth/token" // #nosec G101 -- This is a URL path, not a credential
+
+	// EndpointPathRegister is the dynamic client registration endpoint path (RFC 7591)
+	EndpointPathRegister = "/oauth/register"
+
+	// EndpointPathRevoke is the token revocation endpoint path (RFC 7009)
+	EndpointPathRevoke = "/oauth/revoke"
+
+	// EndpointPathIntrospect is the token introspection endpoint path (RFC 7662)
+	EndpointPathIntrospect = "/oauth/introspect"
+
+	// EndpointPathProtectedResourceMetadata is the Protected Resource Metadata discovery path (RFC 9728)
+	EndpointPathProtectedResourceMetadata = "/.well-known/oauth-protected-resource"
+)
+
 // Config holds OAuth server configuration
 type Config struct {
 	// Issuer is the server's issuer identifier (base URL)
@@ -425,33 +446,33 @@ type CORSConfig struct {
 
 // AuthorizationEndpoint returns the full URL to the authorization endpoint
 func (c *Config) AuthorizationEndpoint() string {
-	return c.Issuer + "/oauth/authorize"
+	return c.Issuer + EndpointPathAuthorize
 }
 
 // TokenEndpoint returns the full URL to the token endpoint
 func (c *Config) TokenEndpoint() string {
-	return c.Issuer + "/oauth/token"
+	return c.Issuer + EndpointPathToken
 }
 
 // RegistrationEndpoint returns the full URL to the dynamic client registration endpoint
 func (c *Config) RegistrationEndpoint() string {
-	return c.Issuer + "/oauth/register"
+	return c.Issuer + EndpointPathRegister
 }
 
 // ProtectedResourceMetadataEndpoint returns the full URL to the RFC 9728 Protected Resource Metadata endpoint
 // This endpoint is used in WWW-Authenticate headers to help MCP clients discover authorization server information
 func (c *Config) ProtectedResourceMetadataEndpoint() string {
-	return c.Issuer + "/.well-known/oauth-protected-resource"
+	return c.Issuer + EndpointPathProtectedResourceMetadata
 }
 
 // RevocationEndpoint returns the full URL to the RFC 7009 token revocation endpoint
 func (c *Config) RevocationEndpoint() string {
-	return c.Issuer + "/oauth/revoke"
+	return c.Issuer + EndpointPathRevoke
 }
 
 // IntrospectionEndpoint returns the full URL to the RFC 7662 token introspection endpoint
 func (c *Config) IntrospectionEndpoint() string {
-	return c.Issuer + "/oauth/introspect"
+	return c.Issuer + EndpointPathIntrospect
 }
 
 // GetResourceIdentifier returns the resource identifier for this server
