@@ -189,8 +189,10 @@ func (p *Provider) ValidateToken(ctx context.Context, accessToken string) (*prov
 	}
 
 	// Parse Google's user info response
+	// Note: v2 endpoint uses "id" while OpenID Connect uses "sub"
 	var googleUserInfo struct {
-		Sub           string `json:"sub"`
+		ID            string `json:"id"`  // v2 endpoint field
+		Sub           string `json:"sub"` // OpenID Connect field (fallback)
 		Email         string `json:"email"`
 		EmailVerified bool   `json:"email_verified"`
 		Name          string `json:"name"`
@@ -204,8 +206,14 @@ func (p *Provider) ValidateToken(ctx context.Context, accessToken string) (*prov
 		return nil, fmt.Errorf("failed to decode user info: %w", err)
 	}
 
+	// Use ID from v2 endpoint, fall back to Sub from OpenID Connect
+	userID := googleUserInfo.ID
+	if userID == "" {
+		userID = googleUserInfo.Sub
+	}
+
 	return &providers.UserInfo{
-		ID:            googleUserInfo.Sub,
+		ID:            userID,
 		Email:         googleUserInfo.Email,
 		EmailVerified: googleUserInfo.EmailVerified,
 		Name:          googleUserInfo.Name,

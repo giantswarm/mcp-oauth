@@ -239,11 +239,18 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 			s.attemptProactiveRefresh(ctx, accessToken, storedToken)
 		}
 	}
-	// If token not found, proceed with provider validation
-	// (token might be from a different instance or storage backend)
+
+	// Determine which token to use for provider validation:
+	// - If we found a stored provider token, use its access token (the Google token)
+	// - If no stored token found, fall back to the input token (backward compatibility
+	//   for tokens from a different instance or direct provider tokens)
+	tokenForProviderValidation := accessToken
+	if storedToken != nil && storedToken.AccessToken != "" {
+		tokenForProviderValidation = storedToken.AccessToken
+	}
 
 	// Validate with provider
-	userInfo, err := s.provider.ValidateToken(ctx, accessToken)
+	userInfo, err := s.provider.ValidateToken(ctx, tokenForProviderValidation)
 	if err != nil {
 		if s.Auditor != nil {
 			s.Auditor.LogAuthFailure("", "", "", err.Error())
@@ -506,12 +513,23 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 		return nil, "", fmt.Errorf("failed to get user info: %w", err)
 	}
 
-	// Save user info and token
+	// Save user info and token by ID
 	if err := s.tokenStore.SaveUserInfo(ctx, userInfo.ID, userInfo); err != nil {
 		s.Logger.Warn("Failed to save user info", "error", err)
 	}
 	if err := s.tokenStore.SaveToken(ctx, userInfo.ID, providerToken); err != nil {
 		s.Logger.Warn("Failed to save provider token", "error", err)
+	}
+
+	// Also save token by email for applications that look up by email address
+	// This is common in multi-account scenarios where email is the natural identifier
+	if userInfo.Email != "" && userInfo.Email != userInfo.ID {
+		if err := s.tokenStore.SaveUserInfo(ctx, userInfo.Email, userInfo); err != nil {
+			s.Logger.Warn("Failed to save user info by email", "error", err)
+		}
+		if err := s.tokenStore.SaveToken(ctx, userInfo.Email, providerToken); err != nil {
+			s.Logger.Warn("Failed to save provider token by email", "error", err)
+		}
 	}
 
 	// Generate authorization code using oauth2.GenerateVerifier (same quality)
