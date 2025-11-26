@@ -133,8 +133,7 @@ func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier strin
 	// Use custom HTTP client
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)
 
-	// Exchange code for token - returns oauth2.Token directly
-	// Note: No PKCE verifier is sent (see method documentation)
+	// Exchange code for token (no PKCE verifier sent - see method doc)
 	token, err := p.Exchange(ctx, code)
 	if err != nil {
 		return nil, fmt.Errorf("failed to exchange code: %w", err)

@@ -17,11 +17,18 @@ type Provider interface {
 
 	// AuthorizationURL generates the URL to redirect users for authentication
 	// codeChallenge and codeChallengeMethod are for PKCE (pass empty strings to disable)
+	//
+	// Note: Confidential client providers (those using client_secret) may ignore
+	// PKCE parameters as they use client_secret authentication instead. PKCE is
+	// primarily for public clients (mobile apps, SPAs) without secrets.
 	AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string) string
 
 	// ExchangeCode exchanges an authorization code for tokens
 	// codeVerifier is for PKCE verification (pass empty string if not using PKCE)
 	// Returns standard oauth2.Token
+	//
+	// Note: Confidential client providers (those using client_secret) may ignore
+	// the codeVerifier parameter as they use client_secret authentication instead.
 	ExchangeCode(ctx context.Context, code string, codeVerifier string) (*oauth2.Token, error)
 
 	// ValidateToken validates an access token and returns user information

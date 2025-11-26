@@ -172,7 +172,7 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 
 			for _, notWant := range tt.wantNotContains {
 				if strings.Contains(authURL, notWant) {
-					t.Errorf("AuthorizationURL() should not contain %q in URL %q (confidential client doesn't use PKCE with Google)", notWant, authURL)
+					t.Errorf("AuthorizationURL() should not contain %q (confidential client)", notWant)
 				}
 			}
 		})
@@ -239,7 +239,7 @@ func TestProvider_ExchangeCode(t *testing.T) {
 	}
 }
 
-func TestProvider_ExchangeCode_WithPKCEVerifier(t *testing.T) {
+func TestProvider_ExchangeCode_IgnoresPKCEVerifier(t *testing.T) {
 	ctx := context.Background()
 	// Create mock Google token endpoint that verifies code_verifier is NOT sent
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
