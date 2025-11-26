@@ -330,6 +330,36 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 		return "", fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
 	}
 
+	// If client didn't provide scopes, use provider's default scopes
+	// This is essential for OAuth proxy pattern where server knows required scopes
+	// Only use defaults that the client is authorized for (intersection)
+	if scope == "" {
+		defaultScopes := s.provider.DefaultScopes()
+		if len(defaultScopes) > 0 {
+			// If client has no scope restrictions, use all provider defaults
+			// Otherwise, use intersection of provider defaults and client's allowed scopes
+			if len(client.Scopes) == 0 {
+				scope = strings.Join(defaultScopes, " ")
+			} else {
+				// Build intersection - only use provider defaults that client is authorized for
+				allowedScopeMap := make(map[string]bool)
+				for _, s := range client.Scopes {
+					allowedScopeMap[s] = true
+				}
+				var authorizedDefaults []string
+				for _, defaultScope := range defaultScopes {
+					if allowedScopeMap[defaultScope] {
+						authorizedDefaults = append(authorizedDefaults, defaultScope)
+					}
+				}
+				if len(authorizedDefaults) > 0 {
+					scope = strings.Join(authorizedDefaults, " ")
+				}
+				// If no intersection, leave scope empty (client will get no scopes)
+			}
+		}
+	}
+
 	// SECURITY: Validate scope string length to prevent DoS attacks
 	// This must happen before parsing/processing the scope string
 	if len(scope) > s.Config.MaxScopeLength {

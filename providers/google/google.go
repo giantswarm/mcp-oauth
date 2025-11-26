@@ -81,6 +81,14 @@ func (p *Provider) Name() string {
 	return "google"
 }
 
+// DefaultScopes returns the provider's configured default scopes.
+// Returns a deep copy to prevent external modification.
+func (p *Provider) DefaultScopes() []string {
+	scopes := make([]string, len(p.Scopes))
+	copy(scopes, p.Scopes)
+	return scopes
+}
+
 // AuthorizationURL generates the Google OAuth authorization URL with optional PKCE.
 // Supports OAuth 2.1 defense-in-depth. See SECURITY_ARCHITECTURE.md for details.
 // If scopes is empty, the provider's default configured scopes are used.
