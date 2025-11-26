@@ -67,6 +67,7 @@ func TestServer_AuditLoggingClientIDMismatch(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -162,6 +163,7 @@ func TestServer_AuditLoggingRedirectURIMismatch(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -405,6 +407,7 @@ func TestServer_AuditEventAuthorizationCodeReuse(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",

@@ -123,15 +123,40 @@ type Config struct {
 	// Default: 32 characters (192 bits of entropy)
 	MinStateLength int // default: 32
 
-	// AllowPublicClientRegistration allows unauthenticated dynamic client registration
-	// WARNING: This can lead to DoS attacks via unlimited client registration
-	// When false, client registration requires a registration access token
-	// Default: false (authentication REQUIRED for security)
+	// AllowPublicClientRegistration controls two security aspects of client registration:
+	// 1. Whether the DCR endpoint (/oauth/register) requires authentication (Bearer token)
+	// 2. Whether public clients (native apps, CLIs with token_endpoint_auth_method="none") can be registered
+	//
+	// When false (SECURE DEFAULT):
+	//   - DCR endpoint REQUIRES a valid RegistrationAccessToken in Authorization header
+	//   - Public client registration is DENIED (only confidential clients can be registered)
+	//   - This prevents both DoS attacks and unauthorized public client creation
+	//
+	// When true (PERMISSIVE, for development only):
+	//   - DCR endpoint allows UNAUTHENTICATED registration (⚠️  DoS risk)
+	//   - Public clients CAN be registered by any requester
+	//   - Should only be used in trusted development environments
+	//
+	// SECURITY RECOMMENDATION: Keep this false in production. Use RegistrationAccessToken
+	// to authenticate trusted client developers, and only enable public clients if your
+	// use case requires native/mobile apps.
+	//
+	// Default: false (authentication REQUIRED, public clients DENIED)
 	AllowPublicClientRegistration bool // default: false
 
-	// RegistrationAccessToken is the token required for client registration
-	// Only checked if AllowPublicClientRegistration is false
-	// Generate a secure random token and share it only with trusted client developers
+	// RegistrationAccessToken is the Bearer token required for client registration
+	// when AllowPublicClientRegistration is false (recommended for production).
+	//
+	// Generate a cryptographically secure random token and share it ONLY with
+	// trusted developers who need to register OAuth clients.
+	//
+	// Example generation: openssl rand -base64 32
+	//
+	// The token is validated using constant-time comparison to prevent timing attacks.
+	// If AllowPublicClientRegistration is false but this is empty, ALL registration
+	// attempts will fail (misconfiguration).
+	//
+	// Default: "" (no token configured)
 	RegistrationAccessToken string
 
 	// AllowedCustomSchemes is a list of allowed custom URI scheme patterns (regex)

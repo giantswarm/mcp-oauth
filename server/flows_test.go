@@ -61,6 +61,7 @@ func TestServer_StartAuthorizationFlow(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -202,6 +203,7 @@ func TestServer_HandleProviderCallback(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -306,6 +308,7 @@ func TestServer_ExchangeAuthorizationCode(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -497,6 +500,7 @@ func TestServer_ExchangeAuthorizationCode_PublicClient_PKCEEnforcement(t *testin
 	publicClient, _, err := srv.RegisterClient(ctx,
 		"Public Mobile App",
 		ClientTypePublic,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -510,6 +514,7 @@ func TestServer_ExchangeAuthorizationCode_PublicClient_PKCEEnforcement(t *testin
 	confidentialClient, _, err := srv.RegisterClient(ctx,
 		"Confidential Server App",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.101",
@@ -724,6 +729,7 @@ func TestServer_ExchangeAuthorizationCode_AllowPublicClientsWithoutPKCE(t *testi
 			publicClient, _, err := srv.RegisterClient(ctx,
 				"Test Public Client",
 				ClientTypePublic,
+				"", // tokenEndpointAuthMethod
 				[]string{"https://example.com/callback"},
 				[]string{"openid", "email"},
 				"192.168.1.100",
@@ -824,6 +830,7 @@ func TestServer_ExchangeAuthorizationCode_PublicClient_ReuseDetection(t *testing
 	publicClient, _, err := srv.RegisterClient(ctx,
 		"Public Mobile App",
 		ClientTypePublic,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -1558,6 +1565,7 @@ func TestServer_RefreshTokenRotation(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -1687,6 +1695,7 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -1893,6 +1902,7 @@ func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -2017,6 +2027,7 @@ func TestServer_ConcurrentRefreshTokenReuse(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -2159,6 +2170,7 @@ func TestServer_ConcurrentAuthorizationCodeReuse(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -2309,6 +2321,7 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -2449,6 +2462,7 @@ func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Test Client 2",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.101",
@@ -2805,6 +2819,7 @@ func TestServer_ConcurrentReuseAndRevocation(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -3376,6 +3391,7 @@ func TestServer_GenericErrorMessagesNoInfoLeakage(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -3611,6 +3627,7 @@ func TestServer_AuthCodeReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -3699,6 +3716,7 @@ func TestServer_RefreshTokenReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -3981,6 +3999,7 @@ func TestStartAuthorizationFlow_ClientScopeValidation(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Limited Client",
 		ClientTypePublic,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "profile"}, // Only openid and profile allowed
 		"192.168.1.100",
@@ -4098,6 +4117,7 @@ func TestExchangeAuthorizationCode_ClientScopeValidation(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Limited Client",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "profile"}, // Only openid and profile allowed
 		"192.168.1.100",
@@ -4247,6 +4267,7 @@ func TestClientScopeValidation_UnrestrictedClient(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Unrestricted Client",
 		ClientTypePublic,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{}, // Empty scopes = no restrictions (backward compatibility)
 		"192.168.1.100",
@@ -4349,6 +4370,7 @@ func TestServer_HandleProviderCallback_PKCEValidationFailure(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",

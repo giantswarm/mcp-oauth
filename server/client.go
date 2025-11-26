@@ -11,7 +11,8 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
-// Client type constants
+// Client type constants (also defined in root package constants.go)
+// These are duplicated to avoid import cycles since root package imports server package
 const (
 	// ClientTypeConfidential represents a confidential OAuth client
 	ClientTypeConfidential = "confidential"
@@ -20,8 +21,25 @@ const (
 	ClientTypePublic = "public"
 )
 
+// Token endpoint authentication method constants (RFC 7591)
+// These are duplicated to avoid import cycles since root package imports server package
+const (
+	// TokenEndpointAuthMethodNone represents no authentication (public clients)
+	TokenEndpointAuthMethodNone = "none"
+
+	// TokenEndpointAuthMethodBasic represents HTTP Basic authentication
+	TokenEndpointAuthMethodBasic = "client_secret_basic"
+
+	// TokenEndpointAuthMethodPost represents POST form parameters
+	TokenEndpointAuthMethodPost = "client_secret_post"
+)
+
 // RegisterClient registers a new OAuth client with IP-based DoS protection
-func (s *Server) RegisterClient(ctx context.Context, clientName, clientType string, redirectURIs []string, scopes []string, clientIP string, maxClientsPerIP int) (*storage.Client, string, error) {
+// tokenEndpointAuthMethod determines how the client authenticates at the token endpoint:
+// - "none": Public client (no secret, PKCE-only auth) - used by native/CLI apps
+// - "client_secret_basic": Confidential client (Basic Auth with secret) - default
+// - "client_secret_post": Confidential client (POST form with secret)
+func (s *Server) RegisterClient(ctx context.Context, clientName, clientType, tokenEndpointAuthMethod string, redirectURIs []string, scopes []string, clientIP string, maxClientsPerIP int) (*storage.Client, string, error) {
 	// Check IP limit to prevent DoS via mass client registration
 	if err := s.clientStore.CheckIPLimit(ctx, clientIP, maxClientsPerIP); err != nil {
 		return nil, "", err
@@ -29,13 +47,31 @@ func (s *Server) RegisterClient(ctx context.Context, clientName, clientType stri
 	// Generate client ID using oauth2.GenerateVerifier (same quality)
 	clientID := generateRandomToken()
 
+	// OAUTH 2.1 COMPLIANCE: Determine client type from token_endpoint_auth_method
+	// Per RFC 7591 Section 2: token_endpoint_auth_method determines client type
+	// - "none" = public client (no secret)
+	// - any other method = confidential client (has secret)
+	if tokenEndpointAuthMethod == TokenEndpointAuthMethodNone {
+		// Client explicitly requests public client (no secret)
+		clientType = ClientTypePublic
+	} else if clientType == "" {
+		// No explicit client_type, infer from auth method
+		// Default to confidential for backward compatibility
+		clientType = ClientTypeConfidential
+	}
+
+	// Set default auth method if not specified
+	if tokenEndpointAuthMethod == "" {
+		if clientType == ClientTypePublic {
+			tokenEndpointAuthMethod = TokenEndpointAuthMethodNone
+		} else {
+			tokenEndpointAuthMethod = TokenEndpointAuthMethodBasic
+		}
+	}
+
 	// Generate client secret for confidential clients
 	var clientSecret string
 	var clientSecretHash string
-
-	if clientType == "" {
-		clientType = ClientTypeConfidential
-	}
 
 	if clientType == ClientTypeConfidential {
 		clientSecret = generateRandomToken()
@@ -54,17 +90,12 @@ func (s *Server) RegisterClient(ctx context.Context, clientName, clientType stri
 		ClientSecretHash:        clientSecretHash,
 		ClientType:              clientType,
 		RedirectURIs:            redirectURIs,
-		TokenEndpointAuthMethod: "client_secret_basic",
+		TokenEndpointAuthMethod: tokenEndpointAuthMethod,
 		GrantTypes:              []string{"authorization_code", "refresh_token"},
 		ResponseTypes:           []string{"code"},
 		ClientName:              clientName,
 		Scopes:                  scopes,
 		CreatedAt:               time.Now(),
-	}
-
-	// Public clients use "none" auth method
-	if clientType == ClientTypePublic {
-		client.TokenEndpointAuthMethod = "none"
 	}
 
 	// Save client
@@ -85,6 +116,7 @@ func (s *Server) RegisterClient(ctx context.Context, clientName, clientType stri
 		"client_id", clientID,
 		"client_name", clientName,
 		"client_type", clientType,
+		"token_endpoint_auth_method", tokenEndpointAuthMethod,
 		"client_ip", clientIP)
 
 	return client, clientSecret, nil

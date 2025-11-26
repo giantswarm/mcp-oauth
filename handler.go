@@ -702,10 +702,11 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 
 	// Parse registration request
 	var req struct {
-		ClientName   string   `json:"client_name"`
-		ClientType   string   `json:"client_type"`
-		RedirectURIs []string `json:"redirect_uris"`
-		Scopes       []string `json:"scopes"`
+		ClientName              string   `json:"client_name"`
+		ClientType              string   `json:"client_type"`
+		TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
+		RedirectURIs            []string `json:"redirect_uris"`
+		Scopes                  []string `json:"scopes"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -713,8 +714,55 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// OAUTH 2.1 COMPLIANCE: Validate token_endpoint_auth_method
+	// Per RFC 7591 Section 2, only these methods are standardized
+	if req.TokenEndpointAuthMethod != "" && !isValidAuthMethod(req.TokenEndpointAuthMethod) {
+		h.logger.Warn("Unsupported token_endpoint_auth_method requested",
+			"method", req.TokenEndpointAuthMethod,
+			"supported_methods", SupportedTokenAuthMethods,
+			"ip", clientIP)
+		// SECURITY: Don't reveal full list of supported methods in error response
+		// Supported methods are already advertised in /.well-known/oauth-authorization-server
+		h.writeError(w, ErrorCodeInvalidRequest,
+			fmt.Sprintf("Unsupported token_endpoint_auth_method: %s", req.TokenEndpointAuthMethod),
+			http.StatusBadRequest)
+		return
+	}
+
+	// SECURITY: Validate public client registration is allowed
+	// When client requests "none" auth method, they're requesting a public client
+	// This is common for native/CLI apps that can't securely store secrets
+	if req.TokenEndpointAuthMethod == TokenEndpointAuthMethodNone || req.ClientType == ClientTypePublic {
+		// CRITICAL: Enforce AllowPublicClientRegistration policy
+		// Even with a valid registration access token, public client creation must be explicitly allowed
+		if !h.server.Config.AllowPublicClientRegistration {
+			h.logger.Warn("Public client registration rejected (not allowed by configuration)",
+				"token_endpoint_auth_method", req.TokenEndpointAuthMethod,
+				"client_type", req.ClientType,
+				"ip", clientIP,
+				"recommendation", "Set AllowPublicClientRegistration=true to enable public client registration")
+			h.recordHTTPMetrics("register", http.MethodPost, http.StatusBadRequest, startTime)
+			if span != nil {
+				instrumentation.SetSpanAttributes(span,
+					attribute.String("oauth.client_type", "public"),
+					attribute.String("security.event", "public_client_registration_denied"),
+				)
+				instrumentation.SetSpanError(span, "public client registration not allowed")
+			}
+			h.writeError(w, ErrorCodeInvalidRequest,
+				"Public client registration is not enabled on this server. Contact the server administrator.",
+				http.StatusBadRequest)
+			return
+		}
+
+		h.logger.Info("Public client registration authorized",
+			"token_endpoint_auth_method", req.TokenEndpointAuthMethod,
+			"client_type", req.ClientType,
+			"ip", clientIP)
+	}
+
 	// Register client with IP tracking
-	client, clientSecret, err := h.server.RegisterClient(ctx, req.ClientName, req.ClientType, req.RedirectURIs, req.Scopes, clientIP, maxClients)
+	client, clientSecret, err := h.server.RegisterClient(ctx, req.ClientName, req.ClientType, req.TokenEndpointAuthMethod, req.RedirectURIs, req.Scopes, clientIP, maxClients)
 	if err != nil {
 		// Check if it's a rate limit error
 		if strings.Contains(err.Error(), "registration limit") {
@@ -970,6 +1018,16 @@ const userInfoKey contextKey = "user_info"
 func UserInfoFromContext(ctx context.Context) (*providers.UserInfo, bool) {
 	userInfo, ok := ctx.Value(userInfoKey).(*providers.UserInfo)
 	return userInfo, ok
+}
+
+// isValidAuthMethod checks if the given token endpoint auth method is supported
+func isValidAuthMethod(method string) bool {
+	for _, supported := range SupportedTokenAuthMethods {
+		if method == supported {
+			return true
+		}
+	}
+	return false
 }
 
 // setCORSHeaders sets CORS headers if configured and the origin is allowed.

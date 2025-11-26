@@ -441,28 +441,71 @@ defer clientRegRateLimiter.Stop()
 
 ### Client Registration Protection
 
-Protect against DoS via mass client registration:
+The `AllowPublicClientRegistration` configuration controls **two security aspects**:
+
+1. **DCR Endpoint Authentication**: Whether the `/oauth/register` endpoint requires a Bearer token
+2. **Public Client Creation**: Whether public clients (native apps with `token_endpoint_auth_method: "none"`) can be registered
+
+**Secure Production Configuration (Recommended):**
 
 ```go
 &oauth.ServerConfig{
-    // Require authentication for client registration (secure by default)
+    // SECURE: Require authentication AND deny public client creation
     AllowPublicClientRegistration: false,
     
     // Registration access token (share only with trusted developers)
-    RegistrationAccessToken: "your-secure-token-here", // Use crypto/rand
+    RegistrationAccessToken: "your-secure-token-here", // Use: openssl rand -base64 32
     
     // Limit registrations per IP
     MaxClientsPerIP: 10,
 }
 ```
 
-Clients must include the registration token when registering:
+With this configuration:
+- Only authenticated requests (with valid token) can access `/oauth/register`
+- Only **confidential clients** (with secrets) can be created
+- Public clients are denied even with valid authentication
 
+**Development/Native App Configuration:**
+
+```go
+&oauth.ServerConfig{
+    // PERMISSIVE: Allow unauthenticated registration AND public clients
+    AllowPublicClientRegistration: true,
+    
+    // Still recommended: limit per-IP to prevent abuse
+    MaxClientsPerIP: 10,
+}
+```
+
+With this configuration:
+- Anyone can register clients (⚠️  DoS risk - use only in trusted environments)
+- Both confidential AND public clients can be created
+
+**Registering Clients:**
+
+Confidential client (server-side app with secret):
 ```bash
 curl -X POST https://your-server.com/oauth/register \
   -H "Authorization: Bearer your-registration-token" \
   -H "Content-Type: application/json" \
-  -d '{"client_name": "My App", "redirect_uris": ["https://myapp.com/callback"]}'
+  -d '{
+    "client_name": "My Web App",
+    "redirect_uris": ["https://myapp.com/callback"],
+    "token_endpoint_auth_method": "client_secret_basic"
+  }'
+```
+
+Public client (native/CLI app, requires `AllowPublicClientRegistration: true`):
+```bash
+curl -X POST https://your-server.com/oauth/register \
+  -H "Authorization: Bearer your-registration-token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_name": "My Native App",
+    "redirect_uris": ["myapp://callback"],
+    "token_endpoint_auth_method": "none"
+  }'
 ```
 
 **Metadata Discovery & Security:**
