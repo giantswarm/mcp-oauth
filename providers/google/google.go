@@ -82,20 +82,25 @@ func (p *Provider) Name() string {
 }
 
 // AuthorizationURL generates the Google OAuth authorization URL
-// Accepts pre-computed PKCE challenge from client
+//
+// Note on PKCE: The codeChallenge and codeChallengeMethod parameters are part of the
+// Provider interface for compatibility, but are intentionally ignored for Google OAuth.
+// Here's why:
+//
+//  1. Two-layer architecture: In the OAuth proxy pattern (MCP client -> OAuth server -> Google),
+//     PKCE is used between MCP client and OAuth server, NOT between OAuth server and Google.
+//
+//  2. Confidential client: The OAuth server acts as a confidential client with client_secret
+//     when communicating with Google. PKCE is designed for public clients without secrets.
+//
+//  3. Security model: The OAuth server already provides PKCE security for MCP clients.
+//     Adding PKCE to the Google leg would be redundant and creates implementation complexity.
+//
+//  4. Google's requirements: Google OAuth supports PKCE but doesn't require it for confidential
+//     clients with client_secret authentication.
 func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string) string {
-	var opts []oauth2.AuthCodeOption
-
-	// Add PKCE if challenge provided (already computed by client)
-	if codeChallenge != "" {
-		opts = append(opts,
-			oauth2.SetAuthURLParam("code_challenge", codeChallenge),
-			oauth2.SetAuthURLParam("code_challenge_method", codeChallengeMethod),
-		)
-	}
-
 	// Request offline access to get refresh token
-	opts = append(opts, oauth2.AccessTypeOffline)
+	opts := []oauth2.AuthCodeOption{oauth2.AccessTypeOffline}
 
 	return p.AuthCodeURL(state, opts...)
 }
@@ -113,22 +118,24 @@ func (p *Provider) ensureContextTimeout(ctx context.Context) (context.Context, c
 
 // ExchangeCode exchanges an authorization code for tokens
 // Returns standard oauth2.Token directly
+//
+// Note on PKCE: The verifier parameter is part of the Provider interface for compatibility,
+// but is intentionally ignored for Google OAuth. This aligns with our AuthorizationURL
+// implementation which doesn't send code_challenge to Google.
+//
+// Security: The OAuth server authenticates to Google using client_secret (confidential client),
+// which provides strong authentication without requiring PKCE. PKCE protection is already
+// provided at the MCP client -> OAuth server layer.
 func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier string) (*oauth2.Token, error) {
 	ctx, cancel := p.ensureContextTimeout(ctx)
 	defer cancel()
-
-	var opts []oauth2.AuthCodeOption
-
-	// PKCE code verifier
-	if verifier != "" {
-		opts = append(opts, oauth2.VerifierOption(verifier))
-	}
 
 	// Use custom HTTP client
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)
 
 	// Exchange code for token - returns oauth2.Token directly
-	token, err := p.Exchange(ctx, code, opts...)
+	// Note: No PKCE verifier is sent (see method documentation)
+	token, err := p.Exchange(ctx, code)
 	if err != nil {
 		return nil, fmt.Errorf("failed to exchange code: %w", err)
 	}

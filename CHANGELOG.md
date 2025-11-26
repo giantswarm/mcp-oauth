@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Google provider PKCE incompatibility causing authentication failures (#68)**
+  - Fixed critical bug where Google provider incorrectly forwarded PKCE parameters to Google OAuth
+  - Issue: OAuth server was sending code_challenge to Google but not code_verifier, causing "Missing code verifier" errors
+  - Root cause: Provider was forwarding MCP client's PKCE parameters to Google, creating a mismatched flow
+  - Solution: Removed PKCE parameter forwarding in Google provider's `AuthorizationURL` and `ExchangeCode` methods
+  - Rationale:
+    - PKCE is for MCP client <-> OAuth server communication (works correctly)
+    - OAuth server <-> Google uses confidential client authentication (client_secret)
+    - PKCE is designed for public clients, not needed for confidential clients with secrets
+    - Forwarding PKCE created an incomplete flow (challenge without verifier)
+  - Impact: Fixes complete OAuth flow failure when using Google provider
+  - Security: Maintains strong authentication via client_secret, PKCE protection already provided at client layer
+  - Tests: Updated to verify PKCE parameters are NOT sent to Google OAuth
+  - Documentation: Added comprehensive comments explaining the two-layer OAuth architecture
+
 ### Added
 
 - **OpenTelemetry instrumentation infrastructure for comprehensive observability (#37)**

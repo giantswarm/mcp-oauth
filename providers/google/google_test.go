@@ -130,25 +130,32 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 		codeChallenge       string
 		codeChallengeMethod string
 		wantContains        []string
+		wantNotContains     []string
 	}{
 		{
-			name:                "with PKCE",
+			name:                "PKCE parameters ignored (confidential client)",
 			state:               "test-state",
 			codeChallenge:       "test-challenge",
 			codeChallengeMethod: "S256",
 			wantContains: []string{
 				"state=test-state",
-				"code_challenge=test-challenge",
-				"code_challenge_method=S256",
 				"access_type=offline",
+			},
+			wantNotContains: []string{
+				"code_challenge",
+				"code_challenge_method",
 			},
 		},
 		{
-			name:  "without PKCE",
+			name:  "without PKCE parameters",
 			state: "test-state",
 			wantContains: []string{
 				"state=test-state",
 				"access_type=offline",
+			},
+			wantNotContains: []string{
+				"code_challenge",
+				"code_challenge_method",
 			},
 		},
 	}
@@ -160,6 +167,12 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 			for _, want := range tt.wantContains {
 				if !strings.Contains(authURL, want) {
 					t.Errorf("AuthorizationURL() missing %q in URL %q", want, authURL)
+				}
+			}
+
+			for _, notWant := range tt.wantNotContains {
+				if strings.Contains(authURL, notWant) {
+					t.Errorf("AuthorizationURL() should not contain %q in URL %q (confidential client doesn't use PKCE with Google)", notWant, authURL)
 				}
 			}
 		})
@@ -226,9 +239,9 @@ func TestProvider_ExchangeCode(t *testing.T) {
 	}
 }
 
-func TestProvider_ExchangeCode_WithPKCE(t *testing.T) {
+func TestProvider_ExchangeCode_WithPKCEVerifier(t *testing.T) {
 	ctx := context.Background()
-	// Create mock Google token endpoint
+	// Create mock Google token endpoint that verifies code_verifier is NOT sent
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != testTokenEndpoint {
 			http.NotFound(w, r)
@@ -241,9 +254,9 @@ func TestProvider_ExchangeCode_WithPKCE(t *testing.T) {
 			return
 		}
 
-		// Verify code_verifier parameter
-		if r.FormValue("code_verifier") != "test-verifier" {
-			http.Error(w, "invalid code_verifier", http.StatusBadRequest)
+		// Verify code_verifier is NOT sent (confidential client doesn't use PKCE)
+		if r.FormValue("code_verifier") != "" {
+			http.Error(w, "code_verifier should not be sent for confidential clients", http.StatusBadRequest)
 			return
 		}
 
@@ -268,6 +281,7 @@ func TestProvider_ExchangeCode_WithPKCE(t *testing.T) {
 
 	provider.Endpoint.TokenURL = server.URL + "/token"
 
+	// Pass verifier parameter (for interface compatibility) but verify it's ignored
 	token, err := provider.ExchangeCode(ctx, "test-code", "test-verifier")
 	if err != nil {
 		t.Fatalf("ExchangeCode() error = %v", err)
