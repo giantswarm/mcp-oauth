@@ -225,6 +225,15 @@ func (s *Server) getOrFetchClient(ctx context.Context, clientID string) (*storag
 			return nil, fmt.Errorf("failed to fetch client metadata: %w", fetchErr)
 		}
 
+		// SECURITY: Re-validate URL before caching (defense-in-depth against TOCTOU)
+		// This protects against DNS changes during fetch that could poison the cache
+		if validationErr := validateMetadataURL(clientID); validationErr != nil {
+			s.Logger.Warn("Metadata URL became invalid after fetch, not caching",
+				"client_id", clientID,
+				"error", validationErr)
+			return nil, fmt.Errorf("metadata URL became invalid after fetch: %w", validationErr)
+		}
+
 		// Convert metadata to storage.Client
 		client := metadataToClient(metadata)
 

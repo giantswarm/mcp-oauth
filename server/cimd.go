@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -324,10 +325,19 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		return nil, fmt.Errorf("metadata must be application/json, got: %s", contentType)
 	}
 
+	// SECURITY: Validate Content-Length header to prevent resource waste
+	// Check declared size before reading body
+	const maxMetadataSize = 1 * 1024 * 1024 // 1MB
+	if contentLength := resp.Header.Get("Content-Length"); contentLength != "" {
+		size, parseErr := strconv.ParseInt(contentLength, 10, 64)
+		if parseErr == nil && size > maxMetadataSize {
+			return nil, fmt.Errorf("metadata Content-Length (%d bytes) exceeds maximum size of %d bytes", size, maxMetadataSize)
+		}
+	}
+
 	// SECURITY: Read entire response body with size limit to prevent:
 	// 1. Memory exhaustion from large responses
 	// 2. Partial JSON parsing from truncated responses
-	const maxMetadataSize = 1 * 1024 * 1024 // 1MB
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxMetadataSize+1))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
@@ -366,6 +376,28 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	// Validate required fields
 	if len(metadata.RedirectURIs) == 0 {
 		return nil, fmt.Errorf("metadata must contain at least one redirect_uri")
+	}
+
+	// SECURITY: Validate redirect URIs for safety (defense-in-depth)
+	// OAuth 2.1 requires HTTPS for redirect URIs except localhost
+	for _, uri := range metadata.RedirectURIs {
+		u, parseErr := url.Parse(uri)
+		if parseErr != nil {
+			return nil, fmt.Errorf("invalid redirect_uri %q: %w", uri, parseErr)
+		}
+
+		// Only allow http and https schemes
+		if u.Scheme != SchemeHTTPS && u.Scheme != SchemeHTTP {
+			return nil, fmt.Errorf("redirect_uri must use http or https scheme, got %s: %s", u.Scheme, uri)
+		}
+
+		// OAuth 2.1: HTTP redirect URIs only allowed for localhost
+		if u.Scheme == SchemeHTTP {
+			hostname := u.Hostname()
+			if hostname != localhostHostname && hostname != localhostIPv4Loopback && hostname != localhostIPv6Loopback {
+				return nil, fmt.Errorf("http redirect_uri only allowed for localhost, got %s: %s", hostname, uri)
+			}
+		}
 	}
 
 	// Set defaults per OAuth 2.0 spec if not specified

@@ -37,6 +37,8 @@ type Server struct {
 	metadataCache                 *clientMetadataCache                    // Cache for URL-based client metadata (MCP 2025-11-25)
 	metadataFetchGroup            singleflight.Group                      // Deduplicates concurrent metadata fetches (DoS protection)
 	metadataFetchRateLimiter      *security.RateLimiter                   // Per-domain rate limiter for metadata fetches
+	metadataCacheCleanupCtx       context.Context                         // Context for metadata cache cleanup goroutine
+	metadataCacheCleanupCancel    context.CancelFunc                      // Cancel function for cleanup goroutine
 	Logger                        *slog.Logger
 	Config                        *Config
 	shutdownOnce                  sync.Once // Ensures Shutdown is called only once
@@ -74,14 +76,19 @@ func New(
 	// Apply secure defaults
 	config = applySecureDefaults(config, logger)
 
+	// Create cleanup context for background goroutines
+	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
+
 	srv := &Server{
-		provider:      provider,
-		tokenStore:    tokenStore,
-		clientStore:   clientStore,
-		flowStore:     flowStore,
-		Config:        config,
-		Logger:        logger,
-		metadataCache: newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
+		provider:                   provider,
+		tokenStore:                 tokenStore,
+		clientStore:                clientStore,
+		flowStore:                  flowStore,
+		Config:                     config,
+		Logger:                     logger,
+		metadataCache:              newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
+		metadataCacheCleanupCtx:    cleanupCtx,
+		metadataCacheCleanupCancel: cleanupCancel,
 	}
 
 	// Validate HTTPS enforcement (OAuth 2.1 security requirement)
@@ -142,6 +149,13 @@ func New(
 				"service_name", instConfig.ServiceName,
 				"service_version", instConfig.ServiceVersion)
 		}
+	}
+
+	// Start background goroutine for metadata cache cleanup
+	// This prevents memory leaks from expired cache entries
+	if config.EnableClientIDMetadataDocuments {
+		go srv.metadataCacheCleanupLoop()
+		logger.Debug("Started metadata cache cleanup goroutine")
 	}
 
 	return srv, nil
@@ -255,6 +269,29 @@ func generatePKCEPair() (challenge, verifier string) {
 	return challenge, verifier
 }
 
+// metadataCacheCleanupLoop runs in a background goroutine to periodically clean
+// expired entries from the metadata cache. This prevents memory leaks from
+// expired cache entries that haven't been naturally evicted by LRU.
+func (s *Server) metadataCacheCleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			removed := s.metadataCache.CleanupExpired()
+			if removed > 0 {
+				s.Logger.Debug("Cleaned expired metadata cache entries",
+					"count", removed,
+					"cache_size", s.metadataCache.Size())
+			}
+		case <-s.metadataCacheCleanupCtx.Done():
+			s.Logger.Debug("Metadata cache cleanup goroutine stopped")
+			return
+		}
+	}
+}
+
 // Shutdown gracefully shuts down the server and all its components.
 // It stops rate limiters, closes storage connections, and cleans up resources.
 // Safe to call multiple times - only the first call will execute shutdown.
@@ -318,6 +355,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			if s.ClientRegistrationRateLimiter != nil {
 				s.Logger.Debug("Stopping client registration rate limiter...")
 				s.ClientRegistrationRateLimiter.Stop()
+			}
+			if s.metadataFetchRateLimiter != nil {
+				s.Logger.Debug("Stopping metadata fetch rate limiter...")
+				s.metadataFetchRateLimiter.Stop()
+			}
+
+			// Stop metadata cache cleanup goroutine
+			if s.metadataCacheCleanupCancel != nil {
+				s.Logger.Debug("Stopping metadata cache cleanup goroutine...")
+				s.metadataCacheCleanupCancel()
 			}
 
 			// Shutdown instrumentation
