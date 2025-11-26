@@ -75,6 +75,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Added edge case tests for long scope lists and special characters
     - Improved test maintainability with test helper constants
   - **Testing**: Comprehensive unit tests for header formatting, integration, backward compatibility mode, and security edge cases (100% coverage)
+  - **Configuration validation** (security hardening):
+    - Validates `DefaultChallengeScopes` for invalid characters (quotes, commas, backslashes)
+    - Warns when scope count exceeds 50 (HTTP header size limit protection)
+    - Defense-in-depth: validation complements existing escaping
+    - Comprehensive test coverage for validation edge cases
+  - **Documentation**:
+    - Added security considerations section to README
+    - Documents information disclosure policy (intentional per OAuth specs)
+    - Guidance on scope configuration best practices
+    - Clear warnings about header size limits
 
 - **OAuth 2.1 PKCE for provider leg - Enhanced security for confidential clients (#68)**
   - Implemented full OAuth 2.1 PKCE support on the OAuth server → Provider leg

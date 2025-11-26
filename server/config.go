@@ -565,6 +565,57 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 	logSecurityWarnings(config, logger)
 }
 
+// validateWWWAuthenticateConfig validates WWW-Authenticate header configuration
+// for security best practices
+func validateWWWAuthenticateConfig(config *Config, logger *slog.Logger) {
+	// Recommendation 1: Warn about very large scope lists (header size limits)
+	// Some proxies/servers have HTTP header size limits (typically 8KB)
+	const maxRecommendedScopes = 50
+	if len(config.DefaultChallengeScopes) > maxRecommendedScopes {
+		logger.Warn("⚠️  CONFIGURATION WARNING: Very large DefaultChallengeScopes configured",
+			"count", len(config.DefaultChallengeScopes),
+			"max_recommended", maxRecommendedScopes,
+			"risk", "May exceed HTTP header size limits in some proxies/servers",
+			"recommendation", "Consider reducing scope count or using broader scopes")
+	}
+
+	// Recommendation 3: Validate scope entries don't contain invalid characters
+	// This provides defense-in-depth (escaping already prevents injection)
+	for i, scope := range config.DefaultChallengeScopes {
+		if strings.Contains(scope, `"`) {
+			logger.Warn("⚠️  CONFIGURATION WARNING: Invalid character in DefaultChallengeScopes",
+				"index", i,
+				"scope", scope,
+				"invalid_char", `"`,
+				"risk", "Scope contains double-quote character",
+				"recommendation", "Use alphanumeric characters, hyphens, underscores, colons, and slashes only")
+		}
+		if strings.Contains(scope, ",") {
+			logger.Warn("⚠️  CONFIGURATION WARNING: Invalid character in DefaultChallengeScopes",
+				"index", i,
+				"scope", scope,
+				"invalid_char", ",",
+				"risk", "Scope contains comma character",
+				"recommendation", "Use alphanumeric characters, hyphens, underscores, colons, and slashes only")
+		}
+		if strings.Contains(scope, `\`) {
+			logger.Warn("⚠️  CONFIGURATION WARNING: Invalid character in DefaultChallengeScopes",
+				"index", i,
+				"scope", scope,
+				"invalid_char", `\`,
+				"risk", "Scope contains backslash character",
+				"recommendation", "Use alphanumeric characters, hyphens, underscores, colons, and slashes only")
+		}
+	}
+
+	// Log info about WWW-Authenticate metadata configuration
+	if config.EnableWWWAuthenticateMetadata && len(config.DefaultChallengeScopes) > 0 {
+		logger.Debug("WWW-Authenticate metadata enabled",
+			"challenge_scopes_count", len(config.DefaultChallengeScopes),
+			"resource_metadata_url", config.ProtectedResourceMetadataEndpoint())
+	}
+}
+
 // logSecurityWarnings logs warnings for insecure configuration settings
 func logSecurityWarnings(config *Config, logger *slog.Logger) {
 	if !config.RequirePKCE {
@@ -579,6 +630,8 @@ func logSecurityWarnings(config *Config, logger *slog.Logger) {
 			"recommendation", "Set AllowPKCEPlain=false to require S256",
 			"learn_more", "https://datatracker.ietf.org/doc/html/rfc7636#section-4.2")
 	}
+	// Validate WWW-Authenticate configuration
+	validateWWWAuthenticateConfig(config, logger)
 	if config.TrustProxy {
 		logger.Warn("⚠️  SECURITY NOTICE: Trusting proxy headers",
 			"risk", "IP spoofing if proxy is not properly configured",
