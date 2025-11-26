@@ -1,0 +1,427 @@
+# Security Architecture
+
+This document explains the security architecture of the `mcp-oauth` library, detailing how OAuth 2.1 security best practices are implemented across the two-layer authentication system.
+
+## Table of Contents
+
+1. [Overview](#overview)
+2. [Two-Layer Architecture](#two-layer-architecture)
+3. [PKCE Implementation](#pkce-implementation)
+4. [State Parameter Protection](#state-parameter-protection)
+5. [Client Authentication](#client-authentication)
+6. [Token Security](#token-security)
+7. [Attack Mitigation](#attack-mitigation)
+8. [Security Checklist](#security-checklist)
+
+## Overview
+
+The `mcp-oauth` library implements an OAuth 2.1-compliant proxy pattern where the OAuth server acts as an intermediary between MCP clients and identity providers (Google, GitHub, etc.). This architecture requires careful security implementation at multiple layers.
+
+**Key Security Principle**: Defense in depth - multiple overlapping security mechanisms protect against various attack vectors.
+
+## Two-Layer Architecture
+
+```
+┌─────────────┐           ┌──────────────┐           ┌──────────────┐
+│             │  Layer 1  │              │  Layer 2  │              │
+│ MCP Client  │ ◄────────►│ OAuth Server │ ◄────────►│   Provider   │
+│ (Public)    │   PKCE    │(Confidential)│PKCE+Secret│ (Google,etc) │
+│             │           │              │           │              │
+└─────────────┘           └──────────────┘           └──────────────┘
+```
+
+### Layer 1: MCP Client ↔ OAuth Server
+
+**Client Type**: Public (mobile apps, SPAs, command-line tools)
+
+**Security Mechanisms**:
+- **PKCE (Proof Key for Code Exchange)**: Mandatory
+- **State Parameter**: CSRF protection
+- **Short-lived authorization codes**: 10 minutes default
+- **One-time use codes**: Prevents replay attacks
+
+**Why PKCE is critical**:
+- Public clients cannot securely store client secrets
+- PKCE prevents authorization code interception attacks
+- Cryptographically binds authorization request to token exchange
+
+### Layer 2: OAuth Server ↔ Provider
+
+**Client Type**: Confidential (server-side application)
+
+**Security Mechanisms**:
+- **Client Secret**: Server authentication to provider
+- **PKCE**: OAuth 2.1 enhancement (defense-in-depth)
+- **State Parameter**: Server-generated CSRF protection
+- **HTTPS**: Mandatory for all communications
+
+**Why both Client Secret AND PKCE**:
+- Client secret: Authenticates the OAuth server to the provider
+- PKCE: Prevents authorization code injection attacks
+- OAuth 2.1 recommends PKCE for ALL client types, not just public clients
+
+## PKCE Implementation
+
+### Client-to-Server PKCE (Layer 1)
+
+**Flow**:
+1. MCP client generates random `code_verifier` (43-128 characters)
+2. Client computes `code_challenge = SHA256(code_verifier)`
+3. Client sends challenge to OAuth server in authorization request
+4. OAuth server stores challenge in authorization state
+5. OAuth server returns authorization code to client
+6. Client sends code + verifier to OAuth server for token exchange
+7. OAuth server validates: `SHA256(received_verifier) == stored_challenge`
+
+**Implementation**: `server/flows.go` - `ExchangeAuthorizationCode()`
+
+**Security Properties**:
+- Prevents code interception attacks
+- Attacker needs both code AND original verifier
+- Verifier never transmitted during authorization (only challenge)
+
+### Server-to-Provider PKCE (Layer 2)
+
+**Flow**:
+1. OAuth server generates random `provider_code_verifier`
+2. Server computes `provider_code_challenge = SHA256(provider_code_verifier)`
+3. Server sends challenge to provider (Google) in authorization request
+4. Server stores verifier in authorization state
+5. Provider returns authorization code to server
+6. Server sends code + verifier to provider for token exchange
+7. Provider validates: `SHA256(received_verifier) == stored_challenge`
+
+**Implementation**: `server/flows.go` - `StartAuthorizationFlow()`, `HandleProviderCallback()`
+
+**Security Properties**:
+- Prevents authorization code injection attacks
+- Protects against compromised state parameters
+- OAuth 2.1 compliance for confidential clients
+- Defense-in-depth alongside client secret
+
+**Why Both PKCE Layers**:
+- Layer 1 PKCE: Protects public clients (cannot use secrets)
+- Layer 2 PKCE: Protects against advanced attacks on confidential clients
+- Each layer has different threat model and protection scope
+
+## State Parameter Protection
+
+The implementation uses **dual-layer state protection** for defense-in-depth:
+
+### Client State (Layer 1)
+
+```go
+// Provided by MCP client
+clientState := request.State
+
+// Requirements:
+// - Minimum 16 characters (configurable)
+// - Cryptographically random
+// - Single-use (deleted after validation)
+// - Validated with constant-time comparison
+```
+
+**Purpose**: Protects MCP client against CSRF attacks
+
+**Validation**: `server/validation.go` - `validateStateParameter()`
+
+### Provider State (Layer 2)
+
+```go
+// Generated by OAuth server
+providerState := generateRandomToken() // 43 characters, 256 bits entropy
+
+// Requirements:
+// - Server-generated (trusted entropy source)
+// - Different from client state
+// - Single-use (deleted after validation)
+// - Validated with constant-time comparison
+```
+
+**Purpose**: Protects OAuth server against callback injection attacks
+
+**Validation**: `server/flows.go` - `HandleProviderCallback()`
+
+### Why Two State Parameters?
+
+1. **Different threat models**: Client-side CSRF vs. server-side callback injection
+2. **Independent validation**: Client and server validate their respective states
+3. **Defense-in-depth**: Compromise of one doesn't compromise the other
+4. **Clear separation**: Client state for client, server state for provider
+
+## Client Authentication
+
+### Confidential Clients
+
+**Authentication Method**: `client_secret_basic` or `client_secret_post`
+
+```go
+// Secret generation: 32 bytes (256 bits) random data
+clientSecret := generateRandomToken() // 43 characters base64url
+
+// Storage: bcrypt hash with constant-time comparison
+hash := bcrypt.GenerateFromPassword([]byte(clientSecret), bcrypt.DefaultCost)
+```
+
+**Security Features**:
+- Secrets never logged or exposed in errors
+- Bcrypt with constant-time comparison (timing attack protection)
+- Dummy hash comparison for non-existent clients (prevents enumeration)
+- Minimum 256 bits entropy (exceeds OAuth recommendations)
+
+**Implementation**: `storage/memory/memory.go` - `ValidateClientSecret()`
+
+### Public Clients
+
+**Authentication Method**: `none`
+
+**Security Restrictions**:
+- MUST use PKCE (enforced by default)
+- Cannot access token introspection endpoint
+- Cannot use refresh token rotation
+
+## Token Security
+
+### Token Generation
+
+All tokens use cryptographically secure random generation:
+
+```go
+func generateRandomToken() string {
+    b := make([]byte, 32) // 256 bits
+    rand.Read(b)          // crypto/rand
+    return base64.RawURLEncoding.EncodeToString(b)
+}
+```
+
+**Properties**:
+- 256-bit entropy (43 characters base64url)
+- Cryptographically unpredictable
+- No structured format (prevents token scanning)
+
+### Token Types
+
+| Token Type | Lifetime | Rotation | Validation |
+|------------|----------|----------|------------|
+| Authorization Code | 10 min | N/A (one-time use) | Atomic reuse detection |
+| Access Token | 1 hour | No | Provider validation |
+| Refresh Token | 7 days | Optional | Family-based reuse detection |
+
+### Refresh Token Rotation (OAuth 2.1)
+
+**Purpose**: Detect and mitigate refresh token theft
+
+**Implementation**: Token families with generation tracking
+
+```go
+type RefreshTokenFamily struct {
+    FamilyID    string // Identifies token lineage
+    Generation  int    // Increments on each rotation
+    Revoked     bool   // Marks compromised families
+}
+```
+
+**Detection Logic**:
+1. Client attempts to use old refresh token
+2. Server detects generation mismatch or revoked family
+3. All tokens in family immediately revoked
+4. Security audit event logged
+
+**Implementation**: `storage/memory/memory.go` - Refresh token family tracking
+
+## Attack Mitigation
+
+### Authorization Code Interception
+
+**Attack**: Attacker intercepts authorization code in redirect
+
+**Mitigations**:
+1. PKCE (Layer 1): Code useless without original verifier
+2. PKCE (Layer 2): Provider binding prevents injection
+3. State parameter: Validates callback origin
+4. One-time use: Code immediately invalidated
+5. Short lifetime: 10-minute window
+
+### Authorization Code Injection
+
+**Attack**: Attacker injects stolen code into victim's session
+
+**Mitigations**:
+1. State parameter (constant-time validation)
+2. PKCE on provider leg (OAuth 2.1 enhancement)
+3. Client secret authentication
+4. One-time use enforcement
+5. Atomic reuse detection
+
+**Why provider-leg PKCE matters**:
+- Cryptographically binds authorization to token exchange
+- Prevents injection even if state is compromised
+- OAuth 2.1 best practice for ALL client types
+
+### Cross-Site Request Forgery (CSRF)
+
+**Attack**: Malicious site initiates OAuth flow for victim
+
+**Mitigations**:
+1. State parameter (mandatory, minimum 16 chars)
+2. Dual-layer state (client + provider)
+3. Constant-time comparison (timing attack protection)
+4. One-time use (prevents replay)
+
+**Implementation**: `server/validation.go` - State validation
+
+### Token Theft
+
+**Attack**: Stolen refresh token used by attacker
+
+**Mitigations**:
+1. Refresh token rotation (optional but recommended)
+2. Token family tracking with reuse detection
+3. Automatic revocation on reuse detection
+4. Audit logging of suspicious activity
+
+**Implementation**: `server/flows.go` - `RefreshAccessToken()`
+
+### Timing Attacks
+
+**Target**: Client secret validation, state comparison
+
+**Mitigations**:
+1. Bcrypt for password hashing (built-in constant-time)
+2. `subtle.ConstantTimeCompare` for state validation
+3. Dummy operations for non-existent entities
+4. Consistent error messages
+
+**Example**:
+```go
+// Always perform bcrypt comparison, even for non-existent clients
+dummyHash := "$2a$10$N9qo8uLOickgx2ZMRZoMyeI..."
+hashToCompare := dummyHash
+if clientExists {
+    hashToCompare = client.ClientSecretHash
+}
+bcrypt.CompareHashAndPassword([]byte(hashToCompare), []byte(secret))
+```
+
+### Open Redirect
+
+**Attack**: Malicious redirect_uri to phish authorization codes
+
+**Mitigations**:
+1. Redirect URI pre-registration (required)
+2. Exact match validation (no wildcards)
+3. Fragment validation (fragments rejected)
+4. HTTPS enforcement for production
+5. Custom scheme validation (mobile apps)
+
+**Implementation**: `server/validation.go` - `validateRedirectURISecurityEnhanced()`
+
+### Man-in-the-Middle (MITM)
+
+**Attack**: Interception of OAuth traffic
+
+**Mitigations**:
+1. HTTPS mandatory for production
+2. Redirect URI HTTPS validation
+3. HTTP allowed only for localhost development
+4. Provider communication always over HTTPS
+
+**Implementation**: `server/validation.go` - `validateHTTPSEnforcement()`
+
+## Security Checklist
+
+### Production Deployment
+
+- [ ] Enable HTTPS for OAuth server (`Issuer` must be `https://`)
+- [ ] Validate all redirect URIs use HTTPS (except localhost)
+- [ ] Configure `RegistrationAccessToken` for dynamic client registration
+- [ ] Enable audit logging (`Auditor` interface)
+- [ ] Set up security monitoring for suspicious events
+- [ ] Rotate client secrets periodically
+- [ ] Configure rate limiting (`RateLimitRate`, `RateLimitBurst`)
+- [ ] Set appropriate token lifetimes (shorter = more secure)
+- [ ] Enable refresh token rotation (`AllowRefreshTokenRotation=true`)
+- [ ] Review and test revoked token cleanup
+- [ ] Set `MinStateLength` >= 16 (default)
+- [ ] Enforce PKCE (`RequirePKCE=true`, default)
+- [ ] Disable plain PKCE (`AllowPKCEPlain=false`, default)
+
+### Provider Configuration (Google Example)
+
+```go
+provider, err := google.NewProvider(&google.Config{
+    ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
+    ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"), // From secure storage
+    RedirectURL:  "https://your-server.com/oauth/callback", // HTTPS!
+    Scopes:       []string{"openid", "email", "profile"},
+})
+```
+
+**Security Notes**:
+- Store secrets in environment variables or secret management system
+- Never commit secrets to version control
+- Use HTTPS redirect URLs in production
+- Minimal scopes (principle of least privilege)
+- PKCE automatically enabled on provider leg (OAuth 2.1)
+
+### Monitoring and Auditing
+
+Enable audit logging for security events:
+
+```go
+auditor := security.NewAuditor(logger, true)
+
+server, err := oauth.NewServer(provider, store, store, store, &oauth.ServerConfig{
+    // ... other config
+}, logger)
+
+server.Auditor = auditor
+```
+
+**Critical Events to Monitor**:
+- `auth_failure`: Failed authentication attempts
+- `authorization_code_reuse`: Potential attack detected
+- `token_reuse_detected`: Refresh token theft detected
+- `rate_limit_exceeded`: Potential abuse
+- `invalid_pkce`: PKCE validation failures
+- `provider_state_mismatch`: Callback injection attempt
+
+### Testing Security
+
+```bash
+# Run security-focused tests
+go test ./security/... -v
+
+# Run PKCE tests
+go test ./server/... -run PKCE -v
+
+# Run timing attack resistance tests
+go test ./storage/memory/... -run TimingAttack -v
+
+# Full test suite with coverage
+go test ./... -cover
+```
+
+## References
+
+- [OAuth 2.1 Draft](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-10)
+- [RFC 6749: OAuth 2.0](https://datatracker.ietf.org/doc/html/rfc6749)
+- [RFC 7636: PKCE](https://datatracker.ietf.org/doc/html/rfc7636)
+- [OAuth 2.0 Security Best Current Practice](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics)
+- [OAuth 2.0 Threat Model](https://datatracker.ietf.org/doc/html/rfc6819)
+
+## Contributing
+
+When adding new security features:
+
+1. Document the threat model
+2. Explain the mitigation strategy
+3. Add comprehensive tests (including attack scenarios)
+4. Update this document
+5. Update SECURITY.md with any disclosure information
+6. Add CHANGELOG entry with security impact
+
+---
+
+**Security Disclosure**: For security vulnerabilities, please see SECURITY.md for responsible disclosure procedures.
+

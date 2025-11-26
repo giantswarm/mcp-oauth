@@ -180,6 +180,9 @@ type TokenStore interface {
 
 ## 🔒 Security
 
+> **📖 For comprehensive security documentation, see [SECURITY_ARCHITECTURE.md](SECURITY_ARCHITECTURE.md)**  
+> This document explains the two-layer PKCE architecture, attack mitigation strategies, and production deployment best practices.
+
 ### 🛡️ Secure by Default
 
 This library follows the **secure-by-default** principle. All security features are enabled out of the box:

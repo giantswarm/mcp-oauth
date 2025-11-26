@@ -130,9 +130,10 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 		codeChallenge       string
 		codeChallengeMethod string
 		wantContains        []string
+		wantNotContains     []string
 	}{
 		{
-			name:                "with PKCE",
+			name:                "with PKCE (OAuth 2.1 security)",
 			state:               "test-state",
 			codeChallenge:       "test-challenge",
 			codeChallengeMethod: "S256",
@@ -144,11 +145,15 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 			},
 		},
 		{
-			name:  "without PKCE",
+			name:  "without PKCE parameters",
 			state: "test-state",
 			wantContains: []string{
 				"state=test-state",
 				"access_type=offline",
+			},
+			wantNotContains: []string{
+				"code_challenge",
+				"code_challenge_method",
 			},
 		},
 	}
@@ -160,6 +165,12 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 			for _, want := range tt.wantContains {
 				if !strings.Contains(authURL, want) {
 					t.Errorf("AuthorizationURL() missing %q in URL %q", want, authURL)
+				}
+			}
+
+			for _, notWant := range tt.wantNotContains {
+				if strings.Contains(authURL, notWant) {
+					t.Errorf("AuthorizationURL() should not contain %q (confidential client)", notWant)
 				}
 			}
 		})
@@ -228,7 +239,7 @@ func TestProvider_ExchangeCode(t *testing.T) {
 
 func TestProvider_ExchangeCode_WithPKCE(t *testing.T) {
 	ctx := context.Background()
-	// Create mock Google token endpoint
+	// Create mock Google token endpoint that verifies code_verifier IS sent (OAuth 2.1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != testTokenEndpoint {
 			http.NotFound(w, r)
@@ -241,9 +252,9 @@ func TestProvider_ExchangeCode_WithPKCE(t *testing.T) {
 			return
 		}
 
-		// Verify code_verifier parameter
+		// Verify code_verifier is sent (OAuth 2.1 security enhancement)
 		if r.FormValue("code_verifier") != "test-verifier" {
-			http.Error(w, "invalid code_verifier", http.StatusBadRequest)
+			http.Error(w, "invalid or missing code_verifier", http.StatusBadRequest)
 			return
 		}
 
@@ -268,6 +279,7 @@ func TestProvider_ExchangeCode_WithPKCE(t *testing.T) {
 
 	provider.Endpoint.TokenURL = server.URL + "/token"
 
+	// Pass verifier parameter for OAuth 2.1 PKCE security
 	token, err := provider.ExchangeCode(ctx, "test-code", "test-verifier")
 	if err != nil {
 		t.Fatalf("ExchangeCode() error = %v", err)

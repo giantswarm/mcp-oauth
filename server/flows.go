@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/oauth2"
 
+	"github.com/giantswarm/mcp-oauth/internal/util"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
@@ -83,7 +84,7 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 		"expiry", storedToken.Expiry,
 		"time_until_expiry", timeUntilExpiry,
 		"refresh_threshold", refreshThreshold,
-		"token_prefix", safeTruncate(accessToken, 8))
+		"token_prefix", util.SafeTruncate(accessToken, 8))
 
 	// Attempt to refresh the provider token
 	newProviderToken, err := s.provider.RefreshToken(ctx, storedToken.RefreshToken)
@@ -91,12 +92,12 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 		// Refresh failed - log warning but continue with validation (graceful degradation)
 		s.Logger.Warn("Proactive token refresh failed, falling back to validation",
 			"error", err,
-			"token_prefix", safeTruncate(accessToken, 8),
+			"token_prefix", util.SafeTruncate(accessToken, 8),
 			"time_until_expiry", timeUntilExpiry)
 
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
-				Type: "proactive_refresh_failed",
+				Type: security.EventProactiveRefreshFailed,
 				Details: map[string]any{
 					"error":             err.Error(),
 					"time_until_expiry": timeUntilExpiry.String(),
@@ -111,18 +112,18 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 	if err := s.tokenStore.SaveToken(ctx, accessToken, newProviderToken); err != nil {
 		s.Logger.Warn("Failed to save refreshed token",
 			"error", err,
-			"token_prefix", safeTruncate(accessToken, 8))
+			"token_prefix", util.SafeTruncate(accessToken, 8))
 		return
 	}
 
 	s.Logger.Info("Token proactively refreshed",
 		"old_expiry", storedToken.Expiry,
 		"new_expiry", newProviderToken.Expiry,
-		"token_prefix", safeTruncate(accessToken, 8))
+		"token_prefix", util.SafeTruncate(accessToken, 8))
 
 	if s.Auditor != nil {
 		s.Auditor.LogEvent(security.Event{
-			Type: "token_proactively_refreshed",
+			Type: security.EventTokenProactivelyRefreshed,
 			Details: map[string]any{
 				"old_expiry": storedToken.Expiry,
 				"new_expiry": newProviderToken.Expiry,
@@ -154,7 +155,7 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 			s.Logger.Debug("Token expired locally",
 				"expiry", storedToken.Expiry,
 				"grace_period_seconds", s.Config.ClockSkewGracePeriod,
-				"token_prefix", safeTruncate(accessToken, 8))
+				"token_prefix", util.SafeTruncate(accessToken, 8))
 
 			if s.Auditor != nil {
 				s.Auditor.LogAuthFailure("", "", "", "token_expired_locally")
@@ -283,7 +284,7 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 	// Log authorization flow start
 	if s.Auditor != nil {
 		s.Auditor.LogEvent(security.Event{
-			Type:     "authorization_flow_started",
+			Type:     security.EventAuthorizationFlowStarted,
 			ClientID: clientID,
 			Details: map[string]any{
 				"redirect_uri":          redirectURI,
@@ -294,30 +295,30 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 	}
 
 	// Generate provider state (different from client state for defense in depth)
-	// This allows us to track the provider callback independently
 	providerState := generateRandomToken()
 
-	// Save authorization state
-	// StateID = client's state (for CSRF validation when redirecting back to client)
-	// ProviderState = our state sent to provider (for validating provider callback)
+	// Generate PKCE for server-to-provider leg (OAuth 2.1)
+	providerCodeChallenge, providerCodeVerifier := generatePKCEPair()
+
+	// Save authorization state with both client and server PKCE parameters
 	authState := &storage.AuthorizationState{
-		StateID:             clientState, // Client's state for CSRF protection
-		ClientID:            clientID,
-		RedirectURI:         redirectURI,
-		Scope:               scope,
-		CodeChallenge:       codeChallenge,
-		CodeChallengeMethod: codeChallengeMethod,
-		ProviderState:       providerState, // Our state for provider callback
-		CreatedAt:           time.Now(),
-		ExpiresAt:           time.Now().Add(time.Duration(s.Config.AuthorizationCodeTTL) * time.Second),
+		StateID:              clientState,
+		ClientID:             clientID,
+		RedirectURI:          redirectURI,
+		Scope:                scope,
+		CodeChallenge:        codeChallenge,
+		CodeChallengeMethod:  codeChallengeMethod,
+		ProviderState:        providerState,
+		ProviderCodeVerifier: providerCodeVerifier,
+		CreatedAt:            time.Now(),
+		ExpiresAt:            time.Now().Add(time.Duration(s.Config.AuthorizationCodeTTL) * time.Second),
 	}
 	if err := s.flowStore.SaveAuthorizationState(ctx, authState); err != nil {
 		return "", fmt.Errorf("failed to save authorization state: %w", err)
 	}
 
-	// Generate authorization URL with provider
-	// Pass the code challenge from client (already computed)
-	authURL := s.provider.AuthorizationURL(providerState, codeChallenge, codeChallengeMethod)
+	// Generate authorization URL with server-generated PKCE
+	authURL := s.provider.AuthorizationURL(providerState, providerCodeChallenge, "S256")
 
 	return authURL, nil
 }
@@ -331,7 +332,7 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 	if err := s.validateStateParameter(providerState); err != nil {
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
-				Type: "invalid_provider_callback",
+				Type: security.EventInvalidProviderCallback,
 				Details: map[string]any{
 					"reason": "invalid_state_format",
 				},
@@ -346,7 +347,7 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 	if err != nil {
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
-				Type: "invalid_provider_callback",
+				Type: security.EventInvalidProviderCallback,
 				Details: map[string]any{
 					"reason": "state_not_found",
 				},
@@ -360,7 +361,7 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 	if subtle.ConstantTimeCompare([]byte(authState.ProviderState), []byte(providerState)) != 1 {
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
-				Type:     "provider_state_mismatch",
+				Type:     security.EventProviderStateMismatch,
 				ClientID: authState.ClientID,
 				Details: map[string]any{
 					"severity": "critical",
@@ -373,15 +374,28 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 	// Save the client's original state before deletion
 	clientState := authState.StateID
 
+	// Save provider verifier before deleting state
+	providerVerifier := authState.ProviderCodeVerifier
+
 	// Delete authorization state (one-time use)
-	// Use providerState for deletion since that's our lookup key
 	_ = s.flowStore.DeleteAuthorizationState(ctx, providerState)
 
-	// Exchange code with provider
-	// Note: We don't pass code_verifier here because PKCE verification
-	// happens when the client exchanges their authorization code with us
-	providerToken, err := s.provider.ExchangeCode(ctx, code, "")
+	// Exchange code with provider using PKCE verification
+	providerToken, err := s.provider.ExchangeCode(ctx, code, providerVerifier)
 	if err != nil {
+		// SECURITY: Log PKCE validation failures for security monitoring
+		if s.Auditor != nil {
+			s.Auditor.LogEvent(security.Event{
+				Type: security.EventProviderCodeExchangeFailed,
+				Details: map[string]any{
+					"provider":     s.provider.Name(),
+					"error":        err.Error(),
+					"pkce_enabled": providerVerifier != "",
+					"client_id":    authState.ClientID,
+					"state_id":     util.SafeTruncate(providerState, 16),
+				},
+			})
+		}
 		return nil, "", fmt.Errorf("failed to exchange code with provider: %w", err)
 	}
 
@@ -424,7 +438,7 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 
 	if s.Auditor != nil {
 		s.Auditor.LogEvent(security.Event{
-			Type:     "authorization_code_issued",
+			Type:     security.EventAuthorizationCodeIssued,
 			UserID:   userInfo.ID,
 			ClientID: authState.ClientID,
 			Details: map[string]any{
@@ -491,7 +505,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 			if s.Auditor != nil {
 				// Log the critical security event
 				s.Auditor.LogEvent(security.Event{
-					Type:     "authorization_code_reuse_detected",
+					Type:     security.EventAuthorizationCodeReuseDetected,
 					UserID:   authCode.UserID,
 					ClientID: clientID,
 					Details: map[string]any{
@@ -511,26 +525,26 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 		}
 
 		// Other error (not found, expired, etc.)
-		return nil, "", s.logAuthCodeValidationFailure("invalid_authorization_code: "+err.Error(), clientID, "", safeTruncate(code, 8))
+		return nil, "", s.logAuthCodeValidationFailure("invalid_authorization_code: "+err.Error(), clientID, "", util.SafeTruncate(code, 8))
 	}
 
 	// Code is now atomically marked as used - no other request can use it
 
 	// Validate client ID matches
 	if authCode.ClientID != clientID {
-		return nil, "", s.logAuthCodeValidationFailure("client_id_mismatch", clientID, "", safeTruncate(code, 8))
+		return nil, "", s.logAuthCodeValidationFailure("client_id_mismatch", clientID, "", util.SafeTruncate(code, 8))
 	}
 
 	// Validate redirect URI matches
 	if authCode.RedirectURI != redirectURI {
-		return nil, "", s.logAuthCodeValidationFailure("redirect_uri_mismatch", clientID, "", safeTruncate(code, 8))
+		return nil, "", s.logAuthCodeValidationFailure("redirect_uri_mismatch", clientID, "", util.SafeTruncate(code, 8))
 	}
 
 	// CRITICAL SECURITY: Fetch client to check if PKCE is required (OAuth 2.1)
 	// Public clients (mobile apps, SPAs) MUST use PKCE to prevent authorization code theft
 	client, err := s.clientStore.GetClient(ctx, clientID)
 	if err != nil {
-		return nil, "", s.logAuthCodeValidationFailure("client_not_found", clientID, "", safeTruncate(code, 8))
+		return nil, "", s.logAuthCodeValidationFailure("client_not_found", clientID, "", util.SafeTruncate(code, 8))
 	}
 
 	// SECURITY: Validate scopes against client's allowed scopes (OAuth 2.0 Security)
@@ -542,11 +556,11 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 			"client_id", clientID,
 			"user_id", authCode.UserID,
 			"requested_scope", authCode.Scope,
-			"code_prefix", safeTruncate(code, 8))
+			"code_prefix", util.SafeTruncate(code, 8))
 
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
-				Type:     "scope_escalation_attempt",
+				Type:     security.EventScopeEscalationAttempt,
 				UserID:   authCode.UserID,
 				ClientID: clientID,
 				Details: map[string]any{
@@ -574,11 +588,11 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 				"user_id", authCode.UserID,
 				"client_type", client.ClientType,
 				"oauth_spec", OAuthSpecVersion,
-				"code_prefix", safeTruncate(code, 8))
+				"code_prefix", util.SafeTruncate(code, 8))
 
 			if s.Auditor != nil {
 				s.Auditor.LogEvent(security.Event{
-					Type:     "pkce_required_for_public_client",
+					Type:     security.EventPKCERequiredForPublicClient,
 					UserID:   authCode.UserID,
 					ClientID: clientID,
 					Details: map[string]any{
@@ -606,7 +620,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
-				Type:     "insecure_public_client_without_pkce",
+				Type:     security.EventInsecurePublicClientWithoutPKCE,
 				UserID:   authCode.UserID,
 				ClientID: clientID,
 				Details: map[string]any{
@@ -640,7 +654,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 			if s.Auditor != nil {
 				// This is a security event - log it separately
 				s.Auditor.LogEvent(security.Event{
-					Type:     "pkce_validation_failed",
+					Type:     security.EventPKCEValidationFailed,
 					UserID:   authCode.UserID,
 					ClientID: clientID,
 					Details: map[string]any{
@@ -702,7 +716,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 		} else {
 			s.Logger.Debug("Created new refresh token family",
 				"user_id", authCode.UserID,
-				"family_id", safeTruncate(familyID, 8))
+				"family_id", util.SafeTruncate(familyID, 8))
 		}
 	} else {
 		// Fallback to basic tracking
@@ -756,7 +770,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 					// Attempted use of token from previously revoked family
 					if s.Auditor != nil {
 						s.Auditor.LogEvent(security.Event{
-							Type:     "revoked_token_family_reuse_attempt",
+							Type:     security.EventRevokedTokenFamilyReuseAttempt,
 							UserID:   family.UserID,
 							ClientID: clientID,
 							Details: map[string]any{
@@ -768,7 +782,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 					}
 					s.Logger.Error("Attempted use of revoked token family",
 						"user_id", family.UserID,
-						"family_id", safeTruncate(family.FamilyID, 8))
+						"family_id", util.SafeTruncate(family.FamilyID, 8))
 					return nil, fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 				}
 
@@ -785,7 +799,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 					s.Logger.Error("Refresh token reuse detected - token was rotated but still being used",
 						"user_id", family.UserID,
 						"client_id", clientID,
-						"family_id", safeTruncate(family.FamilyID, 8),
+						"family_id", util.SafeTruncate(family.FamilyID, 8),
 						"generation", family.Generation,
 						"oauth_spec", "OAuth 2.1 Refresh Token Rotation")
 				}
@@ -805,7 +819,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 				// Step 3: Log critical security event for monitoring/alerting
 				if s.Auditor != nil {
 					s.Auditor.LogEvent(security.Event{
-						Type:     "refresh_token_reuse_detected",
+						Type:     security.EventRefreshTokenReuseDetected,
 						UserID:   family.UserID,
 						ClientID: clientID,
 						Details: map[string]any{
@@ -830,7 +844,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		s.Logger.Debug("Refresh token validation failed",
 			"reason", err.Error(),
 			"client_id", clientID,
-			"token_prefix", safeTruncate(refreshToken, 8))
+			"token_prefix", util.SafeTruncate(refreshToken, 8))
 
 		if s.Auditor != nil {
 			s.Auditor.LogAuthFailure("", clientID, "", "invalid_refresh_token")
@@ -1004,7 +1018,7 @@ func (s *Server) RevokeAllTokensForUserClient(ctx context.Context, userID, clien
 
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
-				Type:     "token_revocation_not_supported",
+				Type:     security.EventTokenRevocationNotSupported,
 				UserID:   userID,
 				ClientID: clientID,
 				Details: map[string]any{
@@ -1033,7 +1047,7 @@ func (s *Server) RevokeAllTokensForUserClient(ctx context.Context, userID, clien
 		providerToken, err := s.tokenStore.GetToken(ctx, tokenID)
 		if err != nil {
 			s.Logger.Warn("Could not get provider token for revocation",
-				"token_id", safeTruncate(tokenID, 8),
+				"token_id", util.SafeTruncate(tokenID, 8),
 				"error", err)
 			continue
 		}
@@ -1092,7 +1106,7 @@ func (s *Server) RevokeAllTokensForUserClient(ctx context.Context, userID, clien
 
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
-				Type:     "provider_revocation_threshold_exceeded",
+				Type:     security.EventProviderRevocationThresholdExceeded,
 				UserID:   userID,
 				ClientID: clientID,
 				Details: map[string]any{
@@ -1122,7 +1136,7 @@ func (s *Server) RevokeAllTokensForUserClient(ctx context.Context, userID, clien
 
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
-				Type:     "provider_revocation_complete_failure",
+				Type:     security.EventProviderRevocationCompleteFailure,
 				UserID:   userID,
 				ClientID: clientID,
 				Details: map[string]any{
@@ -1159,7 +1173,7 @@ func (s *Server) RevokeAllTokensForUserClient(ctx context.Context, userID, clien
 
 	if s.Auditor != nil {
 		s.Auditor.LogEvent(security.Event{
-			Type:     "all_tokens_revoked",
+			Type:     security.EventAllTokensRevoked,
 			UserID:   userID,
 			ClientID: clientID,
 			Details: map[string]any{

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"log/slog"
@@ -16,16 +17,6 @@ import (
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
-
-// safeTruncate safely truncates a string to maxLen characters without panicking.
-// Returns the original string if it's shorter than maxLen, otherwise returns
-// the first maxLen characters. This prevents index out of bounds errors when logging.
-func safeTruncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen]
-}
 
 // Server implements the OAuth 2.1 server logic (provider-agnostic).
 // It coordinates the OAuth flow using a Provider and storage backends.
@@ -240,6 +231,16 @@ func generateRandomToken() string {
 		panic(fmt.Sprintf("crypto/rand.Read failed: %v", err))
 	}
 	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// generatePKCEPair generates a PKCE challenge and verifier pair per RFC 7636.
+// Returns S256 challenge and the corresponding verifier (43 chars each).
+// Used for server-to-provider code binding. See SECURITY_ARCHITECTURE.md.
+func generatePKCEPair() (challenge, verifier string) {
+	verifier = generateRandomToken()
+	hash := sha256.Sum256([]byte(verifier))
+	challenge = base64.RawURLEncoding.EncodeToString(hash[:])
+	return challenge, verifier
 }
 
 // Shutdown gracefully shuts down the server and all its components.

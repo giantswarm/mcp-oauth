@@ -68,7 +68,7 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 
 				if h.server.Auditor != nil {
 					h.server.Auditor.LogEvent(security.Event{
-						Type:      "rate_limit_exceeded",
+						Type:      security.EventRateLimitExceeded,
 						IPAddress: clientIP,
 						Details: map[string]any{
 							"endpoint": r.URL.Path,
