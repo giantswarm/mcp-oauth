@@ -382,6 +382,19 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 	// Exchange code with provider using PKCE verification
 	providerToken, err := s.provider.ExchangeCode(ctx, code, providerVerifier)
 	if err != nil {
+		// SECURITY: Log PKCE validation failures for security monitoring
+		if s.Auditor != nil {
+			s.Auditor.LogEvent(security.Event{
+				Type: "provider_code_exchange_failed",
+				Details: map[string]any{
+					"provider":     s.provider.Name(),
+					"error":        err.Error(),
+					"pkce_enabled": providerVerifier != "",
+					"client_id":    authState.ClientID,
+					"state_id":     safeTruncate(providerState, 16),
+				},
+			})
+		}
 		return nil, "", fmt.Errorf("failed to exchange code with provider: %w", err)
 	}
 
