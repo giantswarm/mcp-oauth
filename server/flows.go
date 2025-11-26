@@ -592,36 +592,9 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 		return nil, "", s.logAuthCodeValidationFailure("redirect_uri_mismatch", clientID, "", util.SafeTruncate(code, 8))
 	}
 
-	// RFC 8707: Validate resource parameter matches if provided
-	// If authorization request included resource, token request MUST include same resource
-	if resource != "" || authCode.Resource != "" {
-		// Validate resource format if provided
-		if resource != "" {
-			if err := s.validateResourceParameter(resource); err != nil {
-				return nil, "", s.logAuthCodeValidationFailure("invalid_resource_format", clientID, authCode.UserID, util.SafeTruncate(code, 8))
-			}
-		}
-		// Validate resource matches authorization code's resource
-		if resource != authCode.Resource {
-			s.Logger.Debug("Resource parameter mismatch",
-				"expected", authCode.Resource,
-				"provided", resource,
-				"client_id", clientID,
-				"user_id", authCode.UserID)
-			if s.Auditor != nil {
-				s.Auditor.LogEvent(security.Event{
-					Type:     security.EventResourceMismatch,
-					UserID:   authCode.UserID,
-					ClientID: clientID,
-					Details: map[string]any{
-						"expected_resource": authCode.Resource,
-						"provided_resource": resource,
-						"severity":          "high",
-					},
-				})
-			}
-			return nil, "", s.logAuthCodeValidationFailure("resource_mismatch", clientID, authCode.UserID, util.SafeTruncate(code, 8))
-		}
+	// RFC 8707: Validate resource parameter consistency
+	if err := s.validateResourceConsistency(resource, authCode, clientID, code); err != nil {
+		return nil, "", err
 	}
 
 	// CRITICAL SECURITY: Fetch client to check if PKCE is required (OAuth 2.1)

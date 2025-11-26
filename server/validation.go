@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/giantswarm/mcp-oauth/internal/util"
+	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
@@ -445,11 +447,8 @@ func validateRedirectURISecurityEnhanced(redirectURI, serverIssuer string, allow
 // validateResourceParameter validates the resource parameter per RFC 8707
 // The resource parameter must be an absolute HTTPS URI identifying the target resource server
 // This prevents token theft and replay attacks across different resource servers
+// Note: Caller must ensure resource is non-empty before calling this function
 func (s *Server) validateResourceParameter(resource string) error {
-	if resource == "" {
-		return fmt.Errorf("resource parameter cannot be empty")
-	}
-
 	// Parse as URL
 	resourceURL, err := url.Parse(resource)
 	if err != nil {
@@ -485,6 +484,47 @@ func (s *Server) validateResourceParameter(resource string) error {
 	// RFC 8707 Section 6: Resource MUST NOT include fragment
 	if resourceURL.Fragment != "" {
 		return fmt.Errorf("resource must not contain fragment identifier")
+	}
+
+	return nil
+}
+
+// validateResourceConsistency validates resource parameter consistency between authorization and token requests
+// Per RFC 8707, if the authorization request included a resource parameter, the token request must include
+// the same resource parameter value
+func (s *Server) validateResourceConsistency(resource string, authCode *storage.AuthorizationCode, clientID, code string) error {
+	// If neither authorization nor token request has resource, validation passes
+	if resource == "" && authCode.Resource == "" {
+		return nil
+	}
+
+	// Validate resource format if provided in token request
+	if resource != "" {
+		if err := s.validateResourceParameter(resource); err != nil {
+			return s.logAuthCodeValidationFailure("invalid_resource_format", clientID, authCode.UserID, util.SafeTruncate(code, 8))
+		}
+	}
+
+	// Validate resource matches authorization code's resource
+	if resource != authCode.Resource {
+		s.Logger.Debug("Resource parameter mismatch",
+			"expected", authCode.Resource,
+			"provided", resource,
+			"client_id", clientID,
+			"user_id", authCode.UserID)
+		if s.Auditor != nil {
+			s.Auditor.LogEvent(security.Event{
+				Type:     security.EventResourceMismatch,
+				UserID:   authCode.UserID,
+				ClientID: clientID,
+				Details: map[string]any{
+					"expected_resource": authCode.Resource,
+					"provided_resource": resource,
+					"severity":          "high",
+				},
+			})
+		}
+		return s.logAuthCodeValidationFailure("resource_mismatch", clientID, authCode.UserID, util.SafeTruncate(code, 8))
 	}
 
 	return nil
