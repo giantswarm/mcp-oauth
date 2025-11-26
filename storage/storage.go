@@ -297,4 +297,5 @@ type TokenMetadata struct {
 	IssuedAt  time.Time // When this token was issued
 	TokenType string    // "access" or "refresh"
 	Audience  string    // RFC 8707: Intended resource server identifier (for audience validation)
+	Scopes    []string  // MCP 2025-11-25: Scopes granted to this token (for scope validation)
 }

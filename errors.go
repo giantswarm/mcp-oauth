@@ -12,6 +12,7 @@ const (
 	ErrorCodeInvalidClient        = "invalid_client"
 	ErrorCodeInvalidScope         = "invalid_scope"
 	ErrorCodeInvalidToken         = "invalid_token"
+	ErrorCodeInsufficientScope    = "insufficient_scope"
 	ErrorCodeUnauthorizedClient   = "unauthorized_client"
 	ErrorCodeUnsupportedGrantType = "unsupported_grant_type"
 	ErrorCodeServerError          = "server_error"
@@ -66,6 +67,11 @@ var (
 	// ErrInvalidToken indicates the access token is invalid or expired
 	ErrInvalidToken = func(desc string) *OAuthError {
 		return NewOAuthError(ErrorCodeInvalidToken, desc, http.StatusUnauthorized)
+	}
+
+	// ErrInsufficientScope indicates the access token lacks required scopes
+	ErrInsufficientScope = func(desc string) *OAuthError {
+		return NewOAuthError(ErrorCodeInsufficientScope, desc, http.StatusForbidden)
 	}
 
 	// ErrUnauthorizedClient indicates the client is not authorized for the requested grant type

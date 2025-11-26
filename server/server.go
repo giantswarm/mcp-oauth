@@ -275,6 +275,12 @@ func (s *Server) SetInstrumentation(inst *instrumentation.Instrumentation) {
 	}
 }
 
+// TokenStore returns the token store used by the server.
+// This allows the handler to access token metadata for scope validation.
+func (s *Server) TokenStore() storage.TokenStore {
+	return s.tokenStore
+}
+
 const (
 	// MinTokenBytes is the minimum number of random bytes required for secure tokens.
 	// 32 bytes = 256 bits of entropy, which exceeds NIST recommendations for

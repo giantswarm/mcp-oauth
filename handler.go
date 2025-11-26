@@ -111,6 +111,42 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 			return
 		}
 
+		// MCP 2025-11-25: Validate token scopes against endpoint requirements
+		// This implements OAuth 2.0 scope-based access control for protected resources
+		requiredScopes := h.getRequiredScopes(r)
+		if len(requiredScopes) > 0 {
+			// Get token scopes from metadata (if available)
+			var tokenScopes []string
+			if metadataStore, ok := h.server.TokenStore().(interface {
+				GetTokenMetadata(tokenID string) (*storage.TokenMetadata, error)
+			}); ok {
+				metadata, err := metadataStore.GetTokenMetadata(accessToken)
+				if err == nil && metadata != nil {
+					tokenScopes = metadata.Scopes
+				}
+			}
+
+			// Check if token has all required scopes
+			if !hasRequiredScopes(tokenScopes, requiredScopes) {
+				h.logger.Warn("Insufficient scope for endpoint",
+					"user_id", userInfo.ID,
+					"endpoint", r.URL.Path,
+					"token_scopes", tokenScopes,
+					"required_scopes", requiredScopes,
+					"ip", clientIP)
+
+				// Audit the insufficient scope event
+				if h.server.Auditor != nil {
+					h.server.Auditor.LogAuthFailure(userInfo.ID, "", clientIP, "insufficient_scope")
+				}
+
+				// Return 403 with insufficient_scope error per RFC 6750 Section 3.1
+				description := fmt.Sprintf("Token lacks required scopes for endpoint %s", r.URL.Path)
+				h.writeInsufficientScopeError(w, requiredScopes, description)
+				return
+			}
+		}
+
 		// Apply per-user rate limiting AFTER authentication
 		// This is a separate, higher limit for authenticated users
 		if h.server.UserRateLimiter != nil {
@@ -1009,6 +1045,42 @@ func (h *Handler) writeError(w http.ResponseWriter, code, description string, st
 	})
 }
 
+// writeInsufficientScopeError writes a 403 Forbidden response with insufficient_scope error.
+// This implements MCP 2025-11-25 scope challenge handling for protected resources.
+// Per RFC 6750 Section 3.1, the response includes WWW-Authenticate header with:
+//   - error="insufficient_scope"
+//   - scope parameter listing required scopes
+//   - resource_metadata URL for discovery
+//
+// Example response:
+//
+//	HTTP/1.1 403 Forbidden
+//	WWW-Authenticate: Bearer error="insufficient_scope",
+//	                         scope="files:read files:write",
+//	                         resource_metadata="https://example.com/.well-known/oauth-protected-resource"
+//
+// Parameters:
+//   - w: HTTP response writer
+//   - requiredScopes: List of scopes needed to access the resource
+//   - description: Optional human-readable error description
+func (h *Handler) writeInsufficientScopeError(w http.ResponseWriter, requiredScopes []string, description string) {
+	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+
+	// Build scope string for WWW-Authenticate header
+	scope := strings.Join(requiredScopes, " ")
+
+	// Use formatWWWAuthenticate to build the header with error details
+	w.Header().Set("WWW-Authenticate", h.formatWWWAuthenticate(scope, ErrorCodeInsufficientScope, description))
+
+	// Write JSON error response body
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error":             ErrorCodeInsufficientScope,
+		"error_description": description,
+	})
+}
+
 // formatWWWAuthenticate formats the WWW-Authenticate header value per RFC 6750 and RFC 9728
 // It includes the resource_metadata URL for MCP 2025-11-25 compliance, along with optional
 // scope, error, and error_description parameters.
@@ -1164,6 +1236,68 @@ const userInfoKey contextKey = "user_info"
 func UserInfoFromContext(ctx context.Context) (*providers.UserInfo, bool) {
 	userInfo, ok := ctx.Value(userInfoKey).(*providers.UserInfo)
 	return userInfo, ok
+}
+
+// getRequiredScopes returns the scopes required for accessing a given request path.
+// It checks the EndpointScopeRequirements configuration and matches against the request path.
+//
+// Path matching supports:
+//   - Exact match: "/api/files" matches only "/api/files"
+//   - Prefix match: "/api/files/*" matches any path starting with "/api/files/"
+//
+// Returns an empty slice if no scope requirements are configured for the path.
+func (h *Handler) getRequiredScopes(r *http.Request) []string {
+	if h.server.Config.EndpointScopeRequirements == nil {
+		return nil
+	}
+
+	path := r.URL.Path
+
+	// First, try exact match
+	if scopes, ok := h.server.Config.EndpointScopeRequirements[path]; ok {
+		return scopes
+	}
+
+	// Then try prefix matches (patterns ending with /*)
+	for pattern, scopes := range h.server.Config.EndpointScopeRequirements {
+		if strings.HasSuffix(pattern, "/*") {
+			prefix := strings.TrimSuffix(pattern, "*")
+			if strings.HasPrefix(path, prefix) {
+				return scopes
+			}
+		}
+	}
+
+	return nil
+}
+
+// hasRequiredScopes checks if the token has all required scopes.
+// Returns true if:
+//   - No required scopes (empty list)
+//   - Token has all required scopes
+//
+// Returns false if token is missing any required scope.
+// Scope matching is case-sensitive per OAuth 2.0 spec.
+func hasRequiredScopes(tokenScopes, requiredScopes []string) bool {
+	// If no scopes required, allow access
+	if len(requiredScopes) == 0 {
+		return true
+	}
+
+	// Build a set of token scopes for efficient lookup
+	tokenScopeSet := make(map[string]bool, len(tokenScopes))
+	for _, scope := range tokenScopes {
+		tokenScopeSet[scope] = true
+	}
+
+	// Check if all required scopes are present
+	for _, required := range requiredScopes {
+		if !tokenScopeSet[required] {
+			return false
+		}
+	}
+
+	return true
 }
 
 // isValidAuthMethod checks if the given token endpoint auth method is supported

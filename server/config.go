@@ -136,6 +136,29 @@ type Config struct {
 	//   - Troubleshooting client compatibility issues
 	DisableWWWAuthenticateMetadata bool // default: false (metadata ENABLED)
 
+	// EndpointScopeRequirements maps HTTP paths to required scopes for MCP 2025-11-25 scope validation.
+	// When a protected endpoint is accessed, the token's scopes are validated against these requirements.
+	// If the token lacks required scopes, a 403 with insufficient_scope error is returned.
+	//
+	// Path Matching:
+	//   - Exact match: "/api/files" matches only "/api/files"
+	//   - Prefix match: "/api/files/*" matches "/api/files/..." (any sub-path)
+	//
+	// Example:
+	//   EndpointScopeRequirements: map[string][]string{
+	//     "/api/files/*":    {"files:read", "files:write"},
+	//     "/api/admin/*":    {"admin:access"},
+	//     "/api/user/profile": {"user:profile"},
+	//   }
+	//
+	// Scope Validation Logic:
+	//   - If no requirements configured for a path, access is allowed (no scope check)
+	//   - If requirements exist, ALL required scopes must be present in the token
+	//   - Scope validation follows OAuth 2.0 semantics (exact string matching)
+	//
+	// Default: nil (no endpoint-specific scope requirements)
+	EndpointScopeRequirements map[string][]string
+
 	// AllowPKCEPlain allows the 'plain' code_challenge_method (NOT RECOMMENDED)
 	// WARNING: The 'plain' method is insecure and deprecated in OAuth 2.1
 	// Only enable for backward compatibility with legacy clients

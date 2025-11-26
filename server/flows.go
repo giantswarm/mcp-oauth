@@ -802,10 +802,28 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 
 	// Track access token metadata for revocation (OAuth 2.1 code reuse detection)
 	// RFC 8707: Store audience binding with tokens for validation
-	if metadataStoreWithAudience, ok := s.tokenStore.(interface {
+	// MCP 2025-11-25: Store scopes with tokens for scope validation
+
+	// Parse scopes from authorization code
+	tokenScopes := normalizeScopes(authCode.Scope)
+
+	// Try to save with scopes and audience (newest method)
+	if metadataStoreWithScopesAndAudience, ok := s.tokenStore.(interface {
+		SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID, tokenType, audience string, scopes []string) error
+	}); ok {
+		// Store access token with audience binding (RFC 8707) and scopes (MCP 2025-11-25)
+		if err := metadataStoreWithScopesAndAudience.SaveTokenMetadataWithScopesAndAudience(accessToken, authCode.UserID, clientID, "access", authCode.Audience, tokenScopes); err != nil {
+			s.Logger.Warn("Failed to save access token metadata with scopes and audience", "error", err)
+		}
+		// CRITICAL: Also save refresh token metadata with audience and scopes for revocation
+		// Refresh tokens inherit the audience and scopes from the authorization code
+		if err := metadataStoreWithScopesAndAudience.SaveTokenMetadataWithScopesAndAudience(refreshToken, authCode.UserID, clientID, "refresh", authCode.Audience, tokenScopes); err != nil {
+			s.Logger.Warn("Failed to save refresh token metadata with scopes and audience", "error", err)
+		}
+	} else if metadataStoreWithAudience, ok := s.tokenStore.(interface {
 		SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenType, audience string) error
 	}); ok {
-		// Store access token with audience binding (RFC 8707)
+		// Fallback to audience-only metadata store (without scopes, backward compatibility)
 		if err := metadataStoreWithAudience.SaveTokenMetadataWithAudience(accessToken, authCode.UserID, clientID, "access", authCode.Audience); err != nil {
 			s.Logger.Warn("Failed to save access token metadata with audience", "error", err)
 		}
@@ -817,7 +835,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 	} else if metadataStore, ok := s.tokenStore.(interface {
 		SaveTokenMetadata(tokenID, userID, clientID, tokenType string) error
 	}); ok {
-		// Fallback to basic metadata store without audience (backward compatibility)
+		// Fallback to basic metadata store without audience or scopes (backward compatibility)
 		if err := metadataStore.SaveTokenMetadata(accessToken, authCode.UserID, clientID, "access"); err != nil {
 			s.Logger.Warn("Failed to save access token metadata", "error", err)
 		}
