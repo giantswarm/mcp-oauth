@@ -15,6 +15,13 @@ import (
 	"github.com/giantswarm/mcp-oauth/security"
 )
 
+// Constants for localhost detection in redirect URIs
+const (
+	localhostHostname     = "localhost"
+	localhostIPv4Loopback = "127.0.0.1"
+	localhostIPv6Loopback = "::1"
+)
+
 // ClientMetadata represents OAuth client metadata fetched from a URL-based client_id
 // Implements draft-ietf-oauth-client-id-metadata-document-00
 type ClientMetadata struct {
@@ -34,7 +41,8 @@ type ClientMetadata struct {
 // isURLClientID checks if a client_id is a URL-formatted identifier
 // Per draft-ietf-oauth-client-id-metadata-document-00:
 // - MUST be an HTTPS URL
-// - MUST have a path component
+// - MUST have a hostname
+// - Path component is optional (spec says "typically" has one, but not required)
 func isURLClientID(clientID string) bool {
 	// Empty strings are not URLs
 	if clientID == "" {
@@ -48,7 +56,7 @@ func isURLClientID(clientID string) bool {
 	}
 
 	// MUST be HTTPS (security requirement)
-	if u.Scheme != "https" {
+	if u.Scheme != SchemeHTTPS {
 		return false
 	}
 
@@ -111,7 +119,7 @@ func validateMetadataURL(clientID string) error {
 	}
 
 	// CRITICAL SECURITY: MUST be HTTPS only (no HTTP)
-	if u.Scheme != "https" {
+	if u.Scheme != SchemeHTTPS {
 		return fmt.Errorf("client_id metadata URL must use HTTPS, got: %s", u.Scheme)
 	}
 
@@ -305,7 +313,7 @@ func hasLocalhostRedirectURIsOnly(redirectURIs []string) bool {
 
 		hostname := u.Hostname() // Hostname() strips port and brackets from IPv6
 		// Check if hostname is NOT localhost (including IPv6 loopback)
-		if hostname != "localhost" && hostname != "127.0.0.1" && hostname != "::1" {
+		if hostname != localhostHostname && hostname != localhostIPv4Loopback && hostname != localhostIPv6Loopback {
 			return false
 		}
 	}

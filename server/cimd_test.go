@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -187,7 +188,7 @@ func TestValidateMetadataURL(t *testing.T) {
 					t.Errorf("validateMetadataURL(%q) expected error containing %q, got nil", tt.url, tt.errText)
 					return
 				}
-				if tt.errText != "" && !contains(err.Error(), tt.errText) {
+				if tt.errText != "" && !strings.Contains(err.Error(), tt.errText) {
 					t.Errorf("validateMetadataURL(%q) error = %v, want error containing %q", tt.url, err, tt.errText)
 				}
 			} else {
@@ -251,7 +252,7 @@ func TestFetchClientMetadata(t *testing.T) {
 		metadata, err := srv.fetchClientMetadata(context.Background(), clientID)
 		if err != nil {
 			// Expected for test server with private IP - this is correct behavior
-			if contains(err.Error(), "private/internal IP") {
+			if strings.Contains(err.Error(), "private/internal IP") {
 				t.Skip("Test server uses private IP - SSRF protection working as expected")
 			}
 			t.Fatalf("fetchClientMetadata() error = %v", err)
@@ -297,7 +298,7 @@ func TestFetchClientMetadata(t *testing.T) {
 		}
 		// Expected: SSRF protection blocks localhost, which is correct behavior
 		// Test server always uses localhost/127.0.0.1, so we expect SSRF protection
-		if !contains(err.Error(), "private/internal IP") && !contains(err.Error(), "mismatch") {
+		if !strings.Contains(err.Error(), "private/internal IP") && !strings.Contains(err.Error(), "mismatch") {
 			t.Errorf("expected SSRF or mismatch error, got: %v", err)
 		}
 	})
@@ -461,19 +462,4 @@ func TestHasLocalhostRedirectURIsOnly(t *testing.T) {
 			}
 		})
 	}
-}
-
-// Helper function to check if string contains substring
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > 0 && len(substr) > 0 && indexOf(s, substr) >= 0))
-}
-
-func indexOf(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }

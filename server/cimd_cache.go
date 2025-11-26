@@ -54,7 +54,8 @@ func (c *clientMetadataCache) Get(clientID string) (*storage.Client, bool) {
 	}
 
 	// Check if expired
-	if time.Now().After(entry.expiresAt) {
+	now := time.Now()
+	if now.After(entry.expiresAt) {
 		return nil, false
 	}
 
@@ -75,16 +76,22 @@ func (c *clientMetadataCache) Set(clientID string, metadata *ClientMetadata, cli
 		ttl = c.defaultTTL
 	}
 
+	now := time.Now()
 	c.entries[clientID] = &cachedMetadataEntry{
 		metadata:  metadata,
 		client:    client,
-		expiresAt: time.Now().Add(ttl),
-		cachedAt:  time.Now(),
+		expiresAt: now.Add(ttl),
+		cachedAt:  now,
 	}
 }
 
 // evictOldest removes the oldest cached entry (by cachedAt time)
 // Caller must hold write lock
+//
+// Note: This is O(n) eviction. For the default max of 1000 entries, this is
+// acceptable and keeps the implementation simple. If cache size grows significantly
+// or eviction becomes a bottleneck, consider using a proper LRU implementation
+// with a doubly-linked list (e.g., container/list or hashicorp/golang-lru).
 func (c *clientMetadataCache) evictOldest() {
 	if len(c.entries) == 0 {
 		return
@@ -209,17 +216,10 @@ func metadataToClient(metadata *ClientMetadata) *storage.Client {
 }
 
 // parseScopes splits a space-delimited scope string into a slice
+// Uses strings.Fields which automatically handles multiple spaces and trimming
 func parseScopes(scopeStr string) []string {
 	if scopeStr == "" {
 		return nil
 	}
-
-	var scopes []string
-	for _, scope := range strings.Split(scopeStr, " ") {
-		scope = strings.TrimSpace(scope)
-		if scope != "" {
-			scopes = append(scopes, scope)
-		}
-	}
-	return scopes
+	return strings.Fields(scopeStr)
 }
