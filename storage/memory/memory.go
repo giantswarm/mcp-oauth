@@ -358,14 +358,14 @@ func (s *Store) GetToken(ctx context.Context, userID string) (*oauth2.Token, err
 	s.mu.RUnlock()
 
 	if !ok {
-		err = fmt.Errorf("token not found for user: %s", userID)
+		err = fmt.Errorf("%w: %s", storage.ErrTokenNotFound, userID)
 		return nil, err
 	}
 
 	// Check if expired with clock skew grace period (and no refresh token)
 	// This prevents false expiration errors due to time synchronization issues
 	if security.IsTokenExpired(token.Expiry) && token.RefreshToken == "" {
-		err = fmt.Errorf("token expired for user: %s", userID)
+		err = fmt.Errorf("%w: %s", storage.ErrTokenExpired, userID)
 		return nil, err
 	}
 
@@ -457,7 +457,7 @@ func (s *Store) GetUserInfo(ctx context.Context, userID string) (*providers.User
 
 	info, ok := s.userInfo[userID]
 	if !ok {
-		err = fmt.Errorf("user info not found: %s", userID)
+		err = fmt.Errorf("%w: %s", storage.ErrUserInfoNotFound, userID)
 		return nil, err
 	}
 
@@ -617,7 +617,7 @@ func (s *Store) GetRefreshTokenFamily(ctx context.Context, refreshToken string) 
 
 	family, ok := s.refreshTokenFamilies[refreshToken]
 	if !ok {
-		return nil, fmt.Errorf("refresh token family not found")
+		return nil, storage.ErrRefreshTokenFamilyNotFound
 	}
 
 	// Convert internal type to interface type
@@ -671,13 +671,13 @@ func (s *Store) GetRefreshTokenInfo(ctx context.Context, refreshToken string) (s
 
 	userID, ok := s.refreshTokens[refreshToken]
 	if !ok {
-		return "", fmt.Errorf("refresh token not found")
+		return "", storage.ErrTokenNotFound
 	}
 
 	// Check if expired with clock skew grace period
 	if expiresAt, hasExpiry := s.refreshTokenExpiries[refreshToken]; hasExpiry {
 		if security.IsTokenExpired(expiresAt) {
-			return "", fmt.Errorf("refresh token expired")
+			return "", storage.ErrTokenExpired
 		}
 	}
 

@@ -82,7 +82,7 @@ func NewMockTokenStore() *MockTokenStore {
 		defer m.mu.RUnlock()
 		info, ok := m.userInfo[userID]
 		if !ok {
-			return nil, fmt.Errorf("user info not found")
+			return nil, storage.ErrUserInfoNotFound
 		}
 		return info, nil
 	}

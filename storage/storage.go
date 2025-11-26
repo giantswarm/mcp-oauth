@@ -38,6 +38,13 @@ var (
 
 	// ErrAuthorizationStateNotFound indicates the authorization state does not exist.
 	ErrAuthorizationStateNotFound = errors.New("authorization state not found")
+
+	// ErrUserInfoNotFound indicates the user info does not exist in storage.
+	ErrUserInfoNotFound = errors.New("user info not found")
+
+	// ErrRefreshTokenFamilyNotFound indicates the refresh token family does not exist.
+	// This is normal for tokens created before family tracking was enabled.
+	ErrRefreshTokenFamilyNotFound = errors.New("refresh token family not found")
 )
 
 // IsNotFoundError checks if an error indicates a "not found" condition.
@@ -47,7 +54,9 @@ func IsNotFoundError(err error) bool {
 	return errors.Is(err, ErrTokenNotFound) ||
 		errors.Is(err, ErrClientNotFound) ||
 		errors.Is(err, ErrAuthorizationCodeNotFound) ||
-		errors.Is(err, ErrAuthorizationStateNotFound)
+		errors.Is(err, ErrAuthorizationStateNotFound) ||
+		errors.Is(err, ErrUserInfoNotFound) ||
+		errors.Is(err, ErrRefreshTokenFamilyNotFound)
 }
 
 // IsExpiredError checks if an error indicates an expired token or code.
