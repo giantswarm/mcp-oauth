@@ -60,6 +60,15 @@ type AuthorizationServerMetadata struct {
 
 	// CodeChallengeMethodsSupported lists the PKCE code challenge methods supported
 	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported,omitempty"`
+
+	// RevocationEndpoint is the URL of the OAuth 2.0 token revocation endpoint (RFC 7009)
+	RevocationEndpoint string `json:"revocation_endpoint,omitempty"`
+
+	// IntrospectionEndpoint is the URL of the OAuth 2.0 token introspection endpoint (RFC 7662)
+	IntrospectionEndpoint string `json:"introspection_endpoint,omitempty"`
+
+	// ClientIDMetadataDocumentSupported indicates support for Client ID Metadata Documents (MCP 2025-11-25)
+	ClientIDMetadataDocumentSupported bool `json:"client_id_metadata_document_supported,omitempty"`
 }
 
 // ==================== Dynamic Client Registration (RFC 7591) Types ====================

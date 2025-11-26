@@ -14,6 +14,27 @@ const (
 	SchemeHTTPS = "https"
 )
 
+// OAuth endpoint paths
+const (
+	// EndpointPathAuthorize is the authorization endpoint path
+	EndpointPathAuthorize = "/oauth/authorize"
+
+	// EndpointPathToken is the token endpoint path
+	EndpointPathToken = "/oauth/token" // #nosec G101 -- This is a URL path, not a credential
+
+	// EndpointPathRegister is the dynamic client registration endpoint path (RFC 7591)
+	EndpointPathRegister = "/oauth/register"
+
+	// EndpointPathRevoke is the token revocation endpoint path (RFC 7009)
+	EndpointPathRevoke = "/oauth/revoke"
+
+	// EndpointPathIntrospect is the token introspection endpoint path (RFC 7662)
+	EndpointPathIntrospect = "/oauth/introspect"
+
+	// EndpointPathProtectedResourceMetadata is the Protected Resource Metadata discovery path (RFC 9728)
+	EndpointPathProtectedResourceMetadata = "/.well-known/oauth-protected-resource"
+)
+
 // Config holds OAuth server configuration
 type Config struct {
 	// Issuer is the server's issuer identifier (base URL)
@@ -321,6 +342,22 @@ type Config struct {
 	// Default: 10 seconds
 	ClientMetadataFetchTimeout time.Duration
 
+	// EnableRevocationEndpoint controls whether the OAuth 2.0 Token Revocation endpoint (RFC 7009)
+	// is advertised in Authorization Server Metadata and available for use.
+	// When true: revocation_endpoint will be included in /.well-known/oauth-authorization-server
+	// When false: revocation_endpoint will NOT be advertised (endpoint not yet implemented)
+	// SECURITY: Only enable when you have implemented the actual revocation endpoint handler
+	// Default: false (not yet implemented)
+	EnableRevocationEndpoint bool
+
+	// EnableIntrospectionEndpoint controls whether the OAuth 2.0 Token Introspection endpoint (RFC 7662)
+	// is advertised in Authorization Server Metadata and available for use.
+	// When true: introspection_endpoint will be included in /.well-known/oauth-authorization-server
+	// When false: introspection_endpoint will NOT be advertised (endpoint not yet implemented)
+	// SECURITY: Only enable when you have implemented the actual introspection endpoint handler
+	// Default: false (not yet implemented)
+	EnableIntrospectionEndpoint bool
+
 	// ClientMetadataCacheTTL is how long to cache fetched client metadata
 	// Caching reduces latency and prevents repeated fetches for the same client
 	// HTTP Cache-Control headers may override this value
@@ -425,23 +462,33 @@ type CORSConfig struct {
 
 // AuthorizationEndpoint returns the full URL to the authorization endpoint
 func (c *Config) AuthorizationEndpoint() string {
-	return c.Issuer + "/oauth/authorize"
+	return c.Issuer + EndpointPathAuthorize
 }
 
 // TokenEndpoint returns the full URL to the token endpoint
 func (c *Config) TokenEndpoint() string {
-	return c.Issuer + "/oauth/token"
+	return c.Issuer + EndpointPathToken
 }
 
 // RegistrationEndpoint returns the full URL to the dynamic client registration endpoint
 func (c *Config) RegistrationEndpoint() string {
-	return c.Issuer + "/oauth/register"
+	return c.Issuer + EndpointPathRegister
 }
 
 // ProtectedResourceMetadataEndpoint returns the full URL to the RFC 9728 Protected Resource Metadata endpoint
 // This endpoint is used in WWW-Authenticate headers to help MCP clients discover authorization server information
 func (c *Config) ProtectedResourceMetadataEndpoint() string {
-	return c.Issuer + "/.well-known/oauth-protected-resource"
+	return c.Issuer + EndpointPathProtectedResourceMetadata
+}
+
+// RevocationEndpoint returns the full URL to the RFC 7009 token revocation endpoint
+func (c *Config) RevocationEndpoint() string {
+	return c.Issuer + EndpointPathRevoke
+}
+
+// IntrospectionEndpoint returns the full URL to the RFC 7662 token introspection endpoint
+func (c *Config) IntrospectionEndpoint() string {
+	return c.Issuer + EndpointPathIntrospect
 }
 
 // GetResourceIdentifier returns the resource identifier for this server
