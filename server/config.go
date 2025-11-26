@@ -244,6 +244,21 @@ type CORSConfig struct {
 	MaxAge int
 }
 
+// AuthorizationEndpoint returns the full URL to the authorization endpoint
+func (c *Config) AuthorizationEndpoint() string {
+	return c.Issuer + "/oauth/authorize"
+}
+
+// TokenEndpoint returns the full URL to the token endpoint
+func (c *Config) TokenEndpoint() string {
+	return c.Issuer + "/oauth/token"
+}
+
+// RegistrationEndpoint returns the full URL to the dynamic client registration endpoint
+func (c *Config) RegistrationEndpoint() string {
+	return c.Issuer + "/oauth/register"
+}
+
 // applySecureDefaults applies secure-by-default configuration values
 // This follows the principle: secure by default, opt-in for less secure options
 func applySecureDefaults(config *Config, logger *slog.Logger) *Config {

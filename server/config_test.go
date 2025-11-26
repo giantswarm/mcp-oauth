@@ -415,6 +415,65 @@ func TestValidateProviderRevocationConfig(t *testing.T) {
 	}
 }
 
+func TestConfig_EndpointHelpers(t *testing.T) {
+	tests := []struct {
+		name      string
+		issuer    string
+		wantAuth  string
+		wantToken string
+		wantReg   string
+	}{
+		{
+			name:      "standard HTTPS issuer",
+			issuer:    "https://auth.example.com",
+			wantAuth:  "https://auth.example.com/oauth/authorize",
+			wantToken: "https://auth.example.com/oauth/token",
+			wantReg:   "https://auth.example.com/oauth/register",
+		},
+		{
+			name:      "issuer with port",
+			issuer:    "https://auth.example.com:8443",
+			wantAuth:  "https://auth.example.com:8443/oauth/authorize",
+			wantToken: "https://auth.example.com:8443/oauth/token",
+			wantReg:   "https://auth.example.com:8443/oauth/register",
+		},
+		{
+			name:      "localhost development",
+			issuer:    "http://localhost:3000",
+			wantAuth:  "http://localhost:3000/oauth/authorize",
+			wantToken: "http://localhost:3000/oauth/token",
+			wantReg:   "http://localhost:3000/oauth/register",
+		},
+		{
+			name:      "issuer with trailing slash",
+			issuer:    "https://auth.example.com/",
+			wantAuth:  "https://auth.example.com//oauth/authorize",
+			wantToken: "https://auth.example.com//oauth/token",
+			wantReg:   "https://auth.example.com//oauth/register",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &Config{
+				Issuer: tt.issuer,
+			}
+
+			if got := config.AuthorizationEndpoint(); got != tt.wantAuth {
+				t.Errorf("AuthorizationEndpoint() = %q, want %q", got, tt.wantAuth)
+			}
+
+			if got := config.TokenEndpoint(); got != tt.wantToken {
+				t.Errorf("TokenEndpoint() = %q, want %q", got, tt.wantToken)
+			}
+
+			if got := config.RegistrationEndpoint(); got != tt.wantReg {
+				t.Errorf("RegistrationEndpoint() = %q, want %q", got, tt.wantReg)
+			}
+		})
+	}
+}
+
 func TestConfig_Fields(t *testing.T) {
 	// Test that all config fields can be set
 	config := &Config{

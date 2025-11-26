@@ -136,14 +136,61 @@ func TestHandler_ServeAuthorizationServerMetadata(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	if meta.Issuer != "https://auth.example.com" {
-		t.Errorf("Issuer = %q, want %q", meta.Issuer, "https://auth.example.com")
+	// RFC 8414: Table-driven test for all required metadata fields
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{
+			name: "issuer",
+			got:  meta.Issuer,
+			want: "https://auth.example.com",
+		},
+		{
+			name: "authorization_endpoint",
+			got:  meta.AuthorizationEndpoint,
+			want: "https://auth.example.com/oauth/authorize",
+		},
+		{
+			name: "token_endpoint",
+			got:  meta.TokenEndpoint,
+			want: "https://auth.example.com/oauth/token",
+		},
+		{
+			name: "registration_endpoint",
+			got:  meta.RegistrationEndpoint,
+			want: "https://auth.example.com/oauth/register",
+		},
 	}
 
-	// RFC 8414: Verify registration_endpoint is present
-	expectedRegistrationEndpoint := "https://auth.example.com/oauth/register"
-	if meta.RegistrationEndpoint != expectedRegistrationEndpoint {
-		t.Errorf("RegistrationEndpoint = %q, want %q", meta.RegistrationEndpoint, expectedRegistrationEndpoint)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Errorf("%s = %q, want %q", tt.name, tt.got, tt.want)
+			}
+		})
+	}
+
+	// Verify response_types_supported
+	if len(meta.ResponseTypesSupported) == 0 {
+		t.Error("ResponseTypesSupported is empty")
+	}
+	if len(meta.ResponseTypesSupported) > 0 && meta.ResponseTypesSupported[0] != "code" {
+		t.Errorf("ResponseTypesSupported[0] = %q, want %q", meta.ResponseTypesSupported[0], "code")
+	}
+
+	// Verify grant_types_supported
+	if len(meta.GrantTypesSupported) < 2 {
+		t.Errorf("GrantTypesSupported has %d items, want at least 2", len(meta.GrantTypesSupported))
+	}
+
+	// Verify code_challenge_methods_supported includes S256
+	if len(meta.CodeChallengeMethodsSupported) == 0 {
+		t.Error("CodeChallengeMethodsSupported is empty")
+	}
+	if len(meta.CodeChallengeMethodsSupported) > 0 && meta.CodeChallengeMethodsSupported[0] != "S256" {
+		t.Errorf("CodeChallengeMethodsSupported[0] = %q, want %q", meta.CodeChallengeMethodsSupported[0], "S256")
 	}
 }
 
