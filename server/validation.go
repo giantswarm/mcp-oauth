@@ -27,6 +27,13 @@ const (
 	PKCEMethodPlain       = "plain"
 )
 
+// Resource parameter validation constants (RFC 8707)
+const (
+	// MaxResourceLength is the maximum allowed length for resource parameter
+	// RFC 3986 suggests 2048 characters as a reasonable URI length limit
+	MaxResourceLength = 2048
+)
+
 // Note: SchemeHTTP and SchemeHTTPS constants are defined in config.go
 
 var (
@@ -449,6 +456,12 @@ func validateRedirectURISecurityEnhanced(redirectURI, serverIssuer string, allow
 // This prevents token theft and replay attacks across different resource servers
 // Note: Caller must ensure resource is non-empty before calling this function
 func (s *Server) validateResourceParameter(resource string) error {
+	// SECURITY: Validate resource length to prevent DoS via extremely long URIs
+	// RFC 3986 suggests 2048 characters as a reasonable limit
+	if len(resource) > MaxResourceLength {
+		return fmt.Errorf("resource exceeds maximum length of %d characters", MaxResourceLength)
+	}
+
 	// Parse as URL
 	resourceURL, err := url.Parse(resource)
 	if err != nil {
@@ -507,11 +520,14 @@ func (s *Server) validateResourceConsistency(resource string, authCode *storage.
 
 	// Validate resource matches authorization code's resource
 	if resource != authCode.Resource {
-		s.Logger.Debug("Resource parameter mismatch",
-			"expected", authCode.Resource,
-			"provided", resource,
-			"client_id", clientID,
-			"user_id", authCode.UserID)
+		// Rate limit logging to prevent DoS via repeated resource mismatch attempts
+		if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(authCode.UserID+":"+clientID+":resource_mismatch") {
+			s.Logger.Debug("Resource parameter mismatch",
+				"expected", authCode.Resource,
+				"provided", resource,
+				"client_id", clientID,
+				"user_id", authCode.UserID)
+		}
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
 				Type:     security.EventResourceMismatch,

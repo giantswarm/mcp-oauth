@@ -196,13 +196,18 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 			if err == nil && metadata.Audience != "" {
 				// Token has audience binding - validate it matches this resource server
 				expectedAudience := s.Config.GetResourceIdentifier()
-				if metadata.Audience != expectedAudience {
-					s.Logger.Warn("Token audience mismatch - token not intended for this resource server",
-						"token_audience", metadata.Audience,
-						"server_identifier", expectedAudience,
-						"token_prefix", util.SafeTruncate(accessToken, 8),
-						"user_id", metadata.UserID,
-						"client_id", metadata.ClientID)
+				// SECURITY: Use constant-time comparison to prevent timing attacks
+				// Although audience is not secret, this follows security best practices
+				if subtle.ConstantTimeCompare([]byte(metadata.Audience), []byte(expectedAudience)) != 1 {
+					// Rate limit logging to prevent DoS via repeated audience mismatch attempts
+					if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(metadata.UserID+":"+metadata.ClientID+":audience_mismatch") {
+						s.Logger.Warn("Token audience mismatch - token not intended for this resource server",
+							"token_audience", metadata.Audience,
+							"server_identifier", expectedAudience,
+							"token_prefix", util.SafeTruncate(accessToken, 8),
+							"user_id", metadata.UserID,
+							"client_id", metadata.ClientID)
+					}
 
 					if s.Auditor != nil {
 						s.Auditor.LogEvent(security.Event{

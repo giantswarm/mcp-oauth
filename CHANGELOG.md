@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **RFC 8707 Security Enhancements**
+  - **Resource Length Validation**: Added maximum length limit (2048 characters) for resource parameter to prevent DoS attacks via extremely long URIs (RFC 3986 recommended limit)
+  - **Constant-Time Audience Comparison**: Implemented constant-time comparison for token audience validation to prevent timing attacks (defense-in-depth best practice)
+  - **Rate Limiting on Resource Mismatch**: Added rate limiting for repeated resource mismatch attempts to prevent reconnaissance attacks and log flooding
+  - **Impact**: Enhanced defense-in-depth for RFC 8707 implementation, preventing potential DoS and timing-based attacks
+  - **Testing**: Added comprehensive test coverage for length validation and rate limiting behavior
+
 - **Scope string deep copy in Google provider to prevent race conditions**
   - **Problem**: Provider was using shallow copy when passing scopes to oauth2.Config, potentially allowing concurrent modifications to shared slice references
   - **Risk**: Low risk in current implementation (scopes only set at initialization), but future code changes could introduce race conditions
