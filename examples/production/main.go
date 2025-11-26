@@ -207,8 +207,12 @@ func setupRoutes(handler *oauth.Handler, logger *slog.Logger) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	// OAuth metadata endpoints
-	mux.HandleFunc("/.well-known/oauth-protected-resource",
-		logRequest(logger, handler.ServeProtectedResourceMetadata))
+	// Using helper function for Protected Resource Metadata (root + sub-path)
+	handler.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
+	// Or manually for logging wrapper:
+	// mux.HandleFunc("/.well-known/oauth-protected-resource",
+	//     logRequest(logger, handler.ServeProtectedResourceMetadata))
+
 	mux.HandleFunc("/.well-known/oauth-authorization-server",
 		logRequest(logger, handler.ServeAuthorizationServerMetadata))
 

@@ -116,8 +116,187 @@ func TestHandler_ServeProtectedResourceMetadata(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	if meta.Resource != "https://auth.example.com" {
-		t.Errorf("Resource = %q, want %q", meta.Resource, "https://auth.example.com")
+	if meta.Resource != testIssuer {
+		t.Errorf("Resource = %q, want %q", meta.Resource, testIssuer)
+	}
+}
+
+func TestHandler_ServeProtectedResourceMetadata_WithScopes(t *testing.T) {
+	store := memory.New()
+	provider := mock.NewMockProvider()
+
+	config := &server.Config{
+		Issuer:          testIssuer,
+		SupportedScopes: []string{"files:read", "files:write", "user:profile"},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeProtectedResourceMetadata(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var meta ProtectedResourceMetadata
+	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if meta.Resource != testIssuer {
+		t.Errorf("Resource = %q, want %q", meta.Resource, testIssuer)
+	}
+
+	// Verify scopes_supported is included
+	if len(meta.ScopesSupported) != 3 {
+		t.Errorf("len(ScopesSupported) = %d, want 3", len(meta.ScopesSupported))
+	}
+
+	expectedScopes := []string{"files:read", "files:write", "user:profile"}
+	for i, scope := range expectedScopes {
+		if meta.ScopesSupported[i] != scope {
+			t.Errorf("ScopesSupported[%d] = %q, want %q", i, meta.ScopesSupported[i], scope)
+		}
+	}
+
+	store.Stop()
+}
+
+func TestHandler_ServeProtectedResourceMetadata_WithoutScopes(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Ensure SupportedScopes is empty (default)
+	handler.server.Config.SupportedScopes = []string{}
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeProtectedResourceMetadata(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var meta map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Verify scopes_supported is NOT included
+	if _, exists := meta["scopes_supported"]; exists {
+		t.Error("scopes_supported should not be included when SupportedScopes is empty")
+	}
+}
+
+func TestHandler_RegisterProtectedResourceMetadataRoutes(t *testing.T) {
+	tests := []struct {
+		name        string
+		mcpPath     string
+		wantRoot    bool
+		wantSubPath bool
+		subPath     string
+	}{
+		{
+			name:        "empty path",
+			mcpPath:     "",
+			wantRoot:    true,
+			wantSubPath: false,
+		},
+		{
+			name:        "root path",
+			mcpPath:     "/",
+			wantRoot:    true,
+			wantSubPath: false,
+		},
+		{
+			name:        "simple path",
+			mcpPath:     "/mcp",
+			wantRoot:    true,
+			wantSubPath: true,
+			subPath:     "/.well-known/oauth-protected-resource/mcp",
+		},
+		{
+			name:        "path without leading slash",
+			mcpPath:     "mcp",
+			wantRoot:    true,
+			wantSubPath: true,
+			subPath:     "/.well-known/oauth-protected-resource/mcp",
+		},
+		{
+			name:        "path with trailing slash",
+			mcpPath:     "/mcp/",
+			wantRoot:    true,
+			wantSubPath: true,
+			subPath:     "/.well-known/oauth-protected-resource/mcp",
+		},
+		{
+			name:        "nested path",
+			mcpPath:     "/api/mcp",
+			wantRoot:    true,
+			wantSubPath: true,
+			subPath:     "/.well-known/oauth-protected-resource/api/mcp",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler, store := setupTestHandler(t)
+			defer store.Stop()
+
+			handler.server.Config.SupportedScopes = []string{"test:scope"}
+
+			mux := http.NewServeMux()
+			handler.RegisterProtectedResourceMetadataRoutes(mux, tt.mcpPath)
+
+			// Test root endpoint
+			if tt.wantRoot {
+				req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil)
+				w := httptest.NewRecorder()
+				mux.ServeHTTP(w, req)
+
+				if w.Code != http.StatusOK {
+					t.Errorf("root endpoint: status = %d, want %d", w.Code, http.StatusOK)
+				}
+
+				var meta ProtectedResourceMetadata
+				if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
+					t.Fatalf("failed to decode root response: %v", err)
+				}
+
+				if len(meta.ScopesSupported) != 1 || meta.ScopesSupported[0] != "test:scope" {
+					t.Errorf("root endpoint: ScopesSupported = %v, want [test:scope]", meta.ScopesSupported)
+				}
+			}
+
+			// Test sub-path endpoint
+			if tt.wantSubPath {
+				req := httptest.NewRequest(http.MethodGet, tt.subPath, nil)
+				w := httptest.NewRecorder()
+				mux.ServeHTTP(w, req)
+
+				if w.Code != http.StatusOK {
+					t.Errorf("sub-path endpoint %q: status = %d, want %d", tt.subPath, w.Code, http.StatusOK)
+				}
+
+				var meta ProtectedResourceMetadata
+				if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
+					t.Fatalf("failed to decode sub-path response: %v", err)
+				}
+
+				if len(meta.ScopesSupported) != 1 || meta.ScopesSupported[0] != "test:scope" {
+					t.Errorf("sub-path endpoint: ScopesSupported = %v, want [test:scope]", meta.ScopesSupported)
+				}
+			}
+		})
 	}
 }
 

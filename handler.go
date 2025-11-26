@@ -155,8 +155,39 @@ func (h *Handler) ServeProtectedResourceMetadata(w http.ResponseWriter, r *http.
 		"bearer_methods_supported": []string{"header"},
 	}
 
+	// Include scopes_supported if configured (MCP 2025-11-25)
+	if len(h.server.Config.SupportedScopes) > 0 {
+		metadata["scopes_supported"] = h.server.Config.SupportedScopes
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(metadata)
+}
+
+// RegisterProtectedResourceMetadataRoutes registers all Protected Resource Metadata discovery routes.
+// It registers both the root endpoint and optional sub-path endpoint if mcpPath is provided.
+//
+// Example usage:
+//
+//	mux := http.NewServeMux()
+//	handler.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
+//	// This registers both:
+//	//   /.well-known/oauth-protected-resource
+//	//   /.well-known/oauth-protected-resource/mcp
+func (h *Handler) RegisterProtectedResourceMetadataRoutes(mux *http.ServeMux, mcpPath string) {
+	// Always register root metadata endpoint
+	mux.HandleFunc("/.well-known/oauth-protected-resource", h.ServeProtectedResourceMetadata)
+
+	// Register sub-path metadata endpoint if MCP endpoint has a path
+	if mcpPath != "" && mcpPath != "/" {
+		// Ensure mcpPath starts with / but doesn't end with /
+		cleanPath := strings.TrimSuffix(mcpPath, "/")
+		if !strings.HasPrefix(cleanPath, "/") {
+			cleanPath = "/" + cleanPath
+		}
+		subPath := "/.well-known/oauth-protected-resource" + cleanPath
+		mux.HandleFunc(subPath, h.ServeProtectedResourceMetadata)
+	}
 }
 
 // ServeAuthorizationServerMetadata serves RFC 8414 Authorization Server Metadata

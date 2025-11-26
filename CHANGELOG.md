@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Enhanced Protected Resource Metadata (RFC 9728, MCP 2025-11-25)**
+  - **Feature**: Enhanced Protected Resource Metadata with `scopes_supported` field and sub-path discovery
+  - **MCP Compliance**: High-priority enhancement for MCP 2025-11-25 specification
+  - **Implementation**:
+    - Added `scopes_supported` field to Protected Resource Metadata response when `SupportedScopes` is configured
+    - Implemented sub-path metadata endpoint support (e.g., `/.well-known/oauth-protected-resource/mcp`)
+    - Added `RegisterProtectedResourceMetadataRoutes()` helper function for easy route registration
+    - Supports both root (`/.well-known/oauth-protected-resource`) and sub-path endpoints
+  - **Discovery**: Clients can now discover available scopes and access metadata at service-specific sub-paths
+  - **Helper Function**: Simplifies registration of both root and sub-path metadata endpoints with a single call
+  - **Testing**: Added comprehensive unit tests for all scenarios (scopes inclusion, sub-path routing, path normalization)
+  - **Documentation**: Updated README and examples to demonstrate new functionality
+
 - **RFC 8707 Resource Parameter for Token Audience Binding (MCP 2025-11-25)**
   - **Feature**: Implemented RFC 8707 Resource Indicators to bind access tokens to their intended resource server
   - **MCP Compliance**: MUST requirement for MCP 2025-11-25 specification
