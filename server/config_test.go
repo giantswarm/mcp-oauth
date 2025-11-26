@@ -835,9 +835,9 @@ func TestValidateWWWAuthenticateConfig_EmptyScopes(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 	config := &Config{
-		Issuer:                        "https://auth.example.com",
-		EnableWWWAuthenticateMetadata: true,
-		DefaultChallengeScopes:        []string{}, // Empty
+		Issuer:                         "https://auth.example.com",
+		DisableWWWAuthenticateMetadata: false,
+		DefaultChallengeScopes:         []string{}, // Empty
 	}
 
 	validateWWWAuthenticateConfig(config, logger)
@@ -854,9 +854,9 @@ func TestValidateWWWAuthenticateConfig_ValidScopes(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	config := &Config{
-		Issuer:                        "https://auth.example.com",
-		EnableWWWAuthenticateMetadata: true,
-		DefaultChallengeScopes:        []string{"mcp:access", "files:read", "user:profile"},
+		Issuer:                         "https://auth.example.com",
+		DisableWWWAuthenticateMetadata: false,
+		DefaultChallengeScopes:         []string{"mcp:access", "files:read", "user:profile"},
 	}
 
 	validateWWWAuthenticateConfig(config, logger)
@@ -883,9 +883,9 @@ func TestValidateWWWAuthenticateConfig_TooManyScopes(t *testing.T) {
 	}
 
 	config := &Config{
-		Issuer:                        "https://auth.example.com",
-		EnableWWWAuthenticateMetadata: true,
-		DefaultChallengeScopes:        scopes,
+		Issuer:                         "https://auth.example.com",
+		DisableWWWAuthenticateMetadata: false,
+		DefaultChallengeScopes:         scopes,
 	}
 
 	validateWWWAuthenticateConfig(config, logger)
@@ -933,9 +933,9 @@ func TestValidateWWWAuthenticateConfig_InvalidCharacters(t *testing.T) {
 			logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 			config := &Config{
-				Issuer:                        "https://auth.example.com",
-				EnableWWWAuthenticateMetadata: true,
-				DefaultChallengeScopes:        tt.scopes,
+				Issuer:                         "https://auth.example.com",
+				DisableWWWAuthenticateMetadata: false,
+				DefaultChallengeScopes:         tt.scopes,
 			}
 
 			validateWWWAuthenticateConfig(config, logger)
@@ -954,9 +954,9 @@ func TestValidateWWWAuthenticateConfig_DisabledMetadata(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	config := &Config{
-		Issuer:                        "https://auth.example.com",
-		EnableWWWAuthenticateMetadata: false,
-		DefaultChallengeScopes:        []string{"mcp:access", "files:read"},
+		Issuer:                         "https://auth.example.com",
+		DisableWWWAuthenticateMetadata: true,
+		DefaultChallengeScopes:         []string{"mcp:access", "files:read"},
 	}
 
 	validateWWWAuthenticateConfig(config, logger)
@@ -1015,9 +1015,9 @@ func TestValidateWWWAuthenticateConfig_EdgeCases(t *testing.T) {
 			}
 
 			config := &Config{
-				Issuer:                        "https://auth.example.com",
-				EnableWWWAuthenticateMetadata: true,
-				DefaultChallengeScopes:        tt.scopes,
+				Issuer:                         "https://auth.example.com",
+				DisableWWWAuthenticateMetadata: false,
+				DefaultChallengeScopes:         tt.scopes,
 			}
 
 			validateWWWAuthenticateConfig(config, logger)

@@ -234,11 +234,14 @@ The library implements MCP 2025-11-25 specification for Protected Resource Metad
 **Configuration:**
 
 ```go
-&oauth.ServerConfig{
-    // Enable MCP 2025-11-25 compliant WWW-Authenticate headers (default: false)
-    EnableWWWAuthenticateMetadata: true,
+config := &server.Config{
+    Issuer: "https://your-domain.com",
     
-    // Optional: Configure default scopes to advertise in challenges
+    // MCP 2025-11-25 compliant WWW-Authenticate headers are enabled by default
+    // Only set to true if you need backward compatibility with legacy clients
+    // DisableWWWAuthenticateMetadata: false,  // (default: false = enabled, secure)
+    
+    // Optional: Configure default scopes to advertise in 401 challenges
     DefaultChallengeScopes: []string{"mcp:access", "files:read"},
 }
 ```
@@ -257,7 +260,7 @@ WWW-Authenticate: Bearer resource_metadata="https://auth.example.com/.well-known
 
 - **Information Disclosure**: The `resource_metadata` URL and configured scopes are intentionally public information per OAuth 2.0/MCP specifications. This is similar to the existing metadata endpoint exposure and is required for proper OAuth discovery.
 - **Scope Configuration**: Review your `DefaultChallengeScopes` carefully. Don't include overly specific scopes that could aid attackers in reconnaissance. Use broad, general scopes like `"mcp:access"` rather than `"internal:admin:full_access"`.
-- **Backward Compatibility**: Keep `EnableWWWAuthenticateMetadata: false` only if you need compatibility with legacy OAuth clients that may not understand enhanced WWW-Authenticate parameters. Modern OAuth clients ignore parameters they don't understand, so enabling this is safe for most deployments.
+- **Backward Compatibility**: Set `DisableWWWAuthenticateMetadata: true` only if you need compatibility with legacy OAuth clients that may not understand enhanced WWW-Authenticate parameters. Modern OAuth clients ignore parameters they don't understand, so the default (enabled) is safe for most deployments.
 - **Header Size Limits**: If configuring many scopes, be aware that some proxies/servers have HTTP header size limits (typically 8KB). The library will log warnings if you exceed 50 scopes.
 
 **Specification Compliance:**

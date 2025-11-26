@@ -1899,9 +1899,8 @@ func TestHandler_WriteError401WithWWWAuthenticate(t *testing.T) {
 			provider := mock.NewMockProvider()
 
 			config := &server.Config{
-				Issuer:                        testIssuer,
-				EnableWWWAuthenticateMetadata: true, // Enable for these tests
-				DefaultChallengeScopes:        tt.defaultChallengeScopes,
+				Issuer:                 testIssuer,
+				DefaultChallengeScopes: tt.defaultChallengeScopes,
 			}
 
 			srv, err := server.New(provider, store, store, store, config, nil)
@@ -1962,9 +1961,8 @@ func TestHandler_ValidateToken401ResponseWithWWWAuthenticate(t *testing.T) {
 	provider := mock.NewMockProvider()
 
 	config := &server.Config{
-		Issuer:                        testIssuer,
-		EnableWWWAuthenticateMetadata: true, // Enable for these tests
-		DefaultChallengeScopes:        []string{"mcp:access"},
+		Issuer:                 testIssuer,
+		DefaultChallengeScopes: []string{"mcp:access"},
 	}
 
 	srv, err := server.New(provider, store, store, store, config, nil)
@@ -2057,32 +2055,32 @@ func TestHandler_ValidateToken401ResponseWithWWWAuthenticate(t *testing.T) {
 // TestHandler_WriteError401BackwardCompatibilityMode tests that WWW-Authenticate can be disabled for legacy clients
 func TestHandler_WriteError401BackwardCompatibilityMode(t *testing.T) {
 	tests := []struct {
-		name                          string
-		enableWWWAuthenticateMetadata bool
-		defaultChallengeScopes        []string
-		wantMinimalHeader             bool
-		wantResourceMetadata          bool
+		name                           string
+		disableWWWAuthenticateMetadata bool
+		defaultChallengeScopes         []string
+		wantMinimalHeader              bool
+		wantResourceMetadata           bool
 	}{
 		{
-			name:                          "metadata enabled (default) - full header",
-			enableWWWAuthenticateMetadata: true,
-			defaultChallengeScopes:        []string{"mcp:access"},
-			wantMinimalHeader:             false,
-			wantResourceMetadata:          true,
+			name:                           "metadata enabled (default) - full header",
+			disableWWWAuthenticateMetadata: false,
+			defaultChallengeScopes:         []string{"mcp:access"},
+			wantMinimalHeader:              false,
+			wantResourceMetadata:           true,
 		},
 		{
-			name:                          "metadata disabled - minimal header for backward compatibility",
-			enableWWWAuthenticateMetadata: false,
-			defaultChallengeScopes:        []string{"mcp:access"},
-			wantMinimalHeader:             true,
-			wantResourceMetadata:          false,
+			name:                           "metadata disabled - minimal header for backward compatibility",
+			disableWWWAuthenticateMetadata: true,
+			defaultChallengeScopes:         []string{"mcp:access"},
+			wantMinimalHeader:              true,
+			wantResourceMetadata:           false,
 		},
 		{
-			name:                          "metadata enabled with no scopes",
-			enableWWWAuthenticateMetadata: true,
-			defaultChallengeScopes:        nil,
-			wantMinimalHeader:             false,
-			wantResourceMetadata:          true,
+			name:                           "metadata enabled with no scopes",
+			disableWWWAuthenticateMetadata: false,
+			defaultChallengeScopes:         nil,
+			wantMinimalHeader:              false,
+			wantResourceMetadata:           true,
 		},
 	}
 
@@ -2094,9 +2092,9 @@ func TestHandler_WriteError401BackwardCompatibilityMode(t *testing.T) {
 			provider := mock.NewMockProvider()
 
 			config := &server.Config{
-				Issuer:                        testIssuer,
-				EnableWWWAuthenticateMetadata: tt.enableWWWAuthenticateMetadata,
-				DefaultChallengeScopes:        tt.defaultChallengeScopes,
+				Issuer:                         testIssuer,
+				DisableWWWAuthenticateMetadata: tt.disableWWWAuthenticateMetadata,
+				DefaultChallengeScopes:         tt.defaultChallengeScopes,
 			}
 
 			srv, err := server.New(provider, store, store, store, config, nil)

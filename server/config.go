@@ -101,25 +101,26 @@ type Config struct {
 	// If empty, no scope parameter is included in WWW-Authenticate headers.
 	DefaultChallengeScopes []string
 
-	// EnableWWWAuthenticateMetadata controls whether 401 responses include
-	// resource_metadata and other discovery parameters in WWW-Authenticate headers.
-	// When true: Full MCP 2025-11-25 compliance with enhanced discovery support
+	// DisableWWWAuthenticateMetadata disables resource_metadata and discovery parameters
+	// in WWW-Authenticate headers for backward compatibility with legacy OAuth clients.
+	// When false (default): Full MCP 2025-11-25 compliance with enhanced discovery support
 	//   - Includes resource_metadata URL for authorization server discovery
 	//   - Includes scope parameter (if DefaultChallengeScopes configured)
 	//   - Includes error and error_description parameters
-	// When false: Minimal WWW-Authenticate headers for backward compatibility
+	// When true: Minimal WWW-Authenticate headers for backward compatibility
 	//   - Only includes "Bearer" scheme without parameters
 	//   - Compatible with older OAuth clients that may not expect parameters
-	// Default: false (opt-in for backward compatibility, set to true for MCP 2025-11-25)
+	// Default: false (metadata ENABLED for secure by default, MCP 2025-11-25 compliant)
 	//
-	// Recommendation: Set to true for new deployments and MCP 2025-11-25 compliance.
-	// Keep false only if you need compatibility with legacy clients.
+	// WARNING: Only enable if you have legacy OAuth clients that cannot handle
+	// parameters in WWW-Authenticate headers. Modern clients will ignore unknown
+	// parameters per HTTP specifications.
 	//
-	// Use case for keeping disabled:
+	// Use case for enabling (disabling metadata):
 	//   - Testing with legacy OAuth clients
 	//   - Gradual migration period for clients updating to MCP 2025-11-25
 	//   - Troubleshooting client compatibility issues
-	EnableWWWAuthenticateMetadata bool // default: false (opt-in)
+	DisableWWWAuthenticateMetadata bool // default: false (metadata ENABLED)
 
 	// AllowPKCEPlain allows the 'plain' code_challenge_method (NOT RECOMMENDED)
 	// WARNING: The 'plain' method is insecure and deprecated in OAuth 2.1
@@ -541,9 +542,6 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 	if !config.RequirePKCE {
 		config.RequirePKCE = true
 	}
-	// Note: EnableWWWAuthenticateMetadata is intentionally NOT defaulted here
-	// to allow users to explicitly disable it for backward compatibility.
-	// The zero value (false) means disabled - users opt-in by setting to true.
 	if config.MinStateLength == 0 {
 		config.MinStateLength = 32 // OAuth 2.1: 128+ bits entropy recommended, 32 chars = 192 bits
 	}
@@ -568,6 +566,14 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 // validateWWWAuthenticateConfig validates WWW-Authenticate header configuration
 // for security best practices
 func validateWWWAuthenticateConfig(config *Config, logger *slog.Logger) {
+	// SECURITY: Warn if WWW-Authenticate metadata is disabled
+	if config.DisableWWWAuthenticateMetadata {
+		logger.Warn("⚠️  SECURITY WARNING: WWW-Authenticate metadata is DISABLED",
+			"risk", "MCP 2025-11-25 non-compliance, reduced client discovery",
+			"recommendation", "Set DisableWWWAuthenticateMetadata=false for spec compliance",
+			"learn_more", "https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization")
+	}
+
 	// Recommendation 1: Warn about very large scope lists (header size limits)
 	// Some proxies/servers have HTTP header size limits (typically 8KB)
 	const maxRecommendedScopes = 50
@@ -609,7 +615,7 @@ func validateWWWAuthenticateConfig(config *Config, logger *slog.Logger) {
 	}
 
 	// Log info about WWW-Authenticate metadata configuration
-	if config.EnableWWWAuthenticateMetadata && len(config.DefaultChallengeScopes) > 0 {
+	if !config.DisableWWWAuthenticateMetadata && len(config.DefaultChallengeScopes) > 0 {
 		logger.Debug("WWW-Authenticate metadata enabled",
 			"challenge_scopes_count", len(config.DefaultChallengeScopes),
 			"resource_metadata_url", config.ProtectedResourceMetadataEndpoint())
