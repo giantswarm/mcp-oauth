@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **RFC 8707 Resource Parameter for Token Audience Binding (MCP 2025-11-25)**
+  - **Feature**: Implemented RFC 8707 Resource Indicators to bind access tokens to their intended resource server
+  - **MCP Compliance**: MUST requirement for MCP 2025-11-25 specification
+  - **Security**: Prevents token theft and replay attacks across different resource servers
+  - **Implementation**:
+    - Authorization endpoint accepts `resource` parameter to specify target resource server
+    - Token endpoint accepts `resource` parameter and validates consistency with authorization code
+    - Audience validation ensures tokens are only accepted by their intended resource server
+    - Resource binding stored with authorization codes and tokens
+  - **Configuration**: New `ResourceIdentifier` field in `server.Config` (defaults to `Issuer` if not set)
+  - **Backward Compatibility**: Resource parameter is optional to maintain compatibility with existing clients
+  - **Storage Changes**: 
+    - Added `Resource` field to `storage.AuthorizationState`
+    - Added `Resource` and `Audience` fields to `storage.AuthorizationCode`
+  - **Validation**: Resource must be absolute HTTPS URI (or HTTP for localhost development)
+  - **Audit Events**: New `EventResourceMismatch` for resource parameter validation failures
+  - **Testing**: All existing tests updated, maintains 80%+ coverage
+
 ### Security
 
 - **Scope string deep copy in Google provider to prevent race conditions**

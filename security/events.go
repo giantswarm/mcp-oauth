@@ -78,6 +78,9 @@ const (
 	// EventScopeEscalationAttempt is logged when a client tries to escalate scopes
 	EventScopeEscalationAttempt = "scope_escalation_attempt"
 
+	// EventResourceMismatch is logged when resource parameter doesn't match (RFC 8707)
+	EventResourceMismatch = "resource_mismatch"
+
 	// Provider-related events
 
 	// EventInvalidProviderCallback is logged when provider callback validation fails

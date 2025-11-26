@@ -25,11 +25,7 @@ const (
 	PKCEMethodPlain       = "plain"
 )
 
-// URI scheme constants
-const (
-	SchemeHTTP  = "http"
-	SchemeHTTPS = "https"
-)
+// Note: SchemeHTTP and SchemeHTTPS constants are defined in config.go
 
 var (
 	// AllowedHTTPSchemes lists allowed HTTP-based redirect URI schemes
@@ -441,6 +437,54 @@ func validateRedirectURISecurityEnhanced(redirectURI, serverIssuer string, allow
 		if err := validateCustomScheme(scheme, allowedCustomSchemes); err != nil {
 			return err
 		}
+	}
+
+	return nil
+}
+
+// validateResourceParameter validates the resource parameter per RFC 8707
+// The resource parameter must be an absolute HTTPS URI identifying the target resource server
+// This prevents token theft and replay attacks across different resource servers
+func (s *Server) validateResourceParameter(resource string) error {
+	if resource == "" {
+		return fmt.Errorf("resource parameter cannot be empty")
+	}
+
+	// Parse as URL
+	resourceURL, err := url.Parse(resource)
+	if err != nil {
+		return fmt.Errorf("resource must be a valid URI: %w", err)
+	}
+
+	// RFC 8707 Section 2: Resource parameter must be an absolute URI
+	if !resourceURL.IsAbs() {
+		return fmt.Errorf("resource must be an absolute URI with scheme and host")
+	}
+
+	// SECURITY: Resource must use HTTPS (or HTTP for localhost development only)
+	if resourceURL.Scheme != SchemeHTTPS {
+		if resourceURL.Scheme == SchemeHTTP {
+			// Allow localhost for development
+			if !isLocalhostHostname(resourceURL.Hostname()) {
+				return fmt.Errorf("resource must use HTTPS (HTTP only allowed for localhost)")
+			}
+			// Warn about HTTP even on localhost
+			s.Logger.Warn("Resource parameter using HTTP on localhost",
+				"resource", resource,
+				"recommendation", "Use HTTPS in production")
+		} else {
+			return fmt.Errorf("resource must use https:// or http:// scheme (got %s://)", resourceURL.Scheme)
+		}
+	}
+
+	// Validate hostname is not empty
+	if resourceURL.Host == "" {
+		return fmt.Errorf("resource must include a host (e.g., https://api.example.com)")
+	}
+
+	// RFC 8707 Section 6: Resource MUST NOT include fragment
+	if resourceURL.Fragment != "" {
+		return fmt.Errorf("resource must not contain fragment identifier")
 	}
 
 	return nil

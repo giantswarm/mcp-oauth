@@ -214,7 +214,8 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 
 // StartAuthorizationFlow starts a new OAuth authorization flow
 // clientState is the state parameter from the client (REQUIRED for CSRF protection)
-func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectURI, scope, codeChallenge, codeChallengeMethod, clientState string) (string, error) {
+// resource is the target resource server identifier per RFC 8707 (optional for backward compatibility)
+func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectURI, scope, resource, codeChallenge, codeChallengeMethod, clientState string) (string, error) {
 	// CRITICAL SECURITY: Validate state parameter from client for CSRF protection
 	// This includes minimum length validation to prevent timing attacks
 	if err := s.validateStateParameter(clientState); err != nil {
@@ -308,16 +309,32 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 		return "", fmt.Errorf("%s: %w", ErrorCodeInvalidScope, err)
 	}
 
+	// RFC 8707: Validate resource parameter if provided
+	// The resource parameter binds tokens to a specific resource server for security
+	if resource != "" {
+		if err := s.validateResourceParameter(resource); err != nil {
+			if s.Auditor != nil {
+				s.Auditor.LogAuthFailure("", clientID, "", fmt.Sprintf("invalid_resource: %v", err))
+			}
+			return "", fmt.Errorf("%s: resource parameter is invalid: %w", ErrorCodeInvalidRequest, err)
+		}
+	}
+
 	// Log authorization flow start
 	if s.Auditor != nil {
+		details := map[string]any{
+			"redirect_uri":          redirectURI,
+			"scope":                 scope,
+			"code_challenge_method": codeChallengeMethod,
+		}
+		// RFC 8707: Include resource parameter in audit log if provided
+		if resource != "" {
+			details["resource"] = resource
+		}
 		s.Auditor.LogEvent(security.Event{
 			Type:     security.EventAuthorizationFlowStarted,
 			ClientID: clientID,
-			Details: map[string]any{
-				"redirect_uri":          redirectURI,
-				"scope":                 scope,
-				"code_challenge_method": codeChallengeMethod,
-			},
+			Details:  details,
 		})
 	}
 
@@ -327,12 +344,13 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 	// Generate PKCE for server-to-provider leg (OAuth 2.1)
 	providerCodeChallenge, providerCodeVerifier := generatePKCEPair()
 
-	// Save authorization state with both client and server PKCE parameters
+	// Save authorization state with both client and server PKCE parameters and resource binding
 	authState := &storage.AuthorizationState{
 		StateID:              clientState,
 		ClientID:             clientID,
 		RedirectURI:          redirectURI,
 		Scope:                scope,
+		Resource:             resource, // RFC 8707: Bind authorization to target resource server
 		CodeChallenge:        codeChallenge,
 		CodeChallengeMethod:  codeChallengeMethod,
 		ProviderState:        providerState,
@@ -447,12 +465,14 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 	// Generate authorization code using oauth2.GenerateVerifier (same quality)
 	authCode := generateRandomToken()
 
-	// Create authorization code object
+	// Create authorization code object with resource binding (RFC 8707)
 	authCodeObj := &storage.AuthorizationCode{
 		Code:                authCode,
 		ClientID:            authState.ClientID,
 		RedirectURI:         authState.RedirectURI,
 		Scope:               authState.Scope,
+		Resource:            authState.Resource, // RFC 8707: Carry resource from authorization request
+		Audience:            authState.Resource, // RFC 8707: Audience = resource for token binding
 		CodeChallenge:       authState.CodeChallenge,
 		CodeChallengeMethod: authState.CodeChallengeMethod,
 		UserID:              userInfo.ID,
@@ -485,7 +505,8 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 
 // ExchangeAuthorizationCode exchanges an authorization code for tokens
 // Returns oauth2.Token directly
-func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, redirectURI, codeVerifier string) (*oauth2.Token, string, error) {
+// resource parameter is optional per RFC 8707 for backward compatibility
+func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, redirectURI, resource, codeVerifier string) (*oauth2.Token, string, error) {
 	// Create span if tracing is enabled
 	var span trace.Span
 	if s.tracer != nil {
@@ -569,6 +590,38 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 	// Validate redirect URI matches
 	if authCode.RedirectURI != redirectURI {
 		return nil, "", s.logAuthCodeValidationFailure("redirect_uri_mismatch", clientID, "", util.SafeTruncate(code, 8))
+	}
+
+	// RFC 8707: Validate resource parameter matches if provided
+	// If authorization request included resource, token request MUST include same resource
+	if resource != "" || authCode.Resource != "" {
+		// Validate resource format if provided
+		if resource != "" {
+			if err := s.validateResourceParameter(resource); err != nil {
+				return nil, "", s.logAuthCodeValidationFailure("invalid_resource_format", clientID, authCode.UserID, util.SafeTruncate(code, 8))
+			}
+		}
+		// Validate resource matches authorization code's resource
+		if resource != authCode.Resource {
+			s.Logger.Debug("Resource parameter mismatch",
+				"expected", authCode.Resource,
+				"provided", resource,
+				"client_id", clientID,
+				"user_id", authCode.UserID)
+			if s.Auditor != nil {
+				s.Auditor.LogEvent(security.Event{
+					Type:     security.EventResourceMismatch,
+					UserID:   authCode.UserID,
+					ClientID: clientID,
+					Details: map[string]any{
+						"expected_resource": authCode.Resource,
+						"provided_resource": resource,
+						"severity":          "high",
+					},
+				})
+			}
+			return nil, "", s.logAuthCodeValidationFailure("resource_mismatch", clientID, authCode.UserID, util.SafeTruncate(code, 8))
+		}
 	}
 
 	// CRITICAL SECURITY: Fetch client to check if PKCE is required (OAuth 2.1)

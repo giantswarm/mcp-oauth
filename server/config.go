@@ -8,6 +8,12 @@ import (
 	"time"
 )
 
+// URI scheme constants (shared with validation.go)
+const (
+	SchemeHTTP  = "http"
+	SchemeHTTPS = "https"
+)
+
 // Config holds OAuth server configuration
 type Config struct {
 	// Issuer is the server's issuer identifier (base URL)
@@ -217,6 +223,13 @@ type Config struct {
 
 	// Instrumentation settings for observability
 	Instrumentation InstrumentationConfig
+
+	// ResourceIdentifier is the canonical URI that identifies this MCP resource server (RFC 8707)
+	// Used for audience validation to ensure tokens are only accepted by their intended resource server
+	// If empty, defaults to Issuer value
+	// Example: "https://mcp.example.com" or "https://api.example.com/mcp"
+	// Security: This prevents token theft and replay attacks to different resource servers
+	ResourceIdentifier string
 }
 
 // InstrumentationConfig holds configuration for OpenTelemetry instrumentation
@@ -333,6 +346,17 @@ func (c *Config) RegistrationEndpoint() string {
 // This endpoint is used in WWW-Authenticate headers to help MCP clients discover authorization server information
 func (c *Config) ProtectedResourceMetadataEndpoint() string {
 	return c.Issuer + "/.well-known/oauth-protected-resource"
+}
+
+// GetResourceIdentifier returns the resource identifier for this server
+// If ResourceIdentifier is explicitly configured, returns that value
+// Otherwise, defaults to the Issuer value (secure default)
+// Per RFC 8707, this identifier is used for token audience binding
+func (c *Config) GetResourceIdentifier() string {
+	if c.ResourceIdentifier != "" {
+		return c.ResourceIdentifier
+	}
+	return c.Issuer
 }
 
 // applySecureDefaults applies secure-by-default configuration values
@@ -523,7 +547,7 @@ func validateCORSConfig(config *Config, logger *slog.Logger) {
 		}
 
 		// Enforce HTTPS in production (unless AllowInsecureHTTP is explicitly enabled)
-		if !config.AllowInsecureHTTP && u.Scheme == "http" {
+		if !config.AllowInsecureHTTP && u.Scheme == SchemeHTTP {
 			hostname := u.Hostname()
 			// Allow localhost for development
 			if hostname != "localhost" && hostname != "127.0.0.1" && !strings.HasPrefix(hostname, "192.168.") && !strings.HasPrefix(hostname, "10.") {

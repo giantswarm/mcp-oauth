@@ -163,6 +163,7 @@ func TestServer_StartAuthorizationFlow(t *testing.T) {
 				tt.clientID,
 				tt.redirectURI,
 				tt.scope,
+				"", // resource parameter (optional)
 				tt.codeChallenge,
 				tt.codeChallengeMethod,
 				tt.clientState,
@@ -223,6 +224,7 @@ func TestServer_HandleProviderCallback(t *testing.T) {
 		client.ClientID,
 		"https://example.com/callback",
 		"openid email",
+		"", // resource parameter (optional)
 		validChallenge,
 		PKCEMethodS256,
 		clientState,
@@ -443,6 +445,7 @@ func TestServer_ExchangeAuthorizationCode(t *testing.T) {
 							tt.code,
 							tt.clientID,
 							tt.redirectURI,
+							"", // resource parameter (optional)
 							tt.codeVerifier,
 						)
 
@@ -464,6 +467,7 @@ func TestServer_ExchangeAuthorizationCode(t *testing.T) {
 				tt.code,
 				tt.clientID,
 				tt.redirectURI,
+				"", // resource parameter (optional)
 				tt.codeVerifier,
 			)
 
@@ -614,6 +618,7 @@ func TestServer_ExchangeAuthorizationCode_PublicClient_PKCEEnforcement(t *testin
 				authCode.Code,
 				tt.clientID,
 				"https://example.com/callback",
+				"", // resource parameter (optional)
 				tt.codeVerifier,
 			)
 
@@ -780,6 +785,7 @@ func TestServer_ExchangeAuthorizationCode_AllowPublicClientsWithoutPKCE(t *testi
 				authCode.Code,
 				publicClient.ClientID,
 				"https://example.com/callback",
+				"", // resource parameter (optional)
 				codeVerifier,
 			)
 
@@ -874,6 +880,7 @@ func TestServer_ExchangeAuthorizationCode_PublicClient_ReuseDetection(t *testing
 		authCode.Code,
 		publicClient.ClientID,
 		"https://example.com/callback",
+		"", // resource parameter (optional)
 		validVerifier,
 	)
 	if err != nil {
@@ -891,6 +898,7 @@ func TestServer_ExchangeAuthorizationCode_PublicClient_ReuseDetection(t *testing
 		authCode.Code,
 		publicClient.ClientID,
 		"https://example.com/callback",
+		"", // resource parameter (optional)
 		validVerifier,
 	)
 
@@ -1587,6 +1595,7 @@ func TestServer_RefreshTokenRotation(t *testing.T) {
 		clientID,
 		"https://example.com/callback",
 		"openid email",
+		"", // resource parameter (optional)
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
@@ -1614,6 +1623,7 @@ func TestServer_RefreshTokenRotation(t *testing.T) {
 		authCodeObj.Code,
 		clientID,
 		"https://example.com/callback",
+		"", // resource parameter (optional)
 		codeVerifier,
 	)
 	if err != nil {
@@ -1717,6 +1727,7 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 		clientID,
 		"https://example.com/callback",
 		"openid email",
+		"", // resource parameter (optional)
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
@@ -1744,6 +1755,7 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 		authCodeObj.Code,
 		clientID,
 		"https://example.com/callback",
+		"", // resource parameter (optional)
 		codeVerifier,
 	)
 	if err != nil {
@@ -1924,6 +1936,7 @@ func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
 		clientID,
 		"https://example.com/callback",
 		"openid email",
+		"", // resource parameter (optional)
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
@@ -1951,6 +1964,7 @@ func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
 		authCodeObj.Code,
 		clientID,
 		"https://example.com/callback",
+		"", // resource parameter (optional)
 		codeVerifier,
 	)
 	if err != nil {
@@ -2049,6 +2063,7 @@ func TestServer_ConcurrentRefreshTokenReuse(t *testing.T) {
 		clientID,
 		"https://example.com/callback",
 		"openid email",
+		"", // resource parameter (optional)
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
@@ -2076,6 +2091,7 @@ func TestServer_ConcurrentRefreshTokenReuse(t *testing.T) {
 		authCodeObj.Code,
 		clientID,
 		"https://example.com/callback",
+		"", // resource parameter (optional)
 		codeVerifier,
 	)
 	if err != nil {
@@ -2192,6 +2208,7 @@ func TestServer_ConcurrentAuthorizationCodeReuse(t *testing.T) {
 		clientID,
 		"https://example.com/callback",
 		"openid email",
+		"", // resource parameter (optional)
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
@@ -2233,6 +2250,7 @@ func TestServer_ConcurrentAuthorizationCodeReuse(t *testing.T) {
 				authCode,
 				clientID,
 				"https://example.com/callback",
+				"", // resource parameter (optional)
 				codeVerifier,
 			)
 			results <- result{success: err == nil, token: token, err: err}
@@ -2343,6 +2361,7 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 		clientID,
 		"https://example.com/callback",
 		"openid email",
+		"", // resource parameter (optional)
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
@@ -2379,6 +2398,7 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 		authCode,
 		clientID,
 		"https://example.com/callback",
+		"", // resource parameter (optional)
 		codeVerifier,
 	)
 	if err != nil {
@@ -2415,6 +2435,7 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 		authCode,
 		clientID,
 		"https://example.com/callback",
+		"", // resource parameter (optional)
 		codeVerifier,
 	)
 	if err == nil {
@@ -2484,6 +2505,7 @@ func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
 		clientID,
 		"https://example.com/callback",
 		"openid email",
+		"", // resource parameter (optional)
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
@@ -2515,6 +2537,7 @@ func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
 		authCode,
 		clientID,
 		"https://example.com/callback",
+		"", // resource parameter (optional)
 		codeVerifier,
 	)
 	if err != nil {
@@ -2547,6 +2570,7 @@ func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
 		authCode,
 		clientID,
 		"https://example.com/callback",
+		"", // resource parameter (optional)
 		codeVerifier,
 	)
 	if err == nil {
@@ -2841,6 +2865,7 @@ func TestServer_ConcurrentReuseAndRevocation(t *testing.T) {
 		clientID,
 		"https://example.com/callback",
 		"openid email",
+		"", // resource parameter (optional)
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
@@ -2868,6 +2893,7 @@ func TestServer_ConcurrentReuseAndRevocation(t *testing.T) {
 		authCodeObj.Code,
 		clientID,
 		"https://example.com/callback",
+		"", // resource parameter (optional)
 		codeVerifier,
 	)
 	if err != nil {
@@ -3415,6 +3441,7 @@ func TestServer_GenericErrorMessagesNoInfoLeakage(t *testing.T) {
 		clientID,
 		"https://example.com/callback",
 		"openid email",
+		"", // resource parameter (optional)
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
@@ -3499,6 +3526,7 @@ func TestServer_GenericErrorMessagesNoInfoLeakage(t *testing.T) {
 				tt.code,
 				tt.clientID,
 				tt.redirectURI,
+				"", // resource parameter (optional)
 				tt.codeVerifier,
 			)
 
@@ -3649,6 +3677,7 @@ func TestServer_AuthCodeReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 		clientID,
 		"https://example.com/callback",
 		"openid email",
+		"", // resource parameter (optional)
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
@@ -3679,6 +3708,7 @@ func TestServer_AuthCodeReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 		authCode,
 		clientID,
 		"https://example.com/callback",
+		"", // resource parameter (optional)
 		codeVerifier,
 	)
 	if err != nil {
@@ -3691,6 +3721,7 @@ func TestServer_AuthCodeReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 		authCode,
 		clientID,
 		"https://example.com/callback",
+		"", // resource parameter (optional)
 		codeVerifier,
 	)
 	if err == nil {
@@ -3738,6 +3769,7 @@ func TestServer_RefreshTokenReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 		clientID,
 		"https://example.com/callback",
 		"openid email",
+		"", // resource parameter (optional)
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
@@ -3765,6 +3797,7 @@ func TestServer_RefreshTokenReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 		authCodeObj.Code,
 		clientID,
 		"https://example.com/callback",
+		"", // resource parameter (optional)
 		codeVerifier,
 	)
 	if err != nil {
@@ -4081,6 +4114,7 @@ func TestStartAuthorizationFlow_ClientScopeValidation(t *testing.T) {
 				client.ClientID,
 				"https://example.com/callback",
 				tt.scope,
+				"", // resource parameter (optional)
 				validChallenge,
 				PKCEMethodS256,
 				validState,
@@ -4222,6 +4256,7 @@ func TestExchangeAuthorizationCode_ClientScopeValidation(t *testing.T) {
 				authCode.Code,
 				client.ClientID,
 				"https://example.com/callback",
+				"", // resource parameter (optional)
 				validVerifier,
 			)
 
@@ -4297,6 +4332,7 @@ func TestClientScopeValidation_UnrestrictedClient(t *testing.T) {
 				client.ClientID,
 				"https://example.com/callback",
 				scope,
+				"", // resource parameter (optional)
 				validChallenge,
 				PKCEMethodS256,
 				validState,
@@ -4391,6 +4427,7 @@ func TestServer_HandleProviderCallback_PKCEValidationFailure(t *testing.T) {
 		client.ClientID,
 		"https://example.com/callback",
 		"openid email",
+		"", // resource parameter (optional)
 		clientChallenge,
 		PKCEMethodS256,
 		clientState,
@@ -4595,6 +4632,7 @@ func TestStartAuthorizationFlow_ScopeLengthValidation(t *testing.T) {
 				client.ClientID,
 				client.RedirectURIs[0],
 				tt.scope,
+				"", // resource parameter (optional)
 				codeChallenge,
 				"S256",
 				state,
