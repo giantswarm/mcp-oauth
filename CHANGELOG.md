@@ -7,24 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **OAuth 2.1 PKCE for provider leg - Enhanced security for confidential clients (#68)**
+  - Implemented full OAuth 2.1 PKCE support on the OAuth server → Provider leg
+  - **Why this matters**: OAuth 2.1 recommends PKCE for ALL client types (public AND confidential) to protect against Authorization Code Injection attacks
+  - **Two-layer PKCE architecture**:
+    1. MCP client → OAuth server: Uses client-provided PKCE (already working)
+    2. OAuth server → Google: Now uses server-generated PKCE (NEW)
+  - **Security benefits**:
+    - Defense-in-depth against Authorization Code Injection
+    - Cryptographic binding between authorization and token exchange
+    - Protection even if state parameter is compromised
+    - OAuth 2.1 compliance for confidential client security
+  - **Implementation details**:
+    - Added `ProviderCodeVerifier` field to `AuthorizationState`
+    - Server generates independent PKCE pair for provider communication
+    - Google provider now accepts and validates PKCE parameters
+    - Both client_secret AND PKCE provide layered security
+  - **Testing**: Updated provider and integration tests to verify PKCE flow
+  - **Documentation**: Added `SECURITY_ARCHITECTURE.md` explaining the security model
+
+- **Comprehensive security architecture documentation**
+  - New `SECURITY_ARCHITECTURE.md` document explaining:
+    - Two-layer authentication architecture (MCP client ↔ OAuth server ↔ Provider)
+    - PKCE implementation at both layers with security rationale
+    - Dual-layer state protection strategy
+    - Attack mitigation strategies (code injection, CSRF, timing attacks, etc.)
+    - Production deployment security checklist
+    - Monitoring and auditing best practices
+  - Detailed threat model analysis
+  - References to OAuth 2.1 and RFC 7636 specifications
+
 ### Fixed
 
-- **Google provider PKCE incompatibility causing authentication failures (#68)**
-  - Fixed critical bug where Google provider incorrectly forwarded PKCE parameters to Google OAuth
-  - Issue: OAuth server was sending code_challenge to Google but not code_verifier, causing "Missing code verifier" errors
-  - Root cause: Provider was forwarding MCP client's PKCE parameters to Google, creating a mismatched flow
-  - Solution: Removed PKCE parameter forwarding in Google provider's `AuthorizationURL` and `ExchangeCode` methods
-  - Rationale:
-    - PKCE is for MCP client <-> OAuth server communication (works correctly)
-    - OAuth server <-> Google uses confidential client authentication (client_secret)
-    - PKCE is designed for public clients, not needed for confidential clients with secrets
-    - Forwarding PKCE created an incomplete flow (challenge without verifier)
-  - Impact: Fixes complete OAuth flow failure when using Google provider
-  - Security: Maintains strong authentication via client_secret, PKCE protection already provided at client layer
-  - Tests: Updated to verify PKCE parameters are NOT sent to Google OAuth
-  - Documentation: Added comprehensive comments explaining the two-layer OAuth architecture
+- **Google provider OAuth flow now fully OAuth 2.1 compliant (#68)**
+  - Fixed: "Missing code verifier" errors when using Google OAuth
+  - Root cause: Provider was forwarding MCP client's PKCE to Google without corresponding verifier
+  - Solution: Implemented proper two-layer PKCE where server generates its own PKCE for provider leg
+  - Impact: Fixes complete OAuth flow failure while enhancing security beyond original implementation
+  - Migration: No breaking changes - PKCE is generated and handled automatically
 
-### Added
+### Changed
 
 - **OpenTelemetry instrumentation infrastructure for comprehensive observability (#37)**
   - Added new `instrumentation` package providing metrics, traces, and logging integration

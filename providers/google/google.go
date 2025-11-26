@@ -83,24 +83,36 @@ func (p *Provider) Name() string {
 
 // AuthorizationURL generates the Google OAuth authorization URL
 //
-// Note on PKCE: The codeChallenge and codeChallengeMethod parameters are part of the
-// Provider interface for compatibility, but are intentionally ignored for Google OAuth.
-// Here's why:
+// OAuth 2.1 Security Enhancement: This implementation now supports PKCE on the
+// OAuth server -> Google leg for defense-in-depth against Authorization Code Injection.
 //
-//  1. Two-layer architecture: In the OAuth proxy pattern (MCP client -> OAuth server -> Google),
-//     PKCE is used between MCP client and OAuth server, NOT between OAuth server and Google.
+// Two-layer PKCE architecture:
+//  1. MCP client -> OAuth server: Uses client-provided PKCE (handled separately)
+//  2. OAuth server -> Google: Uses server-generated PKCE (THIS implementation)
 //
-//  2. Confidential client: The OAuth server acts as a confidential client with client_secret
-//     when communicating with Google. PKCE is designed for public clients without secrets.
+// Why PKCE on provider leg (OAuth 2.1 compliance):
+//   - Protects against Authorization Code Injection even for confidential clients
+//   - OAuth 2.1 recommends PKCE for ALL client types, not just public clients
+//   - Provides cryptographic binding between authorization and token exchange
+//   - Defense in depth: Even if state parameter is compromised, PKCE provides protection
 //
-//  3. Security model: The OAuth server already provides PKCE security for MCP clients.
-//     Adding PKCE to the Google leg would be redundant and creates implementation complexity.
-//
-//  4. Google's requirements: Google OAuth supports PKCE but doesn't require it for confidential
-//     clients with client_secret authentication.
+// Security model:
+//   - Client secret provides server authentication to Google (confidential client)
+//   - PKCE provides authorization code binding (prevents code injection)
+//   - Both mechanisms work together for maximum security
 func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string) string {
+	var opts []oauth2.AuthCodeOption
+
+	// Add PKCE if challenge provided (OAuth 2.1 security enhancement)
+	if codeChallenge != "" && codeChallengeMethod != "" {
+		opts = append(opts,
+			oauth2.SetAuthURLParam("code_challenge", codeChallenge),
+			oauth2.SetAuthURLParam("code_challenge_method", codeChallengeMethod),
+		)
+	}
+
 	// Request offline access to get refresh token
-	opts := []oauth2.AuthCodeOption{oauth2.AccessTypeOffline}
+	opts = append(opts, oauth2.AccessTypeOffline)
 
 	return p.AuthCodeURL(state, opts...)
 }
@@ -119,22 +131,31 @@ func (p *Provider) ensureContextTimeout(ctx context.Context) (context.Context, c
 // ExchangeCode exchanges an authorization code for tokens
 // Returns standard oauth2.Token directly
 //
-// Note on PKCE: The verifier parameter is part of the Provider interface for compatibility,
-// but is intentionally ignored for Google OAuth. This aligns with our AuthorizationURL
-// implementation which doesn't send code_challenge to Google.
+// OAuth 2.1 Security Enhancement: Now supports PKCE verification for defense-in-depth.
 //
-// Security: The OAuth server authenticates to Google using client_secret (confidential client),
-// which provides strong authentication without requiring PKCE. PKCE protection is already
-// provided at the MCP client -> OAuth server layer.
+// The verifier parameter is the PKCE code_verifier for the OAuth server -> Google leg.
+// This is DIFFERENT from the MCP client's PKCE verifier (which is validated separately).
+//
+// Security model:
+//   - Client secret: Server authentication to Google (confidential client)
+//   - PKCE verifier: Authorization code binding (prevents code injection)
+//   - Both mechanisms provide layered security per OAuth 2.1
 func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier string) (*oauth2.Token, error) {
 	ctx, cancel := p.ensureContextTimeout(ctx)
 	defer cancel()
 
+	var opts []oauth2.AuthCodeOption
+
+	// PKCE code verifier (OAuth 2.1 security enhancement)
+	if verifier != "" {
+		opts = append(opts, oauth2.VerifierOption(verifier))
+	}
+
 	// Use custom HTTP client
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)
 
-	// Exchange code for token (no PKCE verifier sent - see method doc)
-	token, err := p.Exchange(ctx, code)
+	// Exchange code for token with PKCE verification
+	token, err := p.Exchange(ctx, code, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to exchange code: %w", err)
 	}

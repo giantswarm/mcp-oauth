@@ -297,27 +297,35 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 	// This allows us to track the provider callback independently
 	providerState := generateRandomToken()
 
+	// OAuth 2.1 Security Enhancement: Generate PKCE for OAuth server -> Provider leg
+	// This provides defense-in-depth against Authorization Code Injection attacks
+	// Note: This is SEPARATE from the MCP client's PKCE (stored in codeChallenge/codeChallengeMethod)
+	providerCodeChallenge, providerCodeVerifier := generatePKCEPair()
+
 	// Save authorization state
 	// StateID = client's state (for CSRF validation when redirecting back to client)
 	// ProviderState = our state sent to provider (for validating provider callback)
+	// CodeChallenge/Method = client's PKCE (for validating MCP client)
+	// ProviderCodeVerifier = our PKCE verifier (for OAuth 2.1 security with provider)
 	authState := &storage.AuthorizationState{
-		StateID:             clientState, // Client's state for CSRF protection
-		ClientID:            clientID,
-		RedirectURI:         redirectURI,
-		Scope:               scope,
-		CodeChallenge:       codeChallenge,
-		CodeChallengeMethod: codeChallengeMethod,
-		ProviderState:       providerState, // Our state for provider callback
-		CreatedAt:           time.Now(),
-		ExpiresAt:           time.Now().Add(time.Duration(s.Config.AuthorizationCodeTTL) * time.Second),
+		StateID:              clientState, // Client's state for CSRF protection
+		ClientID:             clientID,
+		RedirectURI:          redirectURI,
+		Scope:                scope,
+		CodeChallenge:        codeChallenge,        // Client-to-Server PKCE challenge
+		CodeChallengeMethod:  codeChallengeMethod,  // Client-to-Server PKCE method
+		ProviderState:        providerState,        // Our state for provider callback
+		ProviderCodeVerifier: providerCodeVerifier, // Server-to-Provider PKCE verifier (OAuth 2.1)
+		CreatedAt:            time.Now(),
+		ExpiresAt:            time.Now().Add(time.Duration(s.Config.AuthorizationCodeTTL) * time.Second),
 	}
 	if err := s.flowStore.SaveAuthorizationState(ctx, authState); err != nil {
 		return "", fmt.Errorf("failed to save authorization state: %w", err)
 	}
 
-	// Generate authorization URL with provider
-	// Pass the code challenge from client (already computed)
-	authURL := s.provider.AuthorizationURL(providerState, codeChallenge, codeChallengeMethod)
+	// Generate authorization URL with provider using server-generated PKCE
+	// OAuth 2.1: Send our PKCE challenge (not the client's) to the provider
+	authURL := s.provider.AuthorizationURL(providerState, providerCodeChallenge, "S256")
 
 	return authURL, nil
 }
@@ -373,14 +381,17 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 	// Save the client's original state before deletion
 	clientState := authState.StateID
 
+	// Save provider verifier before deleting state (OAuth 2.1 security)
+	providerVerifier := authState.ProviderCodeVerifier
+
 	// Delete authorization state (one-time use)
 	// Use providerState for deletion since that's our lookup key
 	_ = s.flowStore.DeleteAuthorizationState(ctx, providerState)
 
-	// Exchange code with provider
-	// Note: We don't pass code_verifier here because PKCE verification
-	// happens when the client exchanges their authorization code with us
-	providerToken, err := s.provider.ExchangeCode(ctx, code, "")
+	// Exchange code with provider using OAuth 2.1 PKCE
+	// Pass our server-generated verifier (not the client's verifier)
+	// This provides cryptographic binding and prevents Authorization Code Injection
+	providerToken, err := s.provider.ExchangeCode(ctx, code, providerVerifier)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to exchange code with provider: %w", err)
 	}

@@ -133,17 +133,15 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 		wantNotContains     []string
 	}{
 		{
-			name:                "PKCE parameters ignored (confidential client)",
+			name:                "with PKCE (OAuth 2.1 security)",
 			state:               "test-state",
 			codeChallenge:       "test-challenge",
 			codeChallengeMethod: "S256",
 			wantContains: []string{
 				"state=test-state",
+				"code_challenge=test-challenge",
+				"code_challenge_method=S256",
 				"access_type=offline",
-			},
-			wantNotContains: []string{
-				"code_challenge",
-				"code_challenge_method",
 			},
 		},
 		{
@@ -239,9 +237,9 @@ func TestProvider_ExchangeCode(t *testing.T) {
 	}
 }
 
-func TestProvider_ExchangeCode_IgnoresPKCEVerifier(t *testing.T) {
+func TestProvider_ExchangeCode_WithPKCE(t *testing.T) {
 	ctx := context.Background()
-	// Create mock Google token endpoint that verifies code_verifier is NOT sent
+	// Create mock Google token endpoint that verifies code_verifier IS sent (OAuth 2.1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != testTokenEndpoint {
 			http.NotFound(w, r)
@@ -254,9 +252,9 @@ func TestProvider_ExchangeCode_IgnoresPKCEVerifier(t *testing.T) {
 			return
 		}
 
-		// Verify code_verifier is NOT sent (confidential client doesn't use PKCE)
-		if r.FormValue("code_verifier") != "" {
-			http.Error(w, "code_verifier should not be sent for confidential clients", http.StatusBadRequest)
+		// Verify code_verifier is sent (OAuth 2.1 security enhancement)
+		if r.FormValue("code_verifier") != "test-verifier" {
+			http.Error(w, "invalid or missing code_verifier", http.StatusBadRequest)
 			return
 		}
 
@@ -281,7 +279,7 @@ func TestProvider_ExchangeCode_IgnoresPKCEVerifier(t *testing.T) {
 
 	provider.Endpoint.TokenURL = server.URL + "/token"
 
-	// Pass verifier parameter (for interface compatibility) but verify it's ignored
+	// Pass verifier parameter for OAuth 2.1 PKCE security
 	token, err := provider.ExchangeCode(ctx, "test-code", "test-verifier")
 	if err != nil {
 		t.Fatalf("ExchangeCode() error = %v", err)

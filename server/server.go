@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"log/slog"
@@ -240,6 +241,27 @@ func generateRandomToken() string {
 		panic(fmt.Sprintf("crypto/rand.Read failed: %v", err))
 	}
 	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// generatePKCEPair generates a PKCE challenge and verifier pair for OAuth 2.1.
+// Returns (challenge, verifier) where challenge is the S256 hash of the verifier.
+//
+// OAuth 2.1 Security: This is used for the OAuth server -> Provider leg PKCE,
+// which provides defense-in-depth against Authorization Code Injection attacks.
+// The verifier is 43 characters (32 bytes base64url), meeting RFC 7636 requirements.
+//
+// The function panics if the system's random number generator fails,
+// as secure PKCE generation is critical for OAuth 2.1 security.
+func generatePKCEPair() (challenge, verifier string) {
+	// Generate cryptographically secure random verifier
+	// 32 bytes = 43 characters base64url (meets RFC 7636 minimum of 43)
+	verifier = generateRandomToken()
+
+	// Compute S256 challenge (SHA256 hash of verifier)
+	hash := sha256.Sum256([]byte(verifier))
+	challenge = base64.RawURLEncoding.EncodeToString(hash[:])
+
+	return challenge, verifier
 }
 
 // Shutdown gracefully shuts down the server and all its components.
