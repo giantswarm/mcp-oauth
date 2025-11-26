@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -34,6 +35,23 @@ const (
 // Note: This is intentionally duplicated from constants.go to avoid circular imports.
 // Keep in sync with constants.go.
 const OAuthSpecVersion = "OAuth 2.1"
+
+// normalizeScopes splits a space-separated scope string and filters out empty values.
+// This handles malformed input gracefully by trimming whitespace and removing empty entries.
+// Returns nil if the input is empty or contains only whitespace.
+func normalizeScopes(scope string) []string {
+	if scope == "" {
+		return nil
+	}
+
+	var scopes []string
+	for _, s := range strings.Split(scope, " ") {
+		if trimmed := strings.TrimSpace(s); trimmed != "" {
+			scopes = append(scopes, trimmed)
+		}
+	}
+	return scopes
+}
 
 // logAuthCodeValidationFailure logs authorization code validation failures with
 // consistent formatting and returns a generic error per RFC 6749.
@@ -264,6 +282,15 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 		return "", fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
 	}
 
+	// SECURITY: Validate scope string length to prevent DoS attacks
+	// This must happen before parsing/processing the scope string
+	if len(scope) > s.Config.MaxScopeLength {
+		if s.Auditor != nil {
+			s.Auditor.LogAuthFailure("", clientID, "", fmt.Sprintf("scope_too_long: %d characters (max: %d)", len(scope), s.Config.MaxScopeLength))
+		}
+		return "", fmt.Errorf("%s: scope parameter exceeds maximum length of %d characters", ErrorCodeInvalidScope, s.Config.MaxScopeLength)
+	}
+
 	// Validate scopes against server configuration
 	if err := s.validateScopes(scope); err != nil {
 		if s.Auditor != nil {
@@ -317,8 +344,12 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 		return "", fmt.Errorf("failed to save authorization state: %w", err)
 	}
 
-	// Generate authorization URL with server-generated PKCE
-	authURL := s.provider.AuthorizationURL(providerState, providerCodeChallenge, "S256")
+	// Parse scopes to pass to provider
+	// If client didn't request scopes, pass empty slice and provider will use its defaults
+	requestedScopes := normalizeScopes(scope)
+
+	// Generate authorization URL with server-generated PKCE and requested scopes
+	authURL := s.provider.AuthorizationURL(providerState, providerCodeChallenge, "S256", requestedScopes)
 
 	return authURL, nil
 }

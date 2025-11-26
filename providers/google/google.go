@@ -83,7 +83,8 @@ func (p *Provider) Name() string {
 
 // AuthorizationURL generates the Google OAuth authorization URL with optional PKCE.
 // Supports OAuth 2.1 defense-in-depth. See SECURITY_ARCHITECTURE.md for details.
-func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string) string {
+// If scopes is empty, the provider's default configured scopes are used.
+func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string, scopes []string) string {
 	var opts []oauth2.AuthCodeOption
 
 	// Add PKCE parameters if provided
@@ -97,7 +98,24 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	// Request offline access to get refresh token
 	opts = append(opts, oauth2.AccessTypeOffline)
 
-	return p.AuthCodeURL(state, opts...)
+	// SECURITY: Create a deep copy of scopes to prevent potential race conditions
+	// If we use provider defaults, we must copy the slice to avoid shared references
+	// that could be modified concurrently or cause unexpected behavior.
+	var scopesToUse []string
+	if len(scopes) > 0 {
+		// Use requested scopes (create deep copy)
+		scopesToUse = make([]string, len(scopes))
+		copy(scopesToUse, scopes)
+	} else {
+		// Use provider's default scopes (create deep copy)
+		scopesToUse = make([]string, len(p.Scopes))
+		copy(scopesToUse, p.Scopes)
+	}
+
+	// Create a config with the determined scopes
+	config := *p.Config
+	config.Scopes = scopesToUse
+	return config.AuthCodeURL(state, opts...)
 }
 
 // ensureContextTimeout ensures the context has a deadline, adding one if needed.

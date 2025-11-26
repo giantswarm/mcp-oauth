@@ -94,6 +94,14 @@ type Config struct {
 	// If empty, all scopes are allowed
 	SupportedScopes []string
 
+	// MaxScopeLength is the maximum allowed length for the scope parameter string
+	// This prevents potential DoS attacks via extremely long scope strings.
+	// The scope string is space-delimited, so this limits the total length including
+	// all scopes and spaces, not individual scope names.
+	// Default: 1000 characters (sufficient for most use cases)
+	// Example: "openid profile email" = 22 characters
+	MaxScopeLength int // default: 1000
+
 	// DefaultChallengeScopes are the scopes to include in WWW-Authenticate challenges
 	// When a 401 Unauthorized response is returned, these scopes indicate what
 	// permissions would be needed to access the resource.
@@ -400,6 +408,9 @@ func applyTimeDefaults(config *Config) {
 	}
 	if config.RegistrationRateLimitWindow == 0 {
 		config.RegistrationRateLimitWindow = 3600 // 1 hour
+	}
+	if config.MaxScopeLength == 0 {
+		config.MaxScopeLength = 1000 // 1000 characters
 	}
 	if config.StorageCleanupInterval == 0 {
 		config.StorageCleanupInterval = time.Minute // 1 minute

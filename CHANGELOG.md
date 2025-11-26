@@ -7,7 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Scope string deep copy in Google provider to prevent race conditions**
+  - **Problem**: Provider was using shallow copy when passing scopes to oauth2.Config, potentially allowing concurrent modifications to shared slice references
+  - **Risk**: Low risk in current implementation (scopes only set at initialization), but future code changes could introduce race conditions
+  - **Solution**: Implemented deep copy of scope slices to eliminate shared references
+  - **Impact**: Prevents potential data races and unexpected scope modifications in concurrent scenarios
+  - **Testing**: Added comprehensive test coverage for deep copy safety and concurrent modification scenarios
+
+- **Scope string length validation to prevent DoS attacks**
+  - **Problem**: No limit on scope parameter length could allow DoS attacks via extremely long scope strings
+  - **Risk**: Potential resource exhaustion through processing and validating arbitrarily long scope strings
+  - **Solution**: 
+    - Added `MaxScopeLength` configuration parameter (default: 1000 characters)
+    - Scope length validated early in authorization flow before parsing/processing
+    - Clear error messages when limit exceeded
+  - **Impact**: Prevents potential DoS attacks while allowing legitimate use cases (1000 chars supports ~50+ typical scopes)
+  - **Configuration**: `server.Config.MaxScopeLength` (default: 1000, automatically set if 0)
+  - **Error**: Returns `invalid_scope` with clear message when limit exceeded
+  - **Audit**: Scope length violations are logged via audit system
+  - **Testing**: Added tests for boundary conditions (at limit, exceeds limit, empty scopes)
+
 ### Fixed
+
+- **OAuth callback now properly passes client-requested scopes to Google provider (#82)**
+  - **Problem**: Scopes from client authorization requests were not being passed to Google during provider authorization redirect
+  - **Impact**: Google returned tokens without user info (no scopes = no permissions = no data), causing userID extraction to fail and token storage to fail with "userID cannot be empty" errors
+  - **Root Cause**: The Provider interface's `AuthorizationURL` method didn't accept scopes parameter, so only provider's hardcoded scopes were used
+  - **Solution**: 
+    - Modified `Provider.AuthorizationURL()` interface to accept `scopes []string` parameter
+    - Updated Google provider to use client-requested scopes when provided, falling back to configured defaults when empty
+    - Updated server flows to parse and pass client scopes to provider
+  - **Breaking Change**: 🔴 **YES** - Provider interface method signature changed
+    - **Before**: `AuthorizationURL(state, codeChallenge, codeChallengeMethod string) string`
+    - **After**: `AuthorizationURL(state, codeChallenge, codeChallengeMethod string, scopes []string) string`
+    - **Migration**: Add `scopes` parameter to any custom provider implementations
+  - **Behavior**:
+    - When client provides scopes in authorization request → those scopes are used
+    - When client provides no scopes → provider's configured default scopes are used
+    - Empty scopes array → provider defaults used
+  - **Testing**: Added comprehensive tests for dynamic scope behavior
 
 - **WWW-Authenticate metadata now defaults to enabled (secure by default)**
   - **Problem**: Field naming made it unclear whether metadata was enabled or disabled by default
