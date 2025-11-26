@@ -386,6 +386,9 @@ func applySecureDefaults(config *Config, logger *slog.Logger) *Config {
 	// Validate CORS configuration BEFORE applying defaults (to detect invalid values)
 	validateCORSConfig(config, logger)
 
+	// Validate Client ID Metadata Documents configuration (MCP 2025-11-25)
+	validateClientIDMetadataDocumentsConfig(config, logger)
+
 	// Apply time-based defaults
 	applyTimeDefaults(config)
 
@@ -673,6 +676,83 @@ func validateWWWAuthenticateConfig(config *Config, logger *slog.Logger) {
 			"challenge_scopes_count", len(config.DefaultChallengeScopes),
 			"resource_metadata_url", config.ProtectedResourceMetadataEndpoint())
 	}
+}
+
+// validateClientIDMetadataDocumentsConfig validates Client ID Metadata Documents configuration
+// for security and correctness (MCP 2025-11-25, draft-ietf-oauth-client-id-metadata-document-00)
+func validateClientIDMetadataDocumentsConfig(config *Config, logger *slog.Logger) {
+	// Only validate if feature is enabled
+	if !config.EnableClientIDMetadataDocuments {
+		return
+	}
+
+	// SECURITY: Validate ClientMetadataCacheTTL is within reasonable bounds
+	// - Minimum: 1 minute (prevents cache bypass DoS via rapid expiry)
+	// - Maximum: 1 hour (prevents stale metadata from being cached too long)
+	const minTTL = 1 * time.Minute
+	const maxTTL = 1 * time.Hour
+
+	if config.ClientMetadataCacheTTL < 0 {
+		logger.Error("⚠️  CONFIGURATION ERROR: ClientMetadataCacheTTL cannot be negative",
+			"value", config.ClientMetadataCacheTTL,
+			"risk", "Invalid configuration could cause unexpected behavior",
+			"fix", "Set ClientMetadataCacheTTL to a positive duration or 0 for default (5 minutes)")
+		// Set to default to prevent issues
+		config.ClientMetadataCacheTTL = 5 * time.Minute
+	}
+
+	if config.ClientMetadataCacheTTL > 0 && config.ClientMetadataCacheTTL < minTTL {
+		logger.Warn("⚠️  CONFIGURATION WARNING: ClientMetadataCacheTTL is very short",
+			"value", config.ClientMetadataCacheTTL,
+			"minimum_recommended", minTTL,
+			"risk", "Excessive metadata fetches may cause performance issues and rate limiting",
+			"recommendation", fmt.Sprintf("Set ClientMetadataCacheTTL to at least %v", minTTL))
+	}
+
+	if config.ClientMetadataCacheTTL > maxTTL {
+		logger.Warn("⚠️  CONFIGURATION WARNING: ClientMetadataCacheTTL is very long",
+			"value", config.ClientMetadataCacheTTL,
+			"maximum_recommended", maxTTL,
+			"risk", "Stale client metadata may be cached for extended periods",
+			"recommendation", fmt.Sprintf("Set ClientMetadataCacheTTL to at most %v", maxTTL))
+	}
+
+	// SECURITY: Validate ClientMetadataFetchTimeout is reasonable
+	// - Minimum: 1 second (prevents immediate timeout)
+	// - Maximum: 30 seconds (prevents hanging connections)
+	const minTimeout = 1 * time.Second
+	const maxTimeout = 30 * time.Second
+
+	if config.ClientMetadataFetchTimeout < 0 {
+		logger.Error("⚠️  CONFIGURATION ERROR: ClientMetadataFetchTimeout cannot be negative",
+			"value", config.ClientMetadataFetchTimeout,
+			"risk", "Invalid configuration could cause unexpected behavior",
+			"fix", "Set ClientMetadataFetchTimeout to a positive duration or 0 for default (10 seconds)")
+		// Set to default to prevent issues
+		config.ClientMetadataFetchTimeout = 10 * time.Second
+	}
+
+	if config.ClientMetadataFetchTimeout > 0 && config.ClientMetadataFetchTimeout < minTimeout {
+		logger.Warn("⚠️  CONFIGURATION WARNING: ClientMetadataFetchTimeout is very short",
+			"value", config.ClientMetadataFetchTimeout,
+			"minimum_recommended", minTimeout,
+			"risk", "Metadata fetches may timeout prematurely for slow servers",
+			"recommendation", fmt.Sprintf("Set ClientMetadataFetchTimeout to at least %v", minTimeout))
+	}
+
+	if config.ClientMetadataFetchTimeout > maxTimeout {
+		logger.Warn("⚠️  CONFIGURATION WARNING: ClientMetadataFetchTimeout is very long",
+			"value", config.ClientMetadataFetchTimeout,
+			"maximum_recommended", maxTimeout,
+			"risk", "Slow or malicious servers may cause connection hangs",
+			"recommendation", fmt.Sprintf("Set ClientMetadataFetchTimeout to at most %v", maxTimeout))
+	}
+
+	// Log successful validation
+	logger.Debug("Client ID Metadata Documents configuration validated",
+		"cache_ttl", config.ClientMetadataCacheTTL,
+		"fetch_timeout", config.ClientMetadataFetchTimeout,
+		"enabled", config.EnableClientIDMetadataDocuments)
 }
 
 // logSecurityWarnings logs warnings for insecure configuration settings

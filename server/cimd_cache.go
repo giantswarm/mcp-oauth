@@ -152,8 +152,10 @@ func (c *clientMetadataCache) Clear() {
 // This is the main entry point for URL-based client resolution
 //
 // Security features:
+// - SSRF protection: Enforced at HTTP connection time in createSSRFProtectedTransport()
+//   This prevents DNS rebinding attacks by validating IPs when connecting, not just during initial URL validation
 // - Singleflight deduplication: prevents concurrent fetches of the same URL (DoS protection)
-// - Rate limiting: per-domain rate limiting to prevent abuse
+// - Rate limiting: per-domain rate limiting to prevent abuse (default: 10 req/min per domain)
 // - Audit logging: all cache hits and fetches are logged for security monitoring
 func (s *Server) getOrFetchClient(ctx context.Context, clientID string) (*storage.Client, error) {
 	// Check if URL-based client ID
@@ -220,27 +222,30 @@ func (s *Server) getOrFetchClient(ctx context.Context, clientID string) (*storag
 		// Cache miss - fetch from URL
 		s.Logger.Info("Fetching client metadata from URL", "client_id", clientID)
 
-		metadata, fetchErr := s.fetchClientMetadata(ctx, clientID)
+		metadata, suggestedTTL, fetchErr := s.fetchClientMetadata(ctx, clientID)
 		if fetchErr != nil {
 			return nil, fmt.Errorf("failed to fetch client metadata: %w", fetchErr)
 		}
 
-		// SECURITY: Re-validate URL before caching (defense-in-depth against TOCTOU)
-		// This protects against DNS changes during fetch that could poison the cache
-		if validationErr := validateMetadataURL(clientID); validationErr != nil {
-			s.Logger.Warn("Metadata URL became invalid after fetch, not caching",
-				"client_id", clientID,
-				"error", validationErr)
-			return nil, fmt.Errorf("metadata URL became invalid after fetch: %w", validationErr)
-		}
+		// NOTE: SSRF protection happens at connection time in createSSRFProtectedTransport(),
+		// which validates IPs when the HTTP client connects. This prevents DNS rebinding attacks
+		// where DNS resolution changes between validation and connection time.
+		// No post-fetch validation is needed here.
 
 		// Convert metadata to storage.Client
 		client := metadataToClient(metadata)
 
-		// Cache the result
+		// Determine cache TTL: use Cache-Control if provided, otherwise use config/default
 		ttl := s.Config.ClientMetadataCacheTTL
-		if ttl <= 0 {
-			ttl = 5 * time.Minute // Default TTL
+		if suggestedTTL > 0 {
+			// Respect HTTP Cache-Control max-age if present
+			ttl = suggestedTTL
+			s.Logger.Debug("Using Cache-Control TTL",
+				"client_id", clientID,
+				"ttl", ttl)
+		} else if ttl <= 0 {
+			// Fall back to default if neither Cache-Control nor config provides TTL
+			ttl = 5 * time.Minute
 		}
 		s.metadataCache.Set(clientID, metadata, client, ttl)
 

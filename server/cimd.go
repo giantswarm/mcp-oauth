@@ -229,12 +229,14 @@ func createSSRFProtectedTransport(ctx context.Context) *http.Transport {
 // fetchClientMetadata fetches and validates OAuth client metadata from an HTTPS URL
 // Implements draft-ietf-oauth-client-id-metadata-document-00
 //
+// Returns the metadata and a suggested cache TTL from HTTP Cache-Control header (0 if not specified)
+//
 // Security considerations per Section 6:
 // - SSRF protection: blocks private/internal IP addresses at connection time (prevents DNS rebinding)
 // - HTTPS only: rejects HTTP URLs
 // - Timeout protection: enforces reasonable timeout
 // - Size limit: prevents memory exhaustion and validates full document read
-func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*ClientMetadata, error) {
+func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*ClientMetadata, time.Duration, error) {
 	// Validate URL and apply initial SSRF protections
 	if err := validateMetadataURL(clientID); err != nil {
 		if s.Auditor != nil {
@@ -247,13 +249,26 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 				},
 			})
 		}
-		return nil, fmt.Errorf("metadata URL validation failed: %w", err)
+		return nil, 0, fmt.Errorf("metadata URL validation failed: %w", err)
 	}
 
 	// Determine timeout from configuration or use default
 	timeout := 10 * time.Second
 	if s.Config.ClientMetadataFetchTimeout > 0 {
 		timeout = s.Config.ClientMetadataFetchTimeout
+	}
+	
+	// SECURITY: Respect context deadline if set (prevents exceeding caller's timeout)
+	// This is important when the authorization flow has its own deadline
+	if deadline, ok := ctx.Deadline(); ok {
+		timeUntilDeadline := time.Until(deadline)
+		if timeUntilDeadline > 0 && timeUntilDeadline < timeout {
+			timeout = timeUntilDeadline
+			s.Logger.Debug("Using context deadline for metadata fetch",
+				"original_timeout", s.Config.ClientMetadataFetchTimeout,
+				"adjusted_timeout", timeout,
+				"reason", "context deadline")
+		}
 	}
 
 	// SECURITY: Create HTTP client with SSRF-protected transport
@@ -270,7 +285,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	// Create request with context
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, clientID, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create metadata request: %w", err)
+		return nil, 0, fmt.Errorf("failed to create metadata request: %w", err)
 	}
 
 	// Set headers
@@ -289,7 +304,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 				},
 			})
 		}
-		return nil, fmt.Errorf("failed to fetch metadata from %s: %w", clientID, err)
+		return nil, 0, fmt.Errorf("failed to fetch metadata from %s: %w", clientID, err)
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
@@ -309,20 +324,38 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 				},
 			})
 		}
-		return nil, fmt.Errorf("metadata fetch returned HTTP %d: %s", resp.StatusCode, resp.Status)
+		return nil, 0, fmt.Errorf("metadata fetch returned HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
 	// SECURITY: Strict Content-Type validation - must be exactly application/json
 	// (with optional charset parameter)
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" {
-		return nil, fmt.Errorf("metadata response missing Content-Type header")
+		return nil, 0, fmt.Errorf("metadata response missing Content-Type header")
 	}
-	// Parse media type to handle charset parameters
-	mediaType := strings.ToLower(strings.Split(contentType, ";")[0])
-	mediaType = strings.TrimSpace(mediaType)
+	
+	// Parse media type and parameters
+	parts := strings.Split(contentType, ";")
+	mediaType := strings.ToLower(strings.TrimSpace(parts[0]))
 	if mediaType != "application/json" {
-		return nil, fmt.Errorf("metadata must be application/json, got: %s", contentType)
+		return nil, 0, fmt.Errorf("metadata must be application/json, got: %s", contentType)
+	}
+	
+	// SECURITY: Validate charset parameter if present (must be UTF-8)
+	// JSON is defined as UTF-8 per RFC 8259, non-UTF-8 encodings can cause parsing issues
+	for i := 1; i < len(parts); i++ {
+		param := strings.TrimSpace(parts[i])
+		if kv := strings.SplitN(param, "=", 2); len(kv) == 2 {
+			key := strings.ToLower(strings.TrimSpace(kv[0]))
+			value := strings.Trim(strings.ToLower(strings.TrimSpace(kv[1])), "\" ")
+			
+			if key == "charset" {
+				// Allow utf-8 and utf8 (both are valid)
+				if value != "utf-8" && value != "utf8" {
+					return nil, 0, fmt.Errorf("unsupported charset: %s (only UTF-8 is supported for JSON)", value)
+				}
+			}
+		}
 	}
 
 	// SECURITY: Validate Content-Length header to prevent resource waste
@@ -331,7 +364,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	if contentLength := resp.Header.Get("Content-Length"); contentLength != "" {
 		size, parseErr := strconv.ParseInt(contentLength, 10, 64)
 		if parseErr == nil && size > maxMetadataSize {
-			return nil, fmt.Errorf("metadata Content-Length (%d bytes) exceeds maximum size of %d bytes", size, maxMetadataSize)
+			return nil, 0, fmt.Errorf("metadata Content-Length (%d bytes) exceeds maximum size of %d bytes", size, maxMetadataSize)
 		}
 	}
 
@@ -340,18 +373,18 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	// 2. Partial JSON parsing from truncated responses
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxMetadataSize+1))
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
+		return nil, 0, fmt.Errorf("failed to read response body: %w", err)
 	}
 
 	// Check if response was truncated (exceeded size limit)
 	if len(bodyBytes) > maxMetadataSize {
-		return nil, fmt.Errorf("metadata document exceeds maximum size of %d bytes", maxMetadataSize)
+		return nil, 0, fmt.Errorf("metadata document exceeds maximum size of %d bytes", maxMetadataSize)
 	}
 
 	// Parse JSON response
 	var metadata ClientMetadata
 	if err := json.Unmarshal(bodyBytes, &metadata); err != nil {
-		return nil, fmt.Errorf("failed to parse metadata JSON: %w", err)
+		return nil, 0, fmt.Errorf("failed to parse metadata JSON: %w", err)
 	}
 
 	// CRITICAL SECURITY: Validate that client_id in document matches the URL
@@ -369,13 +402,13 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 				},
 			})
 		}
-		return nil, fmt.Errorf("client_id mismatch: document contains %q but was fetched from %q (security violation)",
+		return nil, 0, fmt.Errorf("client_id mismatch: document contains %q but was fetched from %q (security violation)",
 			metadata.ClientID, clientID)
 	}
 
 	// Validate required fields
 	if len(metadata.RedirectURIs) == 0 {
-		return nil, fmt.Errorf("metadata must contain at least one redirect_uri")
+		return nil, 0, fmt.Errorf("metadata must contain at least one redirect_uri")
 	}
 
 	// SECURITY: Validate redirect URIs for safety (defense-in-depth)
@@ -383,19 +416,19 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	for _, uri := range metadata.RedirectURIs {
 		u, parseErr := url.Parse(uri)
 		if parseErr != nil {
-			return nil, fmt.Errorf("invalid redirect_uri %q: %w", uri, parseErr)
+			return nil, 0, fmt.Errorf("invalid redirect_uri %q: %w", uri, parseErr)
 		}
 
 		// Only allow http and https schemes
 		if u.Scheme != SchemeHTTPS && u.Scheme != SchemeHTTP {
-			return nil, fmt.Errorf("redirect_uri must use http or https scheme, got %s: %s", u.Scheme, uri)
+			return nil, 0, fmt.Errorf("redirect_uri must use http or https scheme, got %s: %s", u.Scheme, uri)
 		}
 
 		// OAuth 2.1: HTTP redirect URIs only allowed for localhost
 		if u.Scheme == SchemeHTTP {
 			hostname := u.Hostname()
 			if hostname != localhostHostname && hostname != localhostIPv4Loopback && hostname != localhostIPv6Loopback {
-				return nil, fmt.Errorf("http redirect_uri only allowed for localhost, got %s: %s", hostname, uri)
+				return nil, 0, fmt.Errorf("http redirect_uri only allowed for localhost, got %s: %s", hostname, uri)
 			}
 		}
 	}
@@ -411,15 +444,29 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		metadata.TokenEndpointAuthMethod = "none" // Default for public clients
 	}
 
+	// Parse Cache-Control header for suggested TTL
+	// Per HTTP caching spec, max-age directive suggests how long to cache the response
+	var suggestedTTL time.Duration
+	if cacheControl := resp.Header.Get("Cache-Control"); cacheControl != "" {
+		if maxAge := parseCacheControlMaxAge(cacheControl); maxAge > 0 {
+			suggestedTTL = time.Duration(maxAge) * time.Second
+			s.Logger.Debug("Parsed Cache-Control max-age",
+				"client_id", clientID,
+				"max_age_seconds", maxAge,
+				"suggested_ttl", suggestedTTL)
+		}
+	}
+
 	// Log successful fetch
 	if s.Auditor != nil {
 		s.Auditor.LogEvent(security.Event{
 			Type:     "client_metadata_fetched",
 			ClientID: clientID,
 			Details: map[string]any{
-				"client_name":    metadata.ClientName,
-				"redirect_count": len(metadata.RedirectURIs),
-				"document_size":  len(bodyBytes),
+				"client_name":     metadata.ClientName,
+				"redirect_count":  len(metadata.RedirectURIs),
+				"document_size":   len(bodyBytes),
+				"cache_suggested": suggestedTTL > 0,
 			},
 		})
 	}
@@ -428,9 +475,10 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		"client_id", clientID,
 		"client_name", metadata.ClientName,
 		"redirect_uris", len(metadata.RedirectURIs),
-		"size_bytes", len(bodyBytes))
+		"size_bytes", len(bodyBytes),
+		"cache_ttl", suggestedTTL)
 
-	return &metadata, nil
+	return &metadata, suggestedTTL, nil
 }
 
 // hasLocalhostRedirectURIsOnly checks if all redirect URIs point to localhost
@@ -454,4 +502,31 @@ func hasLocalhostRedirectURIsOnly(redirectURIs []string) bool {
 	}
 
 	return true
+}
+
+// parseCacheControlMaxAge extracts max-age directive from Cache-Control header
+// Returns 0 if max-age is not present or invalid
+// Example: "max-age=300, must-revalidate" -> 300 seconds
+func parseCacheControlMaxAge(cacheControl string) int {
+	// Split by comma to handle multiple directives
+	directives := strings.Split(cacheControl, ",")
+	for _, directive := range directives {
+		// Trim whitespace and convert to lowercase
+		directive = strings.TrimSpace(strings.ToLower(directive))
+
+		// Check for max-age directive
+		if strings.HasPrefix(directive, "max-age=") {
+			// Extract the value after "max-age="
+			ageStr := strings.TrimPrefix(directive, "max-age=")
+			ageStr = strings.TrimSpace(ageStr)
+
+			// Parse as integer
+			age, err := strconv.Atoi(ageStr)
+			if err != nil || age < 0 {
+				return 0
+			}
+			return age
+		}
+	}
+	return 0
 }

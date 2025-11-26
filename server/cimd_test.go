@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/giantswarm/mcp-oauth/security"
 )
 
 // TestIsURLClientID tests URL client ID detection
@@ -290,7 +292,7 @@ func TestFetchClientMetadata(t *testing.T) {
 
 		// Skip SSRF validation for test server (it uses TLS test cert with private IP)
 		// We'll test SSRF separately
-		metadata, err := srv.fetchClientMetadata(context.Background(), clientID)
+		metadata, _, err := srv.fetchClientMetadata(context.Background(), clientID)
 		if err != nil {
 			// Expected for test server with private IP - this is correct behavior
 			if strings.Contains(err.Error(), "private/internal IP") {
@@ -333,7 +335,7 @@ func TestFetchClientMetadata(t *testing.T) {
 		defer badTS.Close()
 
 		clientID := badTS.URL + "/client"
-		_, err := testSrv.fetchClientMetadata(context.Background(), clientID)
+		_, _, err := testSrv.fetchClientMetadata(context.Background(), clientID)
 		if err == nil {
 			t.Error("expected error (SSRF protection or mismatch), got nil")
 		}
@@ -505,6 +507,58 @@ func TestHasLocalhostRedirectURIsOnly(t *testing.T) {
 	}
 }
 
+// TestMetadataFetchRateLimiting tests rate limiting for metadata fetches per domain
+func TestMetadataFetchRateLimiting(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	
+	// Create server with CIMD enabled
+	config := &Config{
+		EnableClientIDMetadataDocuments: true,
+		ClientMetadataFetchTimeout:      5 * time.Second,
+		ClientMetadataCacheTTL:          5 * time.Minute,
+	}
+	
+	srv := &Server{
+		Config:        config,
+		Logger:        logger,
+		metadataCache: newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
+	}
+	
+	// Set up strict rate limiter: 2 requests per second, burst of 2
+	// This means only 2 requests are allowed before rate limiting kicks in
+	srv.metadataFetchRateLimiter = security.NewRateLimiter(0, 2, logger)
+	
+	// Test that rate limiting is enforced per domain
+	// Use unique paths to avoid cache hits
+	domain := "example.com"
+	testURL1 := "https://" + domain + "/client1"
+	testURL2 := "https://" + domain + "/client2"  
+	testURL3 := "https://" + domain + "/client3"
+	
+	// Track which errors we get
+	errors := make([]error, 3)
+	
+	// Make three requests quickly
+	for i, clientID := range []string{testURL1, testURL2, testURL3} {
+		_, errors[i] = srv.getOrFetchClient(context.Background(), clientID)
+	}
+	
+	// First two should pass rate limiting (but may fail for other reasons like SSRF or network)
+	// Third one should be rate limited
+	for i, err := range errors[:2] {
+		if err != nil && strings.Contains(err.Error(), "rate limit exceeded") {
+			t.Errorf("Request %d should not be rate limited, got: %v", i+1, err)
+		}
+	}
+	
+	// Third request MUST be rate limited
+	if errors[2] == nil {
+		t.Error("Expected rate limit error for third request, got nil")
+	} else if !strings.Contains(errors[2].Error(), "rate limit exceeded") {
+		t.Errorf("Expected rate limit error for third request, got: %v", errors[2])
+	}
+}
+
 // TestRedirectURIValidation tests the redirect URI validation in fetchClientMetadata
 func TestRedirectURIValidation(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -585,7 +639,7 @@ func TestRedirectURIValidation(t *testing.T) {
 			}
 
 			clientID := serverURL + "/client"
-			_, err := srv.fetchClientMetadata(context.Background(), clientID)
+			_, _, err := srv.fetchClientMetadata(context.Background(), clientID)
 
 			// We expect SSRF protection to block localhost test server, which is correct
 			// So we check if the error is either SSRF-related OR the validation error we expect

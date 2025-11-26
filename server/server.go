@@ -154,6 +154,15 @@ func New(
 	// Start background goroutine for metadata cache cleanup
 	// This prevents memory leaks from expired cache entries
 	if config.EnableClientIDMetadataDocuments {
+		// SECURITY: Initialize default rate limiter for metadata fetches (10 req/min per domain)
+		// This prevents DoS attacks via flooding with unique client_id URLs
+		// Each domain is tracked separately to prevent one attacker from blocking legitimate domains
+		srv.metadataFetchRateLimiter = security.NewRateLimiter(10, 20, logger)
+		logger.Info("Initialized metadata fetch rate limiter",
+			"rate", "10 requests/min per domain",
+			"burst", 20,
+			"purpose", "DoS protection")
+
 		go srv.metadataCacheCleanupLoop()
 		logger.Debug("Started metadata cache cleanup goroutine")
 	}
