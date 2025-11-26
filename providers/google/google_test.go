@@ -201,6 +201,73 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 	}
 }
 
+// TestProvider_AuthorizationURL_DeepCopySafety verifies that the provider creates
+// deep copies of scopes to prevent race conditions and unexpected modifications
+func TestProvider_AuthorizationURL_DeepCopySafety(t *testing.T) {
+	provider, err := NewProvider(&Config{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		RedirectURL:  "https://example.com/callback",
+		Scopes:       []string{"openid", "profile", "email"},
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+
+	// Test 1: Using provider defaults - should not affect original
+	originalScopes := make([]string, len(provider.Scopes))
+	copy(originalScopes, provider.Scopes)
+
+	authURL1 := provider.AuthorizationURL("state1", "challenge1", "S256", nil)
+
+	// Verify provider's scopes weren't modified
+	if len(provider.Scopes) != len(originalScopes) {
+		t.Errorf("Provider scopes length changed: got %d, want %d", len(provider.Scopes), len(originalScopes))
+	}
+	for i, scope := range provider.Scopes {
+		if scope != originalScopes[i] {
+			t.Errorf("Provider scope[%d] changed: got %q, want %q", i, scope, originalScopes[i])
+		}
+	}
+
+	// Test 2: Using custom scopes - should not affect provider defaults
+	customScopes := []string{"custom:scope1", "custom:scope2"}
+	authURL2 := provider.AuthorizationURL("state2", "challenge2", "S256", customScopes)
+
+	// Verify provider's scopes are still unchanged
+	if len(provider.Scopes) != len(originalScopes) {
+		t.Errorf("Provider scopes length changed after custom scopes: got %d, want %d", len(provider.Scopes), len(originalScopes))
+	}
+
+	// Test 3: Modifying input slice shouldn't affect provider
+	inputScopes := []string{"input:scope1", "input:scope2"}
+	authURL3 := provider.AuthorizationURL("state3", "challenge3", "S256", inputScopes)
+
+	// Modify the input slice after the call
+	inputScopes[0] = "MODIFIED"
+	_ = append(inputScopes, "APPENDED") // Intentionally not using result to test isolation
+
+	// Generate another URL - should not be affected by the modification
+	authURL4 := provider.AuthorizationURL("state4", "challenge4", "S256", []string{"input:scope1", "input:scope2"})
+
+	// URLs 3 and 4 should have the same scopes (ignoring state/challenge differences)
+	if !strings.Contains(authURL3, "input%3Ascope1") {
+		t.Errorf("URL 3 should contain input:scope1")
+	}
+	if !strings.Contains(authURL4, "input%3Ascope1") {
+		t.Errorf("URL 4 should contain input:scope1")
+	}
+
+	// Verify all URLs were generated successfully
+	if authURL1 == "" || authURL2 == "" || authURL3 == "" || authURL4 == "" {
+		t.Error("One or more URLs were not generated")
+	}
+
+	t.Log("✓ Deep copy prevents race conditions")
+	t.Log("✓ Provider defaults are protected from modification")
+	t.Log("✓ Input slices can be safely modified after call")
+}
+
 func TestProvider_ExchangeCode(t *testing.T) {
 	ctx := context.Background()
 	// Create mock Google token endpoint

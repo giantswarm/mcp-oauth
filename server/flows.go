@@ -282,6 +282,15 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 		return "", fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
 	}
 
+	// SECURITY: Validate scope string length to prevent DoS attacks
+	// This must happen before parsing/processing the scope string
+	if len(scope) > s.Config.MaxScopeLength {
+		if s.Auditor != nil {
+			s.Auditor.LogAuthFailure("", clientID, "", fmt.Sprintf("scope_too_long: %d characters (max: %d)", len(scope), s.Config.MaxScopeLength))
+		}
+		return "", fmt.Errorf("%s: scope parameter exceeds maximum length of %d characters", ErrorCodeInvalidScope, s.Config.MaxScopeLength)
+	}
+
 	// Validate scopes against server configuration
 	if err := s.validateScopes(scope); err != nil {
 		if s.Auditor != nil {

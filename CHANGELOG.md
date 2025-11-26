@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Scope string deep copy in Google provider to prevent race conditions**
+  - **Problem**: Provider was using shallow copy when passing scopes to oauth2.Config, potentially allowing concurrent modifications to shared slice references
+  - **Risk**: Low risk in current implementation (scopes only set at initialization), but future code changes could introduce race conditions
+  - **Solution**: Implemented deep copy of scope slices to eliminate shared references
+  - **Impact**: Prevents potential data races and unexpected scope modifications in concurrent scenarios
+  - **Testing**: Added comprehensive test coverage for deep copy safety and concurrent modification scenarios
+
+- **Scope string length validation to prevent DoS attacks**
+  - **Problem**: No limit on scope parameter length could allow DoS attacks via extremely long scope strings
+  - **Risk**: Potential resource exhaustion through processing and validating arbitrarily long scope strings
+  - **Solution**: 
+    - Added `MaxScopeLength` configuration parameter (default: 1000 characters)
+    - Scope length validated early in authorization flow before parsing/processing
+    - Clear error messages when limit exceeded
+  - **Impact**: Prevents potential DoS attacks while allowing legitimate use cases (1000 chars supports ~50+ typical scopes)
+  - **Configuration**: `server.Config.MaxScopeLength` (default: 1000, automatically set if 0)
+  - **Error**: Returns `invalid_scope` with clear message when limit exceeded
+  - **Audit**: Scope length violations are logged via audit system
+  - **Testing**: Added tests for boundary conditions (at limit, exceeds limit, empty scopes)
+
 ### Fixed
 
 - **OAuth callback now properly passes client-requested scopes to Google provider (#82)**

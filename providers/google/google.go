@@ -98,10 +98,18 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	// Request offline access to get refresh token
 	opts = append(opts, oauth2.AccessTypeOffline)
 
-	// Determine which scopes to use: requested scopes or provider defaults
-	scopesToUse := p.Scopes // default to provider's configured scopes
+	// SECURITY: Create a deep copy of scopes to prevent potential race conditions
+	// If we use provider defaults, we must copy the slice to avoid shared references
+	// that could be modified concurrently or cause unexpected behavior.
+	var scopesToUse []string
 	if len(scopes) > 0 {
-		scopesToUse = scopes // override with requested scopes
+		// Use requested scopes (create deep copy)
+		scopesToUse = make([]string, len(scopes))
+		copy(scopesToUse, scopes)
+	} else {
+		// Use provider's default scopes (create deep copy)
+		scopesToUse = make([]string, len(p.Scopes))
+		copy(scopesToUse, p.Scopes)
 	}
 
 	// Create a config with the determined scopes

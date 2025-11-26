@@ -4529,3 +4529,95 @@ func TestNormalizeScopes(t *testing.T) {
 		})
 	}
 }
+
+// TestStartAuthorizationFlow_ScopeLengthValidation tests that scope strings exceeding
+// the maximum length are rejected to prevent DoS attacks
+func TestStartAuthorizationFlow_ScopeLengthValidation(t *testing.T) {
+	ctx := context.Background()
+
+	// Create server with custom MaxScopeLength and allow all scopes
+	srv, _, _ := setupFlowTestServer(t)
+	srv.Config.MaxScopeLength = 50          // Set low limit for testing
+	srv.Config.SupportedScopes = []string{} // Allow all scopes (no validation)
+
+	// Register a test client
+	client, _, err := srv.RegisterClient(ctx, "test-client", ClientTypeConfidential, TokenEndpointAuthMethodBasic, []string{"https://example.com/callback"}, []string{}, "127.0.0.1", 10)
+	if err != nil {
+		t.Fatalf("Failed to register client: %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		scope     string
+		wantError bool
+		errMsg    string
+	}{
+		{
+			name:      "scope within limit",
+			scope:     "openid profile email",
+			wantError: false,
+		},
+		{
+			name:      "scope at exact limit",
+			scope:     strings.Repeat("a", 50),
+			wantError: false,
+		},
+		{
+			name:      "scope exceeds limit by 1 char",
+			scope:     strings.Repeat("a", 51),
+			wantError: true,
+			errMsg:    "exceeds maximum length",
+		},
+		{
+			name:      "scope significantly exceeds limit",
+			scope:     strings.Repeat("openid profile email ", 100), // ~2100 chars
+			wantError: true,
+			errMsg:    "exceeds maximum length",
+		},
+		{
+			name:      "empty scope is allowed",
+			scope:     "",
+			wantError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Generate PKCE pair
+			codeChallenge, _ := generatePKCEPair()
+
+			// Generate a valid state parameter (must be at least 32 characters)
+			state := generateRandomToken() // This generates a secure random token
+
+			// Attempt to start authorization flow
+			_, err := srv.StartAuthorizationFlow(
+				ctx,
+				client.ClientID,
+				client.RedirectURIs[0],
+				tt.scope,
+				codeChallenge,
+				"S256",
+				state,
+			)
+
+			if tt.wantError {
+				if err == nil {
+					t.Errorf("Expected error but got none")
+					return
+				}
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("Error message should contain %q, got: %v", tt.errMsg, err)
+				}
+				t.Logf("✓ Correctly rejected scope with length %d (limit: %d): %v", len(tt.scope), srv.Config.MaxScopeLength, err)
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error: %v", err)
+				}
+				t.Logf("✓ Correctly accepted scope with length %d (limit: %d)", len(tt.scope), srv.Config.MaxScopeLength)
+			}
+		})
+	}
+
+	t.Log("✓ Scope length validation prevents DoS attacks")
+	t.Log("✓ Legitimate scopes within limits are accepted")
+}
