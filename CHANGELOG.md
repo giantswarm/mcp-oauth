@@ -51,6 +51,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Configuration**:
     - `DefaultChallengeScopes`: Configure default scopes to include in WWW-Authenticate challenges
     - Example: `config.DefaultChallengeScopes = []string{"mcp:access", "files:read"}`
+    - `EnableWWWAuthenticateMetadata`: Control whether to include metadata (default: true)
+  - **Backward compatibility**:
+    - Feature enabled by default for MCP 2025-11-25 compliance
+    - Can be disabled for legacy clients: `config.EnableWWWAuthenticateMetadata = false`
+    - When disabled, returns minimal `WWW-Authenticate: Bearer` header
+    - Standard HTTP behavior: clients ignore headers they don't understand
+    - No breaking changes to existing client implementations
   - **Automatic behavior**:
     - All existing 401 responses automatically get proper WWW-Authenticate headers
     - No code changes needed in existing handlers
@@ -59,7 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - MCP 2025-11-25: MUST include resource_metadata in WWW-Authenticate (✓)
     - RFC 6750 Section 3: Bearer token challenge format (✓)
     - RFC 9728: Protected Resource Metadata discovery (✓)
-  - **Testing**: Comprehensive unit tests for header formatting and integration
+  - **Testing**: Comprehensive unit tests for header formatting, integration, and backward compatibility mode
 
 - **OAuth 2.1 PKCE for provider leg - Enhanced security for confidential clients (#68)**
   - Implemented full OAuth 2.1 PKCE support on the OAuth server → Provider leg

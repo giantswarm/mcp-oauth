@@ -1860,8 +1860,9 @@ func TestHandler_WriteError401WithWWWAuthenticate(t *testing.T) {
 			provider := mock.NewMockProvider()
 
 			config := &server.Config{
-				Issuer:                 "https://auth.example.com",
-				DefaultChallengeScopes: tt.defaultChallengeScopes,
+				Issuer:                        "https://auth.example.com",
+				EnableWWWAuthenticateMetadata: true, // Enable for these tests
+				DefaultChallengeScopes:        tt.defaultChallengeScopes,
 			}
 
 			srv, err := server.New(provider, store, store, store, config, nil)
@@ -1922,8 +1923,9 @@ func TestHandler_ValidateToken401ResponseWithWWWAuthenticate(t *testing.T) {
 	provider := mock.NewMockProvider()
 
 	config := &server.Config{
-		Issuer:                 "https://auth.example.com",
-		DefaultChallengeScopes: []string{"mcp:access"},
+		Issuer:                        "https://auth.example.com",
+		EnableWWWAuthenticateMetadata: true, // Enable for these tests
+		DefaultChallengeScopes:        []string{"mcp:access"},
 	}
 
 	srv, err := server.New(provider, store, store, store, config, nil)
@@ -2007,6 +2009,91 @@ func TestHandler_ValidateToken401ResponseWithWWWAuthenticate(t *testing.T) {
 							t.Errorf("WWW-Authenticate missing expected scope:\ngot:  %q\nwant: %q", wwwAuth, expectedScope)
 						}
 					}
+				}
+			}
+		})
+	}
+}
+
+// TestHandler_WriteError401BackwardCompatibilityMode tests that WWW-Authenticate can be disabled for legacy clients
+func TestHandler_WriteError401BackwardCompatibilityMode(t *testing.T) {
+	tests := []struct {
+		name                          string
+		enableWWWAuthenticateMetadata bool
+		defaultChallengeScopes        []string
+		wantMinimalHeader             bool
+		wantResourceMetadata          bool
+	}{
+		{
+			name:                          "metadata enabled (default) - full header",
+			enableWWWAuthenticateMetadata: true,
+			defaultChallengeScopes:        []string{"mcp:access"},
+			wantMinimalHeader:             false,
+			wantResourceMetadata:          true,
+		},
+		{
+			name:                          "metadata disabled - minimal header for backward compatibility",
+			enableWWWAuthenticateMetadata: false,
+			defaultChallengeScopes:        []string{"mcp:access"},
+			wantMinimalHeader:             true,
+			wantResourceMetadata:          false,
+		},
+		{
+			name:                          "metadata enabled with no scopes",
+			enableWWWAuthenticateMetadata: true,
+			defaultChallengeScopes:        nil,
+			wantMinimalHeader:             false,
+			wantResourceMetadata:          true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := memory.New()
+			defer store.Stop()
+
+			provider := mock.NewMockProvider()
+
+			config := &server.Config{
+				Issuer:                        "https://auth.example.com",
+				EnableWWWAuthenticateMetadata: tt.enableWWWAuthenticateMetadata,
+				DefaultChallengeScopes:        tt.defaultChallengeScopes,
+			}
+
+			srv, err := server.New(provider, store, store, store, config, nil)
+			if err != nil {
+				t.Fatalf("server.New() error = %v", err)
+			}
+
+			handler := NewHandler(srv, nil)
+
+			w := httptest.NewRecorder()
+			handler.writeError(w, "invalid_token", "Token validation failed", http.StatusUnauthorized)
+
+			wwwAuth := w.Header().Get("WWW-Authenticate")
+			if wwwAuth == "" {
+				t.Fatal("WWW-Authenticate header should always be set for 401 responses")
+			}
+
+			if tt.wantMinimalHeader {
+				// Should only be "Bearer" without any parameters
+				if wwwAuth != "Bearer" {
+					t.Errorf("Expected minimal 'Bearer' header, got: %q", wwwAuth)
+				}
+				// Should NOT contain resource_metadata
+				if strings.Contains(wwwAuth, "resource_metadata") {
+					t.Errorf("Minimal header should not contain resource_metadata, got: %q", wwwAuth)
+				}
+			}
+
+			if tt.wantResourceMetadata {
+				// Should contain resource_metadata
+				if !strings.Contains(wwwAuth, `resource_metadata="https://auth.example.com/.well-known/oauth-protected-resource"`) {
+					t.Errorf("Expected resource_metadata in header, got: %q", wwwAuth)
+				}
+				// Should contain error parameters
+				if !strings.Contains(wwwAuth, `error="invalid_token"`) {
+					t.Errorf("Expected error parameter in header, got: %q", wwwAuth)
 				}
 			}
 		})

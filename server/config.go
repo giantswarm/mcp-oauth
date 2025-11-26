@@ -101,6 +101,26 @@ type Config struct {
 	// If empty, no scope parameter is included in WWW-Authenticate headers.
 	DefaultChallengeScopes []string
 
+	// EnableWWWAuthenticateMetadata controls whether 401 responses include
+	// resource_metadata and other discovery parameters in WWW-Authenticate headers.
+	// When true: Full MCP 2025-11-25 compliance with enhanced discovery support
+	//   - Includes resource_metadata URL for authorization server discovery
+	//   - Includes scope parameter (if DefaultChallengeScopes configured)
+	//   - Includes error and error_description parameters
+	// When false: Minimal WWW-Authenticate headers for backward compatibility
+	//   - Only includes "Bearer" scheme without parameters
+	//   - Compatible with older OAuth clients that may not expect parameters
+	// Default: false (opt-in for backward compatibility, set to true for MCP 2025-11-25)
+	//
+	// Recommendation: Set to true for new deployments and MCP 2025-11-25 compliance.
+	// Keep false only if you need compatibility with legacy clients.
+	//
+	// Use case for keeping disabled:
+	//   - Testing with legacy OAuth clients
+	//   - Gradual migration period for clients updating to MCP 2025-11-25
+	//   - Troubleshooting client compatibility issues
+	EnableWWWAuthenticateMetadata bool // default: false (opt-in)
+
 	// AllowPKCEPlain allows the 'plain' code_challenge_method (NOT RECOMMENDED)
 	// WARNING: The 'plain' method is insecure and deprecated in OAuth 2.1
 	// Only enable for backward compatibility with legacy clients
@@ -521,6 +541,9 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 	if !config.RequirePKCE {
 		config.RequirePKCE = true
 	}
+	// Note: EnableWWWAuthenticateMetadata is intentionally NOT defaulted here
+	// to allow users to explicitly disable it for backward compatibility.
+	// The zero value (false) means disabled - users opt-in by setting to true.
 	if config.MinStateLength == 0 {
 		config.MinStateLength = 32 // OAuth 2.1: 128+ bits entropy recommended, 32 chars = 192 bits
 	}

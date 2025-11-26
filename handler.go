@@ -22,6 +22,7 @@ import (
 
 const (
 	defaultCORSMaxAge = 3600 // 1 hour default for preflight cache
+	tokenTypeBearer   = "Bearer"
 )
 
 // Handler is a thin HTTP adapter for the OAuth Server.
@@ -877,7 +878,7 @@ func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *oauth2.Token,
 
 	tokenType := token.TokenType
 	if tokenType == "" {
-		tokenType = "Bearer"
+		tokenType = tokenTypeBearer
 	}
 
 	response := map[string]any{
@@ -901,14 +902,20 @@ func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *oauth2.Token,
 func (h *Handler) writeError(w http.ResponseWriter, code, description string, status int) {
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 
-	// MCP 2025-11-25: Include WWW-Authenticate header with resource_metadata for 401 responses
+	// MCP 2025-11-25: Include WWW-Authenticate header for 401 responses
 	// This helps clients discover the authorization server and required scopes
 	if status == http.StatusUnauthorized {
-		scope := ""
-		if len(h.server.Config.DefaultChallengeScopes) > 0 {
-			scope = strings.Join(h.server.Config.DefaultChallengeScopes, " ")
+		if h.server.Config.EnableWWWAuthenticateMetadata {
+			// Full MCP 2025-11-25 compliant header with discovery metadata
+			scope := ""
+			if len(h.server.Config.DefaultChallengeScopes) > 0 {
+				scope = strings.Join(h.server.Config.DefaultChallengeScopes, " ")
+			}
+			w.Header().Set("WWW-Authenticate", h.formatWWWAuthenticate(scope, code, description))
+		} else {
+			// Minimal header for backward compatibility with legacy clients
+			w.Header().Set("WWW-Authenticate", tokenTypeBearer)
 		}
-		w.Header().Set("WWW-Authenticate", h.formatWWWAuthenticate(scope, code, description))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
