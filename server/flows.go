@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -317,8 +318,15 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 		return "", fmt.Errorf("failed to save authorization state: %w", err)
 	}
 
-	// Generate authorization URL with server-generated PKCE
-	authURL := s.provider.AuthorizationURL(providerState, providerCodeChallenge, "S256")
+	// Parse scopes to pass to provider
+	// If client didn't request scopes, pass empty slice and provider will use its defaults
+	var requestedScopes []string
+	if scope != "" {
+		requestedScopes = strings.Split(scope, " ")
+	}
+
+	// Generate authorization URL with server-generated PKCE and requested scopes
+	authURL := s.provider.AuthorizationURL(providerState, providerCodeChallenge, "S256", requestedScopes)
 
 	return authURL, nil
 }

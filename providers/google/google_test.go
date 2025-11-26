@@ -129,6 +129,7 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 		state               string
 		codeChallenge       string
 		codeChallengeMethod string
+		scopes              []string
 		wantContains        []string
 		wantNotContains     []string
 	}{
@@ -137,6 +138,7 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 			state:               "test-state",
 			codeChallenge:       "test-challenge",
 			codeChallengeMethod: "S256",
+			scopes:              nil, // Use provider defaults
 			wantContains: []string{
 				"state=test-state",
 				"code_challenge=test-challenge",
@@ -145,8 +147,9 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 			},
 		},
 		{
-			name:  "without PKCE parameters",
-			state: "test-state",
+			name:   "without PKCE parameters",
+			state:  "test-state",
+			scopes: nil, // Use provider defaults
 			wantContains: []string{
 				"state=test-state",
 				"access_type=offline",
@@ -156,11 +159,32 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 				"code_challenge_method",
 			},
 		},
+		{
+			name:                "with dynamic scopes - uses requested scopes",
+			state:               "test-state",
+			codeChallenge:       "test-challenge",
+			codeChallengeMethod: "S256",
+			scopes:              []string{"https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/drive.readonly"},
+			wantContains: []string{
+				"state=test-state",
+				"scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fgmail.readonly+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.readonly",
+			},
+		},
+		{
+			name:                "with empty scopes array - uses provider defaults",
+			state:               "test-state",
+			codeChallenge:       "test-challenge",
+			codeChallengeMethod: "S256",
+			scopes:              []string{}, // Empty array should use provider defaults
+			wantContains: []string{
+				"state=test-state",
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			authURL := provider.AuthorizationURL(tt.state, tt.codeChallenge, tt.codeChallengeMethod)
+			authURL := provider.AuthorizationURL(tt.state, tt.codeChallenge, tt.codeChallengeMethod, tt.scopes)
 
 			for _, want := range tt.wantContains {
 				if !strings.Contains(authURL, want) {

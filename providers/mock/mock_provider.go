@@ -17,7 +17,7 @@ type MockProvider struct {
 	NameFunc func() string
 
 	// AuthorizationURLFunc is called when AuthorizationURL() is invoked
-	AuthorizationURLFunc func(state string, codeChallenge string, codeChallengeMethod string) string
+	AuthorizationURLFunc func(state string, codeChallenge string, codeChallengeMethod string, scopes []string) string
 
 	// ExchangeCodeFunc is called when ExchangeCode() is invoked
 	ExchangeCodeFunc func(ctx context.Context, code string, codeVerifier string) (*oauth2.Token, error)
@@ -48,7 +48,7 @@ func NewMockProvider() *MockProvider {
 		NameFunc: func() string {
 			return "mock"
 		},
-		AuthorizationURLFunc: func(state string, codeChallenge string, codeChallengeMethod string) string {
+		AuthorizationURLFunc: func(state string, codeChallenge string, codeChallengeMethod string, scopes []string) string {
 			return fmt.Sprintf("https://mock.example.com/authorize?state=%s&code_challenge=%s&code_challenge_method=%s", state, codeChallenge, codeChallengeMethod)
 		},
 		ExchangeCodeFunc: func(ctx context.Context, code string, codeVerifier string) (*oauth2.Token, error) {
@@ -102,7 +102,7 @@ func (m *MockProvider) Name() string {
 }
 
 // AuthorizationURL generates the URL to redirect users for authentication
-func (m *MockProvider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string) string {
+func (m *MockProvider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string, scopes []string) string {
 	m.mu.Lock()
 	m.CallCounts["AuthorizationURL"]++
 	fn := m.AuthorizationURLFunc
@@ -110,7 +110,7 @@ func (m *MockProvider) AuthorizationURL(state string, codeChallenge string, code
 	if fn == nil {
 		return "https://mock.example.com/authorize?state=" + state // Safe default
 	}
-	return fn(state, codeChallenge, codeChallengeMethod)
+	return fn(state, codeChallenge, codeChallengeMethod, scopes)
 }
 
 // ExchangeCode exchanges an authorization code for tokens
