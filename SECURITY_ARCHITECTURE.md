@@ -9,9 +9,10 @@ This document explains the security architecture of the `mcp-oauth` library, det
 3. [PKCE Implementation](#pkce-implementation)
 4. [State Parameter Protection](#state-parameter-protection)
 5. [Client Authentication](#client-authentication)
-6. [Token Security](#token-security)
-7. [Attack Mitigation](#attack-mitigation)
-8. [Security Checklist](#security-checklist)
+6. [Client ID Metadata Documents Security](#client-id-metadata-documents-security)
+7. [Token Security](#token-security)
+8. [Attack Mitigation](#attack-mitigation)
+9. [Security Checklist](#security-checklist)
 
 ## Overview
 
@@ -179,6 +180,245 @@ hash := bcrypt.GenerateFromPassword([]byte(clientSecret), bcrypt.DefaultCost)
 - MUST use PKCE (enforced by default)
 - Cannot access token introspection endpoint
 - Cannot use refresh token rotation
+
+## Client ID Metadata Documents Security
+
+This section documents the security architecture for URL-based client identifiers per MCP 2025-11-25 and draft-ietf-oauth-client-id-metadata-document-00.
+
+### Overview
+
+The library supports using HTTPS URLs as `client_id` values, where the URL points to a JSON document containing client metadata. This enables OAuth flows where the authorization server and client have no pre-existing relationship.
+
+**Feature Status**: Optional (disabled by default via `EnableClientIDMetadataDocuments`)
+
+### SSRF Protection (Multi-Layered)
+
+**Critical Security Requirement**: Prevent Server-Side Request Forgery attacks against internal infrastructure.
+
+#### Layer 1: Initial URL Validation
+
+```go
+// validateMetadataURL performs DNS resolution and blocks private IPs
+func validateMetadataURL(clientID string) error {
+    // Resolve hostname to IP addresses
+    ips, err := net.LookupIP(hostname)
+    
+    // Block private/internal ranges
+    for _, ip := range ips {
+        if isPrivateIP(ip) {
+            return fmt.Errorf("SSRF protection: private IP detected")
+        }
+    }
+}
+```
+
+#### Layer 2: Connection-Time Validation (DNS Rebinding Protection)
+
+**Critical Enhancement**: Validates IPs at connection time, not just during initial validation.
+
+```go
+// createSSRFProtectedTransport validates IPs when actually connecting
+Transport: &http.Transport{
+    DialContext: func(dialCtx context.Context, network, addr string) {
+        // Re-resolve DNS at connection time
+        ips, err := net.DefaultResolver.LookupIPAddr(dialCtx, host)
+        
+        // Validate each resolved IP
+        for _, ipAddr := range ips {
+            if isPrivateIP(ipAddr.IP) {
+                return nil, fmt.Errorf("SSRF protection at connection time")
+            }
+        }
+    }
+}
+```
+
+**Why This Matters**: Prevents DNS rebinding attacks where an attacker controls DNS and changes resolution between validation and connection time.
+
+#### Blocked IP Ranges
+
+- **IPv4 Private Ranges**:
+  - `10.0.0.0/8` (10.x.x.x)
+  - `172.16.0.0/12` (172.16.x.x - 172.31.x.x)
+  - `192.168.0.0/16` (192.168.x.x)
+  - `127.0.0.0/8` (loopback)
+  - `169.254.0.0/16` (link-local)
+
+- **IPv6 Private Ranges**:
+  - `::1` (loopback)
+  - `fc00::/7` (unique local addresses)
+  - `fd00::/8` (commonly used ULA subset)
+  - `fe80::/10` (link-local)
+
+- **IPv4-Mapped IPv6 Addresses** (critical bypass prevention):
+  - `::ffff:127.0.0.1` (mapped loopback)
+  - `::ffff:10.0.0.1` (mapped private IPs)
+
+**Implementation**: `server/cimd.go` - `isPrivateIP()`, `createSSRFProtectedTransport()`
+
+### DoS Protection (Multi-Level)
+
+#### Rate Limiting (Per-Domain)
+
+```go
+// Default: 10 requests/minute per domain, burst of 20
+metadataFetchRateLimiter := security.NewRateLimiter(10, 20, logger)
+```
+
+**Why Per-Domain**: Prevents one attacker from exhausting resources for all domains.
+
+#### Singleflight Deduplication
+
+```go
+// Prevents concurrent fetches of the same URL
+result, err, _ := s.metadataFetchGroup.Do(clientID, func() {
+    // Only one fetch in flight per URL
+})
+```
+
+**Prevents**: DoS via simultaneous requests for the same uncached client_id.
+
+#### Resource Limits
+
+- **Document Size**: 1 MB maximum (prevents memory exhaustion)
+- **Fetch Timeout**: 10 seconds default (prevents hanging connections)
+- **Cache Size**: 1000 entries with LRU eviction (prevents unbounded growth)
+- **Redirect Following**: Disabled (prevents redirect-based attacks)
+- **Cache-Control max-age**: Capped at 1 hour (prevents excessive caching)
+
+### Input Validation
+
+#### URL Structure Validation
+
+```go
+func isURLClientID(clientID string) bool {
+    // MUST be HTTPS only
+    if u.Scheme != "https" { return false }
+    
+    // SECURITY: Reject userinfo (credentials in URL)
+    if u.User != nil { return false }
+    
+    // SECURITY: Reject query parameters (injection prevention)
+    if u.RawQuery != "" { return false }
+    
+    // SECURITY: Reject fragments (path traversal prevention)
+    if u.Fragment != "" { return false }
+}
+```
+
+**Prevented Attacks**:
+- Credential leakage via `https://user:pass@evil.com`
+- Injection via `https://example.com?redirect=http://evil.com`
+- Path traversal via `https://example.com#../../etc/passwd`
+
+#### Content-Type Validation
+
+```go
+// Strict Content-Type validation
+contentType := resp.Header.Get("Content-Type")
+if mediaType != "application/json" {
+    return fmt.Errorf("must be application/json")
+}
+
+// Charset must be UTF-8 (JSON spec requirement)
+if charset != "utf-8" && charset != "utf8" {
+    return fmt.Errorf("only UTF-8 supported")
+}
+```
+
+#### Client ID Matching (Critical Security)
+
+```go
+// MUST match exactly - prevents impersonation
+if metadata.ClientID != clientID {
+    return fmt.Errorf("client_id mismatch: document contains %q but fetched from %q",
+        metadata.ClientID, clientID)
+}
+```
+
+**Why Critical**: Without this check, an attacker could host a metadata document claiming to be any client_id.
+
+### Redirect URI Validation
+
+OAuth 2.1 requirements enforced for metadata-sourced redirect URIs:
+
+- **HTTPS Required**: Except for localhost (127.0.0.1, ::1, localhost)
+- **Scheme Restriction**: Only `http` and `https` allowed
+- **Localhost HTTP**: Only loopback addresses permitted for HTTP
+
+### Caching Security
+
+#### Cache Characteristics
+
+- **Type**: In-memory LRU cache
+- **Max Size**: 1000 entries (prevents memory exhaustion)
+- **TTL**: 5 minutes default, respects HTTP Cache-Control
+- **Max Cache-Control**: Capped at 1 hour (prevents cache poisoning)
+- **Cleanup**: Background goroutine removes expired entries every 5 minutes
+
+#### Cache Metrics
+
+The cache tracks performance metrics for monitoring:
+
+```go
+type cacheMetrics struct {
+    hits       uint64 // Cache hits
+    misses     uint64 // Cache misses (including expired)
+    evictions  uint64 // LRU evictions
+    fetches    uint64 // Successful metadata fetches
+    fetchFails uint64 // Failed fetches
+}
+```
+
+**Monitoring**: Access via `Server.metadataCache.GetMetrics()` for operational visibility.
+
+### Security Assumptions
+
+**Critical Assumptions** (operators must ensure these hold):
+
+1. **DNS Trustworthiness**: The library relies on DNS resolution being trustworthy. In environments where DNS can be compromised by attackers, additional network-level protections are required.
+
+2. **Network Boundary Enforcement**: The SSRF protection assumes that blocked IP ranges (10.x.x.x, etc.) are actually internal networks. If your infrastructure uses public IPs for internal services, you must implement additional firewall rules.
+
+3. **Time Synchronization**: Cache TTL and token expiry depend on accurate system time. Ensure NTP or similar is configured.
+
+4. **Rate Limit Tuning**: Default rate limits (10 req/min per domain) may need adjustment based on your deployment:
+   - **Lower** for high-security environments
+   - **Higher** for high-traffic deployments with many legitimate clients
+
+5. **Feature Toggle**: URL-based client IDs are **disabled by default**. Enable only if you need this feature:
+   ```go
+   config.EnableClientIDMetadataDocuments = true
+   ```
+
+### Threat Model
+
+**Threats Mitigated**:
+- ✅ SSRF attacks against internal infrastructure (multi-layered protection)
+- ✅ DNS rebinding attacks (connection-time validation)
+- ✅ DoS via metadata fetch floods (rate limiting + singleflight)
+- ✅ Cache poisoning (max-age capping, client_id validation)
+- ✅ Memory exhaustion (size limits, cache eviction)
+- ✅ Injection attacks (strict URL validation)
+- ✅ Client impersonation (client_id matching requirement)
+
+**Threats Requiring External Mitigations**:
+- ⚠️ DNS compromise (requires DNS security measures)
+- ⚠️ Public IPs for internal services (requires firewall rules)
+- ⚠️ Time-based attacks (requires NTP configuration)
+
+### Audit Logging
+
+All security-relevant events are logged via the Auditor interface:
+
+- `client_metadata_fetch_blocked` - SSRF protection triggered
+- `client_metadata_fetched` - Successful metadata fetch
+- `client_metadata_fetch_failed` - Fetch failure
+- `client_metadata_cache_hit` - Cache hit
+- `client_metadata_id_mismatch` - Client ID validation failure
+- `client_metadata_rate_limited` - Rate limit exceeded
+
+**Recommendation**: Monitor these events for security anomalies.
 
 ## Token Security
 

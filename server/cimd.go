@@ -257,7 +257,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	if s.Config.ClientMetadataFetchTimeout > 0 {
 		timeout = s.Config.ClientMetadataFetchTimeout
 	}
-	
+
 	// SECURITY: Respect context deadline if set (prevents exceeding caller's timeout)
 	// This is important when the authorization flow has its own deadline
 	if deadline, ok := ctx.Deadline(); ok {
@@ -333,14 +333,14 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	if contentType == "" {
 		return nil, 0, fmt.Errorf("metadata response missing Content-Type header")
 	}
-	
+
 	// Parse media type and parameters
 	parts := strings.Split(contentType, ";")
 	mediaType := strings.ToLower(strings.TrimSpace(parts[0]))
 	if mediaType != "application/json" {
 		return nil, 0, fmt.Errorf("metadata must be application/json, got: %s", contentType)
 	}
-	
+
 	// SECURITY: Validate charset parameter if present (must be UTF-8)
 	// JSON is defined as UTF-8 per RFC 8259, non-UTF-8 encodings can cause parsing issues
 	for i := 1; i < len(parts); i++ {
@@ -348,7 +348,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		if kv := strings.SplitN(param, "=", 2); len(kv) == 2 {
 			key := strings.ToLower(strings.TrimSpace(kv[0]))
 			value := strings.Trim(strings.ToLower(strings.TrimSpace(kv[1])), "\" ")
-			
+
 			if key == "charset" {
 				// Allow utf-8 and utf8 (both are valid)
 				if value != "utf-8" && value != "utf8" {
@@ -506,8 +506,11 @@ func hasLocalhostRedirectURIsOnly(redirectURIs []string) bool {
 
 // parseCacheControlMaxAge extracts max-age directive from Cache-Control header
 // Returns 0 if max-age is not present or invalid
+// Caps the max-age at 1 hour to prevent excessive caching from malicious servers
 // Example: "max-age=300, must-revalidate" -> 300 seconds
 func parseCacheControlMaxAge(cacheControl string) int {
+	const maxCacheControlAge = 3600 // 1 hour - prevents excessive caching
+
 	// Split by comma to handle multiple directives
 	directives := strings.Split(cacheControl, ",")
 	for _, directive := range directives {
@@ -525,6 +528,13 @@ func parseCacheControlMaxAge(cacheControl string) int {
 			if err != nil || age < 0 {
 				return 0
 			}
+
+			// SECURITY: Cap max-age to prevent malicious servers from forcing very long cache times
+			// This prevents cache poisoning attacks where an attacker controls the metadata server
+			if age > maxCacheControlAge {
+				return maxCacheControlAge
+			}
+
 			return age
 		}
 	}

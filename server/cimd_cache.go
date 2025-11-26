@@ -19,6 +19,18 @@ type clientMetadataCache struct {
 	entries    map[string]*cachedMetadataEntry
 	maxEntries int
 	defaultTTL time.Duration
+
+	// Metrics for monitoring cache performance
+	metrics cacheMetrics
+}
+
+// cacheMetrics tracks cache performance statistics
+type cacheMetrics struct {
+	hits       uint64 // Cache hits
+	misses     uint64 // Cache misses (including expired entries)
+	evictions  uint64 // Number of entries evicted due to capacity
+	fetches    uint64 // Number of successful metadata fetches
+	fetchFails uint64 // Number of failed metadata fetches
 }
 
 // cachedMetadataEntry represents a cached client metadata entry with expiry
@@ -47,20 +59,23 @@ func newClientMetadataCache(defaultTTL time.Duration, maxEntries int) *clientMet
 
 // Get retrieves metadata from cache if present and not expired
 func (c *clientMetadataCache) Get(clientID string) (*storage.Client, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	entry, ok := c.entries[clientID]
 	if !ok {
+		c.metrics.misses++
 		return nil, false
 	}
 
 	// Check if expired
 	now := time.Now()
 	if now.After(entry.expiresAt) {
+		c.metrics.misses++
 		return nil, false
 	}
 
+	c.metrics.hits++
 	return entry.client, true
 }
 
@@ -113,6 +128,7 @@ func (c *clientMetadataCache) evictOldest() {
 	// Remove oldest entry
 	if oldestKey != "" {
 		delete(c.entries, oldestKey)
+		c.metrics.evictions++
 	}
 }
 
@@ -148,15 +164,22 @@ func (c *clientMetadataCache) Clear() {
 	c.entries = make(map[string]*cachedMetadataEntry)
 }
 
+// GetMetrics returns a snapshot of cache performance metrics
+func (c *clientMetadataCache) GetMetrics() cacheMetrics {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.metrics
+}
+
 // getOrFetchClient retrieves a client from cache or fetches metadata if not cached
 // This is the main entry point for URL-based client resolution
 //
 // Security features:
-// - SSRF protection: Enforced at HTTP connection time in createSSRFProtectedTransport()
-//   This prevents DNS rebinding attacks by validating IPs when connecting, not just during initial URL validation
-// - Singleflight deduplication: prevents concurrent fetches of the same URL (DoS protection)
-// - Rate limiting: per-domain rate limiting to prevent abuse (default: 10 req/min per domain)
-// - Audit logging: all cache hits and fetches are logged for security monitoring
+//   - SSRF protection: Enforced at HTTP connection time in createSSRFProtectedTransport()
+//     This prevents DNS rebinding attacks by validating IPs when connecting, not just during initial URL validation
+//   - Singleflight deduplication: prevents concurrent fetches of the same URL (DoS protection)
+//   - Rate limiting: per-domain rate limiting to prevent abuse (default: 10 req/min per domain)
+//   - Audit logging: all cache hits and fetches are logged for security monitoring
 func (s *Server) getOrFetchClient(ctx context.Context, clientID string) (*storage.Client, error) {
 	// Check if URL-based client ID
 	if !isURLClientID(clientID) {
@@ -224,8 +247,17 @@ func (s *Server) getOrFetchClient(ctx context.Context, clientID string) (*storag
 
 		metadata, suggestedTTL, fetchErr := s.fetchClientMetadata(ctx, clientID)
 		if fetchErr != nil {
+			// Track fetch failure
+			s.metadataCache.mu.Lock()
+			s.metadataCache.metrics.fetchFails++
+			s.metadataCache.mu.Unlock()
 			return nil, fmt.Errorf("failed to fetch client metadata: %w", fetchErr)
 		}
+
+		// Track successful fetch
+		s.metadataCache.mu.Lock()
+		s.metadataCache.metrics.fetches++
+		s.metadataCache.mu.Unlock()
 
 		// NOTE: SSRF protection happens at connection time in createSSRFProtectedTransport(),
 		// which validates IPs when the HTTP client connects. This prevents DNS rebinding attacks

@@ -510,39 +510,39 @@ func TestHasLocalhostRedirectURIsOnly(t *testing.T) {
 // TestMetadataFetchRateLimiting tests rate limiting for metadata fetches per domain
 func TestMetadataFetchRateLimiting(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
-	
+
 	// Create server with CIMD enabled
 	config := &Config{
 		EnableClientIDMetadataDocuments: true,
 		ClientMetadataFetchTimeout:      5 * time.Second,
 		ClientMetadataCacheTTL:          5 * time.Minute,
 	}
-	
+
 	srv := &Server{
 		Config:        config,
 		Logger:        logger,
 		metadataCache: newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
 	}
-	
+
 	// Set up strict rate limiter: 2 requests per second, burst of 2
 	// This means only 2 requests are allowed before rate limiting kicks in
 	srv.metadataFetchRateLimiter = security.NewRateLimiter(0, 2, logger)
-	
+
 	// Test that rate limiting is enforced per domain
 	// Use unique paths to avoid cache hits
 	domain := "example.com"
 	testURL1 := "https://" + domain + "/client1"
-	testURL2 := "https://" + domain + "/client2"  
+	testURL2 := "https://" + domain + "/client2"
 	testURL3 := "https://" + domain + "/client3"
-	
+
 	// Track which errors we get
 	errors := make([]error, 3)
-	
+
 	// Make three requests quickly
 	for i, clientID := range []string{testURL1, testURL2, testURL3} {
 		_, errors[i] = srv.getOrFetchClient(context.Background(), clientID)
 	}
-	
+
 	// First two should pass rate limiting (but may fail for other reasons like SSRF or network)
 	// Third one should be rate limited
 	for i, err := range errors[:2] {
@@ -550,7 +550,7 @@ func TestMetadataFetchRateLimiting(t *testing.T) {
 			t.Errorf("Request %d should not be rate limited, got: %v", i+1, err)
 		}
 	}
-	
+
 	// Third request MUST be rate limited
 	if errors[2] == nil {
 		t.Error("Expected rate limit error for third request, got nil")
@@ -657,6 +657,75 @@ func TestRedirectURIValidation(t *testing.T) {
 				if err != nil && !strings.Contains(err.Error(), "private/internal IP") {
 					t.Errorf("unexpected error for valid redirect URI: %v", err)
 				}
+			}
+		})
+	}
+}
+
+// TestParseCacheControlMaxAge tests the Cache-Control max-age parsing with capping
+func TestParseCacheControlMaxAge(t *testing.T) {
+	tests := []struct {
+		name         string
+		cacheControl string
+		want         int
+	}{
+		{
+			name:         "no cache-control",
+			cacheControl: "",
+			want:         0,
+		},
+		{
+			name:         "no max-age directive",
+			cacheControl: "public, must-revalidate",
+			want:         0,
+		},
+		{
+			name:         "valid max-age under cap",
+			cacheControl: "max-age=300",
+			want:         300,
+		},
+		{
+			name:         "max-age with other directives",
+			cacheControl: "public, max-age=600, must-revalidate",
+			want:         600,
+		},
+		{
+			name:         "max-age at cap",
+			cacheControl: "max-age=3600",
+			want:         3600,
+		},
+		{
+			name:         "max-age exceeds cap - should be capped",
+			cacheControl: "max-age=7200",
+			want:         3600, // Capped at 1 hour
+		},
+		{
+			name:         "very large max-age - should be capped",
+			cacheControl: "max-age=999999999",
+			want:         3600, // Capped at 1 hour
+		},
+		{
+			name:         "negative max-age",
+			cacheControl: "max-age=-100",
+			want:         0,
+		},
+		{
+			name:         "invalid max-age format",
+			cacheControl: "max-age=abc",
+			want:         0,
+		},
+		{
+			name:         "max-age with whitespace",
+			cacheControl: "max-age = 500",
+			want:         0, // Strict parsing - no space around =
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseCacheControlMaxAge(tt.cacheControl)
+			if got != tt.want {
+				t.Errorf("parseCacheControlMaxAge(%q) = %d, want %d", tt.cacheControl, got, tt.want)
 			}
 		})
 	}
