@@ -11,7 +11,8 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
-// Client type constants
+// Client type constants (also defined in root package constants.go)
+// These are duplicated to avoid import cycles since root package imports server package
 const (
 	// ClientTypeConfidential represents a confidential OAuth client
 	ClientTypeConfidential = "confidential"
@@ -21,6 +22,7 @@ const (
 )
 
 // Token endpoint authentication method constants (RFC 7591)
+// These are duplicated to avoid import cycles since root package imports server package
 const (
 	// TokenEndpointAuthMethodNone represents no authentication (public clients)
 	TokenEndpointAuthMethodNone = "none"

@@ -716,25 +716,15 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 
 	// OAUTH 2.1 COMPLIANCE: Validate token_endpoint_auth_method
 	// Per RFC 7591 Section 2, only these methods are standardized
-	if req.TokenEndpointAuthMethod != "" {
-		validMethods := map[string]bool{
-			TokenEndpointAuthMethodNone:  true,  // Public clients (PKCE-only)
-			TokenEndpointAuthMethodBasic: true,  // HTTP Basic Auth (default for confidential)
-			TokenEndpointAuthMethodPost:  true,  // POST form parameters
-			"client_secret_jwt":          false, // Not yet implemented
-			"private_key_jwt":            false, // Not yet implemented
-		}
-
-		if supported, exists := validMethods[req.TokenEndpointAuthMethod]; !exists || !supported {
-			h.logger.Warn("Unsupported token_endpoint_auth_method requested",
-				"method", req.TokenEndpointAuthMethod,
-				"ip", clientIP)
-			h.writeError(w, ErrorCodeInvalidRequest,
-				fmt.Sprintf("Unsupported token_endpoint_auth_method: %s. Supported: none, client_secret_basic, client_secret_post",
-					req.TokenEndpointAuthMethod),
-				http.StatusBadRequest)
-			return
-		}
+	if req.TokenEndpointAuthMethod != "" && !isValidAuthMethod(req.TokenEndpointAuthMethod) {
+		h.logger.Warn("Unsupported token_endpoint_auth_method requested",
+			"method", req.TokenEndpointAuthMethod,
+			"ip", clientIP)
+		h.writeError(w, ErrorCodeInvalidRequest,
+			fmt.Sprintf("Unsupported token_endpoint_auth_method: %s. Supported: %v",
+				req.TokenEndpointAuthMethod, SupportedTokenAuthMethods),
+			http.StatusBadRequest)
+		return
 	}
 
 	// SECURITY: Validate public client registration is allowed
@@ -1007,6 +997,16 @@ const userInfoKey contextKey = "user_info"
 func UserInfoFromContext(ctx context.Context) (*providers.UserInfo, bool) {
 	userInfo, ok := ctx.Value(userInfoKey).(*providers.UserInfo)
 	return userInfo, ok
+}
+
+// isValidAuthMethod checks if the given token endpoint auth method is supported
+func isValidAuthMethod(method string) bool {
+	for _, supported := range SupportedTokenAuthMethods {
+		if method == supported {
+			return true
+		}
+	}
+	return false
 }
 
 // setCORSHeaders sets CORS headers if configured and the origin is allowed.
