@@ -293,6 +293,8 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	// This satisfies the security requirements from draft-ietf-oauth-client-id-metadata-document-00
 	// Section 6, which requires SSRF protection for metadata document fetching.
 	// CodeQL alert go/request-forgery can be dismissed as false positive.
+	
+	// lgtm[go/request-forgery] - False positive: URL is validated by validateMetadataURL and SSRF-protected transport
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, clientID, nil)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to create metadata request: %w", err)
