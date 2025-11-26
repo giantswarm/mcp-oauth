@@ -66,7 +66,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - MCP 2025-11-25: MUST include resource_metadata in WWW-Authenticate (✓)
     - RFC 6750 Section 3: Bearer token challenge format (✓)
     - RFC 9728: Protected Resource Metadata discovery (✓)
-  - **Testing**: Comprehensive unit tests for header formatting, integration, and backward compatibility mode
+  - **Security improvements**:
+    - Enhanced escaping in error descriptions: properly handles backslashes and quotes
+    - Follows RFC 2616/7230 quoted-string rules for HTTP header values
+    - Prevents header injection from malformed error messages
+  - **Code quality improvements**:
+    - Extracted repeated test strings to constants (DRY principle)
+    - Added edge case tests for long scope lists and special characters
+    - Improved test maintainability with test helper constants
+  - **Testing**: Comprehensive unit tests for header formatting, integration, backward compatibility mode, and security edge cases (100% coverage)
 
 - **OAuth 2.1 PKCE for provider leg - Enhanced security for confidential clients (#68)**
   - Implemented full OAuth 2.1 PKCE support on the OAuth server → Provider leg

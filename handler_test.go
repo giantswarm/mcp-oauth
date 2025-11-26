@@ -22,9 +22,12 @@ import (
 )
 
 const (
-	testTokenTypeBearer  = "Bearer"
-	testClientRemoteAddr = "192.168.1.100:12345"
-	testOriginApp        = "https://app.example.com"
+	testTokenTypeBearer         = "Bearer"
+	testClientRemoteAddr        = "192.168.1.100:12345"
+	testOriginApp               = "https://app.example.com"
+	testIssuer                  = "https://auth.example.com"
+	testResourceMetadataURL     = `resource_metadata="https://auth.example.com/.well-known/oauth-protected-resource"`
+	testResourceMetadataURLFull = "https://auth.example.com/.well-known/oauth-protected-resource"
 )
 
 func setupTestHandler(t *testing.T) (*Handler, *memory.Store) {
@@ -34,7 +37,7 @@ func setupTestHandler(t *testing.T) (*Handler, *memory.Store) {
 	provider := mock.NewMockProvider()
 
 	config := &server.Config{
-		Issuer: "https://auth.example.com",
+		Issuer: testIssuer,
 	}
 
 	srv, err := server.New(provider, store, store, store, config, nil)
@@ -77,7 +80,7 @@ func TestNewHandler(t *testing.T) {
 	provider := mock.NewMockProvider()
 
 	config := &server.Config{
-		Issuer: "https://auth.example.com",
+		Issuer: testIssuer,
 	}
 
 	srv, err := server.New(provider, store, store, store, config, nil)
@@ -1707,7 +1710,7 @@ func TestHandler_FormatWWWAuthenticate(t *testing.T) {
 			errorDesc: "",
 			wantContain: []string{
 				"Bearer",
-				`resource_metadata="https://auth.example.com/.well-known/oauth-protected-resource"`,
+				testResourceMetadataURL,
 			},
 			wantNotContain: []string{"scope=", "error=", "error_description="},
 		},
@@ -1718,7 +1721,7 @@ func TestHandler_FormatWWWAuthenticate(t *testing.T) {
 			errorDesc: "",
 			wantContain: []string{
 				"Bearer",
-				`resource_metadata="https://auth.example.com/.well-known/oauth-protected-resource"`,
+				testResourceMetadataURL,
 				`scope="files:read user:profile"`,
 			},
 			wantNotContain: []string{"error=", "error_description="},
@@ -1730,7 +1733,7 @@ func TestHandler_FormatWWWAuthenticate(t *testing.T) {
 			errorDesc: "",
 			wantContain: []string{
 				"Bearer",
-				`resource_metadata="https://auth.example.com/.well-known/oauth-protected-resource"`,
+				testResourceMetadataURL,
 				`error="invalid_token"`,
 			},
 			wantNotContain: []string{"scope=", "error_description="},
@@ -1742,7 +1745,7 @@ func TestHandler_FormatWWWAuthenticate(t *testing.T) {
 			errorDesc: "Token has expired",
 			wantContain: []string{
 				"Bearer",
-				`resource_metadata="https://auth.example.com/.well-known/oauth-protected-resource"`,
+				testResourceMetadataURL,
 				`error="invalid_token"`,
 				`error_description="Token has expired"`,
 			},
@@ -1755,7 +1758,7 @@ func TestHandler_FormatWWWAuthenticate(t *testing.T) {
 			errorDesc: "Additional file write permission required",
 			wantContain: []string{
 				"Bearer",
-				`resource_metadata="https://auth.example.com/.well-known/oauth-protected-resource"`,
+				testResourceMetadataURL,
 				`scope="files:read files:write"`,
 				`error="insufficient_scope"`,
 				`error_description="Additional file write permission required"`,
@@ -1768,10 +1771,46 @@ func TestHandler_FormatWWWAuthenticate(t *testing.T) {
 			errorDesc: `The "client_id" parameter is missing`,
 			wantContain: []string{
 				"Bearer",
-				`resource_metadata="https://auth.example.com/.well-known/oauth-protected-resource"`,
+				testResourceMetadataURL,
 				`error="invalid_request"`,
 				`error_description="The \"client_id\" parameter is missing"`,
 			},
+		},
+		{
+			name:      "error description with backslashes and quotes (enhanced escaping)",
+			scope:     "",
+			error:     "invalid_request",
+			errorDesc: `The "client_id" contains \n invalid chars`,
+			wantContain: []string{
+				"Bearer",
+				testResourceMetadataURL,
+				`error="invalid_request"`,
+				`error_description="The \"client_id\" contains \\n invalid chars"`,
+			},
+		},
+		{
+			name:      "error description with multiple backslashes",
+			scope:     "",
+			error:     "invalid_token",
+			errorDesc: `Token path: C:\Users\Admin\token.txt`,
+			wantContain: []string{
+				"Bearer",
+				testResourceMetadataURL,
+				`error="invalid_token"`,
+				`error_description="Token path: C:\\Users\\Admin\\token.txt"`,
+			},
+		},
+		{
+			name:      "very long scope list (edge case)",
+			scope:     "files:read files:write files:delete user:profile user:email user:repos admin:org admin:repo_hook",
+			error:     "",
+			errorDesc: "",
+			wantContain: []string{
+				"Bearer",
+				testResourceMetadataURL,
+				`scope="files:read files:write files:delete user:profile user:email user:repos admin:org admin:repo_hook"`,
+			},
+			wantNotContain: []string{"error=", "error_description="},
 		},
 	}
 
@@ -1860,7 +1899,7 @@ func TestHandler_WriteError401WithWWWAuthenticate(t *testing.T) {
 			provider := mock.NewMockProvider()
 
 			config := &server.Config{
-				Issuer:                        "https://auth.example.com",
+				Issuer:                        testIssuer,
 				EnableWWWAuthenticateMetadata: true, // Enable for these tests
 				DefaultChallengeScopes:        tt.defaultChallengeScopes,
 			}
@@ -1882,7 +1921,7 @@ func TestHandler_WriteError401WithWWWAuthenticate(t *testing.T) {
 					t.Error("Expected WWW-Authenticate header, but it was not set")
 				} else {
 					// Verify it contains resource_metadata
-					if !strings.Contains(wwwAuth, `resource_metadata="https://auth.example.com/.well-known/oauth-protected-resource"`) {
+					if !strings.Contains(wwwAuth, testResourceMetadataURL) {
 						t.Errorf("WWW-Authenticate missing resource_metadata:\ngot: %q", wwwAuth)
 					}
 
@@ -1923,7 +1962,7 @@ func TestHandler_ValidateToken401ResponseWithWWWAuthenticate(t *testing.T) {
 	provider := mock.NewMockProvider()
 
 	config := &server.Config{
-		Issuer:                        "https://auth.example.com",
+		Issuer:                        testIssuer,
 		EnableWWWAuthenticateMetadata: true, // Enable for these tests
 		DefaultChallengeScopes:        []string{"mcp:access"},
 	}
@@ -1997,7 +2036,7 @@ func TestHandler_ValidateToken401ResponseWithWWWAuthenticate(t *testing.T) {
 
 					// Verify resource_metadata
 					if tt.wantResourceMeta {
-						if !strings.Contains(wwwAuth, `resource_metadata="https://auth.example.com/.well-known/oauth-protected-resource"`) {
+						if !strings.Contains(wwwAuth, testResourceMetadataURL) {
 							t.Errorf("WWW-Authenticate missing resource_metadata:\ngot: %q", wwwAuth)
 						}
 					}
@@ -2055,7 +2094,7 @@ func TestHandler_WriteError401BackwardCompatibilityMode(t *testing.T) {
 			provider := mock.NewMockProvider()
 
 			config := &server.Config{
-				Issuer:                        "https://auth.example.com",
+				Issuer:                        testIssuer,
 				EnableWWWAuthenticateMetadata: tt.enableWWWAuthenticateMetadata,
 				DefaultChallengeScopes:        tt.defaultChallengeScopes,
 			}
@@ -2088,7 +2127,7 @@ func TestHandler_WriteError401BackwardCompatibilityMode(t *testing.T) {
 
 			if tt.wantResourceMetadata {
 				// Should contain resource_metadata
-				if !strings.Contains(wwwAuth, `resource_metadata="https://auth.example.com/.well-known/oauth-protected-resource"`) {
+				if !strings.Contains(wwwAuth, testResourceMetadataURL) {
 					t.Errorf("Expected resource_metadata in header, got: %q", wwwAuth)
 				}
 				// Should contain error parameters

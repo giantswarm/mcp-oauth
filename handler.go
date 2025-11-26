@@ -961,8 +961,10 @@ func (h *Handler) formatWWWAuthenticate(scope, error, errorDesc string) string {
 
 	// Optional: Include error description if provided
 	if errorDesc != "" {
-		// Escape quotes in error description for proper formatting
-		escapedDesc := strings.ReplaceAll(errorDesc, `"`, `\"`)
+		// Escape backslashes first, then quotes (order matters!)
+		// This follows RFC 2616/7230 quoted-string rules for HTTP headers
+		escapedDesc := strings.ReplaceAll(errorDesc, `\`, `\\`)
+		escapedDesc = strings.ReplaceAll(escapedDesc, `"`, `\"`)
 		params = append(params, fmt.Sprintf(`error_description="%s"`, escapedDesc))
 	}
 
