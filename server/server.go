@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/providers"
@@ -34,6 +35,8 @@ type Server struct {
 	Instrumentation               *instrumentation.Instrumentation        // OpenTelemetry instrumentation
 	tracer                        trace.Tracer                            // OpenTelemetry tracer for server operations
 	metadataCache                 *clientMetadataCache                    // Cache for URL-based client metadata (MCP 2025-11-25)
+	metadataFetchGroup            singleflight.Group                      // Deduplicates concurrent metadata fetches (DoS protection)
+	metadataFetchRateLimiter      *security.RateLimiter                   // Per-domain rate limiter for metadata fetches
 	Logger                        *slog.Logger
 	Config                        *Config
 	shutdownOnce                  sync.Once // Ensures Shutdown is called only once
@@ -182,6 +185,13 @@ func (s *Server) SetSecurityEventRateLimiter(rl *security.RateLimiter) {
 // This prevents resource exhaustion through repeated registration/deletion cycles
 func (s *Server) SetClientRegistrationRateLimiter(rl *security.ClientRegistrationRateLimiter) {
 	s.ClientRegistrationRateLimiter = rl
+}
+
+// SetMetadataFetchRateLimiter sets the per-domain rate limiter for Client ID Metadata Document fetches
+// This prevents abuse and DoS attacks via repeated metadata fetches from different URLs
+// Recommended: 10 requests per minute per domain
+func (s *Server) SetMetadataFetchRateLimiter(rl *security.RateLimiter) {
+	s.metadataFetchRateLimiter = rl
 }
 
 // SetInstrumentation sets the OpenTelemetry instrumentation for server and storage

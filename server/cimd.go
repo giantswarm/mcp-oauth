@@ -43,6 +43,7 @@ type ClientMetadata struct {
 // - MUST be an HTTPS URL
 // - MUST have a hostname
 // - Path component is optional (spec says "typically" has one, but not required)
+// - MUST NOT contain userinfo, query parameters, or fragments (security hardening)
 func isURLClientID(clientID string) bool {
 	// Empty strings are not URLs
 	if clientID == "" {
@@ -65,6 +66,24 @@ func isURLClientID(clientID string) bool {
 		return false
 	}
 
+	// SECURITY: Reject URLs with userinfo (credentials in URL)
+	// Prevents: https://user:pass@example.com/
+	if u.User != nil {
+		return false
+	}
+
+	// SECURITY: Reject URLs with query parameters
+	// Prevents injection attacks like: https://example.com?redirect=http://evil.com
+	if u.RawQuery != "" {
+		return false
+	}
+
+	// SECURITY: Reject URLs with fragments
+	// Prevents fragment-based attacks like: https://example.com#../../etc/passwd
+	if u.Fragment != "" {
+		return false
+	}
+
 	// SHOULD have a path component (but not strictly required)
 	// We'll be lenient here - the spec says client IDs "typically" have paths
 	return true
@@ -72,6 +91,7 @@ func isURLClientID(clientID string) bool {
 
 // isPrivateIP checks if an IP address is in a private/internal range
 // Used for SSRF protection per draft-ietf-oauth-client-id-metadata-document-00 Section 6
+// Covers IPv4, IPv6, and IPv4-mapped IPv6 addresses
 func isPrivateIP(ip net.IP) bool {
 	// Check for loopback addresses (127.0.0.0/8, ::1)
 	if ip.IsLoopback() {
@@ -99,9 +119,34 @@ func isPrivateIP(ip net.IP) bool {
 		}
 	}
 
+	// SECURITY: Check for IPv4-mapped IPv6 addresses (::ffff:0:0/96)
+	// These can be used to bypass IPv4 private IP checks
+	// Example: ::ffff:127.0.0.1, ::ffff:10.0.0.1
+	if len(ip) == 16 && ip.To4() == nil {
+		// Check if this is an IPv4-mapped IPv6 address
+		// Format: 0000:0000:0000:0000:0000:ffff:xxxx:xxxx
+		isIPv4Mapped := true
+		for i := 0; i < 10; i++ {
+			if ip[i] != 0 {
+				isIPv4Mapped = false
+				break
+			}
+		}
+		if isIPv4Mapped && ip[10] == 0xff && ip[11] == 0xff {
+			// Extract the IPv4 part and check recursively
+			ipv4 := net.IPv4(ip[12], ip[13], ip[14], ip[15])
+			return isPrivateIP(ipv4)
+		}
+	}
+
 	// Check for private IPv6 ranges
-	// Unique local addresses (fc00::/7)
+	// Unique local addresses (fc00::/7) - includes both fc00::/8 and fd00::/8
 	if len(ip) == 16 && (ip[0]&0xfe) == 0xfc {
+		return true
+	}
+
+	// fd00::/8 is the most commonly used ULA range (subset of fc00::/7, but check explicitly)
+	if len(ip) == 16 && ip[0] == 0xfd {
 		return true
 	}
 
@@ -144,16 +189,52 @@ func validateMetadataURL(clientID string) error {
 	return nil
 }
 
+// createSSRFProtectedTransport creates an HTTP transport with SSRF protection at connection time
+// This prevents DNS rebinding attacks by validating IPs when connecting, not just during initial validation
+func createSSRFProtectedTransport(ctx context.Context) *http.Transport {
+	return &http.Transport{
+		DialContext: func(dialCtx context.Context, network, addr string) (net.Conn, error) {
+			// Parse host:port
+			host, _, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, fmt.Errorf("invalid address format: %w", err)
+			}
+
+			// CRITICAL SECURITY: Resolve and validate IPs at connection time
+			// This prevents DNS rebinding attacks where DNS resolution changes between
+			// initial validation and actual connection
+			ips, err := net.DefaultResolver.LookupIPAddr(dialCtx, host)
+			if err != nil {
+				return nil, fmt.Errorf("failed to resolve host %s: %w", host, err)
+			}
+
+			// Check all resolved IPs for private ranges
+			for _, ipAddr := range ips {
+				if isPrivateIP(ipAddr.IP) {
+					return nil, fmt.Errorf("SSRF protection: %s resolves to private/internal IP %s", host, ipAddr.IP)
+				}
+			}
+
+			// All IPs are safe - use default dialer
+			dialer := &net.Dialer{
+				Timeout:   5 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}
+			return dialer.DialContext(dialCtx, network, addr)
+		},
+	}
+}
+
 // fetchClientMetadata fetches and validates OAuth client metadata from an HTTPS URL
 // Implements draft-ietf-oauth-client-id-metadata-document-00
 //
 // Security considerations per Section 6:
-// - SSRF protection: blocks private/internal IP addresses
+// - SSRF protection: blocks private/internal IP addresses at connection time (prevents DNS rebinding)
 // - HTTPS only: rejects HTTP URLs
 // - Timeout protection: enforces reasonable timeout
-// - Size limit: prevents memory exhaustion
+// - Size limit: prevents memory exhaustion and validates full document read
 func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*ClientMetadata, error) {
-	// Validate URL and apply SSRF protections
+	// Validate URL and apply initial SSRF protections
 	if err := validateMetadataURL(clientID); err != nil {
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
@@ -174,9 +255,11 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		timeout = s.Config.ClientMetadataFetchTimeout
 	}
 
-	// Create HTTP client with timeout
+	// SECURITY: Create HTTP client with SSRF-protected transport
+	// This prevents DNS rebinding attacks by validating IPs at connection time
 	client := &http.Client{
-		Timeout: timeout,
+		Timeout:   timeout,
+		Transport: createSSRFProtectedTransport(ctx),
 		// Disable redirect following for security
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -228,18 +311,36 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		return nil, fmt.Errorf("metadata fetch returned HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
-	// Check Content-Type
+	// SECURITY: Strict Content-Type validation - must be exactly application/json
+	// (with optional charset parameter)
 	contentType := resp.Header.Get("Content-Type")
-	if !strings.Contains(contentType, "application/json") {
+	if contentType == "" {
+		return nil, fmt.Errorf("metadata response missing Content-Type header")
+	}
+	// Parse media type to handle charset parameters
+	mediaType := strings.ToLower(strings.Split(contentType, ";")[0])
+	mediaType = strings.TrimSpace(mediaType)
+	if mediaType != "application/json" {
 		return nil, fmt.Errorf("metadata must be application/json, got: %s", contentType)
 	}
 
-	// Limit response size to prevent memory exhaustion (1MB max)
-	limitedReader := io.LimitReader(resp.Body, 1*1024*1024)
+	// SECURITY: Read entire response body with size limit to prevent:
+	// 1. Memory exhaustion from large responses
+	// 2. Partial JSON parsing from truncated responses
+	const maxMetadataSize = 1 * 1024 * 1024 // 1MB
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxMetadataSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// Check if response was truncated (exceeded size limit)
+	if len(bodyBytes) > maxMetadataSize {
+		return nil, fmt.Errorf("metadata document exceeds maximum size of %d bytes", maxMetadataSize)
+	}
 
 	// Parse JSON response
 	var metadata ClientMetadata
-	if err := json.NewDecoder(limitedReader).Decode(&metadata); err != nil {
+	if err := json.Unmarshal(bodyBytes, &metadata); err != nil {
 		return nil, fmt.Errorf("failed to parse metadata JSON: %w", err)
 	}
 
@@ -286,6 +387,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 			Details: map[string]any{
 				"client_name":    metadata.ClientName,
 				"redirect_count": len(metadata.RedirectURIs),
+				"document_size":  len(bodyBytes),
 			},
 		})
 	}
@@ -293,7 +395,8 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	s.Logger.Info("Fetched client metadata from URL",
 		"client_id", clientID,
 		"client_name", metadata.ClientName,
-		"redirect_uris", len(metadata.RedirectURIs))
+		"redirect_uris", len(metadata.RedirectURIs),
+		"size_bytes", len(bodyBytes))
 
 	return &metadata, nil
 }

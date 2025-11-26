@@ -3,10 +3,12 @@ package server
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
@@ -148,6 +150,11 @@ func (c *clientMetadataCache) Clear() {
 
 // getOrFetchClient retrieves a client from cache or fetches metadata if not cached
 // This is the main entry point for URL-based client resolution
+//
+// Security features:
+// - Singleflight deduplication: prevents concurrent fetches of the same URL (DoS protection)
+// - Rate limiting: per-domain rate limiting to prevent abuse
+// - Audit logging: all cache hits and fetches are logged for security monitoring
 func (s *Server) getOrFetchClient(ctx context.Context, clientID string) (*storage.Client, error) {
 	// Check if URL-based client ID
 	if !isURLClientID(clientID) {
@@ -162,29 +169,80 @@ func (s *Server) getOrFetchClient(ctx context.Context, clientID string) (*storag
 
 	// Try cache first
 	if cachedClient, ok := s.metadataCache.Get(clientID); ok {
+		// SECURITY: Audit log cache hits for security monitoring
+		if s.Auditor != nil {
+			s.Auditor.LogEvent(security.Event{
+				Type:     "client_metadata_cache_hit",
+				ClientID: clientID,
+				Details: map[string]any{
+					"source": "cache",
+				},
+			})
+		}
 		s.Logger.Debug("Using cached client metadata", "client_id", clientID)
 		return cachedClient, nil
 	}
 
-	// Cache miss - fetch from URL
-	s.Logger.Info("Fetching client metadata from URL", "client_id", clientID)
-
-	metadata, err := s.fetchClientMetadata(ctx, clientID)
+	// SECURITY: Apply rate limiting per domain to prevent abuse
+	// Parse URL to extract domain
+	u, err := url.Parse(clientID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch client metadata: %w", err)
+		return nil, fmt.Errorf("invalid client_id URL: %w", err)
+	}
+	domain := u.Hostname()
+
+	// Check rate limit if rate limiter is configured
+	if s.metadataFetchRateLimiter != nil {
+		if !s.metadataFetchRateLimiter.Allow(domain) {
+			if s.Auditor != nil {
+				s.Auditor.LogEvent(security.Event{
+					Type:     "client_metadata_rate_limited",
+					ClientID: clientID,
+					Details: map[string]any{
+						"domain": domain,
+						"reason": "rate_limit_exceeded",
+					},
+				})
+			}
+			return nil, fmt.Errorf("rate limit exceeded for metadata fetches from domain: %s", domain)
+		}
 	}
 
-	// Convert metadata to storage.Client
-	client := metadataToClient(metadata)
+	// SECURITY: Use singleflight to deduplicate concurrent fetches of the same URL
+	// This prevents DoS via multiple simultaneous requests for the same uncached client_id
+	result, err, _ := s.metadataFetchGroup.Do(clientID, func() (interface{}, error) {
+		// Double-check cache (another goroutine might have filled it while we waited)
+		if cachedClient, ok := s.metadataCache.Get(clientID); ok {
+			s.Logger.Debug("Using cached client metadata (singleflight)", "client_id", clientID)
+			return cachedClient, nil
+		}
 
-	// Cache the result
-	ttl := s.Config.ClientMetadataCacheTTL
-	if ttl <= 0 {
-		ttl = 5 * time.Minute // Default TTL
+		// Cache miss - fetch from URL
+		s.Logger.Info("Fetching client metadata from URL", "client_id", clientID)
+
+		metadata, fetchErr := s.fetchClientMetadata(ctx, clientID)
+		if fetchErr != nil {
+			return nil, fmt.Errorf("failed to fetch client metadata: %w", fetchErr)
+		}
+
+		// Convert metadata to storage.Client
+		client := metadataToClient(metadata)
+
+		// Cache the result
+		ttl := s.Config.ClientMetadataCacheTTL
+		if ttl <= 0 {
+			ttl = 5 * time.Minute // Default TTL
+		}
+		s.metadataCache.Set(clientID, metadata, client, ttl)
+
+		return client, nil
+	})
+
+	if err != nil {
+		return nil, err
 	}
-	s.metadataCache.Set(clientID, metadata, client, ttl)
 
-	return client, nil
+	return result.(*storage.Client), nil
 }
 
 // metadataToClient converts ClientMetadata to storage.Client

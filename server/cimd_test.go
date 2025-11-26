@@ -60,6 +60,34 @@ func TestIsURLClientID(t *testing.T) {
 			clientID: "example.com/client",
 			want:     false,
 		},
+		// Security: Test rejection of userinfo
+		{
+			name:     "HTTPS URL with userinfo - rejected",
+			clientID: "https://user:pass@example.com/client",
+			want:     false,
+		},
+		// Security: Test rejection of query parameters
+		{
+			name:     "HTTPS URL with query - rejected",
+			clientID: "https://example.com/client?redirect=http://evil.com",
+			want:     false,
+		},
+		{
+			name:     "HTTPS URL with query param - rejected",
+			clientID: "https://example.com/client?foo=bar",
+			want:     false,
+		},
+		// Security: Test rejection of fragments
+		{
+			name:     "HTTPS URL with fragment - rejected",
+			clientID: "https://example.com/client#../../etc/passwd",
+			want:     false,
+		},
+		{
+			name:     "HTTPS URL with simple fragment - rejected",
+			clientID: "https://example.com/client#section",
+			want:     false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -113,6 +141,19 @@ func TestIsPrivateIP(t *testing.T) {
 		{name: "172.32.x.x - not private", ip: "172.32.0.0", want: false},
 		{name: "192.167.x.x - not private", ip: "192.167.255.255", want: false},
 		{name: "192.169.x.x - not private", ip: "192.169.0.0", want: false},
+
+		// SECURITY: IPv4-mapped IPv6 addresses (::ffff:0:0/96)
+		// These can be used to bypass IPv4 checks - must be detected as private
+		{name: "IPv4-mapped loopback", ip: "::ffff:127.0.0.1", want: true},
+		{name: "IPv4-mapped 10.x", ip: "::ffff:10.0.0.1", want: true},
+		{name: "IPv4-mapped 192.168.x", ip: "::ffff:192.168.1.1", want: true},
+		{name: "IPv4-mapped 172.16.x", ip: "::ffff:172.16.0.1", want: true},
+		{name: "IPv4-mapped public", ip: "::ffff:8.8.8.8", want: false},
+
+		// SECURITY: fd00::/8 ULA range (additional check beyond fc00::/7)
+		{name: "fd00::/8 ULA start", ip: "fd00::1", want: true},
+		{name: "fd00::/8 ULA mid", ip: "fd12:3456:789a::1", want: true},
+		{name: "fd00::/8 ULA end", ip: "fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", want: true},
 	}
 
 	for _, tt := range tests {
