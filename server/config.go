@@ -159,6 +159,54 @@ type Config struct {
 	// Default: nil (no endpoint-specific scope requirements)
 	EndpointScopeRequirements map[string][]string
 
+	// EndpointMethodScopeRequirements maps HTTP paths AND methods to required scopes.
+	// This extends EndpointScopeRequirements with method-aware scope checking.
+	// Useful when different HTTP methods require different scopes (e.g., GET vs POST).
+	//
+	// Path Matching (same as EndpointScopeRequirements):
+	//   - Exact match: "/api/files" matches only "/api/files"
+	//   - Prefix match: "/api/files/*" matches "/api/files/..." (any sub-path)
+	//
+	// Method Matching:
+	//   - Use "*" as method to match any HTTP method (fallback)
+	//   - Method names are case-sensitive and should be uppercase (GET, POST, etc.)
+	//
+	// Example:
+	//   EndpointMethodScopeRequirements: map[string]map[string][]string{
+	//     "/api/files/*": {
+	//       "GET":    {"files:read"},
+	//       "POST":   {"files:write"},
+	//       "DELETE": {"files:delete", "admin:access"},
+	//       "*":      {"files:read"},  // fallback for other methods
+	//     },
+	//   }
+	//
+	// Precedence:
+	//   1. EndpointMethodScopeRequirements with exact method match
+	//   2. EndpointMethodScopeRequirements with "*" method (fallback)
+	//   3. EndpointScopeRequirements (method-agnostic)
+	//   4. No requirements (access allowed)
+	//
+	// Default: nil (no method-specific scope requirements)
+	EndpointMethodScopeRequirements map[string]map[string][]string
+
+	// HideEndpointPathInErrors controls whether endpoint paths are included in error messages.
+	// When true, error messages will not include the specific endpoint path, providing
+	// defense against information disclosure.
+	//
+	// When false (default): Error messages include the path for debugging
+	//   "Token lacks required scopes for endpoint /api/admin/users"
+	//
+	// When true: Error messages use a generic message
+	//   "Token lacks required scopes for this endpoint"
+	//
+	// Security Consideration:
+	// Including paths in error messages aids debugging but could reveal internal
+	// API structure to attackers. Enable this in production if path disclosure is a concern.
+	//
+	// Default: false (paths included in errors for easier debugging)
+	HideEndpointPathInErrors bool
+
 	// AllowPKCEPlain allows the 'plain' code_challenge_method (NOT RECOMMENDED)
 	// WARNING: The 'plain' method is insecure and deprecated in OAuth 2.1
 	// Only enable for backward compatibility with legacy clients
@@ -411,6 +459,9 @@ func applySecureDefaults(config *Config, logger *slog.Logger) *Config {
 
 	// Validate Client ID Metadata Documents configuration (MCP 2025-11-25)
 	validateClientIDMetadataDocumentsConfig(config, logger)
+
+	// Validate endpoint scope requirements (MCP 2025-11-25)
+	validateEndpointScopeRequirements(config, logger)
 
 	// Apply time-based defaults
 	applyTimeDefaults(config)
@@ -776,6 +827,84 @@ func validateClientIDMetadataDocumentsConfig(config *Config, logger *slog.Logger
 		"cache_ttl", config.ClientMetadataCacheTTL,
 		"fetch_timeout", config.ClientMetadataFetchTimeout,
 		"enabled", config.EnableClientIDMetadataDocuments)
+}
+
+// validateEndpointScopeRequirements validates the EndpointScopeRequirements and
+// EndpointMethodScopeRequirements configuration for security and correctness.
+// It validates scope format per RFC 6749 Section 3.3.
+func validateEndpointScopeRequirements(config *Config, logger *slog.Logger) {
+	// Validate EndpointScopeRequirements
+	for path, scopes := range config.EndpointScopeRequirements {
+		for _, scope := range scopes {
+			if err := validateScopeFormat(scope); err != nil {
+				logger.Warn("Invalid scope format in EndpointScopeRequirements",
+					"path", path,
+					"scope", scope,
+					"error", err,
+					"rfc", "RFC 6749 Section 3.3")
+			}
+		}
+	}
+
+	// Validate EndpointMethodScopeRequirements
+	for path, methodMap := range config.EndpointMethodScopeRequirements {
+		for method, scopes := range methodMap {
+			// Validate method is uppercase (standard HTTP method format)
+			if method != "*" && method != strings.ToUpper(method) {
+				logger.Warn("HTTP method should be uppercase in EndpointMethodScopeRequirements",
+					"path", path,
+					"method", method,
+					"recommendation", "Use uppercase method names (GET, POST, DELETE, etc.)")
+			}
+			for _, scope := range scopes {
+				if err := validateScopeFormat(scope); err != nil {
+					logger.Warn("Invalid scope format in EndpointMethodScopeRequirements",
+						"path", path,
+						"method", method,
+						"scope", scope,
+						"error", err,
+						"rfc", "RFC 6749 Section 3.3")
+				}
+			}
+		}
+	}
+}
+
+// validateScopeFormat validates a single scope string per RFC 6749 Section 3.3.
+// Per the RFC, scope tokens must consist of printable ASCII characters excluding
+// space, double-quote, and backslash: %x21 / %x23-5B / %x5D-7E
+// This is: ! and # through [ and ] through ~
+func validateScopeFormat(scope string) error {
+	if scope == "" {
+		return fmt.Errorf("scope cannot be empty")
+	}
+
+	for i, c := range scope {
+		// RFC 6749 Section 3.3: scope-token = 1*( %x21 / %x23-5B / %x5D-7E )
+		// Valid characters:
+		// - %x21 = ! (exclamation mark)
+		// - %x23-5B = # through [ (includes letters, digits, most punctuation)
+		// - %x5D-7E = ] through ~ (includes more punctuation, letters)
+		// Invalid characters:
+		// - %x20 = space (used as delimiter between scopes)
+		// - %x22 = " (double-quote)
+		// - %x5C = \ (backslash)
+		if c == ' ' {
+			return fmt.Errorf("scope cannot contain space at position %d (use separate scopes instead)", i)
+		}
+		if c == '"' {
+			return fmt.Errorf("scope cannot contain double-quote at position %d", i)
+		}
+		if c == '\\' {
+			return fmt.Errorf("scope cannot contain backslash at position %d", i)
+		}
+		// Check for printable ASCII range (0x21 to 0x7E, excluding 0x22 and 0x5C)
+		if c < 0x21 || c > 0x7E {
+			return fmt.Errorf("scope contains invalid character at position %d (only printable ASCII allowed)", i)
+		}
+	}
+
+	return nil
 }
 
 // logSecurityWarnings logs warnings for insecure configuration settings

@@ -1226,6 +1226,7 @@ func (h *Handler) validateTokenScopes(w http.ResponseWriter, r *http.Request, ac
 	h.logger.Warn("Insufficient scope for endpoint",
 		"user_id", userInfo.ID,
 		"endpoint", r.URL.Path,
+		"method", r.Method,
 		"token_scopes", tokenScopes,
 		"required_scopes", requiredScopes,
 		"ip", clientIP)
@@ -1234,13 +1235,20 @@ func (h *Handler) validateTokenScopes(w http.ResponseWriter, r *http.Request, ac
 		h.server.Auditor.LogAuthFailure(userInfo.ID, "", clientIP, "insufficient_scope")
 	}
 
-	// SECURITY: Sanitize path in error message to prevent log injection
-	// Truncate very long paths to prevent log pollution
-	safePath := r.URL.Path
-	if len(safePath) > 100 {
-		safePath = safePath[:100] + "..."
+	// Build error description based on configuration
+	var description string
+	if h.server.Config.HideEndpointPathInErrors {
+		// SECURITY: Hide endpoint path to prevent information disclosure
+		description = "Token lacks required scopes for this endpoint"
+	} else {
+		// SECURITY: Sanitize path in error message to prevent log injection
+		// Truncate very long paths to prevent log pollution
+		safePath := r.URL.Path
+		if len(safePath) > 100 {
+			safePath = safePath[:100] + "..."
+		}
+		description = fmt.Sprintf("Token lacks required scopes for endpoint %s", safePath)
 	}
-	description := fmt.Sprintf("Token lacks required scopes for endpoint %s", safePath)
 	h.writeInsufficientScopeError(w, requiredScopes, description)
 	return false
 }
@@ -1266,20 +1274,35 @@ func (h *Handler) getTokenScopes(accessToken string) []string {
 	return metadata.Scopes
 }
 
-// getRequiredScopes returns the scopes required for accessing a given request path.
-// It checks the EndpointScopeRequirements configuration and matches against the request path.
+// getRequiredScopes returns the scopes required for accessing a given request path and method.
+// It checks both EndpointMethodScopeRequirements (method-aware) and EndpointScopeRequirements
+// (method-agnostic) configurations.
 //
 // Path matching supports:
 //   - Exact match: "/api/files" matches only "/api/files"
 //   - Prefix match: "/api/files/*" matches any path starting with "/api/files/"
 //   - Longest prefix wins when multiple wildcards match
 //
+// Method matching (EndpointMethodScopeRequirements only):
+//   - Exact method match (e.g., "GET", "POST")
+//   - Wildcard "*" matches any method (fallback)
+//
+// Precedence:
+//  1. EndpointMethodScopeRequirements with exact method match
+//  2. EndpointMethodScopeRequirements with "*" method (fallback)
+//  3. EndpointScopeRequirements (method-agnostic)
+//  4. No requirements (access allowed)
+//
 // SECURITY: Path is normalized using path.Clean() to prevent traversal bypasses
 // via double slashes, "..", etc.
 //
 // Returns an empty slice if no scope requirements are configured for the path.
 func (h *Handler) getRequiredScopes(r *http.Request) []string {
-	if h.server.Config.EndpointScopeRequirements == nil {
+	// Check if any scope requirements are configured
+	hasMethodScopes := h.server.Config.EndpointMethodScopeRequirements != nil
+	hasPathScopes := h.server.Config.EndpointScopeRequirements != nil
+
+	if !hasMethodScopes && !hasPathScopes {
 		return nil
 	}
 
@@ -1289,7 +1312,70 @@ func (h *Handler) getRequiredScopes(r *http.Request) []string {
 	// - Path traversal: /api/files/../admin
 	// - Relative paths: /api/./files
 	normalizedPath := path.Clean("/" + r.URL.Path)
+	method := r.Method
 
+	// Priority 1: Check method-aware scope requirements
+	if hasMethodScopes {
+		if scopes := h.getMethodScopesForPath(normalizedPath, method); scopes != nil {
+			return scopes
+		}
+	}
+
+	// Priority 2: Fallback to method-agnostic scope requirements
+	if hasPathScopes {
+		return h.getPathScopes(normalizedPath)
+	}
+
+	return nil
+}
+
+// getMethodScopesForPath looks up scopes from EndpointMethodScopeRequirements.
+// Returns nil if no matching configuration is found.
+func (h *Handler) getMethodScopesForPath(normalizedPath, method string) []string {
+	// First, try exact path match
+	if methodMap, ok := h.server.Config.EndpointMethodScopeRequirements[normalizedPath]; ok {
+		// Try exact method match
+		if scopes, ok := methodMap[method]; ok {
+			return scopes
+		}
+		// Try wildcard method fallback
+		if scopes, ok := methodMap["*"]; ok {
+			return scopes
+		}
+	}
+
+	// Then try prefix matches (patterns ending with /*)
+	// Use longest-prefix-match to ensure most specific pattern wins
+	var longestPrefix string
+	var matchedMethodMap map[string][]string
+
+	for pattern, methodMap := range h.server.Config.EndpointMethodScopeRequirements {
+		if strings.HasSuffix(pattern, "/*") {
+			prefix := strings.TrimSuffix(pattern, "*")
+			if strings.HasPrefix(normalizedPath, prefix) && len(prefix) > len(longestPrefix) {
+				longestPrefix = prefix
+				matchedMethodMap = methodMap
+			}
+		}
+	}
+
+	if matchedMethodMap != nil {
+		// Try exact method match
+		if scopes, ok := matchedMethodMap[method]; ok {
+			return scopes
+		}
+		// Try wildcard method fallback
+		if scopes, ok := matchedMethodMap["*"]; ok {
+			return scopes
+		}
+	}
+
+	return nil
+}
+
+// getPathScopes looks up scopes from EndpointScopeRequirements (method-agnostic).
+// Returns nil if no matching configuration is found.
+func (h *Handler) getPathScopes(normalizedPath string) []string {
 	// First, try exact match
 	if scopes, ok := h.server.Config.EndpointScopeRequirements[normalizedPath]; ok {
 		return scopes

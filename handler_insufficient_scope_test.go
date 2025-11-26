@@ -354,11 +354,11 @@ func TestValidateTokenWithScopeValidation(t *testing.T) {
 			// Create handler
 			handler := NewHandler(srv, nil)
 
-		// Create a test token
-		accessToken := "test_access_token"
-		userID := testUserID
+			// Create a test token
+			accessToken := "test_access_token"
+			userID := testUserID
 
-		// Store user info
+			// Store user info
 			userInfo := &providers.UserInfo{
 				ID:            userID,
 				Email:         "test@example.com",
@@ -822,5 +822,261 @@ func TestValidateTokenScopesLongPathSanitization(t *testing.T) {
 	// Verify it contains the ellipsis
 	if !strings.Contains(description, "...") {
 		t.Errorf("Error description should contain ellipsis for truncated path: %s", description)
+	}
+}
+
+// TestGetRequiredScopesMethodBased tests HTTP method-based scope requirements
+func TestGetRequiredScopesMethodBased(t *testing.T) {
+	tests := []struct {
+		name        string
+		methodScope map[string]map[string][]string
+		pathScope   map[string][]string
+		requestPath string
+		method      string
+		wantScopes  []string
+		wantNil     bool
+	}{
+		{
+			name: "exact method match",
+			methodScope: map[string]map[string][]string{
+				"/api/files/*": {
+					"GET":  {"files:read"},
+					"POST": {"files:write"},
+				},
+			},
+			requestPath: "/api/files/doc.txt",
+			method:      "GET",
+			wantScopes:  []string{"files:read"},
+		},
+		{
+			name: "POST method match",
+			methodScope: map[string]map[string][]string{
+				"/api/files/*": {
+					"GET":  {"files:read"},
+					"POST": {"files:write"},
+				},
+			},
+			requestPath: "/api/files/doc.txt",
+			method:      "POST",
+			wantScopes:  []string{"files:write"},
+		},
+		{
+			name: "wildcard method fallback",
+			methodScope: map[string]map[string][]string{
+				"/api/files/*": {
+					"GET": {"files:read"},
+					"*":   {"files:read"}, // fallback for other methods
+				},
+			},
+			requestPath: "/api/files/doc.txt",
+			method:      "DELETE",
+			wantScopes:  []string{"files:read"},
+		},
+		{
+			name: "method scope takes precedence over path scope",
+			methodScope: map[string]map[string][]string{
+				"/api/files/*": {
+					"GET": {"files:read:method"},
+				},
+			},
+			pathScope: map[string][]string{
+				"/api/files/*": {"files:read:path"},
+			},
+			requestPath: "/api/files/doc.txt",
+			method:      "GET",
+			wantScopes:  []string{"files:read:method"},
+		},
+		{
+			name: "falls back to path scope when method not matched",
+			methodScope: map[string]map[string][]string{
+				"/api/files/*": {
+					"GET": {"files:read"},
+				},
+			},
+			pathScope: map[string][]string{
+				"/api/files/*": {"files:general"},
+			},
+			requestPath: "/api/files/doc.txt",
+			method:      "DELETE",
+			wantScopes:  []string{"files:general"},
+		},
+		{
+			name: "no match returns nil",
+			methodScope: map[string]map[string][]string{
+				"/api/admin/*": {
+					"GET": {"admin:read"},
+				},
+			},
+			requestPath: "/api/files/doc.txt",
+			method:      "GET",
+			wantNil:     true,
+		},
+		{
+			name: "exact path with method match",
+			methodScope: map[string]map[string][]string{
+				"/api/user/profile": {
+					"GET": {"user:read"},
+					"PUT": {"user:write"},
+				},
+			},
+			requestPath: "/api/user/profile",
+			method:      "PUT",
+			wantScopes:  []string{"user:write"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := memory.New()
+			defer store.Stop()
+			mockProvider := mock.NewMockProvider()
+
+			srv, err := server.New(
+				mockProvider,
+				store,
+				store,
+				store,
+				&server.Config{
+					Issuer:                          "https://example.com",
+					EndpointScopeRequirements:       tt.pathScope,
+					EndpointMethodScopeRequirements: tt.methodScope,
+				},
+				nil,
+			)
+			if err != nil {
+				t.Fatalf("Failed to create server: %v", err)
+			}
+
+			handler := NewHandler(srv, nil)
+
+			req := httptest.NewRequest(tt.method, tt.requestPath, nil)
+			scopes := handler.getRequiredScopes(req)
+
+			if tt.wantNil {
+				if scopes != nil {
+					t.Errorf("Expected nil scopes, got %v", scopes)
+				}
+			} else {
+				if len(scopes) != len(tt.wantScopes) {
+					t.Errorf("Scopes length = %d, want %d", len(scopes), len(tt.wantScopes))
+				}
+				for i, scope := range scopes {
+					if scope != tt.wantScopes[i] {
+						t.Errorf("Scope[%d] = %s, want %s", i, scope, tt.wantScopes[i])
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestHideEndpointPathInErrors tests that endpoint paths can be hidden in error messages
+func TestHideEndpointPathInErrors(t *testing.T) {
+	tests := []struct {
+		name             string
+		hideEndpointPath bool
+		wantPathInError  bool
+	}{
+		{
+			name:             "path shown by default",
+			hideEndpointPath: false,
+			wantPathInError:  true,
+		},
+		{
+			name:             "path hidden when configured",
+			hideEndpointPath: true,
+			wantPathInError:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := memory.New()
+			defer store.Stop()
+			mockProvider := mock.NewMockProvider()
+
+			srv, err := server.New(
+				mockProvider,
+				store,
+				store,
+				store,
+				&server.Config{
+					Issuer: "https://example.com",
+					EndpointScopeRequirements: map[string][]string{
+						"/protected": {"files:read"},
+					},
+					HideEndpointPathInErrors: tt.hideEndpointPath,
+				},
+				nil,
+			)
+			if err != nil {
+				t.Fatalf("Failed to create server: %v", err)
+			}
+
+			handler := NewHandler(srv, nil)
+
+			// Create test token with insufficient scopes
+			accessToken := "test_token_hide_path"
+			userID := testUserID
+
+			userInfo := &providers.UserInfo{
+				ID:            userID,
+				Email:         "test@example.com",
+				EmailVerified: true,
+			}
+			if err := store.SaveUserInfo(context.Background(), userID, userInfo); err != nil {
+				t.Fatalf("Failed to save user info: %v", err)
+			}
+
+			providerToken := &oauth2.Token{
+				AccessToken: accessToken,
+				Expiry:      time.Now().Add(1 * time.Hour),
+			}
+			if err := store.SaveToken(context.Background(), accessToken, providerToken); err != nil {
+				t.Fatalf("Failed to save token: %v", err)
+			}
+
+			if err := store.SaveTokenMetadataWithScopesAndAudience(accessToken, userID, "test_client", "access", "", []string{}); err != nil {
+				t.Fatalf("Failed to save token metadata: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+			req.Header.Set("Authorization", "Bearer "+accessToken)
+
+			w := httptest.NewRecorder()
+
+			nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})
+
+			middleware := handler.ValidateToken(nextHandler)
+			middleware.ServeHTTP(w, req)
+
+			if w.Code != http.StatusForbidden {
+				t.Errorf("Status = %d, want %d", w.Code, http.StatusForbidden)
+			}
+
+			var body map[string]string
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("Failed to unmarshal response: %v", err)
+			}
+
+			description := body["error_description"]
+			containsPath := strings.Contains(description, "/protected")
+
+			if tt.wantPathInError && !containsPath {
+				t.Errorf("Expected path in error description but not found: %s", description)
+			}
+			if !tt.wantPathInError && containsPath {
+				t.Errorf("Expected path NOT in error description but found: %s", description)
+			}
+
+			// When hidden, should use generic message
+			if !tt.wantPathInError {
+				if !strings.Contains(description, "this endpoint") {
+					t.Errorf("Expected generic message with 'this endpoint': %s", description)
+				}
+			}
+		})
 	}
 }
