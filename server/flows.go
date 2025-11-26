@@ -472,6 +472,9 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 	if err != nil {
 		// Check if this is a reuse attempt (code already used)
 		// Use typed error checking for explicit detection, with fallback to authCode.Used check
+		// TODO: Remove the fallback `(authCode != nil && authCode.Used)` once all storage
+		// implementations (including third-party) use ErrAuthorizationCodeUsed sentinel error.
+		// The fallback provides backward compatibility during the transition period.
 		if storage.IsCodeReuseError(err) || (authCode != nil && authCode.Used) {
 			// CRITICAL SECURITY: Authorization code reuse detected - this indicates a potential token theft attack
 			// OAuth 2.1 requires revoking ALL tokens for this user+client when code reuse is detected

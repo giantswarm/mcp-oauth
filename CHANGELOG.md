@@ -48,6 +48,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Impact: Fixes complete OAuth flow failure while enhancing security beyond original implementation
   - Migration: No breaking changes - PKCE is generated and handled automatically
 
+### Security
+
+- **Typed storage errors for security-sensitive error handling**
+  - Added sentinel errors (`ErrTokenNotFound`, `ErrTokenExpired`, `ErrClientNotFound`, `ErrAuthorizationCodeNotFound`, `ErrAuthorizationCodeUsed`, `ErrAuthorizationStateNotFound`) to distinguish transient errors from security events
+  - Added helper functions `IsNotFoundError()`, `IsExpiredError()`, `IsCodeReuseError()` for consistent error type checking
+  - Enables proper detection of token reuse attacks without false positives from transient storage failures
+
+- **CORS wildcard origin now requires explicit opt-in**
+  - New `AllowWildcardOrigin` field must be set to `true` to use `"*"` in `AllowedOrigins`
+  - Prevents accidental CSRF exposure in production deployments
+  - Configuration will panic with clear instructions if wildcard is used without opt-in
+
+- **Constant-time comparison for registration access token**
+  - Uses `crypto/subtle.ConstantTimeCompare` to prevent timing attacks on the registration endpoint
+  - Attackers cannot guess the token character by character through response time analysis
+
+- **MinStateLength floor enforcement**
+  - Absolute minimum of 16 characters enforced regardless of configuration
+  - Ensures adequate CSRF protection entropy even if misconfigured
+  - Logs warning when configured value is below the floor
+
+- **Enhanced SECURITY.md documentation**
+  - Added production logging configuration guidance (disable DEBUG in production)
+  - Added security-sensitive log entries reference table
+  - Extended production deployment checklist with logging, CORS, and state length checks
+
 ### Changed
 
 - **OpenTelemetry instrumentation infrastructure for comprehensive observability (#37)**

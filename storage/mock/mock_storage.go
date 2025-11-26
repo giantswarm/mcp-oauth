@@ -58,7 +58,7 @@ func NewMockTokenStore() *MockTokenStore {
 		defer m.mu.RUnlock()
 		token, ok := m.tokens[userID]
 		if !ok {
-			return nil, fmt.Errorf("token not found")
+			return nil, storage.ErrTokenNotFound
 		}
 		return token, nil
 	}
@@ -102,10 +102,10 @@ func NewMockTokenStore() *MockTokenStore {
 		defer m.mu.RUnlock()
 		info, ok := m.refreshTokens[refreshToken]
 		if !ok {
-			return "", fmt.Errorf("refresh token not found")
+			return "", storage.ErrTokenNotFound
 		}
 		if !info.expiresAt.IsZero() && time.Now().After(info.expiresAt) {
-			return "", fmt.Errorf("refresh token expired")
+			return "", storage.ErrTokenExpired
 		}
 		return info.userID, nil
 	}
@@ -207,7 +207,7 @@ func NewMockClientStore() *MockClientStore {
 		defer m.mu.RUnlock()
 		client, ok := m.clients[clientID]
 		if !ok {
-			return nil, fmt.Errorf("client not found")
+			return nil, storage.ErrClientNotFound
 		}
 		return client, nil
 	}
@@ -354,10 +354,10 @@ func NewMockFlowStore() *MockFlowStore {
 		defer m.mu.RUnlock()
 		state, ok := m.authStates[stateID]
 		if !ok {
-			return nil, fmt.Errorf("authorization state not found")
+			return nil, storage.ErrAuthorizationStateNotFound
 		}
 		if !state.ExpiresAt.IsZero() && time.Now().After(state.ExpiresAt) {
-			return nil, fmt.Errorf("authorization state expired")
+			return nil, storage.ErrTokenExpired
 		}
 		return state, nil
 	}
@@ -367,7 +367,7 @@ func NewMockFlowStore() *MockFlowStore {
 		defer m.mu.RUnlock()
 		state, ok := m.authStatesByProvider[providerState]
 		if !ok {
-			return nil, fmt.Errorf("authorization state not found")
+			return nil, storage.ErrAuthorizationStateNotFound
 		}
 		return state, nil
 	}
@@ -394,10 +394,10 @@ func NewMockFlowStore() *MockFlowStore {
 		defer m.mu.RUnlock()
 		authCode, ok := m.authCodes[code]
 		if !ok {
-			return nil, fmt.Errorf("authorization code not found")
+			return nil, storage.ErrAuthorizationCodeNotFound
 		}
 		if !authCode.ExpiresAt.IsZero() && time.Now().After(authCode.ExpiresAt) {
-			return nil, fmt.Errorf("authorization code expired")
+			return nil, storage.ErrTokenExpired
 		}
 		return authCode, nil
 	}
