@@ -78,6 +78,9 @@ const (
 	// EventScopeEscalationAttempt is logged when a client tries to escalate scopes
 	EventScopeEscalationAttempt = "scope_escalation_attempt"
 
+	// EventScopeDefaultsApplied is logged when provider default scopes are used (forensics/compliance)
+	EventScopeDefaultsApplied = "scope_defaults_applied"
+
 	// EventResourceMismatch is logged when resource parameter doesn't match (RFC 8707)
 	EventResourceMismatch = "resource_mismatch"
 

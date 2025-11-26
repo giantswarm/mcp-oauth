@@ -1421,14 +1421,45 @@ func (s *Server) resolveScopes(requestedScope string, client *storage.Client) st
 		return ""
 	}
 
-	// If client has no restrictions, use all provider defaults
+	// SECURITY: Audit when default scopes are applied for forensics and compliance
+	// This helps track which clients rely on provider defaults vs explicit scopes
+	var resolvedScopes string
 	if len(client.Scopes) == 0 {
-		return strings.Join(defaultScopes, " ")
+		// Client has no restrictions, use all provider defaults
+		resolvedScopes = strings.Join(defaultScopes, " ")
+		if s.Auditor != nil {
+			s.Auditor.LogEvent(security.Event{
+				Type:     security.EventScopeDefaultsApplied,
+				ClientID: client.ClientID,
+				Details: map[string]any{
+					"provider":          s.provider.Name(),
+					"provider_defaults": defaultScopes,
+					"resolved_scopes":   resolvedScopes,
+					"client_restricted": false,
+				},
+			})
+		}
+	} else {
+		// Build intersection - only provider defaults that client is authorized for
+		authorizedScopes := intersectScopes(defaultScopes, client.Scopes)
+		resolvedScopes = strings.Join(authorizedScopes, " ")
+		if s.Auditor != nil {
+			s.Auditor.LogEvent(security.Event{
+				Type:     security.EventScopeDefaultsApplied,
+				ClientID: client.ClientID,
+				Details: map[string]any{
+					"provider":           s.provider.Name(),
+					"provider_defaults":  defaultScopes,
+					"client_allowed":     client.Scopes,
+					"resolved_scopes":    resolvedScopes,
+					"client_restricted":  true,
+					"intersection_count": len(authorizedScopes),
+				},
+			})
+		}
 	}
 
-	// Build intersection - only provider defaults that client is authorized for
-	authorizedScopes := intersectScopes(defaultScopes, client.Scopes)
-	return strings.Join(authorizedScopes, " ")
+	return resolvedScopes
 }
 
 // intersectScopes returns scopes that exist in both slices.
