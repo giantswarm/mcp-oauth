@@ -317,18 +317,19 @@ func (m *MockClientStore) ResetCallCounts() {
 
 // MockFlowStore is a mock implementation of FlowStore for testing
 type MockFlowStore struct {
-	mu                         sync.RWMutex
-	authStates                 map[string]*storage.AuthorizationState
-	authStatesByProvider       map[string]*storage.AuthorizationState
-	authCodes                  map[string]*storage.AuthorizationCode
-	SaveAuthStateFunc          func(ctx context.Context, state *storage.AuthorizationState) error
-	GetAuthStateFunc           func(ctx context.Context, stateID string) (*storage.AuthorizationState, error)
-	GetAuthStateByProviderFunc func(ctx context.Context, providerState string) (*storage.AuthorizationState, error)
-	DeleteAuthStateFunc        func(ctx context.Context, stateID string) error
-	SaveAuthCodeFunc           func(ctx context.Context, code *storage.AuthorizationCode) error
-	GetAuthCodeFunc            func(ctx context.Context, code string) (*storage.AuthorizationCode, error)
-	DeleteAuthCodeFunc         func(ctx context.Context, code string) error
-	CallCounts                 map[string]int
+	mu                             sync.RWMutex
+	authStates                     map[string]*storage.AuthorizationState
+	authStatesByProvider           map[string]*storage.AuthorizationState
+	authCodes                      map[string]*storage.AuthorizationCode
+	SaveAuthStateFunc              func(ctx context.Context, state *storage.AuthorizationState) error
+	GetAuthStateFunc               func(ctx context.Context, stateID string) (*storage.AuthorizationState, error)
+	GetAuthStateByProviderFunc     func(ctx context.Context, providerState string) (*storage.AuthorizationState, error)
+	DeleteAuthStateFunc            func(ctx context.Context, stateID string) error
+	SaveAuthCodeFunc               func(ctx context.Context, code *storage.AuthorizationCode) error
+	GetAuthCodeFunc                func(ctx context.Context, code string) (*storage.AuthorizationCode, error)
+	DeleteAuthCodeFunc             func(ctx context.Context, code string) error
+	AtomicCheckAndMarkCodeUsedFunc func(ctx context.Context, code string) (*storage.AuthorizationCode, error)
+	CallCounts                     map[string]int
 }
 
 // NewMockFlowStore creates a new mock flow store
@@ -409,6 +410,23 @@ func NewMockFlowStore() *MockFlowStore {
 		return nil
 	}
 
+	m.AtomicCheckAndMarkCodeUsedFunc = func(ctx context.Context, code string) (*storage.AuthorizationCode, error) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		authCode, ok := m.authCodes[code]
+		if !ok {
+			return nil, storage.ErrAuthorizationCodeNotFound
+		}
+		if !authCode.ExpiresAt.IsZero() && time.Now().After(authCode.ExpiresAt) {
+			return nil, storage.ErrTokenExpired
+		}
+		if authCode.Used {
+			return authCode, storage.ErrAuthorizationCodeUsed
+		}
+		authCode.Used = true
+		return authCode, nil
+	}
+
 	return m
 }
 
@@ -452,6 +470,12 @@ func (m *MockFlowStore) GetAuthorizationCode(ctx context.Context, code string) (
 func (m *MockFlowStore) DeleteAuthorizationCode(ctx context.Context, code string) error {
 	m.CallCounts["DeleteAuthorizationCode"]++
 	return m.DeleteAuthCodeFunc(ctx, code)
+}
+
+// AtomicCheckAndMarkAuthCodeUsed atomically checks if a code is unused and marks it as used
+func (m *MockFlowStore) AtomicCheckAndMarkAuthCodeUsed(ctx context.Context, code string) (*storage.AuthorizationCode, error) {
+	m.CallCounts["AtomicCheckAndMarkAuthCodeUsed"]++
+	return m.AtomicCheckAndMarkCodeUsedFunc(ctx, code)
 }
 
 // ResetCallCounts resets all call counters

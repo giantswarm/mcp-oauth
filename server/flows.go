@@ -471,8 +471,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 	authCode, err := s.flowStore.AtomicCheckAndMarkAuthCodeUsed(ctx, code)
 	if err != nil {
 		// Check if this is a reuse attempt (code already used)
-		// Primary detection via typed error, with defensive fallback to authCode.Used field
-		if storage.IsCodeReuseError(err) || (authCode != nil && authCode.Used) {
+		if storage.IsCodeReuseError(err) {
 			// CRITICAL SECURITY: Authorization code reuse detected - this indicates a potential token theft attack
 			// OAuth 2.1 requires revoking ALL tokens for this user+client when code reuse is detected
 
