@@ -279,6 +279,15 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 		return "", fmt.Errorf("%w (OAuth 2.0 Security BCP)", err)
 	}
 
+	// Generate server-side state if client didn't provide one (when AllowNoStateParameter=true)
+	// This is needed for internal tracking even when client state is not required
+	internalState := clientState
+	if internalState == "" {
+		internalState = generateRandomToken()
+		s.Logger.Debug("Generated server-side state for client without state parameter",
+			"client_id", clientID)
+	}
+
 	// PKCE validation (secure by default, configurable for backward compatibility)
 	if s.Config.RequirePKCE {
 		// PKCE is required (default, recommended for OAuth 2.1)
@@ -404,8 +413,10 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 	providerCodeChallenge, providerCodeVerifier := generatePKCEPair()
 
 	// Save authorization state with both client and server PKCE parameters and resource binding
+	// Use internalState (which may be server-generated if client didn't provide state)
 	authState := &storage.AuthorizationState{
-		StateID:              clientState,
+		StateID:              internalState,
+		OriginalClientState:  clientState, // Empty if client didn't provide state
 		ClientID:             clientID,
 		RedirectURI:          redirectURI,
 		Scope:                scope,
@@ -480,7 +491,8 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 	}
 
 	// Save the client's original state before deletion
-	clientState := authState.StateID
+	// Use OriginalClientState which is empty if client didn't provide state
+	clientState := authState.OriginalClientState
 
 	// Save provider verifier before deleting state
 	providerVerifier := authState.ProviderCodeVerifier

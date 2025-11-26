@@ -272,11 +272,14 @@ type Client struct {
 
 // AuthorizationState represents the state of an ongoing authorization flow
 type AuthorizationState struct {
-	// Client's state parameter for CSRF protection
-	StateID     string
-	ClientID    string
-	RedirectURI string
-	Scope       string
+	// StateID is used for internal tracking (may be server-generated if client didn't provide state)
+	StateID string
+	// OriginalClientState is the state parameter the client provided (empty if client didn't provide one)
+	// This is returned to the client in the callback redirect
+	OriginalClientState string
+	ClientID            string
+	RedirectURI         string
+	Scope               string
 	// Resource is the target resource server identifier (RFC 8707)
 	// This binds the authorization to a specific resource server
 	Resource string
