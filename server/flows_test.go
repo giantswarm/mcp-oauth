@@ -4445,3 +4445,87 @@ func TestServer_HandleProviderCallback_PKCEValidationFailure(t *testing.T) {
 	t.Log("✓ Provider PKCE validation failure handled correctly")
 	t.Log("✓ Security audit logging enabled (provider_code_exchange_failed event)")
 }
+
+// TestNormalizeScopes tests the normalizeScopes helper function
+func TestNormalizeScopes(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{
+			name:  "empty string",
+			input: "",
+			want:  nil,
+		},
+		{
+			name:  "single scope",
+			input: "openid",
+			want:  []string{"openid"},
+		},
+		{
+			name:  "multiple scopes",
+			input: "openid email profile",
+			want:  []string{"openid", "email", "profile"},
+		},
+		{
+			name:  "scopes with extra whitespace",
+			input: "openid  email   profile",
+			want:  []string{"openid", "email", "profile"},
+		},
+		{
+			name:  "scopes with leading whitespace",
+			input: "  openid email profile",
+			want:  []string{"openid", "email", "profile"},
+		},
+		{
+			name:  "scopes with trailing whitespace",
+			input: "openid email profile  ",
+			want:  []string{"openid", "email", "profile"},
+		},
+		{
+			name:  "scopes with mixed whitespace",
+			input: "  openid   email  profile  ",
+			want:  []string{"openid", "email", "profile"},
+		},
+		{
+			name:  "only whitespace",
+			input: "   ",
+			want:  nil,
+		},
+		{
+			name:  "tabs treated as part of scope value",
+			input: "openid\t\temail\t profile",
+			want:  []string{"openid\t\temail", "profile"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeScopes(tt.input)
+
+			// Compare nil vs empty slice
+			if tt.want == nil && got != nil {
+				t.Errorf("normalizeScopes() = %v, want nil", got)
+				return
+			}
+			if tt.want != nil && got == nil {
+				t.Errorf("normalizeScopes() = nil, want %v", tt.want)
+				return
+			}
+
+			// Compare length
+			if len(got) != len(tt.want) {
+				t.Errorf("normalizeScopes() length = %d, want %d", len(got), len(tt.want))
+				return
+			}
+
+			// Compare elements
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("normalizeScopes()[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}

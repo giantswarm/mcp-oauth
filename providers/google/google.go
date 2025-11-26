@@ -98,17 +98,16 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	// Request offline access to get refresh token
 	opts = append(opts, oauth2.AccessTypeOffline)
 
-	// If specific scopes are requested, override the configured scopes temporarily
-	// This allows dynamic scope selection per-request while maintaining default scopes
+	// Determine which scopes to use: requested scopes or provider defaults
+	scopesToUse := p.Scopes // default to provider's configured scopes
 	if len(scopes) > 0 {
-		// Create a temporary config with the requested scopes
-		tempConfig := *p.Config
-		tempConfig.Scopes = scopes
-		return tempConfig.AuthCodeURL(state, opts...)
+		scopesToUse = scopes // override with requested scopes
 	}
 
-	// Use configured scopes if none specified
-	return p.AuthCodeURL(state, opts...)
+	// Create a config with the determined scopes
+	config := *p.Config
+	config.Scopes = scopesToUse
+	return config.AuthCodeURL(state, opts...)
 }
 
 // ensureContextTimeout ensures the context has a deadline, adding one if needed.

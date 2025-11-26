@@ -36,6 +36,23 @@ const (
 // Keep in sync with constants.go.
 const OAuthSpecVersion = "OAuth 2.1"
 
+// normalizeScopes splits a space-separated scope string and filters out empty values.
+// This handles malformed input gracefully by trimming whitespace and removing empty entries.
+// Returns nil if the input is empty or contains only whitespace.
+func normalizeScopes(scope string) []string {
+	if scope == "" {
+		return nil
+	}
+
+	var scopes []string
+	for _, s := range strings.Split(scope, " ") {
+		if trimmed := strings.TrimSpace(s); trimmed != "" {
+			scopes = append(scopes, trimmed)
+		}
+	}
+	return scopes
+}
+
 // logAuthCodeValidationFailure logs authorization code validation failures with
 // consistent formatting and returns a generic error per RFC 6749.
 // This helper reduces code duplication and ensures consistent error handling.
@@ -320,10 +337,7 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 
 	// Parse scopes to pass to provider
 	// If client didn't request scopes, pass empty slice and provider will use its defaults
-	var requestedScopes []string
-	if scope != "" {
-		requestedScopes = strings.Split(scope, " ")
-	}
+	requestedScopes := normalizeScopes(scope)
 
 	// Generate authorization URL with server-generated PKCE and requested scopes
 	authURL := s.provider.AuthorizationURL(providerState, providerCodeChallenge, "S256", requestedScopes)
