@@ -333,32 +333,7 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 	// If client didn't provide scopes, use provider's default scopes
 	// This is essential for OAuth proxy pattern where server knows required scopes
 	// Only use defaults that the client is authorized for (intersection)
-	if scope == "" {
-		defaultScopes := s.provider.DefaultScopes()
-		if len(defaultScopes) > 0 {
-			// If client has no scope restrictions, use all provider defaults
-			// Otherwise, use intersection of provider defaults and client's allowed scopes
-			if len(client.Scopes) == 0 {
-				scope = strings.Join(defaultScopes, " ")
-			} else {
-				// Build intersection - only use provider defaults that client is authorized for
-				allowedScopeMap := make(map[string]bool)
-				for _, s := range client.Scopes {
-					allowedScopeMap[s] = true
-				}
-				var authorizedDefaults []string
-				for _, defaultScope := range defaultScopes {
-					if allowedScopeMap[defaultScope] {
-						authorizedDefaults = append(authorizedDefaults, defaultScope)
-					}
-				}
-				if len(authorizedDefaults) > 0 {
-					scope = strings.Join(authorizedDefaults, " ")
-				}
-				// If no intersection, leave scope empty (client will get no scopes)
-			}
-		}
-	}
+	scope = s.resolveScopes(scope, client)
 
 	// SECURITY: Validate scope string length to prevent DoS attacks
 	// This must happen before parsing/processing the scope string
@@ -1429,4 +1404,50 @@ func (s *Server) revokeTokenWithRetry(ctx context.Context, token, tokenType, use
 		"final_error", lastErr)
 
 	return fmt.Errorf("provider revocation failed after %d attempts: %w", maxRetries+1, lastErr)
+}
+
+// resolveScopes determines the final scopes to use for an authorization flow.
+// If requestedScope is provided, it's used as-is.
+// If empty, provider defaults are used, filtered by client's allowed scopes.
+func (s *Server) resolveScopes(requestedScope string, client *storage.Client) string {
+	// If client provided scopes, use them
+	if requestedScope != "" {
+		return requestedScope
+	}
+
+	// Get provider defaults
+	defaultScopes := s.provider.DefaultScopes()
+	if len(defaultScopes) == 0 {
+		return ""
+	}
+
+	// If client has no restrictions, use all provider defaults
+	if len(client.Scopes) == 0 {
+		return strings.Join(defaultScopes, " ")
+	}
+
+	// Build intersection - only provider defaults that client is authorized for
+	authorizedScopes := intersectScopes(defaultScopes, client.Scopes)
+	return strings.Join(authorizedScopes, " ")
+}
+
+// intersectScopes returns scopes that exist in both slices.
+// The order is preserved from the first slice (a).
+func intersectScopes(a, b []string) []string {
+	if len(a) == 0 || len(b) == 0 {
+		return nil
+	}
+
+	scopeSet := make(map[string]bool, len(b))
+	for _, scope := range b {
+		scopeSet[scope] = true
+	}
+
+	var result []string
+	for _, scope := range a {
+		if scopeSet[scope] {
+			result = append(result, scope)
+		}
+	}
+	return result
 }

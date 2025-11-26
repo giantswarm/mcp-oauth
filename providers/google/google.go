@@ -84,6 +84,9 @@ func (p *Provider) Name() string {
 // DefaultScopes returns the provider's configured default scopes.
 // Returns a deep copy to prevent external modification.
 func (p *Provider) DefaultScopes() []string {
+	if p.Scopes == nil {
+		return nil
+	}
 	scopes := make([]string, len(p.Scopes))
 	copy(scopes, p.Scopes)
 	return scopes
