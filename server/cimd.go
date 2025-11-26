@@ -158,15 +158,16 @@ func isPrivateIP(ip net.IP) bool {
 // Per draft-ietf-oauth-client-id-metadata-document-00 Section 6:
 // "Authorization servers fetching metadata documents SHOULD consider
 // Server-Side Request Forgery (SSRF) risks"
-func validateMetadataURL(clientID string) error {
+// Returns the validated URL string if all checks pass
+func validateMetadataURL(clientID string) (string, error) {
 	u, err := url.Parse(clientID)
 	if err != nil {
-		return fmt.Errorf("invalid URL: %w", err)
+		return "", fmt.Errorf("invalid URL: %w", err)
 	}
 
 	// CRITICAL SECURITY: MUST be HTTPS only (no HTTP)
 	if u.Scheme != SchemeHTTPS {
-		return fmt.Errorf("client_id metadata URL must use HTTPS, got: %s", u.Scheme)
+		return "", fmt.Errorf("client_id metadata URL must use HTTPS, got: %s", u.Scheme)
 	}
 
 	// Extract hostname for IP validation
@@ -175,19 +176,19 @@ func validateMetadataURL(clientID string) error {
 	// Resolve hostname to IP addresses
 	ips, err := net.LookupIP(hostname)
 	if err != nil {
-		return fmt.Errorf("failed to resolve hostname %s: %w", hostname, err)
+		return "", fmt.Errorf("failed to resolve hostname %s: %w", hostname, err)
 	}
 
 	// CRITICAL SECURITY: Block requests to private/internal IP ranges
 	// This prevents SSRF attacks against internal services
 	for _, ip := range ips {
 		if isPrivateIP(ip) {
-			return fmt.Errorf("client_id metadata URL resolves to private/internal IP address: %s -> %s (SSRF protection)",
+			return "", fmt.Errorf("client_id metadata URL resolves to private/internal IP address: %s -> %s (SSRF protection)",
 				hostname, ip.String())
 		}
 	}
 
-	return nil
+	return u.String(), nil
 }
 
 // createSSRFProtectedTransport creates an HTTP transport with SSRF protection at connection time
@@ -237,8 +238,8 @@ func createSSRFProtectedTransport(ctx context.Context) *http.Transport {
 // - Timeout protection: enforces reasonable timeout
 // - Size limit: prevents memory exhaustion and validates full document read
 func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*ClientMetadata, time.Duration, error) {
-	// Validate URL and apply initial SSRF protections
-	if err := validateMetadataURL(clientID); err != nil {
+	validatedURL, err := validateMetadataURL(clientID)
+	if err != nil {
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
 				Type:     "client_metadata_fetch_blocked",
@@ -252,14 +253,11 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		return nil, 0, fmt.Errorf("metadata URL validation failed: %w", err)
 	}
 
-	// Determine timeout from configuration or use default
 	timeout := 10 * time.Second
 	if s.Config.ClientMetadataFetchTimeout > 0 {
 		timeout = s.Config.ClientMetadataFetchTimeout
 	}
 
-	// SECURITY: Respect context deadline if set (prevents exceeding caller's timeout)
-	// This is important when the authorization flow has its own deadline
 	if deadline, ok := ctx.Deadline(); ok {
 		timeUntilDeadline := time.Until(deadline)
 		if timeUntilDeadline > 0 && timeUntilDeadline < timeout {
@@ -271,33 +269,15 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		}
 	}
 
-	// SECURITY: Create HTTP client with SSRF-protected transport
-	// This prevents DNS rebinding attacks by validating IPs at connection time
 	client := &http.Client{
 		Timeout:   timeout,
 		Transport: createSSRFProtectedTransport(ctx),
-		// Disable redirect following for security
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
 
-	// SECURITY NOTE: The clientID URL used below comes from user input but has multiple
-	// layers of validation to prevent request forgery and SSRF attacks:
-	// 1. validateMetadataURL() enforces HTTPS-only scheme (line 241)
-	// 2. validateMetadataURL() blocks private/internal IP addresses (line 183-186)
-	// 3. createSSRFProtectedTransport() re-validates IPs at connection time (line 207-214)
-	//    to prevent DNS rebinding attacks
-	// 4. HTTP redirects are disabled (CheckRedirect above)
-	// 5. Timeout is enforced to prevent resource exhaustion
-	// This satisfies the security requirements from draft-ietf-oauth-client-id-metadata-document-00
-	// Section 6, which requires SSRF protection for metadata document fetching.
-	//
-	// FALSE POSITIVE: CodeQL alert go/request-forgery - The URL is fully validated and SSRF-protected
-	// as documented above. This is NOT a vulnerability. The spec (RFC draft-ietf-oauth-client-id-
-	// metadata-document-00) explicitly requires fetching metadata from client-provided URLs with
-	// SSRF protections, which we implement correctly.
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, clientID, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, validatedURL, nil)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to create metadata request: %w", err)
 	}

@@ -199,16 +199,17 @@ The library supports using HTTPS URLs as `client_id` values, where the URL point
 
 ```go
 // validateMetadataURL performs DNS resolution and blocks private IPs
-func validateMetadataURL(clientID string) error {
+func validateMetadataURL(clientID string) (string, error) {
     // Resolve hostname to IP addresses
     ips, err := net.LookupIP(hostname)
     
     // Block private/internal ranges
     for _, ip := range ips {
         if isPrivateIP(ip) {
-            return fmt.Errorf("SSRF protection: private IP detected")
+            return "", fmt.Errorf("SSRF protection: private IP detected")
         }
     }
+    return validatedURL, nil
 }
 ```
 

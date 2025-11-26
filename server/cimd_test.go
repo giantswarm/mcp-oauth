@@ -225,7 +225,7 @@ func TestValidateMetadataURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateMetadataURL(tt.url)
+			validatedURL, err := validateMetadataURL(tt.url)
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("validateMetadataURL(%q) expected error containing %q, got nil", tt.url, tt.errText)
@@ -234,9 +234,15 @@ func TestValidateMetadataURL(t *testing.T) {
 				if tt.errText != "" && !strings.Contains(err.Error(), tt.errText) {
 					t.Errorf("validateMetadataURL(%q) error = %v, want error containing %q", tt.url, err, tt.errText)
 				}
+				if validatedURL != "" {
+					t.Errorf("validateMetadataURL(%q) expected empty URL on error, got %q", tt.url, validatedURL)
+				}
 			} else {
 				if err != nil {
 					t.Errorf("validateMetadataURL(%q) unexpected error: %v", tt.url, err)
+				}
+				if validatedURL == "" {
+					t.Errorf("validateMetadataURL(%q) expected non-empty URL, got empty", tt.url)
 				}
 			}
 		})
