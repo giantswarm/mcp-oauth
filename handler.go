@@ -172,6 +172,7 @@ func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 		"issuer":                           h.server.Config.Issuer,
 		"authorization_endpoint":           h.server.Config.Issuer + "/oauth/authorize",
 		"token_endpoint":                   h.server.Config.Issuer + "/oauth/token",
+		"registration_endpoint":            h.server.Config.Issuer + "/oauth/register",
 		"response_types_supported":         []string{"code"},
 		"grant_types_supported":            []string{"authorization_code", "refresh_token"},
 		"code_challenge_methods_supported": []string{"S256"},

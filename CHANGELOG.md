@@ -106,6 +106,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Impact**: Internal refactoring only - no functional changes or breaking changes
   - **Benefit**: Reduced cyclomatic complexity, improved testability and code readability
 
+### Fixed
+
+- **Added registration_endpoint to OAuth Authorization Server Metadata (#66)**
+  - Fixed missing `registration_endpoint` field in `/.well-known/oauth-authorization-server` response
+  - OAuth clients can now automatically discover Dynamic Client Registration endpoint via RFC 8414 metadata
+  - The `/oauth/register` endpoint was working but not advertised in metadata
+  - **Impact**: Enables automatic client discovery for RFC 8414-compliant OAuth clients
+  - **Standards**: Complies with RFC 8414 Section 3.1 requirement for `registration_endpoint` field
+  - **Testing**: Enhanced metadata test to verify field presence and correct URL format
+
 ### Security
 
 - **Implemented LRU eviction in rate limiter to prevent memory exhaustion (#23)**

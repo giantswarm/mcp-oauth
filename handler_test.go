@@ -139,6 +139,12 @@ func TestHandler_ServeAuthorizationServerMetadata(t *testing.T) {
 	if meta.Issuer != "https://auth.example.com" {
 		t.Errorf("Issuer = %q, want %q", meta.Issuer, "https://auth.example.com")
 	}
+
+	// RFC 8414: Verify registration_endpoint is present
+	expectedRegistrationEndpoint := "https://auth.example.com/oauth/register"
+	if meta.RegistrationEndpoint != expectedRegistrationEndpoint {
+		t.Errorf("RegistrationEndpoint = %q, want %q", meta.RegistrationEndpoint, expectedRegistrationEndpoint)
+	}
 }
 
 func TestHandler_ServeClientRegistration(t *testing.T) {
