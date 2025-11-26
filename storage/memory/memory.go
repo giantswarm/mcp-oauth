@@ -18,6 +18,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
+	"github.com/giantswarm/mcp-oauth/internal/util"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
@@ -39,16 +40,6 @@ const (
 	hardMaxFamilyMetadataEntries = 50000
 )
 
-// safeTruncate safely truncates a string to maxLen characters without panicking.
-// Returns the original string if it's shorter than maxLen, otherwise returns
-// the first maxLen characters. This prevents index out of bounds errors.
-func safeTruncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen]
-}
-
 // RefreshTokenFamily tracks a family of refresh tokens for reuse detection (OAuth 2.1)
 type RefreshTokenFamily struct {
 	FamilyID   string    // Unique identifier for this token family
@@ -58,14 +49,6 @@ type RefreshTokenFamily struct {
 	IssuedAt   time.Time // When this generation was issued
 	Revoked    bool      // True if family has been revoked due to reuse detection
 	RevokedAt  time.Time // When this family was revoked (for cleanup purposes)
-}
-
-// TokenMetadata tracks ownership information for a token (for revocation by user+client)
-type TokenMetadata struct {
-	UserID    string    // User who owns this token
-	ClientID  string    // Client who owns this token
-	IssuedAt  time.Time // When this token was issued
-	TokenType string    // "access" or "refresh"
 }
 
 // Store is an in-memory implementation of all storage interfaces.
@@ -84,7 +67,7 @@ type Store struct {
 	refreshTokenFamilies map[string]*RefreshTokenFamily // refresh token -> family metadata
 
 	// Token metadata tracking (for revocation by user+client)
-	tokenMetadata map[string]*TokenMetadata // token ID (access or refresh) -> metadata
+	tokenMetadata map[string]*storage.TokenMetadata // token ID (access or refresh) -> metadata
 
 	// Client storage
 	clients      map[string]*storage.Client
@@ -156,7 +139,7 @@ func NewWithInterval(cleanupInterval time.Duration) *Store {
 		refreshTokens:              make(map[string]string),
 		refreshTokenExpiries:       make(map[string]time.Time),
 		refreshTokenFamilies:       make(map[string]*RefreshTokenFamily),
-		tokenMetadata:              make(map[string]*TokenMetadata),
+		tokenMetadata:              make(map[string]*storage.TokenMetadata),
 		clients:                    make(map[string]*storage.Client),
 		clientsPerIP:               make(map[string]int),
 		authStates:                 make(map[string]*storage.AuthorizationState),
@@ -367,14 +350,14 @@ func (s *Store) GetToken(ctx context.Context, userID string) (*oauth2.Token, err
 	s.mu.RUnlock()
 
 	if !ok {
-		err = fmt.Errorf("token not found for user: %s", userID)
+		err = fmt.Errorf("%w: %s", storage.ErrTokenNotFound, userID)
 		return nil, err
 	}
 
 	// Check if expired with clock skew grace period (and no refresh token)
 	// This prevents false expiration errors due to time synchronization issues
 	if security.IsTokenExpired(token.Expiry) && token.RefreshToken == "" {
-		err = fmt.Errorf("token expired for user: %s", userID)
+		err = fmt.Errorf("%w: %s", storage.ErrTokenExpired, userID)
 		return nil, err
 	}
 
@@ -466,7 +449,7 @@ func (s *Store) GetUserInfo(ctx context.Context, userID string) (*providers.User
 
 	info, ok := s.userInfo[userID]
 	if !ok {
-		err = fmt.Errorf("user info not found: %s", userID)
+		err = fmt.Errorf("%w: %s", storage.ErrUserInfoNotFound, userID)
 		return nil, err
 	}
 
@@ -604,7 +587,7 @@ func (s *Store) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, us
 	}
 
 	// Save token metadata for revocation tracking (OAuth 2.1 code reuse detection)
-	s.tokenMetadata[refreshToken] = &TokenMetadata{
+	s.tokenMetadata[refreshToken] = &storage.TokenMetadata{
 		UserID:    userID,
 		ClientID:  clientID,
 		IssuedAt:  time.Now(),
@@ -613,7 +596,7 @@ func (s *Store) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, us
 
 	s.logger.Debug("Saved refresh token with family tracking",
 		"user_id", userID,
-		"family_id", safeTruncate(familyID, tokenIDLogLength),
+		"family_id", util.SafeTruncate(familyID, tokenIDLogLength),
 		"generation", generation,
 		"expires_at", expiresAt)
 	return nil
@@ -626,7 +609,7 @@ func (s *Store) GetRefreshTokenFamily(ctx context.Context, refreshToken string) 
 
 	family, ok := s.refreshTokenFamilies[refreshToken]
 	if !ok {
-		return nil, fmt.Errorf("refresh token family not found")
+		return nil, storage.ErrRefreshTokenFamilyNotFound
 	}
 
 	// Convert internal type to interface type
@@ -665,7 +648,7 @@ func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) e
 
 	if revokedCount > 0 {
 		s.logger.Warn("Revoked refresh token family due to reuse detection",
-			"family_id", safeTruncate(familyID, tokenIDLogLength),
+			"family_id", util.SafeTruncate(familyID, tokenIDLogLength),
 			"tokens_revoked", revokedCount)
 	}
 
@@ -680,13 +663,13 @@ func (s *Store) GetRefreshTokenInfo(ctx context.Context, refreshToken string) (s
 
 	userID, ok := s.refreshTokens[refreshToken]
 	if !ok {
-		return "", fmt.Errorf("refresh token not found")
+		return "", storage.ErrTokenNotFound
 	}
 
 	// Check if expired with clock skew grace period
 	if expiresAt, hasExpiry := s.refreshTokenExpiries[refreshToken]; hasExpiry {
 		if security.IsTokenExpired(expiresAt) {
-			return "", fmt.Errorf("refresh token expired")
+			return "", storage.ErrTokenExpired
 		}
 	}
 
@@ -717,20 +700,23 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken
 	// Get user ID
 	userID, ok := s.refreshTokens[refreshToken]
 	if !ok {
-		return "", nil, fmt.Errorf("refresh token not found or already used")
+		// Use typed error to allow callers to distinguish "not found" from transient errors
+		return "", nil, fmt.Errorf("%w: refresh token not found or already used", storage.ErrTokenNotFound)
 	}
 
 	// Check if expired with clock skew grace period
 	if expiresAt, hasExpiry := s.refreshTokenExpiries[refreshToken]; hasExpiry {
 		if security.IsTokenExpired(expiresAt) {
-			return "", nil, fmt.Errorf("refresh token expired")
+			// Use typed error to distinguish expiry from not-found
+			return "", nil, fmt.Errorf("%w: refresh token expired", storage.ErrTokenExpired)
 		}
 	}
 
 	// Get provider token
 	providerToken, ok := s.tokens[refreshToken]
 	if !ok {
-		return "", nil, fmt.Errorf("provider token not found")
+		// Provider token missing is a not-found condition (token data incomplete)
+		return "", nil, fmt.Errorf("%w: provider token not found", storage.ErrTokenNotFound)
 	}
 
 	// ATOMIC DELETE - ensures only one request succeeds
@@ -766,7 +752,7 @@ func (s *Store) GetClient(ctx context.Context, clientID string) (*storage.Client
 
 	client, ok := s.clients[clientID]
 	if !ok {
-		err = fmt.Errorf("client not found: %s", clientID)
+		err = fmt.Errorf("%w: %s", storage.ErrClientNotFound, clientID)
 		return nil, err
 	}
 
@@ -854,7 +840,7 @@ func (s *Store) SaveAuthorizationState(ctx context.Context, state *storage.Autho
 	// ProviderState is used when validating provider callbacks
 	s.authStates[state.StateID] = state
 	s.authStates[state.ProviderState] = state
-	s.logger.Debug("Saved authorization state", "state_id", state.StateID, "provider_state_prefix", safeTruncate(state.ProviderState, tokenIDLogLength))
+	s.logger.Debug("Saved authorization state", "state_id", state.StateID, "provider_state_prefix", util.SafeTruncate(state.ProviderState, tokenIDLogLength))
 	return nil
 }
 
@@ -865,12 +851,12 @@ func (s *Store) GetAuthorizationState(ctx context.Context, stateID string) (*sto
 
 	state, ok := s.authStates[stateID]
 	if !ok {
-		return nil, fmt.Errorf("authorization state not found: %s", stateID)
+		return nil, fmt.Errorf("%w: %s", storage.ErrAuthorizationStateNotFound, stateID)
 	}
 
 	// Check if expired with clock skew grace period
 	if security.IsTokenExpired(state.ExpiresAt) {
-		return nil, fmt.Errorf("authorization state expired")
+		return nil, fmt.Errorf("%w: authorization state expired", storage.ErrTokenExpired)
 	}
 
 	return state, nil
@@ -884,12 +870,12 @@ func (s *Store) GetAuthorizationStateByProviderState(ctx context.Context, provid
 
 	state, ok := s.authStates[providerState]
 	if !ok {
-		return nil, fmt.Errorf("authorization state not found for provider state")
+		return nil, fmt.Errorf("%w: provider state", storage.ErrAuthorizationStateNotFound)
 	}
 
 	// Check if expired with clock skew grace period
 	if security.IsTokenExpired(state.ExpiresAt) {
-		return nil, fmt.Errorf("authorization state expired")
+		return nil, fmt.Errorf("%w: authorization state expired", storage.ErrTokenExpired)
 	}
 
 	return state, nil
@@ -938,7 +924,7 @@ func (s *Store) SaveAuthorizationCode(ctx context.Context, code *storage.Authori
 	defer s.mu.Unlock()
 
 	s.authCodes[code.Code] = code
-	s.logger.Debug("Saved authorization code", "code_prefix", safeTruncate(code.Code, tokenIDLogLength))
+	s.logger.Debug("Saved authorization code", "code_prefix", util.SafeTruncate(code.Code, tokenIDLogLength))
 	return nil
 }
 
@@ -954,12 +940,12 @@ func (s *Store) GetAuthorizationCode(ctx context.Context, code string) (*storage
 
 	authCode, ok := s.authCodes[code]
 	if !ok {
-		return nil, fmt.Errorf("authorization code not found")
+		return nil, storage.ErrAuthorizationCodeNotFound
 	}
 
 	// Check if expired with clock skew grace period
 	if security.IsTokenExpired(authCode.ExpiresAt) {
-		return nil, fmt.Errorf("authorization code expired")
+		return nil, fmt.Errorf("%w: authorization code expired", storage.ErrTokenExpired)
 	}
 
 	// Return a COPY to prevent caller from modifying our stored version
@@ -984,26 +970,26 @@ func (s *Store) AtomicCheckAndMarkAuthCodeUsed(ctx context.Context, code string)
 	authCode, ok := s.authCodes[code]
 	if !ok {
 		// Not found - return nil to prevent information leakage
-		return nil, fmt.Errorf("authorization code not found")
+		return nil, storage.ErrAuthorizationCodeNotFound
 	}
 
 	// Check if expired with clock skew grace period
 	if security.IsTokenExpired(authCode.ExpiresAt) {
 		// Expired - return nil to prevent information leakage
-		return nil, fmt.Errorf("authorization code expired")
+		return nil, fmt.Errorf("%w: authorization code expired", storage.ErrTokenExpired)
 	}
 
 	// ATOMIC check-and-set: Only one thread can pass this check
 	if authCode.Used {
 		// SECURITY: Code already used - return authCode to enable reuse detection
 		// The caller needs userID/clientID for token revocation
-		return authCode, fmt.Errorf("authorization code already used")
+		return authCode, storage.ErrAuthorizationCodeUsed
 	}
 
 	// Mark as used atomically
 	authCode.Used = true
 	s.logger.Debug("Marked authorization code as used",
-		"code_prefix", safeTruncate(code, tokenIDLogLength))
+		"code_prefix", util.SafeTruncate(code, tokenIDLogLength))
 
 	// Return the code for token issuance
 	return authCode, nil
@@ -1136,6 +1122,12 @@ func (s *Store) cleanup() {
 // SaveTokenMetadata saves metadata for a token (for revocation tracking)
 // This should be called whenever a token is issued to a user for a client
 func (s *Store) SaveTokenMetadata(tokenID, userID, clientID, tokenType string) error {
+	return s.SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenType, "")
+}
+
+// SaveTokenMetadataWithAudience saves metadata for a token including RFC 8707 audience
+// This should be called whenever a token is issued to a user for a client
+func (s *Store) SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenType, audience string) error {
 	if tokenID == "" || userID == "" || clientID == "" {
 		return fmt.Errorf("tokenID, userID, and clientID cannot be empty")
 	}
@@ -1143,19 +1135,34 @@ func (s *Store) SaveTokenMetadata(tokenID, userID, clientID, tokenType string) e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.tokenMetadata[tokenID] = &TokenMetadata{
+	s.tokenMetadata[tokenID] = &storage.TokenMetadata{
 		UserID:    userID,
 		ClientID:  clientID,
 		IssuedAt:  time.Now(),
 		TokenType: tokenType,
+		Audience:  audience,
 	}
 
 	s.logger.Debug("Saved token metadata",
 		"token_type", tokenType,
 		"user_id", userID,
-		"client_id", clientID)
+		"client_id", clientID,
+		"audience", audience)
 
 	return nil
+}
+
+// GetTokenMetadata retrieves metadata for a token (including RFC 8707 audience)
+func (s *Store) GetTokenMetadata(tokenID string) (*storage.TokenMetadata, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	metadata, exists := s.tokenMetadata[tokenID]
+	if !exists {
+		return nil, fmt.Errorf("token metadata not found")
+	}
+
+	return metadata, nil
 }
 
 // RevokeAllTokensForUserClient revokes all tokens (access + refresh) for a specific user+client combination.
@@ -1209,8 +1216,8 @@ func (s *Store) RevokeAllTokensForUserClient(ctx context.Context, userID, client
 				s.logger.Debug("Revoked token from family",
 					"user_id", userID,
 					"client_id", clientID,
-					"token_id", safeTruncate(tokenID, tokenIDLogLength),
-					"family_id", safeTruncate(familyID, tokenIDLogLength),
+					"token_id", util.SafeTruncate(tokenID, tokenIDLogLength),
+					"family_id", util.SafeTruncate(familyID, tokenIDLogLength),
 					"generation", family.Generation)
 			}
 		}
@@ -1219,7 +1226,7 @@ func (s *Store) RevokeAllTokensForUserClient(ctx context.Context, userID, client
 			s.logger.Info("Revoked entire refresh token family",
 				"user_id", userID,
 				"client_id", clientID,
-				"family_id", safeTruncate(familyID, tokenIDLogLength),
+				"family_id", util.SafeTruncate(familyID, tokenIDLogLength),
 				"tokens_revoked", familyRevokedCount,
 				"reason", "authorization_code_reuse_detected")
 		}
@@ -1240,7 +1247,7 @@ func (s *Store) RevokeAllTokensForUserClient(ctx context.Context, userID, client
 		s.logger.Debug("Revoked access token",
 			"user_id", userID,
 			"client_id", clientID,
-			"token_id", safeTruncate(tokenID, tokenIDLogLength))
+			"token_id", util.SafeTruncate(tokenID, tokenIDLogLength))
 	}
 
 	if revokedCount > 0 {

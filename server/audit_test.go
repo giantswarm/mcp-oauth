@@ -67,6 +67,7 @@ func TestServer_AuditLoggingClientIDMismatch(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -88,6 +89,7 @@ func TestServer_AuditLoggingClientIDMismatch(t *testing.T) {
 		clientID,
 		"https://example.com/callback",
 		"openid email",
+		"", // resource parameter (optional)
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
@@ -119,6 +121,7 @@ func TestServer_AuditLoggingClientIDMismatch(t *testing.T) {
 		validCode,
 		wrongClientID,
 		"https://example.com/callback",
+		"", // resource parameter (optional)
 		codeVerifier,
 	)
 
@@ -162,6 +165,7 @@ func TestServer_AuditLoggingRedirectURIMismatch(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -183,6 +187,7 @@ func TestServer_AuditLoggingRedirectURIMismatch(t *testing.T) {
 		clientID,
 		"https://example.com/callback",
 		"openid email",
+		"", // resource parameter (optional)
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
@@ -214,6 +219,7 @@ func TestServer_AuditLoggingRedirectURIMismatch(t *testing.T) {
 		validCode,
 		clientID,
 		wrongRedirectURI,
+		"", // resource parameter (optional)
 		codeVerifier,
 	)
 
@@ -405,6 +411,7 @@ func TestServer_AuditEventAuthorizationCodeReuse(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -426,6 +433,7 @@ func TestServer_AuditEventAuthorizationCodeReuse(t *testing.T) {
 		clientID,
 		"https://example.com/callback",
 		"openid email",
+		"", // resource parameter (optional)
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
@@ -456,6 +464,7 @@ func TestServer_AuditEventAuthorizationCodeReuse(t *testing.T) {
 		authCode,
 		clientID,
 		"https://example.com/callback",
+		"", // resource parameter (optional)
 		codeVerifier,
 	)
 	if err != nil {
@@ -468,6 +477,7 @@ func TestServer_AuditEventAuthorizationCodeReuse(t *testing.T) {
 		authCode,
 		clientID,
 		"https://example.com/callback",
+		"", // resource parameter (optional)
 		codeVerifier,
 	)
 	if err == nil {

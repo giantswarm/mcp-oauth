@@ -2,10 +2,12 @@ package oauth
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 
@@ -21,6 +23,7 @@ import (
 
 const (
 	defaultCORSMaxAge = 3600 // 1 hour default for preflight cache
+	tokenTypeBearer   = "Bearer"
 )
 
 // Handler is a thin HTTP adapter for the OAuth Server.
@@ -68,7 +71,7 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 
 				if h.server.Auditor != nil {
 					h.server.Auditor.LogEvent(security.Event{
-						Type:      "rate_limit_exceeded",
+						Type:      security.EventRateLimitExceeded,
 						IPAddress: clientIP,
 						Details: map[string]any{
 							"endpoint": r.URL.Path,
@@ -153,8 +156,82 @@ func (h *Handler) ServeProtectedResourceMetadata(w http.ResponseWriter, r *http.
 		"bearer_methods_supported": []string{"header"},
 	}
 
+	// Include scopes_supported if configured (MCP 2025-11-25)
+	if len(h.server.Config.SupportedScopes) > 0 {
+		metadata["scopes_supported"] = h.server.Config.SupportedScopes
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(metadata)
+}
+
+// RegisterProtectedResourceMetadataRoutes registers all Protected Resource Metadata discovery routes.
+// It registers both the root endpoint and optional sub-path endpoint if mcpPath is provided.
+//
+// Security: This function validates the mcpPath to prevent path traversal attacks and DoS through
+// excessively long paths. Invalid paths are logged and skipped.
+//
+// Example usage:
+//
+//	mux := http.NewServeMux()
+//	handler.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
+//	// This registers both:
+//	//   /.well-known/oauth-protected-resource
+//	//   /.well-known/oauth-protected-resource/mcp
+func (h *Handler) RegisterProtectedResourceMetadataRoutes(mux *http.ServeMux, mcpPath string) {
+	// Always register root metadata endpoint
+	mux.HandleFunc(MetadataPathProtectedResource, h.ServeProtectedResourceMetadata)
+
+	// Register sub-path metadata endpoint if MCP endpoint has a path
+	if mcpPath != "" && mcpPath != "/" {
+		// SECURITY: Validate path before registration to prevent attacks
+		if err := h.validateMetadataPath(mcpPath); err != nil {
+			h.logger.Warn("Rejecting invalid metadata path registration",
+				"path", mcpPath,
+				"error", err,
+				"security_event", "invalid_metadata_path")
+			return
+		}
+
+		// Clean and normalize the path
+		cleanPath := path.Clean("/" + strings.TrimPrefix(mcpPath, "/"))
+		subPath := MetadataPathProtectedResource + cleanPath
+
+		h.logger.Info("Registering metadata sub-path endpoint",
+			"path", subPath,
+			"original_mcp_path", mcpPath)
+
+		mux.HandleFunc(subPath, h.ServeProtectedResourceMetadata)
+	}
+}
+
+// validateMetadataPath validates a metadata path for security concerns.
+// It checks for path traversal attempts, excessive length, and other malicious patterns.
+func (h *Handler) validateMetadataPath(mcpPath string) error {
+	// SECURITY: Reject paths containing path traversal sequences
+	// Defense in depth: path.Clean() would normalize these, but explicit check prevents confusion
+	if strings.Contains(mcpPath, "..") {
+		return fmt.Errorf("path contains '..' sequence (path traversal attempt)")
+	}
+
+	// SECURITY: Prevent DoS through excessively long paths
+	// Long paths consume memory and can cause issues with storage, logging, and HTTP headers
+	if len(mcpPath) > MaxMetadataPathLength {
+		return fmt.Errorf("path exceeds maximum length of %d characters (DoS prevention)", MaxMetadataPathLength)
+	}
+
+	// SECURITY: Reject paths with suspicious patterns
+	// Null bytes can cause issues in some HTTP implementations
+	if strings.Contains(mcpPath, "\x00") {
+		return fmt.Errorf("path contains null byte")
+	}
+
+	// SECURITY: Reject paths with excessive slashes (potential DoS or confusion)
+	if strings.Count(mcpPath, "/") > 10 {
+		return fmt.Errorf("path contains too many segments (DoS prevention)")
+	}
+
+	return nil
 }
 
 // ServeAuthorizationServerMetadata serves RFC 8414 Authorization Server Metadata
@@ -170,11 +247,23 @@ func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	metadata := map[string]any{
 		"issuer":                           h.server.Config.Issuer,
-		"authorization_endpoint":           h.server.Config.Issuer + "/oauth/authorize",
-		"token_endpoint":                   h.server.Config.Issuer + "/oauth/token",
+		"authorization_endpoint":           h.server.Config.AuthorizationEndpoint(),
+		"token_endpoint":                   h.server.Config.TokenEndpoint(),
 		"response_types_supported":         []string{"code"},
 		"grant_types_supported":            []string{"authorization_code", "refresh_token"},
-		"code_challenge_methods_supported": []string{"S256"},
+		"code_challenge_methods_supported": []string{PKCEMethodS256},
+	}
+
+	// Only advertise registration_endpoint if client registration is actually available
+	// RFC 8414: registration_endpoint is OPTIONAL and should only be included if supported
+	if h.server.Config.AllowPublicClientRegistration || h.server.Config.RegistrationAccessToken != "" {
+		metadata["registration_endpoint"] = h.server.Config.RegistrationEndpoint()
+	}
+
+	// MCP 2025-11-25: Advertise Client ID Metadata Documents support
+	// Per draft-ietf-oauth-client-id-metadata-document-00
+	if h.server.Config.EnableClientIDMetadataDocuments {
+		metadata["client_id_metadata_document_supported"] = true
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -208,6 +297,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	clientID := r.URL.Query().Get("client_id")
 	redirectURI := r.URL.Query().Get("redirect_uri")
 	scope := r.URL.Query().Get("scope")
+	resource := r.URL.Query().Get("resource") // RFC 8707: Target resource server identifier
 	state := r.URL.Query().Get("state")
 	codeChallenge := r.URL.Query().Get("code_challenge")
 	codeChallengeMethod := r.URL.Query().Get("code_challenge_method")
@@ -241,7 +331,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	)
 
 	// Start authorization flow with client state (server also validates for defense in depth)
-	authURL, err := h.server.StartAuthorizationFlow(ctx, clientID, redirectURI, scope, codeChallenge, codeChallengeMethod, state)
+	authURL, err := h.server.StartAuthorizationFlow(ctx, clientID, redirectURI, scope, resource, codeChallenge, codeChallengeMethod, state)
 	if err != nil {
 		h.logger.Error("Failed to start authorization flow", "error", err)
 		h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusInternalServerError, startTime)
@@ -386,6 +476,7 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	code := r.FormValue("code")
 	clientID := r.FormValue("client_id")
 	redirectURI := r.FormValue("redirect_uri")
+	resource := r.FormValue("resource") // RFC 8707: Target resource server identifier
 	codeVerifier := r.FormValue("code_verifier")
 
 	if code == "" {
@@ -417,7 +508,7 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	)
 
 	// Exchange authorization code for tokens
-	tokenResponse, scope, err := h.server.ExchangeAuthorizationCode(ctx, code, client.ClientID, redirectURI, codeVerifier)
+	tokenResponse, scope, err := h.server.ExchangeAuthorizationCode(ctx, code, client.ClientID, redirectURI, resource, codeVerifier)
 	if err != nil {
 		h.logger.Error("Failed to exchange authorization code", "client_id", client.ClientID, "ip", clientIP, "error", err)
 		h.recordHTTPMetrics("token", http.MethodPost, http.StatusBadRequest, startTime)
@@ -434,7 +525,7 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	// Record code exchanged metric
 	pkceMethod := ""
 	if codeVerifier != "" {
-		pkceMethod = "S256"
+		pkceMethod = PKCEMethodS256
 	}
 	h.recordCodeExchanged(client.ClientID, pkceMethod)
 
@@ -626,7 +717,6 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 		if authHeader == "" {
 			h.logger.Warn("Client registration rejected: missing authorization",
 				"client_ip", clientIP)
-			w.Header().Set("WWW-Authenticate", "Bearer")
 			h.writeError(w, ErrorCodeInvalidToken,
 				"Registration access token required. "+
 					"Set AllowPublicClientRegistration=true to disable authentication (NOT recommended).",
@@ -639,7 +729,6 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
 			h.logger.Warn("Client registration rejected: invalid authorization header",
 				"client_ip", clientIP)
-			w.Header().Set("WWW-Authenticate", "Bearer")
 			h.writeError(w, ErrorCodeInvalidToken, "Invalid Authorization header format", http.StatusUnauthorized)
 			return
 		}
@@ -654,7 +743,9 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 			return
 		}
 
-		if providedToken != h.server.Config.RegistrationAccessToken {
+		// SECURITY: Use constant-time comparison to prevent timing attacks
+		// that could allow guessing the registration token character by character
+		if subtle.ConstantTimeCompare([]byte(providedToken), []byte(h.server.Config.RegistrationAccessToken)) != 1 {
 			h.logger.Warn("Client registration rejected: invalid registration token",
 				"client_ip", clientIP)
 			h.writeError(w, ErrorCodeInvalidToken, "Invalid registration access token", http.StatusUnauthorized)
@@ -693,10 +784,11 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 
 	// Parse registration request
 	var req struct {
-		ClientName   string   `json:"client_name"`
-		ClientType   string   `json:"client_type"`
-		RedirectURIs []string `json:"redirect_uris"`
-		Scopes       []string `json:"scopes"`
+		ClientName              string   `json:"client_name"`
+		ClientType              string   `json:"client_type"`
+		TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
+		RedirectURIs            []string `json:"redirect_uris"`
+		Scopes                  []string `json:"scopes"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -704,8 +796,55 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// OAUTH 2.1 COMPLIANCE: Validate token_endpoint_auth_method
+	// Per RFC 7591 Section 2, only these methods are standardized
+	if req.TokenEndpointAuthMethod != "" && !isValidAuthMethod(req.TokenEndpointAuthMethod) {
+		h.logger.Warn("Unsupported token_endpoint_auth_method requested",
+			"method", req.TokenEndpointAuthMethod,
+			"supported_methods", SupportedTokenAuthMethods,
+			"ip", clientIP)
+		// SECURITY: Don't reveal full list of supported methods in error response
+		// Supported methods are already advertised in /.well-known/oauth-authorization-server
+		h.writeError(w, ErrorCodeInvalidRequest,
+			fmt.Sprintf("Unsupported token_endpoint_auth_method: %s", req.TokenEndpointAuthMethod),
+			http.StatusBadRequest)
+		return
+	}
+
+	// SECURITY: Validate public client registration is allowed
+	// When client requests "none" auth method, they're requesting a public client
+	// This is common for native/CLI apps that can't securely store secrets
+	if req.TokenEndpointAuthMethod == TokenEndpointAuthMethodNone || req.ClientType == ClientTypePublic {
+		// CRITICAL: Enforce AllowPublicClientRegistration policy
+		// Even with a valid registration access token, public client creation must be explicitly allowed
+		if !h.server.Config.AllowPublicClientRegistration {
+			h.logger.Warn("Public client registration rejected (not allowed by configuration)",
+				"token_endpoint_auth_method", req.TokenEndpointAuthMethod,
+				"client_type", req.ClientType,
+				"ip", clientIP,
+				"recommendation", "Set AllowPublicClientRegistration=true to enable public client registration")
+			h.recordHTTPMetrics("register", http.MethodPost, http.StatusBadRequest, startTime)
+			if span != nil {
+				instrumentation.SetSpanAttributes(span,
+					attribute.String("oauth.client_type", "public"),
+					attribute.String("security.event", "public_client_registration_denied"),
+				)
+				instrumentation.SetSpanError(span, "public client registration not allowed")
+			}
+			h.writeError(w, ErrorCodeInvalidRequest,
+				"Public client registration is not enabled on this server. Contact the server administrator.",
+				http.StatusBadRequest)
+			return
+		}
+
+		h.logger.Info("Public client registration authorized",
+			"token_endpoint_auth_method", req.TokenEndpointAuthMethod,
+			"client_type", req.ClientType,
+			"ip", clientIP)
+	}
+
 	// Register client with IP tracking
-	client, clientSecret, err := h.server.RegisterClient(ctx, req.ClientName, req.ClientType, req.RedirectURIs, req.Scopes, clientIP, maxClients)
+	client, clientSecret, err := h.server.RegisterClient(ctx, req.ClientName, req.ClientType, req.TokenEndpointAuthMethod, req.RedirectURIs, req.Scopes, clientIP, maxClients)
 	if err != nil {
 		// Check if it's a rate limit error
 		if strings.Contains(err.Error(), "registration limit") {
@@ -822,7 +961,7 @@ func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *oauth2.Token,
 
 	tokenType := token.TokenType
 	if tokenType == "" {
-		tokenType = "Bearer"
+		tokenType = tokenTypeBearer
 	}
 
 	response := map[string]any{
@@ -845,12 +984,76 @@ func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *oauth2.Token,
 
 func (h *Handler) writeError(w http.ResponseWriter, code, description string, status int) {
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+
+	// MCP 2025-11-25: Include WWW-Authenticate header for 401 responses
+	// This helps clients discover the authorization server and required scopes
+	if status == http.StatusUnauthorized {
+		if !h.server.Config.DisableWWWAuthenticateMetadata {
+			// Full MCP 2025-11-25 compliant header with discovery metadata (default)
+			scope := ""
+			if len(h.server.Config.DefaultChallengeScopes) > 0 {
+				scope = strings.Join(h.server.Config.DefaultChallengeScopes, " ")
+			}
+			w.Header().Set("WWW-Authenticate", h.formatWWWAuthenticate(scope, code, description))
+		} else {
+			// Minimal header for backward compatibility with legacy clients (opt-in)
+			w.Header().Set("WWW-Authenticate", tokenTypeBearer)
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"error":             code,
 		"error_description": description,
 	})
+}
+
+// formatWWWAuthenticate formats the WWW-Authenticate header value per RFC 6750 and RFC 9728
+// It includes the resource_metadata URL for MCP 2025-11-25 compliance, along with optional
+// scope, error, and error_description parameters.
+//
+// Parameters:
+//   - scope: Space-separated list of scopes required (e.g., "files:read user:profile")
+//   - error: OAuth error code (e.g., "invalid_token", "insufficient_scope")
+//   - errorDesc: Human-readable error description
+//
+// Example output:
+//
+//	Bearer resource_metadata="https://example.com/.well-known/oauth-protected-resource",
+//	       scope="files:read user:profile",
+//	       error="invalid_token",
+//	       error_description="Token has expired"
+func (h *Handler) formatWWWAuthenticate(scope, error, errorDesc string) string {
+	// Build the challenge parameters (excluding the Bearer scheme)
+	var params []string
+
+	// MUST: Include resource_metadata URL per MCP 2025-11-25
+	resourceMetadataURL := h.server.Config.ProtectedResourceMetadataEndpoint()
+	params = append(params, fmt.Sprintf(`resource_metadata="%s"`, resourceMetadataURL))
+
+	// Optional: Include scope if configured
+	if scope != "" {
+		params = append(params, fmt.Sprintf(`scope="%s"`, scope))
+	}
+
+	// Optional: Include error code if provided
+	if error != "" {
+		params = append(params, fmt.Sprintf(`error="%s"`, error))
+	}
+
+	// Optional: Include error description if provided
+	if errorDesc != "" {
+		// Escape backslashes first, then quotes (order matters!)
+		// This follows RFC 2616/7230 quoted-string rules for HTTP headers
+		escapedDesc := strings.ReplaceAll(errorDesc, `\`, `\\`)
+		escapedDesc = strings.ReplaceAll(escapedDesc, `"`, `\"`)
+		params = append(params, fmt.Sprintf(`error_description="%s"`, escapedDesc))
+	}
+
+	// Format: "Bearer param1="value1", param2="value2"" per RFC 6750 Section 3
+	// Note: Space after "Bearer", then comma-space between parameters
+	return "Bearer " + strings.Join(params, ", ")
 }
 
 // ServeTokenIntrospection handles the RFC 7662 token introspection endpoint
@@ -961,6 +1164,16 @@ const userInfoKey contextKey = "user_info"
 func UserInfoFromContext(ctx context.Context) (*providers.UserInfo, bool) {
 	userInfo, ok := ctx.Value(userInfoKey).(*providers.UserInfo)
 	return userInfo, ok
+}
+
+// isValidAuthMethod checks if the given token endpoint auth method is supported
+func isValidAuthMethod(method string) bool {
+	for _, supported := range SupportedTokenAuthMethods {
+		if method == supported {
+			return true
+		}
+	}
+	return false
 }
 
 // setCORSHeaders sets CORS headers if configured and the origin is allowed.

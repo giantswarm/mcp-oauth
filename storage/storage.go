@@ -4,12 +4,70 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/providers"
 )
+
+// Storage error types for distinguishing between different failure modes.
+// These allow callers to differentiate between "not found" errors (which may indicate
+// reuse in refresh token scenarios) and transient errors (which should not trigger
+// security responses).
+var (
+	// ErrTokenNotFound indicates the token does not exist in storage.
+	// In refresh token scenarios, this may indicate the token was already rotated,
+	// potentially signaling a reuse attempt if family metadata exists.
+	ErrTokenNotFound = errors.New("token not found")
+
+	// ErrTokenExpired indicates the token exists but has expired.
+	// Expired tokens should be rejected without triggering reuse detection.
+	ErrTokenExpired = errors.New("token expired")
+
+	// ErrClientNotFound indicates the client does not exist in storage.
+	ErrClientNotFound = errors.New("client not found")
+
+	// ErrAuthorizationCodeNotFound indicates the authorization code does not exist.
+	ErrAuthorizationCodeNotFound = errors.New("authorization code not found")
+
+	// ErrAuthorizationCodeUsed indicates the authorization code has already been used.
+	// This is a security event that should trigger token revocation per OAuth 2.1.
+	ErrAuthorizationCodeUsed = errors.New("authorization code already used")
+
+	// ErrAuthorizationStateNotFound indicates the authorization state does not exist.
+	ErrAuthorizationStateNotFound = errors.New("authorization state not found")
+
+	// ErrUserInfoNotFound indicates the user info does not exist in storage.
+	ErrUserInfoNotFound = errors.New("user info not found")
+
+	// ErrRefreshTokenFamilyNotFound indicates the refresh token family does not exist.
+	// This is normal for tokens created before family tracking was enabled.
+	ErrRefreshTokenFamilyNotFound = errors.New("refresh token family not found")
+)
+
+// IsNotFoundError checks if an error indicates a "not found" condition.
+// This is useful for distinguishing between missing resources (which may indicate
+// security issues like token reuse) and transient errors (which should not).
+func IsNotFoundError(err error) bool {
+	return errors.Is(err, ErrTokenNotFound) ||
+		errors.Is(err, ErrClientNotFound) ||
+		errors.Is(err, ErrAuthorizationCodeNotFound) ||
+		errors.Is(err, ErrAuthorizationStateNotFound) ||
+		errors.Is(err, ErrUserInfoNotFound) ||
+		errors.Is(err, ErrRefreshTokenFamilyNotFound)
+}
+
+// IsExpiredError checks if an error indicates an expired token or code.
+func IsExpiredError(err error) bool {
+	return errors.Is(err, ErrTokenExpired)
+}
+
+// IsCodeReuseError checks if an error indicates authorization code reuse.
+func IsCodeReuseError(err error) bool {
+	return errors.Is(err, ErrAuthorizationCodeUsed)
+}
 
 // TokenStore defines the interface for storing and retrieving tokens.
 // This allows using in-memory, Redis, database, or other storage backends.
@@ -190,23 +248,38 @@ type Client struct {
 
 // AuthorizationState represents the state of an ongoing authorization flow
 type AuthorizationState struct {
-	StateID             string // Client's state parameter (for CSRF protection)
-	ClientID            string
-	RedirectURI         string
-	Scope               string
-	CodeChallenge       string
+	// Client's state parameter for CSRF protection
+	StateID     string
+	ClientID    string
+	RedirectURI string
+	Scope       string
+	// Resource is the target resource server identifier (RFC 8707)
+	// This binds the authorization to a specific resource server
+	Resource string
+	// Client-to-Server PKCE challenge from MCP client
+	CodeChallenge string
+	// Client-to-Server PKCE method from MCP client
 	CodeChallengeMethod string
-	ProviderState       string // State parameter sent to the provider (different from StateID)
-	CreatedAt           time.Time
-	ExpiresAt           time.Time
+	// State parameter sent to provider (different from StateID)
+	ProviderState string
+	// Server-to-Provider PKCE verifier (OAuth 2.1)
+	ProviderCodeVerifier string
+	CreatedAt            time.Time
+	ExpiresAt            time.Time
 }
 
 // AuthorizationCode represents an issued authorization code
 type AuthorizationCode struct {
-	Code                string
-	ClientID            string
-	RedirectURI         string
-	Scope               string
+	Code        string
+	ClientID    string
+	RedirectURI string
+	Scope       string
+	// Resource is the target resource server identifier (RFC 8707)
+	// This is carried from the authorization request to bind the token to a specific audience
+	Resource string
+	// Audience is the intended token audience (resource server identifier)
+	// This is used for token validation to prevent token theft across resource servers
+	Audience            string
 	CodeChallenge       string
 	CodeChallengeMethod string
 	UserID              string
@@ -214,4 +287,14 @@ type AuthorizationCode struct {
 	CreatedAt           time.Time
 	ExpiresAt           time.Time
 	Used                bool
+}
+
+// TokenMetadata tracks ownership and audience information for a token (RFC 8707)
+// Used for revocation by user+client and audience validation
+type TokenMetadata struct {
+	UserID    string    // User who owns this token
+	ClientID  string    // Client who owns this token
+	IssuedAt  time.Time // When this token was issued
+	TokenType string    // "access" or "refresh"
+	Audience  string    // RFC 8707: Intended resource server identifier (for audience validation)
 }

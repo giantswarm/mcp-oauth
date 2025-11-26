@@ -93,11 +93,15 @@ func main() {
     handler := oauth.NewHandler(server, nil)
 
     // 5. Setup routes
-    http.HandleFunc("/.well-known/oauth-protected-resource",
-        handler.ServeProtectedResourceMetadata)
-    http.Handle("/mcp", handler.ValidateToken(yourMCPHandler))
+    mux := http.NewServeMux()
+    
+    // Register Protected Resource Metadata endpoints (root + sub-path)
+    handler.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
+    
+    // Protected MCP endpoint
+    mux.Handle("/mcp", handler.ValidateToken(yourMCPHandler))
 
-    http.ListenAndServe(":8080", nil)
+    http.ListenAndServe(":8080", mux)
 }
 ```
 
@@ -180,6 +184,9 @@ type TokenStore interface {
 
 ## 🔒 Security
 
+> **📖 For comprehensive security documentation, see [SECURITY_ARCHITECTURE.md](SECURITY_ARCHITECTURE.md)**  
+> This document explains the two-layer PKCE architecture, attack mitigation strategies, and production deployment best practices.
+
 ### 🛡️ Secure by Default
 
 This library follows the **secure-by-default** principle. All security features are enabled out of the box:
@@ -223,6 +230,47 @@ server, _ := oauth.NewServer(
 ```
 
 **Important**: The server logs clear warnings when security features are weakened.
+
+### WWW-Authenticate Header & Protected Resource Discovery
+
+The library implements MCP 2025-11-25 specification for Protected Resource Metadata discovery via WWW-Authenticate headers. When enabled, all 401 Unauthorized responses include enhanced headers that help clients discover the authorization server and required scopes.
+
+**Configuration:**
+
+```go
+config := &server.Config{
+    Issuer: "https://your-domain.com",
+    
+    // MCP 2025-11-25 compliant WWW-Authenticate headers are enabled by default
+    // Only set to true if you need backward compatibility with legacy clients
+    // DisableWWWAuthenticateMetadata: false,  // (default: false = enabled, secure)
+    
+    // Optional: Configure default scopes to advertise in 401 challenges
+    DefaultChallengeScopes: []string{"mcp:access", "files:read"},
+}
+```
+
+**Example Response:**
+
+```http
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer resource_metadata="https://auth.example.com/.well-known/oauth-protected-resource",
+                         scope="mcp:access files:read",
+                         error="invalid_token",
+                         error_description="Token has expired"
+```
+
+**Security Considerations:**
+
+- **Information Disclosure**: The `resource_metadata` URL and configured scopes are intentionally public information per OAuth 2.0/MCP specifications. This is similar to the existing metadata endpoint exposure and is required for proper OAuth discovery.
+- **Scope Configuration**: Review your `DefaultChallengeScopes` carefully. Don't include overly specific scopes that could aid attackers in reconnaissance. Use broad, general scopes like `"mcp:access"` rather than `"internal:admin:full_access"`.
+- **Backward Compatibility**: Set `DisableWWWAuthenticateMetadata: true` only if you need compatibility with legacy OAuth clients that may not understand enhanced WWW-Authenticate parameters. Modern OAuth clients ignore parameters they don't understand, so the default (enabled) is safe for most deployments.
+- **Header Size Limits**: If configuring many scopes, be aware that some proxies/servers have HTTP header size limits (typically 8KB). The library will log warnings if you exceed 50 scopes.
+
+**Specification Compliance:**
+- RFC 6750 Section 3: Bearer token challenge format
+- RFC 9728: Protected Resource Metadata discovery
+- MCP 2025-11-25: MUST include resource_metadata in WWW-Authenticate
 
 ### Token Encryption
 
@@ -438,29 +486,86 @@ defer clientRegRateLimiter.Stop()
 
 ### Client Registration Protection
 
-Protect against DoS via mass client registration:
+The `AllowPublicClientRegistration` configuration controls **two security aspects**:
+
+1. **DCR Endpoint Authentication**: Whether the `/oauth/register` endpoint requires a Bearer token
+2. **Public Client Creation**: Whether public clients (native apps with `token_endpoint_auth_method: "none"`) can be registered
+
+**Secure Production Configuration (Recommended):**
 
 ```go
 &oauth.ServerConfig{
-    // Require authentication for client registration (secure by default)
+    // SECURE: Require authentication AND deny public client creation
     AllowPublicClientRegistration: false,
     
     // Registration access token (share only with trusted developers)
-    RegistrationAccessToken: "your-secure-token-here", // Use crypto/rand
+    RegistrationAccessToken: "your-secure-token-here", // Use: openssl rand -base64 32
     
     // Limit registrations per IP
     MaxClientsPerIP: 10,
 }
 ```
 
-Clients must include the registration token when registering:
+With this configuration:
+- Only authenticated requests (with valid token) can access `/oauth/register`
+- Only **confidential clients** (with secrets) can be created
+- Public clients are denied even with valid authentication
 
+**Development/Native App Configuration:**
+
+```go
+&oauth.ServerConfig{
+    // PERMISSIVE: Allow unauthenticated registration AND public clients
+    AllowPublicClientRegistration: true,
+    
+    // Still recommended: limit per-IP to prevent abuse
+    MaxClientsPerIP: 10,
+}
+```
+
+With this configuration:
+- Anyone can register clients (⚠️  DoS risk - use only in trusted environments)
+- Both confidential AND public clients can be created
+
+**Registering Clients:**
+
+Confidential client (server-side app with secret):
 ```bash
 curl -X POST https://your-server.com/oauth/register \
   -H "Authorization: Bearer your-registration-token" \
   -H "Content-Type: application/json" \
-  -d '{"client_name": "My App", "redirect_uris": ["https://myapp.com/callback"]}'
+  -d '{
+    "client_name": "My Web App",
+    "redirect_uris": ["https://myapp.com/callback"],
+    "token_endpoint_auth_method": "client_secret_basic"
+  }'
 ```
+
+Public client (native/CLI app, requires `AllowPublicClientRegistration: true`):
+```bash
+curl -X POST https://your-server.com/oauth/register \
+  -H "Authorization: Bearer your-registration-token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_name": "My Native App",
+    "redirect_uris": ["myapp://callback"],
+    "token_endpoint_auth_method": "none"
+  }'
+```
+
+**Metadata Discovery & Security:**
+
+The registration endpoint is advertised in RFC 8414 Authorization Server Metadata (`/.well-known/oauth-authorization-server`) when client registration is enabled:
+- **Included**: When `RegistrationAccessToken` is set OR `AllowPublicClientRegistration=true`
+- **Excluded**: When neither is configured (endpoint effectively disabled)
+
+This conditional advertising provides defense-in-depth:
+- RFC 8414-compliant clients can automatically discover the registration endpoint
+- The endpoint remains hidden in metadata when registration is disabled
+- Even if advertised, the endpoint enforces authentication via Bearer token
+- Multiple layers of protection: authentication, rate limiting, per-IP limits, and audit logging
+
+**Security Note:** Advertising the registration endpoint in metadata does NOT weaken security. The endpoint itself enforces strict authentication (when `AllowPublicClientRegistration=false`), rate limiting, and audit logging. This is analogous to advertising the token endpoint - it's public information about available functionality, but access is strictly controlled.
 
 ### Custom Redirect URI Schemes
 

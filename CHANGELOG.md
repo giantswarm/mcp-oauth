@@ -9,6 +9,277 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Client ID Metadata Documents Support (draft-ietf-oauth-client-id-metadata-document, MCP 2025-11-25)**
+  - **Feature**: Implemented URL-based client identifiers with automatic metadata fetching
+  - **MCP Compliance**: SHOULD requirement for MCP 2025-11-25 specification
+  - **Use Case**: Enables OAuth flows where servers and clients have no pre-existing relationship
+  - **Implementation**:
+    - URL detection: Automatically detects HTTPS URLs as client_id and fetches metadata
+    - Metadata fetching: HTTP client with configurable timeout (default: 10s) and 1MB size limit
+    - SSRF protection: Blocks private IP ranges (10.x, 172.16-31.x, 192.168.x), loopback, and link-local addresses
+    - Caching: In-memory LRU cache with TTL support (default: 5 minutes) and HTTP Cache-Control respect
+    - Validation: Ensures client_id in document matches URL exactly (security requirement)
+    - Integration: Transparent integration with existing authorization flow via `GetClient()`
+  - **Configuration**: 
+    - `EnableClientIDMetadataDocuments` - Enable feature (default: false for backward compatibility)
+    - `ClientMetadataFetchTimeout` - Timeout for metadata fetch (default: 10s)
+    - `ClientMetadataCacheTTL` - Cache TTL (default: 5m)
+  - **Discovery**: Authorization Server Metadata advertises support via `client_id_metadata_document_supported: true`
+  - **Security**:
+    - HTTPS-only enforcement for metadata URLs
+    - Comprehensive SSRF protection against internal network access
+    - Client_id validation prevents impersonation attacks
+    - Localhost redirect URI warnings per spec recommendations
+  - **Testing**: Comprehensive unit tests covering URL detection, SSRF protection, caching, and metadata validation
+  - **Performance**: LRU cache with configurable size (default: 1000 entries) prevents memory exhaustion
+
+- **Enhanced Protected Resource Metadata (RFC 9728, MCP 2025-11-25)**
+  - **Feature**: Enhanced Protected Resource Metadata with `scopes_supported` field and sub-path discovery
+  - **MCP Compliance**: High-priority enhancement for MCP 2025-11-25 specification
+  - **Implementation**:
+    - Added `scopes_supported` field to Protected Resource Metadata response when `SupportedScopes` is configured
+    - Implemented sub-path metadata endpoint support (e.g., `/.well-known/oauth-protected-resource/mcp`)
+    - Added `RegisterProtectedResourceMetadataRoutes()` helper function for easy route registration
+    - Supports both root (`/.well-known/oauth-protected-resource`) and sub-path endpoints
+  - **Discovery**: Clients can now discover available scopes and access metadata at service-specific sub-paths
+  - **Helper Function**: Simplifies registration of both root and sub-path metadata endpoints with a single call
+  - **Testing**: Added comprehensive unit tests for all scenarios (scopes inclusion, sub-path routing, path normalization)
+  - **Documentation**: Updated README and examples to demonstrate new functionality
+
+- **RFC 8707 Resource Parameter for Token Audience Binding (MCP 2025-11-25)**
+  - **Feature**: Implemented RFC 8707 Resource Indicators to bind access tokens to their intended resource server
+  - **MCP Compliance**: MUST requirement for MCP 2025-11-25 specification
+  - **Security**: Prevents token theft and replay attacks across different resource servers
+  - **Implementation**:
+    - Authorization endpoint accepts `resource` parameter to specify target resource server
+    - Token endpoint accepts `resource` parameter and validates consistency with authorization code
+    - Audience validation ensures tokens are only accepted by their intended resource server
+    - Resource binding stored with authorization codes and tokens
+  - **Configuration**: New `ResourceIdentifier` field in `server.Config` (defaults to `Issuer` if not set)
+  - **Backward Compatibility**: Resource parameter is optional to maintain compatibility with existing clients
+  - **Storage Changes**: 
+    - Added `Resource` field to `storage.AuthorizationState`
+    - Added `Resource` and `Audience` fields to `storage.AuthorizationCode`
+  - **Validation**: Resource must be absolute HTTPS URI (or HTTP for localhost development)
+  - **Audit Events**: New `EventResourceMismatch` for resource parameter validation failures
+  - **Testing**: All existing tests updated, maintains 80%+ coverage
+
+### Security
+
+- **RFC 8707 Security Enhancements**
+  - **Resource Length Validation**: Added maximum length limit (2048 characters) for resource parameter to prevent DoS attacks via extremely long URIs (RFC 3986 recommended limit)
+  - **Constant-Time Audience Comparison**: Implemented constant-time comparison for token audience validation to prevent timing attacks (defense-in-depth best practice)
+  - **Rate Limiting on Resource Mismatch**: Added rate limiting for repeated resource mismatch attempts to prevent reconnaissance attacks and log flooding
+  - **Impact**: Enhanced defense-in-depth for RFC 8707 implementation, preventing potential DoS and timing-based attacks
+  - **Testing**: Added comprehensive test coverage for length validation and rate limiting behavior
+
+- **Scope string deep copy in Google provider to prevent race conditions**
+  - **Problem**: Provider was using shallow copy when passing scopes to oauth2.Config, potentially allowing concurrent modifications to shared slice references
+  - **Risk**: Low risk in current implementation (scopes only set at initialization), but future code changes could introduce race conditions
+  - **Solution**: Implemented deep copy of scope slices to eliminate shared references
+  - **Impact**: Prevents potential data races and unexpected scope modifications in concurrent scenarios
+  - **Testing**: Added comprehensive test coverage for deep copy safety and concurrent modification scenarios
+
+- **Scope string length validation to prevent DoS attacks**
+  - **Problem**: No limit on scope parameter length could allow DoS attacks via extremely long scope strings
+  - **Risk**: Potential resource exhaustion through processing and validating arbitrarily long scope strings
+  - **Solution**: 
+    - Added `MaxScopeLength` configuration parameter (default: 1000 characters)
+    - Scope length validated early in authorization flow before parsing/processing
+    - Clear error messages when limit exceeded
+  - **Impact**: Prevents potential DoS attacks while allowing legitimate use cases (1000 chars supports ~50+ typical scopes)
+  - **Configuration**: `server.Config.MaxScopeLength` (default: 1000, automatically set if 0)
+  - **Error**: Returns `invalid_scope` with clear message when limit exceeded
+  - **Audit**: Scope length violations are logged via audit system
+  - **Testing**: Added tests for boundary conditions (at limit, exceeds limit, empty scopes)
+
+### Fixed
+
+- **OAuth callback now properly passes client-requested scopes to Google provider (#82)**
+  - **Problem**: Scopes from client authorization requests were not being passed to Google during provider authorization redirect
+  - **Impact**: Google returned tokens without user info (no scopes = no permissions = no data), causing userID extraction to fail and token storage to fail with "userID cannot be empty" errors
+  - **Root Cause**: The Provider interface's `AuthorizationURL` method didn't accept scopes parameter, so only provider's hardcoded scopes were used
+  - **Solution**: 
+    - Modified `Provider.AuthorizationURL()` interface to accept `scopes []string` parameter
+    - Updated Google provider to use client-requested scopes when provided, falling back to configured defaults when empty
+    - Updated server flows to parse and pass client scopes to provider
+  - **Breaking Change**: 🔴 **YES** - Provider interface method signature changed
+    - **Before**: `AuthorizationURL(state, codeChallenge, codeChallengeMethod string) string`
+    - **After**: `AuthorizationURL(state, codeChallenge, codeChallengeMethod string, scopes []string) string`
+    - **Migration**: Add `scopes` parameter to any custom provider implementations
+  - **Behavior**:
+    - When client provides scopes in authorization request → those scopes are used
+    - When client provides no scopes → provider's configured default scopes are used
+    - Empty scopes array → provider defaults used
+  - **Testing**: Added comprehensive tests for dynamic scope behavior
+
+- **WWW-Authenticate metadata now defaults to enabled (secure by default)**
+  - **Problem**: Field naming made it unclear whether metadata was enabled or disabled by default
+  - **Impact**: Initial implementation had confusing semantics around defaults
+  - **Solution**: Renamed to `DisableWWWAuthenticateMetadata` following the library's "secure by default" principle
+  - **Field change**: `EnableWWWAuthenticateMetadata` → `DisableWWWAuthenticateMetadata` (inverted logic)
+  - **Default behavior**: 
+    - `DisableWWWAuthenticateMetadata: false` (default) → Full metadata ENABLED (secure by default)
+    - `DisableWWWAuthenticateMetadata: true` → Minimal headers for backward compatibility
+  - **Breaking Change**: 🔴 **YES** - Field renamed for clarity
+    - **Before**: `config.EnableWWWAuthenticateMetadata = false` to disable
+    - **After**: `config.DisableWWWAuthenticateMetadata = true` to disable
+    - **Migration**: Replace field name and invert boolean value
+  - **Why this matters**:
+    - Clear naming: "Disable" prefix indicates opt-out, not opt-in
+    - Consistent with library philosophy: secure by default
+    - MCP 2025-11-25 compliance out of the box
+    - Modern OAuth clients ignore unknown header parameters (safe for most clients)
+  - **Configuration changes**:
+    - Renamed field for clarity
+    - Added security warning log when feature is disabled
+    - Removed confusing default-forcing logic (zero value = enabled)
+  - **Testing**: All existing tests updated to use new field name
+
+- **Dynamic Client Registration (DCR) now respects `token_endpoint_auth_method` parameter (#70)**
+  - **Problem**: DCR always created confidential clients with secrets, even when native/CLI apps requested public clients
+  - **Solution**: Implement OAuth 2.1 / RFC 7591 compliant DCR that respects the `token_endpoint_auth_method` field
+  - **Key Changes**:
+    - When `token_endpoint_auth_method: "none"` is requested, creates a public client (no secret)
+    - When `token_endpoint_auth_method: "client_secret_basic"` or `"client_secret_post"`, creates a confidential client (with secret)
+    - Auth method parameter overrides client_type when both are provided
+    - Added validation to reject unsupported auth methods
+  - **Security Enhancements**:
+    - Public clients still require PKCE for all flows (OAuth 2.1 compliance)
+    - **CRITICAL**: Added enforcement of `AllowPublicClientRegistration` policy for public client creation
+    - Public client registration is now denied when `AllowPublicClientRegistration=false`, even with valid registration token
+    - Reduced information leakage in auth method error messages (supported methods not revealed in error responses)
+    - Comprehensive audit logging for public client registration attempts
+  - **Configuration Clarification**:
+    - `AllowPublicClientRegistration` now explicitly controls TWO aspects:
+      1. DCR endpoint authentication (whether Bearer token is required)
+      2. Public client creation (whether clients with `token_endpoint_auth_method="none"` can be registered)
+    - Updated documentation to clearly explain secure vs. permissive configurations
+  - **Use Case**: Enables native applications (like mcp-debug) to properly register as public clients
+  - **Testing**: Added comprehensive unit and integration tests for all auth method combinations and policy enforcement
+  - **Constants**: Added `TokenEndpointAuthMethod*` constants for type safety
+
+### Added
+
+- **MCP 2025-11-25: WWW-Authenticate header with resource_metadata for discovery (#73)**
+  - Implemented MCP 2025-11-25 specification requirement for Protected Resource Metadata discovery
+  - **What changed**: All 401 Unauthorized responses now include enhanced WWW-Authenticate headers
+  - **Header format** (per RFC 6750 and RFC 9728):
+    ```http
+    WWW-Authenticate: Bearer resource_metadata="https://example.com/.well-known/oauth-protected-resource",
+                             scope="files:read user:profile",
+                             error="invalid_token",
+                             error_description="Token has expired"
+    ```
+  - **Discovery mechanism**: Helps MCP clients automatically discover:
+    - Authorization server location via `resource_metadata` URL
+    - Required scopes via optional `scope` parameter
+    - Error details for debugging and retry logic
+  - **Configuration**:
+    - `DefaultChallengeScopes`: Configure default scopes to include in WWW-Authenticate challenges
+    - Example: `config.DefaultChallengeScopes = []string{"mcp:access", "files:read"}`
+    - `DisableWWWAuthenticateMetadata`: Opt-out flag for backward compatibility (default: false = enabled)
+  - **Backward compatibility**:
+    - Feature enabled by default for MCP 2025-11-25 compliance (secure by default)
+    - Can be disabled for legacy clients: `config.DisableWWWAuthenticateMetadata = true`
+    - When disabled, returns minimal `WWW-Authenticate: Bearer` header
+    - Standard HTTP behavior: clients ignore headers they don't understand
+    - No breaking changes to existing client implementations
+  - **Automatic behavior**:
+    - All existing 401 responses automatically get proper WWW-Authenticate headers
+    - No code changes needed in existing handlers
+    - Scope parameter only included if configured (optional)
+  - **Specification compliance**:
+    - MCP 2025-11-25: MUST include resource_metadata in WWW-Authenticate (✓)
+    - RFC 6750 Section 3: Bearer token challenge format (✓)
+    - RFC 9728: Protected Resource Metadata discovery (✓)
+  - **Security improvements**:
+    - Enhanced escaping in error descriptions: properly handles backslashes and quotes
+    - Follows RFC 2616/7230 quoted-string rules for HTTP header values
+    - Prevents header injection from malformed error messages
+  - **Code quality improvements**:
+    - Extracted repeated test strings to constants (DRY principle)
+    - Added edge case tests for long scope lists and special characters
+    - Improved test maintainability with test helper constants
+  - **Testing**: Comprehensive unit tests for header formatting, integration, backward compatibility mode, and security edge cases (100% coverage)
+  - **Configuration validation** (security hardening):
+    - Validates `DefaultChallengeScopes` for invalid characters (quotes, commas, backslashes)
+    - Warns when scope count exceeds 50 (HTTP header size limit protection)
+    - Defense-in-depth: validation complements existing escaping
+    - Comprehensive test coverage for validation edge cases
+  - **Documentation**:
+    - Added security considerations section to README
+    - Documents information disclosure policy (intentional per OAuth specs)
+    - Guidance on scope configuration best practices
+    - Clear warnings about header size limits
+
+- **OAuth 2.1 PKCE for provider leg - Enhanced security for confidential clients (#68)**
+  - Implemented full OAuth 2.1 PKCE support on the OAuth server → Provider leg
+  - **Why this matters**: OAuth 2.1 recommends PKCE for ALL client types (public AND confidential) to protect against Authorization Code Injection attacks
+  - **Two-layer PKCE architecture**:
+    1. MCP client → OAuth server: Uses client-provided PKCE (already working)
+    2. OAuth server → Google: Now uses server-generated PKCE (NEW)
+  - **Security benefits**:
+    - Defense-in-depth against Authorization Code Injection
+    - Cryptographic binding between authorization and token exchange
+    - Protection even if state parameter is compromised
+    - OAuth 2.1 compliance for confidential client security
+  - **Implementation details**:
+    - Added `ProviderCodeVerifier` field to `AuthorizationState`
+    - Server generates independent PKCE pair for provider communication
+    - Google provider now accepts and validates PKCE parameters
+    - Both client_secret AND PKCE provide layered security
+  - **Testing**: Updated provider and integration tests to verify PKCE flow
+  - **Documentation**: Added `SECURITY_ARCHITECTURE.md` explaining the security model
+
+- **Comprehensive security architecture documentation**
+  - New `SECURITY_ARCHITECTURE.md` document explaining:
+    - Two-layer authentication architecture (MCP client ↔ OAuth server ↔ Provider)
+    - PKCE implementation at both layers with security rationale
+    - Dual-layer state protection strategy
+    - Attack mitigation strategies (code injection, CSRF, timing attacks, etc.)
+    - Production deployment security checklist
+    - Monitoring and auditing best practices
+  - Detailed threat model analysis
+  - References to OAuth 2.1 and RFC 7636 specifications
+
+### Fixed
+
+- **Google provider OAuth flow now fully OAuth 2.1 compliant (#68)**
+  - Fixed: "Missing code verifier" errors when using Google OAuth
+  - Root cause: Provider was forwarding MCP client's PKCE to Google without corresponding verifier
+  - Solution: Implemented proper two-layer PKCE where server generates its own PKCE for provider leg
+  - Impact: Fixes complete OAuth flow failure while enhancing security beyond original implementation
+  - Migration: No breaking changes - PKCE is generated and handled automatically
+
+### Security
+
+- **Typed storage errors for security-sensitive error handling**
+  - Added sentinel errors (`ErrTokenNotFound`, `ErrTokenExpired`, `ErrClientNotFound`, `ErrAuthorizationCodeNotFound`, `ErrAuthorizationCodeUsed`, `ErrAuthorizationStateNotFound`) to distinguish transient errors from security events
+  - Added helper functions `IsNotFoundError()`, `IsExpiredError()`, `IsCodeReuseError()` for consistent error type checking
+  - Enables proper detection of token reuse attacks without false positives from transient storage failures
+
+- **CORS wildcard origin now requires explicit opt-in**
+  - New `AllowWildcardOrigin` field must be set to `true` to use `"*"` in `AllowedOrigins`
+  - Prevents accidental CSRF exposure in production deployments
+  - Configuration will panic with clear instructions if wildcard is used without opt-in
+
+- **Constant-time comparison for registration access token**
+  - Uses `crypto/subtle.ConstantTimeCompare` to prevent timing attacks on the registration endpoint
+  - Attackers cannot guess the token character by character through response time analysis
+
+- **MinStateLength floor enforcement**
+  - Absolute minimum of 16 characters enforced regardless of configuration
+  - Ensures adequate CSRF protection entropy even if misconfigured
+  - Logs warning when configured value is below the floor
+
+- **Enhanced SECURITY.md documentation**
+  - Added production logging configuration guidance (disable DEBUG in production)
+  - Added security-sensitive log entries reference table
+  - Extended production deployment checklist with logging, CORS, and state length checks
+
+### Changed
+
 - **OpenTelemetry instrumentation infrastructure for comprehensive observability (#37)**
   - Added new `instrumentation` package providing metrics, traces, and logging integration
   - Features:
@@ -105,6 +376,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added descriptive test constants for better code clarity
   - **Impact**: Internal refactoring only - no functional changes or breaking changes
   - **Benefit**: Reduced cyclomatic complexity, improved testability and code readability
+
+### Fixed
+
+- **Added registration_endpoint to OAuth Authorization Server Metadata (#66)**
+  - Fixed missing `registration_endpoint` field in `/.well-known/oauth-authorization-server` response
+  - OAuth clients can now automatically discover Dynamic Client Registration endpoint via RFC 8414 metadata
+  - The `/oauth/register` endpoint was working but not advertised in metadata
+  - **Conditional Advertising**: Field is only included when client registration is actually available
+    - Included when `RegistrationAccessToken` is set OR `AllowPublicClientRegistration=true`
+    - Excluded when neither is configured (defense-in-depth)
+  - **Impact**: Enables automatic client discovery for RFC 8414-compliant OAuth clients
+  - **Standards**: Complies with RFC 8414 Section 3.1 requirement for `registration_endpoint` field
+  - **Security**: Added comprehensive documentation explaining metadata security model
+  - **Testing**: Enhanced metadata tests to verify conditional inclusion/exclusion behavior
 
 ### Security
 

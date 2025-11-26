@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path"
 	"strings"
 	"testing"
 	"time"
@@ -22,9 +23,12 @@ import (
 )
 
 const (
-	testTokenTypeBearer  = "Bearer"
-	testClientRemoteAddr = "192.168.1.100:12345"
-	testOriginApp        = "https://app.example.com"
+	testTokenTypeBearer         = "Bearer"
+	testClientRemoteAddr        = "192.168.1.100:12345"
+	testOriginApp               = "https://app.example.com"
+	testIssuer                  = "https://auth.example.com"
+	testResourceMetadataURL     = `resource_metadata="https://auth.example.com/.well-known/oauth-protected-resource"`
+	testResourceMetadataURLFull = "https://auth.example.com/.well-known/oauth-protected-resource"
 )
 
 func setupTestHandler(t *testing.T) (*Handler, *memory.Store) {
@@ -34,7 +38,7 @@ func setupTestHandler(t *testing.T) (*Handler, *memory.Store) {
 	provider := mock.NewMockProvider()
 
 	config := &server.Config{
-		Issuer: "https://auth.example.com",
+		Issuer: testIssuer,
 	}
 
 	srv, err := server.New(provider, store, store, store, config, nil)
@@ -44,6 +48,16 @@ func setupTestHandler(t *testing.T) (*Handler, *memory.Store) {
 
 	handler := NewHandler(srv, nil)
 	return handler, store
+}
+
+// decodeProtectedResourceMetadata decodes Protected Resource Metadata from the response body
+func decodeProtectedResourceMetadata(t *testing.T, w *httptest.ResponseRecorder) *ProtectedResourceMetadata {
+	t.Helper()
+	var meta ProtectedResourceMetadata
+	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
+		t.Fatalf("failed to decode Protected Resource Metadata: %v", err)
+	}
+	return &meta
 }
 
 func setupTestHandlerWithCORS(t *testing.T, allowedOrigins []string) (*Handler, *memory.Store) {
@@ -77,7 +91,7 @@ func TestNewHandler(t *testing.T) {
 	provider := mock.NewMockProvider()
 
 	config := &server.Config{
-		Issuer: "https://auth.example.com",
+		Issuer: testIssuer,
 	}
 
 	srv, err := server.New(provider, store, store, store, config, nil)
@@ -108,19 +122,393 @@ func TestHandler_ServeProtectedResourceMetadata(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	var meta ProtectedResourceMetadata
+	meta := decodeProtectedResourceMetadata(t, w)
+
+	if meta.Resource != testIssuer {
+		t.Errorf("Resource = %q, want %q", meta.Resource, testIssuer)
+	}
+}
+
+func TestHandler_ServeProtectedResourceMetadata_WithScopes(t *testing.T) {
+	store := memory.New()
+	provider := mock.NewMockProvider()
+
+	config := &server.Config{
+		Issuer:          testIssuer,
+		SupportedScopes: []string{"files:read", "files:write", "user:profile"},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeProtectedResourceMetadata(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	meta := decodeProtectedResourceMetadata(t, w)
+
+	if meta.Resource != testIssuer {
+		t.Errorf("Resource = %q, want %q", meta.Resource, testIssuer)
+	}
+
+	// Verify scopes_supported is included
+	if len(meta.ScopesSupported) != 3 {
+		t.Errorf("len(ScopesSupported) = %d, want 3", len(meta.ScopesSupported))
+	}
+
+	expectedScopes := []string{"files:read", "files:write", "user:profile"}
+	for i, scope := range expectedScopes {
+		if meta.ScopesSupported[i] != scope {
+			t.Errorf("ScopesSupported[%d] = %q, want %q", i, meta.ScopesSupported[i], scope)
+		}
+	}
+
+	store.Stop()
+}
+
+func TestHandler_ServeProtectedResourceMetadata_WithoutScopes(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Ensure SupportedScopes is empty (default)
+	handler.server.Config.SupportedScopes = []string{}
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeProtectedResourceMetadata(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var meta map[string]any
 	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	if meta.Resource != "https://auth.example.com" {
-		t.Errorf("Resource = %q, want %q", meta.Resource, "https://auth.example.com")
+	// Verify scopes_supported is NOT included
+	if _, exists := meta["scopes_supported"]; exists {
+		t.Error("scopes_supported should not be included when SupportedScopes is empty")
+	}
+}
+
+func TestHandler_RegisterProtectedResourceMetadataRoutes(t *testing.T) {
+	tests := []struct {
+		name        string
+		mcpPath     string
+		wantRoot    bool
+		wantSubPath bool
+		subPath     string
+	}{
+		{
+			name:        "empty path",
+			mcpPath:     "",
+			wantRoot:    true,
+			wantSubPath: false,
+		},
+		{
+			name:        "root path",
+			mcpPath:     "/",
+			wantRoot:    true,
+			wantSubPath: false,
+		},
+		{
+			name:        "simple path",
+			mcpPath:     "/mcp",
+			wantRoot:    true,
+			wantSubPath: true,
+			subPath:     "/.well-known/oauth-protected-resource/mcp",
+		},
+		{
+			name:        "path without leading slash",
+			mcpPath:     "mcp",
+			wantRoot:    true,
+			wantSubPath: true,
+			subPath:     "/.well-known/oauth-protected-resource/mcp",
+		},
+		{
+			name:        "path with trailing slash",
+			mcpPath:     "/mcp/",
+			wantRoot:    true,
+			wantSubPath: true,
+			subPath:     "/.well-known/oauth-protected-resource/mcp",
+		},
+		{
+			name:        "nested path",
+			mcpPath:     "/api/mcp",
+			wantRoot:    true,
+			wantSubPath: true,
+			subPath:     "/.well-known/oauth-protected-resource/api/mcp",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler, store := setupTestHandler(t)
+			defer store.Stop()
+
+			handler.server.Config.SupportedScopes = []string{"test:scope"}
+
+			mux := http.NewServeMux()
+			handler.RegisterProtectedResourceMetadataRoutes(mux, tt.mcpPath)
+
+			// Test root endpoint
+			if tt.wantRoot {
+				req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil)
+				w := httptest.NewRecorder()
+				mux.ServeHTTP(w, req)
+
+				if w.Code != http.StatusOK {
+					t.Errorf("root endpoint: status = %d, want %d", w.Code, http.StatusOK)
+				}
+
+				meta := decodeProtectedResourceMetadata(t, w)
+
+				if len(meta.ScopesSupported) != 1 || meta.ScopesSupported[0] != "test:scope" {
+					t.Errorf("root endpoint: ScopesSupported = %v, want [test:scope]", meta.ScopesSupported)
+				}
+			}
+
+			// Test sub-path endpoint
+			if tt.wantSubPath {
+				req := httptest.NewRequest(http.MethodGet, tt.subPath, nil)
+				w := httptest.NewRecorder()
+				mux.ServeHTTP(w, req)
+
+				if w.Code != http.StatusOK {
+					t.Errorf("sub-path endpoint %q: status = %d, want %d", tt.subPath, w.Code, http.StatusOK)
+				}
+
+				meta := decodeProtectedResourceMetadata(t, w)
+
+				if len(meta.ScopesSupported) != 1 || meta.ScopesSupported[0] != "test:scope" {
+					t.Errorf("sub-path endpoint: ScopesSupported = %v, want [test:scope]", meta.ScopesSupported)
+				}
+			}
+		})
+	}
+}
+
+func TestHandler_RegisterProtectedResourceMetadataRoutes_SecurityValidation(t *testing.T) {
+	tests := []struct {
+		name           string
+		mcpPath        string
+		shouldRegister bool
+		description    string
+		skipHTTPTest   bool // Skip HTTP request test if path contains characters invalid in URLs
+	}{
+		{
+			name:           "path traversal with double dots",
+			mcpPath:        "/../../etc/passwd",
+			shouldRegister: false,
+			description:    "should reject path traversal attempts",
+		},
+		{
+			name:           "path traversal in middle",
+			mcpPath:        "/api/../secret",
+			shouldRegister: false,
+			description:    "should reject path traversal in any position",
+		},
+		{
+			name:           "excessively long path",
+			mcpPath:        "/" + strings.Repeat("a", 300),
+			shouldRegister: false,
+			description:    "should reject paths exceeding max length",
+		},
+		{
+			name:           "path with null byte",
+			mcpPath:        "/mcp\x00/secret",
+			shouldRegister: false,
+			description:    "should reject paths with null bytes",
+			skipHTTPTest:   true, // null bytes are invalid in URLs
+		},
+		{
+			name:           "path with too many segments",
+			mcpPath:        "/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p",
+			shouldRegister: false,
+			description:    "should reject paths with excessive segments",
+		},
+		{
+			name:           "valid simple path",
+			mcpPath:        "/mcp",
+			shouldRegister: true,
+			description:    "should accept valid simple path",
+		},
+		{
+			name:           "valid nested path",
+			mcpPath:        "/api/v1/mcp",
+			shouldRegister: true,
+			description:    "should accept valid nested path",
+		},
+		{
+			name:           "valid path with hyphens and underscores",
+			mcpPath:        "/mcp-server_v2",
+			shouldRegister: true,
+			description:    "should accept path with hyphens and underscores",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler, store := setupTestHandler(t)
+			defer store.Stop()
+
+			handler.server.Config.SupportedScopes = []string{"test:scope"}
+
+			// First verify the validation function works correctly
+			err := handler.validateMetadataPath(tt.mcpPath)
+			if tt.shouldRegister && err != nil {
+				t.Errorf("%s: validateMetadataPath() returned error for valid path: %v",
+					tt.description, err)
+			} else if !tt.shouldRegister && err == nil {
+				t.Errorf("%s: validateMetadataPath() did not reject invalid path",
+					tt.description)
+			}
+
+			// Skip HTTP test if path contains characters that are invalid in URLs
+			if tt.skipHTTPTest {
+				return
+			}
+
+			mux := http.NewServeMux()
+			handler.RegisterProtectedResourceMetadataRoutes(mux, tt.mcpPath)
+
+			// Build expected path
+			var expectedPath string
+			if tt.shouldRegister && tt.mcpPath != "" && tt.mcpPath != "/" {
+				cleanPath := path.Clean("/" + strings.TrimPrefix(tt.mcpPath, "/"))
+				expectedPath = "/.well-known/oauth-protected-resource" + cleanPath
+			} else {
+				// For invalid paths that were rejected, test that a reasonable path returns 404
+				expectedPath = "/.well-known/oauth-protected-resource/rejected-path"
+			}
+
+			// Try to access the sub-path endpoint
+			req := httptest.NewRequest(http.MethodGet, expectedPath, nil)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+
+			if tt.shouldRegister {
+				if w.Code != http.StatusOK {
+					t.Errorf("%s: status = %d, want %d (path should be registered)",
+						tt.description, w.Code, http.StatusOK)
+				}
+			} else {
+				// For invalid paths, verify they were not registered
+				// We expect 404 because the handler was never registered
+				if w.Code == http.StatusOK {
+					t.Errorf("%s: path was incorrectly registered (security violation)",
+						tt.description)
+				}
+			}
+		})
+	}
+}
+
+func TestHandler_validateMetadataPath(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "valid simple path",
+			path:    "/mcp",
+			wantErr: false,
+		},
+		{
+			name:    "valid nested path",
+			path:    "/api/v1/mcp",
+			wantErr: false,
+		},
+		{
+			name:    "path traversal attempt",
+			path:    "../../../etc/passwd",
+			wantErr: true,
+			errMsg:  "path traversal",
+		},
+		{
+			name:    "path traversal in middle",
+			path:    "/api/../secret",
+			wantErr: true,
+			errMsg:  "path traversal",
+		},
+		{
+			name:    "excessively long path",
+			path:    "/" + strings.Repeat("a", 300),
+			wantErr: true,
+			errMsg:  "maximum length",
+		},
+		{
+			name:    "path at max length boundary",
+			path:    "/" + strings.Repeat("a", 255),
+			wantErr: false,
+		},
+		{
+			name:    "path with null byte",
+			path:    "/mcp\x00/hack",
+			wantErr: true,
+			errMsg:  "null byte",
+		},
+		{
+			name:    "path with too many segments",
+			path:    "/a/b/c/d/e/f/g/h/i/j/k/l",
+			wantErr: true,
+			errMsg:  "too many segments",
+		},
+		{
+			name:    "path with exactly 10 segments (boundary)",
+			path:    "/a/b/c/d/e/f/g/h/i/j",
+			wantErr: false,
+		},
+		{
+			name:    "empty path",
+			path:    "",
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler, store := setupTestHandler(t)
+			defer store.Stop()
+
+			err := handler.validateMetadataPath(tt.path)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("validateMetadataPath() error = nil, want error containing %q", tt.errMsg)
+					return
+				}
+				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("validateMetadataPath() error = %v, want error containing %q", err, tt.errMsg)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("validateMetadataPath() unexpected error = %v", err)
+				}
+			}
+		})
 	}
 }
 
 func TestHandler_ServeAuthorizationServerMetadata(t *testing.T) {
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
+
+	// Enable client registration by setting a registration access token
+	handler.server.Config.RegistrationAccessToken = "test-token"
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
 	w := httptest.NewRecorder()
@@ -136,8 +524,128 @@ func TestHandler_ServeAuthorizationServerMetadata(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
+	// RFC 8414: Table-driven test for all required metadata fields
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{
+			name: "issuer",
+			got:  meta.Issuer,
+			want: "https://auth.example.com",
+		},
+		{
+			name: "authorization_endpoint",
+			got:  meta.AuthorizationEndpoint,
+			want: "https://auth.example.com/oauth/authorize",
+		},
+		{
+			name: "token_endpoint",
+			got:  meta.TokenEndpoint,
+			want: "https://auth.example.com/oauth/token",
+		},
+		{
+			name: "registration_endpoint",
+			got:  meta.RegistrationEndpoint,
+			want: "https://auth.example.com/oauth/register",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Errorf("%s = %q, want %q", tt.name, tt.got, tt.want)
+			}
+		})
+	}
+
+	// Verify response_types_supported
+	if len(meta.ResponseTypesSupported) == 0 {
+		t.Error("ResponseTypesSupported is empty")
+	}
+	if len(meta.ResponseTypesSupported) > 0 && meta.ResponseTypesSupported[0] != "code" {
+		t.Errorf("ResponseTypesSupported[0] = %q, want %q", meta.ResponseTypesSupported[0], "code")
+	}
+
+	// Verify grant_types_supported
+	if len(meta.GrantTypesSupported) < 2 {
+		t.Errorf("GrantTypesSupported has %d items, want at least 2", len(meta.GrantTypesSupported))
+	}
+
+	// Verify code_challenge_methods_supported includes S256
+	if len(meta.CodeChallengeMethodsSupported) == 0 {
+		t.Error("CodeChallengeMethodsSupported is empty")
+	}
+	if len(meta.CodeChallengeMethodsSupported) > 0 && meta.CodeChallengeMethodsSupported[0] != "S256" {
+		t.Errorf("CodeChallengeMethodsSupported[0] = %q, want %q", meta.CodeChallengeMethodsSupported[0], "S256")
+	}
+}
+
+func TestHandler_ServeAuthorizationServerMetadata_NoRegistration(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Ensure client registration is disabled (neither token nor public registration)
+	handler.server.Config.AllowPublicClientRegistration = false
+	handler.server.Config.RegistrationAccessToken = ""
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeAuthorizationServerMetadata(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var meta AuthorizationServerMetadata
+	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Verify registration_endpoint is NOT included when registration is disabled
+	if meta.RegistrationEndpoint != "" {
+		t.Errorf("registration_endpoint should be empty when registration is disabled, got %q", meta.RegistrationEndpoint)
+	}
+
+	// Verify required fields are still present
 	if meta.Issuer != "https://auth.example.com" {
-		t.Errorf("Issuer = %q, want %q", meta.Issuer, "https://auth.example.com")
+		t.Errorf("issuer = %q, want %q", meta.Issuer, "https://auth.example.com")
+	}
+	if meta.AuthorizationEndpoint != "https://auth.example.com/oauth/authorize" {
+		t.Errorf("authorization_endpoint = %q, want %q", meta.AuthorizationEndpoint, "https://auth.example.com/oauth/authorize")
+	}
+	if meta.TokenEndpoint != "https://auth.example.com/oauth/token" {
+		t.Errorf("token_endpoint = %q, want %q", meta.TokenEndpoint, "https://auth.example.com/oauth/token")
+	}
+}
+
+func TestHandler_ServeAuthorizationServerMetadata_PublicRegistration(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Enable public client registration (no token required)
+	handler.server.Config.AllowPublicClientRegistration = true
+	handler.server.Config.RegistrationAccessToken = ""
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeAuthorizationServerMetadata(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var meta AuthorizationServerMetadata
+	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Verify registration_endpoint IS included when public registration is enabled
+	if meta.RegistrationEndpoint != "https://auth.example.com/oauth/register" {
+		t.Errorf("registration_endpoint = %q, want %q", meta.RegistrationEndpoint, "https://auth.example.com/oauth/register")
 	}
 }
 
@@ -373,6 +881,7 @@ func TestHandler_ServeAuthorization_CompleteFlow(t *testing.T) {
 	client, _, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -423,6 +932,7 @@ func TestHandler_ServeCallback(t *testing.T) {
 	client, _, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -443,6 +953,7 @@ func TestHandler_ServeCallback(t *testing.T) {
 		client.ClientID,
 		"https://example.com/callback",
 		"openid email",
+		"", // resource parameter (optional)
 		challenge,
 		"S256",
 		clientState,
@@ -554,6 +1065,7 @@ func TestHandler_ServeAuthorization_StateLength(t *testing.T) {
 	client, _, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -672,6 +1184,7 @@ func TestHandler_ServeToken_AuthorizationCode(t *testing.T) {
 	client, secret, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -782,6 +1295,269 @@ func TestHandler_ServeClientRegistration_Success(t *testing.T) {
 	}
 }
 
+func TestHandler_ServeClientRegistration_TokenEndpointAuthMethod(t *testing.T) {
+	handler, _ := setupTestHandler(t)
+	// Enable public registration for these tests
+	handler.server.Config.AllowPublicClientRegistration = true
+	handler.server.Config.AllowPublicClientsWithoutPKCE = true
+
+	tests := []struct {
+		name                    string
+		tokenEndpointAuthMethod string
+		clientType              string
+		wantStatus              int
+		wantAuthMethod          string
+		wantClientType          string
+		wantSecret              bool
+	}{
+		{
+			name:                    "auth_method=none creates public client",
+			tokenEndpointAuthMethod: "none",
+			clientType:              "",
+			wantStatus:              http.StatusCreated,
+			wantAuthMethod:          "none",
+			wantClientType:          "public",
+			wantSecret:              false,
+		},
+		{
+			name:                    "auth_method=client_secret_basic creates confidential client",
+			tokenEndpointAuthMethod: "client_secret_basic",
+			clientType:              "",
+			wantStatus:              http.StatusCreated,
+			wantAuthMethod:          "client_secret_basic",
+			wantClientType:          "confidential",
+			wantSecret:              true,
+		},
+		{
+			name:                    "auth_method=client_secret_post creates confidential client",
+			tokenEndpointAuthMethod: "client_secret_post",
+			clientType:              "",
+			wantStatus:              http.StatusCreated,
+			wantAuthMethod:          "client_secret_post",
+			wantClientType:          "confidential",
+			wantSecret:              true,
+		},
+		{
+			name:                    "unsupported auth_method returns error",
+			tokenEndpointAuthMethod: "client_secret_jwt",
+			clientType:              "",
+			wantStatus:              http.StatusBadRequest,
+		},
+		{
+			name:                    "empty auth_method defaults to client_secret_basic",
+			tokenEndpointAuthMethod: "",
+			clientType:              "confidential",
+			wantStatus:              http.StatusCreated,
+			wantAuthMethod:          "client_secret_basic",
+			wantClientType:          "confidential",
+			wantSecret:              true,
+		},
+		{
+			name:                    "auth_method=none overrides client_type=confidential",
+			tokenEndpointAuthMethod: "none",
+			clientType:              "confidential",
+			wantStatus:              http.StatusCreated,
+			wantAuthMethod:          "none",
+			wantClientType:          "public",
+			wantSecret:              false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			regReq := ClientRegistrationRequest{
+				RedirectURIs:            []string{"https://example.com/callback"},
+				TokenEndpointAuthMethod: tt.tokenEndpointAuthMethod,
+				GrantTypes:              []string{"authorization_code"},
+				ResponseTypes:           []string{"code"},
+				ClientName:              "Test Client - " + tt.name,
+				ClientType:              tt.clientType,
+			}
+
+			body, _ := json.Marshal(regReq)
+			req := httptest.NewRequest(http.MethodPost, "/register", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.RemoteAddr = "192.168.1." + tt.name[:3] // Unique IP per test
+			w := httptest.NewRecorder()
+
+			handler.ServeClientRegistration(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d, body: %s", w.Code, tt.wantStatus, w.Body.String())
+			}
+
+			if tt.wantStatus == http.StatusCreated {
+				var resp ClientRegistrationResponse
+				if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+					t.Fatalf("failed to decode response: %v", err)
+				}
+
+				if resp.ClientID == "" {
+					t.Error("ClientID should not be empty")
+				}
+
+				if resp.TokenEndpointAuthMethod != tt.wantAuthMethod {
+					t.Errorf("TokenEndpointAuthMethod = %q, want %q", resp.TokenEndpointAuthMethod, tt.wantAuthMethod)
+				}
+
+				if resp.ClientType != tt.wantClientType {
+					t.Errorf("ClientType = %q, want %q", resp.ClientType, tt.wantClientType)
+				}
+
+				if tt.wantSecret {
+					if resp.ClientSecret == "" {
+						t.Error("ClientSecret should not be empty for confidential client")
+					}
+				} else {
+					if resp.ClientSecret != "" {
+						t.Error("ClientSecret should be empty for public client")
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestHandler_ServeClientRegistration_PublicClientPolicy(t *testing.T) {
+	// Test that public client registration is properly controlled by AllowPublicClientRegistration
+	const testRegistrationToken = "test-registration-token-12345"
+
+	tests := []struct {
+		name                          string
+		allowPublicClientRegistration bool
+		tokenEndpointAuthMethod       string
+		clientType                    string
+		wantStatus                    int
+		wantErrorContains             string
+	}{
+		{
+			name:                          "public client rejected when policy disabled (auth_method=none)",
+			allowPublicClientRegistration: false,
+			tokenEndpointAuthMethod:       "none",
+			clientType:                    "",
+			wantStatus:                    http.StatusBadRequest,
+			wantErrorContains:             "Public client registration is not enabled",
+		},
+		{
+			name:                          "public client rejected when policy disabled (client_type=public)",
+			allowPublicClientRegistration: false,
+			tokenEndpointAuthMethod:       "",
+			clientType:                    "public",
+			wantStatus:                    http.StatusBadRequest,
+			wantErrorContains:             "Public client registration is not enabled",
+		},
+		{
+			name:                          "public client rejected when policy disabled (both specified)",
+			allowPublicClientRegistration: false,
+			tokenEndpointAuthMethod:       "none",
+			clientType:                    "public",
+			wantStatus:                    http.StatusBadRequest,
+			wantErrorContains:             "Public client registration is not enabled",
+		},
+		{
+			name:                          "public client allowed when policy enabled (auth_method=none)",
+			allowPublicClientRegistration: true,
+			tokenEndpointAuthMethod:       "none",
+			clientType:                    "",
+			wantStatus:                    http.StatusCreated,
+		},
+		{
+			name:                          "public client allowed when policy enabled (client_type=public)",
+			allowPublicClientRegistration: true,
+			tokenEndpointAuthMethod:       "",
+			clientType:                    "public",
+			wantStatus:                    http.StatusCreated,
+		},
+		{
+			name:                          "confidential client allowed when policy disabled",
+			allowPublicClientRegistration: false,
+			tokenEndpointAuthMethod:       "client_secret_basic",
+			clientType:                    "",
+			wantStatus:                    http.StatusCreated,
+		},
+		{
+			name:                          "confidential client (default) allowed when policy disabled",
+			allowPublicClientRegistration: false,
+			tokenEndpointAuthMethod:       "",
+			clientType:                    "confidential",
+			wantStatus:                    http.StatusCreated,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler, store := setupTestHandler(t)
+			defer store.Stop()
+
+			// Configure the policy for this test
+			handler.server.Config.AllowPublicClientRegistration = tt.allowPublicClientRegistration
+			handler.server.Config.AllowPublicClientsWithoutPKCE = true // Not relevant for registration test
+
+			// Set registration token when authentication is required
+			if !tt.allowPublicClientRegistration {
+				handler.server.Config.RegistrationAccessToken = testRegistrationToken
+			}
+
+			regReq := ClientRegistrationRequest{
+				RedirectURIs:            []string{"https://example.com/callback"},
+				TokenEndpointAuthMethod: tt.tokenEndpointAuthMethod,
+				ClientType:              tt.clientType,
+				GrantTypes:              []string{"authorization_code"},
+				ResponseTypes:           []string{"code"},
+				ClientName:              "Test Client - " + tt.name,
+			}
+
+			body, _ := json.Marshal(regReq)
+			req := httptest.NewRequest(http.MethodPost, "/register", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.RemoteAddr = "192.168.1.100"
+
+			// Add authentication header when required
+			if !tt.allowPublicClientRegistration {
+				req.Header.Set("Authorization", "Bearer "+testRegistrationToken)
+			}
+
+			w := httptest.NewRecorder()
+
+			handler.ServeClientRegistration(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d, body: %s", w.Code, tt.wantStatus, w.Body.String())
+			}
+
+			if tt.wantStatus == http.StatusBadRequest && tt.wantErrorContains != "" {
+				body := w.Body.String()
+				if !strings.Contains(body, tt.wantErrorContains) {
+					t.Errorf("error response should contain %q, got: %s", tt.wantErrorContains, body)
+				}
+			}
+
+			if tt.wantStatus == http.StatusCreated {
+				var resp ClientRegistrationResponse
+				if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+					t.Fatalf("failed to decode response: %v", err)
+				}
+
+				if resp.ClientID == "" {
+					t.Error("ClientID should not be empty")
+				}
+
+				// Verify the client was created with correct type
+				expectedType := tt.clientType
+				if tt.tokenEndpointAuthMethod == "none" {
+					expectedType = "public"
+				} else if expectedType == "" {
+					expectedType = "confidential"
+				}
+
+				if resp.ClientType != expectedType {
+					t.Errorf("ClientType = %q, want %q", resp.ClientType, expectedType)
+				}
+			}
+		})
+	}
+}
+
 func TestUserInfoFromContext(t *testing.T) {
 	// Test with no user info in context
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -804,6 +1580,7 @@ func TestHandler_ServeToken_InvalidClient(t *testing.T) {
 	client, _, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid"},
 		"192.168.1.100",
@@ -840,6 +1617,7 @@ func TestHandler_ServeToken_UnsupportedGrantType(t *testing.T) {
 	client, secret, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid"},
 		"192.168.1.100",
@@ -911,6 +1689,7 @@ func TestHandler_ServeTokenRevocation_Success(t *testing.T) {
 	client, secret, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -954,6 +1733,7 @@ func TestHandler_ServeTokenIntrospection(t *testing.T) {
 	client, secret, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -1103,9 +1883,10 @@ func TestCORS_WildcardOrigin(t *testing.T) {
 	config := &server.Config{
 		Issuer: "https://auth.example.com",
 		CORS: server.CORSConfig{
-			AllowedOrigins:   []string{"*"},
-			AllowCredentials: false, // Must be false with wildcard
-			MaxAge:           3600,
+			AllowedOrigins:      []string{"*"},
+			AllowWildcardOrigin: true,  // Explicitly opt-in to wildcard origin
+			AllowCredentials:    false, // Must be false with wildcard
+			MaxAge:              3600,
 		},
 	}
 
@@ -1289,5 +2070,452 @@ func TestCORS_CustomMaxAge(t *testing.T) {
 	maxAge := w.Header().Get("Access-Control-Max-Age")
 	if maxAge != "7200" {
 		t.Errorf("Access-Control-Max-Age = %q, want %q", maxAge, "7200")
+	}
+}
+
+// TestHandler_FormatWWWAuthenticate tests the formatWWWAuthenticate helper function
+func TestHandler_FormatWWWAuthenticate(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	tests := []struct {
+		name           string
+		scope          string
+		error          string
+		errorDesc      string
+		wantContain    []string
+		wantNotContain []string
+	}{
+		{
+			name:      "minimal (only resource_metadata)",
+			scope:     "",
+			error:     "",
+			errorDesc: "",
+			wantContain: []string{
+				"Bearer",
+				testResourceMetadataURL,
+			},
+			wantNotContain: []string{"scope=", "error=", "error_description="},
+		},
+		{
+			name:      "with scope",
+			scope:     "files:read user:profile",
+			error:     "",
+			errorDesc: "",
+			wantContain: []string{
+				"Bearer",
+				testResourceMetadataURL,
+				`scope="files:read user:profile"`,
+			},
+			wantNotContain: []string{"error=", "error_description="},
+		},
+		{
+			name:      "with error",
+			scope:     "",
+			error:     "invalid_token",
+			errorDesc: "",
+			wantContain: []string{
+				"Bearer",
+				testResourceMetadataURL,
+				`error="invalid_token"`,
+			},
+			wantNotContain: []string{"scope=", "error_description="},
+		},
+		{
+			name:      "with error and description",
+			scope:     "",
+			error:     "invalid_token",
+			errorDesc: "Token has expired",
+			wantContain: []string{
+				"Bearer",
+				testResourceMetadataURL,
+				`error="invalid_token"`,
+				`error_description="Token has expired"`,
+			},
+			wantNotContain: []string{"scope="},
+		},
+		{
+			name:      "with all parameters",
+			scope:     "files:read files:write",
+			error:     "insufficient_scope",
+			errorDesc: "Additional file write permission required",
+			wantContain: []string{
+				"Bearer",
+				testResourceMetadataURL,
+				`scope="files:read files:write"`,
+				`error="insufficient_scope"`,
+				`error_description="Additional file write permission required"`,
+			},
+		},
+		{
+			name:      "error description with quotes (escaping test)",
+			scope:     "",
+			error:     "invalid_request",
+			errorDesc: `The "client_id" parameter is missing`,
+			wantContain: []string{
+				"Bearer",
+				testResourceMetadataURL,
+				`error="invalid_request"`,
+				`error_description="The \"client_id\" parameter is missing"`,
+			},
+		},
+		{
+			name:      "error description with backslashes and quotes (enhanced escaping)",
+			scope:     "",
+			error:     "invalid_request",
+			errorDesc: `The "client_id" contains \n invalid chars`,
+			wantContain: []string{
+				"Bearer",
+				testResourceMetadataURL,
+				`error="invalid_request"`,
+				`error_description="The \"client_id\" contains \\n invalid chars"`,
+			},
+		},
+		{
+			name:      "error description with multiple backslashes",
+			scope:     "",
+			error:     "invalid_token",
+			errorDesc: `Token path: C:\Users\Admin\token.txt`,
+			wantContain: []string{
+				"Bearer",
+				testResourceMetadataURL,
+				`error="invalid_token"`,
+				`error_description="Token path: C:\\Users\\Admin\\token.txt"`,
+			},
+		},
+		{
+			name:      "very long scope list (edge case)",
+			scope:     "files:read files:write files:delete user:profile user:email user:repos admin:org admin:repo_hook",
+			error:     "",
+			errorDesc: "",
+			wantContain: []string{
+				"Bearer",
+				testResourceMetadataURL,
+				`scope="files:read files:write files:delete user:profile user:email user:repos admin:org admin:repo_hook"`,
+			},
+			wantNotContain: []string{"error=", "error_description="},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := handler.formatWWWAuthenticate(tt.scope, tt.error, tt.errorDesc)
+
+			// Verify all expected strings are present
+			for _, want := range tt.wantContain {
+				if !strings.Contains(result, want) {
+					t.Errorf("formatWWWAuthenticate() missing expected substring:\ngot:  %q\nwant: %q", result, want)
+				}
+			}
+
+			// Verify unwanted strings are not present
+			for _, notWant := range tt.wantNotContain {
+				if strings.Contains(result, notWant) {
+					t.Errorf("formatWWWAuthenticate() contains unexpected substring:\ngot:  %q\nshould not contain: %q", result, notWant)
+				}
+			}
+
+			// Verify Bearer scheme is at the start
+			if !strings.HasPrefix(result, "Bearer ") {
+				t.Errorf("formatWWWAuthenticate() should start with 'Bearer ', got: %q", result)
+			}
+
+			// Verify comma-space separation (RFC 6750 format)
+			if strings.Contains(result, ",,") || strings.Contains(result, ",  ") {
+				t.Errorf("formatWWWAuthenticate() has malformed comma separation: %q", result)
+			}
+		})
+	}
+}
+
+// TestHandler_WriteError401WithWWWAuthenticate tests that 401 responses include WWW-Authenticate header
+func TestHandler_WriteError401WithWWWAuthenticate(t *testing.T) {
+	tests := []struct {
+		name                   string
+		defaultChallengeScopes []string
+		status                 int
+		wantWWWAuthenticate    bool
+		wantScope              string
+	}{
+		{
+			name:                   "401 without scopes",
+			defaultChallengeScopes: nil,
+			status:                 http.StatusUnauthorized,
+			wantWWWAuthenticate:    true,
+			wantScope:              "",
+		},
+		{
+			name:                   "401 with scopes",
+			defaultChallengeScopes: []string{"files:read", "user:profile"},
+			status:                 http.StatusUnauthorized,
+			wantWWWAuthenticate:    true,
+			wantScope:              "files:read user:profile",
+		},
+		{
+			name:                   "400 should not have WWW-Authenticate",
+			defaultChallengeScopes: []string{"files:read"},
+			status:                 http.StatusBadRequest,
+			wantWWWAuthenticate:    false,
+			wantScope:              "",
+		},
+		{
+			name:                   "403 should not have WWW-Authenticate",
+			defaultChallengeScopes: []string{"files:read"},
+			status:                 http.StatusForbidden,
+			wantWWWAuthenticate:    false,
+			wantScope:              "",
+		},
+		{
+			name:                   "500 should not have WWW-Authenticate",
+			defaultChallengeScopes: []string{"files:read"},
+			status:                 http.StatusInternalServerError,
+			wantWWWAuthenticate:    false,
+			wantScope:              "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := memory.New()
+			defer store.Stop()
+
+			provider := mock.NewMockProvider()
+
+			config := &server.Config{
+				Issuer:                 testIssuer,
+				DefaultChallengeScopes: tt.defaultChallengeScopes,
+			}
+
+			srv, err := server.New(provider, store, store, store, config, nil)
+			if err != nil {
+				t.Fatalf("server.New() error = %v", err)
+			}
+
+			handler := NewHandler(srv, nil)
+
+			w := httptest.NewRecorder()
+			handler.writeError(w, "test_error", "Test error description", tt.status)
+
+			wwwAuth := w.Header().Get("WWW-Authenticate")
+
+			if tt.wantWWWAuthenticate {
+				if wwwAuth == "" {
+					t.Error("Expected WWW-Authenticate header, but it was not set")
+				} else {
+					// Verify it contains resource_metadata
+					if !strings.Contains(wwwAuth, testResourceMetadataURL) {
+						t.Errorf("WWW-Authenticate missing resource_metadata:\ngot: %q", wwwAuth)
+					}
+
+					// Verify scope if expected
+					if tt.wantScope != "" {
+						expectedScope := fmt.Sprintf(`scope="%s"`, tt.wantScope)
+						if !strings.Contains(wwwAuth, expectedScope) {
+							t.Errorf("WWW-Authenticate missing expected scope:\ngot:  %q\nwant: %q", wwwAuth, expectedScope)
+						}
+					} else {
+						if strings.Contains(wwwAuth, "scope=") {
+							t.Errorf("WWW-Authenticate should not contain scope:\ngot: %q", wwwAuth)
+						}
+					}
+
+					// Verify error and error_description are included
+					if !strings.Contains(wwwAuth, `error="test_error"`) {
+						t.Errorf("WWW-Authenticate missing error code:\ngot: %q", wwwAuth)
+					}
+					if !strings.Contains(wwwAuth, `error_description="Test error description"`) {
+						t.Errorf("WWW-Authenticate missing error description:\ngot: %q", wwwAuth)
+					}
+				}
+			} else {
+				if wwwAuth != "" {
+					t.Errorf("Did not expect WWW-Authenticate header for status %d, but got: %q", tt.status, wwwAuth)
+				}
+			}
+		})
+	}
+}
+
+// TestHandler_ValidateToken401ResponseWithWWWAuthenticate tests that ValidateToken middleware returns proper WWW-Authenticate
+func TestHandler_ValidateToken401ResponseWithWWWAuthenticate(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	config := &server.Config{
+		Issuer:                 testIssuer,
+		DefaultChallengeScopes: []string{"mcp:access"},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+
+	// Create a test endpoint that requires authentication
+	testEndpoint := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("success"))
+	})
+
+	// Wrap with ValidateToken middleware
+	protectedEndpoint := handler.ValidateToken(testEndpoint)
+
+	tests := []struct {
+		name             string
+		authHeader       string
+		wantStatus       int
+		wantWWWAuth      bool
+		wantResourceMeta bool
+		wantScope        string
+	}{
+		{
+			name:             "missing authorization header",
+			authHeader:       "",
+			wantStatus:       http.StatusUnauthorized,
+			wantWWWAuth:      true,
+			wantResourceMeta: true,
+			wantScope:        "mcp:access",
+		},
+		{
+			name:             "invalid authorization header format",
+			authHeader:       "InvalidFormat",
+			wantStatus:       http.StatusUnauthorized,
+			wantWWWAuth:      true,
+			wantResourceMeta: true,
+			wantScope:        "mcp:access",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+			if tt.authHeader != "" {
+				req.Header.Set("Authorization", tt.authHeader)
+			}
+
+			w := httptest.NewRecorder()
+			protectedEndpoint.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("Status = %d, want %d", w.Code, tt.wantStatus)
+			}
+
+			wwwAuth := w.Header().Get("WWW-Authenticate")
+
+			if tt.wantWWWAuth {
+				if wwwAuth == "" {
+					t.Error("Expected WWW-Authenticate header, but it was not set")
+				} else {
+					// Verify Bearer scheme
+					if !strings.HasPrefix(wwwAuth, "Bearer ") {
+						t.Errorf("WWW-Authenticate should start with 'Bearer ':\ngot: %q", wwwAuth)
+					}
+
+					// Verify resource_metadata
+					if tt.wantResourceMeta {
+						if !strings.Contains(wwwAuth, testResourceMetadataURL) {
+							t.Errorf("WWW-Authenticate missing resource_metadata:\ngot: %q", wwwAuth)
+						}
+					}
+
+					// Verify scope
+					if tt.wantScope != "" {
+						expectedScope := fmt.Sprintf(`scope="%s"`, tt.wantScope)
+						if !strings.Contains(wwwAuth, expectedScope) {
+							t.Errorf("WWW-Authenticate missing expected scope:\ngot:  %q\nwant: %q", wwwAuth, expectedScope)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestHandler_WriteError401BackwardCompatibilityMode tests that WWW-Authenticate can be disabled for legacy clients
+func TestHandler_WriteError401BackwardCompatibilityMode(t *testing.T) {
+	tests := []struct {
+		name                           string
+		disableWWWAuthenticateMetadata bool
+		defaultChallengeScopes         []string
+		wantMinimalHeader              bool
+		wantResourceMetadata           bool
+	}{
+		{
+			name:                           "metadata enabled (default) - full header",
+			disableWWWAuthenticateMetadata: false,
+			defaultChallengeScopes:         []string{"mcp:access"},
+			wantMinimalHeader:              false,
+			wantResourceMetadata:           true,
+		},
+		{
+			name:                           "metadata disabled - minimal header for backward compatibility",
+			disableWWWAuthenticateMetadata: true,
+			defaultChallengeScopes:         []string{"mcp:access"},
+			wantMinimalHeader:              true,
+			wantResourceMetadata:           false,
+		},
+		{
+			name:                           "metadata enabled with no scopes",
+			disableWWWAuthenticateMetadata: false,
+			defaultChallengeScopes:         nil,
+			wantMinimalHeader:              false,
+			wantResourceMetadata:           true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := memory.New()
+			defer store.Stop()
+
+			provider := mock.NewMockProvider()
+
+			config := &server.Config{
+				Issuer:                         testIssuer,
+				DisableWWWAuthenticateMetadata: tt.disableWWWAuthenticateMetadata,
+				DefaultChallengeScopes:         tt.defaultChallengeScopes,
+			}
+
+			srv, err := server.New(provider, store, store, store, config, nil)
+			if err != nil {
+				t.Fatalf("server.New() error = %v", err)
+			}
+
+			handler := NewHandler(srv, nil)
+
+			w := httptest.NewRecorder()
+			handler.writeError(w, "invalid_token", "Token validation failed", http.StatusUnauthorized)
+
+			wwwAuth := w.Header().Get("WWW-Authenticate")
+			if wwwAuth == "" {
+				t.Fatal("WWW-Authenticate header should always be set for 401 responses")
+			}
+
+			if tt.wantMinimalHeader {
+				// Should only be "Bearer" without any parameters
+				if wwwAuth != "Bearer" {
+					t.Errorf("Expected minimal 'Bearer' header, got: %q", wwwAuth)
+				}
+				// Should NOT contain resource_metadata
+				if strings.Contains(wwwAuth, "resource_metadata") {
+					t.Errorf("Minimal header should not contain resource_metadata, got: %q", wwwAuth)
+				}
+			}
+
+			if tt.wantResourceMetadata {
+				// Should contain resource_metadata
+				if !strings.Contains(wwwAuth, testResourceMetadataURL) {
+					t.Errorf("Expected resource_metadata in header, got: %q", wwwAuth)
+				}
+				// Should contain error parameters
+				if !strings.Contains(wwwAuth, `error="invalid_token"`) {
+					t.Errorf("Expected error parameter in header, got: %q", wwwAuth)
+				}
+			}
+		})
 	}
 }

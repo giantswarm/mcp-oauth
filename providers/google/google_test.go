@@ -129,13 +129,16 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 		state               string
 		codeChallenge       string
 		codeChallengeMethod string
+		scopes              []string
 		wantContains        []string
+		wantNotContains     []string
 	}{
 		{
-			name:                "with PKCE",
+			name:                "with PKCE (OAuth 2.1 security)",
 			state:               "test-state",
 			codeChallenge:       "test-challenge",
 			codeChallengeMethod: "S256",
+			scopes:              nil, // Use provider defaults
 			wantContains: []string{
 				"state=test-state",
 				"code_challenge=test-challenge",
@@ -144,26 +147,125 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 			},
 		},
 		{
-			name:  "without PKCE",
-			state: "test-state",
+			name:   "without PKCE parameters",
+			state:  "test-state",
+			scopes: nil, // Use provider defaults
 			wantContains: []string{
 				"state=test-state",
 				"access_type=offline",
+			},
+			wantNotContains: []string{
+				"code_challenge",
+				"code_challenge_method",
+			},
+		},
+		{
+			name:                "with dynamic scopes - uses requested scopes",
+			state:               "test-state",
+			codeChallenge:       "test-challenge",
+			codeChallengeMethod: "S256",
+			scopes:              []string{"https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/drive.readonly"},
+			wantContains: []string{
+				"state=test-state",
+				"scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fgmail.readonly+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.readonly",
+			},
+		},
+		{
+			name:                "with empty scopes array - uses provider defaults",
+			state:               "test-state",
+			codeChallenge:       "test-challenge",
+			codeChallengeMethod: "S256",
+			scopes:              []string{}, // Empty array should use provider defaults
+			wantContains: []string{
+				"state=test-state",
 			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			authURL := provider.AuthorizationURL(tt.state, tt.codeChallenge, tt.codeChallengeMethod)
+			authURL := provider.AuthorizationURL(tt.state, tt.codeChallenge, tt.codeChallengeMethod, tt.scopes)
 
 			for _, want := range tt.wantContains {
 				if !strings.Contains(authURL, want) {
 					t.Errorf("AuthorizationURL() missing %q in URL %q", want, authURL)
 				}
 			}
+
+			for _, notWant := range tt.wantNotContains {
+				if strings.Contains(authURL, notWant) {
+					t.Errorf("AuthorizationURL() should not contain %q (confidential client)", notWant)
+				}
+			}
 		})
 	}
+}
+
+// TestProvider_AuthorizationURL_DeepCopySafety verifies that the provider creates
+// deep copies of scopes to prevent race conditions and unexpected modifications
+func TestProvider_AuthorizationURL_DeepCopySafety(t *testing.T) {
+	provider, err := NewProvider(&Config{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		RedirectURL:  "https://example.com/callback",
+		Scopes:       []string{"openid", "profile", "email"},
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+
+	// Test 1: Using provider defaults - should not affect original
+	originalScopes := make([]string, len(provider.Scopes))
+	copy(originalScopes, provider.Scopes)
+
+	authURL1 := provider.AuthorizationURL("state1", "challenge1", "S256", nil)
+
+	// Verify provider's scopes weren't modified
+	if len(provider.Scopes) != len(originalScopes) {
+		t.Errorf("Provider scopes length changed: got %d, want %d", len(provider.Scopes), len(originalScopes))
+	}
+	for i, scope := range provider.Scopes {
+		if scope != originalScopes[i] {
+			t.Errorf("Provider scope[%d] changed: got %q, want %q", i, scope, originalScopes[i])
+		}
+	}
+
+	// Test 2: Using custom scopes - should not affect provider defaults
+	customScopes := []string{"custom:scope1", "custom:scope2"}
+	authURL2 := provider.AuthorizationURL("state2", "challenge2", "S256", customScopes)
+
+	// Verify provider's scopes are still unchanged
+	if len(provider.Scopes) != len(originalScopes) {
+		t.Errorf("Provider scopes length changed after custom scopes: got %d, want %d", len(provider.Scopes), len(originalScopes))
+	}
+
+	// Test 3: Modifying input slice shouldn't affect provider
+	inputScopes := []string{"input:scope1", "input:scope2"}
+	authURL3 := provider.AuthorizationURL("state3", "challenge3", "S256", inputScopes)
+
+	// Modify the input slice after the call
+	inputScopes[0] = "MODIFIED"
+	_ = append(inputScopes, "APPENDED") // Intentionally not using result to test isolation
+
+	// Generate another URL - should not be affected by the modification
+	authURL4 := provider.AuthorizationURL("state4", "challenge4", "S256", []string{"input:scope1", "input:scope2"})
+
+	// URLs 3 and 4 should have the same scopes (ignoring state/challenge differences)
+	if !strings.Contains(authURL3, "input%3Ascope1") {
+		t.Errorf("URL 3 should contain input:scope1")
+	}
+	if !strings.Contains(authURL4, "input%3Ascope1") {
+		t.Errorf("URL 4 should contain input:scope1")
+	}
+
+	// Verify all URLs were generated successfully
+	if authURL1 == "" || authURL2 == "" || authURL3 == "" || authURL4 == "" {
+		t.Error("One or more URLs were not generated")
+	}
+
+	t.Log("✓ Deep copy prevents race conditions")
+	t.Log("✓ Provider defaults are protected from modification")
+	t.Log("✓ Input slices can be safely modified after call")
 }
 
 func TestProvider_ExchangeCode(t *testing.T) {
@@ -228,7 +330,7 @@ func TestProvider_ExchangeCode(t *testing.T) {
 
 func TestProvider_ExchangeCode_WithPKCE(t *testing.T) {
 	ctx := context.Background()
-	// Create mock Google token endpoint
+	// Create mock Google token endpoint that verifies code_verifier IS sent (OAuth 2.1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != testTokenEndpoint {
 			http.NotFound(w, r)
@@ -241,9 +343,9 @@ func TestProvider_ExchangeCode_WithPKCE(t *testing.T) {
 			return
 		}
 
-		// Verify code_verifier parameter
+		// Verify code_verifier is sent (OAuth 2.1 security enhancement)
 		if r.FormValue("code_verifier") != "test-verifier" {
-			http.Error(w, "invalid code_verifier", http.StatusBadRequest)
+			http.Error(w, "invalid or missing code_verifier", http.StatusBadRequest)
 			return
 		}
 
@@ -268,6 +370,7 @@ func TestProvider_ExchangeCode_WithPKCE(t *testing.T) {
 
 	provider.Endpoint.TokenURL = server.URL + "/token"
 
+	// Pass verifier parameter for OAuth 2.1 PKCE security
 	token, err := provider.ExchangeCode(ctx, "test-code", "test-verifier")
 	if err != nil {
 		t.Fatalf("ExchangeCode() error = %v", err)

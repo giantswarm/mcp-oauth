@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"io"
 	"log/slog"
 	"strings"
 	"testing"
@@ -415,6 +416,65 @@ func TestValidateProviderRevocationConfig(t *testing.T) {
 	}
 }
 
+func TestConfig_EndpointHelpers(t *testing.T) {
+	tests := []struct {
+		name      string
+		issuer    string
+		wantAuth  string
+		wantToken string
+		wantReg   string
+	}{
+		{
+			name:      "standard HTTPS issuer",
+			issuer:    "https://auth.example.com",
+			wantAuth:  "https://auth.example.com/oauth/authorize",
+			wantToken: "https://auth.example.com/oauth/token",
+			wantReg:   "https://auth.example.com/oauth/register",
+		},
+		{
+			name:      "issuer with port",
+			issuer:    "https://auth.example.com:8443",
+			wantAuth:  "https://auth.example.com:8443/oauth/authorize",
+			wantToken: "https://auth.example.com:8443/oauth/token",
+			wantReg:   "https://auth.example.com:8443/oauth/register",
+		},
+		{
+			name:      "localhost development",
+			issuer:    "http://localhost:3000",
+			wantAuth:  "http://localhost:3000/oauth/authorize",
+			wantToken: "http://localhost:3000/oauth/token",
+			wantReg:   "http://localhost:3000/oauth/register",
+		},
+		{
+			name:      "issuer with trailing slash",
+			issuer:    "https://auth.example.com/",
+			wantAuth:  "https://auth.example.com//oauth/authorize",
+			wantToken: "https://auth.example.com//oauth/token",
+			wantReg:   "https://auth.example.com//oauth/register",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &Config{
+				Issuer: tt.issuer,
+			}
+
+			if got := config.AuthorizationEndpoint(); got != tt.wantAuth {
+				t.Errorf("AuthorizationEndpoint() = %q, want %q", got, tt.wantAuth)
+			}
+
+			if got := config.TokenEndpoint(); got != tt.wantToken {
+				t.Errorf("TokenEndpoint() = %q, want %q", got, tt.wantToken)
+			}
+
+			if got := config.RegistrationEndpoint(); got != tt.wantReg {
+				t.Errorf("RegistrationEndpoint() = %q, want %q", got, tt.wantReg)
+			}
+		})
+	}
+}
+
 func TestConfig_Fields(t *testing.T) {
 	// Test that all config fields can be set
 	config := &Config{
@@ -533,14 +593,15 @@ func TestValidateCORSConfig_WildcardWithCredentials(t *testing.T) {
 }
 
 func TestValidateCORSConfig_WildcardWithoutCredentials(t *testing.T) {
-	// Wildcard without credentials should warn but not panic
+	// Wildcard with AllowWildcardOrigin=true should warn but not panic
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 	config := &Config{
 		CORS: CORSConfig{
-			AllowedOrigins:   []string{"*"},
-			AllowCredentials: false,
+			AllowedOrigins:      []string{"*"},
+			AllowWildcardOrigin: true, // Must explicitly opt-in
+			AllowCredentials:    false,
 		},
 	}
 
@@ -551,6 +612,32 @@ func TestValidateCORSConfig_WildcardWithoutCredentials(t *testing.T) {
 	if !strings.Contains(logOutput, "Wildcard origin") {
 		t.Error("Should log warning for wildcard origin")
 	}
+}
+
+func TestValidateCORSConfig_WildcardWithoutOptIn(t *testing.T) {
+	// Wildcard without AllowWildcardOrigin=true should panic
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	config := &Config{
+		CORS: CORSConfig{
+			AllowedOrigins:      []string{"*"},
+			AllowWildcardOrigin: false, // Not opted-in
+			AllowCredentials:    false,
+		},
+	}
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("Expected panic for wildcard without AllowWildcardOrigin=true")
+		} else {
+			msg, ok := r.(string)
+			if !ok || !strings.Contains(msg, "AllowWildcardOrigin=true") {
+				t.Errorf("Unexpected panic message: %v", r)
+			}
+		}
+	}()
+
+	validateCORSConfig(config, logger)
 }
 
 func TestValidateCORSConfig_InvalidOriginFormat(t *testing.T) {
@@ -737,5 +824,252 @@ func TestValidateCORSConfig_MultipleOrigins(t *testing.T) {
 	logOutput := buf.String()
 	if !strings.Contains(logOutput, "CORS configuration validated") || !strings.Contains(logOutput, "allowed_origins_count=3") {
 		t.Errorf("Should log correct origin count in debug message, got: %s", logOutput)
+	}
+}
+
+// WWW-Authenticate validation tests
+
+func TestValidateWWWAuthenticateConfig_EmptyScopes(t *testing.T) {
+	// No scopes should not generate warnings
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	config := &Config{
+		Issuer:                         "https://auth.example.com",
+		DisableWWWAuthenticateMetadata: false,
+		DefaultChallengeScopes:         []string{}, // Empty
+	}
+
+	validateWWWAuthenticateConfig(config, logger)
+
+	logOutput := buf.String()
+	if strings.Contains(logOutput, "WARNING") {
+		t.Errorf("Should not log warnings for empty scopes, got: %s", logOutput)
+	}
+}
+
+func TestValidateWWWAuthenticateConfig_ValidScopes(t *testing.T) {
+	// Valid scopes should not generate warnings
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	config := &Config{
+		Issuer:                         "https://auth.example.com",
+		DisableWWWAuthenticateMetadata: false,
+		DefaultChallengeScopes:         []string{"mcp:access", "files:read", "user:profile"},
+	}
+
+	validateWWWAuthenticateConfig(config, logger)
+
+	logOutput := buf.String()
+	// Should only have debug log, no warnings
+	if strings.Contains(logOutput, "WARNING") {
+		t.Errorf("Should not log warnings for valid scopes, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "WWW-Authenticate metadata enabled") {
+		t.Errorf("Should log debug message for enabled metadata, got: %s", logOutput)
+	}
+}
+
+func TestValidateWWWAuthenticateConfig_TooManyScopes(t *testing.T) {
+	// More than 50 scopes should generate warning
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	// Create 51 scopes
+	scopes := make([]string, 51)
+	for i := 0; i < 51; i++ {
+		scopes[i] = "scope:" + string(rune('a'+i%26))
+	}
+
+	config := &Config{
+		Issuer:                         "https://auth.example.com",
+		DisableWWWAuthenticateMetadata: false,
+		DefaultChallengeScopes:         scopes,
+	}
+
+	validateWWWAuthenticateConfig(config, logger)
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "Very large DefaultChallengeScopes configured") {
+		t.Errorf("Should log warning for too many scopes, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "count=51") {
+		t.Errorf("Should log actual scope count, got: %s", logOutput)
+	}
+}
+
+func TestValidateWWWAuthenticateConfig_InvalidCharacters(t *testing.T) {
+	tests := []struct {
+		name          string
+		scopes        []string
+		expectedError string
+	}{
+		{
+			name:          "double quote in scope",
+			scopes:        []string{`files:"read"`, "user:profile"},
+			expectedError: "Invalid character in DefaultChallengeScopes",
+		},
+		{
+			name:          "comma in scope",
+			scopes:        []string{"files:read,write", "user:profile"},
+			expectedError: "Invalid character in DefaultChallengeScopes",
+		},
+		{
+			name:          "backslash in scope",
+			scopes:        []string{`files:\read`, "user:profile"},
+			expectedError: "Invalid character in DefaultChallengeScopes",
+		},
+		{
+			name:          "multiple invalid characters",
+			scopes:        []string{`files:"read\write,delete"`, "user:profile"},
+			expectedError: "Invalid character in DefaultChallengeScopes",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+			config := &Config{
+				Issuer:                         "https://auth.example.com",
+				DisableWWWAuthenticateMetadata: false,
+				DefaultChallengeScopes:         tt.scopes,
+			}
+
+			validateWWWAuthenticateConfig(config, logger)
+
+			logOutput := buf.String()
+			if !strings.Contains(logOutput, tt.expectedError) {
+				t.Errorf("Expected warning containing %q, got: %s", tt.expectedError, logOutput)
+			}
+		})
+	}
+}
+
+func TestValidateWWWAuthenticateConfig_DisabledMetadata(t *testing.T) {
+	// Disabled metadata should not generate logs even with scopes
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	config := &Config{
+		Issuer:                         "https://auth.example.com",
+		DisableWWWAuthenticateMetadata: true,
+		DefaultChallengeScopes:         []string{"mcp:access", "files:read"},
+	}
+
+	validateWWWAuthenticateConfig(config, logger)
+
+	logOutput := buf.String()
+	// Should not log anything when metadata is disabled
+	if strings.Contains(logOutput, "WWW-Authenticate metadata enabled") {
+		t.Errorf("Should not log debug message when metadata is disabled, got: %s", logOutput)
+	}
+}
+
+func TestValidateWWWAuthenticateConfig_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name       string
+		scopes     []string
+		expectWarn bool
+		warnSubstr string
+	}{
+		{
+			name:       "exactly 50 scopes - should not warn",
+			scopes:     make([]string, 50),
+			expectWarn: false,
+		},
+		{
+			name:       "51 scopes - should warn",
+			scopes:     make([]string, 51),
+			expectWarn: true,
+			warnSubstr: "Very large DefaultChallengeScopes",
+		},
+		{
+			name:       "valid characters: colon, hyphen, underscore, slash",
+			scopes:     []string{"mcp:access", "files-read", "user_profile", "api/v1"},
+			expectWarn: false,
+		},
+		{
+			name:       "empty scope string",
+			scopes:     []string{"", "files:read"},
+			expectWarn: false, // Empty is technically valid (though not useful)
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+			// Initialize test scopes
+			for i := range tt.scopes {
+				if tt.scopes[i] == "" {
+					continue
+				}
+				if tt.scopes[i] != "mcp:access" && tt.scopes[i] != "files-read" &&
+					tt.scopes[i] != "user_profile" && tt.scopes[i] != "api/v1" && tt.scopes[i] != "files:read" {
+					tt.scopes[i] = "scope" + string(rune('a'+i%26))
+				}
+			}
+
+			config := &Config{
+				Issuer:                         "https://auth.example.com",
+				DisableWWWAuthenticateMetadata: false,
+				DefaultChallengeScopes:         tt.scopes,
+			}
+
+			validateWWWAuthenticateConfig(config, logger)
+
+			logOutput := buf.String()
+			hasWarning := strings.Contains(logOutput, "WARNING")
+
+			if tt.expectWarn && !hasWarning {
+				t.Errorf("Expected warning but got none. Log: %s", logOutput)
+			}
+			if !tt.expectWarn && hasWarning {
+				t.Errorf("Did not expect warning but got one. Log: %s", logOutput)
+			}
+			if tt.expectWarn && tt.warnSubstr != "" && !strings.Contains(logOutput, tt.warnSubstr) {
+				t.Errorf("Expected warning containing %q, got: %s", tt.warnSubstr, logOutput)
+			}
+		})
+	}
+}
+
+func TestConfig_ProtectedResourceMetadataEndpoint(t *testing.T) {
+	tests := []struct {
+		name   string
+		issuer string
+		want   string
+	}{
+		{
+			name:   "standard HTTPS issuer",
+			issuer: "https://auth.example.com",
+			want:   "https://auth.example.com/.well-known/oauth-protected-resource",
+		},
+		{
+			name:   "issuer with port",
+			issuer: "https://auth.example.com:8443",
+			want:   "https://auth.example.com:8443/.well-known/oauth-protected-resource",
+		},
+		{
+			name:   "localhost development",
+			issuer: "http://localhost:3000",
+			want:   "http://localhost:3000/.well-known/oauth-protected-resource",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &Config{
+				Issuer: tt.issuer,
+			}
+
+			if got := config.ProtectedResourceMetadataEndpoint(); got != tt.want {
+				t.Errorf("ProtectedResourceMetadataEndpoint() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

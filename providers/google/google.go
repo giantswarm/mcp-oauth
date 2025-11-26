@@ -81,13 +81,14 @@ func (p *Provider) Name() string {
 	return "google"
 }
 
-// AuthorizationURL generates the Google OAuth authorization URL
-// Accepts pre-computed PKCE challenge from client
-func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string) string {
+// AuthorizationURL generates the Google OAuth authorization URL with optional PKCE.
+// Supports OAuth 2.1 defense-in-depth. See SECURITY_ARCHITECTURE.md for details.
+// If scopes is empty, the provider's default configured scopes are used.
+func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string, scopes []string) string {
 	var opts []oauth2.AuthCodeOption
 
-	// Add PKCE if challenge provided (already computed by client)
-	if codeChallenge != "" {
+	// Add PKCE parameters if provided
+	if codeChallenge != "" && codeChallengeMethod != "" {
 		opts = append(opts,
 			oauth2.SetAuthURLParam("code_challenge", codeChallenge),
 			oauth2.SetAuthURLParam("code_challenge_method", codeChallengeMethod),
@@ -97,7 +98,24 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	// Request offline access to get refresh token
 	opts = append(opts, oauth2.AccessTypeOffline)
 
-	return p.AuthCodeURL(state, opts...)
+	// SECURITY: Create a deep copy of scopes to prevent potential race conditions
+	// If we use provider defaults, we must copy the slice to avoid shared references
+	// that could be modified concurrently or cause unexpected behavior.
+	var scopesToUse []string
+	if len(scopes) > 0 {
+		// Use requested scopes (create deep copy)
+		scopesToUse = make([]string, len(scopes))
+		copy(scopesToUse, scopes)
+	} else {
+		// Use provider's default scopes (create deep copy)
+		scopesToUse = make([]string, len(p.Scopes))
+		copy(scopesToUse, p.Scopes)
+	}
+
+	// Create a config with the determined scopes
+	config := *p.Config
+	config.Scopes = scopesToUse
+	return config.AuthCodeURL(state, opts...)
 }
 
 // ensureContextTimeout ensures the context has a deadline, adding one if needed.
@@ -111,15 +129,15 @@ func (p *Provider) ensureContextTimeout(ctx context.Context) (context.Context, c
 	return context.WithTimeout(ctx, p.requestTimeout)
 }
 
-// ExchangeCode exchanges an authorization code for tokens
-// Returns standard oauth2.Token directly
+// ExchangeCode exchanges an authorization code for tokens with optional PKCE verification.
+// Returns standard oauth2.Token. See SECURITY_ARCHITECTURE.md for security model details.
 func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier string) (*oauth2.Token, error) {
 	ctx, cancel := p.ensureContextTimeout(ctx)
 	defer cancel()
 
 	var opts []oauth2.AuthCodeOption
 
-	// PKCE code verifier
+	// Add PKCE verifier if provided
 	if verifier != "" {
 		opts = append(opts, oauth2.VerifierOption(verifier))
 	}
@@ -127,7 +145,7 @@ func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier strin
 	// Use custom HTTP client
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)
 
-	// Exchange code for token - returns oauth2.Token directly
+	// Exchange code for token
 	token, err := p.Exchange(ctx, code, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to exchange code: %w", err)

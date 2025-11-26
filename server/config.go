@@ -8,6 +8,12 @@ import (
 	"time"
 )
 
+// URI scheme constants (shared with validation.go)
+const (
+	SchemeHTTP  = "http"
+	SchemeHTTPS = "https"
+)
+
 // Config holds OAuth server configuration
 type Config struct {
 	// Issuer is the server's issuer identifier (base URL)
@@ -94,6 +100,42 @@ type Config struct {
 	// If empty, all scopes are allowed
 	SupportedScopes []string
 
+	// MaxScopeLength is the maximum allowed length for the scope parameter string
+	// This prevents potential DoS attacks via extremely long scope strings.
+	// The scope string is space-delimited, so this limits the total length including
+	// all scopes and spaces, not individual scope names.
+	// Default: 1000 characters (sufficient for most use cases)
+	// Example: "openid profile email" = 22 characters
+	MaxScopeLength int // default: 1000
+
+	// DefaultChallengeScopes are the scopes to include in WWW-Authenticate challenges
+	// When a 401 Unauthorized response is returned, these scopes indicate what
+	// permissions would be needed to access the resource.
+	// Per MCP 2025-11-25, this helps clients determine which scopes to request.
+	// If empty, no scope parameter is included in WWW-Authenticate headers.
+	DefaultChallengeScopes []string
+
+	// DisableWWWAuthenticateMetadata disables resource_metadata and discovery parameters
+	// in WWW-Authenticate headers for backward compatibility with legacy OAuth clients.
+	// When false (default): Full MCP 2025-11-25 compliance with enhanced discovery support
+	//   - Includes resource_metadata URL for authorization server discovery
+	//   - Includes scope parameter (if DefaultChallengeScopes configured)
+	//   - Includes error and error_description parameters
+	// When true: Minimal WWW-Authenticate headers for backward compatibility
+	//   - Only includes "Bearer" scheme without parameters
+	//   - Compatible with older OAuth clients that may not expect parameters
+	// Default: false (metadata ENABLED for secure by default, MCP 2025-11-25 compliant)
+	//
+	// WARNING: Only enable if you have legacy OAuth clients that cannot handle
+	// parameters in WWW-Authenticate headers. Modern clients will ignore unknown
+	// parameters per HTTP specifications.
+	//
+	// Use case for enabling (disabling metadata):
+	//   - Testing with legacy OAuth clients
+	//   - Gradual migration period for clients updating to MCP 2025-11-25
+	//   - Troubleshooting client compatibility issues
+	DisableWWWAuthenticateMetadata bool // default: false (metadata ENABLED)
+
 	// AllowPKCEPlain allows the 'plain' code_challenge_method (NOT RECOMMENDED)
 	// WARNING: The 'plain' method is insecure and deprecated in OAuth 2.1
 	// Only enable for backward compatibility with legacy clients
@@ -123,15 +165,40 @@ type Config struct {
 	// Default: 32 characters (192 bits of entropy)
 	MinStateLength int // default: 32
 
-	// AllowPublicClientRegistration allows unauthenticated dynamic client registration
-	// WARNING: This can lead to DoS attacks via unlimited client registration
-	// When false, client registration requires a registration access token
-	// Default: false (authentication REQUIRED for security)
+	// AllowPublicClientRegistration controls two security aspects of client registration:
+	// 1. Whether the DCR endpoint (/oauth/register) requires authentication (Bearer token)
+	// 2. Whether public clients (native apps, CLIs with token_endpoint_auth_method="none") can be registered
+	//
+	// When false (SECURE DEFAULT):
+	//   - DCR endpoint REQUIRES a valid RegistrationAccessToken in Authorization header
+	//   - Public client registration is DENIED (only confidential clients can be registered)
+	//   - This prevents both DoS attacks and unauthorized public client creation
+	//
+	// When true (PERMISSIVE, for development only):
+	//   - DCR endpoint allows UNAUTHENTICATED registration (⚠️  DoS risk)
+	//   - Public clients CAN be registered by any requester
+	//   - Should only be used in trusted development environments
+	//
+	// SECURITY RECOMMENDATION: Keep this false in production. Use RegistrationAccessToken
+	// to authenticate trusted client developers, and only enable public clients if your
+	// use case requires native/mobile apps.
+	//
+	// Default: false (authentication REQUIRED, public clients DENIED)
 	AllowPublicClientRegistration bool // default: false
 
-	// RegistrationAccessToken is the token required for client registration
-	// Only checked if AllowPublicClientRegistration is false
-	// Generate a secure random token and share it only with trusted client developers
+	// RegistrationAccessToken is the Bearer token required for client registration
+	// when AllowPublicClientRegistration is false (recommended for production).
+	//
+	// Generate a cryptographically secure random token and share it ONLY with
+	// trusted developers who need to register OAuth clients.
+	//
+	// Example generation: openssl rand -base64 32
+	//
+	// The token is validated using constant-time comparison to prevent timing attacks.
+	// If AllowPublicClientRegistration is false but this is empty, ALL registration
+	// attempts will fail (misconfiguration).
+	//
+	// Default: "" (no token configured)
 	RegistrationAccessToken string
 
 	// AllowedCustomSchemes is a list of allowed custom URI scheme patterns (regex)
@@ -156,6 +223,31 @@ type Config struct {
 
 	// Instrumentation settings for observability
 	Instrumentation InstrumentationConfig
+
+	// ResourceIdentifier is the canonical URI that identifies this MCP resource server (RFC 8707)
+	// Used for audience validation to ensure tokens are only accepted by their intended resource server
+	// If empty, defaults to Issuer value
+	// Example: "https://mcp.example.com" or "https://api.example.com/mcp"
+	// Security: This prevents token theft and replay attacks to different resource servers
+	ResourceIdentifier string
+
+	// EnableClientIDMetadataDocuments enables URL-based client_id support per MCP 2025-11-25
+	// When enabled, clients can use HTTPS URLs as client identifiers, and the authorization
+	// server will fetch client metadata from that URL following draft-ietf-oauth-client-id-metadata-document-00
+	// This addresses the common MCP scenario where servers and clients have no pre-existing relationship.
+	// Default: false (disabled for backward compatibility)
+	EnableClientIDMetadataDocuments bool
+
+	// ClientMetadataFetchTimeout is the timeout for fetching client metadata from URL-based client_ids
+	// This prevents indefinite blocking if a metadata URL is slow or unresponsive
+	// Default: 10 seconds
+	ClientMetadataFetchTimeout time.Duration
+
+	// ClientMetadataCacheTTL is how long to cache fetched client metadata
+	// Caching reduces latency and prevents repeated fetches for the same client
+	// HTTP Cache-Control headers may override this value
+	// Default: 5 minutes
+	ClientMetadataCacheTTL time.Duration
 }
 
 // InstrumentationConfig holds configuration for OpenTelemetry instrumentation
@@ -229,19 +321,60 @@ type InstrumentationConfig struct {
 type CORSConfig struct {
 	// AllowedOrigins is a list of allowed origin URLs for CORS requests.
 	// Examples: ["https://app.example.com", "https://dashboard.example.com"]
-	// Use "*" to allow all origins (NOT RECOMMENDED for production).
+	// Use "*" to allow all origins (requires AllowWildcardOrigin=true).
 	// Empty list means CORS is disabled (default, secure).
 	AllowedOrigins []string
+
+	// AllowWildcardOrigin explicitly enables wildcard (*) origin support.
+	// WARNING: This allows ANY website to make cross-origin requests to your OAuth server.
+	// This creates significant CSRF attack surface and is NOT RECOMMENDED for production.
+	// Only enable for development or when you fully understand the security implications.
+	// Must be explicitly set to true when using "*" in AllowedOrigins.
+	// Default: false (wildcard origins are rejected)
+	AllowWildcardOrigin bool
 
 	// AllowCredentials enables the Access-Control-Allow-Credentials header.
 	// Required if your browser client needs to send cookies or authorization headers.
 	// Must be true for OAuth flows that require Bearer tokens.
+	// SECURITY: Cannot be used with wildcard origin (per CORS specification).
 	// Default: false
 	AllowCredentials bool
 
 	// MaxAge is the maximum time (in seconds) browsers can cache preflight responses.
 	// Default: 3600 (1 hour)
 	MaxAge int
+}
+
+// AuthorizationEndpoint returns the full URL to the authorization endpoint
+func (c *Config) AuthorizationEndpoint() string {
+	return c.Issuer + "/oauth/authorize"
+}
+
+// TokenEndpoint returns the full URL to the token endpoint
+func (c *Config) TokenEndpoint() string {
+	return c.Issuer + "/oauth/token"
+}
+
+// RegistrationEndpoint returns the full URL to the dynamic client registration endpoint
+func (c *Config) RegistrationEndpoint() string {
+	return c.Issuer + "/oauth/register"
+}
+
+// ProtectedResourceMetadataEndpoint returns the full URL to the RFC 9728 Protected Resource Metadata endpoint
+// This endpoint is used in WWW-Authenticate headers to help MCP clients discover authorization server information
+func (c *Config) ProtectedResourceMetadataEndpoint() string {
+	return c.Issuer + "/.well-known/oauth-protected-resource"
+}
+
+// GetResourceIdentifier returns the resource identifier for this server
+// If ResourceIdentifier is explicitly configured, returns that value
+// Otherwise, defaults to the Issuer value (secure default)
+// Per RFC 8707, this identifier is used for token audience binding
+func (c *Config) GetResourceIdentifier() string {
+	if c.ResourceIdentifier != "" {
+		return c.ResourceIdentifier
+	}
+	return c.Issuer
 }
 
 // applySecureDefaults applies secure-by-default configuration values
@@ -252,6 +385,9 @@ func applySecureDefaults(config *Config, logger *slog.Logger) *Config {
 
 	// Validate CORS configuration BEFORE applying defaults (to detect invalid values)
 	validateCORSConfig(config, logger)
+
+	// Validate Client ID Metadata Documents configuration (MCP 2025-11-25)
+	validateClientIDMetadataDocumentsConfig(config, logger)
 
 	// Apply time-based defaults
 	applyTimeDefaults(config)
@@ -317,6 +453,9 @@ func applyTimeDefaults(config *Config) {
 	}
 	if config.RegistrationRateLimitWindow == 0 {
 		config.RegistrationRateLimitWindow = 3600 // 1 hour
+	}
+	if config.MaxScopeLength == 0 {
+		config.MaxScopeLength = 1000 // 1000 characters
 	}
 	if config.StorageCleanupInterval == 0 {
 		config.StorageCleanupInterval = time.Minute // 1 minute
@@ -401,10 +540,18 @@ func validateCORSConfig(config *Config, logger *slog.Logger) {
 
 	// Validate each origin format
 	for _, origin := range config.CORS.AllowedOrigins {
-		// Wildcard is valid (though not recommended in production)
+		// SECURITY: Wildcard requires explicit opt-in via AllowWildcardOrigin
+		// This ensures operators consciously accept the security implications
 		if origin == "*" {
-			logger.Warn("⚠️  CORS: Wildcard origin (*) configured",
+			if !config.CORS.AllowWildcardOrigin {
+				panic("CORS: wildcard origin '*' requires AllowWildcardOrigin=true to be explicitly set. " +
+					"This allows ANY website to make cross-origin requests to your OAuth server. " +
+					"Set AllowWildcardOrigin=true only if you understand the security implications, " +
+					"or use specific origins (e.g., https://app.example.com) instead.")
+			}
+			logger.Warn("⚠️  CORS: Wildcard origin (*) enabled via AllowWildcardOrigin=true",
 				"risk", "Allows ANY website to make requests to this server",
+				"security_impact", "Increased CSRF attack surface",
 				"recommendation", "Use specific origins (e.g., https://app.example.com) in production")
 			continue
 		}
@@ -421,7 +568,7 @@ func validateCORSConfig(config *Config, logger *slog.Logger) {
 		}
 
 		// Enforce HTTPS in production (unless AllowInsecureHTTP is explicitly enabled)
-		if !config.AllowInsecureHTTP && u.Scheme == "http" {
+		if !config.AllowInsecureHTTP && u.Scheme == SchemeHTTP {
 			hostname := u.Hostname()
 			// Allow localhost for development
 			if hostname != "localhost" && hostname != "127.0.0.1" && !strings.HasPrefix(hostname, "192.168.") && !strings.HasPrefix(hostname, "10.") {
@@ -455,8 +602,157 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 		config.MinStateLength = 32 // OAuth 2.1: 128+ bits entropy recommended, 32 chars = 192 bits
 	}
 
+	// SECURITY: Enforce absolute minimum state length to ensure CSRF protection entropy
+	// OAuth 2.1 recommends at least 128 bits (16 bytes) of entropy
+	// 16 characters in base64 = 96 bits, but this is an absolute floor
+	const absoluteMinStateLength = 16
+	if config.MinStateLength < absoluteMinStateLength {
+		logger.Warn("⚠️  SECURITY WARNING: MinStateLength below recommended minimum, enforcing floor",
+			"configured", config.MinStateLength,
+			"enforced_minimum", absoluteMinStateLength,
+			"recommended", 32,
+			"risk", "reduced CSRF protection entropy")
+		config.MinStateLength = absoluteMinStateLength
+	}
+
 	// Log warnings for insecure settings (whether explicitly set or not)
 	logSecurityWarnings(config, logger)
+}
+
+// validateWWWAuthenticateConfig validates WWW-Authenticate header configuration
+// for security best practices
+func validateWWWAuthenticateConfig(config *Config, logger *slog.Logger) {
+	// SECURITY: Warn if WWW-Authenticate metadata is disabled
+	if config.DisableWWWAuthenticateMetadata {
+		logger.Warn("⚠️  SECURITY WARNING: WWW-Authenticate metadata is DISABLED",
+			"risk", "MCP 2025-11-25 non-compliance, reduced client discovery",
+			"recommendation", "Set DisableWWWAuthenticateMetadata=false for spec compliance",
+			"learn_more", "https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization")
+	}
+
+	// Recommendation 1: Warn about very large scope lists (header size limits)
+	// Some proxies/servers have HTTP header size limits (typically 8KB)
+	const maxRecommendedScopes = 50
+	if len(config.DefaultChallengeScopes) > maxRecommendedScopes {
+		logger.Warn("⚠️  CONFIGURATION WARNING: Very large DefaultChallengeScopes configured",
+			"count", len(config.DefaultChallengeScopes),
+			"max_recommended", maxRecommendedScopes,
+			"risk", "May exceed HTTP header size limits in some proxies/servers",
+			"recommendation", "Consider reducing scope count or using broader scopes")
+	}
+
+	// Recommendation 3: Validate scope entries don't contain invalid characters
+	// This provides defense-in-depth (escaping already prevents injection)
+	for i, scope := range config.DefaultChallengeScopes {
+		if strings.Contains(scope, `"`) {
+			logger.Warn("⚠️  CONFIGURATION WARNING: Invalid character in DefaultChallengeScopes",
+				"index", i,
+				"scope", scope,
+				"invalid_char", `"`,
+				"risk", "Scope contains double-quote character",
+				"recommendation", "Use alphanumeric characters, hyphens, underscores, colons, and slashes only")
+		}
+		if strings.Contains(scope, ",") {
+			logger.Warn("⚠️  CONFIGURATION WARNING: Invalid character in DefaultChallengeScopes",
+				"index", i,
+				"scope", scope,
+				"invalid_char", ",",
+				"risk", "Scope contains comma character",
+				"recommendation", "Use alphanumeric characters, hyphens, underscores, colons, and slashes only")
+		}
+		if strings.Contains(scope, `\`) {
+			logger.Warn("⚠️  CONFIGURATION WARNING: Invalid character in DefaultChallengeScopes",
+				"index", i,
+				"scope", scope,
+				"invalid_char", `\`,
+				"risk", "Scope contains backslash character",
+				"recommendation", "Use alphanumeric characters, hyphens, underscores, colons, and slashes only")
+		}
+	}
+
+	// Log info about WWW-Authenticate metadata configuration
+	if !config.DisableWWWAuthenticateMetadata && len(config.DefaultChallengeScopes) > 0 {
+		logger.Debug("WWW-Authenticate metadata enabled",
+			"challenge_scopes_count", len(config.DefaultChallengeScopes),
+			"resource_metadata_url", config.ProtectedResourceMetadataEndpoint())
+	}
+}
+
+// validateClientIDMetadataDocumentsConfig validates Client ID Metadata Documents configuration
+// for security and correctness (MCP 2025-11-25, draft-ietf-oauth-client-id-metadata-document-00)
+func validateClientIDMetadataDocumentsConfig(config *Config, logger *slog.Logger) {
+	// Only validate if feature is enabled
+	if !config.EnableClientIDMetadataDocuments {
+		return
+	}
+
+	// SECURITY: Validate ClientMetadataCacheTTL is within reasonable bounds
+	// - Minimum: 1 minute (prevents cache bypass DoS via rapid expiry)
+	// - Maximum: 1 hour (prevents stale metadata from being cached too long)
+	const minTTL = 1 * time.Minute
+	const maxTTL = 1 * time.Hour
+
+	if config.ClientMetadataCacheTTL < 0 {
+		logger.Error("⚠️  CONFIGURATION ERROR: ClientMetadataCacheTTL cannot be negative",
+			"value", config.ClientMetadataCacheTTL,
+			"risk", "Invalid configuration could cause unexpected behavior",
+			"fix", "Set ClientMetadataCacheTTL to a positive duration or 0 for default (5 minutes)")
+		// Set to default to prevent issues
+		config.ClientMetadataCacheTTL = 5 * time.Minute
+	}
+
+	if config.ClientMetadataCacheTTL > 0 && config.ClientMetadataCacheTTL < minTTL {
+		logger.Warn("⚠️  CONFIGURATION WARNING: ClientMetadataCacheTTL is very short",
+			"value", config.ClientMetadataCacheTTL,
+			"minimum_recommended", minTTL,
+			"risk", "Excessive metadata fetches may cause performance issues and rate limiting",
+			"recommendation", fmt.Sprintf("Set ClientMetadataCacheTTL to at least %v", minTTL))
+	}
+
+	if config.ClientMetadataCacheTTL > maxTTL {
+		logger.Warn("⚠️  CONFIGURATION WARNING: ClientMetadataCacheTTL is very long",
+			"value", config.ClientMetadataCacheTTL,
+			"maximum_recommended", maxTTL,
+			"risk", "Stale client metadata may be cached for extended periods",
+			"recommendation", fmt.Sprintf("Set ClientMetadataCacheTTL to at most %v", maxTTL))
+	}
+
+	// SECURITY: Validate ClientMetadataFetchTimeout is reasonable
+	// - Minimum: 1 second (prevents immediate timeout)
+	// - Maximum: 30 seconds (prevents hanging connections)
+	const minTimeout = 1 * time.Second
+	const maxTimeout = 30 * time.Second
+
+	if config.ClientMetadataFetchTimeout < 0 {
+		logger.Error("⚠️  CONFIGURATION ERROR: ClientMetadataFetchTimeout cannot be negative",
+			"value", config.ClientMetadataFetchTimeout,
+			"risk", "Invalid configuration could cause unexpected behavior",
+			"fix", "Set ClientMetadataFetchTimeout to a positive duration or 0 for default (10 seconds)")
+		// Set to default to prevent issues
+		config.ClientMetadataFetchTimeout = 10 * time.Second
+	}
+
+	if config.ClientMetadataFetchTimeout > 0 && config.ClientMetadataFetchTimeout < minTimeout {
+		logger.Warn("⚠️  CONFIGURATION WARNING: ClientMetadataFetchTimeout is very short",
+			"value", config.ClientMetadataFetchTimeout,
+			"minimum_recommended", minTimeout,
+			"risk", "Metadata fetches may timeout prematurely for slow servers",
+			"recommendation", fmt.Sprintf("Set ClientMetadataFetchTimeout to at least %v", minTimeout))
+	}
+
+	if config.ClientMetadataFetchTimeout > maxTimeout {
+		logger.Warn("⚠️  CONFIGURATION WARNING: ClientMetadataFetchTimeout is very long",
+			"value", config.ClientMetadataFetchTimeout,
+			"maximum_recommended", maxTimeout,
+			"risk", "Slow or malicious servers may cause connection hangs",
+			"recommendation", fmt.Sprintf("Set ClientMetadataFetchTimeout to at most %v", maxTimeout))
+	}
+
+	// Log successful validation
+	logger.Debug("Client ID Metadata Documents configuration validated",
+		"cache_ttl", config.ClientMetadataCacheTTL,
+		"fetch_timeout", config.ClientMetadataFetchTimeout,
+		"enabled", config.EnableClientIDMetadataDocuments)
 }
 
 // logSecurityWarnings logs warnings for insecure configuration settings
@@ -473,6 +769,8 @@ func logSecurityWarnings(config *Config, logger *slog.Logger) {
 			"recommendation", "Set AllowPKCEPlain=false to require S256",
 			"learn_more", "https://datatracker.ietf.org/doc/html/rfc7636#section-4.2")
 	}
+	// Validate WWW-Authenticate configuration
+	validateWWWAuthenticateConfig(config, logger)
 	if config.TrustProxy {
 		logger.Warn("⚠️  SECURITY NOTICE: Trusting proxy headers",
 			"risk", "IP spoofing if proxy is not properly configured",
