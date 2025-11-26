@@ -158,9 +158,10 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 // Validation flow:
 // 1. Check if token exists in local storage
 // 2. If found, validate expiry locally (with ClockSkewGracePeriod)
-// 3. If expired locally, return error immediately (don't call provider)
-// 4. Validate with provider (external check)
-// 5. Store updated user info
+// 3. RFC 8707: Validate audience binding (token intended for this resource server)
+// 4. If expired locally, return error immediately (don't call provider)
+// 5. Validate with provider (external check)
+// 6. Store updated user info
 //
 // Note: Rate limiting should be done at the HTTP layer with IP address, not here with token
 func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
@@ -185,6 +186,52 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 		s.Logger.Debug("Token passed local expiry validation",
 			"expiry", storedToken.Expiry,
 			"grace_period_seconds", s.Config.ClockSkewGracePeriod)
+
+		// RFC 8707: CRITICAL SECURITY - Validate token audience binding
+		// This prevents token theft and replay attacks across different resource servers
+		if metadataStore, ok := s.tokenStore.(interface {
+			GetTokenMetadata(tokenID string) (*storage.TokenMetadata, error)
+		}); ok {
+			metadata, err := metadataStore.GetTokenMetadata(accessToken)
+			if err == nil && metadata.Audience != "" {
+				// Token has audience binding - validate it matches this resource server
+				expectedAudience := s.Config.GetResourceIdentifier()
+				// SECURITY: Use constant-time comparison to prevent timing attacks
+				// Although audience is not secret, this follows security best practices
+				if subtle.ConstantTimeCompare([]byte(metadata.Audience), []byte(expectedAudience)) != 1 {
+					// Rate limit logging to prevent DoS via repeated audience mismatch attempts
+					if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(metadata.UserID+":"+metadata.ClientID+":audience_mismatch") {
+						s.Logger.Warn("Token audience mismatch - token not intended for this resource server",
+							"token_audience", metadata.Audience,
+							"server_identifier", expectedAudience,
+							"token_prefix", util.SafeTruncate(accessToken, 8),
+							"user_id", metadata.UserID,
+							"client_id", metadata.ClientID)
+					}
+
+					if s.Auditor != nil {
+						s.Auditor.LogEvent(security.Event{
+							Type:     security.EventResourceMismatch,
+							UserID:   metadata.UserID,
+							ClientID: metadata.ClientID,
+							Details: map[string]any{
+								"severity":          "critical",
+								"token_audience":    metadata.Audience,
+								"server_identifier": expectedAudience,
+								"attack_indicator":  "token_replay_to_wrong_resource_server",
+							},
+						})
+						s.Auditor.LogAuthFailure(metadata.UserID, metadata.ClientID, "", "audience_mismatch")
+					}
+
+					return nil, fmt.Errorf("token not intended for this resource server (RFC 8707 audience mismatch)")
+				}
+
+				s.Logger.Debug("Token audience validation passed",
+					"audience", metadata.Audience,
+					"token_prefix", util.SafeTruncate(accessToken, 8))
+			}
+		}
 
 		// PROACTIVE REFRESH: Check if token is near expiry and should be refreshed
 		// This improves UX by preventing validation failures when refresh is available
@@ -214,7 +261,8 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 
 // StartAuthorizationFlow starts a new OAuth authorization flow
 // clientState is the state parameter from the client (REQUIRED for CSRF protection)
-func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectURI, scope, codeChallenge, codeChallengeMethod, clientState string) (string, error) {
+// resource is the target resource server identifier per RFC 8707 (optional for backward compatibility)
+func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectURI, scope, resource, codeChallenge, codeChallengeMethod, clientState string) (string, error) {
 	// CRITICAL SECURITY: Validate state parameter from client for CSRF protection
 	// This includes minimum length validation to prevent timing attacks
 	if err := s.validateStateParameter(clientState); err != nil {
@@ -308,16 +356,32 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 		return "", fmt.Errorf("%s: %w", ErrorCodeInvalidScope, err)
 	}
 
+	// RFC 8707: Validate resource parameter if provided
+	// The resource parameter binds tokens to a specific resource server for security
+	if resource != "" {
+		if err := s.validateResourceParameter(resource); err != nil {
+			if s.Auditor != nil {
+				s.Auditor.LogAuthFailure("", clientID, "", fmt.Sprintf("invalid_resource: %v", err))
+			}
+			return "", fmt.Errorf("%s: resource parameter is invalid: %w", ErrorCodeInvalidRequest, err)
+		}
+	}
+
 	// Log authorization flow start
 	if s.Auditor != nil {
+		details := map[string]any{
+			"redirect_uri":          redirectURI,
+			"scope":                 scope,
+			"code_challenge_method": codeChallengeMethod,
+		}
+		// RFC 8707: Include resource parameter in audit log if provided
+		if resource != "" {
+			details["resource"] = resource
+		}
 		s.Auditor.LogEvent(security.Event{
 			Type:     security.EventAuthorizationFlowStarted,
 			ClientID: clientID,
-			Details: map[string]any{
-				"redirect_uri":          redirectURI,
-				"scope":                 scope,
-				"code_challenge_method": codeChallengeMethod,
-			},
+			Details:  details,
 		})
 	}
 
@@ -327,12 +391,13 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 	// Generate PKCE for server-to-provider leg (OAuth 2.1)
 	providerCodeChallenge, providerCodeVerifier := generatePKCEPair()
 
-	// Save authorization state with both client and server PKCE parameters
+	// Save authorization state with both client and server PKCE parameters and resource binding
 	authState := &storage.AuthorizationState{
 		StateID:              clientState,
 		ClientID:             clientID,
 		RedirectURI:          redirectURI,
 		Scope:                scope,
+		Resource:             resource, // RFC 8707: Bind authorization to target resource server
 		CodeChallenge:        codeChallenge,
 		CodeChallengeMethod:  codeChallengeMethod,
 		ProviderState:        providerState,
@@ -447,12 +512,14 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 	// Generate authorization code using oauth2.GenerateVerifier (same quality)
 	authCode := generateRandomToken()
 
-	// Create authorization code object
+	// Create authorization code object with resource binding (RFC 8707)
 	authCodeObj := &storage.AuthorizationCode{
 		Code:                authCode,
 		ClientID:            authState.ClientID,
 		RedirectURI:         authState.RedirectURI,
 		Scope:               authState.Scope,
+		Resource:            authState.Resource, // RFC 8707: Carry resource from authorization request
+		Audience:            authState.Resource, // RFC 8707: Audience = resource for token binding
 		CodeChallenge:       authState.CodeChallenge,
 		CodeChallengeMethod: authState.CodeChallengeMethod,
 		UserID:              userInfo.ID,
@@ -485,7 +552,8 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 
 // ExchangeAuthorizationCode exchanges an authorization code for tokens
 // Returns oauth2.Token directly
-func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, redirectURI, codeVerifier string) (*oauth2.Token, string, error) {
+// resource parameter is optional per RFC 8707 for backward compatibility
+func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, redirectURI, resource, codeVerifier string) (*oauth2.Token, string, error) {
 	// Create span if tracing is enabled
 	var span trace.Span
 	if s.tracer != nil {
@@ -569,6 +637,11 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 	// Validate redirect URI matches
 	if authCode.RedirectURI != redirectURI {
 		return nil, "", s.logAuthCodeValidationFailure("redirect_uri_mismatch", clientID, "", util.SafeTruncate(code, 8))
+	}
+
+	// RFC 8707: Validate resource parameter consistency
+	if err := s.validateResourceConsistency(resource, authCode, clientID, code); err != nil {
+		return nil, "", err
 	}
 
 	// CRITICAL SECURITY: Fetch client to check if PKCE is required (OAuth 2.1)
@@ -723,9 +796,23 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 	}
 
 	// Track access token metadata for revocation (OAuth 2.1 code reuse detection)
-	if metadataStore, ok := s.tokenStore.(interface {
+	// RFC 8707: Store audience binding with tokens for validation
+	if metadataStoreWithAudience, ok := s.tokenStore.(interface {
+		SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenType, audience string) error
+	}); ok {
+		// Store access token with audience binding (RFC 8707)
+		if err := metadataStoreWithAudience.SaveTokenMetadataWithAudience(accessToken, authCode.UserID, clientID, "access", authCode.Audience); err != nil {
+			s.Logger.Warn("Failed to save access token metadata with audience", "error", err)
+		}
+		// CRITICAL: Also save refresh token metadata with audience for revocation
+		// Refresh tokens inherit the audience from the authorization code
+		if err := metadataStoreWithAudience.SaveTokenMetadataWithAudience(refreshToken, authCode.UserID, clientID, "refresh", authCode.Audience); err != nil {
+			s.Logger.Warn("Failed to save refresh token metadata with audience", "error", err)
+		}
+	} else if metadataStore, ok := s.tokenStore.(interface {
 		SaveTokenMetadata(tokenID, userID, clientID, tokenType string) error
 	}); ok {
+		// Fallback to basic metadata store without audience (backward compatibility)
 		if err := metadataStore.SaveTokenMetadata(accessToken, authCode.UserID, clientID, "access"); err != nil {
 			s.Logger.Warn("Failed to save access token metadata", "error", err)
 		}

@@ -571,6 +571,7 @@ func TestHandler_ServeCallback(t *testing.T) {
 		client.ClientID,
 		"https://example.com/callback",
 		"openid email",
+		"", // resource parameter (optional)
 		challenge,
 		"S256",
 		clientState,

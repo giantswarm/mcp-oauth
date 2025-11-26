@@ -253,6 +253,9 @@ type AuthorizationState struct {
 	ClientID    string
 	RedirectURI string
 	Scope       string
+	// Resource is the target resource server identifier (RFC 8707)
+	// This binds the authorization to a specific resource server
+	Resource string
 	// Client-to-Server PKCE challenge from MCP client
 	CodeChallenge string
 	// Client-to-Server PKCE method from MCP client
@@ -267,10 +270,16 @@ type AuthorizationState struct {
 
 // AuthorizationCode represents an issued authorization code
 type AuthorizationCode struct {
-	Code                string
-	ClientID            string
-	RedirectURI         string
-	Scope               string
+	Code        string
+	ClientID    string
+	RedirectURI string
+	Scope       string
+	// Resource is the target resource server identifier (RFC 8707)
+	// This is carried from the authorization request to bind the token to a specific audience
+	Resource string
+	// Audience is the intended token audience (resource server identifier)
+	// This is used for token validation to prevent token theft across resource servers
+	Audience            string
 	CodeChallenge       string
 	CodeChallengeMethod string
 	UserID              string
@@ -278,4 +287,14 @@ type AuthorizationCode struct {
 	CreatedAt           time.Time
 	ExpiresAt           time.Time
 	Used                bool
+}
+
+// TokenMetadata tracks ownership and audience information for a token (RFC 8707)
+// Used for revocation by user+client and audience validation
+type TokenMetadata struct {
+	UserID    string    // User who owns this token
+	ClientID  string    // Client who owns this token
+	IssuedAt  time.Time // When this token was issued
+	TokenType string    // "access" or "refresh"
+	Audience  string    // RFC 8707: Intended resource server identifier (for audience validation)
 }

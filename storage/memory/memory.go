@@ -51,14 +51,6 @@ type RefreshTokenFamily struct {
 	RevokedAt  time.Time // When this family was revoked (for cleanup purposes)
 }
 
-// TokenMetadata tracks ownership information for a token (for revocation by user+client)
-type TokenMetadata struct {
-	UserID    string    // User who owns this token
-	ClientID  string    // Client who owns this token
-	IssuedAt  time.Time // When this token was issued
-	TokenType string    // "access" or "refresh"
-}
-
 // Store is an in-memory implementation of all storage interfaces.
 // It implements TokenStore, ClientStore, FlowStore, RefreshTokenFamilyStore, and TokenRevocationStore.
 type Store struct {
@@ -75,7 +67,7 @@ type Store struct {
 	refreshTokenFamilies map[string]*RefreshTokenFamily // refresh token -> family metadata
 
 	// Token metadata tracking (for revocation by user+client)
-	tokenMetadata map[string]*TokenMetadata // token ID (access or refresh) -> metadata
+	tokenMetadata map[string]*storage.TokenMetadata // token ID (access or refresh) -> metadata
 
 	// Client storage
 	clients      map[string]*storage.Client
@@ -147,7 +139,7 @@ func NewWithInterval(cleanupInterval time.Duration) *Store {
 		refreshTokens:              make(map[string]string),
 		refreshTokenExpiries:       make(map[string]time.Time),
 		refreshTokenFamilies:       make(map[string]*RefreshTokenFamily),
-		tokenMetadata:              make(map[string]*TokenMetadata),
+		tokenMetadata:              make(map[string]*storage.TokenMetadata),
 		clients:                    make(map[string]*storage.Client),
 		clientsPerIP:               make(map[string]int),
 		authStates:                 make(map[string]*storage.AuthorizationState),
@@ -595,7 +587,7 @@ func (s *Store) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, us
 	}
 
 	// Save token metadata for revocation tracking (OAuth 2.1 code reuse detection)
-	s.tokenMetadata[refreshToken] = &TokenMetadata{
+	s.tokenMetadata[refreshToken] = &storage.TokenMetadata{
 		UserID:    userID,
 		ClientID:  clientID,
 		IssuedAt:  time.Now(),
@@ -1130,6 +1122,12 @@ func (s *Store) cleanup() {
 // SaveTokenMetadata saves metadata for a token (for revocation tracking)
 // This should be called whenever a token is issued to a user for a client
 func (s *Store) SaveTokenMetadata(tokenID, userID, clientID, tokenType string) error {
+	return s.SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenType, "")
+}
+
+// SaveTokenMetadataWithAudience saves metadata for a token including RFC 8707 audience
+// This should be called whenever a token is issued to a user for a client
+func (s *Store) SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenType, audience string) error {
 	if tokenID == "" || userID == "" || clientID == "" {
 		return fmt.Errorf("tokenID, userID, and clientID cannot be empty")
 	}
@@ -1137,19 +1135,34 @@ func (s *Store) SaveTokenMetadata(tokenID, userID, clientID, tokenType string) e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.tokenMetadata[tokenID] = &TokenMetadata{
+	s.tokenMetadata[tokenID] = &storage.TokenMetadata{
 		UserID:    userID,
 		ClientID:  clientID,
 		IssuedAt:  time.Now(),
 		TokenType: tokenType,
+		Audience:  audience,
 	}
 
 	s.logger.Debug("Saved token metadata",
 		"token_type", tokenType,
 		"user_id", userID,
-		"client_id", clientID)
+		"client_id", clientID,
+		"audience", audience)
 
 	return nil
+}
+
+// GetTokenMetadata retrieves metadata for a token (including RFC 8707 audience)
+func (s *Store) GetTokenMetadata(tokenID string) (*storage.TokenMetadata, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	metadata, exists := s.tokenMetadata[tokenID]
+	if !exists {
+		return nil, fmt.Errorf("token metadata not found")
+	}
+
+	return metadata, nil
 }
 
 // RevokeAllTokensForUserClient revokes all tokens (access + refresh) for a specific user+client combination.
