@@ -113,38 +113,8 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 
 		// MCP 2025-11-25: Validate token scopes against endpoint requirements
 		// This implements OAuth 2.0 scope-based access control for protected resources
-		requiredScopes := h.getRequiredScopes(r)
-		if len(requiredScopes) > 0 {
-			// Get token scopes from metadata (if available)
-			var tokenScopes []string
-			if metadataStore, ok := h.server.TokenStore().(interface {
-				GetTokenMetadata(tokenID string) (*storage.TokenMetadata, error)
-			}); ok {
-				metadata, err := metadataStore.GetTokenMetadata(accessToken)
-				if err == nil && metadata != nil {
-					tokenScopes = metadata.Scopes
-				}
-			}
-
-			// Check if token has all required scopes
-			if !hasRequiredScopes(tokenScopes, requiredScopes) {
-				h.logger.Warn("Insufficient scope for endpoint",
-					"user_id", userInfo.ID,
-					"endpoint", r.URL.Path,
-					"token_scopes", tokenScopes,
-					"required_scopes", requiredScopes,
-					"ip", clientIP)
-
-				// Audit the insufficient scope event
-				if h.server.Auditor != nil {
-					h.server.Auditor.LogAuthFailure(userInfo.ID, "", clientIP, "insufficient_scope")
-				}
-
-				// Return 403 with insufficient_scope error per RFC 6750 Section 3.1
-				description := fmt.Sprintf("Token lacks required scopes for endpoint %s", r.URL.Path)
-				h.writeInsufficientScopeError(w, requiredScopes, description)
-				return
-			}
+		if !h.validateTokenScopes(w, r, accessToken, userInfo, clientIP) {
+			return
 		}
 
 		// Apply per-user rate limiting AFTER authentication
@@ -1236,6 +1206,58 @@ const userInfoKey contextKey = "user_info"
 func UserInfoFromContext(ctx context.Context) (*providers.UserInfo, bool) {
 	userInfo, ok := ctx.Value(userInfoKey).(*providers.UserInfo)
 	return userInfo, ok
+}
+
+// validateTokenScopes checks if the token has required scopes for the endpoint.
+// Returns true if validation passes, false if insufficient scopes (response already written).
+func (h *Handler) validateTokenScopes(w http.ResponseWriter, r *http.Request, accessToken string, userInfo *providers.UserInfo, clientIP string) bool {
+	requiredScopes := h.getRequiredScopes(r)
+	if len(requiredScopes) == 0 {
+		return true // No scopes required
+	}
+
+	tokenScopes := h.getTokenScopes(accessToken)
+
+	if hasRequiredScopes(tokenScopes, requiredScopes) {
+		return true
+	}
+
+	// Log and audit the failure
+	h.logger.Warn("Insufficient scope for endpoint",
+		"user_id", userInfo.ID,
+		"endpoint", r.URL.Path,
+		"token_scopes", tokenScopes,
+		"required_scopes", requiredScopes,
+		"ip", clientIP)
+
+	if h.server.Auditor != nil {
+		h.server.Auditor.LogAuthFailure(userInfo.ID, "", clientIP, "insufficient_scope")
+	}
+
+	description := fmt.Sprintf("Token lacks required scopes for endpoint %s", r.URL.Path)
+	h.writeInsufficientScopeError(w, requiredScopes, description)
+	return false
+}
+
+// getTokenScopes retrieves scopes from token metadata.
+// Returns nil if the store doesn't support metadata or if metadata cannot be retrieved.
+func (h *Handler) getTokenScopes(accessToken string) []string {
+	metadataStore, ok := h.server.TokenStore().(storage.TokenMetadataGetter)
+	if !ok {
+		return nil
+	}
+
+	metadata, err := metadataStore.GetTokenMetadata(accessToken)
+	if err != nil {
+		h.logger.Warn("Failed to retrieve token metadata for scope validation", "error", err)
+		return nil
+	}
+
+	if metadata == nil {
+		return nil
+	}
+
+	return metadata.Scopes
 }
 
 // getRequiredScopes returns the scopes required for accessing a given request path.

@@ -107,6 +107,30 @@ type TokenStore interface {
 	AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken string) (userID string, providerToken *oauth2.Token, err error)
 }
 
+// TokenMetadataStore is the basic interface for storing token metadata.
+// This allows tracking which tokens belong to which user and client for revocation purposes.
+type TokenMetadataStore interface {
+	SaveTokenMetadata(tokenID, userID, clientID, tokenType string) error
+}
+
+// TokenMetadataStoreWithAudience extends TokenMetadataStore with RFC 8707 audience support.
+// This allows binding tokens to specific resource servers to prevent token theft.
+type TokenMetadataStoreWithAudience interface {
+	SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenType, audience string) error
+}
+
+// TokenMetadataStoreWithScopesAndAudience extends with MCP 2025-11-25 scope support.
+// This allows tracking which scopes were granted to a token for scope validation.
+type TokenMetadataStoreWithScopesAndAudience interface {
+	SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID, tokenType, audience string, scopes []string) error
+}
+
+// TokenMetadataGetter provides read access to token metadata.
+// This is used for scope validation and token introspection.
+type TokenMetadataGetter interface {
+	GetTokenMetadata(tokenID string) (*TokenMetadata, error)
+}
+
 // RefreshTokenFamilyStore tracks a family of refresh tokens for reuse detection (OAuth 2.1).
 // This is optional - only implemented by stores that support reuse detection.
 // All methods accept context.Context for tracing and cancellation.

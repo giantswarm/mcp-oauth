@@ -281,6 +281,38 @@ func (s *Server) TokenStore() storage.TokenStore {
 	return s.tokenStore
 }
 
+// saveTokenMetadata saves token metadata using the most capable store method available.
+// It tries methods in order of capability:
+// 1. SaveTokenMetadataWithScopesAndAudience (newest - includes scopes and audience)
+// 2. SaveTokenMetadataWithAudience (includes audience only)
+// 3. SaveTokenMetadata (basic - no audience or scopes)
+//
+// This ensures backward compatibility with stores that don't support the newest methods.
+func (s *Server) saveTokenMetadata(tokenID, userID, clientID, tokenType, audience string, scopes []string) {
+	// Try most capable first (scopes + audience)
+	if store, ok := s.tokenStore.(storage.TokenMetadataStoreWithScopesAndAudience); ok {
+		if err := store.SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID, tokenType, audience, scopes); err != nil {
+			s.Logger.Warn("Failed to save token metadata with scopes and audience", "error", err)
+		}
+		return
+	}
+
+	// Fallback to audience only
+	if store, ok := s.tokenStore.(storage.TokenMetadataStoreWithAudience); ok {
+		if err := store.SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenType, audience); err != nil {
+			s.Logger.Warn("Failed to save token metadata with audience", "error", err)
+		}
+		return
+	}
+
+	// Fallback to basic
+	if store, ok := s.tokenStore.(storage.TokenMetadataStore); ok {
+		if err := store.SaveTokenMetadata(tokenID, userID, clientID, tokenType); err != nil {
+			s.Logger.Warn("Failed to save token metadata", "error", err)
+		}
+	}
+}
+
 const (
 	// MinTokenBytes is the minimum number of random bytes required for secure tokens.
 	// 32 bytes = 256 bits of entropy, which exceeds NIST recommendations for
