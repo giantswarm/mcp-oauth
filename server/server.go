@@ -167,7 +167,43 @@ func New(
 		logger.Debug("Started metadata cache cleanup goroutine")
 	}
 
+	// SECURITY: Validate provider default scopes against server configuration
+	// This helps catch configuration mismatches early to prevent runtime confusion
+	// when clients rely on provider defaults but server doesn't support them
+	srv.validateProviderDefaultScopes(logger)
+
 	return srv, nil
+}
+
+// validateProviderDefaultScopes checks if provider default scopes are supported by server configuration.
+// This is a startup-time sanity check to catch configuration mismatches early.
+// Logs warnings for any provider defaults that aren't in the server's supported scopes list.
+func (s *Server) validateProviderDefaultScopes(logger *slog.Logger) {
+	// Skip validation if no supported scopes configured (allow-all mode)
+	if len(s.Config.SupportedScopes) == 0 {
+		return
+	}
+
+	providerDefaults := s.provider.DefaultScopes()
+	if len(providerDefaults) == 0 {
+		return
+	}
+
+	// Build a set of supported scopes for efficient lookup
+	supportedSet := make(map[string]bool, len(s.Config.SupportedScopes))
+	for _, scope := range s.Config.SupportedScopes {
+		supportedSet[scope] = true
+	}
+
+	// Check each provider default scope
+	for _, scope := range providerDefaults {
+		if !supportedSet[scope] {
+			logger.Warn("Provider default scope not in server supported scopes - clients relying on defaults may encounter errors",
+				"scope", scope,
+				"provider", s.provider.Name(),
+				"supported_scopes", s.Config.SupportedScopes)
+		}
+	}
 }
 
 // SetEncryptor sets the token encryptor for server and storage
