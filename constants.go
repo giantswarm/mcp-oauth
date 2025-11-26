@@ -162,3 +162,16 @@ const (
 	// SchemeHTTPS is the HTTPS URI scheme
 	SchemeHTTPS = "https"
 )
+
+// OAuth discovery paths (RFC 8414, RFC 9728)
+const (
+	// MetadataPathProtectedResource is the RFC 9728 Protected Resource Metadata discovery path
+	MetadataPathProtectedResource = "/.well-known/oauth-protected-resource"
+
+	// MetadataPathAuthorizationServer is the RFC 8414 Authorization Server Metadata discovery path
+	MetadataPathAuthorizationServer = "/.well-known/oauth-authorization-server"
+
+	// MaxMetadataPathLength is the maximum allowed length for custom metadata paths
+	// This prevents DoS attacks through excessively long path registration
+	MaxMetadataPathLength = 256
+)

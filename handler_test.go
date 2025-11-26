@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path"
 	"strings"
 	"testing"
 	"time"
@@ -47,6 +48,16 @@ func setupTestHandler(t *testing.T) (*Handler, *memory.Store) {
 
 	handler := NewHandler(srv, nil)
 	return handler, store
+}
+
+// decodeProtectedResourceMetadata decodes Protected Resource Metadata from the response body
+func decodeProtectedResourceMetadata(t *testing.T, w *httptest.ResponseRecorder) *ProtectedResourceMetadata {
+	t.Helper()
+	var meta ProtectedResourceMetadata
+	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
+		t.Fatalf("failed to decode Protected Resource Metadata: %v", err)
+	}
+	return &meta
 }
 
 func setupTestHandlerWithCORS(t *testing.T, allowedOrigins []string) (*Handler, *memory.Store) {
@@ -111,10 +122,7 @@ func TestHandler_ServeProtectedResourceMetadata(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	var meta ProtectedResourceMetadata
-	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
+	meta := decodeProtectedResourceMetadata(t, w)
 
 	if meta.Resource != testIssuer {
 		t.Errorf("Resource = %q, want %q", meta.Resource, testIssuer)
@@ -146,10 +154,7 @@ func TestHandler_ServeProtectedResourceMetadata_WithScopes(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	var meta ProtectedResourceMetadata
-	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
+	meta := decodeProtectedResourceMetadata(t, w)
 
 	if meta.Resource != testIssuer {
 		t.Errorf("Resource = %q, want %q", meta.Resource, testIssuer)
@@ -267,10 +272,7 @@ func TestHandler_RegisterProtectedResourceMetadataRoutes(t *testing.T) {
 					t.Errorf("root endpoint: status = %d, want %d", w.Code, http.StatusOK)
 				}
 
-				var meta ProtectedResourceMetadata
-				if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
-					t.Fatalf("failed to decode root response: %v", err)
-				}
+				meta := decodeProtectedResourceMetadata(t, w)
 
 				if len(meta.ScopesSupported) != 1 || meta.ScopesSupported[0] != "test:scope" {
 					t.Errorf("root endpoint: ScopesSupported = %v, want [test:scope]", meta.ScopesSupported)
@@ -287,13 +289,214 @@ func TestHandler_RegisterProtectedResourceMetadataRoutes(t *testing.T) {
 					t.Errorf("sub-path endpoint %q: status = %d, want %d", tt.subPath, w.Code, http.StatusOK)
 				}
 
-				var meta ProtectedResourceMetadata
-				if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
-					t.Fatalf("failed to decode sub-path response: %v", err)
-				}
+				meta := decodeProtectedResourceMetadata(t, w)
 
 				if len(meta.ScopesSupported) != 1 || meta.ScopesSupported[0] != "test:scope" {
 					t.Errorf("sub-path endpoint: ScopesSupported = %v, want [test:scope]", meta.ScopesSupported)
+				}
+			}
+		})
+	}
+}
+
+func TestHandler_RegisterProtectedResourceMetadataRoutes_SecurityValidation(t *testing.T) {
+	tests := []struct {
+		name           string
+		mcpPath        string
+		shouldRegister bool
+		description    string
+		skipHTTPTest   bool // Skip HTTP request test if path contains characters invalid in URLs
+	}{
+		{
+			name:           "path traversal with double dots",
+			mcpPath:        "/../../etc/passwd",
+			shouldRegister: false,
+			description:    "should reject path traversal attempts",
+		},
+		{
+			name:           "path traversal in middle",
+			mcpPath:        "/api/../secret",
+			shouldRegister: false,
+			description:    "should reject path traversal in any position",
+		},
+		{
+			name:           "excessively long path",
+			mcpPath:        "/" + strings.Repeat("a", 300),
+			shouldRegister: false,
+			description:    "should reject paths exceeding max length",
+		},
+		{
+			name:           "path with null byte",
+			mcpPath:        "/mcp\x00/secret",
+			shouldRegister: false,
+			description:    "should reject paths with null bytes",
+			skipHTTPTest:   true, // null bytes are invalid in URLs
+		},
+		{
+			name:           "path with too many segments",
+			mcpPath:        "/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p",
+			shouldRegister: false,
+			description:    "should reject paths with excessive segments",
+		},
+		{
+			name:           "valid simple path",
+			mcpPath:        "/mcp",
+			shouldRegister: true,
+			description:    "should accept valid simple path",
+		},
+		{
+			name:           "valid nested path",
+			mcpPath:        "/api/v1/mcp",
+			shouldRegister: true,
+			description:    "should accept valid nested path",
+		},
+		{
+			name:           "valid path with hyphens and underscores",
+			mcpPath:        "/mcp-server_v2",
+			shouldRegister: true,
+			description:    "should accept path with hyphens and underscores",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler, store := setupTestHandler(t)
+			defer store.Stop()
+
+			handler.server.Config.SupportedScopes = []string{"test:scope"}
+
+			// First verify the validation function works correctly
+			err := handler.validateMetadataPath(tt.mcpPath)
+			if tt.shouldRegister && err != nil {
+				t.Errorf("%s: validateMetadataPath() returned error for valid path: %v",
+					tt.description, err)
+			} else if !tt.shouldRegister && err == nil {
+				t.Errorf("%s: validateMetadataPath() did not reject invalid path",
+					tt.description)
+			}
+
+			// Skip HTTP test if path contains characters that are invalid in URLs
+			if tt.skipHTTPTest {
+				return
+			}
+
+			mux := http.NewServeMux()
+			handler.RegisterProtectedResourceMetadataRoutes(mux, tt.mcpPath)
+
+			// Build expected path
+			var expectedPath string
+			if tt.shouldRegister && tt.mcpPath != "" && tt.mcpPath != "/" {
+				cleanPath := path.Clean("/" + strings.TrimPrefix(tt.mcpPath, "/"))
+				expectedPath = "/.well-known/oauth-protected-resource" + cleanPath
+			} else {
+				// For invalid paths that were rejected, test that a reasonable path returns 404
+				expectedPath = "/.well-known/oauth-protected-resource/rejected-path"
+			}
+
+			// Try to access the sub-path endpoint
+			req := httptest.NewRequest(http.MethodGet, expectedPath, nil)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+
+			if tt.shouldRegister {
+				if w.Code != http.StatusOK {
+					t.Errorf("%s: status = %d, want %d (path should be registered)",
+						tt.description, w.Code, http.StatusOK)
+				}
+			} else {
+				// For invalid paths, verify they were not registered
+				// We expect 404 because the handler was never registered
+				if w.Code == http.StatusOK {
+					t.Errorf("%s: path was incorrectly registered (security violation)",
+						tt.description)
+				}
+			}
+		})
+	}
+}
+
+func TestHandler_validateMetadataPath(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "valid simple path",
+			path:    "/mcp",
+			wantErr: false,
+		},
+		{
+			name:    "valid nested path",
+			path:    "/api/v1/mcp",
+			wantErr: false,
+		},
+		{
+			name:    "path traversal attempt",
+			path:    "../../../etc/passwd",
+			wantErr: true,
+			errMsg:  "path traversal",
+		},
+		{
+			name:    "path traversal in middle",
+			path:    "/api/../secret",
+			wantErr: true,
+			errMsg:  "path traversal",
+		},
+		{
+			name:    "excessively long path",
+			path:    "/" + strings.Repeat("a", 300),
+			wantErr: true,
+			errMsg:  "maximum length",
+		},
+		{
+			name:    "path at max length boundary",
+			path:    "/" + strings.Repeat("a", 255),
+			wantErr: false,
+		},
+		{
+			name:    "path with null byte",
+			path:    "/mcp\x00/hack",
+			wantErr: true,
+			errMsg:  "null byte",
+		},
+		{
+			name:    "path with too many segments",
+			path:    "/a/b/c/d/e/f/g/h/i/j/k/l",
+			wantErr: true,
+			errMsg:  "too many segments",
+		},
+		{
+			name:    "path with exactly 10 segments (boundary)",
+			path:    "/a/b/c/d/e/f/g/h/i/j",
+			wantErr: false,
+		},
+		{
+			name:    "empty path",
+			path:    "",
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler, store := setupTestHandler(t)
+			defer store.Stop()
+
+			err := handler.validateMetadataPath(tt.path)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("validateMetadataPath() error = nil, want error containing %q", tt.errMsg)
+					return
+				}
+				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("validateMetadataPath() error = %v, want error containing %q", err, tt.errMsg)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("validateMetadataPath() unexpected error = %v", err)
 				}
 			}
 		})
