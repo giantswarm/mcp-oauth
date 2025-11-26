@@ -16,6 +16,10 @@ import (
 	"golang.org/x/oauth2"
 )
 
+const (
+	testUserID = "test_user"
+)
+
 // TestWriteInsufficientScopeError tests the writeInsufficientScopeError function
 func TestWriteInsufficientScopeError(t *testing.T) {
 	tests := []struct {
@@ -350,11 +354,11 @@ func TestValidateTokenWithScopeValidation(t *testing.T) {
 			// Create handler
 			handler := NewHandler(srv, nil)
 
-			// Create a test token
-			accessToken := "test_access_token"
-			userID := "test_user"
+		// Create a test token
+		accessToken := "test_access_token"
+		userID := testUserID
 
-			// Store user info
+		// Store user info
 			userInfo := &providers.UserInfo{
 				ID:            userID,
 				Email:         "test@example.com",
@@ -546,5 +550,277 @@ func TestTokenMetadataWithScopes(t *testing.T) {
 		if scope != scopes[i] {
 			t.Errorf("Scope[%d] = %s, want %s", i, scope, scopes[i])
 		}
+	}
+}
+
+// TestGetRequiredScopesPathNormalization tests path normalization to prevent traversal attacks
+func TestGetRequiredScopesPathNormalization(t *testing.T) {
+	tests := []struct {
+		name        string
+		config      map[string][]string
+		requestPath string
+		wantScopes  []string
+		wantNil     bool
+	}{
+		{
+			name: "double slashes normalized",
+			config: map[string][]string{
+				"/api/files": {"files:read"},
+			},
+			requestPath: "/api//files",
+			wantScopes:  []string{"files:read"},
+		},
+		{
+			name: "path traversal blocked",
+			config: map[string][]string{
+				"/api/admin": {"admin:access"},
+			},
+			requestPath: "/api/files/../admin",
+			wantScopes:  []string{"admin:access"},
+		},
+		{
+			name: "relative path normalized",
+			config: map[string][]string{
+				"/api/files": {"files:read"},
+			},
+			requestPath: "/api/./files",
+			wantScopes:  []string{"files:read"},
+		},
+		{
+			name: "multiple slashes normalized",
+			config: map[string][]string{
+				"/api/files/*": {"files:read", "files:write"},
+			},
+			requestPath: "//api///files//document.txt",
+			wantScopes:  []string{"files:read", "files:write"},
+		},
+		{
+			name: "traversal cannot bypass prefix match",
+			config: map[string][]string{
+				"/api/files/*": {"files:read"},
+			},
+			requestPath: "/api/files/../admin/users",
+			wantNil:     true, // Normalizes to /api/admin/users which doesn't match /api/files/*
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := memory.New()
+			defer store.Stop()
+			mockProvider := mock.NewMockProvider()
+
+			srv, err := server.New(
+				mockProvider,
+				store,
+				store,
+				store,
+				&server.Config{
+					Issuer:                    "https://example.com",
+					EndpointScopeRequirements: tt.config,
+				},
+				nil,
+			)
+			if err != nil {
+				t.Fatalf("Failed to create server: %v", err)
+			}
+
+			handler := NewHandler(srv, nil)
+
+			req := httptest.NewRequest(http.MethodGet, tt.requestPath, nil)
+			scopes := handler.getRequiredScopes(req)
+
+			if tt.wantNil {
+				if scopes != nil {
+					t.Errorf("Expected nil scopes, got %v", scopes)
+				}
+			} else {
+				if len(scopes) != len(tt.wantScopes) {
+					t.Errorf("Scopes length = %d, want %d", len(scopes), len(tt.wantScopes))
+				}
+				for i, scope := range scopes {
+					if scope != tt.wantScopes[i] {
+						t.Errorf("Scope[%d] = %s, want %s", i, scope, tt.wantScopes[i])
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestGetRequiredScopesLongestPrefixMatch tests that longest prefix wins when multiple patterns match
+func TestGetRequiredScopesLongestPrefixMatch(t *testing.T) {
+	tests := []struct {
+		name        string
+		config      map[string][]string
+		requestPath string
+		wantScopes  []string
+	}{
+		{
+			name: "longer prefix wins",
+			config: map[string][]string{
+				"/api/*":       {"api:access"},
+				"/api/files/*": {"files:read", "files:write"},
+			},
+			requestPath: "/api/files/document.txt",
+			wantScopes:  []string{"files:read", "files:write"},
+		},
+		{
+			name: "shorter prefix if only match",
+			config: map[string][]string{
+				"/api/*": {"api:access"},
+			},
+			requestPath: "/api/files/document.txt",
+			wantScopes:  []string{"api:access"},
+		},
+		{
+			name: "exact match preferred over wildcard",
+			config: map[string][]string{
+				"/api/files":   {"files:exact"},
+				"/api/files/*": {"files:wildcard"},
+			},
+			requestPath: "/api/files",
+			wantScopes:  []string{"files:exact"},
+		},
+		{
+			name: "three levels of wildcards",
+			config: map[string][]string{
+				"/api/*":             {"api:access"},
+				"/api/files/*":       {"files:read"},
+				"/api/files/admin/*": {"admin:access"},
+			},
+			requestPath: "/api/files/admin/users",
+			wantScopes:  []string{"admin:access"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := memory.New()
+			defer store.Stop()
+			mockProvider := mock.NewMockProvider()
+
+			srv, err := server.New(
+				mockProvider,
+				store,
+				store,
+				store,
+				&server.Config{
+					Issuer:                    "https://example.com",
+					EndpointScopeRequirements: tt.config,
+				},
+				nil,
+			)
+			if err != nil {
+				t.Fatalf("Failed to create server: %v", err)
+			}
+
+			handler := NewHandler(srv, nil)
+
+			req := httptest.NewRequest(http.MethodGet, tt.requestPath, nil)
+			scopes := handler.getRequiredScopes(req)
+
+			if len(scopes) != len(tt.wantScopes) {
+				t.Errorf("Scopes length = %d, want %d", len(scopes), len(tt.wantScopes))
+			}
+			for i, scope := range scopes {
+				if scope != tt.wantScopes[i] {
+					t.Errorf("Scope[%d] = %s, want %s", i, scope, tt.wantScopes[i])
+				}
+			}
+		})
+	}
+}
+
+// TestValidateTokenScopesLongPathSanitization tests that very long paths are truncated in error messages
+func TestValidateTokenScopesLongPathSanitization(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+	mockProvider := mock.NewMockProvider()
+
+	// Configure endpoint to require scopes
+	srv, err := server.New(
+		mockProvider,
+		store,
+		store,
+		store,
+		&server.Config{
+			Issuer: "https://example.com",
+			EndpointScopeRequirements: map[string][]string{
+				"/*": {"files:read"},
+			},
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+
+	// Create a test token with insufficient scopes
+	accessToken := "test_access_token"
+	userID := "test_user"
+
+	// Store user info
+	userInfo := &providers.UserInfo{
+		ID:            userID,
+		Email:         "test@example.com",
+		EmailVerified: true,
+	}
+	if err := store.SaveUserInfo(context.Background(), userID, userInfo); err != nil {
+		t.Fatalf("Failed to save user info: %v", err)
+	}
+
+	// Store token
+	providerToken := &oauth2.Token{
+		AccessToken: accessToken,
+		Expiry:      time.Now().Add(1 * time.Hour),
+	}
+	if err := store.SaveToken(context.Background(), accessToken, providerToken); err != nil {
+		t.Fatalf("Failed to save token: %v", err)
+	}
+
+	// Store token metadata with insufficient scopes
+	if err := store.SaveTokenMetadataWithScopesAndAudience(accessToken, userID, "test_client", "access", "", []string{"files:write"}); err != nil {
+		t.Fatalf("Failed to save token metadata: %v", err)
+	}
+
+	// Create a very long path (>100 chars)
+	longPath := "/api/" + strings.Repeat("verylongpathsegment/", 10) + "file.txt"
+	req := httptest.NewRequest(http.MethodGet, longPath, nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	w := httptest.NewRecorder()
+
+	// Create next handler
+	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("success"))
+	})
+
+	// Apply middleware
+	middleware := handler.ValidateToken(nextHandler)
+	middleware.ServeHTTP(w, req)
+
+	// Should return 403
+	if w.Code != http.StatusForbidden {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusForbidden)
+	}
+
+	var body map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	// Verify error description is truncated
+	description := body["error_description"]
+	if len(description) > 150 { // 100 for path + some buffer for the message text
+		t.Errorf("Error description too long (%d chars): %s", len(description), description)
+	}
+
+	// Verify it contains the ellipsis
+	if !strings.Contains(description, "...") {
+		t.Errorf("Error description should contain ellipsis for truncated path: %s", description)
 	}
 }

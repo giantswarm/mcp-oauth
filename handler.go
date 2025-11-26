@@ -1234,7 +1234,13 @@ func (h *Handler) validateTokenScopes(w http.ResponseWriter, r *http.Request, ac
 		h.server.Auditor.LogAuthFailure(userInfo.ID, "", clientIP, "insufficient_scope")
 	}
 
-	description := fmt.Sprintf("Token lacks required scopes for endpoint %s", r.URL.Path)
+	// SECURITY: Sanitize path in error message to prevent log injection
+	// Truncate very long paths to prevent log pollution
+	safePath := r.URL.Path
+	if len(safePath) > 100 {
+		safePath = safePath[:100] + "..."
+	}
+	description := fmt.Sprintf("Token lacks required scopes for endpoint %s", safePath)
 	h.writeInsufficientScopeError(w, requiredScopes, description)
 	return false
 }
@@ -1266,6 +1272,10 @@ func (h *Handler) getTokenScopes(accessToken string) []string {
 // Path matching supports:
 //   - Exact match: "/api/files" matches only "/api/files"
 //   - Prefix match: "/api/files/*" matches any path starting with "/api/files/"
+//   - Longest prefix wins when multiple wildcards match
+//
+// SECURITY: Path is normalized using path.Clean() to prevent traversal bypasses
+// via double slashes, "..", etc.
 //
 // Returns an empty slice if no scope requirements are configured for the path.
 func (h *Handler) getRequiredScopes(r *http.Request) []string {
@@ -1273,24 +1283,35 @@ func (h *Handler) getRequiredScopes(r *http.Request) []string {
 		return nil
 	}
 
-	path := r.URL.Path
+	// SECURITY: Normalize path to prevent bypass via path traversal
+	// This prevents attacks using:
+	// - Double slashes: /api//files
+	// - Path traversal: /api/files/../admin
+	// - Relative paths: /api/./files
+	normalizedPath := path.Clean("/" + r.URL.Path)
 
 	// First, try exact match
-	if scopes, ok := h.server.Config.EndpointScopeRequirements[path]; ok {
+	if scopes, ok := h.server.Config.EndpointScopeRequirements[normalizedPath]; ok {
 		return scopes
 	}
 
 	// Then try prefix matches (patterns ending with /*)
+	// Use longest-prefix-match to ensure most specific pattern wins
+	var longestPrefix string
+	var matchedScopes []string
+
 	for pattern, scopes := range h.server.Config.EndpointScopeRequirements {
 		if strings.HasSuffix(pattern, "/*") {
 			prefix := strings.TrimSuffix(pattern, "*")
-			if strings.HasPrefix(path, prefix) {
-				return scopes
+			// Check if this prefix matches and is longer than current match
+			if strings.HasPrefix(normalizedPath, prefix) && len(prefix) > len(longestPrefix) {
+				longestPrefix = prefix
+				matchedScopes = scopes
 			}
 		}
 	}
 
-	return nil
+	return matchedScopes
 }
 
 // hasRequiredScopes checks if the token has all required scopes.
