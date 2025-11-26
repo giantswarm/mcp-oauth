@@ -542,11 +542,6 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 	if !config.RequirePKCE {
 		config.RequirePKCE = true
 	}
-	// DisableWWWAuthenticateMetadata uses inverted logic (Disable instead of Enable):
-	// The zero value (false) means the feature is ENABLED (secure by default)
-	// Administrators can explicitly set it to true to disable for backward compatibility
-	// This follows Go best practices: zero value = secure default
-	// Unlike RequirePKCE (which is forced to true), this CAN be disabled for legacy client support
 	if config.MinStateLength == 0 {
 		config.MinStateLength = 32 // OAuth 2.1: 128+ bits entropy recommended, 32 chars = 192 bits
 	}
