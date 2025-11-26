@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Dynamic Client Registration (DCR) now respects `token_endpoint_auth_method` parameter (#70)**
+  - **Problem**: DCR always created confidential clients with secrets, even when native/CLI apps requested public clients
+  - **Solution**: Implement OAuth 2.1 / RFC 7591 compliant DCR that respects the `token_endpoint_auth_method` field
+  - **Key Changes**:
+    - When `token_endpoint_auth_method: "none"` is requested, creates a public client (no secret)
+    - When `token_endpoint_auth_method: "client_secret_basic"` or `"client_secret_post"`, creates a confidential client (with secret)
+    - Auth method parameter overrides client_type when both are provided
+    - Added validation to reject unsupported auth methods
+  - **Security**: Public clients still require PKCE for all flows (OAuth 2.1 compliance)
+  - **Use Case**: Enables native applications (like mcp-debug) to properly register as public clients
+  - **Testing**: Added comprehensive unit and integration tests for all auth method combinations
+  - **Constants**: Added `TokenEndpointAuthMethod*` constants for type safety
+
 ### Added
 
 - **OAuth 2.1 PKCE for provider leg - Enhanced security for confidential clients (#68)**

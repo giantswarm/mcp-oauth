@@ -496,6 +496,7 @@ func TestHandler_ServeAuthorization_CompleteFlow(t *testing.T) {
 	client, _, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -546,6 +547,7 @@ func TestHandler_ServeCallback(t *testing.T) {
 	client, _, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -677,6 +679,7 @@ func TestHandler_ServeAuthorization_StateLength(t *testing.T) {
 	client, _, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -795,6 +798,7 @@ func TestHandler_ServeToken_AuthorizationCode(t *testing.T) {
 	client, secret, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -905,6 +909,129 @@ func TestHandler_ServeClientRegistration_Success(t *testing.T) {
 	}
 }
 
+func TestHandler_ServeClientRegistration_TokenEndpointAuthMethod(t *testing.T) {
+	handler, _ := setupTestHandler(t)
+	// Enable public registration for these tests
+	handler.server.Config.AllowPublicClientRegistration = true
+	handler.server.Config.AllowPublicClientsWithoutPKCE = true
+
+	tests := []struct {
+		name                    string
+		tokenEndpointAuthMethod string
+		clientType              string
+		wantStatus              int
+		wantAuthMethod          string
+		wantClientType          string
+		wantSecret              bool
+	}{
+		{
+			name:                    "auth_method=none creates public client",
+			tokenEndpointAuthMethod: "none",
+			clientType:              "",
+			wantStatus:              http.StatusCreated,
+			wantAuthMethod:          "none",
+			wantClientType:          "public",
+			wantSecret:              false,
+		},
+		{
+			name:                    "auth_method=client_secret_basic creates confidential client",
+			tokenEndpointAuthMethod: "client_secret_basic",
+			clientType:              "",
+			wantStatus:              http.StatusCreated,
+			wantAuthMethod:          "client_secret_basic",
+			wantClientType:          "confidential",
+			wantSecret:              true,
+		},
+		{
+			name:                    "auth_method=client_secret_post creates confidential client",
+			tokenEndpointAuthMethod: "client_secret_post",
+			clientType:              "",
+			wantStatus:              http.StatusCreated,
+			wantAuthMethod:          "client_secret_post",
+			wantClientType:          "confidential",
+			wantSecret:              true,
+		},
+		{
+			name:                    "unsupported auth_method returns error",
+			tokenEndpointAuthMethod: "client_secret_jwt",
+			clientType:              "",
+			wantStatus:              http.StatusBadRequest,
+		},
+		{
+			name:                    "empty auth_method defaults to client_secret_basic",
+			tokenEndpointAuthMethod: "",
+			clientType:              "confidential",
+			wantStatus:              http.StatusCreated,
+			wantAuthMethod:          "client_secret_basic",
+			wantClientType:          "confidential",
+			wantSecret:              true,
+		},
+		{
+			name:                    "auth_method=none overrides client_type=confidential",
+			tokenEndpointAuthMethod: "none",
+			clientType:              "confidential",
+			wantStatus:              http.StatusCreated,
+			wantAuthMethod:          "none",
+			wantClientType:          "public",
+			wantSecret:              false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			regReq := ClientRegistrationRequest{
+				RedirectURIs:            []string{"https://example.com/callback"},
+				TokenEndpointAuthMethod: tt.tokenEndpointAuthMethod,
+				GrantTypes:              []string{"authorization_code"},
+				ResponseTypes:           []string{"code"},
+				ClientName:              "Test Client - " + tt.name,
+				ClientType:              tt.clientType,
+			}
+
+			body, _ := json.Marshal(regReq)
+			req := httptest.NewRequest(http.MethodPost, "/register", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.RemoteAddr = "192.168.1." + tt.name[:3] // Unique IP per test
+			w := httptest.NewRecorder()
+
+			handler.ServeClientRegistration(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d, body: %s", w.Code, tt.wantStatus, w.Body.String())
+			}
+
+			if tt.wantStatus == http.StatusCreated {
+				var resp ClientRegistrationResponse
+				if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+					t.Fatalf("failed to decode response: %v", err)
+				}
+
+				if resp.ClientID == "" {
+					t.Error("ClientID should not be empty")
+				}
+
+				if resp.TokenEndpointAuthMethod != tt.wantAuthMethod {
+					t.Errorf("TokenEndpointAuthMethod = %q, want %q", resp.TokenEndpointAuthMethod, tt.wantAuthMethod)
+				}
+
+				if resp.ClientType != tt.wantClientType {
+					t.Errorf("ClientType = %q, want %q", resp.ClientType, tt.wantClientType)
+				}
+
+				if tt.wantSecret {
+					if resp.ClientSecret == "" {
+						t.Error("ClientSecret should not be empty for confidential client")
+					}
+				} else {
+					if resp.ClientSecret != "" {
+						t.Error("ClientSecret should be empty for public client")
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestUserInfoFromContext(t *testing.T) {
 	// Test with no user info in context
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -927,6 +1054,7 @@ func TestHandler_ServeToken_InvalidClient(t *testing.T) {
 	client, _, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid"},
 		"192.168.1.100",
@@ -963,6 +1091,7 @@ func TestHandler_ServeToken_UnsupportedGrantType(t *testing.T) {
 	client, secret, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid"},
 		"192.168.1.100",
@@ -1034,6 +1163,7 @@ func TestHandler_ServeTokenRevocation_Success(t *testing.T) {
 	client, secret, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",
@@ -1077,6 +1207,7 @@ func TestHandler_ServeTokenIntrospection(t *testing.T) {
 	client, secret, err := handler.server.RegisterClient(ctx,
 		"Test Client",
 		"confidential",
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid", "email"},
 		"192.168.1.100",

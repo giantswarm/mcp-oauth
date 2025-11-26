@@ -702,10 +702,11 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 
 	// Parse registration request
 	var req struct {
-		ClientName   string   `json:"client_name"`
-		ClientType   string   `json:"client_type"`
-		RedirectURIs []string `json:"redirect_uris"`
-		Scopes       []string `json:"scopes"`
+		ClientName              string   `json:"client_name"`
+		ClientType              string   `json:"client_type"`
+		TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
+		RedirectURIs            []string `json:"redirect_uris"`
+		Scopes                  []string `json:"scopes"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -713,8 +714,44 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// OAUTH 2.1 COMPLIANCE: Validate token_endpoint_auth_method
+	// Per RFC 7591 Section 2, only these methods are standardized
+	if req.TokenEndpointAuthMethod != "" {
+		validMethods := map[string]bool{
+			TokenEndpointAuthMethodNone:  true,  // Public clients (PKCE-only)
+			TokenEndpointAuthMethodBasic: true,  // HTTP Basic Auth (default for confidential)
+			TokenEndpointAuthMethodPost:  true,  // POST form parameters
+			"client_secret_jwt":          false, // Not yet implemented
+			"private_key_jwt":            false, // Not yet implemented
+		}
+
+		if supported, exists := validMethods[req.TokenEndpointAuthMethod]; !exists || !supported {
+			h.logger.Warn("Unsupported token_endpoint_auth_method requested",
+				"method", req.TokenEndpointAuthMethod,
+				"ip", clientIP)
+			h.writeError(w, ErrorCodeInvalidRequest,
+				fmt.Sprintf("Unsupported token_endpoint_auth_method: %s. Supported: none, client_secret_basic, client_secret_post",
+					req.TokenEndpointAuthMethod),
+				http.StatusBadRequest)
+			return
+		}
+	}
+
+	// SECURITY: Validate public client registration is allowed
+	// When client requests "none" auth method, they're requesting a public client
+	// This is common for native/CLI apps that can't securely store secrets
+	if req.TokenEndpointAuthMethod == TokenEndpointAuthMethodNone || req.ClientType == ClientTypePublic {
+		// Note: We check the configuration that was validated at startup
+		// AllowPublicClientRegistration must be explicitly set for public clients
+		// The registration access token requirement is checked above
+		h.logger.Info("Public client registration requested",
+			"token_endpoint_auth_method", req.TokenEndpointAuthMethod,
+			"client_type", req.ClientType,
+			"ip", clientIP)
+	}
+
 	// Register client with IP tracking
-	client, clientSecret, err := h.server.RegisterClient(ctx, req.ClientName, req.ClientType, req.RedirectURIs, req.Scopes, clientIP, maxClients)
+	client, clientSecret, err := h.server.RegisterClient(ctx, req.ClientName, req.ClientType, req.TokenEndpointAuthMethod, req.RedirectURIs, req.Scopes, clientIP, maxClients)
 	if err != nil {
 		// Check if it's a rate limit error
 		if strings.Contains(err.Error(), "registration limit") {

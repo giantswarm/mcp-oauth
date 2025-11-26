@@ -73,6 +73,7 @@ func TestServer_RegisterClient(t *testing.T) {
 			client, secret, err := srv.RegisterClient(ctx,
 				tt.clientName,
 				tt.clientType,
+				"", // tokenEndpointAuthMethod
 				tt.redirectURIs,
 				tt.scopes,
 				tt.clientIP,
@@ -187,6 +188,7 @@ func TestServer_RegisterClient_IPLimit(t *testing.T) {
 	_, _, err = srv.RegisterClient(ctx,
 		"Client 1",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback1"},
 		[]string{"openid"},
 		clientIP,
@@ -200,6 +202,7 @@ func TestServer_RegisterClient_IPLimit(t *testing.T) {
 	_, _, err = srv.RegisterClient(ctx,
 		"Client 2",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback2"},
 		[]string{"openid"},
 		clientIP,
@@ -213,6 +216,7 @@ func TestServer_RegisterClient_IPLimit(t *testing.T) {
 	_, _, err = srv.RegisterClient(ctx,
 		"Client 3",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback3"},
 		[]string{"openid"},
 		clientIP,
@@ -243,6 +247,7 @@ func TestServer_ValidateClientCredentials(t *testing.T) {
 	client, secret, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid"},
 		"192.168.1.100",
@@ -314,6 +319,7 @@ func TestServer_GetClient(t *testing.T) {
 	client, _, err := srv.RegisterClient(ctx,
 		"Test Client",
 		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
 		[]string{"https://example.com/callback"},
 		[]string{"openid"},
 		"192.168.1.100",
@@ -366,5 +372,129 @@ func TestClientTypeConstants(t *testing.T) {
 
 	if ClientTypePublic != "public" {
 		t.Errorf("ClientTypePublic = %q, want %q", ClientTypePublic, "public")
+	}
+}
+
+func TestServer_RegisterClient_TokenEndpointAuthMethod(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	config := &Config{
+		Issuer: "https://auth.example.com",
+	}
+
+	srv, err := New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	tests := []struct {
+		name                    string
+		clientName              string
+		clientType              string
+		tokenEndpointAuthMethod string
+		wantClientType          string
+		wantAuthMethod          string
+		wantSecret              bool
+	}{
+		{
+			name:                    "token_endpoint_auth_method=none creates public client",
+			clientName:              "Native App",
+			clientType:              "",
+			tokenEndpointAuthMethod: "none",
+			wantClientType:          ClientTypePublic,
+			wantAuthMethod:          "none",
+			wantSecret:              false,
+		},
+		{
+			name:                    "token_endpoint_auth_method=client_secret_basic creates confidential client",
+			clientName:              "Web App",
+			clientType:              "",
+			tokenEndpointAuthMethod: "client_secret_basic",
+			wantClientType:          ClientTypeConfidential,
+			wantAuthMethod:          "client_secret_basic",
+			wantSecret:              true,
+		},
+		{
+			name:                    "token_endpoint_auth_method=client_secret_post creates confidential client",
+			clientName:              "Server App",
+			clientType:              "",
+			tokenEndpointAuthMethod: "client_secret_post",
+			wantClientType:          ClientTypeConfidential,
+			wantAuthMethod:          "client_secret_post",
+			wantSecret:              true,
+		},
+		{
+			name:                    "empty auth method + public type uses none",
+			clientName:              "Mobile App",
+			clientType:              ClientTypePublic,
+			tokenEndpointAuthMethod: "",
+			wantClientType:          ClientTypePublic,
+			wantAuthMethod:          "none",
+			wantSecret:              false,
+		},
+		{
+			name:                    "empty auth method + confidential type uses client_secret_basic",
+			clientName:              "Backend Service",
+			clientType:              ClientTypeConfidential,
+			tokenEndpointAuthMethod: "",
+			wantClientType:          ClientTypeConfidential,
+			wantAuthMethod:          "client_secret_basic",
+			wantSecret:              true,
+		},
+		{
+			name:                    "auth method overrides client type (none overrides confidential)",
+			clientName:              "CLI Tool",
+			clientType:              ClientTypeConfidential,
+			tokenEndpointAuthMethod: "none",
+			wantClientType:          ClientTypePublic,
+			wantAuthMethod:          "none",
+			wantSecret:              false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, secret, err := srv.RegisterClient(ctx,
+				tt.clientName,
+				tt.clientType,
+				tt.tokenEndpointAuthMethod,
+				[]string{"https://example.com/callback"},
+				[]string{"openid"},
+				"192.168.1."+tt.name[:3], // Use unique IP for each test
+				10,
+			)
+
+			if err != nil {
+				t.Fatalf("RegisterClient() error = %v", err)
+			}
+
+			if client.ClientType != tt.wantClientType {
+				t.Errorf("ClientType = %q, want %q", client.ClientType, tt.wantClientType)
+			}
+
+			if client.TokenEndpointAuthMethod != tt.wantAuthMethod {
+				t.Errorf("TokenEndpointAuthMethod = %q, want %q", client.TokenEndpointAuthMethod, tt.wantAuthMethod)
+			}
+
+			if tt.wantSecret {
+				if secret == "" {
+					t.Error("RegisterClient() should return secret for confidential client")
+				}
+				if client.ClientSecretHash == "" {
+					t.Error("Client should have secret hash for confidential client")
+				}
+			} else {
+				if secret != "" {
+					t.Error("RegisterClient() should not return secret for public client")
+				}
+				if client.ClientSecretHash != "" {
+					t.Error("Client should not have secret hash for public client")
+				}
+			}
+		})
 	}
 }

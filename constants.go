@@ -127,6 +127,18 @@ const (
 	ClientTypePublic = "public"
 )
 
+// Token endpoint authentication methods (RFC 7591)
+const (
+	// TokenEndpointAuthMethodNone represents no authentication (public clients)
+	TokenEndpointAuthMethodNone = "none"
+
+	// TokenEndpointAuthMethodBasic represents HTTP Basic authentication
+	TokenEndpointAuthMethodBasic = "client_secret_basic"
+
+	// TokenEndpointAuthMethodPost represents POST form parameters
+	TokenEndpointAuthMethodPost = "client_secret_post"
+)
+
 // PKCE code challenge methods
 const (
 	// PKCEMethodS256 is the SHA256 code challenge method (recommended, OAuth 2.1)
