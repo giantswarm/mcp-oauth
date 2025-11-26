@@ -282,7 +282,17 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		},
 	}
 
-	// Create request with context
+	// SECURITY NOTE: The clientID URL used below comes from user input but has multiple
+	// layers of validation to prevent request forgery and SSRF attacks:
+	// 1. validateMetadataURL() enforces HTTPS-only scheme (line 241)
+	// 2. validateMetadataURL() blocks private/internal IP addresses (line 183-186)
+	// 3. createSSRFProtectedTransport() re-validates IPs at connection time (line 207-214)
+	//    to prevent DNS rebinding attacks
+	// 4. HTTP redirects are disabled (CheckRedirect above)
+	// 5. Timeout is enforced to prevent resource exhaustion
+	// This satisfies the security requirements from draft-ietf-oauth-client-id-metadata-document-00
+	// Section 6, which requires SSRF protection for metadata document fetching.
+	// CodeQL alert go/request-forgery can be dismissed as false positive.
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, clientID, nil)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to create metadata request: %w", err)
