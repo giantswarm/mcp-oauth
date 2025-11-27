@@ -524,7 +524,12 @@ func (s *Server) validateResourceConsistency(resource string, authCode *storage.
 	}
 
 	// Validate resource matches authorization code's resource
-	if resource != authCode.Resource {
+	// Normalize URLs to handle trailing slash differences
+	// RFC 8707 doesn't specify trailing slash handling, but practical clients
+	// may send resource identifiers with or without trailing slashes
+	normalizedResource := util.NormalizeURL(resource)
+	normalizedExpected := util.NormalizeURL(authCode.Resource)
+	if normalizedResource != normalizedExpected {
 		// Rate limit logging to prevent DoS via repeated resource mismatch attempts
 		if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(authCode.UserID+":"+clientID+":resource_mismatch") {
 			s.Logger.Debug("Resource parameter mismatch",

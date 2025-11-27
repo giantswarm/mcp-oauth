@@ -87,3 +87,83 @@ func TestSafeTruncate_NoPanic(t *testing.T) {
 		}()
 	}
 }
+
+func TestNormalizeURL(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "URL with trailing slash",
+			input: "https://example.com/",
+			want:  "https://example.com",
+		},
+		{
+			name:  "URL without trailing slash",
+			input: "https://example.com",
+			want:  "https://example.com",
+		},
+		{
+			name:  "URL with multiple trailing slashes",
+			input: "https://example.com///",
+			want:  "https://example.com",
+		},
+		{
+			name:  "URL with path and trailing slash",
+			input: "https://example.com/api/v1/",
+			want:  "https://example.com/api/v1",
+		},
+		{
+			name:  "URL with path without trailing slash",
+			input: "https://example.com/api/v1",
+			want:  "https://example.com/api/v1",
+		},
+		{
+			name:  "empty string",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "just slashes",
+			input: "///",
+			want:  "",
+		},
+		{
+			name:  "URL with port and trailing slash",
+			input: "https://example.com:8080/",
+			want:  "https://example.com:8080",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NormalizeURL(tt.input)
+			if got != tt.want {
+				t.Errorf("NormalizeURL(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeURL_Comparison(t *testing.T) {
+	// Test that URLs with and without trailing slashes are equal after normalization
+	testCases := []struct {
+		url1 string
+		url2 string
+	}{
+		{"https://example.com", "https://example.com/"},
+		{"https://example.com/api", "https://example.com/api/"},
+		{"https://mcp.example.com:8080", "https://mcp.example.com:8080/"},
+		{"https://inboxfewer.k8s-internal.home.derstappen.com", "https://inboxfewer.k8s-internal.home.derstappen.com/"},
+	}
+
+	for _, tc := range testCases {
+		normalized1 := NormalizeURL(tc.url1)
+		normalized2 := NormalizeURL(tc.url2)
+		if normalized1 != normalized2 {
+			t.Errorf("Expected NormalizeURL(%q) == NormalizeURL(%q), got %q != %q",
+				tc.url1, tc.url2, normalized1, normalized2)
+		}
+	}
+}

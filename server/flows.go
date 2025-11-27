@@ -196,9 +196,14 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 			if err == nil && metadata.Audience != "" {
 				// Token has audience binding - validate it matches this resource server
 				expectedAudience := s.Config.GetResourceIdentifier()
+				// Normalize URLs to handle trailing slash differences
+				// RFC 8707 doesn't specify trailing slash handling, but practical clients
+				// may send resource identifiers with or without trailing slashes
+				normalizedAudience := util.NormalizeURL(metadata.Audience)
+				normalizedExpected := util.NormalizeURL(expectedAudience)
 				// SECURITY: Use constant-time comparison to prevent timing attacks
 				// Although audience is not secret, this follows security best practices
-				if subtle.ConstantTimeCompare([]byte(metadata.Audience), []byte(expectedAudience)) != 1 {
+				if subtle.ConstantTimeCompare([]byte(normalizedAudience), []byte(normalizedExpected)) != 1 {
 					// Rate limit logging to prevent DoS via repeated audience mismatch attempts
 					if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(metadata.UserID+":"+metadata.ClientID+":audience_mismatch") {
 						s.Logger.Warn("Token audience mismatch - token not intended for this resource server",
