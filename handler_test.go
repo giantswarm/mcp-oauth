@@ -3722,6 +3722,11 @@ func TestHandler_ServeSuccessInterstitial_Branding(t *testing.T) {
 	if strings.Contains(body, `<div class="success-icon">`) {
 		t.Error("Response should NOT contain default success icon when logo is configured")
 	}
+
+	// Security: Logo should have crossorigin="anonymous" for CORS isolation
+	if !strings.Contains(body, `crossorigin="anonymous"`) {
+		t.Error("Logo img should have crossorigin=\"anonymous\" for security isolation")
+	}
 }
 
 // TestHandler_ServeSuccessInterstitial_CustomTemplate tests interstitial with custom template

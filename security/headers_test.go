@@ -218,6 +218,7 @@ func TestSetInterstitialSecurityHeaders_CSPContainsScriptHash(t *testing.T) {
 		"default-src 'none'",
 		"script-src '" + InterstitialScriptHash + "'",
 		"style-src 'unsafe-inline'",
+		"img-src https: data:",
 		"frame-ancestors 'none'",
 	}
 
@@ -231,6 +232,23 @@ func TestSetInterstitialSecurityHeaders_CSPContainsScriptHash(t *testing.T) {
 	if strings.Contains(csp, "script-src 'unsafe-inline'") {
 		t.Error("CSP should NOT contain 'unsafe-inline' for scripts")
 	}
+}
+
+// TestSetInterstitialSecurityHeaders_CSPImgSrcRestriction verifies that img-src
+// only allows HTTPS sources and data URIs (for inline SVG icons)
+func TestSetInterstitialSecurityHeaders_CSPImgSrcRestriction(t *testing.T) {
+	w := httptest.NewRecorder()
+	SetInterstitialSecurityHeaders(w, "https://example.com")
+
+	csp := w.Header().Get("Content-Security-Policy")
+
+	// img-src should allow HTTPS and data: (for inline SVGs)
+	if !strings.Contains(csp, "img-src https: data:") {
+		t.Errorf("CSP should contain 'img-src https: data:', got: %s", csp)
+	}
+
+	// img-src should NOT allow HTTP (checked implicitly by not having 'http:' in img-src)
+	// The directive 'img-src https: data:' only allows HTTPS, not HTTP
 }
 
 func TestInterstitialScriptHash_Format(t *testing.T) {

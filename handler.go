@@ -270,7 +270,7 @@ const successInterstitialTemplate = `<!DOCTYPE html>
 </head>
 <body>
     <div class="container">
-        {{if .LogoURL}}<img src="{{.LogoURL}}" alt="{{.LogoAlt}}" class="logo">{{else}}<div class="success-icon">
+        {{if .LogoURL}}<img src="{{.LogoURL}}" alt="{{.LogoAlt}}" class="logo" crossorigin="anonymous">{{else}}<div class="success-icon">
             <svg viewBox="0 0 24 24">
                 <polyline class="checkmark" points="4 12 9 17 20 6"></polyline>
             </svg>

@@ -55,7 +55,11 @@ func SetSecurityHeaders(w http.ResponseWriter, serverURL string) {
 //   - Uses hash-based script allowlisting (CSP Level 2) instead of 'unsafe-inline'
 //   - The script hash is computed from a static script that reads the redirect URL
 //     from the DOM, ensuring the hash remains stable across different redirect URLs
-//   - style-src 'unsafe-inline' is required for the inline CSS animations
+//   - style-src 'unsafe-inline' is required because the CSS contains dynamic template
+//     variables (colors, gradients, custom CSS) that change per-request, making
+//     hash-based CSP impossible for styles. This is acceptable because CSS cannot
+//     execute arbitrary code - the risk is significantly lower than for scripts.
+//   - img-src restricts images to HTTPS sources only (plus data: for inline SVG icons)
 func SetInterstitialSecurityHeaders(w http.ResponseWriter, serverURL string) {
 	// X-Frame-Options: Prevent clickjacking attacks
 	w.Header().Set("X-Frame-Options", "DENY")
@@ -66,12 +70,13 @@ func SetInterstitialSecurityHeaders(w http.ResponseWriter, serverURL string) {
 	// X-XSS-Protection: Enable browser XSS protection (legacy browsers)
 	w.Header().Set("X-XSS-Protection", "1; mode=block")
 
-	// Content-Security-Policy: Allow only the specific inline script via hash
+	// Content-Security-Policy: Strict policy for interstitial page
 	// - default-src 'none': Block everything by default
 	// - script-src with hash: Allow only the exact inline script we control
-	// - style-src 'unsafe-inline': Required for inline CSS (animations, styling)
+	// - style-src 'unsafe-inline': Required for dynamic CSS (see Security considerations above)
+	// - img-src https: data:: Allow HTTPS images and inline data URIs (for SVG icons)
 	// - frame-ancestors 'none': Prevent embedding in iframes
-	csp := "default-src 'none'; script-src '" + InterstitialScriptHash + "'; style-src 'unsafe-inline'; frame-ancestors 'none'"
+	csp := "default-src 'none'; script-src '" + InterstitialScriptHash + "'; style-src 'unsafe-inline'; img-src https: data:; frame-ancestors 'none'"
 	w.Header().Set("Content-Security-Policy", csp)
 
 	// Referrer-Policy: Don't leak referrer information

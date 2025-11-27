@@ -522,11 +522,22 @@ type InterstitialConfig struct {
 
 // InterstitialBranding configures visual elements of the default interstitial page.
 // All fields are optional - unset fields use the default values.
+//
+// Security Best Practices:
+//   - LogoURL must use HTTPS (enforced at startup)
+//   - Host logos on trusted CDNs or your own infrastructure
+//   - Use immutable/versioned URLs for logos (e.g., include hash in filename)
+//   - Note: Browsers don't support Subresource Integrity (SRI) for images,
+//     so HTTPS and trusted hosting are your primary security controls
 type InterstitialBranding struct {
 	// LogoURL is an optional URL to a logo image (PNG, SVG, JPEG).
-	// Must be HTTPS for security (validated at startup).
+	// Must be HTTPS for security (validated at startup). HTTP is only allowed
+	// when AllowInsecureHTTP is enabled for local development.
 	// Leave empty to use the default animated checkmark icon.
 	// Recommended size: 80x80 pixels or larger (displayed at 80px height).
+	//
+	// Security: Host on a trusted CDN with immutable URLs. The image is loaded
+	// with crossorigin="anonymous" for better security isolation.
 	LogoURL string
 
 	// LogoAlt is the alt text for the logo image.
