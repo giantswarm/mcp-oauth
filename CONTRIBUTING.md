@@ -211,9 +211,8 @@ mcp-oauth/
 2. **Example Tests**:
    ```go
    func ExampleNewHandler() {
-       handler, _ := NewHandler(&Config{
-           Resource: "https://example.com",
-       })
+       // Create a handler with a server
+       handler := oauth.NewHandler(server, logger)
        _ = handler
        // Output:
    }

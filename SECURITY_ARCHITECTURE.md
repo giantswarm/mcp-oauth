@@ -480,11 +480,9 @@ type RefreshTokenFamily struct {
 **Configuration**:
 ```go
 &server.Config{
-    AllowResourceParameter: true,
-    AllowedResources: []string{
-        "https://files.example.com",
-        "https://api.example.com",
-    },
+    // Set the resource identifier for this server (RFC 8707)
+    // Tokens will be bound to this resource server
+    ResourceIdentifier: "https://files.example.com",
 }
 ```
 
@@ -536,8 +534,8 @@ func validateToken(token, expectedResource string) error {
         return ErrInvalidIssuer
     }
     
-    // Check audience matches requested resource
-    if config.AllowResourceParameter && claims.Audience != expectedResource {
+    // Check audience matches configured resource identifier
+    if config.ResourceIdentifier != "" && claims.Audience != config.ResourceIdentifier {
         return ErrInvalidAudience
     }
     

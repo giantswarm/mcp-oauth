@@ -7,7 +7,7 @@ This example demonstrates a production-ready OAuth 2.1 setup with all security f
 - ✅ Token encryption at rest (AES-256-GCM)
 - ✅ Refresh token rotation with reuse detection (OAuth 2.1)
 - ✅ Comprehensive audit logging
-- ✅ Triple-layered rate limiting (IP, user, security events)
+- ✅ Multi-layered rate limiting (IP, user, client registration)
 - ✅ Provider-side token revocation (Google/GitHub/etc)
 - ✅ Secure client registration with access token
 - ✅ HTTPS/TLS support
@@ -28,11 +28,13 @@ This example demonstrates a production-ready OAuth 2.1 setup with all security f
 ### 1. Generate Encryption Key
 
 ```bash
-# Generate a new encryption key
-go run -C ../.. -c 'package main; import "fmt"; import oauth "github.com/giantswarm/mcp-oauth"; func main() { k, _ := oauth.GenerateEncryptionKey(); fmt.Println(oauth.EncryptionKeyToBase64(k)) }'
+# Generate a 32-byte base64 encoded key using openssl
+openssl rand -base64 32
 
-# Or use this one-liner with Go
-go run main.go  # Will generate and display a key on first run
+# Or in Go:
+# import "github.com/giantswarm/mcp-oauth/security"
+# key, _ := security.GenerateKey()
+# base64Key := base64.StdEncoding.EncodeToString(key[:])
 ```
 
 ### 2. Set Environment Variables
@@ -198,32 +200,33 @@ Share this token ONLY with trusted client developers.
 
 ### Rate Limiting
 
-The production setup uses **three layers of rate limiting** for defense in depth:
+The production setup uses **multiple layers of rate limiting** for defense in depth:
 
 1. **IP-based Rate Limiting**: Prevents DoS attacks from external sources
    ```go
    rateLimiter := security.NewRateLimiter(10, 20, logger)
+   defer rateLimiter.Stop()
    server.SetRateLimiter(rateLimiter)
    ```
 
 2. **User-based Rate Limiting**: Prevents abuse from authenticated users
    ```go
    userRateLimiter := security.NewRateLimiter(100, 200, logger)
+   defer userRateLimiter.Stop()
    server.SetUserRateLimiter(userRateLimiter)
    ```
 
-3. **Security Event Rate Limiting**: Prevents log flooding during attacks
+3. **Client Registration Rate Limiting**: Prevents registration DoS
    ```go
-   // Limits logging of security events (code reuse, token reuse detection)
-   // Prevents attackers from causing DoS via excessive logging
-   securityEventRateLimiter := security.NewRateLimiter(1, 5, logger)
-   server.SetSecurityEventRateLimiter(securityEventRateLimiter)
+   clientRegRateLimiter := security.NewClientRegistrationRateLimiter(logger)
+   defer clientRegRateLimiter.Stop()
+   server.SetClientRegistrationRateLimiter(clientRegRateLimiter)
    ```
 
-**Why three layers?**
+**Why multiple layers?**
 - IP limiting stops attacks before authentication
 - User limiting prevents authenticated abuse
-- Security event limiting prevents log-based DoS attacks
+- Client registration limiting prevents registration/deletion cycle DoS
 
 Adjust based on your threat model and traffic:
 ```go
@@ -291,7 +294,7 @@ curl https://localhost:8443/metrics
 
 Set up alerts for:
 - High error rates
-- Rate limit violations (IP, user, or security event)
+- Rate limit violations (IP, user, or client registration)
 - **Token reuse detection** (CRITICAL - indicates attack!)
 - **Authorization code reuse** (CRITICAL - indicates attack!)
 - **Provider revocation failures** (tokens remain valid at provider)

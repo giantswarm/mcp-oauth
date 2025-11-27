@@ -8,7 +8,7 @@ This example demonstrates a minimal OAuth 2.1 setup for an MCP server.
    - Go to [Google Cloud Console](https://console.cloud.google.com/)
    - Create a project and enable required APIs
    - Create OAuth 2.0 credentials (Web application)
-   - Add redirect URI: `http://localhost:8080/oauth/google/callback`
+   - Add redirect URI: `http://localhost:8080/oauth/callback`
    - Copy Client ID and Client Secret
 
 ## Running the Example

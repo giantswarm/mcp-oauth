@@ -101,11 +101,9 @@ func main() {
 	// === OAuth Discovery Endpoints (MCP 2025-11-25) ===
 
 	// Protected Resource Metadata (RFC 9728)
-	// RegisterProtectedResourceMetadataRoutes creates TWO discovery endpoints:
-	//   1. /.well-known/oauth-protected-resource (standard RFC 9728)
-	//   2. /mcp/.well-known/oauth-protected-resource (MCP 2025-11-25 sub-path)
+	// Registers the discovery endpoint at /.well-known/oauth-protected-resource
 	//
-	// Clients use these endpoints to discover:
+	// Clients use this endpoint to discover:
 	//   - Which authorization server protects this resource
 	//   - What scopes are supported
 	//   - How to send bearer tokens
@@ -156,7 +154,6 @@ func main() {
 	log.Printf("\nEndpoints:")
 	log.Printf("  Discovery (MCP 2025-11-25):")
 	log.Printf("    /.well-known/oauth-protected-resource")
-	log.Printf("    /mcp/.well-known/oauth-protected-resource (sub-path)")
 	log.Printf("    /.well-known/oauth-authorization-server")
 	log.Printf("  OAuth Flow:")
 	log.Printf("    /oauth/authorize")

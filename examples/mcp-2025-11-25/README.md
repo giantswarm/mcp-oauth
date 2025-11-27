@@ -6,7 +6,6 @@ This example demonstrates all features introduced in the MCP 2025-11-25 specific
 
 ### 1. Protected Resource Metadata Discovery (RFC 9728)
 - Automatic metadata exposure at `/.well-known/oauth-protected-resource`
-- Sub-path discovery at `/mcp/.well-known/oauth-protected-resource`
 - Lists supported scopes and authorization servers
 
 ### 2. Enhanced WWW-Authenticate Headers (RFC 6750)
@@ -62,11 +61,8 @@ This example demonstrates all features introduced in the MCP 2025-11-25 specific
 ### Test 1: Discovery Endpoints
 
 ```bash
-# Fetch Protected Resource Metadata (root)
+# Fetch Protected Resource Metadata
 curl http://localhost:8080/.well-known/oauth-protected-resource | jq
-
-# Fetch Protected Resource Metadata (sub-path, MCP 2025-11-25)
-curl http://localhost:8080/mcp/.well-known/oauth-protected-resource | jq
 
 # Fetch Authorization Server Metadata
 curl http://localhost:8080/.well-known/oauth-authorization-server | jq
@@ -255,7 +251,6 @@ The DELETE request will return `403 insufficient_scope` because it requires both
 This example demonstrates:
 
 - ✅ Protected Resource Metadata at standard path (`/.well-known/oauth-protected-resource`)
-- ✅ Protected Resource Metadata at sub-path (`/mcp/.well-known/oauth-protected-resource`)
 - ✅ Authorization Server Metadata (`/.well-known/oauth-authorization-server`)
 - ✅ WWW-Authenticate header with `resource_metadata` parameter
 - ✅ WWW-Authenticate header with `scope` parameter

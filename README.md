@@ -114,7 +114,7 @@ func main() {
     // 5. Setup routes
     mux := http.NewServeMux()
     
-    // Register Protected Resource Metadata endpoints (root + sub-path)
+    // Register Protected Resource Metadata endpoint
     handler.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
     
     // Protected MCP endpoint

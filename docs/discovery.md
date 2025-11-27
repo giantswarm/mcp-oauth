@@ -40,8 +40,6 @@ Helps clients discover which authorization server protects a resource and what s
 
 **Standard Path**: `/.well-known/oauth-protected-resource`
 
-**MCP 2025-11-25 Enhancement**: Also available at sub-paths (e.g., `/mcp/.well-known/oauth-protected-resource`)
-
 ### Configuration
 
 The library automatically exposes this endpoint when you register routes:
@@ -55,17 +53,12 @@ func main() {
     handler := oauth.NewHandler(server, nil)
     mux := http.NewServeMux()
     
-    // Register Protected Resource Metadata endpoints
-    // Creates both root and sub-path discovery
+    // Register Protected Resource Metadata endpoint
     handler.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
     
     http.ListenAndServe(":8080", mux)
 }
 ```
-
-This creates two discovery endpoints:
-1. `/.well-known/oauth-protected-resource` - Standard RFC 9728
-2. `/mcp/.well-known/oauth-protected-resource` - MCP 2025-11-25 sub-path
 
 ### Response Format
 
@@ -113,25 +106,6 @@ curl https://auth.example.com/.well-known/oauth-authorization-server
 # 5. Client starts OAuth flow using discovered endpoints
 ```
 
-### Sub-Path Discovery (MCP 2025-11-25)
-
-MCP 2025-11-25 requires discovery at sub-paths for better namespace isolation:
-
-```bash
-# Standard discovery (RFC 9728)
-curl https://mcp.example.com/.well-known/oauth-protected-resource
-
-# Sub-path discovery (MCP 2025-11-25)
-curl https://mcp.example.com/mcp/.well-known/oauth-protected-resource
-
-# Both return the same metadata
-```
-
-**Why sub-path discovery?**
-- Allows different protected resources on same domain to advertise different authorization requirements
-- Better aligns with MCP server path structure
-- Enables fine-grained discovery for multi-tenant systems
-
 ## Authorization Server Metadata (RFC 8414)
 
 ### Purpose
@@ -150,8 +124,6 @@ Describes the authorization server's capabilities, endpoints, and supported feat
   "authorization_endpoint": "https://auth.example.com/oauth/authorize",
   "token_endpoint": "https://auth.example.com/oauth/token",
   "registration_endpoint": "https://auth.example.com/oauth/register",
-  "revocation_endpoint": "https://auth.example.com/oauth/revoke",
-  "introspection_endpoint": "https://auth.example.com/oauth/introspect",
   "response_types_supported": [
     "code"
   ],
@@ -167,15 +139,6 @@ Describes the authorization server's capabilities, endpoints, and supported feat
     "client_secret_post",
     "none"
   ],
-  "revocation_endpoint_auth_methods_supported": [
-    "client_secret_basic",
-    "client_secret_post",
-    "none"
-  ],
-  "introspection_endpoint_auth_methods_supported": [
-    "client_secret_basic",
-    "client_secret_post"
-  ],
   "scopes_supported": [
     "openid",
     "profile",
@@ -183,6 +146,8 @@ Describes the authorization server's capabilities, endpoints, and supported feat
   ]
 }
 ```
+
+Note: `revocation_endpoint` and `introspection_endpoint` are only included when explicitly enabled via `EnableRevocationEndpoint` and `EnableIntrospectionEndpoint` configuration options.
 
 ### Key Fields
 
@@ -330,13 +295,13 @@ client_id: https://client.example.com/.well-known/client-configuration
 ```go
 &server.Config{
     // Enable Client ID Metadata Document support
-    EnableClientIDMetadata: true,
+    EnableClientIDMetadataDocuments: true,
     
-    // Configure caching
-    ClientIDMetadataCacheTTL: 3600, // 1 hour
+    // Configure caching (default: 5 minutes)
+    ClientMetadataCacheTTL: 5 * time.Minute,
     
-    // Configure timeout for fetching metadata
-    ClientIDMetadataFetchTimeout: 5, // 5 seconds
+    // Configure timeout for fetching metadata (default: 10 seconds)
+    ClientMetadataFetchTimeout: 10 * time.Second,
 }
 ```
 
@@ -527,15 +492,11 @@ HTTP/1.1 200 OK
    }
    ```
 
-2. **Use Resource Parameter**
+2. **Configure Resource Identifier**
    ```go
-   // Bind tokens to specific resources
+   // Set resource identifier for token audience binding (RFC 8707)
    &server.Config{
-       AllowResourceParameter: true,
-       AllowedResources: []string{
-           "https://files.example.com",
-           "https://api.example.com",
-       },
+       ResourceIdentifier: "https://api.example.com",
    }
    ```
 

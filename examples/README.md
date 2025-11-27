@@ -77,7 +77,7 @@ All examples require Google OAuth credentials:
 2. Create a project
 3. Enable required APIs (Gmail, Drive, etc.)
 4. Create OAuth 2.0 credentials (Web application)
-5. Add authorized redirect URI: `http://localhost:8080/oauth/google/callback`
+5. Add authorized redirect URI: `http://localhost:8080/oauth/callback`
 6. Copy Client ID and Secret
 
 ## Environment Variables

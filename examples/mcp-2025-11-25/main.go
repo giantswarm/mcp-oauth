@@ -96,18 +96,14 @@ func main() {
 			},
 
 			// Feature 6: Resource Parameter (RFC 8707) - Token Audience Binding
-			// Binds access tokens to specific resource servers
-			// Prevents token misuse across different services
-			// AllowResourceParameter: true,
-			// AllowedResources: []string{
-			//     "http://localhost:8080",
-			// },
+			// Set ResourceIdentifier to bind tokens to this resource server
+			// ResourceIdentifier: "http://localhost:8080",
 
 			// Feature 7: Client ID Metadata Documents
 			// Enable distributed client verification via HTTPS metadata URLs
-			// EnableClientIDMetadata: true,
-			// ClientIDMetadataCacheTTL: 3600,        // Cache for 1 hour
-			// ClientIDMetadataFetchTimeout: 5,        // 5 second timeout
+			// EnableClientIDMetadataDocuments: true,
+			// ClientMetadataCacheTTL: 5 * time.Minute,   // Cache metadata
+			// ClientMetadataFetchTimeout: 10 * time.Second, // Fetch timeout
 
 			// === OAuth 2.1 Security (enabled by default) ===
 			// RequirePKCE: true,                   // Mandatory PKCE
@@ -137,9 +133,8 @@ func main() {
 	// === Discovery Endpoints (MCP 2025-11-25) ===
 
 	// Protected Resource Metadata (RFC 9728)
-	// Registers both root and sub-path discovery endpoints:
+	// Registers the Protected Resource Metadata discovery endpoint:
 	// - /.well-known/oauth-protected-resource (standard)
-	// - /mcp/.well-known/oauth-protected-resource (MCP 2025-11-25 sub-path)
 	handler.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
 
 	// Authorization Server Metadata (RFC 8414)
@@ -185,7 +180,6 @@ func main() {
 	log.Println("\n=== Endpoints ===")
 	log.Println("Discovery:")
 	log.Println("  /.well-known/oauth-protected-resource")
-	log.Println("  /mcp/.well-known/oauth-protected-resource (sub-path)")
 	log.Println("  /.well-known/oauth-authorization-server")
 	log.Println("\nOAuth Flow:")
 	log.Println("  /oauth/authorize")
