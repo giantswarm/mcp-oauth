@@ -2,6 +2,7 @@ package security
 
 import (
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -221,20 +222,20 @@ func TestSetInterstitialSecurityHeaders_CSPContainsScriptHash(t *testing.T) {
 	}
 
 	for _, part := range expectedParts {
-		if !contains(csp, part) {
+		if !strings.Contains(csp, part) {
 			t.Errorf("CSP should contain %q, got: %s", part, csp)
 		}
 	}
 
 	// Verify CSP does NOT allow unsafe-inline for scripts
-	if contains(csp, "script-src 'unsafe-inline'") {
+	if strings.Contains(csp, "script-src 'unsafe-inline'") {
 		t.Error("CSP should NOT contain 'unsafe-inline' for scripts")
 	}
 }
 
 func TestInterstitialScriptHash_Format(t *testing.T) {
 	// Verify the hash has the correct format
-	if !contains(InterstitialScriptHash, "sha256-") {
+	if !strings.Contains(InterstitialScriptHash, "sha256-") {
 		t.Errorf("InterstitialScriptHash should start with 'sha256-', got: %s", InterstitialScriptHash)
 	}
 
@@ -244,19 +245,4 @@ func TestInterstitialScriptHash_Format(t *testing.T) {
 	if len(InterstitialScriptHash) != expectedLen {
 		t.Errorf("InterstitialScriptHash length = %d, want %d", len(InterstitialScriptHash), expectedLen)
 	}
-}
-
-// contains checks if str contains substr
-func contains(str, substr string) bool {
-	return len(str) >= len(substr) && (str == substr || len(substr) == 0 ||
-		(len(str) > 0 && len(substr) > 0 && findSubstring(str, substr)))
-}
-
-func findSubstring(str, substr string) bool {
-	for i := 0; i <= len(str)-len(substr); i++ {
-		if str[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

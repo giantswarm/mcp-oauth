@@ -1141,17 +1141,8 @@ func validateInterstitialBranding(branding *InterstitialBranding, config *Config
 		}
 
 		// Check for potentially dangerous CSS values
-		dangerousCSSPatterns := []string{
-			"expression(",  // IE CSS expression
-			"javascript:",  // JavaScript URL
-			"behavior:",    // IE CSS behavior
-			"-moz-binding", // Firefox XBL binding
-		}
-		lowerCSS := strings.ToLower(branding.CustomCSS)
-		for _, pattern := range dangerousCSSPatterns {
-			if strings.Contains(lowerCSS, pattern) {
-				panic(fmt.Sprintf("Interstitial: CustomCSS contains potentially dangerous pattern '%s'", pattern))
-			}
+		if pattern, found := containsDangerousCSSPattern(branding.CustomCSS); found {
+			panic(fmt.Sprintf("Interstitial: CustomCSS contains potentially dangerous pattern '%s'", pattern))
 		}
 
 		logger.Debug("Interstitial CustomCSS configured",
@@ -1182,15 +1173,42 @@ func validateInterstitialBranding(branding *InterstitialBranding, config *Config
 		"has_custom_css", branding.CustomCSS != "")
 }
 
+// dangerousCSSPatterns contains patterns that indicate potential CSS injection attacks.
+// These patterns are checked across all CSS value validations.
+var dangerousCSSPatterns = []string{
+	"expression(",  // IE CSS expression (JavaScript execution)
+	"javascript:",  // JavaScript URL scheme
+	"behavior:",    // IE CSS behavior
+	"-moz-binding", // Firefox XBL binding (deprecated but still dangerous)
+}
+
+// containsDangerousCSSPattern checks if the value contains any dangerous CSS patterns.
+// Returns the matched pattern and true if a dangerous pattern is found.
+func containsDangerousCSSPattern(value string, additionalPatterns ...string) (string, bool) {
+	lowerValue := strings.ToLower(value)
+
+	// Check common dangerous patterns
+	for _, pattern := range dangerousCSSPatterns {
+		if strings.Contains(lowerValue, pattern) {
+			return pattern, true
+		}
+	}
+
+	// Check additional patterns specific to the context
+	for _, pattern := range additionalPatterns {
+		if strings.Contains(lowerValue, pattern) {
+			return pattern, true
+		}
+	}
+
+	return "", false
+}
+
 // validateCSSColorValue validates a CSS color value is safe
 func validateCSSColorValue(color string) error {
-	// Check for dangerous patterns
-	lowerColor := strings.ToLower(color)
-	dangerousPatterns := []string{"expression(", "javascript:", "url("}
-	for _, pattern := range dangerousPatterns {
-		if strings.Contains(lowerColor, pattern) {
-			return fmt.Errorf("color value contains dangerous pattern '%s'", pattern)
-		}
+	// Check for dangerous patterns (including url() which is not valid in color values)
+	if pattern, found := containsDangerousCSSPattern(color, "url("); found {
+		return fmt.Errorf("color value contains dangerous pattern '%s'", pattern)
 	}
 
 	// Basic format validation - must match common CSS color formats
@@ -1209,15 +1227,12 @@ func validateCSSColorValue(color string) error {
 // validateCSSBackgroundValue validates a CSS background value is safe
 func validateCSSBackgroundValue(bg string) error {
 	// Check for dangerous patterns
-	lowerBg := strings.ToLower(bg)
-	dangerousPatterns := []string{"expression(", "javascript:", "-moz-binding", "behavior:"}
-	for _, pattern := range dangerousPatterns {
-		if strings.Contains(lowerBg, pattern) {
-			return fmt.Errorf("background value contains dangerous pattern '%s'", pattern)
-		}
+	if pattern, found := containsDangerousCSSPattern(bg); found {
+		return fmt.Errorf("background value contains dangerous pattern '%s'", pattern)
 	}
 
 	// Allow url() only for HTTPS URLs
+	lowerBg := strings.ToLower(bg)
 	if strings.Contains(lowerBg, "url(") {
 		// Extract URL from url() and validate it's HTTPS
 		urlPattern := regexp.MustCompile(`url\(['"]?([^'")]+)['"]?\)`)

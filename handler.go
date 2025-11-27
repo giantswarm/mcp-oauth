@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -417,17 +418,21 @@ func (h *Handler) serveCustomInterstitialTemplate(w http.ResponseWriter, templat
 	// Build template data with branding (if provided)
 	data := h.buildInterstitialData(redirectURL, appName, branding)
 
-	// Set security headers
+	// Execute template to buffer first to handle errors cleanly
+	// This prevents partial writes to the response if template execution fails
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		h.logger.Error("Failed to execute custom interstitial template", "error", err)
+		// Fall back to default template on execution error
+		h.serveDefaultInterstitial(w, redirectURL, appName, nil)
+		return
+	}
+
+	// Set security headers and write the buffered response
 	// Note: Custom templates may need different CSP headers for their scripts
 	security.SetInterstitialSecurityHeaders(w, h.server.Config.Issuer)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-
-	if err := tmpl.Execute(w, data); err != nil {
-		h.logger.Error("Failed to execute custom interstitial template", "error", err)
-		w.Header().Set("Content-Type", "text/plain")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("Authorization successful. Please return to your application."))
-	}
+	_, _ = buf.WriteTo(w)
 }
 
 // serveDefaultInterstitial serves the default interstitial template with optional branding.
@@ -441,17 +446,22 @@ func (h *Handler) serveDefaultInterstitial(w http.ResponseWriter, redirectURL, a
 	// Build template data
 	data := h.buildInterstitialData(redirectURL, appName, branding)
 
+	// Execute template to buffer first to handle errors cleanly
+	// This prevents partial writes to the response if template execution fails
+	var buf bytes.Buffer
+	if err := successInterstitialTmpl.Execute(&buf, data); err != nil {
+		h.logger.Error("Failed to execute success interstitial template", "error", err)
+		// Fallback to plain text on error (should be rare with pre-parsed template)
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("Authorization successful. Please return to your application."))
+		return
+	}
+
 	// Set security headers with CSP hash exception for the inline redirect script
 	security.SetInterstitialSecurityHeaders(w, h.server.Config.Issuer)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-
-	// Execute pre-parsed template (parsed at package initialization)
-	if err := successInterstitialTmpl.Execute(w, data); err != nil {
-		h.logger.Error("Failed to execute success interstitial template", "error", err)
-		w.Header().Set("Content-Type", "text/plain")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("Authorization successful. Please return to your application."))
-	}
+	_, _ = buf.WriteTo(w)
 }
 
 // buildInterstitialData constructs the template data for the interstitial page.
