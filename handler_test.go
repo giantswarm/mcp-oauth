@@ -2739,3 +2739,355 @@ func TestHandler_WriteError401BackwardCompatibilityMode(t *testing.T) {
 		})
 	}
 }
+
+// TestHandler_GetChallengeScopes tests the getChallengeScopes() scope resolution logic
+func TestHandler_GetChallengeScopes(t *testing.T) {
+	tests := []struct {
+		name                   string
+		requestPath            string
+		requestMethod          string
+		endpointScopes         map[string][]string
+		endpointMethodScopes   map[string]map[string][]string
+		defaultChallengeScopes []string
+		wantScopes             string
+	}{
+		{
+			name:                   "endpoint-specific scopes take priority",
+			requestPath:            "/api/files/test.txt",
+			requestMethod:          "GET",
+			endpointScopes:         map[string][]string{"/api/files/*": {"files:read", "files:write"}},
+			defaultChallengeScopes: []string{"default:scope"},
+			wantScopes:             "files:read files:write",
+		},
+		{
+			name:                   "method-specific scopes take priority over path scopes",
+			requestPath:            "/api/files/test.txt",
+			requestMethod:          "POST",
+			endpointScopes:         map[string][]string{"/api/files/*": {"files:read"}},
+			endpointMethodScopes:   map[string]map[string][]string{"/api/files/*": {"POST": {"files:write", "files:create"}}},
+			defaultChallengeScopes: []string{"default:scope"},
+			wantScopes:             "files:write files:create",
+		},
+		{
+			name:                   "fallback to default challenge scopes when no endpoint match",
+			requestPath:            "/api/other/resource",
+			requestMethod:          "GET",
+			endpointScopes:         map[string][]string{"/api/files/*": {"files:read"}},
+			defaultChallengeScopes: []string{"mcp:access", "user:profile"},
+			wantScopes:             "mcp:access user:profile",
+		},
+		{
+			name:                   "no scopes when nothing configured",
+			requestPath:            "/api/resource",
+			requestMethod:          "GET",
+			endpointScopes:         nil,
+			endpointMethodScopes:   nil,
+			defaultChallengeScopes: nil,
+			wantScopes:             "",
+		},
+		{
+			name:                   "exact path match",
+			requestPath:            "/api/user/profile",
+			requestMethod:          "GET",
+			endpointScopes:         map[string][]string{"/api/user/profile": {"user:profile"}},
+			defaultChallengeScopes: []string{"default:scope"},
+			wantScopes:             "user:profile",
+		},
+		{
+			name:                   "wildcard path match",
+			requestPath:            "/api/admin/users/delete",
+			requestMethod:          "DELETE",
+			endpointScopes:         map[string][]string{"/api/admin/*": {"admin:access"}},
+			defaultChallengeScopes: []string{"default:scope"},
+			wantScopes:             "admin:access",
+		},
+		{
+			name:                   "method wildcard fallback",
+			requestPath:            "/api/files/test.txt",
+			requestMethod:          "PATCH",
+			endpointMethodScopes:   map[string]map[string][]string{"/api/files/*": {"*": {"files:modify"}}},
+			defaultChallengeScopes: []string{"default:scope"},
+			wantScopes:             "files:modify",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := memory.New()
+			defer store.Stop()
+
+			provider := mock.NewMockProvider()
+
+			config := &server.Config{
+				Issuer:                          testIssuer,
+				EndpointScopeRequirements:       tt.endpointScopes,
+				EndpointMethodScopeRequirements: tt.endpointMethodScopes,
+				DefaultChallengeScopes:          tt.defaultChallengeScopes,
+			}
+
+			srv, err := server.New(provider, store, store, store, config, nil)
+			if err != nil {
+				t.Fatalf("server.New() error = %v", err)
+			}
+
+			handler := NewHandler(srv, nil)
+
+			// Create test request
+			req := httptest.NewRequest(tt.requestMethod, tt.requestPath, nil)
+
+			// Test getChallengeScopes
+			gotScopes := handler.getChallengeScopes(req)
+
+			if gotScopes != tt.wantScopes {
+				t.Errorf("getChallengeScopes() = %q, want %q", gotScopes, tt.wantScopes)
+			}
+		})
+	}
+}
+
+// TestHandler_WriteUnauthorizedError tests the writeUnauthorizedError method
+func TestHandler_WriteUnauthorizedError(t *testing.T) {
+	tests := []struct {
+		name                   string
+		requestPath            string
+		requestMethod          string
+		endpointScopes         map[string][]string
+		defaultChallengeScopes []string
+		errorCode              string
+		errorDesc              string
+		wantScopes             string
+		wantErrorCode          string
+		wantErrorDesc          string
+	}{
+		{
+			name:                   "with endpoint-specific scopes",
+			requestPath:            "/api/files/test.txt",
+			requestMethod:          "GET",
+			endpointScopes:         map[string][]string{"/api/files/*": {"files:read", "files:write"}},
+			defaultChallengeScopes: []string{"default:scope"},
+			errorCode:              "invalid_token",
+			errorDesc:              "Token has expired",
+			wantScopes:             "files:read files:write",
+			wantErrorCode:          "invalid_token",
+			wantErrorDesc:          "Token has expired",
+		},
+		{
+			name:                   "with default challenge scopes",
+			requestPath:            "/api/other",
+			requestMethod:          "GET",
+			endpointScopes:         nil,
+			defaultChallengeScopes: []string{"mcp:access"},
+			errorCode:              "invalid_token",
+			errorDesc:              "Missing Authorization header",
+			wantScopes:             "mcp:access",
+			wantErrorCode:          "invalid_token",
+			wantErrorDesc:          "Missing Authorization header",
+		},
+		{
+			name:                   "with no scopes configured",
+			requestPath:            "/api/resource",
+			requestMethod:          "GET",
+			endpointScopes:         nil,
+			defaultChallengeScopes: nil,
+			errorCode:              "invalid_token",
+			errorDesc:              "Invalid token format",
+			wantScopes:             "",
+			wantErrorCode:          "invalid_token",
+			wantErrorDesc:          "Invalid token format",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := memory.New()
+			defer store.Stop()
+
+			provider := mock.NewMockProvider()
+
+			config := &server.Config{
+				Issuer:                    testIssuer,
+				EndpointScopeRequirements: tt.endpointScopes,
+				DefaultChallengeScopes:    tt.defaultChallengeScopes,
+			}
+
+			srv, err := server.New(provider, store, store, store, config, nil)
+			if err != nil {
+				t.Fatalf("server.New() error = %v", err)
+			}
+
+			handler := NewHandler(srv, nil)
+
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(tt.requestMethod, tt.requestPath, nil)
+
+			handler.writeUnauthorizedError(w, req, tt.errorCode, tt.errorDesc)
+
+			// Check status code
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("Status = %d, want %d", w.Code, http.StatusUnauthorized)
+			}
+
+			// Check WWW-Authenticate header
+			wwwAuth := w.Header().Get("WWW-Authenticate")
+			if wwwAuth == "" {
+				t.Fatal("WWW-Authenticate header should be set")
+			}
+
+			// Check resource_metadata
+			if !strings.Contains(wwwAuth, testResourceMetadataURL) {
+				t.Errorf("WWW-Authenticate missing resource_metadata:\ngot: %q", wwwAuth)
+			}
+
+			// Check scope parameter
+			if tt.wantScopes != "" {
+				expectedScope := fmt.Sprintf(`scope="%s"`, tt.wantScopes)
+				if !strings.Contains(wwwAuth, expectedScope) {
+					t.Errorf("WWW-Authenticate missing expected scope:\ngot:  %q\nwant: %q", wwwAuth, expectedScope)
+				}
+			} else {
+				if strings.Contains(wwwAuth, "scope=") {
+					t.Errorf("WWW-Authenticate should not contain scope:\ngot: %q", wwwAuth)
+				}
+			}
+
+			// Check error code
+			expectedError := fmt.Sprintf(`error="%s"`, tt.wantErrorCode)
+			if !strings.Contains(wwwAuth, expectedError) {
+				t.Errorf("WWW-Authenticate missing error code:\ngot:  %q\nwant: %q", wwwAuth, expectedError)
+			}
+
+			// Check error description
+			expectedErrorDesc := fmt.Sprintf(`error_description="%s"`, tt.wantErrorDesc)
+			if !strings.Contains(wwwAuth, expectedErrorDesc) {
+				t.Errorf("WWW-Authenticate missing error description:\ngot:  %q\nwant: %q", wwwAuth, expectedErrorDesc)
+			}
+
+			// Check JSON response body
+			var response map[string]string
+			if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+				t.Fatalf("Failed to decode response body: %v", err)
+			}
+
+			if response["error"] != tt.wantErrorCode {
+				t.Errorf("Response error = %q, want %q", response["error"], tt.wantErrorCode)
+			}
+
+			if response["error_description"] != tt.wantErrorDesc {
+				t.Errorf("Response error_description = %q, want %q", response["error_description"], tt.wantErrorDesc)
+			}
+		})
+	}
+}
+
+// TestHandler_ValidateTokenWithEndpointSpecificWWWAuthenticate tests that ValidateToken middleware
+// returns endpoint-specific scopes in WWW-Authenticate headers for 401 responses
+func TestHandler_ValidateTokenWithEndpointSpecificWWWAuthenticate(t *testing.T) {
+	tests := []struct {
+		name                   string
+		requestPath            string
+		requestMethod          string
+		authHeader             string
+		endpointScopes         map[string][]string
+		defaultChallengeScopes []string
+		wantStatus             int
+		wantScopes             string
+	}{
+		{
+			name:                   "missing auth header - endpoint-specific scopes in challenge",
+			requestPath:            "/api/files/test.txt",
+			requestMethod:          "GET",
+			authHeader:             "",
+			endpointScopes:         map[string][]string{"/api/files/*": {"files:read", "files:write"}},
+			defaultChallengeScopes: []string{"default:scope"},
+			wantStatus:             http.StatusUnauthorized,
+			wantScopes:             "files:read files:write",
+		},
+		{
+			name:                   "invalid auth header format - endpoint-specific scopes",
+			requestPath:            "/api/admin/users",
+			requestMethod:          "GET",
+			authHeader:             "InvalidFormat",
+			endpointScopes:         map[string][]string{"/api/admin/*": {"admin:access"}},
+			defaultChallengeScopes: []string{"default:scope"},
+			wantStatus:             http.StatusUnauthorized,
+			wantScopes:             "admin:access",
+		},
+		{
+			name:                   "missing auth header - no scopes configured",
+			requestPath:            "/api/resource",
+			requestMethod:          "GET",
+			authHeader:             "",
+			endpointScopes:         nil,
+			defaultChallengeScopes: nil,
+			wantStatus:             http.StatusUnauthorized,
+			wantScopes:             "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := memory.New()
+			defer store.Stop()
+
+			provider := mock.NewMockProvider()
+
+			config := &server.Config{
+				Issuer:                    testIssuer,
+				EndpointScopeRequirements: tt.endpointScopes,
+				DefaultChallengeScopes:    tt.defaultChallengeScopes,
+			}
+
+			srv, err := server.New(provider, store, store, store, config, nil)
+			if err != nil {
+				t.Fatalf("server.New() error = %v", err)
+			}
+
+			handler := NewHandler(srv, nil)
+
+			// Create test handler that is protected by ValidateToken middleware
+			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})
+
+			protectedHandler := handler.ValidateToken(testHandler)
+
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(tt.requestMethod, tt.requestPath, nil)
+			if tt.authHeader != "" {
+				req.Header.Set("Authorization", tt.authHeader)
+			}
+
+			protectedHandler.ServeHTTP(w, req)
+
+			// Check status code
+			if w.Code != tt.wantStatus {
+				t.Errorf("Status = %d, want %d", w.Code, tt.wantStatus)
+			}
+
+			// Check WWW-Authenticate header for 401 responses
+			if w.Code == http.StatusUnauthorized {
+				wwwAuth := w.Header().Get("WWW-Authenticate")
+				if wwwAuth == "" {
+					t.Fatal("WWW-Authenticate header should be set for 401 responses")
+				}
+
+				// Check resource_metadata is present
+				if !strings.Contains(wwwAuth, testResourceMetadataURL) {
+					t.Errorf("WWW-Authenticate missing resource_metadata:\ngot: %q", wwwAuth)
+				}
+
+				// Check scope parameter
+				if tt.wantScopes != "" {
+					expectedScope := fmt.Sprintf(`scope="%s"`, tt.wantScopes)
+					if !strings.Contains(wwwAuth, expectedScope) {
+						t.Errorf("WWW-Authenticate missing expected scope:\ngot:  %q\nwant: %q", wwwAuth, expectedScope)
+					}
+				} else {
+					if strings.Contains(wwwAuth, "scope=") {
+						t.Errorf("WWW-Authenticate should not contain scope when none configured:\ngot: %q", wwwAuth)
+					}
+				}
+			}
+		})
+	}
+}

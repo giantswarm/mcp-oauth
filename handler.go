@@ -88,14 +88,14 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 		// Extract token from Authorization header
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			h.writeError(w, ErrorCodeInvalidToken, "Missing Authorization header", http.StatusUnauthorized)
+			h.writeUnauthorizedError(w, r, ErrorCodeInvalidToken, "Missing Authorization header")
 			return
 		}
 
 		// Parse Bearer token
 		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-			h.writeError(w, ErrorCodeInvalidToken, "Invalid Authorization header format", http.StatusUnauthorized)
+			h.writeUnauthorizedError(w, r, ErrorCodeInvalidToken, "Invalid Authorization header format")
 			return
 		}
 
@@ -107,7 +107,7 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 			h.logger.Warn("Token validation failed", "ip", clientIP, "error", err)
 			// SECURITY: Don't leak internal error details to client
 			// Log detailed error but return generic message
-			h.writeError(w, ErrorCodeInvalidToken, "Token validation failed", http.StatusUnauthorized)
+			h.writeUnauthorizedError(w, r, ErrorCodeInvalidToken, "Token validation failed")
 			return
 		}
 
@@ -1048,6 +1048,53 @@ func (h *Handler) writeError(w http.ResponseWriter, code, description string, st
 	})
 }
 
+// writeUnauthorizedError writes a 401 Unauthorized response with endpoint-specific scope guidance.
+// It implements MCP 2025-11-25 scope selection strategy by including endpoint-specific scopes
+// in the WWW-Authenticate header when available.
+//
+// Unlike writeError(), this method accepts a request object to determine endpoint-specific scope
+// requirements. The scope resolution priority is:
+//  1. EndpointMethodScopeRequirements or EndpointScopeRequirements (endpoint-specific)
+//  2. DefaultChallengeScopes (configured fallback)
+//  3. No scope parameter (if nothing configured)
+//
+// Example response for /api/files/* endpoint:
+//
+//	HTTP/1.1 401 Unauthorized
+//	WWW-Authenticate: Bearer resource_metadata="https://example.com/.well-known/oauth-protected-resource",
+//	                         scope="files:read files:write",
+//	                         error="invalid_token",
+//	                         error_description="Missing Authorization header"
+//
+// This helps MCP clients discover exactly which scopes they need to request for a specific endpoint,
+// improving the authorization flow UX and reducing unnecessary authorization requests.
+//
+// Parameters:
+//   - w: HTTP response writer
+//   - r: HTTP request (used to determine endpoint-specific scopes)
+//   - code: OAuth error code (e.g., "invalid_token")
+//   - description: Human-readable error description
+func (h *Handler) writeUnauthorizedError(w http.ResponseWriter, r *http.Request, code, description string) {
+	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+
+	// MCP 2025-11-25: Include WWW-Authenticate header with endpoint-specific scope guidance
+	if !h.server.Config.DisableWWWAuthenticateMetadata {
+		// Get endpoint-specific scopes (or fallback to defaults)
+		scope := h.getChallengeScopes(r)
+		w.Header().Set("WWW-Authenticate", h.formatWWWAuthenticate(scope, code, description))
+	} else {
+		// Minimal header for backward compatibility with legacy clients (opt-in)
+		w.Header().Set("WWW-Authenticate", tokenTypeBearer)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error":             code,
+		"error_description": description,
+	})
+}
+
 // writeInsufficientScopeError writes a 403 Forbidden response with insufficient_scope error.
 // This implements MCP 2025-11-25 scope challenge handling for protected resources.
 // Per RFC 6750 Section 3.1, the response includes WWW-Authenticate header with:
@@ -1460,6 +1507,40 @@ func hasRequiredScopes(tokenScopes, requiredScopes []string) bool {
 	}
 
 	return true
+}
+
+// getChallengeScopes returns the scopes to include in WWW-Authenticate challenges for 401 responses.
+// It follows the MCP 2025-11-25 scope selection strategy to help clients discover required scopes.
+//
+// Scope resolution priority (per MCP 2025-11-25):
+//  1. Endpoint-specific scopes (from EndpointMethodScopeRequirements or EndpointScopeRequirements)
+//  2. DefaultChallengeScopes (configured fallback)
+//  3. Empty string (no scope parameter in challenge)
+//
+// This enables intelligent scope selection where clients can see exactly what scopes are needed
+// for a specific endpoint, rather than generic default scopes.
+//
+// Example:
+//   - Request to /api/files/* → returns "files:read files:write"
+//   - Request to /api/admin/* → returns "admin:access"
+//   - Request with no endpoint config → returns DefaultChallengeScopes
+func (h *Handler) getChallengeScopes(r *http.Request) string {
+	// Priority 1: Try endpoint-specific scopes first
+	// This gives clients precise guidance about what scopes are needed for this specific resource
+	requiredScopes := h.getRequiredScopes(r)
+	if len(requiredScopes) > 0 {
+		return strings.Join(requiredScopes, " ")
+	}
+
+	// Priority 2: Fallback to default challenge scopes
+	// These are generic scopes that apply across the application
+	if len(h.server.Config.DefaultChallengeScopes) > 0 {
+		return strings.Join(h.server.Config.DefaultChallengeScopes, " ")
+	}
+
+	// Priority 3: No scope guidance available
+	// WWW-Authenticate header won't include a scope parameter
+	return ""
 }
 
 // isValidAuthMethod checks if the given token endpoint auth method is supported

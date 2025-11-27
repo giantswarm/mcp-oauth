@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Endpoint-Specific Scope Challenges in WWW-Authenticate Headers (MCP 2025-11-25)**
+  - **Feature**: Implemented endpoint-specific scope guidance in WWW-Authenticate headers for 401 Unauthorized responses
+  - **MCP Compliance**: Implements MCP 2025-11-25 scope selection strategy specification
+  - **Use Case**: Helps clients discover exactly which scopes are required for specific endpoints, improving authorization UX
+  - **Implementation**:
+    - Added `getChallengeScopes()` helper that resolves scopes with priority: endpoint-specific → DefaultChallengeScopes → none
+    - Added `writeUnauthorizedError()` method for 401 responses with endpoint-aware scope challenges
+    - Updated `ValidateToken` middleware to use endpoint-specific scopes in WWW-Authenticate headers
+    - Integrates seamlessly with existing `EndpointScopeRequirements` and `EndpointMethodScopeRequirements` configurations
+  - **Scope Resolution Priority**:
+    1. `EndpointMethodScopeRequirements` - method and path specific (e.g., POST /api/files/*)
+    2. `EndpointScopeRequirements` - path specific (e.g., /api/files/*)
+    3. `DefaultChallengeScopes` - configured fallback scopes
+    4. No scope parameter if nothing configured
+  - **Example**: When accessing `/api/files/test.txt` without auth, WWW-Authenticate header includes `scope="files:read files:write"` instead of generic default scopes
+  - **Backward Compatibility**: Fully backward compatible - uses existing endpoint scope configuration, no breaking changes
+  - **Testing**: Added comprehensive unit and integration tests (7 test scenarios, 3 test suites)
+  - **Performance**: Minimal overhead - reuses existing scope resolution logic
+
 - **Client ID Metadata Documents Support (draft-ietf-oauth-client-id-metadata-document, MCP 2025-11-25)**
   - **Feature**: Implemented URL-based client identifiers with automatic metadata fetching
   - **MCP Compliance**: SHOULD requirement for MCP 2025-11-25 specification

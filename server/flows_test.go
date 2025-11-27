@@ -25,6 +25,9 @@ const (
 	testUserID    = "user-123"
 	testUserEmail = "test@example.com"
 	testUserName  = "Test User"
+	// testPKCEVerifierLength is the length used for PKCE verifiers in tests
+	// PKCE spec (RFC 7636) requires verifiers to be 43-128 characters
+	testPKCEVerifierLength = 50
 )
 
 func setupFlowTestServer(t *testing.T) (*Server, *memory.Store, *mock.MockProvider) {
@@ -71,7 +74,7 @@ func TestServer_StartAuthorizationFlow(t *testing.T) {
 		t.Fatalf("RegisterClient() error = %v", err)
 	}
 
-	validVerifier := testutil.GenerateRandomString(50)
+	validVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(validVerifier))
 	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
@@ -214,7 +217,7 @@ func TestServer_HandleProviderCallback(t *testing.T) {
 		t.Fatalf("RegisterClient() error = %v", err)
 	}
 
-	validVerifier := testutil.GenerateRandomString(50)
+	validVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(validVerifier))
 	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 	clientState := testutil.GenerateRandomString(43)
@@ -320,7 +323,7 @@ func TestServer_ExchangeAuthorizationCode(t *testing.T) {
 		t.Fatalf("RegisterClient() error = %v", err)
 	}
 
-	validVerifier := testutil.GenerateRandomString(50)
+	validVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(validVerifier))
 	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
@@ -393,7 +396,7 @@ func TestServer_ExchangeAuthorizationCode(t *testing.T) {
 			code:         authCode.Code,
 			clientID:     client.ClientID,
 			redirectURI:  "https://example.com/callback",
-			codeVerifier: testutil.GenerateRandomString(50), // Different verifier
+			codeVerifier: testutil.GenerateRandomString(testPKCEVerifierLength), // Different verifier
 			wantErr:      true,
 		},
 	}
@@ -528,7 +531,7 @@ func TestServer_ExchangeAuthorizationCode_PublicClient_PKCEEnforcement(t *testin
 		t.Fatalf("RegisterClient(confidential) error = %v", err)
 	}
 
-	validVerifier := testutil.GenerateRandomString(50)
+	validVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(validVerifier))
 	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
@@ -749,7 +752,7 @@ func TestServer_ExchangeAuthorizationCode_AllowPublicClientsWithoutPKCE(t *testi
 			var codeVerifier string
 
 			if tt.includeCodeChallenge {
-				codeVerifier = testutil.GenerateRandomString(50)
+				codeVerifier = testutil.GenerateRandomString(testPKCEVerifierLength)
 				hash := sha256.Sum256([]byte(codeVerifier))
 				codeChallenge = base64.RawURLEncoding.EncodeToString(hash[:])
 				codeChallengeMethod = PKCEMethodS256
@@ -846,7 +849,7 @@ func TestServer_ExchangeAuthorizationCode_PublicClient_ReuseDetection(t *testing
 		t.Fatalf("RegisterClient() error = %v", err)
 	}
 
-	validVerifier := testutil.GenerateRandomString(50)
+	validVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(validVerifier))
 	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
@@ -1585,7 +1588,7 @@ func TestServer_RefreshTokenRotation(t *testing.T) {
 	clientID := client.ClientID
 
 	// Generate PKCE
-	codeVerifier := testutil.GenerateRandomString(50)
+	codeVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(codeVerifier))
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
@@ -1717,7 +1720,7 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 	clientID := client.ClientID
 
 	// Generate PKCE
-	codeVerifier := testutil.GenerateRandomString(50)
+	codeVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(codeVerifier))
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
@@ -1926,7 +1929,7 @@ func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
 	clientID := client.ClientID
 
 	// Generate PKCE
-	codeVerifier := testutil.GenerateRandomString(50)
+	codeVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(codeVerifier))
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
@@ -2053,7 +2056,7 @@ func TestServer_ConcurrentRefreshTokenReuse(t *testing.T) {
 	clientID := client.ClientID
 
 	// Generate PKCE
-	codeVerifier := testutil.GenerateRandomString(50)
+	codeVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(codeVerifier))
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
@@ -2198,7 +2201,7 @@ func TestServer_ConcurrentAuthorizationCodeReuse(t *testing.T) {
 	clientID := client.ClientID
 
 	// Generate PKCE
-	codeVerifier := testutil.GenerateRandomString(50)
+	codeVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(codeVerifier))
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
@@ -2351,7 +2354,7 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 	clientID := client.ClientID
 
 	// Generate PKCE challenge
-	codeVerifier := testutil.GenerateRandomString(50)
+	codeVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(codeVerifier))
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
@@ -2495,7 +2498,7 @@ func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
 	clientID := client.ClientID
 
 	// Generate PKCE challenge
-	codeVerifier := testutil.GenerateRandomString(50)
+	codeVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(codeVerifier))
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
@@ -2855,7 +2858,7 @@ func TestServer_ConcurrentReuseAndRevocation(t *testing.T) {
 	clientID := client.ClientID
 
 	// Generate PKCE
-	codeVerifier := testutil.GenerateRandomString(50)
+	codeVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(codeVerifier))
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
@@ -3431,7 +3434,7 @@ func TestServer_GenericErrorMessagesNoInfoLeakage(t *testing.T) {
 	wrongRedirectURI := "https://evil.com/callback"
 
 	// Generate PKCE
-	codeVerifier := testutil.GenerateRandomString(50)
+	codeVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(codeVerifier))
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
@@ -3667,7 +3670,7 @@ func TestServer_AuthCodeReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 	clientID := client.ClientID
 
 	// Generate PKCE
-	codeVerifier := testutil.GenerateRandomString(50)
+	codeVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(codeVerifier))
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
@@ -3759,7 +3762,7 @@ func TestServer_RefreshTokenReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 	clientID := client.ClientID
 
 	// Generate PKCE
-	codeVerifier := testutil.GenerateRandomString(50)
+	codeVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(codeVerifier))
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
@@ -4042,7 +4045,7 @@ func TestStartAuthorizationFlow_ClientScopeValidation(t *testing.T) {
 		t.Fatalf("RegisterClient() error = %v", err)
 	}
 
-	validVerifier := testutil.GenerateRandomString(50)
+	validVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(validVerifier))
 	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 	validState := testutil.GenerateRandomString(43)
@@ -4177,7 +4180,7 @@ func TestExchangeAuthorizationCode_ClientScopeValidation(t *testing.T) {
 		}, nil
 	}
 
-	validVerifier := testutil.GenerateRandomString(50)
+	validVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(validVerifier))
 	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
@@ -4312,7 +4315,7 @@ func TestClientScopeValidation_UnrestrictedClient(t *testing.T) {
 		t.Fatalf("RegisterClient() error = %v", err)
 	}
 
-	validVerifier := testutil.GenerateRandomString(50)
+	validVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(validVerifier))
 	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 	validState := testutil.GenerateRandomString(43)
@@ -4417,7 +4420,7 @@ func TestServer_HandleProviderCallback_PKCEValidationFailure(t *testing.T) {
 	}
 
 	// Generate valid PKCE for client-to-server leg
-	clientVerifier := testutil.GenerateRandomString(50)
+	clientVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	clientHash := sha256.Sum256([]byte(clientVerifier))
 	clientChallenge := base64.RawURLEncoding.EncodeToString(clientHash[:])
 	clientState := testutil.GenerateRandomString(43)
@@ -5312,7 +5315,7 @@ func TestStartAuthorizationFlow_EmptyState(t *testing.T) {
 		t.Fatalf("RegisterClient() error = %v", err)
 	}
 
-	validVerifier := testutil.GenerateRandomString(50)
+	validVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(validVerifier))
 	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
@@ -5402,7 +5405,7 @@ func TestHandleProviderCallback_EmptyState(t *testing.T) {
 		t.Fatalf("RegisterClient() error = %v", err)
 	}
 
-	validVerifier := testutil.GenerateRandomString(50)
+	validVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(validVerifier))
 	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
