@@ -12,6 +12,16 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
+// Clock interface for time operations, allowing for deterministic testing
+type Clock interface {
+	Now() time.Time
+}
+
+// realClock implements Clock using the standard time package
+type realClock struct{}
+
+func (realClock) Now() time.Time { return time.Now() }
+
 // clientMetadataCache implements an in-memory LRU cache for URL-based client metadata
 // with TTL support and HTTP Cache-Control header respect
 type clientMetadataCache struct {
@@ -25,6 +35,9 @@ type clientMetadataCache struct {
 	negativeEntries    map[string]*negativeCacheEntry
 	negativeTTL        time.Duration
 	maxNegativeEntries int
+
+	// Clock for time operations (injectable for testing)
+	clock Clock
 
 	// Metrics for monitoring cache performance
 	metrics cacheMetrics
@@ -66,13 +79,26 @@ const DefaultNegativeCacheTTL = 5 * time.Minute
 // DefaultMaxNegativeEntries is the default maximum number of negative cache entries
 const DefaultMaxNegativeEntries = 500
 
+// negativeCacheBackoffIncrement is the time added per failed attempt for progressive backoff
+// Each repeated failure for the same client ID extends the TTL by this amount
+const negativeCacheBackoffIncrement = time.Minute
+
 // newClientMetadataCache creates a new metadata cache
 func newClientMetadataCache(defaultTTL time.Duration, maxEntries int) *clientMetadataCache {
+	return newClientMetadataCacheWithClock(defaultTTL, maxEntries, realClock{})
+}
+
+// newClientMetadataCacheWithClock creates a new metadata cache with a custom clock
+// This allows for deterministic testing without time.Sleep
+func newClientMetadataCacheWithClock(defaultTTL time.Duration, maxEntries int, clock Clock) *clientMetadataCache {
 	if maxEntries <= 0 {
 		maxEntries = 1000 // Default: cache up to 1000 unique URL clients
 	}
 	if defaultTTL <= 0 {
 		defaultTTL = 5 * time.Minute // Default: 5 minute TTL
+	}
+	if clock == nil {
+		clock = realClock{}
 	}
 
 	return &clientMetadataCache{
@@ -82,6 +108,7 @@ func newClientMetadataCache(defaultTTL time.Duration, maxEntries int) *clientMet
 		negativeEntries:    make(map[string]*negativeCacheEntry),
 		negativeTTL:        DefaultNegativeCacheTTL,
 		maxNegativeEntries: DefaultMaxNegativeEntries,
+		clock:              clock,
 	}
 }
 
@@ -97,7 +124,7 @@ func (c *clientMetadataCache) Get(clientID string) (*storage.Client, bool) {
 	}
 
 	// Check if expired
-	now := time.Now()
+	now := c.clock.Now()
 	if now.After(entry.expiresAt) {
 		c.metrics.misses++
 		return nil, false
@@ -121,7 +148,7 @@ func (c *clientMetadataCache) Set(clientID string, metadata *ClientMetadata, cli
 		ttl = c.defaultTTL
 	}
 
-	now := time.Now()
+	now := c.clock.Now()
 	c.entries[clientID] = &cachedMetadataEntry{
 		metadata:  metadata,
 		client:    client,
@@ -146,7 +173,7 @@ func (c *clientMetadataCache) GetNegative(clientID string) (string, bool) {
 	}
 
 	// Check if expired
-	now := time.Now()
+	now := c.clock.Now()
 	if now.After(entry.expiresAt) {
 		// Clean up expired entry
 		delete(c.negativeEntries, clientID)
@@ -164,18 +191,20 @@ func (c *clientMetadataCache) SetNegative(clientID string, errorMsg string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	now := c.clock.Now()
+
 	// Check if we already have a negative entry - increment attempts
 	if existing, ok := c.negativeEntries[clientID]; ok {
 		existing.attempts++
 		existing.errorMsg = errorMsg
 		// Extend the TTL slightly for repeated failures (up to 2x original)
 		// This provides backoff for persistent failures
-		extendedTTL := c.negativeTTL + time.Duration(existing.attempts-1)*time.Minute
+		extendedTTL := c.negativeTTL + time.Duration(existing.attempts-1)*negativeCacheBackoffIncrement
 		maxTTL := 2 * c.negativeTTL
 		if extendedTTL > maxTTL {
 			extendedTTL = maxTTL
 		}
-		existing.expiresAt = time.Now().Add(extendedTTL)
+		existing.expiresAt = now.Add(extendedTTL)
 		return
 	}
 
@@ -184,7 +213,6 @@ func (c *clientMetadataCache) SetNegative(clientID string, errorMsg string) {
 		c.evictOldestNegative()
 	}
 
-	now := time.Now()
 	c.negativeEntries[clientID] = &negativeCacheEntry{
 		errorMsg:  errorMsg,
 		expiresAt: now.Add(c.negativeTTL),
@@ -254,7 +282,7 @@ func (c *clientMetadataCache) CleanupExpired() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	now := time.Now()
+	now := c.clock.Now()
 	removed := 0
 
 	// Clean up positive cache entries

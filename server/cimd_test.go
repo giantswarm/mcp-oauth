@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -737,6 +738,28 @@ func TestParseCacheControlMaxAge(t *testing.T) {
 	}
 }
 
+// mockClock implements Clock for deterministic testing
+type mockClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func newMockClock(t time.Time) *mockClock {
+	return &mockClock{now: t}
+}
+
+func (m *mockClock) Now() time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.now
+}
+
+func (m *mockClock) Advance(d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.now = m.now.Add(d)
+}
+
 // TestNegativeCache tests the negative cache functionality for failed metadata fetches
 func TestNegativeCache(t *testing.T) {
 	cache := newClientMetadataCache(5*time.Minute, 100)
@@ -765,18 +788,25 @@ func TestNegativeCache(t *testing.T) {
 		}
 	})
 
-	// Test negative cache expiry
+	// Test negative cache expiry (deterministic with mock clock)
 	t.Run("negative cache expiry", func(t *testing.T) {
-		// Create cache with short negative TTL
-		shortCache := newClientMetadataCache(5*time.Minute, 100)
-		shortCache.negativeTTL = 1 * time.Millisecond
+		clock := newMockClock(time.Now())
+		shortCache := newClientMetadataCacheWithClock(5*time.Minute, 100, clock)
+		shortCache.negativeTTL = 1 * time.Minute
 
 		clientID := "https://example.com/expired-client"
 		shortCache.SetNegative(clientID, "some error")
 
-		time.Sleep(10 * time.Millisecond)
-
+		// Verify entry exists before expiry
 		_, found := shortCache.GetNegative(clientID)
+		if !found {
+			t.Error("expected negative cache hit before expiry")
+		}
+
+		// Advance clock past TTL
+		clock.Advance(2 * time.Minute)
+
+		_, found = shortCache.GetNegative(clientID)
 		if found {
 			t.Error("expected negative cache miss for expired entry, got hit")
 		}
@@ -849,19 +879,26 @@ func TestNegativeCache(t *testing.T) {
 		}
 	})
 
-	// Test CleanupExpired cleans both positive and negative entries
+	// Test CleanupExpired cleans both positive and negative entries (deterministic with mock clock)
 	t.Run("cleanup expired cleans negative entries", func(t *testing.T) {
-		cleanupCache := newClientMetadataCache(5*time.Minute, 100)
-		cleanupCache.negativeTTL = 1 * time.Millisecond
+		clock := newMockClock(time.Now())
+		cleanupCache := newClientMetadataCacheWithClock(5*time.Minute, 100, clock)
+		cleanupCache.negativeTTL = 1 * time.Minute
 
 		cleanupCache.SetNegative("neg1", "error1")
 		cleanupCache.SetNegative("neg2", "error2")
 
-		time.Sleep(10 * time.Millisecond)
+		// Verify entries exist before expiry
+		if cleanupCache.NegativeSize() != 2 {
+			t.Errorf("negative cache size = %d before cleanup, want 2", cleanupCache.NegativeSize())
+		}
+
+		// Advance clock past TTL
+		clock.Advance(2 * time.Minute)
 
 		removed := cleanupCache.CleanupExpired()
-		if removed < 2 {
-			t.Errorf("expected at least 2 entries removed, got %d", removed)
+		if removed != 2 {
+			t.Errorf("expected 2 entries removed, got %d", removed)
 		}
 		if cleanupCache.NegativeSize() != 0 {
 			t.Errorf("negative cache size = %d after cleanup, want 0", cleanupCache.NegativeSize())
