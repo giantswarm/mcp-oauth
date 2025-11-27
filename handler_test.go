@@ -503,6 +503,501 @@ func TestHandler_validateMetadataPath(t *testing.T) {
 	}
 }
 
+// Tests for sub-path Protected Resource Metadata discovery (MCP 2025-11-25)
+
+func TestHandler_ServeProtectedResourceMetadata_SubPathDiscovery(t *testing.T) {
+	tests := []struct {
+		name               string
+		resourcePath       string
+		pathConfigs        map[string]server.ProtectedResourceConfig
+		serverScopes       []string
+		expectedScopes     []string
+		expectedResource   string
+		expectedAuthServer string
+	}{
+		{
+			name:         "root path returns default metadata",
+			resourcePath: "/.well-known/oauth-protected-resource",
+			pathConfigs: map[string]server.ProtectedResourceConfig{
+				"/mcp/files": {ScopesSupported: []string{"files:read"}},
+			},
+			serverScopes:       []string{"default:scope"},
+			expectedScopes:     []string{"default:scope"},
+			expectedResource:   testIssuer,
+			expectedAuthServer: testIssuer,
+		},
+		{
+			name:         "sub-path returns path-specific scopes",
+			resourcePath: "/.well-known/oauth-protected-resource/mcp/files",
+			pathConfigs: map[string]server.ProtectedResourceConfig{
+				"/mcp/files": {ScopesSupported: []string{"files:read", "files:write"}},
+			},
+			serverScopes:       []string{"default:scope"},
+			expectedScopes:     []string{"files:read", "files:write"},
+			expectedResource:   testIssuer + "/mcp/files",
+			expectedAuthServer: testIssuer,
+		},
+		{
+			name:         "sub-path with custom authorization servers",
+			resourcePath: "/.well-known/oauth-protected-resource/mcp/admin",
+			pathConfigs: map[string]server.ProtectedResourceConfig{
+				"/mcp/admin": {
+					ScopesSupported:      []string{"admin:access"},
+					AuthorizationServers: []string{"https://admin-auth.example.com"},
+				},
+			},
+			expectedScopes:     []string{"admin:access"},
+			expectedResource:   testIssuer + "/mcp/admin",
+			expectedAuthServer: "https://admin-auth.example.com",
+		},
+		{
+			name:         "sub-path with custom resource identifier",
+			resourcePath: "/.well-known/oauth-protected-resource/mcp/api",
+			pathConfigs: map[string]server.ProtectedResourceConfig{
+				"/mcp/api": {
+					ScopesSupported:    []string{"api:read"},
+					ResourceIdentifier: "https://api.example.com",
+				},
+			},
+			expectedScopes:   []string{"api:read"},
+			expectedResource: "https://api.example.com",
+		},
+		{
+			name:         "unmatched sub-path falls back to default",
+			resourcePath: "/.well-known/oauth-protected-resource/mcp/unknown",
+			pathConfigs: map[string]server.ProtectedResourceConfig{
+				"/mcp/files": {ScopesSupported: []string{"files:read"}},
+			},
+			serverScopes:     []string{"default:scope"},
+			expectedScopes:   []string{"default:scope"},
+			expectedResource: testIssuer,
+		},
+		{
+			name:         "longest prefix match wins",
+			resourcePath: "/.well-known/oauth-protected-resource/mcp/files/admin",
+			pathConfigs: map[string]server.ProtectedResourceConfig{
+				"/mcp":             {ScopesSupported: []string{"mcp:general"}},
+				"/mcp/files":       {ScopesSupported: []string{"files:read"}},
+				"/mcp/files/admin": {ScopesSupported: []string{"files:admin"}},
+			},
+			expectedScopes:   []string{"files:admin"},
+			expectedResource: testIssuer + "/mcp/files/admin",
+		},
+		{
+			name:         "path without specific scopes falls back to server scopes",
+			resourcePath: "/.well-known/oauth-protected-resource/mcp/empty",
+			pathConfigs: map[string]server.ProtectedResourceConfig{
+				"/mcp/empty": {}, // No scopes specified
+			},
+			serverScopes:     []string{"server:scope"},
+			expectedScopes:   []string{"server:scope"},
+			expectedResource: testIssuer + "/mcp/empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := memory.New()
+			defer store.Stop()
+
+			provider := mock.NewMockProvider()
+
+			config := &server.Config{
+				Issuer:                 testIssuer,
+				SupportedScopes:        tt.serverScopes,
+				ResourceMetadataByPath: tt.pathConfigs,
+			}
+
+			srv, err := server.New(provider, store, store, store, config, nil)
+			if err != nil {
+				t.Fatalf("server.New() error = %v", err)
+			}
+
+			handler := NewHandler(srv, nil)
+
+			req := httptest.NewRequest(http.MethodGet, tt.resourcePath, nil)
+			w := httptest.NewRecorder()
+
+			handler.ServeProtectedResourceMetadata(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+			}
+
+			meta := decodeProtectedResourceMetadata(t, w)
+
+			// Verify resource
+			if tt.expectedResource != "" && meta.Resource != tt.expectedResource {
+				t.Errorf("Resource = %q, want %q", meta.Resource, tt.expectedResource)
+			}
+
+			// Verify authorization servers
+			if tt.expectedAuthServer != "" {
+				if len(meta.AuthorizationServers) == 0 {
+					t.Error("AuthorizationServers is empty")
+				} else if meta.AuthorizationServers[0] != tt.expectedAuthServer {
+					t.Errorf("AuthorizationServers[0] = %q, want %q",
+						meta.AuthorizationServers[0], tt.expectedAuthServer)
+				}
+			}
+
+			// Verify scopes
+			if len(tt.expectedScopes) > 0 {
+				if len(meta.ScopesSupported) != len(tt.expectedScopes) {
+					t.Errorf("len(ScopesSupported) = %d, want %d",
+						len(meta.ScopesSupported), len(tt.expectedScopes))
+				} else {
+					for i, scope := range tt.expectedScopes {
+						if meta.ScopesSupported[i] != scope {
+							t.Errorf("ScopesSupported[%d] = %q, want %q",
+								i, meta.ScopesSupported[i], scope)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestHandler_RegisterProtectedResourceMetadataRoutes_WithResourceMetadataByPath(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	config := &server.Config{
+		Issuer:          testIssuer,
+		SupportedScopes: []string{"default:scope"},
+		ResourceMetadataByPath: map[string]server.ProtectedResourceConfig{
+			"/mcp/files": {ScopesSupported: []string{"files:read", "files:write"}},
+			"/mcp/admin": {ScopesSupported: []string{"admin:access"}},
+		},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+	mux := http.NewServeMux()
+
+	// Register without explicit mcpPath (only uses ResourceMetadataByPath)
+	handler.RegisterProtectedResourceMetadataRoutes(mux, "")
+
+	// Test each expected endpoint
+	endpoints := []struct {
+		path           string
+		expectedScopes []string
+	}{
+		{
+			path:           "/.well-known/oauth-protected-resource",
+			expectedScopes: []string{"default:scope"},
+		},
+		{
+			path:           "/.well-known/oauth-protected-resource/mcp/files",
+			expectedScopes: []string{"files:read", "files:write"},
+		},
+		{
+			path:           "/.well-known/oauth-protected-resource/mcp/admin",
+			expectedScopes: []string{"admin:access"},
+		},
+	}
+
+	for _, ep := range endpoints {
+		t.Run(ep.path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, ep.path, nil)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d for path %s", w.Code, http.StatusOK, ep.path)
+			}
+
+			meta := decodeProtectedResourceMetadata(t, w)
+
+			if len(meta.ScopesSupported) != len(ep.expectedScopes) {
+				t.Errorf("len(ScopesSupported) = %d, want %d",
+					len(meta.ScopesSupported), len(ep.expectedScopes))
+			}
+
+			for i, scope := range ep.expectedScopes {
+				if i < len(meta.ScopesSupported) && meta.ScopesSupported[i] != scope {
+					t.Errorf("ScopesSupported[%d] = %q, want %q",
+						i, meta.ScopesSupported[i], scope)
+				}
+			}
+		})
+	}
+}
+
+func TestHandler_RegisterProtectedResourceMetadataRoutes_DuplicatePaths(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	// Both mcpPath and ResourceMetadataByPath have the same path
+	config := &server.Config{
+		Issuer: testIssuer,
+		ResourceMetadataByPath: map[string]server.ProtectedResourceConfig{
+			"/mcp": {ScopesSupported: []string{"mcp:scope"}},
+		},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+	mux := http.NewServeMux()
+
+	// Register with mcpPath that duplicates ResourceMetadataByPath entry
+	// Should not panic or double-register
+	handler.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
+
+	// Verify the endpoint works
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource/mcp", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestHandler_extractResourcePath(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	tests := []struct {
+		requestPath  string
+		expectedPath string
+	}{
+		{"/.well-known/oauth-protected-resource", "/"},
+		{"/.well-known/oauth-protected-resource/mcp", "/mcp"},
+		{"/.well-known/oauth-protected-resource/mcp/files", "/mcp/files"},
+		{"/.well-known/oauth-protected-resource/mcp/files/admin", "/mcp/files/admin"},
+		{"/some/other/path", "/"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.requestPath, func(t *testing.T) {
+			got := handler.extractResourcePath(tt.requestPath)
+			if got != tt.expectedPath {
+				t.Errorf("extractResourcePath(%q) = %q, want %q",
+					tt.requestPath, got, tt.expectedPath)
+			}
+		})
+	}
+}
+
+func TestHandler_pathMatchesPrefix(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	tests := []struct {
+		resourcePath string
+		prefix       string
+		expected     bool
+	}{
+		{"/mcp", "/mcp", true},         // Exact match
+		{"/mcp/files", "/mcp", true},   // Prefix match
+		{"/mcp/files/a", "/mcp", true}, // Longer path
+		{"/mcpx", "/mcp", false},       // Not a path boundary match
+		{"/mc", "/mcp", false},         // Shorter than prefix
+		{"/other/mcp", "/mcp", false},  // Not a prefix
+		{"/mcp-test", "/mcp", false},   // Hyphen after prefix
+		{"/mcp/", "/mcp", true},        // Trailing slash
+		{"/mcp/files", "/mcp/", false}, // Trailing slash in prefix
+		{"/api/v1", "/api", true},      // API versioning
+		{"/api", "/api/v1", false},     // Shorter resource path
+	}
+
+	for _, tt := range tests {
+		name := tt.resourcePath + "_" + tt.prefix
+		t.Run(name, func(t *testing.T) {
+			got := handler.pathMatchesPrefix(tt.resourcePath, tt.prefix)
+			if got != tt.expected {
+				t.Errorf("pathMatchesPrefix(%q, %q) = %v, want %v",
+					tt.resourcePath, tt.prefix, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestHandler_findPathConfig(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	config := &server.Config{
+		Issuer: testIssuer,
+		ResourceMetadataByPath: map[string]server.ProtectedResourceConfig{
+			"/mcp":             {ScopesSupported: []string{"mcp:base"}},
+			"/mcp/files":       {ScopesSupported: []string{"files:rw"}},
+			"/mcp/files/admin": {ScopesSupported: []string{"admin:full"}},
+			"/api":             {ScopesSupported: []string{"api:access"}},
+		},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+
+	tests := []struct {
+		resourcePath   string
+		expectedScopes []string
+		expectNil      bool
+	}{
+		{"/mcp", []string{"mcp:base"}, false},
+		{"/mcp/files", []string{"files:rw"}, false},
+		{"/mcp/files/admin", []string{"admin:full"}, false},
+		{"/mcp/files/admin/users", []string{"admin:full"}, false}, // Longest match
+		{"/mcp/other", []string{"mcp:base"}, false},               // Falls back to /mcp
+		{"/api", []string{"api:access"}, false},
+		{"/api/v1", []string{"api:access"}, false},
+		{"/unknown", nil, true},   // No match
+		{"/", nil, true},          // Root, no specific config
+		{"/mcp-other", nil, true}, // Not a valid prefix match
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.resourcePath, func(t *testing.T) {
+			result := handler.findPathConfig(tt.resourcePath)
+
+			if tt.expectNil {
+				if result != nil {
+					t.Errorf("findPathConfig(%q) = %v, want nil",
+						tt.resourcePath, result)
+				}
+				return
+			}
+
+			if result == nil {
+				t.Fatalf("findPathConfig(%q) = nil, want non-nil",
+					tt.resourcePath)
+			}
+
+			if len(result.ScopesSupported) != len(tt.expectedScopes) {
+				t.Errorf("len(ScopesSupported) = %d, want %d",
+					len(result.ScopesSupported), len(tt.expectedScopes))
+			}
+
+			for i, scope := range tt.expectedScopes {
+				if i < len(result.ScopesSupported) && result.ScopesSupported[i] != scope {
+					t.Errorf("ScopesSupported[%d] = %q, want %q",
+						i, result.ScopesSupported[i], scope)
+				}
+			}
+		})
+	}
+}
+
+func TestHandler_buildProtectedResourceMetadata(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	config := &server.Config{
+		Issuer:          testIssuer,
+		SupportedScopes: []string{"default:scope"},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+
+	t.Run("nil pathConfig uses defaults", func(t *testing.T) {
+		metadata := handler.buildProtectedResourceMetadata("/mcp", nil)
+
+		if metadata["resource"] != testIssuer {
+			t.Errorf("resource = %v, want %v", metadata["resource"], testIssuer)
+		}
+
+		authServers, ok := metadata["authorization_servers"].([]string)
+		if !ok || len(authServers) != 1 || authServers[0] != testIssuer {
+			t.Errorf("authorization_servers = %v, want [%v]", metadata["authorization_servers"], testIssuer)
+		}
+
+		scopes, ok := metadata["scopes_supported"].([]string)
+		if !ok || len(scopes) != 1 || scopes[0] != "default:scope" {
+			t.Errorf("scopes_supported = %v, want [default:scope]", metadata["scopes_supported"])
+		}
+	})
+
+	t.Run("pathConfig with all custom values", func(t *testing.T) {
+		pathConfig := &server.ProtectedResourceConfig{
+			ScopesSupported:        []string{"custom:scope"},
+			AuthorizationServers:   []string{"https://custom-auth.example.com"},
+			BearerMethodsSupported: []string{"header", "body"},
+			ResourceIdentifier:     "https://custom-resource.example.com",
+		}
+
+		metadata := handler.buildProtectedResourceMetadata("/mcp", pathConfig)
+
+		if metadata["resource"] != "https://custom-resource.example.com" {
+			t.Errorf("resource = %v, want https://custom-resource.example.com",
+				metadata["resource"])
+		}
+
+		authServers, ok := metadata["authorization_servers"].([]string)
+		if !ok || len(authServers) != 1 || authServers[0] != "https://custom-auth.example.com" {
+			t.Errorf("authorization_servers = %v, want [https://custom-auth.example.com]",
+				metadata["authorization_servers"])
+		}
+
+		bearerMethods, ok := metadata["bearer_methods_supported"].([]string)
+		if !ok || len(bearerMethods) != 2 {
+			t.Errorf("bearer_methods_supported = %v, want [header, body]",
+				metadata["bearer_methods_supported"])
+		}
+
+		scopes, ok := metadata["scopes_supported"].([]string)
+		if !ok || len(scopes) != 1 || scopes[0] != "custom:scope" {
+			t.Errorf("scopes_supported = %v, want [custom:scope]",
+				metadata["scopes_supported"])
+		}
+	})
+
+	t.Run("pathConfig without scopes falls back to server scopes", func(t *testing.T) {
+		pathConfig := &server.ProtectedResourceConfig{
+			// No ScopesSupported - should fall back to server default
+		}
+
+		metadata := handler.buildProtectedResourceMetadata("/mcp", pathConfig)
+
+		scopes, ok := metadata["scopes_supported"].([]string)
+		if !ok || len(scopes) != 1 || scopes[0] != "default:scope" {
+			t.Errorf("scopes_supported = %v, want [default:scope]",
+				metadata["scopes_supported"])
+		}
+	})
+
+	t.Run("sub-path without custom resource uses derived resource", func(t *testing.T) {
+		pathConfig := &server.ProtectedResourceConfig{
+			ScopesSupported: []string{"sub:scope"},
+			// No ResourceIdentifier - should derive from issuer + path
+		}
+
+		metadata := handler.buildProtectedResourceMetadata("/mcp/files", pathConfig)
+
+		expectedResource := testIssuer + "/mcp/files"
+		if metadata["resource"] != expectedResource {
+			t.Errorf("resource = %v, want %v", metadata["resource"], expectedResource)
+		}
+	})
+}
+
 func TestHandler_ServeAuthorizationServerMetadata(t *testing.T) {
 	handler, store := setupTestHandler(t)
 	defer store.Stop()

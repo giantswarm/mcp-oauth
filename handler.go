@@ -590,6 +590,15 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 }
 
 // ServeProtectedResourceMetadata serves RFC 9728 Protected Resource Metadata
+// with support for path-specific metadata discovery per MCP 2025-11-25.
+//
+// The handler extracts the resource path from the request URL and looks up
+// path-specific configuration in ResourceMetadataByPath. If a match is found,
+// path-specific metadata is returned; otherwise, default server-wide metadata is used.
+//
+// Path matching uses longest-prefix matching. For example, given paths
+// "/mcp/files" and "/mcp/files/admin", a request for "/mcp/files/admin/users"
+// would match "/mcp/files/admin".
 func (h *Handler) ServeProtectedResourceMetadata(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -600,61 +609,206 @@ func (h *Handler) ServeProtectedResourceMetadata(w http.ResponseWriter, r *http.
 	h.setCORSHeaders(w, r)
 
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
-	metadata := map[string]any{
-		"resource": h.server.Config.Issuer,
-		"authorization_servers": []string{
-			h.server.Config.Issuer,
-		},
-		"bearer_methods_supported": []string{"header"},
-	}
 
-	// Include scopes_supported if configured (MCP 2025-11-25)
-	if len(h.server.Config.SupportedScopes) > 0 {
-		metadata["scopes_supported"] = h.server.Config.SupportedScopes
-	}
+	// Extract the resource path from the request URL
+	// Request path: /.well-known/oauth-protected-resource/mcp/files
+	// Resource path: /mcp/files
+	resourcePath := h.extractResourcePath(r.URL.Path)
+
+	// Look up path-specific configuration
+	pathConfig := h.findPathConfig(resourcePath)
+
+	// Build metadata response
+	metadata := h.buildProtectedResourceMetadata(resourcePath, pathConfig)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(metadata)
 }
 
+// extractResourcePath extracts the resource path from a Protected Resource Metadata URL.
+// For example: "/.well-known/oauth-protected-resource/mcp/files" -> "/mcp/files"
+func (h *Handler) extractResourcePath(requestPath string) string {
+	prefix := MetadataPathProtectedResource
+	if strings.HasPrefix(requestPath, prefix) {
+		resourcePath := strings.TrimPrefix(requestPath, prefix)
+		if resourcePath == "" {
+			return "/"
+		}
+		return resourcePath
+	}
+	return "/"
+}
+
+// findPathConfig finds the best matching ProtectedResourceConfig for a given resource path.
+// It uses longest-prefix matching to find the most specific configuration.
+// Returns nil if no specific configuration is found.
+func (h *Handler) findPathConfig(resourcePath string) *server.ProtectedResourceConfig {
+	if len(h.server.Config.ResourceMetadataByPath) == 0 {
+		return nil
+	}
+
+	var bestMatch string
+	var bestConfig *server.ProtectedResourceConfig
+
+	for configPath, config := range h.server.Config.ResourceMetadataByPath {
+		// Normalize the config path
+		normalizedConfigPath := path.Clean("/" + strings.TrimPrefix(configPath, "/"))
+
+		// Check if this path is a prefix of the resource path
+		if h.pathMatchesPrefix(resourcePath, normalizedConfigPath) {
+			// Use longest match
+			if len(normalizedConfigPath) > len(bestMatch) {
+				bestMatch = normalizedConfigPath
+				configCopy := config // Create a copy to get a stable pointer
+				bestConfig = &configCopy
+			}
+		}
+	}
+
+	return bestConfig
+}
+
+// pathMatchesPrefix checks if resourcePath matches or starts with prefix.
+// Handles path boundaries correctly: /mcp/files matches /mcp but not /mc.
+func (h *Handler) pathMatchesPrefix(resourcePath, prefix string) bool {
+	// Exact match
+	if resourcePath == prefix {
+		return true
+	}
+
+	// Prefix match with path boundary
+	if strings.HasPrefix(resourcePath, prefix) {
+		// Ensure we're matching at a path boundary
+		// /mcp/files should match /mcp but not /mc
+		remaining := strings.TrimPrefix(resourcePath, prefix)
+		return len(remaining) > 0 && remaining[0] == '/'
+	}
+
+	return false
+}
+
+// buildProtectedResourceMetadata builds the Protected Resource Metadata response.
+// It uses path-specific configuration if provided, falling back to server defaults.
+func (h *Handler) buildProtectedResourceMetadata(resourcePath string, pathConfig *server.ProtectedResourceConfig) map[string]any {
+	// Default values from server configuration
+	resource := h.server.Config.GetResourceIdentifier()
+	authServers := []string{h.server.Config.Issuer}
+	bearerMethods := []string{"header"}
+	var scopesSupported []string
+
+	// Apply path-specific configuration if available
+	if pathConfig != nil {
+		// Use path-specific resource identifier if configured
+		if pathConfig.ResourceIdentifier != "" {
+			resource = pathConfig.ResourceIdentifier
+		} else if resourcePath != "/" && resourcePath != "" {
+			// For sub-paths, append the path to the base resource identifier
+			resource = h.server.Config.GetResourceIdentifier() + resourcePath
+		}
+
+		// Use path-specific authorization servers if configured
+		if len(pathConfig.AuthorizationServers) > 0 {
+			authServers = pathConfig.AuthorizationServers
+		}
+
+		// Use path-specific bearer methods if configured
+		if len(pathConfig.BearerMethodsSupported) > 0 {
+			bearerMethods = pathConfig.BearerMethodsSupported
+		}
+
+		// Use path-specific scopes if configured
+		if len(pathConfig.ScopesSupported) > 0 {
+			scopesSupported = pathConfig.ScopesSupported
+		}
+	}
+
+	// Fall back to server-wide scopes if no path-specific scopes
+	if len(scopesSupported) == 0 && len(h.server.Config.SupportedScopes) > 0 {
+		scopesSupported = h.server.Config.SupportedScopes
+	}
+
+	metadata := map[string]any{
+		"resource":                 resource,
+		"authorization_servers":    authServers,
+		"bearer_methods_supported": bearerMethods,
+	}
+
+	// Include scopes_supported if configured (MCP 2025-11-25)
+	if len(scopesSupported) > 0 {
+		metadata["scopes_supported"] = scopesSupported
+	}
+
+	return metadata
+}
+
 // RegisterProtectedResourceMetadataRoutes registers all Protected Resource Metadata discovery routes.
-// It registers both the root endpoint and optional sub-path endpoint if mcpPath is provided.
+// It registers the root endpoint and optional sub-path endpoints based on configuration.
 //
-// Security: This function validates the mcpPath to prevent path traversal attacks and DoS through
+// Route registration is done for:
+//  1. Root endpoint: /.well-known/oauth-protected-resource (always registered)
+//  2. Explicit mcpPath endpoint if provided (backward compatibility)
+//  3. All paths from ResourceMetadataByPath configuration (MCP 2025-11-25)
+//
+// Security: This function validates all paths to prevent path traversal attacks and DoS through
 // excessively long paths. Invalid paths are logged and skipped.
 //
 // Example usage:
 //
-//	mux := http.NewServeMux()
+//	// Legacy single-path registration
 //	handler.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
-//	// This registers both:
-//	//   /.well-known/oauth-protected-resource
-//	//   /.well-known/oauth-protected-resource/mcp
+//
+//	// With per-path configuration (new in MCP 2025-11-25)
+//	// Configure in server.Config.ResourceMetadataByPath, then:
+//	handler.RegisterProtectedResourceMetadataRoutes(mux, "")
+//	// This registers routes for all configured paths automatically
 func (h *Handler) RegisterProtectedResourceMetadataRoutes(mux *http.ServeMux, mcpPath string) {
 	// Always register root metadata endpoint
 	mux.HandleFunc(MetadataPathProtectedResource, h.ServeProtectedResourceMetadata)
 
-	// Register sub-path metadata endpoint if MCP endpoint has a path
+	// Track registered paths to avoid duplicate registrations
+	registeredPaths := make(map[string]bool)
+	registeredPaths[MetadataPathProtectedResource] = true
+
+	// Register explicit mcpPath if provided (backward compatibility)
 	if mcpPath != "" && mcpPath != "/" {
-		// SECURITY: Validate path before registration to prevent attacks
-		if err := h.validateMetadataPath(mcpPath); err != nil {
-			h.logger.Warn("Rejecting invalid metadata path registration",
-				"path", mcpPath,
-				"error", err,
-				"security_event", "invalid_metadata_path")
-			return
-		}
-
-		// Clean and normalize the path
-		cleanPath := path.Clean("/" + strings.TrimPrefix(mcpPath, "/"))
-		subPath := MetadataPathProtectedResource + cleanPath
-
-		h.logger.Info("Registering metadata sub-path endpoint",
-			"path", subPath,
-			"original_mcp_path", mcpPath)
-
-		mux.HandleFunc(subPath, h.ServeProtectedResourceMetadata)
+		h.registerMetadataSubPath(mux, mcpPath, registeredPaths)
 	}
+
+	// Register paths from ResourceMetadataByPath configuration (MCP 2025-11-25)
+	for configPath := range h.server.Config.ResourceMetadataByPath {
+		h.registerMetadataSubPath(mux, configPath, registeredPaths)
+	}
+}
+
+// registerMetadataSubPath registers a single sub-path for Protected Resource Metadata.
+// It validates the path for security concerns and avoids duplicate registrations.
+func (h *Handler) registerMetadataSubPath(mux *http.ServeMux, resourcePath string, registered map[string]bool) {
+	// SECURITY: Validate path before registration to prevent attacks
+	if err := h.validateMetadataPath(resourcePath); err != nil {
+		h.logger.Warn("Rejecting invalid metadata path registration",
+			"path", resourcePath,
+			"error", err,
+			"security_event", "invalid_metadata_path")
+		return
+	}
+
+	// Clean and normalize the path
+	cleanPath := path.Clean("/" + strings.TrimPrefix(resourcePath, "/"))
+	subPath := MetadataPathProtectedResource + cleanPath
+
+	// Skip if already registered
+	if registered[subPath] {
+		h.logger.Debug("Skipping duplicate metadata path registration",
+			"path", subPath)
+		return
+	}
+
+	h.logger.Info("Registering metadata sub-path endpoint",
+		"path", subPath,
+		"resource_path", resourcePath)
+
+	mux.HandleFunc(subPath, h.ServeProtectedResourceMetadata)
+	registered[subPath] = true
 }
 
 // validateMetadataPath validates a metadata path for security concerns.

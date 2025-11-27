@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Sub-Path Protected Resource Metadata Discovery** (MCP 2025-11-25, RFC 9728)
+  - **Feature**: Enable different protected resources on the same domain to advertise different authorization requirements
+  - **New Configuration**: `ResourceMetadataByPath` in `server.Config` allows per-path metadata configuration
+  - **ProtectedResourceConfig Type**: New configuration type with fields:
+    * `ScopesSupported` - Path-specific scopes
+    * `AuthorizationServers` - Path-specific authorization server URLs
+    * `BearerMethodsSupported` - Path-specific bearer token methods
+    * `ResourceIdentifier` - Path-specific resource identifier (RFC 8707)
+  - **Path Matching**: Uses longest-prefix matching to find the most specific configuration
+  - **Automatic Route Registration**: Paths configured in `ResourceMetadataByPath` are automatically registered as discovery endpoints
+  - **Backward Compatible**: Root endpoint and explicit `mcpPath` registration continue to work as before
+  - **Example Usage**:
+    ```go
+    config := &server.Config{
+        Issuer: "https://auth.example.com",
+        ResourceMetadataByPath: map[string]server.ProtectedResourceConfig{
+            "/mcp/files": {ScopesSupported: []string{"files:read", "files:write"}},
+            "/mcp/admin": {ScopesSupported: []string{"admin:access"}},
+        },
+    }
+    // Registers:
+    // - /.well-known/oauth-protected-resource (default metadata)
+    // - /.well-known/oauth-protected-resource/mcp/files (files-specific metadata)
+    // - /.well-known/oauth-protected-resource/mcp/admin (admin-specific metadata)
+    ```
+  - **Configuration Validation**: Path format, scope format, authorization server URLs, and bearer methods are validated at startup
+  - **Tests**: Comprehensive unit tests for sub-path discovery, path matching, and route registration
+
 - **Success Interstitial Page for Custom URL Schemes** (RFC 8252)
   - **Feature**: Serve an HTML "success interstitial" page instead of direct 302 redirects for custom URL schemes (`cursor://`, `vscode://`, `slack://`, etc.)
   - **Problem Solved**: Browsers often fail silently on 302 redirects to custom URL schemes, leaving users on a blank page with a spinning indicator even though authentication succeeded

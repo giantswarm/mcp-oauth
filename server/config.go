@@ -123,6 +123,27 @@ type Config struct {
 	// If empty, all scopes are allowed
 	SupportedScopes []string
 
+	// ResourceMetadataByPath enables per-path Protected Resource Metadata (RFC 9728).
+	// This allows different protected resources to advertise different authorization
+	// requirements. When a client requests /.well-known/oauth-protected-resource/<path>,
+	// the server returns metadata specific to that path.
+	//
+	// Keys are path prefixes (e.g., "/mcp/files", "/mcp/admin").
+	// If a request path matches multiple prefixes, the longest match is used.
+	// If no match is found, the default server-wide metadata is returned.
+	//
+	// Example:
+	//   ResourceMetadataByPath: map[string]ProtectedResourceConfig{
+	//       "/mcp/files": {ScopesSupported: []string{"files:read", "files:write"}},
+	//       "/mcp/admin": {ScopesSupported: []string{"admin:access"}},
+	//   }
+	//
+	// Discovery endpoints registered:
+	//   - /.well-known/oauth-protected-resource (default metadata)
+	//   - /.well-known/oauth-protected-resource/mcp/files (files-specific metadata)
+	//   - /.well-known/oauth-protected-resource/mcp/admin (admin-specific metadata)
+	ResourceMetadataByPath map[string]ProtectedResourceConfig
+
 	// MaxScopeLength is the maximum allowed length for the scope parameter string
 	// This prevents potential DoS attacks via extremely long scope strings.
 	// The scope string is space-delimited, so this limits the total length including
@@ -520,6 +541,46 @@ type InterstitialConfig struct {
 	Branding *InterstitialBranding
 }
 
+// ProtectedResourceConfig holds per-path configuration for Protected Resource Metadata (RFC 9728).
+// This allows different protected resources on the same domain to advertise different
+// authorization requirements (scopes, authorization servers, etc.).
+//
+// Per MCP 2025-11-25, sub-path discovery enables clients to understand the specific
+// requirements for different endpoints on the same resource server.
+//
+// Example:
+//
+//	ResourceMetadataByPath: map[string]ProtectedResourceConfig{
+//	    "/mcp/files": {
+//	        ScopesSupported: []string{"files:read", "files:write"},
+//	    },
+//	    "/mcp/admin": {
+//	        ScopesSupported: []string{"admin:access"},
+//	    },
+//	}
+type ProtectedResourceConfig struct {
+	// ScopesSupported lists the scopes required/supported for this specific resource path.
+	// If empty, falls back to the server's default SupportedScopes configuration.
+	// Per RFC 9728, this helps clients determine what access they need to request.
+	ScopesSupported []string
+
+	// AuthorizationServers lists the authorization server URLs for this resource.
+	// If empty, defaults to the server's Issuer.
+	// This allows different resource paths to point to different authorization servers.
+	AuthorizationServers []string
+
+	// BearerMethodsSupported specifies how bearer tokens can be sent.
+	// Default: ["header"] (Authorization header only).
+	// Options: "header", "body", "query" (per RFC 6750).
+	// Note: "body" and "query" are discouraged for security reasons.
+	BearerMethodsSupported []string
+
+	// ResourceIdentifier is the canonical identifier for this specific resource.
+	// If empty, derived from the server's ResourceIdentifier or Issuer + path.
+	// Used for audience validation per RFC 8707.
+	ResourceIdentifier string
+}
+
 // InterstitialBranding configures visual elements of the default interstitial page.
 // All fields are optional - unset fields use the default values.
 //
@@ -637,6 +698,9 @@ func applySecureDefaults(config *Config, logger *slog.Logger) *Config {
 
 	// Validate endpoint scope requirements (MCP 2025-11-25)
 	validateEndpointScopeRequirements(config, logger)
+
+	// Validate protected resource metadata configuration (RFC 9728, MCP 2025-11-25)
+	validateResourceMetadataByPath(config, logger)
 
 	// Validate interstitial page configuration (RFC 8252 Section 7.1)
 	validateInterstitialConfig(config, logger)
@@ -1080,6 +1144,119 @@ func validateScopeFormat(scope string) error {
 		if c < 0x21 || c > 0x7E {
 			return fmt.Errorf("scope contains invalid character at position %d (only printable ASCII allowed)", i)
 		}
+	}
+
+	return nil
+}
+
+// validateResourceMetadataByPath validates the ResourceMetadataByPath configuration
+// for security, correctness, and RFC 9728 compliance.
+func validateResourceMetadataByPath(config *Config, logger *slog.Logger) {
+	if len(config.ResourceMetadataByPath) == 0 {
+		return
+	}
+
+	for pathKey, pathConfig := range config.ResourceMetadataByPath {
+		// Validate path format
+		if err := validateResourcePath(pathKey); err != nil {
+			logger.Warn("Invalid path in ResourceMetadataByPath",
+				"path", pathKey,
+				"error", err,
+				"recommendation", "Use clean paths without traversal sequences")
+		}
+
+		// Validate scopes format per RFC 6749 Section 3.3
+		for _, scope := range pathConfig.ScopesSupported {
+			if err := validateScopeFormat(scope); err != nil {
+				logger.Warn("Invalid scope format in ResourceMetadataByPath",
+					"path", pathKey,
+					"scope", scope,
+					"error", err,
+					"rfc", "RFC 6749 Section 3.3")
+			}
+		}
+
+		// Validate authorization server URLs
+		for i, authServer := range pathConfig.AuthorizationServers {
+			u, err := url.Parse(authServer)
+			if err != nil || u.Scheme == "" || u.Host == "" {
+				logger.Warn("Invalid authorization server URL in ResourceMetadataByPath",
+					"path", pathKey,
+					"index", i,
+					"url", authServer,
+					"error", "must be a valid URL with scheme and host")
+			} else if u.Scheme != SchemeHTTPS && u.Scheme != SchemeHTTP {
+				logger.Warn("Authorization server URL should use HTTPS",
+					"path", pathKey,
+					"url", authServer,
+					"scheme", u.Scheme,
+					"recommendation", "Use HTTPS for security")
+			}
+		}
+
+		// Validate bearer methods per RFC 6750
+		validBearerMethods := map[string]bool{
+			"header": true,
+			"body":   true,
+			"query":  true,
+		}
+		for _, method := range pathConfig.BearerMethodsSupported {
+			if !validBearerMethods[method] {
+				logger.Warn("Unknown bearer method in ResourceMetadataByPath",
+					"path", pathKey,
+					"method", method,
+					"valid_methods", []string{"header", "body", "query"},
+					"rfc", "RFC 6750")
+			}
+			// Warn about insecure methods
+			if method == "query" || method == "body" {
+				logger.Warn("Insecure bearer method configured in ResourceMetadataByPath",
+					"path", pathKey,
+					"method", method,
+					"risk", "Bearer tokens in query or body can be logged or cached",
+					"recommendation", "Use 'header' method for security")
+			}
+		}
+
+		// Validate resource identifier if provided
+		if pathConfig.ResourceIdentifier != "" {
+			u, err := url.Parse(pathConfig.ResourceIdentifier)
+			if err != nil || u.Scheme == "" || u.Host == "" {
+				logger.Warn("Invalid resource identifier in ResourceMetadataByPath",
+					"path", pathKey,
+					"resource_identifier", pathConfig.ResourceIdentifier,
+					"error", "must be a valid URL with scheme and host",
+					"rfc", "RFC 8707")
+			}
+		}
+	}
+
+	logger.Debug("ResourceMetadataByPath configuration validated",
+		"paths_configured", len(config.ResourceMetadataByPath))
+}
+
+// validateResourcePath validates a resource path for security concerns.
+// Similar to the handler's validateMetadataPath but for configuration validation.
+func validateResourcePath(resourcePath string) error {
+	// Reject paths with path traversal sequences
+	if strings.Contains(resourcePath, "..") {
+		return fmt.Errorf("path contains '..' sequence (path traversal)")
+	}
+
+	// Reject paths with null bytes
+	if strings.Contains(resourcePath, "\x00") {
+		return fmt.Errorf("path contains null byte")
+	}
+
+	// Reject excessively long paths
+	const maxPathLength = 256
+	if len(resourcePath) > maxPathLength {
+		return fmt.Errorf("path exceeds maximum length of %d characters", maxPathLength)
+	}
+
+	// Reject paths with excessive segments
+	if strings.Count(resourcePath, "/") > 10 {
+		return fmt.Errorf("path contains too many segments")
 	}
 
 	return nil

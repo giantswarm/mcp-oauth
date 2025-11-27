@@ -87,6 +87,83 @@ func main() {
 - **`scopes_supported`**: List of all OAuth scopes this resource understands
 - **`bearer_methods_supported`**: How bearer tokens should be sent (typically `["header"]`)
 
+### Sub-Path Metadata Discovery (MCP 2025-11-25)
+
+Different protected resources on the same domain can advertise different authorization requirements. This is useful when different API endpoints require different scopes.
+
+#### Configuration
+
+```go
+import (
+    oauth "github.com/giantswarm/mcp-oauth"
+    "github.com/giantswarm/mcp-oauth/server"
+)
+
+func main() {
+    config := &server.Config{
+        Issuer:          "https://auth.example.com",
+        SupportedScopes: []string{"default:scope"},  // Server-wide default
+        
+        // Per-path metadata configuration
+        ResourceMetadataByPath: map[string]server.ProtectedResourceConfig{
+            "/mcp/files": {
+                ScopesSupported: []string{"files:read", "files:write"},
+            },
+            "/mcp/admin": {
+                ScopesSupported:      []string{"admin:access"},
+                AuthorizationServers: []string{"https://admin-auth.example.com"},
+            },
+        },
+    }
+    
+    handler := oauth.NewHandler(server, nil)
+    mux := http.NewServeMux()
+    
+    // Automatically registers:
+    // - /.well-known/oauth-protected-resource (default)
+    // - /.well-known/oauth-protected-resource/mcp/files
+    // - /.well-known/oauth-protected-resource/mcp/admin
+    handler.RegisterProtectedResourceMetadataRoutes(mux, "")
+}
+```
+
+#### ProtectedResourceConfig Fields
+
+| Field | Description |
+|-------|-------------|
+| `ScopesSupported` | Scopes required for this path (falls back to server default if empty) |
+| `AuthorizationServers` | Authorization server URLs (falls back to Issuer if empty) |
+| `BearerMethodsSupported` | Bearer token methods: `header`, `body`, `query` (default: `["header"]`) |
+| `ResourceIdentifier` | Resource identifier for RFC 8707 audience binding |
+
+#### Path Matching
+
+The library uses longest-prefix matching to find the most specific configuration:
+
+- Request to `/.well-known/oauth-protected-resource/mcp/files/admin/users` 
+- Configured paths: `/mcp`, `/mcp/files`, `/mcp/files/admin`
+- Matched: `/mcp/files/admin` (longest match)
+
+#### Example Response for Sub-Path
+
+Request to `/.well-known/oauth-protected-resource/mcp/files`:
+
+```json
+{
+  "resource": "https://auth.example.com/mcp/files",
+  "authorization_servers": [
+    "https://auth.example.com"
+  ],
+  "scopes_supported": [
+    "files:read",
+    "files:write"
+  ],
+  "bearer_methods_supported": [
+    "header"
+  ]
+}
+```
+
 ### Client Usage
 
 ```bash
