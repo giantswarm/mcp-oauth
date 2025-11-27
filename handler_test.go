@@ -3008,6 +3008,42 @@ func TestHandler_FormatWWWAuthenticate(t *testing.T) {
 			},
 			wantNotContain: []string{"error=", "error_description="},
 		},
+		{
+			name:      "scope with quotes (defense-in-depth escaping)",
+			scope:     `files:read "special" user:profile`,
+			error:     "",
+			errorDesc: "",
+			wantContain: []string{
+				"Bearer",
+				testResourceMetadataURL,
+				`scope="files:read \"special\" user:profile"`,
+			},
+			wantNotContain: []string{"error=", "error_description="},
+		},
+		{
+			name:      "scope with backslash (defense-in-depth escaping)",
+			scope:     `files:read scope\test user:profile`,
+			error:     "",
+			errorDesc: "",
+			wantContain: []string{
+				"Bearer",
+				testResourceMetadataURL,
+				`scope="files:read scope\\test user:profile"`,
+			},
+			wantNotContain: []string{"error=", "error_description="},
+		},
+		{
+			name:      "scope with both backslash and quotes (combined escaping)",
+			scope:     `test:\"quoted\value`,
+			error:     "",
+			errorDesc: "",
+			wantContain: []string{
+				"Bearer",
+				testResourceMetadataURL,
+				`scope="test:\\\"quoted\\value"`,
+			},
+			wantNotContain: []string{"error=", "error_description="},
+		},
 	}
 
 	for _, tt := range tests {

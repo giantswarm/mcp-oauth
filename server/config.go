@@ -922,13 +922,13 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 
 	// SECURITY: Enforce absolute minimum state length to ensure CSRF protection entropy
 	// OAuth 2.1 recommends at least 128 bits (16 bytes) of entropy
-	// 16 characters in base64 = 96 bits, but this is an absolute floor
-	const absoluteMinStateLength = 16
+	// 32 characters provides 192 bits of entropy in base64, which exceeds OAuth 2.1 recommendations
+	// and provides sufficient margin for high-security deployments.
+	const absoluteMinStateLength = 32
 	if config.MinStateLength < absoluteMinStateLength {
-		logger.Warn("⚠️  SECURITY WARNING: MinStateLength below recommended minimum, enforcing floor",
+		logger.Warn("SECURITY WARNING: MinStateLength below recommended minimum, enforcing floor",
 			"configured", config.MinStateLength,
 			"enforced_minimum", absoluteMinStateLength,
-			"recommended", 32,
 			"risk", "reduced CSRF protection entropy")
 		config.MinStateLength = absoluteMinStateLength
 	}
