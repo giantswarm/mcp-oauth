@@ -917,6 +917,36 @@ func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 		return
 	}
 
+	// SECURITY: Apply rate limiting to discovery endpoints to prevent reconnaissance and DoS
+	// Discovery endpoints are unauthenticated and publicly accessible, making them potential
+	// vectors for automated scanning and resource exhaustion attacks
+	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
+	if h.server.RateLimiter != nil {
+		if !h.server.RateLimiter.Allow(clientIP) {
+			h.logger.Warn("Rate limit exceeded on discovery endpoint",
+				"ip", clientIP,
+				"endpoint", "authorization_server_metadata")
+
+			if h.server.Instrumentation != nil {
+				h.server.Instrumentation.Metrics().RecordRateLimitExceeded(r.Context(), "ip")
+			}
+
+			if h.server.Auditor != nil {
+				h.server.Auditor.LogEvent(security.Event{
+					Type:      security.EventRateLimitExceeded,
+					IPAddress: clientIP,
+					Details: map[string]any{
+						"endpoint": r.URL.Path,
+					},
+				})
+			}
+
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
+			return
+		}
+	}
+
 	// Set CORS headers for browser-based clients
 	h.setCORSHeaders(w, r)
 
