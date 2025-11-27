@@ -17,6 +17,7 @@ import (
 
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/internal/util"
+	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/server"
 	"github.com/giantswarm/mcp-oauth/storage"
@@ -2281,6 +2282,105 @@ func TestUserInfoFromContext(t *testing.T) {
 	if userInfo != nil {
 		t.Error("UserInfoFromContext should return nil when no user info in context")
 	}
+}
+
+func TestContextWithUserInfo(t *testing.T) {
+	t.Run("sets user info in context", func(t *testing.T) {
+		ctx := context.Background()
+		expectedUserInfo := &providers.UserInfo{
+			ID:    "user-123",
+			Email: "test@example.com",
+			Name:  "Test User",
+		}
+
+		// Set user info in context
+		ctxWithUser := ContextWithUserInfo(ctx, expectedUserInfo)
+
+		// Retrieve user info from context
+		userInfo, ok := UserInfoFromContext(ctxWithUser)
+		if !ok {
+			t.Error("UserInfoFromContext should return true when user info is in context")
+		}
+		if userInfo == nil {
+			t.Fatal("UserInfoFromContext should return non-nil user info")
+		}
+		if userInfo.ID != expectedUserInfo.ID {
+			t.Errorf("Expected user ID %q, got %q", expectedUserInfo.ID, userInfo.ID)
+		}
+		if userInfo.Email != expectedUserInfo.Email {
+			t.Errorf("Expected email %q, got %q", expectedUserInfo.Email, userInfo.Email)
+		}
+		if userInfo.Name != expectedUserInfo.Name {
+			t.Errorf("Expected name %q, got %q", expectedUserInfo.Name, userInfo.Name)
+		}
+	})
+
+	t.Run("sets nil user info in context", func(t *testing.T) {
+		ctx := context.Background()
+
+		// Set nil user info in context
+		ctxWithUser := ContextWithUserInfo(ctx, nil)
+
+		// Retrieve user info from context - returns (nil, true) because a typed nil
+		// value was explicitly stored. The caller should check userInfo != nil.
+		userInfo, ok := UserInfoFromContext(ctxWithUser)
+		if !ok {
+			t.Error("UserInfoFromContext should return true when nil user info is explicitly set in context")
+		}
+		if userInfo != nil {
+			t.Error("UserInfoFromContext should return nil when nil user info is in context")
+		}
+	})
+
+	t.Run("overwrites existing user info", func(t *testing.T) {
+		ctx := context.Background()
+		originalUserInfo := &providers.UserInfo{
+			ID:    "user-original",
+			Email: "original@example.com",
+		}
+		newUserInfo := &providers.UserInfo{
+			ID:    "user-new",
+			Email: "new@example.com",
+		}
+
+		// Set original user info
+		ctxWithOriginal := ContextWithUserInfo(ctx, originalUserInfo)
+		// Overwrite with new user info
+		ctxWithNew := ContextWithUserInfo(ctxWithOriginal, newUserInfo)
+
+		// Retrieve user info - should get new user info
+		userInfo, ok := UserInfoFromContext(ctxWithNew)
+		if !ok {
+			t.Error("UserInfoFromContext should return true")
+		}
+		if userInfo.ID != newUserInfo.ID {
+			t.Errorf("Expected user ID %q, got %q", newUserInfo.ID, userInfo.ID)
+		}
+		if userInfo.Email != newUserInfo.Email {
+			t.Errorf("Expected email %q, got %q", newUserInfo.Email, userInfo.Email)
+		}
+	})
+
+	t.Run("works with http.Request context", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/test", nil)
+		expectedUserInfo := &providers.UserInfo{
+			ID:    "user-456",
+			Email: "http@example.com",
+		}
+
+		// Set user info in request context
+		ctxWithUser := ContextWithUserInfo(req.Context(), expectedUserInfo)
+		req = req.WithContext(ctxWithUser)
+
+		// Retrieve user info from request context
+		userInfo, ok := UserInfoFromContext(req.Context())
+		if !ok {
+			t.Error("UserInfoFromContext should return true")
+		}
+		if userInfo.ID != expectedUserInfo.ID {
+			t.Errorf("Expected user ID %q, got %q", expectedUserInfo.ID, userInfo.ID)
+		}
+	})
 }
 
 func TestHandler_ServeToken_InvalidClient(t *testing.T) {
