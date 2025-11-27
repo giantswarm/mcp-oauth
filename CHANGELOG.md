@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Success Interstitial Page for Custom URL Schemes** (RFC 8252)
+  - **Feature**: Serve an HTML "success interstitial" page instead of direct 302 redirects for custom URL schemes (`cursor://`, `vscode://`, `slack://`, etc.)
+  - **Problem Solved**: Browsers often fail silently on 302 redirects to custom URL schemes, leaving users on a blank page with a spinning indicator even though authentication succeeded
+  - **Solution**: Per RFC 8252 Section 7.1, native apps should handle the case where browsers cannot redirect to custom schemes. The new interstitial page:
+    * Shows "Authorization Successful!" message confirming authentication worked
+    * Attempts JavaScript redirect after ~500ms delay
+    * Provides manual "Open [App Name]" button as fallback
+    * Shows "You can close this window" instruction
+  - **App Recognition**: Recognizes common MCP client applications and displays friendly names:
+    * Cursor, Visual Studio Code, VSCodium, Slack, Notion, Obsidian
+    * Discord, Figma, Linear, Raycast, Warp, Zed, Windsurf, and more
+    * Unknown schemes show capitalized scheme name
+  - **UX Design**: Modern, clean styling with success checkmark animation
+  - **Security**: Uses `html/template` with proper escaping, includes all security headers
+  - **Backward Compatibility**: HTTP/HTTPS redirect URIs continue to use standard 302 redirects
+  - **Tests**: Comprehensive unit tests for URL scheme detection, app name mapping, and interstitial rendering
+
 - **Comprehensive MCP 2025-11-25 Documentation**
   - **Feature**: Complete documentation package for MCP 2025-11-25 specification compliance
   - **New Documentation**:

@@ -5,8 +5,10 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 	"time"
@@ -51,6 +53,307 @@ func NewHandler(server *Server, logger *slog.Logger) *Handler {
 	}
 
 	return h
+}
+
+// successInterstitialTemplate is the HTML template for OAuth success pages.
+// This is served when redirecting to custom URL schemes (cursor://, vscode://, etc.)
+// where browsers may fail silently on 302 redirects.
+//
+// Per RFC 8252 Section 7.1, native apps should handle the case where the browser
+// cannot redirect to the custom scheme. This interstitial page:
+// - Shows a success message so users know authentication worked
+// - Attempts JavaScript redirect after a brief delay
+// - Provides a manual button as fallback
+// - Instructs users they can close the browser window
+const successInterstitialTemplate = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Authorization Successful</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+        }
+        .container {
+            text-align: center;
+            padding: 2rem;
+            max-width: 480px;
+        }
+        .success-icon {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 1.5rem;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #00d26a 0%, #00a855 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            animation: scaleIn 0.5s ease-out;
+        }
+        .success-icon svg {
+            width: 40px;
+            height: 40px;
+            stroke: #fff;
+            stroke-width: 3;
+            fill: none;
+        }
+        @keyframes scaleIn {
+            0% { transform: scale(0); opacity: 0; }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        @keyframes checkmark {
+            0% { stroke-dashoffset: 50; }
+            100% { stroke-dashoffset: 0; }
+        }
+        .checkmark {
+            stroke-dasharray: 50;
+            stroke-dashoffset: 50;
+            animation: checkmark 0.5s ease-out 0.3s forwards;
+        }
+        h1 {
+            font-size: 1.75rem;
+            font-weight: 600;
+            margin-bottom: 0.75rem;
+            color: #fff;
+        }
+        .message {
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 1rem;
+            line-height: 1.6;
+            margin-bottom: 1.5rem;
+        }
+        .app-name {
+            color: #00d26a;
+            font-weight: 500;
+        }
+        .button {
+            display: inline-block;
+            padding: 0.875rem 2rem;
+            background: linear-gradient(135deg, #00d26a 0%, #00a855 100%);
+            color: #fff;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 500;
+            font-size: 1rem;
+            border: none;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            margin-bottom: 1rem;
+        }
+        .button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 20px rgba(0, 210, 106, 0.3);
+        }
+        .button:active {
+            transform: translateY(0);
+        }
+        .close-hint {
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 0.875rem;
+            margin-top: 1rem;
+        }
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .redirecting {
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 0.875rem;
+            margin-bottom: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="success-icon">
+            <svg viewBox="0 0 24 24">
+                <polyline class="checkmark" points="4 12 9 17 20 6"></polyline>
+            </svg>
+        </div>
+        <h1>Authorization Successful</h1>
+        <p class="message">
+            You have been authenticated successfully.
+            {{if .AppName}}Return to <span class="app-name">{{.AppName}}</span> to continue.{{else}}You can now return to the application.{{end}}
+        </p>
+        <p class="redirecting" id="redirecting">
+            <span class="spinner"></span>Redirecting automatically...
+        </p>
+        <a href="{{.RedirectURL}}" class="button" id="openApp">
+            {{if .AppName}}Open {{.AppName}}{{else}}Open Application{{end}}
+        </a>
+        <p class="close-hint">You can close this window after the application opens.</p>
+    </div>
+    <script>
+        (function() {
+            var redirectURL = "{{.RedirectURL}}";
+            var redirected = false;
+            
+            // Attempt redirect after a brief delay to show the success message
+            setTimeout(function() {
+                if (!redirected) {
+                    redirected = true;
+                    window.location.href = redirectURL;
+                }
+            }, 500);
+            
+            // Hide the redirecting message after a few seconds if still on page
+            setTimeout(function() {
+                var el = document.getElementById('redirecting');
+                if (el) {
+                    el.style.display = 'none';
+                }
+            }, 3000);
+        })();
+    </script>
+</body>
+</html>`
+
+// successInterstitialData holds the template data for the success interstitial page
+type successInterstitialData struct {
+	RedirectURL template.URL // template.URL marks URLs as safe for href attributes
+	AppName     string
+}
+
+// isCustomURLScheme checks if the given URI uses a custom URL scheme
+// (not http or https). Custom schemes like cursor://, vscode://, slack://
+// require special handling because browsers may fail silently on 302 redirects.
+//
+// Returns true for custom schemes that need an interstitial page,
+// false for http/https which can use standard redirects.
+func isCustomURLScheme(uri string) bool {
+	parsed, err := url.Parse(uri)
+	if err != nil {
+		return false
+	}
+
+	scheme := strings.ToLower(parsed.Scheme)
+
+	// Standard HTTP schemes can use regular redirects
+	if scheme == SchemeHTTP || scheme == SchemeHTTPS {
+		return false
+	}
+
+	// Any other scheme (cursor://, vscode://, slack://, etc.) needs interstitial
+	return scheme != ""
+}
+
+// getAppNameFromScheme extracts a human-readable app name from a custom URL scheme.
+// This provides better UX by showing the actual app name in the interstitial page.
+func getAppNameFromScheme(uri string) string {
+	parsed, err := url.Parse(uri)
+	if err != nil {
+		return ""
+	}
+
+	scheme := strings.ToLower(parsed.Scheme)
+
+	// Map common MCP client schemes to friendly names
+	schemeToApp := map[string]string{
+		"cursor":     "Cursor",
+		"vscode":     "Visual Studio Code",
+		"code":       "Visual Studio Code",
+		"codium":     "VSCodium",
+		"slack":      "Slack",
+		"notion":     "Notion",
+		"obsidian":   "Obsidian",
+		"discord":    "Discord",
+		"figma":      "Figma",
+		"linear":     "Linear",
+		"raycast":    "Raycast",
+		"warp":       "Warp",
+		"iterm":      "iTerm",
+		"iterm2":     "iTerm2",
+		"zed":        "Zed",
+		"sublime":    "Sublime Text",
+		"atom":       "Atom",
+		"windsurf":   "Windsurf",
+		"positron":   "Positron",
+		"theia":      "Theia",
+		"jupyterlab": "JupyterLab",
+	}
+
+	if name, ok := schemeToApp[scheme]; ok {
+		return name
+	}
+
+	// For unknown schemes, capitalize the first letter
+	if len(scheme) > 0 {
+		return strings.ToUpper(scheme[:1]) + scheme[1:]
+	}
+
+	return ""
+}
+
+// serveSuccessInterstitial serves an HTML success page for OAuth callbacks
+// to custom URL schemes (RFC 8252 Section 7.1).
+//
+// This solves the problem where browsers fail silently on 302 redirects to
+// custom URL schemes like cursor://, vscode://, etc. Instead of leaving users
+// on a blank page, this serves a friendly page that:
+// - Confirms authentication was successful
+// - Attempts JavaScript redirect after brief delay
+// - Provides manual button as fallback
+// - Tells users they can close the window
+func (h *Handler) serveSuccessInterstitial(w http.ResponseWriter, redirectURL string) {
+	// Parse the template
+	tmpl, err := template.New("success").Parse(successInterstitialTemplate)
+	if err != nil {
+		h.logger.Error("Failed to parse success interstitial template", "error", err)
+		// Fall back to simple redirect if template fails
+		http.Redirect(w, &http.Request{}, redirectURL, http.StatusFound)
+		return
+	}
+
+	// Extract app name from the redirect URL scheme
+	appName := getAppNameFromScheme(redirectURL)
+
+	// SECURITY: We must use template.URL to allow custom URL schemes in href attributes.
+	// Go's html/template filters URLs to only allow http, https, mailto by default.
+	// Custom schemes like cursor://, vscode:// are legitimate OAuth redirect URIs
+	// per RFC 8252 (OAuth 2.0 for Native Apps) and have already been validated
+	// during client registration and authorization flow.
+	data := successInterstitialData{
+		RedirectURL: template.URL(redirectURL), //nolint:gosec // URL validated during OAuth flow
+		AppName:     appName,
+	}
+
+	// Set security headers
+	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+
+	// Set content type
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	// Execute template
+	if err := tmpl.Execute(w, data); err != nil {
+		h.logger.Error("Failed to execute success interstitial template", "error", err)
+		// Fall back to plain text if template execution fails
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("Authorization successful. Please return to your application."))
+	}
 }
 
 // ValidateToken is middleware that validates OAuth tokens
@@ -462,11 +765,24 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	instrumentation.SetSpanAttributes(span, attribute.String("oauth.client_id", authCode.ClientID))
 	instrumentation.SetSpanSuccess(span)
 
-	h.recordHTTPMetrics("callback", http.MethodGet, http.StatusFound, startTime)
-
 	// CRITICAL SECURITY: Redirect back to client with their original state parameter
 	// This allows the client to verify the callback is for their original request (CSRF protection)
 	redirectURL := fmt.Sprintf("%s?code=%s&state=%s", authCode.RedirectURI, authCode.Code, clientState)
+
+	// RFC 8252 Section 7.1: Custom URL schemes require special handling
+	// Browsers may fail silently on 302 redirects to custom schemes (cursor://, vscode://, etc.)
+	// Serve an HTML interstitial page that shows success and attempts JS redirect with manual fallback
+	if isCustomURLScheme(authCode.RedirectURI) {
+		h.logger.Info("Serving success interstitial for custom URL scheme",
+			"client_id", authCode.ClientID,
+			"scheme", strings.Split(authCode.RedirectURI, ":")[0])
+		h.recordHTTPMetrics("callback", http.MethodGet, http.StatusOK, startTime)
+		h.serveSuccessInterstitial(w, redirectURL)
+		return
+	}
+
+	// Standard HTTP/HTTPS redirects work reliably
+	h.recordHTTPMetrics("callback", http.MethodGet, http.StatusFound, startTime)
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
