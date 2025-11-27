@@ -101,9 +101,7 @@ func setupRoutes(handler *oauth.Handler) {
 		handler.ServeProtectedResourceMetadata)
 
 	// Authorization Server Metadata (multi-tenant aware)
-	// Register using the new helper method
-	mux := http.DefaultServeMux
-	handler.RegisterAuthorizationServerMetadataRoutes(mux)
+	handler.RegisterAuthorizationServerMetadataRoutes(http.DefaultServeMux)
 
 	// OAuth endpoints
 	http.HandleFunc("/oauth/authorize", handler.ServeAuthorization)

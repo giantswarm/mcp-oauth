@@ -819,59 +819,68 @@ func (h *Handler) validateMetadataPath(mcpPath string) error {
 //
 // Example usage:
 //
-//	// Single-tenant (no path in issuer)
+//	// Single-tenant: Configure issuer without path
+//	config := &ServerConfig{
+//		Issuer: "https://auth.example.com",
+//	}
+//	// Registers: /.well-known/oauth-authorization-server
+//	//            /.well-known/openid-configuration
 //	handler.RegisterAuthorizationServerMetadataRoutes(mux)
 //
-//	// Multi-tenant (path-based issuer like https://auth.example.com/tenant1)
+//	// Multi-tenant: Configure issuer with path
+//	config := &ServerConfig{
+//		Issuer: "https://auth.example.com/tenant1",
+//	}
+//	// Registers: /.well-known/oauth-authorization-server/tenant1
+//	//            /.well-known/openid-configuration/tenant1
+//	//            /tenant1/.well-known/openid-configuration
+//	//            (plus standard endpoints for backward compatibility)
 //	handler.RegisterAuthorizationServerMetadataRoutes(mux)
 func (h *Handler) RegisterAuthorizationServerMetadataRoutes(mux *http.ServeMux) {
-	// Extract path from issuer URL
 	issuerPath := h.extractIssuerPath()
 
-	if issuerPath == "" || issuerPath == "/" {
-		// Standard single-tenant deployment (no path in issuer)
-		// Register: /.well-known/oauth-authorization-server
+	// Helper to register standard endpoints (always registered for backward compatibility)
+	registerStandardEndpoints := func() {
 		mux.HandleFunc("/.well-known/oauth-authorization-server", h.ServeAuthorizationServerMetadata)
-
-		// Register: /.well-known/openid-configuration
 		mux.HandleFunc("/.well-known/openid-configuration", h.ServeOpenIDConfiguration)
+	}
 
+	if issuerPath == "" || issuerPath == "/" {
+		// Single-tenant deployment
+		registerStandardEndpoints()
 		h.logger.Info("Registered authorization server metadata endpoints",
 			"oauth_endpoint", "/.well-known/oauth-authorization-server",
 			"oidc_endpoint", "/.well-known/openid-configuration")
-	} else {
-		// Multi-tenant deployment with path-based issuer
-		// Per MCP 2025-11-25 spec, support multiple discovery patterns
-
-		// Clean the path
-		cleanPath := path.Clean(issuerPath)
-
-		// 1. OAuth 2.0 AS Metadata with path insertion
-		// Example: /.well-known/oauth-authorization-server/tenant1
-		oauthPathInsert := "/.well-known/oauth-authorization-server" + cleanPath
-		mux.HandleFunc(oauthPathInsert, h.ServeAuthorizationServerMetadata)
-
-		// 2. OpenID Connect Discovery with path insertion
-		// Example: /.well-known/openid-configuration/tenant1
-		oidcPathInsert := "/.well-known/openid-configuration" + cleanPath
-		mux.HandleFunc(oidcPathInsert, h.ServeOpenIDConfiguration)
-
-		// 3. OpenID Connect Discovery with path appending
-		// Example: /tenant1/.well-known/openid-configuration
-		oidcPathAppend := cleanPath + "/.well-known/openid-configuration"
-		mux.HandleFunc(oidcPathAppend, h.ServeOpenIDConfiguration)
-
-		// Also register standard endpoints for backward compatibility
-		mux.HandleFunc("/.well-known/oauth-authorization-server", h.ServeAuthorizationServerMetadata)
-		mux.HandleFunc("/.well-known/openid-configuration", h.ServeOpenIDConfiguration)
-
-		h.logger.Info("Registered multi-tenant authorization server metadata endpoints",
-			"issuer_path", cleanPath,
-			"oauth_path_insert", oauthPathInsert,
-			"oidc_path_insert", oidcPathInsert,
-			"oidc_path_append", oidcPathAppend,
-			"standard_endpoints", "also registered for backward compatibility")
+		return
 	}
+
+	// Multi-tenant deployment with path-based issuer
+	// Per MCP 2025-11-25 spec, support multiple discovery patterns
+
+	// 1. OAuth 2.0 AS Metadata with path insertion
+	// Example: /.well-known/oauth-authorization-server/tenant1
+	oauthPathInsert := "/.well-known/oauth-authorization-server" + issuerPath
+	mux.HandleFunc(oauthPathInsert, h.ServeAuthorizationServerMetadata)
+
+	// 2. OpenID Connect Discovery with path insertion
+	// Example: /.well-known/openid-configuration/tenant1
+	oidcPathInsert := "/.well-known/openid-configuration" + issuerPath
+	mux.HandleFunc(oidcPathInsert, h.ServeOpenIDConfiguration)
+
+	// 3. OpenID Connect Discovery with path appending
+	// Example: /tenant1/.well-known/openid-configuration
+	oidcPathAppend := issuerPath + "/.well-known/openid-configuration"
+	mux.HandleFunc(oidcPathAppend, h.ServeOpenIDConfiguration)
+
+	// Backward compatibility
+	registerStandardEndpoints()
+
+	h.logger.Info("Registered multi-tenant authorization server metadata endpoints",
+		"issuer_path", issuerPath,
+		"oauth_path_insert", oauthPathInsert,
+		"oidc_path_insert", oidcPathInsert,
+		"oidc_path_append", oidcPathAppend,
+		"standard_endpoints", "also registered for backward compatibility")
 }
 
 // extractIssuerPath extracts the path component from the issuer URL.
