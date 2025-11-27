@@ -28,6 +28,32 @@ const (
 	tokenTypeBearer   = "Bearer"
 )
 
+// schemeToAppName maps custom URL schemes to human-readable application names.
+// This provides better UX by showing the actual app name in the interstitial page.
+var schemeToAppName = map[string]string{
+	"cursor":     "Cursor",
+	"vscode":     "Visual Studio Code",
+	"code":       "Visual Studio Code",
+	"codium":     "VSCodium",
+	"slack":      "Slack",
+	"notion":     "Notion",
+	"obsidian":   "Obsidian",
+	"discord":    "Discord",
+	"figma":      "Figma",
+	"linear":     "Linear",
+	"raycast":    "Raycast",
+	"warp":       "Warp",
+	"iterm":      "iTerm",
+	"iterm2":     "iTerm2",
+	"zed":        "Zed",
+	"sublime":    "Sublime Text",
+	"atom":       "Atom",
+	"windsurf":   "Windsurf",
+	"positron":   "Positron",
+	"theia":      "Theia",
+	"jupyterlab": "JupyterLab",
+}
+
 // Handler is a thin HTTP adapter for the OAuth Server.
 // It handles HTTP requests and delegates to the Server for business logic.
 type Handler struct {
@@ -231,6 +257,10 @@ const successInterstitialTemplate = `<!DOCTYPE html>
 </body>
 </html>`
 
+// successInterstitialTmpl is the parsed HTML template for OAuth success pages.
+// Parsed once at package initialization for efficiency.
+var successInterstitialTmpl = template.Must(template.New("success").Parse(successInterstitialTemplate))
+
 // successInterstitialData holds the template data for the success interstitial page
 type successInterstitialData struct {
 	RedirectURL template.URL // template.URL marks URLs as safe for href attributes
@@ -262,6 +292,7 @@ func isCustomURLScheme(uri string) bool {
 
 // getAppNameFromScheme extracts a human-readable app name from a custom URL scheme.
 // This provides better UX by showing the actual app name in the interstitial page.
+// Uses the package-level schemeToAppName map for known applications.
 func getAppNameFromScheme(uri string) string {
 	parsed, err := url.Parse(uri)
 	if err != nil {
@@ -270,32 +301,8 @@ func getAppNameFromScheme(uri string) string {
 
 	scheme := strings.ToLower(parsed.Scheme)
 
-	// Map common MCP client schemes to friendly names
-	schemeToApp := map[string]string{
-		"cursor":     "Cursor",
-		"vscode":     "Visual Studio Code",
-		"code":       "Visual Studio Code",
-		"codium":     "VSCodium",
-		"slack":      "Slack",
-		"notion":     "Notion",
-		"obsidian":   "Obsidian",
-		"discord":    "Discord",
-		"figma":      "Figma",
-		"linear":     "Linear",
-		"raycast":    "Raycast",
-		"warp":       "Warp",
-		"iterm":      "iTerm",
-		"iterm2":     "iTerm2",
-		"zed":        "Zed",
-		"sublime":    "Sublime Text",
-		"atom":       "Atom",
-		"windsurf":   "Windsurf",
-		"positron":   "Positron",
-		"theia":      "Theia",
-		"jupyterlab": "JupyterLab",
-	}
-
-	if name, ok := schemeToApp[scheme]; ok {
+	// Check the package-level map for known app names
+	if name, ok := schemeToAppName[scheme]; ok {
 		return name
 	}
 
@@ -318,15 +325,6 @@ func getAppNameFromScheme(uri string) string {
 // - Provides manual button as fallback
 // - Tells users they can close the window
 func (h *Handler) serveSuccessInterstitial(w http.ResponseWriter, redirectURL string) {
-	// Parse the template
-	tmpl, err := template.New("success").Parse(successInterstitialTemplate)
-	if err != nil {
-		h.logger.Error("Failed to parse success interstitial template", "error", err)
-		// Fall back to simple redirect if template fails
-		http.Redirect(w, &http.Request{}, redirectURL, http.StatusFound)
-		return
-	}
-
 	// Extract app name from the redirect URL scheme
 	appName := getAppNameFromScheme(redirectURL)
 
@@ -346,8 +344,8 @@ func (h *Handler) serveSuccessInterstitial(w http.ResponseWriter, redirectURL st
 	// Set content type
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
-	// Execute template
-	if err := tmpl.Execute(w, data); err != nil {
+	// Execute pre-parsed template (parsed at package initialization)
+	if err := successInterstitialTmpl.Execute(w, data); err != nil {
 		h.logger.Error("Failed to execute success interstitial template", "error", err)
 		// Fall back to plain text if template execution fails
 		w.Header().Set("Content-Type", "text/plain")
@@ -773,9 +771,14 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	// Browsers may fail silently on 302 redirects to custom schemes (cursor://, vscode://, etc.)
 	// Serve an HTML interstitial page that shows success and attempts JS redirect with manual fallback
 	if isCustomURLScheme(authCode.RedirectURI) {
+		// Parse URI to safely extract scheme for logging (avoid strings.Split edge cases)
+		scheme := ""
+		if parsed, err := url.Parse(authCode.RedirectURI); err == nil {
+			scheme = parsed.Scheme
+		}
 		h.logger.Info("Serving success interstitial for custom URL scheme",
 			"client_id", authCode.ClientID,
-			"scheme", strings.Split(authCode.RedirectURI, ":")[0])
+			"scheme", scheme)
 		h.recordHTTPMetrics("callback", http.MethodGet, http.StatusOK, startTime)
 		h.serveSuccessInterstitial(w, redirectURL)
 		return

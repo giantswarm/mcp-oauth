@@ -3287,7 +3287,7 @@ func TestGetAppNameFromScheme(t *testing.T) {
 			expected: "Custom-app",
 		},
 
-		// HTTP schemes - return empty (not custom)
+		// HTTP schemes - capitalizes like unknown schemes (caller should check isCustomURLScheme first)
 		{
 			name:     "http scheme",
 			uri:      "http://example.com",
