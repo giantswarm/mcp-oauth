@@ -736,3 +736,183 @@ func TestParseCacheControlMaxAge(t *testing.T) {
 		})
 	}
 }
+
+// TestNegativeCache tests the negative cache functionality for failed metadata fetches
+func TestNegativeCache(t *testing.T) {
+	cache := newClientMetadataCache(5*time.Minute, 100)
+
+	// Test negative cache miss
+	t.Run("negative cache miss", func(t *testing.T) {
+		_, found := cache.GetNegative("https://example.com/client")
+		if found {
+			t.Error("expected negative cache miss, got hit")
+		}
+	})
+
+	// Test negative cache set and hit
+	t.Run("negative cache set and hit", func(t *testing.T) {
+		clientID := "https://example.com/bad-client"
+		errorMsg := "failed to fetch metadata: connection refused"
+
+		cache.SetNegative(clientID, errorMsg)
+
+		got, found := cache.GetNegative(clientID)
+		if !found {
+			t.Error("expected negative cache hit, got miss")
+		}
+		if got != errorMsg {
+			t.Errorf("negative cache error = %q, want %q", got, errorMsg)
+		}
+	})
+
+	// Test negative cache expiry
+	t.Run("negative cache expiry", func(t *testing.T) {
+		// Create cache with short negative TTL
+		shortCache := newClientMetadataCache(5*time.Minute, 100)
+		shortCache.negativeTTL = 1 * time.Millisecond
+
+		clientID := "https://example.com/expired-client"
+		shortCache.SetNegative(clientID, "some error")
+
+		time.Sleep(10 * time.Millisecond)
+
+		_, found := shortCache.GetNegative(clientID)
+		if found {
+			t.Error("expected negative cache miss for expired entry, got hit")
+		}
+	})
+
+	// Test negative cache increment on repeated failures
+	t.Run("negative cache increment attempts", func(t *testing.T) {
+		clientID := "https://example.com/retry-client"
+		cache.SetNegative(clientID, "error 1")
+		cache.SetNegative(clientID, "error 2")
+
+		// Entry should still exist and have updated error
+		got, found := cache.GetNegative(clientID)
+		if !found {
+			t.Error("expected negative cache hit after multiple failures")
+		}
+		if got != "error 2" {
+			t.Errorf("negative cache error = %q, want %q", got, "error 2")
+		}
+	})
+
+	// Test negative cache LRU eviction
+	t.Run("negative cache LRU eviction", func(t *testing.T) {
+		smallCache := newClientMetadataCache(5*time.Minute, 100)
+		smallCache.maxNegativeEntries = 2
+
+		smallCache.SetNegative("client1", "error1")
+		smallCache.SetNegative("client2", "error2")
+
+		if smallCache.NegativeSize() != 2 {
+			t.Errorf("negative cache size = %d, want 2", smallCache.NegativeSize())
+		}
+
+		// Add third entry - should evict oldest
+		smallCache.SetNegative("client3", "error3")
+		if smallCache.NegativeSize() != 2 {
+			t.Errorf("negative cache size = %d, want 2 after eviction", smallCache.NegativeSize())
+		}
+
+		// client1 should be evicted (oldest)
+		_, found := smallCache.GetNegative("client1")
+		if found {
+			t.Error("expected client1 to be evicted from negative cache, but found")
+		}
+	})
+
+	// Test that successful fetch clears negative cache entry
+	t.Run("successful fetch clears negative cache", func(t *testing.T) {
+		clientID := "https://example.com/recovered-client"
+		cache.SetNegative(clientID, "initial error")
+
+		// Verify negative entry exists
+		_, found := cache.GetNegative(clientID)
+		if !found {
+			t.Error("expected negative cache hit before successful fetch")
+		}
+
+		// Simulate successful fetch by calling Set
+		metadata := &ClientMetadata{
+			ClientID:     clientID,
+			RedirectURIs: []string{"https://app.example.com/callback"},
+		}
+		client := metadataToClient(metadata)
+		cache.Set(clientID, metadata, client, 5*time.Minute)
+
+		// Negative entry should be cleared
+		_, found = cache.GetNegative(clientID)
+		if found {
+			t.Error("expected negative cache miss after successful fetch, but found")
+		}
+	})
+
+	// Test CleanupExpired cleans both positive and negative entries
+	t.Run("cleanup expired cleans negative entries", func(t *testing.T) {
+		cleanupCache := newClientMetadataCache(5*time.Minute, 100)
+		cleanupCache.negativeTTL = 1 * time.Millisecond
+
+		cleanupCache.SetNegative("neg1", "error1")
+		cleanupCache.SetNegative("neg2", "error2")
+
+		time.Sleep(10 * time.Millisecond)
+
+		removed := cleanupCache.CleanupExpired()
+		if removed < 2 {
+			t.Errorf("expected at least 2 entries removed, got %d", removed)
+		}
+		if cleanupCache.NegativeSize() != 0 {
+			t.Errorf("negative cache size = %d after cleanup, want 0", cleanupCache.NegativeSize())
+		}
+	})
+
+	// Test Clear clears both positive and negative caches
+	t.Run("clear clears both caches", func(t *testing.T) {
+		clearCache := newClientMetadataCache(5*time.Minute, 100)
+
+		metadata := &ClientMetadata{
+			ClientID:     "https://example.com/client",
+			RedirectURIs: []string{"https://app.example.com/callback"},
+		}
+		client := metadataToClient(metadata)
+		clearCache.Set("https://example.com/client", metadata, client, 5*time.Minute)
+		clearCache.SetNegative("https://example.com/bad-client", "error")
+
+		if clearCache.Size() != 1 || clearCache.NegativeSize() != 1 {
+			t.Errorf("cache not properly populated: size=%d, negativeSize=%d", clearCache.Size(), clearCache.NegativeSize())
+		}
+
+		clearCache.Clear()
+
+		if clearCache.Size() != 0 {
+			t.Errorf("positive cache size = %d after clear, want 0", clearCache.Size())
+		}
+		if clearCache.NegativeSize() != 0 {
+			t.Errorf("negative cache size = %d after clear, want 0", clearCache.NegativeSize())
+		}
+	})
+}
+
+// TestNegativeCacheMetrics tests that negative cache metrics are tracked
+func TestNegativeCacheMetrics(t *testing.T) {
+	cache := newClientMetadataCache(5*time.Minute, 100)
+
+	// Set a negative entry
+	cache.SetNegative("https://example.com/bad", "error")
+
+	// Get it (should be a hit)
+	cache.GetNegative("https://example.com/bad")
+
+	// Get a non-existent entry (should not affect negative hits)
+	cache.GetNegative("https://example.com/nonexistent")
+
+	metrics := cache.GetMetrics()
+	if metrics.negativeCached != 1 {
+		t.Errorf("negativeCached = %d, want 1", metrics.negativeCached)
+	}
+	if metrics.negativeHits != 1 {
+		t.Errorf("negativeHits = %d, want 1", metrics.negativeHits)
+	}
+}

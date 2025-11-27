@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CIMD Negative Caching for Failed Metadata Fetches**
+  - **Feature**: Cache failed Client ID Metadata Document (CIMD) fetch attempts to prevent rapid retries
+  - **Security**: Mitigates cache poisoning attacks by preventing attackers from repeatedly hammering the server with requests for known-bad client IDs
+  - **Configuration**: Default TTL of 5 minutes for negative entries, separate from positive cache entries
+  - **Backoff**: Repeated failures extend the negative cache TTL up to 2x the default (progressive backoff)
+  - **Recovery**: Successful fetches automatically clear negative cache entries, allowing recovery after fixes
+  - **Metrics**: New cache metrics for negative cache hits, cached entries, and evictions
+
+### Changed
+
+- **Increased Minimum State Parameter Length** (OAuth 2.1 Security)
+  - **Change**: Raised the absolute minimum `MinStateLength` floor from 16 to 32 characters
+  - **Rationale**: 32 characters provides 192 bits of entropy in base64, exceeding OAuth 2.1's recommended 128+ bits
+  - **Security**: Provides sufficient margin for high-security deployments and better CSRF protection
+  - **Backward Compatible**: Existing configurations with MinStateLength >= 32 are unaffected
+
+- **Defense-in-Depth Scope Sanitization in WWW-Authenticate Headers**
+  - **Change**: Added escaping of backslash and quote characters in scope parameter
+  - **Rationale**: While RFC 6749 restricts scope to a limited character set, defense-in-depth escaping prevents potential header injection attacks
+  - **RFC Compliance**: Follows RFC 2616/7230 quoted-string rules for HTTP headers
+
 - **ContextWithUserInfo Function for Testing**
   - **Feature**: Export `ContextWithUserInfo` function to create contexts with user info for testing
   - **Problem Solved**: Library consumers couldn't write unit tests for code depending on authenticated user context because `userInfoKey` was unexported

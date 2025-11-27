@@ -1738,8 +1738,15 @@ func (h *Handler) formatWWWAuthenticate(scope, error, errorDesc string) string {
 	params = append(params, fmt.Sprintf(`resource_metadata="%s"`, resourceMetadataURL))
 
 	// Optional: Include scope if configured
+	// SECURITY: Sanitize scope to prevent header injection (defense-in-depth)
+	// While RFC 6749 Section 3.3 restricts scope to a limited character set,
+	// we escape special characters as a defense-in-depth measure.
 	if scope != "" {
-		params = append(params, fmt.Sprintf(`scope="%s"`, scope))
+		// Escape backslashes first, then quotes (order matters!)
+		// This follows RFC 2616/7230 quoted-string rules for HTTP headers
+		escapedScope := strings.ReplaceAll(scope, `\`, `\\`)
+		escapedScope = strings.ReplaceAll(escapedScope, `"`, `\"`)
+		params = append(params, fmt.Sprintf(`scope="%s"`, escapedScope))
 	}
 
 	// Optional: Include error code if provided
