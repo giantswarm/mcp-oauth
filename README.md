@@ -643,6 +643,94 @@ location / {
 **Rate Limiting Effectiveness:**
 Rate limiting is only as secure as your IP extraction. If `TrustProxy=false` (default), the library uses the direct connection IP, which is most secure but may not work behind proxies. If `TrustProxy=true`, ensure your proxy infrastructure is properly configured and trusted.
 
+## 🎨 Custom Interstitial Page
+
+When OAuth redirects to custom URL schemes (like `cursor://`, `vscode://`), browsers may fail silently. Per RFC 8252, the library serves an HTML interstitial page as a fallback. You can customize this page to match your branding.
+
+### Simple Branding
+
+Customize colors, logo, and text without writing HTML:
+
+```go
+config := &server.Config{
+    Issuer: "https://auth.example.com",
+    Interstitial: &server.InterstitialConfig{
+        Branding: &server.InterstitialBranding{
+            LogoURL:            "https://cdn.example.com/logo.svg",
+            LogoAlt:            "Example Corp",
+            Title:              "Connected to Example Corp",
+            Message:            "You have been authenticated successfully.",
+            ButtonText:         "Return to App",
+            PrimaryColor:       "#4F46E5",
+            BackgroundGradient: "linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%)",
+            CustomCSS:          ".container { max-width: 600px; }",
+        },
+    },
+}
+```
+
+**Available Branding Options:**
+- `LogoURL` - Custom logo image (HTTPS required, replaces default checkmark)
+- `LogoAlt` - Alt text for accessibility
+- `Title` - Page heading (default: "Authorization Successful")
+- `Message` - Success message (supports `{{.AppName}}` placeholder)
+- `ButtonText` - Button label (supports `{{.AppName}}` placeholder)
+- `PrimaryColor` - CSS color for buttons/highlights
+- `BackgroundGradient` - CSS background value
+- `CustomCSS` - Additional CSS (validated for security)
+
+### Custom Template
+
+For more control, provide a custom HTML template:
+
+```go
+config := &server.Config{
+    Issuer: "https://auth.example.com",
+    Interstitial: &server.InterstitialConfig{
+        CustomTemplate: `<!DOCTYPE html>
+<html>
+<head><title>{{if .Title}}{{.Title}}{{else}}Success{{end}}</title></head>
+<body>
+    <h1>Welcome, authenticated with {{.AppName}}!</h1>
+    <a href="{{.RedirectURL}}">Continue</a>
+</body>
+</html>`,
+    },
+}
+```
+
+**Template Variables:**
+- `{{.RedirectURL}}` - OAuth redirect URL (safe for href)
+- `{{.AppName}}` - Human-readable app name (e.g., "Cursor")
+- All branding fields from `InterstitialBranding`
+
+### Custom Handler
+
+For complete control, provide a custom HTTP handler:
+
+```go
+config := &server.Config{
+    Issuer: "https://auth.example.com",
+    Interstitial: &server.InterstitialConfig{
+        CustomHandler: func(w http.ResponseWriter, r *http.Request) {
+            // Extract OAuth context
+            redirectURL := oauth.InterstitialRedirectURL(r.Context())
+            appName := oauth.InterstitialAppName(r.Context())
+            
+            // Set security headers (recommended)
+            security.SetInterstitialSecurityHeaders(w, "https://auth.example.com")
+            
+            // Write your custom response
+            w.Header().Set("Content-Type", "text/html")
+            fmt.Fprintf(w, "<html><body><a href='%s'>Open %s</a></body></html>", 
+                redirectURL, appName)
+        },
+    },
+}
+```
+
+**Security Note:** When using `CustomHandler`, you are responsible for setting appropriate security headers. Use `security.SetInterstitialSecurityHeaders()` as a baseline.
+
 ## 📊 Observability & Instrumentation
 
 The library provides comprehensive OpenTelemetry (OTEL) instrumentation for metrics, distributed tracing, and structured logging.

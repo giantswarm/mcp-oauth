@@ -1,12 +1,15 @@
 package oauth
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 	"time"
@@ -18,6 +21,7 @@ import (
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
+	"github.com/giantswarm/mcp-oauth/server"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
@@ -25,6 +29,64 @@ const (
 	defaultCORSMaxAge = 3600 // 1 hour default for preflight cache
 	tokenTypeBearer   = "Bearer"
 )
+
+// Context keys for interstitial page custom handlers.
+// These are used to pass the redirect URL and app name to custom handlers
+// via the request context.
+type interstitialContextKey string
+
+const (
+	// interstitialRedirectURLKey is the context key for the OAuth redirect URL
+	interstitialRedirectURLKey interstitialContextKey = "interstitial_redirect_url"
+	// interstitialAppNameKey is the context key for the application name
+	interstitialAppNameKey interstitialContextKey = "interstitial_app_name"
+)
+
+// InterstitialRedirectURL extracts the OAuth redirect URL from the request context.
+// This is used by custom interstitial handlers to get the redirect URL.
+// Returns empty string if not found in context.
+func InterstitialRedirectURL(ctx context.Context) string {
+	if v, ok := ctx.Value(interstitialRedirectURLKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// InterstitialAppName extracts the application name from the request context.
+// This is used by custom interstitial handlers to get the human-readable app name.
+// Returns empty string if not found in context.
+func InterstitialAppName(ctx context.Context) string {
+	if v, ok := ctx.Value(interstitialAppNameKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// schemeToAppName maps custom URL schemes to human-readable application names.
+// This provides better UX by showing the actual app name in the interstitial page.
+var schemeToAppName = map[string]string{
+	"cursor":     "Cursor",
+	"vscode":     "Visual Studio Code",
+	"code":       "Visual Studio Code",
+	"codium":     "VSCodium",
+	"slack":      "Slack",
+	"notion":     "Notion",
+	"obsidian":   "Obsidian",
+	"discord":    "Discord",
+	"figma":      "Figma",
+	"linear":     "Linear",
+	"raycast":    "Raycast",
+	"warp":       "Warp",
+	"iterm":      "iTerm",
+	"iterm2":     "iTerm2",
+	"zed":        "Zed",
+	"sublime":    "Sublime Text",
+	"atom":       "Atom",
+	"windsurf":   "Windsurf",
+	"positron":   "Positron",
+	"theia":      "Theia",
+	"jupyterlab": "JupyterLab",
+}
 
 // Handler is a thin HTTP adapter for the OAuth Server.
 // It handles HTTP requests and delegates to the Server for business logic.
@@ -51,6 +113,388 @@ func NewHandler(server *Server, logger *slog.Logger) *Handler {
 	}
 
 	return h
+}
+
+// successInterstitialTemplate is the HTML template for OAuth success pages.
+// This is served when redirecting to custom URL schemes (cursor://, vscode://, etc.)
+// where browsers may fail silently on 302 redirects.
+//
+// Per RFC 8252 Section 7.1, native apps should handle the case where the browser
+// cannot redirect to the custom scheme. This interstitial page:
+// - Shows a success message so users know authentication worked
+// - Attempts JavaScript redirect after a brief delay
+// - Provides a manual button as fallback
+// - Instructs users they can close the browser window
+//
+// The template supports branding customization through CSS variables and conditional
+// rendering of logo/icon, title, message, and button text.
+//
+// SECURITY: The inline script is static (reads redirect URL from the button's href
+// attribute) so it has a stable SHA-256 hash for CSP allowlisting. If you modify
+// the script, you MUST regenerate the hash in security/headers.go:
+//
+//	echo -n '<script content without tags>' | openssl dgst -sha256 -binary | base64
+const successInterstitialTemplate = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{if .Title}}{{.Title}}{{else}}Authorization Successful{{end}}</title>
+    <style>
+        :root {
+            --primary-color: {{if .PrimaryColor}}{{.PrimaryColor}}{{else}}#00d26a{{end}};
+            --primary-color-dark: {{if .PrimaryColor}}{{.PrimaryColor}}{{else}}#00a855{{end}};
+            --bg-gradient: {{if .BackgroundGradient}}{{.BackgroundGradient}}{{else}}linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%){{end}};
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: var(--bg-gradient);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+        }
+        .container {
+            text-align: center;
+            padding: 2rem;
+            max-width: 480px;
+        }
+        .logo {
+            max-height: 80px;
+            max-width: 200px;
+            margin: 0 auto 1.5rem;
+            display: block;
+            animation: scaleIn 0.5s ease-out;
+        }
+        .success-icon {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 1.5rem;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-color-dark) 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            animation: scaleIn 0.5s ease-out;
+        }
+        .success-icon svg {
+            width: 40px;
+            height: 40px;
+            stroke: #fff;
+            stroke-width: 3;
+            fill: none;
+        }
+        @keyframes scaleIn {
+            0% { transform: scale(0); opacity: 0; }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        @keyframes checkmark {
+            0% { stroke-dashoffset: 50; }
+            100% { stroke-dashoffset: 0; }
+        }
+        .checkmark {
+            stroke-dasharray: 50;
+            stroke-dashoffset: 50;
+            animation: checkmark 0.5s ease-out 0.3s forwards;
+        }
+        h1 {
+            font-size: 1.75rem;
+            font-weight: 600;
+            margin-bottom: 0.75rem;
+            color: #fff;
+        }
+        .message {
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 1rem;
+            line-height: 1.6;
+            margin-bottom: 1.5rem;
+        }
+        .app-name {
+            color: var(--primary-color);
+            font-weight: 500;
+        }
+        .button {
+            display: inline-block;
+            padding: 0.875rem 2rem;
+            background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-color-dark) 100%);
+            color: #fff;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 500;
+            font-size: 1rem;
+            border: none;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            margin-bottom: 1rem;
+        }
+        .button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 20px rgba(0, 210, 106, 0.3);
+        }
+        .button:active {
+            transform: translateY(0);
+        }
+        .close-hint {
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 0.875rem;
+            margin-top: 1rem;
+        }
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .redirecting {
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 0.875rem;
+            margin-bottom: 1rem;
+        }
+        {{.CustomCSS}}
+    </style>
+</head>
+<body>
+    <div class="container">
+        {{if .LogoURL}}<img src="{{.LogoURL}}" alt="{{.LogoAlt}}" class="logo" crossorigin="anonymous">{{else}}<div class="success-icon">
+            <svg viewBox="0 0 24 24">
+                <polyline class="checkmark" points="4 12 9 17 20 6"></polyline>
+            </svg>
+        </div>{{end}}
+        <h1>{{if .Title}}{{.Title}}{{else}}Authorization Successful{{end}}</h1>
+        <p class="message">
+            {{if .Message}}{{.Message}}{{else}}You have been authenticated successfully.
+            {{if .AppName}}Return to <span class="app-name">{{.AppName}}</span> to continue.{{else}}You can now return to the application.{{end}}{{end}}
+        </p>
+        <p class="redirecting" id="redirecting">
+            <span class="spinner"></span>Redirecting automatically...
+        </p>
+        <a href="{{.RedirectURL}}" class="button" id="openApp">
+            {{if .ButtonText}}{{.ButtonText}}{{else}}{{if .AppName}}Open {{.AppName}}{{else}}Open Application{{end}}{{end}}
+        </a>
+        <p class="close-hint">You can close this window after the application opens.</p>
+    </div>
+    <script>(function(){var btn=document.getElementById("openApp");if(!btn)return;var redirectURL=btn.href;var redirected=false;setTimeout(function(){if(!redirected){redirected=true;window.location.href=redirectURL;}},500);setTimeout(function(){var el=document.getElementById("redirecting");if(el){el.style.display="none";}},3000);})();</script>
+</body>
+</html>`
+
+// successInterstitialTmpl is the parsed HTML template for OAuth success pages.
+// Parsed once at package initialization for efficiency.
+var successInterstitialTmpl = template.Must(template.New("success").Parse(successInterstitialTemplate))
+
+// successInterstitialData holds the template data for the success interstitial page.
+// All branding fields are optional - unset fields use the default values in the template.
+type successInterstitialData struct {
+	// Core fields (always set)
+	RedirectURL template.URL // template.URL marks URLs as safe for href attributes
+	AppName     string       // Human-readable application name (e.g., "Cursor", "Visual Studio Code")
+
+	// Branding fields (optional, from InterstitialBranding config)
+	LogoURL            string       // URL to custom logo image (HTTPS required)
+	LogoAlt            string       // Alt text for logo (accessibility)
+	Title              string       // Custom page title (replaces "Authorization Successful")
+	Message            string       // Custom success message
+	ButtonText         string       // Custom button text (replaces "Open [AppName]")
+	PrimaryColor       template.CSS // CSS color value for primary/accent color (marked safe for CSS context)
+	BackgroundGradient template.CSS // CSS background value (marked safe for CSS context)
+	CustomCSS          template.CSS // Additional CSS (marked safe for CSS context)
+}
+
+// isCustomURLScheme checks if the given URI uses a custom URL scheme
+// (not http or https). Custom schemes like cursor://, vscode://, slack://
+// require special handling because browsers may fail silently on 302 redirects.
+//
+// Returns true for custom schemes that need an interstitial page,
+// false for http/https which can use standard redirects.
+func isCustomURLScheme(uri string) bool {
+	parsed, err := url.Parse(uri)
+	if err != nil {
+		return false
+	}
+
+	scheme := strings.ToLower(parsed.Scheme)
+
+	// Standard HTTP schemes can use regular redirects
+	if scheme == SchemeHTTP || scheme == SchemeHTTPS {
+		return false
+	}
+
+	// Any other scheme (cursor://, vscode://, slack://, etc.) needs interstitial
+	return scheme != ""
+}
+
+// getAppNameFromScheme extracts a human-readable app name from a custom URL scheme.
+// This provides better UX by showing the actual app name in the interstitial page.
+// Uses the package-level schemeToAppName map for known applications.
+func getAppNameFromScheme(uri string) string {
+	parsed, err := url.Parse(uri)
+	if err != nil {
+		return ""
+	}
+
+	scheme := strings.ToLower(parsed.Scheme)
+
+	// Check the package-level map for known app names
+	if name, ok := schemeToAppName[scheme]; ok {
+		return name
+	}
+
+	// For unknown schemes, capitalize the first letter
+	if len(scheme) > 0 {
+		return strings.ToUpper(scheme[:1]) + scheme[1:]
+	}
+
+	return ""
+}
+
+// serveSuccessInterstitial serves an HTML success page for OAuth callbacks
+// to custom URL schemes (RFC 8252 Section 7.1).
+//
+// This solves the problem where browsers fail silently on 302 redirects to
+// custom URL schemes like cursor://, vscode://, etc. Instead of leaving users
+// on a blank page, this serves a friendly page that:
+// - Confirms authentication was successful
+// - Attempts JavaScript redirect after brief delay
+// - Provides manual button as fallback
+// - Tells users they can close the window
+//
+// The function supports three customization modes (in priority order):
+//  1. CustomHandler - if set, delegates to the handler with context values
+//  2. CustomTemplate - if set, parses and executes the custom template
+//  3. Branding - if set, uses the default template with custom branding
+//  4. Default - uses the built-in template with standard styling
+func (h *Handler) serveSuccessInterstitial(w http.ResponseWriter, r *http.Request, redirectURL string) {
+	// Extract app name from the redirect URL scheme
+	appName := getAppNameFromScheme(redirectURL)
+
+	interstitialCfg := h.server.Config.Interstitial
+
+	// Priority 1: Custom handler (full control)
+	// The handler is responsible for setting all headers and writing the response
+	if interstitialCfg != nil && interstitialCfg.CustomHandler != nil {
+		// Store redirect URL and app name in context for the custom handler
+		ctx := context.WithValue(r.Context(), interstitialRedirectURLKey, redirectURL)
+		ctx = context.WithValue(ctx, interstitialAppNameKey, appName)
+		interstitialCfg.CustomHandler(w, r.WithContext(ctx))
+		return
+	}
+
+	// Priority 2: Custom template
+	if interstitialCfg != nil && interstitialCfg.CustomTemplate != "" {
+		h.serveCustomInterstitialTemplate(w, interstitialCfg.CustomTemplate, redirectURL, appName, interstitialCfg.Branding)
+		return
+	}
+
+	// Priority 3 & 4: Default template (with optional branding)
+	h.serveDefaultInterstitial(w, redirectURL, appName, interstitialCfg)
+}
+
+// serveCustomInterstitialTemplate serves a custom HTML template for the interstitial page.
+// The template is parsed each time (not cached) since custom templates may change at runtime.
+func (h *Handler) serveCustomInterstitialTemplate(w http.ResponseWriter, templateStr, redirectURL, appName string, branding *server.InterstitialBranding) {
+	// Parse the custom template
+	tmpl, err := template.New("custom-interstitial").Parse(templateStr)
+	if err != nil {
+		h.logger.Error("Failed to parse custom interstitial template", "error", err)
+		// Fall back to default template on parse error
+		h.serveDefaultInterstitial(w, redirectURL, appName, nil)
+		return
+	}
+
+	// Build template data with branding (if provided)
+	data := h.buildInterstitialData(redirectURL, appName, branding)
+
+	// Execute template to buffer first to handle errors cleanly
+	// This prevents partial writes to the response if template execution fails
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		h.logger.Error("Failed to execute custom interstitial template", "error", err)
+		// Fall back to default template on execution error
+		h.serveDefaultInterstitial(w, redirectURL, appName, nil)
+		return
+	}
+
+	// Set security headers and write the buffered response
+	// Note: Custom templates may need different CSP headers for their scripts
+	security.SetInterstitialSecurityHeaders(w, h.server.Config.Issuer)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = buf.WriteTo(w)
+}
+
+// serveDefaultInterstitial serves the default interstitial template with optional branding.
+func (h *Handler) serveDefaultInterstitial(w http.ResponseWriter, redirectURL, appName string, interstitialCfg *server.InterstitialConfig) {
+	// Get branding config (may be nil)
+	var branding *server.InterstitialBranding
+	if interstitialCfg != nil {
+		branding = interstitialCfg.Branding
+	}
+
+	// Build template data
+	data := h.buildInterstitialData(redirectURL, appName, branding)
+
+	// Execute template to buffer first to handle errors cleanly
+	// This prevents partial writes to the response if template execution fails
+	var buf bytes.Buffer
+	if err := successInterstitialTmpl.Execute(&buf, data); err != nil {
+		h.logger.Error("Failed to execute success interstitial template", "error", err)
+		// Fallback to plain text on error (should be rare with pre-parsed template)
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("Authorization successful. Please return to your application."))
+		return
+	}
+
+	// Set security headers with CSP hash exception for the inline redirect script
+	security.SetInterstitialSecurityHeaders(w, h.server.Config.Issuer)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = buf.WriteTo(w)
+}
+
+// buildInterstitialData constructs the template data for the interstitial page.
+// It applies branding configuration if provided, using defaults for unset values.
+func (h *Handler) buildInterstitialData(redirectURL, appName string, branding *server.InterstitialBranding) successInterstitialData {
+	// SECURITY: We must use template.URL to allow custom URL schemes in href attributes.
+	// Go's html/template filters URLs to only allow http, https, mailto by default.
+	// Custom schemes like cursor://, vscode:// are legitimate OAuth redirect URIs
+	// per RFC 8252 (OAuth 2.0 for Native Apps) and have already been validated
+	// during client registration and authorization flow.
+	data := successInterstitialData{
+		RedirectURL: template.URL(redirectURL), //nolint:gosec // URL validated during OAuth flow
+		AppName:     appName,
+	}
+
+	// Apply branding if configured
+	if branding != nil {
+		data.LogoURL = branding.LogoURL
+		data.LogoAlt = branding.LogoAlt
+		if data.LogoAlt == "" && data.LogoURL != "" {
+			data.LogoAlt = "Logo" // Accessibility fallback
+		}
+		data.Title = branding.Title
+		data.Message = branding.Message
+		data.ButtonText = branding.ButtonText
+		// SECURITY: CSS values are marked as template.CSS to prevent escaping
+		// These values are validated at config load time to prevent injection
+		data.PrimaryColor = template.CSS(branding.PrimaryColor)             //nolint:gosec // Validated in validateInterstitialBranding
+		data.BackgroundGradient = template.CSS(branding.BackgroundGradient) //nolint:gosec // Validated in validateInterstitialBranding
+		data.CustomCSS = template.CSS(branding.CustomCSS)                   //nolint:gosec // Validated in validateInterstitialBranding
+	}
+
+	return data
 }
 
 // ValidateToken is middleware that validates OAuth tokens
@@ -462,11 +906,29 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	instrumentation.SetSpanAttributes(span, attribute.String("oauth.client_id", authCode.ClientID))
 	instrumentation.SetSpanSuccess(span)
 
-	h.recordHTTPMetrics("callback", http.MethodGet, http.StatusFound, startTime)
-
 	// CRITICAL SECURITY: Redirect back to client with their original state parameter
 	// This allows the client to verify the callback is for their original request (CSRF protection)
 	redirectURL := fmt.Sprintf("%s?code=%s&state=%s", authCode.RedirectURI, authCode.Code, clientState)
+
+	// RFC 8252 Section 7.1: Custom URL schemes require special handling
+	// Browsers may fail silently on 302 redirects to custom schemes (cursor://, vscode://, etc.)
+	// Serve an HTML interstitial page that shows success and attempts JS redirect with manual fallback
+	if isCustomURLScheme(authCode.RedirectURI) {
+		// Parse URI to safely extract scheme for logging (avoid strings.Split edge cases)
+		scheme := ""
+		if parsed, err := url.Parse(authCode.RedirectURI); err == nil {
+			scheme = parsed.Scheme
+		}
+		h.logger.Info("Serving success interstitial for custom URL scheme",
+			"client_id", authCode.ClientID,
+			"scheme", scheme)
+		h.recordHTTPMetrics("callback", http.MethodGet, http.StatusOK, startTime)
+		h.serveSuccessInterstitial(w, r, redirectURL)
+		return
+	}
+
+	// Standard HTTP/HTTPS redirects work reliably
+	h.recordHTTPMetrics("callback", http.MethodGet, http.StatusFound, startTime)
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 

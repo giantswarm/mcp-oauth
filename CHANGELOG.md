@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Success Interstitial Page for Custom URL Schemes** (RFC 8252)
+  - **Feature**: Serve an HTML "success interstitial" page instead of direct 302 redirects for custom URL schemes (`cursor://`, `vscode://`, `slack://`, etc.)
+  - **Problem Solved**: Browsers often fail silently on 302 redirects to custom URL schemes, leaving users on a blank page with a spinning indicator even though authentication succeeded
+  - **Solution**: Per RFC 8252 Section 7.1, native apps should handle the case where browsers cannot redirect to custom schemes. The new interstitial page:
+    * Shows "Authorization Successful!" message confirming authentication worked
+    * Attempts JavaScript redirect after ~500ms delay
+    * Provides manual "Open [App Name]" button as fallback
+    * Shows "You can close this window" instruction
+  - **App Recognition**: Recognizes common MCP client applications and displays friendly names:
+    * Cursor, Visual Studio Code, VSCodium, Slack, Notion, Obsidian
+    * Discord, Figma, Linear, Raycast, Warp, Zed, Windsurf, and more
+    * Unknown schemes show capitalized scheme name
+  - **UX Design**: Modern, clean styling with success checkmark animation
+  - **Security**: 
+    * Uses `html/template` with proper escaping for XSS prevention
+    * Hash-based Content-Security-Policy (CSP Level 2) for inline script allowlisting
+    * Static inline script reads redirect URL from DOM to maintain stable SHA-256 hash
+    * All standard security headers included (X-Frame-Options, X-Content-Type-Options, etc.)
+  - **Backward Compatibility**: HTTP/HTTPS redirect URIs continue to use standard 302 redirects
+  - **Tests**: Comprehensive unit tests for URL scheme detection, app name mapping, and interstitial rendering
+
+- **Configurable Interstitial Page Branding**
+  - **Feature**: Allow library users to customize the interstitial page with their own branding
+  - **Configuration**: Three levels of customization via `server.InterstitialConfig`:
+    * **Custom Handler**: Full control with `CustomHandler func(w http.ResponseWriter, r *http.Request)` - user is responsible for all security headers
+    * **Custom Template**: Provide a custom HTML template via `CustomTemplate string` using Go's `html/template` syntax
+    * **Branding Config**: Simple customization via `InterstitialBranding` struct for logo, colors, text, and CSS
+  - **Branding Options** (`InterstitialBranding`):
+    * `LogoURL` - Custom logo image URL (HTTPS required)
+    * `LogoAlt` - Alt text for accessibility
+    * `Title` - Custom page title
+    * `Message` - Custom success message
+    * `ButtonText` - Custom button text
+    * `PrimaryColor` - CSS color for buttons/highlights
+    * `BackgroundGradient` - CSS background value
+    * `CustomCSS` - Additional CSS to inject
+  - **Security Validation**:
+    * Logo URLs validated to require HTTPS (unless `AllowInsecureHTTP` is set for development)
+    * CSS values validated against injection attacks (expression(), javascript:, behavior:, etc.)
+    * CustomCSS validated to prevent `</style>` tag injection
+  - **Context Helpers**: For custom handlers, helper functions provide access to OAuth context:
+    * `oauth.InterstitialRedirectURL(ctx)` - Get the redirect URL
+    * `oauth.InterstitialAppName(ctx)` - Get the human-readable app name
+  - **Tests**: Comprehensive tests for branding, custom template, custom handler, and security validation
+
 - **Comprehensive MCP 2025-11-25 Documentation**
   - **Feature**: Complete documentation package for MCP 2025-11-25 specification compliance
   - **New Documentation**:
