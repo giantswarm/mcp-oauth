@@ -3634,6 +3634,18 @@ func TestHandler_ServeSuccessInterstitial(t *testing.T) {
 			if w.Header().Get("X-Content-Type-Options") == "" {
 				t.Error("Missing X-Content-Type-Options security header")
 			}
+
+			// Check CSP includes script hash (not 'none' for scripts)
+			csp := w.Header().Get("Content-Security-Policy")
+			if csp == "" {
+				t.Error("Missing Content-Security-Policy header")
+			}
+			if !strings.Contains(csp, "script-src") {
+				t.Error("CSP should contain script-src directive for interstitial page")
+			}
+			if !strings.Contains(csp, "sha256-") {
+				t.Error("CSP should contain SHA-256 hash for inline script")
+			}
 		})
 	}
 }

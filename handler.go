@@ -91,6 +91,12 @@ func NewHandler(server *Server, logger *slog.Logger) *Handler {
 // - Attempts JavaScript redirect after a brief delay
 // - Provides a manual button as fallback
 // - Instructs users they can close the browser window
+//
+// SECURITY: The inline script is static (reads redirect URL from the button's href
+// attribute) so it has a stable SHA-256 hash for CSP allowlisting. If you modify
+// the script, you MUST regenerate the hash in security/headers.go:
+//
+//	echo -n '<script content without tags>' | openssl dgst -sha256 -binary | base64
 const successInterstitialTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -232,28 +238,7 @@ const successInterstitialTemplate = `<!DOCTYPE html>
         </a>
         <p class="close-hint">You can close this window after the application opens.</p>
     </div>
-    <script>
-        (function() {
-            var redirectURL = "{{.RedirectURL}}";
-            var redirected = false;
-            
-            // Attempt redirect after a brief delay to show the success message
-            setTimeout(function() {
-                if (!redirected) {
-                    redirected = true;
-                    window.location.href = redirectURL;
-                }
-            }, 500);
-            
-            // Hide the redirecting message after a few seconds if still on page
-            setTimeout(function() {
-                var el = document.getElementById('redirecting');
-                if (el) {
-                    el.style.display = 'none';
-                }
-            }, 3000);
-        })();
-    </script>
+    <script>(function(){var btn=document.getElementById("openApp");if(!btn)return;var redirectURL=btn.href;var redirected=false;setTimeout(function(){if(!redirected){redirected=true;window.location.href=redirectURL;}},500);setTimeout(function(){var el=document.getElementById("redirecting");if(el){el.style.display="none";}},3000);})();</script>
 </body>
 </html>`
 
@@ -338,8 +323,9 @@ func (h *Handler) serveSuccessInterstitial(w http.ResponseWriter, redirectURL st
 		AppName:     appName,
 	}
 
-	// Set security headers
-	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+	// Set security headers with CSP hash exception for the inline redirect script
+	// This allows the static inline script while blocking any injected scripts
+	security.SetInterstitialSecurityHeaders(w, h.server.Config.Issuer)
 
 	// Set content type
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

@@ -22,7 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     * Discord, Figma, Linear, Raycast, Warp, Zed, Windsurf, and more
     * Unknown schemes show capitalized scheme name
   - **UX Design**: Modern, clean styling with success checkmark animation
-  - **Security**: Uses `html/template` with proper escaping, includes all security headers
+  - **Security**: 
+    * Uses `html/template` with proper escaping for XSS prevention
+    * Hash-based Content-Security-Policy (CSP Level 2) for inline script allowlisting
+    * Static inline script reads redirect URL from DOM to maintain stable SHA-256 hash
+    * All standard security headers included (X-Frame-Options, X-Content-Type-Options, etc.)
   - **Backward Compatibility**: HTTP/HTTPS redirect URIs continue to use standard 302 redirects
   - **Tests**: Comprehensive unit tests for URL scheme detection, app name mapping, and interstitial rendering
 
