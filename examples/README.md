@@ -189,12 +189,14 @@ For production use, see the [production example](./production) and consider:
    - Incident response
    - Performance tuning
 
-## Additional Resources
+## Documentation
 
-- [Main README](../README.md) - Full library documentation
+- [Getting Started](../docs/getting-started.md) - Setup guide
+- [Configuration Guide](../docs/configuration.md) - All configuration options
+- [Security Guide](../docs/security.md) - Security features and best practices
+- [Observability](../docs/observability.md) - Metrics and tracing
 - [API Reference](https://pkg.go.dev/github.com/giantswarm/mcp-oauth) - Godoc
 - [Contributing Guide](../CONTRIBUTING.md) - How to contribute
-- [Security Policy](../SECURITY.md) - Security guidelines
 
 ## Need Help?
 

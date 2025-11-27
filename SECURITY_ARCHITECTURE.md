@@ -1,6 +1,8 @@
 # Security Architecture
 
-This document explains the security architecture of the `mcp-oauth` library, detailing how OAuth 2.1 security best practices are implemented across the two-layer authentication system.
+This document provides a deep technical reference for the security implementation of the `mcp-oauth` library. It details how OAuth 2.1 security best practices are implemented across the two-layer authentication system.
+
+**For practical security configuration, see the [Security Guide](./docs/security.md).**
 
 ## Table of Contents
 
@@ -807,9 +809,11 @@ go test ./... -cover
 
 ### Library Documentation
 
-- [MCP 2025-11-25 Migration Guide](./docs/mcp-2025-11-25.md)
-- [Discovery Mechanisms Guide](./docs/discovery.md)
-- [README](./README.md)
+- [Security Guide](./docs/security.md) - Practical security configuration
+- [Getting Started](./docs/getting-started.md) - Setup guide
+- [Configuration Guide](./docs/configuration.md) - All configuration options
+- [Discovery Mechanisms](./docs/discovery.md) - OAuth discovery
+- [MCP 2025-11-25 Guide](./docs/mcp-2025-11-25.md) - MCP specification features
 
 ## Contributing
 

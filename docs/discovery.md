@@ -583,8 +583,16 @@ HTTP/1.1 200 OK
 
 ## See Also
 
-- [MCP 2025-11-25 Guide](./mcp-2025-11-25.md)
-- [Security Architecture](../SECURITY_ARCHITECTURE.md)
+### Library Documentation
+
+- [Getting Started](./getting-started.md) - Setup guide
+- [Configuration Guide](./configuration.md) - All configuration options
+- [Security Guide](./security.md) - Security features and best practices
+- [MCP 2025-11-25 Guide](./mcp-2025-11-25.md) - MCP specification features
+- [Security Architecture](../SECURITY_ARCHITECTURE.md) - Deep technical security reference
+
+### Standards
+
 - [RFC 6750 - Bearer Token Usage](https://datatracker.ietf.org/doc/html/rfc6750)
 - [RFC 8414 - Authorization Server Metadata](https://datatracker.ietf.org/doc/html/rfc8414)
 - [RFC 9728 - Protected Resource Metadata](https://datatracker.ietf.org/doc/html/rfc9728)
