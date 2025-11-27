@@ -138,7 +138,8 @@ func main() {
 	handler.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
 
 	// Authorization Server Metadata (RFC 8414)
-	mux.HandleFunc("/.well-known/oauth-authorization-server", handler.ServeAuthorizationServerMetadata)
+	// Automatically registers all discovery endpoints including multi-tenant path insertion
+	handler.RegisterAuthorizationServerMetadataRoutes(mux)
 
 	// === OAuth Flow Endpoints ===
 	mux.HandleFunc("/oauth/authorize", handler.ServeAuthorization)

@@ -122,7 +122,9 @@ func main() {
 	//   - Supported grant types and response types
 	//   - PKCE methods supported
 	//   - Available scopes
-	mux.HandleFunc("/.well-known/oauth-authorization-server", handler.ServeAuthorizationServerMetadata)
+	// This automatically registers all discovery endpoints, including multi-tenant
+	// path insertion variants for path-based issuers (MCP 2025-11-25)
+	handler.RegisterAuthorizationServerMetadataRoutes(mux)
 
 	// OAuth Flow Endpoints
 	mux.HandleFunc("/oauth/authorize", handler.ServeAuthorization)

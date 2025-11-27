@@ -805,6 +805,102 @@ func (h *Handler) validateMetadataPath(mcpPath string) error {
 	return util.ValidateMetadataPath(mcpPath)
 }
 
+// RegisterAuthorizationServerMetadataRoutes registers all Authorization Server Metadata discovery routes.
+// This supports multi-tenant deployments with path-based issuers per MCP 2025-11-25.
+//
+// For issuer URLs with path components (e.g., https://auth.example.com/tenant1), registers:
+//  1. Path insertion OAuth: /.well-known/oauth-authorization-server/tenant1
+//  2. Path insertion OIDC: /.well-known/openid-configuration/tenant1
+//  3. Path appending OIDC: /tenant1/.well-known/openid-configuration
+//
+// For issuer URLs without path components (e.g., https://auth.example.com), registers:
+//  1. Standard OAuth: /.well-known/oauth-authorization-server
+//  2. Standard OIDC: /.well-known/openid-configuration
+//
+// Example usage:
+//
+//	// Single-tenant (no path in issuer)
+//	handler.RegisterAuthorizationServerMetadataRoutes(mux)
+//
+//	// Multi-tenant (path-based issuer like https://auth.example.com/tenant1)
+//	handler.RegisterAuthorizationServerMetadataRoutes(mux)
+func (h *Handler) RegisterAuthorizationServerMetadataRoutes(mux *http.ServeMux) {
+	// Extract path from issuer URL
+	issuerPath := h.extractIssuerPath()
+
+	if issuerPath == "" || issuerPath == "/" {
+		// Standard single-tenant deployment (no path in issuer)
+		// Register: /.well-known/oauth-authorization-server
+		mux.HandleFunc("/.well-known/oauth-authorization-server", h.ServeAuthorizationServerMetadata)
+
+		// Register: /.well-known/openid-configuration
+		mux.HandleFunc("/.well-known/openid-configuration", h.ServeOpenIDConfiguration)
+
+		h.logger.Info("Registered authorization server metadata endpoints",
+			"oauth_endpoint", "/.well-known/oauth-authorization-server",
+			"oidc_endpoint", "/.well-known/openid-configuration")
+	} else {
+		// Multi-tenant deployment with path-based issuer
+		// Per MCP 2025-11-25 spec, support multiple discovery patterns
+
+		// Clean the path
+		cleanPath := path.Clean(issuerPath)
+
+		// 1. OAuth 2.0 AS Metadata with path insertion
+		// Example: /.well-known/oauth-authorization-server/tenant1
+		oauthPathInsert := "/.well-known/oauth-authorization-server" + cleanPath
+		mux.HandleFunc(oauthPathInsert, h.ServeAuthorizationServerMetadata)
+
+		// 2. OpenID Connect Discovery with path insertion
+		// Example: /.well-known/openid-configuration/tenant1
+		oidcPathInsert := "/.well-known/openid-configuration" + cleanPath
+		mux.HandleFunc(oidcPathInsert, h.ServeOpenIDConfiguration)
+
+		// 3. OpenID Connect Discovery with path appending
+		// Example: /tenant1/.well-known/openid-configuration
+		oidcPathAppend := cleanPath + "/.well-known/openid-configuration"
+		mux.HandleFunc(oidcPathAppend, h.ServeOpenIDConfiguration)
+
+		// Also register standard endpoints for backward compatibility
+		mux.HandleFunc("/.well-known/oauth-authorization-server", h.ServeAuthorizationServerMetadata)
+		mux.HandleFunc("/.well-known/openid-configuration", h.ServeOpenIDConfiguration)
+
+		h.logger.Info("Registered multi-tenant authorization server metadata endpoints",
+			"issuer_path", cleanPath,
+			"oauth_path_insert", oauthPathInsert,
+			"oidc_path_insert", oidcPathInsert,
+			"oidc_path_append", oidcPathAppend,
+			"standard_endpoints", "also registered for backward compatibility")
+	}
+}
+
+// extractIssuerPath extracts the path component from the issuer URL.
+// Returns empty string if the issuer has no path or only "/".
+// Example: "https://auth.example.com/tenant1" -> "/tenant1"
+func (h *Handler) extractIssuerPath() string {
+	if h.server.Config.Issuer == "" {
+		return ""
+	}
+
+	parsed, err := url.Parse(h.server.Config.Issuer)
+	if err != nil {
+		h.logger.Warn("Failed to parse issuer URL for path extraction",
+			"issuer", h.server.Config.Issuer,
+			"error", err)
+		return ""
+	}
+
+	// Clean the path to remove trailing slashes and normalize
+	cleanedPath := path.Clean(parsed.Path)
+
+	// Return empty string if no path or just "/"
+	if cleanedPath == "" || cleanedPath == "/" || cleanedPath == "." {
+		return ""
+	}
+
+	return cleanedPath
+}
+
 // ServeAuthorizationServerMetadata serves RFC 8414 Authorization Server Metadata
 func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
