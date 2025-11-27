@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Problem Solved**: Library consumers couldn't write unit tests for code depending on authenticated user context because `userInfoKey` was unexported
   - **Usage**: `ctx := oauth.ContextWithUserInfo(context.Background(), &providers.UserInfo{ID: "user-123", Email: "test@example.com"})`
   - **Follows Go Patterns**: Similar to `grpc.NewContextWithServerTransportStream` and other standard library context setters
+  - **Security**: Includes explicit warning in documentation that this function is for testing only and should not be used to bypass authentication in production
 
 - **Sub-Path Protected Resource Metadata Discovery** (MCP 2025-11-25, RFC 9728)
   - **Feature**: Enable different protected resources on the same domain to advertise different authorization requirements

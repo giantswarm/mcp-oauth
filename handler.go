@@ -1873,6 +1873,12 @@ func UserInfoFromContext(ctx context.Context) (*providers.UserInfo, bool) {
 
 // ContextWithUserInfo creates a context with the given user info.
 // This is useful for testing code that depends on authenticated user context.
+//
+// WARNING: This function should ONLY be used for testing. In production,
+// user info should ONLY be set by the ValidateToken middleware after
+// proper token validation. Using this function to bypass authentication
+// in production code is a security vulnerability.
+//
 // Note: if userInfo is nil, UserInfoFromContext will return (nil, true).
 // Callers should check both the ok value and nil-ness of the returned userInfo.
 func ContextWithUserInfo(ctx context.Context, userInfo *providers.UserInfo) context.Context {
