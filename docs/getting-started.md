@@ -120,34 +120,47 @@ The in-memory storage implements all three storage interfaces:
 
 ### Custom Storage
 
-For production deployments requiring persistence or multi-instance setups, implement the storage interfaces:
+For production deployments requiring persistence or multi-instance setups, implement the storage interfaces. All methods accept `context.Context` for tracing and cancellation:
 
 ```go
-import "golang.org/x/oauth2"
+import (
+    "context"
+    "time"
+
+    "golang.org/x/oauth2"
+    "github.com/giantswarm/mcp-oauth/providers"
+    "github.com/giantswarm/mcp-oauth/storage"
+)
 
 // TokenStore handles token persistence
 type TokenStore interface {
-    SaveToken(userID string, token *oauth2.Token) error
-    GetToken(userID string) (*oauth2.Token, error)
-    DeleteToken(userID string) error
-    SaveRefreshToken(refreshToken, userID string, token *oauth2.Token) error
-    GetTokenByRefreshToken(refreshToken string) (*oauth2.Token, string, error)
-    DeleteRefreshToken(refreshToken string) error
+    SaveToken(ctx context.Context, userID string, token *oauth2.Token) error
+    GetToken(ctx context.Context, userID string) (*oauth2.Token, error)
+    DeleteToken(ctx context.Context, userID string) error
+    SaveUserInfo(ctx context.Context, userID string, info *providers.UserInfo) error
+    GetUserInfo(ctx context.Context, userID string) (*providers.UserInfo, error)
+    SaveRefreshToken(ctx context.Context, refreshToken, userID string, expiresAt time.Time) error
+    GetRefreshTokenInfo(ctx context.Context, refreshToken string) (string, error)
+    DeleteRefreshToken(ctx context.Context, refreshToken string) error
 }
 
 // ClientStore handles OAuth client persistence
 type ClientStore interface {
-    SaveClient(client *Client) error
-    GetClient(clientID string) (*Client, error)
-    DeleteClient(clientID string) error
-    ValidateClientSecret(clientID, secret string) (bool, error)
+    SaveClient(ctx context.Context, client *storage.Client) error
+    GetClient(ctx context.Context, clientID string) (*storage.Client, error)
+    ValidateClientSecret(ctx context.Context, clientID, clientSecret string) error
+    ListClients(ctx context.Context) ([]*storage.Client, error)
+    CheckIPLimit(ctx context.Context, ip string, maxClientsPerIP int) error
 }
 
 // FlowStore handles authorization flow state
 type FlowStore interface {
-    SaveAuthorizationState(state string, data *AuthorizationState) error
-    GetAuthorizationState(state string) (*AuthorizationState, error)
-    DeleteAuthorizationState(state string) error
+    SaveAuthorizationState(ctx context.Context, state *storage.AuthorizationState) error
+    GetAuthorizationState(ctx context.Context, stateID string) (*storage.AuthorizationState, error)
+    DeleteAuthorizationState(ctx context.Context, stateID string) error
+    SaveAuthorizationCode(ctx context.Context, code *storage.AuthorizationCode) error
+    GetAuthorizationCode(ctx context.Context, code string) (*storage.AuthorizationCode, error)
+    DeleteAuthorizationCode(ctx context.Context, code string) error
 }
 ```
 

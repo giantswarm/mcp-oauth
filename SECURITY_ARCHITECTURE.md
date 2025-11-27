@@ -725,7 +725,7 @@ done
 - [ ] Enable audit logging (`Auditor` interface)
 - [ ] Set up security monitoring for suspicious events
 - [ ] Rotate client secrets periodically
-- [ ] Configure rate limiting (`RateLimitRate`, `RateLimitBurst`)
+- [ ] Configure rate limiting via `SetRateLimiter()` and `SetUserRateLimiter()`
 - [ ] Set appropriate token lifetimes (shorter = more secure)
 - [ ] Enable refresh token rotation (`AllowRefreshTokenRotation=true`)
 - [ ] Review and test revoked token cleanup

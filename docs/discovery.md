@@ -2,7 +2,7 @@
 
 This document explains how OAuth discovery works in the `mcp-oauth` library, covering all standardized discovery mechanisms defined by OAuth 2.0, RFC 8414, RFC 9728, and MCP 2025-11-25.
 
-## Table of Contents
+## Contents
 
 1. [Overview](#overview)
 2. [Protected Resource Metadata (RFC 9728)](#protected-resource-metadata-rfc-9728)
@@ -384,13 +384,7 @@ client_id: https://client.example.com/.well-known/client-configuration
 
 ### Security
 
-The library implements SSRF protection:
-- Only HTTPS URLs allowed
-- Configurable timeout
-- Response size limits
-- Request validation
-
-See [Security Considerations](./mcp-2025-11-25.md#client-id-metadata-documents-security) for details.
+The library implements multi-layered SSRF protection including DNS rebinding prevention. See [Security Architecture: Client ID Metadata Documents](../SECURITY_ARCHITECTURE.md#client-id-metadata-documents-security) for the detailed threat model and mitigations.
 
 ## Discovery Flow Examples
 

@@ -7,7 +7,7 @@ This folder contains the documentation for the mcp-oauth library.
 | Document | Description |
 |----------|-------------|
 | [Getting Started](./getting-started.md) | Installation, providers, storage, first OAuth server |
-| [Configuration](./configuration.md) | All configuration options, CORS, interstitial pages, proxy |
+| [Configuration](./configuration.md) | All configuration options, CORS, interstitial pages, proxy settings |
 | [Security](./security.md) | Security features, best practices, production checklist |
 | [Observability](./observability.md) | OpenTelemetry, Prometheus metrics, distributed tracing |
 

@@ -260,7 +260,7 @@ Token lifetimes are typically controlled by the identity provider. For server-is
 ```go
 config := &server.Config{
     // Authorization code lifetime (default: 10 minutes)
-    AuthorizationCodeLifetime: 600,
+    AuthorizationCodeTTL: 600,
 }
 ```
 

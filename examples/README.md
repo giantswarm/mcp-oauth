@@ -62,6 +62,45 @@ export GOOGLE_CLIENT_SECRET="your-secret"
 go run main.go
 ```
 
+### [MCP 2025-11-25](./mcp-2025-11-25)
+
+Demonstrates new MCP 2025-11-25 specification features.
+
+**Features:**
+- Protected Resource Metadata (RFC 9728)
+- Enhanced WWW-Authenticate headers
+- Scope discovery and validation
+- Resource parameter binding (RFC 8707)
+
+**Best for:** MCP specification compliance, modern OAuth discovery
+
+```bash
+cd mcp-2025-11-25
+export GOOGLE_CLIENT_ID="your-id"
+export GOOGLE_CLIENT_SECRET="your-secret"
+go run main.go
+```
+
+### [Prometheus](./prometheus)
+
+Demonstrates OpenTelemetry instrumentation with Prometheus metrics.
+
+**Features:**
+- Prometheus metrics endpoint
+- OAuth flow metrics
+- Security event metrics
+- Performance monitoring
+
+**Best for:** Observability, production monitoring
+
+```bash
+cd prometheus
+export GOOGLE_CLIENT_ID="your-id"
+export GOOGLE_CLIENT_SECRET="your-secret"
+go run main.go
+# Visit http://localhost:8080/metrics
+```
+
 ## Quick Start
 
 1. **Choose an example** based on your needs

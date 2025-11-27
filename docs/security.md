@@ -49,7 +49,7 @@ Before deploying to production, verify these settings:
 
 ### Recommended
 
-- [ ] **Token Encryption**: Configure `EncryptionKey` for at-rest encryption
+- [ ] **Token Encryption**: Enable via `SetEncryptor()` for at-rest encryption
 - [ ] **Audit Logging**: Set up `Auditor` for security event logging
 - [ ] **Rate Limiting**: Configure IP, user, and client registration limits
 - [ ] **Registration Protected**: Set `RegistrationAccessToken` or disable registration
