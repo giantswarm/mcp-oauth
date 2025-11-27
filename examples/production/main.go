@@ -207,7 +207,7 @@ func setupRoutes(handler *oauth.Handler, logger *slog.Logger) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	// OAuth metadata endpoints
-	// Note: RegisterProtectedResourceMetadataRoutes registers both root and sub-path endpoints.
+	// Note: RegisterProtectedResourceMetadataRoutes registers the Protected Resource Metadata endpoint.
 	// To use a logging wrapper, register endpoints manually instead.
 	handler.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
 

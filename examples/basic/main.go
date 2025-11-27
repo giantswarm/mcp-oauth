@@ -98,9 +98,30 @@ func main() {
 	// 7. Setup routes
 	mux := http.NewServeMux()
 
-	// OAuth Metadata Endpoints (RFC 8414, RFC 9728)
-	// This registers both root and sub-path metadata endpoints
+	// === OAuth Discovery Endpoints (MCP 2025-11-25) ===
+
+	// Protected Resource Metadata (RFC 9728)
+	// Registers the discovery endpoint at /.well-known/oauth-protected-resource
+	//
+	// Clients use this endpoint to discover:
+	//   - Which authorization server protects this resource
+	//   - What scopes are supported
+	//   - How to send bearer tokens
+	//
+	// Example discovery flow:
+	//   1. Client → GET /mcp (unauthorized)
+	//   2. Server → 401 + WWW-Authenticate: resource_metadata=".../.well-known/oauth-protected-resource"
+	//   3. Client → GET /.well-known/oauth-protected-resource
+	//   4. Client → Discovers authorization server and scopes
 	handler.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
+
+	// Authorization Server Metadata (RFC 8414)
+	// Describes OAuth server capabilities, endpoints, and supported features
+	// Clients use this to discover:
+	//   - OAuth endpoints (authorization, token, etc.)
+	//   - Supported grant types and response types
+	//   - PKCE methods supported
+	//   - Available scopes
 	mux.HandleFunc("/.well-known/oauth-authorization-server", handler.ServeAuthorizationServerMetadata)
 
 	// OAuth Flow Endpoints
@@ -111,6 +132,11 @@ func main() {
 	mux.HandleFunc("/oauth/register", handler.ServeClientRegistration)
 
 	// Protected MCP endpoint
+	// ValidateToken middleware:
+	//   - Validates Bearer token from Authorization header
+	//   - Returns 401 with WWW-Authenticate header if invalid/missing (MCP 2025-11-25)
+	//   - Adds UserInfo to request context if valid
+	//   - Validates token scopes if EndpointScopeRequirements configured
 	mux.Handle("/mcp", handler.ValidateToken(mcpHandler()))
 
 	// Health check
@@ -126,14 +152,21 @@ func main() {
 	log.Printf("🔐 Security: encryption=%v, audit=%v, ratelimit=%v",
 		encKeyB64 != "", true, true)
 	log.Printf("\nEndpoints:")
-	log.Printf("  Metadata:      /.well-known/oauth-protected-resource")
-	log.Printf("  Metadata:      /.well-known/oauth-protected-resource/mcp (sub-path)")
-	log.Printf("  Authorization: /oauth/authorize")
-	log.Printf("  Token:         /oauth/token")
-	log.Printf("  Callback:      /oauth/callback")
-	log.Printf("  Register:      /oauth/register")
-	log.Printf("  Revoke:        /oauth/revoke")
-	log.Printf("  Protected MCP: /mcp")
+	log.Printf("  Discovery (MCP 2025-11-25):")
+	log.Printf("    /.well-known/oauth-protected-resource")
+	log.Printf("    /.well-known/oauth-authorization-server")
+	log.Printf("  OAuth Flow:")
+	log.Printf("    /oauth/authorize")
+	log.Printf("    /oauth/token")
+	log.Printf("    /oauth/callback")
+	log.Printf("    /oauth/register")
+	log.Printf("    /oauth/revoke")
+	log.Printf("  Protected:")
+	log.Printf("    /mcp")
+	log.Printf("\nMCP 2025-11-25 Features:")
+	log.Printf("  - Protected Resource Metadata discovery")
+	log.Printf("  - Enhanced WWW-Authenticate headers with scope guidance")
+	log.Printf("  - OAuth 2.1 security (PKCE, token rotation)")
 	log.Fatal(http.ListenAndServe(addr, mux))
 }
 

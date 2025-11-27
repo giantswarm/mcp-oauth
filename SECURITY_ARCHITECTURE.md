@@ -471,6 +471,94 @@ type RefreshTokenFamily struct {
 
 **Implementation**: `storage/memory/memory.go` - Refresh token family tracking
 
+### Resource Parameter Security (RFC 8707)
+
+**Purpose**: Bind access tokens to specific resource servers to prevent token misuse across different services.
+
+**Threat Model**: Without resource binding, a token issued for one service (e.g., `files.example.com`) could be misused to access a different service (e.g., `admin.example.com`), enabling lateral movement in case of token compromise.
+
+**Configuration**:
+```go
+&server.Config{
+    // Set the resource identifier for this server (RFC 8707)
+    // Tokens will be bound to this resource server
+    ResourceIdentifier: "https://files.example.com",
+}
+```
+
+**Security Benefits**:
+1. **Scope Limitation**: Tokens can only be used with the intended resource server
+2. **Lateral Movement Prevention**: Compromised token for one service cannot access others
+3. **Zero-Trust Architecture**: Enforces principle of least privilege at token level
+4. **Compliance**: Supports multi-tenant and high-security environments
+
+**How It Works**:
+1. Client includes `resource` parameter in authorization request
+2. OAuth server binds the resource to the resulting access token
+3. During token validation, server checks token's `aud` (audience) claim matches request
+4. Mismatched resource results in 401 Unauthorized
+
+**Validation Flow**:
+```
+Client → Authorization with resource=https://files.example.com
+Server → Issues token with aud=https://files.example.com
+Client → Presents token to https://files.example.com ✅ ALLOWED
+Client → Presents same token to https://admin.example.com ❌ REJECTED (401)
+```
+
+**Implementation**: `server/validation.go` - Token audience validation
+
+**Best Practices**:
+- Use specific, well-defined resource URIs
+- Configure `AllowedResources` to prevent typos/attacks
+- Monitor for tokens used against wrong resources (possible attack indicator)
+- Consider requiring resource parameter for multi-service deployments
+
+### Token Audience Validation
+
+**Purpose**: Ensure tokens are only accepted by the intended resource server.
+
+**OAuth 2.0 Claims**:
+- `iss` (issuer): Who issued the token (the authorization server)
+- `aud` (audience): Who the token is intended for (the resource server)
+- `sub` (subject): Who the token represents (the user)
+
+**Validation Logic**:
+```go
+// Pseudocode
+func validateToken(token, expectedResource string) error {
+    claims := parseToken(token)
+    
+    // Check issuer matches our server
+    if claims.Issuer != config.Issuer {
+        return ErrInvalidIssuer
+    }
+    
+    // Check audience matches configured resource identifier
+    if config.ResourceIdentifier != "" && claims.Audience != config.ResourceIdentifier {
+        return ErrInvalidAudience
+    }
+    
+    // Check expiration
+    if claims.ExpiresAt < now() {
+        return ErrTokenExpired
+    }
+    
+    return nil
+}
+```
+
+**Security Properties**:
+- Prevents token replay across different resource servers
+- Mitigates impact of token compromise
+- Required for multi-tenant OAuth deployments
+- Complements scope-based access control
+
+**Audit Events**:
+- `token_audience_mismatch`: Token used for wrong resource
+- `token_validation_failed`: General validation failure
+- `invalid_issuer`: Token from unknown issuer
+
 ## Attack Mitigation
 
 ### Authorization Code Interception
@@ -570,6 +658,61 @@ bcrypt.CompareHashAndPassword([]byte(hashToCompare), []byte(secret))
 
 **Implementation**: `server/validation.go` - `validateHTTPSEnforcement()`
 
+### WWW-Authenticate Information Disclosure
+
+**Attack**: Attacker triggers 401 responses to enumerate available scopes and discovery endpoints
+
+**Risk Level**: LOW (acceptable trade-off for better client experience)
+
+**What is Exposed**:
+- Protected Resource Metadata URL (`.well-known/oauth-protected-resource`)
+- Configured scopes in `DefaultChallengeScopes`
+- Endpoint-specific scope requirements
+- Error codes and descriptions
+
+**Mitigations**:
+1. **Use General Scopes**: Configure broad scopes like `"mcp:access"` rather than `"internal:admin:database:write"`
+2. **Rate Limiting**: Prevents enumeration floods
+3. **Audit Logging**: Monitor unusual 401 response patterns
+4. **Scope Design**: Don't encode sensitive information in scope names
+
+**Why This is Acceptable**:
+- OAuth 2.0/MCP 2025-11-25 specifications require this for client discovery
+- Information disclosed is minimal and intentionally public
+- Benefits of automatic client configuration outweigh minor information disclosure
+- Similar to exposing `.well-known` metadata endpoints (required by OAuth)
+
+**Example Attack Scenario**:
+```bash
+# Attacker enumerates endpoints
+for path in /api/admin /api/files /api/users; do
+    curl -i https://target.com$path 2>&1 | grep "WWW-Authenticate"
+done
+
+# Result: Discovers available scopes
+# WWW-Authenticate: Bearer scope="admin:access"
+# WWW-Authenticate: Bearer scope="files:read files:write"
+# WWW-Authenticate: Bearer scope="users:read"
+```
+
+**Defense-in-Depth**:
+- Rate limiting prevents rapid enumeration
+- Audit logging detects reconnaissance patterns
+- Scopes themselves don't grant access (proper authorization still required)
+- Use coarse-grained scopes when possible
+
+**Configuration**:
+```go
+// Secure scope configuration
+&server.Config{
+    // Good: General, non-descriptive scopes
+    DefaultChallengeScopes: []string{"mcp:access"},
+    
+    // Avoid: Overly specific scopes that reveal internal structure
+    // DefaultChallengeScopes: []string{"internal:admin:database:users:write"},
+}
+```
+
 ## Security Checklist
 
 ### Production Deployment
@@ -646,11 +789,27 @@ go test ./... -cover
 
 ## References
 
+### OAuth and MCP Standards
+
+- [MCP Specification 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization)
 - [OAuth 2.1 Draft](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-10)
 - [RFC 6749: OAuth 2.0](https://datatracker.ietf.org/doc/html/rfc6749)
+- [RFC 6750: Bearer Token Usage](https://datatracker.ietf.org/doc/html/rfc6750)
 - [RFC 7636: PKCE](https://datatracker.ietf.org/doc/html/rfc7636)
+- [RFC 8414: OAuth Authorization Server Metadata](https://datatracker.ietf.org/doc/html/rfc8414)
+- [RFC 8707: Resource Indicators for OAuth 2.0](https://datatracker.ietf.org/doc/html/rfc8707)
+- [RFC 9728: OAuth 2.0 Protected Resource Metadata](https://datatracker.ietf.org/doc/html/rfc9728)
+
+### Security Resources
+
 - [OAuth 2.0 Security Best Current Practice](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics)
-- [OAuth 2.0 Threat Model](https://datatracker.ietf.org/doc/html/rfc6819)
+- [OAuth 2.0 Threat Model (RFC 6819)](https://datatracker.ietf.org/doc/html/rfc6819)
+
+### Library Documentation
+
+- [MCP 2025-11-25 Migration Guide](./docs/mcp-2025-11-25.md)
+- [Discovery Mechanisms Guide](./docs/discovery.md)
+- [README](./README.md)
 
 ## Contributing
 

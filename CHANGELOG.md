@@ -9,6 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Comprehensive MCP 2025-11-25 Documentation**
+  - **Feature**: Complete documentation package for MCP 2025-11-25 specification compliance
+  - **New Documentation**:
+    - `docs/mcp-2025-11-25.md` - Comprehensive migration guide covering all new features:
+      * Protected Resource Metadata Discovery (RFC 9728)
+      * Enhanced WWW-Authenticate headers (RFC 6750)
+      * Scope Selection Strategy
+      * Resource Parameter (RFC 8707) for token audience binding
+      * Client ID Metadata Documents
+      * Insufficient Scope error handling
+    - `docs/discovery.md` - Complete guide to OAuth discovery mechanisms:
+      * Protected Resource Metadata endpoints
+      * Authorization Server Metadata
+      * WWW-Authenticate header discovery
+      * Client ID Metadata Documents
+      * Discovery flow examples and best practices
+  - **Updated Documentation**:
+    - `README.md`:
+      * Added MCP Specification Compliance table showing support status
+      * Added links to new documentation resources
+      * Enhanced WWW-Authenticate section with references to detailed guides
+      * Updated specification compliance references
+    - `SECURITY_ARCHITECTURE.md`:
+      * Added Resource Parameter Security section with token audience validation
+      * Added Token Audience Validation section explaining OAuth 2.0 claims
+      * Added WWW-Authenticate Information Disclosure security analysis
+      * Updated References section with MCP 2025-11-25 and all relevant RFCs
+      * Added links to new documentation resources
+  - **Examples**:
+    - `examples/mcp-2025-11-25/` - New comprehensive example demonstrating:
+      * All MCP 2025-11-25 features configured
+      * Endpoint-specific scope requirements
+      * Method-specific scope requirements
+      * Discovery endpoint setup
+      * Complete testing instructions
+      * Detailed README with testing scenarios
+    - `examples/basic/main.go` - Enhanced with:
+      * Detailed comments explaining discovery endpoints
+      * MCP 2025-11-25 feature highlights
+      * Discovery flow examples
+  - **Migration Support**:
+    - Backward compatibility notes (no breaking changes)
+    - Step-by-step migration path from previous versions
+    - Configuration examples for each new feature
+    - Security considerations for new features
+    - Testing and validation guidelines
+  - **Compliance**: Full documentation coverage for MCP 2025-11-25 specification requirements
+  - **Developer Experience**: Clear examples, migration guides, and best practices for adopting new features
+
 - **Endpoint-Specific Scope Challenges in WWW-Authenticate Headers (MCP 2025-11-25)**
   - **Feature**: Implemented endpoint-specific scope guidance in WWW-Authenticate headers for 401 Unauthorized responses
   - **MCP Compliance**: Implements MCP 2025-11-25 scope selection strategy specification
