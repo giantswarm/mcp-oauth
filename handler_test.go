@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
+	"github.com/giantswarm/mcp-oauth/internal/util"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/server"
 	"github.com/giantswarm/mcp-oauth/storage"
@@ -793,10 +794,7 @@ func TestHandler_extractResourcePath(t *testing.T) {
 	}
 }
 
-func TestHandler_pathMatchesPrefix(t *testing.T) {
-	handler, store := setupTestHandler(t)
-	defer store.Stop()
-
+func TestPathMatchesPrefix(t *testing.T) {
 	tests := []struct {
 		resourcePath string
 		prefix       string
@@ -818,9 +816,9 @@ func TestHandler_pathMatchesPrefix(t *testing.T) {
 	for _, tt := range tests {
 		name := tt.resourcePath + "_" + tt.prefix
 		t.Run(name, func(t *testing.T) {
-			got := handler.pathMatchesPrefix(tt.resourcePath, tt.prefix)
+			got := util.PathMatchesPrefix(tt.resourcePath, tt.prefix)
 			if got != tt.expected {
-				t.Errorf("pathMatchesPrefix(%q, %q) = %v, want %v",
+				t.Errorf("PathMatchesPrefix(%q, %q) = %v, want %v",
 					tt.resourcePath, tt.prefix, got, tt.expected)
 			}
 		})

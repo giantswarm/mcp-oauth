@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/giantswarm/mcp-oauth/internal/util"
 )
 
 // URI scheme constants (shared with validation.go)
@@ -1149,6 +1151,14 @@ func validateScopeFormat(scope string) error {
 	return nil
 }
 
+// validBearerMethods defines the valid RFC 6750 bearer token transmission methods.
+// Defined at package level to avoid re-creating this map on every validation iteration.
+var validBearerMethods = map[string]bool{
+	"header": true,
+	"body":   true,
+	"query":  true,
+}
+
 // validateResourceMetadataByPath validates the ResourceMetadataByPath configuration
 // for security, correctness, and RFC 9728 compliance.
 func validateResourceMetadataByPath(config *Config, logger *slog.Logger) {
@@ -1157,8 +1167,8 @@ func validateResourceMetadataByPath(config *Config, logger *slog.Logger) {
 	}
 
 	for pathKey, pathConfig := range config.ResourceMetadataByPath {
-		// Validate path format
-		if err := validateResourcePath(pathKey); err != nil {
+		// Validate path format using shared validation logic
+		if err := util.ValidateMetadataPath(pathKey); err != nil {
 			logger.Warn("Invalid path in ResourceMetadataByPath",
 				"path", pathKey,
 				"error", err,
@@ -1195,11 +1205,6 @@ func validateResourceMetadataByPath(config *Config, logger *slog.Logger) {
 		}
 
 		// Validate bearer methods per RFC 6750
-		validBearerMethods := map[string]bool{
-			"header": true,
-			"body":   true,
-			"query":  true,
-		}
 		for _, method := range pathConfig.BearerMethodsSupported {
 			if !validBearerMethods[method] {
 				logger.Warn("Unknown bearer method in ResourceMetadataByPath",
@@ -1233,33 +1238,6 @@ func validateResourceMetadataByPath(config *Config, logger *slog.Logger) {
 
 	logger.Debug("ResourceMetadataByPath configuration validated",
 		"paths_configured", len(config.ResourceMetadataByPath))
-}
-
-// validateResourcePath validates a resource path for security concerns.
-// Similar to the handler's validateMetadataPath but for configuration validation.
-func validateResourcePath(resourcePath string) error {
-	// Reject paths with path traversal sequences
-	if strings.Contains(resourcePath, "..") {
-		return fmt.Errorf("path contains '..' sequence (path traversal)")
-	}
-
-	// Reject paths with null bytes
-	if strings.Contains(resourcePath, "\x00") {
-		return fmt.Errorf("path contains null byte")
-	}
-
-	// Reject excessively long paths
-	const maxPathLength = 256
-	if len(resourcePath) > maxPathLength {
-		return fmt.Errorf("path exceeds maximum length of %d characters", maxPathLength)
-	}
-
-	// Reject paths with excessive segments
-	if strings.Count(resourcePath, "/") > 10 {
-		return fmt.Errorf("path contains too many segments")
-	}
-
-	return nil
 }
 
 // validateInterstitialConfig validates the InterstitialConfig for security and correctness.

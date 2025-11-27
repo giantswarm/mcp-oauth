@@ -19,6 +19,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
+	"github.com/giantswarm/mcp-oauth/internal/util"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/server"
@@ -642,6 +643,11 @@ func (h *Handler) extractResourcePath(requestPath string) string {
 // findPathConfig finds the best matching ProtectedResourceConfig for a given resource path.
 // It uses longest-prefix matching to find the most specific configuration.
 // Returns nil if no specific configuration is found.
+//
+// Note: Iteration over ResourceMetadataByPath map is non-deterministic in Go.
+// This is handled by longest-match logic - when multiple paths match, the longest
+// one wins. If two paths have equal length, the result may vary between runs,
+// but this is an unlikely edge case in practice.
 func (h *Handler) findPathConfig(resourcePath string) *server.ProtectedResourceConfig {
 	if len(h.server.Config.ResourceMetadataByPath) == 0 {
 		return nil
@@ -655,7 +661,7 @@ func (h *Handler) findPathConfig(resourcePath string) *server.ProtectedResourceC
 		normalizedConfigPath := path.Clean("/" + strings.TrimPrefix(configPath, "/"))
 
 		// Check if this path is a prefix of the resource path
-		if h.pathMatchesPrefix(resourcePath, normalizedConfigPath) {
+		if util.PathMatchesPrefix(resourcePath, normalizedConfigPath) {
 			// Use longest match
 			if len(normalizedConfigPath) > len(bestMatch) {
 				bestMatch = normalizedConfigPath
@@ -666,25 +672,6 @@ func (h *Handler) findPathConfig(resourcePath string) *server.ProtectedResourceC
 	}
 
 	return bestConfig
-}
-
-// pathMatchesPrefix checks if resourcePath matches or starts with prefix.
-// Handles path boundaries correctly: /mcp/files matches /mcp but not /mc.
-func (h *Handler) pathMatchesPrefix(resourcePath, prefix string) bool {
-	// Exact match
-	if resourcePath == prefix {
-		return true
-	}
-
-	// Prefix match with path boundary
-	if strings.HasPrefix(resourcePath, prefix) {
-		// Ensure we're matching at a path boundary
-		// /mcp/files should match /mcp but not /mc
-		remaining := strings.TrimPrefix(resourcePath, prefix)
-		return len(remaining) > 0 && remaining[0] == '/'
-	}
-
-	return false
 }
 
 // buildProtectedResourceMetadata builds the Protected Resource Metadata response.
@@ -813,31 +800,9 @@ func (h *Handler) registerMetadataSubPath(mux *http.ServeMux, resourcePath strin
 
 // validateMetadataPath validates a metadata path for security concerns.
 // It checks for path traversal attempts, excessive length, and other malicious patterns.
+// This is a thin wrapper around util.ValidateMetadataPath for use by the Handler.
 func (h *Handler) validateMetadataPath(mcpPath string) error {
-	// SECURITY: Reject paths containing path traversal sequences
-	// Defense in depth: path.Clean() would normalize these, but explicit check prevents confusion
-	if strings.Contains(mcpPath, "..") {
-		return fmt.Errorf("path contains '..' sequence (path traversal attempt)")
-	}
-
-	// SECURITY: Prevent DoS through excessively long paths
-	// Long paths consume memory and can cause issues with storage, logging, and HTTP headers
-	if len(mcpPath) > MaxMetadataPathLength {
-		return fmt.Errorf("path exceeds maximum length of %d characters (DoS prevention)", MaxMetadataPathLength)
-	}
-
-	// SECURITY: Reject paths with suspicious patterns
-	// Null bytes can cause issues in some HTTP implementations
-	if strings.Contains(mcpPath, "\x00") {
-		return fmt.Errorf("path contains null byte")
-	}
-
-	// SECURITY: Reject paths with excessive slashes (potential DoS or confusion)
-	if strings.Count(mcpPath, "/") > 10 {
-		return fmt.Errorf("path contains too many segments (DoS prevention)")
-	}
-
-	return nil
+	return util.ValidateMetadataPath(mcpPath)
 }
 
 // ServeAuthorizationServerMetadata serves RFC 8414 Authorization Server Metadata
