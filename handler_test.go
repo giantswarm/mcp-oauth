@@ -3954,3 +3954,54 @@ func TestHandler_ServeCallback_CustomURLScheme_WithBranding(t *testing.T) {
 		t.Error("Response should contain custom primary color from branding config")
 	}
 }
+
+// TestHandler_ServeSuccessInterstitial_AppNamePlaceholder tests that {{.AppName}} placeholder is replaced
+func TestHandler_ServeSuccessInterstitial_AppNamePlaceholder(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	// Configure with branding that uses {{.AppName}} placeholders
+	config := &server.Config{
+		Issuer: testIssuer,
+		Interstitial: &server.InterstitialConfig{
+			Branding: &server.InterstitialBranding{
+				Title:      "Connected to Inboxfewer",
+				Message:    "You have been authenticated with {{.AppName}}. You can now close this window.",
+				ButtonText: "Open {{.AppName}}",
+			},
+		},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/oauth/callback", nil)
+	// cursor:// scheme should be detected and replaced with "Cursor"
+	handler.serveSuccessInterstitial(w, r, "cursor://oauth/callback?code=abc")
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	body := w.Body.String()
+
+	// Check that {{.AppName}} was replaced with actual app name (Cursor)
+	if strings.Contains(body, "{{.AppName}}") {
+		t.Error("Response should NOT contain literal {{.AppName}} placeholder - it should be replaced")
+	}
+
+	// Check that "Cursor" appears in the message and button
+	if !strings.Contains(body, "You have been authenticated with Cursor") {
+		t.Error("Response should contain 'You have been authenticated with Cursor' (AppName replaced)")
+	}
+	if !strings.Contains(body, "Open Cursor") {
+		t.Error("Response should contain 'Open Cursor' (AppName replaced in button)")
+	}
+}

@@ -485,8 +485,10 @@ func (h *Handler) buildInterstitialData(redirectURL, appName string, branding *s
 			data.LogoAlt = "Logo" // Accessibility fallback
 		}
 		data.Title = branding.Title
-		data.Message = branding.Message
-		data.ButtonText = branding.ButtonText
+		// Replace {{.AppName}} placeholder in Message and ButtonText
+		// This allows users to configure messages like "Return to {{.AppName}}"
+		data.Message = strings.ReplaceAll(branding.Message, "{{.AppName}}", appName)
+		data.ButtonText = strings.ReplaceAll(branding.ButtonText, "{{.AppName}}", appName)
 		// SECURITY: CSS values are marked as template.CSS to prevent escaping
 		// These values are validated at config load time to prevent injection
 		data.PrimaryColor = template.CSS(branding.PrimaryColor)             //nolint:gosec // Validated in validateInterstitialBranding
