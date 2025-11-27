@@ -2,7 +2,7 @@
 
 This document explains how OAuth discovery works in the `mcp-oauth` library, covering all standardized discovery mechanisms defined by OAuth 2.0, RFC 8414, RFC 9728, and MCP 2025-11-25.
 
-## Table of Contents
+## Contents
 
 1. [Overview](#overview)
 2. [Protected Resource Metadata (RFC 9728)](#protected-resource-metadata-rfc-9728)
@@ -384,13 +384,7 @@ client_id: https://client.example.com/.well-known/client-configuration
 
 ### Security
 
-The library implements SSRF protection:
-- Only HTTPS URLs allowed
-- Configurable timeout
-- Response size limits
-- Request validation
-
-See [Security Considerations](./mcp-2025-11-25.md#client-id-metadata-documents-security) for details.
+The library implements multi-layered SSRF protection including DNS rebinding prevention. See [Security Architecture: Client ID Metadata Documents](../SECURITY_ARCHITECTURE.md#client-id-metadata-documents-security) for the detailed threat model and mitigations.
 
 ## Discovery Flow Examples
 
@@ -583,8 +577,16 @@ HTTP/1.1 200 OK
 
 ## See Also
 
-- [MCP 2025-11-25 Guide](./mcp-2025-11-25.md)
-- [Security Architecture](../SECURITY_ARCHITECTURE.md)
+### Library Documentation
+
+- [Getting Started](./getting-started.md) - Setup guide
+- [Configuration Guide](./configuration.md) - All configuration options
+- [Security Guide](./security.md) - Security features and best practices
+- [MCP 2025-11-25 Guide](./mcp-2025-11-25.md) - MCP specification features
+- [Security Architecture](../SECURITY_ARCHITECTURE.md) - Deep technical security reference
+
+### Standards
+
 - [RFC 6750 - Bearer Token Usage](https://datatracker.ietf.org/doc/html/rfc6750)
 - [RFC 8414 - Authorization Server Metadata](https://datatracker.ietf.org/doc/html/rfc8414)
 - [RFC 9728 - Protected Resource Metadata](https://datatracker.ietf.org/doc/html/rfc9728)
