@@ -805,11 +805,146 @@ func (h *Handler) validateMetadataPath(mcpPath string) error {
 	return util.ValidateMetadataPath(mcpPath)
 }
 
+// RegisterAuthorizationServerMetadataRoutes registers all Authorization Server Metadata discovery routes.
+// This supports multi-tenant deployments with path-based issuers per MCP 2025-11-25.
+//
+// For issuer URLs with path components (e.g., https://auth.example.com/tenant1), registers:
+//  1. Path insertion OAuth: /.well-known/oauth-authorization-server/tenant1
+//  2. Path insertion OIDC: /.well-known/openid-configuration/tenant1
+//  3. Path appending OIDC: /tenant1/.well-known/openid-configuration
+//
+// For issuer URLs without path components (e.g., https://auth.example.com), registers:
+//  1. Standard OAuth: /.well-known/oauth-authorization-server
+//  2. Standard OIDC: /.well-known/openid-configuration
+//
+// Example usage:
+//
+//	// Single-tenant: Configure issuer without path
+//	config := &ServerConfig{
+//		Issuer: "https://auth.example.com",
+//	}
+//	// Registers: /.well-known/oauth-authorization-server
+//	//            /.well-known/openid-configuration
+//	handler.RegisterAuthorizationServerMetadataRoutes(mux)
+//
+//	// Multi-tenant: Configure issuer with path
+//	config := &ServerConfig{
+//		Issuer: "https://auth.example.com/tenant1",
+//	}
+//	// Registers: /.well-known/oauth-authorization-server/tenant1
+//	//            /.well-known/openid-configuration/tenant1
+//	//            /tenant1/.well-known/openid-configuration
+//	//            (plus standard endpoints for backward compatibility)
+//	handler.RegisterAuthorizationServerMetadataRoutes(mux)
+func (h *Handler) RegisterAuthorizationServerMetadataRoutes(mux *http.ServeMux) {
+	issuerPath := h.extractIssuerPath()
+
+	// Helper to register standard endpoints (always registered for backward compatibility)
+	registerStandardEndpoints := func() {
+		mux.HandleFunc("/.well-known/oauth-authorization-server", h.ServeAuthorizationServerMetadata)
+		mux.HandleFunc("/.well-known/openid-configuration", h.ServeOpenIDConfiguration)
+	}
+
+	if issuerPath == "" || issuerPath == "/" {
+		// Single-tenant deployment
+		registerStandardEndpoints()
+		h.logger.Info("Registered authorization server metadata endpoints",
+			"oauth_endpoint", "/.well-known/oauth-authorization-server",
+			"oidc_endpoint", "/.well-known/openid-configuration")
+		return
+	}
+
+	// Multi-tenant deployment with path-based issuer
+	// Per MCP 2025-11-25 spec, support multiple discovery patterns
+
+	// 1. OAuth 2.0 AS Metadata with path insertion
+	// Example: /.well-known/oauth-authorization-server/tenant1
+	oauthPathInsert := "/.well-known/oauth-authorization-server" + issuerPath
+	mux.HandleFunc(oauthPathInsert, h.ServeAuthorizationServerMetadata)
+
+	// 2. OpenID Connect Discovery with path insertion
+	// Example: /.well-known/openid-configuration/tenant1
+	oidcPathInsert := "/.well-known/openid-configuration" + issuerPath
+	mux.HandleFunc(oidcPathInsert, h.ServeOpenIDConfiguration)
+
+	// 3. OpenID Connect Discovery with path appending
+	// Example: /tenant1/.well-known/openid-configuration
+	oidcPathAppend := issuerPath + "/.well-known/openid-configuration"
+	mux.HandleFunc(oidcPathAppend, h.ServeOpenIDConfiguration)
+
+	// Backward compatibility
+	registerStandardEndpoints()
+
+	h.logger.Info("Registered multi-tenant authorization server metadata endpoints",
+		"issuer_path", issuerPath,
+		"oauth_path_insert", oauthPathInsert,
+		"oidc_path_insert", oidcPathInsert,
+		"oidc_path_append", oidcPathAppend,
+		"standard_endpoints", "also registered for backward compatibility")
+}
+
+// extractIssuerPath extracts the path component from the issuer URL.
+// Returns empty string if the issuer has no path or only "/".
+// Example: "https://auth.example.com/tenant1" -> "/tenant1"
+func (h *Handler) extractIssuerPath() string {
+	if h.server.Config.Issuer == "" {
+		return ""
+	}
+
+	parsed, err := url.Parse(h.server.Config.Issuer)
+	if err != nil {
+		h.logger.Warn("Failed to parse issuer URL for path extraction",
+			"issuer", h.server.Config.Issuer,
+			"error", err)
+		return ""
+	}
+
+	// Clean the path to remove trailing slashes and normalize
+	cleanedPath := path.Clean(parsed.Path)
+
+	// Return empty string if no path or just "/"
+	if cleanedPath == "" || cleanedPath == "/" || cleanedPath == "." {
+		return ""
+	}
+
+	return cleanedPath
+}
+
 // ServeAuthorizationServerMetadata serves RFC 8414 Authorization Server Metadata
 func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
+	}
+
+	// SECURITY: Apply rate limiting to discovery endpoints to prevent reconnaissance and DoS
+	// Discovery endpoints are unauthenticated and publicly accessible, making them potential
+	// vectors for automated scanning and resource exhaustion attacks
+	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
+	if h.server.RateLimiter != nil {
+		if !h.server.RateLimiter.Allow(clientIP) {
+			h.logger.Warn("Rate limit exceeded on discovery endpoint",
+				"ip", clientIP,
+				"endpoint", "authorization_server_metadata")
+
+			if h.server.Instrumentation != nil {
+				h.server.Instrumentation.Metrics().RecordRateLimitExceeded(r.Context(), "ip")
+			}
+
+			if h.server.Auditor != nil {
+				h.server.Auditor.LogEvent(security.Event{
+					Type:      security.EventRateLimitExceeded,
+					IPAddress: clientIP,
+					Details: map[string]any{
+						"endpoint": r.URL.Path,
+					},
+				})
+			}
+
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
+			return
+		}
 	}
 
 	// Set CORS headers for browser-based clients

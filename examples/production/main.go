@@ -211,8 +211,8 @@ func setupRoutes(handler *oauth.Handler, logger *slog.Logger) *http.ServeMux {
 	// To use a logging wrapper, register endpoints manually instead.
 	handler.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
 
-	mux.HandleFunc("/.well-known/oauth-authorization-server",
-		logRequest(logger, handler.ServeAuthorizationServerMetadata))
+	// Authorization Server Metadata (multi-tenant aware)
+	handler.RegisterAuthorizationServerMetadataRoutes(mux)
 
 	// OAuth endpoints
 	mux.HandleFunc("/oauth/authorize",

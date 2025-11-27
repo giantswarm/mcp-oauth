@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Multi-Tenant Authorization Server Discovery (MCP 2025-11-25)**
+  - **Feature**: Automatic registration of multiple discovery endpoints for multi-tenant deployments
+  - **Implementation**: New `RegisterAuthorizationServerMetadataRoutes()` method that detects path-based issuers
+  - **Endpoints Registered**:
+    - For single-tenant (no path): Standard OAuth and OIDC endpoints
+    - For multi-tenant (path-based issuer like `https://auth.example.com/tenant1`):
+      * OAuth path insertion: `/.well-known/oauth-authorization-server/tenant1`
+      * OIDC path insertion: `/.well-known/openid-configuration/tenant1`
+      * OIDC path appending: `/tenant1/.well-known/openid-configuration`
+      * Standard endpoints (backward compatibility)
+  - **Benefits**:
+    - Supports complex multi-tenant architectures with path-based tenant isolation
+    - Fully compliant with MCP 2025-11-25 discovery requirements
+    - Automatic detection based on issuer configuration
+    - Backward compatible with existing deployments
+  - **Testing**: Comprehensive test coverage for single-tenant, multi-tenant, and nested path scenarios
+  - **Examples**: All examples updated to use new registration method
+  - **Use Case**: Enterprise deployments with multiple tenants using path-based issuer URLs
+
 - **CIMD Negative Caching for Failed Metadata Fetches**
   - **Feature**: Cache failed Client ID Metadata Document (CIMD) fetch attempts to prevent rapid retries
   - **Security**: Mitigates cache poisoning attacks by preventing attackers from repeatedly hammering the server with requests for known-bad client IDs

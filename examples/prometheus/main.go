@@ -104,8 +104,8 @@ func main() {
 	mux.HandleFunc("/oauth/introspect", handler.ServeTokenIntrospection)
 	mux.HandleFunc("/oauth/register", handler.ServeClientRegistration)
 
-	// Metadata endpoints
-	mux.HandleFunc("/.well-known/oauth-authorization-server", handler.ServeAuthorizationServerMetadata)
+	// Metadata endpoints (multi-tenant aware)
+	handler.RegisterAuthorizationServerMetadataRoutes(mux)
 
 	// PROMETHEUS METRICS ENDPOINT
 	// This exposes all OpenTelemetry metrics in Prometheus format
