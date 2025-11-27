@@ -79,7 +79,7 @@ func TestServer_AuditLoggingClientIDMismatch(t *testing.T) {
 	clientID := client.ClientID
 
 	// Generate PKCE
-	codeVerifier := testutil.GenerateRandomString(50)
+	codeVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(codeVerifier))
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
@@ -177,7 +177,7 @@ func TestServer_AuditLoggingRedirectURIMismatch(t *testing.T) {
 	clientID := client.ClientID
 
 	// Generate PKCE
-	codeVerifier := testutil.GenerateRandomString(50)
+	codeVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(codeVerifier))
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
@@ -423,7 +423,7 @@ func TestServer_AuditEventAuthorizationCodeReuse(t *testing.T) {
 	clientID := client.ClientID
 
 	// Generate PKCE
-	codeVerifier := testutil.GenerateRandomString(50)
+	codeVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(codeVerifier))
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 

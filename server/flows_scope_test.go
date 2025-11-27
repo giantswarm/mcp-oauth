@@ -66,7 +66,7 @@ func TestServer_StartAuthorizationFlow_EmptyScope(t *testing.T) {
 		t.Fatalf("RegisterClient() error = %v", err)
 	}
 
-	validVerifier := testutil.GenerateRandomString(50)
+	validVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(validVerifier))
 	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 	clientState := testutil.GenerateRandomString(43)
@@ -181,7 +181,7 @@ func TestServer_StartAuthorizationFlow_WithExplicitScopes(t *testing.T) {
 		t.Fatalf("RegisterClient() error = %v", err)
 	}
 
-	validVerifier := testutil.GenerateRandomString(50)
+	validVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(validVerifier))
 	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 	clientState := testutil.GenerateRandomString(43)
@@ -271,7 +271,7 @@ func TestServer_StartAuthorizationFlow_ScopeIntersection(t *testing.T) {
 		t.Fatalf("RegisterClient() error = %v", err)
 	}
 
-	validVerifier := testutil.GenerateRandomString(50)
+	validVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(validVerifier))
 	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 	clientState := testutil.GenerateRandomString(43)

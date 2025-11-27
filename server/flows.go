@@ -281,9 +281,9 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 
 	// Generate server-side state if client didn't provide one (when AllowNoStateParameter=true)
 	// This is needed for internal tracking even when client state is not required
-	internalState := clientState
-	if internalState == "" {
-		internalState = generateRandomToken()
+	trackingState := clientState
+	if trackingState == "" {
+		trackingState = generateRandomToken()
 		s.Logger.Debug("Generated server-side state for client without state parameter",
 			"client_id", clientID)
 	}
@@ -413,9 +413,9 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 	providerCodeChallenge, providerCodeVerifier := generatePKCEPair()
 
 	// Save authorization state with both client and server PKCE parameters and resource binding
-	// Use internalState (which may be server-generated if client didn't provide state)
+	// Use trackingState (which may be server-generated if client didn't provide state)
 	authState := &storage.AuthorizationState{
-		StateID:              internalState,
+		StateID:              trackingState,
 		OriginalClientState:  clientState, // Empty if client didn't provide state
 		ClientID:             clientID,
 		RedirectURI:          redirectURI,
