@@ -1871,6 +1871,12 @@ func UserInfoFromContext(ctx context.Context) (*providers.UserInfo, bool) {
 	return userInfo, ok
 }
 
+// ContextWithUserInfo creates a context with the given user info.
+// This is useful for testing code that depends on authenticated user context.
+func ContextWithUserInfo(ctx context.Context, userInfo *providers.UserInfo) context.Context {
+	return context.WithValue(ctx, userInfoKey, userInfo)
+}
+
 // validateTokenScopes checks if the token has required scopes for the endpoint.
 // Returns true if validation passes, false if insufficient scopes (response already written).
 func (h *Handler) validateTokenScopes(w http.ResponseWriter, r *http.Request, accessToken string, userInfo *providers.UserInfo, clientIP string) bool {
