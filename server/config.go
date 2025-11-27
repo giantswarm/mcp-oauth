@@ -3,7 +3,9 @@ package server
 import (
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -323,6 +325,13 @@ type Config struct {
 	// Instrumentation settings for observability
 	Instrumentation InstrumentationConfig
 
+	// Interstitial configures the OAuth success interstitial page for custom URL schemes.
+	// Per RFC 8252 Section 7.1, browsers may fail silently on 302 redirects to custom
+	// URL schemes (cursor://, vscode://, etc.). The interstitial page provides visual
+	// feedback and a manual fallback button.
+	// Optional: if nil, the default interstitial page is used.
+	Interstitial *InterstitialConfig
+
 	// ResourceIdentifier is the canonical URI that identifies this MCP resource server (RFC 8707)
 	// Used for audience validation to ensure tokens are only accepted by their intended resource server
 	// If empty, defaults to Issuer value
@@ -460,6 +469,107 @@ type CORSConfig struct {
 	MaxAge int
 }
 
+// InterstitialConfig configures the OAuth success interstitial page
+// displayed when redirecting to custom URL schemes (cursor://, vscode://, etc.)
+//
+// Per RFC 8252 Section 7.1, browsers may fail silently on 302 redirects to custom
+// URL schemes. The interstitial page provides visual feedback and a manual fallback.
+//
+// Configuration Priority:
+//  1. CustomHandler - if set, takes full control of the response
+//  2. CustomTemplate - if set, uses the provided HTML template
+//  3. Branding - if set, customizes the default template's appearance
+//  4. Default - uses the built-in template with standard styling
+type InterstitialConfig struct {
+	// CustomHandler allows complete control over the interstitial response.
+	// When set, this handler is called instead of rendering any template.
+	// The handler receives the redirect URL and app name as request context values.
+	// Use oauth.InterstitialRedirectURL(ctx) and oauth.InterstitialAppName(ctx) to extract them.
+	//
+	// SECURITY: The handler MUST set appropriate security headers.
+	// Use security.SetInterstitialSecurityHeaders() as a baseline.
+	// If you include custom inline scripts, you must update CSP headers accordingly.
+	//
+	// Example:
+	//   CustomHandler: func(w http.ResponseWriter, r *http.Request) {
+	//       redirectURL := oauth.InterstitialRedirectURL(r.Context())
+	//       appName := oauth.InterstitialAppName(r.Context())
+	//       security.SetInterstitialSecurityHeaders(w, "https://auth.example.com")
+	//       // Serve your custom response...
+	//   }
+	CustomHandler func(w http.ResponseWriter, r *http.Request)
+
+	// CustomTemplate is a custom HTML template string using Go's html/template syntax.
+	// Available template variables:
+	//   - {{.RedirectURL}} - The OAuth callback redirect URL (marked safe for href)
+	//   - {{.AppName}} - Human-readable application name (e.g., "Cursor", "Visual Studio Code")
+	//   - All InterstitialBranding fields ({{.LogoURL}}, {{.Title}}, etc.)
+	//
+	// SECURITY: The template is parsed using html/template which auto-escapes HTML.
+	// If you include inline scripts, you must update CSP headers accordingly.
+	// Consider using security.SetInterstitialSecurityHeaders() with custom script hashes.
+	//
+	// Ignored if CustomHandler is set.
+	CustomTemplate string
+
+	// Branding allows customization of the default template's appearance.
+	// This is the simplest way to add your organization's branding without
+	// providing a complete custom template.
+	//
+	// Ignored if CustomHandler or CustomTemplate is set.
+	Branding *InterstitialBranding
+}
+
+// InterstitialBranding configures visual elements of the default interstitial page.
+// All fields are optional - unset fields use the default values.
+type InterstitialBranding struct {
+	// LogoURL is an optional URL to a logo image (PNG, SVG, JPEG).
+	// Must be HTTPS for security (validated at startup).
+	// Leave empty to use the default animated checkmark icon.
+	// Recommended size: 80x80 pixels or larger (displayed at 80px height).
+	LogoURL string
+
+	// LogoAlt is the alt text for the logo image.
+	// Required for accessibility if LogoURL is set.
+	// Default: "Logo" (if LogoURL is set)
+	LogoAlt string
+
+	// Title replaces the "Authorization Successful" heading.
+	// Example: "Connected to Acme Corp"
+	Title string
+
+	// Message replaces the default success message.
+	// Use {{.AppName}} placeholder for the application name.
+	// Example: "You have been authenticated with {{.AppName}}. You can now close this window."
+	// Default: "You have been authenticated successfully. Return to {{.AppName}} to continue."
+	Message string
+
+	// ButtonText replaces the "Open [AppName]" button text.
+	// Use {{.AppName}} placeholder for the application name.
+	// Example: "Return to {{.AppName}}"
+	// Default: "Open {{.AppName}}"
+	ButtonText string
+
+	// PrimaryColor is the primary/accent color for buttons and highlights.
+	// Must be a valid CSS color value (hex, rgb, hsl, or named color).
+	// Examples: "#4F46E5", "rgb(79, 70, 229)", "indigo"
+	// Default: "#00d26a" (green)
+	PrimaryColor string
+
+	// BackgroundGradient is the body background CSS value.
+	// Can be a solid color, gradient, or any valid CSS background value.
+	// Example: "linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%)"
+	// Default: "linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%)"
+	BackgroundGradient string
+
+	// CustomCSS is additional CSS to inject into the page.
+	// This CSS is added after the default styles, allowing overrides.
+	// SECURITY: Must not contain "</style>" to prevent injection attacks.
+	// Validated at startup - server will panic if invalid.
+	// Example: ".container { max-width: 600px; }"
+	CustomCSS string
+}
+
 // AuthorizationEndpoint returns the full URL to the authorization endpoint
 func (c *Config) AuthorizationEndpoint() string {
 	return c.Issuer + EndpointPathAuthorize
@@ -516,6 +626,9 @@ func applySecureDefaults(config *Config, logger *slog.Logger) *Config {
 
 	// Validate endpoint scope requirements (MCP 2025-11-25)
 	validateEndpointScopeRequirements(config, logger)
+
+	// Validate interstitial page configuration (RFC 8252 Section 7.1)
+	validateInterstitialConfig(config, logger)
 
 	// Apply time-based defaults
 	applyTimeDefaults(config)
@@ -955,6 +1068,167 @@ func validateScopeFormat(scope string) error {
 		// Check for printable ASCII range (0x21 to 0x7E, excluding 0x22 and 0x5C)
 		if c < 0x21 || c > 0x7E {
 			return fmt.Errorf("scope contains invalid character at position %d (only printable ASCII allowed)", i)
+		}
+	}
+
+	return nil
+}
+
+// validateInterstitialConfig validates the InterstitialConfig for security and correctness.
+// It checks branding values for injection attacks and logs warnings for custom handlers/templates.
+func validateInterstitialConfig(config *Config, logger *slog.Logger) {
+	// Skip validation if no interstitial configuration
+	if config.Interstitial == nil {
+		return
+	}
+
+	interstitial := config.Interstitial
+
+	// SECURITY: Warn about custom handler - user is responsible for security
+	if interstitial.CustomHandler != nil {
+		logger.Warn("Custom interstitial handler configured",
+			"responsibility", "You are responsible for setting security headers",
+			"recommendation", "Use security.SetInterstitialSecurityHeaders() as a baseline",
+			"csp_note", "If using inline scripts, update CSP headers with script hash")
+	}
+
+	// SECURITY: Warn about custom template - user is responsible for CSP
+	if interstitial.CustomTemplate != "" {
+		logger.Warn("Custom interstitial template configured",
+			"template_length", len(interstitial.CustomTemplate),
+			"csp_note", "If using inline scripts, ensure CSP headers include appropriate hashes")
+	}
+
+	// Validate branding configuration
+	if interstitial.Branding != nil {
+		validateInterstitialBranding(interstitial.Branding, config, logger)
+	}
+}
+
+// validateInterstitialBranding validates the InterstitialBranding configuration
+func validateInterstitialBranding(branding *InterstitialBranding, config *Config, logger *slog.Logger) {
+	// SECURITY: Validate LogoURL is HTTPS or empty
+	if branding.LogoURL != "" {
+		u, err := url.Parse(branding.LogoURL)
+		if err != nil {
+			panic(fmt.Sprintf("Interstitial: invalid LogoURL '%s': %v", branding.LogoURL, err))
+		}
+
+		// Must be HTTPS (unless AllowInsecureHTTP is enabled for development)
+		if u.Scheme != SchemeHTTPS {
+			if config.AllowInsecureHTTP && u.Scheme == SchemeHTTP {
+				logger.Warn("⚠️  Interstitial: HTTP LogoURL allowed for development",
+					"logo_url", branding.LogoURL,
+					"recommendation", "Use HTTPS LogoURL in production")
+			} else {
+				panic(fmt.Sprintf("Interstitial: LogoURL must use HTTPS scheme, got '%s' (or set AllowInsecureHTTP=true for development)", u.Scheme))
+			}
+		}
+
+		// Warn if LogoAlt is not set (accessibility)
+		if branding.LogoAlt == "" {
+			logger.Warn("⚠️  Interstitial: LogoAlt not set for LogoURL",
+				"logo_url", branding.LogoURL,
+				"accessibility", "Consider setting LogoAlt for screen readers")
+		}
+	}
+
+	// SECURITY: Validate CustomCSS doesn't contain injection vectors
+	if branding.CustomCSS != "" {
+		// Check for </style> tag injection
+		if strings.Contains(strings.ToLower(branding.CustomCSS), "</style>") {
+			panic("Interstitial: CustomCSS cannot contain '</style>' tag (injection risk)")
+		}
+
+		// Check for potentially dangerous CSS values
+		dangerousCSSPatterns := []string{
+			"expression(",  // IE CSS expression
+			"javascript:",  // JavaScript URL
+			"behavior:",    // IE CSS behavior
+			"-moz-binding", // Firefox XBL binding
+		}
+		lowerCSS := strings.ToLower(branding.CustomCSS)
+		for _, pattern := range dangerousCSSPatterns {
+			if strings.Contains(lowerCSS, pattern) {
+				panic(fmt.Sprintf("Interstitial: CustomCSS contains potentially dangerous pattern '%s'", pattern))
+			}
+		}
+
+		logger.Debug("Interstitial CustomCSS configured",
+			"css_length", len(branding.CustomCSS))
+	}
+
+	// SECURITY: Validate color values are safe CSS (basic validation)
+	if branding.PrimaryColor != "" {
+		if err := validateCSSColorValue(branding.PrimaryColor); err != nil {
+			panic(fmt.Sprintf("Interstitial: invalid PrimaryColor: %v", err))
+		}
+	}
+
+	// SECURITY: Validate background gradient (basic validation)
+	if branding.BackgroundGradient != "" {
+		if err := validateCSSBackgroundValue(branding.BackgroundGradient); err != nil {
+			panic(fmt.Sprintf("Interstitial: invalid BackgroundGradient: %v", err))
+		}
+	}
+
+	logger.Debug("Interstitial branding configuration validated",
+		"has_logo", branding.LogoURL != "",
+		"has_title", branding.Title != "",
+		"has_message", branding.Message != "",
+		"has_button_text", branding.ButtonText != "",
+		"has_primary_color", branding.PrimaryColor != "",
+		"has_background", branding.BackgroundGradient != "",
+		"has_custom_css", branding.CustomCSS != "")
+}
+
+// validateCSSColorValue validates a CSS color value is safe
+func validateCSSColorValue(color string) error {
+	// Check for dangerous patterns
+	lowerColor := strings.ToLower(color)
+	dangerousPatterns := []string{"expression(", "javascript:", "url("}
+	for _, pattern := range dangerousPatterns {
+		if strings.Contains(lowerColor, pattern) {
+			return fmt.Errorf("color value contains dangerous pattern '%s'", pattern)
+		}
+	}
+
+	// Basic format validation - must match common CSS color formats
+	// Hex: #RGB, #RRGGBB, #RGBA, #RRGGBBAA
+	// RGB/RGBA: rgb(), rgba()
+	// HSL/HSLA: hsl(), hsla()
+	// Named colors: allow alphanumeric
+	colorPattern := regexp.MustCompile(`^(#[0-9a-fA-F]{3,8}|rgba?\([^)]+\)|hsla?\([^)]+\)|[a-zA-Z]+)$`)
+	if !colorPattern.MatchString(strings.TrimSpace(color)) {
+		return fmt.Errorf("invalid CSS color format: '%s'", color)
+	}
+
+	return nil
+}
+
+// validateCSSBackgroundValue validates a CSS background value is safe
+func validateCSSBackgroundValue(bg string) error {
+	// Check for dangerous patterns
+	lowerBg := strings.ToLower(bg)
+	dangerousPatterns := []string{"expression(", "javascript:", "-moz-binding", "behavior:"}
+	for _, pattern := range dangerousPatterns {
+		if strings.Contains(lowerBg, pattern) {
+			return fmt.Errorf("background value contains dangerous pattern '%s'", pattern)
+		}
+	}
+
+	// Allow url() only for HTTPS URLs
+	if strings.Contains(lowerBg, "url(") {
+		// Extract URL from url() and validate it's HTTPS
+		urlPattern := regexp.MustCompile(`url\(['"]?([^'")]+)['"]?\)`)
+		matches := urlPattern.FindAllStringSubmatch(bg, -1)
+		for _, match := range matches {
+			if len(match) > 1 {
+				u, err := url.Parse(match[1])
+				if err != nil || (u.Scheme != "" && u.Scheme != SchemeHTTPS) {
+					return fmt.Errorf("url() in background must use HTTPS: '%s'", match[1])
+				}
+			}
 		}
 	}
 

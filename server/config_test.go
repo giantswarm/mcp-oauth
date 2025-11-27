@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -1288,6 +1289,203 @@ func TestValidateEndpointScopeRequirements(t *testing.T) {
 			if tt.expectWarning && tt.warnSubstr != "" && !strings.Contains(logOutput, tt.warnSubstr) {
 				t.Errorf("Expected warning containing %q, got: %s", tt.warnSubstr, logOutput)
 			}
+		})
+	}
+}
+
+// TestValidateInterstitialConfig tests interstitial configuration validation
+func TestValidateInterstitialConfig(t *testing.T) {
+	tests := []struct {
+		name        string
+		config      *Config
+		wantPanic   bool
+		panicSubstr string
+	}{
+		{
+			name:      "nil interstitial config",
+			config:    &Config{Issuer: "https://example.com"},
+			wantPanic: false,
+		},
+		{
+			name: "valid branding config",
+			config: &Config{
+				Issuer: "https://example.com",
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						LogoURL:            "https://cdn.example.com/logo.svg",
+						LogoAlt:            "Example Logo",
+						Title:              "Welcome",
+						PrimaryColor:       "#4F46E5",
+						BackgroundGradient: "linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%)",
+					},
+				},
+			},
+			wantPanic: false,
+		},
+		{
+			name: "HTTP logo URL without AllowInsecureHTTP",
+			config: &Config{
+				Issuer: "https://example.com",
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						LogoURL: "http://cdn.example.com/logo.svg",
+					},
+				},
+			},
+			wantPanic:   true,
+			panicSubstr: "LogoURL must use HTTPS",
+		},
+		{
+			name: "HTTP logo URL with AllowInsecureHTTP",
+			config: &Config{
+				Issuer:            "http://localhost:8080",
+				AllowInsecureHTTP: true,
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						LogoURL: "http://localhost:8080/logo.svg",
+					},
+				},
+			},
+			wantPanic: false,
+		},
+		{
+			name: "invalid logo URL",
+			config: &Config{
+				Issuer: "https://example.com",
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						LogoURL: "://invalid-url",
+					},
+				},
+			},
+			wantPanic:   true,
+			panicSubstr: "invalid LogoURL",
+		},
+		{
+			name: "CustomCSS with style tag injection",
+			config: &Config{
+				Issuer: "https://example.com",
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						CustomCSS: ".container { color: red; }</style><script>alert('xss')</script>",
+					},
+				},
+			},
+			wantPanic:   true,
+			panicSubstr: "</style>",
+		},
+		{
+			name: "CustomCSS with expression() injection",
+			config: &Config{
+				Issuer: "https://example.com",
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						CustomCSS: ".container { width: expression(alert('xss')); }",
+					},
+				},
+			},
+			wantPanic:   true,
+			panicSubstr: "expression(",
+		},
+		{
+			name: "CustomCSS with javascript: injection",
+			config: &Config{
+				Issuer: "https://example.com",
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						CustomCSS: ".container { background: url(javascript:alert('xss')); }",
+					},
+				},
+			},
+			wantPanic:   true,
+			panicSubstr: "javascript:",
+		},
+		{
+			name: "invalid primary color with expression",
+			config: &Config{
+				Issuer: "https://example.com",
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						PrimaryColor: "expression(alert('xss'))",
+					},
+				},
+			},
+			wantPanic:   true,
+			panicSubstr: "invalid PrimaryColor",
+		},
+		{
+			name: "invalid background with javascript URL",
+			config: &Config{
+				Issuer: "https://example.com",
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						BackgroundGradient: "url(javascript:alert('xss'))",
+					},
+				},
+			},
+			wantPanic:   true,
+			panicSubstr: "invalid BackgroundGradient",
+		},
+		{
+			name: "valid hex color",
+			config: &Config{
+				Issuer: "https://example.com",
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						PrimaryColor: "#FF5733",
+					},
+				},
+			},
+			wantPanic: false,
+		},
+		{
+			name: "valid rgb color",
+			config: &Config{
+				Issuer: "https://example.com",
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						PrimaryColor: "rgb(255, 87, 51)",
+					},
+				},
+			},
+			wantPanic: false,
+		},
+		{
+			name: "valid named color",
+			config: &Config{
+				Issuer: "https://example.com",
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						PrimaryColor: "indigo",
+					},
+				},
+			},
+			wantPanic: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if tt.wantPanic {
+					if r == nil {
+						t.Error("Expected panic but got none")
+					} else {
+						panicMsg := fmt.Sprintf("%v", r)
+						if tt.panicSubstr != "" && !strings.Contains(panicMsg, tt.panicSubstr) {
+							t.Errorf("Panic message should contain %q, got: %s", tt.panicSubstr, panicMsg)
+						}
+					}
+				} else {
+					if r != nil {
+						t.Errorf("Did not expect panic but got: %v", r)
+					}
+				}
+			}()
+
+			logger := slog.New(slog.NewTextHandler(&strings.Builder{}, nil))
+			validateInterstitialConfig(tt.config, logger)
 		})
 	}
 }

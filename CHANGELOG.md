@@ -30,6 +30,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Backward Compatibility**: HTTP/HTTPS redirect URIs continue to use standard 302 redirects
   - **Tests**: Comprehensive unit tests for URL scheme detection, app name mapping, and interstitial rendering
 
+- **Configurable Interstitial Page Branding**
+  - **Feature**: Allow library users to customize the interstitial page with their own branding
+  - **Configuration**: Three levels of customization via `server.InterstitialConfig`:
+    * **Custom Handler**: Full control with `CustomHandler func(w http.ResponseWriter, r *http.Request)` - user is responsible for all security headers
+    * **Custom Template**: Provide a custom HTML template via `CustomTemplate string` using Go's `html/template` syntax
+    * **Branding Config**: Simple customization via `InterstitialBranding` struct for logo, colors, text, and CSS
+  - **Branding Options** (`InterstitialBranding`):
+    * `LogoURL` - Custom logo image URL (HTTPS required)
+    * `LogoAlt` - Alt text for accessibility
+    * `Title` - Custom page title
+    * `Message` - Custom success message
+    * `ButtonText` - Custom button text
+    * `PrimaryColor` - CSS color for buttons/highlights
+    * `BackgroundGradient` - CSS background value
+    * `CustomCSS` - Additional CSS to inject
+  - **Security Validation**:
+    * Logo URLs validated to require HTTPS (unless `AllowInsecureHTTP` is set for development)
+    * CSS values validated against injection attacks (expression(), javascript:, behavior:, etc.)
+    * CustomCSS validated to prevent `</style>` tag injection
+  - **Context Helpers**: For custom handlers, helper functions provide access to OAuth context:
+    * `oauth.InterstitialRedirectURL(ctx)` - Get the redirect URL
+    * `oauth.InterstitialAppName(ctx)` - Get the human-readable app name
+  - **Tests**: Comprehensive tests for branding, custom template, custom handler, and security validation
+
 - **Comprehensive MCP 2025-11-25 Documentation**
   - **Feature**: Complete documentation package for MCP 2025-11-25 specification compliance
   - **New Documentation**:

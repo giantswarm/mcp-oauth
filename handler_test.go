@@ -3602,7 +3602,8 @@ func TestHandler_ServeSuccessInterstitial(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
-			handler.serveSuccessInterstitial(w, tt.redirectURL)
+			r := httptest.NewRequest(http.MethodGet, "/oauth/callback", nil)
+			handler.serveSuccessInterstitial(w, r, tt.redirectURL)
 
 			if w.Code != http.StatusOK {
 				t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
@@ -3647,5 +3648,304 @@ func TestHandler_ServeSuccessInterstitial(t *testing.T) {
 				t.Error("CSP should contain SHA-256 hash for inline script")
 			}
 		})
+	}
+}
+
+// TestHandler_ServeSuccessInterstitial_Branding tests interstitial page with branding configuration
+func TestHandler_ServeSuccessInterstitial_Branding(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	// Configure with branding
+	config := &server.Config{
+		Issuer: testIssuer,
+		Interstitial: &server.InterstitialConfig{
+			Branding: &server.InterstitialBranding{
+				LogoURL:            "https://cdn.example.com/logo.svg",
+				LogoAlt:            "Example Corp Logo",
+				Title:              "Connected to Example Corp",
+				Message:            "Welcome! You are now authenticated.",
+				ButtonText:         "Return to App",
+				PrimaryColor:       "#4F46E5",
+				BackgroundGradient: "linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%)",
+				CustomCSS:          ".container { max-width: 600px; }",
+			},
+		},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/oauth/callback", nil)
+	handler.serveSuccessInterstitial(w, r, "cursor://oauth/callback?code=abc")
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	body := w.Body.String()
+
+	// Check custom branding elements
+	if !strings.Contains(body, "https://cdn.example.com/logo.svg") {
+		t.Error("Response should contain custom logo URL")
+	}
+	if !strings.Contains(body, "Example Corp Logo") {
+		t.Error("Response should contain custom logo alt text")
+	}
+	if !strings.Contains(body, "Connected to Example Corp") {
+		t.Error("Response should contain custom title")
+	}
+	if !strings.Contains(body, "Welcome! You are now authenticated.") {
+		t.Error("Response should contain custom message")
+	}
+	if !strings.Contains(body, "Return to App") {
+		t.Error("Response should contain custom button text")
+	}
+	if !strings.Contains(body, "#4F46E5") {
+		t.Error("Response should contain custom primary color")
+	}
+	if !strings.Contains(body, "linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%)") {
+		t.Error("Response should contain custom background gradient")
+	}
+	if !strings.Contains(body, ".container { max-width: 600px; }") {
+		t.Error("Response should contain custom CSS")
+	}
+
+	// Should NOT contain default success icon (since logo is set)
+	if strings.Contains(body, `<div class="success-icon">`) {
+		t.Error("Response should NOT contain default success icon when logo is configured")
+	}
+}
+
+// TestHandler_ServeSuccessInterstitial_CustomTemplate tests interstitial with custom template
+func TestHandler_ServeSuccessInterstitial_CustomTemplate(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	customTemplate := `<!DOCTYPE html>
+<html>
+<head><title>Custom Auth Page</title></head>
+<body>
+<h1>Custom Success - {{.AppName}}</h1>
+<a href="{{.RedirectURL}}">Continue</a>
+</body>
+</html>`
+
+	config := &server.Config{
+		Issuer: testIssuer,
+		Interstitial: &server.InterstitialConfig{
+			CustomTemplate: customTemplate,
+		},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/oauth/callback", nil)
+	handler.serveSuccessInterstitial(w, r, "cursor://oauth/callback?code=abc")
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	body := w.Body.String()
+
+	// Check custom template content
+	if !strings.Contains(body, "Custom Auth Page") {
+		t.Error("Response should contain custom template title")
+	}
+	if !strings.Contains(body, "Custom Success - Cursor") {
+		t.Error("Response should contain custom heading with app name")
+	}
+	if !strings.Contains(body, "cursor://oauth/callback") {
+		t.Error("Response should contain redirect URL")
+	}
+
+	// Should NOT contain default template content
+	if strings.Contains(body, "Authorization Successful") {
+		t.Error("Response should NOT contain default title when custom template is used")
+	}
+}
+
+// TestHandler_ServeSuccessInterstitial_CustomHandler tests interstitial with custom handler
+func TestHandler_ServeSuccessInterstitial_CustomHandler(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	var capturedRedirectURL, capturedAppName string
+
+	config := &server.Config{
+		Issuer: testIssuer,
+		Interstitial: &server.InterstitialConfig{
+			CustomHandler: func(w http.ResponseWriter, r *http.Request) {
+				// Extract values from context using helper functions
+				capturedRedirectURL = InterstitialRedirectURL(r.Context())
+				capturedAppName = InterstitialAppName(r.Context())
+
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("<html><body>Custom Handler Response</body></html>"))
+			},
+		},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/oauth/callback", nil)
+	handler.serveSuccessInterstitial(w, r, "vscode://extension/callback?code=abc")
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	body := w.Body.String()
+
+	// Check custom handler response
+	if !strings.Contains(body, "Custom Handler Response") {
+		t.Error("Response should contain custom handler output")
+	}
+
+	// Verify context values were passed correctly
+	if capturedRedirectURL != "vscode://extension/callback?code=abc" {
+		t.Errorf("InterstitialRedirectURL() = %q, want %q", capturedRedirectURL, "vscode://extension/callback?code=abc")
+	}
+	if capturedAppName != "Visual Studio Code" {
+		t.Errorf("InterstitialAppName() = %q, want %q", capturedAppName, "Visual Studio Code")
+	}
+
+	// Should NOT contain default template content
+	if strings.Contains(body, "Authorization Successful") {
+		t.Error("Response should NOT contain default content when custom handler is used")
+	}
+}
+
+// TestInterstitialContextHelpers tests the context helper functions
+func TestInterstitialContextHelpers(t *testing.T) {
+	ctx := context.Background()
+
+	// Test with empty context
+	if got := InterstitialRedirectURL(ctx); got != "" {
+		t.Errorf("InterstitialRedirectURL(empty ctx) = %q, want empty string", got)
+	}
+	if got := InterstitialAppName(ctx); got != "" {
+		t.Errorf("InterstitialAppName(empty ctx) = %q, want empty string", got)
+	}
+
+	// Test with values set
+	ctx = context.WithValue(ctx, interstitialRedirectURLKey, "cursor://callback")
+	ctx = context.WithValue(ctx, interstitialAppNameKey, "Cursor")
+
+	if got := InterstitialRedirectURL(ctx); got != "cursor://callback" {
+		t.Errorf("InterstitialRedirectURL() = %q, want %q", got, "cursor://callback")
+	}
+	if got := InterstitialAppName(ctx); got != "Cursor" {
+		t.Errorf("InterstitialAppName() = %q, want %q", got, "Cursor")
+	}
+}
+
+// TestHandler_ServeCallback_CustomURLScheme_WithBranding tests callback with branding
+func TestHandler_ServeCallback_CustomURLScheme_WithBranding(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	config := &server.Config{
+		Issuer: testIssuer,
+		Interstitial: &server.InterstitialConfig{
+			Branding: &server.InterstitialBranding{
+				Title:        "Welcome Back!",
+				PrimaryColor: "#FF5733",
+			},
+		},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+
+	// Register a client with custom URL scheme redirect
+	client, _, err := srv.RegisterClient(ctx,
+		"Branded Test Client",
+		"public",
+		"none",
+		[]string{"cursor://oauth/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	// Create authorization state
+	verifier := testutil.GenerateRandomString(50)
+	hash := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
+	clientState := testutil.GenerateRandomString(43)
+
+	_, err = srv.StartAuthorizationFlow(ctx,
+		client.ClientID,
+		"cursor://oauth/callback",
+		"openid email",
+		"",
+		challenge,
+		"S256",
+		clientState,
+	)
+	if err != nil {
+		t.Fatalf("StartAuthorizationFlow() error = %v", err)
+	}
+
+	authState, err := store.GetAuthorizationState(ctx, clientState)
+	if err != nil {
+		t.Fatalf("GetAuthorizationState() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/oauth/callback?state="+authState.ProviderState+"&code=provider-auth-code",
+		nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeCallback(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d for custom URL scheme with branding", w.Code, http.StatusOK)
+	}
+
+	body := w.Body.String()
+
+	// Check custom branding
+	if !strings.Contains(body, "Welcome Back!") {
+		t.Error("Response should contain custom title from branding config")
+	}
+	if !strings.Contains(body, "#FF5733") {
+		t.Error("Response should contain custom primary color from branding config")
 	}
 }
