@@ -2,6 +2,25 @@
 
 A **provider-agnostic** library for implementing OAuth 2.1 Authorization Servers for [Model Context Protocol (MCP)](https://modelcontextprotocol.io) servers, with support for multiple identity providers.
 
+## MCP Specification Compliance
+
+This library implements the authorization section of the MCP specification.
+
+| Specification Version | Support Status | Documentation |
+|-----------------------|----------------|---------------|
+| [2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization) | ✅ Full Support | [Migration Guide](./docs/mcp-2025-11-25.md), [Discovery Guide](./docs/discovery.md) |
+| 2025-06-18 (previous) | ✅ Full Support | Backward compatible |
+
+**Key MCP 2025-11-25 Features:**
+- Protected Resource Metadata (RFC 9728) for automatic discovery
+- Enhanced WWW-Authenticate headers with scope guidance
+- Scope selection strategy for clients
+- Insufficient scope error handling for step-up authorization
+- Resource Parameter support (RFC 8707) for token audience binding
+- Client ID Metadata Documents for distributed client verification
+
+See the [MCP 2025-11-25 Migration Guide](./docs/mcp-2025-11-25.md) for detailed feature documentation and configuration examples.
+
 ## ✨ Key Features
 
 ### 🔌 Provider Abstraction
@@ -235,6 +254,10 @@ server, _ := oauth.NewServer(
 
 The library implements MCP 2025-11-25 specification for Protected Resource Metadata discovery via WWW-Authenticate headers. When enabled, all 401 Unauthorized responses include enhanced headers that help clients discover the authorization server and required scopes.
 
+For comprehensive discovery documentation, see:
+- [Discovery Mechanisms Guide](./docs/discovery.md) - Complete guide to OAuth discovery
+- [MCP 2025-11-25 Features](./docs/mcp-2025-11-25.md) - New features and migration guide
+
 **Configuration:**
 
 ```go
@@ -268,9 +291,15 @@ WWW-Authenticate: Bearer resource_metadata="https://auth.example.com/.well-known
 - **Header Size Limits**: If configuring many scopes, be aware that some proxies/servers have HTTP header size limits (typically 8KB). The library will log warnings if you exceed 50 scopes.
 
 **Specification Compliance:**
-- RFC 6750 Section 3: Bearer token challenge format
-- RFC 9728: Protected Resource Metadata discovery
-- MCP 2025-11-25: MUST include resource_metadata in WWW-Authenticate
+- [RFC 6750 Section 3](https://datatracker.ietf.org/doc/html/rfc6750#section-3): Bearer token challenge format
+- [RFC 9728](https://datatracker.ietf.org/doc/html/rfc9728): Protected Resource Metadata discovery
+- [RFC 8707](https://datatracker.ietf.org/doc/html/rfc8707): Resource Indicators for OAuth 2.0
+- [MCP 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization): MUST include resource_metadata in WWW-Authenticate
+
+**Further Reading:**
+- [Discovery Mechanisms Documentation](./docs/discovery.md)
+- [MCP 2025-11-25 Migration Guide](./docs/mcp-2025-11-25.md)
+- [Security Architecture](./SECURITY_ARCHITECTURE.md)
 
 ### Token Encryption
 
