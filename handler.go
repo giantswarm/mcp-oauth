@@ -585,7 +585,7 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 		}
 
 		// Store user info in context
-		ctx := context.WithValue(r.Context(), userInfoKey, userInfo)
+		ctx := ContextWithUserInfo(r.Context(), userInfo)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -1873,6 +1873,8 @@ func UserInfoFromContext(ctx context.Context) (*providers.UserInfo, bool) {
 
 // ContextWithUserInfo creates a context with the given user info.
 // This is useful for testing code that depends on authenticated user context.
+// Note: if userInfo is nil, UserInfoFromContext will return (nil, true).
+// Callers should check both the ok value and nil-ness of the returned userInfo.
 func ContextWithUserInfo(ctx context.Context, userInfo *providers.UserInfo) context.Context {
 	return context.WithValue(ctx, userInfoKey, userInfo)
 }
