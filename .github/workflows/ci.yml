@@ -7,12 +7,44 @@ on:
     branches: [ main, develop ]
 
 jobs:
+  # Determine Go versions from go.mod for consistent testing
+  setup:
+    name: Setup Go Versions
+    runs-on: ubuntu-latest
+    outputs:
+      go-version: ${{ steps.go-version.outputs.version }}
+      go-matrix: ${{ steps.go-version.outputs.matrix }}
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+    
+    - name: Extract Go version from go.mod
+      id: go-version
+      run: |
+        # Extract version from go.mod (e.g., "1.24.0" -> "1.24")
+        GO_VERSION=$(grep '^go ' go.mod | awk '{print $2}' | cut -d. -f1,2)
+        echo "version=${GO_VERSION}" >> $GITHUB_OUTPUT
+        
+        # Calculate previous minor version for compatibility testing
+        MAJOR=$(echo $GO_VERSION | cut -d. -f1)
+        MINOR=$(echo $GO_VERSION | cut -d. -f2)
+        PREV_MINOR=$((MINOR - 1))
+        PREV_VERSION="${MAJOR}.${PREV_MINOR}"
+        
+        # Create matrix JSON array with current and previous versions
+        echo "matrix=[\"${PREV_VERSION}\", \"${GO_VERSION}\"]" >> $GITHUB_OUTPUT
+        
+        echo "Go version from go.mod: ${GO_VERSION}"
+        echo "Previous version: ${PREV_VERSION}"
+        echo "Test matrix: [\"${PREV_VERSION}\", \"${GO_VERSION}\"]"
+
   test:
     name: Test
     runs-on: ubuntu-latest
+    needs: setup
     strategy:
       matrix:
-        go-version: ['1.23', '1.24']
+        go-version: ${{ fromJson(needs.setup.outputs.go-matrix) }}
     
     steps:
     - name: Checkout code
@@ -59,7 +91,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.24'
+        go-version-file: go.mod
     
     - name: Run golangci-lint
       uses: golangci/golangci-lint-action@v9
@@ -81,10 +113,9 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.24'
+        go-version-file: go.mod
     
     - name: Build example
       run: |
         cd examples/${{ matrix.example }}
         go build -v ./...
-
