@@ -15,6 +15,10 @@ type Provider interface {
 	// Name returns the provider name (e.g., "google", "github", "microsoft")
 	Name() string
 
+	// DefaultScopes returns the provider's default scopes used when the client doesn't
+	// request specific scopes. These are the scopes configured when the provider was created.
+	DefaultScopes() []string
+
 	// AuthorizationURL generates the URL to redirect users for authentication
 	// codeChallenge and codeChallengeMethod are for PKCE (pass empty strings to disable)
 	// scopes is the list of scopes to request (if empty, provider's default scopes are used)

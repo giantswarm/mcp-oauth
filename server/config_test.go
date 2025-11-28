@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -418,39 +419,49 @@ func TestValidateProviderRevocationConfig(t *testing.T) {
 
 func TestConfig_EndpointHelpers(t *testing.T) {
 	tests := []struct {
-		name      string
-		issuer    string
-		wantAuth  string
-		wantToken string
-		wantReg   string
+		name           string
+		issuer         string
+		wantAuth       string
+		wantToken      string
+		wantReg        string
+		wantRevoke     string
+		wantIntrospect string
 	}{
 		{
-			name:      "standard HTTPS issuer",
-			issuer:    "https://auth.example.com",
-			wantAuth:  "https://auth.example.com/oauth/authorize",
-			wantToken: "https://auth.example.com/oauth/token",
-			wantReg:   "https://auth.example.com/oauth/register",
+			name:           "standard HTTPS issuer",
+			issuer:         "https://auth.example.com",
+			wantAuth:       "https://auth.example.com/oauth/authorize",
+			wantToken:      "https://auth.example.com/oauth/token",
+			wantReg:        "https://auth.example.com/oauth/register",
+			wantRevoke:     "https://auth.example.com/oauth/revoke",
+			wantIntrospect: "https://auth.example.com/oauth/introspect",
 		},
 		{
-			name:      "issuer with port",
-			issuer:    "https://auth.example.com:8443",
-			wantAuth:  "https://auth.example.com:8443/oauth/authorize",
-			wantToken: "https://auth.example.com:8443/oauth/token",
-			wantReg:   "https://auth.example.com:8443/oauth/register",
+			name:           "issuer with port",
+			issuer:         "https://auth.example.com:8443",
+			wantAuth:       "https://auth.example.com:8443/oauth/authorize",
+			wantToken:      "https://auth.example.com:8443/oauth/token",
+			wantReg:        "https://auth.example.com:8443/oauth/register",
+			wantRevoke:     "https://auth.example.com:8443/oauth/revoke",
+			wantIntrospect: "https://auth.example.com:8443/oauth/introspect",
 		},
 		{
-			name:      "localhost development",
-			issuer:    "http://localhost:3000",
-			wantAuth:  "http://localhost:3000/oauth/authorize",
-			wantToken: "http://localhost:3000/oauth/token",
-			wantReg:   "http://localhost:3000/oauth/register",
+			name:           "localhost development",
+			issuer:         "http://localhost:3000",
+			wantAuth:       "http://localhost:3000/oauth/authorize",
+			wantToken:      "http://localhost:3000/oauth/token",
+			wantReg:        "http://localhost:3000/oauth/register",
+			wantRevoke:     "http://localhost:3000/oauth/revoke",
+			wantIntrospect: "http://localhost:3000/oauth/introspect",
 		},
 		{
-			name:      "issuer with trailing slash",
-			issuer:    "https://auth.example.com/",
-			wantAuth:  "https://auth.example.com//oauth/authorize",
-			wantToken: "https://auth.example.com//oauth/token",
-			wantReg:   "https://auth.example.com//oauth/register",
+			name:           "issuer with trailing slash",
+			issuer:         "https://auth.example.com/",
+			wantAuth:       "https://auth.example.com//oauth/authorize",
+			wantToken:      "https://auth.example.com//oauth/token",
+			wantReg:        "https://auth.example.com//oauth/register",
+			wantRevoke:     "https://auth.example.com//oauth/revoke",
+			wantIntrospect: "https://auth.example.com//oauth/introspect",
 		},
 	}
 
@@ -470,6 +481,14 @@ func TestConfig_EndpointHelpers(t *testing.T) {
 
 			if got := config.RegistrationEndpoint(); got != tt.wantReg {
 				t.Errorf("RegistrationEndpoint() = %q, want %q", got, tt.wantReg)
+			}
+
+			if got := config.RevocationEndpoint(); got != tt.wantRevoke {
+				t.Errorf("RevocationEndpoint() = %q, want %q", got, tt.wantRevoke)
+			}
+
+			if got := config.IntrospectionEndpoint(); got != tt.wantIntrospect {
+				t.Errorf("IntrospectionEndpoint() = %q, want %q", got, tt.wantIntrospect)
 			}
 		})
 	}
@@ -1070,6 +1089,403 @@ func TestConfig_ProtectedResourceMetadataEndpoint(t *testing.T) {
 			if got := config.ProtectedResourceMetadataEndpoint(); got != tt.want {
 				t.Errorf("ProtectedResourceMetadataEndpoint() = %q, want %q", got, tt.want)
 			}
+		})
+	}
+}
+
+// Scope format validation tests (RFC 6749 Section 3.3)
+
+func TestValidateScopeFormat(t *testing.T) {
+	tests := []struct {
+		name      string
+		scope     string
+		wantError bool
+		errSubstr string
+	}{
+		{
+			name:      "valid simple scope",
+			scope:     "read",
+			wantError: false,
+		},
+		{
+			name:      "valid scope with colon",
+			scope:     "files:read",
+			wantError: false,
+		},
+		{
+			name:      "valid scope with hyphen",
+			scope:     "files-read",
+			wantError: false,
+		},
+		{
+			name:      "valid scope with underscore",
+			scope:     "files_read",
+			wantError: false,
+		},
+		{
+			name:      "valid scope with slash",
+			scope:     "api/v1",
+			wantError: false,
+		},
+		{
+			name:      "valid scope with dot",
+			scope:     "files.read",
+			wantError: false,
+		},
+		{
+			name:      "valid scope with multiple special chars",
+			scope:     "mcp:files-read_v1/api",
+			wantError: false,
+		},
+		{
+			name:      "empty scope",
+			scope:     "",
+			wantError: true,
+			errSubstr: "cannot be empty",
+		},
+		{
+			name:      "scope with space",
+			scope:     "files read",
+			wantError: true,
+			errSubstr: "cannot contain space",
+		},
+		{
+			name:      "scope with double quote",
+			scope:     `files:"read"`,
+			wantError: true,
+			errSubstr: "cannot contain double-quote",
+		},
+		{
+			name:      "scope with backslash",
+			scope:     `files:\read`,
+			wantError: true,
+			errSubstr: "cannot contain backslash",
+		},
+		{
+			name:      "scope with non-printable char",
+			scope:     "files\x00read",
+			wantError: true,
+			errSubstr: "invalid character",
+		},
+		{
+			name:      "scope with control char",
+			scope:     "files\x1fread",
+			wantError: true,
+			errSubstr: "invalid character",
+		},
+		{
+			name:      "scope with DEL char",
+			scope:     "files\x7fread",
+			wantError: true,
+			errSubstr: "invalid character",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateScopeFormat(tt.scope)
+
+			if tt.wantError {
+				if err == nil {
+					t.Errorf("Expected error for scope %q, got nil", tt.scope)
+				} else if tt.errSubstr != "" && !strings.Contains(err.Error(), tt.errSubstr) {
+					t.Errorf("Expected error containing %q, got: %s", tt.errSubstr, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error for scope %q: %s", tt.scope, err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateEndpointScopeRequirements(t *testing.T) {
+	tests := []struct {
+		name          string
+		pathScopes    map[string][]string
+		methodScopes  map[string]map[string][]string
+		expectWarning bool
+		warnSubstr    string
+	}{
+		{
+			name: "valid path scopes",
+			pathScopes: map[string][]string{
+				"/api/files/*": {"files:read", "files:write"},
+			},
+			expectWarning: false,
+		},
+		{
+			name: "valid method scopes",
+			methodScopes: map[string]map[string][]string{
+				"/api/files/*": {
+					"GET":  {"files:read"},
+					"POST": {"files:write"},
+				},
+			},
+			expectWarning: false,
+		},
+		{
+			name: "invalid scope in path scopes",
+			pathScopes: map[string][]string{
+				"/api/files/*": {"files:read", "files write"}, // space is invalid
+			},
+			expectWarning: true,
+			warnSubstr:    "Invalid scope format",
+		},
+		{
+			name: "invalid scope in method scopes",
+			methodScopes: map[string]map[string][]string{
+				"/api/files/*": {
+					"GET": {"files:read", `files:"write"`}, // double quote is invalid
+				},
+			},
+			expectWarning: true,
+			warnSubstr:    "Invalid scope format",
+		},
+		{
+			name: "lowercase method warning",
+			methodScopes: map[string]map[string][]string{
+				"/api/files/*": {
+					"get": {"files:read"}, // lowercase
+				},
+			},
+			expectWarning: true,
+			warnSubstr:    "should be uppercase",
+		},
+		{
+			name: "wildcard method is valid",
+			methodScopes: map[string]map[string][]string{
+				"/api/files/*": {
+					"*": {"files:read"},
+				},
+			},
+			expectWarning: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+			config := &Config{
+				EndpointScopeRequirements:       tt.pathScopes,
+				EndpointMethodScopeRequirements: tt.methodScopes,
+			}
+
+			validateEndpointScopeRequirements(config, logger)
+
+			logOutput := buf.String()
+			hasWarning := strings.Contains(logOutput, "Invalid scope format") ||
+				strings.Contains(logOutput, "should be uppercase")
+
+			if tt.expectWarning && !hasWarning {
+				t.Errorf("Expected warning but got none. Log: %s", logOutput)
+			}
+			if !tt.expectWarning && hasWarning {
+				t.Errorf("Did not expect warning but got one. Log: %s", logOutput)
+			}
+			if tt.expectWarning && tt.warnSubstr != "" && !strings.Contains(logOutput, tt.warnSubstr) {
+				t.Errorf("Expected warning containing %q, got: %s", tt.warnSubstr, logOutput)
+			}
+		})
+	}
+}
+
+// TestValidateInterstitialConfig tests interstitial configuration validation
+func TestValidateInterstitialConfig(t *testing.T) {
+	tests := []struct {
+		name        string
+		config      *Config
+		wantPanic   bool
+		panicSubstr string
+	}{
+		{
+			name:      "nil interstitial config",
+			config:    &Config{Issuer: "https://example.com"},
+			wantPanic: false,
+		},
+		{
+			name: "valid branding config",
+			config: &Config{
+				Issuer: "https://example.com",
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						LogoURL:            "https://cdn.example.com/logo.svg",
+						LogoAlt:            "Example Logo",
+						Title:              "Welcome",
+						PrimaryColor:       "#4F46E5",
+						BackgroundGradient: "linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%)",
+					},
+				},
+			},
+			wantPanic: false,
+		},
+		{
+			name: "HTTP logo URL without AllowInsecureHTTP",
+			config: &Config{
+				Issuer: "https://example.com",
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						LogoURL: "http://cdn.example.com/logo.svg",
+					},
+				},
+			},
+			wantPanic:   true,
+			panicSubstr: "LogoURL must use HTTPS",
+		},
+		{
+			name: "HTTP logo URL with AllowInsecureHTTP",
+			config: &Config{
+				Issuer:            "http://localhost:8080",
+				AllowInsecureHTTP: true,
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						LogoURL: "http://localhost:8080/logo.svg",
+					},
+				},
+			},
+			wantPanic: false,
+		},
+		{
+			name: "invalid logo URL",
+			config: &Config{
+				Issuer: "https://example.com",
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						LogoURL: "://invalid-url",
+					},
+				},
+			},
+			wantPanic:   true,
+			panicSubstr: "invalid LogoURL",
+		},
+		{
+			name: "CustomCSS with style tag injection",
+			config: &Config{
+				Issuer: "https://example.com",
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						CustomCSS: ".container { color: red; }</style><script>alert('xss')</script>",
+					},
+				},
+			},
+			wantPanic:   true,
+			panicSubstr: "</style>",
+		},
+		{
+			name: "CustomCSS with expression() injection",
+			config: &Config{
+				Issuer: "https://example.com",
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						CustomCSS: ".container { width: expression(alert('xss')); }",
+					},
+				},
+			},
+			wantPanic:   true,
+			panicSubstr: "expression(",
+		},
+		{
+			name: "CustomCSS with javascript: injection",
+			config: &Config{
+				Issuer: "https://example.com",
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						CustomCSS: ".container { background: url(javascript:alert('xss')); }",
+					},
+				},
+			},
+			wantPanic:   true,
+			panicSubstr: "javascript:",
+		},
+		{
+			name: "invalid primary color with expression",
+			config: &Config{
+				Issuer: "https://example.com",
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						PrimaryColor: "expression(alert('xss'))",
+					},
+				},
+			},
+			wantPanic:   true,
+			panicSubstr: "invalid PrimaryColor",
+		},
+		{
+			name: "invalid background with javascript URL",
+			config: &Config{
+				Issuer: "https://example.com",
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						BackgroundGradient: "url(javascript:alert('xss'))",
+					},
+				},
+			},
+			wantPanic:   true,
+			panicSubstr: "invalid BackgroundGradient",
+		},
+		{
+			name: "valid hex color",
+			config: &Config{
+				Issuer: "https://example.com",
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						PrimaryColor: "#FF5733",
+					},
+				},
+			},
+			wantPanic: false,
+		},
+		{
+			name: "valid rgb color",
+			config: &Config{
+				Issuer: "https://example.com",
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						PrimaryColor: "rgb(255, 87, 51)",
+					},
+				},
+			},
+			wantPanic: false,
+		},
+		{
+			name: "valid named color",
+			config: &Config{
+				Issuer: "https://example.com",
+				Interstitial: &InterstitialConfig{
+					Branding: &InterstitialBranding{
+						PrimaryColor: "indigo",
+					},
+				},
+			},
+			wantPanic: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if tt.wantPanic {
+					if r == nil {
+						t.Error("Expected panic but got none")
+					} else {
+						panicMsg := fmt.Sprintf("%v", r)
+						if tt.panicSubstr != "" && !strings.Contains(panicMsg, tt.panicSubstr) {
+							t.Errorf("Panic message should contain %q, got: %s", tt.panicSubstr, panicMsg)
+						}
+					}
+				} else {
+					if r != nil {
+						t.Errorf("Did not expect panic but got: %v", r)
+					}
+				}
+			}()
+
+			logger := slog.New(slog.NewTextHandler(&strings.Builder{}, nil))
+			validateInterstitialConfig(tt.config, logger)
 		})
 	}
 }

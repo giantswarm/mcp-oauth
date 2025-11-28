@@ -62,6 +62,45 @@ export GOOGLE_CLIENT_SECRET="your-secret"
 go run main.go
 ```
 
+### [MCP 2025-11-25](./mcp-2025-11-25)
+
+Demonstrates new MCP 2025-11-25 specification features.
+
+**Features:**
+- Protected Resource Metadata (RFC 9728)
+- Enhanced WWW-Authenticate headers
+- Scope discovery and validation
+- Resource parameter binding (RFC 8707)
+
+**Best for:** MCP specification compliance, modern OAuth discovery
+
+```bash
+cd mcp-2025-11-25
+export GOOGLE_CLIENT_ID="your-id"
+export GOOGLE_CLIENT_SECRET="your-secret"
+go run main.go
+```
+
+### [Prometheus](./prometheus)
+
+Demonstrates OpenTelemetry instrumentation with Prometheus metrics.
+
+**Features:**
+- Prometheus metrics endpoint
+- OAuth flow metrics
+- Security event metrics
+- Performance monitoring
+
+**Best for:** Observability, production monitoring
+
+```bash
+cd prometheus
+export GOOGLE_CLIENT_ID="your-id"
+export GOOGLE_CLIENT_SECRET="your-secret"
+go run main.go
+# Visit http://localhost:8080/metrics
+```
+
 ## Quick Start
 
 1. **Choose an example** based on your needs
@@ -77,7 +116,7 @@ All examples require Google OAuth credentials:
 2. Create a project
 3. Enable required APIs (Gmail, Drive, etc.)
 4. Create OAuth 2.0 credentials (Web application)
-5. Add authorized redirect URI: `http://localhost:8080/oauth/google/callback`
+5. Add authorized redirect URI: `http://localhost:8080/oauth/callback`
 6. Copy Client ID and Secret
 
 ## Environment Variables
@@ -189,12 +228,14 @@ For production use, see the [production example](./production) and consider:
    - Incident response
    - Performance tuning
 
-## Additional Resources
+## Documentation
 
-- [Main README](../README.md) - Full library documentation
+- [Getting Started](../docs/getting-started.md) - Setup guide
+- [Configuration Guide](../docs/configuration.md) - All configuration options
+- [Security Guide](../docs/security.md) - Security features and best practices
+- [Observability](../docs/observability.md) - Metrics and tracing
 - [API Reference](https://pkg.go.dev/github.com/giantswarm/mcp-oauth) - Godoc
 - [Contributing Guide](../CONTRIBUTING.md) - How to contribute
-- [Security Policy](../SECURITY.md) - Security guidelines
 
 ## Need Help?
 

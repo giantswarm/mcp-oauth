@@ -16,6 +16,9 @@ type MockProvider struct {
 	// NameFunc is called when Name() is invoked
 	NameFunc func() string
 
+	// DefaultScopesFunc is called when DefaultScopes() is invoked
+	DefaultScopesFunc func() []string
+
 	// AuthorizationURLFunc is called when AuthorizationURL() is invoked
 	AuthorizationURLFunc func(state string, codeChallenge string, codeChallengeMethod string, scopes []string) string
 
@@ -47,6 +50,9 @@ func NewMockProvider() *MockProvider {
 		CallCounts: make(map[string]int),
 		NameFunc: func() string {
 			return "mock"
+		},
+		DefaultScopesFunc: func() []string {
+			return []string{"openid", "email", "profile"}
 		},
 		AuthorizationURLFunc: func(state string, codeChallenge string, codeChallengeMethod string, scopes []string) string {
 			return fmt.Sprintf("https://mock.example.com/authorize?state=%s&code_challenge=%s&code_challenge_method=%s", state, codeChallenge, codeChallengeMethod)
@@ -97,6 +103,19 @@ func (m *MockProvider) Name() string {
 	// Call user function WITHOUT holding lock (deadlock prevention)
 	if fn == nil {
 		return "mock" // Safe default
+	}
+	return fn()
+}
+
+// DefaultScopes returns the provider's default scopes
+func (m *MockProvider) DefaultScopes() []string {
+	m.mu.Lock()
+	m.CallCounts["DefaultScopes"]++
+	fn := m.DefaultScopesFunc
+	m.mu.Unlock()
+
+	if fn == nil {
+		return []string{"openid", "email", "profile"} // Safe default
 	}
 	return fn()
 }

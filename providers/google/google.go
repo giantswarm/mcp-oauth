@@ -81,6 +81,17 @@ func (p *Provider) Name() string {
 	return "google"
 }
 
+// DefaultScopes returns the provider's configured default scopes.
+// Returns a deep copy to prevent external modification.
+func (p *Provider) DefaultScopes() []string {
+	if p.Scopes == nil {
+		return nil
+	}
+	scopes := make([]string, len(p.Scopes))
+	copy(scopes, p.Scopes)
+	return scopes
+}
+
 // AuthorizationURL generates the Google OAuth authorization URL with optional PKCE.
 // Supports OAuth 2.1 defense-in-depth. See SECURITY_ARCHITECTURE.md for details.
 // If scopes is empty, the provider's default configured scopes are used.
@@ -178,8 +189,10 @@ func (p *Provider) ValidateToken(ctx context.Context, accessToken string) (*prov
 	}
 
 	// Parse Google's user info response
+	// Note: v2 endpoint uses "id" while OpenID Connect uses "sub"
 	var googleUserInfo struct {
-		Sub           string `json:"sub"`
+		ID            string `json:"id"`  // v2 endpoint field
+		Sub           string `json:"sub"` // OpenID Connect field (fallback)
 		Email         string `json:"email"`
 		EmailVerified bool   `json:"email_verified"`
 		Name          string `json:"name"`
@@ -193,8 +206,14 @@ func (p *Provider) ValidateToken(ctx context.Context, accessToken string) (*prov
 		return nil, fmt.Errorf("failed to decode user info: %w", err)
 	}
 
+	// Use ID from v2 endpoint, fall back to Sub from OpenID Connect
+	userID := googleUserInfo.ID
+	if userID == "" {
+		userID = googleUserInfo.Sub
+	}
+
 	return &providers.UserInfo{
-		ID:            googleUserInfo.Sub,
+		ID:            userID,
 		Email:         googleUserInfo.Email,
 		EmailVerified: googleUserInfo.EmailVerified,
 		Name:          googleUserInfo.Name,

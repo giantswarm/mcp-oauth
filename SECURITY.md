@@ -30,10 +30,11 @@ When using this library in production:
 
 1. **Enable Token Encryption**:
    ```go
-   encKey, _ := oauth.GenerateEncryptionKey()
-   Security: oauth.SecurityConfig{
-       EncryptionKey: encKey,
-   }
+   import "github.com/giantswarm/mcp-oauth/security"
+   
+   encKey, _ := security.GenerateKey()
+   encryptor, _ := security.NewEncryptor(encKey)
+   server.SetEncryptor(encryptor)
    ```
 
 2. **Store Encryption Keys Securely**:
@@ -43,19 +44,23 @@ When using this library in production:
 
 3. **Enable Audit Logging**:
    ```go
-   Security: oauth.SecurityConfig{
-       EnableAuditLogging: true, // Enabled by default
-   }
+   import "github.com/giantswarm/mcp-oauth/security"
+   
+   auditor := security.NewAuditor(logger, true)
+   server.SetAuditor(auditor)
    ```
 
 4. **Configure Rate Limiting**:
    ```go
-   RateLimit: oauth.RateLimitConfig{
-       Rate: 10,        // Adjust based on your threat model
-       Burst: 20,
-       UserRate: 100,
-       UserBurst: 200,
-   }
+   import "github.com/giantswarm/mcp-oauth/security"
+   
+   ipRateLimiter := security.NewRateLimiter(10, 20, logger)
+   defer ipRateLimiter.Stop()
+   server.SetRateLimiter(ipRateLimiter)
+   
+   userRateLimiter := security.NewRateLimiter(100, 200, logger)
+   defer userRateLimiter.Stop()
+   server.SetUserRateLimiter(userRateLimiter)
    ```
 
 5. **Use HTTPS in Production**:
@@ -65,7 +70,7 @@ When using this library in production:
 
 6. **Secure Client Registration**:
    ```go
-   Security: oauth.SecurityConfig{
+   &oauth.ServerConfig{
        AllowPublicClientRegistration: false,
        RegistrationAccessToken: "secure-random-token",
        MaxClientsPerIP: 10,

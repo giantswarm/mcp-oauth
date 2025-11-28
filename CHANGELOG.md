@@ -7,7 +7,197 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2025-11-27
+
 ### Added
+
+- **Multi-Tenant Authorization Server Discovery (MCP 2025-11-25)**
+  - **Feature**: Automatic registration of multiple discovery endpoints for multi-tenant deployments
+  - **Implementation**: New `RegisterAuthorizationServerMetadataRoutes()` method that detects path-based issuers
+  - **Endpoints Registered**:
+    - For single-tenant (no path): Standard OAuth and OIDC endpoints
+    - For multi-tenant (path-based issuer like `https://auth.example.com/tenant1`):
+      * OAuth path insertion: `/.well-known/oauth-authorization-server/tenant1`
+      * OIDC path insertion: `/.well-known/openid-configuration/tenant1`
+      * OIDC path appending: `/tenant1/.well-known/openid-configuration`
+      * Standard endpoints (backward compatibility)
+  - **Benefits**:
+    - Supports complex multi-tenant architectures with path-based tenant isolation
+    - Fully compliant with MCP 2025-11-25 discovery requirements
+    - Automatic detection based on issuer configuration
+    - Backward compatible with existing deployments
+  - **Testing**: Comprehensive test coverage for single-tenant, multi-tenant, and nested path scenarios
+  - **Examples**: All examples updated to use new registration method
+  - **Use Case**: Enterprise deployments with multiple tenants using path-based issuer URLs
+
+- **CIMD Negative Caching for Failed Metadata Fetches**
+  - **Feature**: Cache failed Client ID Metadata Document (CIMD) fetch attempts to prevent rapid retries
+  - **Security**: Mitigates cache poisoning attacks by preventing attackers from repeatedly hammering the server with requests for known-bad client IDs
+  - **Configuration**: Default TTL of 5 minutes for negative entries, separate from positive cache entries
+  - **Backoff**: Repeated failures extend the negative cache TTL up to 2x the default (progressive backoff)
+  - **Recovery**: Successful fetches automatically clear negative cache entries, allowing recovery after fixes
+  - **Metrics**: New cache metrics for negative cache hits, cached entries, and evictions
+
+### Changed
+
+- **Increased Minimum State Parameter Length** (OAuth 2.1 Security)
+  - **Change**: Raised the absolute minimum `MinStateLength` floor from 16 to 32 characters
+  - **Rationale**: 32 characters provides 192 bits of entropy in base64, exceeding OAuth 2.1's recommended 128+ bits
+  - **Security**: Provides sufficient margin for high-security deployments and better CSRF protection
+  - **Backward Compatible**: Existing configurations with MinStateLength >= 32 are unaffected
+
+- **Defense-in-Depth Scope Sanitization in WWW-Authenticate Headers**
+  - **Change**: Added escaping of backslash and quote characters in scope parameter
+  - **Rationale**: While RFC 6749 restricts scope to a limited character set, defense-in-depth escaping prevents potential header injection attacks
+  - **RFC Compliance**: Follows RFC 2616/7230 quoted-string rules for HTTP headers
+
+- **ContextWithUserInfo Function for Testing**
+  - **Feature**: Export `ContextWithUserInfo` function to create contexts with user info for testing
+  - **Problem Solved**: Library consumers couldn't write unit tests for code depending on authenticated user context because `userInfoKey` was unexported
+  - **Usage**: `ctx := oauth.ContextWithUserInfo(context.Background(), &providers.UserInfo{ID: "user-123", Email: "test@example.com"})`
+  - **Follows Go Patterns**: Similar to `grpc.NewContextWithServerTransportStream` and other standard library context setters
+  - **Security**: Includes explicit warning in documentation that this function is for testing only and should not be used to bypass authentication in production
+
+- **Sub-Path Protected Resource Metadata Discovery** (MCP 2025-11-25, RFC 9728)
+  - **Feature**: Enable different protected resources on the same domain to advertise different authorization requirements
+  - **New Configuration**: `ResourceMetadataByPath` in `server.Config` allows per-path metadata configuration
+  - **ProtectedResourceConfig Type**: New configuration type with fields:
+    * `ScopesSupported` - Path-specific scopes
+    * `AuthorizationServers` - Path-specific authorization server URLs
+    * `BearerMethodsSupported` - Path-specific bearer token methods
+    * `ResourceIdentifier` - Path-specific resource identifier (RFC 8707)
+  - **Path Matching**: Uses longest-prefix matching to find the most specific configuration
+  - **Automatic Route Registration**: Paths configured in `ResourceMetadataByPath` are automatically registered as discovery endpoints
+  - **Backward Compatible**: Root endpoint and explicit `mcpPath` registration continue to work as before
+  - **Example Usage**:
+    ```go
+    config := &server.Config{
+        Issuer: "https://auth.example.com",
+        ResourceMetadataByPath: map[string]server.ProtectedResourceConfig{
+            "/mcp/files": {ScopesSupported: []string{"files:read", "files:write"}},
+            "/mcp/admin": {ScopesSupported: []string{"admin:access"}},
+        },
+    }
+    // Registers:
+    // - /.well-known/oauth-protected-resource (default metadata)
+    // - /.well-known/oauth-protected-resource/mcp/files (files-specific metadata)
+    // - /.well-known/oauth-protected-resource/mcp/admin (admin-specific metadata)
+    ```
+  - **Configuration Validation**: Path format, scope format, authorization server URLs, and bearer methods are validated at startup
+  - **Tests**: Comprehensive unit tests for sub-path discovery, path matching, and route registration
+
+- **Success Interstitial Page for Custom URL Schemes** (RFC 8252)
+  - **Feature**: Serve an HTML "success interstitial" page instead of direct 302 redirects for custom URL schemes (`cursor://`, `vscode://`, `slack://`, etc.)
+  - **Problem Solved**: Browsers often fail silently on 302 redirects to custom URL schemes, leaving users on a blank page with a spinning indicator even though authentication succeeded
+  - **Solution**: Per RFC 8252 Section 7.1, native apps should handle the case where browsers cannot redirect to custom schemes. The new interstitial page:
+    * Shows "Authorization Successful!" message confirming authentication worked
+    * Attempts JavaScript redirect after ~500ms delay
+    * Provides manual "Open [App Name]" button as fallback
+    * Shows "You can close this window" instruction
+  - **App Recognition**: Recognizes common MCP client applications and displays friendly names:
+    * Cursor, Visual Studio Code, VSCodium, Slack, Notion, Obsidian
+    * Discord, Figma, Linear, Raycast, Warp, Zed, Windsurf, and more
+    * Unknown schemes show capitalized scheme name
+  - **UX Design**: Modern, clean styling with success checkmark animation
+  - **Security**: 
+    * Uses `html/template` with proper escaping for XSS prevention
+    * Hash-based Content-Security-Policy (CSP Level 2) for inline script allowlisting
+    * Static inline script reads redirect URL from DOM to maintain stable SHA-256 hash
+    * All standard security headers included (X-Frame-Options, X-Content-Type-Options, etc.)
+  - **Backward Compatibility**: HTTP/HTTPS redirect URIs continue to use standard 302 redirects
+  - **Tests**: Comprehensive unit tests for URL scheme detection, app name mapping, and interstitial rendering
+
+- **Configurable Interstitial Page Branding**
+  - **Feature**: Allow library users to customize the interstitial page with their own branding
+  - **Configuration**: Three levels of customization via `server.InterstitialConfig`:
+    * **Custom Handler**: Full control with `CustomHandler func(w http.ResponseWriter, r *http.Request)` - user is responsible for all security headers
+    * **Custom Template**: Provide a custom HTML template via `CustomTemplate string` using Go's `html/template` syntax
+    * **Branding Config**: Simple customization via `InterstitialBranding` struct for logo, colors, text, and CSS
+  - **Branding Options** (`InterstitialBranding`):
+    * `LogoURL` - Custom logo image URL (HTTPS required)
+    * `LogoAlt` - Alt text for accessibility
+    * `Title` - Custom page title
+    * `Message` - Custom success message
+    * `ButtonText` - Custom button text
+    * `PrimaryColor` - CSS color for buttons/highlights
+    * `BackgroundGradient` - CSS background value
+    * `CustomCSS` - Additional CSS to inject
+  - **Security Validation**:
+    * Logo URLs validated to require HTTPS (unless `AllowInsecureHTTP` is set for development)
+    * CSS values validated against injection attacks (expression(), javascript:, behavior:, etc.)
+    * CustomCSS validated to prevent `</style>` tag injection
+  - **Context Helpers**: For custom handlers, helper functions provide access to OAuth context:
+    * `oauth.InterstitialRedirectURL(ctx)` - Get the redirect URL
+    * `oauth.InterstitialAppName(ctx)` - Get the human-readable app name
+  - **Tests**: Comprehensive tests for branding, custom template, custom handler, and security validation
+
+- **Comprehensive MCP 2025-11-25 Documentation**
+  - **Feature**: Complete documentation package for MCP 2025-11-25 specification compliance
+  - **New Documentation**:
+    - `docs/mcp-2025-11-25.md` - Comprehensive migration guide covering all new features:
+      * Protected Resource Metadata Discovery (RFC 9728)
+      * Enhanced WWW-Authenticate headers (RFC 6750)
+      * Scope Selection Strategy
+      * Resource Parameter (RFC 8707) for token audience binding
+      * Client ID Metadata Documents
+      * Insufficient Scope error handling
+    - `docs/discovery.md` - Complete guide to OAuth discovery mechanisms:
+      * Protected Resource Metadata endpoints
+      * Authorization Server Metadata
+      * WWW-Authenticate header discovery
+      * Client ID Metadata Documents
+      * Discovery flow examples and best practices
+  - **Updated Documentation**:
+    - `README.md`:
+      * Added MCP Specification Compliance table showing support status
+      * Added links to new documentation resources
+      * Enhanced WWW-Authenticate section with references to detailed guides
+      * Updated specification compliance references
+    - `SECURITY_ARCHITECTURE.md`:
+      * Added Resource Parameter Security section with token audience validation
+      * Added Token Audience Validation section explaining OAuth 2.0 claims
+      * Added WWW-Authenticate Information Disclosure security analysis
+      * Updated References section with MCP 2025-11-25 and all relevant RFCs
+      * Added links to new documentation resources
+  - **Examples**:
+    - `examples/mcp-2025-11-25/` - New comprehensive example demonstrating:
+      * All MCP 2025-11-25 features configured
+      * Endpoint-specific scope requirements
+      * Method-specific scope requirements
+      * Discovery endpoint setup
+      * Complete testing instructions
+      * Detailed README with testing scenarios
+    - `examples/basic/main.go` - Enhanced with:
+      * Detailed comments explaining discovery endpoints
+      * MCP 2025-11-25 feature highlights
+      * Discovery flow examples
+  - **Migration Support**:
+    - Backward compatibility notes (no breaking changes)
+    - Step-by-step migration path from previous versions
+    - Configuration examples for each new feature
+    - Security considerations for new features
+    - Testing and validation guidelines
+  - **Compliance**: Full documentation coverage for MCP 2025-11-25 specification requirements
+  - **Developer Experience**: Clear examples, migration guides, and best practices for adopting new features
+
+- **Endpoint-Specific Scope Challenges in WWW-Authenticate Headers (MCP 2025-11-25)**
+  - **Feature**: Implemented endpoint-specific scope guidance in WWW-Authenticate headers for 401 Unauthorized responses
+  - **MCP Compliance**: Implements MCP 2025-11-25 scope selection strategy specification
+  - **Use Case**: Helps clients discover exactly which scopes are required for specific endpoints, improving authorization UX
+  - **Implementation**:
+    - Added `getChallengeScopes()` helper that resolves scopes with priority: endpoint-specific → DefaultChallengeScopes → none
+    - Added `writeUnauthorizedError()` method for 401 responses with endpoint-aware scope challenges
+    - Updated `ValidateToken` middleware to use endpoint-specific scopes in WWW-Authenticate headers
+    - Integrates seamlessly with existing `EndpointScopeRequirements` and `EndpointMethodScopeRequirements` configurations
+  - **Scope Resolution Priority**:
+    1. `EndpointMethodScopeRequirements` - method and path specific (e.g., POST /api/files/*)
+    2. `EndpointScopeRequirements` - path specific (e.g., /api/files/*)
+    3. `DefaultChallengeScopes` - configured fallback scopes
+    4. No scope parameter if nothing configured
+  - **Example**: When accessing `/api/files/test.txt` without auth, WWW-Authenticate header includes `scope="files:read files:write"` instead of generic default scopes
+  - **Backward Compatibility**: Fully backward compatible - uses existing endpoint scope configuration, no breaking changes
+  - **Testing**: Added comprehensive unit and integration tests (7 test scenarios, 3 test suites)
+  - **Performance**: Minimal overhead - reuses existing scope resolution logic
 
 - **Client ID Metadata Documents Support (draft-ietf-oauth-client-id-metadata-document, MCP 2025-11-25)**
   - **Feature**: Implemented URL-based client identifiers with automatic metadata fetching

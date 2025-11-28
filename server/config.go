@@ -3,15 +3,40 @@ package server
 import (
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
+
+	"github.com/giantswarm/mcp-oauth/internal/util"
 )
 
 // URI scheme constants (shared with validation.go)
 const (
 	SchemeHTTP  = "http"
 	SchemeHTTPS = "https"
+)
+
+// OAuth endpoint paths
+const (
+	// EndpointPathAuthorize is the authorization endpoint path
+	EndpointPathAuthorize = "/oauth/authorize"
+
+	// EndpointPathToken is the token endpoint path
+	EndpointPathToken = "/oauth/token" // #nosec G101 -- This is a URL path, not a credential
+
+	// EndpointPathRegister is the dynamic client registration endpoint path (RFC 7591)
+	EndpointPathRegister = "/oauth/register"
+
+	// EndpointPathRevoke is the token revocation endpoint path (RFC 7009)
+	EndpointPathRevoke = "/oauth/revoke"
+
+	// EndpointPathIntrospect is the token introspection endpoint path (RFC 7662)
+	EndpointPathIntrospect = "/oauth/introspect"
+
+	// EndpointPathProtectedResourceMetadata is the Protected Resource Metadata discovery path (RFC 9728)
+	EndpointPathProtectedResourceMetadata = "/.well-known/oauth-protected-resource"
 )
 
 // Config holds OAuth server configuration
@@ -100,6 +125,27 @@ type Config struct {
 	// If empty, all scopes are allowed
 	SupportedScopes []string
 
+	// ResourceMetadataByPath enables per-path Protected Resource Metadata (RFC 9728).
+	// This allows different protected resources to advertise different authorization
+	// requirements. When a client requests /.well-known/oauth-protected-resource/<path>,
+	// the server returns metadata specific to that path.
+	//
+	// Keys are path prefixes (e.g., "/mcp/files", "/mcp/admin").
+	// If a request path matches multiple prefixes, the longest match is used.
+	// If no match is found, the default server-wide metadata is returned.
+	//
+	// Example:
+	//   ResourceMetadataByPath: map[string]ProtectedResourceConfig{
+	//       "/mcp/files": {ScopesSupported: []string{"files:read", "files:write"}},
+	//       "/mcp/admin": {ScopesSupported: []string{"admin:access"}},
+	//   }
+	//
+	// Discovery endpoints registered:
+	//   - /.well-known/oauth-protected-resource (default metadata)
+	//   - /.well-known/oauth-protected-resource/mcp/files (files-specific metadata)
+	//   - /.well-known/oauth-protected-resource/mcp/admin (admin-specific metadata)
+	ResourceMetadataByPath map[string]ProtectedResourceConfig
+
 	// MaxScopeLength is the maximum allowed length for the scope parameter string
 	// This prevents potential DoS attacks via extremely long scope strings.
 	// The scope string is space-delimited, so this limits the total length including
@@ -136,6 +182,77 @@ type Config struct {
 	//   - Troubleshooting client compatibility issues
 	DisableWWWAuthenticateMetadata bool // default: false (metadata ENABLED)
 
+	// EndpointScopeRequirements maps HTTP paths to required scopes for MCP 2025-11-25 scope validation.
+	// When a protected endpoint is accessed, the token's scopes are validated against these requirements.
+	// If the token lacks required scopes, a 403 with insufficient_scope error is returned.
+	//
+	// Path Matching:
+	//   - Exact match: "/api/files" matches only "/api/files"
+	//   - Prefix match: "/api/files/*" matches "/api/files/..." (any sub-path)
+	//
+	// Example:
+	//   EndpointScopeRequirements: map[string][]string{
+	//     "/api/files/*":    {"files:read", "files:write"},
+	//     "/api/admin/*":    {"admin:access"},
+	//     "/api/user/profile": {"user:profile"},
+	//   }
+	//
+	// Scope Validation Logic:
+	//   - If no requirements configured for a path, access is allowed (no scope check)
+	//   - If requirements exist, ALL required scopes must be present in the token
+	//   - Scope validation follows OAuth 2.0 semantics (exact string matching)
+	//
+	// Default: nil (no endpoint-specific scope requirements)
+	EndpointScopeRequirements map[string][]string
+
+	// EndpointMethodScopeRequirements maps HTTP paths AND methods to required scopes.
+	// This extends EndpointScopeRequirements with method-aware scope checking.
+	// Useful when different HTTP methods require different scopes (e.g., GET vs POST).
+	//
+	// Path Matching (same as EndpointScopeRequirements):
+	//   - Exact match: "/api/files" matches only "/api/files"
+	//   - Prefix match: "/api/files/*" matches "/api/files/..." (any sub-path)
+	//
+	// Method Matching:
+	//   - Use "*" as method to match any HTTP method (fallback)
+	//   - Method names are case-sensitive and should be uppercase (GET, POST, etc.)
+	//
+	// Example:
+	//   EndpointMethodScopeRequirements: map[string]map[string][]string{
+	//     "/api/files/*": {
+	//       "GET":    {"files:read"},
+	//       "POST":   {"files:write"},
+	//       "DELETE": {"files:delete", "admin:access"},
+	//       "*":      {"files:read"},  // fallback for other methods
+	//     },
+	//   }
+	//
+	// Precedence:
+	//   1. EndpointMethodScopeRequirements with exact method match
+	//   2. EndpointMethodScopeRequirements with "*" method (fallback)
+	//   3. EndpointScopeRequirements (method-agnostic)
+	//   4. No requirements (access allowed)
+	//
+	// Default: nil (no method-specific scope requirements)
+	EndpointMethodScopeRequirements map[string]map[string][]string
+
+	// HideEndpointPathInErrors controls whether endpoint paths are included in error messages.
+	// When true, error messages will not include the specific endpoint path, providing
+	// defense against information disclosure.
+	//
+	// When false (default): Error messages include the path for debugging
+	//   "Token lacks required scopes for endpoint /api/admin/users"
+	//
+	// When true: Error messages use a generic message
+	//   "Token lacks required scopes for this endpoint"
+	//
+	// Security Consideration:
+	// Including paths in error messages aids debugging but could reveal internal
+	// API structure to attackers. Enable this in production if path disclosure is a concern.
+	//
+	// Default: false (paths included in errors for easier debugging)
+	HideEndpointPathInErrors bool
+
 	// AllowPKCEPlain allows the 'plain' code_challenge_method (NOT RECOMMENDED)
 	// WARNING: The 'plain' method is insecure and deprecated in OAuth 2.1
 	// Only enable for backward compatibility with legacy clients
@@ -164,6 +281,13 @@ type Config struct {
 	// OAuth 2.1 recommends at least 128 bits (16 bytes) of entropy.
 	// Default: 32 characters (192 bits of entropy)
 	MinStateLength int // default: 32
+
+	// AllowNoStateParameter allows authorization requests without the state parameter.
+	// WARNING: Disabling state parameter validation weakens CSRF protection!
+	// The state parameter is REQUIRED by OAuth 2.1 for CSRF attack prevention.
+	// Only enable this for compatibility with clients that don't support state (e.g., some MCP clients).
+	// Default: false (state is REQUIRED for security)
+	AllowNoStateParameter bool // default: false
 
 	// AllowPublicClientRegistration controls two security aspects of client registration:
 	// 1. Whether the DCR endpoint (/oauth/register) requires authentication (Bearer token)
@@ -224,6 +348,13 @@ type Config struct {
 	// Instrumentation settings for observability
 	Instrumentation InstrumentationConfig
 
+	// Interstitial configures the OAuth success interstitial page for custom URL schemes.
+	// Per RFC 8252 Section 7.1, browsers may fail silently on 302 redirects to custom
+	// URL schemes (cursor://, vscode://, etc.). The interstitial page provides visual
+	// feedback and a manual fallback button.
+	// Optional: if nil, the default interstitial page is used.
+	Interstitial *InterstitialConfig
+
 	// ResourceIdentifier is the canonical URI that identifies this MCP resource server (RFC 8707)
 	// Used for audience validation to ensure tokens are only accepted by their intended resource server
 	// If empty, defaults to Issuer value
@@ -242,6 +373,22 @@ type Config struct {
 	// This prevents indefinite blocking if a metadata URL is slow or unresponsive
 	// Default: 10 seconds
 	ClientMetadataFetchTimeout time.Duration
+
+	// EnableRevocationEndpoint controls whether the OAuth 2.0 Token Revocation endpoint (RFC 7009)
+	// is advertised in Authorization Server Metadata and available for use.
+	// When true: revocation_endpoint will be included in /.well-known/oauth-authorization-server
+	// When false: revocation_endpoint will NOT be advertised (endpoint not yet implemented)
+	// SECURITY: Only enable when you have implemented the actual revocation endpoint handler
+	// Default: false (not yet implemented)
+	EnableRevocationEndpoint bool
+
+	// EnableIntrospectionEndpoint controls whether the OAuth 2.0 Token Introspection endpoint (RFC 7662)
+	// is advertised in Authorization Server Metadata and available for use.
+	// When true: introspection_endpoint will be included in /.well-known/oauth-authorization-server
+	// When false: introspection_endpoint will NOT be advertised (endpoint not yet implemented)
+	// SECURITY: Only enable when you have implemented the actual introspection endpoint handler
+	// Default: false (not yet implemented)
+	EnableIntrospectionEndpoint bool
 
 	// ClientMetadataCacheTTL is how long to cache fetched client metadata
 	// Caching reduces latency and prevents repeated fetches for the same client
@@ -345,25 +492,187 @@ type CORSConfig struct {
 	MaxAge int
 }
 
+// InterstitialConfig configures the OAuth success interstitial page
+// displayed when redirecting to custom URL schemes (cursor://, vscode://, etc.)
+//
+// Per RFC 8252 Section 7.1, browsers may fail silently on 302 redirects to custom
+// URL schemes. The interstitial page provides visual feedback and a manual fallback.
+//
+// Configuration Priority:
+//  1. CustomHandler - if set, takes full control of the response
+//  2. CustomTemplate - if set, uses the provided HTML template
+//  3. Branding - if set, customizes the default template's appearance
+//  4. Default - uses the built-in template with standard styling
+type InterstitialConfig struct {
+	// CustomHandler allows complete control over the interstitial response.
+	// When set, this handler is called instead of rendering any template.
+	// The handler receives the redirect URL and app name as request context values.
+	// Use oauth.InterstitialRedirectURL(ctx) and oauth.InterstitialAppName(ctx) to extract them.
+	//
+	// SECURITY: The handler MUST set appropriate security headers.
+	// Use security.SetInterstitialSecurityHeaders() as a baseline.
+	// If you include custom inline scripts, you must update CSP headers accordingly.
+	//
+	// Example:
+	//   CustomHandler: func(w http.ResponseWriter, r *http.Request) {
+	//       redirectURL := oauth.InterstitialRedirectURL(r.Context())
+	//       appName := oauth.InterstitialAppName(r.Context())
+	//       security.SetInterstitialSecurityHeaders(w, "https://auth.example.com")
+	//       // Serve your custom response...
+	//   }
+	CustomHandler func(w http.ResponseWriter, r *http.Request)
+
+	// CustomTemplate is a custom HTML template string using Go's html/template syntax.
+	// Available template variables:
+	//   - {{.RedirectURL}} - The OAuth callback redirect URL (marked safe for href)
+	//   - {{.AppName}} - Human-readable application name (e.g., "Cursor", "Visual Studio Code")
+	//   - All InterstitialBranding fields ({{.LogoURL}}, {{.Title}}, etc.)
+	//
+	// SECURITY: The template is parsed using html/template which auto-escapes HTML.
+	// If you include inline scripts, you must update CSP headers accordingly.
+	// Consider using security.SetInterstitialSecurityHeaders() with custom script hashes.
+	//
+	// Ignored if CustomHandler is set.
+	CustomTemplate string
+
+	// Branding allows customization of the default template's appearance.
+	// This is the simplest way to add your organization's branding without
+	// providing a complete custom template.
+	//
+	// Ignored if CustomHandler or CustomTemplate is set.
+	Branding *InterstitialBranding
+}
+
+// ProtectedResourceConfig holds per-path configuration for Protected Resource Metadata (RFC 9728).
+// This allows different protected resources on the same domain to advertise different
+// authorization requirements (scopes, authorization servers, etc.).
+//
+// Per MCP 2025-11-25, sub-path discovery enables clients to understand the specific
+// requirements for different endpoints on the same resource server.
+//
+// Example:
+//
+//	ResourceMetadataByPath: map[string]ProtectedResourceConfig{
+//	    "/mcp/files": {
+//	        ScopesSupported: []string{"files:read", "files:write"},
+//	    },
+//	    "/mcp/admin": {
+//	        ScopesSupported: []string{"admin:access"},
+//	    },
+//	}
+type ProtectedResourceConfig struct {
+	// ScopesSupported lists the scopes required/supported for this specific resource path.
+	// If empty, falls back to the server's default SupportedScopes configuration.
+	// Per RFC 9728, this helps clients determine what access they need to request.
+	ScopesSupported []string
+
+	// AuthorizationServers lists the authorization server URLs for this resource.
+	// If empty, defaults to the server's Issuer.
+	// This allows different resource paths to point to different authorization servers.
+	AuthorizationServers []string
+
+	// BearerMethodsSupported specifies how bearer tokens can be sent.
+	// Default: ["header"] (Authorization header only).
+	// Options: "header", "body", "query" (per RFC 6750).
+	// Note: "body" and "query" are discouraged for security reasons.
+	BearerMethodsSupported []string
+
+	// ResourceIdentifier is the canonical identifier for this specific resource.
+	// If empty, derived from the server's ResourceIdentifier or Issuer + path.
+	// Used for audience validation per RFC 8707.
+	ResourceIdentifier string
+}
+
+// InterstitialBranding configures visual elements of the default interstitial page.
+// All fields are optional - unset fields use the default values.
+//
+// Security Best Practices:
+//   - LogoURL must use HTTPS (enforced at startup)
+//   - Host logos on trusted CDNs or your own infrastructure
+//   - Use immutable/versioned URLs for logos (e.g., include hash in filename)
+//   - Note: Browsers don't support Subresource Integrity (SRI) for images,
+//     so HTTPS and trusted hosting are your primary security controls
+type InterstitialBranding struct {
+	// LogoURL is an optional URL to a logo image (PNG, SVG, JPEG).
+	// Must be HTTPS for security (validated at startup). HTTP is only allowed
+	// when AllowInsecureHTTP is enabled for local development.
+	// Leave empty to use the default animated checkmark icon.
+	// Recommended size: 80x80 pixels or larger (displayed at 80px height).
+	//
+	// Security: Host on a trusted CDN with immutable URLs. The image is loaded
+	// with crossorigin="anonymous" for better security isolation.
+	LogoURL string
+
+	// LogoAlt is the alt text for the logo image.
+	// Required for accessibility if LogoURL is set.
+	// Default: "Logo" (if LogoURL is set)
+	LogoAlt string
+
+	// Title replaces the "Authorization Successful" heading.
+	// Example: "Connected to Acme Corp"
+	Title string
+
+	// Message replaces the default success message.
+	// Use {{.AppName}} placeholder for the application name.
+	// Example: "You have been authenticated with {{.AppName}}. You can now close this window."
+	// Default: "You have been authenticated successfully. Return to {{.AppName}} to continue."
+	Message string
+
+	// ButtonText replaces the "Open [AppName]" button text.
+	// Use {{.AppName}} placeholder for the application name.
+	// Example: "Return to {{.AppName}}"
+	// Default: "Open {{.AppName}}"
+	ButtonText string
+
+	// PrimaryColor is the primary/accent color for buttons and highlights.
+	// Must be a valid CSS color value (hex, rgb, hsl, or named color).
+	// Examples: "#4F46E5", "rgb(79, 70, 229)", "indigo"
+	// Default: "#00d26a" (green)
+	PrimaryColor string
+
+	// BackgroundGradient is the body background CSS value.
+	// Can be a solid color, gradient, or any valid CSS background value.
+	// Example: "linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%)"
+	// Default: "linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%)"
+	BackgroundGradient string
+
+	// CustomCSS is additional CSS to inject into the page.
+	// This CSS is added after the default styles, allowing overrides.
+	// SECURITY: Must not contain "</style>" to prevent injection attacks.
+	// Validated at startup - server will panic if invalid.
+	// Example: ".container { max-width: 600px; }"
+	CustomCSS string
+}
+
 // AuthorizationEndpoint returns the full URL to the authorization endpoint
 func (c *Config) AuthorizationEndpoint() string {
-	return c.Issuer + "/oauth/authorize"
+	return c.Issuer + EndpointPathAuthorize
 }
 
 // TokenEndpoint returns the full URL to the token endpoint
 func (c *Config) TokenEndpoint() string {
-	return c.Issuer + "/oauth/token"
+	return c.Issuer + EndpointPathToken
 }
 
 // RegistrationEndpoint returns the full URL to the dynamic client registration endpoint
 func (c *Config) RegistrationEndpoint() string {
-	return c.Issuer + "/oauth/register"
+	return c.Issuer + EndpointPathRegister
 }
 
 // ProtectedResourceMetadataEndpoint returns the full URL to the RFC 9728 Protected Resource Metadata endpoint
 // This endpoint is used in WWW-Authenticate headers to help MCP clients discover authorization server information
 func (c *Config) ProtectedResourceMetadataEndpoint() string {
-	return c.Issuer + "/.well-known/oauth-protected-resource"
+	return c.Issuer + EndpointPathProtectedResourceMetadata
+}
+
+// RevocationEndpoint returns the full URL to the RFC 7009 token revocation endpoint
+func (c *Config) RevocationEndpoint() string {
+	return c.Issuer + EndpointPathRevoke
+}
+
+// IntrospectionEndpoint returns the full URL to the RFC 7662 token introspection endpoint
+func (c *Config) IntrospectionEndpoint() string {
+	return c.Issuer + EndpointPathIntrospect
 }
 
 // GetResourceIdentifier returns the resource identifier for this server
@@ -388,6 +697,15 @@ func applySecureDefaults(config *Config, logger *slog.Logger) *Config {
 
 	// Validate Client ID Metadata Documents configuration (MCP 2025-11-25)
 	validateClientIDMetadataDocumentsConfig(config, logger)
+
+	// Validate endpoint scope requirements (MCP 2025-11-25)
+	validateEndpointScopeRequirements(config, logger)
+
+	// Validate protected resource metadata configuration (RFC 9728, MCP 2025-11-25)
+	validateResourceMetadataByPath(config, logger)
+
+	// Validate interstitial page configuration (RFC 8252 Section 7.1)
+	validateInterstitialConfig(config, logger)
 
 	// Apply time-based defaults
 	applyTimeDefaults(config)
@@ -604,13 +922,13 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 
 	// SECURITY: Enforce absolute minimum state length to ensure CSRF protection entropy
 	// OAuth 2.1 recommends at least 128 bits (16 bytes) of entropy
-	// 16 characters in base64 = 96 bits, but this is an absolute floor
-	const absoluteMinStateLength = 16
+	// 32 characters provides 192 bits of entropy in base64, which exceeds OAuth 2.1 recommendations
+	// and provides sufficient margin for high-security deployments.
+	const absoluteMinStateLength = 32
 	if config.MinStateLength < absoluteMinStateLength {
-		logger.Warn("⚠️  SECURITY WARNING: MinStateLength below recommended minimum, enforcing floor",
+		logger.Warn("SECURITY WARNING: MinStateLength below recommended minimum, enforcing floor",
 			"configured", config.MinStateLength,
 			"enforced_minimum", absoluteMinStateLength,
-			"recommended", 32,
 			"risk", "reduced CSRF protection entropy")
 		config.MinStateLength = absoluteMinStateLength
 	}
@@ -755,6 +1073,349 @@ func validateClientIDMetadataDocumentsConfig(config *Config, logger *slog.Logger
 		"enabled", config.EnableClientIDMetadataDocuments)
 }
 
+// validateEndpointScopeRequirements validates the EndpointScopeRequirements and
+// EndpointMethodScopeRequirements configuration for security and correctness.
+// It validates scope format per RFC 6749 Section 3.3.
+func validateEndpointScopeRequirements(config *Config, logger *slog.Logger) {
+	// Validate EndpointScopeRequirements
+	for path, scopes := range config.EndpointScopeRequirements {
+		for _, scope := range scopes {
+			if err := validateScopeFormat(scope); err != nil {
+				logger.Warn("Invalid scope format in EndpointScopeRequirements",
+					"path", path,
+					"scope", scope,
+					"error", err,
+					"rfc", "RFC 6749 Section 3.3")
+			}
+		}
+	}
+
+	// Validate EndpointMethodScopeRequirements
+	for path, methodMap := range config.EndpointMethodScopeRequirements {
+		for method, scopes := range methodMap {
+			// Validate method is uppercase (standard HTTP method format)
+			if method != "*" && method != strings.ToUpper(method) {
+				logger.Warn("HTTP method should be uppercase in EndpointMethodScopeRequirements",
+					"path", path,
+					"method", method,
+					"recommendation", "Use uppercase method names (GET, POST, DELETE, etc.)")
+			}
+			for _, scope := range scopes {
+				if err := validateScopeFormat(scope); err != nil {
+					logger.Warn("Invalid scope format in EndpointMethodScopeRequirements",
+						"path", path,
+						"method", method,
+						"scope", scope,
+						"error", err,
+						"rfc", "RFC 6749 Section 3.3")
+				}
+			}
+		}
+	}
+}
+
+// validateScopeFormat validates a single scope string per RFC 6749 Section 3.3.
+// Per the RFC, scope tokens must consist of printable ASCII characters excluding
+// space, double-quote, and backslash: %x21 / %x23-5B / %x5D-7E
+// This is: ! and # through [ and ] through ~
+func validateScopeFormat(scope string) error {
+	if scope == "" {
+		return fmt.Errorf("scope cannot be empty")
+	}
+
+	for i, c := range scope {
+		// RFC 6749 Section 3.3: scope-token = 1*( %x21 / %x23-5B / %x5D-7E )
+		// Valid characters:
+		// - %x21 = ! (exclamation mark)
+		// - %x23-5B = # through [ (includes letters, digits, most punctuation)
+		// - %x5D-7E = ] through ~ (includes more punctuation, letters)
+		// Invalid characters:
+		// - %x20 = space (used as delimiter between scopes)
+		// - %x22 = " (double-quote)
+		// - %x5C = \ (backslash)
+		if c == ' ' {
+			return fmt.Errorf("scope cannot contain space at position %d (use separate scopes instead)", i)
+		}
+		if c == '"' {
+			return fmt.Errorf("scope cannot contain double-quote at position %d", i)
+		}
+		if c == '\\' {
+			return fmt.Errorf("scope cannot contain backslash at position %d", i)
+		}
+		// Check for printable ASCII range (0x21 to 0x7E, excluding 0x22 and 0x5C)
+		if c < 0x21 || c > 0x7E {
+			return fmt.Errorf("scope contains invalid character at position %d (only printable ASCII allowed)", i)
+		}
+	}
+
+	return nil
+}
+
+// validBearerMethods defines the valid RFC 6750 bearer token transmission methods.
+// Defined at package level to avoid re-creating this map on every validation iteration.
+var validBearerMethods = map[string]bool{
+	"header": true,
+	"body":   true,
+	"query":  true,
+}
+
+// validateResourceMetadataByPath validates the ResourceMetadataByPath configuration
+// for security, correctness, and RFC 9728 compliance.
+func validateResourceMetadataByPath(config *Config, logger *slog.Logger) {
+	if len(config.ResourceMetadataByPath) == 0 {
+		return
+	}
+
+	for pathKey, pathConfig := range config.ResourceMetadataByPath {
+		// Validate path format using shared validation logic
+		if err := util.ValidateMetadataPath(pathKey); err != nil {
+			logger.Warn("Invalid path in ResourceMetadataByPath",
+				"path", pathKey,
+				"error", err,
+				"recommendation", "Use clean paths without traversal sequences")
+		}
+
+		// Validate scopes format per RFC 6749 Section 3.3
+		for _, scope := range pathConfig.ScopesSupported {
+			if err := validateScopeFormat(scope); err != nil {
+				logger.Warn("Invalid scope format in ResourceMetadataByPath",
+					"path", pathKey,
+					"scope", scope,
+					"error", err,
+					"rfc", "RFC 6749 Section 3.3")
+			}
+		}
+
+		// Validate authorization server URLs
+		for i, authServer := range pathConfig.AuthorizationServers {
+			u, err := url.Parse(authServer)
+			if err != nil || u.Scheme == "" || u.Host == "" {
+				logger.Warn("Invalid authorization server URL in ResourceMetadataByPath",
+					"path", pathKey,
+					"index", i,
+					"url", authServer,
+					"error", "must be a valid URL with scheme and host")
+			} else if u.Scheme != SchemeHTTPS && u.Scheme != SchemeHTTP {
+				logger.Warn("Authorization server URL should use HTTPS",
+					"path", pathKey,
+					"url", authServer,
+					"scheme", u.Scheme,
+					"recommendation", "Use HTTPS for security")
+			}
+		}
+
+		// Validate bearer methods per RFC 6750
+		for _, method := range pathConfig.BearerMethodsSupported {
+			if !validBearerMethods[method] {
+				logger.Warn("Unknown bearer method in ResourceMetadataByPath",
+					"path", pathKey,
+					"method", method,
+					"valid_methods", []string{"header", "body", "query"},
+					"rfc", "RFC 6750")
+			}
+			// Warn about insecure methods
+			if method == "query" || method == "body" {
+				logger.Warn("Insecure bearer method configured in ResourceMetadataByPath",
+					"path", pathKey,
+					"method", method,
+					"risk", "Bearer tokens in query or body can be logged or cached",
+					"recommendation", "Use 'header' method for security")
+			}
+		}
+
+		// Validate resource identifier if provided
+		if pathConfig.ResourceIdentifier != "" {
+			u, err := url.Parse(pathConfig.ResourceIdentifier)
+			if err != nil || u.Scheme == "" || u.Host == "" {
+				logger.Warn("Invalid resource identifier in ResourceMetadataByPath",
+					"path", pathKey,
+					"resource_identifier", pathConfig.ResourceIdentifier,
+					"error", "must be a valid URL with scheme and host",
+					"rfc", "RFC 8707")
+			}
+		}
+	}
+
+	logger.Debug("ResourceMetadataByPath configuration validated",
+		"paths_configured", len(config.ResourceMetadataByPath))
+}
+
+// validateInterstitialConfig validates the InterstitialConfig for security and correctness.
+// It checks branding values for injection attacks and logs warnings for custom handlers/templates.
+func validateInterstitialConfig(config *Config, logger *slog.Logger) {
+	// Skip validation if no interstitial configuration
+	if config.Interstitial == nil {
+		return
+	}
+
+	interstitial := config.Interstitial
+
+	// SECURITY: Warn about custom handler - user is responsible for security
+	if interstitial.CustomHandler != nil {
+		logger.Warn("Custom interstitial handler configured",
+			"responsibility", "You are responsible for setting security headers",
+			"recommendation", "Use security.SetInterstitialSecurityHeaders() as a baseline",
+			"csp_note", "If using inline scripts, update CSP headers with script hash")
+	}
+
+	// SECURITY: Warn about custom template - user is responsible for CSP
+	if interstitial.CustomTemplate != "" {
+		logger.Warn("Custom interstitial template configured",
+			"template_length", len(interstitial.CustomTemplate),
+			"csp_note", "If using inline scripts, ensure CSP headers include appropriate hashes")
+	}
+
+	// Validate branding configuration
+	if interstitial.Branding != nil {
+		validateInterstitialBranding(interstitial.Branding, config, logger)
+	}
+}
+
+// validateInterstitialBranding validates the InterstitialBranding configuration
+func validateInterstitialBranding(branding *InterstitialBranding, config *Config, logger *slog.Logger) {
+	// SECURITY: Validate LogoURL is HTTPS or empty
+	if branding.LogoURL != "" {
+		u, err := url.Parse(branding.LogoURL)
+		if err != nil {
+			panic(fmt.Sprintf("Interstitial: invalid LogoURL '%s': %v", branding.LogoURL, err))
+		}
+
+		// Must be HTTPS (unless AllowInsecureHTTP is enabled for development)
+		if u.Scheme != SchemeHTTPS {
+			if config.AllowInsecureHTTP && u.Scheme == SchemeHTTP {
+				logger.Warn("⚠️  Interstitial: HTTP LogoURL allowed for development",
+					"logo_url", branding.LogoURL,
+					"recommendation", "Use HTTPS LogoURL in production")
+			} else {
+				panic(fmt.Sprintf("Interstitial: LogoURL must use HTTPS scheme, got '%s' (or set AllowInsecureHTTP=true for development)", u.Scheme))
+			}
+		}
+
+		// Warn if LogoAlt is not set (accessibility)
+		if branding.LogoAlt == "" {
+			logger.Warn("⚠️  Interstitial: LogoAlt not set for LogoURL",
+				"logo_url", branding.LogoURL,
+				"accessibility", "Consider setting LogoAlt for screen readers")
+		}
+	}
+
+	// SECURITY: Validate CustomCSS doesn't contain injection vectors
+	if branding.CustomCSS != "" {
+		// Check for </style> tag injection
+		if strings.Contains(strings.ToLower(branding.CustomCSS), "</style>") {
+			panic("Interstitial: CustomCSS cannot contain '</style>' tag (injection risk)")
+		}
+
+		// Check for potentially dangerous CSS values
+		if pattern, found := containsDangerousCSSPattern(branding.CustomCSS); found {
+			panic(fmt.Sprintf("Interstitial: CustomCSS contains potentially dangerous pattern '%s'", pattern))
+		}
+
+		logger.Debug("Interstitial CustomCSS configured",
+			"css_length", len(branding.CustomCSS))
+	}
+
+	// SECURITY: Validate color values are safe CSS (basic validation)
+	if branding.PrimaryColor != "" {
+		if err := validateCSSColorValue(branding.PrimaryColor); err != nil {
+			panic(fmt.Sprintf("Interstitial: invalid PrimaryColor: %v", err))
+		}
+	}
+
+	// SECURITY: Validate background gradient (basic validation)
+	if branding.BackgroundGradient != "" {
+		if err := validateCSSBackgroundValue(branding.BackgroundGradient); err != nil {
+			panic(fmt.Sprintf("Interstitial: invalid BackgroundGradient: %v", err))
+		}
+	}
+
+	logger.Debug("Interstitial branding configuration validated",
+		"has_logo", branding.LogoURL != "",
+		"has_title", branding.Title != "",
+		"has_message", branding.Message != "",
+		"has_button_text", branding.ButtonText != "",
+		"has_primary_color", branding.PrimaryColor != "",
+		"has_background", branding.BackgroundGradient != "",
+		"has_custom_css", branding.CustomCSS != "")
+}
+
+// dangerousCSSPatterns contains patterns that indicate potential CSS injection attacks.
+// These patterns are checked across all CSS value validations.
+var dangerousCSSPatterns = []string{
+	"expression(",  // IE CSS expression (JavaScript execution)
+	"javascript:",  // JavaScript URL scheme
+	"behavior:",    // IE CSS behavior
+	"-moz-binding", // Firefox XBL binding (deprecated but still dangerous)
+}
+
+// containsDangerousCSSPattern checks if the value contains any dangerous CSS patterns.
+// Returns the matched pattern and true if a dangerous pattern is found.
+func containsDangerousCSSPattern(value string, additionalPatterns ...string) (string, bool) {
+	lowerValue := strings.ToLower(value)
+
+	// Check common dangerous patterns
+	for _, pattern := range dangerousCSSPatterns {
+		if strings.Contains(lowerValue, pattern) {
+			return pattern, true
+		}
+	}
+
+	// Check additional patterns specific to the context
+	for _, pattern := range additionalPatterns {
+		if strings.Contains(lowerValue, pattern) {
+			return pattern, true
+		}
+	}
+
+	return "", false
+}
+
+// validateCSSColorValue validates a CSS color value is safe
+func validateCSSColorValue(color string) error {
+	// Check for dangerous patterns (including url() which is not valid in color values)
+	if pattern, found := containsDangerousCSSPattern(color, "url("); found {
+		return fmt.Errorf("color value contains dangerous pattern '%s'", pattern)
+	}
+
+	// Basic format validation - must match common CSS color formats
+	// Hex: #RGB, #RRGGBB, #RGBA, #RRGGBBAA
+	// RGB/RGBA: rgb(), rgba()
+	// HSL/HSLA: hsl(), hsla()
+	// Named colors: allow alphanumeric
+	colorPattern := regexp.MustCompile(`^(#[0-9a-fA-F]{3,8}|rgba?\([^)]+\)|hsla?\([^)]+\)|[a-zA-Z]+)$`)
+	if !colorPattern.MatchString(strings.TrimSpace(color)) {
+		return fmt.Errorf("invalid CSS color format: '%s'", color)
+	}
+
+	return nil
+}
+
+// validateCSSBackgroundValue validates a CSS background value is safe
+func validateCSSBackgroundValue(bg string) error {
+	// Check for dangerous patterns
+	if pattern, found := containsDangerousCSSPattern(bg); found {
+		return fmt.Errorf("background value contains dangerous pattern '%s'", pattern)
+	}
+
+	// Allow url() only for HTTPS URLs
+	lowerBg := strings.ToLower(bg)
+	if strings.Contains(lowerBg, "url(") {
+		// Extract URL from url() and validate it's HTTPS
+		urlPattern := regexp.MustCompile(`url\(['"]?([^'")]+)['"]?\)`)
+		matches := urlPattern.FindAllStringSubmatch(bg, -1)
+		for _, match := range matches {
+			if len(match) > 1 {
+				u, err := url.Parse(match[1])
+				if err != nil || (u.Scheme != "" && u.Scheme != SchemeHTTPS) {
+					return fmt.Errorf("url() in background must use HTTPS: '%s'", match[1])
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
 // logSecurityWarnings logs warnings for insecure configuration settings
 func logSecurityWarnings(config *Config, logger *slog.Logger) {
 	if !config.RequirePKCE {
@@ -781,6 +1442,11 @@ func logSecurityWarnings(config *Config, logger *slog.Logger) {
 		logger.Warn("⚠️  SECURITY WARNING: Public client registration is ENABLED",
 			"risk", "DoS attacks via unlimited client registration",
 			"recommendation", "Set AllowPublicClientRegistration=false and use RegistrationAccessToken")
+	}
+	if config.AllowNoStateParameter {
+		logger.Warn("⚠️  SECURITY WARNING: State parameter is NOT REQUIRED",
+			"risk", "CSRF attacks possible without state parameter",
+			"recommendation", "Set AllowNoStateParameter=false unless required for client compatibility")
 	}
 	if !config.AllowPublicClientRegistration && config.RegistrationAccessToken == "" {
 		logger.Warn("⚠️  CONFIGURATION WARNING: RegistrationAccessToken not configured",

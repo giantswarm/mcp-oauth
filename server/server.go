@@ -167,7 +167,43 @@ func New(
 		logger.Debug("Started metadata cache cleanup goroutine")
 	}
 
+	// SECURITY: Validate provider default scopes against server configuration
+	// This helps catch configuration mismatches early to prevent runtime confusion
+	// when clients rely on provider defaults but server doesn't support them
+	srv.validateProviderDefaultScopes(logger)
+
 	return srv, nil
+}
+
+// validateProviderDefaultScopes checks if provider default scopes are supported by server configuration.
+// This is a startup-time sanity check to catch configuration mismatches early.
+// Logs warnings for any provider defaults that aren't in the server's supported scopes list.
+func (s *Server) validateProviderDefaultScopes(logger *slog.Logger) {
+	// Skip validation if no supported scopes configured (allow-all mode)
+	if len(s.Config.SupportedScopes) == 0 {
+		return
+	}
+
+	providerDefaults := s.provider.DefaultScopes()
+	if len(providerDefaults) == 0 {
+		return
+	}
+
+	// Build a set of supported scopes for efficient lookup
+	supportedSet := make(map[string]bool, len(s.Config.SupportedScopes))
+	for _, scope := range s.Config.SupportedScopes {
+		supportedSet[scope] = true
+	}
+
+	// Check each provider default scope
+	for _, scope := range providerDefaults {
+		if !supportedSet[scope] {
+			logger.Warn("Provider default scope not in server supported scopes - clients relying on defaults may encounter errors",
+				"scope", scope,
+				"provider", s.provider.Name(),
+				"supported_scopes", s.Config.SupportedScopes)
+		}
+	}
 }
 
 // SetEncryptor sets the token encryptor for server and storage
@@ -235,6 +271,44 @@ func (s *Server) SetInstrumentation(inst *instrumentation.Instrumentation) {
 		}
 		if setter, ok := s.flowStore.(instrumentationSetter); ok {
 			setter.SetInstrumentation(inst)
+		}
+	}
+}
+
+// TokenStore returns the token store used by the server.
+// This allows the handler to access token metadata for scope validation.
+func (s *Server) TokenStore() storage.TokenStore {
+	return s.tokenStore
+}
+
+// saveTokenMetadata saves token metadata using the most capable store method available.
+// It tries methods in order of capability:
+// 1. SaveTokenMetadataWithScopesAndAudience (newest - includes scopes and audience)
+// 2. SaveTokenMetadataWithAudience (includes audience only)
+// 3. SaveTokenMetadata (basic - no audience or scopes)
+//
+// This ensures backward compatibility with stores that don't support the newest methods.
+func (s *Server) saveTokenMetadata(tokenID, userID, clientID, tokenType, audience string, scopes []string) {
+	// Try most capable first (scopes + audience)
+	if store, ok := s.tokenStore.(storage.TokenMetadataStoreWithScopesAndAudience); ok {
+		if err := store.SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID, tokenType, audience, scopes); err != nil {
+			s.Logger.Warn("Failed to save token metadata with scopes and audience", "error", err)
+		}
+		return
+	}
+
+	// Fallback to audience only
+	if store, ok := s.tokenStore.(storage.TokenMetadataStoreWithAudience); ok {
+		if err := store.SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenType, audience); err != nil {
+			s.Logger.Warn("Failed to save token metadata with audience", "error", err)
+		}
+		return
+	}
+
+	// Fallback to basic
+	if store, ok := s.tokenStore.(storage.TokenMetadataStore); ok {
+		if err := store.SaveTokenMetadata(tokenID, userID, clientID, tokenType); err != nil {
+			s.Logger.Warn("Failed to save token metadata", "error", err)
 		}
 	}
 }

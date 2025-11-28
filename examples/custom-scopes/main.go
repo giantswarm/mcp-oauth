@@ -99,8 +99,9 @@ func setupRoutes(handler *oauth.Handler) {
 	// OAuth metadata endpoints
 	http.HandleFunc("/.well-known/oauth-protected-resource",
 		handler.ServeProtectedResourceMetadata)
-	http.HandleFunc("/.well-known/oauth-authorization-server",
-		handler.ServeAuthorizationServerMetadata)
+
+	// Authorization Server Metadata (multi-tenant aware)
+	handler.RegisterAuthorizationServerMetadataRoutes(http.DefaultServeMux)
 
 	// OAuth endpoints
 	http.HandleFunc("/oauth/authorize", handler.ServeAuthorization)

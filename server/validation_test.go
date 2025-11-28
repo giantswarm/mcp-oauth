@@ -855,3 +855,86 @@ func TestValidateClientScopes_SecurityScenarios(t *testing.T) {
 		}
 	})
 }
+
+// TestValidateStateParameter_AllowNoState tests that empty state is allowed
+// when AllowNoStateParameter is enabled in the server config
+func TestValidateStateParameter_AllowNoState(t *testing.T) {
+	t.Run("empty state rejected when AllowNoStateParameter=false (default)", func(t *testing.T) {
+		setup := newTestServerSetup(false)
+		srv, err := setup.createServer(&Config{
+			RequirePKCE:           true,
+			AllowNoStateParameter: false, // default
+		})
+		if err != nil {
+			t.Fatalf("Failed to create server: %v", err)
+		}
+
+		err = srv.validateStateParameter("")
+		if err == nil {
+			t.Error("Expected error for empty state when AllowNoStateParameter=false")
+		}
+	})
+
+	t.Run("empty state allowed when AllowNoStateParameter=true", func(t *testing.T) {
+		setup := newTestServerSetup(false)
+		srv, err := setup.createServer(&Config{
+			RequirePKCE:           true,
+			AllowNoStateParameter: true,
+		})
+		if err != nil {
+			t.Fatalf("Failed to create server: %v", err)
+		}
+
+		err = srv.validateStateParameter("")
+		if err != nil {
+			t.Errorf("Expected no error for empty state when AllowNoStateParameter=true, got: %v", err)
+		}
+	})
+
+	t.Run("valid state works regardless of AllowNoStateParameter setting", func(t *testing.T) {
+		validState := "0123456789012345678901234567890123456789012" // 43 chars
+
+		// With AllowNoStateParameter=false
+		setup1 := newTestServerSetup(false)
+		srv1, err := setup1.createServer(&Config{
+			RequirePKCE:           true,
+			AllowNoStateParameter: false,
+		})
+		if err != nil {
+			t.Fatalf("Failed to create server: %v", err)
+		}
+		if err := srv1.validateStateParameter(validState); err != nil {
+			t.Errorf("Valid state should work with AllowNoStateParameter=false: %v", err)
+		}
+
+		// With AllowNoStateParameter=true
+		setup2 := newTestServerSetup(false)
+		srv2, err := setup2.createServer(&Config{
+			RequirePKCE:           true,
+			AllowNoStateParameter: true,
+		})
+		if err != nil {
+			t.Fatalf("Failed to create server: %v", err)
+		}
+		if err := srv2.validateStateParameter(validState); err != nil {
+			t.Errorf("Valid state should work with AllowNoStateParameter=true: %v", err)
+		}
+	})
+
+	t.Run("short non-empty state still rejected when AllowNoStateParameter=true", func(t *testing.T) {
+		setup := newTestServerSetup(false)
+		srv, err := setup.createServer(&Config{
+			RequirePKCE:           true,
+			AllowNoStateParameter: true,
+		})
+		if err != nil {
+			t.Fatalf("Failed to create server: %v", err)
+		}
+
+		// Short state (below minimum) should still be rejected
+		err = srv.validateStateParameter("short")
+		if err == nil {
+			t.Error("Expected error for short state even when AllowNoStateParameter=true")
+		}
+	})
+}

@@ -196,9 +196,14 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 			if err == nil && metadata.Audience != "" {
 				// Token has audience binding - validate it matches this resource server
 				expectedAudience := s.Config.GetResourceIdentifier()
+				// Normalize URLs to handle trailing slash differences
+				// RFC 8707 doesn't specify trailing slash handling, but practical clients
+				// may send resource identifiers with or without trailing slashes
+				normalizedAudience := util.NormalizeURL(metadata.Audience)
+				normalizedExpected := util.NormalizeURL(expectedAudience)
 				// SECURITY: Use constant-time comparison to prevent timing attacks
 				// Although audience is not secret, this follows security best practices
-				if subtle.ConstantTimeCompare([]byte(metadata.Audience), []byte(expectedAudience)) != 1 {
+				if subtle.ConstantTimeCompare([]byte(normalizedAudience), []byte(normalizedExpected)) != 1 {
 					// Rate limit logging to prevent DoS via repeated audience mismatch attempts
 					if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(metadata.UserID+":"+metadata.ClientID+":audience_mismatch") {
 						s.Logger.Warn("Token audience mismatch - token not intended for this resource server",
@@ -239,11 +244,18 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 			s.attemptProactiveRefresh(ctx, accessToken, storedToken)
 		}
 	}
-	// If token not found, proceed with provider validation
-	// (token might be from a different instance or storage backend)
+
+	// Determine which token to use for provider validation:
+	// - If we found a stored provider token, use its access token (the Google token)
+	// - If no stored token found, fall back to the input token (backward compatibility
+	//   for tokens from a different instance or direct provider tokens)
+	tokenForProviderValidation := accessToken
+	if storedToken != nil && storedToken.AccessToken != "" {
+		tokenForProviderValidation = storedToken.AccessToken
+	}
 
 	// Validate with provider
-	userInfo, err := s.provider.ValidateToken(ctx, accessToken)
+	userInfo, err := s.provider.ValidateToken(ctx, tokenForProviderValidation)
 	if err != nil {
 		if s.Auditor != nil {
 			s.Auditor.LogAuthFailure("", "", "", err.Error())
@@ -270,6 +282,15 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 			s.Auditor.LogAuthFailure("", clientID, "", "invalid_state_parameter")
 		}
 		return "", fmt.Errorf("%w (OAuth 2.0 Security BCP)", err)
+	}
+
+	// Generate server-side state if client didn't provide one (when AllowNoStateParameter=true)
+	// This is needed for internal tracking even when client state is not required
+	trackingState := clientState
+	if trackingState == "" {
+		trackingState = generateRandomToken()
+		s.Logger.Debug("Generated server-side state for client without state parameter",
+			"client_id", clientID)
 	}
 
 	// PKCE validation (secure by default, configurable for backward compatibility)
@@ -329,6 +350,11 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 		}
 		return "", fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
 	}
+
+	// If client didn't provide scopes, use provider's default scopes
+	// This is essential for OAuth proxy pattern where server knows required scopes
+	// Only use defaults that the client is authorized for (intersection)
+	scope = s.resolveScopes(scope, client)
 
 	// SECURITY: Validate scope string length to prevent DoS attacks
 	// This must happen before parsing/processing the scope string
@@ -392,8 +418,10 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 	providerCodeChallenge, providerCodeVerifier := generatePKCEPair()
 
 	// Save authorization state with both client and server PKCE parameters and resource binding
+	// Use trackingState (which may be server-generated if client didn't provide state)
 	authState := &storage.AuthorizationState{
-		StateID:              clientState,
+		StateID:              trackingState,
+		OriginalClientState:  clientState, // Empty if client didn't provide state
 		ClientID:             clientID,
 		RedirectURI:          redirectURI,
 		Scope:                scope,
@@ -468,7 +496,8 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 	}
 
 	// Save the client's original state before deletion
-	clientState := authState.StateID
+	// Use OriginalClientState which is empty if client didn't provide state
+	clientState := authState.OriginalClientState
 
 	// Save provider verifier before deleting state
 	providerVerifier := authState.ProviderCodeVerifier
@@ -501,12 +530,23 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 		return nil, "", fmt.Errorf("failed to get user info: %w", err)
 	}
 
-	// Save user info and token
+	// Save user info and token by ID
 	if err := s.tokenStore.SaveUserInfo(ctx, userInfo.ID, userInfo); err != nil {
 		s.Logger.Warn("Failed to save user info", "error", err)
 	}
 	if err := s.tokenStore.SaveToken(ctx, userInfo.ID, providerToken); err != nil {
 		s.Logger.Warn("Failed to save provider token", "error", err)
+	}
+
+	// Also save token by email for applications that look up by email address
+	// This is common in multi-account scenarios where email is the natural identifier
+	if userInfo.Email != "" && userInfo.Email != userInfo.ID {
+		if err := s.tokenStore.SaveUserInfo(ctx, userInfo.Email, userInfo); err != nil {
+			s.Logger.Warn("Failed to save user info by email", "error", err)
+		}
+		if err := s.tokenStore.SaveToken(ctx, userInfo.Email, providerToken); err != nil {
+			s.Logger.Warn("Failed to save provider token by email", "error", err)
+		}
 	}
 
 	// Generate authorization code using oauth2.GenerateVerifier (same quality)
@@ -797,31 +837,17 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 
 	// Track access token metadata for revocation (OAuth 2.1 code reuse detection)
 	// RFC 8707: Store audience binding with tokens for validation
-	if metadataStoreWithAudience, ok := s.tokenStore.(interface {
-		SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenType, audience string) error
-	}); ok {
-		// Store access token with audience binding (RFC 8707)
-		if err := metadataStoreWithAudience.SaveTokenMetadataWithAudience(accessToken, authCode.UserID, clientID, "access", authCode.Audience); err != nil {
-			s.Logger.Warn("Failed to save access token metadata with audience", "error", err)
-		}
-		// CRITICAL: Also save refresh token metadata with audience for revocation
-		// Refresh tokens inherit the audience from the authorization code
-		if err := metadataStoreWithAudience.SaveTokenMetadataWithAudience(refreshToken, authCode.UserID, clientID, "refresh", authCode.Audience); err != nil {
-			s.Logger.Warn("Failed to save refresh token metadata with audience", "error", err)
-		}
-	} else if metadataStore, ok := s.tokenStore.(interface {
-		SaveTokenMetadata(tokenID, userID, clientID, tokenType string) error
-	}); ok {
-		// Fallback to basic metadata store without audience (backward compatibility)
-		if err := metadataStore.SaveTokenMetadata(accessToken, authCode.UserID, clientID, "access"); err != nil {
-			s.Logger.Warn("Failed to save access token metadata", "error", err)
-		}
-		// CRITICAL: Also save refresh token metadata for revocation
-		// This ensures refresh tokens can be found and revoked during code reuse detection
-		if err := metadataStore.SaveTokenMetadata(refreshToken, authCode.UserID, clientID, "refresh"); err != nil {
-			s.Logger.Warn("Failed to save refresh token metadata", "error", err)
-		}
-	}
+	// MCP 2025-11-25: Store scopes with tokens for scope validation
+
+	// Parse scopes from authorization code
+	tokenScopes := normalizeScopes(authCode.Scope)
+
+	// Store access token metadata (tries scopes+audience, audience-only, then basic)
+	s.saveTokenMetadata(accessToken, authCode.UserID, clientID, "access", authCode.Audience, tokenScopes)
+
+	// CRITICAL: Also save refresh token metadata for revocation
+	// Refresh tokens inherit the audience and scopes from the authorization code
+	s.saveTokenMetadata(refreshToken, authCode.UserID, clientID, "refresh", authCode.Audience, tokenScopes)
 
 	// Track refresh token with expiry (OAuth 2.1 security)
 	// Use family tracking if storage supports it (for reuse detection)
@@ -1399,4 +1425,81 @@ func (s *Server) revokeTokenWithRetry(ctx context.Context, token, tokenType, use
 		"final_error", lastErr)
 
 	return fmt.Errorf("provider revocation failed after %d attempts: %w", maxRetries+1, lastErr)
+}
+
+// resolveScopes determines the final scopes to use for an authorization flow.
+// If requestedScope is provided, it's used as-is.
+// If empty, provider defaults are used, filtered by client's allowed scopes.
+func (s *Server) resolveScopes(requestedScope string, client *storage.Client) string {
+	// If client provided scopes, use them
+	if requestedScope != "" {
+		return requestedScope
+	}
+
+	// Get provider defaults
+	defaultScopes := s.provider.DefaultScopes()
+	if len(defaultScopes) == 0 {
+		return ""
+	}
+
+	// SECURITY: Audit when default scopes are applied for forensics and compliance
+	// This helps track which clients rely on provider defaults vs explicit scopes
+	var resolvedScopes string
+	if len(client.Scopes) == 0 {
+		// Client has no restrictions, use all provider defaults
+		resolvedScopes = strings.Join(defaultScopes, " ")
+		if s.Auditor != nil {
+			s.Auditor.LogEvent(security.Event{
+				Type:     security.EventScopeDefaultsApplied,
+				ClientID: client.ClientID,
+				Details: map[string]any{
+					"provider":          s.provider.Name(),
+					"provider_defaults": defaultScopes,
+					"resolved_scopes":   resolvedScopes,
+					"client_restricted": false,
+				},
+			})
+		}
+	} else {
+		// Build intersection - only provider defaults that client is authorized for
+		authorizedScopes := intersectScopes(defaultScopes, client.Scopes)
+		resolvedScopes = strings.Join(authorizedScopes, " ")
+		if s.Auditor != nil {
+			s.Auditor.LogEvent(security.Event{
+				Type:     security.EventScopeDefaultsApplied,
+				ClientID: client.ClientID,
+				Details: map[string]any{
+					"provider":           s.provider.Name(),
+					"provider_defaults":  defaultScopes,
+					"client_allowed":     client.Scopes,
+					"resolved_scopes":    resolvedScopes,
+					"client_restricted":  true,
+					"intersection_count": len(authorizedScopes),
+				},
+			})
+		}
+	}
+
+	return resolvedScopes
+}
+
+// intersectScopes returns scopes that exist in both slices.
+// The order is preserved from the first slice (a).
+func intersectScopes(a, b []string) []string {
+	if len(a) == 0 || len(b) == 0 {
+		return nil
+	}
+
+	scopeSet := make(map[string]bool, len(b))
+	for _, scope := range b {
+		scopeSet[scope] = true
+	}
+
+	var result []string
+	for _, scope := range a {
+		if scopeSet[scope] {
+			result = append(result, scope)
+		}
+	}
+	return result
 }

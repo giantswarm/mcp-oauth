@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
+	"github.com/giantswarm/mcp-oauth/internal/util"
+	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/server"
 	"github.com/giantswarm/mcp-oauth/storage"
@@ -503,6 +505,498 @@ func TestHandler_validateMetadataPath(t *testing.T) {
 	}
 }
 
+// Tests for sub-path Protected Resource Metadata discovery (MCP 2025-11-25)
+
+func TestHandler_ServeProtectedResourceMetadata_SubPathDiscovery(t *testing.T) {
+	tests := []struct {
+		name               string
+		resourcePath       string
+		pathConfigs        map[string]server.ProtectedResourceConfig
+		serverScopes       []string
+		expectedScopes     []string
+		expectedResource   string
+		expectedAuthServer string
+	}{
+		{
+			name:         "root path returns default metadata",
+			resourcePath: "/.well-known/oauth-protected-resource",
+			pathConfigs: map[string]server.ProtectedResourceConfig{
+				"/mcp/files": {ScopesSupported: []string{"files:read"}},
+			},
+			serverScopes:       []string{"default:scope"},
+			expectedScopes:     []string{"default:scope"},
+			expectedResource:   testIssuer,
+			expectedAuthServer: testIssuer,
+		},
+		{
+			name:         "sub-path returns path-specific scopes",
+			resourcePath: "/.well-known/oauth-protected-resource/mcp/files",
+			pathConfigs: map[string]server.ProtectedResourceConfig{
+				"/mcp/files": {ScopesSupported: []string{"files:read", "files:write"}},
+			},
+			serverScopes:       []string{"default:scope"},
+			expectedScopes:     []string{"files:read", "files:write"},
+			expectedResource:   testIssuer + "/mcp/files",
+			expectedAuthServer: testIssuer,
+		},
+		{
+			name:         "sub-path with custom authorization servers",
+			resourcePath: "/.well-known/oauth-protected-resource/mcp/admin",
+			pathConfigs: map[string]server.ProtectedResourceConfig{
+				"/mcp/admin": {
+					ScopesSupported:      []string{"admin:access"},
+					AuthorizationServers: []string{"https://admin-auth.example.com"},
+				},
+			},
+			expectedScopes:     []string{"admin:access"},
+			expectedResource:   testIssuer + "/mcp/admin",
+			expectedAuthServer: "https://admin-auth.example.com",
+		},
+		{
+			name:         "sub-path with custom resource identifier",
+			resourcePath: "/.well-known/oauth-protected-resource/mcp/api",
+			pathConfigs: map[string]server.ProtectedResourceConfig{
+				"/mcp/api": {
+					ScopesSupported:    []string{"api:read"},
+					ResourceIdentifier: "https://api.example.com",
+				},
+			},
+			expectedScopes:   []string{"api:read"},
+			expectedResource: "https://api.example.com",
+		},
+		{
+			name:         "unmatched sub-path falls back to default",
+			resourcePath: "/.well-known/oauth-protected-resource/mcp/unknown",
+			pathConfigs: map[string]server.ProtectedResourceConfig{
+				"/mcp/files": {ScopesSupported: []string{"files:read"}},
+			},
+			serverScopes:     []string{"default:scope"},
+			expectedScopes:   []string{"default:scope"},
+			expectedResource: testIssuer,
+		},
+		{
+			name:         "longest prefix match wins",
+			resourcePath: "/.well-known/oauth-protected-resource/mcp/files/admin",
+			pathConfigs: map[string]server.ProtectedResourceConfig{
+				"/mcp":             {ScopesSupported: []string{"mcp:general"}},
+				"/mcp/files":       {ScopesSupported: []string{"files:read"}},
+				"/mcp/files/admin": {ScopesSupported: []string{"files:admin"}},
+			},
+			expectedScopes:   []string{"files:admin"},
+			expectedResource: testIssuer + "/mcp/files/admin",
+		},
+		{
+			name:         "path without specific scopes falls back to server scopes",
+			resourcePath: "/.well-known/oauth-protected-resource/mcp/empty",
+			pathConfigs: map[string]server.ProtectedResourceConfig{
+				"/mcp/empty": {}, // No scopes specified
+			},
+			serverScopes:     []string{"server:scope"},
+			expectedScopes:   []string{"server:scope"},
+			expectedResource: testIssuer + "/mcp/empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := memory.New()
+			defer store.Stop()
+
+			provider := mock.NewMockProvider()
+
+			config := &server.Config{
+				Issuer:                 testIssuer,
+				SupportedScopes:        tt.serverScopes,
+				ResourceMetadataByPath: tt.pathConfigs,
+			}
+
+			srv, err := server.New(provider, store, store, store, config, nil)
+			if err != nil {
+				t.Fatalf("server.New() error = %v", err)
+			}
+
+			handler := NewHandler(srv, nil)
+
+			req := httptest.NewRequest(http.MethodGet, tt.resourcePath, nil)
+			w := httptest.NewRecorder()
+
+			handler.ServeProtectedResourceMetadata(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+			}
+
+			meta := decodeProtectedResourceMetadata(t, w)
+
+			// Verify resource
+			if tt.expectedResource != "" && meta.Resource != tt.expectedResource {
+				t.Errorf("Resource = %q, want %q", meta.Resource, tt.expectedResource)
+			}
+
+			// Verify authorization servers
+			if tt.expectedAuthServer != "" {
+				if len(meta.AuthorizationServers) == 0 {
+					t.Error("AuthorizationServers is empty")
+				} else if meta.AuthorizationServers[0] != tt.expectedAuthServer {
+					t.Errorf("AuthorizationServers[0] = %q, want %q",
+						meta.AuthorizationServers[0], tt.expectedAuthServer)
+				}
+			}
+
+			// Verify scopes
+			if len(tt.expectedScopes) > 0 {
+				if len(meta.ScopesSupported) != len(tt.expectedScopes) {
+					t.Errorf("len(ScopesSupported) = %d, want %d",
+						len(meta.ScopesSupported), len(tt.expectedScopes))
+				} else {
+					for i, scope := range tt.expectedScopes {
+						if meta.ScopesSupported[i] != scope {
+							t.Errorf("ScopesSupported[%d] = %q, want %q",
+								i, meta.ScopesSupported[i], scope)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestHandler_RegisterProtectedResourceMetadataRoutes_WithResourceMetadataByPath(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	config := &server.Config{
+		Issuer:          testIssuer,
+		SupportedScopes: []string{"default:scope"},
+		ResourceMetadataByPath: map[string]server.ProtectedResourceConfig{
+			"/mcp/files": {ScopesSupported: []string{"files:read", "files:write"}},
+			"/mcp/admin": {ScopesSupported: []string{"admin:access"}},
+		},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+	mux := http.NewServeMux()
+
+	// Register without explicit mcpPath (only uses ResourceMetadataByPath)
+	handler.RegisterProtectedResourceMetadataRoutes(mux, "")
+
+	// Test each expected endpoint
+	endpoints := []struct {
+		path           string
+		expectedScopes []string
+	}{
+		{
+			path:           "/.well-known/oauth-protected-resource",
+			expectedScopes: []string{"default:scope"},
+		},
+		{
+			path:           "/.well-known/oauth-protected-resource/mcp/files",
+			expectedScopes: []string{"files:read", "files:write"},
+		},
+		{
+			path:           "/.well-known/oauth-protected-resource/mcp/admin",
+			expectedScopes: []string{"admin:access"},
+		},
+	}
+
+	for _, ep := range endpoints {
+		t.Run(ep.path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, ep.path, nil)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d for path %s", w.Code, http.StatusOK, ep.path)
+			}
+
+			meta := decodeProtectedResourceMetadata(t, w)
+
+			if len(meta.ScopesSupported) != len(ep.expectedScopes) {
+				t.Errorf("len(ScopesSupported) = %d, want %d",
+					len(meta.ScopesSupported), len(ep.expectedScopes))
+			}
+
+			for i, scope := range ep.expectedScopes {
+				if i < len(meta.ScopesSupported) && meta.ScopesSupported[i] != scope {
+					t.Errorf("ScopesSupported[%d] = %q, want %q",
+						i, meta.ScopesSupported[i], scope)
+				}
+			}
+		})
+	}
+}
+
+func TestHandler_RegisterProtectedResourceMetadataRoutes_DuplicatePaths(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	// Both mcpPath and ResourceMetadataByPath have the same path
+	config := &server.Config{
+		Issuer: testIssuer,
+		ResourceMetadataByPath: map[string]server.ProtectedResourceConfig{
+			"/mcp": {ScopesSupported: []string{"mcp:scope"}},
+		},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+	mux := http.NewServeMux()
+
+	// Register with mcpPath that duplicates ResourceMetadataByPath entry
+	// Should not panic or double-register
+	handler.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
+
+	// Verify the endpoint works
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource/mcp", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestHandler_extractResourcePath(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	tests := []struct {
+		requestPath  string
+		expectedPath string
+	}{
+		{"/.well-known/oauth-protected-resource", "/"},
+		{"/.well-known/oauth-protected-resource/mcp", "/mcp"},
+		{"/.well-known/oauth-protected-resource/mcp/files", "/mcp/files"},
+		{"/.well-known/oauth-protected-resource/mcp/files/admin", "/mcp/files/admin"},
+		{"/some/other/path", "/"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.requestPath, func(t *testing.T) {
+			got := handler.extractResourcePath(tt.requestPath)
+			if got != tt.expectedPath {
+				t.Errorf("extractResourcePath(%q) = %q, want %q",
+					tt.requestPath, got, tt.expectedPath)
+			}
+		})
+	}
+}
+
+func TestPathMatchesPrefix(t *testing.T) {
+	tests := []struct {
+		resourcePath string
+		prefix       string
+		expected     bool
+	}{
+		{"/mcp", "/mcp", true},         // Exact match
+		{"/mcp/files", "/mcp", true},   // Prefix match
+		{"/mcp/files/a", "/mcp", true}, // Longer path
+		{"/mcpx", "/mcp", false},       // Not a path boundary match
+		{"/mc", "/mcp", false},         // Shorter than prefix
+		{"/other/mcp", "/mcp", false},  // Not a prefix
+		{"/mcp-test", "/mcp", false},   // Hyphen after prefix
+		{"/mcp/", "/mcp", true},        // Trailing slash
+		{"/mcp/files", "/mcp/", false}, // Trailing slash in prefix
+		{"/api/v1", "/api", true},      // API versioning
+		{"/api", "/api/v1", false},     // Shorter resource path
+	}
+
+	for _, tt := range tests {
+		name := tt.resourcePath + "_" + tt.prefix
+		t.Run(name, func(t *testing.T) {
+			got := util.PathMatchesPrefix(tt.resourcePath, tt.prefix)
+			if got != tt.expected {
+				t.Errorf("PathMatchesPrefix(%q, %q) = %v, want %v",
+					tt.resourcePath, tt.prefix, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestHandler_findPathConfig(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	config := &server.Config{
+		Issuer: testIssuer,
+		ResourceMetadataByPath: map[string]server.ProtectedResourceConfig{
+			"/mcp":             {ScopesSupported: []string{"mcp:base"}},
+			"/mcp/files":       {ScopesSupported: []string{"files:rw"}},
+			"/mcp/files/admin": {ScopesSupported: []string{"admin:full"}},
+			"/api":             {ScopesSupported: []string{"api:access"}},
+		},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+
+	tests := []struct {
+		resourcePath   string
+		expectedScopes []string
+		expectNil      bool
+	}{
+		{"/mcp", []string{"mcp:base"}, false},
+		{"/mcp/files", []string{"files:rw"}, false},
+		{"/mcp/files/admin", []string{"admin:full"}, false},
+		{"/mcp/files/admin/users", []string{"admin:full"}, false}, // Longest match
+		{"/mcp/other", []string{"mcp:base"}, false},               // Falls back to /mcp
+		{"/api", []string{"api:access"}, false},
+		{"/api/v1", []string{"api:access"}, false},
+		{"/unknown", nil, true},   // No match
+		{"/", nil, true},          // Root, no specific config
+		{"/mcp-other", nil, true}, // Not a valid prefix match
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.resourcePath, func(t *testing.T) {
+			result := handler.findPathConfig(tt.resourcePath)
+
+			if tt.expectNil {
+				if result != nil {
+					t.Errorf("findPathConfig(%q) = %v, want nil",
+						tt.resourcePath, result)
+				}
+				return
+			}
+
+			if result == nil {
+				t.Fatalf("findPathConfig(%q) = nil, want non-nil",
+					tt.resourcePath)
+			}
+
+			if len(result.ScopesSupported) != len(tt.expectedScopes) {
+				t.Errorf("len(ScopesSupported) = %d, want %d",
+					len(result.ScopesSupported), len(tt.expectedScopes))
+			}
+
+			for i, scope := range tt.expectedScopes {
+				if i < len(result.ScopesSupported) && result.ScopesSupported[i] != scope {
+					t.Errorf("ScopesSupported[%d] = %q, want %q",
+						i, result.ScopesSupported[i], scope)
+				}
+			}
+		})
+	}
+}
+
+func TestHandler_buildProtectedResourceMetadata(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	config := &server.Config{
+		Issuer:          testIssuer,
+		SupportedScopes: []string{"default:scope"},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+
+	t.Run("nil pathConfig uses defaults", func(t *testing.T) {
+		metadata := handler.buildProtectedResourceMetadata("/mcp", nil)
+
+		if metadata["resource"] != testIssuer {
+			t.Errorf("resource = %v, want %v", metadata["resource"], testIssuer)
+		}
+
+		authServers, ok := metadata["authorization_servers"].([]string)
+		if !ok || len(authServers) != 1 || authServers[0] != testIssuer {
+			t.Errorf("authorization_servers = %v, want [%v]", metadata["authorization_servers"], testIssuer)
+		}
+
+		scopes, ok := metadata["scopes_supported"].([]string)
+		if !ok || len(scopes) != 1 || scopes[0] != "default:scope" {
+			t.Errorf("scopes_supported = %v, want [default:scope]", metadata["scopes_supported"])
+		}
+	})
+
+	t.Run("pathConfig with all custom values", func(t *testing.T) {
+		pathConfig := &server.ProtectedResourceConfig{
+			ScopesSupported:        []string{"custom:scope"},
+			AuthorizationServers:   []string{"https://custom-auth.example.com"},
+			BearerMethodsSupported: []string{"header", "body"},
+			ResourceIdentifier:     "https://custom-resource.example.com",
+		}
+
+		metadata := handler.buildProtectedResourceMetadata("/mcp", pathConfig)
+
+		if metadata["resource"] != "https://custom-resource.example.com" {
+			t.Errorf("resource = %v, want https://custom-resource.example.com",
+				metadata["resource"])
+		}
+
+		authServers, ok := metadata["authorization_servers"].([]string)
+		if !ok || len(authServers) != 1 || authServers[0] != "https://custom-auth.example.com" {
+			t.Errorf("authorization_servers = %v, want [https://custom-auth.example.com]",
+				metadata["authorization_servers"])
+		}
+
+		bearerMethods, ok := metadata["bearer_methods_supported"].([]string)
+		if !ok || len(bearerMethods) != 2 {
+			t.Errorf("bearer_methods_supported = %v, want [header, body]",
+				metadata["bearer_methods_supported"])
+		}
+
+		scopes, ok := metadata["scopes_supported"].([]string)
+		if !ok || len(scopes) != 1 || scopes[0] != "custom:scope" {
+			t.Errorf("scopes_supported = %v, want [custom:scope]",
+				metadata["scopes_supported"])
+		}
+	})
+
+	t.Run("pathConfig without scopes falls back to server scopes", func(t *testing.T) {
+		pathConfig := &server.ProtectedResourceConfig{
+			// No ScopesSupported - should fall back to server default
+		}
+
+		metadata := handler.buildProtectedResourceMetadata("/mcp", pathConfig)
+
+		scopes, ok := metadata["scopes_supported"].([]string)
+		if !ok || len(scopes) != 1 || scopes[0] != "default:scope" {
+			t.Errorf("scopes_supported = %v, want [default:scope]",
+				metadata["scopes_supported"])
+		}
+	})
+
+	t.Run("sub-path without custom resource uses derived resource", func(t *testing.T) {
+		pathConfig := &server.ProtectedResourceConfig{
+			ScopesSupported: []string{"sub:scope"},
+			// No ResourceIdentifier - should derive from issuer + path
+		}
+
+		metadata := handler.buildProtectedResourceMetadata("/mcp/files", pathConfig)
+
+		expectedResource := testIssuer + "/mcp/files"
+		if metadata["resource"] != expectedResource {
+			t.Errorf("resource = %v, want %v", metadata["resource"], expectedResource)
+		}
+	})
+}
+
 func TestHandler_ServeAuthorizationServerMetadata(t *testing.T) {
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
@@ -646,6 +1140,226 @@ func TestHandler_ServeAuthorizationServerMetadata_PublicRegistration(t *testing.
 	// Verify registration_endpoint IS included when public registration is enabled
 	if meta.RegistrationEndpoint != "https://auth.example.com/oauth/register" {
 		t.Errorf("registration_endpoint = %q, want %q", meta.RegistrationEndpoint, "https://auth.example.com/oauth/register")
+	}
+}
+
+// TestHandler_ServeAuthorizationServerMetadata_EnhancedFields tests the new metadata fields
+// added for MCP 2025-11-25 compliance (issue #78)
+func TestHandler_ServeAuthorizationServerMetadata_EnhancedFields(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Configure supported scopes
+	handler.server.Config.SupportedScopes = []string{"openid", "profile", "email", "files:read", "files:write"}
+
+	// Enable enhanced endpoints for testing
+	handler.server.Config.EnableClientIDMetadataDocuments = true
+	handler.server.Config.EnableRevocationEndpoint = true
+	handler.server.Config.EnableIntrospectionEndpoint = true
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeAuthorizationServerMetadata(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var meta AuthorizationServerMetadata
+	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Test new endpoint fields (RFC 7009, RFC 7662)
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{
+			name: "revocation_endpoint",
+			got:  meta.RevocationEndpoint,
+			want: "https://auth.example.com/oauth/revoke",
+		},
+		{
+			name: "introspection_endpoint",
+			got:  meta.IntrospectionEndpoint,
+			want: "https://auth.example.com/oauth/introspect",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Errorf("%s = %q, want %q", tt.name, tt.got, tt.want)
+			}
+		})
+	}
+
+	// Verify token_endpoint_auth_methods_supported
+	if len(meta.TokenEndpointAuthMethodsSupported) != 3 {
+		t.Errorf("len(TokenEndpointAuthMethodsSupported) = %d, want 3", len(meta.TokenEndpointAuthMethodsSupported))
+	}
+	expectedAuthMethods := map[string]bool{
+		"client_secret_basic": true,
+		"client_secret_post":  true,
+		"none":                true,
+	}
+	for _, method := range meta.TokenEndpointAuthMethodsSupported {
+		if !expectedAuthMethods[method] {
+			t.Errorf("unexpected auth method: %q", method)
+		}
+	}
+
+	// Verify scopes_supported
+	if len(meta.ScopesSupported) != 5 {
+		t.Errorf("len(ScopesSupported) = %d, want 5", len(meta.ScopesSupported))
+	}
+	expectedScopes := map[string]bool{
+		"openid":      true,
+		"profile":     true,
+		"email":       true,
+		"files:read":  true,
+		"files:write": true,
+	}
+	for _, scope := range meta.ScopesSupported {
+		if !expectedScopes[scope] {
+			t.Errorf("unexpected scope: %q", scope)
+		}
+	}
+
+	// Verify client_id_metadata_document_supported
+	if !meta.ClientIDMetadataDocumentSupported {
+		t.Error("ClientIDMetadataDocumentSupported should be true when enabled")
+	}
+}
+
+// TestHandler_ServeAuthorizationServerMetadata_DisabledEndpoints verifies that
+// revocation and introspection endpoints are NOT advertised when disabled
+func TestHandler_ServeAuthorizationServerMetadata_DisabledEndpoints(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Explicitly disable endpoints (though false is default)
+	handler.server.Config.EnableRevocationEndpoint = false
+	handler.server.Config.EnableIntrospectionEndpoint = false
+	handler.server.Config.EnableClientIDMetadataDocuments = false
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeAuthorizationServerMetadata(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var meta AuthorizationServerMetadata
+	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Verify endpoints are NOT included when disabled
+	if meta.RevocationEndpoint != "" {
+		t.Errorf("RevocationEndpoint should be empty when disabled, got %q", meta.RevocationEndpoint)
+	}
+	if meta.IntrospectionEndpoint != "" {
+		t.Errorf("IntrospectionEndpoint should be empty when disabled, got %q", meta.IntrospectionEndpoint)
+	}
+	if meta.ClientIDMetadataDocumentSupported {
+		t.Error("ClientIDMetadataDocumentSupported should be false when disabled")
+	}
+}
+
+// TestHandler_ServeAuthorizationServerMetadata_NoScopes verifies scopes_supported
+// is not included when no scopes are configured
+func TestHandler_ServeAuthorizationServerMetadata_NoScopes(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Ensure no scopes are configured
+	handler.server.Config.SupportedScopes = nil
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeAuthorizationServerMetadata(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var meta AuthorizationServerMetadata
+	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Verify scopes_supported is not included (nil/empty)
+	if len(meta.ScopesSupported) > 0 {
+		t.Errorf("ScopesSupported should be empty when no scopes configured, got %v", meta.ScopesSupported)
+	}
+}
+
+// TestHandler_ServeOpenIDConfiguration verifies OpenID Connect Discovery endpoint
+// returns the same metadata as Authorization Server Metadata (RFC 8414 Section 5)
+func TestHandler_ServeOpenIDConfiguration(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Configure server with some settings
+	handler.server.Config.SupportedScopes = []string{"openid", "profile"}
+	handler.server.Config.EnableClientIDMetadataDocuments = true
+	handler.server.Config.EnableRevocationEndpoint = true
+	handler.server.Config.EnableIntrospectionEndpoint = true
+
+	// Request Authorization Server Metadata
+	reqAS := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	wAS := httptest.NewRecorder()
+	handler.ServeAuthorizationServerMetadata(wAS, reqAS)
+
+	// Request OpenID Configuration
+	reqOIDC := httptest.NewRequest(http.MethodGet, "/.well-known/openid-configuration", nil)
+	wOIDC := httptest.NewRecorder()
+	handler.ServeOpenIDConfiguration(wOIDC, reqOIDC)
+
+	// Both should return 200 OK
+	if wAS.Code != http.StatusOK {
+		t.Errorf("AS metadata status = %d, want %d", wAS.Code, http.StatusOK)
+	}
+	if wOIDC.Code != http.StatusOK {
+		t.Errorf("OIDC configuration status = %d, want %d", wOIDC.Code, http.StatusOK)
+	}
+
+	// Decode both responses
+	var metaAS, metaOIDC AuthorizationServerMetadata
+	if err := json.NewDecoder(wAS.Body).Decode(&metaAS); err != nil {
+		t.Fatalf("failed to decode AS metadata: %v", err)
+	}
+	if err := json.NewDecoder(wOIDC.Body).Decode(&metaOIDC); err != nil {
+		t.Fatalf("failed to decode OIDC configuration: %v", err)
+	}
+
+	// Verify key fields match
+	if metaAS.Issuer != metaOIDC.Issuer {
+		t.Errorf("issuer mismatch: AS=%q, OIDC=%q", metaAS.Issuer, metaOIDC.Issuer)
+	}
+	if metaAS.AuthorizationEndpoint != metaOIDC.AuthorizationEndpoint {
+		t.Errorf("authorization_endpoint mismatch: AS=%q, OIDC=%q", metaAS.AuthorizationEndpoint, metaOIDC.AuthorizationEndpoint)
+	}
+	if metaAS.TokenEndpoint != metaOIDC.TokenEndpoint {
+		t.Errorf("token_endpoint mismatch: AS=%q, OIDC=%q", metaAS.TokenEndpoint, metaOIDC.TokenEndpoint)
+	}
+	if metaAS.RevocationEndpoint != metaOIDC.RevocationEndpoint {
+		t.Errorf("revocation_endpoint mismatch: AS=%q, OIDC=%q", metaAS.RevocationEndpoint, metaOIDC.RevocationEndpoint)
+	}
+	if metaAS.IntrospectionEndpoint != metaOIDC.IntrospectionEndpoint {
+		t.Errorf("introspection_endpoint mismatch: AS=%q, OIDC=%q", metaAS.IntrospectionEndpoint, metaOIDC.IntrospectionEndpoint)
+	}
+
+	// Verify array lengths match
+	if len(metaAS.ScopesSupported) != len(metaOIDC.ScopesSupported) {
+		t.Errorf("scopes_supported length mismatch: AS=%d, OIDC=%d", len(metaAS.ScopesSupported), len(metaOIDC.ScopesSupported))
 	}
 }
 
@@ -1570,6 +2284,105 @@ func TestUserInfoFromContext(t *testing.T) {
 	}
 }
 
+func TestContextWithUserInfo(t *testing.T) {
+	t.Run("sets user info in context", func(t *testing.T) {
+		ctx := context.Background()
+		expectedUserInfo := &providers.UserInfo{
+			ID:    "user-123",
+			Email: "test@example.com",
+			Name:  "Test User",
+		}
+
+		// Set user info in context
+		ctxWithUser := ContextWithUserInfo(ctx, expectedUserInfo)
+
+		// Retrieve user info from context
+		userInfo, ok := UserInfoFromContext(ctxWithUser)
+		if !ok {
+			t.Error("UserInfoFromContext should return true when user info is in context")
+		}
+		if userInfo == nil {
+			t.Fatal("UserInfoFromContext should return non-nil user info")
+		}
+		if userInfo.ID != expectedUserInfo.ID {
+			t.Errorf("Expected user ID %q, got %q", expectedUserInfo.ID, userInfo.ID)
+		}
+		if userInfo.Email != expectedUserInfo.Email {
+			t.Errorf("Expected email %q, got %q", expectedUserInfo.Email, userInfo.Email)
+		}
+		if userInfo.Name != expectedUserInfo.Name {
+			t.Errorf("Expected name %q, got %q", expectedUserInfo.Name, userInfo.Name)
+		}
+	})
+
+	t.Run("sets nil user info in context", func(t *testing.T) {
+		ctx := context.Background()
+
+		// Set nil user info in context
+		ctxWithUser := ContextWithUserInfo(ctx, nil)
+
+		// Retrieve user info from context - returns (nil, true) because a typed nil
+		// value was explicitly stored. The caller should check userInfo != nil.
+		userInfo, ok := UserInfoFromContext(ctxWithUser)
+		if !ok {
+			t.Error("UserInfoFromContext should return true when nil user info is explicitly set in context")
+		}
+		if userInfo != nil {
+			t.Error("UserInfoFromContext should return nil when nil user info is in context")
+		}
+	})
+
+	t.Run("overwrites existing user info", func(t *testing.T) {
+		ctx := context.Background()
+		originalUserInfo := &providers.UserInfo{
+			ID:    "user-original",
+			Email: "original@example.com",
+		}
+		newUserInfo := &providers.UserInfo{
+			ID:    "user-new",
+			Email: "new@example.com",
+		}
+
+		// Set original user info
+		ctxWithOriginal := ContextWithUserInfo(ctx, originalUserInfo)
+		// Overwrite with new user info
+		ctxWithNew := ContextWithUserInfo(ctxWithOriginal, newUserInfo)
+
+		// Retrieve user info - should get new user info
+		userInfo, ok := UserInfoFromContext(ctxWithNew)
+		if !ok {
+			t.Error("UserInfoFromContext should return true")
+		}
+		if userInfo.ID != newUserInfo.ID {
+			t.Errorf("Expected user ID %q, got %q", newUserInfo.ID, userInfo.ID)
+		}
+		if userInfo.Email != newUserInfo.Email {
+			t.Errorf("Expected email %q, got %q", newUserInfo.Email, userInfo.Email)
+		}
+	})
+
+	t.Run("works with http.Request context", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/test", nil)
+		expectedUserInfo := &providers.UserInfo{
+			ID:    "user-456",
+			Email: "http@example.com",
+		}
+
+		// Set user info in request context
+		ctxWithUser := ContextWithUserInfo(req.Context(), expectedUserInfo)
+		req = req.WithContext(ctxWithUser)
+
+		// Retrieve user info from request context
+		userInfo, ok := UserInfoFromContext(req.Context())
+		if !ok {
+			t.Error("UserInfoFromContext should return true")
+		}
+		if userInfo.ID != expectedUserInfo.ID {
+			t.Errorf("Expected user ID %q, got %q", expectedUserInfo.ID, userInfo.ID)
+		}
+	})
+}
+
 func TestHandler_ServeToken_InvalidClient(t *testing.T) {
 	ctx := context.Background()
 
@@ -2195,6 +3008,42 @@ func TestHandler_FormatWWWAuthenticate(t *testing.T) {
 			},
 			wantNotContain: []string{"error=", "error_description="},
 		},
+		{
+			name:      "scope with quotes (defense-in-depth escaping)",
+			scope:     `files:read "special" user:profile`,
+			error:     "",
+			errorDesc: "",
+			wantContain: []string{
+				"Bearer",
+				testResourceMetadataURL,
+				`scope="files:read \"special\" user:profile"`,
+			},
+			wantNotContain: []string{"error=", "error_description="},
+		},
+		{
+			name:      "scope with backslash (defense-in-depth escaping)",
+			scope:     `files:read scope\test user:profile`,
+			error:     "",
+			errorDesc: "",
+			wantContain: []string{
+				"Bearer",
+				testResourceMetadataURL,
+				`scope="files:read scope\\test user:profile"`,
+			},
+			wantNotContain: []string{"error=", "error_description="},
+		},
+		{
+			name:      "scope with both backslash and quotes (combined escaping)",
+			scope:     `test:\"quoted\value`,
+			error:     "",
+			errorDesc: "",
+			wantContain: []string{
+				"Bearer",
+				testResourceMetadataURL,
+				`scope="test:\\\"quoted\\value"`,
+			},
+			wantNotContain: []string{"error=", "error_description="},
+		},
 	}
 
 	for _, tt := range tests {
@@ -2517,5 +3366,1271 @@ func TestHandler_WriteError401BackwardCompatibilityMode(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestHandler_GetChallengeScopes tests the getChallengeScopes() scope resolution logic
+func TestHandler_GetChallengeScopes(t *testing.T) {
+	tests := []struct {
+		name                   string
+		requestPath            string
+		requestMethod          string
+		endpointScopes         map[string][]string
+		endpointMethodScopes   map[string]map[string][]string
+		defaultChallengeScopes []string
+		wantScopes             string
+	}{
+		{
+			name:                   "endpoint-specific scopes take priority",
+			requestPath:            "/api/files/test.txt",
+			requestMethod:          "GET",
+			endpointScopes:         map[string][]string{"/api/files/*": {"files:read", "files:write"}},
+			defaultChallengeScopes: []string{"default:scope"},
+			wantScopes:             "files:read files:write",
+		},
+		{
+			name:                   "method-specific scopes take priority over path scopes",
+			requestPath:            "/api/files/test.txt",
+			requestMethod:          "POST",
+			endpointScopes:         map[string][]string{"/api/files/*": {"files:read"}},
+			endpointMethodScopes:   map[string]map[string][]string{"/api/files/*": {"POST": {"files:write", "files:create"}}},
+			defaultChallengeScopes: []string{"default:scope"},
+			wantScopes:             "files:write files:create",
+		},
+		{
+			name:                   "fallback to default challenge scopes when no endpoint match",
+			requestPath:            "/api/other/resource",
+			requestMethod:          "GET",
+			endpointScopes:         map[string][]string{"/api/files/*": {"files:read"}},
+			defaultChallengeScopes: []string{"mcp:access", "user:profile"},
+			wantScopes:             "mcp:access user:profile",
+		},
+		{
+			name:                   "no scopes when nothing configured",
+			requestPath:            "/api/resource",
+			requestMethod:          "GET",
+			endpointScopes:         nil,
+			endpointMethodScopes:   nil,
+			defaultChallengeScopes: nil,
+			wantScopes:             "",
+		},
+		{
+			name:                   "exact path match",
+			requestPath:            "/api/user/profile",
+			requestMethod:          "GET",
+			endpointScopes:         map[string][]string{"/api/user/profile": {"user:profile"}},
+			defaultChallengeScopes: []string{"default:scope"},
+			wantScopes:             "user:profile",
+		},
+		{
+			name:                   "wildcard path match",
+			requestPath:            "/api/admin/users/delete",
+			requestMethod:          "DELETE",
+			endpointScopes:         map[string][]string{"/api/admin/*": {"admin:access"}},
+			defaultChallengeScopes: []string{"default:scope"},
+			wantScopes:             "admin:access",
+		},
+		{
+			name:                   "method wildcard fallback",
+			requestPath:            "/api/files/test.txt",
+			requestMethod:          "PATCH",
+			endpointMethodScopes:   map[string]map[string][]string{"/api/files/*": {"*": {"files:modify"}}},
+			defaultChallengeScopes: []string{"default:scope"},
+			wantScopes:             "files:modify",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := memory.New()
+			defer store.Stop()
+
+			provider := mock.NewMockProvider()
+
+			config := &server.Config{
+				Issuer:                          testIssuer,
+				EndpointScopeRequirements:       tt.endpointScopes,
+				EndpointMethodScopeRequirements: tt.endpointMethodScopes,
+				DefaultChallengeScopes:          tt.defaultChallengeScopes,
+			}
+
+			srv, err := server.New(provider, store, store, store, config, nil)
+			if err != nil {
+				t.Fatalf("server.New() error = %v", err)
+			}
+
+			handler := NewHandler(srv, nil)
+
+			// Create test request
+			req := httptest.NewRequest(tt.requestMethod, tt.requestPath, nil)
+
+			// Test getChallengeScopes
+			gotScopes := handler.getChallengeScopes(req)
+
+			if gotScopes != tt.wantScopes {
+				t.Errorf("getChallengeScopes() = %q, want %q", gotScopes, tt.wantScopes)
+			}
+		})
+	}
+}
+
+// TestHandler_WriteUnauthorizedError tests the writeUnauthorizedError method
+func TestHandler_WriteUnauthorizedError(t *testing.T) {
+	tests := []struct {
+		name                   string
+		requestPath            string
+		requestMethod          string
+		endpointScopes         map[string][]string
+		defaultChallengeScopes []string
+		errorCode              string
+		errorDesc              string
+		wantScopes             string
+		wantErrorCode          string
+		wantErrorDesc          string
+	}{
+		{
+			name:                   "with endpoint-specific scopes",
+			requestPath:            "/api/files/test.txt",
+			requestMethod:          "GET",
+			endpointScopes:         map[string][]string{"/api/files/*": {"files:read", "files:write"}},
+			defaultChallengeScopes: []string{"default:scope"},
+			errorCode:              "invalid_token",
+			errorDesc:              "Token has expired",
+			wantScopes:             "files:read files:write",
+			wantErrorCode:          "invalid_token",
+			wantErrorDesc:          "Token has expired",
+		},
+		{
+			name:                   "with default challenge scopes",
+			requestPath:            "/api/other",
+			requestMethod:          "GET",
+			endpointScopes:         nil,
+			defaultChallengeScopes: []string{"mcp:access"},
+			errorCode:              "invalid_token",
+			errorDesc:              "Missing Authorization header",
+			wantScopes:             "mcp:access",
+			wantErrorCode:          "invalid_token",
+			wantErrorDesc:          "Missing Authorization header",
+		},
+		{
+			name:                   "with no scopes configured",
+			requestPath:            "/api/resource",
+			requestMethod:          "GET",
+			endpointScopes:         nil,
+			defaultChallengeScopes: nil,
+			errorCode:              "invalid_token",
+			errorDesc:              "Invalid token format",
+			wantScopes:             "",
+			wantErrorCode:          "invalid_token",
+			wantErrorDesc:          "Invalid token format",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := memory.New()
+			defer store.Stop()
+
+			provider := mock.NewMockProvider()
+
+			config := &server.Config{
+				Issuer:                    testIssuer,
+				EndpointScopeRequirements: tt.endpointScopes,
+				DefaultChallengeScopes:    tt.defaultChallengeScopes,
+			}
+
+			srv, err := server.New(provider, store, store, store, config, nil)
+			if err != nil {
+				t.Fatalf("server.New() error = %v", err)
+			}
+
+			handler := NewHandler(srv, nil)
+
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(tt.requestMethod, tt.requestPath, nil)
+
+			handler.writeUnauthorizedError(w, req, tt.errorCode, tt.errorDesc)
+
+			// Check status code
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("Status = %d, want %d", w.Code, http.StatusUnauthorized)
+			}
+
+			// Check WWW-Authenticate header
+			wwwAuth := w.Header().Get("WWW-Authenticate")
+			if wwwAuth == "" {
+				t.Fatal("WWW-Authenticate header should be set")
+			}
+
+			// Check resource_metadata
+			if !strings.Contains(wwwAuth, testResourceMetadataURL) {
+				t.Errorf("WWW-Authenticate missing resource_metadata:\ngot: %q", wwwAuth)
+			}
+
+			// Check scope parameter
+			if tt.wantScopes != "" {
+				expectedScope := fmt.Sprintf(`scope="%s"`, tt.wantScopes)
+				if !strings.Contains(wwwAuth, expectedScope) {
+					t.Errorf("WWW-Authenticate missing expected scope:\ngot:  %q\nwant: %q", wwwAuth, expectedScope)
+				}
+			} else {
+				if strings.Contains(wwwAuth, "scope=") {
+					t.Errorf("WWW-Authenticate should not contain scope:\ngot: %q", wwwAuth)
+				}
+			}
+
+			// Check error code
+			expectedError := fmt.Sprintf(`error="%s"`, tt.wantErrorCode)
+			if !strings.Contains(wwwAuth, expectedError) {
+				t.Errorf("WWW-Authenticate missing error code:\ngot:  %q\nwant: %q", wwwAuth, expectedError)
+			}
+
+			// Check error description
+			expectedErrorDesc := fmt.Sprintf(`error_description="%s"`, tt.wantErrorDesc)
+			if !strings.Contains(wwwAuth, expectedErrorDesc) {
+				t.Errorf("WWW-Authenticate missing error description:\ngot:  %q\nwant: %q", wwwAuth, expectedErrorDesc)
+			}
+
+			// Check JSON response body
+			var response map[string]string
+			if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+				t.Fatalf("Failed to decode response body: %v", err)
+			}
+
+			if response["error"] != tt.wantErrorCode {
+				t.Errorf("Response error = %q, want %q", response["error"], tt.wantErrorCode)
+			}
+
+			if response["error_description"] != tt.wantErrorDesc {
+				t.Errorf("Response error_description = %q, want %q", response["error_description"], tt.wantErrorDesc)
+			}
+		})
+	}
+}
+
+// TestHandler_ValidateTokenWithEndpointSpecificWWWAuthenticate tests that ValidateToken middleware
+// returns endpoint-specific scopes in WWW-Authenticate headers for 401 responses
+func TestHandler_ValidateTokenWithEndpointSpecificWWWAuthenticate(t *testing.T) {
+	tests := []struct {
+		name                   string
+		requestPath            string
+		requestMethod          string
+		authHeader             string
+		endpointScopes         map[string][]string
+		defaultChallengeScopes []string
+		wantStatus             int
+		wantScopes             string
+	}{
+		{
+			name:                   "missing auth header - endpoint-specific scopes in challenge",
+			requestPath:            "/api/files/test.txt",
+			requestMethod:          "GET",
+			authHeader:             "",
+			endpointScopes:         map[string][]string{"/api/files/*": {"files:read", "files:write"}},
+			defaultChallengeScopes: []string{"default:scope"},
+			wantStatus:             http.StatusUnauthorized,
+			wantScopes:             "files:read files:write",
+		},
+		{
+			name:                   "invalid auth header format - endpoint-specific scopes",
+			requestPath:            "/api/admin/users",
+			requestMethod:          "GET",
+			authHeader:             "InvalidFormat",
+			endpointScopes:         map[string][]string{"/api/admin/*": {"admin:access"}},
+			defaultChallengeScopes: []string{"default:scope"},
+			wantStatus:             http.StatusUnauthorized,
+			wantScopes:             "admin:access",
+		},
+		{
+			name:                   "missing auth header - no scopes configured",
+			requestPath:            "/api/resource",
+			requestMethod:          "GET",
+			authHeader:             "",
+			endpointScopes:         nil,
+			defaultChallengeScopes: nil,
+			wantStatus:             http.StatusUnauthorized,
+			wantScopes:             "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := memory.New()
+			defer store.Stop()
+
+			provider := mock.NewMockProvider()
+
+			config := &server.Config{
+				Issuer:                    testIssuer,
+				EndpointScopeRequirements: tt.endpointScopes,
+				DefaultChallengeScopes:    tt.defaultChallengeScopes,
+			}
+
+			srv, err := server.New(provider, store, store, store, config, nil)
+			if err != nil {
+				t.Fatalf("server.New() error = %v", err)
+			}
+
+			handler := NewHandler(srv, nil)
+
+			// Create test handler that is protected by ValidateToken middleware
+			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})
+
+			protectedHandler := handler.ValidateToken(testHandler)
+
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(tt.requestMethod, tt.requestPath, nil)
+			if tt.authHeader != "" {
+				req.Header.Set("Authorization", tt.authHeader)
+			}
+
+			protectedHandler.ServeHTTP(w, req)
+
+			// Check status code
+			if w.Code != tt.wantStatus {
+				t.Errorf("Status = %d, want %d", w.Code, tt.wantStatus)
+			}
+
+			// Check WWW-Authenticate header for 401 responses
+			if w.Code == http.StatusUnauthorized {
+				wwwAuth := w.Header().Get("WWW-Authenticate")
+				if wwwAuth == "" {
+					t.Fatal("WWW-Authenticate header should be set for 401 responses")
+				}
+
+				// Check resource_metadata is present
+				if !strings.Contains(wwwAuth, testResourceMetadataURL) {
+					t.Errorf("WWW-Authenticate missing resource_metadata:\ngot: %q", wwwAuth)
+				}
+
+				// Check scope parameter
+				if tt.wantScopes != "" {
+					expectedScope := fmt.Sprintf(`scope="%s"`, tt.wantScopes)
+					if !strings.Contains(wwwAuth, expectedScope) {
+						t.Errorf("WWW-Authenticate missing expected scope:\ngot:  %q\nwant: %q", wwwAuth, expectedScope)
+					}
+				} else {
+					if strings.Contains(wwwAuth, "scope=") {
+						t.Errorf("WWW-Authenticate should not contain scope when none configured:\ngot: %q", wwwAuth)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestIsCustomURLScheme tests the isCustomURLScheme helper function
+func TestIsCustomURLScheme(t *testing.T) {
+	tests := []struct {
+		name     string
+		uri      string
+		expected bool
+	}{
+		// HTTP schemes - should NOT trigger interstitial
+		{
+			name:     "http scheme",
+			uri:      "http://example.com/callback",
+			expected: false,
+		},
+		{
+			name:     "https scheme",
+			uri:      "https://example.com/callback",
+			expected: false,
+		},
+		{
+			name:     "HTTP uppercase",
+			uri:      "HTTP://example.com/callback",
+			expected: false,
+		},
+		{
+			name:     "HTTPS uppercase",
+			uri:      "HTTPS://example.com/callback",
+			expected: false,
+		},
+		{
+			name:     "http localhost",
+			uri:      "http://localhost:8080/callback",
+			expected: false,
+		},
+		{
+			name:     "http loopback",
+			uri:      "http://127.0.0.1:8080/callback",
+			expected: false,
+		},
+
+		// Custom URL schemes - SHOULD trigger interstitial
+		{
+			name:     "cursor scheme",
+			uri:      "cursor://oauth/callback",
+			expected: true,
+		},
+		{
+			name:     "vscode scheme",
+			uri:      "vscode://example.extension/callback",
+			expected: true,
+		},
+		{
+			name:     "slack scheme",
+			uri:      "slack://oauth/callback",
+			expected: true,
+		},
+		{
+			name:     "notion scheme",
+			uri:      "notion://oauth/callback",
+			expected: true,
+		},
+		{
+			name:     "obsidian scheme",
+			uri:      "obsidian://plugin/callback",
+			expected: true,
+		},
+		{
+			name:     "custom-app scheme",
+			uri:      "myapp://auth/done",
+			expected: true,
+		},
+		{
+			name:     "com.example.app scheme (reverse domain)",
+			uri:      "com.example.app://callback",
+			expected: true,
+		},
+		{
+			name:     "custom scheme with query params",
+			uri:      "cursor://callback?code=abc&state=xyz",
+			expected: true,
+		},
+
+		// Edge cases
+		{
+			name:     "empty string",
+			uri:      "",
+			expected: false,
+		},
+		{
+			name:     "no scheme",
+			uri:      "example.com/callback",
+			expected: false,
+		},
+		{
+			name:     "relative path",
+			uri:      "/callback",
+			expected: false,
+		},
+		{
+			name:     "malformed URL",
+			uri:      "://invalid",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isCustomURLScheme(tt.uri)
+			if result != tt.expected {
+				t.Errorf("isCustomURLScheme(%q) = %v, want %v", tt.uri, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestGetAppNameFromScheme tests the getAppNameFromScheme helper function
+func TestGetAppNameFromScheme(t *testing.T) {
+	tests := []struct {
+		name     string
+		uri      string
+		expected string
+	}{
+		// Known app schemes
+		{
+			name:     "cursor",
+			uri:      "cursor://oauth/callback",
+			expected: "Cursor",
+		},
+		{
+			name:     "vscode",
+			uri:      "vscode://extension/callback",
+			expected: "Visual Studio Code",
+		},
+		{
+			name:     "code",
+			uri:      "code://extension/callback",
+			expected: "Visual Studio Code",
+		},
+		{
+			name:     "slack",
+			uri:      "slack://callback",
+			expected: "Slack",
+		},
+		{
+			name:     "notion",
+			uri:      "notion://callback",
+			expected: "Notion",
+		},
+		{
+			name:     "obsidian",
+			uri:      "obsidian://plugin",
+			expected: "Obsidian",
+		},
+		{
+			name:     "figma",
+			uri:      "figma://callback",
+			expected: "Figma",
+		},
+		{
+			name:     "linear",
+			uri:      "linear://callback",
+			expected: "Linear",
+		},
+		{
+			name:     "raycast",
+			uri:      "raycast://callback",
+			expected: "Raycast",
+		},
+		{
+			name:     "warp",
+			uri:      "warp://callback",
+			expected: "Warp",
+		},
+		{
+			name:     "zed",
+			uri:      "zed://callback",
+			expected: "Zed",
+		},
+		{
+			name:     "windsurf",
+			uri:      "windsurf://callback",
+			expected: "Windsurf",
+		},
+
+		// Unknown schemes - should capitalize first letter
+		{
+			name:     "unknown scheme",
+			uri:      "myapp://callback",
+			expected: "Myapp",
+		},
+		{
+			name:     "unknown scheme with dashes",
+			uri:      "custom-app://callback",
+			expected: "Custom-app",
+		},
+
+		// HTTP schemes - capitalizes like unknown schemes (caller should check isCustomURLScheme first)
+		{
+			name:     "http scheme",
+			uri:      "http://example.com",
+			expected: "Http",
+		},
+		{
+			name:     "https scheme",
+			uri:      "https://example.com",
+			expected: "Https",
+		},
+
+		// Edge cases
+		{
+			name:     "empty string",
+			uri:      "",
+			expected: "",
+		},
+		{
+			name:     "malformed URL",
+			uri:      "://invalid",
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := getAppNameFromScheme(tt.uri)
+			if result != tt.expected {
+				t.Errorf("getAppNameFromScheme(%q) = %q, want %q", tt.uri, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestHandler_ServeCallback_CustomURLScheme tests that custom URL schemes
+// receive an interstitial page instead of a direct redirect
+func TestHandler_ServeCallback_CustomURLScheme(t *testing.T) {
+	ctx := context.Background()
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Register a client with custom URL scheme redirect
+	client, _, err := handler.server.RegisterClient(ctx,
+		"Cursor Test Client",
+		"public",
+		"none", // Public client (no secret)
+		[]string{"cursor://oauth/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	// Create authorization state
+	verifier := testutil.GenerateRandomString(50)
+	hash := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	// State must be at least 32 characters for security
+	clientState := testutil.GenerateRandomString(43)
+	_, err = handler.server.StartAuthorizationFlow(ctx,
+		client.ClientID,
+		"cursor://oauth/callback",
+		"openid email",
+		"", // resource parameter (optional)
+		challenge,
+		"S256",
+		clientState,
+	)
+	if err != nil {
+		t.Fatalf("StartAuthorizationFlow() error = %v", err)
+	}
+
+	// Get auth state to find provider state
+	authState, err := store.GetAuthorizationState(ctx, clientState)
+	if err != nil {
+		t.Fatalf("GetAuthorizationState() error = %v", err)
+	}
+
+	// Test callback with valid state
+	req := httptest.NewRequest(http.MethodGet,
+		"/oauth/callback?state="+authState.ProviderState+"&code=provider-auth-code",
+		nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeCallback(w, req)
+
+	// Should return HTML interstitial, NOT a redirect
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d for custom URL scheme", w.Code, http.StatusOK)
+	}
+
+	// Check content type is HTML
+	contentType := w.Header().Get("Content-Type")
+	if !strings.HasPrefix(contentType, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html", contentType)
+	}
+
+	// Verify HTML content contains expected elements
+	body := w.Body.String()
+
+	// Should contain success message
+	if !strings.Contains(body, "Authorization Successful") {
+		t.Error("Response should contain 'Authorization Successful' message")
+	}
+
+	// Should contain app name
+	if !strings.Contains(body, "Cursor") {
+		t.Error("Response should contain app name 'Cursor'")
+	}
+
+	// Should contain the redirect URL with authorization code
+	if !strings.Contains(body, "cursor://oauth/callback") {
+		t.Error("Response should contain the redirect URL")
+	}
+	if !strings.Contains(body, "code=") {
+		t.Error("Response should contain authorization code")
+	}
+	if !strings.Contains(body, "state="+clientState) {
+		t.Error("Response should contain original client state")
+	}
+
+	// Should contain manual button
+	if !strings.Contains(body, "Open Cursor") {
+		t.Error("Response should contain manual 'Open Cursor' button")
+	}
+
+	// Should contain close hint
+	if !strings.Contains(body, "close this window") {
+		t.Error("Response should contain 'close this window' hint")
+	}
+
+	// Should NOT have Location header (no redirect)
+	if location := w.Header().Get("Location"); location != "" {
+		t.Errorf("Location header should be empty for interstitial page, got %q", location)
+	}
+}
+
+// TestHandler_ServeCallback_HTTPScheme tests that HTTP/HTTPS schemes
+// still use direct redirects (not interstitial)
+func TestHandler_ServeCallback_HTTPScheme(t *testing.T) {
+	ctx := context.Background()
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Register a client with HTTPS redirect
+	client, _, err := handler.server.RegisterClient(ctx,
+		"Web App Client",
+		"confidential",
+		"", // tokenEndpointAuthMethod
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	// Create authorization state
+	verifier := testutil.GenerateRandomString(50)
+	hash := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	clientState := testutil.GenerateRandomString(43)
+	_, err = handler.server.StartAuthorizationFlow(ctx,
+		client.ClientID,
+		"https://example.com/callback",
+		"openid email",
+		"",
+		challenge,
+		"S256",
+		clientState,
+	)
+	if err != nil {
+		t.Fatalf("StartAuthorizationFlow() error = %v", err)
+	}
+
+	authState, err := store.GetAuthorizationState(ctx, clientState)
+	if err != nil {
+		t.Fatalf("GetAuthorizationState() error = %v", err)
+	}
+
+	// Test callback
+	req := httptest.NewRequest(http.MethodGet,
+		"/oauth/callback?state="+authState.ProviderState+"&code=provider-auth-code",
+		nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeCallback(w, req)
+
+	// Should redirect, NOT return HTML interstitial
+	if w.Code != http.StatusFound && w.Code != http.StatusSeeOther {
+		t.Errorf("status = %d, want redirect status for HTTPS scheme", w.Code)
+	}
+
+	// Should have Location header
+	location := w.Header().Get("Location")
+	if location == "" {
+		t.Error("Location header should be set for HTTPS redirect")
+	}
+
+	// Verify redirect URL
+	if !strings.HasPrefix(location, "https://example.com/callback") {
+		t.Errorf("Location = %q, want to start with https://example.com/callback", location)
+	}
+	if !strings.Contains(location, "code=") {
+		t.Error("Location should contain authorization code")
+	}
+	if !strings.Contains(location, "state="+clientState) {
+		t.Error("Location should contain original client state")
+	}
+}
+
+// TestHandler_ServeCallback_VSCodeScheme tests VS Code custom scheme handling
+func TestHandler_ServeCallback_VSCodeScheme(t *testing.T) {
+	ctx := context.Background()
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Register a client with VS Code scheme
+	client, _, err := handler.server.RegisterClient(ctx,
+		"VS Code Extension",
+		"public",
+		"none",
+		[]string{"vscode://example.extension/callback"},
+		[]string{"openid"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	verifier := testutil.GenerateRandomString(50)
+	hash := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
+	clientState := testutil.GenerateRandomString(43)
+
+	_, err = handler.server.StartAuthorizationFlow(ctx,
+		client.ClientID,
+		"vscode://example.extension/callback",
+		"openid",
+		"",
+		challenge,
+		"S256",
+		clientState,
+	)
+	if err != nil {
+		t.Fatalf("StartAuthorizationFlow() error = %v", err)
+	}
+
+	authState, err := store.GetAuthorizationState(ctx, clientState)
+	if err != nil {
+		t.Fatalf("GetAuthorizationState() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/oauth/callback?state="+authState.ProviderState+"&code=provider-auth-code",
+		nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeCallback(w, req)
+
+	// Should return interstitial
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d for VS Code scheme", w.Code, http.StatusOK)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "Visual Studio Code") {
+		t.Error("Response should contain 'Visual Studio Code' app name")
+	}
+	if !strings.Contains(body, "vscode://") {
+		t.Error("Response should contain vscode:// redirect URL")
+	}
+}
+
+// TestHandler_ServeSuccessInterstitial tests the interstitial page rendering
+func TestHandler_ServeSuccessInterstitial(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	tests := []struct {
+		name           string
+		redirectURL    string
+		wantAppName    string
+		wantURLPattern string // Pattern to look for (scheme + path, not full URL with query string)
+	}{
+		{
+			name:           "cursor scheme",
+			redirectURL:    "cursor://callback?code=abc123&state=xyz789",
+			wantAppName:    "Cursor",
+			wantURLPattern: "cursor://callback", // URL base without query params (& gets HTML-escaped)
+		},
+		{
+			name:           "vscode scheme",
+			redirectURL:    "vscode://extension/callback?code=abc",
+			wantAppName:    "Visual Studio Code",
+			wantURLPattern: "vscode://extension/callback",
+		},
+		{
+			name:           "unknown scheme",
+			redirectURL:    "myapp://auth/done?code=abc",
+			wantAppName:    "Myapp",
+			wantURLPattern: "myapp://auth/done",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodGet, "/oauth/callback", nil)
+			handler.serveSuccessInterstitial(w, r, tt.redirectURL)
+
+			if w.Code != http.StatusOK {
+				t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+			}
+
+			contentType := w.Header().Get("Content-Type")
+			if !strings.HasPrefix(contentType, "text/html") {
+				t.Errorf("Content-Type = %q, want text/html", contentType)
+			}
+
+			body := w.Body.String()
+
+			// Check for success message
+			if !strings.Contains(body, "Authorization Successful") {
+				t.Error("Missing 'Authorization Successful' message")
+			}
+
+			// Check for app name
+			if !strings.Contains(body, tt.wantAppName) {
+				t.Errorf("Missing app name %q in response", tt.wantAppName)
+			}
+
+			// Check for redirect URL pattern (note: & in URLs gets HTML-escaped to &amp;)
+			if !strings.Contains(body, tt.wantURLPattern) {
+				t.Errorf("Missing redirect URL pattern %q in response", tt.wantURLPattern)
+			}
+
+			// Check for security headers
+			if w.Header().Get("X-Content-Type-Options") == "" {
+				t.Error("Missing X-Content-Type-Options security header")
+			}
+
+			// Check CSP includes script hash (not 'none' for scripts)
+			csp := w.Header().Get("Content-Security-Policy")
+			if csp == "" {
+				t.Error("Missing Content-Security-Policy header")
+			}
+			if !strings.Contains(csp, "script-src") {
+				t.Error("CSP should contain script-src directive for interstitial page")
+			}
+			if !strings.Contains(csp, "sha256-") {
+				t.Error("CSP should contain SHA-256 hash for inline script")
+			}
+		})
+	}
+}
+
+// TestHandler_ServeSuccessInterstitial_Branding tests interstitial page with branding configuration
+func TestHandler_ServeSuccessInterstitial_Branding(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	// Configure with branding
+	config := &server.Config{
+		Issuer: testIssuer,
+		Interstitial: &server.InterstitialConfig{
+			Branding: &server.InterstitialBranding{
+				LogoURL:            "https://cdn.example.com/logo.svg",
+				LogoAlt:            "Example Corp Logo",
+				Title:              "Connected to Example Corp",
+				Message:            "Welcome! You are now authenticated.",
+				ButtonText:         "Return to App",
+				PrimaryColor:       "#4F46E5",
+				BackgroundGradient: "linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%)",
+				CustomCSS:          ".container { max-width: 600px; }",
+			},
+		},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/oauth/callback", nil)
+	handler.serveSuccessInterstitial(w, r, "cursor://oauth/callback?code=abc")
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	body := w.Body.String()
+
+	// Check custom branding elements
+	if !strings.Contains(body, "https://cdn.example.com/logo.svg") {
+		t.Error("Response should contain custom logo URL")
+	}
+	if !strings.Contains(body, "Example Corp Logo") {
+		t.Error("Response should contain custom logo alt text")
+	}
+	if !strings.Contains(body, "Connected to Example Corp") {
+		t.Error("Response should contain custom title")
+	}
+	if !strings.Contains(body, "Welcome! You are now authenticated.") {
+		t.Error("Response should contain custom message")
+	}
+	if !strings.Contains(body, "Return to App") {
+		t.Error("Response should contain custom button text")
+	}
+	if !strings.Contains(body, "#4F46E5") {
+		t.Error("Response should contain custom primary color")
+	}
+	if !strings.Contains(body, "linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%)") {
+		t.Error("Response should contain custom background gradient")
+	}
+	if !strings.Contains(body, ".container { max-width: 600px; }") {
+		t.Error("Response should contain custom CSS")
+	}
+
+	// Should NOT contain default success icon (since logo is set)
+	if strings.Contains(body, `<div class="success-icon">`) {
+		t.Error("Response should NOT contain default success icon when logo is configured")
+	}
+
+	// Security: Logo should have crossorigin="anonymous" for CORS isolation
+	if !strings.Contains(body, `crossorigin="anonymous"`) {
+		t.Error("Logo img should have crossorigin=\"anonymous\" for security isolation")
+	}
+}
+
+// TestHandler_ServeSuccessInterstitial_CustomTemplate tests interstitial with custom template
+func TestHandler_ServeSuccessInterstitial_CustomTemplate(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	customTemplate := `<!DOCTYPE html>
+<html>
+<head><title>Custom Auth Page</title></head>
+<body>
+<h1>Custom Success - {{.AppName}}</h1>
+<a href="{{.RedirectURL}}">Continue</a>
+</body>
+</html>`
+
+	config := &server.Config{
+		Issuer: testIssuer,
+		Interstitial: &server.InterstitialConfig{
+			CustomTemplate: customTemplate,
+		},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/oauth/callback", nil)
+	handler.serveSuccessInterstitial(w, r, "cursor://oauth/callback?code=abc")
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	body := w.Body.String()
+
+	// Check custom template content
+	if !strings.Contains(body, "Custom Auth Page") {
+		t.Error("Response should contain custom template title")
+	}
+	if !strings.Contains(body, "Custom Success - Cursor") {
+		t.Error("Response should contain custom heading with app name")
+	}
+	if !strings.Contains(body, "cursor://oauth/callback") {
+		t.Error("Response should contain redirect URL")
+	}
+
+	// Should NOT contain default template content
+	if strings.Contains(body, "Authorization Successful") {
+		t.Error("Response should NOT contain default title when custom template is used")
+	}
+}
+
+// TestHandler_ServeSuccessInterstitial_CustomHandler tests interstitial with custom handler
+func TestHandler_ServeSuccessInterstitial_CustomHandler(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	var capturedRedirectURL, capturedAppName string
+
+	config := &server.Config{
+		Issuer: testIssuer,
+		Interstitial: &server.InterstitialConfig{
+			CustomHandler: func(w http.ResponseWriter, r *http.Request) {
+				// Extract values from context using helper functions
+				capturedRedirectURL = InterstitialRedirectURL(r.Context())
+				capturedAppName = InterstitialAppName(r.Context())
+
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("<html><body>Custom Handler Response</body></html>"))
+			},
+		},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/oauth/callback", nil)
+	handler.serveSuccessInterstitial(w, r, "vscode://extension/callback?code=abc")
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	body := w.Body.String()
+
+	// Check custom handler response
+	if !strings.Contains(body, "Custom Handler Response") {
+		t.Error("Response should contain custom handler output")
+	}
+
+	// Verify context values were passed correctly
+	if capturedRedirectURL != "vscode://extension/callback?code=abc" {
+		t.Errorf("InterstitialRedirectURL() = %q, want %q", capturedRedirectURL, "vscode://extension/callback?code=abc")
+	}
+	if capturedAppName != "Visual Studio Code" {
+		t.Errorf("InterstitialAppName() = %q, want %q", capturedAppName, "Visual Studio Code")
+	}
+
+	// Should NOT contain default template content
+	if strings.Contains(body, "Authorization Successful") {
+		t.Error("Response should NOT contain default content when custom handler is used")
+	}
+}
+
+// TestInterstitialContextHelpers tests the context helper functions
+func TestInterstitialContextHelpers(t *testing.T) {
+	ctx := context.Background()
+
+	// Test with empty context
+	if got := InterstitialRedirectURL(ctx); got != "" {
+		t.Errorf("InterstitialRedirectURL(empty ctx) = %q, want empty string", got)
+	}
+	if got := InterstitialAppName(ctx); got != "" {
+		t.Errorf("InterstitialAppName(empty ctx) = %q, want empty string", got)
+	}
+
+	// Test with values set
+	ctx = context.WithValue(ctx, interstitialRedirectURLKey, "cursor://callback")
+	ctx = context.WithValue(ctx, interstitialAppNameKey, "Cursor")
+
+	if got := InterstitialRedirectURL(ctx); got != "cursor://callback" {
+		t.Errorf("InterstitialRedirectURL() = %q, want %q", got, "cursor://callback")
+	}
+	if got := InterstitialAppName(ctx); got != "Cursor" {
+		t.Errorf("InterstitialAppName() = %q, want %q", got, "Cursor")
+	}
+}
+
+// TestHandler_ServeCallback_CustomURLScheme_WithBranding tests callback with branding
+func TestHandler_ServeCallback_CustomURLScheme_WithBranding(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	config := &server.Config{
+		Issuer: testIssuer,
+		Interstitial: &server.InterstitialConfig{
+			Branding: &server.InterstitialBranding{
+				Title:        "Welcome Back!",
+				PrimaryColor: "#FF5733",
+			},
+		},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+
+	// Register a client with custom URL scheme redirect
+	client, _, err := srv.RegisterClient(ctx,
+		"Branded Test Client",
+		"public",
+		"none",
+		[]string{"cursor://oauth/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	// Create authorization state
+	verifier := testutil.GenerateRandomString(50)
+	hash := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
+	clientState := testutil.GenerateRandomString(43)
+
+	_, err = srv.StartAuthorizationFlow(ctx,
+		client.ClientID,
+		"cursor://oauth/callback",
+		"openid email",
+		"",
+		challenge,
+		"S256",
+		clientState,
+	)
+	if err != nil {
+		t.Fatalf("StartAuthorizationFlow() error = %v", err)
+	}
+
+	authState, err := store.GetAuthorizationState(ctx, clientState)
+	if err != nil {
+		t.Fatalf("GetAuthorizationState() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/oauth/callback?state="+authState.ProviderState+"&code=provider-auth-code",
+		nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeCallback(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d for custom URL scheme with branding", w.Code, http.StatusOK)
+	}
+
+	body := w.Body.String()
+
+	// Check custom branding
+	if !strings.Contains(body, "Welcome Back!") {
+		t.Error("Response should contain custom title from branding config")
+	}
+	if !strings.Contains(body, "#FF5733") {
+		t.Error("Response should contain custom primary color from branding config")
+	}
+}
+
+// TestHandler_ServeSuccessInterstitial_AppNamePlaceholder tests that {{.AppName}} placeholder is replaced
+func TestHandler_ServeSuccessInterstitial_AppNamePlaceholder(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	// Configure with branding that uses {{.AppName}} placeholders
+	config := &server.Config{
+		Issuer: testIssuer,
+		Interstitial: &server.InterstitialConfig{
+			Branding: &server.InterstitialBranding{
+				Title:      "Connected to Inboxfewer",
+				Message:    "You have been authenticated with {{.AppName}}. You can now close this window.",
+				ButtonText: "Open {{.AppName}}",
+			},
+		},
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/oauth/callback", nil)
+	// cursor:// scheme should be detected and replaced with "Cursor"
+	handler.serveSuccessInterstitial(w, r, "cursor://oauth/callback?code=abc")
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	body := w.Body.String()
+
+	// Check that {{.AppName}} was replaced with actual app name (Cursor)
+	if strings.Contains(body, "{{.AppName}}") {
+		t.Error("Response should NOT contain literal {{.AppName}} placeholder - it should be replaced")
+	}
+
+	// Check that "Cursor" appears in the message and button
+	if !strings.Contains(body, "You have been authenticated with Cursor") {
+		t.Error("Response should contain 'You have been authenticated with Cursor' (AppName replaced)")
+	}
+	if !strings.Contains(body, "Open Cursor") {
+		t.Error("Response should contain 'Open Cursor' (AppName replaced in button)")
 	}
 }
