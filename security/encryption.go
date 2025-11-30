@@ -55,8 +55,12 @@ func (e *Encryptor) Encrypt(plaintext string) (string, error) {
 		return "", fmt.Errorf("failed to generate nonce: %w", err)
 	}
 
-	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
-	return base64.StdEncoding.EncodeToString(ciphertext), nil
+	// Encrypt plaintext
+	ciphertext := gcm.Seal(nil, nonce, []byte(plaintext), nil)
+
+	// Prepend nonce for storage format: [nonce][ciphertext]
+	result := append(nonce, ciphertext...)
+	return base64.StdEncoding.EncodeToString(result), nil
 }
 
 // Decrypt decrypts base64-encoded ciphertext using AES-256-GCM.
