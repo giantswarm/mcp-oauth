@@ -1868,7 +1868,9 @@ func (h *Handler) formatWWWAuthenticate(scope, error, errorDesc string) string {
 	// Build the challenge parameters (excluding the Bearer scheme)
 	var params []string
 
-	// MUST: Include resource_metadata URL per MCP 2025-11-25
+	// Include resource_metadata URL when using WWW-Authenticate discovery (MCP 2025-11-25)
+	// Note: MCP servers must implement EITHER WWW-Authenticate OR well-known URI discovery.
+	// When using WWW-Authenticate (this implementation), resource_metadata parameter is required.
 	resourceMetadataURL := h.server.Config.ProtectedResourceMetadataEndpoint()
 	params = append(params, fmt.Sprintf(`resource_metadata="%s"`, resourceMetadataURL))
 
