@@ -2,6 +2,16 @@
 
 This directory contains example applications demonstrating different use cases of the mcp-oauth library.
 
+## Security Warning
+
+**Most examples use environment variables for secrets to keep them simple. This is NOT SECURE for production use.**
+
+- Examples marked "development/learning" are for local testing only
+- The [Production Example](./production) demonstrates secure secret management
+- For production deployments, always use a secret manager (Vault, AWS Secrets Manager, GCP Secret Manager, Azure Key Vault)
+
+See [Production Example - Secret Management](./production/README.md#secret-management-required-for-production) for secure patterns.
+
 ## Available Examples
 
 ### [Basic](./basic)
@@ -121,10 +131,12 @@ All examples require Google OAuth credentials:
 
 ## Environment Variables
 
+**WARNING: Environment variables are ONLY for development! Never use in production!**
+
 Common environment variables across examples:
 
 ```bash
-# Required
+# Required (DEVELOPMENT ONLY)
 GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=your-client-secret
 
@@ -132,6 +144,12 @@ GOOGLE_CLIENT_SECRET=your-client-secret
 MCP_RESOURCE=http://localhost:8080  # Default
 LOG_LEVEL=info                       # debug, info, warn, error
 ```
+
+**For production:**
+- Use a secret manager (HashiCorp Vault, AWS Secrets Manager, GCP Secret Manager)
+- See [Production Example - Secret Management](./production/README.md#secret-management-required-for-production)
+- Never commit secrets to version control
+- Never store secrets in container images
 
 ## Testing the Examples
 
@@ -203,30 +221,34 @@ curl http://localhost:8080/mcp \
 
 For production use, see the [production example](./production) and consider:
 
-1. **Security**:
-   - Enable token encryption
-   - Use HTTPS/TLS
-   - Enable audit logging
-   - Configure rate limiting
-   - Secure client registration
+1. **Security** (CRITICAL):
+   - **Use a secret manager** (Vault, AWS Secrets Manager, etc.) - NEVER environment variables
+   - Enable token encryption at rest
+   - Use HTTPS/TLS with valid certificates
+   - Enable comprehensive audit logging
+   - Configure multi-layer rate limiting
+   - Secure client registration with access tokens
+   - Follow the [Production Security Checklist](./production/README.md#production-security-checklist)
 
 2. **Observability**:
-   - Structured logging
-   - Metrics collection
-   - Health checks
+   - Structured JSON logging
+   - Prometheus/OpenTelemetry metrics
+   - Health and readiness checks
    - Distributed tracing
+   - Security event monitoring
 
 3. **Deployment**:
-   - Container images (Docker)
-   - Kubernetes manifests
-   - CI/CD pipelines
-   - Secret management
+   - Secure container images (no secrets in layers)
+   - Kubernetes with External Secrets Operator
+   - CI/CD pipelines with secret scanning
+   - Automated secret rotation
 
 4. **Operations**:
-   - Backup and recovery
-   - Monitoring and alerting
-   - Incident response
-   - Performance tuning
+   - Encrypted backups and recovery procedures
+   - 24/7 monitoring and alerting
+   - Documented incident response plan
+   - Regular security audits and penetration testing
+   - Performance tuning and capacity planning
 
 ## Documentation
 

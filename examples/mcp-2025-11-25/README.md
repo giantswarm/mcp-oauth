@@ -2,6 +2,18 @@
 
 This example demonstrates all features introduced in the MCP 2025-11-25 specification for OAuth authorization.
 
+## Security Warning
+
+**This example uses environment variables for secrets for simplicity. This is NOT SECURE for production use.**
+
+For production deployments:
+- Use a secret manager (HashiCorp Vault, AWS Secrets Manager, GCP Secret Manager, Azure Key Vault)
+- See the [Production Example](../production/README.md#secret-management-required-for-production) for secure patterns
+- NEVER commit secrets to version control
+- NEVER use environment variables for secrets in production
+
+**This is a development/learning example only.**
+
 ## Features Demonstrated
 
 ### 1. Protected Resource Metadata Discovery (RFC 9728)
