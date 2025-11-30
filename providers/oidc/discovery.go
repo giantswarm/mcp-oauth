@@ -10,6 +10,17 @@ import (
 	"time"
 )
 
+const (
+	// maxDiscoveryDocumentSize is the maximum allowed size for a discovery document response.
+	// OIDC discovery documents are typically <10KB. 1MB provides a generous safety margin
+	// while preventing memory exhaustion attacks from malicious servers.
+	maxDiscoveryDocumentSize = 1024 * 1024 // 1MB
+
+	// maxRedirects is the maximum number of HTTP redirects to follow during discovery.
+	// Limited to prevent redirect loops and SSRF via redirect chains.
+	maxRedirects = 3
+)
+
 // timeProvider is an interface for time operations to enable deterministic testing.
 type timeProvider interface {
 	Now() time.Time
@@ -70,7 +81,22 @@ type DiscoveryClient struct {
 //	doc, err := client.Discover(ctx, "https://dex.example.com")
 func NewDiscoveryClient(httpClient *http.Client, cacheTTL time.Duration, logger *slog.Logger) *DiscoveryClient {
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 10 * time.Second}
+		// SECURITY: Configure HTTP client with redirect validation to prevent
+		// SSRF via redirect chains (e.g., redirect to private IP after initial validation)
+		httpClient = &http.Client{
+			Timeout: 10 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				// Limit number of redirects to prevent loops
+				if len(via) >= maxRedirects {
+					return fmt.Errorf("stopped after %d redirects", maxRedirects)
+				}
+				// SECURITY: Validate redirect target URL for SSRF protection
+				if err := ValidateIssuerURL(req.URL.String()); err != nil {
+					return fmt.Errorf("invalid redirect target: %w", err)
+				}
+				return nil
+			},
+		}
 	}
 	if cacheTTL == 0 {
 		cacheTTL = 1 * time.Hour
@@ -128,6 +154,9 @@ func (c *DiscoveryClient) Discover(ctx context.Context, issuerURL string) (*Disc
 
 	// Fetch discovery document
 	discoveryURL := issuerURL
+	if len(discoveryURL) == 0 {
+		return nil, fmt.Errorf("issuer URL is empty")
+	}
 	if discoveryURL[len(discoveryURL)-1] != '/' {
 		discoveryURL += "/"
 	}
@@ -144,16 +173,21 @@ func (c *DiscoveryClient) Discover(ctx context.Context, issuerURL string) (*Disc
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch OIDC discovery document: %w", err)
 	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
 
 	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("OIDC discovery failed with status %d", resp.StatusCode)
 	}
 
+	// SECURITY: Limit response body size to prevent memory exhaustion attacks
+	// Discovery documents are typically <10KB, 1MB is a generous safety margin
+	limitedBody := http.MaxBytesReader(nil, resp.Body, maxDiscoveryDocumentSize)
+	defer func() {
+		_ = limitedBody.Close()
+	}()
+
 	var doc DiscoveryDocument
-	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+	if err := json.NewDecoder(limitedBody).Decode(&doc); err != nil {
 		return nil, fmt.Errorf("failed to decode discovery document: %w", err)
 	}
 

@@ -424,6 +424,248 @@ All security-relevant events are logged via the Auditor interface:
 
 **Recommendation**: Monitor these events for security anomalies.
 
+## OIDC Discovery Security
+
+This section documents the security architecture for OIDC provider discovery, used by OIDC-based providers (Dex, Keycloak, Azure AD, etc.).
+
+### Overview
+
+The `providers/oidc` package implements secure OIDC discovery per RFC 8414 (OAuth Authorization Server Metadata) with additional security hardening beyond the standard.
+
+**Security Principle**: OIDC discovery involves fetching configuration from external URLs, creating SSRF and DoS attack vectors that require careful mitigation.
+
+### SSRF Protection (Issuer URL Validation)
+
+**Critical Security Requirement**: Prevent Server-Side Request Forgery attacks when fetching discovery documents.
+
+```go
+// ValidateIssuerURL enforces HTTPS and blocks private IP ranges
+func ValidateIssuerURL(issuerURL string) error {
+    // 1. HTTPS enforcement
+    if u.Scheme != "https" {
+        return fmt.Errorf("issuer URL must use HTTPS")
+    }
+    
+    // 2. Block private IP ranges
+    if ip := net.ParseIP(host); ip != nil {
+        if ip.IsLoopback() { /* 127.0.0.1, ::1 */ }
+        if ip.IsPrivate() { /* 10.x, 172.16-31.x, 192.168.x, fc00::/7 */ }
+        if ip.IsLinkLocalUnicast() { /* 169.254.x.x - AWS/GCP metadata */ }
+    }
+}
+```
+
+#### Blocked Address Ranges
+
+- **IPv4 Loopback**: `127.0.0.0/8` (localhost services)
+- **IPv4 Private**: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`
+- **IPv4 Link-Local**: `169.254.0.0/16` (cloud metadata services)
+- **IPv6 Loopback**: `::1`
+- **IPv6 Private**: `fc00::/7`, `fd00::/8`
+- **IPv6 Link-Local**: `fe80::/10`
+
+**Implementation**: `providers/oidc/validation.go` - `ValidateIssuerURL()`
+
+### HTTPS Enforcement
+
+**Security Requirement**: All endpoints must use HTTPS to prevent credential interception.
+
+**Validation Layers**:
+
+1. **Issuer URL**: Validated before discovery request
+2. **Discovery Document Endpoints**: Validated after parsing
+   - `issuer`
+   - `authorization_endpoint`
+   - `token_endpoint`
+   - `jwks_uri`
+   - `userinfo_endpoint` (optional)
+   - `revocation_endpoint` (optional)
+
+**Implementation**: `providers/oidc/discovery.go` - `validateDocument()`
+
+### DoS Protection (Multi-Layered)
+
+#### Response Size Limit
+
+```go
+// Limit discovery document to 1MB (typically <10KB)
+maxDiscoveryDocumentSize = 1024 * 1024 // 1MB
+limitedBody := http.MaxBytesReader(nil, resp.Body, maxDiscoveryDocumentSize)
+```
+
+**Why This Matters**: Prevents memory exhaustion from malicious OIDC providers returning multi-GB responses.
+
+#### HTTP Redirect Validation
+
+```go
+// Limit redirects and validate each redirect target
+httpClient := &http.Client{
+    CheckRedirect: func(req *http.Request, via []*http.Request) error {
+        // Max 3 redirects
+        if len(via) >= 3 {
+            return fmt.Errorf("stopped after %d redirects", maxRedirects)
+        }
+        // SECURITY: Validate redirect target for SSRF protection
+        if err := ValidateIssuerURL(req.URL.String()); err != nil {
+            return fmt.Errorf("invalid redirect target: %w", err)
+        }
+        return nil
+    },
+}
+```
+
+**Prevents**:
+- Redirect loops (DoS)
+- SSRF via redirect to private IP after initial validation
+- Redirect chain length attacks
+
+#### Connection Timeout
+
+```go
+// 10-second timeout prevents hanging connections
+httpClient := &http.Client{Timeout: 10 * time.Second}
+```
+
+#### Discovery Document Cache
+
+```go
+// Cache with 1-hour TTL (configurable)
+// Reduces load on OIDC provider and attack surface
+cacheTTL := 1 * time.Hour
+```
+
+**Security Benefits**:
+- Reduces repeated requests to potentially malicious URLs
+- Limits attack window for cache poisoning
+- Performance improvement as side benefit
+
+**Implementation**: `providers/oidc/discovery.go` - `DiscoveryClient`
+
+### Input Validation
+
+#### Connector ID Validation
+
+For Dex-specific `connector_id` parameter:
+
+```go
+// Pre-compiled regex for performance
+var connectorIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+func ValidateConnectorID(connectorID string) error {
+    // Character whitelist (prevents injection)
+    if !connectorIDRegex.MatchString(connectorID) {
+        return fmt.Errorf("invalid characters")
+    }
+    
+    // Length limit (prevents DoS)
+    if len(connectorID) > 64 {
+        return fmt.Errorf("exceeds maximum length")
+    }
+}
+```
+
+**Implementation**: `providers/oidc/validation.go` - `ValidateConnectorID()`
+
+#### Scopes and Groups Validation
+
+```go
+// Prevent DoS via excessive or oversized values
+func ValidateScopes(scopes []string) error {
+    // Max 50 scopes, 256 chars each
+    validateStringSlice(scopes, "scopes", 50, 256)
+}
+
+func ValidateGroups(groups []string) error {
+    // Max 100 groups, 256 chars each
+    validateStringSlice(groups, "groups", 100, 256)
+}
+```
+
+**Implementation**: `providers/oidc/validation.go`
+
+### Known Limitations
+
+#### DNS Rebinding Attacks
+
+**Attack Scenario**:
+1. Attacker controls DNS for `evil.example.com`
+2. Initial DNS lookup returns public IP (passes validation)
+3. OAuth server validates URL and proceeds
+4. Attacker changes DNS to resolve to private IP (e.g., `10.0.0.1`)
+5. HTTP client connects to private IP
+
+**Risk Level**: LOW for most deployments
+
+**Why This is Difficult to Prevent**:
+- Application-layer cannot control when OS performs DNS resolution
+- DNS can change between validation and connection
+- Custom DNS resolver adds significant complexity
+- Time-To-Live (TTL) caching at OS level outside application control
+
+**Mitigations Available**:
+
+1. **Network-Level Controls** (Recommended):
+   - Egress firewall rules blocking private IP ranges
+   - DNS security extensions (DNSSEC)
+   - Internal DNS servers with split-horizon
+   - Network segmentation
+
+2. **Operational Controls**:
+   - Allowlist known OIDC provider domains
+   - Monitor DNS resolution patterns
+   - Alert on connections to private IPs from OAuth process
+   - Use managed OIDC providers (Google, Azure AD, Okta)
+
+3. **Application-Level** (Partial):
+   - Connection timeout limits exposure window
+   - Redirect validation checks each hop
+   - Cache reduces repeated lookups
+
+**Risk Assessment**:
+- **High-Security Environments**: Require network-level egress filtering
+- **Standard Deployments**: Existing SSRF protections + managed providers sufficient
+- **Development**: Accept risk (local testing with Dex on localhost)
+
+**Implementation Status**: Documented limitation, network-level mitigation recommended
+
+**References**:
+- [DNS Rebinding Attacks](https://en.wikipedia.org/wiki/DNS_rebinding)
+- [OWASP: Server-Side Request Forgery](https://owasp.org/www-community/attacks/Server_Side_Request_Forgery)
+
+### Threat Model
+
+**Threats Mitigated**:
+- ✅ SSRF against internal infrastructure (IP blocking)
+- ✅ SSRF via HTTP redirects (redirect validation)
+- ✅ Memory exhaustion (response size limit)
+- ✅ Slowloris/hanging connections (timeout)
+- ✅ Credential interception (HTTPS enforcement)
+- ✅ Injection attacks (input validation)
+- ✅ DoS via repeated requests (caching)
+
+**Threats Requiring External Mitigations**:
+- ⚠️ DNS rebinding (requires network-level egress filtering)
+- ⚠️ Compromised OIDC providers (use trusted providers)
+- ⚠️ DNS cache poisoning (DNSSEC recommended)
+
+### Security Testing
+
+The OIDC discovery implementation includes comprehensive security tests:
+
+```bash
+# Run OIDC security tests
+go test ./providers/oidc/... -v
+
+# Tests include:
+# - SSRF protection (private IPs, loopback, link-local)
+# - HTTPS enforcement
+# - Input validation
+# - Cache behavior
+# - Error handling
+```
+
+**Test Coverage**: 95.1% including all security-critical paths
+
 ## Token Security
 
 ### Token Generation

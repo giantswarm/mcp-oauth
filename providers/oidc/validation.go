@@ -7,6 +7,10 @@ import (
 	"regexp"
 )
 
+// connectorIDRegex is a compiled regex for validating connector IDs.
+// Pre-compiled at package initialization for performance.
+var connectorIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
 // ValidateHTTPSURL validates that a URL uses HTTPS scheme.
 // This is a reusable helper to enforce HTTPS across all endpoints.
 //
@@ -92,7 +96,7 @@ func ValidateConnectorID(connectorID string) error {
 	}
 
 	// Connector IDs should be alphanumeric with hyphens/underscores
-	if !regexp.MustCompile(`^[a-zA-Z0-9_-]+$`).MatchString(connectorID) {
+	if !connectorIDRegex.MatchString(connectorID) {
 		return fmt.Errorf("connector_id contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)")
 	}
 
