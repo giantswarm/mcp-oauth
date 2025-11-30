@@ -82,4 +82,9 @@ type UserInfo struct {
 
 	// Locale is the user's preferred locale
 	Locale string
+
+	// Groups contains group memberships from the identity provider.
+	// This is populated from the 'groups' claim in OIDC userinfo responses.
+	// Providers that don't support groups will leave this empty.
+	Groups []string
 }
