@@ -115,16 +115,32 @@ func NewDiscoveryClient(httpClient *http.Client, cacheTTL time.Duration, logger 
 
 // NewTestDiscoveryClient creates a discovery client that skips SSRF validation.
 //
-// WARNING: THIS IS FOR TESTING ONLY!
+// ⚠️  CRITICAL SECURITY WARNING ⚠️
 //
-// This function creates a discovery client that skips SSRF protection.
-// It should ONLY be used in test code with localhost test servers.
-// NEVER use this in production code - it defeats the security protections.
+// This function bypasses ALL security protections including:
+//   - Private IP blocking (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
+//   - Loopback blocking (127.0.0.1, ::1)
+//   - Link-local blocking (169.254.169.254 - AWS metadata service)
+//   - HTTPS enforcement
 //
-// Example (test code only):
+// NEVER USE THIS IN PRODUCTION CODE!
 //
-//	testServer := httptest.NewTLSServer(handler)
-//	client := oidc.NewTestDiscoveryClient(testServer.Client(), 1*time.Hour, nil)
+// This function exists ONLY for unit tests with httptest.Server on localhost.
+// The forbidigo linter is configured to detect and prevent misuse.
+//
+// Intended Use (test files only):
+//
+//	func TestOIDCProvider(t *testing.T) {
+//	    testServer := httptest.NewTLSServer(mockOIDCHandler)
+//	    defer testServer.Close()
+//	    client := oidc.NewTestDiscoveryClient(testServer.Client(), 1*time.Hour, nil)
+//	    // ... test code ...
+//	}
+//
+// Security Enforcement:
+//   - Linter rules prevent usage outside *_test.go files
+//   - Code review must verify all usages are in test code
+//   - CI/CD should fail if this appears in production code paths
 func NewTestDiscoveryClient(httpClient *http.Client, cacheTTL time.Duration, logger *slog.Logger) *DiscoveryClient {
 	client := NewDiscoveryClient(httpClient, cacheTTL, logger)
 	client.skipValidation = true
