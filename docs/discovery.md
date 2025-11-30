@@ -260,6 +260,8 @@ func discoverAuthServer(issuer string) (*Config, error) {
 
 Provides on-demand discovery when clients attempt to access protected resources without valid credentials.
 
+**MCP 2025-11-25 Update**: WWW-Authenticate discovery is one of two acceptable mechanisms. Servers **MUST** implement either WWW-Authenticate header-based discovery OR well-known URI discovery (both are not required simultaneously). Clients **MUST** support both mechanisms and fall back to well-known paths if the header is not present.
+
 ### How It Works
 
 When a client makes an unauthorized request, the server returns a 401 response with a `WWW-Authenticate` header:
@@ -293,7 +295,7 @@ WWW-Authenticate: Bearer resource_metadata="https://mcp.example.com/.well-known/
 
 | Parameter | Purpose | Required |
 |-----------|---------|----------|
-| `resource_metadata` | URL to Protected Resource Metadata | Yes (MCP 2025-11-25) |
+| `resource_metadata` | URL to Protected Resource Metadata | Conditional (if using WWW-Authenticate discovery) |
 | `scope` | Scopes needed to access resource | Recommended |
 | `error` | OAuth error code | Optional |
 | `error_description` | Human-readable error | Optional |
