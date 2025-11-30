@@ -1,7 +1,9 @@
 package security
 
 import (
+	"crypto/rand"
 	"encoding/base64"
+	"io"
 	"testing"
 )
 
@@ -327,5 +329,110 @@ func TestKeyToBase64(t *testing.T) {
 	// Verify it's valid base64
 	if _, err := base64.StdEncoding.DecodeString(encoded); err != nil {
 		t.Errorf("KeyToBase64() returned invalid base64: %v", err)
+	}
+}
+
+func TestEncryptionFormat(t *testing.T) {
+	key := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		t.Fatalf("failed to generate key: %v", err)
+	}
+
+	enc, err := NewEncryptor(key)
+	if err != nil {
+		t.Fatalf("NewEncryptor() error = %v", err)
+	}
+
+	encrypted, err := enc.Encrypt("test")
+	if err != nil {
+		t.Fatalf("Encrypt() error = %v", err)
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(encrypted)
+	if err != nil {
+		t.Fatalf("failed to decode base64: %v", err)
+	}
+
+	// GCM nonce is 12 bytes
+	const expectedNonceSize = 12
+	if len(decoded) < expectedNonceSize {
+		t.Errorf("encrypted data too short for nonce: got %d bytes, need at least %d", len(decoded), expectedNonceSize)
+	}
+
+	// Verify nonce is first 12 bytes
+	nonceFromEncrypted := decoded[:expectedNonceSize]
+	if len(nonceFromEncrypted) != expectedNonceSize {
+		t.Errorf("expected %d-byte nonce prefix, got %d", expectedNonceSize, len(nonceFromEncrypted))
+	}
+
+	// Verify the rest is ciphertext + tag (16 bytes for GCM tag)
+	// For plaintext "test" (4 bytes), we expect: 12 (nonce) + 4 (plaintext) + 16 (tag) = 32 bytes
+	const expectedTotalSize = expectedNonceSize + 4 + 16
+	if len(decoded) != expectedTotalSize {
+		t.Errorf("expected total size %d bytes, got %d", expectedTotalSize, len(decoded))
+	}
+}
+
+func TestNonceUniqueness(t *testing.T) {
+	key := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		t.Fatalf("failed to generate key: %v", err)
+	}
+
+	enc, err := NewEncryptor(key)
+	if err != nil {
+		t.Fatalf("NewEncryptor() error = %v", err)
+	}
+
+	plaintext := "same plaintext"
+
+	// Encrypt the same plaintext multiple times
+	encrypted1, err := enc.Encrypt(plaintext)
+	if err != nil {
+		t.Fatalf("Encrypt() error = %v", err)
+	}
+
+	encrypted2, err := enc.Encrypt(plaintext)
+	if err != nil {
+		t.Fatalf("Encrypt() error = %v", err)
+	}
+
+	// Ciphertexts should be different due to unique nonces
+	if encrypted1 == encrypted2 {
+		t.Error("Encrypt() returned identical ciphertexts for same plaintext - nonce not unique")
+	}
+
+	// Both should decrypt to the same plaintext
+	decrypted1, err := enc.Decrypt(encrypted1)
+	if err != nil {
+		t.Fatalf("Decrypt() error = %v", err)
+	}
+
+	decrypted2, err := enc.Decrypt(encrypted2)
+	if err != nil {
+		t.Fatalf("Decrypt() error = %v", err)
+	}
+
+	if decrypted1 != plaintext || decrypted2 != plaintext {
+		t.Errorf("Decrypt() failed: got %q and %q, want %q", decrypted1, decrypted2, plaintext)
+	}
+
+	// Verify nonces are actually different
+	decoded1, _ := base64.StdEncoding.DecodeString(encrypted1)
+	decoded2, _ := base64.StdEncoding.DecodeString(encrypted2)
+
+	nonce1 := decoded1[:12]
+	nonce2 := decoded2[:12]
+
+	nonceEqual := true
+	for i := range nonce1 {
+		if nonce1[i] != nonce2[i] {
+			nonceEqual = false
+			break
+		}
+	}
+
+	if nonceEqual {
+		t.Error("Encrypt() generated identical nonces - CRITICAL SECURITY ISSUE")
 	}
 }
