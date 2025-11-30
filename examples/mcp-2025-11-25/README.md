@@ -16,8 +16,12 @@ For production deployments:
 
 ## Features Demonstrated
 
-### 1. Protected Resource Metadata Discovery (RFC 9728)
-- Automatic metadata exposure at `/.well-known/oauth-protected-resource`
+### 1. Protected Resource Metadata Discovery Enhancements
+
+Protected Resource Metadata (RFC 9728) was introduced in MCP 2025-06-18. This example demonstrates November 2025-11-25 enhancements:
+
+- **Flexible discovery** via WWW-Authenticate header or well-known URI paths (servers choose one)
+- **Sub-path discovery** for endpoint-specific metadata (`/.well-known/oauth-protected-resource/<path>`)
 - Lists supported scopes and authorization servers
 
 ### 2. Enhanced WWW-Authenticate Headers (RFC 6750)

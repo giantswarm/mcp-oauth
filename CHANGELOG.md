@@ -352,7 +352,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **MCP 2025-11-25: WWW-Authenticate header with resource_metadata for discovery (#73)**
-  - Implemented MCP 2025-11-25 specification requirement for Protected Resource Metadata discovery
+  - Implemented MCP 2025-11-25 specification support for Protected Resource Metadata discovery
   - **What changed**: All 401 Unauthorized responses now include enhanced WWW-Authenticate headers
   - **Header format** (per RFC 6750 and RFC 9728):
     ```http
@@ -380,7 +380,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - No code changes needed in existing handlers
     - Scope parameter only included if configured (optional)
   - **Specification compliance**:
-    - MCP 2025-11-25: MUST include resource_metadata in WWW-Authenticate (✓)
+    - MCP 2025-11-25: One of two discovery mechanisms (WWW-Authenticate OR well-known paths) (✓)
     - RFC 6750 Section 3: Bearer token challenge format (✓)
     - RFC 9728: Protected Resource Metadata discovery (✓)
   - **Security improvements**:
