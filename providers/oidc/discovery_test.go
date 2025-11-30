@@ -11,6 +11,14 @@ import (
 	"time"
 )
 
+// mockTime implements timeProvider for deterministic testing.
+type mockTime struct {
+	now time.Time
+}
+
+func (m *mockTime) Now() time.Time                  { return m.now }
+func (m *mockTime) Since(t time.Time) time.Duration { return m.now.Sub(t) }
+
 // newTestClient creates a discovery client with validation disabled for testing.
 // This allows tests to use httptest servers (which use loopback addresses)
 // without triggering SSRF protection.
@@ -188,14 +196,18 @@ func TestDiscoveryClient_Discover(t *testing.T) {
 		// Short TTL for testing
 		client := newTestClient(server.Client(), 100*time.Millisecond)
 
+		// Use mock time for deterministic testing
+		mockTime := &mockTime{now: time.Now()}
+		client.timeProvider = mockTime
+
 		// First call
 		_, err := client.Discover(context.Background(), server.URL)
 		if err != nil {
 			t.Fatalf("first Discover() error = %v", err)
 		}
 
-		// Wait for cache to expire
-		time.Sleep(150 * time.Millisecond)
+		// Advance mock time to expire cache
+		mockTime.now = mockTime.now.Add(150 * time.Millisecond)
 
 		// Second call - should hit server again
 		_, err = client.Discover(context.Background(), server.URL)

@@ -266,7 +266,7 @@ func TestValidateScopes(t *testing.T) {
 			name:    "reject too many scopes",
 			scopes:  make([]string, 51),
 			wantErr: true,
-			errMsg:  "too many scopes",
+			errMsg:  "exceeds maximum of 50 items",
 		},
 		{
 			name:    "reject scope too long",
@@ -342,7 +342,7 @@ func TestValidateGroups(t *testing.T) {
 			name:    "reject too many groups (101)",
 			groups:  make([]string, 101),
 			wantErr: true,
-			errMsg:  "exceeds maximum of 100 groups",
+			errMsg:  "exceeds maximum of 100 items",
 		},
 		{
 			name:    "reject group name too long",

@@ -6,10 +6,21 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 )
+
+// timeProvider is an interface for time operations to enable deterministic testing.
+type timeProvider interface {
+	Now() time.Time
+	Since(time.Time) time.Duration
+}
+
+// realTime implements timeProvider using actual system time.
+type realTime struct{}
+
+func (realTime) Now() time.Time                  { return time.Now() }
+func (realTime) Since(t time.Time) time.Duration { return time.Since(t) }
 
 // DiscoveryDocument represents an OIDC discovery document.
 // It contains the OpenID Connect provider metadata as defined in RFC 8414.
@@ -38,11 +49,12 @@ type cachedDocument struct {
 //
 // The client is thread-safe and can be used concurrently from multiple goroutines.
 type DiscoveryClient struct {
-	httpClient       *http.Client
-	cache            sync.Map // issuerURL -> *cachedDocument
-	cacheTTL         time.Duration
-	logger           *slog.Logger
-	skipValidation   bool // Internal: skip URL validation for testing only
+	httpClient     *http.Client
+	cache          sync.Map // issuerURL -> *cachedDocument
+	cacheTTL       time.Duration
+	logger         *slog.Logger
+	skipValidation bool // Internal: skip URL validation for testing only
+	timeProvider   timeProvider
 }
 
 // NewDiscoveryClient creates a new OIDC discovery client with default configuration.
@@ -68,9 +80,10 @@ func NewDiscoveryClient(httpClient *http.Client, cacheTTL time.Duration, logger 
 	}
 
 	return &DiscoveryClient{
-		httpClient: httpClient,
-		cacheTTL:   cacheTTL,
-		logger:     logger,
+		httpClient:   httpClient,
+		cacheTTL:     cacheTTL,
+		logger:       logger,
+		timeProvider: realTime{},
 	}
 }
 
@@ -100,16 +113,25 @@ func (c *DiscoveryClient) Discover(ctx context.Context, issuerURL string) (*Disc
 
 	// Check cache first
 	if cached, ok := c.cache.Load(issuerURL); ok {
-		doc := cached.(*cachedDocument)
-		if time.Since(doc.fetchedAt) < c.cacheTTL {
+		doc, ok := cached.(*cachedDocument)
+		if !ok {
+			c.logger.Error("cache corruption: invalid type", "issuer", issuerURL)
+			c.cache.Delete(issuerURL)
+			// Continue to fetch fresh document
+		} else if c.timeProvider.Since(doc.fetchedAt) < c.cacheTTL {
 			c.logger.Debug("OIDC discovery cache hit", "issuer", issuerURL)
 			return doc.document, nil
+		} else {
+			c.logger.Debug("OIDC discovery cache expired", "issuer", issuerURL)
 		}
-		c.logger.Debug("OIDC discovery cache expired", "issuer", issuerURL)
 	}
 
 	// Fetch discovery document
-	discoveryURL := strings.TrimSuffix(issuerURL, "/") + "/.well-known/openid-configuration"
+	discoveryURL := issuerURL
+	if discoveryURL[len(discoveryURL)-1] != '/' {
+		discoveryURL += "/"
+	}
+	discoveryURL += ".well-known/openid-configuration"
 
 	c.logger.Debug("Fetching OIDC discovery document", "url", discoveryURL)
 
@@ -122,7 +144,9 @@ func (c *DiscoveryClient) Discover(ctx context.Context, issuerURL string) (*Disc
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch OIDC discovery document: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("OIDC discovery failed with status %d", resp.StatusCode)
@@ -141,7 +165,7 @@ func (c *DiscoveryClient) Discover(ctx context.Context, issuerURL string) (*Disc
 	// Cache the document
 	c.cache.Store(issuerURL, &cachedDocument{
 		document:  &doc,
-		fetchedAt: time.Now(),
+		fetchedAt: c.timeProvider.Now(),
 	})
 
 	c.logger.Info("OIDC discovery successful",
@@ -170,8 +194,8 @@ func (c *DiscoveryClient) validateDocument(doc *DiscoveryDocument) error {
 		if endpoint.url == "" {
 			return fmt.Errorf("%s is required but missing", endpoint.name)
 		}
-		if !strings.HasPrefix(endpoint.url, "https://") {
-			return fmt.Errorf("%s must use HTTPS: %s", endpoint.name, endpoint.url)
+		if err := ValidateHTTPSURL(endpoint.url, endpoint.name); err != nil {
+			return err
 		}
 	}
 
@@ -185,8 +209,10 @@ func (c *DiscoveryClient) validateDocument(doc *DiscoveryDocument) error {
 	}
 
 	for _, endpoint := range optionalEndpoints {
-		if endpoint.url != "" && !strings.HasPrefix(endpoint.url, "https://") {
-			return fmt.Errorf("%s must use HTTPS if present: %s", endpoint.name, endpoint.url)
+		if endpoint.url != "" {
+			if err := ValidateHTTPSURL(endpoint.url, endpoint.name); err != nil {
+				return err
+			}
 		}
 	}
 

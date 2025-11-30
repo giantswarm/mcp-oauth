@@ -7,6 +7,25 @@ import (
 	"regexp"
 )
 
+// ValidateHTTPSURL validates that a URL uses HTTPS scheme.
+// This is a reusable helper to enforce HTTPS across all endpoints.
+//
+// Example:
+//
+//	if err := ValidateHTTPSURL("https://example.com", "issuer"); err != nil {
+//	    return err
+//	}
+func ValidateHTTPSURL(rawURL, context string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid %s URL: %w", context, err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("%s must use HTTPS, got %s", context, u.Scheme)
+	}
+	return nil
+}
+
 // ValidateIssuerURL validates an OIDC issuer URL with SSRF protection.
 // It enforces HTTPS and blocks private IP ranges to prevent Server-Side Request Forgery attacks.
 //
@@ -22,14 +41,14 @@ import (
 //	    return fmt.Errorf("invalid issuer: %w", err)
 //	}
 func ValidateIssuerURL(issuerURL string) error {
+	// SECURITY: Enforce HTTPS to prevent credential leakage
+	if err := ValidateHTTPSURL(issuerURL, "issuer URL"); err != nil {
+		return err
+	}
+
 	u, err := url.Parse(issuerURL)
 	if err != nil {
 		return fmt.Errorf("invalid issuer URL: %w", err)
-	}
-
-	// SECURITY: Enforce HTTPS to prevent credential leakage
-	if u.Scheme != "https" {
-		return fmt.Errorf("issuer URL must use HTTPS, got %s", u.Scheme)
 	}
 
 	// SECURITY: Validate hostname format
@@ -85,6 +104,22 @@ func ValidateConnectorID(connectorID string) error {
 	return nil
 }
 
+// validateStringSlice validates a slice of strings for size and length constraints.
+// This is a reusable helper to prevent DoS attacks via excessive or oversized items.
+func validateStringSlice(items []string, context string, maxCount, maxLength int) error {
+	if len(items) > maxCount {
+		return fmt.Errorf("%s exceeds maximum of %d items (got %d)", context, maxCount, len(items))
+	}
+
+	for i, item := range items {
+		if len(item) > maxLength {
+			return fmt.Errorf("%s at index %d exceeds maximum length of %d characters", context, i, maxLength)
+		}
+	}
+
+	return nil
+}
+
 // ValidateScopes validates OAuth scopes.
 //
 // Security Considerations:
@@ -99,20 +134,15 @@ func ValidateConnectorID(connectorID string) error {
 //	    return fmt.Errorf("invalid scopes: %w", err)
 //	}
 func ValidateScopes(scopes []string) error {
-	if len(scopes) > 50 {
-		return fmt.Errorf("too many scopes (max 50, got %d)", len(scopes))
-	}
-
+	// Check for empty scopes first
 	for i, scope := range scopes {
 		if scope == "" {
 			return fmt.Errorf("scope at index %d is empty", i)
 		}
-		if len(scope) > 256 {
-			return fmt.Errorf("scope at index %d exceeds maximum length of 256 characters", i)
-		}
 	}
 
-	return nil
+	// Validate size and length constraints
+	return validateStringSlice(scopes, "scopes", 50, 256)
 }
 
 // ValidateGroups validates groups claim from userinfo.
@@ -128,17 +158,6 @@ func ValidateScopes(scopes []string) error {
 //	    return fmt.Errorf("invalid groups: %w", err)
 //	}
 func ValidateGroups(groups []string) error {
-	// SECURITY: Prevent memory exhaustion from excessive groups
-	if len(groups) > 100 {
-		return fmt.Errorf("groups claim exceeds maximum of 100 groups (got %d)", len(groups))
-	}
-
-	for i, group := range groups {
-		// SECURITY: Prevent memory exhaustion from long group names
-		if len(group) > 256 {
-			return fmt.Errorf("group at index %d exceeds maximum length of 256 characters", i)
-		}
-	}
-
-	return nil
+	// SECURITY: Prevent memory exhaustion from excessive groups and long group names
+	return validateStringSlice(groups, "groups", 100, 256)
 }
