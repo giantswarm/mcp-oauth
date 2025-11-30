@@ -113,6 +113,24 @@ func NewDiscoveryClient(httpClient *http.Client, cacheTTL time.Duration, logger 
 	}
 }
 
+// NewTestDiscoveryClient creates a discovery client that skips SSRF validation.
+//
+// WARNING: THIS IS FOR TESTING ONLY!
+//
+// This function creates a discovery client that skips SSRF protection.
+// It should ONLY be used in test code with localhost test servers.
+// NEVER use this in production code - it defeats the security protections.
+//
+// Example (test code only):
+//
+//	testServer := httptest.NewTLSServer(handler)
+//	client := oidc.NewTestDiscoveryClient(testServer.Client(), 1*time.Hour, nil)
+func NewTestDiscoveryClient(httpClient *http.Client, cacheTTL time.Duration, logger *slog.Logger) *DiscoveryClient {
+	client := NewDiscoveryClient(httpClient, cacheTTL, logger)
+	client.skipValidation = true
+	return client
+}
+
 // Discover fetches the OIDC discovery document for an issuer.
 // It validates the issuer URL for security (SSRF protection) and caches results.
 //
