@@ -2,6 +2,18 @@
 
 This example demonstrates how to use the `mcp-oauth` library with Prometheus metrics exporting for production monitoring and observability.
 
+## Security Warning
+
+**This example uses environment variables for secrets for simplicity. This is NOT SECURE for production use.**
+
+For production deployments:
+- Use a secret manager (HashiCorp Vault, AWS Secrets Manager, GCP Secret Manager, Azure Key Vault)
+- See the [Production Example](../production/README.md#secret-management-required-for-production) for secure patterns
+- NEVER commit secrets to version control
+- NEVER use environment variables for secrets in production
+
+**This is a development/learning example only.**
+
 ## Features
 
 - OpenTelemetry instrumentation enabled

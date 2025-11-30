@@ -130,6 +130,26 @@ This library implements OAuth 2.1 with secure defaults:
 - Token encryption at rest (AES-256-GCM)
 - Rate limiting and audit logging
 
+### Secret Management (CRITICAL for Production)
+
+**NEVER use environment variables for production secrets!**
+
+Production deployments **MUST** use a secret manager:
+- **HashiCorp Vault** (recommended for Kubernetes)
+- **AWS Secrets Manager** (for AWS deployments)
+- **Google Cloud Secret Manager** (for GCP deployments)
+- **Azure Key Vault** (for Azure deployments)
+
+**NEVER:**
+- Use environment variables for secrets in production
+- Hardcode secrets in code or configuration files
+- Commit secrets to version control
+- Store secrets in container images or Dockerfiles
+
+See [Production Example - Secret Management](./examples/production/README.md#secret-management-required-for-production) for implementation guidance and examples.
+
+### Documentation
+
 See the [Security Guide](./docs/security.md) for configuration and the [Security Architecture](./SECURITY_ARCHITECTURE.md) for implementation details.
 
 **Vulnerability Reporting**: See [SECURITY.md](./SECURITY.md) for responsible disclosure.
