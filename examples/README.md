@@ -74,12 +74,13 @@ go run main.go
 
 ### [MCP 2025-11-25](./mcp-2025-11-25)
 
-Demonstrates new MCP 2025-11-25 specification features.
+Demonstrates MCP 2025-11-25 specification enhancements.
 
 **Features:**
-- Protected Resource Metadata (RFC 9728)
-- Enhanced WWW-Authenticate headers
-- Scope discovery and validation
+- Sub-path Protected Resource Metadata (new in November)
+- Enhanced WWW-Authenticate headers (new in November)
+- Scope discovery and validation (enhanced in November)
+- Insufficient scope error handling (standardized in November)
 - Resource parameter binding (RFC 8707)
 
 **Best for:** MCP specification compliance, modern OAuth discovery
