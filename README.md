@@ -11,7 +11,7 @@ A **provider-agnostic** OAuth 2.1 Authorization Server library for [Model Contex
 
 ## Key Features
 
-- **Provider Abstraction** - Google and Dex OAuth built-in, easy to add custom providers
+- **Provider Abstraction** - Google, GitHub, and Dex OAuth built-in, easy to add custom providers
 - **Storage Abstraction** - In-memory storage included, simple interface for custom backends
 - **OAuth 2.1 Security** - PKCE enforcement, refresh token rotation, secure defaults
 - **MCP 2025-11-25** - Protected Resource Metadata (RFC 9728), scope discovery, resource binding
@@ -40,7 +40,7 @@ A **provider-agnostic** OAuth 2.1 Authorization Server library for [Model Contex
 
 - **Handler**: HTTP request/response handling
 - **Server**: OAuth business logic (provider-agnostic)
-- **Provider**: Identity provider integration (Google, Dex, or custom)
+- **Provider**: Identity provider integration (Google, GitHub, Dex, or custom)
 - **Storage**: Token/client/flow persistence
 
 ## Quick Start
@@ -116,6 +116,7 @@ go get github.com/giantswarm/mcp-oauth
 The [`examples/`](./examples) directory contains runnable examples:
 
 - **[basic](./examples/basic)** - Minimal setup with Google
+- **[github](./examples/github)** - GitHub OAuth with organization restriction
 - **[dex](./examples/dex)** - Dex provider with connector_id and groups support
 - **[production](./examples/production)** - Full security features
 - **[custom-scopes](./examples/custom-scopes)** - Endpoint-specific scope requirements
