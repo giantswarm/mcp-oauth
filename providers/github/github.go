@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -36,6 +37,10 @@ const (
 	orgsEndpoint   = "https://api.github.com/user/orgs"
 	rateLimitURL   = "https://api.github.com/rate_limit"
 )
+
+// maxResponseBodySize is the maximum size of GitHub API response bodies (1MB).
+// This prevents potential DoS attacks from malicious or compromised responses.
+const maxResponseBodySize = 1 << 20 // 1MB
 
 // Provider implements the providers.Provider interface for GitHub OAuth.
 type Provider struct {
@@ -304,6 +309,7 @@ func (p *Provider) fetchUserInfo(ctx context.Context, accessToken string) (*prov
 	}
 
 	// Parse GitHub's user response
+	// SECURITY: Limit response body size to prevent DoS from oversized responses
 	var ghUser struct {
 		ID        int64  `json:"id"`
 		Login     string `json:"login"`
@@ -314,7 +320,8 @@ func (p *Provider) fetchUserInfo(ctx context.Context, accessToken string) (*prov
 		Bio       string `json:"bio"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&ghUser); err != nil {
+	limitedBody := io.LimitReader(resp.Body, maxResponseBodySize)
+	if err := json.NewDecoder(limitedBody).Decode(&ghUser); err != nil {
 		return nil, fmt.Errorf("failed to decode user info: %w", err)
 	}
 
@@ -348,13 +355,15 @@ func (p *Provider) fetchPrimaryEmail(ctx context.Context, accessToken string) (s
 		return "", false, fmt.Errorf("emails request failed with status %d", resp.StatusCode)
 	}
 
+	// SECURITY: Limit response body size to prevent DoS from oversized responses
 	var emails []struct {
 		Email    string `json:"email"`
 		Primary  bool   `json:"primary"`
 		Verified bool   `json:"verified"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&emails); err != nil {
+	limitedBody := io.LimitReader(resp.Body, maxResponseBodySize)
+	if err := json.NewDecoder(limitedBody).Decode(&emails); err != nil {
 		return "", false, fmt.Errorf("failed to decode emails: %w", err)
 	}
 
@@ -396,11 +405,13 @@ func (p *Provider) fetchUserOrganizations(ctx context.Context, accessToken strin
 		return nil, fmt.Errorf("orgs request failed with status %d", resp.StatusCode)
 	}
 
+	// SECURITY: Limit response body size to prevent DoS from oversized responses
 	var orgs []struct {
 		Login string `json:"login"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&orgs); err != nil {
+	limitedBody := io.LimitReader(resp.Body, maxResponseBodySize)
+	if err := json.NewDecoder(limitedBody).Decode(&orgs); err != nil {
 		return nil, fmt.Errorf("failed to decode orgs: %w", err)
 	}
 

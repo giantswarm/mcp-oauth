@@ -178,14 +178,16 @@ func main() {
 	})
 
 	// Health check endpoint
+	// SECURITY: Do not expose internal error details to clients
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
 		if err := githubProvider.HealthCheck(ctx); err != nil {
+			// Log error for internal monitoring, but don't expose details to clients
 			log.Printf("Health check failed: %v", err)
 			w.WriteHeader(http.StatusServiceUnavailable)
-			fmt.Fprintf(w, "unhealthy: %v", err)
+			fmt.Fprint(w, "unhealthy")
 			return
 		}
 
