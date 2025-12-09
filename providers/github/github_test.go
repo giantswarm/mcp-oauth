@@ -10,16 +10,16 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/oauth2"
+	"github.com/giantswarm/mcp-oauth/providers"
 )
 
 const (
-	testTokenEndpoint  = "/token"
-	testAccessToken    = "test-access-token"
-	testScopeReadOrg   = "read:org"
-	testClientID       = "test-client-id"
-	testClientSecret   = "test-client-secret"
-	testCallbackURL    = "https://example.com/callback"
+	testTokenEndpoint = "/token"
+	testAccessToken   = "test-access-token"
+	testScopeReadOrg  = "read:org"
+	testClientID      = "test-client-id"
+	testClientSecret  = "test-client-secret"
+	testCallbackURL   = "https://example.com/callback"
 )
 
 func TestNewProvider(t *testing.T) {
@@ -32,18 +32,18 @@ func TestNewProvider(t *testing.T) {
 		{
 			name: "valid config",
 			config: &Config{
-				ClientID:     "test-client-id",
-				ClientSecret: "test-client-secret",
-				RedirectURL:  "https://example.com/callback",
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURL:  testCallbackURL,
 			},
 			wantErr: false,
 		},
 		{
 			name: "valid config with custom scopes",
 			config: &Config{
-				ClientID:     "test-client-id",
-				ClientSecret: "test-client-secret",
-				RedirectURL:  "https://example.com/callback",
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURL:  testCallbackURL,
 				Scopes:       []string{"user:email", "read:user", "repo"},
 			},
 			wantErr: false,
@@ -51,9 +51,9 @@ func TestNewProvider(t *testing.T) {
 		{
 			name: "valid config with organizations",
 			config: &Config{
-				ClientID:             "test-client-id",
-				ClientSecret:         "test-client-secret",
-				RedirectURL:          "https://example.com/callback",
+				ClientID:             testClientID,
+				ClientSecret:         testClientSecret,
+				RedirectURL:          testCallbackURL,
 				AllowedOrganizations: []string{"giantswarm"},
 			},
 			wantErr: false,
@@ -61,8 +61,8 @@ func TestNewProvider(t *testing.T) {
 		{
 			name: "missing client ID",
 			config: &Config{
-				ClientSecret: "test-client-secret",
-				RedirectURL:  "https://example.com/callback",
+				ClientSecret: testClientSecret,
+				RedirectURL:  testCallbackURL,
 			},
 			wantErr: true,
 			errMsg:  "client ID is required",
@@ -70,8 +70,8 @@ func TestNewProvider(t *testing.T) {
 		{
 			name: "missing client secret",
 			config: &Config{
-				ClientID:    "test-client-id",
-				RedirectURL: "https://example.com/callback",
+				ClientID:    testClientID,
+				RedirectURL: testCallbackURL,
 			},
 			wantErr: true,
 			errMsg:  "client secret is required",
@@ -79,8 +79,8 @@ func TestNewProvider(t *testing.T) {
 		{
 			name: "empty organization name",
 			config: &Config{
-				ClientID:             "test-client-id",
-				ClientSecret:         "test-client-secret",
+				ClientID:             testClientID,
+				ClientSecret:         testClientSecret,
 				AllowedOrganizations: []string{"giantswarm", ""},
 			},
 			wantErr: true,
@@ -89,8 +89,8 @@ func TestNewProvider(t *testing.T) {
 		{
 			name: "organization name too long",
 			config: &Config{
-				ClientID:             "test-client-id",
-				ClientSecret:         "test-client-secret",
+				ClientID:             testClientID,
+				ClientSecret:         testClientSecret,
 				AllowedOrganizations: []string{strings.Repeat("a", 40)},
 			},
 			wantErr: true,
@@ -122,9 +122,9 @@ func TestNewProvider(t *testing.T) {
 func TestNewProvider_AddReadOrgScope(t *testing.T) {
 	// When AllowedOrganizations is set, read:org should be automatically added
 	config := &Config{
-		ClientID:             "test-client-id",
-		ClientSecret:         "test-client-secret",
-		RedirectURL:          "https://example.com/callback",
+		ClientID:             testClientID,
+		ClientSecret:         testClientSecret,
+		RedirectURL:          testCallbackURL,
 		Scopes:               []string{"user:email"},
 		AllowedOrganizations: []string{"giantswarm"},
 	}
@@ -150,10 +150,10 @@ func TestNewProvider_AddReadOrgScope(t *testing.T) {
 func TestNewProvider_ReadOrgScopeNotDuplicated(t *testing.T) {
 	// When read:org is already present, it shouldn't be duplicated
 	config := &Config{
-		ClientID:             "test-client-id",
-		ClientSecret:         "test-client-secret",
-		RedirectURL:          "https://example.com/callback",
-		Scopes:               []string{"user:email", "read:org"},
+		ClientID:             testClientID,
+		ClientSecret:         testClientSecret,
+		RedirectURL:          testCallbackURL,
+		Scopes:               []string{"user:email", testScopeReadOrg},
 		AllowedOrganizations: []string{"giantswarm"},
 	}
 
@@ -180,9 +180,9 @@ func TestNewProvider_WithCustomHTTPClient(t *testing.T) {
 	}
 
 	config := &Config{
-		ClientID:     "test-client-id",
-		ClientSecret: "test-client-secret",
-		RedirectURL:  "https://example.com/callback",
+		ClientID:     testClientID,
+		ClientSecret: testClientSecret,
+		RedirectURL:  testCallbackURL,
 		HTTPClient:   customClient,
 	}
 
@@ -198,8 +198,8 @@ func TestNewProvider_WithCustomHTTPClient(t *testing.T) {
 
 func TestNewProvider_RequireVerifiedEmailDefault(t *testing.T) {
 	config := &Config{
-		ClientID:     "test-client-id",
-		ClientSecret: "test-client-secret",
+		ClientID:     testClientID,
+		ClientSecret: testClientSecret,
 	}
 
 	provider, err := NewProvider(config)
@@ -215,8 +215,8 @@ func TestNewProvider_RequireVerifiedEmailDefault(t *testing.T) {
 func TestNewProvider_RequireVerifiedEmailFalse(t *testing.T) {
 	falseVal := false
 	config := &Config{
-		ClientID:             "test-client-id",
-		ClientSecret:         "test-client-secret",
+		ClientID:             testClientID,
+		ClientSecret:         testClientSecret,
 		RequireVerifiedEmail: &falseVal,
 	}
 
@@ -232,9 +232,9 @@ func TestNewProvider_RequireVerifiedEmailFalse(t *testing.T) {
 
 func TestProvider_Name(t *testing.T) {
 	provider, err := NewProvider(&Config{
-		ClientID:     "test-client-id",
-		ClientSecret: "test-client-secret",
-		RedirectURL:  "https://example.com/callback",
+		ClientID:     testClientID,
+		ClientSecret: testClientSecret,
+		RedirectURL:  testCallbackURL,
 	})
 	if err != nil {
 		t.Fatalf("NewProvider() error = %v", err)
@@ -247,9 +247,9 @@ func TestProvider_Name(t *testing.T) {
 
 func TestProvider_DefaultScopes(t *testing.T) {
 	provider, err := NewProvider(&Config{
-		ClientID:     "test-client-id",
-		ClientSecret: "test-client-secret",
-		RedirectURL:  "https://example.com/callback",
+		ClientID:     testClientID,
+		ClientSecret: testClientSecret,
+		RedirectURL:  testCallbackURL,
 	})
 	if err != nil {
 		t.Fatalf("NewProvider() error = %v", err)
@@ -279,9 +279,9 @@ func TestProvider_DefaultScopes(t *testing.T) {
 
 func TestProvider_DefaultScopes_DeepCopy(t *testing.T) {
 	provider, err := NewProvider(&Config{
-		ClientID:     "test-client-id",
-		ClientSecret: "test-client-secret",
-		RedirectURL:  "https://example.com/callback",
+		ClientID:     testClientID,
+		ClientSecret: testClientSecret,
+		RedirectURL:  testCallbackURL,
 	})
 	if err != nil {
 		t.Fatalf("NewProvider() error = %v", err)
@@ -303,9 +303,9 @@ func TestProvider_DefaultScopes_DeepCopy(t *testing.T) {
 
 func TestProvider_AuthorizationURL(t *testing.T) {
 	provider, err := NewProvider(&Config{
-		ClientID:     "test-client-id",
-		ClientSecret: "test-client-secret",
-		RedirectURL:  "https://example.com/callback",
+		ClientID:     testClientID,
+		ClientSecret: testClientSecret,
+		RedirectURL:  testCallbackURL,
 		Scopes:       []string{"user:email", "read:user"},
 	})
 	if err != nil {
@@ -391,9 +391,9 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 
 func TestProvider_AuthorizationURL_DeepCopySafety(t *testing.T) {
 	provider, err := NewProvider(&Config{
-		ClientID:     "test-client-id",
-		ClientSecret: "test-client-secret",
-		RedirectURL:  "https://example.com/callback",
+		ClientID:     testClientID,
+		ClientSecret: testClientSecret,
+		RedirectURL:  testCallbackURL,
 		Scopes:       []string{"user:email", "read:user"},
 	})
 	if err != nil {
@@ -452,9 +452,9 @@ func TestProvider_ExchangeCode(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(&Config{
-		ClientID:     "test-client-id",
-		ClientSecret: "test-client-secret",
-		RedirectURL:  "https://example.com/callback",
+		ClientID:     testClientID,
+		ClientSecret: testClientSecret,
+		RedirectURL:  testCallbackURL,
 	})
 	if err != nil {
 		t.Fatalf("NewProvider() error = %v", err)
@@ -498,9 +498,9 @@ func TestProvider_ExchangeCode_WithPKCE(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(&Config{
-		ClientID:     "test-client-id",
-		ClientSecret: "test-client-secret",
-		RedirectURL:  "https://example.com/callback",
+		ClientID:     testClientID,
+		ClientSecret: testClientSecret,
+		RedirectURL:  testCallbackURL,
 	})
 	if err != nil {
 		t.Fatalf("NewProvider() error = %v", err)
@@ -538,8 +538,8 @@ func TestProvider_ValidateToken(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(&Config{
-		ClientID:     "test-client-id",
-		ClientSecret: "test-client-secret",
+		ClientID:     testClientID,
+		ClientSecret: testClientSecret,
 		HTTPClient: &http.Client{
 			Transport: &mockUserTransport{server: server},
 		},
@@ -567,9 +567,7 @@ func TestProvider_ValidateToken(t *testing.T) {
 }
 
 func TestProvider_ValidateToken_EmailFallback(t *testing.T) {
-	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
 		w.Header().Set("Content-Type", "application/json")
 
 		if strings.Contains(r.URL.Path, "/user/emails") {
@@ -591,8 +589,8 @@ func TestProvider_ValidateToken_EmailFallback(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(&Config{
-		ClientID:     "test-client-id",
-		ClientSecret: "test-client-secret",
+		ClientID:     testClientID,
+		ClientSecret: testClientSecret,
 		HTTPClient: &http.Client{
 			Transport: &mockUserTransport{server: server},
 		},
@@ -635,8 +633,8 @@ func TestProvider_ValidateToken_OrganizationRequired(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(&Config{
-		ClientID:             "test-client-id",
-		ClientSecret:         "test-client-secret",
+		ClientID:             testClientID,
+		ClientSecret:         testClientSecret,
 		AllowedOrganizations: []string{"giantswarm"},
 		HTTPClient: &http.Client{
 			Transport: &mockUserTransport{server: server},
@@ -677,8 +675,8 @@ func TestProvider_ValidateToken_OrganizationAllowed(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(&Config{
-		ClientID:             "test-client-id",
-		ClientSecret:         "test-client-secret",
+		ClientID:             testClientID,
+		ClientSecret:         testClientSecret,
 		AllowedOrganizations: []string{"giantswarm"},
 		HTTPClient: &http.Client{
 			Transport: &mockUserTransport{server: server},
@@ -718,8 +716,8 @@ func TestProvider_ValidateToken_OrganizationCaseInsensitive(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(&Config{
-		ClientID:             "test-client-id",
-		ClientSecret:         "test-client-secret",
+		ClientID:             testClientID,
+		ClientSecret:         testClientSecret,
 		AllowedOrganizations: []string{"giantswarm"}, // lowercase
 		HTTPClient: &http.Client{
 			Transport: &mockUserTransport{server: server},
@@ -746,8 +744,8 @@ func TestProvider_ValidateToken_InvalidToken(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(&Config{
-		ClientID:     "test-client-id",
-		ClientSecret: "test-client-secret",
+		ClientID:     testClientID,
+		ClientSecret: testClientSecret,
 		HTTPClient: &http.Client{
 			Transport: &mockUserTransport{server: server},
 		},
@@ -764,8 +762,8 @@ func TestProvider_ValidateToken_InvalidToken(t *testing.T) {
 
 func TestProvider_RefreshToken(t *testing.T) {
 	provider, err := NewProvider(&Config{
-		ClientID:     "test-client-id",
-		ClientSecret: "test-client-secret",
+		ClientID:     testClientID,
+		ClientSecret: testClientSecret,
 	})
 	if err != nil {
 		t.Fatalf("NewProvider() error = %v", err)
@@ -783,8 +781,8 @@ func TestProvider_RefreshToken(t *testing.T) {
 
 func TestProvider_RevokeToken(t *testing.T) {
 	provider, err := NewProvider(&Config{
-		ClientID:     "test-client-id",
-		ClientSecret: "test-client-secret",
+		ClientID:     testClientID,
+		ClientSecret: testClientSecret,
 	})
 	if err != nil {
 		t.Fatalf("NewProvider() error = %v", err)
@@ -828,8 +826,8 @@ func TestProvider_HealthCheck(t *testing.T) {
 			defer server.Close()
 
 			provider, err := NewProvider(&Config{
-				ClientID:     "test-client-id",
-				ClientSecret: "test-client-secret",
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
 				HTTPClient: &http.Client{
 					Transport: &healthCheckTransport{server: server},
 				},
@@ -854,8 +852,8 @@ func TestProvider_HealthCheck_WithTimeout(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(&Config{
-		ClientID:       "test-client-id",
-		ClientSecret:   "test-client-secret",
+		ClientID:       testClientID,
+		ClientSecret:   testClientSecret,
 		RequestTimeout: 10 * time.Millisecond, // Very short timeout
 		HTTPClient: &http.Client{
 			Transport: &healthCheckTransport{server: server},
@@ -878,8 +876,8 @@ func TestProvider_HealthCheck_WithExistingDeadline(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(&Config{
-		ClientID:     "test-client-id",
-		ClientSecret: "test-client-secret",
+		ClientID:     testClientID,
+		ClientSecret: testClientSecret,
 		HTTPClient: &http.Client{
 			Transport: &healthCheckTransport{server: server},
 		},
@@ -909,8 +907,8 @@ func TestProvider_GetUserOrganizations(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(&Config{
-		ClientID:     "test-client-id",
-		ClientSecret: "test-client-secret",
+		ClientID:     testClientID,
+		ClientSecret: testClientSecret,
 		HTTPClient: &http.Client{
 			Transport: &mockUserTransport{server: server},
 		},
@@ -938,8 +936,8 @@ func TestProvider_GetUserOrganizations(t *testing.T) {
 
 func TestProvider_GetProviderToken(t *testing.T) {
 	provider, err := NewProvider(&Config{
-		ClientID:     "test-client-id",
-		ClientSecret: "test-client-secret",
+		ClientID:     testClientID,
+		ClientSecret: testClientSecret,
 	})
 	if err != nil {
 		t.Fatalf("NewProvider() error = %v", err)
@@ -956,44 +954,10 @@ func TestProvider_GetProviderToken(t *testing.T) {
 	}
 }
 
-func TestProvider_BuildAuthenticatedURL(t *testing.T) {
-	provider, err := NewProvider(&Config{
-		ClientID:     "test-client-id",
-		ClientSecret: "test-client-secret",
-	})
-	if err != nil {
-		t.Fatalf("NewProvider() error = %v", err)
-	}
-
-	u, err := provider.BuildAuthenticatedURL("https://api.github.com/repos/owner/repo", "test-token")
-	if err != nil {
-		t.Fatalf("BuildAuthenticatedURL() error = %v", err)
-	}
-
-	if u.Host != "api.github.com" {
-		t.Errorf("Host = %q, want %q", u.Host, "api.github.com")
-	}
-}
-
-func TestProvider_BuildAuthenticatedURL_Invalid(t *testing.T) {
-	provider, err := NewProvider(&Config{
-		ClientID:     "test-client-id",
-		ClientSecret: "test-client-secret",
-	})
-	if err != nil {
-		t.Fatalf("NewProvider() error = %v", err)
-	}
-
-	_, err = provider.BuildAuthenticatedURL("://invalid", "test-token")
-	if err == nil {
-		t.Error("BuildAuthenticatedURL() should return error for invalid URL")
-	}
-}
-
 func TestProvider_ensureContextTimeout(t *testing.T) {
 	provider, err := NewProvider(&Config{
-		ClientID:       "test-client-id",
-		ClientSecret:   "test-client-secret",
+		ClientID:       testClientID,
+		ClientSecret:   testClientSecret,
 		RequestTimeout: 5 * time.Second,
 	})
 	if err != nil {
@@ -1048,27 +1012,20 @@ func (h *healthCheckTransport) RoundTrip(req *http.Request) (*http.Response, err
 	return http.DefaultTransport.RoundTrip(req)
 }
 
-// Test that the Provider implements the providers.Provider interface
+// TestProvider_ImplementsInterface verifies that the Provider implements providers.Provider.
+// Note: The actual compile-time check is done via var _ providers.Provider = (*Provider)(nil) in github.go.
 func TestProvider_ImplementsInterface(t *testing.T) {
 	provider, err := NewProvider(&Config{
-		ClientID:     "test-client-id",
-		ClientSecret: "test-client-secret",
+		ClientID:     testClientID,
+		ClientSecret: testClientSecret,
 	})
 	if err != nil {
 		t.Fatalf("NewProvider() error = %v", err)
 	}
 
-	// This will fail at compile time if Provider doesn't implement the interface
-	var _ interface {
-		Name() string
-		DefaultScopes() []string
-		AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string, scopes []string) string
-		ExchangeCode(ctx context.Context, code string, codeVerifier string) (*oauth2.Token, error)
-		ValidateToken(ctx context.Context, accessToken string) (*interface{ ID() string }, error)
-		RefreshToken(ctx context.Context, refreshToken string) (*oauth2.Token, error)
-		RevokeToken(ctx context.Context, token string) error
-		HealthCheck(ctx context.Context) error
+	// Verify provider can be used as providers.Provider interface
+	var p providers.Provider = provider
+	if p.Name() != "github" {
+		t.Errorf("Name() = %q, want %q", p.Name(), "github")
 	}
-
-	_ = provider
 }

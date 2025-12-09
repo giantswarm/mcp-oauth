@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -16,6 +15,12 @@ import (
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
 )
+
+// Compile-time check that Provider implements the providers.Provider interface.
+var _ providers.Provider = (*Provider)(nil)
+
+// providerName is the name returned by Provider.Name().
+const providerName = "github"
 
 // ErrRefreshNotSupported is returned when attempting to refresh a token.
 // GitHub OAuth Apps issue non-expiring access tokens and don't support refresh.
@@ -162,7 +167,7 @@ func NewProvider(cfg *Config) (*Provider, error) {
 
 // Name returns the provider name.
 func (p *Provider) Name() string {
-	return "github"
+	return providerName
 }
 
 // DefaultScopes returns the provider's configured default scopes.
@@ -370,11 +375,12 @@ func (p *Provider) fetchPrimaryEmail(ctx context.Context, accessToken string) (s
 	return "", false, nil
 }
 
-// validateOrganizationMembership checks if the user is a member of any allowed organization.
-func (p *Provider) validateOrganizationMembership(ctx context.Context, accessToken string) (bool, error) {
+// fetchUserOrganizations fetches all organization logins for the user from GitHub API.
+// This is the core implementation used by both validateOrganizationMembership and GetUserOrganizations.
+func (p *Provider) fetchUserOrganizations(ctx context.Context, accessToken string) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", orgsEndpoint, nil)
 	if err != nil {
-		return false, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Authorization", "Bearer "+accessToken)
@@ -382,12 +388,12 @@ func (p *Provider) validateOrganizationMembership(ctx context.Context, accessTok
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("request failed: %w", err)
+		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("orgs request failed with status %d", resp.StatusCode)
+		return nil, fmt.Errorf("orgs request failed with status %d", resp.StatusCode)
 	}
 
 	var orgs []struct {
@@ -395,13 +401,28 @@ func (p *Provider) validateOrganizationMembership(ctx context.Context, accessTok
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&orgs); err != nil {
-		return false, fmt.Errorf("failed to decode orgs: %w", err)
+		return nil, fmt.Errorf("failed to decode orgs: %w", err)
 	}
 
-	// Check if user is member of any allowed organization
+	result := make([]string, len(orgs))
+	for i, org := range orgs {
+		result[i] = org.Login
+	}
+
+	return result, nil
+}
+
+// validateOrganizationMembership checks if the user is a member of any allowed organization.
+func (p *Provider) validateOrganizationMembership(ctx context.Context, accessToken string) (bool, error) {
+	orgs, err := p.fetchUserOrganizations(ctx, accessToken)
+	if err != nil {
+		return false, err
+	}
+
+	// Check if user is member of any allowed organization (case-insensitive)
 	for _, org := range orgs {
 		for _, allowedOrg := range p.allowedOrganizations {
-			if strings.EqualFold(org.Login, allowedOrg) {
+			if strings.EqualFold(org, allowedOrg) {
 				return true, nil
 			}
 		}
@@ -469,38 +490,7 @@ func (p *Provider) GetUserOrganizations(ctx context.Context, accessToken string)
 	ctx, cancel := p.ensureContextTimeout(ctx)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", orgsEndpoint, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("orgs request failed with status %d", resp.StatusCode)
-	}
-
-	var orgs []struct {
-		Login string `json:"login"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&orgs); err != nil {
-		return nil, fmt.Errorf("failed to decode orgs: %w", err)
-	}
-
-	result := make([]string, len(orgs))
-	for i, org := range orgs {
-		result[i] = org.Login
-	}
-
-	return result, nil
+	return p.fetchUserOrganizations(ctx, accessToken)
 }
 
 // GetProviderToken returns a token suitable for making additional GitHub API calls.
@@ -510,14 +500,4 @@ func (p *Provider) GetProviderToken(accessToken string) *oauth2.Token {
 		AccessToken: accessToken,
 		TokenType:   "Bearer",
 	}
-}
-
-// BuildAuthenticatedURL builds a URL with the access token for GitHub API requests.
-// This is a helper for applications making custom GitHub API calls.
-func (p *Provider) BuildAuthenticatedURL(baseURL, accessToken string) (*url.URL, error) {
-	u, err := url.Parse(baseURL)
-	if err != nil {
-		return nil, fmt.Errorf("invalid URL: %w", err)
-	}
-	return u, nil
 }
