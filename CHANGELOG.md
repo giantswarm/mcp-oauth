@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **GitHub OAuth Provider with Organization Access Control**
+  - **Feature**: New dedicated GitHub OAuth provider in `providers/github/`
+  - **Use Case**: Direct GitHub authentication without requiring Dex or other OIDC proxies
+  - **Scopes**: Default scopes `user:email` and `read:user` for profile and email access
+  - **Organization Restriction**: Optional `AllowedOrganizations` config to restrict login to specific organizations
+    - Automatically adds `read:org` scope when organizations are configured
+    - Case-insensitive organization name matching
+    - Users not in allowed organizations receive clear error (`ErrOrganizationRequired`)
+  - **Email Handling**: Robust email retrieval with fallback to `/user/emails` endpoint for private emails
+  - **PKCE Support**: Full OAuth 2.1 PKCE support for enhanced security
+  - **Health Check**: Uses GitHub's `/rate_limit` endpoint for lightweight health monitoring
+  - **Token Behavior**: Gracefully handles GitHub's non-expiring tokens (`ErrRefreshNotSupported`)
+  - **Token Revocation**: Graceful degradation (returns nil) since GitHub lacks server-side revocation
+  - **Helper Methods**: 
+    - `GetUserOrganizations()` for listing user's organizations
+    - `GetProviderToken()` for creating tokens for additional GitHub API calls
+  - **Documentation**: Comprehensive `doc.go`, example application, and README with setup instructions
+  - **Testing**: 87.2% test coverage with comprehensive unit tests
+  - **Example**: New `examples/github/` demonstrating organization-based access control
+
 ## [0.2.0] - 2025-11-27
 
 ### Added
@@ -777,7 +799,7 @@ N/A - First release
 
 Planned features for future releases:
 
-- [ ] Support for additional OAuth providers (GitHub, Microsoft, etc.)
+- [x] Support for additional OAuth providers (GitHub - completed in v0.2.8, Microsoft - planned)
 - [ ] Token introspection endpoint (RFC 7662)
 - [ ] Device authorization grant (RFC 8628)
 - [ ] JWT access tokens (RFC 9068)
