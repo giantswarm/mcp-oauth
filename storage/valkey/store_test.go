@@ -11,6 +11,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/providers"
+	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
@@ -917,5 +918,221 @@ func TestCalculateTTL(t *testing.T) {
 	ttl = calculateTTL(past)
 	if ttl != 0 {
 		t.Error("TTL should be 0 for past expiry")
+	}
+}
+
+// ============================================================
+// Token Encryption Tests
+// ============================================================
+
+func TestTokenStore_Encryption(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	// Generate encryption key (32 bytes for AES-256)
+	key, err := security.GenerateKey()
+	if err != nil {
+		t.Fatalf("Failed to generate encryption key: %v", err)
+	}
+
+	encryptor, err := security.NewEncryptor(key)
+	if err != nil {
+		t.Fatalf("Failed to create encryptor: %v", err)
+	}
+
+	s.SetEncryptor(encryptor)
+
+	token := &oauth2.Token{
+		AccessToken:  "secret-access-token",
+		RefreshToken: "secret-refresh-token",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(time.Hour),
+	}
+
+	// Save encrypted token
+	err = s.SaveToken(ctx, "encrypted-user", token)
+	if err != nil {
+		t.Fatalf("SaveToken with encryption failed: %v", err)
+	}
+
+	// Retrieve and decrypt token
+	got, err := s.GetToken(ctx, "encrypted-user")
+	if err != nil {
+		t.Fatalf("GetToken with decryption failed: %v", err)
+	}
+
+	// Verify decrypted values match original
+	if got.AccessToken != token.AccessToken {
+		t.Errorf("AccessToken = %q, want %q", got.AccessToken, token.AccessToken)
+	}
+	if got.RefreshToken != token.RefreshToken {
+		t.Errorf("RefreshToken = %q, want %q", got.RefreshToken, token.RefreshToken)
+	}
+}
+
+func TestTokenStore_EncryptionDisabled(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	// Create encryptor with nil key (disabled)
+	encryptor, err := security.NewEncryptor(nil)
+	if err != nil {
+		t.Fatalf("Failed to create disabled encryptor: %v", err)
+	}
+
+	s.SetEncryptor(encryptor)
+
+	token := &oauth2.Token{
+		AccessToken:  "plaintext-access-token",
+		RefreshToken: "plaintext-refresh-token",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(time.Hour),
+	}
+
+	// Save token (should not encrypt)
+	err = s.SaveToken(ctx, "plaintext-user", token)
+	if err != nil {
+		t.Fatalf("SaveToken without encryption failed: %v", err)
+	}
+
+	// Retrieve token
+	got, err := s.GetToken(ctx, "plaintext-user")
+	if err != nil {
+		t.Fatalf("GetToken without decryption failed: %v", err)
+	}
+
+	// Verify values match original
+	if got.AccessToken != token.AccessToken {
+		t.Errorf("AccessToken = %q, want %q", got.AccessToken, token.AccessToken)
+	}
+}
+
+// ============================================================
+// Concurrency Tests for Atomic Operations
+// ============================================================
+
+func TestFlowStore_AtomicCheckAndMarkAuthCodeUsed_Concurrent(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	code := &storage.AuthorizationCode{
+		Code:      "concurrent-code-1",
+		ClientID:  "client-1",
+		UserID:    "user1",
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+		Used:      false,
+	}
+
+	_ = s.SaveAuthorizationCode(ctx, code)
+
+	// Number of concurrent goroutines trying to use the same code
+	numGoroutines := 10
+	successCount := make(chan bool, numGoroutines)
+	reuseCount := make(chan bool, numGoroutines)
+
+	// Start all goroutines simultaneously
+	start := make(chan struct{})
+
+	for i := 0; i < numGoroutines; i++ {
+		go func() {
+			<-start // Wait for signal
+			_, err := s.AtomicCheckAndMarkAuthCodeUsed(ctx, "concurrent-code-1")
+			if err == nil {
+				successCount <- true
+			} else if storage.IsCodeReuseError(err) {
+				reuseCount <- true
+			}
+		}()
+	}
+
+	// Release all goroutines at once
+	close(start)
+
+	// Wait and count results
+	successes := 0
+	reuses := 0
+	timeout := time.After(5 * time.Second)
+
+	for i := 0; i < numGoroutines; i++ {
+		select {
+		case <-successCount:
+			successes++
+		case <-reuseCount:
+			reuses++
+		case <-timeout:
+			t.Fatal("Timeout waiting for goroutines")
+		}
+	}
+
+	// SECURITY: Only ONE goroutine should succeed
+	if successes != 1 {
+		t.Errorf("Expected exactly 1 success, got %d (security vulnerability!)", successes)
+	}
+
+	// All others should get reuse error
+	if reuses != numGoroutines-1 {
+		t.Errorf("Expected %d reuse errors, got %d", numGoroutines-1, reuses)
+	}
+}
+
+// ============================================================
+// Input Validation Tests
+// ============================================================
+
+func TestValidation_InputTooLarge(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	// Create a string that exceeds MaxTokenLength
+	largeToken := make([]byte, MaxTokenLength+1)
+	for i := range largeToken {
+		largeToken[i] = 'a'
+	}
+
+	err := s.SaveRefreshToken(ctx, string(largeToken), "user", time.Now().Add(time.Hour))
+	if err == nil {
+		t.Error("Expected error for oversized refresh token")
+	}
+
+	// Create a string that exceeds MaxIDLength
+	largeID := make([]byte, MaxIDLength+1)
+	for i := range largeID {
+		largeID[i] = 'a'
+	}
+
+	err = s.SaveRefreshToken(ctx, "token", string(largeID), time.Now().Add(time.Hour))
+	if err == nil {
+		t.Error("Expected error for oversized userID")
+	}
+}
+
+func TestValidation_GenericErrorMessages(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	// Test that ValidateClientSecret returns generic error for non-existent client
+	err := s.ValidateClientSecret(ctx, "nonexistent-client", "any-secret")
+	if err == nil {
+		t.Error("Expected error for non-existent client")
+	}
+	// Error should not contain client ID
+	if err.Error() != "invalid client credentials" {
+		t.Errorf("Error message should be generic, got: %v", err)
+	}
+
+	// Test that CheckIPLimit returns generic error when limit exceeded
+	// First, set up an IP that has exceeded the limit
+	for i := 0; i < 5; i++ {
+		_ = s.TrackClientIP(ctx, "192.168.99.99")
+	}
+
+	err = s.CheckIPLimit(ctx, "192.168.99.99", 3)
+	if err == nil {
+		t.Error("Expected error when IP limit exceeded")
+	}
+	// Error should not contain IP or count
+	if err.Error() != "rate limit exceeded" {
+		t.Errorf("Error message should be generic, got: %v", err)
 	}
 }

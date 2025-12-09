@@ -49,7 +49,8 @@ func (s *Store) GetClient(ctx context.Context, clientID string) (*storage.Client
 	data, err := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).ToString()
 	if err != nil {
 		if isNilError(err) {
-			return nil, fmt.Errorf("%w: %s", storage.ErrClientNotFound, clientID)
+			// Return generic error to prevent client enumeration attacks
+			return nil, storage.ErrClientNotFound
 		}
 		return nil, fmt.Errorf("failed to get client: %w", err)
 	}
@@ -70,6 +71,8 @@ func (s *Store) ValidateClientSecret(ctx context.Context, clientID, clientSecret
 
 	// Pre-computed dummy hash for non-existent clients (bcrypt hash of "test")
 	// This ensures we always perform a bcrypt comparison even if client doesn't exist
+	// Note: Using a constant dummy hash is intentional - the timing attack mitigation
+	// comes from always performing the bcrypt comparison, not from the hash value.
 	dummyHash := "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
 
 	client, err := s.GetClient(ctx, clientID)
@@ -95,14 +98,17 @@ func (s *Store) ValidateClientSecret(ctx context.Context, clientID, clientSecret
 		return nil
 	}
 
-	// If client lookup failed, return error (but only after bcrypt comparison)
+	// If client lookup failed, return generic error (but only after bcrypt comparison)
+	// SECURITY: Generic error message prevents client enumeration attacks
 	if err != nil {
-		return fmt.Errorf("invalid client credentials")
+		return errInvalidCredentials
 	}
 
-	// If bcrypt comparison failed, return error
+	// If bcrypt comparison failed, return generic error
+	// SECURITY: Generic error message prevents distinguishing between
+	// "client not found" and "wrong password" scenarios
 	if bcryptErr != nil {
-		return fmt.Errorf("invalid client credentials")
+		return errInvalidCredentials
 	}
 
 	return nil
@@ -191,7 +197,13 @@ func (s *Store) CheckIPLimit(ctx context.Context, ip string, maxClientsPerIP int
 	}
 
 	if count >= maxClientsPerIP {
-		return fmt.Errorf("client registration limit reached for IP %s (%d/%d clients)", ip, count, maxClientsPerIP)
+		// SECURITY: Generic error message prevents revealing current count
+		// or confirming the IP is being tracked
+		s.logger.Warn("Client registration limit reached",
+			"ip", ip,
+			"current_count", count,
+			"max_allowed", maxClientsPerIP)
+		return errRateLimitExceeded
 	}
 
 	return nil

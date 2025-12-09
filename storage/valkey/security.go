@@ -26,6 +26,20 @@ func (s *Store) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, us
 		return fmt.Errorf("family ID cannot be empty")
 	}
 
+	// Validate input lengths to prevent DoS
+	if err := validateStringLength(refreshToken, MaxTokenLength, "refreshToken"); err != nil {
+		return err
+	}
+	if err := validateStringLength(userID, MaxIDLength, "userID"); err != nil {
+		return err
+	}
+	if err := validateStringLength(clientID, MaxIDLength, "clientID"); err != nil {
+		return err
+	}
+	if err := validateStringLength(familyID, MaxIDLength, "familyID"); err != nil {
+		return err
+	}
+
 	// Calculate TTL
 	ttl := calculateTTL(expiresAt)
 	if ttl <= 0 {
@@ -241,6 +255,17 @@ func (s *Store) SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID
 		return fmt.Errorf("tokenID, userID, and clientID cannot be empty")
 	}
 
+	// Validate input lengths to prevent DoS
+	if err := validateStringLength(tokenID, MaxTokenLength, "tokenID"); err != nil {
+		return err
+	}
+	if err := validateStringLength(userID, MaxIDLength, "userID"); err != nil {
+		return err
+	}
+	if err := validateStringLength(clientID, MaxIDLength, "clientID"); err != nil {
+		return err
+	}
+
 	ctx := context.Background()
 
 	meta := &storage.TokenMetadata{
@@ -313,6 +338,14 @@ func (s *Store) GetTokenMetadata(tokenID string) (*storage.TokenMetadata, error)
 func (s *Store) RevokeAllTokensForUserClient(ctx context.Context, userID, clientID string) (int, error) {
 	if userID == "" || clientID == "" {
 		return 0, fmt.Errorf("userID and clientID cannot be empty")
+	}
+
+	// Validate input lengths
+	if err := validateStringLength(userID, MaxIDLength, "userID"); err != nil {
+		return 0, err
+	}
+	if err := validateStringLength(clientID, MaxIDLength, "clientID"); err != nil {
+		return 0, err
 	}
 
 	userClientKey := s.userClientKey(userID, clientID)

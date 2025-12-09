@@ -23,9 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Constant-time bcrypt comparison for client secret validation
     - Token family tracking for OAuth 2.1 reuse detection
     - Configurable revoked family retention for security forensics (default: 90 days)
+    - Optional token encryption at rest via `SetEncryptor()` using AES-256-GCM
+    - Input size validation to prevent DoS attacks (max token: 512 bytes, max ID: 256 bytes)
+    - Generic error messages prevent information leakage (no client IDs or counts in errors)
   - **IP Rate Limiting**: Built-in DoS protection via IP-based client registration limits
   - **Documentation**: Comprehensive package documentation with usage examples
-  - **Testing**: Skip-based tests for environments without Valkey available
+  - **Testing**: Skip-based tests for environments without Valkey available, concurrency tests for atomic operations
 
 - **GitHub OAuth Provider with Organization Access Control**
   - **Feature**: New dedicated GitHub OAuth provider in `providers/github/`

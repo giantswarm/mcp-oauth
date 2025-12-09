@@ -5,12 +5,14 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	valkeygo "github.com/valkey-io/valkey-go"
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/providers"
+	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
@@ -29,6 +31,24 @@ const (
 
 	// connectionVerifyTimeout is the timeout for initial connection verification
 	connectionVerifyTimeout = 5 * time.Second
+
+	// MaxTokenLength is the maximum allowed length for token strings (512 bytes)
+	// This prevents DoS attacks via excessively large tokens
+	MaxTokenLength = 512
+
+	// MaxIDLength is the maximum allowed length for identifiers (userID, clientID, familyID)
+	MaxIDLength = 256
+
+	// MaxTokenDataSize is the maximum size of serialized token data (64KB)
+	// This prevents memory exhaustion from large token payloads
+	MaxTokenDataSize = 64 * 1024
+)
+
+// Validation error messages (generic to prevent information leakage)
+var (
+	errInvalidCredentials = fmt.Errorf("invalid client credentials")
+	errRateLimitExceeded  = fmt.Errorf("rate limit exceeded")
+	errInputTooLarge      = fmt.Errorf("input exceeds maximum allowed size")
 )
 
 // Config holds configuration for the Valkey storage backend.
@@ -63,6 +83,11 @@ type Store struct {
 	prefix                     string
 	logger                     *slog.Logger
 	revokedFamilyRetentionDays int
+
+	// encryptor provides optional token encryption at rest
+	// Access must be synchronized via encryptorMu
+	encryptor   *security.Encryptor
+	encryptorMu sync.RWMutex
 }
 
 // Compile-time interface checks to ensure Store implements all storage interfaces
@@ -146,6 +171,107 @@ func (s *Store) Close() {
 // SetLogger sets a custom logger for the store.
 func (s *Store) SetLogger(logger *slog.Logger) {
 	s.logger = logger
+}
+
+// SetEncryptor sets the token encryptor for encryption at rest.
+// When set, oauth2.Token access and refresh tokens will be encrypted
+// before storing in Valkey and decrypted when retrieved.
+func (s *Store) SetEncryptor(enc *security.Encryptor) {
+	s.encryptorMu.Lock()
+	defer s.encryptorMu.Unlock()
+	s.encryptor = enc
+	if enc != nil && enc.IsEnabled() {
+		s.logger.Info("Token encryption at rest enabled for Valkey storage")
+	}
+}
+
+// getEncryptor returns the current encryptor (thread-safe)
+func (s *Store) getEncryptor() *security.Encryptor {
+	s.encryptorMu.RLock()
+	defer s.encryptorMu.RUnlock()
+	return s.encryptor
+}
+
+// encryptToken encrypts sensitive fields in an oauth2.Token.
+// Returns a new token with encrypted fields, leaving the original unchanged.
+func (s *Store) encryptToken(token *oauth2.Token) (*oauth2.Token, error) {
+	enc := s.getEncryptor()
+	if enc == nil || !enc.IsEnabled() {
+		return token, nil
+	}
+
+	// Create a copy to avoid modifying the original
+	encrypted := &oauth2.Token{
+		AccessToken:  token.AccessToken,
+		RefreshToken: token.RefreshToken,
+		Expiry:       token.Expiry,
+		TokenType:    token.TokenType,
+	}
+
+	// Encrypt access token
+	if encrypted.AccessToken != "" {
+		encVal, err := enc.Encrypt(encrypted.AccessToken)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encrypt access token: %w", err)
+		}
+		encrypted.AccessToken = encVal
+	}
+
+	// Encrypt refresh token
+	if encrypted.RefreshToken != "" {
+		encVal, err := enc.Encrypt(encrypted.RefreshToken)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encrypt refresh token: %w", err)
+		}
+		encrypted.RefreshToken = encVal
+	}
+
+	return encrypted, nil
+}
+
+// decryptToken decrypts sensitive fields in an oauth2.Token.
+// Returns a new token with decrypted fields, leaving the original unchanged.
+func (s *Store) decryptToken(token *oauth2.Token) (*oauth2.Token, error) {
+	enc := s.getEncryptor()
+	if enc == nil || !enc.IsEnabled() {
+		return token, nil
+	}
+
+	// Create a copy to avoid modifying the stored version
+	decrypted := &oauth2.Token{
+		AccessToken:  token.AccessToken,
+		RefreshToken: token.RefreshToken,
+		Expiry:       token.Expiry,
+		TokenType:    token.TokenType,
+	}
+
+	// Decrypt access token
+	if decrypted.AccessToken != "" {
+		decVal, err := enc.Decrypt(decrypted.AccessToken)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decrypt access token: %w", err)
+		}
+		decrypted.AccessToken = decVal
+	}
+
+	// Decrypt refresh token
+	if decrypted.RefreshToken != "" {
+		decVal, err := enc.Decrypt(decrypted.RefreshToken)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decrypt refresh token: %w", err)
+		}
+		decrypted.RefreshToken = decVal
+	}
+
+	return decrypted, nil
+}
+
+// validateStringLength checks if a string exceeds the maximum allowed length
+func validateStringLength(value string, maxLen int, fieldName string) error {
+	if len(value) > maxLen {
+		return fmt.Errorf("%s exceeds maximum length of %d bytes", fieldName, maxLen)
+	}
+	return nil
 }
 
 // ============================================================

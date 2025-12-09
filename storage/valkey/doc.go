@@ -73,11 +73,27 @@
 //   - Constant-time bcrypt comparison prevents timing attacks in client validation
 //   - TLS support enables encrypted connections to Valkey servers
 //   - Family metadata is retained for configurable period for security forensics
+//   - Optional token encryption at rest via SetEncryptor() using AES-256-GCM
+//   - Input size validation prevents DoS attacks via oversized payloads
+//   - Generic error messages prevent information leakage
+//
+// # Token Encryption at Rest
+//
+// Sensitive oauth2.Token fields (AccessToken, RefreshToken) can be encrypted
+// before storing in Valkey:
+//
+//	key, _ := security.GenerateKey()
+//	encryptor, _ := security.NewEncryptor(key)
+//	store.SetEncryptor(encryptor)
+//
+// When enabled, tokens are encrypted with AES-256-GCM before storage and
+// automatically decrypted when retrieved.
 //
 // # Best Practices
 //
 //   - Always use TLS in production environments
 //   - Set strong passwords for Valkey authentication
+//   - Enable token encryption at rest for sensitive deployments
 //   - Use dedicated Valkey instances or databases for OAuth storage
 //   - Monitor key count and memory usage for potential DoS attacks
 //   - Configure appropriate TTLs based on your security requirements

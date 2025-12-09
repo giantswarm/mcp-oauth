@@ -17,7 +17,7 @@ import (
 // TokenStore Implementation
 // ============================================================
 
-// SaveToken saves an oauth2.Token for a user
+// SaveToken saves an oauth2.Token for a user with optional encryption at rest
 func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Token) error {
 	if userID == "" {
 		return fmt.Errorf("userID cannot be empty")
@@ -26,9 +26,25 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 		return fmt.Errorf("token cannot be nil")
 	}
 
-	data, err := json.Marshal(token)
+	// Validate input lengths to prevent DoS
+	if err := validateStringLength(userID, MaxIDLength, "userID"); err != nil {
+		return err
+	}
+
+	// Encrypt token if encryptor is configured
+	tokenToStore, err := s.encryptToken(token)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt token: %w", err)
+	}
+
+	data, err := json.Marshal(tokenToStore)
 	if err != nil {
 		return fmt.Errorf("failed to marshal token: %w", err)
+	}
+
+	// Validate serialized size
+	if len(data) > MaxTokenDataSize {
+		return errInputTooLarge
 	}
 
 	key := s.tokenKey(userID)
@@ -50,18 +66,23 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 		return fmt.Errorf("failed to save token: %w", execErr)
 	}
 
-	s.logger.Debug("Saved token", "user_id", userID)
+	enc := s.getEncryptor()
+	if enc != nil && enc.IsEnabled() {
+		s.logger.Debug("Saved encrypted token", "user_id", userID)
+	} else {
+		s.logger.Debug("Saved token", "user_id", userID)
+	}
 	return nil
 }
 
-// GetToken retrieves an oauth2.Token for a user
+// GetToken retrieves an oauth2.Token for a user and decrypts if necessary
 func (s *Store) GetToken(ctx context.Context, userID string) (*oauth2.Token, error) {
 	key := s.tokenKey(userID)
 
 	data, err := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).ToString()
 	if err != nil {
 		if isNilError(err) {
-			return nil, fmt.Errorf("%w: %s", storage.ErrTokenNotFound, userID)
+			return nil, storage.ErrTokenNotFound
 		}
 		return nil, fmt.Errorf("failed to get token: %w", err)
 	}
@@ -73,10 +94,16 @@ func (s *Store) GetToken(ctx context.Context, userID string) (*oauth2.Token, err
 
 	// Check if expired (and no refresh token to recover)
 	if !token.Expiry.IsZero() && time.Now().After(token.Expiry) && token.RefreshToken == "" {
-		return nil, fmt.Errorf("%w: %s", storage.ErrTokenExpired, userID)
+		return nil, storage.ErrTokenExpired
 	}
 
-	return &token, nil
+	// Decrypt token if encryptor is configured
+	decrypted, err := s.decryptToken(&token)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt token: %w", err)
+	}
+
+	return decrypted, nil
 }
 
 // DeleteToken removes a token for a user
@@ -141,6 +168,14 @@ func (s *Store) SaveRefreshToken(ctx context.Context, refreshToken, userID strin
 	}
 	if userID == "" {
 		return fmt.Errorf("userID cannot be empty")
+	}
+
+	// Validate input lengths to prevent DoS
+	if err := validateStringLength(refreshToken, MaxTokenLength, "refreshToken"); err != nil {
+		return err
+	}
+	if err := validateStringLength(userID, MaxIDLength, "userID"); err != nil {
+		return err
 	}
 
 	key := s.refreshTokenKey(refreshToken)
@@ -230,8 +265,14 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken
 		return "", nil, fmt.Errorf("failed to parse atomic operation result: %w", err)
 	}
 
+	// Decrypt token if encryptor is configured
+	decryptedToken, err := s.decryptToken(resultData.Token)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to decrypt token: %w", err)
+	}
+
 	s.logger.Debug("Atomically retrieved and deleted refresh token", "user_id", resultData.UserID)
-	return resultData.UserID, resultData.Token, nil
+	return resultData.UserID, decryptedToken, nil
 }
 
 // isNilError checks if the error indicates a nil/not-found result from Valkey.
