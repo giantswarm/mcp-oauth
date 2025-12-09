@@ -160,6 +160,8 @@ func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) e
 	now := time.Now()
 
 	for _, token := range tokens {
+		tokenPrefix := safeTruncate(token, tokenIDLogLength)
+
 		// Update family metadata to mark as revoked
 		metaKey := s.refreshTokenMetaKey(token)
 
@@ -173,23 +175,39 @@ func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) e
 				updatedData, _ := json.Marshal(&j)
 				// Keep metadata for forensics with retention TTL
 				retentionTTL := time.Duration(s.revokedFamilyRetentionDays) * 24 * time.Hour
-				_ = s.client.Do(ctx,
+				if err := s.client.Do(ctx,
 					s.client.B().Set().Key(metaKey).Value(string(updatedData)).Ex(retentionTTL).Build(),
-				)
+				).Error(); err != nil {
+					s.logger.Debug("Failed to update family metadata during revocation",
+						"token_prefix", tokenPrefix,
+						"error", err)
+				}
 			}
 		}
 
 		// Delete the refresh token itself
 		refreshKey := s.refreshTokenKey(token)
-		_ = s.client.Do(ctx, s.client.B().Del().Key(refreshKey).Build())
+		if err := s.client.Do(ctx, s.client.B().Del().Key(refreshKey).Build()).Error(); err != nil {
+			s.logger.Debug("Failed to delete refresh token during family revocation",
+				"token_prefix", tokenPrefix,
+				"error", err)
+		}
 
 		// Delete the associated provider token
 		tokenKey := s.tokenKey(token)
-		_ = s.client.Do(ctx, s.client.B().Del().Key(tokenKey).Build())
+		if err := s.client.Do(ctx, s.client.B().Del().Key(tokenKey).Build()).Error(); err != nil {
+			s.logger.Debug("Failed to delete provider token during family revocation",
+				"token_prefix", tokenPrefix,
+				"error", err)
+		}
 
 		// Delete token metadata
 		tokenMetaKey := s.tokenMetaKey(token)
-		_ = s.client.Do(ctx, s.client.B().Del().Key(tokenMetaKey).Build())
+		if err := s.client.Do(ctx, s.client.B().Del().Key(tokenMetaKey).Build()).Error(); err != nil {
+			s.logger.Debug("Failed to delete token metadata during family revocation",
+				"token_prefix", tokenPrefix,
+				"error", err)
+		}
 
 		revokedCount++
 	}
@@ -335,17 +353,31 @@ func (s *Store) RevokeAllTokensForUserClient(ctx context.Context, userID, client
 
 	// Second pass: revoke any remaining tokens (access tokens, tokens without families)
 	for _, tokenID := range tokenIDs {
+		tokenPrefix := safeTruncate(tokenID, tokenIDLogLength)
+
 		// Delete token
 		tokenKey := s.tokenKey(tokenID)
-		_ = s.client.Do(ctx, s.client.B().Del().Key(tokenKey).Build())
+		if err := s.client.Do(ctx, s.client.B().Del().Key(tokenKey).Build()).Error(); err != nil {
+			s.logger.Debug("Failed to delete token during user+client revocation",
+				"token_prefix", tokenPrefix,
+				"error", err)
+		}
 
 		// Delete refresh token if exists
 		refreshKey := s.refreshTokenKey(tokenID)
-		_ = s.client.Do(ctx, s.client.B().Del().Key(refreshKey).Build())
+		if err := s.client.Do(ctx, s.client.B().Del().Key(refreshKey).Build()).Error(); err != nil {
+			s.logger.Debug("Failed to delete refresh token during user+client revocation",
+				"token_prefix", tokenPrefix,
+				"error", err)
+		}
 
 		// Delete token metadata
 		metaKey := s.tokenMetaKey(tokenID)
-		_ = s.client.Do(ctx, s.client.B().Del().Key(metaKey).Build())
+		if err := s.client.Do(ctx, s.client.B().Del().Key(metaKey).Build()).Error(); err != nil {
+			s.logger.Debug("Failed to delete token metadata during user+client revocation",
+				"token_prefix", tokenPrefix,
+				"error", err)
+		}
 
 		revokedCount++
 	}

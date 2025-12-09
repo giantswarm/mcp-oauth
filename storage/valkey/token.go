@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	valkeygo "github.com/valkey-io/valkey-go"
@@ -34,21 +33,21 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 
 	key := s.tokenKey(userID)
 
-	// Calculate TTL if token has expiry
-	var cmd interface{}
+	// Execute the appropriate command based on token expiry
+	var execErr error
 	if !token.Expiry.IsZero() {
 		ttl := calculateTTL(token.Expiry)
 		if ttl <= 0 {
 			// Token already expired, don't store
 			return fmt.Errorf("token already expired")
 		}
-		cmd = s.client.B().Set().Key(key).Value(string(data)).Ex(ttl).Build()
+		execErr = s.client.Do(ctx, s.client.B().Set().Key(key).Value(string(data)).Ex(ttl).Build()).Error()
 	} else {
-		cmd = s.client.B().Set().Key(key).Value(string(data)).Build()
+		execErr = s.client.Do(ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error()
 	}
 
-	if err := s.client.Do(ctx, cmd.(valkeygo.Completed)).Error(); err != nil {
-		return fmt.Errorf("failed to save token: %w", err)
+	if execErr != nil {
+		return fmt.Errorf("failed to save token: %w", execErr)
 	}
 
 	s.logger.Debug("Saved token", "user_id", userID)
@@ -235,13 +234,8 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken
 	return resultData.UserID, resultData.Token, nil
 }
 
-// isNilError checks if the error indicates a nil/not-found result from Valkey
+// isNilError checks if the error indicates a nil/not-found result from Valkey.
+// Uses the valkey-go library's built-in nil detection for robustness.
 func isNilError(err error) bool {
-	if err == nil {
-		return false
-	}
-	// valkey-go returns a specific error for nil results
-	return strings.Contains(err.Error(), "nil") ||
-		strings.Contains(err.Error(), "redis: nil") ||
-		strings.Contains(err.Error(), "valkey: nil")
+	return valkeygo.IsValkeyNil(err)
 }

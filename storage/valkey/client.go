@@ -112,13 +112,15 @@ func (s *Store) ValidateClientSecret(ctx context.Context, clientID, clientSecret
 func (s *Store) ListClients(ctx context.Context) ([]*storage.Client, error) {
 	// Use SCAN to iterate over all client keys
 	pattern := s.clientKey("*")
-	var clients []*storage.Client
+
+	// Use a map to deduplicate results (SCAN can return duplicates across iterations)
+	clientMap := make(map[string]*storage.Client)
 
 	var cursor uint64
 	for {
 		// Execute SCAN command
 		result, err := s.client.Do(ctx,
-			s.client.B().Scan().Cursor(cursor).Match(pattern).Count(100).Build(),
+			s.client.B().Scan().Cursor(cursor).Match(pattern).Count(scanBatchSize).Build(),
 		).AsScanEntry()
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan clients: %w", err)
@@ -126,6 +128,11 @@ func (s *Store) ListClients(ctx context.Context) ([]*storage.Client, error) {
 
 		// Get all client data for the matched keys
 		for _, key := range result.Elements {
+			// Skip if we've already processed this key (SCAN can return duplicates)
+			if _, exists := clientMap[key]; exists {
+				continue
+			}
+
 			data, err := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).ToString()
 			if err != nil {
 				if isNilError(err) {
@@ -142,13 +149,19 @@ func (s *Store) ListClients(ctx context.Context) ([]*storage.Client, error) {
 				continue
 			}
 
-			clients = append(clients, fromClientJSON(&j))
+			clientMap[key] = fromClientJSON(&j)
 		}
 
 		cursor = result.Cursor
 		if cursor == 0 {
 			break
 		}
+	}
+
+	// Convert map to slice
+	clients := make([]*storage.Client, 0, len(clientMap))
+	for _, c := range clientMap {
+		clients = append(clients, c)
 	}
 
 	return clients, nil

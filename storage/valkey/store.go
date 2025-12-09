@@ -23,6 +23,12 @@ const (
 
 	// tokenIDLogLength is the number of characters to include when logging token IDs
 	tokenIDLogLength = 8
+
+	// scanBatchSize is the number of keys to fetch per SCAN iteration
+	scanBatchSize = 100
+
+	// connectionVerifyTimeout is the timeout for initial connection verification
+	connectionVerifyTimeout = 5 * time.Second
 )
 
 // Config holds configuration for the Valkey storage backend.
@@ -110,7 +116,7 @@ func New(cfg Config) (*Store, error) {
 	}
 
 	// Verify connection
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), connectionVerifyTimeout)
 	defer cancel()
 
 	if err := client.Do(ctx, client.B().Ping().Build()).Error(); err != nil {
@@ -209,12 +215,30 @@ func (s *Store) familyKey(familyID string) string {
 // ============================================================
 // Lua Scripts for Atomic Operations
 // ============================================================
-
-// luaAtomicCheckAndMarkCodeUsed is a Lua script that atomically checks if a code
-// is unused and marks it as used. Returns the code JSON if successful, or an error string.
 //
-// KEYS[1] = code key
-// Returns: JSON of the code, "NOT_FOUND", "EXPIRED", or "ALREADY_USED"
+// These Lua scripts provide atomic operations for security-critical OAuth flows.
+// Using Lua scripts ensures atomicity in Valkey/Redis, preventing race conditions
+// that could lead to security vulnerabilities like code replay or token reuse attacks.
+
+// luaAtomicCheckAndMarkCodeUsed is a Lua script that atomically checks if an
+// authorization code is unused and marks it as used. This prevents authorization
+// code replay attacks where an attacker might try to use a code multiple times.
+//
+// Security: This operation MUST be atomic - only ONE concurrent request can succeed.
+// Any concurrent attempts to use the same code will receive "ALREADY_USED" error.
+//
+// KEYS[1] = code key (e.g., "mcp:code:abc123")
+// ARGV[1] = current Unix timestamp in seconds (for expiry check)
+//
+// Returns:
+//   - Original JSON data if code was unused and successfully marked as used
+//   - "NOT_FOUND" if the key doesn't exist in Valkey
+//   - "EXPIRED" if the code has expired (ARGV[1] > code.expires_at)
+//   - "ALREADY_USED:<json>" if code was already used (returns original data for forensics)
+//
+// Edge cases:
+//   - If cjson.decode fails, Lua will raise an error (handled by caller)
+//   - Clock skew: caller should account for clock differences between servers
 const luaAtomicCheckAndMarkCodeUsed = `
 local data = redis.call('GET', KEYS[1])
 if not data then
@@ -243,14 +267,29 @@ return data
 `
 
 // luaScriptAtomicGetAndDeleteRefresh is a Lua script that atomically retrieves
-// and deletes a refresh token and its associated data.
+// and deletes a refresh token and its associated data. This implements the
+// OAuth 2.1 requirement for refresh token rotation with reuse detection.
 //
-// KEYS[1] = refresh token key (userID)
-// KEYS[2] = token key (provider token)
-// KEYS[3] = token meta key
-// ARGV[1] = current time (Unix seconds)
-// ARGV[2] = expiry time (Unix seconds, or -1 if no expiry)
-// Returns: JSON object with userID and token, or error string
+// Security: This operation MUST be atomic - only ONE concurrent request can succeed.
+// Once a refresh token is used, it is immediately deleted. Any subsequent attempts
+// to use the same token will receive "NOT_FOUND" error, which may indicate token theft.
+//
+// KEYS[1] = refresh token key - maps refresh token to userID (e.g., "mcp:refresh:xyz789")
+// KEYS[2] = token key - stores the provider token (e.g., "mcp:token:xyz789")
+// KEYS[3] = token meta key - stores token metadata (e.g., "mcp:meta:xyz789")
+// ARGV[1] = current Unix timestamp in seconds (for expiry check)
+// ARGV[2] = expiry time in Unix seconds, or -1 if TTL should be relied upon
+//
+// Returns:
+//   - JSON object {"user_id": "...", "token": {...}} on success
+//   - "NOT_FOUND" if refresh token key doesn't exist (may indicate already rotated)
+//   - "EXPIRED" if token has expired (when ARGV[2] > 0 and now > expiry)
+//   - "TOKEN_NOT_FOUND" if provider token doesn't exist
+//
+// Edge cases:
+//   - If any key is missing, appropriate error is returned
+//   - All three keys are deleted atomically on success
+//   - If cjson operations fail, Lua will raise an error (handled by caller)
 const luaScriptAtomicGetAndDeleteRefresh = `
 -- Get user ID from refresh token
 local userID = redis.call('GET', KEYS[1])
@@ -322,6 +361,9 @@ func toAuthorizationCodeJSON(code *storage.AuthorizationCode) *authorizationCode
 }
 
 func fromAuthorizationCodeJSON(j *authorizationCodeJSON) *storage.AuthorizationCode {
+	if j == nil {
+		return nil
+	}
 	return &storage.AuthorizationCode{
 		Code:                j.Code,
 		ClientID:            j.ClientID,
@@ -373,6 +415,9 @@ func toAuthorizationStateJSON(state *storage.AuthorizationState) *authorizationS
 }
 
 func fromAuthorizationStateJSON(j *authorizationStateJSON) *storage.AuthorizationState {
+	if j == nil {
+		return nil
+	}
 	return &storage.AuthorizationState{
 		StateID:              j.StateID,
 		OriginalClientState:  j.OriginalClientState,
@@ -419,6 +464,9 @@ func toClientJSON(client *storage.Client) *clientJSON {
 }
 
 func fromClientJSON(j *clientJSON) *storage.Client {
+	if j == nil {
+		return nil
+	}
 	return &storage.Client{
 		ClientID:                j.ClientID,
 		ClientSecretHash:        j.ClientSecretHash,
@@ -460,6 +508,9 @@ func toRefreshTokenFamilyJSON(meta *storage.RefreshTokenFamilyMetadata) *refresh
 }
 
 func fromRefreshTokenFamilyJSON(j *refreshTokenFamilyJSON) *storage.RefreshTokenFamilyMetadata {
+	if j == nil {
+		return nil
+	}
 	meta := &storage.RefreshTokenFamilyMetadata{
 		FamilyID:   j.FamilyID,
 		UserID:     j.UserID,
@@ -496,6 +547,9 @@ func toTokenMetadataJSON(meta *storage.TokenMetadata) *tokenMetadataJSON {
 }
 
 func fromTokenMetadataJSON(j *tokenMetadataJSON) *storage.TokenMetadata {
+	if j == nil {
+		return nil
+	}
 	return &storage.TokenMetadata{
 		UserID:    j.UserID,
 		ClientID:  j.ClientID,
@@ -548,6 +602,9 @@ func toUserInfoJSON(info *providers.UserInfo) *userInfoJSON {
 }
 
 func fromUserInfoJSON(j *userInfoJSON) *providers.UserInfo {
+	if j == nil {
+		return nil
+	}
 	return &providers.UserInfo{
 		ID:            j.ID,
 		Email:         j.Email,

@@ -2,6 +2,7 @@ package valkey
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 
 // testStore creates a test store connected to a local Valkey instance.
 // Tests will be skipped if VALKEY_TEST_ADDR is not set or connection fails.
+// Each test gets a unique prefix to ensure test isolation.
 func testStore(t *testing.T) *Store {
 	t.Helper()
 
@@ -23,10 +25,14 @@ func testStore(t *testing.T) *Store {
 		addr = "localhost:6379"
 	}
 
+	// Generate a unique prefix for this test to ensure isolation
+	// This prevents interference when tests run in parallel
+	prefix := fmt.Sprintf("mcptest:%s:", t.Name())
+
 	// Try to connect
 	store, err := New(Config{
 		Address:   addr,
-		KeyPrefix: "mcptest:",
+		KeyPrefix: prefix,
 	})
 	if err != nil {
 		t.Skipf("Skipping test: could not connect to Valkey at %s: %v", addr, err)
