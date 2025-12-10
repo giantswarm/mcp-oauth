@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Token Encryption Preserves Extra Field**
+  - **Bug**: Token encryption was losing the `Extra` field (`id_token`, `scope`) from `oauth2.Token`, breaking downstream OIDC authentication ([#133](https://github.com/giantswarm/mcp-oauth/issues/133))
+  - **Root Cause**: `encryptToken()` and `decryptToken()` created new tokens without copying the private `raw` field
+  - **Fix**: Extract known extra fields (`id_token`, `scope`) before encryption and restore them using `WithExtra()` after encryption/decryption
+  - **Affected Components**: `storage/memory/memory.go`, `storage/valkey/store.go`
+  - **Testing**: Added regression tests for Extra field preservation with and without encryption enabled
+
 ### Added
 
 - **Valkey Storage Provider**

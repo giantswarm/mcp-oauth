@@ -192,13 +192,47 @@ func (s *Store) getEncryptor() *security.Encryptor {
 	return s.encryptor
 }
 
+// knownExtraFields lists the OIDC extra fields that must be preserved through encryption.
+// These fields are stored in oauth2.Token's private 'raw' field and are critical for
+// downstream OIDC authentication (e.g., id_token for Kubernetes API auth).
+var knownExtraFields = []string{
+	"id_token", // OIDC ID token (critical for downstream auth)
+	"scope",    // Granted scopes (may differ from requested)
+}
+
+// extractExtra extracts known extra fields from an oauth2.Token.
+// The oauth2.Token.Extra() method is the only way to access the private raw field.
+// We extract known OIDC fields that need to be preserved through encryption.
+func extractExtra(token *oauth2.Token) map[string]interface{} {
+	if token == nil {
+		return nil
+	}
+
+	extra := make(map[string]interface{})
+
+	for _, field := range knownExtraFields {
+		if v := token.Extra(field); v != nil {
+			extra[field] = v
+		}
+	}
+
+	if len(extra) == 0 {
+		return nil
+	}
+	return extra
+}
+
 // encryptToken encrypts sensitive fields in an oauth2.Token.
 // Returns a new token with encrypted fields, leaving the original unchanged.
+// IMPORTANT: Preserves the Extra field (id_token, scope) which is critical for OIDC flows.
 func (s *Store) encryptToken(token *oauth2.Token) (*oauth2.Token, error) {
 	enc := s.getEncryptor()
 	if enc == nil || !enc.IsEnabled() {
 		return token, nil
 	}
+
+	// Extract extra fields before creating new token (they're in a private field)
+	extra := extractExtra(token)
 
 	// Create a copy to avoid modifying the original
 	encrypted := &oauth2.Token{
@@ -226,16 +260,25 @@ func (s *Store) encryptToken(token *oauth2.Token) (*oauth2.Token, error) {
 		encrypted.RefreshToken = encVal
 	}
 
+	// Restore extra fields (id_token, scope, etc.) that were in the original token
+	if extra != nil {
+		encrypted = encrypted.WithExtra(extra)
+	}
+
 	return encrypted, nil
 }
 
 // decryptToken decrypts sensitive fields in an oauth2.Token.
 // Returns a new token with decrypted fields, leaving the original unchanged.
+// IMPORTANT: Preserves the Extra field (id_token, scope) which is critical for OIDC flows.
 func (s *Store) decryptToken(token *oauth2.Token) (*oauth2.Token, error) {
 	enc := s.getEncryptor()
 	if enc == nil || !enc.IsEnabled() {
 		return token, nil
 	}
+
+	// Extract extra fields before creating new token (they're in a private field)
+	extra := extractExtra(token)
 
 	// Create a copy to avoid modifying the stored version
 	decrypted := &oauth2.Token{
@@ -261,6 +304,11 @@ func (s *Store) decryptToken(token *oauth2.Token) (*oauth2.Token, error) {
 			return nil, fmt.Errorf("failed to decrypt refresh token: %w", err)
 		}
 		decrypted.RefreshToken = decVal
+	}
+
+	// Restore extra fields (id_token, scope, etc.) that were in the stored token
+	if extra != nil {
+		decrypted = decrypted.WithExtra(extra)
 	}
 
 	return decrypted, nil
