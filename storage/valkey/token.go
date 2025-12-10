@@ -29,6 +29,35 @@ type serializableToken struct {
 	Extra        map[string]interface{} `json:"extra,omitempty"`
 }
 
+// toSerializable converts an oauth2.Token to a serializableToken.
+// This extracts the Extra fields (id_token, scope, etc.) that are stored
+// in oauth2.Token's private 'raw' field and wouldn't be included in standard JSON marshaling.
+func toSerializable(token *oauth2.Token) serializableToken {
+	return serializableToken{
+		AccessToken:  token.AccessToken,
+		TokenType:    token.TokenType,
+		RefreshToken: token.RefreshToken,
+		Expiry:       token.Expiry,
+		Extra:        storage.ExtractTokenExtra(token),
+	}
+}
+
+// toOAuth2Token converts a serializableToken back to an oauth2.Token.
+// This restores the Extra fields using WithExtra(), which is the only way
+// to populate oauth2.Token's private 'raw' field.
+func (st serializableToken) toOAuth2Token() *oauth2.Token {
+	token := &oauth2.Token{
+		AccessToken:  st.AccessToken,
+		TokenType:    st.TokenType,
+		RefreshToken: st.RefreshToken,
+		Expiry:       st.Expiry,
+	}
+	if st.Extra != nil {
+		token = token.WithExtra(st.Extra)
+	}
+	return token
+}
+
 // SaveToken saves an oauth2.Token for a user with optional encryption at rest
 func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Token) error {
 	if userID == "" {
@@ -49,18 +78,8 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 		return fmt.Errorf("failed to encrypt token: %w", err)
 	}
 
-	// Extract extra fields for serialization (they're in a private field of oauth2.Token)
-	// This is critical for preserving id_token and other OIDC fields
-	extra := storage.ExtractTokenExtra(tokenToStore)
-
-	// Create serializable struct that explicitly includes Extra fields
-	st := serializableToken{
-		AccessToken:  tokenToStore.AccessToken,
-		TokenType:    tokenToStore.TokenType,
-		RefreshToken: tokenToStore.RefreshToken,
-		Expiry:       tokenToStore.Expiry,
-		Extra:        extra,
-	}
+	// Convert to serializable struct that explicitly includes Extra fields
+	st := toSerializable(tokenToStore)
 
 	data, err := json.Marshal(st)
 	if err != nil {
@@ -118,18 +137,8 @@ func (s *Store) GetToken(ctx context.Context, userID string) (*oauth2.Token, err
 		return nil, fmt.Errorf("failed to unmarshal token: %w", err)
 	}
 
-	// Reconstruct oauth2.Token from serializable struct
-	token := &oauth2.Token{
-		AccessToken:  st.AccessToken,
-		TokenType:    st.TokenType,
-		RefreshToken: st.RefreshToken,
-		Expiry:       st.Expiry,
-	}
-
-	// Restore Extra fields (critical for id_token and other OIDC fields)
-	if st.Extra != nil {
-		token = token.WithExtra(st.Extra)
-	}
+	// Convert back to oauth2.Token (restores Extra fields like id_token)
+	token := st.toOAuth2Token()
 
 	// Check if expired (and no refresh token to recover)
 	if !token.Expiry.IsZero() && time.Now().After(token.Expiry) && token.RefreshToken == "" {
@@ -304,18 +313,8 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken
 		return "", nil, fmt.Errorf("failed to parse atomic operation result: %w", err)
 	}
 
-	// Reconstruct oauth2.Token from serializable struct
-	token := &oauth2.Token{
-		AccessToken:  resultData.Token.AccessToken,
-		TokenType:    resultData.Token.TokenType,
-		RefreshToken: resultData.Token.RefreshToken,
-		Expiry:       resultData.Token.Expiry,
-	}
-
-	// Restore Extra fields (critical for id_token and other OIDC fields)
-	if resultData.Token.Extra != nil {
-		token = token.WithExtra(resultData.Token.Extra)
-	}
+	// Convert back to oauth2.Token (restores Extra fields like id_token)
+	token := resultData.Token.toOAuth2Token()
 
 	// Decrypt token if encryptor is configured
 	decryptedToken, err := s.decryptToken(token)
