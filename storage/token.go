@@ -14,7 +14,17 @@ import (
 // SECURITY: This allowlist approach ensures unknown extra fields are dropped, preventing
 // potential injection of malicious data. Only explicitly listed fields are preserved.
 //
-// Note: If additional fields need to be preserved, add them here.
+// EXTENSIBILITY: Some OAuth/OIDC providers may include additional fields in token responses.
+// If your provider returns custom extra fields that need to be preserved:
+//  1. Add the field name to this list
+//  2. If the field contains sensitive data (PII, secrets), also add it to SensitiveExtraFields
+//  3. Test that the field survives the encrypt/decrypt roundtrip
+//
+// Common fields from various providers that may need to be added:
+//   - "token_type": Usually "Bearer", already in oauth2.Token.TokenType
+//   - "refresh_expires_in": Keycloak-specific refresh token lifetime
+//   - "session_state": Keycloak session identifier
+//   - "not-before-policy": Keycloak token validity timestamp
 var KnownExtraFields = []string{
 	"id_token",   // OIDC ID token (critical for downstream auth) - ENCRYPTED
 	"scope",      // Granted scopes (may differ from requested)
@@ -27,6 +37,13 @@ var KnownExtraFields = []string{
 // SECURITY: The id_token is a signed JWT containing user identity claims (email, name,
 // subject). While it cannot be used for impersonation (it's signed by the IdP and
 // typically short-lived), it contains PII that should be protected at rest.
+//
+// When adding new fields to KnownExtraFields, evaluate whether they contain:
+//   - PII (email, name, address, phone)
+//   - Authentication credentials or secrets
+//   - Session identifiers that could enable session hijacking
+//
+// If yes, add the field here to ensure it's encrypted at rest.
 var SensitiveExtraFields = []string{
 	"id_token", // Contains user identity claims (email, name, sub)
 }
