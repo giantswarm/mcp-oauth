@@ -1160,8 +1160,8 @@ func TestStore_TokenWithoutEncryption_PreservesExtraField(t *testing.T) {
 	}
 }
 
-// TestExtractExtra verifies the extractExtra helper function
-func TestExtractExtra(t *testing.T) {
+// TestExtractTokenExtra verifies the storage.ExtractTokenExtra helper function
+func TestExtractTokenExtra(t *testing.T) {
 	tests := []struct {
 		name     string
 		token    *oauth2.Token
@@ -1224,19 +1224,19 @@ func TestExtractExtra(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := extractExtra(tt.token)
+			got := storage.ExtractTokenExtra(tt.token)
 			if tt.wantNil {
 				if got != nil {
-					t.Errorf("extractExtra() = %v, want nil", got)
+					t.Errorf("ExtractTokenExtra() = %v, want nil", got)
 				}
 				return
 			}
 			if got == nil {
-				t.Fatal("extractExtra() = nil, want non-nil map")
+				t.Fatal("ExtractTokenExtra() = nil, want non-nil map")
 			}
 			for _, key := range tt.wantKeys {
 				if _, ok := got[key]; !ok {
-					t.Errorf("extractExtra() missing key %q", key)
+					t.Errorf("ExtractTokenExtra() missing key %q", key)
 				}
 			}
 		})
