@@ -268,8 +268,13 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 }
 
 // encryptToken encrypts sensitive fields in an oauth2.Token
-// Returns a new token with encrypted fields, leaving the original unchanged
+// Returns a new token with encrypted fields, leaving the original unchanged.
+// IMPORTANT: Preserves the Extra field (id_token, scope) which is critical for OIDC flows.
+// SECURITY: Encrypts access_token, refresh_token, and id_token (contains PII).
 func (s *Store) encryptToken(token *oauth2.Token) (*oauth2.Token, error) {
+	// Extract extra fields before creating new token (they're in a private field)
+	extra := storage.ExtractTokenExtra(token)
+
 	// Create a copy to avoid modifying the original
 	encrypted := &oauth2.Token{
 		AccessToken:  token.AccessToken,
@@ -296,12 +301,26 @@ func (s *Store) encryptToken(token *oauth2.Token) (*oauth2.Token, error) {
 		encrypted.RefreshToken = enc
 	}
 
+	// Encrypt sensitive extra fields (id_token contains PII)
+	if extra != nil {
+		encryptedExtra, err := storage.EncryptExtraFields(extra, s.encryptor)
+		if err != nil {
+			return nil, err
+		}
+		encrypted = encrypted.WithExtra(encryptedExtra)
+	}
+
 	return encrypted, nil
 }
 
 // decryptToken decrypts sensitive fields in an oauth2.Token
-// Returns a new token with decrypted fields, leaving the original unchanged
+// Returns a new token with decrypted fields, leaving the original unchanged.
+// IMPORTANT: Preserves the Extra field (id_token, scope) which is critical for OIDC flows.
+// SECURITY: Decrypts access_token, refresh_token, and id_token (contains PII).
 func (s *Store) decryptToken(token *oauth2.Token, encryptor *security.Encryptor) (*oauth2.Token, error) {
+	// Extract extra fields before creating new token (they're in a private field)
+	extra := storage.ExtractTokenExtra(token)
+
 	// Create a copy to avoid modifying the stored version
 	decrypted := &oauth2.Token{
 		AccessToken:  token.AccessToken,
@@ -326,6 +345,15 @@ func (s *Store) decryptToken(token *oauth2.Token, encryptor *security.Encryptor)
 			return nil, fmt.Errorf("failed to decrypt refresh token: %w", err)
 		}
 		decrypted.RefreshToken = dec
+	}
+
+	// Decrypt sensitive extra fields (id_token contains PII)
+	if extra != nil {
+		decryptedExtra, err := storage.DecryptExtraFields(extra, encryptor)
+		if err != nil {
+			return nil, err
+		}
+		decrypted = decrypted.WithExtra(decryptedExtra)
 	}
 
 	return decrypted, nil

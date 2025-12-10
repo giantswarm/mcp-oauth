@@ -1054,6 +1054,393 @@ func TestStore_TokenEncryption(t *testing.T) {
 	}
 }
 
+// TestStore_TokenEncryption_PreservesExtraField verifies that token encryption
+// preserves the Extra field (id_token, scope) which is critical for OIDC flows.
+// This is a regression test for issue #133.
+func TestStore_TokenEncryption_PreservesExtraField(t *testing.T) {
+	ctx := context.Background()
+	store := New()
+	defer store.Stop()
+
+	// Set up encryption
+	key, err := security.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+
+	encryptor, err := security.NewEncryptor(key)
+	if err != nil {
+		t.Fatalf("NewEncryptor() error = %v", err)
+	}
+
+	store.SetEncryptor(encryptor)
+
+	// Create token with Extra fields (simulating OIDC provider response)
+	baseToken := testutil.GenerateTestToken()
+	idToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test-id-token-payload.signature" //nolint:gosec // test value, not a real credential
+	grantedScope := "openid email profile"
+	tokenWithExtra := baseToken.WithExtra(map[string]interface{}{
+		"id_token": idToken,
+		"scope":    grantedScope,
+	})
+
+	userID := testUserID
+
+	// Save token with Extra field
+	err = store.SaveToken(ctx, userID, tokenWithExtra)
+	if err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+
+	// Get token back (should be decrypted with Extra field preserved)
+	got, err := store.GetToken(ctx, userID)
+	if err != nil {
+		t.Fatalf("GetToken() error = %v", err)
+	}
+
+	// Verify basic fields
+	if got.AccessToken != baseToken.AccessToken {
+		t.Errorf("AccessToken = %q, want %q", got.AccessToken, baseToken.AccessToken)
+	}
+
+	// Verify Extra fields are preserved (critical for OIDC)
+	gotIDToken := got.Extra("id_token")
+	if gotIDToken == nil {
+		t.Fatal("Extra(\"id_token\") returned nil, want id_token to be preserved")
+	}
+	if gotIDToken != idToken {
+		t.Errorf("Extra(\"id_token\") = %q, want %q", gotIDToken, idToken)
+	}
+
+	gotScope := got.Extra("scope")
+	if gotScope == nil {
+		t.Fatal("Extra(\"scope\") returned nil, want scope to be preserved")
+	}
+	if gotScope != grantedScope {
+		t.Errorf("Extra(\"scope\") = %q, want %q", gotScope, grantedScope)
+	}
+}
+
+// TestStore_TokenWithoutEncryption_PreservesExtraField verifies that even without
+// encryption, the Extra field is preserved through save/get cycle.
+func TestStore_TokenWithoutEncryption_PreservesExtraField(t *testing.T) {
+	ctx := context.Background()
+	store := New()
+	defer store.Stop()
+
+	// No encryption configured - test basic case
+
+	// Create token with Extra fields
+	baseToken := testutil.GenerateTestToken()
+	idToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test-id-token.sig" //nolint:gosec // test value, not a real credential
+	tokenWithExtra := baseToken.WithExtra(map[string]interface{}{
+		"id_token": idToken,
+	})
+
+	userID := testUserID
+
+	// Save and retrieve token
+	err := store.SaveToken(ctx, userID, tokenWithExtra)
+	if err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+
+	got, err := store.GetToken(ctx, userID)
+	if err != nil {
+		t.Fatalf("GetToken() error = %v", err)
+	}
+
+	// Verify Extra field is preserved
+	gotIDToken := got.Extra("id_token")
+	if gotIDToken == nil {
+		t.Fatal("Extra(\"id_token\") returned nil, want id_token to be preserved")
+	}
+	if gotIDToken != idToken {
+		t.Errorf("Extra(\"id_token\") = %q, want %q", gotIDToken, idToken)
+	}
+}
+
+// TestExtractTokenExtra verifies the storage.ExtractTokenExtra helper function
+func TestExtractTokenExtra(t *testing.T) {
+	tests := []struct {
+		name     string
+		token    *oauth2.Token
+		wantNil  bool
+		wantKeys []string
+	}{
+		{
+			name:    "nil token returns nil",
+			token:   nil,
+			wantNil: true,
+		},
+		{
+			name: "token without extra returns nil",
+			token: &oauth2.Token{
+				AccessToken: "access",
+			},
+			wantNil: true,
+		},
+		{
+			name: "token with id_token returns map with id_token",
+			token: (&oauth2.Token{
+				AccessToken: "access",
+			}).WithExtra(map[string]interface{}{
+				"id_token": "test-id-token",
+			}),
+			wantNil:  false,
+			wantKeys: []string{"id_token"},
+		},
+		{
+			name: "token with scope returns map with scope",
+			token: (&oauth2.Token{
+				AccessToken: "access",
+			}).WithExtra(map[string]interface{}{
+				"scope": "openid email",
+			}),
+			wantNil:  false,
+			wantKeys: []string{"scope"},
+		},
+		{
+			name: "token with multiple extra fields",
+			token: (&oauth2.Token{
+				AccessToken: "access",
+			}).WithExtra(map[string]interface{}{
+				"id_token": "test-id-token",
+				"scope":    "openid email",
+			}),
+			wantNil:  false,
+			wantKeys: []string{"id_token", "scope"},
+		},
+		{
+			name: "unknown extra fields are ignored",
+			token: (&oauth2.Token{
+				AccessToken: "access",
+			}).WithExtra(map[string]interface{}{
+				"unknown_field": "value",
+			}),
+			wantNil: true, // unknown fields are not extracted
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := storage.ExtractTokenExtra(tt.token)
+			if tt.wantNil {
+				if got != nil {
+					t.Errorf("ExtractTokenExtra() = %v, want nil", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("ExtractTokenExtra() = nil, want non-nil map")
+			}
+			for _, key := range tt.wantKeys {
+				if _, ok := got[key]; !ok {
+					t.Errorf("ExtractTokenExtra() missing key %q", key)
+				}
+			}
+		})
+	}
+}
+
+// TestEncryptDecryptExtraFields verifies the encryption/decryption of sensitive extra fields
+func TestEncryptDecryptExtraFields(t *testing.T) {
+	// Generate encryption key
+	key, err := security.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+
+	encryptor, err := security.NewEncryptor(key)
+	if err != nil {
+		t.Fatalf("NewEncryptor() error = %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		extra map[string]interface{}
+	}{
+		{
+			name:  "nil extra returns nil",
+			extra: nil,
+		},
+		{
+			name: "id_token is encrypted",
+			extra: map[string]interface{}{
+				"id_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test.sig",
+			},
+		},
+		{
+			name: "scope is not encrypted (not sensitive)",
+			extra: map[string]interface{}{
+				"scope": "openid email profile",
+			},
+		},
+		{
+			name: "mixed fields - only id_token encrypted",
+			extra: map[string]interface{}{
+				"id_token":   "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test.sig",
+				"scope":      "openid email",
+				"expires_in": float64(3600),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Encrypt
+			encrypted, err := storage.EncryptExtraFields(tt.extra, encryptor)
+			if err != nil {
+				t.Fatalf("EncryptExtraFields() error = %v", err)
+			}
+
+			if tt.extra == nil {
+				if encrypted != nil {
+					t.Errorf("EncryptExtraFields(nil) = %v, want nil", encrypted)
+				}
+				return
+			}
+
+			// Verify id_token is actually encrypted (different from original)
+			if origIDToken, ok := tt.extra["id_token"].(string); ok {
+				encIDToken, ok := encrypted["id_token"].(string)
+				if !ok {
+					t.Fatal("encrypted id_token is not a string")
+				}
+				if encIDToken == origIDToken {
+					t.Error("id_token was not encrypted - values are identical")
+				}
+			}
+
+			// Verify scope is NOT encrypted (not in sensitive list)
+			if origScope, ok := tt.extra["scope"].(string); ok {
+				encScope, ok := encrypted["scope"].(string)
+				if !ok {
+					t.Fatal("encrypted scope is not a string")
+				}
+				if encScope != origScope {
+					t.Errorf("scope was encrypted but should not be: got %q, want %q", encScope, origScope)
+				}
+			}
+
+			// Decrypt and verify roundtrip
+			decrypted, err := storage.DecryptExtraFields(encrypted, encryptor)
+			if err != nil {
+				t.Fatalf("DecryptExtraFields() error = %v", err)
+			}
+
+			// Verify all original values are restored
+			for key, origVal := range tt.extra {
+				decVal, ok := decrypted[key]
+				if !ok {
+					t.Errorf("DecryptExtraFields() missing key %q", key)
+					continue
+				}
+				if decVal != origVal {
+					t.Errorf("DecryptExtraFields()[%q] = %v, want %v", key, decVal, origVal)
+				}
+			}
+		})
+	}
+}
+
+// TestEncryptExtraFields_DisabledEncryptor verifies behavior with disabled encryptor
+func TestEncryptExtraFields_DisabledEncryptor(t *testing.T) {
+	// Create disabled encryptor (empty key)
+	encryptor, err := security.NewEncryptor(nil)
+	if err != nil {
+		t.Fatalf("NewEncryptor(nil) error = %v", err)
+	}
+
+	extra := map[string]interface{}{
+		"id_token": "test-id-token",
+		"scope":    "openid",
+	}
+
+	// Should return original map unchanged
+	result, err := storage.EncryptExtraFields(extra, encryptor)
+	if err != nil {
+		t.Fatalf("EncryptExtraFields() error = %v", err)
+	}
+
+	if result["id_token"] != extra["id_token"] {
+		t.Errorf("id_token changed with disabled encryptor: got %v, want %v", result["id_token"], extra["id_token"])
+	}
+}
+
+// TestStore_TokenEncryption_IDTokenIsEncrypted verifies that id_token is actually
+// encrypted in storage, not just preserved. This is a security test.
+func TestStore_TokenEncryption_IDTokenIsEncrypted(t *testing.T) {
+	ctx := context.Background()
+	store := New()
+	defer store.Stop()
+
+	// Set up encryption
+	key, err := security.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+
+	encryptor, err := security.NewEncryptor(key)
+	if err != nil {
+		t.Fatalf("NewEncryptor() error = %v", err)
+	}
+
+	store.SetEncryptor(encryptor)
+
+	// Create token with id_token
+	baseToken := testutil.GenerateTestToken()
+	idToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.contains-pii-email-name.signature" //nolint:gosec // test value
+	tokenWithExtra := baseToken.WithExtra(map[string]interface{}{
+		"id_token": idToken,
+		"scope":    "openid email",
+	})
+
+	userID := "encryption-verification-user"
+
+	// Save token
+	err = store.SaveToken(ctx, userID, tokenWithExtra)
+	if err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+
+	// Access internal storage directly to verify encryption
+	store.mu.RLock()
+	storedToken := store.tokens[userID]
+	store.mu.RUnlock()
+
+	// Verify the stored id_token is encrypted (different from original)
+	storedIDToken := storedToken.Extra("id_token")
+	if storedIDToken == nil {
+		t.Fatal("stored token has no id_token")
+	}
+	storedIDTokenStr, ok := storedIDToken.(string)
+	if !ok {
+		t.Fatalf("stored id_token is not a string: %T", storedIDToken)
+	}
+
+	// SECURITY: The stored value must NOT be the original plaintext
+	if storedIDTokenStr == idToken {
+		t.Error("SECURITY: id_token is stored in plaintext, should be encrypted")
+	}
+
+	// Verify the stored access token is also encrypted
+	if storedToken.AccessToken == baseToken.AccessToken {
+		t.Error("SECURITY: access_token is stored in plaintext, should be encrypted")
+	}
+
+	// Now verify that GetToken returns the decrypted value
+	got, err := store.GetToken(ctx, userID)
+	if err != nil {
+		t.Fatalf("GetToken() error = %v", err)
+	}
+
+	gotIDToken := got.Extra("id_token")
+	if gotIDToken != idToken {
+		t.Errorf("GetToken().Extra(\"id_token\") = %q, want %q", gotIDToken, idToken)
+	}
+}
+
 // ============================================================
 // Concurrent Access Tests
 // ============================================================
