@@ -17,6 +17,18 @@ import (
 // TokenStore Implementation
 // ============================================================
 
+// serializableToken is a JSON-serializable representation of oauth2.Token.
+// This is necessary because oauth2.Token stores extra fields (like id_token)
+// in a private 'raw' field that is not included in standard JSON marshaling.
+// This struct explicitly captures and serializes the Extra fields.
+type serializableToken struct {
+	AccessToken  string                 `json:"access_token"`
+	TokenType    string                 `json:"token_type,omitempty"`
+	RefreshToken string                 `json:"refresh_token,omitempty"`
+	Expiry       time.Time              `json:"expiry,omitempty"`
+	Extra        map[string]interface{} `json:"extra,omitempty"`
+}
+
 // SaveToken saves an oauth2.Token for a user with optional encryption at rest
 func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Token) error {
 	if userID == "" {
@@ -37,7 +49,20 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 		return fmt.Errorf("failed to encrypt token: %w", err)
 	}
 
-	data, err := json.Marshal(tokenToStore)
+	// Extract extra fields for serialization (they're in a private field of oauth2.Token)
+	// This is critical for preserving id_token and other OIDC fields
+	extra := storage.ExtractTokenExtra(tokenToStore)
+
+	// Create serializable struct that explicitly includes Extra fields
+	st := serializableToken{
+		AccessToken:  tokenToStore.AccessToken,
+		TokenType:    tokenToStore.TokenType,
+		RefreshToken: tokenToStore.RefreshToken,
+		Expiry:       tokenToStore.Expiry,
+		Extra:        extra,
+	}
+
+	data, err := json.Marshal(st)
 	if err != nil {
 		return fmt.Errorf("failed to marshal token: %w", err)
 	}
@@ -87,9 +112,23 @@ func (s *Store) GetToken(ctx context.Context, userID string) (*oauth2.Token, err
 		return nil, fmt.Errorf("failed to get token: %w", err)
 	}
 
-	var token oauth2.Token
-	if err := json.Unmarshal([]byte(data), &token); err != nil {
+	// Unmarshal into serializableToken to preserve Extra fields
+	var st serializableToken
+	if err := json.Unmarshal([]byte(data), &st); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal token: %w", err)
+	}
+
+	// Reconstruct oauth2.Token from serializable struct
+	token := &oauth2.Token{
+		AccessToken:  st.AccessToken,
+		TokenType:    st.TokenType,
+		RefreshToken: st.RefreshToken,
+		Expiry:       st.Expiry,
+	}
+
+	// Restore Extra fields (critical for id_token and other OIDC fields)
+	if st.Extra != nil {
+		token = token.WithExtra(st.Extra)
 	}
 
 	// Check if expired (and no refresh token to recover)
@@ -98,7 +137,7 @@ func (s *Store) GetToken(ctx context.Context, userID string) (*oauth2.Token, err
 	}
 
 	// Decrypt token if encryptor is configured
-	decrypted, err := s.decryptToken(&token)
+	decrypted, err := s.decryptToken(token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt token: %w", err)
 	}
@@ -256,17 +295,30 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken
 		return "", nil, fmt.Errorf("%w: provider token not found", storage.ErrTokenNotFound)
 	}
 
-	// Parse the result JSON
+	// Parse the result JSON using serializableToken for proper Extra field handling
 	var resultData struct {
-		UserID string        `json:"user_id"`
-		Token  *oauth2.Token `json:"token"`
+		UserID string            `json:"user_id"`
+		Token  serializableToken `json:"token"`
 	}
 	if err := json.Unmarshal([]byte(result), &resultData); err != nil {
 		return "", nil, fmt.Errorf("failed to parse atomic operation result: %w", err)
 	}
 
+	// Reconstruct oauth2.Token from serializable struct
+	token := &oauth2.Token{
+		AccessToken:  resultData.Token.AccessToken,
+		TokenType:    resultData.Token.TokenType,
+		RefreshToken: resultData.Token.RefreshToken,
+		Expiry:       resultData.Token.Expiry,
+	}
+
+	// Restore Extra fields (critical for id_token and other OIDC fields)
+	if resultData.Token.Extra != nil {
+		token = token.WithExtra(resultData.Token.Extra)
+	}
+
 	// Decrypt token if encryptor is configured
-	decryptedToken, err := s.decryptToken(resultData.Token)
+	decryptedToken, err := s.decryptToken(token)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to decrypt token: %w", err)
 	}
