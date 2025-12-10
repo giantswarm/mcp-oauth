@@ -12,9 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Token Encryption Preserves Extra Field**
   - **Bug**: Token encryption was losing the `Extra` field (`id_token`, `scope`) from `oauth2.Token`, breaking downstream OIDC authentication ([#133](https://github.com/giantswarm/mcp-oauth/issues/133))
   - **Root Cause**: `encryptToken()` and `decryptToken()` created new tokens without copying the private `raw` field
-  - **Fix**: Extract known extra fields (`id_token`, `scope`) before encryption and restore them using `WithExtra()` after encryption/decryption
+  - **Fix**: Extract known extra fields (`id_token`, `scope`, `expires_in`) before encryption and restore them using `WithExtra()` after encryption/decryption
   - **Affected Components**: `storage/memory/memory.go`, `storage/valkey/store.go`
   - **Testing**: Added regression tests for Extra field preservation with and without encryption enabled
+
+### Security
+
+- **ID Token Encryption at Rest**
+  - **Enhancement**: The `id_token` is now encrypted at rest when token encryption is enabled
+  - **Rationale**: The `id_token` contains PII (user email, name, subject) that should be protected
+  - **Implementation**: Added `SensitiveExtraFields` allowlist in `storage/token.go` with `EncryptExtraFields()` and `DecryptExtraFields()` helpers
+  - **Scope/Expires_in**: Non-sensitive fields like `scope` and `expires_in` are preserved but not encrypted
 
 ### Added
 

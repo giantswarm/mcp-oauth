@@ -270,6 +270,7 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 // encryptToken encrypts sensitive fields in an oauth2.Token
 // Returns a new token with encrypted fields, leaving the original unchanged.
 // IMPORTANT: Preserves the Extra field (id_token, scope) which is critical for OIDC flows.
+// SECURITY: Encrypts access_token, refresh_token, and id_token (contains PII).
 func (s *Store) encryptToken(token *oauth2.Token) (*oauth2.Token, error) {
 	// Extract extra fields before creating new token (they're in a private field)
 	extra := storage.ExtractTokenExtra(token)
@@ -300,9 +301,13 @@ func (s *Store) encryptToken(token *oauth2.Token) (*oauth2.Token, error) {
 		encrypted.RefreshToken = enc
 	}
 
-	// Restore extra fields (id_token, scope, etc.) that were in the original token
+	// Encrypt sensitive extra fields (id_token contains PII)
 	if extra != nil {
-		encrypted = encrypted.WithExtra(extra)
+		encryptedExtra, err := storage.EncryptExtraFields(extra, s.encryptor)
+		if err != nil {
+			return nil, err
+		}
+		encrypted = encrypted.WithExtra(encryptedExtra)
 	}
 
 	return encrypted, nil
@@ -311,6 +316,7 @@ func (s *Store) encryptToken(token *oauth2.Token) (*oauth2.Token, error) {
 // decryptToken decrypts sensitive fields in an oauth2.Token
 // Returns a new token with decrypted fields, leaving the original unchanged.
 // IMPORTANT: Preserves the Extra field (id_token, scope) which is critical for OIDC flows.
+// SECURITY: Decrypts access_token, refresh_token, and id_token (contains PII).
 func (s *Store) decryptToken(token *oauth2.Token, encryptor *security.Encryptor) (*oauth2.Token, error) {
 	// Extract extra fields before creating new token (they're in a private field)
 	extra := storage.ExtractTokenExtra(token)
@@ -341,9 +347,13 @@ func (s *Store) decryptToken(token *oauth2.Token, encryptor *security.Encryptor)
 		decrypted.RefreshToken = dec
 	}
 
-	// Restore extra fields (id_token, scope, etc.) that were in the stored token
+	// Decrypt sensitive extra fields (id_token contains PII)
 	if extra != nil {
-		decrypted = decrypted.WithExtra(extra)
+		decryptedExtra, err := storage.DecryptExtraFields(extra, encryptor)
+		if err != nil {
+			return nil, err
+		}
+		decrypted = decrypted.WithExtra(decryptedExtra)
 	}
 
 	return decrypted, nil
