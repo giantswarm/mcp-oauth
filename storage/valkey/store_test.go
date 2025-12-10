@@ -15,6 +15,11 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
+// Test constants for consistent naming
+const (
+	testUserID = "test-user"
+)
+
 // testStore creates a test store connected to a local Valkey instance.
 // Tests will be skipped if VALKEY_TEST_ADDR is not set or connection fails.
 // Each test gets a unique prefix to ensure test isolation.
@@ -1041,7 +1046,7 @@ func TestTokenStore_Encryption_PreservesExtraField(t *testing.T) {
 		"scope":    grantedScope,
 	})
 
-	userID := "extra-field-test-user"
+	userID := testUserID
 
 	// Save token with Extra field
 	err = s.SaveToken(ctx, userID, tokenWithExtra)
@@ -1098,7 +1103,7 @@ func TestTokenStore_WithoutEncryption_PreservesExtraField(t *testing.T) {
 		"id_token": idToken,
 	})
 
-	userID := "extra-field-no-encryption-user"
+	userID := testUserID
 
 	// Save and retrieve token
 	err := s.SaveToken(ctx, userID, tokenWithExtra)
@@ -1153,7 +1158,7 @@ func TestTokenStore_Encryption_IDTokenIsEncrypted(t *testing.T) {
 		"scope":    "openid email",
 	})
 
-	userID := "encryption-verification-user"
+	userID := testUserID
 
 	// Save token
 	err = s.SaveToken(ctx, userID, tokenWithExtra)

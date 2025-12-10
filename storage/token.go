@@ -31,6 +31,16 @@ var SensitiveExtraFields = []string{
 	"id_token", // Contains user identity claims (email, name, sub)
 }
 
+// sensitiveExtraFieldSet is pre-computed for O(1) lookup during encrypt/decrypt operations.
+// This avoids rebuilding the set on every call to EncryptExtraFields/DecryptExtraFields.
+var sensitiveExtraFieldSet = func() map[string]bool {
+	set := make(map[string]bool, len(SensitiveExtraFields))
+	for _, field := range SensitiveExtraFields {
+		set[field] = true
+	}
+	return set
+}()
+
 // ExtractTokenExtra extracts known extra fields from an oauth2.Token.
 // The oauth2.Token.Extra() method is the only way to access the private raw field.
 // We extract known OIDC fields that need to be preserved through encryption.
@@ -67,15 +77,9 @@ func EncryptExtraFields(extra map[string]interface{}, encryptor *security.Encryp
 		return extra, nil
 	}
 
-	// Build set of sensitive fields for O(1) lookup
-	sensitiveSet := make(map[string]bool, len(SensitiveExtraFields))
-	for _, field := range SensitiveExtraFields {
-		sensitiveSet[field] = true
-	}
-
 	result := make(map[string]interface{}, len(extra))
 	for key, value := range extra {
-		if sensitiveSet[key] {
+		if sensitiveExtraFieldSet[key] {
 			// Encrypt sensitive string fields
 			if strVal, ok := value.(string); ok && strVal != "" {
 				encrypted, err := encryptor.Encrypt(strVal)
@@ -108,15 +112,9 @@ func DecryptExtraFields(extra map[string]interface{}, encryptor *security.Encryp
 		return extra, nil
 	}
 
-	// Build set of sensitive fields for O(1) lookup
-	sensitiveSet := make(map[string]bool, len(SensitiveExtraFields))
-	for _, field := range SensitiveExtraFields {
-		sensitiveSet[field] = true
-	}
-
 	result := make(map[string]interface{}, len(extra))
 	for key, value := range extra {
-		if sensitiveSet[key] {
+		if sensitiveExtraFieldSet[key] {
 			// Decrypt sensitive string fields
 			if strVal, ok := value.(string); ok && strVal != "" {
 				decrypted, err := encryptor.Decrypt(strVal)
