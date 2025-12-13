@@ -15,11 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Security**: Two-layer protection: PKCE (primary defense) + custom URI scheme OS-level registration
   - **Configuration**:
     - `TrustedPublicRegistrationSchemes`: List of schemes allowed for token-free registration (e.g., `["cursor", "vscode"]`)
-    - `StrictSchemeMatching`: Defaults to `true` when trusted schemes are configured (secure by default)
-    - `DisableStrictSchemeMatching`: Explicit opt-out for mixed scheme support (not recommended)
+    - `DisableStrictSchemeMatching`: Explicit opt-out for mixed scheme support (not recommended); strict matching is enabled by default
   - **Security Hardening**:
     - HTTP/HTTPS schemes are automatically blocked from trusted schemes (they can be hijacked by any attacker with a web server)
     - Dangerous schemes (`javascript:`, `data:`, `file:`, etc.) are automatically filtered out
+    - Pre-computed trusted schemes map for O(1) lookup performance
     - Documentation clarifies that PKCE is the primary security control, with platform-specific scheme protection as defense-in-depth
   - **Audit Logging**: New event type `client_registered_via_trusted_scheme` for security monitoring
   - **Documentation**: Updated security guide with Cursor compatibility section and platform security considerations

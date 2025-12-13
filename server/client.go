@@ -180,7 +180,8 @@ func (s *Server) GetClient(ctx context.Context, clientID string) (*storage.Clien
 //   - error: validation error if any URI is invalid
 func (s *Server) CanRegisterWithTrustedScheme(redirectURIs []string) (allowed bool, scheme string, err error) {
 	// No trusted schemes configured - require token
-	if len(s.Config.TrustedPublicRegistrationSchemes) == 0 {
+	// Use the pre-computed map for O(1) lookup
+	if len(s.Config.trustedSchemesMap) == 0 {
 		return false, "", nil
 	}
 
@@ -189,11 +190,8 @@ func (s *Server) CanRegisterWithTrustedScheme(redirectURIs []string) (allowed bo
 		return false, "", nil
 	}
 
-	// Build a map of trusted schemes for efficient lookup (case-insensitive)
-	trustedSchemes := make(map[string]bool, len(s.Config.TrustedPublicRegistrationSchemes))
-	for _, trusted := range s.Config.TrustedPublicRegistrationSchemes {
-		trustedSchemes[strings.ToLower(trusted)] = true
-	}
+	// Strict matching is enabled by default unless explicitly disabled
+	strictMatching := !s.Config.DisableStrictSchemeMatching
 
 	var firstTrustedScheme string
 	trustedCount := 0
@@ -205,18 +203,19 @@ func (s *Server) CanRegisterWithTrustedScheme(redirectURIs []string) (allowed bo
 			return false, "", fmt.Errorf("invalid redirect URI: %w", err)
 		}
 
+		// Normalize scheme to lowercase for case-insensitive matching (RFC 3986)
 		uriScheme := strings.ToLower(parsed.Scheme)
 		if uriScheme == "" {
 			// No scheme - require token for safety
 			return false, "", fmt.Errorf("redirect URI missing scheme: %s", uri)
 		}
 
-		if trustedSchemes[uriScheme] {
+		if s.Config.trustedSchemesMap[uriScheme] {
 			trustedCount++
 			if firstTrustedScheme == "" {
 				firstTrustedScheme = uriScheme
 			}
-		} else if s.Config.StrictSchemeMatching {
+		} else if strictMatching {
 			// Strict mode: all URIs must use trusted schemes
 			// Found an untrusted scheme, require token
 			return false, "", nil

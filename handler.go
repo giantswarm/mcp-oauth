@@ -1556,7 +1556,7 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 				h.logger.Info("Client registration authorized via trusted scheme (no token required)",
 					"scheme", scheme,
 					"client_ip", clientIP,
-					"strict_matching", h.server.Config.StrictSchemeMatching)
+					"strict_matching", !h.server.Config.DisableStrictSchemeMatching)
 			} else {
 				// No valid token and not using trusted schemes - reject
 				h.logger.Warn("Client registration rejected: missing or invalid authorization",
@@ -1673,7 +1673,7 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 				"client_type":      client.ClientType,
 				"client_ip":        clientIP,
 				"redirect_uris":    client.RedirectURIs,
-				"strict_matching":  h.server.Config.StrictSchemeMatching,
+				"strict_matching":  !h.server.Config.DisableStrictSchemeMatching,
 				"security_context": "unauthenticated_registration_via_trusted_scheme",
 			},
 		})

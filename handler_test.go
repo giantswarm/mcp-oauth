@@ -2279,7 +2279,7 @@ func TestHandler_ServeClientRegistration_TrustedSchemes(t *testing.T) {
 	tests := []struct {
 		name                          string
 		trustedSchemes                []string
-		strictSchemeMatching          bool
+		disableStrictSchemeMatching   bool // true = permissive mode, false = strict mode (default)
 		registrationAccessToken       string
 		allowPublicClientRegistration bool
 		redirectURIs                  []string
@@ -2293,7 +2293,7 @@ func TestHandler_ServeClientRegistration_TrustedSchemes(t *testing.T) {
 		{
 			name:                          "cursor scheme - no token - allowed",
 			trustedSchemes:                []string{"cursor"},
-			strictSchemeMatching:          true,
+			disableStrictSchemeMatching:   false, // strict mode (default)
 			registrationAccessToken:       testRegistrationToken,
 			allowPublicClientRegistration: false,
 			redirectURIs:                  []string{"cursor://oauth/callback"},
@@ -2305,7 +2305,7 @@ func TestHandler_ServeClientRegistration_TrustedSchemes(t *testing.T) {
 		{
 			name:                          "vscode scheme - no token - allowed",
 			trustedSchemes:                []string{"vscode", "cursor"},
-			strictSchemeMatching:          true,
+			disableStrictSchemeMatching:   false,
 			registrationAccessToken:       testRegistrationToken,
 			allowPublicClientRegistration: false,
 			redirectURIs:                  []string{"vscode://oauth/callback"},
@@ -2317,7 +2317,7 @@ func TestHandler_ServeClientRegistration_TrustedSchemes(t *testing.T) {
 		{
 			name:                          "multiple trusted URIs - all trusted - allowed",
 			trustedSchemes:                []string{"cursor", "vscode"},
-			strictSchemeMatching:          true,
+			disableStrictSchemeMatching:   false,
 			registrationAccessToken:       testRegistrationToken,
 			allowPublicClientRegistration: false,
 			redirectURIs:                  []string{"cursor://oauth/callback", "vscode://oauth/callback"},
@@ -2331,7 +2331,7 @@ func TestHandler_ServeClientRegistration_TrustedSchemes(t *testing.T) {
 		{
 			name:                          "strict: mixed schemes - rejected",
 			trustedSchemes:                []string{"cursor"},
-			strictSchemeMatching:          true,
+			disableStrictSchemeMatching:   false,
 			registrationAccessToken:       testRegistrationToken,
 			allowPublicClientRegistration: false,
 			redirectURIs:                  []string{"cursor://oauth/callback", "https://example.com/callback"},
@@ -2344,7 +2344,7 @@ func TestHandler_ServeClientRegistration_TrustedSchemes(t *testing.T) {
 		{
 			name:                          "strict: https only - rejected without token",
 			trustedSchemes:                []string{"cursor"},
-			strictSchemeMatching:          true,
+			disableStrictSchemeMatching:   false,
 			registrationAccessToken:       testRegistrationToken,
 			allowPublicClientRegistration: false,
 			redirectURIs:                  []string{"https://example.com/callback"},
@@ -2359,7 +2359,7 @@ func TestHandler_ServeClientRegistration_TrustedSchemes(t *testing.T) {
 		{
 			name:                          "permissive: mixed schemes - allowed (has trusted)",
 			trustedSchemes:                []string{"cursor"},
-			strictSchemeMatching:          false,
+			disableStrictSchemeMatching:   true, // permissive mode
 			registrationAccessToken:       testRegistrationToken,
 			allowPublicClientRegistration: false,
 			redirectURIs:                  []string{"cursor://oauth/callback", "https://example.com/callback"},
@@ -2373,7 +2373,7 @@ func TestHandler_ServeClientRegistration_TrustedSchemes(t *testing.T) {
 		{
 			name:                          "with token - any scheme works",
 			trustedSchemes:                []string{"cursor"},
-			strictSchemeMatching:          true,
+			disableStrictSchemeMatching:   false,
 			registrationAccessToken:       testRegistrationToken,
 			allowPublicClientRegistration: false,
 			redirectURIs:                  []string{"https://example.com/callback"},
@@ -2387,7 +2387,7 @@ func TestHandler_ServeClientRegistration_TrustedSchemes(t *testing.T) {
 		{
 			name:                          "no trusted schemes - token required",
 			trustedSchemes:                nil,
-			strictSchemeMatching:          true,
+			disableStrictSchemeMatching:   false,
 			registrationAccessToken:       testRegistrationToken,
 			allowPublicClientRegistration: false,
 			redirectURIs:                  []string{"cursor://oauth/callback"},
@@ -2401,7 +2401,7 @@ func TestHandler_ServeClientRegistration_TrustedSchemes(t *testing.T) {
 		{
 			name:                          "case insensitive scheme matching",
 			trustedSchemes:                []string{"Cursor"},
-			strictSchemeMatching:          true,
+			disableStrictSchemeMatching:   false,
 			registrationAccessToken:       testRegistrationToken,
 			allowPublicClientRegistration: false,
 			redirectURIs:                  []string{"cursor://oauth/callback"},
@@ -2417,13 +2417,18 @@ func TestHandler_ServeClientRegistration_TrustedSchemes(t *testing.T) {
 			handler, store := setupTestHandler(t)
 			defer store.Stop()
 
-			// Configure server
+			// Configure server with trusted schemes and pre-computed map
 			handler.server.Config.TrustedPublicRegistrationSchemes = tt.trustedSchemes
-			handler.server.Config.StrictSchemeMatching = tt.strictSchemeMatching
+			handler.server.Config.DisableStrictSchemeMatching = tt.disableStrictSchemeMatching
 			handler.server.Config.RegistrationAccessToken = tt.registrationAccessToken
 			handler.server.Config.AllowPublicClientRegistration = tt.allowPublicClientRegistration
 			// Disable production mode for tests to allow custom schemes without full validation
 			handler.server.Config.ProductionMode = false
+
+			// Build pre-computed trusted schemes map (normally done by config validation)
+			if len(tt.trustedSchemes) > 0 {
+				handler.server.Config.SetTrustedSchemesMap(tt.trustedSchemes)
+			}
 
 			regReq := ClientRegistrationRequest{
 				ClientName:              "Test Client",

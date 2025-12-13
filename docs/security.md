@@ -247,7 +247,7 @@ config := &server.Config{
         "windsurf",
     },
     
-    // StrictSchemeMatching defaults to true when TrustedPublicRegistrationSchemes is set
+    // Strict scheme matching is enabled by default when TrustedPublicRegistrationSchemes is set
     // To allow mixed schemes (not recommended), set DisableStrictSchemeMatching: true
 }
 ```
@@ -284,10 +284,9 @@ The following schemes are automatically **blocked** from `TrustedPublicRegistrat
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `TrustedPublicRegistrationSchemes` | `[]` | List of allowed schemes for token-free registration |
-| `StrictSchemeMatching` | `true`* | ALL redirect URIs must use trusted schemes |
 | `DisableStrictSchemeMatching` | `false` | Set to `true` to allow mixed schemes (not recommended) |
 
-*Automatically enabled when `TrustedPublicRegistrationSchemes` is configured.
+Strict scheme matching is automatically enabled when `TrustedPublicRegistrationSchemes` is configured. This ensures ALL redirect URIs must use trusted schemes for unauthenticated registration.
 
 **Audit Logging:**
 

@@ -512,12 +512,19 @@ func validateTrustedPublicRegistrationSchemes(config *Config, logger *slog.Logge
 	// Replace the config with the sanitized list
 	config.TrustedPublicRegistrationSchemes = validSchemes
 
-	// If all schemes were removed, log a warning
+	// If all schemes were removed, log a warning and clear the map
 	if len(validSchemes) == 0 {
 		logger.Warn("All schemes removed from TrustedPublicRegistrationSchemes after security validation",
 			"result", "Feature effectively disabled - registration will require token",
 			"recommendation", "Use custom URI schemes like 'cursor', 'vscode' instead of http/https")
+		config.trustedSchemesMap = nil
 		return
+	}
+
+	// Build pre-computed map for O(1) lookup (schemes are already lowercase)
+	config.trustedSchemesMap = make(map[string]bool, len(validSchemes))
+	for _, scheme := range validSchemes {
+		config.trustedSchemesMap[scheme] = true
 	}
 
 	// Determine effective strict matching mode (will be true unless explicitly disabled)
@@ -529,9 +536,9 @@ func validateTrustedPublicRegistrationSchemes(config *Config, logger *slog.Logge
 		"strict_matching", effectiveStrictMatching,
 		"security_note", "Clients with these redirect URI schemes can register without a token")
 
-	// Warn if StrictSchemeMatching is explicitly disabled via DisableStrictSchemeMatching
+	// Warn if strict matching is explicitly disabled
 	if config.DisableStrictSchemeMatching {
-		logger.Warn("StrictSchemeMatching explicitly disabled for TrustedPublicRegistrationSchemes",
+		logger.Warn("Strict scheme matching explicitly disabled for TrustedPublicRegistrationSchemes",
 			"risk", "Clients can mix trusted and untrusted redirect URI schemes",
 			"recommendation", "Remove DisableStrictSchemeMatching for maximum security")
 	}

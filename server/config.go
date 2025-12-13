@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -352,36 +353,36 @@ type Config struct {
 	// malicious client with cursor:// because they can't receive the callback.
 	//
 	// Scheme matching is case-insensitive (per RFC 3986 Section 3.1).
+	// Schemes are normalized to lowercase during configuration validation.
 	//
 	// Example: ["cursor", "vscode", "vscode-insiders", "windsurf"]
 	// Default: [] (all registrations require token unless AllowPublicClientRegistration=true)
 	TrustedPublicRegistrationSchemes []string
 
-	// StrictSchemeMatching requires ALL redirect URIs in a registration request
-	// to use trusted schemes for unauthenticated registration to be allowed.
+	// trustedSchemesMap is a pre-computed map for O(1) lookup of trusted schemes.
+	// This is populated during configuration validation from TrustedPublicRegistrationSchemes.
+	// All schemes are normalized to lowercase for case-insensitive matching.
+	// This field is internal and should not be set directly by users.
+	trustedSchemesMap map[string]bool
+
+	// DisableStrictSchemeMatching explicitly disables strict scheme matching for deployments
+	// that need to support clients with mixed redirect URI schemes (e.g., cursor:// AND https://).
 	//
-	// When true (default when TrustedPublicRegistrationSchemes is configured):
+	// Strict scheme matching (enabled by default when TrustedPublicRegistrationSchemes is configured):
 	//   - All redirect URIs MUST use schemes from TrustedPublicRegistrationSchemes
 	//   - A mix of trusted and untrusted schemes requires a registration token
 	//   - Provides maximum security by preventing token leakage to untrusted URIs
 	//
-	// When false (permissive mode):
+	// When disabled (permissive mode):
 	//   - If ANY redirect URI uses a trusted scheme, registration is allowed
 	//   - Other redirect URIs can use any scheme (including https://)
 	//   - Use case: Clients that need both custom scheme and web-based callbacks
 	//   - A security warning is logged when this mode is used
 	//
-	// This setting only applies when TrustedPublicRegistrationSchemes is non-empty.
-	// Default: true (secure by default - set automatically by applySecurityDefaults)
-	// To disable for permissive mode, set DisableStrictSchemeMatching=true.
-	StrictSchemeMatching bool
-
-	// DisableStrictSchemeMatching explicitly disables StrictSchemeMatching for deployments
-	// that need to support clients with mixed redirect URI schemes (e.g., cursor:// AND https://).
 	// WARNING: Disabling strict matching allows clients to register with untrusted redirect URIs
 	// alongside trusted ones. While PKCE mitigates code interception, this reduces security.
 	// Only set this to true if you have specific requirements for mixed scheme clients.
-	// Default: false (StrictSchemeMatching is enabled when TrustedPublicRegistrationSchemes is configured)
+	// Default: false (strict matching is enabled when TrustedPublicRegistrationSchemes is configured)
 	DisableStrictSchemeMatching bool
 
 	// AllowedCustomSchemes is a list of allowed custom URI scheme patterns (regex)
@@ -847,4 +848,20 @@ func (c *Config) GetResourceIdentifier() string {
 		return c.ResourceIdentifier
 	}
 	return c.Issuer
+}
+
+// SetTrustedSchemesMap builds the pre-computed trusted schemes map from the given schemes.
+// This is primarily used for testing purposes. In production, the map is built
+// automatically by validateTrustedPublicRegistrationSchemes during config validation.
+// Schemes are normalized to lowercase for case-insensitive matching.
+func (c *Config) SetTrustedSchemesMap(schemes []string) {
+	if len(schemes) == 0 {
+		c.trustedSchemesMap = nil
+		return
+	}
+	c.trustedSchemesMap = make(map[string]bool, len(schemes))
+	for _, scheme := range schemes {
+		// Normalize to lowercase for case-insensitive matching (RFC 3986)
+		c.trustedSchemesMap[strings.ToLower(scheme)] = true
+	}
 }

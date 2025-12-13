@@ -57,13 +57,10 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 		config.BlockedRedirectSchemes = DefaultBlockedRedirectSchemes
 	}
 
-	// SECURITY: Enable StrictSchemeMatching by default when TrustedPublicRegistrationSchemes is configured.
-	// This ensures ALL redirect URIs must use trusted schemes for unauthenticated registration,
-	// preventing attackers from mixing trusted and untrusted schemes to bypass authentication.
-	// Use DisableStrictSchemeMatching=true to explicitly opt-out (not recommended).
-	if len(config.TrustedPublicRegistrationSchemes) > 0 && !config.DisableStrictSchemeMatching {
-		config.StrictSchemeMatching = true
-	}
+	// NOTE: StrictSchemeMatching is now computed on-the-fly from DisableStrictSchemeMatching.
+	// When TrustedPublicRegistrationSchemes is configured and DisableStrictSchemeMatching is false,
+	// strict matching is enabled. This ensures ALL redirect URIs must use trusted schemes for
+	// unauthenticated registration, preventing attackers from mixing trusted and untrusted schemes.
 
 	// Apply DNS validation timeout defaults and bounds
 	applyDNSTimeoutDefaults(config, logger)

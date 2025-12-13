@@ -1570,70 +1570,69 @@ func TestDNSValidationTimeoutBounds(t *testing.T) {
 
 func TestValidateTrustedPublicRegistrationSchemes(t *testing.T) {
 	tests := []struct {
-		name                   string
-		inputSchemes           []string
-		disableStrictMatching  bool
-		expectedSchemes        []string
-		expectSecurityLog      bool
-		expectedStrictMatching bool
+		name                  string
+		inputSchemes          []string
+		disableStrictMatching bool
+		expectedSchemes       []string
+		expectSecurityLog     bool
+		expectMapPopulated    bool // Whether trustedSchemesMap should be populated
 	}{
 		{
-			name:                   "empty schemes - no change",
-			inputSchemes:           nil,
-			expectedSchemes:        nil,
-			expectSecurityLog:      false,
-			expectedStrictMatching: false, // Not set when no schemes
+			name:               "empty schemes - no change",
+			inputSchemes:       nil,
+			expectedSchemes:    nil,
+			expectSecurityLog:  false,
+			expectMapPopulated: false,
 		},
 		{
-			name:                   "valid custom schemes - preserved",
-			inputSchemes:           []string{"cursor", "vscode"},
-			expectedSchemes:        []string{"cursor", "vscode"},
-			expectSecurityLog:      false,
-			expectedStrictMatching: true, // Auto-enabled
+			name:               "valid custom schemes - preserved",
+			inputSchemes:       []string{"cursor", "vscode"},
+			expectedSchemes:    []string{"cursor", "vscode"},
+			expectSecurityLog:  false,
+			expectMapPopulated: true,
 		},
 		{
-			name:                   "http scheme - filtered out",
-			inputSchemes:           []string{"cursor", "http", "vscode"},
-			expectedSchemes:        []string{"cursor", "vscode"},
-			expectSecurityLog:      true,
-			expectedStrictMatching: true,
+			name:               "http scheme - filtered out",
+			inputSchemes:       []string{"cursor", "http", "vscode"},
+			expectedSchemes:    []string{"cursor", "vscode"},
+			expectSecurityLog:  true,
+			expectMapPopulated: true,
 		},
 		{
-			name:                   "https scheme - filtered out",
-			inputSchemes:           []string{"https", "cursor"},
-			expectedSchemes:        []string{"cursor"},
-			expectSecurityLog:      true,
-			expectedStrictMatching: true,
+			name:               "https scheme - filtered out",
+			inputSchemes:       []string{"https", "cursor"},
+			expectedSchemes:    []string{"cursor"},
+			expectSecurityLog:  true,
+			expectMapPopulated: true,
 		},
 		{
-			name:                   "both http and https - filtered out",
-			inputSchemes:           []string{"http", "https"},
-			expectedSchemes:        []string{},
-			expectSecurityLog:      true,
-			expectedStrictMatching: false, // No schemes left
+			name:               "both http and https - filtered out",
+			inputSchemes:       []string{"http", "https"},
+			expectedSchemes:    []string{},
+			expectSecurityLog:  true,
+			expectMapPopulated: false, // No schemes left
 		},
 		{
-			name:                   "dangerous schemes - filtered out",
-			inputSchemes:           []string{"cursor", "javascript", "data"},
-			expectedSchemes:        []string{"cursor"},
-			expectSecurityLog:      true,
-			expectedStrictMatching: true,
+			name:               "dangerous schemes - filtered out",
+			inputSchemes:       []string{"cursor", "javascript", "data"},
+			expectedSchemes:    []string{"cursor"},
+			expectSecurityLog:  true,
+			expectMapPopulated: true,
 		},
 		{
-			name:                   "mixed case schemes - normalized to lowercase",
-			inputSchemes:           []string{"Cursor", "VSCODE"},
-			expectedSchemes:        []string{"cursor", "vscode"},
-			expectSecurityLog:      false,
-			expectedStrictMatching: true,
+			name:               "mixed case schemes - normalized to lowercase",
+			inputSchemes:       []string{"Cursor", "VSCODE"},
+			expectedSchemes:    []string{"cursor", "vscode"},
+			expectSecurityLog:  false,
+			expectMapPopulated: true,
 		},
 		{
-			name:                  "disable strict matching - stays disabled",
+			name:                  "disable strict matching - map still populated",
 			inputSchemes:          []string{"cursor"},
 			disableStrictMatching: true,
 			expectedSchemes:       []string{"cursor"},
 			expectSecurityLog:     false,
-			// Note: DisableStrictSchemeMatching keeps it disabled
-			expectedStrictMatching: false,
+			expectMapPopulated:    true,
 		},
 	}
 
@@ -1666,10 +1665,28 @@ func TestValidateTrustedPublicRegistrationSchemes(t *testing.T) {
 				}
 			}
 
-			// Verify StrictSchemeMatching is set correctly
-			if config.StrictSchemeMatching != tt.expectedStrictMatching {
-				t.Errorf("StrictSchemeMatching = %v, want %v",
-					config.StrictSchemeMatching, tt.expectedStrictMatching)
+			// Verify trustedSchemesMap is populated correctly
+			if tt.expectMapPopulated {
+				if config.trustedSchemesMap == nil {
+					t.Error("trustedSchemesMap should be populated but is nil")
+				} else {
+					// Verify all expected schemes are in the map
+					for _, scheme := range tt.expectedSchemes {
+						if !config.trustedSchemesMap[scheme] {
+							t.Errorf("trustedSchemesMap missing scheme %q", scheme)
+						}
+					}
+					// Verify map size matches
+					if len(config.trustedSchemesMap) != len(tt.expectedSchemes) {
+						t.Errorf("trustedSchemesMap size = %d, want %d",
+							len(config.trustedSchemesMap), len(tt.expectedSchemes))
+					}
+				}
+			} else {
+				if len(config.trustedSchemesMap) > 0 {
+					t.Errorf("trustedSchemesMap should be empty but has %d entries",
+						len(config.trustedSchemesMap))
+				}
 			}
 
 			// Verify security log messages
@@ -1678,6 +1695,57 @@ func TestValidateTrustedPublicRegistrationSchemes(t *testing.T) {
 				if !strings.Contains(logOutput, "SECURITY") && !strings.Contains(logOutput, "Removing") {
 					t.Errorf("Expected security log message, got: %s", logOutput)
 				}
+			}
+		})
+	}
+}
+
+func TestIsValidSchemeChar(t *testing.T) {
+	// Test RFC 3986 scheme character validation
+	// scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
+	tests := []struct {
+		name    string
+		char    rune
+		isFirst bool
+		want    bool
+	}{
+		// First character - must be letter
+		{name: "first char lowercase a", char: 'a', isFirst: true, want: true},
+		{name: "first char lowercase z", char: 'z', isFirst: true, want: true},
+		{name: "first char uppercase A", char: 'A', isFirst: false, want: false}, // Assuming input is lowercase
+		{name: "first char digit", char: '0', isFirst: true, want: false},
+		{name: "first char plus", char: '+', isFirst: true, want: false},
+		{name: "first char minus", char: '-', isFirst: true, want: false},
+		{name: "first char dot", char: '.', isFirst: true, want: false},
+		{name: "first char underscore", char: '_', isFirst: true, want: false},
+		{name: "first char space", char: ' ', isFirst: true, want: false},
+
+		// Subsequent characters - letters, digits, +, -, .
+		{name: "subsequent lowercase a", char: 'a', isFirst: false, want: true},
+		{name: "subsequent lowercase z", char: 'z', isFirst: false, want: true},
+		{name: "subsequent digit 0", char: '0', isFirst: false, want: true},
+		{name: "subsequent digit 9", char: '9', isFirst: false, want: true},
+		{name: "subsequent plus", char: '+', isFirst: false, want: true},
+		{name: "subsequent minus", char: '-', isFirst: false, want: true},
+		{name: "subsequent dot", char: '.', isFirst: false, want: true},
+		{name: "subsequent underscore", char: '_', isFirst: false, want: false},
+		{name: "subsequent colon", char: ':', isFirst: false, want: false},
+		{name: "subsequent slash", char: '/', isFirst: false, want: false},
+		{name: "subsequent space", char: ' ', isFirst: false, want: false},
+		{name: "subsequent at", char: '@', isFirst: false, want: false},
+
+		// Edge cases
+		{name: "null char", char: 0, isFirst: false, want: false},
+		{name: "unicode letter", char: '\u00e9', isFirst: false, want: false}, // é
+		{name: "unicode digit", char: '\u0660', isFirst: false, want: false},  // Arabic-Indic 0
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isValidSchemeChar(tt.char, tt.isFirst)
+			if got != tt.want {
+				t.Errorf("isValidSchemeChar(%q, %v) = %v, want %v",
+					tt.char, tt.isFirst, got, tt.want)
 			}
 		})
 	}
