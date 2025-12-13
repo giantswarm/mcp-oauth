@@ -36,6 +36,7 @@ const (
 	RedirectURIErrorCategoryHTTPNotAllowed  = "http_not_allowed"
 	RedirectURIErrorCategoryDNSPrivateIP    = "dns_resolves_to_private_ip"
 	RedirectURIErrorCategoryDNSLinkLocal    = "dns_resolves_to_link_local"
+	RedirectURIErrorCategoryDNSFailure      = "dns_resolution_failed"
 	RedirectURIErrorCategoryInvalidFormat   = "invalid_format"
 	RedirectURIErrorCategoryFragment        = "fragment_not_allowed"
 	RedirectURIErrorCategoryUnspecifiedAddr = "unspecified_address"
@@ -224,6 +225,17 @@ func (s *Server) validateIPAddress(ip net.IP, hostname string) error {
 // validateHostnameWithDNS resolves a hostname and validates the resulting IP addresses.
 // This provides defense against DNS rebinding attacks where an attacker controls DNS
 // to initially resolve to a public IP (for validation) but later to an internal IP.
+//
+// Behavior on DNS failure:
+// - DNSValidationStrict=false (default): Log warning and allow registration (fail-open)
+// - DNSValidationStrict=true: Block registration (fail-closed)
+//
+// SECURITY NOTE (TOCTOU): DNS validation at registration time does not fully prevent
+// DNS rebinding attacks. An attacker could:
+// 1. Register with a hostname resolving to a public IP
+// 2. Later change DNS to resolve to an internal IP
+// For full protection, enable ValidateRedirectURIAtAuthorization to re-validate
+// at authorization time.
 func (s *Server) validateHostnameWithDNS(ctx context.Context, hostname, fullURI string) error {
 	// Create timeout context for DNS resolution
 	resolveCtx, cancel := context.WithTimeout(ctx, s.Config.DNSValidationTimeout)
@@ -232,13 +244,29 @@ func (s *Server) validateHostnameWithDNS(ctx context.Context, hostname, fullURI 
 	// Resolve hostname
 	ips, err := net.DefaultResolver.LookupIP(resolveCtx, "ip", hostname)
 	if err != nil {
-		// DNS resolution failed - log warning but don't block
+		// DNS resolution failed
+		if s.Config.DNSValidationStrict {
+			// Strict mode: fail-closed - block registration on DNS failure
+			s.Logger.Warn("DNS resolution failed during redirect URI validation (strict mode - blocking)",
+				"hostname", hostname,
+				"error", err,
+				"action", "blocking_registration",
+				"mode", "strict")
+			return &RedirectURISecurityError{
+				Category:      RedirectURIErrorCategoryDNSFailure,
+				URI:           sanitizeURIForLogging(fullURI),
+				Reason:        fmt.Sprintf("DNS resolution failed for hostname '%s': %v (strict mode)", hostname, err),
+				ClientMessage: "redirect_uri: hostname could not be resolved (DNS validation required)",
+			}
+		}
+		// Default mode: fail-open - log warning but allow registration
 		// This prevents false positives for legitimate hostnames with temporary DNS issues
-		s.Logger.Warn("DNS resolution failed during redirect URI validation",
+		s.Logger.Warn("DNS resolution failed during redirect URI validation (allowing registration)",
 			"hostname", hostname,
 			"error", err,
 			"action", "allowing_registration",
-			"recommendation", "Monitor for abuse")
+			"mode", "permissive",
+			"recommendation", "Enable DNSValidationStrict=true for fail-closed behavior")
 		return nil
 	}
 
@@ -321,4 +349,61 @@ func GetRedirectURIErrorCategory(err error) string {
 		return secErr.Category
 	}
 	return ""
+}
+
+// ValidateRedirectURIAtAuthorizationTime performs security validation on a redirect URI
+// during the authorization request. This is a secondary validation point that provides
+// defense against TOCTOU (Time-of-Check to Time-of-Use) attacks.
+//
+// This method is only called when Config.ValidateRedirectURIAtAuthorization=true.
+//
+// Security context:
+// The primary validation happens at client registration (ValidateRedirectURIForRegistration).
+// However, DNS rebinding attacks can bypass registration-time validation:
+// 1. Attacker registers with hostname "evil.com" resolving to public IP 1.2.3.4
+// 2. After registration, attacker changes DNS to resolve to internal IP 10.0.0.1
+// 3. Authorization request redirects to internal network (SSRF)
+//
+// By re-validating at authorization time, we catch DNS rebinding attacks.
+// The trade-off is additional latency for DNS lookups during authorization.
+//
+// Note: This only applies security validation. The registered redirect_uri matching
+// is still performed separately by validateRedirectURI().
+func (s *Server) ValidateRedirectURIAtAuthorizationTime(ctx context.Context, redirectURI string) error {
+	// Skip if authorization-time validation is disabled
+	if !s.Config.ValidateRedirectURIAtAuthorization {
+		return nil
+	}
+
+	// Reuse the same validation logic as registration
+	// This ensures consistent security checks at both stages
+	return s.ValidateRedirectURIForRegistration(ctx, redirectURI)
+}
+
+// HighSecurityRedirectURIConfig returns a Config with strict redirect URI security settings.
+// This is a convenience function for high-security deployments.
+//
+// Settings enabled:
+// - ProductionMode=true: HTTPS required for non-loopback
+// - AllowLocalhostRedirectURIs=true: RFC 8252 native app support
+// - AllowPrivateIPRedirectURIs=false: Block SSRF to internal networks
+// - AllowLinkLocalRedirectURIs=false: Block cloud metadata SSRF
+// - DNSValidation=true: Resolve hostnames to check IPs
+// - DNSValidationStrict=true: Fail-closed on DNS failures
+// - ValidateRedirectURIAtAuthorization=true: Catch DNS rebinding
+//
+// Use this as a starting point and adjust for your environment:
+//
+//	config := server.HighSecurityRedirectURIConfig()
+//	config.AllowPrivateIPRedirectURIs = true  // For internal deployments
+func HighSecurityRedirectURIConfig() *Config {
+	return &Config{
+		ProductionMode:                     true,
+		AllowLocalhostRedirectURIs:         true, // RFC 8252 native app support
+		AllowPrivateIPRedirectURIs:         false,
+		AllowLinkLocalRedirectURIs:         false,
+		DNSValidation:                      true,
+		DNSValidationStrict:                true,
+		ValidateRedirectURIAtAuthorization: true,
+	}
 }

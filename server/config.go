@@ -380,10 +380,34 @@ type Config struct {
 	// Default: false (DNS lookup can have performance implications)
 	DNSValidation bool
 
+	// DNSValidationStrict enables fail-closed behavior for DNS validation.
+	// When true AND DNSValidation=true:
+	// - DNS resolution failures BLOCK client registration (fail-closed)
+	// - This prevents attackers from bypassing validation by causing DNS failures
+	// When false (default):
+	// - DNS resolution failures are logged but registration is allowed (fail-open)
+	// - This prevents false positives for legitimate hostnames with temporary DNS issues
+	// SECURITY: Enable this for high-security environments where DNS is reliable.
+	// WARNING: May cause legitimate registration failures during DNS outages.
+	// Default: false (fail-open for availability)
+	DNSValidationStrict bool
+
 	// DNSValidationTimeout is the timeout for DNS resolution when DNSValidation=true.
 	// Prevents slow DNS from blocking registration.
 	// Default: 2 seconds
 	DNSValidationTimeout time.Duration
+
+	// ValidateRedirectURIAtAuthorization enables re-validation of redirect URIs during
+	// authorization requests, not just at client registration time.
+	// This provides defense against TOCTOU (Time-of-Check to Time-of-Use) attacks where:
+	// 1. Attacker registers with a hostname resolving to a public IP
+	// 2. Later changes DNS to resolve to an internal IP (DNS rebinding)
+	// When enabled, the same security checks applied at registration are repeated
+	// at authorization time, catching DNS rebinding attacks.
+	// SECURITY: Recommended for high-security environments.
+	// WARNING: Adds latency to authorization requests (DNS lookups if DNSValidation=true).
+	// Default: false (validation only at registration for performance)
+	ValidateRedirectURIAtAuthorization bool
 
 	// AllowInsecureHTTP allows running OAuth server over HTTP (INSECURE - development only)
 	// WARNING: OAuth over HTTP exposes all tokens and credentials to network interception
@@ -1551,10 +1575,29 @@ func logSecurityWarnings(config *Config, logger *slog.Logger) {
 			"learn_more", "https://owasp.org/www-community/attacks/Server_Side_Request_Forgery")
 	}
 	if config.DNSValidation {
+		mode := "permissive (fail-open)"
+		if config.DNSValidationStrict {
+			mode = "strict (fail-closed)"
+		}
 		logger.Info("DNS validation enabled for redirect URIs",
 			"timeout", config.DNSValidationTimeout,
+			"mode", mode,
 			"benefit", "Defense against DNS rebinding attacks",
 			"caveat", "May add latency to client registration")
+		if !config.DNSValidationStrict {
+			logger.Warn("DNS validation is fail-open (DNSValidationStrict=false)",
+				"risk", "DNS failures allow registration (potential bypass)",
+				"recommendation", "Set DNSValidationStrict=true for high-security environments")
+		}
+	}
+	if config.ValidateRedirectURIAtAuthorization {
+		logger.Info("Authorization-time redirect URI validation enabled",
+			"benefit", "Defense against TOCTOU/DNS rebinding attacks",
+			"caveat", "Adds latency to authorization requests")
+	} else if config.DNSValidation {
+		logger.Info("Authorization-time redirect URI validation is DISABLED",
+			"risk", "DNS rebinding attacks possible after registration",
+			"recommendation", "Set ValidateRedirectURIAtAuthorization=true for TOCTOU protection")
 	}
 	// Only log localhost blocking when ProductionMode is enabled (strict security)
 	// In development mode, localhost is expected to be controlled differently

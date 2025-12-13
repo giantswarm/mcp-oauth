@@ -351,6 +351,22 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 		return "", fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
 	}
 
+	// SECURITY: Authorization-time redirect URI validation (TOCTOU protection)
+	// This re-validates the redirect URI security at authorization time to catch
+	// DNS rebinding attacks where the hostname resolved to a safe IP at registration
+	// but now resolves to an internal IP. Only enabled when
+	// Config.ValidateRedirectURIAtAuthorization=true.
+	if err := s.ValidateRedirectURIAtAuthorizationTime(ctx, redirectURI); err != nil {
+		if s.Auditor != nil {
+			s.Auditor.LogAuthFailure("", clientID, "", "redirect_uri_security_violation")
+		}
+		s.Logger.Warn("Redirect URI failed authorization-time security validation",
+			"client_id", clientID,
+			"redirect_uri", sanitizeURIForLogging(redirectURI),
+			"error", err.Error())
+		return "", fmt.Errorf("%s: redirect URI failed security validation", ErrorCodeInvalidRequest)
+	}
+
 	// If client didn't provide scopes, use provider's default scopes
 	// This is essential for OAuth proxy pattern where server knows required scopes
 	// Only use defaults that the client is authorized for (intersection)

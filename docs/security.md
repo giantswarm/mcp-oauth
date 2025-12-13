@@ -10,7 +10,8 @@ This guide covers security configuration for production deployments. For deep te
 4. [Rate Limiting](#rate-limiting)
 5. [Audit Logging](#audit-logging)
 6. [Client Registration Protection](#client-registration-protection)
-7. [Legacy Client Support](#legacy-client-support)
+7. [Redirect URI Security](#redirect-uri-security)
+8. [Legacy Client Support](#legacy-client-support)
 
 ## Secure Defaults
 
@@ -54,6 +55,13 @@ Before deploying to production, verify these settings:
 - [ ] **Rate Limiting**: Configure IP, user, and client registration limits
 - [ ] **Registration Protected**: Set `RegistrationAccessToken` or disable registration
 - [ ] **Proxy Configured**: Set `TrustProxy` and `TrustedProxyCount` if behind proxy
+- [ ] **Production Mode**: Set `ProductionMode=true` for strict redirect URI validation
+
+### High-Security (Recommended for Sensitive Environments)
+
+- [ ] **DNS Validation**: Enable `DNSValidation=true` to check hostname IPs
+- [ ] **Strict DNS**: Enable `DNSValidationStrict=true` for fail-closed DNS validation
+- [ ] **Auth-Time Validation**: Enable `ValidateRedirectURIAtAuthorization=true` for TOCTOU protection
 
 ### Rate Limiter Cleanup
 
@@ -234,6 +242,101 @@ config := &server.Config{
 ```
 
 Use only in trusted development environments.
+
+## Redirect URI Security
+
+The library provides comprehensive redirect URI validation to prevent SSRF and open redirect attacks.
+
+### Production Mode
+
+Enable strict security for production deployments:
+
+```go
+config := &server.Config{
+    ProductionMode:             true,  // HTTPS required for non-loopback
+    AllowLocalhostRedirectURIs: true,  // RFC 8252 native app support
+    AllowPrivateIPRedirectURIs: false, // Block SSRF to internal networks
+    AllowLinkLocalRedirectURIs: false, // Block cloud metadata SSRF
+}
+```
+
+### DNS Validation (Strict Mode)
+
+Protect against DNS rebinding attacks with fail-closed validation:
+
+```go
+config := &server.Config{
+    // Enable DNS validation
+    DNSValidation:       true,
+    DNSValidationStrict: true,  // Fail-closed: DNS failures block registration
+    DNSValidationTimeout: 2 * time.Second,
+    
+    // Enable authorization-time re-validation (TOCTOU protection)
+    ValidateRedirectURIAtAuthorization: true,
+}
+```
+
+**Security Controls:**
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ProductionMode` | `false` | HTTPS required for non-loopback URIs |
+| `AllowLocalhostRedirectURIs` | `false` | Allow localhost/loopback per RFC 8252 |
+| `AllowPrivateIPRedirectURIs` | `false` | Block RFC 1918 private IPs |
+| `AllowLinkLocalRedirectURIs` | `false` | Block 169.254.x.x/fe80:: (cloud SSRF) |
+| `DNSValidation` | `false` | Resolve hostnames to check IPs |
+| `DNSValidationStrict` | `false` | Fail-closed on DNS failures |
+| `ValidateRedirectURIAtAuthorization` | `false` | Re-validate at authorization time |
+
+### DNS Validation Limitations
+
+**TOCTOU (Time-of-Check to Time-of-Use) Risk:**
+
+DNS validation at registration time does not fully prevent DNS rebinding attacks:
+
+1. Attacker registers with `evil.com` resolving to public IP `1.2.3.4`
+2. After registration, attacker changes DNS to resolve to `10.0.0.1`
+3. Authorization request redirects to internal network (SSRF)
+
+**Mitigation:** Enable `ValidateRedirectURIAtAuthorization=true` to re-validate redirect URIs at authorization time.
+
+**Fail-Open vs Fail-Closed:**
+
+| `DNSValidationStrict` | DNS Failure Behavior | Use Case |
+|-----------------------|----------------------|----------|
+| `false` (default) | Log warning, allow registration | High availability, some risk |
+| `true` | Block registration | High security, potential false positives |
+
+### High-Security Configuration
+
+For maximum security, use the convenience function:
+
+```go
+config := server.HighSecurityRedirectURIConfig()
+
+// Customize as needed
+config.Issuer = "https://auth.example.com"
+config.AllowPrivateIPRedirectURIs = true  // For internal deployments
+```
+
+This enables:
+- `ProductionMode=true`
+- `DNSValidation=true`
+- `DNSValidationStrict=true`
+- `ValidateRedirectURIAtAuthorization=true`
+
+### Blocked URI Schemes
+
+The following schemes are always blocked (XSS/security risk):
+
+- `javascript:` - XSS attacks
+- `data:` - XSS attacks
+- `file:` - Local file access
+- `vbscript:` - Legacy XSS
+- `about:` - Browser internals
+- `ftp:` - Insecure protocol
+
+Customize via `BlockedRedirectSchemes` (not recommended).
 
 ## Legacy Client Support
 
