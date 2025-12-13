@@ -149,29 +149,17 @@ const (
 // This includes IPv4 loopback (entire 127.0.0.0/8 range per RFC 1122),
 // IPv6 loopback (::1), localhost hostname, and 0.0.0.0 (bind-all in dev).
 // Used to determine if HTTP is acceptable for development purposes.
+//
+// Note: This wraps isLoopbackAddress and adds 0.0.0.0 for dev HTTP allowance.
+// The 0.0.0.0 address is not a true loopback but is used in development
+// to bind to all interfaces.
 func isLocalhostHostname(hostname string) bool {
-	// Direct hostname checks
-	if hostname == "localhost" || hostname == "0.0.0.0" {
+	// Allow 0.0.0.0 for development HTTP (bind-all)
+	if hostname == "0.0.0.0" {
 		return true
 	}
-
-	// Strip brackets from IPv6 addresses for parsing
-	// net.ParseIP doesn't handle brackets, but url.Hostname() may include them
-	cleanHostname := hostname
-	if len(hostname) > 2 && hostname[0] == '[' && hostname[len(hostname)-1] == ']' {
-		cleanHostname = hostname[1 : len(hostname)-1]
-	}
-
-	// Parse as IP and check if it's a loopback address
-	// This correctly handles:
-	// - 127.0.0.1 through 127.255.255.255 (entire 127.0.0.0/8 range)
-	// - ::1 (IPv6 loopback)
-	// - ::ffff:127.0.0.1 (IPv4-mapped IPv6 loopback)
-	if ip := net.ParseIP(cleanHostname); ip != nil {
-		return ip.IsLoopback()
-	}
-
-	return false
+	// Delegate to the core loopback check
+	return isLoopbackAddress(hostname)
 }
 
 // validateRedirectURI validates that a redirect URI is registered and secure
