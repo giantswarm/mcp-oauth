@@ -2,7 +2,7 @@ module github.com/giantswarm/mcp-oauth/examples/mcp-2025-11-25
 
 go 1.24.0
 
-require github.com/giantswarm/mcp-oauth v0.2.11
+require github.com/giantswarm/mcp-oauth v0.2.19
 
 replace github.com/giantswarm/mcp-oauth => ../..
 
