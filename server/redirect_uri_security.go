@@ -7,19 +7,9 @@ import (
 	"net"
 	"net/url"
 	"strings"
-)
 
-// isLinkLocalIP checks if an IP address is link-local (unicast or multicast).
-// This includes:
-// - IPv4 link-local: 169.254.0.0/16 (also catches cloud metadata 169.254.169.254)
-// - IPv6 link-local unicast: fe80::/10
-// - IPv6 link-local multicast: ff02::/16
-//
-// Link-local addresses are a significant security concern in cloud environments
-// as they can access instance metadata services (AWS, GCP, Azure).
-func isLinkLocalIP(ip net.IP) bool {
-	return ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
-}
+	"github.com/giantswarm/mcp-oauth/internal/util"
+)
 
 // Redirect URI validation stage constants for metrics.
 const (
@@ -153,16 +143,19 @@ func (s *Server) validateRedirectURIInternal(ctx context.Context, redirectURI st
 
 // validateSchemeNotBlocked checks if a URI scheme is in the blocked list.
 // Blocked schemes are never allowed regardless of configuration (security invariant).
-// The scheme parameter should already be lowercase (caller's responsibility).
+// Both the scheme parameter and blocked list entries are normalized to lowercase
+// for case-insensitive comparison (defense in depth).
 // The rawURI parameter is sanitized automatically when creating the error.
 func (s *Server) validateSchemeNotBlocked(scheme, rawURI string) error {
+	// Normalize scheme to lowercase for case-insensitive comparison (defense in depth)
+	normalizedScheme := strings.ToLower(scheme)
 	for _, blocked := range s.Config.BlockedRedirectSchemes {
-		if scheme == strings.ToLower(blocked) {
+		if normalizedScheme == strings.ToLower(blocked) {
 			return newRedirectURISecurityError(
 				RedirectURIErrorCategoryBlockedScheme,
 				rawURI,
 				fmt.Sprintf("scheme '%s' is in blocked list", blocked),
-				fmt.Sprintf("redirect_uri: scheme '%s' is blocked for security reasons", scheme),
+				fmt.Sprintf("redirect_uri: scheme '%s' is blocked for security reasons", normalizedScheme),
 			)
 		}
 	}
@@ -219,6 +212,11 @@ func (s *Server) validateHTTPRedirectURI(ctx context.Context, parsed *url.URL, r
 // validateIPAddress checks if an IP address is allowed based on security configuration.
 // This prevents SSRF attacks to internal networks and cloud metadata services.
 // The rawURI parameter is sanitized automatically when creating errors.
+//
+// IMPORTANT: This function does NOT check for loopback addresses. Loopback handling is
+// done separately by validateHTTPRedirectURI to allow HTTP on loopback per RFC 8252
+// Section 7.3. The caller must check isLoopbackAddress() before calling this function
+// if loopback addresses need special treatment (e.g., allowing HTTP).
 func (s *Server) validateIPAddress(ip net.IP, rawURI string) error {
 	// Check for unspecified addresses (0.0.0.0, ::)
 	// These are always blocked as they can bind to all interfaces or have undefined behavior
@@ -245,7 +243,7 @@ func (s *Server) validateIPAddress(ip net.IP, rawURI string) error {
 
 	// Check for link-local addresses (169.254.x.x, fe80::/10) and link-local multicast
 	// This is critical for cloud security - blocks access to metadata services (169.254.169.254)
-	if isLinkLocalIP(ip) && !s.Config.AllowLinkLocalRedirectURIs {
+	if util.IsLinkLocal(ip) && !s.Config.AllowLinkLocalRedirectURIs {
 		return newRedirectURISecurityError(
 			RedirectURIErrorCategoryLinkLocal,
 			rawURI,
@@ -324,7 +322,7 @@ func (s *Server) validateHostnameWithDNS(ctx context.Context, hostname, rawURI s
 		}
 
 		// Check for link-local IPs (unicast and multicast)
-		if isLinkLocalIP(ip) && !s.Config.AllowLinkLocalRedirectURIs {
+		if util.IsLinkLocal(ip) && !s.Config.AllowLinkLocalRedirectURIs {
 			return newRedirectURISecurityError(
 				RedirectURIErrorCategoryDNSLinkLocal,
 				rawURI,
@@ -395,8 +393,12 @@ func GetRedirectURIErrorCategory(err error) string {
 // recordRedirectURISecurityMetric records a redirect URI security rejection metric.
 // This is called internally when validation fails.
 func (s *Server) recordRedirectURISecurityMetric(ctx context.Context, category, stage string) {
-	if s.Instrumentation != nil && s.Instrumentation.Metrics() != nil {
-		s.Instrumentation.Metrics().RecordRedirectURISecurityRejected(ctx, category, stage)
+	if s.Instrumentation == nil {
+		return
+	}
+	// Store the result to avoid calling Metrics() twice (defensive against caching differences)
+	if m := s.Instrumentation.Metrics(); m != nil {
+		m.RecordRedirectURISecurityRejected(ctx, category, stage)
 	}
 }
 

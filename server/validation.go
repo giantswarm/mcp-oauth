@@ -5,7 +5,6 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
-	"net"
 	"net/url"
 	"regexp"
 	"strings"
@@ -400,25 +399,10 @@ func validateCustomScheme(scheme string, allowedSchemes []string) error {
 //
 // Note: This function does NOT consider 0.0.0.0 as loopback (it's "unspecified").
 // For development HTTP allowance that includes 0.0.0.0, use isLocalhostHostname.
+//
+// This delegates to the shared util.IsLoopbackHostname for DRY.
 func isLoopbackAddress(hostname string) bool {
-	// Handle "localhost" hostname directly
-	if hostname == "localhost" {
-		return true
-	}
-
-	// Normalize hostname (strip brackets from IPv6 like [::1])
-	cleanHostname := strings.Trim(hostname, "[]")
-	cleanHostname = strings.TrimSpace(cleanHostname)
-
-	// Parse as IP and use stdlib's IsLoopback for correct handling of:
-	// - 127.0.0.0/8 range (all 16M addresses)
-	// - ::1 (IPv6 loopback)
-	// - ::ffff:127.0.0.1 (IPv4-mapped IPv6 loopback)
-	if ip := net.ParseIP(cleanHostname); ip != nil {
-		return ip.IsLoopback()
-	}
-
-	return false
+	return util.IsLoopbackHostname(hostname)
 }
 
 // validateRedirectURISecurityEnhanced performs comprehensive security validation on redirect URIs
