@@ -391,9 +391,9 @@ type Config struct {
 	AllowLinkLocalRedirectURIs bool
 
 	// BlockedRedirectSchemes lists URI schemes that are always rejected for security.
-	// These schemes can be used for XSS attacks (javascript:, data:) or local file access (file:).
+	// These schemes can be used for XSS attacks (javascript:, data:, blob:) or local file/app access (file:, ms-appx:).
 	// This is applied in ALL modes (production and development).
-	// Default: ["javascript", "data", "file", "vbscript", "about", "ftp"]
+	// Default: ["javascript", "data", "file", "vbscript", "about", "ftp", "blob", "ms-appx", "ms-appx-web"]
 	// Override to customize blocked schemes (empty list uses defaults).
 	BlockedRedirectSchemes []string
 

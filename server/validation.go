@@ -41,10 +41,24 @@ var (
 	AllowedHTTPSchemes = []string{SchemeHTTP, SchemeHTTPS}
 
 	// DefaultBlockedRedirectSchemes is the canonical list of URI schemes that are blocked
-	// for redirect URIs. These schemes can be used for XSS attacks (javascript:, data:)
-	// or local file access (file:). This is the single source of truth for blocked schemes.
+	// for redirect URIs. These schemes can be used for XSS attacks (javascript:, data:, blob:)
+	// or local file/app access (file:, ms-appx:). This is the single source of truth for blocked schemes.
 	// Used by Config.BlockedRedirectSchemes default and validateCustomScheme.
-	DefaultBlockedRedirectSchemes = []string{"javascript", "data", "file", "vbscript", "about", "ftp"}
+	//
+	// Blocked schemes:
+	// - javascript: XSS attacks via script execution
+	// - data: XSS attacks via inline content
+	// - file: Local filesystem access
+	// - vbscript: Legacy XSS (IE)
+	// - about: Browser internals access
+	// - ftp: Insecure protocol
+	// - blob: XSS via Blob URLs (browser exploit vector)
+	// - ms-appx: Windows app package access
+	// - ms-appx-web: Windows app web content access
+	DefaultBlockedRedirectSchemes = []string{
+		"javascript", "data", "file", "vbscript", "about", "ftp",
+		"blob", "ms-appx", "ms-appx-web",
+	}
 
 	// DangerousSchemes is an alias for backward compatibility.
 	// Deprecated: Use DefaultBlockedRedirectSchemes instead.

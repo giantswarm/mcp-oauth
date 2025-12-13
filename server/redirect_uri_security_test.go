@@ -39,7 +39,7 @@ func newTestServerWithSecurityConfig(productionMode, allowLocalhost, allowPrivat
 		AllowPrivateIPRedirectURIs: allowPrivateIP,
 		AllowLinkLocalRedirectURIs: allowLinkLocal,
 		// Always set these explicitly for tests
-		BlockedRedirectSchemes: []string{"javascript", "data", "file", "vbscript", "about", "ftp"},
+		BlockedRedirectSchemes: []string{"javascript", "data", "file", "vbscript", "about", "ftp", "blob", "ms-appx", "ms-appx-web"},
 		DNSResolver:            mockResolver, // Use mock resolver to avoid real DNS
 	}
 
@@ -90,6 +90,24 @@ func TestValidateRedirectURIForRegistration_BlockedSchemes(t *testing.T) {
 		{
 			name:        "ftp scheme blocked",
 			redirectURI: "ftp://files.example.com/path",
+			wantErr:     true,
+			errCategory: RedirectURIErrorCategoryBlockedScheme,
+		},
+		{
+			name:        "blob scheme blocked",
+			redirectURI: "blob:https://example.com/uuid",
+			wantErr:     true,
+			errCategory: RedirectURIErrorCategoryBlockedScheme,
+		},
+		{
+			name:        "ms-appx scheme blocked",
+			redirectURI: "ms-appx://package/path",
+			wantErr:     true,
+			errCategory: RedirectURIErrorCategoryBlockedScheme,
+		},
+		{
+			name:        "ms-appx-web scheme blocked",
+			redirectURI: "ms-appx-web://package/path",
 			wantErr:     true,
 			errCategory: RedirectURIErrorCategoryBlockedScheme,
 		},

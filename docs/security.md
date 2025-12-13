@@ -337,14 +337,29 @@ DNS rebinding attacks are mitigated by re-validating redirect URIs at authorizat
 
 The following schemes are always blocked (XSS/security risk):
 
-- `javascript:` - XSS attacks
-- `data:` - XSS attacks
-- `file:` - Local file access
-- `vbscript:` - Legacy XSS
-- `about:` - Browser internals
+- `javascript:` - XSS attacks via script execution
+- `data:` - XSS attacks via inline content
+- `file:` - Local filesystem access
+- `vbscript:` - Legacy XSS (Internet Explorer)
+- `about:` - Browser internals access
 - `ftp:` - Insecure protocol
+- `blob:` - XSS via Blob URLs (browser exploit vector)
+- `ms-appx:` - Windows app package access
+- `ms-appx-web:` - Windows app web content access
 
 Customize via `BlockedRedirectSchemes` (not recommended).
+
+### Known Limitations
+
+**IPv6 Zone IDs:**
+
+IPv6 addresses with zone IDs (e.g., `fe80::1%eth0`) cannot be parsed by Go's `net.ParseIP()`. When such addresses appear in redirect URIs:
+
+- They are treated as hostnames rather than IP addresses
+- If DNS validation is disabled, they may pass validation
+- If DNS validation is enabled, they will fail DNS lookup (blocking registration in strict mode)
+
+For maximum security, keep DNS validation enabled (`DNSValidation=true`, `DNSValidationStrict=true`) to ensure these edge cases are properly handled.
 
 ## Legacy Client Support
 
