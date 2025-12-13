@@ -108,15 +108,15 @@ func (s *Server) ValidateRedirectURIForRegistration(ctx context.Context, redirec
 
 // validateSchemeNotBlocked checks if a URI scheme is in the blocked list.
 // Blocked schemes are never allowed regardless of configuration (security invariant).
+// The scheme parameter should already be lowercase (caller's responsibility).
 // The sanitizedURI parameter is used for consistent error logging.
 func (s *Server) validateSchemeNotBlocked(scheme, sanitizedURI string) error {
-	schemeLower := strings.ToLower(scheme)
 	for _, blocked := range s.Config.BlockedRedirectSchemes {
-		if schemeLower == strings.ToLower(blocked) {
+		if scheme == strings.ToLower(blocked) {
 			return &RedirectURISecurityError{
 				Category:      RedirectURIErrorCategoryBlockedScheme,
 				URI:           sanitizedURI,
-				Reason:        fmt.Sprintf("scheme '%s' is in blocked list", scheme),
+				Reason:        fmt.Sprintf("scheme '%s' is in blocked list", blocked),
 				ClientMessage: fmt.Sprintf("redirect_uri: scheme '%s' is blocked for security reasons", scheme),
 			}
 		}
@@ -405,6 +405,7 @@ func (s *Server) ValidateRedirectURIAtAuthorizationTime(ctx context.Context, red
 // Use this as a starting point and adjust for your environment:
 //
 //	config := server.HighSecurityRedirectURIConfig()
+//	config.Issuer = "https://auth.example.com"
 //	config.AllowPrivateIPRedirectURIs = true  // For internal deployments
 func HighSecurityRedirectURIConfig() *Config {
 	return &Config{

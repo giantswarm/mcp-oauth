@@ -68,6 +68,7 @@ func (s *Server) RegisterClient(ctx context.Context, clientName, clientType, tok
 			"client_ip", clientIP)
 		return nil, "", fmt.Errorf("invalid_redirect_uri: %w", err)
 	}
+
 	// Generate client ID using oauth2.GenerateVerifier (same quality)
 	clientID := generateRandomToken()
 

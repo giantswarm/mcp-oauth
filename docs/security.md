@@ -245,85 +245,93 @@ Use only in trusted development environments.
 
 ## Redirect URI Security
 
-The library provides comprehensive redirect URI validation to prevent SSRF and open redirect attacks.
+The library provides comprehensive redirect URI validation to prevent SSRF and open redirect attacks. **All security features are enabled by default** following the library's principle of "secure by default, explicit opt-out for less security."
 
-### Production Mode
+### Secure by Default
 
-Enable strict security for production deployments:
-
-```go
-config := &server.Config{
-    ProductionMode:             true,  // HTTPS required for non-loopback
-    AllowLocalhostRedirectURIs: true,  // RFC 8252 native app support
-    AllowPrivateIPRedirectURIs: false, // Block SSRF to internal networks
-    AllowLinkLocalRedirectURIs: false, // Block cloud metadata SSRF
-}
-```
-
-### DNS Validation (Strict Mode)
-
-Protect against DNS rebinding attacks with fail-closed validation:
-
-```go
-config := &server.Config{
-    // Enable DNS validation
-    DNSValidation:       true,
-    DNSValidationStrict: true,  // Fail-closed: DNS failures block registration
-    DNSValidationTimeout: 2 * time.Second,
-    
-    // Enable authorization-time re-validation (TOCTOU protection)
-    ValidateRedirectURIAtAuthorization: true,
-}
-```
-
-**Security Controls:**
+The following security controls are **automatically enabled**:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `ProductionMode` | `false` | HTTPS required for non-loopback URIs |
-| `AllowLocalhostRedirectURIs` | `false` | Allow localhost/loopback per RFC 8252 |
-| `AllowPrivateIPRedirectURIs` | `false` | Block RFC 1918 private IPs |
-| `AllowLinkLocalRedirectURIs` | `false` | Block 169.254.x.x/fe80:: (cloud SSRF) |
-| `DNSValidation` | `false` | Resolve hostnames to check IPs |
-| `DNSValidationStrict` | `false` | Fail-closed on DNS failures |
-| `ValidateRedirectURIAtAuthorization` | `false` | Re-validate at authorization time |
+| `ProductionMode` | `true` | HTTPS required for non-loopback URIs |
+| `DNSValidation` | `true` | Resolve hostnames to check IPs |
+| `DNSValidationStrict` | `true` | Fail-closed on DNS failures |
+| `ValidateRedirectURIAtAuthorization` | `true` | Re-validate at authorization time (TOCTOU protection) |
+| `AllowLocalhostRedirectURIs` | `false` | Loopback blocked by default |
+| `AllowPrivateIPRedirectURIs` | `false` | RFC 1918 private IPs blocked |
+| `AllowLinkLocalRedirectURIs` | `false` | 169.254.x.x/fe80:: blocked (cloud SSRF) |
 
-### DNS Validation Limitations
+### Escape Hatches for Less Strict Validation
 
-**TOCTOU (Time-of-Check to Time-of-Use) Risk:**
+If you need to reduce security for specific use cases, use the `Allow*` flags:
 
-DNS validation at registration time does not fully prevent DNS rebinding attacks:
+```go
+config := &server.Config{
+    // Native app support (RFC 8252) - allows HTTP on localhost/loopback
+    AllowLocalhostRedirectURIs: true,
+    
+    // Internal/VPN deployments - allows RFC 1918 private IPs
+    // WARNING: Enables SSRF to internal networks
+    AllowPrivateIPRedirectURIs: true,
+    
+    // Rarely needed - allows link-local addresses
+    // WARNING: Enables SSRF to cloud metadata services (169.254.169.254)
+    AllowLinkLocalRedirectURIs: true,
+}
+```
 
-1. Attacker registers with `evil.com` resolving to public IP `1.2.3.4`
-2. After registration, attacker changes DNS to resolve to `10.0.0.1`
-3. Authorization request redirects to internal network (SSRF)
+### Disabling Security Features (Development Only)
 
-**Mitigation:** Enable `ValidateRedirectURIAtAuthorization=true` to re-validate redirect URIs at authorization time.
+To completely disable security features (e.g., for local development), use the explicit `Disable*` fields:
 
-**Fail-Open vs Fail-Closed:**
+```go
+config := &server.Config{
+    // Disable HTTPS requirement for non-loopback (development only!)
+    DisableProductionMode: true,
+    
+    // Disable DNS validation (if latency is unacceptable)
+    DisableDNSValidation: true,
+    
+    // Use fail-open DNS validation (if DNS is unreliable)
+    DisableDNSValidationStrict: true,
+    
+    // Skip authorization-time re-validation (if latency is critical)
+    DisableAuthorizationTimeValidation: true,
+}
+```
 
-| `DNSValidationStrict` | DNS Failure Behavior | Use Case |
-|-----------------------|----------------------|----------|
-| `false` (default) | Log warning, allow registration | High availability, some risk |
-| `true` | Block registration | High security, potential false positives |
+**WARNING:** These `Disable*` fields significantly weaken security. Only use them in trusted development environments, never in production.
 
-### High-Security Configuration
+### Native App Support (RFC 8252)
 
-For maximum security, use the convenience function:
+For native/CLI apps that need localhost redirects:
 
 ```go
 config := server.HighSecurityRedirectURIConfig()
-
-// Customize as needed
 config.Issuer = "https://auth.example.com"
-config.AllowPrivateIPRedirectURIs = true  // For internal deployments
+// AllowLocalhostRedirectURIs is already true in HighSecurityRedirectURIConfig
 ```
 
-This enables:
-- `ProductionMode=true`
-- `DNSValidation=true`
-- `DNSValidationStrict=true`
-- `ValidateRedirectURIAtAuthorization=true`
+Or manually:
+
+```go
+config := &server.Config{
+    AllowLocalhostRedirectURIs: true,  // Allows http://localhost, http://127.0.0.1, http://[::1]
+}
+```
+
+### DNS Validation Details
+
+DNS validation is enabled by default and operates in **strict (fail-closed) mode**:
+
+- Hostnames in redirect URIs are resolved via DNS
+- If the resolved IP is private/link-local, registration is rejected
+- If DNS resolution fails, registration is rejected (strict mode)
+- At authorization time, redirect URIs are re-validated to catch DNS rebinding attacks
+
+**TOCTOU (Time-of-Check to Time-of-Use) Protection:**
+
+DNS rebinding attacks are mitigated by re-validating redirect URIs at authorization time (`ValidateRedirectURIAtAuthorization=true`), not just at registration.
 
 ### Blocked URI Schemes
 

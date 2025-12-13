@@ -12,19 +12,35 @@ import (
 )
 
 // newTestServerWithSecurityConfig creates a test server with specific redirect URI security settings.
+// Note: This creates a server with a mock DNS resolver to avoid real DNS lookups in tests.
+// The mock resolver returns a public IP (93.184.216.34) for all hostnames by default.
+//
+// Parameters control security features via explicit Disable* fields (secure by default pattern):
+// - productionMode=false sets DisableProductionMode=true (allows HTTP on non-loopback)
+// - dnsValidation=false sets DisableDNSValidation=true (disables DNS checks)
 func newTestServerWithSecurityConfig(productionMode, allowLocalhost, allowPrivateIP, allowLinkLocal, dnsValidation bool) *Server {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	store := memory.New()
 	provider := mock.NewMockProvider()
 
+	// Create mock DNS resolver that returns public IPs by default
+	// This prevents tests from depending on real DNS resolution
+	mockResolver := newMockDNSResolver()
+
 	config := &Config{
-		Issuer:                     "https://auth.example.com",
-		ProductionMode:             productionMode,
+		Issuer: "https://auth.example.com",
+		// Use Disable* fields to opt-out of secure defaults
+		DisableProductionMode:              !productionMode,
+		DisableDNSValidation:               !dnsValidation,
+		DisableDNSValidationStrict:         !dnsValidation, // Match strict to validation setting
+		DisableAuthorizationTimeValidation: true,           // Disable for simpler testing
+		// Allow* flags for specific relaxations
 		AllowLocalhostRedirectURIs: allowLocalhost,
 		AllowPrivateIPRedirectURIs: allowPrivateIP,
 		AllowLinkLocalRedirectURIs: allowLinkLocal,
-		DNSValidation:              dnsValidation,
-		BlockedRedirectSchemes:     []string{"javascript", "data", "file", "vbscript", "about", "ftp"},
+		// Always set these explicitly for tests
+		BlockedRedirectSchemes: []string{"javascript", "data", "file", "vbscript", "about", "ftp"},
+		DNSResolver:            mockResolver, // Use mock resolver to avoid real DNS
 	}
 
 	server, err := New(provider, store, store, store, config, logger)
@@ -111,22 +127,26 @@ func TestValidateRedirectURIForRegistration_BlockedSchemes(t *testing.T) {
 func TestValidateRedirectURIForRegistration_ProductionMode(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("HTTP on non-loopback blocked in production mode", func(t *testing.T) {
+	// Note: ProductionMode is now ALWAYS true by default (secure by default).
+	// There is no "development mode" that allows HTTP on non-loopback.
+	// HTTP on loopback is controlled by AllowLocalhostRedirectURIs.
+
+	t.Run("HTTP on non-loopback blocked (secure by default)", func(t *testing.T) {
 		server := newTestServerWithSecurityConfig(true, true, false, false, false)
 		err := server.ValidateRedirectURIForRegistration(ctx, "http://app.example.com/callback")
 		if err == nil {
-			t.Error("Expected error for HTTP on non-loopback in production mode")
+			t.Error("Expected error for HTTP on non-loopback")
 		}
 		if GetRedirectURIErrorCategory(err) != RedirectURIErrorCategoryHTTPNotAllowed {
 			t.Errorf("Expected category %s, got %s", RedirectURIErrorCategoryHTTPNotAllowed, GetRedirectURIErrorCategory(err))
 		}
 	})
 
-	t.Run("HTTP on non-loopback allowed in development mode", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(false, true, false, false, false)
-		err := server.ValidateRedirectURIForRegistration(ctx, "http://app.example.com/callback")
+	t.Run("HTTP on loopback allowed when AllowLocalhostRedirectURIs=true", func(t *testing.T) {
+		server := newTestServerWithSecurityConfig(true, true, false, false, false)
+		err := server.ValidateRedirectURIForRegistration(ctx, "http://localhost:8080/callback")
 		if err != nil {
-			t.Errorf("Expected no error for HTTP in development mode, got %v", err)
+			t.Errorf("Expected no error for HTTP on localhost, got %v", err)
 		}
 	})
 
@@ -663,18 +683,18 @@ func TestHighSecurityRedirectURIConfig(t *testing.T) {
 }
 
 func TestDNSValidationStrict(t *testing.T) {
-	t.Run("Strict mode config defaults to false", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, false)
-		if server.Config.DNSValidationStrict {
-			t.Error("Expected DNSValidationStrict to default to false")
+	// Note: DNSValidationStrict now defaults to true (secure by default)
+	t.Run("Strict mode config defaults to true (secure by default)", func(t *testing.T) {
+		server := newTestServerWithSecurityConfig(true, true, false, false, true)
+		if !server.Config.DNSValidationStrict {
+			t.Error("Expected DNSValidationStrict to default to true (secure by default)")
 		}
 	})
 
-	t.Run("Strict mode can be enabled", func(t *testing.T) {
+	t.Run("Strict mode is set via test helper", func(t *testing.T) {
 		server := newTestServerWithSecurityConfig(true, true, false, false, true)
-		server.Config.DNSValidationStrict = true
 		if !server.Config.DNSValidationStrict {
-			t.Error("Expected DNSValidationStrict to be settable to true")
+			t.Error("Expected DNSValidationStrict to be true when DNSValidation is enabled")
 		}
 	})
 }

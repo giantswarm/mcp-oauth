@@ -360,10 +360,15 @@ type Config struct {
 	// - Private IP addresses blocked in redirect URIs (unless AllowPrivateIPRedirectURIs=true)
 	// - Link-local addresses blocked (unless AllowLinkLocalRedirectURIs=true)
 	// - Dangerous URI schemes blocked (javascript:, data:, file:, etc.)
-	// When false, relaxed validation for development (still enforces dangerous scheme blocking).
-	// Default: false (Go zero-value; set to true explicitly for production deployments)
-	// WARNING: A security warning is logged when ProductionMode=false to remind operators.
+	// Default: true (secure by default - set automatically by applySecurityDefaults)
+	// To disable for development, set DisableProductionMode=true instead.
 	ProductionMode bool
+
+	// DisableProductionMode explicitly disables ProductionMode for development environments.
+	// WARNING: Disabling ProductionMode significantly weakens redirect URI security.
+	// Only set this to true for local development where you need HTTP on non-loopback hosts.
+	// Default: false (ProductionMode is enabled)
+	DisableProductionMode bool
 
 	// AllowLocalhostRedirectURIs allows http://localhost and http://127.0.0.1 redirect URIs
 	// even in ProductionMode. Required for native apps per RFC 8252.
@@ -395,22 +400,32 @@ type Config struct {
 	// DNSValidation enables DNS resolution of redirect URI hostnames to validate
 	// they don't resolve to private/internal IPs (defense against DNS rebinding attacks).
 	// When enabled, hostnames are resolved and the resulting IP is checked.
-	// WARNING: DNS lookups add latency to client registration and can fail.
-	// Consider using this for high-security environments with reliable DNS.
-	// Default: false (DNS lookup can have performance implications)
+	// Default: true (secure by default - set automatically by applySecurityDefaults)
+	// To disable, set DisableDNSValidation=true instead.
 	DNSValidation bool
+
+	// DisableDNSValidation explicitly disables DNS validation for redirect URI hostnames.
+	// WARNING: Disabling DNS validation allows potential DNS rebinding attacks.
+	// Only set this to true if DNS lookup latency during client registration is unacceptable.
+	// Default: false (DNSValidation is enabled)
+	DisableDNSValidation bool
 
 	// DNSValidationStrict enables fail-closed behavior for DNS validation.
 	// When true AND DNSValidation=true:
 	// - DNS resolution failures BLOCK client registration (fail-closed)
 	// - This prevents attackers from bypassing validation by causing DNS failures
-	// When false (default):
+	// When false:
 	// - DNS resolution failures are logged but registration is allowed (fail-open)
-	// - This prevents false positives for legitimate hostnames with temporary DNS issues
-	// SECURITY: Enable this for high-security environments where DNS is reliable.
-	// WARNING: May cause legitimate registration failures during DNS outages.
-	// Default: false (fail-open for availability)
+	// - This may allow bypass of DNS validation via intentional DNS failures
+	// Default: true (secure by default - set automatically by applySecurityDefaults)
+	// To disable strict mode, set DisableDNSValidationStrict=true instead.
 	DNSValidationStrict bool
+
+	// DisableDNSValidationStrict explicitly disables fail-closed DNS validation.
+	// WARNING: Disabling strict mode allows potential DNS validation bypass via intentional failures.
+	// Only set this to true if DNS reliability issues cause unacceptable registration failures.
+	// Default: false (DNSValidationStrict is enabled)
+	DisableDNSValidationStrict bool
 
 	// DNSValidationTimeout is the timeout for DNS resolution when DNSValidation=true.
 	// Prevents slow DNS from blocking registration.
@@ -430,10 +445,15 @@ type Config struct {
 	// 2. Later changes DNS to resolve to an internal IP (DNS rebinding)
 	// When enabled, the same security checks applied at registration are repeated
 	// at authorization time, catching DNS rebinding attacks.
-	// SECURITY: Recommended for high-security environments.
-	// WARNING: Adds latency to authorization requests (DNS lookups if DNSValidation=true).
-	// Default: false (validation only at registration for performance)
+	// Default: true (secure by default - set automatically by applySecurityDefaults)
+	// To disable, set DisableAuthorizationTimeValidation=true instead.
 	ValidateRedirectURIAtAuthorization bool
+
+	// DisableAuthorizationTimeValidation explicitly disables redirect URI validation at authorization time.
+	// WARNING: Disabling this allows DNS rebinding attacks between registration and use.
+	// Only set this to true if authorization latency is critical and you accept the TOCTOU risk.
+	// Default: false (ValidateRedirectURIAtAuthorization is enabled)
+	DisableAuthorizationTimeValidation bool
 
 	// AllowInsecureHTTP allows running OAuth server over HTTP (INSECURE - development only)
 	// WARNING: OAuth over HTTP exposes all tokens and credentials to network interception
@@ -1024,11 +1044,26 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 		config.MinStateLength = 32 // OAuth 2.1: 128+ bits entropy recommended, 32 chars = 192 bits
 	}
 
-	// Redirect URI security defaults
-	// Note: ProductionMode and AllowLocalhostRedirectURIs default to false (Go zero-values).
-	// We can't distinguish between unset and explicitly set to false in Go, so we log
-	// security warnings in logSecurityWarnings to alert operators about insecure configurations.
-	// Operators should explicitly set ProductionMode=true for production deployments.
+	// Redirect URI security defaults - SECURE BY DEFAULT
+	// These security features are enabled by default following the library's principle
+	// of "secure by default, explicit opt-out for less security."
+	//
+	// Users who need to disable security features must use the explicit Disable* fields.
+	// This pattern works with Go's zero-value (false = secure default).
+	//
+	// Security features enabled unless explicitly disabled:
+	if !config.DisableProductionMode {
+		config.ProductionMode = true
+	}
+	if !config.DisableDNSValidation {
+		config.DNSValidation = true
+	}
+	if !config.DisableDNSValidationStrict {
+		config.DNSValidationStrict = true
+	}
+	if !config.DisableAuthorizationTimeValidation {
+		config.ValidateRedirectURIAtAuthorization = true
+	}
 	//
 	// Default blocked schemes (always dangerous) - use canonical list from validation.go
 	if len(config.BlockedRedirectSchemes) == 0 {
@@ -1580,12 +1615,44 @@ func logSecurityWarnings(config *Config, logger *slog.Logger) {
 			"learn_more", "https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-10#section-4.1.1")
 	}
 
-	// Redirect URI security warnings
-	if !config.ProductionMode {
+	// Redirect URI security logging
+	// Security features are enabled by default. Warn when Disable* fields are used.
+	logger.Info("Redirect URI security status",
+		"production_mode", config.ProductionMode,
+		"dns_validation", config.DNSValidation,
+		"dns_validation_strict", config.DNSValidationStrict,
+		"authorization_time_validation", config.ValidateRedirectURIAtAuthorization,
+		"dns_timeout", config.DNSValidationTimeout)
+
+	// Warn about explicitly disabled security features
+	if config.DisableProductionMode {
 		logger.Warn("⚠️  SECURITY WARNING: ProductionMode is DISABLED",
-			"risk", "Relaxed redirect URI validation allows insecure configurations",
-			"recommendation", "Set ProductionMode=true for production deployments",
+			"risk", "HTTP allowed on non-loopback hosts, relaxed redirect URI validation",
+			"recommendation", "Only disable for local development environments",
 			"learn_more", "https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics#section-4.1")
+	}
+	if config.DisableDNSValidation {
+		logger.Warn("⚠️  SECURITY WARNING: DNS validation is DISABLED",
+			"risk", "DNS rebinding attacks possible - hostnames not validated",
+			"recommendation", "Only disable if DNS lookup latency is unacceptable",
+			"learn_more", "https://owasp.org/www-community/attacks/Server_Side_Request_Forgery")
+	}
+	if config.DisableDNSValidationStrict {
+		logger.Warn("⚠️  SECURITY WARNING: DNS validation strict mode is DISABLED",
+			"risk", "DNS failures allow registration (fail-open) - potential bypass",
+			"recommendation", "Only disable if DNS reliability issues cause problems")
+	}
+	if config.DisableAuthorizationTimeValidation {
+		logger.Warn("⚠️  SECURITY WARNING: Authorization-time validation is DISABLED",
+			"risk", "DNS rebinding attacks possible after registration (TOCTOU)",
+			"recommendation", "Only disable if authorization latency is critical")
+	}
+
+	// Info about Allow* escape hatches
+	if config.AllowLocalhostRedirectURIs {
+		logger.Info("Localhost redirect URIs are ALLOWED (RFC 8252 native app support)",
+			"note", "HTTP allowed on loopback for native apps",
+			"learn_more", "https://datatracker.ietf.org/doc/html/rfc8252#section-7.3")
 	}
 	if config.AllowPrivateIPRedirectURIs {
 		logger.Warn("⚠️  SECURITY WARNING: Private IP redirect URIs are ALLOWED",
@@ -1599,38 +1666,5 @@ func logSecurityWarnings(config *Config, logger *slog.Logger) {
 			"recommendation", "Disable unless specifically required",
 			"impact", "Could expose cloud instance credentials and sensitive metadata",
 			"learn_more", "https://owasp.org/www-community/attacks/Server_Side_Request_Forgery")
-	}
-	if config.DNSValidation {
-		mode := "permissive (fail-open)"
-		if config.DNSValidationStrict {
-			mode = "strict (fail-closed)"
-		}
-		logger.Info("DNS validation enabled for redirect URIs",
-			"timeout", config.DNSValidationTimeout,
-			"mode", mode,
-			"benefit", "Defense against DNS rebinding attacks",
-			"caveat", "May add latency to client registration")
-		if !config.DNSValidationStrict {
-			logger.Warn("DNS validation is fail-open (DNSValidationStrict=false)",
-				"risk", "DNS failures allow registration (potential bypass)",
-				"recommendation", "Set DNSValidationStrict=true for high-security environments")
-		}
-	}
-	if config.ValidateRedirectURIAtAuthorization {
-		logger.Info("Authorization-time redirect URI validation enabled",
-			"benefit", "Defense against TOCTOU/DNS rebinding attacks",
-			"caveat", "Adds latency to authorization requests")
-	} else if config.DNSValidation {
-		logger.Info("Authorization-time redirect URI validation is DISABLED",
-			"risk", "DNS rebinding attacks possible after registration",
-			"recommendation", "Set ValidateRedirectURIAtAuthorization=true for TOCTOU protection")
-	}
-	// Only log localhost blocking when ProductionMode is enabled (strict security)
-	// In development mode, localhost is expected to be controlled differently
-	if config.ProductionMode && !config.AllowLocalhostRedirectURIs {
-		logger.Info("Localhost redirect URIs are BLOCKED (strict mode)",
-			"impact", "Native apps (RFC 8252) will not work",
-			"recommendation", "Set AllowLocalhostRedirectURIs=true for native app support",
-			"learn_more", "https://datatracker.ietf.org/doc/html/rfc8252#section-7.3")
 	}
 }
