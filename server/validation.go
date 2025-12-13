@@ -5,7 +5,6 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
-	"net"
 	"net/url"
 	"regexp"
 	"strings"
@@ -40,14 +39,32 @@ var (
 	// AllowedHTTPSchemes lists allowed HTTP-based redirect URI schemes
 	AllowedHTTPSchemes = []string{SchemeHTTP, SchemeHTTPS}
 
-	// DangerousSchemes lists URI schemes that must never be allowed for security
-	DangerousSchemes = []string{"javascript", "data", "file", "vbscript", "about"}
+	// DefaultBlockedRedirectSchemes is the canonical list of URI schemes that are blocked
+	// for redirect URIs. These schemes can be used for XSS attacks (javascript:, data:, blob:)
+	// or local file/app access (file:, ms-appx:). This is the single source of truth for blocked schemes.
+	// Used by Config.BlockedRedirectSchemes default and validateCustomScheme.
+	//
+	// Blocked schemes:
+	// - javascript: XSS attacks via script execution
+	// - data: XSS attacks via inline content
+	// - file: Local filesystem access
+	// - vbscript: Legacy XSS (IE)
+	// - about: Browser internals access
+	// - ftp: Insecure protocol
+	// - blob: XSS via Blob URLs (browser exploit vector)
+	// - ms-appx: Windows app package access
+	// - ms-appx-web: Windows app web content access
+	DefaultBlockedRedirectSchemes = []string{
+		"javascript", "data", "file", "vbscript", "about", "ftp",
+		"blob", "ms-appx", "ms-appx-web",
+	}
+
+	// DangerousSchemes is an alias for backward compatibility.
+	// Deprecated: Use DefaultBlockedRedirectSchemes instead.
+	DangerousSchemes = DefaultBlockedRedirectSchemes
 
 	// DefaultRFC3986SchemePattern is the default regex pattern for custom URI schemes (RFC 3986)
 	DefaultRFC3986SchemePattern = []string{"^[a-z][a-z0-9+.-]*$"}
-
-	// LoopbackAddresses lists recognized loopback addresses for development
-	LoopbackAddresses = []string{"localhost", "127.0.0.1", "::1", "[::1]"}
 )
 
 // validateHTTPSEnforcement ensures that the OAuth server is running over HTTPS
@@ -131,29 +148,17 @@ const (
 // This includes IPv4 loopback (entire 127.0.0.0/8 range per RFC 1122),
 // IPv6 loopback (::1), localhost hostname, and 0.0.0.0 (bind-all in dev).
 // Used to determine if HTTP is acceptable for development purposes.
+//
+// Note: This wraps isLoopbackAddress and adds 0.0.0.0 for dev HTTP allowance.
+// The 0.0.0.0 address is not a true loopback but is used in development
+// to bind to all interfaces.
 func isLocalhostHostname(hostname string) bool {
-	// Direct hostname checks
-	if hostname == "localhost" || hostname == "0.0.0.0" {
+	// Allow 0.0.0.0 for development HTTP (bind-all)
+	if hostname == "0.0.0.0" {
 		return true
 	}
-
-	// Strip brackets from IPv6 addresses for parsing
-	// net.ParseIP doesn't handle brackets, but url.Hostname() may include them
-	cleanHostname := hostname
-	if len(hostname) > 2 && hostname[0] == '[' && hostname[len(hostname)-1] == ']' {
-		cleanHostname = hostname[1 : len(hostname)-1]
-	}
-
-	// Parse as IP and check if it's a loopback address
-	// This correctly handles:
-	// - 127.0.0.1 through 127.255.255.255 (entire 127.0.0.0/8 range)
-	// - ::1 (IPv6 loopback)
-	// - ::ffff:127.0.0.1 (IPv4-mapped IPv6 loopback)
-	if ip := net.ParseIP(cleanHostname); ip != nil {
-		return ip.IsLoopback()
-	}
-
-	return false
+	// Delegate to the core loopback check
+	return isLoopbackAddress(hostname)
 }
 
 // validateRedirectURI validates that a redirect URI is registered and secure
@@ -388,21 +393,16 @@ func validateCustomScheme(scheme string, allowedSchemes []string) error {
 		scheme, allowedSchemes)
 }
 
-// isLoopbackAddress checks if a hostname is a loopback address
+// isLoopbackAddress checks if a hostname is a true loopback address.
+// This includes the entire 127.0.0.0/8 range (RFC 1122) and IPv6 ::1.
+// Expects hostname without port (as returned by url.URL.Hostname()).
+//
+// Note: This function does NOT consider 0.0.0.0 as loopback (it's "unspecified").
+// For development HTTP allowance that includes 0.0.0.0, use isLocalhostHostname.
+//
+// This delegates to the shared util.IsLoopbackHostname for DRY.
 func isLoopbackAddress(hostname string) bool {
-	// Normalize hostname (remove brackets for IPv6)
-	hostname = strings.Trim(hostname, "[]")
-	hostname = strings.TrimSpace(hostname)
-
-	// Check against recognized loopback addresses
-	for _, loopback := range LoopbackAddresses {
-		if hostname == loopback {
-			return true
-		}
-	}
-
-	// Also check for 127.x.x.x range and localhost with port
-	return strings.HasPrefix(hostname, "127.") || strings.HasPrefix(hostname, "localhost:")
+	return util.IsLoopbackHostname(hostname)
 }
 
 // validateRedirectURISecurityEnhanced performs comprehensive security validation on redirect URIs

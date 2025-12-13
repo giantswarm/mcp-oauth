@@ -117,6 +117,29 @@ Instrumentation: oauth.InstrumentationConfig{
 | `oauth.pkce.validation_failed` | `method` | PKCE validation failures |
 | `oauth.code.reuse_detected` | - | Authorization code reuse attempts |
 | `oauth.token.reuse_detected` | - | Refresh token reuse attempts |
+| `oauth.redirect_uri.security_rejected` | `category`, `stage` | Redirect URI security validation failures (SSRF/XSS protection) |
+
+**Redirect URI Security Categories:**
+
+The `oauth.redirect_uri.security_rejected` metric tracks security validation failures with detailed categorization:
+
+| Category | Description |
+|----------|-------------|
+| `blocked_scheme` | Dangerous scheme (javascript:, data:, file:, etc.) |
+| `private_ip` | RFC 1918 private IP (10.x, 172.16.x, 192.168.x) |
+| `link_local` | Link-local address (169.254.x.x - cloud metadata SSRF) |
+| `loopback_not_allowed` | Loopback when AllowLocalhostRedirectURIs=false |
+| `http_not_allowed` | HTTP on non-loopback in ProductionMode |
+| `dns_resolves_to_private_ip` | Hostname resolves to private IP (DNS rebinding) |
+| `dns_resolves_to_link_local` | Hostname resolves to link-local (DNS rebinding) |
+| `dns_resolution_failed` | DNS lookup failed (strict mode) |
+| `unspecified_address` | 0.0.0.0 or :: (always blocked) |
+| `fragment_not_allowed` | URI contains fragment (OAuth 2.0 BCP violation) |
+| `invalid_format` | Malformed URI |
+
+The `stage` label indicates when the rejection occurred:
+- `registration`: During client registration
+- `authorization`: During authorization request (TOCTOU protection)
 
 ### Storage
 
@@ -274,6 +297,16 @@ rate(oauth_token_refreshed_total[5m])
 **Rate limit violations:**
 ```promql
 increase(oauth_rate_limit_exceeded_total[1h])
+```
+
+**Redirect URI security rejections (SSRF/XSS attempts):**
+```promql
+increase(oauth_redirect_uri_security_rejected_total[1h])
+```
+
+**Redirect URI rejections by category:**
+```promql
+sum by (category) (increase(oauth_redirect_uri_security_rejected_total[1h]))
 ```
 
 **P99 latency:**

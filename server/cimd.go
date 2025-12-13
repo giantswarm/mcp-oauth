@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/giantswarm/mcp-oauth/internal/util"
 	"github.com/giantswarm/mcp-oauth/security"
 )
 
@@ -93,65 +94,11 @@ func isURLClientID(clientID string) bool {
 // isPrivateIP checks if an IP address is in a private/internal range
 // Used for SSRF protection per draft-ietf-oauth-client-id-metadata-document-00 Section 6
 // Covers IPv4, IPv6, and IPv4-mapped IPv6 addresses
+//
+// This delegates to the shared util.IsPrivateOrInternal for DRY.
+// The utility checks for loopback, link-local, private, and unspecified addresses.
 func isPrivateIP(ip net.IP) bool {
-	// Check for loopback addresses (127.0.0.0/8, ::1)
-	if ip.IsLoopback() {
-		return true
-	}
-
-	// Check for link-local addresses (169.254.0.0/16, fe80::/10)
-	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-		return true
-	}
-
-	// Check for private IPv4 ranges
-	// 10.0.0.0/8
-	if ipv4 := ip.To4(); ipv4 != nil {
-		if ipv4[0] == 10 {
-			return true
-		}
-		// 172.16.0.0/12
-		if ipv4[0] == 172 && ipv4[1] >= 16 && ipv4[1] <= 31 {
-			return true
-		}
-		// 192.168.0.0/16
-		if ipv4[0] == 192 && ipv4[1] == 168 {
-			return true
-		}
-	}
-
-	// SECURITY: Check for IPv4-mapped IPv6 addresses (::ffff:0:0/96)
-	// These can be used to bypass IPv4 private IP checks
-	// Example: ::ffff:127.0.0.1, ::ffff:10.0.0.1
-	if len(ip) == 16 && ip.To4() == nil {
-		// Check if this is an IPv4-mapped IPv6 address
-		// Format: 0000:0000:0000:0000:0000:ffff:xxxx:xxxx
-		isIPv4Mapped := true
-		for i := 0; i < 10; i++ {
-			if ip[i] != 0 {
-				isIPv4Mapped = false
-				break
-			}
-		}
-		if isIPv4Mapped && ip[10] == 0xff && ip[11] == 0xff {
-			// Extract the IPv4 part and check recursively
-			ipv4 := net.IPv4(ip[12], ip[13], ip[14], ip[15])
-			return isPrivateIP(ipv4)
-		}
-	}
-
-	// Check for private IPv6 ranges
-	// Unique local addresses (fc00::/7) - includes both fc00::/8 and fd00::/8
-	if len(ip) == 16 && (ip[0]&0xfe) == 0xfc {
-		return true
-	}
-
-	// fd00::/8 is the most commonly used ULA range (subset of fc00::/7, but check explicitly)
-	if len(ip) == 16 && ip[0] == 0xfd {
-		return true
-	}
-
-	return false
+	return util.IsPrivateOrInternal(ip)
 }
 
 // validateAndSanitizeMetadataURL performs SSRF protection checks and returns a sanitized URL

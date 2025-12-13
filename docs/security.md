@@ -10,7 +10,8 @@ This guide covers security configuration for production deployments. For deep te
 4. [Rate Limiting](#rate-limiting)
 5. [Audit Logging](#audit-logging)
 6. [Client Registration Protection](#client-registration-protection)
-7. [Legacy Client Support](#legacy-client-support)
+7. [Redirect URI Security](#redirect-uri-security)
+8. [Legacy Client Support](#legacy-client-support)
 
 ## Secure Defaults
 
@@ -54,6 +55,13 @@ Before deploying to production, verify these settings:
 - [ ] **Rate Limiting**: Configure IP, user, and client registration limits
 - [ ] **Registration Protected**: Set `RegistrationAccessToken` or disable registration
 - [ ] **Proxy Configured**: Set `TrustProxy` and `TrustedProxyCount` if behind proxy
+- [ ] **Production Mode**: Set `ProductionMode=true` for strict redirect URI validation
+
+### High-Security (Recommended for Sensitive Environments)
+
+- [ ] **DNS Validation**: Enable `DNSValidation=true` to check hostname IPs
+- [ ] **Strict DNS**: Enable `DNSValidationStrict=true` for fail-closed DNS validation
+- [ ] **Auth-Time Validation**: Enable `ValidateRedirectURIAtAuthorization=true` for TOCTOU protection
 
 ### Rate Limiter Cleanup
 
@@ -234,6 +242,148 @@ config := &server.Config{
 ```
 
 Use only in trusted development environments.
+
+## Redirect URI Security
+
+The library provides comprehensive redirect URI validation to prevent SSRF and open redirect attacks. **All security features are enabled by default** following the library's principle of "secure by default, explicit opt-out for less security."
+
+### Secure by Default
+
+The following security controls are **automatically enabled**:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ProductionMode` | `true` | HTTPS required for non-loopback URIs |
+| `DNSValidation` | `true` | Resolve hostnames to check IPs |
+| `DNSValidationStrict` | `true` | Fail-closed on DNS failures |
+| `ValidateRedirectURIAtAuthorization` | `true` | Re-validate at authorization time (TOCTOU protection) |
+| `AllowLocalhostRedirectURIs` | `false` | Loopback blocked by default (set to `true` for native apps) |
+| `AllowPrivateIPRedirectURIs` | `false` | RFC 1918 private IPs blocked |
+| `AllowLinkLocalRedirectURIs` | `false` | 169.254.x.x/fe80:: blocked (cloud SSRF) |
+
+**Note for Native/CLI App Support:** If your OAuth server needs to support native applications (desktop apps, CLI tools), you must set `AllowLocalhostRedirectURIs: true` per [RFC 8252 Section 7.3](https://datatracker.ietf.org/doc/html/rfc8252#section-7.3). This allows HTTP on loopback addresses (`localhost`, `127.x.x.x`, `::1`) which is required for native app OAuth flows.
+
+### Escape Hatches for Less Strict Validation
+
+If you need to reduce security for specific use cases, use the `Allow*` flags:
+
+```go
+config := &server.Config{
+    // Native app support (RFC 8252) - allows HTTP on localhost/loopback
+    AllowLocalhostRedirectURIs: true,
+    
+    // Internal/VPN deployments - allows RFC 1918 private IPs
+    // WARNING: Enables SSRF to internal networks
+    AllowPrivateIPRedirectURIs: true,
+    
+    // Rarely needed - allows link-local addresses
+    // WARNING: Enables SSRF to cloud metadata services (169.254.169.254)
+    AllowLinkLocalRedirectURIs: true,
+}
+```
+
+### Disabling Security Features (Development Only)
+
+To completely disable security features (e.g., for local development), use the explicit `Disable*` fields:
+
+```go
+config := &server.Config{
+    // Disable HTTPS requirement for non-loopback (development only!)
+    DisableProductionMode: true,
+    
+    // Disable DNS validation (if latency is unacceptable)
+    DisableDNSValidation: true,
+    
+    // Use fail-open DNS validation (if DNS is unreliable)
+    DisableDNSValidationStrict: true,
+    
+    // Skip authorization-time re-validation (if latency is critical)
+    DisableAuthorizationTimeValidation: true,
+}
+```
+
+**WARNING:** These `Disable*` fields significantly weaken security. Only use them in trusted development environments, never in production.
+
+### Native App Support (RFC 8252)
+
+For native/CLI apps that need localhost redirects:
+
+```go
+config := server.HighSecurityRedirectURIConfig()
+config.Issuer = "https://auth.example.com"
+// AllowLocalhostRedirectURIs is already true in HighSecurityRedirectURIConfig
+```
+
+Or manually:
+
+```go
+config := &server.Config{
+    AllowLocalhostRedirectURIs: true,  // Allows http://localhost, http://127.0.0.1, http://[::1]
+}
+```
+
+### DNS Validation Details
+
+DNS validation is enabled by default and operates in **strict (fail-closed) mode**:
+
+- Hostnames in redirect URIs are resolved via DNS
+- If the resolved IP is private/link-local, registration is rejected
+- If DNS resolution fails, registration is rejected (strict mode)
+- At authorization time, redirect URIs are re-validated to catch DNS rebinding attacks
+
+**TOCTOU (Time-of-Check to Time-of-Use) Protection:**
+
+DNS rebinding attacks are mitigated by re-validating redirect URIs at authorization time (`ValidateRedirectURIAtAuthorization=true`), not just at registration.
+
+**DNS Timeout Configuration:**
+
+The DNS validation timeout controls how long to wait for DNS resolution:
+
+```go
+config := &server.Config{
+    DNSValidationTimeout: 5 * time.Second,  // Default: 2s, Maximum: 30s
+}
+```
+
+- **Default:** 2 seconds - fast enough for good UX, slow enough for most DNS servers
+- **Maximum:** 30 seconds - values above this are automatically capped to prevent DoS via slow registrations
+- **Negative values:** Automatically corrected to the default
+
+**High-Volume Deployments:**
+
+For environments with high-volume client registration, consider these infrastructure-level optimizations:
+
+- **DNS Caching:** Deploy a local DNS cache (e.g., CoreDNS, dnsmasq) to reduce latency and external DNS load
+- **Rate Limiting:** Apply rate limiting at the infrastructure level (reverse proxy, API gateway) to protect against registration abuse
+- **Connection Pooling:** The library uses Go's default DNS resolver which pools connections; for extreme scale, consider a custom `DNSResolver` implementation with additional caching
+
+### Blocked URI Schemes
+
+The following schemes are always blocked (XSS/security risk):
+
+- `javascript:` - XSS attacks via script execution
+- `data:` - XSS attacks via inline content
+- `file:` - Local filesystem access
+- `vbscript:` - Legacy XSS (Internet Explorer)
+- `about:` - Browser internals access
+- `ftp:` - Insecure protocol
+- `blob:` - XSS via Blob URLs (browser exploit vector)
+- `ms-appx:` - Windows app package access
+- `ms-appx-web:` - Windows app web content access
+
+Customize via `BlockedRedirectSchemes` (not recommended).
+
+### Known Limitations
+
+**IPv6 Zone IDs:**
+
+IPv6 addresses with zone IDs (e.g., `fe80::1%eth0`) cannot be parsed by Go's `net.ParseIP()`. When such addresses appear in redirect URIs:
+
+- They are treated as hostnames rather than IP addresses
+- If DNS validation is disabled, they may pass validation
+- If DNS validation is enabled, they will fail DNS lookup (blocking registration in strict mode)
+
+For maximum security, keep DNS validation enabled (`DNSValidation=true`, `DNSValidationStrict=true`) to ensure these edge cases are properly handled.
 
 ## Legacy Client Support
 

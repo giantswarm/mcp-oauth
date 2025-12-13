@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestApplyTimeDefaults(t *testing.T) {
@@ -204,6 +205,8 @@ func TestLogSecurityWarnings(t *testing.T) {
 				TrustProxy:                    false,
 				AllowPublicClientRegistration: false,
 				RegistrationAccessToken:       "secure-token",
+				ProductionMode:                true, // Secure default: production mode enabled
+				AllowLocalhostRedirectURIs:    true, // RFC 8252 native app support
 			},
 			notExpectedWarnings: []string{
 				"WARNING",
@@ -1486,6 +1489,81 @@ func TestValidateInterstitialConfig(t *testing.T) {
 
 			logger := slog.New(slog.NewTextHandler(&strings.Builder{}, nil))
 			validateInterstitialConfig(tt.config, logger)
+		})
+	}
+}
+
+func TestDNSValidationTimeoutBounds(t *testing.T) {
+	tests := []struct {
+		name            string
+		timeout         time.Duration
+		expectedTimeout time.Duration
+		expectWarning   bool
+		warningSubstr   string
+	}{
+		{
+			name:            "zero timeout gets default",
+			timeout:         0,
+			expectedTimeout: 2 * time.Second,
+			expectWarning:   false,
+		},
+		{
+			name:            "valid timeout preserved",
+			timeout:         5 * time.Second,
+			expectedTimeout: 5 * time.Second,
+			expectWarning:   false,
+		},
+		{
+			name:            "timeout at maximum is preserved",
+			timeout:         30 * time.Second,
+			expectedTimeout: 30 * time.Second,
+			expectWarning:   false,
+		},
+		{
+			name:            "timeout exceeding maximum is capped",
+			timeout:         60 * time.Second,
+			expectedTimeout: 30 * time.Second,
+			expectWarning:   true,
+			warningSubstr:   "exceeds maximum",
+		},
+		{
+			name:            "very large timeout is capped",
+			timeout:         5 * time.Minute,
+			expectedTimeout: 30 * time.Second,
+			expectWarning:   true,
+			warningSubstr:   "exceeds maximum",
+		},
+		{
+			name:            "negative timeout gets default",
+			timeout:         -1 * time.Second,
+			expectedTimeout: 2 * time.Second,
+			expectWarning:   true,
+			warningSubstr:   "cannot be negative",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+			config := &Config{
+				Issuer:               "https://auth.example.com",
+				DNSValidationTimeout: tt.timeout,
+			}
+
+			applySecurityDefaults(config, logger)
+
+			if config.DNSValidationTimeout != tt.expectedTimeout {
+				t.Errorf("DNSValidationTimeout = %v, want %v", config.DNSValidationTimeout, tt.expectedTimeout)
+			}
+
+			logOutput := buf.String()
+			if tt.expectWarning {
+				if tt.warningSubstr != "" && !strings.Contains(logOutput, tt.warningSubstr) {
+					t.Errorf("Expected warning containing %q, got: %s", tt.warningSubstr, logOutput)
+				}
+			}
 		})
 	}
 }

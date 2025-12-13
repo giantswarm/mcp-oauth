@@ -7,6 +7,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
@@ -39,11 +40,35 @@ const (
 // - "none": Public client (no secret, PKCE-only auth) - used by native/CLI apps
 // - "client_secret_basic": Confidential client (Basic Auth with secret) - default
 // - "client_secret_post": Confidential client (POST form with secret)
+//
+// Security: This function validates redirect URIs against the security configuration
+// (ProductionMode, AllowPrivateIPRedirectURIs, etc.) to prevent SSRF and open redirect attacks.
 func (s *Server) RegisterClient(ctx context.Context, clientName, clientType, tokenEndpointAuthMethod string, redirectURIs []string, scopes []string, clientIP string, maxClientsPerIP int) (*storage.Client, string, error) {
 	// Check IP limit to prevent DoS via mass client registration
 	if err := s.clientStore.CheckIPLimit(ctx, clientIP, maxClientsPerIP); err != nil {
 		return nil, "", err
 	}
+
+	// SECURITY: Validate redirect URIs for security (SSRF, dangerous schemes, private IPs)
+	// This validation is critical for preventing open redirect and SSRF vulnerabilities
+	if err := s.ValidateRedirectURIsForRegistration(ctx, redirectURIs); err != nil {
+		if s.Auditor != nil {
+			category := GetRedirectURIErrorCategory(err)
+			s.Auditor.LogEvent(security.Event{
+				Type: security.EventClientRegistrationRejected,
+				Details: map[string]any{
+					"reason":    "redirect_uri_validation_failed",
+					"category":  category,
+					"client_ip": clientIP,
+				},
+			})
+		}
+		s.Logger.Warn("Client registration rejected: redirect URI validation failed",
+			"error", err.Error(),
+			"client_ip", clientIP)
+		return nil, "", fmt.Errorf("invalid_redirect_uri: %w", err)
+	}
+
 	// Generate client ID using oauth2.GenerateVerifier (same quality)
 	clientID := generateRandomToken()
 
