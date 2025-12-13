@@ -37,6 +37,9 @@ const (
 	// EventClientRegistered is logged when a new OAuth client is registered
 	EventClientRegistered = "client_registered"
 
+	// EventClientRegistrationRejected is logged when client registration is rejected for security reasons
+	EventClientRegistrationRejected = "client_registration_rejected"
+
 	// EventClientRegistrationRateLimitExceeded is logged when client registration rate limit is exceeded
 	EventClientRegistrationRateLimitExceeded = "client_registration_rate_limit_exceeded"
 

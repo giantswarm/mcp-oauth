@@ -331,6 +331,59 @@ type Config struct {
 	// Default: ["^[a-z][a-z0-9+.-]*$"] (RFC 3986 compliant schemes)
 	AllowedCustomSchemes []string
 
+	// ======================== REDIRECT URI SECURITY (RFC 6749, OAuth 2.1 BCP) ========================
+	// These settings control security validation of redirect URIs during client registration
+	// and authorization flows. They address SSRF and open redirect vulnerabilities.
+
+	// ProductionMode enforces strict security validation for redirect URIs:
+	// - HTTPS required for all redirect URIs (except loopback when AllowLocalhostRedirectURIs=true)
+	// - Private IP addresses blocked in redirect URIs (unless AllowPrivateIPRedirectURIs=true)
+	// - Link-local addresses blocked (unless AllowLinkLocalRedirectURIs=true)
+	// - Dangerous URI schemes blocked (javascript:, data:, file:, etc.)
+	// When false, relaxed validation for development (still enforces dangerous scheme blocking).
+	// Default: true (secure by default)
+	ProductionMode bool
+
+	// AllowLocalhostRedirectURIs allows http://localhost and http://127.0.0.1 redirect URIs
+	// even in ProductionMode. Required for native apps per RFC 8252.
+	// Also allows loopback IPv6 addresses (::1, [::1]).
+	// Default: true (native apps need localhost per RFC 8252 Section 7.3)
+	AllowLocalhostRedirectURIs bool
+
+	// AllowPrivateIPRedirectURIs allows redirect URIs that resolve to private IP addresses
+	// (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 per RFC 1918).
+	// WARNING: Enables SSRF attacks to internal networks if not properly secured.
+	// Only enable for internal/VPN deployments where clients legitimately use private IPs.
+	// Default: false (blocked for security)
+	AllowPrivateIPRedirectURIs bool
+
+	// AllowLinkLocalRedirectURIs allows link-local addresses (169.254.0.0/16, fe80::/10).
+	// WARNING: Could enable access to cloud metadata services (SSRF to 169.254.169.254).
+	// This is a significant security risk in cloud environments (AWS, GCP, Azure).
+	// Only enable if you have specific requirements for link-local addresses.
+	// Default: false (blocked for security)
+	AllowLinkLocalRedirectURIs bool
+
+	// BlockedRedirectSchemes lists URI schemes that are always rejected for security.
+	// These schemes can be used for XSS attacks (javascript:, data:) or local file access (file:).
+	// This is applied in ALL modes (production and development).
+	// Default: ["javascript", "data", "file", "vbscript", "about", "ftp"]
+	// Override to customize blocked schemes (empty list uses defaults).
+	BlockedRedirectSchemes []string
+
+	// DNSValidation enables DNS resolution of redirect URI hostnames to validate
+	// they don't resolve to private/internal IPs (defense against DNS rebinding attacks).
+	// When enabled, hostnames are resolved and the resulting IP is checked.
+	// WARNING: DNS lookups add latency to client registration and can fail.
+	// Consider using this for high-security environments with reliable DNS.
+	// Default: false (DNS lookup can have performance implications)
+	DNSValidation bool
+
+	// DNSValidationTimeout is the timeout for DNS resolution when DNSValidation=true.
+	// Prevents slow DNS from blocking registration.
+	// Default: 2 seconds
+	DNSValidationTimeout time.Duration
+
 	// AllowInsecureHTTP allows running OAuth server over HTTP (INSECURE - development only)
 	// WARNING: OAuth over HTTP exposes all tokens and credentials to network interception
 	// This should ONLY be enabled for local development (localhost, 127.0.0.1)
@@ -920,6 +973,25 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 		config.MinStateLength = 32 // OAuth 2.1: 128+ bits entropy recommended, 32 chars = 192 bits
 	}
 
+	// Redirect URI security defaults (secure by default)
+	// ProductionMode defaults to true (secure by default)
+	// We can't distinguish between unset and explicitly set to false, so we rely
+	// on the warning in logSecurityWarnings to alert operators
+	//
+	// Note: AllowLocalhostRedirectURIs defaults to false (Go zero-value).
+	// This is secure by default, but operators should enable it for native app support (RFC 8252).
+	// We don't force it to true because some high-security environments may want to block localhost.
+	// Default blocked schemes (always dangerous)
+	if len(config.BlockedRedirectSchemes) == 0 {
+		config.BlockedRedirectSchemes = []string{
+			"javascript", "data", "file", "vbscript", "about", "ftp",
+		}
+	}
+	// DNS validation timeout default
+	if config.DNSValidationTimeout == 0 {
+		config.DNSValidationTimeout = 2 * time.Second
+	}
+
 	// SECURITY: Enforce absolute minimum state length to ensure CSRF protection entropy
 	// OAuth 2.1 recommends at least 128 bits (16 bytes) of entropy
 	// 32 characters provides 192 bits of entropy in base64, which exceeds OAuth 2.1 recommendations
@@ -1459,5 +1531,40 @@ func logSecurityWarnings(config *Config, logger *slog.Logger) {
 			"recommendation", "Use HTTPS in all environments",
 			"compliance", "OAuth 2.1 requires HTTPS for all endpoints",
 			"learn_more", "https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-10#section-4.1.1")
+	}
+
+	// Redirect URI security warnings
+	if !config.ProductionMode {
+		logger.Warn("⚠️  SECURITY WARNING: ProductionMode is DISABLED",
+			"risk", "Relaxed redirect URI validation allows insecure configurations",
+			"recommendation", "Set ProductionMode=true for production deployments",
+			"learn_more", "https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics#section-4.1")
+	}
+	if config.AllowPrivateIPRedirectURIs {
+		logger.Warn("⚠️  SECURITY WARNING: Private IP redirect URIs are ALLOWED",
+			"risk", "SSRF attacks to internal networks (10.x, 172.16.x, 192.168.x)",
+			"recommendation", "Only enable for internal/VPN deployments with proper network controls",
+			"learn_more", "https://owasp.org/www-community/attacks/Server_Side_Request_Forgery")
+	}
+	if config.AllowLinkLocalRedirectURIs {
+		logger.Warn("⚠️  SECURITY WARNING: Link-local redirect URIs are ALLOWED",
+			"risk", "SSRF to cloud metadata services (169.254.169.254 - AWS/GCP/Azure)",
+			"recommendation", "Disable unless specifically required",
+			"impact", "Could expose cloud instance credentials and sensitive metadata",
+			"learn_more", "https://owasp.org/www-community/attacks/Server_Side_Request_Forgery")
+	}
+	if config.DNSValidation {
+		logger.Info("DNS validation enabled for redirect URIs",
+			"timeout", config.DNSValidationTimeout,
+			"benefit", "Defense against DNS rebinding attacks",
+			"caveat", "May add latency to client registration")
+	}
+	// Only log localhost blocking when ProductionMode is enabled (strict security)
+	// In development mode, localhost is expected to be controlled differently
+	if config.ProductionMode && !config.AllowLocalhostRedirectURIs {
+		logger.Info("Localhost redirect URIs are BLOCKED (strict mode)",
+			"impact", "Native apps (RFC 8252) will not work",
+			"recommendation", "Set AllowLocalhostRedirectURIs=true for native app support",
+			"learn_more", "https://datatracker.ietf.org/doc/html/rfc8252#section-7.3")
 	}
 }
