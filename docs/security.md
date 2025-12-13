@@ -247,25 +247,47 @@ config := &server.Config{
         "windsurf",
     },
     
-    // Require ALL redirect URIs to use trusted schemes (recommended)
-    StrictSchemeMatching: true,
+    // StrictSchemeMatching defaults to true when TrustedPublicRegistrationSchemes is set
+    // To allow mixed schemes (not recommended), set DisableStrictSchemeMatching: true
 }
 ```
 
-**Why Custom URI Schemes Are Safe:**
+**Security Model:**
 
-Custom URI schemes (e.g., `cursor://`, `vscode://`) are registered at the OS level. Only the application that registered the scheme can receive callbacks. This means:
+This feature relies on **two layers of protection**:
 
-1. An attacker cannot register a malicious client with `cursor://malicious/callback`
-2. Even if registered, the callback goes to the Cursor app, not the attacker
-3. The attacker cannot intercept the authorization code or tokens
+1. **PKCE (Primary Defense):** Even if an attacker intercepts the authorization code via scheme hijacking, they cannot exchange it without the `code_verifier`. PKCE is enforced by default and is the primary security control.
+
+2. **Custom URI Scheme Registration:** Custom URI schemes (e.g., `cursor://`, `vscode://`) are typically registered at the OS level, making them harder to hijack than web URLs.
+
+**Platform Considerations:**
+
+Custom URI scheme protection varies by platform:
+
+| Platform | Protection Level | Notes |
+|----------|-----------------|-------|
+| macOS/iOS | Moderate | Schemes registered per-app, but no verification of who registered first |
+| Windows | Moderate | Any app can register a scheme; first-installer-wins |
+| Android | Strong (App Links) | App Links provide verified ownership; traditional schemes are weaker |
+| Linux | Weak | Depends on desktop environment configuration |
+
+**Because platform protection varies, PKCE enforcement is critical.** The library requires PKCE by default (`RequirePKCE=true`, `AllowPKCEPlain=false`), which mitigates scheme hijacking attacks on all platforms.
+
+**Automatic Security Filtering:**
+
+The following schemes are automatically **blocked** from `TrustedPublicRegistrationSchemes`:
+- `http://` and `https://` - Can be hijacked by any attacker with a web server
+- Dangerous schemes: `javascript:`, `data:`, `file:`, `vbscript:`, `about:`, `ftp:`, `blob:`, `ms-appx:`
 
 **Security Controls:**
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `TrustedPublicRegistrationSchemes` | `[]` | List of allowed schemes for token-free registration |
-| `StrictSchemeMatching` | `false` | When `true`, ALL redirect URIs must use trusted schemes (recommended) |
+| `StrictSchemeMatching` | `true`* | ALL redirect URIs must use trusted schemes |
+| `DisableStrictSchemeMatching` | `false` | Set to `true` to allow mixed schemes (not recommended) |
+
+*Automatically enabled when `TrustedPublicRegistrationSchemes` is configured.
 
 **Audit Logging:**
 

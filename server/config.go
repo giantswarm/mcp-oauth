@@ -360,20 +360,29 @@ type Config struct {
 	// StrictSchemeMatching requires ALL redirect URIs in a registration request
 	// to use trusted schemes for unauthenticated registration to be allowed.
 	//
-	// When true (recommended for maximum security):
+	// When true (default when TrustedPublicRegistrationSchemes is configured):
 	//   - All redirect URIs MUST use schemes from TrustedPublicRegistrationSchemes
 	//   - A mix of trusted and untrusted schemes requires a registration token
 	//   - Provides maximum security by preventing token leakage to untrusted URIs
 	//
-	// When false (permissive, Go default):
+	// When false (permissive mode):
 	//   - If ANY redirect URI uses a trusted scheme, registration is allowed
 	//   - Other redirect URIs can use any scheme (including https://)
 	//   - Use case: Clients that need both custom scheme and web-based callbacks
 	//   - A security warning is logged when this mode is used
 	//
 	// This setting only applies when TrustedPublicRegistrationSchemes is non-empty.
-	// Default: false (Go zero value). Set to true for maximum security.
+	// Default: true (secure by default - set automatically by applySecurityDefaults)
+	// To disable for permissive mode, set DisableStrictSchemeMatching=true.
 	StrictSchemeMatching bool
+
+	// DisableStrictSchemeMatching explicitly disables StrictSchemeMatching for deployments
+	// that need to support clients with mixed redirect URI schemes (e.g., cursor:// AND https://).
+	// WARNING: Disabling strict matching allows clients to register with untrusted redirect URIs
+	// alongside trusted ones. While PKCE mitigates code interception, this reduces security.
+	// Only set this to true if you have specific requirements for mixed scheme clients.
+	// Default: false (StrictSchemeMatching is enabled when TrustedPublicRegistrationSchemes is configured)
+	DisableStrictSchemeMatching bool
 
 	// AllowedCustomSchemes is a list of allowed custom URI scheme patterns (regex)
 	// Used for validating custom redirect URIs (e.g., myapp://, com.example.app://)

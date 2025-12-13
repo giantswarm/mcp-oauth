@@ -1567,3 +1567,118 @@ func TestDNSValidationTimeoutBounds(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateTrustedPublicRegistrationSchemes(t *testing.T) {
+	tests := []struct {
+		name                   string
+		inputSchemes           []string
+		disableStrictMatching  bool
+		expectedSchemes        []string
+		expectSecurityLog      bool
+		expectedStrictMatching bool
+	}{
+		{
+			name:                   "empty schemes - no change",
+			inputSchemes:           nil,
+			expectedSchemes:        nil,
+			expectSecurityLog:      false,
+			expectedStrictMatching: false, // Not set when no schemes
+		},
+		{
+			name:                   "valid custom schemes - preserved",
+			inputSchemes:           []string{"cursor", "vscode"},
+			expectedSchemes:        []string{"cursor", "vscode"},
+			expectSecurityLog:      false,
+			expectedStrictMatching: true, // Auto-enabled
+		},
+		{
+			name:                   "http scheme - filtered out",
+			inputSchemes:           []string{"cursor", "http", "vscode"},
+			expectedSchemes:        []string{"cursor", "vscode"},
+			expectSecurityLog:      true,
+			expectedStrictMatching: true,
+		},
+		{
+			name:                   "https scheme - filtered out",
+			inputSchemes:           []string{"https", "cursor"},
+			expectedSchemes:        []string{"cursor"},
+			expectSecurityLog:      true,
+			expectedStrictMatching: true,
+		},
+		{
+			name:                   "both http and https - filtered out",
+			inputSchemes:           []string{"http", "https"},
+			expectedSchemes:        []string{},
+			expectSecurityLog:      true,
+			expectedStrictMatching: false, // No schemes left
+		},
+		{
+			name:                   "dangerous schemes - filtered out",
+			inputSchemes:           []string{"cursor", "javascript", "data"},
+			expectedSchemes:        []string{"cursor"},
+			expectSecurityLog:      true,
+			expectedStrictMatching: true,
+		},
+		{
+			name:                   "mixed case schemes - normalized to lowercase",
+			inputSchemes:           []string{"Cursor", "VSCODE"},
+			expectedSchemes:        []string{"cursor", "vscode"},
+			expectSecurityLog:      false,
+			expectedStrictMatching: true,
+		},
+		{
+			name:                  "disable strict matching - stays disabled",
+			inputSchemes:          []string{"cursor"},
+			disableStrictMatching: true,
+			expectedSchemes:       []string{"cursor"},
+			expectSecurityLog:     false,
+			// Note: DisableStrictSchemeMatching keeps it disabled
+			expectedStrictMatching: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+			config := &Config{
+				Issuer:                           "https://auth.example.com",
+				TrustedPublicRegistrationSchemes: tt.inputSchemes,
+				DisableStrictSchemeMatching:      tt.disableStrictMatching,
+			}
+
+			// Apply full configuration pipeline
+			applySecureDefaults(config, logger)
+
+			// Verify schemes are filtered correctly
+			if len(config.TrustedPublicRegistrationSchemes) != len(tt.expectedSchemes) {
+				t.Errorf("TrustedPublicRegistrationSchemes length = %d, want %d",
+					len(config.TrustedPublicRegistrationSchemes), len(tt.expectedSchemes))
+			}
+
+			for i, expected := range tt.expectedSchemes {
+				if i < len(config.TrustedPublicRegistrationSchemes) {
+					if config.TrustedPublicRegistrationSchemes[i] != expected {
+						t.Errorf("TrustedPublicRegistrationSchemes[%d] = %q, want %q",
+							i, config.TrustedPublicRegistrationSchemes[i], expected)
+					}
+				}
+			}
+
+			// Verify StrictSchemeMatching is set correctly
+			if config.StrictSchemeMatching != tt.expectedStrictMatching {
+				t.Errorf("StrictSchemeMatching = %v, want %v",
+					config.StrictSchemeMatching, tt.expectedStrictMatching)
+			}
+
+			// Verify security log messages
+			logOutput := buf.String()
+			if tt.expectSecurityLog {
+				if !strings.Contains(logOutput, "SECURITY") && !strings.Contains(logOutput, "Removing") {
+					t.Errorf("Expected security log message, got: %s", logOutput)
+				}
+			}
+		})
+	}
+}

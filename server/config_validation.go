@@ -424,13 +424,19 @@ func validateResourceMetadataPathConfig(pathKey string, pathConfig ProtectedReso
 	}
 }
 
-// validateTrustedPublicRegistrationSchemes validates TrustedPublicRegistrationSchemes configuration.
+// validateTrustedPublicRegistrationSchemes validates and sanitizes TrustedPublicRegistrationSchemes configuration.
 // This feature allows unauthenticated client registration for clients using trusted custom URI schemes
 // (e.g., cursor://, vscode://), enabling compatibility with MCP clients that don't support registration tokens.
+//
+// SECURITY: HTTP/HTTPS schemes are automatically REMOVED from the list because they can be hijacked
+// by attackers who control web servers. Only custom URI schemes are safe for unauthenticated registration.
 func validateTrustedPublicRegistrationSchemes(config *Config, logger *slog.Logger) {
 	if len(config.TrustedPublicRegistrationSchemes) == 0 {
 		return // Feature not configured
 	}
+
+	// Build a new list with only valid, safe schemes
+	validSchemes := make([]string, 0, len(config.TrustedPublicRegistrationSchemes))
 
 	// Validate each scheme
 	for i, scheme := range config.TrustedPublicRegistrationSchemes {
@@ -438,66 +444,96 @@ func validateTrustedPublicRegistrationSchemes(config *Config, logger *slog.Logge
 
 		// Check for empty scheme
 		if scheme == "" {
-			logger.Warn("Empty scheme in TrustedPublicRegistrationSchemes",
+			logger.Warn("Empty scheme in TrustedPublicRegistrationSchemes - removing",
 				"index", i,
-				"recommendation", "Remove empty entries from the list")
+				"action", "Removed from list")
 			continue
 		}
 
 		// Check RFC 3986 compliance: scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
 		if len(schemeLower) > 0 && !isValidSchemeChar(rune(schemeLower[0]), true) {
-			logger.Warn("Invalid scheme in TrustedPublicRegistrationSchemes",
+			logger.Warn("Invalid scheme in TrustedPublicRegistrationSchemes - removing",
 				"scheme", scheme,
 				"index", i,
 				"error", "scheme must start with a letter (RFC 3986)",
-				"recommendation", "Use valid URI scheme names like 'cursor', 'vscode'")
+				"action", "Removed from list")
 			continue
 		}
 
+		invalidChar := false
 		for j, c := range schemeLower {
 			if !isValidSchemeChar(c, j == 0) {
-				logger.Warn("Invalid character in TrustedPublicRegistrationSchemes scheme",
+				logger.Warn("Invalid character in TrustedPublicRegistrationSchemes scheme - removing",
 					"scheme", scheme,
 					"index", i,
 					"char_position", j,
 					"error", "scheme contains invalid character (RFC 3986)",
-					"valid_chars", "a-z, 0-9, +, -, .")
+					"valid_chars", "a-z, 0-9, +, -, .",
+					"action", "Removed from list")
+				invalidChar = true
 				break
 			}
 		}
-
-		// Warn about HTTP/HTTPS schemes - these are NOT safe for unauthenticated registration
-		if schemeLower == SchemeHTTP || schemeLower == SchemeHTTPS {
-			logger.Error("SECURITY ERROR: HTTP/HTTPS schemes in TrustedPublicRegistrationSchemes",
-				"scheme", scheme,
-				"risk", "HTTP/HTTPS redirect URIs can be hijacked by attackers",
-				"recommendation", "Only use custom URI schemes like 'cursor', 'vscode' that are OS-protected",
-				"action", "Remove http/https from TrustedPublicRegistrationSchemes")
+		if invalidChar {
+			continue
 		}
 
-		// Warn about dangerous/blocked schemes
+		// SECURITY: Block HTTP/HTTPS schemes - they can be hijacked by attackers
+		// Unlike custom URI schemes, anyone can set up a web server to receive callbacks
+		if schemeLower == SchemeHTTP || schemeLower == SchemeHTTPS {
+			logger.Error("SECURITY: Removing HTTP/HTTPS from TrustedPublicRegistrationSchemes",
+				"scheme", scheme,
+				"risk", "HTTP/HTTPS redirect URIs can be hijacked by any attacker with a web server",
+				"security", "Only custom URI schemes are safe for unauthenticated registration",
+				"action", "Automatically removed for security")
+			continue
+		}
+
+		// SECURITY: Block dangerous schemes that could be used for attacks
+		isDangerous := false
 		for _, blocked := range DefaultBlockedRedirectSchemes {
 			if schemeLower == blocked {
-				logger.Error("SECURITY ERROR: Dangerous scheme in TrustedPublicRegistrationSchemes",
+				logger.Error("SECURITY: Removing dangerous scheme from TrustedPublicRegistrationSchemes",
 					"scheme", scheme,
 					"risk", fmt.Sprintf("'%s' scheme can be exploited for attacks", scheme),
-					"recommendation", "Remove this scheme from TrustedPublicRegistrationSchemes")
+					"action", "Automatically removed for security")
+				isDangerous = true
 				break
 			}
 		}
+		if isDangerous {
+			continue
+		}
+
+		// Scheme is valid and safe - add to the list (normalized to lowercase)
+		validSchemes = append(validSchemes, schemeLower)
 	}
+
+	// Replace the config with the sanitized list
+	config.TrustedPublicRegistrationSchemes = validSchemes
+
+	// If all schemes were removed, log a warning
+	if len(validSchemes) == 0 {
+		logger.Warn("All schemes removed from TrustedPublicRegistrationSchemes after security validation",
+			"result", "Feature effectively disabled - registration will require token",
+			"recommendation", "Use custom URI schemes like 'cursor', 'vscode' instead of http/https")
+		return
+	}
+
+	// Determine effective strict matching mode (will be true unless explicitly disabled)
+	effectiveStrictMatching := !config.DisableStrictSchemeMatching
 
 	// Log configuration summary
 	logger.Info("TrustedPublicRegistrationSchemes configured",
 		"schemes", config.TrustedPublicRegistrationSchemes,
-		"strict_matching", config.StrictSchemeMatching,
+		"strict_matching", effectiveStrictMatching,
 		"security_note", "Clients with these redirect URI schemes can register without a token")
 
-	// Warn if StrictSchemeMatching is disabled
-	if !config.StrictSchemeMatching {
-		logger.Warn("StrictSchemeMatching disabled for TrustedPublicRegistrationSchemes",
+	// Warn if StrictSchemeMatching is explicitly disabled via DisableStrictSchemeMatching
+	if config.DisableStrictSchemeMatching {
+		logger.Warn("StrictSchemeMatching explicitly disabled for TrustedPublicRegistrationSchemes",
 			"risk", "Clients can mix trusted and untrusted redirect URI schemes",
-			"recommendation", "Enable StrictSchemeMatching for maximum security")
+			"recommendation", "Remove DisableStrictSchemeMatching for maximum security")
 	}
 
 	// Security warning: if AllowPublicClientRegistration is also true, the trusted schemes
