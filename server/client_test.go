@@ -676,6 +676,42 @@ func TestServer_CanRegisterWithTrustedScheme(t *testing.T) {
 			wantErr:         true,
 			wantErrContains: "missing scheme",
 		},
+
+		// Edge cases - extremely long URIs (security: ensure no buffer issues)
+		{
+			name:           "extremely long redirect URI path - trusted scheme",
+			trustedSchemes: []string{"cursor"},
+			redirectURIs:   []string{"cursor://oauth/callback/" + strings.Repeat("a", 10000)},
+			wantAllowed:    true,
+			wantScheme:     "cursor",
+			wantErr:        false,
+		},
+		{
+			name:           "extremely long redirect URI path - untrusted scheme",
+			trustedSchemes: []string{"cursor"},
+			redirectURIs:   []string{"https://example.com/callback/" + strings.Repeat("b", 10000)},
+			wantAllowed:    false,
+			wantScheme:     "",
+			wantErr:        false,
+		},
+		{
+			name:           "many redirect URIs - all trusted",
+			trustedSchemes: []string{"cursor", "vscode"},
+			redirectURIs: func() []string {
+				uris := make([]string, 100)
+				for i := range uris {
+					if i%2 == 0 {
+						uris[i] = "cursor://oauth/callback/" + strings.Repeat("x", i)
+					} else {
+						uris[i] = "vscode://oauth/callback/" + strings.Repeat("y", i)
+					}
+				}
+				return uris
+			}(),
+			wantAllowed: true,
+			wantScheme:  "cursor",
+			wantErr:     false,
+		},
 	}
 
 	for _, tt := range tests {

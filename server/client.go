@@ -166,10 +166,10 @@ func (s *Server) GetClient(ctx context.Context, clientID string) (*storage.Clien
 // This enables compatibility with MCP clients like Cursor that don't support
 // registration tokens, while maintaining security for other clients.
 //
-// Security: Custom URI schemes (cursor://, vscode://) can only be intercepted
-// by the application that registered the scheme with the OS. This makes them
-// inherently safe for public registration - an attacker cannot register a
-// malicious client with cursor:// because they can't receive the callback.
+// Security: Custom URI schemes are harder to hijack than web URLs, but protection
+// varies by platform (strong on Android App Links, moderate on macOS/Windows/iOS,
+// weak on Linux). PKCE is the primary security control and is always enforced.
+// See docs/security.md for platform-specific considerations.
 //
 // Parameters:
 //   - redirectURIs: The redirect URIs from the registration request

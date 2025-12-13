@@ -1533,6 +1533,12 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 
 		// If no valid token, check if redirect URIs use trusted schemes
 		if !hasValidToken {
+			// Log if a token was provided but was invalid (security audit trail)
+			if authHeader != "" {
+				h.logger.Warn("Invalid registration token provided, checking trusted schemes as fallback",
+					"client_ip", clientIP,
+					"has_trusted_schemes_configured", len(h.server.Config.TrustedPublicRegistrationSchemes) > 0)
+			}
 			allowed, scheme, err := h.server.CanRegisterWithTrustedScheme(req.RedirectURIs)
 			if err != nil {
 				h.logger.Warn("Client registration rejected: invalid redirect URI",
