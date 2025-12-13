@@ -11,14 +11,36 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
+// testSecurityConfig holds security configuration for test servers.
+// Using a struct with named fields improves readability over multiple boolean parameters.
+type testSecurityConfig struct {
+	productionMode bool // Require HTTPS for non-loopback (default: true)
+	allowLocalhost bool // Allow localhost/loopback addresses (default: true)
+	allowPrivateIP bool // Allow private IP addresses (default: false)
+	allowLinkLocal bool // Allow link-local addresses (default: false)
+	dnsValidation  bool // Enable DNS validation (default: false for most tests)
+}
+
+// defaultTestSecurityConfig returns the most common test configuration:
+// production mode enabled, localhost allowed, private/link-local blocked, no DNS validation.
+func defaultTestSecurityConfig() testSecurityConfig {
+	return testSecurityConfig{
+		productionMode: true,
+		allowLocalhost: true,
+		allowPrivateIP: false,
+		allowLinkLocal: false,
+		dnsValidation:  false,
+	}
+}
+
 // newTestServerWithSecurityConfig creates a test server with specific redirect URI security settings.
 // Note: This creates a server with a mock DNS resolver to avoid real DNS lookups in tests.
 // The mock resolver returns a public IP (93.184.216.34) for all hostnames by default.
 //
-// Parameters control security features via explicit Disable* fields (secure by default pattern):
+// Security features are controlled via the testSecurityConfig struct for readability:
 // - productionMode=false sets DisableProductionMode=true (allows HTTP on non-loopback)
 // - dnsValidation=false sets DisableDNSValidation=true (disables DNS checks)
-func newTestServerWithSecurityConfig(productionMode, allowLocalhost, allowPrivateIP, allowLinkLocal, dnsValidation bool) *Server {
+func newTestServerWithSecurityConfig(cfg testSecurityConfig) *Server {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	store := memory.New()
 	provider := mock.NewMockProvider()
@@ -30,14 +52,14 @@ func newTestServerWithSecurityConfig(productionMode, allowLocalhost, allowPrivat
 	config := &Config{
 		Issuer: "https://auth.example.com",
 		// Use Disable* fields to opt-out of secure defaults
-		DisableProductionMode:              !productionMode,
-		DisableDNSValidation:               !dnsValidation,
-		DisableDNSValidationStrict:         !dnsValidation, // Match strict to validation setting
-		DisableAuthorizationTimeValidation: true,           // Disable for simpler testing
+		DisableProductionMode:              !cfg.productionMode,
+		DisableDNSValidation:               !cfg.dnsValidation,
+		DisableDNSValidationStrict:         !cfg.dnsValidation, // Match strict to validation setting
+		DisableAuthorizationTimeValidation: true,               // Disable for simpler testing
 		// Allow* flags for specific relaxations
-		AllowLocalhostRedirectURIs: allowLocalhost,
-		AllowPrivateIPRedirectURIs: allowPrivateIP,
-		AllowLinkLocalRedirectURIs: allowLinkLocal,
+		AllowLocalhostRedirectURIs: cfg.allowLocalhost,
+		AllowPrivateIPRedirectURIs: cfg.allowPrivateIP,
+		AllowLinkLocalRedirectURIs: cfg.allowLinkLocal,
 		// Always set these explicitly for tests
 		BlockedRedirectSchemes: []string{"javascript", "data", "file", "vbscript", "about", "ftp", "blob", "ms-appx", "ms-appx-web"},
 		DNSResolver:            mockResolver, // Use mock resolver to avoid real DNS
@@ -123,7 +145,7 @@ func TestValidateRedirectURIForRegistration_BlockedSchemes(t *testing.T) {
 		},
 	}
 
-	server := newTestServerWithSecurityConfig(true, true, false, false, false)
+	server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
 	ctx := context.Background()
 
 	for _, tt := range tests {
@@ -150,7 +172,7 @@ func TestValidateRedirectURIForRegistration_ProductionMode(t *testing.T) {
 	// HTTP on loopback is controlled by AllowLocalhostRedirectURIs.
 
 	t.Run("HTTP on non-loopback blocked (secure by default)", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, false)
+		server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
 		err := server.ValidateRedirectURIForRegistration(ctx, "http://app.example.com/callback")
 		if err == nil {
 			t.Error("Expected error for HTTP on non-loopback")
@@ -161,7 +183,7 @@ func TestValidateRedirectURIForRegistration_ProductionMode(t *testing.T) {
 	})
 
 	t.Run("HTTP on loopback allowed when AllowLocalhostRedirectURIs=true", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, false)
+		server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
 		err := server.ValidateRedirectURIForRegistration(ctx, "http://localhost:8080/callback")
 		if err != nil {
 			t.Errorf("Expected no error for HTTP on localhost, got %v", err)
@@ -169,7 +191,7 @@ func TestValidateRedirectURIForRegistration_ProductionMode(t *testing.T) {
 	})
 
 	t.Run("HTTPS always allowed", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, false)
+		server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
 		err := server.ValidateRedirectURIForRegistration(ctx, "https://app.example.com/callback")
 		if err != nil {
 			t.Errorf("Expected no error for HTTPS, got %v", err)
@@ -193,7 +215,7 @@ func TestValidateRedirectURIForRegistration_Loopback(t *testing.T) {
 	}
 
 	t.Run("Loopback allowed when AllowLocalhostRedirectURIs=true", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, false)
+		server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
 		for _, uri := range loopbackURIs {
 			err := server.ValidateRedirectURIForRegistration(ctx, uri)
 			if err != nil {
@@ -203,7 +225,10 @@ func TestValidateRedirectURIForRegistration_Loopback(t *testing.T) {
 	})
 
 	t.Run("Loopback blocked when AllowLocalhostRedirectURIs=false", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, false, false, false, false)
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: true,
+			allowLocalhost: false,
+		})
 		for _, uri := range loopbackURIs {
 			err := server.ValidateRedirectURIForRegistration(ctx, uri)
 			if err == nil {
@@ -226,7 +251,7 @@ func TestValidateRedirectURIForRegistration_PrivateIPs(t *testing.T) {
 	}
 
 	t.Run("Private IPs blocked when AllowPrivateIPRedirectURIs=false", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, false)
+		server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
 		for _, uri := range privateIPURIs {
 			err := server.ValidateRedirectURIForRegistration(ctx, uri)
 			if err == nil {
@@ -239,7 +264,11 @@ func TestValidateRedirectURIForRegistration_PrivateIPs(t *testing.T) {
 	})
 
 	t.Run("Private IPs allowed when AllowPrivateIPRedirectURIs=true", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, true, false, false)
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: true,
+			allowLocalhost: true,
+			allowPrivateIP: true,
+		})
 		for _, uri := range privateIPURIs {
 			err := server.ValidateRedirectURIForRegistration(ctx, uri)
 			if err != nil {
@@ -259,7 +288,7 @@ func TestValidateRedirectURIForRegistration_LinkLocalIPs(t *testing.T) {
 	}
 
 	t.Run("Link-local IPs blocked when AllowLinkLocalRedirectURIs=false", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, false)
+		server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
 		for _, uri := range linkLocalURIs {
 			err := server.ValidateRedirectURIForRegistration(ctx, uri)
 			if err == nil {
@@ -272,7 +301,11 @@ func TestValidateRedirectURIForRegistration_LinkLocalIPs(t *testing.T) {
 	})
 
 	t.Run("Link-local IPs allowed when AllowLinkLocalRedirectURIs=true", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, true, false)
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: true,
+			allowLocalhost: true,
+			allowLinkLocal: true,
+		})
 		for _, uri := range linkLocalURIs {
 			err := server.ValidateRedirectURIForRegistration(ctx, uri)
 			if err != nil {
@@ -284,7 +317,7 @@ func TestValidateRedirectURIForRegistration_LinkLocalIPs(t *testing.T) {
 
 func TestValidateRedirectURIForRegistration_Fragments(t *testing.T) {
 	ctx := context.Background()
-	server := newTestServerWithSecurityConfig(true, true, false, false, false)
+	server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
 
 	t.Run("Fragment in URI blocked", func(t *testing.T) {
 		err := server.ValidateRedirectURIForRegistration(ctx, "https://app.example.com/callback#fragment")
@@ -306,7 +339,7 @@ func TestValidateRedirectURIForRegistration_Fragments(t *testing.T) {
 
 func TestValidateRedirectURIForRegistration_InvalidFormat(t *testing.T) {
 	ctx := context.Background()
-	server := newTestServerWithSecurityConfig(true, true, false, false, false)
+	server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
 
 	t.Run("Invalid URI format blocked", func(t *testing.T) {
 		err := server.ValidateRedirectURIForRegistration(ctx, "://invalid")
@@ -321,7 +354,7 @@ func TestValidateRedirectURIForRegistration_InvalidFormat(t *testing.T) {
 
 func TestValidateRedirectURIsForRegistration_Multiple(t *testing.T) {
 	ctx := context.Background()
-	server := newTestServerWithSecurityConfig(true, true, false, false, false)
+	server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
 
 	t.Run("Multiple valid URIs allowed", func(t *testing.T) {
 		uris := []string{
@@ -357,7 +390,7 @@ func TestValidateRedirectURIsForRegistration_Multiple(t *testing.T) {
 
 func TestValidateRedirectURIForRegistration_CustomSchemes(t *testing.T) {
 	ctx := context.Background()
-	server := newTestServerWithSecurityConfig(true, true, false, false, false)
+	server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
 
 	validCustomSchemes := []string{
 		"myapp://callback",
@@ -378,7 +411,7 @@ func TestValidateRedirectURIForRegistration_CustomSchemes(t *testing.T) {
 
 func TestValidateRedirectURIForRegistration_PublicIPs(t *testing.T) {
 	ctx := context.Background()
-	server := newTestServerWithSecurityConfig(true, true, false, false, false)
+	server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
 
 	publicIPURIs := []string{
 		"https://8.8.8.8/callback",     // Google DNS (public)
@@ -398,7 +431,7 @@ func TestValidateRedirectURIForRegistration_PublicIPs(t *testing.T) {
 
 func TestValidateRedirectURIForRegistration_UnspecifiedAddresses(t *testing.T) {
 	ctx := context.Background()
-	server := newTestServerWithSecurityConfig(true, true, false, false, false)
+	server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
 
 	unspecifiedURIs := []string{
 		"https://0.0.0.0/callback", // IPv4 unspecified
@@ -424,7 +457,7 @@ func TestValidateRedirectURIForRegistration_IPv6EdgeCases(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("IPv6 loopback variations", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, false)
+		server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
 
 		// Note: net.IP.IsLoopback() correctly recognizes ::1 as loopback.
 		// The full form 0:0:0:0:0:0:0:1 also works with net.ParseIP().
@@ -443,7 +476,7 @@ func TestValidateRedirectURIForRegistration_IPv6EdgeCases(t *testing.T) {
 	})
 
 	t.Run("IPv6 link-local blocked", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, false)
+		server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
 
 		// Note: Zone IDs (fe80::1%eth0) cannot be parsed by net.ParseIP,
 		// so they are treated as hostnames and pass validation when DNS validation is disabled.
@@ -462,7 +495,7 @@ func TestValidateRedirectURIForRegistration_IPv6EdgeCases(t *testing.T) {
 	})
 
 	t.Run("IPv6 private addresses blocked", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, false)
+		server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
 
 		// fc00::/7 is the IPv6 Unique Local Address (ULA) range
 		privateIPv6URIs := []string{
@@ -483,7 +516,7 @@ func TestValidateRedirectURIForRegistration_IPv6EdgeCases(t *testing.T) {
 	})
 
 	t.Run("IPv6 public addresses allowed", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, false)
+		server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
 
 		// 2001:4860:4860::8888 is Google's public IPv6 DNS
 		publicIPv6URIs := []string{
@@ -502,7 +535,12 @@ func TestValidateRedirectURIForRegistration_IPv6EdgeCases(t *testing.T) {
 
 	t.Run("IPv6 unspecified always blocked", func(t *testing.T) {
 		// Even with all permissions enabled, unspecified addresses should be blocked
-		server := newTestServerWithSecurityConfig(false, true, true, true, false)
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: false,
+			allowLocalhost: true,
+			allowPrivateIP: true,
+			allowLinkLocal: true,
+		})
 
 		err := server.ValidateRedirectURIForRegistration(ctx, "https://[::]/callback")
 		if err == nil {
@@ -583,7 +621,10 @@ func TestIsRedirectURISecurityError(t *testing.T) {
 
 func TestConfigDefaults(t *testing.T) {
 	t.Run("AllowLocalhostRedirectURIs can be set to false", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, false, false, false, false)
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: true,
+			allowLocalhost: false,
+		})
 		// AllowLocalhostRedirectURIs should respect the explicit false setting
 		// (secure by default - only allow if explicitly enabled)
 		if server.Config.AllowLocalhostRedirectURIs {
@@ -592,7 +633,7 @@ func TestConfigDefaults(t *testing.T) {
 	})
 
 	t.Run("BlockedRedirectSchemes has defaults", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, false)
+		server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
 		if len(server.Config.BlockedRedirectSchemes) == 0 {
 			t.Error("Expected BlockedRedirectSchemes to have default values")
 		}
@@ -618,7 +659,7 @@ func TestValidateRedirectURIAtAuthorizationTime(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("Skipped when disabled", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, false)
+		server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
 		// ValidateRedirectURIAtAuthorization defaults to false
 		server.Config.ValidateRedirectURIAtAuthorization = false
 
@@ -630,7 +671,7 @@ func TestValidateRedirectURIAtAuthorizationTime(t *testing.T) {
 	})
 
 	t.Run("Validates when enabled", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, false)
+		server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
 		server.Config.ValidateRedirectURIAtAuthorization = true
 
 		// Should fail for blocked schemes
@@ -647,7 +688,7 @@ func TestValidateRedirectURIAtAuthorizationTime(t *testing.T) {
 	})
 
 	t.Run("Validates private IPs at authorization time", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, false)
+		server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
 		server.Config.ValidateRedirectURIAtAuthorization = true
 
 		err := server.ValidateRedirectURIAtAuthorizationTime(ctx, "https://10.0.0.1/callback")
@@ -703,14 +744,22 @@ func TestHighSecurityRedirectURIConfig(t *testing.T) {
 func TestDNSValidationStrict(t *testing.T) {
 	// Note: DNSValidationStrict now defaults to true (secure by default)
 	t.Run("Strict mode config defaults to true (secure by default)", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, true)
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: true,
+			allowLocalhost: true,
+			dnsValidation:  true,
+		})
 		if !server.Config.DNSValidationStrict {
 			t.Error("Expected DNSValidationStrict to default to true (secure by default)")
 		}
 	})
 
 	t.Run("Strict mode is set via test helper", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, true)
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: true,
+			allowLocalhost: true,
+			dnsValidation:  true,
+		})
 		if !server.Config.DNSValidationStrict {
 			t.Error("Expected DNSValidationStrict to be true when DNSValidation is enabled")
 		}
@@ -755,7 +804,11 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("DNS resolves to private IP - blocked", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, true)
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: true,
+			allowLocalhost: true,
+			dnsValidation:  true,
+		})
 		resolver := newMockDNSResolver()
 		resolver.setResult("evil.example.com", net.ParseIP("10.0.0.1"))
 		server.Config.DNSResolver = resolver
@@ -770,7 +823,12 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 	})
 
 	t.Run("DNS resolves to private IP - allowed when AllowPrivateIPRedirectURIs=true", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, true, false, true)
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: true,
+			allowLocalhost: true,
+			allowPrivateIP: true,
+			dnsValidation:  true,
+		})
 		resolver := newMockDNSResolver()
 		resolver.setResult("internal.example.com", net.ParseIP("192.168.1.100"))
 		server.Config.DNSResolver = resolver
@@ -782,7 +840,11 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 	})
 
 	t.Run("DNS resolves to link-local IP - blocked", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, true)
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: true,
+			allowLocalhost: true,
+			dnsValidation:  true,
+		})
 		resolver := newMockDNSResolver()
 		// AWS metadata service IP
 		resolver.setResult("metadata.attacker.com", net.ParseIP("169.254.169.254"))
@@ -798,7 +860,11 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 	})
 
 	t.Run("DNS resolves to public IP - allowed", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, true)
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: true,
+			allowLocalhost: true,
+			dnsValidation:  true,
+		})
 		resolver := newMockDNSResolver()
 		resolver.setResult("app.example.com", net.ParseIP("93.184.216.34"))
 		server.Config.DNSResolver = resolver
@@ -810,7 +876,11 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 	})
 
 	t.Run("DNS resolution fails - strict mode blocks", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, true)
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: true,
+			allowLocalhost: true,
+			dnsValidation:  true,
+		})
 		server.Config.DNSValidationStrict = true
 		resolver := newMockDNSResolver()
 		resolver.setError("unreachable.example.com", &net.DNSError{
@@ -829,7 +899,11 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 	})
 
 	t.Run("DNS resolution fails - permissive mode allows", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, true)
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: true,
+			allowLocalhost: true,
+			dnsValidation:  true,
+		})
 		server.Config.DNSValidationStrict = false // Permissive (default)
 		resolver := newMockDNSResolver()
 		resolver.setError("flaky.example.com", &net.DNSError{
@@ -846,7 +920,11 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 	})
 
 	t.Run("DNS resolves to multiple IPs - one private blocks all", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, true)
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: true,
+			allowLocalhost: true,
+			dnsValidation:  true,
+		})
 		resolver := newMockDNSResolver()
 		// Mixed public and private IPs
 		resolver.setResult("mixed.example.com",
@@ -865,7 +943,11 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 	})
 
 	t.Run("DNS resolves to IPv6 private (ULA) - blocked", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, true)
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: true,
+			allowLocalhost: true,
+			dnsValidation:  true,
+		})
 		resolver := newMockDNSResolver()
 		// IPv6 Unique Local Address (fc00::/7)
 		resolver.setResult("ipv6internal.example.com", net.ParseIP("fd00::1"))
@@ -881,7 +963,11 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 	})
 
 	t.Run("DNS resolves to IPv6 link-local - blocked", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, true)
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: true,
+			allowLocalhost: true,
+			dnsValidation:  true,
+		})
 		resolver := newMockDNSResolver()
 		resolver.setResult("ipv6linklocal.example.com", net.ParseIP("fe80::1"))
 		server.Config.DNSResolver = resolver
@@ -904,7 +990,11 @@ func TestAuthorizationTimeValidationWithMockDNS(t *testing.T) {
 		// 1. At registration time: evil.com -> 93.184.216.34 (public, allowed)
 		// 2. At authorization time: evil.com -> 10.0.0.1 (private, blocked)
 
-		server := newTestServerWithSecurityConfig(true, true, false, false, true)
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: true,
+			allowLocalhost: true,
+			dnsValidation:  true,
+		})
 		server.Config.ValidateRedirectURIAtAuthorization = true
 		resolver := newMockDNSResolver()
 		// Now the attacker has changed DNS to point to internal network
@@ -921,7 +1011,11 @@ func TestAuthorizationTimeValidationWithMockDNS(t *testing.T) {
 	})
 
 	t.Run("Valid redirect URI passes authorization-time validation", func(t *testing.T) {
-		server := newTestServerWithSecurityConfig(true, true, false, false, true)
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: true,
+			allowLocalhost: true,
+			dnsValidation:  true,
+		})
 		server.Config.ValidateRedirectURIAtAuthorization = true
 		resolver := newMockDNSResolver()
 		resolver.setResult("app.example.com", net.ParseIP("93.184.216.34"))

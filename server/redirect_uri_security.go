@@ -1,4 +1,3 @@
-// Package server provides the OAuth 2.1 authorization server implementation.
 package server
 
 import (
@@ -97,7 +96,7 @@ func (s *Server) ValidateRedirectURIForRegistration(ctx context.Context, redirec
 	if err := validateCustomScheme(scheme, s.Config.AllowedCustomSchemes); err != nil {
 		return &RedirectURISecurityError{
 			Category:      RedirectURIErrorCategoryBlockedScheme,
-			URI:           sanitizeURIForLogging(redirectURI),
+			URI:           sanitizedURI,
 			Reason:        err.Error(),
 			ClientMessage: fmt.Sprintf("redirect_uri: scheme '%s' is not allowed", scheme),
 		}
@@ -198,28 +197,14 @@ func (s *Server) validateIPAddress(ip net.IP, sanitizedURI string) error {
 		}
 	}
 
-	// Check for link-local addresses (169.254.x.x, fe80::/10)
-	// This is critical for cloud security - blocks access to metadata services
-	if ip.IsLinkLocalUnicast() {
-		if !s.Config.AllowLinkLocalRedirectURIs {
-			return &RedirectURISecurityError{
-				Category:      RedirectURIErrorCategoryLinkLocal,
-				URI:           sanitizedURI,
-				Reason:        fmt.Sprintf("IP %s is link-local (could target cloud metadata services)", ip.String()),
-				ClientMessage: "redirect_uri: link-local addresses are not allowed (cloud SSRF protection)",
-			}
-		}
-	}
-
-	// Also check for link-local multicast
-	if ip.IsLinkLocalMulticast() {
-		if !s.Config.AllowLinkLocalRedirectURIs {
-			return &RedirectURISecurityError{
-				Category:      RedirectURIErrorCategoryLinkLocal,
-				URI:           sanitizedURI,
-				Reason:        fmt.Sprintf("IP %s is link-local multicast", ip.String()),
-				ClientMessage: "redirect_uri: link-local addresses are not allowed",
-			}
+	// Check for link-local addresses (169.254.x.x, fe80::/10) and link-local multicast
+	// This is critical for cloud security - blocks access to metadata services (169.254.169.254)
+	if (ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()) && !s.Config.AllowLinkLocalRedirectURIs {
+		return &RedirectURISecurityError{
+			Category:      RedirectURIErrorCategoryLinkLocal,
+			URI:           sanitizedURI,
+			Reason:        fmt.Sprintf("IP %s is link-local (could target cloud metadata services)", ip.String()),
+			ClientMessage: "redirect_uri: link-local addresses are not allowed (cloud SSRF protection)",
 		}
 	}
 
