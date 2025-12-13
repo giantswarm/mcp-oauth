@@ -333,6 +333,28 @@ DNS validation is enabled by default and operates in **strict (fail-closed) mode
 
 DNS rebinding attacks are mitigated by re-validating redirect URIs at authorization time (`ValidateRedirectURIAtAuthorization=true`), not just at registration.
 
+**DNS Timeout Configuration:**
+
+The DNS validation timeout controls how long to wait for DNS resolution:
+
+```go
+config := &server.Config{
+    DNSValidationTimeout: 5 * time.Second,  // Default: 2s, Maximum: 30s
+}
+```
+
+- **Default:** 2 seconds - fast enough for good UX, slow enough for most DNS servers
+- **Maximum:** 30 seconds - values above this are automatically capped to prevent DoS via slow registrations
+- **Negative values:** Automatically corrected to the default
+
+**High-Volume Deployments:**
+
+For environments with high-volume client registration, consider these infrastructure-level optimizations:
+
+- **DNS Caching:** Deploy a local DNS cache (e.g., CoreDNS, dnsmasq) to reduce latency and external DNS load
+- **Rate Limiting:** Apply rate limiting at the infrastructure level (reverse proxy, API gateway) to protect against registration abuse
+- **Connection Pooling:** The library uses Go's default DNS resolver which pools connections; for extreme scale, consider a custom `DNSResolver` implementation with additional caching
+
 ### Blocked URI Schemes
 
 The following schemes are always blocked (XSS/security risk):

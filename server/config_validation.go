@@ -269,9 +269,26 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 	if len(config.BlockedRedirectSchemes) == 0 {
 		config.BlockedRedirectSchemes = DefaultBlockedRedirectSchemes
 	}
-	// DNS validation timeout default
+	// DNS validation timeout defaults and bounds
+	// Default: 2 seconds - fast enough for good UX, slow enough for most DNS servers
+	// Maximum: 30 seconds - prevents misconfiguration that could cause DoS via slow registration
+	const (
+		defaultDNSTimeout = 2 * time.Second
+		maxDNSTimeout     = 30 * time.Second
+	)
 	if config.DNSValidationTimeout == 0 {
-		config.DNSValidationTimeout = 2 * time.Second
+		config.DNSValidationTimeout = defaultDNSTimeout
+	} else if config.DNSValidationTimeout > maxDNSTimeout {
+		logger.Warn("DNS validation timeout exceeds maximum, capping to prevent slow registrations",
+			"configured", config.DNSValidationTimeout,
+			"maximum", maxDNSTimeout,
+			"risk", "very long timeouts can cause slow client registrations and potential DoS")
+		config.DNSValidationTimeout = maxDNSTimeout
+	} else if config.DNSValidationTimeout < 0 {
+		logger.Warn("DNS validation timeout cannot be negative, using default",
+			"configured", config.DNSValidationTimeout,
+			"default", defaultDNSTimeout)
+		config.DNSValidationTimeout = defaultDNSTimeout
 	}
 
 	// SECURITY: Enforce absolute minimum state length to ensure CSRF protection entropy
