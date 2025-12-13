@@ -7,6 +7,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
@@ -1024,6 +1025,89 @@ func TestAuthorizationTimeValidationWithMockDNS(t *testing.T) {
 		err := server.ValidateRedirectURIAtAuthorizationTime(ctx, "https://app.example.com/callback")
 		if err != nil {
 			t.Errorf("Expected no error for valid redirect URI, got %v", err)
+		}
+	})
+}
+
+func TestRedirectURISecurityMetrics(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("Metrics recorded on registration validation failure", func(t *testing.T) {
+		server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
+
+		// Trigger a blocked scheme error - should record metric
+		err := server.ValidateRedirectURIForRegistration(ctx, "javascript:alert('xss')")
+		if err == nil {
+			t.Error("Expected error for blocked scheme")
+		}
+
+		// Verify the error category is correct (metric should have been recorded internally)
+		category := GetRedirectURIErrorCategory(err)
+		if category != RedirectURIErrorCategoryBlockedScheme {
+			t.Errorf("Expected category %s, got %s", RedirectURIErrorCategoryBlockedScheme, category)
+		}
+	})
+
+	t.Run("Metrics recorded on authorization-time validation failure", func(t *testing.T) {
+		server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
+		server.Config.ValidateRedirectURIAtAuthorization = true
+
+		// Trigger a private IP error at authorization time
+		err := server.ValidateRedirectURIAtAuthorizationTime(ctx, "https://10.0.0.1/callback")
+		if err == nil {
+			t.Error("Expected error for private IP at authorization time")
+		}
+
+		category := GetRedirectURIErrorCategory(err)
+		if category != RedirectURIErrorCategoryPrivateIP {
+			t.Errorf("Expected category %s, got %s", RedirectURIErrorCategoryPrivateIP, category)
+		}
+	})
+
+	t.Run("Stage constants are exported correctly", func(t *testing.T) {
+		if RedirectURIStageRegistration != "registration" {
+			t.Errorf("Expected RedirectURIStageRegistration to be 'registration', got %s", RedirectURIStageRegistration)
+		}
+		if RedirectURIStageAuthorization != "authorization" {
+			t.Errorf("Expected RedirectURIStageAuthorization to be 'authorization', got %s", RedirectURIStageAuthorization)
+		}
+	})
+
+	t.Run("Metrics work with instrumentation enabled", func(t *testing.T) {
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		store := memory.New()
+		provider := mock.NewMockProvider()
+
+		// Create instrumentation
+		inst, err := instrumentation.New(instrumentation.Config{
+			Enabled: true,
+		})
+		if err != nil {
+			t.Fatalf("Failed to create instrumentation: %v", err)
+		}
+		defer func() { _ = inst.Shutdown(context.Background()) }()
+
+		config := &Config{
+			Issuer:                     "https://auth.example.com",
+			AllowLocalhostRedirectURIs: true,
+		}
+
+		server, err := New(provider, store, store, store, config, logger)
+		if err != nil {
+			t.Fatalf("Failed to create server: %v", err)
+		}
+		server.Instrumentation = inst
+
+		// This should record a metric via instrumentation
+		validationErr := server.ValidateRedirectURIForRegistration(ctx, "javascript:alert('xss')")
+		if validationErr == nil {
+			t.Error("Expected error for blocked scheme")
+		}
+
+		// Verify category is correct
+		category := GetRedirectURIErrorCategory(validationErr)
+		if category != RedirectURIErrorCategoryBlockedScheme {
+			t.Errorf("Expected category %s, got %s", RedirectURIErrorCategoryBlockedScheme, category)
 		}
 	})
 }

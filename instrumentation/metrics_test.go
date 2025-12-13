@@ -97,6 +97,13 @@ func TestMetrics_RecordSecurityEvents(t *testing.T) {
 
 	metrics.RecordTokenReuseDetected(ctx)
 
+	// Test redirect URI security rejection metrics
+	metrics.RecordRedirectURISecurityRejected(ctx, "blocked_scheme", "registration")
+	metrics.RecordRedirectURISecurityRejected(ctx, "private_ip", "registration")
+	metrics.RecordRedirectURISecurityRejected(ctx, "link_local", "registration")
+	metrics.RecordRedirectURISecurityRejected(ctx, "dns_resolves_to_private_ip", "authorization")
+	metrics.RecordRedirectURISecurityRejected(ctx, "http_not_allowed", "registration")
+
 	// All should complete without panic
 }
 
@@ -255,6 +262,7 @@ func TestMetrics_NoOpBehavior(t *testing.T) {
 	metrics.RecordPKCEValidationFailed(ctx, "S256")
 	metrics.RecordCodeReuseDetected(ctx)
 	metrics.RecordTokenReuseDetected(ctx)
+	metrics.RecordRedirectURISecurityRejected(ctx, "blocked_scheme", "registration")
 	metrics.RecordStorageOperation(ctx, "save", "success", 5.0)
 	metrics.RecordProviderAPICall(ctx, "google", "exchange", 200, 100.0, nil)
 	metrics.RecordAuditEvent(ctx, "test_event")

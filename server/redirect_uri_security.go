@@ -9,6 +9,14 @@ import (
 	"strings"
 )
 
+// Redirect URI validation stage constants for metrics.
+const (
+	// RedirectURIStageRegistration indicates validation during client registration.
+	RedirectURIStageRegistration = "registration"
+	// RedirectURIStageAuthorization indicates validation during authorization request.
+	RedirectURIStageAuthorization = "authorization"
+)
+
 // RedirectURISecurityError represents a redirect URI validation error
 // with detailed information for operators while keeping error messages generic for clients.
 type RedirectURISecurityError struct {
@@ -56,6 +64,21 @@ const (
 // - Internal/VPN: Allow private IPs
 // - Development: Relaxed validation
 func (s *Server) ValidateRedirectURIForRegistration(ctx context.Context, redirectURI string) error {
+	err := s.validateRedirectURIInternal(ctx, redirectURI)
+	if err != nil {
+		// Record security metric for monitoring/alerting
+		category := GetRedirectURIErrorCategory(err)
+		if category != "" {
+			s.recordRedirectURISecurityMetric(ctx, category, RedirectURIStageRegistration)
+		}
+	}
+	return err
+}
+
+// validateRedirectURIInternal performs the actual redirect URI validation.
+// This is separated from ValidateRedirectURIForRegistration to allow metrics
+// recording at the appropriate stage (registration vs authorization).
+func (s *Server) validateRedirectURIInternal(ctx context.Context, redirectURI string) error {
 	// Parse the redirect URI first
 	parsed, err := url.Parse(redirectURI)
 	if err != nil {
@@ -346,6 +369,14 @@ func GetRedirectURIErrorCategory(err error) string {
 	return ""
 }
 
+// recordRedirectURISecurityMetric records a redirect URI security rejection metric.
+// This is called internally when validation fails.
+func (s *Server) recordRedirectURISecurityMetric(ctx context.Context, category, stage string) {
+	if s.Instrumentation != nil && s.Instrumentation.Metrics() != nil {
+		s.Instrumentation.Metrics().RecordRedirectURISecurityRejected(ctx, category, stage)
+	}
+}
+
 // ValidateRedirectURIAtAuthorizationTime performs security validation on a redirect URI
 // during the authorization request. This is a secondary validation point that provides
 // defense against TOCTOU (Time-of-Check to Time-of-Use) attacks.
@@ -372,7 +403,15 @@ func (s *Server) ValidateRedirectURIAtAuthorizationTime(ctx context.Context, red
 
 	// Reuse the same validation logic as registration
 	// This ensures consistent security checks at both stages
-	return s.ValidateRedirectURIForRegistration(ctx, redirectURI)
+	err := s.validateRedirectURIInternal(ctx, redirectURI)
+	if err != nil {
+		// Record security metric with authorization stage
+		category := GetRedirectURIErrorCategory(err)
+		if category != "" {
+			s.recordRedirectURISecurityMetric(ctx, category, RedirectURIStageAuthorization)
+		}
+	}
+	return err
 }
 
 // HighSecurityRedirectURIConfig returns a Config with strict redirect URI security settings.

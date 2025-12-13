@@ -25,6 +25,8 @@ const (
 
 	// Security attributes
 	metricAttrLimiterType = "limiter_type"
+	metricAttrCategory    = "category"
+	metricAttrStage       = "stage"
 
 	// Storage attributes
 	metricAttrResult = "result"
@@ -52,10 +54,11 @@ type Metrics struct {
 	ClientRegistered     metric.Int64Counter
 
 	// Security Metrics
-	RateLimitExceeded    metric.Int64Counter
-	PKCEValidationFailed metric.Int64Counter
-	CodeReuseDetected    metric.Int64Counter
-	TokenReuseDetected   metric.Int64Counter
+	RateLimitExceeded           metric.Int64Counter
+	PKCEValidationFailed        metric.Int64Counter
+	CodeReuseDetected           metric.Int64Counter
+	TokenReuseDetected          metric.Int64Counter
+	RedirectURISecurityRejected metric.Int64Counter // Redirect URI validation failures by category
 
 	// Storage Metrics
 	StorageOperationTotal    metric.Int64Counter
@@ -216,6 +219,14 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 		"oauth.token.reuse_detected",
 		"Number of token reuse attempts detected",
 		"{attempt}")
+	if err != nil {
+		return nil, err
+	}
+
+	m.RedirectURISecurityRejected, err = createCounter(securityMeter,
+		"oauth.redirect_uri.security_rejected",
+		"Number of redirect URI validation failures (SSRF/XSS protection)",
+		"{rejection}")
 	if err != nil {
 		return nil, err
 	}
@@ -435,6 +446,20 @@ func (m *Metrics) RecordCodeReuseDetected(ctx context.Context) {
 // RecordTokenReuseDetected records a token reuse attempt
 func (m *Metrics) RecordTokenReuseDetected(ctx context.Context) {
 	m.TokenReuseDetected.Add(ctx, 1)
+}
+
+// RecordRedirectURISecurityRejected records a redirect URI security validation failure.
+// This metric helps monitor SSRF and XSS attack attempts.
+//
+// Parameters:
+//   - category: The error category (e.g., "blocked_scheme", "private_ip", "link_local",
+//     "dns_resolves_to_private_ip", "loopback_not_allowed", "http_not_allowed")
+//   - stage: When the rejection occurred ("registration" or "authorization")
+func (m *Metrics) RecordRedirectURISecurityRejected(ctx context.Context, category, stage string) {
+	m.RedirectURISecurityRejected.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(metricAttrCategory, category),
+		attribute.String(metricAttrStage, stage),
+	))
 }
 
 // RecordStorageOperation records a storage operation
