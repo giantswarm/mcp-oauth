@@ -360,18 +360,19 @@ type Config struct {
 	// StrictSchemeMatching requires ALL redirect URIs in a registration request
 	// to use trusted schemes for unauthenticated registration to be allowed.
 	//
-	// When true (default, recommended):
+	// When true (recommended for maximum security):
 	//   - All redirect URIs MUST use schemes from TrustedPublicRegistrationSchemes
 	//   - A mix of trusted and untrusted schemes requires a registration token
 	//   - Provides maximum security by preventing token leakage to untrusted URIs
 	//
-	// When false (permissive):
+	// When false (permissive, Go default):
 	//   - If ANY redirect URI uses a trusted scheme, registration is allowed
 	//   - Other redirect URIs can use any scheme (including https://)
 	//   - Use case: Clients that need both custom scheme and web-based callbacks
+	//   - A security warning is logged when this mode is used
 	//
 	// This setting only applies when TrustedPublicRegistrationSchemes is non-empty.
-	// Default: true (all redirect URIs must use trusted schemes)
+	// Default: false (Go zero value). Set to true for maximum security.
 	StrictSchemeMatching bool
 
 	// AllowedCustomSchemes is a list of allowed custom URI scheme patterns (regex)

@@ -265,7 +265,7 @@ Custom URI schemes (e.g., `cursor://`, `vscode://`) are registered at the OS lev
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `TrustedPublicRegistrationSchemes` | `[]` | List of allowed schemes for token-free registration |
-| `StrictSchemeMatching` | `true` | ALL redirect URIs must use trusted schemes |
+| `StrictSchemeMatching` | `false` | When `true`, ALL redirect URIs must use trusted schemes (recommended) |
 
 **Audit Logging:**
 

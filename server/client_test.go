@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"golang.org/x/crypto/bcrypt"
@@ -713,7 +714,7 @@ func TestServer_CanRegisterWithTrustedScheme(t *testing.T) {
 					t.Error("CanRegisterWithTrustedScheme() expected error, got nil")
 					return
 				}
-				if tt.wantErrContains != "" && !contains(err.Error(), tt.wantErrContains) {
+				if tt.wantErrContains != "" && !strings.Contains(err.Error(), tt.wantErrContains) {
 					t.Errorf("error = %q, want containing %q", err.Error(), tt.wantErrContains)
 				}
 				return
@@ -733,19 +734,4 @@ func TestServer_CanRegisterWithTrustedScheme(t *testing.T) {
 			}
 		})
 	}
-}
-
-// contains checks if s contains substr (helper for tests)
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > 0 && len(substr) > 0 && findSubstring(s, substr)))
-}
-
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

@@ -205,16 +205,16 @@ func (s *Server) CanRegisterWithTrustedScheme(redirectURIs []string) (allowed bo
 			return false, "", fmt.Errorf("invalid redirect URI: %w", err)
 		}
 
-		scheme := strings.ToLower(parsed.Scheme)
-		if scheme == "" {
+		uriScheme := strings.ToLower(parsed.Scheme)
+		if uriScheme == "" {
 			// No scheme - require token for safety
 			return false, "", fmt.Errorf("redirect URI missing scheme: %s", uri)
 		}
 
-		if trustedSchemes[scheme] {
+		if trustedSchemes[uriScheme] {
 			trustedCount++
 			if firstTrustedScheme == "" {
-				firstTrustedScheme = scheme
+				firstTrustedScheme = uriScheme
 			}
 		} else if s.Config.StrictSchemeMatching {
 			// Strict mode: all URIs must use trusted schemes
