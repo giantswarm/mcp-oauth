@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"log/slog"
+	"net"
 	"os"
 	"testing"
 
@@ -387,8 +388,8 @@ func TestValidateRedirectURIForRegistration_IPv6EdgeCases(t *testing.T) {
 	t.Run("IPv6 loopback variations", func(t *testing.T) {
 		server := newTestServerWithSecurityConfig(true, true, false, false, false)
 
-		// Note: Only shortened form ::1 is recognized by isLoopbackAddress
-		// The full form 0:0:0:0:0:0:0:1 is not in the LoopbackAddresses list
+		// Note: net.IP.IsLoopback() correctly recognizes ::1 as loopback.
+		// The full form 0:0:0:0:0:0:0:1 also works with net.ParseIP().
 		loopbackIPv6URIs := []string{
 			"http://[::1]/callback",
 			"http://[::1]:8080/callback",
@@ -662,16 +663,6 @@ func TestHighSecurityRedirectURIConfig(t *testing.T) {
 }
 
 func TestDNSValidationStrict(t *testing.T) {
-	// Note: These tests verify the error category handling for DNS failures.
-	// Actual DNS failure testing requires mocking the resolver which is complex.
-	// The core logic is tested via the error category constant.
-
-	t.Run("DNSFailure error category exists", func(t *testing.T) {
-		if RedirectURIErrorCategoryDNSFailure != "dns_resolution_failed" {
-			t.Errorf("Unexpected DNS failure category: %s", RedirectURIErrorCategoryDNSFailure)
-		}
-	})
-
 	t.Run("Strict mode config defaults to false", func(t *testing.T) {
 		server := newTestServerWithSecurityConfig(true, true, false, false, false)
 		if server.Config.DNSValidationStrict {
@@ -684,6 +675,223 @@ func TestDNSValidationStrict(t *testing.T) {
 		server.Config.DNSValidationStrict = true
 		if !server.Config.DNSValidationStrict {
 			t.Error("Expected DNSValidationStrict to be settable to true")
+		}
+	})
+}
+
+// mockDNSResolver implements DNSResolver for testing.
+type mockDNSResolver struct {
+	// results maps hostname to resolved IPs
+	results map[string][]net.IP
+	// errors maps hostname to error
+	errors map[string]error
+}
+
+func newMockDNSResolver() *mockDNSResolver {
+	return &mockDNSResolver{
+		results: make(map[string][]net.IP),
+		errors:  make(map[string]error),
+	}
+}
+
+func (m *mockDNSResolver) LookupIP(_ context.Context, _, host string) ([]net.IP, error) {
+	if err, ok := m.errors[host]; ok {
+		return nil, err
+	}
+	if ips, ok := m.results[host]; ok {
+		return ips, nil
+	}
+	// Default: return a public IP if not configured
+	return []net.IP{net.ParseIP("93.184.216.34")}, nil
+}
+
+func (m *mockDNSResolver) setResult(host string, ips ...net.IP) {
+	m.results[host] = ips
+}
+
+func (m *mockDNSResolver) setError(host string, err error) {
+	m.errors[host] = err
+}
+
+func TestDNSValidationWithMockResolver(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("DNS resolves to private IP - blocked", func(t *testing.T) {
+		server := newTestServerWithSecurityConfig(true, true, false, false, true)
+		resolver := newMockDNSResolver()
+		resolver.setResult("evil.example.com", net.ParseIP("10.0.0.1"))
+		server.Config.DNSResolver = resolver
+
+		err := server.ValidateRedirectURIForRegistration(ctx, "https://evil.example.com/callback")
+		if err == nil {
+			t.Error("Expected error for hostname resolving to private IP")
+		}
+		if GetRedirectURIErrorCategory(err) != RedirectURIErrorCategoryDNSPrivateIP {
+			t.Errorf("Expected category %s, got %s", RedirectURIErrorCategoryDNSPrivateIP, GetRedirectURIErrorCategory(err))
+		}
+	})
+
+	t.Run("DNS resolves to private IP - allowed when AllowPrivateIPRedirectURIs=true", func(t *testing.T) {
+		server := newTestServerWithSecurityConfig(true, true, true, false, true)
+		resolver := newMockDNSResolver()
+		resolver.setResult("internal.example.com", net.ParseIP("192.168.1.100"))
+		server.Config.DNSResolver = resolver
+
+		err := server.ValidateRedirectURIForRegistration(ctx, "https://internal.example.com/callback")
+		if err != nil {
+			t.Errorf("Expected no error when private IPs allowed, got %v", err)
+		}
+	})
+
+	t.Run("DNS resolves to link-local IP - blocked", func(t *testing.T) {
+		server := newTestServerWithSecurityConfig(true, true, false, false, true)
+		resolver := newMockDNSResolver()
+		// AWS metadata service IP
+		resolver.setResult("metadata.attacker.com", net.ParseIP("169.254.169.254"))
+		server.Config.DNSResolver = resolver
+
+		err := server.ValidateRedirectURIForRegistration(ctx, "https://metadata.attacker.com/callback")
+		if err == nil {
+			t.Error("Expected error for hostname resolving to link-local IP (metadata service)")
+		}
+		if GetRedirectURIErrorCategory(err) != RedirectURIErrorCategoryDNSLinkLocal {
+			t.Errorf("Expected category %s, got %s", RedirectURIErrorCategoryDNSLinkLocal, GetRedirectURIErrorCategory(err))
+		}
+	})
+
+	t.Run("DNS resolves to public IP - allowed", func(t *testing.T) {
+		server := newTestServerWithSecurityConfig(true, true, false, false, true)
+		resolver := newMockDNSResolver()
+		resolver.setResult("app.example.com", net.ParseIP("93.184.216.34"))
+		server.Config.DNSResolver = resolver
+
+		err := server.ValidateRedirectURIForRegistration(ctx, "https://app.example.com/callback")
+		if err != nil {
+			t.Errorf("Expected no error for public IP, got %v", err)
+		}
+	})
+
+	t.Run("DNS resolution fails - strict mode blocks", func(t *testing.T) {
+		server := newTestServerWithSecurityConfig(true, true, false, false, true)
+		server.Config.DNSValidationStrict = true
+		resolver := newMockDNSResolver()
+		resolver.setError("unreachable.example.com", &net.DNSError{
+			Err:  "no such host",
+			Name: "unreachable.example.com",
+		})
+		server.Config.DNSResolver = resolver
+
+		err := server.ValidateRedirectURIForRegistration(ctx, "https://unreachable.example.com/callback")
+		if err == nil {
+			t.Error("Expected error in strict mode when DNS fails")
+		}
+		if GetRedirectURIErrorCategory(err) != RedirectURIErrorCategoryDNSFailure {
+			t.Errorf("Expected category %s, got %s", RedirectURIErrorCategoryDNSFailure, GetRedirectURIErrorCategory(err))
+		}
+	})
+
+	t.Run("DNS resolution fails - permissive mode allows", func(t *testing.T) {
+		server := newTestServerWithSecurityConfig(true, true, false, false, true)
+		server.Config.DNSValidationStrict = false // Permissive (default)
+		resolver := newMockDNSResolver()
+		resolver.setError("flaky.example.com", &net.DNSError{
+			Err:         "temporary failure",
+			Name:        "flaky.example.com",
+			IsTemporary: true,
+		})
+		server.Config.DNSResolver = resolver
+
+		err := server.ValidateRedirectURIForRegistration(ctx, "https://flaky.example.com/callback")
+		if err != nil {
+			t.Errorf("Expected no error in permissive mode when DNS fails, got %v", err)
+		}
+	})
+
+	t.Run("DNS resolves to multiple IPs - one private blocks all", func(t *testing.T) {
+		server := newTestServerWithSecurityConfig(true, true, false, false, true)
+		resolver := newMockDNSResolver()
+		// Mixed public and private IPs
+		resolver.setResult("mixed.example.com",
+			net.ParseIP("93.184.216.34"), // Public
+			net.ParseIP("10.0.0.1"),      // Private - should block
+		)
+		server.Config.DNSResolver = resolver
+
+		err := server.ValidateRedirectURIForRegistration(ctx, "https://mixed.example.com/callback")
+		if err == nil {
+			t.Error("Expected error when any resolved IP is private")
+		}
+		if GetRedirectURIErrorCategory(err) != RedirectURIErrorCategoryDNSPrivateIP {
+			t.Errorf("Expected category %s, got %s", RedirectURIErrorCategoryDNSPrivateIP, GetRedirectURIErrorCategory(err))
+		}
+	})
+
+	t.Run("DNS resolves to IPv6 private (ULA) - blocked", func(t *testing.T) {
+		server := newTestServerWithSecurityConfig(true, true, false, false, true)
+		resolver := newMockDNSResolver()
+		// IPv6 Unique Local Address (fc00::/7)
+		resolver.setResult("ipv6internal.example.com", net.ParseIP("fd00::1"))
+		server.Config.DNSResolver = resolver
+
+		err := server.ValidateRedirectURIForRegistration(ctx, "https://ipv6internal.example.com/callback")
+		if err == nil {
+			t.Error("Expected error for hostname resolving to IPv6 private address")
+		}
+		if GetRedirectURIErrorCategory(err) != RedirectURIErrorCategoryDNSPrivateIP {
+			t.Errorf("Expected category %s, got %s", RedirectURIErrorCategoryDNSPrivateIP, GetRedirectURIErrorCategory(err))
+		}
+	})
+
+	t.Run("DNS resolves to IPv6 link-local - blocked", func(t *testing.T) {
+		server := newTestServerWithSecurityConfig(true, true, false, false, true)
+		resolver := newMockDNSResolver()
+		resolver.setResult("ipv6linklocal.example.com", net.ParseIP("fe80::1"))
+		server.Config.DNSResolver = resolver
+
+		err := server.ValidateRedirectURIForRegistration(ctx, "https://ipv6linklocal.example.com/callback")
+		if err == nil {
+			t.Error("Expected error for hostname resolving to IPv6 link-local address")
+		}
+		if GetRedirectURIErrorCategory(err) != RedirectURIErrorCategoryDNSLinkLocal {
+			t.Errorf("Expected category %s, got %s", RedirectURIErrorCategoryDNSLinkLocal, GetRedirectURIErrorCategory(err))
+		}
+	})
+}
+
+func TestAuthorizationTimeValidationWithMockDNS(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("DNS rebinding attack detected at authorization time", func(t *testing.T) {
+		// Simulates a DNS rebinding attack:
+		// 1. At registration time: evil.com -> 93.184.216.34 (public, allowed)
+		// 2. At authorization time: evil.com -> 10.0.0.1 (private, blocked)
+
+		server := newTestServerWithSecurityConfig(true, true, false, false, true)
+		server.Config.ValidateRedirectURIAtAuthorization = true
+		resolver := newMockDNSResolver()
+		// Now the attacker has changed DNS to point to internal network
+		resolver.setResult("evil.example.com", net.ParseIP("10.0.0.1"))
+		server.Config.DNSResolver = resolver
+
+		err := server.ValidateRedirectURIAtAuthorizationTime(ctx, "https://evil.example.com/callback")
+		if err == nil {
+			t.Error("Expected DNS rebinding attack to be detected at authorization time")
+		}
+		if GetRedirectURIErrorCategory(err) != RedirectURIErrorCategoryDNSPrivateIP {
+			t.Errorf("Expected category %s, got %s", RedirectURIErrorCategoryDNSPrivateIP, GetRedirectURIErrorCategory(err))
+		}
+	})
+
+	t.Run("Valid redirect URI passes authorization-time validation", func(t *testing.T) {
+		server := newTestServerWithSecurityConfig(true, true, false, false, true)
+		server.Config.ValidateRedirectURIAtAuthorization = true
+		resolver := newMockDNSResolver()
+		resolver.setResult("app.example.com", net.ParseIP("93.184.216.34"))
+		server.Config.DNSResolver = resolver
+
+		err := server.ValidateRedirectURIAtAuthorizationTime(ctx, "https://app.example.com/callback")
+		if err != nil {
+			t.Errorf("Expected no error for valid redirect URI, got %v", err)
 		}
 	})
 }

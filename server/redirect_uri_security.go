@@ -80,15 +80,16 @@ func (s *Server) ValidateRedirectURIForRegistration(ctx context.Context, redirec
 	}
 
 	scheme := strings.ToLower(parsed.Scheme)
+	sanitizedURI := sanitizeURIForLogging(redirectURI)
 
 	// Step 1: Check for blocked schemes (always blocked, regardless of mode)
-	if err := s.validateSchemeNotBlocked(scheme); err != nil {
+	if err := s.validateSchemeNotBlocked(scheme, sanitizedURI); err != nil {
 		return err
 	}
 
 	// Step 2: Handle HTTP/HTTPS schemes
 	if scheme == SchemeHTTP || scheme == SchemeHTTPS {
-		return s.validateHTTPRedirectURI(ctx, parsed)
+		return s.validateHTTPRedirectURI(ctx, parsed, sanitizedURI)
 	}
 
 	// Step 3: Handle custom schemes (for native apps)
@@ -107,13 +108,14 @@ func (s *Server) ValidateRedirectURIForRegistration(ctx context.Context, redirec
 
 // validateSchemeNotBlocked checks if a URI scheme is in the blocked list.
 // Blocked schemes are never allowed regardless of configuration (security invariant).
-func (s *Server) validateSchemeNotBlocked(scheme string) error {
+// The sanitizedURI parameter is used for consistent error logging.
+func (s *Server) validateSchemeNotBlocked(scheme, sanitizedURI string) error {
 	schemeLower := strings.ToLower(scheme)
 	for _, blocked := range s.Config.BlockedRedirectSchemes {
 		if schemeLower == strings.ToLower(blocked) {
 			return &RedirectURISecurityError{
 				Category:      RedirectURIErrorCategoryBlockedScheme,
-				URI:           "",
+				URI:           sanitizedURI,
 				Reason:        fmt.Sprintf("scheme '%s' is in blocked list", scheme),
 				ClientMessage: fmt.Sprintf("redirect_uri: scheme '%s' is blocked for security reasons", scheme),
 			}
@@ -124,7 +126,8 @@ func (s *Server) validateSchemeNotBlocked(scheme string) error {
 
 // validateHTTPRedirectURI validates HTTP/HTTPS redirect URIs with full security checks.
 // This is the core validation logic that applies ProductionMode rules.
-func (s *Server) validateHTTPRedirectURI(ctx context.Context, parsed *url.URL) error {
+// The sanitizedURI parameter is used for consistent error logging.
+func (s *Server) validateHTTPRedirectURI(ctx context.Context, parsed *url.URL, sanitizedURI string) error {
 	scheme := strings.ToLower(parsed.Scheme)
 	hostname := parsed.Hostname()
 
@@ -136,7 +139,7 @@ func (s *Server) validateHTTPRedirectURI(ctx context.Context, parsed *url.URL) e
 		if !s.Config.AllowLocalhostRedirectURIs {
 			return &RedirectURISecurityError{
 				Category:      RedirectURIErrorCategoryLoopback,
-				URI:           sanitizeURIForLogging(parsed.String()),
+				URI:           sanitizedURI,
 				Reason:        "loopback addresses disabled via AllowLocalhostRedirectURIs=false",
 				ClientMessage: "redirect_uri: loopback addresses are not allowed",
 			}
@@ -149,7 +152,7 @@ func (s *Server) validateHTTPRedirectURI(ctx context.Context, parsed *url.URL) e
 	if s.Config.ProductionMode && scheme == SchemeHTTP {
 		return &RedirectURISecurityError{
 			Category:      RedirectURIErrorCategoryHTTPNotAllowed,
-			URI:           sanitizeURIForLogging(parsed.String()),
+			URI:           sanitizedURI,
 			Reason:        "ProductionMode=true requires HTTPS for non-loopback URIs",
 			ClientMessage: "redirect_uri: HTTPS is required in production (HTTP only allowed for localhost)",
 		}
@@ -157,12 +160,12 @@ func (s *Server) validateHTTPRedirectURI(ctx context.Context, parsed *url.URL) e
 
 	// Step 3: Check if hostname is an IP address
 	if ip := net.ParseIP(hostname); ip != nil {
-		return s.validateIPAddress(ip, hostname)
+		return s.validateIPAddress(ip, sanitizedURI)
 	}
 
 	// Step 4: Hostname-based validation (optionally with DNS resolution)
 	if s.Config.DNSValidation {
-		return s.validateHostnameWithDNS(ctx, hostname, parsed.String())
+		return s.validateHostnameWithDNS(ctx, hostname, sanitizedURI)
 	}
 
 	return nil
@@ -170,14 +173,15 @@ func (s *Server) validateHTTPRedirectURI(ctx context.Context, parsed *url.URL) e
 
 // validateIPAddress checks if an IP address is allowed based on security configuration.
 // This prevents SSRF attacks to internal networks and cloud metadata services.
-func (s *Server) validateIPAddress(ip net.IP, hostname string) error {
+// The sanitizedURI parameter is used for consistent error logging.
+func (s *Server) validateIPAddress(ip net.IP, sanitizedURI string) error {
 	// Check for unspecified addresses (0.0.0.0, ::)
 	// These are always blocked as they can bind to all interfaces or have undefined behavior
 	if ip.IsUnspecified() {
 		return &RedirectURISecurityError{
 			Category:      RedirectURIErrorCategoryUnspecifiedAddr,
-			URI:           "",
-			Reason:        fmt.Sprintf("IP %s is unspecified (0.0.0.0 or ::)", hostname),
+			URI:           sanitizedURI,
+			Reason:        fmt.Sprintf("IP %s is unspecified (0.0.0.0 or ::)", ip.String()),
 			ClientMessage: "redirect_uri: unspecified addresses (0.0.0.0, ::) are not allowed",
 		}
 	}
@@ -187,8 +191,8 @@ func (s *Server) validateIPAddress(ip net.IP, hostname string) error {
 		if !s.Config.AllowPrivateIPRedirectURIs {
 			return &RedirectURISecurityError{
 				Category:      RedirectURIErrorCategoryPrivateIP,
-				URI:           "",
-				Reason:        fmt.Sprintf("IP %s is in private range (RFC 1918)", hostname),
+				URI:           sanitizedURI,
+				Reason:        fmt.Sprintf("IP %s is in private range (RFC 1918)", ip.String()),
 				ClientMessage: "redirect_uri: private IP addresses are not allowed (SSRF protection)",
 			}
 		}
@@ -200,8 +204,8 @@ func (s *Server) validateIPAddress(ip net.IP, hostname string) error {
 		if !s.Config.AllowLinkLocalRedirectURIs {
 			return &RedirectURISecurityError{
 				Category:      RedirectURIErrorCategoryLinkLocal,
-				URI:           "",
-				Reason:        fmt.Sprintf("IP %s is link-local (could target cloud metadata services)", hostname),
+				URI:           sanitizedURI,
+				Reason:        fmt.Sprintf("IP %s is link-local (could target cloud metadata services)", ip.String()),
 				ClientMessage: "redirect_uri: link-local addresses are not allowed (cloud SSRF protection)",
 			}
 		}
@@ -212,8 +216,8 @@ func (s *Server) validateIPAddress(ip net.IP, hostname string) error {
 		if !s.Config.AllowLinkLocalRedirectURIs {
 			return &RedirectURISecurityError{
 				Category:      RedirectURIErrorCategoryLinkLocal,
-				URI:           "",
-				Reason:        fmt.Sprintf("IP %s is link-local multicast", hostname),
+				URI:           sanitizedURI,
+				Reason:        fmt.Sprintf("IP %s is link-local multicast", ip.String()),
 				ClientMessage: "redirect_uri: link-local addresses are not allowed",
 			}
 		}
@@ -241,8 +245,14 @@ func (s *Server) validateHostnameWithDNS(ctx context.Context, hostname, fullURI 
 	resolveCtx, cancel := context.WithTimeout(ctx, s.Config.DNSValidationTimeout)
 	defer cancel()
 
+	// Use configured resolver or default
+	resolver := s.Config.DNSResolver
+	if resolver == nil {
+		resolver = &defaultDNSResolver{}
+	}
+
 	// Resolve hostname
-	ips, err := net.DefaultResolver.LookupIP(resolveCtx, "ip", hostname)
+	ips, err := resolver.LookupIP(resolveCtx, "ip", hostname)
 	if err != nil {
 		// DNS resolution failed
 		if s.Config.DNSValidationStrict {

@@ -52,9 +52,6 @@ var (
 
 	// DefaultRFC3986SchemePattern is the default regex pattern for custom URI schemes (RFC 3986)
 	DefaultRFC3986SchemePattern = []string{"^[a-z][a-z0-9+.-]*$"}
-
-	// LoopbackAddresses lists recognized loopback addresses for development
-	LoopbackAddresses = []string{"localhost", "127.0.0.1", "::1", "[::1]"}
 )
 
 // validateHTTPSEnforcement ensures that the OAuth server is running over HTTPS
@@ -395,22 +392,31 @@ func validateCustomScheme(scheme string, allowedSchemes []string) error {
 		scheme, allowedSchemes)
 }
 
-// isLoopbackAddress checks if a hostname is a loopback address.
+// isLoopbackAddress checks if a hostname is a true loopback address.
+// This includes the entire 127.0.0.0/8 range (RFC 1122) and IPv6 ::1.
 // Expects hostname without port (as returned by url.URL.Hostname()).
+//
+// Note: This function does NOT consider 0.0.0.0 as loopback (it's "unspecified").
+// For development HTTP allowance that includes 0.0.0.0, use isLocalhostHostname.
 func isLoopbackAddress(hostname string) bool {
-	// Normalize hostname (remove brackets for IPv6)
-	hostname = strings.Trim(hostname, "[]")
-	hostname = strings.TrimSpace(hostname)
-
-	// Check against recognized loopback addresses
-	for _, loopback := range LoopbackAddresses {
-		if hostname == loopback {
-			return true
-		}
+	// Handle "localhost" hostname directly
+	if hostname == "localhost" {
+		return true
 	}
 
-	// Also check for full 127.0.0.0/8 loopback range (e.g., 127.0.0.100)
-	return strings.HasPrefix(hostname, "127.")
+	// Normalize hostname (strip brackets from IPv6 like [::1])
+	cleanHostname := strings.Trim(hostname, "[]")
+	cleanHostname = strings.TrimSpace(cleanHostname)
+
+	// Parse as IP and use stdlib's IsLoopback for correct handling of:
+	// - 127.0.0.0/8 range (all 16M addresses)
+	// - ::1 (IPv6 loopback)
+	// - ::ffff:127.0.0.1 (IPv4-mapped IPv6 loopback)
+	if ip := net.ParseIP(cleanHostname); ip != nil {
+		return ip.IsLoopback()
+	}
+
+	return false
 }
 
 // validateRedirectURISecurityEnhanced performs comprehensive security validation on redirect URIs

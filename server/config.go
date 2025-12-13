@@ -1,8 +1,10 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -11,6 +13,24 @@ import (
 
 	"github.com/giantswarm/mcp-oauth/internal/util"
 )
+
+// DNSResolver is an interface for DNS resolution, allowing for dependency injection
+// in testing. The default implementation uses net.DefaultResolver.
+//
+// This interface is intentionally minimal - it only exposes the method needed
+// for redirect URI validation.
+type DNSResolver interface {
+	// LookupIP looks up host using the local resolver.
+	// It returns a slice of that host's IPv4 and IPv6 addresses.
+	LookupIP(ctx context.Context, network, host string) ([]net.IP, error)
+}
+
+// defaultDNSResolver wraps net.DefaultResolver to implement DNSResolver.
+type defaultDNSResolver struct{}
+
+func (d *defaultDNSResolver) LookupIP(ctx context.Context, network, host string) ([]net.IP, error) {
+	return net.DefaultResolver.LookupIP(ctx, network, host)
+}
 
 // URI scheme constants (shared with validation.go)
 const (
@@ -396,6 +416,12 @@ type Config struct {
 	// Prevents slow DNS from blocking registration.
 	// Default: 2 seconds
 	DNSValidationTimeout time.Duration
+
+	// DNSResolver is the resolver used for DNS lookups during redirect URI validation.
+	// This is primarily for testing - allows injecting a mock resolver.
+	// If nil, the default net.DefaultResolver is used.
+	// Default: nil (uses net.DefaultResolver)
+	DNSResolver DNSResolver
 
 	// ValidateRedirectURIAtAuthorization enables re-validation of redirect URIs during
 	// authorization requests, not just at client registration time.
@@ -967,7 +993,7 @@ func validateCORSConfig(config *Config, logger *slog.Logger) {
 		if !config.AllowInsecureHTTP && u.Scheme == SchemeHTTP {
 			hostname := u.Hostname()
 			// Allow localhost for development
-			if hostname != "localhost" && hostname != "127.0.0.1" && !strings.HasPrefix(hostname, "192.168.") && !strings.HasPrefix(hostname, "10.") {
+			if hostname != localhostHostname && hostname != localhostIPv4Loopback && !strings.HasPrefix(hostname, "192.168.") && !strings.HasPrefix(hostname, "10.") {
 				panic(fmt.Sprintf("CORS: HTTP origin '%s' not allowed (use HTTPS or set AllowInsecureHTTP=true for development)", origin))
 			}
 			logger.Warn("⚠️  CORS: HTTP origin allowed for localhost/development",
