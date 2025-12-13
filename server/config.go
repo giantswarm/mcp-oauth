@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -333,10 +334,56 @@ type Config struct {
 	//
 	// The token is validated using constant-time comparison to prevent timing attacks.
 	// If AllowPublicClientRegistration is false but this is empty, ALL registration
-	// attempts will fail (misconfiguration).
+	// attempts will fail (misconfiguration) unless TrustedPublicRegistrationSchemes
+	// is configured and the client uses trusted redirect URI schemes.
 	//
 	// Default: "" (no token configured)
 	RegistrationAccessToken string
+
+	// TrustedPublicRegistrationSchemes lists URI schemes that are allowed for
+	// unauthenticated client registration. Clients registering with redirect URIs
+	// using ONLY these schemes do NOT need a RegistrationAccessToken.
+	//
+	// This enables compatibility with MCP clients like Cursor that don't support
+	// registration tokens, while maintaining security for other clients.
+	//
+	// Security: Custom URI schemes (cursor://, vscode://) can only be intercepted
+	// by the application that registered the scheme with the OS. This makes them
+	// inherently safe for public registration - an attacker cannot register a
+	// malicious client with cursor:// because they can't receive the callback.
+	//
+	// Scheme matching is case-insensitive (per RFC 3986 Section 3.1).
+	// Schemes are normalized to lowercase during configuration validation.
+	//
+	// Example: ["cursor", "vscode", "vscode-insiders", "windsurf"]
+	// Default: [] (all registrations require token unless AllowPublicClientRegistration=true)
+	TrustedPublicRegistrationSchemes []string
+
+	// trustedSchemesMap is a pre-computed map for O(1) lookup of trusted schemes.
+	// This is populated during configuration validation from TrustedPublicRegistrationSchemes.
+	// All schemes are normalized to lowercase for case-insensitive matching.
+	// This field is internal and should not be set directly by users.
+	trustedSchemesMap map[string]bool
+
+	// DisableStrictSchemeMatching explicitly disables strict scheme matching for deployments
+	// that need to support clients with mixed redirect URI schemes (e.g., cursor:// AND https://).
+	//
+	// Strict scheme matching (enabled by default when TrustedPublicRegistrationSchemes is configured):
+	//   - All redirect URIs MUST use schemes from TrustedPublicRegistrationSchemes
+	//   - A mix of trusted and untrusted schemes requires a registration token
+	//   - Provides maximum security by preventing token leakage to untrusted URIs
+	//
+	// When disabled (permissive mode):
+	//   - If ANY redirect URI uses a trusted scheme, registration is allowed
+	//   - Other redirect URIs can use any scheme (including https://)
+	//   - Use case: Clients that need both custom scheme and web-based callbacks
+	//   - A security warning is logged when this mode is used
+	//
+	// WARNING: Disabling strict matching allows clients to register with untrusted redirect URIs
+	// alongside trusted ones. While PKCE mitigates code interception, this reduces security.
+	// Only set this to true if you have specific requirements for mixed scheme clients.
+	// Default: false (strict matching is enabled when TrustedPublicRegistrationSchemes is configured)
+	DisableStrictSchemeMatching bool
 
 	// AllowedCustomSchemes is a list of allowed custom URI scheme patterns (regex)
 	// Used for validating custom redirect URIs (e.g., myapp://, com.example.app://)
@@ -801,4 +848,20 @@ func (c *Config) GetResourceIdentifier() string {
 		return c.ResourceIdentifier
 	}
 	return c.Issuer
+}
+
+// SetTrustedSchemesMap builds the pre-computed trusted schemes map from the given schemes.
+// This is primarily used for testing purposes. In production, the map is built
+// automatically by validateTrustedPublicRegistrationSchemes during config validation.
+// Schemes are normalized to lowercase for case-insensitive matching.
+func (c *Config) SetTrustedSchemesMap(schemes []string) {
+	if len(schemes) == 0 {
+		c.trustedSchemesMap = nil
+		return
+	}
+	c.trustedSchemesMap = make(map[string]bool, len(schemes))
+	for _, scheme := range schemes {
+		// Normalize to lowercase for case-insensitive matching (RFC 3986)
+		c.trustedSchemesMap[strings.ToLower(scheme)] = true
+	}
 }

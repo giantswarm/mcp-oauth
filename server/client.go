@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -156,4 +158,74 @@ func (s *Server) ValidateClientCredentials(ctx context.Context, clientID, client
 // Supports both pre-registered clients and URL-based Client ID Metadata Documents (MCP 2025-11-25)
 func (s *Server) GetClient(ctx context.Context, clientID string) (*storage.Client, error) {
 	return s.getOrFetchClient(ctx, clientID)
+}
+
+// CanRegisterWithTrustedScheme checks if a registration request can proceed without
+// a registration access token based on the redirect URIs using trusted custom URI schemes.
+//
+// This enables compatibility with MCP clients like Cursor that don't support
+// registration tokens, while maintaining security for other clients.
+//
+// Security: Custom URI schemes are harder to hijack than web URLs, but protection
+// varies by platform (strong on Android App Links, moderate on macOS/Windows/iOS,
+// weak on Linux). PKCE is the primary security control and is always enforced.
+// See docs/security.md for platform-specific considerations.
+//
+// Parameters:
+//   - redirectURIs: The redirect URIs from the registration request
+//
+// Returns:
+//   - allowed: true if registration can proceed without a token
+//   - scheme: the first trusted scheme found (for audit logging), empty if not allowed
+//   - error: validation error if any URI is invalid
+func (s *Server) CanRegisterWithTrustedScheme(redirectURIs []string) (allowed bool, scheme string, err error) {
+	// No trusted schemes configured - require token
+	// Use the pre-computed map for O(1) lookup
+	if len(s.Config.trustedSchemesMap) == 0 {
+		return false, "", nil
+	}
+
+	// No redirect URIs provided - require token
+	if len(redirectURIs) == 0 {
+		return false, "", nil
+	}
+
+	// Strict matching is enabled by default unless explicitly disabled
+	strictMatching := !s.Config.DisableStrictSchemeMatching
+
+	var firstTrustedScheme string
+	trustedCount := 0
+
+	for _, uri := range redirectURIs {
+		parsed, err := url.Parse(uri)
+		if err != nil {
+			// Invalid URI - cannot determine scheme, require token for safety
+			return false, "", fmt.Errorf("invalid redirect URI: %w", err)
+		}
+
+		// Normalize scheme to lowercase for case-insensitive matching (RFC 3986)
+		uriScheme := strings.ToLower(parsed.Scheme)
+		if uriScheme == "" {
+			// No scheme - require token for safety
+			return false, "", fmt.Errorf("redirect URI missing scheme: %s", uri)
+		}
+
+		if s.Config.trustedSchemesMap[uriScheme] {
+			trustedCount++
+			if firstTrustedScheme == "" {
+				firstTrustedScheme = uriScheme
+			}
+		} else if strictMatching {
+			// Strict mode: all URIs must use trusted schemes
+			// Found an untrusted scheme, require token
+			return false, "", nil
+		}
+	}
+
+	// At least one trusted scheme must be found
+	if trustedCount == 0 {
+		return false, "", nil
+	}
+
+	return true, firstTrustedScheme, nil
 }

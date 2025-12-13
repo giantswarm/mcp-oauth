@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"golang.org/x/crypto/bcrypt"
@@ -494,6 +495,263 @@ func TestServer_RegisterClient_TokenEndpointAuthMethod(t *testing.T) {
 				if client.ClientSecretHash != "" {
 					t.Error("Client should not have secret hash for public client")
 				}
+			}
+		})
+	}
+}
+
+func TestServer_CanRegisterWithTrustedScheme(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	tests := []struct {
+		name                        string
+		trustedSchemes              []string
+		disableStrictSchemeMatching bool // Use this to test permissive mode (defaults to strict)
+		redirectURIs                []string
+		wantAllowed                 bool
+		wantScheme                  string
+		wantErr                     bool
+		wantErrContains             string
+	}{
+		// Basic functionality tests
+		{
+			name:           "no trusted schemes configured - require token",
+			trustedSchemes: nil,
+			redirectURIs:   []string{"cursor://oauth/callback"},
+			wantAllowed:    false,
+			wantScheme:     "",
+			wantErr:        false,
+		},
+		{
+			name:           "empty trusted schemes - require token",
+			trustedSchemes: []string{},
+			redirectURIs:   []string{"cursor://oauth/callback"},
+			wantAllowed:    false,
+			wantScheme:     "",
+			wantErr:        false,
+		},
+		{
+			name:           "no redirect URIs - require token",
+			trustedSchemes: []string{"cursor"},
+			redirectURIs:   []string{},
+			wantAllowed:    false,
+			wantScheme:     "",
+			wantErr:        false,
+		},
+		{
+			name:           "nil redirect URIs - require token",
+			trustedSchemes: []string{"cursor"},
+			redirectURIs:   nil,
+			wantAllowed:    false,
+			wantScheme:     "",
+			wantErr:        false,
+		},
+
+		// Trusted scheme matching tests
+		{
+			name:           "single cursor scheme allowed",
+			trustedSchemes: []string{"cursor"},
+			redirectURIs:   []string{"cursor://oauth/callback"},
+			wantAllowed:    true,
+			wantScheme:     "cursor",
+			wantErr:        false,
+		},
+		{
+			name:           "single vscode scheme allowed",
+			trustedSchemes: []string{"vscode"},
+			redirectURIs:   []string{"vscode://oauth/callback"},
+			wantAllowed:    true,
+			wantScheme:     "vscode",
+			wantErr:        false,
+		},
+		{
+			name:           "multiple trusted schemes - cursor matches",
+			trustedSchemes: []string{"cursor", "vscode", "vscode-insiders"},
+			redirectURIs:   []string{"cursor://oauth/callback"},
+			wantAllowed:    true,
+			wantScheme:     "cursor",
+			wantErr:        false,
+		},
+		{
+			name:           "multiple trusted schemes - vscode-insiders matches",
+			trustedSchemes: []string{"cursor", "vscode", "vscode-insiders"},
+			redirectURIs:   []string{"vscode-insiders://oauth/callback"},
+			wantAllowed:    true,
+			wantScheme:     "vscode-insiders",
+			wantErr:        false,
+		},
+
+		// Case insensitivity tests
+		{
+			name:           "scheme matching is case insensitive",
+			trustedSchemes: []string{"Cursor"},
+			redirectURIs:   []string{"cursor://oauth/callback"},
+			wantAllowed:    true,
+			wantScheme:     "cursor",
+			wantErr:        false,
+		},
+		{
+			name:           "uppercase redirect URI scheme matches",
+			trustedSchemes: []string{"cursor"},
+			redirectURIs:   []string{"CURSOR://oauth/callback"},
+			wantAllowed:    true,
+			wantScheme:     "cursor",
+			wantErr:        false,
+		},
+
+		// Multiple redirect URIs - strict matching (default)
+		{
+			name:           "strict: all URIs use trusted schemes - allowed",
+			trustedSchemes: []string{"cursor", "vscode"},
+			redirectURIs:   []string{"cursor://oauth/callback", "vscode://oauth/callback"},
+			wantAllowed:    true,
+			wantScheme:     "cursor",
+			wantErr:        false,
+		},
+		{
+			name:           "strict: mixed schemes - not allowed",
+			trustedSchemes: []string{"cursor"},
+			redirectURIs:   []string{"cursor://oauth/callback", "https://example.com/callback"},
+			wantAllowed:    false,
+			wantScheme:     "",
+			wantErr:        false,
+		},
+		{
+			name:           "strict: all URIs untrusted - not allowed",
+			trustedSchemes: []string{"cursor"},
+			redirectURIs:   []string{"https://example.com/callback"},
+			wantAllowed:    false,
+			wantScheme:     "",
+			wantErr:        false,
+		},
+
+		// Multiple redirect URIs - permissive matching (requires DisableStrictSchemeMatching)
+		{
+			name:                        "permissive: mixed schemes - allowed (has trusted)",
+			trustedSchemes:              []string{"cursor"},
+			disableStrictSchemeMatching: true,
+			redirectURIs:                []string{"cursor://oauth/callback", "https://example.com/callback"},
+			wantAllowed:                 true,
+			wantScheme:                  "cursor",
+			wantErr:                     false,
+		},
+		{
+			name:                        "permissive: all untrusted - not allowed",
+			trustedSchemes:              []string{"cursor"},
+			disableStrictSchemeMatching: true,
+			redirectURIs:                []string{"https://example.com/callback"},
+			wantAllowed:                 false,
+			wantScheme:                  "",
+			wantErr:                     false,
+		},
+		{
+			name:                        "permissive: trusted at end of list",
+			trustedSchemes:              []string{"cursor"},
+			disableStrictSchemeMatching: true,
+			redirectURIs:                []string{"https://example.com/callback", "cursor://oauth/callback"},
+			wantAllowed:                 true,
+			wantScheme:                  "cursor",
+			wantErr:                     false,
+		},
+
+		// Error cases
+		{
+			name:            "invalid redirect URI format",
+			trustedSchemes:  []string{"cursor"},
+			redirectURIs:    []string{"://invalid"},
+			wantAllowed:     false,
+			wantScheme:      "",
+			wantErr:         true,
+			wantErrContains: "invalid redirect URI",
+		},
+		{
+			name:            "redirect URI missing scheme",
+			trustedSchemes:  []string{"cursor"},
+			redirectURIs:    []string{"/path/only"},
+			wantAllowed:     false,
+			wantScheme:      "",
+			wantErr:         true,
+			wantErrContains: "missing scheme",
+		},
+
+		// Edge cases - extremely long URIs (security: ensure no buffer issues)
+		{
+			name:           "extremely long redirect URI path - trusted scheme",
+			trustedSchemes: []string{"cursor"},
+			redirectURIs:   []string{"cursor://oauth/callback/" + strings.Repeat("a", 10000)},
+			wantAllowed:    true,
+			wantScheme:     "cursor",
+			wantErr:        false,
+		},
+		{
+			name:           "extremely long redirect URI path - untrusted scheme",
+			trustedSchemes: []string{"cursor"},
+			redirectURIs:   []string{"https://example.com/callback/" + strings.Repeat("b", 10000)},
+			wantAllowed:    false,
+			wantScheme:     "",
+			wantErr:        false,
+		},
+		{
+			name:           "many redirect URIs - all trusted",
+			trustedSchemes: []string{"cursor", "vscode"},
+			redirectURIs: func() []string {
+				uris := make([]string, 100)
+				for i := range uris {
+					if i%2 == 0 {
+						uris[i] = "cursor://oauth/callback/" + strings.Repeat("x", i)
+					} else {
+						uris[i] = "vscode://oauth/callback/" + strings.Repeat("y", i)
+					}
+				}
+				return uris
+			}(),
+			wantAllowed: true,
+			wantScheme:  "cursor",
+			wantErr:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &Config{
+				Issuer:                           "https://auth.example.com",
+				TrustedPublicRegistrationSchemes: tt.trustedSchemes,
+				DisableStrictSchemeMatching:      tt.disableStrictSchemeMatching,
+			}
+
+			srv, err := New(provider, store, store, store, config, nil)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+
+			allowed, scheme, err := srv.CanRegisterWithTrustedScheme(tt.redirectURIs)
+
+			// Check error
+			if tt.wantErr {
+				if err == nil {
+					t.Error("CanRegisterWithTrustedScheme() expected error, got nil")
+					return
+				}
+				if tt.wantErrContains != "" && !strings.Contains(err.Error(), tt.wantErrContains) {
+					t.Errorf("error = %q, want containing %q", err.Error(), tt.wantErrContains)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("CanRegisterWithTrustedScheme() unexpected error = %v", err)
+			}
+
+			// Check allowed
+			if allowed != tt.wantAllowed {
+				t.Errorf("allowed = %v, want %v", allowed, tt.wantAllowed)
+			}
+
+			// Check scheme
+			if scheme != tt.wantScheme {
+				t.Errorf("scheme = %q, want %q", scheme, tt.wantScheme)
 			}
 		})
 	}

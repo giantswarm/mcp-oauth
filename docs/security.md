@@ -229,6 +229,69 @@ With this configuration:
 - Only confidential clients (with secrets) can be created
 - Public clients are denied even with valid authentication
 
+### Trusted Custom URI Schemes (Cursor/IDE Compatibility)
+
+For MCP clients like Cursor that don't support registration tokens, you can allow unauthenticated registration **only** for clients using trusted custom URI schemes:
+
+```go
+config := &server.Config{
+    // Require token for most clients
+    AllowPublicClientRegistration: false,
+    RegistrationAccessToken: os.Getenv("REGISTRATION_TOKEN"),
+    
+    // Allow unauthenticated registration for IDE clients
+    TrustedPublicRegistrationSchemes: []string{
+        "cursor",
+        "vscode",
+        "vscode-insiders",
+        "windsurf",
+    },
+    
+    // Strict scheme matching is enabled by default when TrustedPublicRegistrationSchemes is set
+    // To allow mixed schemes (not recommended), set DisableStrictSchemeMatching: true
+}
+```
+
+**Security Model:**
+
+This feature relies on **two layers of protection**:
+
+1. **PKCE (Primary Defense):** Even if an attacker intercepts the authorization code via scheme hijacking, they cannot exchange it without the `code_verifier`. PKCE is enforced by default and is the primary security control.
+
+2. **Custom URI Scheme Registration:** Custom URI schemes (e.g., `cursor://`, `vscode://`) are typically registered at the OS level, making them harder to hijack than web URLs.
+
+**Platform Considerations:**
+
+Custom URI scheme protection varies by platform:
+
+| Platform | Protection Level | Notes |
+|----------|-----------------|-------|
+| macOS/iOS | Moderate | Schemes registered per-app, but no verification of who registered first |
+| Windows | Moderate | Any app can register a scheme; first-installer-wins |
+| Android | Strong (App Links) | App Links provide verified ownership; traditional schemes are weaker |
+| Linux | Weak | Depends on desktop environment configuration |
+
+**Because platform protection varies, PKCE enforcement is critical.** The library requires PKCE by default (`RequirePKCE=true`, `AllowPKCEPlain=false`), which mitigates scheme hijacking attacks on all platforms.
+
+**Automatic Security Filtering:**
+
+The following schemes are automatically **blocked** from `TrustedPublicRegistrationSchemes`:
+- `http://` and `https://` - Can be hijacked by any attacker with a web server
+- Dangerous schemes: `javascript:`, `data:`, `file:`, `vbscript:`, `about:`, `ftp:`, `blob:`, `ms-appx:`
+
+**Security Controls:**
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `TrustedPublicRegistrationSchemes` | `[]` | List of allowed schemes for token-free registration |
+| `DisableStrictSchemeMatching` | `false` | Set to `true` to allow mixed schemes (not recommended) |
+
+Strict scheme matching is automatically enabled when `TrustedPublicRegistrationSchemes` is configured. This ensures ALL redirect URIs must use trusted schemes for unauthenticated registration.
+
+**Audit Logging:**
+
+Registrations via trusted schemes are logged with event type `client_registered_via_trusted_scheme` for security monitoring.
+
 ### Development Configuration
 
 ```go

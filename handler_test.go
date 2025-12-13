@@ -2272,6 +2272,218 @@ func TestHandler_ServeClientRegistration_PublicClientPolicy(t *testing.T) {
 	}
 }
 
+func TestHandler_ServeClientRegistration_TrustedSchemes(t *testing.T) {
+	// Test that clients can register without a token when using trusted URI schemes
+	const testRegistrationToken = "test-registration-token-12345"
+
+	tests := []struct {
+		name                          string
+		trustedSchemes                []string
+		disableStrictSchemeMatching   bool // true = permissive mode, false = strict mode (default)
+		registrationAccessToken       string
+		allowPublicClientRegistration bool
+		redirectURIs                  []string
+		tokenEndpointAuthMethod       string
+		clientType                    string
+		provideToken                  bool
+		wantStatus                    int
+		wantErrorContains             string
+	}{
+		// Trusted scheme registration tests
+		{
+			name:                          "cursor scheme - no token - allowed",
+			trustedSchemes:                []string{"cursor"},
+			disableStrictSchemeMatching:   false, // strict mode (default)
+			registrationAccessToken:       testRegistrationToken,
+			allowPublicClientRegistration: false,
+			redirectURIs:                  []string{"cursor://oauth/callback"},
+			tokenEndpointAuthMethod:       "none",
+			clientType:                    "",
+			provideToken:                  false,
+			wantStatus:                    http.StatusCreated,
+		},
+		{
+			name:                          "vscode scheme - no token - allowed",
+			trustedSchemes:                []string{"vscode", "cursor"},
+			disableStrictSchemeMatching:   false,
+			registrationAccessToken:       testRegistrationToken,
+			allowPublicClientRegistration: false,
+			redirectURIs:                  []string{"vscode://oauth/callback"},
+			tokenEndpointAuthMethod:       "none",
+			clientType:                    "",
+			provideToken:                  false,
+			wantStatus:                    http.StatusCreated,
+		},
+		{
+			name:                          "multiple trusted URIs - all trusted - allowed",
+			trustedSchemes:                []string{"cursor", "vscode"},
+			disableStrictSchemeMatching:   false,
+			registrationAccessToken:       testRegistrationToken,
+			allowPublicClientRegistration: false,
+			redirectURIs:                  []string{"cursor://oauth/callback", "vscode://oauth/callback"},
+			tokenEndpointAuthMethod:       "none",
+			clientType:                    "",
+			provideToken:                  false,
+			wantStatus:                    http.StatusCreated,
+		},
+
+		// Strict matching tests
+		{
+			name:                          "strict: mixed schemes - rejected",
+			trustedSchemes:                []string{"cursor"},
+			disableStrictSchemeMatching:   false,
+			registrationAccessToken:       testRegistrationToken,
+			allowPublicClientRegistration: false,
+			redirectURIs:                  []string{"cursor://oauth/callback", "https://example.com/callback"},
+			tokenEndpointAuthMethod:       "none",
+			clientType:                    "",
+			provideToken:                  false,
+			wantStatus:                    http.StatusUnauthorized,
+			wantErrorContains:             "authentication",
+		},
+		{
+			name:                          "strict: https only - rejected without token",
+			trustedSchemes:                []string{"cursor"},
+			disableStrictSchemeMatching:   false,
+			registrationAccessToken:       testRegistrationToken,
+			allowPublicClientRegistration: false,
+			redirectURIs:                  []string{"https://example.com/callback"},
+			tokenEndpointAuthMethod:       "",
+			clientType:                    "",
+			provideToken:                  false,
+			wantStatus:                    http.StatusUnauthorized,
+			wantErrorContains:             "authentication",
+		},
+
+		// Permissive matching tests
+		{
+			name:                          "permissive: mixed schemes - allowed (has trusted)",
+			trustedSchemes:                []string{"cursor"},
+			disableStrictSchemeMatching:   true, // permissive mode
+			registrationAccessToken:       testRegistrationToken,
+			allowPublicClientRegistration: false,
+			redirectURIs:                  []string{"cursor://oauth/callback", "https://example.com/callback"},
+			tokenEndpointAuthMethod:       "none",
+			clientType:                    "",
+			provideToken:                  false,
+			wantStatus:                    http.StatusCreated,
+		},
+
+		// Token always works
+		{
+			name:                          "with token - any scheme works",
+			trustedSchemes:                []string{"cursor"},
+			disableStrictSchemeMatching:   false,
+			registrationAccessToken:       testRegistrationToken,
+			allowPublicClientRegistration: false,
+			redirectURIs:                  []string{"https://example.com/callback"},
+			tokenEndpointAuthMethod:       "",
+			clientType:                    "",
+			provideToken:                  true,
+			wantStatus:                    http.StatusCreated,
+		},
+
+		// No trusted schemes configured
+		{
+			name:                          "no trusted schemes - token required",
+			trustedSchemes:                nil,
+			disableStrictSchemeMatching:   false,
+			registrationAccessToken:       testRegistrationToken,
+			allowPublicClientRegistration: false,
+			redirectURIs:                  []string{"cursor://oauth/callback"},
+			tokenEndpointAuthMethod:       "none",
+			clientType:                    "",
+			provideToken:                  false,
+			wantStatus:                    http.StatusUnauthorized,
+		},
+
+		// Case insensitivity
+		{
+			name:                          "case insensitive scheme matching",
+			trustedSchemes:                []string{"Cursor"},
+			disableStrictSchemeMatching:   false,
+			registrationAccessToken:       testRegistrationToken,
+			allowPublicClientRegistration: false,
+			redirectURIs:                  []string{"cursor://oauth/callback"},
+			tokenEndpointAuthMethod:       "none",
+			clientType:                    "",
+			provideToken:                  false,
+			wantStatus:                    http.StatusCreated,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler, store := setupTestHandler(t)
+			defer store.Stop()
+
+			// Configure server with trusted schemes and pre-computed map
+			handler.server.Config.TrustedPublicRegistrationSchemes = tt.trustedSchemes
+			handler.server.Config.DisableStrictSchemeMatching = tt.disableStrictSchemeMatching
+			handler.server.Config.RegistrationAccessToken = tt.registrationAccessToken
+			handler.server.Config.AllowPublicClientRegistration = tt.allowPublicClientRegistration
+			// Disable production mode for tests to allow custom schemes without full validation
+			handler.server.Config.ProductionMode = false
+
+			// Build pre-computed trusted schemes map (normally done by config validation)
+			if len(tt.trustedSchemes) > 0 {
+				handler.server.Config.SetTrustedSchemesMap(tt.trustedSchemes)
+			}
+
+			regReq := ClientRegistrationRequest{
+				ClientName:              "Test Client",
+				ClientType:              tt.clientType,
+				TokenEndpointAuthMethod: tt.tokenEndpointAuthMethod,
+				RedirectURIs:            tt.redirectURIs,
+			}
+
+			body, err := json.Marshal(regReq)
+			if err != nil {
+				t.Fatalf("failed to marshal request: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/register", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.RemoteAddr = "192.168.1.100:12345"
+
+			if tt.provideToken {
+				req.Header.Set("Authorization", "Bearer "+testRegistrationToken)
+			}
+
+			w := httptest.NewRecorder()
+
+			handler.ServeClientRegistration(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d, body: %s", w.Code, tt.wantStatus, w.Body.String())
+			}
+
+			if tt.wantStatus != http.StatusCreated && tt.wantErrorContains != "" {
+				respBody := w.Body.String()
+				if !strings.Contains(strings.ToLower(respBody), strings.ToLower(tt.wantErrorContains)) {
+					t.Errorf("error response should contain %q (case-insensitive), got: %s", tt.wantErrorContains, respBody)
+				}
+			}
+
+			if tt.wantStatus == http.StatusCreated {
+				var resp ClientRegistrationResponse
+				if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+					t.Fatalf("failed to decode response: %v", err)
+				}
+
+				if resp.ClientID == "" {
+					t.Error("ClientID should not be empty")
+				}
+
+				// Verify redirect URIs match
+				if len(resp.RedirectURIs) != len(tt.redirectURIs) {
+					t.Errorf("RedirectURIs length = %d, want %d", len(resp.RedirectURIs), len(tt.redirectURIs))
+				}
+			}
+		})
+	}
+}
+
 func TestUserInfoFromContext(t *testing.T) {
 	// Test with no user info in context
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)

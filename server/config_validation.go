@@ -34,6 +34,9 @@ func applySecureDefaults(config *Config, logger *slog.Logger) *Config {
 	// Validate interstitial page configuration (RFC 8252 Section 7.1)
 	validateInterstitialConfig(config, logger)
 
+	// Validate trusted public registration schemes configuration
+	validateTrustedPublicRegistrationSchemes(config, logger)
+
 	// Apply time-based defaults
 	applyTimeDefaults(config)
 
@@ -419,4 +422,147 @@ func validateResourceMetadataPathConfig(pathKey string, pathConfig ProtectedReso
 				"rfc", "RFC 8707")
 		}
 	}
+}
+
+// validateTrustedPublicRegistrationSchemes validates and sanitizes TrustedPublicRegistrationSchemes configuration.
+// This feature allows unauthenticated client registration for clients using trusted custom URI schemes
+// (e.g., cursor://, vscode://), enabling compatibility with MCP clients that don't support registration tokens.
+//
+// SECURITY: HTTP/HTTPS schemes are automatically REMOVED from the list because they can be hijacked
+// by attackers who control web servers. Only custom URI schemes are safe for unauthenticated registration.
+func validateTrustedPublicRegistrationSchemes(config *Config, logger *slog.Logger) {
+	if len(config.TrustedPublicRegistrationSchemes) == 0 {
+		return // Feature not configured
+	}
+
+	// Build a new list with only valid, safe schemes
+	validSchemes := make([]string, 0, len(config.TrustedPublicRegistrationSchemes))
+
+	// Validate each scheme
+	for i, scheme := range config.TrustedPublicRegistrationSchemes {
+		schemeLower := strings.ToLower(scheme)
+
+		// Check for empty scheme
+		if scheme == "" {
+			logger.Warn("Empty scheme in TrustedPublicRegistrationSchemes - removing",
+				"index", i,
+				"action", "Removed from list")
+			continue
+		}
+
+		// Check RFC 3986 compliance: scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
+		if len(schemeLower) > 0 && !isValidSchemeChar(rune(schemeLower[0]), true) {
+			logger.Warn("Invalid scheme in TrustedPublicRegistrationSchemes - removing",
+				"scheme", scheme,
+				"index", i,
+				"error", "scheme must start with a letter (RFC 3986)",
+				"action", "Removed from list")
+			continue
+		}
+
+		invalidChar := false
+		for j, c := range schemeLower {
+			if !isValidSchemeChar(c, j == 0) {
+				logger.Warn("Invalid character in TrustedPublicRegistrationSchemes scheme - removing",
+					"scheme", scheme,
+					"index", i,
+					"char_position", j,
+					"error", "scheme contains invalid character (RFC 3986)",
+					"valid_chars", "a-z, 0-9, +, -, .",
+					"action", "Removed from list")
+				invalidChar = true
+				break
+			}
+		}
+		if invalidChar {
+			continue
+		}
+
+		// SECURITY: Block HTTP/HTTPS schemes - they can be hijacked by attackers
+		// Unlike custom URI schemes, anyone can set up a web server to receive callbacks
+		if schemeLower == SchemeHTTP || schemeLower == SchemeHTTPS {
+			logger.Error("SECURITY: Removing HTTP/HTTPS from TrustedPublicRegistrationSchemes",
+				"scheme", scheme,
+				"risk", "HTTP/HTTPS redirect URIs can be hijacked by any attacker with a web server",
+				"security", "Only custom URI schemes are safe for unauthenticated registration",
+				"action", "Automatically removed for security")
+			continue
+		}
+
+		// SECURITY: Block dangerous schemes that could be used for attacks
+		isDangerous := false
+		for _, blocked := range DefaultBlockedRedirectSchemes {
+			if schemeLower == blocked {
+				logger.Error("SECURITY: Removing dangerous scheme from TrustedPublicRegistrationSchemes",
+					"scheme", scheme,
+					"risk", fmt.Sprintf("'%s' scheme can be exploited for attacks", scheme),
+					"action", "Automatically removed for security")
+				isDangerous = true
+				break
+			}
+		}
+		if isDangerous {
+			continue
+		}
+
+		// Scheme is valid and safe - add to the list (normalized to lowercase)
+		validSchemes = append(validSchemes, schemeLower)
+	}
+
+	// Replace the config with the sanitized list
+	config.TrustedPublicRegistrationSchemes = validSchemes
+
+	// If all schemes were removed, log a warning and clear the map
+	if len(validSchemes) == 0 {
+		logger.Warn("All schemes removed from TrustedPublicRegistrationSchemes after security validation",
+			"result", "Feature effectively disabled - registration will require token",
+			"recommendation", "Use custom URI schemes like 'cursor', 'vscode' instead of http/https")
+		config.trustedSchemesMap = nil
+		return
+	}
+
+	// Build pre-computed map for O(1) lookup (schemes are already lowercase)
+	config.trustedSchemesMap = make(map[string]bool, len(validSchemes))
+	for _, scheme := range validSchemes {
+		config.trustedSchemesMap[scheme] = true
+	}
+
+	// Determine effective strict matching mode (will be true unless explicitly disabled)
+	effectiveStrictMatching := !config.DisableStrictSchemeMatching
+
+	// Log configuration summary
+	logger.Info("TrustedPublicRegistrationSchemes configured",
+		"schemes", config.TrustedPublicRegistrationSchemes,
+		"strict_matching", effectiveStrictMatching,
+		"security_note", "Clients with these redirect URI schemes can register without a token")
+
+	// Warn if strict matching is explicitly disabled
+	if config.DisableStrictSchemeMatching {
+		logger.Warn("Strict scheme matching explicitly disabled for TrustedPublicRegistrationSchemes",
+			"risk", "Clients can mix trusted and untrusted redirect URI schemes",
+			"recommendation", "Remove DisableStrictSchemeMatching for maximum security")
+	}
+
+	// Security warning: if AllowPublicClientRegistration is also true, the trusted schemes
+	// feature is redundant (anyone can register without a token anyway)
+	if config.AllowPublicClientRegistration && len(config.TrustedPublicRegistrationSchemes) > 0 {
+		logger.Warn("TrustedPublicRegistrationSchemes is redundant when AllowPublicClientRegistration=true",
+			"recommendation", "Set AllowPublicClientRegistration=false and use TrustedPublicRegistrationSchemes for controlled access")
+	}
+}
+
+// isValidSchemeChar checks if a character is valid in a URI scheme per RFC 3986.
+// scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
+// First character must be a letter (isFirst=true), subsequent can include digits and symbols.
+func isValidSchemeChar(c rune, isFirst bool) bool {
+	if c >= 'a' && c <= 'z' {
+		return true
+	}
+	if isFirst {
+		return false // First char must be a letter
+	}
+	if c >= '0' && c <= '9' {
+		return true
+	}
+	return c == '+' || c == '-' || c == '.'
 }

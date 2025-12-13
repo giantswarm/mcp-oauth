@@ -1466,55 +1466,6 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	// Get client IP for DoS protection
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
-	// OAuth 2.1: Require authentication for client registration (secure by default)
-	// Only allow unauthenticated registration if explicitly configured
-	if !h.server.Config.AllowPublicClientRegistration {
-		// Check for registration access token
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			h.logger.Warn("Client registration rejected: missing authorization",
-				"client_ip", clientIP)
-			h.writeError(w, ErrorCodeInvalidToken,
-				"Registration access token required. "+
-					"Set AllowPublicClientRegistration=true to disable authentication (NOT recommended).",
-				http.StatusUnauthorized)
-			return
-		}
-
-		// Verify Bearer token
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-			h.logger.Warn("Client registration rejected: invalid authorization header",
-				"client_ip", clientIP)
-			h.writeError(w, ErrorCodeInvalidToken, "Invalid Authorization header format", http.StatusUnauthorized)
-			return
-		}
-
-		// Validate registration access token
-		providedToken := parts[1]
-		if h.server.Config.RegistrationAccessToken == "" {
-			h.logger.Error("RegistrationAccessToken not configured but AllowPublicClientRegistration=false")
-			h.writeError(w, ErrorCodeServerError,
-				"Server configuration error: registration token not configured",
-				http.StatusInternalServerError)
-			return
-		}
-
-		// SECURITY: Use constant-time comparison to prevent timing attacks
-		// that could allow guessing the registration token character by character
-		if subtle.ConstantTimeCompare([]byte(providedToken), []byte(h.server.Config.RegistrationAccessToken)) != 1 {
-			h.logger.Warn("Client registration rejected: invalid registration token",
-				"client_ip", clientIP)
-			h.writeError(w, ErrorCodeInvalidToken, "Invalid registration access token", http.StatusUnauthorized)
-			return
-		}
-
-		h.logger.Info("Client registration authenticated with valid token")
-	} else {
-		h.logger.Warn("⚠️  Unauthenticated client registration (DoS risk)",
-			"client_ip", clientIP)
-	}
-
 	// SECURITY: Check time-windowed rate limit BEFORE processing request
 	// This prevents resource exhaustion through repeated registration/deletion cycles
 	if h.server.ClientRegistrationRateLimiter != nil {
@@ -1539,7 +1490,7 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 		maxClients = 10 // Default limit
 	}
 
-	// Parse registration request
+	// Parse registration request (must happen before auth check to support trusted scheme validation)
 	var req struct {
 		ClientName              string   `json:"client_name"`
 		ClientType              string   `json:"client_type"`
@@ -1551,6 +1502,76 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(w, ErrorCodeInvalidRequest, "Invalid JSON", http.StatusBadRequest)
 		return
+	}
+
+	// OAuth 2.1: Require authentication for client registration (secure by default)
+	// Registration is allowed if ANY of:
+	// 1. AllowPublicClientRegistration=true (open registration, not recommended)
+	// 2. Valid RegistrationAccessToken is provided
+	// 3. All redirect URIs use TrustedPublicRegistrationSchemes (for Cursor/IDE compatibility)
+	registeredViaTrustedScheme := false
+	trustedScheme := ""
+
+	if !h.server.Config.AllowPublicClientRegistration {
+		authHeader := r.Header.Get("Authorization")
+		hasValidToken := false
+
+		// Check if a valid registration token was provided
+		if authHeader != "" {
+			parts := strings.SplitN(authHeader, " ", 2)
+			if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
+				providedToken := parts[1]
+				if h.server.Config.RegistrationAccessToken != "" {
+					// SECURITY: Use constant-time comparison to prevent timing attacks
+					if subtle.ConstantTimeCompare([]byte(providedToken), []byte(h.server.Config.RegistrationAccessToken)) == 1 {
+						hasValidToken = true
+						h.logger.Info("Client registration authenticated with valid token")
+					}
+				}
+			}
+		}
+
+		// If no valid token, check if redirect URIs use trusted schemes
+		if !hasValidToken {
+			// Log if a token was provided but was invalid (security audit trail)
+			if authHeader != "" {
+				h.logger.Warn("Invalid registration token provided, checking trusted schemes as fallback",
+					"client_ip", clientIP,
+					"has_trusted_schemes_configured", len(h.server.Config.TrustedPublicRegistrationSchemes) > 0)
+			}
+			allowed, scheme, err := h.server.CanRegisterWithTrustedScheme(req.RedirectURIs)
+			if err != nil {
+				h.logger.Warn("Client registration rejected: invalid redirect URI",
+					"client_ip", clientIP,
+					"error", err)
+				h.writeError(w, ErrorCodeInvalidRequest,
+					fmt.Sprintf("Invalid redirect URI: %v", err),
+					http.StatusBadRequest)
+				return
+			}
+
+			if allowed {
+				registeredViaTrustedScheme = true
+				trustedScheme = scheme
+				h.logger.Info("Client registration authorized via trusted scheme (no token required)",
+					"scheme", scheme,
+					"client_ip", clientIP,
+					"strict_matching", !h.server.Config.DisableStrictSchemeMatching)
+			} else {
+				// No valid token and not using trusted schemes - reject
+				h.logger.Warn("Client registration rejected: missing or invalid authorization",
+					"client_ip", clientIP,
+					"has_token", authHeader != "",
+					"trusted_schemes_configured", len(h.server.Config.TrustedPublicRegistrationSchemes) > 0)
+				h.writeError(w, ErrorCodeInvalidToken,
+					"Registration requires authentication. Provide a valid registration token or use a trusted redirect URI scheme.",
+					http.StatusUnauthorized)
+				return
+			}
+		}
+	} else {
+		h.logger.Warn("Unauthenticated client registration (DoS risk)",
+			"client_ip", clientIP)
 	}
 
 	// OAUTH 2.1 COMPLIANCE: Validate token_endpoint_auth_method
@@ -1571,10 +1592,16 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	// SECURITY: Validate public client registration is allowed
 	// When client requests "none" auth method, they're requesting a public client
 	// This is common for native/CLI apps that can't securely store secrets
-	if req.TokenEndpointAuthMethod == TokenEndpointAuthMethodNone || req.ClientType == ClientTypePublic {
+	//
+	// NOTE: Trusted scheme registration implicitly allows public clients because
+	// custom URI schemes are designed for native apps which are inherently public clients.
+	// The security comes from the OS-level scheme registration, not client secrets.
+	isPublicClientRequest := req.TokenEndpointAuthMethod == TokenEndpointAuthMethodNone || req.ClientType == ClientTypePublic
+	if isPublicClientRequest {
 		// CRITICAL: Enforce AllowPublicClientRegistration policy
-		// Even with a valid registration access token, public client creation must be explicitly allowed
-		if !h.server.Config.AllowPublicClientRegistration {
+		// Public client creation must be explicitly allowed UNLESS:
+		// - The registration is via a trusted scheme (which is inherently for public/native clients)
+		if !h.server.Config.AllowPublicClientRegistration && !registeredViaTrustedScheme {
 			h.logger.Warn("Public client registration rejected (not allowed by configuration)",
 				"token_endpoint_auth_method", req.TokenEndpointAuthMethod,
 				"client_type", req.ClientType,
@@ -1597,7 +1624,16 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 		h.logger.Info("Public client registration authorized",
 			"token_endpoint_auth_method", req.TokenEndpointAuthMethod,
 			"client_type", req.ClientType,
-			"ip", clientIP)
+			"ip", clientIP,
+			"via_trusted_scheme", registeredViaTrustedScheme)
+	}
+
+	// Track trusted scheme registration in span for observability
+	if span != nil && registeredViaTrustedScheme {
+		instrumentation.SetSpanAttributes(span,
+			attribute.String("oauth.registration_method", "trusted_scheme"),
+			attribute.String("oauth.trusted_scheme", trustedScheme),
+		)
 	}
 
 	// Register client with IP tracking
@@ -1624,6 +1660,24 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 
 	// Record client registered metric
 	h.recordClientRegistered(client.ClientType)
+
+	// AUDIT: Log trusted scheme registration for security monitoring
+	// This is separate from the standard client registration audit log to track
+	// clients registered without tokens (Cursor/IDE compatibility path)
+	if registeredViaTrustedScheme && h.server.Auditor != nil {
+		h.server.Auditor.LogEvent(security.Event{
+			Type:     security.EventClientRegisteredViaTrustedScheme,
+			ClientID: client.ClientID,
+			Details: map[string]any{
+				"scheme":           trustedScheme,
+				"client_type":      client.ClientType,
+				"client_ip":        clientIP,
+				"redirect_uris":    client.RedirectURIs,
+				"strict_matching":  !h.server.Config.DisableStrictSchemeMatching,
+				"security_context": "unauthenticated_registration_via_trusted_scheme",
+			},
+		})
+	}
 
 	h.recordHTTPMetrics("register", http.MethodPost, http.StatusCreated, startTime)
 	instrumentation.SetSpanAttributes(span,
