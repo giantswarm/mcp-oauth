@@ -257,9 +257,11 @@ The following security controls are **automatically enabled**:
 | `DNSValidation` | `true` | Resolve hostnames to check IPs |
 | `DNSValidationStrict` | `true` | Fail-closed on DNS failures |
 | `ValidateRedirectURIAtAuthorization` | `true` | Re-validate at authorization time (TOCTOU protection) |
-| `AllowLocalhostRedirectURIs` | `false` | Loopback blocked by default |
+| `AllowLocalhostRedirectURIs` | `false` | Loopback blocked by default (set to `true` for native apps) |
 | `AllowPrivateIPRedirectURIs` | `false` | RFC 1918 private IPs blocked |
 | `AllowLinkLocalRedirectURIs` | `false` | 169.254.x.x/fe80:: blocked (cloud SSRF) |
+
+**Note for Native/CLI App Support:** If your OAuth server needs to support native applications (desktop apps, CLI tools), you must set `AllowLocalhostRedirectURIs: true` per [RFC 8252 Section 7.3](https://datatracker.ietf.org/doc/html/rfc8252#section-7.3). This allows HTTP on loopback addresses (`localhost`, `127.x.x.x`, `::1`) which is required for native app OAuth flows.
 
 ### Escape Hatches for Less Strict Validation
 

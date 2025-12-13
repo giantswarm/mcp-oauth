@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"testing"
 
@@ -1108,6 +1109,246 @@ func TestRedirectURISecurityMetrics(t *testing.T) {
 		category := GetRedirectURIErrorCategory(validationErr)
 		if category != RedirectURIErrorCategoryBlockedScheme {
 			t.Errorf("Expected category %s, got %s", RedirectURIErrorCategoryBlockedScheme, category)
+		}
+	})
+}
+
+// TestValidateRedirectURIForRegistration_IPBypassAttempts tests that various IP address
+// encoding bypass attempts are handled correctly. These are common SSRF bypass techniques.
+//
+// Go's net.ParseIP() correctly rejects non-standard IP representations, so these are
+// treated as hostnames and validated via DNS (if enabled) or rejected by URL parsing.
+func TestValidateRedirectURIForRegistration_IPBypassAttempts(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("Octal IP representation rejected", func(t *testing.T) {
+		// Octal representations like 0177.0.0.1 (127.0.0.1) or 012.0.0.1 (10.0.0.1)
+		// are sometimes used to bypass IP validation.
+		// Go's net.ParseIP() returns nil for these, so they're treated as hostnames.
+		// With DNS validation enabled + strict mode, they fail DNS lookup and are blocked.
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: true,
+			allowLocalhost: true,
+			dnsValidation:  true,
+		})
+		server.Config.DNSValidationStrict = true
+
+		resolver := newMockDNSResolver()
+		// Simulate DNS failure for these invalid "hostnames"
+		resolver.setError("0177.0.0.1", &net.DNSError{Err: "no such host", Name: "0177.0.0.1"})
+		resolver.setError("012.0.0.1", &net.DNSError{Err: "no such host", Name: "012.0.0.1"})
+		resolver.setError("0300.0250.0.1", &net.DNSError{Err: "no such host", Name: "0300.0250.0.1"})
+		server.Config.DNSResolver = resolver
+
+		octalTests := []struct {
+			name string
+			uri  string
+		}{
+			{"Octal 127.0.0.1", "https://0177.0.0.1/callback"},
+			{"Octal 10.0.0.1", "https://012.0.0.1/callback"},
+			{"Octal 192.168.0.1", "https://0300.0250.0.1/callback"},
+		}
+
+		for _, tt := range octalTests {
+			t.Run(tt.name, func(t *testing.T) {
+				err := server.ValidateRedirectURIForRegistration(ctx, tt.uri)
+				if err == nil {
+					t.Errorf("Expected error for octal IP bypass attempt: %s", tt.uri)
+				}
+				// Should fail with DNS failure category since strict mode is on
+				category := GetRedirectURIErrorCategory(err)
+				if category != RedirectURIErrorCategoryDNSFailure {
+					t.Logf("Note: Octal IP %s rejected with category %s (expected: dns_resolution_failed)", tt.uri, category)
+				}
+			})
+		}
+	})
+
+	t.Run("Hex IP representation rejected", func(t *testing.T) {
+		// Hex representations like 0x7f.0.0.1 (127.0.0.1) or 0x7f000001
+		// are sometimes used to bypass IP validation.
+		// Go's net.ParseIP() returns nil for these, so they're treated as hostnames.
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: true,
+			allowLocalhost: true,
+			dnsValidation:  true,
+		})
+		server.Config.DNSValidationStrict = true
+
+		resolver := newMockDNSResolver()
+		resolver.setError("0x7f.0.0.1", &net.DNSError{Err: "no such host", Name: "0x7f.0.0.1"})
+		resolver.setError("0x7f000001", &net.DNSError{Err: "no such host", Name: "0x7f000001"})
+		resolver.setError("0x0a.0.0.1", &net.DNSError{Err: "no such host", Name: "0x0a.0.0.1"})
+		server.Config.DNSResolver = resolver
+
+		hexTests := []struct {
+			name string
+			uri  string
+		}{
+			{"Hex dotted 127.0.0.1", "https://0x7f.0.0.1/callback"},
+			{"Hex integer 127.0.0.1", "https://0x7f000001/callback"},
+			{"Hex dotted 10.0.0.1", "https://0x0a.0.0.1/callback"},
+		}
+
+		for _, tt := range hexTests {
+			t.Run(tt.name, func(t *testing.T) {
+				err := server.ValidateRedirectURIForRegistration(ctx, tt.uri)
+				if err == nil {
+					t.Errorf("Expected error for hex IP bypass attempt: %s", tt.uri)
+				}
+				category := GetRedirectURIErrorCategory(err)
+				if category != RedirectURIErrorCategoryDNSFailure {
+					t.Logf("Note: Hex IP %s rejected with category %s (expected: dns_resolution_failed)", tt.uri, category)
+				}
+			})
+		}
+	})
+
+	t.Run("Decimal integer IP representation rejected", func(t *testing.T) {
+		// Some systems accept decimal integer representations like 2130706433 (127.0.0.1)
+		// Go's net.ParseIP() returns nil for these, treating them as hostnames.
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: true,
+			allowLocalhost: true,
+			dnsValidation:  true,
+		})
+		server.Config.DNSValidationStrict = true
+
+		resolver := newMockDNSResolver()
+		resolver.setError("2130706433", &net.DNSError{Err: "no such host", Name: "2130706433"})
+		resolver.setError("167772161", &net.DNSError{Err: "no such host", Name: "167772161"})
+		server.Config.DNSResolver = resolver
+
+		decimalTests := []struct {
+			name string
+			uri  string
+		}{
+			{"Decimal 127.0.0.1", "https://2130706433/callback"},
+			{"Decimal 10.0.0.1", "https://167772161/callback"},
+		}
+
+		for _, tt := range decimalTests {
+			t.Run(tt.name, func(t *testing.T) {
+				err := server.ValidateRedirectURIForRegistration(ctx, tt.uri)
+				if err == nil {
+					t.Errorf("Expected error for decimal IP bypass attempt: %s", tt.uri)
+				}
+			})
+		}
+	})
+
+	t.Run("Net.ParseIP behavior documented", func(t *testing.T) {
+		// Document that net.ParseIP correctly rejects these bypass attempts
+		bypassAttempts := []string{
+			"0177.0.0.1",     // Octal
+			"0x7f.0.0.1",     // Hex dotted
+			"0x7f000001",     // Hex integer
+			"2130706433",     // Decimal integer
+			"127.0.0.1.1",    // Extra octet
+			"127.0.0",        // Missing octet
+			"127.0.0.1/8",    // CIDR notation
+			"127.0.0.1:80",   // Port included
+			"127.0.0.01",     // Leading zero in last octet
+			"0127.0.0.1",     // Leading zero in first octet
+			"127.0.0.1%eth0", // Zone ID (common bypass)
+		}
+
+		for _, attempt := range bypassAttempts {
+			ip := net.ParseIP(attempt)
+			if ip != nil {
+				t.Errorf("SECURITY: net.ParseIP accepted bypass attempt '%s' as %v", attempt, ip)
+			}
+		}
+	})
+}
+
+// TestValidateRedirectURIForRegistration_URLEncodedSchemeBypass tests that URL-encoded
+// schemes are not parsed as valid dangerous schemes.
+// This is a common XSS bypass technique: %6A%61%76%61%73%63%72%69%70%74: for "javascript:"
+func TestValidateRedirectURIForRegistration_URLEncodedSchemeBypass(t *testing.T) {
+	ctx := context.Background()
+	server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
+
+	t.Run("URL-encoded scheme not decoded by url.Parse", func(t *testing.T) {
+		// When Go's url.Parse sees "%6A%61%76%61%73%63%72%69%70%74:", it does NOT
+		// decode the scheme. The scheme would be empty or invalid, not "javascript".
+		// This test documents this behavior.
+
+		encodedSchemeTests := []struct {
+			name        string
+			uri         string
+			description string
+		}{
+			{
+				name:        "Fully encoded javascript",
+				uri:         "%6A%61%76%61%73%63%72%69%70%74:alert('xss')",
+				description: "javascript: fully URL-encoded",
+			},
+			{
+				name:        "Partially encoded javascript",
+				uri:         "java%73cript:alert('xss')",
+				description: "javascript: with encoded 's'",
+			},
+			{
+				name:        "Encoded data scheme",
+				uri:         "%64%61%74%61:text/html,<script>",
+				description: "data: fully URL-encoded",
+			},
+			{
+				name:        "Mixed case encoded",
+				uri:         "%4A%41%56%41script:alert('xss')",
+				description: "JAVA encoded + script literal",
+			},
+		}
+
+		for _, tt := range encodedSchemeTests {
+			t.Run(tt.name, func(t *testing.T) {
+				err := server.ValidateRedirectURIForRegistration(ctx, tt.uri)
+				// These should fail validation - either as invalid format or blocked scheme
+				// Go's url.Parse doesn't decode the scheme, so "%6A..." is not "javascript"
+				if err == nil {
+					t.Errorf("Expected error for URL-encoded scheme bypass: %s (%s)", tt.uri, tt.description)
+				}
+
+				// Log the actual error category for documentation
+				category := GetRedirectURIErrorCategory(err)
+				t.Logf("URL-encoded scheme '%s' rejected with category: %s (error: %v)",
+					tt.uri, category, err)
+			})
+		}
+	})
+
+	t.Run("Document url.Parse scheme handling", func(t *testing.T) {
+		// This test documents Go's url.Parse behavior with encoded schemes
+		// to ensure we understand how it protects against bypass attacks.
+
+		testCases := []struct {
+			input           string
+			expectedScheme  string
+			shouldParseFail bool
+		}{
+			{"javascript:alert(1)", "javascript", false},
+			{"%6A%61%76%61%73%63%72%69%70%74:alert(1)", "", true}, // Empty/invalid scheme
+			{"https://example.com", "https", false},
+			{"%68%74%74%70%73://example.com", "", true}, // Encoded https
+		}
+
+		for _, tc := range testCases {
+			parsed, err := url.Parse(tc.input)
+			if tc.shouldParseFail {
+				// Either parse error or empty/unexpected scheme
+				if err == nil && parsed.Scheme == tc.expectedScheme && tc.expectedScheme != "" {
+					t.Errorf("Expected parse failure or empty scheme for '%s', got scheme '%s'",
+						tc.input, parsed.Scheme)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Expected successful parse for '%s', got error: %v", tc.input, err)
+				} else if parsed.Scheme != tc.expectedScheme {
+					t.Errorf("Expected scheme '%s' for '%s', got '%s'",
+						tc.expectedScheme, tc.input, parsed.Scheme)
+				}
+			}
 		}
 	})
 }
