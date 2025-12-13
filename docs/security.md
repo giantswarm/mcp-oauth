@@ -229,6 +229,48 @@ With this configuration:
 - Only confidential clients (with secrets) can be created
 - Public clients are denied even with valid authentication
 
+### Trusted Custom URI Schemes (Cursor/IDE Compatibility)
+
+For MCP clients like Cursor that don't support registration tokens, you can allow unauthenticated registration **only** for clients using trusted custom URI schemes:
+
+```go
+config := &server.Config{
+    // Require token for most clients
+    AllowPublicClientRegistration: false,
+    RegistrationAccessToken: os.Getenv("REGISTRATION_TOKEN"),
+    
+    // Allow unauthenticated registration for IDE clients
+    TrustedPublicRegistrationSchemes: []string{
+        "cursor",
+        "vscode",
+        "vscode-insiders",
+        "windsurf",
+    },
+    
+    // Require ALL redirect URIs to use trusted schemes (recommended)
+    StrictSchemeMatching: true,
+}
+```
+
+**Why Custom URI Schemes Are Safe:**
+
+Custom URI schemes (e.g., `cursor://`, `vscode://`) are registered at the OS level. Only the application that registered the scheme can receive callbacks. This means:
+
+1. An attacker cannot register a malicious client with `cursor://malicious/callback`
+2. Even if registered, the callback goes to the Cursor app, not the attacker
+3. The attacker cannot intercept the authorization code or tokens
+
+**Security Controls:**
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `TrustedPublicRegistrationSchemes` | `[]` | List of allowed schemes for token-free registration |
+| `StrictSchemeMatching` | `true` | ALL redirect URIs must use trusted schemes |
+
+**Audit Logging:**
+
+Registrations via trusted schemes are logged with event type `client_registered_via_trusted_scheme` for security monitoring.
+
 ### Development Configuration
 
 ```go

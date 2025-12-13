@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Trusted Public Registration Schemes (Cursor/IDE Compatibility)**
+  - **Feature**: Allow unauthenticated client registration for clients using trusted custom URI schemes (`cursor://`, `vscode://`, etc.)
+  - **Use Case**: MCP clients like Cursor that don't support registration tokens can now register without authentication when using custom URI schemes
+  - **Security**: Custom URI schemes are OS-protected; only the application that registered the scheme can receive callbacks
+  - **Configuration**:
+    - `TrustedPublicRegistrationSchemes`: List of schemes allowed for token-free registration (e.g., `["cursor", "vscode"]`)
+    - `StrictSchemeMatching`: When `true` (default), ALL redirect URIs must use trusted schemes
+  - **Audit Logging**: New event type `client_registered_via_trusted_scheme` for security monitoring
+  - **Documentation**: Updated security guide with Cursor compatibility section
+  - **Issue**: [#141](https://github.com/giantswarm/mcp-oauth/issues/141)
+
 ### Fixed
 
 - **Token Encryption Preserves Extra Field**

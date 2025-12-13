@@ -333,10 +333,46 @@ type Config struct {
 	//
 	// The token is validated using constant-time comparison to prevent timing attacks.
 	// If AllowPublicClientRegistration is false but this is empty, ALL registration
-	// attempts will fail (misconfiguration).
+	// attempts will fail (misconfiguration) unless TrustedPublicRegistrationSchemes
+	// is configured and the client uses trusted redirect URI schemes.
 	//
 	// Default: "" (no token configured)
 	RegistrationAccessToken string
+
+	// TrustedPublicRegistrationSchemes lists URI schemes that are allowed for
+	// unauthenticated client registration. Clients registering with redirect URIs
+	// using ONLY these schemes do NOT need a RegistrationAccessToken.
+	//
+	// This enables compatibility with MCP clients like Cursor that don't support
+	// registration tokens, while maintaining security for other clients.
+	//
+	// Security: Custom URI schemes (cursor://, vscode://) can only be intercepted
+	// by the application that registered the scheme with the OS. This makes them
+	// inherently safe for public registration - an attacker cannot register a
+	// malicious client with cursor:// because they can't receive the callback.
+	//
+	// Scheme matching is case-insensitive (per RFC 3986 Section 3.1).
+	//
+	// Example: ["cursor", "vscode", "vscode-insiders", "windsurf"]
+	// Default: [] (all registrations require token unless AllowPublicClientRegistration=true)
+	TrustedPublicRegistrationSchemes []string
+
+	// StrictSchemeMatching requires ALL redirect URIs in a registration request
+	// to use trusted schemes for unauthenticated registration to be allowed.
+	//
+	// When true (default, recommended):
+	//   - All redirect URIs MUST use schemes from TrustedPublicRegistrationSchemes
+	//   - A mix of trusted and untrusted schemes requires a registration token
+	//   - Provides maximum security by preventing token leakage to untrusted URIs
+	//
+	// When false (permissive):
+	//   - If ANY redirect URI uses a trusted scheme, registration is allowed
+	//   - Other redirect URIs can use any scheme (including https://)
+	//   - Use case: Clients that need both custom scheme and web-based callbacks
+	//
+	// This setting only applies when TrustedPublicRegistrationSchemes is non-empty.
+	// Default: true (all redirect URIs must use trusted schemes)
+	StrictSchemeMatching bool
 
 	// AllowedCustomSchemes is a list of allowed custom URI scheme patterns (regex)
 	// Used for validating custom redirect URIs (e.g., myapp://, com.example.app://)

@@ -37,6 +37,11 @@ const (
 	// EventClientRegistered is logged when a new OAuth client is registered
 	EventClientRegistered = "client_registered"
 
+	// EventClientRegisteredViaTrustedScheme is logged when a client is registered without a token
+	// because it uses only trusted custom URI schemes (e.g., cursor://, vscode://).
+	// This enables compatibility with MCP clients that don't support registration tokens.
+	EventClientRegisteredViaTrustedScheme = "client_registered_via_trusted_scheme"
+
 	// EventClientRegistrationRejected is logged when client registration is rejected for security reasons
 	EventClientRegistrationRejected = "client_registration_rejected"
 

@@ -34,6 +34,9 @@ func applySecureDefaults(config *Config, logger *slog.Logger) *Config {
 	// Validate interstitial page configuration (RFC 8252 Section 7.1)
 	validateInterstitialConfig(config, logger)
 
+	// Validate trusted public registration schemes configuration
+	validateTrustedPublicRegistrationSchemes(config, logger)
+
 	// Apply time-based defaults
 	applyTimeDefaults(config)
 
@@ -419,4 +422,104 @@ func validateResourceMetadataPathConfig(pathKey string, pathConfig ProtectedReso
 				"rfc", "RFC 8707")
 		}
 	}
+}
+
+// validateTrustedPublicRegistrationSchemes validates TrustedPublicRegistrationSchemes configuration.
+// This feature allows unauthenticated client registration for clients using trusted custom URI schemes
+// (e.g., cursor://, vscode://), enabling compatibility with MCP clients that don't support registration tokens.
+func validateTrustedPublicRegistrationSchemes(config *Config, logger *slog.Logger) {
+	if len(config.TrustedPublicRegistrationSchemes) == 0 {
+		return // Feature not configured
+	}
+
+	// Validate each scheme
+	for i, scheme := range config.TrustedPublicRegistrationSchemes {
+		schemeLower := strings.ToLower(scheme)
+
+		// Check for empty scheme
+		if scheme == "" {
+			logger.Warn("Empty scheme in TrustedPublicRegistrationSchemes",
+				"index", i,
+				"recommendation", "Remove empty entries from the list")
+			continue
+		}
+
+		// Check RFC 3986 compliance: scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
+		if len(schemeLower) > 0 && !isValidSchemeChar(rune(schemeLower[0]), true) {
+			logger.Warn("Invalid scheme in TrustedPublicRegistrationSchemes",
+				"scheme", scheme,
+				"index", i,
+				"error", "scheme must start with a letter (RFC 3986)",
+				"recommendation", "Use valid URI scheme names like 'cursor', 'vscode'")
+			continue
+		}
+
+		for j, c := range schemeLower {
+			if !isValidSchemeChar(c, j == 0) {
+				logger.Warn("Invalid character in TrustedPublicRegistrationSchemes scheme",
+					"scheme", scheme,
+					"index", i,
+					"char_position", j,
+					"error", "scheme contains invalid character (RFC 3986)",
+					"valid_chars", "a-z, 0-9, +, -, .")
+				break
+			}
+		}
+
+		// Warn about HTTP/HTTPS schemes - these are NOT safe for unauthenticated registration
+		if schemeLower == SchemeHTTP || schemeLower == SchemeHTTPS {
+			logger.Error("SECURITY ERROR: HTTP/HTTPS schemes in TrustedPublicRegistrationSchemes",
+				"scheme", scheme,
+				"risk", "HTTP/HTTPS redirect URIs can be hijacked by attackers",
+				"recommendation", "Only use custom URI schemes like 'cursor', 'vscode' that are OS-protected",
+				"action", "Remove http/https from TrustedPublicRegistrationSchemes")
+		}
+
+		// Warn about dangerous/blocked schemes
+		for _, blocked := range DefaultBlockedRedirectSchemes {
+			if schemeLower == blocked {
+				logger.Error("SECURITY ERROR: Dangerous scheme in TrustedPublicRegistrationSchemes",
+					"scheme", scheme,
+					"risk", fmt.Sprintf("'%s' scheme can be exploited for attacks", scheme),
+					"recommendation", "Remove this scheme from TrustedPublicRegistrationSchemes")
+				break
+			}
+		}
+	}
+
+	// Log configuration summary
+	logger.Info("TrustedPublicRegistrationSchemes configured",
+		"schemes", config.TrustedPublicRegistrationSchemes,
+		"strict_matching", config.StrictSchemeMatching,
+		"security_note", "Clients with these redirect URI schemes can register without a token")
+
+	// Warn if StrictSchemeMatching is disabled
+	if !config.StrictSchemeMatching {
+		logger.Warn("StrictSchemeMatching disabled for TrustedPublicRegistrationSchemes",
+			"risk", "Clients can mix trusted and untrusted redirect URI schemes",
+			"recommendation", "Enable StrictSchemeMatching for maximum security")
+	}
+
+	// Security warning: if AllowPublicClientRegistration is also true, the trusted schemes
+	// feature is redundant (anyone can register without a token anyway)
+	if config.AllowPublicClientRegistration && len(config.TrustedPublicRegistrationSchemes) > 0 {
+		logger.Warn("TrustedPublicRegistrationSchemes is redundant when AllowPublicClientRegistration=true",
+			"recommendation", "Set AllowPublicClientRegistration=false and use TrustedPublicRegistrationSchemes for controlled access")
+	}
+}
+
+// isValidSchemeChar checks if a character is valid in a URI scheme per RFC 3986.
+// scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
+// First character must be a letter (isFirst=true), subsequent can include digits and symbols.
+func isValidSchemeChar(c rune, isFirst bool) bool {
+	if c >= 'a' && c <= 'z' {
+		return true
+	}
+	if isFirst {
+		return false // First char must be a letter
+	}
+	if c >= '0' && c <= '9' {
+		return true
+	}
+	return c == '+' || c == '-' || c == '.'
 }

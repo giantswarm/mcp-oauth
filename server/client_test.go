@@ -498,3 +498,254 @@ func TestServer_RegisterClient_TokenEndpointAuthMethod(t *testing.T) {
 		})
 	}
 }
+
+func TestServer_CanRegisterWithTrustedScheme(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+
+	provider := mock.NewMockProvider()
+
+	tests := []struct {
+		name                 string
+		trustedSchemes       []string
+		strictSchemeMatching bool
+		redirectURIs         []string
+		wantAllowed          bool
+		wantScheme           string
+		wantErr              bool
+		wantErrContains      string
+	}{
+		// Basic functionality tests
+		{
+			name:                 "no trusted schemes configured - require token",
+			trustedSchemes:       nil,
+			strictSchemeMatching: true,
+			redirectURIs:         []string{"cursor://oauth/callback"},
+			wantAllowed:          false,
+			wantScheme:           "",
+			wantErr:              false,
+		},
+		{
+			name:                 "empty trusted schemes - require token",
+			trustedSchemes:       []string{},
+			strictSchemeMatching: true,
+			redirectURIs:         []string{"cursor://oauth/callback"},
+			wantAllowed:          false,
+			wantScheme:           "",
+			wantErr:              false,
+		},
+		{
+			name:                 "no redirect URIs - require token",
+			trustedSchemes:       []string{"cursor"},
+			strictSchemeMatching: true,
+			redirectURIs:         []string{},
+			wantAllowed:          false,
+			wantScheme:           "",
+			wantErr:              false,
+		},
+		{
+			name:                 "nil redirect URIs - require token",
+			trustedSchemes:       []string{"cursor"},
+			strictSchemeMatching: true,
+			redirectURIs:         nil,
+			wantAllowed:          false,
+			wantScheme:           "",
+			wantErr:              false,
+		},
+
+		// Trusted scheme matching tests
+		{
+			name:                 "single cursor scheme allowed",
+			trustedSchemes:       []string{"cursor"},
+			strictSchemeMatching: true,
+			redirectURIs:         []string{"cursor://oauth/callback"},
+			wantAllowed:          true,
+			wantScheme:           "cursor",
+			wantErr:              false,
+		},
+		{
+			name:                 "single vscode scheme allowed",
+			trustedSchemes:       []string{"vscode"},
+			strictSchemeMatching: true,
+			redirectURIs:         []string{"vscode://oauth/callback"},
+			wantAllowed:          true,
+			wantScheme:           "vscode",
+			wantErr:              false,
+		},
+		{
+			name:                 "multiple trusted schemes - cursor matches",
+			trustedSchemes:       []string{"cursor", "vscode", "vscode-insiders"},
+			strictSchemeMatching: true,
+			redirectURIs:         []string{"cursor://oauth/callback"},
+			wantAllowed:          true,
+			wantScheme:           "cursor",
+			wantErr:              false,
+		},
+		{
+			name:                 "multiple trusted schemes - vscode-insiders matches",
+			trustedSchemes:       []string{"cursor", "vscode", "vscode-insiders"},
+			strictSchemeMatching: true,
+			redirectURIs:         []string{"vscode-insiders://oauth/callback"},
+			wantAllowed:          true,
+			wantScheme:           "vscode-insiders",
+			wantErr:              false,
+		},
+
+		// Case insensitivity tests
+		{
+			name:                 "scheme matching is case insensitive",
+			trustedSchemes:       []string{"Cursor"},
+			strictSchemeMatching: true,
+			redirectURIs:         []string{"cursor://oauth/callback"},
+			wantAllowed:          true,
+			wantScheme:           "cursor",
+			wantErr:              false,
+		},
+		{
+			name:                 "uppercase redirect URI scheme matches",
+			trustedSchemes:       []string{"cursor"},
+			strictSchemeMatching: true,
+			redirectURIs:         []string{"CURSOR://oauth/callback"},
+			wantAllowed:          true,
+			wantScheme:           "cursor",
+			wantErr:              false,
+		},
+
+		// Multiple redirect URIs - strict matching
+		{
+			name:                 "strict: all URIs use trusted schemes - allowed",
+			trustedSchemes:       []string{"cursor", "vscode"},
+			strictSchemeMatching: true,
+			redirectURIs:         []string{"cursor://oauth/callback", "vscode://oauth/callback"},
+			wantAllowed:          true,
+			wantScheme:           "cursor",
+			wantErr:              false,
+		},
+		{
+			name:                 "strict: mixed schemes - not allowed",
+			trustedSchemes:       []string{"cursor"},
+			strictSchemeMatching: true,
+			redirectURIs:         []string{"cursor://oauth/callback", "https://example.com/callback"},
+			wantAllowed:          false,
+			wantScheme:           "",
+			wantErr:              false,
+		},
+		{
+			name:                 "strict: all URIs untrusted - not allowed",
+			trustedSchemes:       []string{"cursor"},
+			strictSchemeMatching: true,
+			redirectURIs:         []string{"https://example.com/callback"},
+			wantAllowed:          false,
+			wantScheme:           "",
+			wantErr:              false,
+		},
+
+		// Multiple redirect URIs - permissive matching
+		{
+			name:                 "permissive: mixed schemes - allowed (has trusted)",
+			trustedSchemes:       []string{"cursor"},
+			strictSchemeMatching: false,
+			redirectURIs:         []string{"cursor://oauth/callback", "https://example.com/callback"},
+			wantAllowed:          true,
+			wantScheme:           "cursor",
+			wantErr:              false,
+		},
+		{
+			name:                 "permissive: all untrusted - not allowed",
+			trustedSchemes:       []string{"cursor"},
+			strictSchemeMatching: false,
+			redirectURIs:         []string{"https://example.com/callback"},
+			wantAllowed:          false,
+			wantScheme:           "",
+			wantErr:              false,
+		},
+		{
+			name:                 "permissive: trusted at end of list",
+			trustedSchemes:       []string{"cursor"},
+			strictSchemeMatching: false,
+			redirectURIs:         []string{"https://example.com/callback", "cursor://oauth/callback"},
+			wantAllowed:          true,
+			wantScheme:           "cursor",
+			wantErr:              false,
+		},
+
+		// Error cases
+		{
+			name:                 "invalid redirect URI format",
+			trustedSchemes:       []string{"cursor"},
+			strictSchemeMatching: true,
+			redirectURIs:         []string{"://invalid"},
+			wantAllowed:          false,
+			wantScheme:           "",
+			wantErr:              true,
+			wantErrContains:      "invalid redirect URI",
+		},
+		{
+			name:                 "redirect URI missing scheme",
+			trustedSchemes:       []string{"cursor"},
+			strictSchemeMatching: true,
+			redirectURIs:         []string{"/path/only"},
+			wantAllowed:          false,
+			wantScheme:           "",
+			wantErr:              true,
+			wantErrContains:      "missing scheme",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &Config{
+				Issuer:                           "https://auth.example.com",
+				TrustedPublicRegistrationSchemes: tt.trustedSchemes,
+				StrictSchemeMatching:             tt.strictSchemeMatching,
+			}
+
+			srv, err := New(provider, store, store, store, config, nil)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+
+			allowed, scheme, err := srv.CanRegisterWithTrustedScheme(tt.redirectURIs)
+
+			// Check error
+			if tt.wantErr {
+				if err == nil {
+					t.Error("CanRegisterWithTrustedScheme() expected error, got nil")
+					return
+				}
+				if tt.wantErrContains != "" && !contains(err.Error(), tt.wantErrContains) {
+					t.Errorf("error = %q, want containing %q", err.Error(), tt.wantErrContains)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("CanRegisterWithTrustedScheme() unexpected error = %v", err)
+			}
+
+			// Check allowed
+			if allowed != tt.wantAllowed {
+				t.Errorf("allowed = %v, want %v", allowed, tt.wantAllowed)
+			}
+
+			// Check scheme
+			if scheme != tt.wantScheme {
+				t.Errorf("scheme = %q, want %q", scheme, tt.wantScheme)
+			}
+		})
+	}
+}
+
+// contains checks if s contains substr (helper for tests)
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		(len(s) > 0 && len(substr) > 0 && findSubstring(s, substr)))
+}
+
+func findSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
