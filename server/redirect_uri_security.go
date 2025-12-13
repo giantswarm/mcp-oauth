@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -306,14 +307,17 @@ func sanitizeURIForLogging(uri string) string {
 }
 
 // IsRedirectURISecurityError checks if an error is a redirect URI security validation error.
+// Uses errors.As to properly handle wrapped errors.
 func IsRedirectURISecurityError(err error) bool {
-	_, ok := err.(*RedirectURISecurityError)
-	return ok
+	var secErr *RedirectURISecurityError
+	return errors.As(err, &secErr)
 }
 
 // GetRedirectURIErrorCategory returns the error category if the error is a RedirectURISecurityError.
+// Uses errors.As to properly handle wrapped errors.
 func GetRedirectURIErrorCategory(err error) string {
-	if secErr, ok := err.(*RedirectURISecurityError); ok {
+	var secErr *RedirectURISecurityError
+	if errors.As(err, &secErr) {
 		return secErr.Category
 	}
 	return ""

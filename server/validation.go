@@ -40,8 +40,15 @@ var (
 	// AllowedHTTPSchemes lists allowed HTTP-based redirect URI schemes
 	AllowedHTTPSchemes = []string{SchemeHTTP, SchemeHTTPS}
 
-	// DangerousSchemes lists URI schemes that must never be allowed for security
-	DangerousSchemes = []string{"javascript", "data", "file", "vbscript", "about"}
+	// DefaultBlockedRedirectSchemes is the canonical list of URI schemes that are blocked
+	// for redirect URIs. These schemes can be used for XSS attacks (javascript:, data:)
+	// or local file access (file:). This is the single source of truth for blocked schemes.
+	// Used by Config.BlockedRedirectSchemes default and validateCustomScheme.
+	DefaultBlockedRedirectSchemes = []string{"javascript", "data", "file", "vbscript", "about", "ftp"}
+
+	// DangerousSchemes is an alias for backward compatibility.
+	// Deprecated: Use DefaultBlockedRedirectSchemes instead.
+	DangerousSchemes = DefaultBlockedRedirectSchemes
 
 	// DefaultRFC3986SchemePattern is the default regex pattern for custom URI schemes (RFC 3986)
 	DefaultRFC3986SchemePattern = []string{"^[a-z][a-z0-9+.-]*$"}
@@ -388,7 +395,8 @@ func validateCustomScheme(scheme string, allowedSchemes []string) error {
 		scheme, allowedSchemes)
 }
 
-// isLoopbackAddress checks if a hostname is a loopback address
+// isLoopbackAddress checks if a hostname is a loopback address.
+// Expects hostname without port (as returned by url.URL.Hostname()).
 func isLoopbackAddress(hostname string) bool {
 	// Normalize hostname (remove brackets for IPv6)
 	hostname = strings.Trim(hostname, "[]")
@@ -401,8 +409,8 @@ func isLoopbackAddress(hostname string) bool {
 		}
 	}
 
-	// Also check for 127.x.x.x range and localhost with port
-	return strings.HasPrefix(hostname, "127.") || strings.HasPrefix(hostname, "localhost:")
+	// Also check for full 127.0.0.0/8 loopback range (e.g., 127.0.0.100)
+	return strings.HasPrefix(hostname, "127.")
 }
 
 // validateRedirectURISecurityEnhanced performs comprehensive security validation on redirect URIs

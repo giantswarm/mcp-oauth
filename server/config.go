@@ -341,13 +341,14 @@ type Config struct {
 	// - Link-local addresses blocked (unless AllowLinkLocalRedirectURIs=true)
 	// - Dangerous URI schemes blocked (javascript:, data:, file:, etc.)
 	// When false, relaxed validation for development (still enforces dangerous scheme blocking).
-	// Default: true (secure by default)
+	// Default: false (Go zero-value; set to true explicitly for production deployments)
+	// WARNING: A security warning is logged when ProductionMode=false to remind operators.
 	ProductionMode bool
 
 	// AllowLocalhostRedirectURIs allows http://localhost and http://127.0.0.1 redirect URIs
 	// even in ProductionMode. Required for native apps per RFC 8252.
 	// Also allows loopback IPv6 addresses (::1, [::1]).
-	// Default: true (native apps need localhost per RFC 8252 Section 7.3)
+	// Default: false (Go zero-value; set to true for native app support per RFC 8252 Section 7.3)
 	AllowLocalhostRedirectURIs bool
 
 	// AllowPrivateIPRedirectURIs allows redirect URIs that resolve to private IP addresses
@@ -973,19 +974,15 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 		config.MinStateLength = 32 // OAuth 2.1: 128+ bits entropy recommended, 32 chars = 192 bits
 	}
 
-	// Redirect URI security defaults (secure by default)
-	// ProductionMode defaults to true (secure by default)
-	// We can't distinguish between unset and explicitly set to false, so we rely
-	// on the warning in logSecurityWarnings to alert operators
+	// Redirect URI security defaults
+	// Note: ProductionMode and AllowLocalhostRedirectURIs default to false (Go zero-values).
+	// We can't distinguish between unset and explicitly set to false in Go, so we log
+	// security warnings in logSecurityWarnings to alert operators about insecure configurations.
+	// Operators should explicitly set ProductionMode=true for production deployments.
 	//
-	// Note: AllowLocalhostRedirectURIs defaults to false (Go zero-value).
-	// This is secure by default, but operators should enable it for native app support (RFC 8252).
-	// We don't force it to true because some high-security environments may want to block localhost.
-	// Default blocked schemes (always dangerous)
+	// Default blocked schemes (always dangerous) - use canonical list from validation.go
 	if len(config.BlockedRedirectSchemes) == 0 {
-		config.BlockedRedirectSchemes = []string{
-			"javascript", "data", "file", "vbscript", "about", "ftp",
-		}
+		config.BlockedRedirectSchemes = DefaultBlockedRedirectSchemes
 	}
 	// DNS validation timeout default
 	if config.DNSValidationTimeout == 0 {
