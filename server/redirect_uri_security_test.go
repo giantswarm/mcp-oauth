@@ -357,6 +357,124 @@ func TestValidateRedirectURIForRegistration_PublicIPs(t *testing.T) {
 	}
 }
 
+func TestValidateRedirectURIForRegistration_UnspecifiedAddresses(t *testing.T) {
+	ctx := context.Background()
+	server := newTestServerWithSecurityConfig(true, true, false, false, false)
+
+	unspecifiedURIs := []string{
+		"https://0.0.0.0/callback", // IPv4 unspecified
+		"https://0.0.0.0:8080/callback",
+		"https://[::]/callback",      // IPv6 unspecified
+		"https://[::]:8080/callback", // IPv6 unspecified with port
+	}
+
+	for _, uri := range unspecifiedURIs {
+		t.Run("Unspecified address blocked: "+uri, func(t *testing.T) {
+			err := server.ValidateRedirectURIForRegistration(ctx, uri)
+			if err == nil {
+				t.Errorf("Expected unspecified address URI %s to be blocked", uri)
+			}
+			if GetRedirectURIErrorCategory(err) != RedirectURIErrorCategoryUnspecifiedAddr {
+				t.Errorf("Expected category %s, got %s for %s", RedirectURIErrorCategoryUnspecifiedAddr, GetRedirectURIErrorCategory(err), uri)
+			}
+		})
+	}
+}
+
+func TestValidateRedirectURIForRegistration_IPv6EdgeCases(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("IPv6 loopback variations", func(t *testing.T) {
+		server := newTestServerWithSecurityConfig(true, true, false, false, false)
+
+		// Note: Only shortened form ::1 is recognized by isLoopbackAddress
+		// The full form 0:0:0:0:0:0:0:1 is not in the LoopbackAddresses list
+		loopbackIPv6URIs := []string{
+			"http://[::1]/callback",
+			"http://[::1]:8080/callback",
+			"https://[::1]/callback",
+		}
+
+		for _, uri := range loopbackIPv6URIs {
+			err := server.ValidateRedirectURIForRegistration(ctx, uri)
+			if err != nil {
+				t.Errorf("Expected IPv6 loopback URI %s to be allowed, got error: %v", uri, err)
+			}
+		}
+	})
+
+	t.Run("IPv6 link-local blocked", func(t *testing.T) {
+		server := newTestServerWithSecurityConfig(true, true, false, false, false)
+
+		// Note: Zone IDs (fe80::1%eth0) cannot be parsed by net.ParseIP,
+		// so they are treated as hostnames and pass validation when DNS validation is disabled.
+		// Only pure IPv6 link-local addresses are properly blocked.
+		linkLocalIPv6URIs := []string{
+			"https://[fe80::1]/callback",
+			"https://[fe80::1234:5678:abcd:ef01]/callback",
+		}
+
+		for _, uri := range linkLocalIPv6URIs {
+			err := server.ValidateRedirectURIForRegistration(ctx, uri)
+			if err == nil {
+				t.Errorf("Expected IPv6 link-local URI %s to be blocked", uri)
+			}
+		}
+	})
+
+	t.Run("IPv6 private addresses blocked", func(t *testing.T) {
+		server := newTestServerWithSecurityConfig(true, true, false, false, false)
+
+		// fc00::/7 is the IPv6 Unique Local Address (ULA) range
+		privateIPv6URIs := []string{
+			"https://[fc00::1]/callback",
+			"https://[fd00::1]/callback",
+			"https://[fd12:3456:789a::1]/callback",
+		}
+
+		for _, uri := range privateIPv6URIs {
+			err := server.ValidateRedirectURIForRegistration(ctx, uri)
+			if err == nil {
+				t.Errorf("Expected IPv6 private URI %s to be blocked", uri)
+			}
+			if GetRedirectURIErrorCategory(err) != RedirectURIErrorCategoryPrivateIP {
+				t.Errorf("Expected category %s, got %s for %s", RedirectURIErrorCategoryPrivateIP, GetRedirectURIErrorCategory(err), uri)
+			}
+		}
+	})
+
+	t.Run("IPv6 public addresses allowed", func(t *testing.T) {
+		server := newTestServerWithSecurityConfig(true, true, false, false, false)
+
+		// 2001:4860:4860::8888 is Google's public IPv6 DNS
+		publicIPv6URIs := []string{
+			"https://[2001:4860:4860::8888]/callback",
+			"https://[2606:4700:4700::1111]/callback", // Cloudflare IPv6 DNS
+			"https://[2001:db8::1]/callback",          // Documentation prefix (TEST)
+		}
+
+		for _, uri := range publicIPv6URIs {
+			err := server.ValidateRedirectURIForRegistration(ctx, uri)
+			if err != nil {
+				t.Errorf("Expected IPv6 public URI %s to be allowed, got error: %v", uri, err)
+			}
+		}
+	})
+
+	t.Run("IPv6 unspecified always blocked", func(t *testing.T) {
+		// Even with all permissions enabled, unspecified addresses should be blocked
+		server := newTestServerWithSecurityConfig(false, true, true, true, false)
+
+		err := server.ValidateRedirectURIForRegistration(ctx, "https://[::]/callback")
+		if err == nil {
+			t.Error("Expected IPv6 unspecified address to be blocked even with permissive config")
+		}
+		if GetRedirectURIErrorCategory(err) != RedirectURIErrorCategoryUnspecifiedAddr {
+			t.Errorf("Expected category %s, got %s", RedirectURIErrorCategoryUnspecifiedAddr, GetRedirectURIErrorCategory(err))
+		}
+	})
+}
+
 func TestSanitizeURIForLogging(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -28,15 +28,16 @@ func (e *RedirectURISecurityError) Error() string {
 
 // Redirect URI security error categories for metrics and logging.
 const (
-	RedirectURIErrorCategoryBlockedScheme  = "blocked_scheme"
-	RedirectURIErrorCategoryPrivateIP      = "private_ip"
-	RedirectURIErrorCategoryLinkLocal      = "link_local"
-	RedirectURIErrorCategoryLoopback       = "loopback_not_allowed"
-	RedirectURIErrorCategoryHTTPNotAllowed = "http_not_allowed"
-	RedirectURIErrorCategoryDNSPrivateIP   = "dns_resolves_to_private_ip"
-	RedirectURIErrorCategoryDNSLinkLocal   = "dns_resolves_to_link_local"
-	RedirectURIErrorCategoryInvalidFormat  = "invalid_format"
-	RedirectURIErrorCategoryFragment       = "fragment_not_allowed"
+	RedirectURIErrorCategoryBlockedScheme   = "blocked_scheme"
+	RedirectURIErrorCategoryPrivateIP       = "private_ip"
+	RedirectURIErrorCategoryLinkLocal       = "link_local"
+	RedirectURIErrorCategoryLoopback        = "loopback_not_allowed"
+	RedirectURIErrorCategoryHTTPNotAllowed  = "http_not_allowed"
+	RedirectURIErrorCategoryDNSPrivateIP    = "dns_resolves_to_private_ip"
+	RedirectURIErrorCategoryDNSLinkLocal    = "dns_resolves_to_link_local"
+	RedirectURIErrorCategoryInvalidFormat   = "invalid_format"
+	RedirectURIErrorCategoryFragment        = "fragment_not_allowed"
+	RedirectURIErrorCategoryUnspecifiedAddr = "unspecified_address"
 )
 
 // ValidateRedirectURIForRegistration performs comprehensive security validation
@@ -168,6 +169,17 @@ func (s *Server) validateHTTPRedirectURI(ctx context.Context, parsed *url.URL) e
 // validateIPAddress checks if an IP address is allowed based on security configuration.
 // This prevents SSRF attacks to internal networks and cloud metadata services.
 func (s *Server) validateIPAddress(ip net.IP, hostname string) error {
+	// Check for unspecified addresses (0.0.0.0, ::)
+	// These are always blocked as they can bind to all interfaces or have undefined behavior
+	if ip.IsUnspecified() {
+		return &RedirectURISecurityError{
+			Category:      RedirectURIErrorCategoryUnspecifiedAddr,
+			URI:           "",
+			Reason:        fmt.Sprintf("IP %s is unspecified (0.0.0.0 or ::)", hostname),
+			ClientMessage: "redirect_uri: unspecified addresses (0.0.0.0, ::) are not allowed",
+		}
+	}
+
 	// Check for private IP ranges (RFC 1918)
 	if ip.IsPrivate() {
 		if !s.Config.AllowPrivateIPRedirectURIs {
