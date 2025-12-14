@@ -150,7 +150,6 @@ The metadata document is a JSON file hosted at the client's URL. The `client_id`
 | `token_endpoint_auth_method` | No | Defaults to `"none"` (public client) |
 | `scope` | No | Space-delimited scopes the client may request |
 | `contacts` | No | Contact email addresses |
-| `jwks_uri` | No | URL to client's JSON Web Key Set (for confidential clients) |
 
 ### Redirect URI Rules
 

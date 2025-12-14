@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"log/slog"
@@ -15,6 +16,13 @@ import (
 )
 
 func main() {
+	// Security warning: This example uses AllowInsecureHTTP for local development.
+	// Never use AllowInsecureHTTP in production environments.
+	if os.Getenv("ALLOW_INSECURE_HTTP") == "true" {
+		log.Println("WARNING: Running in insecure mode (AllowInsecureHTTP=true)")
+		log.Println("WARNING: This configuration is NOT SAFE for production use")
+	}
+
 	// 1. Create a provider (Google in this case)
 	googleProvider, err := google.NewProvider(&google.Config{
 		ClientID:     getEnvOrFail("GOOGLE_CLIENT_ID"),
@@ -147,6 +155,20 @@ func main() {
 	log.Fatal(http.ListenAndServe(addr, mux))
 }
 
+// mcpResponse represents the JSON response from the MCP endpoint.
+// Using a struct with json.Marshal prevents JSON injection vulnerabilities
+// that can occur when using fmt.Sprintf with user-controlled data.
+type mcpResponse struct {
+	Message string  `json:"message"`
+	User    mcpUser `json:"user"`
+}
+
+type mcpUser struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+	Name  string `json:"name"`
+}
+
 func mcpHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Get authenticated user info from context
@@ -156,18 +178,25 @@ func mcpHandler() http.Handler {
 			return
 		}
 
-		// Your MCP logic here
-		response := fmt.Sprintf(`{
-  "message": "Welcome to MCP server with CIMD support",
-  "user": {
-    "id": "%s",
-    "email": "%s",
-    "name": "%s"
-  }
-}`, userInfo.ID, userInfo.Email, userInfo.Name)
+		// Build response using proper JSON marshaling to prevent injection
+		response := mcpResponse{
+			Message: "Welcome to MCP server with CIMD support",
+			User: mcpUser{
+				ID:    userInfo.ID,
+				Email: userInfo.Email,
+				Name:  userInfo.Name,
+			},
+		}
 
+		// Set security headers
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(response))
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+
+		// Use json.NewEncoder for safe JSON serialization
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
 	})
 }
 
