@@ -190,8 +190,14 @@ func createSSRFProtectedTransport(ctx context.Context) *http.Transport {
 // - Timeout protection: enforces reasonable timeout
 // - Size limit: prevents memory exhaustion and validates full document read
 func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*ClientMetadata, time.Duration, error) {
+	// Record fetch start time for metrics
+	fetchStart := time.Now()
+
 	sanitizedURL, err := validateAndSanitizeMetadataURL(clientID)
 	if err != nil {
+		// Record blocked fetch metric
+		s.recordCIMDFetchMetric(ctx, "blocked", fetchStart)
+
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
 				Type:     "client_metadata_fetch_blocked",
@@ -231,6 +237,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sanitizedURL, nil)
 	if err != nil {
+		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
 		return nil, 0, fmt.Errorf("failed to create metadata request: %w", err)
 	}
 
@@ -241,6 +248,9 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	// Perform request
 	resp, err := client.Do(req)
 	if err != nil {
+		// Record error fetch metric
+		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
+
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
 				Type:     "client_metadata_fetch_failed",
@@ -260,6 +270,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 
 	// Check HTTP status
 	if resp.StatusCode != http.StatusOK {
+		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
 				Type:     "client_metadata_fetch_failed",
@@ -277,6 +288,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	// (with optional charset parameter)
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" {
+		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
 		return nil, 0, fmt.Errorf("metadata response missing Content-Type header")
 	}
 
@@ -284,6 +296,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	parts := strings.Split(contentType, ";")
 	mediaType := strings.ToLower(strings.TrimSpace(parts[0]))
 	if mediaType != "application/json" {
+		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
 		return nil, 0, fmt.Errorf("metadata must be application/json, got: %s", contentType)
 	}
 
@@ -298,6 +311,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 			if key == "charset" {
 				// Allow utf-8 and utf8 (both are valid)
 				if value != "utf-8" && value != "utf8" {
+					s.recordCIMDFetchMetric(ctx, "error", fetchStart)
 					return nil, 0, fmt.Errorf("unsupported charset: %s (only UTF-8 is supported for JSON)", value)
 				}
 			}
@@ -310,6 +324,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	if contentLength := resp.Header.Get("Content-Length"); contentLength != "" {
 		size, parseErr := strconv.ParseInt(contentLength, 10, 64)
 		if parseErr == nil && size > maxMetadataSize {
+			s.recordCIMDFetchMetric(ctx, "error", fetchStart)
 			return nil, 0, fmt.Errorf("metadata Content-Length (%d bytes) exceeds maximum size of %d bytes", size, maxMetadataSize)
 		}
 	}
@@ -319,17 +334,20 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	// 2. Partial JSON parsing from truncated responses
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxMetadataSize+1))
 	if err != nil {
+		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
 		return nil, 0, fmt.Errorf("failed to read response body: %w", err)
 	}
 
 	// Check if response was truncated (exceeded size limit)
 	if len(bodyBytes) > maxMetadataSize {
+		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
 		return nil, 0, fmt.Errorf("metadata document exceeds maximum size of %d bytes", maxMetadataSize)
 	}
 
 	// Parse JSON response
 	var metadata ClientMetadata
 	if err := json.Unmarshal(bodyBytes, &metadata); err != nil {
+		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
 		return nil, 0, fmt.Errorf("failed to parse metadata JSON: %w", err)
 	}
 
@@ -337,6 +355,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	// Per spec: "The client_id value in the metadata document MUST exactly match
 	// the URL from which it was retrieved"
 	if metadata.ClientID != clientID {
+		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
 				Type:     "client_metadata_id_mismatch",
@@ -354,6 +373,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 
 	// Validate required fields
 	if len(metadata.RedirectURIs) == 0 {
+		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
 		return nil, 0, fmt.Errorf("metadata must contain at least one redirect_uri")
 	}
 
@@ -362,11 +382,13 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	for _, uri := range metadata.RedirectURIs {
 		u, parseErr := url.Parse(uri)
 		if parseErr != nil {
+			s.recordCIMDFetchMetric(ctx, "error", fetchStart)
 			return nil, 0, fmt.Errorf("invalid redirect_uri %q: %w", uri, parseErr)
 		}
 
 		// Only allow http and https schemes
 		if u.Scheme != SchemeHTTPS && u.Scheme != SchemeHTTP {
+			s.recordCIMDFetchMetric(ctx, "error", fetchStart)
 			return nil, 0, fmt.Errorf("redirect_uri must use http or https scheme, got %s: %s", u.Scheme, uri)
 		}
 
@@ -374,6 +396,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		if u.Scheme == SchemeHTTP {
 			hostname := u.Hostname()
 			if hostname != localhostHostname && hostname != localhostIPv4Loopback && hostname != localhostIPv6Loopback {
+				s.recordCIMDFetchMetric(ctx, "error", fetchStart)
 				return nil, 0, fmt.Errorf("http redirect_uri only allowed for localhost, got %s: %s", hostname, uri)
 			}
 		}
@@ -417,6 +440,9 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		})
 	}
 
+	// Record successful fetch metric
+	s.recordCIMDFetchMetric(ctx, "success", fetchStart)
+
 	s.Logger.Info("Fetched client metadata from URL",
 		"client_id", clientID,
 		"client_name", metadata.ClientName,
@@ -425,6 +451,15 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		"cache_ttl", suggestedTTL)
 
 	return &metadata, suggestedTTL, nil
+}
+
+// recordCIMDFetchMetric records CIMD fetch metrics if instrumentation is enabled
+func (s *Server) recordCIMDFetchMetric(ctx context.Context, result string, fetchStart time.Time) {
+	if s.Instrumentation != nil {
+		// Use Seconds() * 1000 for sub-millisecond precision (consistent with handler.go)
+		durationMs := time.Since(fetchStart).Seconds() * 1000
+		s.Instrumentation.Metrics().RecordCIMDFetch(ctx, result, durationMs)
+	}
 }
 
 // hasLocalhostRedirectURIsOnly checks if all redirect URIs point to localhost
