@@ -1656,7 +1656,7 @@ func TestServer_ValidateToken_DisableProactiveRefresh(t *testing.T) {
 			}
 
 			// Validate token
-			userInfo, err := srv.ValidateToken(context.Background(), accessToken)
+			userInfo, err := srv.ValidateToken(ctx, accessToken)
 			if err != nil {
 				t.Errorf("ValidateToken() error = %v", err)
 				return
