@@ -428,12 +428,16 @@ func (s *Server) getOrFetchClient(ctx context.Context, clientID string) (*storag
 	result, err, _ := s.metadataFetchGroup.Do(clientID, func() (interface{}, error) {
 		// Double-check cache (another goroutine might have filled it while we waited)
 		if cachedClient, ok := s.metadataCache.Get(clientID); ok {
+			// Record cache hit metric for singleflight path
+			s.recordCIMDCacheMetric(ctx, "hit")
 			s.Logger.Debug("Using cached client metadata (singleflight)", "client_id", clientID)
 			return cachedClient, nil
 		}
 
 		// Double-check negative cache too (another goroutine might have added a failure)
 		if errorMsg, found := s.metadataCache.GetNegative(clientID); found {
+			// Record negative cache hit metric for singleflight path
+			s.recordCIMDCacheMetric(ctx, "negative_hit")
 			return nil, fmt.Errorf("client metadata previously failed validation: %s (cached)", errorMsg)
 		}
 
