@@ -37,6 +37,9 @@ const (
 
 	// Audit attributes
 	metricAttrEventType = "event_type"
+
+	// Token validation attributes
+	metricAttrReason = "reason"
 )
 
 // Metrics holds all metric instruments for the OAuth library
@@ -59,6 +62,9 @@ type Metrics struct {
 	CodeReuseDetected           metric.Int64Counter
 	TokenReuseDetected          metric.Int64Counter
 	RedirectURISecurityRejected metric.Int64Counter // Redirect URI validation failures by category
+
+	// Token Validation Metrics
+	ProactiveRefreshSkipped metric.Int64Counter // Proactive refresh skipped (disabled or not eligible)
 
 	// Storage Metrics
 	StorageOperationTotal    metric.Int64Counter
@@ -227,6 +233,15 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 		"oauth.redirect_uri.security_rejected",
 		"Number of redirect URI validation failures (SSRF/XSS protection)",
 		"{rejection}")
+	if err != nil {
+		return nil, err
+	}
+
+	// Token Validation Metrics
+	m.ProactiveRefreshSkipped, err = createCounter(serverMeter,
+		"oauth.token.proactive_refresh_skipped",
+		"Number of times proactive token refresh was skipped (disabled or not eligible)",
+		"{skip}")
 	if err != nil {
 		return nil, err
 	}
@@ -446,6 +461,22 @@ func (m *Metrics) RecordCodeReuseDetected(ctx context.Context) {
 // RecordTokenReuseDetected records a token reuse attempt
 func (m *Metrics) RecordTokenReuseDetected(ctx context.Context) {
 	m.TokenReuseDetected.Add(ctx, 1)
+}
+
+// RecordProactiveRefreshSkipped records when proactive token refresh is skipped.
+// This metric helps operators understand token refresh behavior, especially when
+// MCP clients handle their own token refresh with the OIDC provider.
+//
+// Parameters:
+//   - reason: Why refresh was skipped. Common values:
+//   - "disabled": DisableProactiveRefresh=true in config
+//   - "threshold_zero": TokenRefreshThreshold=0
+//   - "no_refresh_token": Token has no refresh token available
+//   - "not_near_expiry": Token is not within the refresh threshold window
+func (m *Metrics) RecordProactiveRefreshSkipped(ctx context.Context, reason string) {
+	m.ProactiveRefreshSkipped.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(metricAttrReason, reason),
+	))
 }
 
 // RecordRedirectURISecurityRejected records a redirect URI security validation failure.

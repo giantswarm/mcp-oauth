@@ -79,6 +79,14 @@ func (s *Server) isTokenExpiredLocally(token *oauth2.Token) bool {
 	return time.Now().After(expiryWithGrace)
 }
 
+// ProactiveRefreshSkipReason constants for metrics
+const (
+	ProactiveRefreshSkipDisabled       = "disabled"         // DisableProactiveRefresh=true
+	ProactiveRefreshSkipThresholdZero  = "threshold_zero"   // TokenRefreshThreshold=0
+	ProactiveRefreshSkipNoRefreshToken = "no_refresh_token" // Token has no refresh token
+	ProactiveRefreshSkipNotNearExpiry  = "not_near_expiry"  // Token not within threshold window
+)
+
 // shouldProactivelyRefresh determines if a token should be proactively refreshed based on
 // expiry threshold, refresh token availability, and configuration.
 //
@@ -90,22 +98,37 @@ func (s *Server) isTokenExpiredLocally(token *oauth2.Token) bool {
 func (s *Server) shouldProactivelyRefresh(token *oauth2.Token) bool {
 	// Check configuration first (avoid token field access if feature is disabled)
 	if s.Config.DisableProactiveRefresh {
+		s.recordProactiveRefreshSkipped(ProactiveRefreshSkipDisabled)
 		return false
 	}
 
 	refreshThreshold := time.Duration(s.Config.TokenRefreshThreshold) * time.Second
 	if refreshThreshold == 0 {
+		s.recordProactiveRefreshSkipped(ProactiveRefreshSkipThresholdZero)
 		return false
 	}
 
 	// Check token requirements
 	if token.RefreshToken == "" {
+		s.recordProactiveRefreshSkipped(ProactiveRefreshSkipNoRefreshToken)
 		return false
 	}
 
 	timeUntilExpiry := time.Until(token.Expiry)
+	shouldRefresh := timeUntilExpiry > 0 && timeUntilExpiry <= refreshThreshold
+	if !shouldRefresh {
+		s.recordProactiveRefreshSkipped(ProactiveRefreshSkipNotNearExpiry)
+	}
 
-	return timeUntilExpiry > 0 && timeUntilExpiry <= refreshThreshold
+	return shouldRefresh
+}
+
+// recordProactiveRefreshSkipped records a metric when proactive refresh is skipped.
+// This is a no-op if instrumentation is not configured.
+func (s *Server) recordProactiveRefreshSkipped(reason string) {
+	if s.Instrumentation != nil {
+		s.Instrumentation.Metrics().RecordProactiveRefreshSkipped(context.Background(), reason)
+	}
 }
 
 // attemptProactiveRefresh attempts to refresh a token that is near expiry.

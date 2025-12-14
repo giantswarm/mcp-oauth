@@ -227,6 +227,30 @@ func logCoreSecurityWarnings(config *Config, logger *slog.Logger) {
 			"compliance", "OAuth 2.1 requires HTTPS for all endpoints",
 			"learn_more", "https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-10#section-4.1.1")
 	}
+
+	// Log proactive refresh configuration for observability
+	logProactiveRefreshConfig(config, logger)
+}
+
+// logProactiveRefreshConfig logs the proactive token refresh configuration status.
+// This helps operators verify their configuration, especially when using MCP clients
+// that handle their own token refresh with the OIDC provider.
+func logProactiveRefreshConfig(config *Config, logger *slog.Logger) {
+	if config.DisableProactiveRefresh {
+		logger.Info("Proactive token refresh is DISABLED",
+			"config", "DisableProactiveRefresh=true",
+			"reason", "MCP clients handling their own token refresh with OIDC provider",
+			"security_note", "Token validation still occurs on every request - security is maintained",
+			"affected_behavior", "Tokens will not be proactively refreshed during validation")
+	} else if config.TokenRefreshThreshold == 0 {
+		logger.Info("Proactive token refresh is disabled via threshold",
+			"config", "TokenRefreshThreshold=0",
+			"security_note", "Token validation still occurs on every request - security is maintained")
+	} else {
+		logger.Debug("Proactive token refresh is enabled",
+			"threshold_seconds", config.TokenRefreshThreshold,
+			"behavior", "Tokens within threshold of expiry will be proactively refreshed during validation")
+	}
 }
 
 // logRedirectURISecurityStatus logs the redirect URI security configuration status.

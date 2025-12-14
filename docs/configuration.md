@@ -287,6 +287,16 @@ config := &server.Config{
 - Your OIDC provider rotates refresh tokens (issues new ones on each use)
 - You see "refresh token already claimed" errors in your logs
 
+**Security Note:** Disabling proactive refresh does NOT reduce security. All security
+mechanisms remain intact:
+- Token validation still occurs on every request via the provider
+- Local token expiry checks continue to work (with clock skew grace period)
+- Audience validation (RFC 8707) remains enforced
+- Refresh token reuse detection remains active for actual attacks
+
+The only difference is that tokens won't be automatically refreshed when they're near
+expiry. Users may need to re-authenticate when tokens expire, but this is safe behavior.
+
 **Alternative solution:** Increase your OIDC provider's token expiry to exceed typical
 session durations, preventing the proactive refresh window from triggering.
 
