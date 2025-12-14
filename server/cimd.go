@@ -190,8 +190,14 @@ func createSSRFProtectedTransport(ctx context.Context) *http.Transport {
 // - Timeout protection: enforces reasonable timeout
 // - Size limit: prevents memory exhaustion and validates full document read
 func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*ClientMetadata, time.Duration, error) {
+	// Record fetch start time for metrics
+	fetchStart := time.Now()
+
 	sanitizedURL, err := validateAndSanitizeMetadataURL(clientID)
 	if err != nil {
+		// Record blocked fetch metric
+		s.recordCIMDFetchMetric(ctx, "blocked", fetchStart)
+
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
 				Type:     "client_metadata_fetch_blocked",
@@ -241,6 +247,9 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	// Perform request
 	resp, err := client.Do(req)
 	if err != nil {
+		// Record error fetch metric
+		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
+
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
 				Type:     "client_metadata_fetch_failed",
@@ -417,6 +426,9 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		})
 	}
 
+	// Record successful fetch metric
+	s.recordCIMDFetchMetric(ctx, "success", fetchStart)
+
 	s.Logger.Info("Fetched client metadata from URL",
 		"client_id", clientID,
 		"client_name", metadata.ClientName,
@@ -425,6 +437,14 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		"cache_ttl", suggestedTTL)
 
 	return &metadata, suggestedTTL, nil
+}
+
+// recordCIMDFetchMetric records CIMD fetch metrics if instrumentation is enabled
+func (s *Server) recordCIMDFetchMetric(ctx context.Context, result string, fetchStart time.Time) {
+	if s.Instrumentation != nil {
+		durationMs := float64(time.Since(fetchStart).Milliseconds())
+		s.Instrumentation.Metrics().RecordCIMDFetch(ctx, result, durationMs)
+	}
 }
 
 // hasLocalhostRedirectURIsOnly checks if all redirect URIs point to localhost

@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CIMD Metrics Callbacks for Observability**
+  - **Feature**: Added instrumentation callbacks for Client ID Metadata Document (CIMD) operations
+  - **New Metrics**:
+    - `oauth.cimd.fetch.total`: Counter for CIMD metadata fetch attempts (labels: `result=success/error/blocked`)
+    - `oauth.cimd.fetch.duration`: Histogram for CIMD metadata fetch duration in milliseconds
+    - `oauth.cimd.cache.total`: Counter for CIMD cache operations (labels: `operation=hit/miss/negative_hit`)
+  - **API Methods**:
+    - `RecordCIMDFetch(ctx, result, durationMs)`: Record fetch attempts with outcome and duration
+    - `RecordCIMDCache(ctx, operation)`: Record cache hit/miss/negative_hit events
+  - **Use Case**: Enables consumers to monitor CIMD performance, track cache efficiency, and observe blocked requests (SSRF protection)
+  - **Issue**: [#148](https://github.com/giantswarm/mcp-oauth/issues/148)
+
 - **Client ID Metadata Documents (CIMD) Documentation and Example**
   - **Feature**: Comprehensive documentation and example for Client ID Metadata Documents support
   - **Documentation**: New `docs/cimd.md` with complete reference covering:

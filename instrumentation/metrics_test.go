@@ -225,6 +225,8 @@ func TestMetrics_ConcurrentRecording(t *testing.T) {
 				metrics.RecordCodeExchange(ctx, "client", "S256")
 				metrics.RecordStorageOperation(ctx, "save", "success", 5.0)
 				metrics.RecordProviderAPICall(ctx, "google", "exchange", 200, 100.0, nil)
+				metrics.RecordCIMDFetch(ctx, "success", 50.0)
+				metrics.RecordCIMDCache(ctx, "hit")
 			}
 			done <- true
 		}(i)
@@ -236,6 +238,47 @@ func TestMetrics_ConcurrentRecording(t *testing.T) {
 	}
 
 	// Should complete without race conditions or panics
+}
+
+func TestMetrics_RecordCIMDOperations(t *testing.T) {
+	ctx := context.Background()
+	inst, err := New(Config{
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer func() { _ = inst.Shutdown(context.Background()) }()
+
+	metrics := inst.Metrics()
+
+	// Test CIMD fetch metrics with various results
+	t.Run("CIMD fetch success", func(t *testing.T) {
+		metrics.RecordCIMDFetch(ctx, "success", 123.45)
+	})
+
+	t.Run("CIMD fetch error", func(t *testing.T) {
+		metrics.RecordCIMDFetch(ctx, "error", 500.0)
+	})
+
+	t.Run("CIMD fetch blocked", func(t *testing.T) {
+		metrics.RecordCIMDFetch(ctx, "blocked", 5.0)
+	})
+
+	// Test CIMD cache metrics with various operations
+	t.Run("CIMD cache hit", func(t *testing.T) {
+		metrics.RecordCIMDCache(ctx, "hit")
+	})
+
+	t.Run("CIMD cache miss", func(t *testing.T) {
+		metrics.RecordCIMDCache(ctx, "miss")
+	})
+
+	t.Run("CIMD cache negative_hit", func(t *testing.T) {
+		metrics.RecordCIMDCache(ctx, "negative_hit")
+	})
+
+	// All should complete without panic
 }
 
 func TestMetrics_NoOpBehavior(t *testing.T) {
@@ -267,6 +310,8 @@ func TestMetrics_NoOpBehavior(t *testing.T) {
 	metrics.RecordProviderAPICall(ctx, "google", "exchange", 200, 100.0, nil)
 	metrics.RecordAuditEvent(ctx, "test_event")
 	metrics.RecordEncryptionOperation(ctx, "encrypt", 5.0)
+	metrics.RecordCIMDFetch(ctx, "success", 100.0)
+	metrics.RecordCIMDCache(ctx, "hit")
 
 	// No panics = success
 }

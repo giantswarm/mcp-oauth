@@ -82,6 +82,11 @@ type Metrics struct {
 	EncryptionOperationsTotal metric.Int64Counter
 	EncryptionDuration        metric.Float64Histogram
 
+	// CIMD (Client ID Metadata Document) Metrics
+	CIMDFetchTotal    metric.Int64Counter     // Total fetch attempts (labels: result=success/error/blocked)
+	CIMDFetchDuration metric.Float64Histogram // Fetch duration in milliseconds
+	CIMDCacheTotal    metric.Int64Counter     // Cache operations (labels: operation=hit/miss/negative_hit)
+
 	// Configuration values (copied from instrumentation config to avoid circular dependency)
 	includeClientIDInMetrics bool
 }
@@ -341,6 +346,33 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 		return nil, err
 	}
 
+	// CIMD (Client ID Metadata Document) Metrics
+	cimdMeter := inst.Meter("cimd")
+
+	m.CIMDFetchTotal, err = createCounter(cimdMeter,
+		"oauth.cimd.fetch.total",
+		"Total number of CIMD metadata fetch attempts",
+		"{fetch}")
+	if err != nil {
+		return nil, err
+	}
+
+	m.CIMDFetchDuration, err = createHistogram(cimdMeter,
+		"oauth.cimd.fetch.duration",
+		"CIMD metadata fetch duration in milliseconds",
+		"ms")
+	if err != nil {
+		return nil, err
+	}
+
+	m.CIMDCacheTotal, err = createCounter(cimdMeter,
+		"oauth.cimd.cache.total",
+		"Total number of CIMD cache operations",
+		"{operation}")
+	if err != nil {
+		return nil, err
+	}
+
 	return m, nil
 }
 
@@ -520,6 +552,30 @@ func (m *Metrics) RecordEncryptionOperation(ctx context.Context, operation strin
 
 	m.EncryptionOperationsTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
 	m.EncryptionDuration.Record(ctx, durationMs, metric.WithAttributes(
+		attribute.String(metricAttrOperation, operation),
+	))
+}
+
+// RecordCIMDFetch records a Client ID Metadata Document fetch attempt.
+// This metric helps track CIMD fetch latency and success/failure rates.
+//
+// Parameters:
+//   - result: The outcome of the fetch ("success", "error", or "blocked")
+//   - durationMs: The duration of the fetch operation in milliseconds
+func (m *Metrics) RecordCIMDFetch(ctx context.Context, result string, durationMs float64) {
+	m.CIMDFetchTotal.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(metricAttrResult, result),
+	))
+	m.CIMDFetchDuration.Record(ctx, durationMs)
+}
+
+// RecordCIMDCache records a CIMD cache operation.
+// This metric helps monitor cache hit/miss rates for CIMD metadata.
+//
+// Parameters:
+//   - operation: The type of cache operation ("hit", "miss", or "negative_hit")
+func (m *Metrics) RecordCIMDCache(ctx context.Context, operation string) {
+	m.CIMDCacheTotal.Add(ctx, 1, metric.WithAttributes(
 		attribute.String(metricAttrOperation, operation),
 	))
 }

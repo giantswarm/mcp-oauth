@@ -358,6 +358,9 @@ func (s *Server) getOrFetchClient(ctx context.Context, clientID string) (*storag
 
 	// Try cache first
 	if cachedClient, ok := s.metadataCache.Get(clientID); ok {
+		// Record cache hit metric
+		s.recordCIMDCacheMetric(ctx, "hit")
+
 		// SECURITY: Audit log cache hits for security monitoring
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
@@ -375,6 +378,9 @@ func (s *Server) getOrFetchClient(ctx context.Context, clientID string) (*storag
 	// SECURITY: Check negative cache for previously failed client IDs
 	// This prevents rapid retries of known-bad client IDs and mitigates cache poisoning
 	if errorMsg, found := s.metadataCache.GetNegative(clientID); found {
+		// Record negative cache hit metric
+		s.recordCIMDCacheMetric(ctx, "negative_hit")
+
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
 				Type:     "client_metadata_negative_cache_hit",
@@ -430,6 +436,9 @@ func (s *Server) getOrFetchClient(ctx context.Context, clientID string) (*storag
 		if errorMsg, found := s.metadataCache.GetNegative(clientID); found {
 			return nil, fmt.Errorf("client metadata previously failed validation: %s (cached)", errorMsg)
 		}
+
+		// Record cache miss metric (we're about to fetch from the origin)
+		s.recordCIMDCacheMetric(ctx, "miss")
 
 		// Cache miss - fetch from URL
 		s.Logger.Info("Fetching client metadata from URL", "client_id", clientID)
@@ -533,4 +542,11 @@ func parseScopes(scopeStr string) []string {
 		return nil
 	}
 	return strings.Fields(scopeStr)
+}
+
+// recordCIMDCacheMetric records CIMD cache metrics if instrumentation is enabled
+func (s *Server) recordCIMDCacheMetric(ctx context.Context, operation string) {
+	if s.Instrumentation != nil {
+		s.Instrumentation.Metrics().RecordCIMDCache(ctx, operation)
+	}
 }
