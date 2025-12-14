@@ -18,10 +18,8 @@ import (
 func main() {
 	// Security warning: This example uses AllowInsecureHTTP for local development.
 	// Never use AllowInsecureHTTP in production environments.
-	if os.Getenv("ALLOW_INSECURE_HTTP") == "true" {
-		log.Println("WARNING: Running in insecure mode (AllowInsecureHTTP=true)")
-		log.Println("WARNING: This configuration is NOT SAFE for production use")
-	}
+	log.Println("WARNING: Running in insecure mode (AllowInsecureHTTP=true)")
+	log.Println("WARNING: This configuration is NOT SAFE for production use")
 
 	// 1. Create a provider (Google in this case)
 	googleProvider, err := google.NewProvider(&google.Config{

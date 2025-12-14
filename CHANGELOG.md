@@ -43,6 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **JSON Injection Vulnerability in Example Code**
+  - **Bug**: The `mcpHandler()` in basic and production examples used `fmt.Sprintf` to construct JSON responses with user-controlled data (`userInfo.Name`, `userInfo.Email`, `userInfo.ID`), allowing potential JSON injection if user data contained special characters like `"` or `\`
+  - **Fix**: Replaced with proper struct types and `json.NewEncoder()` for safe serialization
+  - **Affected Examples**: `examples/basic/main.go`, `examples/production/main.go`
+  - **Security**: Added `X-Content-Type-Options: nosniff` header to prevent MIME type sniffing attacks
+
 - **CIMD: Authorization flow now uses getOrFetchClient**
   - **Bug**: URL-based client IDs were not working in authorization flow because `StartAuthorizationFlow` and `ExchangeAuthorizationCode` used direct `clientStore.GetClient()` instead of `getOrFetchClient()` ([#143](https://github.com/giantswarm/mcp-oauth/issues/143))
   - **Root Cause**: When `EnableClientIDMetadataDocuments` was enabled, the authorization flow bypassed the CIMD-aware client lookup function
