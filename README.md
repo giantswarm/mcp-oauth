@@ -15,6 +15,7 @@ A **provider-agnostic** OAuth 2.1 Authorization Server library for [Model Contex
 - **Storage Abstraction** - In-memory storage included, simple interface for custom backends
 - **OAuth 2.1 Security** - PKCE enforcement, refresh token rotation, secure defaults
 - **MCP 2025-11-25** - Protected Resource Metadata (RFC 9728), scope discovery, resource binding
+- **Client ID Metadata Documents** - URL-based client IDs with dynamic metadata discovery
 - **Observability** - OpenTelemetry instrumentation with Prometheus and OTLP support
 
 ## Architecture
@@ -109,6 +110,7 @@ go get github.com/giantswarm/mcp-oauth
 | [Observability](./docs/observability.md) | OpenTelemetry, Prometheus metrics, distributed tracing |
 | [Discovery Mechanisms](./docs/discovery.md) | OAuth discovery (RFC 8414, RFC 9728) |
 | [MCP 2025-11-25](./docs/mcp-2025-11-25.md) | New specification features and migration |
+| [Client ID Metadata Documents](./docs/cimd.md) | URL-based client IDs with dynamic metadata discovery |
 | [Security Architecture](./SECURITY_ARCHITECTURE.md) | Deep-dive into security implementation |
 
 ## Examples
@@ -121,6 +123,7 @@ The [`examples/`](./examples) directory contains runnable examples:
 - **[production](./examples/production)** - Full security features
 - **[custom-scopes](./examples/custom-scopes)** - Endpoint-specific scope requirements
 - **[mcp-2025-11-25](./examples/mcp-2025-11-25)** - New MCP specification features
+- **[cimd](./examples/cimd)** - Client ID Metadata Documents (URL-based client IDs)
 - **[prometheus](./examples/prometheus)** - Observability integration
 
 ## Security

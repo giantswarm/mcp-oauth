@@ -17,6 +17,7 @@ This folder contains the documentation for the mcp-oauth library.
 |----------|-------------|
 | [Discovery Mechanisms](./discovery.md) | OAuth discovery (RFC 8414, RFC 9728), WWW-Authenticate |
 | [MCP 2025-11-25](./mcp-2025-11-25.md) | New MCP specification features and migration |
+| [Client ID Metadata Documents](./cimd.md) | URL-based client IDs with dynamic metadata discovery |
 | [Security Architecture](../SECURITY_ARCHITECTURE.md) | Deep technical security implementation details |
 
 ## Quick Links
