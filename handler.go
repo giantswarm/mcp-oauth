@@ -972,7 +972,13 @@ func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 
 	// Only advertise registration_endpoint if client registration is actually available
 	// RFC 8414: registration_endpoint is OPTIONAL and should only be included if supported
-	if h.server.Config.AllowPublicClientRegistration || h.server.Config.RegistrationAccessToken != "" {
+	// Registration is available when:
+	// - AllowPublicClientRegistration=true (open registration), OR
+	// - RegistrationAccessToken is set (token-based registration), OR
+	// - TrustedPublicRegistrationSchemes is configured (Cursor/VSCode can register via trusted URI schemes)
+	if h.server.Config.AllowPublicClientRegistration ||
+		h.server.Config.RegistrationAccessToken != "" ||
+		len(h.server.Config.TrustedPublicRegistrationSchemes) > 0 {
 		metadata["registration_endpoint"] = h.server.Config.RegistrationEndpoint()
 	}
 
