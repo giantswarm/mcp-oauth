@@ -334,8 +334,9 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 		}
 	}
 
-	// Validate client
-	client, err := s.clientStore.GetClient(ctx, clientID)
+	// Validate client - use getOrFetchClient to support URL-based client IDs (CIMD)
+	// This enables the Client ID Metadata Document feature per MCP 2025-11-25 spec
+	client, err := s.getOrFetchClient(ctx, clientID)
 	if err != nil {
 		if s.Auditor != nil {
 			s.Auditor.LogAuthFailure("", clientID, "", ErrorCodeInvalidClient)
@@ -702,7 +703,8 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 
 	// CRITICAL SECURITY: Fetch client to check if PKCE is required (OAuth 2.1)
 	// Public clients (mobile apps, SPAs) MUST use PKCE to prevent authorization code theft
-	client, err := s.clientStore.GetClient(ctx, clientID)
+	// Use getOrFetchClient to support URL-based client IDs (CIMD) per MCP 2025-11-25 spec
+	client, err := s.getOrFetchClient(ctx, clientID)
 	if err != nil {
 		return nil, "", s.logAuthCodeValidationFailure("client_not_found", clientID, "", util.SafeTruncate(code, 8))
 	}
