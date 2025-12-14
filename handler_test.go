@@ -1080,9 +1080,10 @@ func TestHandler_ServeAuthorizationServerMetadata_NoRegistration(t *testing.T) {
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
-	// Ensure client registration is disabled (neither token nor public registration)
+	// Ensure client registration is disabled (neither token, public registration, nor trusted schemes)
 	handler.server.Config.AllowPublicClientRegistration = false
 	handler.server.Config.RegistrationAccessToken = ""
+	handler.server.Config.TrustedPublicRegistrationSchemes = nil
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
 	w := httptest.NewRecorder()
@@ -1140,6 +1141,40 @@ func TestHandler_ServeAuthorizationServerMetadata_PublicRegistration(t *testing.
 	// Verify registration_endpoint IS included when public registration is enabled
 	if meta.RegistrationEndpoint != "https://auth.example.com/oauth/register" {
 		t.Errorf("registration_endpoint = %q, want %q", meta.RegistrationEndpoint, "https://auth.example.com/oauth/register")
+	}
+}
+
+// TestHandler_ServeAuthorizationServerMetadata_TrustedSchemes verifies that
+// registration_endpoint is advertised when TrustedPublicRegistrationSchemes is configured
+// This enables Cursor/VSCode to discover the DCR endpoint for token-less registration
+func TestHandler_ServeAuthorizationServerMetadata_TrustedSchemes(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Configure trusted schemes for Cursor/VSCode (without token or public registration)
+	handler.server.Config.AllowPublicClientRegistration = false
+	handler.server.Config.RegistrationAccessToken = ""
+	handler.server.Config.TrustedPublicRegistrationSchemes = []string{"cursor", "vscode"}
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeAuthorizationServerMetadata(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var meta AuthorizationServerMetadata
+	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Verify registration_endpoint IS included when trusted schemes are configured
+	// This allows Cursor/VSCode to discover DCR even without a registration token
+	if meta.RegistrationEndpoint != "https://auth.example.com/oauth/register" {
+		t.Errorf("registration_endpoint = %q, want %q (trusted schemes should enable DCR discovery)",
+			meta.RegistrationEndpoint, "https://auth.example.com/oauth/register")
 	}
 }
 
