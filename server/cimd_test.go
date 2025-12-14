@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/giantswarm/mcp-oauth/security"
+	"github.com/giantswarm/mcp-oauth/storage"
+	"github.com/giantswarm/mcp-oauth/storage/mock"
 )
 
 // TestIsURLClientID tests URL client ID detection
@@ -951,5 +953,137 @@ func TestNegativeCacheMetrics(t *testing.T) {
 	}
 	if metrics.negativeHits != 1 {
 		t.Errorf("negativeHits = %d, want 1", metrics.negativeHits)
+	}
+}
+
+// TestGetOrFetchClient_NonURLClientID tests that non-URL client IDs fall back to normal client store lookup
+func TestGetOrFetchClient_NonURLClientID(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	// Create mock storage and pre-register a client
+	clientStore := mock.NewMockClientStore()
+	err := clientStore.SaveClient(context.Background(), &storage.Client{
+		ClientID:     "my-regular-client",
+		ClientName:   "Regular Client",
+		ClientType:   "confidential",
+		RedirectURIs: []string{"https://example.com/callback"},
+	})
+	if err != nil {
+		t.Fatalf("failed to save client: %v", err)
+	}
+
+	config := &Config{
+		EnableClientIDMetadataDocuments: true,
+		ClientMetadataCacheTTL:          5 * time.Minute,
+	}
+
+	srv := &Server{
+		Config:        config,
+		Logger:        logger,
+		clientStore:   clientStore,
+		metadataCache: newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
+	}
+
+	// Test that non-URL client IDs use normal client store lookup
+	client, err := srv.getOrFetchClient(context.Background(), "my-regular-client")
+	if err != nil {
+		t.Fatalf("getOrFetchClient() error = %v", err)
+	}
+	if client.ClientID != "my-regular-client" {
+		t.Errorf("ClientID = %q, want %q", client.ClientID, "my-regular-client")
+	}
+	if client.ClientName != "Regular Client" {
+		t.Errorf("ClientName = %q, want %q", client.ClientName, "Regular Client")
+	}
+}
+
+// TestGetOrFetchClient_URLClientID_CIMDDisabled tests that URL client IDs are rejected when CIMD is disabled
+func TestGetOrFetchClient_URLClientID_CIMDDisabled(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	config := &Config{
+		EnableClientIDMetadataDocuments: false, // CIMD disabled
+	}
+
+	srv := &Server{
+		Config:        config,
+		Logger:        logger,
+		metadataCache: newClientMetadataCache(5*time.Minute, 1000),
+	}
+
+	// Test that URL client IDs are rejected when CIMD is disabled
+	_, err := srv.getOrFetchClient(context.Background(), "https://example.com/client-metadata.json")
+	if err == nil {
+		t.Error("expected error for URL client ID when CIMD is disabled, got nil")
+	}
+	if !strings.Contains(err.Error(), "client_id_metadata_documents feature is disabled") {
+		t.Errorf("expected CIMD disabled error, got: %v", err)
+	}
+}
+
+// TestGetOrFetchClient_URLClientID_CacheHit tests that cached URL clients are returned
+func TestGetOrFetchClient_URLClientID_CacheHit(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	config := &Config{
+		EnableClientIDMetadataDocuments: true,
+		ClientMetadataCacheTTL:          5 * time.Minute,
+	}
+
+	srv := &Server{
+		Config:        config,
+		Logger:        logger,
+		metadataCache: newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
+	}
+
+	// Pre-populate cache with a URL client
+	clientID := "https://example.com/client-metadata.json"
+	metadata := &ClientMetadata{
+		ClientID:     clientID,
+		ClientName:   "Cached Client",
+		RedirectURIs: []string{"https://app.example.com/callback"},
+	}
+	client := metadataToClient(metadata)
+	srv.metadataCache.Set(clientID, metadata, client, 5*time.Minute)
+
+	// Test that cached client is returned
+	cachedClient, err := srv.getOrFetchClient(context.Background(), clientID)
+	if err != nil {
+		t.Fatalf("getOrFetchClient() error = %v", err)
+	}
+	if cachedClient.ClientID != clientID {
+		t.Errorf("ClientID = %q, want %q", cachedClient.ClientID, clientID)
+	}
+	if cachedClient.ClientName != "Cached Client" {
+		t.Errorf("ClientName = %q, want %q", cachedClient.ClientName, "Cached Client")
+	}
+}
+
+// TestGetOrFetchClient_URLClientID_NegativeCacheHit tests that failed URL clients return cached error
+func TestGetOrFetchClient_URLClientID_NegativeCacheHit(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	config := &Config{
+		EnableClientIDMetadataDocuments: true,
+		ClientMetadataCacheTTL:          5 * time.Minute,
+	}
+
+	srv := &Server{
+		Config:        config,
+		Logger:        logger,
+		metadataCache: newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
+	}
+
+	// Pre-populate negative cache
+	clientID := "https://example.com/bad-client"
+	srv.metadataCache.SetNegative(clientID, "previous validation failure")
+
+	// Test that negative cached error is returned
+	_, err := srv.getOrFetchClient(context.Background(), clientID)
+	if err == nil {
+		t.Error("expected error for negatively cached client ID, got nil")
+	}
+	if !strings.Contains(err.Error(), "previously failed validation") {
+		t.Errorf("expected negative cache error, got: %v", err)
 	}
 }

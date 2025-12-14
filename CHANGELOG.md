@@ -27,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **CIMD: Authorization flow now uses getOrFetchClient**
+  - **Bug**: URL-based client IDs were not working in authorization flow because `StartAuthorizationFlow` and `ExchangeAuthorizationCode` used direct `clientStore.GetClient()` instead of `getOrFetchClient()` ([#143](https://github.com/giantswarm/mcp-oauth/issues/143))
+  - **Root Cause**: When `EnableClientIDMetadataDocuments` was enabled, the authorization flow bypassed the CIMD-aware client lookup function
+  - **Fix**: Changed `clientStore.GetClient()` to `getOrFetchClient()` in `flows.go` at lines 338 and 705
+  - **Impact**: MCP clients using URL-based client IDs per MCP 2025-11-25 spec now work correctly in the full OAuth flow
+  - **Testing**: Added unit tests for `getOrFetchClient` behavior with non-URL clients, CIMD disabled, cache hits, and negative cache hits
+
 - **Token Encryption Preserves Extra Field**
   - **Bug**: Token encryption was losing the `Extra` field (`id_token`, `scope`) from `oauth2.Token`, breaking downstream OIDC authentication ([#133](https://github.com/giantswarm/mcp-oauth/issues/133))
   - **Root Cause**: `encryptToken()` and `decryptToken()` created new tokens without copying the private `raw` field
