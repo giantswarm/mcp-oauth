@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
+	"github.com/giantswarm/mcp-oauth/storage/mock"
 )
 
 // TestIsURLClientID tests URL client ID detection
@@ -960,16 +960,16 @@ func TestNegativeCacheMetrics(t *testing.T) {
 func TestGetOrFetchClient_NonURLClientID(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	// Create mock storage with a pre-registered client
-	clientStore := &mockClientStore{
-		clients: map[string]*storage.Client{
-			"my-regular-client": {
-				ClientID:     "my-regular-client",
-				ClientName:   "Regular Client",
-				ClientType:   "confidential",
-				RedirectURIs: []string{"https://example.com/callback"},
-			},
-		},
+	// Create mock storage and pre-register a client
+	clientStore := mock.NewMockClientStore()
+	err := clientStore.SaveClient(context.Background(), &storage.Client{
+		ClientID:     "my-regular-client",
+		ClientName:   "Regular Client",
+		ClientType:   "confidential",
+		RedirectURIs: []string{"https://example.com/callback"},
+	})
+	if err != nil {
+		t.Fatalf("failed to save client: %v", err)
 	}
 
 	config := &Config{
@@ -1086,37 +1086,4 @@ func TestGetOrFetchClient_URLClientID_NegativeCacheHit(t *testing.T) {
 	if !strings.Contains(err.Error(), "previously failed validation") {
 		t.Errorf("expected negative cache error, got: %v", err)
 	}
-}
-
-// mockClientStore is a simple mock implementation for testing
-type mockClientStore struct {
-	clients map[string]*storage.Client
-}
-
-func (m *mockClientStore) GetClient(_ context.Context, clientID string) (*storage.Client, error) {
-	if client, ok := m.clients[clientID]; ok {
-		return client, nil
-	}
-	return nil, fmt.Errorf("client not found: %s", clientID)
-}
-
-func (m *mockClientStore) SaveClient(_ context.Context, client *storage.Client) error {
-	m.clients[client.ClientID] = client
-	return nil
-}
-
-func (m *mockClientStore) ValidateClientSecret(_ context.Context, _, _ string) error {
-	return nil
-}
-
-func (m *mockClientStore) ListClients(_ context.Context) ([]*storage.Client, error) {
-	var result []*storage.Client
-	for _, client := range m.clients {
-		result = append(result, client)
-	}
-	return result, nil
-}
-
-func (m *mockClientStore) CheckIPLimit(_ context.Context, _ string, _ int) error {
-	return nil
 }
