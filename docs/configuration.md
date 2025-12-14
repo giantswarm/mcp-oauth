@@ -253,6 +253,43 @@ config := &server.Config{
 4. On success: Updated token saved, validation continues
 5. On failure: Graceful fallback to normal validation
 
+### Disabling Proactive Refresh
+
+In some deployments, MCP clients (like Cursor or Claude Desktop) handle their own token
+refresh directly with the OIDC provider. This can cause issues with proactive refresh:
+
+**The Problem:**
+When a client refreshes tokens directly with the provider:
+1. The provider issues a new refresh token and invalidates the old one
+2. The mcp-oauth server still has the old (now invalid) refresh token
+3. When the server tries to proactively refresh, it fails with "token already claimed"
+4. This may trigger false-positive refresh token reuse detection, revoking all tokens
+
+**Solution:** Disable proactive refresh when clients handle their own token refresh:
+
+```go
+config := &server.Config{
+    // Disable proactive refresh when MCP clients refresh tokens directly
+    DisableProactiveRefresh: true,
+}
+```
+
+Alternatively, set `TokenRefreshThreshold` to 0:
+
+```go
+config := &server.Config{
+    TokenRefreshThreshold: 0, // Disables proactive refresh
+}
+```
+
+**When to disable proactive refresh:**
+- MCP clients (Cursor, Claude Desktop) are handling their own OIDC token refresh
+- Your OIDC provider rotates refresh tokens (issues new ones on each use)
+- You see "refresh token already claimed" errors in your logs
+
+**Alternative solution:** Increase your OIDC provider's token expiry to exceed typical
+session durations, preventing the proactive refresh window from triggering.
+
 ### Token Lifetimes
 
 Token lifetimes are typically controlled by the identity provider. For server-issued tokens:

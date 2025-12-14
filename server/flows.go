@@ -80,13 +80,29 @@ func (s *Server) isTokenExpiredLocally(token *oauth2.Token) bool {
 }
 
 // shouldProactivelyRefresh determines if a token should be proactively refreshed based on
-// expiry threshold and refresh token availability.
+// expiry threshold, refresh token availability, and configuration.
+//
+// Returns false if:
+//   - DisableProactiveRefresh is true (feature disabled)
+//   - TokenRefreshThreshold is 0 (threshold set to zero)
+//   - Token has no refresh token available
+//   - Token is not within the refresh threshold window
 func (s *Server) shouldProactivelyRefresh(token *oauth2.Token) bool {
+	// Check if proactive refresh is explicitly disabled
+	if s.Config.DisableProactiveRefresh {
+		return false
+	}
+
 	if token.RefreshToken == "" {
 		return false
 	}
 
 	refreshThreshold := time.Duration(s.Config.TokenRefreshThreshold) * time.Second
+	// Also skip if threshold is zero (another way to disable)
+	if refreshThreshold == 0 {
+		return false
+	}
+
 	timeUntilExpiry := time.Until(token.Expiry)
 
 	return timeUntilExpiry > 0 && timeUntilExpiry <= refreshThreshold

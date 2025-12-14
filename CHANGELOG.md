@@ -27,6 +27,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Proactive Token Refresh Conflict with MCP Clients**
+  - **Issue**: Proactive token refresh can trigger false-positive "refresh token reuse detection" when MCP clients (like Cursor, Claude Desktop) handle their own token refresh with the OIDC provider ([#137](https://github.com/giantswarm/mcp-oauth/issues/137))
+  - **Root Cause**: When MCP clients refresh tokens directly with the provider, the provider issues a new refresh token and invalidates the old one. The mcp-oauth server's stored refresh token becomes stale, and proactive refresh attempts fail with "token already claimed", potentially triggering security token revocation.
+  - **Solution**: Added `DisableProactiveRefresh` configuration option to disable proactive token refresh entirely
+  - **Alternative**: Set `TokenRefreshThreshold: 0` to achieve the same effect
+  - **Configuration**:
+    ```go
+    config := &server.Config{
+        DisableProactiveRefresh: true, // Disable proactive refresh for MCP client compatibility
+    }
+    ```
+  - **Documentation**: Updated configuration guide with detailed explanation and troubleshooting guidance
+
 - **CIMD: Authorization flow now uses getOrFetchClient**
   - **Bug**: URL-based client IDs were not working in authorization flow because `StartAuthorizationFlow` and `ExchangeAuthorizationCode` used direct `clientStore.GetClient()` instead of `getOrFetchClient()` ([#143](https://github.com/giantswarm/mcp-oauth/issues/143))
   - **Root Cause**: When `EnableClientIDMetadataDocuments` was enabled, the authorization flow bypassed the CIMD-aware client lookup function

@@ -1563,6 +1563,119 @@ func TestServer_ValidateToken_ProactiveRefresh_CustomThreshold(t *testing.T) {
 	}
 }
 
+// TestServer_ValidateToken_DisableProactiveRefresh tests that DisableProactiveRefresh config works
+func TestServer_ValidateToken_DisableProactiveRefresh(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name                    string
+		disableProactiveRefresh bool
+		tokenRefreshThreshold   int64 // seconds
+		tokenExpiry             time.Duration
+		wantRefreshCalled       bool
+	}{
+		{
+			name:                    "proactive refresh enabled (default) - token near expiry - should refresh",
+			disableProactiveRefresh: false,
+			tokenRefreshThreshold:   300, // 5 minutes
+			tokenExpiry:             4 * time.Minute,
+			wantRefreshCalled:       true,
+		},
+		{
+			name:                    "DisableProactiveRefresh true - token near expiry - should NOT refresh",
+			disableProactiveRefresh: true,
+			tokenRefreshThreshold:   300, // 5 minutes
+			tokenExpiry:             4 * time.Minute,
+			wantRefreshCalled:       false,
+		},
+		{
+			name:                    "DisableProactiveRefresh true - token very near expiry - should NOT refresh",
+			disableProactiveRefresh: true,
+			tokenRefreshThreshold:   300, // 5 minutes
+			tokenExpiry:             30 * time.Second,
+			wantRefreshCalled:       false,
+		},
+		{
+			name:                    "TokenRefreshThreshold zero - should NOT refresh (alternative disable)",
+			disableProactiveRefresh: false,
+			tokenRefreshThreshold:   0, // disabled via threshold
+			tokenExpiry:             4 * time.Minute,
+			wantRefreshCalled:       false,
+		},
+		{
+			name:                    "both disabled - should NOT refresh",
+			disableProactiveRefresh: true,
+			tokenRefreshThreshold:   0,
+			tokenExpiry:             4 * time.Minute,
+			wantRefreshCalled:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Fresh server for each test to avoid state pollution
+			srv, store, provider := setupFlowTestServer(t)
+
+			// Apply test configuration
+			srv.Config.DisableProactiveRefresh = tt.disableProactiveRefresh
+			srv.Config.TokenRefreshThreshold = tt.tokenRefreshThreshold
+
+			// Track refresh calls
+			refreshCalled := false
+			provider.RefreshTokenFunc = func(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+				refreshCalled = true
+				return &oauth2.Token{
+					AccessToken:  "new-token",
+					RefreshToken: "new-refresh",
+					Expiry:       time.Now().Add(1 * time.Hour),
+					TokenType:    "Bearer",
+				}, nil
+			}
+
+			// Provider validates successfully
+			provider.ValidateTokenFunc = func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+				return &providers.UserInfo{
+					ID:    "user-disable-test",
+					Email: "disable@example.com",
+					Name:  "Disable Test User",
+				}, nil
+			}
+
+			// Save token with specific expiry and a refresh token
+			accessToken := "disable-proactive-test"
+			token := &oauth2.Token{
+				AccessToken:  "provider-token",
+				RefreshToken: "valid-refresh-token",
+				Expiry:       time.Now().Add(tt.tokenExpiry),
+				TokenType:    "Bearer",
+			}
+
+			err := store.SaveToken(ctx, accessToken, token)
+			if err != nil {
+				t.Fatalf("SaveToken() error = %v", err)
+			}
+
+			// Validate token
+			userInfo, err := srv.ValidateToken(context.Background(), accessToken)
+			if err != nil {
+				t.Errorf("ValidateToken() error = %v", err)
+				return
+			}
+
+			// Verify user info returned
+			if userInfo == nil {
+				t.Fatal("ValidateToken() returned nil userInfo")
+			}
+
+			// Check if refresh was called as expected
+			if refreshCalled != tt.wantRefreshCalled {
+				t.Errorf("RefreshToken called = %v, want %v (disableProactiveRefresh=%v, threshold=%ds, expiry=%v)",
+					refreshCalled, tt.wantRefreshCalled, tt.disableProactiveRefresh, tt.tokenRefreshThreshold, tt.tokenExpiry)
+			}
+		})
+	}
+}
+
 // TestServer_RefreshTokenRotation tests basic refresh token rotation without reuse
 func TestServer_RefreshTokenRotation(t *testing.T) {
 	ctx := context.Background()

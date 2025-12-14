@@ -63,7 +63,9 @@ func applyTimeDefaults(config *Config) {
 	if config.ClockSkewGracePeriod == 0 {
 		config.ClockSkewGracePeriod = 5
 	}
-	if config.TokenRefreshThreshold == 0 {
+	// Only apply TokenRefreshThreshold default if proactive refresh is not disabled
+	// When DisableProactiveRefresh is true, the threshold value is irrelevant
+	if config.TokenRefreshThreshold == 0 && !config.DisableProactiveRefresh {
 		config.TokenRefreshThreshold = 300 // 5 minutes
 	}
 

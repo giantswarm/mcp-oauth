@@ -110,7 +110,29 @@ type Config struct {
 	// refresh it proactively to avoid validation failures.
 	// This improves user experience by preventing expired token errors when refresh is possible.
 	// Default: 300 seconds (5 minutes)
+	// Set to 0 or use DisableProactiveRefresh to disable this feature.
 	TokenRefreshThreshold int64 // seconds, default: 300
+
+	// DisableProactiveRefresh disables the proactive token refresh feature entirely.
+	// When true, tokens will NOT be refreshed proactively during validation, even if they
+	// are near expiry and have a refresh token available.
+	//
+	// IMPORTANT: Enable this when MCP clients (e.g., Cursor, Claude Desktop) handle their own
+	// token refresh directly with the OIDC provider. In this scenario, the mcp-oauth server's
+	// stored refresh token may become stale after the client refreshes tokens with the provider,
+	// because the provider issues a new refresh token and invalidates the old one.
+	//
+	// When proactive refresh is enabled (default) and the client has already refreshed tokens
+	// with the provider, the server's attempt to refresh will fail with "refresh token already
+	// claimed", which may trigger false-positive refresh token reuse detection and revoke all
+	// tokens for the user+client pair.
+	//
+	// Recommended settings when MCP clients handle token refresh:
+	//   - Set DisableProactiveRefresh: true
+	//   - OR increase OIDC provider token expiry to exceed typical session duration
+	//
+	// Default: false (proactive refresh is enabled)
+	DisableProactiveRefresh bool // default: false
 
 	// ProviderRevocationTimeout is the timeout PER TOKEN for revoking tokens at the provider (Google/GitHub/etc)
 	// during security events (code reuse, token reuse detection).
