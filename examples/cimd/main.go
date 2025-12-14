@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/giantswarm/mcp-oauth/providers/google"
@@ -15,6 +16,11 @@ import (
 )
 
 func main() {
+	// Security warning: This example uses AllowInsecureHTTP for local development.
+	// Never use AllowInsecureHTTP in production environments.
+	log.Println("WARNING: Running in insecure mode (AllowInsecureHTTP=true)")
+	log.Println("WARNING: This configuration is NOT SAFE for production use")
+
 	// 1. Create a provider (Google in this case)
 	googleProvider, err := google.NewProvider(&google.Config{
 		ClientID:     getEnvOrFail("GOOGLE_CLIENT_ID"),
@@ -24,7 +30,6 @@ func main() {
 			"openid",
 			"email",
 			"profile",
-			"https://www.googleapis.com/auth/gmail.readonly",
 		},
 	})
 	if err != nil {
@@ -40,9 +45,14 @@ func main() {
 		Level: slog.LevelInfo,
 	}))
 
-	// 4. Create OAuth server
-	// Security: Secure by default! PKCE (S256 only) is enabled by default.
-	// All security settings follow OAuth 2.1 best practices.
+	// 4. Create OAuth server with CIMD enabled
+	//
+	// Client ID Metadata Documents (CIMD) allow clients to use HTTPS URLs as
+	// their client identifiers. The authorization server dynamically discovers
+	// client metadata by fetching a JSON document from the URL.
+	//
+	// This is ideal for MCP scenarios where servers and clients have no
+	// pre-existing relationship.
 	server, err := oauth.NewServer(
 		googleProvider,
 		store, // TokenStore
@@ -51,22 +61,30 @@ func main() {
 		&oauth.ServerConfig{
 			Issuer:            "http://localhost:8080",
 			AllowInsecureHTTP: true, // Required for HTTP on localhost (development only)
-			// Secure defaults (applied automatically if not set):
-			// - RequirePKCE: true (mandatory PKCE)
-			// - AllowPKCEPlain: false (only S256 method)
-			// - AllowRefreshTokenRotation: true (token rotation)
-			// - TrustProxy: false (don't trust proxy headers)
 
-			// Optional: Enable OpenTelemetry instrumentation for observability
-			// Uncomment to enable metrics and distributed tracing:
-			// Instrumentation: oauth.InstrumentationConfig{
-			//     Enabled:         true,
-			//     ServiceName:     "mcp-oauth-basic",
-			//     ServiceVersion:  "1.0.0",
-			//     MetricsExporter: "stdout",  // Options: "prometheus", "stdout", "none"
-			//     TracesExporter:  "stdout",  // Options: "otlp", "stdout", "none"
-			//     OTLPEndpoint:    "localhost:4318", // Required if TracesExporter="otlp"
-			// },
+			// ========== CIMD Configuration ==========
+
+			// Enable Client ID Metadata Documents support (MCP 2025-11-25)
+			// When enabled, clients can use HTTPS URLs as their client_id
+			// and the server will fetch client metadata from that URL.
+			EnableClientIDMetadataDocuments: true,
+
+			// Timeout for fetching metadata from client URLs (default: 10s)
+			// Protects against slow or unresponsive metadata endpoints.
+			ClientMetadataFetchTimeout: 10 * time.Second,
+
+			// How long to cache fetched client metadata (default: 5 minutes)
+			// HTTP Cache-Control headers may override this value.
+			// Cached entries reduce latency and external requests.
+			ClientMetadataCacheTTL: 5 * time.Minute,
+
+			// ========== Security Features ==========
+			// The following security features are automatically enabled:
+			// - SSRF protection (blocks private/internal IPs)
+			// - DNS rebinding protection (validates IPs at connection time)
+			// - PKCE required for all CIMD clients (public clients)
+			// - Rate limiting per domain
+			// - Negative caching for failed fetches
 		},
 		logger,
 	)
@@ -74,23 +92,12 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// 5. Optional: Add security features
-	encKeyB64 := os.Getenv("OAUTH_ENCRYPTION_KEY")
-	if encKeyB64 != "" {
-		encKey, err := security.KeyFromBase64(encKeyB64)
-		if err != nil {
-			log.Fatalf("Invalid encryption key: %v", err)
-		}
-		encryptor, _ := security.NewEncryptor(encKey)
-		server.SetEncryptor(encryptor)
-		logger.Info("Token encryption enabled")
-	}
-
+	// 5. Add security features
 	auditor := security.NewAuditor(logger, true)
 	server.SetAuditor(auditor)
 
 	rateLimiter := security.NewRateLimiter(10, 20, logger)
-	defer rateLimiter.Stop() // Important: cleanup background goroutines
+	defer rateLimiter.Stop()
 	server.SetRateLimiter(rateLimiter)
 
 	// 6. Create HTTP handler
@@ -99,35 +106,11 @@ func main() {
 	// 7. Setup routes
 	mux := http.NewServeMux()
 
-	// === OAuth Discovery Endpoints (MCP 2025-11-25) ===
-
-	// Protected Resource Metadata (RFC 9728)
-	// Registers the discovery endpoint at /.well-known/oauth-protected-resource
-	//
-	// Clients use this endpoint to discover:
-	//   - Which authorization server protects this resource
-	//   - What scopes are supported
-	//   - How to send bearer tokens
-	//
-	// Example discovery flow:
-	//   1. Client → GET /mcp (unauthorized)
-	//   2. Server → 401 + WWW-Authenticate: resource_metadata=".../.well-known/oauth-protected-resource"
-	//   3. Client → GET /.well-known/oauth-protected-resource
-	//   4. Client → Discovers authorization server and scopes
+	// Discovery endpoints
 	handler.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
-
-	// Authorization Server Metadata (RFC 8414)
-	// Describes OAuth server capabilities, endpoints, and supported features
-	// Clients use this to discover:
-	//   - OAuth endpoints (authorization, token, etc.)
-	//   - Supported grant types and response types
-	//   - PKCE methods supported
-	//   - Available scopes
-	// This automatically registers all discovery endpoints, including multi-tenant
-	// path insertion variants for path-based issuers (MCP 2025-11-25)
 	handler.RegisterAuthorizationServerMetadataRoutes(mux)
 
-	// OAuth Flow Endpoints
+	// OAuth flow endpoints
 	mux.HandleFunc("/oauth/authorize", handler.ServeAuthorization)
 	mux.HandleFunc("/oauth/callback", handler.ServeCallback)
 	mux.HandleFunc("/oauth/token", handler.ServeToken)
@@ -135,27 +118,21 @@ func main() {
 	mux.HandleFunc("/oauth/register", handler.ServeClientRegistration)
 
 	// Protected MCP endpoint
-	// ValidateToken middleware:
-	//   - Validates Bearer token from Authorization header
-	//   - Returns 401 with WWW-Authenticate header if invalid/missing (MCP 2025-11-25)
-	//   - Adds UserInfo to request context if valid
-	//   - Validates token scopes if EndpointScopeRequirements configured
 	mux.Handle("/mcp", handler.ValidateToken(mcpHandler()))
 
 	// Health check
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "OK - Provider: %s\n", googleProvider.Name())
+		fmt.Fprintf(w, "OK - Provider: %s, CIMD: enabled\n", googleProvider.Name())
 	})
 
 	// Start server
 	addr := ":8080"
-	log.Printf("🚀 Starting MCP OAuth Server on %s", addr)
-	log.Printf("📦 Provider: %s", googleProvider.Name())
-	log.Printf("🔐 Security: encryption=%v, audit=%v, ratelimit=%v",
-		encKeyB64 != "", true, true)
+	log.Printf("Starting MCP OAuth Server with CIMD support on %s", addr)
+	log.Printf("Provider: %s", googleProvider.Name())
+	log.Printf("CIMD: enabled (Client ID Metadata Documents)")
 	log.Printf("\nEndpoints:")
-	log.Printf("  Discovery (MCP 2025-11-25):")
+	log.Printf("  Discovery:")
 	log.Printf("    /.well-known/oauth-protected-resource")
 	log.Printf("    /.well-known/oauth-authorization-server")
 	log.Printf("  OAuth Flow:")
@@ -166,10 +143,13 @@ func main() {
 	log.Printf("    /oauth/revoke")
 	log.Printf("  Protected:")
 	log.Printf("    /mcp")
-	log.Printf("\nMCP 2025-11-25 Features:")
-	log.Printf("  - Protected Resource Metadata discovery")
-	log.Printf("  - Enhanced WWW-Authenticate headers with scope guidance")
-	log.Printf("  - OAuth 2.1 security (PKCE, token rotation)")
+	log.Printf("\nCIMD Features:")
+	log.Printf("  - Clients can use HTTPS URLs as client_id")
+	log.Printf("  - Server fetches and caches client metadata")
+	log.Printf("  - SSRF protection with DNS rebinding prevention")
+	log.Printf("  - PKCE required for all URL-based clients")
+	log.Printf("\nExample usage with CIMD:")
+	log.Printf("  client_id=https://example.com/oauth/client.json")
 	log.Fatal(http.ListenAndServe(addr, mux))
 }
 
@@ -198,7 +178,7 @@ func mcpHandler() http.Handler {
 
 		// Build response using proper JSON marshaling to prevent injection
 		response := mcpResponse{
-			Message: "Welcome to MCP server",
+			Message: "Welcome to MCP server with CIMD support",
 			User: mcpUser{
 				ID:    userInfo.ID,
 				Email: userInfo.Email,

@@ -92,6 +92,25 @@ export GOOGLE_CLIENT_SECRET="your-secret"
 go run main.go
 ```
 
+### [CIMD (Client ID Metadata Documents)](./cimd)
+
+Demonstrates Client ID Metadata Documents support from MCP 2025-11-25.
+
+**Features:**
+- URL-based client_id support
+- Dynamic client metadata discovery
+- SSRF protection
+- Metadata caching
+
+**Best for:** MCP deployments with third-party clients, distributed ecosystems
+
+```bash
+cd cimd
+export GOOGLE_CLIENT_ID="your-id"
+export GOOGLE_CLIENT_SECRET="your-secret"
+go run main.go
+```
+
 ### [Prometheus](./prometheus)
 
 Demonstrates OpenTelemetry instrumentation with Prometheus metrics.

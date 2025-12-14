@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Client ID Metadata Documents (CIMD) Documentation and Example**
+  - **Feature**: Comprehensive documentation and example for Client ID Metadata Documents support
+  - **Documentation**: New `docs/cimd.md` with complete reference covering:
+    - What CIMD is and when to use it
+    - Configuration options (`EnableClientIDMetadataDocuments`, `ClientMetadataFetchTimeout`, `ClientMetadataCacheTTL`)
+    - Client metadata document format and field reference
+    - How the authorization flow works with CIMD
+    - Security features (SSRF protection, negative caching, rate limiting)
+    - Caching behavior and troubleshooting guide
+  - **Example**: New `examples/cimd/` directory with:
+    - Complete server implementation with CIMD enabled
+    - Sample `client.json` metadata document
+    - Detailed README with setup and usage instructions
+  - **README Updates**: Added CIMD to main README features, documentation table, and examples list
+  - **Issue**: [#145](https://github.com/giantswarm/mcp-oauth/issues/145)
+
 - **Trusted Public Registration Schemes (Cursor/IDE Compatibility)**
   - **Feature**: Allow unauthenticated client registration for clients using trusted custom URI schemes (`cursor://`, `vscode://`, etc.)
   - **Use Case**: MCP clients like Cursor that don't support registration tokens can now register without authentication when using custom URI schemes
@@ -26,6 +42,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Issue**: [#141](https://github.com/giantswarm/mcp-oauth/issues/141)
 
 ### Fixed
+
+- **JSON Injection Vulnerability in Example Code**
+  - **Bug**: The `mcpHandler()` in basic and production examples used `fmt.Sprintf` to construct JSON responses with user-controlled data (`userInfo.Name`, `userInfo.Email`, `userInfo.ID`), allowing potential JSON injection if user data contained special characters like `"` or `\`
+  - **Fix**: Replaced with proper struct types and `json.NewEncoder()` for safe serialization
+  - **Affected Examples**: `examples/basic/main.go`, `examples/production/main.go`
+  - **Security**: Added `X-Content-Type-Options: nosniff` header to prevent MIME type sniffing attacks
 
 - **CIMD: Authorization flow now uses getOrFetchClient**
   - **Bug**: URL-based client IDs were not working in authorization flow because `StartAuthorizationFlow` and `ExchangeAuthorizationCode` used direct `clientStore.GetClient()` instead of `getOrFetchClient()` ([#143](https://github.com/giantswarm/mcp-oauth/issues/143))

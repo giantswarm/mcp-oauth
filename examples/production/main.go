@@ -9,6 +9,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"log/slog"
@@ -253,6 +254,21 @@ func setupRoutes(handler *oauth.Handler, logger *slog.Logger) *http.ServeMux {
 	return mux
 }
 
+// mcpResponse represents the JSON response from the MCP endpoint.
+// Using a struct with json.Marshal prevents JSON injection vulnerabilities
+// that can occur when using fmt.Sprintf with user-controlled data.
+type mcpResponse struct {
+	Message   string  `json:"message"`
+	User      mcpUser `json:"user"`
+	Timestamp int64   `json:"timestamp"`
+}
+
+type mcpUser struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+	Name  string `json:"name"`
+}
+
 func mcpHandler(logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		userInfo, ok := oauth.UserInfoFromContext(r.Context())
@@ -268,24 +284,29 @@ func mcpHandler(logger *slog.Logger) http.Handler {
 			"path", r.URL.Path,
 		)
 
-		// Your MCP logic here
-		response := map[string]interface{}{
-			"message": "Welcome to production MCP server",
-			"user": map[string]string{
-				"email": userInfo.Email,
-				"name":  userInfo.Name,
-				"id":    userInfo.ID,
+		// Build response using proper JSON marshaling to prevent injection
+		response := mcpResponse{
+			Message: "Welcome to production MCP server",
+			User: mcpUser{
+				ID:    userInfo.ID,
+				Email: userInfo.Email,
+				Name:  userInfo.Name,
 			},
-			"timestamp": time.Now().Unix(),
+			Timestamp: time.Now().Unix(),
 		}
 
+		// Set security headers
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
 
-		fmt.Fprintf(w, `{"message":"%s","user":{"email":"%s","name":"%s","id":"%s"}}`,
-			response["message"], userInfo.Email, userInfo.Name, userInfo.ID)
+		// Use json.NewEncoder for safe JSON serialization
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			logger.Error("Failed to encode response", "error", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
 	})
 }
 
