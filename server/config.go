@@ -559,6 +559,12 @@ type Config struct {
 	// HTTP Cache-Control headers may override this value
 	// Default: 5 minutes
 	ClientMetadataCacheTTL time.Duration
+
+	// MachineIdentity configures handling of machine identities (K8s service accounts).
+	// When enabled, UserInfo for tokens without email/groups (common for K8s SAs via Dex token exchange)
+	// will be enriched with synthetic email and derived K8s groups.
+	// Default: disabled (Enabled=false)
+	MachineIdentity MachineIdentityConfig
 }
 
 // InstrumentationConfig holds configuration for OpenTelemetry instrumentation
@@ -745,6 +751,37 @@ type ProtectedResourceConfig struct {
 	// If empty, derived from the server's ResourceIdentifier or Issuer + path.
 	// Used for audience validation per RFC 8707.
 	ResourceIdentifier string
+}
+
+// MachineIdentityConfig configures handling of machine identities (Kubernetes service accounts).
+// When enabled, the server enriches UserInfo for machine identities that lack email and groups
+// by parsing the Kubernetes service account identity from the sub claim.
+//
+// This is useful when validating tokens obtained via Dex token exchange for K8s service accounts,
+// which don't have email addresses or groups in their tokens.
+//
+// Example K8s SA sub claim: "system:serviceaccount:my-namespace:my-service"
+// Generated email: "my-service@my-namespace.serviceaccount.local"
+// Derived groups: ["system:serviceaccounts", "system:serviceaccounts:my-namespace", "system:authenticated"]
+type MachineIdentityConfig struct {
+	// Enabled enables machine identity support (synthetic email + derived groups).
+	// When true, UserInfo for K8s service accounts will be enriched with:
+	// - Synthetic email address (if missing)
+	// - Standard K8s groups (if missing and DeriveGroups=true)
+	// Default: false (backward compatible)
+	Enabled bool
+
+	// EmailDomain is the domain suffix for synthetic emails.
+	// Format: {sa-name}@{namespace}.{EmailDomain}
+	// Example with default: "my-service@my-namespace.serviceaccount.local"
+	// Default: "serviceaccount.local"
+	EmailDomain string
+
+	// DeriveGroups enables deriving standard K8s groups from the SA identity.
+	// Groups derived: ["system:serviceaccounts", "system:serviceaccounts:{namespace}", "system:authenticated"]
+	// These match the groups Kubernetes assigns to service accounts.
+	// Default: true (when Enabled=true)
+	DeriveGroups bool
 }
 
 // InterstitialBranding configures visual elements of the default interstitial page.

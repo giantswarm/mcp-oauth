@@ -1563,6 +1563,227 @@ func TestServer_ValidateToken_ProactiveRefresh_CustomThreshold(t *testing.T) {
 	}
 }
 
+// TestServer_ValidateToken_MachineIdentity tests machine identity enrichment for K8s service accounts
+func TestServer_ValidateToken_MachineIdentity(t *testing.T) {
+	ctx := context.Background()
+
+	// Real Dex-encoded subject from K8s SA: system:serviceaccount:org-giantswarm:grizzly-shoot
+	dexEncodedSub := "CjJzeXN0ZW06c2VydmljZWFjY291bnQ6b3JnLWdpYW50c3dhcm06Z3JpenpseS1zaG9vdBIKa3ViZXJuZXRlcw"
+
+	tests := []struct {
+		name               string
+		machineIdentity    MachineIdentityConfig
+		providerUserInfo   *providers.UserInfo
+		wantEmail          string
+		wantGroups         []string
+		wantEmailEnriched  bool
+		wantGroupsEnriched bool
+	}{
+		{
+			name: "machine identity disabled - no enrichment",
+			machineIdentity: MachineIdentityConfig{
+				Enabled: false,
+			},
+			providerUserInfo: &providers.UserInfo{
+				ID:    dexEncodedSub,
+				Email: "",
+			},
+			wantEmail:          "",
+			wantGroups:         nil,
+			wantEmailEnriched:  false,
+			wantGroupsEnriched: false,
+		},
+		{
+			name: "K8s SA with Dex encoded sub - full enrichment",
+			machineIdentity: MachineIdentityConfig{
+				Enabled:      true,
+				DeriveGroups: true,
+			},
+			providerUserInfo: &providers.UserInfo{
+				ID:    dexEncodedSub,
+				Email: "",
+			},
+			wantEmail: "grizzly-shoot@org-giantswarm.serviceaccount.local",
+			wantGroups: []string{
+				"system:serviceaccounts",
+				"system:serviceaccounts:org-giantswarm",
+				"system:authenticated",
+			},
+			wantEmailEnriched:  true,
+			wantGroupsEnriched: true,
+		},
+		{
+			name: "K8s SA with custom email domain",
+			machineIdentity: MachineIdentityConfig{
+				Enabled:      true,
+				EmailDomain:  "k8s.example.com",
+				DeriveGroups: true,
+			},
+			providerUserInfo: &providers.UserInfo{
+				ID:    dexEncodedSub,
+				Email: "",
+			},
+			wantEmail: "grizzly-shoot@org-giantswarm.k8s.example.com",
+			wantGroups: []string{
+				"system:serviceaccounts",
+				"system:serviceaccounts:org-giantswarm",
+				"system:authenticated",
+			},
+			wantEmailEnriched:  true,
+			wantGroupsEnriched: true,
+		},
+		{
+			name: "K8s SA with email only - no groups derivation",
+			machineIdentity: MachineIdentityConfig{
+				Enabled:      true,
+				DeriveGroups: false,
+			},
+			providerUserInfo: &providers.UserInfo{
+				ID:    dexEncodedSub,
+				Email: "",
+			},
+			wantEmail:          "grizzly-shoot@org-giantswarm.serviceaccount.local",
+			wantGroups:         nil,
+			wantEmailEnriched:  true,
+			wantGroupsEnriched: false,
+		},
+		{
+			name: "K8s SA with existing email - no email override",
+			machineIdentity: MachineIdentityConfig{
+				Enabled:      true,
+				DeriveGroups: true,
+			},
+			providerUserInfo: &providers.UserInfo{
+				ID:    dexEncodedSub,
+				Email: "existing@example.com",
+			},
+			wantEmail: "existing@example.com", // Preserved
+			wantGroups: []string{
+				"system:serviceaccounts",
+				"system:serviceaccounts:org-giantswarm",
+				"system:authenticated",
+			},
+			wantEmailEnriched:  false,
+			wantGroupsEnriched: true,
+		},
+		{
+			name: "K8s SA with existing groups - no groups override",
+			machineIdentity: MachineIdentityConfig{
+				Enabled:      true,
+				DeriveGroups: true,
+			},
+			providerUserInfo: &providers.UserInfo{
+				ID:     dexEncodedSub,
+				Email:  "",
+				Groups: []string{"custom-group"},
+			},
+			wantEmail:          "grizzly-shoot@org-giantswarm.serviceaccount.local",
+			wantGroups:         []string{"custom-group"}, // Preserved
+			wantEmailEnriched:  true,
+			wantGroupsEnriched: false,
+		},
+		{
+			name: "raw K8s SA format",
+			machineIdentity: MachineIdentityConfig{
+				Enabled:      true,
+				DeriveGroups: true,
+			},
+			providerUserInfo: &providers.UserInfo{
+				ID:    "system:serviceaccount:default:my-service",
+				Email: "",
+			},
+			wantEmail: "my-service@default.serviceaccount.local",
+			wantGroups: []string{
+				"system:serviceaccounts",
+				"system:serviceaccounts:default",
+				"system:authenticated",
+			},
+			wantEmailEnriched:  true,
+			wantGroupsEnriched: true,
+		},
+		{
+			name: "non-K8s machine identity - fallback email",
+			machineIdentity: MachineIdentityConfig{
+				Enabled:      true,
+				DeriveGroups: true,
+			},
+			providerUserInfo: &providers.UserInfo{
+				ID:    "some-machine-id-123",
+				Email: "",
+			},
+			wantEmail:          "some-machine-id-123@machine.local",
+			wantGroups:         nil, // No groups derived for non-K8s
+			wantEmailEnriched:  true,
+			wantGroupsEnriched: false,
+		},
+		{
+			name: "regular user - no enrichment needed",
+			machineIdentity: MachineIdentityConfig{
+				Enabled:      true,
+				DeriveGroups: true,
+			},
+			providerUserInfo: &providers.UserInfo{
+				ID:     "user-123",
+				Email:  "user@example.com",
+				Groups: []string{"users"},
+			},
+			wantEmail:          "user@example.com",
+			wantGroups:         []string{"users"},
+			wantEmailEnriched:  false,
+			wantGroupsEnriched: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := memory.New()
+			t.Cleanup(func() { store.Stop() })
+
+			provider := mock.NewMockProvider()
+			provider.ValidateTokenFunc = func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+				// Return a copy to avoid modifying the test case
+				return &providers.UserInfo{
+					ID:     tt.providerUserInfo.ID,
+					Email:  tt.providerUserInfo.Email,
+					Groups: tt.providerUserInfo.Groups,
+				}, nil
+			}
+
+			config := &Config{
+				Issuer:          "https://auth.example.com",
+				SupportedScopes: []string{"openid"},
+				MachineIdentity: tt.machineIdentity,
+			}
+
+			srv, err := New(provider, store, store, store, config, nil)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+
+			userInfo, err := srv.ValidateToken(ctx, "test-token")
+			if err != nil {
+				t.Fatalf("ValidateToken() error = %v", err)
+			}
+
+			// Check email
+			if userInfo.Email != tt.wantEmail {
+				t.Errorf("Email = %q, want %q", userInfo.Email, tt.wantEmail)
+			}
+
+			// Check groups
+			if len(userInfo.Groups) != len(tt.wantGroups) {
+				t.Errorf("Groups count = %d, want %d", len(userInfo.Groups), len(tt.wantGroups))
+			} else {
+				for i, g := range userInfo.Groups {
+					if g != tt.wantGroups[i] {
+						t.Errorf("Groups[%d] = %q, want %q", i, g, tt.wantGroups[i])
+					}
+				}
+			}
+		})
+	}
+}
+
 // TestServer_RefreshTokenRotation tests basic refresh token rotation without reuse
 func TestServer_RefreshTokenRotation(t *testing.T) {
 	ctx := context.Background()

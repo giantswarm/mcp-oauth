@@ -263,6 +263,12 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 		return nil, err
 	}
 
+	// Enrich machine identities (K8s service accounts) if configured
+	// This generates synthetic email and derives K8s groups for SAs obtained via Dex token exchange
+	if s.Config.MachineIdentity.Enabled {
+		userInfo = s.enrichMachineIdentity(userInfo)
+	}
+
 	// Store user info
 	if err := s.tokenStore.SaveUserInfo(ctx, userInfo.ID, userInfo); err != nil {
 		s.Logger.Warn("Failed to save user info", "error", err)
@@ -1520,4 +1526,77 @@ func intersectScopes(a, b []string) []string {
 		}
 	}
 	return result
+}
+
+// enrichMachineIdentity enriches UserInfo for machine identities (Kubernetes service accounts).
+// This is called when MachineIdentity.Enabled=true and generates synthetic email addresses
+// and derives standard K8s groups for service accounts that lack these fields.
+//
+// The enrichment only occurs if:
+//   - The userInfo is missing email OR groups (or both)
+//   - The user ID (sub claim) can be parsed as a K8s service account
+//
+// For K8s service accounts with format "system:serviceaccount:namespace:name":
+//   - Email is generated as: {name}@{namespace}.{EmailDomain}
+//   - Groups are derived as: ["system:serviceaccounts", "system:serviceaccounts:{namespace}", "system:authenticated"]
+//
+// This enables seamless integration with existing code that expects email-based identities
+// when using Dex token exchange for K8s service account authentication.
+func (s *Server) enrichMachineIdentity(userInfo *providers.UserInfo) *providers.UserInfo {
+	// Only process if missing email or groups
+	needsEmail := userInfo.Email == ""
+	needsGroups := len(userInfo.Groups) == 0 && s.Config.MachineIdentity.DeriveGroups
+
+	if !needsEmail && !needsGroups {
+		// Nothing to enrich
+		return userInfo
+	}
+
+	// Try to parse as K8s service account
+	namespace, name, ok := ParseKubernetesServiceAccount(userInfo.ID)
+	if !ok {
+		// Not a K8s service account - try fallback for other machine identities
+		if needsEmail {
+			userInfo.Email = GenerateFallbackEmail(userInfo.ID)
+			s.Logger.Debug("Generated fallback email for non-K8s machine identity",
+				"user_id", userInfo.ID,
+				"email", userInfo.Email)
+		}
+		return userInfo
+	}
+
+	// Enrich K8s service account identity
+	if needsEmail {
+		domain := s.Config.MachineIdentity.EmailDomain
+		if domain == "" {
+			domain = DefaultMachineIdentityEmailDomain
+		}
+		userInfo.Email = GenerateSyntheticEmail(namespace, name, domain)
+	}
+
+	if needsGroups {
+		userInfo.Groups = DeriveKubernetesGroups(namespace)
+	}
+
+	s.Logger.Debug("Enriched K8s service account identity",
+		"user_id", userInfo.ID,
+		"namespace", namespace,
+		"name", name,
+		"email", userInfo.Email,
+		"groups", userInfo.Groups)
+
+	if s.Auditor != nil {
+		s.Auditor.LogEvent(security.Event{
+			Type:   security.EventMachineIdentityEnriched,
+			UserID: userInfo.ID,
+			Details: map[string]any{
+				"namespace":       namespace,
+				"service_account": name,
+				"email_generated": needsEmail,
+				"groups_derived":  needsGroups,
+			},
+		})
+	}
+
+	return userInfo
 }

@@ -116,4 +116,10 @@ const (
 
 	// EventProactiveRefreshFailed is logged when proactive token refresh fails
 	EventProactiveRefreshFailed = "proactive_refresh_failed"
+
+	// Machine identity events
+
+	// EventMachineIdentityEnriched is logged when a machine identity (K8s SA) is enriched
+	// with synthetic email and/or derived groups
+	EventMachineIdentityEnriched = "machine_identity_enriched"
 )
