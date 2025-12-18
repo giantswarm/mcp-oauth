@@ -107,7 +107,7 @@ Before **every** commit, you **MUST** perform these checks:
 
 2.  **Lint Code:**
     ```bash
-    make verify-all
+    make verify
     ```
     -   **CRITICAL:** Fix ALL linter errors before committing
     -   Linter failures in CI will block your PR from being merged

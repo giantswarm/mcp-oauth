@@ -44,6 +44,16 @@ func NewError(code, description string, status int) *Error {
 	}
 }
 
+// OAuthError is an alias for Error, provided for backward compatibility.
+//
+// Deprecated: Use Error instead. This alias will be removed in a future major version.
+type OAuthError = Error
+
+// NewOAuthError is an alias for NewError, provided for backward compatibility.
+//
+// Deprecated: Use NewError instead. This alias will be removed in a future major version.
+var NewOAuthError = NewError
+
 // Common OAuth errors as reusable instances
 var (
 	// ErrInvalidRequest indicates the request is malformed or missing required parameters

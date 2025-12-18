@@ -717,7 +717,10 @@ func getAndUnmarshal[J any, T any](
 	return fromJSON(&j), nil
 }
 
-// safeTruncate safely truncates a string to n characters
+// safeTruncate safely truncates a string to n characters.
+// Note: This is a local copy of helpers.SafeTruncate to avoid import cycles
+// and keep the valkey package self-contained. The function is simple enough
+// that duplication is preferable to adding an internal package dependency.
 func safeTruncate(s string, n int) string {
 	if len(s) <= n {
 		return s
