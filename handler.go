@@ -1051,92 +1051,92 @@ func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 		return
 	}
 
-	// SECURITY: Apply rate limiting to discovery endpoints to prevent reconnaissance and DoS
-	// Discovery endpoints are unauthenticated and publicly accessible, making them potential
-	// vectors for automated scanning and resource exhaustion attacks
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
-	if h.server.RateLimiter != nil {
-		if !h.server.RateLimiter.Allow(clientIP) {
-			h.logger.Warn("Rate limit exceeded on discovery endpoint",
-				"ip", clientIP,
-				"endpoint", "authorization_server_metadata")
-
-			if h.server.Instrumentation != nil {
-				h.server.Instrumentation.Metrics().RecordRateLimitExceeded(r.Context(), "ip")
-			}
-
-			if h.server.Auditor != nil {
-				h.server.Auditor.LogEvent(security.Event{
-					Type:      security.EventRateLimitExceeded,
-					IPAddress: clientIP,
-					Details: map[string]any{
-						"endpoint": r.URL.Path,
-					},
-				})
-			}
-
-			w.Header().Set("Retry-After", "60")
-			http.Error(w, "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
-			return
-		}
+	if h.checkDiscoveryRateLimit(w, r, clientIP) {
+		return
 	}
 
-	// Set CORS headers for browser-based clients
 	h.setCORSHeaders(w, r)
-
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
-	metadata := map[string]any{
-		"issuer":                           h.server.Config.Issuer,
-		"authorization_endpoint":           h.server.Config.AuthorizationEndpoint(),
-		"token_endpoint":                   h.server.Config.TokenEndpoint(),
-		"response_types_supported":         []string{"code"},
-		"grant_types_supported":            []string{"authorization_code", "refresh_token"},
-		"code_challenge_methods_supported": []string{PKCEMethodS256},
 
-		// RFC 8414: Token endpoint authentication methods
-		// These methods are always supported for the authorization_code flow
+	metadata := h.buildAuthServerMetadata()
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(metadata)
+}
+
+// checkDiscoveryRateLimit checks rate limit for discovery endpoints.
+// Returns true if rate limit exceeded and response was written.
+func (h *Handler) checkDiscoveryRateLimit(w http.ResponseWriter, r *http.Request, clientIP string) bool {
+	if h.server.RateLimiter == nil || h.server.RateLimiter.Allow(clientIP) {
+		return false
+	}
+
+	h.logger.Warn("Rate limit exceeded on discovery endpoint",
+		"ip", clientIP,
+		"endpoint", "authorization_server_metadata")
+
+	if h.server.Instrumentation != nil {
+		h.server.Instrumentation.Metrics().RecordRateLimitExceeded(r.Context(), "ip")
+	}
+
+	if h.server.Auditor != nil {
+		h.server.Auditor.LogEvent(security.Event{
+			Type:      security.EventRateLimitExceeded,
+			IPAddress: clientIP,
+			Details:   map[string]any{"endpoint": r.URL.Path},
+		})
+	}
+
+	w.Header().Set("Retry-After", "60")
+	http.Error(w, "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
+	return true
+}
+
+// buildAuthServerMetadata builds the RFC 8414 authorization server metadata.
+func (h *Handler) buildAuthServerMetadata() map[string]any {
+	metadata := map[string]any{
+		"issuer":                                h.server.Config.Issuer,
+		"authorization_endpoint":                h.server.Config.AuthorizationEndpoint(),
+		"token_endpoint":                        h.server.Config.TokenEndpoint(),
+		"response_types_supported":              []string{"code"},
+		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
+		"code_challenge_methods_supported":      []string{PKCEMethodS256},
 		"token_endpoint_auth_methods_supported": SupportedTokenAuthMethods,
 	}
 
-	// RFC 8414: scopes_supported is OPTIONAL but RECOMMENDED
-	// Only include if scopes are configured to avoid empty arrays
+	h.addOptionalMetadata(metadata)
+	return metadata
+}
+
+// addOptionalMetadata adds optional endpoints based on configuration.
+func (h *Handler) addOptionalMetadata(metadata map[string]any) {
 	if len(h.server.Config.SupportedScopes) > 0 {
 		metadata["scopes_supported"] = h.server.Config.SupportedScopes
 	}
 
-	// Only advertise registration_endpoint if client registration is actually available
-	// RFC 8414: registration_endpoint is OPTIONAL and should only be included if supported
-	// Registration is available when:
-	// - AllowPublicClientRegistration=true (open registration), OR
-	// - RegistrationAccessToken is set (token-based registration), OR
-	// - TrustedPublicRegistrationSchemes is configured (Cursor/VSCode can register via trusted URI schemes)
-	if h.server.Config.AllowPublicClientRegistration ||
-		h.server.Config.RegistrationAccessToken != "" ||
-		len(h.server.Config.TrustedPublicRegistrationSchemes) > 0 {
+	if h.isRegistrationAvailable() {
 		metadata["registration_endpoint"] = h.server.Config.RegistrationEndpoint()
 	}
 
-	// RFC 7009: Only advertise revocation_endpoint if the feature is enabled and implemented
-	// This prevents advertising capabilities that don't exist (security issue)
 	if h.server.Config.EnableRevocationEndpoint {
 		metadata["revocation_endpoint"] = h.server.Config.RevocationEndpoint()
 	}
 
-	// RFC 7662: Only advertise introspection_endpoint if the feature is enabled and implemented
-	// This prevents advertising capabilities that don't exist (security issue)
 	if h.server.Config.EnableIntrospectionEndpoint {
 		metadata["introspection_endpoint"] = h.server.Config.IntrospectionEndpoint()
 	}
 
-	// MCP 2025-11-25: Advertise Client ID Metadata Documents support
-	// Per draft-ietf-oauth-client-id-metadata-document-00
-	// Only advertise if actually enabled to avoid false capabilities
 	if h.server.Config.EnableClientIDMetadataDocuments {
 		metadata["client_id_metadata_document_supported"] = true
 	}
+}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(metadata)
+// isRegistrationAvailable checks if client registration is available.
+func (h *Handler) isRegistrationAvailable() bool {
+	return h.server.Config.AllowPublicClientRegistration ||
+		h.server.Config.RegistrationAccessToken != "" ||
+		len(h.server.Config.TrustedPublicRegistrationSchemes) > 0
 }
 
 // ServeOpenIDConfiguration handles OpenID Connect Discovery 1.0 requests
@@ -1757,9 +1757,6 @@ func (h *Handler) parseBasicAuth(r *http.Request) (username, password string) {
 // authenticateClient validates client credentials from either Basic Auth or form parameters
 // Returns the validated client or an error with the OAuth error code
 func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string) (*storage.Client, error) {
-	ctx := r.Context()
-
-	// Get client credentials from Authorization header (if present)
 	authClientID, authClientSecret := h.parseBasicAuth(r)
 	if authClientID != "" {
 		clientID = authClientID
@@ -1769,37 +1766,44 @@ func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string)
 		return nil, ErrInvalidRequest("client_id is required")
 	}
 
-	// Fetch client
-	client, err := h.server.GetClient(ctx, clientID)
+	client, err := h.server.GetClient(r.Context(), clientID)
 	if err != nil {
-		h.logger.Warn("Unknown client", "client_id", clientID, "ip", clientIP)
-		if h.server.Auditor != nil {
-			h.server.Auditor.LogAuthFailure("", clientID, clientIP, ErrorCodeInvalidClient)
-		}
+		h.logAuthFailure(clientID, clientIP, ErrorCodeInvalidClient, "Unknown client")
 		return nil, ErrInvalidClient("Client authentication failed")
 	}
 
-	// CRITICAL SECURITY: Confidential clients MUST authenticate
-	if client.ClientType == ClientTypeConfidential {
-		if authClientSecret == "" {
-			h.logger.Warn("Confidential client missing credentials", "client_id", clientID, "ip", clientIP)
-			if h.server.Auditor != nil {
-				h.server.Auditor.LogAuthFailure("", clientID, clientIP, "confidential_client_auth_required")
-			}
-			return nil, ErrInvalidClient("Client authentication required")
-		}
-
-		// Validate client credentials
-		if err := h.server.ValidateClientCredentials(ctx, clientID, authClientSecret); err != nil {
-			h.logger.Warn("Client authentication failed", "client_id", clientID, "ip", clientIP, "error", err)
-			if h.server.Auditor != nil {
-				h.server.Auditor.LogAuthFailure("", clientID, clientIP, "client_authentication_failed")
-			}
-			return nil, ErrInvalidClient("Client authentication failed")
-		}
+	if err := h.validateConfidentialClient(r.Context(), client, authClientSecret, clientIP); err != nil {
+		return nil, err
 	}
 
 	return client, nil
+}
+
+// validateConfidentialClient validates credentials for confidential clients.
+func (h *Handler) validateConfidentialClient(ctx context.Context, client *storage.Client, secret, clientIP string) error {
+	if client.ClientType != ClientTypeConfidential {
+		return nil
+	}
+
+	if secret == "" {
+		h.logAuthFailure(client.ClientID, clientIP, "confidential_client_auth_required", "Confidential client missing credentials")
+		return ErrInvalidClient("Client authentication required")
+	}
+
+	if err := h.server.ValidateClientCredentials(ctx, client.ClientID, secret); err != nil {
+		h.logAuthFailure(client.ClientID, clientIP, "client_authentication_failed", "Client authentication failed")
+		return ErrInvalidClient("Client authentication failed")
+	}
+
+	return nil
+}
+
+// logAuthFailure logs authentication failures with optional auditing.
+func (h *Handler) logAuthFailure(clientID, clientIP, reason, message string) {
+	h.logger.Warn(message, "client_id", clientID, "ip", clientIP)
+	if h.server.Auditor != nil {
+		h.server.Auditor.LogAuthFailure("", clientID, clientIP, reason)
+	}
 }
 
 func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *oauth2.Token, scope string) {
@@ -2003,19 +2007,14 @@ func (h *Handler) formatWWWAuthenticate(scope, errCode, errorDesc string) string
 // This allows resource servers to validate access tokens
 // Security: Requires client authentication to prevent token scanning attacks
 func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Set CORS headers for browser-based clients
 	h.setCORSHeaders(w, r)
-
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
-	// Parse form data
 	if err := r.ParseForm(); err != nil {
 		h.writeError(w, ErrorCodeInvalidRequest, "Failed to parse request", http.StatusBadRequest)
 		return
@@ -2027,75 +2026,82 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// SECURITY: Require client authentication to prevent token scanning attacks
-	// Per RFC 7662 Section 2.1: the authorization server MUST authenticate the client
-	authClientID, authClientSecret := h.parseBasicAuth(r)
-	var clientID string
-	if authClientID != "" {
-		clientID = authClientID
-		// Validate client credentials
-		if err := h.server.ValidateClientCredentials(ctx, clientID, authClientSecret); err != nil {
-			h.logger.Warn("Client authentication failed for introspection", "client_id", clientID, "ip", clientIP)
-			if h.server.Auditor != nil {
-				h.server.Auditor.LogAuthFailure("", clientID, clientIP, "introspection_auth_failed")
-			}
-			h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
-			return
-		}
-	} else {
-		// Try form parameter as fallback (but still require authentication)
-		clientID = r.FormValue("client_id")
-		if clientID == "" {
-			// No client authentication provided - reject per RFC 7662 security considerations
-			h.logger.Warn("Token introspection rejected: missing client authentication", "ip", clientIP)
-			if h.server.Auditor != nil {
-				h.server.Auditor.LogAuthFailure("", "", clientIP, "introspection_missing_auth")
-			}
-			h.writeError(w, ErrorCodeInvalidClient, "Client authentication required for token introspection", http.StatusUnauthorized)
-			return
-		}
-		// Client ID provided but no credentials - also reject
-		h.logger.Warn("Token introspection rejected: client_id without credentials", "client_id", clientID, "ip", clientIP)
-		if h.server.Auditor != nil {
-			h.server.Auditor.LogAuthFailure("", clientID, clientIP, "introspection_missing_credentials")
-		}
-		h.writeError(w, ErrorCodeInvalidClient, "Client authentication required for token introspection", http.StatusUnauthorized)
+	clientID, err := h.authenticateIntrospectionClient(r, clientIP)
+	if err != nil {
+		h.writeError(w, ErrorCodeInvalidClient, err.Error(), http.StatusUnauthorized)
 		return
 	}
 
-	// Validate the token
-	userInfo, err := h.server.ValidateToken(r.Context(), token)
+	// Validate the token and build response
+	response := h.buildIntrospectionResponse(r.Context(), token, clientID, clientIP)
 
-	// Build introspection response per RFC 7662
-	response := map[string]interface{}{
-		"active": false,
-	}
-
-	if err == nil && userInfo != nil {
-		// Token is valid and active
-		response["active"] = true
-		response["sub"] = userInfo.ID
-		response["email"] = userInfo.Email
-		response["email_verified"] = userInfo.EmailVerified
-
-		// Optional claims
-		if userInfo.Name != "" {
-			response["name"] = userInfo.Name
-		}
-		if clientID != "" {
-			response["client_id"] = clientID
-		}
-		response["token_type"] = "Bearer"
-	} else {
-		// Token is invalid or expired
-		h.logger.Debug("Token introspection failed", "error", err, "ip", clientIP)
-	}
-
-	// Always return 200 OK per RFC 7662
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(response)
+}
+
+// authenticateIntrospectionClient validates client credentials for token introspection.
+// Returns the client ID on success, or an error if authentication fails.
+func (h *Handler) authenticateIntrospectionClient(r *http.Request, clientIP string) (string, error) {
+	ctx := r.Context()
+	authClientID, authClientSecret := h.parseBasicAuth(r)
+
+	if authClientID != "" {
+		if err := h.server.ValidateClientCredentials(ctx, authClientID, authClientSecret); err != nil {
+			h.logger.Warn("Client authentication failed for introspection", "client_id", authClientID, "ip", clientIP)
+			if h.server.Auditor != nil {
+				h.server.Auditor.LogAuthFailure("", authClientID, clientIP, "introspection_auth_failed")
+			}
+			return "", fmt.Errorf("client authentication failed")
+		}
+		return authClientID, nil
+	}
+
+	// No Basic Auth - check for client_id in form (but we still reject without credentials)
+	clientID := r.FormValue("client_id")
+	if clientID == "" {
+		h.logger.Warn("Token introspection rejected: missing client authentication", "ip", clientIP)
+		if h.server.Auditor != nil {
+			h.server.Auditor.LogAuthFailure("", "", clientIP, "introspection_missing_auth")
+		}
+		return "", fmt.Errorf("client authentication required for token introspection")
+	}
+
+	h.logger.Warn("Token introspection rejected: client_id without credentials", "client_id", clientID, "ip", clientIP)
+	if h.server.Auditor != nil {
+		h.server.Auditor.LogAuthFailure("", clientID, clientIP, "introspection_missing_credentials")
+	}
+	return "", fmt.Errorf("client authentication required for token introspection")
+}
+
+// buildIntrospectionResponse creates the RFC 7662 introspection response.
+func (h *Handler) buildIntrospectionResponse(ctx context.Context, token, clientID, clientIP string) map[string]interface{} {
+	userInfo, err := h.server.ValidateToken(ctx, token)
+
+	response := map[string]interface{}{
+		"active": false,
+	}
+
+	if err != nil || userInfo == nil {
+		h.logger.Debug("Token introspection failed", "error", err, "ip", clientIP)
+		return response
+	}
+
+	response["active"] = true
+	response["sub"] = userInfo.ID
+	response["email"] = userInfo.Email
+	response["email_verified"] = userInfo.EmailVerified
+	response["token_type"] = "Bearer"
+
+	if userInfo.Name != "" {
+		response["name"] = userInfo.Name
+	}
+	if clientID != "" {
+		response["client_id"] = clientID
+	}
+
+	return response
 }
 
 // Context key for user info
@@ -2249,42 +2255,47 @@ func (h *Handler) getRequiredScopes(r *http.Request) []string {
 func (h *Handler) getMethodScopesForPath(normalizedPath, method string) []string {
 	// First, try exact path match
 	if methodMap, ok := h.server.Config.EndpointMethodScopeRequirements[normalizedPath]; ok {
-		// Try exact method match
-		if scopes, ok := methodMap[method]; ok {
-			return scopes
-		}
-		// Try wildcard method fallback
-		if scopes, ok := methodMap["*"]; ok {
+		if scopes := getScopesFromMethodMap(methodMap, method); scopes != nil {
 			return scopes
 		}
 	}
 
 	// Then try prefix matches (patterns ending with /*)
-	// Use longest-prefix-match to ensure most specific pattern wins
+	matchedMethodMap := h.findLongestPrefixMethodMap(normalizedPath)
+	return getScopesFromMethodMap(matchedMethodMap, method)
+}
+
+// findLongestPrefixMethodMap finds the method map for the longest matching prefix pattern.
+func (h *Handler) findLongestPrefixMethodMap(normalizedPath string) map[string][]string {
 	var longestPrefix string
 	var matchedMethodMap map[string][]string
 
 	for pattern, methodMap := range h.server.Config.EndpointMethodScopeRequirements {
-		if strings.HasSuffix(pattern, "/*") {
-			prefix := strings.TrimSuffix(pattern, "*")
-			if strings.HasPrefix(normalizedPath, prefix) && len(prefix) > len(longestPrefix) {
-				longestPrefix = prefix
-				matchedMethodMap = methodMap
-			}
+		if !strings.HasSuffix(pattern, "/*") {
+			continue
+		}
+		prefix := strings.TrimSuffix(pattern, "*")
+		if strings.HasPrefix(normalizedPath, prefix) && len(prefix) > len(longestPrefix) {
+			longestPrefix = prefix
+			matchedMethodMap = methodMap
 		}
 	}
 
-	if matchedMethodMap != nil {
-		// Try exact method match
-		if scopes, ok := matchedMethodMap[method]; ok {
-			return scopes
-		}
-		// Try wildcard method fallback
-		if scopes, ok := matchedMethodMap["*"]; ok {
-			return scopes
-		}
-	}
+	return matchedMethodMap
+}
 
+// getScopesFromMethodMap gets scopes for a method from a method map.
+// Tries exact method match first, then wildcard fallback.
+func getScopesFromMethodMap(methodMap map[string][]string, method string) []string {
+	if methodMap == nil {
+		return nil
+	}
+	if scopes, ok := methodMap[method]; ok {
+		return scopes
+	}
+	if scopes, ok := methodMap["*"]; ok {
+		return scopes
+	}
 	return nil
 }
 

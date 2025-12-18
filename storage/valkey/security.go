@@ -189,71 +189,19 @@ func (s *Store) GetRefreshTokenFamily(ctx context.Context, refreshToken string) 
 // RevokeRefreshTokenFamily revokes all tokens in a family (for reuse detection)
 // This is called when token reuse is detected (OAuth 2.1 security requirement)
 func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) error {
-	familySetKey := s.familyKey(familyID)
-
-	// Get all tokens in the family
-	tokens, err := s.client.Do(ctx, s.client.B().Smembers().Key(familySetKey).Build()).AsStrSlice()
+	tokens, err := s.getFamilyTokens(ctx, familyID)
 	if err != nil {
-		if isNilError(err) {
-			// Family doesn't exist or is empty
-			return nil
-		}
-		return fmt.Errorf("failed to get family members: %w", err)
+		return err
+	}
+	if len(tokens) == 0 {
+		return nil
 	}
 
-	revokedCount := 0
 	now := time.Now()
+	revokedCount := 0
 
 	for _, token := range tokens {
-		tokenPrefix := safeTruncate(token, tokenIDLogLength)
-
-		// Update family metadata to mark as revoked
-		metaKey := s.refreshTokenMetaKey(token)
-
-		data, err := s.client.Do(ctx, s.client.B().Get().Key(metaKey).Build()).ToString()
-		if err == nil {
-			var j refreshTokenFamilyJSON
-			if err := json.Unmarshal([]byte(data), &j); err == nil {
-				j.Revoked = true
-				j.RevokedAt = now.Unix()
-
-				updatedData, _ := json.Marshal(&j)
-				// Keep metadata for forensics with retention TTL
-				retentionTTL := time.Duration(s.revokedFamilyRetentionDays) * 24 * time.Hour
-				if err := s.client.Do(ctx,
-					s.client.B().Set().Key(metaKey).Value(string(updatedData)).Ex(retentionTTL).Build(),
-				).Error(); err != nil {
-					s.logger.Debug("Failed to update family metadata during revocation",
-						"token_prefix", tokenPrefix,
-						"error", err)
-				}
-			}
-		}
-
-		// Delete the refresh token itself
-		refreshKey := s.refreshTokenKey(token)
-		if err := s.client.Do(ctx, s.client.B().Del().Key(refreshKey).Build()).Error(); err != nil {
-			s.logger.Debug("Failed to delete refresh token during family revocation",
-				"token_prefix", tokenPrefix,
-				"error", err)
-		}
-
-		// Delete the associated provider token
-		tokenKey := s.tokenKey(token)
-		if err := s.client.Do(ctx, s.client.B().Del().Key(tokenKey).Build()).Error(); err != nil {
-			s.logger.Debug("Failed to delete provider token during family revocation",
-				"token_prefix", tokenPrefix,
-				"error", err)
-		}
-
-		// Delete token metadata
-		tokenMetaKey := s.tokenMetaKey(token)
-		if err := s.client.Do(ctx, s.client.B().Del().Key(tokenMetaKey).Build()).Error(); err != nil {
-			s.logger.Debug("Failed to delete token metadata during family revocation",
-				"token_prefix", tokenPrefix,
-				"error", err)
-		}
-
+		s.revokeTokenInFamily(ctx, token, now)
 		revokedCount++
 	}
 
@@ -264,6 +212,72 @@ func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) e
 	}
 
 	return nil
+}
+
+// getFamilyTokens retrieves all tokens in a family.
+func (s *Store) getFamilyTokens(ctx context.Context, familyID string) ([]string, error) {
+	familySetKey := s.familyKey(familyID)
+
+	tokens, err := s.client.Do(ctx, s.client.B().Smembers().Key(familySetKey).Build()).AsStrSlice()
+	if err != nil {
+		if isNilError(err) {
+			return nil, nil // Family doesn't exist or is empty
+		}
+		return nil, fmt.Errorf("failed to get family members: %w", err)
+	}
+	return tokens, nil
+}
+
+// revokeTokenInFamily revokes a single token within a family.
+func (s *Store) revokeTokenInFamily(ctx context.Context, token string, now time.Time) {
+	tokenPrefix := safeTruncate(token, tokenIDLogLength)
+
+	s.markFamilyMetadataRevoked(ctx, token, now, tokenPrefix)
+	s.deleteTokenKeys(ctx, token, tokenPrefix)
+}
+
+// markFamilyMetadataRevoked updates family metadata to mark as revoked.
+func (s *Store) markFamilyMetadataRevoked(ctx context.Context, token string, now time.Time, tokenPrefix string) {
+	metaKey := s.refreshTokenMetaKey(token)
+
+	data, err := s.client.Do(ctx, s.client.B().Get().Key(metaKey).Build()).ToString()
+	if err != nil {
+		return
+	}
+
+	var j refreshTokenFamilyJSON
+	if err := json.Unmarshal([]byte(data), &j); err != nil {
+		return
+	}
+
+	j.Revoked = true
+	j.RevokedAt = now.Unix()
+
+	updatedData, _ := json.Marshal(&j)
+	retentionTTL := time.Duration(s.revokedFamilyRetentionDays) * 24 * time.Hour
+	if err := s.client.Do(ctx,
+		s.client.B().Set().Key(metaKey).Value(string(updatedData)).Ex(retentionTTL).Build(),
+	).Error(); err != nil {
+		s.logger.Debug("Failed to update family metadata during revocation",
+			"token_prefix", tokenPrefix,
+			"error", err)
+	}
+}
+
+// deleteTokenKeys deletes all keys associated with a token.
+func (s *Store) deleteTokenKeys(ctx context.Context, token, tokenPrefix string) {
+	s.deleteKey(ctx, s.refreshTokenKey(token), "refresh token", tokenPrefix)
+	s.deleteKey(ctx, s.tokenKey(token), "provider token", tokenPrefix)
+	s.deleteKey(ctx, s.tokenMetaKey(token), "token metadata", tokenPrefix)
+}
+
+// deleteKey deletes a single key and logs any errors.
+func (s *Store) deleteKey(ctx context.Context, key, description, tokenPrefix string) {
+	if err := s.client.Do(ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
+		s.logger.Debug("Failed to delete "+description+" during family revocation",
+			"token_prefix", tokenPrefix,
+			"error", err)
+	}
 }
 
 // ============================================================

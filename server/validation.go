@@ -417,7 +417,6 @@ func isLoopbackAddress(hostname string) bool {
 // validateRedirectURISecurityEnhanced performs comprehensive security validation on redirect URIs
 // per OAuth 2.0 Security Best Current Practice (BCP) with enhanced custom scheme support
 func validateRedirectURISecurityEnhanced(redirectURI, serverIssuer string, allowedCustomSchemes []string) error {
-	// Parse the redirect URI
 	parsed, err := url.Parse(redirectURI)
 	if err != nil {
 		return fmt.Errorf("invalid redirect_uri format: %w", err)
@@ -430,38 +429,47 @@ func validateRedirectURISecurityEnhanced(redirectURI, serverIssuer string, allow
 
 	scheme := strings.ToLower(parsed.Scheme)
 
-	// Check if it's an HTTP(S) scheme
-	isHTTP := false
+	if isHTTPScheme(scheme) {
+		return validateHTTPRedirectURI(parsed, scheme, serverIssuer)
+	}
+	return validateCustomScheme(scheme, allowedCustomSchemes)
+}
+
+// isHTTPScheme checks if the scheme is HTTP or HTTPS.
+func isHTTPScheme(scheme string) bool {
 	for _, httpScheme := range AllowedHTTPSchemes {
 		if scheme == httpScheme {
-			isHTTP = true
-			break
+			return true
 		}
 	}
+	return false
+}
 
-	if isHTTP {
-		// HTTP/HTTPS redirect URI validation
-		hostname := strings.ToLower(parsed.Hostname())
+// validateHTTPRedirectURI validates HTTP/HTTPS redirect URIs.
+func validateHTTPRedirectURI(parsed *url.URL, scheme, serverIssuer string) error {
+	hostname := strings.ToLower(parsed.Hostname())
 
-		// Check if it's a loopback address (allowed for development)
-		isLoopback := isLoopbackAddress(hostname)
-
-		// For production (non-loopback), require HTTPS
-		if !isLoopback && scheme != SchemeHTTPS {
-			// Check if server itself is HTTPS
-			if serverParsed, err := url.Parse(serverIssuer); err == nil {
-				if serverParsed.Scheme == SchemeHTTPS {
-					return fmt.Errorf("redirect_uri must use HTTPS in production (got %s://)", scheme)
-				}
-			}
-		}
-	} else {
-		// Custom scheme (for native/mobile apps)
-		if err := validateCustomScheme(scheme, allowedCustomSchemes); err != nil {
-			return err
-		}
+	if isLoopbackAddress(hostname) {
+		return nil // Loopback is allowed for development
 	}
 
+	if scheme == SchemeHTTPS {
+		return nil // HTTPS is always allowed
+	}
+
+	// For non-loopback HTTP, check if server itself is HTTPS
+	return validateHTTPAgainstServerIssuer(scheme, serverIssuer)
+}
+
+// validateHTTPAgainstServerIssuer checks if HTTP is allowed based on server issuer.
+func validateHTTPAgainstServerIssuer(scheme, serverIssuer string) error {
+	serverParsed, err := url.Parse(serverIssuer)
+	if err != nil {
+		return nil // Can't parse server issuer, allow
+	}
+	if serverParsed.Scheme == SchemeHTTPS {
+		return fmt.Errorf("redirect_uri must use HTTPS in production (got %s://)", scheme)
+	}
 	return nil
 }
 

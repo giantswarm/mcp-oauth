@@ -264,39 +264,65 @@ func validateClientMetadataFetchTimeout(config *Config, logger *slog.Logger) {
 // EndpointMethodScopeRequirements configuration for security and correctness.
 // It validates scope format per RFC 6749 Section 3.3.
 func validateEndpointScopeRequirements(config *Config, logger *slog.Logger) {
-	// Validate EndpointScopeRequirements
-	for path, scopes := range config.EndpointScopeRequirements {
-		for _, scope := range scopes {
-			if err := validateScopeFormat(scope); err != nil {
-				logger.Warn("Invalid scope format in EndpointScopeRequirements",
-					"path", path,
-					"scope", scope,
-					"error", err,
-					"rfc", "RFC 6749 Section 3.3")
-			}
+	validatePathScopeRequirements(config.EndpointScopeRequirements, logger)
+	validateMethodScopeRequirements(config.EndpointMethodScopeRequirements, logger)
+}
+
+// validatePathScopeRequirements validates EndpointScopeRequirements.
+func validatePathScopeRequirements(requirements map[string][]string, logger *slog.Logger) {
+	for path, scopes := range requirements {
+		validateScopesForPath(path, scopes, logger)
+	}
+}
+
+// validateScopesForPath validates scopes for a single path in EndpointScopeRequirements.
+func validateScopesForPath(path string, scopes []string, logger *slog.Logger) {
+	for _, scope := range scopes {
+		if err := validateScopeFormat(scope); err != nil {
+			logger.Warn("Invalid scope format in EndpointScopeRequirements",
+				"path", path,
+				"scope", scope,
+				"error", err,
+				"rfc", "RFC 6749 Section 3.3")
 		}
 	}
+}
 
-	// Validate EndpointMethodScopeRequirements
-	for path, methodMap := range config.EndpointMethodScopeRequirements {
-		for method, scopes := range methodMap {
-			// Validate method is uppercase (standard HTTP method format)
-			if method != "*" && method != strings.ToUpper(method) {
-				logger.Warn("HTTP method should be uppercase in EndpointMethodScopeRequirements",
-					"path", path,
-					"method", method,
-					"recommendation", "Use uppercase method names (GET, POST, DELETE, etc.)")
-			}
-			for _, scope := range scopes {
-				if err := validateScopeFormat(scope); err != nil {
-					logger.Warn("Invalid scope format in EndpointMethodScopeRequirements",
-						"path", path,
-						"method", method,
-						"scope", scope,
-						"error", err,
-						"rfc", "RFC 6749 Section 3.3")
-				}
-			}
+// validateMethodScopeRequirements validates EndpointMethodScopeRequirements.
+func validateMethodScopeRequirements(requirements map[string]map[string][]string, logger *slog.Logger) {
+	for path, methodMap := range requirements {
+		validateMethodMapForPath(path, methodMap, logger)
+	}
+}
+
+// validateMethodMapForPath validates method-scope mappings for a single path.
+func validateMethodMapForPath(path string, methodMap map[string][]string, logger *slog.Logger) {
+	for method, scopes := range methodMap {
+		validateHTTPMethodFormat(path, method, logger)
+		validateScopesForPathMethod(path, method, scopes, logger)
+	}
+}
+
+// validateHTTPMethodFormat warns if HTTP method is not uppercase.
+func validateHTTPMethodFormat(path, method string, logger *slog.Logger) {
+	if method != "*" && method != strings.ToUpper(method) {
+		logger.Warn("HTTP method should be uppercase in EndpointMethodScopeRequirements",
+			"path", path,
+			"method", method,
+			"recommendation", "Use uppercase method names (GET, POST, DELETE, etc.)")
+	}
+}
+
+// validateScopesForPathMethod validates scopes for a path+method combination.
+func validateScopesForPathMethod(path, method string, scopes []string, logger *slog.Logger) {
+	for _, scope := range scopes {
+		if err := validateScopeFormat(scope); err != nil {
+			logger.Warn("Invalid scope format in EndpointMethodScopeRequirements",
+				"path", path,
+				"method", method,
+				"scope", scope,
+				"error", err,
+				"rfc", "RFC 6749 Section 3.3")
 		}
 	}
 }

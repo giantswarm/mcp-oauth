@@ -194,90 +194,102 @@ func NewClientStore() *ClientStore {
 		CallCounts:      make(map[string]int),
 	}
 
-	// Set default implementations
-	m.SaveClientFunc = func(_ context.Context, client *storage.Client) error {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		m.clients[client.ClientID] = client
-		return nil
-	}
-
-	m.GetClientFunc = func(_ context.Context, clientID string) (*storage.Client, error) {
-		m.mu.RLock()
-		defer m.mu.RUnlock()
-		client, ok := m.clients[clientID]
-		if !ok {
-			return nil, storage.ErrClientNotFound
-		}
-		return client, nil
-	}
-
-	m.ValidateSecretFunc = func(_ context.Context, clientID, clientSecret string) error {
-		// SECURITY: Always perform constant-time operations to prevent timing attacks
-		// that could reveal whether a client ID exists or not
-
-		// Pre-computed dummy hash for non-existent clients (bcrypt hash of "test")
-		// This ensures we always perform a bcrypt comparison even if client doesn't exist
-		dummyHash := "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
-
-		m.mu.RLock()
-		client, ok := m.clients[clientID]
-		m.mu.RUnlock()
-
-		// Determine which hash to use (real or dummy)
-		hashToCompare := dummyHash
-		isPublicClient := false
-
-		if ok {
-			if client.ClientType == "public" {
-				isPublicClient = true
-			} else if client.ClientSecretHash != "" {
-				hashToCompare = client.ClientSecretHash
-			}
-		}
-
-		// ALWAYS perform bcrypt comparison (constant-time by design)
-		// This prevents timing attacks based on whether we skip the comparison
-		bcryptErr := bcrypt.CompareHashAndPassword([]byte(hashToCompare), []byte(clientSecret))
-
-		// For public clients, authentication always succeeds
-		if isPublicClient && ok {
-			return nil
-		}
-
-		// If client lookup failed, return error (but only after bcrypt comparison)
-		if !ok {
-			return fmt.Errorf("invalid client credentials")
-		}
-
-		// If bcrypt comparison failed, return error
-		if bcryptErr != nil {
-			return fmt.Errorf("invalid client credentials")
-		}
-
-		return nil
-	}
-
-	m.ListClientsFunc = func(_ context.Context) ([]*storage.Client, error) {
-		m.mu.RLock()
-		defer m.mu.RUnlock()
-		clients := make([]*storage.Client, 0, len(m.clients))
-		for _, client := range m.clients {
-			clients = append(clients, client)
-		}
-		return clients, nil
-	}
-
-	m.CheckIPLimitFunc = func(_ context.Context, ip string, maxClientsPerIP int) error {
-		m.mu.RLock()
-		defer m.mu.RUnlock()
-		if count := m.ipRegistrations[ip]; count >= maxClientsPerIP {
-			return fmt.Errorf("IP registration limit exceeded")
-		}
-		return nil
-	}
-
+	m.initDefaultFuncs()
 	return m
+}
+
+// initDefaultFuncs initializes the default function implementations for ClientStore.
+func (m *ClientStore) initDefaultFuncs() {
+	m.SaveClientFunc = m.defaultSaveClient
+	m.GetClientFunc = m.defaultGetClient
+	m.ValidateSecretFunc = m.defaultValidateSecret
+	m.ListClientsFunc = m.defaultListClients
+	m.CheckIPLimitFunc = m.defaultCheckIPLimit
+}
+
+func (m *ClientStore) defaultSaveClient(_ context.Context, client *storage.Client) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.clients[client.ClientID] = client
+	return nil
+}
+
+func (m *ClientStore) defaultGetClient(_ context.Context, clientID string) (*storage.Client, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	client, ok := m.clients[clientID]
+	if !ok {
+		return nil, storage.ErrClientNotFound
+	}
+	return client, nil
+}
+
+// dummyHash is a pre-computed bcrypt hash for non-existent clients (bcrypt hash of "test").
+// This ensures we always perform a bcrypt comparison even if client doesn't exist.
+const dummyHash = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
+
+func (m *ClientStore) defaultValidateSecret(_ context.Context, clientID, clientSecret string) error {
+	// SECURITY: Always perform constant-time operations to prevent timing attacks
+	// that could reveal whether a client ID exists or not
+	m.mu.RLock()
+	client, ok := m.clients[clientID]
+	m.mu.RUnlock()
+
+	hashToCompare, isPublicClient := m.getHashAndClientType(client, ok)
+
+	// ALWAYS perform bcrypt comparison (constant-time by design)
+	// This prevents timing attacks based on whether we skip the comparison
+	bcryptErr := bcrypt.CompareHashAndPassword([]byte(hashToCompare), []byte(clientSecret))
+
+	return m.evaluateValidation(ok, isPublicClient, bcryptErr)
+}
+
+func (m *ClientStore) getHashAndClientType(client *storage.Client, found bool) (string, bool) {
+	if !found {
+		return dummyHash, false
+	}
+	if client.ClientType == "public" {
+		return dummyHash, true
+	}
+	if client.ClientSecretHash != "" {
+		return client.ClientSecretHash, false
+	}
+	return dummyHash, false
+}
+
+func (m *ClientStore) evaluateValidation(clientFound, isPublicClient bool, bcryptErr error) error {
+	// For public clients, authentication always succeeds
+	if isPublicClient && clientFound {
+		return nil
+	}
+	// If client lookup failed, return error (but only after bcrypt comparison)
+	if !clientFound {
+		return fmt.Errorf("invalid client credentials")
+	}
+	// If bcrypt comparison failed, return error
+	if bcryptErr != nil {
+		return fmt.Errorf("invalid client credentials")
+	}
+	return nil
+}
+
+func (m *ClientStore) defaultListClients(_ context.Context) ([]*storage.Client, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	clients := make([]*storage.Client, 0, len(m.clients))
+	for _, client := range m.clients {
+		clients = append(clients, client)
+	}
+	return clients, nil
+}
+
+func (m *ClientStore) defaultCheckIPLimit(_ context.Context, ip string, maxClientsPerIP int) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if count := m.ipRegistrations[ip]; count >= maxClientsPerIP {
+		return fmt.Errorf("IP registration limit exceeded")
+	}
+	return nil
 }
 
 // SaveClient saves a registered client
@@ -341,93 +353,105 @@ func NewFlowStore() *FlowStore {
 		CallCounts:           make(map[string]int),
 	}
 
-	// Set default implementations
-	m.SaveAuthStateFunc = func(_ context.Context, state *storage.AuthorizationState) error {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		m.authStates[state.StateID] = state
-		m.authStatesByProvider[state.ProviderState] = state
-		return nil
-	}
-
-	m.GetAuthStateFunc = func(_ context.Context, stateID string) (*storage.AuthorizationState, error) {
-		m.mu.RLock()
-		defer m.mu.RUnlock()
-		state, ok := m.authStates[stateID]
-		if !ok {
-			return nil, storage.ErrAuthorizationStateNotFound
-		}
-		if !state.ExpiresAt.IsZero() && time.Now().After(state.ExpiresAt) {
-			return nil, storage.ErrTokenExpired
-		}
-		return state, nil
-	}
-
-	m.GetAuthStateByProviderFunc = func(_ context.Context, providerState string) (*storage.AuthorizationState, error) {
-		m.mu.RLock()
-		defer m.mu.RUnlock()
-		state, ok := m.authStatesByProvider[providerState]
-		if !ok {
-			return nil, storage.ErrAuthorizationStateNotFound
-		}
-		return state, nil
-	}
-
-	m.DeleteAuthStateFunc = func(_ context.Context, stateID string) error {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		if state, ok := m.authStates[stateID]; ok {
-			delete(m.authStatesByProvider, state.ProviderState)
-		}
-		delete(m.authStates, stateID)
-		return nil
-	}
-
-	m.SaveAuthCodeFunc = func(_ context.Context, code *storage.AuthorizationCode) error {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		m.authCodes[code.Code] = code
-		return nil
-	}
-
-	m.GetAuthCodeFunc = func(_ context.Context, code string) (*storage.AuthorizationCode, error) {
-		m.mu.RLock()
-		defer m.mu.RUnlock()
-		authCode, ok := m.authCodes[code]
-		if !ok {
-			return nil, storage.ErrAuthorizationCodeNotFound
-		}
-		if !authCode.ExpiresAt.IsZero() && time.Now().After(authCode.ExpiresAt) {
-			return nil, storage.ErrTokenExpired
-		}
-		return authCode, nil
-	}
-
-	m.DeleteAuthCodeFunc = func(_ context.Context, code string) error {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		delete(m.authCodes, code)
-		return nil
-	}
-
-	m.AtomicCheckAndMarkCodeUsedFunc = func(_ context.Context, code string) (*storage.AuthorizationCode, error) {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		authCode, ok := m.authCodes[code]
-		if !ok {
-			return nil, storage.ErrAuthorizationCodeNotFound
-		}
-		if !authCode.ExpiresAt.IsZero() && time.Now().After(authCode.ExpiresAt) {
-			return nil, storage.ErrTokenExpired
-		}
-		if authCode.Used {
-			return authCode, storage.ErrAuthorizationCodeUsed
-		}
-		authCode.Used = true
-		return authCode, nil
-	}
-
+	m.initDefaultFlowFuncs()
 	return m
+}
+
+// initDefaultFlowFuncs initializes the default function implementations for FlowStore.
+func (m *FlowStore) initDefaultFlowFuncs() {
+	m.SaveAuthStateFunc = m.defaultSaveAuthState
+	m.GetAuthStateFunc = m.defaultGetAuthState
+	m.GetAuthStateByProviderFunc = m.defaultGetAuthStateByProvider
+	m.DeleteAuthStateFunc = m.defaultDeleteAuthState
+	m.SaveAuthCodeFunc = m.defaultSaveAuthCode
+	m.GetAuthCodeFunc = m.defaultGetAuthCode
+	m.DeleteAuthCodeFunc = m.defaultDeleteAuthCode
+	m.AtomicCheckAndMarkCodeUsedFunc = m.defaultAtomicCheckAndMarkCodeUsed
+}
+
+func (m *FlowStore) defaultSaveAuthState(_ context.Context, state *storage.AuthorizationState) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.authStates[state.StateID] = state
+	m.authStatesByProvider[state.ProviderState] = state
+	return nil
+}
+
+func (m *FlowStore) defaultGetAuthState(_ context.Context, stateID string) (*storage.AuthorizationState, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	state, ok := m.authStates[stateID]
+	if !ok {
+		return nil, storage.ErrAuthorizationStateNotFound
+	}
+	if !state.ExpiresAt.IsZero() && time.Now().After(state.ExpiresAt) {
+		return nil, storage.ErrTokenExpired
+	}
+	return state, nil
+}
+
+func (m *FlowStore) defaultGetAuthStateByProvider(_ context.Context, providerState string) (*storage.AuthorizationState, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	state, ok := m.authStatesByProvider[providerState]
+	if !ok {
+		return nil, storage.ErrAuthorizationStateNotFound
+	}
+	return state, nil
+}
+
+func (m *FlowStore) defaultDeleteAuthState(_ context.Context, stateID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if state, ok := m.authStates[stateID]; ok {
+		delete(m.authStatesByProvider, state.ProviderState)
+	}
+	delete(m.authStates, stateID)
+	return nil
+}
+
+func (m *FlowStore) defaultSaveAuthCode(_ context.Context, code *storage.AuthorizationCode) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.authCodes[code.Code] = code
+	return nil
+}
+
+func (m *FlowStore) defaultGetAuthCode(_ context.Context, code string) (*storage.AuthorizationCode, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	authCode, ok := m.authCodes[code]
+	if !ok {
+		return nil, storage.ErrAuthorizationCodeNotFound
+	}
+	if !authCode.ExpiresAt.IsZero() && time.Now().After(authCode.ExpiresAt) {
+		return nil, storage.ErrTokenExpired
+	}
+	return authCode, nil
+}
+
+func (m *FlowStore) defaultDeleteAuthCode(_ context.Context, code string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.authCodes, code)
+	return nil
+}
+
+func (m *FlowStore) defaultAtomicCheckAndMarkCodeUsed(_ context.Context, code string) (*storage.AuthorizationCode, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	authCode, ok := m.authCodes[code]
+	if !ok {
+		return nil, storage.ErrAuthorizationCodeNotFound
+	}
+	if !authCode.ExpiresAt.IsZero() && time.Now().After(authCode.ExpiresAt) {
+		return nil, storage.ErrTokenExpired
+	}
+	if authCode.Used {
+		return authCode, storage.ErrAuthorizationCodeUsed
+	}
+	authCode.Used = true
+	return authCode, nil
 }
 
 // SaveAuthorizationState saves the state of an ongoing authorization flow

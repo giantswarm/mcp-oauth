@@ -41,61 +41,9 @@ func validateInterstitialConfig(config *Config, logger *slog.Logger) {
 
 // validateInterstitialBranding validates the InterstitialBranding configuration
 func validateInterstitialBranding(branding *InterstitialBranding, config *Config, logger *slog.Logger) {
-	// SECURITY: Validate LogoURL is HTTPS or empty
-	if branding.LogoURL != "" {
-		u, err := url.Parse(branding.LogoURL)
-		if err != nil {
-			panic(fmt.Sprintf("Interstitial: invalid LogoURL '%s': %v", branding.LogoURL, err))
-		}
-
-		// Must be HTTPS (unless AllowInsecureHTTP is enabled for development)
-		if u.Scheme != SchemeHTTPS {
-			if config.AllowInsecureHTTP && u.Scheme == SchemeHTTP {
-				logger.Warn("⚠️  Interstitial: HTTP LogoURL allowed for development",
-					"logo_url", branding.LogoURL,
-					"recommendation", "Use HTTPS LogoURL in production")
-			} else {
-				panic(fmt.Sprintf("Interstitial: LogoURL must use HTTPS scheme, got '%s' (or set AllowInsecureHTTP=true for development)", u.Scheme))
-			}
-		}
-
-		// Warn if LogoAlt is not set (accessibility)
-		if branding.LogoAlt == "" {
-			logger.Warn("⚠️  Interstitial: LogoAlt not set for LogoURL",
-				"logo_url", branding.LogoURL,
-				"accessibility", "Consider setting LogoAlt for screen readers")
-		}
-	}
-
-	// SECURITY: Validate CustomCSS doesn't contain injection vectors
-	if branding.CustomCSS != "" {
-		// Check for </style> tag injection
-		if strings.Contains(strings.ToLower(branding.CustomCSS), "</style>") {
-			panic("Interstitial: CustomCSS cannot contain '</style>' tag (injection risk)")
-		}
-
-		// Check for potentially dangerous CSS values
-		if pattern, found := containsDangerousCSSPattern(branding.CustomCSS); found {
-			panic(fmt.Sprintf("Interstitial: CustomCSS contains potentially dangerous pattern '%s'", pattern))
-		}
-
-		logger.Debug("Interstitial CustomCSS configured",
-			"css_length", len(branding.CustomCSS))
-	}
-
-	// SECURITY: Validate color values are safe CSS (basic validation)
-	if branding.PrimaryColor != "" {
-		if err := validateCSSColorValue(branding.PrimaryColor); err != nil {
-			panic(fmt.Sprintf("Interstitial: invalid PrimaryColor: %v", err))
-		}
-	}
-
-	// SECURITY: Validate background gradient (basic validation)
-	if branding.BackgroundGradient != "" {
-		if err := validateCSSBackgroundValue(branding.BackgroundGradient); err != nil {
-			panic(fmt.Sprintf("Interstitial: invalid BackgroundGradient: %v", err))
-		}
-	}
+	validateBrandingLogoURL(branding, config, logger)
+	validateBrandingCustomCSS(branding, logger)
+	validateBrandingColors(branding)
 
 	logger.Debug("Interstitial branding configuration validated",
 		"has_logo", branding.LogoURL != "",
@@ -105,6 +53,78 @@ func validateInterstitialBranding(branding *InterstitialBranding, config *Config
 		"has_primary_color", branding.PrimaryColor != "",
 		"has_background", branding.BackgroundGradient != "",
 		"has_custom_css", branding.CustomCSS != "")
+}
+
+// validateBrandingLogoURL validates the LogoURL is HTTPS or empty.
+func validateBrandingLogoURL(branding *InterstitialBranding, config *Config, logger *slog.Logger) {
+	if branding.LogoURL == "" {
+		return
+	}
+
+	u, err := url.Parse(branding.LogoURL)
+	if err != nil {
+		panic(fmt.Sprintf("Interstitial: invalid LogoURL '%s': %v", branding.LogoURL, err))
+	}
+
+	validateLogoURLScheme(u, branding.LogoURL, config.AllowInsecureHTTP, logger)
+
+	// Warn if LogoAlt is not set (accessibility)
+	if branding.LogoAlt == "" {
+		logger.Warn("Interstitial: LogoAlt not set for LogoURL",
+			"logo_url", branding.LogoURL,
+			"accessibility", "Consider setting LogoAlt for screen readers")
+	}
+}
+
+// validateLogoURLScheme ensures the logo URL uses HTTPS.
+func validateLogoURLScheme(u *url.URL, logoURL string, allowInsecureHTTP bool, logger *slog.Logger) {
+	if u.Scheme == SchemeHTTPS {
+		return
+	}
+
+	if allowInsecureHTTP && u.Scheme == SchemeHTTP {
+		logger.Warn("Interstitial: HTTP LogoURL allowed for development",
+			"logo_url", logoURL,
+			"recommendation", "Use HTTPS LogoURL in production")
+		return
+	}
+
+	panic(fmt.Sprintf("Interstitial: LogoURL must use HTTPS scheme, got '%s' (or set AllowInsecureHTTP=true for development)", u.Scheme))
+}
+
+// validateBrandingCustomCSS validates CustomCSS doesn't contain injection vectors.
+func validateBrandingCustomCSS(branding *InterstitialBranding, logger *slog.Logger) {
+	if branding.CustomCSS == "" {
+		return
+	}
+
+	// Check for </style> tag injection
+	if strings.Contains(strings.ToLower(branding.CustomCSS), "</style>") {
+		panic("Interstitial: CustomCSS cannot contain '</style>' tag (injection risk)")
+	}
+
+	// Check for potentially dangerous CSS values
+	if pattern, found := containsDangerousCSSPattern(branding.CustomCSS); found {
+		panic(fmt.Sprintf("Interstitial: CustomCSS contains potentially dangerous pattern '%s'", pattern))
+	}
+
+	logger.Debug("Interstitial CustomCSS configured",
+		"css_length", len(branding.CustomCSS))
+}
+
+// validateBrandingColors validates color and background gradient values.
+func validateBrandingColors(branding *InterstitialBranding) {
+	if branding.PrimaryColor != "" {
+		if err := validateCSSColorValue(branding.PrimaryColor); err != nil {
+			panic(fmt.Sprintf("Interstitial: invalid PrimaryColor: %v", err))
+		}
+	}
+
+	if branding.BackgroundGradient != "" {
+		if err := validateCSSBackgroundValue(branding.BackgroundGradient); err != nil {
+			panic(fmt.Sprintf("Interstitial: invalid BackgroundGradient: %v", err))
+		}
+	}
 }
 
 // dangerousCSSPatterns contains patterns that indicate potential CSS injection attacks.

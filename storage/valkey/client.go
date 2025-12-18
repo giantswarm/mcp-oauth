@@ -116,7 +116,6 @@ func (s *Store) ValidateClientSecret(ctx context.Context, clientID, clientSecret
 
 // ListClients lists all registered clients
 func (s *Store) ListClients(ctx context.Context) ([]*storage.Client, error) {
-	// Use SCAN to iterate over all client keys
 	pattern := s.clientKey("*")
 
 	// Use a map to deduplicate results (SCAN can return duplicates across iterations)
@@ -124,53 +123,81 @@ func (s *Store) ListClients(ctx context.Context) ([]*storage.Client, error) {
 
 	var cursor uint64
 	for {
-		// Execute SCAN command
-		result, err := s.client.Do(ctx,
-			s.client.B().Scan().Cursor(cursor).Match(pattern).Count(scanBatchSize).Build(),
-		).AsScanEntry()
+		result, newCursor, err := s.scanClientKeys(ctx, pattern, cursor)
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan clients: %w", err)
+			return nil, err
 		}
 
-		// Get all client data for the matched keys
-		for _, key := range result.Elements {
-			// Skip if we've already processed this key (SCAN can return duplicates)
-			if _, exists := clientMap[key]; exists {
-				continue
-			}
-
-			data, err := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).ToString()
-			if err != nil {
-				if isNilError(err) {
-					continue // Key may have been deleted between SCAN and GET
-				}
-				return nil, fmt.Errorf("failed to get client %s: %w", key, err)
-			}
-
-			var j clientJSON
-			if err := json.Unmarshal([]byte(data), &j); err != nil {
-				s.logger.Warn("Failed to unmarshal client, skipping",
-					"key", key,
-					"error", err)
-				continue
-			}
-
-			clientMap[key] = fromClientJSON(&j)
+		if err := s.fetchClientsFromKeys(ctx, result, clientMap); err != nil {
+			return nil, err
 		}
 
-		cursor = result.Cursor
+		cursor = newCursor
 		if cursor == 0 {
 			break
 		}
 	}
 
-	// Convert map to slice
+	return s.clientMapToSlice(clientMap), nil
+}
+
+// scanClientKeys executes a SCAN command for client keys.
+func (s *Store) scanClientKeys(ctx context.Context, pattern string, cursor uint64) ([]string, uint64, error) {
+	result, err := s.client.Do(ctx,
+		s.client.B().Scan().Cursor(cursor).Match(pattern).Count(scanBatchSize).Build(),
+	).AsScanEntry()
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to scan clients: %w", err)
+	}
+	return result.Elements, result.Cursor, nil
+}
+
+// fetchClientsFromKeys fetches client data for the given keys and adds to clientMap.
+func (s *Store) fetchClientsFromKeys(ctx context.Context, keys []string, clientMap map[string]*storage.Client) error {
+	for _, key := range keys {
+		if _, exists := clientMap[key]; exists {
+			continue // Skip duplicates (SCAN can return duplicates)
+		}
+
+		client, err := s.fetchClientByKey(ctx, key)
+		if err != nil {
+			return err
+		}
+		if client != nil {
+			clientMap[key] = client
+		}
+	}
+	return nil
+}
+
+// fetchClientByKey fetches a single client by its Valkey key.
+func (s *Store) fetchClientByKey(ctx context.Context, key string) (*storage.Client, error) {
+	data, err := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).ToString()
+	if err != nil {
+		if isNilError(err) {
+			return nil, nil // Key may have been deleted between SCAN and GET
+		}
+		return nil, fmt.Errorf("failed to get client %s: %w", key, err)
+	}
+
+	var j clientJSON
+	if err := json.Unmarshal([]byte(data), &j); err != nil {
+		s.logger.Warn("Failed to unmarshal client, skipping",
+			"key", key,
+			"error", err)
+		return nil, nil
+	}
+
+	return fromClientJSON(&j), nil
+}
+
+// clientMapToSlice converts a client map to a slice.
+func (s *Store) clientMapToSlice(clientMap map[string]*storage.Client) []*storage.Client {
 	clients := make([]*storage.Client, 0, len(clientMap))
 	for _, c := range clientMap {
 		clients = append(clients, c)
 	}
-
-	return clients, nil
+	return clients
 }
 
 // CheckIPLimit checks if an IP has reached the client registration limit

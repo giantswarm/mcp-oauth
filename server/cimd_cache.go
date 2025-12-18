@@ -404,100 +404,21 @@ func (s *Server) getOrFetchClient(ctx context.Context, clientID string) (*storag
 		return nil, fmt.Errorf("URL-based client_id not supported: client_id_metadata_documents feature is disabled")
 	}
 
-	// Try cache first
 	if client, ok := s.tryGetCachedClient(ctx, clientID); ok {
 		return client, nil
 	}
 
-	// Check negative cache
 	if err := s.checkNegativeCache(ctx, clientID); err != nil {
 		return nil, err
 	}
 
-	// Check rate limit
 	if err := s.checkMetadataFetchRateLimit(ctx, clientID); err != nil {
 		return nil, err
 	}
 
 	// SECURITY: Use singleflight to deduplicate concurrent fetches of the same URL
-	// This prevents DoS via multiple simultaneous requests for the same uncached client_id
 	result, err, _ := s.metadataFetchGroup.Do(clientID, func() (interface{}, error) {
-		// Double-check cache (another goroutine might have filled it while we waited)
-		if cachedClient, ok := s.metadataCache.Get(clientID); ok {
-			// Record cache hit metric for singleflight path
-			s.recordCIMDCacheMetric(ctx, "hit")
-			s.Logger.Debug("Using cached client metadata (singleflight)", "client_id", clientID)
-			return cachedClient, nil
-		}
-
-		// Double-check negative cache too (another goroutine might have added a failure)
-		if errorMsg, found := s.metadataCache.GetNegative(clientID); found {
-			// Record negative cache hit metric for singleflight path
-			s.recordCIMDCacheMetric(ctx, "negative_hit")
-			return nil, fmt.Errorf("client metadata previously failed validation: %s (cached)", errorMsg)
-		}
-
-		// Record cache miss metric (we're about to fetch from the origin)
-		s.recordCIMDCacheMetric(ctx, "miss")
-
-		// Cache miss - fetch from URL
-		s.Logger.Info("Fetching client metadata from URL", "client_id", clientID)
-
-		metadata, suggestedTTL, fetchErr := s.fetchClientMetadata(ctx, clientID)
-		if fetchErr != nil {
-			// Track fetch failure
-			s.metadataCache.mu.Lock()
-			s.metadataCache.metrics.fetchFails++
-			s.metadataCache.mu.Unlock()
-
-			// SECURITY: Store negative cache entry to prevent rapid retries
-			// This mitigates DoS from repeatedly trying invalid client IDs
-			// and reduces impact of cache poisoning attacks
-			s.metadataCache.SetNegative(clientID, fetchErr.Error())
-
-			if s.Auditor != nil {
-				s.Auditor.LogEvent(security.Event{
-					Type:     "client_metadata_fetch_failed_cached",
-					ClientID: clientID,
-					Details: map[string]any{
-						"error":          fetchErr.Error(),
-						"negative_cache": "stored",
-						"cache_purpose":  "prevent_rapid_retry",
-					},
-				})
-			}
-
-			return nil, fmt.Errorf("failed to fetch client metadata: %w", fetchErr)
-		}
-
-		// Track successful fetch
-		s.metadataCache.mu.Lock()
-		s.metadataCache.metrics.fetches++
-		s.metadataCache.mu.Unlock()
-
-		// NOTE: SSRF protection happens at connection time in createSSRFProtectedTransport(),
-		// which validates IPs when the HTTP client connects. This prevents DNS rebinding attacks
-		// where DNS resolution changes between validation and connection time.
-		// No post-fetch validation is needed here.
-
-		// Convert metadata to storage.Client
-		client := metadataToClient(metadata)
-
-		// Determine cache TTL: use Cache-Control if provided, otherwise use config/default
-		ttl := s.Config.ClientMetadataCacheTTL
-		if suggestedTTL > 0 {
-			// Respect HTTP Cache-Control max-age if present
-			ttl = suggestedTTL
-			s.Logger.Debug("Using Cache-Control TTL",
-				"client_id", clientID,
-				"ttl", ttl)
-		} else if ttl <= 0 {
-			// Fall back to default if neither Cache-Control nor config provides TTL
-			ttl = 5 * time.Minute
-		}
-		s.metadataCache.Set(clientID, metadata, client, ttl)
-
-		return client, nil
+		return s.fetchClientWithSingleflight(ctx, clientID)
 	})
 
 	if err != nil {
@@ -505,6 +426,81 @@ func (s *Server) getOrFetchClient(ctx context.Context, clientID string) (*storag
 	}
 
 	return result.(*storage.Client), nil
+}
+
+// fetchClientWithSingleflight performs the actual fetch within singleflight context.
+func (s *Server) fetchClientWithSingleflight(ctx context.Context, clientID string) (*storage.Client, error) {
+	// Double-check cache (another goroutine might have filled it while we waited)
+	if cachedClient, ok := s.metadataCache.Get(clientID); ok {
+		s.recordCIMDCacheMetric(ctx, "hit")
+		s.Logger.Debug("Using cached client metadata (singleflight)", "client_id", clientID)
+		return cachedClient, nil
+	}
+
+	// Double-check negative cache too
+	if errorMsg, found := s.metadataCache.GetNegative(clientID); found {
+		s.recordCIMDCacheMetric(ctx, "negative_hit")
+		return nil, fmt.Errorf("client metadata previously failed validation: %s (cached)", errorMsg)
+	}
+
+	s.recordCIMDCacheMetric(ctx, "miss")
+	s.Logger.Info("Fetching client metadata from URL", "client_id", clientID)
+
+	metadata, suggestedTTL, fetchErr := s.fetchClientMetadata(ctx, clientID)
+	if fetchErr != nil {
+		s.handleMetadataFetchFailure(clientID, fetchErr)
+		return nil, fmt.Errorf("failed to fetch client metadata: %w", fetchErr)
+	}
+
+	return s.cacheAndReturnClient(clientID, metadata, suggestedTTL), nil
+}
+
+// handleMetadataFetchFailure handles failed metadata fetches.
+func (s *Server) handleMetadataFetchFailure(clientID string, fetchErr error) {
+	s.metadataCache.mu.Lock()
+	s.metadataCache.metrics.fetchFails++
+	s.metadataCache.mu.Unlock()
+
+	s.metadataCache.SetNegative(clientID, fetchErr.Error())
+
+	if s.Auditor != nil {
+		s.Auditor.LogEvent(security.Event{
+			Type:     "client_metadata_fetch_failed_cached",
+			ClientID: clientID,
+			Details: map[string]any{
+				"error":          fetchErr.Error(),
+				"negative_cache": "stored",
+				"cache_purpose":  "prevent_rapid_retry",
+			},
+		})
+	}
+}
+
+// cacheAndReturnClient caches metadata and returns the client.
+func (s *Server) cacheAndReturnClient(clientID string, metadata *ClientMetadata, suggestedTTL time.Duration) *storage.Client {
+	s.metadataCache.mu.Lock()
+	s.metadataCache.metrics.fetches++
+	s.metadataCache.mu.Unlock()
+
+	client := metadataToClient(metadata)
+	ttl := s.determineCacheTTL(clientID, suggestedTTL)
+	s.metadataCache.Set(clientID, metadata, client, ttl)
+
+	return client
+}
+
+// determineCacheTTL determines the TTL to use for caching.
+func (s *Server) determineCacheTTL(clientID string, suggestedTTL time.Duration) time.Duration {
+	if suggestedTTL > 0 {
+		s.Logger.Debug("Using Cache-Control TTL", "client_id", clientID, "ttl", suggestedTTL)
+		return suggestedTTL
+	}
+
+	if s.Config.ClientMetadataCacheTTL > 0 {
+		return s.Config.ClientMetadataCacheTTL
+	}
+
+	return 5 * time.Minute // Default TTL
 }
 
 // metadataToClient converts ClientMetadata to storage.Client

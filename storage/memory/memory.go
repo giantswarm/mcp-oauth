@@ -1230,51 +1230,52 @@ func (s *Store) RevokeAllTokensForUserClient(_ context.Context, userID, clientID
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	revokedCount := 0
+	// Step 1: Identify all tokens and families to revoke
+	familiesToRevoke, tokensToRevoke := s.identifyTokensToRevoke(userID, clientID)
 
-	// Step 1: Identify all token families to revoke
+	// Step 2: Revoke entire token families
+	revokedCount := s.revokeFamilies(familiesToRevoke, userID, clientID)
+
+	// Step 3: Revoke remaining tokens (access tokens, tokens without families)
+	revokedCount += s.revokeRemainingTokens(tokensToRevoke, userID, clientID)
+
+	if revokedCount > 0 {
+		s.logger.Warn("Revoked all tokens for user+client",
+			"user_id", userID,
+			"client_id", clientID,
+			"tokens_revoked", revokedCount,
+			"reason", "authorization_code_reuse_detected")
+	}
+
+	return revokedCount, nil
+}
+
+// identifyTokensToRevoke finds all tokens and families for a user+client. Must be called with lock held.
+func (s *Store) identifyTokensToRevoke(userID, clientID string) (map[string]bool, []string) {
 	familiesToRevoke := make(map[string]bool)
 	tokensToRevoke := make([]string, 0)
 
 	for tokenID, metadata := range s.tokenMetadata {
-		if metadata.UserID == userID && metadata.ClientID == clientID {
-			tokensToRevoke = append(tokensToRevoke, tokenID)
-
-			// Track family IDs that need complete revocation
-			if family, hasFam := s.refreshTokenFamilies[tokenID]; hasFam {
-				familiesToRevoke[family.FamilyID] = true
-			}
+		if metadata.UserID != userID || metadata.ClientID != clientID {
+			continue
+		}
+		tokensToRevoke = append(tokensToRevoke, tokenID)
+		if family, hasFam := s.refreshTokenFamilies[tokenID]; hasFam {
+			familiesToRevoke[family.FamilyID] = true
 		}
 	}
 
-	// Step 2: Revoke ENTIRE token families (finds ALL family members, not just tracked ones)
+	return familiesToRevoke, tokensToRevoke
+}
+
+// revokeFamilies revokes all tokens in the given families. Must be called with lock held.
+func (s *Store) revokeFamilies(familiesToRevoke map[string]bool, userID, clientID string) int {
 	now := time.Now()
+	revokedCount := 0
+
 	for familyID := range familiesToRevoke {
-		familyRevokedCount := 0
-		for tokenID, family := range s.refreshTokenFamilies {
-			if family.FamilyID == familyID {
-				// Mark family as revoked (keeps metadata for forensics/detection)
-				// CRITICAL: Must update the map entry directly, not the loop copy
-				s.refreshTokenFamilies[tokenID].Revoked = true
-				s.refreshTokenFamilies[tokenID].RevokedAt = now
-
-				// Delete the actual tokens
-				delete(s.refreshTokens, tokenID)
-				delete(s.refreshTokenExpiries, tokenID)
-				delete(s.tokens, tokenID)
-				delete(s.tokenMetadata, tokenID)
-
-				revokedCount++
-				familyRevokedCount++
-
-				s.logger.Debug("Revoked token from family",
-					"user_id", userID,
-					"client_id", clientID,
-					"token_id", helpers.SafeTruncate(tokenID, tokenIDLogLength),
-					"family_id", helpers.SafeTruncate(familyID, tokenIDLogLength),
-					"generation", family.Generation)
-			}
-		}
+		familyRevokedCount := s.revokeFamily(familyID, now, userID, clientID)
+		revokedCount += familyRevokedCount
 
 		if familyRevokedCount > 0 {
 			s.logger.Info("Revoked entire refresh token family",
@@ -1286,14 +1287,51 @@ func (s *Store) RevokeAllTokensForUserClient(_ context.Context, userID, clientID
 		}
 	}
 
-	// Step 3: Revoke remaining tokens (access tokens, tokens without families)
+	return revokedCount
+}
+
+// revokeFamily revokes all tokens in a single family. Must be called with lock held.
+func (s *Store) revokeFamily(familyID string, now time.Time, userID, clientID string) int {
+	familyRevokedCount := 0
+
+	for tokenID, family := range s.refreshTokenFamilies {
+		if family.FamilyID != familyID {
+			continue
+		}
+		// Mark family as revoked (keeps metadata for forensics/detection)
+		// CRITICAL: Must update the map entry directly, not the loop copy
+		s.refreshTokenFamilies[tokenID].Revoked = true
+		s.refreshTokenFamilies[tokenID].RevokedAt = now
+
+		// Delete the actual tokens
+		delete(s.refreshTokens, tokenID)
+		delete(s.refreshTokenExpiries, tokenID)
+		delete(s.tokens, tokenID)
+		delete(s.tokenMetadata, tokenID)
+
+		familyRevokedCount++
+
+		s.logger.Debug("Revoked token from family",
+			"user_id", userID,
+			"client_id", clientID,
+			"token_id", helpers.SafeTruncate(tokenID, tokenIDLogLength),
+			"family_id", helpers.SafeTruncate(familyID, tokenIDLogLength),
+			"generation", family.Generation)
+	}
+
+	return familyRevokedCount
+}
+
+// revokeRemainingTokens revokes tokens not already revoked via family revocation. Must be called with lock held.
+func (s *Store) revokeRemainingTokens(tokensToRevoke []string, userID, clientID string) int {
+	revokedCount := 0
+
 	for _, tokenID := range tokensToRevoke {
 		// Skip if already deleted as part of family revocation
 		if _, exists := s.tokens[tokenID]; !exists {
 			continue
 		}
 
-		// Delete the token itself
 		delete(s.tokens, tokenID)
 		delete(s.tokenMetadata, tokenID)
 		revokedCount++
@@ -1304,15 +1342,7 @@ func (s *Store) RevokeAllTokensForUserClient(_ context.Context, userID, clientID
 			"token_id", helpers.SafeTruncate(tokenID, tokenIDLogLength))
 	}
 
-	if revokedCount > 0 {
-		s.logger.Warn("Revoked all tokens for user+client",
-			"user_id", userID,
-			"client_id", clientID,
-			"tokens_revoked", revokedCount,
-			"reason", "authorization_code_reuse_detected")
-	}
-
-	return revokedCount, nil
+	return revokedCount
 }
 
 // GetTokensByUserClient retrieves all token IDs for a user+client combination.
