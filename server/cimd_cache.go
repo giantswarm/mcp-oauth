@@ -365,7 +365,7 @@ func (s *Server) checkNegativeCache(ctx context.Context, clientID string) error 
 }
 
 // checkMetadataFetchRateLimit checks if fetching metadata for this clientID is rate limited
-func (s *Server) checkMetadataFetchRateLimit(ctx context.Context, clientID string) error {
+func (s *Server) checkMetadataFetchRateLimit(_ context.Context, clientID string) error {
 	if s.metadataFetchRateLimiter == nil {
 		return nil
 	}

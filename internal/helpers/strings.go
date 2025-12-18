@@ -1,7 +1,7 @@
-// Package util provides common utility functions used across the mcp-oauth library.
+// Package helpers provides common utility functions used across the mcp-oauth library.
 // These utilities handle string manipulation, formatting, and other shared operations
 // that don't fit into domain-specific packages.
-package util
+package helpers
 
 import "strings"
 

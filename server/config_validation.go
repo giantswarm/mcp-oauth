@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/giantswarm/mcp-oauth/internal/util"
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 )
 
 // applySecureDefaults applies secure-by-default configuration values.
@@ -355,7 +355,7 @@ func validateResourceMetadataByPath(config *Config, logger *slog.Logger) {
 
 // validateResourceMetadataPathConfig validates a single resource metadata path configuration.
 func validateResourceMetadataPathConfig(pathKey string, pathConfig ProtectedResourceConfig, logger *slog.Logger) {
-	if err := util.ValidateMetadataPath(pathKey); err != nil {
+	if err := helpers.ValidateMetadataPath(pathKey); err != nil {
 		logger.Warn("Invalid path in ResourceMetadataByPath", "path", pathKey, "error", err)
 	}
 

@@ -44,18 +44,6 @@ type Provider struct {
 	mu sync.RWMutex
 }
 
-// MockProvider is an alias for Provider for backward compatibility.
-//
-// Deprecated: Use Provider instead.
-type MockProvider = Provider
-
-// NewMockProvider creates a new mock provider with default implementations.
-//
-// Deprecated: Use NewProvider instead.
-func NewMockProvider() *Provider {
-	return NewProvider()
-}
-
 // NewProvider creates a new mock provider with default implementations
 func NewProvider() *Provider {
 	return &Provider{

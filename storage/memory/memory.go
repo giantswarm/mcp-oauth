@@ -18,7 +18,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
-	"github.com/giantswarm/mcp-oauth/internal/util"
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
@@ -624,7 +624,7 @@ func (s *Store) SaveRefreshTokenWithFamily(_ context.Context, refreshToken, user
 
 	s.logger.Debug("Saved refresh token with family tracking",
 		"user_id", userID,
-		"family_id", util.SafeTruncate(familyID, tokenIDLogLength),
+		"family_id", helpers.SafeTruncate(familyID, tokenIDLogLength),
 		"generation", generation,
 		"expires_at", expiresAt)
 	return nil
@@ -676,7 +676,7 @@ func (s *Store) RevokeRefreshTokenFamily(_ context.Context, familyID string) err
 
 	if revokedCount > 0 {
 		s.logger.Warn("Revoked refresh token family due to reuse detection",
-			"family_id", util.SafeTruncate(familyID, tokenIDLogLength),
+			"family_id", helpers.SafeTruncate(familyID, tokenIDLogLength),
 			"tokens_revoked", revokedCount)
 	}
 
@@ -868,7 +868,7 @@ func (s *Store) SaveAuthorizationState(_ context.Context, state *storage.Authori
 	// ProviderState is used when validating provider callbacks
 	s.authStates[state.StateID] = state
 	s.authStates[state.ProviderState] = state
-	s.logger.Debug("Saved authorization state", "state_id", state.StateID, "provider_state_prefix", util.SafeTruncate(state.ProviderState, tokenIDLogLength))
+	s.logger.Debug("Saved authorization state", "state_id", state.StateID, "provider_state_prefix", helpers.SafeTruncate(state.ProviderState, tokenIDLogLength))
 	return nil
 }
 
@@ -952,7 +952,7 @@ func (s *Store) SaveAuthorizationCode(ctx context.Context, code *storage.Authori
 	defer s.mu.Unlock()
 
 	s.authCodes[code.Code] = code
-	s.logger.Debug("Saved authorization code", "code_prefix", util.SafeTruncate(code.Code, tokenIDLogLength))
+	s.logger.Debug("Saved authorization code", "code_prefix", helpers.SafeTruncate(code.Code, tokenIDLogLength))
 	return nil
 }
 
@@ -1017,7 +1017,7 @@ func (s *Store) AtomicCheckAndMarkAuthCodeUsed(_ context.Context, code string) (
 	// Mark as used atomically
 	authCode.Used = true
 	s.logger.Debug("Marked authorization code as used",
-		"code_prefix", util.SafeTruncate(code, tokenIDLogLength))
+		"code_prefix", helpers.SafeTruncate(code, tokenIDLogLength))
 
 	// Return the code for token issuance
 	return authCode, nil
@@ -1270,8 +1270,8 @@ func (s *Store) RevokeAllTokensForUserClient(_ context.Context, userID, clientID
 				s.logger.Debug("Revoked token from family",
 					"user_id", userID,
 					"client_id", clientID,
-					"token_id", util.SafeTruncate(tokenID, tokenIDLogLength),
-					"family_id", util.SafeTruncate(familyID, tokenIDLogLength),
+					"token_id", helpers.SafeTruncate(tokenID, tokenIDLogLength),
+					"family_id", helpers.SafeTruncate(familyID, tokenIDLogLength),
 					"generation", family.Generation)
 			}
 		}
@@ -1280,7 +1280,7 @@ func (s *Store) RevokeAllTokensForUserClient(_ context.Context, userID, clientID
 			s.logger.Info("Revoked entire refresh token family",
 				"user_id", userID,
 				"client_id", clientID,
-				"family_id", util.SafeTruncate(familyID, tokenIDLogLength),
+				"family_id", helpers.SafeTruncate(familyID, tokenIDLogLength),
 				"tokens_revoked", familyRevokedCount,
 				"reason", "authorization_code_reuse_detected")
 		}
@@ -1301,7 +1301,7 @@ func (s *Store) RevokeAllTokensForUserClient(_ context.Context, userID, clientID
 		s.logger.Debug("Revoked access token",
 			"user_id", userID,
 			"client_id", clientID,
-			"token_id", util.SafeTruncate(tokenID, tokenIDLogLength))
+			"token_id", helpers.SafeTruncate(tokenID, tokenIDLogLength))
 	}
 
 	if revokedCount > 0 {

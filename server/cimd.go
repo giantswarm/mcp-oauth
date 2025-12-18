@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/giantswarm/mcp-oauth/internal/util"
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/security"
 )
 
@@ -95,10 +95,10 @@ func isURLClientID(clientID string) bool {
 // Used for SSRF protection per draft-ietf-oauth-client-id-metadata-document-00 Section 6
 // Covers IPv4, IPv6, and IPv4-mapped IPv6 addresses
 //
-// This delegates to the shared util.IsPrivateOrInternal for DRY.
+// This delegates to the shared helpers.IsPrivateOrInternal for DRY.
 // The utility checks for loopback, link-local, private, and unspecified addresses.
 func isPrivateIP(ip net.IP) bool {
-	return util.IsPrivateOrInternal(ip)
+	return helpers.IsPrivateOrInternal(ip)
 }
 
 // validateAndSanitizeMetadataURL performs SSRF protection checks and returns a sanitized URL

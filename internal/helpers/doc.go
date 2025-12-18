@@ -1,4 +1,4 @@
-// Package util provides common utility functions used across the mcp-oauth library.
+// Package helpers provides common utility functions used across the mcp-oauth library.
 //
 // This package contains helper functions for string manipulation, formatting,
 // IP classification, and other shared operations that don't fit into domain-specific
@@ -11,4 +11,4 @@
 //   - IsLinkLocal: Checks if an IP is link-local (cloud metadata SSRF protection)
 //   - IsLoopbackHostname: Checks if a hostname represents a loopback address
 //   - ValidateMetadataPath: Validates paths for security concerns (path traversal, etc.)
-package util
+package helpers

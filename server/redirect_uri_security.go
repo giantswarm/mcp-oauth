@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/giantswarm/mcp-oauth/internal/util"
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 )
 
 // Redirect URI validation stage constants for metrics.
@@ -243,7 +243,7 @@ func (s *Server) validateIPAddress(ip net.IP, rawURI string) error {
 
 	// Check for link-local addresses (169.254.x.x, fe80::/10) and link-local multicast
 	// This is critical for cloud security - blocks access to metadata services (169.254.169.254)
-	if util.IsLinkLocal(ip) && !s.Config.AllowLinkLocalRedirectURIs {
+	if helpers.IsLinkLocal(ip) && !s.Config.AllowLinkLocalRedirectURIs {
 		return newRedirectURISecurityError(
 			RedirectURIErrorCategoryLinkLocal,
 			rawURI,
@@ -322,7 +322,7 @@ func (s *Server) validateHostnameWithDNS(ctx context.Context, hostname, rawURI s
 		}
 
 		// Check for link-local IPs (unicast and multicast)
-		if util.IsLinkLocal(ip) && !s.Config.AllowLinkLocalRedirectURIs {
+		if helpers.IsLinkLocal(ip) && !s.Config.AllowLinkLocalRedirectURIs {
 			return newRedirectURISecurityError(
 				RedirectURIErrorCategoryDNSLinkLocal,
 				rawURI,

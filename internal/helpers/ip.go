@@ -1,5 +1,5 @@
-// Package util provides common utility functions used across the mcp-oauth library.
-package util
+// Package helpers provides common utility functions used across the mcp-oauth library.
+package helpers
 
 import "net"
 

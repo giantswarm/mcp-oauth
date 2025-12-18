@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/giantswarm/mcp-oauth/internal/util"
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
@@ -409,9 +409,9 @@ func validateCustomScheme(scheme string, allowedSchemes []string) error {
 // Note: This function does NOT consider 0.0.0.0 as loopback (it's "unspecified").
 // For development HTTP allowance that includes 0.0.0.0, use isLocalhostHostname.
 //
-// This delegates to the shared util.IsLoopbackHostname for DRY.
+// This delegates to the shared helpers.IsLoopbackHostname for DRY.
 func isLoopbackAddress(hostname string) bool {
-	return util.IsLoopbackHostname(hostname)
+	return helpers.IsLoopbackHostname(hostname)
 }
 
 // validateRedirectURISecurityEnhanced performs comprehensive security validation on redirect URIs
@@ -528,7 +528,7 @@ func (s *Server) validateResourceConsistency(resource string, authCode *storage.
 	// Validate resource format if provided in token request
 	if resource != "" {
 		if err := s.validateResourceParameter(resource); err != nil {
-			return s.logAuthCodeValidationFailure("invalid_resource_format", clientID, authCode.UserID, util.SafeTruncate(code, 8))
+			return s.logAuthCodeValidationFailure("invalid_resource_format", clientID, authCode.UserID, helpers.SafeTruncate(code, 8))
 		}
 	}
 
@@ -536,8 +536,8 @@ func (s *Server) validateResourceConsistency(resource string, authCode *storage.
 	// Normalize URLs to handle trailing slash differences
 	// RFC 8707 doesn't specify trailing slash handling, but practical clients
 	// may send resource identifiers with or without trailing slashes
-	normalizedResource := util.NormalizeURL(resource)
-	normalizedExpected := util.NormalizeURL(authCode.Resource)
+	normalizedResource := helpers.NormalizeURL(resource)
+	normalizedExpected := helpers.NormalizeURL(authCode.Resource)
 	if normalizedResource != normalizedExpected {
 		// Rate limit logging to prevent DoS via repeated resource mismatch attempts
 		if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(authCode.UserID+":"+clientID+":resource_mismatch") {
@@ -559,7 +559,7 @@ func (s *Server) validateResourceConsistency(resource string, authCode *storage.
 				},
 			})
 		}
-		return s.logAuthCodeValidationFailure("resource_mismatch", clientID, authCode.UserID, util.SafeTruncate(code, 8))
+		return s.logAuthCodeValidationFailure("resource_mismatch", clientID, authCode.UserID, helpers.SafeTruncate(code, 8))
 	}
 
 	return nil

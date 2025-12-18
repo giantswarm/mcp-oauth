@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
-	"github.com/giantswarm/mcp-oauth/internal/util"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/server"
@@ -815,7 +815,7 @@ func TestPathMatchesPrefix(t *testing.T) {
 	for _, tt := range tests {
 		name := tt.resourcePath + "_" + tt.prefix
 		t.Run(name, func(t *testing.T) {
-			got := util.PathMatchesPrefix(tt.resourcePath, tt.prefix)
+			got := helpers.PathMatchesPrefix(tt.resourcePath, tt.prefix)
 			if got != tt.expected {
 				t.Errorf("PathMatchesPrefix(%q, %q) = %v, want %v",
 					tt.resourcePath, tt.prefix, got, tt.expected)

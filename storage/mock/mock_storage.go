@@ -36,18 +36,6 @@ type refreshTokenInfo struct {
 	expiresAt time.Time
 }
 
-// MockTokenStore is an alias for TokenStore for backward compatibility.
-//
-// Deprecated: Use TokenStore instead.
-type MockTokenStore = TokenStore
-
-// NewMockTokenStore creates a new mock token store.
-//
-// Deprecated: Use NewTokenStore instead.
-func NewMockTokenStore() *TokenStore {
-	return NewTokenStore()
-}
-
 // NewTokenStore creates a new mock token store
 func NewTokenStore() *TokenStore {
 	m := &TokenStore{
@@ -198,18 +186,6 @@ type ClientStore struct {
 	CallCounts         map[string]int
 }
 
-// MockClientStore is an alias for ClientStore for backward compatibility.
-//
-// Deprecated: Use ClientStore instead.
-type MockClientStore = ClientStore
-
-// NewMockClientStore creates a new mock client store.
-//
-// Deprecated: Use NewClientStore instead.
-func NewMockClientStore() *ClientStore {
-	return NewClientStore()
-}
-
 // NewClientStore creates a new mock client store
 func NewClientStore() *ClientStore {
 	m := &ClientStore{
@@ -354,18 +330,6 @@ type FlowStore struct {
 	DeleteAuthCodeFunc             func(ctx context.Context, code string) error
 	AtomicCheckAndMarkCodeUsedFunc func(ctx context.Context, code string) (*storage.AuthorizationCode, error)
 	CallCounts                     map[string]int
-}
-
-// MockFlowStore is an alias for FlowStore for backward compatibility.
-//
-// Deprecated: Use FlowStore instead.
-type MockFlowStore = FlowStore
-
-// NewMockFlowStore creates a new mock flow store.
-//
-// Deprecated: Use NewFlowStore instead.
-func NewMockFlowStore() *FlowStore {
-	return NewFlowStore()
 }
 
 // NewFlowStore creates a new mock flow store

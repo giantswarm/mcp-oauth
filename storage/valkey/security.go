@@ -16,6 +16,42 @@ import (
 // SaveRefreshTokenWithFamily saves a refresh token with family tracking for reuse detection
 // This is the OAuth 2.1 compliant version that enables token theft detection
 func (s *Store) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, userID, clientID, familyID string, generation int, expiresAt time.Time) error {
+	if err := s.validateRefreshTokenParams(refreshToken, userID, clientID, familyID); err != nil {
+		return err
+	}
+
+	ttl := calculateTTL(expiresAt)
+	if ttl <= 0 {
+		return fmt.Errorf("refresh token already expired")
+	}
+
+	if err := s.saveRefreshTokenBasic(ctx, refreshToken, userID, ttl); err != nil {
+		return err
+	}
+
+	if err := s.saveFamilyMetadata(ctx, refreshToken, userID, clientID, familyID, generation, ttl); err != nil {
+		return err
+	}
+
+	s.addTokenToFamilySet(ctx, refreshToken, familyID, ttl)
+
+	if err := s.saveRefreshTokenMetadata(ctx, refreshToken, userID, clientID, ttl); err != nil {
+		return err
+	}
+
+	s.addTokenToUserClientSet(ctx, refreshToken, userID, clientID)
+
+	s.logger.Debug("Saved refresh token with family tracking",
+		"user_id", userID,
+		"family_id", safeTruncate(familyID, tokenIDLogLength),
+		"generation", generation,
+		"expires_at", expiresAt)
+
+	return nil
+}
+
+// validateRefreshTokenParams validates the refresh token parameters.
+func (s *Store) validateRefreshTokenParams(refreshToken, userID, clientID, familyID string) error {
 	if refreshToken == "" {
 		return fmt.Errorf("refresh token cannot be empty")
 	}
@@ -26,7 +62,6 @@ func (s *Store) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, us
 		return fmt.Errorf("family ID cannot be empty")
 	}
 
-	// Validate input lengths to prevent DoS
 	if err := validateStringLength(refreshToken, MaxTokenLength, "refreshToken"); err != nil {
 		return err
 	}
@@ -36,25 +71,22 @@ func (s *Store) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, us
 	if err := validateStringLength(clientID, MaxIDLength, "clientID"); err != nil {
 		return err
 	}
-	if err := validateStringLength(familyID, MaxIDLength, "familyID"); err != nil {
-		return err
-	}
+	return validateStringLength(familyID, MaxIDLength, "familyID")
+}
 
-	// Calculate TTL
-	ttl := calculateTTL(expiresAt)
-	if ttl <= 0 {
-		return fmt.Errorf("refresh token already expired")
-	}
-
-	// Save basic refresh token info (userID)
+// saveRefreshTokenBasic saves the basic refresh token info.
+func (s *Store) saveRefreshTokenBasic(ctx context.Context, refreshToken, userID string, ttl time.Duration) error {
 	refreshKey := s.refreshTokenKey(refreshToken)
 	if err := s.client.Do(ctx,
 		s.client.B().Set().Key(refreshKey).Value(userID).Ex(ttl).Build(),
 	).Error(); err != nil {
 		return fmt.Errorf("failed to save refresh token: %w", err)
 	}
+	return nil
+}
 
-	// Save family metadata for reuse detection
+// saveFamilyMetadata saves the family metadata for reuse detection.
+func (s *Store) saveFamilyMetadata(ctx context.Context, refreshToken, userID, clientID, familyID string, generation int, ttl time.Duration) error {
 	familyMeta := &storage.RefreshTokenFamilyMetadata{
 		FamilyID:   familyID,
 		UserID:     userID,
@@ -75,8 +107,11 @@ func (s *Store) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, us
 	).Error(); err != nil {
 		return fmt.Errorf("failed to save family metadata: %w", err)
 	}
+	return nil
+}
 
-	// Add this token to the family set (for family-wide revocation)
+// addTokenToFamilySet adds the token to the family set for family-wide revocation.
+func (s *Store) addTokenToFamilySet(ctx context.Context, refreshToken, familyID string, ttl time.Duration) {
 	familySetKey := s.familyKey(familyID)
 	if err := s.client.Do(ctx,
 		s.client.B().Sadd().Key(familySetKey).Member(refreshToken).Build(),
@@ -86,7 +121,6 @@ func (s *Store) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, us
 			"error", err)
 	}
 
-	// Set TTL on family set (extends on each new token)
 	if err := s.client.Do(ctx,
 		s.client.B().Expire().Key(familySetKey).Seconds(int64(ttl.Seconds())).Build(),
 	).Error(); err != nil {
@@ -94,8 +128,10 @@ func (s *Store) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, us
 			"family_id", safeTruncate(familyID, tokenIDLogLength),
 			"error", err)
 	}
+}
 
-	// Save token metadata for revocation tracking (OAuth 2.1 code reuse detection)
+// saveRefreshTokenMetadata saves token metadata for revocation tracking.
+func (s *Store) saveRefreshTokenMetadata(ctx context.Context, refreshToken, userID, clientID string, ttl time.Duration) error {
 	tokenMeta := &storage.TokenMetadata{
 		UserID:    userID,
 		ClientID:  clientID,
@@ -114,8 +150,11 @@ func (s *Store) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, us
 	).Error(); err != nil {
 		return fmt.Errorf("failed to save token metadata: %w", err)
 	}
+	return nil
+}
 
-	// Add token to user+client set (for bulk revocation)
+// addTokenToUserClientSet adds the token to the user+client set for bulk revocation.
+func (s *Store) addTokenToUserClientSet(ctx context.Context, refreshToken, userID, clientID string) {
 	userClientKey := s.userClientKey(userID, clientID)
 	if err := s.client.Do(ctx,
 		s.client.B().Sadd().Key(userClientKey).Member(refreshToken).Build(),
@@ -125,14 +164,6 @@ func (s *Store) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, us
 			"client_id", clientID,
 			"error", err)
 	}
-
-	s.logger.Debug("Saved refresh token with family tracking",
-		"user_id", userID,
-		"family_id", safeTruncate(familyID, tokenIDLogLength),
-		"generation", generation,
-		"expires_at", expiresAt)
-
-	return nil
 }
 
 // GetRefreshTokenFamily retrieves family metadata for a refresh token
@@ -336,92 +367,21 @@ func (s *Store) GetTokenMetadata(tokenID string) (*storage.TokenMetadata, error)
 // This implements the OAuth 2.1 requirement for authorization code reuse detection.
 // Returns the number of tokens revoked and any error encountered.
 func (s *Store) RevokeAllTokensForUserClient(ctx context.Context, userID, clientID string) (int, error) {
-	if userID == "" || clientID == "" {
-		return 0, fmt.Errorf("userID and clientID cannot be empty")
-	}
-
-	// Validate input lengths
-	if err := validateStringLength(userID, MaxIDLength, "userID"); err != nil {
-		return 0, err
-	}
-	if err := validateStringLength(clientID, MaxIDLength, "clientID"); err != nil {
+	if err := s.validateRevocationParams(userID, clientID); err != nil {
 		return 0, err
 	}
 
-	userClientKey := s.userClientKey(userID, clientID)
-
-	// Get all token IDs for this user+client
-	tokenIDs, err := s.client.Do(ctx, s.client.B().Smembers().Key(userClientKey).Build()).AsStrSlice()
+	tokenIDs, err := s.getTokensForUserClient(ctx, userID, clientID)
 	if err != nil {
-		if isNilError(err) {
-			return 0, nil // No tokens to revoke
-		}
-		return 0, fmt.Errorf("failed to get tokens for user+client: %w", err)
+		return 0, err
+	}
+	if len(tokenIDs) == 0 {
+		return 0, nil
 	}
 
-	revokedCount := 0
-	familiesToRevoke := make(map[string]bool)
-
-	// First pass: identify all families that need to be revoked
-	for _, tokenID := range tokenIDs {
-		// Get family metadata to find family ID
-		metaKey := s.refreshTokenMetaKey(tokenID)
-		data, err := s.client.Do(ctx, s.client.B().Get().Key(metaKey).Build()).ToString()
-		if err == nil {
-			var j refreshTokenFamilyJSON
-			if err := json.Unmarshal([]byte(data), &j); err == nil && j.FamilyID != "" {
-				familiesToRevoke[j.FamilyID] = true
-			}
-		}
-	}
-
-	// Revoke entire families
-	for familyID := range familiesToRevoke {
-		if err := s.RevokeRefreshTokenFamily(ctx, familyID); err != nil {
-			s.logger.Warn("Failed to revoke token family",
-				"family_id", safeTruncate(familyID, tokenIDLogLength),
-				"error", err)
-		}
-	}
-
-	// Second pass: revoke any remaining tokens (access tokens, tokens without families)
-	for _, tokenID := range tokenIDs {
-		tokenPrefix := safeTruncate(tokenID, tokenIDLogLength)
-
-		// Delete token
-		tokenKey := s.tokenKey(tokenID)
-		if err := s.client.Do(ctx, s.client.B().Del().Key(tokenKey).Build()).Error(); err != nil {
-			s.logger.Debug("Failed to delete token during user+client revocation",
-				"token_prefix", tokenPrefix,
-				"error", err)
-		}
-
-		// Delete refresh token if exists
-		refreshKey := s.refreshTokenKey(tokenID)
-		if err := s.client.Do(ctx, s.client.B().Del().Key(refreshKey).Build()).Error(); err != nil {
-			s.logger.Debug("Failed to delete refresh token during user+client revocation",
-				"token_prefix", tokenPrefix,
-				"error", err)
-		}
-
-		// Delete token metadata
-		metaKey := s.tokenMetaKey(tokenID)
-		if err := s.client.Do(ctx, s.client.B().Del().Key(metaKey).Build()).Error(); err != nil {
-			s.logger.Debug("Failed to delete token metadata during user+client revocation",
-				"token_prefix", tokenPrefix,
-				"error", err)
-		}
-
-		revokedCount++
-	}
-
-	// Delete the user+client set
-	if err := s.client.Do(ctx, s.client.B().Del().Key(userClientKey).Build()).Error(); err != nil {
-		s.logger.Warn("Failed to delete user+client set",
-			"user_id", userID,
-			"client_id", clientID,
-			"error", err)
-	}
+	s.revokeFamiliesForTokens(ctx, tokenIDs)
+	revokedCount := s.revokeIndividualTokens(ctx, tokenIDs)
+	s.deleteUserClientSet(ctx, userID, clientID)
 
 	if revokedCount > 0 {
 		s.logger.Warn("Revoked all tokens for user+client",
@@ -432,6 +392,93 @@ func (s *Store) RevokeAllTokensForUserClient(ctx context.Context, userID, client
 	}
 
 	return revokedCount, nil
+}
+
+// validateRevocationParams validates the user and client IDs for revocation.
+func (s *Store) validateRevocationParams(userID, clientID string) error {
+	if userID == "" || clientID == "" {
+		return fmt.Errorf("userID and clientID cannot be empty")
+	}
+	if err := validateStringLength(userID, MaxIDLength, "userID"); err != nil {
+		return err
+	}
+	return validateStringLength(clientID, MaxIDLength, "clientID")
+}
+
+// getTokensForUserClient retrieves all token IDs for a user+client combination.
+func (s *Store) getTokensForUserClient(ctx context.Context, userID, clientID string) ([]string, error) {
+	userClientKey := s.userClientKey(userID, clientID)
+	tokenIDs, err := s.client.Do(ctx, s.client.B().Smembers().Key(userClientKey).Build()).AsStrSlice()
+	if err != nil {
+		if isNilError(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get tokens for user+client: %w", err)
+	}
+	return tokenIDs, nil
+}
+
+// revokeFamiliesForTokens identifies and revokes all token families for the given tokens.
+func (s *Store) revokeFamiliesForTokens(ctx context.Context, tokenIDs []string) {
+	familiesToRevoke := s.identifyFamilies(ctx, tokenIDs)
+	for familyID := range familiesToRevoke {
+		if err := s.RevokeRefreshTokenFamily(ctx, familyID); err != nil {
+			s.logger.Warn("Failed to revoke token family",
+				"family_id", safeTruncate(familyID, tokenIDLogLength),
+				"error", err)
+		}
+	}
+}
+
+// identifyFamilies finds all family IDs for the given tokens.
+func (s *Store) identifyFamilies(ctx context.Context, tokenIDs []string) map[string]bool {
+	families := make(map[string]bool)
+	for _, tokenID := range tokenIDs {
+		metaKey := s.refreshTokenMetaKey(tokenID)
+		data, err := s.client.Do(ctx, s.client.B().Get().Key(metaKey).Build()).ToString()
+		if err == nil {
+			var j refreshTokenFamilyJSON
+			if err := json.Unmarshal([]byte(data), &j); err == nil && j.FamilyID != "" {
+				families[j.FamilyID] = true
+			}
+		}
+	}
+	return families
+}
+
+// revokeIndividualTokens revokes individual tokens and returns the count.
+func (s *Store) revokeIndividualTokens(ctx context.Context, tokenIDs []string) int {
+	revokedCount := 0
+	for _, tokenID := range tokenIDs {
+		s.deleteTokenAndMetadata(ctx, tokenID)
+		revokedCount++
+	}
+	return revokedCount
+}
+
+// deleteTokenAndMetadata deletes a token and all its associated metadata.
+func (s *Store) deleteTokenAndMetadata(ctx context.Context, tokenID string) {
+	tokenPrefix := safeTruncate(tokenID, tokenIDLogLength)
+
+	if err := s.client.Do(ctx, s.client.B().Del().Key(s.tokenKey(tokenID)).Build()).Error(); err != nil {
+		s.logger.Debug("Failed to delete token during user+client revocation", "token_prefix", tokenPrefix, "error", err)
+	}
+
+	if err := s.client.Do(ctx, s.client.B().Del().Key(s.refreshTokenKey(tokenID)).Build()).Error(); err != nil {
+		s.logger.Debug("Failed to delete refresh token during user+client revocation", "token_prefix", tokenPrefix, "error", err)
+	}
+
+	if err := s.client.Do(ctx, s.client.B().Del().Key(s.tokenMetaKey(tokenID)).Build()).Error(); err != nil {
+		s.logger.Debug("Failed to delete token metadata during user+client revocation", "token_prefix", tokenPrefix, "error", err)
+	}
+}
+
+// deleteUserClientSet deletes the user+client token set.
+func (s *Store) deleteUserClientSet(ctx context.Context, userID, clientID string) {
+	userClientKey := s.userClientKey(userID, clientID)
+	if err := s.client.Do(ctx, s.client.B().Del().Key(userClientKey).Build()).Error(); err != nil {
+		s.logger.Warn("Failed to delete user+client set", "user_id", userID, "client_id", clientID, "error", err)
+	}
 }
 
 // GetTokensByUserClient retrieves all token IDs for a user+client combination.
