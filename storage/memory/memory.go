@@ -1051,13 +1051,9 @@ func (s *Store) cleanupLoop() {
 	}
 }
 
-func (s *Store) cleanup() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+// cleanupExpiredTokens removes expired tokens without refresh tokens
+func (s *Store) cleanupExpiredTokens() int {
 	cleaned := 0
-
-	// Cleanup expired tokens (with clock skew grace period)
 	for userID, token := range s.tokens {
 		if security.IsTokenExpired(token.Expiry) && token.RefreshToken == "" {
 			delete(s.tokens, userID)
@@ -1065,61 +1061,74 @@ func (s *Store) cleanup() {
 			cleaned++
 		}
 	}
+	return cleaned
+}
 
-	// Cleanup expired authorization states (with clock skew grace period)
+// cleanupExpiredAuthStates removes expired authorization states
+func (s *Store) cleanupExpiredAuthStates() int {
+	cleaned := 0
 	for stateID, state := range s.authStates {
 		if security.IsTokenExpired(state.ExpiresAt) {
 			delete(s.authStates, stateID)
 			cleaned++
 		}
 	}
+	return cleaned
+}
 
-	// Cleanup expired authorization codes (with clock skew grace period)
+// cleanupExpiredAuthCodes removes expired authorization codes
+func (s *Store) cleanupExpiredAuthCodes() int {
+	cleaned := 0
 	for code, authCode := range s.authCodes {
 		if security.IsTokenExpired(authCode.ExpiresAt) {
 			delete(s.authCodes, code)
 			cleaned++
 		}
 	}
+	return cleaned
+}
 
-	// Cleanup expired refresh tokens (with clock skew grace period)
+// cleanupExpiredRefreshTokens removes expired refresh tokens and their metadata
+func (s *Store) cleanupExpiredRefreshTokens() int {
+	cleaned := 0
 	for refreshToken, expiresAt := range s.refreshTokenExpiries {
 		if security.IsTokenExpired(expiresAt) {
 			delete(s.refreshTokens, refreshToken)
 			delete(s.refreshTokenExpiries, refreshToken)
-			delete(s.refreshTokenFamilies, refreshToken) // Also cleanup family metadata
+			delete(s.refreshTokenFamilies, refreshToken)
 			cleaned++
 		}
 	}
+	return cleaned
+}
 
-	// Cleanup revoked token families (keep metadata for a while for forensics, then cleanup)
-	// Use configurable retention period (default: 90 days)
-	// This provides retention for security audits and forensics
+// cleanupRevokedFamilies removes old revoked token family metadata
+func (s *Store) cleanupRevokedFamilies() int {
+	cleaned := 0
 	retentionDays := s.revokedFamilyRetentionDays
 	if retentionDays == 0 {
-		retentionDays = 90 // fallback to default
+		retentionDays = 90
 	}
-	revokedFamilyCleanupThreshold := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
+	threshold := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
 	for refreshToken, family := range s.refreshTokenFamilies {
 		if family.Revoked {
-			// Use RevokedAt if available, otherwise fall back to IssuedAt
 			revokedTime := family.RevokedAt
 			if revokedTime.IsZero() {
 				revokedTime = family.IssuedAt
 			}
-			if revokedTime.Before(revokedFamilyCleanupThreshold) {
+			if revokedTime.Before(threshold) {
 				delete(s.refreshTokenFamilies, refreshToken)
 				cleaned++
 			}
 		}
 	}
+	return cleaned
+}
 
-	// Cleanup orphaned token metadata (tokens that no longer exist)
-	// SECURITY NOTE: Orphaned metadata can occur if the process crashes between deletes.
-	// This is expected for in-memory storage. For production use with persistent storage,
-	// implement proper transaction support to prevent orphaning.
+// cleanupOrphanedMetadata removes token metadata for tokens that no longer exist
+func (s *Store) cleanupOrphanedMetadata() int {
+	cleaned := 0
 	for tokenID := range s.tokenMetadata {
-		// Check if token still exists (either as a regular token or refresh token)
 		if _, existsAsToken := s.tokens[tokenID]; !existsAsToken {
 			if _, existsAsRefresh := s.refreshTokens[tokenID]; !existsAsRefresh {
 				delete(s.tokenMetadata, tokenID)
@@ -1127,15 +1136,24 @@ func (s *Store) cleanup() {
 			}
 		}
 	}
+	return cleaned
+}
 
-	// SECURITY MONITORING: Check for excessive family metadata growth
-	// This could indicate a memory exhaustion attack via repeated token reuse
+func (s *Store) cleanup() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cleaned := s.cleanupExpiredTokens()
+	cleaned += s.cleanupExpiredAuthStates()
+	cleaned += s.cleanupExpiredAuthCodes()
+	cleaned += s.cleanupExpiredRefreshTokens()
+	cleaned += s.cleanupRevokedFamilies()
+	cleaned += s.cleanupOrphanedMetadata()
+
 	familyCount := len(s.refreshTokenFamilies)
 	if familyCount > maxFamilyMetadataEntries {
-		s.logger.Warn("Refresh token family metadata approaching limit - possible memory exhaustion attack",
-			"current_count", familyCount,
-			"max_threshold", maxFamilyMetadataEntries,
-			"recommendation", "Review security logs for repeated token reuse attempts")
+		s.logger.Warn("Refresh token family metadata approaching limit",
+			"current_count", familyCount, "max_threshold", maxFamilyMetadataEntries)
 	}
 
 	if cleaned > 0 {

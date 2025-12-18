@@ -334,6 +334,57 @@ func (c *clientMetadataCache) GetMetrics() cacheMetrics {
 	return c.metrics
 }
 
+// tryGetCachedClient tries to get a client from cache
+// Returns (client, true) if found, (nil, false) otherwise
+func (s *Server) tryGetCachedClient(ctx context.Context, clientID string) (*storage.Client, bool) {
+	cachedClient, ok := s.metadataCache.Get(clientID)
+	if !ok {
+		return nil, false
+	}
+
+	s.recordCIMDCacheMetric(ctx, "hit")
+	s.logMetadataFetchEvent("client_metadata_cache_hit", clientID, map[string]any{"source": "cache"})
+	s.Logger.Debug("Using cached client metadata", "client_id", clientID)
+	return cachedClient, true
+}
+
+// checkNegativeCache checks if clientID is in the negative cache
+// Returns error if found in negative cache, nil otherwise
+func (s *Server) checkNegativeCache(ctx context.Context, clientID string) error {
+	errorMsg, found := s.metadataCache.GetNegative(clientID)
+	if !found {
+		return nil
+	}
+
+	s.recordCIMDCacheMetric(ctx, "negative_hit")
+	s.logMetadataFetchEvent("client_metadata_negative_cache_hit", clientID, map[string]any{
+		"source": "negative_cache", "cached_error": errorMsg,
+	})
+	s.Logger.Debug("Client ID in negative cache", "client_id", clientID, "cached_error", errorMsg)
+	return fmt.Errorf("client metadata previously failed validation: %s (cached)", errorMsg)
+}
+
+// checkMetadataFetchRateLimit checks if fetching metadata for this clientID is rate limited
+func (s *Server) checkMetadataFetchRateLimit(ctx context.Context, clientID string) error {
+	if s.metadataFetchRateLimiter == nil {
+		return nil
+	}
+
+	u, err := url.Parse(clientID)
+	if err != nil {
+		return fmt.Errorf("invalid client_id URL: %w", err)
+	}
+	domain := u.Hostname()
+
+	if !s.metadataFetchRateLimiter.Allow(domain) {
+		s.logMetadataFetchEvent("client_metadata_rate_limited", clientID, map[string]any{
+			"domain": domain, "reason": "rate_limit_exceeded",
+		})
+		return fmt.Errorf("rate limit exceeded for metadata fetches from domain: %s", domain)
+	}
+	return nil
+}
+
 // getOrFetchClient retrieves a client from cache or fetches metadata if not cached
 // This is the main entry point for URL-based client resolution
 //
@@ -345,82 +396,27 @@ func (c *clientMetadataCache) GetMetrics() cacheMetrics {
 //   - Negative caching: prevents rapid retries of known-bad client IDs (cache poisoning mitigation)
 //   - Audit logging: all cache hits and fetches are logged for security monitoring
 func (s *Server) getOrFetchClient(ctx context.Context, clientID string) (*storage.Client, error) {
-	// Check if URL-based client ID
 	if !isURLClientID(clientID) {
-		// Not a URL, use normal client lookup
 		return s.clientStore.GetClient(ctx, clientID)
 	}
 
-	// Check if CIMD is enabled
 	if !s.Config.EnableClientIDMetadataDocuments {
 		return nil, fmt.Errorf("URL-based client_id not supported: client_id_metadata_documents feature is disabled")
 	}
 
 	// Try cache first
-	if cachedClient, ok := s.metadataCache.Get(clientID); ok {
-		// Record cache hit metric
-		s.recordCIMDCacheMetric(ctx, "hit")
-
-		// SECURITY: Audit log cache hits for security monitoring
-		if s.Auditor != nil {
-			s.Auditor.LogEvent(security.Event{
-				Type:     "client_metadata_cache_hit",
-				ClientID: clientID,
-				Details: map[string]any{
-					"source": "cache",
-				},
-			})
-		}
-		s.Logger.Debug("Using cached client metadata", "client_id", clientID)
-		return cachedClient, nil
+	if client, ok := s.tryGetCachedClient(ctx, clientID); ok {
+		return client, nil
 	}
 
-	// SECURITY: Check negative cache for previously failed client IDs
-	// This prevents rapid retries of known-bad client IDs and mitigates cache poisoning
-	if errorMsg, found := s.metadataCache.GetNegative(clientID); found {
-		// Record negative cache hit metric
-		s.recordCIMDCacheMetric(ctx, "negative_hit")
-
-		if s.Auditor != nil {
-			s.Auditor.LogEvent(security.Event{
-				Type:     "client_metadata_negative_cache_hit",
-				ClientID: clientID,
-				Details: map[string]any{
-					"source":        "negative_cache",
-					"cached_error":  errorMsg,
-					"cache_purpose": "prevent_rapid_retry",
-				},
-			})
-		}
-		s.Logger.Debug("Client ID in negative cache (previously failed)",
-			"client_id", clientID,
-			"cached_error", errorMsg)
-		return nil, fmt.Errorf("client metadata previously failed validation: %s (cached)", errorMsg)
+	// Check negative cache
+	if err := s.checkNegativeCache(ctx, clientID); err != nil {
+		return nil, err
 	}
 
-	// SECURITY: Apply rate limiting per domain to prevent abuse
-	// Parse URL to extract domain
-	u, err := url.Parse(clientID)
-	if err != nil {
-		return nil, fmt.Errorf("invalid client_id URL: %w", err)
-	}
-	domain := u.Hostname()
-
-	// Check rate limit if rate limiter is configured
-	if s.metadataFetchRateLimiter != nil {
-		if !s.metadataFetchRateLimiter.Allow(domain) {
-			if s.Auditor != nil {
-				s.Auditor.LogEvent(security.Event{
-					Type:     "client_metadata_rate_limited",
-					ClientID: clientID,
-					Details: map[string]any{
-						"domain": domain,
-						"reason": "rate_limit_exceeded",
-					},
-				})
-			}
-			return nil, fmt.Errorf("rate limit exceeded for metadata fetches from domain: %s", domain)
-		}
+	// Check rate limit
+	if err := s.checkMetadataFetchRateLimit(ctx, clientID); err != nil {
+		return nil, err
 	}
 
 	// SECURITY: Use singleflight to deduplicate concurrent fetches of the same URL

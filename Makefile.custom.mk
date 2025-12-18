@@ -71,7 +71,7 @@ gci-check: ## Check gci import ordering
 
 ##@ Static Analysis
 
-.PHONY: staticcheck errcheck ineffassign unconvert misspell gocritic revive nilaway
+.PHONY: staticcheck errcheck ineffassign unconvert misspell gocritic revive
 staticcheck: ## Run staticcheck
 	@echo "====> $@"
 	@if command -v staticcheck >/dev/null 2>&1; then \
@@ -128,18 +128,9 @@ revive: ## Run revive - fast, configurable linter
 		echo "revive not installed. Run: go install github.com/mgechev/revive@latest"; \
 	fi
 
-nilaway: ## Run nilaway - nil pointer dereference detector (informational)
-	@echo "====> $@"
-	@if command -v nilaway >/dev/null 2>&1; then \
-		echo "Note: nilaway may report false positives for http.Client.Do and map iteration"; \
-		nilaway ./... || true; \
-	else \
-		echo "nilaway not installed. Run: go install go.uber.org/nilaway/cmd/nilaway@latest"; \
-	fi
-
 ##@ Security Analysis
 
-.PHONY: gosec govulncheck security-check trivy nancy-simple
+.PHONY: gosec govulncheck security-check trivy
 gosec: ## Run gosec - security-focused linter
 	@echo "====> $@"
 	@if command -v gosec >/dev/null 2>&1; then \
@@ -164,48 +155,40 @@ trivy: ## Run trivy filesystem scan (if installed)
 		echo "trivy not installed. See: https://aquasecurity.github.io/trivy/latest/getting-started/installation/"; \
 	fi
 
-nancy-simple: ## Run nancy without OSS Index auth (may have limited results)
-	@echo "====> $@"
-	@if command -v nancy >/dev/null 2>&1; then \
-		go list -json -deps ./... 2>/dev/null | nancy sleuth --skip-update-check --quiet 2>/dev/null || true; \
-	else \
-		echo "nancy not installed. Run: go install github.com/sonatype-nexus-community/nancy@latest"; \
-	fi
-
 security-check: gosec govulncheck ## Run all security checks
 	@echo "====> $@"
 
 ##@ Code Quality
 
 .PHONY: gocyclo gocognit goconst dupl quality-check
-gocyclo: ## Run gocyclo - cyclomatic complexity (threshold 15)
+gocyclo: ## Run gocyclo - cyclomatic complexity (threshold 15, excludes tests)
 	@echo "====> $@"
 	@if command -v gocyclo >/dev/null 2>&1; then \
-		gocyclo -over 15 . || true; \
+		find . -name '*.go' -not -name '*_test.go' -not -path './vendor/*' -not -path './examples/*' | xargs gocyclo -over 15; \
 	else \
 		echo "gocyclo not installed. Run: go install github.com/fzipp/gocyclo/cmd/gocyclo@latest"; \
 	fi
 
-gocognit: ## Run gocognit - cognitive complexity (threshold 15)
+gocognit: ## Run gocognit - cognitive complexity (threshold 15, excludes tests)
 	@echo "====> $@"
 	@if command -v gocognit >/dev/null 2>&1; then \
-		gocognit -over 15 . || true; \
+		find . -name '*.go' -not -name '*_test.go' -not -path './vendor/*' -not -path './examples/*' | xargs gocognit -over 15; \
 	else \
 		echo "gocognit not installed. Run: go install github.com/uudashr/gocognit/cmd/gocognit@latest"; \
 	fi
 
-goconst: ## Run goconst - find repeated strings
+goconst: ## Run goconst - find repeated strings (excludes tests and examples)
 	@echo "====> $@"
 	@if command -v goconst >/dev/null 2>&1; then \
-		goconst ./...; \
+		goconst -ignore "test" ./...; \
 	else \
 		echo "goconst not installed. Run: go install github.com/jgautheron/goconst/cmd/goconst@latest"; \
 	fi
 
-dupl: ## Run dupl - code duplication detection (threshold 100)
+dupl: ## Run dupl - code duplication detection (threshold 100, excludes tests)
 	@echo "====> $@"
 	@if command -v dupl >/dev/null 2>&1; then \
-		dupl -threshold 100 . || true; \
+		find . -name '*.go' -not -name '*_test.go' -not -path './vendor/*' -not -path './examples/*' | xargs dupl -threshold 100; \
 	else \
 		echo "dupl not installed. Run: go install github.com/mibk/dupl@latest"; \
 	fi
@@ -234,12 +217,16 @@ mod-tidy-check: ## Check if go mod tidy would make changes
 	@rm -f go.mod.backup go.sum.backup
 	@echo "go.mod is tidy"
 
-mod-outdated: ## Check for outdated dependencies
+mod-outdated: ## Check for outdated dependencies (informational)
 	@echo "====> $@"
-	@if command -v jq >/dev/null 2>&1; then \
-		go list -m -u -json all 2>/dev/null | jq -r 'select(.Update) | "\(.Path): \(.Version) -> \(.Update.Version)"' || true; \
+	@outdated=$$(go list -m -u -json all 2>/dev/null | jq -r 'select(.Update) | "\(.Path): \(.Version) -> \(.Update.Version)"'); \
+	if [ -n "$$outdated" ]; then \
+		echo "WARNING: Outdated dependencies found:"; \
+		echo "$$outdated"; \
+		echo ""; \
+		echo "Please update dependencies by running: go get -u ./... && go mod tidy"; \
 	else \
-		go list -m -u all 2>/dev/null | grep '\[' || echo "All dependencies up to date"; \
+		echo "All dependencies are up to date"; \
 	fi
 
 deps-check: mod-verify mod-tidy-check ## Run all dependency checks
@@ -247,7 +234,7 @@ deps-check: mod-verify mod-tidy-check ## Run all dependency checks
 
 ##@ Documentation Checks
 
-.PHONY: doc-check doc-missing godoc-check
+.PHONY: doc-check
 doc-check: ## Check for missing doc.go files in packages
 	@echo "====> $@"
 	@missing=""; \
@@ -261,13 +248,6 @@ doc-check: ## Check for missing doc.go files in packages
 	else \
 		echo "All packages have doc.go files"; \
 	fi
-
-godoc-check: ## Validate exported documentation
-	@echo "====> $@"
-	@echo "Checking exported documentation..."
-	@go doc -all . 2>&1 | head -50 || true
-	@echo ""
-	@echo "Tip: Run 'make godoc' to browse full documentation"
 
 ##@ Examples
 
@@ -312,11 +292,9 @@ install-analyze-tools: install-tools ## Install all analysis tools
 	go install github.com/client9/misspell/cmd/misspell@latest
 	go install github.com/go-critic/go-critic/cmd/gocritic@latest
 	go install github.com/mgechev/revive@latest
-	go install go.uber.org/nilaway/cmd/nilaway@latest
 	@echo "Installing security tools..."
 	go install github.com/securego/gosec/v2/cmd/gosec@latest
 	go install golang.org/x/vuln/cmd/govulncheck@latest
-	go install github.com/sonatype-nexus-community/nancy@latest
 	@echo "Installing code quality tools..."
 	go install github.com/fzipp/gocyclo/cmd/gocyclo@latest
 	go install github.com/uudashr/gocognit/cmd/gocognit@latest
@@ -347,7 +325,7 @@ analyze-format: fmt-check gci-check ## Run all formatting checks
 analyze-lint: vet lint staticcheck errcheck ineffassign unconvert misspell gocritic revive ## Run all linting tools
 	@echo "====> $@"
 
-analyze-security: security-check nancy-simple ## Run all security tools
+analyze-security: security-check ## Run all security tools
 	@echo "====> $@"
 
 analyze-quality: quality-check ## Run all code quality tools
@@ -356,7 +334,7 @@ analyze-quality: quality-check ## Run all code quality tools
 analyze-deps: deps-check mod-outdated ## Run all dependency analysis
 	@echo "====> $@"
 
-analyze-all: analyze-format analyze-lint analyze-security analyze-quality analyze-deps doc-check godoc-check ## Run ALL analysis tools
+analyze-all: analyze-format analyze-lint analyze-security analyze-quality analyze-deps doc-check ## Run ALL analysis tools
 	@echo "====> $@"
 	@echo ""
 	@echo "=========================================="

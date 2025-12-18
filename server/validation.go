@@ -294,18 +294,19 @@ func (s *Server) validateStateParameter(state string) error {
 	return nil
 }
 
-// validatePKCE validates the PKCE code verifier against the challenge per RFC 7636
-func (s *Server) validatePKCE(challenge, method, verifier string) error {
-	if challenge == "" {
-		// No PKCE required for this flow
-		return nil
-	}
+// isValidPKCEVerifierChar checks if a character is valid for PKCE code verifier
+// RFC 7636: code_verifier can only contain [A-Z] / [a-z] / [0-9] / "-" / "." / "_" / "~"
+func isValidPKCEVerifierChar(ch rune) bool {
+	return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
+		ch == '-' || ch == '.' || ch == '_' || ch == '~'
+}
 
+// validateCodeVerifierFormat validates the format of a PKCE code verifier
+func validateCodeVerifierFormat(verifier string) error {
 	if verifier == "" {
 		return fmt.Errorf("code_verifier is required when code_challenge is present")
 	}
 
-	// RFC 7636: code_verifier must be 43-128 characters
 	if len(verifier) < MinCodeVerifierLength {
 		return fmt.Errorf("code_verifier must be at least %d characters (RFC 7636)", MinCodeVerifierLength)
 	}
@@ -313,46 +314,53 @@ func (s *Server) validatePKCE(challenge, method, verifier string) error {
 		return fmt.Errorf("code_verifier must be at most %d characters (RFC 7636)", MaxCodeVerifierLength)
 	}
 
-	// RFC 7636: code_verifier can only contain [A-Z] / [a-z] / [0-9] / "-" / "." / "_" / "~"
-	// This prevents injection attacks and ensures cryptographic quality
-	// Security: Also prevents null bytes, control characters, or Unicode that could cause issues
 	for _, ch := range verifier {
-		isValid := (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
-			ch == '-' || ch == '.' || ch == '_' || ch == '~'
-		if !isValid {
+		if !isValidPKCEVerifierChar(ch) {
 			return fmt.Errorf("code_verifier contains invalid characters (must be [A-Za-z0-9-._~])")
 		}
 	}
+	return nil
+}
 
-	var computedChallenge string
-
-	// Compute challenge based on method
+// computePKCEChallenge computes the challenge from verifier using the specified method
+func (s *Server) computePKCEChallenge(verifier, method string) (string, error) {
 	switch method {
 	case PKCEMethodS256:
-		// Recommended: SHA256 hash of verifier
 		hash := sha256.Sum256([]byte(verifier))
-		computedChallenge = base64.RawURLEncoding.EncodeToString(hash[:])
+		return base64.RawURLEncoding.EncodeToString(hash[:]), nil
 
 	case PKCEMethodPlain:
-		// Deprecated but allowed if configured for backward compatibility
 		if !s.Config.AllowPKCEPlain {
-			return fmt.Errorf("'%s' code_challenge_method is not allowed (configure AllowPKCEPlain=true if needed for legacy clients)", PKCEMethodPlain)
+			return "", fmt.Errorf("'%s' code_challenge_method is not allowed (configure AllowPKCEPlain=true if needed for legacy clients)", PKCEMethodPlain)
 		}
-		computedChallenge = verifier
-		s.Logger.Warn("Using insecure 'plain' PKCE method",
-			"recommendation", "Upgrade client to use S256")
+		s.Logger.Warn("Using insecure 'plain' PKCE method", "recommendation", "Upgrade client to use S256")
+		return verifier, nil
 
 	default:
-		return fmt.Errorf("unsupported code_challenge_method: %s (supported: S256%s)", method, func() string {
-			if s.Config.AllowPKCEPlain {
-				return ", plain"
-			}
-			return ""
-		}())
+		supportedMethods := "S256"
+		if s.Config.AllowPKCEPlain {
+			supportedMethods = "S256, plain"
+		}
+		return "", fmt.Errorf("unsupported code_challenge_method: %s (supported: %s)", method, supportedMethods)
+	}
+}
+
+// validatePKCE validates the PKCE code verifier against the challenge per RFC 7636
+func (s *Server) validatePKCE(challenge, method, verifier string) error {
+	if challenge == "" {
+		return nil // No PKCE required for this flow
+	}
+
+	if err := validateCodeVerifierFormat(verifier); err != nil {
+		return err
+	}
+
+	computedChallenge, err := s.computePKCEChallenge(verifier, method)
+	if err != nil {
+		return err
 	}
 
 	// Constant-time comparison to prevent timing attacks
-	// Using subtle.ConstantTimeCompare to prevent side-channel attacks
 	if subtle.ConstantTimeCompare([]byte(computedChallenge), []byte(challenge)) != 1 {
 		return fmt.Errorf("code_verifier does not match code_challenge")
 	}

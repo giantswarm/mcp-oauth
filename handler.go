@@ -31,6 +31,127 @@ const (
 	tokenTypeBearer   = "Bearer"
 )
 
+// clientRegistrationRequest represents the JSON request for client registration
+type clientRegistrationRequest struct {
+	ClientName              string   `json:"client_name"`
+	ClientType              string   `json:"client_type"`
+	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
+	RedirectURIs            []string `json:"redirect_uris"`
+	Scopes                  []string `json:"scopes"`
+}
+
+// checkClientRegistrationRateLimit checks if client registration is rate limited
+// Returns true if request should be rejected, false if allowed
+func (h *Handler) checkClientRegistrationRateLimit(w http.ResponseWriter, clientIP string, _ time.Time) bool {
+	if h.server.ClientRegistrationRateLimiter == nil {
+		return false
+	}
+
+	if !h.server.ClientRegistrationRateLimiter.Allow(clientIP) {
+		h.logger.Warn("Client registration rate limit exceeded",
+			"ip", clientIP,
+			"max_per_window", h.server.Config.MaxRegistrationsPerHour,
+			"window", time.Duration(h.server.Config.RegistrationRateLimitWindow)*time.Second)
+		if h.server.Auditor != nil {
+			h.server.Auditor.LogClientRegistrationRateLimitExceeded(clientIP)
+		}
+		h.writeError(w, ErrorCodeInvalidRequest,
+			"Client registration rate limit exceeded. Please try again later.",
+			http.StatusTooManyRequests)
+		return true
+	}
+	return false
+}
+
+// validateRegistrationToken validates the registration access token
+// Returns true if valid token was provided
+func (h *Handler) validateRegistrationToken(authHeader string) bool {
+	if authHeader == "" || h.server.Config.RegistrationAccessToken == "" {
+		return false
+	}
+
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+		return false
+	}
+
+	return subtle.ConstantTimeCompare([]byte(parts[1]), []byte(h.server.Config.RegistrationAccessToken)) == 1
+}
+
+// authorizeClientRegistration checks if client registration is authorized
+// Returns (registeredViaTrustedScheme, trustedScheme, error)
+func (h *Handler) authorizeClientRegistration(w http.ResponseWriter, r *http.Request, req *clientRegistrationRequest, clientIP string) (bool, string, bool) {
+	if h.server.Config.AllowPublicClientRegistration {
+		h.logger.Warn("Unauthenticated client registration (DoS risk)", "client_ip", clientIP)
+		return false, "", true
+	}
+
+	authHeader := r.Header.Get("Authorization")
+	if h.validateRegistrationToken(authHeader) {
+		h.logger.Info("Client registration authenticated with valid token")
+		return false, "", true
+	}
+
+	// Check trusted schemes
+	if authHeader != "" {
+		h.logger.Warn("Invalid registration token provided, checking trusted schemes as fallback",
+			"client_ip", clientIP, "has_trusted_schemes_configured", len(h.server.Config.TrustedPublicRegistrationSchemes) > 0)
+	}
+
+	allowed, scheme, err := h.server.CanRegisterWithTrustedScheme(req.RedirectURIs)
+	if err != nil {
+		h.logger.Warn("Client registration rejected: invalid redirect URI", "client_ip", clientIP, "error", err)
+		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("Invalid redirect URI: %v", err), http.StatusBadRequest)
+		return false, "", false
+	}
+
+	if allowed {
+		h.logger.Info("Client registration authorized via trusted scheme",
+			"scheme", scheme, "client_ip", clientIP, "strict_matching", !h.server.Config.DisableStrictSchemeMatching)
+		return true, scheme, true
+	}
+
+	h.logger.Warn("Client registration rejected: missing or invalid authorization",
+		"client_ip", clientIP, "has_token", authHeader != "",
+		"trusted_schemes_configured", len(h.server.Config.TrustedPublicRegistrationSchemes) > 0)
+	h.writeError(w, ErrorCodeInvalidToken,
+		"Registration requires authentication. Provide a valid registration token or use a trusted redirect URI scheme.",
+		http.StatusUnauthorized)
+	return false, "", false
+}
+
+// validatePublicClientRegistration validates public client registration is allowed
+// Returns true if allowed, false if rejected
+func (h *Handler) validatePublicClientRegistration(w http.ResponseWriter, req *clientRegistrationRequest, clientIP string, registeredViaTrustedScheme bool, startTime time.Time, span trace.Span) bool {
+	isPublicClientRequest := req.TokenEndpointAuthMethod == TokenEndpointAuthMethodNone || req.ClientType == ClientTypePublic
+	if !isPublicClientRequest {
+		return true
+	}
+
+	if !h.server.Config.AllowPublicClientRegistration && !registeredViaTrustedScheme {
+		h.logger.Warn("Public client registration rejected (not allowed by configuration)",
+			"token_endpoint_auth_method", req.TokenEndpointAuthMethod,
+			"client_type", req.ClientType, "ip", clientIP)
+		h.recordHTTPMetrics("register", http.MethodPost, http.StatusBadRequest, startTime)
+		if span != nil {
+			instrumentation.SetSpanAttributes(span,
+				attribute.String("oauth.client_type", "public"),
+				attribute.String("security.event", "public_client_registration_denied"),
+			)
+			instrumentation.SetSpanError(span, "public client registration not allowed")
+		}
+		h.writeError(w, ErrorCodeInvalidRequest,
+			"Public client registration is not enabled on this server. Contact the server administrator.",
+			http.StatusBadRequest)
+		return false
+	}
+
+	h.logger.Info("Public client registration authorized",
+		"token_endpoint_auth_method", req.TokenEndpointAuthMethod, "client_type", req.ClientType,
+		"ip", clientIP, "via_trusted_scheme", registeredViaTrustedScheme)
+	return true
+}
+
 // Context keys for interstitial page custom handlers.
 // These are used to pass the redirect URL and app name to custom handlers
 // via the request context.
@@ -1456,7 +1577,6 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	if h.tracer != nil {
 		ctx, span = h.tracer.Start(ctx, "oauth.http.client_registration")
 		defer span.End()
-		// Update request context to include span context
 		r = r.WithContext(ctx)
 	}
 
@@ -1466,175 +1586,48 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Set CORS headers for browser-based clients
 	h.setCORSHeaders(w, r)
-
-	// Get client IP for DoS protection
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
-	// SECURITY: Check time-windowed rate limit BEFORE processing request
-	// This prevents resource exhaustion through repeated registration/deletion cycles
-	if h.server.ClientRegistrationRateLimiter != nil {
-		if !h.server.ClientRegistrationRateLimiter.Allow(clientIP) {
-			h.logger.Warn("Client registration rate limit exceeded",
-				"ip", clientIP,
-				"max_per_window", h.server.Config.MaxRegistrationsPerHour,
-				"window", time.Duration(h.server.Config.RegistrationRateLimitWindow)*time.Second)
-			if h.server.Auditor != nil {
-				h.server.Auditor.LogClientRegistrationRateLimitExceeded(clientIP)
-			}
-			h.writeError(w, ErrorCodeInvalidRequest,
-				"Client registration rate limit exceeded. Please try again later.",
-				http.StatusTooManyRequests)
-			return
-		}
+	// Check rate limit
+	if h.checkClientRegistrationRateLimit(w, clientIP, startTime) {
+		return
 	}
 
-	// Check per-IP registration limit to prevent DoS attacks
 	maxClients := h.server.Config.MaxClientsPerIP
 	if maxClients == 0 {
-		maxClients = 10 // Default limit
+		maxClients = 10
 	}
 
-	// Parse registration request (must happen before auth check to support trusted scheme validation)
-	var req struct {
-		ClientName              string   `json:"client_name"`
-		ClientType              string   `json:"client_type"`
-		TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
-		RedirectURIs            []string `json:"redirect_uris"`
-		Scopes                  []string `json:"scopes"`
-	}
-
+	// Parse registration request
+	var req clientRegistrationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(w, ErrorCodeInvalidRequest, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
-	// OAuth 2.1: Require authentication for client registration (secure by default)
-	// Registration is allowed if ANY of:
-	// 1. AllowPublicClientRegistration=true (open registration, not recommended)
-	// 2. Valid RegistrationAccessToken is provided
-	// 3. All redirect URIs use TrustedPublicRegistrationSchemes (for Cursor/IDE compatibility)
-	registeredViaTrustedScheme := false
-	trustedScheme := ""
-
-	if !h.server.Config.AllowPublicClientRegistration {
-		authHeader := r.Header.Get("Authorization")
-		hasValidToken := false
-
-		// Check if a valid registration token was provided
-		if authHeader != "" {
-			parts := strings.SplitN(authHeader, " ", 2)
-			if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
-				providedToken := parts[1]
-				if h.server.Config.RegistrationAccessToken != "" {
-					// SECURITY: Use constant-time comparison to prevent timing attacks
-					if subtle.ConstantTimeCompare([]byte(providedToken), []byte(h.server.Config.RegistrationAccessToken)) == 1 {
-						hasValidToken = true
-						h.logger.Info("Client registration authenticated with valid token")
-					}
-				}
-			}
-		}
-
-		// If no valid token, check if redirect URIs use trusted schemes
-		if !hasValidToken {
-			// Log if a token was provided but was invalid (security audit trail)
-			if authHeader != "" {
-				h.logger.Warn("Invalid registration token provided, checking trusted schemes as fallback",
-					"client_ip", clientIP,
-					"has_trusted_schemes_configured", len(h.server.Config.TrustedPublicRegistrationSchemes) > 0)
-			}
-			allowed, scheme, err := h.server.CanRegisterWithTrustedScheme(req.RedirectURIs)
-			if err != nil {
-				h.logger.Warn("Client registration rejected: invalid redirect URI",
-					"client_ip", clientIP,
-					"error", err)
-				h.writeError(w, ErrorCodeInvalidRequest,
-					fmt.Sprintf("Invalid redirect URI: %v", err),
-					http.StatusBadRequest)
-				return
-			}
-
-			if allowed {
-				registeredViaTrustedScheme = true
-				trustedScheme = scheme
-				h.logger.Info("Client registration authorized via trusted scheme (no token required)",
-					"scheme", scheme,
-					"client_ip", clientIP,
-					"strict_matching", !h.server.Config.DisableStrictSchemeMatching)
-			} else {
-				// No valid token and not using trusted schemes - reject
-				h.logger.Warn("Client registration rejected: missing or invalid authorization",
-					"client_ip", clientIP,
-					"has_token", authHeader != "",
-					"trusted_schemes_configured", len(h.server.Config.TrustedPublicRegistrationSchemes) > 0)
-				h.writeError(w, ErrorCodeInvalidToken,
-					"Registration requires authentication. Provide a valid registration token or use a trusted redirect URI scheme.",
-					http.StatusUnauthorized)
-				return
-			}
-		}
-	} else {
-		h.logger.Warn("Unauthenticated client registration (DoS risk)",
-			"client_ip", clientIP)
+	// Authorize registration
+	registeredViaTrustedScheme, trustedScheme, authorized := h.authorizeClientRegistration(w, r, &req, clientIP)
+	if !authorized {
+		return
 	}
 
-	// OAUTH 2.1 COMPLIANCE: Validate token_endpoint_auth_method
-	// Per RFC 7591 Section 2, only these methods are standardized
+	// Validate token_endpoint_auth_method
 	if req.TokenEndpointAuthMethod != "" && !isValidAuthMethod(req.TokenEndpointAuthMethod) {
 		h.logger.Warn("Unsupported token_endpoint_auth_method requested",
-			"method", req.TokenEndpointAuthMethod,
-			"supported_methods", SupportedTokenAuthMethods,
-			"ip", clientIP)
-		// SECURITY: Don't reveal full list of supported methods in error response
-		// Supported methods are already advertised in /.well-known/oauth-authorization-server
+			"method", req.TokenEndpointAuthMethod, "supported_methods", SupportedTokenAuthMethods, "ip", clientIP)
 		h.writeError(w, ErrorCodeInvalidRequest,
 			fmt.Sprintf("Unsupported token_endpoint_auth_method: %s", req.TokenEndpointAuthMethod),
 			http.StatusBadRequest)
 		return
 	}
 
-	// SECURITY: Validate public client registration is allowed
-	// When client requests "none" auth method, they're requesting a public client
-	// This is common for native/CLI apps that can't securely store secrets
-	//
-	// NOTE: Trusted scheme registration implicitly allows public clients because
-	// custom URI schemes are designed for native apps which are inherently public clients.
-	// The security comes from the OS-level scheme registration, not client secrets.
-	isPublicClientRequest := req.TokenEndpointAuthMethod == TokenEndpointAuthMethodNone || req.ClientType == ClientTypePublic
-	if isPublicClientRequest {
-		// CRITICAL: Enforce AllowPublicClientRegistration policy
-		// Public client creation must be explicitly allowed UNLESS:
-		// - The registration is via a trusted scheme (which is inherently for public/native clients)
-		if !h.server.Config.AllowPublicClientRegistration && !registeredViaTrustedScheme {
-			h.logger.Warn("Public client registration rejected (not allowed by configuration)",
-				"token_endpoint_auth_method", req.TokenEndpointAuthMethod,
-				"client_type", req.ClientType,
-				"ip", clientIP,
-				"recommendation", "Set AllowPublicClientRegistration=true to enable public client registration")
-			h.recordHTTPMetrics("register", http.MethodPost, http.StatusBadRequest, startTime)
-			if span != nil {
-				instrumentation.SetSpanAttributes(span,
-					attribute.String("oauth.client_type", "public"),
-					attribute.String("security.event", "public_client_registration_denied"),
-				)
-				instrumentation.SetSpanError(span, "public client registration not allowed")
-			}
-			h.writeError(w, ErrorCodeInvalidRequest,
-				"Public client registration is not enabled on this server. Contact the server administrator.",
-				http.StatusBadRequest)
-			return
-		}
-
-		h.logger.Info("Public client registration authorized",
-			"token_endpoint_auth_method", req.TokenEndpointAuthMethod,
-			"client_type", req.ClientType,
-			"ip", clientIP,
-			"via_trusted_scheme", registeredViaTrustedScheme)
+	// Validate public client registration
+	if !h.validatePublicClientRegistration(w, &req, clientIP, registeredViaTrustedScheme, startTime, span) {
+		return
 	}
 
-	// Track trusted scheme registration in span for observability
+	// Track trusted scheme registration in span
 	if span != nil && registeredViaTrustedScheme {
 		instrumentation.SetSpanAttributes(span,
 			attribute.String("oauth.registration_method", "trusted_scheme"),

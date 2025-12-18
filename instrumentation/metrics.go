@@ -115,12 +115,53 @@ func createHistogram(meter metric.Meter, name, desc, unit string) (metric.Float6
 	return hist, nil
 }
 
+// metricsBuilder helps construct metrics with accumulated error handling
+type metricsBuilder struct {
+	err error
+}
+
+// counter creates a counter and stores the first error
+func (b *metricsBuilder) counter(meter metric.Meter, name, desc, unit string) metric.Int64Counter {
+	if b.err != nil {
+		return nil
+	}
+	c, err := createCounter(meter, name, desc, unit)
+	if err != nil {
+		b.err = err
+	}
+	return c
+}
+
+// histogram creates a histogram and stores the first error
+func (b *metricsBuilder) histogram(meter metric.Meter, name, desc, unit string) metric.Float64Histogram {
+	if b.err != nil {
+		return nil
+	}
+	h, err := createHistogram(meter, name, desc, unit)
+	if err != nil {
+		b.err = err
+	}
+	return h
+}
+
+// gauge creates an observable gauge and stores the first error
+func (b *metricsBuilder) gauge(meter metric.Meter, name, desc, unit string) metric.Int64ObservableGauge {
+	if b.err != nil {
+		return nil
+	}
+	g, err := meter.Int64ObservableGauge(name,
+		metric.WithDescription(desc),
+		metric.WithUnit(unit))
+	if err != nil {
+		b.err = fmt.Errorf("failed to create %s gauge: %w", name, err)
+	}
+	return g
+}
+
 // newMetrics creates and registers all metric instruments
 func newMetrics(inst *Instrumentation) (*Metrics, error) {
-	m := &Metrics{
-		includeClientIDInMetrics: inst.config.IncludeClientIDInMetrics,
-	}
-	var err error
+	b := &metricsBuilder{}
+	m := &Metrics{includeClientIDInMetrics: inst.config.IncludeClientIDInMetrics}
 
 	// Create meters for each layer
 	httpMeter := inst.Meter("http")
@@ -128,249 +169,55 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 	storageMeter := inst.Meter("storage")
 	providerMeter := inst.Meter("provider")
 	securityMeter := inst.Meter("security")
-
-	// HTTP Layer Metrics
-	m.HTTPRequestsTotal, err = createCounter(httpMeter,
-		"oauth.http.requests.total",
-		"Total number of HTTP requests",
-		"{request}")
-	if err != nil {
-		return nil, err
-	}
-
-	m.HTTPRequestDuration, err = createHistogram(httpMeter,
-		"oauth.http.request.duration",
-		"HTTP request duration in milliseconds",
-		"ms")
-	if err != nil {
-		return nil, err
-	}
-
-	// OAuth Flow Metrics
-	m.AuthorizationStarted, err = createCounter(serverMeter,
-		"oauth.authorization.started",
-		"Number of authorization flows started",
-		"{flow}")
-	if err != nil {
-		return nil, err
-	}
-
-	m.CallbackProcessed, err = createCounter(serverMeter,
-		"oauth.callback.processed",
-		"Number of provider callbacks processed",
-		"{callback}")
-	if err != nil {
-		return nil, err
-	}
-
-	m.CodeExchanged, err = createCounter(serverMeter,
-		"oauth.code.exchanged",
-		"Number of authorization codes exchanged for tokens",
-		"{exchange}")
-	if err != nil {
-		return nil, err
-	}
-
-	m.TokenRefreshed, err = createCounter(serverMeter,
-		"oauth.token.refreshed",
-		"Number of tokens refreshed",
-		"{refresh}")
-	if err != nil {
-		return nil, err
-	}
-
-	m.TokenRevoked, err = createCounter(serverMeter,
-		"oauth.token.revoked",
-		"Number of tokens revoked",
-		"{revocation}")
-	if err != nil {
-		return nil, err
-	}
-
-	m.ClientRegistered, err = createCounter(serverMeter,
-		"oauth.client.registered",
-		"Number of clients registered",
-		"{client}")
-	if err != nil {
-		return nil, err
-	}
-
-	// Security Metrics
-	m.RateLimitExceeded, err = createCounter(securityMeter,
-		"oauth.rate_limit.exceeded",
-		"Number of rate limit violations",
-		"{violation}")
-	if err != nil {
-		return nil, err
-	}
-
-	m.PKCEValidationFailed, err = createCounter(securityMeter,
-		"oauth.pkce.validation_failed",
-		"Number of PKCE validation failures",
-		"{failure}")
-	if err != nil {
-		return nil, err
-	}
-
-	m.CodeReuseDetected, err = createCounter(securityMeter,
-		"oauth.code.reuse_detected",
-		"Number of authorization code reuse attempts detected",
-		"{attempt}")
-	if err != nil {
-		return nil, err
-	}
-
-	m.TokenReuseDetected, err = createCounter(securityMeter,
-		"oauth.token.reuse_detected",
-		"Number of token reuse attempts detected",
-		"{attempt}")
-	if err != nil {
-		return nil, err
-	}
-
-	m.RedirectURISecurityRejected, err = createCounter(securityMeter,
-		"oauth.redirect_uri.security_rejected",
-		"Number of redirect URI validation failures (SSRF/XSS protection)",
-		"{rejection}")
-	if err != nil {
-		return nil, err
-	}
-
-	// Storage Metrics
-	m.StorageOperationTotal, err = createCounter(storageMeter,
-		"storage.operation.total",
-		"Total number of storage operations",
-		"{operation}")
-	if err != nil {
-		return nil, err
-	}
-
-	m.StorageOperationDuration, err = createHistogram(storageMeter,
-		"storage.operation.duration",
-		"Storage operation duration in milliseconds",
-		"ms")
-	if err != nil {
-		return nil, err
-	}
-
-	// Storage Size Gauges (observable)
-	// These are populated via callbacks registered by storage implementations
-	m.StorageTokensCount, err = storageMeter.Int64ObservableGauge(
-		"storage.tokens.count",
-		metric.WithDescription("Current number of tokens in storage"),
-		metric.WithUnit("{token}"))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create storage.tokens.count gauge: %w", err)
-	}
-
-	m.StorageClientsCount, err = storageMeter.Int64ObservableGauge(
-		"storage.clients.count",
-		metric.WithDescription("Current number of registered clients in storage"),
-		metric.WithUnit("{client}"))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create storage.clients.count gauge: %w", err)
-	}
-
-	m.StorageFlowsCount, err = storageMeter.Int64ObservableGauge(
-		"storage.flows.count",
-		metric.WithDescription("Current number of active authorization flows in storage"),
-		metric.WithUnit("{flow}"))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create storage.flows.count gauge: %w", err)
-	}
-
-	m.StorageFamiliesCount, err = storageMeter.Int64ObservableGauge(
-		"storage.families.count",
-		metric.WithDescription("Current number of token families in storage (includes revoked)"),
-		metric.WithUnit("{family}"))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create storage.families.count gauge: %w", err)
-	}
-
-	m.StorageRefreshTokensCount, err = storageMeter.Int64ObservableGauge(
-		"storage.refresh_tokens.count",
-		metric.WithDescription("Current number of refresh tokens in storage"),
-		metric.WithUnit("{token}"))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create storage.refresh_tokens.count gauge: %w", err)
-	}
-
-	// Provider Metrics
-	m.ProviderAPICallsTotal, err = createCounter(providerMeter,
-		"provider.api.calls.total",
-		"Total number of provider API calls",
-		"{call}")
-	if err != nil {
-		return nil, err
-	}
-
-	m.ProviderAPIDuration, err = createHistogram(providerMeter,
-		"provider.api.duration",
-		"Provider API call duration in milliseconds",
-		"ms")
-	if err != nil {
-		return nil, err
-	}
-
-	m.ProviderAPIErrors, err = createCounter(providerMeter,
-		"provider.api.errors.total",
-		"Total number of provider API errors",
-		"{error}")
-	if err != nil {
-		return nil, err
-	}
-
-	// Audit Metrics
-	m.AuditEventsTotal, err = createCounter(securityMeter,
-		"oauth.audit.events.total",
-		"Total number of audit events",
-		"{event}")
-	if err != nil {
-		return nil, err
-	}
-
-	// Encryption Metrics
-	m.EncryptionOperationsTotal, err = createCounter(securityMeter,
-		"oauth.encryption.operations.total",
-		"Total number of encryption/decryption operations",
-		"{operation}")
-	if err != nil {
-		return nil, err
-	}
-
-	m.EncryptionDuration, err = createHistogram(securityMeter,
-		"oauth.encryption.duration",
-		"Encryption/decryption operation duration in milliseconds",
-		"ms")
-	if err != nil {
-		return nil, err
-	}
-
-	// CIMD (Client ID Metadata Document) Metrics
 	cimdMeter := inst.Meter("cimd")
 
-	m.CIMDFetchTotal, err = createCounter(cimdMeter,
-		"oauth.cimd.fetch.total",
-		"Total number of CIMD metadata fetch attempts",
-		"{fetch}")
-	if err != nil {
-		return nil, err
-	}
+	// HTTP Layer Metrics
+	m.HTTPRequestsTotal = b.counter(httpMeter, "oauth.http.requests.total", "Total number of HTTP requests", "{request}")
+	m.HTTPRequestDuration = b.histogram(httpMeter, "oauth.http.request.duration", "HTTP request duration in milliseconds", "ms")
 
-	m.CIMDFetchDuration, err = createHistogram(cimdMeter,
-		"oauth.cimd.fetch.duration",
-		"CIMD metadata fetch duration in milliseconds",
-		"ms")
-	if err != nil {
-		return nil, err
-	}
+	// OAuth Flow Metrics
+	m.AuthorizationStarted = b.counter(serverMeter, "oauth.authorization.started", "Number of authorization flows started", "{flow}")
+	m.CallbackProcessed = b.counter(serverMeter, "oauth.callback.processed", "Number of provider callbacks processed", "{callback}")
+	m.CodeExchanged = b.counter(serverMeter, "oauth.code.exchanged", "Number of authorization codes exchanged for tokens", "{exchange}")
+	m.TokenRefreshed = b.counter(serverMeter, "oauth.token.refreshed", "Number of tokens refreshed", "{refresh}")
+	m.TokenRevoked = b.counter(serverMeter, "oauth.token.revoked", "Number of tokens revoked", "{revocation}")
+	m.ClientRegistered = b.counter(serverMeter, "oauth.client.registered", "Number of clients registered", "{client}")
 
-	m.CIMDCacheTotal, err = createCounter(cimdMeter,
-		"oauth.cimd.cache.total",
-		"Total number of CIMD cache operations",
-		"{operation}")
-	if err != nil {
-		return nil, err
+	// Security Metrics
+	m.RateLimitExceeded = b.counter(securityMeter, "oauth.rate_limit.exceeded", "Number of rate limit violations", "{violation}")
+	m.PKCEValidationFailed = b.counter(securityMeter, "oauth.pkce.validation_failed", "Number of PKCE validation failures", "{failure}")
+	m.CodeReuseDetected = b.counter(securityMeter, "oauth.code.reuse_detected", "Number of authorization code reuse attempts detected", "{attempt}")
+	m.TokenReuseDetected = b.counter(securityMeter, "oauth.token.reuse_detected", "Number of token reuse attempts detected", "{attempt}")
+	m.RedirectURISecurityRejected = b.counter(securityMeter, "oauth.redirect_uri.security_rejected", "Number of redirect URI validation failures (SSRF/XSS protection)", "{rejection}")
+
+	// Storage Metrics
+	m.StorageOperationTotal = b.counter(storageMeter, "storage.operation.total", "Total number of storage operations", "{operation}")
+	m.StorageOperationDuration = b.histogram(storageMeter, "storage.operation.duration", "Storage operation duration in milliseconds", "ms")
+	m.StorageTokensCount = b.gauge(storageMeter, "storage.tokens.count", "Current number of tokens in storage", "{token}")
+	m.StorageClientsCount = b.gauge(storageMeter, "storage.clients.count", "Current number of registered clients in storage", "{client}")
+	m.StorageFlowsCount = b.gauge(storageMeter, "storage.flows.count", "Current number of active authorization flows in storage", "{flow}")
+	m.StorageFamiliesCount = b.gauge(storageMeter, "storage.families.count", "Current number of token families in storage (includes revoked)", "{family}")
+	m.StorageRefreshTokensCount = b.gauge(storageMeter, "storage.refresh_tokens.count", "Current number of refresh tokens in storage", "{token}")
+
+	// Provider Metrics
+	m.ProviderAPICallsTotal = b.counter(providerMeter, "provider.api.calls.total", "Total number of provider API calls", "{call}")
+	m.ProviderAPIDuration = b.histogram(providerMeter, "provider.api.duration", "Provider API call duration in milliseconds", "ms")
+	m.ProviderAPIErrors = b.counter(providerMeter, "provider.api.errors.total", "Total number of provider API errors", "{error}")
+
+	// Audit Metrics
+	m.AuditEventsTotal = b.counter(securityMeter, "oauth.audit.events.total", "Total number of audit events", "{event}")
+
+	// Encryption Metrics
+	m.EncryptionOperationsTotal = b.counter(securityMeter, "oauth.encryption.operations.total", "Total number of encryption/decryption operations", "{operation}")
+	m.EncryptionDuration = b.histogram(securityMeter, "oauth.encryption.duration", "Encryption/decryption operation duration in milliseconds", "ms")
+
+	// CIMD (Client ID Metadata Document) Metrics
+	m.CIMDFetchTotal = b.counter(cimdMeter, "oauth.cimd.fetch.total", "Total number of CIMD metadata fetch attempts", "{fetch}")
+	m.CIMDFetchDuration = b.histogram(cimdMeter, "oauth.cimd.fetch.duration", "CIMD metadata fetch duration in milliseconds", "ms")
+	m.CIMDCacheTotal = b.counter(cimdMeter, "oauth.cimd.cache.total", "Total number of CIMD cache operations", "{operation}")
+
+	if b.err != nil {
+		return nil, b.err
 	}
 
 	return m, nil
