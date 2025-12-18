@@ -12,6 +12,26 @@ import (
 	"github.com/giantswarm/mcp-oauth/providers"
 )
 
+// DummyBcryptHash is a pre-computed bcrypt hash used for timing attack mitigation.
+// This hash (bcrypt hash of "test") ensures we always perform a bcrypt comparison
+// even if a client doesn't exist, preventing timing-based client enumeration attacks.
+// Note: Using a constant dummy hash is intentional - the timing attack mitigation
+// comes from always performing the bcrypt comparison, not from the hash value.
+const DummyBcryptHash = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
+
+// Common error message strings used across storage implementations.
+// These ensure consistent error messages and reduce code duplication.
+const (
+	// ErrMsgProviderStateRequired is the error message when provider state is missing.
+	ErrMsgProviderStateRequired = "provider state is required"
+
+	// ErrMsgInvalidAuthorizationState is the error message for invalid authorization state.
+	ErrMsgInvalidAuthorizationState = "invalid authorization state"
+
+	// ErrMsgRefreshTokenNotFoundOrUsed is the error message for refresh token not found or already used.
+	ErrMsgRefreshTokenNotFoundOrUsed = "refresh token not found or already used"
+)
+
 // Storage error types for distinguishing between different failure modes.
 // These allow callers to differentiate between "not found" errors (which may indicate
 // reuse in refresh token scenarios) and transient errors (which should not trigger

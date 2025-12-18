@@ -139,7 +139,7 @@ func generateClientSecret(clientType string) (string, string, error) {
 }
 
 // trackClientIPAndLog tracks the IP for DoS protection and logs the registration.
-func (s *Server) trackClientIPAndLog(client *storage.Client, clientSecret, clientIP string) {
+func (s *Server) trackClientIPAndLog(client *storage.Client, _ /* clientSecret - not logged for security */, clientIP string) {
 	if memStore, ok := s.clientStore.(*memory.Store); ok {
 		memStore.TrackClientIP(clientIP)
 	}

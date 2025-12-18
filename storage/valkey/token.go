@@ -296,7 +296,7 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken
 
 	switch result {
 	case "NOT_FOUND":
-		return "", nil, fmt.Errorf("%w: refresh token not found or already used", storage.ErrTokenNotFound)
+		return "", nil, fmt.Errorf("%w: "+storage.ErrMsgRefreshTokenNotFoundOrUsed, storage.ErrTokenNotFound)
 	case "EXPIRED":
 		return "", nil, fmt.Errorf("%w: refresh token expired", storage.ErrTokenExpired)
 	case "TOKEN_NOT_FOUND":

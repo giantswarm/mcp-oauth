@@ -18,10 +18,10 @@ import (
 // Stores by both client state (StateID) and provider state (ProviderState) for dual lookup
 func (s *Store) SaveAuthorizationState(ctx context.Context, state *storage.AuthorizationState) error {
 	if state == nil || state.StateID == "" {
-		return fmt.Errorf("invalid authorization state")
+		return fmt.Errorf(storage.ErrMsgInvalidAuthorizationState)
 	}
 	if state.ProviderState == "" {
-		return fmt.Errorf("provider state is required")
+		return fmt.Errorf(storage.ErrMsgProviderStateRequired)
 	}
 
 	data, err := json.Marshal(toAuthorizationStateJSON(state))

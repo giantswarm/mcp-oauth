@@ -254,23 +254,7 @@ func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier strin
 	ctx, cancel := p.ensureContextTimeout(ctx)
 	defer cancel()
 
-	var opts []oauth2.AuthCodeOption
-
-	// Add PKCE verifier if provided
-	if verifier != "" {
-		opts = append(opts, oauth2.VerifierOption(verifier))
-	}
-
-	// Use custom HTTP client
-	ctx = context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)
-
-	// Exchange code for token
-	token, err := p.Exchange(ctx, code, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to exchange code: %w", err)
-	}
-
-	return token, nil
+	return providers.ExchangeCodeWithPKCE(ctx, p, p.httpClient, code, verifier)
 }
 
 // ValidateToken validates an access token by calling GitHub's user endpoint.
