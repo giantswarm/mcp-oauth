@@ -36,121 +36,81 @@ fmt-check: ## Check formatting without applying changes
 	@gofmt -s -d . | (! grep .) || (echo "gofmt check failed" && exit 1)
 	@echo "Checking goimports..."
 	@goimports -d -local $(MODULE) . | (! grep .) || (echo "goimports check failed" && exit 1)
-	@if command -v gofumpt >/dev/null 2>&1; then \
-		echo "Checking gofumpt..."; \
-		gofumpt -d . | (! grep .) || (echo "gofumpt check failed" && exit 1); \
-	fi
+	@echo "Checking gofumpt..."
+	@command -v gofumpt >/dev/null 2>&1 || (echo "ERROR: gofumpt not installed. Run: go install mvdan.cc/gofumpt@latest" && exit 1)
+	@gofumpt -d . | (! grep .) || (echo "gofumpt check failed" && exit 1)
 	@echo "All format checks passed"
 
 gofumpt: ## Apply gofumpt (stricter gofmt)
 	@echo "====> $@"
-	@if command -v gofumpt >/dev/null 2>&1; then \
-		gofumpt -w .; \
-	else \
-		echo "gofumpt not installed. Run: go install mvdan.cc/gofumpt@latest"; \
-	fi
+	@command -v gofumpt >/dev/null 2>&1 || (echo "ERROR: gofumpt not installed. Run: go install mvdan.cc/gofumpt@latest" && exit 1)
+	gofumpt -w .
 
 gci-write: ## Apply gci import ordering
 	@echo "====> $@"
-	@if command -v gci >/dev/null 2>&1; then \
-		gci write -s standard -s default -s 'prefix($(MODULE))' --skip-generated .; \
-	else \
-		echo "gci not installed. Run: go install github.com/daixiang0/gci@latest"; \
-	fi
+	@command -v gci >/dev/null 2>&1 || (echo "ERROR: gci not installed. Run: go install github.com/daixiang0/gci@latest" && exit 1)
+	gci write -s standard -s default -s 'prefix($(MODULE))' --skip-generated .
 
 gci-check: ## Check gci import ordering
 	@echo "====> $@"
-	@if command -v gci >/dev/null 2>&1; then \
-		gci diff -s standard -s default -s 'prefix($(MODULE))' --skip-generated . | (! grep .) || (echo "gci check failed" && exit 1); \
-	else \
-		echo "gci not installed. Run: go install github.com/daixiang0/gci@latest"; \
-	fi
+	@command -v gci >/dev/null 2>&1 || (echo "ERROR: gci not installed. Run: go install github.com/daixiang0/gci@latest" && exit 1)
+	@gci diff -s standard -s default -s 'prefix($(MODULE))' --skip-generated . | (! grep .) || (echo "gci check failed" && exit 1)
 
 ##@ Static Analysis
 
 .PHONY: staticcheck errcheck ineffassign unconvert misspell gocritic revive
 staticcheck: ## Run staticcheck
 	@echo "====> $@"
-	@if command -v staticcheck >/dev/null 2>&1; then \
-		staticcheck ./...; \
-	else \
-		echo "staticcheck not installed. Run: go install honnef.co/go/tools/cmd/staticcheck@latest"; \
-	fi
+	@command -v staticcheck >/dev/null 2>&1 || (echo "ERROR: staticcheck not installed. Run: go install honnef.co/go/tools/cmd/staticcheck@latest" && exit 1)
+	staticcheck ./...
 
 errcheck: ## Run errcheck - find unchecked errors
 	@echo "====> $@"
-	@if command -v errcheck >/dev/null 2>&1; then \
-		errcheck -ignoretests ./...; \
-	else \
-		echo "errcheck not installed. Run: go install github.com/kisielk/errcheck@latest"; \
-	fi
+	@command -v errcheck >/dev/null 2>&1 || (echo "ERROR: errcheck not installed. Run: go install github.com/kisielk/errcheck@latest" && exit 1)
+	errcheck -ignoretests ./...
 
 ineffassign: ## Run ineffassign - detect ineffectual assignments
 	@echo "====> $@"
-	@if command -v ineffassign >/dev/null 2>&1; then \
-		ineffassign ./...; \
-	else \
-		echo "ineffassign not installed. Run: go install github.com/gordonklaus/ineffassign@latest"; \
-	fi
+	@command -v ineffassign >/dev/null 2>&1 || (echo "ERROR: ineffassign not installed. Run: go install github.com/gordonklaus/ineffassign@latest" && exit 1)
+	ineffassign ./...
 
 unconvert: ## Run unconvert - remove unnecessary type conversions
 	@echo "====> $@"
-	@if command -v unconvert >/dev/null 2>&1; then \
-		unconvert ./...; \
-	else \
-		echo "unconvert not installed. Run: go install github.com/mdempsky/unconvert@latest"; \
-	fi
+	@command -v unconvert >/dev/null 2>&1 || (echo "ERROR: unconvert not installed. Run: go install github.com/mdempsky/unconvert@latest" && exit 1)
+	unconvert ./...
 
 misspell: ## Run misspell - find commonly misspelled words
 	@echo "====> $@"
-	@if command -v misspell >/dev/null 2>&1; then \
-		find . -name '*.go' -not -path './vendor/*' -not -path './examples/*/vendor/*' | xargs misspell; \
-	else \
-		echo "misspell not installed. Run: go install github.com/client9/misspell/cmd/misspell@latest"; \
-	fi
+	@command -v misspell >/dev/null 2>&1 || (echo "ERROR: misspell not installed. Run: go install github.com/client9/misspell/cmd/misspell@latest" && exit 1)
+	find . -name '*.go' -not -path './vendor/*' -not -path './examples/*/vendor/*' | xargs misspell
 
 gocritic: ## Run gocritic - opinionated linter
 	@echo "====> $@"
-	@if command -v gocritic >/dev/null 2>&1; then \
-		gocritic check ./...; \
-	else \
-		echo "gocritic not installed. Run: go install github.com/go-critic/go-critic/cmd/gocritic@latest"; \
-	fi
+	@command -v gocritic >/dev/null 2>&1 || (echo "ERROR: gocritic not installed. Run: go install github.com/go-critic/go-critic/cmd/gocritic@latest" && exit 1)
+	gocritic check ./...
 
 revive: ## Run revive - fast, configurable linter
 	@echo "====> $@"
-	@if command -v revive >/dev/null 2>&1; then \
-		revive ./...; \
-	else \
-		echo "revive not installed. Run: go install github.com/mgechev/revive@latest"; \
-	fi
+	@command -v revive >/dev/null 2>&1 || (echo "ERROR: revive not installed. Run: go install github.com/mgechev/revive@latest" && exit 1)
+	revive ./...
 
 ##@ Security Analysis
 
 .PHONY: gosec govulncheck security-check trivy
 gosec: ## Run gosec - security-focused linter
 	@echo "====> $@"
-	@if command -v gosec >/dev/null 2>&1; then \
-		gosec -quiet -exclude=G101,G104,G203 -exclude-dir=examples ./...; \
-	else \
-		echo "gosec not installed. Run: go install github.com/securego/gosec/v2/cmd/gosec@latest"; \
-	fi
+	@command -v gosec >/dev/null 2>&1 || (echo "ERROR: gosec not installed. Run: go install github.com/securego/gosec/v2/cmd/gosec@latest" && exit 1)
+	gosec -quiet -exclude=G101,G104,G203 -exclude-dir=examples ./...
 
 govulncheck: ## Run govulncheck - official Go vulnerability checker
 	@echo "====> $@"
-	@if command -v govulncheck >/dev/null 2>&1; then \
-		govulncheck ./...; \
-	else \
-		echo "govulncheck not installed. Run: go install golang.org/x/vuln/cmd/govulncheck@latest"; \
-	fi
+	@command -v govulncheck >/dev/null 2>&1 || (echo "ERROR: govulncheck not installed. Run: go install golang.org/x/vuln/cmd/govulncheck@latest" && exit 1)
+	govulncheck ./...
 
-trivy: ## Run trivy filesystem scan (if installed)
+trivy: ## Run trivy filesystem scan
 	@echo "====> $@"
-	@if command -v trivy >/dev/null 2>&1; then \
-		trivy fs --scanners vuln,secret --severity HIGH,CRITICAL .; \
-	else \
-		echo "trivy not installed. See: https://aquasecurity.github.io/trivy/latest/getting-started/installation/"; \
-	fi
+	@command -v trivy >/dev/null 2>&1 || (echo "ERROR: trivy not installed. See: https://aquasecurity.github.io/trivy/latest/getting-started/installation/" && exit 1)
+	trivy fs --scanners vuln,secret --severity HIGH,CRITICAL .
 
 security-check: gosec govulncheck ## Run all security checks
 	@echo "====> $@"
@@ -160,35 +120,23 @@ security-check: gosec govulncheck ## Run all security checks
 .PHONY: gocyclo gocognit goconst dupl quality-check
 gocyclo: ## Run gocyclo - cyclomatic complexity (threshold 15, excludes tests)
 	@echo "====> $@"
-	@if command -v gocyclo >/dev/null 2>&1; then \
-		find . -name '*.go' -not -name '*_test.go' -not -path './vendor/*' -not -path './examples/*' | xargs gocyclo -over 15; \
-	else \
-		echo "gocyclo not installed. Run: go install github.com/fzipp/gocyclo/cmd/gocyclo@latest"; \
-	fi
+	@command -v gocyclo >/dev/null 2>&1 || (echo "ERROR: gocyclo not installed. Run: go install github.com/fzipp/gocyclo/cmd/gocyclo@latest" && exit 1)
+	find . -name '*.go' -not -name '*_test.go' -not -path './vendor/*' -not -path './examples/*' | xargs gocyclo -over 15
 
 gocognit: ## Run gocognit - cognitive complexity (threshold 15, excludes tests)
 	@echo "====> $@"
-	@if command -v gocognit >/dev/null 2>&1; then \
-		find . -name '*.go' -not -name '*_test.go' -not -path './vendor/*' -not -path './examples/*' | xargs gocognit -over 15; \
-	else \
-		echo "gocognit not installed. Run: go install github.com/uudashr/gocognit/cmd/gocognit@latest"; \
-	fi
+	@command -v gocognit >/dev/null 2>&1 || (echo "ERROR: gocognit not installed. Run: go install github.com/uudashr/gocognit/cmd/gocognit@latest" && exit 1)
+	find . -name '*.go' -not -name '*_test.go' -not -path './vendor/*' -not -path './examples/*' | xargs gocognit -over 15
 
 goconst: ## Run goconst - find repeated strings (excludes tests and examples)
 	@echo "====> $@"
-	@if command -v goconst >/dev/null 2>&1; then \
-		goconst -ignore "test" ./...; \
-	else \
-		echo "goconst not installed. Run: go install github.com/jgautheron/goconst/cmd/goconst@latest"; \
-	fi
+	@command -v goconst >/dev/null 2>&1 || (echo "ERROR: goconst not installed. Run: go install github.com/jgautheron/goconst/cmd/goconst@latest" && exit 1)
+	goconst -ignore "test" ./...
 
 dupl: ## Run dupl - code duplication detection (threshold 100, excludes tests)
 	@echo "====> $@"
-	@if command -v dupl >/dev/null 2>&1; then \
-		find . -name '*.go' -not -name '*_test.go' -not -path './vendor/*' -not -path './examples/*' | xargs dupl -threshold 100; \
-	else \
-		echo "dupl not installed. Run: go install github.com/mibk/dupl@latest"; \
-	fi
+	@command -v dupl >/dev/null 2>&1 || (echo "ERROR: dupl not installed. Run: go install github.com/mibk/dupl@latest" && exit 1)
+	find . -name '*.go' -not -name '*_test.go' -not -path './vendor/*' -not -path './examples/*' | xargs dupl -threshold 100
 
 quality-check: gocyclo gocognit goconst dupl ## Run all code quality checks
 	@echo "====> $@"
@@ -341,8 +289,7 @@ analyze-all: analyze-format analyze-lint analyze-security analyze-quality analyz
 ##@ Verification
 
 .PHONY: verify verify-all ci check-security
-verify: fmt vet lint test-race ## Run standard verification steps
-	@echo "====> $@"
+verify: verify-all ## Run all verification steps (comprehensive)
 
 verify-all: fmt-all analyze-all test-all ## Run all verification steps (comprehensive)
 	@echo "====> $@"
