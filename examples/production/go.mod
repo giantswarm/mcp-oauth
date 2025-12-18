@@ -1,6 +1,6 @@
 module github.com/giantswarm/mcp-oauth/examples/production
 
-go 1.24.0
+go 1.24.11
 
 replace github.com/giantswarm/mcp-oauth => ../..
 
