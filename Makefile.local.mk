@@ -1,5 +1,5 @@
 # Local development overrides
-# This file loads after Makefile.gen.go.mk to override the slow test target
+# This file loads last (alphabetically) to override targets from generated Makefiles
 
 ##@ Local Development
 
@@ -9,4 +9,15 @@
 test: ## Run tests (fast version for local dev, use test-race for full CI checks)
 	@echo "====> $@"
 	go test -v ./...
+
+# Override the generated clean target with a more comprehensive version for library development
+.PHONY: clean
+clean: ## Clean build artifacts and coverage files
+	@echo "====> $@"
+	rm -f $(APPLICATION)* 2>/dev/null || true
+	rm -f coverage.out coverage.html coverage_security.out
+	rm -rf dist/ build/
+	find examples -type f -name '*.exe' -delete 2>/dev/null || true
+	find examples -type f ! -name '*.go' ! -name '*.mod' ! -name '*.sum' ! -name 'README.md' ! -name '*.json' -type f -executable -delete 2>/dev/null || true
+	go clean
 

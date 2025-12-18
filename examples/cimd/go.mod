@@ -1,6 +1,6 @@
 module github.com/giantswarm/mcp-oauth/examples/cimd
 
-go 1.24.2
+go 1.24.11
 
 require github.com/giantswarm/mcp-oauth v0.0.0
 

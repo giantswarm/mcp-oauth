@@ -1,3 +1,7 @@
+// Package main demonstrates OAuth setup with the Dex OIDC provider.
+//
+// This example shows how to integrate with Dex for federated authentication
+// with support for groups-based authorization.
 package main
 
 import (
@@ -134,7 +138,7 @@ func main() {
 	mux.Handle("/api/resource", handler.ValidateToken(resourceHandler))
 
 	// Home page with login link
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		html := `<!DOCTYPE html>
 <html>
 <head>

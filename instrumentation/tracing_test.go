@@ -310,7 +310,7 @@ func TestSpanConcurrency(t *testing.T) {
 
 	// Create spans concurrently
 	for i := 0; i < 10; i++ {
-		go func(id int) {
+		go func(_ int) {
 			for j := 0; j < 100; j++ {
 				_, span := inst.Tracer("server").Start(ctx, "concurrent-span")
 				AddOAuthFlowAttributes(span, "client", "user", "scope")
@@ -376,7 +376,7 @@ func TestSetSpanError(t *testing.T) {
 	// Should not panic
 }
 
-func TestSetSpanError_NilSpan(t *testing.T) {
+func TestSetSpanError_NilSpan(_ *testing.T) {
 	// Test that nil-safe helper handles nil span
 	SetSpanError(nil, "test error message")
 
@@ -405,7 +405,7 @@ func TestSetSpanAttributes(t *testing.T) {
 	// Should not panic
 }
 
-func TestSetSpanAttributes_NilSpan(t *testing.T) {
+func TestSetSpanAttributes_NilSpan(_ *testing.T) {
 	// Test that nil-safe helper handles nil span
 	SetSpanAttributes(nil,
 		attribute.String("key1", "value1"),
@@ -415,7 +415,7 @@ func TestSetSpanAttributes_NilSpan(t *testing.T) {
 	// Should not panic
 }
 
-func TestNilSafeHelpers_WithNilSpans(t *testing.T) {
+func TestNilSafeHelpers_WithNilSpans(_ *testing.T) {
 	// Test all nil-safe helpers with nil spans
 	SetSpanError(nil, "error")
 	SetSpanAttributes(nil, attribute.String("key", "value"))

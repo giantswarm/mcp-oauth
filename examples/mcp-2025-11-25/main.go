@@ -1,3 +1,8 @@
+// Package main demonstrates MCP 2025-11-25 OAuth specification features.
+//
+// This example showcases the advanced OAuth features from the MCP 2025-11-25
+// specification including Protected Resource Metadata, scope selection,
+// and enhanced WWW-Authenticate headers.
 package main
 
 import (
@@ -163,7 +168,7 @@ func main() {
 	mux.Handle("/api/profile", handler.ValidateToken(mcpHandler("User Profile API")))
 
 	// Health check (unprotected)
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "OK - Provider: %s\n", googleProvider.Name())
 	})

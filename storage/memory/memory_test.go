@@ -1455,7 +1455,7 @@ func TestStore_ConcurrentTokenAccess(t *testing.T) {
 
 	// Concurrent writes
 	for i := 0; i < numGoroutines; i++ {
-		go func(id int) {
+		go func(_ int) {
 			token := testutil.GenerateTestToken()
 			userID := testutil.GenerateRandomString(16)
 			if err := store.SaveToken(ctx, userID, token); err != nil {
@@ -1481,7 +1481,7 @@ func TestStore_ConcurrentClientAccess(t *testing.T) {
 
 	// Concurrent writes
 	for i := 0; i < numGoroutines; i++ {
-		go func(id int) {
+		go func(_ int) {
 			client := testutil.GenerateTestClient()
 			client.ClientID = testutil.GenerateRandomString(16)
 			if err := store.SaveClient(ctx, client); err != nil {
@@ -1524,7 +1524,7 @@ func TestStore_CleanupExpiredTokens(t *testing.T) {
 	}
 }
 
-func TestStore_SetLogger(t *testing.T) {
+func TestStore_SetLogger(_ *testing.T) {
 	store := New()
 	defer store.Stop()
 

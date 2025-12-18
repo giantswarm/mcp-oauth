@@ -107,24 +107,14 @@ Before **every** commit, you **MUST** perform these checks:
 
 2.  **Lint Code:**
     ```bash
-    make lint
+    make verify
     ```
     -   **CRITICAL:** Fix ALL linter errors before committing
     -   Linter failures in CI will block your PR from being merged
-    -   Common issues to watch for:
-        - Unused variables or imports
-        - Boolean comparisons (`use !x` not `x == false`)
-        - Repeated strings that should be constants
-        - Security issues flagged by `gosec`
-
-3.  **Run All Tests:**
-    ```bash
-    make test
-    ```
     -   **DO NOT** commit if any tests are failing. Fix the tests first.
     -   Code must meet the test coverage minimums defined in [architecture.mdc](mdc:.cursor/rules/architecture.mdc).
 
-4.  **Check Examples:** If you modified any interfaces or core functionality, verify that examples still work:
+3.  **Check Examples:** If you modified any interfaces or core functionality, verify that examples still work:
     ```bash
     cd examples/basic
     go build

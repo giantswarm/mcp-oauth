@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestOAuthError_Error(t *testing.T) {
+func TestError_Error(t *testing.T) {
 	tests := []struct {
 		name        string
 		code        string
@@ -28,18 +28,18 @@ func TestOAuthError_Error(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			e := &OAuthError{
+			e := &Error{
 				Code:        tt.code,
 				Description: tt.description,
 			}
 			if got := e.Error(); got != tt.want {
-				t.Errorf("OAuthError.Error() = %q, want %q", got, tt.want)
+				t.Errorf("Error.Error() = %q, want %q", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestNewOAuthError(t *testing.T) {
+func TestNewError(t *testing.T) {
 	tests := []struct {
 		name        string
 		code        string
@@ -68,7 +68,7 @@ func TestNewOAuthError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := NewOAuthError(tt.code, tt.description, tt.status)
+			err := NewError(tt.code, tt.description, tt.status)
 			if err.Code != tt.code {
 				t.Errorf("Code = %q, want %q", err.Code, tt.code)
 			}
@@ -113,7 +113,7 @@ func TestErrorConstants(t *testing.T) {
 func TestErrorConstructors(t *testing.T) {
 	tests := []struct {
 		name           string
-		constructor    func(string) *OAuthError
+		constructor    func(string) *Error
 		expectedCode   string
 		expectedStatus int
 	}{

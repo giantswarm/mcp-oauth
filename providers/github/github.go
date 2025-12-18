@@ -81,62 +81,20 @@ type Config struct {
 
 // NewProvider creates a new GitHub OAuth provider.
 func NewProvider(cfg *Config) (*Provider, error) {
-	if cfg.ClientID == "" {
-		return nil, fmt.Errorf("client ID is required")
-	}
-	if cfg.ClientSecret == "" {
-		return nil, fmt.Errorf("client secret is required")
+	if err := validateConfig(cfg); err != nil {
+		return nil, err
 	}
 
-	// Default scopes if none provided
-	scopes := cfg.Scopes
-	if len(scopes) == 0 {
-		scopes = []string{"user:email", "read:user"}
+	scopes, err := normalizeScopes(cfg.Scopes, cfg.AllowedOrganizations)
+	if err != nil {
+		return nil, err
 	}
 
-	// Deep copy scopes to prevent external modification
-	scopesCopy := make([]string, len(scopes))
-	copy(scopesCopy, scopes)
-	scopes = scopesCopy
-
-	// If organizations are restricted, ensure read:org scope is present
-	if len(cfg.AllowedOrganizations) > 0 {
-		hasReadOrg := false
-		for _, scope := range scopes {
-			if scope == "read:org" {
-				hasReadOrg = true
-				break
-			}
-		}
-		if !hasReadOrg {
-			scopes = append(scopes, "read:org")
-		}
+	allowedOrgs, err := validateOrganizations(cfg.AllowedOrganizations)
+	if err != nil {
+		return nil, err
 	}
 
-	// SECURITY: Validate scopes
-	if err := oidc.ValidateScopes(scopes); err != nil {
-		return nil, fmt.Errorf("invalid scopes: %w", err)
-	}
-
-	// Deep copy and validate allowed organizations
-	var allowedOrgs []string
-	if len(cfg.AllowedOrganizations) > 0 {
-		allowedOrgs = make([]string, len(cfg.AllowedOrganizations))
-		copy(allowedOrgs, cfg.AllowedOrganizations)
-
-		// Validate organization names
-		for _, org := range allowedOrgs {
-			if org == "" {
-				return nil, fmt.Errorf("organization name cannot be empty")
-			}
-			// GitHub org names: 1-39 chars, alphanumeric and hyphens, no double hyphens
-			if len(org) > 39 {
-				return nil, fmt.Errorf("organization name %q exceeds maximum length of 39 characters", org)
-			}
-		}
-	}
-
-	// Set request timeout (default: 30 seconds)
 	requestTimeout := cfg.RequestTimeout
 	if requestTimeout == 0 {
 		requestTimeout = 30 * time.Second
@@ -144,16 +102,10 @@ func NewProvider(cfg *Config) (*Provider, error) {
 
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{
-			Timeout: requestTimeout,
-		}
+		httpClient = &http.Client{Timeout: requestTimeout}
 	}
 
-	// Determine if verified email is required (default: true)
-	requireVerifiedEmail := true
-	if cfg.RequireVerifiedEmail != nil {
-		requireVerifiedEmail = *cfg.RequireVerifiedEmail
-	}
+	requireVerifiedEmail := cfg.RequireVerifiedEmail == nil || *cfg.RequireVerifiedEmail
 
 	return &Provider{
 		Config: &oauth2.Config{
@@ -168,6 +120,74 @@ func NewProvider(cfg *Config) (*Provider, error) {
 		allowedOrganizations: allowedOrgs,
 		requireVerifiedEmail: requireVerifiedEmail,
 	}, nil
+}
+
+// validateConfig checks that required configuration fields are present.
+func validateConfig(cfg *Config) error {
+	if cfg.ClientID == "" {
+		return fmt.Errorf("client ID is required")
+	}
+	if cfg.ClientSecret == "" {
+		return fmt.Errorf("client secret is required")
+	}
+	return nil
+}
+
+// normalizeScopes handles scope defaulting, copying, and adding read:org if needed.
+func normalizeScopes(configScopes, allowedOrgs []string) ([]string, error) {
+	scopes := configScopes
+	if len(scopes) == 0 {
+		scopes = []string{"user:email", "read:user"}
+	}
+
+	// Deep copy scopes to prevent external modification
+	scopesCopy := make([]string, len(scopes))
+	copy(scopesCopy, scopes)
+	scopes = scopesCopy
+
+	// If organizations are restricted, ensure read:org scope is present
+	if len(allowedOrgs) > 0 && !containsScope(scopes, "read:org") {
+		scopes = append(scopes, "read:org")
+	}
+
+	// SECURITY: Validate scopes
+	if err := oidc.ValidateScopes(scopes); err != nil {
+		return nil, fmt.Errorf("invalid scopes: %w", err)
+	}
+
+	return scopes, nil
+}
+
+// containsScope checks if a scope is present in the list.
+func containsScope(scopes []string, target string) bool {
+	for _, scope := range scopes {
+		if scope == target {
+			return true
+		}
+	}
+	return false
+}
+
+// validateOrganizations validates and deep copies the allowed organizations list.
+func validateOrganizations(orgs []string) ([]string, error) {
+	if len(orgs) == 0 {
+		return nil, nil
+	}
+
+	allowedOrgs := make([]string, len(orgs))
+	copy(allowedOrgs, orgs)
+
+	for _, org := range allowedOrgs {
+		if org == "" {
+			return nil, fmt.Errorf("organization name cannot be empty")
+		}
+		// GitHub org names: 1-39 chars, alphanumeric and hyphens, no double hyphens
+		if len(org) > 39 {
+			return nil, fmt.Errorf("organization name %q exceeds maximum length of 39 characters", org)
+		}
+	}
+
+	return allowedOrgs, nil
 }
 
 // Name returns the provider name.
@@ -234,23 +254,7 @@ func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier strin
 	ctx, cancel := p.ensureContextTimeout(ctx)
 	defer cancel()
 
-	var opts []oauth2.AuthCodeOption
-
-	// Add PKCE verifier if provided
-	if verifier != "" {
-		opts = append(opts, oauth2.VerifierOption(verifier))
-	}
-
-	// Use custom HTTP client
-	ctx = context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)
-
-	// Exchange code for token
-	token, err := p.Exchange(ctx, code, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to exchange code: %w", err)
-	}
-
-	return token, nil
+	return providers.ExchangeCodeWithPKCE(ctx, p, p.httpClient, code, verifier)
 }
 
 // ValidateToken validates an access token by calling GitHub's user endpoint.

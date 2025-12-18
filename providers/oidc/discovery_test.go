@@ -140,7 +140,7 @@ func TestDiscoveryClient_Discover(t *testing.T) {
 		httpDoc := validDoc
 		httpDoc.AuthorizationEndpoint = "http://dex.example.com/auth" // HTTP instead of HTTPS
 
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(httpDoc)
 		}))
@@ -158,7 +158,7 @@ func TestDiscoveryClient_Discover(t *testing.T) {
 
 	t.Run("cache hit", func(t *testing.T) {
 		callCount := 0
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			callCount++
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(validDoc)
@@ -186,7 +186,7 @@ func TestDiscoveryClient_Discover(t *testing.T) {
 
 	t.Run("cache expiry", func(t *testing.T) {
 		callCount := 0
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			callCount++
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(validDoc)
@@ -221,7 +221,7 @@ func TestDiscoveryClient_Discover(t *testing.T) {
 	})
 
 	t.Run("404 not found", func(t *testing.T) {
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			http.Error(w, "not found", http.StatusNotFound)
 		}))
 		defer server.Close()
@@ -237,7 +237,7 @@ func TestDiscoveryClient_Discover(t *testing.T) {
 	})
 
 	t.Run("malformed JSON", func(t *testing.T) {
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte("not json"))
 		}))
@@ -254,7 +254,7 @@ func TestDiscoveryClient_Discover(t *testing.T) {
 	})
 
 	t.Run("context cancellation", func(t *testing.T) {
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			time.Sleep(1 * time.Second) // Simulate slow response
 			_ = json.NewEncoder(w).Encode(validDoc)
 		}))
@@ -359,10 +359,8 @@ func TestDiscoveryClient_validateDocument(t *testing.T) {
 				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("validateDocument() error = %v, want error containing %q", err, tt.errMsg)
 				}
-			} else {
-				if err != nil {
-					t.Errorf("validateDocument() unexpected error = %v", err)
-				}
+			} else if err != nil {
+				t.Errorf("validateDocument() unexpected error = %v", err)
 			}
 		})
 	}
@@ -376,7 +374,7 @@ func TestDiscoveryClient_ClearCache(t *testing.T) {
 		JWKSUri:               "https://dex.example.com/keys",
 	}
 
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(validDoc)
 	}))

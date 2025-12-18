@@ -116,10 +116,8 @@ func TestValidateIssuerURL(t *testing.T) {
 				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("ValidateIssuerURL() error = %v, want error containing %q", err, tt.errMsg)
 				}
-			} else {
-				if err != nil {
-					t.Errorf("ValidateIssuerURL() unexpected error = %v", err)
-				}
+			} else if err != nil {
+				t.Errorf("ValidateIssuerURL() unexpected error = %v", err)
 			}
 		})
 	}
@@ -215,10 +213,8 @@ func TestValidateConnectorID(t *testing.T) {
 				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("ValidateConnectorID() error = %v, want error containing %q", err, tt.errMsg)
 				}
-			} else {
-				if err != nil {
-					t.Errorf("ValidateConnectorID() unexpected error = %v", err)
-				}
+			} else if err != nil {
+				t.Errorf("ValidateConnectorID() unexpected error = %v", err)
 			}
 		})
 	}
@@ -299,10 +295,8 @@ func TestValidateScopes(t *testing.T) {
 				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("ValidateScopes() error = %v, want error containing %q", err, tt.errMsg)
 				}
-			} else {
-				if err != nil {
-					t.Errorf("ValidateScopes() unexpected error = %v", err)
-				}
+			} else if err != nil {
+				t.Errorf("ValidateScopes() unexpected error = %v", err)
 			}
 		})
 	}
@@ -375,10 +369,8 @@ func TestValidateGroups(t *testing.T) {
 				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("ValidateGroups() error = %v, want error containing %q", err, tt.errMsg)
 				}
-			} else {
-				if err != nil {
-					t.Errorf("ValidateGroups() unexpected error = %v", err)
-				}
+			} else if err != nil {
+				t.Errorf("ValidateGroups() unexpected error = %v", err)
 			}
 		})
 	}

@@ -91,15 +91,16 @@ func applyDNSTimeoutDefaults(config *Config, logger *slog.Logger) {
 		maxDNSTimeout     = 30 * time.Second
 	)
 
-	if config.DNSValidationTimeout == 0 {
+	switch {
+	case config.DNSValidationTimeout == 0:
 		config.DNSValidationTimeout = defaultDNSTimeout
-	} else if config.DNSValidationTimeout > maxDNSTimeout {
+	case config.DNSValidationTimeout > maxDNSTimeout:
 		logger.Warn("DNS validation timeout exceeds maximum, capping to prevent slow registrations",
 			"configured", config.DNSValidationTimeout,
 			"corrected_to", maxDNSTimeout,
 			"risk", "very long timeouts can cause slow client registrations and potential DoS")
 		config.DNSValidationTimeout = maxDNSTimeout
-	} else if config.DNSValidationTimeout < 0 {
+	case config.DNSValidationTimeout < 0:
 		logger.Warn("DNS validation timeout cannot be negative, using default",
 			"configured", config.DNSValidationTimeout,
 			"corrected_to", defaultDNSTimeout)

@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
-	"github.com/giantswarm/mcp-oauth/internal/util"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/server"
@@ -37,7 +37,7 @@ func setupTestHandler(t *testing.T) (*Handler, *memory.Store) {
 	t.Helper()
 
 	store := memory.New()
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &server.Config{
 		Issuer: testIssuer,
@@ -66,7 +66,7 @@ func setupTestHandlerWithCORS(t *testing.T, allowedOrigins []string) (*Handler, 
 	t.Helper()
 
 	store := memory.New()
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &server.Config{
 		Issuer: "https://auth.example.com",
@@ -90,7 +90,7 @@ func TestNewHandler(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &server.Config{
 		Issuer: testIssuer,
@@ -133,7 +133,7 @@ func TestHandler_ServeProtectedResourceMetadata(t *testing.T) {
 
 func TestHandler_ServeProtectedResourceMetadata_WithScopes(t *testing.T) {
 	store := memory.New()
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &server.Config{
 		Issuer:          testIssuer,
@@ -496,10 +496,8 @@ func TestHandler_validateMetadataPath(t *testing.T) {
 				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("validateMetadataPath() error = %v, want error containing %q", err, tt.errMsg)
 				}
-			} else {
-				if err != nil {
-					t.Errorf("validateMetadataPath() unexpected error = %v", err)
-				}
+			} else if err != nil {
+				t.Errorf("validateMetadataPath() unexpected error = %v", err)
 			}
 		})
 	}
@@ -602,7 +600,7 @@ func TestHandler_ServeProtectedResourceMetadata_SubPathDiscovery(t *testing.T) {
 			store := memory.New()
 			defer store.Stop()
 
-			provider := mock.NewMockProvider()
+			provider := mock.NewProvider()
 
 			config := &server.Config{
 				Issuer:                 testIssuer,
@@ -665,7 +663,7 @@ func TestHandler_RegisterProtectedResourceMetadataRoutes_WithResourceMetadataByP
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &server.Config{
 		Issuer:          testIssuer,
@@ -737,7 +735,7 @@ func TestHandler_RegisterProtectedResourceMetadataRoutes_DuplicatePaths(t *testi
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	// Both mcpPath and ResourceMetadataByPath have the same path
 	config := &server.Config{
@@ -817,7 +815,7 @@ func TestPathMatchesPrefix(t *testing.T) {
 	for _, tt := range tests {
 		name := tt.resourcePath + "_" + tt.prefix
 		t.Run(name, func(t *testing.T) {
-			got := util.PathMatchesPrefix(tt.resourcePath, tt.prefix)
+			got := helpers.PathMatchesPrefix(tt.resourcePath, tt.prefix)
 			if got != tt.expected {
 				t.Errorf("PathMatchesPrefix(%q, %q) = %v, want %v",
 					tt.resourcePath, tt.prefix, got, tt.expected)
@@ -830,7 +828,7 @@ func TestHandler_findPathConfig(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &server.Config{
 		Issuer: testIssuer,
@@ -902,7 +900,7 @@ func TestHandler_buildProtectedResourceMetadata(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &server.Config{
 		Issuer:          testIssuer,
@@ -1464,7 +1462,7 @@ func TestHandler_ValidateToken_MissingHeader(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	// Create a simple handler to wrap
-	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
@@ -1501,7 +1499,7 @@ func TestHandler_ValidateToken_InvalidFormat(t *testing.T) {
 			req.Header.Set("Authorization", tt.header)
 			w := httptest.NewRecorder()
 
-			nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			nextHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			})
 
@@ -2924,10 +2922,8 @@ func TestCORS_AllowedOrigin(t *testing.T) {
 				if w.Header().Get("Vary") != "Origin" {
 					t.Errorf("Vary header = %q, want %q", w.Header().Get("Vary"), "Origin")
 				}
-			} else {
-				if allowOrigin != "" {
-					t.Errorf("Access-Control-Allow-Origin should not be set for disallowed origin, got %q", allowOrigin)
-				}
+			} else if allowOrigin != "" {
+				t.Errorf("Access-Control-Allow-Origin should not be set for disallowed origin, got %q", allowOrigin)
 			}
 		})
 	}
@@ -2938,7 +2934,7 @@ func TestCORS_WildcardOrigin(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &server.Config{
 		Issuer: "https://auth.example.com",
@@ -3375,7 +3371,7 @@ func TestHandler_WriteError401WithWWWAuthenticate(t *testing.T) {
 			store := memory.New()
 			defer store.Stop()
 
-			provider := mock.NewMockProvider()
+			provider := mock.NewProvider()
 
 			config := &server.Config{
 				Issuer:                 testIssuer,
@@ -3409,10 +3405,8 @@ func TestHandler_WriteError401WithWWWAuthenticate(t *testing.T) {
 						if !strings.Contains(wwwAuth, expectedScope) {
 							t.Errorf("WWW-Authenticate missing expected scope:\ngot:  %q\nwant: %q", wwwAuth, expectedScope)
 						}
-					} else {
-						if strings.Contains(wwwAuth, "scope=") {
-							t.Errorf("WWW-Authenticate should not contain scope:\ngot: %q", wwwAuth)
-						}
+					} else if strings.Contains(wwwAuth, "scope=") {
+						t.Errorf("WWW-Authenticate should not contain scope:\ngot: %q", wwwAuth)
 					}
 
 					// Verify error and error_description are included
@@ -3437,7 +3431,7 @@ func TestHandler_ValidateToken401ResponseWithWWWAuthenticate(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &server.Config{
 		Issuer:                 testIssuer,
@@ -3452,7 +3446,7 @@ func TestHandler_ValidateToken401ResponseWithWWWAuthenticate(t *testing.T) {
 	handler := NewHandler(srv, nil)
 
 	// Create a test endpoint that requires authentication
-	testEndpoint := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	testEndpoint := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("success"))
 	})
@@ -3568,7 +3562,7 @@ func TestHandler_WriteError401BackwardCompatibilityMode(t *testing.T) {
 			store := memory.New()
 			defer store.Stop()
 
-			provider := mock.NewMockProvider()
+			provider := mock.NewProvider()
 
 			config := &server.Config{
 				Issuer:                         testIssuer,
@@ -3692,7 +3686,7 @@ func TestHandler_GetChallengeScopes(t *testing.T) {
 			store := memory.New()
 			defer store.Stop()
 
-			provider := mock.NewMockProvider()
+			provider := mock.NewProvider()
 
 			config := &server.Config{
 				Issuer:                          testIssuer,
@@ -3778,7 +3772,7 @@ func TestHandler_WriteUnauthorizedError(t *testing.T) {
 			store := memory.New()
 			defer store.Stop()
 
-			provider := mock.NewMockProvider()
+			provider := mock.NewProvider()
 
 			config := &server.Config{
 				Issuer:                    testIssuer,
@@ -3820,10 +3814,8 @@ func TestHandler_WriteUnauthorizedError(t *testing.T) {
 				if !strings.Contains(wwwAuth, expectedScope) {
 					t.Errorf("WWW-Authenticate missing expected scope:\ngot:  %q\nwant: %q", wwwAuth, expectedScope)
 				}
-			} else {
-				if strings.Contains(wwwAuth, "scope=") {
-					t.Errorf("WWW-Authenticate should not contain scope:\ngot: %q", wwwAuth)
-				}
+			} else if strings.Contains(wwwAuth, "scope=") {
+				t.Errorf("WWW-Authenticate should not contain scope:\ngot: %q", wwwAuth)
 			}
 
 			// Check error code
@@ -3905,7 +3897,7 @@ func TestHandler_ValidateTokenWithEndpointSpecificWWWAuthenticate(t *testing.T) 
 			store := memory.New()
 			defer store.Stop()
 
-			provider := mock.NewMockProvider()
+			provider := mock.NewProvider()
 
 			config := &server.Config{
 				Issuer:                    testIssuer,
@@ -3921,7 +3913,7 @@ func TestHandler_ValidateTokenWithEndpointSpecificWWWAuthenticate(t *testing.T) 
 			handler := NewHandler(srv, nil)
 
 			// Create test handler that is protected by ValidateToken middleware
-			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			})
 
@@ -3958,10 +3950,8 @@ func TestHandler_ValidateTokenWithEndpointSpecificWWWAuthenticate(t *testing.T) 
 					if !strings.Contains(wwwAuth, expectedScope) {
 						t.Errorf("WWW-Authenticate missing expected scope:\ngot:  %q\nwant: %q", wwwAuth, expectedScope)
 					}
-				} else {
-					if strings.Contains(wwwAuth, "scope=") {
-						t.Errorf("WWW-Authenticate should not contain scope when none configured:\ngot: %q", wwwAuth)
-					}
+				} else if strings.Contains(wwwAuth, "scope=") {
+					t.Errorf("WWW-Authenticate should not contain scope when none configured:\ngot: %q", wwwAuth)
 				}
 			}
 		})
@@ -4532,7 +4522,7 @@ func TestHandler_ServeSuccessInterstitial_Branding(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	// Configure with branding
 	config := &server.Config{
@@ -4610,7 +4600,7 @@ func TestHandler_ServeSuccessInterstitial_CustomTemplate(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	customTemplate := `<!DOCTYPE html>
 <html>
@@ -4667,7 +4657,7 @@ func TestHandler_ServeSuccessInterstitial_CustomHandler(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	var capturedRedirectURL, capturedAppName string
 
@@ -4752,7 +4742,7 @@ func TestHandler_ServeCallback_CustomURLScheme_WithBranding(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &server.Config{
 		Issuer: testIssuer,
@@ -4836,7 +4826,7 @@ func TestHandler_ServeSuccessInterstitial_AppNamePlaceholder(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	// Configure with branding that uses {{.AppName}} placeholders
 	config := &server.Config{

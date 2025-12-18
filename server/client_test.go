@@ -16,7 +16,7 @@ func TestServer_RegisterClient(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &Config{
 		Issuer: "https://auth.example.com",
@@ -171,7 +171,7 @@ func TestServer_RegisterClient_IPLimit(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &Config{
 		Issuer: "https://auth.example.com",
@@ -233,7 +233,7 @@ func TestServer_ValidateClientCredentials(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &Config{
 		Issuer: "https://auth.example.com",
@@ -305,7 +305,7 @@ func TestServer_GetClient(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &Config{
 		Issuer: "https://auth.example.com",
@@ -381,7 +381,7 @@ func TestServer_RegisterClient_TokenEndpointAuthMethod(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &Config{
 		Issuer: "https://auth.example.com",
@@ -468,7 +468,6 @@ func TestServer_RegisterClient_TokenEndpointAuthMethod(t *testing.T) {
 				"192.168.1."+tt.name[:3], // Use unique IP for each test
 				10,
 			)
-
 			if err != nil {
 				t.Fatalf("RegisterClient() error = %v", err)
 			}
@@ -504,7 +503,7 @@ func TestServer_CanRegisterWithTrustedScheme(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	tests := []struct {
 		name                        string

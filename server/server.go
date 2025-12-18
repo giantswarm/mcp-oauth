@@ -53,28 +53,11 @@ func New(
 	config *Config,
 	logger *slog.Logger,
 ) (*Server, error) {
-	if provider == nil {
-		return nil, fmt.Errorf("provider is required")
-	}
-	if tokenStore == nil {
-		return nil, fmt.Errorf("token store is required")
-	}
-	if clientStore == nil {
-		return nil, fmt.Errorf("client store is required")
-	}
-	if flowStore == nil {
-		return nil, fmt.Errorf("flow store is required")
-	}
-	if config == nil {
-		config = &Config{}
+	if err := validateServerDependencies(provider, tokenStore, clientStore, flowStore); err != nil {
+		return nil, err
 	}
 
-	if logger == nil {
-		logger = slog.Default()
-	}
-
-	// Apply secure defaults
-	config = applySecureDefaults(config, logger)
+	config, logger = applyDefaults(config, logger)
 
 	// Create cleanup context for background goroutines
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
@@ -91,88 +74,133 @@ func New(
 		metadataCacheCleanupCancel: cleanupCancel,
 	}
 
-	// Validate HTTPS enforcement (OAuth 2.1 security requirement)
 	if err := srv.validateHTTPSEnforcement(); err != nil {
 		return nil, err
 	}
 
-	// Configure storage retention if storage supports it
+	configureStorageRetention(tokenStore, config)
+	srv.initializeInstrumentation(tokenStore, clientStore, flowStore)
+	srv.initializeMetadataSupport()
+	srv.validateProviderDefaultScopes(logger)
+
+	return srv, nil
+}
+
+// validateServerDependencies checks that all required dependencies are provided.
+func validateServerDependencies(provider providers.Provider, tokenStore storage.TokenStore, clientStore storage.ClientStore, flowStore storage.FlowStore) error {
+	if provider == nil {
+		return fmt.Errorf("provider is required")
+	}
+	if tokenStore == nil {
+		return fmt.Errorf("token store is required")
+	}
+	if clientStore == nil {
+		return fmt.Errorf("client store is required")
+	}
+	if flowStore == nil {
+		return fmt.Errorf("flow store is required")
+	}
+	return nil
+}
+
+// applyDefaults applies default values for config and logger, then applies secure defaults.
+func applyDefaults(config *Config, logger *slog.Logger) (*Config, *slog.Logger) {
+	if config == nil {
+		config = &Config{}
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return applySecureDefaults(config, logger), logger
+}
+
+// configureStorageRetention sets retention days on storage if it supports it.
+func configureStorageRetention(tokenStore storage.TokenStore, config *Config) {
 	type retentionSetter interface {
 		SetRevokedFamilyRetentionDays(days int64)
 	}
 	if setter, ok := tokenStore.(retentionSetter); ok {
 		setter.SetRevokedFamilyRetentionDays(config.RevokedFamilyRetentionDays)
 	}
+}
 
-	// Initialize instrumentation if enabled
-	if config.Instrumentation.Enabled {
-		instConfig := instrumentation.Config{
-			Enabled:                  true,
-			ServiceName:              config.Instrumentation.ServiceName,
-			ServiceVersion:           config.Instrumentation.ServiceVersion,
-			LogClientIPs:             config.Instrumentation.LogClientIPs,
-			IncludeClientIDInMetrics: config.Instrumentation.IncludeClientIDInMetrics,
-			MetricsExporter:          config.Instrumentation.MetricsExporter,
-			TracesExporter:           config.Instrumentation.TracesExporter,
-			OTLPEndpoint:             config.Instrumentation.OTLPEndpoint,
-			OTLPInsecure:             config.Instrumentation.OTLPInsecure,
-		}
-		if instConfig.ServiceName == "" {
-			instConfig.ServiceName = "mcp-oauth"
-		}
-		if instConfig.ServiceVersion == "" {
-			instConfig.ServiceVersion = "unknown"
-		}
-
-		inst, err := instrumentation.New(instConfig)
-		if err != nil {
-			logger.Warn("Failed to initialize instrumentation, continuing without it", "error", err)
-		} else {
-			srv.Instrumentation = inst
-			srv.tracer = inst.Tracer("server")
-
-			// Propagate instrumentation to storage layers
-			type instrumentationSetter interface {
-				SetInstrumentation(*instrumentation.Instrumentation)
-			}
-			if setter, ok := tokenStore.(instrumentationSetter); ok {
-				setter.SetInstrumentation(inst)
-			}
-			if setter, ok := clientStore.(instrumentationSetter); ok {
-				setter.SetInstrumentation(inst)
-			}
-			if setter, ok := flowStore.(instrumentationSetter); ok {
-				setter.SetInstrumentation(inst)
-			}
-
-			logger.Info("Instrumentation initialized",
-				"service_name", instConfig.ServiceName,
-				"service_version", instConfig.ServiceVersion)
-		}
+// initializeInstrumentation sets up OpenTelemetry instrumentation if enabled.
+func (s *Server) initializeInstrumentation(tokenStore storage.TokenStore, clientStore storage.ClientStore, flowStore storage.FlowStore) {
+	if !s.Config.Instrumentation.Enabled {
+		return
 	}
 
-	// Start background goroutine for metadata cache cleanup
-	// This prevents memory leaks from expired cache entries
-	if config.EnableClientIDMetadataDocuments {
-		// SECURITY: Initialize default rate limiter for metadata fetches (10 req/min per domain)
-		// This prevents DoS attacks via flooding with unique client_id URLs
-		// Each domain is tracked separately to prevent one attacker from blocking legitimate domains
-		srv.metadataFetchRateLimiter = security.NewRateLimiter(10, 20, logger)
-		logger.Info("Initialized metadata fetch rate limiter",
-			"rate", "10 requests/min per domain",
-			"burst", 20,
-			"purpose", "DoS protection")
-
-		go srv.metadataCacheCleanupLoop()
-		logger.Debug("Started metadata cache cleanup goroutine")
+	instConfig := buildInstrumentationConfig(s.Config.Instrumentation)
+	inst, err := instrumentation.New(instConfig)
+	if err != nil {
+		s.Logger.Warn("Failed to initialize instrumentation, continuing without it", "error", err)
+		return
 	}
 
-	// SECURITY: Validate provider default scopes against server configuration
-	// This helps catch configuration mismatches early to prevent runtime confusion
-	// when clients rely on provider defaults but server doesn't support them
-	srv.validateProviderDefaultScopes(logger)
+	s.Instrumentation = inst
+	s.tracer = inst.Tracer("server")
+	propagateInstrumentation(inst, tokenStore, clientStore, flowStore)
 
-	return srv, nil
+	s.Logger.Info("Instrumentation initialized",
+		"service_name", instConfig.ServiceName,
+		"service_version", instConfig.ServiceVersion)
+}
+
+// buildInstrumentationConfig creates an instrumentation config with defaults.
+func buildInstrumentationConfig(cfg InstrumentationConfig) instrumentation.Config {
+	serviceName := cfg.ServiceName
+	if serviceName == "" {
+		serviceName = "mcp-oauth"
+	}
+	serviceVersion := cfg.ServiceVersion
+	if serviceVersion == "" {
+		serviceVersion = "unknown"
+	}
+
+	return instrumentation.Config{
+		Enabled:                  true,
+		ServiceName:              serviceName,
+		ServiceVersion:           serviceVersion,
+		LogClientIPs:             cfg.LogClientIPs,
+		IncludeClientIDInMetrics: cfg.IncludeClientIDInMetrics,
+		MetricsExporter:          cfg.MetricsExporter,
+		TracesExporter:           cfg.TracesExporter,
+		OTLPEndpoint:             cfg.OTLPEndpoint,
+		OTLPInsecure:             cfg.OTLPInsecure,
+	}
+}
+
+// propagateInstrumentation propagates instrumentation to storage layers that support it.
+func propagateInstrumentation(inst *instrumentation.Instrumentation, tokenStore storage.TokenStore, clientStore storage.ClientStore, flowStore storage.FlowStore) {
+	type instrumentationSetter interface {
+		SetInstrumentation(*instrumentation.Instrumentation)
+	}
+	if setter, ok := tokenStore.(instrumentationSetter); ok {
+		setter.SetInstrumentation(inst)
+	}
+	if setter, ok := clientStore.(instrumentationSetter); ok {
+		setter.SetInstrumentation(inst)
+	}
+	if setter, ok := flowStore.(instrumentationSetter); ok {
+		setter.SetInstrumentation(inst)
+	}
+}
+
+// initializeMetadataSupport initializes client ID metadata document support if enabled.
+func (s *Server) initializeMetadataSupport() {
+	if !s.Config.EnableClientIDMetadataDocuments {
+		return
+	}
+
+	// SECURITY: Initialize rate limiter for metadata fetches (10 req/min per domain)
+	s.metadataFetchRateLimiter = security.NewRateLimiter(10, 20, s.Logger)
+	s.Logger.Info("Initialized metadata fetch rate limiter",
+		"rate", "10 requests/min per domain",
+		"burst", 20,
+		"purpose", "DoS protection")
+
+	go s.metadataCacheCleanupLoop()
+	s.Logger.Debug("Started metadata cache cleanup goroutine")
 }
 
 // validateProviderDefaultScopes checks if provider default scopes are supported by server configuration.
@@ -415,73 +443,86 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	s.shutdownOnce.Do(func() {
 		s.Logger.Info("Starting graceful shutdown...")
-
-		// Create a channel to signal when shutdown is complete
 		done := make(chan struct{})
 
 		go func() {
 			defer close(done)
-
-			// Stop rate limiters
-			if s.RateLimiter != nil {
-				s.Logger.Debug("Stopping IP rate limiter...")
-				s.RateLimiter.Stop()
-			}
-			if s.UserRateLimiter != nil {
-				s.Logger.Debug("Stopping user rate limiter...")
-				s.UserRateLimiter.Stop()
-			}
-			if s.SecurityEventRateLimiter != nil {
-				s.Logger.Debug("Stopping security event rate limiter...")
-				s.SecurityEventRateLimiter.Stop()
-			}
-			if s.ClientRegistrationRateLimiter != nil {
-				s.Logger.Debug("Stopping client registration rate limiter...")
-				s.ClientRegistrationRateLimiter.Stop()
-			}
-			if s.metadataFetchRateLimiter != nil {
-				s.Logger.Debug("Stopping metadata fetch rate limiter...")
-				s.metadataFetchRateLimiter.Stop()
-			}
-
-			// Stop metadata cache cleanup goroutine
-			if s.metadataCacheCleanupCancel != nil {
-				s.Logger.Debug("Stopping metadata cache cleanup goroutine...")
-				s.metadataCacheCleanupCancel()
-			}
-
-			// Shutdown instrumentation
-			if s.Instrumentation != nil {
-				s.Logger.Debug("Shutting down instrumentation...")
-				if err := s.Instrumentation.Shutdown(ctx); err != nil {
-					s.Logger.Warn("Failed to shutdown instrumentation", "error", err)
-				}
-			}
-
-			// Stop storage cleanup goroutines if the store supports it
-			type stoppableStore interface {
-				Stop()
-			}
-			if store, ok := s.tokenStore.(stoppableStore); ok {
-				s.Logger.Debug("Stopping storage cleanup...")
-				store.Stop()
-			}
-
-			s.Logger.Info("Graceful shutdown completed")
+			s.performShutdown(ctx)
 		}()
 
-		// Wait for shutdown to complete or context to be cancelled
 		select {
 		case <-done:
 			// Shutdown completed successfully
 		case <-ctx.Done():
-			// Context cancelled or timed out
 			shutdownErr = fmt.Errorf("shutdown cancelled: %w", ctx.Err())
 			s.Logger.Warn("Shutdown timed out or was cancelled", "error", shutdownErr)
 		}
 	})
 
 	return shutdownErr
+}
+
+// performShutdown performs the actual shutdown of all server components.
+func (s *Server) performShutdown(ctx context.Context) {
+	s.stopRateLimiters()
+	s.stopMetadataCacheCleanup()
+	s.shutdownInstrumentation(ctx)
+	s.stopStorage()
+	s.Logger.Info("Graceful shutdown completed")
+}
+
+// stopRateLimiters stops all rate limiters.
+func (s *Server) stopRateLimiters() {
+	if s.RateLimiter != nil {
+		s.Logger.Debug("Stopping IP rate limiter...")
+		s.RateLimiter.Stop()
+	}
+	if s.UserRateLimiter != nil {
+		s.Logger.Debug("Stopping user rate limiter...")
+		s.UserRateLimiter.Stop()
+	}
+	if s.SecurityEventRateLimiter != nil {
+		s.Logger.Debug("Stopping security event rate limiter...")
+		s.SecurityEventRateLimiter.Stop()
+	}
+	if s.ClientRegistrationRateLimiter != nil {
+		s.Logger.Debug("Stopping client registration rate limiter...")
+		s.ClientRegistrationRateLimiter.Stop()
+	}
+	if s.metadataFetchRateLimiter != nil {
+		s.Logger.Debug("Stopping metadata fetch rate limiter...")
+		s.metadataFetchRateLimiter.Stop()
+	}
+}
+
+// stopMetadataCacheCleanup stops the metadata cache cleanup goroutine.
+func (s *Server) stopMetadataCacheCleanup() {
+	if s.metadataCacheCleanupCancel != nil {
+		s.Logger.Debug("Stopping metadata cache cleanup goroutine...")
+		s.metadataCacheCleanupCancel()
+	}
+}
+
+// shutdownInstrumentation shuts down the instrumentation subsystem.
+func (s *Server) shutdownInstrumentation(ctx context.Context) {
+	if s.Instrumentation == nil {
+		return
+	}
+	s.Logger.Debug("Shutting down instrumentation...")
+	if err := s.Instrumentation.Shutdown(ctx); err != nil {
+		s.Logger.Warn("Failed to shutdown instrumentation", "error", err)
+	}
+}
+
+// stopStorage stops storage cleanup goroutines if supported.
+func (s *Server) stopStorage() {
+	type stoppableStore interface {
+		Stop()
+	}
+	if store, ok := s.tokenStore.(stoppableStore); ok {
+		s.Logger.Debug("Stopping storage cleanup...")
+		store.Stop()
+	}
 }
 
 // ShutdownWithTimeout is a convenience wrapper around Shutdown that creates

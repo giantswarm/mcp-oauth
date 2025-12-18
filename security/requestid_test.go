@@ -294,11 +294,11 @@ func TestRequestIDMiddlewareIntegration(t *testing.T) {
 	// Test that request ID flows through multiple handlers
 	var requestIDs []string
 
-	handler1 := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler1 := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		requestIDs = append(requestIDs, GetRequestID(r.Context()))
 	})
 
-	handler2 := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler2 := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		requestIDs = append(requestIDs, GetRequestID(r.Context()))
 	})
 

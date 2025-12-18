@@ -18,7 +18,7 @@ func TestRegisterAuthorizationServerMetadataRoutes_SingleTenant(t *testing.T) {
 		Issuer: "https://auth.example.com",
 	}
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 	store := memory.New()
 	defer store.Stop()
 
@@ -75,7 +75,7 @@ func TestRegisterAuthorizationServerMetadataRoutes_MultiTenant(t *testing.T) {
 		Issuer: "https://auth.example.com/tenant1",
 	}
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 	store := memory.New()
 	defer store.Stop()
 
@@ -171,7 +171,7 @@ func TestRegisterAuthorizationServerMetadataRoutes_NestedPath(t *testing.T) {
 		Issuer: "https://auth.example.com/org1/tenant1/prod",
 	}
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 	store := memory.New()
 	defer store.Stop()
 
@@ -296,7 +296,7 @@ func TestExtractIssuerPath(t *testing.T) {
 				Issuer: tt.issuer,
 			}
 
-			provider := mock.NewMockProvider()
+			provider := mock.NewProvider()
 			store := memory.New()
 			defer store.Stop()
 

@@ -119,7 +119,7 @@ func setupRoutes(handler *oauth.Handler) {
 	// General MCP endpoint
 	http.Handle("/mcp", handler.ValidateToken(mcpHandler()))
 
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})

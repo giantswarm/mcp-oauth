@@ -47,7 +47,7 @@ func TestServer_AuditLoggingClientIDMismatch(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 	logger, logBuf := captureLogger()
 
 	config := &Config{
@@ -145,7 +145,7 @@ func TestServer_AuditLoggingRedirectURIMismatch(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 	logger, logBuf := captureLogger()
 
 	config := &Config{
@@ -243,7 +243,7 @@ func TestServer_AuditEventProviderRevocationThresholdExceeded(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 	logger, logBuf := captureLogger()
 
 	config := &Config{
@@ -265,7 +265,7 @@ func TestServer_AuditEventProviderRevocationThresholdExceeded(t *testing.T) {
 	clientID := "test_client_audit"
 
 	// Configure provider to fail ALL attempts (100% failure)
-	provider.RevokeTokenFunc = func(ctx context.Context, token string) error {
+	provider.RevokeTokenFunc = func(_ context.Context, _ string) error {
 		return fmt.Errorf("provider revocation failed")
 	}
 
@@ -320,7 +320,7 @@ func TestServer_AuditEventProviderRevocationCompleteFailure(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 	logger, logBuf := captureLogger()
 
 	config := &Config{
@@ -341,7 +341,7 @@ func TestServer_AuditEventProviderRevocationCompleteFailure(t *testing.T) {
 	clientID := "test_client_complete_fail"
 
 	// Configure provider to fail ALL attempts (100% failure)
-	provider.RevokeTokenFunc = func(ctx context.Context, token string) error {
+	provider.RevokeTokenFunc = func(_ context.Context, _ string) error {
 		return fmt.Errorf("provider revocation failed")
 	}
 
@@ -391,7 +391,7 @@ func TestServer_AuditEventAuthorizationCodeReuse(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 	logger, logBuf := captureLogger()
 
 	config := &Config{

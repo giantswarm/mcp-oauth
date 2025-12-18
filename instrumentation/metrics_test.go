@@ -32,7 +32,7 @@ func TestMetrics_RecordHTTPRequest(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		t.Run(tt.name, func(_ *testing.T) {
 			// Should not panic
 			metrics.RecordHTTPRequest(ctx, tt.method, tt.endpoint, tt.statusCode, tt.durationMs)
 		})
@@ -156,7 +156,7 @@ func TestMetrics_RecordProviderAPICalls(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		t.Run(tt.name, func(_ *testing.T) {
 			metrics.RecordProviderAPICall(ctx, tt.provider, tt.operation, tt.statusCode, tt.durationMs, tt.err)
 		})
 	}
@@ -218,7 +218,7 @@ func TestMetrics_ConcurrentRecording(t *testing.T) {
 	done := make(chan bool)
 
 	for i := 0; i < 10; i++ {
-		go func(id int) {
+		go func(_ int) {
 			for j := 0; j < 100; j++ {
 				metrics.RecordHTTPRequest(ctx, "GET", "/test", 200, 10.0)
 				metrics.RecordAuthorizationStarted(ctx, "client")
@@ -253,28 +253,28 @@ func TestMetrics_RecordCIMDOperations(t *testing.T) {
 	metrics := inst.Metrics()
 
 	// Test CIMD fetch metrics with various results
-	t.Run("CIMD fetch success", func(t *testing.T) {
+	t.Run("CIMD fetch success", func(_ *testing.T) {
 		metrics.RecordCIMDFetch(ctx, "success", 123.45)
 	})
 
-	t.Run("CIMD fetch error", func(t *testing.T) {
+	t.Run("CIMD fetch error", func(_ *testing.T) {
 		metrics.RecordCIMDFetch(ctx, "error", 500.0)
 	})
 
-	t.Run("CIMD fetch blocked", func(t *testing.T) {
+	t.Run("CIMD fetch blocked", func(_ *testing.T) {
 		metrics.RecordCIMDFetch(ctx, "blocked", 5.0)
 	})
 
 	// Test CIMD cache metrics with various operations
-	t.Run("CIMD cache hit", func(t *testing.T) {
+	t.Run("CIMD cache hit", func(_ *testing.T) {
 		metrics.RecordCIMDCache(ctx, "hit")
 	})
 
-	t.Run("CIMD cache miss", func(t *testing.T) {
+	t.Run("CIMD cache miss", func(_ *testing.T) {
 		metrics.RecordCIMDCache(ctx, "miss")
 	})
 
-	t.Run("CIMD cache negative_hit", func(t *testing.T) {
+	t.Run("CIMD cache negative_hit", func(_ *testing.T) {
 		metrics.RecordCIMDCache(ctx, "negative_hit")
 	})
 

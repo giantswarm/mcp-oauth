@@ -480,26 +480,26 @@ func (m *mockProviderForTest) DefaultScopes() []string {
 	return m.defaultScopes
 }
 
-func (m *mockProviderForTest) AuthorizationURL(state, codeChallenge, codeChallengeMethod string, scopes []string) string {
+func (m *mockProviderForTest) AuthorizationURL(_, _, _ string, _ []string) string {
 	return ""
 }
 
-func (m *mockProviderForTest) ExchangeCode(ctx context.Context, code, codeVerifier string) (*oauth2.Token, error) {
+func (m *mockProviderForTest) ExchangeCode(_ context.Context, _, _ string) (*oauth2.Token, error) {
 	return nil, nil
 }
 
-func (m *mockProviderForTest) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+func (m *mockProviderForTest) ValidateToken(_ context.Context, _ string) (*providers.UserInfo, error) {
 	return nil, nil
 }
 
-func (m *mockProviderForTest) RefreshToken(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+func (m *mockProviderForTest) RefreshToken(_ context.Context, _ string) (*oauth2.Token, error) {
 	return nil, nil
 }
 
-func (m *mockProviderForTest) RevokeToken(ctx context.Context, token string) error {
+func (m *mockProviderForTest) RevokeToken(_ context.Context, _ string) error {
 	return nil
 }
 
-func (m *mockProviderForTest) HealthCheck(ctx context.Context) error {
+func (m *mockProviderForTest) HealthCheck(_ context.Context) error {
 	return nil
 }

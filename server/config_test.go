@@ -780,6 +780,7 @@ func TestValidateCORSConfig_HTTPLocalhostAllowed(t *testing.T) {
 }
 
 func TestValidateCORSConfig_HTTPAllowedWithFlag(t *testing.T) {
+	_ = t // Test verifies no panic with HTTP origin when AllowInsecureHTTP=true
 	// HTTP origin should be allowed when AllowInsecureHTTP=true
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))

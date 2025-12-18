@@ -3,8 +3,9 @@ package storage
 import (
 	"fmt"
 
-	"github.com/giantswarm/mcp-oauth/security"
 	"golang.org/x/oauth2"
+
+	"github.com/giantswarm/mcp-oauth/security"
 )
 
 // KnownExtraFields lists the OIDC extra fields that must be preserved through encryption.
@@ -87,34 +88,7 @@ func ExtractTokenExtra(token *oauth2.Token) map[string]interface{} {
 // Non-sensitive fields are copied as-is.
 // If encryptor is nil or disabled, returns the original map unchanged.
 func EncryptExtraFields(extra map[string]interface{}, encryptor *security.Encryptor) (map[string]interface{}, error) {
-	if extra == nil {
-		return nil, nil
-	}
-	if encryptor == nil || !encryptor.IsEnabled() {
-		return extra, nil
-	}
-
-	result := make(map[string]interface{}, len(extra))
-	for key, value := range extra {
-		if sensitiveExtraFieldSet[key] {
-			// Encrypt sensitive string fields
-			if strVal, ok := value.(string); ok && strVal != "" {
-				encrypted, err := encryptor.Encrypt(strVal)
-				if err != nil {
-					return nil, fmt.Errorf("failed to encrypt extra field %s: %w", key, err)
-				}
-				result[key] = encrypted
-			} else {
-				// Non-string or empty values are copied as-is
-				result[key] = value
-			}
-		} else {
-			// Non-sensitive fields are copied as-is
-			result[key] = value
-		}
-	}
-
-	return result, nil
+	return transformExtraFields(extra, encryptor, encryptValue)
 }
 
 // DecryptExtraFields decrypts sensitive fields in the extra map.
@@ -122,6 +96,14 @@ func EncryptExtraFields(extra map[string]interface{}, encryptor *security.Encryp
 // Non-sensitive fields are copied as-is.
 // If encryptor is nil or disabled, returns the original map unchanged.
 func DecryptExtraFields(extra map[string]interface{}, encryptor *security.Encryptor) (map[string]interface{}, error) {
+	return transformExtraFields(extra, encryptor, decryptValue)
+}
+
+// transformFunc defines the signature for encrypt/decrypt operations.
+type transformFunc func(encryptor *security.Encryptor, value string) (string, error)
+
+// transformExtraFields applies a transformation to sensitive fields in the extra map.
+func transformExtraFields(extra map[string]interface{}, encryptor *security.Encryptor, transform transformFunc) (map[string]interface{}, error) {
 	if extra == nil {
 		return nil, nil
 	}
@@ -131,23 +113,40 @@ func DecryptExtraFields(extra map[string]interface{}, encryptor *security.Encryp
 
 	result := make(map[string]interface{}, len(extra))
 	for key, value := range extra {
-		if sensitiveExtraFieldSet[key] {
-			// Decrypt sensitive string fields
-			if strVal, ok := value.(string); ok && strVal != "" {
-				decrypted, err := encryptor.Decrypt(strVal)
-				if err != nil {
-					return nil, fmt.Errorf("failed to decrypt extra field %s: %w", key, err)
-				}
-				result[key] = decrypted
-			} else {
-				// Non-string or empty values are copied as-is
-				result[key] = value
-			}
-		} else {
-			// Non-sensitive fields are copied as-is
-			result[key] = value
+		transformedValue, err := transformField(key, value, encryptor, transform)
+		if err != nil {
+			return nil, err
 		}
+		result[key] = transformedValue
 	}
 
 	return result, nil
+}
+
+// transformField transforms a single field if it's sensitive.
+func transformField(key string, value interface{}, encryptor *security.Encryptor, transform transformFunc) (interface{}, error) {
+	if !sensitiveExtraFieldSet[key] {
+		return value, nil
+	}
+
+	strVal, ok := value.(string)
+	if !ok || strVal == "" {
+		return value, nil
+	}
+
+	transformed, err := transform(encryptor, strVal)
+	if err != nil {
+		return nil, fmt.Errorf("failed to transform extra field %s: %w", key, err)
+	}
+	return transformed, nil
+}
+
+// encryptValue encrypts a string value.
+func encryptValue(encryptor *security.Encryptor, value string) (string, error) {
+	return encryptor.Encrypt(value)
+}
+
+// decryptValue decrypts a string value.
+func decryptValue(encryptor *security.Encryptor, value string) (string, error) {
+	return encryptor.Decrypt(value)
 }

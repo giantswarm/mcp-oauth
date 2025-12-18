@@ -53,6 +53,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Documentation**: Updated security guide with Cursor compatibility section and platform security considerations
   - **Issue**: [#141](https://github.com/giantswarm/mcp-oauth/issues/141)
 
+### Changed
+
+- **Refactored Error Types for Cleaner API**
+  - **Change**: Renamed `OAuthError` to `Error` and `NewOAuthError` to `NewError` for a cleaner, more idiomatic Go API
+  - **Backward Compatibility**: Type alias `OAuthError` and function alias `NewOAuthError` are provided for backward compatibility
+  - **Migration**: Update your code to use `oauth.Error` and `oauth.NewError`. The aliases will be removed in a future major version.
+  - **Example**:
+    ```go
+    // Before (deprecated)
+    err := oauth.NewOAuthError("invalid_request", "Missing parameter", 400)
+    var oauthErr *oauth.OAuthError
+    
+    // After (recommended)
+    err := oauth.NewError("invalid_request", "Missing parameter", 400)
+    var oauthErr *oauth.Error
+    ```
+
+- **Code Quality Improvements**
+  - Reduced cyclomatic and cognitive complexity across the codebase
+  - Extracted shared helper functions to reduce code duplication (DRY principle)
+  - Added generic helpers for common patterns (`lookupWithTracing`, `getAndUnmarshal`, `ExchangeCodeWithPKCE`)
+  - Introduced `metricsBuilder` pattern for cleaner metrics initialization
+  - Moved shared constants to `storage/storage.go` for consistency
+
+- **Internal Package Rename**
+  - Renamed `internal/util` to `internal/helpers` for clarity (internal change, no public API impact)
+
+### Deprecated
+
+- **`OAuthError` type**: Use `Error` instead. Alias provided for backward compatibility.
+- **`NewOAuthError` function**: Use `NewError` instead. Alias provided for backward compatibility.
+
 ### Fixed
 
 - **JSON Injection Vulnerability in Example Code**

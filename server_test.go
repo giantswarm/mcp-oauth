@@ -12,7 +12,7 @@ func TestNewServer(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &server.Config{
 		Issuer: "https://auth.example.com",

@@ -19,7 +19,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
-	"github.com/giantswarm/mcp-oauth/internal/util"
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/server"
@@ -30,6 +30,127 @@ const (
 	defaultCORSMaxAge = 3600 // 1 hour default for preflight cache
 	tokenTypeBearer   = "Bearer"
 )
+
+// clientRegistrationRequest represents the JSON request for client registration
+type clientRegistrationRequest struct {
+	ClientName              string   `json:"client_name"`
+	ClientType              string   `json:"client_type"`
+	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
+	RedirectURIs            []string `json:"redirect_uris"`
+	Scopes                  []string `json:"scopes"`
+}
+
+// checkClientRegistrationRateLimit checks if client registration is rate limited
+// Returns true if request should be rejected, false if allowed
+func (h *Handler) checkClientRegistrationRateLimit(w http.ResponseWriter, clientIP string, _ time.Time) bool {
+	if h.server.ClientRegistrationRateLimiter == nil {
+		return false
+	}
+
+	if !h.server.ClientRegistrationRateLimiter.Allow(clientIP) {
+		h.logger.Warn("Client registration rate limit exceeded",
+			"ip", clientIP,
+			"max_per_window", h.server.Config.MaxRegistrationsPerHour,
+			"window", time.Duration(h.server.Config.RegistrationRateLimitWindow)*time.Second)
+		if h.server.Auditor != nil {
+			h.server.Auditor.LogClientRegistrationRateLimitExceeded(clientIP)
+		}
+		h.writeError(w, ErrorCodeInvalidRequest,
+			"Client registration rate limit exceeded. Please try again later.",
+			http.StatusTooManyRequests)
+		return true
+	}
+	return false
+}
+
+// validateRegistrationToken validates the registration access token
+// Returns true if valid token was provided
+func (h *Handler) validateRegistrationToken(authHeader string) bool {
+	if authHeader == "" || h.server.Config.RegistrationAccessToken == "" {
+		return false
+	}
+
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+		return false
+	}
+
+	return subtle.ConstantTimeCompare([]byte(parts[1]), []byte(h.server.Config.RegistrationAccessToken)) == 1
+}
+
+// authorizeClientRegistration checks if client registration is authorized
+// Returns (registeredViaTrustedScheme, trustedScheme, error)
+func (h *Handler) authorizeClientRegistration(w http.ResponseWriter, r *http.Request, req *clientRegistrationRequest, clientIP string) (bool, string, bool) {
+	if h.server.Config.AllowPublicClientRegistration {
+		h.logger.Warn("Unauthenticated client registration (DoS risk)", "client_ip", clientIP)
+		return false, "", true
+	}
+
+	authHeader := r.Header.Get("Authorization")
+	if h.validateRegistrationToken(authHeader) {
+		h.logger.Info("Client registration authenticated with valid token")
+		return false, "", true
+	}
+
+	// Check trusted schemes
+	if authHeader != "" {
+		h.logger.Warn("Invalid registration token provided, checking trusted schemes as fallback",
+			"client_ip", clientIP, "has_trusted_schemes_configured", len(h.server.Config.TrustedPublicRegistrationSchemes) > 0)
+	}
+
+	allowed, scheme, err := h.server.CanRegisterWithTrustedScheme(req.RedirectURIs)
+	if err != nil {
+		h.logger.Warn("Client registration rejected: invalid redirect URI", "client_ip", clientIP, "error", err)
+		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("Invalid redirect URI: %v", err), http.StatusBadRequest)
+		return false, "", false
+	}
+
+	if allowed {
+		h.logger.Info("Client registration authorized via trusted scheme",
+			"scheme", scheme, "client_ip", clientIP, "strict_matching", !h.server.Config.DisableStrictSchemeMatching)
+		return true, scheme, true
+	}
+
+	h.logger.Warn("Client registration rejected: missing or invalid authorization",
+		"client_ip", clientIP, "has_token", authHeader != "",
+		"trusted_schemes_configured", len(h.server.Config.TrustedPublicRegistrationSchemes) > 0)
+	h.writeError(w, ErrorCodeInvalidToken,
+		"Registration requires authentication. Provide a valid registration token or use a trusted redirect URI scheme.",
+		http.StatusUnauthorized)
+	return false, "", false
+}
+
+// validatePublicClientRegistration validates public client registration is allowed
+// Returns true if allowed, false if rejected
+func (h *Handler) validatePublicClientRegistration(w http.ResponseWriter, req *clientRegistrationRequest, clientIP string, registeredViaTrustedScheme bool, startTime time.Time, span trace.Span) bool {
+	isPublicClientRequest := req.TokenEndpointAuthMethod == TokenEndpointAuthMethodNone || req.ClientType == ClientTypePublic
+	if !isPublicClientRequest {
+		return true
+	}
+
+	if !h.server.Config.AllowPublicClientRegistration && !registeredViaTrustedScheme {
+		h.logger.Warn("Public client registration rejected (not allowed by configuration)",
+			"token_endpoint_auth_method", req.TokenEndpointAuthMethod,
+			"client_type", req.ClientType, "ip", clientIP)
+		h.recordHTTPMetrics("register", http.MethodPost, http.StatusBadRequest, startTime)
+		if span != nil {
+			instrumentation.SetSpanAttributes(span,
+				attribute.String("oauth.client_type", "public"),
+				attribute.String("security.event", "public_client_registration_denied"),
+			)
+			instrumentation.SetSpanError(span, "public client registration not allowed")
+		}
+		h.writeError(w, ErrorCodeInvalidRequest,
+			"Public client registration is not enabled on this server. Contact the server administrator.",
+			http.StatusBadRequest)
+		return false
+	}
+
+	h.logger.Info("Public client registration authorized",
+		"token_endpoint_auth_method", req.TokenEndpointAuthMethod, "client_type", req.ClientType,
+		"ip", clientIP, "via_trusted_scheme", registeredViaTrustedScheme)
+	return true
+}
 
 // Context keys for interstitial page custom handlers.
 // These are used to pass the redirect URL and app name to custom handlers
@@ -503,91 +624,104 @@ func (h *Handler) buildInterstitialData(redirectURL, appName string, branding *s
 // ValidateToken is middleware that validates OAuth tokens
 func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Get client IP for rate limiting and logging
 		clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
-		// Apply IP-based rate limiting BEFORE token validation
-		if h.server.RateLimiter != nil {
-			if !h.server.RateLimiter.Allow(clientIP) {
-				h.logger.Warn("Rate limit exceeded", "ip", clientIP)
-
-				// Record rate limit exceeded metric
-				if h.server.Instrumentation != nil {
-					h.server.Instrumentation.Metrics().RecordRateLimitExceeded(r.Context(), "ip")
-				}
-
-				if h.server.Auditor != nil {
-					h.server.Auditor.LogEvent(security.Event{
-						Type:      security.EventRateLimitExceeded,
-						IPAddress: clientIP,
-						Details: map[string]any{
-							"endpoint": r.URL.Path,
-						},
-					})
-					h.server.Auditor.LogRateLimitExceeded(clientIP, "")
-				}
-				w.Header().Set("Retry-After", "60")
-				h.writeError(w, ErrorCodeRateLimitExceeded, "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
-				return
-			}
-		}
-
-		// Extract token from Authorization header
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			h.writeUnauthorizedError(w, r, ErrorCodeInvalidToken, "Missing Authorization header")
+		if h.checkIPRateLimit(w, r, clientIP) {
 			return
 		}
 
-		// Parse Bearer token
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-			h.writeUnauthorizedError(w, r, ErrorCodeInvalidToken, "Invalid Authorization header format")
+		accessToken, ok := h.extractBearerToken(w, r)
+		if !ok {
 			return
 		}
 
-		accessToken := parts[1]
-
-		// Validate token with server
 		userInfo, err := h.server.ValidateToken(r.Context(), accessToken)
 		if err != nil {
 			h.logger.Warn("Token validation failed", "ip", clientIP, "error", err)
-			// SECURITY: Don't leak internal error details to client
-			// Log detailed error but return generic message
 			h.writeUnauthorizedError(w, r, ErrorCodeInvalidToken, "Token validation failed")
 			return
 		}
 
-		// MCP 2025-11-25: Validate token scopes against endpoint requirements
-		// This implements OAuth 2.0 scope-based access control for protected resources
 		if !h.validateTokenScopes(w, r, accessToken, userInfo, clientIP) {
 			return
 		}
 
-		// Apply per-user rate limiting AFTER authentication
-		// This is a separate, higher limit for authenticated users
-		if h.server.UserRateLimiter != nil {
-			if !h.server.UserRateLimiter.Allow(userInfo.ID) {
-				h.logger.Warn("User rate limit exceeded", "user_id", userInfo.ID, "ip", clientIP)
-
-				// Record rate limit exceeded metric
-				if h.server.Instrumentation != nil {
-					h.server.Instrumentation.Metrics().RecordRateLimitExceeded(r.Context(), "user")
-				}
-
-				if h.server.Auditor != nil {
-					h.server.Auditor.LogRateLimitExceeded(clientIP, userInfo.ID)
-				}
-				w.Header().Set("Retry-After", "60")
-				h.writeError(w, ErrorCodeRateLimitExceeded, "Rate limit exceeded for user. Please try again later.", http.StatusTooManyRequests)
-				return
-			}
+		if h.checkUserRateLimit(w, r, userInfo.ID, clientIP) {
+			return
 		}
 
-		// Store user info in context
 		ctx := ContextWithUserInfo(r.Context(), userInfo)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// checkIPRateLimit checks if the client IP is rate limited. Returns true if limited.
+func (h *Handler) checkIPRateLimit(w http.ResponseWriter, r *http.Request, clientIP string) bool {
+	if h.server.RateLimiter == nil || h.server.RateLimiter.Allow(clientIP) {
+		return false
+	}
+
+	h.logger.Warn("Rate limit exceeded", "ip", clientIP)
+	h.recordRateLimitExceeded(r.Context(), "ip", clientIP, "", r.URL.Path)
+	w.Header().Set("Retry-After", "60")
+	h.writeError(w, ErrorCodeRateLimitExceeded, "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
+	return true
+}
+
+// checkUserRateLimit checks if the user is rate limited. Returns true if limited.
+func (h *Handler) checkUserRateLimit(w http.ResponseWriter, r *http.Request, userID, clientIP string) bool {
+	if h.server.UserRateLimiter == nil || h.server.UserRateLimiter.Allow(userID) {
+		return false
+	}
+
+	h.logger.Warn("User rate limit exceeded", "user_id", userID, "ip", clientIP)
+	h.recordUserRateLimitExceeded(r.Context(), clientIP, userID)
+	w.Header().Set("Retry-After", "60")
+	h.writeError(w, ErrorCodeRateLimitExceeded, "Rate limit exceeded for user. Please try again later.", http.StatusTooManyRequests)
+	return true
+}
+
+// recordRateLimitExceeded records rate limit metrics and audit events.
+func (h *Handler) recordRateLimitExceeded(ctx context.Context, limitType, clientIP, userID, endpoint string) {
+	if h.server.Instrumentation != nil {
+		h.server.Instrumentation.Metrics().RecordRateLimitExceeded(ctx, limitType)
+	}
+	if h.server.Auditor != nil {
+		h.server.Auditor.LogEvent(security.Event{
+			Type:      security.EventRateLimitExceeded,
+			IPAddress: clientIP,
+			Details:   map[string]any{"endpoint": endpoint},
+		})
+		h.server.Auditor.LogRateLimitExceeded(clientIP, userID)
+	}
+}
+
+// recordUserRateLimitExceeded records user rate limit metrics and audit events.
+func (h *Handler) recordUserRateLimitExceeded(ctx context.Context, clientIP, userID string) {
+	if h.server.Instrumentation != nil {
+		h.server.Instrumentation.Metrics().RecordRateLimitExceeded(ctx, "user")
+	}
+	if h.server.Auditor != nil {
+		h.server.Auditor.LogRateLimitExceeded(clientIP, userID)
+	}
+}
+
+// extractBearerToken extracts the Bearer token from the Authorization header.
+// Returns the token and true if successful, or writes an error and returns false.
+func (h *Handler) extractBearerToken(w http.ResponseWriter, r *http.Request) (string, bool) {
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		h.writeUnauthorizedError(w, r, ErrorCodeInvalidToken, "Missing Authorization header")
+		return "", false
+	}
+
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+		h.writeUnauthorizedError(w, r, ErrorCodeInvalidToken, "Invalid Authorization header format")
+		return "", false
+	}
+
+	return parts[1], true
 }
 
 // ServeProtectedResourceMetadata serves RFC 9728 Protected Resource Metadata
@@ -661,7 +795,7 @@ func (h *Handler) findPathConfig(resourcePath string) *server.ProtectedResourceC
 		normalizedConfigPath := path.Clean("/" + strings.TrimPrefix(configPath, "/"))
 
 		// Check if this path is a prefix of the resource path
-		if util.PathMatchesPrefix(resourcePath, normalizedConfigPath) {
+		if helpers.PathMatchesPrefix(resourcePath, normalizedConfigPath) {
 			// Use longest match
 			if len(normalizedConfigPath) > len(bestMatch) {
 				bestMatch = normalizedConfigPath
@@ -800,9 +934,9 @@ func (h *Handler) registerMetadataSubPath(mux *http.ServeMux, resourcePath strin
 
 // validateMetadataPath validates a metadata path for security concerns.
 // It checks for path traversal attempts, excessive length, and other malicious patterns.
-// This is a thin wrapper around util.ValidateMetadataPath for use by the Handler.
+// This is a thin wrapper around helpers.ValidateMetadataPath for use by the Handler.
 func (h *Handler) validateMetadataPath(mcpPath string) error {
-	return util.ValidateMetadataPath(mcpPath)
+	return helpers.ValidateMetadataPath(mcpPath)
 }
 
 // RegisterAuthorizationServerMetadataRoutes registers all Authorization Server Metadata discovery routes.
@@ -917,92 +1051,92 @@ func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 		return
 	}
 
-	// SECURITY: Apply rate limiting to discovery endpoints to prevent reconnaissance and DoS
-	// Discovery endpoints are unauthenticated and publicly accessible, making them potential
-	// vectors for automated scanning and resource exhaustion attacks
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
-	if h.server.RateLimiter != nil {
-		if !h.server.RateLimiter.Allow(clientIP) {
-			h.logger.Warn("Rate limit exceeded on discovery endpoint",
-				"ip", clientIP,
-				"endpoint", "authorization_server_metadata")
-
-			if h.server.Instrumentation != nil {
-				h.server.Instrumentation.Metrics().RecordRateLimitExceeded(r.Context(), "ip")
-			}
-
-			if h.server.Auditor != nil {
-				h.server.Auditor.LogEvent(security.Event{
-					Type:      security.EventRateLimitExceeded,
-					IPAddress: clientIP,
-					Details: map[string]any{
-						"endpoint": r.URL.Path,
-					},
-				})
-			}
-
-			w.Header().Set("Retry-After", "60")
-			http.Error(w, "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
-			return
-		}
+	if h.checkDiscoveryRateLimit(w, r, clientIP) {
+		return
 	}
 
-	// Set CORS headers for browser-based clients
 	h.setCORSHeaders(w, r)
-
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
-	metadata := map[string]any{
-		"issuer":                           h.server.Config.Issuer,
-		"authorization_endpoint":           h.server.Config.AuthorizationEndpoint(),
-		"token_endpoint":                   h.server.Config.TokenEndpoint(),
-		"response_types_supported":         []string{"code"},
-		"grant_types_supported":            []string{"authorization_code", "refresh_token"},
-		"code_challenge_methods_supported": []string{PKCEMethodS256},
 
-		// RFC 8414: Token endpoint authentication methods
-		// These methods are always supported for the authorization_code flow
+	metadata := h.buildAuthServerMetadata()
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(metadata)
+}
+
+// checkDiscoveryRateLimit checks rate limit for discovery endpoints.
+// Returns true if rate limit exceeded and response was written.
+func (h *Handler) checkDiscoveryRateLimit(w http.ResponseWriter, r *http.Request, clientIP string) bool {
+	if h.server.RateLimiter == nil || h.server.RateLimiter.Allow(clientIP) {
+		return false
+	}
+
+	h.logger.Warn("Rate limit exceeded on discovery endpoint",
+		"ip", clientIP,
+		"endpoint", "authorization_server_metadata")
+
+	if h.server.Instrumentation != nil {
+		h.server.Instrumentation.Metrics().RecordRateLimitExceeded(r.Context(), "ip")
+	}
+
+	if h.server.Auditor != nil {
+		h.server.Auditor.LogEvent(security.Event{
+			Type:      security.EventRateLimitExceeded,
+			IPAddress: clientIP,
+			Details:   map[string]any{"endpoint": r.URL.Path},
+		})
+	}
+
+	w.Header().Set("Retry-After", "60")
+	http.Error(w, "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
+	return true
+}
+
+// buildAuthServerMetadata builds the RFC 8414 authorization server metadata.
+func (h *Handler) buildAuthServerMetadata() map[string]any {
+	metadata := map[string]any{
+		"issuer":                                h.server.Config.Issuer,
+		"authorization_endpoint":                h.server.Config.AuthorizationEndpoint(),
+		"token_endpoint":                        h.server.Config.TokenEndpoint(),
+		"response_types_supported":              []string{"code"},
+		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
+		"code_challenge_methods_supported":      []string{PKCEMethodS256},
 		"token_endpoint_auth_methods_supported": SupportedTokenAuthMethods,
 	}
 
-	// RFC 8414: scopes_supported is OPTIONAL but RECOMMENDED
-	// Only include if scopes are configured to avoid empty arrays
+	h.addOptionalMetadata(metadata)
+	return metadata
+}
+
+// addOptionalMetadata adds optional endpoints based on configuration.
+func (h *Handler) addOptionalMetadata(metadata map[string]any) {
 	if len(h.server.Config.SupportedScopes) > 0 {
 		metadata["scopes_supported"] = h.server.Config.SupportedScopes
 	}
 
-	// Only advertise registration_endpoint if client registration is actually available
-	// RFC 8414: registration_endpoint is OPTIONAL and should only be included if supported
-	// Registration is available when:
-	// - AllowPublicClientRegistration=true (open registration), OR
-	// - RegistrationAccessToken is set (token-based registration), OR
-	// - TrustedPublicRegistrationSchemes is configured (Cursor/VSCode can register via trusted URI schemes)
-	if h.server.Config.AllowPublicClientRegistration ||
-		h.server.Config.RegistrationAccessToken != "" ||
-		len(h.server.Config.TrustedPublicRegistrationSchemes) > 0 {
+	if h.isRegistrationAvailable() {
 		metadata["registration_endpoint"] = h.server.Config.RegistrationEndpoint()
 	}
 
-	// RFC 7009: Only advertise revocation_endpoint if the feature is enabled and implemented
-	// This prevents advertising capabilities that don't exist (security issue)
 	if h.server.Config.EnableRevocationEndpoint {
 		metadata["revocation_endpoint"] = h.server.Config.RevocationEndpoint()
 	}
 
-	// RFC 7662: Only advertise introspection_endpoint if the feature is enabled and implemented
-	// This prevents advertising capabilities that don't exist (security issue)
 	if h.server.Config.EnableIntrospectionEndpoint {
 		metadata["introspection_endpoint"] = h.server.Config.IntrospectionEndpoint()
 	}
 
-	// MCP 2025-11-25: Advertise Client ID Metadata Documents support
-	// Per draft-ietf-oauth-client-id-metadata-document-00
-	// Only advertise if actually enabled to avoid false capabilities
 	if h.server.Config.EnableClientIDMetadataDocuments {
 		metadata["client_id_metadata_document_supported"] = true
 	}
+}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(metadata)
+// isRegistrationAvailable checks if client registration is available.
+func (h *Handler) isRegistrationAvailable() bool {
+	return h.server.Config.AllowPublicClientRegistration ||
+		h.server.Config.RegistrationAccessToken != "" ||
+		len(h.server.Config.TrustedPublicRegistrationSchemes) > 0
 }
 
 // ServeOpenIDConfiguration handles OpenID Connect Discovery 1.0 requests
@@ -1071,8 +1205,8 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 
 	// Add attributes to span
 	instrumentation.SetSpanAttributes(span,
-		attribute.String("oauth.client_id", clientID),
-		attribute.String("oauth.pkce_method", codeChallengeMethod),
+		attribute.String(instrumentation.AttrClientID, clientID),
+		attribute.String(instrumentation.AttrPKCEMethod, codeChallengeMethod),
 	)
 
 	// Start authorization flow with client state (server also validates for defense in depth)
@@ -1165,7 +1299,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Record successful callback
 	h.recordCallbackProcessed(authCode.ClientID, true)
-	instrumentation.SetSpanAttributes(span, attribute.String("oauth.client_id", authCode.ClientID))
+	instrumentation.SetSpanAttributes(span, attribute.String(instrumentation.AttrClientID, authCode.ClientID))
 	instrumentation.SetSpanSuccess(span)
 
 	// CRITICAL SECURITY: Redirect back to client with their original state parameter
@@ -1255,8 +1389,8 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 		h.recordHTTPMetrics("token", http.MethodPost, http.StatusUnauthorized, startTime)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "client authentication failed")
-		// authenticateClient returns OAuthError, extract details
-		if oauthErr, ok := err.(*OAuthError); ok {
+		// authenticateClient returns Error, extract details
+		if oauthErr, ok := err.(*Error); ok {
 			h.writeError(w, oauthErr.Code, oauthErr.Description, oauthErr.Status)
 		} else {
 			h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
@@ -1266,8 +1400,8 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 
 	// Add span attributes
 	instrumentation.SetSpanAttributes(span,
-		attribute.String("oauth.client_id", client.ClientID),
-		attribute.String("oauth.client_type", client.ClientType),
+		attribute.String(instrumentation.AttrClientID, client.ClientID),
+		attribute.String(instrumentation.AttrClientType, client.ClientType),
 	)
 
 	// Exchange authorization code for tokens
@@ -1340,7 +1474,7 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	instrumentation.SetSpanAttributes(span, attribute.String("oauth.client_id", clientID))
+	instrumentation.SetSpanAttributes(span, attribute.String(instrumentation.AttrClientID, clientID))
 
 	// Refresh token
 	tokenResponse, err := h.server.RefreshAccessToken(ctx, refreshToken, clientID)
@@ -1425,7 +1559,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	instrumentation.SetSpanAttributes(span, attribute.String("oauth.client_id", clientID))
+	instrumentation.SetSpanAttributes(span, attribute.String(instrumentation.AttrClientID, clientID))
 
 	// Revoke token
 	if err := h.server.RevokeToken(ctx, token, clientID, clientIP); err != nil {
@@ -1449,14 +1583,9 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 // ServeClientRegistration handles dynamic client registration (RFC 7591)
 func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
-
-	// Create span if tracing is enabled
-	var span trace.Span
-	ctx := r.Context()
-	if h.tracer != nil {
-		ctx, span = h.tracer.Start(ctx, "oauth.http.client_registration")
+	ctx, span := h.startRegistrationSpan(r)
+	if span != nil {
 		defer span.End()
-		// Update request context to include span context
 		r = r.WithContext(ctx)
 	}
 
@@ -1466,233 +1595,138 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Set CORS headers for browser-based clients
 	h.setCORSHeaders(w, r)
-
-	// Get client IP for DoS protection
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
-	// SECURITY: Check time-windowed rate limit BEFORE processing request
-	// This prevents resource exhaustion through repeated registration/deletion cycles
-	if h.server.ClientRegistrationRateLimiter != nil {
-		if !h.server.ClientRegistrationRateLimiter.Allow(clientIP) {
-			h.logger.Warn("Client registration rate limit exceeded",
-				"ip", clientIP,
-				"max_per_window", h.server.Config.MaxRegistrationsPerHour,
-				"window", time.Duration(h.server.Config.RegistrationRateLimitWindow)*time.Second)
-			if h.server.Auditor != nil {
-				h.server.Auditor.LogClientRegistrationRateLimitExceeded(clientIP)
-			}
-			h.writeError(w, ErrorCodeInvalidRequest,
-				"Client registration rate limit exceeded. Please try again later.",
-				http.StatusTooManyRequests)
-			return
-		}
-	}
-
-	// Check per-IP registration limit to prevent DoS attacks
-	maxClients := h.server.Config.MaxClientsPerIP
-	if maxClients == 0 {
-		maxClients = 10 // Default limit
-	}
-
-	// Parse registration request (must happen before auth check to support trusted scheme validation)
-	var req struct {
-		ClientName              string   `json:"client_name"`
-		ClientType              string   `json:"client_type"`
-		TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
-		RedirectURIs            []string `json:"redirect_uris"`
-		Scopes                  []string `json:"scopes"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.writeError(w, ErrorCodeInvalidRequest, "Invalid JSON", http.StatusBadRequest)
+	if h.checkClientRegistrationRateLimit(w, clientIP, startTime) {
 		return
 	}
 
-	// OAuth 2.1: Require authentication for client registration (secure by default)
-	// Registration is allowed if ANY of:
-	// 1. AllowPublicClientRegistration=true (open registration, not recommended)
-	// 2. Valid RegistrationAccessToken is provided
-	// 3. All redirect URIs use TrustedPublicRegistrationSchemes (for Cursor/IDE compatibility)
-	registeredViaTrustedScheme := false
-	trustedScheme := ""
-
-	if !h.server.Config.AllowPublicClientRegistration {
-		authHeader := r.Header.Get("Authorization")
-		hasValidToken := false
-
-		// Check if a valid registration token was provided
-		if authHeader != "" {
-			parts := strings.SplitN(authHeader, " ", 2)
-			if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
-				providedToken := parts[1]
-				if h.server.Config.RegistrationAccessToken != "" {
-					// SECURITY: Use constant-time comparison to prevent timing attacks
-					if subtle.ConstantTimeCompare([]byte(providedToken), []byte(h.server.Config.RegistrationAccessToken)) == 1 {
-						hasValidToken = true
-						h.logger.Info("Client registration authenticated with valid token")
-					}
-				}
-			}
-		}
-
-		// If no valid token, check if redirect URIs use trusted schemes
-		if !hasValidToken {
-			// Log if a token was provided but was invalid (security audit trail)
-			if authHeader != "" {
-				h.logger.Warn("Invalid registration token provided, checking trusted schemes as fallback",
-					"client_ip", clientIP,
-					"has_trusted_schemes_configured", len(h.server.Config.TrustedPublicRegistrationSchemes) > 0)
-			}
-			allowed, scheme, err := h.server.CanRegisterWithTrustedScheme(req.RedirectURIs)
-			if err != nil {
-				h.logger.Warn("Client registration rejected: invalid redirect URI",
-					"client_ip", clientIP,
-					"error", err)
-				h.writeError(w, ErrorCodeInvalidRequest,
-					fmt.Sprintf("Invalid redirect URI: %v", err),
-					http.StatusBadRequest)
-				return
-			}
-
-			if allowed {
-				registeredViaTrustedScheme = true
-				trustedScheme = scheme
-				h.logger.Info("Client registration authorized via trusted scheme (no token required)",
-					"scheme", scheme,
-					"client_ip", clientIP,
-					"strict_matching", !h.server.Config.DisableStrictSchemeMatching)
-			} else {
-				// No valid token and not using trusted schemes - reject
-				h.logger.Warn("Client registration rejected: missing or invalid authorization",
-					"client_ip", clientIP,
-					"has_token", authHeader != "",
-					"trusted_schemes_configured", len(h.server.Config.TrustedPublicRegistrationSchemes) > 0)
-				h.writeError(w, ErrorCodeInvalidToken,
-					"Registration requires authentication. Provide a valid registration token or use a trusted redirect URI scheme.",
-					http.StatusUnauthorized)
-				return
-			}
-		}
-	} else {
-		h.logger.Warn("Unauthenticated client registration (DoS risk)",
-			"client_ip", clientIP)
+	req, err := h.parseAndValidateRegistrationRequest(w, r, clientIP)
+	if err != nil {
+		return
 	}
 
-	// OAUTH 2.1 COMPLIANCE: Validate token_endpoint_auth_method
-	// Per RFC 7591 Section 2, only these methods are standardized
+	registeredViaTrustedScheme, trustedScheme, authorized := h.authorizeClientRegistration(w, r, req, clientIP)
+	if !authorized {
+		return
+	}
+
+	if !h.validatePublicClientRegistration(w, req, clientIP, registeredViaTrustedScheme, startTime, span) {
+		return
+	}
+
+	h.recordTrustedSchemeSpan(span, registeredViaTrustedScheme, trustedScheme)
+
+	maxClients := h.getMaxClientsPerIP()
+	client, clientSecret, err := h.server.RegisterClient(ctx, req.ClientName, req.ClientType, req.TokenEndpointAuthMethod, req.RedirectURIs, req.Scopes, clientIP, maxClients)
+	if err != nil {
+		h.handleRegistrationError(w, err, clientIP, startTime, span)
+		return
+	}
+
+	h.recordClientRegistered(client.ClientType)
+	h.auditTrustedSchemeRegistration(registeredViaTrustedScheme, trustedScheme, client, clientIP)
+	h.recordHTTPMetrics("register", http.MethodPost, http.StatusCreated, startTime)
+	h.setRegistrationSpanSuccess(span, client)
+	h.writeRegistrationResponse(w, client, clientSecret)
+}
+
+// startRegistrationSpan creates a tracing span for client registration.
+func (h *Handler) startRegistrationSpan(r *http.Request) (context.Context, trace.Span) {
+	if h.tracer == nil {
+		return r.Context(), nil
+	}
+	return h.tracer.Start(r.Context(), "oauth.http.client_registration")
+}
+
+// parseAndValidateRegistrationRequest parses the request and validates auth method.
+func (h *Handler) parseAndValidateRegistrationRequest(w http.ResponseWriter, r *http.Request, clientIP string) (*clientRegistrationRequest, error) {
+	var req clientRegistrationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, ErrorCodeInvalidRequest, "Invalid JSON", http.StatusBadRequest)
+		return nil, err
+	}
+
 	if req.TokenEndpointAuthMethod != "" && !isValidAuthMethod(req.TokenEndpointAuthMethod) {
 		h.logger.Warn("Unsupported token_endpoint_auth_method requested",
-			"method", req.TokenEndpointAuthMethod,
-			"supported_methods", SupportedTokenAuthMethods,
-			"ip", clientIP)
-		// SECURITY: Don't reveal full list of supported methods in error response
-		// Supported methods are already advertised in /.well-known/oauth-authorization-server
+			"method", req.TokenEndpointAuthMethod, "supported_methods", SupportedTokenAuthMethods, "ip", clientIP)
 		h.writeError(w, ErrorCodeInvalidRequest,
 			fmt.Sprintf("Unsupported token_endpoint_auth_method: %s", req.TokenEndpointAuthMethod),
 			http.StatusBadRequest)
-		return
+		return nil, fmt.Errorf("unsupported auth method")
 	}
 
-	// SECURITY: Validate public client registration is allowed
-	// When client requests "none" auth method, they're requesting a public client
-	// This is common for native/CLI apps that can't securely store secrets
-	//
-	// NOTE: Trusted scheme registration implicitly allows public clients because
-	// custom URI schemes are designed for native apps which are inherently public clients.
-	// The security comes from the OS-level scheme registration, not client secrets.
-	isPublicClientRequest := req.TokenEndpointAuthMethod == TokenEndpointAuthMethodNone || req.ClientType == ClientTypePublic
-	if isPublicClientRequest {
-		// CRITICAL: Enforce AllowPublicClientRegistration policy
-		// Public client creation must be explicitly allowed UNLESS:
-		// - The registration is via a trusted scheme (which is inherently for public/native clients)
-		if !h.server.Config.AllowPublicClientRegistration && !registeredViaTrustedScheme {
-			h.logger.Warn("Public client registration rejected (not allowed by configuration)",
-				"token_endpoint_auth_method", req.TokenEndpointAuthMethod,
-				"client_type", req.ClientType,
-				"ip", clientIP,
-				"recommendation", "Set AllowPublicClientRegistration=true to enable public client registration")
-			h.recordHTTPMetrics("register", http.MethodPost, http.StatusBadRequest, startTime)
-			if span != nil {
-				instrumentation.SetSpanAttributes(span,
-					attribute.String("oauth.client_type", "public"),
-					attribute.String("security.event", "public_client_registration_denied"),
-				)
-				instrumentation.SetSpanError(span, "public client registration not allowed")
-			}
-			h.writeError(w, ErrorCodeInvalidRequest,
-				"Public client registration is not enabled on this server. Contact the server administrator.",
-				http.StatusBadRequest)
-			return
-		}
+	return &req, nil
+}
 
-		h.logger.Info("Public client registration authorized",
-			"token_endpoint_auth_method", req.TokenEndpointAuthMethod,
-			"client_type", req.ClientType,
-			"ip", clientIP,
-			"via_trusted_scheme", registeredViaTrustedScheme)
+// getMaxClientsPerIP returns the max clients per IP with default.
+func (h *Handler) getMaxClientsPerIP() int {
+	if h.server.Config.MaxClientsPerIP == 0 {
+		return 10
 	}
+	return h.server.Config.MaxClientsPerIP
+}
 
-	// Track trusted scheme registration in span for observability
+// recordTrustedSchemeSpan records trusted scheme info in span.
+func (h *Handler) recordTrustedSchemeSpan(span trace.Span, registeredViaTrustedScheme bool, trustedScheme string) {
 	if span != nil && registeredViaTrustedScheme {
 		instrumentation.SetSpanAttributes(span,
 			attribute.String("oauth.registration_method", "trusted_scheme"),
 			attribute.String("oauth.trusted_scheme", trustedScheme),
 		)
 	}
+}
 
-	// Register client with IP tracking
-	client, clientSecret, err := h.server.RegisterClient(ctx, req.ClientName, req.ClientType, req.TokenEndpointAuthMethod, req.RedirectURIs, req.Scopes, clientIP, maxClients)
-	if err != nil {
-		// Check if it's a rate limit error
-		if strings.Contains(err.Error(), "registration limit") {
-			h.logger.Warn("Client registration limit exceeded", "ip", clientIP, "error", err)
-			h.recordHTTPMetrics("register", http.MethodPost, http.StatusTooManyRequests, startTime)
-			instrumentation.RecordError(span, err)
-			instrumentation.SetSpanError(span, "registration limit exceeded")
-			// SECURITY: Generic error message to prevent enumeration
-			h.writeError(w, ErrorCodeInvalidRequest, "Client registration limit exceeded", http.StatusTooManyRequests)
-			return
-		}
-		h.logger.Error("Failed to register client", "ip", clientIP, "error", err)
-		h.recordHTTPMetrics("register", http.MethodPost, http.StatusInternalServerError, startTime)
+// handleRegistrationError handles client registration errors.
+func (h *Handler) handleRegistrationError(w http.ResponseWriter, err error, clientIP string, startTime time.Time, span trace.Span) {
+	if strings.Contains(err.Error(), "registration limit") {
+		h.logger.Warn("Client registration limit exceeded", "ip", clientIP, "error", err)
+		h.recordHTTPMetrics("register", http.MethodPost, http.StatusTooManyRequests, startTime)
 		instrumentation.RecordError(span, err)
-		instrumentation.SetSpanError(span, "registration failed")
-		// SECURITY: Don't leak internal error details
-		h.writeError(w, ErrorCodeServerError, "Failed to register client", http.StatusInternalServerError)
+		instrumentation.SetSpanError(span, "registration limit exceeded")
+		h.writeError(w, ErrorCodeInvalidRequest, "Client registration limit exceeded", http.StatusTooManyRequests)
 		return
 	}
 
-	// Record client registered metric
-	h.recordClientRegistered(client.ClientType)
+	h.logger.Error("Failed to register client", "ip", clientIP, "error", err)
+	h.recordHTTPMetrics("register", http.MethodPost, http.StatusInternalServerError, startTime)
+	instrumentation.RecordError(span, err)
+	instrumentation.SetSpanError(span, "registration failed")
+	h.writeError(w, ErrorCodeServerError, "Failed to register client", http.StatusInternalServerError)
+}
 
-	// AUDIT: Log trusted scheme registration for security monitoring
-	// This is separate from the standard client registration audit log to track
-	// clients registered without tokens (Cursor/IDE compatibility path)
-	if registeredViaTrustedScheme && h.server.Auditor != nil {
-		h.server.Auditor.LogEvent(security.Event{
-			Type:     security.EventClientRegisteredViaTrustedScheme,
-			ClientID: client.ClientID,
-			Details: map[string]any{
-				"scheme":           trustedScheme,
-				"client_type":      client.ClientType,
-				"client_ip":        clientIP,
-				"redirect_uris":    client.RedirectURIs,
-				"strict_matching":  !h.server.Config.DisableStrictSchemeMatching,
-				"security_context": "unauthenticated_registration_via_trusted_scheme",
-			},
-		})
+// auditTrustedSchemeRegistration logs trusted scheme registration for security monitoring.
+func (h *Handler) auditTrustedSchemeRegistration(registeredViaTrustedScheme bool, trustedScheme string, client *storage.Client, clientIP string) {
+	if !registeredViaTrustedScheme || h.server.Auditor == nil {
+		return
 	}
 
-	h.recordHTTPMetrics("register", http.MethodPost, http.StatusCreated, startTime)
+	h.server.Auditor.LogEvent(security.Event{
+		Type:     security.EventClientRegisteredViaTrustedScheme,
+		ClientID: client.ClientID,
+		Details: map[string]any{
+			"scheme":           trustedScheme,
+			"client_type":      client.ClientType,
+			"client_ip":        clientIP,
+			"redirect_uris":    client.RedirectURIs,
+			"strict_matching":  !h.server.Config.DisableStrictSchemeMatching,
+			"security_context": "unauthenticated_registration_via_trusted_scheme",
+		},
+	})
+}
+
+// setRegistrationSpanSuccess sets success attributes on the span.
+func (h *Handler) setRegistrationSpanSuccess(span trace.Span, client *storage.Client) {
 	instrumentation.SetSpanAttributes(span,
-		attribute.String("oauth.client_id", client.ClientID),
-		attribute.String("oauth.client_type", client.ClientType),
+		attribute.String(instrumentation.AttrClientID, client.ClientID),
+		attribute.String(instrumentation.AttrClientType, client.ClientType),
 	)
 	instrumentation.SetSpanSuccess(span)
+}
 
-	// Build response
+// writeRegistrationResponse writes the client registration response.
+func (h *Handler) writeRegistrationResponse(w http.ResponseWriter, client *storage.Client, clientSecret string) {
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	response := map[string]any{
 		"client_id":                  client.ClientID,
@@ -1723,9 +1757,6 @@ func (h *Handler) parseBasicAuth(r *http.Request) (username, password string) {
 // authenticateClient validates client credentials from either Basic Auth or form parameters
 // Returns the validated client or an error with the OAuth error code
 func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string) (*storage.Client, error) {
-	ctx := r.Context()
-
-	// Get client credentials from Authorization header (if present)
 	authClientID, authClientSecret := h.parseBasicAuth(r)
 	if authClientID != "" {
 		clientID = authClientID
@@ -1735,37 +1766,44 @@ func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string)
 		return nil, ErrInvalidRequest("client_id is required")
 	}
 
-	// Fetch client
-	client, err := h.server.GetClient(ctx, clientID)
+	client, err := h.server.GetClient(r.Context(), clientID)
 	if err != nil {
-		h.logger.Warn("Unknown client", "client_id", clientID, "ip", clientIP)
-		if h.server.Auditor != nil {
-			h.server.Auditor.LogAuthFailure("", clientID, clientIP, ErrorCodeInvalidClient)
-		}
+		h.logAuthFailure(clientID, clientIP, ErrorCodeInvalidClient, "Unknown client")
 		return nil, ErrInvalidClient("Client authentication failed")
 	}
 
-	// CRITICAL SECURITY: Confidential clients MUST authenticate
-	if client.ClientType == ClientTypeConfidential {
-		if authClientSecret == "" {
-			h.logger.Warn("Confidential client missing credentials", "client_id", clientID, "ip", clientIP)
-			if h.server.Auditor != nil {
-				h.server.Auditor.LogAuthFailure("", clientID, clientIP, "confidential_client_auth_required")
-			}
-			return nil, ErrInvalidClient("Client authentication required")
-		}
-
-		// Validate client credentials
-		if err := h.server.ValidateClientCredentials(ctx, clientID, authClientSecret); err != nil {
-			h.logger.Warn("Client authentication failed", "client_id", clientID, "ip", clientIP, "error", err)
-			if h.server.Auditor != nil {
-				h.server.Auditor.LogAuthFailure("", clientID, clientIP, "client_authentication_failed")
-			}
-			return nil, ErrInvalidClient("Client authentication failed")
-		}
+	if err := h.validateConfidentialClient(r.Context(), client, authClientSecret, clientIP); err != nil {
+		return nil, err
 	}
 
 	return client, nil
+}
+
+// validateConfidentialClient validates credentials for confidential clients.
+func (h *Handler) validateConfidentialClient(ctx context.Context, client *storage.Client, secret, clientIP string) error {
+	if client.ClientType != ClientTypeConfidential {
+		return nil
+	}
+
+	if secret == "" {
+		h.logAuthFailure(client.ClientID, clientIP, "confidential_client_auth_required", "Confidential client missing credentials")
+		return ErrInvalidClient("Client authentication required")
+	}
+
+	if err := h.server.ValidateClientCredentials(ctx, client.ClientID, secret); err != nil {
+		h.logAuthFailure(client.ClientID, clientIP, "client_authentication_failed", "Client authentication failed")
+		return ErrInvalidClient("Client authentication failed")
+	}
+
+	return nil
+}
+
+// logAuthFailure logs authentication failures with optional auditing.
+func (h *Handler) logAuthFailure(clientID, clientIP, reason, message string) {
+	h.logger.Warn(message, "client_id", clientID, "ip", clientIP)
+	if h.server.Auditor != nil {
+		h.server.Auditor.LogAuthFailure("", clientID, clientIP, reason)
+	}
 }
 
 func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *oauth2.Token, scope string) {
@@ -1924,7 +1962,7 @@ func (h *Handler) writeInsufficientScopeError(w http.ResponseWriter, requiredSco
 //	       scope="files:read user:profile",
 //	       error="invalid_token",
 //	       error_description="Token has expired"
-func (h *Handler) formatWWWAuthenticate(scope, error, errorDesc string) string {
+func (h *Handler) formatWWWAuthenticate(scope, errCode, errorDesc string) string {
 	// Build the challenge parameters (excluding the Bearer scheme)
 	var params []string
 
@@ -1947,8 +1985,8 @@ func (h *Handler) formatWWWAuthenticate(scope, error, errorDesc string) string {
 	}
 
 	// Optional: Include error code if provided
-	if error != "" {
-		params = append(params, fmt.Sprintf(`error="%s"`, error))
+	if errCode != "" {
+		params = append(params, fmt.Sprintf(`error="%s"`, errCode))
 	}
 
 	// Optional: Include error description if provided
@@ -1969,19 +2007,14 @@ func (h *Handler) formatWWWAuthenticate(scope, error, errorDesc string) string {
 // This allows resource servers to validate access tokens
 // Security: Requires client authentication to prevent token scanning attacks
 func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Set CORS headers for browser-based clients
 	h.setCORSHeaders(w, r)
-
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
-	// Parse form data
 	if err := r.ParseForm(); err != nil {
 		h.writeError(w, ErrorCodeInvalidRequest, "Failed to parse request", http.StatusBadRequest)
 		return
@@ -1993,75 +2026,82 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// SECURITY: Require client authentication to prevent token scanning attacks
-	// Per RFC 7662 Section 2.1: the authorization server MUST authenticate the client
-	authClientID, authClientSecret := h.parseBasicAuth(r)
-	var clientID string
-	if authClientID != "" {
-		clientID = authClientID
-		// Validate client credentials
-		if err := h.server.ValidateClientCredentials(ctx, clientID, authClientSecret); err != nil {
-			h.logger.Warn("Client authentication failed for introspection", "client_id", clientID, "ip", clientIP)
-			if h.server.Auditor != nil {
-				h.server.Auditor.LogAuthFailure("", clientID, clientIP, "introspection_auth_failed")
-			}
-			h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
-			return
-		}
-	} else {
-		// Try form parameter as fallback (but still require authentication)
-		clientID = r.FormValue("client_id")
-		if clientID == "" {
-			// No client authentication provided - reject per RFC 7662 security considerations
-			h.logger.Warn("Token introspection rejected: missing client authentication", "ip", clientIP)
-			if h.server.Auditor != nil {
-				h.server.Auditor.LogAuthFailure("", "", clientIP, "introspection_missing_auth")
-			}
-			h.writeError(w, ErrorCodeInvalidClient, "Client authentication required for token introspection", http.StatusUnauthorized)
-			return
-		}
-		// Client ID provided but no credentials - also reject
-		h.logger.Warn("Token introspection rejected: client_id without credentials", "client_id", clientID, "ip", clientIP)
-		if h.server.Auditor != nil {
-			h.server.Auditor.LogAuthFailure("", clientID, clientIP, "introspection_missing_credentials")
-		}
-		h.writeError(w, ErrorCodeInvalidClient, "Client authentication required for token introspection", http.StatusUnauthorized)
+	clientID, err := h.authenticateIntrospectionClient(r, clientIP)
+	if err != nil {
+		h.writeError(w, ErrorCodeInvalidClient, err.Error(), http.StatusUnauthorized)
 		return
 	}
 
-	// Validate the token
-	userInfo, err := h.server.ValidateToken(r.Context(), token)
+	// Validate the token and build response
+	response := h.buildIntrospectionResponse(r.Context(), token, clientID, clientIP)
 
-	// Build introspection response per RFC 7662
-	response := map[string]interface{}{
-		"active": false,
-	}
-
-	if err == nil && userInfo != nil {
-		// Token is valid and active
-		response["active"] = true
-		response["sub"] = userInfo.ID
-		response["email"] = userInfo.Email
-		response["email_verified"] = userInfo.EmailVerified
-
-		// Optional claims
-		if userInfo.Name != "" {
-			response["name"] = userInfo.Name
-		}
-		if clientID != "" {
-			response["client_id"] = clientID
-		}
-		response["token_type"] = "Bearer"
-	} else {
-		// Token is invalid or expired
-		h.logger.Debug("Token introspection failed", "error", err, "ip", clientIP)
-	}
-
-	// Always return 200 OK per RFC 7662
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(response)
+}
+
+// authenticateIntrospectionClient validates client credentials for token introspection.
+// Returns the client ID on success, or an error if authentication fails.
+func (h *Handler) authenticateIntrospectionClient(r *http.Request, clientIP string) (string, error) {
+	ctx := r.Context()
+	authClientID, authClientSecret := h.parseBasicAuth(r)
+
+	if authClientID != "" {
+		if err := h.server.ValidateClientCredentials(ctx, authClientID, authClientSecret); err != nil {
+			h.logger.Warn("Client authentication failed for introspection", "client_id", authClientID, "ip", clientIP)
+			if h.server.Auditor != nil {
+				h.server.Auditor.LogAuthFailure("", authClientID, clientIP, "introspection_auth_failed")
+			}
+			return "", fmt.Errorf("client authentication failed")
+		}
+		return authClientID, nil
+	}
+
+	// No Basic Auth - check for client_id in form (but we still reject without credentials)
+	clientID := r.FormValue("client_id")
+	if clientID == "" {
+		h.logger.Warn("Token introspection rejected: missing client authentication", "ip", clientIP)
+		if h.server.Auditor != nil {
+			h.server.Auditor.LogAuthFailure("", "", clientIP, "introspection_missing_auth")
+		}
+		return "", fmt.Errorf("client authentication required for token introspection")
+	}
+
+	h.logger.Warn("Token introspection rejected: client_id without credentials", "client_id", clientID, "ip", clientIP)
+	if h.server.Auditor != nil {
+		h.server.Auditor.LogAuthFailure("", clientID, clientIP, "introspection_missing_credentials")
+	}
+	return "", fmt.Errorf("client authentication required for token introspection")
+}
+
+// buildIntrospectionResponse creates the RFC 7662 introspection response.
+func (h *Handler) buildIntrospectionResponse(ctx context.Context, token, clientID, clientIP string) map[string]interface{} {
+	userInfo, err := h.server.ValidateToken(ctx, token)
+
+	response := map[string]interface{}{
+		"active": false,
+	}
+
+	if err != nil || userInfo == nil {
+		h.logger.Debug("Token introspection failed", "error", err, "ip", clientIP)
+		return response
+	}
+
+	response["active"] = true
+	response["sub"] = userInfo.ID
+	response["email"] = userInfo.Email
+	response["email_verified"] = userInfo.EmailVerified
+	response["token_type"] = "Bearer"
+
+	if userInfo.Name != "" {
+		response["name"] = userInfo.Name
+	}
+	if clientID != "" {
+		response["client_id"] = clientID
+	}
+
+	return response
 }
 
 // Context key for user info
@@ -2215,42 +2255,47 @@ func (h *Handler) getRequiredScopes(r *http.Request) []string {
 func (h *Handler) getMethodScopesForPath(normalizedPath, method string) []string {
 	// First, try exact path match
 	if methodMap, ok := h.server.Config.EndpointMethodScopeRequirements[normalizedPath]; ok {
-		// Try exact method match
-		if scopes, ok := methodMap[method]; ok {
-			return scopes
-		}
-		// Try wildcard method fallback
-		if scopes, ok := methodMap["*"]; ok {
+		if scopes := getScopesFromMethodMap(methodMap, method); scopes != nil {
 			return scopes
 		}
 	}
 
 	// Then try prefix matches (patterns ending with /*)
-	// Use longest-prefix-match to ensure most specific pattern wins
+	matchedMethodMap := h.findLongestPrefixMethodMap(normalizedPath)
+	return getScopesFromMethodMap(matchedMethodMap, method)
+}
+
+// findLongestPrefixMethodMap finds the method map for the longest matching prefix pattern.
+func (h *Handler) findLongestPrefixMethodMap(normalizedPath string) map[string][]string {
 	var longestPrefix string
 	var matchedMethodMap map[string][]string
 
 	for pattern, methodMap := range h.server.Config.EndpointMethodScopeRequirements {
-		if strings.HasSuffix(pattern, "/*") {
-			prefix := strings.TrimSuffix(pattern, "*")
-			if strings.HasPrefix(normalizedPath, prefix) && len(prefix) > len(longestPrefix) {
-				longestPrefix = prefix
-				matchedMethodMap = methodMap
-			}
+		if !strings.HasSuffix(pattern, "/*") {
+			continue
+		}
+		prefix := strings.TrimSuffix(pattern, "*")
+		if strings.HasPrefix(normalizedPath, prefix) && len(prefix) > len(longestPrefix) {
+			longestPrefix = prefix
+			matchedMethodMap = methodMap
 		}
 	}
 
-	if matchedMethodMap != nil {
-		// Try exact method match
-		if scopes, ok := matchedMethodMap[method]; ok {
-			return scopes
-		}
-		// Try wildcard method fallback
-		if scopes, ok := matchedMethodMap["*"]; ok {
-			return scopes
-		}
-	}
+	return matchedMethodMap
+}
 
+// getScopesFromMethodMap gets scopes for a method from a method map.
+// Tries exact method match first, then wildcard fallback.
+func getScopesFromMethodMap(methodMap map[string][]string, method string) []string {
+	if methodMap == nil {
+		return nil
+	}
+	if scopes, ok := methodMap[method]; ok {
+		return scopes
+	}
+	if scopes, ok := methodMap["*"]; ok {
+		return scopes
+	}
 	return nil
 }
 

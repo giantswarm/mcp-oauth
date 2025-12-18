@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/giantswarm/mcp-oauth/internal/util"
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/security"
 )
 
@@ -95,10 +95,10 @@ func isURLClientID(clientID string) bool {
 // Used for SSRF protection per draft-ietf-oauth-client-id-metadata-document-00 Section 6
 // Covers IPv4, IPv6, and IPv4-mapped IPv6 addresses
 //
-// This delegates to the shared util.IsPrivateOrInternal for DRY.
+// This delegates to the shared helpers.IsPrivateOrInternal for DRY.
 // The utility checks for loopback, link-local, private, and unspecified addresses.
 func isPrivateIP(ip net.IP) bool {
-	return util.IsPrivateOrInternal(ip)
+	return helpers.IsPrivateOrInternal(ip)
 }
 
 // validateAndSanitizeMetadataURL performs SSRF protection checks and returns a sanitized URL
@@ -145,7 +145,7 @@ func validateAndSanitizeMetadataURL(clientID string) (string, error) {
 
 // createSSRFProtectedTransport creates an HTTP transport with SSRF protection at connection time
 // This prevents DNS rebinding attacks by validating IPs when connecting, not just during initial validation
-func createSSRFProtectedTransport(ctx context.Context) *http.Transport {
+func createSSRFProtectedTransport(_ context.Context) *http.Transport {
 	return &http.Transport{
 		DialContext: func(dialCtx context.Context, network, addr string) (net.Conn, error) {
 			// Parse host:port
@@ -190,76 +190,35 @@ func createSSRFProtectedTransport(ctx context.Context) *http.Transport {
 // - Timeout protection: enforces reasonable timeout
 // - Size limit: prevents memory exhaustion and validates full document read
 func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*ClientMetadata, time.Duration, error) {
-	// Record fetch start time for metrics
 	fetchStart := time.Now()
 
 	sanitizedURL, err := validateAndSanitizeMetadataURL(clientID)
 	if err != nil {
-		// Record blocked fetch metric
 		s.recordCIMDFetchMetric(ctx, "blocked", fetchStart)
-
-		if s.Auditor != nil {
-			s.Auditor.LogEvent(security.Event{
-				Type:     "client_metadata_fetch_blocked",
-				ClientID: clientID,
-				Details: map[string]any{
-					"reason": err.Error(),
-					"ssrf":   "protected",
-				},
-			})
-		}
+		s.logMetadataFetchEvent("client_metadata_fetch_blocked", clientID, map[string]any{
+			"reason": err.Error(),
+			"ssrf":   "protected",
+		})
 		return nil, 0, fmt.Errorf("metadata URL validation failed: %w", err)
 	}
 
-	timeout := 10 * time.Second
-	if s.Config.ClientMetadataFetchTimeout > 0 {
-		timeout = s.Config.ClientMetadataFetchTimeout
-	}
-
-	if deadline, ok := ctx.Deadline(); ok {
-		timeUntilDeadline := time.Until(deadline)
-		if timeUntilDeadline > 0 && timeUntilDeadline < timeout {
-			timeout = timeUntilDeadline
-			s.Logger.Debug("Using context deadline for metadata fetch",
-				"original_timeout", s.Config.ClientMetadataFetchTimeout,
-				"adjusted_timeout", timeout,
-				"reason", "context deadline")
-		}
-	}
-
-	client := &http.Client{
-		Timeout:   timeout,
-		Transport: createSSRFProtectedTransport(ctx),
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
+	timeout := s.calculateFetchTimeout(ctx)
+	client := s.createMetadataHTTPClient(ctx, timeout)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sanitizedURL, nil)
 	if err != nil {
 		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
 		return nil, 0, fmt.Errorf("failed to create metadata request: %w", err)
 	}
-
-	// Set headers
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "mcp-oauth")
 
-	// Perform request
 	resp, err := client.Do(req)
 	if err != nil {
-		// Record error fetch metric
 		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
-
-		if s.Auditor != nil {
-			s.Auditor.LogEvent(security.Event{
-				Type:     "client_metadata_fetch_failed",
-				ClientID: clientID,
-				Details: map[string]any{
-					"error": err.Error(),
-				},
-			})
-		}
+		s.logMetadataFetchEvent("client_metadata_fetch_failed", clientID, map[string]any{
+			"error": err.Error(),
+		})
 		return nil, 0, fmt.Errorf("failed to fetch metadata from %s: %w", clientID, err)
 	}
 	defer func() {
@@ -268,80 +227,27 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		}
 	}()
 
-	// Check HTTP status
 	if resp.StatusCode != http.StatusOK {
 		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
-		if s.Auditor != nil {
-			s.Auditor.LogEvent(security.Event{
-				Type:     "client_metadata_fetch_failed",
-				ClientID: clientID,
-				Details: map[string]any{
-					"status_code": resp.StatusCode,
-					"status":      resp.Status,
-				},
-			})
-		}
+		s.logMetadataFetchEvent("client_metadata_fetch_failed", clientID, map[string]any{
+			"status_code": resp.StatusCode,
+			"status":      resp.Status,
+		})
 		return nil, 0, fmt.Errorf("metadata fetch returned HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
-	// SECURITY: Strict Content-Type validation - must be exactly application/json
-	// (with optional charset parameter)
-	contentType := resp.Header.Get("Content-Type")
-	if contentType == "" {
+	// SECURITY: Strict Content-Type validation
+	if err := validateResponseContentType(resp); err != nil {
 		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
-		return nil, 0, fmt.Errorf("metadata response missing Content-Type header")
+		return nil, 0, err
 	}
 
-	// Parse media type and parameters
-	parts := strings.Split(contentType, ";")
-	mediaType := strings.ToLower(strings.TrimSpace(parts[0]))
-	if mediaType != "application/json" {
-		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
-		return nil, 0, fmt.Errorf("metadata must be application/json, got: %s", contentType)
-	}
-
-	// SECURITY: Validate charset parameter if present (must be UTF-8)
-	// JSON is defined as UTF-8 per RFC 8259, non-UTF-8 encodings can cause parsing issues
-	for i := 1; i < len(parts); i++ {
-		param := strings.TrimSpace(parts[i])
-		if kv := strings.SplitN(param, "=", 2); len(kv) == 2 {
-			key := strings.ToLower(strings.TrimSpace(kv[0]))
-			value := strings.Trim(strings.ToLower(strings.TrimSpace(kv[1])), "\" ")
-
-			if key == "charset" {
-				// Allow utf-8 and utf8 (both are valid)
-				if value != "utf-8" && value != "utf8" {
-					s.recordCIMDFetchMetric(ctx, "error", fetchStart)
-					return nil, 0, fmt.Errorf("unsupported charset: %s (only UTF-8 is supported for JSON)", value)
-				}
-			}
-		}
-	}
-
-	// SECURITY: Validate Content-Length header to prevent resource waste
-	// Check declared size before reading body
-	const maxMetadataSize = 1 * 1024 * 1024 // 1MB
-	if contentLength := resp.Header.Get("Content-Length"); contentLength != "" {
-		size, parseErr := strconv.ParseInt(contentLength, 10, 64)
-		if parseErr == nil && size > maxMetadataSize {
-			s.recordCIMDFetchMetric(ctx, "error", fetchStart)
-			return nil, 0, fmt.Errorf("metadata Content-Length (%d bytes) exceeds maximum size of %d bytes", size, maxMetadataSize)
-		}
-	}
-
-	// SECURITY: Read entire response body with size limit to prevent:
-	// 1. Memory exhaustion from large responses
-	// 2. Partial JSON parsing from truncated responses
-	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxMetadataSize+1))
+	// SECURITY: Read and validate response body with size limit
+	const maxMetadataSize int64 = 1 * 1024 * 1024 // 1MB
+	bodyBytes, err := readAndValidateResponseBody(resp, maxMetadataSize)
 	if err != nil {
 		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
-		return nil, 0, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	// Check if response was truncated (exceeded size limit)
-	if len(bodyBytes) > maxMetadataSize {
-		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
-		return nil, 0, fmt.Errorf("metadata document exceeds maximum size of %d bytes", maxMetadataSize)
+		return nil, 0, err
 	}
 
 	// Parse JSON response
@@ -352,66 +258,25 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	}
 
 	// CRITICAL SECURITY: Validate that client_id in document matches the URL
-	// Per spec: "The client_id value in the metadata document MUST exactly match
-	// the URL from which it was retrieved"
 	if metadata.ClientID != clientID {
 		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
-		if s.Auditor != nil {
-			s.Auditor.LogEvent(security.Event{
-				Type:     "client_metadata_id_mismatch",
-				ClientID: clientID,
-				Details: map[string]any{
-					"document_client_id": metadata.ClientID,
-					"url_client_id":      clientID,
-					"severity":           "high",
-				},
-			})
-		}
+		s.logMetadataFetchEvent("client_metadata_id_mismatch", clientID, map[string]any{
+			"document_client_id": metadata.ClientID,
+			"url_client_id":      clientID,
+			"severity":           "high",
+		})
 		return nil, 0, fmt.Errorf("client_id mismatch: document contains %q but was fetched from %q (security violation)",
 			metadata.ClientID, clientID)
 	}
 
-	// Validate required fields
-	if len(metadata.RedirectURIs) == 0 {
+	// Validate redirect URIs
+	if err := validateClientMetadataRedirectURIs(metadata.RedirectURIs); err != nil {
 		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
-		return nil, 0, fmt.Errorf("metadata must contain at least one redirect_uri")
-	}
-
-	// SECURITY: Validate redirect URIs for safety (defense-in-depth)
-	// OAuth 2.1 requires HTTPS for redirect URIs except localhost
-	for _, uri := range metadata.RedirectURIs {
-		u, parseErr := url.Parse(uri)
-		if parseErr != nil {
-			s.recordCIMDFetchMetric(ctx, "error", fetchStart)
-			return nil, 0, fmt.Errorf("invalid redirect_uri %q: %w", uri, parseErr)
-		}
-
-		// Only allow http and https schemes
-		if u.Scheme != SchemeHTTPS && u.Scheme != SchemeHTTP {
-			s.recordCIMDFetchMetric(ctx, "error", fetchStart)
-			return nil, 0, fmt.Errorf("redirect_uri must use http or https scheme, got %s: %s", u.Scheme, uri)
-		}
-
-		// OAuth 2.1: HTTP redirect URIs only allowed for localhost
-		if u.Scheme == SchemeHTTP {
-			hostname := u.Hostname()
-			if hostname != localhostHostname && hostname != localhostIPv4Loopback && hostname != localhostIPv6Loopback {
-				s.recordCIMDFetchMetric(ctx, "error", fetchStart)
-				return nil, 0, fmt.Errorf("http redirect_uri only allowed for localhost, got %s: %s", hostname, uri)
-			}
-		}
+		return nil, 0, err
 	}
 
 	// Set defaults per OAuth 2.0 spec if not specified
-	if len(metadata.GrantTypes) == 0 {
-		metadata.GrantTypes = []string{"authorization_code"}
-	}
-	if len(metadata.ResponseTypes) == 0 {
-		metadata.ResponseTypes = []string{"code"}
-	}
-	if metadata.TokenEndpointAuthMethod == "" {
-		metadata.TokenEndpointAuthMethod = "none" // Default for public clients
-	}
+	setClientMetadataDefaults(&metadata)
 
 	// Parse Cache-Control header for suggested TTL
 	// Per HTTP caching spec, max-age directive suggests how long to cache the response
@@ -427,20 +292,12 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	}
 
 	// Log successful fetch
-	if s.Auditor != nil {
-		s.Auditor.LogEvent(security.Event{
-			Type:     "client_metadata_fetched",
-			ClientID: clientID,
-			Details: map[string]any{
-				"client_name":     metadata.ClientName,
-				"redirect_count":  len(metadata.RedirectURIs),
-				"document_size":   len(bodyBytes),
-				"cache_suggested": suggestedTTL > 0,
-			},
-		})
-	}
-
-	// Record successful fetch metric
+	s.logMetadataFetchEvent("client_metadata_fetched", clientID, map[string]any{
+		"client_name":     metadata.ClientName,
+		"redirect_count":  len(metadata.RedirectURIs),
+		"document_size":   len(bodyBytes),
+		"cache_suggested": suggestedTTL > 0,
+	})
 	s.recordCIMDFetchMetric(ctx, "success", fetchStart)
 
 	s.Logger.Info("Fetched client metadata from URL",
@@ -451,6 +308,149 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		"cache_ttl", suggestedTTL)
 
 	return &metadata, suggestedTTL, nil
+}
+
+// validateResponseContentType validates the Content-Type header for JSON responses
+// Returns an error if the content type is not application/json with valid charset
+func validateResponseContentType(resp *http.Response) error {
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		return fmt.Errorf("metadata response missing Content-Type header")
+	}
+
+	// Parse media type and parameters
+	parts := strings.Split(contentType, ";")
+	mediaType := strings.ToLower(strings.TrimSpace(parts[0]))
+	if mediaType != "application/json" {
+		return fmt.Errorf("metadata must be application/json, got: %s", contentType)
+	}
+
+	// Validate charset parameter if present (must be UTF-8)
+	for i := 1; i < len(parts); i++ {
+		param := strings.TrimSpace(parts[i])
+		if kv := strings.SplitN(param, "=", 2); len(kv) == 2 {
+			key := strings.ToLower(strings.TrimSpace(kv[0]))
+			value := strings.Trim(strings.ToLower(strings.TrimSpace(kv[1])), "\" ")
+
+			if key == "charset" && value != "utf-8" && value != "utf8" {
+				return fmt.Errorf("unsupported charset: %s (only UTF-8 is supported for JSON)", value)
+			}
+		}
+	}
+
+	return nil
+}
+
+// readAndValidateResponseBody reads the response body with size validation
+// Returns the body bytes or an error if the body exceeds the size limit
+func readAndValidateResponseBody(resp *http.Response, maxSize int64) ([]byte, error) {
+	// Check declared size before reading body
+	if contentLength := resp.Header.Get("Content-Length"); contentLength != "" {
+		size, parseErr := strconv.ParseInt(contentLength, 10, 64)
+		if parseErr == nil && size > maxSize {
+			return nil, fmt.Errorf("metadata Content-Length (%d bytes) exceeds maximum size of %d bytes", size, maxSize)
+		}
+	}
+
+	// Read entire response body with size limit
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// Check if response was truncated
+	if int64(len(bodyBytes)) > maxSize {
+		return nil, fmt.Errorf("metadata document exceeds maximum size of %d bytes", maxSize)
+	}
+
+	return bodyBytes, nil
+}
+
+// validateClientMetadataRedirectURIs validates redirect URIs in client metadata
+// Ensures URIs use valid schemes and HTTP is only used for localhost
+func validateClientMetadataRedirectURIs(redirectURIs []string) error {
+	if len(redirectURIs) == 0 {
+		return fmt.Errorf("metadata must contain at least one redirect_uri")
+	}
+
+	for _, uri := range redirectURIs {
+		u, parseErr := url.Parse(uri)
+		if parseErr != nil {
+			return fmt.Errorf("invalid redirect_uri %q: %w", uri, parseErr)
+		}
+
+		// Only allow http and https schemes
+		if u.Scheme != SchemeHTTPS && u.Scheme != SchemeHTTP {
+			return fmt.Errorf("redirect_uri must use http or https scheme, got %s: %s", u.Scheme, uri)
+		}
+
+		// OAuth 2.1: HTTP redirect URIs only allowed for localhost
+		if u.Scheme == SchemeHTTP {
+			hostname := u.Hostname()
+			if hostname != localhostHostname && hostname != localhostIPv4Loopback && hostname != localhostIPv6Loopback {
+				return fmt.Errorf("http redirect_uri only allowed for localhost, got %s: %s", hostname, uri)
+			}
+		}
+	}
+
+	return nil
+}
+
+// setClientMetadataDefaults sets default values for optional metadata fields
+func setClientMetadataDefaults(metadata *ClientMetadata) {
+	if len(metadata.GrantTypes) == 0 {
+		metadata.GrantTypes = []string{"authorization_code"}
+	}
+	if len(metadata.ResponseTypes) == 0 {
+		metadata.ResponseTypes = []string{"code"}
+	}
+	if metadata.TokenEndpointAuthMethod == "" {
+		metadata.TokenEndpointAuthMethod = "none" // Default for public clients
+	}
+}
+
+// calculateFetchTimeout determines the timeout to use for metadata fetch
+// Returns the configured timeout or a shorter one if context deadline is sooner
+func (s *Server) calculateFetchTimeout(ctx context.Context) time.Duration {
+	timeout := 10 * time.Second
+	if s.Config.ClientMetadataFetchTimeout > 0 {
+		timeout = s.Config.ClientMetadataFetchTimeout
+	}
+
+	if deadline, ok := ctx.Deadline(); ok {
+		timeUntilDeadline := time.Until(deadline)
+		if timeUntilDeadline > 0 && timeUntilDeadline < timeout {
+			s.Logger.Debug("Using context deadline for metadata fetch",
+				"original_timeout", s.Config.ClientMetadataFetchTimeout,
+				"adjusted_timeout", timeUntilDeadline,
+				"reason", "context deadline")
+			return timeUntilDeadline
+		}
+	}
+
+	return timeout
+}
+
+// logMetadataFetchEvent logs an audit event for metadata fetch operations
+func (s *Server) logMetadataFetchEvent(eventType, clientID string, details map[string]any) {
+	if s.Auditor != nil {
+		s.Auditor.LogEvent(security.Event{
+			Type:     eventType,
+			ClientID: clientID,
+			Details:  details,
+		})
+	}
+}
+
+// createMetadataHTTPClient creates an HTTP client configured for metadata fetching
+func (s *Server) createMetadataHTTPClient(ctx context.Context, timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: createSSRFProtectedTransport(ctx),
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 // recordCIMDFetchMetric records CIMD fetch metrics if instrumentation is enabled

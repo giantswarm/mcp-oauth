@@ -67,83 +67,22 @@ type Config struct {
 // NewProvider creates a new Dex OAuth provider.
 // It performs OIDC discovery to fetch authorization and token endpoints.
 func NewProvider(cfg *Config) (*Provider, error) {
-	if cfg.ClientID == "" {
-		return nil, fmt.Errorf("client ID is required")
-	}
-	if cfg.ClientSecret == "" {
-		return nil, fmt.Errorf("client secret is required")
-	}
-	if cfg.IssuerURL == "" {
-		return nil, fmt.Errorf("issuer URL is required")
+	if err := validateRequiredConfig(cfg); err != nil {
+		return nil, err
 	}
 
-	// SECURITY: Validate issuer URL with SSRF protection
-	// Skip validation only for tests (skipValidation is internal and not exported)
-	if !cfg.skipValidation {
-		if err := oidc.ValidateIssuerURL(cfg.IssuerURL); err != nil {
-			return nil, fmt.Errorf("invalid issuer URL: %w", err)
-		}
-	}
-
-	// SECURITY: Validate connector_id if provided
-	if cfg.ConnectorID != "" {
-		if err := oidc.ValidateConnectorID(cfg.ConnectorID); err != nil {
-			return nil, fmt.Errorf("invalid connector ID: %w", err)
-		}
-	}
-
-	// Default scopes if none provided (Dex-optimized)
-	scopes := cfg.Scopes
-	if len(scopes) == 0 {
-		scopes = []string{
-			"openid",
-			"profile",
-			"email",
-			"groups",         // Dex-specific: required for group membership
-			"offline_access", // Required for refresh tokens
-		}
-	}
-
-	// SECURITY: Validate scopes
-	if err := oidc.ValidateScopes(scopes); err != nil {
-		return nil, fmt.Errorf("invalid scopes: %w", err)
-	}
-
-	// Set request timeout (default: 30 seconds)
-	requestTimeout := cfg.RequestTimeout
-	if requestTimeout == 0 {
-		requestTimeout = 30 * time.Second
-	}
-
-	httpClient := cfg.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{
-			Timeout: requestTimeout,
-		}
-	}
-
-	// Create discovery client
-	var discoveryClient *oidc.DiscoveryClient
-	if cfg.skipValidation {
-		// TESTING ONLY: Skip SSRF validation for localhost test servers
-		discoveryClient = oidc.NewTestDiscoveryClient(httpClient, 1*time.Hour, nil)
-	} else {
-		discoveryClient = oidc.NewDiscoveryClient(httpClient, 1*time.Hour, nil)
-	}
-
-	// Perform OIDC discovery to get endpoints
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
-	defer cancel()
-
-	doc, err := discoveryClient.Discover(ctx, cfg.IssuerURL)
+	scopes, err := resolveScopes(cfg.Scopes)
 	if err != nil {
-		return nil, fmt.Errorf("OIDC discovery failed: %w", err)
+		return nil, err
 	}
 
-	// Create OAuth2 endpoint from discovery document
-	endpoint := oauth2.Endpoint{
-		AuthURL:  doc.AuthorizationEndpoint,
-		TokenURL: doc.TokenEndpoint,
+	requestTimeout := resolveTimeout(cfg.RequestTimeout)
+	httpClient := resolveHTTPClient(cfg.HTTPClient, requestTimeout)
+	discoveryClient := createDiscoveryClient(cfg.skipValidation, httpClient)
+
+	doc, err := performOIDCDiscovery(discoveryClient, cfg.IssuerURL, requestTimeout)
+	if err != nil {
+		return nil, err
 	}
 
 	return &Provider{
@@ -152,7 +91,10 @@ func NewProvider(cfg *Config) (*Provider, error) {
 			ClientSecret: cfg.ClientSecret,
 			RedirectURL:  cfg.RedirectURL,
 			Scopes:       scopes,
-			Endpoint:     endpoint,
+			Endpoint: oauth2.Endpoint{
+				AuthURL:  doc.AuthorizationEndpoint,
+				TokenURL: doc.TokenEndpoint,
+			},
 		},
 		discoveryClient: discoveryClient,
 		issuerURL:       cfg.IssuerURL,
@@ -160,6 +102,94 @@ func NewProvider(cfg *Config) (*Provider, error) {
 		httpClient:      httpClient,
 		requestTimeout:  requestTimeout,
 	}, nil
+}
+
+// validateRequiredConfig validates required configuration fields.
+func validateRequiredConfig(cfg *Config) error {
+	if cfg.ClientID == "" {
+		return fmt.Errorf("client ID is required")
+	}
+	if cfg.ClientSecret == "" {
+		return fmt.Errorf("client secret is required")
+	}
+	if cfg.IssuerURL == "" {
+		return fmt.Errorf("issuer URL is required")
+	}
+
+	// SECURITY: Validate issuer URL with SSRF protection (skip for tests)
+	if !cfg.skipValidation {
+		if err := oidc.ValidateIssuerURL(cfg.IssuerURL); err != nil {
+			return fmt.Errorf("invalid issuer URL: %w", err)
+		}
+	}
+
+	// SECURITY: Validate connector_id if provided
+	if cfg.ConnectorID != "" {
+		if err := oidc.ValidateConnectorID(cfg.ConnectorID); err != nil {
+			return fmt.Errorf("invalid connector ID: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// defaultDexScopes are the default scopes for Dex providers.
+var defaultDexScopes = []string{
+	"openid",
+	"profile",
+	"email",
+	"groups",         // Dex-specific: required for group membership
+	"offline_access", // Required for refresh tokens
+}
+
+// resolveScopes returns validated scopes, using defaults if none provided.
+func resolveScopes(configScopes []string) ([]string, error) {
+	scopes := configScopes
+	if len(scopes) == 0 {
+		scopes = defaultDexScopes
+	}
+
+	if err := oidc.ValidateScopes(scopes); err != nil {
+		return nil, fmt.Errorf("invalid scopes: %w", err)
+	}
+
+	return scopes, nil
+}
+
+// resolveTimeout returns the timeout, using default if not set.
+func resolveTimeout(timeout time.Duration) time.Duration {
+	if timeout == 0 {
+		return 30 * time.Second
+	}
+	return timeout
+}
+
+// resolveHTTPClient returns the HTTP client, creating one if not provided.
+func resolveHTTPClient(client *http.Client, timeout time.Duration) *http.Client {
+	if client != nil {
+		return client
+	}
+	return &http.Client{Timeout: timeout}
+}
+
+// createDiscoveryClient creates an OIDC discovery client.
+func createDiscoveryClient(skipValidation bool, httpClient *http.Client) *oidc.DiscoveryClient {
+	if skipValidation {
+		return oidc.NewTestDiscoveryClient(httpClient, 1*time.Hour, nil)
+	}
+	return oidc.NewDiscoveryClient(httpClient, 1*time.Hour, nil)
+}
+
+// performOIDCDiscovery performs OIDC discovery to fetch endpoints.
+func performOIDCDiscovery(client *oidc.DiscoveryClient, issuerURL string, timeout time.Duration) (*oidc.DiscoveryDocument, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	doc, err := client.Discover(ctx, issuerURL)
+	if err != nil {
+		return nil, fmt.Errorf("OIDC discovery failed: %w", err)
+	}
+	return doc, nil
 }
 
 // Name returns the provider name
@@ -235,23 +265,7 @@ func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier strin
 	ctx, cancel := p.ensureContextTimeout(ctx)
 	defer cancel()
 
-	var opts []oauth2.AuthCodeOption
-
-	// Add PKCE verifier if provided
-	if verifier != "" {
-		opts = append(opts, oauth2.VerifierOption(verifier))
-	}
-
-	// Use custom HTTP client
-	ctx = context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)
-
-	// Exchange code for token
-	token, err := p.Exchange(ctx, code, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to exchange code: %w", err)
-	}
-
-	return token, nil
+	return providers.ExchangeCodeWithPKCE(ctx, p, p.httpClient, code, verifier)
 }
 
 // ValidateToken validates an access token by calling Dex's userinfo endpoint.

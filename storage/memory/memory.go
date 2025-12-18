@@ -18,7 +18,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
-	"github.com/giantswarm/mcp-oauth/internal/util"
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
@@ -462,26 +462,7 @@ func (s *Store) SaveUserInfo(ctx context.Context, userID string, info *providers
 
 // GetUserInfo retrieves user information
 func (s *Store) GetUserInfo(ctx context.Context, userID string) (*providers.UserInfo, error) {
-	ctx, span := s.startStorageSpan(ctx, "get_user_info")
-	defer span.End()
-
-	startTime := time.Now()
-	var err error
-
-	defer func() {
-		s.recordStorageOperation(ctx, span, "get_user_info", err, startTime)
-	}()
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	info, ok := s.userInfo[userID]
-	if !ok {
-		err = fmt.Errorf("%w: %s", storage.ErrUserInfoNotFound, userID)
-		return nil, err
-	}
-
-	return info, nil
+	return lookupWithTracing(ctx, s, "get_user_info", s.userInfo, userID, storage.ErrUserInfoNotFound)
 }
 
 // ============================================================
@@ -524,7 +505,7 @@ func (s *Store) SaveClient(ctx context.Context, client *storage.Client) error {
 }
 
 // CheckIPLimit checks if an IP has reached the client registration limit
-func (s *Store) CheckIPLimit(ctx context.Context, ip string, maxClientsPerIP int) error {
+func (s *Store) CheckIPLimit(_ context.Context, ip string, maxClientsPerIP int) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -553,7 +534,7 @@ func (s *Store) TrackClientIP(ip string) {
 
 // SaveRefreshToken saves a refresh token mapping to user ID with expiry
 // For OAuth 2.1 compliance, also tracks token family for reuse detection
-func (s *Store) SaveRefreshToken(ctx context.Context, refreshToken, userID string, expiresAt time.Time) error {
+func (s *Store) SaveRefreshToken(_ context.Context, refreshToken, userID string, expiresAt time.Time) error {
 	if refreshToken == "" {
 		return fmt.Errorf("refresh token cannot be empty")
 	}
@@ -572,7 +553,7 @@ func (s *Store) SaveRefreshToken(ctx context.Context, refreshToken, userID strin
 
 // SaveRefreshTokenWithFamily saves a refresh token with family tracking for reuse detection
 // This is the OAuth 2.1 compliant version that enables token theft detection
-func (s *Store) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, userID, clientID, familyID string, generation int, expiresAt time.Time) error {
+func (s *Store) SaveRefreshTokenWithFamily(_ context.Context, refreshToken, userID, clientID, familyID string, generation int, expiresAt time.Time) error {
 	if refreshToken == "" {
 		return fmt.Errorf("refresh token cannot be empty")
 	}
@@ -624,14 +605,14 @@ func (s *Store) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, us
 
 	s.logger.Debug("Saved refresh token with family tracking",
 		"user_id", userID,
-		"family_id", util.SafeTruncate(familyID, tokenIDLogLength),
+		"family_id", helpers.SafeTruncate(familyID, tokenIDLogLength),
 		"generation", generation,
 		"expires_at", expiresAt)
 	return nil
 }
 
 // GetRefreshTokenFamily retrieves family metadata for a refresh token
-func (s *Store) GetRefreshTokenFamily(ctx context.Context, refreshToken string) (*storage.RefreshTokenFamilyMetadata, error) {
+func (s *Store) GetRefreshTokenFamily(_ context.Context, refreshToken string) (*storage.RefreshTokenFamilyMetadata, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -654,7 +635,7 @@ func (s *Store) GetRefreshTokenFamily(ctx context.Context, refreshToken string) 
 
 // RevokeRefreshTokenFamily revokes all tokens in a family (for reuse detection)
 // This is called when token reuse is detected (OAuth 2.1 security requirement)
-func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) error {
+func (s *Store) RevokeRefreshTokenFamily(_ context.Context, familyID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -676,7 +657,7 @@ func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) e
 
 	if revokedCount > 0 {
 		s.logger.Warn("Revoked refresh token family due to reuse detection",
-			"family_id", util.SafeTruncate(familyID, tokenIDLogLength),
+			"family_id", helpers.SafeTruncate(familyID, tokenIDLogLength),
 			"tokens_revoked", revokedCount)
 	}
 
@@ -685,7 +666,7 @@ func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) e
 
 // GetRefreshTokenInfo retrieves the user ID for a refresh token
 // Returns error if token is not found or expired (with clock skew grace)
-func (s *Store) GetRefreshTokenInfo(ctx context.Context, refreshToken string) (string, error) {
+func (s *Store) GetRefreshTokenInfo(_ context.Context, refreshToken string) (string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -705,7 +686,7 @@ func (s *Store) GetRefreshTokenInfo(ctx context.Context, refreshToken string) (s
 }
 
 // DeleteRefreshToken removes a refresh token (used for rotation)
-func (s *Store) DeleteRefreshToken(ctx context.Context, refreshToken string) error {
+func (s *Store) DeleteRefreshToken(_ context.Context, refreshToken string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -721,7 +702,7 @@ func (s *Store) DeleteRefreshToken(ctx context.Context, refreshToken string) err
 //
 // SECURITY: This operation is atomic - only ONE concurrent request can succeed.
 // All other concurrent requests will receive a "token not found" error.
-func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken string) (string, *oauth2.Token, error) {
+func (s *Store) AtomicGetAndDeleteRefreshToken(_ context.Context, refreshToken string) (string, *oauth2.Token, error) {
 	s.mu.Lock() // MUST use write lock for atomic get-and-delete
 	defer s.mu.Unlock()
 
@@ -729,7 +710,7 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken
 	userID, ok := s.refreshTokens[refreshToken]
 	if !ok {
 		// Use typed error to allow callers to distinguish "not found" from transient errors
-		return "", nil, fmt.Errorf("%w: refresh token not found or already used", storage.ErrTokenNotFound)
+		return "", nil, fmt.Errorf("%w: "+storage.ErrMsgRefreshTokenNotFoundOrUsed, storage.ErrTokenNotFound)
 	}
 
 	// Check if expired with clock skew grace period
@@ -764,27 +745,7 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken
 
 // GetClient retrieves a client by ID
 func (s *Store) GetClient(ctx context.Context, clientID string) (*storage.Client, error) {
-	// Start span and track metrics
-	ctx, span := s.startStorageSpan(ctx, "get_client")
-	defer span.End()
-
-	startTime := time.Now()
-	var err error
-
-	defer func() {
-		s.recordStorageOperation(ctx, span, "get_client", err, startTime)
-	}()
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	client, ok := s.clients[clientID]
-	if !ok {
-		err = fmt.Errorf("%w: %s", storage.ErrClientNotFound, clientID)
-		return nil, err
-	}
-
-	return client, nil
+	return lookupWithTracing(ctx, s, "get_client", s.clients, clientID, storage.ErrClientNotFound)
 }
 
 // ValidateClientSecret validates a client's secret using bcrypt
@@ -793,14 +754,11 @@ func (s *Store) ValidateClientSecret(ctx context.Context, clientID, clientSecret
 	// SECURITY: Always perform the same operations to prevent timing attacks
 	// that could reveal whether a client exists or not
 
-	// Pre-computed dummy hash for non-existent clients (bcrypt hash of "test")
-	// This ensures we always perform a bcrypt comparison even if client doesn't exist
-	dummyHash := "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
-
 	client, err := s.GetClient(ctx, clientID)
 
 	// Determine which hash to use (real or dummy)
-	hashToCompare := dummyHash
+	// Use shared dummy hash constant for timing attack mitigation
+	hashToCompare := storage.DummyBcryptHash
 	isPublicClient := false
 
 	if err == nil {
@@ -834,7 +792,7 @@ func (s *Store) ValidateClientSecret(ctx context.Context, clientID, clientSecret
 }
 
 // ListClients lists all registered clients
-func (s *Store) ListClients(ctx context.Context) ([]*storage.Client, error) {
+func (s *Store) ListClients(_ context.Context) ([]*storage.Client, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -852,12 +810,12 @@ func (s *Store) ListClients(ctx context.Context) ([]*storage.Client, error) {
 
 // SaveAuthorizationState saves the state of an ongoing authorization flow
 // Stores by both client state (StateID) and provider state (ProviderState) for dual lookup
-func (s *Store) SaveAuthorizationState(ctx context.Context, state *storage.AuthorizationState) error {
+func (s *Store) SaveAuthorizationState(_ context.Context, state *storage.AuthorizationState) error {
 	if state == nil || state.StateID == "" {
-		return fmt.Errorf("invalid authorization state")
+		return fmt.Errorf(storage.ErrMsgInvalidAuthorizationState)
 	}
 	if state.ProviderState == "" {
-		return fmt.Errorf("provider state is required")
+		return fmt.Errorf(storage.ErrMsgProviderStateRequired)
 	}
 
 	s.mu.Lock()
@@ -868,12 +826,12 @@ func (s *Store) SaveAuthorizationState(ctx context.Context, state *storage.Autho
 	// ProviderState is used when validating provider callbacks
 	s.authStates[state.StateID] = state
 	s.authStates[state.ProviderState] = state
-	s.logger.Debug("Saved authorization state", "state_id", state.StateID, "provider_state_prefix", util.SafeTruncate(state.ProviderState, tokenIDLogLength))
+	s.logger.Debug("Saved authorization state", "state_id", state.StateID, "provider_state_prefix", helpers.SafeTruncate(state.ProviderState, tokenIDLogLength))
 	return nil
 }
 
 // GetAuthorizationState retrieves an authorization state by client state
-func (s *Store) GetAuthorizationState(ctx context.Context, stateID string) (*storage.AuthorizationState, error) {
+func (s *Store) GetAuthorizationState(_ context.Context, stateID string) (*storage.AuthorizationState, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -892,7 +850,7 @@ func (s *Store) GetAuthorizationState(ctx context.Context, stateID string) (*sto
 
 // GetAuthorizationStateByProviderState retrieves an authorization state by provider state
 // This is used during provider callback validation (separate from client state)
-func (s *Store) GetAuthorizationStateByProviderState(ctx context.Context, providerState string) (*storage.AuthorizationState, error) {
+func (s *Store) GetAuthorizationStateByProviderState(_ context.Context, providerState string) (*storage.AuthorizationState, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -911,7 +869,7 @@ func (s *Store) GetAuthorizationStateByProviderState(ctx context.Context, provid
 
 // DeleteAuthorizationState removes an authorization state
 // Removes both client state and provider state entries
-func (s *Store) DeleteAuthorizationState(ctx context.Context, stateID string) error {
+func (s *Store) DeleteAuthorizationState(_ context.Context, stateID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -952,7 +910,7 @@ func (s *Store) SaveAuthorizationCode(ctx context.Context, code *storage.Authori
 	defer s.mu.Unlock()
 
 	s.authCodes[code.Code] = code
-	s.logger.Debug("Saved authorization code", "code_prefix", util.SafeTruncate(code.Code, tokenIDLogLength))
+	s.logger.Debug("Saved authorization code", "code_prefix", helpers.SafeTruncate(code.Code, tokenIDLogLength))
 	return nil
 }
 
@@ -962,7 +920,7 @@ func (s *Store) SaveAuthorizationCode(ctx context.Context, code *storage.Authori
 //
 // NOTE: For actual code exchange, use AtomicCheckAndMarkAuthCodeUsed instead
 // to prevent race conditions.
-func (s *Store) GetAuthorizationCode(ctx context.Context, code string) (*storage.AuthorizationCode, error) {
+func (s *Store) GetAuthorizationCode(_ context.Context, code string) (*storage.AuthorizationCode, error) {
 	s.mu.Lock() // Use write lock to ensure consistent read
 	defer s.mu.Unlock()
 
@@ -991,7 +949,7 @@ func (s *Store) GetAuthorizationCode(ctx context.Context, code string) (*storage
 // IMPORTANT: The authCode is ONLY returned on reuse errors (Used=true) to enable
 // detection and revocation. For other errors (not found, expired), nil is returned
 // to prevent information leakage.
-func (s *Store) AtomicCheckAndMarkAuthCodeUsed(ctx context.Context, code string) (*storage.AuthorizationCode, error) {
+func (s *Store) AtomicCheckAndMarkAuthCodeUsed(_ context.Context, code string) (*storage.AuthorizationCode, error) {
 	s.mu.Lock() // MUST use write lock for atomic check-and-set
 	defer s.mu.Unlock()
 
@@ -1017,14 +975,14 @@ func (s *Store) AtomicCheckAndMarkAuthCodeUsed(ctx context.Context, code string)
 	// Mark as used atomically
 	authCode.Used = true
 	s.logger.Debug("Marked authorization code as used",
-		"code_prefix", util.SafeTruncate(code, tokenIDLogLength))
+		"code_prefix", helpers.SafeTruncate(code, tokenIDLogLength))
 
 	// Return the code for token issuance
 	return authCode, nil
 }
 
 // DeleteAuthorizationCode removes an authorization code
-func (s *Store) DeleteAuthorizationCode(ctx context.Context, code string) error {
+func (s *Store) DeleteAuthorizationCode(_ context.Context, code string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1051,13 +1009,9 @@ func (s *Store) cleanupLoop() {
 	}
 }
 
-func (s *Store) cleanup() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+// cleanupExpiredTokens removes expired tokens without refresh tokens
+func (s *Store) cleanupExpiredTokens() int {
 	cleaned := 0
-
-	// Cleanup expired tokens (with clock skew grace period)
 	for userID, token := range s.tokens {
 		if security.IsTokenExpired(token.Expiry) && token.RefreshToken == "" {
 			delete(s.tokens, userID)
@@ -1065,61 +1019,74 @@ func (s *Store) cleanup() {
 			cleaned++
 		}
 	}
+	return cleaned
+}
 
-	// Cleanup expired authorization states (with clock skew grace period)
+// cleanupExpiredAuthStates removes expired authorization states
+func (s *Store) cleanupExpiredAuthStates() int {
+	cleaned := 0
 	for stateID, state := range s.authStates {
 		if security.IsTokenExpired(state.ExpiresAt) {
 			delete(s.authStates, stateID)
 			cleaned++
 		}
 	}
+	return cleaned
+}
 
-	// Cleanup expired authorization codes (with clock skew grace period)
+// cleanupExpiredAuthCodes removes expired authorization codes
+func (s *Store) cleanupExpiredAuthCodes() int {
+	cleaned := 0
 	for code, authCode := range s.authCodes {
 		if security.IsTokenExpired(authCode.ExpiresAt) {
 			delete(s.authCodes, code)
 			cleaned++
 		}
 	}
+	return cleaned
+}
 
-	// Cleanup expired refresh tokens (with clock skew grace period)
+// cleanupExpiredRefreshTokens removes expired refresh tokens and their metadata
+func (s *Store) cleanupExpiredRefreshTokens() int {
+	cleaned := 0
 	for refreshToken, expiresAt := range s.refreshTokenExpiries {
 		if security.IsTokenExpired(expiresAt) {
 			delete(s.refreshTokens, refreshToken)
 			delete(s.refreshTokenExpiries, refreshToken)
-			delete(s.refreshTokenFamilies, refreshToken) // Also cleanup family metadata
+			delete(s.refreshTokenFamilies, refreshToken)
 			cleaned++
 		}
 	}
+	return cleaned
+}
 
-	// Cleanup revoked token families (keep metadata for a while for forensics, then cleanup)
-	// Use configurable retention period (default: 90 days)
-	// This provides retention for security audits and forensics
+// cleanupRevokedFamilies removes old revoked token family metadata
+func (s *Store) cleanupRevokedFamilies() int {
+	cleaned := 0
 	retentionDays := s.revokedFamilyRetentionDays
 	if retentionDays == 0 {
-		retentionDays = 90 // fallback to default
+		retentionDays = 90
 	}
-	revokedFamilyCleanupThreshold := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
+	threshold := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
 	for refreshToken, family := range s.refreshTokenFamilies {
 		if family.Revoked {
-			// Use RevokedAt if available, otherwise fall back to IssuedAt
 			revokedTime := family.RevokedAt
 			if revokedTime.IsZero() {
 				revokedTime = family.IssuedAt
 			}
-			if revokedTime.Before(revokedFamilyCleanupThreshold) {
+			if revokedTime.Before(threshold) {
 				delete(s.refreshTokenFamilies, refreshToken)
 				cleaned++
 			}
 		}
 	}
+	return cleaned
+}
 
-	// Cleanup orphaned token metadata (tokens that no longer exist)
-	// SECURITY NOTE: Orphaned metadata can occur if the process crashes between deletes.
-	// This is expected for in-memory storage. For production use with persistent storage,
-	// implement proper transaction support to prevent orphaning.
+// cleanupOrphanedMetadata removes token metadata for tokens that no longer exist
+func (s *Store) cleanupOrphanedMetadata() int {
+	cleaned := 0
 	for tokenID := range s.tokenMetadata {
-		// Check if token still exists (either as a regular token or refresh token)
 		if _, existsAsToken := s.tokens[tokenID]; !existsAsToken {
 			if _, existsAsRefresh := s.refreshTokens[tokenID]; !existsAsRefresh {
 				delete(s.tokenMetadata, tokenID)
@@ -1127,15 +1094,24 @@ func (s *Store) cleanup() {
 			}
 		}
 	}
+	return cleaned
+}
 
-	// SECURITY MONITORING: Check for excessive family metadata growth
-	// This could indicate a memory exhaustion attack via repeated token reuse
+func (s *Store) cleanup() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cleaned := s.cleanupExpiredTokens()
+	cleaned += s.cleanupExpiredAuthStates()
+	cleaned += s.cleanupExpiredAuthCodes()
+	cleaned += s.cleanupExpiredRefreshTokens()
+	cleaned += s.cleanupRevokedFamilies()
+	cleaned += s.cleanupOrphanedMetadata()
+
 	familyCount := len(s.refreshTokenFamilies)
 	if familyCount > maxFamilyMetadataEntries {
-		s.logger.Warn("Refresh token family metadata approaching limit - possible memory exhaustion attack",
-			"current_count", familyCount,
-			"max_threshold", maxFamilyMetadataEntries,
-			"recommendation", "Review security logs for repeated token reuse attempts")
+		s.logger.Warn("Refresh token family metadata approaching limit",
+			"current_count", familyCount, "max_threshold", maxFamilyMetadataEntries)
 	}
 
 	if cleaned > 0 {
@@ -1204,7 +1180,7 @@ func (s *Store) GetTokenMetadata(tokenID string) (*storage.TokenMetadata, error)
 // RevokeAllTokensForUserClient revokes all tokens (access + refresh) for a specific user+client combination.
 // This implements the OAuth 2.1 requirement for authorization code reuse detection.
 // Returns the number of tokens revoked and any error encountered.
-func (s *Store) RevokeAllTokensForUserClient(ctx context.Context, userID, clientID string) (int, error) {
+func (s *Store) RevokeAllTokensForUserClient(_ context.Context, userID, clientID string) (int, error) {
 	if userID == "" || clientID == "" {
 		return 0, fmt.Errorf("userID and clientID cannot be empty")
 	}
@@ -1212,79 +1188,14 @@ func (s *Store) RevokeAllTokensForUserClient(ctx context.Context, userID, client
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	revokedCount := 0
+	// Step 1: Identify all tokens and families to revoke
+	familiesToRevoke, tokensToRevoke := s.identifyTokensToRevoke(userID, clientID)
 
-	// Step 1: Identify all token families to revoke
-	familiesToRevoke := make(map[string]bool)
-	tokensToRevoke := make([]string, 0)
-
-	for tokenID, metadata := range s.tokenMetadata {
-		if metadata.UserID == userID && metadata.ClientID == clientID {
-			tokensToRevoke = append(tokensToRevoke, tokenID)
-
-			// Track family IDs that need complete revocation
-			if family, hasFam := s.refreshTokenFamilies[tokenID]; hasFam {
-				familiesToRevoke[family.FamilyID] = true
-			}
-		}
-	}
-
-	// Step 2: Revoke ENTIRE token families (finds ALL family members, not just tracked ones)
-	now := time.Now()
-	for familyID := range familiesToRevoke {
-		familyRevokedCount := 0
-		for tokenID, family := range s.refreshTokenFamilies {
-			if family.FamilyID == familyID {
-				// Mark family as revoked (keeps metadata for forensics/detection)
-				// CRITICAL: Must update the map entry directly, not the loop copy
-				s.refreshTokenFamilies[tokenID].Revoked = true
-				s.refreshTokenFamilies[tokenID].RevokedAt = now
-
-				// Delete the actual tokens
-				delete(s.refreshTokens, tokenID)
-				delete(s.refreshTokenExpiries, tokenID)
-				delete(s.tokens, tokenID)
-				delete(s.tokenMetadata, tokenID)
-
-				revokedCount++
-				familyRevokedCount++
-
-				s.logger.Debug("Revoked token from family",
-					"user_id", userID,
-					"client_id", clientID,
-					"token_id", util.SafeTruncate(tokenID, tokenIDLogLength),
-					"family_id", util.SafeTruncate(familyID, tokenIDLogLength),
-					"generation", family.Generation)
-			}
-		}
-
-		if familyRevokedCount > 0 {
-			s.logger.Info("Revoked entire refresh token family",
-				"user_id", userID,
-				"client_id", clientID,
-				"family_id", util.SafeTruncate(familyID, tokenIDLogLength),
-				"tokens_revoked", familyRevokedCount,
-				"reason", "authorization_code_reuse_detected")
-		}
-	}
+	// Step 2: Revoke entire token families
+	revokedCount := s.revokeFamilies(familiesToRevoke, userID, clientID)
 
 	// Step 3: Revoke remaining tokens (access tokens, tokens without families)
-	for _, tokenID := range tokensToRevoke {
-		// Skip if already deleted as part of family revocation
-		if _, exists := s.tokens[tokenID]; !exists {
-			continue
-		}
-
-		// Delete the token itself
-		delete(s.tokens, tokenID)
-		delete(s.tokenMetadata, tokenID)
-		revokedCount++
-
-		s.logger.Debug("Revoked access token",
-			"user_id", userID,
-			"client_id", clientID,
-			"token_id", util.SafeTruncate(tokenID, tokenIDLogLength))
-	}
+	revokedCount += s.revokeRemainingTokens(tokensToRevoke, userID, clientID)
 
 	if revokedCount > 0 {
 		s.logger.Warn("Revoked all tokens for user+client",
@@ -1297,9 +1208,104 @@ func (s *Store) RevokeAllTokensForUserClient(ctx context.Context, userID, client
 	return revokedCount, nil
 }
 
+// identifyTokensToRevoke finds all tokens and families for a user+client. Must be called with lock held.
+func (s *Store) identifyTokensToRevoke(userID, clientID string) (map[string]bool, []string) {
+	familiesToRevoke := make(map[string]bool)
+	tokensToRevoke := make([]string, 0)
+
+	for tokenID, metadata := range s.tokenMetadata {
+		if metadata.UserID != userID || metadata.ClientID != clientID {
+			continue
+		}
+		tokensToRevoke = append(tokensToRevoke, tokenID)
+		if family, hasFam := s.refreshTokenFamilies[tokenID]; hasFam {
+			familiesToRevoke[family.FamilyID] = true
+		}
+	}
+
+	return familiesToRevoke, tokensToRevoke
+}
+
+// revokeFamilies revokes all tokens in the given families. Must be called with lock held.
+func (s *Store) revokeFamilies(familiesToRevoke map[string]bool, userID, clientID string) int {
+	now := time.Now()
+	revokedCount := 0
+
+	for familyID := range familiesToRevoke {
+		familyRevokedCount := s.revokeFamily(familyID, now, userID, clientID)
+		revokedCount += familyRevokedCount
+
+		if familyRevokedCount > 0 {
+			s.logger.Info("Revoked entire refresh token family",
+				"user_id", userID,
+				"client_id", clientID,
+				"family_id", helpers.SafeTruncate(familyID, tokenIDLogLength),
+				"tokens_revoked", familyRevokedCount,
+				"reason", "authorization_code_reuse_detected")
+		}
+	}
+
+	return revokedCount
+}
+
+// revokeFamily revokes all tokens in a single family. Must be called with lock held.
+func (s *Store) revokeFamily(familyID string, now time.Time, userID, clientID string) int {
+	familyRevokedCount := 0
+
+	for tokenID, family := range s.refreshTokenFamilies {
+		if family.FamilyID != familyID {
+			continue
+		}
+		// Mark family as revoked (keeps metadata for forensics/detection)
+		// CRITICAL: Must update the map entry directly, not the loop copy
+		s.refreshTokenFamilies[tokenID].Revoked = true
+		s.refreshTokenFamilies[tokenID].RevokedAt = now
+
+		// Delete the actual tokens
+		delete(s.refreshTokens, tokenID)
+		delete(s.refreshTokenExpiries, tokenID)
+		delete(s.tokens, tokenID)
+		delete(s.tokenMetadata, tokenID)
+
+		familyRevokedCount++
+
+		s.logger.Debug("Revoked token from family",
+			"user_id", userID,
+			"client_id", clientID,
+			"token_id", helpers.SafeTruncate(tokenID, tokenIDLogLength),
+			"family_id", helpers.SafeTruncate(familyID, tokenIDLogLength),
+			"generation", family.Generation)
+	}
+
+	return familyRevokedCount
+}
+
+// revokeRemainingTokens revokes tokens not already revoked via family revocation. Must be called with lock held.
+func (s *Store) revokeRemainingTokens(tokensToRevoke []string, userID, clientID string) int {
+	revokedCount := 0
+
+	for _, tokenID := range tokensToRevoke {
+		// Skip if already deleted as part of family revocation
+		if _, exists := s.tokens[tokenID]; !exists {
+			continue
+		}
+
+		delete(s.tokens, tokenID)
+		delete(s.tokenMetadata, tokenID)
+		revokedCount++
+
+		s.logger.Debug("Revoked access token",
+			"user_id", userID,
+			"client_id", clientID,
+			"token_id", helpers.SafeTruncate(tokenID, tokenIDLogLength))
+	}
+
+	return revokedCount
+}
+
 // GetTokensByUserClient retrieves all token IDs for a user+client combination.
 // This is primarily for testing and debugging purposes.
-func (s *Store) GetTokensByUserClient(ctx context.Context, userID, clientID string) ([]string, error) {
+func (s *Store) GetTokensByUserClient(_ context.Context, userID, clientID string) ([]string, error) {
 	if userID == "" || clientID == "" {
 		return nil, fmt.Errorf("userID and clientID cannot be empty")
 	}
@@ -1351,13 +1357,45 @@ func (s *Store) recordStorageOperation(ctx context.Context, span trace.Span, ope
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 		}
-	} else {
+	} else if span != nil {
 		// Set span success status
-		if span != nil {
-			span.SetStatus(codes.Ok, "")
-		}
+		span.SetStatus(codes.Ok, "")
 	}
 
 	// Record operation with count and duration
 	s.instrumentation.Metrics().RecordStorageOperation(ctx, operation, result, durationMs)
+}
+
+// lookupWithTracing is a generic helper for read-only map lookups with tracing and metrics.
+// It encapsulates the common pattern of starting a span, deferring metrics recording,
+// acquiring a read lock, and performing a map lookup.
+func lookupWithTracing[K comparable, V any](
+	ctx context.Context,
+	s *Store,
+	operation string,
+	m map[K]V,
+	key K,
+	notFoundErr error,
+) (V, error) {
+	ctx, span := s.startStorageSpan(ctx, operation)
+	defer span.End()
+
+	startTime := time.Now()
+	var err error
+	var zero V
+
+	defer func() {
+		s.recordStorageOperation(ctx, span, operation, err, startTime)
+	}()
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	value, ok := m[key]
+	if !ok {
+		err = fmt.Errorf("%w: %s", notFoundErr, fmt.Sprint(key))
+		return zero, err
+	}
+
+	return value, nil
 }

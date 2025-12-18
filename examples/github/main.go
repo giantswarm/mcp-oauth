@@ -1,3 +1,7 @@
+// Package main demonstrates OAuth setup with the GitHub OAuth provider.
+//
+// This example shows how to authenticate users via GitHub with optional
+// organization restrictions.
 package main
 
 import (
@@ -123,7 +127,7 @@ func main() {
 	mux.Handle("/api/resource", handler.ValidateToken(resourceHandler))
 
 	// Home page with login link
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		orgInfo := ""
 		if len(allowedOrgs) > 0 {
 			orgInfo = fmt.Sprintf(`<p><strong>Allowed Organizations:</strong> %s</p>

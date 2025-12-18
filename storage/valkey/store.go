@@ -3,6 +3,7 @@ package valkey
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -192,106 +193,78 @@ func (s *Store) getEncryptor() *security.Encryptor {
 	return s.encryptor
 }
 
-// encryptToken encrypts sensitive fields in an oauth2.Token.
-// Returns a new token with encrypted fields, leaving the original unchanged.
+// tokenTransformFuncs contains the functions used to transform token fields.
+type tokenTransformFuncs struct {
+	transformString func(string) (string, error)
+	transformExtra  func(map[string]any, *security.Encryptor) (map[string]any, error)
+	accessErrFmt    string
+	refreshErrFmt   string
+}
+
+// transformTokenFields applies transformation functions to a token's sensitive fields.
+// Returns a new token with transformed fields, leaving the original unchanged.
 // IMPORTANT: Preserves the Extra field (id_token, scope) which is critical for OIDC flows.
-// SECURITY: Encrypts access_token, refresh_token, and id_token (contains PII).
-func (s *Store) encryptToken(token *oauth2.Token) (*oauth2.Token, error) {
+func (s *Store) transformTokenFields(token *oauth2.Token, funcs tokenTransformFuncs) (*oauth2.Token, error) {
 	enc := s.getEncryptor()
 	if enc == nil || !enc.IsEnabled() {
 		return token, nil
 	}
 
-	// Extract extra fields before creating new token (they're in a private field)
 	extra := storage.ExtractTokenExtra(token)
-
-	// Create a copy to avoid modifying the original
-	encrypted := &oauth2.Token{
+	result := &oauth2.Token{
 		AccessToken:  token.AccessToken,
 		RefreshToken: token.RefreshToken,
 		Expiry:       token.Expiry,
 		TokenType:    token.TokenType,
 	}
 
-	// Encrypt access token
-	if encrypted.AccessToken != "" {
-		encVal, err := enc.Encrypt(encrypted.AccessToken)
+	if result.AccessToken != "" {
+		val, err := funcs.transformString(result.AccessToken)
 		if err != nil {
-			return nil, fmt.Errorf("failed to encrypt access token: %w", err)
+			return nil, fmt.Errorf(funcs.accessErrFmt, err)
 		}
-		encrypted.AccessToken = encVal
+		result.AccessToken = val
 	}
 
-	// Encrypt refresh token
-	if encrypted.RefreshToken != "" {
-		encVal, err := enc.Encrypt(encrypted.RefreshToken)
+	if result.RefreshToken != "" {
+		val, err := funcs.transformString(result.RefreshToken)
 		if err != nil {
-			return nil, fmt.Errorf("failed to encrypt refresh token: %w", err)
+			return nil, fmt.Errorf(funcs.refreshErrFmt, err)
 		}
-		encrypted.RefreshToken = encVal
+		result.RefreshToken = val
 	}
 
-	// Encrypt sensitive extra fields (id_token contains PII)
 	if extra != nil {
-		encryptedExtra, err := storage.EncryptExtraFields(extra, enc)
+		transformedExtra, err := funcs.transformExtra(extra, enc)
 		if err != nil {
 			return nil, err
 		}
-		encrypted = encrypted.WithExtra(encryptedExtra)
+		result = result.WithExtra(transformedExtra)
 	}
 
-	return encrypted, nil
+	return result, nil
+}
+
+// encryptToken encrypts sensitive fields in an oauth2.Token.
+// Returns a new token with encrypted fields, leaving the original unchanged.
+func (s *Store) encryptToken(token *oauth2.Token) (*oauth2.Token, error) {
+	return s.transformTokenFields(token, tokenTransformFuncs{
+		transformString: s.getEncryptor().Encrypt,
+		transformExtra:  storage.EncryptExtraFields,
+		accessErrFmt:    "failed to encrypt access token: %w",
+		refreshErrFmt:   "failed to encrypt refresh token: %w",
+	})
 }
 
 // decryptToken decrypts sensitive fields in an oauth2.Token.
 // Returns a new token with decrypted fields, leaving the original unchanged.
-// IMPORTANT: Preserves the Extra field (id_token, scope) which is critical for OIDC flows.
-// SECURITY: Decrypts access_token, refresh_token, and id_token (contains PII).
 func (s *Store) decryptToken(token *oauth2.Token) (*oauth2.Token, error) {
-	enc := s.getEncryptor()
-	if enc == nil || !enc.IsEnabled() {
-		return token, nil
-	}
-
-	// Extract extra fields before creating new token (they're in a private field)
-	extra := storage.ExtractTokenExtra(token)
-
-	// Create a copy to avoid modifying the stored version
-	decrypted := &oauth2.Token{
-		AccessToken:  token.AccessToken,
-		RefreshToken: token.RefreshToken,
-		Expiry:       token.Expiry,
-		TokenType:    token.TokenType,
-	}
-
-	// Decrypt access token
-	if decrypted.AccessToken != "" {
-		decVal, err := enc.Decrypt(decrypted.AccessToken)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decrypt access token: %w", err)
-		}
-		decrypted.AccessToken = decVal
-	}
-
-	// Decrypt refresh token
-	if decrypted.RefreshToken != "" {
-		decVal, err := enc.Decrypt(decrypted.RefreshToken)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decrypt refresh token: %w", err)
-		}
-		decrypted.RefreshToken = decVal
-	}
-
-	// Decrypt sensitive extra fields (id_token contains PII)
-	if extra != nil {
-		decryptedExtra, err := storage.DecryptExtraFields(extra, enc)
-		if err != nil {
-			return nil, err
-		}
-		decrypted = decrypted.WithExtra(decryptedExtra)
-	}
-
-	return decrypted, nil
+	return s.transformTokenFields(token, tokenTransformFuncs{
+		transformString: s.getEncryptor().Decrypt,
+		transformExtra:  storage.DecryptExtraFields,
+		accessErrFmt:    "failed to decrypt access token: %w",
+		refreshErrFmt:   "failed to decrypt refresh token: %w",
+	})
 }
 
 // validateStringLength checks if a string exceeds the maximum allowed length
@@ -718,7 +691,36 @@ func fromTokenMetadataJSON(j *tokenMetadataJSON) *storage.TokenMetadata {
 // Helper methods
 // ============================================================
 
-// safeTruncate safely truncates a string to n characters
+// getAndUnmarshal is a generic helper for fetching a key from Valkey,
+// unmarshalling the JSON data, and converting to the target type.
+// This reduces code duplication across GetClient, GetRefreshTokenFamily, etc.
+func getAndUnmarshal[J any, T any](
+	ctx context.Context,
+	s *Store,
+	key string,
+	notFoundErr error,
+	fromJSON func(*J) *T,
+) (*T, error) {
+	data, err := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).ToString()
+	if err != nil {
+		if isNilError(err) {
+			return nil, notFoundErr
+		}
+		return nil, fmt.Errorf("failed to get data: %w", err)
+	}
+
+	var j J
+	if err := json.Unmarshal([]byte(data), &j); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal data: %w", err)
+	}
+
+	return fromJSON(&j), nil
+}
+
+// safeTruncate safely truncates a string to n characters.
+// Note: This is a local copy of helpers.SafeTruncate to avoid import cycles
+// and keep the valkey package self-contained. The function is simple enough
+// that duplication is preferable to adding an internal package dependency.
 func safeTruncate(s string, n int) string {
 	if len(s) <= n {
 		return s

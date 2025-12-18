@@ -46,13 +46,44 @@ const (
 // Security: This function validates redirect URIs against the security configuration
 // (ProductionMode, AllowPrivateIPRedirectURIs, etc.) to prevent SSRF and open redirect attacks.
 func (s *Server) RegisterClient(ctx context.Context, clientName, clientType, tokenEndpointAuthMethod string, redirectURIs []string, scopes []string, clientIP string, maxClientsPerIP int) (*storage.Client, string, error) {
-	// Check IP limit to prevent DoS via mass client registration
 	if err := s.clientStore.CheckIPLimit(ctx, clientIP, maxClientsPerIP); err != nil {
 		return nil, "", err
 	}
 
-	// SECURITY: Validate redirect URIs for security (SSRF, dangerous schemes, private IPs)
-	// This validation is critical for preventing open redirect and SSRF vulnerabilities
+	if err := s.validateRedirectURIsWithAudit(ctx, redirectURIs, clientIP); err != nil {
+		return nil, "", err
+	}
+
+	clientID := generateRandomToken()
+	clientType, tokenEndpointAuthMethod = resolveClientTypeAndAuthMethod(clientType, tokenEndpointAuthMethod)
+	clientSecret, clientSecretHash, err := generateClientSecret(clientType)
+	if err != nil {
+		return nil, "", err
+	}
+
+	client := &storage.Client{
+		ClientID:                clientID,
+		ClientSecretHash:        clientSecretHash,
+		ClientType:              clientType,
+		RedirectURIs:            redirectURIs,
+		TokenEndpointAuthMethod: tokenEndpointAuthMethod,
+		GrantTypes:              []string{"authorization_code", "refresh_token"},
+		ResponseTypes:           []string{"code"},
+		ClientName:              clientName,
+		Scopes:                  scopes,
+		CreatedAt:               time.Now(),
+	}
+
+	if err := s.clientStore.SaveClient(ctx, client); err != nil {
+		return nil, "", fmt.Errorf("failed to save client: %w", err)
+	}
+
+	s.trackClientIPAndLog(client, clientSecret, clientIP)
+	return client, clientSecret, nil
+}
+
+// validateRedirectURIsWithAudit validates redirect URIs and logs failures for auditing.
+func (s *Server) validateRedirectURIsWithAudit(ctx context.Context, redirectURIs []string, clientIP string) error {
 	if err := s.ValidateRedirectURIsForRegistration(ctx, redirectURIs); err != nil {
 		if s.Auditor != nil {
 			category := GetRedirectURIErrorCategory(err)
@@ -68,26 +99,20 @@ func (s *Server) RegisterClient(ctx context.Context, clientName, clientType, tok
 		s.Logger.Warn("Client registration rejected: redirect URI validation failed",
 			"error", err.Error(),
 			"client_ip", clientIP)
-		return nil, "", fmt.Errorf("invalid_redirect_uri: %w", err)
+		return fmt.Errorf("invalid_redirect_uri: %w", err)
 	}
+	return nil
+}
 
-	// Generate client ID using oauth2.GenerateVerifier (same quality)
-	clientID := generateRandomToken()
-
-	// OAUTH 2.1 COMPLIANCE: Determine client type from token_endpoint_auth_method
-	// Per RFC 7591 Section 2: token_endpoint_auth_method determines client type
-	// - "none" = public client (no secret)
-	// - any other method = confidential client (has secret)
+// resolveClientTypeAndAuthMethod determines the client type and auth method.
+// Per RFC 7591 Section 2: token_endpoint_auth_method determines client type.
+func resolveClientTypeAndAuthMethod(clientType, tokenEndpointAuthMethod string) (string, string) {
 	if tokenEndpointAuthMethod == TokenEndpointAuthMethodNone {
-		// Client explicitly requests public client (no secret)
 		clientType = ClientTypePublic
 	} else if clientType == "" {
-		// No explicit client_type, infer from auth method
-		// Default to confidential for backward compatibility
 		clientType = ClientTypeConfidential
 	}
 
-	// Set default auth method if not specified
 	if tokenEndpointAuthMethod == "" {
 		if clientType == ClientTypePublic {
 			tokenEndpointAuthMethod = TokenEndpointAuthMethodNone
@@ -96,57 +121,39 @@ func (s *Server) RegisterClient(ctx context.Context, clientName, clientType, tok
 		}
 	}
 
-	// Generate client secret for confidential clients
-	var clientSecret string
-	var clientSecretHash string
+	return clientType, tokenEndpointAuthMethod
+}
 
-	if clientType == ClientTypeConfidential {
-		clientSecret = generateRandomToken()
-
-		// Hash the secret for storage
-		hash, err := bcrypt.GenerateFromPassword([]byte(clientSecret), bcrypt.DefaultCost)
-		if err != nil {
-			return nil, "", fmt.Errorf("failed to hash client secret: %w", err)
-		}
-		clientSecretHash = string(hash)
+// generateClientSecret generates a secret for confidential clients.
+func generateClientSecret(clientType string) (string, string, error) {
+	if clientType != ClientTypeConfidential {
+		return "", "", nil
 	}
 
-	// Create client object
-	client := &storage.Client{
-		ClientID:                clientID,
-		ClientSecretHash:        clientSecretHash,
-		ClientType:              clientType,
-		RedirectURIs:            redirectURIs,
-		TokenEndpointAuthMethod: tokenEndpointAuthMethod,
-		GrantTypes:              []string{"authorization_code", "refresh_token"},
-		ResponseTypes:           []string{"code"},
-		ClientName:              clientName,
-		Scopes:                  scopes,
-		CreatedAt:               time.Now(),
+	clientSecret := generateRandomToken()
+	hash, err := bcrypt.GenerateFromPassword([]byte(clientSecret), bcrypt.DefaultCost)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to hash client secret: %w", err)
 	}
+	return clientSecret, string(hash), nil
+}
 
-	// Save client
-	if err := s.clientStore.SaveClient(ctx, client); err != nil {
-		return nil, "", fmt.Errorf("failed to save client: %w", err)
-	}
-
-	// Track IP for DoS protection
+// trackClientIPAndLog tracks the IP for DoS protection and logs the registration.
+func (s *Server) trackClientIPAndLog(client *storage.Client, _ /* clientSecret - not logged for security */, clientIP string) {
 	if memStore, ok := s.clientStore.(*memory.Store); ok {
 		memStore.TrackClientIP(clientIP)
 	}
 
 	if s.Auditor != nil {
-		s.Auditor.LogClientRegistered(clientID, clientType, clientIP)
+		s.Auditor.LogClientRegistered(client.ClientID, client.ClientType, clientIP)
 	}
 
 	s.Logger.Info("Registered new OAuth client",
-		"client_id", clientID,
-		"client_name", clientName,
-		"client_type", clientType,
-		"token_endpoint_auth_method", tokenEndpointAuthMethod,
+		"client_id", client.ClientID,
+		"client_name", client.ClientName,
+		"client_type", client.ClientType,
+		"token_endpoint_auth_method", client.TokenEndpointAuthMethod,
 		"client_ip", clientIP)
-
-	return client, clientSecret, nil
 }
 
 // ValidateClientCredentials validates client credentials for token endpoint

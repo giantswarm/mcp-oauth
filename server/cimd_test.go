@@ -333,7 +333,7 @@ func TestFetchClientMetadata(t *testing.T) {
 		}
 
 		// Create server that returns wrong client_id
-		badTS := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		badTS := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			metadata := ClientMetadata{
 				ClientID:     "https://wrong.example.com/client",
 				RedirectURIs: []string{"https://app.example.com/callback"},
@@ -628,7 +628,7 @@ func TestRedirectURIValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create a test server that returns metadata with the test redirect URI
 			var serverURL string
-			ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				metadata := ClientMetadata{
 					ClientID:     serverURL + "/client",
 					RedirectURIs: []string{tt.redirectURI},
@@ -661,11 +661,9 @@ func TestRedirectURIValidation(t *testing.T) {
 				if !strings.Contains(err.Error(), "private/internal IP") && !strings.Contains(err.Error(), tt.errContains) {
 					t.Errorf("error = %v, want error containing %q or SSRF protection", err, tt.errContains)
 				}
-			} else {
+			} else if err != nil && !strings.Contains(err.Error(), "private/internal IP") {
 				// For valid URIs, we still expect SSRF protection to block test server
-				if err != nil && !strings.Contains(err.Error(), "private/internal IP") {
-					t.Errorf("unexpected error for valid redirect URI: %v", err)
-				}
+				t.Errorf("unexpected error for valid redirect URI: %v", err)
 			}
 		})
 	}
@@ -961,7 +959,7 @@ func TestGetOrFetchClient_NonURLClientID(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	// Create mock storage and pre-register a client
-	clientStore := mock.NewMockClientStore()
+	clientStore := mock.NewClientStore()
 	err := clientStore.SaveClient(context.Background(), &storage.Client{
 		ClientID:     "my-regular-client",
 		ClientName:   "Regular Client",

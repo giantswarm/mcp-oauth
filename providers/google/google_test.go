@@ -444,7 +444,7 @@ func TestProvider_ValidateToken(t *testing.T) {
 
 func TestProvider_ValidateToken_InvalidToken(t *testing.T) {
 	// Create mock Google userinfo endpoint that returns 401
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	}))
 	defer server.Close()
@@ -561,7 +561,7 @@ func TestProvider_RevokeToken(t *testing.T) {
 func TestProvider_RevokeToken_Failed(t *testing.T) {
 	ctx := context.Background()
 	// Create mock Google revoke endpoint that returns error
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "revocation failed", http.StatusBadRequest)
 	}))
 	defer server.Close()
@@ -676,7 +676,7 @@ func TestProvider_HealthCheck(t *testing.T) {
 
 func TestProvider_HealthCheck_WithTimeout(t *testing.T) {
 	// Create a server that delays response to test timeout handling
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -702,7 +702,7 @@ func TestProvider_HealthCheck_WithTimeout(t *testing.T) {
 }
 
 func TestProvider_HealthCheck_WithExistingDeadline(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()

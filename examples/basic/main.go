@@ -1,3 +1,7 @@
+// Package main demonstrates basic OAuth 2.1 setup for MCP servers.
+//
+// This example shows the minimal setup required to get an OAuth-protected
+// MCP server running with Google as the identity provider.
 package main
 
 import (
@@ -143,7 +147,7 @@ func main() {
 	mux.Handle("/mcp", handler.ValidateToken(mcpHandler()))
 
 	// Health check
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "OK - Provider: %s\n", googleProvider.Name())
 	})
