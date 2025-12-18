@@ -44,23 +44,7 @@ func (s *Store) SaveClient(ctx context.Context, client *storage.Client) error {
 
 // GetClient retrieves a client by ID
 func (s *Store) GetClient(ctx context.Context, clientID string) (*storage.Client, error) {
-	key := s.clientKey(clientID)
-
-	data, err := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).ToString()
-	if err != nil {
-		if isNilError(err) {
-			// Return generic error to prevent client enumeration attacks
-			return nil, storage.ErrClientNotFound
-		}
-		return nil, fmt.Errorf("failed to get client: %w", err)
-	}
-
-	var j clientJSON
-	if err := json.Unmarshal([]byte(data), &j); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal client: %w", err)
-	}
-
-	return fromClientJSON(&j), nil
+	return getAndUnmarshal(ctx, s, s.clientKey(clientID), storage.ErrClientNotFound, fromClientJSON)
 }
 
 // ValidateClientSecret validates a client's secret using bcrypt
@@ -69,16 +53,11 @@ func (s *Store) ValidateClientSecret(ctx context.Context, clientID, clientSecret
 	// SECURITY: Always perform the same operations to prevent timing attacks
 	// that could reveal whether a client exists or not
 
-	// Pre-computed dummy hash for non-existent clients (bcrypt hash of "test")
-	// This ensures we always perform a bcrypt comparison even if client doesn't exist
-	// Note: Using a constant dummy hash is intentional - the timing attack mitigation
-	// comes from always performing the bcrypt comparison, not from the hash value.
-	dummyHash := "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
-
 	client, err := s.GetClient(ctx, clientID)
 
 	// Determine which hash to use (real or dummy)
-	hashToCompare := dummyHash
+	// Use shared dummy hash constant for timing attack mitigation
+	hashToCompare := storage.DummyBcryptHash
 	isPublicClient := false
 
 	if err == nil {

@@ -168,22 +168,7 @@ func (s *Store) addTokenToUserClientSet(ctx context.Context, refreshToken, userI
 
 // GetRefreshTokenFamily retrieves family metadata for a refresh token
 func (s *Store) GetRefreshTokenFamily(ctx context.Context, refreshToken string) (*storage.RefreshTokenFamilyMetadata, error) {
-	metaKey := s.refreshTokenMetaKey(refreshToken)
-
-	data, err := s.client.Do(ctx, s.client.B().Get().Key(metaKey).Build()).ToString()
-	if err != nil {
-		if isNilError(err) {
-			return nil, storage.ErrRefreshTokenFamilyNotFound
-		}
-		return nil, fmt.Errorf("failed to get family metadata: %w", err)
-	}
-
-	var j refreshTokenFamilyJSON
-	if err := json.Unmarshal([]byte(data), &j); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal family metadata: %w", err)
-	}
-
-	return fromRefreshTokenFamilyJSON(&j), nil
+	return getAndUnmarshal(ctx, s, s.refreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
 }
 
 // RevokeRefreshTokenFamily revokes all tokens in a family (for reuse detection)

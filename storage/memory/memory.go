@@ -462,26 +462,7 @@ func (s *Store) SaveUserInfo(ctx context.Context, userID string, info *providers
 
 // GetUserInfo retrieves user information
 func (s *Store) GetUserInfo(ctx context.Context, userID string) (*providers.UserInfo, error) {
-	ctx, span := s.startStorageSpan(ctx, "get_user_info")
-	defer span.End()
-
-	startTime := time.Now()
-	var err error
-
-	defer func() {
-		s.recordStorageOperation(ctx, span, "get_user_info", err, startTime)
-	}()
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	info, ok := s.userInfo[userID]
-	if !ok {
-		err = fmt.Errorf("%w: %s", storage.ErrUserInfoNotFound, userID)
-		return nil, err
-	}
-
-	return info, nil
+	return lookupWithTracing(ctx, s, "get_user_info", s.userInfo, userID, storage.ErrUserInfoNotFound)
 }
 
 // ============================================================
@@ -729,7 +710,7 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(_ context.Context, refreshToken s
 	userID, ok := s.refreshTokens[refreshToken]
 	if !ok {
 		// Use typed error to allow callers to distinguish "not found" from transient errors
-		return "", nil, fmt.Errorf("%w: refresh token not found or already used", storage.ErrTokenNotFound)
+		return "", nil, fmt.Errorf("%w: "+storage.ErrMsgRefreshTokenNotFoundOrUsed, storage.ErrTokenNotFound)
 	}
 
 	// Check if expired with clock skew grace period
@@ -764,27 +745,7 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(_ context.Context, refreshToken s
 
 // GetClient retrieves a client by ID
 func (s *Store) GetClient(ctx context.Context, clientID string) (*storage.Client, error) {
-	// Start span and track metrics
-	ctx, span := s.startStorageSpan(ctx, "get_client")
-	defer span.End()
-
-	startTime := time.Now()
-	var err error
-
-	defer func() {
-		s.recordStorageOperation(ctx, span, "get_client", err, startTime)
-	}()
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	client, ok := s.clients[clientID]
-	if !ok {
-		err = fmt.Errorf("%w: %s", storage.ErrClientNotFound, clientID)
-		return nil, err
-	}
-
-	return client, nil
+	return lookupWithTracing(ctx, s, "get_client", s.clients, clientID, storage.ErrClientNotFound)
 }
 
 // ValidateClientSecret validates a client's secret using bcrypt
@@ -793,14 +754,11 @@ func (s *Store) ValidateClientSecret(ctx context.Context, clientID, clientSecret
 	// SECURITY: Always perform the same operations to prevent timing attacks
 	// that could reveal whether a client exists or not
 
-	// Pre-computed dummy hash for non-existent clients (bcrypt hash of "test")
-	// This ensures we always perform a bcrypt comparison even if client doesn't exist
-	dummyHash := "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
-
 	client, err := s.GetClient(ctx, clientID)
 
 	// Determine which hash to use (real or dummy)
-	hashToCompare := dummyHash
+	// Use shared dummy hash constant for timing attack mitigation
+	hashToCompare := storage.DummyBcryptHash
 	isPublicClient := false
 
 	if err == nil {
@@ -854,10 +812,10 @@ func (s *Store) ListClients(_ context.Context) ([]*storage.Client, error) {
 // Stores by both client state (StateID) and provider state (ProviderState) for dual lookup
 func (s *Store) SaveAuthorizationState(_ context.Context, state *storage.AuthorizationState) error {
 	if state == nil || state.StateID == "" {
-		return fmt.Errorf("invalid authorization state")
+		return fmt.Errorf(storage.ErrMsgInvalidAuthorizationState)
 	}
 	if state.ProviderState == "" {
-		return fmt.Errorf("provider state is required")
+		return fmt.Errorf(storage.ErrMsgProviderStateRequired)
 	}
 
 	s.mu.Lock()
@@ -1406,4 +1364,38 @@ func (s *Store) recordStorageOperation(ctx context.Context, span trace.Span, ope
 
 	// Record operation with count and duration
 	s.instrumentation.Metrics().RecordStorageOperation(ctx, operation, result, durationMs)
+}
+
+// lookupWithTracing is a generic helper for read-only map lookups with tracing and metrics.
+// It encapsulates the common pattern of starting a span, deferring metrics recording,
+// acquiring a read lock, and performing a map lookup.
+func lookupWithTracing[K comparable, V any](
+	ctx context.Context,
+	s *Store,
+	operation string,
+	m map[K]V,
+	key K,
+	notFoundErr error,
+) (V, error) {
+	ctx, span := s.startStorageSpan(ctx, operation)
+	defer span.End()
+
+	startTime := time.Now()
+	var err error
+	var zero V
+
+	defer func() {
+		s.recordStorageOperation(ctx, span, operation, err, startTime)
+	}()
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	value, ok := m[key]
+	if !ok {
+		err = fmt.Errorf("%w: %s", notFoundErr, fmt.Sprint(key))
+		return zero, err
+	}
+
+	return value, nil
 }
