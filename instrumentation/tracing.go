@@ -43,13 +43,9 @@ const (
 	AttrError            = "oauth.error"             // Error code
 	AttrErrorDescription = "oauth.error_description" // Error description
 
-	// RESERVED - DO NOT USE: These constants exist only to prevent accidental use.
-	// The underscore prefix indicates these are internal/reserved and should not be used.
-	// NEVER set these attributes to actual credential values in traces or logs.
-	// Instead, use boolean flags like "token_present" or "code_validated".
-	_reservedAuthorizationCode = "oauth.authorization_code" //nolint:unused // RESERVED - use "code_present" or "code_length" instead
-	_reservedAccessToken       = "oauth.access_token"       //nolint:unused,gosec // RESERVED - use "token_type" or "token_present" instead
-	_reservedRefreshToken      = "oauth.refresh_token"      //nolint:unused,gosec // RESERVED - use "refresh_present" or "refresh_rotated" instead
+	// SECURITY WARNING: NEVER log actual credential values (authorization codes, access tokens,
+	// refresh tokens) in traces or logs. Use only metadata like "token_present", "code_validated",
+	// "token_type", etc. Logging credentials creates critical security vulnerabilities.
 
 	// Storage attributes
 	AttrStorageOperation = "storage.operation"

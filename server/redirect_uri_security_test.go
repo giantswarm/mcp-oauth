@@ -45,7 +45,7 @@ func defaultTestSecurityConfig() testSecurityConfig {
 func newTestServerWithSecurityConfig(cfg testSecurityConfig) *Server {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	store := memory.New()
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	// Create mock DNS resolver that returns public IPs by default
 	// This prevents tests from depending on real DNS resolution
@@ -1077,7 +1077,7 @@ func TestRedirectURISecurityMetrics(t *testing.T) {
 	t.Run("Metrics work with instrumentation enabled", func(t *testing.T) {
 		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 		store := memory.New()
-		provider := mock.NewMockProvider()
+		provider := mock.NewProvider()
 
 		// Create instrumentation
 		inst, err := instrumentation.New(instrumentation.Config{

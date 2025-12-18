@@ -435,7 +435,7 @@ func (i *Instrumentation) RegisterStorageSizeCallbacks(
 
 	// Register callbacks for each gauge
 	_, err := meter.RegisterCallback(
-		func(ctx context.Context, observer metric.Observer) error {
+		func(_ context.Context, observer metric.Observer) error {
 			if tokensCount != nil {
 				observer.ObserveInt64(i.metrics.StorageTokensCount, tokensCount())
 			}

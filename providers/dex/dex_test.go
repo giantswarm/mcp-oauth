@@ -60,7 +60,7 @@ func setupMockDexServer(t *testing.T, options ...func(*mockDexConfig)) *httptest
 	mux := http.NewServeMux()
 
 	// Discovery endpoint
-	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(cfg.discoveryDoc); err != nil {
 			t.Fatalf("Failed to encode discovery document: %v", err)
@@ -68,7 +68,7 @@ func setupMockDexServer(t *testing.T, options ...func(*mockDexConfig)) *httptest
 	})
 
 	// UserInfo endpoint
-	mux.HandleFunc("/userinfo", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/userinfo", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(cfg.userInfo); err != nil {
 			t.Fatalf("Failed to encode userinfo: %v", err)
@@ -76,7 +76,7 @@ func setupMockDexServer(t *testing.T, options ...func(*mockDexConfig)) *httptest
 	})
 
 	// Token endpoint (for refresh)
-	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(cfg.tokenResponse); err != nil {
 			t.Fatalf("Failed to encode token response: %v", err)
@@ -84,7 +84,7 @@ func setupMockDexServer(t *testing.T, options ...func(*mockDexConfig)) *httptest
 	})
 
 	// Revocation endpoint
-	mux.HandleFunc("/revoke", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/revoke", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
@@ -152,7 +152,6 @@ func TestNewProvider(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(testConfig(server))
-
 	if err != nil {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
@@ -256,7 +255,6 @@ func TestDefaultScopes(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(testConfig(server))
-
 	if err != nil {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
@@ -293,7 +291,6 @@ func TestDefaultScopes_DeepCopy(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(testConfig(server))
-
 	if err != nil {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
@@ -318,7 +315,6 @@ func TestAuthorizationURL_ConnectorID(t *testing.T) {
 	provider, err := NewProvider(testConfig(server, func(cfg *Config) {
 		cfg.ConnectorID = "github"
 	}))
-
 	if err != nil {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
@@ -336,7 +332,6 @@ func TestAuthorizationURL_WithoutConnectorID(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(testConfig(server))
-
 	if err != nil {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
@@ -354,7 +349,6 @@ func TestAuthorizationURL_PKCE(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(testConfig(server))
-
 	if err != nil {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
@@ -375,7 +369,6 @@ func TestAuthorizationURL_CustomScopes(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(testConfig(server))
-
 	if err != nil {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
@@ -394,7 +387,6 @@ func TestExchangeCode(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(testConfig(server))
-
 	if err != nil {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
@@ -416,7 +408,6 @@ func TestValidateToken(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(testConfig(server))
-
 	if err != nil {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
@@ -462,7 +453,6 @@ func TestValidateToken_ExcessiveGroups(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(testConfig(server))
-
 	if err != nil {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
@@ -484,7 +474,6 @@ func TestRefreshToken(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(testConfig(server))
-
 	if err != nil {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
@@ -506,7 +495,6 @@ func TestRevokeToken(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(testConfig(server))
-
 	if err != nil {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
@@ -544,7 +532,6 @@ func TestRevokeToken_NoEndpoint(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(testConfig(server))
-
 	if err != nil {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
@@ -564,7 +551,6 @@ func TestHealthCheck(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(testConfig(server))
-
 	if err != nil {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
@@ -609,7 +595,6 @@ func TestCustomScopes(t *testing.T) {
 	provider, err := NewProvider(testConfig(server, func(cfg *Config) {
 		cfg.Scopes = customScopes
 	}))
-
 	if err != nil {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
@@ -635,7 +620,6 @@ func TestCustomTimeout(t *testing.T) {
 	provider, err := NewProvider(testConfig(server, func(cfg *Config) {
 		cfg.RequestTimeout = customTimeout
 	}))
-
 	if err != nil {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
@@ -653,7 +637,6 @@ func TestEnsureContextTimeout(t *testing.T) {
 	provider, err := NewProvider(testConfig(server, func(cfg *Config) {
 		cfg.RequestTimeout = 10 * time.Second
 	}))
-
 	if err != nil {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
@@ -681,7 +664,7 @@ func TestEnsureContextTimeout(t *testing.T) {
 
 // TestValidateToken_NoUserInfoEndpoint tests error handling when userinfo endpoint is missing
 func TestValidateToken_NoUserInfoEndpoint(t *testing.T) {
-	server := setupMockDexServer(t, func(cfg *mockDexConfig) {
+	server := setupMockDexServer(t, func(_ *mockDexConfig) {
 		// We need to set this after server creation, but the discovery doc is set
 		// in setupMockDexServer after the server is created. We need to modify approach.
 	})

@@ -60,8 +60,8 @@ func (e *Encryptor) Encrypt(plaintext string) (string, error) {
 
 	// Prepend nonce to ciphertext for storage
 	// Format: [nonce][ciphertext]
-	result := append(nonce, ciphertext...)
-	return base64.StdEncoding.EncodeToString(result), nil
+	nonce = append(nonce, ciphertext...)
+	return base64.StdEncoding.EncodeToString(nonce), nil
 }
 
 // Decrypt decrypts base64-encoded ciphertext using AES-256-GCM.

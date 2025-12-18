@@ -285,7 +285,7 @@ func TestClientRegistrationRateLimiter_ConcurrentAccess(t *testing.T) {
 
 	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
-		go func(goroutineID int) {
+		go func(_ int) {
 			defer wg.Done()
 			ip := testIP
 			for j := 0; j < numRequestsPerGoroutine; j++ {
@@ -307,6 +307,7 @@ func TestClientRegistrationRateLimiter_ConcurrentAccess(t *testing.T) {
 }
 
 func TestClientRegistrationRateLimiter_Stop(t *testing.T) {
+	_ = t // Test verifies Stop() doesn't panic
 	logger := slog.Default()
 	rl := NewClientRegistrationRateLimiter(logger)
 

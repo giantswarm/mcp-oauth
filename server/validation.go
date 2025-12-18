@@ -60,6 +60,7 @@ var (
 	}
 
 	// DangerousSchemes is an alias for backward compatibility.
+	//
 	// Deprecated: Use DefaultBlockedRedirectSchemes instead.
 	DangerousSchemes = DefaultBlockedRedirectSchemes
 

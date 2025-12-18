@@ -194,14 +194,15 @@ func main() {
 	)
 
 	// Start server (use TLS in production)
-	if tlsCert := os.Getenv("TLS_CERT_FILE"); tlsCert != "" {
+	tlsCert := os.Getenv("TLS_CERT_FILE")
+	if tlsCert != "" {
 		tlsKey := getEnvOrFail("TLS_KEY_FILE")
 		logger.Info("Starting HTTPS server", "cert", tlsCert)
 		log.Fatal(httpServer.ListenAndServeTLS(tlsCert, tlsKey))
-	} else {
-		logger.Warn("Starting HTTP server - use HTTPS in production!")
-		log.Fatal(httpServer.ListenAndServe())
 	}
+
+	logger.Warn("Starting HTTP server - use HTTPS in production!")
+	log.Fatal(httpServer.ListenAndServe())
 }
 
 func setupRoutes(handler *oauth.Handler, logger *slog.Logger) *http.ServeMux {
@@ -310,20 +311,20 @@ func mcpHandler(logger *slog.Logger) http.Handler {
 	})
 }
 
-func healthHandler(w http.ResponseWriter, r *http.Request) {
+func healthHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
-func readinessHandler(w http.ResponseWriter, r *http.Request) {
+func readinessHandler(w http.ResponseWriter, _ *http.Request) {
 	// Add actual readiness checks here (database, external services, etc.)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"ready"}`))
 }
 
-func metricsHandler(w http.ResponseWriter, r *http.Request) {
+func metricsHandler(w http.ResponseWriter, _ *http.Request) {
 	// Implement metrics export (Prometheus, etc.)
 	w.Header().Set("Content-Type", "text/plain")
 	w.Write([]byte("# HELP oauth_requests_total Total OAuth requests\n"))

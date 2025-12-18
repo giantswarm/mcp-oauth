@@ -12,7 +12,7 @@ import (
 
 // testServerSetup holds common test dependencies
 type testServerSetup struct {
-	provider *mock.MockProvider
+	provider *mock.Provider
 	store    *memory.Store
 	logger   *slog.Logger
 	logBuf   *bytes.Buffer
@@ -21,7 +21,7 @@ type testServerSetup struct {
 // newTestServerSetup creates a test server setup with optional custom logger
 func newTestServerSetup(customLogger bool) *testServerSetup {
 	setup := &testServerSetup{
-		provider: mock.NewMockProvider(),
+		provider: mock.NewProvider(),
 		store:    memory.New(),
 	}
 
@@ -552,10 +552,8 @@ func TestValidateStateParameter(t *testing.T) {
 				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("validateStateParameter() error = %v, want error containing %q", err, tt.errMsg)
 				}
-			} else {
-				if err != nil {
-					t.Errorf("validateStateParameter() unexpected error = %v", err)
-				}
+			} else if err != nil {
+				t.Errorf("validateStateParameter() unexpected error = %v", err)
 			}
 		})
 	}
@@ -768,10 +766,8 @@ func TestValidateClientScopes(t *testing.T) {
 				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("validateClientScopes() error = %v, want error containing %q", err, tt.errMsg)
 				}
-			} else {
-				if err != nil {
-					t.Errorf("validateClientScopes() unexpected error = %v", err)
-				}
+			} else if err != nil {
+				t.Errorf("validateClientScopes() unexpected error = %v", err)
 			}
 		})
 	}

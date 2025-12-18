@@ -1,3 +1,7 @@
+// Package main demonstrates OAuth setup with Prometheus metrics.
+//
+// This example shows how to expose OpenTelemetry metrics in Prometheus format
+// for monitoring OAuth operations.
 package main
 
 import (
@@ -113,13 +117,13 @@ func main() {
 	logger.Info("Prometheus metrics endpoint enabled", "url", "http://localhost:8080/metrics")
 
 	// Health check endpoint
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"status":"healthy"}`)
 	})
 
 	// Home page with links
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		fmt.Fprintf(w, `
 <!DOCTYPE html>

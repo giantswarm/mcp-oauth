@@ -211,7 +211,6 @@ func (s *Store) AtomicCheckAndMarkAuthCodeUsed(ctx context.Context, code string)
 			Arg(fmt.Sprintf("%d", time.Now().Unix())).
 			Build(),
 	).ToString()
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute atomic code check: %w", err)
 	}

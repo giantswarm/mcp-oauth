@@ -16,7 +16,7 @@ func TestNew(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &Config{
 		Issuer: "https://auth.example.com",
@@ -44,7 +44,7 @@ func TestNew_WithLogger(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 	logger := slog.Default()
 
 	config := &Config{
@@ -65,7 +65,7 @@ func TestNew_NilConfig(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	srv, err := New(provider, store, store, store, nil, nil)
 	if err != nil {
@@ -91,7 +91,7 @@ func TestNew_MissingTokenStore(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	_, err := New(provider, nil, store, store, &Config{}, nil)
 	if err == nil {
@@ -103,7 +103,7 @@ func TestNew_MissingClientStore(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	_, err := New(provider, store, nil, store, &Config{}, nil)
 	if err == nil {
@@ -115,7 +115,7 @@ func TestNew_MissingFlowStore(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	_, err := New(provider, store, store, nil, &Config{}, nil)
 	if err == nil {
@@ -127,7 +127,7 @@ func TestServer_SetEncryptor(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	srv, err := New(provider, store, store, store, &Config{Issuer: "https://test.example.com"}, nil)
 	if err != nil {
@@ -155,7 +155,7 @@ func TestServer_SetAuditor(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	srv, err := New(provider, store, store, store, &Config{Issuer: "https://test.example.com"}, nil)
 	if err != nil {
@@ -174,7 +174,7 @@ func TestServer_SetRateLimiter(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	srv, err := New(provider, store, store, store, &Config{Issuer: "https://test.example.com"}, nil)
 	if err != nil {
@@ -195,7 +195,7 @@ func TestServer_SetUserRateLimiter(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	srv, err := New(provider, store, store, store, &Config{Issuer: "https://test.example.com"}, nil)
 	if err != nil {
@@ -216,7 +216,7 @@ func TestServer_SetSecurityEventRateLimiter(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	srv, err := New(provider, store, store, store, &Config{Issuer: "https://test.example.com"}, nil)
 	if err != nil {
@@ -239,7 +239,7 @@ func TestServer_ProviderRevocationConfigDefaults(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	// Create server with empty config (should apply defaults)
 	config := &Config{
@@ -276,7 +276,7 @@ func TestServer_ProviderRevocationConfigCustomValues(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	// Create server with custom config values
 	config := &Config{
@@ -316,7 +316,7 @@ func TestServer_RevokedFamilyRetentionPropagation(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &Config{
 		Issuer:                     "https://auth.example.com",
@@ -443,7 +443,7 @@ func BenchmarkGenerateRandomToken(b *testing.B) {
 func TestServer_Shutdown(t *testing.T) {
 	// Create a test server with all components
 	store := memory.New()
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &Config{
 		Issuer: "https://auth.example.com",
@@ -485,7 +485,7 @@ func TestServer_Shutdown(t *testing.T) {
 func TestServer_Shutdown_WithoutRateLimiters(t *testing.T) {
 	// Test shutdown with no rate limiters configured
 	store := memory.New()
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &Config{
 		Issuer: "https://auth.example.com",
@@ -509,7 +509,7 @@ func TestServer_Shutdown_WithoutRateLimiters(t *testing.T) {
 func TestServer_Shutdown_ContextCancellation(t *testing.T) {
 	// Test shutdown behavior when context is cancelled
 	store := memory.New()
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &Config{
 		Issuer: "https://auth.example.com",
@@ -536,7 +536,7 @@ func TestServer_Shutdown_ContextCancellation(t *testing.T) {
 func TestServer_ShutdownWithTimeout(t *testing.T) {
 	// Create a test server
 	store := memory.New()
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &Config{
 		Issuer: "https://auth.example.com",
@@ -567,7 +567,7 @@ func TestServer_ShutdownWithTimeout(t *testing.T) {
 func TestServer_ShutdownWithTimeout_ShortTimeout(t *testing.T) {
 	// Test with a very short timeout to ensure timeout handling works
 	store := memory.New()
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &Config{
 		Issuer: "https://auth.example.com",

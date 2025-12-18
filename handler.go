@@ -1071,8 +1071,8 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 
 	// Add attributes to span
 	instrumentation.SetSpanAttributes(span,
-		attribute.String("oauth.client_id", clientID),
-		attribute.String("oauth.pkce_method", codeChallengeMethod),
+		attribute.String(instrumentation.AttrClientID, clientID),
+		attribute.String(instrumentation.AttrPKCEMethod, codeChallengeMethod),
 	)
 
 	// Start authorization flow with client state (server also validates for defense in depth)
@@ -1165,7 +1165,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Record successful callback
 	h.recordCallbackProcessed(authCode.ClientID, true)
-	instrumentation.SetSpanAttributes(span, attribute.String("oauth.client_id", authCode.ClientID))
+	instrumentation.SetSpanAttributes(span, attribute.String(instrumentation.AttrClientID, authCode.ClientID))
 	instrumentation.SetSpanSuccess(span)
 
 	// CRITICAL SECURITY: Redirect back to client with their original state parameter
@@ -1266,8 +1266,8 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 
 	// Add span attributes
 	instrumentation.SetSpanAttributes(span,
-		attribute.String("oauth.client_id", client.ClientID),
-		attribute.String("oauth.client_type", client.ClientType),
+		attribute.String(instrumentation.AttrClientID, client.ClientID),
+		attribute.String(instrumentation.AttrClientType, client.ClientType),
 	)
 
 	// Exchange authorization code for tokens
@@ -1340,7 +1340,7 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	instrumentation.SetSpanAttributes(span, attribute.String("oauth.client_id", clientID))
+	instrumentation.SetSpanAttributes(span, attribute.String(instrumentation.AttrClientID, clientID))
 
 	// Refresh token
 	tokenResponse, err := h.server.RefreshAccessToken(ctx, refreshToken, clientID)
@@ -1425,7 +1425,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	instrumentation.SetSpanAttributes(span, attribute.String("oauth.client_id", clientID))
+	instrumentation.SetSpanAttributes(span, attribute.String(instrumentation.AttrClientID, clientID))
 
 	// Revoke token
 	if err := h.server.RevokeToken(ctx, token, clientID, clientIP); err != nil {
@@ -1687,8 +1687,8 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 
 	h.recordHTTPMetrics("register", http.MethodPost, http.StatusCreated, startTime)
 	instrumentation.SetSpanAttributes(span,
-		attribute.String("oauth.client_id", client.ClientID),
-		attribute.String("oauth.client_type", client.ClientType),
+		attribute.String(instrumentation.AttrClientID, client.ClientID),
+		attribute.String(instrumentation.AttrClientType, client.ClientType),
 	)
 	instrumentation.SetSpanSuccess(span)
 
@@ -1924,7 +1924,7 @@ func (h *Handler) writeInsufficientScopeError(w http.ResponseWriter, requiredSco
 //	       scope="files:read user:profile",
 //	       error="invalid_token",
 //	       error_description="Token has expired"
-func (h *Handler) formatWWWAuthenticate(scope, error, errorDesc string) string {
+func (h *Handler) formatWWWAuthenticate(scope, errCode, errorDesc string) string {
 	// Build the challenge parameters (excluding the Bearer scheme)
 	var params []string
 
@@ -1947,8 +1947,8 @@ func (h *Handler) formatWWWAuthenticate(scope, error, errorDesc string) string {
 	}
 
 	// Optional: Include error code if provided
-	if error != "" {
-		params = append(params, fmt.Sprintf(`error="%s"`, error))
+	if errCode != "" {
+		params = append(params, fmt.Sprintf(`error="%s"`, errCode))
 	}
 
 	// Optional: Include error description if provided

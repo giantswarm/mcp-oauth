@@ -1,6 +1,7 @@
 package security
 
 import (
+	"fmt"
 	"log/slog"
 	"testing"
 	"time"
@@ -176,6 +177,7 @@ func TestRateLimiter_Cleanup_KeepsActive(t *testing.T) {
 }
 
 func TestRateLimiter_ConcurrentAccess(t *testing.T) {
+	_ = t // Test verifies no race conditions when run with -race flag
 	rl := NewRateLimiter(100, 100, slog.Default())
 	defer rl.Stop()
 
@@ -185,7 +187,7 @@ func TestRateLimiter_ConcurrentAccess(t *testing.T) {
 	// Concurrent requests from different identifiers
 	for i := 0; i < numGoroutines; i++ {
 		go func(id int) {
-			identifier := "identifier-" + string(rune('0'+id))
+			identifier := fmt.Sprintf("identifier-%d", id)
 			for j := 0; j < 10; j++ {
 				rl.Allow(identifier)
 			}
@@ -202,6 +204,7 @@ func TestRateLimiter_ConcurrentAccess(t *testing.T) {
 }
 
 func TestRateLimiter_Stop(t *testing.T) {
+	_ = t // Test verifies Stop() doesn't panic
 	rl := NewRateLimiter(10, 20, slog.Default())
 
 	// Stop should not panic
@@ -248,6 +251,7 @@ func TestRateLimiter_Stop_Concurrent(t *testing.T) {
 
 // Test Stop() is safe even while rate limiter is actively processing requests
 func TestRateLimiter_Stop_WhileActive(t *testing.T) {
+	_ = t // Test verifies no race conditions when run with -race flag
 	rl := NewRateLimiter(100, 100, slog.Default())
 
 	const numWorkers = 50
@@ -257,7 +261,7 @@ func TestRateLimiter_Stop_WhileActive(t *testing.T) {
 	// Workers continuously making requests
 	for i := 0; i < numWorkers; i++ {
 		go func(id int) {
-			identifier := "worker-" + string(rune('0'+id))
+			identifier := fmt.Sprintf("worker-%d", id)
 			for {
 				select {
 				case <-stop:
@@ -356,16 +360,16 @@ func TestRateLimiter_LRUEviction(t *testing.T) {
 
 	// Verify id-1 was evicted
 	rl.mu.RLock()
-	_, hasId1 := rl.limiters["id-1"]
-	_, hasId2 := rl.limiters["id-2"]
-	_, hasId3 := rl.limiters["id-3"]
-	_, hasId4 := rl.limiters["id-4"]
+	_, hasID1 := rl.limiters["id-1"]
+	_, hasID2 := rl.limiters["id-2"]
+	_, hasID3 := rl.limiters["id-3"]
+	_, hasID4 := rl.limiters["id-4"]
 	rl.mu.RUnlock()
 
-	if hasId1 {
+	if hasID1 {
 		t.Error("id-1 should have been evicted")
 	}
-	if !hasId2 || !hasId3 || !hasId4 {
+	if !hasID2 || !hasID3 || !hasID4 {
 		t.Error("id-2, id-3, and id-4 should be present")
 	}
 }
@@ -389,19 +393,19 @@ func TestRateLimiter_LRUAccessUpdatesOrder(t *testing.T) {
 
 	// Verify id-2 was evicted, not id-1
 	rl.mu.RLock()
-	_, hasId1 := rl.limiters["id-1"]
-	_, hasId2 := rl.limiters["id-2"]
-	_, hasId3 := rl.limiters["id-3"]
-	_, hasId4 := rl.limiters["id-4"]
+	_, hasID1 := rl.limiters["id-1"]
+	_, hasID2 := rl.limiters["id-2"]
+	_, hasID3 := rl.limiters["id-3"]
+	_, hasID4 := rl.limiters["id-4"]
 	rl.mu.RUnlock()
 
-	if !hasId1 {
+	if !hasID1 {
 		t.Error("id-1 should be present (was accessed recently)")
 	}
-	if hasId2 {
+	if hasID2 {
 		t.Error("id-2 should have been evicted (least recently used)")
 	}
-	if !hasId3 || !hasId4 {
+	if !hasID3 || !hasID4 {
 		t.Error("id-3 and id-4 should be present")
 	}
 }
@@ -494,9 +498,9 @@ func TestRateLimiter_CleanupWithLRU(t *testing.T) {
 	rl.mu.RLock()
 	currentCount := len(rl.limiters)
 	lruCount := rl.lruList.Len()
-	_, hasId1 := rl.limiters["id-1"]
-	_, hasId2 := rl.limiters["id-2"]
-	_, hasId3 := rl.limiters["id-3"]
+	_, hasID1 := rl.limiters["id-1"]
+	_, hasID2 := rl.limiters["id-2"]
+	_, hasID3 := rl.limiters["id-3"]
 	rl.mu.RUnlock()
 
 	if currentCount != 1 {
@@ -507,11 +511,11 @@ func TestRateLimiter_CleanupWithLRU(t *testing.T) {
 		t.Errorf("LRU list count = %d, want 1", lruCount)
 	}
 
-	if hasId1 || hasId2 {
+	if hasID1 || hasID2 {
 		t.Error("id-1 and id-2 should be cleaned up")
 	}
 
-	if !hasId3 {
+	if !hasID3 {
 		t.Error("id-3 should be present")
 	}
 

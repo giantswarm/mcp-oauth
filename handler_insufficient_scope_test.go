@@ -9,11 +9,12 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/oauth2"
+
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/server"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
-	"golang.org/x/oauth2"
 )
 
 const (
@@ -61,7 +62,7 @@ func TestWriteInsufficientScopeError(t *testing.T) {
 			// Create test server and handler
 			store := memory.New()
 			defer store.Stop()
-			mockProvider := mock.NewMockProvider()
+			mockProvider := mock.NewProvider()
 
 			srv, err := server.New(
 				mockProvider,
@@ -184,7 +185,7 @@ func TestGetRequiredScopes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := memory.New()
 			defer store.Stop()
-			mockProvider := mock.NewMockProvider()
+			mockProvider := mock.NewProvider()
 
 			srv, err := server.New(
 				mockProvider,
@@ -328,7 +329,7 @@ func TestValidateTokenWithScopeValidation(t *testing.T) {
 			// Create test store and server
 			store := memory.New()
 			defer store.Stop()
-			mockProvider := mock.NewMockProvider()
+			mockProvider := mock.NewProvider()
 
 			// Configure endpoint scope requirements
 			endpointScopes := map[string][]string{}
@@ -390,7 +391,7 @@ func TestValidateTokenWithScopeValidation(t *testing.T) {
 			w := httptest.NewRecorder()
 
 			// Create a test handler that the middleware wraps
-			nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			nextHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write([]byte("success"))
 			})
@@ -430,7 +431,7 @@ func TestValidateTokenWithoutScopeMetadata(t *testing.T) {
 	// Create test store and server
 	store := memory.New()
 	defer store.Stop()
-	mockProvider := mock.NewMockProvider()
+	mockProvider := mock.NewProvider()
 
 	// Configure endpoint to require scopes
 	srv, err := server.New(
@@ -481,7 +482,7 @@ func TestValidateTokenWithoutScopeMetadata(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	// Create next handler
-	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("success"))
 	})
@@ -608,7 +609,7 @@ func TestGetRequiredScopesPathNormalization(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := memory.New()
 			defer store.Stop()
-			mockProvider := mock.NewMockProvider()
+			mockProvider := mock.NewProvider()
 
 			srv, err := server.New(
 				mockProvider,
@@ -698,7 +699,7 @@ func TestGetRequiredScopesLongestPrefixMatch(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := memory.New()
 			defer store.Stop()
-			mockProvider := mock.NewMockProvider()
+			mockProvider := mock.NewProvider()
 
 			srv, err := server.New(
 				mockProvider,
@@ -736,7 +737,7 @@ func TestGetRequiredScopesLongestPrefixMatch(t *testing.T) {
 func TestValidateTokenScopesLongPathSanitization(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
-	mockProvider := mock.NewMockProvider()
+	mockProvider := mock.NewProvider()
 
 	// Configure endpoint to require scopes
 	srv, err := server.New(
@@ -794,7 +795,7 @@ func TestValidateTokenScopesLongPathSanitization(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	// Create next handler
-	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("success"))
 	})
@@ -929,7 +930,7 @@ func TestGetRequiredScopesMethodBased(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := memory.New()
 			defer store.Stop()
-			mockProvider := mock.NewMockProvider()
+			mockProvider := mock.NewProvider()
 
 			srv, err := server.New(
 				mockProvider,
@@ -993,7 +994,7 @@ func TestHideEndpointPathInErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := memory.New()
 			defer store.Stop()
-			mockProvider := mock.NewMockProvider()
+			mockProvider := mock.NewProvider()
 
 			srv, err := server.New(
 				mockProvider,
@@ -1045,7 +1046,7 @@ func TestHideEndpointPathInErrors(t *testing.T) {
 
 			w := httptest.NewRecorder()
 
-			nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			nextHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			})
 

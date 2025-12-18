@@ -1,3 +1,7 @@
+// Package main demonstrates Client ID Metadata Document (CIMD) verification.
+//
+// This example shows how to enable and use CIMD for verifying client metadata
+// via HTTPS discovery documents hosted on trusted domains.
 package main
 
 import (

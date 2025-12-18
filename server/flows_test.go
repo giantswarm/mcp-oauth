@@ -30,13 +30,13 @@ const (
 	testPKCEVerifierLength = 50
 )
 
-func setupFlowTestServer(t *testing.T) (*Server, *memory.Store, *mock.MockProvider) {
+func setupFlowTestServer(t *testing.T) (*Server, *memory.Store, *mock.Provider) {
 	t.Helper()
 
 	store := memory.New()
 	t.Cleanup(func() { store.Stop() })
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &Config{
 		Issuer:               "https://auth.example.com",
@@ -679,7 +679,7 @@ func TestServer_ExchangeAuthorizationCode_AllowPublicClientsWithoutPKCE(t *testi
 	store := memory.New()
 	defer store.Stop()
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	tests := []struct {
 		name                          string
@@ -927,7 +927,7 @@ func TestServer_ValidateToken(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Configure provider to return valid user info
-	provider.ValidateTokenFunc = func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+	provider.ValidateTokenFunc = func(_ context.Context, accessToken string) (*providers.UserInfo, error) {
 		if accessToken == "valid-token" {
 			return &providers.UserInfo{
 				ID:    "user-123",
@@ -987,7 +987,7 @@ func TestServer_ValidateToken(t *testing.T) {
 
 // setupValidTokenProvider returns a provider function that always validates tokens successfully
 func setupValidTokenProvider() func(context.Context, string) (*providers.UserInfo, error) {
-	return func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+	return func(_ context.Context, _ string) (*providers.UserInfo, error) {
 		return &providers.UserInfo{
 			ID:    "user-123",
 			Email: "test@example.com",
@@ -1139,7 +1139,7 @@ func TestServer_ValidateToken_ClockSkewScenarios(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Provider always returns valid user info (simulating provider with skewed clock)
-	provider.ValidateTokenFunc = func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+	provider.ValidateTokenFunc = func(_ context.Context, _ string) (*providers.UserInfo, error) {
 		return &providers.UserInfo{
 			ID:    "user-clock-skew",
 			Email: "clockskew@example.com",
@@ -1307,7 +1307,7 @@ func TestServer_ValidateToken_ProactiveRefresh(t *testing.T) {
 			var refreshCalledWith string
 
 			// Configure provider refresh function
-			provider.RefreshTokenFunc = func(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+			provider.RefreshTokenFunc = func(_ context.Context, refreshToken string) (*oauth2.Token, error) {
 				refreshCalled = true
 				refreshCalledWith = refreshToken
 				return &oauth2.Token{
@@ -1319,7 +1319,7 @@ func TestServer_ValidateToken_ProactiveRefresh(t *testing.T) {
 			}
 
 			// Provider always validates successfully
-			provider.ValidateTokenFunc = func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+			provider.ValidateTokenFunc = func(_ context.Context, _ string) (*providers.UserInfo, error) {
 				return &providers.UserInfo{
 					ID:    testUserID,
 					Email: testUserEmail,
@@ -1402,13 +1402,13 @@ func TestServer_ValidateToken_ProactiveRefresh_Failure(t *testing.T) {
 	srv.Config.TokenRefreshThreshold = 300 // 5 minutes
 
 	// Configure provider refresh to fail
-	provider.RefreshTokenFunc = func(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
 		return nil, fmt.Errorf("provider refresh failed: network error")
 	}
 
 	// Provider validation still succeeds (graceful fallback)
 	validationCalled := false
-	provider.ValidateTokenFunc = func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+	provider.ValidateTokenFunc = func(_ context.Context, _ string) (*providers.UserInfo, error) {
 		validationCalled = true
 		return &providers.UserInfo{
 			ID:    "user-fallback",
@@ -1434,7 +1434,6 @@ func TestServer_ValidateToken_ProactiveRefresh_Failure(t *testing.T) {
 
 	// Validate token - refresh should fail but validation should succeed (graceful fallback)
 	userInfo, err := srv.ValidateToken(context.Background(), accessToken)
-
 	// Should NOT error - graceful fallback to validation
 	if err != nil {
 		t.Errorf("ValidateToken() error = %v, want nil (should fallback to validation)", err)
@@ -1457,11 +1456,9 @@ func TestServer_ValidateToken_ProactiveRefresh_Failure(t *testing.T) {
 	savedToken, err := store.GetToken(ctx, accessToken)
 	if err != nil {
 		t.Errorf("Failed to get saved token: %v", err)
-	} else {
+	} else if !savedToken.Expiry.Equal(oldExpiry) {
 		// Token expiry should be unchanged (refresh failed)
-		if !savedToken.Expiry.Equal(oldExpiry) {
-			t.Errorf("Token expiry changed after failed refresh: got %v, want %v", savedToken.Expiry, oldExpiry)
-		}
+		t.Errorf("Token expiry changed after failed refresh: got %v, want %v", savedToken.Expiry, oldExpiry)
 	}
 }
 
@@ -1515,7 +1512,7 @@ func TestServer_ValidateToken_ProactiveRefresh_CustomThreshold(t *testing.T) {
 
 			// Track refresh calls
 			refreshCalled := false
-			provider.RefreshTokenFunc = func(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+			provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
 				refreshCalled = true
 				return &oauth2.Token{
 					AccessToken:  "new-token",
@@ -1526,7 +1523,7 @@ func TestServer_ValidateToken_ProactiveRefresh_CustomThreshold(t *testing.T) {
 			}
 
 			// Provider validates successfully
-			provider.ValidateTokenFunc = func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+			provider.ValidateTokenFunc = func(_ context.Context, _ string) (*providers.UserInfo, error) {
 				return &providers.UserInfo{
 					ID:    "user-custom-threshold",
 					Email: "custom@example.com",
@@ -1648,7 +1645,7 @@ func TestServer_RefreshTokenRotation(t *testing.T) {
 	}
 
 	// Configure mock provider to return a new token on refresh
-	provider.RefreshTokenFunc = func(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
 		return &oauth2.Token{
 			AccessToken:  "new-provider-access-token",
 			RefreshToken: "new-provider-refresh-token",
@@ -1785,7 +1782,7 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 	}
 
 	// Configure mock provider for refresh
-	provider.RefreshTokenFunc = func(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
 		return &oauth2.Token{
 			AccessToken:  "rotated-provider-access-token",
 			RefreshToken: "rotated-provider-refresh-token",
@@ -1978,7 +1975,7 @@ func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
 	refreshTokens := []string{token.RefreshToken}
 
 	// Configure mock provider
-	provider.RefreshTokenFunc = func(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
 		return &oauth2.Token{
 			AccessToken:  "provider-access-token",
 			RefreshToken: "provider-refresh-token",
@@ -2104,7 +2101,7 @@ func TestServer_ConcurrentRefreshTokenReuse(t *testing.T) {
 	firstRefreshToken := token.RefreshToken
 
 	// Configure mock provider
-	provider.RefreshTokenFunc = func(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
 		return &oauth2.Token{
 			AccessToken:  "new-provider-access-token",
 			RefreshToken: "new-provider-refresh-token",
@@ -2704,7 +2701,7 @@ func TestServer_RevokeAllTokensProviderFailure(t *testing.T) {
 
 	// Configure mock provider to fail revocation
 	revokeCallCount := 0
-	provider.RevokeTokenFunc = func(ctx context.Context, token string) error {
+	provider.RevokeTokenFunc = func(_ context.Context, _ string) error {
 		revokeCallCount++
 		return fmt.Errorf("provider revocation failed: network timeout")
 	}
@@ -2780,7 +2777,7 @@ func TestServer_RevokeAllTokensProviderTimeout(t *testing.T) {
 	clientID := "test_client_timeout"
 
 	// Configure mock provider to block (simulate slow provider)
-	provider.RevokeTokenFunc = func(ctx context.Context, token string) error {
+	provider.RevokeTokenFunc = func(ctx context.Context, _ string) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -2906,7 +2903,7 @@ func TestServer_ConcurrentReuseAndRevocation(t *testing.T) {
 	firstRefreshToken := token.RefreshToken
 
 	// Configure mock provider for refresh
-	provider.RefreshTokenFunc = func(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
 		return &oauth2.Token{
 			AccessToken:  "rotated-provider-access-token",
 			RefreshToken: "rotated-provider-refresh-token",
@@ -3021,7 +3018,7 @@ func TestServer_ProviderRevocationRetrySuccess(t *testing.T) {
 
 	// Configure provider to fail twice, then succeed
 	callCount := 0
-	provider.RevokeTokenFunc = func(ctx context.Context, token string) error {
+	provider.RevokeTokenFunc = func(_ context.Context, _ string) error {
 		callCount++
 		if callCount <= 2 {
 			return fmt.Errorf("transient network error")
@@ -3091,7 +3088,7 @@ func TestServer_ProviderRevocationFailureThreshold(t *testing.T) {
 
 	// Configure provider to fail 60% of the time (exceeds 50% threshold)
 	callCount := 0
-	provider.RevokeTokenFunc = func(ctx context.Context, token string) error {
+	provider.RevokeTokenFunc = func(_ context.Context, _ string) error {
 		callCount++
 		// Fail 3 out of 5 calls (60% failure rate)
 		if callCount <= 3 {
@@ -3150,7 +3147,7 @@ func TestServer_ProviderRevocationWithinThreshold(t *testing.T) {
 
 	// Configure provider to fail 40% of the time (within 50% threshold)
 	callCount := 0
-	provider.RevokeTokenFunc = func(ctx context.Context, token string) error {
+	provider.RevokeTokenFunc = func(_ context.Context, _ string) error {
 		callCount++
 		// Fail 2 out of 5 calls (40% failure rate - within threshold)
 		if callCount <= 2 {
@@ -3213,7 +3210,7 @@ func TestServer_ProviderRevocationExponentialBackoff(t *testing.T) {
 
 	// Track timing of attempts
 	attemptTimes := []time.Time{}
-	provider.RevokeTokenFunc = func(ctx context.Context, token string) error {
+	provider.RevokeTokenFunc = func(_ context.Context, _ string) error {
 		attemptTimes = append(attemptTimes, time.Now())
 		return fmt.Errorf("always fail") // Always fail to test all retries
 	}
@@ -3284,7 +3281,7 @@ func TestServer_ProviderRevocationContextCancellation(t *testing.T) {
 	clientID := "test_client_cancel"
 
 	attemptCount := 0
-	provider.RevokeTokenFunc = func(ctx context.Context, token string) error {
+	provider.RevokeTokenFunc = func(_ context.Context, _ string) error {
 		attemptCount++
 		// Always fail to force retries
 		return fmt.Errorf("transient error")
@@ -3362,7 +3359,7 @@ func TestServer_ProviderRevocationExactlyAtThreshold(t *testing.T) {
 
 	// Configure provider to fail exactly 50% (5 out of 10)
 	callCount := 0
-	provider.RevokeTokenFunc = func(ctx context.Context, token string) error {
+	provider.RevokeTokenFunc = func(_ context.Context, _ string) error {
 		callCount++
 		if callCount <= 5 {
 			return fmt.Errorf("provider revocation failed")
@@ -3571,7 +3568,7 @@ func TestServer_ProviderRevocationZeroTokens(t *testing.T) {
 	clientID := "test_client_zero"
 
 	callCount := 0
-	provider.RevokeTokenFunc = func(ctx context.Context, token string) error {
+	provider.RevokeTokenFunc = func(_ context.Context, _ string) error {
 		callCount++
 		return nil
 	}
@@ -3614,7 +3611,7 @@ func TestServer_ProviderRevocationSingleTokenFailure(t *testing.T) {
 	clientID := "test_client_single"
 
 	// Fail all attempts
-	provider.RevokeTokenFunc = func(ctx context.Context, token string) error {
+	provider.RevokeTokenFunc = func(_ context.Context, _ string) error {
 		return fmt.Errorf("provider revocation failed")
 	}
 
@@ -3810,7 +3807,7 @@ func TestServer_RefreshTokenReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 	firstRefreshToken := token.RefreshToken
 
 	// Configure mock provider
-	provider.RefreshTokenFunc = func(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
 		return &oauth2.Token{
 			AccessToken:  "new-access-token",
 			RefreshToken: "new-refresh-token",
@@ -3892,7 +3889,7 @@ func TestServer_ProviderRevocationDifferentErrorTypes(t *testing.T) {
 			clientID := "test_client_errors"
 
 			attemptCount := 0
-			provider.RevokeTokenFunc = func(ctx context.Context, token string) error {
+			provider.RevokeTokenFunc = func(_ context.Context, _ string) error {
 				if attemptCount < len(tt.errorSequence) {
 					err := tt.errorSequence[attemptCount]
 					attemptCount++
@@ -3948,7 +3945,7 @@ func TestServer_ConcurrentProviderRevocationCalls(t *testing.T) {
 	// Configure provider with artificial delay
 	var callMu sync.Mutex
 	callCount := 0
-	provider.RevokeTokenFunc = func(ctx context.Context, token string) error {
+	provider.RevokeTokenFunc = func(_ context.Context, _ string) error {
 		callMu.Lock()
 		callCount++
 		callMu.Unlock()
@@ -4165,14 +4162,14 @@ func TestExchangeAuthorizationCode_ClientScopeValidation(t *testing.T) {
 	}
 
 	// Setup provider responses by setting the mock functions
-	provider.ExchangeCodeFunc = func(ctx context.Context, code string, codeVerifier string) (*oauth2.Token, error) {
+	provider.ExchangeCodeFunc = func(_ context.Context, _ string, _ string) (*oauth2.Token, error) {
 		return &oauth2.Token{
 			AccessToken:  "mock-provider-token",
 			RefreshToken: "mock-refresh-token",
 			Expiry:       time.Now().Add(time.Hour),
 		}, nil
 	}
-	provider.ValidateTokenFunc = func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+	provider.ValidateTokenFunc = func(_ context.Context, _ string) (*providers.UserInfo, error) {
 		return &providers.UserInfo{
 			ID:    "test-user-123",
 			Email: "test@example.com",
@@ -4340,7 +4337,6 @@ func TestClientScopeValidation_UnrestrictedClient(t *testing.T) {
 				PKCEMethodS256,
 				validState,
 			)
-
 			if err != nil {
 				// Check if error is due to server's SupportedScopes, not client scopes
 				if strings.Contains(err.Error(), "unsupported scope") {
@@ -4370,13 +4366,13 @@ func TestServer_HandleProviderCallback_PKCEValidationFailure(t *testing.T) {
 	defer store.Stop()
 
 	// Create a mock provider that simulates PKCE validation failure
-	mockProvider := mock.NewMockProvider()
+	mockProvider := mock.NewProvider()
 
 	// Track the code verifier that was sent to the provider
 	var capturedVerifier string
 
 	// Mock provider will reject with "Missing code verifier" error (like Google does)
-	mockProvider.ExchangeCodeFunc = func(ctx context.Context, code string, codeVerifier string) (*oauth2.Token, error) {
+	mockProvider.ExchangeCodeFunc = func(_ context.Context, _ string, codeVerifier string) (*oauth2.Token, error) {
 		capturedVerifier = codeVerifier
 		// Simulate provider rejecting invalid/missing PKCE verifier
 		if codeVerifier == "" {
@@ -4668,9 +4664,9 @@ func TestResourceParameter_AudienceValidation(t *testing.T) {
 	ctx := context.Background()
 
 	// Setup server with resource identifier
-	mockProvider := mock.NewMockProvider()
+	mockProvider := mock.NewProvider()
 	// Configure mock to return tokens with valid expiry
-	mockProvider.ExchangeCodeFunc = func(ctx context.Context, code string, codeVerifier string) (*oauth2.Token, error) {
+	mockProvider.ExchangeCodeFunc = func(_ context.Context, code string, _ string) (*oauth2.Token, error) {
 		return &oauth2.Token{
 			AccessToken:  "mock-access-token-" + code,
 			TokenType:    "Bearer",
@@ -4678,7 +4674,7 @@ func TestResourceParameter_AudienceValidation(t *testing.T) {
 			Expiry:       time.Now().Add(1 * time.Hour), // Valid for 1 hour
 		}, nil
 	}
-	mockProvider.ValidateTokenFunc = func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+	mockProvider.ValidateTokenFunc = func(_ context.Context, _ string) (*providers.UserInfo, error) {
 		return &providers.UserInfo{
 			ID:    "user123",
 			Email: "user@example.com",
@@ -4919,9 +4915,9 @@ func TestResourceParameter_AudienceValidation(t *testing.T) {
 func TestResourceParameter_ConsistencyValidation(t *testing.T) {
 	ctx := context.Background()
 
-	mockProvider := mock.NewMockProvider()
+	mockProvider := mock.NewProvider()
 	// Configure mock to return tokens with valid expiry
-	mockProvider.ExchangeCodeFunc = func(ctx context.Context, code string, codeVerifier string) (*oauth2.Token, error) {
+	mockProvider.ExchangeCodeFunc = func(_ context.Context, code string, _ string) (*oauth2.Token, error) {
 		return &oauth2.Token{
 			AccessToken:  "mock-access-token-" + code,
 			TokenType:    "Bearer",
@@ -4929,7 +4925,7 @@ func TestResourceParameter_ConsistencyValidation(t *testing.T) {
 			Expiry:       time.Now().Add(1 * time.Hour),
 		}, nil
 	}
-	mockProvider.ValidateTokenFunc = func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+	mockProvider.ValidateTokenFunc = func(_ context.Context, _ string) (*providers.UserInfo, error) {
 		return &providers.UserInfo{
 			ID:    "user456",
 			Email: "user@example.com",
@@ -5031,7 +5027,7 @@ func TestResourceParameter_ConsistencyValidation(t *testing.T) {
 func TestResourceParameter_InvalidFormat(t *testing.T) {
 	ctx := context.Background()
 
-	mockProvider := mock.NewMockProvider()
+	mockProvider := mock.NewProvider()
 	store := memory.New()
 	defer store.Stop()
 
@@ -5163,8 +5159,8 @@ func TestResourceParameter_ExplicitIdentifier(t *testing.T) {
 func TestResourceParameter_RateLimiting(t *testing.T) {
 	ctx := context.Background()
 
-	mockProvider := mock.NewMockProvider()
-	mockProvider.ExchangeCodeFunc = func(ctx context.Context, code string, codeVerifier string) (*oauth2.Token, error) {
+	mockProvider := mock.NewProvider()
+	mockProvider.ExchangeCodeFunc = func(_ context.Context, code string, _ string) (*oauth2.Token, error) {
 		return &oauth2.Token{
 			AccessToken:  "mock-access-token-" + code,
 			TokenType:    "Bearer",
@@ -5172,7 +5168,7 @@ func TestResourceParameter_RateLimiting(t *testing.T) {
 			Expiry:       time.Now().Add(1 * time.Hour),
 		}, nil
 	}
-	mockProvider.ValidateTokenFunc = func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+	mockProvider.ValidateTokenFunc = func(_ context.Context, _ string) (*providers.UserInfo, error) {
 		return &providers.UserInfo{
 			ID:    "user789",
 			Email: "user@example.com",
@@ -5268,13 +5264,13 @@ func TestResourceParameter_RateLimiting(t *testing.T) {
 }
 
 // setupFlowTestServerWithNoStateParameter creates a test server with AllowNoStateParameter=true
-func setupFlowTestServerWithNoStateParameter(t *testing.T) (*Server, *memory.Store, *mock.MockProvider) {
+func setupFlowTestServerWithNoStateParameter(t *testing.T) (*Server, *memory.Store, *mock.Provider) {
 	t.Helper()
 
 	store := memory.New()
 	t.Cleanup(func() { store.Stop() })
 
-	provider := mock.NewMockProvider()
+	provider := mock.NewProvider()
 
 	config := &Config{
 		Issuer:                "https://auth.example.com",

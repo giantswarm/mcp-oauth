@@ -11,8 +11,8 @@ import (
 	"github.com/giantswarm/mcp-oauth/providers"
 )
 
-// MockProvider is a mock implementation of the Provider interface for testing
-type MockProvider struct {
+// Provider is a mock implementation of the Provider interface for testing
+type Provider struct {
 	// NameFunc is called when Name() is invoked
 	NameFunc func() string
 
@@ -44,9 +44,21 @@ type MockProvider struct {
 	mu sync.RWMutex
 }
 
-// NewMockProvider creates a new mock provider with default implementations
-func NewMockProvider() *MockProvider {
-	return &MockProvider{
+// MockProvider is an alias for Provider for backward compatibility.
+//
+// Deprecated: Use Provider instead.
+type MockProvider = Provider
+
+// NewMockProvider creates a new mock provider with default implementations.
+//
+// Deprecated: Use NewProvider instead.
+func NewMockProvider() *Provider {
+	return NewProvider()
+}
+
+// NewProvider creates a new mock provider with default implementations
+func NewProvider() *Provider {
+	return &Provider{
 		CallCounts: make(map[string]int),
 		NameFunc: func() string {
 			return "mock"
@@ -54,17 +66,17 @@ func NewMockProvider() *MockProvider {
 		DefaultScopesFunc: func() []string {
 			return []string{"openid", "email", "profile"}
 		},
-		AuthorizationURLFunc: func(state string, codeChallenge string, codeChallengeMethod string, scopes []string) string {
+		AuthorizationURLFunc: func(state, codeChallenge, codeChallengeMethod string, _ []string) string {
 			return fmt.Sprintf("https://mock.example.com/authorize?state=%s&code_challenge=%s&code_challenge_method=%s", state, codeChallenge, codeChallengeMethod)
 		},
-		ExchangeCodeFunc: func(ctx context.Context, code string, codeVerifier string) (*oauth2.Token, error) {
+		ExchangeCodeFunc: func(_ context.Context, _ string, _ string) (*oauth2.Token, error) {
 			return &oauth2.Token{
 				AccessToken:  "mock-access-token",
 				TokenType:    "Bearer",
 				RefreshToken: "mock-refresh-token",
 			}, nil
 		},
-		ValidateTokenFunc: func(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+		ValidateTokenFunc: func(_ context.Context, _ string) (*providers.UserInfo, error) {
 			return &providers.UserInfo{
 				ID:            "mock-user-123",
 				Email:         "mock@example.com",
@@ -74,24 +86,24 @@ func NewMockProvider() *MockProvider {
 				FamilyName:    "User",
 			}, nil
 		},
-		RefreshTokenFunc: func(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+		RefreshTokenFunc: func(_ context.Context, _ string) (*oauth2.Token, error) {
 			return &oauth2.Token{
 				AccessToken:  "new-mock-access-token",
 				TokenType:    "Bearer",
 				RefreshToken: "new-mock-refresh-token",
 			}, nil
 		},
-		RevokeTokenFunc: func(ctx context.Context, token string) error {
+		RevokeTokenFunc: func(_ context.Context, _ string) error {
 			return nil
 		},
-		HealthCheckFunc: func(ctx context.Context) error {
+		HealthCheckFunc: func(_ context.Context) error {
 			return nil // Healthy by default
 		},
 	}
 }
 
 // Name returns the provider name
-func (m *MockProvider) Name() string {
+func (m *Provider) Name() string {
 	// LOCK PATTERN: Lock only to update counter and read function reference
 	// Release lock BEFORE calling user function to prevent deadlocks
 	// (user function might call other mock methods)
@@ -108,7 +120,7 @@ func (m *MockProvider) Name() string {
 }
 
 // DefaultScopes returns the provider's default scopes
-func (m *MockProvider) DefaultScopes() []string {
+func (m *Provider) DefaultScopes() []string {
 	m.mu.Lock()
 	m.CallCounts["DefaultScopes"]++
 	fn := m.DefaultScopesFunc
@@ -121,7 +133,7 @@ func (m *MockProvider) DefaultScopes() []string {
 }
 
 // AuthorizationURL generates the URL to redirect users for authentication
-func (m *MockProvider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string, scopes []string) string {
+func (m *Provider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string, scopes []string) string {
 	m.mu.Lock()
 	m.CallCounts["AuthorizationURL"]++
 	fn := m.AuthorizationURLFunc
@@ -133,7 +145,7 @@ func (m *MockProvider) AuthorizationURL(state string, codeChallenge string, code
 }
 
 // ExchangeCode exchanges an authorization code for tokens
-func (m *MockProvider) ExchangeCode(ctx context.Context, code string, codeVerifier string) (*oauth2.Token, error) {
+func (m *Provider) ExchangeCode(ctx context.Context, code string, codeVerifier string) (*oauth2.Token, error) {
 	m.mu.Lock()
 	m.CallCounts["ExchangeCode"]++
 	fn := m.ExchangeCodeFunc
@@ -145,7 +157,7 @@ func (m *MockProvider) ExchangeCode(ctx context.Context, code string, codeVerifi
 }
 
 // ValidateToken validates an access token and returns user information
-func (m *MockProvider) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+func (m *Provider) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
 	m.mu.Lock()
 	m.CallCounts["ValidateToken"]++
 	fn := m.ValidateTokenFunc
@@ -157,7 +169,7 @@ func (m *MockProvider) ValidateToken(ctx context.Context, accessToken string) (*
 }
 
 // RefreshToken refreshes an expired token using a refresh token
-func (m *MockProvider) RefreshToken(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+func (m *Provider) RefreshToken(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
 	m.mu.Lock()
 	m.CallCounts["RefreshToken"]++
 	fn := m.RefreshTokenFunc
@@ -169,7 +181,7 @@ func (m *MockProvider) RefreshToken(ctx context.Context, refreshToken string) (*
 }
 
 // RevokeToken revokes a token at the provider
-func (m *MockProvider) RevokeToken(ctx context.Context, token string) error {
+func (m *Provider) RevokeToken(ctx context.Context, token string) error {
 	m.mu.Lock()
 	m.CallCounts["RevokeToken"]++
 	fn := m.RevokeTokenFunc
@@ -181,7 +193,7 @@ func (m *MockProvider) RevokeToken(ctx context.Context, token string) error {
 }
 
 // HealthCheck verifies that the provider is reachable and functioning correctly
-func (m *MockProvider) HealthCheck(ctx context.Context) error {
+func (m *Provider) HealthCheck(ctx context.Context) error {
 	m.mu.Lock()
 	m.CallCounts["HealthCheck"]++
 	fn := m.HealthCheckFunc
@@ -193,14 +205,14 @@ func (m *MockProvider) HealthCheck(ctx context.Context) error {
 }
 
 // ResetCallCounts resets all call counters
-func (m *MockProvider) ResetCallCounts() {
+func (m *Provider) ResetCallCounts() {
 	m.mu.Lock()
 	m.CallCounts = make(map[string]int)
 	m.mu.Unlock()
 }
 
 // GetCallCount returns the number of times a method was called
-func (m *MockProvider) GetCallCount(method string) int {
+func (m *Provider) GetCallCount(method string) int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.CallCounts[method]

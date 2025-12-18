@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/oauth2"
 
+	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/internal/util"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -618,7 +619,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 		defer span.End()
 
 		span.SetAttributes(
-			attribute.String("oauth.client_id", clientID),
+			attribute.String(instrumentation.AttrClientID, clientID),
 		)
 	}
 
@@ -919,7 +920,6 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	// This is the synchronization point - only ONE concurrent request can succeed
 	// After this, we check family metadata to detect reuse of already-rotated tokens
 	userID, providerToken, err := s.tokenStore.AtomicGetAndDeleteRefreshToken(ctx, refreshToken)
-
 	if err != nil {
 		// SECURITY: Distinguish between "not found" errors (potential reuse) and transient errors
 		// Only check for reuse if the error indicates the token was not found or already deleted

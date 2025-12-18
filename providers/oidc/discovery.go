@@ -174,14 +174,15 @@ func (c *DiscoveryClient) Discover(ctx context.Context, issuerURL string) (*Disc
 	// Check cache first
 	if cached, ok := c.cache.Load(issuerURL); ok {
 		doc, ok := cached.(*cachedDocument)
-		if !ok {
+		switch {
+		case !ok:
 			c.logger.Error("cache corruption: invalid type", "issuer", issuerURL)
 			c.cache.Delete(issuerURL)
 			// Continue to fetch fresh document
-		} else if c.timeProvider.Since(doc.fetchedAt) < c.cacheTTL {
+		case c.timeProvider.Since(doc.fetchedAt) < c.cacheTTL:
 			c.logger.Debug("OIDC discovery cache hit", "issuer", issuerURL)
 			return doc.document, nil
-		} else {
+		default:
 			c.logger.Debug("OIDC discovery cache expired", "issuer", issuerURL)
 		}
 	}
@@ -295,7 +296,7 @@ func (c *DiscoveryClient) validateDocument(doc *DiscoveryDocument) error {
 //	client.ClearCache() // Force refresh on next Discover() call
 func (c *DiscoveryClient) ClearCache() {
 	count := 0
-	c.cache.Range(func(key, value interface{}) bool {
+	c.cache.Range(func(key, _ interface{}) bool {
 		c.cache.Delete(key)
 		count++
 		return true

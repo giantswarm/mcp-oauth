@@ -3,8 +3,9 @@ package storage
 import (
 	"fmt"
 
-	"github.com/giantswarm/mcp-oauth/security"
 	"golang.org/x/oauth2"
+
+	"github.com/giantswarm/mcp-oauth/security"
 )
 
 // KnownExtraFields lists the OIDC extra fields that must be preserved through encryption.

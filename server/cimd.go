@@ -145,7 +145,7 @@ func validateAndSanitizeMetadataURL(clientID string) (string, error) {
 
 // createSSRFProtectedTransport creates an HTTP transport with SSRF protection at connection time
 // This prevents DNS rebinding attacks by validating IPs when connecting, not just during initial validation
-func createSSRFProtectedTransport(ctx context.Context) *http.Transport {
+func createSSRFProtectedTransport(_ context.Context) *http.Transport {
 	return &http.Transport{
 		DialContext: func(dialCtx context.Context, network, addr string) (net.Conn, error) {
 			// Parse host:port
@@ -230,7 +230,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	client := &http.Client{
 		Timeout:   timeout,
 		Transport: createSSRFProtectedTransport(ctx),
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
