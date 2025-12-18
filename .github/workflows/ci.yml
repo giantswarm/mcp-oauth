@@ -7,81 +7,8 @@ on:
     branches: [ main, develop ]
 
 jobs:
-  # Determine Go versions from go.mod for consistent testing
-  setup:
-    name: Setup Go Versions
-    runs-on: ubuntu-latest
-    outputs:
-      go-version: ${{ steps.go-version.outputs.version }}
-      go-matrix: ${{ steps.go-version.outputs.matrix }}
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v6
-    
-    - name: Extract Go version from go.mod
-      id: go-version
-      run: |
-        # Extract version from go.mod (e.g., "1.24.0" -> "1.24")
-        GO_VERSION=$(grep '^go ' go.mod | awk '{print $2}' | cut -d. -f1,2)
-        echo "version=${GO_VERSION}" >> $GITHUB_OUTPUT
-        
-        # Calculate previous minor version for compatibility testing
-        MAJOR=$(echo $GO_VERSION | cut -d. -f1)
-        MINOR=$(echo $GO_VERSION | cut -d. -f2)
-        PREV_MINOR=$((MINOR - 1))
-        PREV_VERSION="${MAJOR}.${PREV_MINOR}"
-        
-        # Create matrix JSON array with current and previous versions
-        echo "matrix=[\"${PREV_VERSION}\", \"${GO_VERSION}\"]" >> $GITHUB_OUTPUT
-        
-        echo "Go version from go.mod: ${GO_VERSION}"
-        echo "Previous version: ${PREV_VERSION}"
-        echo "Test matrix: [\"${PREV_VERSION}\", \"${GO_VERSION}\"]"
-
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    needs: setup
-    strategy:
-      matrix:
-        go-version: ${{ fromJson(needs.setup.outputs.go-matrix) }}
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v6
-    
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: ${{ matrix.go-version }}
-    
-    - name: Cache Go modules
-      uses: actions/cache@v5
-      with:
-        path: ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ matrix.go-version }}-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-${{ matrix.go-version }}-
-    
-    - name: Download dependencies
-      run: go mod download
-    
-    - name: Verify dependencies
-      run: go mod verify
-    
-    - name: Run tests
-      run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
-    
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v5
-      with:
-        file: ./coverage.txt
-        flags: unittests
-        name: codecov-umbrella
-        fail_ci_if_error: false
-
-  lint:
-    name: Lint
+  verify:
+    name: Verify
     runs-on: ubuntu-latest
     
     steps:
@@ -93,11 +20,35 @@ jobs:
       with:
         go-version-file: go.mod
     
-    - name: Run golangci-lint
-      uses: golangci/golangci-lint-action@v9
+    - name: Cache Go modules
+      uses: actions/cache@v5
       with:
-        version: latest
-        args: --timeout=5m
+        path: ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+    
+    - name: Cache Go tools
+      uses: actions/cache@v5
+      with:
+        path: ~/go/bin
+        key: ${{ runner.os }}-go-tools-${{ hashFiles('Makefile.custom.mk') }}
+        restore-keys: |
+          ${{ runner.os }}-go-tools-
+    
+    - name: Install analysis tools
+      run: make install-analyze-tools
+    
+    - name: Run make verify
+      run: make verify
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v5
+      with:
+        file: ./coverage.out
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
 
   build-examples:
     name: Build Examples
