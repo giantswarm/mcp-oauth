@@ -1,9 +1,6 @@
 # Custom targets for mcp-oauth library
 # This file extends the devctl-generated Makefile.gen.go.mk with additional analysis tools
 
-# Ensure Go binaries (from go install) are in PATH
-export PATH := $(HOME)/.go/bin:$(PATH)
-
 ##@ Library Development
 
 # NOTE: 'make test' is defined in Makefile.gen.go.mk and runs with -race (slow but thorough)
