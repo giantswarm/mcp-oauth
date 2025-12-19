@@ -4,7 +4,7 @@ go 1.24.11
 
 replace github.com/giantswarm/mcp-oauth => ../..
 
-require github.com/giantswarm/mcp-oauth v0.2.24
+require github.com/giantswarm/mcp-oauth v0.2.25
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
