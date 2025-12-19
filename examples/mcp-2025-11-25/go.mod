@@ -2,7 +2,7 @@ module github.com/giantswarm/mcp-oauth/examples/mcp-2025-11-25
 
 go 1.24.11
 
-require github.com/giantswarm/mcp-oauth v0.2.11
+require github.com/giantswarm/mcp-oauth v0.2.24
 
 require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect

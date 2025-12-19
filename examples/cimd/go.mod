@@ -2,7 +2,7 @@ module github.com/giantswarm/mcp-oauth/examples/cimd
 
 go 1.24.11
 
-require github.com/giantswarm/mcp-oauth v0.0.0
+require github.com/giantswarm/mcp-oauth v0.2.24
 
 require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
