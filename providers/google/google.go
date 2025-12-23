@@ -116,13 +116,14 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	// IMPORTANT: Filter out "offline_access" scope - Google doesn't support it as a scope.
 	// Google uses access_type=offline (added above) instead of the offline_access scope.
 	// Passing offline_access to Google causes: Error 400: invalid_scope
-	var scopesToUse []string
 	var sourceScopes []string
 	if len(scopes) > 0 {
 		sourceScopes = scopes
 	} else {
 		sourceScopes = p.Scopes
 	}
+	// Pre-allocate with capacity hint to avoid reallocations
+	scopesToUse := make([]string, 0, len(sourceScopes))
 	for _, s := range sourceScopes {
 		if s != "offline_access" {
 			scopesToUse = append(scopesToUse, s)

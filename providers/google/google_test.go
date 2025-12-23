@@ -231,24 +231,29 @@ func TestProvider_AuthorizationURL_FiltersOfflineAccess(t *testing.T) {
 	}
 
 	tests := []struct {
-		name   string
-		scopes []string
+		name              string
+		scopes            []string
+		wantScopesPresent []string // Scopes that SHOULD be in the URL
 	}{
 		{
-			name:   "filters offline_access from requested scopes",
-			scopes: []string{"openid", "email", "offline_access", "profile"},
+			name:              "filters offline_access from requested scopes",
+			scopes:            []string{"openid", "email", "offline_access", "profile"},
+			wantScopesPresent: []string{"openid", "email", "profile"},
 		},
 		{
-			name:   "filters offline_access from provider defaults",
-			scopes: nil, // Uses provider defaults which include offline_access
+			name:              "filters offline_access from provider defaults",
+			scopes:            nil, // Uses provider defaults which include offline_access
+			wantScopesPresent: []string{"openid", "email"},
 		},
 		{
-			name:   "handles only offline_access scope",
-			scopes: []string{"offline_access"},
+			name:              "handles only offline_access scope - results in empty scope list",
+			scopes:            []string{"offline_access"},
+			wantScopesPresent: nil, // No scopes should remain
 		},
 		{
-			name:   "handles offline_access with OIDC scopes",
-			scopes: []string{"openid", "offline_access"},
+			name:              "handles offline_access with OIDC scopes",
+			scopes:            []string{"openid", "offline_access"},
+			wantScopesPresent: []string{"openid"},
 		},
 	}
 
@@ -264,6 +269,13 @@ func TestProvider_AuthorizationURL_FiltersOfflineAccess(t *testing.T) {
 			// Verify access_type=offline IS present (Google's way of requesting refresh tokens)
 			if !strings.Contains(authURL, "access_type=offline") {
 				t.Errorf("AuthorizationURL() should contain access_type=offline, got URL: %q", authURL)
+			}
+
+			// Verify expected scopes are present
+			for _, wantScope := range tt.wantScopesPresent {
+				if !strings.Contains(authURL, wantScope) {
+					t.Errorf("AuthorizationURL() should contain scope %q, got URL: %q", wantScope, authURL)
+				}
 			}
 		})
 	}

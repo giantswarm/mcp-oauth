@@ -46,4 +46,3 @@ require (
 )
 
 replace github.com/giantswarm/mcp-oauth => ../..
-
