@@ -112,15 +112,22 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	// SECURITY: Create a deep copy of scopes to prevent potential race conditions
 	// If we use provider defaults, we must copy the slice to avoid shared references
 	// that could be modified concurrently or cause unexpected behavior.
-	var scopesToUse []string
+	//
+	// IMPORTANT: Filter out "offline_access" scope - Google doesn't support it as a scope.
+	// Google uses access_type=offline (added above) instead of the offline_access scope.
+	// Passing offline_access to Google causes: Error 400: invalid_scope
+	var sourceScopes []string
 	if len(scopes) > 0 {
-		// Use requested scopes (create deep copy)
-		scopesToUse = make([]string, len(scopes))
-		copy(scopesToUse, scopes)
+		sourceScopes = scopes
 	} else {
-		// Use provider's default scopes (create deep copy)
-		scopesToUse = make([]string, len(p.Scopes))
-		copy(scopesToUse, p.Scopes)
+		sourceScopes = p.Scopes
+	}
+	// Pre-allocate with capacity hint to avoid reallocations
+	scopesToUse := make([]string, 0, len(sourceScopes))
+	for _, s := range sourceScopes {
+		if s != "offline_access" {
+			scopesToUse = append(scopesToUse, s)
+		}
 	}
 
 	// Create a config with the determined scopes

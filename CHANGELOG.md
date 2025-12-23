@@ -87,6 +87,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Google provider now filters out `offline_access` scope (#156)**
+  - **Problem**: When clients requested the standard OIDC `offline_access` scope, the Google provider passed it directly to Google's authorization endpoint, causing `Error 400: invalid_scope`
+  - **Root Cause**: Google doesn't support `offline_access` as a scope - it uses `access_type=offline` as a URL parameter instead (which was already being set correctly)
+  - **Fix**: Filter out `offline_access` from scopes before passing to Google, since the equivalent functionality is already provided via `access_type=offline`
+  - **Impact**: OIDC-compliant clients that request `offline_access` scope will now work correctly with the Google provider
+
 - **JSON Injection Vulnerability in Example Code**
   - **Bug**: The `mcpHandler()` in basic and production examples used `fmt.Sprintf` to construct JSON responses with user-controlled data (`userInfo.Name`, `userInfo.Email`, `userInfo.ID`), allowing potential JSON injection if user data contained special characters like `"` or `\`
   - **Fix**: Replaced with proper struct types and `json.NewEncoder()` for safe serialization
