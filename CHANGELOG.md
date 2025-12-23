@@ -87,6 +87,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Valkey storage: ProviderToken Extra field (id_token) now preserved during authorization code serialization (#158)**
+  - **Problem**: When using Valkey storage, the `id_token` in the `ProviderToken.Extra` field was lost during authorization code serialization, causing downstream OIDC authentication to fail
+  - **Root Cause**: `oauth2.Token` stores Extra fields (like `id_token`) in a private `raw` field that is NOT serialized by standard `json.Marshal`. The `authorizationCodeJSON` struct was directly embedding `*oauth2.Token`, which lost these fields
+  - **Fix**: Changed `authorizationCodeJSON.ProviderToken` to use `*serializableToken` instead of `*oauth2.Token`, which explicitly captures and serializes the Extra fields
+  - **Impact**: Authorization codes with provider tokens now correctly preserve id_token and other Extra fields through Valkey serialization
+  - **Related**: Same pattern was already applied to direct token storage in commit `878730a` for issue #133
+
 - **Google provider now filters out `offline_access` scope (#156)**
   - **Problem**: When clients requested the standard OIDC `offline_access` scope, the Google provider passed it directly to Google's authorization endpoint, causing `Error 400: invalid_scope`
   - **Root Cause**: Google doesn't support `offline_access` as a scope - it uses `access_type=offline` as a URL parameter instead (which was already being set correctly)
