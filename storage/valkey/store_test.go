@@ -654,6 +654,183 @@ func TestFlowStore_DeleteAuthorizationCode(t *testing.T) {
 	}
 }
 
+// TestFlowStore_AuthorizationCode_PreservesProviderTokenExtraField is a regression
+// test for issue #158. It verifies that the ProviderToken's Extra field (containing
+// id_token) is preserved during authorization code serialization in Valkey storage.
+//
+// The root cause was that oauth2.Token stores Extra fields in a private 'raw' field
+// that is not included in standard JSON marshaling. The fix uses serializableToken
+// for ProviderToken to explicitly serialize the Extra fields.
+func TestFlowStore_AuthorizationCode_PreservesProviderTokenExtraField(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	// Create a provider token with Extra fields (simulating OIDC provider response)
+	baseProviderToken := &oauth2.Token{
+		AccessToken:  "provider-access-token",
+		RefreshToken: "provider-refresh-token",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(time.Hour),
+	}
+
+	// The id_token is the critical field that was being lost in issue #158
+	idToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test-id-token-for-issue-158.signature" //nolint:gosec // test value
+	grantedScope := "openid email profile"
+	providerToken := baseProviderToken.WithExtra(map[string]interface{}{
+		"id_token": idToken,
+		"scope":    grantedScope,
+	})
+
+	// Create authorization code with the provider token
+	code := &storage.AuthorizationCode{
+		Code:          "auth-code-with-extra",
+		ClientID:      "client-1",
+		RedirectURI:   "https://example.com/callback",
+		Scope:         "openid email",
+		UserID:        "user-123",
+		ProviderToken: providerToken,
+		CreatedAt:     time.Now(),
+		ExpiresAt:     time.Now().Add(5 * time.Minute),
+		Used:          false,
+	}
+
+	// Save the authorization code to Valkey
+	err := s.SaveAuthorizationCode(ctx, code)
+	if err != nil {
+		t.Fatalf("SaveAuthorizationCode failed: %v", err)
+	}
+
+	// Retrieve the authorization code
+	got, err := s.GetAuthorizationCode(ctx, "auth-code-with-extra")
+	if err != nil {
+		t.Fatalf("GetAuthorizationCode failed: %v", err)
+	}
+
+	// Verify basic fields
+	if got.Code != code.Code {
+		t.Errorf("Code = %q, want %q", got.Code, code.Code)
+	}
+	if got.ClientID != code.ClientID {
+		t.Errorf("ClientID = %q, want %q", got.ClientID, code.ClientID)
+	}
+	if got.UserID != code.UserID {
+		t.Errorf("UserID = %q, want %q", got.UserID, code.UserID)
+	}
+
+	// Verify ProviderToken exists
+	if got.ProviderToken == nil {
+		t.Fatal("ProviderToken is nil, expected token to be preserved")
+	}
+
+	// Verify ProviderToken basic fields
+	if got.ProviderToken.AccessToken != providerToken.AccessToken {
+		t.Errorf("ProviderToken.AccessToken = %q, want %q", got.ProviderToken.AccessToken, providerToken.AccessToken)
+	}
+	if got.ProviderToken.RefreshToken != providerToken.RefreshToken {
+		t.Errorf("ProviderToken.RefreshToken = %q, want %q", got.ProviderToken.RefreshToken, providerToken.RefreshToken)
+	}
+
+	// CRITICAL: Verify Extra fields are preserved (this was the bug in issue #158)
+	gotIDToken := got.ProviderToken.Extra("id_token")
+	if gotIDToken == nil {
+		t.Fatal("ProviderToken.Extra(\"id_token\") returned nil - id_token was lost during serialization (issue #158)")
+	}
+	if gotIDToken != idToken {
+		t.Errorf("ProviderToken.Extra(\"id_token\") = %q, want %q", gotIDToken, idToken)
+	}
+
+	gotScope := got.ProviderToken.Extra("scope")
+	if gotScope == nil {
+		t.Fatal("ProviderToken.Extra(\"scope\") returned nil - scope was lost during serialization")
+	}
+	if gotScope != grantedScope {
+		t.Errorf("ProviderToken.Extra(\"scope\") = %q, want %q", gotScope, grantedScope)
+	}
+}
+
+// TestFlowStore_AtomicCheckAndMarkAuthCodeUsed_PreservesProviderTokenExtraField
+// tests that the atomic operation also preserves the Extra field.
+func TestFlowStore_AtomicCheckAndMarkAuthCodeUsed_PreservesProviderTokenExtraField(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	// Create provider token with Extra field
+	baseProviderToken := &oauth2.Token{
+		AccessToken:  "atomic-provider-access-token",
+		RefreshToken: "atomic-provider-refresh-token",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(time.Hour),
+	}
+	idToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.atomic-test-id-token.signature" //nolint:gosec // test value
+	providerToken := baseProviderToken.WithExtra(map[string]interface{}{
+		"id_token": idToken,
+	})
+
+	code := &storage.AuthorizationCode{
+		Code:          "atomic-code-with-extra",
+		ClientID:      "client-1",
+		RedirectURI:   "https://example.com/callback",
+		UserID:        "user-123",
+		ProviderToken: providerToken,
+		CreatedAt:     time.Now(),
+		ExpiresAt:     time.Now().Add(5 * time.Minute),
+		Used:          false,
+	}
+
+	_ = s.SaveAuthorizationCode(ctx, code)
+
+	// Use atomic operation to mark as used
+	got, err := s.AtomicCheckAndMarkAuthCodeUsed(ctx, "atomic-code-with-extra")
+	if err != nil {
+		t.Fatalf("AtomicCheckAndMarkAuthCodeUsed failed: %v", err)
+	}
+
+	// Verify ProviderToken and Extra field
+	if got.ProviderToken == nil {
+		t.Fatal("ProviderToken is nil after atomic operation")
+	}
+
+	gotIDToken := got.ProviderToken.Extra("id_token")
+	if gotIDToken == nil {
+		t.Fatal("ProviderToken.Extra(\"id_token\") returned nil after atomic operation")
+	}
+	if gotIDToken != idToken {
+		t.Errorf("ProviderToken.Extra(\"id_token\") = %q, want %q", gotIDToken, idToken)
+	}
+}
+
+// TestFlowStore_AuthorizationCode_NilProviderToken ensures that nil ProviderToken
+// is handled gracefully and doesn't cause issues.
+func TestFlowStore_AuthorizationCode_NilProviderToken(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	code := &storage.AuthorizationCode{
+		Code:          "code-nil-provider-token",
+		ClientID:      "client-1",
+		RedirectURI:   "https://example.com/callback",
+		UserID:        "user-123",
+		ProviderToken: nil, // Explicitly nil
+		CreatedAt:     time.Now(),
+		ExpiresAt:     time.Now().Add(5 * time.Minute),
+		Used:          false,
+	}
+
+	err := s.SaveAuthorizationCode(ctx, code)
+	if err != nil {
+		t.Fatalf("SaveAuthorizationCode with nil ProviderToken failed: %v", err)
+	}
+
+	got, err := s.GetAuthorizationCode(ctx, "code-nil-provider-token")
+	if err != nil {
+		t.Fatalf("GetAuthorizationCode failed: %v", err)
+	}
+
+	if got.ProviderToken != nil {
+		t.Error("Expected ProviderToken to be nil")
+	}
+}
+
 // ============================================================
 // RefreshTokenFamilyStore Tests
 // ============================================================

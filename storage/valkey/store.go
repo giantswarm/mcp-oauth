@@ -453,24 +453,28 @@ return cjson.encode({user_id = userID, token = cjson.decode(tokenData)})
 // ============================================================
 
 // authorizationCodeJSON is the JSON representation of an authorization code
+// NOTE: ProviderToken uses *serializableToken instead of *oauth2.Token because
+// oauth2.Token stores Extra fields (like id_token) in a private 'raw' field
+// that is not included in standard JSON marshaling. Using serializableToken
+// ensures these critical fields are preserved during Valkey serialization.
 type authorizationCodeJSON struct {
-	Code                string        `json:"code"`
-	ClientID            string        `json:"client_id"`
-	RedirectURI         string        `json:"redirect_uri"`
-	Scope               string        `json:"scope"`
-	Resource            string        `json:"resource,omitempty"`
-	Audience            string        `json:"audience,omitempty"`
-	CodeChallenge       string        `json:"code_challenge,omitempty"`
-	CodeChallengeMethod string        `json:"code_challenge_method,omitempty"`
-	UserID              string        `json:"user_id"`
-	ProviderToken       *oauth2.Token `json:"provider_token,omitempty"`
-	CreatedAt           int64         `json:"created_at"`
-	ExpiresAt           int64         `json:"expires_at"`
-	Used                bool          `json:"used"`
+	Code                string             `json:"code"`
+	ClientID            string             `json:"client_id"`
+	RedirectURI         string             `json:"redirect_uri"`
+	Scope               string             `json:"scope"`
+	Resource            string             `json:"resource,omitempty"`
+	Audience            string             `json:"audience,omitempty"`
+	CodeChallenge       string             `json:"code_challenge,omitempty"`
+	CodeChallengeMethod string             `json:"code_challenge_method,omitempty"`
+	UserID              string             `json:"user_id"`
+	ProviderToken       *serializableToken `json:"provider_token,omitempty"`
+	CreatedAt           int64              `json:"created_at"`
+	ExpiresAt           int64              `json:"expires_at"`
+	Used                bool               `json:"used"`
 }
 
 func toAuthorizationCodeJSON(code *storage.AuthorizationCode) *authorizationCodeJSON {
-	return &authorizationCodeJSON{
+	j := &authorizationCodeJSON{
 		Code:                code.Code,
 		ClientID:            code.ClientID,
 		RedirectURI:         code.RedirectURI,
@@ -480,18 +484,26 @@ func toAuthorizationCodeJSON(code *storage.AuthorizationCode) *authorizationCode
 		CodeChallenge:       code.CodeChallenge,
 		CodeChallengeMethod: code.CodeChallengeMethod,
 		UserID:              code.UserID,
-		ProviderToken:       code.ProviderToken,
 		CreatedAt:           code.CreatedAt.Unix(),
 		ExpiresAt:           code.ExpiresAt.Unix(),
 		Used:                code.Used,
 	}
+
+	// Convert ProviderToken to serializable format to preserve Extra fields (id_token, etc.)
+	if code.ProviderToken != nil {
+		st := toSerializable(code.ProviderToken)
+		j.ProviderToken = &st
+	}
+
+	return j
 }
 
 func fromAuthorizationCodeJSON(j *authorizationCodeJSON) *storage.AuthorizationCode {
 	if j == nil {
 		return nil
 	}
-	return &storage.AuthorizationCode{
+
+	authCode := &storage.AuthorizationCode{
 		Code:                j.Code,
 		ClientID:            j.ClientID,
 		RedirectURI:         j.RedirectURI,
@@ -501,11 +513,17 @@ func fromAuthorizationCodeJSON(j *authorizationCodeJSON) *storage.AuthorizationC
 		CodeChallenge:       j.CodeChallenge,
 		CodeChallengeMethod: j.CodeChallengeMethod,
 		UserID:              j.UserID,
-		ProviderToken:       j.ProviderToken,
 		CreatedAt:           time.Unix(j.CreatedAt, 0),
 		ExpiresAt:           time.Unix(j.ExpiresAt, 0),
 		Used:                j.Used,
 	}
+
+	// Convert ProviderToken from serializable format to restore Extra fields (id_token, etc.)
+	if j.ProviderToken != nil {
+		authCode.ProviderToken = j.ProviderToken.toOAuth2Token()
+	}
+
+	return authCode
 }
 
 // authorizationStateJSON is the JSON representation of an authorization state
