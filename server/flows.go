@@ -835,12 +835,16 @@ func (s *Server) exchangeCodeWithProvider(ctx context.Context, code, providerVer
 // downstream consumers can reliably retrieve tokens by email, regardless of whether
 // the OIDC provider's subject claim differs from the email (e.g., Dex uses base64-encoded subjects).
 func (s *Server) saveUserInfoAndToken(ctx context.Context, userInfo *providers.UserInfo, providerToken *oauth2.Token) {
-	// Always save by ID
-	if err := s.tokenStore.SaveUserInfo(ctx, userInfo.ID, userInfo); err != nil {
-		s.Logger.Warn("Failed to save user info", "error", err)
-	}
-	if err := s.tokenStore.SaveToken(ctx, userInfo.ID, providerToken); err != nil {
-		s.Logger.Warn("Failed to save provider token", "error", err)
+	// Save by ID (required - ID should always be present from provider's subject claim)
+	if userInfo.ID != "" {
+		if err := s.tokenStore.SaveUserInfo(ctx, userInfo.ID, userInfo); err != nil {
+			s.Logger.Warn("Failed to save user info", "error", err)
+		}
+		if err := s.tokenStore.SaveToken(ctx, userInfo.ID, providerToken); err != nil {
+			s.Logger.Warn("Failed to save provider token", "error", err)
+		}
+	} else {
+		s.Logger.Warn("UserInfo has empty ID, skipping ID-based storage")
 	}
 
 	// Always save by email if available (regardless of whether it equals ID)

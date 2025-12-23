@@ -112,7 +112,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Root Cause**: The condition `userInfo.Email != userInfo.ID` prevented email storage when the comparison was not properly evaluated. With Dex, the subject claim is a base64-encoded identifier (e.g., `Cg1tYXJrdGVzdGVyQGdtYWlsLmNvbQoFbG9jYWw`), not the email
   - **Fix**: Always save tokens by email when email is available, regardless of whether it equals the ID. This is idempotent and ensures downstream consumers can reliably use email for lookups
   - **Affected Components**: `server/flows.go` - `saveUserInfoAndToken` function
-  - **Testing**: Added test `TestServer_HandleProviderCallback_TokenLookupByEmail` that simulates Dex's base64-encoded subject claims
+  - **Testing**: Added test `TestServer_HandleProviderCallback_EmailLookup` that simulates Dex's base64-encoded subject claims
 
 ### Security
 

@@ -305,12 +305,12 @@ func TestServer_HandleProviderCallback(t *testing.T) {
 	}
 }
 
-// TestServer_HandleProviderCallback_TokenLookupByEmail tests that tokens can be
+// TestServer_HandleProviderCallback_EmailLookup tests that tokens can be
 // looked up by email when the OIDC provider's subject claim differs from the email.
 // This is common with Dex which uses base64-encoded subjects like "Cg1tYXJrdGVzdGVyQGdtYWlsLmNvbQoFbG9jYWw".
 //
 // See: https://github.com/giantswarm/mcp-oauth/issues/154
-func TestServer_HandleProviderCallback_TokenLookupByEmail(t *testing.T) {
+func TestServer_HandleProviderCallback_EmailLookup(t *testing.T) {
 	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
