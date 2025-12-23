@@ -180,6 +180,21 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 				"state=test-state",
 			},
 		},
+		{
+			name:                "filters out offline_access scope - Google uses access_type param instead",
+			state:               "test-state",
+			codeChallenge:       "test-challenge",
+			codeChallengeMethod: "S256",
+			scopes:              []string{"openid", "email", "offline_access", "profile"},
+			wantContains: []string{
+				"state=test-state",
+				"access_type=offline", // Google's way of requesting refresh tokens
+				"scope=",              // Should have scope parameter
+			},
+			wantNotContains: []string{
+				"offline_access", // Should NOT be passed to Google
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -196,6 +211,59 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 				if strings.Contains(authURL, notWant) {
 					t.Errorf("AuthorizationURL() should not contain %q (confidential client)", notWant)
 				}
+			}
+		})
+	}
+}
+
+// TestProvider_AuthorizationURL_FiltersOfflineAccess verifies that offline_access
+// scope is filtered out since Google uses access_type=offline parameter instead.
+// See: https://developers.google.com/identity/protocols/oauth2/web-server#offline
+func TestProvider_AuthorizationURL_FiltersOfflineAccess(t *testing.T) {
+	provider, err := NewProvider(&Config{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		RedirectURL:  "https://example.com/callback",
+		Scopes:       []string{"openid", "email", "offline_access"}, // Provider default includes offline_access
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		scopes []string
+	}{
+		{
+			name:   "filters offline_access from requested scopes",
+			scopes: []string{"openid", "email", "offline_access", "profile"},
+		},
+		{
+			name:   "filters offline_access from provider defaults",
+			scopes: nil, // Uses provider defaults which include offline_access
+		},
+		{
+			name:   "handles only offline_access scope",
+			scopes: []string{"offline_access"},
+		},
+		{
+			name:   "handles offline_access with OIDC scopes",
+			scopes: []string{"openid", "offline_access"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authURL := provider.AuthorizationURL("test-state", "test-challenge", "S256", tt.scopes)
+
+			// Verify offline_access is NOT in the URL
+			if strings.Contains(authURL, "offline_access") {
+				t.Errorf("AuthorizationURL() should not contain offline_access, got URL: %q", authURL)
+			}
+
+			// Verify access_type=offline IS present (Google's way of requesting refresh tokens)
+			if !strings.Contains(authURL, "access_type=offline") {
+				t.Errorf("AuthorizationURL() should contain access_type=offline, got URL: %q", authURL)
 			}
 		})
 	}
