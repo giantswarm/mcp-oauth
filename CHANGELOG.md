@@ -107,6 +107,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Affected Components**: `storage/memory/memory.go`, `storage/valkey/store.go`
   - **Testing**: Added regression tests for Extra field preservation with and without encryption enabled
 
+- **Token Lookup by Email Fails When Dex Subject Claim Differs**
+  - **Bug**: When using mcp-oauth with Dex as the OIDC provider, looking up tokens by `userInfo.Email` failed because tokens were only stored by email if it differed from `userInfo.ID` ([#154](https://github.com/giantswarm/mcp-oauth/issues/154))
+  - **Root Cause**: The condition `userInfo.Email != userInfo.ID` prevented email storage when the comparison was not properly evaluated. With Dex, the subject claim is a base64-encoded identifier (e.g., `Cg1tYXJrdGVzdGVyQGdtYWlsLmNvbQoFbG9jYWw`), not the email
+  - **Fix**: Always save tokens by email when email is available, regardless of whether it equals the ID. This is idempotent and ensures downstream consumers can reliably use email for lookups
+  - **Affected Components**: `server/flows.go` - `saveUserInfoAndToken` function
+  - **Testing**: Added test `TestServer_HandleProviderCallback_EmailLookup` that simulates Dex's base64-encoded subject claims
+
 ### Security
 
 - **ID Token Encryption at Rest**

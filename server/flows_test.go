@@ -305,6 +305,115 @@ func TestServer_HandleProviderCallback(t *testing.T) {
 	}
 }
 
+// TestServer_HandleProviderCallback_EmailLookup tests that tokens can be
+// looked up by email when the OIDC provider's subject claim differs from the email.
+// This is common with Dex which uses base64-encoded subjects like "Cg1tYXJrdGVzdGVyQGdtYWlsLmNvbQoFbG9jYWw".
+//
+// See: https://github.com/giantswarm/mcp-oauth/issues/154
+func TestServer_HandleProviderCallback_EmailLookup(t *testing.T) {
+	ctx := context.Background()
+	srv, store, provider := setupFlowTestServer(t)
+
+	// Configure provider to return a subject claim that differs from email
+	// This simulates Dex's behavior where sub is a base64-encoded identifier
+	dexStyleSubjectClaim := "Cg1tYXJrdGVzdGVyQGdtYWlsLmNvbQoFbG9jYWw" // base64-encoded like Dex
+	testEmail := "markus@example.com"
+
+	provider.ValidateTokenFunc = func(_ context.Context, _ string) (*providers.UserInfo, error) {
+		return &providers.UserInfo{
+			ID:            dexStyleSubjectClaim, // Different from email
+			Email:         testEmail,
+			EmailVerified: true,
+			Name:          "Markus User",
+		}, nil
+	}
+
+	// Register a test client
+	client, _, err := srv.RegisterClient(ctx,
+		"Test Client",
+		ClientTypeConfidential,
+		"",
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	validVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
+	hash := sha256.Sum256([]byte(validVerifier))
+	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+	clientState := testutil.GenerateRandomString(43)
+
+	// Start authorization flow
+	_, err = srv.StartAuthorizationFlow(ctx,
+		client.ClientID,
+		"https://example.com/callback",
+		"openid email",
+		"",
+		validChallenge,
+		PKCEMethodS256,
+		clientState,
+	)
+	if err != nil {
+		t.Fatalf("StartAuthorizationFlow() error = %v", err)
+	}
+
+	// Get the provider state
+	authState, err := store.GetAuthorizationState(ctx, clientState)
+	if err != nil {
+		t.Fatalf("GetAuthorizationState() error = %v", err)
+	}
+	providerState := authState.ProviderState
+
+	// Complete the provider callback
+	_, _, err = srv.HandleProviderCallback(ctx, providerState, "provider-auth-code")
+	if err != nil {
+		t.Fatalf("HandleProviderCallback() error = %v", err)
+	}
+
+	// TEST: Verify token can be retrieved by subject claim (ID)
+	tokenByID, err := store.GetToken(ctx, dexStyleSubjectClaim)
+	if err != nil {
+		t.Errorf("GetToken by ID failed: %v", err)
+	}
+	if tokenByID == nil {
+		t.Error("Token not found by ID (subject claim)")
+	}
+
+	// TEST: Verify token can ALSO be retrieved by email
+	// This is the bug fix - previously tokens were only saved by email if email != ID
+	tokenByEmail, err := store.GetToken(ctx, testEmail)
+	if err != nil {
+		t.Errorf("GetToken by email failed: %v", err)
+	}
+	if tokenByEmail == nil {
+		t.Error("Token not found by email - this is the bug we're fixing (issue #154)")
+	}
+
+	// TEST: Verify user info can also be retrieved by email
+	userInfoByEmail, err := store.GetUserInfo(ctx, testEmail)
+	if err != nil {
+		t.Errorf("GetUserInfo by email failed: %v", err)
+	}
+	if userInfoByEmail == nil {
+		t.Error("UserInfo not found by email")
+	} else if userInfoByEmail.Email != testEmail {
+		t.Errorf("UserInfo.Email = %q, want %q", userInfoByEmail.Email, testEmail)
+	}
+
+	// TEST: Verify user info can be retrieved by ID
+	userInfoByID, err := store.GetUserInfo(ctx, dexStyleSubjectClaim)
+	if err != nil {
+		t.Errorf("GetUserInfo by ID failed: %v", err)
+	}
+	if userInfoByID == nil {
+		t.Error("UserInfo not found by ID")
+	}
+}
+
 func TestServer_ExchangeAuthorizationCode(t *testing.T) {
 	ctx := context.Background()
 	srv, store, _ := setupFlowTestServer(t)
