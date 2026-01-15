@@ -199,6 +199,14 @@ func (s *Server) initializeMetadataSupport() {
 		"burst", 20,
 		"purpose", "DoS protection")
 
+	// SECURITY WARNING: Log when SSRF protection is relaxed for internal networks
+	if s.Config.AllowPrivateIPClientMetadata {
+		s.Logger.Warn("SSRF protection reduced: AllowPrivateIPClientMetadata is enabled",
+			"config", "AllowPrivateIPClientMetadata=true",
+			"warning", "Client metadata can be fetched from private/internal IP addresses",
+			"allowed_ranges", "10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, ::1, link-local")
+	}
+
 	go s.metadataCacheCleanupLoop()
 	s.Logger.Debug("Started metadata cache cleanup goroutine")
 }
