@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **AllowPrivateIPClientMetadata Configuration Option for Internal Network CIMD**
+  - **Feature**: Added configuration option to allow CIMD (Client ID Metadata Document) metadata URLs that resolve to private IP addresses
+  - **Use Case**: Enables MCP aggregators and servers to communicate over internal/private networks (home labs, air-gapped environments, enterprise intranets)
+  - **Configuration**: `AllowPrivateIPClientMetadata` in `server.Config` (default: `false` for security)
+  - **Security**: When enabled, relaxes SSRF protection to allow:
+    - Private IP ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 (RFC 1918)
+    - Loopback addresses: 127.0.0.0/8, ::1
+    - Link-local addresses: 169.254.0.0/16, fe80::/10
+  - **Warning**: Only enable for trusted internal network deployments. PKCE and other OAuth security measures still apply.
+  - **Logging**: When enabled, logs a startup warning at `Warn` level to ensure operator visibility, and logs each private IP fetch at `Info` level for audit trail.
+  - **Example**:
+    ```go
+    config := &server.Config{
+        Issuer: "https://auth.internal.example.com",
+        EnableClientIDMetadataDocuments: true,
+        AllowPrivateIPClientMetadata: true, // Allow fetching from internal network
+    }
+    ```
+  - **Issue**: [#164](https://github.com/giantswarm/mcp-oauth/issues/164)
+
 - **CIMD Metrics Callbacks for Observability**
   - **Feature**: Added instrumentation callbacks for Client ID Metadata Document (CIMD) operations
   - **New Metrics**:

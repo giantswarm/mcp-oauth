@@ -4,7 +4,7 @@ go 1.24.11
 
 require (
 	github.com/stretchr/testify v1.11.1
-	github.com/valkey-io/valkey-go v1.0.69
+	github.com/valkey-io/valkey-go v1.0.70
 	go.opentelemetry.io/otel v1.39.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.39.0
 	go.opentelemetry.io/otel/exporters/prometheus v0.61.0

@@ -228,24 +228,104 @@ func TestValidateMetadataURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sanitizedURL, err := validateAndSanitizeMetadataURL(tt.url)
+			// Test with allowPrivateIP=false (default, SSRF protection enabled)
+			sanitizedURL, err := validateAndSanitizeMetadataURL(tt.url, false)
 			if tt.wantErr {
 				if err == nil {
-					t.Errorf("validateAndSanitizeMetadataURL(%q) expected error containing %q, got nil", tt.url, tt.errText)
+					t.Errorf("validateAndSanitizeMetadataURL(%q, false) expected error containing %q, got nil", tt.url, tt.errText)
 					return
 				}
 				if tt.errText != "" && !strings.Contains(err.Error(), tt.errText) {
-					t.Errorf("validateAndSanitizeMetadataURL(%q) error = %v, want error containing %q", tt.url, err, tt.errText)
+					t.Errorf("validateAndSanitizeMetadataURL(%q, false) error = %v, want error containing %q", tt.url, err, tt.errText)
 				}
 				if sanitizedURL != "" {
-					t.Errorf("validateAndSanitizeMetadataURL(%q) expected empty URL on error, got %q", tt.url, sanitizedURL)
+					t.Errorf("validateAndSanitizeMetadataURL(%q, false) expected empty URL on error, got %q", tt.url, sanitizedURL)
 				}
 			} else {
 				if err != nil {
-					t.Errorf("validateAndSanitizeMetadataURL(%q) unexpected error: %v", tt.url, err)
+					t.Errorf("validateAndSanitizeMetadataURL(%q, false) unexpected error: %v", tt.url, err)
 				}
 				if sanitizedURL == "" {
-					t.Errorf("validateAndSanitizeMetadataURL(%q) expected non-empty URL, got empty", tt.url)
+					t.Errorf("validateAndSanitizeMetadataURL(%q, false) expected non-empty URL, got empty", tt.url)
+				}
+			}
+		})
+	}
+}
+
+// TestValidateMetadataURL_AllowPrivateIP tests that private IPs are allowed when configured
+func TestValidateMetadataURL_AllowPrivateIP(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+		errText string
+	}{
+		{
+			name:    "HTTP still not allowed even with private IP allowed",
+			url:     "http://192.168.1.1/client",
+			wantErr: true,
+			errText: "must use HTTPS",
+		},
+		{
+			name:    "invalid URL still rejected",
+			url:     "://invalid",
+			wantErr: true,
+			errText: "invalid URL",
+		},
+		{
+			name:    "localhost allowed with private IP config",
+			url:     "https://localhost/client",
+			wantErr: false,
+		},
+		{
+			name:    "127.0.0.1 allowed with private IP config",
+			url:     "https://127.0.0.1/client",
+			wantErr: false,
+		},
+		{
+			name:    "10.x.x.x allowed with private IP config",
+			url:     "https://10.0.0.1/client",
+			wantErr: false,
+		},
+		{
+			name:    "172.16.x.x allowed with private IP config",
+			url:     "https://172.16.0.1/client",
+			wantErr: false,
+		},
+		{
+			name:    "192.168.x.x allowed with private IP config",
+			url:     "https://192.168.1.1/client",
+			wantErr: false,
+		},
+		{
+			name:    "valid public HTTPS URL still works",
+			url:     "https://example.com/client",
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Test with allowPrivateIP=true (SSRF protection relaxed for internal networks)
+			sanitizedURL, err := validateAndSanitizeMetadataURL(tt.url, true)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("validateAndSanitizeMetadataURL(%q, true) expected error containing %q, got nil", tt.url, tt.errText)
+					return
+				}
+				if tt.errText != "" && !strings.Contains(err.Error(), tt.errText) {
+					t.Errorf("validateAndSanitizeMetadataURL(%q, true) error = %v, want error containing %q", tt.url, err, tt.errText)
+				}
+				if sanitizedURL != "" {
+					t.Errorf("validateAndSanitizeMetadataURL(%q, true) expected empty URL on error, got %q", tt.url, sanitizedURL)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("validateAndSanitizeMetadataURL(%q, true) unexpected error: %v", tt.url, err)
+				}
+				if sanitizedURL == "" {
+					t.Errorf("validateAndSanitizeMetadataURL(%q, true) expected non-empty URL, got empty", tt.url)
 				}
 			}
 		})
@@ -1055,6 +1135,89 @@ func TestGetOrFetchClient_URLClientID_CacheHit(t *testing.T) {
 	if cachedClient.ClientName != "Cached Client" {
 		t.Errorf("ClientName = %q, want %q", cachedClient.ClientName, "Cached Client")
 	}
+}
+
+// TestFetchClientMetadata_AllowPrivateIP tests fetching metadata from private IP when configured
+func TestFetchClientMetadata_AllowPrivateIP(t *testing.T) {
+	// We'll set serverURL in the handler once we know it
+	var serverURL string
+
+	// Create mock HTTPS server on localhost (a private/loopback address)
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Return valid metadata with matching client_id
+		metadata := ClientMetadata{
+			ClientID:                serverURL + r.URL.Path,
+			ClientName:              "Private Network Client",
+			RedirectURIs:            []string{"https://app.example.com/callback"},
+			GrantTypes:              []string{"authorization_code"},
+			ResponseTypes:           []string{"code"},
+			TokenEndpointAuthMethod: "none",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(metadata)
+	}))
+	defer ts.Close()
+	serverURL = ts.URL
+
+	t.Run("fetch blocked without AllowPrivateIPClientMetadata", func(t *testing.T) {
+		logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+		srv := &Server{
+			Config: &Config{
+				ClientMetadataFetchTimeout:      10 * time.Second,
+				EnableClientIDMetadataDocuments: true,
+				AllowPrivateIPClientMetadata:    false, // SSRF protection enabled (default)
+			},
+			Logger: logger,
+		}
+
+		clientID := ts.URL + "/client-metadata.json"
+		_, _, err := srv.fetchClientMetadata(context.Background(), clientID)
+
+		// Should be blocked by SSRF protection (test server uses localhost/127.0.0.1)
+		if err == nil {
+			t.Error("expected SSRF protection error, got nil")
+			return
+		}
+		if !strings.Contains(err.Error(), "private/internal IP") {
+			t.Errorf("expected private/internal IP error, got: %v", err)
+		}
+	})
+
+	t.Run("fetch allowed with AllowPrivateIPClientMetadata", func(t *testing.T) {
+		logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+		srv := &Server{
+			Config: &Config{
+				ClientMetadataFetchTimeout:      10 * time.Second,
+				EnableClientIDMetadataDocuments: true,
+				AllowPrivateIPClientMetadata:    true, // Allow private IPs for internal networks
+			},
+			Logger: logger,
+		}
+
+		clientID := ts.URL + "/client-metadata.json"
+		_, _, err := srv.fetchClientMetadata(context.Background(), clientID)
+
+		// The test server uses a self-signed certificate, so we expect a TLS error.
+		// The key assertion is that we do NOT get an SSRF protection error - proving
+		// that AllowPrivateIPClientMetadata bypasses the private IP check.
+		if err == nil {
+			// If somehow the fetch succeeded (unlikely with test server certs), that's fine
+			return
+		}
+
+		// Verify error is NOT about private IP (SSRF protection)
+		if strings.Contains(err.Error(), "private/internal IP") {
+			t.Errorf("expected SSRF protection to be bypassed with AllowPrivateIPClientMetadata=true, but got: %v", err)
+		}
+
+		// TLS errors are expected since httptest.NewTLSServer uses self-signed certs.
+		// This proves we got past SSRF validation and attempted the actual fetch.
+		// Any other error type is noted but not a test failure, since our primary
+		// assertion is that SSRF protection was bypassed (checked above).
+		if !strings.Contains(err.Error(), "tls") && !strings.Contains(err.Error(), "certificate") {
+			t.Logf("note: error is not TLS-related (still acceptable as SSRF was bypassed): %v", err)
+		}
+	})
 }
 
 // TestGetOrFetchClient_URLClientID_NegativeCacheHit tests that failed URL clients return cached error
