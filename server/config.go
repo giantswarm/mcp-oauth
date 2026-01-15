@@ -430,6 +430,25 @@ type Config struct {
 	// Default: false (blocked for security)
 	AllowLinkLocalRedirectURIs bool
 
+	// AllowPrivateIPClientMetadata allows CIMD (Client ID Metadata Document) metadata URLs
+	// that resolve to private IP addresses (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 per RFC 1918).
+	// This also allows loopback addresses (127.0.0.0/8, ::1) and link-local addresses.
+	// WARNING: Reduces SSRF protection. Only enable for internal/VPN deployments where
+	// MCP servers legitimately communicate over private networks.
+	//
+	// Use cases:
+	//   - Home lab deployments
+	//   - Air-gapped environments
+	//   - Internal enterprise networks
+	//   - Any deployment where MCP servers communicate over private networks
+	//
+	// Security: When enabled, the server will fetch client metadata from URLs that resolve
+	// to private IPs. This is necessary when MCP aggregators and servers are on the same
+	// internal network. PKCE and other OAuth security measures still apply.
+	//
+	// Default: false (blocked for security)
+	AllowPrivateIPClientMetadata bool
+
 	// BlockedRedirectSchemes lists URI schemes that are always rejected for security.
 	// These schemes can be used for XSS attacks (javascript:, data:, blob:) or local file/app access (file:, ms-appx:).
 	// This is applied in ALL modes (production and development).

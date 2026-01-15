@@ -105,7 +105,10 @@ func isPrivateIP(ip net.IP) bool {
 // Per draft-ietf-oauth-client-id-metadata-document-00 Section 6:
 // "Authorization servers fetching metadata documents SHOULD consider
 // Server-Side Request Forgery (SSRF) risks"
-func validateAndSanitizeMetadataURL(clientID string) (string, error) {
+//
+// When allowPrivateIP is true, private/internal IP addresses are allowed for internal
+// network deployments (home labs, air-gapped environments, enterprise intranets).
+func validateAndSanitizeMetadataURL(clientID string, allowPrivateIP bool) (string, error) {
 	u, err := url.Parse(clientID)
 	if err != nil {
 		return "", fmt.Errorf("invalid URL: %w", err)
@@ -127,10 +130,13 @@ func validateAndSanitizeMetadataURL(clientID string) (string, error) {
 
 	// CRITICAL SECURITY: Block requests to private/internal IP ranges
 	// This prevents SSRF attacks against internal services
-	for _, ip := range ips {
-		if isPrivateIP(ip) {
-			return "", fmt.Errorf("client_id metadata URL resolves to private/internal IP address: %s -> %s (SSRF protection)",
-				hostname, ip.String())
+	// Skip this check if AllowPrivateIPClientMetadata is enabled for internal deployments
+	if !allowPrivateIP {
+		for _, ip := range ips {
+			if isPrivateIP(ip) {
+				return "", fmt.Errorf("client_id metadata URL resolves to private/internal IP address: %s -> %s (SSRF protection)",
+					hostname, ip.String())
+			}
 		}
 	}
 
@@ -145,7 +151,10 @@ func validateAndSanitizeMetadataURL(clientID string) (string, error) {
 
 // createSSRFProtectedTransport creates an HTTP transport with SSRF protection at connection time
 // This prevents DNS rebinding attacks by validating IPs when connecting, not just during initial validation
-func createSSRFProtectedTransport(_ context.Context) *http.Transport {
+//
+// When allowPrivateIP is true, private/internal IP addresses are allowed for internal
+// network deployments (home labs, air-gapped environments, enterprise intranets).
+func createSSRFProtectedTransport(_ context.Context, allowPrivateIP bool) *http.Transport {
 	return &http.Transport{
 		DialContext: func(dialCtx context.Context, network, addr string) (net.Conn, error) {
 			// Parse host:port
@@ -157,19 +166,22 @@ func createSSRFProtectedTransport(_ context.Context) *http.Transport {
 			// CRITICAL SECURITY: Resolve and validate IPs at connection time
 			// This prevents DNS rebinding attacks where DNS resolution changes between
 			// initial validation and actual connection
-			ips, err := net.DefaultResolver.LookupIPAddr(dialCtx, host)
-			if err != nil {
-				return nil, fmt.Errorf("failed to resolve host %s: %w", host, err)
-			}
+			// Skip this check if AllowPrivateIPClientMetadata is enabled for internal deployments
+			if !allowPrivateIP {
+				ips, err := net.DefaultResolver.LookupIPAddr(dialCtx, host)
+				if err != nil {
+					return nil, fmt.Errorf("failed to resolve host %s: %w", host, err)
+				}
 
-			// Check all resolved IPs for private ranges
-			for _, ipAddr := range ips {
-				if isPrivateIP(ipAddr.IP) {
-					return nil, fmt.Errorf("SSRF protection: %s resolves to private/internal IP %s", host, ipAddr.IP)
+				// Check all resolved IPs for private ranges
+				for _, ipAddr := range ips {
+					if isPrivateIP(ipAddr.IP) {
+						return nil, fmt.Errorf("SSRF protection: %s resolves to private/internal IP %s", host, ipAddr.IP)
+					}
 				}
 			}
 
-			// All IPs are safe - use default dialer
+			// All IPs are safe (or private IPs allowed) - use default dialer
 			dialer := &net.Dialer{
 				Timeout:   5 * time.Second,
 				KeepAlive: 30 * time.Second,
@@ -185,14 +197,16 @@ func createSSRFProtectedTransport(_ context.Context) *http.Transport {
 // Returns the metadata and a suggested cache TTL from HTTP Cache-Control header (0 if not specified)
 //
 // Security considerations per Section 6:
-// - SSRF protection: blocks private/internal IP addresses at connection time (prevents DNS rebinding)
-// - HTTPS only: rejects HTTP URLs
-// - Timeout protection: enforces reasonable timeout
-// - Size limit: prevents memory exhaustion and validates full document read
+//   - SSRF protection: blocks private/internal IP addresses at connection time (prevents DNS rebinding)
+//     unless AllowPrivateIPClientMetadata is enabled for internal network deployments
+//   - HTTPS only: rejects HTTP URLs
+//   - Timeout protection: enforces reasonable timeout
+//   - Size limit: prevents memory exhaustion and validates full document read
 func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*ClientMetadata, time.Duration, error) {
 	fetchStart := time.Now()
+	allowPrivateIP := s.Config.AllowPrivateIPClientMetadata
 
-	sanitizedURL, err := validateAndSanitizeMetadataURL(clientID)
+	sanitizedURL, err := validateAndSanitizeMetadataURL(clientID, allowPrivateIP)
 	if err != nil {
 		s.recordCIMDFetchMetric(ctx, "blocked", fetchStart)
 		s.logMetadataFetchEvent("client_metadata_fetch_blocked", clientID, map[string]any{
@@ -203,7 +217,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	}
 
 	timeout := s.calculateFetchTimeout(ctx)
-	client := s.createMetadataHTTPClient(ctx, timeout)
+	client := s.createMetadataHTTPClient(ctx, timeout, allowPrivateIP)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sanitizedURL, nil)
 	if err != nil {
@@ -443,10 +457,13 @@ func (s *Server) logMetadataFetchEvent(eventType, clientID string, details map[s
 }
 
 // createMetadataHTTPClient creates an HTTP client configured for metadata fetching
-func (s *Server) createMetadataHTTPClient(ctx context.Context, timeout time.Duration) *http.Client {
+//
+// When allowPrivateIP is true, private/internal IP addresses are allowed for internal
+// network deployments (home labs, air-gapped environments, enterprise intranets).
+func (s *Server) createMetadataHTTPClient(ctx context.Context, timeout time.Duration, allowPrivateIP bool) *http.Client {
 	return &http.Client{
 		Timeout:   timeout,
-		Transport: createSSRFProtectedTransport(ctx),
+		Transport: createSSRFProtectedTransport(ctx, allowPrivateIP),
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
