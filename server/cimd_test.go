@@ -1210,10 +1210,12 @@ func TestFetchClientMetadata_AllowPrivateIP(t *testing.T) {
 			t.Errorf("expected SSRF protection to be bypassed with AllowPrivateIPClientMetadata=true, but got: %v", err)
 		}
 
-		// Verify error IS about TLS (expected for test server with self-signed cert)
-		// This proves we got past SSRF validation and attempted the actual fetch
+		// TLS errors are expected since httptest.NewTLSServer uses self-signed certs.
+		// This proves we got past SSRF validation and attempted the actual fetch.
+		// Any other error type is noted but not a test failure, since our primary
+		// assertion is that SSRF protection was bypassed (checked above).
 		if !strings.Contains(err.Error(), "tls") && !strings.Contains(err.Error(), "certificate") {
-			t.Logf("unexpected error (not TLS-related): %v", err)
+			t.Logf("note: error is not TLS-related (still acceptable as SSRF was bypassed): %v", err)
 		}
 	})
 }

@@ -106,8 +106,7 @@ func isPrivateIP(ip net.IP) bool {
 // "Authorization servers fetching metadata documents SHOULD consider
 // Server-Side Request Forgery (SSRF) risks"
 //
-// When allowPrivateIP is true, private/internal IP addresses are allowed for internal
-// network deployments (home labs, air-gapped environments, enterprise intranets).
+// The allowPrivateIP parameter controls private IP access; see Config.AllowPrivateIPClientMetadata.
 func validateAndSanitizeMetadataURL(clientID string, allowPrivateIP bool) (string, error) {
 	u, err := url.Parse(clientID)
 	if err != nil {
@@ -152,8 +151,7 @@ func validateAndSanitizeMetadataURL(clientID string, allowPrivateIP bool) (strin
 // createSSRFProtectedTransport creates an HTTP transport with SSRF protection at connection time
 // This prevents DNS rebinding attacks by validating IPs when connecting, not just during initial validation
 //
-// When allowPrivateIP is true, private/internal IP addresses are allowed for internal
-// network deployments (home labs, air-gapped environments, enterprise intranets).
+// The allowPrivateIP parameter controls private IP access; see Config.AllowPrivateIPClientMetadata.
 func createSSRFProtectedTransport(_ context.Context, allowPrivateIP bool) *http.Transport {
 	return &http.Transport{
 		DialContext: func(dialCtx context.Context, network, addr string) (net.Conn, error) {
@@ -205,6 +203,12 @@ func createSSRFProtectedTransport(_ context.Context, allowPrivateIP bool) *http.
 func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*ClientMetadata, time.Duration, error) {
 	fetchStart := time.Now()
 	allowPrivateIP := s.Config.AllowPrivateIPClientMetadata
+
+	if allowPrivateIP {
+		s.Logger.Debug("CIMD fetch with private IP allowance enabled",
+			"client_id", clientID,
+			"config", "AllowPrivateIPClientMetadata=true")
+	}
 
 	sanitizedURL, err := validateAndSanitizeMetadataURL(clientID, allowPrivateIP)
 	if err != nil {
@@ -458,8 +462,7 @@ func (s *Server) logMetadataFetchEvent(eventType, clientID string, details map[s
 
 // createMetadataHTTPClient creates an HTTP client configured for metadata fetching
 //
-// When allowPrivateIP is true, private/internal IP addresses are allowed for internal
-// network deployments (home labs, air-gapped environments, enterprise intranets).
+// The allowPrivateIP parameter controls private IP access; see Config.AllowPrivateIPClientMetadata.
 func (s *Server) createMetadataHTTPClient(ctx context.Context, timeout time.Duration, allowPrivateIP bool) *http.Client {
 	return &http.Client{
 		Timeout:   timeout,
