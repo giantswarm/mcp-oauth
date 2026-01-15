@@ -205,7 +205,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	allowPrivateIP := s.Config.AllowPrivateIPClientMetadata
 
 	if allowPrivateIP {
-		s.Logger.Debug("CIMD fetch with private IP allowance enabled",
+		s.Logger.Info("CIMD fetch with private IP allowance enabled",
 			"client_id", clientID,
 			"config", "AllowPrivateIPClientMetadata=true")
 	}

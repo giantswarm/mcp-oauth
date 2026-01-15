@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Loopback addresses: 127.0.0.0/8, ::1
     - Link-local addresses: 169.254.0.0/16, fe80::/10
   - **Warning**: Only enable for trusted internal network deployments. PKCE and other OAuth security measures still apply.
+  - **Logging**: When enabled, logs a startup warning at `Warn` level to ensure operator visibility, and logs each private IP fetch at `Info` level for audit trail.
   - **Example**:
     ```go
     config := &server.Config{
