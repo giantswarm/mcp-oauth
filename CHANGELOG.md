@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Solution**: The Google provider now adds `prompt=consent` to authorization URLs by default, ensuring refresh tokens are always returned
   - **Configuration**: `ForceConsent` field in `google.Config` (default: `true`)
   - **Backward Compatibility**: Existing code benefits automatically since `ForceConsent` defaults to `true`
-  - **Opt-out**: Set `ForceConsent: boolPtr(false)` if you don't need refresh tokens or prefer fewer consent prompts
+  - **Opt-out**: Set `ForceConsent` to a pointer to `false` if you don't need refresh tokens or prefer fewer consent prompts
   - **Example**:
     ```go
     provider, err := google.NewProvider(&google.Config{
