@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Google Provider: ForceConsent Configuration for Reliable Refresh Tokens**
+  - **Feature**: Added `ForceConsent` configuration option to the Google OAuth provider
+  - **Root Cause**: Google only returns refresh tokens on the first user consent. Subsequent authorizations return no refresh token, causing token refresh failures.
+  - **Solution**: The Google provider now adds `prompt=consent` to authorization URLs by default, ensuring refresh tokens are always returned
+  - **Configuration**: `ForceConsent` field in `google.Config` (default: `true`)
+  - **Backward Compatibility**: Existing code benefits automatically since `ForceConsent` defaults to `true`
+  - **Opt-out**: Set `ForceConsent` to a pointer to `false` if you don't need refresh tokens or prefer fewer consent prompts
+  - **Example**:
+    ```go
+    provider, err := google.NewProvider(&google.Config{
+        ClientID:     "your-client-id",
+        ClientSecret: "your-secret",
+        RedirectURL:  "https://example.com/callback",
+        // ForceConsent defaults to true for reliable refresh tokens
+    })
+    ```
+  - **References**: [Google OAuth 2.0 Offline Access](https://developers.google.com/identity/protocols/oauth2/web-server#offline)
+  - **Issue**: [#168](https://github.com/giantswarm/mcp-oauth/issues/168)
+
 - **AllowPrivateIPClientMetadata Configuration Option for Internal Network CIMD**
   - **Feature**: Added configuration option to allow CIMD (Client ID Metadata Document) metadata URLs that resolve to private IP addresses
   - **Use Case**: Enables MCP aggregators and servers to communicate over internal/private networks (home labs, air-gapped environments, enterprise intranets)

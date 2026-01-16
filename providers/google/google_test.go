@@ -144,6 +144,7 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 				"code_challenge=test-challenge",
 				"code_challenge_method=S256",
 				"access_type=offline",
+				"prompt=consent", // Default ForceConsent=true
 			},
 		},
 		{
@@ -153,6 +154,7 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 			wantContains: []string{
 				"state=test-state",
 				"access_type=offline",
+				"prompt=consent", // Default ForceConsent=true
 			},
 			wantNotContains: []string{
 				"code_challenge",
@@ -214,6 +216,69 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestProvider_AuthorizationURL_ForceConsent verifies that ForceConsent config option
+// controls whether prompt=consent is added to the authorization URL.
+// See: https://developers.google.com/identity/protocols/oauth2/web-server#offline
+func TestProvider_AuthorizationURL_ForceConsent(t *testing.T) {
+	tests := []struct {
+		name              string
+		forceConsent      *bool
+		wantPromptConsent bool
+	}{
+		{
+			name:              "default (nil) - ForceConsent enabled",
+			forceConsent:      nil,
+			wantPromptConsent: true,
+		},
+		{
+			name:              "ForceConsent explicitly enabled",
+			forceConsent:      boolPtr(true),
+			wantPromptConsent: true,
+		},
+		{
+			name:              "ForceConsent explicitly disabled",
+			forceConsent:      boolPtr(false),
+			wantPromptConsent: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider, err := NewProvider(&Config{
+				ClientID:     "test-client-id",
+				ClientSecret: "test-client-secret",
+				RedirectURL:  "https://example.com/callback",
+				Scopes:       []string{"openid", "email"},
+				ForceConsent: tt.forceConsent,
+			})
+			if err != nil {
+				t.Fatalf("NewProvider() error = %v", err)
+			}
+
+			authURL := provider.AuthorizationURL("test-state", "test-challenge", "S256", nil)
+
+			hasPromptConsent := strings.Contains(authURL, "prompt=consent")
+			if hasPromptConsent != tt.wantPromptConsent {
+				if tt.wantPromptConsent {
+					t.Errorf("AuthorizationURL() should contain prompt=consent, got URL: %q", authURL)
+				} else {
+					t.Errorf("AuthorizationURL() should NOT contain prompt=consent, got URL: %q", authURL)
+				}
+			}
+
+			// access_type=offline should always be present
+			if !strings.Contains(authURL, "access_type=offline") {
+				t.Errorf("AuthorizationURL() should always contain access_type=offline, got URL: %q", authURL)
+			}
+		})
+	}
+}
+
+// boolPtr returns a pointer to a bool value
+func boolPtr(b bool) *bool {
+	return &b
 }
 
 // TestProvider_AuthorizationURL_FiltersOfflineAccess verifies that offline_access
