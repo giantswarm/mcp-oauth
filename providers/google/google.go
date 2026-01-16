@@ -23,6 +23,7 @@ type Provider struct {
 	*oauth2.Config
 	httpClient     *http.Client
 	requestTimeout time.Duration
+	forceConsent   bool
 }
 
 // Config holds Google OAuth configuration
@@ -33,6 +34,16 @@ type Config struct {
 	Scopes         []string
 	HTTPClient     *http.Client  // Optional custom HTTP client
 	RequestTimeout time.Duration // Timeout for provider API calls (default: 30s)
+
+	// ForceConsent forces the consent screen on every authorization.
+	// This ensures a refresh token is always returned by Google.
+	// Google only sends refresh tokens on the first consent, so without this
+	// option, subsequent authorizations will not include a refresh token.
+	// Default: true (recommended for server applications that need refresh tokens)
+	//
+	// Set to false only if you don't need refresh tokens or prefer fewer consent prompts.
+	// See: https://developers.google.com/identity/protocols/oauth2/web-server#offline
+	ForceConsent *bool
 }
 
 // NewProvider creates a new Google OAuth provider
@@ -63,6 +74,12 @@ func NewProvider(cfg *Config) (*Provider, error) {
 		}
 	}
 
+	// Default ForceConsent to true (recommended for server applications)
+	forceConsent := true
+	if cfg.ForceConsent != nil {
+		forceConsent = *cfg.ForceConsent
+	}
+
 	return &Provider{
 		Config: &oauth2.Config{
 			ClientID:     cfg.ClientID,
@@ -73,6 +90,7 @@ func NewProvider(cfg *Config) (*Provider, error) {
 		},
 		httpClient:     httpClient,
 		requestTimeout: requestTimeout,
+		forceConsent:   forceConsent,
 	}, nil
 }
 
@@ -108,6 +126,13 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 
 	// Request offline access to get refresh token
 	opts = append(opts, oauth2.AccessTypeOffline)
+
+	// Force consent screen if configured (default: true)
+	// This ensures Google always returns a refresh token, not just on first consent.
+	// See: https://developers.google.com/identity/protocols/oauth2/web-server#offline
+	if p.forceConsent {
+		opts = append(opts, oauth2.ApprovalForce)
+	}
 
 	// SECURITY: Create a deep copy of scopes to prevent potential race conditions
 	// If we use provider defaults, we must copy the slice to avoid shared references
