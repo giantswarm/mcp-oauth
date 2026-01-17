@@ -11,7 +11,8 @@ This guide covers security configuration for production deployments. For deep te
 5. [Audit Logging](#audit-logging)
 6. [Client Registration Protection](#client-registration-protection)
 7. [Redirect URI Security](#redirect-uri-security)
-8. [Legacy Client Support](#legacy-client-support)
+8. [SSO Token Forwarding](#sso-token-forwarding)
+9. [Legacy Client Support](#legacy-client-support)
 
 ## Secure Defaults
 
@@ -447,6 +448,82 @@ IPv6 addresses with zone IDs (e.g., `fe80::1%eth0`) cannot be parsed by Go's `ne
 - If DNS validation is enabled, they will fail DNS lookup (blocking registration in strict mode)
 
 For maximum security, keep DNS validation enabled (`DNSValidation=true`, `DNSValidationStrict=true`) to ensure these edge cases are properly handled.
+
+## SSO Token Forwarding
+
+The `TrustedAudiences` feature enables Single Sign-On (SSO) scenarios where tokens issued to a trusted upstream service can be accepted by downstream MCP servers.
+
+### Use Case: MCP Aggregator Architecture
+
+In architectures with an MCP aggregator (like muster) that proxies requests to downstream MCP servers:
+
+1. Users authenticate to the aggregator once
+2. The aggregator receives tokens with its own `client_id` as the audience
+3. Downstream servers accept these forwarded tokens via `TrustedAudiences`
+
+Without this feature, each downstream MCP server would require its own separate OAuth flow.
+
+### Configuration
+
+```go
+config := &server.Config{
+    Issuer:             "https://auth.example.com",
+    ResourceIdentifier: "https://mcp-kubernetes.example.com",
+    
+    // Accept tokens issued to the muster aggregator
+    TrustedAudiences: []string{
+        "muster-client",
+        "my-other-aggregator-client",
+    },
+}
+```
+
+### Security Model
+
+| Aspect | Behavior |
+|--------|----------|
+| **Explicit Trust** | Each trusted audience must be explicitly configured |
+| **Same Issuer** | Tokens are only accepted if from the configured IdP |
+| **Own Identifier** | Server's own `ResourceIdentifier` is always implicitly trusted |
+| **Audit Logging** | `EventCrossClientTokenAccepted` logged for security monitoring |
+| **Constant-Time** | Audience comparison uses constant-time comparison |
+
+### Security Recommendations
+
+1. **Minimize Trust**: Only add audiences you explicitly trust
+2. **Same IdP**: All trusted audiences should use the same Identity Provider
+3. **Monitor Logs**: Watch for `cross_client_token_accepted` audit events
+4. **Validate Scopes**: Use `EndpointScopeRequirements` for fine-grained access control
+
+### Example YAML Configuration
+
+```yaml
+# Downstream MCP server (mcp-kubernetes) configuration
+oauth:
+  issuer: "https://auth.example.com"
+  resourceIdentifier: "https://mcp-kubernetes.example.com"
+  # Trust tokens forwarded from muster aggregator
+  trustedAudiences:
+    - "muster-client"
+```
+
+### Audit Event
+
+When a token is accepted via `TrustedAudiences`, the `EventCrossClientTokenAccepted` event is logged:
+
+```json
+{
+  "event_type": "cross_client_token_accepted",
+  "user_id_hash": "a1b2c3d4...",
+  "client_id": "original-client",
+  "details": {
+    "original_audience": "muster-client",
+    "server_identifier": "https://mcp-kubernetes.example.com",
+    "trusted_via": "TrustedAudiences",
+    "sso_token_forwarded": true
+  }
+}
+```
 
 ## Legacy Client Support
 

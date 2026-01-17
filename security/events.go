@@ -92,6 +92,12 @@ const (
 	// EventResourceMismatch is logged when resource parameter doesn't match (RFC 8707)
 	EventResourceMismatch = "resource_mismatch"
 
+	// EventCrossClientTokenAccepted is logged when a token is accepted via TrustedAudiences.
+	// This occurs in SSO scenarios where tokens issued to a trusted upstream (e.g., muster)
+	// are accepted by a downstream MCP server. This event is logged for security monitoring
+	// and forensics to track cross-client token usage patterns.
+	EventCrossClientTokenAccepted = "cross_client_token_accepted"
+
 	// Provider-related events
 
 	// EventInvalidProviderCallback is logged when provider callback validation fails

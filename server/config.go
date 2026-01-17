@@ -545,6 +545,32 @@ type Config struct {
 	// Security: This prevents token theft and replay attacks to different resource servers
 	ResourceIdentifier string
 
+	// TrustedAudiences lists additional OAuth client IDs whose tokens are accepted.
+	// This enables Single Sign-On (SSO) scenarios where tokens issued to a trusted upstream
+	// (e.g., an MCP aggregator like muster) are accepted by this resource server.
+	//
+	// Security Model:
+	//   - The server's own ClientID (via ResourceIdentifier) is always implicitly trusted
+	//   - Each trusted audience must be explicitly configured (no implicit trust)
+	//   - Tokens are only accepted if they're from the configured issuer (same IdP)
+	//   - An audit event (EventCrossClientTokenAccepted) is logged when a token is accepted
+	//     via cross-client trust for security monitoring
+	//
+	// Use Case:
+	// In architectures with an MCP aggregator (like muster) that proxies requests to
+	// downstream MCP servers, users authenticate to the aggregator and receive tokens
+	// with the aggregator's client_id as the audience. By adding the aggregator's
+	// client_id to TrustedAudiences, downstream servers can accept these forwarded
+	// tokens without requiring separate authentication flows.
+	//
+	// Example:
+	//   TrustedAudiences: []string{"muster-client", "my-aggregator-client"}
+	//   This accepts tokens issued to either "muster-client" or "my-aggregator-client"
+	//   in addition to tokens issued to this server's own ResourceIdentifier.
+	//
+	// Default: nil (only tokens for this server's ResourceIdentifier are accepted)
+	TrustedAudiences []string
+
 	// EnableClientIDMetadataDocuments enables URL-based client_id support per MCP 2025-11-25
 	// When enabled, clients can use HTTPS URLs as client identifiers, and the authorization
 	// server will fetch client metadata from that URL following draft-ietf-oauth-client-id-metadata-document-00

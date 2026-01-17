@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **TrustedAudiences Support for SSO Token Forwarding**
+  - **Feature**: Added `TrustedAudiences` configuration option to accept tokens issued to trusted upstream OAuth clients
+  - **Use Case**: Enables Single Sign-On (SSO) scenarios in MCP architectures where an aggregator (like muster) proxies requests to downstream MCP servers
+  - **Problem Solved**: Previously, each downstream MCP server required separate authentication, even when all services use the same Identity Provider
+  - **Configuration**: `TrustedAudiences []string` in `server.Config`
+  - **Security Model**:
+    - The server's own `ResourceIdentifier` is always implicitly trusted
+    - Each trusted audience must be explicitly configured (no implicit trust)
+    - Tokens are only accepted if they're from the same configured issuer
+    - Audit event `EventCrossClientTokenAccepted` is logged when a token is accepted via cross-client trust
+  - **Backward Compatibility**: Empty `TrustedAudiences` maintains current behavior (only own tokens accepted)
+  - **Example**:
+    ```go
+    config := &server.Config{
+        Issuer:             "https://auth.example.com",
+        ResourceIdentifier: "https://mcp-kubernetes.example.com",
+        // Accept tokens issued to the muster aggregator
+        TrustedAudiences:   []string{"muster-client"},
+    }
+    ```
+  - **New Audit Event**: `EventCrossClientTokenAccepted` for security monitoring of SSO token usage
+  - **Issue**: [#171](https://github.com/giantswarm/mcp-oauth/issues/171)
+
 - **Google Provider: ForceConsent Configuration for Reliable Refresh Tokens**
   - **Feature**: Added `ForceConsent` configuration option to the Google OAuth provider
   - **Root Cause**: Google only returns refresh tokens on the first user consent. Subsequent authorizations return no refresh token, causing token refresh failures.
