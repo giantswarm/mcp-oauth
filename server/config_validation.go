@@ -31,6 +31,9 @@ func applySecureDefaults(config *Config, logger *slog.Logger) *Config {
 	// Validate protected resource metadata configuration (RFC 9728, MCP 2025-11-25)
 	validateResourceMetadataByPath(config, logger)
 
+	// Validate TrustedAudiences configuration (SSO token forwarding)
+	validateTrustedAudiences(config, logger)
+
 	// Validate interstitial page configuration (RFC 8252 Section 7.1)
 	validateInterstitialConfig(config, logger)
 
@@ -429,6 +432,84 @@ func validateResourceIdentifier(pathKey, identifier string, logger *slog.Logger)
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		logger.Warn("Invalid resource identifier", "path", pathKey, "resource_identifier", identifier)
 	}
+}
+
+// validateTrustedAudiences validates the TrustedAudiences configuration for SSO token forwarding.
+// Each audience entry must be a non-empty string that represents either a client_id or a URL.
+// This enables Single Sign-On scenarios where tokens issued to trusted upstream services
+// (e.g., an MCP aggregator) are accepted by downstream MCP servers.
+func validateTrustedAudiences(config *Config, logger *slog.Logger) {
+	if len(config.TrustedAudiences) == 0 {
+		return
+	}
+
+	validAudiences := filterValidAudiences(config.TrustedAudiences, logger)
+	config.TrustedAudiences = validAudiences
+
+	if len(validAudiences) > 0 {
+		logger.Info("TrustedAudiences configured for SSO token forwarding",
+			"audiences", validAudiences,
+			"count", len(validAudiences))
+	}
+}
+
+// filterValidAudiences filters and validates a list of audience strings.
+func filterValidAudiences(audiences []string, logger *slog.Logger) []string {
+	validAudiences := make([]string, 0, len(audiences))
+	seenAudiences := make(map[string]bool, len(audiences))
+
+	for i, audience := range audiences {
+		normalized, ok := validateAudience(audience, i, seenAudiences, logger)
+		if ok {
+			seenAudiences[normalized] = true
+			validAudiences = append(validAudiences, normalized)
+		}
+	}
+
+	return validAudiences
+}
+
+// validateAudience validates a single audience entry.
+// Returns the normalized audience and true if valid, or empty string and false if invalid.
+func validateAudience(audience string, index int, seen map[string]bool, logger *slog.Logger) (string, bool) {
+	if audience == "" {
+		logger.Warn("Empty audience in TrustedAudiences - removing", "index", index)
+		return "", false
+	}
+
+	audience = strings.TrimSpace(audience)
+	if audience == "" {
+		logger.Warn("Whitespace-only audience in TrustedAudiences - removing", "index", index)
+		return "", false
+	}
+
+	if seen[audience] {
+		logger.Warn("Duplicate audience in TrustedAudiences - removing",
+			"audience", audience, "index", index)
+		return "", false
+	}
+
+	if !isValidAudienceFormat(audience, index, logger) {
+		return "", false
+	}
+
+	return audience, true
+}
+
+// isValidAudienceFormat checks if an audience has a valid format.
+// Audiences can be client IDs (any string) or URLs (must be valid).
+func isValidAudienceFormat(audience string, index int, logger *slog.Logger) bool {
+	if !strings.HasPrefix(audience, "http://") && !strings.HasPrefix(audience, "https://") {
+		return true // Non-URL audience (client_id) - always valid
+	}
+
+	u, err := url.Parse(audience)
+	if err != nil || u.Host == "" {
+		logger.Warn("Invalid URL format in TrustedAudiences",
+			"audience", audience, "index", index, "error", err)
+		return false
+	}
+	return true
 }
 
 // validateTrustedPublicRegistrationSchemes validates and sanitizes TrustedPublicRegistrationSchemes configuration.

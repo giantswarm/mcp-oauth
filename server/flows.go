@@ -232,6 +232,8 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 }
 
 // validateTokenAudience validates RFC 8707 audience binding for the token.
+// It checks if the token's audience matches this server's ResourceIdentifier or
+// any of the TrustedAudiences configured for SSO token forwarding.
 func (s *Server) validateTokenAudience(accessToken string) error {
 	metadataStore, ok := s.tokenStore.(interface {
 		GetTokenMetadata(tokenID string) (*storage.TokenMetadata, error)
@@ -249,6 +251,7 @@ func (s *Server) validateTokenAudience(accessToken string) error {
 	normalizedAudience := helpers.NormalizeURL(metadata.Audience)
 	normalizedExpected := helpers.NormalizeURL(expectedAudience)
 
+	// Check if audience matches this server's own resource identifier
 	if subtle.ConstantTimeCompare([]byte(normalizedAudience), []byte(normalizedExpected)) == 1 {
 		s.Logger.Debug("Token audience validation passed",
 			"audience", metadata.Audience,
@@ -256,9 +259,58 @@ func (s *Server) validateTokenAudience(accessToken string) error {
 		return nil
 	}
 
+	// Check if audience matches any of the TrustedAudiences (SSO token forwarding)
+	if s.isTrustedAudience(metadata.Audience) {
+		s.logCrossClientTokenAccepted(accessToken, metadata)
+		return nil
+	}
+
 	// Audience mismatch - log and return error
 	s.logAudienceMismatch(accessToken, metadata, expectedAudience)
 	return fmt.Errorf("token not intended for this resource server (RFC 8707 audience mismatch)")
+}
+
+// isTrustedAudience checks if the given audience is in the TrustedAudiences list.
+// This enables SSO scenarios where tokens issued to trusted upstream services are accepted.
+func (s *Server) isTrustedAudience(audience string) bool {
+	if len(s.Config.TrustedAudiences) == 0 {
+		return false
+	}
+
+	normalizedAudience := helpers.NormalizeURL(audience)
+
+	for _, trusted := range s.Config.TrustedAudiences {
+		normalizedTrusted := helpers.NormalizeURL(trusted)
+		if subtle.ConstantTimeCompare([]byte(normalizedAudience), []byte(normalizedTrusted)) == 1 {
+			return true
+		}
+	}
+
+	return false
+}
+
+// logCrossClientTokenAccepted logs when a token is accepted via TrustedAudiences.
+// This audit event helps track SSO token usage patterns for security monitoring.
+func (s *Server) logCrossClientTokenAccepted(accessToken string, metadata *storage.TokenMetadata) {
+	s.Logger.Debug("Token accepted via TrustedAudiences (SSO token forwarding)",
+		"token_audience", metadata.Audience,
+		"user_id", metadata.UserID,
+		"client_id", metadata.ClientID,
+		"token_prefix", helpers.SafeTruncate(accessToken, 8))
+
+	if s.Auditor != nil {
+		s.Auditor.LogEvent(security.Event{
+			Type:     security.EventCrossClientTokenAccepted,
+			UserID:   metadata.UserID,
+			ClientID: metadata.ClientID,
+			Details: map[string]any{
+				"original_audience":   metadata.Audience,
+				"server_identifier":   s.Config.GetResourceIdentifier(),
+				"trusted_via":         "TrustedAudiences",
+				"sso_token_forwarded": true,
+			},
+		})
+	}
 }
 
 // logAudienceMismatch logs an audience mismatch security event.
