@@ -4,6 +4,7 @@
 package helpers
 
 import (
+	"crypto/subtle"
 	"net/url"
 	"strings"
 )
@@ -205,4 +206,41 @@ func PathMatchesPrefix(resourcePath, prefix string) bool {
 	}
 
 	return false
+}
+
+// MatchAudienceSecure checks if a token audience matches any of the trusted audiences.
+// Uses URL normalization for consistent comparison and constant-time comparison
+// for security (defense-in-depth against timing attacks).
+//
+// Returns the matched trusted audience value, or empty string if no match found.
+// This is used for SSO token forwarding where tokens from trusted upstream
+// services are validated.
+//
+// Examples:
+//
+//	MatchAudienceSecure("https://example.com", []string{"https://EXAMPLE.COM"}) // Returns "https://EXAMPLE.COM"
+//	MatchAudienceSecure("https://example.com:443/", []string{"https://example.com"}) // Returns "https://example.com"
+//	MatchAudienceSecure("https://other.com", []string{"https://example.com"}) // Returns ""
+func MatchAudienceSecure(tokenAudience string, trustedAudiences []string) string {
+	normalizedToken := NormalizeURL(tokenAudience)
+	for _, trusted := range trustedAudiences {
+		normalizedTrusted := NormalizeURL(trusted)
+		if subtle.ConstantTimeCompare([]byte(normalizedToken), []byte(normalizedTrusted)) == 1 {
+			return trusted
+		}
+	}
+	return ""
+}
+
+// FindMatchingAudience checks if any of the token's audiences match any trusted audience.
+// Returns the first matched token audience value, or empty string if no match.
+// This is the multi-audience version of MatchAudienceSecure for JWT tokens
+// that may have multiple audience claims.
+func FindMatchingAudience(tokenAudiences, trustedAudiences []string) string {
+	for _, tokenAud := range tokenAudiences {
+		if MatchAudienceSecure(tokenAud, trustedAudiences) != "" {
+			return tokenAud
+		}
+	}
+	return ""
 }

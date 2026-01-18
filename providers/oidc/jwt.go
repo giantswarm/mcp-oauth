@@ -6,7 +6,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rsa"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -497,22 +496,15 @@ func validateIssuer(claims *IDTokenClaims, expectedIssuer string) error {
 }
 
 // validateAudience checks that at least one token audience matches a trusted audience.
-// Uses URL normalization to handle trailing slashes and constant-time comparison for security.
-// This is consistent with findMatchingTrustedAudience in server/flows_sso.go.
+// Uses the shared helpers.FindMatchingAudience for consistent URL normalization
+// and constant-time comparison across the codebase.
 func validateAudience(claims *IDTokenClaims, trustedAudiences []string) error {
 	if len(trustedAudiences) == 0 {
 		return nil
 	}
 
-	for _, tokenAud := range claims.Audience {
-		normalizedTokenAud := helpers.NormalizeURL(tokenAud)
-		for _, trusted := range trustedAudiences {
-			normalizedTrusted := helpers.NormalizeURL(trusted)
-			// Use constant-time comparison for defense-in-depth
-			if subtle.ConstantTimeCompare([]byte(normalizedTokenAud), []byte(normalizedTrusted)) == 1 {
-				return nil
-			}
-		}
+	if helpers.FindMatchingAudience(claims.Audience, trustedAudiences) != "" {
+		return nil
 	}
 
 	return fmt.Errorf("audience mismatch: token audiences %v not in trusted %v", claims.Audience, trustedAudiences)

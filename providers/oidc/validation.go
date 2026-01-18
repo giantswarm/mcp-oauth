@@ -36,6 +36,8 @@ func ValidateHTTPSURL(rawURL, context string) error {
 // ValidateIssuerURL validates an OIDC issuer URL with SSRF protection.
 // It enforces HTTPS and blocks private IP ranges to prevent Server-Side Request Forgery attacks.
 //
+// This is a convenience wrapper around ValidateExternalURL with "issuer URL" as the context.
+//
 // Security Considerations:
 //   - HTTPS Enforcement: Prevents credential interception
 //   - Private IP Blocking: Prevents SSRF against internal services (Kubernetes API, metadata services, etc.)
@@ -48,37 +50,7 @@ func ValidateHTTPSURL(rawURL, context string) error {
 //	    return fmt.Errorf("invalid issuer: %w", err)
 //	}
 func ValidateIssuerURL(issuerURL string) error {
-	// SECURITY: Enforce HTTPS to prevent credential leakage
-	if err := ValidateHTTPSURL(issuerURL, "issuer URL"); err != nil {
-		return err
-	}
-
-	u, err := url.Parse(issuerURL)
-	if err != nil {
-		return fmt.Errorf("invalid issuer URL: %w", err)
-	}
-
-	// SECURITY: Validate hostname format
-	host := u.Hostname()
-	if host == "" {
-		return fmt.Errorf("issuer URL must have a hostname")
-	}
-
-	// SECURITY: Block private IP ranges to prevent SSRF
-	// Parse as IP address
-	if ip := net.ParseIP(host); ip != nil {
-		if ip.IsLoopback() {
-			return fmt.Errorf("issuer URL must not point to loopback addresses")
-		}
-		if ip.IsPrivate() {
-			return fmt.Errorf("issuer URL must not point to private IP ranges")
-		}
-		if ip.IsLinkLocalUnicast() {
-			return fmt.Errorf("issuer URL must not point to link-local addresses")
-		}
-	}
-
-	return nil
+	return ValidateExternalURL(issuerURL, "issuer URL")
 }
 
 // ValidateExternalURL validates an external URL with SSRF protection.
@@ -218,13 +190,19 @@ func ValidateGroups(groups []string) error {
 	return validateStringSlice(groups, "groups", 100, 256)
 }
 
-// isPrivateOrRestrictedIP checks if an IP address is private, loopback, or link-local.
+// isPrivateOrRestrictedIP checks if an IP address is private, loopback, link-local, or unspecified.
 // This is used for DNS rebinding protection to validate resolved IPs.
+//
+// Blocked address types:
+//   - Loopback: 127.0.0.0/8, ::1
+//   - Private: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+//   - Link-local: 169.254.0.0/16, fe80::/10 (includes cloud metadata services)
+//   - Unspecified: 0.0.0.0, :: (can be abused in some SSRF scenarios)
 func isPrivateOrRestrictedIP(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
 }
 
 // SSRFSafeDialContext creates a DialContext function that validates resolved IPs

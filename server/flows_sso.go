@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/subtle"
 	"fmt"
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
@@ -108,19 +107,11 @@ func (s *Server) validateForwardedIDToken(ctx context.Context, tokenString strin
 }
 
 // findMatchingTrustedAudience checks if any of the token's audiences match our trusted audiences.
-// Uses URL normalization to handle trailing slashes and constant-time comparison for security.
+// Uses the shared helpers.FindMatchingAudience for consistent URL normalization
+// and constant-time comparison across the codebase.
 // Returns the matched audience or empty string if no match.
 func (s *Server) findMatchingTrustedAudience(tokenAudiences []string) string {
-	for _, tokenAud := range tokenAudiences {
-		normalizedTokenAud := helpers.NormalizeURL(tokenAud)
-		for _, trusted := range s.Config.TrustedAudiences {
-			normalizedTrusted := helpers.NormalizeURL(trusted)
-			if subtle.ConstantTimeCompare([]byte(normalizedTokenAud), []byte(normalizedTrusted)) == 1 {
-				return tokenAud
-			}
-		}
-	}
-	return ""
+	return helpers.FindMatchingAudience(tokenAudiences, s.Config.TrustedAudiences)
 }
 
 // getJWKSClient returns or creates a JWKS client for JWT validation.

@@ -393,3 +393,151 @@ func TestPathMatchesPrefix(t *testing.T) {
 		})
 	}
 }
+
+func TestMatchAudienceSecure(t *testing.T) {
+	tests := []struct {
+		name             string
+		tokenAudience    string
+		trustedAudiences []string
+		want             string
+	}{
+		{
+			name:             "exact match",
+			tokenAudience:    "https://example.com",
+			trustedAudiences: []string{"https://example.com"},
+			want:             "https://example.com",
+		},
+		{
+			name:             "case insensitive match",
+			tokenAudience:    "https://example.com",
+			trustedAudiences: []string{"HTTPS://EXAMPLE.COM"},
+			want:             "HTTPS://EXAMPLE.COM",
+		},
+		{
+			name:             "trailing slash normalization",
+			tokenAudience:    "https://example.com/",
+			trustedAudiences: []string{"https://example.com"},
+			want:             "https://example.com",
+		},
+		{
+			name:             "default port normalization",
+			tokenAudience:    "https://example.com:443",
+			trustedAudiences: []string{"https://example.com"},
+			want:             "https://example.com",
+		},
+		{
+			name:             "combined normalization",
+			tokenAudience:    "HTTPS://Example.COM:443/",
+			trustedAudiences: []string{"https://example.com"},
+			want:             "https://example.com",
+		},
+		{
+			name:             "no match",
+			tokenAudience:    "https://other.com",
+			trustedAudiences: []string{"https://example.com"},
+			want:             "",
+		},
+		{
+			name:             "empty trusted audiences",
+			tokenAudience:    "https://example.com",
+			trustedAudiences: []string{},
+			want:             "",
+		},
+		{
+			name:             "multiple trusted audiences first match",
+			tokenAudience:    "https://example.com",
+			trustedAudiences: []string{"https://example.com", "https://other.com"},
+			want:             "https://example.com",
+		},
+		{
+			name:             "multiple trusted audiences second match",
+			tokenAudience:    "https://other.com",
+			trustedAudiences: []string{"https://example.com", "https://other.com"},
+			want:             "https://other.com",
+		},
+		{
+			name:             "non-URL audience",
+			tokenAudience:    "my-client-id",
+			trustedAudiences: []string{"my-client-id"},
+			want:             "my-client-id",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := MatchAudienceSecure(tt.tokenAudience, tt.trustedAudiences)
+			if got != tt.want {
+				t.Errorf("MatchAudienceSecure(%q, %v) = %q, want %q",
+					tt.tokenAudience, tt.trustedAudiences, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFindMatchingAudience(t *testing.T) {
+	tests := []struct {
+		name             string
+		tokenAudiences   []string
+		trustedAudiences []string
+		want             string
+	}{
+		{
+			name:             "single audience matches",
+			tokenAudiences:   []string{"https://example.com"},
+			trustedAudiences: []string{"https://example.com"},
+			want:             "https://example.com",
+		},
+		{
+			name:             "multiple token audiences first matches",
+			tokenAudiences:   []string{"https://example.com", "https://other.com"},
+			trustedAudiences: []string{"https://example.com"},
+			want:             "https://example.com",
+		},
+		{
+			name:             "multiple token audiences second matches",
+			tokenAudiences:   []string{"https://other.com", "https://example.com"},
+			trustedAudiences: []string{"https://example.com"},
+			want:             "https://example.com",
+		},
+		{
+			name:             "case insensitive match",
+			tokenAudiences:   []string{"https://example.com"},
+			trustedAudiences: []string{"HTTPS://EXAMPLE.COM"},
+			want:             "https://example.com",
+		},
+		{
+			name:             "no match",
+			tokenAudiences:   []string{"https://other.com"},
+			trustedAudiences: []string{"https://example.com"},
+			want:             "",
+		},
+		{
+			name:             "empty token audiences",
+			tokenAudiences:   []string{},
+			trustedAudiences: []string{"https://example.com"},
+			want:             "",
+		},
+		{
+			name:             "empty trusted audiences",
+			tokenAudiences:   []string{"https://example.com"},
+			trustedAudiences: []string{},
+			want:             "",
+		},
+		{
+			name:             "both empty",
+			tokenAudiences:   []string{},
+			trustedAudiences: []string{},
+			want:             "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FindMatchingAudience(tt.tokenAudiences, tt.trustedAudiences)
+			if got != tt.want {
+				t.Errorf("FindMatchingAudience(%v, %v) = %q, want %q",
+					tt.tokenAudiences, tt.trustedAudiences, got, tt.want)
+			}
+		})
+	}
+}
