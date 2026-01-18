@@ -439,3 +439,22 @@ func (p *Provider) HealthCheck(ctx context.Context) error {
 
 	return nil
 }
+
+// JWKSURI returns the JWKS URI for Dex from the discovery document.
+// This implements the JWKSProvider interface for SSO token forwarding.
+func (p *Provider) JWKSURI(ctx context.Context) (string, error) {
+	ctx, cancel := p.ensureContextTimeout(ctx)
+	defer cancel()
+
+	doc, err := p.discoveryClient.Discover(ctx, p.issuerURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to discover JWKS URI: %w", err)
+	}
+
+	return doc.JWKSUri, nil
+}
+
+// IssuerURL returns the Dex issuer URL for JWT validation.
+func (p *Provider) IssuerURL() string {
+	return p.issuerURL
+}

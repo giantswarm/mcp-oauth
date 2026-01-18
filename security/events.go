@@ -98,6 +98,11 @@ const (
 	// and forensics to track cross-client token usage patterns.
 	EventCrossClientTokenAccepted = "cross_client_token_accepted"
 
+	// EventForwardedIDTokenAccepted is logged when a forwarded ID token (JWT) is validated
+	// and accepted via JWKS signature verification. This is part of SSO token forwarding
+	// where an upstream MCP server's ID token is passed as a Bearer token to downstream services.
+	EventForwardedIDTokenAccepted = "forwarded_id_token_accepted"
+
 	// Provider-related events
 
 	// EventInvalidProviderCallback is logged when provider callback validation fails

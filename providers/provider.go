@@ -57,6 +57,25 @@ type Provider interface {
 	HealthCheck(ctx context.Context) error
 }
 
+// JWKSProvider is an optional interface for providers that support JWKS-based
+// JWT validation. This enables SSO token forwarding where ID tokens from
+// upstream servers are validated via JWKS signature verification.
+//
+// Providers that don't support JWKS validation can omit this interface.
+// The server will fall back to userinfo endpoint validation in that case.
+type JWKSProvider interface {
+	Provider
+
+	// JWKSURI returns the JWKS (JSON Web Key Set) URI for this provider.
+	// This is used to fetch public keys for JWT signature verification.
+	// Returns empty string if JWKS is not available.
+	JWKSURI(ctx context.Context) (string, error)
+
+	// IssuerURL returns the issuer URL for this provider.
+	// This is used for JWT issuer validation.
+	IssuerURL() string
+}
+
 // UserInfo represents user information from a provider
 type UserInfo struct {
 	// ID is the unique user identifier from the provider

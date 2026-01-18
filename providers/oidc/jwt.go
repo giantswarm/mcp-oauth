@@ -1,0 +1,354 @@
+// Package oidc provides OIDC (OpenID Connect) utilities for OAuth providers.
+package oidc
+
+import (
+	"context"
+	"crypto/rsa"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"math/big"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+)
+
+// JWKSClient fetches and caches JWKS (JSON Web Key Sets) for JWT validation.
+// It provides SSRF protection and caches keys with configurable TTL.
+//
+// The client is thread-safe and can be used concurrently from multiple goroutines.
+type JWKSClient struct {
+	httpClient   *http.Client
+	cache        sync.Map // jwksURI -> *cachedJWKS
+	cacheTTL     time.Duration
+	logger       *slog.Logger
+	timeProvider timeProvider
+}
+
+// cachedJWKS holds a JWKS with its fetch timestamp.
+type cachedJWKS struct {
+	keys      *JWKS
+	fetchedAt time.Time
+}
+
+// JWKS represents a JSON Web Key Set per RFC 7517.
+type JWKS struct {
+	Keys []JWK `json:"keys"`
+}
+
+// JWK represents a JSON Web Key per RFC 7517.
+type JWK struct {
+	Kty string `json:"kty"` // Key Type (e.g., "RSA")
+	Use string `json:"use"` // Public Key Use (e.g., "sig")
+	Kid string `json:"kid"` // Key ID
+	Alg string `json:"alg"` // Algorithm (e.g., "RS256")
+	N   string `json:"n"`   // RSA modulus (base64url)
+	E   string `json:"e"`   // RSA exponent (base64url)
+}
+
+// NewJWKSClient creates a new JWKS client with default configuration.
+//
+// Parameters:
+//   - httpClient: HTTP client to use for requests (nil uses default with 10s timeout)
+//   - cacheTTL: Time-to-live for cached JWKS (0 uses default 1 hour)
+//   - logger: Logger for debug/info messages (nil uses default logger)
+func NewJWKSClient(httpClient *http.Client, cacheTTL time.Duration, logger *slog.Logger) *JWKSClient {
+	if httpClient == nil {
+		httpClient = &http.Client{
+			Timeout: 10 * time.Second,
+		}
+	}
+	if cacheTTL == 0 {
+		cacheTTL = 1 * time.Hour
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	return &JWKSClient{
+		httpClient:   httpClient,
+		cacheTTL:     cacheTTL,
+		logger:       logger,
+		timeProvider: realTime{},
+	}
+}
+
+// FetchJWKS fetches the JWKS from a given URI with caching.
+// Uses HTTPS validation and SSRF protection for security.
+func (c *JWKSClient) FetchJWKS(ctx context.Context, jwksURI string) (*JWKS, error) {
+	// Check cache first
+	if cached, ok := c.cache.Load(jwksURI); ok {
+		doc, ok := cached.(*cachedJWKS)
+		if ok && c.timeProvider.Since(doc.fetchedAt) < c.cacheTTL {
+			c.logger.Debug("JWKS cache hit", "uri", jwksURI)
+			return doc.keys, nil
+		}
+	}
+
+	// Validate HTTPS
+	if err := ValidateHTTPSURL(jwksURI, "JWKS URI"); err != nil {
+		return nil, fmt.Errorf("invalid JWKS URI: %w", err)
+	}
+
+	c.logger.Debug("Fetching JWKS", "uri", jwksURI)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jwksURI, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create JWKS request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch JWKS: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("JWKS fetch failed with status %d", resp.StatusCode)
+	}
+
+	var jwks JWKS
+	if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
+		return nil, fmt.Errorf("failed to decode JWKS: %w", err)
+	}
+
+	// Cache the JWKS
+	c.cache.Store(jwksURI, &cachedJWKS{
+		keys:      &jwks,
+		fetchedAt: c.timeProvider.Now(),
+	})
+
+	c.logger.Debug("JWKS fetched successfully", "uri", jwksURI, "key_count", len(jwks.Keys))
+
+	return &jwks, nil
+}
+
+// GetKey retrieves a key from the JWKS by key ID.
+// Returns nil if the key is not found.
+func (j *JWKS) GetKey(kid string) *JWK {
+	for i := range j.Keys {
+		if j.Keys[i].Kid == kid {
+			return &j.Keys[i]
+		}
+	}
+	return nil
+}
+
+// RSAPublicKey converts a JWK to an RSA public key for signature verification.
+func (j *JWK) RSAPublicKey() (*rsa.PublicKey, error) {
+	if j.Kty != "RSA" {
+		return nil, fmt.Errorf("unsupported key type: %s", j.Kty)
+	}
+
+	// Decode modulus (N)
+	nBytes, err := base64.RawURLEncoding.DecodeString(j.N)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode modulus: %w", err)
+	}
+	n := new(big.Int).SetBytes(nBytes)
+
+	// Decode exponent (E)
+	eBytes, err := base64.RawURLEncoding.DecodeString(j.E)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode exponent: %w", err)
+	}
+
+	// Convert exponent bytes to int
+	var e int
+	for _, b := range eBytes {
+		e = e<<8 + int(b)
+	}
+
+	return &rsa.PublicKey{N: n, E: e}, nil
+}
+
+// IsJWT checks if a token string looks like a JWT (has 3 parts separated by dots).
+// This is a quick syntactic check, not cryptographic validation.
+func IsJWT(token string) bool {
+	parts := strings.Split(token, ".")
+	return len(parts) == 3 && len(parts[0]) > 0 && len(parts[1]) > 0 && len(parts[2]) > 0
+}
+
+// ParseUnverifiedClaims extracts claims from a JWT without verifying the signature.
+// This is useful for routing decisions (e.g., checking audience) before full validation.
+// SECURITY: Never trust the claims returned from this function for authorization decisions.
+func ParseUnverifiedClaims(tokenString string) (jwt.MapClaims, error) {
+	parser := jwt.NewParser()
+	token, _, err := parser.ParseUnverified(tokenString, jwt.MapClaims{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse JWT: %w", err)
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return nil, fmt.Errorf("unexpected claims type")
+	}
+
+	return claims, nil
+}
+
+// GetAudienceFromClaims extracts the audience claim from JWT claims.
+// The audience can be a single string or an array of strings.
+// Returns nil if no audience is present.
+func GetAudienceFromClaims(claims jwt.MapClaims) []string {
+	aud, exists := claims["aud"]
+	if !exists {
+		return nil
+	}
+
+	// Single string audience
+	if audStr, ok := aud.(string); ok {
+		return []string{audStr}
+	}
+
+	// Array of audiences
+	if audSlice, ok := aud.([]interface{}); ok {
+		result := make([]string, 0, len(audSlice))
+		for _, a := range audSlice {
+			if s, ok := a.(string); ok {
+				result = append(result, s)
+			}
+		}
+		return result
+	}
+
+	return nil
+}
+
+// IDTokenClaims represents the standard claims in an OIDC ID token.
+type IDTokenClaims struct {
+	jwt.RegisteredClaims
+
+	// Standard OIDC claims
+	Email         string   `json:"email,omitempty"`
+	EmailVerified bool     `json:"email_verified,omitempty"`
+	Name          string   `json:"name,omitempty"`
+	GivenName     string   `json:"given_name,omitempty"`
+	FamilyName    string   `json:"family_name,omitempty"`
+	Picture       string   `json:"picture,omitempty"`
+	Locale        string   `json:"locale,omitempty"`
+	Groups        []string `json:"groups,omitempty"`
+}
+
+// ValidateIDToken validates an ID token (JWT) using the provider's JWKS.
+// This is used for SSO token forwarding where ID tokens are passed as Bearer tokens.
+//
+// Validation includes:
+//   - Signature verification using JWKS
+//   - Expiration check
+//   - Issuer validation (if expectedIssuer is non-empty)
+//   - Audience validation (checks if any audience matches trustedAudiences)
+//
+// Returns the parsed claims if validation succeeds.
+func ValidateIDToken(ctx context.Context, tokenString string, jwksClient *JWKSClient, jwksURI, expectedIssuer string, trustedAudiences []string) (*IDTokenClaims, error) {
+	// Fetch JWKS
+	jwks, err := jwksClient.FetchJWKS(ctx, jwksURI)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch JWKS: %w", err)
+	}
+
+	// Parse and validate token signature
+	claims, err := parseAndValidateToken(tokenString, jwks)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate issuer if expected
+	if err := validateIssuer(claims, expectedIssuer); err != nil {
+		return nil, err
+	}
+
+	// Validate audience
+	if err := validateAudience(claims, trustedAudiences); err != nil {
+		return nil, err
+	}
+
+	return claims, nil
+}
+
+// parseAndValidateToken parses a JWT and validates its signature using JWKS.
+func parseAndValidateToken(tokenString string, jwks *JWKS) (*IDTokenClaims, error) {
+	parser := jwt.NewParser(
+		jwt.WithExpirationRequired(),
+		jwt.WithIssuedAt(),
+	)
+
+	claims := &IDTokenClaims{}
+	keyFunc := createKeyFunc(jwks)
+
+	token, err := parser.ParseWithClaims(tokenString, claims, keyFunc)
+	if err != nil {
+		return nil, fmt.Errorf("token validation failed: %w", err)
+	}
+
+	if !token.Valid {
+		return nil, fmt.Errorf("token is invalid")
+	}
+
+	return claims, nil
+}
+
+// createKeyFunc creates a jwt.Keyfunc that resolves keys from the JWKS.
+func createKeyFunc(jwks *JWKS) jwt.Keyfunc {
+	return func(token *jwt.Token) (interface{}, error) {
+		// Validate signing algorithm
+		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+
+		// Get key ID from header
+		kid, ok := token.Header["kid"].(string)
+		if !ok || kid == "" {
+			return nil, fmt.Errorf("token missing kid header")
+		}
+
+		// Find and convert the key
+		key := jwks.GetKey(kid)
+		if key == nil {
+			return nil, fmt.Errorf("key %s not found in JWKS", kid)
+		}
+
+		return key.RSAPublicKey()
+	}
+}
+
+// validateIssuer checks the token issuer matches the expected issuer.
+func validateIssuer(claims *IDTokenClaims, expectedIssuer string) error {
+	if expectedIssuer == "" {
+		return nil
+	}
+	if claims.Issuer != expectedIssuer {
+		return fmt.Errorf("issuer mismatch: got %q, expected %q", claims.Issuer, expectedIssuer)
+	}
+	return nil
+}
+
+// validateAudience checks that at least one token audience matches a trusted audience.
+func validateAudience(claims *IDTokenClaims, trustedAudiences []string) error {
+	if len(trustedAudiences) == 0 {
+		return nil
+	}
+
+	for _, tokenAud := range claims.Audience {
+		for _, trusted := range trustedAudiences {
+			if tokenAud == trusted {
+				return nil
+			}
+		}
+	}
+
+	return fmt.Errorf("audience mismatch: token audiences %v not in trusted %v", claims.Audience, trustedAudiences)
+}
+
+// ClearCache clears the JWKS cache.
+func (c *JWKSClient) ClearCache() {
+	c.cache.Range(func(key, _ interface{}) bool {
+		c.cache.Delete(key)
+		return true
+	})
+	c.logger.Debug("JWKS cache cleared")
+}

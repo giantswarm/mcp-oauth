@@ -32,6 +32,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **New Audit Event**: `EventCrossClientTokenAccepted` for security monitoring of SSO token usage
   - **Issue**: [#171](https://github.com/giantswarm/mcp-oauth/issues/171)
 
+- **JWT/JWKS Validation for SSO ID Token Forwarding**
+  - **Bug Fix**: Fixed ID token forwarding failures when `TrustedAudiences` is configured
+  - **Root Cause**: The `ValidateToken` middleware was calling the IdP's userinfo endpoint before checking for JWT tokens with trusted audiences. Many IdPs reject ID tokens at the userinfo endpoint (which expects access tokens).
+  - **Solution**: When `TrustedAudiences` is configured, the middleware now:
+    1. Detects if the Bearer token is a JWT
+    2. Validates the JWT signature using the provider's JWKS endpoint
+    3. Checks if the `aud` claim matches a trusted audience
+    4. Extracts user info directly from JWT claims
+    5. Falls back to userinfo validation only if JWT validation fails
+  - **New Provider Interface**: Added `JWKSProvider` interface for providers that support JWKS-based JWT validation
+  - **Provider Support**: Google and Dex providers now expose their JWKS URIs for JWT validation
+  - **Security Features**:
+    - SSRF protection for JWKS URI fetching
+    - JWKS documents cached for 1 hour (configurable)
+    - Signature verification using RSA keys from JWKS
+    - Clock skew tolerance of 1 minute
+  - **New Audit Events**: 
+    - `EventForwardedIDTokenValidated`: Logged when JWT validation succeeds
+    - `EventForwardedIDTokenValidationFailed`: Logged when JWT validation fails (for debugging)
+  - **Issue**: [#173](https://github.com/giantswarm/mcp-oauth/issues/173)
+
 - **Google Provider: ForceConsent Configuration for Reliable Refresh Tokens**
   - **Feature**: Added `ForceConsent` configuration option to the Google OAuth provider
   - **Root Cause**: Google only returns refresh tokens on the first user consent. Subsequent authorizations return no refresh token, causing token refresh failures.

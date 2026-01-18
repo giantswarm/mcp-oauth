@@ -15,6 +15,7 @@ import (
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/providers"
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
@@ -39,6 +40,7 @@ type Server struct {
 	metadataFetchRateLimiter      *security.RateLimiter                   // Per-domain rate limiter for metadata fetches
 	metadataCacheCleanupCtx       context.Context                         // Context for metadata cache cleanup goroutine
 	metadataCacheCleanupCancel    context.CancelFunc                      // Cancel function for cleanup goroutine
+	jwksClient                    *oidc.JWKSClient                        // JWKS client for SSO token forwarding validation
 	Logger                        *slog.Logger
 	Config                        *Config
 	shutdownOnce                  sync.Once // Ensures Shutdown is called only once

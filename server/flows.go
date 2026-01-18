@@ -16,6 +16,7 @@ import (
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/providers"
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
@@ -157,15 +158,36 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 // the provider, preventing expired tokens from being accepted due to clock skew.
 //
 // Validation flow:
-// 1. Check if token exists in local storage
-// 2. If found, validate expiry locally (with ClockSkewGracePeriod)
-// 3. RFC 8707: Validate audience binding (token intended for this resource server)
-// 4. If expired locally, return error immediately (don't call provider)
-// 5. Validate with provider (external check)
-// 6. Store updated user info
+// 1. Check if token is a JWT with a trusted audience (SSO token forwarding)
+// 2. If JWT with trusted audience, validate via JWKS signature verification
+// 3. Check if token exists in local storage
+// 4. If found, validate expiry locally (with ClockSkewGracePeriod)
+// 5. RFC 8707: Validate audience binding (token intended for this resource server)
+// 6. If expired locally, return error immediately (don't call provider)
+// 7. Validate with provider (external check - userinfo endpoint)
+// 8. Store updated user info
 //
 // Note: Rate limiting should be done at the HTTP layer with IP address, not here with token
 func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+	// PRIORITY 1: Check if this is a forwarded ID token (JWT) from a trusted upstream service
+	// This MUST happen BEFORE calling userinfo, as ID tokens cannot be validated via userinfo
+	if len(s.Config.TrustedAudiences) > 0 && oidc.IsJWT(accessToken) {
+		userInfo, err := s.validateForwardedIDToken(ctx, accessToken)
+		if err != nil {
+			// Log at debug level - not all JWTs are valid ID tokens, fallback to normal flow
+			s.Logger.Debug("Forwarded ID token validation failed, falling back to userinfo",
+				"error", err.Error(),
+				"token_prefix", helpers.SafeTruncate(accessToken, 8))
+		} else if userInfo != nil {
+			// ID token validated successfully - return the user info
+			s.Logger.Debug("Forwarded ID token validated via JWKS",
+				"user_id", userInfo.ID,
+				"token_prefix", helpers.SafeTruncate(accessToken, 8))
+			return userInfo, nil
+		}
+	}
+
+	// PRIORITY 2: Standard token validation flow
 	storedToken, err := s.validateStoredToken(ctx, accessToken)
 	if err != nil {
 		return nil, err
@@ -174,7 +196,7 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 	// Determine which token to use for provider validation
 	tokenForProviderValidation := s.selectTokenForProviderValidation(accessToken, storedToken)
 
-	// Validate with provider
+	// Validate with provider (userinfo endpoint)
 	userInfo, err := s.provider.ValidateToken(ctx, tokenForProviderValidation)
 	if err != nil {
 		if s.Auditor != nil {
@@ -346,6 +368,134 @@ func (s *Server) selectTokenForProviderValidation(accessToken string, storedToke
 		return storedToken.AccessToken
 	}
 	return accessToken
+}
+
+// validateForwardedIDToken validates a JWT ID token from a trusted upstream service.
+// This enables SSO token forwarding where an upstream MCP server forwards its ID token
+// to downstream services for authentication.
+//
+// Validation steps:
+// 1. Parse the JWT claims without verification to check audience
+// 2. Check if any audience matches TrustedAudiences
+// 3. If matched, validate the JWT signature using the provider's JWKS
+// 4. Extract user info from the validated claims
+//
+// Returns (nil, nil) if the token doesn't match any trusted audience (fallback to normal flow)
+// Returns (nil, error) if the token matches but validation fails
+// Returns (userInfo, nil) if validation succeeds
+func (s *Server) validateForwardedIDToken(ctx context.Context, tokenString string) (*providers.UserInfo, error) {
+	// Parse claims without verification to check audience
+	claims, err := oidc.ParseUnverifiedClaims(tokenString)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse JWT claims: %w", err)
+	}
+
+	// Check if any audience matches our trusted audiences
+	tokenAudiences := oidc.GetAudienceFromClaims(claims)
+	matchedAudience := s.findMatchingTrustedAudience(tokenAudiences)
+	if matchedAudience == "" {
+		// No match - this token is not for us, return nil to trigger fallback
+		return nil, nil
+	}
+
+	s.Logger.Debug("JWT audience matches TrustedAudiences, validating via JWKS",
+		"matched_audience", matchedAudience,
+		"token_prefix", helpers.SafeTruncate(tokenString, 8))
+
+	// Check if provider supports JWKS validation
+	jwksProvider, ok := s.provider.(providers.JWKSProvider)
+	if !ok {
+		s.Logger.Warn("Provider does not support JWKS validation, cannot validate forwarded ID token",
+			"provider", s.provider.Name())
+		return nil, fmt.Errorf("provider %s does not support JWKS validation", s.provider.Name())
+	}
+
+	// Get JWKS URI from provider
+	jwksURI, err := jwksProvider.JWKSURI(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get JWKS URI: %w", err)
+	}
+
+	// Validate the JWT signature using JWKS
+	idTokenClaims, err := oidc.ValidateIDToken(
+		ctx,
+		tokenString,
+		s.getJWKSClient(),
+		jwksURI,
+		"", // Don't validate issuer - it may be from a different client
+		s.Config.TrustedAudiences,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("ID token signature validation failed: %w", err)
+	}
+
+	// Extract user info from validated claims
+	userInfo := s.idTokenClaimsToUserInfo(idTokenClaims)
+
+	// Log the successful SSO token acceptance
+	s.logForwardedIDTokenAccepted(tokenString, matchedAudience, userInfo)
+
+	return userInfo, nil
+}
+
+// findMatchingTrustedAudience checks if any of the token's audiences match our trusted audiences.
+// Returns the matched audience or empty string if no match.
+func (s *Server) findMatchingTrustedAudience(tokenAudiences []string) string {
+	for _, tokenAud := range tokenAudiences {
+		normalizedTokenAud := helpers.NormalizeURL(tokenAud)
+		for _, trusted := range s.Config.TrustedAudiences {
+			normalizedTrusted := helpers.NormalizeURL(trusted)
+			if subtle.ConstantTimeCompare([]byte(normalizedTokenAud), []byte(normalizedTrusted)) == 1 {
+				return tokenAud
+			}
+		}
+	}
+	return ""
+}
+
+// getJWKSClient returns or creates a JWKS client for JWT validation.
+func (s *Server) getJWKSClient() *oidc.JWKSClient {
+	if s.jwksClient == nil {
+		s.jwksClient = oidc.NewJWKSClient(nil, 0, s.Logger)
+	}
+	return s.jwksClient
+}
+
+// idTokenClaimsToUserInfo converts validated ID token claims to UserInfo.
+func (s *Server) idTokenClaimsToUserInfo(claims *oidc.IDTokenClaims) *providers.UserInfo {
+	return &providers.UserInfo{
+		ID:            claims.Subject,
+		Email:         claims.Email,
+		EmailVerified: claims.EmailVerified,
+		Name:          claims.Name,
+		GivenName:     claims.GivenName,
+		FamilyName:    claims.FamilyName,
+		Picture:       claims.Picture,
+		Locale:        claims.Locale,
+		Groups:        claims.Groups,
+	}
+}
+
+// logForwardedIDTokenAccepted logs a security event when a forwarded ID token is accepted.
+func (s *Server) logForwardedIDTokenAccepted(tokenString, matchedAudience string, userInfo *providers.UserInfo) {
+	s.Logger.Info("Forwarded ID token accepted via TrustedAudiences (SSO)",
+		"user_id", userInfo.ID,
+		"email", userInfo.Email,
+		"matched_audience", matchedAudience,
+		"token_prefix", helpers.SafeTruncate(tokenString, 8))
+
+	if s.Auditor != nil {
+		s.Auditor.LogEvent(security.Event{
+			Type:   security.EventForwardedIDTokenAccepted,
+			UserID: userInfo.ID,
+			Details: map[string]any{
+				"matched_audience":    matchedAudience,
+				"email":               userInfo.Email,
+				"validation_method":   "jwks",
+				"sso_token_forwarded": true,
+			},
+		})
+	}
 }
 
 // validatePKCEForAuthFlow validates PKCE parameters for authorization flow start

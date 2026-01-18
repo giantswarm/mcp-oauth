@@ -463,6 +463,18 @@ In architectures with an MCP aggregator (like muster) that proxies requests to d
 
 Without this feature, each downstream MCP server would require its own separate OAuth flow.
 
+### Token Validation Flow
+
+When `TrustedAudiences` is configured, the token validation follows a prioritized approach:
+
+1. **JWT Detection**: Check if the Bearer token is a JWT (three dot-separated parts)
+2. **JWKS Validation**: If the provider supports JWKS, validate the JWT signature using the provider's JWKS endpoint
+3. **Audience Check**: Verify the JWT's `aud` claim matches one of the `TrustedAudiences`
+4. **Claims Extraction**: Extract user info directly from JWT claims (sub, email, name, groups, etc.)
+5. **Fallback**: If JWT validation fails, fall back to the provider's userinfo endpoint
+
+This approach is critical for ID token forwarding scenarios. Many Identity Providers (IdPs) reject ID tokens when passed to their userinfo endpoint, as userinfo expects access tokens. By validating JWTs via JWKS first, the library can correctly handle forwarded ID tokens.
+
 ### Configuration
 
 ```go
@@ -478,22 +490,39 @@ config := &server.Config{
 }
 ```
 
+JWKS documents are cached for 1 hour by default to balance performance with key rotation freshness.
+
+### Provider Requirements
+
+For JWT validation to work, the provider must implement the `JWKSProvider` interface:
+
+| Provider | JWKS Support | Notes |
+|----------|--------------|-------|
+| Google   | Yes          | Uses `https://www.googleapis.com/oauth2/v3/certs` |
+| Dex      | Yes          | Discovers JWKS URI via OIDC discovery |
+| GitHub   | No           | GitHub OAuth Apps don't use OIDC/JWT |
+
+Providers without JWKS support will always use userinfo endpoint validation.
+
 ### Security Model
 
 | Aspect | Behavior |
 |--------|----------|
+| **JWKS Validation** | JWTs are validated via cryptographic signature verification |
 | **Explicit Trust** | Each trusted audience must be explicitly configured |
 | **Same Issuer** | Tokens are only accepted if from the configured IdP |
 | **Own Identifier** | Server's own `ResourceIdentifier` is always implicitly trusted |
-| **Audit Logging** | `EventCrossClientTokenAccepted` logged for security monitoring |
+| **Audit Logging** | `EventForwardedIDTokenValidated` and `EventCrossClientTokenAccepted` logged |
+| **SSRF Protection** | JWKS URIs are validated to prevent SSRF attacks |
 | **Constant-Time** | Audience comparison uses constant-time comparison |
 
 ### Security Recommendations
 
 1. **Minimize Trust**: Only add audiences you explicitly trust
 2. **Same IdP**: All trusted audiences should use the same Identity Provider
-3. **Monitor Logs**: Watch for `cross_client_token_accepted` audit events
+3. **Monitor Logs**: Watch for `forwarded_id_token_validated` and `cross_client_token_accepted` audit events
 4. **Validate Scopes**: Use `EndpointScopeRequirements` for fine-grained access control
+5. **JWKS Caching**: The default 1-hour cache TTL balances performance with key rotation freshness
 
 ### Example YAML Configuration
 
@@ -507,7 +536,38 @@ oauth:
     - "muster-client"
 ```
 
-### Audit Event
+### Audit Events
+
+When a forwarded ID token is validated via JWKS, `EventForwardedIDTokenValidated` is logged:
+
+```json
+{
+  "event_type": "forwarded_id_token_validated",
+  "user_id": "user@example.com",
+  "details": {
+    "issuer": "https://auth.example.com",
+    "audience": ["muster-client"],
+    "token_type": "jwt",
+    "validation": "jwks",
+    "trusted_via": "TrustedAudiences"
+  }
+}
+```
+
+If JWT validation fails, `EventForwardedIDTokenValidationFailed` is logged for debugging:
+
+```json
+{
+  "event_type": "forwarded_id_token_validation_failed",
+  "details": {
+    "reason": "token validation failed: signature verification failed",
+    "token_type": "jwt",
+    "validation": "jwks",
+    "audiences": ["muster-client"],
+    "jwks_uri": "https://auth.example.com/.well-known/jwks.json"
+  }
+}
+```
 
 When a token is accepted via `TrustedAudiences`, the `EventCrossClientTokenAccepted` event is logged:
 
