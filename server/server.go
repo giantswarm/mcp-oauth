@@ -210,6 +210,15 @@ func (s *Server) initializeMetadataSupport() {
 			"allowed_ranges", "10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, ::1, link-local")
 	}
 
+	// SECURITY WARNING: Log when SSRF protection is relaxed for JWKS endpoints
+	if s.Config.AllowPrivateIPJWKS {
+		s.Logger.Warn("SSRF protection reduced: AllowPrivateIPJWKS is enabled",
+			"config", "AllowPrivateIPJWKS=true",
+			"warning", "JWKS endpoints can resolve to private/internal IP addresses",
+			"use_case", "Private IdP deployments (e.g., internal Dex)",
+			"allowed_ranges", "10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, ::1, link-local")
+	}
+
 	go s.metadataCacheCleanupLoop()
 	s.Logger.Debug("Started metadata cache cleanup goroutine")
 }

@@ -611,3 +611,33 @@ func TestNewSSRFSafeHTTPClient(t *testing.T) {
 		}
 	})
 }
+
+// TestNewPrivateIPAllowedHTTPClient tests the HTTP client creation that allows private IPs.
+func TestNewPrivateIPAllowedHTTPClient(t *testing.T) {
+	t.Run("creates client with default timeout", func(t *testing.T) {
+		client := NewPrivateIPAllowedHTTPClient(0)
+		if client == nil {
+			t.Fatal("Expected non-nil client")
+		}
+		if client.Timeout != DefaultHTTPTimeout {
+			t.Errorf("Expected timeout %v, got %v", DefaultHTTPTimeout, client.Timeout)
+		}
+	})
+
+	t.Run("creates client with custom timeout", func(t *testing.T) {
+		client := NewPrivateIPAllowedHTTPClient(30 * time.Second)
+		if client == nil {
+			t.Fatal("Expected non-nil client")
+		}
+		if client.Timeout != 30*time.Second {
+			t.Errorf("Expected timeout 30s, got %v", client.Timeout)
+		}
+	})
+
+	t.Run("client has standard transport without SSRF protection", func(t *testing.T) {
+		client := NewPrivateIPAllowedHTTPClient(0)
+		if client.Transport == nil {
+			t.Error("Expected client to have transport configured")
+		}
+	})
+}

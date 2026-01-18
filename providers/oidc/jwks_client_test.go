@@ -46,6 +46,119 @@ func TestJWKSClient_Creation(t *testing.T) {
 	}
 }
 
+func TestJWKSClientWithOptions_AllowPrivateIP(t *testing.T) {
+	t.Run("default client has AllowPrivateIP false", func(t *testing.T) {
+		client := NewJWKSClient(nil, 0, nil)
+		if client.allowPrivateIP {
+			t.Error("Expected allowPrivateIP to be false by default")
+		}
+	})
+
+	t.Run("client with AllowPrivateIP true", func(t *testing.T) {
+		client := NewJWKSClientWithOptions(JWKSClientOptions{
+			AllowPrivateIP: true,
+			Logger:         slog.Default(),
+		})
+		if !client.allowPrivateIP {
+			t.Error("Expected allowPrivateIP to be true")
+		}
+	})
+
+	t.Run("client respects custom cacheTTL", func(t *testing.T) {
+		client := NewJWKSClientWithOptions(JWKSClientOptions{
+			CacheTTL: 5 * time.Minute,
+		})
+		if client.cacheTTL != 5*time.Minute {
+			t.Errorf("Expected cacheTTL 5m, got %v", client.cacheTTL)
+		}
+	})
+
+	t.Run("client uses custom HTTPClient", func(t *testing.T) {
+		customHTTP := &http.Client{Timeout: 1 * time.Second}
+		client := NewJWKSClientWithOptions(JWKSClientOptions{
+			HTTPClient: customHTTP,
+		})
+		if client.httpClient != customHTTP {
+			t.Error("Expected custom HTTP client to be used")
+		}
+	})
+}
+
+func TestFetchJWKS_AllowPrivateIP(t *testing.T) {
+	t.Run("private IP URL rejected without AllowPrivateIP", func(t *testing.T) {
+		client := NewJWKSClient(nil, 0, slog.Default())
+
+		// Try to fetch from a private IP (should fail URL validation)
+		_, err := client.FetchJWKS(context.Background(), "https://192.168.1.1/jwks")
+		if err == nil {
+			t.Error("Expected error when fetching from private IP without AllowPrivateIP")
+		}
+		if !strings.Contains(err.Error(), "private IP") && !strings.Contains(err.Error(), "JWKS URI") {
+			t.Errorf("Expected error about private IP, got: %v", err)
+		}
+	})
+
+	t.Run("private IP URL validation bypassed with AllowPrivateIP", func(t *testing.T) {
+		client := NewJWKSClientWithOptions(JWKSClientOptions{
+			AllowPrivateIP: true,
+			Logger:         slog.Default(),
+		})
+
+		// Try to fetch from a private IP
+		// This will fail at the HTTP level (connection refused) but should pass URL validation
+		_, err := client.FetchJWKS(context.Background(), "https://192.168.1.1/jwks")
+		if err == nil {
+			// If no error, that's unexpected but means validation passed
+			t.Log("Fetch unexpectedly succeeded (maybe host is reachable?)")
+			return
+		}
+
+		// The error should be about connection/fetch failure, NOT about private IP validation
+		if strings.Contains(err.Error(), "private IP") {
+			t.Errorf("Expected private IP check to be bypassed, got: %v", err)
+		}
+	})
+
+	t.Run("HTTPS still required with AllowPrivateIP", func(t *testing.T) {
+		client := NewJWKSClientWithOptions(JWKSClientOptions{
+			AllowPrivateIP: true,
+			Logger:         slog.Default(),
+		})
+
+		// HTTP should still be rejected even with AllowPrivateIP
+		_, err := client.FetchJWKS(context.Background(), "http://192.168.1.1/jwks")
+		if err == nil {
+			t.Error("Expected error for HTTP URL even with AllowPrivateIP")
+		}
+		if !strings.Contains(err.Error(), "HTTPS") {
+			t.Errorf("Expected HTTPS requirement error, got: %v", err)
+		}
+	})
+
+	t.Run("loopback URL rejected without AllowPrivateIP", func(t *testing.T) {
+		client := NewJWKSClient(nil, 0, slog.Default())
+
+		_, err := client.FetchJWKS(context.Background(), "https://127.0.0.1/jwks")
+		if err == nil {
+			t.Error("Expected error when fetching from loopback without AllowPrivateIP")
+		}
+	})
+
+	t.Run("loopback URL validation bypassed with AllowPrivateIP", func(t *testing.T) {
+		client := NewJWKSClientWithOptions(JWKSClientOptions{
+			AllowPrivateIP: true,
+			Logger:         slog.Default(),
+		})
+
+		// Try to fetch from loopback
+		// Will fail at HTTP level but should pass URL validation
+		_, err := client.FetchJWKS(context.Background(), "https://127.0.0.1/jwks")
+		if err != nil && strings.Contains(err.Error(), "loopback") {
+			t.Errorf("Expected loopback check to be bypassed, got: %v", err)
+		}
+	})
+}
+
 func TestValidateIDToken_Integration(t *testing.T) {
 	// Generate RSA key for signing
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)

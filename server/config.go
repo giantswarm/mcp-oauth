@@ -449,6 +449,28 @@ type Config struct {
 	// Default: false (blocked for security)
 	AllowPrivateIPClientMetadata bool
 
+	// AllowPrivateIPJWKS allows JWKS endpoints to resolve to private IP addresses
+	// (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 per RFC 1918) during SSO token
+	// validation (TrustedAudiences). This also allows loopback addresses (127.0.0.0/8, ::1)
+	// and link-local addresses.
+	//
+	// This is necessary for private IdP deployments where Dex or another OIDC provider
+	// runs on internal networks, and SSO token forwarding is used.
+	//
+	// WARNING: Reduces SSRF protection for JWKS fetching only. Only enable for
+	// internal/VPN deployments where the IdP legitimately runs on private networks.
+	//
+	// Use cases:
+	//   - Home lab deployments with internal Dex
+	//   - Air-gapped environments
+	//   - Enterprise deployments with private IdPs
+	//
+	// Note: For Google OAuth, this setting has no effect as Google's JWKS endpoint
+	// is always publicly accessible.
+	//
+	// Default: false (blocked for security)
+	AllowPrivateIPJWKS bool
+
 	// BlockedRedirectSchemes lists URI schemes that are always rejected for security.
 	// These schemes can be used for XSS attacks (javascript:, data:, blob:) or local file/app access (file:, ms-appx:).
 	// This is applied in ALL modes (production and development).
