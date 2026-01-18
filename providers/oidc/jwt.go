@@ -86,11 +86,11 @@ const (
 func NewJWKSClient(httpClient *http.Client, cacheTTL time.Duration, logger *slog.Logger) *JWKSClient {
 	if httpClient == nil {
 		httpClient = &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: DefaultHTTPTimeout,
 		}
 	}
 	if cacheTTL == 0 {
-		cacheTTL = 1 * time.Hour
+		cacheTTL = DefaultCacheTTL
 	}
 	if logger == nil {
 		logger = slog.Default()
@@ -185,7 +185,7 @@ func (j *JWKS) GetKey(kid string) *JWK {
 
 // PublicKey returns the appropriate public key based on the key type (RSA or EC).
 // This is the preferred method for obtaining a key for signature verification.
-func (j *JWK) PublicKey() (interface{}, error) {
+func (j *JWK) PublicKey() (any, error) {
 	switch j.Kty {
 	case KeyTypeRSA:
 		return j.RSAPublicKey()
@@ -490,14 +490,17 @@ func validateIssuer(claims *IDTokenClaims, expectedIssuer string) error {
 }
 
 // validateAudience checks that at least one token audience matches a trusted audience.
+// Uses URL normalization to handle trailing slashes consistently with findMatchingTrustedAudience.
 func validateAudience(claims *IDTokenClaims, trustedAudiences []string) error {
 	if len(trustedAudiences) == 0 {
 		return nil
 	}
 
 	for _, tokenAud := range claims.Audience {
+		normalizedTokenAud := normalizeURL(tokenAud)
 		for _, trusted := range trustedAudiences {
-			if tokenAud == trusted {
+			normalizedTrusted := normalizeURL(trusted)
+			if normalizedTokenAud == normalizedTrusted {
 				return nil
 			}
 		}
@@ -506,9 +509,15 @@ func validateAudience(claims *IDTokenClaims, trustedAudiences []string) error {
 	return fmt.Errorf("audience mismatch: token audiences %v not in trusted %v", claims.Audience, trustedAudiences)
 }
 
+// normalizeURL removes trailing slashes for consistent URL comparison.
+// This ensures "https://example.com" and "https://example.com/" are treated as equivalent.
+func normalizeURL(url string) string {
+	return strings.TrimRight(url, "/")
+}
+
 // ClearCache clears the JWKS cache.
 func (c *JWKSClient) ClearCache() {
-	c.cache.Range(func(key, _ interface{}) bool {
+	c.cache.Range(func(key, _ any) bool {
 		c.cache.Delete(key)
 		return true
 	})

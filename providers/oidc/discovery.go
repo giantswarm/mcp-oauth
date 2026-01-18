@@ -21,18 +21,6 @@ const (
 	maxRedirects = 3
 )
 
-// timeProvider is an interface for time operations to enable deterministic testing.
-type timeProvider interface {
-	Now() time.Time
-	Since(time.Time) time.Duration
-}
-
-// realTime implements timeProvider using actual system time.
-type realTime struct{}
-
-func (realTime) Now() time.Time                  { return time.Now() }
-func (realTime) Since(t time.Time) time.Duration { return time.Since(t) }
-
 // DiscoveryDocument represents an OIDC discovery document.
 // It contains the OpenID Connect provider metadata as defined in RFC 8414.
 type DiscoveryDocument struct {
@@ -84,7 +72,7 @@ func NewDiscoveryClient(httpClient *http.Client, cacheTTL time.Duration, logger 
 		// SECURITY: Configure HTTP client with redirect validation to prevent
 		// SSRF via redirect chains (e.g., redirect to private IP after initial validation)
 		httpClient = &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: DefaultHTTPTimeout,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				// Limit number of redirects to prevent loops
 				if len(via) >= maxRedirects {
@@ -99,7 +87,7 @@ func NewDiscoveryClient(httpClient *http.Client, cacheTTL time.Duration, logger 
 		}
 	}
 	if cacheTTL == 0 {
-		cacheTTL = 1 * time.Hour
+		cacheTTL = DefaultCacheTTL
 	}
 	if logger == nil {
 		logger = slog.Default()
@@ -296,7 +284,7 @@ func (c *DiscoveryClient) validateDocument(doc *DiscoveryDocument) error {
 //	client.ClearCache() // Force refresh on next Discover() call
 func (c *DiscoveryClient) ClearCache() {
 	count := 0
-	c.cache.Range(func(key, _ interface{}) bool {
+	c.cache.Range(func(key, _ any) bool {
 		c.cache.Delete(key)
 		count++
 		return true

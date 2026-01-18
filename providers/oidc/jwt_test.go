@@ -1,18 +1,8 @@
 package oidc
 
 import (
-	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
-	"log/slog"
-	"math/big"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -77,7 +67,7 @@ func TestParseUnverifiedClaims(t *testing.T) {
 	}{
 		{
 			name: "valid JWT with single audience",
-			token: createTestJWTWithClaims(t, map[string]interface{}{
+			token: createTestJWTWithClaims(t, map[string]any{
 				"sub": "user123",
 				"aud": "client-id",
 				"iss": "https://auth.example.com",
@@ -89,7 +79,7 @@ func TestParseUnverifiedClaims(t *testing.T) {
 		},
 		{
 			name: "valid JWT with multiple audiences",
-			token: createTestJWTWithClaims(t, map[string]interface{}{
+			token: createTestJWTWithClaims(t, map[string]any{
 				"sub": "user456",
 				"aud": []string{"client-a", "client-b"},
 				"iss": "https://auth.example.com",
@@ -156,7 +146,7 @@ func TestGetAudienceFromClaims(t *testing.T) {
 		},
 		{
 			name:     "array audience",
-			claims:   jwt.MapClaims{"aud": []interface{}{"client-a", "client-b"}},
+			claims:   jwt.MapClaims{"aud": []any{"client-a", "client-b"}},
 			expected: []string{"client-a", "client-b"},
 		},
 		{
@@ -184,252 +174,6 @@ func TestGetAudienceFromClaims(t *testing.T) {
 	}
 }
 
-func TestJWKToRSAPublicKey(t *testing.T) {
-	// Generate a test RSA key
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("Failed to generate RSA key: %v", err)
-	}
-
-	// Convert to JWK format
-	n := base64.RawURLEncoding.EncodeToString(privateKey.N.Bytes())
-	e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privateKey.E)).Bytes())
-
-	jwk := JWK{
-		Kty: "RSA",
-		Use: "sig",
-		Kid: "test-kid",
-		Alg: "RS256",
-		N:   n,
-		E:   e,
-	}
-
-	// Convert back to RSA public key
-	pubKey, err := jwk.RSAPublicKey()
-	if err != nil {
-		t.Fatalf("RSAPublicKey() error: %v", err)
-	}
-
-	// Verify the key matches
-	if pubKey.N.Cmp(privateKey.N) != 0 {
-		t.Error("Modulus mismatch")
-	}
-	if pubKey.E != privateKey.E {
-		t.Error("Exponent mismatch")
-	}
-}
-
-func TestJWKToRSAPublicKey_WrongKeyType(t *testing.T) {
-	jwk := JWK{
-		Kty: "EC",
-		Kid: "test-kid",
-	}
-
-	_, err := jwk.RSAPublicKey()
-	if err == nil {
-		t.Error("Expected error for EC key type when calling RSAPublicKey")
-	}
-}
-
-func TestJWKToECDSAPublicKey(t *testing.T) {
-	tests := []struct {
-		name  string
-		curve elliptic.Curve
-		crv   string
-	}{
-		{"P-256", elliptic.P256(), "P-256"},
-		{"P-384", elliptic.P384(), "P-384"},
-		{"P-521", elliptic.P521(), "P-521"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Generate a test ECDSA key
-			privateKey, err := ecdsa.GenerateKey(tt.curve, rand.Reader)
-			if err != nil {
-				t.Fatalf("Failed to generate ECDSA key: %v", err)
-			}
-
-			// Convert to JWK format
-			x := base64.RawURLEncoding.EncodeToString(privateKey.X.Bytes())
-			y := base64.RawURLEncoding.EncodeToString(privateKey.Y.Bytes())
-
-			jwk := JWK{
-				Kty: "EC",
-				Use: "sig",
-				Kid: "test-ec-kid",
-				Alg: "ES256",
-				Crv: tt.crv,
-				X:   x,
-				Y:   y,
-			}
-
-			// Convert back to ECDSA public key
-			pubKey, err := jwk.ECDSAPublicKey()
-			if err != nil {
-				t.Fatalf("ECDSAPublicKey() error: %v", err)
-			}
-
-			// Verify the key matches
-			if pubKey.X.Cmp(privateKey.X) != 0 {
-				t.Error("X coordinate mismatch")
-			}
-			if pubKey.Y.Cmp(privateKey.Y) != 0 {
-				t.Error("Y coordinate mismatch")
-			}
-			if pubKey.Curve != tt.curve {
-				t.Errorf("Curve mismatch: got %v, want %v", pubKey.Curve, tt.curve)
-			}
-		})
-	}
-}
-
-func TestJWKToECDSAPublicKey_WrongKeyType(t *testing.T) {
-	jwk := JWK{
-		Kty: "RSA",
-		Kid: "test-kid",
-	}
-
-	_, err := jwk.ECDSAPublicKey()
-	if err == nil {
-		t.Error("Expected error for RSA key type when calling ECDSAPublicKey")
-	}
-}
-
-func TestJWKToECDSAPublicKey_UnsupportedCurve(t *testing.T) {
-	jwk := JWK{
-		Kty: "EC",
-		Kid: "test-kid",
-		Crv: "P-192", // Unsupported curve
-		X:   "test",
-		Y:   "test",
-	}
-
-	_, err := jwk.ECDSAPublicKey()
-	if err == nil {
-		t.Error("Expected error for unsupported curve")
-	}
-	if !strings.Contains(err.Error(), "unsupported EC curve") {
-		t.Errorf("Expected error about unsupported curve, got: %v", err)
-	}
-}
-
-func TestJWKPublicKey(t *testing.T) {
-	t.Run("RSA key", func(t *testing.T) {
-		privateKey, _ := rsa.GenerateKey(rand.Reader, 2048)
-		jwk := JWK{
-			Kty: "RSA",
-			Kid: "test-rsa",
-			N:   base64.RawURLEncoding.EncodeToString(privateKey.N.Bytes()),
-			E:   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privateKey.E)).Bytes()),
-		}
-
-		key, err := jwk.PublicKey()
-		if err != nil {
-			t.Fatalf("PublicKey() error: %v", err)
-		}
-		if _, ok := key.(*rsa.PublicKey); !ok {
-			t.Errorf("Expected *rsa.PublicKey, got %T", key)
-		}
-	})
-
-	t.Run("EC key", func(t *testing.T) {
-		privateKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		jwk := JWK{
-			Kty: "EC",
-			Kid: "test-ec",
-			Crv: "P-256",
-			X:   base64.RawURLEncoding.EncodeToString(privateKey.X.Bytes()),
-			Y:   base64.RawURLEncoding.EncodeToString(privateKey.Y.Bytes()),
-		}
-
-		key, err := jwk.PublicKey()
-		if err != nil {
-			t.Fatalf("PublicKey() error: %v", err)
-		}
-		if _, ok := key.(*ecdsa.PublicKey); !ok {
-			t.Errorf("Expected *ecdsa.PublicKey, got %T", key)
-		}
-	})
-
-	t.Run("unsupported key type", func(t *testing.T) {
-		jwk := JWK{
-			Kty: "OKP", // Unsupported (EdDSA)
-			Kid: "test-okp",
-		}
-
-		_, err := jwk.PublicKey()
-		if err == nil {
-			t.Error("Expected error for unsupported key type")
-		}
-		if !strings.Contains(err.Error(), "unsupported key type") {
-			t.Errorf("Expected error about unsupported key type, got: %v", err)
-		}
-	})
-}
-
-func TestJWKSClient_Creation(t *testing.T) {
-	// Test that client is created with defaults
-	client := NewJWKSClient(nil, 0, nil)
-	if client == nil {
-		t.Fatal("NewJWKSClient returned nil")
-	}
-	if client.cacheTTL != 1*time.Hour {
-		t.Errorf("Expected default cacheTTL 1h, got %v", client.cacheTTL)
-	}
-
-	// Test with custom values
-	customHTTP := &http.Client{Timeout: 5 * time.Second}
-	customClient := NewJWKSClient(customHTTP, 30*time.Minute, slog.Default())
-	if customClient == nil {
-		t.Fatal("NewJWKSClient with custom values returned nil")
-	}
-	if customClient.httpClient != customHTTP {
-		t.Error("Expected custom HTTP client to be used")
-	}
-	if customClient.cacheTTL != 30*time.Minute {
-		t.Errorf("Expected cacheTTL 30m, got %v", customClient.cacheTTL)
-	}
-}
-
-func TestJWKS_GetKey(t *testing.T) {
-	jwks := &JWKS{
-		Keys: []JWK{
-			{Kid: "key-1", Kty: "RSA"},
-			{Kid: "key-2", Kty: "RSA"},
-			{Kid: "key-3", Kty: "RSA"},
-		},
-	}
-
-	tests := []struct {
-		name     string
-		kid      string
-		expected string
-	}{
-		{"find first key", "key-1", "key-1"},
-		{"find middle key", "key-2", "key-2"},
-		{"find last key", "key-3", "key-3"},
-		{"key not found", "key-4", ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			key := jwks.GetKey(tt.kid)
-			if tt.expected == "" {
-				if key != nil {
-					t.Errorf("Expected nil, got key with kid=%s", key.Kid)
-				}
-			} else {
-				if key == nil {
-					t.Errorf("Expected key with kid=%s, got nil", tt.expected)
-				} else if key.Kid != tt.expected {
-					t.Errorf("Expected kid=%s, got kid=%s", tt.expected, key.Kid)
-				}
-			}
-		})
-	}
-}
-
 func TestValidateAudience(t *testing.T) {
 	tests := []struct {
 		name             string
@@ -450,43 +194,52 @@ func TestValidateAudience(t *testing.T) {
 			wantError:        false,
 		},
 		{
-			name:             "exact match - multiple trusted",
-			tokenAudiences:   []string{"client-b"},
-			trustedAudiences: []string{"client-a", "client-b", "client-c"},
-			wantError:        false,
-		},
-		{
-			name:             "multiple token audiences - one matches",
-			tokenAudiences:   []string{"client-x", "client-a"},
-			trustedAudiences: []string{"client-a"},
+			name:             "exact match - multiple token audiences",
+			tokenAudiences:   []string{"client-a", "client-b"},
+			trustedAudiences: []string{"client-b"},
 			wantError:        false,
 		},
 		{
 			name:             "no match",
-			tokenAudiences:   []string{"unknown-client"},
-			trustedAudiences: []string{"client-a", "client-b"},
+			tokenAudiences:   []string{"client-a"},
+			trustedAudiences: []string{"client-b"},
 			wantError:        true,
 		},
 		{
-			name:             "empty token audience",
-			tokenAudiences:   nil,
+			name:             "empty token audiences",
+			tokenAudiences:   []string{},
 			trustedAudiences: []string{"client-a"},
 			wantError:        true,
+		},
+		{
+			name:             "URL normalization - trailing slash match",
+			tokenAudiences:   []string{"https://example.com"},
+			trustedAudiences: []string{"https://example.com/"},
+			wantError:        false,
+		},
+		{
+			name:             "URL normalization - reverse trailing slash match",
+			tokenAudiences:   []string{"https://example.com/"},
+			trustedAudiences: []string{"https://example.com"},
+			wantError:        false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			claims := &IDTokenClaims{}
-			claims.Audience = tt.tokenAudiences
+			claims := &IDTokenClaims{
+				RegisteredClaims: jwt.RegisteredClaims{
+					Audience: tt.tokenAudiences,
+				},
+			}
 
 			err := validateAudience(claims, tt.trustedAudiences)
 
 			if tt.wantError && err == nil {
-				t.Error("Expected error, got nil")
+				t.Error("validateAudience() expected error, got nil")
 			}
 			if !tt.wantError && err != nil {
-				t.Errorf("Unexpected error: %v", err)
+				t.Errorf("validateAudience() unexpected error: %v", err)
 			}
 		})
 	}
@@ -500,8 +253,8 @@ func TestValidateIssuer(t *testing.T) {
 		wantError      bool
 	}{
 		{
-			name:           "empty expected - no validation",
-			tokenIssuer:    "https://any.issuer.com",
+			name:           "empty expected issuer - no validation",
+			tokenIssuer:    "any-issuer",
 			expectedIssuer: "",
 			wantError:      false,
 		},
@@ -513,37 +266,62 @@ func TestValidateIssuer(t *testing.T) {
 		},
 		{
 			name:           "mismatch",
-			tokenIssuer:    "https://other.issuer.com",
-			expectedIssuer: "https://auth.example.com",
+			tokenIssuer:    "https://auth.example.com",
+			expectedIssuer: "https://other.example.com",
 			wantError:      true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			claims := &IDTokenClaims{}
-			claims.Issuer = tt.tokenIssuer
+			claims := &IDTokenClaims{
+				RegisteredClaims: jwt.RegisteredClaims{
+					Issuer: tt.tokenIssuer,
+				},
+			}
 
 			err := validateIssuer(claims, tt.expectedIssuer)
 
 			if tt.wantError && err == nil {
-				t.Error("Expected error, got nil")
+				t.Error("validateIssuer() expected error, got nil")
 			}
 			if !tt.wantError && err != nil {
-				t.Errorf("Unexpected error: %v", err)
+				t.Errorf("validateIssuer() unexpected error: %v", err)
 			}
 		})
 	}
 }
 
-// createTestJWTWithClaims creates an unsigned JWT for testing purposes.
-// This is only for testing ParseUnverifiedClaims - not for production use.
-func createTestJWTWithClaims(t *testing.T, claims map[string]interface{}) string {
+func TestNormalizeURL(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"https://example.com", "https://example.com"},
+		{"https://example.com/", "https://example.com"},
+		{"https://example.com///", "https://example.com"},
+		{"https://example.com/path/", "https://example.com/path"},
+		{"client-id", "client-id"},
+		{"", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := normalizeURL(tt.input)
+			if got != tt.expected {
+				t.Errorf("normalizeURL(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+// createTestJWTWithClaims creates a JWT token for testing purposes.
+// The token has valid structure but an invalid signature (for parsing tests only).
+func createTestJWTWithClaims(t *testing.T, claims map[string]any) string {
 	t.Helper()
 
-	// Create header
-	header := map[string]interface{}{
-		"alg": "none",
+	header := map[string]any{
+		"alg": "RS256",
 		"typ": "JWT",
 	}
 
@@ -560,562 +338,4 @@ func createTestJWTWithClaims(t *testing.T, claims map[string]interface{}) string
 	// Create unsigned JWT (header.payload.signature)
 	return base64.RawURLEncoding.EncodeToString(headerBytes) + "." +
 		base64.RawURLEncoding.EncodeToString(claimsBytes) + ".signature"
-}
-
-func TestValidateIDToken_Integration(t *testing.T) {
-	// Generate RSA key for signing
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("Failed to generate RSA key: %v", err)
-	}
-
-	// Create JWKS
-	testJWKS := JWKS{
-		Keys: []JWK{
-			{
-				Kty: "RSA",
-				Use: "sig",
-				Kid: "test-key-1",
-				Alg: "RS256",
-				N:   base64.RawURLEncoding.EncodeToString(privateKey.N.Bytes()),
-				E:   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privateKey.E)).Bytes()),
-			},
-		},
-	}
-
-	// Create JWKS server
-	jwksServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(testJWKS); err != nil {
-			t.Errorf("Failed to encode JWKS: %v", err)
-		}
-	}))
-	defer jwksServer.Close()
-
-	// Create a valid signed JWT
-	claims := &IDTokenClaims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   "user123",
-			Issuer:    "https://auth.example.com",
-			Audience:  []string{"client-a", "client-b"},
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-		},
-		Email:         "user@example.com",
-		EmailVerified: true,
-		Name:          "Test User",
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	token.Header["kid"] = "test-key-1"
-
-	signedToken, err := token.SignedString(privateKey)
-	if err != nil {
-		t.Fatalf("Failed to sign token: %v", err)
-	}
-
-	// Create JWKS client that skips HTTPS validation for test server
-	client := &JWKSClient{
-		httpClient:   jwksServer.Client(),
-		cacheTTL:     1 * time.Minute,
-		timeProvider: realTime{},
-		logger:       slog.Default(),
-	}
-
-	// Manually add to cache since we can't use the test server URL (localhost)
-	client.cache.Store(jwksServer.URL, &cachedJWKS{
-		keys:      &testJWKS,
-		fetchedAt: time.Now(),
-	})
-
-	// Test valid token
-	t.Run("valid token", func(t *testing.T) {
-		validatedClaims, err := ValidateIDToken(
-			context.Background(),
-			signedToken,
-			client,
-			jwksServer.URL,
-			"https://auth.example.com",
-			[]string{"client-a"},
-		)
-		if err != nil {
-			t.Errorf("ValidateIDToken() error: %v", err)
-			return
-		}
-
-		if validatedClaims.Subject != "user123" {
-			t.Errorf("Subject = %q, want %q", validatedClaims.Subject, "user123")
-		}
-		if validatedClaims.Email != "user@example.com" {
-			t.Errorf("Email = %q, want %q", validatedClaims.Email, "user@example.com")
-		}
-	})
-
-	// Test audience mismatch
-	t.Run("audience mismatch", func(t *testing.T) {
-		_, err := ValidateIDToken(
-			context.Background(),
-			signedToken,
-			client,
-			jwksServer.URL,
-			"https://auth.example.com",
-			[]string{"untrusted-client"},
-		)
-
-		if err == nil {
-			t.Error("Expected error for audience mismatch")
-		}
-	})
-
-	// Test issuer mismatch
-	t.Run("issuer mismatch", func(t *testing.T) {
-		_, err := ValidateIDToken(
-			context.Background(),
-			signedToken,
-			client,
-			jwksServer.URL,
-			"https://wrong.issuer.com",
-			[]string{"client-a"},
-		)
-
-		if err == nil {
-			t.Error("Expected error for issuer mismatch")
-		}
-	})
-}
-
-func TestFetchJWKS(t *testing.T) {
-	// Create a test JWKS
-	testJWKS := JWKS{
-		Keys: []JWK{
-			{
-				Kty: "RSA",
-				Use: "sig",
-				Kid: "test-key",
-				Alg: "RS256",
-				N:   "test-n",
-				E:   "test-e",
-			},
-		},
-	}
-
-	t.Run("successful fetch", func(t *testing.T) {
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(testJWKS)
-		}))
-		defer server.Close()
-
-		client := &JWKSClient{
-			httpClient:   server.Client(),
-			cacheTTL:     1 * time.Hour,
-			timeProvider: realTime{},
-			logger:       slog.Default(),
-		}
-
-		// Pre-populate cache to test cache hit path
-		client.cache.Store(server.URL, &cachedJWKS{
-			keys:      &testJWKS,
-			fetchedAt: time.Now(),
-		})
-
-		// Should hit cache
-		jwks, err := client.FetchJWKS(context.Background(), server.URL)
-		if err != nil {
-			t.Errorf("FetchJWKS() error: %v", err)
-			return
-		}
-		if len(jwks.Keys) != 1 {
-			t.Errorf("Expected 1 key, got %d", len(jwks.Keys))
-		}
-	})
-
-	t.Run("cache miss and fetch", func(t *testing.T) {
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(testJWKS)
-		}))
-		defer server.Close()
-
-		// Create client that bypasses HTTPS validation for test server
-		client := &JWKSClient{
-			httpClient:   server.Client(),
-			cacheTTL:     1 * time.Hour,
-			timeProvider: realTime{},
-			logger:       slog.Default(),
-		}
-
-		// Store an expired cache entry
-		client.cache.Store(server.URL, &cachedJWKS{
-			keys:      &testJWKS,
-			fetchedAt: time.Now().Add(-2 * time.Hour), // Expired
-		})
-
-		// Need to bypass HTTPS check for localhost test server
-		// We'll test the cache hit path instead
-		cached, _ := client.cache.Load(server.URL)
-		doc := cached.(*cachedJWKS)
-		if doc.keys == nil {
-			t.Error("Expected cached keys")
-		}
-	})
-
-	t.Run("invalid JWKS URI - not HTTPS", func(t *testing.T) {
-		client := NewJWKSClient(nil, 0, nil)
-
-		_, err := client.FetchJWKS(context.Background(), "http://insecure.example.com/jwks")
-		if err == nil {
-			t.Error("Expected error for non-HTTPS URI")
-		}
-	})
-
-	t.Run("fetch error - server error", func(t *testing.T) {
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusInternalServerError)
-		}))
-		defer server.Close()
-
-		client := &JWKSClient{
-			httpClient:   server.Client(),
-			cacheTTL:     1 * time.Hour,
-			timeProvider: realTime{},
-			logger:       slog.Default(),
-		}
-
-		// Pre-cache to avoid HTTPS validation
-		client.cache.Store(server.URL, &cachedJWKS{
-			keys:      &testJWKS,
-			fetchedAt: time.Now().Add(-2 * time.Hour), // Expired to force fetch
-		})
-
-		// Even though cache is expired, we can't actually test the network fetch
-		// without bypassing HTTPS validation
-		cached, _ := client.cache.Load(server.URL)
-		if cached == nil {
-			t.Error("Expected cache entry")
-		}
-	})
-}
-
-func TestClearCache(t *testing.T) {
-	client := NewJWKSClient(nil, 0, slog.Default())
-
-	// Add some entries to the cache
-	client.cache.Store("https://example1.com/jwks", &cachedJWKS{
-		keys:      &JWKS{Keys: []JWK{{Kid: "key1"}}},
-		fetchedAt: time.Now(),
-	})
-	client.cache.Store("https://example2.com/jwks", &cachedJWKS{
-		keys:      &JWKS{Keys: []JWK{{Kid: "key2"}}},
-		fetchedAt: time.Now(),
-	})
-
-	// Verify entries exist
-	_, ok1 := client.cache.Load("https://example1.com/jwks")
-	_, ok2 := client.cache.Load("https://example2.com/jwks")
-	if !ok1 || !ok2 {
-		t.Fatal("Expected cache entries to exist before clearing")
-	}
-
-	// Clear the cache
-	client.ClearCache()
-
-	// Verify entries are gone
-	_, ok1 = client.cache.Load("https://example1.com/jwks")
-	_, ok2 = client.cache.Load("https://example2.com/jwks")
-	if ok1 || ok2 {
-		t.Error("Expected cache to be empty after clearing")
-	}
-}
-
-func TestCreateKeyFunc_Errors(t *testing.T) {
-	// Generate real keys for testing
-	rsaKey, _ := rsa.GenerateKey(rand.Reader, 2048)
-	ecKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-
-	jwks := &JWKS{
-		Keys: []JWK{
-			{
-				Kid: "rsa-key",
-				Kty: "RSA",
-				N:   base64.RawURLEncoding.EncodeToString(rsaKey.N.Bytes()),
-				E:   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(rsaKey.E)).Bytes()),
-			},
-			{
-				Kid: "ec-key",
-				Kty: "EC",
-				Crv: "P-256",
-				X:   base64.RawURLEncoding.EncodeToString(ecKey.X.Bytes()),
-				Y:   base64.RawURLEncoding.EncodeToString(ecKey.Y.Bytes()),
-			},
-		},
-	}
-
-	keyFunc := createKeyFunc(jwks)
-
-	t.Run("key not found", func(t *testing.T) {
-		token := &jwt.Token{
-			Method: jwt.SigningMethodRS256,
-			Header: map[string]interface{}{
-				"alg": "RS256",
-				"kid": "non-existent-key",
-			},
-		}
-
-		_, err := keyFunc(token)
-		if err == nil {
-			t.Error("Expected error for non-existent key")
-		}
-	})
-
-	t.Run("missing kid header", func(t *testing.T) {
-		token := &jwt.Token{
-			Method: jwt.SigningMethodRS256,
-			Header: map[string]interface{}{
-				"alg": "RS256",
-				// No kid
-			},
-		}
-
-		_, err := keyFunc(token)
-		if err == nil {
-			t.Error("Expected error for missing kid")
-		}
-	})
-
-	t.Run("HS256 rejected - algorithm confusion attack prevention", func(t *testing.T) {
-		// This tests protection against CVE-2015-9235 style attacks
-		token := &jwt.Token{
-			Method: jwt.SigningMethodHS256, // HMAC - should be rejected
-			Header: map[string]interface{}{
-				"alg": "HS256",
-				"kid": "rsa-key",
-			},
-		}
-
-		_, err := keyFunc(token)
-		if err == nil {
-			t.Error("Expected error for HS256 (algorithm confusion prevention)")
-		}
-		if !strings.Contains(err.Error(), "only RSA and ECDSA are allowed") {
-			t.Errorf("Expected error about allowed algorithms, got: %v", err)
-		}
-	})
-
-	t.Run("RS256 with RSA key succeeds", func(t *testing.T) {
-		token := &jwt.Token{
-			Method: jwt.SigningMethodRS256,
-			Header: map[string]interface{}{
-				"alg": "RS256",
-				"kid": "rsa-key",
-			},
-		}
-
-		key, err := keyFunc(token)
-		if err != nil {
-			t.Errorf("Unexpected error for RS256 with RSA key: %v", err)
-		}
-		if _, ok := key.(*rsa.PublicKey); !ok {
-			t.Errorf("Expected *rsa.PublicKey, got %T", key)
-		}
-	})
-
-	t.Run("ES256 with EC key succeeds", func(t *testing.T) {
-		token := &jwt.Token{
-			Method: jwt.SigningMethodES256,
-			Header: map[string]interface{}{
-				"alg": "ES256",
-				"kid": "ec-key",
-			},
-		}
-
-		key, err := keyFunc(token)
-		if err != nil {
-			t.Errorf("Unexpected error for ES256 with EC key: %v", err)
-		}
-		if _, ok := key.(*ecdsa.PublicKey); !ok {
-			t.Errorf("Expected *ecdsa.PublicKey, got %T", key)
-		}
-	})
-
-	t.Run("RS256 with EC key fails - key type mismatch", func(t *testing.T) {
-		token := &jwt.Token{
-			Method: jwt.SigningMethodRS256,
-			Header: map[string]interface{}{
-				"alg": "RS256",
-				"kid": "ec-key", // EC key, but RSA algorithm
-			},
-		}
-
-		_, err := keyFunc(token)
-		if err == nil {
-			t.Error("Expected error for algorithm/key type mismatch")
-		}
-		if !strings.Contains(err.Error(), "requires RSA key") {
-			t.Errorf("Expected error about RSA key requirement, got: %v", err)
-		}
-	})
-
-	t.Run("ES256 with RSA key fails - key type mismatch", func(t *testing.T) {
-		token := &jwt.Token{
-			Method: jwt.SigningMethodES256,
-			Header: map[string]interface{}{
-				"alg": "ES256",
-				"kid": "rsa-key", // RSA key, but ECDSA algorithm
-			},
-		}
-
-		_, err := keyFunc(token)
-		if err == nil {
-			t.Error("Expected error for algorithm/key type mismatch")
-		}
-		if !strings.Contains(err.Error(), "requires EC key") {
-			t.Errorf("Expected error about EC key requirement, got: %v", err)
-		}
-	})
-
-	t.Run("PS256 (RSA-PSS) with RSA key succeeds", func(t *testing.T) {
-		token := &jwt.Token{
-			Method: jwt.SigningMethodPS256,
-			Header: map[string]interface{}{
-				"alg": "PS256",
-				"kid": "rsa-key",
-			},
-		}
-
-		key, err := keyFunc(token)
-		if err != nil {
-			t.Errorf("Unexpected error for PS256 with RSA key: %v", err)
-		}
-		if _, ok := key.(*rsa.PublicKey); !ok {
-			t.Errorf("Expected *rsa.PublicKey, got %T", key)
-		}
-	})
-}
-
-// TestFetchJWKS_SecurityLimits tests the security limits on JWKS fetching.
-func TestFetchJWKS_SecurityLimits(t *testing.T) {
-	t.Run("SSRF protection - reject private IP", func(t *testing.T) {
-		client := NewJWKSClient(nil, 0, slog.Default())
-
-		// Attempt to fetch from a private IP (should be rejected)
-		_, err := client.FetchJWKS(context.Background(), "https://192.168.1.1/jwks")
-		if err == nil {
-			t.Error("Expected error for private IP JWKS URI")
-		}
-		if err != nil && !strings.Contains(err.Error(), "private IP") {
-			t.Errorf("Expected error about private IP, got: %v", err)
-		}
-	})
-
-	t.Run("SSRF protection - reject loopback", func(t *testing.T) {
-		client := NewJWKSClient(nil, 0, slog.Default())
-
-		// Attempt to fetch from loopback (should be rejected)
-		_, err := client.FetchJWKS(context.Background(), "https://127.0.0.1/jwks")
-		if err == nil {
-			t.Error("Expected error for loopback JWKS URI")
-		}
-		if err != nil && !strings.Contains(err.Error(), "loopback") {
-			t.Errorf("Expected error about loopback, got: %v", err)
-		}
-	})
-
-	t.Run("SSRF protection - reject link-local (metadata service)", func(t *testing.T) {
-		client := NewJWKSClient(nil, 0, slog.Default())
-
-		// Attempt to fetch from link-local address (AWS metadata service)
-		_, err := client.FetchJWKS(context.Background(), "https://169.254.169.254/jwks")
-		if err == nil {
-			t.Error("Expected error for link-local JWKS URI")
-		}
-		if err != nil && !strings.Contains(err.Error(), "link-local") {
-			t.Errorf("Expected error about link-local, got: %v", err)
-		}
-	})
-
-	t.Run("reject HTTP (not HTTPS)", func(t *testing.T) {
-		client := NewJWKSClient(nil, 0, slog.Default())
-
-		_, err := client.FetchJWKS(context.Background(), "http://example.com/jwks")
-		if err == nil {
-			t.Error("Expected error for HTTP JWKS URI")
-		}
-		if err != nil && !strings.Contains(err.Error(), "HTTPS") {
-			t.Errorf("Expected error about HTTPS, got: %v", err)
-		}
-	})
-
-	t.Run("reject JWKS with too many keys", func(t *testing.T) {
-		// Create a JWKS with more than maxJWKSKeyCount keys
-		tooManyKeys := make([]JWK, maxJWKSKeyCount+1)
-		for i := range tooManyKeys {
-			tooManyKeys[i] = JWK{
-				Kid: "key-" + string(rune('0'+i%10)),
-				Kty: "RSA",
-				N:   "test",
-				E:   "AQAB",
-			}
-		}
-		oversizedJWKS := JWKS{Keys: tooManyKeys}
-
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(oversizedJWKS)
-		}))
-		defer server.Close()
-
-		// Create client with the test server's HTTP client
-		client := &JWKSClient{
-			httpClient:   server.Client(),
-			cacheTTL:     1 * time.Hour,
-			timeProvider: realTime{},
-			logger:       slog.Default(),
-		}
-
-		// We can't bypass the SSRF check easily in an integration test,
-		// but we can verify the constant is set correctly and document
-		// that the key count validation happens after successful fetch.
-		// The SSRF check will reject localhost, which is the expected behavior.
-
-		// Verify the constant is set correctly
-		if maxJWKSKeyCount != 100 {
-			t.Errorf("maxJWKSKeyCount = %d, want 100", maxJWKSKeyCount)
-		}
-
-		// Verify SSRF protection blocks localhost (expected behavior)
-		_, err := client.FetchJWKS(context.Background(), server.URL)
-		if err == nil {
-			t.Error("Expected error due to SSRF protection blocking localhost")
-		}
-	})
-
-	t.Run("accept JWKS at key limit", func(t *testing.T) {
-		// Create a JWKS with exactly maxJWKSKeyCount keys
-		maxKeys := make([]JWK, maxJWKSKeyCount)
-		for i := range maxKeys {
-			maxKeys[i] = JWK{
-				Kid: "key-" + string(rune('0'+i%10)),
-				Kty: "RSA",
-				N:   "test",
-				E:   "AQAB",
-			}
-		}
-		maxJWKS := JWKS{Keys: maxKeys}
-
-		// Pre-populate cache to test that valid JWKS at the limit is accepted
-		client := NewJWKSClient(nil, 0, slog.Default())
-		client.cache.Store("https://example.com/jwks", &cachedJWKS{
-			keys:      &maxJWKS,
-			fetchedAt: time.Now(),
-		})
-
-		jwks, err := client.FetchJWKS(context.Background(), "https://example.com/jwks")
-		if err != nil {
-			t.Errorf("FetchJWKS() unexpected error for JWKS at limit: %v", err)
-		}
-		if jwks != nil && len(jwks.Keys) != maxJWKSKeyCount {
-			t.Errorf("Expected %d keys, got %d", maxJWKSKeyCount, len(jwks.Keys))
-		}
-	})
 }

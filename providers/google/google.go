@@ -349,6 +349,10 @@ const googleIssuerURL = "https://accounts.google.com"
 
 // JWKSURI returns Google's JWKS URI for JWT signature verification.
 // This implements the JWKSProvider interface for SSO token forwarding.
+//
+// Note: The context parameter is unused for Google because the JWKS URI is a
+// static well-known endpoint. Other providers (like Dex) use the context for
+// OIDC discovery which may involve network calls.
 func (p *Provider) JWKSURI(_ context.Context) (string, error) {
 	return googleJWKSURI, nil
 }
