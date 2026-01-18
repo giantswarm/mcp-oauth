@@ -17,6 +17,14 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
+// testJWTWithMusterClientAudience is a test JWT with muster-client audience for testing.
+// Header: {"alg":"RS256","typ":"JWT"}
+// Payload: {"aud":"muster-client","sub":"user123"}
+// Signature: invalid (for testing only)
+//
+//nolint:gosec // G101: Test JWT structure, not a credential
+const testJWTWithMusterClientAudience = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJtdXN0ZXItY2xpZW50Iiwic3ViIjoidXNlcjEyMyJ9.invalid-signature"
+
 // TestIsTrustedAudience tests the isTrustedAudience helper function.
 func TestIsTrustedAudience(t *testing.T) {
 	tests := []struct {
@@ -351,7 +359,7 @@ func TestLogCrossClientTokenAccepted(t *testing.T) {
 		Audience: "muster-client",
 	}
 
-	srv.logCrossClientTokenAccepted("test-token-12345678", metadata)
+	srv.logCrossClientTokenAccepted("test-token-12345678", metadata) //nolint:staticcheck // Testing the cross-client logging path
 
 	// Verify log output
 	logOutput := logBuffer.String()
@@ -614,6 +622,158 @@ func TestValidateToken_JWTBeforeUserinfo(t *testing.T) {
 		// because the JWT validation will fail (no real JWKS)
 		if mockProvider.GetCallCount("ValidateToken") == 0 {
 			t.Error("Expected fallback to userinfo after JWT validation failure")
+		}
+	})
+}
+
+// TestValidateToken_IssuerValidation verifies that issuer validation is configured
+// when the provider implements JWKSProvider and provides an issuer URL.
+// Note: Full end-to-end issuer validation requires a valid JWT with proper signature,
+// which is tested in providers/oidc/jwt_test.go. This test verifies the mock provider
+// supports the JWKSProvider interface and the issuer is passed to the validation.
+func TestValidateToken_IssuerValidation(t *testing.T) {
+	store := memory.New()
+	t.Cleanup(func() { store.Stop() })
+
+	var logBuffer bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuffer, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	config := &Config{
+		Issuer:             "https://auth.example.com",
+		ResourceIdentifier: "https://mcp.example.com",
+		TrustedAudiences:   []string{"muster-client"},
+	}
+
+	// Test that provider's IssuerURL is called when JWKSProvider is implemented
+	t.Run("provider IssuerURL is called during JWT validation", func(t *testing.T) {
+		mockProvider := mock.NewProvider()
+		issuerCalled := false
+		mockProvider.IssuerURLFunc = func() string {
+			issuerCalled = true
+			return "https://accounts.google.com"
+		}
+
+		srv := &Server{
+			Config:     config,
+			tokenStore: store,
+			flowStore:  store,
+			provider:   mockProvider,
+			Logger:     logger,
+		}
+
+		// Use test JWT with valid structure but invalid signature
+		_, _ = srv.ValidateToken(context.Background(), testJWTWithMusterClientAudience)
+
+		// Verify IssuerURL was called during validation
+		if !issuerCalled {
+			t.Error("Expected IssuerURL to be called during JWT validation")
+		}
+	})
+
+	// Test that JWKSURI is called when JWKSProvider is implemented
+	t.Run("provider JWKSURI is called during JWT validation", func(t *testing.T) {
+		mockProvider := mock.NewProvider()
+		mockProvider.ResetCallCounts()
+
+		srv := &Server{
+			Config:     config,
+			tokenStore: store,
+			flowStore:  store,
+			provider:   mockProvider,
+			Logger:     logger,
+		}
+
+		// Use test JWT with valid structure but invalid signature
+		_, _ = srv.ValidateToken(context.Background(), testJWTWithMusterClientAudience)
+
+		// Verify JWKSURI was called
+		if mockProvider.GetCallCount("JWKSURI") == 0 {
+			t.Error("Expected JWKSURI to be called during JWT validation")
+		}
+	})
+
+	// Test with provider that has empty issuer URL
+	t.Run("provider with empty issuer URL proceeds without issuer validation", func(t *testing.T) {
+		logBuffer.Reset()
+
+		mockProvider := mock.NewProvider()
+		mockProvider.IssuerURLFunc = func() string {
+			return "" // Empty issuer - validation should proceed without issuer check
+		}
+
+		srv := &Server{
+			Config:     config,
+			tokenStore: store,
+			flowStore:  store,
+			provider:   mockProvider,
+			Logger:     logger,
+		}
+
+		// Use test JWT with valid structure but invalid signature
+		_, _ = srv.ValidateToken(context.Background(), testJWTWithMusterClientAudience)
+
+		// Verify issuer validation log was NOT emitted (since issuer is empty)
+		logOutput := logBuffer.String()
+		if strings.Contains(logOutput, "Validating JWT issuer against provider") {
+			t.Error("Expected issuer validation to be skipped when provider has empty issuer URL")
+		}
+	})
+}
+
+// TestMockProvider_JWKSProvider verifies that the mock provider implements JWKSProvider.
+func TestMockProvider_JWKSProvider(t *testing.T) {
+	mockProvider := mock.NewProvider()
+
+	t.Run("default JWKS URI", func(t *testing.T) {
+		uri, err := mockProvider.JWKSURI(context.Background())
+		if err != nil {
+			t.Errorf("JWKSURI() error = %v", err)
+		}
+		if uri == "" {
+			t.Error("Expected non-empty JWKS URI")
+		}
+	})
+
+	t.Run("default issuer URL", func(t *testing.T) {
+		issuer := mockProvider.IssuerURL()
+		if issuer == "" {
+			t.Error("Expected non-empty issuer URL")
+		}
+	})
+
+	t.Run("custom JWKS URI", func(t *testing.T) {
+		mockProvider.JWKSURIFunc = func(_ context.Context) (string, error) {
+			return "https://custom.example.com/.well-known/jwks.json", nil
+		}
+		uri, err := mockProvider.JWKSURI(context.Background())
+		if err != nil {
+			t.Errorf("JWKSURI() error = %v", err)
+		}
+		if uri != "https://custom.example.com/.well-known/jwks.json" {
+			t.Errorf("JWKSURI() = %q, want custom URI", uri)
+		}
+	})
+
+	t.Run("custom issuer URL", func(t *testing.T) {
+		mockProvider.IssuerURLFunc = func() string {
+			return "https://custom-issuer.example.com"
+		}
+		issuer := mockProvider.IssuerURL()
+		if issuer != "https://custom-issuer.example.com" {
+			t.Errorf("IssuerURL() = %q, want custom issuer", issuer)
+		}
+	})
+
+	t.Run("call counts tracked", func(t *testing.T) {
+		mockProvider.ResetCallCounts()
+		_, _ = mockProvider.JWKSURI(context.Background())
+		_ = mockProvider.IssuerURL()
+
+		if mockProvider.GetCallCount("JWKSURI") != 1 {
+			t.Errorf("JWKSURI call count = %d, want 1", mockProvider.GetCallCount("JWKSURI"))
+		}
+		if mockProvider.GetCallCount("IssuerURL") != 1 {
+			t.Errorf("IssuerURL call count = %d, want 1", mockProvider.GetCallCount("IssuerURL"))
 		}
 	})
 }

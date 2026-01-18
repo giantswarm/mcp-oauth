@@ -416,13 +416,22 @@ func (s *Server) validateForwardedIDToken(ctx context.Context, tokenString strin
 		return nil, fmt.Errorf("failed to get JWKS URI: %w", err)
 	}
 
+	// Get issuer URL from provider for additional validation
+	// This adds defense-in-depth by ensuring the token was issued by the expected provider
+	expectedIssuer := jwksProvider.IssuerURL()
+	if expectedIssuer != "" {
+		s.Logger.Debug("Validating JWT issuer against provider",
+			"expected_issuer", expectedIssuer,
+			"token_prefix", helpers.SafeTruncate(tokenString, 8))
+	}
+
 	// Validate the JWT signature using JWKS
 	idTokenClaims, err := oidc.ValidateIDToken(
 		ctx,
 		tokenString,
 		s.getJWKSClient(),
 		jwksURI,
-		"", // Don't validate issuer - it may be from a different client
+		expectedIssuer, // Validate issuer if provider specifies one
 		s.Config.TrustedAudiences,
 	)
 	if err != nil {
@@ -432,8 +441,8 @@ func (s *Server) validateForwardedIDToken(ctx context.Context, tokenString strin
 	// Extract user info from validated claims
 	userInfo := s.idTokenClaimsToUserInfo(idTokenClaims)
 
-	// Log the successful SSO token acceptance
-	s.logForwardedIDTokenAccepted(tokenString, matchedAudience, userInfo)
+	// Log the successful SSO token acceptance with issuer information
+	s.logForwardedIDTokenAccepted(tokenString, matchedAudience, expectedIssuer, userInfo)
 
 	return userInfo, nil
 }
@@ -478,23 +487,30 @@ func (s *Server) idTokenClaimsToUserInfo(claims *oidc.IDTokenClaims) *providers.
 }
 
 // logForwardedIDTokenAccepted logs a security event when a forwarded ID token is accepted.
-func (s *Server) logForwardedIDTokenAccepted(tokenString, matchedAudience string, userInfo *providers.UserInfo) {
+func (s *Server) logForwardedIDTokenAccepted(tokenString, matchedAudience, validatedIssuer string, userInfo *providers.UserInfo) {
 	s.Logger.Info("Forwarded ID token accepted via TrustedAudiences (SSO)",
 		"user_id", userInfo.ID,
 		"email", userInfo.Email,
 		"matched_audience", matchedAudience,
+		"issuer_validated", validatedIssuer != "",
 		"token_prefix", helpers.SafeTruncate(tokenString, 8))
 
 	if s.Auditor != nil {
+		details := map[string]any{
+			"matched_audience":    matchedAudience,
+			"email":               userInfo.Email,
+			"validation_method":   "jwks",
+			"sso_token_forwarded": true,
+			"issuer_validated":    validatedIssuer != "",
+		}
+		// Include validated issuer in audit log for security forensics
+		if validatedIssuer != "" {
+			details["validated_issuer"] = validatedIssuer
+		}
 		s.Auditor.LogEvent(security.Event{
-			Type:   security.EventForwardedIDTokenAccepted,
-			UserID: userInfo.ID,
-			Details: map[string]any{
-				"matched_audience":    matchedAudience,
-				"email":               userInfo.Email,
-				"validation_method":   "jwks",
-				"sso_token_forwarded": true,
-			},
+			Type:    security.EventForwardedIDTokenAccepted,
+			UserID:  userInfo.ID,
+			Details: details,
 		})
 	}
 }
