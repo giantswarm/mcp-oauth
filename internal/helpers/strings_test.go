@@ -97,6 +97,7 @@ func TestNormalizeURL(t *testing.T) {
 		input string
 		want  string
 	}{
+		// Trailing slash normalization
 		{
 			name:  "URL with trailing slash",
 			input: "https://example.com/",
@@ -122,6 +123,94 @@ func TestNormalizeURL(t *testing.T) {
 			input: "https://example.com/api/v1",
 			want:  "https://example.com/api/v1",
 		},
+
+		// Case normalization (scheme and host only)
+		{
+			name:  "uppercase scheme",
+			input: "HTTPS://example.com",
+			want:  "https://example.com",
+		},
+		{
+			name:  "mixed case scheme",
+			input: "HtTpS://example.com",
+			want:  "https://example.com",
+		},
+		{
+			name:  "uppercase host",
+			input: "https://EXAMPLE.COM",
+			want:  "https://example.com",
+		},
+		{
+			name:  "mixed case host",
+			input: "https://Example.COM",
+			want:  "https://example.com",
+		},
+		{
+			name:  "path case preserved",
+			input: "https://example.com/Path/To/Resource",
+			want:  "https://example.com/Path/To/Resource",
+		},
+		{
+			name:  "full mixed case with path",
+			input: "HTTPS://Example.COM/Path/To/Resource/",
+			want:  "https://example.com/Path/To/Resource",
+		},
+
+		// Default port normalization
+		{
+			name:  "HTTPS default port 443 removed",
+			input: "https://example.com:443",
+			want:  "https://example.com",
+		},
+		{
+			name:  "HTTPS default port 443 with path",
+			input: "https://example.com:443/api/v1/",
+			want:  "https://example.com/api/v1",
+		},
+		{
+			name:  "HTTP default port 80 removed",
+			input: "http://example.com:80",
+			want:  "http://example.com",
+		},
+		{
+			name:  "non-default port preserved",
+			input: "https://example.com:8443/",
+			want:  "https://example.com:8443",
+		},
+		{
+			name:  "URL with port and trailing slash",
+			input: "https://example.com:8080/",
+			want:  "https://example.com:8080",
+		},
+
+		// Query and fragment preservation
+		{
+			name:  "URL with query string",
+			input: "https://example.com/path?foo=bar",
+			want:  "https://example.com/path?foo=bar",
+		},
+		{
+			name:  "URL with fragment",
+			input: "https://example.com/path#section",
+			want:  "https://example.com/path#section",
+		},
+		{
+			name:  "URL with query and fragment",
+			input: "https://example.com/path?foo=bar#section",
+			want:  "https://example.com/path?foo=bar#section",
+		},
+
+		// Non-URL values (backwards compatibility)
+		{
+			name:  "simple client ID",
+			input: "client-id",
+			want:  "client-id",
+		},
+		{
+			name:  "client ID with trailing slashes",
+			input: "client-id///",
+			want:  "client-id",
+		},
 		{
 			name:  "empty string",
 			input: "",
@@ -131,11 +220,6 @@ func TestNormalizeURL(t *testing.T) {
 			name:  "just slashes",
 			input: "///",
 			want:  "",
-		},
-		{
-			name:  "URL with port and trailing slash",
-			input: "https://example.com:8080/",
-			want:  "https://example.com:8080",
 		},
 	}
 
@@ -150,24 +234,43 @@ func TestNormalizeURL(t *testing.T) {
 }
 
 func TestNormalizeURL_Comparison(t *testing.T) {
-	// Test that URLs with and without trailing slashes are equal after normalization
+	// Test that semantically equivalent URLs are equal after normalization
 	testCases := []struct {
+		name string
 		url1 string
 		url2 string
 	}{
-		{"https://example.com", "https://example.com/"},
-		{"https://example.com/api", "https://example.com/api/"},
-		{"https://mcp.example.com:8080", "https://mcp.example.com:8080/"},
-		{"https://inboxfewer.k8s-internal.home.derstappen.com", "https://inboxfewer.k8s-internal.home.derstappen.com/"},
+		// Trailing slash equivalence
+		{"trailing slash", "https://example.com", "https://example.com/"},
+		{"trailing slash with path", "https://example.com/api", "https://example.com/api/"},
+		{"trailing slash with port", "https://mcp.example.com:8080", "https://mcp.example.com:8080/"},
+		{"long hostname", "https://inboxfewer.k8s-internal.home.derstappen.com", "https://inboxfewer.k8s-internal.home.derstappen.com/"},
+
+		// Case insensitivity (scheme and host)
+		{"case scheme", "https://example.com", "HTTPS://example.com"},
+		{"case host", "https://example.com", "https://EXAMPLE.COM"},
+		{"case both", "https://example.com", "HTTPS://EXAMPLE.COM"},
+		{"mixed case", "https://example.com/Path", "HTTPS://EXAMPLE.COM/Path"},
+
+		// Default port equivalence
+		{"https default port", "https://example.com", "https://example.com:443"},
+		{"https default port with path", "https://example.com/api", "https://example.com:443/api"},
+		{"http default port", "http://example.com", "http://example.com:80"},
+
+		// Combined normalizations
+		{"case and port", "https://example.com", "HTTPS://EXAMPLE.COM:443/"},
+		{"case port and trailing", "https://example.com/api", "HTTPS://EXAMPLE.COM:443/api/"},
 	}
 
 	for _, tc := range testCases {
-		normalized1 := NormalizeURL(tc.url1)
-		normalized2 := NormalizeURL(tc.url2)
-		if normalized1 != normalized2 {
-			t.Errorf("Expected NormalizeURL(%q) == NormalizeURL(%q), got %q != %q",
-				tc.url1, tc.url2, normalized1, normalized2)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			normalized1 := NormalizeURL(tc.url1)
+			normalized2 := NormalizeURL(tc.url2)
+			if normalized1 != normalized2 {
+				t.Errorf("Expected NormalizeURL(%q) == NormalizeURL(%q), got %q != %q",
+					tc.url1, tc.url2, normalized1, normalized2)
+			}
+		})
 	}
 }
 
@@ -286,6 +389,154 @@ func TestPathMatchesPrefix(t *testing.T) {
 			if got != tt.expected {
 				t.Errorf("PathMatchesPrefix(%q, %q) = %v, want %v",
 					tt.resourcePath, tt.prefix, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestMatchAudienceSecure(t *testing.T) {
+	tests := []struct {
+		name             string
+		tokenAudience    string
+		trustedAudiences []string
+		want             string
+	}{
+		{
+			name:             "exact match",
+			tokenAudience:    "https://example.com",
+			trustedAudiences: []string{"https://example.com"},
+			want:             "https://example.com",
+		},
+		{
+			name:             "case insensitive match",
+			tokenAudience:    "https://example.com",
+			trustedAudiences: []string{"HTTPS://EXAMPLE.COM"},
+			want:             "HTTPS://EXAMPLE.COM",
+		},
+		{
+			name:             "trailing slash normalization",
+			tokenAudience:    "https://example.com/",
+			trustedAudiences: []string{"https://example.com"},
+			want:             "https://example.com",
+		},
+		{
+			name:             "default port normalization",
+			tokenAudience:    "https://example.com:443",
+			trustedAudiences: []string{"https://example.com"},
+			want:             "https://example.com",
+		},
+		{
+			name:             "combined normalization",
+			tokenAudience:    "HTTPS://Example.COM:443/",
+			trustedAudiences: []string{"https://example.com"},
+			want:             "https://example.com",
+		},
+		{
+			name:             "no match",
+			tokenAudience:    "https://other.com",
+			trustedAudiences: []string{"https://example.com"},
+			want:             "",
+		},
+		{
+			name:             "empty trusted audiences",
+			tokenAudience:    "https://example.com",
+			trustedAudiences: []string{},
+			want:             "",
+		},
+		{
+			name:             "multiple trusted audiences first match",
+			tokenAudience:    "https://example.com",
+			trustedAudiences: []string{"https://example.com", "https://other.com"},
+			want:             "https://example.com",
+		},
+		{
+			name:             "multiple trusted audiences second match",
+			tokenAudience:    "https://other.com",
+			trustedAudiences: []string{"https://example.com", "https://other.com"},
+			want:             "https://other.com",
+		},
+		{
+			name:             "non-URL audience",
+			tokenAudience:    "my-client-id",
+			trustedAudiences: []string{"my-client-id"},
+			want:             "my-client-id",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := MatchAudienceSecure(tt.tokenAudience, tt.trustedAudiences)
+			if got != tt.want {
+				t.Errorf("MatchAudienceSecure(%q, %v) = %q, want %q",
+					tt.tokenAudience, tt.trustedAudiences, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFindMatchingAudience(t *testing.T) {
+	tests := []struct {
+		name             string
+		tokenAudiences   []string
+		trustedAudiences []string
+		want             string
+	}{
+		{
+			name:             "single audience matches",
+			tokenAudiences:   []string{"https://example.com"},
+			trustedAudiences: []string{"https://example.com"},
+			want:             "https://example.com",
+		},
+		{
+			name:             "multiple token audiences first matches",
+			tokenAudiences:   []string{"https://example.com", "https://other.com"},
+			trustedAudiences: []string{"https://example.com"},
+			want:             "https://example.com",
+		},
+		{
+			name:             "multiple token audiences second matches",
+			tokenAudiences:   []string{"https://other.com", "https://example.com"},
+			trustedAudiences: []string{"https://example.com"},
+			want:             "https://example.com",
+		},
+		{
+			name:             "case insensitive match",
+			tokenAudiences:   []string{"https://example.com"},
+			trustedAudiences: []string{"HTTPS://EXAMPLE.COM"},
+			want:             "https://example.com",
+		},
+		{
+			name:             "no match",
+			tokenAudiences:   []string{"https://other.com"},
+			trustedAudiences: []string{"https://example.com"},
+			want:             "",
+		},
+		{
+			name:             "empty token audiences",
+			tokenAudiences:   []string{},
+			trustedAudiences: []string{"https://example.com"},
+			want:             "",
+		},
+		{
+			name:             "empty trusted audiences",
+			tokenAudiences:   []string{"https://example.com"},
+			trustedAudiences: []string{},
+			want:             "",
+		},
+		{
+			name:             "both empty",
+			tokenAudiences:   []string{},
+			trustedAudiences: []string{},
+			want:             "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FindMatchingAudience(tt.tokenAudiences, tt.trustedAudiences)
+			if got != tt.want {
+				t.Errorf("FindMatchingAudience(%v, %v) = %q, want %q",
+					tt.tokenAudiences, tt.trustedAudiences, got, tt.want)
 			}
 		})
 	}

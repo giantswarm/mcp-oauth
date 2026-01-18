@@ -16,6 +16,7 @@ import (
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/providers"
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
@@ -157,15 +158,36 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 // the provider, preventing expired tokens from being accepted due to clock skew.
 //
 // Validation flow:
-// 1. Check if token exists in local storage
-// 2. If found, validate expiry locally (with ClockSkewGracePeriod)
-// 3. RFC 8707: Validate audience binding (token intended for this resource server)
-// 4. If expired locally, return error immediately (don't call provider)
-// 5. Validate with provider (external check)
-// 6. Store updated user info
+// 1. Check if token is a JWT with a trusted audience (SSO token forwarding)
+// 2. If JWT with trusted audience, validate via JWKS signature verification
+// 3. Check if token exists in local storage
+// 4. If found, validate expiry locally (with ClockSkewGracePeriod)
+// 5. RFC 8707: Validate audience binding (token intended for this resource server)
+// 6. If expired locally, return error immediately (don't call provider)
+// 7. Validate with provider (external check - userinfo endpoint)
+// 8. Store updated user info
 //
 // Note: Rate limiting should be done at the HTTP layer with IP address, not here with token
 func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+	// PRIORITY 1: Check if this is a forwarded ID token (JWT) from a trusted upstream service
+	// This MUST happen BEFORE calling userinfo, as ID tokens cannot be validated via userinfo
+	if len(s.Config.TrustedAudiences) > 0 && oidc.IsJWT(accessToken) {
+		userInfo, err := s.validateForwardedIDToken(ctx, accessToken)
+		if err != nil {
+			// Log at debug level - not all JWTs are valid ID tokens, fallback to normal flow
+			s.Logger.Debug("Forwarded ID token validation failed, falling back to userinfo",
+				"error", err.Error(),
+				"token_prefix", helpers.SafeTruncate(accessToken, 8))
+		} else if userInfo != nil {
+			// ID token validated successfully - return the user info
+			s.Logger.Debug("Forwarded ID token validated via JWKS",
+				"user_id", userInfo.ID,
+				"token_prefix", helpers.SafeTruncate(accessToken, 8))
+			return userInfo, nil
+		}
+	}
+
+	// PRIORITY 2: Standard token validation flow
 	storedToken, err := s.validateStoredToken(ctx, accessToken)
 	if err != nil {
 		return nil, err
@@ -174,7 +196,7 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 	// Determine which token to use for provider validation
 	tokenForProviderValidation := s.selectTokenForProviderValidation(accessToken, storedToken)
 
-	// Validate with provider
+	// Validate with provider (userinfo endpoint)
 	userInfo, err := s.provider.ValidateToken(ctx, tokenForProviderValidation)
 	if err != nil {
 		if s.Auditor != nil {
@@ -272,21 +294,9 @@ func (s *Server) validateTokenAudience(accessToken string) error {
 
 // isTrustedAudience checks if the given audience is in the TrustedAudiences list.
 // This enables SSO scenarios where tokens issued to trusted upstream services are accepted.
+// Uses helpers.MatchAudienceSecure for consistent URL normalization and constant-time comparison.
 func (s *Server) isTrustedAudience(audience string) bool {
-	if len(s.Config.TrustedAudiences) == 0 {
-		return false
-	}
-
-	normalizedAudience := helpers.NormalizeURL(audience)
-
-	for _, trusted := range s.Config.TrustedAudiences {
-		normalizedTrusted := helpers.NormalizeURL(trusted)
-		if subtle.ConstantTimeCompare([]byte(normalizedAudience), []byte(normalizedTrusted)) == 1 {
-			return true
-		}
-	}
-
-	return false
+	return helpers.MatchAudienceSecure(audience, s.Config.TrustedAudiences) != ""
 }
 
 // logCrossClientTokenAccepted logs when a token is accepted via TrustedAudiences.

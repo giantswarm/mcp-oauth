@@ -463,6 +463,18 @@ In architectures with an MCP aggregator (like muster) that proxies requests to d
 
 Without this feature, each downstream MCP server would require its own separate OAuth flow.
 
+### Token Validation Flow
+
+When `TrustedAudiences` is configured, the token validation follows a prioritized approach:
+
+1. **JWT Detection**: Check if the Bearer token is a JWT (three dot-separated parts)
+2. **JWKS Validation**: If the provider supports JWKS, validate the JWT signature using the provider's JWKS endpoint
+3. **Audience Check**: Verify the JWT's `aud` claim matches one of the `TrustedAudiences`
+4. **Claims Extraction**: Extract user info directly from JWT claims (sub, email, name, groups, etc.)
+5. **Fallback**: If JWT validation fails, fall back to the provider's userinfo endpoint
+
+This approach is critical for ID token forwarding scenarios. Many Identity Providers (IdPs) reject ID tokens when passed to their userinfo endpoint, as userinfo expects access tokens. By validating JWTs via JWKS first, the library can correctly handle forwarded ID tokens.
+
 ### Configuration
 
 ```go
@@ -478,22 +490,43 @@ config := &server.Config{
 }
 ```
 
+JWKS documents are cached for 1 hour by default to balance performance with key rotation freshness.
+
+### Provider Requirements
+
+For JWT validation to work, the provider must implement the `JWKSProvider` interface:
+
+| Provider | JWKS Support | Notes |
+|----------|--------------|-------|
+| Google   | Yes          | Uses `https://www.googleapis.com/oauth2/v3/certs` |
+| Dex      | Yes          | Discovers JWKS URI via OIDC discovery |
+| GitHub   | No           | GitHub OAuth Apps don't use OIDC/JWT |
+
+Providers without JWKS support will always use userinfo endpoint validation.
+
 ### Security Model
 
 | Aspect | Behavior |
 |--------|----------|
+| **JWKS Validation** | JWTs are validated via cryptographic signature verification |
 | **Explicit Trust** | Each trusted audience must be explicitly configured |
 | **Same Issuer** | Tokens are only accepted if from the configured IdP |
 | **Own Identifier** | Server's own `ResourceIdentifier` is always implicitly trusted |
-| **Audit Logging** | `EventCrossClientTokenAccepted` logged for security monitoring |
+| **Audit Logging** | `EventForwardedIDTokenAccepted` and `EventCrossClientTokenAccepted` logged |
+| **SSRF Protection** | JWKS URIs are validated to block private IPs, loopback, and link-local addresses |
+| **DNS Rebinding Protection** | Resolved IPs are validated at connection time to prevent DNS rebinding attacks |
+| **Memory Limits** | Response body limited to 1MB, max 100 keys per JWKS |
+| **Algorithm Restriction** | Only RSA and ECDSA signing methods accepted (prevents algorithm confusion attacks like CVE-2015-9235) |
+| **URL Normalization** | Case-insensitive host comparison, default port removal (443/80) |
 | **Constant-Time** | Audience comparison uses constant-time comparison |
 
 ### Security Recommendations
 
 1. **Minimize Trust**: Only add audiences you explicitly trust
 2. **Same IdP**: All trusted audiences should use the same Identity Provider
-3. **Monitor Logs**: Watch for `cross_client_token_accepted` audit events
+3. **Monitor Logs**: Watch for `forwarded_id_token_accepted` and `cross_client_token_accepted` audit events
 4. **Validate Scopes**: Use `EndpointScopeRequirements` for fine-grained access control
+5. **JWKS Caching**: The default 1-hour cache TTL balances performance with key rotation freshness
 
 ### Example YAML Configuration
 
@@ -507,7 +540,22 @@ oauth:
     - "muster-client"
 ```
 
-### Audit Event
+### Audit Events
+
+When a forwarded ID token is validated via JWKS, `EventForwardedIDTokenAccepted` is logged:
+
+```json
+{
+  "event_type": "forwarded_id_token_accepted",
+  "user_id": "user@example.com",
+  "details": {
+    "matched_audience": "muster-client",
+    "email": "user@example.com",
+    "validation_method": "jwks",
+    "sso_token_forwarded": true
+  }
+}
+```
 
 When a token is accepted via `TrustedAudiences`, the `EventCrossClientTokenAccepted` event is logged:
 
@@ -524,6 +572,62 @@ When a token is accepted via `TrustedAudiences`, the `EventCrossClientTokenAccep
   }
 }
 ```
+
+## JWKS Security Hardening
+
+The JWKS (JSON Web Key Set) fetching mechanism includes multiple layers of security protection to prevent attacks during JWT validation.
+
+### DNS Rebinding Protection
+
+DNS rebinding attacks occur when an attacker controls a DNS server that initially resolves to a public IP (passing URL validation) but later resolves to a private IP during the actual HTTP connection. The library mitigates this by validating resolved IPs at connection time:
+
+```go
+// DNS rebinding protection is enabled by default when using NewJWKSClient
+// The SSRF-safe HTTP client validates IPs after DNS resolution
+client := oidc.NewJWKSClient(nil, 0, logger)
+```
+
+**How it works:**
+1. URL validation checks the hostname against known private ranges
+2. At connection time, DNS is resolved to actual IPs
+3. Each resolved IP is validated against restricted ranges before connection
+4. If any resolved IP is private/loopback/link-local, the connection is rejected
+
+This prevents attackers from using DNS rebinding to access:
+- Internal Kubernetes services
+- Cloud metadata endpoints (169.254.169.254)
+- Local development servers
+
+### Algorithm Confusion Attack Prevention
+
+The library explicitly restricts JWT signing algorithms to prevent algorithm confusion attacks (CVE-2015-9235):
+
+| Algorithm Type | Supported | Why |
+|---------------|-----------|-----|
+| RSA (RS256, RS384, RS512) | Yes | Asymmetric, public key verification |
+| RSA-PSS (PS256, PS384, PS512) | Yes | Asymmetric with improved padding |
+| ECDSA (ES256, ES384, ES512) | Yes | Asymmetric, elliptic curve |
+| HMAC (HS256, HS384, HS512) | **No** | Symmetric - enables key confusion attacks |
+
+The algorithm check validates the **method type** (not just the header string), preventing attackers from changing the `alg` header to force HMAC verification with the public key.
+
+### URL Normalization
+
+Audience comparison uses strict URL normalization to prevent bypasses:
+
+```go
+// These are all considered equivalent:
+"https://example.com"
+"HTTPS://EXAMPLE.COM"
+"https://example.com:443"
+"https://example.com/"
+```
+
+Normalization includes:
+- **Case normalization**: Scheme and host are lowercased
+- **Default port removal**: `:443` for HTTPS, `:80` for HTTP
+- **Trailing slash removal**: Consistent path handling
+- **Path case preserved**: Only scheme/host are case-insensitive
 
 ## Legacy Client Support
 

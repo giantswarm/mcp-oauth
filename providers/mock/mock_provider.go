@@ -11,7 +11,8 @@ import (
 	"github.com/giantswarm/mcp-oauth/providers"
 )
 
-// Provider is a mock implementation of the Provider interface for testing
+// Provider is a mock implementation of the Provider interface for testing.
+// It also implements JWKSProvider for testing JWKS-based validation.
 type Provider struct {
 	// NameFunc is called when Name() is invoked
 	NameFunc func() string
@@ -36,6 +37,12 @@ type Provider struct {
 
 	// HealthCheckFunc is called when HealthCheck() is invoked
 	HealthCheckFunc func(ctx context.Context) error
+
+	// JWKSURIFunc is called when JWKSURI() is invoked (for JWKSProvider interface)
+	JWKSURIFunc func(ctx context.Context) (string, error)
+
+	// IssuerURLFunc is called when IssuerURL() is invoked (for JWKSProvider interface)
+	IssuerURLFunc func() string
 
 	// CallCounts tracks how many times each method was called
 	CallCounts map[string]int
@@ -205,3 +212,34 @@ func (m *Provider) GetCallCount(method string) int {
 	defer m.mu.RUnlock()
 	return m.CallCounts[method]
 }
+
+// JWKSURI returns the JWKS URI for JWT signature verification.
+// This implements the JWKSProvider interface for testing SSO token forwarding.
+func (m *Provider) JWKSURI(ctx context.Context) (string, error) {
+	m.mu.Lock()
+	m.CallCounts["JWKSURI"]++
+	fn := m.JWKSURIFunc
+	m.mu.Unlock()
+	if fn == nil {
+		// Default: return a mock JWKS URI
+		return "https://mock.example.com/.well-known/jwks.json", nil
+	}
+	return fn(ctx)
+}
+
+// IssuerURL returns the issuer URL for JWT validation.
+// This implements the JWKSProvider interface for testing SSO token forwarding.
+func (m *Provider) IssuerURL() string {
+	m.mu.Lock()
+	m.CallCounts["IssuerURL"]++
+	fn := m.IssuerURLFunc
+	m.mu.Unlock()
+	if fn == nil {
+		// Default: return a mock issuer URL
+		return "https://mock.example.com"
+	}
+	return fn()
+}
+
+// Verify Provider implements JWKSProvider interface at compile time
+var _ providers.JWKSProvider = (*Provider)(nil)
