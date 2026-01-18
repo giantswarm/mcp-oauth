@@ -50,6 +50,18 @@ type JWK struct {
 	E   string `json:"e"`   // RSA exponent (base64url)
 }
 
+const (
+	// maxJWKSDocumentSize is the maximum allowed size for a JWKS response.
+	// JWKS documents are typically a few KB. 1MB is a generous safety margin
+	// to prevent memory exhaustion attacks from malicious JWKS endpoints.
+	maxJWKSDocumentSize = 1024 * 1024 // 1MB
+
+	// maxJWKSKeyCount is the maximum number of keys allowed in a JWKS.
+	// This prevents memory exhaustion from malicious endpoints returning
+	// millions of keys. 100 keys is far more than any legitimate provider needs.
+	maxJWKSKeyCount = 100
+)
+
 // NewJWKSClient creates a new JWKS client with default configuration.
 //
 // Parameters:
@@ -79,6 +91,12 @@ func NewJWKSClient(httpClient *http.Client, cacheTTL time.Duration, logger *slog
 
 // FetchJWKS fetches the JWKS from a given URI with caching.
 // Uses HTTPS validation and SSRF protection for security.
+//
+// Security Features:
+//   - SSRF Protection: Validates URI to block private IPs, loopback, and link-local addresses
+//   - Response Size Limit: Limits response body to 1MB to prevent memory exhaustion
+//   - Key Count Limit: Limits JWKS to 100 keys to prevent memory exhaustion
+//   - Caching: Reduces attack surface by caching valid responses
 func (c *JWKSClient) FetchJWKS(ctx context.Context, jwksURI string) (*JWKS, error) {
 	// Check cache first
 	if cached, ok := c.cache.Load(jwksURI); ok {
@@ -89,8 +107,9 @@ func (c *JWKSClient) FetchJWKS(ctx context.Context, jwksURI string) (*JWKS, erro
 		}
 	}
 
-	// Validate HTTPS
-	if err := ValidateHTTPSURL(jwksURI, "JWKS URI"); err != nil {
+	// SECURITY: Validate JWKS URI with full SSRF protection
+	// This blocks private IPs, loopback, and link-local addresses
+	if err := ValidateExternalURL(jwksURI, "JWKS URI"); err != nil {
 		return nil, fmt.Errorf("invalid JWKS URI: %w", err)
 	}
 
@@ -111,9 +130,20 @@ func (c *JWKSClient) FetchJWKS(ctx context.Context, jwksURI string) (*JWKS, erro
 		return nil, fmt.Errorf("JWKS fetch failed with status %d", resp.StatusCode)
 	}
 
+	// SECURITY: Limit response body size to prevent memory exhaustion attacks
+	// JWKS documents are typically a few KB, 1MB is a generous safety margin
+	limitedBody := http.MaxBytesReader(nil, resp.Body, maxJWKSDocumentSize)
+	defer func() { _ = limitedBody.Close() }()
+
 	var jwks JWKS
-	if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
+	if err := json.NewDecoder(limitedBody).Decode(&jwks); err != nil {
 		return nil, fmt.Errorf("failed to decode JWKS: %w", err)
+	}
+
+	// SECURITY: Limit number of keys to prevent memory exhaustion
+	// No legitimate provider needs more than 100 keys
+	if len(jwks.Keys) > maxJWKSKeyCount {
+		return nil, fmt.Errorf("JWKS contains too many keys (%d > %d)", len(jwks.Keys), maxJWKSKeyCount)
 	}
 
 	// Cache the JWKS

@@ -44,11 +44,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **New Provider Interface**: Added `JWKSProvider` interface for providers that support JWKS-based JWT validation
   - **Provider Support**: Google and Dex providers now expose their JWKS URIs for JWT validation
   - **Security Features**:
-    - SSRF protection for JWKS URI fetching
+    - SSRF protection for JWKS URI fetching (blocks private IPs, loopback, link-local addresses)
+    - Response body size limit (1MB) prevents memory exhaustion attacks
+    - JWKS key count limit (100 keys) prevents DoS via excessive keys
     - JWKS documents cached for 1 hour (configurable)
     - Signature verification using RSA keys from JWKS
+    - Algorithm restriction (RSA only) prevents algorithm confusion attacks
     - Clock skew tolerance of 1 minute
   - **New Audit Event**: `EventForwardedIDTokenAccepted` (`forwarded_id_token_accepted`): Logged when JWT validation succeeds
+  - **New Validation Function**: `ValidateExternalURL()` for generic SSRF-protected URL validation
   - **Issue**: [#173](https://github.com/giantswarm/mcp-oauth/issues/173)
 
 - **Google Provider: ForceConsent Configuration for Reliable Refresh Tokens**

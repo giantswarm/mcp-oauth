@@ -78,6 +78,55 @@ func ValidateIssuerURL(issuerURL string) error {
 	return nil
 }
 
+// ValidateExternalURL validates an external URL with SSRF protection.
+// It enforces HTTPS and blocks private IP ranges to prevent Server-Side Request Forgery attacks.
+// This is a generic version of ValidateIssuerURL that accepts a context parameter for error messages.
+//
+// Security Considerations:
+//   - HTTPS Enforcement: Prevents credential interception
+//   - Private IP Blocking: Prevents SSRF against internal services (Kubernetes API, metadata services, etc.)
+//   - Loopback Blocking: Prevents attacks against localhost services
+//   - Link-local Blocking: Prevents metadata service attacks (169.254.169.254)
+//
+// Example:
+//
+//	if err := ValidateExternalURL("https://provider.example.com/.well-known/jwks", "JWKS URI"); err != nil {
+//	    return fmt.Errorf("invalid JWKS URI: %w", err)
+//	}
+func ValidateExternalURL(rawURL, context string) error {
+	// SECURITY: Enforce HTTPS to prevent credential leakage
+	if err := ValidateHTTPSURL(rawURL, context); err != nil {
+		return err
+	}
+
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid %s: %w", context, err)
+	}
+
+	// SECURITY: Validate hostname format
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("%s must have a hostname", context)
+	}
+
+	// SECURITY: Block private IP ranges to prevent SSRF
+	// Parse as IP address
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() {
+			return fmt.Errorf("%s must not point to loopback addresses", context)
+		}
+		if ip.IsPrivate() {
+			return fmt.Errorf("%s must not point to private IP ranges", context)
+		}
+		if ip.IsLinkLocalUnicast() {
+			return fmt.Errorf("%s must not point to link-local addresses", context)
+		}
+	}
+
+	return nil
+}
+
 // ValidateConnectorID validates a Dex connector_id parameter.
 // Connector IDs should be alphanumeric with hyphens/underscores only.
 //

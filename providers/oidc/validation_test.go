@@ -375,3 +375,128 @@ func TestValidateGroups(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateExternalURL tests the generic external URL validation with SSRF protection.
+// This is used for JWKS URIs and other external endpoints.
+func TestValidateExternalURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		context string
+		wantErr bool
+		errMsg  string
+	}{
+		// Valid cases
+		{
+			name:    "valid HTTPS URL",
+			url:     "https://provider.example.com/.well-known/jwks",
+			context: "JWKS URI",
+			wantErr: false,
+		},
+		{
+			name:    "valid HTTPS URL with port",
+			url:     "https://provider.example.com:8443/jwks",
+			context: "JWKS URI",
+			wantErr: false,
+		},
+
+		// SECURITY: HTTP rejection
+		{
+			name:    "reject HTTP (not HTTPS)",
+			url:     "http://provider.example.com/jwks",
+			context: "JWKS URI",
+			wantErr: true,
+			errMsg:  "must use HTTPS",
+		},
+
+		// SECURITY: Loopback addresses (SSRF protection)
+		{
+			name:    "reject IPv4 loopback",
+			url:     "https://127.0.0.1/jwks",
+			context: "JWKS URI",
+			wantErr: true,
+			errMsg:  "loopback",
+		},
+		{
+			name:    "reject IPv6 loopback",
+			url:     "https://[::1]/jwks",
+			context: "JWKS URI",
+			wantErr: true,
+			errMsg:  "loopback",
+		},
+
+		// SECURITY: Private IP ranges (SSRF protection)
+		{
+			name:    "reject private IP 10.0.0.0/8",
+			url:     "https://10.0.0.1/jwks",
+			context: "JWKS URI",
+			wantErr: true,
+			errMsg:  "private IP",
+		},
+		{
+			name:    "reject private IP 172.16.0.0/12",
+			url:     "https://172.16.0.1/jwks",
+			context: "JWKS URI",
+			wantErr: true,
+			errMsg:  "private IP",
+		},
+		{
+			name:    "reject private IP 192.168.0.0/16",
+			url:     "https://192.168.1.1/jwks",
+			context: "JWKS URI",
+			wantErr: true,
+			errMsg:  "private IP",
+		},
+
+		// SECURITY: Link-local addresses (AWS/cloud metadata service protection)
+		{
+			name:    "reject link-local IPv4 (metadata service)",
+			url:     "https://169.254.169.254/latest/meta-data/",
+			context: "JWKS URI",
+			wantErr: true,
+			errMsg:  "link-local",
+		},
+		{
+			name:    "reject link-local IPv6",
+			url:     "https://[fe80::1]/jwks",
+			context: "JWKS URI",
+			wantErr: true,
+			errMsg:  "link-local",
+		},
+
+		// Empty/malformed URLs
+		{
+			name:    "reject empty hostname",
+			url:     "https://",
+			context: "JWKS URI",
+			wantErr: true,
+			errMsg:  "must have a hostname",
+		},
+
+		// Verify context is used in error messages
+		{
+			name:    "error message includes context",
+			url:     "http://example.com",
+			context: "custom endpoint",
+			wantErr: true,
+			errMsg:  "custom endpoint",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateExternalURL(tt.url, tt.context)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("ValidateExternalURL() expected error for %q, got nil", tt.url)
+					return
+				}
+				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("ValidateExternalURL() error = %v, want error containing %q", err, tt.errMsg)
+				}
+			} else if err != nil {
+				t.Errorf("ValidateExternalURL() unexpected error = %v", err)
+			}
+		})
+	}
+}

@@ -513,7 +513,9 @@ Providers without JWKS support will always use userinfo endpoint validation.
 | **Same Issuer** | Tokens are only accepted if from the configured IdP |
 | **Own Identifier** | Server's own `ResourceIdentifier` is always implicitly trusted |
 | **Audit Logging** | `EventForwardedIDTokenAccepted` and `EventCrossClientTokenAccepted` logged |
-| **SSRF Protection** | JWKS URIs are validated to prevent SSRF attacks |
+| **SSRF Protection** | JWKS URIs are validated to block private IPs, loopback, and link-local addresses |
+| **Memory Limits** | Response body limited to 1MB, max 100 keys per JWKS |
+| **Algorithm Restriction** | Only RSA signing methods accepted (prevents algorithm confusion) |
 | **Constant-Time** | Audience comparison uses constant-time comparison |
 
 ### Security Recommendations
