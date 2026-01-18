@@ -21,6 +21,22 @@ const (
 	DefaultClockSkewLeeway = 30 * time.Second
 )
 
+// HTTP transport configuration constants shared across HTTP clients.
+// These ensure consistent behavior for all OIDC-related HTTP operations.
+const (
+	// DefaultTLSHandshakeTimeout is the timeout for TLS handshake operations.
+	DefaultTLSHandshakeTimeout = 10 * time.Second
+
+	// DefaultMaxIdleConns is the maximum number of idle connections to keep.
+	DefaultMaxIdleConns = 10
+
+	// DefaultIdleConnTimeout is how long idle connections are kept before closing.
+	DefaultIdleConnTimeout = 90 * time.Second
+
+	// DefaultDialerKeepAlive is the keep-alive period for TCP connections.
+	DefaultDialerKeepAlive = 30 * time.Second
+)
+
 // timeProvider is an interface for time operations to enable deterministic testing.
 // This allows tests to control time without using time.Sleep or other non-deterministic methods.
 type timeProvider interface {

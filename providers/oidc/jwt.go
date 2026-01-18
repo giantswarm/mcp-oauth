@@ -179,11 +179,17 @@ func NewJWKSClientWithOptions(opts JWKSClientOptions) *JWKSClient {
 //   - Key Count Limit: Limits JWKS to 100 keys to prevent memory exhaustion
 //   - Caching: Reduces attack surface by caching valid responses
 func (c *JWKSClient) FetchJWKS(ctx context.Context, jwksURI string) (*JWKS, error) {
+	// Defensive nil-safety: ensure logger is available even if struct was created directly
+	logger := c.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	// Check cache first
 	if cached, ok := c.cache.Load(jwksURI); ok {
 		doc, ok := cached.(*cachedJWKS)
 		if ok && c.timeProvider.Since(doc.fetchedAt) < c.cacheTTL {
-			c.logger.Debug("JWKS cache hit", "uri", jwksURI)
+			logger.Debug("JWKS cache hit", "uri", jwksURI)
 			return doc.keys, nil
 		}
 	}
@@ -194,7 +200,7 @@ func (c *JWKSClient) FetchJWKS(ctx context.Context, jwksURI string) (*JWKS, erro
 		if err := ValidateHTTPSURL(jwksURI, "JWKS URI"); err != nil {
 			return nil, fmt.Errorf("invalid JWKS URI: %w", err)
 		}
-		c.logger.Debug("Fetching JWKS with private IP allowance",
+		logger.Debug("Fetching JWKS with private IP allowance",
 			"uri", jwksURI,
 			"allow_private_ip", true)
 	} else {
@@ -203,7 +209,7 @@ func (c *JWKSClient) FetchJWKS(ctx context.Context, jwksURI string) (*JWKS, erro
 		if err := ValidateExternalURL(jwksURI, "JWKS URI"); err != nil {
 			return nil, fmt.Errorf("invalid JWKS URI: %w", err)
 		}
-		c.logger.Debug("Fetching JWKS", "uri", jwksURI)
+		logger.Debug("Fetching JWKS", "uri", jwksURI)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jwksURI, nil)
@@ -243,7 +249,7 @@ func (c *JWKSClient) FetchJWKS(ctx context.Context, jwksURI string) (*JWKS, erro
 		fetchedAt: c.timeProvider.Now(),
 	})
 
-	c.logger.Debug("JWKS fetched successfully", "uri", jwksURI, "key_count", len(jwks.Keys))
+	logger.Debug("JWKS fetched successfully", "uri", jwksURI, "key_count", len(jwks.Keys))
 
 	return &jwks, nil
 }

@@ -277,15 +277,15 @@ func NewSSRFSafeHTTPClient(timeout time.Duration) *http.Client {
 
 	dialer := &net.Dialer{
 		Timeout:   timeout,
-		KeepAlive: 30 * time.Second,
+		KeepAlive: DefaultDialerKeepAlive,
 	}
 
 	transport := &http.Transport{
 		DialContext:           SSRFSafeDialContext(dialer),
-		TLSHandshakeTimeout:   10 * time.Second,
+		TLSHandshakeTimeout:   DefaultTLSHandshakeTimeout,
 		ResponseHeaderTimeout: timeout,
-		MaxIdleConns:          10,
-		IdleConnTimeout:       90 * time.Second,
+		MaxIdleConns:          DefaultMaxIdleConns,
+		IdleConnTimeout:       DefaultIdleConnTimeout,
 	}
 
 	return &http.Client{
@@ -322,11 +322,18 @@ func NewPrivateIPAllowedHTTPClient(timeout time.Duration) *http.Client {
 		timeout = DefaultHTTPTimeout
 	}
 
+	// Use standard dialer without SSRF protection (allows private IPs)
+	dialer := &net.Dialer{
+		Timeout:   timeout,
+		KeepAlive: DefaultDialerKeepAlive,
+	}
+
 	transport := &http.Transport{
-		TLSHandshakeTimeout:   10 * time.Second,
+		DialContext:           dialer.DialContext,
+		TLSHandshakeTimeout:   DefaultTLSHandshakeTimeout,
 		ResponseHeaderTimeout: timeout,
-		MaxIdleConns:          10,
-		IdleConnTimeout:       90 * time.Second,
+		MaxIdleConns:          DefaultMaxIdleConns,
+		IdleConnTimeout:       DefaultIdleConnTimeout,
 	}
 
 	return &http.Client{

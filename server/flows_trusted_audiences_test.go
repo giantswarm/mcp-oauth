@@ -795,10 +795,6 @@ func TestGetJWKSClient_AllowPrivateIPJWKS(t *testing.T) {
 		if client == nil {
 			t.Fatal("Expected non-nil JWKS client")
 		}
-
-		// Try to validate a private IP URL - should fail with SSRF protection
-		// We don't have direct access to check the internal allowPrivateIP flag,
-		// but we can verify the client was created successfully
 	})
 
 	t.Run("AllowPrivateIPJWKS creates client without SSRF protection", func(t *testing.T) {
@@ -834,6 +830,101 @@ func TestGetJWKSClient_AllowPrivateIPJWKS(t *testing.T) {
 
 		if client1 != client2 {
 			t.Error("Expected same client instance to be returned (sync.Once)")
+		}
+	})
+
+	t.Run("SSRF-protected client blocks private IP JWKS fetch", func(t *testing.T) {
+		config := &Config{
+			Issuer:             "https://auth.example.com",
+			AllowPrivateIPJWKS: false, // SSRF protection enabled
+		}
+
+		srv := &Server{
+			Config: config,
+			Logger: slog.Default(),
+		}
+
+		client := srv.getJWKSClient()
+		if client == nil {
+			t.Fatal("Expected non-nil JWKS client")
+		}
+
+		// Try to fetch JWKS from a private IP - should fail with SSRF protection error
+		ctx := context.Background()
+		_, err := client.FetchJWKS(ctx, "https://192.168.1.100/.well-known/jwks.json")
+
+		if err == nil {
+			t.Fatal("Expected error when fetching from private IP with SSRF protection enabled")
+		}
+
+		// Verify the error is about private IP (SSRF protection), not a network error
+		errStr := err.Error()
+		if !strings.Contains(errStr, "private") {
+			t.Errorf("Expected private IP error, got: %v", err)
+		}
+	})
+
+	t.Run("private IP allowed client bypasses SSRF for private IP", func(t *testing.T) {
+		config := &Config{
+			Issuer:             "https://auth.example.com",
+			AllowPrivateIPJWKS: true, // SSRF protection disabled for JWKS
+		}
+
+		srv := &Server{
+			Config: config,
+			Logger: slog.Default(),
+		}
+
+		client := srv.getJWKSClient()
+		if client == nil {
+			t.Fatal("Expected non-nil JWKS client")
+		}
+
+		// Try to fetch JWKS from a private IP
+		// Should fail at network level (connection refused), NOT at SSRF validation
+		ctx := context.Background()
+		_, err := client.FetchJWKS(ctx, "https://192.168.1.100/.well-known/jwks.json")
+
+		if err == nil {
+			// If somehow it succeeded (unlikely), that's fine - means SSRF was bypassed
+			return
+		}
+
+		// The error should NOT be about private IP - SSRF should be bypassed
+		errStr := err.Error()
+		if strings.Contains(errStr, "private IP") {
+			t.Errorf("Expected SSRF protection to be bypassed, but got private IP error: %v", err)
+		}
+	})
+
+	t.Run("HTTPS still required even with AllowPrivateIPJWKS", func(t *testing.T) {
+		config := &Config{
+			Issuer:             "https://auth.example.com",
+			AllowPrivateIPJWKS: true, // SSRF protection disabled
+		}
+
+		srv := &Server{
+			Config: config,
+			Logger: slog.Default(),
+		}
+
+		client := srv.getJWKSClient()
+		if client == nil {
+			t.Fatal("Expected non-nil JWKS client")
+		}
+
+		// Try to fetch JWKS over HTTP (not HTTPS) - should fail even with AllowPrivateIPJWKS
+		ctx := context.Background()
+		_, err := client.FetchJWKS(ctx, "http://192.168.1.100/.well-known/jwks.json")
+
+		if err == nil {
+			t.Fatal("Expected error when using HTTP (HTTPS should always be required)")
+		}
+
+		// Verify the error is about HTTPS requirement
+		errStr := err.Error()
+		if !strings.Contains(errStr, "HTTPS") {
+			t.Errorf("Expected HTTPS requirement error, got: %v", err)
 		}
 	})
 }
