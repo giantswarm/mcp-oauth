@@ -512,7 +512,7 @@ Providers without JWKS support will always use userinfo endpoint validation.
 | **Explicit Trust** | Each trusted audience must be explicitly configured |
 | **Same Issuer** | Tokens are only accepted if from the configured IdP |
 | **Own Identifier** | Server's own `ResourceIdentifier` is always implicitly trusted |
-| **Audit Logging** | `EventForwardedIDTokenValidated` and `EventCrossClientTokenAccepted` logged |
+| **Audit Logging** | `EventForwardedIDTokenAccepted` and `EventCrossClientTokenAccepted` logged |
 | **SSRF Protection** | JWKS URIs are validated to prevent SSRF attacks |
 | **Constant-Time** | Audience comparison uses constant-time comparison |
 
@@ -520,7 +520,7 @@ Providers without JWKS support will always use userinfo endpoint validation.
 
 1. **Minimize Trust**: Only add audiences you explicitly trust
 2. **Same IdP**: All trusted audiences should use the same Identity Provider
-3. **Monitor Logs**: Watch for `forwarded_id_token_validated` and `cross_client_token_accepted` audit events
+3. **Monitor Logs**: Watch for `forwarded_id_token_accepted` and `cross_client_token_accepted` audit events
 4. **Validate Scopes**: Use `EndpointScopeRequirements` for fine-grained access control
 5. **JWKS Caching**: The default 1-hour cache TTL balances performance with key rotation freshness
 
@@ -538,33 +538,17 @@ oauth:
 
 ### Audit Events
 
-When a forwarded ID token is validated via JWKS, `EventForwardedIDTokenValidated` is logged:
+When a forwarded ID token is validated via JWKS, `EventForwardedIDTokenAccepted` is logged:
 
 ```json
 {
-  "event_type": "forwarded_id_token_validated",
+  "event_type": "forwarded_id_token_accepted",
   "user_id": "user@example.com",
   "details": {
-    "issuer": "https://auth.example.com",
-    "audience": ["muster-client"],
-    "token_type": "jwt",
-    "validation": "jwks",
-    "trusted_via": "TrustedAudiences"
-  }
-}
-```
-
-If JWT validation fails, `EventForwardedIDTokenValidationFailed` is logged for debugging:
-
-```json
-{
-  "event_type": "forwarded_id_token_validation_failed",
-  "details": {
-    "reason": "token validation failed: signature verification failed",
-    "token_type": "jwt",
-    "validation": "jwks",
-    "audiences": ["muster-client"],
-    "jwks_uri": "https://auth.example.com/.well-known/jwks.json"
+    "matched_audience": "muster-client",
+    "email": "user@example.com",
+    "validation_method": "jwks",
+    "sso_token_forwarded": true
   }
 }
 ```

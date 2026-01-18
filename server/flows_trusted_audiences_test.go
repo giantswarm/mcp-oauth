@@ -8,13 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/oauth2"
-
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
-	"github.com/giantswarm/mcp-oauth/providers"
+	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
+	"golang.org/x/oauth2"
 )
 
 // TestIsTrustedAudience tests the isTrustedAudience helper function.
@@ -565,8 +564,8 @@ func TestValidateToken_JWTBeforeUserinfo(t *testing.T) {
 		TrustedAudiences:   []string{"muster-client"},
 	}
 
-	// Create a mock provider that tracks whether ValidateToken was called
-	mockProvider := &mockProviderWithTracking{}
+	// Use the existing mock provider from providers/mock package
+	mockProvider := mock.NewProvider()
 
 	srv := &Server{
 		Config:     config,
@@ -578,21 +577,21 @@ func TestValidateToken_JWTBeforeUserinfo(t *testing.T) {
 
 	// Test with an opaque token (not a JWT) - should call userinfo
 	t.Run("opaque token calls userinfo", func(t *testing.T) {
-		mockProvider.reset()
+		mockProvider.ResetCallCounts()
 
 		// This is an opaque access token (not a JWT)
 		opaqueToken := "opaque-access-token-not-jwt" //nolint:gosec // G101: Test data, not a real credential
 
 		_, _ = srv.ValidateToken(context.Background(), opaqueToken)
 
-		if !mockProvider.validateTokenCalled {
+		if mockProvider.GetCallCount("ValidateToken") == 0 {
 			t.Error("Expected ValidateToken (userinfo) to be called for opaque token")
 		}
 	})
 
 	// Test with a JWT-like token - should attempt JWKS validation first
 	t.Run("jwt token attempts jwks first", func(t *testing.T) {
-		mockProvider.reset()
+		mockProvider.ResetCallCounts()
 		logBuffer.Reset()
 
 		// This looks like a JWT (3 parts separated by dots)
@@ -600,59 +599,20 @@ func TestValidateToken_JWTBeforeUserinfo(t *testing.T) {
 
 		_, _ = srv.ValidateToken(context.Background(), jwtToken)
 
-		// Check logs to verify JWT validation was attempted
+		// Verify JWT path was attempted by checking logs
 		// The JWT path should be tried first when TrustedAudiences is configured
 		logOutput := logBuffer.String()
 		jwtPathAttempted := strings.Contains(logOutput, "Forwarded ID token validation failed") ||
 			strings.Contains(logOutput, "JWT audience matches TrustedAudiences")
-		_ = jwtPathAttempted // Consume the variable; this is informational
+
+		if !jwtPathAttempted {
+			t.Error("Expected JWT validation path to be attempted before userinfo")
+		}
 
 		// The provider's ValidateToken should still be called as fallback
 		// because the JWT validation will fail (no real JWKS)
-		if !mockProvider.validateTokenCalled {
+		if mockProvider.GetCallCount("ValidateToken") == 0 {
 			t.Error("Expected fallback to userinfo after JWT validation failure")
 		}
 	})
-}
-
-// mockProviderWithTracking is a mock provider that tracks method calls.
-type mockProviderWithTracking struct {
-	validateTokenCalled bool
-}
-
-func (m *mockProviderWithTracking) reset() {
-	m.validateTokenCalled = false
-}
-
-func (m *mockProviderWithTracking) Name() string {
-	return "mock"
-}
-
-func (m *mockProviderWithTracking) DefaultScopes() []string {
-	return []string{"openid"}
-}
-
-func (m *mockProviderWithTracking) AuthorizationURL(state, codeChallenge, codeChallengeMethod string, scopes []string) string {
-	return ""
-}
-
-func (m *mockProviderWithTracking) ExchangeCode(ctx context.Context, code, codeVerifier string) (*oauth2.Token, error) {
-	return nil, nil
-}
-
-func (m *mockProviderWithTracking) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
-	m.validateTokenCalled = true
-	return &providers.UserInfo{ID: "test-user"}, nil
-}
-
-func (m *mockProviderWithTracking) RefreshToken(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
-	return nil, nil
-}
-
-func (m *mockProviderWithTracking) RevokeToken(ctx context.Context, token string) error {
-	return nil
-}
-
-func (m *mockProviderWithTracking) HealthCheck(ctx context.Context) error {
-	return nil
 }

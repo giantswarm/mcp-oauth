@@ -454,10 +454,11 @@ func (s *Server) findMatchingTrustedAudience(tokenAudiences []string) string {
 }
 
 // getJWKSClient returns or creates a JWKS client for JWT validation.
+// Thread-safe: uses sync.Once to ensure initialization happens only once.
 func (s *Server) getJWKSClient() *oidc.JWKSClient {
-	if s.jwksClient == nil {
+	s.jwksClientOnce.Do(func() {
 		s.jwksClient = oidc.NewJWKSClient(nil, 0, s.Logger)
-	}
+	})
 	return s.jwksClient
 }
 

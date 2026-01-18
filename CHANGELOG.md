@@ -48,9 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - JWKS documents cached for 1 hour (configurable)
     - Signature verification using RSA keys from JWKS
     - Clock skew tolerance of 1 minute
-  - **New Audit Events**: 
-    - `EventForwardedIDTokenValidated`: Logged when JWT validation succeeds
-    - `EventForwardedIDTokenValidationFailed`: Logged when JWT validation fails (for debugging)
+  - **New Audit Event**: `EventForwardedIDTokenAccepted` (`forwarded_id_token_accepted`): Logged when JWT validation succeeds
   - **Issue**: [#173](https://github.com/giantswarm/mcp-oauth/issues/173)
 
 - **Google Provider: ForceConsent Configuration for Reliable Refresh Tokens**
