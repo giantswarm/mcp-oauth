@@ -9,6 +9,16 @@ const (
 
 	// DefaultHTTPTimeout is the default timeout for HTTP requests to OIDC endpoints.
 	DefaultHTTPTimeout = 10 * time.Second
+
+	// DefaultClockSkewLeeway is the default leeway for JWT time validation (exp, nbf, iat).
+	// This accounts for clock drift between the token issuer and this server.
+	// 30 seconds is a reasonable default that handles minor clock skew without
+	// creating a significant security window.
+	//
+	// Security consideration: A larger leeway increases the window during which
+	// an expired token might be accepted, but too small a leeway may cause
+	// legitimate tokens to be rejected due to clock drift.
+	DefaultClockSkewLeeway = 30 * time.Second
 )
 
 // timeProvider is an interface for time operations to enable deterministic testing.

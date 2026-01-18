@@ -342,7 +342,10 @@ type IDTokenClaims struct {
 //
 // Validation includes:
 //   - Signature verification using JWKS
-//   - Expiration check
+//   - Expiration check (exp claim, required)
+//   - Not-before check (nbf claim, validated if present)
+//   - Issued-at validation (iat claim, validated if present)
+//   - Clock skew tolerance (DefaultClockSkewLeeway = 30 seconds)
 //   - Issuer validation (if expectedIssuer is non-empty)
 //   - Audience validation (checks if any audience matches trustedAudiences)
 //
@@ -374,10 +377,18 @@ func ValidateIDToken(ctx context.Context, tokenString string, jwksClient *JWKSCl
 }
 
 // parseAndValidateToken parses a JWT and validates its signature using JWKS.
+//
+// Time-based claim validation:
+//   - exp (Expiration): Required, validated with DefaultClockSkewLeeway
+//   - nbf (Not Before): Validated if present, with DefaultClockSkewLeeway
+//   - iat (Issued At): Validated if present
+//
+// The leeway accounts for clock skew between the token issuer and this server.
 func parseAndValidateToken(tokenString string, jwks *JWKS) (*IDTokenClaims, error) {
 	parser := jwt.NewParser(
 		jwt.WithExpirationRequired(),
 		jwt.WithIssuedAt(),
+		jwt.WithLeeway(DefaultClockSkewLeeway), // Handles clock skew for exp/nbf/iat
 	)
 
 	claims := &IDTokenClaims{}

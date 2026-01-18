@@ -52,7 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Signature verification using RSA and ECDSA keys from JWKS
     - Algorithm restriction (RSA and ECDSA only) prevents algorithm confusion attacks (CVE-2015-9235)
     - Enhanced URL normalization for audience comparison (case-insensitive host, default port removal)
-    - Clock skew tolerance of 1 minute
+    - Clock skew tolerance (30 seconds) for time-based claims (exp, nbf, iat)
   - **New Audit Event**: `EventForwardedIDTokenAccepted` (`forwarded_id_token_accepted`): Logged when JWT validation succeeds
   - **New Validation Function**: `ValidateExternalURL()` for generic SSRF-protected URL validation
   - **Issue**: [#173](https://github.com/giantswarm/mcp-oauth/issues/173)

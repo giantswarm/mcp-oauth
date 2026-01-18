@@ -19,6 +19,9 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// testKeyID is a constant for the test RSA key ID used across tests.
+const testKeyID = "test-key-1"
+
 func TestJWKSClient_Creation(t *testing.T) {
 	// Test that client is created with defaults
 	client := NewJWKSClient(nil, 0, nil)
@@ -56,7 +59,7 @@ func TestValidateIDToken_Integration(t *testing.T) {
 			{
 				Kty: "RSA",
 				Use: "sig",
-				Kid: "test-key-1",
+				Kid: testKeyID,
 				Alg: "RS256",
 				N:   base64.RawURLEncoding.EncodeToString(privateKey.N.Bytes()),
 				E:   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privateKey.E)).Bytes()),
@@ -88,7 +91,7 @@ func TestValidateIDToken_Integration(t *testing.T) {
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	token.Header["kid"] = "test-key-1"
+	token.Header["kid"] = testKeyID
 
 	signedToken, err := token.SignedString(privateKey)
 	if err != nil {
@@ -161,6 +164,157 @@ func TestValidateIDToken_Integration(t *testing.T) {
 
 		if err == nil {
 			t.Error("Expected error for issuer mismatch")
+		}
+	})
+
+	// Test nbf (Not Before) claim - token with future nbf within leeway should be accepted
+	t.Run("nbf within leeway accepted", func(t *testing.T) {
+		// Create a token with nbf 10 seconds in the future (within 30-second leeway)
+		nbfClaims := &IDTokenClaims{
+			RegisteredClaims: jwt.RegisteredClaims{
+				Subject:   "user-nbf",
+				Issuer:    "https://auth.example.com",
+				Audience:  []string{"client-a"},
+				ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+				IssuedAt:  jwt.NewNumericDate(time.Now()),
+				NotBefore: jwt.NewNumericDate(time.Now().Add(10 * time.Second)), // 10s in future
+			},
+			Email: "nbf-user@example.com",
+		}
+
+		nbfToken := jwt.NewWithClaims(jwt.SigningMethodRS256, nbfClaims)
+		nbfToken.Header["kid"] = testKeyID
+
+		signedNbfToken, err := nbfToken.SignedString(privateKey)
+		if err != nil {
+			t.Fatalf("Failed to sign nbf token: %v", err)
+		}
+
+		validatedClaims, err := ValidateIDToken(
+			context.Background(),
+			signedNbfToken,
+			client,
+			jwksServer.URL,
+			"https://auth.example.com",
+			[]string{"client-a"},
+		)
+		if err != nil {
+			t.Errorf("ValidateIDToken() should accept token with nbf within leeway, got error: %v", err)
+			return
+		}
+
+		if validatedClaims.Subject != "user-nbf" {
+			t.Errorf("Subject = %q, want %q", validatedClaims.Subject, "user-nbf")
+		}
+	})
+
+	// Test nbf (Not Before) claim - token with future nbf outside leeway should be rejected
+	t.Run("nbf outside leeway rejected", func(t *testing.T) {
+		// Create a token with nbf 60 seconds in the future (outside 30-second leeway)
+		nbfClaims := &IDTokenClaims{
+			RegisteredClaims: jwt.RegisteredClaims{
+				Subject:   "user-nbf-future",
+				Issuer:    "https://auth.example.com",
+				Audience:  []string{"client-a"},
+				ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+				IssuedAt:  jwt.NewNumericDate(time.Now()),
+				NotBefore: jwt.NewNumericDate(time.Now().Add(60 * time.Second)), // 60s in future
+			},
+		}
+
+		nbfToken := jwt.NewWithClaims(jwt.SigningMethodRS256, nbfClaims)
+		nbfToken.Header["kid"] = testKeyID
+
+		signedNbfToken, err := nbfToken.SignedString(privateKey)
+		if err != nil {
+			t.Fatalf("Failed to sign nbf token: %v", err)
+		}
+
+		_, err = ValidateIDToken(
+			context.Background(),
+			signedNbfToken,
+			client,
+			jwksServer.URL,
+			"https://auth.example.com",
+			[]string{"client-a"},
+		)
+
+		if err == nil {
+			t.Error("Expected error for token with nbf 60 seconds in the future")
+		}
+	})
+
+	// Test expired token within leeway should be accepted
+	t.Run("expired within leeway accepted", func(t *testing.T) {
+		// Create a token that expired 10 seconds ago (within 30-second leeway)
+		expiredClaims := &IDTokenClaims{
+			RegisteredClaims: jwt.RegisteredClaims{
+				Subject:   "user-expired-leeway",
+				Issuer:    "https://auth.example.com",
+				Audience:  []string{"client-a"},
+				ExpiresAt: jwt.NewNumericDate(time.Now().Add(-10 * time.Second)), // 10s ago
+				IssuedAt:  jwt.NewNumericDate(time.Now().Add(-time.Hour)),
+			},
+		}
+
+		expiredToken := jwt.NewWithClaims(jwt.SigningMethodRS256, expiredClaims)
+		expiredToken.Header["kid"] = testKeyID
+
+		signedExpiredToken, err := expiredToken.SignedString(privateKey)
+		if err != nil {
+			t.Fatalf("Failed to sign expired token: %v", err)
+		}
+
+		validatedClaims, err := ValidateIDToken(
+			context.Background(),
+			signedExpiredToken,
+			client,
+			jwksServer.URL,
+			"https://auth.example.com",
+			[]string{"client-a"},
+		)
+		if err != nil {
+			t.Errorf("ValidateIDToken() should accept token expired within leeway, got error: %v", err)
+			return
+		}
+
+		if validatedClaims.Subject != "user-expired-leeway" {
+			t.Errorf("Subject = %q, want %q", validatedClaims.Subject, "user-expired-leeway")
+		}
+	})
+
+	// Test expired token outside leeway should be rejected
+	t.Run("expired outside leeway rejected", func(t *testing.T) {
+		// Create a token that expired 60 seconds ago (outside 30-second leeway)
+		expiredClaims := &IDTokenClaims{
+			RegisteredClaims: jwt.RegisteredClaims{
+				Subject:   "user-expired",
+				Issuer:    "https://auth.example.com",
+				Audience:  []string{"client-a"},
+				ExpiresAt: jwt.NewNumericDate(time.Now().Add(-60 * time.Second)), // 60s ago
+				IssuedAt:  jwt.NewNumericDate(time.Now().Add(-time.Hour)),
+			},
+		}
+
+		expiredToken := jwt.NewWithClaims(jwt.SigningMethodRS256, expiredClaims)
+		expiredToken.Header["kid"] = testKeyID
+
+		signedExpiredToken, err := expiredToken.SignedString(privateKey)
+		if err != nil {
+			t.Fatalf("Failed to sign expired token: %v", err)
+		}
+
+		_, err = ValidateIDToken(
+			context.Background(),
+			signedExpiredToken,
+			client,
+			jwksServer.URL,
+			"https://auth.example.com",
+			[]string{"client-a"},
+		)
+
+		if err == nil {
+			t.Error("Expected error for token expired 60 seconds ago")
 		}
 	})
 }
