@@ -292,29 +292,6 @@ func TestValidateIssuer(t *testing.T) {
 	}
 }
 
-func TestNormalizeURL(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"https://example.com", "https://example.com"},
-		{"https://example.com/", "https://example.com"},
-		{"https://example.com///", "https://example.com"},
-		{"https://example.com/path/", "https://example.com/path"},
-		{"client-id", "client-id"},
-		{"", ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			got := normalizeURL(tt.input)
-			if got != tt.expected {
-				t.Errorf("normalizeURL(%q) = %q, want %q", tt.input, got, tt.expected)
-			}
-		})
-	}
-}
-
 // createTestJWTWithClaims creates a JWT token for testing purposes.
 // The token has valid structure but an invalid signature (for parsing tests only).
 func createTestJWTWithClaims(t *testing.T, claims map[string]any) string {

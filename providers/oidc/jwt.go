@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rsa"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -490,29 +492,25 @@ func validateIssuer(claims *IDTokenClaims, expectedIssuer string) error {
 }
 
 // validateAudience checks that at least one token audience matches a trusted audience.
-// Uses URL normalization to handle trailing slashes consistently with findMatchingTrustedAudience.
+// Uses URL normalization to handle trailing slashes and constant-time comparison for security.
+// This is consistent with findMatchingTrustedAudience in server/flows_sso.go.
 func validateAudience(claims *IDTokenClaims, trustedAudiences []string) error {
 	if len(trustedAudiences) == 0 {
 		return nil
 	}
 
 	for _, tokenAud := range claims.Audience {
-		normalizedTokenAud := normalizeURL(tokenAud)
+		normalizedTokenAud := helpers.NormalizeURL(tokenAud)
 		for _, trusted := range trustedAudiences {
-			normalizedTrusted := normalizeURL(trusted)
-			if normalizedTokenAud == normalizedTrusted {
+			normalizedTrusted := helpers.NormalizeURL(trusted)
+			// Use constant-time comparison for defense-in-depth
+			if subtle.ConstantTimeCompare([]byte(normalizedTokenAud), []byte(normalizedTrusted)) == 1 {
 				return nil
 			}
 		}
 	}
 
 	return fmt.Errorf("audience mismatch: token audiences %v not in trusted %v", claims.Audience, trustedAudiences)
-}
-
-// normalizeURL removes trailing slashes for consistent URL comparison.
-// This ensures "https://example.com" and "https://example.com/" are treated as equivalent.
-func normalizeURL(url string) string {
-	return strings.TrimRight(url, "/")
 }
 
 // ClearCache clears the JWKS cache.
