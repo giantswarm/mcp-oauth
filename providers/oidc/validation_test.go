@@ -1,8 +1,11 @@
 package oidc
 
 import (
+	"context"
+	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidateIssuerURL(t *testing.T) {
@@ -499,4 +502,112 @@ func TestValidateExternalURL(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestIsPrivateOrRestrictedIP tests the IP validation helper.
+func TestIsPrivateOrRestrictedIP(t *testing.T) {
+	tests := []struct {
+		name       string
+		ip         string
+		restricted bool
+	}{
+		// Public IPs - should NOT be restricted
+		{"public IPv4", "8.8.8.8", false},
+		{"public IPv4 Google DNS", "8.8.4.4", false},
+		{"public IPv4 Cloudflare", "1.1.1.1", false},
+
+		// Loopback - should be restricted
+		{"IPv4 loopback", "127.0.0.1", true},
+		{"IPv4 loopback alt", "127.0.0.2", true},
+		{"IPv6 loopback", "::1", true},
+
+		// Private 10.0.0.0/8 - should be restricted
+		{"private 10.x", "10.0.0.1", true},
+		{"private 10.x high", "10.255.255.255", true},
+
+		// Private 172.16.0.0/12 - should be restricted
+		{"private 172.16.x", "172.16.0.1", true},
+		{"private 172.31.x", "172.31.255.255", true},
+
+		// Private 192.168.0.0/16 - should be restricted
+		{"private 192.168.x", "192.168.0.1", true},
+		{"private 192.168.x high", "192.168.255.255", true},
+
+		// Link-local IPv4 (169.254.0.0/16) - should be restricted (AWS/cloud metadata)
+		{"link-local metadata", "169.254.169.254", true},
+		{"link-local other", "169.254.1.1", true},
+
+		// Link-local IPv6 - should be restricted
+		{"link-local IPv6", "fe80::1", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ip := net.ParseIP(tt.ip)
+			if ip == nil {
+				t.Fatalf("Failed to parse IP: %s", tt.ip)
+			}
+
+			got := isPrivateOrRestrictedIP(ip)
+			if got != tt.restricted {
+				t.Errorf("isPrivateOrRestrictedIP(%s) = %v, want %v", tt.ip, got, tt.restricted)
+			}
+		})
+	}
+}
+
+// TestSSRFSafeDialContext tests the DNS rebinding protection.
+func TestSSRFSafeDialContext(t *testing.T) {
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	dialFunc := SSRFSafeDialContext(dialer)
+
+	t.Run("rejects loopback after DNS resolution", func(t *testing.T) {
+		// localhost should be rejected because it resolves to 127.0.0.1
+		ctx := context.Background()
+		_, err := dialFunc(ctx, "tcp", "localhost:443")
+		if err == nil {
+			t.Error("Expected error for localhost (resolves to loopback)")
+		}
+		if !strings.Contains(err.Error(), "restricted IP") {
+			t.Errorf("Expected 'restricted IP' error, got: %v", err)
+		}
+	})
+
+	t.Run("handles invalid address format", func(t *testing.T) {
+		ctx := context.Background()
+		_, err := dialFunc(ctx, "tcp", "invalid-no-port")
+		if err == nil {
+			t.Error("Expected error for invalid address format")
+		}
+	})
+}
+
+// TestNewSSRFSafeHTTPClient tests the SSRF-safe HTTP client creation.
+func TestNewSSRFSafeHTTPClient(t *testing.T) {
+	t.Run("creates client with default timeout", func(t *testing.T) {
+		client := NewSSRFSafeHTTPClient(0)
+		if client == nil {
+			t.Fatal("Expected non-nil client")
+		}
+		if client.Timeout != DefaultHTTPTimeout {
+			t.Errorf("Expected timeout %v, got %v", DefaultHTTPTimeout, client.Timeout)
+		}
+	})
+
+	t.Run("creates client with custom timeout", func(t *testing.T) {
+		client := NewSSRFSafeHTTPClient(30 * time.Second)
+		if client == nil {
+			t.Fatal("Expected non-nil client")
+		}
+		if client.Timeout != 30*time.Second {
+			t.Errorf("Expected timeout 30s, got %v", client.Timeout)
+		}
+	})
+
+	t.Run("client has custom transport", func(t *testing.T) {
+		client := NewSSRFSafeHTTPClient(0)
+		if client.Transport == nil {
+			t.Error("Expected client to have custom transport for DNS rebinding protection")
+		}
+	})
 }

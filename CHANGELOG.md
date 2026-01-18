@@ -45,15 +45,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Provider Support**: Google and Dex providers now expose their JWKS URIs for JWT validation
   - **Security Features**:
     - SSRF protection for JWKS URI fetching (blocks private IPs, loopback, link-local addresses)
+    - DNS rebinding protection: Validates resolved IPs at connection time, not just URL parsing time
     - Response body size limit (1MB) prevents memory exhaustion attacks
     - JWKS key count limit (100 keys) prevents DoS via excessive keys
     - JWKS documents cached for 1 hour (configurable)
-    - Signature verification using RSA keys from JWKS
-    - Algorithm restriction (RSA only) prevents algorithm confusion attacks
+    - Signature verification using RSA and ECDSA keys from JWKS
+    - Algorithm restriction (RSA and ECDSA only) prevents algorithm confusion attacks (CVE-2015-9235)
+    - Enhanced URL normalization for audience comparison (case-insensitive host, default port removal)
     - Clock skew tolerance of 1 minute
   - **New Audit Event**: `EventForwardedIDTokenAccepted` (`forwarded_id_token_accepted`): Logged when JWT validation succeeds
   - **New Validation Function**: `ValidateExternalURL()` for generic SSRF-protected URL validation
   - **Issue**: [#173](https://github.com/giantswarm/mcp-oauth/issues/173)
+
+- **DNS Rebinding Protection for JWKS Fetching**
+  - **Security Enhancement**: Added DNS rebinding attack protection to the SSRF-safe HTTP client
+  - **How It Works**: Validates resolved IP addresses at connection time, not just during URL parsing
+  - **Why It Matters**: Attackers can't use DNS rebinding to bypass SSRF protection and access internal services
+  - **New Functions**:
+    - `SSRFSafeDialContext()`: Creates a dial function that validates resolved IPs
+    - `NewSSRFSafeHTTPClient()`: Creates an HTTP client with DNS rebinding protection
+  - **Default Behavior**: JWKS client automatically uses SSRF-safe HTTP client when no custom client is provided
+
+- **Enhanced URL Normalization for Audience Comparison**
+  - **Security Enhancement**: Stricter URL normalization prevents audience matching bypasses
+  - **Normalization Rules**:
+    - Case-insensitive scheme and host (`HTTPS://EXAMPLE.COM` equals `https://example.com`)
+    - Default port removal (`:443` for HTTPS, `:80` for HTTP)
+    - Trailing slash removal
+    - Path case preserved (paths remain case-sensitive)
+  - **Why It Matters**: Prevents attackers from bypassing audience checks using case or port variations
+
+- **ECDSA Key Support for JWT Validation**
+  - **Feature**: Added support for ECDSA (EC) keys in addition to RSA for JWT signature verification
+  - **Supported Curves**: P-256 (ES256), P-384 (ES384), P-521 (ES512)
+  - **Why It Matters**: Many modern IdPs use ECDSA keys for better performance with equivalent security
 
 - **Google Provider: ForceConsent Configuration for Reliable Refresh Tokens**
   - **Feature**: Added `ForceConsent` configuration option to the Google OAuth provider

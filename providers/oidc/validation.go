@@ -1,10 +1,13 @@
 package oidc
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"regexp"
+	"time"
 )
 
 // connectorIDRegex is a compiled regex for validating connector IDs.
@@ -213,4 +216,102 @@ func ValidateScopes(scopes []string) error {
 func ValidateGroups(groups []string) error {
 	// SECURITY: Prevent memory exhaustion from excessive groups and long group names
 	return validateStringSlice(groups, "groups", 100, 256)
+}
+
+// isPrivateOrRestrictedIP checks if an IP address is private, loopback, or link-local.
+// This is used for DNS rebinding protection to validate resolved IPs.
+func isPrivateOrRestrictedIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
+}
+
+// SSRFSafeDialContext creates a DialContext function that validates resolved IPs
+// to prevent DNS rebinding attacks. DNS rebinding occurs when an attacker controls
+// a DNS server that initially returns a public IP (passing URL validation) but later
+// returns a private IP (when the actual connection is made).
+//
+// Security Features:
+//   - Validates each resolved IP before allowing connection
+//   - Blocks loopback, private, and link-local addresses
+//   - Prevents access to cloud metadata services (169.254.169.254)
+//
+// Example:
+//
+//	transport := &http.Transport{
+//	    DialContext: SSRFSafeDialContext(&net.Dialer{Timeout: 10 * time.Second}),
+//	}
+//	client := &http.Client{Transport: transport}
+func SSRFSafeDialContext(dialer *net.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		// Extract host from address (addr is "host:port")
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid address %q: %w", addr, err)
+		}
+
+		// Resolve the hostname to IP addresses
+		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+		if err != nil {
+			return nil, fmt.Errorf("DNS resolution failed for %q: %w", host, err)
+		}
+
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("no IP addresses found for %q", host)
+		}
+
+		// SECURITY: Validate ALL resolved IPs before attempting any connection
+		// This prevents DNS rebinding attacks where the first IP is public but others are private
+		for _, ip := range ips {
+			if isPrivateOrRestrictedIP(ip) {
+				return nil, fmt.Errorf("DNS rebinding attack detected: %q resolved to restricted IP %s", host, ip)
+			}
+		}
+
+		// All IPs are safe, connect to the first one
+		// We use the first IP since we've validated all are safe
+		safeAddr := net.JoinHostPort(ips[0].String(), port)
+		return dialer.DialContext(ctx, network, safeAddr)
+	}
+}
+
+// NewSSRFSafeHTTPClient creates an HTTP client with DNS rebinding protection.
+// This client validates that resolved IP addresses are not private/restricted
+// at connection time, preventing DNS rebinding attacks.
+//
+// Parameters:
+//   - timeout: HTTP client timeout (0 uses default 10 seconds)
+//
+// Security Features:
+//   - DNS Rebinding Protection: Validates resolved IPs at connection time
+//   - SSRF Protection: Blocks private, loopback, and link-local addresses
+//   - TLS Verification: Uses default TLS settings (no InsecureSkipVerify)
+//
+// Example:
+//
+//	client := NewSSRFSafeHTTPClient(30 * time.Second)
+//	resp, err := client.Get("https://example.com/jwks")
+func NewSSRFSafeHTTPClient(timeout time.Duration) *http.Client {
+	if timeout == 0 {
+		timeout = DefaultHTTPTimeout
+	}
+
+	dialer := &net.Dialer{
+		Timeout:   timeout,
+		KeepAlive: 30 * time.Second,
+	}
+
+	transport := &http.Transport{
+		DialContext:           SSRFSafeDialContext(dialer),
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: timeout,
+		MaxIdleConns:          10,
+		IdleConnTimeout:       90 * time.Second,
+	}
+
+	return &http.Client{
+		Transport: transport,
+		Timeout:   timeout,
+	}
 }

@@ -514,8 +514,10 @@ Providers without JWKS support will always use userinfo endpoint validation.
 | **Own Identifier** | Server's own `ResourceIdentifier` is always implicitly trusted |
 | **Audit Logging** | `EventForwardedIDTokenAccepted` and `EventCrossClientTokenAccepted` logged |
 | **SSRF Protection** | JWKS URIs are validated to block private IPs, loopback, and link-local addresses |
+| **DNS Rebinding Protection** | Resolved IPs are validated at connection time to prevent DNS rebinding attacks |
 | **Memory Limits** | Response body limited to 1MB, max 100 keys per JWKS |
-| **Algorithm Restriction** | Only RSA signing methods accepted (prevents algorithm confusion) |
+| **Algorithm Restriction** | Only RSA and ECDSA signing methods accepted (prevents algorithm confusion attacks like CVE-2015-9235) |
+| **URL Normalization** | Case-insensitive host comparison, default port removal (443/80) |
 | **Constant-Time** | Audience comparison uses constant-time comparison |
 
 ### Security Recommendations
@@ -570,6 +572,62 @@ When a token is accepted via `TrustedAudiences`, the `EventCrossClientTokenAccep
   }
 }
 ```
+
+## JWKS Security Hardening
+
+The JWKS (JSON Web Key Set) fetching mechanism includes multiple layers of security protection to prevent attacks during JWT validation.
+
+### DNS Rebinding Protection
+
+DNS rebinding attacks occur when an attacker controls a DNS server that initially resolves to a public IP (passing URL validation) but later resolves to a private IP during the actual HTTP connection. The library mitigates this by validating resolved IPs at connection time:
+
+```go
+// DNS rebinding protection is enabled by default when using NewJWKSClient
+// The SSRF-safe HTTP client validates IPs after DNS resolution
+client := oidc.NewJWKSClient(nil, 0, logger)
+```
+
+**How it works:**
+1. URL validation checks the hostname against known private ranges
+2. At connection time, DNS is resolved to actual IPs
+3. Each resolved IP is validated against restricted ranges before connection
+4. If any resolved IP is private/loopback/link-local, the connection is rejected
+
+This prevents attackers from using DNS rebinding to access:
+- Internal Kubernetes services
+- Cloud metadata endpoints (169.254.169.254)
+- Local development servers
+
+### Algorithm Confusion Attack Prevention
+
+The library explicitly restricts JWT signing algorithms to prevent algorithm confusion attacks (CVE-2015-9235):
+
+| Algorithm Type | Supported | Why |
+|---------------|-----------|-----|
+| RSA (RS256, RS384, RS512) | Yes | Asymmetric, public key verification |
+| RSA-PSS (PS256, PS384, PS512) | Yes | Asymmetric with improved padding |
+| ECDSA (ES256, ES384, ES512) | Yes | Asymmetric, elliptic curve |
+| HMAC (HS256, HS384, HS512) | **No** | Symmetric - enables key confusion attacks |
+
+The algorithm check validates the **method type** (not just the header string), preventing attackers from changing the `alg` header to force HMAC verification with the public key.
+
+### URL Normalization
+
+Audience comparison uses strict URL normalization to prevent bypasses:
+
+```go
+// These are all considered equivalent:
+"https://example.com"
+"HTTPS://EXAMPLE.COM"
+"https://example.com:443"
+"https://example.com/"
+```
+
+Normalization includes:
+- **Case normalization**: Scheme and host are lowercased
+- **Default port removal**: `:443` for HTTPS, `:80` for HTTP
+- **Trailing slash removal**: Consistent path handling
+- **Path case preserved**: Only scheme/host are case-insensitive
 
 ## Legacy Client Support
 

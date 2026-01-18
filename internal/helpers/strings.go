@@ -3,7 +3,10 @@
 // that don't fit into domain-specific packages.
 package helpers
 
-import "strings"
+import (
+	"net/url"
+	"strings"
+)
 
 // SafeTruncate safely truncates a string to maxLen characters without panicking.
 // Returns the original string if it's shorter than maxLen, otherwise returns
@@ -27,17 +30,74 @@ func SafeTruncate(s string, maxLen int) string {
 	return s[:maxLen]
 }
 
-// NormalizeURL normalizes a URL for comparison by removing trailing slashes.
+// NormalizeURL normalizes a URL for comparison.
 // This is used for RFC 8707 resource identifier and audience comparison,
-// where URLs with and without trailing slashes should be considered equivalent.
+// where semantically equivalent URLs should be considered equal.
+//
+// Normalization includes:
+//   - Lowercase scheme and host (case-insensitive per RFC 3986)
+//   - Remove default ports (:443 for https, :80 for http)
+//   - Remove trailing slashes from path
+//   - Preserve path case (paths are case-sensitive)
+//
+// If the input is not a valid URL, it returns the lowercase trimmed input
+// for backwards compatibility with non-URL audience values.
 //
 // Example:
 //
-//	NormalizeURL("https://example.com/")   // Returns: "https://example.com"
-//	NormalizeURL("https://example.com")    // Returns: "https://example.com"
-//	NormalizeURL("https://example.com///") // Returns: "https://example.com"
-func NormalizeURL(url string) string {
-	return strings.TrimRight(url, "/")
+//	NormalizeURL("https://EXAMPLE.COM/")       // Returns: "https://example.com"
+//	NormalizeURL("https://example.com:443/")  // Returns: "https://example.com"
+//	NormalizeURL("https://example.com")        // Returns: "https://example.com"
+//	NormalizeURL("https://example.com///")     // Returns: "https://example.com"
+//	NormalizeURL("HTTPS://Example.COM/Path")   // Returns: "https://example.com/Path"
+//	NormalizeURL("client-id")                  // Returns: "client-id" (non-URL)
+func NormalizeURL(rawURL string) string {
+	// Try to parse as URL for full normalization
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme == "" {
+		// Not a valid URL, just trim trailing slashes
+		return strings.TrimRight(rawURL, "/")
+	}
+
+	// Normalize scheme to lowercase
+	scheme := strings.ToLower(parsed.Scheme)
+
+	// Normalize host to lowercase and remove default ports
+	host := strings.ToLower(parsed.Host)
+	host = removeDefaultPort(host, scheme)
+
+	// Normalize path by removing trailing slashes (preserve case)
+	path := strings.TrimRight(parsed.Path, "/")
+
+	// Reconstruct the normalized URL
+	// Only include components that were present
+	result := scheme + "://" + host
+	if path != "" {
+		result += path
+	}
+
+	// Preserve query and fragment if present
+	if parsed.RawQuery != "" {
+		result += "?" + parsed.RawQuery
+	}
+	if parsed.Fragment != "" {
+		result += "#" + parsed.Fragment
+	}
+
+	return result
+}
+
+// removeDefaultPort removes the default port from a host:port string.
+// HTTPS default is 443, HTTP default is 80.
+func removeDefaultPort(host, scheme string) string {
+	switch scheme {
+	case "https":
+		return strings.TrimSuffix(host, ":443")
+	case "http":
+		return strings.TrimSuffix(host, ":80")
+	default:
+		return host
+	}
 }
 
 // MaxMetadataPathLength is the maximum allowed length for custom metadata paths.

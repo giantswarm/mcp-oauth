@@ -17,8 +17,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 )
 
 // JWKSClient fetches and caches JWKS (JSON Web Key Sets) for JWT validation.
@@ -82,14 +83,18 @@ const (
 // NewJWKSClient creates a new JWKS client with default configuration.
 //
 // Parameters:
-//   - httpClient: HTTP client to use for requests (nil uses default with 10s timeout)
+//   - httpClient: HTTP client to use for requests (nil uses SSRF-safe client with DNS rebinding protection)
 //   - cacheTTL: Time-to-live for cached JWKS (0 uses default 1 hour)
 //   - logger: Logger for debug/info messages (nil uses default logger)
+//
+// Security Features (when httpClient is nil):
+//   - DNS Rebinding Protection: Validates resolved IPs at connection time
+//   - SSRF Protection: Blocks private, loopback, and link-local addresses
+//   - TLS Verification: Uses default TLS settings
 func NewJWKSClient(httpClient *http.Client, cacheTTL time.Duration, logger *slog.Logger) *JWKSClient {
 	if httpClient == nil {
-		httpClient = &http.Client{
-			Timeout: DefaultHTTPTimeout,
-		}
+		// SECURITY: Use SSRF-safe client with DNS rebinding protection
+		httpClient = NewSSRFSafeHTTPClient(DefaultHTTPTimeout)
 	}
 	if cacheTTL == 0 {
 		cacheTTL = DefaultCacheTTL
