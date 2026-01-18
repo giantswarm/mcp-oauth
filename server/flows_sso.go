@@ -116,9 +116,16 @@ func (s *Server) findMatchingTrustedAudience(tokenAudiences []string) string {
 
 // getJWKSClient returns or creates a JWKS client for JWT validation.
 // Thread-safe: uses sync.Once to ensure initialization happens only once.
+//
+// The client respects the AllowPrivateIPJWKS configuration option:
+//   - When false (default): SSRF protection is enabled, blocking private IPs
+//   - When true: Private IPs are allowed for internal IdP deployments
 func (s *Server) getJWKSClient() *oidc.JWKSClient {
 	s.jwksClientOnce.Do(func() {
-		s.jwksClient = oidc.NewJWKSClient(nil, 0, s.Logger)
+		s.jwksClient = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
+			Logger:         s.Logger,
+			AllowPrivateIP: s.Config.AllowPrivateIPJWKS,
+		})
 	})
 	return s.jwksClient
 }

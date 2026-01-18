@@ -528,6 +528,36 @@ Providers without JWKS support will always use userinfo endpoint validation.
 4. **Validate Scopes**: Use `EndpointScopeRequirements` for fine-grained access control
 5. **JWKS Caching**: The default 1-hour cache TTL balances performance with key rotation freshness
 
+### Private IdP Deployments
+
+If your Identity Provider (e.g., Dex) runs on a private network, JWKS fetching will fail due to SSRF protection. Use the `AllowPrivateIPJWKS` configuration option to allow JWKS endpoints to resolve to private IP addresses:
+
+```go
+config := &server.Config{
+    Issuer:             "https://dex.internal.example.com",
+    TrustedAudiences:   []string{"muster-client"},
+    
+    // Allow JWKS fetching from private IdP
+    // WARNING: Reduces SSRF protection for JWKS endpoints only
+    AllowPrivateIPJWKS: true,
+}
+```
+
+| Setting | Default | Behavior |
+|---------|---------|----------|
+| `AllowPrivateIPJWKS` | `false` | Private IPs blocked for JWKS fetching |
+
+**When enabled, allows:**
+- Private IP ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 (RFC 1918)
+- Loopback addresses: 127.0.0.0/8, ::1
+- Link-local addresses: 169.254.0.0/16, fe80::/10
+
+**Security notes:**
+- HTTPS is still required even when `AllowPrivateIPJWKS` is enabled
+- This only affects JWKS fetching for SSO token validation (TrustedAudiences)
+- A warning is logged at startup when this option is enabled
+- For Google OAuth, this setting has no effect as Google's JWKS endpoint is always publicly accessible
+
 ### Example YAML Configuration
 
 ```yaml

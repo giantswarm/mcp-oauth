@@ -99,6 +99,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **References**: [Google OAuth 2.0 Offline Access](https://developers.google.com/identity/protocols/oauth2/web-server#offline)
   - **Issue**: [#168](https://github.com/giantswarm/mcp-oauth/issues/168)
 
+- **AllowPrivateIPJWKS Configuration Option for Private IdP Deployments**
+  - **Feature**: Added configuration option to allow JWKS endpoints to resolve to private IP addresses during SSO token validation
+  - **Use Case**: Enables SSO token forwarding (TrustedAudiences) with private Identity Provider deployments (e.g., internal Dex)
+  - **Problem Solved**: Previously, JWKS fetching for JWT validation was blocked by SSRF protection when the IdP runs on private networks
+  - **Configuration**: `AllowPrivateIPJWKS` in `server.Config` (default: `false` for security)
+  - **Security**: When enabled, relaxes SSRF protection for JWKS fetching only to allow:
+    - Private IP ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 (RFC 1918)
+    - Loopback addresses: 127.0.0.0/8, ::1
+    - Link-local addresses: 169.254.0.0/16, fe80::/10
+  - **HTTPS Enforcement**: HTTPS is still required even when AllowPrivateIPJWKS is enabled
+  - **Warning**: Only enable for trusted internal network deployments where the IdP legitimately runs on private networks
+  - **Logging**: When enabled, logs a startup warning at `Warn` level to ensure operator visibility
+  - **New API**:
+    - `JWKSClientOptions` struct for configurable JWKS client creation
+    - `NewJWKSClientWithOptions()` function for creating JWKS clients with custom options
+    - `NewPrivateIPAllowedHTTPClient()` for HTTP client without SSRF protection
+  - **Example**:
+    ```go
+    config := &server.Config{
+        Issuer:             "https://auth.internal.example.com",
+        TrustedAudiences:   []string{"muster-client"},
+        AllowPrivateIPJWKS: true, // Allow JWKS fetching from internal Dex
+    }
+    ```
+  - **Issue**: [#175](https://github.com/giantswarm/mcp-oauth/issues/175)
+
 - **AllowPrivateIPClientMetadata Configuration Option for Internal Network CIMD**
   - **Feature**: Added configuration option to allow CIMD (Client ID Metadata Document) metadata URLs that resolve to private IP addresses
   - **Use Case**: Enables MCP aggregators and servers to communicate over internal/private networks (home labs, air-gapped environments, enterprise intranets)

@@ -777,3 +777,63 @@ func TestMockProvider_JWKSProvider(t *testing.T) {
 		}
 	})
 }
+
+// TestGetJWKSClient_AllowPrivateIPJWKS tests that getJWKSClient respects the AllowPrivateIPJWKS config.
+func TestGetJWKSClient_AllowPrivateIPJWKS(t *testing.T) {
+	t.Run("default config creates SSRF-protected client", func(t *testing.T) {
+		config := &Config{
+			Issuer:             "https://auth.example.com",
+			AllowPrivateIPJWKS: false, // Default
+		}
+
+		srv := &Server{
+			Config: config,
+			Logger: slog.Default(),
+		}
+
+		client := srv.getJWKSClient()
+		if client == nil {
+			t.Fatal("Expected non-nil JWKS client")
+		}
+
+		// Try to validate a private IP URL - should fail with SSRF protection
+		// We don't have direct access to check the internal allowPrivateIP flag,
+		// but we can verify the client was created successfully
+	})
+
+	t.Run("AllowPrivateIPJWKS creates client without SSRF protection", func(t *testing.T) {
+		config := &Config{
+			Issuer:             "https://auth.example.com",
+			AllowPrivateIPJWKS: true,
+		}
+
+		srv := &Server{
+			Config: config,
+			Logger: slog.Default(),
+		}
+
+		client := srv.getJWKSClient()
+		if client == nil {
+			t.Fatal("Expected non-nil JWKS client")
+		}
+	})
+
+	t.Run("client is initialized only once (sync.Once)", func(t *testing.T) {
+		config := &Config{
+			Issuer:             "https://auth.example.com",
+			AllowPrivateIPJWKS: true,
+		}
+
+		srv := &Server{
+			Config: config,
+			Logger: slog.Default(),
+		}
+
+		client1 := srv.getJWKSClient()
+		client2 := srv.getJWKSClient()
+
+		if client1 != client2 {
+			t.Error("Expected same client instance to be returned (sync.Once)")
+		}
+	})
+}

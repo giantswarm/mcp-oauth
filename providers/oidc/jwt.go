@@ -26,11 +26,12 @@ import (
 //
 // The client is thread-safe and can be used concurrently from multiple goroutines.
 type JWKSClient struct {
-	httpClient   *http.Client
-	cache        sync.Map // jwksURI -> *cachedJWKS
-	cacheTTL     time.Duration
-	logger       *slog.Logger
-	timeProvider timeProvider
+	httpClient     *http.Client
+	cache          sync.Map // jwksURI -> *cachedJWKS
+	cacheTTL       time.Duration
+	logger         *slog.Logger
+	timeProvider   timeProvider
+	allowPrivateIP bool // When true, SSRF protection is disabled for private IdP deployments
 }
 
 // cachedJWKS holds a JWKS with its fetch timestamp.
@@ -79,6 +80,24 @@ const (
 	KeyTypeEC = "EC"
 )
 
+// JWKSClientOptions contains optional configuration for JWKSClient.
+type JWKSClientOptions struct {
+	// HTTPClient is the HTTP client to use for requests.
+	// If nil, an appropriate client is created based on AllowPrivateIP setting.
+	HTTPClient *http.Client
+
+	// CacheTTL is the time-to-live for cached JWKS (0 uses default 1 hour).
+	CacheTTL time.Duration
+
+	// Logger is the logger for debug/info messages (nil uses default logger).
+	Logger *slog.Logger
+
+	// AllowPrivateIP allows JWKS endpoints to resolve to private IP addresses.
+	// WARNING: Reduces SSRF protection. Only enable for internal/VPN deployments
+	// where the IdP legitimately runs on private networks.
+	AllowPrivateIP bool
+}
+
 // NewJWKSClient creates a new JWKS client with default configuration.
 //
 // Parameters:
@@ -91,22 +110,61 @@ const (
 //   - SSRF Protection: Blocks private, loopback, and link-local addresses
 //   - TLS Verification: Uses default TLS settings
 func NewJWKSClient(httpClient *http.Client, cacheTTL time.Duration, logger *slog.Logger) *JWKSClient {
+	return NewJWKSClientWithOptions(JWKSClientOptions{
+		HTTPClient:     httpClient,
+		CacheTTL:       cacheTTL,
+		Logger:         logger,
+		AllowPrivateIP: false,
+	})
+}
+
+// NewJWKSClientWithOptions creates a new JWKS client with configurable options.
+// This allows fine-grained control over SSRF protection for private IdP deployments.
+//
+// When AllowPrivateIP is true:
+//   - SSRF protection is disabled (private, loopback, and link-local IPs are allowed)
+//   - HTTPS is still enforced
+//   - A warning is logged about reduced security
+//
+// Security Features:
+//   - TLS Verification: Uses default TLS settings (no InsecureSkipVerify)
+//   - Response Size Limit: Limits response body to 1MB
+//   - Key Count Limit: Limits JWKS to 100 keys
+//
+// Example:
+//
+//	client := NewJWKSClientWithOptions(JWKSClientOptions{
+//	    AllowPrivateIP: true,  // For internal Dex
+//	    Logger:         logger,
+//	})
+func NewJWKSClientWithOptions(opts JWKSClientOptions) *JWKSClient {
+	httpClient := opts.HTTPClient
 	if httpClient == nil {
-		// SECURITY: Use SSRF-safe client with DNS rebinding protection
-		httpClient = NewSSRFSafeHTTPClient(DefaultHTTPTimeout)
+		if opts.AllowPrivateIP {
+			// Use client without SSRF protection for private IdP deployments
+			httpClient = NewPrivateIPAllowedHTTPClient(DefaultHTTPTimeout)
+		} else {
+			// SECURITY: Use SSRF-safe client with DNS rebinding protection
+			httpClient = NewSSRFSafeHTTPClient(DefaultHTTPTimeout)
+		}
 	}
+
+	cacheTTL := opts.CacheTTL
 	if cacheTTL == 0 {
 		cacheTTL = DefaultCacheTTL
 	}
+
+	logger := opts.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
 
 	return &JWKSClient{
-		httpClient:   httpClient,
-		cacheTTL:     cacheTTL,
-		logger:       logger,
-		timeProvider: realTime{},
+		httpClient:     httpClient,
+		cacheTTL:       cacheTTL,
+		logger:         logger,
+		timeProvider:   realTime{},
+		allowPrivateIP: opts.AllowPrivateIP,
 	}
 }
 
@@ -115,6 +173,8 @@ func NewJWKSClient(httpClient *http.Client, cacheTTL time.Duration, logger *slog
 //
 // Security Features:
 //   - SSRF Protection: Validates URI to block private IPs, loopback, and link-local addresses
+//     (unless AllowPrivateIP is enabled for private IdP deployments)
+//   - HTTPS Enforcement: Always requires HTTPS (even with AllowPrivateIP)
 //   - Response Size Limit: Limits response body to 1MB to prevent memory exhaustion
 //   - Key Count Limit: Limits JWKS to 100 keys to prevent memory exhaustion
 //   - Caching: Reduces attack surface by caching valid responses
@@ -128,13 +188,23 @@ func (c *JWKSClient) FetchJWKS(ctx context.Context, jwksURI string) (*JWKS, erro
 		}
 	}
 
-	// SECURITY: Validate JWKS URI with full SSRF protection
-	// This blocks private IPs, loopback, and link-local addresses
-	if err := ValidateExternalURL(jwksURI, "JWKS URI"); err != nil {
-		return nil, fmt.Errorf("invalid JWKS URI: %w", err)
+	// SECURITY: URL validation depends on AllowPrivateIP setting
+	if c.allowPrivateIP {
+		// When private IPs are allowed, only validate HTTPS (skip IP checks)
+		if err := ValidateHTTPSURL(jwksURI, "JWKS URI"); err != nil {
+			return nil, fmt.Errorf("invalid JWKS URI: %w", err)
+		}
+		c.logger.Debug("Fetching JWKS with private IP allowance",
+			"uri", jwksURI,
+			"allow_private_ip", true)
+	} else {
+		// SECURITY: Validate JWKS URI with full SSRF protection
+		// This blocks private IPs, loopback, and link-local addresses
+		if err := ValidateExternalURL(jwksURI, "JWKS URI"); err != nil {
+			return nil, fmt.Errorf("invalid JWKS URI: %w", err)
+		}
+		c.logger.Debug("Fetching JWKS", "uri", jwksURI)
 	}
-
-	c.logger.Debug("Fetching JWKS", "uri", jwksURI)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jwksURI, nil)
 	if err != nil {

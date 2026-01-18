@@ -293,3 +293,44 @@ func NewSSRFSafeHTTPClient(timeout time.Duration) *http.Client {
 		Timeout:   timeout,
 	}
 }
+
+// NewPrivateIPAllowedHTTPClient creates an HTTP client without SSRF protection.
+// This client allows connections to private IP addresses, which is necessary
+// for private IdP deployments (e.g., internal Dex).
+//
+// WARNING: This reduces SSRF protection. Only use when connecting to trusted
+// internal services where the IdP legitimately runs on private networks.
+//
+// Parameters:
+//   - timeout: HTTP client timeout (0 uses default 10 seconds)
+//
+// Security Features:
+//   - TLS Verification: Uses default TLS settings (no InsecureSkipVerify)
+//   - No SSRF Protection: Private, loopback, and link-local addresses are ALLOWED
+//
+// Use Cases:
+//   - Home lab deployments with internal Dex
+//   - Air-gapped environments
+//   - Enterprise deployments with private IdPs
+//
+// Example:
+//
+//	client := NewPrivateIPAllowedHTTPClient(30 * time.Second)
+//	resp, err := client.Get("https://dex.internal/keys")
+func NewPrivateIPAllowedHTTPClient(timeout time.Duration) *http.Client {
+	if timeout == 0 {
+		timeout = DefaultHTTPTimeout
+	}
+
+	transport := &http.Transport{
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: timeout,
+		MaxIdleConns:          10,
+		IdleConnTimeout:       90 * time.Second,
+	}
+
+	return &http.Client{
+		Transport: transport,
+		Timeout:   timeout,
+	}
+}
