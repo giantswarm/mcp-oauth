@@ -2,6 +2,8 @@ package oidc
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
@@ -10,6 +12,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -216,16 +219,153 @@ func TestJWKToRSAPublicKey(t *testing.T) {
 	}
 }
 
-func TestJWKToRSAPublicKey_UnsupportedKeyType(t *testing.T) {
+func TestJWKToRSAPublicKey_WrongKeyType(t *testing.T) {
 	jwk := JWK{
-		Kty: "EC", // Unsupported
+		Kty: "EC",
 		Kid: "test-kid",
 	}
 
 	_, err := jwk.RSAPublicKey()
 	if err == nil {
-		t.Error("Expected error for unsupported key type")
+		t.Error("Expected error for EC key type when calling RSAPublicKey")
 	}
+}
+
+func TestJWKToECDSAPublicKey(t *testing.T) {
+	tests := []struct {
+		name  string
+		curve elliptic.Curve
+		crv   string
+	}{
+		{"P-256", elliptic.P256(), "P-256"},
+		{"P-384", elliptic.P384(), "P-384"},
+		{"P-521", elliptic.P521(), "P-521"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Generate a test ECDSA key
+			privateKey, err := ecdsa.GenerateKey(tt.curve, rand.Reader)
+			if err != nil {
+				t.Fatalf("Failed to generate ECDSA key: %v", err)
+			}
+
+			// Convert to JWK format
+			x := base64.RawURLEncoding.EncodeToString(privateKey.X.Bytes())
+			y := base64.RawURLEncoding.EncodeToString(privateKey.Y.Bytes())
+
+			jwk := JWK{
+				Kty: "EC",
+				Use: "sig",
+				Kid: "test-ec-kid",
+				Alg: "ES256",
+				Crv: tt.crv,
+				X:   x,
+				Y:   y,
+			}
+
+			// Convert back to ECDSA public key
+			pubKey, err := jwk.ECDSAPublicKey()
+			if err != nil {
+				t.Fatalf("ECDSAPublicKey() error: %v", err)
+			}
+
+			// Verify the key matches
+			if pubKey.X.Cmp(privateKey.X) != 0 {
+				t.Error("X coordinate mismatch")
+			}
+			if pubKey.Y.Cmp(privateKey.Y) != 0 {
+				t.Error("Y coordinate mismatch")
+			}
+			if pubKey.Curve != tt.curve {
+				t.Errorf("Curve mismatch: got %v, want %v", pubKey.Curve, tt.curve)
+			}
+		})
+	}
+}
+
+func TestJWKToECDSAPublicKey_WrongKeyType(t *testing.T) {
+	jwk := JWK{
+		Kty: "RSA",
+		Kid: "test-kid",
+	}
+
+	_, err := jwk.ECDSAPublicKey()
+	if err == nil {
+		t.Error("Expected error for RSA key type when calling ECDSAPublicKey")
+	}
+}
+
+func TestJWKToECDSAPublicKey_UnsupportedCurve(t *testing.T) {
+	jwk := JWK{
+		Kty: "EC",
+		Kid: "test-kid",
+		Crv: "P-192", // Unsupported curve
+		X:   "test",
+		Y:   "test",
+	}
+
+	_, err := jwk.ECDSAPublicKey()
+	if err == nil {
+		t.Error("Expected error for unsupported curve")
+	}
+	if !strings.Contains(err.Error(), "unsupported EC curve") {
+		t.Errorf("Expected error about unsupported curve, got: %v", err)
+	}
+}
+
+func TestJWKPublicKey(t *testing.T) {
+	t.Run("RSA key", func(t *testing.T) {
+		privateKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+		jwk := JWK{
+			Kty: "RSA",
+			Kid: "test-rsa",
+			N:   base64.RawURLEncoding.EncodeToString(privateKey.N.Bytes()),
+			E:   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privateKey.E)).Bytes()),
+		}
+
+		key, err := jwk.PublicKey()
+		if err != nil {
+			t.Fatalf("PublicKey() error: %v", err)
+		}
+		if _, ok := key.(*rsa.PublicKey); !ok {
+			t.Errorf("Expected *rsa.PublicKey, got %T", key)
+		}
+	})
+
+	t.Run("EC key", func(t *testing.T) {
+		privateKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		jwk := JWK{
+			Kty: "EC",
+			Kid: "test-ec",
+			Crv: "P-256",
+			X:   base64.RawURLEncoding.EncodeToString(privateKey.X.Bytes()),
+			Y:   base64.RawURLEncoding.EncodeToString(privateKey.Y.Bytes()),
+		}
+
+		key, err := jwk.PublicKey()
+		if err != nil {
+			t.Fatalf("PublicKey() error: %v", err)
+		}
+		if _, ok := key.(*ecdsa.PublicKey); !ok {
+			t.Errorf("Expected *ecdsa.PublicKey, got %T", key)
+		}
+	})
+
+	t.Run("unsupported key type", func(t *testing.T) {
+		jwk := JWK{
+			Kty: "OKP", // Unsupported (EdDSA)
+			Kid: "test-okp",
+		}
+
+		_, err := jwk.PublicKey()
+		if err == nil {
+			t.Error("Expected error for unsupported key type")
+		}
+		if !strings.Contains(err.Error(), "unsupported key type") {
+			t.Errorf("Expected error about unsupported key type, got: %v", err)
+		}
+	})
 }
 
 func TestJWKSClient_Creation(t *testing.T) {
@@ -444,7 +584,7 @@ func TestValidateIDToken_Integration(t *testing.T) {
 	}
 
 	// Create JWKS server
-	jwksServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	jwksServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(testJWKS); err != nil {
 			t.Errorf("Failed to encode JWKS: %v", err)
@@ -689,16 +829,31 @@ func TestClearCache(t *testing.T) {
 }
 
 func TestCreateKeyFunc_Errors(t *testing.T) {
+	// Generate real keys for testing
+	rsaKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	ecKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+
 	jwks := &JWKS{
 		Keys: []JWK{
-			{Kid: "key-1", Kty: "RSA", N: "test", E: "AQAB"},
+			{
+				Kid: "rsa-key",
+				Kty: "RSA",
+				N:   base64.RawURLEncoding.EncodeToString(rsaKey.N.Bytes()),
+				E:   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(rsaKey.E)).Bytes()),
+			},
+			{
+				Kid: "ec-key",
+				Kty: "EC",
+				Crv: "P-256",
+				X:   base64.RawURLEncoding.EncodeToString(ecKey.X.Bytes()),
+				Y:   base64.RawURLEncoding.EncodeToString(ecKey.Y.Bytes()),
+			},
 		},
 	}
 
 	keyFunc := createKeyFunc(jwks)
 
 	t.Run("key not found", func(t *testing.T) {
-		// Create a token with a non-existent key ID
 		token := &jwt.Token{
 			Method: jwt.SigningMethodRS256,
 			Header: map[string]interface{}{
@@ -728,18 +883,112 @@ func TestCreateKeyFunc_Errors(t *testing.T) {
 		}
 	})
 
-	t.Run("wrong signing method", func(t *testing.T) {
+	t.Run("HS256 rejected - algorithm confusion attack prevention", func(t *testing.T) {
+		// This tests protection against CVE-2015-9235 style attacks
 		token := &jwt.Token{
-			Method: jwt.SigningMethodHS256, // HMAC, not RSA
+			Method: jwt.SigningMethodHS256, // HMAC - should be rejected
 			Header: map[string]interface{}{
 				"alg": "HS256",
-				"kid": "key-1",
+				"kid": "rsa-key",
 			},
 		}
 
 		_, err := keyFunc(token)
 		if err == nil {
-			t.Error("Expected error for wrong signing method")
+			t.Error("Expected error for HS256 (algorithm confusion prevention)")
+		}
+		if !strings.Contains(err.Error(), "only RSA and ECDSA are allowed") {
+			t.Errorf("Expected error about allowed algorithms, got: %v", err)
+		}
+	})
+
+	t.Run("RS256 with RSA key succeeds", func(t *testing.T) {
+		token := &jwt.Token{
+			Method: jwt.SigningMethodRS256,
+			Header: map[string]interface{}{
+				"alg": "RS256",
+				"kid": "rsa-key",
+			},
+		}
+
+		key, err := keyFunc(token)
+		if err != nil {
+			t.Errorf("Unexpected error for RS256 with RSA key: %v", err)
+		}
+		if _, ok := key.(*rsa.PublicKey); !ok {
+			t.Errorf("Expected *rsa.PublicKey, got %T", key)
+		}
+	})
+
+	t.Run("ES256 with EC key succeeds", func(t *testing.T) {
+		token := &jwt.Token{
+			Method: jwt.SigningMethodES256,
+			Header: map[string]interface{}{
+				"alg": "ES256",
+				"kid": "ec-key",
+			},
+		}
+
+		key, err := keyFunc(token)
+		if err != nil {
+			t.Errorf("Unexpected error for ES256 with EC key: %v", err)
+		}
+		if _, ok := key.(*ecdsa.PublicKey); !ok {
+			t.Errorf("Expected *ecdsa.PublicKey, got %T", key)
+		}
+	})
+
+	t.Run("RS256 with EC key fails - key type mismatch", func(t *testing.T) {
+		token := &jwt.Token{
+			Method: jwt.SigningMethodRS256,
+			Header: map[string]interface{}{
+				"alg": "RS256",
+				"kid": "ec-key", // EC key, but RSA algorithm
+			},
+		}
+
+		_, err := keyFunc(token)
+		if err == nil {
+			t.Error("Expected error for algorithm/key type mismatch")
+		}
+		if !strings.Contains(err.Error(), "requires RSA key") {
+			t.Errorf("Expected error about RSA key requirement, got: %v", err)
+		}
+	})
+
+	t.Run("ES256 with RSA key fails - key type mismatch", func(t *testing.T) {
+		token := &jwt.Token{
+			Method: jwt.SigningMethodES256,
+			Header: map[string]interface{}{
+				"alg": "ES256",
+				"kid": "rsa-key", // RSA key, but ECDSA algorithm
+			},
+		}
+
+		_, err := keyFunc(token)
+		if err == nil {
+			t.Error("Expected error for algorithm/key type mismatch")
+		}
+		if !strings.Contains(err.Error(), "requires EC key") {
+			t.Errorf("Expected error about EC key requirement, got: %v", err)
+		}
+	})
+
+	t.Run("PS256 (RSA-PSS) with RSA key succeeds", func(t *testing.T) {
+		token := &jwt.Token{
+			Method: jwt.SigningMethodPS256,
+			Header: map[string]interface{}{
+				"alg": "PS256",
+				"kid": "rsa-key",
+			},
+		}
+
+		key, err := keyFunc(token)
+		if err != nil {
+			t.Errorf("Unexpected error for PS256 with RSA key: %v", err)
+		}
+		if _, ok := key.(*rsa.PublicKey); !ok {
+			t.Errorf("Expected *rsa.PublicKey, got %T", key)
 		}
 	})
 }
@@ -754,7 +1003,7 @@ func TestFetchJWKS_SecurityLimits(t *testing.T) {
 		if err == nil {
 			t.Error("Expected error for private IP JWKS URI")
 		}
-		if err != nil && !contains(err.Error(), "private IP") {
+		if err != nil && !strings.Contains(err.Error(), "private IP") {
 			t.Errorf("Expected error about private IP, got: %v", err)
 		}
 	})
@@ -767,7 +1016,7 @@ func TestFetchJWKS_SecurityLimits(t *testing.T) {
 		if err == nil {
 			t.Error("Expected error for loopback JWKS URI")
 		}
-		if err != nil && !contains(err.Error(), "loopback") {
+		if err != nil && !strings.Contains(err.Error(), "loopback") {
 			t.Errorf("Expected error about loopback, got: %v", err)
 		}
 	})
@@ -780,7 +1029,7 @@ func TestFetchJWKS_SecurityLimits(t *testing.T) {
 		if err == nil {
 			t.Error("Expected error for link-local JWKS URI")
 		}
-		if err != nil && !contains(err.Error(), "link-local") {
+		if err != nil && !strings.Contains(err.Error(), "link-local") {
 			t.Errorf("Expected error about link-local, got: %v", err)
 		}
 	})
@@ -792,7 +1041,7 @@ func TestFetchJWKS_SecurityLimits(t *testing.T) {
 		if err == nil {
 			t.Error("Expected error for HTTP JWKS URI")
 		}
-		if err != nil && !contains(err.Error(), "HTTPS") {
+		if err != nil && !strings.Contains(err.Error(), "HTTPS") {
 			t.Errorf("Expected error about HTTPS, got: %v", err)
 		}
 	})
@@ -869,19 +1118,4 @@ func TestFetchJWKS_SecurityLimits(t *testing.T) {
 			t.Errorf("Expected %d keys, got %d", maxJWKSKeyCount, len(jwks.Keys))
 		}
 	})
-}
-
-// contains is a helper function to check if a string contains a substring.
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > 0 && len(substr) > 0 && findSubstring(s, substr)))
-}
-
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
