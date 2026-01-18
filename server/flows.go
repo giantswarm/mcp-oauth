@@ -294,21 +294,9 @@ func (s *Server) validateTokenAudience(accessToken string) error {
 
 // isTrustedAudience checks if the given audience is in the TrustedAudiences list.
 // This enables SSO scenarios where tokens issued to trusted upstream services are accepted.
+// Uses helpers.MatchAudienceSecure for consistent URL normalization and constant-time comparison.
 func (s *Server) isTrustedAudience(audience string) bool {
-	if len(s.Config.TrustedAudiences) == 0 {
-		return false
-	}
-
-	normalizedAudience := helpers.NormalizeURL(audience)
-
-	for _, trusted := range s.Config.TrustedAudiences {
-		normalizedTrusted := helpers.NormalizeURL(trusted)
-		if subtle.ConstantTimeCompare([]byte(normalizedAudience), []byte(normalizedTrusted)) == 1 {
-			return true
-		}
-	}
-
-	return false
+	return helpers.MatchAudienceSecure(audience, s.Config.TrustedAudiences) != ""
 }
 
 // logCrossClientTokenAccepted logs when a token is accepted via TrustedAudiences.
