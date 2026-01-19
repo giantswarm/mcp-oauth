@@ -20,6 +20,12 @@ This folder contains the documentation for the mcp-oauth library.
 | [Client ID Metadata Documents](./cimd.md) | URL-based client IDs with dynamic metadata discovery |
 | [Security Architecture](../SECURITY_ARCHITECTURE.md) | Deep technical security implementation details |
 
+## Security Assessments
+
+| Document | Description |
+|----------|-------------|
+| [Security Assessment (Opus 4.5)](./SECURITY_ASSESSMENT_OPUS_4.5.md) | Comprehensive security assessment by Claude Opus 4.5 (January 2026) |
+
 ## Quick Links
 
 - [README](../README.md) - Project overview
