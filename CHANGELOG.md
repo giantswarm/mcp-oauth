@@ -12,20 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **OAuth 2.1 Client Binding for Refresh Tokens**
   - **Feature**: Refresh tokens are now bound to the client that was originally issued the token, per OAuth 2.1 Section 6
   - **Security Benefit**: Prevents cross-client token theft attacks where an attacker with a stolen refresh token attempts to use it from a different client
+  - **Secure by Default**: Tokens without client binding are rejected - no insecure fallback option
   - **Implementation Details**:
     - Uses constant-time comparison (`crypto/subtle.ConstantTimeCompare`) to prevent timing attacks
     - Rate-limited security event logging to prevent DoS via log flooding
     - Comprehensive audit events for security monitoring
-  - **Backward Compatibility**: Legacy tokens without client binding are allowed with a warning, enabling gradual migration
-  - **New Configuration**: `StrictClientBinding` - When enabled, rejects legacy tokens without client binding
-    - **Migration Strategy**:
-      1. Deploy with `StrictClientBinding=false` (default) to allow legacy tokens
-      2. Monitor `oauth.refresh_token.legacy_used` metric to track legacy token usage
-      3. Once legacy tokens are rotated out (RefreshTokenTTL period), enable strict mode
-      4. Set `StrictClientBinding=true` to reject any remaining legacy tokens
-  - **New Metric**: `oauth.refresh_token.legacy_used` - Tracks usage of legacy tokens without client binding for migration monitoring
+  - **Upgrade Impact**: Existing refresh tokens issued before this version will be invalidated - users must re-authenticate
+  - **New Metric**: `oauth.refresh_token.legacy_rejected` - Tracks rejected legacy tokens (for observability)
   - **New Security Events**:
-    - `EventRefreshTokenMissingClientBinding`: Warning when a legacy token without client binding is used
+    - `EventRefreshTokenMissingClientBinding`: When a token without client binding is rejected
     - `EventRefreshTokenClientBindingMismatch`: Critical event when client IDs don't match (possible attack)
   - **New Handler Method**: `authenticateRefreshTokenClient` - Enforces OAuth 2.1 Section 6 requiring confidential clients to authenticate on refresh
 

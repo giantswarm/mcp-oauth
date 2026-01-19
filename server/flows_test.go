@@ -5623,11 +5623,12 @@ func TestServer_ValidateRefreshTokenClientBinding(t *testing.T) {
 			wantError:          false,
 		},
 		{
-			name:               "empty stored clientID (legacy token) should pass for backward compatibility",
+			name:               "empty stored clientID (legacy token) should be rejected",
 			storedClientID:     "",
 			requestingClientID: "client-abc-123",
 			userID:             "user-123",
-			wantError:          false,
+			wantError:          true,
+			errorContains:      "invalid_grant",
 		},
 		{
 			name:               "mismatching client IDs should fail",
@@ -5710,15 +5711,18 @@ func TestServer_ValidateRefreshTokenClientBinding_WithAuditor(t *testing.T) {
 		}
 	})
 
-	t.Run("legacy token with auditor should not panic", func(t *testing.T) {
+	t.Run("legacy token with auditor should reject and not panic", func(t *testing.T) {
 		srv, _, _ := setupFlowTestServer(t)
 
 		// Create a real auditor with a discard logger
 		srv.Auditor = security.NewAuditor(slog.Default(), true)
 
 		err := srv.validateRefreshTokenClientBinding(context.Background(), "", "requesting-client", "user-456")
-		if err != nil {
-			t.Fatalf("unexpected error for legacy token: %v", err)
+		if err == nil {
+			t.Fatal("expected error for legacy token without client binding")
+		}
+		if !strings.Contains(err.Error(), "invalid_grant") {
+			t.Errorf("expected error to contain 'invalid_grant', got %v", err)
 		}
 	})
 
@@ -5880,26 +5884,20 @@ func TestServer_RefreshAccessToken_ClientBinding_Integration(t *testing.T) {
 		t.Log("✓ Refresh with mismatching client ID correctly rejected")
 	})
 
-	t.Run("legacy token without binding allowed when StrictClientBinding is false", func(t *testing.T) {
+	t.Run("legacy token without binding is always rejected", func(t *testing.T) {
 		srv, store, provider := setupFlowTestServer(t)
 
-		// Ensure strict mode is disabled (default)
-		srv.Config.StrictClientBinding = false
-
-		// Set up provider to return valid tokens
+		// Set up provider (should not be called due to early rejection)
 		provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
-			return &oauth2.Token{
-				AccessToken:  "new-provider-access-token",
-				RefreshToken: "new-provider-refresh-token",
-				Expiry:       time.Now().Add(time.Hour),
-			}, nil
+			t.Error("Provider RefreshToken should not be called when legacy token is rejected")
+			return nil, fmt.Errorf("should not be called")
 		}
 
 		// Create a legacy refresh token WITHOUT client binding
 		// This simulates tokens issued before OAuth 2.1 client binding was implemented
 		clientID := "requesting-client"
 		userID := "user-legacy"
-		refreshToken := "legacy-refresh-token-no-binding"
+		refreshToken := "legacy-refresh-no-binding" // #nosec G101 -- test data, not credentials
 
 		// Save refresh token without family/client binding (legacy behavior)
 		err := store.SaveRefreshToken(
@@ -5923,62 +5921,11 @@ func TestServer_RefreshAccessToken_ClientBinding_Integration(t *testing.T) {
 			t.Fatalf("Failed to save provider token: %v", err)
 		}
 
-		// Attempt refresh - should succeed with warning (backward compatibility)
-		newToken, err := srv.RefreshAccessToken(context.Background(), refreshToken, clientID)
-		if err != nil {
-			t.Fatalf("Expected legacy token refresh to succeed with StrictClientBinding=false, got: %v", err)
-		}
-		if newToken == nil {
-			t.Fatal("Expected non-nil token response")
-		}
-
-		t.Log("✓ Legacy token without binding allowed (backward compatibility)")
-	})
-
-	t.Run("legacy token without binding rejected when StrictClientBinding is true", func(t *testing.T) {
-		srv, store, provider := setupFlowTestServer(t)
-
-		// Enable strict mode
-		srv.Config.StrictClientBinding = true
-
-		// Set up provider (should not be called due to early rejection)
-		provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
-			t.Error("Provider RefreshToken should not be called when legacy token is rejected in strict mode")
-			return nil, fmt.Errorf("should not be called")
-		}
-
-		// Create a legacy refresh token WITHOUT client binding
-		clientID := "requesting-client"
-		userID := "user-legacy-strict"
-		refreshToken := "legacy-refresh-strict-mode-test" // #nosec G101 -- test data, not credentials
-
-		// Save refresh token without family/client binding (legacy behavior)
-		err := store.SaveRefreshToken(
-			context.Background(),
-			refreshToken,
-			userID,
-			time.Now().Add(time.Hour),
-		)
-		if err != nil {
-			t.Fatalf("Failed to save refresh token: %v", err)
-		}
-
-		// Save provider token
-		providerToken := &oauth2.Token{
-			AccessToken:  "provider-access-token",
-			RefreshToken: "provider-refresh-token",
-			Expiry:       time.Now().Add(time.Hour),
-		}
-		err = store.SaveToken(context.Background(), refreshToken, providerToken)
-		if err != nil {
-			t.Fatalf("Failed to save provider token: %v", err)
-		}
-
-		// Attempt refresh - should fail in strict mode
+		// Attempt refresh - should always fail (OAuth 2.1 requires client binding)
 		newToken, err := srv.RefreshAccessToken(context.Background(), refreshToken, clientID)
 
 		if err == nil {
-			t.Fatal("Expected legacy token refresh to fail with StrictClientBinding=true")
+			t.Fatal("Expected legacy token refresh to fail - OAuth 2.1 requires client binding")
 		}
 		if !strings.Contains(err.Error(), "invalid_grant") {
 			t.Errorf("Expected 'invalid_grant' error, got: %v", err)
@@ -5987,6 +5934,6 @@ func TestServer_RefreshAccessToken_ClientBinding_Integration(t *testing.T) {
 			t.Error("Expected nil token response on failure")
 		}
 
-		t.Log("✓ Legacy token without binding rejected (strict mode)")
+		t.Log("✓ Legacy token without binding correctly rejected (OAuth 2.1 compliance)")
 	})
 }

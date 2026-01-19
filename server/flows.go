@@ -1192,24 +1192,18 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	return tokenResponse, nil
 }
 
-// handleLegacyRefreshToken handles refresh tokens that lack client binding (legacy tokens).
-// Records metrics for migration tracking and either rejects (strict mode) or allows with warning.
+// handleLegacyRefreshToken rejects refresh tokens that lack client binding.
+// OAuth 2.1 Section 6 requires client binding - tokens without it are invalid.
 func (s *Server) handleLegacyRefreshToken(ctx context.Context, requestingClientID, userID string) error {
-	// Record metric for migration tracking
+	// Record metric for observability (tracking rejected legacy tokens)
 	if s.Instrumentation != nil {
-		s.Instrumentation.Metrics().RecordLegacyRefreshTokenUsed(ctx)
+		s.Instrumentation.Metrics().RecordLegacyRefreshTokenRejected(ctx)
 	}
 
-	// If strict mode is enabled, reject legacy tokens
-	if s.Config.StrictClientBinding {
-		return s.rejectLegacyRefreshToken(requestingClientID, userID)
-	}
-
-	// Log a warning but allow for backward compatibility during migration
-	s.Logger.Warn("Refresh token missing client binding (legacy token or metadata issue)",
+	s.Logger.Warn("Refresh token rejected - missing client binding",
 		"user_id", userID,
 		"requesting_client_id", requestingClientID,
-		"security_note", "Consider enabling StrictClientBinding after migration")
+		"reason", "OAuth 2.1 Section 6 requires client binding")
 
 	if s.Auditor != nil {
 		s.Auditor.LogEvent(security.Event{
@@ -1217,41 +1211,13 @@ func (s *Server) handleLegacyRefreshToken(ctx context.Context, requestingClientI
 			UserID:   userID,
 			ClientID: requestingClientID,
 			Details: map[string]any{
-				"severity":       "warning",
-				"strict_mode":    false,
-				"action":         "allowed",
-				"security_risk":  "cross_client_token_theft_possible",
-				"recommendation": "enable_strict_client_binding_after_migration",
+				"severity":      "high",
+				"action":        "rejected",
+				"security_risk": "cross_client_token_theft_prevented",
+				"oauth_spec":    "OAuth 2.1 Section 6",
 			},
 		})
-	}
-
-	// Allow for backward compatibility - tokens issued before this security fix
-	// will not have client binding. New tokens will have it.
-	return nil
-}
-
-// rejectLegacyRefreshToken rejects a legacy refresh token when StrictClientBinding is enabled.
-func (s *Server) rejectLegacyRefreshToken(requestingClientID, userID string) error {
-	s.Logger.Warn("Refresh token rejected - missing client binding (strict mode enabled)",
-		"user_id", userID,
-		"requesting_client_id", requestingClientID,
-		"config", "StrictClientBinding=true")
-
-	if s.Auditor != nil {
-		s.Auditor.LogEvent(security.Event{
-			Type:     security.EventRefreshTokenMissingClientBinding,
-			UserID:   userID,
-			ClientID: requestingClientID,
-			Details: map[string]any{
-				"severity":            "high",
-				"strict_mode":         true,
-				"action":              "rejected",
-				"security_risk":       "cross_client_token_theft_possible",
-				"migration_completed": false,
-			},
-		})
-		s.Auditor.LogAuthFailure(userID, requestingClientID, "", "refresh_token_missing_client_binding_strict")
+		s.Auditor.LogAuthFailure(userID, requestingClientID, "", "refresh_token_missing_client_binding")
 	}
 
 	// Return generic error per OAuth spec (don't reveal details to attacker)
@@ -1267,8 +1233,7 @@ func (s *Server) rejectLegacyRefreshToken(requestingClientID, userID string) err
 //
 // Returns nil if validation passes, or an error with "invalid_grant" if:
 //   - The stored clientID doesn't match the requesting clientID
-//   - The stored clientID is empty (legacy token without client binding)
-//     AND StrictClientBinding is enabled (default: warn but allow for backward compatibility)
+//   - The stored clientID is empty (token without client binding - always rejected)
 func (s *Server) validateRefreshTokenClientBinding(ctx context.Context, storedClientID, requestingClientID, userID string) error {
 	// If no stored clientID, this is a legacy token without binding
 	if storedClientID == "" {
