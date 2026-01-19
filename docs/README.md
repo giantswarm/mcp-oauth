@@ -20,6 +20,14 @@ This folder contains the documentation for the mcp-oauth library.
 | [Client ID Metadata Documents](./cimd.md) | URL-based client IDs with dynamic metadata discovery |
 | [Security Architecture](../SECURITY_ARCHITECTURE.md) | Deep technical security implementation details |
 
+## Security Assessments
+
+| Document | Description |
+|----------|-------------|
+| [Security Assessment (Claude Opus 4.5)](./security-assessment-opus-4.5.md) | Comprehensive security assessment by Claude Opus 4.5 (January 2026) |
+| [Security Assessment (GPT-5.2-Codex)](./security-assessment-gpt-5.2-codex.md) | Security assessment with high-severity finding on refresh token binding |
+| [Security Assessment (Gemini 3 Pro)](./security-assessment-gemini-3-pro.md) | Security assessment focusing on compliance and infrastructure |
+
 ## Quick Links
 
 - [README](../README.md) - Project overview

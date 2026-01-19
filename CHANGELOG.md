@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Security assessment reports**
+  - Added comprehensive security assessment reports from three AI systems:
+    - Claude Opus 4.5: Full codebase security review with OAuth 2.1 compliance analysis
+    - GPT-5.2-Codex: Security assessment with high-severity finding on refresh token client binding
+    - Gemini 3 Pro: Security assessment focusing on compliance, data protection, and infrastructure
+  - Reports document OAuth 2.1 compliance, cryptographic implementations, SSRF protections, and security controls
+
 - **TrustedAudiences Support for SSO Token Forwarding**
   - **Feature**: Added `TrustedAudiences` configuration option to accept tokens issued to trusted upstream OAuth clients
   - **Use Case**: Enables Single Sign-On (SSO) scenarios in MCP architectures where an aggregator (like muster) proxies requests to downstream MCP servers
