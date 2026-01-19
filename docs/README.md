@@ -10,7 +10,6 @@ This folder contains the documentation for the mcp-oauth library.
 | [Configuration](./configuration.md) | All configuration options, CORS, interstitial pages, proxy settings |
 | [Security](./security.md) | Security features, best practices, production checklist |
 | [Observability](./observability.md) | OpenTelemetry, Prometheus metrics, distributed tracing |
-| [Security Assessment (GPT-5.2-Codex)](./security-assessment-GPT-5.2-Codex.md) | Security assessment report |
 
 ## Reference
 
@@ -25,7 +24,9 @@ This folder contains the documentation for the mcp-oauth library.
 
 | Document | Description |
 |----------|-------------|
-| [Security Assessment (Opus 4.5)](./SECURITY_ASSESSMENT_OPUS_4.5.md) | Comprehensive security assessment by Claude Opus 4.5 (January 2026) |
+| [Security Assessment (Claude Opus 4.5)](./security-assessment-opus-4.5.md) | Comprehensive security assessment by Claude Opus 4.5 (January 2026) |
+| [Security Assessment (GPT-5.2-Codex)](./security-assessment-gpt-5.2-codex.md) | Security assessment with high-severity finding on refresh token binding |
+| [Security Assessment (Gemini 3 Pro)](./security-assessment-gemini-3-pro.md) | Security assessment focusing on compliance and infrastructure |
 
 ## Quick Links
 
