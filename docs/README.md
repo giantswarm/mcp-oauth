@@ -10,6 +10,7 @@ This folder contains the documentation for the mcp-oauth library.
 | [Configuration](./configuration.md) | All configuration options, CORS, interstitial pages, proxy settings |
 | [Security](./security.md) | Security features, best practices, production checklist |
 | [Observability](./observability.md) | OpenTelemetry, Prometheus metrics, distributed tracing |
+| [Security Assessment (GPT-5.2-Codex)](./security-assessment-GPT-5.2-Codex.md) | Security assessment report |
 
 ## Reference
 

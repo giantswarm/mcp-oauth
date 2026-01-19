@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Security assessment report (GPT-5.2-Codex)**
+  - Added a repository security assessment report documenting scope, findings, and recommendations
+
 - **TrustedAudiences Support for SSO Token Forwarding**
   - **Feature**: Added `TrustedAudiences` configuration option to accept tokens issued to trusted upstream OAuth clients
   - **Use Case**: Enables Single Sign-On (SSO) scenarios in MCP architectures where an aggregator (like muster) proxies requests to downstream MCP servers
