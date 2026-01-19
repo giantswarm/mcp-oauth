@@ -1127,14 +1127,22 @@ func (s *Server) recordExchangeSuccess(span trace.Span, authCode *storage.Author
 // RefreshAccessToken refreshes an access token using a refresh token with OAuth 2.1 rotation
 // Returns oauth2.Token directly
 // Implements OAuth 2.1 refresh token reuse detection for enhanced security
+// Implements OAuth 2.1 Section 6 client binding validation
 func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID string) (*oauth2.Token, error) {
 	// Check if storage supports token family tracking (OAuth 2.1 reuse detection)
 	familyStore, supportsFamilies := s.tokenStore.(storage.RefreshTokenFamilyStore)
 
 	// OAUTH 2.1 SECURITY: Atomically get and delete refresh token FIRST
-	userID, providerToken, err := s.tokenStore.AtomicGetAndDeleteRefreshToken(ctx, refreshToken)
+	// Returns clientID for client binding validation
+	userID, storedClientID, providerToken, err := s.tokenStore.AtomicGetAndDeleteRefreshToken(ctx, refreshToken)
 	if err != nil {
 		return nil, s.handleRefreshTokenError(ctx, err, refreshToken, clientID, familyStore, supportsFamilies)
+	}
+
+	// OAUTH 2.1 SECURITY: Validate client binding (Section 6)
+	// The refresh token MUST only be accepted by the client it was issued to
+	if err := s.validateRefreshTokenClientBinding(ctx, storedClientID, clientID, userID); err != nil {
+		return nil, err
 	}
 
 	// Refresh token with provider
@@ -1182,6 +1190,94 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	}
 
 	return tokenResponse, nil
+}
+
+// handleLegacyRefreshToken rejects refresh tokens that lack client binding.
+// OAuth 2.1 Section 6 requires client binding - tokens without it are invalid.
+func (s *Server) handleLegacyRefreshToken(ctx context.Context, requestingClientID, userID string) error {
+	// Record metric for observability (tracking rejected legacy tokens)
+	if s.Instrumentation != nil {
+		s.Instrumentation.Metrics().RecordLegacyRefreshTokenRejected(ctx)
+	}
+
+	s.Logger.Warn("Refresh token rejected - missing client binding",
+		"user_id", userID,
+		"requesting_client_id", requestingClientID,
+		"reason", "OAuth 2.1 Section 6 requires client binding")
+
+	if s.Auditor != nil {
+		s.Auditor.LogEvent(security.Event{
+			Type:     security.EventRefreshTokenMissingClientBinding,
+			UserID:   userID,
+			ClientID: requestingClientID,
+			Details: map[string]any{
+				"severity":      "high",
+				"action":        "rejected",
+				"security_risk": "cross_client_token_theft_prevented",
+				"oauth_spec":    "OAuth 2.1 Section 6",
+			},
+		})
+		s.Auditor.LogAuthFailure(userID, requestingClientID, "", "refresh_token_missing_client_binding")
+	}
+
+	// Return generic error per OAuth spec (don't reveal details to attacker)
+	return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+}
+
+// validateRefreshTokenClientBinding validates that the requesting client matches
+// the client that was originally issued the refresh token.
+// This implements OAuth 2.1 Section 6 client binding requirement.
+//
+// Security: This prevents cross-client token theft where an attacker with a stolen
+// refresh token attempts to use it from a different client.
+//
+// Returns nil if validation passes, or an error with "invalid_grant" if:
+//   - The stored clientID doesn't match the requesting clientID
+//   - The stored clientID is empty (token without client binding - always rejected)
+func (s *Server) validateRefreshTokenClientBinding(ctx context.Context, storedClientID, requestingClientID, userID string) error {
+	// If no stored clientID, this is a legacy token without binding
+	if storedClientID == "" {
+		return s.handleLegacyRefreshToken(ctx, requestingClientID, userID)
+	}
+
+	// SECURITY: Validate client binding using constant-time comparison
+	// This prevents timing attacks that could reveal valid client IDs
+	if subtle.ConstantTimeCompare([]byte(storedClientID), []byte(requestingClientID)) != 1 {
+		// Rate limit logging to prevent DoS via log flooding
+		if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(userID+":"+requestingClientID+":client_binding_mismatch") {
+			s.Logger.Error("Refresh token client binding validation failed - possible token theft attempt",
+				"user_id", userID,
+				"stored_client_id", storedClientID,
+				"requesting_client_id", requestingClientID,
+				"security_event", "cross_client_token_theft_attempt",
+				"oauth_spec", "OAuth 2.1 Section 6")
+		}
+
+		if s.Auditor != nil {
+			s.Auditor.LogEvent(security.Event{
+				Type:     security.EventRefreshTokenClientBindingMismatch,
+				UserID:   userID,
+				ClientID: requestingClientID,
+				Details: map[string]any{
+					"severity":             "critical",
+					"stored_client_id":     storedClientID,
+					"requesting_client_id": requestingClientID,
+					"attack_indicator":     "cross_client_token_theft_attempt",
+					"oauth_spec":           "OAuth 2.1 Section 6",
+				},
+			})
+			s.Auditor.LogAuthFailure(userID, requestingClientID, "", "refresh_token_client_binding_mismatch")
+		}
+
+		// Return generic error per OAuth spec (don't reveal details to attacker)
+		return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+	}
+
+	s.Logger.Debug("Refresh token client binding validated",
+		"user_id", userID,
+		"client_id", storedClientID)
+
+	return nil
 }
 
 // RevokeToken revokes a token (access or refresh)

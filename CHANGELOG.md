@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **OAuth 2.1 Client Binding for Refresh Tokens**
+  - **Feature**: Refresh tokens are now bound to the client that was originally issued the token, per OAuth 2.1 Section 6
+  - **Security Benefit**: Prevents cross-client token theft attacks where an attacker with a stolen refresh token attempts to use it from a different client
+  - **Secure by Default**: Tokens without client binding are rejected - no insecure fallback option
+  - **Implementation Details**:
+    - Uses constant-time comparison (`crypto/subtle.ConstantTimeCompare`) to prevent timing attacks
+    - Rate-limited security event logging to prevent DoS via log flooding
+    - Comprehensive audit events for security monitoring
+  - **Upgrade Impact**: Existing refresh tokens issued before this version will be invalidated - users must re-authenticate
+  - **New Metric**: `oauth.refresh_token.legacy_rejected` - Tracks rejected legacy tokens (for observability)
+  - **New Security Events**:
+    - `EventRefreshTokenMissingClientBinding`: When a token without client binding is rejected
+    - `EventRefreshTokenClientBindingMismatch`: Critical event when client IDs don't match (possible attack)
+  - **New Handler Method**: `authenticateRefreshTokenClient` - Enforces OAuth 2.1 Section 6 requiring confidential clients to authenticate on refresh
+
+### Changed
+
+- **BREAKING**: `TokenStore.AtomicGetAndDeleteRefreshToken` signature changed
+  - **Old**: `AtomicGetAndDeleteRefreshToken(ctx, refreshToken) (userID string, providerToken *oauth2.Token, err error)`
+  - **New**: `AtomicGetAndDeleteRefreshToken(ctx, refreshToken) (userID string, clientID string, providerToken *oauth2.Token, err error)`
+  - **Reason**: Returns `clientID` for client binding validation per OAuth 2.1 Section 6
+  - **Migration**: Update all `TokenStore` implementations to return the `clientID` from token metadata
+
 ### Added
 
 - **Security assessment reports**

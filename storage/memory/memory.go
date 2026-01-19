@@ -698,11 +698,12 @@ func (s *Store) DeleteRefreshToken(_ context.Context, refreshToken string) error
 
 // AtomicGetAndDeleteRefreshToken atomically retrieves and deletes a refresh token.
 // This prevents race conditions in refresh token rotation and reuse detection.
-// Returns the userID and provider token if successful.
+// Returns the userID, clientID, and provider token if successful.
 //
 // SECURITY: This operation is atomic - only ONE concurrent request can succeed.
 // All other concurrent requests will receive a "token not found" error.
-func (s *Store) AtomicGetAndDeleteRefreshToken(_ context.Context, refreshToken string) (string, *oauth2.Token, error) {
+// SECURITY: Returns clientID for client binding validation per OAuth 2.1 Section 6.
+func (s *Store) AtomicGetAndDeleteRefreshToken(_ context.Context, refreshToken string) (string, string, *oauth2.Token, error) {
 	s.mu.Lock() // MUST use write lock for atomic get-and-delete
 	defer s.mu.Unlock()
 
@@ -710,14 +711,14 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(_ context.Context, refreshToken s
 	userID, ok := s.refreshTokens[refreshToken]
 	if !ok {
 		// Use typed error to allow callers to distinguish "not found" from transient errors
-		return "", nil, fmt.Errorf("%w: "+storage.ErrMsgRefreshTokenNotFoundOrUsed, storage.ErrTokenNotFound)
+		return "", "", nil, fmt.Errorf("%w: "+storage.ErrMsgRefreshTokenNotFoundOrUsed, storage.ErrTokenNotFound)
 	}
 
 	// Check if expired with clock skew grace period
 	if expiresAt, hasExpiry := s.refreshTokenExpiries[refreshToken]; hasExpiry {
 		if security.IsTokenExpired(expiresAt) {
 			// Use typed error to distinguish expiry from not-found
-			return "", nil, fmt.Errorf("%w: refresh token expired", storage.ErrTokenExpired)
+			return "", "", nil, fmt.Errorf("%w: refresh token expired", storage.ErrTokenExpired)
 		}
 	}
 
@@ -725,7 +726,13 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(_ context.Context, refreshToken s
 	providerToken, ok := s.tokens[refreshToken]
 	if !ok {
 		// Provider token missing is a not-found condition (token data incomplete)
-		return "", nil, fmt.Errorf("%w: provider token not found", storage.ErrTokenNotFound)
+		return "", "", nil, fmt.Errorf("%w: provider token not found", storage.ErrTokenNotFound)
+	}
+
+	// Get clientID from token metadata for client binding validation (OAuth 2.1 Section 6)
+	var clientID string
+	if metadata, hasMetadata := s.tokenMetadata[refreshToken]; hasMetadata {
+		clientID = metadata.ClientID
 	}
 
 	// ATOMIC DELETE - ensures only one request succeeds
@@ -738,9 +745,10 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(_ context.Context, refreshToken s
 	// It will be cleaned up by the background cleanup goroutine after retention period.
 
 	s.logger.Debug("Atomically retrieved and deleted refresh token",
-		"user_id", userID)
+		"user_id", userID,
+		"client_id", clientID)
 
-	return userID, providerToken, nil
+	return userID, clientID, providerToken, nil
 }
 
 // GetClient retrieves a client by ID

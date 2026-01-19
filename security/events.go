@@ -74,6 +74,15 @@ const (
 	// EventRefreshTokenReuseDetected is logged when a refresh token is reused in the same family
 	EventRefreshTokenReuseDetected = "refresh_token_reuse_detected"
 
+	// EventRefreshTokenMissingClientBinding is logged when a refresh token lacks client binding
+	// This may occur for legacy tokens issued before OAuth 2.1 client binding was implemented
+	EventRefreshTokenMissingClientBinding = "refresh_token_missing_client_binding"
+
+	// EventRefreshTokenClientBindingMismatch is logged when the requesting client doesn't match
+	// the client that was originally issued the refresh token (OAuth 2.1 Section 6 violation)
+	// This is a critical security event indicating possible cross-client token theft
+	EventRefreshTokenClientBindingMismatch = "refresh_token_client_binding_mismatch"
+
 	// EventRevokedTokenFamilyReuseAttempt is logged when a revoked token family is accessed
 	EventRevokedTokenFamilyReuseAttempt = "revoked_token_family_reuse_attempt"
 
