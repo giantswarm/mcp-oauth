@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Rate-limited security event logging to prevent DoS via log flooding
     - Comprehensive audit events for security monitoring
   - **Backward Compatibility**: Legacy tokens without client binding are allowed with a warning, enabling gradual migration
+  - **New Configuration**: `StrictClientBinding` - When enabled, rejects legacy tokens without client binding
+    - **Migration Strategy**:
+      1. Deploy with `StrictClientBinding=false` (default) to allow legacy tokens
+      2. Monitor `oauth.refresh_token.legacy_used` metric to track legacy token usage
+      3. Once legacy tokens are rotated out (RefreshTokenTTL period), enable strict mode
+      4. Set `StrictClientBinding=true` to reject any remaining legacy tokens
+  - **New Metric**: `oauth.refresh_token.legacy_used` - Tracks usage of legacy tokens without client binding for migration monitoring
   - **New Security Events**:
     - `EventRefreshTokenMissingClientBinding`: Warning when a legacy token without client binding is used
     - `EventRefreshTokenClientBindingMismatch`: Critical event when client IDs don't match (possible attack)

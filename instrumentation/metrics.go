@@ -59,6 +59,7 @@ type Metrics struct {
 	CodeReuseDetected           metric.Int64Counter
 	TokenReuseDetected          metric.Int64Counter
 	RedirectURISecurityRejected metric.Int64Counter // Redirect URI validation failures by category
+	LegacyRefreshTokenUsed      metric.Int64Counter // Legacy refresh tokens without client binding
 
 	// Storage Metrics
 	StorageOperationTotal    metric.Int64Counter
@@ -189,6 +190,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 	m.CodeReuseDetected = b.counter(securityMeter, "oauth.code.reuse_detected", "Number of authorization code reuse attempts detected", "{attempt}")
 	m.TokenReuseDetected = b.counter(securityMeter, "oauth.token.reuse_detected", "Number of token reuse attempts detected", "{attempt}")
 	m.RedirectURISecurityRejected = b.counter(securityMeter, "oauth.redirect_uri.security_rejected", "Number of redirect URI validation failures (SSRF/XSS protection)", "{rejection}")
+	m.LegacyRefreshTokenUsed = b.counter(securityMeter, "oauth.refresh_token.legacy_used", "Number of legacy refresh tokens without client binding used (migration tracking)", "{token}")
 
 	// Storage Metrics
 	m.StorageOperationTotal = b.counter(storageMeter, "storage.operation.total", "Total number of storage operations", "{operation}")
@@ -325,6 +327,13 @@ func (m *Metrics) RecordCodeReuseDetected(ctx context.Context) {
 // RecordTokenReuseDetected records a token reuse attempt
 func (m *Metrics) RecordTokenReuseDetected(ctx context.Context) {
 	m.TokenReuseDetected.Add(ctx, 1)
+}
+
+// RecordLegacyRefreshTokenUsed records usage of a legacy refresh token without client binding.
+// This metric is critical for tracking migration progress from pre-OAuth 2.1 tokens.
+// Once this metric drops to zero, StrictClientBinding can be safely enabled.
+func (m *Metrics) RecordLegacyRefreshTokenUsed(ctx context.Context) {
+	m.LegacyRefreshTokenUsed.Add(ctx, 1)
 }
 
 // RecordRedirectURISecurityRejected records a redirect URI security validation failure.

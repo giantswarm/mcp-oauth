@@ -1141,7 +1141,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 
 	// OAUTH 2.1 SECURITY: Validate client binding (Section 6)
 	// The refresh token MUST only be accepted by the client it was issued to
-	if err := s.validateRefreshTokenClientBinding(storedClientID, clientID, userID); err != nil {
+	if err := s.validateRefreshTokenClientBinding(ctx, storedClientID, clientID, userID); err != nil {
 		return nil, err
 	}
 
@@ -1192,6 +1192,72 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	return tokenResponse, nil
 }
 
+// handleLegacyRefreshToken handles refresh tokens that lack client binding (legacy tokens).
+// Records metrics for migration tracking and either rejects (strict mode) or allows with warning.
+func (s *Server) handleLegacyRefreshToken(ctx context.Context, requestingClientID, userID string) error {
+	// Record metric for migration tracking
+	if s.Instrumentation != nil {
+		s.Instrumentation.Metrics().RecordLegacyRefreshTokenUsed(ctx)
+	}
+
+	// If strict mode is enabled, reject legacy tokens
+	if s.Config.StrictClientBinding {
+		return s.rejectLegacyRefreshToken(requestingClientID, userID)
+	}
+
+	// Log a warning but allow for backward compatibility during migration
+	s.Logger.Warn("Refresh token missing client binding (legacy token or metadata issue)",
+		"user_id", userID,
+		"requesting_client_id", requestingClientID,
+		"security_note", "Consider enabling StrictClientBinding after migration")
+
+	if s.Auditor != nil {
+		s.Auditor.LogEvent(security.Event{
+			Type:     security.EventRefreshTokenMissingClientBinding,
+			UserID:   userID,
+			ClientID: requestingClientID,
+			Details: map[string]any{
+				"severity":       "warning",
+				"strict_mode":    false,
+				"action":         "allowed",
+				"security_risk":  "cross_client_token_theft_possible",
+				"recommendation": "enable_strict_client_binding_after_migration",
+			},
+		})
+	}
+
+	// Allow for backward compatibility - tokens issued before this security fix
+	// will not have client binding. New tokens will have it.
+	return nil
+}
+
+// rejectLegacyRefreshToken rejects a legacy refresh token when StrictClientBinding is enabled.
+func (s *Server) rejectLegacyRefreshToken(requestingClientID, userID string) error {
+	s.Logger.Warn("Refresh token rejected - missing client binding (strict mode enabled)",
+		"user_id", userID,
+		"requesting_client_id", requestingClientID,
+		"config", "StrictClientBinding=true")
+
+	if s.Auditor != nil {
+		s.Auditor.LogEvent(security.Event{
+			Type:     security.EventRefreshTokenMissingClientBinding,
+			UserID:   userID,
+			ClientID: requestingClientID,
+			Details: map[string]any{
+				"severity":            "high",
+				"strict_mode":         true,
+				"action":              "rejected",
+				"security_risk":       "cross_client_token_theft_possible",
+				"migration_completed": false,
+			},
+		})
+		s.Auditor.LogAuthFailure(userID, requestingClientID, "", "refresh_token_missing_client_binding_strict")
+	}
+
+	// Return generic error per OAuth spec (don't reveal details to attacker)
+	return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+}
+
 // validateRefreshTokenClientBinding validates that the requesting client matches
 // the client that was originally issued the refresh token.
 // This implements OAuth 2.1 Section 6 client binding requirement.
@@ -1202,32 +1268,11 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 // Returns nil if validation passes, or an error with "invalid_grant" if:
 //   - The stored clientID doesn't match the requesting clientID
 //   - The stored clientID is empty (legacy token without client binding)
-//     AND strict binding is enabled (default: warn but allow for backward compatibility)
-func (s *Server) validateRefreshTokenClientBinding(storedClientID, requestingClientID, userID string) error {
+//     AND StrictClientBinding is enabled (default: warn but allow for backward compatibility)
+func (s *Server) validateRefreshTokenClientBinding(ctx context.Context, storedClientID, requestingClientID, userID string) error {
 	// If no stored clientID, this is a legacy token without binding
-	// Log a warning but allow for backward compatibility during migration
 	if storedClientID == "" {
-		s.Logger.Warn("Refresh token missing client binding (legacy token or metadata issue)",
-			"user_id", userID,
-			"requesting_client_id", requestingClientID,
-			"security_note", "Consider migrating to tokens with client binding for OAuth 2.1 compliance")
-
-		if s.Auditor != nil {
-			s.Auditor.LogEvent(security.Event{
-				Type:     security.EventRefreshTokenMissingClientBinding,
-				UserID:   userID,
-				ClientID: requestingClientID,
-				Details: map[string]any{
-					"severity":       "warning",
-					"security_risk":  "cross_client_token_theft_possible",
-					"recommendation": "enable_client_binding_for_new_tokens",
-				},
-			})
-		}
-
-		// Allow for backward compatibility - tokens issued before this security fix
-		// will not have client binding. New tokens will have it.
-		return nil
+		return s.handleLegacyRefreshToken(ctx, requestingClientID, userID)
 	}
 
 	// SECURITY: Validate client binding using constant-time comparison

@@ -135,6 +135,22 @@ type Config struct {
 	// Default: 90 days (recommended for security compliance and forensics)
 	RevokedFamilyRetentionDays int64 // days, default: 90
 
+	// StrictClientBinding enforces OAuth 2.1 Section 6 client binding for refresh tokens.
+	// When true: Refresh tokens WITHOUT stored client binding are REJECTED with "invalid_grant"
+	// When false (default): Legacy tokens without client binding are allowed with a warning
+	//
+	// Migration Strategy:
+	//   1. Deploy with StrictClientBinding=false (default) to allow legacy tokens
+	//   2. Monitor "oauth.refresh_token.legacy_used" metric to track legacy token usage
+	//   3. Once legacy tokens are rotated out (RefreshTokenTTL period), enable strict mode
+	//   4. Set StrictClientBinding=true to reject any remaining legacy tokens
+	//
+	// Security: Enabling strict mode prevents cross-client token theft attacks where
+	// an attacker uses a stolen refresh token from a different client.
+	//
+	// Default: false (backward compatible - allows legacy tokens with warning)
+	StrictClientBinding bool // default: false
+
 	// SupportedScopes lists the scopes that are allowed for clients
 	// If empty, all scopes are allowed
 	SupportedScopes []string
