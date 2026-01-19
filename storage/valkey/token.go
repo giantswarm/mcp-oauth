@@ -272,10 +272,11 @@ func (s *Store) DeleteRefreshToken(ctx context.Context, refreshToken string) err
 
 // AtomicGetAndDeleteRefreshToken atomically retrieves and deletes a refresh token.
 // This prevents race conditions in refresh token rotation and reuse detection.
-// Returns the userID and provider token if successful.
+// Returns the userID, clientID, and provider token if successful.
 //
 // SECURITY: This operation is atomic via Lua script - only ONE concurrent request can succeed.
-func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken string) (string, *oauth2.Token, error) {
+// SECURITY: Returns clientID for client binding validation per OAuth 2.1 Section 6.
+func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken string) (string, string, *oauth2.Token, error) {
 	// Build key names for the Lua script
 	refreshKey := s.refreshTokenKey(refreshToken)
 	tokenKey := s.tokenKey(refreshToken)
@@ -291,25 +292,26 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken
 			Build(),
 	).ToString()
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to execute atomic refresh token operation: %w", err)
+		return "", "", nil, fmt.Errorf("failed to execute atomic refresh token operation: %w", err)
 	}
 
 	switch result {
 	case "NOT_FOUND":
-		return "", nil, fmt.Errorf("%w: "+storage.ErrMsgRefreshTokenNotFoundOrUsed, storage.ErrTokenNotFound)
+		return "", "", nil, fmt.Errorf("%w: "+storage.ErrMsgRefreshTokenNotFoundOrUsed, storage.ErrTokenNotFound)
 	case "EXPIRED":
-		return "", nil, fmt.Errorf("%w: refresh token expired", storage.ErrTokenExpired)
+		return "", "", nil, fmt.Errorf("%w: refresh token expired", storage.ErrTokenExpired)
 	case "TOKEN_NOT_FOUND":
-		return "", nil, fmt.Errorf("%w: provider token not found", storage.ErrTokenNotFound)
+		return "", "", nil, fmt.Errorf("%w: provider token not found", storage.ErrTokenNotFound)
 	}
 
 	// Parse the result JSON using serializableToken for proper Extra field handling
 	var resultData struct {
-		UserID string            `json:"user_id"`
-		Token  serializableToken `json:"token"`
+		UserID   string            `json:"user_id"`
+		ClientID string            `json:"client_id"`
+		Token    serializableToken `json:"token"`
 	}
 	if err := json.Unmarshal([]byte(result), &resultData); err != nil {
-		return "", nil, fmt.Errorf("failed to parse atomic operation result: %w", err)
+		return "", "", nil, fmt.Errorf("failed to parse atomic operation result: %w", err)
 	}
 
 	// Convert back to oauth2.Token (restores Extra fields like id_token)
@@ -318,11 +320,13 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken
 	// Decrypt token if encryptor is configured
 	decryptedToken, err := s.decryptToken(token)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to decrypt token: %w", err)
+		return "", "", nil, fmt.Errorf("failed to decrypt token: %w", err)
 	}
 
-	s.logger.Debug("Atomically retrieved and deleted refresh token", "user_id", resultData.UserID)
-	return resultData.UserID, decryptedToken, nil
+	s.logger.Debug("Atomically retrieved and deleted refresh token",
+		"user_id", resultData.UserID,
+		"client_id", resultData.ClientID)
+	return resultData.UserID, resultData.ClientID, decryptedToken, nil
 }
 
 // isNilError checks if the error indicates a nil/not-found result from Valkey.

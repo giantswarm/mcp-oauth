@@ -1457,24 +1457,18 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Get client credentials from Authorization header (if present)
-	if authClientID, authClientSecret := h.parseBasicAuth(r); authClientID != "" {
-		clientID = authClientID
-		// Validate client credentials
-		if err := h.server.ValidateClientCredentials(ctx, clientID, authClientSecret); err != nil {
-			h.logger.Warn("Client authentication failed", "client_id", clientID, "ip", clientIP, "error", err)
-			if h.server.Auditor != nil {
-				h.server.Auditor.LogAuthFailure("", clientID, clientIP, "client_authentication_failed")
-			}
-			h.recordHTTPMetrics("token", http.MethodPost, http.StatusUnauthorized, startTime)
-			instrumentation.RecordError(span, err)
-			instrumentation.SetSpanError(span, "client authentication failed")
-			h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
-			return
-		}
+	// OAUTH 2.1 SECURITY: Authenticate client for refresh token grant
+	// Confidential clients MUST authenticate; public clients may use client_id only
+	clientID, clientAuthenticated, err := h.authenticateRefreshTokenClient(ctx, w, r, clientID, clientIP, startTime, span)
+	if err != nil {
+		// Error already written to response by authenticateRefreshTokenClient
+		return
 	}
 
 	instrumentation.SetSpanAttributes(span, attribute.String(instrumentation.AttrClientID, clientID))
+	if clientAuthenticated {
+		instrumentation.SetSpanAttributes(span, attribute.Bool("oauth.client_authenticated", true))
+	}
 
 	// Refresh token
 	tokenResponse, err := h.server.RefreshAccessToken(ctx, refreshToken, clientID)
@@ -1498,6 +1492,82 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 
 	// Return tokens
 	h.writeTokenResponse(w, tokenResponse, "")
+}
+
+// authenticateRefreshTokenClient authenticates the client for refresh token grant.
+// Per OAuth 2.1 Section 6, confidential clients MUST authenticate on refresh.
+// Returns (clientID, clientAuthenticated, error).
+// If error is returned, the HTTP response has already been written.
+func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.ResponseWriter, r *http.Request, clientID, clientIP string, startTime time.Time, span trace.Span) (string, bool, error) {
+	authClientID, authClientSecret := h.parseBasicAuth(r)
+
+	// Case 1: Basic Auth credentials provided - validate them
+	if authClientID != "" {
+		clientID = authClientID
+		if err := h.server.ValidateClientCredentials(ctx, clientID, authClientSecret); err != nil {
+			h.logger.Warn("Client authentication failed", "client_id", clientID, "ip", clientIP, "error", err)
+			if h.server.Auditor != nil {
+				h.server.Auditor.LogAuthFailure("", clientID, clientIP, "refresh_client_authentication_failed")
+			}
+			h.recordHTTPMetrics("token", http.MethodPost, http.StatusUnauthorized, startTime)
+			instrumentation.RecordError(span, err)
+			instrumentation.SetSpanError(span, "client authentication failed")
+			h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
+			return "", false, err
+		}
+		return clientID, true, nil
+	}
+
+	// Case 2: No Basic Auth - check if client_id was provided
+	if clientID == "" {
+		h.recordHTTPMetrics("token", http.MethodPost, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "client_id missing")
+		h.writeError(w, ErrorCodeInvalidRequest, "client_id is required", http.StatusBadRequest)
+		return "", false, fmt.Errorf("client_id required")
+	}
+
+	// Case 3: client_id provided but no credentials - check if client is confidential
+	client, err := h.server.GetClient(ctx, clientID)
+	if err != nil {
+		h.logger.Warn("Unknown client for refresh", "client_id", clientID, "ip", clientIP)
+		if h.server.Auditor != nil {
+			h.server.Auditor.LogAuthFailure("", clientID, clientIP, "refresh_unknown_client")
+		}
+		h.recordHTTPMetrics("token", http.MethodPost, http.StatusUnauthorized, startTime)
+		instrumentation.SetSpanError(span, "unknown client")
+		h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
+		return "", false, err
+	}
+
+	// OAUTH 2.1 SECURITY: Confidential clients MUST authenticate
+	if client.ClientType == ClientTypeConfidential {
+		h.logger.Warn("Confidential client attempted refresh without authentication",
+			"client_id", clientID, "ip", clientIP,
+			"security_event", "confidential_client_missing_auth",
+			"oauth_spec", "OAuth 2.1 Section 6")
+		if h.server.Auditor != nil {
+			h.server.Auditor.LogAuthFailure("", clientID, clientIP, "confidential_client_refresh_missing_auth")
+			h.server.Auditor.LogEvent(security.Event{
+				Type:     security.EventAuthFailure,
+				ClientID: clientID,
+				Details: map[string]any{
+					"severity":     "high",
+					"client_type":  "confidential",
+					"auth_missing": true,
+					"endpoint":     "refresh_token",
+					"ip":           clientIP,
+					"oauth_spec":   "OAuth 2.1 Section 6",
+				},
+			})
+		}
+		h.recordHTTPMetrics("token", http.MethodPost, http.StatusUnauthorized, startTime)
+		instrumentation.SetSpanError(span, "confidential client requires authentication")
+		h.writeError(w, ErrorCodeInvalidClient, "Client authentication required", http.StatusUnauthorized)
+		return "", false, fmt.Errorf("confidential client requires authentication")
+	}
+
+	// Public client - authentication not required but client_id validated
+	return clientID, false, nil
 }
 
 // ServeTokenRevocation handles the RFC 7009 token revocation endpoint

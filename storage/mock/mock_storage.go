@@ -16,23 +16,25 @@ import (
 
 // TokenStore is a mock implementation of storage.TokenStore for testing
 type TokenStore struct {
-	mu                sync.RWMutex
-	tokens            map[string]*oauth2.Token
-	userInfo          map[string]*providers.UserInfo
-	refreshTokens     map[string]refreshTokenInfo
-	SaveTokenFunc     func(ctx context.Context, userID string, token *oauth2.Token) error
-	GetTokenFunc      func(ctx context.Context, userID string) (*oauth2.Token, error)
-	DeleteTokenFunc   func(ctx context.Context, userID string) error
-	SaveUserInfoFunc  func(ctx context.Context, userID string, info *providers.UserInfo) error
-	GetUserInfoFunc   func(ctx context.Context, userID string) (*providers.UserInfo, error)
-	SaveRefreshFunc   func(ctx context.Context, refreshToken, userID string, expiresAt time.Time) error
-	GetRefreshFunc    func(ctx context.Context, refreshToken string) (string, error)
-	DeleteRefreshFunc func(ctx context.Context, refreshToken string) error
-	CallCounts        map[string]int
+	mu                     sync.RWMutex
+	tokens                 map[string]*oauth2.Token
+	userInfo               map[string]*providers.UserInfo
+	refreshTokens          map[string]refreshTokenInfo
+	SaveTokenFunc          func(ctx context.Context, userID string, token *oauth2.Token) error
+	GetTokenFunc           func(ctx context.Context, userID string) (*oauth2.Token, error)
+	DeleteTokenFunc        func(ctx context.Context, userID string) error
+	SaveUserInfoFunc       func(ctx context.Context, userID string, info *providers.UserInfo) error
+	GetUserInfoFunc        func(ctx context.Context, userID string) (*providers.UserInfo, error)
+	SaveRefreshFunc        func(ctx context.Context, refreshToken, userID string, expiresAt time.Time) error
+	GetRefreshFunc         func(ctx context.Context, refreshToken string) (string, error)
+	DeleteRefreshFunc      func(ctx context.Context, refreshToken string) error
+	AtomicGetAndDeleteFunc func(ctx context.Context, refreshToken string) (string, string, *oauth2.Token, error)
+	CallCounts             map[string]int
 }
 
 type refreshTokenInfo struct {
 	userID    string
+	clientID  string
 	expiresAt time.Time
 }
 
@@ -45,79 +47,117 @@ func NewTokenStore() *TokenStore {
 		CallCounts:    make(map[string]int),
 	}
 
-	// Set default implementations
-	m.SaveTokenFunc = func(_ context.Context, userID string, token *oauth2.Token) error {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		m.tokens[userID] = token
-		return nil
-	}
-
-	m.GetTokenFunc = func(_ context.Context, userID string) (*oauth2.Token, error) {
-		m.mu.RLock()
-		defer m.mu.RUnlock()
-		token, ok := m.tokens[userID]
-		if !ok {
-			return nil, storage.ErrTokenNotFound
-		}
-		return token, nil
-	}
-
-	m.DeleteTokenFunc = func(_ context.Context, userID string) error {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		delete(m.tokens, userID)
-		return nil
-	}
-
-	m.SaveUserInfoFunc = func(_ context.Context, userID string, info *providers.UserInfo) error {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		m.userInfo[userID] = info
-		return nil
-	}
-
-	m.GetUserInfoFunc = func(_ context.Context, userID string) (*providers.UserInfo, error) {
-		m.mu.RLock()
-		defer m.mu.RUnlock()
-		info, ok := m.userInfo[userID]
-		if !ok {
-			return nil, storage.ErrUserInfoNotFound
-		}
-		return info, nil
-	}
-
-	m.SaveRefreshFunc = func(_ context.Context, refreshToken, userID string, expiresAt time.Time) error {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		m.refreshTokens[refreshToken] = refreshTokenInfo{
-			userID:    userID,
-			expiresAt: expiresAt,
-		}
-		return nil
-	}
-
-	m.GetRefreshFunc = func(_ context.Context, refreshToken string) (string, error) {
-		m.mu.RLock()
-		defer m.mu.RUnlock()
-		info, ok := m.refreshTokens[refreshToken]
-		if !ok {
-			return "", storage.ErrTokenNotFound
-		}
-		if !info.expiresAt.IsZero() && time.Now().After(info.expiresAt) {
-			return "", storage.ErrTokenExpired
-		}
-		return info.userID, nil
-	}
-
-	m.DeleteRefreshFunc = func(_ context.Context, refreshToken string) error {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		delete(m.refreshTokens, refreshToken)
-		return nil
-	}
-
+	m.initDefaultFuncs()
 	return m
+}
+
+// initDefaultFuncs initializes the default function implementations for TokenStore.
+func (m *TokenStore) initDefaultFuncs() {
+	m.SaveTokenFunc = m.defaultSaveToken
+	m.GetTokenFunc = m.defaultGetToken
+	m.DeleteTokenFunc = m.defaultDeleteToken
+	m.SaveUserInfoFunc = m.defaultSaveUserInfo
+	m.GetUserInfoFunc = m.defaultGetUserInfo
+	m.SaveRefreshFunc = m.defaultSaveRefresh
+	m.GetRefreshFunc = m.defaultGetRefresh
+	m.DeleteRefreshFunc = m.defaultDeleteRefresh
+	m.AtomicGetAndDeleteFunc = m.defaultAtomicGetAndDelete
+}
+
+func (m *TokenStore) defaultSaveToken(_ context.Context, userID string, token *oauth2.Token) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tokens[userID] = token
+	return nil
+}
+
+func (m *TokenStore) defaultGetToken(_ context.Context, userID string) (*oauth2.Token, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	token, ok := m.tokens[userID]
+	if !ok {
+		return nil, storage.ErrTokenNotFound
+	}
+	return token, nil
+}
+
+func (m *TokenStore) defaultDeleteToken(_ context.Context, userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.tokens, userID)
+	return nil
+}
+
+func (m *TokenStore) defaultSaveUserInfo(_ context.Context, userID string, info *providers.UserInfo) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.userInfo[userID] = info
+	return nil
+}
+
+func (m *TokenStore) defaultGetUserInfo(_ context.Context, userID string) (*providers.UserInfo, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	info, ok := m.userInfo[userID]
+	if !ok {
+		return nil, storage.ErrUserInfoNotFound
+	}
+	return info, nil
+}
+
+func (m *TokenStore) defaultSaveRefresh(_ context.Context, refreshToken, userID string, expiresAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.refreshTokens[refreshToken] = refreshTokenInfo{
+		userID:    userID,
+		expiresAt: expiresAt,
+	}
+	return nil
+}
+
+func (m *TokenStore) defaultGetRefresh(_ context.Context, refreshToken string) (string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	info, ok := m.refreshTokens[refreshToken]
+	if !ok {
+		return "", storage.ErrTokenNotFound
+	}
+	if !info.expiresAt.IsZero() && time.Now().After(info.expiresAt) {
+		return "", storage.ErrTokenExpired
+	}
+	return info.userID, nil
+}
+
+func (m *TokenStore) defaultDeleteRefresh(_ context.Context, refreshToken string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.refreshTokens, refreshToken)
+	return nil
+}
+
+func (m *TokenStore) defaultAtomicGetAndDelete(_ context.Context, refreshToken string) (string, string, *oauth2.Token, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	info, ok := m.refreshTokens[refreshToken]
+	if !ok {
+		return "", "", nil, fmt.Errorf("%w: "+storage.ErrMsgRefreshTokenNotFoundOrUsed, storage.ErrTokenNotFound)
+	}
+
+	if !info.expiresAt.IsZero() && time.Now().After(info.expiresAt) {
+		return "", "", nil, fmt.Errorf("%w: refresh token expired", storage.ErrTokenExpired)
+	}
+
+	token, ok := m.tokens[refreshToken]
+	if !ok {
+		return "", "", nil, fmt.Errorf("%w: provider token not found", storage.ErrTokenNotFound)
+	}
+
+	// Atomic delete
+	delete(m.refreshTokens, refreshToken)
+	delete(m.tokens, refreshToken)
+
+	return info.userID, info.clientID, token, nil
 }
 
 // SaveToken saves a token for a user
@@ -166,6 +206,41 @@ func (m *TokenStore) GetRefreshTokenInfo(ctx context.Context, refreshToken strin
 func (m *TokenStore) DeleteRefreshToken(ctx context.Context, refreshToken string) error {
 	m.CallCounts["DeleteRefreshToken"]++
 	return m.DeleteRefreshFunc(ctx, refreshToken)
+}
+
+// AtomicGetAndDeleteRefreshToken atomically retrieves and deletes a refresh token.
+// This prevents race conditions in refresh token rotation and reuse detection.
+// Returns the userID, clientID, and provider token if successful.
+//
+// SECURITY: This operation is atomic - only ONE concurrent request can succeed.
+// SECURITY: Returns clientID for client binding validation per OAuth 2.1 Section 6.
+func (m *TokenStore) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken string) (string, string, *oauth2.Token, error) {
+	m.CallCounts["AtomicGetAndDeleteRefreshToken"]++
+	return m.AtomicGetAndDeleteFunc(ctx, refreshToken)
+}
+
+// SetRefreshTokenClientID sets the clientID for a refresh token.
+// This is a test helper for setting up refresh tokens with client binding.
+func (m *TokenStore) SetRefreshTokenClientID(refreshToken, clientID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if info, ok := m.refreshTokens[refreshToken]; ok {
+		info.clientID = clientID
+		m.refreshTokens[refreshToken] = info
+	}
+}
+
+// SaveRefreshTokenWithClientID saves a refresh token with client binding.
+// This is a test helper that combines SaveRefreshToken with client ID.
+func (m *TokenStore) SaveRefreshTokenWithClientID(ctx context.Context, refreshToken, userID, clientID string, expiresAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.refreshTokens[refreshToken] = refreshTokenInfo{
+		userID:    userID,
+		clientID:  clientID,
+		expiresAt: expiresAt,
+	}
+	return nil
 }
 
 // ResetCallCounts resets all call counters

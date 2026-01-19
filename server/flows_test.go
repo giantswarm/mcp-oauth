@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"sync"
@@ -5602,4 +5603,160 @@ func TestHandleProviderCallback_EmptyState(t *testing.T) {
 	})
 
 	_ = provider // Use provider to satisfy compiler
+}
+
+// TestServer_ValidateRefreshTokenClientBinding tests the OAuth 2.1 Section 6 client binding validation
+func TestServer_ValidateRefreshTokenClientBinding(t *testing.T) {
+	tests := []struct {
+		name               string
+		storedClientID     string
+		requestingClientID string
+		userID             string
+		wantError          bool
+		errorContains      string
+	}{
+		{
+			name:               "matching client IDs should pass",
+			storedClientID:     "client-abc-123",
+			requestingClientID: "client-abc-123",
+			userID:             "user-123",
+			wantError:          false,
+		},
+		{
+			name:               "empty stored clientID (legacy token) should pass for backward compatibility",
+			storedClientID:     "",
+			requestingClientID: "client-abc-123",
+			userID:             "user-123",
+			wantError:          false,
+		},
+		{
+			name:               "mismatching client IDs should fail",
+			storedClientID:     "client-original",
+			requestingClientID: "client-attacker",
+			userID:             "user-123",
+			wantError:          true,
+			errorContains:      "invalid_grant",
+		},
+		{
+			name:               "different length client IDs should fail",
+			storedClientID:     "short",
+			requestingClientID: "much-longer-client-id",
+			userID:             "user-123",
+			wantError:          true,
+			errorContains:      "invalid_grant",
+		},
+		{
+			name:               "similar client IDs with one character difference should fail",
+			storedClientID:     "client-abc-123",
+			requestingClientID: "client-abc-124",
+			userID:             "user-123",
+			wantError:          true,
+			errorContains:      "invalid_grant",
+		},
+		{
+			name:               "empty requesting clientID with stored clientID should fail",
+			storedClientID:     "client-abc-123",
+			requestingClientID: "",
+			userID:             "user-123",
+			wantError:          true,
+			errorContains:      "invalid_grant",
+		},
+		{
+			name:               "case sensitivity - different case should fail",
+			storedClientID:     "Client-ABC-123",
+			requestingClientID: "client-abc-123",
+			userID:             "user-123",
+			wantError:          true,
+			errorContains:      "invalid_grant",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, _, _ := setupFlowTestServer(t)
+
+			err := srv.validateRefreshTokenClientBinding(tt.storedClientID, tt.requestingClientID, tt.userID)
+
+			if tt.wantError {
+				if err == nil {
+					t.Error("expected error but got nil")
+					return
+				}
+				if tt.errorContains != "" && !strings.Contains(err.Error(), tt.errorContains) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.errorContains)
+				}
+			} else if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// TestServer_ValidateRefreshTokenClientBinding_WithAuditor tests that audit events are logged correctly
+func TestServer_ValidateRefreshTokenClientBinding_WithAuditor(t *testing.T) {
+	t.Run("mismatch with auditor should not panic", func(t *testing.T) {
+		srv, _, _ := setupFlowTestServer(t)
+
+		// Create a real auditor with a discard logger
+		srv.Auditor = security.NewAuditor(slog.Default(), true)
+
+		err := srv.validateRefreshTokenClientBinding("original-client", "attacker-client", "user-123")
+
+		if err == nil {
+			t.Fatal("expected error for mismatched client IDs")
+		}
+		if !strings.Contains(err.Error(), "invalid_grant") {
+			t.Errorf("expected error to contain 'invalid_grant', got %v", err)
+		}
+	})
+
+	t.Run("legacy token with auditor should not panic", func(t *testing.T) {
+		srv, _, _ := setupFlowTestServer(t)
+
+		// Create a real auditor with a discard logger
+		srv.Auditor = security.NewAuditor(slog.Default(), true)
+
+		err := srv.validateRefreshTokenClientBinding("", "requesting-client", "user-456")
+		if err != nil {
+			t.Fatalf("unexpected error for legacy token: %v", err)
+		}
+	})
+
+	t.Run("mismatch without auditor should not panic", func(t *testing.T) {
+		srv, _, _ := setupFlowTestServer(t)
+		srv.Auditor = nil // Explicitly set to nil
+
+		err := srv.validateRefreshTokenClientBinding("original-client", "attacker-client", "user-123")
+
+		if err == nil {
+			t.Fatal("expected error for mismatched client IDs")
+		}
+	})
+}
+
+// TestServer_ValidateRefreshTokenClientBinding_WithRateLimiter tests rate limiting of security event logging
+func TestServer_ValidateRefreshTokenClientBinding_WithRateLimiter(t *testing.T) {
+	srv, _, _ := setupFlowTestServer(t)
+
+	// Set up a rate limiter that blocks after first call
+	srv.SecurityEventRateLimiter = security.NewRateLimiter(1, 1, slog.Default()) // 1 request per second
+
+	// First call should succeed (and log)
+	err1 := srv.validateRefreshTokenClientBinding("original", "attacker", "user-123")
+	if err1 == nil {
+		t.Fatal("expected error for first mismatch")
+	}
+
+	// Second call with same key should still return error but rate limiter prevents log
+	// (We can't easily verify logging was suppressed without more complex mocking,
+	// but we verify the error is still returned correctly)
+	err2 := srv.validateRefreshTokenClientBinding("original", "attacker", "user-123")
+	if err2 == nil {
+		t.Fatal("expected error for second mismatch")
+	}
+
+	// Both should return the same error type
+	if err1.Error() != err2.Error() {
+		t.Errorf("errors should be identical: %v vs %v", err1, err2)
+	}
 }

@@ -400,6 +400,7 @@ return data
 // Security: This operation MUST be atomic - only ONE concurrent request can succeed.
 // Once a refresh token is used, it is immediately deleted. Any subsequent attempts
 // to use the same token will receive "NOT_FOUND" error, which may indicate token theft.
+// Security: Returns clientID for client binding validation per OAuth 2.1 Section 6.
 //
 // KEYS[1] = refresh token key - maps refresh token to userID (e.g., "mcp:refresh:xyz789")
 // KEYS[2] = token key - stores the provider token (e.g., "mcp:token:xyz789")
@@ -408,7 +409,7 @@ return data
 // ARGV[2] = expiry time in Unix seconds, or -1 if TTL should be relied upon
 //
 // Returns:
-//   - JSON object {"user_id": "...", "token": {...}} on success
+//   - JSON object {"user_id": "...", "client_id": "...", "token": {...}} on success
 //   - "NOT_FOUND" if refresh token key doesn't exist (may indicate already rotated)
 //   - "EXPIRED" if token has expired (when ARGV[2] > 0 and now > expiry)
 //   - "TOKEN_NOT_FOUND" if provider token doesn't exist
@@ -439,13 +440,23 @@ if not tokenData then
     return 'TOKEN_NOT_FOUND'
 end
 
+-- Get token metadata for client binding validation (OAuth 2.1 Section 6)
+local clientID = ""
+local metaData = redis.call('GET', KEYS[3])
+if metaData then
+    local meta = cjson.decode(metaData)
+    if meta and meta.client_id then
+        clientID = meta.client_id
+    end
+end
+
 -- Atomically delete all keys
 redis.call('DEL', KEYS[1])
 redis.call('DEL', KEYS[2])
 redis.call('DEL', KEYS[3])
 
 -- Return result as JSON
-return cjson.encode({user_id = userID, token = cjson.decode(tokenData)})
+return cjson.encode({user_id = userID, client_id = clientID, token = cjson.decode(tokenData)})
 `
 
 // ============================================================

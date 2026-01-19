@@ -120,11 +120,12 @@ type TokenStore interface {
 
 	// AtomicGetAndDeleteRefreshToken atomically retrieves and deletes a refresh token.
 	// This prevents race conditions in refresh token rotation and reuse detection.
-	// Returns the userID and provider token if successful, or an error if:
+	// Returns the userID, clientID, and provider token if successful, or an error if:
 	// - Token not found (may indicate already used/rotated)
 	// - Token expired
 	// SECURITY: This operation MUST be atomic to prevent concurrent token refresh attacks.
-	AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken string) (userID string, providerToken *oauth2.Token, err error)
+	// SECURITY: Returns clientID for client binding validation per OAuth 2.1 Section 6.
+	AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken string) (userID string, clientID string, providerToken *oauth2.Token, err error)
 }
 
 // TokenMetadataStore is the basic interface for storing token metadata.

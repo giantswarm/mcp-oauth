@@ -1127,14 +1127,22 @@ func (s *Server) recordExchangeSuccess(span trace.Span, authCode *storage.Author
 // RefreshAccessToken refreshes an access token using a refresh token with OAuth 2.1 rotation
 // Returns oauth2.Token directly
 // Implements OAuth 2.1 refresh token reuse detection for enhanced security
+// Implements OAuth 2.1 Section 6 client binding validation
 func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID string) (*oauth2.Token, error) {
 	// Check if storage supports token family tracking (OAuth 2.1 reuse detection)
 	familyStore, supportsFamilies := s.tokenStore.(storage.RefreshTokenFamilyStore)
 
 	// OAUTH 2.1 SECURITY: Atomically get and delete refresh token FIRST
-	userID, providerToken, err := s.tokenStore.AtomicGetAndDeleteRefreshToken(ctx, refreshToken)
+	// Returns clientID for client binding validation
+	userID, storedClientID, providerToken, err := s.tokenStore.AtomicGetAndDeleteRefreshToken(ctx, refreshToken)
 	if err != nil {
 		return nil, s.handleRefreshTokenError(ctx, err, refreshToken, clientID, familyStore, supportsFamilies)
+	}
+
+	// OAUTH 2.1 SECURITY: Validate client binding (Section 6)
+	// The refresh token MUST only be accepted by the client it was issued to
+	if err := s.validateRefreshTokenClientBinding(storedClientID, clientID, userID); err != nil {
+		return nil, err
 	}
 
 	// Refresh token with provider
@@ -1182,6 +1190,84 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	}
 
 	return tokenResponse, nil
+}
+
+// validateRefreshTokenClientBinding validates that the requesting client matches
+// the client that was originally issued the refresh token.
+// This implements OAuth 2.1 Section 6 client binding requirement.
+//
+// Security: This prevents cross-client token theft where an attacker with a stolen
+// refresh token attempts to use it from a different client.
+//
+// Returns nil if validation passes, or an error with "invalid_grant" if:
+//   - The stored clientID doesn't match the requesting clientID
+//   - The stored clientID is empty (legacy token without client binding)
+//     AND strict binding is enabled (default: warn but allow for backward compatibility)
+func (s *Server) validateRefreshTokenClientBinding(storedClientID, requestingClientID, userID string) error {
+	// If no stored clientID, this is a legacy token without binding
+	// Log a warning but allow for backward compatibility during migration
+	if storedClientID == "" {
+		s.Logger.Warn("Refresh token missing client binding (legacy token or metadata issue)",
+			"user_id", userID,
+			"requesting_client_id", requestingClientID,
+			"security_note", "Consider migrating to tokens with client binding for OAuth 2.1 compliance")
+
+		if s.Auditor != nil {
+			s.Auditor.LogEvent(security.Event{
+				Type:     security.EventRefreshTokenMissingClientBinding,
+				UserID:   userID,
+				ClientID: requestingClientID,
+				Details: map[string]any{
+					"severity":       "warning",
+					"security_risk":  "cross_client_token_theft_possible",
+					"recommendation": "enable_client_binding_for_new_tokens",
+				},
+			})
+		}
+
+		// Allow for backward compatibility - tokens issued before this security fix
+		// will not have client binding. New tokens will have it.
+		return nil
+	}
+
+	// SECURITY: Validate client binding using constant-time comparison
+	// This prevents timing attacks that could reveal valid client IDs
+	if subtle.ConstantTimeCompare([]byte(storedClientID), []byte(requestingClientID)) != 1 {
+		// Rate limit logging to prevent DoS via log flooding
+		if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(userID+":"+requestingClientID+":client_binding_mismatch") {
+			s.Logger.Error("Refresh token client binding validation failed - possible token theft attempt",
+				"user_id", userID,
+				"stored_client_id", storedClientID,
+				"requesting_client_id", requestingClientID,
+				"security_event", "cross_client_token_theft_attempt",
+				"oauth_spec", "OAuth 2.1 Section 6")
+		}
+
+		if s.Auditor != nil {
+			s.Auditor.LogEvent(security.Event{
+				Type:     security.EventRefreshTokenClientBindingMismatch,
+				UserID:   userID,
+				ClientID: requestingClientID,
+				Details: map[string]any{
+					"severity":             "critical",
+					"stored_client_id":     storedClientID,
+					"requesting_client_id": requestingClientID,
+					"attack_indicator":     "cross_client_token_theft_attempt",
+					"oauth_spec":           "OAuth 2.1 Section 6",
+				},
+			})
+			s.Auditor.LogAuthFailure(userID, requestingClientID, "", "refresh_token_client_binding_mismatch")
+		}
+
+		// Return generic error per OAuth spec (don't reveal details to attacker)
+		return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+	}
+
+	s.Logger.Debug("Refresh token client binding validated",
+		"user_id", userID,
+		"client_id", storedClientID)
+
+	return nil
 }
 
 // RevokeToken revokes a token (access or refresh)
