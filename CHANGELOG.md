@@ -34,6 +34,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **RFC 8693 Token Exchange Client for Cross-Cluster SSO**
+  - **Feature**: New `TokenExchangeClient` in `providers/oidc` package implements RFC 8693 OAuth 2.0 Token Exchange
+  - **Use Case**: Enables cross-cluster SSO scenarios where each cluster has its own Identity Provider (e.g., separate Dex instances)
+  - **Problem Solved**: When Muster on Cluster A needs to call mcp-kubernetes on Cluster B, and each cluster has its own Dex, tokens from Cluster A's Dex are not valid on Cluster B. Token exchange allows exchanging a token from one Dex for a token from another Dex.
+  - **New Types**:
+    - `oidc.TokenExchangeClient` - Client for performing RFC 8693 token exchanges
+    - `oidc.TokenExchangeRequest` - Request parameters including subject token, connector ID, and optional scopes
+    - `oidc.TokenExchangeResponse` - Response with the exchanged access token
+    - `oidc.TokenExchangeCache` - Thread-safe cache for exchanged tokens to reduce exchange requests
+  - **New Constants**:
+    - `oidc.GrantTypeTokenExchange` - RFC 8693 grant type URN
+    - `oidc.TokenTypeIDToken`, `oidc.TokenTypeAccessToken`, `oidc.TokenTypeRefreshToken`, `oidc.TokenTypeJWT` - Token type URNs
+  - **Security Features**:
+    - SSRF protection with DNS rebinding prevention (configurable via `AllowPrivateIP` for internal deployments)
+    - HTTPS enforcement for all token endpoints
+    - Response size limiting (1MB) to prevent memory exhaustion
+    - Subject token size limiting (64KB) to prevent DoS attacks
+    - Security event logging at Warn level for SSRF detection and monitoring
+    - Cache key security documentation to prevent cache poisoning
+    - Rate limiting guidance for production deployments
+  - **Dex Integration**: Works with Dex's token exchange implementation via the `connector_id` parameter
+  - **Example Usage**:
+    ```go
+    client := oidc.NewTokenExchangeClient(logger)
+    resp, err := client.Exchange(ctx, oidc.TokenExchangeRequest{
+        TokenEndpoint:    "https://dex.cluster-b.example.com/token",
+        SubjectToken:     userIDToken,
+        SubjectTokenType: oidc.TokenTypeIDToken,
+        ConnectorID:      "cluster-a-dex",
+        Scope:            "openid profile email groups",
+    })
+    ```
+  - **Related**: giantswarm/muster#275 - Investigate Dex Token Exchange (RFC 8693) for cross-cluster SSO
+
 - **SSO Validation Metadata via TokenSource Field**
   - **Feature**: Added `TokenSource` field to `providers.UserInfo` to indicate how the user was authenticated
   - **Use Case**: Downstream MCP servers can now distinguish between normal OAuth flow tokens and SSO-forwarded tokens
