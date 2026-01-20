@@ -49,8 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Security Features**:
     - SSRF protection with DNS rebinding prevention (configurable via `AllowPrivateIP` for internal deployments)
     - HTTPS enforcement for all token endpoints
-    - Response size limiting to prevent memory exhaustion
-    - Structured logging for security monitoring
+    - Response size limiting (1MB) to prevent memory exhaustion
+    - Subject token size limiting (64KB) to prevent DoS attacks
+    - Security event logging at Warn level for SSRF detection and monitoring
+    - Cache key security documentation to prevent cache poisoning
+    - Rate limiting guidance for production deployments
   - **Dex Integration**: Works with Dex's token exchange implementation via the `connector_id` parameter
   - **Example Usage**:
     ```go

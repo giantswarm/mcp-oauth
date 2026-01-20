@@ -55,6 +55,11 @@ const (
 	// maxResourceLength is the maximum length for the resource parameter (RFC 3986 recommended).
 	// This prevents DoS attacks via extremely long URIs.
 	maxResourceLength = 2048
+
+	// maxSubjectTokenLength is the maximum allowed length for the subject token.
+	// JWTs are typically 1-4KB, but can be larger with many claims. 64KB is generous
+	// while preventing abuse via extremely large tokens.
+	maxSubjectTokenLength = 64 * 1024 // 64KB
 )
 
 // TokenExchangeClient performs RFC 8693 OAuth 2.0 Token Exchange operations.
@@ -68,7 +73,18 @@ const (
 //   - SSRF protection via URL validation (unless AllowPrivateIP is enabled)
 //   - HTTPS enforcement for token endpoints
 //   - Response size limiting to prevent memory exhaustion
+//   - Subject token size limiting (64KB max)
 //   - Structured logging for security monitoring
+//
+// # Rate Limiting
+//
+// This client does not implement rate limiting internally. For production deployments,
+// callers SHOULD implement rate limiting to prevent abuse, especially when the token
+// exchange endpoint is exposed to user-controlled input. Consider using:
+//
+//   - Per-user rate limits to prevent individual users from overwhelming the IdP
+//   - Global rate limits to protect against coordinated attacks
+//   - The [TokenExchangeCache] to reduce redundant exchange requests
 //
 // # Example Usage
 //
@@ -328,6 +344,10 @@ func (c *TokenExchangeClient) validateRequest(req *TokenExchangeRequest) error {
 	if req.SubjectToken == "" {
 		return fmt.Errorf("subject token is required")
 	}
+	// SECURITY: Prevent DoS via extremely large subject tokens
+	if len(req.SubjectToken) > maxSubjectTokenLength {
+		return fmt.Errorf("subject token exceeds maximum length of %d bytes", maxSubjectTokenLength)
+	}
 	if req.ConnectorID == "" {
 		return fmt.Errorf("connector ID is required")
 	}
@@ -384,6 +404,9 @@ func (c *TokenExchangeClient) validateTokenEndpoint(tokenEndpoint string) error 
 	if c.allowPrivateIP {
 		// When private IPs are allowed, only validate HTTPS (skip IP checks)
 		if err := ValidateHTTPSURL(tokenEndpoint, "token endpoint"); err != nil {
+			c.logger.Warn("Token endpoint HTTPS validation failed",
+				"url", tokenEndpoint,
+				"error", err.Error())
 			return fmt.Errorf("invalid token endpoint: %w", err)
 		}
 		c.logger.Debug("Validating token endpoint with private IP allowance",
@@ -392,6 +415,10 @@ func (c *TokenExchangeClient) validateTokenEndpoint(tokenEndpoint string) error 
 	} else {
 		// SECURITY: Validate with full SSRF protection
 		if err := ValidateExternalURL(tokenEndpoint, "token endpoint"); err != nil {
+			// Log at Warn level for security monitoring (potential SSRF attempt)
+			c.logger.Warn("Token endpoint validation failed (potential SSRF attempt)",
+				"url", tokenEndpoint,
+				"error", err.Error())
 			return fmt.Errorf("invalid token endpoint: %w", err)
 		}
 	}
@@ -683,9 +710,19 @@ func (c *TokenExchangeCache) GetStats() TokenExchangeCacheStats {
 //   - Creates fixed-length keys for consistent memory usage
 //   - Does not expose sensitive information if the cache is inspected
 //
+// # Security Requirements
+//
+// IMPORTANT: The userID parameter MUST be extracted from trusted, validated claims
+// in the subject token (e.g., the "sub" claim after JWT signature verification),
+// NOT from user input or unvalidated sources. Using untrusted userID values could
+// lead to cache poisoning attacks where an attacker retrieves tokens cached for
+// other users.
+//
 // Example:
 //
-//	key := GenerateCacheKey("https://dex.cluster-b.example.com/token", "cluster-a", "user-123")
+//	// Extract userID from validated JWT claims (after signature verification)
+//	userID := validatedClaims.Subject
+//	key := GenerateCacheKey("https://dex.cluster-b.example.com/token", "cluster-a", userID)
 //	cachedToken := cache.Get(key)
 func GenerateCacheKey(tokenEndpoint, connectorID, userID string) string {
 	// Use null byte as separator since it cannot appear in URLs, connector IDs, or user IDs.

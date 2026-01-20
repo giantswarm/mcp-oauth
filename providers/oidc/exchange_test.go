@@ -288,6 +288,24 @@ func TestTokenExchangeClient_Exchange(t *testing.T) {
 		}
 	})
 
+	t.Run("SECURITY: reject excessively long subject token", func(t *testing.T) {
+		client := NewTokenExchangeClient(nil)
+		// Create a subject token that exceeds the 64KB limit
+		longToken := strings.Repeat("a", 65*1024) // 65KB
+		_, err := client.Exchange(context.Background(), TokenExchangeRequest{
+			TokenEndpoint: "https://example.com/token",
+			SubjectToken:  longToken,
+			ConnectorID:   "source-cluster",
+		})
+
+		if err == nil {
+			t.Error("Exchange() should reject excessively long subject token")
+		}
+		if !strings.Contains(err.Error(), "maximum length") {
+			t.Errorf("error should mention maximum length, got: %v", err)
+		}
+	})
+
 	t.Run("SECURITY: reject HTTP token endpoint", func(t *testing.T) {
 		client := NewTokenExchangeClient(nil)
 		_, err := client.Exchange(context.Background(), TokenExchangeRequest{
