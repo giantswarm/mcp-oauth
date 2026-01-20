@@ -648,11 +648,38 @@ func TestTokenExchangeCache(t *testing.T) {
 }
 
 func TestGenerateCacheKey(t *testing.T) {
-	key := GenerateCacheKey("https://dex.example.com/token", "source-cluster", "user-123")
-	expected := "https://dex.example.com/token:source-cluster:user-123"
-	if key != expected {
-		t.Errorf("GenerateCacheKey() = %v, want %v", key, expected)
-	}
+	t.Run("generates consistent hash", func(t *testing.T) {
+		key1 := GenerateCacheKey("https://dex.example.com/token", "source-cluster", "user-123")
+		key2 := GenerateCacheKey("https://dex.example.com/token", "source-cluster", "user-123")
+		if key1 != key2 {
+			t.Errorf("GenerateCacheKey() should be deterministic, got %v and %v", key1, key2)
+		}
+		// Key should be base64url encoded SHA-256 (43 chars without padding)
+		if len(key1) != 43 {
+			t.Errorf("GenerateCacheKey() length = %d, want 43 (base64url SHA-256)", len(key1))
+		}
+	})
+
+	t.Run("different inputs produce different keys", func(t *testing.T) {
+		key1 := GenerateCacheKey("https://dex.example.com/token", "cluster-a", "user-1")
+		key2 := GenerateCacheKey("https://dex.example.com/token", "cluster-b", "user-1")
+		key3 := GenerateCacheKey("https://dex.example.com/token", "cluster-a", "user-2")
+		if key1 == key2 {
+			t.Error("Different connector IDs should produce different keys")
+		}
+		if key1 == key3 {
+			t.Error("Different user IDs should produce different keys")
+		}
+	})
+
+	t.Run("prevents collision with delimiter characters", func(t *testing.T) {
+		// These would collide with simple ":" delimiter
+		key1 := GenerateCacheKey("https://a:b", "c", "d")
+		key2 := GenerateCacheKey("https://a", "b:c", "d")
+		if key1 == key2 {
+			t.Error("Keys with delimiter characters in values should not collide")
+		}
+	})
 }
 
 func TestTokenExchangeConstants(t *testing.T) {
@@ -679,4 +706,216 @@ func TestTokenExchangeConstants(t *testing.T) {
 	if TokenTypeJWT != expectedJWT {
 		t.Errorf("TokenTypeJWT = %v, want %v", TokenTypeJWT, expectedJWT)
 	}
+}
+
+func TestTokenExchangeCache_LRUEviction(t *testing.T) {
+	t.Run("evicts least recently used when at capacity", func(t *testing.T) {
+		// Create cache with max 3 entries
+		cache := NewTokenExchangeCacheWithMaxEntries(3)
+
+		// Add 3 entries
+		cache.Set("key1", "token1", TokenTypeAccessToken, 3600)
+		cache.Set("key2", "token2", TokenTypeAccessToken, 3600)
+		cache.Set("key3", "token3", TokenTypeAccessToken, 3600)
+
+		if cache.Size() != 3 {
+			t.Fatalf("Size() = %d, want 3", cache.Size())
+		}
+
+		// Add 4th entry, should evict key1 (least recently used)
+		cache.Set("key4", "token4", TokenTypeAccessToken, 3600)
+
+		if cache.Size() != 3 {
+			t.Errorf("Size() = %d, want 3 after eviction", cache.Size())
+		}
+
+		// key1 should be evicted
+		if cache.Get("key1") != nil {
+			t.Error("key1 should have been evicted")
+		}
+
+		// key2, key3, key4 should still exist
+		if cache.Get("key2") == nil {
+			t.Error("key2 should still exist")
+		}
+		if cache.Get("key3") == nil {
+			t.Error("key3 should still exist")
+		}
+		if cache.Get("key4") == nil {
+			t.Error("key4 should still exist")
+		}
+	})
+
+	t.Run("accessing entry prevents eviction", func(t *testing.T) {
+		cache := NewTokenExchangeCacheWithMaxEntries(3)
+
+		// Add 3 entries
+		cache.Set("key1", "token1", TokenTypeAccessToken, 3600)
+		cache.Set("key2", "token2", TokenTypeAccessToken, 3600)
+		cache.Set("key3", "token3", TokenTypeAccessToken, 3600)
+
+		// Access key1 to move it to front
+		_ = cache.Get("key1")
+
+		// Add 4th entry, should evict key2 (now least recently used)
+		cache.Set("key4", "token4", TokenTypeAccessToken, 3600)
+
+		// key1 should still exist (was accessed)
+		if cache.Get("key1") == nil {
+			t.Error("key1 should still exist after access")
+		}
+
+		// key2 should be evicted
+		if cache.Get("key2") != nil {
+			t.Error("key2 should have been evicted")
+		}
+	})
+
+	t.Run("updating entry moves it to front", func(t *testing.T) {
+		cache := NewTokenExchangeCacheWithMaxEntries(3)
+
+		cache.Set("key1", "token1", TokenTypeAccessToken, 3600)
+		cache.Set("key2", "token2", TokenTypeAccessToken, 3600)
+		cache.Set("key3", "token3", TokenTypeAccessToken, 3600)
+
+		// Update key1
+		cache.Set("key1", "token1-updated", TokenTypeAccessToken, 3600)
+
+		// Add 4th entry, should evict key2 (now least recently used)
+		cache.Set("key4", "token4", TokenTypeAccessToken, 3600)
+
+		if cache.Get("key1") == nil {
+			t.Error("key1 should still exist after update")
+		}
+		if cache.Get("key1").AccessToken != "token1-updated" {
+			t.Error("key1 should have updated value")
+		}
+		if cache.Get("key2") != nil {
+			t.Error("key2 should have been evicted")
+		}
+	})
+}
+
+func TestTokenExchangeCache_GetStats(t *testing.T) {
+	cache := NewTokenExchangeCacheWithMaxEntries(100)
+
+	// Initial stats
+	stats := cache.GetStats()
+	if stats.CurrentEntries != 0 {
+		t.Errorf("CurrentEntries = %d, want 0", stats.CurrentEntries)
+	}
+	if stats.MaxEntries != 100 {
+		t.Errorf("MaxEntries = %d, want 100", stats.MaxEntries)
+	}
+	if stats.TotalEvictions != 0 {
+		t.Errorf("TotalEvictions = %d, want 0", stats.TotalEvictions)
+	}
+
+	// Add some entries
+	cache.Set("key1", "token1", TokenTypeAccessToken, 3600)
+	cache.Set("key2", "token2", TokenTypeAccessToken, 3600)
+
+	stats = cache.GetStats()
+	if stats.CurrentEntries != 2 {
+		t.Errorf("CurrentEntries = %d, want 2", stats.CurrentEntries)
+	}
+	if stats.MemoryPressure != 2.0 {
+		t.Errorf("MemoryPressure = %f, want 2.0", stats.MemoryPressure)
+	}
+}
+
+func TestTokenExchangeCache_UnlimitedMode(t *testing.T) {
+	// maxEntries=0 means unlimited
+	cache := NewTokenExchangeCacheWithMaxEntries(0)
+
+	// Add many entries
+	for i := 0; i < 100; i++ {
+		cache.Set(GenerateCacheKey("endpoint", "connector", string(rune('a'+i%26))), "token", TokenTypeAccessToken, 3600)
+	}
+
+	// No evictions should occur
+	stats := cache.GetStats()
+	if stats.TotalEvictions != 0 {
+		t.Errorf("TotalEvictions = %d, want 0 in unlimited mode", stats.TotalEvictions)
+	}
+}
+
+func TestValidateResourceParameter(t *testing.T) {
+	client := NewTokenExchangeClient(nil)
+
+	t.Run("valid HTTPS resource", func(t *testing.T) {
+		_, err := client.Exchange(t.Context(), TokenExchangeRequest{
+			TokenEndpoint: "https://dex.example.com/token",
+			SubjectToken:  "test-token",
+			ConnectorID:   "source-cluster",
+			Resource:      "https://api.example.com/v1",
+		})
+		// Will fail due to network, but should not fail on resource validation
+		if err != nil && strings.Contains(err.Error(), "resource") {
+			t.Errorf("Valid HTTPS resource should not fail validation: %v", err)
+		}
+	})
+
+	t.Run("valid HTTP resource", func(t *testing.T) {
+		_, err := client.Exchange(t.Context(), TokenExchangeRequest{
+			TokenEndpoint: "https://dex.example.com/token",
+			SubjectToken:  "test-token",
+			ConnectorID:   "source-cluster",
+			Resource:      "http://localhost:8080/api",
+		})
+		// Will fail due to network, but should not fail on resource validation
+		if err != nil && strings.Contains(err.Error(), "resource") {
+			t.Errorf("Valid HTTP resource should not fail validation: %v", err)
+		}
+	})
+
+	t.Run("reject relative URI", func(t *testing.T) {
+		_, err := client.Exchange(t.Context(), TokenExchangeRequest{
+			TokenEndpoint: "https://dex.example.com/token",
+			SubjectToken:  "test-token",
+			ConnectorID:   "source-cluster",
+			Resource:      "/api/v1",
+		})
+		if err == nil || !strings.Contains(err.Error(), "absolute URI") {
+			t.Errorf("Relative URI should be rejected, got: %v", err)
+		}
+	})
+
+	t.Run("reject non-http scheme", func(t *testing.T) {
+		_, err := client.Exchange(t.Context(), TokenExchangeRequest{
+			TokenEndpoint: "https://dex.example.com/token",
+			SubjectToken:  "test-token",
+			ConnectorID:   "source-cluster",
+			Resource:      "ftp://files.example.com",
+		})
+		if err == nil || !strings.Contains(err.Error(), "HTTP or HTTPS") {
+			t.Errorf("Non-HTTP scheme should be rejected, got: %v", err)
+		}
+	})
+
+	t.Run("reject excessively long resource", func(t *testing.T) {
+		longResource := "https://example.com/" + strings.Repeat("a", 2100)
+		_, err := client.Exchange(t.Context(), TokenExchangeRequest{
+			TokenEndpoint: "https://dex.example.com/token",
+			SubjectToken:  "test-token",
+			ConnectorID:   "source-cluster",
+			Resource:      longResource,
+		})
+		if err == nil || !strings.Contains(err.Error(), "maximum length") {
+			t.Errorf("Excessively long resource should be rejected, got: %v", err)
+		}
+	})
+
+	t.Run("empty resource is allowed", func(t *testing.T) {
+		_, err := client.Exchange(t.Context(), TokenExchangeRequest{
+			TokenEndpoint: "https://dex.example.com/token",
+			SubjectToken:  "test-token",
+			ConnectorID:   "source-cluster",
+			Resource:      "", // Empty is OK (optional field)
+		})
+		// Will fail due to network, but should not fail on resource validation
+		if err != nil && strings.Contains(err.Error(), "resource") {
+			t.Errorf("Empty resource should be allowed: %v", err)
+		}
+	})
 }
