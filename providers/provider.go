@@ -129,6 +129,11 @@ type UserInfo struct {
 	// Downstream servers can use this to determine whether to look up
 	// a stored ID token or use the Bearer token directly for downstream
 	// authentication (e.g., Kubernetes API authentication).
+	//
+	// SECURITY: This field is set server-side during token validation and
+	// should NOT be trusted if received from external sources (e.g., if
+	// UserInfo is deserialized from untrusted input). Always use the server's
+	// ValidateToken() method to obtain a trusted UserInfo with correct TokenSource.
 	TokenSource TokenSource
 }
 
