@@ -136,18 +136,25 @@ type UserInfo struct {
 // When true, the Bearer token IS the ID token and there is no entry in the
 // token store (the server didn't issue the token).
 //
+// Returns false for nil receivers, OAuth tokens, empty TokenSource, and
+// unknown/invalid TokenSource values.
+//
 // Downstream servers should use the Bearer token directly for downstream
 // authentication when this returns true, rather than looking up a stored token.
 func (u *UserInfo) IsSSO() bool {
-	return u.TokenSource == TokenSourceSSO
+	return u != nil && u.TokenSource == TokenSourceSSO
 }
 
 // IsOAuth returns true if this user was authenticated via normal OAuth flow.
 // When true, the server issued the token and the provider's ID token is
 // stored in the token store.
 //
+// Returns true for nil receivers (safe default) and empty TokenSource
+// (backward compatibility with existing code). Returns false for SSO tokens
+// and unknown/invalid TokenSource values.
+//
 // Downstream servers should look up the stored ID token from the token store
 // when this returns true.
 func (u *UserInfo) IsOAuth() bool {
-	return u.TokenSource == TokenSourceOAuth || u.TokenSource == ""
+	return u == nil || u.TokenSource == TokenSourceOAuth || u.TokenSource == ""
 }

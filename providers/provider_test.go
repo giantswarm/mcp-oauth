@@ -121,3 +121,20 @@ func TestUserInfo_TokenSourceMutuallyExclusive(t *testing.T) {
 		t.Error("Empty token source should be treated as OAuth for backward compatibility")
 	}
 }
+
+// TestUserInfo_NilReceiver verifies that nil UserInfo is handled safely.
+func TestUserInfo_NilReceiver(t *testing.T) {
+	var nilUser *UserInfo
+
+	t.Run("IsSSO returns false for nil receiver", func(t *testing.T) {
+		if nilUser.IsSSO() {
+			t.Error("IsSSO() should return false for nil receiver")
+		}
+	})
+
+	t.Run("IsOAuth returns true for nil receiver (safe default)", func(t *testing.T) {
+		if !nilUser.IsOAuth() {
+			t.Error("IsOAuth() should return true for nil receiver as safe default")
+		}
+	})
+}
