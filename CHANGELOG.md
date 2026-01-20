@@ -34,6 +34,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **SSO Validation Metadata via TokenSource Field**
+  - **Feature**: Added `TokenSource` field to `providers.UserInfo` to indicate how the user was authenticated
+  - **Use Case**: Downstream MCP servers can now distinguish between normal OAuth flow tokens and SSO-forwarded tokens
+  - **Problem Solved**: When SSO token forwarding is used, downstream servers need to know whether to look up a stored ID token from the token store or use the Bearer token directly for downstream authentication (e.g., Kubernetes API auth)
+  - **New Types**:
+    - `providers.TokenSource` type with constants `TokenSourceOAuth` and `TokenSourceSSO`
+  - **New Methods on `UserInfo`**:
+    - `IsSSO() bool` - Returns true if authenticated via SSO token forwarding
+    - `IsOAuth() bool` - Returns true if authenticated via normal OAuth flow (default)
+  - **Backward Compatible**: Empty `TokenSource` is treated as `TokenSourceOAuth` for backward compatibility with existing code
+  - **Related**: Unblocks SSO token forwarding + downstream OAuth in mcp-kubernetes and other MCP servers
+
 - **Security assessment reports**
   - Added comprehensive security assessment reports from three AI systems:
     - Claude Opus 4.5: Full codebase security review with OAuth 2.1 compliance analysis

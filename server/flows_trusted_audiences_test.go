@@ -11,7 +11,9 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
+	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
@@ -927,4 +929,134 @@ func TestGetJWKSClient_AllowPrivateIPJWKS(t *testing.T) {
 			t.Errorf("Expected HTTPS requirement error, got: %v", err)
 		}
 	})
+}
+
+// TestValidateToken_TokenSource_OAuth verifies that TokenSource is set to OAuth
+// for tokens validated via the normal OAuth flow (userinfo endpoint).
+func TestValidateToken_TokenSource_OAuth(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	t.Cleanup(func() { store.Stop() })
+
+	var logBuffer bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuffer, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	config := &Config{
+		Issuer:             "https://auth.example.com",
+		ResourceIdentifier: "https://mcp.example.com",
+		// No TrustedAudiences - will use userinfo endpoint
+	}
+
+	mockProvider := mock.NewProvider()
+
+	srv := &Server{
+		Config:     config,
+		tokenStore: store,
+		flowStore:  store,
+		provider:   mockProvider,
+		Logger:     logger,
+	}
+
+	// Opaque token validated via userinfo endpoint should have TokenSourceOAuth
+	t.Run("opaque token has TokenSourceOAuth", func(t *testing.T) {
+		opaqueToken := "opaque-access-token-12345" //nolint:gosec // G101: Test data, not a real credential
+
+		userInfo, err := srv.ValidateToken(ctx, opaqueToken)
+		if err != nil {
+			t.Fatalf("ValidateToken() error = %v", err)
+		}
+
+		if userInfo.TokenSource != providers.TokenSourceOAuth {
+			t.Errorf("TokenSource = %q, want %q", userInfo.TokenSource, providers.TokenSourceOAuth)
+		}
+
+		if !userInfo.IsOAuth() {
+			t.Error("IsOAuth() should return true for OAuth-validated token")
+		}
+
+		if userInfo.IsSSO() {
+			t.Error("IsSSO() should return false for OAuth-validated token")
+		}
+	})
+}
+
+// TestValidateToken_TokenSource_SSO verifies that TokenSource is set to SSO
+// for tokens validated via SSO token forwarding (JWKS validation).
+// This test verifies the idTokenClaimsToUserInfo function sets TokenSourceSSO.
+func TestValidateToken_TokenSource_SSO(t *testing.T) {
+	store := memory.New()
+	t.Cleanup(func() { store.Stop() })
+
+	var logBuffer bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuffer, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	config := &Config{
+		Issuer:             "https://auth.example.com",
+		ResourceIdentifier: "https://mcp.example.com",
+		TrustedAudiences:   []string{"muster-client"},
+	}
+
+	srv := &Server{
+		Config:     config,
+		tokenStore: store,
+		flowStore:  store,
+		Logger:     logger,
+	}
+
+	// Test idTokenClaimsToUserInfo sets TokenSourceSSO
+	t.Run("idTokenClaimsToUserInfo sets TokenSourceSSO", func(t *testing.T) {
+		claims := &oidc.IDTokenClaims{
+			Email:         "user@example.com",
+			EmailVerified: true,
+			Name:          "Test User",
+		}
+		claims.Subject = testUserID
+
+		userInfo := srv.idTokenClaimsToUserInfo(claims)
+
+		if userInfo.TokenSource != providers.TokenSourceSSO {
+			t.Errorf("TokenSource = %q, want %q", userInfo.TokenSource, providers.TokenSourceSSO)
+		}
+
+		if !userInfo.IsSSO() {
+			t.Error("IsSSO() should return true for SSO-validated token")
+		}
+
+		if userInfo.IsOAuth() {
+			t.Error("IsOAuth() should return false for SSO-validated token")
+		}
+
+		// Verify other fields are set correctly
+		if userInfo.ID != testUserID {
+			t.Errorf("ID = %q, want %q", userInfo.ID, testUserID)
+		}
+		if userInfo.Email != "user@example.com" {
+			t.Errorf("Email = %q, want %q", userInfo.Email, "user@example.com")
+		}
+	})
+}
+
+// TestTokenSource_BackwardCompatibility verifies that UserInfo without TokenSource
+// set is treated as OAuth for backward compatibility.
+func TestTokenSource_BackwardCompatibility(t *testing.T) {
+	// UserInfo from older code or storage may not have TokenSource set
+	userInfo := &providers.UserInfo{
+		ID:    "user-123",
+		Email: "user@example.com",
+		// TokenSource not set (zero value)
+	}
+
+	// Should be treated as OAuth for backward compatibility
+	if !userInfo.IsOAuth() {
+		t.Error("Empty TokenSource should be treated as OAuth for backward compatibility")
+	}
+
+	if userInfo.IsSSO() {
+		t.Error("Empty TokenSource should not be treated as SSO")
+	}
+
+	// Verify the zero value
+	if userInfo.TokenSource != "" {
+		t.Errorf("Expected empty TokenSource, got %q", userInfo.TokenSource)
+	}
 }

@@ -76,6 +76,20 @@ type JWKSProvider interface {
 	IssuerURL() string
 }
 
+// TokenSource indicates how the user was authenticated.
+type TokenSource string
+
+const (
+	// TokenSourceOAuth indicates the user was authenticated via normal OAuth flow.
+	// The server issued the token and the provider's ID token is stored in the token store.
+	TokenSourceOAuth TokenSource = "oauth"
+
+	// TokenSourceSSO indicates the user was authenticated via SSO token forwarding.
+	// The Bearer token IS the ID token forwarded from a trusted upstream service.
+	// There is no entry in the token store because the server didn't issue the token.
+	TokenSourceSSO TokenSource = "sso"
+)
+
 // UserInfo represents user information from a provider
 type UserInfo struct {
 	// ID is the unique user identifier from the provider
@@ -106,4 +120,34 @@ type UserInfo struct {
 	// This is populated from the 'groups' claim in OIDC userinfo responses.
 	// Providers that don't support groups will leave this empty.
 	Groups []string
+
+	// TokenSource indicates how this user was authenticated.
+	// This is set to TokenSourceOAuth for normal OAuth flow tokens
+	// (where the ID token is stored in the token store) or TokenSourceSSO
+	// for SSO-forwarded tokens (where the Bearer token IS the ID token).
+	//
+	// Downstream servers can use this to determine whether to look up
+	// a stored ID token or use the Bearer token directly for downstream
+	// authentication (e.g., Kubernetes API authentication).
+	TokenSource TokenSource
+}
+
+// IsSSO returns true if this user was authenticated via SSO token forwarding.
+// When true, the Bearer token IS the ID token and there is no entry in the
+// token store (the server didn't issue the token).
+//
+// Downstream servers should use the Bearer token directly for downstream
+// authentication when this returns true, rather than looking up a stored token.
+func (u *UserInfo) IsSSO() bool {
+	return u.TokenSource == TokenSourceSSO
+}
+
+// IsOAuth returns true if this user was authenticated via normal OAuth flow.
+// When true, the server issued the token and the provider's ID token is
+// stored in the token store.
+//
+// Downstream servers should look up the stored ID token from the token store
+// when this returns true.
+func (u *UserInfo) IsOAuth() bool {
+	return u.TokenSource == TokenSourceOAuth || u.TokenSource == ""
 }

@@ -205,6 +205,10 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 		return nil, err
 	}
 
+	// Set token source to OAuth since this is the normal OAuth flow
+	// (the server issued the token and the provider's ID token is stored)
+	userInfo.TokenSource = providers.TokenSourceOAuth
+
 	// Store user info
 	if err := s.tokenStore.SaveUserInfo(ctx, userInfo.ID, userInfo); err != nil {
 		s.Logger.Warn("Failed to save user info", "error", err)

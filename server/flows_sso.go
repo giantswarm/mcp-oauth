@@ -131,6 +131,7 @@ func (s *Server) getJWKSClient() *oidc.JWKSClient {
 }
 
 // idTokenClaimsToUserInfo converts validated ID token claims to UserInfo.
+// Sets TokenSource to TokenSourceSSO since this is called for SSO-forwarded tokens.
 func (s *Server) idTokenClaimsToUserInfo(claims *oidc.IDTokenClaims) *providers.UserInfo {
 	return &providers.UserInfo{
 		ID:            claims.Subject,
@@ -142,6 +143,7 @@ func (s *Server) idTokenClaimsToUserInfo(claims *oidc.IDTokenClaims) *providers.
 		Picture:       claims.Picture,
 		Locale:        claims.Locale,
 		Groups:        claims.Groups,
+		TokenSource:   providers.TokenSourceSSO,
 	}
 }
 
