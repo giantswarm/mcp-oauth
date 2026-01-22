@@ -267,47 +267,85 @@ func (s *Store) countKeysByPattern(pattern string) int64 {
 	return count
 }
 
-// startStorageSpan starts a new span for a storage operation.
-// Returns a context with the span attached and the span itself.
-func (s *Store) startStorageSpan(ctx context.Context, operation string) (context.Context, trace.Span) {
-	s.instMu.RLock()
-	tracer := s.tracer
-	s.instMu.RUnlock()
-
-	if tracer == nil {
-		return ctx, trace.SpanFromContext(ctx)
-	}
-
-	return tracer.Start(ctx, "storage."+operation,
-		trace.WithAttributes(
-			attribute.String("operation", operation),
-			attribute.String("storage.backend", "valkey"),
-		))
+// tracedOp holds the context for a traced storage operation.
+// It encapsulates the span and timing information to avoid repetitive boilerplate.
+type tracedOp struct {
+	ctx       context.Context
+	span      trace.Span
+	operation string
+	startTime time.Time
+	store     *Store
 }
 
-// recordStorageOperation records metrics for a storage operation and sets span status.
-func (s *Store) recordStorageOperation(ctx context.Context, span trace.Span, operation string, err error, startTime time.Time) {
-	s.instMu.RLock()
-	inst := s.inst
-	s.instMu.RUnlock()
+// end completes the traced operation, recording metrics and setting span status.
+// Call this with defer: defer op.end(&err)
+func (t *tracedOp) end(errPtr *error) {
+	if t.span != nil {
+		t.span.End()
+	}
+
+	t.store.instMu.RLock()
+	inst := t.store.inst
+	t.store.instMu.RUnlock()
 
 	if inst == nil {
 		return
 	}
 
-	durationMs := float64(time.Since(startTime).Milliseconds())
+	durationMs := float64(time.Since(t.startTime).Milliseconds())
 	result := "success"
+	err := *errPtr
 	if err != nil {
 		result = "error"
-		if span != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
+		if t.span != nil {
+			t.span.RecordError(err)
+			t.span.SetStatus(codes.Error, err.Error())
 		}
-	} else if span != nil {
-		span.SetStatus(codes.Ok, "")
+	} else if t.span != nil {
+		t.span.SetStatus(codes.Ok, "")
 	}
 
-	inst.Metrics().RecordStorageOperation(ctx, operation, result, durationMs)
+	inst.Metrics().RecordStorageOperation(t.ctx, t.operation, result, durationMs)
+}
+
+// startTracedOp starts a traced storage operation with span and timing.
+// Returns a tracedOp that should be completed with defer op.end(&err).
+//
+// Usage:
+//
+//	func (s *Store) SomeOperation(ctx context.Context) (err error) {
+//	    op := s.startTracedOp(ctx, "some_operation")
+//	    defer op.end(&err)
+//	    // ... operation logic ...
+//	    return nil
+//	}
+func (s *Store) startTracedOp(ctx context.Context, operation string) *tracedOp {
+	s.instMu.RLock()
+	tracer := s.tracer
+	s.instMu.RUnlock()
+
+	op := &tracedOp{
+		ctx:       ctx,
+		operation: operation,
+		startTime: time.Now(),
+		store:     s,
+	}
+
+	if tracer == nil {
+		op.span = trace.SpanFromContext(ctx)
+		return op
+	}
+
+	ctx, span := tracer.Start(ctx, "storage."+operation,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("operation", operation),
+			attribute.String("storage.backend", "valkey"),
+		))
+	op.ctx = ctx
+	op.span = span
+
+	return op
 }
 
 // tokenTransformFuncs contains the functions used to transform token fields.

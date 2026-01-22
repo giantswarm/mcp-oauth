@@ -59,25 +59,15 @@ func (st serializableToken) toOAuth2Token() *oauth2.Token {
 }
 
 // SaveToken saves an oauth2.Token for a user with optional encryption at rest
-func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Token) error {
-	// Start span for tracing
-	ctx, span := s.startStorageSpan(ctx, "save_token")
-	defer span.End()
-
-	startTime := time.Now()
-	var err error
-
-	defer func() {
-		s.recordStorageOperation(ctx, span, "save_token", err, startTime)
-	}()
+func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Token) (err error) {
+	op := s.startTracedOp(ctx, "save_token")
+	defer op.end(&err)
 
 	if userID == "" {
-		err = fmt.Errorf("userID cannot be empty")
-		return err
+		return fmt.Errorf("userID cannot be empty")
 	}
 	if token == nil {
-		err = fmt.Errorf("token cannot be nil")
-		return err
+		return fmt.Errorf("token cannot be nil")
 	}
 
 	// Validate input lengths to prevent DoS
@@ -86,25 +76,22 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 	}
 
 	// Encrypt token if encryptor is configured
-	tokenToStore, encErr := s.encryptToken(token)
-	if encErr != nil {
-		err = fmt.Errorf("failed to encrypt token: %w", encErr)
-		return err
+	tokenToStore, err := s.encryptToken(token)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt token: %w", err)
 	}
 
 	// Convert to serializable struct that explicitly includes Extra fields
 	st := toSerializable(tokenToStore)
 
-	data, marshalErr := json.Marshal(st)
-	if marshalErr != nil {
-		err = fmt.Errorf("failed to marshal token: %w", marshalErr)
-		return err
+	data, err := json.Marshal(st)
+	if err != nil {
+		return fmt.Errorf("failed to marshal token: %w", err)
 	}
 
 	// Validate serialized size
 	if len(data) > MaxTokenDataSize {
-		err = errInputTooLarge
-		return err
+		return errInputTooLarge
 	}
 
 	key := s.tokenKey(userID)
@@ -114,17 +101,15 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 		ttl := calculateTTL(token.Expiry)
 		if ttl <= 0 {
 			// Token already expired, don't store
-			err = fmt.Errorf("token already expired")
-			return err
+			return fmt.Errorf("token already expired")
 		}
-		err = s.client.Do(ctx, s.client.B().Set().Key(key).Value(string(data)).Ex(ttl).Build()).Error()
+		err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Ex(ttl).Build()).Error()
 	} else {
-		err = s.client.Do(ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error()
+		err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error()
 	}
 
 	if err != nil {
-		err = fmt.Errorf("failed to save token: %w", err)
-		return err
+		return fmt.Errorf("failed to save token: %w", err)
 	}
 
 	enc := s.getEncryptor()
@@ -137,35 +122,24 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 }
 
 // GetToken retrieves an oauth2.Token for a user and decrypts if necessary
-func (s *Store) GetToken(ctx context.Context, userID string) (*oauth2.Token, error) {
-	// Start span for tracing
-	ctx, span := s.startStorageSpan(ctx, "get_token")
-	defer span.End()
-
-	startTime := time.Now()
-	var err error
-
-	defer func() {
-		s.recordStorageOperation(ctx, span, "get_token", err, startTime)
-	}()
+func (s *Store) GetToken(ctx context.Context, userID string) (result *oauth2.Token, err error) {
+	op := s.startTracedOp(ctx, "get_token")
+	defer op.end(&err)
 
 	key := s.tokenKey(userID)
 
-	data, getErr := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).ToString()
-	if getErr != nil {
-		if isNilError(getErr) {
-			err = storage.ErrTokenNotFound
-			return nil, err
+	data, err := s.client.Do(op.ctx, s.client.B().Get().Key(key).Build()).ToString()
+	if err != nil {
+		if isNilError(err) {
+			return nil, storage.ErrTokenNotFound
 		}
-		err = fmt.Errorf("failed to get token: %w", getErr)
-		return nil, err
+		return nil, fmt.Errorf("failed to get token: %w", err)
 	}
 
 	// Unmarshal into serializableToken to preserve Extra fields
 	var st serializableToken
-	if unmarshalErr := json.Unmarshal([]byte(data), &st); unmarshalErr != nil {
-		err = fmt.Errorf("failed to unmarshal token: %w", unmarshalErr)
-		return nil, err
+	if err = json.Unmarshal([]byte(data), &st); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal token: %w", err)
 	}
 
 	// Convert back to oauth2.Token (restores Extra fields like id_token)
@@ -173,38 +147,27 @@ func (s *Store) GetToken(ctx context.Context, userID string) (*oauth2.Token, err
 
 	// Check if expired (and no refresh token to recover)
 	if !token.Expiry.IsZero() && time.Now().After(token.Expiry) && token.RefreshToken == "" {
-		err = storage.ErrTokenExpired
-		return nil, err
+		return nil, storage.ErrTokenExpired
 	}
 
 	// Decrypt token if encryptor is configured
-	decrypted, decErr := s.decryptToken(token)
-	if decErr != nil {
-		err = fmt.Errorf("failed to decrypt token: %w", decErr)
-		return nil, err
+	decrypted, err := s.decryptToken(token)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt token: %w", err)
 	}
 
 	return decrypted, nil
 }
 
 // DeleteToken removes a token for a user
-func (s *Store) DeleteToken(ctx context.Context, userID string) error {
-	// Start span for tracing
-	ctx, span := s.startStorageSpan(ctx, "delete_token")
-	defer span.End()
-
-	startTime := time.Now()
-	var err error
-
-	defer func() {
-		s.recordStorageOperation(ctx, span, "delete_token", err, startTime)
-	}()
+func (s *Store) DeleteToken(ctx context.Context, userID string) (err error) {
+	op := s.startTracedOp(ctx, "delete_token")
+	defer op.end(&err)
 
 	key := s.tokenKey(userID)
 
-	if delErr := s.client.Do(ctx, s.client.B().Del().Key(key).Build()).Error(); delErr != nil {
-		err = fmt.Errorf("failed to delete token: %w", delErr)
-		return err
+	if err = s.client.Do(op.ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
+		return fmt.Errorf("failed to delete token: %w", err)
 	}
 
 	s.logger.Debug("Deleted token", "user_id", userID)
@@ -212,79 +175,59 @@ func (s *Store) DeleteToken(ctx context.Context, userID string) error {
 }
 
 // SaveUserInfo saves user information
-func (s *Store) SaveUserInfo(ctx context.Context, userID string, info *providers.UserInfo) error {
-	// Start span for tracing
-	ctx, span := s.startStorageSpan(ctx, "save_user_info")
-	defer span.End()
-
-	startTime := time.Now()
-	var err error
-
-	defer func() {
-		s.recordStorageOperation(ctx, span, "save_user_info", err, startTime)
-	}()
+func (s *Store) SaveUserInfo(ctx context.Context, userID string, info *providers.UserInfo) (err error) {
+	op := s.startTracedOp(ctx, "save_user_info")
+	defer op.end(&err)
 
 	if userID == "" {
-		err = fmt.Errorf("userID cannot be empty")
-		return err
+		return fmt.Errorf("userID cannot be empty")
 	}
 	if info == nil {
-		err = fmt.Errorf("userInfo cannot be nil")
-		return err
+		return fmt.Errorf("userInfo cannot be nil")
 	}
 
-	data, marshalErr := json.Marshal(toUserInfoJSON(info))
-	if marshalErr != nil {
-		err = fmt.Errorf("failed to marshal user info: %w", marshalErr)
-		return err
+	data, err := json.Marshal(toUserInfoJSON(info))
+	if err != nil {
+		return fmt.Errorf("failed to marshal user info: %w", err)
 	}
 
 	key := s.userInfoKey(userID)
 
-	if setErr := s.client.Do(ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error(); setErr != nil {
-		err = fmt.Errorf("failed to save user info: %w", setErr)
-		return err
+	if err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error(); err != nil {
+		return fmt.Errorf("failed to save user info: %w", err)
 	}
 
 	return nil
 }
 
 // GetUserInfo retrieves user information
-func (s *Store) GetUserInfo(ctx context.Context, userID string) (*providers.UserInfo, error) {
-	// Start span for tracing
-	ctx, span := s.startStorageSpan(ctx, "get_user_info")
-	defer span.End()
-
-	startTime := time.Now()
-	var err error
-
-	defer func() {
-		s.recordStorageOperation(ctx, span, "get_user_info", err, startTime)
-	}()
+func (s *Store) GetUserInfo(ctx context.Context, userID string) (result *providers.UserInfo, err error) {
+	op := s.startTracedOp(ctx, "get_user_info")
+	defer op.end(&err)
 
 	key := s.userInfoKey(userID)
 
-	data, getErr := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).ToString()
-	if getErr != nil {
-		if isNilError(getErr) {
-			err = fmt.Errorf("%w: %s", storage.ErrUserInfoNotFound, userID)
-			return nil, err
+	data, err := s.client.Do(op.ctx, s.client.B().Get().Key(key).Build()).ToString()
+	if err != nil {
+		if isNilError(err) {
+			return nil, fmt.Errorf("%w: %s", storage.ErrUserInfoNotFound, userID)
 		}
-		err = fmt.Errorf("failed to get user info: %w", getErr)
-		return nil, err
+		return nil, fmt.Errorf("failed to get user info: %w", err)
 	}
 
 	var j userInfoJSON
-	if unmarshalErr := json.Unmarshal([]byte(data), &j); unmarshalErr != nil {
-		err = fmt.Errorf("failed to unmarshal user info: %w", unmarshalErr)
-		return nil, err
+	if err = json.Unmarshal([]byte(data), &j); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal user info: %w", err)
 	}
 
 	return fromUserInfoJSON(&j), nil
 }
 
 // SaveRefreshToken saves a refresh token mapping to user ID with expiry
-func (s *Store) SaveRefreshToken(ctx context.Context, refreshToken, userID string, expiresAt time.Time) error {
+func (s *Store) SaveRefreshToken(ctx context.Context, refreshToken, userID string, expiresAt time.Time) (err error) {
+	op := s.startTracedOp(ctx, "save_refresh_token")
+	defer op.end(&err)
+
 	if refreshToken == "" {
 		return fmt.Errorf("refresh token cannot be empty")
 	}
@@ -293,10 +236,10 @@ func (s *Store) SaveRefreshToken(ctx context.Context, refreshToken, userID strin
 	}
 
 	// Validate input lengths to prevent DoS
-	if err := validateStringLength(refreshToken, MaxTokenLength, "refreshToken"); err != nil {
+	if err = validateStringLength(refreshToken, MaxTokenLength, "refreshToken"); err != nil {
 		return err
 	}
-	if err := validateStringLength(userID, MaxIDLength, "userID"); err != nil {
+	if err = validateStringLength(userID, MaxIDLength, "userID"); err != nil {
 		return err
 	}
 
@@ -308,7 +251,7 @@ func (s *Store) SaveRefreshToken(ctx context.Context, refreshToken, userID strin
 		return fmt.Errorf("refresh token already expired")
 	}
 
-	if err := s.client.Do(ctx, s.client.B().Set().Key(key).Value(userID).Ex(ttl).Build()).Error(); err != nil {
+	if err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(userID).Ex(ttl).Build()).Error(); err != nil {
 		return fmt.Errorf("failed to save refresh token: %w", err)
 	}
 
@@ -317,10 +260,13 @@ func (s *Store) SaveRefreshToken(ctx context.Context, refreshToken, userID strin
 }
 
 // GetRefreshTokenInfo retrieves the user ID for a refresh token
-func (s *Store) GetRefreshTokenInfo(ctx context.Context, refreshToken string) (string, error) {
+func (s *Store) GetRefreshTokenInfo(ctx context.Context, refreshToken string) (userID string, err error) {
+	op := s.startTracedOp(ctx, "get_refresh_token_info")
+	defer op.end(&err)
+
 	key := s.refreshTokenKey(refreshToken)
 
-	userID, err := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).ToString()
+	userID, err = s.client.Do(op.ctx, s.client.B().Get().Key(key).Build()).ToString()
 	if err != nil {
 		if isNilError(err) {
 			return "", storage.ErrTokenNotFound
@@ -333,10 +279,13 @@ func (s *Store) GetRefreshTokenInfo(ctx context.Context, refreshToken string) (s
 }
 
 // DeleteRefreshToken removes a refresh token
-func (s *Store) DeleteRefreshToken(ctx context.Context, refreshToken string) error {
+func (s *Store) DeleteRefreshToken(ctx context.Context, refreshToken string) (err error) {
+	op := s.startTracedOp(ctx, "delete_refresh_token")
+	defer op.end(&err)
+
 	key := s.refreshTokenKey(refreshToken)
 
-	if err := s.client.Do(ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
+	if err = s.client.Do(op.ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
 		return fmt.Errorf("failed to delete refresh token: %w", err)
 	}
 
@@ -350,14 +299,17 @@ func (s *Store) DeleteRefreshToken(ctx context.Context, refreshToken string) err
 //
 // SECURITY: This operation is atomic via Lua script - only ONE concurrent request can succeed.
 // SECURITY: Returns clientID for client binding validation per OAuth 2.1 Section 6.
-func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken string) (string, string, *oauth2.Token, error) {
+func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken string) (resUserID, resClientID string, resToken *oauth2.Token, err error) {
+	op := s.startTracedOp(ctx, "atomic_get_and_delete_refresh_token")
+	defer op.end(&err)
+
 	// Build key names for the Lua script
 	refreshKey := s.refreshTokenKey(refreshToken)
 	tokenKey := s.tokenKey(refreshToken)
 	metaKey := s.tokenMetaKey(refreshToken)
 
 	// Execute Lua script for atomic operation
-	result, err := s.client.Do(ctx,
+	result, err := s.client.Do(op.ctx,
 		s.client.B().Eval().Script(luaScriptAtomicGetAndDeleteRefresh).
 			Numkeys(3).
 			Key(refreshKey, tokenKey, metaKey).
@@ -384,7 +336,7 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken
 		ClientID string            `json:"client_id"`
 		Token    serializableToken `json:"token"`
 	}
-	if err := json.Unmarshal([]byte(result), &resultData); err != nil {
+	if err = json.Unmarshal([]byte(result), &resultData); err != nil {
 		return "", "", nil, fmt.Errorf("failed to parse atomic operation result: %w", err)
 	}
 

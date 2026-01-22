@@ -15,8 +15,11 @@ import (
 
 // SaveRefreshTokenWithFamily saves a refresh token with family tracking for reuse detection
 // This is the OAuth 2.1 compliant version that enables token theft detection
-func (s *Store) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, userID, clientID, familyID string, generation int, expiresAt time.Time) error {
-	if err := s.validateRefreshTokenParams(refreshToken, userID, clientID, familyID); err != nil {
+func (s *Store) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, userID, clientID, familyID string, generation int, expiresAt time.Time) (err error) {
+	op := s.startTracedOp(ctx, "save_refresh_token_with_family")
+	defer op.end(&err)
+
+	if err = s.validateRefreshTokenParams(refreshToken, userID, clientID, familyID); err != nil {
 		return err
 	}
 
@@ -25,21 +28,21 @@ func (s *Store) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, us
 		return fmt.Errorf("refresh token already expired")
 	}
 
-	if err := s.saveRefreshTokenBasic(ctx, refreshToken, userID, ttl); err != nil {
+	if err = s.saveRefreshTokenBasic(op.ctx, refreshToken, userID, ttl); err != nil {
 		return err
 	}
 
-	if err := s.saveFamilyMetadata(ctx, refreshToken, userID, clientID, familyID, generation, ttl); err != nil {
+	if err = s.saveFamilyMetadata(op.ctx, refreshToken, userID, clientID, familyID, generation, ttl); err != nil {
 		return err
 	}
 
-	s.addTokenToFamilySet(ctx, refreshToken, familyID, ttl)
+	s.addTokenToFamilySet(op.ctx, refreshToken, familyID, ttl)
 
-	if err := s.saveRefreshTokenMetadata(ctx, refreshToken, userID, clientID, ttl); err != nil {
+	if err = s.saveRefreshTokenMetadata(op.ctx, refreshToken, userID, clientID, ttl); err != nil {
 		return err
 	}
 
-	s.addTokenToUserClientSet(ctx, refreshToken, userID, clientID)
+	s.addTokenToUserClientSet(op.ctx, refreshToken, userID, clientID)
 
 	s.logger.Debug("Saved refresh token with family tracking",
 		"user_id", userID,
@@ -167,14 +170,20 @@ func (s *Store) addTokenToUserClientSet(ctx context.Context, refreshToken, userI
 }
 
 // GetRefreshTokenFamily retrieves family metadata for a refresh token
-func (s *Store) GetRefreshTokenFamily(ctx context.Context, refreshToken string) (*storage.RefreshTokenFamilyMetadata, error) {
-	return getAndUnmarshal(ctx, s, s.refreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
+func (s *Store) GetRefreshTokenFamily(ctx context.Context, refreshToken string) (result *storage.RefreshTokenFamilyMetadata, err error) {
+	op := s.startTracedOp(ctx, "get_refresh_token_family")
+	defer op.end(&err)
+
+	return getAndUnmarshal(op.ctx, s, s.refreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
 }
 
 // RevokeRefreshTokenFamily revokes all tokens in a family (for reuse detection)
 // This is called when token reuse is detected (OAuth 2.1 security requirement)
-func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) error {
-	tokens, err := s.getFamilyTokens(ctx, familyID)
+func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) (err error) {
+	op := s.startTracedOp(ctx, "revoke_refresh_token_family")
+	defer op.end(&err)
+
+	tokens, err := s.getFamilyTokens(op.ctx, familyID)
 	if err != nil {
 		return err
 	}
@@ -186,7 +195,7 @@ func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) e
 	revokedCount := 0
 
 	for _, token := range tokens {
-		s.revokeTokenInFamily(ctx, token, now)
+		s.revokeTokenInFamily(op.ctx, token, now)
 		revokedCount++
 	}
 
@@ -365,12 +374,15 @@ func (s *Store) GetTokenMetadata(tokenID string) (*storage.TokenMetadata, error)
 // RevokeAllTokensForUserClient revokes all tokens (access + refresh) for a specific user+client combination.
 // This implements the OAuth 2.1 requirement for authorization code reuse detection.
 // Returns the number of tokens revoked and any error encountered.
-func (s *Store) RevokeAllTokensForUserClient(ctx context.Context, userID, clientID string) (int, error) {
-	if err := s.validateRevocationParams(userID, clientID); err != nil {
+func (s *Store) RevokeAllTokensForUserClient(ctx context.Context, userID, clientID string) (count int, err error) {
+	op := s.startTracedOp(ctx, "revoke_all_tokens_for_user_client")
+	defer op.end(&err)
+
+	if err = s.validateRevocationParams(userID, clientID); err != nil {
 		return 0, err
 	}
 
-	tokenIDs, err := s.getTokensForUserClient(ctx, userID, clientID)
+	tokenIDs, err := s.getTokensForUserClient(op.ctx, userID, clientID)
 	if err != nil {
 		return 0, err
 	}
@@ -378,9 +390,9 @@ func (s *Store) RevokeAllTokensForUserClient(ctx context.Context, userID, client
 		return 0, nil
 	}
 
-	s.revokeFamiliesForTokens(ctx, tokenIDs)
-	revokedCount := s.revokeIndividualTokens(ctx, tokenIDs)
-	s.deleteUserClientSet(ctx, userID, clientID)
+	s.revokeFamiliesForTokens(op.ctx, tokenIDs)
+	revokedCount := s.revokeIndividualTokens(op.ctx, tokenIDs)
+	s.deleteUserClientSet(op.ctx, userID, clientID)
 
 	if revokedCount > 0 {
 		s.logger.Warn("Revoked all tokens for user+client",
@@ -482,14 +494,17 @@ func (s *Store) deleteUserClientSet(ctx context.Context, userID, clientID string
 
 // GetTokensByUserClient retrieves all token IDs for a user+client combination.
 // This is primarily for testing and debugging purposes.
-func (s *Store) GetTokensByUserClient(ctx context.Context, userID, clientID string) ([]string, error) {
+func (s *Store) GetTokensByUserClient(ctx context.Context, userID, clientID string) (tokens []string, err error) {
+	op := s.startTracedOp(ctx, "get_tokens_by_user_client")
+	defer op.end(&err)
+
 	if userID == "" || clientID == "" {
 		return nil, fmt.Errorf("userID and clientID cannot be empty")
 	}
 
 	userClientKey := s.userClientKey(userID, clientID)
 
-	tokens, err := s.client.Do(ctx, s.client.B().Smembers().Key(userClientKey).Build()).AsStrSlice()
+	tokens, err = s.client.Do(op.ctx, s.client.B().Smembers().Key(userClientKey).Build()).AsStrSlice()
 	if err != nil {
 		if isNilError(err) {
 			return []string{}, nil
