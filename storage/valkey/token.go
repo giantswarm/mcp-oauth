@@ -189,10 +189,22 @@ func (s *Store) GetToken(ctx context.Context, userID string) (*oauth2.Token, err
 
 // DeleteToken removes a token for a user
 func (s *Store) DeleteToken(ctx context.Context, userID string) error {
+	// Start span for tracing
+	ctx, span := s.startStorageSpan(ctx, "delete_token")
+	defer span.End()
+
+	startTime := time.Now()
+	var err error
+
+	defer func() {
+		s.recordStorageOperation(ctx, span, "delete_token", err, startTime)
+	}()
+
 	key := s.tokenKey(userID)
 
-	if err := s.client.Do(ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
-		return fmt.Errorf("failed to delete token: %w", err)
+	if delErr := s.client.Do(ctx, s.client.B().Del().Key(key).Build()).Error(); delErr != nil {
+		err = fmt.Errorf("failed to delete token: %w", delErr)
+		return err
 	}
 
 	s.logger.Debug("Deleted token", "user_id", userID)
@@ -201,22 +213,37 @@ func (s *Store) DeleteToken(ctx context.Context, userID string) error {
 
 // SaveUserInfo saves user information
 func (s *Store) SaveUserInfo(ctx context.Context, userID string, info *providers.UserInfo) error {
+	// Start span for tracing
+	ctx, span := s.startStorageSpan(ctx, "save_user_info")
+	defer span.End()
+
+	startTime := time.Now()
+	var err error
+
+	defer func() {
+		s.recordStorageOperation(ctx, span, "save_user_info", err, startTime)
+	}()
+
 	if userID == "" {
-		return fmt.Errorf("userID cannot be empty")
+		err = fmt.Errorf("userID cannot be empty")
+		return err
 	}
 	if info == nil {
-		return fmt.Errorf("userInfo cannot be nil")
+		err = fmt.Errorf("userInfo cannot be nil")
+		return err
 	}
 
-	data, err := json.Marshal(toUserInfoJSON(info))
-	if err != nil {
-		return fmt.Errorf("failed to marshal user info: %w", err)
+	data, marshalErr := json.Marshal(toUserInfoJSON(info))
+	if marshalErr != nil {
+		err = fmt.Errorf("failed to marshal user info: %w", marshalErr)
+		return err
 	}
 
 	key := s.userInfoKey(userID)
 
-	if err := s.client.Do(ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error(); err != nil {
-		return fmt.Errorf("failed to save user info: %w", err)
+	if setErr := s.client.Do(ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error(); setErr != nil {
+		err = fmt.Errorf("failed to save user info: %w", setErr)
+		return err
 	}
 
 	return nil
@@ -224,19 +251,33 @@ func (s *Store) SaveUserInfo(ctx context.Context, userID string, info *providers
 
 // GetUserInfo retrieves user information
 func (s *Store) GetUserInfo(ctx context.Context, userID string) (*providers.UserInfo, error) {
+	// Start span for tracing
+	ctx, span := s.startStorageSpan(ctx, "get_user_info")
+	defer span.End()
+
+	startTime := time.Now()
+	var err error
+
+	defer func() {
+		s.recordStorageOperation(ctx, span, "get_user_info", err, startTime)
+	}()
+
 	key := s.userInfoKey(userID)
 
-	data, err := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).ToString()
-	if err != nil {
-		if isNilError(err) {
-			return nil, fmt.Errorf("%w: %s", storage.ErrUserInfoNotFound, userID)
+	data, getErr := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).ToString()
+	if getErr != nil {
+		if isNilError(getErr) {
+			err = fmt.Errorf("%w: %s", storage.ErrUserInfoNotFound, userID)
+			return nil, err
 		}
-		return nil, fmt.Errorf("failed to get user info: %w", err)
+		err = fmt.Errorf("failed to get user info: %w", getErr)
+		return nil, err
 	}
 
 	var j userInfoJSON
-	if err := json.Unmarshal([]byte(data), &j); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal user info: %w", err)
+	if unmarshalErr := json.Unmarshal([]byte(data), &j); unmarshalErr != nil {
+		err = fmt.Errorf("failed to unmarshal user info: %w", unmarshalErr)
+		return nil, err
 	}
 
 	return fromUserInfoJSON(&j), nil

@@ -96,9 +96,11 @@ type Store struct {
 	encryptorMu sync.RWMutex
 
 	// Instrumentation for metrics and tracing
+	// Access must be synchronized via instMu
 	inst   *instrumentation.Instrumentation
 	tracer trace.Tracer
 	meter  metric.Meter
+	instMu sync.RWMutex
 }
 
 // Compile-time interface checks to ensure Store implements all storage interfaces
@@ -205,14 +207,17 @@ func (s *Store) getEncryptor() *security.Encryptor {
 
 // SetInstrumentation sets OpenTelemetry instrumentation for the store.
 // This enables tracing and metrics for storage operations.
+// This method should be called once during initialization before any storage operations.
 func (s *Store) SetInstrumentation(inst *instrumentation.Instrumentation) {
 	if inst == nil {
 		return
 	}
 
+	s.instMu.Lock()
 	s.inst = inst
 	s.tracer = inst.Tracer("storage")
 	s.meter = inst.Meter("storage")
+	s.instMu.Unlock()
 
 	// Register storage size callbacks for Prometheus gauges.
 	// These callbacks use SCAN operations to count keys, which is efficient
@@ -265,11 +270,15 @@ func (s *Store) countKeysByPattern(pattern string) int64 {
 // startStorageSpan starts a new span for a storage operation.
 // Returns a context with the span attached and the span itself.
 func (s *Store) startStorageSpan(ctx context.Context, operation string) (context.Context, trace.Span) {
-	if s.tracer == nil {
+	s.instMu.RLock()
+	tracer := s.tracer
+	s.instMu.RUnlock()
+
+	if tracer == nil {
 		return ctx, trace.SpanFromContext(ctx)
 	}
 
-	return s.tracer.Start(ctx, "storage."+operation,
+	return tracer.Start(ctx, "storage."+operation,
 		trace.WithAttributes(
 			attribute.String("operation", operation),
 			attribute.String("storage.backend", "valkey"),
@@ -278,7 +287,11 @@ func (s *Store) startStorageSpan(ctx context.Context, operation string) (context
 
 // recordStorageOperation records metrics for a storage operation and sets span status.
 func (s *Store) recordStorageOperation(ctx context.Context, span trace.Span, operation string, err error, startTime time.Time) {
-	if s.inst == nil {
+	s.instMu.RLock()
+	inst := s.inst
+	s.instMu.RUnlock()
+
+	if inst == nil {
 		return
 	}
 
@@ -294,7 +307,7 @@ func (s *Store) recordStorageOperation(ctx context.Context, span trace.Span, ope
 		span.SetStatus(codes.Ok, "")
 	}
 
-	s.inst.Metrics().RecordStorageOperation(ctx, operation, result, durationMs)
+	inst.Metrics().RecordStorageOperation(ctx, operation, result, durationMs)
 }
 
 // tokenTransformFuncs contains the functions used to transform token fields.

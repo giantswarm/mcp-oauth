@@ -15,11 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **New Methods**:
     - `Store.SetInstrumentation(inst)` - Sets OpenTelemetry instrumentation for the store
     - Storage size callbacks for Prometheus gauges using SCAN operations
-  - **Tracing**: Added tracing spans for key storage operations (`save_token`, `get_token`, `save_client`, `get_client`, `save_authorization_code`) with `storage.backend=valkey` attribute
+  - **Tracing**: Added tracing spans for all storage operations (`save_token`, `get_token`, `delete_token`, `save_client`, `get_client`, `save_user_info`, `get_user_info`, `save_authorization_code`) with `storage.backend=valkey` attribute
   - **Metrics**: Storage operations now record duration and success/error metrics via `RecordStorageOperation`
+  - **Thread Safety**: Instrumentation fields are protected by mutex for safe concurrent access
   - **Implementation Notes**:
     - Storage size counting uses SCAN operations which are efficient for periodic metrics scraping
     - Tracing spans include operation name and backend type for filtering in observability tools
+    - Both memory and Valkey storage backends now include `storage.backend` attribute in spans for consistent filtering
   - **Grafana Dashboard Support**: Fixes "No data" panels in mcp-kubernetes Grafana dashboards for storage metrics when using Valkey backend
 
 - **OIDC Prompt Parameter and Silent Authentication Support**
