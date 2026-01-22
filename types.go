@@ -154,6 +154,11 @@ type TokenResponse struct {
 
 	// Scope is the scope of the access token
 	Scope string `json:"scope,omitempty"`
+
+	// IDToken is the OIDC ID token from the upstream provider (optional).
+	// Per OpenID Connect Core 1.0 Section 3.1.3.3, this is REQUIRED for OIDC flows.
+	// This enables clients to use id_token_hint and login_hint for silent re-authentication.
+	IDToken string `json:"id_token,omitempty"`
 }
 
 // CallbackResult represents the result of an OAuth authorization callback.

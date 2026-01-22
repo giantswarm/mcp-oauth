@@ -606,6 +606,165 @@ func TestServer_ExchangeAuthorizationCode(t *testing.T) {
 	}
 }
 
+// TestServer_ExchangeAuthorizationCode_IDTokenForwarding verifies that the id_token
+// from the upstream provider is correctly forwarded in the token response.
+// Per OpenID Connect Core 1.0 Section 3.1.3.3, the id_token is REQUIRED for OIDC flows.
+func TestServer_ExchangeAuthorizationCode_IDTokenForwarding(t *testing.T) {
+	ctx := context.Background()
+	srv, store, _ := setupFlowTestServer(t)
+
+	// Register a test client
+	client, _, err := srv.RegisterClient(ctx,
+		"Test Client",
+		ClientTypeConfidential,
+		"",
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	validVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
+	hash := sha256.Sum256([]byte(validVerifier))
+	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	// Create a provider token with id_token (simulating upstream OIDC provider response)
+	testIDToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0LXVzZXItMTIzIiwiZW1haWwiOiJ0ZXN0QGV4YW1wbGUuY29tIiwiaXNzIjoiaHR0cHM6Ly9pZHAuZXhhbXBsZS5jb20ifQ.signature" //nolint:gosec // test value
+	providerToken := (&oauth2.Token{
+		AccessToken:  "provider-access-token",
+		RefreshToken: "provider-refresh-token",
+		Expiry:       time.Now().Add(1 * time.Hour),
+	}).WithExtra(map[string]interface{}{
+		"id_token": testIDToken,
+	})
+
+	// Create an authorization code with the provider token containing id_token
+	authCode := &storage.AuthorizationCode{
+		Code:                testutil.GenerateRandomString(32),
+		ClientID:            client.ClientID,
+		RedirectURI:         "https://example.com/callback",
+		Scope:               "openid email",
+		CodeChallenge:       validChallenge,
+		CodeChallengeMethod: PKCEMethodS256,
+		UserID:              "test-user-123",
+		ProviderToken:       providerToken,
+		CreatedAt:           time.Now(),
+		ExpiresAt:           time.Now().Add(10 * time.Minute),
+		Used:                false,
+	}
+
+	err = store.SaveAuthorizationCode(ctx, authCode)
+	if err != nil {
+		t.Fatalf("SaveAuthorizationCode() error = %v", err)
+	}
+
+	// Exchange the authorization code
+	token, _, err := srv.ExchangeAuthorizationCode(
+		ctx,
+		authCode.Code,
+		client.ClientID,
+		"https://example.com/callback",
+		"",
+		validVerifier,
+	)
+	if err != nil {
+		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
+	}
+
+	// Verify that the id_token is forwarded in the response
+	idToken := token.Extra("id_token")
+	if idToken == nil {
+		t.Fatal("id_token should be present in the response, got nil")
+	}
+
+	idTokenStr, ok := idToken.(string)
+	if !ok {
+		t.Fatalf("id_token should be a string, got %T", idToken)
+	}
+
+	if idTokenStr != testIDToken {
+		t.Errorf("id_token = %q, want %q", idTokenStr, testIDToken)
+	}
+}
+
+// TestServer_ExchangeAuthorizationCode_NoIDToken verifies that the token response
+// is valid when there is no id_token from the provider (non-OIDC flows).
+func TestServer_ExchangeAuthorizationCode_NoIDToken(t *testing.T) {
+	ctx := context.Background()
+	srv, store, _ := setupFlowTestServer(t)
+
+	// Register a test client
+	client, _, err := srv.RegisterClient(ctx,
+		"Test Client",
+		ClientTypeConfidential,
+		"",
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	validVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
+	hash := sha256.Sum256([]byte(validVerifier))
+	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	// Create a provider token WITHOUT id_token
+	providerToken := &oauth2.Token{
+		AccessToken:  "provider-access-token",
+		RefreshToken: "provider-refresh-token",
+		Expiry:       time.Now().Add(1 * time.Hour),
+	}
+
+	authCode := &storage.AuthorizationCode{
+		Code:                testutil.GenerateRandomString(32),
+		ClientID:            client.ClientID,
+		RedirectURI:         "https://example.com/callback",
+		Scope:               "openid email",
+		CodeChallenge:       validChallenge,
+		CodeChallengeMethod: PKCEMethodS256,
+		UserID:              "test-user-456",
+		ProviderToken:       providerToken,
+		CreatedAt:           time.Now(),
+		ExpiresAt:           time.Now().Add(10 * time.Minute),
+		Used:                false,
+	}
+
+	err = store.SaveAuthorizationCode(ctx, authCode)
+	if err != nil {
+		t.Fatalf("SaveAuthorizationCode() error = %v", err)
+	}
+
+	// Exchange the authorization code
+	token, _, err := srv.ExchangeAuthorizationCode(
+		ctx,
+		authCode.Code,
+		client.ClientID,
+		"https://example.com/callback",
+		"",
+		validVerifier,
+	)
+	if err != nil {
+		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
+	}
+
+	// Verify the response is valid (access_token should be present)
+	if token.AccessToken == "" {
+		t.Error("AccessToken should not be empty")
+	}
+
+	// Verify id_token is nil when not provided
+	idToken := token.Extra("id_token")
+	if idToken != nil {
+		t.Errorf("id_token should be nil when not provided, got %v", idToken)
+	}
+}
+
 // TestServer_ExchangeAuthorizationCode_PublicClient_PKCEEnforcement tests
 // that public clients MUST use PKCE (OAuth 2.1 requirement) while confidential
 // clients can optionally use PKCE for enhanced security.
@@ -5935,5 +6094,140 @@ func TestServer_RefreshAccessToken_ClientBinding_Integration(t *testing.T) {
 		}
 
 		t.Log("✓ Legacy token without binding correctly rejected (OAuth 2.1 compliance)")
+	})
+}
+
+// TestServer_RefreshAccessToken_IDTokenForwarding verifies that the id_token from
+// the provider's refresh response is correctly forwarded to the client.
+// Per OpenID Connect Core 1.0 Section 12.2, some providers return a new id_token on refresh.
+func TestServer_RefreshAccessToken_IDTokenForwarding(t *testing.T) {
+	t.Run("id_token from provider should be forwarded", func(t *testing.T) {
+		srv, store, provider := setupFlowTestServer(t)
+
+		testIDToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyLTQ1NiIsImVtYWlsIjoidGVzdEBleGFtcGxlLmNvbSIsImlzcyI6Imh0dHBzOi8vaWRwLmV4YW1wbGUuY29tIn0.signature" //nolint:gosec // test value
+
+		// Set up provider to return a token with id_token
+		provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
+			return (&oauth2.Token{
+				AccessToken:  "new-provider-access-token",
+				RefreshToken: "new-provider-refresh-token",
+				Expiry:       time.Now().Add(time.Hour),
+			}).WithExtra(map[string]interface{}{
+				"id_token": testIDToken,
+			}), nil
+		}
+
+		clientID := "test-client-123"
+		userID := "user-456"
+		refreshToken := "refresh-token-with-id-token-test"
+
+		// Save the refresh token with proper metadata
+		err := store.SaveRefreshTokenWithFamily(
+			context.Background(),
+			refreshToken,
+			userID,
+			clientID,
+			"family-123",
+			0,
+			time.Now().Add(time.Hour),
+		)
+		if err != nil {
+			t.Fatalf("Failed to save refresh token: %v", err)
+		}
+
+		// Save initial provider token
+		providerToken := &oauth2.Token{
+			AccessToken:  "provider-access-token",
+			RefreshToken: "provider-refresh-token",
+			Expiry:       time.Now().Add(time.Hour),
+		}
+		err = store.SaveToken(context.Background(), refreshToken, providerToken)
+		if err != nil {
+			t.Fatalf("Failed to save provider token: %v", err)
+		}
+
+		// Refresh the token
+		newToken, err := srv.RefreshAccessToken(context.Background(), refreshToken, clientID)
+		if err != nil {
+			t.Fatalf("Expected refresh to succeed, got error: %v", err)
+		}
+
+		// Verify id_token is forwarded in the response
+		idToken := newToken.Extra("id_token")
+		if idToken == nil {
+			t.Fatal("id_token should be present in the response, got nil")
+		}
+
+		idTokenStr, ok := idToken.(string)
+		if !ok {
+			t.Fatalf("id_token should be a string, got %T", idToken)
+		}
+
+		if idTokenStr != testIDToken {
+			t.Errorf("id_token = %q, want %q", idTokenStr, testIDToken)
+		}
+
+		t.Log("✓ id_token correctly forwarded during refresh")
+	})
+
+	t.Run("response should be valid when provider returns no id_token", func(t *testing.T) {
+		srv, store, provider := setupFlowTestServer(t)
+
+		// Set up provider to return a token WITHOUT id_token
+		provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
+			return &oauth2.Token{
+				AccessToken:  "new-provider-access-token",
+				RefreshToken: "new-provider-refresh-token",
+				Expiry:       time.Now().Add(time.Hour),
+			}, nil
+		}
+
+		clientID := "test-client-456"
+		userID := "user-789"
+		refreshToken := "refresh-token-no-id-token-test"
+
+		// Save the refresh token with proper metadata
+		err := store.SaveRefreshTokenWithFamily(
+			context.Background(),
+			refreshToken,
+			userID,
+			clientID,
+			"family-456",
+			0,
+			time.Now().Add(time.Hour),
+		)
+		if err != nil {
+			t.Fatalf("Failed to save refresh token: %v", err)
+		}
+
+		// Save initial provider token
+		providerToken := &oauth2.Token{
+			AccessToken:  "provider-access-token",
+			RefreshToken: "provider-refresh-token",
+			Expiry:       time.Now().Add(time.Hour),
+		}
+		err = store.SaveToken(context.Background(), refreshToken, providerToken)
+		if err != nil {
+			t.Fatalf("Failed to save provider token: %v", err)
+		}
+
+		// Refresh the token
+		newToken, err := srv.RefreshAccessToken(context.Background(), refreshToken, clientID)
+		if err != nil {
+			t.Fatalf("Expected refresh to succeed, got error: %v", err)
+		}
+
+		// Verify response is valid
+		if newToken.AccessToken == "" {
+			t.Error("Expected non-empty access token")
+		}
+
+		// Verify id_token is nil when not provided
+		idToken := newToken.Extra("id_token")
+		if idToken != nil {
+			t.Errorf("id_token should be nil when not provided, got %v", idToken)
+		}
+
+		t.Log("✓ Response valid when provider returns no id_token")
 	})
 }
