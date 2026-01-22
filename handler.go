@@ -1915,10 +1915,8 @@ func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *oauth2.Token,
 	// Per OpenID Connect Core 1.0 Section 3.1.3.3, the id_token is REQUIRED
 	// in token responses for OIDC flows. This enables clients to use
 	// id_token_hint and login_hint for silent re-authentication.
-	if idToken := token.Extra("id_token"); idToken != nil {
-		if idTokenStr, ok := idToken.(string); ok && idTokenStr != "" {
-			response["id_token"] = idTokenStr
-		}
+	if idToken := server.ExtractIDToken(token); idToken != "" {
+		response["id_token"] = idToken
 	}
 
 	w.Header().Set("Content-Type", "application/json")

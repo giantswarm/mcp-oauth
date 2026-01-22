@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/oauth2"
 	"golang.org/x/sync/singleflight"
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
@@ -398,6 +399,22 @@ func generatePKCEPair() (challenge, verifier string) {
 	hash := sha256.Sum256([]byte(verifier))
 	challenge = base64.RawURLEncoding.EncodeToString(hash[:])
 	return challenge, verifier
+}
+
+// ExtractIDToken extracts the id_token string from an oauth2.Token's Extra field.
+// Returns empty string if the token is nil, id_token is not present, or not a valid string.
+// Per OpenID Connect Core 1.0 Section 3.1.3.3, the id_token is REQUIRED in token
+// responses for OIDC flows, enabling silent re-authentication with id_token_hint.
+func ExtractIDToken(token *oauth2.Token) string {
+	if token == nil {
+		return ""
+	}
+	if idToken := token.Extra("id_token"); idToken != nil {
+		if idTokenStr, ok := idToken.(string); ok {
+			return idTokenStr
+		}
+	}
+	return ""
 }
 
 // metadataCacheCleanupLoop runs in a background goroutine to periodically clean

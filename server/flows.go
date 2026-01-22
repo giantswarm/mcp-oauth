@@ -1086,14 +1086,10 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 	// OIDC Compliance: Forward id_token from upstream provider to client
 	// Per OpenID Connect Core 1.0 Section 3.1.3.3, the id_token is REQUIRED in token responses
 	// for OIDC flows. This enables silent re-authentication with id_token_hint and login_hint.
-	if authCode.ProviderToken != nil {
-		if idToken := authCode.ProviderToken.Extra("id_token"); idToken != nil {
-			if idTokenStr, ok := idToken.(string); ok && idTokenStr != "" {
-				tokenResponse = tokenResponse.WithExtra(map[string]interface{}{
-					"id_token": idTokenStr,
-				})
-			}
-		}
+	if idToken := ExtractIDToken(authCode.ProviderToken); idToken != "" {
+		tokenResponse = tokenResponse.WithExtra(map[string]interface{}{
+			"id_token": idToken,
+		})
 	}
 
 	// Store token mappings
@@ -1187,12 +1183,10 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	// OIDC Compliance: Forward id_token from refreshed provider token to client
 	// Per OpenID Connect Core 1.0 Section 12.2, some providers return a new id_token
 	// on refresh. When present, forward it to enable silent re-authentication flows.
-	if idToken := newProviderToken.Extra("id_token"); idToken != nil {
-		if idTokenStr, ok := idToken.(string); ok && idTokenStr != "" {
-			tokenResponse = tokenResponse.WithExtra(map[string]interface{}{
-				"id_token": idTokenStr,
-			})
-		}
+	if idToken := ExtractIDToken(newProviderToken); idToken != "" {
+		tokenResponse = tokenResponse.WithExtra(map[string]interface{}{
+			"id_token": idToken,
+		})
 	}
 
 	// Store new access token -> provider token mapping
