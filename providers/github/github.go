@@ -236,16 +236,7 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	}
 
 	// SECURITY: Create a deep copy of scopes to prevent potential race conditions
-	var scopesToUse []string
-	if len(scopes) > 0 {
-		// Use requested scopes (create deep copy)
-		scopesToUse = make([]string, len(scopes))
-		copy(scopesToUse, scopes)
-	} else {
-		// Use provider's default scopes (create deep copy)
-		scopesToUse = make([]string, len(p.Scopes))
-		copy(scopesToUse, p.Scopes)
-	}
+	scopesToUse := providers.CopyScopes(scopes, p.Scopes)
 
 	// Create a config with the determined scopes
 	config := *p.Config

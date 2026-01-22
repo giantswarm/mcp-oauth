@@ -200,7 +200,8 @@ func (r *CallbackResult) IsError() bool {
 //
 // Example usage:
 //
-//	result := ParseCallbackURL(r.URL)
+//	q := r.URL.Query()
+//	result := ParseCallbackQuery(q.Get("code"), q.Get("state"), q.Get("error"), q.Get("error_description"), q.Get("error_uri"))
 //	if err := result.Err(); err != nil {
 //	    if IsSilentAuthError(err) {
 //	        // Fall back to interactive login

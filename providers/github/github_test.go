@@ -426,6 +426,109 @@ func TestProvider_AuthorizationURL_DeepCopySafety(t *testing.T) {
 	}
 }
 
+// TestProvider_AuthorizationURL_Options tests that AuthorizationURLOptions are correctly
+// applied to the authorization URL. GitHub uses "login" instead of "login_hint" per
+// GitHub OAuth documentation.
+func TestProvider_AuthorizationURL_Options(t *testing.T) {
+	provider, err := NewProvider(&Config{
+		ClientID:     testClientID,
+		ClientSecret: testClientSecret,
+		RedirectURL:  testCallbackURL,
+		Scopes:       []string{"user:email"},
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+
+	tests := []struct {
+		name           string
+		opts           *providers.AuthorizationURLOptions
+		wantContains   []string
+		wantNotContain []string
+	}{
+		{
+			name: "nil options - uses defaults",
+			opts: nil,
+			wantNotContain: []string{
+				"login=",
+				"prompt=",
+			},
+		},
+		{
+			name: "login_hint maps to login parameter",
+			opts: &providers.AuthorizationURLOptions{
+				LoginHint: "testuser",
+			},
+			wantContains: []string{
+				"login=testuser",
+			},
+			wantNotContain: []string{
+				"login_hint=", // GitHub uses "login", not "login_hint"
+			},
+		},
+		{
+			name: "login_hint with email",
+			opts: &providers.AuthorizationURLOptions{
+				LoginHint: "user@example.com",
+			},
+			wantContains: []string{
+				"login=user%40example.com",
+			},
+		},
+		{
+			name: "extra parameters are passed through",
+			opts: &providers.AuthorizationURLOptions{
+				Extra: map[string]string{
+					"allow_signup": "false",
+				},
+			},
+			wantContains: []string{
+				"allow_signup=false",
+			},
+		},
+		{
+			name: "combination - login_hint with extra params",
+			opts: &providers.AuthorizationURLOptions{
+				LoginHint: "testuser",
+				Extra: map[string]string{
+					"allow_signup": "false",
+				},
+			},
+			wantContains: []string{
+				"login=testuser",
+				"allow_signup=false",
+			},
+		},
+		{
+			name: "prompt is ignored (GitHub doesn't support OIDC prompt)",
+			opts: &providers.AuthorizationURLOptions{
+				Prompt: "none",
+			},
+			wantNotContain: []string{
+				"prompt=", // GitHub doesn't support OIDC prompt parameter
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authURL := provider.AuthorizationURL("test-state", "test-challenge", "S256", nil, tt.opts)
+
+			for _, want := range tt.wantContains {
+				if !strings.Contains(authURL, want) {
+					t.Errorf("AuthorizationURL() missing %q in URL: %s", want, authURL)
+				}
+			}
+
+			for _, notWant := range tt.wantNotContain {
+				if strings.Contains(authURL, notWant) {
+					t.Errorf("AuthorizationURL() should not contain %q in URL: %s", notWant, authURL)
+				}
+			}
+		})
+	}
+}
+
 func TestProvider_ExchangeCode(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != testTokenEndpoint {
