@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -1754,8 +1755,8 @@ const maxClientNameLength = 256
 //   - Must not exceed 256 characters
 //   - Must contain only printable characters (no control characters)
 func validateClientName(name string) error {
-	// Check length limit
-	if len(name) > maxClientNameLength {
+	// Check length limit (count Unicode code points, not bytes)
+	if utf8.RuneCountInString(name) > maxClientNameLength {
 		return fmt.Errorf("client_name must be %d characters or less", maxClientNameLength)
 	}
 

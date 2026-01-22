@@ -2541,7 +2541,7 @@ func TestValidateClientName(t *testing.T) {
 		},
 		{
 			name:       "valid unicode name",
-			clientName: "Application",
+			clientName: "アプリケーション", // Japanese: "Application"
 			wantErr:    false,
 		},
 		{
@@ -2557,6 +2557,11 @@ func TestValidateClientName(t *testing.T) {
 		{
 			name:       "max length name",
 			clientName: strings.Repeat("a", 256),
+			wantErr:    false,
+		},
+		{
+			name:       "max length name with multibyte chars",
+			clientName: strings.Repeat("日", 256), // 256 runes, but 768 bytes
 			wantErr:    false,
 		},
 		{
@@ -2592,6 +2597,12 @@ func TestValidateClientName(t *testing.T) {
 		{
 			name:       "rejects name exceeding max length",
 			clientName: strings.Repeat("a", 257),
+			wantErr:    true,
+			errContain: "256 characters or less",
+		},
+		{
+			name:       "rejects multibyte name exceeding max length",
+			clientName: strings.Repeat("日", 257), // 257 runes, 771 bytes
 			wantErr:    true,
 			errContain: "256 characters or less",
 		},
