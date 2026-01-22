@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Provider Token Not Saved for SSO Token Forwarding (#193)**
+  - **Bug**: Provider tokens (from upstream IdP like Dex) were not being saved in Valkey storage, breaking SSO token forwarding. User info was saved but tokens were missing.
+  - **Root Cause**: The `SaveToken` function uses the access token's expiry as the storage TTL. When the provider's access token has a short lifetime (5-15 minutes) or is already expired, `SaveToken` would fail with "token already expired" or the token would be evicted quickly by Valkey.
+  - **Fix**: Added `ProviderTokenTTL` configuration (default: 24 hours) and extended provider token expiry before saving for user lookup. This ensures tokens remain available for SSO forwarding regardless of access token lifetime.
+  - **New Configuration**: `Config.ProviderTokenTTL` - controls how long provider tokens are stored (default: 86400 seconds = 24 hours)
+  - **Affected Components**: `server/flows.go` - new `extendTokenExpiryForStorage()` function in `saveUserInfoAndToken()`
+  - **Testing**: Added `TestServer_HandleProviderCallback_ShortLivedToken` and `TestServer_ExtendTokenExpiryForStorage` tests
+
 ### Added
 
 - **Valkey Storage Instrumentation Support (#191)**

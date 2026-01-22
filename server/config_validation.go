@@ -69,6 +69,9 @@ func applyTimeDefaults(config *Config) {
 	if config.TokenRefreshThreshold == 0 {
 		config.TokenRefreshThreshold = 300 // 5 minutes
 	}
+	if config.ProviderTokenTTL == 0 {
+		config.ProviderTokenTTL = 86400 // 24 hours - for SSO token forwarding
+	}
 
 	applyProviderRevocationDefaults(config)
 	applyRateLimitDefaults(config)

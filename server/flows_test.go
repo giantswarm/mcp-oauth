@@ -415,6 +415,277 @@ func TestServer_HandleProviderCallback_EmailLookup(t *testing.T) {
 	}
 }
 
+// TestServer_HandleProviderCallback_ShortLivedToken tests that provider tokens with
+// short expiry times (or already expired) are still saved with extended TTL.
+// This is critical for SSO token forwarding where the id_token must remain available
+// for the user's session duration, even if the access token expires quickly.
+//
+// See: https://github.com/giantswarm/mcp-oauth/issues/193
+func TestServer_HandleProviderCallback_ShortLivedToken(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	t.Cleanup(func() { store.Stop() })
+
+	provider := mock.NewProvider()
+
+	// Configure provider to return an ALREADY EXPIRED access token
+	// This simulates Dex returning tokens with very short lifetimes
+	expiredExpiry := time.Now().Add(-5 * time.Minute) // Already expired 5 minutes ago
+	testEmail := "shortlived@example.com"
+	testUserID := "short-lived-user-id"
+
+	provider.ExchangeCodeFunc = func(_ context.Context, _, _ string) (*oauth2.Token, error) {
+		token := &oauth2.Token{
+			AccessToken:  "short-lived-access-token",
+			RefreshToken: "valid-refresh-token",
+			Expiry:       expiredExpiry, // Already expired!
+		}
+		// Include id_token in extras
+		return token.WithExtra(map[string]interface{}{
+			"id_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test.signature",
+		}), nil
+	}
+
+	provider.ValidateTokenFunc = func(_ context.Context, _ string) (*providers.UserInfo, error) {
+		return &providers.UserInfo{
+			ID:            testUserID,
+			Email:         testEmail,
+			EmailVerified: true,
+			Name:          "Short Lived User",
+		}, nil
+	}
+
+	// Create server with custom ProviderTokenTTL
+	config := &Config{
+		Issuer:               "https://auth.example.com",
+		SupportedScopes:      []string{"openid", "email", "profile"},
+		AuthorizationCodeTTL: 600,
+		AccessTokenTTL:       3600,
+		ProviderTokenTTL:     3600, // 1 hour - should extend the expired token
+		RequirePKCE:          true,
+		AllowPKCEPlain:       false,
+	}
+
+	srv, err := New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+
+	// Register a test client
+	client, _, err := srv.RegisterClient(ctx,
+		"Test Client",
+		ClientTypeConfidential,
+		"",
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	validVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
+	hash := sha256.Sum256([]byte(validVerifier))
+	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+	clientState := testutil.GenerateRandomString(43)
+
+	// Start authorization flow
+	_, err = srv.StartAuthorizationFlow(ctx,
+		client.ClientID,
+		"https://example.com/callback",
+		"openid email",
+		"",
+		validChallenge,
+		PKCEMethodS256,
+		clientState,
+	)
+	if err != nil {
+		t.Fatalf("StartAuthorizationFlow() error = %v", err)
+	}
+
+	// Get the provider state
+	authState, err := store.GetAuthorizationState(ctx, clientState)
+	if err != nil {
+		t.Fatalf("GetAuthorizationState() error = %v", err)
+	}
+	providerState := authState.ProviderState
+
+	// Complete the provider callback - this should save the token with extended expiry
+	_, _, err = srv.HandleProviderCallback(ctx, providerState, "provider-auth-code")
+	if err != nil {
+		t.Fatalf("HandleProviderCallback() error = %v", err)
+	}
+
+	// TEST: Verify token can be retrieved by email (despite original being expired)
+	tokenByEmail, err := store.GetToken(ctx, testEmail)
+	if err != nil {
+		t.Errorf("GetToken by email failed: %v - token should be saved with extended expiry", err)
+	}
+	if tokenByEmail == nil {
+		t.Fatal("Token not found by email - fix for issue #193 not working")
+	}
+
+	// Verify the token has extended expiry (should be in the future)
+	if tokenByEmail.Expiry.Before(time.Now()) {
+		t.Errorf("Token expiry should be in the future after extension, got %v", tokenByEmail.Expiry)
+	}
+
+	// Verify the refresh token is preserved
+	if tokenByEmail.RefreshToken != "valid-refresh-token" {
+		t.Errorf("RefreshToken not preserved, got %q", tokenByEmail.RefreshToken)
+	}
+
+	// Verify id_token is preserved in extras
+	idToken := tokenByEmail.Extra("id_token")
+	if idToken == nil {
+		t.Error("id_token should be preserved in token extras for SSO forwarding")
+	}
+
+	// TEST: Verify token can also be retrieved by ID
+	tokenByID, err := store.GetToken(ctx, testUserID)
+	if err != nil {
+		t.Errorf("GetToken by ID failed: %v", err)
+	}
+	if tokenByID == nil {
+		t.Error("Token not found by ID")
+	}
+
+	t.Logf("SUCCESS: Short-lived token saved with extended expiry. Original: %v, Extended: %v",
+		expiredExpiry, tokenByEmail.Expiry)
+}
+
+// TestServer_ExtendTokenExpiryForStorage tests the extendTokenExpiryForStorage helper function.
+func TestServer_ExtendTokenExpiryForStorage(t *testing.T) {
+	store := memory.New()
+	t.Cleanup(func() { store.Stop() })
+
+	provider := mock.NewProvider()
+
+	config := &Config{
+		Issuer:           "https://auth.example.com",
+		ProviderTokenTTL: 3600, // 1 hour
+	}
+
+	srv, err := New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+
+	tests := []struct {
+		name           string
+		inputToken     *oauth2.Token
+		expectExtended bool
+		description    string
+	}{
+		{
+			name:           "nil token",
+			inputToken:     nil,
+			expectExtended: false,
+			description:    "nil token should return nil",
+		},
+		{
+			name: "already expired token",
+			inputToken: &oauth2.Token{
+				AccessToken:  "expired-token",
+				RefreshToken: "refresh",
+				Expiry:       time.Now().Add(-1 * time.Hour),
+			},
+			expectExtended: true,
+			description:    "expired token should be extended",
+		},
+		{
+			name: "short-lived token",
+			inputToken: &oauth2.Token{
+				AccessToken:  "short-token",
+				RefreshToken: "refresh",
+				Expiry:       time.Now().Add(5 * time.Minute),
+			},
+			expectExtended: true,
+			description:    "token expiring soon should be extended",
+		},
+		{
+			name: "long-lived token",
+			inputToken: &oauth2.Token{
+				AccessToken:  "long-token",
+				RefreshToken: "refresh",
+				Expiry:       time.Now().Add(24 * time.Hour),
+			},
+			expectExtended: false,
+			description:    "token with longer expiry than ProviderTokenTTL should not be changed",
+		},
+		{
+			name: "zero expiry token",
+			inputToken: &oauth2.Token{
+				AccessToken:  "no-expiry-token",
+				RefreshToken: "refresh",
+				// Expiry is zero
+			},
+			expectExtended: true,
+			description:    "token with zero expiry should be extended",
+		},
+		{
+			name: "token with id_token extra",
+			inputToken: func() *oauth2.Token {
+				t := &oauth2.Token{
+					AccessToken:  "token-with-extra",
+					RefreshToken: "refresh",
+					Expiry:       time.Now().Add(-1 * time.Minute),
+				}
+				return t.WithExtra(map[string]interface{}{
+					"id_token": "test-id-token",
+					"scope":    "openid email",
+				})
+			}(),
+			expectExtended: true,
+			description:    "token with extras should preserve id_token",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := srv.extendTokenExpiryForStorage(tt.inputToken)
+
+			if tt.inputToken == nil {
+				if result != nil {
+					t.Errorf("expected nil result for nil input")
+				}
+				return
+			}
+
+			if result == nil {
+				t.Fatalf("unexpected nil result")
+			}
+
+			// Verify access token and refresh token are preserved
+			if result.AccessToken != tt.inputToken.AccessToken {
+				t.Errorf("AccessToken not preserved: got %q, want %q", result.AccessToken, tt.inputToken.AccessToken)
+			}
+			if result.RefreshToken != tt.inputToken.RefreshToken {
+				t.Errorf("RefreshToken not preserved: got %q, want %q", result.RefreshToken, tt.inputToken.RefreshToken)
+			}
+
+			// Check expiry extension
+			expectedMinExpiry := time.Now().Add(time.Duration(config.ProviderTokenTTL-10) * time.Second) // Allow 10s tolerance
+			if tt.expectExtended {
+				if result.Expiry.Before(expectedMinExpiry) {
+					t.Errorf("Expected extended expiry > %v, got %v", expectedMinExpiry, result.Expiry)
+				}
+			}
+
+			// Check id_token preservation if present in input
+			if idToken := tt.inputToken.Extra("id_token"); idToken != nil {
+				resultIDToken := result.Extra("id_token")
+				if resultIDToken == nil {
+					t.Error("id_token should be preserved in result")
+				} else if resultIDToken != idToken {
+					t.Errorf("id_token not preserved: got %v, want %v", resultIDToken, idToken)
+				}
+			}
+		})
+	}
+}
+
 func TestServer_ExchangeAuthorizationCode(t *testing.T) {
 	ctx := context.Background()
 	srv, store, _ := setupFlowTestServer(t)

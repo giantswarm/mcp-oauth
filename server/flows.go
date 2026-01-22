@@ -901,13 +901,22 @@ func (s *Server) exchangeCodeWithProvider(ctx context.Context, code, providerVer
 // Tokens are always saved by both ID and email (when email is available) to ensure
 // downstream consumers can reliably retrieve tokens by email, regardless of whether
 // the OIDC provider's subject claim differs from the email (e.g., Dex uses base64-encoded subjects).
+//
+// IMPORTANT: Provider tokens are saved with an extended expiry (ProviderTokenTTL) to ensure
+// they remain available for SSO token forwarding, even if the original access token has
+// a short lifetime. The original token data (including refresh_token) is preserved.
 func (s *Server) saveUserInfoAndToken(ctx context.Context, userInfo *providers.UserInfo, providerToken *oauth2.Token) {
+	// Create a copy of the token with extended expiry for storage purposes
+	// This ensures the token remains available for SSO token forwarding even if
+	// the provider's access token has a short lifetime (e.g., 5 minutes from Dex)
+	tokenForStorage := s.extendTokenExpiryForStorage(providerToken)
+
 	// Save by ID (required - ID should always be present from provider's subject claim)
 	if userInfo.ID != "" {
 		if err := s.tokenStore.SaveUserInfo(ctx, userInfo.ID, userInfo); err != nil {
 			s.Logger.Warn("Failed to save user info", "error", err)
 		}
-		if err := s.tokenStore.SaveToken(ctx, userInfo.ID, providerToken); err != nil {
+		if err := s.tokenStore.SaveToken(ctx, userInfo.ID, tokenForStorage); err != nil {
 			s.Logger.Warn("Failed to save provider token", "error", err)
 		}
 	} else {
@@ -920,10 +929,66 @@ func (s *Server) saveUserInfoAndToken(ctx context.Context, userInfo *providers.U
 		if err := s.tokenStore.SaveUserInfo(ctx, userInfo.Email, userInfo); err != nil {
 			s.Logger.Warn("Failed to save user info by email", "error", err)
 		}
-		if err := s.tokenStore.SaveToken(ctx, userInfo.Email, providerToken); err != nil {
+		if err := s.tokenStore.SaveToken(ctx, userInfo.Email, tokenForStorage); err != nil {
 			s.Logger.Warn("Failed to save provider token by email", "error", err)
 		}
 	}
+}
+
+// extendTokenExpiryForStorage creates a copy of the token with an extended expiry
+// based on ProviderTokenTTL configuration. This ensures provider tokens remain
+// available for SSO token forwarding regardless of the original access token's lifetime.
+//
+// The function preserves all original token data (access_token, refresh_token, id_token in Extra)
+// but extends the Expiry field to ensure the storage backend (Valkey) keeps the token
+// for the configured ProviderTokenTTL duration.
+//
+// Rationale:
+//   - Provider access tokens may have short lifetimes (5-15 minutes)
+//   - SSO token forwarding needs the id_token for longer (user session duration)
+//   - If refresh_token is present, the token can be refreshed when access_token expires
+//   - Storage TTL should be independent of access_token expiry
+func (s *Server) extendTokenExpiryForStorage(token *oauth2.Token) *oauth2.Token {
+	if token == nil {
+		return nil
+	}
+
+	// Calculate the extended expiry based on ProviderTokenTTL
+	extendedExpiry := time.Now().Add(time.Duration(s.Config.ProviderTokenTTL) * time.Second)
+
+	// If the token already has a longer expiry, keep it
+	if !token.Expiry.IsZero() && token.Expiry.After(extendedExpiry) {
+		return token
+	}
+
+	// Create a new token with extended expiry, preserving all other fields
+	// Note: We can't modify the original token as it may be used elsewhere
+	extendedToken := &oauth2.Token{
+		AccessToken:  token.AccessToken,
+		TokenType:    token.TokenType,
+		RefreshToken: token.RefreshToken,
+		Expiry:       extendedExpiry,
+	}
+
+	// Preserve Extra fields (id_token, scope, etc.) using WithExtra
+	// This is necessary because oauth2.Token stores extras in a private field
+	if extra := token.Extra("id_token"); extra != nil {
+		extraMap := make(map[string]interface{})
+		extraMap["id_token"] = extra
+		// Also preserve scope if present
+		if scope := token.Extra("scope"); scope != nil {
+			extraMap["scope"] = scope
+		}
+		extendedToken = extendedToken.WithExtra(extraMap)
+	}
+
+	s.Logger.Debug("Extended provider token expiry for storage",
+		"original_expiry", token.Expiry,
+		"extended_expiry", extendedExpiry,
+		"has_refresh_token", token.RefreshToken != "",
+		"provider_token_ttl_seconds", s.Config.ProviderTokenTTL)
+
+	return extendedToken
 }
 
 // createAndSaveAuthorizationCode creates and saves an authorization code.
