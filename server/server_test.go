@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/oauth2"
+
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
@@ -437,6 +439,83 @@ func TestGenerateRandomToken_Entropy(t *testing.T) {
 func BenchmarkGenerateRandomToken(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_ = generateRandomToken()
+	}
+}
+
+// TestExtractIDToken verifies the helper function correctly extracts id_token from oauth2.Token.
+// Per OpenID Connect Core 1.0 Section 3.1.3.3, the id_token enables silent re-authentication.
+func TestExtractIDToken(t *testing.T) {
+	tests := []struct {
+		name     string
+		token    *oauth2.Token
+		expected string
+	}{
+		{
+			name:     "nil token returns empty string",
+			token:    nil,
+			expected: "",
+		},
+		{
+			name: "token without extras returns empty string",
+			token: &oauth2.Token{
+				AccessToken: "access-token-123",
+			},
+			expected: "",
+		},
+		{
+			name: "token with id_token returns the id_token",
+			token: (&oauth2.Token{
+				AccessToken: "access-token-123",
+			}).WithExtra(map[string]interface{}{
+				"id_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature", //nolint:gosec // test value
+			}),
+			expected: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature",
+		},
+		{
+			name: "token with empty id_token returns empty string",
+			token: (&oauth2.Token{
+				AccessToken: "access-token-123",
+			}).WithExtra(map[string]interface{}{
+				"id_token": "",
+			}),
+			expected: "",
+		},
+		{
+			name: "token with nil id_token returns empty string",
+			token: (&oauth2.Token{
+				AccessToken: "access-token-123",
+			}).WithExtra(map[string]interface{}{
+				"id_token": nil,
+			}),
+			expected: "",
+		},
+		{
+			name: "token with non-string id_token returns empty string",
+			token: (&oauth2.Token{
+				AccessToken: "access-token-123",
+			}).WithExtra(map[string]interface{}{
+				"id_token": 12345, // wrong type
+			}),
+			expected: "",
+		},
+		{
+			name: "token with other extras but no id_token returns empty string",
+			token: (&oauth2.Token{
+				AccessToken: "access-token-123",
+			}).WithExtra(map[string]interface{}{
+				"custom_field": "value",
+			}),
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ExtractIDToken(tt.token)
+			if result != tt.expected {
+				t.Errorf("ExtractIDToken() = %q, want %q", result, tt.expected)
+			}
+		})
 	}
 }
 

@@ -1561,6 +1561,81 @@ func TestHandler_writeTokenResponse(t *testing.T) {
 	}
 }
 
+// TestHandler_writeTokenResponse_WithIDToken verifies that the id_token from the upstream
+// provider is correctly forwarded in the token response per OpenID Connect Core 1.0 Section 3.1.3.3.
+func TestHandler_writeTokenResponse_WithIDToken(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Create a token with id_token in the Extra field (simulating upstream provider response)
+	baseToken := testutil.GenerateTestToken()
+	testIDToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZW1haWwiOiJ0ZXN0QGV4YW1wbGUuY29tIn0.signature" //nolint:gosec // test value
+	tokenWithIDToken := baseToken.WithExtra(map[string]interface{}{
+		"id_token": testIDToken,
+	})
+
+	w := httptest.NewRecorder()
+	handler.writeTokenResponse(w, tokenWithIDToken, "openid email")
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var tokenResp TokenResponse
+	if err := json.NewDecoder(w.Body).Decode(&tokenResp); err != nil {
+		t.Fatalf("failed to decode token response: %v", err)
+	}
+
+	if tokenResp.AccessToken != tokenWithIDToken.AccessToken {
+		t.Errorf("AccessToken = %q, want %q", tokenResp.AccessToken, tokenWithIDToken.AccessToken)
+	}
+
+	if tokenResp.TokenType != testTokenTypeBearer {
+		t.Errorf("TokenType = %q, want %q", tokenResp.TokenType, testTokenTypeBearer)
+	}
+
+	// Verify id_token is included in response (OIDC compliance)
+	if tokenResp.IDToken != testIDToken {
+		t.Errorf("IDToken = %q, want %q", tokenResp.IDToken, testIDToken)
+	}
+}
+
+// TestHandler_writeTokenResponse_WithoutIDToken verifies that the response is valid
+// when there is no id_token (non-OIDC flows or providers that don't return id_token).
+func TestHandler_writeTokenResponse_WithoutIDToken(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Create a token without id_token
+	token := testutil.GenerateTestToken()
+
+	w := httptest.NewRecorder()
+	handler.writeTokenResponse(w, token, "openid email")
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var tokenResp TokenResponse
+	if err := json.NewDecoder(w.Body).Decode(&tokenResp); err != nil {
+		t.Fatalf("failed to decode token response: %v", err)
+	}
+
+	// Verify id_token is empty when not provided
+	if tokenResp.IDToken != "" {
+		t.Errorf("IDToken = %q, want empty string", tokenResp.IDToken)
+	}
+
+	// Verify other fields are still correct
+	if tokenResp.AccessToken != token.AccessToken {
+		t.Errorf("AccessToken = %q, want %q", tokenResp.AccessToken, token.AccessToken)
+	}
+
+	if tokenResp.Scope != "openid email" {
+		t.Errorf("Scope = %q, want %q", tokenResp.Scope, "openid email")
+	}
+}
+
 func TestHandler_ServeAuthorization_MissingParams(t *testing.T) {
 	handler, store := setupTestHandler(t)
 	defer store.Stop()

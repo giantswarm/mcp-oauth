@@ -51,6 +51,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Reason**: Returns `clientID` for client binding validation per OAuth 2.1 Section 6
   - **Migration**: Update all `TokenStore` implementations to return the `clientID` from token metadata
 
+### Fixed
+
+- **Token endpoint now includes `id_token` from upstream provider in response (#189)**
+  - **Problem**: The token endpoint (`/oauth/token`) was not forwarding the `id_token` from upstream OIDC providers (e.g., Dex, Google) to clients, breaking OIDC silent re-authentication flows that rely on `id_token_hint` and `login_hint`
+  - **Root Cause**: `writeTokenResponse()` in `handler.go` only included `access_token`, `token_type`, `expires_in`, `refresh_token`, and `scope` in the response. The `id_token` from the provider's token response was stored internally but never forwarded
+  - **Fix**:
+    - `server/flows.go`: `generateAndStoreTokens()` now extracts `id_token` from `authCode.ProviderToken.Extra("id_token")` and includes it in the token response using `WithExtra()`
+    - `server/flows.go`: `RefreshAccessToken()` now forwards `id_token` from the provider's refresh response when present
+    - `handler.go`: `writeTokenResponse()` now includes `id_token` in the JSON response when present in the token's Extra field
+    - `types.go`: Added `IDToken` field to `TokenResponse` struct for proper deserialization
+  - **Impact**: Clients can now extract user identity from `id_token` for `login_hint` and use `id_token_hint` for OIDC silent re-authentication with `prompt=none`
+  - **OIDC Compliance**: Per [OpenID Connect Core 1.0 Section 3.1.3.3](https://openid.net/specs/openid-connect-core-1_0.html#TokenResponse), the `id_token` is REQUIRED in token responses for OIDC flows
+
 ### Security
 
 - **Input Validation for `client_name` in All Client Registration Paths**
