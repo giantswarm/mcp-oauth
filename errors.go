@@ -1,8 +1,10 @@
 package oauth
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // OAuth error codes as constants
@@ -19,6 +21,13 @@ const (
 	ErrorCodeAccessDenied         = "access_denied"
 	ErrorCodeInvalidRedirectURI   = "invalid_redirect_uri"
 	ErrorCodeRateLimitExceeded    = "rate_limit_exceeded"
+
+	// Silent authentication error codes (OIDC Core Section 3.1.2.6)
+	// These indicate the IdP requires user interaction and silent auth failed.
+	ErrorCodeLoginRequired            = "login_required"
+	ErrorCodeConsentRequired          = "consent_required"
+	ErrorCodeInteractionRequired      = "interaction_required"
+	ErrorCodeAccountSelectionRequired = "account_selection_required"
 )
 
 // Error represents an OAuth 2.0 error response.
@@ -111,3 +120,109 @@ var (
 		return NewError(ErrorCodeInvalidRedirectURI, desc, http.StatusBadRequest)
 	}
 )
+
+// ErrSilentAuthFailed is a sentinel error for when silent authentication is not possible.
+// This occurs when the IdP requires user interaction (login or consent) but the
+// authorization request used prompt=none for silent authentication.
+//
+// Use IsSilentAuthError to check if an error indicates silent auth failure.
+var ErrSilentAuthFailed = errors.New("silent authentication failed: user interaction required")
+
+// SilentAuthError represents an error from a silent authentication attempt.
+// These errors indicate the IdP requires user interaction and the client
+// should fall back to interactive login.
+//
+// Silent authentication fails when:
+//   - No active session at the IdP (login_required)
+//   - User hasn't granted required scopes (consent_required)
+//   - IdP needs user interaction for other reasons (interaction_required)
+//   - Multiple accounts and none selected (account_selection_required)
+//
+// See: https://openid.net/specs/openid-connect-core-1_0.html#AuthError
+type SilentAuthError struct {
+	// Code is the OAuth/OIDC error code.
+	// Common values: "login_required", "consent_required", "interaction_required"
+	Code string
+
+	// Description is the optional error description from the IdP
+	Description string
+}
+
+// Error implements the error interface.
+func (e *SilentAuthError) Error() string {
+	if e.Description != "" {
+		return fmt.Sprintf("silent authentication failed: %s - %s", e.Code, e.Description)
+	}
+	return fmt.Sprintf("silent authentication failed: %s", e.Code)
+}
+
+// IsSilentAuthError returns true if the error indicates silent authentication failed
+// and interactive login is required. This checks for:
+//   - *SilentAuthError type (including wrapped errors)
+//   - Error strings containing known silent auth error codes
+//
+// Example usage:
+//
+//	result := handleCallback(r)
+//	if err := result.Err(); err != nil {
+//	    if oauth.IsSilentAuthError(err) {
+//	        // Fall back to interactive login
+//	        return startInteractiveLogin(w, r)
+//	    }
+//	    // Handle other errors
+//	    return handleError(w, err)
+//	}
+func IsSilentAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Check if error is or wraps a SilentAuthError
+	var silentErr *SilentAuthError
+	if errors.As(err, &silentErr) {
+		return true
+	}
+
+	// Check if error is or wraps ErrSilentAuthFailed sentinel
+	if errors.Is(err, ErrSilentAuthFailed) {
+		return true
+	}
+
+	// Also check error message for known OAuth error codes
+	// This handles cases where the error wasn't wrapped as SilentAuthError
+	errStr := err.Error()
+	return strings.Contains(errStr, ErrorCodeLoginRequired) ||
+		strings.Contains(errStr, ErrorCodeConsentRequired) ||
+		strings.Contains(errStr, ErrorCodeInteractionRequired) ||
+		strings.Contains(errStr, ErrorCodeAccountSelectionRequired)
+}
+
+// ParseOAuthError parses an OAuth error response and returns the appropriate error type.
+// For silent auth failure codes (login_required, consent_required, interaction_required,
+// account_selection_required), returns a *SilentAuthError.
+// For other errors, returns a generic *Error with the code and description.
+// Returns nil if errorCode is empty.
+//
+// Example usage:
+//
+//	err := oauth.ParseOAuthError(r.URL.Query().Get("error"), r.URL.Query().Get("error_description"))
+//	if err != nil {
+//	    if oauth.IsSilentAuthError(err) {
+//	        // Handle silent auth failure
+//	    }
+//	}
+func ParseOAuthError(errorCode, errorDescription string) error {
+	if errorCode == "" {
+		return nil
+	}
+
+	switch errorCode {
+	case ErrorCodeLoginRequired, ErrorCodeConsentRequired, ErrorCodeInteractionRequired, ErrorCodeAccountSelectionRequired:
+		return &SilentAuthError{Code: errorCode, Description: errorDescription}
+	default:
+		if errorDescription != "" {
+			return fmt.Errorf("oauth error: %s - %s", errorCode, errorDescription)
+		}
+		return fmt.Errorf("oauth error: %s", errorCode)
+	}
+}

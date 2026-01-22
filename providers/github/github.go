@@ -209,7 +209,9 @@ func (p *Provider) DefaultScopes() []string {
 // AuthorizationURL generates the GitHub OAuth authorization URL with optional PKCE.
 // If scopes is empty, the provider's default configured scopes are used.
 // GitHub supports PKCE but doesn't require it for confidential clients.
-func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string, scopes []string) string {
+// opts contains optional OIDC parameters like login_hint (nil for defaults).
+// Note: GitHub doesn't support all OIDC parameters, but login is supported as "login" param.
+func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string, scopes []string, authOpts *providers.AuthorizationURLOptions) string {
 	var opts []oauth2.AuthCodeOption
 
 	// Add PKCE parameters if provided (GitHub supports PKCE)
@@ -218,6 +220,19 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 			oauth2.SetAuthURLParam("code_challenge", codeChallenge),
 			oauth2.SetAuthURLParam("code_challenge_method", codeChallengeMethod),
 		)
+	}
+
+	// Apply optional parameters
+	// GitHub uses "login" instead of "login_hint" per GitHub OAuth docs
+	if authOpts != nil {
+		if authOpts.LoginHint != "" {
+			opts = append(opts, oauth2.SetAuthURLParam("login", authOpts.LoginHint))
+		}
+		// GitHub doesn't support prompt=none for silent auth, but we can still pass
+		// custom parameters via Extra
+		for k, v := range authOpts.Extra {
+			opts = append(opts, oauth2.SetAuthURLParam(k, v))
+		}
 	}
 
 	// SECURITY: Create a deep copy of scopes to prevent potential race conditions

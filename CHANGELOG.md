@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **OIDC Prompt Parameter and Silent Authentication Support**
+  - **Feature**: New `AuthorizationURLOptions` struct for optional OIDC parameters in authorization requests
+  - **Use Case**: Enables silent re-authentication flows where MCP clients can attempt token refresh without user interaction when an IdP session already exists
+  - **New Types**:
+    - `providers.AuthorizationURLOptions` - Contains optional OIDC parameters: `Prompt`, `LoginHint`, `MaxAge`, `ACRValues`, `IDTokenHint`, `Extra`
+    - `oauth.SilentAuthError` - Error type for silent authentication failures
+    - `oauth.CallbackResult` - Structured result type for OAuth callbacks with `Err()` and `IsError()` methods
+  - **New Functions**:
+    - `oauth.ParseOAuthError(code, description)` - Parses OAuth error responses into appropriate error types
+    - `oauth.IsSilentAuthError(err)` - Detects if an error indicates silent auth failed and interactive login is required
+    - `oauth.ParseCallbackQuery(...)` - Convenience function for parsing OAuth callback query parameters
+    - `providers.ApplyAuthorizationURLOptions(opts)` - Shared helper for converting options to oauth2.AuthCodeOption
+    - `providers.CopyScopes(requested, defaults)` - Shared helper for safe scope copying
+  - **New Constants**:
+    - `ErrorCodeLoginRequired`, `ErrorCodeConsentRequired`, `ErrorCodeInteractionRequired`, `ErrorCodeAccountSelectionRequired` - OIDC silent auth error codes
+  - **New Sentinel Error**: `oauth.ErrSilentAuthFailed` - Indicates silent authentication is not possible
+  - **OIDC Parameters Supported**:
+    - `prompt=none` - Silent authentication (no UI displayed, error if login/consent required)
+    - `prompt=login` - Force re-authentication even if session exists
+    - `prompt=consent` - Force consent even if previously granted
+    - `prompt=select_account` - Force account selection
+    - `login_hint` - Pre-fill username/email at IdP
+    - `max_age` - Maximum authentication age in seconds
+    - `acr_values` - Authentication context class references
+    - `id_token_hint` - Previously issued ID token as session hint
+  - **Provider Support**: Google, GitHub (partial - uses `login` param), Dex, and Mock providers updated
+  - **References**: [OpenID Connect Core 1.0 Section 3.1.2.1](https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest)
+
+### Changed
+
+- **BREAKING**: `Provider.AuthorizationURL` interface signature changed
+  - **Old**: `AuthorizationURL(state, codeChallenge, codeChallengeMethod string, scopes []string) string`
+  - **New**: `AuthorizationURL(state, codeChallenge, codeChallengeMethod string, scopes []string, opts *AuthorizationURLOptions) string`
+  - **Migration**: Pass `nil` as the last parameter for existing code to maintain current behavior
+  - **Reason**: Enables optional OIDC parameters for silent authentication and other advanced flows
+
 ### Security
 
 - **OAuth 2.1 Client Binding for Refresh Tokens**

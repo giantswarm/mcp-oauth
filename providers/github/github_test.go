@@ -372,7 +372,7 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			authURL := provider.AuthorizationURL(tt.state, tt.codeChallenge, tt.codeChallengeMethod, tt.scopes)
+			authURL := provider.AuthorizationURL(tt.state, tt.codeChallenge, tt.codeChallengeMethod, tt.scopes, nil)
 
 			for _, want := range tt.wantContains {
 				if !strings.Contains(authURL, want) {
@@ -406,13 +406,13 @@ func TestProvider_AuthorizationURL_DeepCopySafety(t *testing.T) {
 
 	// Generate URL with custom scopes
 	customScopes := []string{"repo", "workflow"}
-	_ = provider.AuthorizationURL("state1", "challenge1", "S256", customScopes)
+	_ = provider.AuthorizationURL("state1", "challenge1", "S256", customScopes, nil)
 
 	// Modify custom scopes after call
 	customScopes[0] = "MODIFIED"
 
 	// Generate another URL - provider should be unaffected
-	url2 := provider.AuthorizationURL("state2", "challenge2", "S256", nil)
+	url2 := provider.AuthorizationURL("state2", "challenge2", "S256", nil, nil)
 
 	// Verify original scopes are used for default
 	for i, scope := range provider.Scopes {

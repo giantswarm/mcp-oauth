@@ -791,7 +791,8 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 	requestedScopes := normalizeScopes(scope)
 
 	// Generate authorization URL with server-generated PKCE and requested scopes
-	authURL := s.provider.AuthorizationURL(providerState, providerCodeChallenge, "S256", requestedScopes)
+	// TODO: Support passing AuthorizationURLOptions from client for silent auth scenarios
+	authURL := s.provider.AuthorizationURL(providerState, providerCodeChallenge, "S256", requestedScopes, nil)
 
 	return authURL, nil
 }

@@ -21,7 +21,7 @@ type Provider struct {
 	DefaultScopesFunc func() []string
 
 	// AuthorizationURLFunc is called when AuthorizationURL() is invoked
-	AuthorizationURLFunc func(state string, codeChallenge string, codeChallengeMethod string, scopes []string) string
+	AuthorizationURLFunc func(state string, codeChallenge string, codeChallengeMethod string, scopes []string, opts *providers.AuthorizationURLOptions) string
 
 	// ExchangeCodeFunc is called when ExchangeCode() is invoked
 	ExchangeCodeFunc func(ctx context.Context, code string, codeVerifier string) (*oauth2.Token, error)
@@ -61,8 +61,12 @@ func NewProvider() *Provider {
 		DefaultScopesFunc: func() []string {
 			return []string{"openid", "email", "profile"}
 		},
-		AuthorizationURLFunc: func(state, codeChallenge, codeChallengeMethod string, _ []string) string {
-			return fmt.Sprintf("https://mock.example.com/authorize?state=%s&code_challenge=%s&code_challenge_method=%s", state, codeChallenge, codeChallengeMethod)
+		AuthorizationURLFunc: func(state, codeChallenge, codeChallengeMethod string, _ []string, opts *providers.AuthorizationURLOptions) string {
+			url := fmt.Sprintf("https://mock.example.com/authorize?state=%s&code_challenge=%s&code_challenge_method=%s", state, codeChallenge, codeChallengeMethod)
+			if opts != nil && opts.Prompt != "" {
+				url += "&prompt=" + opts.Prompt
+			}
+			return url
 		},
 		ExchangeCodeFunc: func(_ context.Context, _ string, _ string) (*oauth2.Token, error) {
 			return &oauth2.Token{
@@ -128,7 +132,7 @@ func (m *Provider) DefaultScopes() []string {
 }
 
 // AuthorizationURL generates the URL to redirect users for authentication
-func (m *Provider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string, scopes []string) string {
+func (m *Provider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string, scopes []string, opts *providers.AuthorizationURLOptions) string {
 	m.mu.Lock()
 	m.CallCounts["AuthorizationURL"]++
 	fn := m.AuthorizationURLFunc
@@ -136,7 +140,7 @@ func (m *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	if fn == nil {
 		return "https://mock.example.com/authorize?state=" + state // Safe default
 	}
-	return fn(state, codeChallenge, codeChallengeMethod, scopes)
+	return fn(state, codeChallenge, codeChallengeMethod, scopes, opts)
 }
 
 // ExchangeCode exchanges an authorization code for tokens

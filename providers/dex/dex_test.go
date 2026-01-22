@@ -319,7 +319,7 @@ func TestAuthorizationURL_ConnectorID(t *testing.T) {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
 
-	url := provider.AuthorizationURL("state123", "challenge", "S256", nil)
+	url := provider.AuthorizationURL("state123", "challenge", "S256", nil, nil)
 
 	if !strings.Contains(url, "connector_id=github") {
 		t.Errorf("AuthorizationURL() = %q, want URL containing 'connector_id=github'", url)
@@ -336,7 +336,7 @@ func TestAuthorizationURL_WithoutConnectorID(t *testing.T) {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
 
-	url := provider.AuthorizationURL("state123", "challenge", "S256", nil)
+	url := provider.AuthorizationURL("state123", "challenge", "S256", nil, nil)
 
 	if strings.Contains(url, "connector_id") {
 		t.Errorf("AuthorizationURL() = %q, should not contain 'connector_id'", url)
@@ -353,7 +353,7 @@ func TestAuthorizationURL_PKCE(t *testing.T) {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
 
-	url := provider.AuthorizationURL("state123", "challenge_value", "S256", nil)
+	url := provider.AuthorizationURL("state123", "challenge_value", "S256", nil, nil)
 
 	if !strings.Contains(url, "code_challenge=challenge_value") {
 		t.Errorf("AuthorizationURL() missing code_challenge parameter")
@@ -374,7 +374,7 @@ func TestAuthorizationURL_CustomScopes(t *testing.T) {
 	}
 
 	customScopes := []string{"openid", "custom_scope"}
-	url := provider.AuthorizationURL("state123", "", "", customScopes)
+	url := provider.AuthorizationURL("state123", "", "", customScopes, nil)
 
 	if !strings.Contains(url, "custom_scope") {
 		t.Errorf("AuthorizationURL() = %q, want URL containing 'custom_scope'", url)

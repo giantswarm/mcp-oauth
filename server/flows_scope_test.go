@@ -480,7 +480,7 @@ func (m *mockProviderForTest) DefaultScopes() []string {
 	return m.defaultScopes
 }
 
-func (m *mockProviderForTest) AuthorizationURL(_, _, _ string, _ []string) string {
+func (m *mockProviderForTest) AuthorizationURL(_, _, _ string, _ []string, _ *providers.AuthorizationURLOptions) string {
 	return ""
 }
 

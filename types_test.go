@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -252,5 +253,244 @@ func TestTokenResponse_JSON(t *testing.T) {
 	}
 	if got.Scope != resp.Scope {
 		t.Errorf("Scope = %q, want %q", got.Scope, resp.Scope)
+	}
+}
+
+func TestCallbackResult_IsError(t *testing.T) {
+	tests := []struct {
+		name     string
+		result   CallbackResult
+		expected bool
+	}{
+		{
+			name: "successful callback - not an error",
+			result: CallbackResult{
+				Code:  "abc123",
+				State: "state456",
+			},
+			expected: false,
+		},
+		{
+			name: "error callback - access_denied",
+			result: CallbackResult{
+				Error:            "access_denied",
+				ErrorDescription: "User denied the request",
+				State:            "state456",
+			},
+			expected: true,
+		},
+		{
+			name: "error callback - login_required",
+			result: CallbackResult{
+				Error: "login_required",
+				State: "state456",
+			},
+			expected: true,
+		},
+		{
+			name:     "empty result",
+			result:   CallbackResult{},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.result.IsError(); got != tt.expected {
+				t.Errorf("CallbackResult.IsError() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestCallbackResult_Err(t *testing.T) {
+	tests := []struct {
+		name           string
+		result         CallbackResult
+		wantNil        bool
+		wantSilentAuth bool
+		wantMessage    string
+	}{
+		{
+			name: "successful callback returns nil",
+			result: CallbackResult{
+				Code:  "abc123",
+				State: "state456",
+			},
+			wantNil: true,
+		},
+		{
+			name: "login_required returns SilentAuthError",
+			result: CallbackResult{
+				Error:            "login_required",
+				ErrorDescription: "User must authenticate",
+				State:            "state456",
+			},
+			wantSilentAuth: true,
+			wantMessage:    "silent authentication failed: login_required - User must authenticate",
+		},
+		{
+			name: "consent_required returns SilentAuthError",
+			result: CallbackResult{
+				Error: "consent_required",
+				State: "state456",
+			},
+			wantSilentAuth: true,
+			wantMessage:    "silent authentication failed: consent_required",
+		},
+		{
+			name: "interaction_required returns SilentAuthError",
+			result: CallbackResult{
+				Error:            "interaction_required",
+				ErrorDescription: "UI required",
+				State:            "state456",
+			},
+			wantSilentAuth: true,
+			wantMessage:    "silent authentication failed: interaction_required - UI required",
+		},
+		{
+			name: "access_denied returns generic error",
+			result: CallbackResult{
+				Error:            "access_denied",
+				ErrorDescription: "User denied the request",
+				State:            "state456",
+			},
+			wantSilentAuth: false,
+			wantMessage:    "oauth error: access_denied - User denied the request",
+		},
+		{
+			name: "empty error returns nil",
+			result: CallbackResult{
+				State: "state456",
+			},
+			wantNil: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.result.Err()
+
+			if tt.wantNil {
+				if err != nil {
+					t.Errorf("CallbackResult.Err() = %v, want nil", err)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatal("CallbackResult.Err() = nil, want error")
+			}
+
+			if err.Error() != tt.wantMessage {
+				t.Errorf("CallbackResult.Err().Error() = %q, want %q", err.Error(), tt.wantMessage)
+			}
+
+			if tt.wantSilentAuth {
+				var silentErr *SilentAuthError
+				if !errors.As(err, &silentErr) {
+					t.Errorf("CallbackResult.Err() should return *SilentAuthError")
+				}
+				if !IsSilentAuthError(err) {
+					t.Errorf("IsSilentAuthError() should return true")
+				}
+			}
+		})
+	}
+}
+
+func TestParseCallbackQuery(t *testing.T) {
+	tests := []struct {
+		name             string
+		code             string
+		state            string
+		errorCode        string
+		errorDescription string
+		errorURI         string
+	}{
+		{
+			name:  "successful callback",
+			code:  "auth_code_123",
+			state: "state_456",
+		},
+		{
+			name:             "error callback with all fields",
+			state:            "state_456",
+			errorCode:        "login_required",
+			errorDescription: "User must authenticate",
+			errorURI:         "https://docs.example.com/errors",
+		},
+		{
+			name:      "error callback without description",
+			state:     "state_456",
+			errorCode: "access_denied",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ParseCallbackQuery(tt.code, tt.state, tt.errorCode, tt.errorDescription, tt.errorURI)
+
+			if result.Code != tt.code {
+				t.Errorf("Code = %q, want %q", result.Code, tt.code)
+			}
+			if result.State != tt.state {
+				t.Errorf("State = %q, want %q", result.State, tt.state)
+			}
+			if result.Error != tt.errorCode {
+				t.Errorf("Error = %q, want %q", result.Error, tt.errorCode)
+			}
+			if result.ErrorDescription != tt.errorDescription {
+				t.Errorf("ErrorDescription = %q, want %q", result.ErrorDescription, tt.errorDescription)
+			}
+			if result.ErrorURI != tt.errorURI {
+				t.Errorf("ErrorURI = %q, want %q", result.ErrorURI, tt.errorURI)
+			}
+		})
+	}
+}
+
+func TestCallbackResult_SilentAuthWorkflow(t *testing.T) {
+	// This test demonstrates the typical silent auth workflow:
+	// 1. Client sends authorization request with prompt=none
+	// 2. IdP returns error because user session doesn't exist
+	// 3. Client detects silent auth failure and falls back to interactive login
+
+	// Simulate IdP returning login_required error
+	result := ParseCallbackQuery(
+		"",           // No code because auth failed
+		"csrf_state", // State preserved
+		"login_required",
+		"The user is not logged in",
+		"",
+	)
+
+	// Check if it's an error
+	if !result.IsError() {
+		t.Fatal("Expected callback to be an error")
+	}
+
+	// Get the typed error
+	err := result.Err()
+	if err == nil {
+		t.Fatal("Expected non-nil error")
+	}
+
+	// Detect that it's a silent auth error
+	if !IsSilentAuthError(err) {
+		t.Error("Expected IsSilentAuthError to return true")
+	}
+
+	// Extract the SilentAuthError details
+	var silentErr *SilentAuthError
+	if !errors.As(err, &silentErr) {
+		t.Fatal("Expected error to be *SilentAuthError")
+	}
+
+	if silentErr.Code != "login_required" {
+		t.Errorf("SilentAuthError.Code = %q, want %q", silentErr.Code, "login_required")
+	}
+	if silentErr.Description != "The user is not logged in" {
+		t.Errorf("SilentAuthError.Description = %q, want %q", silentErr.Description, "The user is not logged in")
 	}
 }
