@@ -11,4 +11,5 @@
 //   - IsLinkLocal: Checks if an IP is link-local (cloud metadata SSRF protection)
 //   - IsLoopbackHostname: Checks if a hostname represents a loopback address
 //   - ValidateMetadataPath: Validates paths for security concerns (path traversal, etc.)
+//   - ValidateClientName: Validates client_name for XSS and log injection prevention
 package helpers

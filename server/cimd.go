@@ -275,20 +275,8 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		return nil, 0, fmt.Errorf("failed to parse metadata JSON: %w", err)
 	}
 
-	// CRITICAL SECURITY: Validate that client_id in document matches the URL
-	if metadata.ClientID != clientID {
-		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
-		s.logMetadataFetchEvent("client_metadata_id_mismatch", clientID, map[string]any{
-			"document_client_id": metadata.ClientID,
-			"url_client_id":      clientID,
-			"severity":           "high",
-		})
-		return nil, 0, fmt.Errorf("client_id mismatch: document contains %q but was fetched from %q (security violation)",
-			metadata.ClientID, clientID)
-	}
-
-	// Validate redirect URIs
-	if err := validateClientMetadataRedirectURIs(metadata.RedirectURIs); err != nil {
+	// Validate fetched metadata for security issues
+	if err := s.validateFetchedClientMetadata(&metadata, clientID); err != nil {
 		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
 		return nil, 0, err
 	}
@@ -382,6 +370,35 @@ func readAndValidateResponseBody(resp *http.Response, maxSize int64) ([]byte, er
 	}
 
 	return bodyBytes, nil
+}
+
+// validateFetchedClientMetadata performs security validation on fetched client metadata.
+// This includes client_id matching, redirect URI validation, and client_name sanitization.
+func (s *Server) validateFetchedClientMetadata(metadata *ClientMetadata, expectedClientID string) error {
+	// CRITICAL SECURITY: Validate that client_id in document matches the URL
+	if metadata.ClientID != expectedClientID {
+		s.logMetadataFetchEvent("client_metadata_id_mismatch", expectedClientID, map[string]any{
+			"document_client_id": metadata.ClientID,
+			"url_client_id":      expectedClientID,
+			"severity":           "high",
+		})
+		return fmt.Errorf("client_id mismatch: document contains %q but was fetched from %q (security violation)",
+			metadata.ClientID, expectedClientID)
+	}
+
+	// Validate redirect URIs
+	if err := validateClientMetadataRedirectURIs(metadata.RedirectURIs); err != nil {
+		return err
+	}
+
+	// Validate client_name to prevent stored XSS and log injection (defense-in-depth)
+	if err := helpers.ValidateClientName(metadata.ClientName); err != nil {
+		s.Logger.Warn("Invalid client_name in fetched metadata",
+			"client_id", expectedClientID, "error", err)
+		return fmt.Errorf("invalid client metadata: %w", err)
+	}
+
+	return nil
 }
 
 // validateClientMetadataRedirectURIs validates redirect URIs in client metadata

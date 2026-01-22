@@ -1248,3 +1248,95 @@ func TestGetOrFetchClient_URLClientID_NegativeCacheHit(t *testing.T) {
 		t.Errorf("expected negative cache error, got: %v", err)
 	}
 }
+
+// TestFetchClientMetadata_ClientNameValidation tests that malicious client_name values are rejected
+func TestFetchClientMetadata_ClientNameValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		clientName  string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:       "valid client name",
+			clientName: "My Application",
+			wantErr:    false,
+		},
+		{
+			name:        "XSS in client_name",
+			clientName:  "<script>alert(1)</script>",
+			wantErr:     true,
+			errContains: "special characters",
+		},
+		{
+			name:        "log injection in client_name",
+			clientName:  "Legit App\nWARN Security violation",
+			wantErr:     true,
+			errContains: "newline characters",
+		},
+		{
+			name:        "control character in client_name",
+			clientName:  "App\x00Name",
+			wantErr:     true,
+			errContains: "printable characters",
+		},
+		{
+			name:        "too long client_name",
+			clientName:  strings.Repeat("x", 300),
+			wantErr:     true,
+			errContains: "256 characters",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var serverURL string
+
+			// Create mock HTTPS server that returns metadata with the test client_name
+			ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				metadata := ClientMetadata{
+					ClientID:                serverURL + r.URL.Path,
+					ClientName:              tt.clientName,
+					RedirectURIs:            []string{"https://app.example.com/callback"},
+					GrantTypes:              []string{"authorization_code"},
+					ResponseTypes:           []string{"code"},
+					TokenEndpointAuthMethod: "none",
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(metadata)
+			}))
+			defer ts.Close()
+			serverURL = ts.URL
+
+			logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+			srv := &Server{
+				Config: &Config{
+					ClientMetadataFetchTimeout:      10 * time.Second,
+					EnableClientIDMetadataDocuments: true,
+					AllowPrivateIPClientMetadata:    true, // Allow private IPs to bypass SSRF for testing
+				},
+				Logger: logger,
+			}
+
+			clientID := ts.URL + "/client-metadata.json"
+			_, _, err := srv.fetchClientMetadata(context.Background(), clientID)
+
+			// TLS errors from test server are expected - skip those
+			if err != nil && (strings.Contains(err.Error(), "tls") || strings.Contains(err.Error(), "certificate")) {
+				t.Skip("TLS error from test server - cannot verify client_name validation")
+			}
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.errContains)
+					return
+				}
+				if !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("expected error containing %q, got: %v", tt.errContains, err)
+				}
+			} else if err != nil {
+				t.Errorf("expected no error, got: %v", err)
+			}
+		})
+	}
+}

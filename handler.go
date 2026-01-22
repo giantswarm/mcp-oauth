@@ -1718,6 +1718,14 @@ func (h *Handler) parseAndValidateRegistrationRequest(w http.ResponseWriter, r *
 		return nil, err
 	}
 
+	// Validate client_name to prevent potential stored XSS and log injection (defense-in-depth)
+	if err := helpers.ValidateClientName(req.ClientName); err != nil {
+		h.logger.Warn("Invalid client_name in registration request",
+			"client_name_length", len(req.ClientName), "error", err, "ip", clientIP)
+		h.writeError(w, ErrorCodeInvalidRequest, err.Error(), http.StatusBadRequest)
+		return nil, err
+	}
+
 	if req.TokenEndpointAuthMethod != "" && !isValidAuthMethod(req.TokenEndpointAuthMethod) {
 		h.logger.Warn("Unsupported token_endpoint_auth_method requested",
 			"method", req.TokenEndpointAuthMethod, "supported_methods", SupportedTokenAuthMethods, "ip", clientIP)
