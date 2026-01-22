@@ -45,6 +45,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Migration**: Pass `nil` as the last parameter for existing code to maintain current behavior
   - **Reason**: Enables optional OIDC parameters for silent authentication and other advanced flows
 
+- **BREAKING**: `TokenStore.AtomicGetAndDeleteRefreshToken` signature changed
+  - **Old**: `AtomicGetAndDeleteRefreshToken(ctx, refreshToken) (userID string, providerToken *oauth2.Token, err error)`
+  - **New**: `AtomicGetAndDeleteRefreshToken(ctx, refreshToken) (userID string, clientID string, providerToken *oauth2.Token, err error)`
+  - **Reason**: Returns `clientID` for client binding validation per OAuth 2.1 Section 6
+  - **Migration**: Update all `TokenStore` implementations to return the `clientID` from token metadata
+
 ### Security
 
 - **OAuth 2.1 Client Binding for Refresh Tokens**
@@ -61,14 +67,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `EventRefreshTokenMissingClientBinding`: When a token without client binding is rejected
     - `EventRefreshTokenClientBindingMismatch`: Critical event when client IDs don't match (possible attack)
   - **New Handler Method**: `authenticateRefreshTokenClient` - Enforces OAuth 2.1 Section 6 requiring confidential clients to authenticate on refresh
-
-### Changed
-
-- **BREAKING**: `TokenStore.AtomicGetAndDeleteRefreshToken` signature changed
-  - **Old**: `AtomicGetAndDeleteRefreshToken(ctx, refreshToken) (userID string, providerToken *oauth2.Token, err error)`
-  - **New**: `AtomicGetAndDeleteRefreshToken(ctx, refreshToken) (userID string, clientID string, providerToken *oauth2.Token, err error)`
-  - **Reason**: Returns `clientID` for client binding validation per OAuth 2.1 Section 6
-  - **Migration**: Update all `TokenStore` implementations to return the `clientID` from token metadata
 
 ### Added
 
