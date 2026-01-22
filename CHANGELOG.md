@@ -53,15 +53,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **Input Validation for `client_name` in Dynamic Client Registration**
-  - **Feature**: Added input validation for the `client_name` field during client registration
+- **Input Validation for `client_name` in All Client Registration Paths**
+  - **Feature**: Added comprehensive input validation for the `client_name` field during both dynamic client registration (`/register` endpoint) and Client-Initiated Metadata Discovery (CIMD) flows
   - **Defense-in-Depth**: While `client_name` is currently only used in JSON responses (which escape HTML), validation prevents potential stored XSS if the value is ever displayed in HTML contexts (admin dashboards, log viewers, audit reports)
+  - **Log Injection Prevention**: Newlines are now rejected to prevent log line splitting attacks where attackers could forge log entries
   - **Validation Rules**:
     - Must not contain HTML-like characters (`<` or `>`)
-    - Must not exceed 256 characters
+    - Must not exceed 256 characters (runes, not bytes - proper Unicode handling)
     - Must contain only printable characters (no control characters)
+    - Must not contain newline characters (`\n`, `\r`) to prevent log injection
   - **Error Handling**: Invalid `client_name` values return `400 Bad Request` with a descriptive error message
-  - **References**: [OWASP Input Validation Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Input_Validation_Cheat_Sheet.html), [CWE-79](https://cwe.mitre.org/data/definitions/79.html)
+  - **Shared Implementation**: Validation logic moved to `internal/helpers.ValidateClientName` for consistent enforcement across all entry points
+  - **References**: [OWASP Input Validation Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Input_Validation_Cheat_Sheet.html), [CWE-79](https://cwe.mitre.org/data/definitions/79.html), [CWE-117](https://cwe.mitre.org/data/definitions/117.html) (Log Injection)
 
 - **OAuth 2.1 Client Binding for Refresh Tokens**
   - **Feature**: Refresh tokens are now bound to the client that was originally issued the token, per OAuth 2.1 Section 6
