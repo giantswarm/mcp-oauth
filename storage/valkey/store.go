@@ -10,8 +10,13 @@ import (
 	"time"
 
 	valkeygo "github.com/valkey-io/valkey-go"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/oauth2"
 
+	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
@@ -89,6 +94,13 @@ type Store struct {
 	// Access must be synchronized via encryptorMu
 	encryptor   *security.Encryptor
 	encryptorMu sync.RWMutex
+
+	// Instrumentation for metrics and tracing
+	// Access must be synchronized via instMu
+	inst   *instrumentation.Instrumentation
+	tracer trace.Tracer
+	meter  metric.Meter
+	instMu sync.RWMutex
 }
 
 // Compile-time interface checks to ensure Store implements all storage interfaces
@@ -191,6 +203,149 @@ func (s *Store) getEncryptor() *security.Encryptor {
 	s.encryptorMu.RLock()
 	defer s.encryptorMu.RUnlock()
 	return s.encryptor
+}
+
+// SetInstrumentation sets OpenTelemetry instrumentation for the store.
+// This enables tracing and metrics for storage operations.
+// This method should be called once during initialization before any storage operations.
+func (s *Store) SetInstrumentation(inst *instrumentation.Instrumentation) {
+	if inst == nil {
+		return
+	}
+
+	s.instMu.Lock()
+	s.inst = inst
+	s.tracer = inst.Tracer("storage")
+	s.meter = inst.Meter("storage")
+	s.instMu.Unlock()
+
+	// Register storage size callbacks for Prometheus gauges.
+	// These callbacks use SCAN operations to count keys, which is efficient
+	// for periodic metrics scraping but not for high-frequency access.
+	err := inst.RegisterStorageSizeCallbacks(
+		func() int64 { return s.countKeysByPattern(s.prefix + "token:*") },
+		func() int64 { return s.countKeysByPattern(s.prefix + "client:*") },
+		func() int64 { return s.countKeysByPattern(s.prefix + "state:*") },
+		func() int64 { return s.countKeysByPattern(s.prefix + "family:*") },
+		func() int64 { return s.countKeysByPattern(s.prefix + "refresh:*") },
+	)
+	if err != nil {
+		s.logger.Warn("Failed to register storage size callbacks", "error", err)
+	}
+
+	s.logger.Info("Valkey storage instrumentation enabled")
+}
+
+// countKeysByPattern counts keys matching a glob pattern using SCAN.
+// This is used for storage size metrics and is designed for periodic scraping.
+func (s *Store) countKeysByPattern(pattern string) int64 {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var count int64
+	var cursor uint64
+
+	for {
+		result, err := s.client.Do(ctx,
+			s.client.B().Scan().Cursor(cursor).Match(pattern).Count(scanBatchSize).Build(),
+		).AsScanEntry()
+		if err != nil {
+			s.logger.Debug("Failed to scan keys for metrics",
+				"pattern", pattern,
+				"error", err)
+			return count
+		}
+
+		count += int64(len(result.Elements))
+		cursor = result.Cursor
+
+		if cursor == 0 {
+			break
+		}
+	}
+
+	return count
+}
+
+// tracedOp holds the context for a traced storage operation.
+// It encapsulates the span and timing information to avoid repetitive boilerplate.
+type tracedOp struct {
+	ctx       context.Context
+	span      trace.Span
+	operation string
+	startTime time.Time
+	store     *Store
+}
+
+// end completes the traced operation, recording metrics and setting span status.
+// Call this with defer: defer op.end(&err)
+func (t *tracedOp) end(errPtr *error) {
+	if t.span != nil {
+		t.span.End()
+	}
+
+	t.store.instMu.RLock()
+	inst := t.store.inst
+	t.store.instMu.RUnlock()
+
+	if inst == nil {
+		return
+	}
+
+	durationMs := float64(time.Since(t.startTime).Milliseconds())
+	result := "success"
+	err := *errPtr
+	if err != nil {
+		result = "error"
+		if t.span != nil {
+			t.span.RecordError(err)
+			t.span.SetStatus(codes.Error, err.Error())
+		}
+	} else if t.span != nil {
+		t.span.SetStatus(codes.Ok, "")
+	}
+
+	inst.Metrics().RecordStorageOperation(t.ctx, t.operation, result, durationMs)
+}
+
+// startTracedOp starts a traced storage operation with span and timing.
+// Returns a tracedOp that should be completed with defer op.end(&err).
+//
+// Usage:
+//
+//	func (s *Store) SomeOperation(ctx context.Context) (err error) {
+//	    op := s.startTracedOp(ctx, "some_operation")
+//	    defer op.end(&err)
+//	    // ... operation logic ...
+//	    return nil
+//	}
+func (s *Store) startTracedOp(ctx context.Context, operation string) *tracedOp {
+	s.instMu.RLock()
+	tracer := s.tracer
+	s.instMu.RUnlock()
+
+	op := &tracedOp{
+		ctx:       ctx,
+		operation: operation,
+		startTime: time.Now(),
+		store:     s,
+	}
+
+	if tracer == nil {
+		op.span = trace.SpanFromContext(ctx)
+		return op
+	}
+
+	ctx, span := tracer.Start(ctx, "storage."+operation,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("operation", operation),
+			attribute.String("storage.backend", "valkey"),
+		))
+	op.ctx = ctx
+	op.span = span
+
+	return op
 }
 
 // tokenTransformFuncs contains the functions used to transform token fields.

@@ -16,7 +16,10 @@ import (
 
 // SaveAuthorizationState saves the state of an ongoing authorization flow
 // Stores by both client state (StateID) and provider state (ProviderState) for dual lookup
-func (s *Store) SaveAuthorizationState(ctx context.Context, state *storage.AuthorizationState) error {
+func (s *Store) SaveAuthorizationState(ctx context.Context, state *storage.AuthorizationState) (err error) {
+	op := s.startTracedOp(ctx, "save_authorization_state")
+	defer op.end(&err)
+
 	if state == nil || state.StateID == "" {
 		return fmt.Errorf(storage.ErrMsgInvalidAuthorizationState)
 	}
@@ -37,7 +40,7 @@ func (s *Store) SaveAuthorizationState(ctx context.Context, state *storage.Autho
 
 	// Store the state data by StateID
 	stateKey := s.stateKey(state.StateID)
-	if err := s.client.Do(ctx,
+	if err = s.client.Do(op.ctx,
 		s.client.B().Set().Key(stateKey).Value(string(data)).Ex(ttl).Build(),
 	).Error(); err != nil {
 		return fmt.Errorf("failed to save authorization state: %w", err)
@@ -45,7 +48,7 @@ func (s *Store) SaveAuthorizationState(ctx context.Context, state *storage.Autho
 
 	// Store a reverse lookup by provider state -> state ID
 	providerKey := s.providerStateKey(state.ProviderState)
-	if err := s.client.Do(ctx,
+	if err = s.client.Do(op.ctx,
 		s.client.B().Set().Key(providerKey).Value(state.StateID).Ex(ttl).Build(),
 	).Error(); err != nil {
 		return fmt.Errorf("failed to save provider state lookup: %w", err)
@@ -58,10 +61,13 @@ func (s *Store) SaveAuthorizationState(ctx context.Context, state *storage.Autho
 }
 
 // GetAuthorizationState retrieves an authorization state by client state
-func (s *Store) GetAuthorizationState(ctx context.Context, stateID string) (*storage.AuthorizationState, error) {
+func (s *Store) GetAuthorizationState(ctx context.Context, stateID string) (result *storage.AuthorizationState, err error) {
+	op := s.startTracedOp(ctx, "get_authorization_state")
+	defer op.end(&err)
+
 	key := s.stateKey(stateID)
 
-	data, err := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).ToString()
+	data, err := s.client.Do(op.ctx, s.client.B().Get().Key(key).Build()).ToString()
 	if err != nil {
 		if isNilError(err) {
 			return nil, fmt.Errorf("%w: %s", storage.ErrAuthorizationStateNotFound, stateID)
@@ -70,7 +76,7 @@ func (s *Store) GetAuthorizationState(ctx context.Context, stateID string) (*sto
 	}
 
 	var j authorizationStateJSON
-	if err := json.Unmarshal([]byte(data), &j); err != nil {
+	if err = json.Unmarshal([]byte(data), &j); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal authorization state: %w", err)
 	}
 
@@ -86,11 +92,14 @@ func (s *Store) GetAuthorizationState(ctx context.Context, stateID string) (*sto
 
 // GetAuthorizationStateByProviderState retrieves an authorization state by provider state
 // This is used during provider callback validation (separate from client state)
-func (s *Store) GetAuthorizationStateByProviderState(ctx context.Context, providerState string) (*storage.AuthorizationState, error) {
+func (s *Store) GetAuthorizationStateByProviderState(ctx context.Context, providerState string) (result *storage.AuthorizationState, err error) {
+	op := s.startTracedOp(ctx, "get_authorization_state_by_provider_state")
+	defer op.end(&err)
+
 	// First, look up the state ID from the provider state
 	providerKey := s.providerStateKey(providerState)
 
-	stateID, err := s.client.Do(ctx, s.client.B().Get().Key(providerKey).Build()).ToString()
+	stateID, err := s.client.Do(op.ctx, s.client.B().Get().Key(providerKey).Build()).ToString()
 	if err != nil {
 		if isNilError(err) {
 			return nil, fmt.Errorf("%w: provider state", storage.ErrAuthorizationStateNotFound)
@@ -98,33 +107,36 @@ func (s *Store) GetAuthorizationStateByProviderState(ctx context.Context, provid
 		return nil, fmt.Errorf("failed to get provider state lookup: %w", err)
 	}
 
-	// Now get the actual state data
-	return s.GetAuthorizationState(ctx, stateID)
+	// Now get the actual state data (this will create its own child span)
+	return s.GetAuthorizationState(op.ctx, stateID)
 }
 
 // DeleteAuthorizationState removes an authorization state
 // Removes both client state and provider state entries
-func (s *Store) DeleteAuthorizationState(ctx context.Context, stateID string) error {
+func (s *Store) DeleteAuthorizationState(ctx context.Context, stateID string) (err error) {
+	op := s.startTracedOp(ctx, "delete_authorization_state")
+	defer op.end(&err)
+
 	// Get the state first to find the provider state key
 	key := s.stateKey(stateID)
 
-	data, err := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).ToString()
-	if err == nil {
+	data, getErr := s.client.Do(op.ctx, s.client.B().Get().Key(key).Build()).ToString()
+	if getErr == nil {
 		// Parse to get provider state for cleanup
 		var j authorizationStateJSON
-		if err := json.Unmarshal([]byte(data), &j); err == nil {
+		if unmarshalErr := json.Unmarshal([]byte(data), &j); unmarshalErr == nil {
 			// Delete the provider state lookup
 			providerKey := s.providerStateKey(j.ProviderState)
-			if err := s.client.Do(ctx, s.client.B().Del().Key(providerKey).Build()).Error(); err != nil {
+			if delErr := s.client.Do(op.ctx, s.client.B().Del().Key(providerKey).Build()).Error(); delErr != nil {
 				s.logger.Warn("Failed to delete provider state lookup",
 					"state_id", stateID,
-					"error", err)
+					"error", delErr)
 			}
 		}
 	}
 
 	// Delete the main state entry
-	if err := s.client.Do(ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
+	if err = s.client.Do(op.ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
 		return fmt.Errorf("failed to delete authorization state: %w", err)
 	}
 
@@ -133,7 +145,10 @@ func (s *Store) DeleteAuthorizationState(ctx context.Context, stateID string) er
 }
 
 // SaveAuthorizationCode saves an issued authorization code
-func (s *Store) SaveAuthorizationCode(ctx context.Context, code *storage.AuthorizationCode) error {
+func (s *Store) SaveAuthorizationCode(ctx context.Context, code *storage.AuthorizationCode) (err error) {
+	op := s.startTracedOp(ctx, "save_authorization_code")
+	defer op.end(&err)
+
 	if code == nil || code.Code == "" {
 		return fmt.Errorf("invalid authorization code")
 	}
@@ -151,7 +166,7 @@ func (s *Store) SaveAuthorizationCode(ctx context.Context, code *storage.Authori
 
 	key := s.codeKey(code.Code)
 
-	if err := s.client.Do(ctx,
+	if err = s.client.Do(op.ctx,
 		s.client.B().Set().Key(key).Value(string(data)).Ex(ttl).Build(),
 	).Error(); err != nil {
 		return fmt.Errorf("failed to save authorization code: %w", err)
@@ -165,10 +180,13 @@ func (s *Store) SaveAuthorizationCode(ctx context.Context, code *storage.Authori
 // GetAuthorizationCode retrieves an authorization code without modifying it.
 // NOTE: For actual code exchange, use AtomicCheckAndMarkAuthCodeUsed instead
 // to prevent race conditions.
-func (s *Store) GetAuthorizationCode(ctx context.Context, code string) (*storage.AuthorizationCode, error) {
+func (s *Store) GetAuthorizationCode(ctx context.Context, code string) (result *storage.AuthorizationCode, err error) {
+	op := s.startTracedOp(ctx, "get_authorization_code")
+	defer op.end(&err)
+
 	key := s.codeKey(code)
 
-	data, err := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).ToString()
+	data, err := s.client.Do(op.ctx, s.client.B().Get().Key(key).Build()).ToString()
 	if err != nil {
 		if isNilError(err) {
 			return nil, storage.ErrAuthorizationCodeNotFound
@@ -177,7 +195,7 @@ func (s *Store) GetAuthorizationCode(ctx context.Context, code string) (*storage
 	}
 
 	var j authorizationCodeJSON
-	if err := json.Unmarshal([]byte(data), &j); err != nil {
+	if err = json.Unmarshal([]byte(data), &j); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal authorization code: %w", err)
 	}
 
@@ -200,11 +218,14 @@ func (s *Store) GetAuthorizationCode(ctx context.Context, code string) (*storage
 // IMPORTANT: The authCode is ONLY returned on reuse errors (Used=true) to enable
 // detection and revocation. For other errors (not found, expired), nil is returned
 // to prevent information leakage.
-func (s *Store) AtomicCheckAndMarkAuthCodeUsed(ctx context.Context, code string) (*storage.AuthorizationCode, error) {
+func (s *Store) AtomicCheckAndMarkAuthCodeUsed(ctx context.Context, code string) (authCode *storage.AuthorizationCode, err error) {
+	op := s.startTracedOp(ctx, "atomic_check_and_mark_auth_code_used")
+	defer op.end(&err)
+
 	key := s.codeKey(code)
 
 	// Execute Lua script for atomic operation
-	result, err := s.client.Do(ctx,
+	result, err := s.client.Do(op.ctx,
 		s.client.B().Eval().Script(luaAtomicCheckAndMarkCodeUsed).
 			Numkeys(1).
 			Key(key).
@@ -224,15 +245,16 @@ func (s *Store) AtomicCheckAndMarkAuthCodeUsed(ctx context.Context, code string)
 		// Parse the code data to return for reuse detection
 		codeData := strings.TrimPrefix(result, "ALREADY_USED:")
 		var j authorizationCodeJSON
-		if err := json.Unmarshal([]byte(codeData), &j); err != nil {
+		if unmarshalErr := json.Unmarshal([]byte(codeData), &j); unmarshalErr != nil {
 			return nil, fmt.Errorf("%w: failed to parse reused code", storage.ErrAuthorizationCodeUsed)
 		}
+		// Return error but don't set err variable to avoid masking the intentional error
 		return fromAuthorizationCodeJSON(&j), storage.ErrAuthorizationCodeUsed
 	}
 
 	// Success - parse the code data (from before marking as used)
 	var j authorizationCodeJSON
-	if err := json.Unmarshal([]byte(result), &j); err != nil {
+	if err = json.Unmarshal([]byte(result), &j); err != nil {
 		return nil, fmt.Errorf("failed to parse authorization code: %w", err)
 	}
 
@@ -243,10 +265,13 @@ func (s *Store) AtomicCheckAndMarkAuthCodeUsed(ctx context.Context, code string)
 }
 
 // DeleteAuthorizationCode removes an authorization code
-func (s *Store) DeleteAuthorizationCode(ctx context.Context, code string) error {
+func (s *Store) DeleteAuthorizationCode(ctx context.Context, code string) (err error) {
+	op := s.startTracedOp(ctx, "delete_authorization_code")
+	defer op.end(&err)
+
 	key := s.codeKey(code)
 
-	if err := s.client.Do(ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
+	if err = s.client.Do(op.ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
 		return fmt.Errorf("failed to delete authorization code: %w", err)
 	}
 

@@ -59,7 +59,10 @@ func (st serializableToken) toOAuth2Token() *oauth2.Token {
 }
 
 // SaveToken saves an oauth2.Token for a user with optional encryption at rest
-func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Token) error {
+func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Token) (err error) {
+	op := s.startTracedOp(ctx, "save_token")
+	defer op.end(&err)
+
 	if userID == "" {
 		return fmt.Errorf("userID cannot be empty")
 	}
@@ -68,7 +71,7 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 	}
 
 	// Validate input lengths to prevent DoS
-	if err := validateStringLength(userID, MaxIDLength, "userID"); err != nil {
+	if err = validateStringLength(userID, MaxIDLength, "userID"); err != nil {
 		return err
 	}
 
@@ -94,20 +97,19 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 	key := s.tokenKey(userID)
 
 	// Execute the appropriate command based on token expiry
-	var execErr error
 	if !token.Expiry.IsZero() {
 		ttl := calculateTTL(token.Expiry)
 		if ttl <= 0 {
 			// Token already expired, don't store
 			return fmt.Errorf("token already expired")
 		}
-		execErr = s.client.Do(ctx, s.client.B().Set().Key(key).Value(string(data)).Ex(ttl).Build()).Error()
+		err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Ex(ttl).Build()).Error()
 	} else {
-		execErr = s.client.Do(ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error()
+		err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error()
 	}
 
-	if execErr != nil {
-		return fmt.Errorf("failed to save token: %w", execErr)
+	if err != nil {
+		return fmt.Errorf("failed to save token: %w", err)
 	}
 
 	enc := s.getEncryptor()
@@ -120,10 +122,13 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 }
 
 // GetToken retrieves an oauth2.Token for a user and decrypts if necessary
-func (s *Store) GetToken(ctx context.Context, userID string) (*oauth2.Token, error) {
+func (s *Store) GetToken(ctx context.Context, userID string) (result *oauth2.Token, err error) {
+	op := s.startTracedOp(ctx, "get_token")
+	defer op.end(&err)
+
 	key := s.tokenKey(userID)
 
-	data, err := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).ToString()
+	data, err := s.client.Do(op.ctx, s.client.B().Get().Key(key).Build()).ToString()
 	if err != nil {
 		if isNilError(err) {
 			return nil, storage.ErrTokenNotFound
@@ -133,7 +138,7 @@ func (s *Store) GetToken(ctx context.Context, userID string) (*oauth2.Token, err
 
 	// Unmarshal into serializableToken to preserve Extra fields
 	var st serializableToken
-	if err := json.Unmarshal([]byte(data), &st); err != nil {
+	if err = json.Unmarshal([]byte(data), &st); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal token: %w", err)
 	}
 
@@ -155,10 +160,13 @@ func (s *Store) GetToken(ctx context.Context, userID string) (*oauth2.Token, err
 }
 
 // DeleteToken removes a token for a user
-func (s *Store) DeleteToken(ctx context.Context, userID string) error {
+func (s *Store) DeleteToken(ctx context.Context, userID string) (err error) {
+	op := s.startTracedOp(ctx, "delete_token")
+	defer op.end(&err)
+
 	key := s.tokenKey(userID)
 
-	if err := s.client.Do(ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
+	if err = s.client.Do(op.ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
 		return fmt.Errorf("failed to delete token: %w", err)
 	}
 
@@ -167,7 +175,10 @@ func (s *Store) DeleteToken(ctx context.Context, userID string) error {
 }
 
 // SaveUserInfo saves user information
-func (s *Store) SaveUserInfo(ctx context.Context, userID string, info *providers.UserInfo) error {
+func (s *Store) SaveUserInfo(ctx context.Context, userID string, info *providers.UserInfo) (err error) {
+	op := s.startTracedOp(ctx, "save_user_info")
+	defer op.end(&err)
+
 	if userID == "" {
 		return fmt.Errorf("userID cannot be empty")
 	}
@@ -182,7 +193,7 @@ func (s *Store) SaveUserInfo(ctx context.Context, userID string, info *providers
 
 	key := s.userInfoKey(userID)
 
-	if err := s.client.Do(ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error(); err != nil {
+	if err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error(); err != nil {
 		return fmt.Errorf("failed to save user info: %w", err)
 	}
 
@@ -190,10 +201,13 @@ func (s *Store) SaveUserInfo(ctx context.Context, userID string, info *providers
 }
 
 // GetUserInfo retrieves user information
-func (s *Store) GetUserInfo(ctx context.Context, userID string) (*providers.UserInfo, error) {
+func (s *Store) GetUserInfo(ctx context.Context, userID string) (result *providers.UserInfo, err error) {
+	op := s.startTracedOp(ctx, "get_user_info")
+	defer op.end(&err)
+
 	key := s.userInfoKey(userID)
 
-	data, err := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).ToString()
+	data, err := s.client.Do(op.ctx, s.client.B().Get().Key(key).Build()).ToString()
 	if err != nil {
 		if isNilError(err) {
 			return nil, fmt.Errorf("%w: %s", storage.ErrUserInfoNotFound, userID)
@@ -202,7 +216,7 @@ func (s *Store) GetUserInfo(ctx context.Context, userID string) (*providers.User
 	}
 
 	var j userInfoJSON
-	if err := json.Unmarshal([]byte(data), &j); err != nil {
+	if err = json.Unmarshal([]byte(data), &j); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal user info: %w", err)
 	}
 
@@ -210,7 +224,10 @@ func (s *Store) GetUserInfo(ctx context.Context, userID string) (*providers.User
 }
 
 // SaveRefreshToken saves a refresh token mapping to user ID with expiry
-func (s *Store) SaveRefreshToken(ctx context.Context, refreshToken, userID string, expiresAt time.Time) error {
+func (s *Store) SaveRefreshToken(ctx context.Context, refreshToken, userID string, expiresAt time.Time) (err error) {
+	op := s.startTracedOp(ctx, "save_refresh_token")
+	defer op.end(&err)
+
 	if refreshToken == "" {
 		return fmt.Errorf("refresh token cannot be empty")
 	}
@@ -219,10 +236,10 @@ func (s *Store) SaveRefreshToken(ctx context.Context, refreshToken, userID strin
 	}
 
 	// Validate input lengths to prevent DoS
-	if err := validateStringLength(refreshToken, MaxTokenLength, "refreshToken"); err != nil {
+	if err = validateStringLength(refreshToken, MaxTokenLength, "refreshToken"); err != nil {
 		return err
 	}
-	if err := validateStringLength(userID, MaxIDLength, "userID"); err != nil {
+	if err = validateStringLength(userID, MaxIDLength, "userID"); err != nil {
 		return err
 	}
 
@@ -234,7 +251,7 @@ func (s *Store) SaveRefreshToken(ctx context.Context, refreshToken, userID strin
 		return fmt.Errorf("refresh token already expired")
 	}
 
-	if err := s.client.Do(ctx, s.client.B().Set().Key(key).Value(userID).Ex(ttl).Build()).Error(); err != nil {
+	if err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(userID).Ex(ttl).Build()).Error(); err != nil {
 		return fmt.Errorf("failed to save refresh token: %w", err)
 	}
 
@@ -243,10 +260,13 @@ func (s *Store) SaveRefreshToken(ctx context.Context, refreshToken, userID strin
 }
 
 // GetRefreshTokenInfo retrieves the user ID for a refresh token
-func (s *Store) GetRefreshTokenInfo(ctx context.Context, refreshToken string) (string, error) {
+func (s *Store) GetRefreshTokenInfo(ctx context.Context, refreshToken string) (userID string, err error) {
+	op := s.startTracedOp(ctx, "get_refresh_token_info")
+	defer op.end(&err)
+
 	key := s.refreshTokenKey(refreshToken)
 
-	userID, err := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).ToString()
+	userID, err = s.client.Do(op.ctx, s.client.B().Get().Key(key).Build()).ToString()
 	if err != nil {
 		if isNilError(err) {
 			return "", storage.ErrTokenNotFound
@@ -259,10 +279,13 @@ func (s *Store) GetRefreshTokenInfo(ctx context.Context, refreshToken string) (s
 }
 
 // DeleteRefreshToken removes a refresh token
-func (s *Store) DeleteRefreshToken(ctx context.Context, refreshToken string) error {
+func (s *Store) DeleteRefreshToken(ctx context.Context, refreshToken string) (err error) {
+	op := s.startTracedOp(ctx, "delete_refresh_token")
+	defer op.end(&err)
+
 	key := s.refreshTokenKey(refreshToken)
 
-	if err := s.client.Do(ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
+	if err = s.client.Do(op.ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
 		return fmt.Errorf("failed to delete refresh token: %w", err)
 	}
 
@@ -276,14 +299,17 @@ func (s *Store) DeleteRefreshToken(ctx context.Context, refreshToken string) err
 //
 // SECURITY: This operation is atomic via Lua script - only ONE concurrent request can succeed.
 // SECURITY: Returns clientID for client binding validation per OAuth 2.1 Section 6.
-func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken string) (string, string, *oauth2.Token, error) {
+func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken string) (resUserID, resClientID string, resToken *oauth2.Token, err error) {
+	op := s.startTracedOp(ctx, "atomic_get_and_delete_refresh_token")
+	defer op.end(&err)
+
 	// Build key names for the Lua script
 	refreshKey := s.refreshTokenKey(refreshToken)
 	tokenKey := s.tokenKey(refreshToken)
 	metaKey := s.tokenMetaKey(refreshToken)
 
 	// Execute Lua script for atomic operation
-	result, err := s.client.Do(ctx,
+	result, err := s.client.Do(op.ctx,
 		s.client.B().Eval().Script(luaScriptAtomicGetAndDeleteRefresh).
 			Numkeys(3).
 			Key(refreshKey, tokenKey, metaKey).
@@ -310,7 +336,7 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken
 		ClientID string            `json:"client_id"`
 		Token    serializableToken `json:"token"`
 	}
-	if err := json.Unmarshal([]byte(result), &resultData); err != nil {
+	if err = json.Unmarshal([]byte(result), &resultData); err != nil {
 		return "", "", nil, fmt.Errorf("failed to parse atomic operation result: %w", err)
 	}
 

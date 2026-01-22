@@ -22,7 +22,10 @@ const (
 // ============================================================
 
 // SaveClient saves a registered client
-func (s *Store) SaveClient(ctx context.Context, client *storage.Client) error {
+func (s *Store) SaveClient(ctx context.Context, client *storage.Client) (err error) {
+	op := s.startTracedOp(ctx, "save_client")
+	defer op.end(&err)
+
 	if client == nil || client.ClientID == "" {
 		return fmt.Errorf("invalid client")
 	}
@@ -34,7 +37,7 @@ func (s *Store) SaveClient(ctx context.Context, client *storage.Client) error {
 
 	key := s.clientKey(client.ClientID)
 
-	if err := s.client.Do(ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error(); err != nil {
+	if err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error(); err != nil {
 		return fmt.Errorf("failed to save client: %w", err)
 	}
 
@@ -43,24 +46,35 @@ func (s *Store) SaveClient(ctx context.Context, client *storage.Client) error {
 }
 
 // GetClient retrieves a client by ID
-func (s *Store) GetClient(ctx context.Context, clientID string) (*storage.Client, error) {
-	return getAndUnmarshal(ctx, s, s.clientKey(clientID), storage.ErrClientNotFound, fromClientJSON)
+func (s *Store) GetClient(ctx context.Context, clientID string) (result *storage.Client, err error) {
+	op := s.startTracedOp(ctx, "get_client")
+	defer op.end(&err)
+
+	result, err = getAndUnmarshal(op.ctx, s, s.clientKey(clientID), storage.ErrClientNotFound, fromClientJSON)
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
 }
 
 // ValidateClientSecret validates a client's secret using bcrypt
 // Uses constant-time operations to prevent timing attacks
-func (s *Store) ValidateClientSecret(ctx context.Context, clientID, clientSecret string) error {
+func (s *Store) ValidateClientSecret(ctx context.Context, clientID, clientSecret string) (err error) {
+	op := s.startTracedOp(ctx, "validate_client_secret")
+	defer op.end(&err)
+
 	// SECURITY: Always perform the same operations to prevent timing attacks
 	// that could reveal whether a client exists or not
 
-	client, err := s.GetClient(ctx, clientID)
+	client, clientErr := s.GetClient(op.ctx, clientID)
 
 	// Determine which hash to use (real or dummy)
 	// Use shared dummy hash constant for timing attack mitigation
 	hashToCompare := storage.DummyBcryptHash
 	isPublicClient := false
 
-	if err == nil {
+	if clientErr == nil {
 		if client.ClientType == "public" {
 			isPublicClient = true
 		} else if client.ClientSecretHash != "" {
@@ -73,13 +87,13 @@ func (s *Store) ValidateClientSecret(ctx context.Context, clientID, clientSecret
 	bcryptErr := bcrypt.CompareHashAndPassword([]byte(hashToCompare), []byte(clientSecret))
 
 	// For public clients, authentication always succeeds
-	if isPublicClient && err == nil {
+	if isPublicClient && clientErr == nil {
 		return nil
 	}
 
 	// If client lookup failed, return generic error (but only after bcrypt comparison)
 	// SECURITY: Generic error message prevents client enumeration attacks
-	if err != nil {
+	if clientErr != nil {
 		return errInvalidCredentials
 	}
 
@@ -94,7 +108,10 @@ func (s *Store) ValidateClientSecret(ctx context.Context, clientID, clientSecret
 }
 
 // ListClients lists all registered clients
-func (s *Store) ListClients(ctx context.Context) ([]*storage.Client, error) {
+func (s *Store) ListClients(ctx context.Context) (result []*storage.Client, err error) {
+	op := s.startTracedOp(ctx, "list_clients")
+	defer op.end(&err)
+
 	pattern := s.clientKey("*")
 
 	// Use a map to deduplicate results (SCAN can return duplicates across iterations)
@@ -102,12 +119,14 @@ func (s *Store) ListClients(ctx context.Context) ([]*storage.Client, error) {
 
 	var cursor uint64
 	for {
-		result, newCursor, err := s.scanClientKeys(ctx, pattern, cursor)
+		var keys []string
+		var newCursor uint64
+		keys, newCursor, err = s.scanClientKeys(op.ctx, pattern, cursor)
 		if err != nil {
 			return nil, err
 		}
 
-		if err := s.fetchClientsFromKeys(ctx, result, clientMap); err != nil {
+		if err = s.fetchClientsFromKeys(op.ctx, keys, clientMap); err != nil {
 			return nil, err
 		}
 
@@ -180,14 +199,17 @@ func (s *Store) clientMapToSlice(clientMap map[string]*storage.Client) []*storag
 }
 
 // CheckIPLimit checks if an IP has reached the client registration limit
-func (s *Store) CheckIPLimit(ctx context.Context, ip string, maxClientsPerIP int) error {
+func (s *Store) CheckIPLimit(ctx context.Context, ip string, maxClientsPerIP int) (err error) {
+	op := s.startTracedOp(ctx, "check_ip_limit")
+	defer op.end(&err)
+
 	if maxClientsPerIP <= 0 {
 		return nil // No limit
 	}
 
 	key := s.clientIPKey(ip)
 
-	countStr, err := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).ToString()
+	countStr, err := s.client.Do(op.ctx, s.client.B().Get().Key(key).Build()).ToString()
 	if err != nil {
 		if isNilError(err) {
 			// No registrations yet for this IP
@@ -216,20 +238,23 @@ func (s *Store) CheckIPLimit(ctx context.Context, ip string, maxClientsPerIP int
 }
 
 // TrackClientIP increments the client count for an IP address
-func (s *Store) TrackClientIP(ctx context.Context, ip string) error {
+func (s *Store) TrackClientIP(ctx context.Context, ip string) (err error) {
+	op := s.startTracedOp(ctx, "track_client_ip")
+	defer op.end(&err)
+
 	key := s.clientIPKey(ip)
 
 	// Use INCR to atomically increment the count
-	_, err := s.client.Do(ctx, s.client.B().Incr().Key(key).Build()).AsInt64()
+	_, err = s.client.Do(op.ctx, s.client.B().Incr().Key(key).Build()).AsInt64()
 	if err != nil {
 		return fmt.Errorf("failed to track client IP: %w", err)
 	}
 
 	// Set TTL on the key (reset daily)
-	if err := s.client.Do(ctx, s.client.B().Expire().Key(key).Seconds(int64(clientIPTrackingTTL.Seconds())).Build()).Error(); err != nil {
+	if expErr := s.client.Do(op.ctx, s.client.B().Expire().Key(key).Seconds(int64(clientIPTrackingTTL.Seconds())).Build()).Error(); expErr != nil {
 		s.logger.Warn("Failed to set TTL on client IP tracking key",
 			"ip", ip,
-			"error", err)
+			"error", expErr)
 	}
 
 	return nil

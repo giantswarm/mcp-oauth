@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Valkey Storage Instrumentation Support (#191)**
+  - **Feature**: Added OpenTelemetry instrumentation to Valkey storage backend for observability parity with memory storage
+  - **Use Case**: Enables Prometheus/Grafana dashboards to monitor storage size metrics (`storage.tokens.count`, `storage.clients.count`, `storage.flows.count`, etc.) when using Valkey backend
+  - **New Methods**:
+    - `Store.SetInstrumentation(inst)` - Sets OpenTelemetry instrumentation for the store
+    - Storage size callbacks for Prometheus gauges using SCAN operations
+  - **Tracing**: Added tracing spans for ALL storage operations with `storage.backend=valkey` attribute:
+    - Token operations: `save_token`, `get_token`, `delete_token`
+    - User info: `save_user_info`, `get_user_info`
+    - Client operations: `save_client`, `get_client`, `list_clients`, `validate_client_secret`, `check_ip_limit`, `track_client_ip`
+    - Flow operations: `save_authorization_state`, `get_authorization_state`, `get_authorization_state_by_provider_state`, `delete_authorization_state`, `save_authorization_code`, `get_authorization_code`, `atomic_check_and_mark_auth_code_used`, `delete_authorization_code`
+    - Refresh token operations: `save_refresh_token`, `get_refresh_token_info`, `delete_refresh_token`, `atomic_get_and_delete_refresh_token`, `save_refresh_token_with_family`, `get_refresh_token_family`, `revoke_refresh_token_family`
+    - Revocation: `revoke_all_tokens_for_user_client`, `get_tokens_by_user_client`
+  - **Metrics**: Storage operations now record duration and success/error metrics via `RecordStorageOperation`
+  - **Span Kind**: All storage spans use `SpanKindClient` for proper trace visualization
+  - **Thread Safety**: Instrumentation fields are protected by mutex for safe concurrent access
+  - **DRY Implementation**: Refactored instrumentation using `tracedOp` helper struct to reduce boilerplate across all storage methods
+  - **Implementation Notes**:
+    - Storage size counting uses SCAN operations which are efficient for periodic metrics scraping
+    - Tracing spans include operation name and backend type for filtering in observability tools
+    - Both memory and Valkey storage backends now include `storage.backend` attribute and `SpanKindClient` for consistent filtering
+  - **Grafana Dashboard Support**: Fixes "No data" panels in mcp-kubernetes Grafana dashboards for storage metrics when using Valkey backend
+
 - **OIDC Prompt Parameter and Silent Authentication Support**
   - **Feature**: New `AuthorizationURLOptions` struct for optional OIDC parameters in authorization requests
   - **Use Case**: Enables silent re-authentication flows where MCP clients can attempt token refresh without user interaction when an IdP session already exists

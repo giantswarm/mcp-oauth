@@ -1343,8 +1343,10 @@ func (s *Store) startStorageSpan(ctx context.Context, operation string) (context
 	}
 
 	ctx, span := s.tracer.Start(ctx, fmt.Sprintf("storage.%s", operation),
+		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(
 			attribute.String("operation", operation),
+			attribute.String("storage.backend", "memory"),
 		))
 
 	return ctx, span
