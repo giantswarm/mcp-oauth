@@ -55,10 +55,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Input Validation for `client_name` in All Client Registration Paths**
   - **Feature**: Added comprehensive input validation for the `client_name` field during both dynamic client registration (`/register` endpoint) and Client-Initiated Metadata Discovery (CIMD) flows
-  - **Defense-in-Depth**: While `client_name` is currently only used in JSON responses (which escape HTML), validation prevents potential stored XSS if the value is ever displayed in HTML contexts (admin dashboards, log viewers, audit reports)
+  - **Defense-in-Depth**: Validation prevents potential stored XSS and script injection if the value is ever displayed in HTML contexts, JavaScript strings, template literals, or markdown renderers
   - **Log Injection Prevention**: Newlines are now rejected to prevent log line splitting attacks where attackers could forge log entries
   - **Validation Rules**:
     - Must not contain HTML-like characters (`<` or `>`)
+    - Must not contain quote characters (`'`, `"`, backtick) that enable script/template injection
     - Must not exceed 256 characters (runes, not bytes - proper Unicode handling)
     - Must contain only printable characters (no control characters)
     - Must not contain newline characters (`\n`, `\r`) to prevent log injection

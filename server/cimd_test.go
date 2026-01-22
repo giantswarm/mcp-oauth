@@ -1266,7 +1266,7 @@ func TestFetchClientMetadata_ClientNameValidation(t *testing.T) {
 			name:        "XSS in client_name",
 			clientName:  "<script>alert(1)</script>",
 			wantErr:     true,
-			errContains: "HTML characters",
+			errContains: "special characters",
 		},
 		{
 			name:        "log injection in client_name",

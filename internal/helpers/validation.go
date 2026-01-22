@@ -10,14 +10,19 @@ import (
 // MaxClientNameLength is the maximum allowed length for client_name in runes.
 const MaxClientNameLength = 256
 
-// ValidateClientName validates the client_name field to prevent potential stored XSS
-// and log injection attacks. This is a defense-in-depth measure - while client_name
-// is typically only used in JSON responses (which escape HTML), validation prevents
-// issues if the value is ever displayed in HTML contexts (admin dashboards, log
-// viewers, audit reports).
+// dangerousClientNameChars contains characters that could enable injection attacks
+// in various contexts (HTML, JavaScript, template literals, markdown).
+const dangerousClientNameChars = "<>'\"`"
+
+// ValidateClientName validates the client_name field to prevent potential stored XSS,
+// script injection, and log injection attacks. This is a defense-in-depth measure -
+// while client_name is typically only used in JSON responses (which escape HTML),
+// validation prevents issues if the value is ever displayed in various contexts
+// (admin dashboards, log viewers, audit reports, markdown renderers).
 //
 // Validation rules:
 //   - Must not contain HTML-like characters (< or >)
+//   - Must not contain quote characters (' " `) that enable script/template injection
 //   - Must not exceed 256 characters (runes, not bytes)
 //   - Must contain only printable characters (no control characters)
 //   - Must not contain newlines (prevents log line splitting attacks)
@@ -34,9 +39,9 @@ func ValidateClientName(name string) error {
 		return fmt.Errorf("client_name must be %d characters or less", MaxClientNameLength)
 	}
 
-	// Reject HTML-like content to prevent potential XSS if displayed in HTML context
-	if strings.ContainsAny(name, "<>") {
-		return fmt.Errorf("client_name must not contain HTML characters (< or >)")
+	// Reject characters that could enable injection in HTML, JavaScript, or template contexts
+	if strings.ContainsAny(name, dangerousClientNameChars) {
+		return fmt.Errorf("client_name must not contain special characters (< > ' \" `)")
 	}
 
 	// Validate all characters are printable and don't contain newlines

@@ -2539,13 +2539,25 @@ func TestHandler_ServeClientRegistration_ClientNameValidation(t *testing.T) {
 			name:           "script tag rejected",
 			clientName:     "<script>alert(1)</script>",
 			wantStatus:     http.StatusBadRequest,
-			wantErrContain: "HTML characters",
+			wantErrContain: "special characters",
 		},
 		{
 			name:           "HTML tag rejected",
 			clientName:     "<b>Bold App</b>",
 			wantStatus:     http.StatusBadRequest,
-			wantErrContain: "HTML characters",
+			wantErrContain: "special characters",
+		},
+		{
+			name:           "single quote rejected (JS injection)",
+			clientName:     "Client's App",
+			wantStatus:     http.StatusBadRequest,
+			wantErrContain: "special characters",
+		},
+		{
+			name:           "backtick rejected (template injection)",
+			clientName:     "App `test`",
+			wantStatus:     http.StatusBadRequest,
+			wantErrContain: "special characters",
 		},
 		{
 			name:           "long name rejected",
