@@ -23,19 +23,33 @@ const (
 
 // SaveClient saves a registered client
 func (s *Store) SaveClient(ctx context.Context, client *storage.Client) error {
+	// Start span for tracing
+	ctx, span := s.startStorageSpan(ctx, "save_client")
+	defer span.End()
+
+	startTime := time.Now()
+	var err error
+
+	defer func() {
+		s.recordStorageOperation(ctx, span, "save_client", err, startTime)
+	}()
+
 	if client == nil || client.ClientID == "" {
-		return fmt.Errorf("invalid client")
+		err = fmt.Errorf("invalid client")
+		return err
 	}
 
-	data, err := json.Marshal(toClientJSON(client))
-	if err != nil {
-		return fmt.Errorf("failed to marshal client: %w", err)
+	data, marshalErr := json.Marshal(toClientJSON(client))
+	if marshalErr != nil {
+		err = fmt.Errorf("failed to marshal client: %w", marshalErr)
+		return err
 	}
 
 	key := s.clientKey(client.ClientID)
 
-	if err := s.client.Do(ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error(); err != nil {
-		return fmt.Errorf("failed to save client: %w", err)
+	if setErr := s.client.Do(ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error(); setErr != nil {
+		err = fmt.Errorf("failed to save client: %w", setErr)
+		return err
 	}
 
 	s.logger.Debug("Saved client", "client_id", client.ClientID)
@@ -44,7 +58,24 @@ func (s *Store) SaveClient(ctx context.Context, client *storage.Client) error {
 
 // GetClient retrieves a client by ID
 func (s *Store) GetClient(ctx context.Context, clientID string) (*storage.Client, error) {
-	return getAndUnmarshal(ctx, s, s.clientKey(clientID), storage.ErrClientNotFound, fromClientJSON)
+	// Start span for tracing
+	ctx, span := s.startStorageSpan(ctx, "get_client")
+	defer span.End()
+
+	startTime := time.Now()
+	var err error
+
+	defer func() {
+		s.recordStorageOperation(ctx, span, "get_client", err, startTime)
+	}()
+
+	client, getErr := getAndUnmarshal(ctx, s, s.clientKey(clientID), storage.ErrClientNotFound, fromClientJSON)
+	if getErr != nil {
+		err = getErr
+		return nil, err
+	}
+
+	return client, nil
 }
 
 // ValidateClientSecret validates a client's secret using bcrypt

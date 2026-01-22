@@ -10,6 +10,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/oauth2"
 
+	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
@@ -1492,5 +1493,123 @@ func TestValidation_GenericErrorMessages(t *testing.T) {
 	// Error should not contain IP or count
 	if err.Error() != "rate limit exceeded" {
 		t.Errorf("Error message should be generic, got: %v", err)
+	}
+}
+
+// ============================================================
+// Instrumentation Tests
+// ============================================================
+
+func TestStore_SetInstrumentation(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	// Create instrumentation with noop provider (instrumentation disabled)
+	inst, err := instrumentation.New(instrumentation.Config{
+		Enabled: false,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create instrumentation: %v", err)
+	}
+
+	// Should not panic with nil instrumentation
+	s.SetInstrumentation(nil)
+
+	// Should work with valid instrumentation
+	s.SetInstrumentation(inst)
+
+	// Verify storage operations still work with instrumentation enabled
+	token := &oauth2.Token{
+		AccessToken:  "instrumented-token",
+		RefreshToken: "instrumented-refresh",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(time.Hour),
+	}
+
+	err = s.SaveToken(ctx, "instrumented-user", token)
+	if err != nil {
+		t.Fatalf("SaveToken with instrumentation failed: %v", err)
+	}
+
+	got, err := s.GetToken(ctx, "instrumented-user")
+	if err != nil {
+		t.Fatalf("GetToken with instrumentation failed: %v", err)
+	}
+
+	if got.AccessToken != token.AccessToken {
+		t.Errorf("AccessToken = %q, want %q", got.AccessToken, token.AccessToken)
+	}
+}
+
+func TestStore_SetInstrumentation_WithPrometheus(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	// Create instrumentation with Prometheus exporter (real metrics)
+	inst, err := instrumentation.New(instrumentation.Config{
+		Enabled:         true,
+		MetricsExporter: "prometheus",
+	})
+	if err != nil {
+		t.Fatalf("Failed to create instrumentation: %v", err)
+	}
+	defer func() {
+		if shutdownErr := inst.Shutdown(ctx); shutdownErr != nil {
+			t.Logf("Warning: shutdown error: %v", shutdownErr)
+		}
+	}()
+
+	// Set instrumentation (should register storage size callbacks)
+	s.SetInstrumentation(inst)
+
+	// Add some data to the store
+	client := &storage.Client{
+		ClientID:     "metric-client",
+		ClientType:   "public",
+		RedirectURIs: []string{"https://example.com/callback"},
+		CreatedAt:    time.Now(),
+	}
+	_ = s.SaveClient(ctx, client)
+
+	token := &oauth2.Token{
+		AccessToken: "metric-token",
+		Expiry:      time.Now().Add(time.Hour),
+	}
+	_ = s.SaveToken(ctx, "metric-user", token)
+
+	// Verify metrics are available (they use SCAN which should find our data)
+	// We can't easily verify the actual metric values, but we can verify
+	// that the instrumentation was set up without errors
+	if s.inst == nil {
+		t.Error("Instrumentation should be set on store")
+	}
+	if s.tracer == nil {
+		t.Error("Tracer should be set on store")
+	}
+	if s.meter == nil {
+		t.Error("Meter should be set on store")
+	}
+}
+
+func TestStore_CountKeysByPattern(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	// Add some clients
+	for i := 0; i < 5; i++ {
+		client := &storage.Client{
+			ClientID:     fmt.Sprintf("count-client-%d", i),
+			ClientType:   "public",
+			RedirectURIs: []string{"https://example.com/callback"},
+			CreatedAt:    time.Now(),
+		}
+		_ = s.SaveClient(ctx, client)
+	}
+
+	// Count clients using the internal method
+	count := s.countKeysByPattern(s.prefix + "client:*")
+
+	if count < 5 {
+		t.Errorf("countKeysByPattern returned %d, want at least 5", count)
 	}
 }

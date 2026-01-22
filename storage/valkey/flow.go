@@ -134,27 +134,42 @@ func (s *Store) DeleteAuthorizationState(ctx context.Context, stateID string) er
 
 // SaveAuthorizationCode saves an issued authorization code
 func (s *Store) SaveAuthorizationCode(ctx context.Context, code *storage.AuthorizationCode) error {
+	// Start span for tracing
+	ctx, span := s.startStorageSpan(ctx, "save_authorization_code")
+	defer span.End()
+
+	startTime := time.Now()
+	var err error
+
+	defer func() {
+		s.recordStorageOperation(ctx, span, "save_authorization_code", err, startTime)
+	}()
+
 	if code == nil || code.Code == "" {
-		return fmt.Errorf("invalid authorization code")
+		err = fmt.Errorf("invalid authorization code")
+		return err
 	}
 
-	data, err := json.Marshal(toAuthorizationCodeJSON(code))
-	if err != nil {
-		return fmt.Errorf("failed to marshal authorization code: %w", err)
+	data, marshalErr := json.Marshal(toAuthorizationCodeJSON(code))
+	if marshalErr != nil {
+		err = fmt.Errorf("failed to marshal authorization code: %w", marshalErr)
+		return err
 	}
 
 	// Calculate TTL
 	ttl := calculateTTL(code.ExpiresAt)
 	if ttl <= 0 {
-		return fmt.Errorf("authorization code already expired")
+		err = fmt.Errorf("authorization code already expired")
+		return err
 	}
 
 	key := s.codeKey(code.Code)
 
-	if err := s.client.Do(ctx,
+	if setErr := s.client.Do(ctx,
 		s.client.B().Set().Key(key).Value(string(data)).Ex(ttl).Build(),
-	).Error(); err != nil {
-		return fmt.Errorf("failed to save authorization code: %w", err)
+	).Error(); setErr != nil {
+		err = fmt.Errorf("failed to save authorization code: %w", setErr)
+		return err
 	}
 
 	s.logger.Debug("Saved authorization code",

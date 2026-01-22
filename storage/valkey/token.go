@@ -60,54 +60,71 @@ func (st serializableToken) toOAuth2Token() *oauth2.Token {
 
 // SaveToken saves an oauth2.Token for a user with optional encryption at rest
 func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Token) error {
+	// Start span for tracing
+	ctx, span := s.startStorageSpan(ctx, "save_token")
+	defer span.End()
+
+	startTime := time.Now()
+	var err error
+
+	defer func() {
+		s.recordStorageOperation(ctx, span, "save_token", err, startTime)
+	}()
+
 	if userID == "" {
-		return fmt.Errorf("userID cannot be empty")
+		err = fmt.Errorf("userID cannot be empty")
+		return err
 	}
 	if token == nil {
-		return fmt.Errorf("token cannot be nil")
+		err = fmt.Errorf("token cannot be nil")
+		return err
 	}
 
 	// Validate input lengths to prevent DoS
-	if err := validateStringLength(userID, MaxIDLength, "userID"); err != nil {
+	if err = validateStringLength(userID, MaxIDLength, "userID"); err != nil {
 		return err
 	}
 
 	// Encrypt token if encryptor is configured
-	tokenToStore, err := s.encryptToken(token)
-	if err != nil {
-		return fmt.Errorf("failed to encrypt token: %w", err)
+	tokenToStore, encErr := s.encryptToken(token)
+	if encErr != nil {
+		err = fmt.Errorf("failed to encrypt token: %w", encErr)
+		return err
 	}
 
 	// Convert to serializable struct that explicitly includes Extra fields
 	st := toSerializable(tokenToStore)
 
-	data, err := json.Marshal(st)
-	if err != nil {
-		return fmt.Errorf("failed to marshal token: %w", err)
+	data, marshalErr := json.Marshal(st)
+	if marshalErr != nil {
+		err = fmt.Errorf("failed to marshal token: %w", marshalErr)
+		return err
 	}
 
 	// Validate serialized size
 	if len(data) > MaxTokenDataSize {
-		return errInputTooLarge
+		err = errInputTooLarge
+		return err
 	}
 
 	key := s.tokenKey(userID)
 
 	// Execute the appropriate command based on token expiry
-	var execErr error
 	if !token.Expiry.IsZero() {
 		ttl := calculateTTL(token.Expiry)
 		if ttl <= 0 {
 			// Token already expired, don't store
-			return fmt.Errorf("token already expired")
+			err = fmt.Errorf("token already expired")
+			return err
 		}
-		execErr = s.client.Do(ctx, s.client.B().Set().Key(key).Value(string(data)).Ex(ttl).Build()).Error()
+		err = s.client.Do(ctx, s.client.B().Set().Key(key).Value(string(data)).Ex(ttl).Build()).Error()
 	} else {
-		execErr = s.client.Do(ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error()
+		err = s.client.Do(ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error()
 	}
 
-	if execErr != nil {
-		return fmt.Errorf("failed to save token: %w", execErr)
+	if err != nil {
+		err = fmt.Errorf("failed to save token: %w", err)
+		return err
 	}
 
 	enc := s.getEncryptor()
@@ -121,20 +138,34 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 
 // GetToken retrieves an oauth2.Token for a user and decrypts if necessary
 func (s *Store) GetToken(ctx context.Context, userID string) (*oauth2.Token, error) {
+	// Start span for tracing
+	ctx, span := s.startStorageSpan(ctx, "get_token")
+	defer span.End()
+
+	startTime := time.Now()
+	var err error
+
+	defer func() {
+		s.recordStorageOperation(ctx, span, "get_token", err, startTime)
+	}()
+
 	key := s.tokenKey(userID)
 
-	data, err := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).ToString()
-	if err != nil {
-		if isNilError(err) {
-			return nil, storage.ErrTokenNotFound
+	data, getErr := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).ToString()
+	if getErr != nil {
+		if isNilError(getErr) {
+			err = storage.ErrTokenNotFound
+			return nil, err
 		}
-		return nil, fmt.Errorf("failed to get token: %w", err)
+		err = fmt.Errorf("failed to get token: %w", getErr)
+		return nil, err
 	}
 
 	// Unmarshal into serializableToken to preserve Extra fields
 	var st serializableToken
-	if err := json.Unmarshal([]byte(data), &st); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal token: %w", err)
+	if unmarshalErr := json.Unmarshal([]byte(data), &st); unmarshalErr != nil {
+		err = fmt.Errorf("failed to unmarshal token: %w", unmarshalErr)
+		return nil, err
 	}
 
 	// Convert back to oauth2.Token (restores Extra fields like id_token)
@@ -142,13 +173,15 @@ func (s *Store) GetToken(ctx context.Context, userID string) (*oauth2.Token, err
 
 	// Check if expired (and no refresh token to recover)
 	if !token.Expiry.IsZero() && time.Now().After(token.Expiry) && token.RefreshToken == "" {
-		return nil, storage.ErrTokenExpired
+		err = storage.ErrTokenExpired
+		return nil, err
 	}
 
 	// Decrypt token if encryptor is configured
-	decrypted, err := s.decryptToken(token)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt token: %w", err)
+	decrypted, decErr := s.decryptToken(token)
+	if decErr != nil {
+		err = fmt.Errorf("failed to decrypt token: %w", decErr)
+		return nil, err
 	}
 
 	return decrypted, nil

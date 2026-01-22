@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Valkey Storage Instrumentation Support (#191)**
+  - **Feature**: Added OpenTelemetry instrumentation to Valkey storage backend for observability parity with memory storage
+  - **Use Case**: Enables Prometheus/Grafana dashboards to monitor storage size metrics (`storage.tokens.count`, `storage.clients.count`, `storage.flows.count`, etc.) when using Valkey backend
+  - **New Methods**:
+    - `Store.SetInstrumentation(inst)` - Sets OpenTelemetry instrumentation for the store
+    - Storage size callbacks for Prometheus gauges using SCAN operations
+  - **Tracing**: Added tracing spans for key storage operations (`save_token`, `get_token`, `save_client`, `get_client`, `save_authorization_code`) with `storage.backend=valkey` attribute
+  - **Metrics**: Storage operations now record duration and success/error metrics via `RecordStorageOperation`
+  - **Implementation Notes**:
+    - Storage size counting uses SCAN operations which are efficient for periodic metrics scraping
+    - Tracing spans include operation name and backend type for filtering in observability tools
+  - **Grafana Dashboard Support**: Fixes "No data" panels in mcp-kubernetes Grafana dashboards for storage metrics when using Valkey backend
+
 - **OIDC Prompt Parameter and Silent Authentication Support**
   - **Feature**: New `AuthorizationURLOptions` struct for optional OIDC parameters in authorization requests
   - **Use Case**: Enables silent re-authentication flows where MCP clients can attempt token refresh without user interaction when an IdP session already exists
