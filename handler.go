@@ -13,6 +13,7 @@ import (
 	"path"
 	"strings"
 	"time"
+	"unicode"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -1718,6 +1719,16 @@ func (h *Handler) parseAndValidateRegistrationRequest(w http.ResponseWriter, r *
 		return nil, err
 	}
 
+	// Validate client_name to prevent potential stored XSS (defense-in-depth)
+	if req.ClientName != "" {
+		if err := validateClientName(req.ClientName); err != nil {
+			h.logger.Warn("Invalid client_name in registration request",
+				"client_name_length", len(req.ClientName), "error", err, "ip", clientIP)
+			h.writeError(w, ErrorCodeInvalidRequest, err.Error(), http.StatusBadRequest)
+			return nil, err
+		}
+	}
+
 	if req.TokenEndpointAuthMethod != "" && !isValidAuthMethod(req.TokenEndpointAuthMethod) {
 		h.logger.Warn("Unsupported token_endpoint_auth_method requested",
 			"method", req.TokenEndpointAuthMethod, "supported_methods", SupportedTokenAuthMethods, "ip", clientIP)
@@ -1728,6 +1739,39 @@ func (h *Handler) parseAndValidateRegistrationRequest(w http.ResponseWriter, r *
 	}
 
 	return &req, nil
+}
+
+// maxClientNameLength is the maximum allowed length for client_name.
+const maxClientNameLength = 256
+
+// validateClientName validates the client_name field to prevent potential stored XSS.
+// This is a defense-in-depth measure - while client_name is currently only used in
+// JSON responses (which escape HTML), validation prevents issues if the value is
+// ever displayed in HTML contexts (admin dashboards, log viewers, audit reports).
+//
+// Validation rules:
+//   - Must not contain HTML-like characters (< or >)
+//   - Must not exceed 256 characters
+//   - Must contain only printable characters (no control characters)
+func validateClientName(name string) error {
+	// Check length limit
+	if len(name) > maxClientNameLength {
+		return fmt.Errorf("client_name must be %d characters or less", maxClientNameLength)
+	}
+
+	// Reject HTML-like content to prevent potential XSS if displayed in HTML context
+	if strings.ContainsAny(name, "<>") {
+		return fmt.Errorf("client_name must not contain HTML characters (< or >)")
+	}
+
+	// Validate all characters are printable (no control characters)
+	for i, r := range name {
+		if !unicode.IsPrint(r) && !unicode.IsSpace(r) {
+			return fmt.Errorf("client_name must contain only printable characters (invalid character at position %d)", i)
+		}
+	}
+
+	return nil
 }
 
 // getMaxClientsPerIP returns the max clients per IP with default.

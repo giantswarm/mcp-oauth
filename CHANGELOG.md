@@ -53,6 +53,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Input Validation for `client_name` in Dynamic Client Registration**
+  - **Feature**: Added input validation for the `client_name` field during client registration
+  - **Defense-in-Depth**: While `client_name` is currently only used in JSON responses (which escape HTML), validation prevents potential stored XSS if the value is ever displayed in HTML contexts (admin dashboards, log viewers, audit reports)
+  - **Validation Rules**:
+    - Must not contain HTML-like characters (`<` or `>`)
+    - Must not exceed 256 characters
+    - Must contain only printable characters (no control characters)
+  - **Error Handling**: Invalid `client_name` values return `400 Bad Request` with a descriptive error message
+  - **References**: [OWASP Input Validation Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Input_Validation_Cheat_Sheet.html), [CWE-79](https://cwe.mitre.org/data/definitions/79.html)
+
 - **OAuth 2.1 Client Binding for Refresh Tokens**
   - **Feature**: Refresh tokens are now bound to the client that was originally issued the token, per OAuth 2.1 Section 6
   - **Security Benefit**: Prevents cross-client token theft attacks where an attacker with a stolen refresh token attempts to use it from a different client

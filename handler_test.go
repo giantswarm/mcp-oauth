@@ -2517,6 +2517,225 @@ func TestHandler_ServeClientRegistration_TrustedSchemes(t *testing.T) {
 	}
 }
 
+func TestValidateClientName(t *testing.T) {
+	tests := []struct {
+		name       string
+		clientName string
+		wantErr    bool
+		errContain string
+	}{
+		{
+			name:       "valid simple name",
+			clientName: "My Application",
+			wantErr:    false,
+		},
+		{
+			name:       "valid name with numbers",
+			clientName: "App v2.0",
+			wantErr:    false,
+		},
+		{
+			name:       "valid name with special chars",
+			clientName: "Test App (Production) - 2026",
+			wantErr:    false,
+		},
+		{
+			name:       "valid unicode name",
+			clientName: "Application",
+			wantErr:    false,
+		},
+		{
+			name:       "valid name with emoji",
+			clientName: "Cool App",
+			wantErr:    false,
+		},
+		{
+			name:       "empty name is valid",
+			clientName: "",
+			wantErr:    false,
+		},
+		{
+			name:       "max length name",
+			clientName: strings.Repeat("a", 256),
+			wantErr:    false,
+		},
+		{
+			name:       "rejects script tag",
+			clientName: "<script>alert(1)</script>",
+			wantErr:    true,
+			errContain: "HTML characters",
+		},
+		{
+			name:       "rejects opening angle bracket",
+			clientName: "App <version>",
+			wantErr:    true,
+			errContain: "HTML characters",
+		},
+		{
+			name:       "rejects closing angle bracket",
+			clientName: "App >name",
+			wantErr:    true,
+			errContain: "HTML characters",
+		},
+		{
+			name:       "rejects img tag",
+			clientName: "<img src=x onerror=alert(1)>",
+			wantErr:    true,
+			errContain: "HTML characters",
+		},
+		{
+			name:       "rejects SVG XSS",
+			clientName: "<svg onload=alert(1)>",
+			wantErr:    true,
+			errContain: "HTML characters",
+		},
+		{
+			name:       "rejects name exceeding max length",
+			clientName: strings.Repeat("a", 257),
+			wantErr:    true,
+			errContain: "256 characters or less",
+		},
+		{
+			name:       "rejects name way over max length",
+			clientName: strings.Repeat("x", 1000),
+			wantErr:    true,
+			errContain: "256 characters or less",
+		},
+		{
+			name:       "rejects null byte",
+			clientName: "App\x00Name",
+			wantErr:    true,
+			errContain: "printable characters",
+		},
+		{
+			name:       "rejects control character",
+			clientName: "App\x07Name",
+			wantErr:    true,
+			errContain: "printable characters",
+		},
+		{
+			name:       "rejects escape character",
+			clientName: "App\x1BName",
+			wantErr:    true,
+			errContain: "printable characters",
+		},
+		{
+			name:       "allows tabs",
+			clientName: "App\tName",
+			wantErr:    false,
+		},
+		{
+			name:       "allows newlines",
+			clientName: "App\nName",
+			wantErr:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateClientName(tt.clientName)
+			switch {
+			case tt.wantErr && err == nil:
+				t.Errorf("validateClientName(%q) = nil, want error containing %q",
+					tt.clientName, tt.errContain)
+			case tt.wantErr && !strings.Contains(err.Error(), tt.errContain):
+				t.Errorf("validateClientName(%q) error = %q, want error containing %q",
+					tt.clientName, err.Error(), tt.errContain)
+			case !tt.wantErr && err != nil:
+				t.Errorf("validateClientName(%q) = %v, want nil", tt.clientName, err)
+			}
+		})
+	}
+}
+
+func TestHandler_ServeClientRegistration_ClientNameValidation(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Enable public registration for this test
+	handler.server.Config.AllowPublicClientRegistration = true
+
+	tests := []struct {
+		name           string
+		clientName     string
+		wantStatus     int
+		wantErrContain string
+	}{
+		{
+			name:       "valid client name succeeds",
+			clientName: "Test Application",
+			wantStatus: http.StatusCreated,
+		},
+		{
+			name:           "script tag rejected",
+			clientName:     "<script>alert(1)</script>",
+			wantStatus:     http.StatusBadRequest,
+			wantErrContain: "HTML characters",
+		},
+		{
+			name:           "HTML tag rejected",
+			clientName:     "<b>Bold App</b>",
+			wantStatus:     http.StatusBadRequest,
+			wantErrContain: "HTML characters",
+		},
+		{
+			name:           "long name rejected",
+			clientName:     strings.Repeat("x", 300),
+			wantStatus:     http.StatusBadRequest,
+			wantErrContain: "256 characters",
+		},
+		{
+			name:           "control character rejected",
+			clientName:     "App\x00Name",
+			wantStatus:     http.StatusBadRequest,
+			wantErrContain: "printable characters",
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			regReq := ClientRegistrationRequest{
+				RedirectURIs:            []string{"https://example.com/callback"},
+				TokenEndpointAuthMethod: "client_secret_basic",
+				GrantTypes:              []string{"authorization_code"},
+				ResponseTypes:           []string{"code"},
+				ClientName:              tt.clientName,
+				ClientType:              "confidential",
+			}
+
+			body, _ := json.Marshal(regReq)
+			req := httptest.NewRequest(http.MethodPost, "/register", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			// Use unique IP per test to avoid rate limiting
+			req.RemoteAddr = fmt.Sprintf("192.168.%d.%d:12345", i/256, i%256)
+			w := httptest.NewRecorder()
+
+			handler.ServeClientRegistration(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d, body: %s", w.Code, tt.wantStatus, w.Body.String())
+			}
+
+			if tt.wantStatus != http.StatusCreated {
+				// Verify error message contains expected text
+				if !strings.Contains(w.Body.String(), tt.wantErrContain) {
+					t.Errorf("error response %q should contain %q",
+						w.Body.String(), tt.wantErrContain)
+				}
+			} else {
+				// Verify successful registration
+				var resp ClientRegistrationResponse
+				if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+					t.Fatalf("failed to decode response: %v", err)
+				}
+				if resp.ClientID == "" {
+					t.Error("ClientID should not be empty")
+				}
+			}
+		})
+	}
+}
+
 func TestUserInfoFromContext(t *testing.T) {
 	// Test with no user info in context
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
