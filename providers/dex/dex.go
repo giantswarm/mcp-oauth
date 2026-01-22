@@ -211,12 +211,13 @@ func (p *Provider) DefaultScopes() []string {
 // AuthorizationURL generates the Dex OAuth authorization URL with PKCE support.
 // If connector_id is configured, it appends the parameter to bypass Dex's connector selection UI.
 // If scopes is empty, the provider's default configured scopes are used.
-func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string, scopes []string) string {
-	var opts []oauth2.AuthCodeOption
+// opts contains optional OIDC parameters like prompt, login_hint, max_age (nil for defaults).
+func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string, scopes []string, authOpts *providers.AuthorizationURLOptions) string {
+	var authCodeOpts []oauth2.AuthCodeOption
 
 	// Add PKCE parameters if provided
 	if codeChallenge != "" && codeChallengeMethod != "" {
-		opts = append(opts,
+		authCodeOpts = append(authCodeOpts,
 			oauth2.SetAuthURLParam("code_challenge", codeChallenge),
 			oauth2.SetAuthURLParam("code_challenge_method", codeChallengeMethod),
 		)
@@ -225,27 +226,19 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	// Add connector_id parameter if configured (Dex-specific feature)
 	// This bypasses the Dex connector selection screen
 	if p.connectorID != "" {
-		opts = append(opts,
-			oauth2.SetAuthURLParam("connector_id", p.connectorID),
-		)
+		authCodeOpts = append(authCodeOpts, oauth2.SetAuthURLParam("connector_id", p.connectorID))
 	}
 
+	// Apply optional OIDC parameters (Dex supports standard OIDC params)
+	authCodeOpts = append(authCodeOpts, providers.ApplyAuthorizationURLOptions(authOpts)...)
+
 	// SECURITY: Create a deep copy of scopes to prevent potential race conditions
-	var scopesToUse []string
-	if len(scopes) > 0 {
-		// Use requested scopes (create deep copy)
-		scopesToUse = make([]string, len(scopes))
-		copy(scopesToUse, scopes)
-	} else {
-		// Use provider's default scopes (create deep copy)
-		scopesToUse = make([]string, len(p.Scopes))
-		copy(scopesToUse, p.Scopes)
-	}
+	scopesToUse := providers.CopyScopes(scopes, p.Scopes)
 
 	// Create a config with the determined scopes
 	config := *p.Config
 	config.Scopes = scopesToUse
-	return config.AuthCodeURL(state, opts...)
+	return config.AuthCodeURL(state, authCodeOpts...)
 }
 
 // ensureContextTimeout ensures the context has a deadline, adding one if needed.

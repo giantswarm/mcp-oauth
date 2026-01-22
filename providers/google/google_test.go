@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+
+	"github.com/giantswarm/mcp-oauth/providers"
 )
 
 const (
@@ -201,7 +203,7 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			authURL := provider.AuthorizationURL(tt.state, tt.codeChallenge, tt.codeChallengeMethod, tt.scopes)
+			authURL := provider.AuthorizationURL(tt.state, tt.codeChallenge, tt.codeChallengeMethod, tt.scopes, nil)
 
 			for _, want := range tt.wantContains {
 				if !strings.Contains(authURL, want) {
@@ -257,7 +259,7 @@ func TestProvider_AuthorizationURL_ForceConsent(t *testing.T) {
 				t.Fatalf("NewProvider() error = %v", err)
 			}
 
-			authURL := provider.AuthorizationURL("test-state", "test-challenge", "S256", nil)
+			authURL := provider.AuthorizationURL("test-state", "test-challenge", "S256", nil, nil)
 
 			hasPromptConsent := strings.Contains(authURL, "prompt=consent")
 			if hasPromptConsent != tt.wantPromptConsent {
@@ -324,7 +326,7 @@ func TestProvider_AuthorizationURL_FiltersOfflineAccess(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			authURL := provider.AuthorizationURL("test-state", "test-challenge", "S256", tt.scopes)
+			authURL := provider.AuthorizationURL("test-state", "test-challenge", "S256", tt.scopes, nil)
 
 			// Verify offline_access is NOT in the URL
 			if strings.Contains(authURL, "offline_access") {
@@ -363,7 +365,7 @@ func TestProvider_AuthorizationURL_DeepCopySafety(t *testing.T) {
 	originalScopes := make([]string, len(provider.Scopes))
 	copy(originalScopes, provider.Scopes)
 
-	authURL1 := provider.AuthorizationURL("state1", "challenge1", "S256", nil)
+	authURL1 := provider.AuthorizationURL("state1", "challenge1", "S256", nil, nil)
 
 	// Verify provider's scopes weren't modified
 	if len(provider.Scopes) != len(originalScopes) {
@@ -377,7 +379,7 @@ func TestProvider_AuthorizationURL_DeepCopySafety(t *testing.T) {
 
 	// Test 2: Using custom scopes - should not affect provider defaults
 	customScopes := []string{"custom:scope1", "custom:scope2"}
-	authURL2 := provider.AuthorizationURL("state2", "challenge2", "S256", customScopes)
+	authURL2 := provider.AuthorizationURL("state2", "challenge2", "S256", customScopes, nil)
 
 	// Verify provider's scopes are still unchanged
 	if len(provider.Scopes) != len(originalScopes) {
@@ -386,14 +388,14 @@ func TestProvider_AuthorizationURL_DeepCopySafety(t *testing.T) {
 
 	// Test 3: Modifying input slice shouldn't affect provider
 	inputScopes := []string{"input:scope1", "input:scope2"}
-	authURL3 := provider.AuthorizationURL("state3", "challenge3", "S256", inputScopes)
+	authURL3 := provider.AuthorizationURL("state3", "challenge3", "S256", inputScopes, nil)
 
 	// Modify the input slice after the call
 	inputScopes[0] = "MODIFIED"
 	_ = append(inputScopes, "APPENDED") // Intentionally not using result to test isolation
 
 	// Generate another URL - should not be affected by the modification
-	authURL4 := provider.AuthorizationURL("state4", "challenge4", "S256", []string{"input:scope1", "input:scope2"})
+	authURL4 := provider.AuthorizationURL("state4", "challenge4", "S256", []string{"input:scope1", "input:scope2"}, nil)
 
 	// URLs 3 and 4 should have the same scopes (ignoring state/challenge differences)
 	if !strings.Contains(authURL3, "input%3Ascope1") {
@@ -411,6 +413,161 @@ func TestProvider_AuthorizationURL_DeepCopySafety(t *testing.T) {
 	t.Log("✓ Deep copy prevents race conditions")
 	t.Log("✓ Provider defaults are protected from modification")
 	t.Log("✓ Input slices can be safely modified after call")
+}
+
+// TestProvider_AuthorizationURL_Options tests that AuthorizationURLOptions are correctly
+// applied to the authorization URL for silent authentication and other OIDC features.
+func TestProvider_AuthorizationURL_Options(t *testing.T) {
+	provider, err := NewProvider(&Config{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		RedirectURL:  "https://example.com/callback",
+		Scopes:       []string{"openid", "email"},
+		ForceConsent: boolPtr(false), // Disable so we can test prompt parameter
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+
+	tests := []struct {
+		name           string
+		opts           *providers.AuthorizationURLOptions
+		wantContains   []string
+		wantNotContain []string
+	}{
+		{
+			name: "nil options - uses defaults",
+			opts: nil,
+			wantContains: []string{
+				"access_type=offline",
+			},
+			wantNotContain: []string{
+				"prompt=",
+				"login_hint=",
+				"max_age=",
+			},
+		},
+		{
+			name: "prompt=none for silent auth",
+			opts: &providers.AuthorizationURLOptions{
+				Prompt: "none",
+			},
+			wantContains: []string{
+				"prompt=none",
+				"access_type=offline",
+			},
+		},
+		{
+			name: "prompt=login for forced re-auth",
+			opts: &providers.AuthorizationURLOptions{
+				Prompt: "login",
+			},
+			wantContains: []string{
+				"prompt=login",
+			},
+		},
+		{
+			name: "prompt=consent for forced consent",
+			opts: &providers.AuthorizationURLOptions{
+				Prompt: "consent",
+			},
+			wantContains: []string{
+				"prompt=consent",
+			},
+		},
+		{
+			name: "login_hint for known user",
+			opts: &providers.AuthorizationURLOptions{
+				LoginHint: "user@example.com",
+			},
+			wantContains: []string{
+				"login_hint=user%40example.com",
+			},
+		},
+		{
+			name: "max_age for session freshness",
+			opts: &providers.AuthorizationURLOptions{
+				MaxAge: intPtr(0), // Force re-auth
+			},
+			wantContains: []string{
+				"max_age=0",
+			},
+		},
+		{
+			name: "max_age with specific value",
+			opts: &providers.AuthorizationURLOptions{
+				MaxAge: intPtr(3600), // Session must be less than 1 hour old
+			},
+			wantContains: []string{
+				"max_age=3600",
+			},
+		},
+		{
+			name: "id_token_hint for silent auth",
+			opts: &providers.AuthorizationURLOptions{
+				IDTokenHint: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+			},
+			wantContains: []string{
+				"id_token_hint=",
+			},
+		},
+		{
+			name: "acr_values for authentication context",
+			opts: &providers.AuthorizationURLOptions{
+				ACRValues: "urn:mace:incommon:iap:silver",
+			},
+			wantContains: []string{
+				"acr_values=",
+			},
+		},
+		{
+			name: "extra parameters",
+			opts: &providers.AuthorizationURLOptions{
+				Extra: map[string]string{
+					"hd": "example.com", // Google-specific: hosted domain
+				},
+			},
+			wantContains: []string{
+				"hd=example.com",
+			},
+		},
+		{
+			name: "combination - silent auth with login_hint",
+			opts: &providers.AuthorizationURLOptions{
+				Prompt:      "none",
+				LoginHint:   "user@example.com",
+				IDTokenHint: "previous-id-token",
+			},
+			wantContains: []string{
+				"prompt=none",
+				"login_hint=",
+				"id_token_hint=",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authURL := provider.AuthorizationURL("test-state", "test-challenge", "S256", nil, tt.opts)
+
+			for _, want := range tt.wantContains {
+				if !strings.Contains(authURL, want) {
+					t.Errorf("AuthorizationURL() missing %q in URL: %s", want, authURL)
+				}
+			}
+
+			for _, notWant := range tt.wantNotContain {
+				if strings.Contains(authURL, notWant) {
+					t.Errorf("AuthorizationURL() should not contain %q in URL: %s", notWant, authURL)
+				}
+			}
+		})
+	}
+}
+
+// intPtr is a helper to create *int for MaxAge tests.
+func intPtr(i int) *int {
+	return &i
 }
 
 func TestProvider_ExchangeCode(t *testing.T) {

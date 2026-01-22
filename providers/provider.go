@@ -8,6 +8,45 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// AuthorizationURLOptions contains optional OIDC parameters for the authorization request.
+// These parameters enable advanced authentication flows like silent re-authentication
+// and user hints per OpenID Connect Core 1.0 Section 3.1.2.1.
+//
+// See: https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest
+type AuthorizationURLOptions struct {
+	// Prompt controls the authentication UX behavior.
+	// Common values:
+	//   - "none": Silent authentication - no UI displayed. Returns error if login/consent required.
+	//   - "login": Force re-authentication even if session exists.
+	//   - "consent": Force consent even if previously granted.
+	//   - "select_account": Force account selection even if only one account.
+	// Multiple values can be space-separated: "login consent"
+	Prompt string
+
+	// LoginHint pre-fills the email/username field at the IdP.
+	// Useful for re-authentication when the user's identity is already known.
+	// Example: "user@example.com"
+	LoginHint string
+
+	// MaxAge specifies the maximum authentication age in seconds.
+	// If the user's session is older than this, re-authentication is required.
+	// A value of 0 is equivalent to prompt=login.
+	MaxAge *int
+
+	// ACRValues requests specific authentication context class references.
+	// Space-separated string of acr_values.
+	// Example: "urn:mace:incommon:iap:silver"
+	ACRValues string
+
+	// IDTokenHint is a previously issued ID token passed as a hint about the user's session.
+	// Used with prompt=none to identify the user for silent re-authentication.
+	IDTokenHint string
+
+	// Extra allows setting additional custom parameters not covered above.
+	// These are added as query parameters to the authorization URL.
+	Extra map[string]string
+}
+
 // Provider defines the interface for OAuth identity providers.
 // This abstraction allows supporting Google, GitHub, Microsoft, and generic OIDC providers.
 // Now uses golang.org/x/oauth2.Token directly instead of custom types.
@@ -22,11 +61,12 @@ type Provider interface {
 	// AuthorizationURL generates the URL to redirect users for authentication
 	// codeChallenge and codeChallengeMethod are for PKCE (pass empty strings to disable)
 	// scopes is the list of scopes to request (if empty, provider's default scopes are used)
+	// opts contains optional OIDC parameters like prompt, login_hint, max_age (nil for defaults)
 	//
 	// OAuth 2.1 Security: PKCE is recommended for ALL client types (public and confidential)
 	// to protect against Authorization Code Injection attacks. Providers should support PKCE
 	// even when using client_secret authentication for defense-in-depth.
-	AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string, scopes []string) string
+	AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string, scopes []string, opts *AuthorizationURLOptions) string
 
 	// ExchangeCode exchanges an authorization code for tokens
 	// codeVerifier is for PKCE verification (pass empty string if not using PKCE)

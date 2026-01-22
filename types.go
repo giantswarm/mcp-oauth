@@ -155,3 +155,80 @@ type TokenResponse struct {
 	// Scope is the scope of the access token
 	Scope string `json:"scope,omitempty"`
 }
+
+// CallbackResult represents the result of an OAuth authorization callback.
+// It parses and holds the query parameters from the OAuth redirect.
+//
+// The callback may contain either:
+//   - Success: Code and State parameters
+//   - Error: Error, ErrorDescription, and optionally ErrorURI parameters
+//
+// Use Err() to get a typed error for error responses, including SilentAuthError
+// for silent authentication failures.
+type CallbackResult struct {
+	// Code is the authorization code from a successful authorization.
+	// Empty if the callback contains an error.
+	Code string
+
+	// State is the state parameter for CSRF validation.
+	// Should match the state sent in the authorization request.
+	State string
+
+	// Error is the OAuth error code if authorization failed.
+	// Common values: "access_denied", "login_required", "consent_required"
+	Error string
+
+	// ErrorDescription provides additional information about the error.
+	// Human-readable text describing the error.
+	ErrorDescription string
+
+	// ErrorURI points to a web page with error documentation.
+	ErrorURI string
+}
+
+// IsError returns true if the callback contains an error.
+// Use Err() to get the actual error with proper typing.
+func (r *CallbackResult) IsError() bool {
+	return r.Error != ""
+}
+
+// Err returns an appropriate error for the callback result.
+// For silent auth failures (login_required, consent_required, interaction_required,
+// account_selection_required), returns a *SilentAuthError that can be detected with
+// IsSilentAuthError().
+// Returns nil if no error occurred.
+//
+// Example usage:
+//
+//	q := r.URL.Query()
+//	result := ParseCallbackQuery(q.Get("code"), q.Get("state"), q.Get("error"), q.Get("error_description"), q.Get("error_uri"))
+//	if err := result.Err(); err != nil {
+//	    if IsSilentAuthError(err) {
+//	        // Fall back to interactive login
+//	        return startInteractiveLogin(w, r)
+//	    }
+//	    return handleError(w, err)
+//	}
+//	// Process result.Code
+func (r *CallbackResult) Err() error {
+	return ParseOAuthError(r.Error, r.ErrorDescription)
+}
+
+// ParseCallbackQuery creates a CallbackResult from URL query parameters.
+// This is a convenience function for parsing OAuth callback query strings.
+//
+// Parameters:
+//   - code: The authorization code (from "code" query param)
+//   - state: The state parameter (from "state" query param)
+//   - errorCode: The error code (from "error" query param)
+//   - errorDescription: The error description (from "error_description" query param)
+//   - errorURI: The error URI (from "error_uri" query param)
+func ParseCallbackQuery(code, state, errorCode, errorDescription, errorURI string) *CallbackResult {
+	return &CallbackResult{
+		Code:             code,
+		State:            state,
+		Error:            errorCode,
+		ErrorDescription: errorDescription,
+		ErrorURI:         errorURI,
+	}
+}

@@ -110,10 +110,25 @@ func (p *Provider) DefaultScopes() []string {
 	return scopes
 }
 
+// filterGoogleScopes creates a deep copy of scopes and filters out "offline_access".
+// Google doesn't support offline_access as a scope; it uses access_type=offline instead.
+func filterGoogleScopes(requestedScopes, defaultScopes []string) []string {
+	sourceScopes := providers.CopyScopes(requestedScopes, defaultScopes)
+	// Filter out offline_access - Google uses access_type=offline parameter instead
+	filtered := make([]string, 0, len(sourceScopes))
+	for _, s := range sourceScopes {
+		if s != "offline_access" {
+			filtered = append(filtered, s)
+		}
+	}
+	return filtered
+}
+
 // AuthorizationURL generates the Google OAuth authorization URL with optional PKCE.
 // Supports OAuth 2.1 defense-in-depth. See SECURITY_ARCHITECTURE.md for details.
 // If scopes is empty, the provider's default configured scopes are used.
-func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string, scopes []string) string {
+// opts contains optional OIDC parameters like prompt, login_hint, max_age (nil for defaults).
+func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChallengeMethod string, scopes []string, authOpts *providers.AuthorizationURLOptions) string {
 	var opts []oauth2.AuthCodeOption
 
 	// Add PKCE parameters if provided
@@ -129,35 +144,17 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 
 	// Force consent screen if configured (default: true)
 	// This ensures Google always returns a refresh token, not just on first consent.
-	// See: https://developers.google.com/identity/protocols/oauth2/web-server#offline
-	if p.forceConsent {
+	// Note: If authOpts.Prompt is set, it overrides this setting
+	if p.forceConsent && (authOpts == nil || authOpts.Prompt == "") {
 		opts = append(opts, oauth2.ApprovalForce)
 	}
 
-	// SECURITY: Create a deep copy of scopes to prevent potential race conditions
-	// If we use provider defaults, we must copy the slice to avoid shared references
-	// that could be modified concurrently or cause unexpected behavior.
-	//
-	// IMPORTANT: Filter out "offline_access" scope - Google doesn't support it as a scope.
-	// Google uses access_type=offline (added above) instead of the offline_access scope.
-	// Passing offline_access to Google causes: Error 400: invalid_scope
-	var sourceScopes []string
-	if len(scopes) > 0 {
-		sourceScopes = scopes
-	} else {
-		sourceScopes = p.Scopes
-	}
-	// Pre-allocate with capacity hint to avoid reallocations
-	scopesToUse := make([]string, 0, len(sourceScopes))
-	for _, s := range sourceScopes {
-		if s != "offline_access" {
-			scopesToUse = append(scopesToUse, s)
-		}
-	}
+	// Apply optional OIDC parameters
+	opts = append(opts, providers.ApplyAuthorizationURLOptions(authOpts)...)
 
-	// Create a config with the determined scopes
+	// Create a config with filtered scopes
 	config := *p.Config
-	config.Scopes = scopesToUse
+	config.Scopes = filterGoogleScopes(scopes, p.Scopes)
 	return config.AuthCodeURL(state, opts...)
 }
 

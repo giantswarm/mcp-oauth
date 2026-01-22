@@ -14,6 +14,58 @@ type OAuth2ConfigExchanger interface {
 	Exchange(ctx context.Context, code string, opts ...oauth2.AuthCodeOption) (*oauth2.Token, error)
 }
 
+// ApplyAuthorizationURLOptions converts AuthorizationURLOptions to oauth2.AuthCodeOption slice.
+// This shared helper reduces code duplication across providers and helps keep cyclomatic
+// complexity low. Returns nil if opts is nil.
+//
+// Standard OIDC parameters supported:
+//   - prompt: Controls authentication UX (none, login, consent, select_account)
+//   - login_hint: Pre-fills username/email field
+//   - max_age: Maximum authentication age in seconds
+//   - acr_values: Authentication context class references
+//   - id_token_hint: Previously issued ID token as session hint
+//   - Extra: Additional custom parameters
+func ApplyAuthorizationURLOptions(opts *AuthorizationURLOptions) []oauth2.AuthCodeOption {
+	if opts == nil {
+		return nil
+	}
+
+	var result []oauth2.AuthCodeOption
+	if opts.Prompt != "" {
+		result = append(result, oauth2.SetAuthURLParam("prompt", opts.Prompt))
+	}
+	if opts.LoginHint != "" {
+		result = append(result, oauth2.SetAuthURLParam("login_hint", opts.LoginHint))
+	}
+	if opts.MaxAge != nil {
+		result = append(result, oauth2.SetAuthURLParam("max_age", fmt.Sprintf("%d", *opts.MaxAge)))
+	}
+	if opts.ACRValues != "" {
+		result = append(result, oauth2.SetAuthURLParam("acr_values", opts.ACRValues))
+	}
+	if opts.IDTokenHint != "" {
+		result = append(result, oauth2.SetAuthURLParam("id_token_hint", opts.IDTokenHint))
+	}
+	for k, v := range opts.Extra {
+		result = append(result, oauth2.SetAuthURLParam(k, v))
+	}
+	return result
+}
+
+// CopyScopes creates a deep copy of scopes to prevent race conditions.
+// If requestedScopes is non-empty, copies those; otherwise copies defaultScopes.
+func CopyScopes(requestedScopes, defaultScopes []string) []string {
+	var sourceScopes []string
+	if len(requestedScopes) > 0 {
+		sourceScopes = requestedScopes
+	} else {
+		sourceScopes = defaultScopes
+	}
+	scopesCopy := make([]string, len(sourceScopes))
+	copy(scopesCopy, sourceScopes)
+	return scopesCopy
+}
+
 // ExchangeCodeWithPKCE is a shared helper for exchanging authorization codes with optional PKCE.
 // It handles the common pattern of:
 // 1. Adding PKCE verifier if provided
