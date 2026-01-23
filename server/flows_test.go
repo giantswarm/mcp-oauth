@@ -625,7 +625,7 @@ func TestServer_ExtendTokenExpiryForStorage(t *testing.T) {
 			description:    "token with zero expiry should be extended",
 		},
 		{
-			name: "token with id_token extra",
+			name: "token with all KnownExtraFields",
 			inputToken: func() *oauth2.Token {
 				t := &oauth2.Token{
 					AccessToken:  "token-with-extra",
@@ -633,12 +633,28 @@ func TestServer_ExtendTokenExpiryForStorage(t *testing.T) {
 					Expiry:       time.Now().Add(-1 * time.Minute),
 				}
 				return t.WithExtra(map[string]interface{}{
-					"id_token": "test-id-token",
-					"scope":    "openid email",
+					"id_token":   "test-id-token",
+					"scope":      "openid email",
+					"expires_in": float64(300), // 5 minutes - JSON numbers decode as float64
 				})
 			}(),
 			expectExtended: true,
-			description:    "token with extras should preserve id_token",
+			description:    "token with extras should preserve all KnownExtraFields (id_token, scope, expires_in)",
+		},
+		{
+			name: "token with only scope (no id_token)",
+			inputToken: func() *oauth2.Token {
+				t := &oauth2.Token{
+					AccessToken:  "token-scope-only",
+					RefreshToken: "refresh",
+					Expiry:       time.Now().Add(-1 * time.Minute),
+				}
+				return t.WithExtra(map[string]interface{}{
+					"scope": "openid profile",
+				})
+			}(),
+			expectExtended: true,
+			description:    "token with only scope should still preserve scope (regression test for DRY fix)",
 		},
 	}
 
@@ -673,13 +689,15 @@ func TestServer_ExtendTokenExpiryForStorage(t *testing.T) {
 				}
 			}
 
-			// Check id_token preservation if present in input
-			if idToken := tt.inputToken.Extra("id_token"); idToken != nil {
-				resultIDToken := result.Extra("id_token")
-				if resultIDToken == nil {
-					t.Error("id_token should be preserved in result")
-				} else if resultIDToken != idToken {
-					t.Errorf("id_token not preserved: got %v, want %v", resultIDToken, idToken)
+			// Check all KnownExtraFields are preserved
+			for _, field := range []string{"id_token", "scope", "expires_in"} {
+				if inputVal := tt.inputToken.Extra(field); inputVal != nil {
+					resultVal := result.Extra(field)
+					if resultVal == nil {
+						t.Errorf("%s should be preserved in result", field)
+					} else if resultVal != inputVal {
+						t.Errorf("%s not preserved: got %v, want %v", field, resultVal, inputVal)
+					}
 				}
 			}
 		})

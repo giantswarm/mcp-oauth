@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Fix**: Added `ProviderTokenTTL` configuration (default: 24 hours) and extended provider token expiry before saving for user lookup. This ensures tokens remain available for SSO forwarding regardless of access token lifetime.
   - **New Configuration**: `Config.ProviderTokenTTL` - controls how long provider tokens are stored (default: 86400 seconds = 24 hours)
   - **Affected Components**: `server/flows.go` - new `extendTokenExpiryForStorage()` function in `saveUserInfoAndToken()`
-  - **Testing**: Added `TestServer_HandleProviderCallback_ShortLivedToken` and `TestServer_ExtendTokenExpiryForStorage` tests
+  - **Implementation**: Uses `storage.ExtractTokenExtra()` to preserve all `KnownExtraFields` (id_token, scope, expires_in) - ensures consistency with storage layer and future extensibility
+  - **Testing**: Added `TestServer_HandleProviderCallback_ShortLivedToken` and `TestServer_ExtendTokenExpiryForStorage` tests covering all edge cases
 
 ### Added
 

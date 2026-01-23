@@ -970,16 +970,10 @@ func (s *Server) extendTokenExpiryForStorage(token *oauth2.Token) *oauth2.Token 
 		Expiry:       extendedExpiry,
 	}
 
-	// Preserve Extra fields (id_token, scope, etc.) using WithExtra
-	// This is necessary because oauth2.Token stores extras in a private field
-	if extra := token.Extra("id_token"); extra != nil {
-		extraMap := make(map[string]interface{})
-		extraMap["id_token"] = extra
-		// Also preserve scope if present
-		if scope := token.Extra("scope"); scope != nil {
-			extraMap["scope"] = scope
-		}
-		extendedToken = extendedToken.WithExtra(extraMap)
+	// Preserve Extra fields (id_token, scope, expires_in, etc.) using the shared helper
+	// This ensures all KnownExtraFields are preserved, not just id_token
+	if extra := storage.ExtractTokenExtra(token); extra != nil {
+		extendedToken = extendedToken.WithExtra(extra)
 	}
 
 	s.Logger.Debug("Extended provider token expiry for storage",
