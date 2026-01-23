@@ -175,3 +175,26 @@ const (
 	// This prevents DoS attacks through excessively long path registration
 	MaxMetadataPathLength = 256
 )
+
+// OIDC parameter validation constants (OpenID Connect Core 1.0 Section 3.1.2.1)
+// These limits provide defense-in-depth against DoS attacks via oversized parameters.
+const (
+	// MaxLoginHintLength is the maximum length for the login_hint parameter.
+	// This is typically an email address (RFC 5321 limits to 254 chars).
+	// We use 256 to accommodate edge cases and remain consistent with other ID limits.
+	MaxLoginHintLength = 256
+
+	// MaxIDTokenHintLength is the maximum length for the id_token_hint parameter.
+	// JWTs can be large (especially with many claims), so we allow up to 64KB.
+	// This matches maxSubjectTokenLength used in token exchange flows.
+	MaxIDTokenHintLength = 64 * 1024 // 64KB
+
+	// MaxACRValuesLength is the maximum length for the acr_values parameter.
+	// ACR values are typically short URNs, but can be space-separated lists.
+	MaxACRValuesLength = 1024
+
+	// MaxPromptLength is the maximum length for the prompt parameter.
+	// Valid values are "none", "login", "consent", "select_account" or combinations.
+	// Even with all combined ("login consent select_account"), this is well under 100 chars.
+	MaxPromptLength = 128
+)

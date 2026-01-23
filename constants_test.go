@@ -208,3 +208,45 @@ func TestTokenLengthSecurity(t *testing.T) {
 		t.Errorf("StateTokenLength = %d, should be at least %d for security", StateTokenLength, minSecureLength)
 	}
 }
+
+// TestOIDCParameterLimits verifies OIDC parameter length limits are appropriate.
+// These constants provide defense-in-depth against DoS attacks via oversized parameters.
+func TestOIDCParameterLimits(t *testing.T) {
+	// login_hint is typically an email (RFC 5321 limits local+domain to 254 chars)
+	// We use 256 to be consistent with other ID length limits
+	if MaxLoginHintLength < 254 {
+		t.Errorf("MaxLoginHintLength = %d, should be at least 254 to accommodate email addresses", MaxLoginHintLength)
+	}
+	if MaxLoginHintLength > 1024 {
+		t.Errorf("MaxLoginHintLength = %d, should be reasonably limited for DoS protection", MaxLoginHintLength)
+	}
+
+	// id_token_hint can be a full JWT which can be large with many claims
+	// 64KB matches maxSubjectTokenLength used elsewhere
+	if MaxIDTokenHintLength < 4*1024 {
+		t.Errorf("MaxIDTokenHintLength = %d, should be at least 4KB for typical JWTs", MaxIDTokenHintLength)
+	}
+	if MaxIDTokenHintLength > 128*1024 {
+		t.Errorf("MaxIDTokenHintLength = %d, should not exceed 128KB for DoS protection", MaxIDTokenHintLength)
+	}
+	if MaxIDTokenHintLength != 64*1024 {
+		t.Errorf("MaxIDTokenHintLength = %d, expected 64KB to match maxSubjectTokenLength", MaxIDTokenHintLength)
+	}
+
+	// acr_values are typically short URNs, even as space-separated list
+	if MaxACRValuesLength < 256 {
+		t.Errorf("MaxACRValuesLength = %d, should be at least 256 for typical ACR values", MaxACRValuesLength)
+	}
+	if MaxACRValuesLength > 4096 {
+		t.Errorf("MaxACRValuesLength = %d, should be reasonably limited", MaxACRValuesLength)
+	}
+
+	// prompt values are from a fixed set, even combined they're short
+	// "login consent select_account" = 27 chars, so 128 is very generous
+	if MaxPromptLength < 64 {
+		t.Errorf("MaxPromptLength = %d, should be at least 64 for combined prompt values", MaxPromptLength)
+	}
+	if MaxPromptLength > 256 {
+		t.Errorf("MaxPromptLength = %d, should not exceed 256 for DoS protection", MaxPromptLength)
+	}
+}

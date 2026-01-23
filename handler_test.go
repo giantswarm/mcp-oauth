@@ -1966,6 +1966,221 @@ func TestHandler_ServeAuthorization_OIDCParameterForwarding(t *testing.T) {
 	}
 }
 
+// TestParseOIDCOptions_Validation tests that parseOIDCOptions properly validates
+// OIDC parameters for length limits and allowed values (security hardening).
+func TestParseOIDCOptions_Validation(t *testing.T) {
+	tests := []struct {
+		name            string
+		queryParams     map[string]string
+		wantNil         bool
+		wantPrompt      string
+		wantLoginHint   string
+		wantIDTokenHint string
+		wantACRValues   string
+		description     string
+	}{
+		{
+			name:        "valid prompt=none",
+			queryParams: map[string]string{"prompt": "none"},
+			wantPrompt:  "none",
+			description: "Valid prompt value should be accepted",
+		},
+		{
+			name:        "valid prompt=login",
+			queryParams: map[string]string{"prompt": "login"},
+			wantPrompt:  "login",
+			description: "Valid prompt value should be accepted",
+		},
+		{
+			name:        "valid prompt=consent",
+			queryParams: map[string]string{"prompt": "consent"},
+			wantPrompt:  "consent",
+			description: "Valid prompt value should be accepted",
+		},
+		{
+			name:        "valid prompt=select_account",
+			queryParams: map[string]string{"prompt": "select_account"},
+			wantPrompt:  "select_account",
+			description: "Valid prompt value should be accepted",
+		},
+		{
+			name:        "valid combined prompt values",
+			queryParams: map[string]string{"prompt": "login consent"},
+			wantPrompt:  "login consent",
+			description: "Multiple valid prompt values should be accepted",
+		},
+		{
+			name:        "invalid prompt value rejected",
+			queryParams: map[string]string{"prompt": "invalid_value"},
+			wantNil:     true,
+			description: "Unknown prompt value should be rejected",
+		},
+		{
+			name:        "prompt with injection attempt rejected",
+			queryParams: map[string]string{"prompt": "none&other_param=injected"},
+			wantNil:     true,
+			description: "Prompt containing & (injection attempt) should be rejected",
+		},
+		{
+			name:        "prompt exceeds max length",
+			queryParams: map[string]string{"prompt": string(make([]byte, MaxPromptLength+1))},
+			wantNil:     true,
+			description: "Oversized prompt should be rejected",
+		},
+		{
+			name:          "login_hint within limit",
+			queryParams:   map[string]string{"login_hint": "user@example.com"},
+			wantLoginHint: "user@example.com",
+			description:   "Valid login_hint should be accepted",
+		},
+		{
+			name:        "login_hint exceeds max length",
+			queryParams: map[string]string{"login_hint": string(make([]byte, MaxLoginHintLength+1))},
+			wantNil:     true,
+			description: "Oversized login_hint should be rejected",
+		},
+		{
+			name:          "login_hint at max length",
+			queryParams:   map[string]string{"login_hint": string(make([]byte, MaxLoginHintLength))},
+			wantLoginHint: string(make([]byte, MaxLoginHintLength)),
+			description:   "login_hint at exactly max length should be accepted",
+		},
+		{
+			name:            "id_token_hint within limit",
+			queryParams:     map[string]string{"id_token_hint": "eyJhbGciOiJSUzI1NiJ9.test.signature"},
+			wantIDTokenHint: "eyJhbGciOiJSUzI1NiJ9.test.signature",
+			description:     "Valid id_token_hint should be accepted",
+		},
+		{
+			name:        "id_token_hint exceeds max length (64KB)",
+			queryParams: map[string]string{"id_token_hint": string(make([]byte, MaxIDTokenHintLength+1))},
+			wantNil:     true,
+			description: "Oversized id_token_hint should be rejected",
+		},
+		{
+			name:          "acr_values within limit",
+			queryParams:   map[string]string{"acr_values": "urn:mace:incommon:iap:silver"},
+			wantACRValues: "urn:mace:incommon:iap:silver",
+			description:   "Valid acr_values should be accepted",
+		},
+		{
+			name:        "acr_values exceeds max length",
+			queryParams: map[string]string{"acr_values": string(make([]byte, MaxACRValuesLength+1))},
+			wantNil:     true,
+			description: "Oversized acr_values should be rejected",
+		},
+		{
+			name:          "mixed valid and invalid - invalid prompt rejects all",
+			queryParams:   map[string]string{"prompt": "invalid", "login_hint": "user@example.com"},
+			wantLoginHint: "user@example.com",
+			wantNil:       false, // login_hint is still valid
+			description:   "Invalid prompt doesn't reject valid login_hint",
+		},
+		{
+			name: "all parameters valid",
+			queryParams: map[string]string{
+				"prompt":        "none",
+				"login_hint":    "user@example.com",
+				"id_token_hint": "eyJhbGciOiJSUzI1NiJ9.test",
+				"acr_values":    "urn:mace:incommon:iap:silver",
+			},
+			wantPrompt:      "none",
+			wantLoginHint:   "user@example.com",
+			wantIDTokenHint: "eyJhbGciOiJSUzI1NiJ9.test",
+			wantACRValues:   "urn:mace:incommon:iap:silver",
+			description:     "All valid parameters should be accepted",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Build query values
+			query := url.Values{}
+			for k, v := range tt.queryParams {
+				query.Set(k, v)
+			}
+
+			opts := parseOIDCOptions(query)
+
+			if tt.wantNil {
+				if opts != nil {
+					t.Errorf("Expected nil options, got %+v", opts)
+				}
+				return
+			}
+
+			// Check specific expected values
+			if tt.wantPrompt != "" {
+				if opts == nil {
+					t.Fatal("Expected non-nil options for prompt check")
+				}
+				if opts.Prompt != tt.wantPrompt {
+					t.Errorf("prompt = %q, want %q", opts.Prompt, tt.wantPrompt)
+				}
+			}
+			if tt.wantLoginHint != "" {
+				if opts == nil {
+					t.Fatal("Expected non-nil options for login_hint check")
+				}
+				if opts.LoginHint != tt.wantLoginHint {
+					t.Errorf("login_hint = %q, want %q", opts.LoginHint, tt.wantLoginHint)
+				}
+			}
+			if tt.wantIDTokenHint != "" {
+				if opts == nil {
+					t.Fatal("Expected non-nil options for id_token_hint check")
+				}
+				if opts.IDTokenHint != tt.wantIDTokenHint {
+					t.Errorf("id_token_hint = %q, want %q", opts.IDTokenHint, tt.wantIDTokenHint)
+				}
+			}
+			if tt.wantACRValues != "" {
+				if opts == nil {
+					t.Fatal("Expected non-nil options for acr_values check")
+				}
+				if opts.ACRValues != tt.wantACRValues {
+					t.Errorf("acr_values = %q, want %q", opts.ACRValues, tt.wantACRValues)
+				}
+			}
+
+			t.Logf("✓ %s", tt.description)
+		})
+	}
+}
+
+// TestValidatePrompt tests the validatePrompt helper function directly.
+func TestValidatePrompt(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+		desc     string
+	}{
+		{"", "", "empty string is valid"},
+		{"none", "none", "valid single value: none"},
+		{"login", "login", "valid single value: login"},
+		{"consent", "consent", "valid single value: consent"},
+		{"select_account", "select_account", "valid single value: select_account"},
+		{"login consent", "login consent", "valid combined: login consent"},
+		{"none login consent select_account", "none login consent select_account", "all valid values - semantic validation is IdP's responsibility"},
+		{"invalid", "", "invalid value rejected"},
+		{"none invalid", "", "mixed valid/invalid rejected"},
+		{"NONE", "", "case-sensitive: uppercase rejected"},
+		{"None", "", "case-sensitive: mixed case rejected"},
+		{"login  consent", "login  consent", "extra whitespace preserved (handled by IdP)"},
+		{string(make([]byte, MaxPromptLength)), "", "at max length with invalid content"},
+		{string(make([]byte, MaxPromptLength+1)), "", "exceeds max length"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			result := validatePrompt(tt.input)
+			if result != tt.expected {
+				t.Errorf("validatePrompt(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
 func TestHandler_ServeCallback(t *testing.T) {
 	ctx := context.Background()
 	handler, store := setupTestHandler(t)

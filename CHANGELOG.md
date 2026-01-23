@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Problem**: When acting as an OAuth proxy, mcp-oauth was ignoring `prompt`, `login_hint`, and `id_token_hint` parameters from client authorization requests. Clients sending `prompt=none` for silent re-authentication would be redirected to the IdP without this parameter, causing the IdP to show the login page instead of attempting silent auth.
   - **Root Cause**: `StartAuthorizationFlow` in `server/flows.go` always passed `nil` for `AuthorizationURLOptions` to the provider, ignoring any OIDC parameters in the incoming request. The handler (`ServeAuthorization`) did not extract these parameters from the query string.
   - **Fix**:
-    - `handler.go`: `ServeAuthorization` now extracts `prompt`, `login_hint`, and `id_token_hint` from the authorization request query parameters
+    - `handler.go`: `ServeAuthorization` now extracts `prompt`, `login_hint`, `id_token_hint`, `max_age`, and `acr_values` from the authorization request query parameters
     - `server/flows.go`: `StartAuthorizationFlow` now accepts `*providers.AuthorizationURLOptions` and passes it to the provider's `AuthorizationURL` method
     - Audit logging now includes forwarded OIDC parameters (with privacy-aware handling for sensitive fields)
   - **Use Case**: Enables silent re-authentication through muster aggregator proxy. Users with active IdP sessions can now authenticate without manual account selection.
@@ -24,8 +24,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `prompt=select_account` - Force account selection
     - `login_hint` - Pre-fill username/email at IdP
     - `id_token_hint` - Previously issued ID token as session hint
-  - **Testing**: Added `TestStartAuthorizationFlow_OIDCParameterForwarding` with comprehensive test cases
+    - `max_age` - Maximum authentication age in seconds (forces re-auth if session too old)
+    - `acr_values` - Authentication context class references (e.g., request MFA)
+  - **Testing**: Added `TestStartAuthorizationFlow_OIDCParameterForwarding` and `TestHandler_ServeAuthorization_OIDCParameterForwarding` with comprehensive test cases covering all OIDC parameters
   - **References**: [OpenID Connect Core 1.0 Section 3.1.2.1](https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest)
+  - **Security Hardening**: Added input validation for OIDC parameters (defense-in-depth):
+    - `prompt`: Whitelist validation - only `none`, `login`, `consent`, `select_account` accepted (max 128 chars)
+    - `login_hint`: Length limit of 256 characters (typical email length)
+    - `id_token_hint`: Length limit of 64KB (matches `maxSubjectTokenLength`)
+    - `acr_values`: Length limit of 1024 characters
+    - Invalid/oversized parameters are silently ignored (not forwarded), matching OIDC spec behavior
+  - **Documentation**: Updated `docs/silent-authentication.md` with trust model and security validation details
 
 - **Provider Token Not Saved for SSO Token Forwarding (#193)**
   - **Bug**: Provider tokens (from upstream IdP like Dex) were not being saved in Valkey storage, breaking SSO token forwarding. User info was saved but tokens were missing.
