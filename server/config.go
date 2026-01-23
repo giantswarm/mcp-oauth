@@ -67,6 +67,21 @@ type Config struct {
 	// RefreshTokenTTL is how long refresh tokens are valid
 	RefreshTokenTTL int64 // seconds, default: 7776000 (90 days)
 
+	// ProviderTokenTTL is how long provider tokens (from upstream IdP like Dex/Google) are stored
+	// for SSO token forwarding. This is INDEPENDENT of the access token's actual expiry.
+	//
+	// Provider tokens are saved by userID and email in HandleProviderCallback to enable:
+	//   - SSO token forwarding (extracting id_token for downstream services)
+	//   - Token refresh (using refresh_token to get new tokens)
+	//
+	// If the provider's access token has a short expiry (e.g., 5 minutes), this TTL ensures
+	// the token remains available in storage for the user's session duration.
+	// When a refresh_token is present, the server can refresh expired access tokens.
+	//
+	// Default: 86400 seconds (24 hours)
+	// Recommended: Set to your expected session duration or longer
+	ProviderTokenTTL int64 // seconds, default: 86400 (24 hours)
+
 	// AllowRefreshTokenRotation enables refresh token rotation (OAuth 2.1)
 	// Default: true (secure by default)
 	AllowRefreshTokenRotation bool // default: true

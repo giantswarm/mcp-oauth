@@ -40,6 +40,9 @@ func applySecureDefaults(config *Config, logger *slog.Logger) *Config {
 	// Validate trusted public registration schemes configuration
 	validateTrustedPublicRegistrationSchemes(config, logger)
 
+	// Validate ProviderTokenTTL configuration (SSO token forwarding)
+	validateProviderTokenTTLConfig(config, logger)
+
 	// Apply time-based defaults
 	applyTimeDefaults(config)
 
@@ -68,6 +71,9 @@ func applyTimeDefaults(config *Config) {
 	}
 	if config.TokenRefreshThreshold == 0 {
 		config.TokenRefreshThreshold = 300 // 5 minutes
+	}
+	if config.ProviderTokenTTL <= 0 {
+		config.ProviderTokenTTL = DefaultProviderTokenTTL // 24 hours - for SSO token forwarding
 	}
 
 	applyProviderRevocationDefaults(config)
@@ -510,6 +516,67 @@ func isValidAudienceFormat(audience string, index int, logger *slog.Logger) bool
 		return false
 	}
 	return true
+}
+
+// ProviderTokenTTL validation constants
+const (
+	// MinProviderTokenTTL is the minimum allowed value for ProviderTokenTTL (1 hour).
+	// Shorter values would defeat the purpose of extending token storage for SSO forwarding.
+	MinProviderTokenTTL = 3600 // 1 hour
+
+	// MaxProviderTokenTTL is the recommended maximum for ProviderTokenTTL (7 days).
+	// Values exceeding this may lead to stale tokens accumulating in storage.
+	MaxProviderTokenTTL = 604800 // 7 days
+
+	// DefaultProviderTokenTTL is the default value for ProviderTokenTTL (24 hours).
+	DefaultProviderTokenTTL = 86400 // 24 hours
+)
+
+// validateProviderTokenTTLConfig validates the ProviderTokenTTL configuration for SSO token forwarding.
+// This ensures provider tokens are stored long enough for SSO use cases while preventing
+// excessive storage retention that could lead to stale token accumulation.
+//
+// SECURITY: Negative or zero values are corrected to the default (24 hours) to prevent
+// tokens from being extended into the past (which would cause immediate expiry).
+func validateProviderTokenTTLConfig(config *Config, logger *slog.Logger) {
+	// Skip validation if using default (will be applied in applyTimeDefaults)
+	if config.ProviderTokenTTL == 0 {
+		return
+	}
+
+	origValue := config.ProviderTokenTTL
+
+	// SECURITY: Negative values would cause tokens to be extended into the past
+	if config.ProviderTokenTTL < 0 {
+		logger.Error("CONFIGURATION ERROR: ProviderTokenTTL cannot be negative",
+			"provided_value", origValue,
+			"corrected_to", DefaultProviderTokenTTL,
+			"risk", "Negative TTL would cause tokens to expire immediately",
+			"fix", fmt.Sprintf("Set ProviderTokenTTL to a positive value (default: %d seconds = 24 hours)", DefaultProviderTokenTTL))
+		config.ProviderTokenTTL = DefaultProviderTokenTTL
+		return
+	}
+
+	// Warn if value is below recommended minimum
+	if config.ProviderTokenTTL < MinProviderTokenTTL {
+		logger.Warn("CONFIGURATION WARNING: ProviderTokenTTL is very short",
+			"value_seconds", config.ProviderTokenTTL,
+			"minimum_recommended_seconds", MinProviderTokenTTL,
+			"risk", "Provider tokens may expire before SSO forwarding can use them",
+			"recommendation", fmt.Sprintf("Set ProviderTokenTTL to at least %d seconds (1 hour)", MinProviderTokenTTL))
+	}
+
+	// Warn if value exceeds recommended maximum
+	if config.ProviderTokenTTL > MaxProviderTokenTTL {
+		logger.Warn("CONFIGURATION WARNING: ProviderTokenTTL exceeds recommended maximum",
+			"value_seconds", config.ProviderTokenTTL,
+			"maximum_recommended_seconds", MaxProviderTokenTTL,
+			"risk", "Stale provider tokens may accumulate in storage",
+			"recommendation", fmt.Sprintf("Set ProviderTokenTTL to at most %d seconds (7 days)", MaxProviderTokenTTL))
+	}
+
+	logger.Debug("ProviderTokenTTL configuration validated",
+		"value_seconds", config.ProviderTokenTTL)
 }
 
 // validateTrustedPublicRegistrationSchemes validates and sanitizes TrustedPublicRegistrationSchemes configuration.
