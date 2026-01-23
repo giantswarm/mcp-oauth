@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1745,6 +1746,508 @@ func TestHandler_ServeAuthorization_CompleteFlow(t *testing.T) {
 	}
 }
 
+// TestHandler_ServeAuthorization_OIDCParameterForwarding tests that OIDC parameters
+// from the query string are properly extracted and forwarded to the upstream IdP.
+// This enables silent re-authentication (prompt=none), user hints, session freshness
+// requirements (max_age), and authentication context (acr_values).
+// See: OpenID Connect Core 1.0 Section 3.1.2.1
+func TestHandler_ServeAuthorization_OIDCParameterForwarding(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name            string
+		queryParams     map[string]string
+		wantPrompt      string
+		wantLoginHint   string
+		wantIDTokenHint string
+		wantMaxAge      *int
+		wantACRValues   string
+		description     string
+	}{
+		{
+			name:        "no OIDC params",
+			queryParams: map[string]string{},
+			description: "Base case: no OIDC parameters should be forwarded",
+		},
+		{
+			name: "prompt=none for silent auth",
+			queryParams: map[string]string{
+				"prompt": "none",
+			},
+			wantPrompt:  "none",
+			description: "Silent authentication: no UI should be displayed",
+		},
+		{
+			name: "prompt=login for forced re-auth",
+			queryParams: map[string]string{
+				"prompt": "login",
+			},
+			wantPrompt:  "login",
+			description: "Force re-authentication even if session exists",
+		},
+		{
+			name: "login_hint for known user",
+			queryParams: map[string]string{
+				"login_hint": "user@example.com",
+			},
+			wantLoginHint: "user@example.com",
+			description:   "Pre-fill email/username at IdP",
+		},
+		{
+			name: "id_token_hint for session binding",
+			queryParams: map[string]string{
+				"id_token_hint": "eyJhbGciOiJSUzI1NiJ9.test.signature",
+			},
+			wantIDTokenHint: "eyJhbGciOiJSUzI1NiJ9.test.signature",
+			description:     "Previously issued ID token as session hint",
+		},
+		{
+			name: "max_age for session freshness",
+			queryParams: map[string]string{
+				"max_age": "3600",
+			},
+			wantMaxAge:  testutil.IntPtr(3600),
+			description: "Require re-auth if session is older than 1 hour",
+		},
+		{
+			name: "max_age=0 for immediate re-auth",
+			queryParams: map[string]string{
+				"max_age": "0",
+			},
+			wantMaxAge:  testutil.IntPtr(0),
+			description: "max_age=0 is equivalent to prompt=login",
+		},
+		{
+			name: "acr_values for authentication context",
+			queryParams: map[string]string{
+				"acr_values": "urn:mace:incommon:iap:silver",
+			},
+			wantACRValues: "urn:mace:incommon:iap:silver",
+			description:   "Request specific authentication level (e.g., MFA)",
+		},
+		{
+			name: "all OIDC params combined (full silent re-auth)",
+			queryParams: map[string]string{
+				"prompt":        "none",
+				"login_hint":    "user@example.com",
+				"id_token_hint": "eyJhbGciOiJSUzI1NiJ9.test.signature",
+				"max_age":       "7200",
+				"acr_values":    "urn:mace:incommon:iap:silver",
+			},
+			wantPrompt:      "none",
+			wantLoginHint:   "user@example.com",
+			wantIDTokenHint: "eyJhbGciOiJSUzI1NiJ9.test.signature",
+			wantMaxAge:      testutil.IntPtr(7200),
+			wantACRValues:   "urn:mace:incommon:iap:silver",
+			description:     "Full silent re-authentication with all hints",
+		},
+		{
+			name: "invalid max_age is ignored",
+			queryParams: map[string]string{
+				"max_age": "not-a-number",
+				"prompt":  "login",
+			},
+			wantPrompt:  "login",
+			wantMaxAge:  nil, // Invalid max_age should be ignored
+			description: "Invalid max_age values are silently ignored",
+		},
+		{
+			name: "oversized max_age length is ignored",
+			queryParams: map[string]string{
+				"max_age": strings.Repeat("9", MaxMaxAgeLength+1),
+				"prompt":  "login",
+			},
+			wantPrompt:  "login",
+			wantMaxAge:  nil,
+			description: "Overlong max_age values are ignored",
+		},
+		{
+			name: "max_age above allowed range is ignored",
+			queryParams: map[string]string{
+				"max_age": strconv.Itoa(MaxMaxAgeSeconds + 1),
+				"prompt":  "login",
+			},
+			wantPrompt:  "login",
+			wantMaxAge:  nil,
+			description: "Out-of-range max_age values are ignored",
+		},
+		{
+			name: "negative max_age is ignored",
+			queryParams: map[string]string{
+				"max_age": "-100",
+				"prompt":  "login",
+			},
+			wantPrompt:  "login",
+			wantMaxAge:  nil, // Negative max_age should be ignored
+			description: "Negative max_age values are silently ignored",
+		},
+		{
+			name: "prompt with newline is normalized",
+			queryParams: map[string]string{
+				"prompt": "login\nconsent",
+			},
+			wantPrompt:  "login consent",
+			description: "Control characters are normalized out",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := memory.New()
+			defer store.Stop()
+
+			// Create mock provider that captures the authorization URL options
+			var capturedOpts *providers.AuthorizationURLOptions
+			provider := mock.NewProvider()
+			provider.AuthorizationURLFunc = func(state, _, _ string, _ []string, opts *providers.AuthorizationURLOptions) string {
+				capturedOpts = opts
+				return "https://mock.example.com/authorize?state=" + state
+			}
+
+			config := &server.Config{
+				Issuer: testIssuer,
+			}
+
+			srv, err := server.New(provider, store, store, store, config, nil)
+			if err != nil {
+				t.Fatalf("server.New() error = %v", err)
+			}
+
+			handler := NewHandler(srv, nil)
+
+			// Register a client
+			client, _, err := srv.RegisterClient(ctx,
+				"Test Client",
+				"confidential",
+				"",
+				[]string{"https://example.com/callback"},
+				[]string{"openid", "email"},
+				"192.168.1.100",
+				10,
+			)
+			if err != nil {
+				t.Fatalf("RegisterClient() error = %v", err)
+			}
+
+			// Generate valid PKCE challenge
+			verifier := testutil.GenerateRandomString(50)
+			hash := sha256.Sum256([]byte(verifier))
+			challenge := base64.RawURLEncoding.EncodeToString(hash[:])
+			validState := testutil.GenerateRandomString(43)
+
+			// Build the authorization URL with OIDC parameters
+			reqURL := "/authorize?client_id=" + client.ClientID +
+				"&redirect_uri=https://example.com/callback" +
+				"&scope=openid+email" +
+				"&response_type=code" +
+				"&code_challenge=" + challenge +
+				"&code_challenge_method=S256" +
+				"&state=" + validState
+
+			// Add OIDC parameters from test case
+			for key, value := range tt.queryParams {
+				reqURL += "&" + key + "=" + url.QueryEscape(value)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, reqURL, nil)
+			w := httptest.NewRecorder()
+
+			handler.ServeAuthorization(w, req)
+
+			// Should redirect to provider
+			if w.Code != http.StatusFound && w.Code != http.StatusSeeOther {
+				t.Errorf("status = %d, want redirect status", w.Code)
+				return
+			}
+
+			// Verify OIDC options were forwarded correctly
+			hasAnyOIDCParam := tt.wantPrompt != "" || tt.wantLoginHint != "" ||
+				tt.wantIDTokenHint != "" || tt.wantMaxAge != nil || tt.wantACRValues != ""
+
+			if hasAnyOIDCParam {
+				if capturedOpts == nil {
+					t.Fatal("Expected authOpts to be passed to provider, got nil")
+				}
+				if tt.wantPrompt != "" && capturedOpts.Prompt != tt.wantPrompt {
+					t.Errorf("prompt = %q, want %q", capturedOpts.Prompt, tt.wantPrompt)
+				}
+				if tt.wantLoginHint != "" && capturedOpts.LoginHint != tt.wantLoginHint {
+					t.Errorf("login_hint = %q, want %q", capturedOpts.LoginHint, tt.wantLoginHint)
+				}
+				if tt.wantIDTokenHint != "" && capturedOpts.IDTokenHint != tt.wantIDTokenHint {
+					t.Errorf("id_token_hint = %q, want %q", capturedOpts.IDTokenHint, tt.wantIDTokenHint)
+				}
+				if tt.wantMaxAge != nil {
+					if capturedOpts.MaxAge == nil {
+						t.Error("max_age = nil, want non-nil")
+					} else if *capturedOpts.MaxAge != *tt.wantMaxAge {
+						t.Errorf("max_age = %d, want %d", *capturedOpts.MaxAge, *tt.wantMaxAge)
+					}
+				}
+				if tt.wantACRValues != "" && capturedOpts.ACRValues != tt.wantACRValues {
+					t.Errorf("acr_values = %q, want %q", capturedOpts.ACRValues, tt.wantACRValues)
+				}
+			} else if capturedOpts != nil {
+				// If no OIDC params expected, authOpts should be nil
+				t.Errorf("Expected authOpts to be nil, got %+v", capturedOpts)
+			}
+		})
+	}
+}
+
+// TestParseOIDCOptions_Validation tests that parseOIDCOptions properly validates
+// OIDC parameters for length limits and allowed values (security hardening).
+func TestParseOIDCOptions_Validation(t *testing.T) {
+	tests := []struct {
+		name            string
+		queryParams     map[string]string
+		wantNil         bool
+		wantPrompt      string
+		wantLoginHint   string
+		wantIDTokenHint string
+		wantMaxAge      *int
+		wantACRValues   string
+		description     string
+	}{
+		{
+			name:        "valid prompt=none",
+			queryParams: map[string]string{"prompt": "none"},
+			wantPrompt:  "none",
+			description: "Valid prompt value should be accepted",
+		},
+		{
+			name:        "valid prompt=login",
+			queryParams: map[string]string{"prompt": "login"},
+			wantPrompt:  "login",
+			description: "Valid prompt value should be accepted",
+		},
+		{
+			name:        "valid prompt=consent",
+			queryParams: map[string]string{"prompt": "consent"},
+			wantPrompt:  "consent",
+			description: "Valid prompt value should be accepted",
+		},
+		{
+			name:        "valid prompt=select_account",
+			queryParams: map[string]string{"prompt": "select_account"},
+			wantPrompt:  "select_account",
+			description: "Valid prompt value should be accepted",
+		},
+		{
+			name:        "valid combined prompt values",
+			queryParams: map[string]string{"prompt": "login consent"},
+			wantPrompt:  "login consent",
+			description: "Multiple valid prompt values should be accepted",
+		},
+		{
+			name:        "invalid prompt value rejected",
+			queryParams: map[string]string{"prompt": "invalid_value"},
+			wantNil:     true,
+			description: "Unknown prompt value should be rejected",
+		},
+		{
+			name:        "prompt with injection attempt rejected",
+			queryParams: map[string]string{"prompt": "none&other_param=injected"},
+			wantNil:     true,
+			description: "Prompt containing & (injection attempt) should be rejected",
+		},
+		{
+			name:        "prompt with newline normalized",
+			queryParams: map[string]string{"prompt": "login\nconsent"},
+			wantPrompt:  "login consent",
+			description: "Prompt control characters are normalized out",
+		},
+		{
+			name:        "prompt exceeds max length",
+			queryParams: map[string]string{"prompt": string(make([]byte, MaxPromptLength+1))},
+			wantNil:     true,
+			description: "Oversized prompt should be rejected",
+		},
+		{
+			name:          "login_hint within limit",
+			queryParams:   map[string]string{"login_hint": "user@example.com"},
+			wantLoginHint: "user@example.com",
+			description:   "Valid login_hint should be accepted",
+		},
+		{
+			name:        "login_hint exceeds max length",
+			queryParams: map[string]string{"login_hint": string(make([]byte, MaxLoginHintLength+1))},
+			wantNil:     true,
+			description: "Oversized login_hint should be rejected",
+		},
+		{
+			name:          "login_hint at max length",
+			queryParams:   map[string]string{"login_hint": string(make([]byte, MaxLoginHintLength))},
+			wantLoginHint: string(make([]byte, MaxLoginHintLength)),
+			description:   "login_hint at exactly max length should be accepted",
+		},
+		{
+			name:            "id_token_hint within limit",
+			queryParams:     map[string]string{"id_token_hint": "eyJhbGciOiJSUzI1NiJ9.test.signature"},
+			wantIDTokenHint: "eyJhbGciOiJSUzI1NiJ9.test.signature",
+			description:     "Valid id_token_hint should be accepted",
+		},
+		{
+			name:        "id_token_hint exceeds max length (64KB)",
+			queryParams: map[string]string{"id_token_hint": string(make([]byte, MaxIDTokenHintLength+1))},
+			wantNil:     true,
+			description: "Oversized id_token_hint should be rejected",
+		},
+		{
+			name:          "acr_values within limit",
+			queryParams:   map[string]string{"acr_values": "urn:mace:incommon:iap:silver"},
+			wantACRValues: "urn:mace:incommon:iap:silver",
+			description:   "Valid acr_values should be accepted",
+		},
+		{
+			name:        "acr_values exceeds max length",
+			queryParams: map[string]string{"acr_values": string(make([]byte, MaxACRValuesLength+1))},
+			wantNil:     true,
+			description: "Oversized acr_values should be rejected",
+		},
+		{
+			name:        "max_age within range",
+			queryParams: map[string]string{"max_age": "3600"},
+			wantMaxAge:  testutil.IntPtr(3600),
+			description: "Valid max_age should be accepted",
+		},
+		{
+			name:        "max_age exceeds length limit",
+			queryParams: map[string]string{"max_age": strings.Repeat("9", MaxMaxAgeLength+1)},
+			wantNil:     true,
+			description: "Overlong max_age should be ignored",
+		},
+		{
+			name:        "max_age exceeds range",
+			queryParams: map[string]string{"max_age": strconv.Itoa(MaxMaxAgeSeconds + 1)},
+			wantNil:     true,
+			description: "Out-of-range max_age should be ignored",
+		},
+		{
+			name:          "mixed valid and invalid - invalid prompt rejects all",
+			queryParams:   map[string]string{"prompt": "invalid", "login_hint": "user@example.com"},
+			wantLoginHint: "user@example.com",
+			wantNil:       false, // login_hint is still valid
+			description:   "Invalid prompt doesn't reject valid login_hint",
+		},
+		{
+			name: "all parameters valid",
+			queryParams: map[string]string{
+				"prompt":        "none",
+				"login_hint":    "user@example.com",
+				"id_token_hint": "eyJhbGciOiJSUzI1NiJ9.test",
+				"acr_values":    "urn:mace:incommon:iap:silver",
+			},
+			wantPrompt:      "none",
+			wantLoginHint:   "user@example.com",
+			wantIDTokenHint: "eyJhbGciOiJSUzI1NiJ9.test",
+			wantACRValues:   "urn:mace:incommon:iap:silver",
+			description:     "All valid parameters should be accepted",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Build query values
+			query := url.Values{}
+			for k, v := range tt.queryParams {
+				query.Set(k, v)
+			}
+
+			opts := parseOIDCOptions(query)
+
+			if tt.wantNil {
+				if opts != nil {
+					t.Errorf("Expected nil options, got %+v", opts)
+				}
+				return
+			}
+
+			// Check specific expected values
+			if tt.wantPrompt != "" {
+				if opts == nil {
+					t.Fatal("Expected non-nil options for prompt check")
+				}
+				if opts.Prompt != tt.wantPrompt {
+					t.Errorf("prompt = %q, want %q", opts.Prompt, tt.wantPrompt)
+				}
+			}
+			if tt.wantLoginHint != "" {
+				if opts == nil {
+					t.Fatal("Expected non-nil options for login_hint check")
+				}
+				if opts.LoginHint != tt.wantLoginHint {
+					t.Errorf("login_hint = %q, want %q", opts.LoginHint, tt.wantLoginHint)
+				}
+			}
+			if tt.wantIDTokenHint != "" {
+				if opts == nil {
+					t.Fatal("Expected non-nil options for id_token_hint check")
+				}
+				if opts.IDTokenHint != tt.wantIDTokenHint {
+					t.Errorf("id_token_hint = %q, want %q", opts.IDTokenHint, tt.wantIDTokenHint)
+				}
+			}
+			if tt.wantACRValues != "" {
+				if opts == nil {
+					t.Fatal("Expected non-nil options for acr_values check")
+				}
+				if opts.ACRValues != tt.wantACRValues {
+					t.Errorf("acr_values = %q, want %q", opts.ACRValues, tt.wantACRValues)
+				}
+			}
+			if tt.wantMaxAge != nil {
+				if opts == nil {
+					t.Fatal("Expected non-nil options for max_age check")
+				}
+				if opts.MaxAge == nil {
+					t.Fatal("Expected non-nil max_age value")
+				}
+				if *opts.MaxAge != *tt.wantMaxAge {
+					t.Errorf("max_age = %d, want %d", *opts.MaxAge, *tt.wantMaxAge)
+				}
+			}
+
+			t.Logf("✓ %s", tt.description)
+		})
+	}
+}
+
+// TestValidatePrompt tests the validatePrompt helper function directly.
+func TestValidatePrompt(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+		desc     string
+	}{
+		{"", "", "empty string is valid"},
+		{"none", "none", "valid single value: none"},
+		{"login", "login", "valid single value: login"},
+		{"consent", "consent", "valid single value: consent"},
+		{"select_account", "select_account", "valid single value: select_account"},
+		{"login consent", "login consent", "valid combined: login consent"},
+		{"none login consent select_account", "none login consent select_account", "all valid values - semantic validation is IdP's responsibility"},
+		{"invalid", "", "invalid value rejected"},
+		{"none invalid", "", "mixed valid/invalid rejected"},
+		{"NONE", "", "case-sensitive: uppercase rejected"},
+		{"None", "", "case-sensitive: mixed case rejected"},
+		{"login  consent", "login consent", "extra whitespace normalized"},
+		{"login\tconsent", "login consent", "tab normalized to single space"},
+		{"login\nconsent", "login consent", "newline normalized to single space"},
+		{string(make([]byte, MaxPromptLength)), "", "at max length with invalid content"},
+		{string(make([]byte, MaxPromptLength+1)), "", "exceeds max length"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			result := validatePrompt(tt.input)
+			if result != tt.expected {
+				t.Errorf("validatePrompt(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
 func TestHandler_ServeCallback(t *testing.T) {
 	ctx := context.Background()
 	handler, store := setupTestHandler(t)
@@ -1779,6 +2282,7 @@ func TestHandler_ServeCallback(t *testing.T) {
 		challenge,
 		"S256",
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow(ctx, ) error = %v", err)
@@ -4405,6 +4909,7 @@ func TestHandler_ServeCallback_CustomURLScheme(t *testing.T) {
 		challenge,
 		"S256",
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -4510,6 +5015,7 @@ func TestHandler_ServeCallback_HTTPScheme(t *testing.T) {
 		challenge,
 		"S256",
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -4584,6 +5090,7 @@ func TestHandler_ServeCallback_VSCodeScheme(t *testing.T) {
 		challenge,
 		"S256",
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -4970,6 +5477,7 @@ func TestHandler_ServeCallback_CustomURLScheme_WithBranding(t *testing.T) {
 		challenge,
 		"S256",
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)

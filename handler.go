@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1180,6 +1181,9 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	codeChallenge := r.URL.Query().Get("code_challenge")
 	codeChallengeMethod := r.URL.Query().Get("code_challenge_method")
 
+	// Extract OIDC parameters for upstream IdP forwarding
+	authOpts := parseOIDCOptions(r.URL.Query())
+
 	if clientID == "" {
 		h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "client_id missing")
@@ -1210,7 +1214,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	)
 
 	// Start authorization flow with client state (server also validates for defense in depth)
-	authURL, err := h.server.StartAuthorizationFlow(ctx, clientID, redirectURI, scope, resource, codeChallenge, codeChallengeMethod, state)
+	authURL, err := h.server.StartAuthorizationFlow(ctx, clientID, redirectURI, scope, resource, codeChallenge, codeChallengeMethod, state, authOpts)
 	if err != nil {
 		h.logger.Error("Failed to start authorization flow", "error", err)
 		h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusInternalServerError, startTime)
@@ -2643,4 +2647,117 @@ func (h *Handler) recordClientRegistered(clientType string) {
 
 	metrics := h.server.Instrumentation.Metrics()
 	metrics.RecordClientRegistration(context.Background(), clientType)
+}
+
+// validPromptValues defines the allowed values for the OIDC prompt parameter.
+// Per OpenID Connect Core 1.0 Section 3.1.2.1, valid values are:
+// - "none": No UI displayed (silent auth)
+// - "login": Force re-authentication
+// - "consent": Force consent screen
+// - "select_account": Force account selection
+//
+// Multiple values can be space-separated (e.g., "login consent").
+// Empty string is valid (no prompt parameter).
+var validPromptValues = map[string]bool{
+	"none":           true,
+	"login":          true,
+	"consent":        true,
+	"select_account": true,
+}
+
+// validatePrompt validates the prompt parameter value.
+// Returns the validated prompt string (may be truncated) or empty string if invalid.
+// Multiple space-separated values are supported per OIDC spec.
+func validatePrompt(prompt string) string {
+	if prompt == "" {
+		return ""
+	}
+
+	// Enforce length limit first (defense against DoS)
+	if len(prompt) > MaxPromptLength {
+		return "" // Reject oversized prompt values
+	}
+
+	// Validate each space-separated value
+	parts := strings.Fields(prompt)
+	if len(parts) == 0 {
+		return ""
+	}
+	for _, part := range parts {
+		if !validPromptValues[part] {
+			// Unknown prompt value - reject entire prompt for security
+			// (could be injection attempt or typo; let IdP handle defaults)
+			return ""
+		}
+	}
+
+	normalized := strings.Join(parts, " ")
+	if len(normalized) > MaxPromptLength {
+		return ""
+	}
+
+	return normalized
+}
+
+// parseOIDCOptions extracts and validates OIDC parameters from the query string for upstream IdP forwarding.
+// Returns nil if no valid OIDC parameters are provided.
+//
+// Security: All parameters are validated for length and content to prevent DoS and injection attacks.
+// Invalid or oversized values are silently ignored (matching OIDC spec behavior where IdP handles validation).
+//
+// Supported parameters (per OpenID Connect Core 1.0 Section 3.1.2.1):
+//   - prompt: Controls authentication UX ("none", "login", "consent", "select_account")
+//   - login_hint: Pre-fills username/email at IdP (max 256 chars)
+//   - id_token_hint: Previously issued ID token for session binding (max 64KB)
+//   - max_age: Maximum authentication age in seconds (invalid values silently ignored)
+//   - acr_values: Authentication context class references (max 1024 chars)
+func parseOIDCOptions(query url.Values) *providers.AuthorizationURLOptions {
+	prompt := query.Get("prompt")
+	loginHint := query.Get("login_hint")
+	idTokenHint := query.Get("id_token_hint")
+	maxAgeStr := query.Get("max_age")
+	acrValues := query.Get("acr_values")
+
+	// Validate and sanitize prompt parameter (whitelist validation)
+	prompt = validatePrompt(prompt)
+
+	// Enforce length limits on string parameters (defense-in-depth against DoS)
+	// Invalid/oversized values are silently ignored per OIDC spec behavior
+	if len(loginHint) > MaxLoginHintLength {
+		loginHint = "" // Reject oversized login_hint
+	}
+	if len(idTokenHint) > MaxIDTokenHintLength {
+		idTokenHint = "" // Reject oversized id_token_hint
+	}
+	if len(acrValues) > MaxACRValuesLength {
+		acrValues = "" // Reject oversized acr_values
+	}
+
+	// Parse max_age to integer (optional, only if provided)
+	var maxAge *int
+	if maxAgeStr != "" {
+		if len(maxAgeStr) > MaxMaxAgeLength {
+			maxAgeStr = ""
+		}
+		if maxAgeStr != "" {
+			if v, err := strconv.Atoi(maxAgeStr); err == nil && v >= 0 && v <= MaxMaxAgeSeconds {
+				maxAge = &v
+			}
+		}
+		// Invalid max_age values are silently ignored per OIDC spec behavior
+		// (providers handle validation, we forward what we can parse)
+	}
+
+	// Return nil if no valid OIDC parameters are provided
+	if prompt == "" && loginHint == "" && idTokenHint == "" && maxAge == nil && acrValues == "" {
+		return nil
+	}
+
+	return &providers.AuthorizationURLOptions{
+		Prompt:      prompt,
+		LoginHint:   loginHint,
+		IDTokenHint: idTokenHint,
+		MaxAge:      maxAge,
+		ACRValues:   acrValues,
+	}
 }

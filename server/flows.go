@@ -686,7 +686,8 @@ func (s *Server) rotateRefreshToken(ctx context.Context, oldRefreshToken, userID
 // StartAuthorizationFlow starts a new OAuth authorization flow
 // clientState is the state parameter from the client (REQUIRED for CSRF protection)
 // resource is the target resource server identifier per RFC 8707 (optional for backward compatibility)
-func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectURI, scope, resource, codeChallenge, codeChallengeMethod, clientState string) (string, error) {
+// authOpts contains optional OIDC parameters (prompt, login_hint, id_token_hint) for upstream IdP forwarding
+func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectURI, scope, resource, codeChallenge, codeChallengeMethod, clientState string, authOpts *providers.AuthorizationURLOptions) (string, error) {
 	// CRITICAL SECURITY: Validate state parameter from client for CSRF protection
 	if err := s.validateStateParameter(clientState); err != nil {
 		s.logAuthFailure("", clientID, "invalid_state_parameter")
@@ -743,22 +744,7 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 	}
 
 	// Log authorization flow start
-	if s.Auditor != nil {
-		details := map[string]any{
-			"redirect_uri":          redirectURI,
-			"scope":                 scope,
-			"code_challenge_method": codeChallengeMethod,
-		}
-		// RFC 8707: Include resource parameter in audit log if provided
-		if resource != "" {
-			details["resource"] = resource
-		}
-		s.Auditor.LogEvent(security.Event{
-			Type:     security.EventAuthorizationFlowStarted,
-			ClientID: clientID,
-			Details:  details,
-		})
-	}
+	s.logAuthorizationFlowStarted(clientID, redirectURI, scope, codeChallengeMethod, resource, authOpts)
 
 	// Generate provider state (different from client state for defense in depth)
 	providerState := generateRandomToken()
@@ -791,8 +777,8 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 	requestedScopes := normalizeScopes(scope)
 
 	// Generate authorization URL with server-generated PKCE and requested scopes
-	// TODO: Support passing AuthorizationURLOptions from client for silent auth scenarios
-	authURL := s.provider.AuthorizationURL(providerState, providerCodeChallenge, "S256", requestedScopes, nil)
+	// Forward OIDC parameters (prompt, login_hint, id_token_hint) to upstream IdP for silent auth scenarios
+	authURL := s.provider.AuthorizationURL(providerState, providerCodeChallenge, "S256", requestedScopes, authOpts)
 
 	return authURL, nil
 }
@@ -1709,4 +1695,44 @@ func intersectScopes(a, b []string) []string {
 		}
 	}
 	return result
+}
+
+// logAuthorizationFlowStarted logs the authorization flow start event with all relevant details.
+// This helper reduces cyclomatic complexity in StartAuthorizationFlow.
+func (s *Server) logAuthorizationFlowStarted(clientID, redirectURI, scope, codeChallengeMethod, resource string, authOpts *providers.AuthorizationURLOptions) {
+	if s.Auditor == nil {
+		return
+	}
+
+	details := map[string]any{
+		"redirect_uri":          redirectURI,
+		"scope":                 scope,
+		"code_challenge_method": codeChallengeMethod,
+	}
+
+	// RFC 8707: Include resource parameter in audit log if provided
+	if resource != "" {
+		details["resource"] = resource
+	}
+
+	// OIDC: Include forwarded parameters in audit log for security visibility
+	if authOpts != nil {
+		if authOpts.Prompt != "" {
+			details["prompt"] = authOpts.Prompt
+		}
+		if authOpts.LoginHint != "" {
+			// Mask email for privacy in audit logs
+			details["login_hint_provided"] = true
+		}
+		if authOpts.IDTokenHint != "" {
+			// Don't log the actual token, just that it was provided
+			details["id_token_hint_provided"] = true
+		}
+	}
+
+	s.Auditor.LogEvent(security.Event{
+		Type:     security.EventAuthorizationFlowStarted,
+		ClientID: clientID,
+		Details:  details,
+	})
 }

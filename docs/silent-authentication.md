@@ -251,6 +251,79 @@ GitHub doesn't implement the OIDC `prompt` parameter. Instead:
 - `login_hint` is mapped to GitHub's `login` parameter
 - Silent authentication is not supported (GitHub always shows UI)
 
+## HTTP-Level Parameter Forwarding (Proxy Mode)
+
+When mcp-oauth acts as an OAuth proxy (receiving authorization requests from clients and forwarding them to an upstream IdP), it automatically extracts and forwards all OIDC parameters from the incoming HTTP request to the upstream provider.
+
+### Supported Query Parameters
+
+The `/authorize` endpoint extracts and forwards:
+
+| Query Parameter | Forward Behavior | Validation |
+|-----------------|------------------|------------|
+| `prompt` | Forwarded if valid | Whitelist: `none`, `login`, `consent`, `select_account` (max 128 chars) |
+| `login_hint` | Forwarded as-is | Length limit: 256 characters |
+| `id_token_hint` | Forwarded as-is | Length limit: 64KB |
+| `max_age` | Parsed as integer | Non-negative integers only; invalid values silently ignored |
+| `acr_values` | Forwarded as-is | Length limit: 1024 characters |
+
+### Security: Input Validation
+
+All OIDC parameters are validated before forwarding to provide defense-in-depth:
+
+1. **Length Limits**: Each parameter has a maximum length to prevent DoS attacks via oversized payloads
+2. **Prompt Whitelist**: Only valid OIDC prompt values are forwarded; unknown values are rejected
+3. **Silent Rejection**: Invalid or oversized parameters are silently ignored (not forwarded), matching OIDC spec behavior where the IdP handles defaults
+
+Parameters that fail validation are **not forwarded** to the upstream IdP, and no error is returned to the client. This follows the principle of being strict in what we accept while allowing the IdP to apply its own defaults.
+
+### Security: Trust Model
+
+When using mcp-oauth as an OAuth proxy, the following trust model applies:
+
+| Component | Trust Level | Notes |
+|-----------|-------------|-------|
+| **Upstream IdP** | Trusted | The IdP is assumed to properly validate all OIDC parameters, handle malformed inputs safely, and not be vulnerable to parameter injection |
+| **Client Application** | Untrusted | Client-provided parameters are validated for length and content before forwarding |
+| **Network** | Assumed Secure | TLS is required for all IdP communication |
+
+**Important**: mcp-oauth performs input validation as defense-in-depth, but the upstream IdP is ultimately responsible for:
+- Validating parameter semantics (e.g., checking if `prompt=none` is allowed for the client)
+- Handling authentication/consent requirements
+- Returning appropriate errors for invalid requests
+
+If you're using mcp-oauth with an IdP that may not properly validate inputs, consider implementing additional validation at the ingress layer.
+
+### Example Client Request
+
+A client can include OIDC parameters in the authorization request:
+
+```
+GET /authorize?client_id=abc123
+    &redirect_uri=https://app.example.com/callback
+    &response_type=code
+    &scope=openid+profile+email
+    &state=xyz789
+    &code_challenge=...
+    &code_challenge_method=S256
+    &prompt=none
+    &login_hint=user@example.com
+    &max_age=3600
+```
+
+mcp-oauth will forward `prompt=none`, `login_hint=user@example.com`, and `max_age=3600` to the upstream IdP.
+
+### Use Case: Aggregator Proxy
+
+This is particularly useful when mcp-oauth is used as an aggregator proxy (like muster) that sits between MCP clients and upstream identity providers. Clients can:
+
+1. Send `prompt=none` for silent re-authentication attempts
+2. Include `login_hint` with the known user's email for better UX
+3. Specify `max_age` to require fresh authentication for sensitive operations
+4. Request specific `acr_values` for enhanced security (e.g., MFA)
+
+The proxy transparently forwards these to the upstream IdP, enabling seamless silent authentication flows through the proxy.
+
 ## Best Practices
 
 ### 1. Always Have a Fallback

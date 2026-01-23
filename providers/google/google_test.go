@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/providers"
 )
 
@@ -487,7 +488,7 @@ func TestProvider_AuthorizationURL_Options(t *testing.T) {
 		{
 			name: "max_age for session freshness",
 			opts: &providers.AuthorizationURLOptions{
-				MaxAge: intPtr(0), // Force re-auth
+				MaxAge: testutil.IntPtr(0), // Force re-auth
 			},
 			wantContains: []string{
 				"max_age=0",
@@ -496,7 +497,7 @@ func TestProvider_AuthorizationURL_Options(t *testing.T) {
 		{
 			name: "max_age with specific value",
 			opts: &providers.AuthorizationURLOptions{
-				MaxAge: intPtr(3600), // Session must be less than 1 hour old
+				MaxAge: testutil.IntPtr(3600), // Session must be less than 1 hour old
 			},
 			wantContains: []string{
 				"max_age=3600",
@@ -563,11 +564,6 @@ func TestProvider_AuthorizationURL_Options(t *testing.T) {
 			}
 		})
 	}
-}
-
-// intPtr is a helper to create *int for MaxAge tests.
-func intPtr(i int) *int {
-	return &i
 }
 
 func TestProvider_ExchangeCode(t *testing.T) {
