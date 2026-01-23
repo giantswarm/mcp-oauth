@@ -93,6 +93,7 @@ func TestServer_AuditLoggingClientIDMismatch(t *testing.T) {
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -191,6 +192,7 @@ func TestServer_AuditLoggingRedirectURIMismatch(t *testing.T) {
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -437,6 +439,7 @@ func TestServer_AuditEventAuthorizationCodeReuse(t *testing.T) {
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)

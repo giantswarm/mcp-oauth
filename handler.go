@@ -1180,6 +1180,11 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	codeChallenge := r.URL.Query().Get("code_challenge")
 	codeChallengeMethod := r.URL.Query().Get("code_challenge_method")
 
+	// OIDC parameters for upstream IdP forwarding (OpenID Connect Core 1.0 Section 3.1.2.1)
+	prompt := r.URL.Query().Get("prompt")             // "none", "login", "consent", "select_account"
+	loginHint := r.URL.Query().Get("login_hint")      // Pre-fill username/email at IdP
+	idTokenHint := r.URL.Query().Get("id_token_hint") // Previously issued ID token for silent auth
+
 	if clientID == "" {
 		h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "client_id missing")
@@ -1209,8 +1214,18 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		attribute.String(instrumentation.AttrPKCEMethod, codeChallengeMethod),
 	)
 
+	// Build OIDC options for upstream IdP forwarding (only if any are provided)
+	var authOpts *providers.AuthorizationURLOptions
+	if prompt != "" || loginHint != "" || idTokenHint != "" {
+		authOpts = &providers.AuthorizationURLOptions{
+			Prompt:      prompt,
+			LoginHint:   loginHint,
+			IDTokenHint: idTokenHint,
+		}
+	}
+
 	// Start authorization flow with client state (server also validates for defense in depth)
-	authURL, err := h.server.StartAuthorizationFlow(ctx, clientID, redirectURI, scope, resource, codeChallenge, codeChallengeMethod, state)
+	authURL, err := h.server.StartAuthorizationFlow(ctx, clientID, redirectURI, scope, resource, codeChallenge, codeChallengeMethod, state, authOpts)
 	if err != nil {
 		h.logger.Error("Failed to start authorization flow", "error", err)
 		h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusInternalServerError, startTime)

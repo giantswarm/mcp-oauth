@@ -1779,6 +1779,7 @@ func TestHandler_ServeCallback(t *testing.T) {
 		challenge,
 		"S256",
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow(ctx, ) error = %v", err)
@@ -4405,6 +4406,7 @@ func TestHandler_ServeCallback_CustomURLScheme(t *testing.T) {
 		challenge,
 		"S256",
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -4510,6 +4512,7 @@ func TestHandler_ServeCallback_HTTPScheme(t *testing.T) {
 		challenge,
 		"S256",
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -4584,6 +4587,7 @@ func TestHandler_ServeCallback_VSCodeScheme(t *testing.T) {
 		challenge,
 		"S256",
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -4970,6 +4974,7 @@ func TestHandler_ServeCallback_CustomURLScheme_WithBranding(t *testing.T) {
 		challenge,
 		"S256",
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)

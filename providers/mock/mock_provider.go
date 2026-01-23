@@ -63,8 +63,16 @@ func NewProvider() *Provider {
 		},
 		AuthorizationURLFunc: func(state, codeChallenge, codeChallengeMethod string, _ []string, opts *providers.AuthorizationURLOptions) string {
 			url := fmt.Sprintf("https://mock.example.com/authorize?state=%s&code_challenge=%s&code_challenge_method=%s", state, codeChallenge, codeChallengeMethod)
-			if opts != nil && opts.Prompt != "" {
-				url += "&prompt=" + opts.Prompt
+			if opts != nil {
+				if opts.Prompt != "" {
+					url += "&prompt=" + opts.Prompt
+				}
+				if opts.LoginHint != "" {
+					url += "&login_hint=" + opts.LoginHint
+				}
+				if opts.IDTokenHint != "" {
+					url += "&id_token_hint=" + opts.IDTokenHint
+				}
 			}
 			return url
 		},

@@ -81,6 +81,7 @@ func TestServer_StartAuthorizationFlow_EmptyScope(t *testing.T) {
 		validChallenge,
 		PKCEMethodS256,
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -198,6 +199,7 @@ func TestServer_StartAuthorizationFlow_WithExplicitScopes(t *testing.T) {
 		validChallenge,
 		PKCEMethodS256,
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -290,6 +292,7 @@ func TestServer_StartAuthorizationFlow_ScopeIntersection(t *testing.T) {
 		validChallenge,
 		PKCEMethodS256,
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)

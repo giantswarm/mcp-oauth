@@ -171,6 +171,7 @@ func TestServer_StartAuthorizationFlow(t *testing.T) {
 				tt.codeChallenge,
 				tt.codeChallengeMethod,
 				tt.clientState,
+				nil, // authOpts (OIDC params for upstream IdP)
 			)
 
 			if (err != nil) != tt.wantErr {
@@ -196,6 +197,188 @@ func TestServer_StartAuthorizationFlow(t *testing.T) {
 					}
 				}
 			}
+		})
+	}
+}
+
+// TestStartAuthorizationFlow_OIDCParameterForwarding tests that OIDC parameters
+// (prompt, login_hint, id_token_hint) are forwarded to the upstream IdP.
+// This enables silent re-authentication (prompt=none) and user hints.
+// See: OpenID Connect Core 1.0 Section 3.1.2.1
+func TestStartAuthorizationFlow_OIDCParameterForwarding(t *testing.T) {
+	ctx := context.Background()
+	srv, store, provider := setupFlowTestServer(t)
+
+	// Register a test client
+	client, _, err := srv.RegisterClient(ctx,
+		"oidc-test-client",
+		ClientTypeConfidential,
+		"", // tokenEndpointAuthMethod
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email", "profile"},
+		"127.0.0.1",
+		100,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	validVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
+	hash := sha256.Sum256([]byte(validVerifier))
+	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+	clientState := testutil.GenerateRandomString(43)
+
+	tests := []struct {
+		name            string
+		authOpts        *providers.AuthorizationURLOptions
+		wantPrompt      string
+		wantLoginHint   string
+		wantIDTokenHint string
+		description     string
+	}{
+		{
+			name:        "nil options - no OIDC params in URL",
+			authOpts:    nil,
+			description: "When authOpts is nil, no OIDC parameters should be added",
+		},
+		{
+			name: "prompt=none for silent auth",
+			authOpts: &providers.AuthorizationURLOptions{
+				Prompt: "none",
+			},
+			wantPrompt:  "none",
+			description: "Silent authentication: no UI should be displayed",
+		},
+		{
+			name: "prompt=login for re-authentication",
+			authOpts: &providers.AuthorizationURLOptions{
+				Prompt: "login",
+			},
+			wantPrompt:  "login",
+			description: "Force re-authentication even if session exists",
+		},
+		{
+			name: "login_hint for user identification",
+			authOpts: &providers.AuthorizationURLOptions{
+				LoginHint: "user@example.com",
+			},
+			wantLoginHint: "user@example.com",
+			description:   "Pre-fill email/username at IdP",
+		},
+		{
+			name: "id_token_hint for session hint",
+			authOpts: &providers.AuthorizationURLOptions{
+				IDTokenHint: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test.signature",
+			},
+			wantIDTokenHint: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test.signature",
+			description:     "Previously issued ID token to identify user session",
+		},
+		{
+			name: "all OIDC params combined (silent re-auth)",
+			authOpts: &providers.AuthorizationURLOptions{
+				Prompt:      "none",
+				LoginHint:   "user@example.com",
+				IDTokenHint: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test.signature",
+			},
+			wantPrompt:      "none",
+			wantLoginHint:   "user@example.com",
+			wantIDTokenHint: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test.signature",
+			description:     "Full silent re-authentication with all hints",
+		},
+		{
+			name: "prompt=consent for forced consent",
+			authOpts: &providers.AuthorizationURLOptions{
+				Prompt: "consent",
+			},
+			wantPrompt:  "consent",
+			description: "Force consent even if previously granted",
+		},
+		{
+			name: "prompt=select_account for account selection",
+			authOpts: &providers.AuthorizationURLOptions{
+				Prompt: "select_account",
+			},
+			wantPrompt:  "select_account",
+			description: "Force account selection even if only one account",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Track the options passed to the provider
+			var capturedOpts *providers.AuthorizationURLOptions
+			originalFunc := provider.AuthorizationURLFunc
+			provider.AuthorizationURLFunc = func(state, codeChallenge, codeChallengeMethod string, scopes []string, opts *providers.AuthorizationURLOptions) string {
+				capturedOpts = opts
+				return originalFunc(state, codeChallenge, codeChallengeMethod, scopes, opts)
+			}
+			defer func() { provider.AuthorizationURLFunc = originalFunc }()
+
+			authURL, err := srv.StartAuthorizationFlow(ctx,
+				client.ClientID,
+				"https://example.com/callback",
+				"openid email",
+				"", // resource parameter
+				validChallenge,
+				PKCEMethodS256,
+				clientState+tt.name, // Unique state per test
+				tt.authOpts,
+			)
+			if err != nil {
+				t.Fatalf("StartAuthorizationFlow() error = %v", err)
+			}
+
+			if authURL == "" {
+				t.Error("StartAuthorizationFlow() returned empty authorization URL")
+			}
+
+			// Verify options were passed to provider
+			if tt.authOpts == nil {
+				if capturedOpts != nil {
+					t.Error("Expected nil authOpts to be passed to provider, got non-nil")
+				}
+			} else {
+				if capturedOpts == nil {
+					t.Fatal("Expected authOpts to be passed to provider, got nil")
+				}
+
+				if tt.wantPrompt != "" && capturedOpts.Prompt != tt.wantPrompt {
+					t.Errorf("prompt = %q, want %q", capturedOpts.Prompt, tt.wantPrompt)
+				}
+				if tt.wantLoginHint != "" && capturedOpts.LoginHint != tt.wantLoginHint {
+					t.Errorf("login_hint = %q, want %q", capturedOpts.LoginHint, tt.wantLoginHint)
+				}
+				if tt.wantIDTokenHint != "" && capturedOpts.IDTokenHint != tt.wantIDTokenHint {
+					t.Errorf("id_token_hint = %q, want %q", capturedOpts.IDTokenHint, tt.wantIDTokenHint)
+				}
+			}
+
+			// Verify the URL contains expected parameters (mock provider adds them)
+			parsedURL, err := url.Parse(authURL)
+			if err != nil {
+				t.Fatalf("Failed to parse auth URL: %v", err)
+			}
+
+			if tt.wantPrompt != "" {
+				if got := parsedURL.Query().Get("prompt"); got != tt.wantPrompt {
+					t.Errorf("URL prompt param = %q, want %q", got, tt.wantPrompt)
+				}
+			}
+			if tt.wantLoginHint != "" {
+				if got := parsedURL.Query().Get("login_hint"); got != tt.wantLoginHint {
+					t.Errorf("URL login_hint param = %q, want %q", got, tt.wantLoginHint)
+				}
+			}
+			if tt.wantIDTokenHint != "" {
+				if got := parsedURL.Query().Get("id_token_hint"); got != tt.wantIDTokenHint {
+					t.Errorf("URL id_token_hint param = %q, want %q", got, tt.wantIDTokenHint)
+				}
+			}
+
+			// Clean up state for next iteration
+			_ = store.DeleteAuthorizationState(ctx, clientState+tt.name)
+
+			t.Logf("✓ %s: %s", tt.name, tt.description)
 		})
 	}
 }
@@ -232,6 +415,7 @@ func TestServer_HandleProviderCallback(t *testing.T) {
 		validChallenge,
 		PKCEMethodS256,
 		clientState,
+		nil, // authOpts (OIDC params for upstream IdP)
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -357,6 +541,7 @@ func TestServer_HandleProviderCallback_EmailLookup(t *testing.T) {
 		validChallenge,
 		PKCEMethodS256,
 		clientState,
+		nil, // authOpts (OIDC params for upstream IdP)
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -499,6 +684,7 @@ func TestServer_HandleProviderCallback_ShortLivedToken(t *testing.T) {
 		validChallenge,
 		PKCEMethodS256,
 		clientState,
+		nil, // authOpts (OIDC params for upstream IdP)
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -2157,6 +2343,7 @@ func TestServer_RefreshTokenRotation(t *testing.T) {
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -2289,6 +2476,7 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -2498,6 +2686,7 @@ func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -2625,6 +2814,7 @@ func TestServer_ConcurrentRefreshTokenReuse(t *testing.T) {
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -2770,6 +2960,7 @@ func TestServer_ConcurrentAuthorizationCodeReuse(t *testing.T) {
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -2923,6 +3114,7 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -3067,6 +3259,7 @@ func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -3427,6 +3620,7 @@ func TestServer_ConcurrentReuseAndRevocation(t *testing.T) {
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -4003,6 +4197,7 @@ func TestServer_GenericErrorMessagesNoInfoLeakage(t *testing.T) {
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -4239,6 +4434,7 @@ func TestServer_AuthCodeReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -4331,6 +4527,7 @@ func TestServer_RefreshTokenReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -4676,6 +4873,7 @@ func TestStartAuthorizationFlow_ClientScopeValidation(t *testing.T) {
 				validChallenge,
 				PKCEMethodS256,
 				validState,
+				nil, // authOpts
 			)
 
 			if tt.wantErr {
@@ -4894,6 +5092,7 @@ func TestClientScopeValidation_UnrestrictedClient(t *testing.T) {
 				validChallenge,
 				PKCEMethodS256,
 				validState,
+				nil, // authOpts
 			)
 			if err != nil {
 				// Check if error is due to server's SupportedScopes, not client scopes
@@ -4988,6 +5187,7 @@ func TestServer_HandleProviderCallback_PKCEValidationFailure(t *testing.T) {
 		clientChallenge,
 		PKCEMethodS256,
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -5193,6 +5393,7 @@ func TestStartAuthorizationFlow_ScopeLengthValidation(t *testing.T) {
 				codeChallenge,
 				"S256",
 				state,
+				nil, // authOpts
 			)
 
 			if tt.wantError {
@@ -5290,6 +5491,7 @@ func TestResourceParameter_AudienceValidation(t *testing.T) {
 			codeChallenge,
 			PKCEMethodS256,
 			clientState,
+			nil, // authOpts
 		)
 		if err != nil {
 			t.Fatalf("Failed to start authorization flow: %v", err)
@@ -5367,6 +5569,7 @@ func TestResourceParameter_AudienceValidation(t *testing.T) {
 			codeChallenge,
 			PKCEMethodS256,
 			clientState,
+			nil, // authOpts
 		)
 		if err != nil {
 			t.Fatalf("Failed to start authorization flow: %v", err)
@@ -5426,6 +5629,7 @@ func TestResourceParameter_AudienceValidation(t *testing.T) {
 			codeChallenge,
 			PKCEMethodS256,
 			clientState,
+			nil, // authOpts
 		)
 		if err != nil {
 			t.Fatalf("Failed to start authorization flow: %v", err)
@@ -5540,6 +5744,7 @@ func TestResourceParameter_ConsistencyValidation(t *testing.T) {
 			codeChallenge,
 			PKCEMethodS256,
 			clientState,
+			nil, // authOpts
 		)
 		if err != nil {
 			t.Fatalf("Failed to start authorization flow: %v", err)
@@ -5668,6 +5873,7 @@ func TestResourceParameter_InvalidFormat(t *testing.T) {
 				codeChallenge,
 				PKCEMethodS256,
 				clientState,
+				nil, // authOpts
 			)
 
 			if err == nil {
@@ -5785,6 +5991,7 @@ func TestResourceParameter_RateLimiting(t *testing.T) {
 		codeChallenge,
 		PKCEMethodS256,
 		clientState,
+		nil, // authOpts
 	)
 	if err != nil {
 		t.Fatalf("Failed to start authorization flow: %v", err)
@@ -5882,7 +6089,8 @@ func TestStartAuthorizationFlow_EmptyState(t *testing.T) {
 			"", // resource
 			validChallenge,
 			"S256",
-			"", // empty state - should succeed
+			"",  // empty state - should succeed
+			nil, // authOpts
 		)
 		if err != nil {
 			t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -5903,7 +6111,8 @@ func TestStartAuthorizationFlow_EmptyState(t *testing.T) {
 			"",
 			validChallenge,
 			"S256",
-			"", // empty state
+			"",  // empty state
+			nil, // authOpts
 		)
 		if err != nil {
 			t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -5925,6 +6134,7 @@ func TestStartAuthorizationFlow_EmptyState(t *testing.T) {
 			validChallenge,
 			"S256",
 			validState, // non-empty state
+			nil,        // authOpts
 		)
 		if err != nil {
 			t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -5973,7 +6183,8 @@ func TestHandleProviderCallback_EmptyState(t *testing.T) {
 			"",
 			validChallenge,
 			"S256",
-			"", // empty state
+			"",  // empty state
+			nil, // authOpts
 		)
 		if err != nil {
 			t.Fatalf("StartAuthorizationFlow() error = %v", err)
@@ -6020,6 +6231,7 @@ func TestHandleProviderCallback_EmptyState(t *testing.T) {
 			validChallenge,
 			"S256",
 			originalState,
+			nil, // authOpts
 		)
 		if err != nil {
 			t.Fatalf("StartAuthorizationFlow() error = %v", err)
