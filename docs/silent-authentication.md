@@ -241,9 +241,52 @@ const (
 | Provider | Silent Auth Support | Notes |
 |----------|---------------------|-------|
 | Google | Full | All OIDC parameters supported |
-| Dex | Full | All OIDC parameters supported |
+| Azure AD | Full | All OIDC parameters supported |
+| Okta | Full | All OIDC parameters supported |
+| Auth0 | Full | All OIDC parameters supported |
+| Keycloak | Full | All OIDC parameters supported |
+| Dex | **None** | Does not honor `prompt=none` - see [Dex Limitation](#dex-limitation-prompt-none-not-supported) |
 | GitHub | Partial | Uses `login` parameter instead of `prompt` |
 | Mock | Full | For testing |
+
+### Dex Limitation: `prompt=none` Not Supported
+
+**Silent re-authentication using `prompt=none` does not work when mcp-oauth forwards to Dex.** This is a known Dex limitation, not an mcp-oauth bug.
+
+#### Background
+
+mcp-oauth correctly:
+1. Accepts `prompt`, `login_hint`, and `id_token_hint` parameters in authorization requests
+2. Forwards these parameters to the upstream IdP (Dex)
+3. Provides `ApplyAuthorizationURLOptions()` helper for clients
+
+However, **Dex does not honor `prompt=none`**:
+- Dex doesn't maintain browser sessions between requests
+- Dex ignores `prompt=none` and shows its login UI anyway
+- Current Dex versions do not return `login_required` error as required by the OIDC spec
+
+#### Related Dex Issues
+
+- [dexidp/dex#990](https://github.com/dexidp/dex/issues/990) - Original feature request (2017, still open)
+- [dexidp/dex#4325](https://github.com/dexidp/dex/pull/4325) - PR to check for `prompt=none` (2025, open)
+- [dexidp/dex#4086](https://github.com/dexidp/dex/pull/4086) - PR to respect `promptType=none` (2025, open)
+
+#### Impact
+
+When mcp-oauth is configured to use Dex as the upstream IdP:
+- `prompt=none` is forwarded to Dex but ignored
+- Users must always interact with the browser to complete login
+- Silent re-authentication falls back to interactive login
+
+#### Workaround
+
+If Dex uses an OIDC connector (e.g., Azure AD), the upstream IdP may have an active session. While Dex still requires user interaction to proceed through its UI, the upstream IdP won't require re-entering credentials.
+
+#### Recommendation
+
+If your use case requires true silent re-authentication:
+1. Use a direct OIDC provider (Google, Azure AD, Okta, Auth0, Keycloak) instead of Dex
+2. Monitor the Dex issues above for future `prompt=none` support
 
 ### GitHub Notes
 

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **Documented Dex limitation: `prompt=none` not supported (#197)**
+  - Updated `docs/silent-authentication.md` to correctly reflect that Dex does **not** honor `prompt=none`
+  - Added detailed section explaining the limitation, related Dex issues, and workarounds
+  - Updated Provider Support table with accurate silent auth support status for each provider
+  - Added additional providers (Azure AD, Okta, Auth0, Keycloak) that fully support silent authentication
+
 ### Fixed
 
 - **OAuth proxy now forwards OIDC parameters to upstream IdP (#195)**
