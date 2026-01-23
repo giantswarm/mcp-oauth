@@ -1745,6 +1745,227 @@ func TestHandler_ServeAuthorization_CompleteFlow(t *testing.T) {
 	}
 }
 
+// TestHandler_ServeAuthorization_OIDCParameterForwarding tests that OIDC parameters
+// from the query string are properly extracted and forwarded to the upstream IdP.
+// This enables silent re-authentication (prompt=none), user hints, session freshness
+// requirements (max_age), and authentication context (acr_values).
+// See: OpenID Connect Core 1.0 Section 3.1.2.1
+func TestHandler_ServeAuthorization_OIDCParameterForwarding(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name            string
+		queryParams     map[string]string
+		wantPrompt      string
+		wantLoginHint   string
+		wantIDTokenHint string
+		wantMaxAge      *int
+		wantACRValues   string
+		description     string
+	}{
+		{
+			name:        "no OIDC params",
+			queryParams: map[string]string{},
+			description: "Base case: no OIDC parameters should be forwarded",
+		},
+		{
+			name: "prompt=none for silent auth",
+			queryParams: map[string]string{
+				"prompt": "none",
+			},
+			wantPrompt:  "none",
+			description: "Silent authentication: no UI should be displayed",
+		},
+		{
+			name: "prompt=login for forced re-auth",
+			queryParams: map[string]string{
+				"prompt": "login",
+			},
+			wantPrompt:  "login",
+			description: "Force re-authentication even if session exists",
+		},
+		{
+			name: "login_hint for known user",
+			queryParams: map[string]string{
+				"login_hint": "user@example.com",
+			},
+			wantLoginHint: "user@example.com",
+			description:   "Pre-fill email/username at IdP",
+		},
+		{
+			name: "id_token_hint for session binding",
+			queryParams: map[string]string{
+				"id_token_hint": "eyJhbGciOiJSUzI1NiJ9.test.signature",
+			},
+			wantIDTokenHint: "eyJhbGciOiJSUzI1NiJ9.test.signature",
+			description:     "Previously issued ID token as session hint",
+		},
+		{
+			name: "max_age for session freshness",
+			queryParams: map[string]string{
+				"max_age": "3600",
+			},
+			wantMaxAge:  testutil.IntPtr(3600),
+			description: "Require re-auth if session is older than 1 hour",
+		},
+		{
+			name: "max_age=0 for immediate re-auth",
+			queryParams: map[string]string{
+				"max_age": "0",
+			},
+			wantMaxAge:  testutil.IntPtr(0),
+			description: "max_age=0 is equivalent to prompt=login",
+		},
+		{
+			name: "acr_values for authentication context",
+			queryParams: map[string]string{
+				"acr_values": "urn:mace:incommon:iap:silver",
+			},
+			wantACRValues: "urn:mace:incommon:iap:silver",
+			description:   "Request specific authentication level (e.g., MFA)",
+		},
+		{
+			name: "all OIDC params combined (full silent re-auth)",
+			queryParams: map[string]string{
+				"prompt":        "none",
+				"login_hint":    "user@example.com",
+				"id_token_hint": "eyJhbGciOiJSUzI1NiJ9.test.signature",
+				"max_age":       "7200",
+				"acr_values":    "urn:mace:incommon:iap:silver",
+			},
+			wantPrompt:      "none",
+			wantLoginHint:   "user@example.com",
+			wantIDTokenHint: "eyJhbGciOiJSUzI1NiJ9.test.signature",
+			wantMaxAge:      testutil.IntPtr(7200),
+			wantACRValues:   "urn:mace:incommon:iap:silver",
+			description:     "Full silent re-authentication with all hints",
+		},
+		{
+			name: "invalid max_age is ignored",
+			queryParams: map[string]string{
+				"max_age": "not-a-number",
+				"prompt":  "login",
+			},
+			wantPrompt:  "login",
+			wantMaxAge:  nil, // Invalid max_age should be ignored
+			description: "Invalid max_age values are silently ignored",
+		},
+		{
+			name: "negative max_age is ignored",
+			queryParams: map[string]string{
+				"max_age": "-100",
+				"prompt":  "login",
+			},
+			wantPrompt:  "login",
+			wantMaxAge:  nil, // Negative max_age should be ignored
+			description: "Negative max_age values are silently ignored",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := memory.New()
+			defer store.Stop()
+
+			// Create mock provider that captures the authorization URL options
+			var capturedOpts *providers.AuthorizationURLOptions
+			provider := mock.NewProvider()
+			provider.AuthorizationURLFunc = func(state, _, _ string, _ []string, opts *providers.AuthorizationURLOptions) string {
+				capturedOpts = opts
+				return "https://mock.example.com/authorize?state=" + state
+			}
+
+			config := &server.Config{
+				Issuer: testIssuer,
+			}
+
+			srv, err := server.New(provider, store, store, store, config, nil)
+			if err != nil {
+				t.Fatalf("server.New() error = %v", err)
+			}
+
+			handler := NewHandler(srv, nil)
+
+			// Register a client
+			client, _, err := srv.RegisterClient(ctx,
+				"Test Client",
+				"confidential",
+				"",
+				[]string{"https://example.com/callback"},
+				[]string{"openid", "email"},
+				"192.168.1.100",
+				10,
+			)
+			if err != nil {
+				t.Fatalf("RegisterClient() error = %v", err)
+			}
+
+			// Generate valid PKCE challenge
+			verifier := testutil.GenerateRandomString(50)
+			hash := sha256.Sum256([]byte(verifier))
+			challenge := base64.RawURLEncoding.EncodeToString(hash[:])
+			validState := testutil.GenerateRandomString(43)
+
+			// Build the authorization URL with OIDC parameters
+			reqURL := "/authorize?client_id=" + client.ClientID +
+				"&redirect_uri=https://example.com/callback" +
+				"&scope=openid+email" +
+				"&response_type=code" +
+				"&code_challenge=" + challenge +
+				"&code_challenge_method=S256" +
+				"&state=" + validState
+
+			// Add OIDC parameters from test case
+			for key, value := range tt.queryParams {
+				reqURL += "&" + key + "=" + url.QueryEscape(value)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, reqURL, nil)
+			w := httptest.NewRecorder()
+
+			handler.ServeAuthorization(w, req)
+
+			// Should redirect to provider
+			if w.Code != http.StatusFound && w.Code != http.StatusSeeOther {
+				t.Errorf("status = %d, want redirect status", w.Code)
+				return
+			}
+
+			// Verify OIDC options were forwarded correctly
+			hasAnyOIDCParam := tt.wantPrompt != "" || tt.wantLoginHint != "" ||
+				tt.wantIDTokenHint != "" || tt.wantMaxAge != nil || tt.wantACRValues != ""
+
+			if hasAnyOIDCParam {
+				if capturedOpts == nil {
+					t.Fatal("Expected authOpts to be passed to provider, got nil")
+				}
+				if tt.wantPrompt != "" && capturedOpts.Prompt != tt.wantPrompt {
+					t.Errorf("prompt = %q, want %q", capturedOpts.Prompt, tt.wantPrompt)
+				}
+				if tt.wantLoginHint != "" && capturedOpts.LoginHint != tt.wantLoginHint {
+					t.Errorf("login_hint = %q, want %q", capturedOpts.LoginHint, tt.wantLoginHint)
+				}
+				if tt.wantIDTokenHint != "" && capturedOpts.IDTokenHint != tt.wantIDTokenHint {
+					t.Errorf("id_token_hint = %q, want %q", capturedOpts.IDTokenHint, tt.wantIDTokenHint)
+				}
+				if tt.wantMaxAge != nil {
+					if capturedOpts.MaxAge == nil {
+						t.Error("max_age = nil, want non-nil")
+					} else if *capturedOpts.MaxAge != *tt.wantMaxAge {
+						t.Errorf("max_age = %d, want %d", *capturedOpts.MaxAge, *tt.wantMaxAge)
+					}
+				}
+				if tt.wantACRValues != "" && capturedOpts.ACRValues != tt.wantACRValues {
+					t.Errorf("acr_values = %q, want %q", capturedOpts.ACRValues, tt.wantACRValues)
+				}
+			} else if capturedOpts != nil {
+				// If no OIDC params expected, authOpts should be nil
+				t.Errorf("Expected authOpts to be nil, got %+v", capturedOpts)
+			}
+		})
+	}
+}
+
 func TestHandler_ServeCallback(t *testing.T) {
 	ctx := context.Background()
 	handler, store := setupTestHandler(t)

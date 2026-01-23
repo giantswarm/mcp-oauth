@@ -4,6 +4,7 @@ package mock
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"sync"
 
 	"golang.org/x/oauth2"
@@ -51,6 +52,32 @@ type Provider struct {
 	mu sync.RWMutex
 }
 
+// buildOIDCParams builds URL query parameters from OIDC authorization options.
+// Returns an empty string if opts is nil or contains no parameters.
+func buildOIDCParams(opts *providers.AuthorizationURLOptions) string {
+	if opts == nil {
+		return ""
+	}
+
+	var params string
+	if opts.Prompt != "" {
+		params += "&prompt=" + url.QueryEscape(opts.Prompt)
+	}
+	if opts.LoginHint != "" {
+		params += "&login_hint=" + url.QueryEscape(opts.LoginHint)
+	}
+	if opts.IDTokenHint != "" {
+		params += "&id_token_hint=" + url.QueryEscape(opts.IDTokenHint)
+	}
+	if opts.MaxAge != nil {
+		params += fmt.Sprintf("&max_age=%d", *opts.MaxAge)
+	}
+	if opts.ACRValues != "" {
+		params += "&acr_values=" + url.QueryEscape(opts.ACRValues)
+	}
+	return params
+}
+
 // NewProvider creates a new mock provider with default implementations
 func NewProvider() *Provider {
 	return &Provider{
@@ -62,19 +89,10 @@ func NewProvider() *Provider {
 			return []string{"openid", "email", "profile"}
 		},
 		AuthorizationURLFunc: func(state, codeChallenge, codeChallengeMethod string, _ []string, opts *providers.AuthorizationURLOptions) string {
-			url := fmt.Sprintf("https://mock.example.com/authorize?state=%s&code_challenge=%s&code_challenge_method=%s", state, codeChallenge, codeChallengeMethod)
-			if opts != nil {
-				if opts.Prompt != "" {
-					url += "&prompt=" + opts.Prompt
-				}
-				if opts.LoginHint != "" {
-					url += "&login_hint=" + opts.LoginHint
-				}
-				if opts.IDTokenHint != "" {
-					url += "&id_token_hint=" + opts.IDTokenHint
-				}
-			}
-			return url
+			authURL := fmt.Sprintf("https://mock.example.com/authorize?state=%s&code_challenge=%s&code_challenge_method=%s",
+				url.QueryEscape(state), url.QueryEscape(codeChallenge), url.QueryEscape(codeChallengeMethod))
+			authURL += buildOIDCParams(opts)
+			return authURL
 		},
 		ExchangeCodeFunc: func(_ context.Context, _ string, _ string) (*oauth2.Token, error) {
 			return &oauth2.Token{

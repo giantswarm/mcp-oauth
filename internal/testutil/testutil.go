@@ -220,6 +220,24 @@ func AssertFalse(t *testing.T, condition bool, message string) {
 	}
 }
 
+// IntPtr returns a pointer to the given int value.
+// This is useful in tests for creating pointer values inline.
+func IntPtr(v int) *int {
+	return &v
+}
+
+// StringPtr returns a pointer to the given string value.
+// This is useful in tests for creating pointer values inline.
+func StringPtr(v string) *string {
+	return &v
+}
+
+// BoolPtr returns a pointer to the given bool value.
+// This is useful in tests for creating pointer values inline.
+func BoolPtr(v bool) *bool {
+	return &v
+}
+
 // AssertNil fails the test if v is not nil
 func AssertNil(t *testing.T, v interface{}) {
 	t.Helper()

@@ -234,6 +234,8 @@ func TestStartAuthorizationFlow_OIDCParameterForwarding(t *testing.T) {
 		wantPrompt      string
 		wantLoginHint   string
 		wantIDTokenHint string
+		wantMaxAge      *int
+		wantACRValues   string
 		description     string
 	}{
 		{
@@ -274,15 +276,43 @@ func TestStartAuthorizationFlow_OIDCParameterForwarding(t *testing.T) {
 			description:     "Previously issued ID token to identify user session",
 		},
 		{
+			name: "max_age for session freshness",
+			authOpts: &providers.AuthorizationURLOptions{
+				MaxAge: testutil.IntPtr(3600),
+			},
+			wantMaxAge:  testutil.IntPtr(3600),
+			description: "Require re-auth if session is older than 1 hour",
+		},
+		{
+			name: "max_age=0 equivalent to prompt=login",
+			authOpts: &providers.AuthorizationURLOptions{
+				MaxAge: testutil.IntPtr(0),
+			},
+			wantMaxAge:  testutil.IntPtr(0),
+			description: "max_age=0 forces immediate re-authentication",
+		},
+		{
+			name: "acr_values for authentication context",
+			authOpts: &providers.AuthorizationURLOptions{
+				ACRValues: "urn:mace:incommon:iap:silver",
+			},
+			wantACRValues: "urn:mace:incommon:iap:silver",
+			description:   "Request specific authentication level (e.g., MFA)",
+		},
+		{
 			name: "all OIDC params combined (silent re-auth)",
 			authOpts: &providers.AuthorizationURLOptions{
 				Prompt:      "none",
 				LoginHint:   "user@example.com",
 				IDTokenHint: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test.signature",
+				MaxAge:      testutil.IntPtr(7200),
+				ACRValues:   "urn:mace:incommon:iap:silver",
 			},
 			wantPrompt:      "none",
 			wantLoginHint:   "user@example.com",
 			wantIDTokenHint: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test.signature",
+			wantMaxAge:      testutil.IntPtr(7200),
+			wantACRValues:   "urn:mace:incommon:iap:silver",
 			description:     "Full silent re-authentication with all hints",
 		},
 		{
@@ -351,6 +381,16 @@ func TestStartAuthorizationFlow_OIDCParameterForwarding(t *testing.T) {
 				if tt.wantIDTokenHint != "" && capturedOpts.IDTokenHint != tt.wantIDTokenHint {
 					t.Errorf("id_token_hint = %q, want %q", capturedOpts.IDTokenHint, tt.wantIDTokenHint)
 				}
+				if tt.wantMaxAge != nil {
+					if capturedOpts.MaxAge == nil {
+						t.Error("max_age = nil, want non-nil")
+					} else if *capturedOpts.MaxAge != *tt.wantMaxAge {
+						t.Errorf("max_age = %d, want %d", *capturedOpts.MaxAge, *tt.wantMaxAge)
+					}
+				}
+				if tt.wantACRValues != "" && capturedOpts.ACRValues != tt.wantACRValues {
+					t.Errorf("acr_values = %q, want %q", capturedOpts.ACRValues, tt.wantACRValues)
+				}
 			}
 
 			// Verify the URL contains expected parameters (mock provider adds them)
@@ -372,6 +412,17 @@ func TestStartAuthorizationFlow_OIDCParameterForwarding(t *testing.T) {
 			if tt.wantIDTokenHint != "" {
 				if got := parsedURL.Query().Get("id_token_hint"); got != tt.wantIDTokenHint {
 					t.Errorf("URL id_token_hint param = %q, want %q", got, tt.wantIDTokenHint)
+				}
+			}
+			if tt.wantMaxAge != nil {
+				want := fmt.Sprintf("%d", *tt.wantMaxAge)
+				if got := parsedURL.Query().Get("max_age"); got != want {
+					t.Errorf("URL max_age param = %q, want %q", got, want)
+				}
+			}
+			if tt.wantACRValues != "" {
+				if got := parsedURL.Query().Get("acr_values"); got != tt.wantACRValues {
+					t.Errorf("URL acr_values param = %q, want %q", got, tt.wantACRValues)
 				}
 			}
 

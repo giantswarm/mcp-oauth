@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1180,10 +1181,8 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	codeChallenge := r.URL.Query().Get("code_challenge")
 	codeChallengeMethod := r.URL.Query().Get("code_challenge_method")
 
-	// OIDC parameters for upstream IdP forwarding (OpenID Connect Core 1.0 Section 3.1.2.1)
-	prompt := r.URL.Query().Get("prompt")             // "none", "login", "consent", "select_account"
-	loginHint := r.URL.Query().Get("login_hint")      // Pre-fill username/email at IdP
-	idTokenHint := r.URL.Query().Get("id_token_hint") // Previously issued ID token for silent auth
+	// Extract OIDC parameters for upstream IdP forwarding
+	authOpts := parseOIDCOptions(r.URL.Query())
 
 	if clientID == "" {
 		h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusBadRequest, startTime)
@@ -1213,16 +1212,6 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		attribute.String(instrumentation.AttrClientID, clientID),
 		attribute.String(instrumentation.AttrPKCEMethod, codeChallengeMethod),
 	)
-
-	// Build OIDC options for upstream IdP forwarding (only if any are provided)
-	var authOpts *providers.AuthorizationURLOptions
-	if prompt != "" || loginHint != "" || idTokenHint != "" {
-		authOpts = &providers.AuthorizationURLOptions{
-			Prompt:      prompt,
-			LoginHint:   loginHint,
-			IDTokenHint: idTokenHint,
-		}
-	}
 
 	// Start authorization flow with client state (server also validates for defense in depth)
 	authURL, err := h.server.StartAuthorizationFlow(ctx, clientID, redirectURI, scope, resource, codeChallenge, codeChallengeMethod, state, authOpts)
@@ -2658,4 +2647,44 @@ func (h *Handler) recordClientRegistered(clientType string) {
 
 	metrics := h.server.Instrumentation.Metrics()
 	metrics.RecordClientRegistration(context.Background(), clientType)
+}
+
+// parseOIDCOptions extracts OIDC parameters from the query string for upstream IdP forwarding.
+// Returns nil if no OIDC parameters are provided.
+//
+// Supported parameters (per OpenID Connect Core 1.0 Section 3.1.2.1):
+//   - prompt: Controls authentication UX ("none", "login", "consent", "select_account")
+//   - login_hint: Pre-fills username/email at IdP
+//   - id_token_hint: Previously issued ID token for session binding
+//   - max_age: Maximum authentication age in seconds (invalid values silently ignored)
+//   - acr_values: Authentication context class references
+func parseOIDCOptions(query url.Values) *providers.AuthorizationURLOptions {
+	prompt := query.Get("prompt")
+	loginHint := query.Get("login_hint")
+	idTokenHint := query.Get("id_token_hint")
+	maxAgeStr := query.Get("max_age")
+	acrValues := query.Get("acr_values")
+
+	// Parse max_age to integer (optional, only if provided)
+	var maxAge *int
+	if maxAgeStr != "" {
+		if v, err := strconv.Atoi(maxAgeStr); err == nil && v >= 0 {
+			maxAge = &v
+		}
+		// Invalid max_age values are silently ignored per OIDC spec behavior
+		// (providers handle validation, we forward what we can parse)
+	}
+
+	// Return nil if no OIDC parameters are provided
+	if prompt == "" && loginHint == "" && idTokenHint == "" && maxAge == nil && acrValues == "" {
+		return nil
+	}
+
+	return &providers.AuthorizationURLOptions{
+		Prompt:      prompt,
+		LoginHint:   loginHint,
+		IDTokenHint: idTokenHint,
+		MaxAge:      maxAge,
+		ACRValues:   acrValues,
+	}
 }
