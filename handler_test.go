@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1851,6 +1852,26 @@ func TestHandler_ServeAuthorization_OIDCParameterForwarding(t *testing.T) {
 			description: "Invalid max_age values are silently ignored",
 		},
 		{
+			name: "oversized max_age length is ignored",
+			queryParams: map[string]string{
+				"max_age": strings.Repeat("9", MaxMaxAgeLength+1),
+				"prompt":  "login",
+			},
+			wantPrompt:  "login",
+			wantMaxAge:  nil,
+			description: "Overlong max_age values are ignored",
+		},
+		{
+			name: "max_age above allowed range is ignored",
+			queryParams: map[string]string{
+				"max_age": strconv.Itoa(MaxMaxAgeSeconds + 1),
+				"prompt":  "login",
+			},
+			wantPrompt:  "login",
+			wantMaxAge:  nil,
+			description: "Out-of-range max_age values are ignored",
+		},
+		{
 			name: "negative max_age is ignored",
 			queryParams: map[string]string{
 				"max_age": "-100",
@@ -1859,6 +1880,14 @@ func TestHandler_ServeAuthorization_OIDCParameterForwarding(t *testing.T) {
 			wantPrompt:  "login",
 			wantMaxAge:  nil, // Negative max_age should be ignored
 			description: "Negative max_age values are silently ignored",
+		},
+		{
+			name: "prompt with newline is normalized",
+			queryParams: map[string]string{
+				"prompt": "login\nconsent",
+			},
+			wantPrompt:  "login consent",
+			description: "Control characters are normalized out",
 		},
 	}
 
@@ -1976,6 +2005,7 @@ func TestParseOIDCOptions_Validation(t *testing.T) {
 		wantPrompt      string
 		wantLoginHint   string
 		wantIDTokenHint string
+		wantMaxAge      *int
 		wantACRValues   string
 		description     string
 	}{
@@ -2020,6 +2050,12 @@ func TestParseOIDCOptions_Validation(t *testing.T) {
 			queryParams: map[string]string{"prompt": "none&other_param=injected"},
 			wantNil:     true,
 			description: "Prompt containing & (injection attempt) should be rejected",
+		},
+		{
+			name:        "prompt with newline normalized",
+			queryParams: map[string]string{"prompt": "login\nconsent"},
+			wantPrompt:  "login consent",
+			description: "Prompt control characters are normalized out",
 		},
 		{
 			name:        "prompt exceeds max length",
@@ -2068,6 +2104,24 @@ func TestParseOIDCOptions_Validation(t *testing.T) {
 			queryParams: map[string]string{"acr_values": string(make([]byte, MaxACRValuesLength+1))},
 			wantNil:     true,
 			description: "Oversized acr_values should be rejected",
+		},
+		{
+			name:        "max_age within range",
+			queryParams: map[string]string{"max_age": "3600"},
+			wantMaxAge:  testutil.IntPtr(3600),
+			description: "Valid max_age should be accepted",
+		},
+		{
+			name:        "max_age exceeds length limit",
+			queryParams: map[string]string{"max_age": strings.Repeat("9", MaxMaxAgeLength+1)},
+			wantNil:     true,
+			description: "Overlong max_age should be ignored",
+		},
+		{
+			name:        "max_age exceeds range",
+			queryParams: map[string]string{"max_age": strconv.Itoa(MaxMaxAgeSeconds + 1)},
+			wantNil:     true,
+			description: "Out-of-range max_age should be ignored",
 		},
 		{
 			name:          "mixed valid and invalid - invalid prompt rejects all",
@@ -2142,6 +2196,17 @@ func TestParseOIDCOptions_Validation(t *testing.T) {
 					t.Errorf("acr_values = %q, want %q", opts.ACRValues, tt.wantACRValues)
 				}
 			}
+			if tt.wantMaxAge != nil {
+				if opts == nil {
+					t.Fatal("Expected non-nil options for max_age check")
+				}
+				if opts.MaxAge == nil {
+					t.Fatal("Expected non-nil max_age value")
+				}
+				if *opts.MaxAge != *tt.wantMaxAge {
+					t.Errorf("max_age = %d, want %d", *opts.MaxAge, *tt.wantMaxAge)
+				}
+			}
 
 			t.Logf("✓ %s", tt.description)
 		})
@@ -2166,7 +2231,9 @@ func TestValidatePrompt(t *testing.T) {
 		{"none invalid", "", "mixed valid/invalid rejected"},
 		{"NONE", "", "case-sensitive: uppercase rejected"},
 		{"None", "", "case-sensitive: mixed case rejected"},
-		{"login  consent", "login  consent", "extra whitespace preserved (handled by IdP)"},
+		{"login  consent", "login consent", "extra whitespace normalized"},
+		{"login\tconsent", "login consent", "tab normalized to single space"},
+		{"login\nconsent", "login consent", "newline normalized to single space"},
 		{string(make([]byte, MaxPromptLength)), "", "at max length with invalid content"},
 		{string(make([]byte, MaxPromptLength+1)), "", "exceeds max length"},
 	}

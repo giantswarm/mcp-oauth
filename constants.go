@@ -197,4 +197,12 @@ const (
 	// Valid values are "none", "login", "consent", "select_account" or combinations.
 	// Even with all combined ("login consent select_account"), this is well under 100 chars.
 	MaxPromptLength = 128
+
+	// MaxMaxAgeLength is the maximum length for the max_age parameter (in seconds).
+	// This caps parsing work for untrusted input.
+	MaxMaxAgeLength = 10
+
+	// MaxMaxAgeSeconds caps max_age to a reasonable window (31 days).
+	// Values above this are ignored to reduce DoS risk from huge integers.
+	MaxMaxAgeSeconds = 31 * 24 * 60 * 60
 )

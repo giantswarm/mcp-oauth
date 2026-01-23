@@ -249,4 +249,20 @@ func TestOIDCParameterLimits(t *testing.T) {
 	if MaxPromptLength > 256 {
 		t.Errorf("MaxPromptLength = %d, should not exceed 256 for DoS protection", MaxPromptLength)
 	}
+
+	// max_age length should be limited to prevent parsing abuse
+	if MaxMaxAgeLength < 6 {
+		t.Errorf("MaxMaxAgeLength = %d, should be at least 6 to allow reasonable values", MaxMaxAgeLength)
+	}
+	if MaxMaxAgeLength > 12 {
+		t.Errorf("MaxMaxAgeLength = %d, should not exceed 12 for DoS protection", MaxMaxAgeLength)
+	}
+
+	// max_age should be capped to a reasonable window
+	if MaxMaxAgeSeconds < 7*24*60*60 {
+		t.Errorf("MaxMaxAgeSeconds = %d, should be at least 7 days", MaxMaxAgeSeconds)
+	}
+	if MaxMaxAgeSeconds > 365*24*60*60 {
+		t.Errorf("MaxMaxAgeSeconds = %d, should not exceed 1 year", MaxMaxAgeSeconds)
+	}
 }

@@ -2680,6 +2680,9 @@ func validatePrompt(prompt string) string {
 
 	// Validate each space-separated value
 	parts := strings.Fields(prompt)
+	if len(parts) == 0 {
+		return ""
+	}
 	for _, part := range parts {
 		if !validPromptValues[part] {
 			// Unknown prompt value - reject entire prompt for security
@@ -2688,7 +2691,12 @@ func validatePrompt(prompt string) string {
 		}
 	}
 
-	return prompt
+	normalized := strings.Join(parts, " ")
+	if len(normalized) > MaxPromptLength {
+		return ""
+	}
+
+	return normalized
 }
 
 // parseOIDCOptions extracts and validates OIDC parameters from the query string for upstream IdP forwarding.
@@ -2728,8 +2736,13 @@ func parseOIDCOptions(query url.Values) *providers.AuthorizationURLOptions {
 	// Parse max_age to integer (optional, only if provided)
 	var maxAge *int
 	if maxAgeStr != "" {
-		if v, err := strconv.Atoi(maxAgeStr); err == nil && v >= 0 {
-			maxAge = &v
+		if len(maxAgeStr) > MaxMaxAgeLength {
+			maxAgeStr = ""
+		}
+		if maxAgeStr != "" {
+			if v, err := strconv.Atoi(maxAgeStr); err == nil && v >= 0 && v <= MaxMaxAgeSeconds {
+				maxAge = &v
+			}
 		}
 		// Invalid max_age values are silently ignored per OIDC spec behavior
 		// (providers handle validation, we forward what we can parse)
