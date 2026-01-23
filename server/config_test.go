@@ -420,6 +420,159 @@ func TestValidateProviderRevocationConfig(t *testing.T) {
 	}
 }
 
+func TestValidateProviderTokenTTLConfig(t *testing.T) {
+	tests := []struct {
+		name              string
+		inputTTL          int64
+		expectedTTL       int64
+		expectError       bool
+		expectWarning     bool
+		expectedLogSubstr string
+	}{
+		{
+			name:        "zero value - skip validation (will get default)",
+			inputTTL:    0,
+			expectedTTL: 0, // Not changed by validation, only by applyTimeDefaults
+		},
+		{
+			name:              "negative value - corrected to default",
+			inputTTL:          -1,
+			expectedTTL:       DefaultProviderTokenTTL,
+			expectError:       true,
+			expectedLogSubstr: "cannot be negative",
+		},
+		{
+			name:              "very negative value - corrected to default",
+			inputTTL:          -86400,
+			expectedTTL:       DefaultProviderTokenTTL,
+			expectError:       true,
+			expectedLogSubstr: "cannot be negative",
+		},
+		{
+			name:              "below minimum - warning",
+			inputTTL:          1800, // 30 minutes
+			expectedTTL:       1800, // Not corrected, just warned
+			expectWarning:     true,
+			expectedLogSubstr: "very short",
+		},
+		{
+			name:        "at minimum - no warning",
+			inputTTL:    MinProviderTokenTTL, // 1 hour
+			expectedTTL: MinProviderTokenTTL,
+		},
+		{
+			name:        "valid value - 24 hours (default)",
+			inputTTL:    86400,
+			expectedTTL: 86400,
+		},
+		{
+			name:        "at maximum - no warning",
+			inputTTL:    MaxProviderTokenTTL, // 7 days
+			expectedTTL: MaxProviderTokenTTL,
+		},
+		{
+			name:              "above maximum - warning",
+			inputTTL:          1209600, // 14 days
+			expectedTTL:       1209600, // Not corrected, just warned
+			expectWarning:     true,
+			expectedLogSubstr: "exceeds recommended maximum",
+		},
+		{
+			name:              "very large value - warning",
+			inputTTL:          31536000, // 1 year
+			expectedTTL:       31536000, // Not corrected, just warned
+			expectWarning:     true,
+			expectedLogSubstr: "exceeds recommended maximum",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+			config := &Config{
+				Issuer:           "https://auth.example.com",
+				ProviderTokenTTL: tt.inputTTL,
+			}
+
+			validateProviderTokenTTLConfig(config, logger)
+
+			// Verify value is correct
+			if config.ProviderTokenTTL != tt.expectedTTL {
+				t.Errorf("ProviderTokenTTL = %d, want %d", config.ProviderTokenTTL, tt.expectedTTL)
+			}
+
+			logOutput := buf.String()
+
+			// Verify error logging
+			if tt.expectError {
+				if !strings.Contains(logOutput, "ERROR") {
+					t.Errorf("Expected error log, got: %s", logOutput)
+				}
+				if tt.expectedLogSubstr != "" && !strings.Contains(logOutput, tt.expectedLogSubstr) {
+					t.Errorf("Expected log containing %q, got: %s", tt.expectedLogSubstr, logOutput)
+				}
+			}
+
+			// Verify warning logging
+			if tt.expectWarning {
+				if !strings.Contains(logOutput, "WARNING") {
+					t.Errorf("Expected warning log, got: %s", logOutput)
+				}
+				if tt.expectedLogSubstr != "" && !strings.Contains(logOutput, tt.expectedLogSubstr) {
+					t.Errorf("Expected log containing %q, got: %s", tt.expectedLogSubstr, logOutput)
+				}
+			}
+
+			// Verify no unexpected warnings/errors
+			if !tt.expectError && !tt.expectWarning && tt.inputTTL != 0 {
+				if strings.Contains(logOutput, "ERROR") || strings.Contains(logOutput, "WARNING") {
+					t.Errorf("Did not expect error/warning, got: %s", logOutput)
+				}
+			}
+		})
+	}
+}
+
+func TestApplyTimeDefaults_ProviderTokenTTL(t *testing.T) {
+	tests := []struct {
+		name        string
+		inputTTL    int64
+		expectedTTL int64
+	}{
+		{
+			name:        "zero gets default",
+			inputTTL:    0,
+			expectedTTL: DefaultProviderTokenTTL,
+		},
+		{
+			name:        "negative gets default",
+			inputTTL:    -1,
+			expectedTTL: DefaultProviderTokenTTL,
+		},
+		{
+			name:        "positive value preserved",
+			inputTTL:    7200,
+			expectedTTL: 7200,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &Config{
+				ProviderTokenTTL: tt.inputTTL,
+			}
+
+			applyTimeDefaults(config)
+
+			if config.ProviderTokenTTL != tt.expectedTTL {
+				t.Errorf("ProviderTokenTTL = %d, want %d", config.ProviderTokenTTL, tt.expectedTTL)
+			}
+		})
+	}
+}
+
 func TestConfig_EndpointHelpers(t *testing.T) {
 	tests := []struct {
 		name           string

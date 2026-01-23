@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Affected Components**: `server/flows.go` - new `extendTokenExpiryForStorage()` function in `saveUserInfoAndToken()`
   - **Implementation**: Uses `storage.ExtractTokenExtra()` to preserve all `KnownExtraFields` (id_token, scope, expires_in) - ensures consistency with storage layer and future extensibility
   - **Testing**: Added `TestServer_HandleProviderCallback_ShortLivedToken` and `TestServer_ExtendTokenExpiryForStorage` tests covering all edge cases
+  - **Security**: Added validation for `ProviderTokenTTL` configuration:
+    - Negative values are automatically corrected to default (24 hours) with error log
+    - Values below 1 hour generate warning about potential SSO forwarding issues
+    - Values exceeding 7 days generate warning about stale token accumulation
+    - Defined constants: `MinProviderTokenTTL` (1 hour), `MaxProviderTokenTTL` (7 days), `DefaultProviderTokenTTL` (24 hours)
 
 ### Added
 
