@@ -400,6 +400,39 @@ func TestCopyScopes(t *testing.T) {
 			t.Errorf("expected 3 scopes, got %d: %v", len(result), result)
 		}
 	})
+
+	t.Run("preserves order with requested scopes first then audience scopes", func(t *testing.T) {
+		requested := []string{testScopeEmail, testScopeOpenID}
+		defaults := []string{
+			testScopeOpenID,
+			"audience:server:client_id:first-client",
+			testScopeProfile,
+			"audience:server:client_id:second-client",
+		}
+
+		result := CopyScopes(requested, defaults)
+
+		// Should have 4 scopes: 2 requested + 2 audience
+		if len(result) != 4 {
+			t.Errorf("expected 4 scopes, got %d: %v", len(result), result)
+		}
+
+		// Verify order: requested scopes come first, in their original order
+		if result[0] != testScopeEmail {
+			t.Errorf("expected first scope to be %q, got %q", testScopeEmail, result[0])
+		}
+		if result[1] != testScopeOpenID {
+			t.Errorf("expected second scope to be %q, got %q", testScopeOpenID, result[1])
+		}
+
+		// Audience scopes should be appended after requested scopes
+		if result[2] != "audience:server:client_id:first-client" {
+			t.Errorf("expected third scope to be audience:server:client_id:first-client, got %q", result[2])
+		}
+		if result[3] != "audience:server:client_id:second-client" {
+			t.Errorf("expected fourth scope to be audience:server:client_id:second-client, got %q", result[3])
+		}
+	})
 }
 
 // TestAuthorizationURLOptions_Struct tests the AuthorizationURLOptions struct.

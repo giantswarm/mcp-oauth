@@ -72,7 +72,8 @@ func CopyScopes(requestedScopes, defaultScopes []string) []string {
 	}
 
 	// Start with a copy of requested scopes
-	result := make([]string, len(requestedScopes))
+	// Pre-allocate with extra capacity for potential audience scopes to avoid reallocation
+	result := make([]string, len(requestedScopes), len(requestedScopes)+len(defaultScopes))
 	copy(result, requestedScopes)
 
 	// Build a set of requested scopes for deduplication
