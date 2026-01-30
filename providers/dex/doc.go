@@ -12,6 +12,7 @@
 //   - Groups Claim: Automatically includes the 'groups' scope to retrieve user group memberships
 //   - Refresh Token Rotation: Properly handles Dex's strict refresh token rotation policy
 //   - OIDC Discovery: Dynamically fetches endpoints via OIDC discovery with SSRF protection
+//   - Cross-Client Audience Scopes: Helper functions for SSO token forwarding to multiple clients
 //
 // # Security Features
 //
@@ -76,4 +77,27 @@
 //   - offline_access: Refresh token support
 //
 // You can override these by providing custom Scopes in the Config.
+//
+// # Cross-Client Audience Scopes
+//
+// Dex supports a cross-client token issuance pattern where a token can be made valid
+// for multiple clients by requesting special audience scopes. This is useful for SSO
+// scenarios where a user authenticates once but needs access to multiple downstream
+// services (e.g., Kubernetes OIDC via dex-k8s-authenticator).
+//
+// Use the audience helper functions to format these scopes:
+//
+//	// Format a single audience scope
+//	scope := dex.FormatAudienceScope("dex-k8s-authenticator")
+//	// returns "audience:server:client_id:dex-k8s-authenticator"
+//
+//	// Format multiple audience scopes
+//	scopes := dex.FormatAudienceScopes([]string{"k8s-auth", "api-gateway"})
+//	// returns ["audience:server:client_id:k8s-auth", "audience:server:client_id:api-gateway"]
+//
+//	// Append audience scopes to existing OAuth scopes
+//	allScopes := dex.AppendAudienceScopes("openid profile email", []string{"k8s-auth"})
+//	// returns "openid profile email audience:server:client_id:k8s-auth"
+//
+// Reference: https://dexidp.io/docs/custom-scopes-claims-clients/#cross-client-trust-and-authorized-party
 package dex
