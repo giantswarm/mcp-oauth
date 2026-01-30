@@ -313,6 +313,93 @@ func TestCopyScopes(t *testing.T) {
 			t.Errorf("input was modified when result changed: %v", requested)
 		}
 	})
+
+	t.Run("merges cross-client audience scopes from defaults", func(t *testing.T) {
+		requested := []string{testScopeOpenID, testScopeEmail}
+		defaults := []string{
+			testScopeOpenID,
+			testScopeProfile,
+			"audience:server:client_id:dex-k8s-authenticator",
+		}
+
+		result := CopyScopes(requested, defaults)
+
+		// Should have requested scopes plus the audience scope
+		if len(result) != 3 {
+			t.Errorf("expected 3 scopes, got %d: %v", len(result), result)
+		}
+
+		// Verify audience scope was merged
+		foundAudience := false
+		for _, s := range result {
+			if s == "audience:server:client_id:dex-k8s-authenticator" {
+				foundAudience = true
+				break
+			}
+		}
+		if !foundAudience {
+			t.Errorf("audience scope not merged: %v", result)
+		}
+	})
+
+	t.Run("merges multiple cross-client audience scopes", func(t *testing.T) {
+		requested := []string{testScopeOpenID}
+		defaults := []string{
+			testScopeOpenID,
+			"audience:server:client_id:k8s-auth",
+			"audience:server:client_id:api-gateway",
+		}
+
+		result := CopyScopes(requested, defaults)
+
+		// Should have 1 requested + 2 audience scopes = 3
+		if len(result) != 3 {
+			t.Errorf("expected 3 scopes, got %d: %v", len(result), result)
+		}
+	})
+
+	t.Run("does not duplicate audience scopes already in requested", func(t *testing.T) {
+		audienceScope := "audience:server:client_id:dex-k8s-authenticator"
+		requested := []string{testScopeOpenID, audienceScope}
+		defaults := []string{testScopeOpenID, testScopeProfile, audienceScope}
+
+		result := CopyScopes(requested, defaults)
+
+		// Should only have 2 scopes (no duplicate)
+		if len(result) != 2 {
+			t.Errorf("expected 2 scopes (no duplicate), got %d: %v", len(result), result)
+		}
+	})
+
+	t.Run("does not merge non-audience scopes from defaults", func(t *testing.T) {
+		requested := []string{testScopeOpenID}
+		defaults := []string{testScopeOpenID, testScopeProfile, testScopeEmail}
+
+		result := CopyScopes(requested, defaults)
+
+		// Should only have the requested scope
+		if len(result) != 1 {
+			t.Errorf("expected 1 scope, got %d: %v", len(result), result)
+		}
+		if result[0] != testScopeOpenID {
+			t.Errorf("unexpected scope: %v", result)
+		}
+	})
+
+	t.Run("uses all defaults when requested is empty including audience scopes", func(t *testing.T) {
+		var requested []string
+		defaults := []string{
+			testScopeOpenID,
+			testScopeProfile,
+			"audience:server:client_id:dex-k8s-authenticator",
+		}
+
+		result := CopyScopes(requested, defaults)
+
+		if len(result) != 3 {
+			t.Errorf("expected 3 scopes, got %d: %v", len(result), result)
+		}
+	})
 }
 
 // TestAuthorizationURLOptions_Struct tests the AuthorizationURLOptions struct.

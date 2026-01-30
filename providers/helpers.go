@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"golang.org/x/oauth2"
 )
@@ -52,18 +53,45 @@ func ApplyAuthorizationURLOptions(opts *AuthorizationURLOptions) []oauth2.AuthCo
 	return result
 }
 
+// CrossClientAudienceScopePrefix is the Dex-specific prefix for cross-client audience scopes.
+// Scopes with this prefix are mandatory and must be merged into client-requested scopes
+// to enable SSO token forwarding scenarios.
+const CrossClientAudienceScopePrefix = "audience:server:client_id:"
+
 // CopyScopes creates a deep copy of scopes to prevent race conditions.
-// If requestedScopes is non-empty, copies those; otherwise copies defaultScopes.
+// If requestedScopes is empty, copies defaultScopes.
+// If requestedScopes is non-empty, copies those and merges in any mandatory scopes
+// from defaultScopes. Mandatory scopes are cross-client audience scopes (prefixed with
+// "audience:server:client_id:") which are required for SSO token forwarding scenarios.
 func CopyScopes(requestedScopes, defaultScopes []string) []string {
-	var sourceScopes []string
-	if len(requestedScopes) > 0 {
-		sourceScopes = requestedScopes
-	} else {
-		sourceScopes = defaultScopes
+	// If no requested scopes, use defaults entirely
+	if len(requestedScopes) == 0 {
+		scopesCopy := make([]string, len(defaultScopes))
+		copy(scopesCopy, defaultScopes)
+		return scopesCopy
 	}
-	scopesCopy := make([]string, len(sourceScopes))
-	copy(scopesCopy, sourceScopes)
-	return scopesCopy
+
+	// Start with a copy of requested scopes
+	result := make([]string, len(requestedScopes))
+	copy(result, requestedScopes)
+
+	// Build a set of requested scopes for deduplication
+	requestedSet := make(map[string]struct{}, len(requestedScopes))
+	for _, s := range requestedScopes {
+		requestedSet[s] = struct{}{}
+	}
+
+	// Merge mandatory scopes from defaults (cross-client audience scopes)
+	// These scopes are required for SSO token forwarding and must not be omitted
+	for _, s := range defaultScopes {
+		if strings.HasPrefix(s, CrossClientAudienceScopePrefix) {
+			if _, exists := requestedSet[s]; !exists {
+				result = append(result, s)
+			}
+		}
+	}
+
+	return result
 }
 
 // ExchangeCodeWithPKCE is a shared helper for exchanging authorization codes with optional PKCE.
