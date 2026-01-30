@@ -351,6 +351,7 @@ func TestIDTokenClaims_TimeClaimsDocumentation(t *testing.T) {
 
 // createTestJWTWithClaims creates a JWT token for testing purposes.
 // The token has valid structure but an invalid signature (for parsing tests only).
+// The signature is valid base64 but not cryptographically valid.
 func createTestJWTWithClaims(t *testing.T, claims map[string]any) string {
 	t.Helper()
 
@@ -369,7 +370,8 @@ func createTestJWTWithClaims(t *testing.T, claims map[string]any) string {
 		t.Fatalf("Failed to marshal claims: %v", err)
 	}
 
-	// Create unsigned JWT (header.payload.signature)
+	// Create test JWT with valid base64 signature (not cryptographically valid, just valid base64)
+	fakeSignature := base64.RawURLEncoding.EncodeToString([]byte("fake-signature-for-testing"))
 	return base64.RawURLEncoding.EncodeToString(headerBytes) + "." +
-		base64.RawURLEncoding.EncodeToString(claimsBytes) + ".signature"
+		base64.RawURLEncoding.EncodeToString(claimsBytes) + "." + fakeSignature
 }

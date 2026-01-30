@@ -22,10 +22,10 @@ import (
 // testJWTWithMusterClientAudience is a test JWT with muster-client audience for testing.
 // Header: {"alg":"RS256","typ":"JWT"}
 // Payload: {"aud":"muster-client","sub":"user123"}
-// Signature: invalid (for testing only)
+// Signature: valid base64 but not cryptographically valid (for testing flow, not crypto validation)
 //
 //nolint:gosec // G101: Test JWT structure, not a credential
-const testJWTWithMusterClientAudience = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJtdXN0ZXItY2xpZW50Iiwic3ViIjoidXNlcjEyMyJ9.invalid-signature"
+const testJWTWithMusterClientAudience = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJtdXN0ZXItY2xpZW50Iiwic3ViIjoidXNlcjEyMyJ9.ZmFrZS1zaWduYXR1cmUtYnl0ZXMtZm9yLXRlc3Rpbmctb25seQ"
 
 // TestIsTrustedAudience tests the isTrustedAudience helper function.
 func TestIsTrustedAudience(t *testing.T) {
