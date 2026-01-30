@@ -87,22 +87,48 @@
 //
 // Use the audience helper functions to format these scopes:
 //
-//	// Format a single audience scope
-//	scope := dex.FormatAudienceScope("dex-k8s-authenticator")
-//	// returns "audience:server:client_id:dex-k8s-authenticator"
+//	// Format a single audience scope (returns error for invalid input)
+//	scope, err := dex.FormatAudienceScope("dex-k8s-authenticator")
+//	if err != nil {
+//	    return fmt.Errorf("invalid audience: %w", err)
+//	}
+//	// scope = "audience:server:client_id:dex-k8s-authenticator"
 //
 //	// Format multiple audience scopes
-//	scopes := dex.FormatAudienceScopes([]string{"k8s-auth", "api-gateway"})
-//	// returns ["audience:server:client_id:k8s-auth", "audience:server:client_id:api-gateway"]
+//	scopes, err := dex.FormatAudienceScopes([]string{"k8s-auth", "api-gateway"})
+//	if err != nil {
+//	    return fmt.Errorf("invalid audiences: %w", err)
+//	}
+//	// scopes = ["audience:server:client_id:k8s-auth", "audience:server:client_id:api-gateway"]
 //
 //	// Append audience scopes to existing OAuth scopes
-//	allScopes := dex.AppendAudienceScopes("openid profile email", []string{"k8s-auth"})
-//	// returns "openid profile email audience:server:client_id:k8s-auth"
+//	allScopes, err := dex.AppendAudienceScopes("openid profile email", []string{"k8s-auth"})
+//	if err != nil {
+//	    return fmt.Errorf("invalid audiences: %w", err)
+//	}
+//	// allScopes = "openid profile email audience:server:client_id:k8s-auth"
 //
 //	// Check if a scope is an audience scope using the exported constant
 //	if strings.HasPrefix(scope, dex.AudienceScopePrefix) {
 //	    // handle audience scope
 //	}
+//
+//	// Validate an audience string before use (optional, functions validate internally)
+//	if err := dex.ValidateAudience("k8s-auth"); err != nil {
+//	    return fmt.Errorf("invalid audience: %w", err)
+//	}
+//
+// # Audience Scope Security
+//
+// All audience helper functions validate input to prevent scope injection attacks.
+// OAuth scopes are space-delimited (RFC 6749 Section 3.3), so an unvalidated audience
+// string containing spaces could inject additional scopes into the OAuth request.
+//
+// Security measures:
+//   - Character whitelist: Only alphanumeric, hyphens, and underscores allowed
+//   - Length limit: Maximum 256 characters per audience
+//   - Count limit: Maximum 50 audiences per call
+//   - Empty string handling: Filtered out (not treated as error)
 //
 // Reference: https://dexidp.io/docs/custom-scopes-claims-clients/#cross-client-trust-and-authorized-party
 package dex

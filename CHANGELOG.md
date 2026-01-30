@@ -10,11 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Dex cross-client audience scope helper functions (#201)**
-  - Added `FormatAudienceScope(audience string) string` - Formats a client ID as a Dex cross-client audience scope (e.g., `"k8s-auth"` -> `"audience:server:client_id:k8s-auth"`)
-  - Added `FormatAudienceScopes(audiences []string) []string` - Formats multiple client IDs, filtering out empty strings
-  - Added `AppendAudienceScopes(scopes string, audiences []string) string` - Appends audience scopes to existing OAuth scope strings
+  - Added `FormatAudienceScope(audience string) (string, error)` - Formats a client ID as a Dex cross-client audience scope (e.g., `"k8s-auth"` -> `"audience:server:client_id:k8s-auth"`)
+  - Added `FormatAudienceScopes(audiences []string) ([]string, error)` - Formats multiple client IDs, filtering out empty strings
+  - Added `AppendAudienceScopes(scopes string, audiences []string) (string, error)` - Appends audience scopes to existing OAuth scope strings
+  - Added `ValidateAudience(audience string) error` - Validates a single audience string
+  - Added `ValidateAudiences(audiences []string) error` - Validates multiple audience strings
   - Added `AudienceScopePrefix` constant - Exported prefix for checking/parsing audience scopes
+  - Added `MaxAudienceLength` constant (256) - Maximum allowed audience string length
+  - Added `MaxAudienceCount` constant (50) - Maximum audiences per call
   - **Use Case**: Enables SSO scenarios where a token needs to be valid for multiple downstream services (e.g., Kubernetes OIDC via dex-k8s-authenticator)
+  - **Security**: All functions validate audience strings to prevent scope injection attacks:
+    - Character whitelist: Only `[a-zA-Z0-9_-]` allowed (prevents space-based scope injection)
+    - Length limit: Max 256 characters (prevents DoS via memory exhaustion)
+    - Count limit: Max 50 audiences (prevents DoS via excessive processing)
   - **Reference**: [Dex Cross-Client Trust Documentation](https://dexidp.io/docs/custom-scopes-claims-clients/#cross-client-trust-and-authorized-party)
 
 ### Documentation
