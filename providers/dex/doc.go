@@ -99,5 +99,10 @@
 //	allScopes := dex.AppendAudienceScopes("openid profile email", []string{"k8s-auth"})
 //	// returns "openid profile email audience:server:client_id:k8s-auth"
 //
+//	// Check if a scope is an audience scope using the exported constant
+//	if strings.HasPrefix(scope, dex.AudienceScopePrefix) {
+//	    // handle audience scope
+//	}
+//
 // Reference: https://dexidp.io/docs/custom-scopes-claims-clients/#cross-client-trust-and-authorized-party
 package dex

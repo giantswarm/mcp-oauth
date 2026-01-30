@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added `FormatAudienceScope(audience string) string` - Formats a client ID as a Dex cross-client audience scope (e.g., `"k8s-auth"` -> `"audience:server:client_id:k8s-auth"`)
   - Added `FormatAudienceScopes(audiences []string) []string` - Formats multiple client IDs, filtering out empty strings
   - Added `AppendAudienceScopes(scopes string, audiences []string) string` - Appends audience scopes to existing OAuth scope strings
+  - Added `AudienceScopePrefix` constant - Exported prefix for checking/parsing audience scopes
   - **Use Case**: Enables SSO scenarios where a token needs to be valid for multiple downstream services (e.g., Kubernetes OIDC via dex-k8s-authenticator)
   - **Reference**: [Dex Cross-Client Trust Documentation](https://dexidp.io/docs/custom-scopes-claims-clients/#cross-client-trust-and-authorized-party)
 

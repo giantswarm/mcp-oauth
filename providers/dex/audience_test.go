@@ -204,7 +204,7 @@ func TestAppendAudienceScopes(t *testing.T) {
 // TestAudienceScopePrefix verifies the constant is correctly defined
 func TestAudienceScopePrefix(t *testing.T) {
 	expected := "audience:server:client_id:"
-	if audienceScopePrefix != expected {
-		t.Errorf("audienceScopePrefix = %q, want %q", audienceScopePrefix, expected)
+	if AudienceScopePrefix != expected {
+		t.Errorf("AudienceScopePrefix = %q, want %q", AudienceScopePrefix, expected)
 	}
 }

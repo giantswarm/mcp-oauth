@@ -11,8 +11,13 @@ import (
 	"strings"
 )
 
-// audienceScopePrefix is the Dex-specific prefix for cross-client audience scopes.
-const audienceScopePrefix = "audience:server:client_id:"
+// AudienceScopePrefix is the Dex-specific prefix for cross-client audience scopes.
+// This can be used to check if a scope is an audience scope:
+//
+//	if strings.HasPrefix(scope, dex.AudienceScopePrefix) {
+//	    // handle audience scope
+//	}
+const AudienceScopePrefix = "audience:server:client_id:"
 
 // FormatAudienceScope formats a client ID as a Dex cross-client audience scope.
 // This enables a token to be valid for the specified client in addition to the
@@ -26,7 +31,7 @@ const audienceScopePrefix = "audience:server:client_id:"
 // Use case: When a user authenticates through one client but needs access to
 // resources protected by another client (e.g., Kubernetes OIDC via dex-k8s-authenticator).
 func FormatAudienceScope(audience string) string {
-	return audienceScopePrefix + audience
+	return AudienceScopePrefix + audience
 }
 
 // FormatAudienceScopes formats multiple client IDs as Dex cross-client audience scopes.
@@ -43,11 +48,17 @@ func FormatAudienceScope(audience string) string {
 // Use case: When a token needs to be valid for multiple downstream services
 // simultaneously for cross-cluster or multi-service SSO.
 func FormatAudienceScopes(audiences []string) []string {
-	var scopes []string
+	if len(audiences) == 0 {
+		return nil
+	}
+	scopes := make([]string, 0, len(audiences))
 	for _, audience := range audiences {
 		if audience != "" {
 			scopes = append(scopes, FormatAudienceScope(audience))
 		}
+	}
+	if len(scopes) == 0 {
+		return nil
 	}
 	return scopes
 }
