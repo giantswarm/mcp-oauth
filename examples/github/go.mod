@@ -1,6 +1,6 @@
 module github.com/giantswarm/mcp-oauth/examples/github
 
-go 1.24.11
+go 1.24.12
 
 require github.com/giantswarm/mcp-oauth v0.2.43
 
