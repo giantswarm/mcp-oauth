@@ -85,6 +85,34 @@
 // scenarios where a user authenticates once but needs access to multiple downstream
 // services (e.g., Kubernetes OIDC via dex-k8s-authenticator).
 //
+// # IMPORTANT: Mandatory Scope Merging
+//
+// When audience scopes (prefixed with "audience:server:client_id:") are configured in
+// the provider's default scopes, they are AUTOMATICALLY MERGED into ALL authorization
+// requests. This behavior is intentional to ensure SSO token forwarding works correctly.
+//
+// Administrator implications:
+//   - Tokens will ALWAYS include the configured audience claims
+//   - Clients CANNOT opt out of these audiences by requesting custom scopes
+//   - This affects token size and validation on downstream services
+//   - The server logs configured audience scopes at startup for visibility
+//
+// Example configuration with mandatory audience:
+//
+//	provider, err := dex.NewProvider(&dex.Config{
+//	    IssuerURL:    "https://dex.example.com",
+//	    ClientID:     "mcp-oauth",
+//	    ClientSecret: "secret",
+//	    RedirectURL:  "http://localhost:8080/oauth/callback",
+//	    Scopes: []string{
+//	        "openid", "profile", "email", "groups", "offline_access",
+//	        "audience:server:client_id:dex-k8s-authenticator", // Always merged
+//	    },
+//	})
+//
+// With this configuration, even if a client requests only ["openid", "email"], the
+// resulting authorization request will include "audience:server:client_id:dex-k8s-authenticator".
+//
 // Use the audience helper functions to format these scopes:
 //
 //	// Format a single audience scope (returns error for invalid input)

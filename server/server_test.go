@@ -663,3 +663,160 @@ func TestServer_ShutdownWithTimeout_ShortTimeout(t *testing.T) {
 		t.Logf("ShutdownWithTimeout() with short timeout: %v (may timeout on slow systems)", err)
 	}
 }
+
+func TestIsAudienceScope(t *testing.T) {
+	tests := []struct {
+		name     string
+		scope    string
+		expected bool
+	}{
+		{
+			name:     "valid audience scope",
+			scope:    "audience:server:client_id:k8s-auth",
+			expected: true,
+		},
+		{
+			name:     "valid audience scope with hyphens",
+			scope:    "audience:server:client_id:dex-k8s-authenticator",
+			expected: true,
+		},
+		{
+			name:     "valid audience scope with underscores",
+			scope:    "audience:server:client_id:api_gateway_v2",
+			expected: true,
+		},
+		{
+			name:     "not an audience scope - openid",
+			scope:    "openid",
+			expected: false,
+		},
+		{
+			name:     "not an audience scope - profile",
+			scope:    "profile",
+			expected: false,
+		},
+		{
+			name:     "not an audience scope - email",
+			scope:    "email",
+			expected: false,
+		},
+		{
+			name:     "not an audience scope - groups",
+			scope:    "groups",
+			expected: false,
+		},
+		{
+			name:     "not an audience scope - offline_access",
+			scope:    "offline_access",
+			expected: false,
+		},
+		{
+			name:     "empty string",
+			scope:    "",
+			expected: false,
+		},
+		{
+			name:     "prefix only without client id",
+			scope:    "audience:server:client_id:",
+			expected: false,
+		},
+		{
+			name:     "partial prefix match",
+			scope:    "audience:server:",
+			expected: false,
+		},
+		{
+			name:     "similar but not matching prefix",
+			scope:    "audience:client:server_id:test",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isAudienceScope(tt.scope)
+			if result != tt.expected {
+				t.Errorf("isAudienceScope(%q) = %v, want %v", tt.scope, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestLogMandatoryAudienceScopes(t *testing.T) {
+	t.Run("logs when audience scopes are present", func(t *testing.T) {
+		store := memory.New()
+		defer store.Stop()
+
+		provider := mock.NewProvider()
+		provider.DefaultScopesFunc = func() []string {
+			return []string{
+				"openid",
+				"profile",
+				"audience:server:client_id:k8s-auth",
+				"audience:server:client_id:api-gateway",
+			}
+		}
+
+		// Create server - it will log during initialization
+		config := &Config{
+			Issuer: "https://auth.example.com",
+		}
+
+		srv, err := New(provider, store, store, store, config, slog.Default())
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+
+		// Verify server was created successfully
+		// The logging happens at startup - we're just verifying no errors
+		if srv == nil {
+			t.Fatal("Server should not be nil")
+		}
+	})
+
+	t.Run("no log when no audience scopes", func(t *testing.T) {
+		store := memory.New()
+		defer store.Stop()
+
+		provider := mock.NewProvider()
+		provider.DefaultScopesFunc = func() []string {
+			return []string{"openid", "profile", "email"}
+		}
+
+		config := &Config{
+			Issuer: "https://auth.example.com",
+		}
+
+		srv, err := New(provider, store, store, store, config, slog.Default())
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+
+		if srv == nil {
+			t.Fatal("Server should not be nil")
+		}
+	})
+
+	t.Run("handles empty default scopes", func(t *testing.T) {
+		store := memory.New()
+		defer store.Stop()
+
+		provider := mock.NewProvider()
+		provider.DefaultScopesFunc = func() []string {
+			return nil
+		}
+
+		config := &Config{
+			Issuer: "https://auth.example.com",
+		}
+
+		srv, err := New(provider, store, store, store, config, slog.Default())
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+
+		if srv == nil {
+			t.Fatal("Server should not be nil")
+		}
+	})
+}

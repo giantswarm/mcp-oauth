@@ -41,6 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Fix**: Modified `CopyScopes` to merge mandatory scopes (cross-client audience scopes with prefix `audience:server:client_id:`) from defaults into client-requested scopes while avoiding duplicates.
   - **Use Case**: Enables SSO token forwarding scenarios where muster aggregator forwards tokens to mcp-kubernetes servers that use Kubernetes OIDC authentication. Tokens now correctly contain multiple audiences.
   - **New Constant**: Added `providers.CrossClientAudienceScopePrefix` for checking/parsing cross-client audience scopes.
+  - **Startup Logging**: Server now logs configured mandatory audience scopes at startup, helping administrators understand which audiences will be automatically merged into all tokens.
+  - **Enhanced Documentation**: Added comprehensive documentation in `providers/helpers.go` and `providers/dex/doc.go` explaining:
+    - Mandatory scope merging behavior and its implications
+    - That clients cannot opt out of configured audience scopes
+    - Impact on token size and downstream service validation
   - **Reference**: [Dex Cross-Client Trust Documentation](https://dexidp.io/docs/custom-scopes-claims-clients/#cross-client-trust-and-authorized-party)
 
 - **OAuth proxy now forwards OIDC parameters to upstream IdP (#195)**

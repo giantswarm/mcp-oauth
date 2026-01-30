@@ -227,13 +227,19 @@ func (s *Server) initializeMetadataSupport() {
 // validateProviderDefaultScopes checks if provider default scopes are supported by server configuration.
 // This is a startup-time sanity check to catch configuration mismatches early.
 // Logs warnings for any provider defaults that aren't in the server's supported scopes list.
+// Also logs informational messages about mandatory audience scopes that will be auto-merged.
 func (s *Server) validateProviderDefaultScopes(logger *slog.Logger) {
+	providerDefaults := s.provider.DefaultScopes()
+
+	// Log mandatory audience scopes (these will be auto-merged into all requests)
+	// This helps administrators understand which audiences will always be included in tokens
+	s.logMandatoryAudienceScopes(logger, providerDefaults)
+
 	// Skip validation if no supported scopes configured (allow-all mode)
 	if len(s.Config.SupportedScopes) == 0 {
 		return
 	}
 
-	providerDefaults := s.provider.DefaultScopes()
 	if len(providerDefaults) == 0 {
 		return
 	}
@@ -253,6 +259,31 @@ func (s *Server) validateProviderDefaultScopes(logger *slog.Logger) {
 				"supported_scopes", s.Config.SupportedScopes)
 		}
 	}
+}
+
+// logMandatoryAudienceScopes logs information about cross-client audience scopes
+// configured in provider defaults. These scopes are automatically merged into ALL
+// authorization requests to support SSO token forwarding scenarios.
+func (s *Server) logMandatoryAudienceScopes(logger *slog.Logger, providerDefaults []string) {
+	var audienceScopes []string
+	for _, scope := range providerDefaults {
+		if isAudienceScope(scope) {
+			audienceScopes = append(audienceScopes, scope)
+		}
+	}
+
+	if len(audienceScopes) > 0 {
+		logger.Info("Mandatory cross-client audience scopes configured - these will be merged into ALL authorization requests",
+			"audience_scopes", audienceScopes,
+			"provider", s.provider.Name(),
+			"count", len(audienceScopes))
+	}
+}
+
+// isAudienceScope checks if a scope is a Dex cross-client audience scope.
+func isAudienceScope(scope string) bool {
+	return len(scope) > len(providers.CrossClientAudienceScopePrefix) &&
+		scope[:len(providers.CrossClientAudienceScopePrefix)] == providers.CrossClientAudienceScopePrefix
 }
 
 // SetEncryptor sets the token encryptor for server and storage

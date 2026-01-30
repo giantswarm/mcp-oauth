@@ -56,6 +56,18 @@ func ApplyAuthorizationURLOptions(opts *AuthorizationURLOptions) []oauth2.AuthCo
 // CrossClientAudienceScopePrefix is the Dex-specific prefix for cross-client audience scopes.
 // Scopes with this prefix are mandatory and must be merged into client-requested scopes
 // to enable SSO token forwarding scenarios.
+//
+// ADMINISTRATOR NOTE: Any scope with this prefix configured in the provider's default
+// scopes will be AUTOMATICALLY MERGED into ALL authorization requests, regardless of
+// what scopes the client explicitly requests. This is intentional behavior to ensure
+// SSO token forwarding works correctly, but administrators should be aware that:
+//
+//   - Tokens will always include the configured audience claims
+//   - Clients cannot opt out of these audiences
+//   - This affects token size and validation requirements on downstream services
+//
+// Example: If defaults include "audience:server:client_id:k8s-auth", every token will
+// be valid for the "k8s-auth" client, even if the requesting client didn't ask for it.
 const CrossClientAudienceScopePrefix = "audience:server:client_id:"
 
 // CopyScopes creates a deep copy of scopes to prevent race conditions.
@@ -63,6 +75,21 @@ const CrossClientAudienceScopePrefix = "audience:server:client_id:"
 // If requestedScopes is non-empty, copies those and merges in any mandatory scopes
 // from defaultScopes. Mandatory scopes are cross-client audience scopes (prefixed with
 // "audience:server:client_id:") which are required for SSO token forwarding scenarios.
+//
+// Mandatory Scope Merging:
+//
+// Cross-client audience scopes (prefixed with CrossClientAudienceScopePrefix) from
+// defaultScopes are ALWAYS merged into the result, even when the client provides
+// custom scopes. This ensures SSO token forwarding scenarios work correctly.
+//
+// Example:
+//
+//	defaultScopes: ["openid", "profile", "audience:server:client_id:k8s-auth"]
+//	requestedScopes: ["openid", "email"]
+//	result: ["openid", "email", "audience:server:client_id:k8s-auth"]
+//
+// Note that "profile" is NOT merged (it's not an audience scope), but the audience
+// scope IS merged because it's mandatory for SSO token forwarding.
 func CopyScopes(requestedScopes, defaultScopes []string) []string {
 	// If no requested scopes, use defaults entirely
 	if len(requestedScopes) == 0 {
