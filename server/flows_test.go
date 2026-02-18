@@ -7147,3 +7147,267 @@ func TestServer_RefreshAccessToken_ExpiryCap(t *testing.T) {
 		}
 	})
 }
+
+// TestServer_ValidateToken_RefreshUpdatesRTMapping verifies that when a provider
+// token is refreshed during validation, the refresh-token storage key is also
+// updated with the new provider token. This prevents stale credentials when the
+// client later uses their refresh token.
+func TestServer_ValidateToken_RefreshUpdatesRTMapping(t *testing.T) {
+	ctx := context.Background()
+	srv, store, provider := setupFlowTestServer(t)
+	srv.Config.AccessTokenTTL = 3600
+
+	rotatedProviderRT := "provider-rt-v2"
+	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
+		return &oauth2.Token{
+			AccessToken:  "new-provider-at",
+			RefreshToken: rotatedProviderRT,
+			Expiry:       time.Now().Add(30 * time.Minute),
+			TokenType:    "Bearer",
+		}, nil
+	}
+	provider.ValidateTokenFunc = setupValidTokenProvider()
+
+	clientAT := "client-access-token"
+	clientRT := "client-refresh-token"
+
+	oldProviderToken := &oauth2.Token{
+		AccessToken:  "old-provider-at",
+		RefreshToken: "old-provider-rt",
+		Expiry:       time.Now().Add(-10 * time.Minute),
+	}
+
+	if err := store.SaveToken(ctx, clientAT, oldProviderToken); err != nil {
+		t.Fatalf("SaveToken(AT) error = %v", err)
+	}
+	if err := store.SaveToken(ctx, clientRT, oldProviderToken); err != nil {
+		t.Fatalf("SaveToken(RT) error = %v", err)
+	}
+
+	srv.registerTokenPair(clientAT, clientRT)
+
+	_, err := srv.ValidateToken(ctx, clientAT)
+	if err != nil {
+		t.Fatalf("ValidateToken() unexpected error = %v", err)
+	}
+
+	// The RT-key mapping must now contain the rotated provider refresh token.
+	refreshKeyToken, err := store.GetToken(ctx, clientRT)
+	if err != nil {
+		t.Fatalf("GetToken(RT) error = %v", err)
+	}
+	if refreshKeyToken.RefreshToken != rotatedProviderRT {
+		t.Errorf("RT-key provider token RefreshToken = %q, want %q",
+			refreshKeyToken.RefreshToken, rotatedProviderRT)
+	}
+}
+
+// TestServer_ValidateToken_PreservesOldRefreshToken verifies that when the
+// provider omits the refresh_token in a refresh response, the old refresh
+// token is preserved (per OAuth 2.0 RFC 6749 Section 5.1).
+func TestServer_ValidateToken_PreservesOldRefreshToken(t *testing.T) {
+	ctx := context.Background()
+	srv, store, provider := setupFlowTestServer(t)
+
+	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
+		return &oauth2.Token{
+			AccessToken: "new-provider-at",
+			Expiry:      time.Now().Add(30 * time.Minute),
+			TokenType:   "Bearer",
+			// No RefreshToken returned
+		}, nil
+	}
+	provider.ValidateTokenFunc = setupValidTokenProvider()
+
+	clientAT := "client-at-preserve"
+	oldRT := "old-provider-refresh-token"
+
+	if err := store.SaveToken(ctx, clientAT, &oauth2.Token{
+		AccessToken:  "old-provider-at",
+		RefreshToken: oldRT,
+		Expiry:       time.Now().Add(-10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+
+	_, err := srv.ValidateToken(ctx, clientAT)
+	if err != nil {
+		t.Fatalf("ValidateToken() unexpected error = %v", err)
+	}
+
+	refreshedToken, err := store.GetToken(ctx, clientAT)
+	if err != nil {
+		t.Fatalf("GetToken() error = %v", err)
+	}
+	if refreshedToken.RefreshToken != oldRT {
+		t.Errorf("RefreshToken = %q, want preserved old value %q",
+			refreshedToken.RefreshToken, oldRT)
+	}
+}
+
+// TestServer_GenerateAndStoreTokens_PastExpiryIgnored verifies that when a
+// provider token has an expiry in the past, the cap is not applied (the token
+// uses AccessTokenTTL instead of a past timestamp).
+func TestServer_GenerateAndStoreTokens_PastExpiryIgnored(t *testing.T) {
+	srv, _, _ := setupFlowTestServer(t)
+	srv.Config.AccessTokenTTL = 3600
+
+	authCode := &storage.AuthorizationCode{
+		Code:     "test-code-past",
+		ClientID: "test-client",
+		UserID:   "test-user",
+		Scope:    "openid",
+		ProviderToken: &oauth2.Token{
+			AccessToken:  "provider-access",
+			RefreshToken: "provider-refresh",
+			Expiry:       time.Now().Add(-30 * time.Second), // already expired
+		},
+	}
+
+	tokenResponse := srv.generateAndStoreTokens(context.Background(), authCode, "test-client")
+
+	// The expiry must be in the future (AccessTokenTTL), NOT the past provider expiry
+	if tokenResponse.Expiry.Before(time.Now()) {
+		t.Errorf("Token expiry = %v, must be in the future but is in the past", tokenResponse.Expiry)
+	}
+
+	expectedExpiry := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
+	timeDiff := tokenResponse.Expiry.Sub(expectedExpiry).Abs()
+	if timeDiff > 2*time.Second {
+		t.Errorf("Token expiry = %v, want close to %v (diff: %v)",
+			tokenResponse.Expiry, expectedExpiry, timeDiff)
+	}
+}
+
+// TestPreserveRefreshToken tests the preserveRefreshToken helper function.
+func TestPreserveRefreshToken(t *testing.T) {
+	t.Run("new token has refresh token - use new", func(t *testing.T) {
+		newToken := &oauth2.Token{AccessToken: "at", RefreshToken: "new-rt"}
+		result := preserveRefreshToken(newToken, "old-rt")
+		if result.RefreshToken != "new-rt" {
+			t.Errorf("RefreshToken = %q, want %q", result.RefreshToken, "new-rt")
+		}
+	})
+
+	t.Run("new token missing refresh token - preserve old", func(t *testing.T) {
+		newToken := &oauth2.Token{AccessToken: "at"}
+		result := preserveRefreshToken(newToken, "old-rt")
+		if result.RefreshToken != "old-rt" {
+			t.Errorf("RefreshToken = %q, want %q", result.RefreshToken, "old-rt")
+		}
+	})
+
+	t.Run("new token missing refresh token and no old - stay empty", func(t *testing.T) {
+		newToken := &oauth2.Token{AccessToken: "at"}
+		result := preserveRefreshToken(newToken, "")
+		if result.RefreshToken != "" {
+			t.Errorf("RefreshToken = %q, want empty", result.RefreshToken)
+		}
+	})
+
+	t.Run("nil token - returns nil", func(t *testing.T) {
+		result := preserveRefreshToken(nil, "old-rt")
+		if result != nil {
+			t.Errorf("expected nil, got %v", result)
+		}
+	})
+}
+
+// TestCapTokenExpiry tests the capTokenExpiry helper function.
+func TestCapTokenExpiry(t *testing.T) {
+	srv, _, _ := setupFlowTestServer(t)
+	srv.Config.AccessTokenTTL = 3600
+
+	t.Run("provider expires sooner - caps to provider", func(t *testing.T) {
+		providerExpiry := time.Now().Add(10 * time.Minute)
+		expiry := srv.capTokenExpiry(providerExpiry)
+		diff := expiry.Sub(providerExpiry).Abs()
+		if diff > 2*time.Second {
+			t.Errorf("expiry = %v, want close to %v (diff: %v)", expiry, providerExpiry, diff)
+		}
+	})
+
+	t.Run("provider expires later - uses AccessTokenTTL", func(t *testing.T) {
+		providerExpiry := time.Now().Add(2 * time.Hour)
+		expiry := srv.capTokenExpiry(providerExpiry)
+		expected := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
+		diff := expiry.Sub(expected).Abs()
+		if diff > 2*time.Second {
+			t.Errorf("expiry = %v, want close to %v (diff: %v)", expiry, expected, diff)
+		}
+	})
+
+	t.Run("provider expiry in the past - uses AccessTokenTTL", func(t *testing.T) {
+		providerExpiry := time.Now().Add(-30 * time.Second)
+		expiry := srv.capTokenExpiry(providerExpiry)
+		if expiry.Before(time.Now()) {
+			t.Errorf("expiry = %v, must not be in the past", expiry)
+		}
+		expected := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
+		diff := expiry.Sub(expected).Abs()
+		if diff > 2*time.Second {
+			t.Errorf("expiry = %v, want close to %v (diff: %v)", expiry, expected, diff)
+		}
+	})
+
+	t.Run("zero expiry - uses AccessTokenTTL", func(t *testing.T) {
+		expiry := srv.capTokenExpiry(time.Time{})
+		expected := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
+		diff := expiry.Sub(expected).Abs()
+		if diff > 2*time.Second {
+			t.Errorf("expiry = %v, want close to %v (diff: %v)", expiry, expected, diff)
+		}
+	})
+}
+
+// TestServer_ValidateToken_ConcurrentRefreshDedup verifies that concurrent
+// requests for the same expired token use singleflight to deduplicate the
+// provider refresh call.
+func TestServer_ValidateToken_ConcurrentRefreshDedup(t *testing.T) {
+	srv, store, provider := setupFlowTestServer(t)
+
+	var refreshCount int
+	var mu sync.Mutex
+	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
+		mu.Lock()
+		refreshCount++
+		mu.Unlock()
+		return &oauth2.Token{
+			AccessToken:  "new-provider-at",
+			RefreshToken: "new-provider-rt",
+			Expiry:       time.Now().Add(1 * time.Hour),
+			TokenType:    "Bearer",
+		}, nil
+	}
+	provider.ValidateTokenFunc = setupValidTokenProvider()
+
+	clientAT := "concurrent-at"
+	if err := store.SaveToken(context.Background(), clientAT, &oauth2.Token{
+		AccessToken:  "old-provider-at",
+		RefreshToken: "old-provider-rt",
+		Expiry:       time.Now().Add(-10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+
+	const goroutines = 5
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	for range goroutines {
+		go func() {
+			defer wg.Done()
+			_, _ = srv.ValidateToken(context.Background(), clientAT)
+		}()
+	}
+	wg.Wait()
+
+	mu.Lock()
+	count := refreshCount
+	mu.Unlock()
+
+	// Singleflight should coalesce most calls into one
+	if count > 2 {
+		t.Errorf("provider.RefreshToken called %d times, expected at most 2 (singleflight dedup)", count)
+	}
+}

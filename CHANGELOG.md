@@ -39,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Problem**: Token responses advertised `expires_in: 3600` (from `AccessTokenTTL`) but `ValidateToken` checked the upstream provider token's expiry, which is often much shorter (e.g. 10-30 min for Dex). Requests failed with 401 well before the advertised lifetime.
   - **Fix**: `validateStoredToken` now attempts to refresh the provider token using its refresh token before rejecting. As long as the refresh token is valid, requests continue working transparently.
   - **Additional**: `generateAndStoreTokens` and `RefreshAccessToken` now cap token expiry to `min(AccessTokenTTL, providerToken.Expiry)` so `expires_in` accurately reflects the effective lifetime.
+  - **Stale mapping fix**: Both the access-token and refresh-token storage keys are now updated when a provider token is refreshed, preventing stale credentials for providers that rotate refresh tokens (e.g. Dex).
+  - **Refresh token preservation**: When a provider omits `refresh_token` in a refresh response (allowed by OAuth 2.0 RFC 6749 Section 5.1), the old refresh token is preserved.
+  - **Singleflight deduplication**: Concurrent validation requests for the same expired token are coalesced into a single provider refresh call, preventing double-refresh races.
+  - **Expiry cap safety**: The expiry cap now ignores provider tokens with past expiry (clock skew, provider bugs), preventing `expires_in <= 0` in token responses.
 
 - **Cross-client audience scopes now merged with client-requested scopes (#203)**
   - **Problem**: When a client requested specific OAuth scopes during authorization, Dex provider's configured cross-client audience scopes were completely ignored instead of being merged. This broke SSO token forwarding scenarios where tokens need multiple audiences.
