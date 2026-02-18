@@ -121,9 +121,9 @@ func preserveRefreshToken(newToken *oauth2.Token, oldRefreshToken string) *oauth
 	if newToken == nil || newToken.RefreshToken != "" || oldRefreshToken == "" {
 		return newToken
 	}
-	copy := *newToken
-	copy.RefreshToken = oldRefreshToken
-	return &copy
+	clonedToken := *newToken
+	clonedToken.RefreshToken = oldRefreshToken
+	return &clonedToken
 }
 
 // updateProviderTokenMappings saves the refreshed provider token under both the
