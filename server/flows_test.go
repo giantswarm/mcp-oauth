@@ -7418,8 +7418,8 @@ func TestServer_RefreshAccessToken_CleansUpOldTokenPair(t *testing.T) {
 
 	clientID := "test-client-cleanup"
 	userID := "test-user-cleanup"
-	oldAccessToken := "old-client-access"
-	oldRefreshToken := "old-client-refresh"
+	oldAccessToken := "old-client-access"   // nolint:gosec // G101: test token identifier, not credentials
+	oldRefreshToken := "old-client-refresh" // nolint:gosec // G101: test token identifier, not credentials
 
 	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
 		return &oauth2.Token{
