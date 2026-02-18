@@ -1805,6 +1805,7 @@ func TestServer_ValidateToken_LocalExpiry(t *testing.T) {
 		tokenExpiry    time.Time
 		saveToken      bool
 		clockSkewGrace int64
+		refreshFails   bool // if true, configure provider RefreshToken to fail
 		wantErr        bool
 		wantErrMsg     string
 	}{
@@ -1824,13 +1825,14 @@ func TestServer_ValidateToken_LocalExpiry(t *testing.T) {
 			wantErr:        false,
 		},
 		{
-			name:           "token expired - beyond grace period",
+			name:           "token expired - refresh fails - beyond grace period",
 			accessToken:    "expired-token",
 			tokenExpiry:    time.Now().Add(-10 * time.Minute),
 			saveToken:      true,
+			refreshFails:   true,
 			clockSkewGrace: 5,
 			wantErr:        true,
-			wantErrMsg:     "access token expired (local validation)",
+			wantErrMsg:     "access token expired",
 		},
 		{
 			name:           "token expired but within grace period",
@@ -1849,22 +1851,24 @@ func TestServer_ValidateToken_LocalExpiry(t *testing.T) {
 			wantErr:        false,
 		},
 		{
-			name:           "token expired just beyond grace period",
+			name:           "token expired - refresh fails - just beyond grace period",
 			accessToken:    "just-beyond-grace",
 			tokenExpiry:    time.Now().Add(-6 * time.Second),
 			saveToken:      true,
+			refreshFails:   true,
 			clockSkewGrace: 5,
 			wantErr:        true,
-			wantErrMsg:     "access token expired (local validation)",
+			wantErrMsg:     "access token expired",
 		},
 		{
-			name:           "zero grace period - strict expiry check",
+			name:           "zero grace period - refresh fails - strict expiry check",
 			accessToken:    "zero-grace-token",
 			tokenExpiry:    time.Now().Add(-1 * time.Second),
 			saveToken:      true,
+			refreshFails:   true,
 			clockSkewGrace: 0,
 			wantErr:        true,
-			wantErrMsg:     "access token expired (local validation)",
+			wantErrMsg:     "access token expired",
 		},
 		{
 			name:           "large grace period - expired token still valid",
@@ -1886,6 +1890,22 @@ func TestServer_ValidateToken_LocalExpiry(t *testing.T) {
 
 			// Set clock skew grace period for this test
 			srv.Config.ClockSkewGracePeriod = tt.clockSkewGrace
+
+			// Configure provider refresh behavior per test case
+			if tt.refreshFails {
+				provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
+					return nil, fmt.Errorf("refresh token expired")
+				}
+			} else {
+				provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
+					return &oauth2.Token{
+						AccessToken:  "refreshed-provider-token",
+						RefreshToken: "refreshed-provider-refresh",
+						Expiry:       time.Now().Add(1 * time.Hour),
+						TokenType:    "Bearer",
+					}, nil
+				}
+			}
 
 			// Save token to storage if needed
 			if tt.saveToken {
@@ -1951,8 +1971,13 @@ func TestServer_ValidateToken_ClockSkewScenarios(t *testing.T) {
 	// Configure grace period
 	srv.Config.ClockSkewGracePeriod = 5
 
-	t.Run("token expired locally but provider still accepts - local validation wins", func(t *testing.T) {
+	t.Run("token expired locally with refresh failure - local validation wins", func(t *testing.T) {
 		accessToken := "locally-expired-token"
+
+		// Configure provider refresh to fail (simulates expired refresh token)
+		provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
+			return nil, fmt.Errorf("refresh token expired")
+		}
 
 		// Save token with expiry 10 minutes in the past (beyond grace period)
 		token := &oauth2.Token{
@@ -1965,7 +1990,7 @@ func TestServer_ValidateToken_ClockSkewScenarios(t *testing.T) {
 			t.Fatalf("SaveToken() error = %v", err)
 		}
 
-		// Try to validate - should fail locally before reaching provider
+		// Try to validate - should fail locally (refresh fails)
 		_, err = srv.ValidateToken(context.Background(), accessToken)
 		if err == nil {
 			t.Error("ValidateToken() expected error for locally expired token")
@@ -6781,5 +6806,344 @@ func TestServer_RefreshAccessToken_IDTokenForwarding(t *testing.T) {
 		}
 
 		t.Log("✓ Response valid when provider returns no id_token")
+	})
+}
+
+// TestServer_ValidateToken_RefreshOnExpiry tests that expired provider tokens are
+// transparently refreshed during validation when a refresh token is available.
+func TestServer_ValidateToken_RefreshOnExpiry(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("expired token with refresh token - should refresh and succeed", func(t *testing.T) {
+		srv, store, provider := setupFlowTestServer(t)
+
+		var refreshCalled bool
+		provider.RefreshTokenFunc = func(_ context.Context, refreshToken string) (*oauth2.Token, error) {
+			refreshCalled = true
+			if refreshToken != "provider-refresh-token" {
+				t.Errorf("RefreshToken called with %q, want %q", refreshToken, "provider-refresh-token")
+			}
+			return &oauth2.Token{
+				AccessToken:  "new-provider-access-token",
+				RefreshToken: "new-provider-refresh-token",
+				Expiry:       time.Now().Add(1 * time.Hour),
+				TokenType:    "Bearer",
+			}, nil
+		}
+		provider.ValidateTokenFunc = setupValidTokenProvider()
+
+		// Save token with expired provider token that has a refresh token
+		accessToken := "test-expired-with-refresh"
+		token := &oauth2.Token{
+			AccessToken:  "provider-access-token",
+			RefreshToken: "provider-refresh-token",
+			Expiry:       time.Now().Add(-10 * time.Minute), // expired
+		}
+		if err := store.SaveToken(ctx, accessToken, token); err != nil {
+			t.Fatalf("SaveToken() error = %v", err)
+		}
+
+		userInfo, err := srv.ValidateToken(ctx, accessToken)
+		if err != nil {
+			t.Fatalf("ValidateToken() unexpected error = %v", err)
+		}
+		if userInfo == nil {
+			t.Fatal("ValidateToken() returned nil userInfo")
+		}
+		if !refreshCalled {
+			t.Error("Expected provider.RefreshToken to be called")
+		}
+
+		// Verify the refreshed token was stored
+		storedToken, err := store.GetToken(ctx, accessToken)
+		if err != nil {
+			t.Fatalf("GetToken() error = %v", err)
+		}
+		if storedToken.AccessToken != "new-provider-access-token" {
+			t.Errorf("Stored token AccessToken = %q, want %q", storedToken.AccessToken, "new-provider-access-token")
+		}
+	})
+
+	t.Run("expired token with refresh token but refresh fails - should reject", func(t *testing.T) {
+		srv, store, provider := setupFlowTestServer(t)
+
+		provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
+			return nil, fmt.Errorf("refresh token revoked")
+		}
+		provider.ValidateTokenFunc = setupValidTokenProvider()
+
+		accessToken := "test-expired-refresh-fails"
+		token := &oauth2.Token{
+			AccessToken:  "provider-access-token",
+			RefreshToken: "provider-refresh-token",
+			Expiry:       time.Now().Add(-10 * time.Minute), // expired
+		}
+		if err := store.SaveToken(ctx, accessToken, token); err != nil {
+			t.Fatalf("SaveToken() error = %v", err)
+		}
+
+		_, err := srv.ValidateToken(ctx, accessToken)
+		if err == nil {
+			t.Fatal("ValidateToken() expected error but got none")
+		}
+		if !strings.Contains(err.Error(), "refresh failed") {
+			t.Errorf("ValidateToken() error = %q, want error containing 'refresh failed'", err.Error())
+		}
+	})
+
+	t.Run("non-expired token - should not attempt refresh", func(t *testing.T) {
+		srv, store, provider := setupFlowTestServer(t)
+
+		var refreshCalled bool
+		provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
+			refreshCalled = true
+			return nil, fmt.Errorf("should not be called")
+		}
+		provider.ValidateTokenFunc = setupValidTokenProvider()
+
+		accessToken := "test-valid-no-refresh-needed" // nolint:gosec // G101: False positive - test token, not credentials
+		token := &oauth2.Token{
+			AccessToken:  "provider-access-token",
+			RefreshToken: "provider-refresh-token",
+			Expiry:       time.Now().Add(30 * time.Minute), // not expired
+		}
+		if err := store.SaveToken(ctx, accessToken, token); err != nil {
+			t.Fatalf("SaveToken() error = %v", err)
+		}
+
+		userInfo, err := srv.ValidateToken(ctx, accessToken)
+		if err != nil {
+			t.Fatalf("ValidateToken() unexpected error = %v", err)
+		}
+		if userInfo == nil {
+			t.Fatal("ValidateToken() returned nil userInfo")
+		}
+		if refreshCalled {
+			t.Error("Expected provider.RefreshToken NOT to be called for valid token")
+		}
+	})
+}
+
+// TestServer_GenerateAndStoreTokens_ExpiryCap tests that the generated token's expiry
+// is capped to the provider token's expiry when the provider token expires sooner.
+func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("provider token expires before AccessTokenTTL - should cap expiry", func(t *testing.T) {
+		srv, store, _ := setupFlowTestServer(t)
+		srv.Config.AccessTokenTTL = 3600 // 1 hour
+
+		providerExpiry := time.Now().Add(10 * time.Minute) // 10 minutes
+		authCode := &storage.AuthorizationCode{
+			Code:     "test-code",
+			ClientID: "test-client",
+			UserID:   "test-user",
+			Scope:    "openid",
+			ProviderToken: &oauth2.Token{
+				AccessToken:  "provider-access",
+				RefreshToken: "provider-refresh",
+				Expiry:       providerExpiry,
+			},
+		}
+
+		tokenResponse := srv.generateAndStoreTokens(ctx, authCode, "test-client")
+
+		// Expiry should be capped to provider token's expiry (within a small tolerance)
+		timeDiff := tokenResponse.Expiry.Sub(providerExpiry).Abs()
+		if timeDiff > 2*time.Second {
+			t.Errorf("Token expiry = %v, want close to provider expiry %v (diff: %v)",
+				tokenResponse.Expiry, providerExpiry, timeDiff)
+		}
+
+		// Verify token was stored
+		storedToken, err := store.GetToken(ctx, tokenResponse.AccessToken)
+		if err != nil {
+			t.Fatalf("GetToken() error = %v", err)
+		}
+		if storedToken == nil {
+			t.Fatal("Expected stored token, got nil")
+		}
+	})
+
+	t.Run("provider token expires after AccessTokenTTL - should use AccessTokenTTL", func(t *testing.T) {
+		srv, store, _ := setupFlowTestServer(t)
+		srv.Config.AccessTokenTTL = 3600 // 1 hour
+
+		authCode := &storage.AuthorizationCode{
+			Code:     "test-code-2",
+			ClientID: "test-client",
+			UserID:   "test-user",
+			Scope:    "openid",
+			ProviderToken: &oauth2.Token{
+				AccessToken:  "provider-access",
+				RefreshToken: "provider-refresh",
+				Expiry:       time.Now().Add(2 * time.Hour), // longer than AccessTokenTTL
+			},
+		}
+
+		tokenResponse := srv.generateAndStoreTokens(ctx, authCode, "test-client")
+
+		// Expiry should be approximately now + AccessTokenTTL
+		expectedExpiry := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
+		timeDiff := tokenResponse.Expiry.Sub(expectedExpiry).Abs()
+		if timeDiff > 2*time.Second {
+			t.Errorf("Token expiry = %v, want close to %v (diff: %v)",
+				tokenResponse.Expiry, expectedExpiry, timeDiff)
+		}
+
+		// Verify token was stored
+		storedToken, err := store.GetToken(ctx, tokenResponse.AccessToken)
+		if err != nil {
+			t.Fatalf("GetToken() error = %v", err)
+		}
+		if storedToken == nil {
+			t.Fatal("Expected stored token, got nil")
+		}
+	})
+
+	t.Run("provider token with zero expiry - should use AccessTokenTTL", func(t *testing.T) {
+		srv, _, _ := setupFlowTestServer(t)
+		srv.Config.AccessTokenTTL = 3600 // 1 hour
+
+		authCode := &storage.AuthorizationCode{
+			Code:     "test-code-3",
+			ClientID: "test-client",
+			UserID:   "test-user",
+			Scope:    "openid",
+			ProviderToken: &oauth2.Token{
+				AccessToken:  "provider-access",
+				RefreshToken: "provider-refresh",
+				// Zero expiry
+			},
+		}
+
+		tokenResponse := srv.generateAndStoreTokens(ctx, authCode, "test-client")
+
+		expectedExpiry := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
+		timeDiff := tokenResponse.Expiry.Sub(expectedExpiry).Abs()
+		if timeDiff > 2*time.Second {
+			t.Errorf("Token expiry = %v, want close to %v (diff: %v)",
+				tokenResponse.Expiry, expectedExpiry, timeDiff)
+		}
+	})
+
+	t.Run("nil provider token - should use AccessTokenTTL", func(t *testing.T) {
+		srv, _, _ := setupFlowTestServer(t)
+		srv.Config.AccessTokenTTL = 3600 // 1 hour
+
+		authCode := &storage.AuthorizationCode{
+			Code:          "test-code-4",
+			ClientID:      "test-client",
+			UserID:        "test-user",
+			Scope:         "openid",
+			ProviderToken: nil,
+		}
+
+		tokenResponse := srv.generateAndStoreTokens(ctx, authCode, "test-client")
+
+		expectedExpiry := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
+		timeDiff := tokenResponse.Expiry.Sub(expectedExpiry).Abs()
+		if timeDiff > 2*time.Second {
+			t.Errorf("Token expiry = %v, want close to %v (diff: %v)",
+				tokenResponse.Expiry, expectedExpiry, timeDiff)
+		}
+	})
+}
+
+// TestServer_RefreshAccessToken_ExpiryCap tests that refreshed tokens' expiry
+// is capped to the new provider token's expiry when it expires sooner.
+func TestServer_RefreshAccessToken_ExpiryCap(t *testing.T) {
+	t.Run("provider returns token expiring before AccessTokenTTL - should cap expiry", func(t *testing.T) {
+		srv, store, provider := setupFlowTestServer(t)
+		srv.Config.AccessTokenTTL = 3600 // 1 hour
+
+		providerExpiry := time.Now().Add(10 * time.Minute)
+		provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
+			return &oauth2.Token{
+				AccessToken:  "new-provider-access",
+				RefreshToken: "new-provider-refresh",
+				Expiry:       providerExpiry,
+				TokenType:    "Bearer",
+			}, nil
+		}
+
+		clientID := "test-client-cap"
+		userID := "user-cap"
+		refreshToken := "refresh-token-cap-test"
+
+		// Save refresh token with family
+		if err := store.SaveRefreshTokenWithFamily(
+			context.Background(), refreshToken, userID, clientID,
+			"family-cap", 0, time.Now().Add(time.Hour),
+		); err != nil {
+			t.Fatalf("Failed to save refresh token: %v", err)
+		}
+
+		// Save provider token
+		if err := store.SaveToken(context.Background(), refreshToken, &oauth2.Token{
+			AccessToken:  "old-provider-access",
+			RefreshToken: "old-provider-refresh",
+			Expiry:       time.Now().Add(time.Hour),
+		}); err != nil {
+			t.Fatalf("Failed to save provider token: %v", err)
+		}
+
+		newToken, err := srv.RefreshAccessToken(context.Background(), refreshToken, clientID)
+		if err != nil {
+			t.Fatalf("RefreshAccessToken() error = %v", err)
+		}
+
+		// Expiry should be capped to provider token's expiry
+		timeDiff := newToken.Expiry.Sub(providerExpiry).Abs()
+		if timeDiff > 2*time.Second {
+			t.Errorf("Token expiry = %v, want close to provider expiry %v (diff: %v)",
+				newToken.Expiry, providerExpiry, timeDiff)
+		}
+	})
+
+	t.Run("provider returns token expiring after AccessTokenTTL - should use AccessTokenTTL", func(t *testing.T) {
+		srv, store, provider := setupFlowTestServer(t)
+		srv.Config.AccessTokenTTL = 3600 // 1 hour
+
+		provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
+			return &oauth2.Token{
+				AccessToken:  "new-provider-access",
+				RefreshToken: "new-provider-refresh",
+				Expiry:       time.Now().Add(2 * time.Hour), // longer than AccessTokenTTL
+				TokenType:    "Bearer",
+			}, nil
+		}
+
+		clientID := "test-client-nopcap"
+		userID := "user-nocap"
+		refreshToken := "refresh-token-nocap-test"
+
+		if err := store.SaveRefreshTokenWithFamily(
+			context.Background(), refreshToken, userID, clientID,
+			"family-nocap", 0, time.Now().Add(time.Hour),
+		); err != nil {
+			t.Fatalf("Failed to save refresh token: %v", err)
+		}
+
+		if err := store.SaveToken(context.Background(), refreshToken, &oauth2.Token{
+			AccessToken:  "old-provider-access",
+			RefreshToken: "old-provider-refresh",
+			Expiry:       time.Now().Add(time.Hour),
+		}); err != nil {
+			t.Fatalf("Failed to save provider token: %v", err)
+		}
+
+		newToken, err := srv.RefreshAccessToken(context.Background(), refreshToken, clientID)
+		if err != nil {
+			t.Fatalf("RefreshAccessToken() error = %v", err)
+		}
+
+		// Expiry should be approximately now + AccessTokenTTL
+		expectedExpiry := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
+		timeDiff := newToken.Expiry.Sub(expectedExpiry).Abs()
+		if timeDiff > 2*time.Second {
+			t.Errorf("Token expiry = %v, want close to %v (diff: %v)",
+				newToken.Expiry, expectedExpiry, timeDiff)
+		}
 	})
 }

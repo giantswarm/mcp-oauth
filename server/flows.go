@@ -228,16 +228,47 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 
 	// Token found - validate expiry with grace period for clock skew
 	if s.isTokenExpiredLocally(storedToken) {
-		s.Logger.Debug("Token expired locally",
-			"expiry", storedToken.Expiry,
-			"grace_period_seconds", s.Config.ClockSkewGracePeriod,
-			"token_prefix", helpers.SafeTruncate(accessToken, 8))
+		// Provider token expired - attempt refresh before rejecting
+		if storedToken.RefreshToken != "" {
+			newProviderToken, err := s.provider.RefreshToken(ctx, storedToken.RefreshToken)
+			if err == nil {
+				// Refresh succeeded - update stored token and continue validation
+				if saveErr := s.tokenStore.SaveToken(ctx, accessToken, newProviderToken); saveErr != nil {
+					s.Logger.Warn("Failed to save refreshed provider token", "error", saveErr)
+				}
+				s.Logger.Info("Expired provider token refreshed during validation",
+					"old_expiry", storedToken.Expiry,
+					"new_expiry", newProviderToken.Expiry,
+					"token_prefix", helpers.SafeTruncate(accessToken, 8))
+				storedToken = newProviderToken
+				// Fall through to normal validation (audience check, provider validation, etc.)
+			} else {
+				// Refresh failed - reject
+				s.Logger.Debug("Token expired locally and refresh failed",
+					"expiry", storedToken.Expiry,
+					"grace_period_seconds", s.Config.ClockSkewGracePeriod,
+					"refresh_error", err,
+					"token_prefix", helpers.SafeTruncate(accessToken, 8))
 
-		if s.Auditor != nil {
-			s.Auditor.LogAuthFailure("", "", "", "token_expired_locally")
+				if s.Auditor != nil {
+					s.Auditor.LogAuthFailure("", "", "", "token_expired_locally")
+				}
+
+				return nil, fmt.Errorf("access token expired (local validation, refresh failed: %w)", err)
+			}
+		} else {
+			// No refresh token available - reject
+			s.Logger.Debug("Token expired locally",
+				"expiry", storedToken.Expiry,
+				"grace_period_seconds", s.Config.ClockSkewGracePeriod,
+				"token_prefix", helpers.SafeTruncate(accessToken, 8))
+
+			if s.Auditor != nil {
+				s.Auditor.LogAuthFailure("", "", "", "token_expired_locally")
+			}
+
+			return nil, fmt.Errorf("access token expired (local validation)")
 		}
-
-		return nil, fmt.Errorf("access token expired (local validation)")
 	}
 
 	s.Logger.Debug("Token passed local expiry validation",
@@ -1121,10 +1152,17 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 	accessToken := generateRandomToken()
 	refreshToken := generateRandomToken()
 
+	// Cap expiry to the provider token's expiry so expires_in doesn't promise
+	// more than the underlying provider token can deliver
+	expiry := time.Now().Add(time.Duration(s.Config.AccessTokenTTL) * time.Second)
+	if authCode.ProviderToken != nil && !authCode.ProviderToken.Expiry.IsZero() && authCode.ProviderToken.Expiry.Before(expiry) {
+		expiry = authCode.ProviderToken.Expiry
+	}
+
 	tokenResponse := &oauth2.Token{
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
-		Expiry:       time.Now().Add(time.Duration(s.Config.AccessTokenTTL) * time.Second),
+		Expiry:       expiry,
 		TokenType:    "Bearer",
 	}
 
@@ -1217,11 +1255,18 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	// OAuth 2.1: Refresh Token Rotation
 	newRefreshToken, rotated := s.rotateRefreshToken(ctx, refreshToken, userID, clientID, familyStore, supportsFamilies)
 
+	// Cap expiry to the provider token's expiry so expires_in doesn't promise
+	// more than the underlying provider token can deliver
+	expiry := time.Now().Add(time.Duration(s.Config.AccessTokenTTL) * time.Second)
+	if newProviderToken != nil && !newProviderToken.Expiry.IsZero() && newProviderToken.Expiry.Before(expiry) {
+		expiry = newProviderToken.Expiry
+	}
+
 	// Create token response using oauth2.Token
 	tokenResponse := &oauth2.Token{
 		AccessToken:  newAccessToken,
 		RefreshToken: newRefreshToken,
-		Expiry:       time.Now().Add(time.Duration(s.Config.AccessTokenTTL) * time.Second),
+		Expiry:       expiry,
 		TokenType:    "Bearer",
 	}
 
