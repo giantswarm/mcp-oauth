@@ -7411,3 +7411,132 @@ func TestServer_ValidateToken_ConcurrentRefreshDedup(t *testing.T) {
 		t.Errorf("provider.RefreshToken called %d times, expected at most 2 (singleflight dedup)", count)
 	}
 }
+
+func TestServer_RefreshAccessToken_CleansUpOldTokenPair(t *testing.T) {
+	ctx := context.Background()
+	srv, store, provider := setupFlowTestServer(t)
+
+	clientID := "test-client-cleanup"
+	userID := "test-user-cleanup"
+	oldAccessToken := "old-client-access"
+	oldRefreshToken := "old-client-refresh"
+
+	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
+		return &oauth2.Token{
+			AccessToken:  "new-provider-access",
+			RefreshToken: "new-provider-refresh",
+			Expiry:       time.Now().Add(30 * time.Minute),
+			TokenType:    "Bearer",
+		}, nil
+	}
+
+	if err := store.SaveRefreshTokenWithFamily(
+		ctx, oldRefreshToken, userID, clientID, "family-cleanup", 0, time.Now().Add(time.Hour),
+	); err != nil {
+		t.Fatalf("SaveRefreshTokenWithFamily() error = %v", err)
+	}
+
+	if err := store.SaveToken(ctx, oldRefreshToken, &oauth2.Token{
+		AccessToken:  "old-provider-access",
+		RefreshToken: "old-provider-refresh",
+		Expiry:       time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+
+	srv.registerTokenPair(oldAccessToken, oldRefreshToken)
+
+	newToken, err := srv.RefreshAccessToken(ctx, oldRefreshToken, clientID)
+	if err != nil {
+		t.Fatalf("RefreshAccessToken() error = %v", err)
+	}
+
+	if _, ok := srv.tokenPairs.Load(oldAccessToken); ok {
+		t.Fatalf("old access token pair mapping should be deleted")
+	}
+	if _, ok := srv.tokenPairsByRefresh.Load(oldRefreshToken); ok {
+		t.Fatalf("old refresh token pair mapping should be deleted")
+	}
+
+	pairedRT, ok := srv.tokenPairs.Load(newToken.AccessToken)
+	if !ok {
+		t.Fatalf("new access token mapping missing")
+	}
+	if pairedRT.(string) != newToken.RefreshToken {
+		t.Fatalf("new access token mapped to %q, want %q", pairedRT.(string), newToken.RefreshToken)
+	}
+
+	pairedAT, ok := srv.tokenPairsByRefresh.Load(newToken.RefreshToken)
+	if !ok {
+		t.Fatalf("new refresh token reverse mapping missing")
+	}
+	if pairedAT.(string) != newToken.AccessToken {
+		t.Fatalf("new refresh token mapped to %q, want %q", pairedAT.(string), newToken.AccessToken)
+	}
+}
+
+func TestServer_RevokeToken_CleansUpTokenPair(t *testing.T) {
+	ctx := context.Background()
+	srv, store, provider := setupFlowTestServer(t)
+
+	provider.RevokeTokenFunc = func(_ context.Context, _ string) error {
+		return nil
+	}
+
+	accessToken := "revoke-access-token"
+	refreshToken := "revoke-refresh-token"
+
+	if err := store.SaveToken(ctx, accessToken, &oauth2.Token{
+		AccessToken:  "provider-access",
+		RefreshToken: "provider-refresh",
+		Expiry:       time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+
+	srv.registerTokenPair(accessToken, refreshToken)
+
+	if err := srv.RevokeToken(ctx, accessToken, "test-client", "127.0.0.1"); err != nil {
+		t.Fatalf("RevokeToken() error = %v", err)
+	}
+
+	if _, ok := srv.tokenPairs.Load(accessToken); ok {
+		t.Fatalf("access token pair mapping should be deleted")
+	}
+	if _, ok := srv.tokenPairsByRefresh.Load(refreshToken); ok {
+		t.Fatalf("refresh token reverse mapping should be deleted")
+	}
+}
+
+func TestServer_ValidateToken_SingleflightRefreshIgnoresCanceledLeaderContext(t *testing.T) {
+	srv, store, provider := setupFlowTestServer(t)
+
+	provider.RefreshTokenFunc = func(ctx context.Context, _ string) (*oauth2.Token, error) {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("refresh context unexpectedly canceled: %w", ctx.Err())
+		}
+		return &oauth2.Token{
+			AccessToken:  "provider-access-new",
+			RefreshToken: "provider-refresh-new",
+			Expiry:       time.Now().Add(30 * time.Minute),
+			TokenType:    "Bearer",
+		}, nil
+	}
+	provider.ValidateTokenFunc = setupValidTokenProvider()
+
+	accessToken := "canceled-context-refresh-token"
+	if err := store.SaveToken(context.Background(), accessToken, &oauth2.Token{
+		AccessToken:  "provider-access-old",
+		RefreshToken: "provider-refresh-old",
+		Expiry:       time.Now().Add(-10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := srv.ValidateToken(canceledCtx, accessToken); err != nil {
+		t.Fatalf("ValidateToken() unexpected error with canceled leader context: %v", err)
+	}
+}

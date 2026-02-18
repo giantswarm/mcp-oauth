@@ -85,6 +85,32 @@ func (s *Server) isTokenExpiredLocally(token *oauth2.Token) bool {
 // triggered by one key can also update the other.
 func (s *Server) registerTokenPair(accessToken, refreshToken string) {
 	s.tokenPairs.Store(accessToken, refreshToken)
+	s.tokenPairsByRefresh.Store(refreshToken, accessToken)
+}
+
+// unregisterTokenPairByAccess removes both directions of a token pair using access token key.
+func (s *Server) unregisterTokenPairByAccess(accessToken string) {
+	pairedRT, ok := s.tokenPairs.Load(accessToken)
+	s.tokenPairs.Delete(accessToken)
+	if ok {
+		s.tokenPairsByRefresh.Delete(pairedRT.(string))
+	}
+}
+
+// unregisterTokenPairByRefresh removes both directions of a token pair using refresh token key.
+func (s *Server) unregisterTokenPairByRefresh(refreshToken string) {
+	pairedAT, ok := s.tokenPairsByRefresh.Load(refreshToken)
+	s.tokenPairsByRefresh.Delete(refreshToken)
+	if ok {
+		s.tokenPairs.Delete(pairedAT.(string))
+	}
+}
+
+// unregisterTokenPairIfPresent attempts cleanup regardless of whether token is
+// an access token or a refresh token.
+func (s *Server) unregisterTokenPairIfPresent(token string) {
+	s.unregisterTokenPairByAccess(token)
+	s.unregisterTokenPairByRefresh(token)
 }
 
 // preserveRefreshToken returns a copy of newToken with the old refresh token
@@ -286,7 +312,10 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 
 		// Singleflight: deduplicate concurrent refresh attempts for the same token
 		result, err, _ := s.refreshGroup.Do(accessToken, func() (interface{}, error) {
-			return s.provider.RefreshToken(ctx, storedToken.RefreshToken)
+			// Use a context detached from caller cancellation so one canceled
+			// leader request does not fail all coalesced waiters.
+			refreshCtx := context.WithoutCancel(ctx)
+			return s.provider.RefreshToken(refreshCtx, storedToken.RefreshToken)
 		})
 
 		if err != nil {
@@ -738,6 +767,7 @@ func (s *Server) rotateRefreshToken(ctx context.Context, oldRefreshToken, userID
 	// Invalidate old refresh token
 	_ = s.tokenStore.DeleteRefreshToken(ctx, oldRefreshToken)
 	_ = s.tokenStore.DeleteToken(ctx, oldRefreshToken)
+	s.unregisterTokenPairByRefresh(oldRefreshToken)
 
 	s.Logger.Info("Refresh token rotated (OAuth 2.1)",
 		"user_id", userID, "generation", generation, "family_tracking", supportsFamilies)
@@ -1459,6 +1489,7 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP stri
 	if err := s.tokenStore.DeleteToken(ctx, token); err != nil {
 		s.Logger.Warn("Failed to delete token locally", "error", err)
 	}
+	s.unregisterTokenPairIfPresent(token)
 
 	if s.Auditor != nil {
 		s.Auditor.LogTokenRevoked("", clientID, clientIP, "access_or_refresh")
@@ -1617,6 +1648,10 @@ func (s *Server) RevokeAllTokensForUserClient(ctx context.Context, userID, clien
 			"client_id", clientID,
 			"error", err)
 		return fmt.Errorf("failed to revoke tokens locally: %w", err)
+	}
+
+	for _, tokenID := range tokens {
+		s.unregisterTokenPairIfPresent(tokenID)
 	}
 
 	// Log the revocation
