@@ -215,14 +215,20 @@ doc-check: ## Check for missing doc.go files in packages
 EXAMPLES := $(shell find examples -mindepth 1 -maxdepth 1 -type d | sort)
 GO_VERSION := $(shell grep '^go ' go.mod | awk '{print $$2}')
 
+.PHONY: init-examples
+init-examples: ## Generate go.mod stubs for all examples (no build)
+	@for dir in $(EXAMPLES); do \
+		name=$$(basename $$dir); \
+		printf 'module %s/examples/%s\n\ngo %s\n\nreplace %s => ../..\n' \
+			"$(MODULE)" "$$name" "$(GO_VERSION)" "$(MODULE)" > "$$dir/go.mod"; \
+	done
+
 .PHONY: build-examples
-build-examples: ## Build all examples (generates go.mod from root module)
+build-examples: init-examples ## Build all examples (generates go.mod from root module)
 	@echo "====> $@"
 	@for dir in $(EXAMPLES); do \
 		name=$$(basename $$dir); \
 		echo "Building example: $$name ..."; \
-		printf 'module %s/examples/%s\n\ngo %s\n\nreplace %s => ../..\n' \
-			"$(MODULE)" "$$name" "$(GO_VERSION)" "$(MODULE)" > "$$dir/go.mod"; \
 		(cd "$$dir" && go mod tidy -v && go build -v ./...) || exit 1; \
 	done
 	@echo "All examples built successfully"
@@ -311,7 +317,7 @@ analyze-all: analyze-format analyze-lint analyze-security analyze-quality analyz
 .PHONY: verify verify-all ci check-security
 verify: verify-all ## Run all verification steps (comprehensive)
 
-verify-all: fmt-all analyze-all test-all ## Run all verification steps (comprehensive)
+verify-all: init-examples fmt-all analyze-all test-all ## Run all verification steps (comprehensive)
 	@echo "====> $@"
 
 ci: verify test-coverage ## Run CI checks
