@@ -4,7 +4,7 @@ go 1.24.12
 
 replace github.com/giantswarm/mcp-oauth => ../..
 
-require github.com/giantswarm/mcp-oauth v0.2.59
+require github.com/giantswarm/mcp-oauth v0.2.62
 
 require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
