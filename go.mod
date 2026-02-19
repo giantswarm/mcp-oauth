@@ -6,7 +6,6 @@ toolchain go1.26.0
 
 require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
-	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
 	github.com/valkey-io/valkey-go v1.0.72
 	go.opentelemetry.io/otel v1.40.0
@@ -36,6 +35,7 @@ require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.7 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/otlptranslator v1.0.0 // indirect
