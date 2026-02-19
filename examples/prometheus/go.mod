@@ -5,7 +5,7 @@ go 1.24.12
 replace github.com/giantswarm/mcp-oauth => ../..
 
 require (
-	github.com/giantswarm/mcp-oauth v0.2.58
+	github.com/giantswarm/mcp-oauth v0.2.59
 	github.com/prometheus/client_golang v1.23.2
 )
 
