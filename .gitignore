@@ -55,6 +55,7 @@ logs/
 # OS files
 Thumbs.db
 
+examples/*/go.mod
 examples/*/go.sum
 examples/basic/basic
 examples/production/production

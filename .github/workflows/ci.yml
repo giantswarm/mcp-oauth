@@ -53,20 +53,15 @@ jobs:
   build-examples:
     name: Build Examples
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        example: [basic, production, custom-scopes, prometheus]
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v6
-    
+
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
         go-version-file: go.mod
-    
-    - name: Build example
-      run: |
-        cd examples/${{ matrix.example }}
-        go build -v ./...
+
+    - name: Build all examples
+      run: make build-examples

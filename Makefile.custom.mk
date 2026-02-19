@@ -209,25 +209,29 @@ doc-check: ## Check for missing doc.go files in packages
 
 ##@ Examples
 
-.PHONY: build-examples run-example-basic run-example-production run-example-custom-scopes
-build-examples: ## Build all examples
-	@echo "====> $@"
-	@echo "Building examples..."
-	cd examples/basic && go build -v
-	cd examples/production && go build -v
-	cd examples/custom-scopes && go build -v
+EXAMPLES := $(shell find examples -mindepth 1 -maxdepth 1 -type d | sort)
+GO_VERSION := $(shell grep '^go ' go.mod | awk '{print $$2}')
 
-run-example-basic: ## Run basic example
+.PHONY: build-examples
+build-examples: ## Build all examples (generates go.mod from root module)
 	@echo "====> $@"
-	cd examples/basic && go run main.go
+	@for dir in $(EXAMPLES); do \
+		name=$$(basename $$dir); \
+		echo "Building example: $$name ..."; \
+		printf 'module %s/examples/%s\n\ngo %s\n\nreplace %s => ../..\n' \
+			"$(MODULE)" "$$name" "$(GO_VERSION)" "$(MODULE)" > "$$dir/go.mod"; \
+		(cd "$$dir" && go mod tidy -v && go build -v ./...) || exit 1; \
+	done
+	@echo "All examples built successfully"
 
-run-example-production: ## Run production example
+.PHONY: clean-examples
+clean-examples: ## Remove generated go.mod/go.sum and binaries from examples
 	@echo "====> $@"
-	cd examples/production && go run main.go
-
-run-example-custom-scopes: ## Run custom-scopes example
-	@echo "====> $@"
-	cd examples/custom-scopes && go run main.go
+	@for dir in $(EXAMPLES); do \
+		rm -f "$$dir/go.mod" "$$dir/go.sum"; \
+	done
+	find examples -type f -name '*.exe' -delete 2>/dev/null || true
+	find examples -type f ! -name '*.go' ! -name 'README.md' ! -name '*.json' -type f -executable -delete 2>/dev/null || true
 
 ##@ Dependencies
 
