@@ -147,7 +147,7 @@ gocognit: ## Run gocognit - cognitive complexity (threshold 15, excludes tests)
 goconst: ## Run goconst - find repeated strings (excludes tests and examples)
 	@echo "====> $@"
 	@command -v goconst >/dev/null 2>&1 || (echo "ERROR: goconst not installed. Run: go install github.com/jgautheron/goconst/cmd/goconst@latest" && exit 1)
-	goconst -ignore "test" $(GO_PACKAGES)
+	goconst -ignore "test|examples" ./...
 
 dupl: ## Run dupl - code duplication detection (threshold 100, excludes tests)
 	@echo "====> $@"
