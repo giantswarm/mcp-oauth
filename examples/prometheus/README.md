@@ -36,7 +36,12 @@ export GOOGLE_CLIENT_SECRET="your-client-secret"
 export GOOGLE_REDIRECT_URI="http://localhost:8080/oauth/callback"
 ```
 
-2. Run the server:
+2. Generate go.mod files and build (from the repository root):
+```bash
+make build-examples
+```
+
+3. Run the server:
 ```bash
 cd examples/prometheus
 go run main.go
