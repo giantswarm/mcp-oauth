@@ -65,10 +65,10 @@ Protected Resource Metadata (RFC 9728) was introduced in MCP 2025-06-18. This ex
    export GOOGLE_CLIENT_SECRET="your-client-secret"
    ```
 
-3. Build and run:
+3. Build and run (from the repository root):
    ```bash
-   go mod download
-   go build
+   make build-examples
+   cd examples/mcp-2025-11-25
    ./mcp-2025-11-25
    ```
 
