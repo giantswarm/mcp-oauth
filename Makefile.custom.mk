@@ -164,13 +164,14 @@ mod-verify: ## Verify go.mod dependencies
 	@echo "====> $@"
 	go mod verify
 
-mod-tidy-check: ## Check if go mod tidy would make changes
+mod-tidy-check: clean-examples ## Check if go mod tidy would make changes
 	@echo "====> $@"
 	@cp go.mod go.mod.backup
 	@cp go.sum go.sum.backup
 	@go mod tidy
 	@if ! diff -q go.mod go.mod.backup >/dev/null 2>&1 || ! diff -q go.sum go.sum.backup >/dev/null 2>&1; then \
 		echo "go.mod or go.sum would be modified by 'go mod tidy'"; \
+		diff go.mod go.mod.backup || true; \
 		mv go.mod.backup go.mod; \
 		mv go.sum.backup go.sum; \
 		exit 1; \
