@@ -1,6 +1,9 @@
 # Custom targets for mcp-oauth library
 # This file extends the devctl-generated Makefile.gen.go.mk with additional analysis tools
 
+# Examples have no go.mod (generated at build time), so exclude them from analysis.
+GO_PACKAGES := $(shell go list ./... 2>/dev/null | grep -v /examples/)
+
 ##@ Library Development
 
 # NOTE: 'make test' is defined in Makefile.gen.go.mk and runs with -race (slow but thorough)
@@ -62,22 +65,22 @@ gci-check: ## Check gci import ordering
 staticcheck: ## Run staticcheck
 	@echo "====> $@"
 	@command -v staticcheck >/dev/null 2>&1 || (echo "ERROR: staticcheck not installed. Run: go install honnef.co/go/tools/cmd/staticcheck@latest" && exit 1)
-	staticcheck ./...
+	staticcheck $(GO_PACKAGES)
 
 errcheck: ## Run errcheck - find unchecked errors
 	@echo "====> $@"
 	@command -v errcheck >/dev/null 2>&1 || (echo "ERROR: errcheck not installed. Run: go install github.com/kisielk/errcheck@latest" && exit 1)
-	errcheck -ignoretests ./...
+	errcheck -ignoretests $(GO_PACKAGES)
 
 ineffassign: ## Run ineffassign - detect ineffectual assignments
 	@echo "====> $@"
 	@command -v ineffassign >/dev/null 2>&1 || (echo "ERROR: ineffassign not installed. Run: go install github.com/gordonklaus/ineffassign@latest" && exit 1)
-	ineffassign ./...
+	ineffassign $(GO_PACKAGES)
 
 unconvert: ## Run unconvert - remove unnecessary type conversions
 	@echo "====> $@"
 	@command -v unconvert >/dev/null 2>&1 || (echo "ERROR: unconvert not installed. Run: go install github.com/mdempsky/unconvert@latest" && exit 1)
-	unconvert ./...
+	unconvert $(GO_PACKAGES)
 
 misspell: ## Run misspell - find commonly misspelled words
 	@echo "====> $@"
@@ -87,12 +90,12 @@ misspell: ## Run misspell - find commonly misspelled words
 gocritic: ## Run gocritic - opinionated linter
 	@echo "====> $@"
 	@command -v gocritic >/dev/null 2>&1 || (echo "ERROR: gocritic not installed. Run: go install github.com/go-critic/go-critic/cmd/gocritic@latest" && exit 1)
-	gocritic check ./...
+	gocritic check $(GO_PACKAGES)
 
 revive: ## Run revive - fast, configurable linter
 	@echo "====> $@"
 	@command -v revive >/dev/null 2>&1 || (echo "ERROR: revive not installed. Run: go install github.com/mgechev/revive@latest" && exit 1)
-	revive ./...
+	revive $(GO_PACKAGES)
 
 ##@ Security Analysis
 
@@ -105,7 +108,7 @@ gosec: ## Run gosec - security-focused linter
 govulncheck: ## Run govulncheck - official Go vulnerability checker
 	@echo "====> $@"
 	@command -v govulncheck >/dev/null 2>&1 || (echo "ERROR: govulncheck not installed. Run: go install golang.org/x/vuln/cmd/govulncheck@latest" && exit 1)
-	@output=$$(timeout 180s govulncheck ./... 2>&1); \
+	@output=$$(timeout 180s govulncheck $(GO_PACKAGES) 2>&1); \
 	status=$$?; \
 	if [ $$status -eq 0 ]; then \
 		echo "$$output"; \
@@ -144,7 +147,7 @@ gocognit: ## Run gocognit - cognitive complexity (threshold 15, excludes tests)
 goconst: ## Run goconst - find repeated strings (excludes tests and examples)
 	@echo "====> $@"
 	@command -v goconst >/dev/null 2>&1 || (echo "ERROR: goconst not installed. Run: go install github.com/jgautheron/goconst/cmd/goconst@latest" && exit 1)
-	goconst -ignore "test" ./...
+	goconst -ignore "test" $(GO_PACKAGES)
 
 dupl: ## Run dupl - code duplication detection (threshold 100, excludes tests)
 	@echo "====> $@"
