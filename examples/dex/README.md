@@ -56,17 +56,17 @@ export DEX_CONNECTOR_ID="github"                     # Skip connector selection 
 
 ## Running the Example
 
-### Option 1: Using go run
+First, generate `go.mod` files and build all examples from the repository root:
 
 ```bash
-go run main.go
+make build-examples
 ```
 
-### Option 2: Build and run
+Then run the example:
 
 ```bash
-go build -o dex-example
-./dex-example
+cd examples/dex
+go run main.go
 ```
 
 The server will start on http://localhost:8080

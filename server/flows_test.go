@@ -7363,12 +7363,26 @@ func TestCapTokenExpiry(t *testing.T) {
 // TestServer_ValidateToken_ConcurrentRefreshDedup verifies that concurrent
 // requests for the same expired token use singleflight to deduplicate the
 // provider refresh call.
+//
+// The refresh function blocks until explicitly released so that all goroutines
+// queue up inside singleflight.Do before the first call completes. Without
+// this barrier the instant-returning mock gives singleflight no window to
+// coalesce, making the test flaky.
 func TestServer_ValidateToken_ConcurrentRefreshDedup(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 
 	var refreshCount int
 	var mu sync.Mutex
+	refreshStarted := make(chan struct{}, 1)
+	allowRefresh := make(chan struct{})
+
 	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
+		select {
+		case refreshStarted <- struct{}{}:
+		default:
+		}
+		<-allowRefresh
+
 		mu.Lock()
 		refreshCount++
 		mu.Unlock()
@@ -7400,15 +7414,21 @@ func TestServer_ValidateToken_ConcurrentRefreshDedup(t *testing.T) {
 			_, _ = srv.ValidateToken(context.Background(), clientAT)
 		}()
 	}
+
+	// Wait for the first refresh call to start, then give the remaining
+	// goroutines time to enter singleflight.Do before releasing.
+	<-refreshStarted
+	time.Sleep(50 * time.Millisecond)
+	close(allowRefresh)
+
 	wg.Wait()
 
 	mu.Lock()
 	count := refreshCount
 	mu.Unlock()
 
-	// Singleflight should coalesce most calls into one
-	if count > 2 {
-		t.Errorf("provider.RefreshToken called %d times, expected at most 2 (singleflight dedup)", count)
+	if count != 1 {
+		t.Errorf("provider.RefreshToken called %d times, expected exactly 1 (singleflight dedup)", count)
 	}
 }
 

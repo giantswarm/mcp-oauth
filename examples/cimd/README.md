@@ -31,7 +31,12 @@ For production deployments, use a secret manager. See the [Production Example](.
    export GOOGLE_CLIENT_SECRET="your-client-secret"
    ```
 
-2. **Run the server**:
+2. **Generate go.mod** (from the repository root):
+   ```bash
+   make build-examples
+   ```
+
+3. **Run the server** (from `examples/cimd`):
    ```bash
    go run main.go
    ```

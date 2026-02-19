@@ -307,7 +307,15 @@ set -o history  # Re-enable shell history
 
 ## Running
 
+First, generate `go.mod` files and build all examples from the repository root:
+
+```bash
+make build-examples
+```
+
 ### Development (HTTP)
+
+From `examples/production`:
 
 ```bash
 # Without TLS (development only)

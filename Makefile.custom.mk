@@ -1,6 +1,9 @@
 # Custom targets for mcp-oauth library
 # This file extends the devctl-generated Makefile.gen.go.mk with additional analysis tools
 
+# Examples have no go.mod (generated at build time), so exclude them from analysis.
+GO_PACKAGES := $(shell go list ./... 2>/dev/null | grep -v /examples/)
+
 ##@ Library Development
 
 # NOTE: 'make test' is defined in Makefile.gen.go.mk and runs with -race (slow but thorough)
@@ -62,22 +65,22 @@ gci-check: ## Check gci import ordering
 staticcheck: ## Run staticcheck
 	@echo "====> $@"
 	@command -v staticcheck >/dev/null 2>&1 || (echo "ERROR: staticcheck not installed. Run: go install honnef.co/go/tools/cmd/staticcheck@latest" && exit 1)
-	staticcheck ./...
+	staticcheck $(GO_PACKAGES)
 
 errcheck: ## Run errcheck - find unchecked errors
 	@echo "====> $@"
 	@command -v errcheck >/dev/null 2>&1 || (echo "ERROR: errcheck not installed. Run: go install github.com/kisielk/errcheck@latest" && exit 1)
-	errcheck -ignoretests ./...
+	errcheck -ignoretests $(GO_PACKAGES)
 
 ineffassign: ## Run ineffassign - detect ineffectual assignments
 	@echo "====> $@"
 	@command -v ineffassign >/dev/null 2>&1 || (echo "ERROR: ineffassign not installed. Run: go install github.com/gordonklaus/ineffassign@latest" && exit 1)
-	ineffassign ./...
+	ineffassign $(GO_PACKAGES)
 
 unconvert: ## Run unconvert - remove unnecessary type conversions
 	@echo "====> $@"
 	@command -v unconvert >/dev/null 2>&1 || (echo "ERROR: unconvert not installed. Run: go install github.com/mdempsky/unconvert@latest" && exit 1)
-	unconvert ./...
+	unconvert $(GO_PACKAGES)
 
 misspell: ## Run misspell - find commonly misspelled words
 	@echo "====> $@"
@@ -87,12 +90,12 @@ misspell: ## Run misspell - find commonly misspelled words
 gocritic: ## Run gocritic - opinionated linter
 	@echo "====> $@"
 	@command -v gocritic >/dev/null 2>&1 || (echo "ERROR: gocritic not installed. Run: go install github.com/go-critic/go-critic/cmd/gocritic@latest" && exit 1)
-	gocritic check ./...
+	gocritic check $(GO_PACKAGES)
 
 revive: ## Run revive - fast, configurable linter
 	@echo "====> $@"
 	@command -v revive >/dev/null 2>&1 || (echo "ERROR: revive not installed. Run: go install github.com/mgechev/revive@latest" && exit 1)
-	revive ./...
+	revive $(GO_PACKAGES)
 
 ##@ Security Analysis
 
@@ -105,7 +108,7 @@ gosec: ## Run gosec - security-focused linter
 govulncheck: ## Run govulncheck - official Go vulnerability checker
 	@echo "====> $@"
 	@command -v govulncheck >/dev/null 2>&1 || (echo "ERROR: govulncheck not installed. Run: go install golang.org/x/vuln/cmd/govulncheck@latest" && exit 1)
-	@output=$$(timeout 180s govulncheck ./... 2>&1); \
+	@output=$$(timeout 180s govulncheck $(GO_PACKAGES) 2>&1); \
 	status=$$?; \
 	if [ $$status -eq 0 ]; then \
 		echo "$$output"; \
@@ -144,7 +147,7 @@ gocognit: ## Run gocognit - cognitive complexity (threshold 15, excludes tests)
 goconst: ## Run goconst - find repeated strings (excludes tests and examples)
 	@echo "====> $@"
 	@command -v goconst >/dev/null 2>&1 || (echo "ERROR: goconst not installed. Run: go install github.com/jgautheron/goconst/cmd/goconst@latest" && exit 1)
-	goconst -ignore "test" ./...
+	goconst -ignore "test|examples" ./...
 
 dupl: ## Run dupl - code duplication detection (threshold 100, excludes tests)
 	@echo "====> $@"
@@ -209,25 +212,35 @@ doc-check: ## Check for missing doc.go files in packages
 
 ##@ Examples
 
-.PHONY: build-examples run-example-basic run-example-production run-example-custom-scopes
-build-examples: ## Build all examples
-	@echo "====> $@"
-	@echo "Building examples..."
-	cd examples/basic && go build -v
-	cd examples/production && go build -v
-	cd examples/custom-scopes && go build -v
+EXAMPLES := $(shell find examples -mindepth 1 -maxdepth 1 -type d | sort)
+GO_VERSION := $(shell grep '^go ' go.mod | awk '{print $$2}')
 
-run-example-basic: ## Run basic example
-	@echo "====> $@"
-	cd examples/basic && go run main.go
+.PHONY: init-examples
+init-examples: ## Generate go.mod stubs for all examples (no build)
+	@for dir in $(EXAMPLES); do \
+		name=$$(basename $$dir); \
+		printf 'module %s/examples/%s\n\ngo %s\n\nreplace %s => ../..\n' \
+			"$(MODULE)" "$$name" "$(GO_VERSION)" "$(MODULE)" > "$$dir/go.mod"; \
+	done
 
-run-example-production: ## Run production example
+.PHONY: build-examples
+build-examples: init-examples ## Build all examples (generates go.mod from root module)
 	@echo "====> $@"
-	cd examples/production && go run main.go
+	@for dir in $(EXAMPLES); do \
+		name=$$(basename $$dir); \
+		echo "Building example: $$name ..."; \
+		(cd "$$dir" && go mod tidy -v && go build -v ./...) || exit 1; \
+	done
+	@echo "All examples built successfully"
 
-run-example-custom-scopes: ## Run custom-scopes example
+.PHONY: clean-examples
+clean-examples: ## Remove generated go.mod/go.sum and binaries from examples
 	@echo "====> $@"
-	cd examples/custom-scopes && go run main.go
+	@for dir in $(EXAMPLES); do \
+		rm -f "$$dir/go.mod" "$$dir/go.sum"; \
+	done
+	find examples -type f -name '*.exe' -delete 2>/dev/null || true
+	find examples -type f ! -name '*.go' ! -name 'README.md' ! -name '*.json' -type f -executable -delete 2>/dev/null || true
 
 ##@ Dependencies
 
@@ -304,7 +317,7 @@ analyze-all: analyze-format analyze-lint analyze-security analyze-quality analyz
 .PHONY: verify verify-all ci check-security
 verify: verify-all ## Run all verification steps (comprehensive)
 
-verify-all: fmt-all analyze-all test-all ## Run all verification steps (comprehensive)
+verify-all: init-examples fmt-all analyze-all test-all ## Run all verification steps (comprehensive)
 	@echo "====> $@"
 
 ci: verify test-coverage ## Run CI checks
