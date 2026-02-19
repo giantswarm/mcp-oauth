@@ -56,12 +56,16 @@ func NewError(code, description string, status int) *Error {
 // OAuthError is an alias for Error, provided for backward compatibility.
 //
 // Deprecated: Use Error instead. This alias will be removed in a future major version.
+//
+//revive:disable:exported // Backward-compatible API aliases use stuttering names intentionally.
 type OAuthError = Error
 
 // NewOAuthError is an alias for NewError, provided for backward compatibility.
 //
 // Deprecated: Use NewError instead. This alias will be removed in a future major version.
 var NewOAuthError = NewError
+
+//revive:enable:exported
 
 // Common OAuth errors as reusable instances
 var (
