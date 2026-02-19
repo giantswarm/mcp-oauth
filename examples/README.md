@@ -133,10 +133,15 @@ go run main.go
 
 ## Quick Start
 
-1. **Choose an example** based on your needs
-2. **Set up Google OAuth credentials** (see main README.md)
-3. **Set environment variables**
-4. **Run the example**
+1. **Generate example go.mod files** (from the repository root):
+   ```bash
+   make build-examples
+   ```
+   Examples do not ship their own `go.mod`; it is generated at build time with a `replace` directive pointing at the local library source.
+2. **Choose an example** based on your needs
+3. **Set up OAuth credentials** (see sections below)
+4. **Set environment variables**
+5. **Run the example**
 
 ## Common Setup
 
@@ -176,7 +181,11 @@ LOG_LEVEL=info                       # debug, info, warn, error
 ### 1. Start the Server
 
 ```bash
-cd basic  # or production, custom-scopes
+# From the repository root, generate go.mod files and build all examples
+make build-examples
+
+# Then run the desired example
+cd examples/basic  # or production, custom-scopes, etc.
 go run main.go
 ```
 

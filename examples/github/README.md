@@ -37,7 +37,11 @@ export GITHUB_ALLOWED_ORGANIZATIONS="giantswarm,kubernetes"
 ## Running the Example
 
 ```bash
-# From the examples/github directory
+# From the repository root, generate go.mod files
+make build-examples
+
+# Then run the example
+cd examples/github
 go run main.go
 ```
 
