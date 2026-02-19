@@ -628,7 +628,7 @@ func TestTokenExchangeCache(t *testing.T) {
 		}
 	})
 
-	t.Run("concurrent access", func(t *testing.T) {
+	t.Run("concurrent access", func(_ *testing.T) {
 		cache := NewTokenExchangeCache()
 		done := make(chan bool)
 

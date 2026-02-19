@@ -43,6 +43,9 @@ type Server struct {
 	metadataCacheCleanupCancel    context.CancelFunc                      // Cancel function for cleanup goroutine
 	jwksClient                    *oidc.JWKSClient                        // JWKS client for SSO token forwarding validation
 	jwksClientOnce                sync.Once                               // Ensures JWKS client is initialized only once
+	tokenPairs                    sync.Map                                // Maps client access token -> client refresh token for paired updates
+	tokenPairsByRefresh           sync.Map                                // Maps client refresh token -> client access token for pair cleanup
+	refreshGroup                  singleflight.Group                      // Deduplicates concurrent provider token refreshes per access token
 	Logger                        *slog.Logger
 	Config                        *Config
 	shutdownOnce                  sync.Once // Ensures Shutdown is called only once
