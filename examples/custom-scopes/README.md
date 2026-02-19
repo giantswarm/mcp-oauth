@@ -63,7 +63,17 @@ export GOOGLE_CLIENT_ID="your-client-id.apps.googleusercontent.com"
 export GOOGLE_CLIENT_SECRET="your-client-secret"
 ```
 
-### 4. Run the Server
+### 4. Generate go.mod and Build
+
+From the repository root:
+
+```bash
+make build-examples
+```
+
+### 5. Run the Server
+
+From `examples/custom-scopes`:
 
 ```bash
 go run main.go

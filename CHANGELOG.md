@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Remove go.mod from examples to prevent recursive Renovate updates.** Example `go.mod` files are now generated at build time via `make build-examples`. This eliminates the cycle where Renovate bumps the mcp-oauth dependency in examples, triggers a release, which triggers another Renovate update, and so on. CI now uses the same make target instead of a per-example matrix.
+
 ### Added
 
 - **Dex cross-client audience scope helper functions (#201)**
