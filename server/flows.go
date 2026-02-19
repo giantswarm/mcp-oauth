@@ -81,6 +81,77 @@ func (s *Server) isTokenExpiredLocally(token *oauth2.Token) bool {
 	return time.Now().After(expiryWithGrace)
 }
 
+// registerTokenPair records the AT -> RT pairing so that provider token refreshes
+// triggered by one key can also update the other.
+func (s *Server) registerTokenPair(accessToken, refreshToken string) {
+	s.tokenPairs.Store(accessToken, refreshToken)
+	s.tokenPairsByRefresh.Store(refreshToken, accessToken)
+}
+
+// unregisterTokenPairByAccess removes both directions of a token pair using access token key.
+func (s *Server) unregisterTokenPairByAccess(accessToken string) {
+	pairedRT, ok := s.tokenPairs.Load(accessToken)
+	s.tokenPairs.Delete(accessToken)
+	if ok {
+		s.tokenPairsByRefresh.Delete(pairedRT.(string))
+	}
+}
+
+// unregisterTokenPairByRefresh removes both directions of a token pair using refresh token key.
+func (s *Server) unregisterTokenPairByRefresh(refreshToken string) {
+	pairedAT, ok := s.tokenPairsByRefresh.Load(refreshToken)
+	s.tokenPairsByRefresh.Delete(refreshToken)
+	if ok {
+		s.tokenPairs.Delete(pairedAT.(string))
+	}
+}
+
+// unregisterTokenPairIfPresent attempts cleanup regardless of whether token is
+// an access token or a refresh token.
+func (s *Server) unregisterTokenPairIfPresent(token string) {
+	s.unregisterTokenPairByAccess(token)
+	s.unregisterTokenPairByRefresh(token)
+}
+
+// preserveRefreshToken returns a copy of newToken with the old refresh token
+// carried forward when the provider omitted it in the refresh response.
+// OAuth 2.0 RFC 6749 Section 5.1 allows providers to omit refresh_token,
+// in which case the client should keep using the previous one.
+func preserveRefreshToken(newToken *oauth2.Token, oldRefreshToken string) *oauth2.Token {
+	if newToken == nil || newToken.RefreshToken != "" || oldRefreshToken == "" {
+		return newToken
+	}
+	clonedToken := *newToken
+	clonedToken.RefreshToken = oldRefreshToken
+	return &clonedToken
+}
+
+// updateProviderTokenMappings saves the refreshed provider token under both the
+// access-token and refresh-token storage keys. This prevents the refresh-token
+// mapping from becoming stale when the provider rotates refresh tokens.
+func (s *Server) updateProviderTokenMappings(ctx context.Context, accessToken string, newProviderToken *oauth2.Token) {
+	if saveErr := s.tokenStore.SaveToken(ctx, accessToken, newProviderToken); saveErr != nil {
+		s.Logger.Warn("Failed to save refreshed provider token for access key", "error", saveErr)
+	}
+	if pairedRT, ok := s.tokenPairs.Load(accessToken); ok {
+		if saveErr := s.tokenStore.SaveToken(ctx, pairedRT.(string), newProviderToken); saveErr != nil {
+			s.Logger.Warn("Failed to save refreshed provider token for refresh key", "error", saveErr)
+		}
+	}
+}
+
+// capTokenExpiry returns the earlier of the configured AccessTokenTTL-based expiry
+// and the provider token's expiry, ensuring expires_in never promises more than
+// the underlying provider token can deliver. Provider tokens with zero or past
+// expiry are ignored.
+func (s *Server) capTokenExpiry(providerExpiry time.Time) time.Time {
+	expiry := time.Now().Add(time.Duration(s.Config.AccessTokenTTL) * time.Second)
+	if !providerExpiry.IsZero() && providerExpiry.After(time.Now()) && providerExpiry.Before(expiry) {
+		expiry = providerExpiry
+	}
+	return expiry
+}
+
 // shouldProactivelyRefresh determines if a token should be proactively refreshed based on
 // expiry threshold and refresh token availability.
 func (s *Server) shouldProactivelyRefresh(token *oauth2.Token) bool {
@@ -128,13 +199,11 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 		return
 	}
 
-	// Refresh succeeded - update stored token
-	if err := s.tokenStore.SaveToken(ctx, accessToken, newProviderToken); err != nil {
-		s.Logger.Warn("Failed to save refreshed token",
-			"error", err,
-			"token_prefix", helpers.SafeTruncate(accessToken, 8))
-		return
-	}
+	// Preserve old refresh token if provider omitted it
+	newProviderToken = preserveRefreshToken(newProviderToken, storedToken.RefreshToken)
+
+	// Update both AT and RT storage mappings to keep provider credentials in sync
+	s.updateProviderTokenMappings(ctx, accessToken, newProviderToken)
 
 	s.Logger.Info("Token proactively refreshed",
 		"old_expiry", storedToken.Expiry,
@@ -228,16 +297,50 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 
 	// Token found - validate expiry with grace period for clock skew
 	if s.isTokenExpiredLocally(storedToken) {
-		s.Logger.Debug("Token expired locally",
-			"expiry", storedToken.Expiry,
-			"grace_period_seconds", s.Config.ClockSkewGracePeriod,
-			"token_prefix", helpers.SafeTruncate(accessToken, 8))
+		if storedToken.RefreshToken == "" {
+			s.Logger.Debug("Token expired locally",
+				"expiry", storedToken.Expiry,
+				"grace_period_seconds", s.Config.ClockSkewGracePeriod,
+				"token_prefix", helpers.SafeTruncate(accessToken, 8))
 
-		if s.Auditor != nil {
-			s.Auditor.LogAuthFailure("", "", "", "token_expired_locally")
+			if s.Auditor != nil {
+				s.Auditor.LogAuthFailure("", "", "", "token_expired_locally")
+			}
+
+			return nil, fmt.Errorf("access token expired (local validation)")
 		}
 
-		return nil, fmt.Errorf("access token expired (local validation)")
+		// Singleflight: deduplicate concurrent refresh attempts for the same token
+		result, err, _ := s.refreshGroup.Do(accessToken, func() (interface{}, error) {
+			// Use a context detached from caller cancellation so one canceled
+			// leader request does not fail all coalesced waiters.
+			refreshCtx := context.WithoutCancel(ctx)
+			return s.provider.RefreshToken(refreshCtx, storedToken.RefreshToken)
+		})
+
+		if err != nil {
+			s.Logger.Debug("Token expired locally and refresh failed",
+				"expiry", storedToken.Expiry,
+				"grace_period_seconds", s.Config.ClockSkewGracePeriod,
+				"refresh_error", err,
+				"token_prefix", helpers.SafeTruncate(accessToken, 8))
+
+			if s.Auditor != nil {
+				s.Auditor.LogAuthFailure("", "", "", "token_expired_locally")
+			}
+
+			return nil, fmt.Errorf("access token expired (local validation, refresh failed: %w)", err)
+		}
+
+		newProviderToken := result.(*oauth2.Token)
+		newProviderToken = preserveRefreshToken(newProviderToken, storedToken.RefreshToken)
+		s.updateProviderTokenMappings(ctx, accessToken, newProviderToken)
+
+		s.Logger.Info("Expired provider token refreshed during validation",
+			"old_expiry", storedToken.Expiry,
+			"new_expiry", newProviderToken.Expiry,
+			"token_prefix", helpers.SafeTruncate(accessToken, 8))
+		storedToken = newProviderToken
 	}
 
 	s.Logger.Debug("Token passed local expiry validation",
@@ -664,6 +767,7 @@ func (s *Server) rotateRefreshToken(ctx context.Context, oldRefreshToken, userID
 	// Invalidate old refresh token
 	_ = s.tokenStore.DeleteRefreshToken(ctx, oldRefreshToken)
 	_ = s.tokenStore.DeleteToken(ctx, oldRefreshToken)
+	s.unregisterTokenPairByRefresh(oldRefreshToken)
 
 	s.Logger.Info("Refresh token rotated (OAuth 2.1)",
 		"user_id", userID, "generation", generation, "family_tracking", supportsFamilies)
@@ -1121,10 +1225,15 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 	accessToken := generateRandomToken()
 	refreshToken := generateRandomToken()
 
+	var providerExpiry time.Time
+	if authCode.ProviderToken != nil {
+		providerExpiry = authCode.ProviderToken.Expiry
+	}
+
 	tokenResponse := &oauth2.Token{
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
-		Expiry:       time.Now().Add(time.Duration(s.Config.AccessTokenTTL) * time.Second),
+		Expiry:       s.capTokenExpiry(providerExpiry),
 		TokenType:    "Bearer",
 	}
 
@@ -1144,6 +1253,9 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 	if err := s.tokenStore.SaveToken(ctx, refreshToken, authCode.ProviderToken); err != nil {
 		s.Logger.Warn("Failed to save refresh token", "error", err)
 	}
+
+	// Track AT -> RT pairing for refresh-time updates
+	s.registerTokenPair(accessToken, refreshToken)
 
 	// Store token metadata
 	tokenScopes := normalizeScopes(authCode.Scope)
@@ -1217,11 +1329,16 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	// OAuth 2.1: Refresh Token Rotation
 	newRefreshToken, rotated := s.rotateRefreshToken(ctx, refreshToken, userID, clientID, familyStore, supportsFamilies)
 
+	var providerExpiry time.Time
+	if newProviderToken != nil {
+		providerExpiry = newProviderToken.Expiry
+	}
+
 	// Create token response using oauth2.Token
 	tokenResponse := &oauth2.Token{
 		AccessToken:  newAccessToken,
 		RefreshToken: newRefreshToken,
-		Expiry:       time.Now().Add(time.Duration(s.Config.AccessTokenTTL) * time.Second),
+		Expiry:       s.capTokenExpiry(providerExpiry),
 		TokenType:    "Bearer",
 	}
 
@@ -1243,6 +1360,9 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	if err := s.tokenStore.SaveToken(ctx, newRefreshToken, newProviderToken); err != nil {
 		s.Logger.Warn("Failed to save new refresh token", "error", err)
 	}
+
+	// Track AT -> RT pairing for refresh-time updates
+	s.registerTokenPair(newAccessToken, newRefreshToken)
 
 	// Track new access token metadata for revocation (OAuth 2.1 code reuse detection)
 	if metadataStore, ok := s.tokenStore.(interface {
@@ -1369,6 +1489,7 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP stri
 	if err := s.tokenStore.DeleteToken(ctx, token); err != nil {
 		s.Logger.Warn("Failed to delete token locally", "error", err)
 	}
+	s.unregisterTokenPairIfPresent(token)
 
 	if s.Auditor != nil {
 		s.Auditor.LogTokenRevoked("", clientID, clientIP, "access_or_refresh")
@@ -1527,6 +1648,10 @@ func (s *Server) RevokeAllTokensForUserClient(ctx context.Context, userID, clien
 			"client_id", clientID,
 			"error", err)
 		return fmt.Errorf("failed to revoke tokens locally: %w", err)
+	}
+
+	for _, tokenID := range tokens {
+		s.unregisterTokenPairIfPresent(tokenID)
 	}
 
 	// Log the revocation
