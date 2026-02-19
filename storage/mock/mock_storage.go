@@ -232,7 +232,7 @@ func (m *TokenStore) SetRefreshTokenClientID(refreshToken, clientID string) {
 
 // SaveRefreshTokenWithClientID saves a refresh token with client binding.
 // This is a test helper that combines SaveRefreshToken with client ID.
-func (m *TokenStore) SaveRefreshTokenWithClientID(ctx context.Context, refreshToken, userID, clientID string, expiresAt time.Time) error {
+func (m *TokenStore) SaveRefreshTokenWithClientID(_ context.Context, refreshToken, userID, clientID string, expiresAt time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.refreshTokens[refreshToken] = refreshTokenInfo{
