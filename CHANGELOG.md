@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Valkey store: provider token TTL causes false refresh token reuse detection (#216)**
+  - **Bug**: Valkey `SaveToken` used the upstream provider's access token expiry (e.g., 30 minutes from Dex) as the Valkey key TTL. When a provider token was stored alongside a long-lived refresh token (90 days), Valkey would evict it after 30 minutes. This caused `AtomicGetAndDeleteRefreshToken` to return `TOKEN_NOT_FOUND`, which triggered false positive reuse detection and forced users to re-authenticate.
+  - **Root Cause**: `SaveToken` unconditionally used `token.Expiry` as the key TTL, not distinguishing between tokens with and without a refresh token.
+  - **Fix**: When a token has a `RefreshToken` field set, `SaveToken` no longer sets a TTL based on the access token expiry. This aligns with the memory store, which skips cleanup for tokens that have a refresh token.
+  - **Affected Components**: `storage/valkey/token.go` - `SaveToken` TTL logic
+
 ### Changed
 
 - **Remove go.mod from examples to prevent recursive Renovate updates.** Example `go.mod` files are now generated at build time via `make build-examples`. This eliminates the cycle where Renovate bumps the mcp-oauth dependency in examples, triggers a release, which triggers another Renovate update, and so on. CI now uses the same make target instead of a per-example matrix.
