@@ -12,8 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Valkey store: provider token TTL causes false refresh token reuse detection (#216)**
   - **Bug**: Valkey `SaveToken` used the upstream provider's access token expiry (e.g., 30 minutes from Dex) as the Valkey key TTL. When a provider token was stored alongside a long-lived refresh token (90 days), Valkey would evict it after 30 minutes. This caused `AtomicGetAndDeleteRefreshToken` to return `TOKEN_NOT_FOUND`, which triggered false positive reuse detection and forced users to re-authenticate.
   - **Root Cause**: `SaveToken` unconditionally used `token.Expiry` as the key TTL, not distinguishing between tokens with and without a refresh token.
-  - **Fix**: When a token has a `RefreshToken` field set, `SaveToken` no longer sets a TTL based on the access token expiry. This aligns with the memory store, which skips cleanup for tokens that have a refresh token.
-  - **Affected Components**: `storage/valkey/token.go` - `SaveToken` TTL logic
+  - **Fix**: When a token has a `RefreshToken` field set, `SaveToken` now uses the configurable `RefreshTokenTTL` (default 90 days) instead of the access token expiry. This ensures Valkey keeps the key long enough for the refresh token flow to complete, while still providing automatic cleanup of orphaned keys.
+  - **Affected Components**: `storage/valkey/token.go`, `storage/valkey/store.go`
+- **Memory store: orphaned provider tokens with refresh tokens never cleaned up**
+  - Provider tokens with a `RefreshToken` field were permanently excluded from cleanup, even after the associated MCP refresh token was consumed or expired. This caused a slow memory leak for long-running servers.
+  - Cleanup now also removes expired provider tokens whose key is no longer tracked as an active MCP refresh token.
 
 ### Changed
 

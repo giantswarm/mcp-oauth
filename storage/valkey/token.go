@@ -96,19 +96,22 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 
 	key := s.tokenKey(userID)
 
-	// Determine whether to set a TTL on the Valkey key.
+	// Determine which TTL to set on the Valkey key.
 	//
-	// Tokens with a RefreshToken are stored WITHOUT a TTL based on
-	// token.Expiry because that expiry reflects the short-lived upstream
-	// access token (e.g., 30 minutes from Dex), not the lifetime of the
-	// muster refresh token (e.g., 90 days). Setting a short TTL would
-	// cause Valkey to evict the provider token before the refresh token
-	// expires, triggering false positive reuse detection in
+	// Tokens with a RefreshToken use the configured refresh token TTL
+	// because token.Expiry reflects the short-lived upstream access token
+	// (e.g., 30 minutes from Dex), not the lifetime of the MCP refresh
+	// token (e.g., 90 days). Using the access token expiry as the key TTL
+	// would cause Valkey to evict the provider token before the refresh
+	// token expires, triggering false positive reuse detection in
 	// AtomicGetAndDeleteRefreshToken.
-	//
-	// This aligns with the memory store, which skips cleanup for tokens
-	// that have a RefreshToken set.
-	if !token.Expiry.IsZero() && token.RefreshToken == "" {
+	if token.RefreshToken != "" {
+		if s.refreshTokenTTL > 0 {
+			err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Ex(s.refreshTokenTTL).Build()).Error()
+		} else {
+			err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error()
+		}
+	} else if !token.Expiry.IsZero() {
 		ttl := calculateTTL(token.Expiry)
 		if ttl <= 0 {
 			return fmt.Errorf("token already expired")

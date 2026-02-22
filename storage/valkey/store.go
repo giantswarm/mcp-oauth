@@ -29,6 +29,11 @@ const (
 	// DefaultRevokedFamilyRetentionDays is the default retention period for revoked token families
 	DefaultRevokedFamilyRetentionDays = 90
 
+	// DefaultRefreshTokenTTL is the default TTL for provider tokens that have
+	// a refresh token. This prevents orphaned keys from living indefinitely
+	// when the refresh token is consumed or expires without explicit cleanup.
+	DefaultRefreshTokenTTL = 90 * 24 * time.Hour
+
 	// tokenIDLogLength is the number of characters to include when logging token IDs
 	tokenIDLogLength = 8
 
@@ -80,6 +85,11 @@ type Config struct {
 	// RevokedFamilyRetentionDays is the retention period for revoked token family metadata
 	// Used for security forensics and auditing. Default: 90 days
 	RevokedFamilyRetentionDays int
+
+	// RefreshTokenTTL is the TTL applied to provider tokens that have a refresh
+	// token. This should match the MCP server's refresh token lifetime so that
+	// Valkey automatically evicts orphaned provider tokens. Default: 90 days
+	RefreshTokenTTL time.Duration
 }
 
 // Store is a Valkey-backed implementation of all storage interfaces.
@@ -89,6 +99,7 @@ type Store struct {
 	prefix                     string
 	logger                     *slog.Logger
 	revokedFamilyRetentionDays int
+	refreshTokenTTL            time.Duration
 
 	// encryptor provides optional token encryption at rest
 	// Access must be synchronized via encryptorMu
@@ -134,6 +145,11 @@ func New(cfg Config) (*Store, error) {
 		retentionDays = DefaultRevokedFamilyRetentionDays
 	}
 
+	refreshTokenTTL := cfg.RefreshTokenTTL
+	if refreshTokenTTL <= 0 {
+		refreshTokenTTL = DefaultRefreshTokenTTL
+	}
+
 	// Build client options
 	opts := valkeygo.ClientOption{
 		InitAddress: []string{cfg.Address},
@@ -172,6 +188,7 @@ func New(cfg Config) (*Store, error) {
 		prefix:                     prefix,
 		logger:                     logger,
 		revokedFamilyRetentionDays: retentionDays,
+		refreshTokenTTL:            refreshTokenTTL,
 	}, nil
 }
 

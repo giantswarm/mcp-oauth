@@ -212,7 +212,7 @@ func TestTokenStore_SaveToken_WithRefreshToken_NoShortTTL(t *testing.T) {
 
 	// A provider token with a short-lived access token (30 min) but a refresh
 	// token present. Valkey must NOT use the access token expiry as the key
-	// TTL, otherwise the key is evicted before the muster refresh token expires.
+	// TTL, otherwise the key is evicted before the MCP refresh token expires.
 	token := &oauth2.Token{
 		AccessToken:  "short-lived-access",
 		RefreshToken: "long-lived-refresh",
