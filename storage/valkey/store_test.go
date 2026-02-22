@@ -206,6 +206,116 @@ func TestTokenStore_SaveToken_NilToken(t *testing.T) {
 	}
 }
 
+func TestTokenStore_SaveToken_WithRefreshToken_NoShortTTL(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	// A provider token with a short-lived access token (30 min) but a refresh
+	// token present. Valkey must NOT use the access token expiry as the key
+	// TTL, otherwise the key is evicted before the MCP refresh token expires.
+	token := &oauth2.Token{
+		AccessToken:  "short-lived-access",
+		RefreshToken: "long-lived-refresh",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(2 * time.Second),
+	}
+
+	err := s.SaveToken(ctx, "user-rt-ttl", token)
+	if err != nil {
+		t.Fatalf("SaveToken failed: %v", err)
+	}
+
+	// Wait for the access token expiry to pass.
+	time.Sleep(3 * time.Second)
+
+	// The key must still exist because tokens with a RefreshToken are stored
+	// without TTL (matching the memory store's cleanup behavior).
+	got, err := s.GetToken(ctx, "user-rt-ttl")
+	if err != nil {
+		t.Fatalf("GetToken failed after access token expiry: %v (token was prematurely evicted)", err)
+	}
+	if got.AccessToken != "short-lived-access" {
+		t.Errorf("AccessToken = %q, want %q", got.AccessToken, "short-lived-access")
+	}
+	if got.RefreshToken != "long-lived-refresh" {
+		t.Errorf("RefreshToken = %q, want %q", got.RefreshToken, "long-lived-refresh")
+	}
+}
+
+func TestTokenStore_SaveToken_WithRefreshToken_ExpiredExpiry(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	// Provider token with an already-expired access token but a valid refresh
+	// token. This must succeed because the refresh token can still be used.
+	token := &oauth2.Token{
+		AccessToken:  "already-expired-access",
+		RefreshToken: "still-valid-refresh",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(-10 * time.Minute),
+	}
+
+	err := s.SaveToken(ctx, "user-expired-rt", token)
+	if err != nil {
+		t.Fatalf("SaveToken should succeed for expired token with RefreshToken, got: %v", err)
+	}
+
+	got, err := s.GetToken(ctx, "user-expired-rt")
+	if err != nil {
+		t.Fatalf("GetToken failed: %v", err)
+	}
+	if got.RefreshToken != "still-valid-refresh" {
+		t.Errorf("RefreshToken = %q, want %q", got.RefreshToken, "still-valid-refresh")
+	}
+}
+
+func TestTokenStore_SaveToken_WithoutRefreshToken_ExpiredReject(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	// Token WITHOUT a refresh token and an already-expired expiry must still
+	// be rejected (existing behavior preserved).
+	token := &oauth2.Token{
+		AccessToken: "expired-no-rt",
+		TokenType:   "Bearer",
+		Expiry:      time.Now().Add(-time.Hour),
+	}
+
+	err := s.SaveToken(ctx, "user-no-rt-expired", token)
+	if err == nil {
+		t.Error("Expected error for expired token without RefreshToken")
+	}
+}
+
+func TestTokenStore_SaveToken_WithoutRefreshToken_HasTTL(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	// Token without RefreshToken and with a short expiry should be evicted
+	// after the TTL (existing behavior preserved).
+	token := &oauth2.Token{
+		AccessToken: "short-no-rt",
+		TokenType:   "Bearer",
+		Expiry:      time.Now().Add(2 * time.Second),
+	}
+
+	err := s.SaveToken(ctx, "user-short-no-rt", token)
+	if err != nil {
+		t.Fatalf("SaveToken failed: %v", err)
+	}
+
+	// Wait for the TTL to expire.
+	time.Sleep(3 * time.Second)
+
+	_, err = s.GetToken(ctx, "user-short-no-rt")
+	if err == nil {
+		t.Error("Expected error: token without RefreshToken should be evicted after TTL")
+	}
+	if !storage.IsNotFoundError(err) {
+		t.Errorf("Expected ErrTokenNotFound, got: %v", err)
+	}
+}
+
 // ============================================================
 // UserInfo Tests
 // ============================================================

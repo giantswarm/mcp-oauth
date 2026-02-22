@@ -1017,15 +1017,31 @@ func (s *Store) cleanupLoop() {
 	}
 }
 
-// cleanupExpiredTokens removes expired tokens without refresh tokens
+// cleanupExpiredTokens removes expired provider tokens.
+//
+// For tokens without a provider RefreshToken, the access token expiry is
+// authoritative and the entry is removed once it passes.
+//
+// For tokens with a provider RefreshToken, the entry is kept as long as
+// the key is still tracked in refreshTokens (the MCP refresh token is
+// still active). Once the MCP refresh token is consumed or expires (and
+// is removed from refreshTokens by cleanupExpiredRefreshTokens or
+// AtomicGetAndDeleteRefreshToken), the provider token becomes orphaned
+// and is cleaned up here once the access token expiry has also passed.
 func (s *Store) cleanupExpiredTokens() int {
 	cleaned := 0
-	for userID, token := range s.tokens {
-		if security.IsTokenExpired(token.Expiry) && token.RefreshToken == "" {
-			delete(s.tokens, userID)
-			delete(s.userInfo, userID)
-			cleaned++
+	for key, token := range s.tokens {
+		if !security.IsTokenExpired(token.Expiry) {
+			continue
 		}
+		if token.RefreshToken != "" {
+			if _, active := s.refreshTokens[key]; active {
+				continue
+			}
+		}
+		delete(s.tokens, key)
+		delete(s.userInfo, key)
+		cleaned++
 	}
 	return cleaned
 }
