@@ -1452,7 +1452,7 @@ func TestStore_CleanupExpiredTokens_WithRefreshToken(t *testing.T) {
 	store := NewWithInterval(100 * time.Millisecond)
 	defer store.Stop()
 
-	refreshTokenKey := "mcp-refresh-token-1"
+	refreshTokenKey := "mcp-refresh-token-1" //nolint:gosec // test value, not a real credential
 	providerToken := &oauth2.Token{
 		AccessToken:  "provider-access",
 		RefreshToken: "provider-refresh",
