@@ -105,19 +105,18 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 	// would cause Valkey to evict the provider token before the refresh
 	// token expires, triggering false positive reuse detection in
 	// AtomicGetAndDeleteRefreshToken.
-	if token.RefreshToken != "" {
-		if s.refreshTokenTTL > 0 {
-			err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Ex(s.refreshTokenTTL).Build()).Error()
-		} else {
-			err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error()
-		}
-	} else if !token.Expiry.IsZero() {
+	switch {
+	case token.RefreshToken != "" && s.refreshTokenTTL > 0:
+		err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Ex(s.refreshTokenTTL).Build()).Error()
+	case token.RefreshToken != "":
+		err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error()
+	case !token.Expiry.IsZero():
 		ttl := calculateTTL(token.Expiry)
 		if ttl <= 0 {
 			return fmt.Errorf("token already expired")
 		}
 		err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Ex(ttl).Build()).Error()
-	} else {
+	default:
 		err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error()
 	}
 
