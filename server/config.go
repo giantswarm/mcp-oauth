@@ -183,6 +183,13 @@ type Config struct {
 	// Example: "openid profile email" = 22 characters
 	MaxScopeLength int // default: 1000
 
+	// MaxRequestBodySize is the maximum allowed size in bytes for incoming HTTP request bodies.
+	// This prevents denial-of-service attacks via oversized POST bodies by wrapping the
+	// request body with http.MaxBytesReader before parsing form data or JSON payloads.
+	// Requests exceeding this limit receive a 413 Request Entity Too Large response.
+	// Default: 1048576 (1 MiB, generous for OAuth form data which is typically a few KB)
+	MaxRequestBodySize int64 // bytes, default: 1048576 (1 MiB)
+
 	// DefaultChallengeScopes are the scopes to include in WWW-Authenticate challenges
 	// When a 401 Unauthorized response is returned, these scopes indicate what
 	// permissions would be needed to access the resource.

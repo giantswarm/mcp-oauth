@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Limit HTTP request body size in handler (gosec G120) (#220)**
+  - All POST handler methods (`ServeToken`, `ServeTokenRevocation`, `ServeTokenIntrospection`) now wrap the request body with `http.MaxBytesReader` before parsing form data, preventing denial-of-service via oversized POST bodies.
+  - Oversized requests receive a `413 Request Entity Too Large` response.
+  - New `MaxRequestBodySize` config option in `server.Config` (default: 1 MiB) allows tuning the limit.
+  - Removed `G120` from the gosec exclude list in `Makefile.custom.mk`.
+
 ### Fixed
 
 - **ValidateGroups limit of 100 is too low for enterprise environments (#218)**

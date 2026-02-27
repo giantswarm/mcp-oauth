@@ -1680,6 +1680,124 @@ func TestHandler_ServeToken_MissingGrantType(t *testing.T) {
 	}
 }
 
+func setupTestHandlerWithBodyLimit(t *testing.T, maxBodySize int64) (*Handler, *memory.Store) {
+	t.Helper()
+
+	store := memory.New()
+	provider := mock.NewProvider()
+
+	config := &server.Config{
+		Issuer:             testIssuer,
+		MaxRequestBodySize: maxBodySize,
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+	return handler, store
+}
+
+func TestHandler_RequestBodyTooLarge(t *testing.T) {
+	const tinyLimit int64 = 16
+
+	tests := []struct {
+		name    string
+		method  string
+		path    string
+		handler func(h *Handler, w http.ResponseWriter, r *http.Request)
+	}{
+		{
+			name:   "ServeToken",
+			method: http.MethodPost,
+			path:   "/token",
+			handler: func(h *Handler, w http.ResponseWriter, r *http.Request) {
+				h.ServeToken(w, r)
+			},
+		},
+		{
+			name:   "ServeTokenRevocation",
+			method: http.MethodPost,
+			path:   "/revoke",
+			handler: func(h *Handler, w http.ResponseWriter, r *http.Request) {
+				h.ServeTokenRevocation(w, r)
+			},
+		},
+		{
+			name:   "ServeTokenIntrospection",
+			method: http.MethodPost,
+			path:   "/introspect",
+			handler: func(h *Handler, w http.ResponseWriter, r *http.Request) {
+				h.ServeTokenIntrospection(w, r)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, store := setupTestHandlerWithBodyLimit(t, tinyLimit)
+			defer store.Stop()
+
+			oversizedBody := strings.Repeat("x", int(tinyLimit)+1)
+			body := fmt.Sprintf("grant_type=%s", oversizedBody)
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			w := httptest.NewRecorder()
+
+			tc.handler(handler, w, req)
+
+			if w.Code != http.StatusRequestEntityTooLarge {
+				t.Errorf("status = %d, want %d", w.Code, http.StatusRequestEntityTooLarge)
+			}
+
+			var errResp map[string]string
+			if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+				t.Fatalf("failed to decode error response: %v", err)
+			}
+			if errResp["error"] != ErrorCodeInvalidRequest {
+				t.Errorf("error = %q, want %q", errResp["error"], ErrorCodeInvalidRequest)
+			}
+			if !strings.Contains(errResp["error_description"], "too large") {
+				t.Errorf("error_description = %q, want it to contain 'too large'", errResp["error_description"])
+			}
+		})
+	}
+}
+
+func TestHandler_RequestBodyWithinLimit(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	body := "grant_type=authorization_code&code=test"
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	handler.ServeToken(w, req)
+
+	if w.Code == http.StatusRequestEntityTooLarge {
+		t.Errorf("expected request to be within default body limit, got 413")
+	}
+}
+
+func TestIsMaxBytesError(t *testing.T) {
+	if isMaxBytesError(fmt.Errorf("generic error")) {
+		t.Error("generic error should not be detected as MaxBytesError")
+	}
+
+	maxBytesErr := &http.MaxBytesError{Limit: 100}
+	if !isMaxBytesError(maxBytesErr) {
+		t.Error("MaxBytesError should be detected")
+	}
+
+	wrapped := fmt.Errorf("wrapped: %w", maxBytesErr)
+	if !isMaxBytesError(wrapped) {
+		t.Error("wrapped MaxBytesError should be detected")
+	}
+}
+
 func TestHandler_ServeTokenRevocation_InvalidMethod(t *testing.T) {
 	handler, store := setupTestHandler(t)
 	defer store.Stop()

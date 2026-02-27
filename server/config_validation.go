@@ -122,6 +122,9 @@ func applyRateLimitDefaults(config *Config) {
 	if config.MaxScopeLength == 0 {
 		config.MaxScopeLength = 1000 // 1000 characters
 	}
+	if config.MaxRequestBodySize == 0 {
+		config.MaxRequestBodySize = 1 << 20 // 1 MiB
+	}
 }
 
 // applyCleanupIntervalDefaults sets defaults for cleanup interval configuration.
