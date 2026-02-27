@@ -575,13 +575,22 @@ func ValidateScopes(scopes []string) error {
     validateStringSlice(scopes, "scopes", 50, 256)
 }
 
-func ValidateGroups(groups []string) error {
-    // Max 100 groups, 256 chars each
-    validateStringSlice(groups, "groups", 100, 256)
+// ValidateGroups validates and truncates groups.
+// Truncates to maxGroups instead of rejecting; returns a defensive copy.
+// Individual group names exceeding DefaultMaxGroupNameLength are rejected.
+func ValidateGroups(groups []string, maxGroups int) ([]string, bool, error) {
+    // If maxGroups <= 0, uses DefaultMaxGroups (500)
+    // Validates all name lengths (rejects oversized names)
+    // Truncates to maxGroups if exceeded, returns truncated=true
+    // Always returns a defensive copy
 }
 ```
 
 **Implementation**: `providers/oidc/validation.go`
+
+The Dex provider uses `ValidateGroups` in `ValidateToken` to truncate groups
+instead of rejecting the entire authentication. The limit is configurable
+via `dex.Config.MaxGroups` (default: 500).
 
 ### Known Limitations
 

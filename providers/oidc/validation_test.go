@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -305,78 +306,136 @@ func TestValidateScopes(t *testing.T) {
 	}
 }
 
+// enterpriseGroupCount represents a realistic enterprise Active Directory group count
+// from issue #218 where users had 303 groups and were blocked by the previous limit of 100.
+const enterpriseGroupCount = 303
+
 func TestValidateGroups(t *testing.T) {
 	tests := []struct {
-		name    string
-		groups  []string
-		wantErr bool
-		errMsg  string
+		name          string
+		groups        []string
+		maxGroups     int
+		wantLen       int
+		wantTruncated bool
+		wantErr       bool
+		errMsg        string
 	}{
-		// Valid cases
 		{
-			name:    "valid single group",
-			groups:  []string{"admin"},
-			wantErr: false,
+			name:      "single group",
+			groups:    []string{"admin"},
+			maxGroups: 0,
+			wantLen:   1,
 		},
 		{
-			name:    "valid multiple groups",
-			groups:  []string{"admin", "developers", "users"},
-			wantErr: false,
+			name:      "multiple groups",
+			groups:    []string{"admin", "developers", "users"},
+			maxGroups: 0,
+			wantLen:   3,
 		},
 		{
-			name:    "empty array",
-			groups:  []string{},
-			wantErr: false,
+			name:      "nil groups",
+			groups:    nil,
+			maxGroups: 0,
+			wantLen:   0,
 		},
 		{
-			name:    "valid max groups (100)",
-			groups:  make([]string, 100),
-			wantErr: false,
-		},
-
-		// SECURITY: Limits
-		{
-			name:    "reject too many groups (101)",
-			groups:  make([]string, 101),
-			wantErr: true,
-			errMsg:  "exceeds maximum of 100 items",
+			name:      "empty groups",
+			groups:    []string{},
+			maxGroups: 0,
+			wantLen:   0,
 		},
 		{
-			name:    "reject group name too long",
-			groups:  []string{strings.Repeat("a", 257)},
+			name:      "enterprise group count within default limit",
+			groups:    makeGroups(enterpriseGroupCount),
+			maxGroups: 0,
+			wantLen:   enterpriseGroupCount,
+		},
+		{
+			name:      "exactly at default limit",
+			groups:    makeGroups(DefaultMaxGroups),
+			maxGroups: 0,
+			wantLen:   DefaultMaxGroups,
+		},
+		{
+			name:          "truncates beyond default limit",
+			groups:        makeGroups(DefaultMaxGroups + 10),
+			maxGroups:     0,
+			wantLen:       DefaultMaxGroups,
+			wantTruncated: true,
+		},
+		{
+			name:          "truncates to custom limit",
+			groups:        makeGroups(enterpriseGroupCount),
+			maxGroups:     100,
+			wantLen:       100,
+			wantTruncated: true,
+		},
+		{
+			name:      "exactly at custom limit",
+			groups:    makeGroups(100),
+			maxGroups: 100,
+			wantLen:   100,
+		},
+		{
+			name:          "negative maxGroups uses default",
+			groups:        makeGroups(DefaultMaxGroups + 1),
+			maxGroups:     -1,
+			wantLen:       DefaultMaxGroups,
+			wantTruncated: true,
+		},
+		{
+			name:    "rejects oversized group name",
+			groups:  []string{"ok", strings.Repeat("x", DefaultMaxGroupNameLength+1)},
 			wantErr: true,
 			errMsg:  "exceeds maximum length of 256 characters",
 		},
 		{
-			name:    "accept max group name length",
-			groups:  []string{strings.Repeat("a", 256)},
-			wantErr: false,
+			name:      "accepts max group name length",
+			groups:    []string{strings.Repeat("a", DefaultMaxGroupNameLength)},
+			maxGroups: 0,
+			wantLen:   1,
+		},
+		{
+			name:      "oversized group name rejected even beyond truncation boundary",
+			groups:    append(makeGroups(10), strings.Repeat("x", DefaultMaxGroupNameLength+1)),
+			maxGroups: 5,
+			wantErr:   true,
+			errMsg:    "exceeds maximum length",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Fill empty groups array with valid values for testing
-			if len(tt.groups) > 5 && tt.groups[0] == "" {
-				for i := range tt.groups {
-					tt.groups[i] = "group"
-				}
-			}
-
-			err := ValidateGroups(tt.groups)
+			result, truncated, err := ValidateGroups(tt.groups, tt.maxGroups)
 			if tt.wantErr {
 				if err == nil {
-					t.Errorf("ValidateGroups() expected error, got nil")
-					return
+					t.Fatalf("ValidateGroups() expected error, got nil")
 				}
 				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("ValidateGroups() error = %v, want error containing %q", err, tt.errMsg)
 				}
-			} else if err != nil {
-				t.Errorf("ValidateGroups() unexpected error = %v", err)
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("ValidateGroups() unexpected error: %v", err)
+			}
+			if truncated != tt.wantTruncated {
+				t.Errorf("ValidateGroups() truncated = %v, want %v", truncated, tt.wantTruncated)
+			}
+			if len(result) != tt.wantLen {
+				t.Errorf("ValidateGroups() returned %d groups, want %d", len(result), tt.wantLen)
 			}
 		})
 	}
+}
+
+func makeGroups(n int) []string {
+	groups := make([]string, n)
+	for i := range groups {
+		groups[i] = fmt.Sprintf("group-%d", i)
+	}
+	return groups
 }
 
 // TestValidateExternalURL tests the generic external URL validation with SSRF protection.

@@ -173,7 +173,26 @@ func ValidateScopes(scopes []string) error {
 	return validateStringSlice(scopes, "scopes", 50, 256)
 }
 
-// ValidateGroups validates groups claim from userinfo.
+// Default limits for groups validation.
+const (
+	// DefaultMaxGroups is the default maximum number of groups accepted in an OIDC groups claim.
+	// Set to 500 to accommodate enterprise environments (Active Directory, Azure AD, LDAP)
+	// where users commonly have hundreds of group memberships.
+	DefaultMaxGroups = 500
+
+	// DefaultMaxGroupNameLength is the default maximum length of a single group name.
+	DefaultMaxGroupNameLength = 256
+)
+
+// ValidateGroups validates and truncates an OIDC groups claim.
+// If maxGroups is <= 0, DefaultMaxGroups (500) is used.
+//
+// Groups exceeding maxGroups are truncated (not rejected) so authentication
+// can proceed. The second return value indicates whether truncation occurred.
+// Individual group names exceeding DefaultMaxGroupNameLength are rejected
+// with an error, as oversized names may indicate an injection attempt.
+//
+// Returns a defensive copy of the groups slice.
 //
 // Security Considerations:
 //   - Array Size Limit: Prevents memory exhaustion from excessive groups
@@ -181,13 +200,33 @@ func ValidateScopes(scopes []string) error {
 //
 // Example:
 //
-//	groups := []string{"admin", "developers"}
-//	if err := ValidateGroups(groups); err != nil {
+//	validated, truncated, err := ValidateGroups(groups, 0)
+//	if err != nil {
 //	    return fmt.Errorf("invalid groups: %w", err)
 //	}
-func ValidateGroups(groups []string) error {
-	// SECURITY: Prevent memory exhaustion from excessive groups and long group names
-	return validateStringSlice(groups, "groups", 100, 256)
+//	if truncated {
+//	    slog.Warn("groups truncated", "original", len(groups))
+//	}
+func ValidateGroups(groups []string, maxGroups int) ([]string, bool, error) {
+	if maxGroups <= 0 {
+		maxGroups = DefaultMaxGroups
+	}
+
+	for i, g := range groups {
+		if len(g) > DefaultMaxGroupNameLength {
+			return nil, false, fmt.Errorf("groups at index %d exceeds maximum length of %d characters", i, DefaultMaxGroupNameLength)
+		}
+	}
+
+	truncated := len(groups) > maxGroups
+	count := len(groups)
+	if truncated {
+		count = maxGroups
+	}
+
+	result := make([]string, count)
+	copy(result, groups[:count])
+	return result, truncated, nil
 }
 
 // isPrivateOrRestrictedIP checks if an IP address is private, loopback, link-local, or unspecified.
