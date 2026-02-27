@@ -67,6 +67,19 @@ func TestApplyTimeDefaults(t *testing.T) {
 			expectedMaxClientsPerIP:    10,
 			expectedMaxRequestBodySize: 1 << 20,
 		},
+		{
+			name: "negative MaxRequestBodySize should get default",
+			input: &Config{
+				MaxRequestBodySize: -1,
+			},
+			expectedAuthCodeTTL:        600,
+			expectedAccessTokenTTL:     3600,
+			expectedRefreshTokenTTL:    7776000,
+			expectedTrustedProxyCount:  1,
+			expectedClockSkewGrace:     5,
+			expectedMaxClientsPerIP:    10,
+			expectedMaxRequestBodySize: 1 << 20,
+		},
 	}
 
 	for _, tt := range tests {

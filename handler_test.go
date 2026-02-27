@@ -1733,6 +1733,14 @@ func TestHandler_RequestBodyTooLarge(t *testing.T) {
 				h.ServeTokenIntrospection(w, r)
 			},
 		},
+		{
+			name:   "ServeClientRegistration",
+			method: http.MethodPost,
+			path:   "/register",
+			handler: func(h *Handler, w http.ResponseWriter, r *http.Request) {
+				h.ServeClientRegistration(w, r)
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -1741,9 +1749,19 @@ func TestHandler_RequestBodyTooLarge(t *testing.T) {
 			defer store.Stop()
 
 			oversizedBody := strings.Repeat("x", int(tinyLimit)+1)
-			body := fmt.Sprintf("grant_type=%s", oversizedBody)
+
+			var body string
+			var contentType string
+			if tc.name == "ServeClientRegistration" {
+				body = fmt.Sprintf(`{"client_name":"%s"}`, oversizedBody)
+				contentType = "application/json"
+			} else {
+				body = fmt.Sprintf("grant_type=%s", oversizedBody)
+				contentType = "application/x-www-form-urlencoded"
+			}
+
 			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(body))
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.Header.Set("Content-Type", contentType)
 			w := httptest.NewRecorder()
 
 			tc.handler(handler, w, req)

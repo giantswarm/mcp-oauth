@@ -10,9 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Limit HTTP request body size in handler (gosec G120) (#220)**
-  - All POST handler methods (`ServeToken`, `ServeTokenRevocation`, `ServeTokenIntrospection`) now wrap the request body with `http.MaxBytesReader` before parsing form data, preventing denial-of-service via oversized POST bodies.
-  - Oversized requests receive a `413 Request Entity Too Large` response.
-  - New `MaxRequestBodySize` config option in `server.Config` (default: 1 MiB) allows tuning the limit.
+  - All POST handler methods (`ServeToken`, `ServeTokenRevocation`, `ServeTokenIntrospection`, `ServeClientRegistration`) now wrap the request body with `http.MaxBytesReader` before parsing form data or JSON payloads, preventing denial-of-service via oversized POST bodies.
+  - Oversized requests receive a `413 Request Entity Too Large` response with consistent observability (HTTP metrics and tracing) across all endpoints.
+  - New `MaxRequestBodySize` config option in `server.Config` (default: 1 MiB) allows tuning the limit. Negative values are corrected to the default with a warning.
   - Removed `G120` from the gosec exclude list in `Makefile.custom.mk`.
 
 ### Fixed

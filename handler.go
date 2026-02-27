@@ -1335,6 +1335,8 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 
 // ServeToken handles the OAuth token endpoint
 func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -1346,9 +1348,11 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config.MaxRequestBodySize)
 	if err := r.ParseForm(); err != nil {
 		if isMaxBytesError(err) {
+			h.recordHTTPMetrics("token", http.MethodPost, http.StatusRequestEntityTooLarge, startTime)
 			h.writeError(w, ErrorCodeInvalidRequest, "Request body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
+		h.recordHTTPMetrics("token", http.MethodPost, http.StatusBadRequest, startTime)
 		h.writeError(w, ErrorCodeInvalidRequest, "Failed to parse request", http.StatusBadRequest)
 		return
 	}
@@ -1688,8 +1692,15 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config.MaxRequestBodySize)
+
 	req, err := h.parseAndValidateRegistrationRequest(w, r, clientIP)
 	if err != nil {
+		if isMaxBytesError(err) {
+			h.recordHTTPMetrics("register", http.MethodPost, http.StatusRequestEntityTooLarge, startTime)
+			instrumentation.RecordError(span, err)
+			instrumentation.SetSpanError(span, "request body too large")
+		}
 		return
 	}
 
@@ -1730,6 +1741,10 @@ func (h *Handler) startRegistrationSpan(r *http.Request) (context.Context, trace
 func (h *Handler) parseAndValidateRegistrationRequest(w http.ResponseWriter, r *http.Request, clientIP string) (*clientRegistrationRequest, error) {
 	var req clientRegistrationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if isMaxBytesError(err) {
+			h.writeError(w, ErrorCodeInvalidRequest, "Request body too large", http.StatusRequestEntityTooLarge)
+			return nil, err
+		}
 		h.writeError(w, ErrorCodeInvalidRequest, "Invalid JSON", http.StatusBadRequest)
 		return nil, err
 	}
@@ -2109,6 +2124,8 @@ func (h *Handler) formatWWWAuthenticate(scope, errCode, errorDesc string) string
 // This allows resource servers to validate access tokens
 // Security: Requires client authentication to prevent token scanning attacks
 func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -2120,9 +2137,11 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config.MaxRequestBodySize)
 	if err := r.ParseForm(); err != nil {
 		if isMaxBytesError(err) {
+			h.recordHTTPMetrics("introspect", http.MethodPost, http.StatusRequestEntityTooLarge, startTime)
 			h.writeError(w, ErrorCodeInvalidRequest, "Request body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
+		h.recordHTTPMetrics("introspect", http.MethodPost, http.StatusBadRequest, startTime)
 		h.writeError(w, ErrorCodeInvalidRequest, "Failed to parse request", http.StatusBadRequest)
 		return
 	}
