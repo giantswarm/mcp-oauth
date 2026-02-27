@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **ValidateGroups limit of 100 is too low for enterprise environments (#218)**
+  - **Bug**: Users in enterprise environments (Active Directory, Azure AD, LDAP) with more than 100 OIDC groups were unable to authenticate. The `ValidateGroups` function rejected the entire authentication flow when the groups claim exceeded 100 items.
+  - **Root Cause**: `ValidateGroups` used a hardcoded maximum of 100 groups, which is insufficient for enterprise IdP setups where users commonly have hundreds of group memberships.
+  - **Fix**: Increased the default limit from 100 to 500 (`DefaultMaxGroups`). Added `SanitizeGroups` function that truncates groups exceeding the limit instead of rejecting the authentication. The Dex provider now uses `SanitizeGroups` and logs a warning when truncation occurs, ensuring authentication always succeeds even with very large group counts.
+  - **New Config**: Added `MaxGroups` field to `dex.Config` allowing deployments to tune the limit. Added `Logger` field (`*slog.Logger`) for operational warnings.
+  - **Affected Components**: `providers/oidc/validation.go`, `providers/dex/dex.go`
 - **Valkey store: provider token TTL causes false refresh token reuse detection (#216)**
   - **Bug**: Valkey `SaveToken` used the upstream provider's access token expiry (e.g., 30 minutes from Dex) as the Valkey key TTL. When a provider token was stored alongside a long-lived refresh token (90 days), Valkey would evict it after 30 minutes. This caused `AtomicGetAndDeleteRefreshToken` to return `TOKEN_NOT_FOUND`, which triggered false positive reuse detection and forced users to re-authenticate.
   - **Root Cause**: `SaveToken` unconditionally used `token.Expiry` as the key TTL, not distinguishing between tokens with and without a refresh token.

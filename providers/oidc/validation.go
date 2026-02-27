@@ -173,7 +173,23 @@ func ValidateScopes(scopes []string) error {
 	return validateStringSlice(scopes, "scopes", 50, 256)
 }
 
+// Default limits for groups validation.
+const (
+	// DefaultMaxGroups is the default maximum number of groups accepted in an OIDC groups claim.
+	// Set to 500 to accommodate enterprise environments (Active Directory, Azure AD, LDAP)
+	// where users commonly have hundreds of group memberships.
+	DefaultMaxGroups = 500
+
+	// DefaultMaxGroupNameLength is the default maximum length of a single group name.
+	DefaultMaxGroupNameLength = 256
+)
+
 // ValidateGroups validates groups claim from userinfo.
+// It rejects the entire groups list if it exceeds DefaultMaxGroups or
+// if any group name exceeds DefaultMaxGroupNameLength.
+//
+// For authentication flows where partial group data is acceptable,
+// use SanitizeGroups which truncates instead of rejecting.
 //
 // Security Considerations:
 //   - Array Size Limit: Prevents memory exhaustion from excessive groups
@@ -186,8 +202,49 @@ func ValidateScopes(scopes []string) error {
 //	    return fmt.Errorf("invalid groups: %w", err)
 //	}
 func ValidateGroups(groups []string) error {
-	// SECURITY: Prevent memory exhaustion from excessive groups and long group names
-	return validateStringSlice(groups, "groups", 100, 256)
+	return validateStringSlice(groups, "groups", DefaultMaxGroups, DefaultMaxGroupNameLength)
+}
+
+// SanitizeGroups validates and truncates a groups claim instead of rejecting it.
+// If the number of groups exceeds maxCount, the list is truncated to maxCount entries
+// and the second return value is true. If maxCount is <= 0, DefaultMaxGroups is used.
+//
+// Individual group names that exceed DefaultMaxGroupNameLength are still rejected
+// with an error, as oversized names may indicate an injection attempt.
+//
+// This function is preferred over ValidateGroups in authentication flows where
+// partial group data is acceptable and a hard failure would block the user entirely.
+//
+// Example:
+//
+//	sanitized, truncated, err := SanitizeGroups(groups, 500)
+//	if err != nil {
+//	    return fmt.Errorf("invalid groups: %w", err)
+//	}
+//	if truncated {
+//	    slog.Warn("groups truncated", "original", len(groups), "limit", 500)
+//	}
+func SanitizeGroups(groups []string, maxCount int) ([]string, bool, error) {
+	if maxCount <= 0 {
+		maxCount = DefaultMaxGroups
+	}
+
+	// Validate all group name lengths, including those beyond the truncation
+	// boundary. An oversized name anywhere in the list may indicate an injection
+	// attempt and should be rejected regardless of whether it would be truncated.
+	for i, g := range groups {
+		if len(g) > DefaultMaxGroupNameLength {
+			return nil, false, fmt.Errorf("%s at index %d exceeds maximum length of %d characters", "groups", i, DefaultMaxGroupNameLength)
+		}
+	}
+
+	if len(groups) > maxCount {
+		result := make([]string, maxCount)
+		copy(result, groups[:maxCount])
+		return result, true, nil
+	}
+
+	return groups, false, nil
 }
 
 // isPrivateOrRestrictedIP checks if an IP address is private, loopback, link-local, or unspecified.

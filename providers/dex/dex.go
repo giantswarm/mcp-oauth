@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -28,6 +29,8 @@ type Provider struct {
 	connectorID     string
 	httpClient      *http.Client
 	requestTimeout  time.Duration
+	maxGroups       int
+	logger          *slog.Logger
 }
 
 // Config holds Dex OAuth configuration
@@ -58,6 +61,16 @@ type Config struct {
 	// RequestTimeout is the timeout for provider API calls (default: 30s)
 	RequestTimeout time.Duration
 
+	// MaxGroups is the maximum number of groups to accept from the OIDC groups claim.
+	// Groups beyond this limit are truncated (not rejected) and a warning is logged.
+	// Default: oidc.DefaultMaxGroups (500). Set higher for enterprise environments
+	// with very large group counts (e.g., Active Directory).
+	MaxGroups int
+
+	// Logger is an optional structured logger for operational warnings (e.g., group truncation).
+	// Default: slog.Default()
+	Logger *slog.Logger
+
 	// skipValidation skips SSRF protection for issuer URLs
 	// INTERNAL USE ONLY: This is for testing with localhost test servers
 	// Production code must NEVER set this to true
@@ -85,6 +98,16 @@ func NewProvider(cfg *Config) (*Provider, error) {
 		return nil, err
 	}
 
+	maxGroups := cfg.MaxGroups
+	if maxGroups <= 0 {
+		maxGroups = oidc.DefaultMaxGroups
+	}
+
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	return &Provider{
 		Config: &oauth2.Config{
 			ClientID:     cfg.ClientID,
@@ -101,6 +124,8 @@ func NewProvider(cfg *Config) (*Provider, error) {
 		connectorID:     cfg.ConnectorID,
 		httpClient:      httpClient,
 		requestTimeout:  requestTimeout,
+		maxGroups:       maxGroups,
+		logger:          logger,
 	}, nil
 }
 
@@ -315,11 +340,20 @@ func (p *Provider) ValidateToken(ctx context.Context, accessToken string) (*prov
 		return nil, fmt.Errorf("failed to decode user info: %w", err)
 	}
 
-	// SECURITY: Validate groups claim
-	if len(dexUserInfo.Groups) > 0 {
-		if err := oidc.ValidateGroups(dexUserInfo.Groups); err != nil {
+	groups := dexUserInfo.Groups
+	if len(groups) > 0 {
+		sanitized, truncated, err := oidc.SanitizeGroups(groups, p.maxGroups)
+		if err != nil {
 			return nil, fmt.Errorf("invalid groups claim: %w", err)
 		}
+		if truncated {
+			p.logger.Warn("groups claim truncated for user",
+				"user_id", dexUserInfo.Sub,
+				"original_count", len(groups),
+				"limit", p.maxGroups,
+			)
+		}
+		groups = sanitized
 	}
 
 	return &providers.UserInfo{
@@ -331,7 +365,7 @@ func (p *Provider) ValidateToken(ctx context.Context, accessToken string) (*prov
 		FamilyName:    dexUserInfo.FamilyName,
 		Picture:       dexUserInfo.Picture,
 		Locale:        dexUserInfo.Locale,
-		Groups:        dexUserInfo.Groups,
+		Groups:        groups,
 	}, nil
 }
 

@@ -1,15 +1,23 @@
 package dex
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 )
+
+// enterpriseGroupCount represents a realistic enterprise Active Directory group count
+// from issue #218 where users had 303 groups and were blocked by the previous limit of 100.
+const enterpriseGroupCount = 303
 
 // Helper function to create test config for a given server
 func testConfig(server *httptest.Server, options ...func(*Config)) *Config {
@@ -439,16 +447,123 @@ func TestValidateToken(t *testing.T) {
 	}
 }
 
-// TestValidateToken_ExcessiveGroups tests groups validation
-func TestValidateToken_ExcessiveGroups(t *testing.T) {
-	// Create 101 groups (exceeds limit of 100)
-	excessiveGroups := make([]string, 101)
-	for i := 0; i < 101; i++ {
-		excessiveGroups[i] = fmt.Sprintf("group%d", i)
+// TestValidateToken_GroupsTruncation tests that groups exceeding the limit are
+// truncated instead of rejected, allowing authentication to succeed.
+func TestValidateToken_GroupsTruncation(t *testing.T) {
+	groups := make([]string, enterpriseGroupCount)
+	for i := range groups {
+		groups[i] = fmt.Sprintf("group-%d", i)
 	}
 
 	server := setupMockDexServer(t, func(cfg *mockDexConfig) {
-		cfg.userInfo.Groups = excessiveGroups
+		cfg.userInfo.Groups = groups
+	})
+	defer server.Close()
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	provider, err := NewProvider(testConfig(server, func(cfg *Config) {
+		cfg.MaxGroups = 100
+		cfg.Logger = logger
+	}))
+	if err != nil {
+		t.Fatalf("NewProvider() failed: %v", err)
+	}
+
+	ctx := context.Background()
+
+	userInfo, err := provider.ValidateToken(ctx, "test_token")
+	if err != nil {
+		t.Fatalf("ValidateToken() should succeed with truncated groups, got: %v", err)
+	}
+
+	if len(userInfo.Groups) != 100 {
+		t.Errorf("ValidateToken() returned %d groups, want 100 (truncated)", len(userInfo.Groups))
+	}
+
+	if !strings.Contains(logBuf.String(), "groups claim truncated") {
+		t.Error("expected truncation warning in log output")
+	}
+	if !strings.Contains(logBuf.String(), fmt.Sprintf("original_count=%d", enterpriseGroupCount)) {
+		t.Errorf("expected original_count=%d in log, got: %s", enterpriseGroupCount, logBuf.String())
+	}
+}
+
+// TestValidateToken_GroupsWithinLimit tests that groups within the limit pass through unchanged.
+func TestValidateToken_GroupsWithinLimit(t *testing.T) {
+	groups := make([]string, 50)
+	for i := range groups {
+		groups[i] = fmt.Sprintf("group-%d", i)
+	}
+
+	server := setupMockDexServer(t, func(cfg *mockDexConfig) {
+		cfg.userInfo.Groups = groups
+	})
+	defer server.Close()
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	provider, err := NewProvider(testConfig(server, func(cfg *Config) {
+		cfg.Logger = logger
+	}))
+	if err != nil {
+		t.Fatalf("NewProvider() failed: %v", err)
+	}
+
+	ctx := context.Background()
+
+	userInfo, err := provider.ValidateToken(ctx, "test_token")
+	if err != nil {
+		t.Fatalf("ValidateToken() failed: %v", err)
+	}
+
+	if len(userInfo.Groups) != 50 {
+		t.Errorf("ValidateToken() returned %d groups, want 50", len(userInfo.Groups))
+	}
+
+	if strings.Contains(logBuf.String(), "truncated") {
+		t.Error("should not log truncation warning when groups are within limit")
+	}
+}
+
+// TestValidateToken_EnterpriseGroupCount tests that the default limit (500)
+// accommodates enterprise group counts.
+func TestValidateToken_EnterpriseGroupCount(t *testing.T) {
+	groups := make([]string, enterpriseGroupCount)
+	for i := range groups {
+		groups[i] = fmt.Sprintf("enterprise-group-%d", i)
+	}
+
+	server := setupMockDexServer(t, func(cfg *mockDexConfig) {
+		cfg.userInfo.Groups = groups
+	})
+	defer server.Close()
+
+	provider, err := NewProvider(testConfig(server))
+	if err != nil {
+		t.Fatalf("NewProvider() failed: %v", err)
+	}
+
+	ctx := context.Background()
+
+	userInfo, err := provider.ValidateToken(ctx, "test_token")
+	if err != nil {
+		t.Fatalf("ValidateToken() should accept %d groups with default limit, got: %v", enterpriseGroupCount, err)
+	}
+
+	if len(userInfo.Groups) != enterpriseGroupCount {
+		t.Errorf("ValidateToken() returned %d groups, want %d (all preserved)", len(userInfo.Groups), enterpriseGroupCount)
+	}
+}
+
+// TestValidateToken_InvalidGroupName tests that oversized group names are still rejected.
+func TestValidateToken_InvalidGroupName(t *testing.T) {
+	groups := []string{"valid-group", strings.Repeat("x", oidc.DefaultMaxGroupNameLength+1)}
+
+	server := setupMockDexServer(t, func(cfg *mockDexConfig) {
+		cfg.userInfo.Groups = groups
 	})
 	defer server.Close()
 
@@ -461,11 +576,51 @@ func TestValidateToken_ExcessiveGroups(t *testing.T) {
 
 	_, err = provider.ValidateToken(ctx, "test_token")
 	if err == nil {
-		t.Error("ValidateToken() should fail with excessive groups")
+		t.Error("ValidateToken() should fail with oversized group name")
 	}
 	if !strings.Contains(err.Error(), "groups") {
 		t.Errorf("ValidateToken() error = %v, want error about groups", err)
 	}
+}
+
+// TestNewProvider_MaxGroupsConfig tests that MaxGroups configuration is applied.
+func TestNewProvider_MaxGroupsConfig(t *testing.T) {
+	server := setupMockDexServer(t)
+	defer server.Close()
+
+	t.Run("default max groups", func(t *testing.T) {
+		provider, err := NewProvider(testConfig(server))
+		if err != nil {
+			t.Fatalf("NewProvider() failed: %v", err)
+		}
+		if provider.maxGroups != oidc.DefaultMaxGroups {
+			t.Errorf("maxGroups = %d, want %d", provider.maxGroups, oidc.DefaultMaxGroups)
+		}
+	})
+
+	t.Run("custom max groups", func(t *testing.T) {
+		provider, err := NewProvider(testConfig(server, func(cfg *Config) {
+			cfg.MaxGroups = 1000
+		}))
+		if err != nil {
+			t.Fatalf("NewProvider() failed: %v", err)
+		}
+		if provider.maxGroups != 1000 {
+			t.Errorf("maxGroups = %d, want 1000", provider.maxGroups)
+		}
+	})
+
+	t.Run("zero max groups uses default", func(t *testing.T) {
+		provider, err := NewProvider(testConfig(server, func(cfg *Config) {
+			cfg.MaxGroups = 0
+		}))
+		if err != nil {
+			t.Fatalf("NewProvider() failed: %v", err)
+		}
+		if provider.maxGroups != oidc.DefaultMaxGroups {
+			t.Errorf("maxGroups = %d, want %d", provider.maxGroups, oidc.DefaultMaxGroups)
+		}
+	})
 }
 
 // TestRefreshToken tests token refresh

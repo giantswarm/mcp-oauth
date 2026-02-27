@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -312,7 +313,6 @@ func TestValidateGroups(t *testing.T) {
 		wantErr bool
 		errMsg  string
 	}{
-		// Valid cases
 		{
 			name:    "valid single group",
 			groups:  []string{"admin"},
@@ -329,34 +329,36 @@ func TestValidateGroups(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "valid max groups (100)",
-			groups:  make([]string, 100),
+			name:    "accept default max groups (500)",
+			groups:  make([]string, DefaultMaxGroups),
 			wantErr: false,
 		},
-
-		// SECURITY: Limits
 		{
-			name:    "reject too many groups (101)",
-			groups:  make([]string, 101),
+			name:    "accept enterprise group count",
+			groups:  make([]string, enterpriseGroupCount),
+			wantErr: false,
+		},
+		{
+			name:    "reject exceeding default max groups",
+			groups:  make([]string, DefaultMaxGroups+1),
 			wantErr: true,
-			errMsg:  "exceeds maximum of 100 items",
+			errMsg:  "exceeds maximum of 500 items",
 		},
 		{
 			name:    "reject group name too long",
-			groups:  []string{strings.Repeat("a", 257)},
+			groups:  []string{strings.Repeat("a", DefaultMaxGroupNameLength+1)},
 			wantErr: true,
 			errMsg:  "exceeds maximum length of 256 characters",
 		},
 		{
 			name:    "accept max group name length",
-			groups:  []string{strings.Repeat("a", 256)},
+			groups:  []string{strings.Repeat("a", DefaultMaxGroupNameLength)},
 			wantErr: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Fill empty groups array with valid values for testing
 			if len(tt.groups) > 5 && tt.groups[0] == "" {
 				for i := range tt.groups {
 					tt.groups[i] = "group"
@@ -377,6 +379,133 @@ func TestValidateGroups(t *testing.T) {
 			}
 		})
 	}
+}
+
+// enterpriseGroupCount represents a realistic enterprise Active Directory group count
+// from issue #218 where users had 303 groups and were blocked by the previous limit of 100.
+const enterpriseGroupCount = 303
+
+func TestSanitizeGroups(t *testing.T) {
+	tests := []struct {
+		name          string
+		groups        []string
+		maxCount      int
+		wantLen       int
+		wantTruncated bool
+		wantErr       bool
+		errMsg        string
+	}{
+		{
+			name:          "no truncation needed",
+			groups:        []string{"admin", "dev", "ops"},
+			maxCount:      500,
+			wantLen:       3,
+			wantTruncated: false,
+		},
+		{
+			name:          "nil groups",
+			groups:        nil,
+			maxCount:      500,
+			wantLen:       0,
+			wantTruncated: false,
+		},
+		{
+			name:          "empty groups",
+			groups:        []string{},
+			maxCount:      500,
+			wantLen:       0,
+			wantTruncated: false,
+		},
+		{
+			name:          "truncate to limit",
+			groups:        makeGroups(enterpriseGroupCount),
+			maxCount:      100,
+			wantLen:       100,
+			wantTruncated: true,
+		},
+		{
+			name:          "truncate large enterprise group set",
+			groups:        makeGroups(600),
+			maxCount:      500,
+			wantLen:       500,
+			wantTruncated: true,
+		},
+		{
+			name:          "exactly at limit is not truncated",
+			groups:        makeGroups(500),
+			maxCount:      500,
+			wantLen:       500,
+			wantTruncated: false,
+		},
+		{
+			name:          "zero maxCount uses default",
+			groups:        makeGroups(DefaultMaxGroups + 10),
+			maxCount:      0,
+			wantLen:       DefaultMaxGroups,
+			wantTruncated: true,
+		},
+		{
+			name:          "negative maxCount uses default",
+			groups:        makeGroups(DefaultMaxGroups + 1),
+			maxCount:      -1,
+			wantLen:       DefaultMaxGroups,
+			wantTruncated: true,
+		},
+		{
+			name:     "rejects oversized group name",
+			groups:   []string{"ok", strings.Repeat("x", DefaultMaxGroupNameLength+1)},
+			maxCount: 500,
+			wantErr:  true,
+			errMsg:   "exceeds maximum length of 256 characters",
+		},
+		{
+			name:     "oversized group name checked before truncation",
+			groups:   append(makeGroups(10), strings.Repeat("x", DefaultMaxGroupNameLength+1)),
+			maxCount: 5,
+			wantErr:  true,
+			errMsg:   "exceeds maximum length",
+		},
+		{
+			name:          "custom low limit",
+			groups:        makeGroups(20),
+			maxCount:      10,
+			wantLen:       10,
+			wantTruncated: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, truncated, err := SanitizeGroups(tt.groups, tt.maxCount)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("SanitizeGroups() expected error, got nil")
+				}
+				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("SanitizeGroups() error = %v, want error containing %q", err, tt.errMsg)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("SanitizeGroups() unexpected error: %v", err)
+			}
+			if truncated != tt.wantTruncated {
+				t.Errorf("SanitizeGroups() truncated = %v, want %v", truncated, tt.wantTruncated)
+			}
+			if len(result) != tt.wantLen {
+				t.Errorf("SanitizeGroups() returned %d groups, want %d", len(result), tt.wantLen)
+			}
+		})
+	}
+}
+
+func makeGroups(n int) []string {
+	groups := make([]string, n)
+	for i := range groups {
+		groups[i] = fmt.Sprintf("group-%d", i)
+	}
+	return groups
 }
 
 // TestValidateExternalURL tests the generic external URL validation with SSRF protection.

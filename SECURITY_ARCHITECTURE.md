@@ -576,12 +576,23 @@ func ValidateScopes(scopes []string) error {
 }
 
 func ValidateGroups(groups []string) error {
-    // Max 100 groups, 256 chars each
-    validateStringSlice(groups, "groups", 100, 256)
+    // Max 500 groups (DefaultMaxGroups), 256 chars each
+    validateStringSlice(groups, "groups", DefaultMaxGroups, DefaultMaxGroupNameLength)
+}
+
+// SanitizeGroups truncates instead of rejecting excessive groups.
+// Preferred in auth flows where partial group data is acceptable.
+func SanitizeGroups(groups []string, maxCount int) ([]string, bool, error) {
+    // Validate individual name lengths (still rejects oversized names)
+    // Truncate to maxCount if exceeded, return truncated=true
 }
 ```
 
 **Implementation**: `providers/oidc/validation.go`
+
+The Dex provider uses `SanitizeGroups` in `ValidateToken` to truncate groups
+instead of rejecting the entire authentication. The limit is configurable
+via `dex.Config.MaxGroups` (default: 500).
 
 ### Known Limitations
 
