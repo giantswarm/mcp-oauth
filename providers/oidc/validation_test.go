@@ -306,256 +306,125 @@ func TestValidateScopes(t *testing.T) {
 	}
 }
 
-func TestValidateGroups(t *testing.T) {
-	tests := []struct {
-		name    string
-		groups  []string
-		wantErr bool
-		errMsg  string
-	}{
-		{
-			name:    "valid single group",
-			groups:  []string{"admin"},
-			wantErr: false,
-		},
-		{
-			name:    "valid multiple groups",
-			groups:  []string{"admin", "developers", "users"},
-			wantErr: false,
-		},
-		{
-			name:    "empty array",
-			groups:  []string{},
-			wantErr: false,
-		},
-		{
-			name:    "accept default max groups (500)",
-			groups:  make([]string, DefaultMaxGroups),
-			wantErr: false,
-		},
-		{
-			name:    "accept enterprise group count",
-			groups:  make([]string, enterpriseGroupCount),
-			wantErr: false,
-		},
-		{
-			name:    "reject exceeding default max groups",
-			groups:  make([]string, DefaultMaxGroups+1),
-			wantErr: true,
-			errMsg:  "exceeds maximum of 500 items",
-		},
-		{
-			name:    "reject group name too long",
-			groups:  []string{strings.Repeat("a", DefaultMaxGroupNameLength+1)},
-			wantErr: true,
-			errMsg:  "exceeds maximum length of 256 characters",
-		},
-		{
-			name:    "accept max group name length",
-			groups:  []string{strings.Repeat("a", DefaultMaxGroupNameLength)},
-			wantErr: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if len(tt.groups) > 5 && tt.groups[0] == "" {
-				for i := range tt.groups {
-					tt.groups[i] = "group"
-				}
-			}
-
-			err := ValidateGroups(tt.groups)
-			if tt.wantErr {
-				if err == nil {
-					t.Errorf("ValidateGroups() expected error, got nil")
-					return
-				}
-				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
-					t.Errorf("ValidateGroups() error = %v, want error containing %q", err, tt.errMsg)
-				}
-			} else if err != nil {
-				t.Errorf("ValidateGroups() unexpected error = %v", err)
-			}
-		})
-	}
-}
-
 // enterpriseGroupCount represents a realistic enterprise Active Directory group count
 // from issue #218 where users had 303 groups and were blocked by the previous limit of 100.
 const enterpriseGroupCount = 303
 
-func TestValidateGroupsWithLimit(t *testing.T) {
-	tests := []struct {
-		name     string
-		groups   []string
-		maxCount int
-		wantErr  bool
-		errMsg   string
-	}{
-		{
-			name:     "within custom limit",
-			groups:   makeGroups(50),
-			maxCount: 100,
-			wantErr:  false,
-		},
-		{
-			name:     "exactly at custom limit",
-			groups:   makeGroups(100),
-			maxCount: 100,
-			wantErr:  false,
-		},
-		{
-			name:     "exceeds custom limit",
-			groups:   makeGroups(101),
-			maxCount: 100,
-			wantErr:  true,
-			errMsg:   "exceeds maximum of 100 items",
-		},
-		{
-			name:     "stricter than default",
-			groups:   makeGroups(51),
-			maxCount: 50,
-			wantErr:  true,
-			errMsg:   "exceeds maximum of 50 items",
-		},
-		{
-			name:     "rejects oversized group name",
-			groups:   []string{strings.Repeat("a", DefaultMaxGroupNameLength+1)},
-			maxCount: 100,
-			wantErr:  true,
-			errMsg:   "exceeds maximum length of 256 characters",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateGroupsWithLimit(tt.groups, tt.maxCount)
-			if tt.wantErr {
-				if err == nil {
-					t.Errorf("ValidateGroupsWithLimit() expected error, got nil")
-					return
-				}
-				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
-					t.Errorf("ValidateGroupsWithLimit() error = %v, want error containing %q", err, tt.errMsg)
-				}
-			} else if err != nil {
-				t.Errorf("ValidateGroupsWithLimit() unexpected error = %v", err)
-			}
-		})
-	}
-}
-
-func TestSanitizeGroups(t *testing.T) {
+func TestValidateGroups(t *testing.T) {
 	tests := []struct {
 		name          string
 		groups        []string
-		maxCount      int
+		maxGroups     int
 		wantLen       int
 		wantTruncated bool
 		wantErr       bool
 		errMsg        string
 	}{
 		{
-			name:          "no truncation needed",
-			groups:        []string{"admin", "dev", "ops"},
-			maxCount:      500,
-			wantLen:       3,
-			wantTruncated: false,
+			name:      "single group",
+			groups:    []string{"admin"},
+			maxGroups: 0,
+			wantLen:   1,
 		},
 		{
-			name:          "nil groups",
-			groups:        nil,
-			maxCount:      500,
-			wantLen:       0,
-			wantTruncated: false,
+			name:      "multiple groups",
+			groups:    []string{"admin", "developers", "users"},
+			maxGroups: 0,
+			wantLen:   3,
 		},
 		{
-			name:          "empty groups",
-			groups:        []string{},
-			maxCount:      500,
-			wantLen:       0,
-			wantTruncated: false,
+			name:      "nil groups",
+			groups:    nil,
+			maxGroups: 0,
+			wantLen:   0,
 		},
 		{
-			name:          "truncate to limit",
+			name:      "empty groups",
+			groups:    []string{},
+			maxGroups: 0,
+			wantLen:   0,
+		},
+		{
+			name:      "enterprise group count within default limit",
+			groups:    makeGroups(enterpriseGroupCount),
+			maxGroups: 0,
+			wantLen:   enterpriseGroupCount,
+		},
+		{
+			name:      "exactly at default limit",
+			groups:    makeGroups(DefaultMaxGroups),
+			maxGroups: 0,
+			wantLen:   DefaultMaxGroups,
+		},
+		{
+			name:          "truncates beyond default limit",
+			groups:        makeGroups(DefaultMaxGroups + 10),
+			maxGroups:     0,
+			wantLen:       DefaultMaxGroups,
+			wantTruncated: true,
+		},
+		{
+			name:          "truncates to custom limit",
 			groups:        makeGroups(enterpriseGroupCount),
-			maxCount:      100,
+			maxGroups:     100,
 			wantLen:       100,
 			wantTruncated: true,
 		},
 		{
-			name:          "truncate large enterprise group set",
-			groups:        makeGroups(600),
-			maxCount:      500,
-			wantLen:       500,
-			wantTruncated: true,
+			name:      "exactly at custom limit",
+			groups:    makeGroups(100),
+			maxGroups: 100,
+			wantLen:   100,
 		},
 		{
-			name:          "exactly at limit is not truncated",
-			groups:        makeGroups(500),
-			maxCount:      500,
-			wantLen:       500,
-			wantTruncated: false,
-		},
-		{
-			name:          "zero maxCount uses default",
-			groups:        makeGroups(DefaultMaxGroups + 10),
-			maxCount:      0,
-			wantLen:       DefaultMaxGroups,
-			wantTruncated: true,
-		},
-		{
-			name:          "negative maxCount uses default",
+			name:          "negative maxGroups uses default",
 			groups:        makeGroups(DefaultMaxGroups + 1),
-			maxCount:      -1,
+			maxGroups:     -1,
 			wantLen:       DefaultMaxGroups,
 			wantTruncated: true,
 		},
 		{
-			name:     "rejects oversized group name",
-			groups:   []string{"ok", strings.Repeat("x", DefaultMaxGroupNameLength+1)},
-			maxCount: 500,
-			wantErr:  true,
-			errMsg:   "exceeds maximum length of 256 characters",
+			name:    "rejects oversized group name",
+			groups:  []string{"ok", strings.Repeat("x", DefaultMaxGroupNameLength+1)},
+			wantErr: true,
+			errMsg:  "exceeds maximum length of 256 characters",
 		},
 		{
-			name:     "oversized group name checked before truncation",
-			groups:   append(makeGroups(10), strings.Repeat("x", DefaultMaxGroupNameLength+1)),
-			maxCount: 5,
-			wantErr:  true,
-			errMsg:   "exceeds maximum length",
+			name:      "accepts max group name length",
+			groups:    []string{strings.Repeat("a", DefaultMaxGroupNameLength)},
+			maxGroups: 0,
+			wantLen:   1,
 		},
 		{
-			name:          "custom low limit",
-			groups:        makeGroups(20),
-			maxCount:      10,
-			wantLen:       10,
-			wantTruncated: true,
+			name:      "oversized group name rejected even beyond truncation boundary",
+			groups:    append(makeGroups(10), strings.Repeat("x", DefaultMaxGroupNameLength+1)),
+			maxGroups: 5,
+			wantErr:   true,
+			errMsg:    "exceeds maximum length",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, truncated, err := SanitizeGroups(tt.groups, tt.maxCount)
+			result, truncated, err := ValidateGroups(tt.groups, tt.maxGroups)
 			if tt.wantErr {
 				if err == nil {
-					t.Fatalf("SanitizeGroups() expected error, got nil")
+					t.Fatalf("ValidateGroups() expected error, got nil")
 				}
 				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
-					t.Errorf("SanitizeGroups() error = %v, want error containing %q", err, tt.errMsg)
+					t.Errorf("ValidateGroups() error = %v, want error containing %q", err, tt.errMsg)
 				}
 				return
 			}
 
 			if err != nil {
-				t.Fatalf("SanitizeGroups() unexpected error: %v", err)
+				t.Fatalf("ValidateGroups() unexpected error: %v", err)
 			}
 			if truncated != tt.wantTruncated {
-				t.Errorf("SanitizeGroups() truncated = %v, want %v", truncated, tt.wantTruncated)
+				t.Errorf("ValidateGroups() truncated = %v, want %v", truncated, tt.wantTruncated)
 			}
 			if len(result) != tt.wantLen {
-				t.Errorf("SanitizeGroups() returned %d groups, want %d", len(result), tt.wantLen)
+				t.Errorf("ValidateGroups() returned %d groups, want %d", len(result), tt.wantLen)
 			}
 		})
 	}

@@ -342,7 +342,7 @@ func (p *Provider) ValidateToken(ctx context.Context, accessToken string) (*prov
 
 	groups := dexUserInfo.Groups
 	if len(groups) > 0 {
-		sanitized, truncated, err := oidc.SanitizeGroups(groups, p.maxGroups)
+		validated, truncated, err := oidc.ValidateGroups(groups, p.maxGroups)
 		if err != nil {
 			return nil, fmt.Errorf("invalid groups claim: %w", err)
 		}
@@ -353,7 +353,7 @@ func (p *Provider) ValidateToken(ctx context.Context, accessToken string) (*prov
 				"limit", p.maxGroups,
 			)
 		}
-		groups = sanitized
+		groups = validated
 	}
 
 	return &providers.UserInfo{

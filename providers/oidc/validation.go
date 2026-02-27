@@ -184,12 +184,15 @@ const (
 	DefaultMaxGroupNameLength = 256
 )
 
-// ValidateGroups validates groups claim from userinfo.
-// It rejects the entire groups list if it exceeds DefaultMaxGroups or
-// if any group name exceeds DefaultMaxGroupNameLength.
+// ValidateGroups validates and truncates an OIDC groups claim.
+// If maxGroups is <= 0, DefaultMaxGroups (500) is used.
 //
-// For authentication flows where partial group data is acceptable,
-// use SanitizeGroups which truncates instead of rejecting.
+// Groups exceeding maxGroups are truncated (not rejected) so authentication
+// can proceed. The second return value indicates whether truncation occurred.
+// Individual group names exceeding DefaultMaxGroupNameLength are rejected
+// with an error, as oversized names may indicate an injection attempt.
+//
+// Returns a defensive copy of the groups slice.
 //
 // Security Considerations:
 //   - Array Size Limit: Prevents memory exhaustion from excessive groups
@@ -197,66 +200,28 @@ const (
 //
 // Example:
 //
-//	groups := []string{"admin", "developers"}
-//	if err := ValidateGroups(groups); err != nil {
-//	    return fmt.Errorf("invalid groups: %w", err)
-//	}
-func ValidateGroups(groups []string) error {
-	return ValidateGroupsWithLimit(groups, DefaultMaxGroups)
-}
-
-// ValidateGroupsWithLimit validates groups claim with a custom maximum count.
-// It rejects the entire list if the count exceeds maxCount or any name
-// exceeds DefaultMaxGroupNameLength.
-//
-// Use this when you need stricter limits than DefaultMaxGroups (500).
-//
-// Example:
-//
-//	if err := ValidateGroupsWithLimit(groups, 100); err != nil {
-//	    return fmt.Errorf("invalid groups: %w", err)
-//	}
-func ValidateGroupsWithLimit(groups []string, maxCount int) error {
-	return validateStringSlice(groups, "groups", maxCount, DefaultMaxGroupNameLength)
-}
-
-// SanitizeGroups validates and truncates a groups claim instead of rejecting it.
-// If the number of groups exceeds maxCount, the list is truncated to maxCount entries
-// and the second return value is true. If maxCount is <= 0, DefaultMaxGroups is used.
-//
-// Individual group names that exceed DefaultMaxGroupNameLength are still rejected
-// with an error, as oversized names may indicate an injection attempt.
-//
-// This function is preferred over ValidateGroups in authentication flows where
-// partial group data is acceptable and a hard failure would block the user entirely.
-//
-// Example:
-//
-//	sanitized, truncated, err := SanitizeGroups(groups, 500)
+//	validated, truncated, err := ValidateGroups(groups, 0)
 //	if err != nil {
 //	    return fmt.Errorf("invalid groups: %w", err)
 //	}
 //	if truncated {
-//	    slog.Warn("groups truncated", "original", len(groups), "limit", 500)
+//	    slog.Warn("groups truncated", "original", len(groups))
 //	}
-func SanitizeGroups(groups []string, maxCount int) ([]string, bool, error) {
-	if maxCount <= 0 {
-		maxCount = DefaultMaxGroups
+func ValidateGroups(groups []string, maxGroups int) ([]string, bool, error) {
+	if maxGroups <= 0 {
+		maxGroups = DefaultMaxGroups
 	}
 
-	// Validate all group name lengths, including those beyond the truncation
-	// boundary. An oversized name anywhere in the list may indicate an injection
-	// attempt and should be rejected regardless of whether it would be truncated.
 	for i, g := range groups {
 		if len(g) > DefaultMaxGroupNameLength {
 			return nil, false, fmt.Errorf("groups at index %d exceeds maximum length of %d characters", i, DefaultMaxGroupNameLength)
 		}
 	}
 
-	truncated := len(groups) > maxCount
+	truncated := len(groups) > maxGroups
 	count := len(groups)
 	if truncated {
-		count = maxCount
+		count = maxGroups
 	}
 
 	result := make([]string, count)
