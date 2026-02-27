@@ -202,7 +202,22 @@ const (
 //	    return fmt.Errorf("invalid groups: %w", err)
 //	}
 func ValidateGroups(groups []string) error {
-	return validateStringSlice(groups, "groups", DefaultMaxGroups, DefaultMaxGroupNameLength)
+	return ValidateGroupsWithLimit(groups, DefaultMaxGroups)
+}
+
+// ValidateGroupsWithLimit validates groups claim with a custom maximum count.
+// It rejects the entire list if the count exceeds maxCount or any name
+// exceeds DefaultMaxGroupNameLength.
+//
+// Use this when you need stricter limits than DefaultMaxGroups (500).
+//
+// Example:
+//
+//	if err := ValidateGroupsWithLimit(groups, 100); err != nil {
+//	    return fmt.Errorf("invalid groups: %w", err)
+//	}
+func ValidateGroupsWithLimit(groups []string, maxCount int) error {
+	return validateStringSlice(groups, "groups", maxCount, DefaultMaxGroupNameLength)
 }
 
 // SanitizeGroups validates and truncates a groups claim instead of rejecting it.
@@ -234,17 +249,19 @@ func SanitizeGroups(groups []string, maxCount int) ([]string, bool, error) {
 	// attempt and should be rejected regardless of whether it would be truncated.
 	for i, g := range groups {
 		if len(g) > DefaultMaxGroupNameLength {
-			return nil, false, fmt.Errorf("%s at index %d exceeds maximum length of %d characters", "groups", i, DefaultMaxGroupNameLength)
+			return nil, false, fmt.Errorf("groups at index %d exceeds maximum length of %d characters", i, DefaultMaxGroupNameLength)
 		}
 	}
 
-	if len(groups) > maxCount {
-		result := make([]string, maxCount)
-		copy(result, groups[:maxCount])
-		return result, true, nil
+	truncated := len(groups) > maxCount
+	count := len(groups)
+	if truncated {
+		count = maxCount
 	}
 
-	return groups, false, nil
+	result := make([]string, count)
+	copy(result, groups[:count])
+	return result, truncated, nil
 }
 
 // isPrivateOrRestrictedIP checks if an IP address is private, loopback, link-local, or unspecified.

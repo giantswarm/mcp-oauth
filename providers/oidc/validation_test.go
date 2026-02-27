@@ -385,6 +385,67 @@ func TestValidateGroups(t *testing.T) {
 // from issue #218 where users had 303 groups and were blocked by the previous limit of 100.
 const enterpriseGroupCount = 303
 
+func TestValidateGroupsWithLimit(t *testing.T) {
+	tests := []struct {
+		name     string
+		groups   []string
+		maxCount int
+		wantErr  bool
+		errMsg   string
+	}{
+		{
+			name:     "within custom limit",
+			groups:   makeGroups(50),
+			maxCount: 100,
+			wantErr:  false,
+		},
+		{
+			name:     "exactly at custom limit",
+			groups:   makeGroups(100),
+			maxCount: 100,
+			wantErr:  false,
+		},
+		{
+			name:     "exceeds custom limit",
+			groups:   makeGroups(101),
+			maxCount: 100,
+			wantErr:  true,
+			errMsg:   "exceeds maximum of 100 items",
+		},
+		{
+			name:     "stricter than default",
+			groups:   makeGroups(51),
+			maxCount: 50,
+			wantErr:  true,
+			errMsg:   "exceeds maximum of 50 items",
+		},
+		{
+			name:     "rejects oversized group name",
+			groups:   []string{strings.Repeat("a", DefaultMaxGroupNameLength+1)},
+			maxCount: 100,
+			wantErr:  true,
+			errMsg:   "exceeds maximum length of 256 characters",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateGroupsWithLimit(tt.groups, tt.maxCount)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("ValidateGroupsWithLimit() expected error, got nil")
+					return
+				}
+				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("ValidateGroupsWithLimit() error = %v, want error containing %q", err, tt.errMsg)
+				}
+			} else if err != nil {
+				t.Errorf("ValidateGroupsWithLimit() unexpected error = %v", err)
+			}
+		})
+	}
+}
+
 func TestSanitizeGroups(t *testing.T) {
 	tests := []struct {
 		name          string
