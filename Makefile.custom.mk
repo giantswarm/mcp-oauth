@@ -103,7 +103,7 @@ revive: ## Run revive - fast, configurable linter
 gosec: ## Run gosec - security-focused linter
 	@echo "====> $@"
 	@command -v gosec >/dev/null 2>&1 || (echo "ERROR: gosec not installed. Run: go install github.com/securego/gosec/v2/cmd/gosec@latest" && exit 1)
-	gosec -quiet -exclude=G101,G104,G117,G118,G120,G203,G704 -exclude-dir=examples ./...
+	gosec -quiet -exclude=G101,G104,G117,G118,G203,G704 -exclude-dir=examples ./...
 
 govulncheck: ## Run govulncheck - official Go vulnerability checker
 	@echo "====> $@"

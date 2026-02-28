@@ -43,6 +43,9 @@ func applySecureDefaults(config *Config, logger *slog.Logger) *Config {
 	// Validate ProviderTokenTTL configuration (SSO token forwarding)
 	validateProviderTokenTTLConfig(config, logger)
 
+	// Validate MaxRequestBodySize configuration
+	validateMaxRequestBodySizeConfig(config, logger)
+
 	// Apply time-based defaults
 	applyTimeDefaults(config)
 
@@ -121,6 +124,9 @@ func applyRateLimitDefaults(config *Config) {
 	}
 	if config.MaxScopeLength == 0 {
 		config.MaxScopeLength = 1000 // 1000 characters
+	}
+	if config.MaxRequestBodySize <= 0 {
+		config.MaxRequestBodySize = 1 << 20 // 1 MiB
 	}
 }
 
@@ -577,6 +583,19 @@ func validateProviderTokenTTLConfig(config *Config, logger *slog.Logger) {
 
 	logger.Debug("ProviderTokenTTL configuration validated",
 		"value_seconds", config.ProviderTokenTTL)
+}
+
+// validateMaxRequestBodySizeConfig validates MaxRequestBodySize for invalid values.
+// Negative values would cause http.MaxBytesReader to reject ALL requests immediately,
+// so they are corrected to the default with a warning.
+func validateMaxRequestBodySizeConfig(config *Config, logger *slog.Logger) {
+	if config.MaxRequestBodySize < 0 {
+		logger.Warn("CONFIGURATION WARNING: Invalid MaxRequestBodySize corrected",
+			"provided_value", config.MaxRequestBodySize,
+			"corrected_to", 1<<20,
+			"reason", "negative value would reject all requests")
+		config.MaxRequestBodySize = 1 << 20
+	}
 }
 
 // validateTrustedPublicRegistrationSchemes validates and sanitizes TrustedPublicRegistrationSchemes configuration.

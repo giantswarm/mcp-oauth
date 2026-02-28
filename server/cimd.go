@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -220,6 +221,16 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		return nil, 0, fmt.Errorf("metadata URL validation failed: %w", err)
 	}
 
+	// Defense-in-depth: verify the sanitized URL is HTTPS before making the request.
+	// This check is redundant with validateAndSanitizeMetadataURL but serves two purposes:
+	//  1. Guards against regressions in the validation function
+	//  2. Satisfies CodeQL's SSRF barrier guard analysis (CWE-918), which requires
+	//     a url.Parse + scheme check in the same scope as the HTTP request
+	if verifyURL, parseErr := url.Parse(sanitizedURL); parseErr != nil || verifyURL.Scheme != SchemeHTTPS {
+		s.recordCIMDFetchMetric(ctx, "blocked", fetchStart)
+		return nil, 0, fmt.Errorf("post-validation URL verification failed for %s", clientID)
+	}
+
 	timeout := s.calculateFetchTimeout(ctx)
 	client := s.createMetadataHTTPClient(ctx, timeout, allowPrivateIP)
 
@@ -245,6 +256,16 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		}
 	}()
 
+	metadata, suggestedTTL, err := s.processMetadataResponse(ctx, resp, clientID, fetchStart)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return metadata, suggestedTTL, nil
+}
+
+// processMetadataResponse validates, parses, and processes a CIMD HTTP response.
+func (s *Server) processMetadataResponse(ctx context.Context, resp *http.Response, clientID string, fetchStart time.Time) (*ClientMetadata, time.Duration, error) {
 	if resp.StatusCode != http.StatusOK {
 		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
 		s.logMetadataFetchEvent("client_metadata_fetch_failed", clientID, map[string]any{
@@ -254,13 +275,11 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		return nil, 0, fmt.Errorf("metadata fetch returned HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
-	// SECURITY: Strict Content-Type validation
 	if err := validateResponseContentType(resp); err != nil {
 		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
 		return nil, 0, err
 	}
 
-	// SECURITY: Read and validate response body with size limit
 	const maxMetadataSize int64 = 1 * 1024 * 1024 // 1MB
 	bodyBytes, err := readAndValidateResponseBody(resp, maxMetadataSize)
 	if err != nil {
@@ -268,36 +287,21 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		return nil, 0, err
 	}
 
-	// Parse JSON response
 	var metadata ClientMetadata
 	if err := json.Unmarshal(bodyBytes, &metadata); err != nil {
 		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
 		return nil, 0, fmt.Errorf("failed to parse metadata JSON: %w", err)
 	}
 
-	// Validate fetched metadata for security issues
 	if err := s.validateFetchedClientMetadata(&metadata, clientID); err != nil {
 		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
 		return nil, 0, err
 	}
 
-	// Set defaults per OAuth 2.0 spec if not specified
 	setClientMetadataDefaults(&metadata)
 
-	// Parse Cache-Control header for suggested TTL
-	// Per HTTP caching spec, max-age directive suggests how long to cache the response
-	var suggestedTTL time.Duration
-	if cacheControl := resp.Header.Get("Cache-Control"); cacheControl != "" {
-		if maxAge := parseCacheControlMaxAge(cacheControl); maxAge > 0 {
-			suggestedTTL = time.Duration(maxAge) * time.Second
-			s.Logger.Debug("Parsed Cache-Control max-age",
-				"client_id", clientID,
-				"max_age_seconds", maxAge,
-				"suggested_ttl", suggestedTTL)
-		}
-	}
+	suggestedTTL := parseSuggestedTTL(resp, clientID, s.Logger)
 
-	// Log successful fetch
 	s.logMetadataFetchEvent("client_metadata_fetched", clientID, map[string]any{
 		"client_name":     metadata.ClientName,
 		"redirect_count":  len(metadata.RedirectURIs),
@@ -314,6 +318,24 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		"cache_ttl", suggestedTTL)
 
 	return &metadata, suggestedTTL, nil
+}
+
+// parseSuggestedTTL extracts the suggested cache TTL from Cache-Control headers.
+func parseSuggestedTTL(resp *http.Response, clientID string, logger *slog.Logger) time.Duration {
+	cacheControl := resp.Header.Get("Cache-Control")
+	if cacheControl == "" {
+		return 0
+	}
+	maxAge := parseCacheControlMaxAge(cacheControl)
+	if maxAge <= 0 {
+		return 0
+	}
+	ttl := time.Duration(maxAge) * time.Second
+	logger.Debug("Parsed Cache-Control max-age",
+		"client_id", clientID,
+		"max_age_seconds", maxAge,
+		"suggested_ttl", ttl)
+	return ttl
 }
 
 // validateResponseContentType validates the Content-Type header for JSON responses

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"log/slog"
@@ -1334,6 +1335,8 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 
 // ServeToken handles the OAuth token endpoint
 func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -1342,13 +1345,19 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 	// Set CORS headers for browser-based clients
 	h.setCORSHeaders(w, r)
 
-	// Parse form data
+	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config.MaxRequestBodySize)
 	if err := r.ParseForm(); err != nil {
+		if isMaxBytesError(err) {
+			h.recordHTTPMetrics("token", http.MethodPost, http.StatusRequestEntityTooLarge, startTime)
+			h.writeError(w, ErrorCodeInvalidRequest, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		h.recordHTTPMetrics("token", http.MethodPost, http.StatusBadRequest, startTime)
 		h.writeError(w, ErrorCodeInvalidRequest, "Failed to parse request", http.StatusBadRequest)
 		return
 	}
 
-	grantType := r.FormValue("grant_type")
+	grantType := r.Form.Get("grant_type")
 
 	switch grantType {
 	case "authorization_code":
@@ -1373,12 +1382,12 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
-	// Parse parameters
-	code := r.FormValue("code")
-	clientID := r.FormValue("client_id")
-	redirectURI := r.FormValue("redirect_uri")
-	resource := r.FormValue("resource") // RFC 8707: Target resource server identifier
-	codeVerifier := r.FormValue("code_verifier")
+	// Read from already-parsed form (ParseForm called by ServeToken)
+	code := r.Form.Get("code")
+	clientID := r.Form.Get("client_id")
+	redirectURI := r.Form.Get("redirect_uri")
+	resource := r.Form.Get("resource") // RFC 8707: Target resource server identifier
+	codeVerifier := r.Form.Get("code_verifier")
 
 	if code == "" {
 		h.recordHTTPMetrics("token", http.MethodPost, http.StatusBadRequest, startTime)
@@ -1450,9 +1459,9 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
-	// Parse parameters
-	refreshToken := r.FormValue("refresh_token")
-	clientID := r.FormValue("client_id")
+	// Read from already-parsed form (ParseForm called by ServeToken)
+	refreshToken := r.Form.Get("refresh_token")
+	clientID := r.Form.Get("client_id")
 
 	if refreshToken == "" {
 		h.recordHTTPMetrics("token", http.MethodPost, http.StatusBadRequest, startTime)
@@ -1597,8 +1606,15 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
-	// Parse form data
+	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config.MaxRequestBodySize)
 	if err := r.ParseForm(); err != nil {
+		if isMaxBytesError(err) {
+			h.recordHTTPMetrics("revoke", http.MethodPost, http.StatusRequestEntityTooLarge, startTime)
+			instrumentation.RecordError(span, err)
+			instrumentation.SetSpanError(span, "request body too large")
+			h.writeError(w, ErrorCodeInvalidRequest, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		h.recordHTTPMetrics("revoke", http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "parse form failed")
@@ -1606,8 +1622,8 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token := r.FormValue("token")
-	clientID := r.FormValue("client_id")
+	token := r.Form.Get("token")
+	clientID := r.Form.Get("client_id")
 
 	if token == "" {
 		h.recordHTTPMetrics("revoke", http.MethodPost, http.StatusBadRequest, startTime)
@@ -1676,8 +1692,15 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config.MaxRequestBodySize)
+
 	req, err := h.parseAndValidateRegistrationRequest(w, r, clientIP)
 	if err != nil {
+		if isMaxBytesError(err) {
+			h.recordHTTPMetrics("register", http.MethodPost, http.StatusRequestEntityTooLarge, startTime)
+			instrumentation.RecordError(span, err)
+			instrumentation.SetSpanError(span, "request body too large")
+		}
 		return
 	}
 
@@ -1718,6 +1741,10 @@ func (h *Handler) startRegistrationSpan(r *http.Request) (context.Context, trace
 func (h *Handler) parseAndValidateRegistrationRequest(w http.ResponseWriter, r *http.Request, clientIP string) (*clientRegistrationRequest, error) {
 	var req clientRegistrationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if isMaxBytesError(err) {
+			h.writeError(w, ErrorCodeInvalidRequest, "Request body too large", http.StatusRequestEntityTooLarge)
+			return nil, err
+		}
 		h.writeError(w, ErrorCodeInvalidRequest, "Invalid JSON", http.StatusBadRequest)
 		return nil, err
 	}
@@ -2097,6 +2124,8 @@ func (h *Handler) formatWWWAuthenticate(scope, errCode, errorDesc string) string
 // This allows resource servers to validate access tokens
 // Security: Requires client authentication to prevent token scanning attacks
 func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -2105,12 +2134,19 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 	h.setCORSHeaders(w, r)
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
+	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config.MaxRequestBodySize)
 	if err := r.ParseForm(); err != nil {
+		if isMaxBytesError(err) {
+			h.recordHTTPMetrics("introspect", http.MethodPost, http.StatusRequestEntityTooLarge, startTime)
+			h.writeError(w, ErrorCodeInvalidRequest, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		h.recordHTTPMetrics("introspect", http.MethodPost, http.StatusBadRequest, startTime)
 		h.writeError(w, ErrorCodeInvalidRequest, "Failed to parse request", http.StatusBadRequest)
 		return
 	}
 
-	token := r.FormValue("token")
+	token := r.Form.Get("token")
 	if token == "" {
 		h.writeError(w, ErrorCodeInvalidRequest, "token parameter is required", http.StatusBadRequest)
 		return
@@ -2149,7 +2185,7 @@ func (h *Handler) authenticateIntrospectionClient(r *http.Request, clientIP stri
 	}
 
 	// No Basic Auth - check for client_id in form (but we still reject without credentials)
-	clientID := r.FormValue("client_id")
+	clientID := r.Form.Get("client_id")
 	if clientID == "" {
 		h.logger.Warn("Token introspection rejected: missing client authentication", "ip", clientIP)
 		if h.server.Auditor != nil {
@@ -2760,4 +2796,11 @@ func parseOIDCOptions(query url.Values) *providers.AuthorizationURLOptions {
 		MaxAge:      maxAge,
 		ACRValues:   acrValues,
 	}
+}
+
+// isMaxBytesError reports whether err was caused by the request body
+// exceeding the http.MaxBytesReader limit.
+func isMaxBytesError(err error) bool {
+	var maxBytesErr *http.MaxBytesError
+	return errors.As(err, &maxBytesErr)
 }

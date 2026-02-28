@@ -12,24 +12,26 @@ import (
 
 func TestApplyTimeDefaults(t *testing.T) {
 	tests := []struct {
-		name                      string
-		input                     *Config
-		expectedAuthCodeTTL       int64
-		expectedAccessTokenTTL    int64
-		expectedRefreshTokenTTL   int64
-		expectedTrustedProxyCount int
-		expectedClockSkewGrace    int64
-		expectedMaxClientsPerIP   int
+		name                       string
+		input                      *Config
+		expectedAuthCodeTTL        int64
+		expectedAccessTokenTTL     int64
+		expectedRefreshTokenTTL    int64
+		expectedTrustedProxyCount  int
+		expectedClockSkewGrace     int64
+		expectedMaxClientsPerIP    int
+		expectedMaxRequestBodySize int64
 	}{
 		{
-			name:                      "all zeros should get defaults",
-			input:                     &Config{},
-			expectedAuthCodeTTL:       600,
-			expectedAccessTokenTTL:    3600,
-			expectedRefreshTokenTTL:   7776000,
-			expectedTrustedProxyCount: 1,
-			expectedClockSkewGrace:    5,
-			expectedMaxClientsPerIP:   10,
+			name:                       "all zeros should get defaults",
+			input:                      &Config{},
+			expectedAuthCodeTTL:        600,
+			expectedAccessTokenTTL:     3600,
+			expectedRefreshTokenTTL:    7776000,
+			expectedTrustedProxyCount:  1,
+			expectedClockSkewGrace:     5,
+			expectedMaxClientsPerIP:    10,
+			expectedMaxRequestBodySize: 1 << 20,
 		},
 		{
 			name: "custom values should be preserved",
@@ -40,13 +42,15 @@ func TestApplyTimeDefaults(t *testing.T) {
 				TrustedProxyCount:    2,
 				ClockSkewGracePeriod: 10,
 				MaxClientsPerIP:      20,
+				MaxRequestBodySize:   512,
 			},
-			expectedAuthCodeTTL:       300,
-			expectedAccessTokenTTL:    1800,
-			expectedRefreshTokenTTL:   86400,
-			expectedTrustedProxyCount: 2,
-			expectedClockSkewGrace:    10,
-			expectedMaxClientsPerIP:   20,
+			expectedAuthCodeTTL:        300,
+			expectedAccessTokenTTL:     1800,
+			expectedRefreshTokenTTL:    86400,
+			expectedTrustedProxyCount:  2,
+			expectedClockSkewGrace:     10,
+			expectedMaxClientsPerIP:    20,
+			expectedMaxRequestBodySize: 512,
 		},
 		{
 			name: "partial custom values",
@@ -55,12 +59,26 @@ func TestApplyTimeDefaults(t *testing.T) {
 				// AccessTokenTTL should get default
 				RefreshTokenTTL: 172800,
 			},
-			expectedAuthCodeTTL:       450,
-			expectedAccessTokenTTL:    3600,
-			expectedRefreshTokenTTL:   172800,
-			expectedTrustedProxyCount: 1,
-			expectedClockSkewGrace:    5,
-			expectedMaxClientsPerIP:   10,
+			expectedAuthCodeTTL:        450,
+			expectedAccessTokenTTL:     3600,
+			expectedRefreshTokenTTL:    172800,
+			expectedTrustedProxyCount:  1,
+			expectedClockSkewGrace:     5,
+			expectedMaxClientsPerIP:    10,
+			expectedMaxRequestBodySize: 1 << 20,
+		},
+		{
+			name: "negative MaxRequestBodySize should get default",
+			input: &Config{
+				MaxRequestBodySize: -1,
+			},
+			expectedAuthCodeTTL:        600,
+			expectedAccessTokenTTL:     3600,
+			expectedRefreshTokenTTL:    7776000,
+			expectedTrustedProxyCount:  1,
+			expectedClockSkewGrace:     5,
+			expectedMaxClientsPerIP:    10,
+			expectedMaxRequestBodySize: 1 << 20,
 		},
 	}
 
@@ -85,6 +103,9 @@ func TestApplyTimeDefaults(t *testing.T) {
 			}
 			if tt.input.MaxClientsPerIP != tt.expectedMaxClientsPerIP {
 				t.Errorf("MaxClientsPerIP = %d, want %d", tt.input.MaxClientsPerIP, tt.expectedMaxClientsPerIP)
+			}
+			if tt.input.MaxRequestBodySize != tt.expectedMaxRequestBodySize {
+				t.Errorf("MaxRequestBodySize = %d, want %d", tt.input.MaxRequestBodySize, tt.expectedMaxRequestBodySize)
 			}
 		})
 	}
