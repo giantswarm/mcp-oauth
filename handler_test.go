@@ -2637,6 +2637,116 @@ func TestHandler_ServeCallback_StateLength(t *testing.T) {
 	}
 }
 
+func setupTestHandlerWithAllowNoState(t *testing.T) (*Handler, *memory.Store) {
+	t.Helper()
+
+	store := memory.New()
+	provider := mock.NewProvider()
+
+	config := &server.Config{
+		Issuer:                testIssuer,
+		AllowNoStateParameter: true,
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+	return handler, store
+}
+
+func TestHandler_ServeAuthorization_ShortStateWithAllowNoState(t *testing.T) {
+	ctx := context.Background()
+
+	handler, store := setupTestHandlerWithAllowNoState(t)
+	defer store.Stop()
+
+	client, _, err := handler.server.RegisterClient(ctx,
+		"Test Client",
+		"confidential",
+		"",
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		state      string
+		wantStatus int
+	}{
+		{
+			name:       "short state (1 char) accepted with AllowNoStateParameter=true",
+			state:      "x",
+			wantStatus: http.StatusFound,
+		},
+		{
+			name:       "short state (10 chars) accepted with AllowNoStateParameter=true",
+			state:      "0123456789",
+			wantStatus: http.StatusFound,
+		},
+		{
+			name:       "empty state accepted with AllowNoStateParameter=true",
+			state:      "",
+			wantStatus: http.StatusFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			url := fmt.Sprintf("/authorize?client_id=%s&redirect_uri=https://example.com/callback&scope=openid&state=%s&code_challenge=test-challenge&code_challenge_method=S256",
+				client.ClientID, tt.state)
+			req := httptest.NewRequest(http.MethodGet, url, nil)
+			w := httptest.NewRecorder()
+
+			handler.ServeAuthorization(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+		})
+	}
+}
+
+func TestHandler_ServeCallback_ShortProviderStateAlwaysRejected(t *testing.T) {
+	handler, store := setupTestHandlerWithAllowNoState(t)
+	defer store.Stop()
+
+	tests := []struct {
+		name  string
+		state string
+	}{
+		{
+			name:  "short provider state (1 char) rejected even with AllowNoStateParameter=true",
+			state: "x",
+		},
+		{
+			name:  "short provider state (10 chars) rejected even with AllowNoStateParameter=true",
+			state: "0123456789",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			url := fmt.Sprintf("/oauth/callback?state=%s&code=test-code", tt.state)
+			req := httptest.NewRequest(http.MethodGet, url, nil)
+			w := httptest.NewRecorder()
+
+			handler.ServeCallback(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("short provider state should be rejected at validation layer, got status %d, want %d", w.Code, http.StatusBadRequest)
+			}
+		})
+	}
+}
+
 func TestHandler_ServeToken_AuthorizationCode(t *testing.T) {
 	ctx := context.Background()
 	handler, store := setupTestHandler(t)

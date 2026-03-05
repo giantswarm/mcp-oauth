@@ -126,7 +126,7 @@ clientState := request.State
 
 **Purpose**: Protects MCP client against CSRF attacks
 
-**Validation**: `server/validation.go` - `validateStateParameter()`
+**Validation**: `server/validation.go` - `validateClientStateParameter()`
 
 ### Provider State (Layer 2)
 

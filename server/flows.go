@@ -793,7 +793,7 @@ func (s *Server) rotateRefreshToken(ctx context.Context, oldRefreshToken, userID
 // authOpts contains optional OIDC parameters (prompt, login_hint, id_token_hint) for upstream IdP forwarding
 func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectURI, scope, resource, codeChallenge, codeChallengeMethod, clientState string, authOpts *providers.AuthorizationURLOptions) (string, error) {
 	// CRITICAL SECURITY: Validate state parameter from client for CSRF protection
-	if err := s.validateStateParameter(clientState); err != nil {
+	if err := s.validateClientStateParameter(clientState); err != nil {
 		s.logAuthFailure("", clientID, "invalid_state_parameter")
 		return "", fmt.Errorf("%w (OAuth 2.0 Security BCP)", err)
 	}
@@ -926,7 +926,7 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 
 // validateAndRetrieveAuthState validates the provider state and retrieves the authorization state.
 func (s *Server) validateAndRetrieveAuthState(ctx context.Context, providerState string) (*storage.AuthorizationState, error) {
-	if err := s.validateStateParameter(providerState); err != nil {
+	if err := s.validateProviderStateParameter(providerState); err != nil {
 		s.logInvalidProviderCallback("invalid_state_format")
 		return nil, fmt.Errorf("invalid state parameter: %w", err)
 	}
