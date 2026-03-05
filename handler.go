@@ -1201,7 +1201,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, ErrorCodeInvalidRequest, "state parameter is required for CSRF protection", http.StatusBadRequest)
 		return
 	}
-	if state != "" && len(state) < MinStateLength {
+	if state != "" && len(state) < MinStateLength && !h.server.Config.AllowNoStateParameter {
 		h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "state too short")
 		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at least %d characters for security", MinStateLength), http.StatusBadRequest)
@@ -1281,7 +1281,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, ErrorCodeInvalidRequest, "state and code are required", http.StatusBadRequest)
 		return
 	}
-	if len(state) < MinStateLength {
+	if len(state) < MinStateLength && !h.server.Config.AllowNoStateParameter {
 		h.recordHTTPMetrics("callback", http.MethodGet, http.StatusBadRequest, startTime)
 		h.recordCallbackProcessed("", false)
 		instrumentation.SetSpanError(span, "state too short")

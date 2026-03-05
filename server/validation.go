@@ -287,7 +287,7 @@ func (s *Server) validateStateParameter(state string) error {
 		return fmt.Errorf("state parameter is required for CSRF protection")
 	}
 
-	if len(state) < s.Config.MinStateLength {
+	if len(state) < s.Config.MinStateLength && !s.Config.AllowNoStateParameter {
 		return fmt.Errorf("state parameter must be at least %d characters for security", s.Config.MinStateLength)
 	}
 

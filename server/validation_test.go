@@ -917,7 +917,7 @@ func TestValidateStateParameter_AllowNoState(t *testing.T) {
 		}
 	})
 
-	t.Run("short non-empty state still rejected when AllowNoStateParameter=true", func(t *testing.T) {
+	t.Run("short non-empty state accepted when AllowNoStateParameter=true", func(t *testing.T) {
 		setup := newTestServerSetup(false)
 		srv, err := setup.createServer(&Config{
 			RequirePKCE:           true,
@@ -927,10 +927,26 @@ func TestValidateStateParameter_AllowNoState(t *testing.T) {
 			t.Fatalf("Failed to create server: %v", err)
 		}
 
-		// Short state (below minimum) should still be rejected
+		// If we allow no state at all (least secure), short state (more secure than none) should also be accepted
+		err = srv.validateStateParameter("short")
+		if err != nil {
+			t.Errorf("Expected no error for short state when AllowNoStateParameter=true, got: %v", err)
+		}
+	})
+
+	t.Run("short non-empty state rejected when AllowNoStateParameter=false", func(t *testing.T) {
+		setup := newTestServerSetup(false)
+		srv, err := setup.createServer(&Config{
+			RequirePKCE:           true,
+			AllowNoStateParameter: false,
+		})
+		if err != nil {
+			t.Fatalf("Failed to create server: %v", err)
+		}
+
 		err = srv.validateStateParameter("short")
 		if err == nil {
-			t.Error("Expected error for short state even when AllowNoStateParameter=true")
+			t.Error("Expected error for short state when AllowNoStateParameter=false")
 		}
 	})
 }

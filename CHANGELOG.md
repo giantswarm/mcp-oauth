@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **AllowNoStateParameter should also accept short state parameters (#225)**
+  - **Bug**: When `AllowNoStateParameter=true`, the server correctly accepted empty state parameters but still rejected short (non-empty, < 32 chars) state parameters. This caused authentication failures for clients like VS Code's MCP client that send state parameters shorter than 32 characters.
+  - **Root Cause**: The state length validation in `handler.go` (ServeAuthorization and ServeCallback) and `server/validation.go` (validateStateParameter) did not check `AllowNoStateParameter` before rejecting short states. The logic was inconsistent: allowing no state (least secure) while rejecting short state (more secure than none).
+  - **Fix**: Added `AllowNoStateParameter` checks to all three short-state rejection paths so that when the flag is enabled, short state parameters are accepted alongside empty ones.
+  - **Affected Components**: `handler.go`, `server/validation.go`
 - **ValidateGroups limit of 100 is too low for enterprise environments (#218)**
   - **Bug**: Users in enterprise environments (Active Directory, Azure AD, LDAP) with more than 100 OIDC groups were unable to authenticate. The `ValidateGroups` function rejected the entire authentication flow when the groups claim exceeded 100 items.
   - **Root Cause**: `ValidateGroups` used a hardcoded maximum of 100 groups, which is insufficient for enterprise IdP setups where users commonly have hundreds of group memberships.
