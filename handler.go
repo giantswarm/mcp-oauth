@@ -1196,12 +1196,14 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	// Input validation at HTTP layer to return proper status codes
 	// Can be disabled for clients that don't support state (e.g., some MCP clients)
 	if state == "" && !h.server.Config.AllowNoStateParameter {
+		h.logger.Warn("Authorization request rejected: state parameter missing", "client_id", clientID)
 		h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "state missing")
 		h.writeError(w, ErrorCodeInvalidRequest, "state parameter is required for CSRF protection", http.StatusBadRequest)
 		return
 	}
 	if state != "" && len(state) < MinStateLength && !h.server.Config.AllowNoStateParameter {
+		h.logger.Warn("Authorization request rejected: state parameter too short", "state_length", len(state), "min_required", MinStateLength, "client_id", clientID)
 		h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "state too short")
 		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at least %d characters for security", MinStateLength), http.StatusBadRequest)
@@ -1282,6 +1284,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(state) < MinStateLength && !h.server.Config.AllowNoStateParameter {
+		h.logger.Warn("Callback rejected: state parameter too short", "state_length", len(state), "min_required", MinStateLength)
 		h.recordHTTPMetrics("callback", http.MethodGet, http.StatusBadRequest, startTime)
 		h.recordCallbackProcessed("", false)
 		instrumentation.SetSpanError(span, "state too short")
