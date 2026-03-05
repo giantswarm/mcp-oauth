@@ -2719,19 +2719,16 @@ func TestHandler_ServeCallback_ShortStateWithAllowNoState(t *testing.T) {
 	defer store.Stop()
 
 	tests := []struct {
-		name       string
-		state      string
-		wantStatus int
+		name  string
+		state string
 	}{
 		{
-			name:       "short state (1 char) passes length check with AllowNoStateParameter=true",
-			state:      "x",
-			wantStatus: http.StatusInternalServerError, // passes length check, fails at state lookup
+			name:  "short state (1 char) passes length check with AllowNoStateParameter=true",
+			state: "x",
 		},
 		{
-			name:       "short state (10 chars) passes length check with AllowNoStateParameter=true",
-			state:      "0123456789",
-			wantStatus: http.StatusInternalServerError, // passes length check, fails at state lookup
+			name:  "short state (10 chars) passes length check with AllowNoStateParameter=true",
+			state: "0123456789",
 		},
 	}
 
@@ -2743,8 +2740,8 @@ func TestHandler_ServeCallback_ShortStateWithAllowNoState(t *testing.T) {
 
 			handler.ServeCallback(w, req)
 
-			if w.Code != tt.wantStatus {
-				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			if w.Code == http.StatusBadRequest {
+				t.Errorf("short state should not be rejected at validation layer, got status %d", w.Code)
 			}
 		})
 	}

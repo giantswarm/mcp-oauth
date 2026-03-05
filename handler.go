@@ -1196,7 +1196,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	// Input validation at HTTP layer to return proper status codes
 	// Can be disabled for clients that don't support state (e.g., some MCP clients)
 	if state == "" && !h.server.Config.AllowNoStateParameter {
-		h.logger.Warn("Authorization request rejected: state parameter missing", "client_id", clientID)
+		h.logger.Info("Authorization request rejected: state parameter missing", "client_id", clientID)
 		h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "state missing")
 		h.writeError(w, ErrorCodeInvalidRequest, "state parameter is required for CSRF protection", http.StatusBadRequest)
@@ -1276,6 +1276,9 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 
 	// CRITICAL SECURITY: Validate state and code parameters
 	// Input validation at HTTP layer to return proper status codes
+	// Note: state here is the server-generated provider state (not the client state).
+	// It must always be present regardless of AllowNoStateParameter, which only
+	// controls the client-facing state in the authorization request.
 	if state == "" || code == "" {
 		h.recordHTTPMetrics("callback", http.MethodGet, http.StatusBadRequest, startTime)
 		h.recordCallbackProcessed("", false)
