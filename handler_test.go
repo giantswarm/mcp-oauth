@@ -2714,7 +2714,7 @@ func TestHandler_ServeAuthorization_ShortStateWithAllowNoState(t *testing.T) {
 	}
 }
 
-func TestHandler_ServeCallback_ShortStateWithAllowNoState(t *testing.T) {
+func TestHandler_ServeCallback_ShortProviderStateAlwaysRejected(t *testing.T) {
 	handler, store := setupTestHandlerWithAllowNoState(t)
 	defer store.Stop()
 
@@ -2723,11 +2723,11 @@ func TestHandler_ServeCallback_ShortStateWithAllowNoState(t *testing.T) {
 		state string
 	}{
 		{
-			name:  "short state (1 char) passes length check with AllowNoStateParameter=true",
+			name:  "short provider state (1 char) rejected even with AllowNoStateParameter=true",
 			state: "x",
 		},
 		{
-			name:  "short state (10 chars) passes length check with AllowNoStateParameter=true",
+			name:  "short provider state (10 chars) rejected even with AllowNoStateParameter=true",
 			state: "0123456789",
 		},
 	}
@@ -2740,8 +2740,8 @@ func TestHandler_ServeCallback_ShortStateWithAllowNoState(t *testing.T) {
 
 			handler.ServeCallback(w, req)
 
-			if w.Code == http.StatusBadRequest {
-				t.Errorf("short state should not be rejected at validation layer, got status %d", w.Code)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("short provider state should be rejected at validation layer, got status %d, want %d", w.Code, http.StatusBadRequest)
 			}
 		})
 	}

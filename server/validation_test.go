@@ -473,7 +473,7 @@ func TestHTTPSEnforcement_WithPort(t *testing.T) {
 	}
 }
 
-func TestValidateStateParameter(t *testing.T) {
+func TestValidateClientStateParameter(t *testing.T) {
 	setup := newTestServerSetup(false)
 	srv, err := setup.createServer(&Config{
 		RequirePKCE:    true,
@@ -542,28 +542,28 @@ func TestValidateStateParameter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := srv.validateStateParameter(tt.state)
+			err := srv.validateClientStateParameter(tt.state)
 
 			if tt.wantErr {
 				if err == nil {
-					t.Errorf("validateStateParameter() expected error but got none")
+					t.Errorf("validateClientStateParameter() expected error but got none")
 					return
 				}
 				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
-					t.Errorf("validateStateParameter() error = %v, want error containing %q", err, tt.errMsg)
+					t.Errorf("validateClientStateParameter() error = %v, want error containing %q", err, tt.errMsg)
 				}
 			} else if err != nil {
-				t.Errorf("validateStateParameter() unexpected error = %v", err)
+				t.Errorf("validateClientStateParameter() unexpected error = %v", err)
 			}
 		})
 	}
 }
 
-// TestValidateStateParameter_TimingAttackResistance ensures that state validation
+// TestValidateClientStateParameter_TimingAttackResistance ensures that state validation
 // combined with constant-time comparison provides timing attack resistance.
 // This test verifies that the validation enforces minimum length requirements
 // which is the first line of defense against timing attacks.
-func TestValidateStateParameter_TimingAttackResistance(t *testing.T) {
+func TestValidateClientStateParameter_TimingAttackResistance(t *testing.T) {
 	setup := newTestServerSetup(false)
 	srv, err := setup.createServer(&Config{
 		RequirePKCE:    true,
@@ -573,7 +573,6 @@ func TestValidateStateParameter_TimingAttackResistance(t *testing.T) {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 
-	// Test that very short states (which could be brute-forced quickly) are rejected
 	shortStates := []string{
 		"a",
 		"ab",
@@ -585,14 +584,12 @@ func TestValidateStateParameter_TimingAttackResistance(t *testing.T) {
 	}
 
 	for _, state := range shortStates {
-		err := srv.validateStateParameter(state)
+		err := srv.validateClientStateParameter(state)
 		if err == nil {
-			t.Errorf("validateStateParameter(%q) expected error for short state (len=%d) but got none", state, len(state))
+			t.Errorf("validateClientStateParameter(%q) expected error for short state (len=%d) but got none", state, len(state))
 		}
 	}
 
-	// Test that states meeting minimum length are accepted
-	// This ensures sufficient entropy for CSRF protection and timing attack resistance
 	validStates := []string{
 		strings.Repeat("a", 32),  // Exactly minimum
 		strings.Repeat("b", 43),  // PKCE verifier length
@@ -601,9 +598,9 @@ func TestValidateStateParameter_TimingAttackResistance(t *testing.T) {
 	}
 
 	for _, state := range validStates {
-		err := srv.validateStateParameter(state)
+		err := srv.validateClientStateParameter(state)
 		if err != nil {
-			t.Errorf("validateStateParameter(%q) unexpected error for valid state (len=%d): %v", state[:10]+"...", len(state), err)
+			t.Errorf("validateClientStateParameter(%q) unexpected error for valid state (len=%d): %v", state[:10]+"...", len(state), err)
 		}
 	}
 }
@@ -852,20 +849,20 @@ func TestValidateClientScopes_SecurityScenarios(t *testing.T) {
 	})
 }
 
-// TestValidateStateParameter_AllowNoState tests that empty state is allowed
-// when AllowNoStateParameter is enabled in the server config
-func TestValidateStateParameter_AllowNoState(t *testing.T) {
+// TestValidateClientStateParameter_AllowNoState tests that empty and short
+// client state is allowed when AllowNoStateParameter is enabled.
+func TestValidateClientStateParameter_AllowNoState(t *testing.T) {
 	t.Run("empty state rejected when AllowNoStateParameter=false (default)", func(t *testing.T) {
 		setup := newTestServerSetup(false)
 		srv, err := setup.createServer(&Config{
 			RequirePKCE:           true,
-			AllowNoStateParameter: false, // default
+			AllowNoStateParameter: false,
 		})
 		if err != nil {
 			t.Fatalf("Failed to create server: %v", err)
 		}
 
-		err = srv.validateStateParameter("")
+		err = srv.validateClientStateParameter("")
 		if err == nil {
 			t.Error("Expected error for empty state when AllowNoStateParameter=false")
 		}
@@ -881,7 +878,7 @@ func TestValidateStateParameter_AllowNoState(t *testing.T) {
 			t.Fatalf("Failed to create server: %v", err)
 		}
 
-		err = srv.validateStateParameter("")
+		err = srv.validateClientStateParameter("")
 		if err != nil {
 			t.Errorf("Expected no error for empty state when AllowNoStateParameter=true, got: %v", err)
 		}
@@ -890,7 +887,6 @@ func TestValidateStateParameter_AllowNoState(t *testing.T) {
 	t.Run("valid state works regardless of AllowNoStateParameter setting", func(t *testing.T) {
 		validState := "0123456789012345678901234567890123456789012" // 43 chars
 
-		// With AllowNoStateParameter=false
 		setup1 := newTestServerSetup(false)
 		srv1, err := setup1.createServer(&Config{
 			RequirePKCE:           true,
@@ -899,11 +895,10 @@ func TestValidateStateParameter_AllowNoState(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create server: %v", err)
 		}
-		if err := srv1.validateStateParameter(validState); err != nil {
+		if err := srv1.validateClientStateParameter(validState); err != nil {
 			t.Errorf("Valid state should work with AllowNoStateParameter=false: %v", err)
 		}
 
-		// With AllowNoStateParameter=true
 		setup2 := newTestServerSetup(false)
 		srv2, err := setup2.createServer(&Config{
 			RequirePKCE:           true,
@@ -912,7 +907,7 @@ func TestValidateStateParameter_AllowNoState(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create server: %v", err)
 		}
-		if err := srv2.validateStateParameter(validState); err != nil {
+		if err := srv2.validateClientStateParameter(validState); err != nil {
 			t.Errorf("Valid state should work with AllowNoStateParameter=true: %v", err)
 		}
 	})
@@ -927,8 +922,7 @@ func TestValidateStateParameter_AllowNoState(t *testing.T) {
 			t.Fatalf("Failed to create server: %v", err)
 		}
 
-		// If we allow no state at all (least secure), short state (more secure than none) should also be accepted
-		err = srv.validateStateParameter("short")
+		err = srv.validateClientStateParameter("short")
 		if err != nil {
 			t.Errorf("Expected no error for short state when AllowNoStateParameter=true, got: %v", err)
 		}
@@ -944,9 +938,62 @@ func TestValidateStateParameter_AllowNoState(t *testing.T) {
 			t.Fatalf("Failed to create server: %v", err)
 		}
 
-		err = srv.validateStateParameter("short")
+		err = srv.validateClientStateParameter("short")
 		if err == nil {
 			t.Error("Expected error for short state when AllowNoStateParameter=false")
+		}
+	})
+}
+
+// TestValidateProviderStateParameter tests that provider state validation always
+// enforces minimum length regardless of AllowNoStateParameter.
+func TestValidateProviderStateParameter(t *testing.T) {
+	t.Run("empty provider state always rejected", func(t *testing.T) {
+		setup := newTestServerSetup(false)
+		srv, err := setup.createServer(&Config{
+			RequirePKCE:           true,
+			AllowNoStateParameter: true,
+		})
+		if err != nil {
+			t.Fatalf("Failed to create server: %v", err)
+		}
+
+		err = srv.validateProviderStateParameter("")
+		if err == nil {
+			t.Error("Expected error for empty provider state even with AllowNoStateParameter=true")
+		}
+	})
+
+	t.Run("short provider state rejected even with AllowNoStateParameter=true", func(t *testing.T) {
+		setup := newTestServerSetup(false)
+		srv, err := setup.createServer(&Config{
+			RequirePKCE:           true,
+			AllowNoStateParameter: true,
+		})
+		if err != nil {
+			t.Fatalf("Failed to create server: %v", err)
+		}
+
+		err = srv.validateProviderStateParameter("short")
+		if err == nil {
+			t.Error("Expected error for short provider state even with AllowNoStateParameter=true")
+		}
+	})
+
+	t.Run("valid-length provider state accepted", func(t *testing.T) {
+		setup := newTestServerSetup(false)
+		srv, err := setup.createServer(&Config{
+			RequirePKCE:           true,
+			AllowNoStateParameter: false,
+		})
+		if err != nil {
+			t.Fatalf("Failed to create server: %v", err)
+		}
+
+		validState := "0123456789012345678901234567890123456789012" // 43 chars
+		err = srv.validateProviderStateParameter(validState)
+		if err != nil {
+			t.Errorf("Expected no error for valid-length provider state, got: %v", err)
 		}
 	})
 }
