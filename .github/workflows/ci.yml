@@ -15,10 +15,19 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v6
     
+    - name: Determine Go version from toolchain directive
+      id: go-version
+      run: |
+        version=$(awk '/^toolchain go/ { print substr($2, 3) }' go.mod)
+        if [ -z "$version" ]; then
+          version=$(awk '/^go / { print $2 }' go.mod)
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version-file: 'go.mod'
+        go-version: ${{ steps.go-version.outputs.version }}
 
     - name: Cache Go tools
       uses: actions/cache@v5
@@ -50,10 +59,19 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v6
 
+    - name: Determine Go version from toolchain directive
+      id: go-version
+      run: |
+        version=$(awk '/^toolchain go/ { print substr($2, 3) }' go.mod)
+        if [ -z "$version" ]; then
+          version=$(awk '/^go / { print $2 }' go.mod)
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version-file: 'go.mod'
+        go-version: ${{ steps.go-version.outputs.version }}
 
     - name: Build all examples
       run: make build-examples
