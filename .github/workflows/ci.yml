@@ -18,16 +18,8 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.26'
-    
-    - name: Cache Go modules
-      uses: actions/cache@v5
-      with:
-        path: ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
-    
+        go-version-file: 'go.mod'
+
     - name: Cache Go tools
       uses: actions/cache@v5
       with:
@@ -35,7 +27,7 @@ jobs:
         key: ${{ runner.os }}-go-tools-${{ hashFiles('Makefile.custom.mk') }}
         restore-keys: |
           ${{ runner.os }}-go-tools-
-    
+
     - name: Install analysis tools
       run: make install-analyze-tools
     
@@ -61,7 +53,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.26'
+        go-version-file: 'go.mod'
 
     - name: Build all examples
       run: make build-examples
