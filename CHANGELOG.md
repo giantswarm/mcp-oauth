@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Lower MinStateLength absolute floor from 32 to 24 characters (#228)**
+  - The absolute minimum floor for `MinStateLength` has been lowered from 32 to 24 characters.
+  - 24 characters still provides 144 bits of entropy, exceeding OAuth 2.1's 128-bit minimum recommendation.
+  - This unblocks VS Code web (`vscode.dev`) as an MCP client, which uses 24-character state parameters.
+  - The default `MinStateLength` is also lowered from 32 to 24 to align with the new floor.
+  - The `AllowNoStateParameter` workaround is no longer needed for VS Code web clients.
+
 ### Added
 
 - **Limit HTTP request body size in handler (gosec G120) (#220)**

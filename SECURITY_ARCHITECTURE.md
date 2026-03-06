@@ -980,7 +980,7 @@ done
 - [ ] Set appropriate token lifetimes (shorter = more secure)
 - [ ] Enable refresh token rotation (`AllowRefreshTokenRotation=true`)
 - [ ] Review and test revoked token cleanup
-- [ ] Set `MinStateLength` >= 16 (default)
+- [ ] Set `MinStateLength` >= 24 (default)
 - [ ] Enforce PKCE (`RequirePKCE=true`, default)
 - [ ] Disable plain PKCE (`AllowPKCEPlain=false`, default)
 
