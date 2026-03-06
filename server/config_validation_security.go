@@ -28,7 +28,7 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 		config.RequirePKCE = true
 	}
 	if config.MinStateLength == 0 {
-		config.MinStateLength = 32 // OAuth 2.1: 128+ bits entropy recommended, 32 chars = 192 bits
+		config.MinStateLength = 24 // OAuth 2.1: 128+ bits entropy recommended, 24 chars = 144 bits
 	}
 
 	// Redirect URI security defaults - SECURE BY DEFAULT
@@ -67,9 +67,9 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 
 	// SECURITY: Enforce absolute minimum state length to ensure CSRF protection entropy
 	// OAuth 2.1 recommends at least 128 bits (16 bytes) of entropy
-	// 32 characters provides 192 bits of entropy in base64, which exceeds OAuth 2.1 recommendations
-	// and provides sufficient margin for high-security deployments.
-	const absoluteMinStateLength = 32
+	// 24 characters provides 144 bits of entropy in base64, exceeding OAuth 2.1's 128-bit minimum.
+	// This supports VS Code web (vscode.dev) which uses 24-character state parameters.
+	const absoluteMinStateLength = 24
 	if config.MinStateLength < absoluteMinStateLength {
 		logger.Warn("SECURITY WARNING: MinStateLength below recommended minimum, enforcing floor",
 			"configured", config.MinStateLength,

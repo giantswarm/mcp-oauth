@@ -83,8 +83,9 @@ const (
 	// MinStateLength is the minimum length for state parameters to prevent
 	// timing attacks and ensure sufficient entropy for CSRF protection.
 	// OAuth 2.1 recommends at least 128 bits (16 bytes) of entropy.
+	// 24 characters provides 144 bits of entropy in base64, exceeding the 128-bit minimum.
 	// This value is used as the default for server.Config.MinStateLength.
-	MinStateLength = 32
+	MinStateLength = 24
 )
 
 // Redirect URI validation constants

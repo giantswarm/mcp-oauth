@@ -499,22 +499,32 @@ func TestValidateClientStateParameter(t *testing.T) {
 			name:    "state too short - 1 character",
 			state:   "x",
 			wantErr: true,
-			errMsg:  "state parameter must be at least 32 characters for security",
+			errMsg:  "state parameter must be at least 24 characters for security",
 		},
 		{
 			name:    "state too short - 10 characters",
 			state:   "0123456789",
 			wantErr: true,
-			errMsg:  "state parameter must be at least 32 characters for security",
+			errMsg:  "state parameter must be at least 24 characters for security",
 		},
 		{
-			name:    "state too short - 31 characters (just under minimum)",
-			state:   "0123456789012345678901234567890",
+			name:    "state too short - 23 characters (just under minimum)",
+			state:   "01234567890123456789012",
 			wantErr: true,
-			errMsg:  "state parameter must be at least 32 characters for security",
+			errMsg:  "state parameter must be at least 24 characters for security",
 		},
 		{
-			name:    "state exactly minimum length - 32 characters",
+			name:    "state exactly minimum length - 24 characters",
+			state:   "012345678901234567890123",
+			wantErr: false,
+		},
+		{
+			name:    "state 31 characters (above minimum)",
+			state:   "0123456789012345678901234567890",
+			wantErr: false,
+		},
+		{
+			name:    "state above minimum - 32 characters",
 			state:   "01234567890123456789012345678901",
 			wantErr: false,
 		},
@@ -529,12 +539,12 @@ func TestValidateClientStateParameter(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "state with special characters and minimum length",
+			name:    "state with special characters above minimum length",
 			state:   "abcdef-GHIJKL_mnopqr.stuvwxyz",
-			wantErr: true, // This is 31 chars
+			wantErr: false, // 29 chars, above 24-char minimum
 		},
 		{
-			name:    "state with base64url characters and minimum length",
+			name:    "state with base64url characters and above minimum length",
 			state:   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef", // 32 chars
 			wantErr: false,
 		},
@@ -591,10 +601,11 @@ func TestValidateClientStateParameter_TimingAttackResistance(t *testing.T) {
 	}
 
 	validStates := []string{
-		strings.Repeat("a", 32),  // Exactly minimum
-		strings.Repeat("b", 43),  // PKCE verifier length
-		strings.Repeat("c", 64),  // Double minimum
-		strings.Repeat("d", 128), // Very long
+		strings.Repeat("a", 24),  // Exactly minimum
+		strings.Repeat("b", 32),  // Previous default
+		strings.Repeat("c", 43),  // PKCE verifier length
+		strings.Repeat("d", 64),  // Well above minimum
+		strings.Repeat("e", 128), // Very long
 	}
 
 	for _, state := range validStates {
