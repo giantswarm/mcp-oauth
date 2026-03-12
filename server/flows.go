@@ -1487,12 +1487,7 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP stri
 
 	// Look up family metadata BEFORE deleting the token, since DeleteToken may
 	// remove data that GetRefreshTokenFamily depends on in some store implementations.
-	var family *storage.RefreshTokenFamilyMetadata
-	if familyStore, ok := s.tokenStore.(storage.RefreshTokenFamilyStore); ok {
-		if f, err := familyStore.GetRefreshTokenFamily(ctx, token); err == nil && f != nil {
-			family = f
-		}
-	}
+	family := s.lookupRefreshTokenFamily(ctx, token)
 
 	// Delete locally
 	if err := s.tokenStore.DeleteToken(ctx, token); err != nil {
@@ -1500,30 +1495,7 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP stri
 	}
 	s.unregisterTokenPairIfPresent(token)
 
-	// If this token belongs to a non-revoked refresh token family, revoke the entire family.
-	// This ensures that all rotated tokens in the chain become invalid on explicit revocation.
-	if family != nil && !family.Revoked {
-		if familyStore, ok := s.tokenStore.(storage.RefreshTokenFamilyStore); ok {
-			if err := familyStore.RevokeRefreshTokenFamily(ctx, family.FamilyID); err != nil {
-				s.Logger.Warn("Failed to revoke refresh token family", "family_id", family.FamilyID, "error", err)
-			} else {
-				s.Logger.Info("Revoked refresh token family on explicit revocation",
-					"family_id", family.FamilyID, "client_id", clientID, "ip", clientIP)
-				if s.Auditor != nil {
-					s.Auditor.LogEvent(security.Event{
-						Type:     security.EventRefreshTokenFamilyRevoked,
-						UserID:   family.UserID,
-						ClientID: clientID,
-						Details: map[string]any{
-							"family_id": family.FamilyID,
-							"reason":    "explicit_revocation",
-							"ip":        clientIP,
-						},
-					})
-				}
-			}
-		}
-	}
+	s.revokeTokenFamilyIfNeeded(ctx, family, clientID, clientIP)
 
 	if s.Auditor != nil {
 		s.Auditor.LogTokenRevoked("", clientID, clientIP, "access_or_refresh")
@@ -1531,6 +1503,46 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP stri
 
 	s.Logger.Info("Token revoked", "client_id", clientID, "ip", clientIP)
 	return nil
+}
+
+func (s *Server) lookupRefreshTokenFamily(ctx context.Context, token string) *storage.RefreshTokenFamilyMetadata {
+	familyStore, ok := s.tokenStore.(storage.RefreshTokenFamilyStore)
+	if !ok {
+		return nil
+	}
+	f, err := familyStore.GetRefreshTokenFamily(ctx, token)
+	if err != nil || f == nil {
+		return nil
+	}
+	return f
+}
+
+func (s *Server) revokeTokenFamilyIfNeeded(ctx context.Context, family *storage.RefreshTokenFamilyMetadata, clientID, clientIP string) {
+	if family == nil || family.Revoked {
+		return
+	}
+	familyStore, ok := s.tokenStore.(storage.RefreshTokenFamilyStore)
+	if !ok {
+		return
+	}
+	if err := familyStore.RevokeRefreshTokenFamily(ctx, family.FamilyID); err != nil {
+		s.Logger.Warn("Failed to revoke refresh token family", "family_id", family.FamilyID, "error", err)
+		return
+	}
+	s.Logger.Info("Revoked refresh token family on explicit revocation",
+		"family_id", family.FamilyID, "client_id", clientID, "ip", clientIP)
+	if s.Auditor != nil {
+		s.Auditor.LogEvent(security.Event{
+			Type:     security.EventRefreshTokenFamilyRevoked,
+			UserID:   family.UserID,
+			ClientID: clientID,
+			Details: map[string]any{
+				"family_id": family.FamilyID,
+				"reason":    "explicit_revocation",
+				"ip":        clientIP,
+			},
+		})
+	}
 }
 
 // RevokeAllTokensForUserClient revokes all tokens (access + refresh) for a specific user+client combination.
