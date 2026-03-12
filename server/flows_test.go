@@ -3125,32 +3125,150 @@ func TestServer_RevokeToken(t *testing.T) {
 	refreshToken := testutil.GenerateRandomString(32)
 	familyID := testutil.GenerateRandomString(32)
 
-	// Save tokens
+	// Save provider token mapping so RevokeToken finds the token
 	providerToken := &oauth2.Token{
 		AccessToken:  "test-access-token",
 		RefreshToken: "provider-refresh-token",
 		Expiry:       time.Now().Add(1 * time.Hour),
 	}
-	err := store.SaveToken(ctx, userID, providerToken)
+	err := store.SaveToken(ctx, refreshToken, providerToken)
 	if err != nil {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
 
+	// Save refresh token with family tracking
 	err = store.SaveRefreshTokenWithFamily(ctx, refreshToken, userID, clientID, familyID, 1, time.Now().Add(90*24*time.Hour))
 	if err != nil {
 		t.Fatalf("SaveRefreshTokenWithFamily() error = %v", err)
 	}
 
 	// Test revocation
-	err = srv.RevokeToken(context.Background(), refreshToken, clientID, "192.168.1.100")
+	err = srv.RevokeToken(ctx, refreshToken, clientID, "192.168.1.100")
 	if err != nil {
 		t.Errorf("RevokeToken() error = %v", err)
 	}
 
 	// Verify token family was revoked (not just the individual token)
-	family, err := store.GetRefreshTokenFamily(ctx, familyID)
-	if err == nil && family != nil && !family.Revoked {
-		t.Error("Token family should have been revoked")
+	family, err := store.GetRefreshTokenFamily(ctx, refreshToken)
+	if err != nil {
+		t.Fatalf("GetRefreshTokenFamily() error = %v", err)
+	}
+	if !family.Revoked {
+		t.Error("Token family should have been revoked on explicit revocation")
+	}
+}
+
+// TestServer_RevokeToken_AccessTokenNoFamilyRevocation verifies that revoking an access token
+// (which has no family entry) does not error and does not attempt family revocation.
+func TestServer_RevokeToken_AccessTokenNoFamilyRevocation(t *testing.T) {
+	ctx := context.Background()
+	srv, store, provider := setupFlowTestServer(t)
+
+	provider.RevokeTokenFunc = func(_ context.Context, _ string) error {
+		return nil
+	}
+
+	accessToken := "access-token-no-family"
+
+	// Save only a provider token mapping (no family)
+	err := store.SaveToken(ctx, accessToken, &oauth2.Token{
+		AccessToken: "provider-access",
+		Expiry:      time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+
+	// Revoking an access token should succeed without touching any family
+	err = srv.RevokeToken(ctx, accessToken, "test-client", "127.0.0.1")
+	if err != nil {
+		t.Errorf("RevokeToken() for access token error = %v", err)
+	}
+
+	// Verify the token was deleted
+	_, err = store.GetToken(ctx, accessToken)
+	if err == nil {
+		t.Error("Access token should have been deleted after revocation")
+	}
+}
+
+// TestServer_RevokeToken_RefreshTokenWithoutFamily verifies that revoking a refresh token
+// that has no family entry still succeeds (graceful degradation).
+func TestServer_RevokeToken_RefreshTokenWithoutFamily(t *testing.T) {
+	ctx := context.Background()
+	srv, store, provider := setupFlowTestServer(t)
+
+	provider.RevokeTokenFunc = func(_ context.Context, _ string) error {
+		return nil
+	}
+
+	refreshToken := "refresh-token-no-family"
+
+	// Save a provider token mapping but no family entry
+	err := store.SaveToken(ctx, refreshToken, &oauth2.Token{
+		AccessToken:  "provider-access",
+		RefreshToken: "provider-refresh",
+		Expiry:       time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+
+	// Revoking should succeed without errors even with no family
+	err = srv.RevokeToken(ctx, refreshToken, "test-client", "127.0.0.1")
+	if err != nil {
+		t.Errorf("RevokeToken() for token without family error = %v", err)
+	}
+
+	// Verify the token was deleted
+	_, err = store.GetToken(ctx, refreshToken)
+	if err == nil {
+		t.Error("Token should have been deleted after revocation")
+	}
+}
+
+// TestServer_RevokeToken_FamilyRevocationRevokesAllSiblings verifies that revoking one token
+// in a family also revokes its sibling tokens (other generations in the same family).
+func TestServer_RevokeToken_FamilyRevocationRevokesAllSiblings(t *testing.T) {
+	ctx := context.Background()
+	srv, store, provider := setupFlowTestServer(t)
+
+	provider.RevokeTokenFunc = func(_ context.Context, _ string) error {
+		return nil
+	}
+
+	userID := "test-user"
+	clientID := "test-client"
+	familyID := testutil.GenerateRandomString(32)
+	refreshToken1 := testutil.GenerateRandomString(32)
+	refreshToken2 := testutil.GenerateRandomString(32)
+
+	// Save two tokens in the same family (simulating rotation)
+	for i, tok := range []string{refreshToken1, refreshToken2} {
+		if err := store.SaveToken(ctx, tok, &oauth2.Token{
+			AccessToken: fmt.Sprintf("provider-access-%d", i),
+			Expiry:      time.Now().Add(time.Hour),
+		}); err != nil {
+			t.Fatalf("SaveToken() error = %v", err)
+		}
+		if err := store.SaveRefreshTokenWithFamily(ctx, tok, userID, clientID, familyID, i+1, time.Now().Add(90*24*time.Hour)); err != nil {
+			t.Fatalf("SaveRefreshTokenWithFamily() error = %v", err)
+		}
+	}
+
+	// Revoke only the first token
+	err := srv.RevokeToken(ctx, refreshToken1, clientID, "127.0.0.1")
+	if err != nil {
+		t.Fatalf("RevokeToken() error = %v", err)
+	}
+
+	// Both tokens in the family should be revoked
+	family2, err := store.GetRefreshTokenFamily(ctx, refreshToken2)
+	if err != nil {
+		t.Fatalf("GetRefreshTokenFamily(token2) error = %v", err)
+	}
+	if !family2.Revoked {
+		t.Error("Sibling token in the same family should have been revoked")
 	}
 }
 

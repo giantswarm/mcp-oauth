@@ -83,6 +83,10 @@ const (
 	// This is a critical security event indicating possible cross-client token theft
 	EventRefreshTokenClientBindingMismatch = "refresh_token_client_binding_mismatch"
 
+	// EventRefreshTokenFamilyRevoked is logged when an entire refresh token family is revoked
+	// during explicit token revocation (all tokens sharing the same family ID become invalid)
+	EventRefreshTokenFamilyRevoked = "refresh_token_family_revoked"
+
 	// EventRevokedTokenFamilyReuseAttempt is logged when a revoked token family is accessed
 	EventRevokedTokenFamilyReuseAttempt = "revoked_token_family_reuse_attempt"
 
