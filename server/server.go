@@ -23,6 +23,10 @@ import (
 
 // TokenFamilyRevocationHandler is called when a token family is revoked (e.g., on logout).
 // Consumers can use this to clean up per-session state associated with the family ID.
+//
+// The provided context is the HTTP request context that triggered the revocation and
+// may be canceled when the request completes. If the handler performs slow cleanup
+// operations, it should derive a new context with its own deadline.
 type TokenFamilyRevocationHandler func(ctx context.Context, userID, familyID string)
 
 // Server implements the OAuth 2.1 server logic (provider-agnostic).
@@ -343,6 +347,7 @@ func (s *Server) SetMetadataFetchRateLimiter(rl *security.RateLimiter) {
 
 // SetTokenFamilyRevocationHandler sets a callback that fires when a token family
 // is revoked (e.g., on logout). This lets consumers clean up per-session state.
+// Must be called during server initialization, before the server starts handling requests.
 func (s *Server) SetTokenFamilyRevocationHandler(handler TokenFamilyRevocationHandler) {
 	s.tokenFamilyRevocationHandler = handler
 }

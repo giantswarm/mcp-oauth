@@ -1313,6 +1313,18 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	// Check if storage supports token family tracking (OAuth 2.1 reuse detection)
 	familyStore, supportsFamilies := s.tokenStore.(storage.RefreshTokenFamilyStore)
 
+	// Capture scopes and audience from old token metadata before the atomic
+	// delete removes it. Best-effort: if there's a race, the atomic operation
+	// below will fail and these values won't be used.
+	var oldScopes []string
+	var oldAudience string
+	if metaGetter, ok := s.tokenStore.(storage.TokenMetadataGetter); ok {
+		if oldMeta, err := metaGetter.GetTokenMetadata(refreshToken); err == nil && oldMeta != nil {
+			oldScopes = oldMeta.Scopes
+			oldAudience = oldMeta.Audience
+		}
+	}
+
 	// OAUTH 2.1 SECURITY: Atomically get and delete refresh token FIRST
 	// Returns clientID for client binding validation
 	userID, storedClientID, providerToken, err := s.tokenStore.AtomicGetAndDeleteRefreshToken(ctx, refreshToken)
@@ -1374,9 +1386,9 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	// Track AT -> RT pairing for refresh-time updates
 	s.registerTokenPair(newAccessToken, newRefreshToken)
 
-	// Save token metadata with familyID for session tracking
-	s.saveTokenMetadata(newAccessToken, userID, clientID, "access", "", familyID, nil)
-	s.saveTokenMetadata(newRefreshToken, userID, clientID, "refresh", "", familyID, nil)
+	// Save token metadata preserving scopes and audience from the original grant
+	s.saveTokenMetadata(newAccessToken, userID, clientID, "access", oldAudience, familyID, oldScopes)
+	s.saveTokenMetadata(newRefreshToken, userID, clientID, "refresh", oldAudience, familyID, oldScopes)
 
 	if s.Auditor != nil {
 		s.Auditor.LogTokenRefreshed(userID, clientID, "", rotated)

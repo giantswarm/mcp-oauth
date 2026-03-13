@@ -7844,6 +7844,96 @@ func TestServer_RefreshAccessToken_FamilyIDInMetadata(t *testing.T) {
 	}
 }
 
+func TestServer_RefreshAccessToken_PreservesScopesAndAudience(t *testing.T) {
+	ctx := context.Background()
+	srv, store, provider := setupFlowTestServer(t)
+	srv.Config.AllowRefreshTokenRotation = true
+	srv.Config.RefreshTokenTTL = 86400
+
+	client, _, err := srv.RegisterClient(ctx,
+		"Scope Test Client",
+		ClientTypeConfidential,
+		"",
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email", "profile"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+	clientID := client.ClientID
+
+	codeVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
+	hash := sha256.Sum256([]byte(codeVerifier))
+	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	clientState := testutil.GenerateRandomString(43)
+	_, err = srv.StartAuthorizationFlow(ctx, clientID, "https://example.com/callback", "openid email profile", "", codeChallenge, PKCEMethodS256, clientState, nil)
+	if err != nil {
+		t.Fatalf("StartAuthorizationFlow() error = %v", err)
+	}
+
+	authState, err := store.GetAuthorizationState(ctx, clientState)
+	if err != nil {
+		t.Fatalf("GetAuthorizationState() error = %v", err)
+	}
+
+	authCodeObj, _, err := srv.HandleProviderCallback(ctx, authState.ProviderState, "code-"+testutil.GenerateRandomString(10))
+	if err != nil {
+		t.Fatalf("HandleProviderCallback() error = %v", err)
+	}
+
+	token, _, err := srv.ExchangeAuthorizationCode(ctx, authCodeObj.Code, clientID, "https://example.com/callback", "", codeVerifier)
+	if err != nil {
+		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
+	}
+
+	origMeta, err := store.GetTokenMetadata(token.AccessToken)
+	if err != nil {
+		t.Fatalf("GetTokenMetadata(original AT) error = %v", err)
+	}
+	if len(origMeta.Scopes) == 0 {
+		t.Fatal("Original token should have scopes set")
+	}
+
+	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
+		return &oauth2.Token{
+			AccessToken:  "refreshed-provider-at",
+			RefreshToken: "refreshed-provider-rt",
+			Expiry:       time.Now().Add(time.Hour),
+		}, nil
+	}
+
+	token2, err := srv.RefreshAccessToken(ctx, token.RefreshToken, clientID)
+	if err != nil {
+		t.Fatalf("RefreshAccessToken() error = %v", err)
+	}
+
+	newATMeta, err := store.GetTokenMetadata(token2.AccessToken)
+	if err != nil {
+		t.Fatalf("GetTokenMetadata(new AT) error = %v", err)
+	}
+
+	if len(newATMeta.Scopes) != len(origMeta.Scopes) {
+		t.Errorf("Refreshed AT scopes = %v, want %v (scopes should survive refresh)", newATMeta.Scopes, origMeta.Scopes)
+	}
+	for i, s := range origMeta.Scopes {
+		if i < len(newATMeta.Scopes) && newATMeta.Scopes[i] != s {
+			t.Errorf("Refreshed AT scope[%d] = %q, want %q", i, newATMeta.Scopes[i], s)
+		}
+	}
+
+	newRTMeta, err := store.GetTokenMetadata(token2.RefreshToken)
+	if err != nil {
+		t.Fatalf("GetTokenMetadata(new RT) error = %v", err)
+	}
+
+	if len(newRTMeta.Scopes) != len(origMeta.Scopes) {
+		t.Errorf("Refreshed RT scopes = %v, want %v (scopes should survive refresh)", newRTMeta.Scopes, origMeta.Scopes)
+	}
+}
+
 func TestServer_RevokeToken_CallsTokenFamilyRevocationHandler(t *testing.T) {
 	ctx := context.Background()
 	srv, store, _ := setupFlowTestServer(t)

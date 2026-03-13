@@ -135,17 +135,8 @@ func (s *Store) addTokenToFamilySet(ctx context.Context, refreshToken, familyID 
 
 // saveRefreshTokenMetadata saves token metadata for revocation tracking.
 // If metadata already exists for this token (e.g., set earlier by saveTokenMetadata),
-// the existing entry is preserved. Otherwise a minimal entry is created.
+// the existing entry is preserved via SET NX. Otherwise a minimal entry is created.
 func (s *Store) saveRefreshTokenMetadata(ctx context.Context, refreshToken, userID, clientID, familyID string, ttl time.Duration) error {
-	tokenMetaKey := s.tokenMetaKey(refreshToken)
-
-	existing, err := s.client.Do(ctx,
-		s.client.B().Get().Key(tokenMetaKey).Build(),
-	).ToString()
-	if err == nil && existing != "" {
-		return nil
-	}
-
 	tokenMeta := &storage.TokenMetadata{
 		UserID:    userID,
 		ClientID:  clientID,
@@ -154,15 +145,17 @@ func (s *Store) saveRefreshTokenMetadata(ctx context.Context, refreshToken, user
 		FamilyID:  familyID,
 	}
 
-	tokenMetaData, jsonErr := json.Marshal(toTokenMetadataJSON(tokenMeta))
-	if jsonErr != nil {
-		return fmt.Errorf("failed to marshal token metadata: %w", jsonErr)
+	tokenMetaData, err := json.Marshal(toTokenMetadataJSON(tokenMeta))
+	if err != nil {
+		return fmt.Errorf("failed to marshal token metadata: %w", err)
 	}
 
-	if setErr := s.client.Do(ctx,
-		s.client.B().Set().Key(tokenMetaKey).Value(string(tokenMetaData)).Ex(ttl).Build(),
-	).Error(); setErr != nil {
-		return fmt.Errorf("failed to save token metadata: %w", setErr)
+	tokenMetaKey := s.tokenMetaKey(refreshToken)
+	if err := s.client.Do(ctx,
+		s.client.B().Set().Key(tokenMetaKey).Value(string(tokenMetaData)).Nx().Ex(ttl).Build(),
+	).Error(); err != nil {
+		s.logger.Debug("Token metadata already exists (NX not set), preserving richer entry",
+			"token", safeTruncate(refreshToken, tokenIDLogLength))
 	}
 	return nil
 }
@@ -319,6 +312,11 @@ func (s *Store) SaveTokenMetadataWithFamily(tokenID, userID, clientID, tokenType
 	}
 	if err := validateStringLength(clientID, MaxIDLength, "clientID"); err != nil {
 		return err
+	}
+	if familyID != "" {
+		if err := validateStringLength(familyID, MaxIDLength, "familyID"); err != nil {
+			return err
+		}
 	}
 
 	ctx := context.Background()
