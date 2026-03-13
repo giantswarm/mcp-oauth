@@ -644,7 +644,10 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 			return
 		}
 
-		if !h.validateTokenScopes(w, r, accessToken, userInfo, clientIP) {
+		// Single metadata lookup: used for both scope validation and session ID
+		metadata := h.getTokenMetadata(accessToken)
+
+		if !h.validateTokenScopesFromMetadata(w, r, metadata, userInfo, clientIP) {
 			return
 		}
 
@@ -653,6 +656,9 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 		}
 
 		ctx := ContextWithUserInfo(r.Context(), userInfo)
+		if metadata != nil && metadata.FamilyID != "" {
+			ctx = ContextWithSessionID(ctx, metadata.FamilyID)
+		}
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -2262,21 +2268,57 @@ func ContextWithUserInfo(ctx context.Context, userInfo *providers.UserInfo) cont
 	return context.WithValue(ctx, userInfoKey, userInfo)
 }
 
-// validateTokenScopes checks if the token has required scopes for the endpoint.
-// Returns true if validation passes, false if insufficient scopes (response already written).
-func (h *Handler) validateTokenScopes(w http.ResponseWriter, r *http.Request, accessToken string, userInfo *providers.UserInfo, clientIP string) bool {
-	requiredScopes := h.getRequiredScopes(r)
-	if len(requiredScopes) == 0 {
-		return true // No scopes required
+type sessionIDKey struct{}
+
+// ContextWithSessionID creates a context carrying a stable session identifier
+// derived from the OAuth refresh token family. This allows consumers to
+// associate per-session state with the current authenticated request.
+func ContextWithSessionID(ctx context.Context, sessionID string) context.Context {
+	return context.WithValue(ctx, sessionIDKey{}, sessionID)
+}
+
+// SessionIDFromContext retrieves the session identifier from the request context.
+// Returns the session ID and true if present and non-empty, or ("", false) otherwise.
+func SessionIDFromContext(ctx context.Context) (string, bool) {
+	id, ok := ctx.Value(sessionIDKey{}).(string)
+	return id, ok && id != ""
+}
+
+// getTokenMetadata retrieves token metadata from storage.
+// Returns nil if the store doesn't support metadata or if metadata cannot be retrieved.
+func (h *Handler) getTokenMetadata(accessToken string) *storage.TokenMetadata {
+	metadataStore, ok := h.server.TokenStore().(storage.TokenMetadataGetter)
+	if !ok {
+		return nil
 	}
 
-	tokenScopes := h.getTokenScopes(accessToken)
+	metadata, err := metadataStore.GetTokenMetadata(accessToken)
+	if err != nil {
+		h.logger.Warn("Failed to retrieve token metadata", "error", err)
+		return nil
+	}
+
+	return metadata
+}
+
+// validateTokenScopesFromMetadata checks if the token has required scopes using
+// pre-fetched metadata (avoids a redundant GetTokenMetadata call).
+// Returns true if validation passes, false if insufficient scopes (response already written).
+func (h *Handler) validateTokenScopesFromMetadata(w http.ResponseWriter, r *http.Request, metadata *storage.TokenMetadata, userInfo *providers.UserInfo, clientIP string) bool {
+	requiredScopes := h.getRequiredScopes(r)
+	if len(requiredScopes) == 0 {
+		return true
+	}
+
+	var tokenScopes []string
+	if metadata != nil {
+		tokenScopes = metadata.Scopes
+	}
 
 	if hasRequiredScopes(tokenScopes, requiredScopes) {
 		return true
 	}
 
-	// Log and audit the failure
 	h.logger.Warn("Insufficient scope for endpoint",
 		"user_id", userInfo.ID,
 		"endpoint", r.URL.Path,
@@ -2289,14 +2331,13 @@ func (h *Handler) validateTokenScopes(w http.ResponseWriter, r *http.Request, ac
 		h.server.Auditor.LogAuthFailure(userInfo.ID, "", clientIP, "insufficient_scope")
 	}
 
-	// Build error description based on configuration
 	var description string
 	if h.server.Config.HideEndpointPathInErrors {
 		// SECURITY: Hide endpoint path to prevent information disclosure
 		description = "Token lacks required scopes for this endpoint"
 	} else {
-		// SECURITY: Sanitize path in error message to prevent log injection
-		// Truncate very long paths to prevent log pollution
+		// SECURITY: Sanitize path in error message to prevent log injection.
+		// Truncate very long paths to prevent log pollution.
 		safePath := r.URL.Path
 		if len(safePath) > 100 {
 			safePath = safePath[:100] + "..."
@@ -2305,27 +2346,6 @@ func (h *Handler) validateTokenScopes(w http.ResponseWriter, r *http.Request, ac
 	}
 	h.writeInsufficientScopeError(w, requiredScopes, description)
 	return false
-}
-
-// getTokenScopes retrieves scopes from token metadata.
-// Returns nil if the store doesn't support metadata or if metadata cannot be retrieved.
-func (h *Handler) getTokenScopes(accessToken string) []string {
-	metadataStore, ok := h.server.TokenStore().(storage.TokenMetadataGetter)
-	if !ok {
-		return nil
-	}
-
-	metadata, err := metadataStore.GetTokenMetadata(accessToken)
-	if err != nil {
-		h.logger.Warn("Failed to retrieve token metadata for scope validation", "error", err)
-		return nil
-	}
-
-	if metadata == nil {
-		return nil
-	}
-
-	return metadata.Scopes
 }
 
 // getRequiredScopes returns the scopes required for accessing a given request path and method.

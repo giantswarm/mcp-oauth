@@ -38,7 +38,7 @@ func (s *Store) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, us
 
 	s.addTokenToFamilySet(op.ctx, refreshToken, familyID, ttl)
 
-	if err = s.saveRefreshTokenMetadata(op.ctx, refreshToken, userID, clientID, ttl); err != nil {
+	if err = s.saveRefreshTokenMetadata(op.ctx, refreshToken, userID, clientID, familyID, ttl); err != nil {
 		return err
 	}
 
@@ -134,12 +134,15 @@ func (s *Store) addTokenToFamilySet(ctx context.Context, refreshToken, familyID 
 }
 
 // saveRefreshTokenMetadata saves token metadata for revocation tracking.
-func (s *Store) saveRefreshTokenMetadata(ctx context.Context, refreshToken, userID, clientID string, ttl time.Duration) error {
+// If metadata already exists for this token (e.g., set earlier by saveTokenMetadata),
+// the existing entry is preserved via SET NX. Otherwise a minimal entry is created.
+func (s *Store) saveRefreshTokenMetadata(ctx context.Context, refreshToken, userID, clientID, familyID string, ttl time.Duration) error {
 	tokenMeta := &storage.TokenMetadata{
 		UserID:    userID,
 		ClientID:  clientID,
 		IssuedAt:  time.Now(),
 		TokenType: "refresh",
+		FamilyID:  familyID,
 	}
 
 	tokenMetaData, err := json.Marshal(toTokenMetadataJSON(tokenMeta))
@@ -149,9 +152,14 @@ func (s *Store) saveRefreshTokenMetadata(ctx context.Context, refreshToken, user
 
 	tokenMetaKey := s.tokenMetaKey(refreshToken)
 	if err := s.client.Do(ctx,
-		s.client.B().Set().Key(tokenMetaKey).Value(string(tokenMetaData)).Ex(ttl).Build(),
+		s.client.B().Set().Key(tokenMetaKey).Value(string(tokenMetaData)).Nx().Ex(ttl).Build(),
 	).Error(); err != nil {
-		return fmt.Errorf("failed to save token metadata: %w", err)
+		if isNilError(err) {
+			s.logger.Debug("Token metadata already exists (NX not set), preserving richer entry",
+				"token", safeTruncate(refreshToken, tokenIDLogLength))
+		} else {
+			return fmt.Errorf("failed to save refresh token metadata: %w", err)
+		}
 	}
 	return nil
 }
@@ -290,11 +298,16 @@ func (s *Store) SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenTy
 
 // SaveTokenMetadataWithScopesAndAudience saves metadata for a token including RFC 8707 audience and MCP 2025-11-25 scopes
 func (s *Store) SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID, tokenType, audience string, scopes []string) error {
+	return s.SaveTokenMetadataWithFamily(tokenID, userID, clientID, tokenType, audience, "", scopes)
+}
+
+// SaveTokenMetadataWithFamily saves metadata for a token including audience, scopes, and refresh token family ID.
+// The familyID links the token to a session (refresh token family) for per-session state tracking.
+func (s *Store) SaveTokenMetadataWithFamily(tokenID, userID, clientID, tokenType, audience, familyID string, scopes []string) error {
 	if tokenID == "" || userID == "" || clientID == "" {
 		return fmt.Errorf("tokenID, userID, and clientID cannot be empty")
 	}
 
-	// Validate input lengths to prevent DoS
 	if err := validateStringLength(tokenID, MaxTokenLength, "tokenID"); err != nil {
 		return err
 	}
@@ -303,6 +316,11 @@ func (s *Store) SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID
 	}
 	if err := validateStringLength(clientID, MaxIDLength, "clientID"); err != nil {
 		return err
+	}
+	if familyID != "" {
+		if err := validateStringLength(familyID, MaxIDLength, "familyID"); err != nil {
+			return err
+		}
 	}
 
 	ctx := context.Background()
@@ -314,6 +332,7 @@ func (s *Store) SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID
 		TokenType: tokenType,
 		Audience:  audience,
 		Scopes:    scopes,
+		FamilyID:  familyID,
 	}
 
 	data, err := json.Marshal(toTokenMetadataJSON(meta))
@@ -329,7 +348,6 @@ func (s *Store) SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID
 		return fmt.Errorf("failed to save token metadata: %w", err)
 	}
 
-	// Add to user+client set
 	userClientKey := s.userClientKey(userID, clientID)
 	if err := s.client.Do(ctx,
 		s.client.B().Sadd().Key(userClientKey).Member(tokenID).Build(),
@@ -345,7 +363,8 @@ func (s *Store) SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID
 		"user_id", userID,
 		"client_id", clientID,
 		"audience", audience,
-		"scopes", scopes)
+		"scopes", scopes,
+		"family_id", familyID)
 
 	return nil
 }

@@ -146,6 +146,12 @@ type TokenMetadataStoreWithScopesAndAudience interface {
 	SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID, tokenType, audience string, scopes []string) error
 }
 
+// TokenMetadataStoreWithFamily extends with refresh token family ID support.
+// This allows tracking which session (token family) a token belongs to.
+type TokenMetadataStoreWithFamily interface {
+	SaveTokenMetadataWithFamily(tokenID, userID, clientID, tokenType, audience, familyID string, scopes []string) error
+}
+
 // TokenMetadataGetter provides read access to token metadata.
 // This is used for scope validation and token introspection.
 type TokenMetadataGetter interface {
@@ -346,4 +352,5 @@ type TokenMetadata struct {
 	TokenType string    // "access" or "refresh"
 	Audience  string    // RFC 8707: Intended resource server identifier (for audience validation)
 	Scopes    []string  // MCP 2025-11-25: Scopes granted to this token (for scope validation)
+	FamilyID  string    // Refresh token family ID for session tracking
 }

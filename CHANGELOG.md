@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Session ID exposed through request context for per-session state isolation (#237)**
+  - `SessionIDFromContext(ctx)` returns a stable session identifier derived from the OAuth refresh token family.
+  - The session ID is persisted in token metadata (survives server restarts).
+  - `SetTokenFamilyRevocationHandler` allows consumers to clean up session state on logout.
+  - New `TokenMetadataStoreWithFamily` storage interface extends the progressive-extension chain with `SaveTokenMetadataWithFamily`.
+  - Both in-memory and Valkey storage backends implement the new interface.
+
 - **Limit HTTP request body size in handler (gosec G120) (#220)**
   - All POST handler methods (`ServeToken`, `ServeTokenRevocation`, `ServeTokenIntrospection`, `ServeClientRegistration`) now wrap the request body with `http.MaxBytesReader` before parsing form data or JSON payloads, preventing denial-of-service via oversized POST bodies.
   - Oversized requests receive a `413 Request Entity Too Large` response with consistent observability (HTTP metrics and tracing) across all endpoints.

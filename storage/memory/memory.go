@@ -101,11 +101,13 @@ type Store struct {
 
 // Compile-time interface checks to ensure Store implements all storage interfaces
 var (
-	_ storage.TokenStore              = (*Store)(nil)
-	_ storage.ClientStore             = (*Store)(nil)
-	_ storage.FlowStore               = (*Store)(nil)
-	_ storage.RefreshTokenFamilyStore = (*Store)(nil)
-	_ storage.TokenRevocationStore    = (*Store)(nil)
+	_ storage.TokenStore                              = (*Store)(nil)
+	_ storage.ClientStore                             = (*Store)(nil)
+	_ storage.FlowStore                               = (*Store)(nil)
+	_ storage.RefreshTokenFamilyStore                 = (*Store)(nil)
+	_ storage.TokenRevocationStore                    = (*Store)(nil)
+	_ storage.TokenMetadataStoreWithFamily            = (*Store)(nil)
+	_ storage.TokenMetadataStoreWithScopesAndAudience = (*Store)(nil)
 )
 
 // New creates a new in-memory store with default cleanup interval (1 minute)
@@ -595,12 +597,25 @@ func (s *Store) SaveRefreshTokenWithFamily(_ context.Context, refreshToken, user
 		Revoked:    false,
 	}
 
-	// Save token metadata for revocation tracking (OAuth 2.1 code reuse detection)
-	s.tokenMetadata[refreshToken] = &storage.TokenMetadata{
-		UserID:    userID,
-		ClientID:  clientID,
-		IssuedAt:  time.Now(),
-		TokenType: "refresh",
+	// Save token metadata for revocation tracking (OAuth 2.1 code reuse detection).
+	// Preserve any existing metadata fields (e.g., Audience, Scopes) that may
+	// have been set by saveTokenMetadata earlier in the flow.
+	if existing, ok := s.tokenMetadata[refreshToken]; ok {
+		existing.UserID = userID
+		existing.ClientID = clientID
+		existing.IssuedAt = time.Now()
+		existing.TokenType = "refresh"
+		if existing.FamilyID == "" {
+			existing.FamilyID = familyID
+		}
+	} else {
+		s.tokenMetadata[refreshToken] = &storage.TokenMetadata{
+			UserID:    userID,
+			ClientID:  clientID,
+			IssuedAt:  time.Now(),
+			TokenType: "refresh",
+			FamilyID:  familyID,
+		}
 	}
 
 	s.logger.Debug("Saved refresh token with family tracking",
@@ -1162,6 +1177,12 @@ func (s *Store) SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenTy
 // SaveTokenMetadataWithScopesAndAudience saves metadata for a token including RFC 8707 audience and MCP 2025-11-25 scopes
 // This should be called whenever a token is issued to a user for a client
 func (s *Store) SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID, tokenType, audience string, scopes []string) error {
+	return s.SaveTokenMetadataWithFamily(tokenID, userID, clientID, tokenType, audience, "", scopes)
+}
+
+// SaveTokenMetadataWithFamily saves metadata for a token including audience, scopes, and refresh token family ID.
+// The familyID links the token to a session (refresh token family) for per-session state tracking.
+func (s *Store) SaveTokenMetadataWithFamily(tokenID, userID, clientID, tokenType, audience, familyID string, scopes []string) error {
 	if tokenID == "" || userID == "" || clientID == "" {
 		return fmt.Errorf("tokenID, userID, and clientID cannot be empty")
 	}
@@ -1176,6 +1197,7 @@ func (s *Store) SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID
 		TokenType: tokenType,
 		Audience:  audience,
 		Scopes:    scopes,
+		FamilyID:  familyID,
 	}
 
 	s.logger.Debug("Saved token metadata",
@@ -1183,7 +1205,8 @@ func (s *Store) SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID
 		"user_id", userID,
 		"client_id", clientID,
 		"audience", audience,
-		"scopes", scopes)
+		"scopes", scopes,
+		"family_id", familyID)
 
 	return nil
 }

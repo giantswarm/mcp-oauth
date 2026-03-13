@@ -116,11 +116,13 @@ type Store struct {
 
 // Compile-time interface checks to ensure Store implements all storage interfaces
 var (
-	_ storage.TokenStore              = (*Store)(nil)
-	_ storage.ClientStore             = (*Store)(nil)
-	_ storage.FlowStore               = (*Store)(nil)
-	_ storage.RefreshTokenFamilyStore = (*Store)(nil)
-	_ storage.TokenRevocationStore    = (*Store)(nil)
+	_ storage.TokenStore                              = (*Store)(nil)
+	_ storage.ClientStore                             = (*Store)(nil)
+	_ storage.FlowStore                               = (*Store)(nil)
+	_ storage.RefreshTokenFamilyStore                 = (*Store)(nil)
+	_ storage.TokenRevocationStore                    = (*Store)(nil)
+	_ storage.TokenMetadataStoreWithFamily            = (*Store)(nil)
+	_ storage.TokenMetadataStoreWithScopesAndAudience = (*Store)(nil)
 )
 
 // New creates a new Valkey-backed storage instance.
@@ -861,6 +863,7 @@ type tokenMetadataJSON struct {
 	TokenType string   `json:"token_type"`
 	Audience  string   `json:"audience,omitempty"`
 	Scopes    []string `json:"scopes,omitempty"`
+	FamilyID  string   `json:"family_id,omitempty"`
 }
 
 func toTokenMetadataJSON(meta *storage.TokenMetadata) *tokenMetadataJSON {
@@ -871,6 +874,7 @@ func toTokenMetadataJSON(meta *storage.TokenMetadata) *tokenMetadataJSON {
 		TokenType: meta.TokenType,
 		Audience:  meta.Audience,
 		Scopes:    meta.Scopes,
+		FamilyID:  meta.FamilyID,
 	}
 }
 
@@ -885,6 +889,7 @@ func fromTokenMetadataJSON(j *tokenMetadataJSON) *storage.TokenMetadata {
 		TokenType: j.TokenType,
 		Audience:  j.Audience,
 		Scopes:    j.Scopes,
+		FamilyID:  j.FamilyID,
 	}
 }
 

@@ -18,6 +18,7 @@ const (
 	testUserID       = "test-user"
 	testRefreshToken = "test-refresh-token"
 	testSecret       = "test-secret"
+	testAudienceURL  = "https://api.example.com"
 )
 
 // ============================================================
@@ -1534,4 +1535,104 @@ func TestStore_SetLogger(_ *testing.T) {
 
 	// Logger should be set (we can't easily test this without reflection)
 	// Just verify no panic
+}
+
+func TestStore_SaveTokenMetadataWithFamily(t *testing.T) {
+	store := New()
+	defer store.Stop()
+
+	err := store.SaveTokenMetadataWithFamily("token-1", "user-1", "client-1", "access", testAudienceURL, "family-abc", []string{"openid", "email"})
+	if err != nil {
+		t.Fatalf("SaveTokenMetadataWithFamily() error = %v", err)
+	}
+
+	meta, err := store.GetTokenMetadata("token-1")
+	if err != nil {
+		t.Fatalf("GetTokenMetadata() error = %v", err)
+	}
+
+	if meta.FamilyID != "family-abc" {
+		t.Errorf("FamilyID = %q, want %q", meta.FamilyID, "family-abc")
+	}
+	if meta.UserID != "user-1" {
+		t.Errorf("UserID = %q, want %q", meta.UserID, "user-1")
+	}
+	if meta.ClientID != "client-1" {
+		t.Errorf("ClientID = %q, want %q", meta.ClientID, "client-1")
+	}
+	if meta.TokenType != "access" {
+		t.Errorf("TokenType = %q, want %q", meta.TokenType, "access")
+	}
+	if meta.Audience != testAudienceURL {
+		t.Errorf("Audience = %q, want %q", meta.Audience, testAudienceURL)
+	}
+	if len(meta.Scopes) != 2 || meta.Scopes[0] != "openid" || meta.Scopes[1] != "email" {
+		t.Errorf("Scopes = %v, want [openid email]", meta.Scopes)
+	}
+}
+
+func TestStore_SaveTokenMetadataWithFamily_EmptyFamilyID(t *testing.T) {
+	store := New()
+	defer store.Stop()
+
+	err := store.SaveTokenMetadataWithFamily("token-2", "user-1", "client-1", "refresh", "", "", nil)
+	if err != nil {
+		t.Fatalf("SaveTokenMetadataWithFamily() error = %v", err)
+	}
+
+	meta, err := store.GetTokenMetadata("token-2")
+	if err != nil {
+		t.Fatalf("GetTokenMetadata() error = %v", err)
+	}
+
+	if meta.FamilyID != "" {
+		t.Errorf("FamilyID = %q, want empty", meta.FamilyID)
+	}
+}
+
+func TestStore_SaveTokenMetadataWithFamily_ValidationErrors(t *testing.T) {
+	store := New()
+	defer store.Stop()
+
+	tests := []struct {
+		name     string
+		tokenID  string
+		userID   string
+		clientID string
+	}{
+		{"empty tokenID", "", "user-1", "client-1"},
+		{"empty userID", "token-1", "", "client-1"},
+		{"empty clientID", "token-1", "user-1", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := store.SaveTokenMetadataWithFamily(tt.tokenID, tt.userID, tt.clientID, "access", "", "family-1", nil)
+			if err == nil {
+				t.Errorf("SaveTokenMetadataWithFamily() should fail for %s", tt.name)
+			}
+		})
+	}
+}
+
+func TestStore_SaveTokenMetadataWithScopesAndAudience_DelegatesToFamily(t *testing.T) {
+	store := New()
+	defer store.Stop()
+
+	err := store.SaveTokenMetadataWithScopesAndAudience("token-d", "user-1", "client-1", "access", testAudienceURL, []string{"read"})
+	if err != nil {
+		t.Fatalf("SaveTokenMetadataWithScopesAndAudience() error = %v", err)
+	}
+
+	meta, err := store.GetTokenMetadata("token-d")
+	if err != nil {
+		t.Fatalf("GetTokenMetadata() error = %v", err)
+	}
+
+	if meta.FamilyID != "" {
+		t.Errorf("FamilyID = %q, want empty (delegation should pass empty familyID)", meta.FamilyID)
+	}
+	if meta.Audience != testAudienceURL {
+		t.Errorf("Audience = %q, want %q", meta.Audience, testAudienceURL)
+	}
 }

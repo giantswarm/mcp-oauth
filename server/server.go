@@ -21,6 +21,14 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
+// TokenFamilyRevocationHandler is called when a token family is revoked (e.g., on logout).
+// Consumers can use this to clean up per-session state associated with the family ID.
+//
+// The provided context is the HTTP request context that triggered the revocation and
+// may be canceled when the request completes. If the handler performs slow cleanup
+// operations, it should derive a new context with its own deadline.
+type TokenFamilyRevocationHandler func(ctx context.Context, userID, familyID string)
+
 // Server implements the OAuth 2.1 server logic (provider-agnostic).
 // It coordinates the OAuth flow using a Provider and storage backends.
 type Server struct {
@@ -28,6 +36,7 @@ type Server struct {
 	tokenStore                    storage.TokenStore
 	clientStore                   storage.ClientStore
 	flowStore                     storage.FlowStore
+	tokenFamilyRevocationHandler  TokenFamilyRevocationHandler
 	Encryptor                     *security.Encryptor
 	Auditor                       *security.Auditor
 	RateLimiter                   *security.RateLimiter                   // IP-based rate limiter
@@ -336,6 +345,13 @@ func (s *Server) SetMetadataFetchRateLimiter(rl *security.RateLimiter) {
 	s.metadataFetchRateLimiter = rl
 }
 
+// SetTokenFamilyRevocationHandler sets a callback that fires when a token family
+// is revoked (e.g., on logout). This lets consumers clean up per-session state.
+// Must be called during server initialization, before the server starts handling requests.
+func (s *Server) SetTokenFamilyRevocationHandler(handler TokenFamilyRevocationHandler) {
+	s.tokenFamilyRevocationHandler = handler
+}
+
 // SetInstrumentation sets the OpenTelemetry instrumentation for server and storage
 func (s *Server) SetInstrumentation(inst *instrumentation.Instrumentation) {
 	s.Instrumentation = inst
@@ -364,33 +380,50 @@ func (s *Server) TokenStore() storage.TokenStore {
 	return s.tokenStore
 }
 
+// tokenMetadataParams bundles the parameters for saveTokenMetadata to avoid
+// a long positional-string parameter list that is easy to misorder.
+type tokenMetadataParams struct {
+	TokenID   string
+	UserID    string
+	ClientID  string
+	TokenType string
+	Audience  string
+	FamilyID  string
+	Scopes    []string
+}
+
 // saveTokenMetadata saves token metadata using the most capable store method available.
 // It tries methods in order of capability:
-// 1. SaveTokenMetadataWithScopesAndAudience (newest - includes scopes and audience)
-// 2. SaveTokenMetadataWithAudience (includes audience only)
-// 3. SaveTokenMetadata (basic - no audience or scopes)
+// 1. SaveTokenMetadataWithFamily (newest - includes family ID, scopes, and audience)
+// 2. SaveTokenMetadataWithScopesAndAudience (includes scopes and audience)
+// 3. SaveTokenMetadataWithAudience (includes audience only)
+// 4. SaveTokenMetadata (basic - no audience or scopes)
 //
 // This ensures backward compatibility with stores that don't support the newest methods.
-func (s *Server) saveTokenMetadata(tokenID, userID, clientID, tokenType, audience string, scopes []string) {
-	// Try most capable first (scopes + audience)
+func (s *Server) saveTokenMetadata(p tokenMetadataParams) {
+	if store, ok := s.tokenStore.(storage.TokenMetadataStoreWithFamily); ok {
+		if err := store.SaveTokenMetadataWithFamily(p.TokenID, p.UserID, p.ClientID, p.TokenType, p.Audience, p.FamilyID, p.Scopes); err != nil {
+			s.Logger.Warn("Failed to save token metadata with family", "error", err)
+		}
+		return
+	}
+
 	if store, ok := s.tokenStore.(storage.TokenMetadataStoreWithScopesAndAudience); ok {
-		if err := store.SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID, tokenType, audience, scopes); err != nil {
+		if err := store.SaveTokenMetadataWithScopesAndAudience(p.TokenID, p.UserID, p.ClientID, p.TokenType, p.Audience, p.Scopes); err != nil {
 			s.Logger.Warn("Failed to save token metadata with scopes and audience", "error", err)
 		}
 		return
 	}
 
-	// Fallback to audience only
 	if store, ok := s.tokenStore.(storage.TokenMetadataStoreWithAudience); ok {
-		if err := store.SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenType, audience); err != nil {
+		if err := store.SaveTokenMetadataWithAudience(p.TokenID, p.UserID, p.ClientID, p.TokenType, p.Audience); err != nil {
 			s.Logger.Warn("Failed to save token metadata with audience", "error", err)
 		}
 		return
 	}
 
-	// Fallback to basic
 	if store, ok := s.tokenStore.(storage.TokenMetadataStore); ok {
-		if err := store.SaveTokenMetadata(tokenID, userID, clientID, tokenType); err != nil {
+		if err := store.SaveTokenMetadata(p.TokenID, p.UserID, p.ClientID, p.TokenType); err != nil {
 			s.Logger.Warn("Failed to save token metadata", "error", err)
 		}
 	}

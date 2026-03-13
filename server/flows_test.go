@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -7064,7 +7065,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 			},
 		}
 
-		tokenResponse := srv.generateAndStoreTokens(ctx, authCode, "test-client")
+		tokenResponse := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
 
 		// Expiry should be capped to provider token's expiry (within a small tolerance)
 		timeDiff := tokenResponse.Expiry.Sub(providerExpiry).Abs()
@@ -7099,7 +7100,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 			},
 		}
 
-		tokenResponse := srv.generateAndStoreTokens(ctx, authCode, "test-client")
+		tokenResponse := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
 
 		// Expiry should be approximately now + AccessTokenTTL
 		expectedExpiry := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
@@ -7135,7 +7136,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 			},
 		}
 
-		tokenResponse := srv.generateAndStoreTokens(ctx, authCode, "test-client")
+		tokenResponse := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
 
 		expectedExpiry := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
 		timeDiff := tokenResponse.Expiry.Sub(expectedExpiry).Abs()
@@ -7157,7 +7158,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 			ProviderToken: nil,
 		}
 
-		tokenResponse := srv.generateAndStoreTokens(ctx, authCode, "test-client")
+		tokenResponse := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
 
 		expectedExpiry := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
 		timeDiff := tokenResponse.Expiry.Sub(expectedExpiry).Abs()
@@ -7382,7 +7383,7 @@ func TestServer_GenerateAndStoreTokens_PastExpiryIgnored(t *testing.T) {
 		},
 	}
 
-	tokenResponse := srv.generateAndStoreTokens(context.Background(), authCode, "test-client")
+	tokenResponse := srv.generateAndStoreTokens(context.Background(), authCode, "test-client", "")
 
 	// The expiry must be in the future (AccessTokenTTL), NOT the past provider expiry
 	if tokenResponse.Expiry.Before(time.Now()) {
@@ -7676,5 +7677,371 @@ func TestServer_ValidateToken_SingleflightRefreshIgnoresCanceledLeaderContext(t 
 
 	if _, err := srv.ValidateToken(canceledCtx, accessToken); err != nil {
 		t.Fatalf("ValidateToken() unexpected error with canceled leader context: %v", err)
+	}
+}
+
+func TestServer_ExchangeAuthorizationCode_FamilyIDInMetadata(t *testing.T) {
+	ctx := context.Background()
+	srv, store, _ := setupFlowTestServer(t)
+
+	client, _, err := srv.RegisterClient(ctx,
+		"Test Client",
+		ClientTypeConfidential,
+		"",
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+	clientID := client.ClientID
+
+	codeVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
+	hash := sha256.Sum256([]byte(codeVerifier))
+	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	clientState := testutil.GenerateRandomString(43)
+	_, err = srv.StartAuthorizationFlow(ctx,
+		clientID,
+		"https://example.com/callback",
+		"openid email",
+		"",
+		codeChallenge,
+		PKCEMethodS256,
+		clientState,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("StartAuthorizationFlow() error = %v", err)
+	}
+
+	authState, err := store.GetAuthorizationState(ctx, clientState)
+	if err != nil {
+		t.Fatalf("GetAuthorizationState() error = %v", err)
+	}
+
+	authCodeObj, _, err := srv.HandleProviderCallback(ctx, authState.ProviderState, "provider-code-"+testutil.GenerateRandomString(10))
+	if err != nil {
+		t.Fatalf("HandleProviderCallback() error = %v", err)
+	}
+
+	token, _, err := srv.ExchangeAuthorizationCode(ctx, authCodeObj.Code, clientID, "https://example.com/callback", "", codeVerifier)
+	if err != nil {
+		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
+	}
+
+	atMeta, err := store.GetTokenMetadata(token.AccessToken)
+	if err != nil {
+		t.Fatalf("GetTokenMetadata(access) error = %v", err)
+	}
+	if atMeta.FamilyID == "" {
+		t.Error("Access token metadata should have FamilyID set after exchange")
+	}
+
+	rtMeta, err := store.GetTokenMetadata(token.RefreshToken)
+	if err != nil {
+		t.Fatalf("GetTokenMetadata(refresh) error = %v", err)
+	}
+	if rtMeta.FamilyID == "" {
+		t.Error("Refresh token metadata should have FamilyID set after exchange")
+	}
+
+	if atMeta.FamilyID != rtMeta.FamilyID {
+		t.Errorf("AT and RT should share the same FamilyID: AT=%q, RT=%q", atMeta.FamilyID, rtMeta.FamilyID)
+	}
+
+	family, err := store.GetRefreshTokenFamily(ctx, token.RefreshToken)
+	if err != nil {
+		t.Fatalf("GetRefreshTokenFamily() error = %v", err)
+	}
+	if family.FamilyID != atMeta.FamilyID {
+		t.Errorf("Token family FamilyID = %q, metadata FamilyID = %q -- should match", family.FamilyID, atMeta.FamilyID)
+	}
+}
+
+func TestServer_RefreshAccessToken_FamilyIDInMetadata(t *testing.T) {
+	ctx := context.Background()
+	srv, store, provider := setupFlowTestServer(t)
+	srv.Config.AllowRefreshTokenRotation = true
+	srv.Config.RefreshTokenTTL = 86400
+
+	client, _, err := srv.RegisterClient(ctx,
+		"Test Client",
+		ClientTypeConfidential,
+		"",
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+	clientID := client.ClientID
+
+	codeVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
+	hash := sha256.Sum256([]byte(codeVerifier))
+	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	clientState := testutil.GenerateRandomString(43)
+	_, err = srv.StartAuthorizationFlow(ctx, clientID, "https://example.com/callback", "openid email", "", codeChallenge, PKCEMethodS256, clientState, nil)
+	if err != nil {
+		t.Fatalf("StartAuthorizationFlow() error = %v", err)
+	}
+
+	authState, err := store.GetAuthorizationState(ctx, clientState)
+	if err != nil {
+		t.Fatalf("GetAuthorizationState() error = %v", err)
+	}
+
+	authCodeObj, _, err := srv.HandleProviderCallback(ctx, authState.ProviderState, "code-"+testutil.GenerateRandomString(10))
+	if err != nil {
+		t.Fatalf("HandleProviderCallback() error = %v", err)
+	}
+
+	token, _, err := srv.ExchangeAuthorizationCode(ctx, authCodeObj.Code, clientID, "https://example.com/callback", "", codeVerifier)
+	if err != nil {
+		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
+	}
+
+	origMeta, err := store.GetTokenMetadata(token.AccessToken)
+	if err != nil {
+		t.Fatalf("GetTokenMetadata() error = %v", err)
+	}
+	origFamilyID := origMeta.FamilyID
+	if origFamilyID == "" {
+		t.Fatal("Original token should have a FamilyID")
+	}
+
+	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
+		return &oauth2.Token{
+			AccessToken:  "new-provider-access",
+			RefreshToken: "new-provider-refresh",
+			Expiry:       time.Now().Add(time.Hour),
+		}, nil
+	}
+
+	token2, err := srv.RefreshAccessToken(ctx, token.RefreshToken, clientID)
+	if err != nil {
+		t.Fatalf("RefreshAccessToken() error = %v", err)
+	}
+
+	newATMeta, err := store.GetTokenMetadata(token2.AccessToken)
+	if err != nil {
+		t.Fatalf("GetTokenMetadata(new AT) error = %v", err)
+	}
+	if newATMeta.FamilyID != origFamilyID {
+		t.Errorf("New AT FamilyID = %q, want %q (same family after refresh)", newATMeta.FamilyID, origFamilyID)
+	}
+
+	newRTMeta, err := store.GetTokenMetadata(token2.RefreshToken)
+	if err != nil {
+		t.Fatalf("GetTokenMetadata(new RT) error = %v", err)
+	}
+	if newRTMeta.FamilyID != origFamilyID {
+		t.Errorf("New RT FamilyID = %q, want %q (same family after refresh)", newRTMeta.FamilyID, origFamilyID)
+	}
+}
+
+func TestServer_RefreshAccessToken_PreservesScopesAndAudience(t *testing.T) {
+	ctx := context.Background()
+	srv, store, provider := setupFlowTestServer(t)
+	srv.Config.AllowRefreshTokenRotation = true
+	srv.Config.RefreshTokenTTL = 86400
+
+	client, _, err := srv.RegisterClient(ctx,
+		"Scope Test Client",
+		ClientTypeConfidential,
+		"",
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email", "profile"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+	clientID := client.ClientID
+
+	codeVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
+	hash := sha256.Sum256([]byte(codeVerifier))
+	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	clientState := testutil.GenerateRandomString(43)
+	_, err = srv.StartAuthorizationFlow(ctx, clientID, "https://example.com/callback", "openid email profile", "", codeChallenge, PKCEMethodS256, clientState, nil)
+	if err != nil {
+		t.Fatalf("StartAuthorizationFlow() error = %v", err)
+	}
+
+	authState, err := store.GetAuthorizationState(ctx, clientState)
+	if err != nil {
+		t.Fatalf("GetAuthorizationState() error = %v", err)
+	}
+
+	authCodeObj, _, err := srv.HandleProviderCallback(ctx, authState.ProviderState, "code-"+testutil.GenerateRandomString(10))
+	if err != nil {
+		t.Fatalf("HandleProviderCallback() error = %v", err)
+	}
+
+	token, _, err := srv.ExchangeAuthorizationCode(ctx, authCodeObj.Code, clientID, "https://example.com/callback", "", codeVerifier)
+	if err != nil {
+		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
+	}
+
+	origMeta, err := store.GetTokenMetadata(token.AccessToken)
+	if err != nil {
+		t.Fatalf("GetTokenMetadata(original AT) error = %v", err)
+	}
+	if len(origMeta.Scopes) == 0 {
+		t.Fatal("Original token should have scopes set")
+	}
+
+	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
+		return &oauth2.Token{
+			AccessToken:  "refreshed-provider-at",
+			RefreshToken: "refreshed-provider-rt",
+			Expiry:       time.Now().Add(time.Hour),
+		}, nil
+	}
+
+	token2, err := srv.RefreshAccessToken(ctx, token.RefreshToken, clientID)
+	if err != nil {
+		t.Fatalf("RefreshAccessToken() error = %v", err)
+	}
+
+	newATMeta, err := store.GetTokenMetadata(token2.AccessToken)
+	if err != nil {
+		t.Fatalf("GetTokenMetadata(new AT) error = %v", err)
+	}
+
+	if !slices.Equal(newATMeta.Scopes, origMeta.Scopes) {
+		t.Errorf("Refreshed AT scopes = %v, want %v (scopes should survive refresh)", newATMeta.Scopes, origMeta.Scopes)
+	}
+
+	newRTMeta, err := store.GetTokenMetadata(token2.RefreshToken)
+	if err != nil {
+		t.Fatalf("GetTokenMetadata(new RT) error = %v", err)
+	}
+
+	if !slices.Equal(newRTMeta.Scopes, origMeta.Scopes) {
+		t.Errorf("Refreshed RT scopes = %v, want %v (scopes should survive refresh)", newRTMeta.Scopes, origMeta.Scopes)
+	}
+}
+
+func TestServer_RevokeToken_CallsTokenFamilyRevocationHandler(t *testing.T) {
+	ctx := context.Background()
+	srv, store, _ := setupFlowTestServer(t)
+
+	userID := "revoke-handler-user"
+	clientID := "revoke-handler-client"
+	familyID := testutil.GenerateRandomString(32)
+	refreshToken := testutil.GenerateRandomString(32)
+
+	var handlerCalled bool
+	var capturedUserID, capturedFamilyID string
+	srv.SetTokenFamilyRevocationHandler(func(_ context.Context, uid, fid string) {
+		handlerCalled = true
+		capturedUserID = uid
+		capturedFamilyID = fid
+	})
+
+	if err := store.SaveToken(ctx, refreshToken, &oauth2.Token{
+		AccessToken:  "provider-at",
+		RefreshToken: "provider-rt",
+		Expiry:       time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+
+	if err := store.SaveRefreshTokenWithFamily(ctx, refreshToken, userID, clientID, familyID, 1, time.Now().Add(90*24*time.Hour)); err != nil {
+		t.Fatalf("SaveRefreshTokenWithFamily() error = %v", err)
+	}
+
+	if err := srv.RevokeToken(ctx, refreshToken, clientID, "127.0.0.1"); err != nil {
+		t.Fatalf("RevokeToken() error = %v", err)
+	}
+
+	if !handlerCalled {
+		t.Fatal("TokenFamilyRevocationHandler should have been called on revocation")
+	}
+	if capturedUserID != userID {
+		t.Errorf("Handler received userID = %q, want %q", capturedUserID, userID)
+	}
+	if capturedFamilyID != familyID {
+		t.Errorf("Handler received familyID = %q, want %q", capturedFamilyID, familyID)
+	}
+}
+
+func TestServer_RevokeToken_NoHandlerDoesNotPanic(t *testing.T) {
+	ctx := context.Background()
+	srv, store, _ := setupFlowTestServer(t)
+
+	userID := "no-handler-user"
+	clientID := "no-handler-client"
+	familyID := testutil.GenerateRandomString(32)
+	refreshToken := testutil.GenerateRandomString(32)
+
+	if err := store.SaveToken(ctx, refreshToken, &oauth2.Token{
+		AccessToken:  "provider-at",
+		RefreshToken: "provider-rt",
+		Expiry:       time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+
+	if err := store.SaveRefreshTokenWithFamily(ctx, refreshToken, userID, clientID, familyID, 1, time.Now().Add(90*24*time.Hour)); err != nil {
+		t.Fatalf("SaveRefreshTokenWithFamily() error = %v", err)
+	}
+
+	if err := srv.RevokeToken(ctx, refreshToken, clientID, "127.0.0.1"); err != nil {
+		t.Fatalf("RevokeToken() should succeed without a handler: %v", err)
+	}
+}
+
+func TestServer_RevokeToken_HandlerNotCalledWithoutFamily(t *testing.T) {
+	ctx := context.Background()
+	srv, store, provider := setupFlowTestServer(t)
+
+	provider.RevokeTokenFunc = func(_ context.Context, _ string) error { return nil }
+
+	var handlerCalled bool
+	srv.SetTokenFamilyRevocationHandler(func(_ context.Context, _, _ string) {
+		handlerCalled = true
+	})
+
+	accessToken := "at-no-family"
+	if err := store.SaveToken(ctx, accessToken, &oauth2.Token{
+		AccessToken: "provider-at",
+		Expiry:      time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+
+	if err := srv.RevokeToken(ctx, accessToken, "client-1", "127.0.0.1"); err != nil {
+		t.Fatalf("RevokeToken() error = %v", err)
+	}
+
+	if handlerCalled {
+		t.Error("TokenFamilyRevocationHandler should NOT be called when token has no family")
+	}
+}
+
+func TestServer_SetTokenFamilyRevocationHandler(t *testing.T) {
+	srv, _, _ := setupFlowTestServer(t)
+
+	var called bool
+	srv.SetTokenFamilyRevocationHandler(func(_ context.Context, _, _ string) {
+		called = true
+	})
+
+	if srv.tokenFamilyRevocationHandler == nil {
+		t.Fatal("Handler should be set after SetTokenFamilyRevocationHandler()")
+	}
+
+	srv.tokenFamilyRevocationHandler(context.Background(), "u", "f")
+	if !called {
+		t.Error("Handler should be callable")
 	}
 }

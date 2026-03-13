@@ -742,11 +742,12 @@ func (s *Server) handleRefreshTokenError(ctx context.Context, err error, refresh
 	return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 }
 
-// rotateRefreshToken handles OAuth 2.1 refresh token rotation with family tracking
-func (s *Server) rotateRefreshToken(ctx context.Context, oldRefreshToken, userID, clientID string, familyStore storage.RefreshTokenFamilyStore, supportsFamilies bool) (string, bool) {
+// rotateRefreshToken handles OAuth 2.1 refresh token rotation with family tracking.
+// Returns (newRefreshToken, familyID, rotated).
+func (s *Server) rotateRefreshToken(ctx context.Context, oldRefreshToken, userID, clientID string, familyStore storage.RefreshTokenFamilyStore, supportsFamilies bool) (string, string, bool) {
 	if !s.Config.AllowRefreshTokenRotation {
 		s.Logger.Warn("Refresh token reused (rotation disabled)", "user_id", userID)
-		return oldRefreshToken, false
+		return oldRefreshToken, "", false
 	}
 
 	newRefreshToken := generateRandomToken()
@@ -784,7 +785,7 @@ func (s *Server) rotateRefreshToken(ctx context.Context, oldRefreshToken, userID
 		}
 	}
 
-	return newRefreshToken, true
+	return newRefreshToken, familyID, true
 }
 
 // StartAuthorizationFlow starts a new OAuth authorization flow
@@ -1128,9 +1129,15 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 		return nil, "", err
 	}
 
-	tokenResponse := s.generateAndStoreTokens(ctx, authCode, clientID)
+	// Pre-generate familyID so metadata can reference it before the family is persisted
+	var familyID string
+	if _, ok := s.tokenStore.(storage.RefreshTokenFamilyStore); ok {
+		familyID = generateRandomToken()
+	}
 
-	s.trackRefreshTokenFamily(ctx, tokenResponse.RefreshToken, authCode.UserID, clientID)
+	tokenResponse := s.generateAndStoreTokens(ctx, authCode, clientID, familyID)
+
+	s.trackRefreshTokenFamily(ctx, tokenResponse.RefreshToken, authCode.UserID, clientID, familyID)
 
 	if s.Auditor != nil {
 		s.Auditor.LogTokenIssued(authCode.UserID, clientID, "", authCode.Scope)
@@ -1221,7 +1228,7 @@ func (s *Server) logScopeValidationFailure(authCode *storage.AuthorizationCode, 
 }
 
 // generateAndStoreTokens generates and stores access and refresh tokens.
-func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.AuthorizationCode, clientID string) *oauth2.Token {
+func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.AuthorizationCode, clientID, familyID string) *oauth2.Token {
 	accessToken := generateRandomToken()
 	refreshToken := generateRandomToken()
 
@@ -1257,20 +1264,38 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 	// Track AT -> RT pairing for refresh-time updates
 	s.registerTokenPair(accessToken, refreshToken)
 
-	// Store token metadata
 	tokenScopes := normalizeScopes(authCode.Scope)
-	s.saveTokenMetadata(accessToken, authCode.UserID, clientID, "access", authCode.Audience, tokenScopes)
-	s.saveTokenMetadata(refreshToken, authCode.UserID, clientID, "refresh", authCode.Audience, tokenScopes)
+	s.saveTokenMetadata(tokenMetadataParams{
+		TokenID:   accessToken,
+		UserID:    authCode.UserID,
+		ClientID:  clientID,
+		TokenType: "access",
+		Audience:  authCode.Audience,
+		FamilyID:  familyID,
+		Scopes:    tokenScopes,
+	})
+	s.saveTokenMetadata(tokenMetadataParams{
+		TokenID:   refreshToken,
+		UserID:    authCode.UserID,
+		ClientID:  clientID,
+		TokenType: "refresh",
+		Audience:  authCode.Audience,
+		FamilyID:  familyID,
+		Scopes:    tokenScopes,
+	})
 
 	return tokenResponse
 }
 
 // trackRefreshTokenFamily tracks the refresh token with family support if available.
-func (s *Server) trackRefreshTokenFamily(ctx context.Context, refreshToken, userID, clientID string) {
+// If familyID is provided it is used; otherwise a new one is generated.
+func (s *Server) trackRefreshTokenFamily(ctx context.Context, refreshToken, userID, clientID, familyID string) {
 	refreshTokenExpiry := time.Now().Add(time.Duration(s.Config.RefreshTokenTTL) * time.Second)
 
 	if familyStore, ok := s.tokenStore.(storage.RefreshTokenFamilyStore); ok {
-		familyID := generateRandomToken()
+		if familyID == "" {
+			familyID = generateRandomToken()
+		}
 		if err := familyStore.SaveRefreshTokenWithFamily(ctx, refreshToken, userID, clientID, familyID, 0, refreshTokenExpiry); err != nil {
 			s.Logger.Warn("Failed to track refresh token with family", "error", err)
 		} else {
@@ -1303,6 +1328,18 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	// Check if storage supports token family tracking (OAuth 2.1 reuse detection)
 	familyStore, supportsFamilies := s.tokenStore.(storage.RefreshTokenFamilyStore)
 
+	// Capture scopes and audience from old token metadata before the atomic
+	// delete removes it. Best-effort: if there's a race, the atomic operation
+	// below will fail and these values won't be used.
+	var oldScopes []string
+	var oldAudience string
+	if metaGetter, ok := s.tokenStore.(storage.TokenMetadataGetter); ok {
+		if oldMeta, err := metaGetter.GetTokenMetadata(refreshToken); err == nil && oldMeta != nil {
+			oldScopes = oldMeta.Scopes
+			oldAudience = oldMeta.Audience
+		}
+	}
+
 	// OAUTH 2.1 SECURITY: Atomically get and delete refresh token FIRST
 	// Returns clientID for client binding validation
 	userID, storedClientID, providerToken, err := s.tokenStore.AtomicGetAndDeleteRefreshToken(ctx, refreshToken)
@@ -1327,7 +1364,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	newAccessToken := generateRandomToken()
 
 	// OAuth 2.1: Refresh Token Rotation
-	newRefreshToken, rotated := s.rotateRefreshToken(ctx, refreshToken, userID, clientID, familyStore, supportsFamilies)
+	newRefreshToken, familyID, rotated := s.rotateRefreshToken(ctx, refreshToken, userID, clientID, familyStore, supportsFamilies)
 
 	var providerExpiry time.Time
 	if newProviderToken != nil {
@@ -1364,14 +1401,24 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	// Track AT -> RT pairing for refresh-time updates
 	s.registerTokenPair(newAccessToken, newRefreshToken)
 
-	// Track new access token metadata for revocation (OAuth 2.1 code reuse detection)
-	if metadataStore, ok := s.tokenStore.(interface {
-		SaveTokenMetadata(tokenID, userID, clientID, tokenType string) error
-	}); ok {
-		if err := metadataStore.SaveTokenMetadata(newAccessToken, userID, clientID, "access"); err != nil {
-			s.Logger.Warn("Failed to save access token metadata", "error", err)
-		}
-	}
+	s.saveTokenMetadata(tokenMetadataParams{
+		TokenID:   newAccessToken,
+		UserID:    userID,
+		ClientID:  clientID,
+		TokenType: "access",
+		Audience:  oldAudience,
+		FamilyID:  familyID,
+		Scopes:    oldScopes,
+	})
+	s.saveTokenMetadata(tokenMetadataParams{
+		TokenID:   newRefreshToken,
+		UserID:    userID,
+		ClientID:  clientID,
+		TokenType: "refresh",
+		Audience:  oldAudience,
+		FamilyID:  familyID,
+		Scopes:    oldScopes,
+	})
 
 	if s.Auditor != nil {
 		s.Auditor.LogTokenRefreshed(userID, clientID, "", rotated)
@@ -1531,6 +1578,11 @@ func (s *Server) revokeTokenFamilyIfNeeded(ctx context.Context, family *storage.
 	}
 	s.Logger.Info("Revoked refresh token family on explicit revocation",
 		"family_id", family.FamilyID, "client_id", clientID, "ip", clientIP)
+
+	if s.tokenFamilyRevocationHandler != nil {
+		s.tokenFamilyRevocationHandler(ctx, family.UserID, family.FamilyID)
+	}
+
 	if s.Auditor != nil {
 		s.Auditor.LogEvent(security.Event{
 			Type:     security.EventRefreshTokenFamilyRevoked,
