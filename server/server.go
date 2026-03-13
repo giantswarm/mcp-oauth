@@ -21,6 +21,10 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
+// TokenFamilyRevocationHandler is called when a token family is revoked (e.g., on logout).
+// Consumers can use this to clean up per-session state associated with the family ID.
+type TokenFamilyRevocationHandler func(ctx context.Context, userID, familyID string)
+
 // Server implements the OAuth 2.1 server logic (provider-agnostic).
 // It coordinates the OAuth flow using a Provider and storage backends.
 type Server struct {
@@ -28,6 +32,7 @@ type Server struct {
 	tokenStore                    storage.TokenStore
 	clientStore                   storage.ClientStore
 	flowStore                     storage.FlowStore
+	tokenFamilyRevocationHandler  TokenFamilyRevocationHandler
 	Encryptor                     *security.Encryptor
 	Auditor                       *security.Auditor
 	RateLimiter                   *security.RateLimiter                   // IP-based rate limiter
@@ -336,6 +341,12 @@ func (s *Server) SetMetadataFetchRateLimiter(rl *security.RateLimiter) {
 	s.metadataFetchRateLimiter = rl
 }
 
+// SetTokenFamilyRevocationHandler sets a callback that fires when a token family
+// is revoked (e.g., on logout). This lets consumers clean up per-session state.
+func (s *Server) SetTokenFamilyRevocationHandler(handler TokenFamilyRevocationHandler) {
+	s.tokenFamilyRevocationHandler = handler
+}
+
 // SetInstrumentation sets the OpenTelemetry instrumentation for server and storage
 func (s *Server) SetInstrumentation(inst *instrumentation.Instrumentation) {
 	s.Instrumentation = inst
@@ -366,13 +377,22 @@ func (s *Server) TokenStore() storage.TokenStore {
 
 // saveTokenMetadata saves token metadata using the most capable store method available.
 // It tries methods in order of capability:
-// 1. SaveTokenMetadataWithScopesAndAudience (newest - includes scopes and audience)
-// 2. SaveTokenMetadataWithAudience (includes audience only)
-// 3. SaveTokenMetadata (basic - no audience or scopes)
+// 1. SaveTokenMetadataWithFamily (newest - includes family ID, scopes, and audience)
+// 2. SaveTokenMetadataWithScopesAndAudience (includes scopes and audience)
+// 3. SaveTokenMetadataWithAudience (includes audience only)
+// 4. SaveTokenMetadata (basic - no audience or scopes)
 //
 // This ensures backward compatibility with stores that don't support the newest methods.
-func (s *Server) saveTokenMetadata(tokenID, userID, clientID, tokenType, audience string, scopes []string) {
-	// Try most capable first (scopes + audience)
+func (s *Server) saveTokenMetadata(tokenID, userID, clientID, tokenType, audience, familyID string, scopes []string) {
+	// Try most capable first (family + scopes + audience)
+	if store, ok := s.tokenStore.(storage.TokenMetadataStoreWithFamily); ok {
+		if err := store.SaveTokenMetadataWithFamily(tokenID, userID, clientID, tokenType, audience, familyID, scopes); err != nil {
+			s.Logger.Warn("Failed to save token metadata with family", "error", err)
+		}
+		return
+	}
+
+	// Fallback to scopes + audience
 	if store, ok := s.tokenStore.(storage.TokenMetadataStoreWithScopesAndAudience); ok {
 		if err := store.SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID, tokenType, audience, scopes); err != nil {
 			s.Logger.Warn("Failed to save token metadata with scopes and audience", "error", err)

@@ -1723,3 +1723,72 @@ func TestStore_CountKeysByPattern(t *testing.T) {
 		t.Errorf("countKeysByPattern returned %d, want at least 5", count)
 	}
 }
+
+func TestStore_SaveTokenMetadataWithFamily(t *testing.T) {
+	s := testStore(t)
+
+	err := s.SaveTokenMetadataWithFamily("family-meta-1", "user1", "client1", "access", "https://api.example.com", "family-xyz", []string{"openid", "email"})
+	if err != nil {
+		t.Fatalf("SaveTokenMetadataWithFamily failed: %v", err)
+	}
+
+	meta, err := s.GetTokenMetadata("family-meta-1")
+	if err != nil {
+		t.Fatalf("GetTokenMetadata failed: %v", err)
+	}
+
+	if meta.FamilyID != "family-xyz" {
+		t.Errorf("FamilyID = %q, want %q", meta.FamilyID, "family-xyz")
+	}
+	if meta.UserID != "user1" {
+		t.Errorf("UserID = %q, want %q", meta.UserID, "user1")
+	}
+	if meta.ClientID != "client1" {
+		t.Errorf("ClientID = %q, want %q", meta.ClientID, "client1")
+	}
+	if meta.Audience != "https://api.example.com" {
+		t.Errorf("Audience = %q, want %q", meta.Audience, "https://api.example.com")
+	}
+	if len(meta.Scopes) != 2 || meta.Scopes[0] != "openid" || meta.Scopes[1] != "email" {
+		t.Errorf("Scopes = %v, want [openid email]", meta.Scopes)
+	}
+}
+
+func TestStore_SaveTokenMetadataWithFamily_EmptyFamilyID(t *testing.T) {
+	s := testStore(t)
+
+	err := s.SaveTokenMetadataWithFamily("family-meta-empty", "user1", "client1", "refresh", "", "", nil)
+	if err != nil {
+		t.Fatalf("SaveTokenMetadataWithFamily failed: %v", err)
+	}
+
+	meta, err := s.GetTokenMetadata("family-meta-empty")
+	if err != nil {
+		t.Fatalf("GetTokenMetadata failed: %v", err)
+	}
+
+	if meta.FamilyID != "" {
+		t.Errorf("FamilyID = %q, want empty", meta.FamilyID)
+	}
+}
+
+func TestStore_SaveTokenMetadataWithScopesAndAudience_DelegatesToFamily(t *testing.T) {
+	s := testStore(t)
+
+	err := s.SaveTokenMetadataWithScopesAndAudience("family-delegate-1", "user1", "client1", "access", "https://api.example.com", []string{"read"})
+	if err != nil {
+		t.Fatalf("SaveTokenMetadataWithScopesAndAudience failed: %v", err)
+	}
+
+	meta, err := s.GetTokenMetadata("family-delegate-1")
+	if err != nil {
+		t.Fatalf("GetTokenMetadata failed: %v", err)
+	}
+
+	if meta.FamilyID != "" {
+		t.Errorf("FamilyID = %q, want empty (delegation should pass empty familyID)", meta.FamilyID)
+	}
+	if meta.Audience != "https://api.example.com" {
+		t.Errorf("Audience = %q, want %q", meta.Audience, "https://api.example.com")
+	}
+}

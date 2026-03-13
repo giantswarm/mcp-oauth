@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/oauth2"
+
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/providers"
@@ -5804,5 +5806,200 @@ func TestHandler_ServeSuccessInterstitial_AppNamePlaceholder(t *testing.T) {
 	}
 	if !strings.Contains(body, "Open Cursor") {
 		t.Error("Response should contain 'Open Cursor' (AppName replaced in button)")
+	}
+}
+
+func TestHandler_ValidateToken_SessionIDFromContext_WithFamilyID(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+	provider := mock.NewProvider()
+
+	config := &server.Config{
+		Issuer: testIssuer,
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+
+	accessToken := "session-test-at"
+	familyID := "family-session-abc"
+
+	ctx := context.Background()
+	if err := store.SaveToken(ctx, accessToken, &oauth2.Token{
+		AccessToken: "provider-access",
+		Expiry:      time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+
+	if err := store.SaveTokenMetadataWithFamily(accessToken, "mock-user-123", "client-1", "access", "", familyID, nil); err != nil {
+		t.Fatalf("SaveTokenMetadataWithFamily() error = %v", err)
+	}
+
+	var capturedSessionID string
+	var sessionOK bool
+
+	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		capturedSessionID, sessionOK = SessionIDFromContext(r.Context())
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	w := httptest.NewRecorder()
+
+	handler.ValidateToken(nextHandler).ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if !sessionOK {
+		t.Error("SessionIDFromContext() should return true when FamilyID is set")
+	}
+	if capturedSessionID != familyID {
+		t.Errorf("SessionIDFromContext() = %q, want %q", capturedSessionID, familyID)
+	}
+}
+
+func TestHandler_ValidateToken_SessionIDFromContext_WithoutFamilyID(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+	provider := mock.NewProvider()
+
+	config := &server.Config{
+		Issuer: testIssuer,
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+
+	accessToken := "session-test-no-family"
+
+	ctx := context.Background()
+	if err := store.SaveToken(ctx, accessToken, &oauth2.Token{
+		AccessToken: "provider-access",
+		Expiry:      time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+
+	var capturedSessionID string
+	var sessionOK bool
+
+	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		capturedSessionID, sessionOK = SessionIDFromContext(r.Context())
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	w := httptest.NewRecorder()
+
+	handler.ValidateToken(nextHandler).ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if sessionOK {
+		t.Error("SessionIDFromContext() should return false when no FamilyID is set")
+	}
+	if capturedSessionID != "" {
+		t.Errorf("SessionIDFromContext() = %q, want empty", capturedSessionID)
+	}
+}
+
+func TestHandler_ValidateToken_UserInfoAndSessionIDCoexist(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+	provider := mock.NewProvider()
+
+	config := &server.Config{
+		Issuer: testIssuer,
+	}
+
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New() error = %v", err)
+	}
+
+	handler := NewHandler(srv, nil)
+
+	accessToken := "coexist-test-at"
+	familyID := "family-coexist-xyz"
+
+	ctx := context.Background()
+	if err := store.SaveToken(ctx, accessToken, &oauth2.Token{
+		AccessToken: "provider-access",
+		Expiry:      time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+
+	if err := store.SaveTokenMetadataWithFamily(accessToken, "mock-user-123", "client-1", "access", "", familyID, nil); err != nil {
+		t.Fatalf("SaveTokenMetadataWithFamily() error = %v", err)
+	}
+
+	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		userInfo, uiOK := UserInfoFromContext(r.Context())
+		sessionID, sidOK := SessionIDFromContext(r.Context())
+
+		if !uiOK || userInfo == nil {
+			t.Error("UserInfoFromContext() should return valid user info")
+		}
+		if !sidOK || sessionID == "" {
+			t.Error("SessionIDFromContext() should return valid session ID")
+		}
+		if userInfo != nil && userInfo.ID == "" {
+			t.Error("UserInfo.ID should not be empty")
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	w := httptest.NewRecorder()
+
+	handler.ValidateToken(nextHandler).ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestSessionIDFromContext_EmptyContext(t *testing.T) {
+	ctx := context.Background()
+	id, ok := SessionIDFromContext(ctx)
+
+	if ok {
+		t.Error("SessionIDFromContext() on empty context should return false")
+	}
+	if id != "" {
+		t.Errorf("SessionIDFromContext() = %q, want empty", id)
+	}
+}
+
+func TestContextWithSessionID_RoundTrip(t *testing.T) {
+	ctx := context.Background()
+	ctx = ContextWithSessionID(ctx, "test-session-42")
+
+	id, ok := SessionIDFromContext(ctx)
+	if !ok {
+		t.Error("SessionIDFromContext() should return true")
+	}
+	if id != "test-session-42" {
+		t.Errorf("SessionIDFromContext() = %q, want %q", id, "test-session-42")
+	}
+}
+
+func TestSessionIDFromContext_EmptyString(t *testing.T) {
+	ctx := ContextWithSessionID(context.Background(), "")
+	_, ok := SessionIDFromContext(ctx)
+	if ok {
+		t.Error("SessionIDFromContext() should return false for empty string")
 	}
 }
