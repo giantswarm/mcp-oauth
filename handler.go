@@ -2333,8 +2333,11 @@ func (h *Handler) validateTokenScopesFromMetadata(w http.ResponseWriter, r *http
 
 	var description string
 	if h.server.Config.HideEndpointPathInErrors {
+		// SECURITY: Hide endpoint path to prevent information disclosure
 		description = "Token lacks required scopes for this endpoint"
 	} else {
+		// SECURITY: Sanitize path in error message to prevent log injection.
+		// Truncate very long paths to prevent log pollution.
 		safePath := r.URL.Path
 		if len(safePath) > 100 {
 			safePath = safePath[:100] + "..."

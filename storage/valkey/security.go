@@ -154,8 +154,12 @@ func (s *Store) saveRefreshTokenMetadata(ctx context.Context, refreshToken, user
 	if err := s.client.Do(ctx,
 		s.client.B().Set().Key(tokenMetaKey).Value(string(tokenMetaData)).Nx().Ex(ttl).Build(),
 	).Error(); err != nil {
-		s.logger.Debug("Token metadata already exists (NX not set), preserving richer entry",
-			"token", safeTruncate(refreshToken, tokenIDLogLength))
+		if isNilError(err) {
+			s.logger.Debug("Token metadata already exists (NX not set), preserving richer entry",
+				"token", safeTruncate(refreshToken, tokenIDLogLength))
+		} else {
+			return fmt.Errorf("failed to save refresh token metadata: %w", err)
+		}
 	}
 	return nil
 }

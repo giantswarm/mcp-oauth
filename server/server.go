@@ -380,6 +380,18 @@ func (s *Server) TokenStore() storage.TokenStore {
 	return s.tokenStore
 }
 
+// tokenMetadataParams bundles the parameters for saveTokenMetadata to avoid
+// a long positional-string parameter list that is easy to misorder.
+type tokenMetadataParams struct {
+	TokenID   string
+	UserID    string
+	ClientID  string
+	TokenType string
+	Audience  string
+	FamilyID  string
+	Scopes    []string
+}
+
 // saveTokenMetadata saves token metadata using the most capable store method available.
 // It tries methods in order of capability:
 // 1. SaveTokenMetadataWithFamily (newest - includes family ID, scopes, and audience)
@@ -388,34 +400,30 @@ func (s *Server) TokenStore() storage.TokenStore {
 // 4. SaveTokenMetadata (basic - no audience or scopes)
 //
 // This ensures backward compatibility with stores that don't support the newest methods.
-func (s *Server) saveTokenMetadata(tokenID, userID, clientID, tokenType, audience, familyID string, scopes []string) {
-	// Try most capable first (family + scopes + audience)
+func (s *Server) saveTokenMetadata(p tokenMetadataParams) {
 	if store, ok := s.tokenStore.(storage.TokenMetadataStoreWithFamily); ok {
-		if err := store.SaveTokenMetadataWithFamily(tokenID, userID, clientID, tokenType, audience, familyID, scopes); err != nil {
+		if err := store.SaveTokenMetadataWithFamily(p.TokenID, p.UserID, p.ClientID, p.TokenType, p.Audience, p.FamilyID, p.Scopes); err != nil {
 			s.Logger.Warn("Failed to save token metadata with family", "error", err)
 		}
 		return
 	}
 
-	// Fallback to scopes + audience
 	if store, ok := s.tokenStore.(storage.TokenMetadataStoreWithScopesAndAudience); ok {
-		if err := store.SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID, tokenType, audience, scopes); err != nil {
+		if err := store.SaveTokenMetadataWithScopesAndAudience(p.TokenID, p.UserID, p.ClientID, p.TokenType, p.Audience, p.Scopes); err != nil {
 			s.Logger.Warn("Failed to save token metadata with scopes and audience", "error", err)
 		}
 		return
 	}
 
-	// Fallback to audience only
 	if store, ok := s.tokenStore.(storage.TokenMetadataStoreWithAudience); ok {
-		if err := store.SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenType, audience); err != nil {
+		if err := store.SaveTokenMetadataWithAudience(p.TokenID, p.UserID, p.ClientID, p.TokenType, p.Audience); err != nil {
 			s.Logger.Warn("Failed to save token metadata with audience", "error", err)
 		}
 		return
 	}
 
-	// Fallback to basic
 	if store, ok := s.tokenStore.(storage.TokenMetadataStore); ok {
-		if err := store.SaveTokenMetadata(tokenID, userID, clientID, tokenType); err != nil {
+		if err := store.SaveTokenMetadata(p.TokenID, p.UserID, p.ClientID, p.TokenType); err != nil {
 			s.Logger.Warn("Failed to save token metadata", "error", err)
 		}
 	}

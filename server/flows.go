@@ -1264,10 +1264,25 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 	// Track AT -> RT pairing for refresh-time updates
 	s.registerTokenPair(accessToken, refreshToken)
 
-	// Store token metadata
 	tokenScopes := normalizeScopes(authCode.Scope)
-	s.saveTokenMetadata(accessToken, authCode.UserID, clientID, "access", authCode.Audience, familyID, tokenScopes)
-	s.saveTokenMetadata(refreshToken, authCode.UserID, clientID, "refresh", authCode.Audience, familyID, tokenScopes)
+	s.saveTokenMetadata(tokenMetadataParams{
+		TokenID:   accessToken,
+		UserID:    authCode.UserID,
+		ClientID:  clientID,
+		TokenType: "access",
+		Audience:  authCode.Audience,
+		FamilyID:  familyID,
+		Scopes:    tokenScopes,
+	})
+	s.saveTokenMetadata(tokenMetadataParams{
+		TokenID:   refreshToken,
+		UserID:    authCode.UserID,
+		ClientID:  clientID,
+		TokenType: "refresh",
+		Audience:  authCode.Audience,
+		FamilyID:  familyID,
+		Scopes:    tokenScopes,
+	})
 
 	return tokenResponse
 }
@@ -1386,9 +1401,24 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	// Track AT -> RT pairing for refresh-time updates
 	s.registerTokenPair(newAccessToken, newRefreshToken)
 
-	// Save token metadata preserving scopes and audience from the original grant
-	s.saveTokenMetadata(newAccessToken, userID, clientID, "access", oldAudience, familyID, oldScopes)
-	s.saveTokenMetadata(newRefreshToken, userID, clientID, "refresh", oldAudience, familyID, oldScopes)
+	s.saveTokenMetadata(tokenMetadataParams{
+		TokenID:   newAccessToken,
+		UserID:    userID,
+		ClientID:  clientID,
+		TokenType: "access",
+		Audience:  oldAudience,
+		FamilyID:  familyID,
+		Scopes:    oldScopes,
+	})
+	s.saveTokenMetadata(tokenMetadataParams{
+		TokenID:   newRefreshToken,
+		UserID:    userID,
+		ClientID:  clientID,
+		TokenType: "refresh",
+		Audience:  oldAudience,
+		FamilyID:  familyID,
+		Scopes:    oldScopes,
+	})
 
 	if s.Auditor != nil {
 		s.Auditor.LogTokenRefreshed(userID, clientID, "", rotated)

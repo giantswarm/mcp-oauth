@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -7915,13 +7916,8 @@ func TestServer_RefreshAccessToken_PreservesScopesAndAudience(t *testing.T) {
 		t.Fatalf("GetTokenMetadata(new AT) error = %v", err)
 	}
 
-	if len(newATMeta.Scopes) != len(origMeta.Scopes) {
+	if !slices.Equal(newATMeta.Scopes, origMeta.Scopes) {
 		t.Errorf("Refreshed AT scopes = %v, want %v (scopes should survive refresh)", newATMeta.Scopes, origMeta.Scopes)
-	}
-	for i, s := range origMeta.Scopes {
-		if i < len(newATMeta.Scopes) && newATMeta.Scopes[i] != s {
-			t.Errorf("Refreshed AT scope[%d] = %q, want %q", i, newATMeta.Scopes[i], s)
-		}
 	}
 
 	newRTMeta, err := store.GetTokenMetadata(token2.RefreshToken)
@@ -7929,7 +7925,7 @@ func TestServer_RefreshAccessToken_PreservesScopesAndAudience(t *testing.T) {
 		t.Fatalf("GetTokenMetadata(new RT) error = %v", err)
 	}
 
-	if len(newRTMeta.Scopes) != len(origMeta.Scopes) {
+	if !slices.Equal(newRTMeta.Scopes, origMeta.Scopes) {
 		t.Errorf("Refreshed RT scopes = %v, want %v (scopes should survive refresh)", newRTMeta.Scopes, origMeta.Scopes)
 	}
 }
@@ -8033,8 +8029,6 @@ func TestServer_RevokeToken_HandlerNotCalledWithoutFamily(t *testing.T) {
 }
 
 func TestServer_SetTokenFamilyRevocationHandler(t *testing.T) {
-	_, _, _ = setupFlowTestServer(t)
-
 	srv, _, _ := setupFlowTestServer(t)
 
 	var called bool
