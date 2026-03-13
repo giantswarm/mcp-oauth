@@ -18,7 +18,8 @@ import (
 
 // Test constants for consistent naming
 const (
-	testUserID = "test-user"
+	testUserID      = "test-user"
+	testAudienceURL = "https://api.example.com"
 )
 
 // testStore creates a test store connected to a local Valkey instance.
@@ -1069,7 +1070,7 @@ func TestTokenRevocationStore_GetTokensByUserClient(t *testing.T) {
 func TestTokenRevocationStore_SaveTokenMetadataWithScopesAndAudience(t *testing.T) {
 	s := testStore(t)
 
-	err := s.SaveTokenMetadataWithScopesAndAudience("meta-token-1", "user1", "client1", "access", "https://api.example.com", []string{"read", "write"})
+	err := s.SaveTokenMetadataWithScopesAndAudience("meta-token-1", "user1", "client1", "access", testAudienceURL, []string{"read", "write"})
 	if err != nil {
 		t.Fatalf("SaveTokenMetadataWithScopesAndAudience failed: %v", err)
 	}
@@ -1079,8 +1080,8 @@ func TestTokenRevocationStore_SaveTokenMetadataWithScopesAndAudience(t *testing.
 		t.Fatalf("GetTokenMetadata failed: %v", err)
 	}
 
-	if meta.Audience != "https://api.example.com" {
-		t.Errorf("Audience = %q, want %q", meta.Audience, "https://api.example.com")
+	if meta.Audience != testAudienceURL {
+		t.Errorf("Audience = %q, want %q", meta.Audience, testAudienceURL)
 	}
 	if len(meta.Scopes) != 2 {
 		t.Errorf("Scopes length = %d, want 2", len(meta.Scopes))
@@ -1727,7 +1728,7 @@ func TestStore_CountKeysByPattern(t *testing.T) {
 func TestStore_SaveTokenMetadataWithFamily(t *testing.T) {
 	s := testStore(t)
 
-	err := s.SaveTokenMetadataWithFamily("family-meta-1", "user1", "client1", "access", "https://api.example.com", "family-xyz", []string{"openid", "email"})
+	err := s.SaveTokenMetadataWithFamily("family-meta-1", "user1", "client1", "access", testAudienceURL, "family-xyz", []string{"openid", "email"})
 	if err != nil {
 		t.Fatalf("SaveTokenMetadataWithFamily failed: %v", err)
 	}
@@ -1746,8 +1747,8 @@ func TestStore_SaveTokenMetadataWithFamily(t *testing.T) {
 	if meta.ClientID != "client1" {
 		t.Errorf("ClientID = %q, want %q", meta.ClientID, "client1")
 	}
-	if meta.Audience != "https://api.example.com" {
-		t.Errorf("Audience = %q, want %q", meta.Audience, "https://api.example.com")
+	if meta.Audience != testAudienceURL {
+		t.Errorf("Audience = %q, want %q", meta.Audience, testAudienceURL)
 	}
 	if len(meta.Scopes) != 2 || meta.Scopes[0] != "openid" || meta.Scopes[1] != "email" {
 		t.Errorf("Scopes = %v, want [openid email]", meta.Scopes)
@@ -1775,7 +1776,7 @@ func TestStore_SaveTokenMetadataWithFamily_EmptyFamilyID(t *testing.T) {
 func TestStore_SaveTokenMetadataWithScopesAndAudience_DelegatesToFamily(t *testing.T) {
 	s := testStore(t)
 
-	err := s.SaveTokenMetadataWithScopesAndAudience("family-delegate-1", "user1", "client1", "access", "https://api.example.com", []string{"read"})
+	err := s.SaveTokenMetadataWithScopesAndAudience("family-delegate-1", "user1", "client1", "access", testAudienceURL, []string{"read"})
 	if err != nil {
 		t.Fatalf("SaveTokenMetadataWithScopesAndAudience failed: %v", err)
 	}
@@ -1788,7 +1789,7 @@ func TestStore_SaveTokenMetadataWithScopesAndAudience_DelegatesToFamily(t *testi
 	if meta.FamilyID != "" {
 		t.Errorf("FamilyID = %q, want empty (delegation should pass empty familyID)", meta.FamilyID)
 	}
-	if meta.Audience != "https://api.example.com" {
-		t.Errorf("Audience = %q, want %q", meta.Audience, "https://api.example.com")
+	if meta.Audience != testAudienceURL {
+		t.Errorf("Audience = %q, want %q", meta.Audience, testAudienceURL)
 	}
 }

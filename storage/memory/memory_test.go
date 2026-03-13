@@ -18,6 +18,7 @@ const (
 	testUserID       = "test-user"
 	testRefreshToken = "test-refresh-token"
 	testSecret       = "test-secret"
+	testAudienceURL  = "https://api.example.com"
 )
 
 // ============================================================
@@ -1540,7 +1541,7 @@ func TestStore_SaveTokenMetadataWithFamily(t *testing.T) {
 	store := New()
 	defer store.Stop()
 
-	err := store.SaveTokenMetadataWithFamily("token-1", "user-1", "client-1", "access", "https://api.example.com", "family-abc", []string{"openid", "email"})
+	err := store.SaveTokenMetadataWithFamily("token-1", "user-1", "client-1", "access", testAudienceURL, "family-abc", []string{"openid", "email"})
 	if err != nil {
 		t.Fatalf("SaveTokenMetadataWithFamily() error = %v", err)
 	}
@@ -1562,8 +1563,8 @@ func TestStore_SaveTokenMetadataWithFamily(t *testing.T) {
 	if meta.TokenType != "access" {
 		t.Errorf("TokenType = %q, want %q", meta.TokenType, "access")
 	}
-	if meta.Audience != "https://api.example.com" {
-		t.Errorf("Audience = %q, want %q", meta.Audience, "https://api.example.com")
+	if meta.Audience != testAudienceURL {
+		t.Errorf("Audience = %q, want %q", meta.Audience, testAudienceURL)
 	}
 	if len(meta.Scopes) != 2 || meta.Scopes[0] != "openid" || meta.Scopes[1] != "email" {
 		t.Errorf("Scopes = %v, want [openid email]", meta.Scopes)
@@ -1618,7 +1619,7 @@ func TestStore_SaveTokenMetadataWithScopesAndAudience_DelegatesToFamily(t *testi
 	store := New()
 	defer store.Stop()
 
-	err := store.SaveTokenMetadataWithScopesAndAudience("token-d", "user-1", "client-1", "access", "https://api.example.com", []string{"read"})
+	err := store.SaveTokenMetadataWithScopesAndAudience("token-d", "user-1", "client-1", "access", testAudienceURL, []string{"read"})
 	if err != nil {
 		t.Fatalf("SaveTokenMetadataWithScopesAndAudience() error = %v", err)
 	}
@@ -1631,7 +1632,7 @@ func TestStore_SaveTokenMetadataWithScopesAndAudience_DelegatesToFamily(t *testi
 	if meta.FamilyID != "" {
 		t.Errorf("FamilyID = %q, want empty (delegation should pass empty familyID)", meta.FamilyID)
 	}
-	if meta.Audience != "https://api.example.com" {
-		t.Errorf("Audience = %q, want %q", meta.Audience, "https://api.example.com")
+	if meta.Audience != testAudienceURL {
+		t.Errorf("Audience = %q, want %q", meta.Audience, testAudienceURL)
 	}
 }

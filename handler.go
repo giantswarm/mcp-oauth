@@ -2345,22 +2345,6 @@ func (h *Handler) validateTokenScopesFromMetadata(w http.ResponseWriter, r *http
 	return false
 }
 
-// validateTokenScopes checks if the token has required scopes for the endpoint.
-// Returns true if validation passes, false if insufficient scopes (response already written).
-func (h *Handler) validateTokenScopes(w http.ResponseWriter, r *http.Request, accessToken string, userInfo *providers.UserInfo, clientIP string) bool {
-	return h.validateTokenScopesFromMetadata(w, r, h.getTokenMetadata(accessToken), userInfo, clientIP)
-}
-
-// getTokenScopes retrieves scopes from token metadata.
-// Returns nil if the store doesn't support metadata or if metadata cannot be retrieved.
-func (h *Handler) getTokenScopes(accessToken string) []string {
-	metadata := h.getTokenMetadata(accessToken)
-	if metadata == nil {
-		return nil
-	}
-	return metadata.Scopes
-}
-
 // getRequiredScopes returns the scopes required for accessing a given request path and method.
 // It checks both EndpointMethodScopeRequirements (method-aware) and EndpointScopeRequirements
 // (method-agnostic) configurations.
