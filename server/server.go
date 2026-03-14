@@ -25,6 +25,14 @@ import (
 // created during authorization code exchange. Consumers can use this to
 // initialize per-session state (e.g., establish SSO connections).
 //
+// The provided context is the HTTP request context of the token exchange and
+// may be canceled when the request completes. If the handler performs slow
+// initialization, it should derive a new context with its own deadline.
+//
+// The handler is only invoked when the token store supports refresh token
+// family tracking (implements [storage.RefreshTokenFamilyStore]). If the store
+// does not support families, the handler is silently skipped.
+//
 // Parameters:
 //   - ctx: the HTTP request context of the token exchange
 //   - userID: the authenticated user's identifier
@@ -366,8 +374,17 @@ func (s *Server) SetMetadataFetchRateLimiter(rl *security.RateLimiter) {
 // token family is created during authorization code exchange. This lets consumers
 // initialize per-session state (e.g., establish SSO connections to downstream servers).
 // Must be called during server initialization, before the server starts handling requests.
+//
+// The handler is only invoked when the token store implements
+// [storage.RefreshTokenFamilyStore]. A warning is logged at registration time
+// if the current store does not support families.
 func (s *Server) SetSessionCreationHandler(handler SessionCreationHandler) {
 	s.sessionCreationHandler = handler
+	if handler != nil {
+		if _, ok := s.tokenStore.(storage.RefreshTokenFamilyStore); !ok {
+			s.Logger.Warn("SessionCreationHandler registered but token store does not support refresh token families -- handler will never fire")
+		}
+	}
 }
 
 // SetSessionRevocationHandler sets a callback that fires when a token family is

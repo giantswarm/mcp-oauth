@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Session ID exposed through request context for per-session state isolation (#237)**
   - `SessionIDFromContext(ctx)` returns a stable session identifier derived from the OAuth refresh token family.
   - The session ID is persisted in token metadata (survives server restarts).
-  - `SetTokenFamilyRevocationHandler` allows consumers to clean up session state on logout.
+  - `SetSessionRevocationHandler` (formerly `SetTokenFamilyRevocationHandler`) allows consumers to clean up session state on logout.
   - New `TokenMetadataStoreWithFamily` storage interface extends the progressive-extension chain with `SaveTokenMetadataWithFamily`.
   - Both in-memory and Valkey storage backends implement the new interface.
 
