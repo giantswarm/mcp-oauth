@@ -7930,7 +7930,7 @@ func TestServer_RefreshAccessToken_PreservesScopesAndAudience(t *testing.T) {
 	}
 }
 
-func TestServer_RevokeToken_CallsTokenFamilyRevocationHandler(t *testing.T) {
+func TestServer_RevokeToken_CallsSessionRevocationHandler(t *testing.T) {
 	ctx := context.Background()
 	srv, store, _ := setupFlowTestServer(t)
 
@@ -7941,7 +7941,7 @@ func TestServer_RevokeToken_CallsTokenFamilyRevocationHandler(t *testing.T) {
 
 	var handlerCalled bool
 	var capturedUserID, capturedFamilyID string
-	srv.SetTokenFamilyRevocationHandler(func(_ context.Context, uid, fid string) {
+	srv.SetSessionRevocationHandler(func(_ context.Context, uid, fid string) {
 		handlerCalled = true
 		capturedUserID = uid
 		capturedFamilyID = fid
@@ -7964,7 +7964,7 @@ func TestServer_RevokeToken_CallsTokenFamilyRevocationHandler(t *testing.T) {
 	}
 
 	if !handlerCalled {
-		t.Fatal("TokenFamilyRevocationHandler should have been called on revocation")
+		t.Fatal("SessionRevocationHandler should have been called on revocation")
 	}
 	if capturedUserID != userID {
 		t.Errorf("Handler received userID = %q, want %q", capturedUserID, userID)
@@ -8007,7 +8007,7 @@ func TestServer_RevokeToken_HandlerNotCalledWithoutFamily(t *testing.T) {
 	provider.RevokeTokenFunc = func(_ context.Context, _ string) error { return nil }
 
 	var handlerCalled bool
-	srv.SetTokenFamilyRevocationHandler(func(_ context.Context, _, _ string) {
+	srv.SetSessionRevocationHandler(func(_ context.Context, _, _ string) {
 		handlerCalled = true
 	})
 
@@ -8024,11 +8024,29 @@ func TestServer_RevokeToken_HandlerNotCalledWithoutFamily(t *testing.T) {
 	}
 
 	if handlerCalled {
-		t.Error("TokenFamilyRevocationHandler should NOT be called when token has no family")
+		t.Error("SessionRevocationHandler should NOT be called when token has no family")
 	}
 }
 
-func TestServer_SetTokenFamilyRevocationHandler(t *testing.T) {
+func TestServer_SetSessionRevocationHandler(t *testing.T) {
+	srv, _, _ := setupFlowTestServer(t)
+
+	var called bool
+	srv.SetSessionRevocationHandler(func(_ context.Context, _, _ string) {
+		called = true
+	})
+
+	if srv.sessionRevocationHandler == nil {
+		t.Fatal("Handler should be set after SetSessionRevocationHandler()")
+	}
+
+	srv.sessionRevocationHandler(context.Background(), "u", "f")
+	if !called {
+		t.Error("Handler should be callable")
+	}
+}
+
+func TestServer_SetTokenFamilyRevocationHandler_DeprecatedAlias(t *testing.T) {
 	srv, _, _ := setupFlowTestServer(t)
 
 	var called bool
@@ -8036,12 +8054,170 @@ func TestServer_SetTokenFamilyRevocationHandler(t *testing.T) {
 		called = true
 	})
 
-	if srv.tokenFamilyRevocationHandler == nil {
-		t.Fatal("Handler should be set after SetTokenFamilyRevocationHandler()")
+	if srv.sessionRevocationHandler == nil {
+		t.Fatal("Deprecated SetTokenFamilyRevocationHandler should set sessionRevocationHandler")
 	}
 
-	srv.tokenFamilyRevocationHandler(context.Background(), "u", "f")
+	srv.sessionRevocationHandler(context.Background(), "u", "f")
+	if !called {
+		t.Error("Handler set via deprecated alias should be callable")
+	}
+}
+
+func TestServer_SetSessionCreationHandler(t *testing.T) {
+	srv, _, _ := setupFlowTestServer(t)
+
+	var called bool
+	srv.SetSessionCreationHandler(func(_ context.Context, _, _ string, _ *oauth2.Token) {
+		called = true
+	})
+
+	if srv.sessionCreationHandler == nil {
+		t.Fatal("Handler should be set after SetSessionCreationHandler()")
+	}
+
+	srv.sessionCreationHandler(context.Background(), "u", "f", &oauth2.Token{})
 	if !called {
 		t.Error("Handler should be callable")
+	}
+}
+
+func TestServer_SessionCreationHandler_CalledOnExchange(t *testing.T) {
+	ctx := context.Background()
+	srv, store, _ := setupFlowTestServer(t)
+
+	var handlerUserID, handlerFamilyID string
+	var handlerToken *oauth2.Token
+	srv.SetSessionCreationHandler(func(_ context.Context, userID, familyID string, token *oauth2.Token) {
+		handlerUserID = userID
+		handlerFamilyID = familyID
+		handlerToken = token
+	})
+
+	client, _, err := srv.RegisterClient(ctx,
+		"Test Client",
+		ClientTypeConfidential,
+		"",
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	codeVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
+	hash := sha256.Sum256([]byte(codeVerifier))
+	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	clientState := testutil.GenerateRandomString(43)
+	_, err = srv.StartAuthorizationFlow(ctx,
+		client.ClientID,
+		"https://example.com/callback",
+		"openid email",
+		"",
+		codeChallenge,
+		PKCEMethodS256,
+		clientState,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("StartAuthorizationFlow() error = %v", err)
+	}
+
+	authState, err := store.GetAuthorizationState(ctx, clientState)
+	if err != nil {
+		t.Fatalf("GetAuthorizationState() error = %v", err)
+	}
+
+	authCodeObj, _, err := srv.HandleProviderCallback(ctx, authState.ProviderState, "provider-code-"+testutil.GenerateRandomString(10))
+	if err != nil {
+		t.Fatalf("HandleProviderCallback() error = %v", err)
+	}
+
+	token, _, err := srv.ExchangeAuthorizationCode(ctx, authCodeObj.Code, client.ClientID, "https://example.com/callback", "", codeVerifier)
+	if err != nil {
+		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
+	}
+
+	if handlerUserID == "" {
+		t.Fatal("SessionCreationHandler was not called during ExchangeAuthorizationCode")
+	}
+
+	expectedUserID := "mock-user-123"
+	if handlerUserID != expectedUserID {
+		t.Errorf("handler userID = %q, want %q", handlerUserID, expectedUserID)
+	}
+
+	if handlerFamilyID == "" {
+		t.Error("handler familyID should not be empty")
+	}
+
+	if handlerToken == nil {
+		t.Fatal("handler token should not be nil")
+	}
+	if handlerToken.AccessToken != token.AccessToken {
+		t.Errorf("handler token AccessToken = %q, want %q", handlerToken.AccessToken, token.AccessToken)
+	}
+
+	atMeta, err := store.GetTokenMetadata(token.AccessToken)
+	if err != nil {
+		t.Fatalf("GetTokenMetadata(access) error = %v", err)
+	}
+	if atMeta.FamilyID != handlerFamilyID {
+		t.Errorf("metadata FamilyID = %q, handler familyID = %q -- should match", atMeta.FamilyID, handlerFamilyID)
+	}
+}
+
+func TestServer_SessionCreationHandler_NotCalledWithoutHandler(t *testing.T) {
+	ctx := context.Background()
+	srv, store, _ := setupFlowTestServer(t)
+
+	client, _, err := srv.RegisterClient(ctx,
+		"Test Client",
+		ClientTypeConfidential,
+		"",
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	codeVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
+	hash := sha256.Sum256([]byte(codeVerifier))
+	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	clientState := testutil.GenerateRandomString(43)
+	_, err = srv.StartAuthorizationFlow(ctx,
+		client.ClientID,
+		"https://example.com/callback",
+		"openid email",
+		"",
+		codeChallenge,
+		PKCEMethodS256,
+		clientState,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("StartAuthorizationFlow() error = %v", err)
+	}
+
+	authState, err := store.GetAuthorizationState(ctx, clientState)
+	if err != nil {
+		t.Fatalf("GetAuthorizationState() error = %v", err)
+	}
+
+	authCodeObj, _, err := srv.HandleProviderCallback(ctx, authState.ProviderState, "provider-code-"+testutil.GenerateRandomString(10))
+	if err != nil {
+		t.Fatalf("HandleProviderCallback() error = %v", err)
+	}
+
+	_, _, err = srv.ExchangeAuthorizationCode(ctx, authCodeObj.Code, client.ClientID, "https://example.com/callback", "", codeVerifier)
+	if err != nil {
+		t.Fatalf("ExchangeAuthorizationCode() should succeed without handler, got error = %v", err)
 	}
 }

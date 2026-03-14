@@ -1139,6 +1139,10 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 
 	s.trackRefreshTokenFamily(ctx, tokenResponse.RefreshToken, authCode.UserID, clientID, familyID)
 
+	if s.sessionCreationHandler != nil && familyID != "" {
+		s.sessionCreationHandler(ctx, authCode.UserID, familyID, tokenResponse)
+	}
+
 	if s.Auditor != nil {
 		s.Auditor.LogTokenIssued(authCode.UserID, clientID, "", authCode.Scope)
 	}
@@ -1579,8 +1583,8 @@ func (s *Server) revokeTokenFamilyIfNeeded(ctx context.Context, family *storage.
 	s.Logger.Info("Revoked refresh token family on explicit revocation",
 		"family_id", family.FamilyID, "client_id", clientID, "ip", clientIP)
 
-	if s.tokenFamilyRevocationHandler != nil {
-		s.tokenFamilyRevocationHandler(ctx, family.UserID, family.FamilyID)
+	if s.sessionRevocationHandler != nil {
+		s.sessionRevocationHandler(ctx, family.UserID, family.FamilyID)
 	}
 
 	if s.Auditor != nil {
