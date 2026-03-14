@@ -21,13 +21,37 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
-// TokenFamilyRevocationHandler is called when a token family is revoked (e.g., on logout).
+// SessionCreationHandler is called synchronously when a new token family is
+// created during authorization code exchange. Consumers can use this to
+// initialize per-session state (e.g., establish SSO connections).
+//
+// The provided context is the HTTP request context of the token exchange and
+// may be canceled when the request completes. If the handler performs slow
+// initialization, it should derive a new context with its own deadline.
+//
+// The handler is only invoked when the token store supports refresh token
+// family tracking (implements [storage.RefreshTokenFamilyStore]). If the store
+// does not support families, the handler is silently skipped.
+//
+// Parameters:
+//   - ctx: the HTTP request context of the token exchange
+//   - userID: the authenticated user's identifier
+//   - familyID: the newly created token family ID (used as session ID)
+//   - token: the issued OAuth token (contains id_token in Extra for OIDC flows)
+type SessionCreationHandler func(ctx context.Context, userID, familyID string, token *oauth2.Token)
+
+// SessionRevocationHandler is called when a token family is revoked (e.g., on logout).
 // Consumers can use this to clean up per-session state associated with the family ID.
 //
 // The provided context is the HTTP request context that triggered the revocation and
 // may be canceled when the request completes. If the handler performs slow cleanup
 // operations, it should derive a new context with its own deadline.
-type TokenFamilyRevocationHandler func(ctx context.Context, userID, familyID string)
+type SessionRevocationHandler func(ctx context.Context, userID, familyID string)
+
+// TokenFamilyRevocationHandler is the old name for SessionRevocationHandler.
+//
+// Deprecated: Use SessionRevocationHandler instead.
+type TokenFamilyRevocationHandler = SessionRevocationHandler
 
 // Server implements the OAuth 2.1 server logic (provider-agnostic).
 // It coordinates the OAuth flow using a Provider and storage backends.
@@ -36,7 +60,8 @@ type Server struct {
 	tokenStore                    storage.TokenStore
 	clientStore                   storage.ClientStore
 	flowStore                     storage.FlowStore
-	tokenFamilyRevocationHandler  TokenFamilyRevocationHandler
+	sessionCreationHandler        SessionCreationHandler
+	sessionRevocationHandler      SessionRevocationHandler
 	Encryptor                     *security.Encryptor
 	Auditor                       *security.Auditor
 	RateLimiter                   *security.RateLimiter                   // IP-based rate limiter
@@ -345,11 +370,35 @@ func (s *Server) SetMetadataFetchRateLimiter(rl *security.RateLimiter) {
 	s.metadataFetchRateLimiter = rl
 }
 
-// SetTokenFamilyRevocationHandler sets a callback that fires when a token family
-// is revoked (e.g., on logout). This lets consumers clean up per-session state.
+// SetSessionCreationHandler sets a callback that fires synchronously when a new
+// token family is created during authorization code exchange. This lets consumers
+// initialize per-session state (e.g., establish SSO connections to downstream servers).
 // Must be called during server initialization, before the server starts handling requests.
+//
+// The handler is only invoked when the token store implements
+// [storage.RefreshTokenFamilyStore]. A warning is logged at registration time
+// if the current store does not support families.
+func (s *Server) SetSessionCreationHandler(handler SessionCreationHandler) {
+	s.sessionCreationHandler = handler
+	if handler != nil {
+		if _, ok := s.tokenStore.(storage.RefreshTokenFamilyStore); !ok {
+			s.Logger.Warn("SessionCreationHandler registered but token store does not support refresh token families -- handler will never fire")
+		}
+	}
+}
+
+// SetSessionRevocationHandler sets a callback that fires when a token family is
+// revoked (e.g., on logout). This lets consumers clean up per-session state.
+// Must be called during server initialization, before the server starts handling requests.
+func (s *Server) SetSessionRevocationHandler(handler SessionRevocationHandler) {
+	s.sessionRevocationHandler = handler
+}
+
+// SetTokenFamilyRevocationHandler is the old name for SetSessionRevocationHandler.
+//
+// Deprecated: Use SetSessionRevocationHandler instead.
 func (s *Server) SetTokenFamilyRevocationHandler(handler TokenFamilyRevocationHandler) {
-	s.tokenFamilyRevocationHandler = handler
+	s.SetSessionRevocationHandler(handler)
 }
 
 // SetInstrumentation sets the OpenTelemetry instrumentation for server and storage

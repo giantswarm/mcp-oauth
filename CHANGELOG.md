@@ -18,10 +18,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **SessionCreationHandler callback for session initialization during login (#239)**
+  - `SetSessionCreationHandler` registers a callback that fires synchronously during authorization code exchange when a new token family is created.
+  - Consumers can use this to initialize per-session state (e.g., establish SSO connections) as part of the login flow itself.
+  - The handler receives the request context, user ID, family ID (session ID), and the issued OAuth token (with id_token in Extra for OIDC flows).
+
+- **Rename TokenFamilyRevocationHandler to SessionRevocationHandler (#239)**
+  - `SetSessionRevocationHandler` replaces `SetTokenFamilyRevocationHandler` for consistent session lifecycle naming.
+  - `TokenFamilyRevocationHandler` and `SetTokenFamilyRevocationHandler` remain as deprecated type aliases for backward compatibility.
+
 - **Session ID exposed through request context for per-session state isolation (#237)**
   - `SessionIDFromContext(ctx)` returns a stable session identifier derived from the OAuth refresh token family.
   - The session ID is persisted in token metadata (survives server restarts).
-  - `SetTokenFamilyRevocationHandler` allows consumers to clean up session state on logout.
+  - `SetSessionRevocationHandler` (formerly `SetTokenFamilyRevocationHandler`) allows consumers to clean up session state on logout.
   - New `TokenMetadataStoreWithFamily` storage interface extends the progressive-extension chain with `SaveTokenMetadataWithFamily`.
   - Both in-memory and Valkey storage backends implement the new interface.
 
