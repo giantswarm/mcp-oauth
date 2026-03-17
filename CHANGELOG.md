@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Dex provider scope filtering to strip non-standard client scopes (#245)**
+  - Added `filterDexScopes()` mirroring the Google provider's `filterGoogleScopes()` pattern.
+  - Non-standard scopes (e.g., `claudeai`) are now stripped before forwarding to Dex.
+  - Supported scopes: standard OIDC (`openid`, `profile`, `email`, `offline_access`), Dex-specific (`groups`, `federated:id`), and cross-client audience scopes.
+
 - **SessionCreationHandler callback for session initialization during login (#239)**
   - `SetSessionCreationHandler` registers a callback that fires synchronously during authorization code exchange when a new token family is created.
   - Consumers can use this to initialize per-session state (e.g., establish SSO connections) as part of the login flow itself.

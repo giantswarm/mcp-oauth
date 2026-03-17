@@ -459,6 +459,112 @@ func TestEnsureOpenIDScope(t *testing.T) {
 	}
 }
 
+// TestIsDexSupportedScope tests the scope classification function.
+func TestIsDexSupportedScope(t *testing.T) {
+	tests := []struct {
+		scope    string
+		expected bool
+	}{
+		{"openid", true},
+		{"profile", true},
+		{"email", true},
+		{"offline_access", true},
+		{"groups", true},
+		{"federated:id", true},
+		{"audience:server:client_id:test", true},
+		{"audience:server:client_id:k8s-auth", true},
+		{"claudeai", false},
+		{"custom:scope", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.scope, func(t *testing.T) {
+			if got := isDexSupportedScope(tt.scope); got != tt.expected {
+				t.Errorf("isDexSupportedScope(%q) = %v, want %v", tt.scope, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestFilterDexScopes_DropsUnsupportedScopes verifies that filterDexScopes
+// drops scopes that Dex does not recognize, preventing authorization failures.
+func TestFilterDexScopes_DropsUnsupportedScopes(t *testing.T) {
+	defaultScopes := []string{"openid", "email", "profile", "groups", "offline_access"}
+
+	tests := []struct {
+		name           string
+		requested      []string
+		wantContain    []string
+		wantNotContain []string
+	}{
+		{
+			name:           "drops non-standard scopes like claudeai",
+			requested:      []string{"openid", "claudeai"},
+			wantContain:    []string{"openid"},
+			wantNotContain: []string{"claudeai"},
+		},
+		{
+			name:        "keeps standard OIDC scopes",
+			requested:   []string{"openid", "email", "profile"},
+			wantContain: []string{"openid", "email", "profile"},
+		},
+		{
+			name:        "keeps Dex-specific scopes",
+			requested:   []string{"openid", "groups", "offline_access"},
+			wantContain: []string{"openid", "groups", "offline_access"},
+		},
+		{
+			name:        "keeps federated:id scope",
+			requested:   []string{"openid", "federated:id"},
+			wantContain: []string{"openid", "federated:id"},
+		},
+		{
+			name:        "keeps audience scopes",
+			requested:   []string{"openid", "audience:server:client_id:k8s"},
+			wantContain: []string{"openid", "audience:server:client_id:k8s"},
+		},
+		{
+			name:        "uses defaults when requested is nil",
+			requested:   nil,
+			wantContain: []string{"openid", "email", "profile", "groups", "offline_access"},
+		},
+		{
+			name:        "injects openid from defaults when missing in requested",
+			requested:   []string{"email", "groups"},
+			wantContain: []string{"email", "groups", "openid"},
+		},
+		{
+			name:           "drops multiple unsupported scopes",
+			requested:      []string{"openid", "claudeai", "custom:scope", "random_scope"},
+			wantContain:    []string{"openid"},
+			wantNotContain: []string{"claudeai", "custom:scope", "random_scope"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := filterDexScopes(tt.requested, defaultScopes)
+
+			resultSet := make(map[string]bool, len(result))
+			for _, s := range result {
+				resultSet[s] = true
+			}
+
+			for _, want := range tt.wantContain {
+				if !resultSet[want] {
+					t.Errorf("filterDexScopes() should contain %q, got %v", want, result)
+				}
+			}
+			for _, notWant := range tt.wantNotContain {
+				if resultSet[notWant] {
+					t.Errorf("filterDexScopes() should NOT contain %q, got %v", notWant, result)
+				}
+			}
+		})
+	}
+}
+
 // TestAuthorizationURL_OpenIDAlwaysPresent verifies that the Dex provider always
 // includes "openid" in the authorization URL, even when clients send non-standard
 // scopes that don't include it.

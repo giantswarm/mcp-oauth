@@ -174,7 +174,7 @@ var defaultDexScopes = []string{
 // Supported: standard OIDC scopes, Dex-specific scopes, and cross-client audience scopes.
 func isDexSupportedScope(scope string) bool {
 	switch scope {
-	case scopeOpenID, "profile", "email", "offline_access", "groups":
+	case scopeOpenID, "profile", "email", "offline_access", "groups", "federated:id":
 		return true
 	default:
 		return strings.HasPrefix(scope, AudienceScopePrefix)
