@@ -158,13 +158,41 @@ func validateRequiredConfig(cfg *Config) error {
 	return nil
 }
 
+// scopeOpenID is the OpenID Connect scope required by Dex per the OIDC spec.
+const scopeOpenID = "openid"
+
 // defaultDexScopes are the default scopes for Dex providers.
 var defaultDexScopes = []string{
-	"openid",
+	scopeOpenID,
 	"profile",
 	"email",
 	"groups",         // Dex-specific: required for group membership
 	"offline_access", // Required for refresh tokens
+}
+
+// isDexSupportedScope returns true if the scope is recognized by Dex.
+// Supported: standard OIDC scopes, Dex-specific scopes, and cross-client audience scopes.
+func isDexSupportedScope(scope string) bool {
+	switch scope {
+	case scopeOpenID, "profile", "email", "offline_access", "groups", "federated:id":
+		return true
+	default:
+		return strings.HasPrefix(scope, AudienceScopePrefix)
+	}
+}
+
+// filterDexScopes creates a deep copy of scopes and filters out any scopes that
+// Dex does not support. This prevents authorization failures when clients send
+// non-standard scopes (e.g., "claudeai") that Dex would reject.
+func filterDexScopes(requestedScopes, defaultScopes []string) []string {
+	sourceScopes := providers.CopyScopes(requestedScopes, defaultScopes)
+	filtered := make([]string, 0, len(sourceScopes))
+	for _, s := range sourceScopes {
+		if isDexSupportedScope(s) {
+			filtered = append(filtered, s)
+		}
+	}
+	return filtered
 }
 
 // resolveScopes returns validated scopes, using defaults if none provided.
@@ -257,15 +285,12 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	// Apply optional OIDC parameters (Dex supports standard OIDC params)
 	authCodeOpts = append(authCodeOpts, providers.ApplyAuthorizationURLOptions(authOpts)...)
 
-	// SECURITY: Create a deep copy of scopes to prevent potential race conditions.
-	// CopyScopes also force-merges mandatory scopes (openid, audience:server:client_id:*)
-	// from defaults when clients provide custom scopes.
-	scopesToUse := providers.CopyScopes(scopes, p.Scopes)
-
-	// Defense-in-depth: Ensure "openid" is always present for Dex.
-	// Even if neither the client nor the provider defaults include it (misconfiguration),
-	// Dex requires it per the OIDC spec. This is a safety net beyond CopyScopes.
-	scopesToUse = ensureOpenIDScope(scopesToUse)
+	// Filter scopes to only include Dex-supported values.
+	// This prevents authorization failures when clients send non-standard scopes
+	// (e.g., "claudeai") that Dex would reject with "Unrecognized scope(s)".
+	// filterDexScopes also handles deep copying and force-merging mandatory scopes
+	// (openid, audience:server:client_id:*) from defaults via CopyScopes internally.
+	scopesToUse := filterDexScopes(scopes, p.Scopes)
 
 	// Create a config with the determined scopes
 	config := *p.Config
@@ -279,11 +304,11 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 // defaults somehow omit it.
 func ensureOpenIDScope(scopes []string) []string {
 	for _, s := range scopes {
-		if s == "openid" {
+		if s == scopeOpenID {
 			return scopes
 		}
 	}
-	return append(scopes, "openid")
+	return append(scopes, scopeOpenID)
 }
 
 // ensureContextTimeout ensures the context has a deadline, adding one if needed.
