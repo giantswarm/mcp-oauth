@@ -748,7 +748,7 @@ func TestValidateToken_GroupsWithinLimit(t *testing.T) {
 	}
 }
 
-// TestValidateToken_EnterpriseGroupCount tests that the default limit (500)
+// TestValidateToken_EnterpriseGroupCount tests that the default limit (600)
 // accommodates enterprise group counts.
 func TestValidateToken_EnterpriseGroupCount(t *testing.T) {
 	groups := make([]string, enterpriseGroupCount)

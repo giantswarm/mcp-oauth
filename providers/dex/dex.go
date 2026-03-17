@@ -63,7 +63,7 @@ type Config struct {
 
 	// MaxGroups is the maximum number of groups to accept from the OIDC groups claim.
 	// Groups beyond this limit are truncated (not rejected) and a warning is logged.
-	// Default: oidc.DefaultMaxGroups (500). Set higher for enterprise environments
+	// Default: oidc.DefaultMaxGroups (600). Set higher for enterprise environments
 	// with very large group counts (e.g., Active Directory).
 	MaxGroups int
 

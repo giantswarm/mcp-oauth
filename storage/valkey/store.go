@@ -50,9 +50,10 @@ const (
 	// MaxIDLength is the maximum allowed length for identifiers (userID, clientID, familyID)
 	MaxIDLength = 256
 
-	// MaxTokenDataSize is the maximum size of serialized token data (64KB)
-	// This prevents memory exhaustion from large token payloads
-	MaxTokenDataSize = 64 * 1024
+	// MaxTokenDataSize is the maximum size of serialized token data (256KB).
+	// This prevents memory exhaustion from large token payloads while accommodating
+	// enterprise OIDC tokens that embed large groups claims in signed JWTs.
+	MaxTokenDataSize = 256 * 1024
 )
 
 // Validation error messages (generic to prevent information leakage)
