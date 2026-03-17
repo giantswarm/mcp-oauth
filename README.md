@@ -17,6 +17,7 @@ A **provider-agnostic** OAuth 2.1 Authorization Server library for [Model Contex
 - **MCP 2025-11-25** - Protected Resource Metadata (RFC 9728), scope discovery, resource binding
 - **Silent Authentication** - OIDC prompt parameter support for seamless token refresh without user interaction
 - **Client ID Metadata Documents** - URL-based client IDs with dynamic metadata discovery
+- **Lifecycle Callbacks** - Session creation, revocation, and token refresh event hooks
 - **Observability** - OpenTelemetry instrumentation with Prometheus and OTLP support
 
 ## Architecture
