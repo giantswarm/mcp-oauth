@@ -1,0 +1,18 @@
+version: "2"
+
+linters:
+  settings:
+    gosec:
+      excludes:
+        - G101
+        - G104
+        - G115
+        - G117
+        - G118
+        - G120
+        - G203
+        - G704
+
+  exclusions:
+    paths:
+      - examples/
