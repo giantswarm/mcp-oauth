@@ -371,7 +371,8 @@ func TestAuthorizationURL_PKCE(t *testing.T) {
 	}
 }
 
-// TestAuthorizationURL_CustomScopes tests custom scope handling
+// TestAuthorizationURL_CustomScopes tests that unsupported scopes are filtered out
+// while Dex-supported scopes are preserved.
 func TestAuthorizationURL_CustomScopes(t *testing.T) {
 	server := setupMockDexServer(t)
 	defer server.Close()
@@ -381,11 +382,20 @@ func TestAuthorizationURL_CustomScopes(t *testing.T) {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
 
-	customScopes := []string{"openid", "custom_scope"}
-	url := provider.AuthorizationURL("state123", "", "", customScopes, nil)
+	customScopes := []string{"openid", "email", "claudeai", "custom_scope"}
+	authURL := provider.AuthorizationURL("state123", "", "", customScopes, nil)
 
-	if !strings.Contains(url, "custom_scope") {
-		t.Errorf("AuthorizationURL() = %q, want URL containing 'custom_scope'", url)
+	if strings.Contains(authURL, "custom_scope") {
+		t.Errorf("AuthorizationURL() = %q, want unsupported scope 'custom_scope' to be filtered out", authURL)
+	}
+	if strings.Contains(authURL, "claudeai") {
+		t.Errorf("AuthorizationURL() = %q, want unsupported scope 'claudeai' to be filtered out", authURL)
+	}
+	if !strings.Contains(authURL, "openid") {
+		t.Errorf("AuthorizationURL() = %q, want supported scope 'openid' to be present", authURL)
+	}
+	if !strings.Contains(authURL, "email") {
+		t.Errorf("AuthorizationURL() = %q, want supported scope 'email' to be present", authURL)
 	}
 }
 
