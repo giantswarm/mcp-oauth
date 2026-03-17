@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Raise DefaultMaxGroups from 500 to 600 and MaxTokenDataSize from 64KB to 256KB (#248)**
+  - `DefaultMaxGroups` raised from 500 to 600 to accommodate enterprise OIDC environments where users have 500+ group memberships (e.g., large GitHub organizations with many teams).
+  - `MaxTokenDataSize` raised from 64KB to 256KB. When Dex issues an `id_token` JWT containing hundreds of groups, the serialized token can exceed 64KB, causing all Valkey save operations to fail and breaking authentication entirely. 256KB still provides DoS protection while accommodating enterprise token sizes.
+
 - **Lower MinStateLength absolute floor from 32 to 24 characters (#228)**
   - The absolute minimum floor for `MinStateLength` has been lowered from 32 to 24 characters.
   - 24 characters still provides 144 bits of entropy, exceeding OAuth 2.1's 128-bit minimum recommendation.

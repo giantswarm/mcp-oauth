@@ -579,7 +579,7 @@ func ValidateScopes(scopes []string) error {
 // Truncates to maxGroups instead of rejecting; returns a defensive copy.
 // Individual group names exceeding DefaultMaxGroupNameLength are rejected.
 func ValidateGroups(groups []string, maxGroups int) ([]string, bool, error) {
-    // If maxGroups <= 0, uses DefaultMaxGroups (500)
+    // If maxGroups <= 0, uses DefaultMaxGroups (600)
     // Validates all name lengths (rejects oversized names)
     // Truncates to maxGroups if exceeded, returns truncated=true
     // Always returns a defensive copy

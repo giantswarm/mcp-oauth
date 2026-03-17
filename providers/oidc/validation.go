@@ -176,16 +176,16 @@ func ValidateScopes(scopes []string) error {
 // Default limits for groups validation.
 const (
 	// DefaultMaxGroups is the default maximum number of groups accepted in an OIDC groups claim.
-	// Set to 500 to accommodate enterprise environments (Active Directory, Azure AD, LDAP)
-	// where users commonly have hundreds of group memberships.
-	DefaultMaxGroups = 500
+	// Set to 600 to accommodate enterprise environments (Active Directory, Azure AD, LDAP,
+	// large GitHub organizations) where users commonly have 500+ group memberships.
+	DefaultMaxGroups = 600
 
 	// DefaultMaxGroupNameLength is the default maximum length of a single group name.
 	DefaultMaxGroupNameLength = 256
 )
 
 // ValidateGroups validates and truncates an OIDC groups claim.
-// If maxGroups is <= 0, DefaultMaxGroups (500) is used.
+// If maxGroups is <= 0, DefaultMaxGroups (600) is used.
 //
 // Groups exceeding maxGroups are truncated (not rejected) so authentication
 // can proceed. The second return value indicates whether truncation occurred.
