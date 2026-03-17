@@ -257,13 +257,33 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	// Apply optional OIDC parameters (Dex supports standard OIDC params)
 	authCodeOpts = append(authCodeOpts, providers.ApplyAuthorizationURLOptions(authOpts)...)
 
-	// SECURITY: Create a deep copy of scopes to prevent potential race conditions
+	// SECURITY: Create a deep copy of scopes to prevent potential race conditions.
+	// CopyScopes also force-merges mandatory scopes (openid, audience:server:client_id:*)
+	// from defaults when clients provide custom scopes.
 	scopesToUse := providers.CopyScopes(scopes, p.Scopes)
+
+	// Defense-in-depth: Ensure "openid" is always present for Dex.
+	// Even if neither the client nor the provider defaults include it (misconfiguration),
+	// Dex requires it per the OIDC spec. This is a safety net beyond CopyScopes.
+	scopesToUse = ensureOpenIDScope(scopesToUse)
 
 	// Create a config with the determined scopes
 	config := *p.Config
 	config.Scopes = scopesToUse
 	return config.AuthCodeURL(state, authCodeOpts...)
+}
+
+// ensureOpenIDScope guarantees that "openid" is present in the scope list.
+// This is defense-in-depth for OIDC compliance: Dex requires "openid" per spec,
+// and this ensures it is always included even if both the client and provider
+// defaults somehow omit it.
+func ensureOpenIDScope(scopes []string) []string {
+	for _, s := range scopes {
+		if s == "openid" {
+			return scopes
+		}
+	}
+	return append(scopes, "openid")
 }
 
 // ensureContextTimeout ensures the context has a deadline, adding one if needed.

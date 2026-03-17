@@ -433,6 +433,97 @@ func TestCopyScopes(t *testing.T) {
 			t.Errorf("expected fourth scope to be audience:server:client_id:second-client, got %q", result[3])
 		}
 	})
+
+	t.Run("merges openid from defaults when client omits it", func(t *testing.T) {
+		requested := []string{"claudeai"}
+		defaults := []string{testScopeOpenID, testScopeProfile, testScopeEmail}
+
+		result := CopyScopes(requested, defaults)
+
+		if len(result) != 2 {
+			t.Errorf("expected 2 scopes, got %d: %v", len(result), result)
+		}
+		if result[0] != "claudeai" {
+			t.Errorf("expected first scope to be %q, got %q", "claudeai", result[0])
+		}
+		if result[1] != testScopeOpenID {
+			t.Errorf("expected second scope to be %q, got %q", testScopeOpenID, result[1])
+		}
+	})
+
+	t.Run("does not duplicate openid when already in requested", func(t *testing.T) {
+		requested := []string{testScopeOpenID, testScopeEmail}
+		defaults := []string{testScopeOpenID, testScopeProfile}
+
+		result := CopyScopes(requested, defaults)
+
+		if len(result) != 2 {
+			t.Errorf("expected 2 scopes (no duplicate openid), got %d: %v", len(result), result)
+		}
+	})
+
+	t.Run("does not inject openid when not in defaults", func(t *testing.T) {
+		requested := []string{"custom:scope"}
+		defaults := []string{testScopeProfile, testScopeEmail}
+
+		result := CopyScopes(requested, defaults)
+
+		if len(result) != 1 {
+			t.Errorf("expected 1 scope, got %d: %v", len(result), result)
+		}
+		if result[0] != "custom:scope" {
+			t.Errorf("unexpected scope: %v", result)
+		}
+	})
+
+	t.Run("merges both openid and audience scopes", func(t *testing.T) {
+		requested := []string{"claudeai"}
+		defaults := []string{
+			testScopeOpenID,
+			testScopeProfile,
+			"audience:server:client_id:k8s-auth",
+		}
+
+		result := CopyScopes(requested, defaults)
+
+		if len(result) != 3 {
+			t.Errorf("expected 3 scopes, got %d: %v", len(result), result)
+		}
+		if result[0] != "claudeai" {
+			t.Errorf("expected first scope to be %q, got %q", "claudeai", result[0])
+		}
+		if result[1] != testScopeOpenID {
+			t.Errorf("expected second scope to be %q, got %q", testScopeOpenID, result[1])
+		}
+		if result[2] != "audience:server:client_id:k8s-auth" {
+			t.Errorf("expected third scope to be audience scope, got %q", result[2])
+		}
+	})
+}
+
+func TestIsMandatoryScope(t *testing.T) {
+	tests := []struct {
+		scope    string
+		expected bool
+	}{
+		{"openid", true},
+		{"audience:server:client_id:k8s-auth", true},
+		{"audience:server:client_id:", true},
+		{"profile", false},
+		{"email", false},
+		{"groups", false},
+		{"claudeai", false},
+		{"offline_access", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.scope, func(t *testing.T) {
+			if got := isMandatoryScope(tt.scope); got != tt.expected {
+				t.Errorf("isMandatoryScope(%q) = %v, want %v", tt.scope, got, tt.expected)
+			}
+		})
+	}
 }
 
 // TestAuthorizationURLOptions_Struct tests the AuthorizationURLOptions struct.

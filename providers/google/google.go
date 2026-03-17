@@ -110,14 +110,33 @@ func (p *Provider) DefaultScopes() []string {
 	return scopes
 }
 
-// filterGoogleScopes creates a deep copy of scopes and filters out "offline_access".
-// Google doesn't support offline_access as a scope; it uses access_type=offline instead.
+// isGoogleSupportedScope returns true if the scope is recognized by Google's OAuth endpoints.
+// Supported scopes:
+//   - "openid", "email", "profile": Standard OIDC scopes
+//   - Scopes starting with "https://www.googleapis.com/": Google API scopes
+//
+// Unsupported scopes (filtered out):
+//   - "offline_access": Google uses access_type=offline parameter instead
+//   - "groups": Dex-specific scope not recognized by Google
+//   - Any other non-Google scopes (e.g., "claudeai", custom provider scopes)
+func isGoogleSupportedScope(scope string) bool {
+	switch scope {
+	case "openid", "email", "profile":
+		return true
+	default:
+		return strings.HasPrefix(scope, "https://www.googleapis.com/")
+	}
+}
+
+// filterGoogleScopes creates a deep copy of scopes and filters out any scopes that
+// Google does not support. This prevents authorization failures when clients send
+// provider-specific scopes (e.g., Dex's "groups") or non-standard scopes (e.g., "claudeai")
+// to a Google provider.
 func filterGoogleScopes(requestedScopes, defaultScopes []string) []string {
 	sourceScopes := providers.CopyScopes(requestedScopes, defaultScopes)
-	// Filter out offline_access - Google uses access_type=offline parameter instead
 	filtered := make([]string, 0, len(sourceScopes))
 	for _, s := range sourceScopes {
-		if s != "offline_access" {
+		if isGoogleSupportedScope(s) {
 			filtered = append(filtered, s)
 		}
 	}
