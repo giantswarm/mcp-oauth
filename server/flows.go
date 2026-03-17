@@ -140,6 +140,25 @@ func (s *Server) updateProviderTokenMappings(ctx context.Context, accessToken st
 	}
 }
 
+// fireTokenRefreshHandler invokes the registered TokenRefreshHandler (if any)
+// after a provider token has been refreshed. It retrieves the userID and familyID
+// from stored token metadata so callers don't need to plumb them through.
+func (s *Server) fireTokenRefreshHandler(ctx context.Context, accessToken string, newProviderToken *oauth2.Token) {
+	if s.tokenRefreshHandler == nil {
+		return
+	}
+
+	var userID, familyID string
+	if metaGetter, ok := s.tokenStore.(storage.TokenMetadataGetter); ok {
+		if meta, err := metaGetter.GetTokenMetadata(accessToken); err == nil && meta != nil {
+			userID = meta.UserID
+			familyID = meta.FamilyID
+		}
+	}
+
+	s.tokenRefreshHandler(ctx, userID, familyID, newProviderToken)
+}
+
 // capTokenExpiry returns the earlier of the configured AccessTokenTTL-based expiry
 // and the provider token's expiry, ensuring expires_in never promises more than
 // the underlying provider token can deliver. Provider tokens with zero or past
@@ -204,6 +223,8 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 
 	// Update both AT and RT storage mappings to keep provider credentials in sync
 	s.updateProviderTokenMappings(ctx, accessToken, newProviderToken)
+
+	s.fireTokenRefreshHandler(ctx, accessToken, newProviderToken)
 
 	s.Logger.Info("Token proactively refreshed",
 		"old_expiry", storedToken.Expiry,
@@ -335,6 +356,8 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 		newProviderToken := result.(*oauth2.Token)
 		newProviderToken = preserveRefreshToken(newProviderToken, storedToken.RefreshToken)
 		s.updateProviderTokenMappings(ctx, accessToken, newProviderToken)
+
+		s.fireTokenRefreshHandler(ctx, accessToken, newProviderToken)
 
 		s.Logger.Info("Expired provider token refreshed during validation",
 			"old_expiry", storedToken.Expiry,

@@ -30,6 +30,8 @@ const (
 	// testPKCEVerifierLength is the length used for PKCE verifiers in tests
 	// PKCE spec (RFC 7636) requires verifiers to be 43-128 characters
 	testPKCEVerifierLength = 50
+
+	testMockUserID = "mock-user-123"
 )
 
 func setupFlowTestServer(t *testing.T) (*Server, *memory.Store, *mock.Provider) {
@@ -8145,9 +8147,8 @@ func TestServer_SessionCreationHandler_CalledOnExchange(t *testing.T) {
 		t.Fatal("SessionCreationHandler was not called during ExchangeAuthorizationCode")
 	}
 
-	expectedUserID := "mock-user-123"
-	if handlerUserID != expectedUserID {
-		t.Errorf("handler userID = %q, want %q", handlerUserID, expectedUserID)
+	if handlerUserID != testMockUserID {
+		t.Errorf("handler userID = %q, want %q", handlerUserID, testMockUserID)
 	}
 
 	if handlerFamilyID == "" {
@@ -8219,5 +8220,201 @@ func TestServer_SessionCreationHandler_NotCalledWithoutHandler(t *testing.T) {
 	_, _, err = srv.ExchangeAuthorizationCode(ctx, authCodeObj.Code, client.ClientID, "https://example.com/callback", "", codeVerifier)
 	if err != nil {
 		t.Fatalf("ExchangeAuthorizationCode() should succeed without handler, got error = %v", err)
+	}
+}
+
+func TestServer_SetTokenRefreshHandler(t *testing.T) {
+	srv, _, _ := setupFlowTestServer(t)
+
+	var called bool
+	srv.SetTokenRefreshHandler(func(_ context.Context, _, _ string, _ *oauth2.Token) {
+		called = true
+	})
+
+	if srv.tokenRefreshHandler == nil {
+		t.Fatal("Handler should be set after SetTokenRefreshHandler()")
+	}
+
+	srv.tokenRefreshHandler(context.Background(), "u", "f", &oauth2.Token{})
+	if !called {
+		t.Error("Handler should be callable")
+	}
+}
+
+func TestServer_TokenRefreshHandler_CalledOnProactiveRefresh(t *testing.T) {
+	ctx := context.Background()
+	srv, store, provider := setupFlowTestServer(t)
+
+	srv.Config.TokenRefreshThreshold = 300 // 5 minutes
+
+	var handlerUserID, handlerFamilyID string
+	var handlerToken *oauth2.Token
+	srv.SetTokenRefreshHandler(func(_ context.Context, userID, familyID string, token *oauth2.Token) {
+		handlerUserID = userID
+		handlerFamilyID = familyID
+		handlerToken = token
+	})
+
+	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
+		return &oauth2.Token{
+			AccessToken:  "refreshed-provider-access",
+			RefreshToken: "refreshed-provider-refresh",
+			Expiry:       time.Now().Add(1 * time.Hour),
+			TokenType:    "Bearer",
+		}, nil
+	}
+
+	provider.ValidateTokenFunc = func(_ context.Context, _ string) (*providers.UserInfo, error) {
+		return &providers.UserInfo{
+			ID:    testMockUserID,
+			Email: "mock@example.com",
+		}, nil
+	}
+
+	// Store a token that is near expiry (within the 5m threshold)
+	accessToken := "proactive-refresh-test-token"
+	nearExpiryToken := &oauth2.Token{
+		AccessToken:  "provider-at",
+		RefreshToken: "provider-rt",
+		Expiry:       time.Now().Add(2 * time.Minute),
+		TokenType:    "Bearer",
+	}
+	if err := store.SaveToken(ctx, accessToken, nearExpiryToken); err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+
+	// Save token metadata so the handler can retrieve userID/familyID
+	if err := store.SaveTokenMetadataWithFamily(accessToken, testMockUserID, "test-client", "access", "", "test-family-id", nil); err != nil {
+		t.Fatalf("SaveTokenMetadataWithFamily() error = %v", err)
+	}
+
+	_, err := srv.ValidateToken(ctx, accessToken)
+	if err != nil {
+		t.Fatalf("ValidateToken() error = %v", err)
+	}
+
+	if handlerToken == nil {
+		t.Fatal("TokenRefreshHandler was not called during proactive refresh")
+	}
+	if handlerUserID != testMockUserID {
+		t.Errorf("handler userID = %q, want %q", handlerUserID, testMockUserID)
+	}
+	if handlerFamilyID != "test-family-id" {
+		t.Errorf("handler familyID = %q, want %q", handlerFamilyID, "test-family-id")
+	}
+	if handlerToken.AccessToken != "refreshed-provider-access" {
+		t.Errorf("handler token AccessToken = %q, want %q", handlerToken.AccessToken, "refreshed-provider-access")
+	}
+}
+
+func TestServer_TokenRefreshHandler_CalledOnExpiredTokenRefresh(t *testing.T) {
+	ctx := context.Background()
+	srv, store, provider := setupFlowTestServer(t)
+
+	var handlerUserID, handlerFamilyID string
+	var handlerToken *oauth2.Token
+	srv.SetTokenRefreshHandler(func(_ context.Context, userID, familyID string, token *oauth2.Token) {
+		handlerUserID = userID
+		handlerFamilyID = familyID
+		handlerToken = token
+	})
+
+	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
+		return &oauth2.Token{
+			AccessToken:  "refreshed-expired-access",
+			RefreshToken: "refreshed-expired-refresh",
+			Expiry:       time.Now().Add(1 * time.Hour),
+			TokenType:    "Bearer",
+		}, nil
+	}
+
+	provider.ValidateTokenFunc = func(_ context.Context, _ string) (*providers.UserInfo, error) {
+		return &providers.UserInfo{
+			ID:    testMockUserID,
+			Email: "mock@example.com",
+		}, nil
+	}
+
+	// Store an already-expired token with a refresh token
+	accessToken := "expired-refresh-test-token"
+	expiredToken := &oauth2.Token{
+		AccessToken:  "old-provider-at",
+		RefreshToken: "old-provider-rt",
+		Expiry:       time.Now().Add(-10 * time.Minute),
+		TokenType:    "Bearer",
+	}
+	if err := store.SaveToken(ctx, accessToken, expiredToken); err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+
+	if err := store.SaveTokenMetadataWithFamily(accessToken, testMockUserID, "test-client", "access", "", "expired-family-id", nil); err != nil {
+		t.Fatalf("SaveTokenMetadataWithFamily() error = %v", err)
+	}
+
+	_, err := srv.ValidateToken(ctx, accessToken)
+	if err != nil {
+		t.Fatalf("ValidateToken() error = %v", err)
+	}
+
+	if handlerToken == nil {
+		t.Fatal("TokenRefreshHandler was not called during expired token refresh")
+	}
+	if handlerUserID != testMockUserID {
+		t.Errorf("handler userID = %q, want %q", handlerUserID, testMockUserID)
+	}
+	if handlerFamilyID != "expired-family-id" {
+		t.Errorf("handler familyID = %q, want %q", handlerFamilyID, "expired-family-id")
+	}
+	if handlerToken.AccessToken != "refreshed-expired-access" {
+		t.Errorf("handler token AccessToken = %q, want %q", handlerToken.AccessToken, "refreshed-expired-access")
+	}
+}
+
+func TestServer_TokenRefreshHandler_NotCalledWithoutHandler(t *testing.T) {
+	ctx := context.Background()
+	srv, store, provider := setupFlowTestServer(t)
+
+	srv.Config.TokenRefreshThreshold = 300
+
+	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
+		return &oauth2.Token{
+			AccessToken:  "refreshed-access",
+			RefreshToken: "refreshed-refresh",
+			Expiry:       time.Now().Add(1 * time.Hour),
+			TokenType:    "Bearer",
+		}, nil
+	}
+
+	provider.ValidateTokenFunc = func(_ context.Context, _ string) (*providers.UserInfo, error) {
+		return &providers.UserInfo{
+			ID:    testMockUserID,
+			Email: "mock@example.com",
+		}, nil
+	}
+
+	accessToken := "no-handler-test-token"
+	nearExpiryToken := &oauth2.Token{
+		AccessToken:  "provider-at",
+		RefreshToken: "provider-rt",
+		Expiry:       time.Now().Add(2 * time.Minute),
+		TokenType:    "Bearer",
+	}
+	if err := store.SaveToken(ctx, accessToken, nearExpiryToken); err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+
+	// No handler set -- ValidateToken should still succeed
+	_, err := srv.ValidateToken(ctx, accessToken)
+	if err != nil {
+		t.Fatalf("ValidateToken() should succeed without handler, got error = %v", err)
+	}
+}
+
+func TestServer_TokenRefreshHandler_NilHandler(t *testing.T) {
+	srv, _, _ := setupFlowTestServer(t)
+
+	srv.SetTokenRefreshHandler(nil)
+	if srv.tokenRefreshHandler != nil {
+		t.Error("Handler should be nil after SetTokenRefreshHandler(nil)")
 	}
 }

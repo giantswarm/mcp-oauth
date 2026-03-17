@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **TokenRefreshHandler callback for provider token refresh events (#250)**
+  - `SetTokenRefreshHandler` registers a callback that fires synchronously after a provider token is refreshed, either proactively (near-expiry) or reactively (expired token during validation).
+  - Consumers can use this to update downstream caches (e.g., ID token caches for SSO forwarding) without a separate polling layer.
+  - The handler receives the request context, user ID, family ID (session ID), and the freshly obtained provider token.
+  - Follows the established `SessionCreationHandler` / `SessionRevocationHandler` pattern.
+
 - **Dex provider scope filtering to strip non-standard client scopes (#245)**
   - Added `filterDexScopes()` mirroring the Google provider's `filterGoogleScopes()` pattern.
   - Non-standard scopes (e.g., `claudeai`) are now stripped before forwarding to Dex.
