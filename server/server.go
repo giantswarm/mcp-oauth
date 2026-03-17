@@ -418,9 +418,9 @@ func (s *Server) SetSessionRevocationHandler(handler SessionRevocationHandler) {
 // ID token caching layers.
 // Must be called during server initialization, before the server starts handling requests.
 //
-// The handler is only invoked when the token store implements
-// [storage.TokenMetadataGetter], because the user ID and family ID are
-// retrieved from token metadata. A warning is logged at registration time
+// The handler always fires on refresh events. However, userID and familyID
+// are only populated when the token store implements
+// [storage.TokenMetadataGetter]. A warning is logged at registration time
 // if the current store does not support metadata lookups.
 func (s *Server) SetTokenRefreshHandler(handler TokenRefreshHandler) {
 	s.tokenRefreshHandler = handler

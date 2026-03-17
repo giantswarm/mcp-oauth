@@ -153,6 +153,10 @@ func (s *Server) fireTokenRefreshHandler(ctx context.Context, accessToken string
 		if meta, err := metaGetter.GetTokenMetadata(accessToken); err == nil && meta != nil {
 			userID = meta.UserID
 			familyID = meta.FamilyID
+		} else if err != nil {
+			s.Logger.Debug("Failed to retrieve token metadata for refresh handler",
+				"error", err,
+				"token_prefix", helpers.SafeTruncate(accessToken, 8))
 		}
 	}
 
