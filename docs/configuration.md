@@ -9,8 +9,9 @@ This guide covers all configuration options for the mcp-oauth library.
 3. [Proxy Configuration](#proxy-configuration)
 4. [Interstitial Page Customization](#interstitial-page-customization)
 5. [Token Behavior](#token-behavior)
-6. [Client Registration](#client-registration)
-7. [Scope Configuration](#scope-configuration)
+6. [Session & Token Lifecycle Callbacks](#session--token-lifecycle-callbacks)
+7. [Client Registration](#client-registration)
+8. [Scope Configuration](#scope-configuration)
 
 ## Server Configuration
 
@@ -262,6 +263,64 @@ config := &server.Config{
     // Authorization code lifetime (default: 10 minutes)
     AuthorizationCodeTTL: 600,
 }
+```
+
+## Session & Token Lifecycle Callbacks
+
+The server provides three lifecycle callbacks that let consumers react to key events during OAuth session management. All callbacks are **synchronous** -- they execute in the HTTP request goroutine before the response is sent. If your handler performs slow or blocking operations (network calls, database writes), derive a new context with its own deadline and run the work asynchronously.
+
+Register callbacks during server initialization, before the server starts handling requests.
+
+### SessionCreationHandler
+
+Fires when a new session is created during authorization code exchange.
+
+```go
+server.SetSessionCreationHandler(func(ctx context.Context, userID, familyID string, token *oauth2.Token) {
+    log.Printf("New session: user=%s session=%s", userID, familyID)
+    // Initialize per-session state, establish downstream connections, etc.
+})
+```
+
+Requires the token store to implement `storage.RefreshTokenFamilyStore`. A warning is logged at registration if it does not.
+
+### SessionRevocationHandler
+
+Fires when a session is revoked (e.g., on logout or token family revocation).
+
+```go
+server.SetSessionRevocationHandler(func(ctx context.Context, userID, familyID string) {
+    log.Printf("Session revoked: user=%s session=%s", userID, familyID)
+    // Tear down per-session state, close downstream connections, etc.
+})
+```
+
+### TokenRefreshHandler
+
+Fires after a provider token is refreshed, either proactively (near-expiry) or reactively (expired token encountered during validation). This eliminates the need for separate token polling or caching layers in consumers.
+
+```go
+server.SetTokenRefreshHandler(func(ctx context.Context, userID, familyID string, newToken *oauth2.Token) {
+    idToken, _ := newToken.Extra("id_token").(string)
+    log.Printf("Token refreshed: user=%s session=%s has_id_token=%v", userID, familyID, idToken != "")
+    // Update downstream caches, forward fresh ID tokens, etc.
+})
+```
+
+The `userID` and `familyID` fields are populated only when the token store implements `storage.TokenMetadataGetter`. A warning is logged at registration if it does not.
+
+### Synchronous Execution
+
+All three handlers run in the request goroutine. To avoid increasing response latency:
+
+```go
+server.SetTokenRefreshHandler(func(ctx context.Context, userID, familyID string, newToken *oauth2.Token) {
+    go func() {
+        asyncCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+        defer cancel()
+        updateDownstreamCache(asyncCtx, userID, familyID, newToken)
+    }()
+})
 ```
 
 ## Client Registration

@@ -48,6 +48,22 @@ type SessionCreationHandler func(ctx context.Context, userID, familyID string, t
 // operations, it should derive a new context with its own deadline.
 type SessionRevocationHandler func(ctx context.Context, userID, familyID string)
 
+// TokenRefreshHandler is called synchronously after a provider token is
+// refreshed, either proactively (near-expiry) or reactively (expired token
+// during validation). Consumers can use this to update downstream caches
+// (e.g., ID token caches for SSO forwarding) without a separate polling layer.
+//
+// The provided context is the HTTP request context that triggered the refresh.
+// If the handler performs slow operations, it should derive a new context with
+// its own deadline.
+//
+// Parameters:
+//   - ctx: the HTTP request context that triggered the refresh
+//   - userID: the authenticated user's identifier
+//   - familyID: the token family ID (session ID); empty if the store does not support families
+//   - newToken: the freshly obtained provider token (contains id_token in Extra for OIDC flows)
+type TokenRefreshHandler func(ctx context.Context, userID, familyID string, newToken *oauth2.Token)
+
 // TokenFamilyRevocationHandler is the old name for SessionRevocationHandler.
 //
 // Deprecated: Use SessionRevocationHandler instead.
@@ -62,6 +78,7 @@ type Server struct {
 	flowStore                     storage.FlowStore
 	sessionCreationHandler        SessionCreationHandler
 	sessionRevocationHandler      SessionRevocationHandler
+	tokenRefreshHandler           TokenRefreshHandler
 	Encryptor                     *security.Encryptor
 	Auditor                       *security.Auditor
 	RateLimiter                   *security.RateLimiter                   // IP-based rate limiter
@@ -392,6 +409,26 @@ func (s *Server) SetSessionCreationHandler(handler SessionCreationHandler) {
 // Must be called during server initialization, before the server starts handling requests.
 func (s *Server) SetSessionRevocationHandler(handler SessionRevocationHandler) {
 	s.sessionRevocationHandler = handler
+}
+
+// SetTokenRefreshHandler sets a callback that fires synchronously after a
+// provider token is refreshed (proactively near expiry, or reactively when
+// an expired token is encountered during validation). This lets consumers
+// react to refresh events immediately, eliminating the need for separate
+// ID token caching layers.
+// Must be called during server initialization, before the server starts handling requests.
+//
+// The handler always fires on refresh events. However, userID and familyID
+// are only populated when the token store implements
+// [storage.TokenMetadataGetter]. A warning is logged at registration time
+// if the current store does not support metadata lookups.
+func (s *Server) SetTokenRefreshHandler(handler TokenRefreshHandler) {
+	s.tokenRefreshHandler = handler
+	if handler != nil {
+		if _, ok := s.tokenStore.(storage.TokenMetadataGetter); !ok {
+			s.Logger.Warn("TokenRefreshHandler registered but token store does not support TokenMetadataGetter -- handler will not receive userID/familyID")
+		}
+	}
 }
 
 // SetTokenFamilyRevocationHandler is the old name for SetSessionRevocationHandler.
