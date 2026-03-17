@@ -349,6 +349,116 @@ func TestProvider_AuthorizationURL_FiltersOfflineAccess(t *testing.T) {
 	}
 }
 
+// TestFilterGoogleScopes_DropsUnsupportedScopes verifies that filterGoogleScopes
+// drops scopes that Google does not recognize, preventing authorization failures.
+func TestFilterGoogleScopes_DropsUnsupportedScopes(t *testing.T) {
+	defaultScopes := []string{"openid", "email", "profile"}
+
+	tests := []struct {
+		name           string
+		requested      []string
+		wantContain    []string
+		wantNotContain []string
+	}{
+		{
+			name:           "drops Dex-specific groups scope",
+			requested:      []string{"openid", "email", "groups"},
+			wantContain:    []string{"openid", "email"},
+			wantNotContain: []string{"groups"},
+		},
+		{
+			name:           "drops non-standard scopes like claudeai",
+			requested:      []string{"openid", "claudeai"},
+			wantContain:    []string{"openid"},
+			wantNotContain: []string{"claudeai"},
+		},
+		{
+			name:           "keeps Google API scopes",
+			requested:      []string{"openid", "https://www.googleapis.com/auth/gmail.readonly"},
+			wantContain:    []string{"openid", "https://www.googleapis.com/auth/gmail.readonly"},
+			wantNotContain: nil,
+		},
+		{
+			name:           "drops offline_access",
+			requested:      []string{"openid", "offline_access"},
+			wantContain:    []string{"openid"},
+			wantNotContain: []string{"offline_access"},
+		},
+		{
+			name:           "drops multiple unsupported scopes",
+			requested:      []string{"openid", "groups", "claudeai", "offline_access", "custom:scope"},
+			wantContain:    []string{"openid"},
+			wantNotContain: []string{"groups", "claudeai", "offline_access", "custom:scope"},
+		},
+		{
+			name:        "keeps all standard OIDC scopes",
+			requested:   []string{"openid", "email", "profile"},
+			wantContain: []string{"openid", "email", "profile"},
+		},
+		{
+			name:        "uses defaults when requested is nil",
+			requested:   nil,
+			wantContain: []string{"openid", "email", "profile"},
+		},
+		{
+			name:           "injects openid from defaults when missing in requested",
+			requested:      []string{"email", "groups"},
+			wantContain:    []string{"email", "openid"},
+			wantNotContain: []string{"groups"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := filterGoogleScopes(tt.requested, defaultScopes)
+
+			resultSet := make(map[string]bool, len(result))
+			for _, s := range result {
+				resultSet[s] = true
+			}
+
+			for _, want := range tt.wantContain {
+				if !resultSet[want] {
+					t.Errorf("filterGoogleScopes() should contain %q, got %v", want, result)
+				}
+			}
+			for _, notWant := range tt.wantNotContain {
+				if resultSet[notWant] {
+					t.Errorf("filterGoogleScopes() should NOT contain %q, got %v", notWant, result)
+				}
+			}
+		})
+	}
+}
+
+// TestIsGoogleSupportedScope tests the scope classification function.
+func TestIsGoogleSupportedScope(t *testing.T) {
+	tests := []struct {
+		scope    string
+		expected bool
+	}{
+		{"openid", true},
+		{"email", true},
+		{"profile", true},
+		{"https://www.googleapis.com/auth/gmail.readonly", true},
+		{"https://www.googleapis.com/auth/drive", true},
+		{"groups", false},
+		{"claudeai", false},
+		{"offline_access", false},
+		{"custom:scope", false},
+		{"audience:server:client_id:test", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.scope, func(t *testing.T) {
+			if got := isGoogleSupportedScope(tt.scope); got != tt.expected {
+				t.Errorf("isGoogleSupportedScope(%q) = %v, want %v", tt.scope, got, tt.expected)
+			}
+		})
+	}
+}
+
 // TestProvider_AuthorizationURL_DeepCopySafety verifies that the provider creates
 // deep copies of scopes to prevent race conditions and unexpected modifications
 func TestProvider_AuthorizationURL_DeepCopySafety(t *testing.T) {
@@ -379,7 +489,7 @@ func TestProvider_AuthorizationURL_DeepCopySafety(t *testing.T) {
 	}
 
 	// Test 2: Using custom scopes - should not affect provider defaults
-	customScopes := []string{"custom:scope1", "custom:scope2"}
+	customScopes := []string{"https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/drive.readonly"}
 	authURL2 := provider.AuthorizationURL("state2", "challenge2", "S256", customScopes, nil)
 
 	// Verify provider's scopes are still unchanged
@@ -388,7 +498,7 @@ func TestProvider_AuthorizationURL_DeepCopySafety(t *testing.T) {
 	}
 
 	// Test 3: Modifying input slice shouldn't affect provider
-	inputScopes := []string{"input:scope1", "input:scope2"}
+	inputScopes := []string{"openid", "email"}
 	authURL3 := provider.AuthorizationURL("state3", "challenge3", "S256", inputScopes, nil)
 
 	// Modify the input slice after the call
@@ -396,14 +506,14 @@ func TestProvider_AuthorizationURL_DeepCopySafety(t *testing.T) {
 	_ = append(inputScopes, "APPENDED") // Intentionally not using result to test isolation
 
 	// Generate another URL - should not be affected by the modification
-	authURL4 := provider.AuthorizationURL("state4", "challenge4", "S256", []string{"input:scope1", "input:scope2"}, nil)
+	authURL4 := provider.AuthorizationURL("state4", "challenge4", "S256", []string{"openid", "email"}, nil)
 
 	// URLs 3 and 4 should have the same scopes (ignoring state/challenge differences)
-	if !strings.Contains(authURL3, "input%3Ascope1") {
-		t.Errorf("URL 3 should contain input:scope1")
+	if !strings.Contains(authURL3, "openid") {
+		t.Errorf("URL 3 should contain openid")
 	}
-	if !strings.Contains(authURL4, "input%3Ascope1") {
-		t.Errorf("URL 4 should contain input:scope1")
+	if !strings.Contains(authURL4, "openid") {
+		t.Errorf("URL 4 should contain openid")
 	}
 
 	// Verify all URLs were generated successfully

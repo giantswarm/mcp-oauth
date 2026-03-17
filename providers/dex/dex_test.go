@@ -389,6 +389,110 @@ func TestAuthorizationURL_CustomScopes(t *testing.T) {
 	}
 }
 
+// TestEnsureOpenIDScope tests the defense-in-depth openid injection.
+func TestEnsureOpenIDScope(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   []string
+		wantLen int
+		wantHas string
+	}{
+		{
+			name:    "already has openid",
+			input:   []string{"openid", "email", "profile"},
+			wantLen: 3,
+			wantHas: "openid",
+		},
+		{
+			name:    "missing openid - gets injected",
+			input:   []string{"email", "profile"},
+			wantLen: 3,
+			wantHas: "openid",
+		},
+		{
+			name:    "only non-standard scopes - openid injected",
+			input:   []string{"claudeai"},
+			wantLen: 2,
+			wantHas: "openid",
+		},
+		{
+			name:    "empty scopes - openid injected",
+			input:   []string{},
+			wantLen: 1,
+			wantHas: "openid",
+		},
+		{
+			name:    "nil scopes - openid injected",
+			input:   nil,
+			wantLen: 1,
+			wantHas: "openid",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ensureOpenIDScope(tt.input)
+			if len(result) != tt.wantLen {
+				t.Errorf("ensureOpenIDScope() returned %d scopes, want %d: %v", len(result), tt.wantLen, result)
+			}
+			found := false
+			for _, s := range result {
+				if s == tt.wantHas {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("ensureOpenIDScope() result %v does not contain %q", result, tt.wantHas)
+			}
+		})
+	}
+}
+
+// TestAuthorizationURL_OpenIDAlwaysPresent verifies that the Dex provider always
+// includes "openid" in the authorization URL, even when clients send non-standard
+// scopes that don't include it.
+func TestAuthorizationURL_OpenIDAlwaysPresent(t *testing.T) {
+	server := setupMockDexServer(t)
+	defer server.Close()
+
+	provider, err := NewProvider(testConfig(server))
+	if err != nil {
+		t.Fatalf("NewProvider() failed: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		scopes []string
+	}{
+		{
+			name:   "client sends only non-standard scope",
+			scopes: []string{"claudeai"},
+		},
+		{
+			name:   "client sends Dex-specific scopes without openid",
+			scopes: []string{"groups", "email"},
+		},
+		{
+			name:   "client sends openid explicitly",
+			scopes: []string{"openid", "email"},
+		},
+		{
+			name:   "nil scopes uses defaults which include openid",
+			scopes: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authURL := provider.AuthorizationURL("state", "challenge", "S256", tt.scopes, nil)
+			if !strings.Contains(authURL, "openid") {
+				t.Errorf("AuthorizationURL() should always contain openid scope, got URL: %s", authURL)
+			}
+		})
+	}
+}
+
 // TestExchangeCode tests code exchange (mock only, as we can't test actual OAuth flow)
 func TestExchangeCode(t *testing.T) {
 	server := setupMockDexServer(t)

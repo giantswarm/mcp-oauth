@@ -70,26 +70,33 @@ func ApplyAuthorizationURLOptions(opts *AuthorizationURLOptions) []oauth2.AuthCo
 // be valid for the "k8s-auth" client, even if the requesting client didn't ask for it.
 const CrossClientAudienceScopePrefix = "audience:server:client_id:"
 
+// isMandatoryScope returns true if the scope must always be force-merged into the
+// resolved scope set when present in the provider's defaults. Currently mandatory:
+//   - "openid": Required by OIDC-compliant providers per the OpenID Connect spec.
+//   - CrossClientAudienceScopePrefix: Required for SSO token forwarding scenarios.
+func isMandatoryScope(scope string) bool {
+	return scope == "openid" || strings.HasPrefix(scope, CrossClientAudienceScopePrefix)
+}
+
 // CopyScopes creates a deep copy of scopes to prevent race conditions.
 // If requestedScopes is empty, copies defaultScopes.
 // If requestedScopes is non-empty, copies those and merges in any mandatory scopes
-// from defaultScopes. Mandatory scopes are cross-client audience scopes (prefixed with
-// "audience:server:client_id:") which are required for SSO token forwarding scenarios.
-//
-// Mandatory Scope Merging:
-//
-// Cross-client audience scopes (prefixed with CrossClientAudienceScopePrefix) from
-// defaultScopes are ALWAYS merged into the result, even when the client provides
-// custom scopes. This ensures SSO token forwarding scenarios work correctly.
+// from defaultScopes. Mandatory scopes are:
+//   - "openid": Always force-merged when present in defaults, ensuring OIDC-compliant
+//     providers always receive the required openid scope regardless of what the client
+//     requested (e.g., clients sending only "claudeai" will still get "openid" injected).
+//   - Cross-client audience scopes (prefixed with CrossClientAudienceScopePrefix):
+//     Required for SSO token forwarding scenarios.
 //
 // Example:
 //
 //	defaultScopes: ["openid", "profile", "audience:server:client_id:k8s-auth"]
-//	requestedScopes: ["openid", "email"]
-//	result: ["openid", "email", "audience:server:client_id:k8s-auth"]
+//	requestedScopes: ["claudeai"]
+//	result: ["claudeai", "openid", "audience:server:client_id:k8s-auth"]
 //
-// Note that "profile" is NOT merged (it's not an audience scope), but the audience
-// scope IS merged because it's mandatory for SSO token forwarding.
+// Note that "profile" is NOT merged (it's not mandatory), but "openid" and the
+// audience scope ARE merged because they are mandatory for OIDC compliance and
+// SSO token forwarding respectively.
 func CopyScopes(requestedScopes, defaultScopes []string) []string {
 	// If no requested scopes, use defaults entirely
 	if len(requestedScopes) == 0 {
@@ -99,7 +106,7 @@ func CopyScopes(requestedScopes, defaultScopes []string) []string {
 	}
 
 	// Start with a copy of requested scopes
-	// Pre-allocate with extra capacity for potential audience scopes to avoid reallocation
+	// Pre-allocate with extra capacity for potential mandatory scopes to avoid reallocation
 	result := make([]string, len(requestedScopes), len(requestedScopes)+len(defaultScopes))
 	copy(result, requestedScopes)
 
@@ -109,10 +116,9 @@ func CopyScopes(requestedScopes, defaultScopes []string) []string {
 		requestedSet[s] = struct{}{}
 	}
 
-	// Merge mandatory scopes from defaults (cross-client audience scopes)
-	// These scopes are required for SSO token forwarding and must not be omitted
+	// Merge mandatory scopes from defaults
 	for _, s := range defaultScopes {
-		if strings.HasPrefix(s, CrossClientAudienceScopePrefix) {
+		if isMandatoryScope(s) {
 			if _, exists := requestedSet[s]; !exists {
 				result = append(result, s)
 			}
