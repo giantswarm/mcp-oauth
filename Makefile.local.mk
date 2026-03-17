@@ -10,6 +10,13 @@ test: ## Run tests (fast version for local dev, use test-race for full CI checks
 	@echo "====> $@"
 	go test -v ./...
 
+# Override lint to not enable gosec inside golangci-lint; gosec runs
+# separately via `make gosec` with proper exclusions (G101, G117, etc.).
+.PHONY: lint
+lint: ## Runs golangci-lint.
+	@echo "====> $@"
+	golangci-lint run -E goconst --timeout=15m ./...
+
 # Override the generated clean target with a more comprehensive version for library development
 .PHONY: clean
 clean: clean-examples ## Clean build artifacts and coverage files
