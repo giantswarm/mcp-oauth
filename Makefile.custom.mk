@@ -6,31 +6,25 @@ GO_PACKAGES := $(shell go list ./... 2>/dev/null | grep -v /examples/)
 
 ##@ Library Development
 
-# NOTE: 'make test' is defined in Makefile.gen.go.mk and runs with -race (slow but thorough)
-# For faster local iteration, use 'make test-fast' instead
-
-.PHONY: test-fast test-coverage test-race test-all
+.PHONY: test-fast test-coverage test-race
 test-fast: ## Run tests (fast, no race detector) - RECOMMENDED for local dev
 	@echo "====> $@"
 	go test -v ./...
 
-test-coverage: ## Run tests with coverage
+test-coverage: ## Run tests with coverage and race detector
 	@echo "====> $@"
-	go test -v -coverprofile=coverage.out -covermode=atomic ./...
+	go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report: coverage.html"
 
-test-race: ## Run tests with race detector
+test-race: ## Run tests with race detector (no coverage report)
 	@echo "====> $@"
 	go test -v -race ./...
 
-test-all: test-race test-coverage ## Run all tests
-	@echo "====> $@"
-
 ##@ Code Formatting
 
-.PHONY: fmt-all fmt-check gofumpt gci
-fmt-all: fmt imports gofumpt gci-write ## Apply all formatting (gofmt, goimports, gofumpt, gci)
+.PHONY: fmt-all fmt-check gofumpt
+fmt-all: fmt imports gofumpt ## Apply all formatting (gofmt, goimports, gofumpt)
 	@echo "====> $@"
 
 fmt-check: ## Check formatting without applying changes
@@ -49,54 +43,6 @@ gofumpt: ## Apply gofumpt (stricter gofmt)
 	@command -v gofumpt >/dev/null 2>&1 || (echo "ERROR: gofumpt not installed. Run: go install mvdan.cc/gofumpt@latest" && exit 1)
 	gofumpt -w .
 
-gci-write: ## Apply gci import ordering
-	@echo "====> $@"
-	@command -v gci >/dev/null 2>&1 || (echo "ERROR: gci not installed. Run: go install github.com/daixiang0/gci@latest" && exit 1)
-	gci write -s standard -s default -s 'prefix($(MODULE))' --skip-generated .
-
-gci-check: ## Check gci import ordering
-	@echo "====> $@"
-	@command -v gci >/dev/null 2>&1 || (echo "ERROR: gci not installed. Run: go install github.com/daixiang0/gci@latest" && exit 1)
-	@gci diff -s standard -s default -s 'prefix($(MODULE))' --skip-generated . | (! grep .) || (echo "gci check failed" && exit 1)
-
-##@ Static Analysis
-
-.PHONY: staticcheck errcheck ineffassign unconvert misspell gocritic revive
-staticcheck: ## Run staticcheck
-	@echo "====> $@"
-	@command -v staticcheck >/dev/null 2>&1 || (echo "ERROR: staticcheck not installed. Run: go install honnef.co/go/tools/cmd/staticcheck@latest" && exit 1)
-	staticcheck $(GO_PACKAGES)
-
-errcheck: ## Run errcheck - find unchecked errors
-	@echo "====> $@"
-	@command -v errcheck >/dev/null 2>&1 || (echo "ERROR: errcheck not installed. Run: go install github.com/kisielk/errcheck@latest" && exit 1)
-	errcheck -ignoretests $(GO_PACKAGES)
-
-ineffassign: ## Run ineffassign - detect ineffectual assignments
-	@echo "====> $@"
-	@command -v ineffassign >/dev/null 2>&1 || (echo "ERROR: ineffassign not installed. Run: go install github.com/gordonklaus/ineffassign@latest" && exit 1)
-	ineffassign $(GO_PACKAGES)
-
-unconvert: ## Run unconvert - remove unnecessary type conversions
-	@echo "====> $@"
-	@command -v unconvert >/dev/null 2>&1 || (echo "ERROR: unconvert not installed. Run: go install github.com/mdempsky/unconvert@latest" && exit 1)
-	unconvert $(GO_PACKAGES)
-
-misspell: ## Run misspell - find commonly misspelled words
-	@echo "====> $@"
-	@command -v misspell >/dev/null 2>&1 || (echo "ERROR: misspell not installed. Run: go install github.com/client9/misspell/cmd/misspell@latest" && exit 1)
-	find . -name '*.go' -not -path './vendor/*' -not -path './examples/*/vendor/*' | xargs misspell
-
-gocritic: ## Run gocritic - opinionated linter
-	@echo "====> $@"
-	@command -v gocritic >/dev/null 2>&1 || (echo "ERROR: gocritic not installed. Run: go install github.com/go-critic/go-critic/cmd/gocritic@latest" && exit 1)
-	gocritic check $(GO_PACKAGES)
-
-revive: ## Run revive - fast, configurable linter
-	@echo "====> $@"
-	@command -v revive >/dev/null 2>&1 || (echo "ERROR: revive not installed. Run: go install github.com/mgechev/revive@latest" && exit 1)
-	revive $(GO_PACKAGES)
-
 ##@ Security Analysis
 
 .PHONY: gosec govulncheck security-check trivy
@@ -108,20 +54,7 @@ gosec: ## Run gosec - security-focused linter
 govulncheck: ## Run govulncheck - official Go vulnerability checker
 	@echo "====> $@"
 	@command -v govulncheck >/dev/null 2>&1 || (echo "ERROR: govulncheck not installed. Run: go install golang.org/x/vuln/cmd/govulncheck@latest" && exit 1)
-	@output=$$(timeout 180s govulncheck $(GO_PACKAGES) 2>&1); \
-	status=$$?; \
-	if [ $$status -eq 0 ]; then \
-		echo "$$output"; \
-	elif [ $$status -eq 124 ]; then \
-		echo "$$output"; \
-		echo "WARNING: govulncheck timed out after 180s in CI environment; continuing to avoid indefinite verify hangs."; \
-	elif echo "$$output" | grep -q "GO-2026-4337" && [ "$$(echo "$$output" | grep -c "Vulnerability #")" = "1" ]; then \
-		echo "$$output"; \
-		echo "WARNING: Ignoring known Go stdlib vulnerability GO-2026-4337 in CI toolchain; re-enable strict failure once runner Go is patched."; \
-	else \
-		echo "$$output"; \
-		exit $$status; \
-	fi
+	govulncheck $(GO_PACKAGES)
 
 trivy: ## Run trivy filesystem scan
 	@echo "====> $@"
@@ -133,7 +66,7 @@ security-check: gosec govulncheck ## Run all security checks
 
 ##@ Code Quality
 
-.PHONY: gocyclo gocognit goconst dupl quality-check
+.PHONY: gocyclo gocognit dupl quality-check
 gocyclo: ## Run gocyclo - cyclomatic complexity (threshold 15, excludes tests)
 	@echo "====> $@"
 	@command -v gocyclo >/dev/null 2>&1 || (echo "ERROR: gocyclo not installed. Run: go install github.com/fzipp/gocyclo/cmd/gocyclo@latest" && exit 1)
@@ -144,17 +77,12 @@ gocognit: ## Run gocognit - cognitive complexity (threshold 15, excludes tests)
 	@command -v gocognit >/dev/null 2>&1 || (echo "ERROR: gocognit not installed. Run: go install github.com/uudashr/gocognit/cmd/gocognit@latest" && exit 1)
 	find . -name '*.go' -not -name '*_test.go' -not -path './vendor/*' -not -path './examples/*' | xargs gocognit -over 15
 
-goconst: ## Run goconst - find repeated strings (excludes tests and examples)
-	@echo "====> $@"
-	@command -v goconst >/dev/null 2>&1 || (echo "ERROR: goconst not installed. Run: go install github.com/jgautheron/goconst/cmd/goconst@latest" && exit 1)
-	goconst -ignore "test|examples" ./...
-
 dupl: ## Run dupl - code duplication detection (threshold 100, excludes tests)
 	@echo "====> $@"
 	@command -v dupl >/dev/null 2>&1 || (echo "ERROR: dupl not installed. Run: go install github.com/mibk/dupl@latest" && exit 1)
 	find . -name '*.go' -not -name '*_test.go' -not -path './vendor/*' -not -path './examples/*' | xargs dupl -threshold 100
 
-quality-check: gocyclo gocognit goconst dupl ## Run all code quality checks
+quality-check: gocyclo gocognit dupl ## Run all code quality checks
 	@echo "====> $@"
 
 ##@ Dependency Analysis
@@ -255,22 +183,12 @@ install-analyze-tools: install-tools ## Install all analysis tools
 	@echo "====> $@"
 	@echo "Installing formatting tools..."
 	go install mvdan.cc/gofumpt@latest
-	go install github.com/daixiang0/gci@latest
-	@echo "Installing static analysis tools..."
-	go install honnef.co/go/tools/cmd/staticcheck@latest
-	go install github.com/kisielk/errcheck@latest
-	go install github.com/gordonklaus/ineffassign@latest
-	go install github.com/mdempsky/unconvert@latest
-	go install github.com/client9/misspell/cmd/misspell@latest
-	go install github.com/go-critic/go-critic/cmd/gocritic@latest
-	go install github.com/mgechev/revive@latest
 	@echo "Installing security tools..."
 	go install github.com/securego/gosec/v2/cmd/gosec@latest
 	go install golang.org/x/vuln/cmd/govulncheck@latest
 	@echo "Installing code quality tools..."
 	go install github.com/fzipp/gocyclo/cmd/gocyclo@latest
 	go install github.com/uudashr/gocognit/cmd/gocognit@latest
-	go install github.com/jgautheron/goconst/cmd/goconst@latest
 	go install github.com/mibk/dupl@latest
 	@echo "All analysis tools installed"
 
@@ -290,23 +208,8 @@ update-deps: ## Update dependencies
 
 ##@ Aggregate Analysis Targets
 
-.PHONY: analyze-format analyze-lint analyze-security analyze-quality analyze-deps analyze-all
-analyze-format: fmt-check gci-check ## Run all formatting checks
-	@echo "====> $@"
-
-analyze-lint: vet lint staticcheck errcheck ineffassign unconvert misspell gocritic revive ## Run all linting tools
-	@echo "====> $@"
-
-analyze-security: security-check ## Run all security tools
-	@echo "====> $@"
-
-analyze-quality: quality-check ## Run all code quality tools
-	@echo "====> $@"
-
-analyze-deps: deps-check mod-outdated ## Run all dependency analysis
-	@echo "====> $@"
-
-analyze-all: analyze-format analyze-lint analyze-security analyze-quality analyze-deps doc-check ## Run ALL analysis tools
+.PHONY: analyze-all
+analyze-all: fmt-check vet lint gosec quality-check deps-check doc-check ## Run ALL analysis (golangci-lint includes most linters)
 	@echo "====> $@"
 	@echo ""
 	@echo "=========================================="
@@ -315,13 +218,11 @@ analyze-all: analyze-format analyze-lint analyze-security analyze-quality analyz
 
 ##@ Verification
 
-.PHONY: verify verify-all ci check-security
-verify: verify-all ## Run all verification steps (comprehensive)
-
-verify-all: init-examples fmt-all analyze-all test-all ## Run all verification steps (comprehensive)
+.PHONY: verify ci check-security
+verify: init-examples fmt-all analyze-all test-coverage ## Run all verification steps
 	@echo "====> $@"
 
-ci: verify test-coverage ## Run CI checks
+ci: verify ## Run CI checks (alias for verify)
 	@echo "====> $@"
 
 check-security: security-check ## Alias for security-check
