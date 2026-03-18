@@ -73,30 +73,41 @@ const CrossClientAudienceScopePrefix = "audience:server:client_id:"
 // isMandatoryScope returns true if the scope must always be force-merged into the
 // resolved scope set when present in the provider's defaults. Currently mandatory:
 //   - "openid": Required by OIDC-compliant providers per the OpenID Connect spec.
+//   - "email": Required for user identification in downstream services.
+//   - "profile": Required for user display name and metadata.
+//   - "groups": Required for RBAC-based authorization.
+//   - "offline_access": Required for refresh token issuance.
 //   - CrossClientAudienceScopePrefix: Required for SSO token forwarding scenarios.
 func isMandatoryScope(scope string) bool {
-	return scope == "openid" || strings.HasPrefix(scope, CrossClientAudienceScopePrefix)
+	switch scope {
+	case "openid", "email", "profile", "groups", "offline_access":
+		return true
+	default:
+		return strings.HasPrefix(scope, CrossClientAudienceScopePrefix)
+	}
 }
 
 // CopyScopes creates a deep copy of scopes to prevent race conditions.
 // If requestedScopes is empty, copies defaultScopes.
 // If requestedScopes is non-empty, copies those and merges in any mandatory scopes
-// from defaultScopes. Mandatory scopes are:
-//   - "openid": Always force-merged when present in defaults, ensuring OIDC-compliant
-//     providers always receive the required openid scope regardless of what the client
-//     requested (e.g., clients sending only "claudeai" will still get "openid" injected).
+// from defaultScopes. Mandatory scopes (when present in defaults) are:
+//   - "openid": Required by OIDC spec.
+//   - "email": Required for user identification in downstream services.
+//   - "profile": Required for user display name and metadata.
+//   - "groups": Required for RBAC-based authorization.
+//   - "offline_access": Required for refresh token issuance.
 //   - Cross-client audience scopes (prefixed with CrossClientAudienceScopePrefix):
 //     Required for SSO token forwarding scenarios.
 //
 // Example:
 //
-//	defaultScopes: ["openid", "profile", "audience:server:client_id:k8s-auth"]
+//	defaultScopes: ["openid", "profile", "email", "groups", "offline_access", "audience:server:client_id:k8s-auth"]
 //	requestedScopes: ["claudeai"]
-//	result: ["claudeai", "openid", "audience:server:client_id:k8s-auth"]
+//	result: ["claudeai", "openid", "profile", "email", "groups", "offline_access", "audience:server:client_id:k8s-auth"]
 //
-// Note that "profile" is NOT merged (it's not mandatory), but "openid" and the
-// audience scope ARE merged because they are mandatory for OIDC compliance and
-// SSO token forwarding respectively.
+// All identity-critical scopes from defaults are force-merged, ensuring that
+// downstream services always receive the claims they need (email, groups, etc.)
+// regardless of what the MCP client explicitly requests.
 func CopyScopes(requestedScopes, defaultScopes []string) []string {
 	// If no requested scopes, use defaults entirely
 	if len(requestedScopes) == 0 {

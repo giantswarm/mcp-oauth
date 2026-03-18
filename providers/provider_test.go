@@ -241,17 +241,24 @@ const (
 
 // TestCopyScopes tests the CopyScopes helper.
 func TestCopyScopes(t *testing.T) {
-	t.Run("uses requested scopes when provided", func(t *testing.T) {
+	t.Run("uses requested scopes and merges mandatory defaults", func(t *testing.T) {
 		requested := []string{testScopeOpenID, testScopeEmail}
 		defaults := []string{testScopeOpenID, testScopeProfile, testScopeEmail}
 
 		result := CopyScopes(requested, defaults)
 
-		if len(result) != 2 {
-			t.Errorf("expected 2 scopes, got %d", len(result))
+		// requested has openid + email; profile is mandatory from defaults
+		if len(result) != 3 {
+			t.Errorf("expected 3 scopes, got %d: %v", len(result), result)
 		}
-		if result[0] != testScopeOpenID || result[1] != testScopeEmail {
-			t.Errorf("unexpected scopes: %v", result)
+		if result[0] != testScopeOpenID {
+			t.Errorf("expected first scope to be %q, got %q", testScopeOpenID, result[0])
+		}
+		if result[1] != testScopeEmail {
+			t.Errorf("expected second scope to be %q, got %q", testScopeEmail, result[1])
+		}
+		if result[2] != testScopeProfile {
+			t.Errorf("expected third scope to be %q, got %q", testScopeProfile, result[2])
 		}
 	})
 
@@ -324,21 +331,26 @@ func TestCopyScopes(t *testing.T) {
 
 		result := CopyScopes(requested, defaults)
 
-		// Should have requested scopes plus the audience scope
-		if len(result) != 3 {
-			t.Errorf("expected 3 scopes, got %d: %v", len(result), result)
+		// requested has openid + email; profile and audience are mandatory from defaults
+		if len(result) != 4 {
+			t.Errorf("expected 4 scopes, got %d: %v", len(result), result)
 		}
 
-		// Verify audience scope was merged
 		foundAudience := false
+		foundProfile := false
 		for _, s := range result {
 			if s == "audience:server:client_id:dex-k8s-authenticator" {
 				foundAudience = true
-				break
+			}
+			if s == testScopeProfile {
+				foundProfile = true
 			}
 		}
 		if !foundAudience {
 			t.Errorf("audience scope not merged: %v", result)
+		}
+		if !foundProfile {
+			t.Errorf("profile scope not merged: %v", result)
 		}
 	})
 
@@ -365,24 +377,39 @@ func TestCopyScopes(t *testing.T) {
 
 		result := CopyScopes(requested, defaults)
 
-		// Should only have 2 scopes (no duplicate)
-		if len(result) != 2 {
-			t.Errorf("expected 2 scopes (no duplicate), got %d: %v", len(result), result)
+		// openid + audience (from requested) + profile (mandatory from defaults) = 3
+		if len(result) != 3 {
+			t.Errorf("expected 3 scopes, got %d: %v", len(result), result)
+		}
+
+		audienceCount := 0
+		for _, s := range result {
+			if s == audienceScope {
+				audienceCount++
+			}
+		}
+		if audienceCount != 1 {
+			t.Errorf("expected exactly 1 audience scope, got %d in: %v", audienceCount, result)
 		}
 	})
 
-	t.Run("does not merge non-audience scopes from defaults", func(t *testing.T) {
+	t.Run("merges identity scopes from defaults", func(t *testing.T) {
 		requested := []string{testScopeOpenID}
 		defaults := []string{testScopeOpenID, testScopeProfile, testScopeEmail}
 
 		result := CopyScopes(requested, defaults)
 
-		// Should only have the requested scope
-		if len(result) != 1 {
-			t.Errorf("expected 1 scope, got %d: %v", len(result), result)
+		if len(result) != 3 {
+			t.Errorf("expected 3 scopes, got %d: %v", len(result), result)
 		}
 		if result[0] != testScopeOpenID {
-			t.Errorf("unexpected scope: %v", result)
+			t.Errorf("expected first scope to be %q, got %q", testScopeOpenID, result[0])
+		}
+		if result[1] != testScopeProfile {
+			t.Errorf("expected second scope to be %q, got %q", testScopeProfile, result[1])
+		}
+		if result[2] != testScopeEmail {
+			t.Errorf("expected third scope to be %q, got %q", testScopeEmail, result[2])
 		}
 	})
 
@@ -401,7 +428,7 @@ func TestCopyScopes(t *testing.T) {
 		}
 	})
 
-	t.Run("preserves order with requested scopes first then audience scopes", func(t *testing.T) {
+	t.Run("preserves order with requested scopes first then mandatory scopes", func(t *testing.T) {
 		requested := []string{testScopeEmail, testScopeOpenID}
 		defaults := []string{
 			testScopeOpenID,
@@ -412,42 +439,48 @@ func TestCopyScopes(t *testing.T) {
 
 		result := CopyScopes(requested, defaults)
 
-		// Should have 4 scopes: 2 requested + 2 audience
-		if len(result) != 4 {
-			t.Errorf("expected 4 scopes, got %d: %v", len(result), result)
+		// Should have 5 scopes: 2 requested + 2 audience + 1 profile (mandatory, not in requested)
+		if len(result) != 5 {
+			t.Errorf("expected 5 scopes, got %d: %v", len(result), result)
 		}
 
-		// Verify order: requested scopes come first, in their original order
 		if result[0] != testScopeEmail {
 			t.Errorf("expected first scope to be %q, got %q", testScopeEmail, result[0])
 		}
 		if result[1] != testScopeOpenID {
 			t.Errorf("expected second scope to be %q, got %q", testScopeOpenID, result[1])
 		}
-
-		// Audience scopes should be appended after requested scopes
 		if result[2] != "audience:server:client_id:first-client" {
 			t.Errorf("expected third scope to be audience:server:client_id:first-client, got %q", result[2])
 		}
-		if result[3] != "audience:server:client_id:second-client" {
-			t.Errorf("expected fourth scope to be audience:server:client_id:second-client, got %q", result[3])
+		if result[3] != testScopeProfile {
+			t.Errorf("expected fourth scope to be %q, got %q", testScopeProfile, result[3])
+		}
+		if result[4] != "audience:server:client_id:second-client" {
+			t.Errorf("expected fifth scope to be audience:server:client_id:second-client, got %q", result[4])
 		}
 	})
 
-	t.Run("merges openid from defaults when client omits it", func(t *testing.T) {
+	t.Run("merges all mandatory scopes from defaults when client omits them", func(t *testing.T) {
 		requested := []string{"claudeai"}
 		defaults := []string{testScopeOpenID, testScopeProfile, testScopeEmail}
 
 		result := CopyScopes(requested, defaults)
 
-		if len(result) != 2 {
-			t.Errorf("expected 2 scopes, got %d: %v", len(result), result)
+		if len(result) != 4 {
+			t.Errorf("expected 4 scopes, got %d: %v", len(result), result)
 		}
 		if result[0] != "claudeai" {
 			t.Errorf("expected first scope to be %q, got %q", "claudeai", result[0])
 		}
 		if result[1] != testScopeOpenID {
 			t.Errorf("expected second scope to be %q, got %q", testScopeOpenID, result[1])
+		}
+		if result[2] != testScopeProfile {
+			t.Errorf("expected third scope to be %q, got %q", testScopeProfile, result[2])
+		}
+		if result[3] != testScopeEmail {
+			t.Errorf("expected fourth scope to be %q, got %q", testScopeEmail, result[3])
 		}
 	})
 
@@ -457,14 +490,57 @@ func TestCopyScopes(t *testing.T) {
 
 		result := CopyScopes(requested, defaults)
 
-		if len(result) != 2 {
-			t.Errorf("expected 2 scopes (no duplicate openid), got %d: %v", len(result), result)
+		// openid + email (from requested) + profile (mandatory from defaults) = 3
+		if len(result) != 3 {
+			t.Errorf("expected 3 scopes, got %d: %v", len(result), result)
+		}
+
+		openidCount := 0
+		for _, s := range result {
+			if s == testScopeOpenID {
+				openidCount++
+			}
+		}
+		if openidCount != 1 {
+			t.Errorf("expected exactly 1 openid scope, got %d in: %v", openidCount, result)
 		}
 	})
 
-	t.Run("does not inject openid when not in defaults", func(t *testing.T) {
+	t.Run("exact bug scenario: claudeai with full dex defaults", func(t *testing.T) {
+		requested := []string{"claudeai"}
+		defaults := []string{
+			testScopeOpenID,
+			testScopeProfile,
+			testScopeEmail,
+			"groups",
+			"offline_access",
+			"audience:server:client_id:dex-k8s-authenticator",
+		}
+
+		result := CopyScopes(requested, defaults)
+
+		expected := []string{
+			"claudeai",
+			testScopeOpenID,
+			testScopeProfile,
+			testScopeEmail,
+			"groups",
+			"offline_access",
+			"audience:server:client_id:dex-k8s-authenticator",
+		}
+		if len(result) != len(expected) {
+			t.Fatalf("expected %d scopes, got %d: %v", len(expected), len(result), result)
+		}
+		for i, s := range expected {
+			if result[i] != s {
+				t.Errorf("scope[%d] = %q, want %q", i, result[i], s)
+			}
+		}
+	})
+
+	t.Run("does not inject mandatory scopes when not in defaults", func(t *testing.T) {
 		requested := []string{"custom:scope"}
-		defaults := []string{testScopeProfile, testScopeEmail}
+		defaults := []string{"federated:id"}
 
 		result := CopyScopes(requested, defaults)
 
@@ -476,7 +552,21 @@ func TestCopyScopes(t *testing.T) {
 		}
 	})
 
-	t.Run("merges both openid and audience scopes", func(t *testing.T) {
+	t.Run("does not merge non-mandatory scopes from defaults", func(t *testing.T) {
+		requested := []string{testScopeOpenID}
+		defaults := []string{testScopeOpenID, "federated:id", "custom:admin"}
+
+		result := CopyScopes(requested, defaults)
+
+		if len(result) != 1 {
+			t.Errorf("expected 1 scope, got %d: %v", len(result), result)
+		}
+		if result[0] != testScopeOpenID {
+			t.Errorf("unexpected scope: %v", result)
+		}
+	})
+
+	t.Run("merges all mandatory and audience scopes", func(t *testing.T) {
 		requested := []string{"claudeai"}
 		defaults := []string{
 			testScopeOpenID,
@@ -486,8 +576,8 @@ func TestCopyScopes(t *testing.T) {
 
 		result := CopyScopes(requested, defaults)
 
-		if len(result) != 3 {
-			t.Errorf("expected 3 scopes, got %d: %v", len(result), result)
+		if len(result) != 4 {
+			t.Errorf("expected 4 scopes, got %d: %v", len(result), result)
 		}
 		if result[0] != "claudeai" {
 			t.Errorf("expected first scope to be %q, got %q", "claudeai", result[0])
@@ -495,8 +585,11 @@ func TestCopyScopes(t *testing.T) {
 		if result[1] != testScopeOpenID {
 			t.Errorf("expected second scope to be %q, got %q", testScopeOpenID, result[1])
 		}
-		if result[2] != "audience:server:client_id:k8s-auth" {
-			t.Errorf("expected third scope to be audience scope, got %q", result[2])
+		if result[2] != testScopeProfile {
+			t.Errorf("expected third scope to be %q, got %q", testScopeProfile, result[2])
+		}
+		if result[3] != "audience:server:client_id:k8s-auth" {
+			t.Errorf("expected fourth scope to be audience scope, got %q", result[3])
 		}
 	})
 }
@@ -507,13 +600,15 @@ func TestIsMandatoryScope(t *testing.T) {
 		expected bool
 	}{
 		{"openid", true},
+		{"email", true},
+		{"profile", true},
+		{"groups", true},
+		{"offline_access", true},
 		{"audience:server:client_id:k8s-auth", true},
 		{"audience:server:client_id:", true},
-		{"profile", false},
-		{"email", false},
-		{"groups", false},
 		{"claudeai", false},
-		{"offline_access", false},
+		{"custom:scope", false},
+		{"federated:id", false},
 		{"", false},
 	}
 

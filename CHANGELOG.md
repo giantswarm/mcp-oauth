@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Treat email, profile, groups, offline_access as mandatory scopes (#252)**
+  - `isMandatoryScope()` now returns true for `email`, `profile`, `groups`, and `offline_access` in addition to `openid` and cross-client audience scopes.
+  - When an MCP client sends only custom scopes (e.g., `claudeai`), identity-critical scopes from the provider's defaults are now force-merged into the authorization request.
+  - This fixes empty `email` claims and missing `groups` in ID tokens issued by Dex, which caused downstream MCP servers to reject tool calls with "authentication required".
+
 ### Changed
 
 - **Raise DefaultMaxGroups from 500 to 600 and MaxTokenDataSize from 64KB to 256KB (#248)**
