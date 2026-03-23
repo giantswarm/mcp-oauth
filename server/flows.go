@@ -156,7 +156,7 @@ func (s *Server) fireTokenRefreshHandler(ctx context.Context, accessToken string
 		} else if err != nil {
 			s.Logger.Debug("Failed to retrieve token metadata for refresh handler",
 				"error", err,
-				"token_prefix", helpers.SafeTruncate(accessToken, 8))
+				"token_suffix", helpers.TokenSuffix(accessToken, 8))
 		}
 	}
 
@@ -198,7 +198,7 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 		"expiry", storedToken.Expiry,
 		"time_until_expiry", timeUntilExpiry,
 		"refresh_threshold", refreshThreshold,
-		"token_prefix", helpers.SafeTruncate(accessToken, 8))
+		"token_suffix", helpers.TokenSuffix(accessToken, 8))
 
 	// Attempt to refresh the provider token
 	newProviderToken, err := s.provider.RefreshToken(ctx, storedToken.RefreshToken)
@@ -206,7 +206,7 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 		// Refresh failed - log warning but continue with validation (graceful degradation)
 		s.Logger.Warn("Proactive token refresh failed, falling back to validation",
 			"error", err,
-			"token_prefix", helpers.SafeTruncate(accessToken, 8),
+			"token_suffix", helpers.TokenSuffix(accessToken, 8),
 			"time_until_expiry", timeUntilExpiry)
 
 		if s.Auditor != nil {
@@ -233,7 +233,7 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 	s.Logger.Info("Token proactively refreshed",
 		"old_expiry", storedToken.Expiry,
 		"new_expiry", newProviderToken.Expiry,
-		"token_prefix", helpers.SafeTruncate(accessToken, 8))
+		"token_suffix", helpers.TokenSuffix(accessToken, 8))
 
 	if s.Auditor != nil {
 		s.Auditor.LogEvent(security.Event{
@@ -271,12 +271,12 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 			// Log at debug level - not all JWTs are valid ID tokens, fallback to normal flow
 			s.Logger.Debug("Forwarded ID token validation failed, falling back to userinfo",
 				"error", err.Error(),
-				"token_prefix", helpers.SafeTruncate(accessToken, 8))
+				"token_suffix", helpers.TokenSuffix(accessToken, 8))
 		} else if userInfo != nil {
 			// ID token validated successfully - return the user info
 			s.Logger.Debug("Forwarded ID token validated via JWKS",
 				"user_id", userInfo.ID,
-				"token_prefix", helpers.SafeTruncate(accessToken, 8))
+				"token_suffix", helpers.TokenSuffix(accessToken, 8))
 			return userInfo, nil
 		}
 	}
@@ -326,7 +326,7 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 			s.Logger.Debug("Token expired locally",
 				"expiry", storedToken.Expiry,
 				"grace_period_seconds", s.Config.ClockSkewGracePeriod,
-				"token_prefix", helpers.SafeTruncate(accessToken, 8))
+				"token_suffix", helpers.TokenSuffix(accessToken, 8))
 
 			if s.Auditor != nil {
 				s.Auditor.LogAuthFailure("", "", "", "token_expired_locally")
@@ -348,7 +348,7 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 				"expiry", storedToken.Expiry,
 				"grace_period_seconds", s.Config.ClockSkewGracePeriod,
 				"refresh_error", err,
-				"token_prefix", helpers.SafeTruncate(accessToken, 8))
+				"token_suffix", helpers.TokenSuffix(accessToken, 8))
 
 			if s.Auditor != nil {
 				s.Auditor.LogAuthFailure("", "", "", "token_expired_locally")
@@ -366,7 +366,7 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 		s.Logger.Info("Expired provider token refreshed during validation",
 			"old_expiry", storedToken.Expiry,
 			"new_expiry", newProviderToken.Expiry,
-			"token_prefix", helpers.SafeTruncate(accessToken, 8))
+			"token_suffix", helpers.TokenSuffix(accessToken, 8))
 		storedToken = newProviderToken
 	}
 
@@ -411,7 +411,7 @@ func (s *Server) validateTokenAudience(accessToken string) error {
 	if subtle.ConstantTimeCompare([]byte(normalizedAudience), []byte(normalizedExpected)) == 1 {
 		s.Logger.Debug("Token audience validation passed",
 			"audience", metadata.Audience,
-			"token_prefix", helpers.SafeTruncate(accessToken, 8))
+			"token_suffix", helpers.TokenSuffix(accessToken, 8))
 		return nil
 	}
 
@@ -440,7 +440,7 @@ func (s *Server) logCrossClientTokenAccepted(accessToken string, metadata *stora
 		"token_audience", metadata.Audience,
 		"user_id", metadata.UserID,
 		"client_id", metadata.ClientID,
-		"token_prefix", helpers.SafeTruncate(accessToken, 8))
+		"token_suffix", helpers.TokenSuffix(accessToken, 8))
 
 	if s.Auditor != nil {
 		s.Auditor.LogEvent(security.Event{
@@ -463,7 +463,7 @@ func (s *Server) logAudienceMismatch(accessToken string, metadata *storage.Token
 		s.Logger.Warn("Token audience mismatch - token not intended for this resource server",
 			"token_audience", metadata.Audience,
 			"server_identifier", expectedAudience,
-			"token_prefix", helpers.SafeTruncate(accessToken, 8),
+			"token_suffix", helpers.TokenSuffix(accessToken, 8),
 			"user_id", metadata.UserID,
 			"client_id", metadata.ClientID)
 	}
@@ -750,7 +750,7 @@ func (s *Server) handleRefreshTokenError(ctx context.Context, err error, refresh
 	// Handle transient errors differently
 	if !isNotFoundOrExpired {
 		s.Logger.Warn("Transient error during refresh token validation",
-			"error", err.Error(), "client_id", clientID, "token_prefix", helpers.SafeTruncate(refreshToken, 8))
+			"error", err.Error(), "client_id", clientID, "token_suffix", helpers.TokenSuffix(refreshToken, 8))
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(security.Event{
 				Type: security.EventAuthFailure, ClientID: clientID,
@@ -762,7 +762,7 @@ func (s *Server) handleRefreshTokenError(ctx context.Context, err error, refresh
 
 	// Regular invalid token error
 	s.Logger.Debug("Refresh token validation failed",
-		"reason", err.Error(), "client_id", clientID, "token_prefix", helpers.SafeTruncate(refreshToken, 8))
+		"reason", err.Error(), "client_id", clientID, "token_suffix", helpers.TokenSuffix(refreshToken, 8))
 	if s.Auditor != nil {
 		s.Auditor.LogAuthFailure("", clientID, "", "invalid_refresh_token")
 	}

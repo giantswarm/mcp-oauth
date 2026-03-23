@@ -5,6 +5,67 @@ import (
 	"testing"
 )
 
+func TestTokenSuffix(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		maxLen int
+		want   string
+	}{
+		{
+			name:   "string shorter than maxLen",
+			input:  "short",
+			maxLen: 10,
+			want:   "short",
+		},
+		{
+			name:   "string equal to maxLen",
+			input:  "exactly10c",
+			maxLen: 10,
+			want:   "exactly10c",
+		},
+		{
+			name:   "string longer than maxLen",
+			input:  "this-is-a-very-long-token-string",
+			maxLen: 8,
+			want:   "n-string",
+		},
+		{
+			name:   "JWT-like token returns unique suffix",
+			input:  "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.unique_signature_here",
+			maxLen: 8,
+			want:   "ure_here",
+		},
+		{
+			name:   "empty string",
+			input:  "",
+			maxLen: 5,
+			want:   "",
+		},
+		{
+			name:   "maxLen is zero",
+			input:  "test",
+			maxLen: 0,
+			want:   "",
+		},
+		{
+			name:   "maxLen is negative",
+			input:  "test",
+			maxLen: -1,
+			want:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := TokenSuffix(tt.input, tt.maxLen)
+			if got != tt.want {
+				t.Errorf("TokenSuffix(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSafeTruncate(t *testing.T) {
 	tests := []struct {
 		name   string

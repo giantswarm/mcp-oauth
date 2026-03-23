@@ -9,6 +9,29 @@ import (
 	"strings"
 )
 
+// TokenSuffix returns the last maxLen characters of a string for use in log messages.
+// Unlike SafeTruncate (which returns a prefix), this is useful for JWT tokens where the
+// header is always identical (e.g., "eyJhbGci...") making prefixes useless for
+// distinguishing tokens. The signature at the end of a JWT is unique per token.
+//
+// Returns the original string if it's shorter than maxLen.
+// If maxLen is negative, it's treated as 0 and returns an empty string.
+//
+// Example:
+//
+//	TokenSuffix("eyJhbGciOiJSUzI1NiJ9.payload.unique_sig", 8) // Returns: "ique_sig"
+//	TokenSuffix("short", 10)                                    // Returns: "short"
+//	TokenSuffix("test", -1)                                     // Returns: ""
+func TokenSuffix(s string, maxLen int) string {
+	if maxLen < 0 {
+		return ""
+	}
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[len(s)-maxLen:]
+}
+
 // SafeTruncate safely truncates a string to maxLen characters without panicking.
 // Returns the original string if it's shorter than maxLen, otherwise returns
 // the first maxLen characters. This prevents index out of bounds errors when

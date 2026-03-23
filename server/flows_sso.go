@@ -53,7 +53,7 @@ func (s *Server) validateForwardedIDToken(ctx context.Context, tokenString strin
 
 	s.Logger.Debug("JWT audience matches TrustedAudiences, validating via JWKS",
 		"matched_audience", matchedAudience,
-		"token_prefix", helpers.SafeTruncate(tokenString, 8))
+		"token_suffix", helpers.TokenSuffix(tokenString, 8))
 
 	// Check if provider supports JWKS validation
 	jwksProvider, ok := s.provider.(providers.JWKSProvider)
@@ -75,7 +75,7 @@ func (s *Server) validateForwardedIDToken(ctx context.Context, tokenString strin
 	if expectedIssuer != "" {
 		s.Logger.Debug("Validating JWT issuer against provider",
 			"expected_issuer", expectedIssuer,
-			"token_prefix", helpers.SafeTruncate(tokenString, 8))
+			"token_suffix", helpers.TokenSuffix(tokenString, 8))
 	}
 
 	// Validate the JWT signature using JWKS
@@ -154,7 +154,7 @@ func (s *Server) logForwardedIDTokenAccepted(tokenString, matchedAudience, valid
 		"email", userInfo.Email,
 		"matched_audience", matchedAudience,
 		"issuer_validated", validatedIssuer != "",
-		"token_prefix", helpers.SafeTruncate(tokenString, 8))
+		"token_suffix", helpers.TokenSuffix(tokenString, 8))
 
 	if s.Auditor != nil {
 		details := map[string]any{
