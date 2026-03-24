@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/subtle"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -253,168 +254,15 @@ func NewHandler(server *Server, logger *slog.Logger) *Handler {
 // The template supports branding customization through CSS variables and conditional
 // rendering of logo/icon, title, message, and button text.
 //
-// SECURITY: The inline script is static (reads redirect URL from the button's href
-// attribute) so it has a stable SHA-256 hash for CSP allowlisting. If you modify
-// the script, you MUST regenerate the hash in security/headers.go:
+// SECURITY: The inline script in success_interstitial.html is static (reads
+// redirect URL from the button's href attribute) so it has a stable SHA-256
+// hash for CSP allowlisting. If you modify the script, you MUST regenerate
+// the hash in security/headers.go:
 //
 //	echo -n '<script content without tags>' | openssl dgst -sha256 -binary | base64
-const successInterstitialTemplate = `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{if .Title}}{{.Title}}{{else}}Authorization Successful{{end}}</title>
-    <style>
-        :root {
-            --primary-color: {{if .PrimaryColor}}{{.PrimaryColor}}{{else}}#00d26a{{end}};
-            --primary-color-dark: {{if .PrimaryColor}}{{.PrimaryColor}}{{else}}#00a855{{end}};
-            --bg-gradient: {{if .BackgroundGradient}}{{.BackgroundGradient}}{{else}}linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%){{end}};
-        }
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: var(--bg-gradient);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: #fff;
-        }
-        .container {
-            text-align: center;
-            padding: 2rem;
-            max-width: 480px;
-        }
-        .logo {
-            max-height: 80px;
-            max-width: 200px;
-            margin: 0 auto 1.5rem;
-            display: block;
-            animation: scaleIn 0.5s ease-out;
-        }
-        .success-icon {
-            width: 80px;
-            height: 80px;
-            margin: 0 auto 1.5rem;
-            border-radius: 50%;
-            background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-color-dark) 100%);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            animation: scaleIn 0.5s ease-out;
-        }
-        .success-icon svg {
-            width: 40px;
-            height: 40px;
-            stroke: #fff;
-            stroke-width: 3;
-            fill: none;
-        }
-        @keyframes scaleIn {
-            0% { transform: scale(0); opacity: 0; }
-            50% { transform: scale(1.1); }
-            100% { transform: scale(1); opacity: 1; }
-        }
-        @keyframes checkmark {
-            0% { stroke-dashoffset: 50; }
-            100% { stroke-dashoffset: 0; }
-        }
-        .checkmark {
-            stroke-dasharray: 50;
-            stroke-dashoffset: 50;
-            animation: checkmark 0.5s ease-out 0.3s forwards;
-        }
-        h1 {
-            font-size: 1.75rem;
-            font-weight: 600;
-            margin-bottom: 0.75rem;
-            color: #fff;
-        }
-        .message {
-            color: rgba(255, 255, 255, 0.7);
-            font-size: 1rem;
-            line-height: 1.6;
-            margin-bottom: 1.5rem;
-        }
-        .app-name {
-            color: var(--primary-color);
-            font-weight: 500;
-        }
-        .button {
-            display: inline-block;
-            padding: 0.875rem 2rem;
-            background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-color-dark) 100%);
-            color: #fff;
-            text-decoration: none;
-            border-radius: 8px;
-            font-weight: 500;
-            font-size: 1rem;
-            border: none;
-            cursor: pointer;
-            transition: transform 0.2s, box-shadow 0.2s;
-            margin-bottom: 1rem;
-        }
-        .button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 20px rgba(0, 210, 106, 0.3);
-        }
-        .button:active {
-            transform: translateY(0);
-        }
-        .close-hint {
-            color: rgba(255, 255, 255, 0.5);
-            font-size: 0.875rem;
-            margin-top: 1rem;
-        }
-        .spinner {
-            display: inline-block;
-            width: 16px;
-            height: 16px;
-            border: 2px solid rgba(255, 255, 255, 0.3);
-            border-top-color: #fff;
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-            margin-right: 8px;
-            vertical-align: middle;
-        }
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-        .redirecting {
-            color: rgba(255, 255, 255, 0.6);
-            font-size: 0.875rem;
-            margin-bottom: 1rem;
-        }
-        {{.CustomCSS}}
-    </style>
-</head>
-<body>
-    <div class="container">
-        {{if .LogoURL}}<img src="{{.LogoURL}}" alt="{{.LogoAlt}}" class="logo" crossorigin="anonymous">{{else}}<div class="success-icon">
-            <svg viewBox="0 0 24 24">
-                <polyline class="checkmark" points="4 12 9 17 20 6"></polyline>
-            </svg>
-        </div>{{end}}
-        <h1>{{if .Title}}{{.Title}}{{else}}Authorization Successful{{end}}</h1>
-        <p class="message">
-            {{if .Message}}{{.Message}}{{else}}You have been authenticated successfully.
-            {{if .AppName}}Return to <span class="app-name">{{.AppName}}</span> to continue.{{else}}You can now return to the application.{{end}}{{end}}
-        </p>
-        <p class="redirecting" id="redirecting">
-            <span class="spinner"></span>Redirecting automatically...
-        </p>
-        <a href="{{.RedirectURL}}" class="button" id="openApp">
-            {{if .ButtonText}}{{.ButtonText}}{{else}}{{if .AppName}}Open {{.AppName}}{{else}}Open Application{{end}}{{end}}
-        </a>
-        <p class="close-hint">You can close this window after the application opens.</p>
-    </div>
-    <script>(function(){var btn=document.getElementById("openApp");if(!btn)return;var redirectURL=btn.href;var redirected=false;setTimeout(function(){if(!redirected){redirected=true;window.location.href=redirectURL;}},500);setTimeout(function(){var el=document.getElementById("redirecting");if(el){el.style.display="none";}},3000);})();</script>
-</body>
-</html>`
+//
+//go:embed success_interstitial.html
+var successInterstitialTemplate string
 
 // successInterstitialTmpl is the parsed HTML template for OAuth success pages.
 // Parsed once at package initialization for efficiency.
