@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/giantswarm/mcp-oauth/providers/mock"
+	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
@@ -954,6 +955,185 @@ func TestValidateClientStateParameter_AllowNoState(t *testing.T) {
 			t.Error("Expected error for short state when AllowNoStateParameter=false")
 		}
 	})
+}
+
+// TestMatchesLoopbackRedirectURI tests RFC 8252 Section 7.3 port-agnostic
+// matching for loopback redirect URIs.
+func TestMatchesLoopbackRedirectURI(t *testing.T) {
+	tests := []struct {
+		name           string
+		requestedURI   string
+		registeredURIs []string
+		want           bool
+	}{
+		// RFC 8252 Section 7.3: Port MUST be allowed to vary for loopback
+		{
+			name:           "localhost with ephemeral port matches registered without port",
+			requestedURI:   "http://localhost:49567/callback",
+			registeredURIs: []string{"http://localhost/callback"},
+			want:           true,
+		},
+		{
+			name:           "localhost with different ephemeral port",
+			requestedURI:   "http://localhost:12345/callback",
+			registeredURIs: []string{"http://localhost/callback"},
+			want:           true,
+		},
+		{
+			name:           "127.0.0.1 with ephemeral port matches registered without port",
+			requestedURI:   "http://127.0.0.1:49567/callback",
+			registeredURIs: []string{"http://127.0.0.1/callback"},
+			want:           true,
+		},
+		{
+			name:           "IPv6 loopback with port",
+			requestedURI:   "http://[::1]:49567/callback",
+			registeredURIs: []string{"http://[::1]/callback"},
+			want:           true,
+		},
+		{
+			name:           "registered with port matches request with different port",
+			requestedURI:   "http://localhost:49567/callback",
+			registeredURIs: []string{"http://localhost:3000/callback"},
+			want:           true,
+		},
+		{
+			name:           "exact match still works",
+			requestedURI:   "http://localhost/callback",
+			registeredURIs: []string{"http://localhost/callback"},
+			want:           true,
+		},
+		// Path must match
+		{
+			name:           "different path does not match",
+			requestedURI:   "http://localhost:49567/other",
+			registeredURIs: []string{"http://localhost/callback"},
+			want:           false,
+		},
+		// Scheme must match
+		{
+			name:           "different scheme does not match",
+			requestedURI:   "https://localhost:49567/callback",
+			registeredURIs: []string{"http://localhost/callback"},
+			want:           false,
+		},
+		// Host must match
+		{
+			name:           "localhost does not match 127.0.0.1",
+			requestedURI:   "http://localhost:49567/callback",
+			registeredURIs: []string{"http://127.0.0.1/callback"},
+			want:           false,
+		},
+		// Non-loopback URIs are never matched by this function
+		{
+			name:           "non-loopback URI is not matched",
+			requestedURI:   "https://example.com:8080/callback",
+			registeredURIs: []string{"https://example.com/callback"},
+			want:           false,
+		},
+		{
+			name:           "non-loopback registered URI is skipped",
+			requestedURI:   "http://localhost:49567/callback",
+			registeredURIs: []string{"https://example.com/callback"},
+			want:           false,
+		},
+		// Multiple registered URIs
+		{
+			name:         "matches one of multiple registered URIs",
+			requestedURI: "http://localhost:49567/callback",
+			registeredURIs: []string{
+				"https://example.com/callback",
+				"http://localhost/callback",
+			},
+			want: true,
+		},
+		// Empty/invalid
+		{
+			name:           "empty registered URIs",
+			requestedURI:   "http://localhost:49567/callback",
+			registeredURIs: []string{},
+			want:           false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchesLoopbackRedirectURI(tt.requestedURI, tt.registeredURIs)
+			if got != tt.want {
+				t.Errorf("matchesLoopbackRedirectURI(%q, %v) = %v, want %v",
+					tt.requestedURI, tt.registeredURIs, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestValidateRedirectURI_RFC8252LoopbackPort tests the full validateRedirectURI
+// flow with RFC 8252 port-agnostic matching enabled via AllowLocalhostRedirectURIs.
+func TestValidateRedirectURI_RFC8252LoopbackPort(t *testing.T) {
+	tests := []struct {
+		name                      string
+		redirectURI               string
+		registeredURIs            []string
+		allowLocalhostRedirectURIs bool
+		wantErr                   bool
+	}{
+		{
+			name:                      "loopback port matching enabled - matches",
+			redirectURI:               "http://localhost:49567/callback",
+			registeredURIs:            []string{"http://localhost/callback"},
+			allowLocalhostRedirectURIs: true,
+			wantErr:                   false,
+		},
+		{
+			name:                      "loopback port matching disabled - rejects",
+			redirectURI:               "http://localhost:49567/callback",
+			registeredURIs:            []string{"http://localhost/callback"},
+			allowLocalhostRedirectURIs: false,
+			wantErr:                   true,
+		},
+		{
+			name:                      "non-loopback is never port-agnostic even when enabled",
+			redirectURI:               "https://example.com:8080/callback",
+			registeredURIs:            []string{"https://example.com/callback"},
+			allowLocalhostRedirectURIs: true,
+			wantErr:                   true,
+		},
+		{
+			name:                      "exact match works regardless of setting",
+			redirectURI:               "http://localhost/callback",
+			registeredURIs:            []string{"http://localhost/callback"},
+			allowLocalhostRedirectURIs: false,
+			wantErr:                   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setup := newTestServerSetup(false)
+			config := &Config{
+				AllowLocalhostRedirectURIs: tt.allowLocalhostRedirectURIs,
+				AllowInsecureHTTP:          true,
+				Issuer:                     "http://localhost:8080",
+			}
+			srv, err := setup.createServer(config)
+			if err != nil {
+				t.Fatalf("Failed to create server: %v", err)
+			}
+
+			client := &storage.Client{
+				ClientID:     "test-client",
+				RedirectURIs: tt.registeredURIs,
+			}
+
+			err = srv.validateRedirectURI(client, tt.redirectURI)
+			if tt.wantErr && err == nil {
+				t.Error("Expected error but got none")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("Expected no error but got: %v", err)
+			}
+		})
+	}
 }
 
 // TestValidateProviderStateParameter tests that provider state validation always
