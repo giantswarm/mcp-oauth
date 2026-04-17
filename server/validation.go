@@ -162,7 +162,17 @@ func isLocalhostHostname(hostname string) bool {
 	return isLoopbackAddress(hostname)
 }
 
-// validateRedirectURI validates that a redirect URI is registered and secure
+// validateRedirectURI validates that a redirect URI is registered and secure.
+//
+// Per RFC 8252 Section 7.3, loopback redirect URIs (localhost, 127.0.0.1, [::1])
+// MUST allow any port at authorization time. The authorization server MUST allow
+// any port to be specified for loopback redirect URIs to accommodate native apps
+// that obtain an available ephemeral port from the OS at request time.
+//
+// For loopback URIs, matching compares only scheme, host, and path — the port is
+// excluded from comparison (RFC 8252 Section 8.3).
+//
+// For all other URIs, exact string matching is used per OAuth 2.1.
 func (s *Server) validateRedirectURI(client *storage.Client, redirectURI string) error {
 	// First check if URI is registered
 	found := false
@@ -172,12 +182,76 @@ func (s *Server) validateRedirectURI(client *storage.Client, redirectURI string)
 			break
 		}
 	}
+
+	// If exact match failed and localhost redirect URIs are allowed,
+	// try RFC 8252 port-agnostic matching for loopback addresses
+	if !found && s.Config.AllowLocalhostRedirectURIs {
+		if matchesLoopbackRedirectURI(redirectURI, client.RedirectURIs) {
+			found = true
+		}
+	}
+
 	if !found {
 		return fmt.Errorf("redirect URI not registered for client")
 	}
 
 	// Perform security validation on the URI with custom scheme support
 	return validateRedirectURISecurityEnhanced(redirectURI, s.Config.Issuer, s.Config.AllowedCustomSchemes)
+}
+
+// matchesLoopbackRedirectURI checks if a redirect URI matches any registered URI
+// using RFC 8252 Section 7.3 port-agnostic matching for loopback addresses.
+//
+// Per RFC 8252:
+//   - Section 7.3: "The authorization server MUST allow any port to be specified at
+//     the time of the request for loopback IP redirect URIs, to accommodate clients
+//     that obtain an available ephemeral port from the operating system at the time
+//     of the request."
+//   - Section 8.3: "The redirect URI MUST NOT be compared against pre-registered
+//     URIs using simple string matching [...] the comparison MUST be done by comparing
+//     scheme, host, and path."
+//
+// This function only applies port-agnostic matching when the requested redirect URI
+// targets a loopback address (localhost, 127.0.0.0/8, ::1). Non-loopback URIs are
+// never matched by this function — they require exact string matching.
+func matchesLoopbackRedirectURI(requestedURI string, registeredURIs []string) bool {
+	parsed, err := url.Parse(requestedURI)
+	if err != nil {
+		return false
+	}
+
+	// Only apply port-agnostic matching for loopback addresses
+	hostname := parsed.Hostname()
+	if !isLoopbackAddress(hostname) {
+		return false
+	}
+
+	requestedScheme := strings.ToLower(parsed.Scheme)
+	requestedHost := strings.ToLower(hostname)
+	requestedPath := parsed.Path
+
+	for _, registered := range registeredURIs {
+		registeredParsed, err := url.Parse(registered)
+		if err != nil {
+			continue
+		}
+
+		registeredHost := registeredParsed.Hostname()
+
+		// Only match against registered URIs that are also loopback
+		if !isLoopbackAddress(registeredHost) {
+			continue
+		}
+
+		// Compare scheme, host, and path — exclude port (RFC 8252 Section 8.3)
+		if strings.ToLower(registeredParsed.Scheme) == requestedScheme &&
+			strings.ToLower(registeredHost) == requestedHost &&
+			registeredParsed.Path == requestedPath {
+			return true
+		}
+	}
+
+	return false
 }
 
 // validateScopes validates that requested scopes are allowed
