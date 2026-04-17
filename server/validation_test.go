@@ -1010,6 +1010,19 @@ func TestMatchesLoopbackRedirectURI(t *testing.T) {
 			registeredURIs: []string{"http://localhost/callback"},
 			want:           false,
 		},
+		// Path comparison is case-sensitive and exact — trailing slashes differ
+		{
+			name:           "trailing slash mismatch does not match (requested has slash)",
+			requestedURI:   "http://localhost:49567/callback/",
+			registeredURIs: []string{"http://localhost/callback"},
+			want:           false,
+		},
+		{
+			name:           "trailing slash mismatch does not match (registered has slash)",
+			requestedURI:   "http://localhost:49567/callback",
+			registeredURIs: []string{"http://localhost/callback/"},
+			want:           false,
+		},
 		// Scheme must match
 		{
 			name:           "different scheme does not match",
