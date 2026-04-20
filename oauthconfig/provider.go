@@ -51,6 +51,23 @@ func ProviderFromEnvWithPrefix(prefix string) (providers.Provider, error) {
 //
 // Returned as providers.Provider (not *dex.Provider) so call sites stay
 // provider-agnostic. Callers that need Dex-specific methods cast.
+//
+// Deliberately NOT exposed as env vars (opinionated defaults):
+//
+//   - Scopes — the default Dex-optimized scope set is strictly better than
+//     what an operator would hand-configure; callers needing custom scopes
+//     build dex.Config themselves.
+//   - HTTPClient — overriding the HTTP client is a programmatic concern
+//     (proxies, custom TLS, test doubles); the env surface would force the
+//     loader to invent a serialization for *http.Client.
+//   - RequestTimeout — operators tune this via the upstream IdP's latency
+//     profile, which rarely varies per deployment. Default 30s is sound.
+//   - MaxGroups — enterprise-specific tuning for very large AD group counts;
+//     the library default (oidc.DefaultMaxGroups = 600) covers the common
+//     case, and callers with unusual group counts construct Config manually.
+//
+// Callers needing any of these construct [dex.Config] programmatically and
+// call [dex.NewProvider] directly, bypassing this loader.
 func DexFromEnv() (providers.Provider, error) {
 	return DexFromEnvWithPrefix("OAUTH_")
 }
@@ -91,8 +108,16 @@ func DexFromEnvWithPrefix(prefix string) (providers.Provider, error) {
 //	OAUTH_GOOGLE_REDIRECT_URL          (required)
 //	OAUTH_GOOGLE_FORCE_CONSENT         (optional; defaults to provider default of true)
 //
-// google.Config does not currently expose a hosted-domain setting; consumers
-// that need workspace restriction must construct google.Config programmatically.
+// Deliberately NOT exposed as env vars:
+//
+//   - Scopes — the Google-default set ("openid", "email", "profile") matches
+//     the overwhelmingly common case; custom scopes are a programmatic choice.
+//   - HTTPClient / RequestTimeout — same rationale as [DexFromEnv].
+//
+// google.Config currently has no hosted-domain field (the Google provider
+// doesn't implement Workspace domain restriction). Callers needing workspace
+// restriction must construct [google.Config] programmatically once that field
+// exists on the Config struct.
 func GoogleFromEnv() (providers.Provider, error) {
 	return GoogleFromEnvWithPrefix("OAUTH_")
 }
@@ -138,9 +163,15 @@ func GoogleFromEnvWithPrefix(prefix string) (providers.Provider, error) {
 //	OAUTH_GITHUB_ALLOWED_ORGANIZATIONS     (optional; comma-separated) — restrict login to members
 //	OAUTH_GITHUB_REQUIRE_VERIFIED_EMAIL    (optional; defaults to provider default of true)
 //
-// GitHub is OAuth 2.0 only (no OIDC), so providers.IssuerOf returns "" for
-// the resulting provider. Consumers that rely on AcceptForwardedIDToken must
-// not configure GitHub as the upstream provider.
+// Deliberately NOT exposed as env vars:
+//
+//   - Scopes — the defaults ("user:email", "read:user") suit the vast
+//     majority of MCP deployments; custom scopes are programmatic.
+//   - HTTPClient / RequestTimeout — same rationale as [DexFromEnv].
+//
+// GitHub is OAuth 2.0 only (no OIDC), so [providers.IssuerOf] returns "" for
+// the resulting provider. Consumers that rely on
+// [Server.AcceptForwardedIDToken] must not configure GitHub as the upstream.
 func GitHubFromEnv() (providers.Provider, error) {
 	return GitHubFromEnvWithPrefix("OAUTH_")
 }
