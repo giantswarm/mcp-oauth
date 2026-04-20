@@ -1075,6 +1075,12 @@ func TestHandler_ServeAuthorizationServerMetadata(t *testing.T) {
 	if len(meta.CodeChallengeMethodsSupported) > 0 && meta.CodeChallengeMethodsSupported[0] != "S256" {
 		t.Errorf("CodeChallengeMethodsSupported[0] = %q, want %q", meta.CodeChallengeMethodsSupported[0], "S256")
 	}
+
+	// RFC 9207: servers that include the `iss` parameter in authorization responses
+	// MUST advertise the capability so clients can enable the corresponding check.
+	if !meta.AuthorizationResponseIssParameterSupported {
+		t.Error("AuthorizationResponseIssParameterSupported should be true (RFC 9207)")
+	}
 }
 
 func TestHandler_ServeAuthorizationServerMetadata_NoRegistration(t *testing.T) {
@@ -2461,6 +2467,11 @@ func TestHandler_ServeCallback(t *testing.T) {
 	}
 	if !strings.Contains(location, "state="+clientState) {
 		t.Error("Location should contain original client state")
+	}
+	// RFC 9207: Location MUST carry the URL-encoded `iss` parameter so the client
+	// can confirm the response came from the expected authorization server.
+	if !strings.Contains(location, "iss="+url.QueryEscape(testIssuer)) {
+		t.Errorf("Location should contain URL-encoded iss=%s; got %q", testIssuer, location)
 	}
 }
 
@@ -5210,6 +5221,12 @@ func TestHandler_ServeCallback_CustomURLScheme(t *testing.T) {
 	}
 	if !strings.Contains(body, "state="+clientState) {
 		t.Error("Response should contain original client state")
+	}
+	// RFC 9207: the embedded redirect URL in the interstitial must include `iss`
+	// so the client app sees the same authorization-response parameters it would
+	// have received via a direct 302.
+	if !strings.Contains(body, "iss="+url.QueryEscape(testIssuer)) {
+		t.Errorf("Interstitial should contain URL-encoded iss=%s in the embedded redirect", testIssuer)
 	}
 
 	// Should contain manual button

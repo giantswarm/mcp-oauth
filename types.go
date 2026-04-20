@@ -69,6 +69,12 @@ type AuthorizationServerMetadata struct {
 
 	// ClientIDMetadataDocumentSupported indicates support for Client ID Metadata Documents (MCP 2025-11-25)
 	ClientIDMetadataDocumentSupported bool `json:"client_id_metadata_document_supported,omitempty"`
+
+	// AuthorizationResponseIssParameterSupported indicates that this authorization
+	// server includes the `iss` parameter in authorization responses (RFC 9207),
+	// allowing clients talking to multiple authorization servers to detect mix-up
+	// attacks.
+	AuthorizationResponseIssParameterSupported bool `json:"authorization_response_iss_parameter_supported,omitempty"`
 }
 
 // ==================== Dynamic Client Registration (RFC 7591) Types ====================
