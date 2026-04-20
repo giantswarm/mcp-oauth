@@ -130,6 +130,41 @@ func TestFromEnv_InsecureHTTPGate(t *testing.T) {
 			t.Error("AllowInsecureHTTP should be true")
 		}
 	})
+
+	// RFC 3986 §3.1: URL schemes are case-insensitive. A mixed-case scheme
+	// must still trip the gate; otherwise operators silently bypass the check
+	// with "HTTP://". An earlier iteration of this loader used
+	// strings.HasPrefix(issuer, "http://") and missed these cases.
+	t.Run("refused-for-uppercase-scheme", func(t *testing.T) {
+		setRequired(t, "HTTP://auth.example")
+		_, err := oauthconfig.FromEnv()
+		if err == nil || !strings.Contains(err.Error(), "ALLOW_INSECURE_HTTP") {
+			t.Fatalf("expected insecure-HTTP refusal for HTTP://, got %v", err)
+		}
+	})
+
+	t.Run("refused-for-mixedcase-scheme", func(t *testing.T) {
+		setRequired(t, "Http://auth.example")
+		_, err := oauthconfig.FromEnv()
+		if err == nil || !strings.Contains(err.Error(), "ALLOW_INSECURE_HTTP") {
+			t.Fatalf("expected insecure-HTTP refusal for Http://, got %v", err)
+		}
+	})
+
+	t.Run("https-uppercase-accepted", func(t *testing.T) {
+		setRequired(t, "HTTPS://auth.example")
+		if _, err := oauthconfig.FromEnv(); err != nil {
+			t.Fatalf("HTTPS uppercase should be accepted, got %v", err)
+		}
+	})
+
+	t.Run("unparseable-url-rejected", func(t *testing.T) {
+		setRequired(t, "://broken")
+		_, err := oauthconfig.FromEnv()
+		if err == nil || !strings.Contains(err.Error(), "valid URL") {
+			t.Fatalf("expected URL parse error, got %v", err)
+		}
+	})
 }
 
 func TestFromEnv_FilePrecedence(t *testing.T) {

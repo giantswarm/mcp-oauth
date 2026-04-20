@@ -2,6 +2,7 @@ package oauthconfig
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -44,8 +45,17 @@ func FromEnvWithPrefix(prefix string) (*server.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !allowInsecure && strings.HasPrefix(issuer, "http://") {
-		return nil, fmt.Errorf("%sISSUER is http:// but %sALLOW_INSECURE_HTTP is not set; refusing to run an OAuth server over plain HTTP without an explicit opt-in", prefix, prefix)
+	// URL schemes are case-insensitive per RFC 3986 §3.1 — parse and normalize
+	// so HTTP://example.com does not bypass the gate that http://example.com
+	// triggers.
+	if !allowInsecure {
+		u, perr := url.Parse(issuer)
+		if perr != nil {
+			return nil, fmt.Errorf("%sISSUER is not a valid URL: %w", prefix, perr)
+		}
+		if strings.EqualFold(u.Scheme, "http") {
+			return nil, fmt.Errorf("%sISSUER uses http:// but %sALLOW_INSECURE_HTTP is not set; refusing to run an OAuth server over plain HTTP without an explicit opt-in", prefix, prefix)
+		}
 	}
 	cfg.AllowInsecureHTTP = allowInsecure
 
