@@ -341,27 +341,35 @@ func (m *Metrics) RecordLegacyRefreshTokenRejected(ctx context.Context) {
 	m.LegacyRefreshTokenRejected.Add(ctx, 1)
 }
 
-// Forwarded-ID-token result enum. Keep this bounded; never pass raw error strings
-// into RecordForwardedIDTokenAccepted as the `result` — label cardinality matters.
+// ForwardedIDTokenResult is the bounded result enum for the
+// oauth.forwarded_id_token.accepted_total counter. Declared as a typed string
+// so the compiler enforces the closed set — callers cannot pass raw error
+// strings (label cardinality matters).
+type ForwardedIDTokenResult string
+
 const (
-	ForwardedIDTokenResultOK            = "ok"
-	ForwardedIDTokenResultAudMismatch   = "aud_mismatch"
-	ForwardedIDTokenResultIssMismatch   = "iss_mismatch"
-	ForwardedIDTokenResultSigInvalid    = "sig_invalid"
-	ForwardedIDTokenResultExpired       = "expired"
-	ForwardedIDTokenResultNoJWKS        = "no_jwks"
-	ForwardedIDTokenResultParseError    = "parse_error"
+	ForwardedIDTokenResultOK          ForwardedIDTokenResult = "ok"
+	ForwardedIDTokenResultAudMismatch ForwardedIDTokenResult = "aud_mismatch"
+	ForwardedIDTokenResultIssMismatch ForwardedIDTokenResult = "iss_mismatch"
+	ForwardedIDTokenResultSigInvalid  ForwardedIDTokenResult = "sig_invalid"
+	ForwardedIDTokenResultExpired     ForwardedIDTokenResult = "expired"
+	ForwardedIDTokenResultNotYetValid ForwardedIDTokenResult = "not_yet_valid"
+	ForwardedIDTokenResultNoJWKS      ForwardedIDTokenResult = "no_jwks"
+	ForwardedIDTokenResultParseError  ForwardedIDTokenResult = "parse_error"
 )
 
 // RecordForwardedIDTokenAccepted records a forwarded ID token acceptance attempt.
-// The `result` argument MUST be one of the ForwardedIDTokenResult* constants.
-// For the unmatched-audience cases, pass the empty string as `audience` rather
-// than a token-derived value to keep label cardinality bounded.
-func (m *Metrics) RecordForwardedIDTokenAccepted(ctx context.Context, issuer, audience, result string) {
+// `provider` is the provider name (e.g. "dex", "google") so the metric is
+// self-describing without consumers having to cross-reference server config.
+// For unmatched-audience / parse-error / no-jwks cases, pass the empty string
+// as `audience` rather than a token-derived value to keep cardinality bounded.
+// Threads ctx through so OTel trace/baggage correlation survives on the metric.
+func (m *Metrics) RecordForwardedIDTokenAccepted(ctx context.Context, provider, issuer, audience string, result ForwardedIDTokenResult) {
 	attrs := []attribute.KeyValue{
+		attribute.String(metricAttrProvider, provider),
 		attribute.String(metricAttrIssuer, issuer),
 		attribute.String(metricAttrAudience, audience),
-		attribute.String(metricAttrResult, result),
+		attribute.String(metricAttrResult, string(result)),
 	}
 	m.ForwardedIDTokenAccepted.Add(ctx, 1, metric.WithAttributes(attrs...))
 }

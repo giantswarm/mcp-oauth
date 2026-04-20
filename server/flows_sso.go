@@ -41,7 +41,10 @@ import (
 func (s *Server) validateAndParseForwardedIDToken(ctx context.Context, tokenString string) (*oidc.IDTokenClaims, string, error) {
 	claims, err := oidc.ParseUnverifiedClaims(tokenString)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to parse JWT claims: %w", err)
+		// Wrap with errForwardedTokenParseFailed so AcceptForwardedIDToken's
+		// classifier can distinguish parse errors from later validation
+		// failures via errors.Is, without a second parse pass.
+		return nil, "", fmt.Errorf("%w: %w", errForwardedTokenParseFailed, err)
 	}
 
 	tokenAudiences := oidc.GetAudienceFromClaims(claims)

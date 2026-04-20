@@ -148,37 +148,40 @@ func main() {
 	// Demonstrates Server.AcceptForwardedIDToken. This endpoint does NOT use
 	// the ValidateToken middleware; it is the entry point aggregators and
 	// bridges use to accept a Dex-issued ID token directly rather than running
-	// their own auth-code flow. Requires TRUSTED_AUDIENCES to be set to match
-	// the audience the upstream IdP minted the token for.
-	mux.HandleFunc("/api/forwarded", func(w http.ResponseWriter, r *http.Request) {
-		bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if bearer == "" || bearer == r.Header.Get("Authorization") {
-			http.Error(w, "missing Bearer token", http.StatusUnauthorized)
-			return
-		}
-
-		acc, err := server.AcceptForwardedIDToken(r.Context(), bearer)
-		if err != nil {
-			status := http.StatusUnauthorized
-			if errors.Is(err, oauth.ErrTrustedAudienceMismatch) {
-				log.Printf("forwarded token rejected: audience mismatch")
-			} else {
-				log.Printf("forwarded token rejected: %v", err)
+	// their own auth-code flow. Registered only when TRUSTED_AUDIENCES is set
+	// — without that, every call would fail with audience-mismatch and the
+	// endpoint would just be a noise source.
+	if len(trustedAudiences) > 0 {
+		mux.HandleFunc("/api/forwarded", func(w http.ResponseWriter, r *http.Request) {
+			bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			if bearer == "" || bearer == r.Header.Get("Authorization") {
+				http.Error(w, "missing Bearer token", http.StatusUnauthorized)
+				return
 			}
-			http.Error(w, err.Error(), status)
-			return
-		}
 
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"message":    "forwarded token accepted",
-			"session_id": acc.SessionID,
-			"subject":    acc.Subject,
-			"issuer":     acc.Issuer,
-			"audience":   acc.Audience,
-			"expires_at": acc.ExpiresAt,
+			acc, err := server.AcceptForwardedIDToken(r.Context(), bearer)
+			if err != nil {
+				status := http.StatusUnauthorized
+				if errors.Is(err, oauth.ErrTrustedAudienceMismatch) {
+					log.Printf("forwarded token rejected: audience mismatch")
+				} else {
+					log.Printf("forwarded token rejected: %v", err)
+				}
+				http.Error(w, err.Error(), status)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"message":    "forwarded token accepted",
+				"session_id": acc.SessionID,
+				"subject":    acc.Subject,
+				"issuer":     acc.Issuer,
+				"audience":   acc.Audience,
+				"expires_at": acc.ExpiresAt,
+			})
 		})
-	})
+	}
 
 	// Home page with login link
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {

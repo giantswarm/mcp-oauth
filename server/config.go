@@ -618,11 +618,16 @@ type Config struct {
 	// SessionIDHMACKey optionally replaces the default SHA-256 session-ID derivation
 	// in Server.AcceptForwardedIDToken with HMAC-SHA-256 keyed by this value.
 	//
-	// Default (nil/empty): session ID is "ext-" + hex(sha256(token))[:16]. Deterministic
-	// across deployments receiving the same token, which gives cross-hop audit-log
-	// correlation when an aggregator (e.g. muster) fans a single forwarded token out to
-	// multiple downstream MCP servers. This is the intended behavior for single-tenant
-	// deployments.
+	// Session IDs have the form "ext-<16 hex chars>". The digest input is
+	// domain-separated with a versioned label so the key is safely reusable for
+	// other keyed derivations without cross-purpose collision risk; see the
+	// Server.AcceptForwardedIDToken godoc for the exact construction.
+	//
+	// Default (nil/empty): unkeyed SHA-256 over the domain-separated input.
+	// Deterministic across deployments receiving the same token — this gives
+	// cross-hop audit-log correlation when an aggregator (e.g. muster) fans a
+	// single forwarded token out to multiple downstream MCP servers. Intended
+	// for single-tenant deployments.
 	//
 	// Trade-off: anyone with audit-log access across two servers can link a user's
 	// sessions across them via the token hash. For multi-tenant isolation, set this key
@@ -633,6 +638,9 @@ type Config struct {
 	// the same key or all leave it empty. A single mismatched key silently breaks
 	// correlation with no runtime error — the tokens still validate, the sessions just
 	// no longer line up across hops. The library cannot detect the mismatch.
+	//
+	// Recommended: 32 random bytes from crypto/rand, loaded from a secret
+	// manager or mounted file (not from an environment variable).
 	SessionIDHMACKey []byte
 
 	// EnableClientIDMetadataDocuments enables URL-based client_id support per MCP 2025-11-25

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/big"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/oauth2"
 
+	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
@@ -269,6 +271,9 @@ func TestAcceptForwardedIDToken_ExpiredJWT(t *testing.T) {
 func TestAcceptForwardedIDToken_NoJWKSProvider(t *testing.T) {
 	h := newForwardedTokenHarness(t)
 	// Replace the JWKSProvider-capable mock with a bare Provider implementation.
+	// Safe because the no-JWKS precondition runs BEFORE validateAndParseForwardedIDToken
+	// (which would dereference the JWKS client) — see AcceptForwardedIDToken for the
+	// check order.
 	h.srv.provider = &oauthOnlyProvider{name: "oauth-only"}
 
 	tok := h.signToken(t, h.validClaims())
@@ -281,33 +286,104 @@ func TestAcceptForwardedIDToken_NoJWKSProvider(t *testing.T) {
 	}
 }
 
+// TestAcceptForwardedIDToken_HMACKeyChangesSessionID feeds the SAME bearer token
+// to two servers — one unkeyed, one with SessionIDHMACKey set — and asserts the
+// derived session IDs differ. Earlier iteration of this test signed two
+// different tokens (one per harness) and compared their session IDs, which
+// trivially differed because the bearer-token bytes differed; it would have
+// passed even if the HMAC branch were deleted. Sharing the same provider
+// keypair across both servers isolates the HMAC key as the only variable.
 func TestAcceptForwardedIDToken_HMACKeyChangesSessionID(t *testing.T) {
-	tok := "" // set below once harness is built
-	h1 := newForwardedTokenHarness(t)
-	tok = h1.signToken(t, h1.validClaims())
+	h := newForwardedTokenHarness(t)
+	tok := h.signToken(t, h.validClaims())
 
-	a1, err := h1.srv.AcceptForwardedIDToken(context.Background(), tok)
+	// a1: unkeyed SHA-256 derivation.
+	a1, err := h.srv.AcceptForwardedIDToken(context.Background(), tok)
 	if err != nil {
-		t.Fatalf("default-key: %v", err)
+		t.Fatalf("unkeyed: %v", err)
 	}
 
-	// Second server with an HMAC key set; reuse the same provider/JWKS so the
-	// validation succeeds, just with a different session-ID derivation.
-	h2 := newForwardedTokenHarness(t, func(c *Config) {
-		c.SessionIDHMACKey = []byte("per-deployment-secret-key")
-	})
-	// Re-sign under h2's key so the signature validates against h2's JWKS.
-	tok2 := h2.signToken(t, h2.validClaims())
-	a2, err := h2.srv.AcceptForwardedIDToken(context.Background(), tok2)
+	// Build a second Server sharing the SAME provider/JWKS and validator
+	// state, differing ONLY in Config.SessionIDHMACKey. This exercises the
+	// HMAC branch of deriveForwardedSessionID. Can't shallow-copy *h.srv
+	// because the Server embeds sync primitives (singleflight.Group) that
+	// copylocks would flag; construct a sibling and wire only the fields
+	// AcceptForwardedIDToken reads.
+	cfg2 := *h.srv.Config
+	cfg2.SessionIDHMACKey = []byte("per-deployment-secret-key-32-byte")
+	srv2 := &Server{
+		Config:     &cfg2,
+		Logger:     h.srv.Logger,
+		provider:   h.srv.provider,
+		tokenStore: h.srv.tokenStore,
+		jwksClient: h.srv.jwksClient,
+	}
+	srv2.jwksClientOnce.Do(func() {}) // prevent re-init of jwksClient
+
+	a2, err := srv2.AcceptForwardedIDToken(context.Background(), tok)
 	if err != nil {
-		t.Fatalf("hmac-key: %v", err)
+		t.Fatalf("hmac-keyed: %v", err)
 	}
 
 	if a1.SessionID == a2.SessionID {
-		t.Errorf("SessionID should differ when HMAC key set: both = %q", a1.SessionID)
+		t.Errorf("SessionID should differ when HMAC key set (same token, only key changed): both = %q", a1.SessionID)
 	}
-	if !strings.HasPrefix(a2.SessionID, "ext-") {
-		t.Errorf("HMAC-derived SessionID missing ext- prefix: %q", a2.SessionID)
+	if !strings.HasPrefix(a1.SessionID, "ext-") || len(a1.SessionID) != len("ext-")+16 {
+		t.Errorf("unkeyed SessionID shape unexpected: %q", a1.SessionID)
+	}
+	if !strings.HasPrefix(a2.SessionID, "ext-") || len(a2.SessionID) != len("ext-")+16 {
+		t.Errorf("HMAC-derived SessionID shape unexpected: %q", a2.SessionID)
+	}
+
+	// Second call with the SAME key and SAME token must be deterministic.
+	a2Again, err := srv2.AcceptForwardedIDToken(context.Background(), tok)
+	if err != nil {
+		t.Fatalf("hmac-keyed second call: %v", err)
+	}
+	if a2.SessionID != a2Again.SessionID {
+		t.Errorf("HMAC-keyed SessionID not deterministic across calls: %q vs %q", a2.SessionID, a2Again.SessionID)
+	}
+}
+
+// TestAcceptForwardedIDToken_EmptyBearer guards the explicit empty-token check
+// so callers get a clear error instead of a noisy parse_error metric on every
+// unauthenticated request.
+func TestAcceptForwardedIDToken_EmptyBearer(t *testing.T) {
+	h := newForwardedTokenHarness(t)
+	_, err := h.srv.AcceptForwardedIDToken(context.Background(), "")
+	if err == nil {
+		t.Fatal("expected error for empty bearer token")
+	}
+	if !strings.Contains(err.Error(), "must not be empty") {
+		t.Errorf("err = %v, want 'must not be empty' message", err)
+	}
+}
+
+func TestClassifyForwardedTokenError(t *testing.T) {
+	// Wrap errForwardedTokenParseFailed the same way validateAndParseForwardedIDToken does.
+	parseWrapped := fmt.Errorf("%w: junk", errForwardedTokenParseFailed)
+	issuerWrapped := fmt.Errorf("ID token signature validation failed: %w: got \"x\", expected \"y\"", oidc.ErrIssuerMismatch)
+	expiredWrapped := fmt.Errorf("ID token signature validation failed: %w", jwt.ErrTokenExpired)
+	nbfWrapped := fmt.Errorf("ID token signature validation failed: %w", jwt.ErrTokenNotValidYet)
+
+	cases := []struct {
+		name string
+		err  error
+		want instrumentation.ForwardedIDTokenResult
+	}{
+		{"nil", nil, instrumentation.ForwardedIDTokenResultOK},
+		{"parse", parseWrapped, instrumentation.ForwardedIDTokenResultParseError},
+		{"issuer", issuerWrapped, instrumentation.ForwardedIDTokenResultIssMismatch},
+		{"expired", expiredWrapped, instrumentation.ForwardedIDTokenResultExpired},
+		{"nbf", nbfWrapped, instrumentation.ForwardedIDTokenResultNotYetValid},
+		{"default", errors.New("some other failure"), instrumentation.ForwardedIDTokenResultSigInvalid},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyForwardedTokenError(tc.err); got != tc.want {
+				t.Errorf("classifyForwardedTokenError(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
 	}
 }
 

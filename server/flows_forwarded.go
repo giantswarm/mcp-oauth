@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -22,14 +21,41 @@ import (
 // Callers should typically respond with 401.
 var ErrTrustedAudienceMismatch = errors.New("forwarded ID token audience does not match TrustedAudiences")
 
+// errForwardedTokenParseFailed wraps the underlying parser error so
+// [classifyForwardedTokenError] can distinguish "not a JWT" from later
+// validation failures without a second parse.
+var errForwardedTokenParseFailed = errors.New("forwarded ID token parse failed")
+
+// Session-ID derivation: the library publishes a stable format for
+// ForwardedIDTokenAcceptance.SessionID so downstream servers receiving the
+// same token derive the same ID (cross-hop audit correlation). To keep the
+// key reusable for other purposes later, the input is domain-separated with
+// a versioned label.
+const (
+	// forwardedSessionIDLabel is the domain-separation label written BEFORE
+	// the bearer token bytes into both the SHA-256 and HMAC-SHA-256
+	// derivations. Versioned so a future format change can be distinguished.
+	forwardedSessionIDLabel = "mcp-oauth/v1/forwarded-session-id"
+
+	// sessionIDDigestBytes is the truncation length of the digest output
+	// (64 bits → 16 hex chars). Chosen for audit-log correlation, not as a
+	// security boundary: birthday collision is ~1-in-a-million at ~6.5k
+	// concurrent distinct tokens, which is comfortable for per-server active
+	// sessions. If a deployment needs stronger collision resistance, it
+	// should raise this and coordinate the change across all servers sharing
+	// SessionIDHMACKey.
+	sessionIDDigestBytes = 8
+)
+
 // ForwardedIDTokenAcceptance is the verified result of accepting a JWT forwarded
 // from a trusted upstream identity provider. It is returned by
 // [Server.AcceptForwardedIDToken] and is safe to use for downstream routing, session
 // keying, and audit-log correlation.
 type ForwardedIDTokenAcceptance struct {
-	// SessionID is a deterministic identifier derived from the bearer token:
-	//   default: "ext-" + hex(sha256(token))[:16]
-	//   with Config.SessionIDHMACKey set: "ext-" + hex(hmac-sha256(key, token))[:16]
+	// SessionID is a deterministic identifier of the form "ext-<16 hex chars>"
+	// derived from a domain-separated hash of the bearer token:
+	//   default: first sessionIDDigestBytes of sha256(forwardedSessionIDLabel || 0x00 || token)
+	//   with Config.SessionIDHMACKey set: same input, HMAC-SHA-256 with the key
 	//
 	// Two MCP servers receiving the same token compute the same SessionID, which
 	// gives cross-hop audit-log correlation when an aggregator fans a single
@@ -45,10 +71,14 @@ type ForwardedIDTokenAcceptance struct {
 	// has TokenSource = TokenSourceSSO.
 	UserInfo *providers.UserInfo
 
-	// Issuer is the validated `iss` claim from the JWT.
+	// Issuer is the validated `iss` claim from the JWT. Equals the configured
+	// provider's IssuerURL() — the signature check enforces that equality, so
+	// this field never carries an unverified value.
 	Issuer string
 
-	// Audience is the entry of Config.TrustedAudiences that matched the token's `aud`.
+	// Audience is the entry of Config.TrustedAudiences that matched the token's
+	// `aud` claim (not the raw aud claim itself, which may contain multiple
+	// values). Suitable for metric labels and audit records.
 	Audience string
 
 	// ExpiresAt is the JWT `exp` claim, for caller-side session-cache TTLs. The
@@ -96,38 +126,40 @@ type ForwardedIDTokenAcceptance struct {
 //
 // Returns [ErrTrustedAudienceMismatch] when the token's `aud` does not match any
 // entry in Config.TrustedAudiences. Other errors (signature invalid, issuer
-// mismatch, JWT expired, provider has no JWKS, parse error) are returned wrapped.
+// mismatch, JWT expired, JWT not yet valid, provider has no JWKS, parse error)
+// are returned wrapped.
 func (s *Server) AcceptForwardedIDToken(ctx context.Context, bearerToken string) (*ForwardedIDTokenAcceptance, error) {
-	// Early parse-shape check to distinguish parse_error from later failure modes
-	// in the metric. validateAndParseForwardedIDToken handles the real parse too.
-	if _, err := oidc.ParseUnverifiedClaims(bearerToken); err != nil {
-		s.recordForwardedIDTokenAccepted("", "", instrumentation.ForwardedIDTokenResultParseError)
-		return nil, fmt.Errorf("parse JWT: %w", err)
+	providerName := s.provider.Name()
+
+	if bearerToken == "" {
+		err := errors.New("forwarded ID token must not be empty")
+		s.recordForwardedIDTokenAccepted(ctx, providerName, "", "", instrumentation.ForwardedIDTokenResultParseError)
+		return nil, err
 	}
 
-	// Check JWKSProvider up front so the no_jwks classification is explicit and
-	// can't be swallowed into a generic sig_invalid downstream.
-	jwksProvider, ok := s.provider.(providers.JWKSProvider)
-	if !ok {
-		s.recordForwardedIDTokenAccepted("", "", instrumentation.ForwardedIDTokenResultNoJWKS)
-		return nil, fmt.Errorf("provider %s does not support JWKS validation (required for forwarded ID token acceptance)", s.provider.Name())
+	// Fail fast when the provider cannot verify JWTs. Using providers.IssuerOf
+	// both matches the sibling fast-path's intent and exercises the in-tree
+	// helper (instead of re-doing a type assertion here).
+	expectedIssuer := providers.IssuerOf(s.provider)
+	if expectedIssuer == "" {
+		s.recordForwardedIDTokenAccepted(ctx, providerName, "", "", instrumentation.ForwardedIDTokenResultNoJWKS)
+		return nil, fmt.Errorf("provider %s does not support JWKS validation (required for forwarded ID token acceptance)", providerName)
 	}
 
 	claims, matchedAudience, err := s.validateAndParseForwardedIDToken(ctx, bearerToken)
 	if err != nil {
-		s.recordForwardedIDTokenAccepted(jwksProvider.IssuerURL(), "", classifyValidationError(err))
+		s.recordForwardedIDTokenAccepted(ctx, providerName, expectedIssuer, "", classifyForwardedTokenError(err))
 		return nil, err
 	}
 	if claims == nil {
 		// No trusted audience matched — the caller asked us to accept a forwarded
 		// token, so an audience mismatch is a hard error here (unlike the
 		// ValidateToken fast-path which falls back to userinfo).
-		s.recordForwardedIDTokenAccepted(jwksProvider.IssuerURL(), "", instrumentation.ForwardedIDTokenResultAudMismatch)
+		s.recordForwardedIDTokenAccepted(ctx, providerName, expectedIssuer, "", instrumentation.ForwardedIDTokenResultAudMismatch)
 		return nil, ErrTrustedAudienceMismatch
 	}
 
 	userInfo := s.idTokenClaimsToUserInfo(claims)
-	issuer := claims.Issuer
 
 	var expiresAt time.Time
 	if claims.ExpiresAt != nil {
@@ -138,61 +170,69 @@ func (s *Server) AcceptForwardedIDToken(ctx context.Context, bearerToken string)
 		SessionID: s.deriveForwardedSessionID(bearerToken),
 		Subject:   claims.Subject,
 		UserInfo:  userInfo,
-		Issuer:    issuer,
+		Issuer:    claims.Issuer,
 		Audience:  matchedAudience,
 		ExpiresAt: expiresAt,
 	}
 
-	s.logForwardedIDTokenAccepted(bearerToken, matchedAudience, jwksProvider.IssuerURL(), userInfo)
-	s.recordForwardedIDTokenAccepted(issuer, matchedAudience, instrumentation.ForwardedIDTokenResultOK)
+	s.logForwardedIDTokenAccepted(bearerToken, matchedAudience, expectedIssuer, userInfo)
+	s.recordForwardedIDTokenAccepted(ctx, providerName, claims.Issuer, matchedAudience, instrumentation.ForwardedIDTokenResultOK)
 
 	return acceptance, nil
 }
 
-// deriveForwardedSessionID produces the deterministic "ext-<hex16>" session identifier.
-// Uses HMAC-SHA-256 when Config.SessionIDHMACKey is set, otherwise plain SHA-256.
-// See the Config.SessionIDHMACKey godoc and docs/security.md for the correlation
-// property and operator caveat.
+// deriveForwardedSessionID produces the deterministic "ext-<hex>" session
+// identifier. See the SessionID field godoc and docs/security.md for the
+// correlation property and the SessionIDHMACKey operator caveat.
+//
+// The input is domain-separated so Config.SessionIDHMACKey can be safely reused
+// for other keyed derivations without risking cross-purpose collisions.
+// hash.Hash.Write never returns an error — the doc on hash.Hash guarantees it —
+// so the results are ignored.
 func (s *Server) deriveForwardedSessionID(bearerToken string) string {
 	var digest []byte
 	if len(s.Config.SessionIDHMACKey) > 0 {
 		mac := hmac.New(sha256.New, s.Config.SessionIDHMACKey)
+		_, _ = mac.Write([]byte(forwardedSessionIDLabel))
+		_, _ = mac.Write([]byte{0x00})
 		_, _ = mac.Write([]byte(bearerToken))
 		digest = mac.Sum(nil)
 	} else {
-		sum := sha256.Sum256([]byte(bearerToken))
-		digest = sum[:]
+		h := sha256.New()
+		_, _ = h.Write([]byte(forwardedSessionIDLabel))
+		_, _ = h.Write([]byte{0x00})
+		_, _ = h.Write([]byte(bearerToken))
+		digest = h.Sum(nil)
 	}
-	return "ext-" + hex.EncodeToString(digest[:8])
+	return "ext-" + hex.EncodeToString(digest[:sessionIDDigestBytes])
 }
 
 // recordForwardedIDTokenAccepted emits the forwarded-ID-token metric. Safe when
-// Instrumentation is unconfigured. `result` MUST be one of the
-// instrumentation.ForwardedIDTokenResult* constants.
-func (s *Server) recordForwardedIDTokenAccepted(issuer, audience, result string) {
+// Instrumentation is unconfigured. Threads ctx through so OTel trace correlation
+// survives on the metric.
+func (s *Server) recordForwardedIDTokenAccepted(ctx context.Context, provider, issuer, audience string, result instrumentation.ForwardedIDTokenResult) {
 	if s.Instrumentation == nil {
 		return
 	}
-	s.Instrumentation.Metrics().RecordForwardedIDTokenAccepted(context.Background(), issuer, audience, result)
+	s.Instrumentation.Metrics().RecordForwardedIDTokenAccepted(ctx, provider, issuer, audience, result)
 }
 
-// classifyValidationError maps an error from validateAndParseForwardedIDToken to
-// one of the bounded result-enum values. Never returns raw error strings — label
-// cardinality matters.
-func classifyValidationError(err error) string {
-	if err == nil {
+// classifyForwardedTokenError maps an error from the validator to one of the
+// bounded result-enum values. Uses errors.Is sentinels throughout — no string
+// matching — so the mapping survives upstream message tweaks.
+func classifyForwardedTokenError(err error) instrumentation.ForwardedIDTokenResult {
+	switch {
+	case err == nil:
 		return instrumentation.ForwardedIDTokenResultOK
-	}
-	if errors.Is(err, jwt.ErrTokenExpired) {
+	case errors.Is(err, errForwardedTokenParseFailed):
+		return instrumentation.ForwardedIDTokenResultParseError
+	case errors.Is(err, oidc.ErrIssuerMismatch):
+		return instrumentation.ForwardedIDTokenResultIssMismatch
+	case errors.Is(err, jwt.ErrTokenExpired):
 		return instrumentation.ForwardedIDTokenResultExpired
-	}
-	if errors.Is(err, jwt.ErrTokenNotValidYet) {
+	case errors.Is(err, jwt.ErrTokenNotValidYet):
+		return instrumentation.ForwardedIDTokenResultNotYetValid
+	default:
 		return instrumentation.ForwardedIDTokenResultSigInvalid
 	}
-	// validateIssuer in providers/oidc/jwt.go:575 returns a formatted error without
-	// a sentinel; a substring match keeps this classification deterministic.
-	if msg := err.Error(); strings.Contains(msg, "issuer mismatch") {
-		return instrumentation.ForwardedIDTokenResultIssMismatch
-	}
-	return instrumentation.ForwardedIDTokenResultSigInvalid
 }
