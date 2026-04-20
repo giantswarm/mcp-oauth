@@ -23,54 +23,49 @@ import (
 // 4. Extract user info from validated claims
 // 5. Fall back to userinfo endpoint if JWT validation fails
 
-// validateForwardedIDToken validates a JWT ID token from a trusted upstream service.
-// This enables SSO token forwarding where an upstream MCP server forwards its ID token
-// to downstream services for authentication.
+// validateAndParseForwardedIDToken validates a JWT ID token from a trusted upstream
+// service and returns its verified claims. This is the shared core used by both the
+// fallback-style validateForwardedIDToken (ValidateToken fast-path) and the direct
+// AcceptForwardedIDToken entry point.
 //
 // Validation steps:
 // 1. Parse the JWT claims without verification to check audience
 // 2. Check if any audience matches TrustedAudiences
 // 3. If matched, validate the JWT signature using the provider's JWKS
-// 4. Extract user info from the validated claims
+// 4. Return the verified claims
 //
-// Returns (nil, nil) if the token doesn't match any trusted audience (fallback to normal flow)
-// Returns (nil, error) if the token matches but validation fails
-// Returns (userInfo, nil) if validation succeeds
-func (s *Server) validateForwardedIDToken(ctx context.Context, tokenString string) (*providers.UserInfo, error) {
-	// Parse claims without verification to check audience
+// Returns (nil, "", nil) if the token doesn't match any trusted audience — callers
+// that want fallback semantics (the ValidateToken fast-path) treat this as "not for us."
+// Returns (nil, "", error) if the token matches but validation fails.
+// Returns (claims, matchedAudience, nil) if validation succeeds.
+func (s *Server) validateAndParseForwardedIDToken(ctx context.Context, tokenString string) (*oidc.IDTokenClaims, string, error) {
 	claims, err := oidc.ParseUnverifiedClaims(tokenString)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse JWT claims: %w", err)
+		return nil, "", fmt.Errorf("failed to parse JWT claims: %w", err)
 	}
 
-	// Check if any audience matches our trusted audiences
 	tokenAudiences := oidc.GetAudienceFromClaims(claims)
 	matchedAudience := s.findMatchingTrustedAudience(tokenAudiences)
 	if matchedAudience == "" {
-		// No match - this token is not for us, return nil to trigger fallback
-		return nil, nil
+		return nil, "", nil
 	}
 
 	s.Logger.Debug("JWT audience matches TrustedAudiences, validating via JWKS",
 		"matched_audience", matchedAudience,
 		"token_suffix", helpers.TokenSuffix(tokenString, 8))
 
-	// Check if provider supports JWKS validation
 	jwksProvider, ok := s.provider.(providers.JWKSProvider)
 	if !ok {
 		s.Logger.Warn("Provider does not support JWKS validation, cannot validate forwarded ID token",
 			"provider", s.provider.Name())
-		return nil, fmt.Errorf("provider %s does not support JWKS validation", s.provider.Name())
+		return nil, "", fmt.Errorf("provider %s does not support JWKS validation", s.provider.Name())
 	}
 
-	// Get JWKS URI from provider
 	jwksURI, err := jwksProvider.JWKSURI(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get JWKS URI: %w", err)
+		return nil, "", fmt.Errorf("failed to get JWKS URI: %w", err)
 	}
 
-	// Get issuer URL from provider for additional validation
-	// This adds defense-in-depth by ensuring the token was issued by the expected provider
 	expectedIssuer := jwksProvider.IssuerURL()
 	if expectedIssuer != "" {
 		s.Logger.Debug("Validating JWT issuer against provider",
@@ -78,30 +73,44 @@ func (s *Server) validateForwardedIDToken(ctx context.Context, tokenString strin
 			"token_suffix", helpers.TokenSuffix(tokenString, 8))
 	}
 
-	// Validate the JWT signature using JWKS
 	idTokenClaims, err := oidc.ValidateIDToken(
 		ctx,
 		tokenString,
 		s.getJWKSClient(),
 		jwksURI,
-		expectedIssuer, // Validate issuer if provider specifies one
+		expectedIssuer,
 		s.Config.TrustedAudiences,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("ID token signature validation failed: %w", err)
+		return nil, "", fmt.Errorf("ID token signature validation failed: %w", err)
 	}
 
-	// Defensive nil check - ValidateIDToken should never return (nil, nil)
-	// but this guards against future changes
 	if idTokenClaims == nil {
-		return nil, fmt.Errorf("ID token validation returned nil claims")
+		return nil, "", fmt.Errorf("ID token validation returned nil claims")
 	}
 
-	// Extract user info from validated claims
-	userInfo := s.idTokenClaimsToUserInfo(idTokenClaims)
+	return idTokenClaims, matchedAudience, nil
+}
 
-	// Log the successful SSO token acceptance with issuer information
-	s.logForwardedIDTokenAccepted(tokenString, matchedAudience, expectedIssuer, userInfo)
+// validateForwardedIDToken is the fallback-style wrapper used by the ValidateToken
+// fast-path. It returns (nil, nil) when the token doesn't carry a trusted audience
+// so the caller falls back to the normal userinfo flow.
+func (s *Server) validateForwardedIDToken(ctx context.Context, tokenString string) (*providers.UserInfo, error) {
+	claims, matchedAudience, err := s.validateAndParseForwardedIDToken(ctx, tokenString)
+	if err != nil {
+		return nil, err
+	}
+	if claims == nil {
+		return nil, nil
+	}
+
+	userInfo := s.idTokenClaimsToUserInfo(claims)
+
+	var validatedIssuer string
+	if jwksProvider, ok := s.provider.(providers.JWKSProvider); ok {
+		validatedIssuer = jwksProvider.IssuerURL()
+	}
+	s.logForwardedIDTokenAccepted(tokenString, matchedAudience, validatedIssuer, userInfo)
 
 	return userInfo, nil
 }

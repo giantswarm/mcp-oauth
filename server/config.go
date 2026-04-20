@@ -615,6 +615,26 @@ type Config struct {
 	// Default: nil (only tokens for this server's ResourceIdentifier are accepted)
 	TrustedAudiences []string
 
+	// SessionIDHMACKey optionally replaces the default SHA-256 session-ID derivation
+	// in Server.AcceptForwardedIDToken with HMAC-SHA-256 keyed by this value.
+	//
+	// Default (nil/empty): session ID is "ext-" + hex(sha256(token))[:16]. Deterministic
+	// across deployments receiving the same token, which gives cross-hop audit-log
+	// correlation when an aggregator (e.g. muster) fans a single forwarded token out to
+	// multiple downstream MCP servers. This is the intended behavior for single-tenant
+	// deployments.
+	//
+	// Trade-off: anyone with audit-log access across two servers can link a user's
+	// sessions across them via the token hash. For multi-tenant isolation, set this key
+	// to a per-deployment secret — cross-hop correlation then holds only among servers
+	// sharing the same key.
+	//
+	// Operator caveat: every MCP server in a correlation set must either all configure
+	// the same key or all leave it empty. A single mismatched key silently breaks
+	// correlation with no runtime error — the tokens still validate, the sessions just
+	// no longer line up across hops. The library cannot detect the mismatch.
+	SessionIDHMACKey []byte
+
 	// EnableClientIDMetadataDocuments enables URL-based client_id support per MCP 2025-11-25
 	// When enabled, clients can use HTTPS URLs as client identifiers, and the authorization
 	// server will fetch client metadata from that URL following draft-ietf-oauth-client-id-metadata-document-00
