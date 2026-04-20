@@ -102,6 +102,30 @@ type Server struct {
 	shutdownOnce                  sync.Once // Ensures Shutdown is called only once
 }
 
+// NewWithCombined is an additive constructor for backends that implement the
+// [storage.Combined] interface (both memory and valkey do). It avoids the
+// awkward call site where the same *Store value is passed three times to [New]
+// because TokenStore/ClientStore/FlowStore are separate parameters:
+//
+//	// Old:
+//	srv, err := server.New(provider, store, store, store, cfg, logger)
+//
+//	// New:
+//	srv, err := server.NewWithCombined(provider, store, cfg, logger)
+//
+// [New] is unchanged so callers that split persistence across different
+// backing stores (e.g. Postgres tokens + memory flows) keep working.
+func NewWithCombined(
+	provider providers.Provider,
+	store storage.Combined,
+	config *Config,
+	logger *slog.Logger,
+) (*Server, error) {
+	// Delegate to New with the same value in all three slots. The embedded
+	// interfaces guarantee the method sets match.
+	return New(provider, store, store, store, config, logger)
+}
+
 // New creates a new OAuth server
 func New(
 	provider providers.Provider,

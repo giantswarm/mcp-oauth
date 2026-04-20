@@ -283,6 +283,27 @@ type FlowStore interface {
 	DeleteAuthorizationCode(ctx context.Context, code string) error
 }
 
+// Combined is the convenience union of the three storage interfaces that a
+// single backend typically implements together: TokenStore, ClientStore, and
+// FlowStore. Both the in-tree memory and valkey backends satisfy it.
+//
+// It exists so consumers no longer have to pass the same *Store three times to
+// [server.NewWithCombined] (the old [server.New] signature took TokenStore,
+// ClientStore, and FlowStore as separate arguments for backends that split
+// persistence across backing stores). Consumers that still split per-interface
+// can keep using the split constructor.
+//
+// The optional interfaces (RefreshTokenFamilyStore, TokenRevocationStore, the
+// TokenMetadata* interfaces) are intentionally NOT embedded here — Combined is
+// the minimum every server needs, and backends opt into the extras by
+// implementing them. The server uses runtime type assertions (via the Set*
+// hooks and gated SessionCreationHandler wiring) to detect the optional ones.
+type Combined interface {
+	TokenStore
+	ClientStore
+	FlowStore
+}
+
 // Client represents a registered OAuth client
 type Client struct {
 	ClientID                string

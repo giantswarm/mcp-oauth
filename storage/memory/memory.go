@@ -104,6 +104,7 @@ var (
 	_ storage.TokenStore                              = (*Store)(nil)
 	_ storage.ClientStore                             = (*Store)(nil)
 	_ storage.FlowStore                               = (*Store)(nil)
+	_ storage.Combined                                = (*Store)(nil)
 	_ storage.RefreshTokenFamilyStore                 = (*Store)(nil)
 	_ storage.TokenRevocationStore                    = (*Store)(nil)
 	_ storage.TokenMetadataStoreWithFamily            = (*Store)(nil)

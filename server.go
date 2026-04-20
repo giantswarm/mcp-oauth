@@ -42,3 +42,17 @@ func NewServer(
 ) (*Server, error) {
 	return server.New(provider, tokenStore, clientStore, flowStore, config, logger)
 }
+
+// NewServerWithCombined is a convenience wrapper for server.NewWithCombined
+// — the additive constructor that takes a [storage.Combined] backend instead
+// of three separate store arguments. Use it when your backend (memory, valkey,
+// or anything else) implements all three storage interfaces, which is the
+// common case.
+func NewServerWithCombined(
+	provider providers.Provider,
+	store storage.Combined,
+	config *ServerConfig,
+	logger *slog.Logger,
+) (*Server, error) {
+	return server.NewWithCombined(provider, store, config, logger)
+}
