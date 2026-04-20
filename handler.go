@@ -736,19 +736,28 @@ type OAuthRoutesOptions struct {
 	IncludeMetadata bool
 }
 
-// RegisterOAuthRoutes registers the five OAuth flow endpoints on mux and,
-// when opts.IncludeMetadata is true (the default), also registers the
-// Protected Resource Metadata and Authorization Server Metadata routes
-// via the two existing Register*Routes helpers.
+// RegisterOAuthRoutes registers the OAuth flow endpoints on mux and, when
+// opts.IncludeMetadata is true (the default), also registers the Protected
+// Resource Metadata and Authorization Server Metadata routes via the two
+// existing Register*Routes helpers.
 //
-// The endpoints registered are fixed at their standard paths
-// (authorize/callback/token/revoke/register under /oauth) because
-// [Config.AuthorizationEndpoint], [Config.TokenEndpoint] and the other
-// metadata builders hardcode those paths. A customizable prefix was
-// considered and rejected — it would make the routes register at one URL
-// while metadata advertised a different one. Consumers needing a custom
-// prefix must wire the individual Serve* methods by hand, at which point
-// they also need to override metadata advertisement.
+// Routes registered (all under /oauth, paths fixed by the Config endpoint
+// builders):
+//
+//   - /oauth/authorize, /oauth/callback, /oauth/token,
+//     /oauth/revoke, /oauth/register — always registered.
+//   - /oauth/introspect — only when Config.EnableIntrospectionEndpoint is
+//     true. ServeTokenIntrospection does not self-gate on that flag, so
+//     registering it unconditionally would expose an endpoint the operator
+//     disabled in config.
+//
+// A customizable prefix was considered and rejected — [Config.AuthorizationEndpoint],
+// [Config.TokenEndpoint], and the other metadata builders hardcode the /oauth
+// prefix when constructing the issuer-scoped URLs that appear in metadata.
+// A custom prefix would make the routes register at one URL while metadata
+// advertised a different one. Consumers needing a custom prefix must wire
+// the individual Serve* methods by hand, at which point they also need to
+// override metadata advertisement.
 //
 // Replaces the five-line `mux.HandleFunc("/oauth/...", handler.Serve...)`
 // block every consumer writes today:
@@ -764,6 +773,14 @@ func (h *Handler) RegisterOAuthRoutes(mux *http.ServeMux, opts OAuthRoutesOption
 	mux.HandleFunc(server.EndpointPathToken, h.ServeToken)
 	mux.HandleFunc(server.EndpointPathRevoke, h.ServeTokenRevocation)
 	mux.HandleFunc(server.EndpointPathRegister, h.ServeClientRegistration)
+
+	// Token introspection (RFC 7662) is opt-in. ServeTokenIntrospection does
+	// not self-gate on Config.EnableIntrospectionEndpoint — registering it
+	// unconditionally would expose an endpoint the operator disabled in
+	// config. Only wire the route when the flag is on.
+	if h.server.Config.EnableIntrospectionEndpoint {
+		mux.HandleFunc(server.EndpointPathIntrospect, h.ServeTokenIntrospection)
+	}
 
 	if !opts.IncludeMetadata {
 		return

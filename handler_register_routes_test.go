@@ -146,6 +146,29 @@ func TestHandler_RegisterOAuthRoutes_MCPPathWithResourceMetadataByPath_WarnsOnce
 	}
 }
 
+func TestHandler_RegisterOAuthRoutes_IntrospectGatedOnEnableFlag(t *testing.T) {
+	t.Run("disabled-by-default", func(t *testing.T) {
+		handler, _, _ := newRegisterRoutesHandler(t, nil)
+		mux := http.NewServeMux()
+		handler.RegisterOAuthRoutes(mux, OAuthRoutesOptions{IncludeMetadata: true})
+		// ServeTokenIntrospection does not self-gate on
+		// Config.EnableIntrospectionEndpoint, so the bundle must not register
+		// the route unless explicitly enabled.
+		assertMuxUnregistered(t, mux, "/oauth/introspect")
+	})
+
+	t.Run("enabled-via-config", func(t *testing.T) {
+		cfg := &server.Config{
+			Issuer:                      testIssuer,
+			EnableIntrospectionEndpoint: true,
+		}
+		handler, _, _ := newRegisterRoutesHandler(t, cfg)
+		mux := http.NewServeMux()
+		handler.RegisterOAuthRoutes(mux, OAuthRoutesOptions{IncludeMetadata: true})
+		assertMuxResolves(t, mux, "/oauth/introspect", "/oauth/introspect")
+	})
+}
+
 func TestHandler_RegisterOAuthRoutes_NoWarnWithoutConflict(t *testing.T) {
 	handler, _, buf := newRegisterRoutesHandler(t, nil)
 	mux := http.NewServeMux()
