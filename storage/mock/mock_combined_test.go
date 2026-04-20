@@ -7,6 +7,8 @@ import (
 
 	"golang.org/x/oauth2"
 
+	mockproviders "github.com/giantswarm/mcp-oauth/providers/mock"
+	"github.com/giantswarm/mcp-oauth/server"
 	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/giantswarm/mcp-oauth/storage/mock"
 )
@@ -105,4 +107,52 @@ func TestCombinedStore_ResetAllCallCounts(t *testing.T) {
 // output when someone intentionally or accidentally breaks embedding.
 func TestCombinedStore_SatisfiesInterface(t *testing.T) {
 	var _ storage.Combined = mock.NewCombined()
+}
+
+// TestCombinedStore_WithNewWithCombined is the end-to-end composition test:
+// mock.NewCombined() passed to server.NewWithCombined should produce a
+// functional *Server. Each piece is unit-tested in isolation — PR 5 covers
+// NewWithCombined's pointer-identity, this package covers the mock's
+// interface satisfaction — this test locks down the combination so the two
+// APIs cannot drift apart without failing here.
+//
+// Concrete reason to have it: if someone adds a method to storage.TokenStore
+// without implementing it on mock.TokenStore, the compile-time assertion
+// already catches that. But the actual server-construction path — which
+// uses the embedded interface promotion to satisfy all three separate
+// storage arguments to server.New from a single *CombinedStore — also needs
+// to work, and that's what THIS test proves.
+func TestCombinedStore_WithNewWithCombined(t *testing.T) {
+	store := mock.NewCombined()
+	provider := mockproviders.NewProvider()
+
+	srv, err := server.NewWithCombined(provider, store, &server.Config{
+		Issuer: "https://auth.test.example",
+	}, nil)
+	if err != nil {
+		t.Fatalf("server.NewWithCombined(mock.NewCombined()): %v", err)
+	}
+	if srv == nil {
+		t.Fatal("*Server should not be nil after successful construction")
+	}
+
+	// Exercise one method from each embedded interface through the store to
+	// prove the mocks wired behind the server are live and addressable —
+	// not just a compile-time trick.
+	ctx := context.Background()
+	if err := store.SaveToken(ctx, "u-1", &oauth2.Token{AccessToken: "at"}); err != nil {
+		t.Fatalf("SaveToken via CombinedStore: %v", err)
+	}
+	if err := store.SaveClient(ctx, &storage.Client{ClientID: "c-1", ClientType: "public"}); err != nil {
+		t.Fatalf("SaveClient via CombinedStore: %v", err)
+	}
+
+	// Per-mock CallCounts remain reachable — the point of keeping the
+	// embedded pointers visible rather than flattening them away.
+	if store.TokenStore.CallCounts["SaveToken"] != 1 {
+		t.Errorf("TokenStore.CallCounts[SaveToken] = %d, want 1", store.TokenStore.CallCounts["SaveToken"])
+	}
+	if store.ClientStore.CallCounts["SaveClient"] != 1 {
+		t.Errorf("ClientStore.CallCounts[SaveClient] = %d, want 1", store.ClientStore.CallCounts["SaveClient"])
+	}
 }
