@@ -35,6 +35,10 @@ const (
 	metricAttrProvider  = "provider"
 	metricAttrErrorType = "error_type"
 
+	// Forwarded-ID-token attributes
+	metricAttrIssuer   = "issuer"
+	metricAttrAudience = "audience"
+
 	// Audit attributes
 	metricAttrEventType = "event_type"
 )
@@ -60,6 +64,7 @@ type Metrics struct {
 	TokenReuseDetected          metric.Int64Counter
 	RedirectURISecurityRejected metric.Int64Counter // Redirect URI validation failures by category
 	LegacyRefreshTokenRejected  metric.Int64Counter // Legacy refresh tokens rejected (missing client binding)
+	ForwardedIDTokenAccepted    metric.Int64Counter // Forwarded ID token acceptance attempts (labels: issuer, audience, result)
 
 	// Storage Metrics
 	StorageOperationTotal    metric.Int64Counter
@@ -191,6 +196,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 	m.TokenReuseDetected = b.counter(securityMeter, "oauth.token.reuse_detected", "Number of token reuse attempts detected", "{attempt}")
 	m.RedirectURISecurityRejected = b.counter(securityMeter, "oauth.redirect_uri.security_rejected", "Number of redirect URI validation failures (SSRF/XSS protection)", "{rejection}")
 	m.LegacyRefreshTokenRejected = b.counter(securityMeter, "oauth.refresh_token.legacy_rejected", "Number of legacy refresh tokens rejected due to missing client binding (OAuth 2.1 compliance)", "{token}")
+	m.ForwardedIDTokenAccepted = b.counter(securityMeter, "oauth.forwarded_id_token.accepted_total", "Number of forwarded ID token acceptance attempts (labels: issuer, audience, result — result is a bounded enum: ok|aud_mismatch|iss_mismatch|sig_invalid|expired|not_yet_valid|no_jwks|parse_error)", "{attempt}")
 
 	// Storage Metrics
 	m.StorageOperationTotal = b.counter(storageMeter, "storage.operation.total", "Total number of storage operations", "{operation}")
@@ -333,6 +339,39 @@ func (m *Metrics) RecordTokenReuseDetected(ctx context.Context) {
 // This metric tracks rejected tokens for observability and security monitoring.
 func (m *Metrics) RecordLegacyRefreshTokenRejected(ctx context.Context) {
 	m.LegacyRefreshTokenRejected.Add(ctx, 1)
+}
+
+// ForwardedIDTokenResult is the bounded result enum for the
+// oauth.forwarded_id_token.accepted_total counter. Declared as a typed string
+// so the compiler enforces the closed set — callers cannot pass raw error
+// strings (label cardinality matters).
+type ForwardedIDTokenResult string
+
+const (
+	ForwardedIDTokenResultOK          ForwardedIDTokenResult = "ok"
+	ForwardedIDTokenResultAudMismatch ForwardedIDTokenResult = "aud_mismatch"
+	ForwardedIDTokenResultIssMismatch ForwardedIDTokenResult = "iss_mismatch"
+	ForwardedIDTokenResultSigInvalid  ForwardedIDTokenResult = "sig_invalid"
+	ForwardedIDTokenResultExpired     ForwardedIDTokenResult = "expired"
+	ForwardedIDTokenResultNotYetValid ForwardedIDTokenResult = "not_yet_valid"
+	ForwardedIDTokenResultNoJWKS      ForwardedIDTokenResult = "no_jwks"
+	ForwardedIDTokenResultParseError  ForwardedIDTokenResult = "parse_error"
+)
+
+// RecordForwardedIDTokenAccepted records a forwarded ID token acceptance attempt.
+// `provider` is the provider name (e.g. "dex", "google") so the metric is
+// self-describing without consumers having to cross-reference server config.
+// For unmatched-audience / parse-error / no-jwks cases, pass the empty string
+// as `audience` rather than a token-derived value to keep cardinality bounded.
+// Threads ctx through so OTel trace/baggage correlation survives on the metric.
+func (m *Metrics) RecordForwardedIDTokenAccepted(ctx context.Context, provider, issuer, audience string, result ForwardedIDTokenResult) {
+	attrs := []attribute.KeyValue{
+		attribute.String(metricAttrProvider, provider),
+		attribute.String(metricAttrIssuer, issuer),
+		attribute.String(metricAttrAudience, audience),
+		attribute.String(metricAttrResult, string(result)),
+	}
+	m.ForwardedIDTokenAccepted.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
 // RecordRedirectURISecurityRejected records a redirect URI security validation failure.

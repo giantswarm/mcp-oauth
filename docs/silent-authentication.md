@@ -445,8 +445,61 @@ authURL := provider.AuthorizationURL(state, challenge, "S256", scopes, &provider
 })
 ```
 
+## Accepting a Forwarded ID Token Directly
+
+Silent authentication is one half of the "upstream-IdP pass-through" story. The other half is the case where a trusted intermediary (an aggregator, a gateway, an AgentCore Runtime bridge) already holds a valid ID token from the upstream IdP and presents it as the Bearer credential to this server. `Server.AcceptForwardedIDToken` is the library entry point for that case.
+
+Unlike the auth-code flow, this path never touches the authorization_code grant — there is no family, no refresh token, no `SessionCreationHandler` firing, and no entry created in `TokenStore`. It is a pure validation function that returns the verified claims plus a deterministic session identifier.
+
+### When to use it
+
+Use `AcceptForwardedIDToken` when:
+
+- An upstream intermediary (muster, a bridge, a sidecar) receives an MCP request with a Bearer token it obtained from the same IdP this server trusts.
+- The intermediary wants to hand the token directly to this server rather than translate it into a server-issued access token.
+- This server needs to attribute the request to the original end user (per-user RBAC, audit) without running its own auth-code flow.
+
+The classic deployment is the Bedrock AgentCore Runtime bridge: user authenticates to Dex, gets an ID token, presents it to the bridge, bridge forwards it unchanged to an MCP server configured with Dex's audience in `Config.TrustedAudiences`.
+
+### Preconditions
+
+1. The configured `providers.Provider` implements `providers.JWKSProvider`. GitHub's provider does not qualify (OAuth 2.0 only) — the function returns a clear error in that case.
+2. `Config.TrustedAudiences` contains the audience the upstream IdP minted the token for.
+3. The provider's `IssuerURL()` matches the JWT's `iss` claim (the signature check requires this anyway).
+
+### Usage
+
+```go
+acc, err := oauthServer.AcceptForwardedIDToken(r.Context(), bearerToken)
+if err != nil {
+    if errors.Is(err, server.ErrTrustedAudienceMismatch) {
+        // Audience is not in TrustedAudiences → 401.
+    }
+    // Other errors (sig_invalid, iss_mismatch, expired, no_jwks, parse_error) → 401.
+    http.Error(w, "unauthorized", http.StatusUnauthorized)
+    return
+}
+
+// acc.SessionID is "ext-<hex16>", deterministic from the token.
+// acc.Subject is the validated `sub` claim.
+// acc.UserInfo.TokenSource == providers.TokenSourceSSO.
+// acc.ExpiresAt matches the JWT exp — the library does NOT refresh forwarded tokens.
+```
+
+### What it does NOT do
+
+- **Does not fire `SessionCreationHandler`.** That handler is gated on `RefreshTokenFamilyStore` and the authorization-code family lifecycle. Forwarded tokens have neither. Callers that want a "first time we've seen this session" hook should build that on top with their own seen-set keyed on `acc.SessionID` and TTL bounded by `acc.ExpiresAt`.
+- **Does not mirror the token into `TokenStore`.** `TokenStore.SaveToken` is keyed by userID; two concurrent bridged sessions for the same user would overwrite each other. Aggregators that need to retrieve the forwarded token later (for example, to attach it to downstream MCP calls) must store it in their own structure.
+- **Does not refresh expired tokens.** When the JWT expires, validation fails and the caller must propagate 401 so the MCP client re-authenticates against the upstream IdP.
+
+### Aggregator fan-out
+
+When the caller is itself an aggregator (muster fanning out to mcp-prometheus, mcp-kubernetes, mcp-opsgenie) and forwards the same token to every downstream, each downstream independently calls `AcceptForwardedIDToken` and derives the **same** `SessionID`. That gives cross-hop audit-log correlation without coordination — see the session-ID section in [security.md](./security.md) for the correlation property, the `Config.SessionIDHMACKey` escape hatch for multi-tenant isolation, and the operator caveat around key agreement.
+
 ## References
 
 - [OpenID Connect Core 1.0 - Authentication Request](https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest)
 - [OpenID Connect Core 1.0 - Authentication Error Response](https://openid.net/specs/openid-connect-core-1_0.html#AuthError)
 - [RFC 6749 - OAuth 2.0 Authorization Framework](https://datatracker.ietf.org/doc/html/rfc6749)
+- [RFC 7517 - JSON Web Key (JWK)](https://datatracker.ietf.org/doc/html/rfc7517)
+- [RFC 8725 - JSON Web Token Best Current Practices](https://datatracker.ietf.org/doc/html/rfc8725)
