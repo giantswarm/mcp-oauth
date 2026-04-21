@@ -225,8 +225,8 @@ func TestAcceptForwardedIDToken_IssuerMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for issuer mismatch, got nil")
 	}
-	if !strings.Contains(err.Error(), "issuer mismatch") {
-		t.Errorf("err = %v, want issuer-mismatch message", err)
+	if !errors.Is(err, oidc.ErrIssuerMismatch) {
+		t.Errorf("err = %v, want wrapped oidc.ErrIssuerMismatch", err)
 	}
 }
 
