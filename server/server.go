@@ -164,6 +164,7 @@ func New(
 	srv.initializeInstrumentation(tokenStore, clientStore, flowStore)
 	srv.initializeMetadataSupport()
 	srv.validateProviderDefaultScopes(logger)
+	srv.logForwardedSessionIDKeyFingerprint()
 
 	return srv, nil
 }
