@@ -528,6 +528,42 @@ Providers without JWKS support will always use userinfo endpoint validation.
 4. **Validate Scopes**: Use `EndpointScopeRequirements` for fine-grained access control
 5. **JWKS Caching**: The default 1-hour cache TTL balances performance with key rotation freshness
 
+### Direct Acceptance: `Server.AcceptForwardedIDToken`
+
+`Server.ValidateToken` runs the JWKS/TrustedAudiences path opportunistically — if the token isn't a JWT or the audience doesn't match, it falls back to the userinfo endpoint. `Server.AcceptForwardedIDToken` is the direct, non-fallback entry point for callers that want the library to accept a forwarded token or fail hard.
+
+Use it when an upstream intermediary (aggregator, bridge, sidecar) already holds a valid ID token from the trusted IdP and presents it as the Bearer credential. See [silent-authentication.md](./silent-authentication.md) for the full usage guide; this section covers the security properties and operator-facing configuration.
+
+#### Session-ID correlation property
+
+`AcceptForwardedIDToken` returns a deterministic identifier of the form `"ext-" + hex(sha256(bearerToken))[:16]`. Two MCP servers receiving the same bearer token compute the same identifier, which gives cross-hop audit-log correlation when an aggregator fans a single token out to multiple downstream servers. This is intentional for single-tenant deployments — it lets one correlation ID line up the hops of a distributed request without any coordination.
+
+**Threat model implication:** anyone with audit-log access across two servers in the same correlation set can link a user's sessions across them via the token hash. The hash is one-way (the token cannot be recovered from the identifier), but session linkage is observable. For single-tenant deployments where all servers belong to the same operator and the same audit pipeline, this is a feature. For multi-tenant deployments where different operators run different servers and must not correlate sessions, it is a property to disable.
+
+#### `Config.SessionIDHMACKey`: multi-tenant isolation
+
+Setting `Config.SessionIDHMACKey` replaces the SHA-256 derivation with HMAC-SHA-256 keyed by the configured value. The identifier becomes `"ext-" + hex(hmac-sha256(key, bearerToken))[:16]` — still deterministic, but correlation holds only among servers that share the key.
+
+```go
+config := &server.Config{
+    Issuer:           "https://auth.example.com",
+    TrustedAudiences: []string{"muster-client"},
+
+    // Per-deployment secret. Treat as sensitive; rotate via the same process
+    // you use for EncryptionKey. Must be the same across all MCP servers that
+    // should share session-ID correlation, and different from other tenants'.
+    SessionIDHMACKey: mustReadKey("/etc/mcp/session-id-hmac.key"),
+}
+```
+
+**Operator caveat (critical — the library cannot detect the mistake):** every MCP server in a correlation set must either *all* configure the same `SessionIDHMACKey` **or** *all* leave it empty. A single mismatched key silently breaks correlation with no runtime error — the tokens still validate, the sessions just no longer line up across hops. Treat the key as a deployment-wide constant and version it (e.g. `session-id-hmac-key-v1`) so rotations are explicit and detectable.
+
+Recommended key properties: 32 random bytes from `crypto/rand`, base64-encoded for transport, loaded from a secret manager or mounted file (not from an environment variable).
+
+#### Expiry behavior
+
+`AcceptForwardedIDToken` does not refresh forwarded tokens — the library holds no refresh credential for them. When the JWT `exp` has passed, validation fails and the caller must propagate 401 so the MCP client re-authenticates against the upstream IdP. Callers should use `acceptance.ExpiresAt` to set any session-cache TTLs rather than re-parsing the JWT.
+
 ### Private IdP Deployments
 
 If your Identity Provider (e.g., Dex) runs on a private network, JWKS fetching will fail due to SSRF protection. Use the `AllowPrivateIPJWKS` configuration option to allow JWKS endpoints to resolve to private IP addresses:

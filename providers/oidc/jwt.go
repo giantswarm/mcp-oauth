@@ -8,6 +8,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
@@ -571,13 +572,20 @@ func createKeyFunc(jwks *JWKS) jwt.Keyfunc {
 	}
 }
 
+// ErrIssuerMismatch is returned (wrapped) when a JWT's iss claim does not match
+// the expected issuer. Callers that need to distinguish issuer mismatch from
+// other validation failures (for audit classification, metric labeling, etc.)
+// should use errors.Is against this sentinel rather than string-matching the
+// message.
+var ErrIssuerMismatch = errors.New("issuer mismatch")
+
 // validateIssuer checks the token issuer matches the expected issuer.
 func validateIssuer(claims *IDTokenClaims, expectedIssuer string) error {
 	if expectedIssuer == "" {
 		return nil
 	}
 	if claims.Issuer != expectedIssuer {
-		return fmt.Errorf("issuer mismatch: got %q, expected %q", claims.Issuer, expectedIssuer)
+		return fmt.Errorf("%w: got %q, expected %q", ErrIssuerMismatch, claims.Issuer, expectedIssuer)
 	}
 	return nil
 }
