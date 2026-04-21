@@ -20,6 +20,16 @@ type ServerConfig = server.Config
 // Use server.InstrumentationConfig for new code.
 type InstrumentationConfig = server.InstrumentationConfig
 
+// ForwardedIDTokenAcceptance is re-exported from the server package for
+// consumers that want to call Server.AcceptForwardedIDToken via the top-level
+// alias without importing the server package directly.
+type ForwardedIDTokenAcceptance = server.ForwardedIDTokenAcceptance
+
+// ErrTrustedAudienceMismatch is re-exported from the server package for the
+// same reason — callers typically compare with errors.Is to decide whether
+// to respond 401.
+var ErrTrustedAudienceMismatch = server.ErrTrustedAudienceMismatch
+
 // NewServer creates a new OAuth server.
 // This is a convenience wrapper for server.New() to maintain backward compatibility.
 func NewServer(

@@ -7,11 +7,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	oauth "github.com/giantswarm/mcp-oauth"
@@ -66,6 +68,11 @@ func main() {
 		Level: slog.LevelInfo,
 	}))
 
+	// Optional: audiences this server accepts in forwarded ID tokens. Typical
+	// values are the upstream aggregator or bridge that fronts this server
+	// (e.g. "muster-client", "agentcore-runtime"). Comma-separated.
+	trustedAudiences := splitCSV(os.Getenv("TRUSTED_AUDIENCES"))
+
 	// Create OAuth server
 	server, err := oauth.NewServer(
 		dexProvider,
@@ -75,6 +82,7 @@ func main() {
 		&oauth.ServerConfig{
 			Issuer:            "http://localhost:8080",
 			AllowInsecureHTTP: true, // Required for HTTP on localhost (development only)
+			TrustedAudiences:  trustedAudiences,
 		},
 		logger,
 	)
@@ -136,6 +144,44 @@ func main() {
 
 	// Wrap with ValidateToken middleware
 	mux.Handle("/api/resource", handler.ValidateToken(resourceHandler))
+
+	// Demonstrates Server.AcceptForwardedIDToken. This endpoint does NOT use
+	// the ValidateToken middleware; it is the entry point aggregators and
+	// bridges use to accept a Dex-issued ID token directly rather than running
+	// their own auth-code flow. Registered only when TRUSTED_AUDIENCES is set
+	// — without that, every call would fail with audience-mismatch and the
+	// endpoint would just be a noise source.
+	if len(trustedAudiences) > 0 {
+		mux.HandleFunc("/api/forwarded", func(w http.ResponseWriter, r *http.Request) {
+			bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			if bearer == "" || bearer == r.Header.Get("Authorization") {
+				http.Error(w, "missing Bearer token", http.StatusUnauthorized)
+				return
+			}
+
+			acc, err := server.AcceptForwardedIDToken(r.Context(), bearer)
+			if err != nil {
+				status := http.StatusUnauthorized
+				if errors.Is(err, oauth.ErrTrustedAudienceMismatch) {
+					log.Printf("forwarded token rejected: audience mismatch")
+				} else {
+					log.Printf("forwarded token rejected: %v", err)
+				}
+				http.Error(w, err.Error(), status)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"message":    "forwarded token accepted",
+				"session_id": acc.SessionID,
+				"subject":    acc.Subject,
+				"issuer":     acc.Issuer,
+				"audience":   acc.Audience,
+				"expires_at": acc.ExpiresAt,
+			})
+		})
+	}
 
 	// Home page with login link
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
@@ -200,7 +246,25 @@ func main() {
 	addr := ":8080"
 	log.Printf("Starting server on http://localhost%s", addr)
 	log.Printf("Visit http://localhost%s to sign in with Dex", addr)
+	if len(trustedAudiences) > 0 {
+		log.Printf("Forwarded-ID-token acceptance enabled (TrustedAudiences: %v); POST a Dex-issued JWT as Bearer to /api/forwarded", trustedAudiences)
+	}
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
+}
+
+// splitCSV trims and drops empty entries from a comma-separated list.
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
