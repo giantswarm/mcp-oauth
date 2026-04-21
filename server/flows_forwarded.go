@@ -61,6 +61,14 @@ type ForwardedIDTokenAcceptance struct {
 	// gives cross-hop audit-log correlation when an aggregator fans a single
 	// forwarded token out to multiple downstream servers. See Config.SessionIDHMACKey
 	// for the isolation escape hatch and the operator caveat around key agreement.
+	//
+	// Scope: this is a correlation identifier for logs, metrics, and session
+	// caches — not a security boundary. The 64-bit truncation is sized for
+	// audit correlation, not collision resistance under adversarial input.
+	// Do not use SessionID as an authorization key, capability handle, or any
+	// identifier whose uniqueness a security decision depends on; the Subject
+	// field (or a store keyed on verified claims) is the correct source for
+	// authorization decisions.
 	SessionID string
 
 	// Subject is the validated `sub` claim from the JWT. It equals UserInfo.ID and
@@ -215,6 +223,31 @@ func (s *Server) recordForwardedIDTokenAccepted(ctx context.Context, provider, i
 		return
 	}
 	s.Instrumentation.Metrics().RecordForwardedIDTokenAccepted(ctx, provider, issuer, audience, result)
+}
+
+// logForwardedSessionIDKeyFingerprint emits a one-shot startup log line when
+// Config.SessionIDHMACKey is configured, carrying a non-reversible fingerprint
+// of the key (SHA-256 of the key, truncated to 16 hex chars) plus the raw key
+// length.
+//
+// Motivation: a mismatched SessionIDHMACKey across a correlation set silently
+// breaks cross-hop session-ID correlation with no runtime error — the library
+// cannot detect the mismatch. Logging a fingerprint lets operators verify key
+// agreement across deployments by grepping logs, without ever exposing the key
+// itself. The fingerprint uses the full SHA-256 (not HMAC over the key with
+// itself, and not the key directly) truncated to 16 hex chars — sufficient
+// to catch accidental mismatches, one-way so the key cannot be recovered.
+//
+// Safe to call when SessionIDHMACKey is empty (it becomes a no-op).
+func (s *Server) logForwardedSessionIDKeyFingerprint() {
+	if len(s.Config.SessionIDHMACKey) == 0 {
+		return
+	}
+	sum := sha256.Sum256(s.Config.SessionIDHMACKey)
+	s.Logger.Info("Forwarded-ID-token session correlation: SessionIDHMACKey is configured",
+		"key_fingerprint", hex.EncodeToString(sum[:8]),
+		"key_bytes", len(s.Config.SessionIDHMACKey),
+		"purpose", "All MCP servers in a correlation set must report the same key_fingerprint; a mismatch silently breaks cross-hop session-ID correlation")
 }
 
 // classifyForwardedTokenError maps an error from the validator to one of the
