@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -208,8 +209,9 @@ func optionalPositiveInt(name string) (int, error) {
 // are set, the _FILE variant wins. A single trailing newline is trimmed from
 // file contents (projected-volume files commonly carry one).
 func optionalSecret(name string) (string, error) {
-	if path := os.Getenv(name + "_FILE"); path != "" {
-		b, err := os.ReadFile(path) // #nosec G304 -- path is explicitly supplied by the operator
+	if raw := os.Getenv(name + "_FILE"); raw != "" {
+		path := filepath.Clean(raw)
+		b, err := os.ReadFile(path)
 		if err != nil {
 			return "", fmt.Errorf("%s_FILE: %w", name, err)
 		}
