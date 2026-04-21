@@ -196,7 +196,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 	m.TokenReuseDetected = b.counter(securityMeter, "oauth.token.reuse_detected", "Number of token reuse attempts detected", "{attempt}")
 	m.RedirectURISecurityRejected = b.counter(securityMeter, "oauth.redirect_uri.security_rejected", "Number of redirect URI validation failures (SSRF/XSS protection)", "{rejection}")
 	m.LegacyRefreshTokenRejected = b.counter(securityMeter, "oauth.refresh_token.legacy_rejected", "Number of legacy refresh tokens rejected due to missing client binding (OAuth 2.1 compliance)", "{token}")
-	m.ForwardedIDTokenAccepted = b.counter(securityMeter, "oauth.forwarded_id_token.accepted_total", "Number of forwarded ID token acceptance attempts (labels: issuer, audience, result — result is a bounded enum: ok|aud_mismatch|iss_mismatch|sig_invalid|expired|no_jwks|parse_error)", "{attempt}")
+	m.ForwardedIDTokenAccepted = b.counter(securityMeter, "oauth.forwarded_id_token.accepted_total", "Number of forwarded ID token acceptance attempts (labels: issuer, audience, result — result is a bounded enum: ok|aud_mismatch|iss_mismatch|sig_invalid|expired|not_yet_valid|no_jwks|parse_error)", "{attempt}")
 
 	// Storage Metrics
 	m.StorageOperationTotal = b.counter(storageMeter, "storage.operation.total", "Total number of storage operations", "{operation}")
