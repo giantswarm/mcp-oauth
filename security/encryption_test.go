@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"io"
 	"testing"
 )
@@ -354,6 +355,47 @@ func TestKeyToBase64(t *testing.T) {
 		t.Errorf("KeyToBase64() returned invalid base64: %v", err)
 	}
 }
+
+func TestKeyFromHex(t *testing.T) {
+	key, err := GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+
+	encoded := KeyToHex(key)
+	if len(encoded) != 64 {
+		t.Errorf("KeyToHex() returned %d chars, want 64", len(encoded))
+	}
+
+	decoded, err := KeyFromHex(encoded)
+	if err != nil {
+		t.Fatalf("KeyFromHex() error = %v", err)
+	}
+	if !bytes.Equal(decoded, key) {
+		t.Errorf("KeyFromHex() round-trip mismatch")
+	}
+}
+
+func TestKeyFromHex_Invalid(t *testing.T) {
+	tests := []struct {
+		name    string
+		encoded string
+	}{
+		{"non-hex chars", "zz" + bytesToHex(make([]byte, 31))},
+		{"wrong length (short)", hex.EncodeToString(make([]byte, 16))},
+		{"wrong length (long)", hex.EncodeToString(make([]byte, 48))},
+		{"empty", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := KeyFromHex(tt.encoded); err == nil {
+				t.Errorf("KeyFromHex(%q) succeeded, want error", tt.encoded)
+			}
+		})
+	}
+}
+
+func bytesToHex(b []byte) string { return hex.EncodeToString(b) }
 
 func TestEncryptionFormat(t *testing.T) {
 	key := make([]byte, 32)

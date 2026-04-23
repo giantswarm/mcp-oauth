@@ -5,6 +5,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"math"
@@ -185,4 +186,23 @@ func KeyFromBase64(s string) ([]byte, error) {
 // KeyToBase64 encodes an encryption key to base64
 func KeyToBase64(key []byte) string {
 	return base64.StdEncoding.EncodeToString(key)
+}
+
+// KeyFromHex decodes a hex-encoded 32-byte encryption key. 64-char input is
+// the canonical form produced by `openssl rand -hex 32`. Paired with
+// KeyFromBase64 for operators who prefer one encoding over the other.
+func KeyFromHex(s string) ([]byte, error) {
+	key, err := hex.DecodeString(s)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode hex key: %w", err)
+	}
+	if len(key) != 32 {
+		return nil, fmt.Errorf("key must be 32 bytes, got %d", len(key))
+	}
+	return key, nil
+}
+
+// KeyToHex encodes an encryption key to lowercase hex.
+func KeyToHex(key []byte) string {
+	return hex.EncodeToString(key)
 }
