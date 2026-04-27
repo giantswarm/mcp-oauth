@@ -46,71 +46,43 @@ func FromEnvWithPrefix(prefix string) (*server.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	// URL schemes are case-insensitive per RFC 3986 §3.1 — parse and normalize
-	// so HTTP://example.com does not bypass the gate that http://example.com
-	// triggers.
-	if !allowInsecure {
-		u, perr := url.Parse(issuer)
-		if perr != nil {
-			return nil, fmt.Errorf("%sISSUER is not a valid URL: %w", prefix, perr)
-		}
-		if strings.EqualFold(u.Scheme, "http") {
-			return nil, fmt.Errorf("%sISSUER uses http:// but %sALLOW_INSECURE_HTTP is not set; refusing to run an OAuth server over plain HTTP without an explicit opt-in", prefix, prefix)
-		}
+	if err := validateIssuerScheme(issuer, allowInsecure, prefix); err != nil {
+		return nil, err
 	}
 	cfg.AllowInsecureHTTP = allowInsecure
 
-	if v, err := optionalBool(prefix+"ALLOW_PUBLIC_CLIENT_REGISTRATION", false); err != nil {
-		return nil, err
-	} else {
-		cfg.AllowPublicClientRegistration = v
-	}
-
-	if v, err := optionalBool(prefix+"TRUST_PROXY", false); err != nil {
-		return nil, err
-	} else {
-		cfg.TrustProxy = v
-	}
-
-	if v, err := optionalDurationSeconds(prefix + "ACCESS_TOKEN_TTL"); err != nil {
-		return nil, err
-	} else if v != 0 {
-		cfg.AccessTokenTTL = v
-	}
-
-	if v, err := optionalDurationSeconds(prefix + "REFRESH_TOKEN_TTL"); err != nil {
-		return nil, err
-	} else if v != 0 {
-		cfg.RefreshTokenTTL = v
-	}
-
-	if v, err := optionalPositiveInt(prefix + "MAX_CLIENTS_PER_IP"); err != nil {
-		return nil, err
-	} else if v != 0 {
-		cfg.MaxClientsPerIP = v
-	}
-
-	regTok, err := optionalSecret(prefix + "REGISTRATION_ACCESS_TOKEN")
+	cfg.AllowPublicClientRegistration, err = optionalBool(prefix+"ALLOW_PUBLIC_CLIENT_REGISTRATION", false)
 	if err != nil {
 		return nil, err
 	}
-	cfg.RegistrationAccessToken = regTok
+
+	cfg.TrustProxy, err = optionalBool(prefix+"TRUST_PROXY", false)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := loadDurationSecondsIfSet(prefix+"ACCESS_TOKEN_TTL", &cfg.AccessTokenTTL); err != nil {
+		return nil, err
+	}
+	if err := loadDurationSecondsIfSet(prefix+"REFRESH_TOKEN_TTL", &cfg.RefreshTokenTTL); err != nil {
+		return nil, err
+	}
+	if err := loadPositiveIntIfSet(prefix+"MAX_CLIENTS_PER_IP", &cfg.MaxClientsPerIP); err != nil {
+		return nil, err
+	}
+
+	cfg.RegistrationAccessToken, err = optionalSecret(prefix + "REGISTRATION_ACCESS_TOKEN")
+	if err != nil {
+		return nil, err
+	}
 
 	// The encryption key is NOT read here because *server.Config does not
 	// carry one — token-at-rest encryption is attached via server.SetEncryptor
 	// after the server is constructed. See [NewEncryptorFromEnv] for the
 	// corresponding loader.
 
-	hmacB64, err := optionalSecret(prefix + "SESSION_ID_HMAC_KEY")
-	if err != nil {
+	if err := loadSessionIDHMACKey(prefix, cfg); err != nil {
 		return nil, err
-	}
-	if hmacB64 != "" {
-		key, err := security.KeyFromBase64(hmacB64)
-		if err != nil {
-			return nil, fmt.Errorf("%sSESSION_ID_HMAC_KEY: %w", prefix, err)
-		}
-		cfg.SessionIDHMACKey = key
 	}
 
 	if raw := os.Getenv(prefix + "TRUSTED_AUDIENCES"); raw != "" {
@@ -118,6 +90,61 @@ func FromEnvWithPrefix(prefix string) (*server.Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// validateIssuerScheme rejects a plain-HTTP issuer unless the operator has
+// explicitly opted in. URL schemes are case-insensitive per RFC 3986 §3.1, so
+// HTTP://example.com must not slip past a gate that catches http://example.com.
+func validateIssuerScheme(issuer string, allowInsecure bool, prefix string) error {
+	if allowInsecure {
+		return nil
+	}
+	u, err := url.Parse(issuer)
+	if err != nil {
+		return fmt.Errorf("%sISSUER is not a valid URL: %w", prefix, err)
+	}
+	if strings.EqualFold(u.Scheme, "http") {
+		return fmt.Errorf("%sISSUER uses http:// but %sALLOW_INSECURE_HTTP is not set; refusing to run an OAuth server over plain HTTP without an explicit opt-in", prefix, prefix)
+	}
+	return nil
+}
+
+func loadDurationSecondsIfSet(name string, dst *int64) error {
+	v, err := optionalDurationSeconds(name)
+	if err != nil {
+		return err
+	}
+	if v != 0 {
+		*dst = v
+	}
+	return nil
+}
+
+func loadPositiveIntIfSet(name string, dst *int) error {
+	v, err := optionalPositiveInt(name)
+	if err != nil {
+		return err
+	}
+	if v != 0 {
+		*dst = v
+	}
+	return nil
+}
+
+func loadSessionIDHMACKey(prefix string, cfg *server.Config) error {
+	hmacB64, err := optionalSecret(prefix + "SESSION_ID_HMAC_KEY")
+	if err != nil {
+		return err
+	}
+	if hmacB64 == "" {
+		return nil
+	}
+	key, err := security.KeyFromBase64(hmacB64)
+	if err != nil {
+		return fmt.Errorf("%sSESSION_ID_HMAC_KEY: %w", prefix, err)
+	}
+	cfg.SessionIDHMACKey = key
+	return nil
 }
 
 // NewEncryptorFromEnv reads OAUTH_ENCRYPTION_KEY (or OAUTH_ENCRYPTION_KEY_FILE)
