@@ -511,6 +511,19 @@ func TestValidateKeyEntropy(t *testing.T) {
 		0x1c, 0x65, 0xd4, 0x0f, 0x97, 0x2b, 0xe6, 0x51,
 	}
 
+	// 16 distinct bytes repeated to length 32 — sits exactly on the threshold.
+	exactly16Distinct := make([]byte, 32)
+	for i := range 16 {
+		exactly16Distinct[i] = byte(i)
+		exactly16Distinct[i+16] = byte(i)
+	}
+
+	// 15 distinct bytes — one short of the threshold.
+	fifteenDistinct := make([]byte, 32)
+	for i := range fifteenDistinct {
+		fifteenDistinct[i] = byte(i % 15)
+	}
+
 	tests := []struct {
 		name    string
 		key     []byte
@@ -521,6 +534,9 @@ func TestValidateKeyEntropy(t *testing.T) {
 		{"32 zero bytes", make([]byte, 32), true},
 		{"32 0xff bytes", bytes.Repeat([]byte{0xff}, 32), true},
 		{"32 'a' bytes (ascii placeholder)", bytes.Repeat([]byte{'a'}, 32), true},
+		{"alternating two bytes 0xAB/0xCD", bytes.Repeat([]byte{0xAB, 0xCD}, 16), true},
+		{"15 distinct bytes (below threshold)", fifteenDistinct, true},
+		{"exactly 16 distinct bytes (at threshold)", exactly16Distinct, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -532,25 +548,22 @@ func TestValidateKeyEntropy(t *testing.T) {
 	}
 }
 
-func TestShannonEntropy(t *testing.T) {
+func TestDistinctBytes(t *testing.T) {
 	tests := []struct {
 		name string
 		in   []byte
-		want float64 // expected bits/byte within 0.01
+		want int
 	}{
 		{"empty", nil, 0},
-		{"single byte", []byte{0x42}, 0},
-		{"all same byte", bytes.Repeat([]byte{0xab}, 100), 0},
-		// Two distinct bytes, perfectly balanced → log2(2) = 1.0 bit/byte.
-		{"two values balanced", append(bytes.Repeat([]byte{0}, 50), bytes.Repeat([]byte{1}, 50)...), 1.0},
-		// 256 distinct values, each once → log2(256) = 8.0 bits/byte (the cap).
-		{"full alphabet once each", fullByteAlphabet(), 8.0},
+		{"single byte", []byte{0x42}, 1},
+		{"all same byte", bytes.Repeat([]byte{0xab}, 100), 1},
+		{"two values", append(bytes.Repeat([]byte{0}, 50), bytes.Repeat([]byte{1}, 50)...), 2},
+		{"full alphabet once each", fullByteAlphabet(), 256},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := shannonEntropy(tt.in)
-			if got < tt.want-0.01 || got > tt.want+0.01 {
-				t.Errorf("shannonEntropy = %.4f, want %.4f (±0.01)", got, tt.want)
+			if got := distinctBytes(tt.in); got != tt.want {
+				t.Errorf("distinctBytes = %d, want %d", got, tt.want)
 			}
 		})
 	}

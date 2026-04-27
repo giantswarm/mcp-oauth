@@ -8,58 +8,48 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"math"
 )
 
-// MinKeyEntropyBitsPerByte is the minimum Shannon entropy a symmetric key
-// must carry, measured in bits per byte. The upper bound is 8.0 (uniformly
-// random bytes); a uniformly random 32-byte key averages ~4.9 bits/byte
-// (capped by log2(32)=5.0 since entropy is bounded by distinct-symbol
-// count). 4.0 rejects catastrophic inputs (all-zeros, repeated byte,
-// placeholders like "aaaa…") while leaving headroom for legitimate keys
-// with modest non-uniformity.
-const MinKeyEntropyBitsPerByte = 4.0
+// MinKeyDistinctBytes is the minimum number of distinct byte values an
+// AES-256 key must contain. 16 bounds the effective keyspace from a key
+// drawn over this many symbols at ≥ 2^128 (the NIST minimum for AES). A
+// uniformly random 32-byte key averages ~30 distinct bytes (σ ≈ 1.5), so
+// the false-positive rate on genuine keys is negligible.
+const MinKeyDistinctBytes = 16
 
-// ValidateKeyEntropy returns an error when key carries too little Shannon
-// entropy to be safe as an AES-256 key. Empty input is accepted (caller
-// has opted out of encryption entirely — see NewEncryptor).
+// ValidateKeyEntropy returns an error when key is too predictable to be
+// safe as an AES-256 key. Empty input is accepted (caller has opted out of
+// encryption entirely — see NewEncryptor).
 //
 // Defense in depth: callers using GenerateKey never trip this, but
-// operators who paste a low-entropy placeholder (`000…000`, `aaaa…`) into
-// a secret manager still pass length checks and would otherwise encrypt
-// all tokens under a trivially-known key.
+// operators who paste a placeholder (`000…000`, `0xff…`, `aaaa…`,
+// `0xAB 0xCD` repeated) into a secret manager still pass length checks
+// and would otherwise encrypt all tokens under a trivially-known key.
+//
+// This check cannot detect every weak key — e.g. SHA-256 of a dictionary
+// word produces a high-distinct-byte output that still trivially leaks.
+// Operators must generate keys via crypto/rand (GenerateKey) or
+// `openssl rand`; this gate is only a backstop against obvious mistakes.
 func ValidateKeyEntropy(key []byte) error {
 	if len(key) == 0 {
 		return nil
 	}
-	entropy := shannonEntropy(key)
-	if entropy < MinKeyEntropyBitsPerByte {
-		return fmt.Errorf("encryption key has low entropy (%.2f bits/byte, want >= %.1f) — check that the key is not all zeros, a repeated byte, or a placeholder", entropy, MinKeyEntropyBitsPerByte)
+	if n := distinctBytes(key); n < MinKeyDistinctBytes {
+		return fmt.Errorf("encryption key has only %d distinct byte values (want >= %d) — check that the key is not all zeros, a repeated byte, or a placeholder; generate with crypto/rand or `openssl rand -hex 32`", n, MinKeyDistinctBytes)
 	}
 	return nil
 }
 
-// shannonEntropy returns the Shannon entropy of b in bits per byte.
-// Uniformly random bytes approach min(log2(len(b)), 8.0); a sequence of a
-// single repeated byte is 0.0.
-func shannonEntropy(b []byte) float64 {
-	if len(b) == 0 {
-		return 0
-	}
-	var counts [256]int
+func distinctBytes(b []byte) int {
+	var seen [256]bool
+	n := 0
 	for _, c := range b {
-		counts[c]++
-	}
-	total := float64(len(b))
-	var entropy float64
-	for _, c := range counts {
-		if c == 0 {
-			continue
+		if !seen[c] {
+			seen[c] = true
+			n++
 		}
-		p := float64(c) / total
-		entropy -= p * math.Log2(p)
 	}
-	return entropy
+	return n
 }
 
 // Encryptor handles token encryption at rest using AES-256-GCM.
