@@ -360,7 +360,7 @@ func (s *Store) startTracedOp(ctx context.Context, operation string) *tracedOp {
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(
 			attribute.String("operation", operation),
-			attribute.String("storage.backend", "valkey"),
+			attribute.String("storage.backend", storage.BackendValkey),
 		))
 	op.ctx = ctx
 	op.span = span

@@ -19,6 +19,15 @@ import (
 // comes from always performing the bcrypt comparison, not from the hash value.
 const DummyBcryptHash = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
 
+// Backend identifiers for the in-tree storage implementations. These are the
+// canonical strings emitted as the `storage.backend` OTEL span attribute and
+// are exported so consumers can dispatch on a configured backend name without
+// re-declaring the same literals (e.g. cmd-line flag parsing, factory funcs).
+const (
+	BackendMemory = "memory"
+	BackendValkey = "valkey"
+)
+
 // Common error message strings used across storage implementations.
 // These ensure consistent error messages and reduce code duplication.
 const (
