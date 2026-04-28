@@ -13,7 +13,7 @@
 //   - OAUTH_ALLOW_INSECURE_HTTP               (default false) — permit http:// issuer
 //   - OAUTH_ALLOW_PUBLIC_CLIENT_REGISTRATION  (default false)
 //   - OAUTH_REGISTRATION_ACCESS_TOKEN         — registration bearer; see _FILE note below
-//   - OAUTH_ENCRYPTION_KEY                    — base64 32-byte AES-GCM key
+//   - OAUTH_ENCRYPTION_KEY                    — 32-byte AES-GCM key, base64 (preferred) or hex
 //   - OAUTH_SESSION_ID_HMAC_KEY               — base64 32-byte HMAC key
 //     (see server.Config.SessionIDHMACKey for the operator caveat)
 //   - OAUTH_ACCESS_TOKEN_TTL                  — Go duration (e.g. "1h")
