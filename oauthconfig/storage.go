@@ -12,7 +12,7 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage/valkey"
 )
 
-// StorageFromEnv selects a storage backend from the STORAGE_BACKEND
+// StorageFromEnv selects a storage backend from the OAUTH_STORAGE_BACKEND
 // environment variable and returns a ready [storage.Combined] plus a close
 // function the caller MUST defer. "memory" (default) and "valkey" are
 // supported.
@@ -21,26 +21,27 @@ import (
 // for valkey. It is always safe to call and always returns nil (close errors
 // are swallowed and logged by the backend).
 //
-// Valkey-specific variables (read only when STORAGE_BACKEND=valkey):
+// Valkey-specific variables (read only when OAUTH_STORAGE_BACKEND=valkey):
 //
-//   - VALKEY_ADDRESS                   (required when STORAGE_BACKEND=valkey)
-//   - VALKEY_PASSWORD[_FILE]           (optional)
-//   - VALKEY_DB                        (optional; non-negative integer)
-//   - VALKEY_KEY_PREFIX                (optional; defaults to valkey.DefaultKeyPrefix)
-//   - VALKEY_TLS                       (optional; "true" enables TLS)
-//   - VALKEY_TLS_INSECURE_SKIP_VERIFY  (optional; dev only)
-//   - VALKEY_REFRESH_TOKEN_TTL         (optional Go duration)
+//   - OAUTH_VALKEY_ADDR                   (required when OAUTH_STORAGE_BACKEND=valkey)
+//   - OAUTH_VALKEY_PASSWORD[_FILE]           (optional)
+//   - OAUTH_VALKEY_DB                        (optional; non-negative integer)
+//   - OAUTH_VALKEY_KEY_PREFIX                (optional; defaults to valkey.DefaultKeyPrefix)
+//   - OAUTH_VALKEY_TLS                       (optional; "true" enables TLS)
+//   - OAUTH_VALKEY_TLS_INSECURE_SKIP_VERIFY  (optional; dev only)
+//   - OAUTH_VALKEY_REFRESH_TOKEN_TTL         (optional Go duration)
 //
 // Pass the returned [storage.Combined] to [server.NewWithCombined].
 func StorageFromEnv(logger *slog.Logger) (storage.Combined, func() error, error) {
-	return StorageFromEnvWithPrefix("", logger)
+	return StorageFromEnvWithPrefix("OAUTH_", logger)
 }
 
 // StorageFromEnvWithPrefix is [StorageFromEnv] with a caller-supplied prefix
 // applied to STORAGE_BACKEND and VALKEY_*. The prefix is applied verbatim;
 // include a trailing underscore if you want one. Useful for consumers that
 // scope their env vars to their product name, e.g.
-// StorageFromEnvWithPrefix("MUSTER_", logger).
+// StorageFromEnvWithPrefix("MUSTER_OAUTH_", logger) reads
+// MUSTER_OAUTH_STORAGE_BACKEND and MUSTER_OAUTH_VALKEY_*.
 func StorageFromEnvWithPrefix(prefix string, logger *slog.Logger) (storage.Combined, func() error, error) {
 	backend := os.Getenv(prefix + "STORAGE_BACKEND")
 	if backend == "" {
@@ -63,9 +64,9 @@ func StorageFromEnvWithPrefix(prefix string, logger *slog.Logger) (storage.Combi
 // nil (Valkey close errors are logged by the backend; surfacing them would
 // complicate caller shutdown flows).
 func newValkeyFromEnv(prefix string, logger *slog.Logger) (storage.Combined, func() error, error) {
-	addr := os.Getenv(prefix + "VALKEY_ADDRESS")
+	addr := os.Getenv(prefix + "VALKEY_ADDR")
 	if addr == "" {
-		return nil, nil, fmt.Errorf("%sVALKEY_ADDRESS is required when %sSTORAGE_BACKEND=valkey", prefix, prefix)
+		return nil, nil, fmt.Errorf("%sVALKEY_ADDR is required when %sSTORAGE_BACKEND=valkey", prefix, prefix)
 	}
 
 	password, err := optionalSecret(prefix + "VALKEY_PASSWORD")
