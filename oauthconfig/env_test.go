@@ -183,6 +183,44 @@ func TestFromEnv_InsecureHTTPGate(t *testing.T) {
 	})
 }
 
+// TestFromEnv_LoopbackIssuerException locks down the RFC 8252 loopback
+// bypass: http:// is permitted without OAUTH_ALLOW_INSECURE_HTTP when the
+// hostname is localhost / 127.0.0.1 / [::1]. Required for local dev loops
+// (`http://localhost:5556`) that should NOT need to flip the global insecure
+// flag — which would weaken every other http:// check at the same time.
+func TestFromEnv_LoopbackIssuerException(t *testing.T) {
+	cases := []struct {
+		name    string
+		issuer  string
+		wantErr bool
+	}{
+		{name: "localhost with port", issuer: "http://localhost:5556"},
+		{name: "localhost without port", issuer: "http://localhost"},
+		{name: "127.0.0.1 with port", issuer: "http://127.0.0.1:5556"},
+		{name: "ipv6 loopback with port", issuer: "http://[::1]:5556"},
+		{name: "Localhost mixed case", issuer: "http://Localhost:5556"},
+		{name: "https on loopback still fine", issuer: "https://localhost:5556"},
+		{name: "non-loopback http rejected", issuer: "http://auth.example", wantErr: true},
+		{name: "lookalike 127.0.0.1.evil rejected", issuer: "http://127.0.0.1.evil.com", wantErr: true},
+		{name: "lookalike localhost.evil rejected", issuer: "http://localhost.evil.com", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setRequired(t, tc.issuer)
+			_, err := oauthconfig.FromEnv()
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "ALLOW_INSECURE_HTTP") {
+					t.Fatalf("expected ALLOW_INSECURE_HTTP refusal, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("FromEnv: %v", err)
+			}
+		})
+	}
+}
+
 func TestFromEnv_FilePrecedence(t *testing.T) {
 	setRequired(t, "https://auth.example")
 	t.Setenv("OAUTH_REGISTRATION_ACCESS_TOKEN", "from-env")

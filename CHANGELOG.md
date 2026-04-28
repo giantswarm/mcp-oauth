@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **oauthconfig.FromEnv: loopback issuers bypass the http:// gate**
+  - `http://localhost`, `http://127.0.0.1`, and `http://[::1]` (with or without ports) are now accepted as `OAUTH_ISSUER` without setting `OAUTH_ALLOW_INSECURE_HTTP`. Per RFC 8252 §7.3 (native-app loopback). Lookalikes like `http://127.0.0.1.evil` are still rejected.
+  - Removes the dev-loop footgun where flipping `OAUTH_ALLOW_INSECURE_HTTP=true` for `http://localhost:5556` weakened every other http:// check at the same time.
 - **oauthconfig.DexFromEnv defaults `OAUTH_DEX_REDIRECT_URL` to `${OAUTH_ISSUER}/oauth/callback`**
   - Saves consumers from templating the issuer URL into two env vars (helm value + DEX_REDIRECT_URL). When OAUTH_ISSUER is set and DEX_REDIRECT_URL is unset, the loader derives the canonical provider-callback URL automatically. A trailing slash on the issuer is tolerated.
   - Additive: explicit OAUTH_DEX_REDIRECT_URL still wins. The "required" error still fires when both vars are unset.
