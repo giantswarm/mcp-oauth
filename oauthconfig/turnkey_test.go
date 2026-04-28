@@ -36,7 +36,7 @@ func TestTurnkeyWiring(t *testing.T) {
 
 	// Storage: memory (explicit, to prove the env var is honored through the
 	// composition, not just "default fall-through").
-	t.Setenv("STORAGE_BACKEND", "memory")
+	t.Setenv("OAUTH_STORAGE_BACKEND", "memory")
 
 	// Provider: GitHub. Synchronous construction, no network.
 	t.Setenv("OAUTH_PROVIDER", "github")

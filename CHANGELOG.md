@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **oauthconfig.StorageFromEnv: default prefix is now `OAUTH_`, and `VALKEY_ADDRESS` is renamed to `VALKEY_ADDR`**
+  - `STORAGE_BACKEND` → `OAUTH_STORAGE_BACKEND`; `VALKEY_*` → `OAUTH_VALKEY_*`. The address var also shortens: `VALKEY_ADDRESS` → `OAUTH_VALKEY_ADDR` (matches Go ecosystem `*_ADDR` naming for env-var-facing names; the underlying `valkey.Config.Address` field is unchanged).
+  - Aligns the storage loader's namespace with `FromEnv` (which already defaults to the `OAUTH_` prefix). Consumers using `StorageFromEnvWithPrefix("MUSTER_", …)` must switch to `StorageFromEnvWithPrefix("MUSTER_OAUTH_", …)` and rename their env vars accordingly.
 - **oauthconfig.FromEnv validates `OAUTH_TRUSTED_AUDIENCES` at startup**
   - Each entry is now passed through `dex.ValidateAudiences`. Allowed charset is `[a-zA-Z0-9_-]` (per-entry max 256 chars, list max 50). Malformed values fail loudly at startup instead of silently failing token-acceptance later.
   - **Behaviour change**: URL-shaped audiences (e.g. `https://api.example.com`) are rejected. The package documented RFC 8707 URI audiences previously; in practice all in-tree consumers use Dex client-id-shaped audiences. Operators with URL-shaped audiences must populate `oauth.Config.TrustedAudiences` programmatically rather than via env.
