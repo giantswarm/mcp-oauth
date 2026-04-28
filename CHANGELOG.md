@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **oauthconfig.FromEnv: loopback issuers bypass the http:// gate**
+  - `http://localhost`, `http://127.0.0.1`, and `http://[::1]` (with or without ports) are now accepted as `OAUTH_ISSUER` without setting `OAUTH_ALLOW_INSECURE_HTTP`. Per RFC 8252 §7.3 (native-app loopback). Lookalikes like `http://127.0.0.1.evil` are still rejected.
+  - Removes the dev-loop footgun where flipping `OAUTH_ALLOW_INSECURE_HTTP=true` for `http://localhost:5556` weakened every other http:// check at the same time.
+
 ### Fixed
 
 - **Treat email, profile, groups, offline_access as mandatory scopes (#252)**

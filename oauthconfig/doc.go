@@ -11,6 +11,9 @@
 //
 //   - OAUTH_ISSUER                            (required) — server issuer URL
 //   - OAUTH_ALLOW_INSECURE_HTTP               (default false) — permit http:// issuer
+//     (loopback issuers — http://localhost, http://127.0.0.1, http://[::1] —
+//     are exempt from this gate per RFC 8252 §7.3, so dev loops don't have to
+//     enable the global insecure flag)
 //   - OAUTH_ALLOW_PUBLIC_CLIENT_REGISTRATION  (default false)
 //   - OAUTH_REGISTRATION_ACCESS_TOKEN         — registration bearer; see _FILE note below
 //   - OAUTH_ENCRYPTION_KEY                    — base64 32-byte AES-GCM key

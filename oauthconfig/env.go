@@ -93,8 +93,14 @@ func FromEnvWithPrefix(prefix string) (*server.Config, error) {
 }
 
 // validateIssuerScheme rejects a plain-HTTP issuer unless the operator has
-// explicitly opted in. URL schemes are case-insensitive per RFC 3986 §3.1, so
-// HTTP://example.com must not slip past a gate that catches http://example.com.
+// explicitly opted in OR the issuer points at a loopback host. URL schemes
+// are case-insensitive per RFC 3986 §3.1, so HTTP://example.com must not
+// slip past a gate that catches http://example.com.
+//
+// The loopback exception (RFC 8252 native-app territory) skips the
+// ALLOW_INSECURE_HTTP requirement for "http://localhost", "http://127.0.0.1",
+// and "http://[::1]" so dev loops don't have to flip the global insecure flag
+// — which would weaken every other http:// check at the same time.
 func validateIssuerScheme(issuer string, allowInsecure bool, prefix string) error {
 	if allowInsecure {
 		return nil
@@ -103,10 +109,25 @@ func validateIssuerScheme(issuer string, allowInsecure bool, prefix string) erro
 	if err != nil {
 		return fmt.Errorf("%sISSUER is not a valid URL: %w", prefix, err)
 	}
-	if strings.EqualFold(u.Scheme, "http") {
-		return fmt.Errorf("%sISSUER uses http:// but %sALLOW_INSECURE_HTTP is not set; refusing to run an OAuth server over plain HTTP without an explicit opt-in", prefix, prefix)
+	if !strings.EqualFold(u.Scheme, "http") {
+		return nil
 	}
-	return nil
+	if isLoopbackHost(u.Hostname()) {
+		return nil
+	}
+	return fmt.Errorf("%sISSUER uses http:// but %sALLOW_INSECURE_HTTP is not set; refusing to run an OAuth server over plain HTTP without an explicit opt-in", prefix, prefix)
+}
+
+// isLoopbackHost reports whether host is one of the loopback identifiers
+// used to bypass the http-issuer gate: "localhost", "127.0.0.1", or "::1".
+// Pure string match — no DNS resolution. Comparison is case-insensitive on
+// the textual identifier ("Localhost" matches) per RFC 3986 §3.2.2.
+func isLoopbackHost(host string) bool {
+	switch strings.ToLower(host) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
 }
 
 func loadDurationSecondsIfSet(name string, dst *int64) error {
