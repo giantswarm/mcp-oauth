@@ -45,17 +45,17 @@ func StorageFromEnv(logger *slog.Logger) (storage.Combined, func() error, error)
 func StorageFromEnvWithPrefix(prefix string, logger *slog.Logger) (storage.Combined, func() error, error) {
 	backend := os.Getenv(prefix + "STORAGE_BACKEND")
 	if backend == "" {
-		backend = "memory"
+		backend = storage.BackendMemory
 	}
 
 	switch backend {
-	case "memory":
+	case storage.BackendMemory:
 		store := memory.New()
 		return store, func() error { store.Stop(); return nil }, nil
-	case "valkey":
+	case storage.BackendValkey:
 		return newValkeyFromEnv(prefix, logger)
 	default:
-		return nil, nil, fmt.Errorf("%sSTORAGE_BACKEND: unknown backend %q (want \"memory\" or \"valkey\")", prefix, backend)
+		return nil, nil, fmt.Errorf("%sSTORAGE_BACKEND: unknown backend %q (want %q or %q)", prefix, backend, storage.BackendMemory, storage.BackendValkey)
 	}
 }
 
