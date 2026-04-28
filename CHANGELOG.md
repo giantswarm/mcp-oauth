@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **oauthconfig.StorageFromEnv switch now uses `storage.BackendMemory` / `storage.BackendValkey` instead of string literals**
+  - Internal cleanup so the loader and the storage package share one source of truth for backend names. The constants were already exported from the `storage` package — consumers that branch on backend name (e.g. "refuse memory in production") should reference `storage.Backend*`.
 - **oauthconfig.FromEnv: loopback issuers bypass the http:// gate**
   - `http://localhost`, `http://127.0.0.1`, and `http://[::1]` (with or without ports) are now accepted as `OAUTH_ISSUER` without setting `OAUTH_ALLOW_INSECURE_HTTP`. Per RFC 8252 §7.3 (native-app loopback). Lookalikes like `http://127.0.0.1.evil` are still rejected.
   - Removes the dev-loop footgun where flipping `OAUTH_ALLOW_INSECURE_HTTP=true` for `http://localhost:5556` weakened every other http:// check at the same time.
