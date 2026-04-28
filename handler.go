@@ -718,6 +718,97 @@ func (h *Handler) buildProtectedResourceMetadata(resourcePath string, pathConfig
 	return metadata
 }
 
+// OAuthRoutesOptions controls the bundle registered by [Handler.RegisterOAuthRoutes].
+type OAuthRoutesOptions struct {
+	// MCPPath is forwarded to RegisterProtectedResourceMetadataRoutes for
+	// backward compatibility with single-path consumers. Kept because a few
+	// examples still pass it, but prefer configuring
+	// [Config.ResourceMetadataByPath] instead — when that map is non-empty,
+	// MCPPath is ignored (with a single warn log at registration time so the
+	// conflict is visible).
+	MCPPath string
+
+	// IncludeMetadata controls whether the two discovery bundles
+	// (Protected Resource Metadata per RFC 9728 and Authorization Server
+	// Metadata per RFC 8414) are registered alongside the OAuth flow
+	// endpoints. Default true — this is what every consumer today does by
+	// hand.
+	IncludeMetadata bool
+}
+
+// RegisterOAuthRoutes registers the OAuth flow endpoints on mux and, when
+// opts.IncludeMetadata is true (the default), also registers the Protected
+// Resource Metadata and Authorization Server Metadata routes via the two
+// existing Register*Routes helpers.
+//
+// Routes registered (all under /oauth, paths fixed by the Config endpoint
+// builders):
+//
+//   - /oauth/authorize, /oauth/callback, /oauth/token,
+//     /oauth/revoke, /oauth/register — always registered.
+//   - /oauth/introspect — only when Config.EnableIntrospectionEndpoint is
+//     true. ServeTokenIntrospection does not self-gate on that flag, so
+//     registering it unconditionally would expose an endpoint the operator
+//     disabled in config.
+//
+// A customizable prefix was considered and rejected — [Config.AuthorizationEndpoint],
+// [Config.TokenEndpoint], and the other metadata builders hardcode the /oauth
+// prefix when constructing the issuer-scoped URLs that appear in metadata.
+// A custom prefix would make the routes register at one URL while metadata
+// advertised a different one. Consumers needing a custom prefix must wire
+// the individual Serve* methods by hand, at which point they also need to
+// override metadata advertisement.
+//
+// Replaces the five-line `mux.HandleFunc("/oauth/...", handler.Serve...)`
+// block every consumer writes today:
+//
+//	handler.RegisterOAuthRoutes(mux, oauth.OAuthRoutesOptions{
+//	    MCPPath:         "/mcp",
+//	    IncludeMetadata: true,
+//	})
+func (h *Handler) RegisterOAuthRoutes(mux *http.ServeMux, opts OAuthRoutesOptions) {
+	// OAuth flow endpoints — fixed paths (see method godoc for rationale).
+	mux.HandleFunc(server.EndpointPathAuthorize, h.ServeAuthorization)
+	mux.HandleFunc(oauthCallbackPath, h.ServeCallback)
+	mux.HandleFunc(server.EndpointPathToken, h.ServeToken)
+	mux.HandleFunc(server.EndpointPathRevoke, h.ServeTokenRevocation)
+	mux.HandleFunc(server.EndpointPathRegister, h.ServeClientRegistration)
+
+	// Token introspection (RFC 7662) is opt-in. ServeTokenIntrospection does
+	// not self-gate on Config.EnableIntrospectionEndpoint — registering it
+	// unconditionally would expose an endpoint the operator disabled in
+	// config. Only wire the route when the flag is on.
+	if h.server.Config.EnableIntrospectionEndpoint {
+		mux.HandleFunc(server.EndpointPathIntrospect, h.ServeTokenIntrospection)
+	}
+
+	if !opts.IncludeMetadata {
+		return
+	}
+
+	// ResourceMetadataByPath is the configuration-driven replacement for the
+	// single MCPPath argument. If both are set, the configuration wins —
+	// RegisterProtectedResourceMetadataRoutes already registers all the
+	// configured paths, so a different MCPPath value would be registered
+	// but never preferred over the config entries. Log once so consumers
+	// notice the inconsistency instead of silently ignoring the MCPPath.
+	if opts.MCPPath != "" && len(h.server.Config.ResourceMetadataByPath) > 0 {
+		h.logger.Warn("RegisterOAuthRoutes: MCPPath is set alongside non-empty Config.ResourceMetadataByPath; the configuration map is preferred and MCPPath adds only a back-compat alias route",
+			"mcp_path", opts.MCPPath,
+			"configured_paths", len(h.server.Config.ResourceMetadataByPath),
+		)
+	}
+
+	h.RegisterProtectedResourceMetadataRoutes(mux, opts.MCPPath)
+	h.RegisterAuthorizationServerMetadataRoutes(mux)
+}
+
+// oauthCallbackPath is the provider-callback path. The server's own
+// AuthorizationEndpoint / TokenEndpoint / RegistrationEndpoint / RevocationEndpoint
+// methods all live under /oauth (see server/config.go); callback follows the
+// same convention.
+const oauthCallbackPath = "/oauth/callback"
+
 // RegisterProtectedResourceMetadataRoutes registers all Protected Resource Metadata discovery routes.
 // It registers the root endpoint and optional sub-path endpoints based on configuration.
 //
