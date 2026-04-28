@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **oauthconfig.NewEncryptorFromEnv accepts hex-encoded keys**
+  - `OAUTH_ENCRYPTION_KEY` is now decoded as base64 first (canonical, `openssl rand -base64 32`); on any failure the value is retried as hex (`openssl rand -hex 32`). Reinstates hex support that was dropped in an earlier refactor and broke operators with hex-generated keys.
+  - Additive: existing base64 deployments are unaffected.
+
 ### Fixed
 
 - **Treat email, profile, groups, offline_access as mandatory scopes (#252)**
