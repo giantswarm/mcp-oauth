@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **oauthconfig.LogStartupWarnings helper for AllowInsecureHTTP / AllowPublicClientRegistration**
+  - Centralizes the two `logger.Warn` calls every consumer was rolling after building `*server.Config`. Each warning fires at most once per call and includes the env var name so operators can grep their logs back to the source. Nil-safe for cfg and logger.
+
 ### Fixed
 
 - **Treat email, profile, groups, offline_access as mandatory scopes (#252)**

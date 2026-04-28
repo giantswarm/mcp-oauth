@@ -56,4 +56,11 @@
 // with a caller-supplied prefix (for consumers that scope env vars to their
 // product, e.g. "MUSTER_OAUTH_"). The prefix is applied verbatim — include the
 // trailing underscore if you want one.
+//
+// # Startup warnings
+//
+// [LogStartupWarnings] emits operator-facing slog.Warn calls for
+// security-sensitive flags (AllowInsecureHTTP, AllowPublicClientRegistration)
+// that consumers were previously logging in their own startup code. Call once
+// after FromEnv and before serving requests.
 package oauthconfig
