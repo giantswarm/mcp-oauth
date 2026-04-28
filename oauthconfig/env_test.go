@@ -342,3 +342,40 @@ func TestFromEnv_EmptyTrustedAudiencesOmitted(t *testing.T) {
 		t.Errorf("TrustedAudiences = %v, want empty (whitespace-only entries dropped)", cfg.TrustedAudiences)
 	}
 }
+
+// TestFromEnv_TrustedAudiencesCharset locks down the dex.ValidateAudiences
+// gate added to FromEnv: client-id-shaped entries pass; entries with spaces,
+// scheme separators, or path slashes (i.e. URL-shaped audiences) are
+// rejected at startup so operators don't get a silent SSO break later.
+func TestFromEnv_TrustedAudiencesCharset(t *testing.T) {
+	cases := []struct {
+		name    string
+		raw     string
+		wantErr bool
+	}{
+		{name: "single client-id", raw: "muster-client"},
+		{name: "multiple client-ids", raw: "muster-client, second-aud,a_b-c"},
+		{name: "trailing comma", raw: "muster-client,"},
+		{name: "url-shaped audience rejected", raw: "https://api.example.com", wantErr: true},
+		{name: "audience with space rejected", raw: "muster client", wantErr: true},
+		{name: "audience with colon rejected", raw: "muster:client", wantErr: true},
+		{name: "audience with slash rejected", raw: "muster/client", wantErr: true},
+		{name: "mix of valid and invalid rejects whole list", raw: "muster-client,bad audience", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setRequired(t, "https://auth.example")
+			t.Setenv("OAUTH_TRUSTED_AUDIENCES", tc.raw)
+			_, err := oauthconfig.FromEnv()
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "TRUSTED_AUDIENCES") {
+					t.Fatalf("expected TRUSTED_AUDIENCES error, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("FromEnv: %v", err)
+			}
+		})
+	}
+}

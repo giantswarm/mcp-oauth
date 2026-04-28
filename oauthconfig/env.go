@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/giantswarm/mcp-oauth/providers/dex"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/server"
 )
@@ -87,6 +88,9 @@ func FromEnvWithPrefix(prefix string) (*server.Config, error) {
 
 	if raw := os.Getenv(prefix + "TRUSTED_AUDIENCES"); raw != "" {
 		cfg.TrustedAudiences = splitAndTrim(raw, ",")
+		if err := dex.ValidateAudiences(cfg.TrustedAudiences); err != nil {
+			return nil, fmt.Errorf("%sTRUSTED_AUDIENCES: %w", prefix, err)
+		}
 	}
 
 	return cfg, nil
