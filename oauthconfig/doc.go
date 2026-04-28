@@ -13,7 +13,7 @@
 //   - OAUTH_ALLOW_INSECURE_HTTP               (default false) — permit http:// issuer
 //   - OAUTH_ALLOW_PUBLIC_CLIENT_REGISTRATION  (default false)
 //   - OAUTH_REGISTRATION_ACCESS_TOKEN         — registration bearer; see _FILE note below
-//   - OAUTH_ENCRYPTION_KEY                    — base64 32-byte AES-GCM key
+//   - OAUTH_ENCRYPTION_KEY                    — 32-byte AES-GCM key, base64 (preferred) or hex
 //   - OAUTH_SESSION_ID_HMAC_KEY               — base64 32-byte HMAC key
 //     (see server.Config.SessionIDHMACKey for the operator caveat)
 //   - OAUTH_ACCESS_TOKEN_TTL                  — Go duration (e.g. "1h")
@@ -21,6 +21,9 @@
 //   - OAUTH_MAX_CLIENTS_PER_IP                — positive integer
 //   - OAUTH_TRUST_PROXY                       (default false)
 //   - OAUTH_TRUSTED_AUDIENCES                 — comma-separated audience list
+//   - OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS     (default false) — RFC 8252 native-app loopback support
+//   - OAUTH_TRUSTED_REDIRECT_SCHEMES          — comma-separated URI schemes (e.g. "cursor,vscode")
+//     populates server.Config.TrustedPublicRegistrationSchemes
 //
 // Defaults are not applied in this package. [FromEnv] only populates the
 // fields it reads; server.New runs applyDefaults afterwards and is the single
@@ -42,13 +45,19 @@
 // identifiers are not secrets. The asymmetry is intentional; the list lives in
 // deployment configuration (Helm values / ConfigMap) rather than in a Secret.
 //
-// # OAUTH_TRUSTED_AUDIENCES limitation
+// # OAUTH_TRUSTED_AUDIENCES charset and limits
 //
-// The value is split on literal commas. RFC 8707 audiences are URIs and URIs
-// should not contain literal commas, so this is safe in practice. Callers with
-// audiences containing commas for some other reason must populate
-// oauth.Config.TrustedAudiences programmatically instead of relying on this
-// loader.
+// The value is split on literal commas, then each non-empty entry is validated
+// through dex.ValidateAudiences. Allowed characters are [a-zA-Z0-9_-]; the
+// per-entry length cap is 256 characters and the total list cap is 50.
+// FromEnv returns an error at startup if any entry violates these rules.
+//
+// This charset matches the Dex cross-client audience scope namespace
+// (`audience:server:client_id:<id>`), which is the only context in which
+// TrustedAudiences is currently consumed in production. Operators with
+// URL-shaped audiences (RFC 8707) or other non-conforming values must
+// populate oauth.Config.TrustedAudiences programmatically instead of relying
+// on this loader.
 //
 // # FromEnv vs FromEnvWithPrefix
 //
