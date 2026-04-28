@@ -48,6 +48,8 @@ func setRequired(t *testing.T, issuer string) {
 		"OAUTH_SESSION_ID_HMAC_KEY",
 		"OAUTH_SESSION_ID_HMAC_KEY_FILE",
 		"OAUTH_TRUSTED_AUDIENCES",
+		"OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS",
+		"OAUTH_TRUSTED_REDIRECT_SCHEMES",
 	} {
 		t.Setenv(v, "")
 	}
@@ -67,6 +69,8 @@ func TestFromEnv_HappyPath(t *testing.T) {
 	t.Setenv("OAUTH_ENCRYPTION_KEY", validKeyB64)
 	t.Setenv("OAUTH_SESSION_ID_HMAC_KEY", validKeyB64)
 	t.Setenv("OAUTH_TRUSTED_AUDIENCES", "muster-client, second-aud ,")
+	t.Setenv("OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS", "true")
+	t.Setenv("OAUTH_TRUSTED_REDIRECT_SCHEMES", "cursor, vscode ,, vscode-insiders")
 
 	cfg, err := oauthconfig.FromEnv()
 	if err != nil {
@@ -99,6 +103,13 @@ func TestFromEnv_HappyPath(t *testing.T) {
 	want := []string{"muster-client", "second-aud"}
 	if !reflect.DeepEqual(cfg.TrustedAudiences, want) {
 		t.Errorf("TrustedAudiences = %v, want %v", cfg.TrustedAudiences, want)
+	}
+	if !cfg.AllowLocalhostRedirectURIs {
+		t.Errorf("AllowLocalhostRedirectURIs = false")
+	}
+	wantSchemes := []string{"cursor", "vscode", "vscode-insiders"}
+	if !reflect.DeepEqual(cfg.TrustedPublicRegistrationSchemes, wantSchemes) {
+		t.Errorf("TrustedPublicRegistrationSchemes = %v, want %v", cfg.TrustedPublicRegistrationSchemes, wantSchemes)
 	}
 }
 
@@ -271,6 +282,8 @@ func TestFromEnvWithPrefix(t *testing.T) {
 	setRequired(t, "")
 	t.Setenv("MUSTER_OAUTH_ISSUER", "https://muster.example")
 	t.Setenv("MUSTER_OAUTH_TRUSTED_AUDIENCES", "agentcore-runtime")
+	t.Setenv("MUSTER_OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS", "true")
+	t.Setenv("MUSTER_OAUTH_TRUSTED_REDIRECT_SCHEMES", "cursor")
 
 	cfg, err := oauthconfig.FromEnvWithPrefix("MUSTER_OAUTH_")
 	if err != nil {
@@ -281,6 +294,12 @@ func TestFromEnvWithPrefix(t *testing.T) {
 	}
 	if want := []string{"agentcore-runtime"}; !reflect.DeepEqual(cfg.TrustedAudiences, want) {
 		t.Errorf("TrustedAudiences = %v, want %v", cfg.TrustedAudiences, want)
+	}
+	if !cfg.AllowLocalhostRedirectURIs {
+		t.Errorf("AllowLocalhostRedirectURIs = false")
+	}
+	if want := []string{"cursor"}; !reflect.DeepEqual(cfg.TrustedPublicRegistrationSchemes, want) {
+		t.Errorf("TrustedPublicRegistrationSchemes = %v, want %v", cfg.TrustedPublicRegistrationSchemes, want)
 	}
 }
 
@@ -340,5 +359,27 @@ func TestFromEnv_EmptyTrustedAudiencesOmitted(t *testing.T) {
 	}
 	if len(cfg.TrustedAudiences) != 0 {
 		t.Errorf("TrustedAudiences = %v, want empty (whitespace-only entries dropped)", cfg.TrustedAudiences)
+	}
+}
+
+func TestFromEnv_BadAllowLocalhostRedirectURIs(t *testing.T) {
+	setRequired(t, "https://auth.example")
+	t.Setenv("OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS", "maybe")
+	_, err := oauthconfig.FromEnv()
+	if err == nil || !strings.Contains(err.Error(), "ALLOW_LOCALHOST_REDIRECT_URIS") {
+		t.Fatalf("expected bool parse error on ALLOW_LOCALHOST_REDIRECT_URIS, got %v", err)
+	}
+}
+
+func TestFromEnv_EmptyTrustedRedirectSchemesOmitted(t *testing.T) {
+	setRequired(t, "https://auth.example")
+	t.Setenv("OAUTH_TRUSTED_REDIRECT_SCHEMES", "  , , ")
+
+	cfg, err := oauthconfig.FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if len(cfg.TrustedPublicRegistrationSchemes) != 0 {
+		t.Errorf("TrustedPublicRegistrationSchemes = %v, want empty (whitespace-only entries dropped)", cfg.TrustedPublicRegistrationSchemes)
 	}
 }

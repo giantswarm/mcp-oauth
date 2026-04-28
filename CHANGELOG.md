@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **oauthconfig.FromEnv: cover `AllowLocalhostRedirectURIs` and `TrustedPublicRegistrationSchemes`**
+  - New `OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS` (bool) and `OAUTH_TRUSTED_REDIRECT_SCHEMES` (comma-separated) env vars are now read by `FromEnv` / `FromEnvWithPrefix`. `OAUTH_TRUSTED_REDIRECT_SCHEMES` populates `server.Config.TrustedPublicRegistrationSchemes`.
+  - Removes the need for downstream consumers (mcp-observability-platform, muster, mcp-prometheus) to set `srvCfg.AllowLocalhostRedirectURIs = true` and `srvCfg.TrustedPublicRegistrationSchemes = []string{...}` manually after `FromEnv()`.
+
 ### Fixed
 
 - **Treat email, profile, groups, offline_access as mandatory scopes (#252)**
