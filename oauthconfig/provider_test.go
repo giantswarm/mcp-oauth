@@ -8,6 +8,11 @@ import (
 	"github.com/giantswarm/mcp-oauth/providers"
 )
 
+// githubProviderName is providers.Provider.Name() for the GitHub provider.
+// Constant exists to satisfy goconst (the literal "github" appears in several
+// Setenv / Name() assertions across tests in this file).
+const githubProviderName = "github"
+
 // clearProviderEnv zeroes every provider-related var this package reads.
 // Per-test t.Setenv calls then re-populate what each test actually exercises.
 // OAUTH_ISSUER is included because DexFromEnv falls back to it for
@@ -212,8 +217,8 @@ func TestGitHubFromEnv_Happy(t *testing.T) {
 	if p == nil {
 		t.Fatal("nil provider")
 	}
-	if p.Name() != "github" {
-		t.Errorf("Name() = %q, want github", p.Name())
+	if p.Name() != githubProviderName {
+		t.Errorf("Name() = %q, want %s", p.Name(), githubProviderName)
 	}
 	// GitHub is OAuth-only — IssuerOf must return "".
 	if got := providers.IssuerOf(p); got != "" {
@@ -283,7 +288,7 @@ func TestProviderFromEnv_DispatchesToGoogle(t *testing.T) {
 
 func TestProviderFromEnv_DispatchesToGitHub(t *testing.T) {
 	clearProviderEnv(t)
-	t.Setenv("OAUTH_PROVIDER", "github")
+	t.Setenv("OAUTH_PROVIDER", githubProviderName)
 	t.Setenv("OAUTH_GITHUB_CLIENT_ID", "ghid")
 	t.Setenv("OAUTH_GITHUB_CLIENT_SECRET", "ghsecret")
 	t.Setenv("OAUTH_GITHUB_REDIRECT_URL", "https://app.example/callback")
@@ -292,8 +297,8 @@ func TestProviderFromEnv_DispatchesToGitHub(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProviderFromEnv: %v", err)
 	}
-	if p.Name() != "github" {
-		t.Errorf("Name() = %q, want github", p.Name())
+	if p.Name() != githubProviderName {
+		t.Errorf("Name() = %q, want %s", p.Name(), githubProviderName)
 	}
 }
 
@@ -311,7 +316,7 @@ func TestProviderFromEnv_DispatchesToDex_ParsesBeforeNetwork(t *testing.T) {
 
 func TestProviderFromEnv_WithPrefix(t *testing.T) {
 	clearProviderEnv(t)
-	t.Setenv("MUSTER_PROVIDER", "github")
+	t.Setenv("MUSTER_PROVIDER", githubProviderName)
 	t.Setenv("MUSTER_GITHUB_CLIENT_ID", "ghid")
 	t.Setenv("MUSTER_GITHUB_CLIENT_SECRET", "ghsecret")
 	t.Setenv("MUSTER_GITHUB_REDIRECT_URL", "https://app.example/callback")
@@ -320,8 +325,8 @@ func TestProviderFromEnv_WithPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProviderFromEnvWithPrefix: %v", err)
 	}
-	if p.Name() != "github" {
-		t.Errorf("Name() = %q, want github", p.Name())
+	if p.Name() != githubProviderName {
+		t.Errorf("Name() = %q, want %s", p.Name(), githubProviderName)
 	}
 }
 
