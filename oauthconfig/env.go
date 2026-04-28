@@ -89,6 +89,15 @@ func FromEnvWithPrefix(prefix string) (*server.Config, error) {
 		cfg.TrustedAudiences = splitAndTrim(raw, ",")
 	}
 
+	cfg.AllowLocalhostRedirectURIs, err = optionalBool(prefix+"ALLOW_LOCALHOST_REDIRECT_URIS", false)
+	if err != nil {
+		return nil, err
+	}
+
+	if raw := os.Getenv(prefix + "TRUSTED_REDIRECT_SCHEMES"); raw != "" {
+		cfg.TrustedPublicRegistrationSchemes = splitAndTrim(raw, ",")
+	}
+
 	return cfg, nil
 }
 
