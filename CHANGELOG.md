@@ -13,6 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Each entry is now passed through `dex.ValidateAudiences`. Allowed charset is `[a-zA-Z0-9_-]` (per-entry max 256 chars, list max 50). Malformed values fail loudly at startup instead of silently failing token-acceptance later.
   - **Behaviour change**: URL-shaped audiences (e.g. `https://api.example.com`) are rejected. The package documented RFC 8707 URI audiences previously; in practice all in-tree consumers use Dex client-id-shaped audiences. Operators with URL-shaped audiences must populate `oauth.Config.TrustedAudiences` programmatically rather than via env.
 
+### Added
+
+- **oauthconfig.NewEncryptorFromEnv accepts hex-encoded keys**
+  - `OAUTH_ENCRYPTION_KEY` is now decoded as base64 first (canonical, `openssl rand -base64 32`); on any failure the value is retried as hex (`openssl rand -hex 32`). Reinstates hex support that was dropped in an earlier refactor and broke operators with hex-generated keys.
+  - Additive: existing base64 deployments are unaffected.
+- **oauthconfig.FromEnv: cover `AllowLocalhostRedirectURIs` and `TrustedPublicRegistrationSchemes`**
+  - New `OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS` (bool) and `OAUTH_TRUSTED_REDIRECT_SCHEMES` (comma-separated) env vars are now read by `FromEnv` / `FromEnvWithPrefix`. `OAUTH_TRUSTED_REDIRECT_SCHEMES` populates `server.Config.TrustedPublicRegistrationSchemes`.
+  - Removes the need for downstream consumers (mcp-observability-platform, muster, mcp-prometheus) to set `srvCfg.AllowLocalhostRedirectURIs = true` and `srvCfg.TrustedPublicRegistrationSchemes = []string{...}` manually after `FromEnv()`.
+
 ### Fixed
 
 - **Treat email, profile, groups, offline_access as mandatory scopes (#252)**

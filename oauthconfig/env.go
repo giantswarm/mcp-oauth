@@ -93,6 +93,15 @@ func FromEnvWithPrefix(prefix string) (*server.Config, error) {
 		}
 	}
 
+	cfg.AllowLocalhostRedirectURIs, err = optionalBool(prefix+"ALLOW_LOCALHOST_REDIRECT_URIS", false)
+	if err != nil {
+		return nil, err
+	}
+
+	if raw := os.Getenv(prefix + "TRUSTED_REDIRECT_SCHEMES"); raw != "" {
+		cfg.TrustedPublicRegistrationSchemes = splitAndTrim(raw, ",")
+	}
+
 	return cfg, nil
 }
 
@@ -152,9 +161,14 @@ func loadSessionIDHMACKey(prefix string, cfg *server.Config) error {
 }
 
 // NewEncryptorFromEnv reads OAUTH_ENCRYPTION_KEY (or OAUTH_ENCRYPTION_KEY_FILE)
-// as a base64-encoded 32-byte AES-GCM key and returns a *security.Encryptor
-// ready to pass to server.SetEncryptor. Returns (nil, nil) when no key is
-// configured — callers can decide whether to require encryption.
+// as a 32-byte AES-GCM key and returns a *security.Encryptor ready to pass to
+// server.SetEncryptor. Returns (nil, nil) when no key is configured — callers
+// can decide whether to require encryption.
+//
+// The key may be encoded as either base64 (canonical, produced by
+// `openssl rand -base64 32`) or hex (`openssl rand -hex 32`). Base64 is tried
+// first; on any failure (decode error or wrong length) the value is retried as
+// hex. base64 is the recommended form.
 //
 // Separate from [FromEnv] because token-at-rest encryption is wired via
 // server.SetEncryptor after server construction, not through *server.Config.
@@ -165,18 +179,39 @@ func NewEncryptorFromEnv() (*security.Encryptor, error) {
 // NewEncryptorFromEnvWithPrefix is [NewEncryptorFromEnv] with a caller-supplied
 // prefix. See [FromEnvWithPrefix] for the convention.
 func NewEncryptorFromEnvWithPrefix(prefix string) (*security.Encryptor, error) {
-	encB64, err := optionalSecret(prefix + "ENCRYPTION_KEY")
+	raw, err := optionalSecret(prefix + "ENCRYPTION_KEY")
 	if err != nil {
 		return nil, err
 	}
-	if encB64 == "" {
+	if raw == "" {
 		return nil, nil
 	}
-	key, err := security.KeyFromBase64(encB64)
+	key, err := decodeSymmetricKey(raw)
 	if err != nil {
 		return nil, fmt.Errorf("%sENCRYPTION_KEY: %w", prefix, err)
 	}
 	return security.NewEncryptor(key)
+}
+
+// decodeSymmetricKey decodes a 32-byte symmetric key from either base64 (the
+// canonical form produced by `openssl rand -base64 32`) or hex
+// (`openssl rand -hex 32`). Base64 is attempted first; on any failure — bad
+// charset OR a decoded length other than 32 — the value is retried as hex.
+//
+// The fallback exists because the previous loader accepted only base64, and
+// dropping hex support broke operators who had generated keys with
+// `openssl rand -hex 32`. The two encodings have disjoint shapes when the
+// underlying key really is 32 bytes (base64 → 44 chars with `=` padding;
+// hex → 64 chars [0-9a-f]), so the order is unambiguous in practice.
+func decodeSymmetricKey(s string) ([]byte, error) {
+	if key, err := security.KeyFromBase64(s); err == nil {
+		return key, nil
+	}
+	key, err := security.KeyFromHex(s)
+	if err != nil {
+		return nil, fmt.Errorf("expected base64 or hex 32-byte key: %w", err)
+	}
+	return key, nil
 }
 
 // requireString returns os.Getenv(name) or an error if empty.
