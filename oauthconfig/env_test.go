@@ -2,6 +2,7 @@ package oauthconfig_test
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,6 +16,10 @@ import (
 // security.KeyFromBase64 requires for both ENCRYPTION_KEY and
 // SESSION_ID_HMAC_KEY.
 var validKeyB64 = base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+
+// validKeyHex is the same 32-byte key encoded as hex — the form produced by
+// `openssl rand -hex 32`. NewEncryptorFromEnv accepts both encodings.
+var validKeyHex = hex.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
 
 // writeSecretFile writes v to a temp file and returns its path. The file is
 // cleaned up automatically at test end via t.TempDir.
@@ -48,6 +53,8 @@ func setRequired(t *testing.T, issuer string) {
 		"OAUTH_SESSION_ID_HMAC_KEY",
 		"OAUTH_SESSION_ID_HMAC_KEY_FILE",
 		"OAUTH_TRUSTED_AUDIENCES",
+		"OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS",
+		"OAUTH_TRUSTED_REDIRECT_SCHEMES",
 	} {
 		t.Setenv(v, "")
 	}
@@ -67,6 +74,8 @@ func TestFromEnv_HappyPath(t *testing.T) {
 	t.Setenv("OAUTH_ENCRYPTION_KEY", validKeyB64)
 	t.Setenv("OAUTH_SESSION_ID_HMAC_KEY", validKeyB64)
 	t.Setenv("OAUTH_TRUSTED_AUDIENCES", "muster-client, second-aud ,")
+	t.Setenv("OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS", "true")
+	t.Setenv("OAUTH_TRUSTED_REDIRECT_SCHEMES", "cursor, vscode ,, vscode-insiders")
 
 	cfg, err := oauthconfig.FromEnv()
 	if err != nil {
@@ -99,6 +108,13 @@ func TestFromEnv_HappyPath(t *testing.T) {
 	want := []string{"muster-client", "second-aud"}
 	if !reflect.DeepEqual(cfg.TrustedAudiences, want) {
 		t.Errorf("TrustedAudiences = %v, want %v", cfg.TrustedAudiences, want)
+	}
+	if !cfg.AllowLocalhostRedirectURIs {
+		t.Errorf("AllowLocalhostRedirectURIs = false")
+	}
+	wantSchemes := []string{"cursor", "vscode", "vscode-insiders"}
+	if !reflect.DeepEqual(cfg.TrustedPublicRegistrationSchemes, wantSchemes) {
+		t.Errorf("TrustedPublicRegistrationSchemes = %v, want %v", cfg.TrustedPublicRegistrationSchemes, wantSchemes)
 	}
 }
 
@@ -271,6 +287,8 @@ func TestFromEnvWithPrefix(t *testing.T) {
 	setRequired(t, "")
 	t.Setenv("MUSTER_OAUTH_ISSUER", "https://muster.example")
 	t.Setenv("MUSTER_OAUTH_TRUSTED_AUDIENCES", "agentcore-runtime")
+	t.Setenv("MUSTER_OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS", "true")
+	t.Setenv("MUSTER_OAUTH_TRUSTED_REDIRECT_SCHEMES", "cursor")
 
 	cfg, err := oauthconfig.FromEnvWithPrefix("MUSTER_OAUTH_")
 	if err != nil {
@@ -281,6 +299,12 @@ func TestFromEnvWithPrefix(t *testing.T) {
 	}
 	if want := []string{"agentcore-runtime"}; !reflect.DeepEqual(cfg.TrustedAudiences, want) {
 		t.Errorf("TrustedAudiences = %v, want %v", cfg.TrustedAudiences, want)
+	}
+	if !cfg.AllowLocalhostRedirectURIs {
+		t.Errorf("AllowLocalhostRedirectURIs = false")
+	}
+	if want := []string{"cursor"}; !reflect.DeepEqual(cfg.TrustedPublicRegistrationSchemes, want) {
+		t.Errorf("TrustedPublicRegistrationSchemes = %v, want %v", cfg.TrustedPublicRegistrationSchemes, want)
 	}
 }
 
@@ -320,14 +344,64 @@ func TestNewEncryptorFromEnv(t *testing.T) {
 		}
 	})
 
-	t.Run("bad-base64", func(t *testing.T) {
+	t.Run("bad-encoding", func(t *testing.T) {
 		setRequired(t, "")
 		t.Setenv("OAUTH_ENCRYPTION_KEY", "not-base64-!!")
 		_, err := oauthconfig.NewEncryptorFromEnv()
 		if err == nil || !strings.Contains(err.Error(), "ENCRYPTION_KEY") {
-			t.Fatalf("expected base64 error, got %v", err)
+			t.Fatalf("expected ENCRYPTION_KEY decode error, got %v", err)
 		}
 	})
+}
+
+// TestNewEncryptorFromEnv_KeyEncodings exercises the base64/hex acceptance
+// matrix introduced when hex support was reinstated. Operators historically
+// generated keys with `openssl rand -hex 32`; dropping hex broke those
+// deployments. Base64 stays canonical (and is tried first), hex is the
+// documented fallback.
+func TestNewEncryptorFromEnv_KeyEncodings(t *testing.T) {
+	tooShortB64 := base64.StdEncoding.EncodeToString([]byte("too-short"))
+	tooShortHex := hex.EncodeToString([]byte("too-short"))
+
+	cases := []struct {
+		name    string
+		envKey  string
+		fileKey string
+		wantErr bool
+		wantEnc bool
+	}{
+		{name: "base64", envKey: validKeyB64, wantEnc: true},
+		{name: "hex", envKey: validKeyHex, wantEnc: true},
+		{name: "base64 via _FILE", fileKey: validKeyB64 + "\n", wantEnc: true},
+		{name: "hex via _FILE", fileKey: validKeyHex + "\n", wantEnc: true},
+		{name: "neither base64 nor hex rejected", envKey: "definitely-neither-!!", wantErr: true},
+		{name: "wrong-length base64 rejected", envKey: tooShortB64, wantErr: true},
+		{name: "wrong-length hex rejected", envKey: tooShortHex, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setRequired(t, "")
+			if tc.envKey != "" {
+				t.Setenv("OAUTH_ENCRYPTION_KEY", tc.envKey)
+			}
+			if tc.fileKey != "" {
+				t.Setenv("OAUTH_ENCRYPTION_KEY_FILE", writeSecretFile(t, tc.fileKey))
+			}
+			enc, err := oauthconfig.NewEncryptorFromEnv()
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "ENCRYPTION_KEY") {
+					t.Fatalf("expected ENCRYPTION_KEY error, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("NewEncryptorFromEnv: %v", err)
+			}
+			if tc.wantEnc && enc == nil {
+				t.Fatal("expected non-nil Encryptor")
+			}
+		})
+	}
 }
 
 func TestFromEnv_EmptyTrustedAudiencesOmitted(t *testing.T) {
@@ -340,5 +414,64 @@ func TestFromEnv_EmptyTrustedAudiencesOmitted(t *testing.T) {
 	}
 	if len(cfg.TrustedAudiences) != 0 {
 		t.Errorf("TrustedAudiences = %v, want empty (whitespace-only entries dropped)", cfg.TrustedAudiences)
+	}
+}
+
+// TestFromEnv_TrustedAudiencesCharset locks down the dex.ValidateAudiences
+// gate added to FromEnv: client-id-shaped entries pass; entries with spaces,
+// scheme separators, or path slashes (i.e. URL-shaped audiences) are
+// rejected at startup so operators don't get a silent SSO break later.
+func TestFromEnv_TrustedAudiencesCharset(t *testing.T) {
+	cases := []struct {
+		name    string
+		raw     string
+		wantErr bool
+	}{
+		{name: "single client-id", raw: "muster-client"},
+		{name: "multiple client-ids", raw: "muster-client, second-aud,a_b-c"},
+		{name: "trailing comma", raw: "muster-client,"},
+		{name: "url-shaped audience rejected", raw: "https://api.example.com", wantErr: true},
+		{name: "audience with space rejected", raw: "muster client", wantErr: true},
+		{name: "audience with colon rejected", raw: "muster:client", wantErr: true},
+		{name: "audience with slash rejected", raw: "muster/client", wantErr: true},
+		{name: "mix of valid and invalid rejects whole list", raw: "muster-client,bad audience", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setRequired(t, "https://auth.example")
+			t.Setenv("OAUTH_TRUSTED_AUDIENCES", tc.raw)
+			_, err := oauthconfig.FromEnv()
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "TRUSTED_AUDIENCES") {
+					t.Fatalf("expected TRUSTED_AUDIENCES error, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("FromEnv: %v", err)
+			}
+		})
+	}
+}
+
+func TestFromEnv_BadAllowLocalhostRedirectURIs(t *testing.T) {
+	setRequired(t, "https://auth.example")
+	t.Setenv("OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS", "maybe")
+	_, err := oauthconfig.FromEnv()
+	if err == nil || !strings.Contains(err.Error(), "ALLOW_LOCALHOST_REDIRECT_URIS") {
+		t.Fatalf("expected bool parse error on ALLOW_LOCALHOST_REDIRECT_URIS, got %v", err)
+	}
+}
+
+func TestFromEnv_EmptyTrustedRedirectSchemesOmitted(t *testing.T) {
+	setRequired(t, "https://auth.example")
+	t.Setenv("OAUTH_TRUSTED_REDIRECT_SCHEMES", "  , , ")
+
+	cfg, err := oauthconfig.FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if len(cfg.TrustedPublicRegistrationSchemes) != 0 {
+		t.Errorf("TrustedPublicRegistrationSchemes = %v, want empty (whitespace-only entries dropped)", cfg.TrustedPublicRegistrationSchemes)
 	}
 }
