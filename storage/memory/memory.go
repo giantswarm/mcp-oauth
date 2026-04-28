@@ -1386,7 +1386,7 @@ func (s *Store) startStorageSpan(ctx context.Context, operation string) (context
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(
 			attribute.String("operation", operation),
-			attribute.String("storage.backend", "memory"),
+			attribute.String("storage.backend", storage.BackendMemory),
 		))
 
 	return ctx, span

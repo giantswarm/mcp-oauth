@@ -1,8 +1,10 @@
 package security
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"io"
 	"testing"
 )
@@ -36,6 +38,13 @@ func TestGenerateKey(t *testing.T) {
 }
 
 func TestNewEncryptor(t *testing.T) {
+	// Use a real random key for the valid case — 32 zero bytes now (correctly)
+	// fails the entropy check, so we can't use make([]byte, 32) any more.
+	randKey := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, randKey); err != nil {
+		t.Fatalf("failed to generate random key: %v", err)
+	}
+
 	tests := []struct {
 		name       string
 		key        []byte
@@ -43,8 +52,8 @@ func TestNewEncryptor(t *testing.T) {
 		wantEnable bool
 	}{
 		{
-			name:       "valid 32-byte key",
-			key:        make([]byte, 32),
+			name:       "valid random 32-byte key",
+			key:        randKey,
 			wantErr:    false,
 			wantEnable: true,
 		},
@@ -69,6 +78,21 @@ func TestNewEncryptor(t *testing.T) {
 		{
 			name:       "invalid key length (64 bytes)",
 			key:        make([]byte, 64),
+			wantErr:    true,
+			wantEnable: false,
+		},
+		{
+			// Catches copy-paste failure modes: all-zeros placeholder
+			// written into a secret manager, accidentally-left-default.
+			name:       "low-entropy key (32 zero bytes)",
+			key:        make([]byte, 32),
+			wantErr:    true,
+			wantEnable: false,
+		},
+		{
+			// ASCII placeholder like "aaaa…" — 0 entropy, passes length.
+			name:       "low-entropy key (32 'a' bytes)",
+			key:        bytes.Repeat([]byte{'a'}, 32),
 			wantErr:    true,
 			wantEnable: false,
 		},
@@ -332,6 +356,47 @@ func TestKeyToBase64(t *testing.T) {
 	}
 }
 
+func TestKeyFromHex(t *testing.T) {
+	key, err := GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+
+	encoded := KeyToHex(key)
+	if len(encoded) != 64 {
+		t.Errorf("KeyToHex() returned %d chars, want 64", len(encoded))
+	}
+
+	decoded, err := KeyFromHex(encoded)
+	if err != nil {
+		t.Fatalf("KeyFromHex() error = %v", err)
+	}
+	if !bytes.Equal(decoded, key) {
+		t.Errorf("KeyFromHex() round-trip mismatch")
+	}
+}
+
+func TestKeyFromHex_Invalid(t *testing.T) {
+	tests := []struct {
+		name    string
+		encoded string
+	}{
+		{"non-hex chars", "zz" + bytesToHex(make([]byte, 31))},
+		{"wrong length (short)", hex.EncodeToString(make([]byte, 16))},
+		{"wrong length (long)", hex.EncodeToString(make([]byte, 48))},
+		{"empty", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := KeyFromHex(tt.encoded); err == nil {
+				t.Errorf("KeyFromHex(%q) succeeded, want error", tt.encoded)
+			}
+		})
+	}
+}
+
+func bytesToHex(b []byte) string { return hex.EncodeToString(b) }
+
 func TestEncryptionFormat(t *testing.T) {
 	key := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, key); err != nil {
@@ -435,4 +500,79 @@ func TestNonceUniqueness(t *testing.T) {
 	if nonceEqual {
 		t.Error("Encrypt() generated identical nonces - CRITICAL SECURITY ISSUE")
 	}
+}
+
+func TestValidateKeyEntropy(t *testing.T) {
+	// Use a real random key for the happy case (fixed — deterministic test).
+	random32 := []byte{
+		0x3f, 0xa9, 0x17, 0x4d, 0xe2, 0x0c, 0x5b, 0x71,
+		0x8e, 0x24, 0xc7, 0x93, 0x06, 0xf8, 0xab, 0x62,
+		0x19, 0x5d, 0x7e, 0xa0, 0x4b, 0xcf, 0x38, 0x82,
+		0x1c, 0x65, 0xd4, 0x0f, 0x97, 0x2b, 0xe6, 0x51,
+	}
+
+	// 16 distinct bytes repeated to length 32 — sits exactly on the threshold.
+	exactly16Distinct := make([]byte, 32)
+	for i := range 16 {
+		exactly16Distinct[i] = byte(i)
+		exactly16Distinct[i+16] = byte(i)
+	}
+
+	// 15 distinct bytes — one short of the threshold.
+	fifteenDistinct := make([]byte, 32)
+	for i := range fifteenDistinct {
+		fifteenDistinct[i] = byte(i % 15)
+	}
+
+	tests := []struct {
+		name    string
+		key     []byte
+		wantErr bool
+	}{
+		{"empty (opt-out of encryption)", nil, false},
+		{"random 32 bytes", random32, false},
+		{"32 zero bytes", make([]byte, 32), true},
+		{"32 0xff bytes", bytes.Repeat([]byte{0xff}, 32), true},
+		{"32 'a' bytes (ascii placeholder)", bytes.Repeat([]byte{'a'}, 32), true},
+		{"alternating two bytes 0xAB/0xCD", bytes.Repeat([]byte{0xAB, 0xCD}, 16), true},
+		{"15 distinct bytes (below threshold)", fifteenDistinct, true},
+		{"exactly 16 distinct bytes (at threshold)", exactly16Distinct, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateKeyEntropy(tt.key)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateKeyEntropy() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestDistinctBytes(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []byte
+		want int
+	}{
+		{"empty", nil, 0},
+		{"single byte", []byte{0x42}, 1},
+		{"all same byte", bytes.Repeat([]byte{0xab}, 100), 1},
+		{"two values", append(bytes.Repeat([]byte{0}, 50), bytes.Repeat([]byte{1}, 50)...), 2},
+		{"full alphabet once each", fullByteAlphabet(), 256},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := distinctBytes(tt.in); got != tt.want {
+				t.Errorf("distinctBytes = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func fullByteAlphabet() []byte {
+	b := make([]byte, 256)
+	for i := range b {
+		b[i] = byte(i)
+	}
+	return b
 }
