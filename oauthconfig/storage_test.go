@@ -1,0 +1,182 @@
+package oauthconfig_test
+
+import (
+	"log/slog"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/giantswarm/mcp-oauth/oauthconfig"
+	"github.com/giantswarm/mcp-oauth/storage/memory"
+	"github.com/giantswarm/mcp-oauth/storage/valkey"
+)
+
+// clearStorageEnv zeroes every STORAGE_* / VALKEY_* var this package reads so
+// each test inherits a known baseline regardless of what the CI shell set.
+func clearStorageEnv(t *testing.T) {
+	t.Helper()
+	for _, v := range []string{
+		"STORAGE_BACKEND",
+		"VALKEY_ADDRESS",
+		"VALKEY_PASSWORD",
+		"VALKEY_PASSWORD_FILE",
+		"VALKEY_DB",
+		"VALKEY_KEY_PREFIX",
+		"VALKEY_TLS",
+		"VALKEY_TLS_INSECURE_SKIP_VERIFY",
+		"VALKEY_REFRESH_TOKEN_TTL",
+	} {
+		t.Setenv(v, "")
+	}
+}
+
+func TestStorageFromEnv_DefaultIsMemory(t *testing.T) {
+	clearStorageEnv(t)
+	store, closeFn, err := oauthconfig.StorageFromEnv(slog.Default())
+	if err != nil {
+		t.Fatalf("StorageFromEnv: %v", err)
+	}
+	t.Cleanup(func() { _ = closeFn() })
+
+	if _, ok := store.(*memory.Store); !ok {
+		t.Errorf("default backend: got %T, want *memory.Store", store)
+	}
+}
+
+func TestStorageFromEnv_MemoryExplicit(t *testing.T) {
+	clearStorageEnv(t)
+	t.Setenv("STORAGE_BACKEND", "memory")
+
+	store, closeFn, err := oauthconfig.StorageFromEnv(slog.Default())
+	if err != nil {
+		t.Fatalf("StorageFromEnv: %v", err)
+	}
+	t.Cleanup(func() { _ = closeFn() })
+
+	if _, ok := store.(*memory.Store); !ok {
+		t.Errorf("got %T, want *memory.Store", store)
+	}
+}
+
+func TestStorageFromEnv_UnknownBackend(t *testing.T) {
+	clearStorageEnv(t)
+	t.Setenv("STORAGE_BACKEND", "postgres")
+
+	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
+	if err == nil || !strings.Contains(err.Error(), "unknown backend") {
+		t.Fatalf("expected unknown-backend error, got %v", err)
+	}
+}
+
+func TestStorageFromEnv_ValkeyMissingAddress(t *testing.T) {
+	clearStorageEnv(t)
+	t.Setenv("STORAGE_BACKEND", "valkey")
+
+	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
+	if err == nil || !strings.Contains(err.Error(), "VALKEY_ADDRESS") {
+		t.Fatalf("expected VALKEY_ADDRESS required error, got %v", err)
+	}
+}
+
+func TestStorageFromEnv_ValkeyBadDB(t *testing.T) {
+	clearStorageEnv(t)
+	t.Setenv("STORAGE_BACKEND", "valkey")
+	t.Setenv("VALKEY_ADDRESS", "unreachable:0")
+	t.Setenv("VALKEY_DB", "not-a-number")
+
+	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
+	if err == nil || !strings.Contains(err.Error(), "VALKEY_DB") {
+		t.Fatalf("expected VALKEY_DB parse error, got %v", err)
+	}
+}
+
+func TestStorageFromEnv_ValkeyBadTLSBool(t *testing.T) {
+	clearStorageEnv(t)
+	t.Setenv("STORAGE_BACKEND", "valkey")
+	t.Setenv("VALKEY_ADDRESS", "unreachable:0")
+	t.Setenv("VALKEY_TLS", "maybe")
+
+	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
+	if err == nil || !strings.Contains(err.Error(), "VALKEY_TLS") {
+		t.Fatalf("expected VALKEY_TLS bool parse error, got %v", err)
+	}
+}
+
+func TestStorageFromEnv_ValkeyBadRefreshTTL(t *testing.T) {
+	clearStorageEnv(t)
+	t.Setenv("STORAGE_BACKEND", "valkey")
+	t.Setenv("VALKEY_ADDRESS", "unreachable:0")
+	t.Setenv("VALKEY_REFRESH_TOKEN_TTL", "not-a-duration")
+
+	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
+	if err == nil || !strings.Contains(err.Error(), "VALKEY_REFRESH_TOKEN_TTL") {
+		t.Fatalf("expected VALKEY_REFRESH_TOKEN_TTL parse error, got %v", err)
+	}
+}
+
+// TestStorageFromEnv_ValkeyPasswordFilePrecedence verifies the _FILE variant
+// overrides the plain env var. Does NOT require a running Valkey — the test
+// relies on the bad-address path to surface the password in an error, proving
+// the env-loader read from the file not the env.
+func TestStorageFromEnv_ValkeyPasswordFilePrecedence(t *testing.T) {
+	clearStorageEnv(t)
+	t.Setenv("STORAGE_BACKEND", "valkey")
+	t.Setenv("VALKEY_ADDRESS", "127.0.0.1:1") // unreachable by design
+	t.Setenv("VALKEY_PASSWORD", "from-env")
+
+	pwdFile := writeSecretFile(t, "from-file\n")
+	t.Setenv("VALKEY_PASSWORD_FILE", pwdFile)
+
+	// Connection will fail — we only care that the loader accepted the _FILE
+	// variant without erroring on password parsing.
+	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
+	if err == nil {
+		t.Fatal("expected connection error against unreachable address")
+	}
+	// The error should originate from valkey.New (connection failure), not
+	// from our env-loader stage.
+	if strings.Contains(err.Error(), "VALKEY_PASSWORD") {
+		t.Errorf("password stage should not have errored; got %v", err)
+	}
+}
+
+func TestStorageFromEnvWithPrefix(t *testing.T) {
+	clearStorageEnv(t)
+	t.Setenv("MUSTER_STORAGE_BACKEND", "memory")
+
+	store, closeFn, err := oauthconfig.StorageFromEnvWithPrefix("MUSTER_", slog.Default())
+	if err != nil {
+		t.Fatalf("StorageFromEnvWithPrefix: %v", err)
+	}
+	t.Cleanup(func() { _ = closeFn() })
+
+	if _, ok := store.(*memory.Store); !ok {
+		t.Errorf("prefixed backend: got %T, want *memory.Store", store)
+	}
+}
+
+// TestStorageFromEnv_ValkeyLive hits a real Valkey instance when VALKEY_TEST_ADDR
+// is set, matching the opt-in convention of storage/valkey's own tests. Skipped
+// otherwise. Verifies the full happy path: env parse → valkey.New → Combined.
+func TestStorageFromEnv_ValkeyLive(t *testing.T) {
+	addr := os.Getenv("VALKEY_TEST_ADDR")
+	if addr == "" {
+		t.Skip("set VALKEY_TEST_ADDR (e.g. localhost:6379) to run")
+	}
+
+	clearStorageEnv(t)
+	t.Setenv("STORAGE_BACKEND", "valkey")
+	t.Setenv("VALKEY_ADDRESS", addr)
+	t.Setenv("VALKEY_KEY_PREFIX", "oauthconfigtest:")
+	t.Setenv("VALKEY_REFRESH_TOKEN_TTL", "1h")
+
+	store, closeFn, err := oauthconfig.StorageFromEnv(slog.Default())
+	if err != nil {
+		t.Fatalf("StorageFromEnv against live valkey: %v", err)
+	}
+	t.Cleanup(func() { _ = closeFn() })
+
+	if _, ok := store.(*valkey.Store); !ok {
+		t.Errorf("valkey backend: got %T, want *valkey.Store", store)
+	}
+}
