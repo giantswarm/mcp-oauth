@@ -1192,6 +1192,9 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, ErrorCodeServerError, "Failed to start authorization flow", http.StatusInternalServerError)
 		return
 	}
+	// #nosec G710 -- authURL is built by the configured provider's
+	// AuthorizationURL() (server-controlled host) and re-validated above to be
+	// http/https. Not user-controllable; not an open redirect.
 	http.Redirect(w, r, parsedAuthURL.String(), http.StatusFound)
 }
 
@@ -1307,6 +1310,10 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Standard HTTP/HTTPS redirects work reliably
 	h.recordHTTPMetrics("callback", http.MethodGet, http.StatusFound, startTime)
+	// #nosec G710 -- redirectURL is built from authCode.RedirectURI, which was
+	// allowlist-validated against client.RedirectURIs and re-validated by
+	// ValidateRedirectURIAtAuthorizationTime when the authorization state was
+	// persisted. Not an open redirect.
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
