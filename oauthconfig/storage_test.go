@@ -11,20 +11,21 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage/valkey"
 )
 
-// clearStorageEnv zeroes every STORAGE_* / VALKEY_* var this package reads so
-// each test inherits a known baseline regardless of what the CI shell set.
+// clearStorageEnv zeroes every OAUTH_STORAGE_* / OAUTH_VALKEY_* var this
+// package reads so each test inherits a known baseline regardless of what the
+// CI shell set.
 func clearStorageEnv(t *testing.T) {
 	t.Helper()
 	for _, v := range []string{
-		"STORAGE_BACKEND",
-		"VALKEY_ADDRESS",
-		"VALKEY_PASSWORD",
-		"VALKEY_PASSWORD_FILE",
-		"VALKEY_DB",
-		"VALKEY_KEY_PREFIX",
-		"VALKEY_TLS",
-		"VALKEY_TLS_INSECURE_SKIP_VERIFY",
-		"VALKEY_REFRESH_TOKEN_TTL",
+		"OAUTH_STORAGE_BACKEND",
+		"OAUTH_VALKEY_ADDRESS",
+		"OAUTH_VALKEY_PASSWORD",
+		"OAUTH_VALKEY_PASSWORD_FILE",
+		"OAUTH_VALKEY_DB",
+		"OAUTH_VALKEY_KEY_PREFIX",
+		"OAUTH_VALKEY_TLS",
+		"OAUTH_VALKEY_TLS_INSECURE_SKIP_VERIFY",
+		"OAUTH_VALKEY_REFRESH_TOKEN_TTL",
 	} {
 		t.Setenv(v, "")
 	}
@@ -45,7 +46,7 @@ func TestStorageFromEnv_DefaultIsMemory(t *testing.T) {
 
 func TestStorageFromEnv_MemoryExplicit(t *testing.T) {
 	clearStorageEnv(t)
-	t.Setenv("STORAGE_BACKEND", "memory")
+	t.Setenv("OAUTH_STORAGE_BACKEND", "memory")
 
 	store, closeFn, err := oauthconfig.StorageFromEnv(slog.Default())
 	if err != nil {
@@ -60,7 +61,7 @@ func TestStorageFromEnv_MemoryExplicit(t *testing.T) {
 
 func TestStorageFromEnv_UnknownBackend(t *testing.T) {
 	clearStorageEnv(t)
-	t.Setenv("STORAGE_BACKEND", "postgres")
+	t.Setenv("OAUTH_STORAGE_BACKEND", "postgres")
 
 	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
 	if err == nil || !strings.Contains(err.Error(), "unknown backend") {
@@ -70,7 +71,7 @@ func TestStorageFromEnv_UnknownBackend(t *testing.T) {
 
 func TestStorageFromEnv_ValkeyMissingAddress(t *testing.T) {
 	clearStorageEnv(t)
-	t.Setenv("STORAGE_BACKEND", "valkey")
+	t.Setenv("OAUTH_STORAGE_BACKEND", "valkey")
 
 	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
 	if err == nil || !strings.Contains(err.Error(), "VALKEY_ADDRESS") {
@@ -80,9 +81,9 @@ func TestStorageFromEnv_ValkeyMissingAddress(t *testing.T) {
 
 func TestStorageFromEnv_ValkeyBadDB(t *testing.T) {
 	clearStorageEnv(t)
-	t.Setenv("STORAGE_BACKEND", "valkey")
-	t.Setenv("VALKEY_ADDRESS", "unreachable:0")
-	t.Setenv("VALKEY_DB", "not-a-number")
+	t.Setenv("OAUTH_STORAGE_BACKEND", "valkey")
+	t.Setenv("OAUTH_VALKEY_ADDRESS", "unreachable:0")
+	t.Setenv("OAUTH_VALKEY_DB", "not-a-number")
 
 	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
 	if err == nil || !strings.Contains(err.Error(), "VALKEY_DB") {
@@ -92,9 +93,9 @@ func TestStorageFromEnv_ValkeyBadDB(t *testing.T) {
 
 func TestStorageFromEnv_ValkeyBadTLSBool(t *testing.T) {
 	clearStorageEnv(t)
-	t.Setenv("STORAGE_BACKEND", "valkey")
-	t.Setenv("VALKEY_ADDRESS", "unreachable:0")
-	t.Setenv("VALKEY_TLS", "maybe")
+	t.Setenv("OAUTH_STORAGE_BACKEND", "valkey")
+	t.Setenv("OAUTH_VALKEY_ADDRESS", "unreachable:0")
+	t.Setenv("OAUTH_VALKEY_TLS", "maybe")
 
 	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
 	if err == nil || !strings.Contains(err.Error(), "VALKEY_TLS") {
@@ -104,9 +105,9 @@ func TestStorageFromEnv_ValkeyBadTLSBool(t *testing.T) {
 
 func TestStorageFromEnv_ValkeyBadRefreshTTL(t *testing.T) {
 	clearStorageEnv(t)
-	t.Setenv("STORAGE_BACKEND", "valkey")
-	t.Setenv("VALKEY_ADDRESS", "unreachable:0")
-	t.Setenv("VALKEY_REFRESH_TOKEN_TTL", "not-a-duration")
+	t.Setenv("OAUTH_STORAGE_BACKEND", "valkey")
+	t.Setenv("OAUTH_VALKEY_ADDRESS", "unreachable:0")
+	t.Setenv("OAUTH_VALKEY_REFRESH_TOKEN_TTL", "not-a-duration")
 
 	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
 	if err == nil || !strings.Contains(err.Error(), "VALKEY_REFRESH_TOKEN_TTL") {
@@ -120,12 +121,12 @@ func TestStorageFromEnv_ValkeyBadRefreshTTL(t *testing.T) {
 // the env-loader read from the file not the env.
 func TestStorageFromEnv_ValkeyPasswordFilePrecedence(t *testing.T) {
 	clearStorageEnv(t)
-	t.Setenv("STORAGE_BACKEND", "valkey")
-	t.Setenv("VALKEY_ADDRESS", "127.0.0.1:1") // unreachable by design
-	t.Setenv("VALKEY_PASSWORD", "from-env")
+	t.Setenv("OAUTH_STORAGE_BACKEND", "valkey")
+	t.Setenv("OAUTH_VALKEY_ADDRESS", "127.0.0.1:1") // unreachable by design
+	t.Setenv("OAUTH_VALKEY_PASSWORD", "from-env")
 
 	pwdFile := writeSecretFile(t, "from-file\n")
-	t.Setenv("VALKEY_PASSWORD_FILE", pwdFile)
+	t.Setenv("OAUTH_VALKEY_PASSWORD_FILE", pwdFile)
 
 	// Connection will fail — we only care that the loader accepted the _FILE
 	// variant without erroring on password parsing.
@@ -142,9 +143,9 @@ func TestStorageFromEnv_ValkeyPasswordFilePrecedence(t *testing.T) {
 
 func TestStorageFromEnvWithPrefix(t *testing.T) {
 	clearStorageEnv(t)
-	t.Setenv("MUSTER_STORAGE_BACKEND", "memory")
+	t.Setenv("MUSTER_OAUTH_STORAGE_BACKEND", "memory")
 
-	store, closeFn, err := oauthconfig.StorageFromEnvWithPrefix("MUSTER_", slog.Default())
+	store, closeFn, err := oauthconfig.StorageFromEnvWithPrefix("MUSTER_OAUTH_", slog.Default())
 	if err != nil {
 		t.Fatalf("StorageFromEnvWithPrefix: %v", err)
 	}
@@ -165,10 +166,10 @@ func TestStorageFromEnv_ValkeyLive(t *testing.T) {
 	}
 
 	clearStorageEnv(t)
-	t.Setenv("STORAGE_BACKEND", "valkey")
-	t.Setenv("VALKEY_ADDRESS", addr)
-	t.Setenv("VALKEY_KEY_PREFIX", "oauthconfigtest:")
-	t.Setenv("VALKEY_REFRESH_TOKEN_TTL", "1h")
+	t.Setenv("OAUTH_STORAGE_BACKEND", "valkey")
+	t.Setenv("OAUTH_VALKEY_ADDRESS", addr)
+	t.Setenv("OAUTH_VALKEY_KEY_PREFIX", "oauthconfigtest:")
+	t.Setenv("OAUTH_VALKEY_REFRESH_TOKEN_TTL", "1h")
 
 	store, closeFn, err := oauthconfig.StorageFromEnv(slog.Default())
 	if err != nil {

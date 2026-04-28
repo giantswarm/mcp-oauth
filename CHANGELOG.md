@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **oauthconfig.StorageFromEnv: default prefix is now `OAUTH_`**
+  - `STORAGE_BACKEND` → `OAUTH_STORAGE_BACKEND`; `VALKEY_*` → `OAUTH_VALKEY_*` (e.g. `VALKEY_ADDRESS` → `OAUTH_VALKEY_ADDRESS`).
+  - Aligns the storage loader's namespace with `FromEnv` (which already defaults to the `OAUTH_` prefix). Consumers using `StorageFromEnvWithPrefix("MUSTER_", …)` must switch to `StorageFromEnvWithPrefix("MUSTER_OAUTH_", …)` and rename their env vars accordingly.
+
 ### Fixed
 
 - **Treat email, profile, groups, offline_access as mandatory scopes (#252)**
