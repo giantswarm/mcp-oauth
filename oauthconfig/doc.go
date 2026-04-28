@@ -21,6 +21,9 @@
 //   - OAUTH_MAX_CLIENTS_PER_IP                — positive integer
 //   - OAUTH_TRUST_PROXY                       (default false)
 //   - OAUTH_TRUSTED_AUDIENCES                 — comma-separated audience list
+//   - OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS     (default false) — RFC 8252 native-app loopback support
+//   - OAUTH_TRUSTED_REDIRECT_SCHEMES          — comma-separated URI schemes (e.g. "cursor,vscode")
+//     populates server.Config.TrustedPublicRegistrationSchemes
 //
 // Defaults are not applied in this package. [FromEnv] only populates the
 // fields it reads; server.New runs applyDefaults afterwards and is the single
