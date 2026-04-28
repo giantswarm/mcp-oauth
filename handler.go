@@ -1050,6 +1050,9 @@ func (h *Handler) buildAuthServerMetadata() map[string]any {
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 		"code_challenge_methods_supported":      []string{PKCEMethodS256},
 		"token_endpoint_auth_methods_supported": SupportedTokenAuthMethods,
+		// RFC 9207: advertise that authorization responses include the `iss` parameter
+		// so clients can verify the response came from the expected authorization server.
+		"authorization_response_iss_parameter_supported": true,
 	}
 
 	h.addOptionalMetadata(metadata)
@@ -1260,8 +1263,18 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	instrumentation.SetSpanSuccess(span)
 
 	// CRITICAL SECURITY: Redirect back to client with their original state parameter
-	// This allows the client to verify the callback is for their original request (CSRF protection)
-	redirectURL := fmt.Sprintf("%s?code=%s&state=%s", authCode.RedirectURI, authCode.Code, clientState)
+	// This allows the client to verify the callback is for their original request (CSRF protection).
+	//
+	// RFC 9207 (OAuth 2.0 Authorization Server Issuer Identification): include the `iss`
+	// parameter so clients talking to multiple authorization servers can detect mix-up
+	// attacks (authorization response injected from a different AS than the client sent
+	// the request to). The issuer MUST be URL-encoded since it is an https:// URL.
+	redirectURL := fmt.Sprintf("%s?code=%s&state=%s&iss=%s",
+		authCode.RedirectURI,
+		authCode.Code,
+		clientState,
+		url.QueryEscape(h.server.Config.Issuer),
+	)
 
 	// RFC 8252 Section 7.1: Custom URL schemes require special handling
 	// Browsers may fail silently on 302 redirects to custom schemes (cursor://, vscode://, etc.)
