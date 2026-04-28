@@ -718,6 +718,97 @@ func (h *Handler) buildProtectedResourceMetadata(resourcePath string, pathConfig
 	return metadata
 }
 
+// OAuthRoutesOptions controls the bundle registered by [Handler.RegisterOAuthRoutes].
+type OAuthRoutesOptions struct {
+	// MCPPath is forwarded to RegisterProtectedResourceMetadataRoutes for
+	// backward compatibility with single-path consumers. Kept because a few
+	// examples still pass it, but prefer configuring
+	// [Config.ResourceMetadataByPath] instead — when that map is non-empty,
+	// MCPPath is ignored (with a single warn log at registration time so the
+	// conflict is visible).
+	MCPPath string
+
+	// IncludeMetadata controls whether the two discovery bundles
+	// (Protected Resource Metadata per RFC 9728 and Authorization Server
+	// Metadata per RFC 8414) are registered alongside the OAuth flow
+	// endpoints. Default true — this is what every consumer today does by
+	// hand.
+	IncludeMetadata bool
+}
+
+// RegisterOAuthRoutes registers the OAuth flow endpoints on mux and, when
+// opts.IncludeMetadata is true (the default), also registers the Protected
+// Resource Metadata and Authorization Server Metadata routes via the two
+// existing Register*Routes helpers.
+//
+// Routes registered (all under /oauth, paths fixed by the Config endpoint
+// builders):
+//
+//   - /oauth/authorize, /oauth/callback, /oauth/token,
+//     /oauth/revoke, /oauth/register — always registered.
+//   - /oauth/introspect — only when Config.EnableIntrospectionEndpoint is
+//     true. ServeTokenIntrospection does not self-gate on that flag, so
+//     registering it unconditionally would expose an endpoint the operator
+//     disabled in config.
+//
+// A customizable prefix was considered and rejected — [Config.AuthorizationEndpoint],
+// [Config.TokenEndpoint], and the other metadata builders hardcode the /oauth
+// prefix when constructing the issuer-scoped URLs that appear in metadata.
+// A custom prefix would make the routes register at one URL while metadata
+// advertised a different one. Consumers needing a custom prefix must wire
+// the individual Serve* methods by hand, at which point they also need to
+// override metadata advertisement.
+//
+// Replaces the five-line `mux.HandleFunc("/oauth/...", handler.Serve...)`
+// block every consumer writes today:
+//
+//	handler.RegisterOAuthRoutes(mux, oauth.OAuthRoutesOptions{
+//	    MCPPath:         "/mcp",
+//	    IncludeMetadata: true,
+//	})
+func (h *Handler) RegisterOAuthRoutes(mux *http.ServeMux, opts OAuthRoutesOptions) {
+	// OAuth flow endpoints — fixed paths (see method godoc for rationale).
+	mux.HandleFunc(server.EndpointPathAuthorize, h.ServeAuthorization)
+	mux.HandleFunc(oauthCallbackPath, h.ServeCallback)
+	mux.HandleFunc(server.EndpointPathToken, h.ServeToken)
+	mux.HandleFunc(server.EndpointPathRevoke, h.ServeTokenRevocation)
+	mux.HandleFunc(server.EndpointPathRegister, h.ServeClientRegistration)
+
+	// Token introspection (RFC 7662) is opt-in. ServeTokenIntrospection does
+	// not self-gate on Config.EnableIntrospectionEndpoint — registering it
+	// unconditionally would expose an endpoint the operator disabled in
+	// config. Only wire the route when the flag is on.
+	if h.server.Config.EnableIntrospectionEndpoint {
+		mux.HandleFunc(server.EndpointPathIntrospect, h.ServeTokenIntrospection)
+	}
+
+	if !opts.IncludeMetadata {
+		return
+	}
+
+	// ResourceMetadataByPath is the configuration-driven replacement for the
+	// single MCPPath argument. If both are set, the configuration wins —
+	// RegisterProtectedResourceMetadataRoutes already registers all the
+	// configured paths, so a different MCPPath value would be registered
+	// but never preferred over the config entries. Log once so consumers
+	// notice the inconsistency instead of silently ignoring the MCPPath.
+	if opts.MCPPath != "" && len(h.server.Config.ResourceMetadataByPath) > 0 {
+		h.logger.Warn("RegisterOAuthRoutes: MCPPath is set alongside non-empty Config.ResourceMetadataByPath; the configuration map is preferred and MCPPath adds only a back-compat alias route",
+			"mcp_path", opts.MCPPath,
+			"configured_paths", len(h.server.Config.ResourceMetadataByPath),
+		)
+	}
+
+	h.RegisterProtectedResourceMetadataRoutes(mux, opts.MCPPath)
+	h.RegisterAuthorizationServerMetadataRoutes(mux)
+}
+
+// oauthCallbackPath is the provider-callback path. The server's own
+// AuthorizationEndpoint / TokenEndpoint / RegistrationEndpoint / RevocationEndpoint
+// methods all live under /oauth (see server/config.go); callback follows the
+// same convention.
+const oauthCallbackPath = "/oauth/callback"
+
 // RegisterProtectedResourceMetadataRoutes registers all Protected Resource Metadata discovery routes.
 // It registers the root endpoint and optional sub-path endpoints based on configuration.
 //
@@ -959,6 +1050,9 @@ func (h *Handler) buildAuthServerMetadata() map[string]any {
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 		"code_challenge_methods_supported":      []string{PKCEMethodS256},
 		"token_endpoint_auth_methods_supported": SupportedTokenAuthMethods,
+		// RFC 9207: advertise that authorization responses include the `iss` parameter
+		// so clients can verify the response came from the expected authorization server.
+		"authorization_response_iss_parameter_supported": true,
 	}
 
 	h.addOptionalMetadata(metadata)
@@ -1087,8 +1181,21 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusFound, startTime)
 	instrumentation.SetSpanSuccess(span)
 
-	// Redirect to provider
-	http.Redirect(w, r, authURL, http.StatusFound)
+	// Parse and validate scheme before redirecting. authURL is built by the
+	// configured provider's AuthorizationURL(); the parse + scheme check is
+	// defense in depth against a misconfigured provider returning a non-HTTP URL.
+	parsedAuthURL, err := url.Parse(authURL)
+	if err != nil || (parsedAuthURL.Scheme != "https" && parsedAuthURL.Scheme != "http") {
+		h.logger.Error("Provider returned invalid authorization URL", "error", err)
+		h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusInternalServerError, startTime)
+		instrumentation.SetSpanError(span, "invalid authorization URL")
+		h.writeError(w, ErrorCodeServerError, "Failed to start authorization flow", http.StatusInternalServerError)
+		return
+	}
+	// #nosec G710 -- authURL is built by the configured provider's
+	// AuthorizationURL() (server-controlled host) and re-validated above to be
+	// http/https. Not user-controllable; not an open redirect.
+	http.Redirect(w, r, parsedAuthURL.String(), http.StatusFound)
 }
 
 // ServeCallback handles the OAuth provider callback
@@ -1169,21 +1276,33 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	instrumentation.SetSpanSuccess(span)
 
 	// CRITICAL SECURITY: Redirect back to client with their original state parameter
-	// This allows the client to verify the callback is for their original request (CSRF protection)
-	redirectURL := fmt.Sprintf("%s?code=%s&state=%s", authCode.RedirectURI, authCode.Code, clientState)
+	// for CSRF protection. RFC 9207: include `iss` so clients talking to multiple
+	// authorization servers can detect mix-up attacks. authCode.RedirectURI was
+	// allowlist-validated against client.RedirectURIs at authorization time and
+	// re-validated by ValidateRedirectURIAtAuthorizationTime; we parse it here to
+	// build the response URL through url.Values rather than string concatenation.
+	parsedRedirect, err := url.Parse(authCode.RedirectURI)
+	if err != nil {
+		h.logger.Error("Stored redirect URI failed to parse", "error", err, "client_id", authCode.ClientID)
+		h.recordHTTPMetrics("callback", http.MethodGet, http.StatusInternalServerError, startTime)
+		instrumentation.SetSpanError(span, "invalid stored redirect URI")
+		h.writeError(w, ErrorCodeServerError, "Authorization failed", http.StatusInternalServerError)
+		return
+	}
+	q := parsedRedirect.Query()
+	q.Set("code", authCode.Code)
+	q.Set("state", clientState)
+	q.Set("iss", h.server.Config.Issuer)
+	parsedRedirect.RawQuery = q.Encode()
+	redirectURL := parsedRedirect.String()
 
 	// RFC 8252 Section 7.1: Custom URL schemes require special handling
 	// Browsers may fail silently on 302 redirects to custom schemes (cursor://, vscode://, etc.)
 	// Serve an HTML interstitial page that shows success and attempts JS redirect with manual fallback
 	if isCustomURLScheme(authCode.RedirectURI) {
-		// Parse URI to safely extract scheme for logging (avoid strings.Split edge cases)
-		scheme := ""
-		if parsed, err := url.Parse(authCode.RedirectURI); err == nil {
-			scheme = parsed.Scheme
-		}
 		h.logger.Info("Serving success interstitial for custom URL scheme",
 			"client_id", authCode.ClientID,
-			"scheme", scheme)
+			"scheme", parsedRedirect.Scheme)
 		h.recordHTTPMetrics("callback", http.MethodGet, http.StatusOK, startTime)
 		h.serveSuccessInterstitial(w, r, redirectURL)
 		return
@@ -1191,6 +1310,10 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Standard HTTP/HTTPS redirects work reliably
 	h.recordHTTPMetrics("callback", http.MethodGet, http.StatusFound, startTime)
+	// #nosec G710 -- redirectURL is built from authCode.RedirectURI, which was
+	// allowlist-validated against client.RedirectURIs and re-validated by
+	// ValidateRedirectURIAtAuthorizationTime when the authorization state was
+	// persisted. Not an open redirect.
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
