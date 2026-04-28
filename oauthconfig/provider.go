@@ -3,12 +3,20 @@ package oauthconfig
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/dex"
 	"github.com/giantswarm/mcp-oauth/providers/github"
 	"github.com/giantswarm/mcp-oauth/providers/google"
 )
+
+// dexDefaultCallbackPath is the canonical mcp-oauth provider-callback path;
+// kept in sync with handler.oauthCallbackPath in the root package. Used by
+// DexFromEnvWithPrefix when OAUTH_DEX_REDIRECT_URL is unset and OAUTH_ISSUER
+// is available, so consumers stop having to pre-template
+// ${OAUTH_ISSUER}/oauth/callback in their helm values.
+const dexDefaultCallbackPath = "/oauth/callback"
 
 // ProviderFromEnv reads OAUTH_PROVIDER (dex|google|github) and dispatches to
 // the matching per-provider loader (DexFromEnv, GoogleFromEnv, GitHubFromEnv).
@@ -46,8 +54,13 @@ func ProviderFromEnvWithPrefix(prefix string) (providers.Provider, error) {
 //	OAUTH_DEX_ISSUER_URL            (required) — e.g. https://dex.example.com
 //	OAUTH_DEX_CLIENT_ID             (required)
 //	OAUTH_DEX_CLIENT_SECRET[_FILE]  (required)
-//	OAUTH_DEX_REDIRECT_URL          (required)
+//	OAUTH_DEX_REDIRECT_URL          (optional; defaults to OAUTH_ISSUER + "/oauth/callback")
 //	OAUTH_DEX_CONNECTOR_ID          (optional) — e.g. "github", "ldap"
+//
+// OAUTH_DEX_REDIRECT_URL is required ONLY when OAUTH_ISSUER is also unset.
+// When OAUTH_ISSUER is set (the typical deployment shape), the redirect URL
+// defaults to "${OAUTH_ISSUER}/oauth/callback" — the canonical mcp-oauth
+// provider-callback path. A trailing slash on OAUTH_ISSUER is tolerated.
 //
 // Returned as providers.Provider (not *dex.Provider) so call sites stay
 // provider-agnostic. Callers that need Dex-specific methods cast.
@@ -82,7 +95,7 @@ func DexFromEnvWithPrefix(prefix string) (providers.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
-	redirectURL, err := requireString(prefix + "DEX_REDIRECT_URL")
+	redirectURL, err := dexRedirectURL(prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -207,6 +220,28 @@ func GitHubFromEnvWithPrefix(prefix string) (providers.Provider, error) {
 	}
 
 	return github.NewProvider(cfg)
+}
+
+// dexRedirectURL resolves the OAuth provider-callback URL for the Dex
+// provider. Reads OAUTH_DEX_REDIRECT_URL when set; otherwise falls back to
+// "${OAUTH_ISSUER}<dexDefaultCallbackPath>" so deployments don't have to
+// duplicate the issuer URL across two env vars (one explicit gap that every
+// consumer's helm chart was working around with a value template).
+//
+// If both are unset, returns the existing requireString "required" error
+// for OAUTH_DEX_REDIRECT_URL — preserving the prior failure message and
+// shifting the onus back to the operator to set at least one of the two.
+//
+// strings.TrimRight handles a trailing slash on the issuer so we don't emit
+// "https://auth.example//oauth/callback".
+func dexRedirectURL(prefix string) (string, error) {
+	if v := os.Getenv(prefix + "DEX_REDIRECT_URL"); v != "" {
+		return v, nil
+	}
+	if issuer := os.Getenv(prefix + "ISSUER"); issuer != "" {
+		return strings.TrimRight(issuer, "/") + dexDefaultCallbackPath, nil
+	}
+	return requireString(prefix + "DEX_REDIRECT_URL")
 }
 
 // requireSecret is requireString that also understands the _FILE convention

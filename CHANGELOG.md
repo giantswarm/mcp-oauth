@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **oauthconfig.DexFromEnv defaults `OAUTH_DEX_REDIRECT_URL` to `${OAUTH_ISSUER}/oauth/callback`**
+  - Saves consumers from templating the issuer URL into two env vars (helm value + DEX_REDIRECT_URL). When OAUTH_ISSUER is set and DEX_REDIRECT_URL is unset, the loader derives the canonical provider-callback URL automatically. A trailing slash on the issuer is tolerated.
+  - Additive: explicit OAUTH_DEX_REDIRECT_URL still wins. The "required" error still fires when both vars are unset.
+
 ### Fixed
 
 - **Treat email, profile, groups, offline_access as mandatory scopes (#252)**
