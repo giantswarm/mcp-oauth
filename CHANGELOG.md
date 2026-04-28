@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
-- **oauthconfig.StorageFromEnv: default prefix is now `OAUTH_`**
-  - `STORAGE_BACKEND` → `OAUTH_STORAGE_BACKEND`; `VALKEY_*` → `OAUTH_VALKEY_*` (e.g. `VALKEY_ADDRESS` → `OAUTH_VALKEY_ADDRESS`).
+- **oauthconfig.StorageFromEnv: default prefix is now `OAUTH_`, and `VALKEY_ADDRESS` is renamed to `VALKEY_ADDR`**
+  - `STORAGE_BACKEND` → `OAUTH_STORAGE_BACKEND`; `VALKEY_*` → `OAUTH_VALKEY_*`. The address var also shortens: `VALKEY_ADDRESS` → `OAUTH_VALKEY_ADDR` (matches Go ecosystem `*_ADDR` naming for env-var-facing names; the underlying `valkey.Config.Address` field is unchanged).
   - Aligns the storage loader's namespace with `FromEnv` (which already defaults to the `OAUTH_` prefix). Consumers using `StorageFromEnvWithPrefix("MUSTER_", …)` must switch to `StorageFromEnvWithPrefix("MUSTER_OAUTH_", …)` and rename their env vars accordingly.
 
 ### Fixed

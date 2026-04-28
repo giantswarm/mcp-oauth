@@ -18,7 +18,7 @@ func clearStorageEnv(t *testing.T) {
 	t.Helper()
 	for _, v := range []string{
 		"OAUTH_STORAGE_BACKEND",
-		"OAUTH_VALKEY_ADDRESS",
+		"OAUTH_VALKEY_ADDR",
 		"OAUTH_VALKEY_PASSWORD",
 		"OAUTH_VALKEY_PASSWORD_FILE",
 		"OAUTH_VALKEY_DB",
@@ -74,15 +74,15 @@ func TestStorageFromEnv_ValkeyMissingAddress(t *testing.T) {
 	t.Setenv("OAUTH_STORAGE_BACKEND", "valkey")
 
 	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
-	if err == nil || !strings.Contains(err.Error(), "VALKEY_ADDRESS") {
-		t.Fatalf("expected VALKEY_ADDRESS required error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "VALKEY_ADDR") {
+		t.Fatalf("expected VALKEY_ADDR required error, got %v", err)
 	}
 }
 
 func TestStorageFromEnv_ValkeyBadDB(t *testing.T) {
 	clearStorageEnv(t)
 	t.Setenv("OAUTH_STORAGE_BACKEND", "valkey")
-	t.Setenv("OAUTH_VALKEY_ADDRESS", "unreachable:0")
+	t.Setenv("OAUTH_VALKEY_ADDR", "unreachable:0")
 	t.Setenv("OAUTH_VALKEY_DB", "not-a-number")
 
 	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
@@ -94,7 +94,7 @@ func TestStorageFromEnv_ValkeyBadDB(t *testing.T) {
 func TestStorageFromEnv_ValkeyBadTLSBool(t *testing.T) {
 	clearStorageEnv(t)
 	t.Setenv("OAUTH_STORAGE_BACKEND", "valkey")
-	t.Setenv("OAUTH_VALKEY_ADDRESS", "unreachable:0")
+	t.Setenv("OAUTH_VALKEY_ADDR", "unreachable:0")
 	t.Setenv("OAUTH_VALKEY_TLS", "maybe")
 
 	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
@@ -106,7 +106,7 @@ func TestStorageFromEnv_ValkeyBadTLSBool(t *testing.T) {
 func TestStorageFromEnv_ValkeyBadRefreshTTL(t *testing.T) {
 	clearStorageEnv(t)
 	t.Setenv("OAUTH_STORAGE_BACKEND", "valkey")
-	t.Setenv("OAUTH_VALKEY_ADDRESS", "unreachable:0")
+	t.Setenv("OAUTH_VALKEY_ADDR", "unreachable:0")
 	t.Setenv("OAUTH_VALKEY_REFRESH_TOKEN_TTL", "not-a-duration")
 
 	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
@@ -122,7 +122,7 @@ func TestStorageFromEnv_ValkeyBadRefreshTTL(t *testing.T) {
 func TestStorageFromEnv_ValkeyPasswordFilePrecedence(t *testing.T) {
 	clearStorageEnv(t)
 	t.Setenv("OAUTH_STORAGE_BACKEND", "valkey")
-	t.Setenv("OAUTH_VALKEY_ADDRESS", "127.0.0.1:1") // unreachable by design
+	t.Setenv("OAUTH_VALKEY_ADDR", "127.0.0.1:1") // unreachable by design
 	t.Setenv("OAUTH_VALKEY_PASSWORD", "from-env")
 
 	pwdFile := writeSecretFile(t, "from-file\n")
@@ -167,7 +167,7 @@ func TestStorageFromEnv_ValkeyLive(t *testing.T) {
 
 	clearStorageEnv(t)
 	t.Setenv("OAUTH_STORAGE_BACKEND", "valkey")
-	t.Setenv("OAUTH_VALKEY_ADDRESS", addr)
+	t.Setenv("OAUTH_VALKEY_ADDR", addr)
 	t.Setenv("OAUTH_VALKEY_KEY_PREFIX", "oauthconfigtest:")
 	t.Setenv("OAUTH_VALKEY_REFRESH_TOKEN_TTL", "1h")
 

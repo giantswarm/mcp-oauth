@@ -23,7 +23,7 @@ import (
 //
 // Valkey-specific variables (read only when OAUTH_STORAGE_BACKEND=valkey):
 //
-//   - OAUTH_VALKEY_ADDRESS                   (required when OAUTH_STORAGE_BACKEND=valkey)
+//   - OAUTH_VALKEY_ADDR                   (required when OAUTH_STORAGE_BACKEND=valkey)
 //   - OAUTH_VALKEY_PASSWORD[_FILE]           (optional)
 //   - OAUTH_VALKEY_DB                        (optional; non-negative integer)
 //   - OAUTH_VALKEY_KEY_PREFIX                (optional; defaults to valkey.DefaultKeyPrefix)
@@ -64,9 +64,9 @@ func StorageFromEnvWithPrefix(prefix string, logger *slog.Logger) (storage.Combi
 // nil (Valkey close errors are logged by the backend; surfacing them would
 // complicate caller shutdown flows).
 func newValkeyFromEnv(prefix string, logger *slog.Logger) (storage.Combined, func() error, error) {
-	addr := os.Getenv(prefix + "VALKEY_ADDRESS")
+	addr := os.Getenv(prefix + "VALKEY_ADDR")
 	if addr == "" {
-		return nil, nil, fmt.Errorf("%sVALKEY_ADDRESS is required when %sSTORAGE_BACKEND=valkey", prefix, prefix)
+		return nil, nil, fmt.Errorf("%sVALKEY_ADDR is required when %sSTORAGE_BACKEND=valkey", prefix, prefix)
 	}
 
 	password, err := optionalSecret(prefix + "VALKEY_PASSWORD")
