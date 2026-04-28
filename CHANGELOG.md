@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **oauthconfig.FromEnv validates `OAUTH_TRUSTED_AUDIENCES` at startup**
+  - Each entry is now passed through `dex.ValidateAudiences`. Allowed charset is `[a-zA-Z0-9_-]` (per-entry max 256 chars, list max 50). Malformed values fail loudly at startup instead of silently failing token-acceptance later.
+  - **Behaviour change**: URL-shaped audiences (e.g. `https://api.example.com`) are rejected. The package documented RFC 8707 URI audiences previously; in practice all in-tree consumers use Dex client-id-shaped audiences. Operators with URL-shaped audiences must populate `oauth.Config.TrustedAudiences` programmatically rather than via env.
+
 ### Added
 
 - **oauthconfig.NewEncryptorFromEnv accepts hex-encoded keys**

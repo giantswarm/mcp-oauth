@@ -45,13 +45,19 @@
 // identifiers are not secrets. The asymmetry is intentional; the list lives in
 // deployment configuration (Helm values / ConfigMap) rather than in a Secret.
 //
-// # OAUTH_TRUSTED_AUDIENCES limitation
+// # OAUTH_TRUSTED_AUDIENCES charset and limits
 //
-// The value is split on literal commas. RFC 8707 audiences are URIs and URIs
-// should not contain literal commas, so this is safe in practice. Callers with
-// audiences containing commas for some other reason must populate
-// oauth.Config.TrustedAudiences programmatically instead of relying on this
-// loader.
+// The value is split on literal commas, then each non-empty entry is validated
+// through dex.ValidateAudiences. Allowed characters are [a-zA-Z0-9_-]; the
+// per-entry length cap is 256 characters and the total list cap is 50.
+// FromEnv returns an error at startup if any entry violates these rules.
+//
+// This charset matches the Dex cross-client audience scope namespace
+// (`audience:server:client_id:<id>`), which is the only context in which
+// TrustedAudiences is currently consumed in production. Operators with
+// URL-shaped audiences (RFC 8707) or other non-conforming values must
+// populate oauth.Config.TrustedAudiences programmatically instead of relying
+// on this loader.
 //
 // # FromEnv vs FromEnvWithPrefix
 //
