@@ -1181,8 +1181,18 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusFound, startTime)
 	instrumentation.SetSpanSuccess(span)
 
-	// Redirect to provider
-	http.Redirect(w, r, authURL, http.StatusFound)
+	// Parse and validate scheme before redirecting. authURL is built by the
+	// configured provider's AuthorizationURL(); the parse + scheme check is
+	// defense in depth against a misconfigured provider returning a non-HTTP URL.
+	parsedAuthURL, err := url.Parse(authURL)
+	if err != nil || (parsedAuthURL.Scheme != "https" && parsedAuthURL.Scheme != "http") {
+		h.logger.Error("Provider returned invalid authorization URL", "error", err)
+		h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusInternalServerError, startTime)
+		instrumentation.SetSpanError(span, "invalid authorization URL")
+		h.writeError(w, ErrorCodeServerError, "Failed to start authorization flow", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, parsedAuthURL.String(), http.StatusFound)
 }
 
 // ServeCallback handles the OAuth provider callback
@@ -1263,31 +1273,33 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	instrumentation.SetSpanSuccess(span)
 
 	// CRITICAL SECURITY: Redirect back to client with their original state parameter
-	// This allows the client to verify the callback is for their original request (CSRF protection).
-	//
-	// RFC 9207 (OAuth 2.0 Authorization Server Issuer Identification): include the `iss`
-	// parameter so clients talking to multiple authorization servers can detect mix-up
-	// attacks (authorization response injected from a different AS than the client sent
-	// the request to). The issuer MUST be URL-encoded since it is an https:// URL.
-	redirectURL := fmt.Sprintf("%s?code=%s&state=%s&iss=%s",
-		authCode.RedirectURI,
-		authCode.Code,
-		clientState,
-		url.QueryEscape(h.server.Config.Issuer),
-	)
+	// for CSRF protection. RFC 9207: include `iss` so clients talking to multiple
+	// authorization servers can detect mix-up attacks. authCode.RedirectURI was
+	// allowlist-validated against client.RedirectURIs at authorization time and
+	// re-validated by ValidateRedirectURIAtAuthorizationTime; we parse it here to
+	// build the response URL through url.Values rather than string concatenation.
+	parsedRedirect, err := url.Parse(authCode.RedirectURI)
+	if err != nil {
+		h.logger.Error("Stored redirect URI failed to parse", "error", err, "client_id", authCode.ClientID)
+		h.recordHTTPMetrics("callback", http.MethodGet, http.StatusInternalServerError, startTime)
+		instrumentation.SetSpanError(span, "invalid stored redirect URI")
+		h.writeError(w, ErrorCodeServerError, "Authorization failed", http.StatusInternalServerError)
+		return
+	}
+	q := parsedRedirect.Query()
+	q.Set("code", authCode.Code)
+	q.Set("state", clientState)
+	q.Set("iss", h.server.Config.Issuer)
+	parsedRedirect.RawQuery = q.Encode()
+	redirectURL := parsedRedirect.String()
 
 	// RFC 8252 Section 7.1: Custom URL schemes require special handling
 	// Browsers may fail silently on 302 redirects to custom schemes (cursor://, vscode://, etc.)
 	// Serve an HTML interstitial page that shows success and attempts JS redirect with manual fallback
 	if isCustomURLScheme(authCode.RedirectURI) {
-		// Parse URI to safely extract scheme for logging (avoid strings.Split edge cases)
-		scheme := ""
-		if parsed, err := url.Parse(authCode.RedirectURI); err == nil {
-			scheme = parsed.Scheme
-		}
 		h.logger.Info("Serving success interstitial for custom URL scheme",
 			"client_id", authCode.ClientID,
-			"scheme", scheme)
+			"scheme", parsedRedirect.Scheme)
 		h.recordHTTPMetrics("callback", http.MethodGet, http.StatusOK, startTime)
 		h.serveSuccessInterstitial(w, r, redirectURL)
 		return
