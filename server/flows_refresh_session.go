@@ -48,15 +48,16 @@ import (
 // the standard OAuth 2.1 rotation contract, not a regression from this
 // API.
 //
-// Cross-process race: when storage is shared (Valkey, Postgres, …) and
-// another instance rotates the family between this call's lookup and
-// its atomic delete, the atomic delete returns "not found" and is
-// surfaced to the caller as an invalid-grant error. RefreshSession
-// does not retry across this race because the underlying error is
-// indistinguishable from a genuine reuse-detection event, and a naive
-// retry would falsely trigger family revocation on the rotated state.
-// Callers in distributed deployments that observe this should re-read
-// the cached entry — another instance has produced a fresh token.
+// Cross-process race: when the storage backend is shared across
+// instances and another instance rotates the family between this call's
+// lookup and its atomic delete, the atomic delete returns "not found"
+// and is surfaced to the caller as an invalid-grant error.
+// RefreshSession does not retry across this race because the underlying
+// error is indistinguishable from a genuine reuse-detection event, and
+// a naive retry would falsely trigger family revocation on the rotated
+// state. Callers in distributed deployments that observe this should
+// re-read the cached entry — another instance has produced a fresh
+// token.
 func (s *Server) RefreshSession(ctx context.Context, familyID string) (*oauth2.Token, error) {
 	if familyID == "" {
 		return nil, fmt.Errorf("familyID is required")
@@ -76,6 +77,15 @@ func (s *Server) RefreshSession(ctx context.Context, familyID string) (*oauth2.T
 // then delegates to the existing RefreshAccessToken path so rotation,
 // reuse detection, audit logging, and TokenRefreshHandler dispatch all
 // behave identically to the public token-endpoint flow.
+//
+// The clientID returned from storage is passed back into
+// RefreshAccessToken so its OAuth 2.1 client-binding validation runs.
+// In this in-process flow that check trivially passes (the value comes
+// from storage and goes straight back into a check against itself); the
+// useful path is the public refresh-token-grant flow where storage's
+// clientID is compared against an untrusted value supplied by the
+// caller. Calling RefreshAccessToken with the storage clientID keeps
+// the audit log and reuse-detection paths uniform across both flows.
 func (s *Server) refreshSessionImpl(ctx context.Context, familyID string) (*oauth2.Token, error) {
 	activeStore, ok := s.tokenStore.(storage.ActiveRefreshTokenByFamilyStore)
 	if !ok {
@@ -84,13 +94,15 @@ func (s *Server) refreshSessionImpl(ctx context.Context, familyID string) (*oaut
 
 	refreshToken, clientID, err := activeStore.GetActiveRefreshTokenByFamily(ctx, familyID)
 	switch {
-	case errors.Is(err, storage.ErrRefreshTokenFamilyRevoked):
+	case err == nil:
+		return s.RefreshAccessToken(ctx, refreshToken, clientID)
+	case errors.Is(err, storage.ErrRefreshTokenFamilyNotFound),
+		errors.Is(err, storage.ErrRefreshTokenFamilyRevoked):
+		// Both sentinels are the caller's actionable signal — wrap with
+		// the familyID for log readability, preserve the sentinel for
+		// errors.Is at the call site.
 		return nil, fmt.Errorf("family %q: %w", familyID, err)
-	case errors.Is(err, storage.ErrRefreshTokenFamilyNotFound):
-		return nil, fmt.Errorf("family %q: %w", familyID, err)
-	case err != nil:
+	default:
 		return nil, fmt.Errorf("lookup active refresh token: %w", err)
 	}
-
-	return s.RefreshAccessToken(ctx, refreshToken, clientID)
 }

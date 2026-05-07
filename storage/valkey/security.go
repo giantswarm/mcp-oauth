@@ -208,13 +208,9 @@ func (s *Store) GetRefreshTokenFamilyByID(ctx context.Context, familyID string) 
 		return nil, storage.ErrRefreshTokenFamilyNotFound
 	}
 
-	familySetKey := s.familyKey(familyID)
-	tokens, err := s.client.Do(op.ctx, s.client.B().Smembers().Key(familySetKey).Build()).AsStrSlice()
+	tokens, err := s.getFamilyTokens(op.ctx, familyID)
 	if err != nil {
-		if isNilError(err) {
-			return nil, storage.ErrRefreshTokenFamilyNotFound
-		}
-		return nil, fmt.Errorf("read family members: %w", err)
+		return nil, err
 	}
 	if len(tokens) == 0 {
 		return nil, storage.ErrRefreshTokenFamilyNotFound
@@ -246,7 +242,7 @@ func (s *Store) GetActiveRefreshTokenByFamily(ctx context.Context, familyID stri
 		return "", "", storage.ErrRefreshTokenFamilyNotFound
 	}
 
-	tokens, err := s.readFamilyMembers(op.ctx, familyID)
+	tokens, err := s.getFamilyTokens(op.ctx, familyID)
 	if err != nil {
 		return "", "", err
 	}
@@ -263,21 +259,6 @@ func (s *Store) GetActiveRefreshTokenByFamily(ctx context.Context, familyID stri
 	default:
 		return "", "", storage.ErrRefreshTokenFamilyNotFound
 	}
-}
-
-// readFamilyMembers reads the Set of refresh tokens belonging to a
-// family. Returns ErrRefreshTokenFamilyNotFound when the Set is missing
-// or unreadable as nil.
-func (s *Store) readFamilyMembers(ctx context.Context, familyID string) ([]string, error) {
-	familySetKey := s.familyKey(familyID)
-	tokens, err := s.client.Do(ctx, s.client.B().Smembers().Key(familySetKey).Build()).AsStrSlice()
-	if err != nil {
-		if isNilError(err) {
-			return nil, storage.ErrRefreshTokenFamilyNotFound
-		}
-		return nil, fmt.Errorf("read family members: %w", err)
-	}
-	return tokens, nil
 }
 
 // pickActiveMember walks the family member set and returns the
