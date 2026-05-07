@@ -498,6 +498,58 @@ func TestValidateIDToken_Integration(t *testing.T) {
 			t.Error("Expected unknown kid to be rejected")
 		}
 	})
+
+	t.Run("multiple keys at same kid (rotation overlap) accepted", func(t *testing.T) {
+		// RFC 7517 §4.5 allows multiple keys with the same kid. The
+		// rotation-overlap pattern: publish both old and new under the
+		// same kid for a brief window so verifiers caching either key
+		// still pass while the rotation propagates. The validator must
+		// try each in turn and succeed on the matching one.
+		oldKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("generate old key: %v", err)
+		}
+		newKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("generate new key: %v", err)
+		}
+
+		const overlapKid = "rotating-kid"
+		jwksWithBoth := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{
+			// Old key first — keys[0] wouldn't match a token signed with the new key.
+			{Key: oldKey.Public(), KeyID: overlapKid, Algorithm: "RS256", Use: "sig"},
+			{Key: newKey.Public(), KeyID: overlapKid, Algorithm: "RS256", Use: "sig"},
+		}}
+		const overlapURL = "https://overlap-test/jwks"
+		client.cache.Store(overlapURL, &cachedJWKS{keys: &jwksWithBoth, fetchedAt: time.Now()})
+
+		// Sign with the SECOND key — keys[0] (old) won't verify; the
+		// loop must fall through to keys[1].
+		signedByNew := signTestToken(t, newKey, jose.RS256, overlapKid, validClaims)
+		got, err := ValidateIDToken(
+			context.Background(), signedByNew, client, overlapURL,
+			"https://auth.example.com", []string{"client-a"},
+		)
+		if err != nil {
+			t.Errorf("multi-key rotation: validation should succeed when second key matches, got %v", err)
+		}
+		if got != nil && got.Subject != "user123" {
+			t.Errorf("Subject = %q, want user123", got.Subject)
+		}
+
+		// Sign with neither key (signature mismatch on every kid match) — must reject.
+		strangerKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("generate stranger key: %v", err)
+		}
+		signedByStranger := signTestToken(t, strangerKey, jose.RS256, overlapKid, validClaims)
+		if _, err := ValidateIDToken(
+			context.Background(), signedByStranger, client, overlapURL,
+			"https://auth.example.com", []string{"client-a"},
+		); err == nil {
+			t.Error("multi-key rotation: validation must reject a token whose signature matches none of the keys")
+		}
+	})
 }
 
 func TestFetchJWKS(t *testing.T) {

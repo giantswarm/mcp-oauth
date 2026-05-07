@@ -368,9 +368,23 @@ func parseAndValidateToken(tokenString string, jwks *jose.JSONWebKeySet) (*IDTok
 		return nil, fmt.Errorf("key %s not found in JWKS", kid)
 	}
 
+	// RFC 7517 §4.5 allows multiple keys with the same kid (used during
+	// key-rotation overlap). Try each in turn — the first whose verify
+	// succeeds wins. Without this loop, a JWKS that publishes both an old
+	// and a new key under the same kid would reject any token signed by
+	// whichever isn't keys[0].
 	var claims IDTokenClaims
-	if err := parsed.Claims(keys[0].Key, &claims); err != nil {
-		return nil, fmt.Errorf("token validation failed: %w", err)
+	var lastErr error
+	for i := range keys {
+		if err := parsed.Claims(keys[i].Key, &claims); err == nil {
+			lastErr = nil
+			break
+		} else {
+			lastErr = err
+		}
+	}
+	if lastErr != nil {
+		return nil, fmt.Errorf("token validation failed: %w", lastErr)
 	}
 
 	if claims.Expiry == nil {
