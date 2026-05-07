@@ -32,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **JWT/JWKS handling consolidated onto `github.com/go-jose/go-jose/v4`; `github.com/golang-jwt/jwt/v5` removed as a dependency**
+  - `providers/oidc.JWK`, `providers/oidc.JWKS`, `providers/oidc.JWKSClient.FetchJWKS` now use `jose.JSONWebKey` / `jose.JSONWebKeySet`. The custom RSA/ECDSA public-key reconstruction from base64url N/E/X/Y is gone.
+  - `providers/oidc.IDTokenClaims` embeds `josejwt.Claims` instead of `golang-jwt`'s `RegisteredClaims`; the registered-claim field set is preserved (`Issuer`, `Subject`, `Audience`, `IssuedAt`, `NotBefore`) — `ExpiresAt` is now `Expiry` per go-jose naming.
+  - `providers/oidc` exports `ErrTokenExpired` and `ErrTokenNotValidYet` sentinels so callers (e.g. `flows_forwarded.go`) can `errors.Is` against the package's own errors instead of a third-party library's.
+  - `server.AccessTokenIssuer` (JWT mode) signs via `jose.NewSigner` + `josejwt.Signed(...).Claims(...).Serialize()`. The algorithm allowlist is enforced by go-jose at parse time, removing the need for the manual `t.Method.Alg() != expectedAlg` keyfunc check.
+  - Net diff is ~500 LOC removed; alg-confusion defense (CVE-2015-9235 style attacks) now lives in the parser instead of the keyfunc.
+  - **Breaking** for consumers who imported `oidc.JWK` / `oidc.JWKS` / `oidc.JWK.RSAPublicKey()` / `oidc.JWK.ECDSAPublicKey()` / `oidc.KeyTypeRSA` / `oidc.KeyTypeEC` directly. Use the corresponding `jose.JSONWebKey` / `jose.JSONWebKeySet` types from `github.com/go-jose/go-jose/v4`.
 - **oauthconfig.StorageFromEnv: default prefix is now `OAUTH_`, and `VALKEY_ADDRESS` is renamed to `VALKEY_ADDR`**
   - `STORAGE_BACKEND` → `OAUTH_STORAGE_BACKEND`; `VALKEY_*` → `OAUTH_VALKEY_*`. The address var also shortens: `VALKEY_ADDRESS` → `OAUTH_VALKEY_ADDR` (matches Go ecosystem `*_ADDR` naming for env-var-facing names; the underlying `valkey.Config.Address` field is unchanged).
   - Aligns the storage loader's namespace with `FromEnv` (which already defaults to the `OAUTH_` prefix). Consumers using `StorageFromEnvWithPrefix("MUSTER_", …)` must switch to `StorageFromEnvWithPrefix("MUSTER_OAUTH_", …)` and rename their env vars accordingly.

@@ -9,8 +9,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
-
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
@@ -170,8 +168,8 @@ func (s *Server) AcceptForwardedIDToken(ctx context.Context, bearerToken string)
 	userInfo := s.idTokenClaimsToUserInfo(claims)
 
 	var expiresAt time.Time
-	if claims.ExpiresAt != nil {
-		expiresAt = claims.ExpiresAt.Time
+	if claims.Expiry != nil {
+		expiresAt = claims.Expiry.Time()
 	}
 
 	acceptance := &ForwardedIDTokenAcceptance{
@@ -261,9 +259,9 @@ func classifyForwardedTokenError(err error) instrumentation.ForwardedIDTokenResu
 		return instrumentation.ForwardedIDTokenResultParseError
 	case errors.Is(err, oidc.ErrIssuerMismatch):
 		return instrumentation.ForwardedIDTokenResultIssMismatch
-	case errors.Is(err, jwt.ErrTokenExpired):
+	case errors.Is(err, oidc.ErrTokenExpired):
 		return instrumentation.ForwardedIDTokenResultExpired
-	case errors.Is(err, jwt.ErrTokenNotValidYet):
+	case errors.Is(err, oidc.ErrTokenNotValidYet):
 		return instrumentation.ForwardedIDTokenResultNotYetValid
 	default:
 		return instrumentation.ForwardedIDTokenResultSigInvalid
