@@ -1322,8 +1322,7 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 	// Track AT -> RT pairing for refresh-time updates
 	s.registerTokenPair(accessToken, refreshToken)
 
-	s.saveTokenMetadata(ctx, tokenMetadataParams{
-		TokenID:   accessToken,
+	s.saveTokenMetadata(ctx, accessToken, storage.TokenMetadata{
 		UserID:    authCode.UserID,
 		ClientID:  clientID,
 		TokenType: "access",
@@ -1331,8 +1330,7 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 		FamilyID:  familyID,
 		Scopes:    tokenScopes,
 	})
-	s.saveTokenMetadata(ctx, tokenMetadataParams{
-		TokenID:   refreshToken,
+	s.saveTokenMetadata(ctx, refreshToken, storage.TokenMetadata{
 		UserID:    authCode.UserID,
 		ClientID:  clientID,
 		TokenType: "refresh",
@@ -1520,8 +1518,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	// Track AT -> RT pairing for refresh-time updates
 	s.registerTokenPair(newAccessToken, newRefreshToken)
 
-	s.saveTokenMetadata(ctx, tokenMetadataParams{
-		TokenID:   newAccessToken,
+	s.saveTokenMetadata(ctx, newAccessToken, storage.TokenMetadata{
 		UserID:    userID,
 		ClientID:  clientID,
 		TokenType: "access",
@@ -1529,8 +1526,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		FamilyID:  familyID,
 		Scopes:    oldScopes,
 	})
-	s.saveTokenMetadata(ctx, tokenMetadataParams{
-		TokenID:   newRefreshToken,
+	s.saveTokenMetadata(ctx, newRefreshToken, storage.TokenMetadata{
 		UserID:    userID,
 		ClientID:  clientID,
 		TokenType: "refresh",

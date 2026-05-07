@@ -541,37 +541,18 @@ func (s *Server) TokenStore() storage.TokenStore {
 	return s.tokenStore
 }
 
-// tokenMetadataParams bundles the parameters for saveTokenMetadata to avoid
-// a long positional-string parameter list that is easy to misorder.
-type tokenMetadataParams struct {
-	TokenID   string
-	UserID    string
-	ClientID  string
-	TokenType string
-	Audience  string
-	FamilyID  string
-	Scopes    []string
-}
-
 // saveTokenMetadata writes token metadata to the configured store. Backends
 // that do not implement storage.TokenMetadataStore are silently skipped —
-// metadata is observability scaffolding (revocation tracking, scope
-// validation, family bookkeeping) and a missing implementation reduces
-// observability rather than breaking the OAuth flow.
-func (s *Server) saveTokenMetadata(ctx context.Context, p tokenMetadataParams) {
+// metadata is observability scaffolding (audit, scope validation, family
+// bookkeeping) and a missing implementation reduces observability rather
+// than breaking the OAuth flow. metadata.IssuedAt on the input is ignored;
+// backends populate it from the wall clock at write time.
+func (s *Server) saveTokenMetadata(ctx context.Context, tokenID string, metadata storage.TokenMetadata) {
 	store, ok := s.tokenStore.(storage.TokenMetadataStore)
 	if !ok {
 		return
 	}
-	err := store.SaveTokenMetadata(ctx, p.TokenID, storage.TokenMetadata{
-		UserID:    p.UserID,
-		ClientID:  p.ClientID,
-		TokenType: p.TokenType,
-		Audience:  p.Audience,
-		FamilyID:  p.FamilyID,
-		Scopes:    p.Scopes,
-	})
-	if err != nil {
+	if err := store.SaveTokenMetadata(ctx, tokenID, metadata); err != nil {
 		s.Logger.Warn("Failed to save token metadata", "error", err)
 	}
 }
