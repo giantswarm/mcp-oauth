@@ -1031,8 +1031,8 @@ func TestTokenRevocationStore_RevokeAllTokensForUserClient(t *testing.T) {
 	_ = s.SaveRefreshTokenWithFamily(ctx, "user-client-token-2", "revoke-user", "revoke-client", "uc-family", 2, time.Now().Add(time.Hour))
 
 	// Also save token metadata for these
-	_ = s.SaveTokenMetadata("user-client-token-1", "revoke-user", "revoke-client", "refresh")
-	_ = s.SaveTokenMetadata("user-client-token-2", "revoke-user", "revoke-client", "refresh")
+	_ = s.SaveTokenMetadata(context.Background(), "user-client-token-1", storage.TokenMetadata{UserID: "revoke-user", ClientID: "revoke-client", TokenType: "refresh"})
+	_ = s.SaveTokenMetadata(context.Background(), "user-client-token-2", storage.TokenMetadata{UserID: "revoke-user", ClientID: "revoke-client", TokenType: "refresh"})
 
 	// Revoke all
 	count, err := s.RevokeAllTokensForUserClient(ctx, "revoke-user", "revoke-client")
@@ -1071,7 +1071,7 @@ func TestTokenRevocationStore_GetTokensByUserClient(t *testing.T) {
 func TestTokenRevocationStore_SaveTokenMetadataWithScopesAndAudience(t *testing.T) {
 	s := testStore(t)
 
-	err := s.SaveTokenMetadataWithScopesAndAudience("meta-token-1", "user1", "client1", "access", testAudienceURL, []string{"read", "write"})
+	err := s.SaveTokenMetadata(context.Background(), "meta-token-1", storage.TokenMetadata{UserID: "user1", ClientID: "client1", TokenType: "access", Audience: testAudienceURL, Scopes: []string{"read", "write"}})
 	if err != nil {
 		t.Fatalf("SaveTokenMetadataWithScopesAndAudience failed: %v", err)
 	}
@@ -1729,7 +1729,7 @@ func TestStore_CountKeysByPattern(t *testing.T) {
 func TestStore_SaveTokenMetadataWithFamily(t *testing.T) {
 	s := testStore(t)
 
-	err := s.SaveTokenMetadataWithFamily("family-meta-1", "user1", "client1", "access", testAudienceURL, "family-xyz", []string{"openid", "email"})
+	err := s.SaveTokenMetadata(context.Background(), "family-meta-1", storage.TokenMetadata{UserID: "user1", ClientID: "client1", TokenType: "access", Audience: testAudienceURL, FamilyID: "family-xyz", Scopes: []string{"openid", "email"}})
 	if err != nil {
 		t.Fatalf("SaveTokenMetadataWithFamily failed: %v", err)
 	}
@@ -1759,7 +1759,7 @@ func TestStore_SaveTokenMetadataWithFamily(t *testing.T) {
 func TestStore_SaveTokenMetadataWithFamily_EmptyFamilyID(t *testing.T) {
 	s := testStore(t)
 
-	err := s.SaveTokenMetadataWithFamily("family-meta-empty", "user1", "client1", "refresh", "", "", nil)
+	err := s.SaveTokenMetadata(context.Background(), "family-meta-empty", storage.TokenMetadata{UserID: "user1", ClientID: "client1", TokenType: "refresh", Audience: "", FamilyID: "", Scopes: nil})
 	if err != nil {
 		t.Fatalf("SaveTokenMetadataWithFamily failed: %v", err)
 	}
@@ -1777,7 +1777,7 @@ func TestStore_SaveTokenMetadataWithFamily_EmptyFamilyID(t *testing.T) {
 func TestStore_SaveTokenMetadataWithScopesAndAudience_DelegatesToFamily(t *testing.T) {
 	s := testStore(t)
 
-	err := s.SaveTokenMetadataWithScopesAndAudience("family-delegate-1", "user1", "client1", "access", testAudienceURL, []string{"read"})
+	err := s.SaveTokenMetadata(context.Background(), "family-delegate-1", storage.TokenMetadata{UserID: "user1", ClientID: "client1", TokenType: "access", Audience: testAudienceURL, Scopes: []string{"read"}})
 	if err != nil {
 		t.Fatalf("SaveTokenMetadataWithScopesAndAudience failed: %v", err)
 	}

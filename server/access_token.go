@@ -3,11 +3,12 @@ package server
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
 	josejwt "github.com/go-jose/go-jose/v4/jwt"
+
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 )
 
 // AccessTokenClaims is the input passed to AccessTokenIssuer.Issue. It carries
@@ -173,7 +174,7 @@ func (j *jwtIssuer) Issue(_ context.Context, c AccessTokenClaims) (string, error
 			ID:       jti,
 		},
 		ClientID: c.ClientID,
-		Scope:    joinScopes(c.Scopes),
+		Scope:    helpers.JoinScopes(c.Scopes),
 		Email:    c.Email,
 		Groups:   c.Groups,
 		FamilyID: c.FamilyID,
@@ -184,18 +185,6 @@ func (j *jwtIssuer) Issue(_ context.Context, c AccessTokenClaims) (string, error
 		return "", fmt.Errorf("sign access token: %w", err)
 	}
 	return signed, nil
-}
-
-// joinScopes concatenates non-empty scopes with single spaces per RFC 6749
-// §3.3 scope encoding. Empty entries are dropped to avoid stray separators.
-func joinScopes(scopes []string) string {
-	out := scopes[:0:0]
-	for _, s := range scopes {
-		if s != "" {
-			out = append(out, s)
-		}
-	}
-	return strings.Join(out, " ")
 }
 
 // publicJWKFromConfig returns a single public JWK for the configured access

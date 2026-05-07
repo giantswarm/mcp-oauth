@@ -14,6 +14,7 @@ import (
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/server"
+	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
@@ -379,7 +380,7 @@ func TestValidateTokenWithScopeValidation(t *testing.T) {
 			}
 
 			// Store token metadata with scopes
-			if err := store.SaveTokenMetadataWithScopesAndAudience(accessToken, userID, "test_client", "access", "", tt.tokenScopes); err != nil {
+			if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: userID, ClientID: "test_client", TokenType: "access", Audience: "", Scopes: tt.tokenScopes}); err != nil {
 				t.Fatalf("Failed to save token metadata: %v", err)
 			}
 
@@ -518,7 +519,7 @@ func TestTokenMetadataWithScopes(t *testing.T) {
 	scopes := []string{"files:read", "files:write", "user:profile"}
 
 	// Save token metadata with scopes
-	err := store.SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID, "access", audience, scopes)
+	err := store.SaveTokenMetadata(context.Background(), tokenID, storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access", Audience: audience, Scopes: scopes})
 	if err != nil {
 		t.Fatalf("Failed to save token metadata: %v", err)
 	}
@@ -783,7 +784,7 @@ func TestValidateTokenScopesLongPathSanitization(t *testing.T) {
 	}
 
 	// Store token metadata with insufficient scopes
-	if err := store.SaveTokenMetadataWithScopesAndAudience(accessToken, userID, "test_client", "access", "", []string{"files:write"}); err != nil {
+	if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: userID, ClientID: "test_client", TokenType: "access", Audience: "", Scopes: []string{"files:write"}}); err != nil {
 		t.Fatalf("Failed to save token metadata: %v", err)
 	}
 
@@ -1037,7 +1038,7 @@ func TestHideEndpointPathInErrors(t *testing.T) {
 				t.Fatalf("Failed to save token: %v", err)
 			}
 
-			if err := store.SaveTokenMetadataWithScopesAndAudience(accessToken, userID, "test_client", "access", "", []string{}); err != nil {
+			if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: userID, ClientID: "test_client", TokenType: "access", Audience: "", Scopes: []string{}}); err != nil {
 				t.Fatalf("Failed to save token metadata: %v", err)
 			}
 

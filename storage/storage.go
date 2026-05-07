@@ -137,28 +137,16 @@ type TokenStore interface {
 	AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken string) (userID string, clientID string, providerToken *oauth2.Token, err error)
 }
 
-// TokenMetadataStore is the basic interface for storing token metadata.
-// This allows tracking which tokens belong to which user and client for revocation purposes.
+// TokenMetadataStore stores write-side token metadata used for revocation
+// tracking (RFC 7009), audience binding (RFC 8707), scope validation
+// (MCP 2025-11-25), and refresh-token-family bookkeeping (OAuth 2.1
+// reuse detection). The whole metadata payload travels in a single
+// TokenMetadata struct so adding a new field is a single-place change
+// rather than a new interface.
+//
+// Implementations populate IssuedAt with the wall-clock time of the call.
 type TokenMetadataStore interface {
-	SaveTokenMetadata(tokenID, userID, clientID, tokenType string) error
-}
-
-// TokenMetadataStoreWithAudience extends TokenMetadataStore with RFC 8707 audience support.
-// This allows binding tokens to specific resource servers to prevent token theft.
-type TokenMetadataStoreWithAudience interface {
-	SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenType, audience string) error
-}
-
-// TokenMetadataStoreWithScopesAndAudience extends with MCP 2025-11-25 scope support.
-// This allows tracking which scopes were granted to a token for scope validation.
-type TokenMetadataStoreWithScopesAndAudience interface {
-	SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID, tokenType, audience string, scopes []string) error
-}
-
-// TokenMetadataStoreWithFamily extends with refresh token family ID support.
-// This allows tracking which session (token family) a token belongs to.
-type TokenMetadataStoreWithFamily interface {
-	SaveTokenMetadataWithFamily(tokenID, userID, clientID, tokenType, audience, familyID string, scopes []string) error
+	SaveTokenMetadata(ctx context.Context, tokenID string, metadata TokenMetadata) error
 }
 
 // TokenMetadataGetter provides read access to token metadata.

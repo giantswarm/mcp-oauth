@@ -11,6 +11,8 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	josejwt "github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/require"
+
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 )
 
 func TestOpaqueIssuer_IssueProducesRandomToken(t *testing.T) {
@@ -165,9 +167,9 @@ func TestPublicJWKFromConfig_ECDSAEncoding(t *testing.T) {
 }
 
 func TestJoinScopes(t *testing.T) {
-	require.Equal(t, "", joinScopes(nil))
-	require.Equal(t, "", joinScopes([]string{}))
-	require.Equal(t, "openid", joinScopes([]string{"openid"}))
-	require.Equal(t, "openid profile email", joinScopes([]string{"openid", "profile", "email"}))
-	require.Equal(t, "openid email", joinScopes([]string{"openid", "", "email"}), "empties dropped")
+	require.Equal(t, "", helpers.JoinScopes(nil))
+	require.Equal(t, "", helpers.JoinScopes([]string{}))
+	require.Equal(t, "openid", helpers.JoinScopes([]string{"openid"}))
+	require.Equal(t, "openid profile email", helpers.JoinScopes([]string{"openid", "profile", "email"}))
+	require.Equal(t, "openid email", helpers.JoinScopes([]string{"openid", "", "email"}), "empties dropped")
 }

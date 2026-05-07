@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
@@ -508,7 +508,7 @@ func metadataToClient(metadata *ClientMetadata) *storage.Client {
 	// Parse scope string into slice
 	var scopes []string
 	if metadata.Scope != "" {
-		scopes = parseScopes(metadata.Scope)
+		scopes = helpers.SplitScopes(metadata.Scope)
 	}
 
 	// Default to public client (token_endpoint_auth_method="none")
@@ -529,15 +529,6 @@ func metadataToClient(metadata *ClientMetadata) *storage.Client {
 		Scopes:                  scopes,
 		CreatedAt:               time.Now(),
 	}
-}
-
-// parseScopes splits a space-delimited scope string into a slice
-// Uses strings.Fields which automatically handles multiple spaces and trimming
-func parseScopes(scopeStr string) []string {
-	if scopeStr == "" {
-		return nil
-	}
-	return strings.Fields(scopeStr)
 }
 
 // recordCIMDCacheMetric records CIMD cache metrics if instrumentation is enabled

@@ -1541,7 +1541,7 @@ func TestStore_SaveTokenMetadataWithFamily(t *testing.T) {
 	store := New()
 	defer store.Stop()
 
-	err := store.SaveTokenMetadataWithFamily("token-1", "user-1", "client-1", "access", testAudienceURL, "family-abc", []string{"openid", "email"})
+	err := store.SaveTokenMetadata(context.Background(), "token-1", storage.TokenMetadata{UserID: "user-1", ClientID: "client-1", TokenType: "access", Audience: testAudienceURL, FamilyID: "family-abc", Scopes: []string{"openid", "email"}})
 	if err != nil {
 		t.Fatalf("SaveTokenMetadataWithFamily() error = %v", err)
 	}
@@ -1575,7 +1575,7 @@ func TestStore_SaveTokenMetadataWithFamily_EmptyFamilyID(t *testing.T) {
 	store := New()
 	defer store.Stop()
 
-	err := store.SaveTokenMetadataWithFamily("token-2", "user-1", "client-1", "refresh", "", "", nil)
+	err := store.SaveTokenMetadata(context.Background(), "token-2", storage.TokenMetadata{UserID: "user-1", ClientID: "client-1", TokenType: "refresh", Audience: "", FamilyID: "", Scopes: nil})
 	if err != nil {
 		t.Fatalf("SaveTokenMetadataWithFamily() error = %v", err)
 	}
@@ -1607,7 +1607,7 @@ func TestStore_SaveTokenMetadataWithFamily_ValidationErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := store.SaveTokenMetadataWithFamily(tt.tokenID, tt.userID, tt.clientID, "access", "", "family-1", nil)
+			err := store.SaveTokenMetadata(context.Background(), tt.tokenID, storage.TokenMetadata{UserID: tt.userID, ClientID: tt.clientID, TokenType: "access", Audience: "", FamilyID: "family-1", Scopes: nil})
 			if err == nil {
 				t.Errorf("SaveTokenMetadataWithFamily() should fail for %s", tt.name)
 			}
@@ -1619,7 +1619,7 @@ func TestStore_SaveTokenMetadataWithScopesAndAudience_DelegatesToFamily(t *testi
 	store := New()
 	defer store.Stop()
 
-	err := store.SaveTokenMetadataWithScopesAndAudience("token-d", "user-1", "client-1", "access", testAudienceURL, []string{"read"})
+	err := store.SaveTokenMetadata(context.Background(), "token-d", storage.TokenMetadata{UserID: "user-1", ClientID: "client-1", TokenType: "access", Audience: testAudienceURL, Scopes: []string{"read"}})
 	if err != nil {
 		t.Fatalf("SaveTokenMetadataWithScopesAndAudience() error = %v", err)
 	}
