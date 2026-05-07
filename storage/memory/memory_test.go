@@ -1537,13 +1537,13 @@ func TestStore_SetLogger(_ *testing.T) {
 	// Just verify no panic
 }
 
-func TestStore_SaveTokenMetadataWithFamily(t *testing.T) {
+func TestStore_SaveTokenMetadata_WithFamilyID(t *testing.T) {
 	store := New()
 	defer store.Stop()
 
 	err := store.SaveTokenMetadata(context.Background(), "token-1", storage.TokenMetadata{UserID: "user-1", ClientID: "client-1", TokenType: "access", Audience: testAudienceURL, FamilyID: "family-abc", Scopes: []string{"openid", "email"}})
 	if err != nil {
-		t.Fatalf("SaveTokenMetadataWithFamily() error = %v", err)
+		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
 
 	meta, err := store.GetTokenMetadata("token-1")
@@ -1571,13 +1571,13 @@ func TestStore_SaveTokenMetadataWithFamily(t *testing.T) {
 	}
 }
 
-func TestStore_SaveTokenMetadataWithFamily_EmptyFamilyID(t *testing.T) {
+func TestStore_SaveTokenMetadata_EmptyFamilyID(t *testing.T) {
 	store := New()
 	defer store.Stop()
 
 	err := store.SaveTokenMetadata(context.Background(), "token-2", storage.TokenMetadata{UserID: "user-1", ClientID: "client-1", TokenType: "refresh", Audience: "", FamilyID: "", Scopes: nil})
 	if err != nil {
-		t.Fatalf("SaveTokenMetadataWithFamily() error = %v", err)
+		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
 
 	meta, err := store.GetTokenMetadata("token-2")
@@ -1590,7 +1590,7 @@ func TestStore_SaveTokenMetadataWithFamily_EmptyFamilyID(t *testing.T) {
 	}
 }
 
-func TestStore_SaveTokenMetadataWithFamily_ValidationErrors(t *testing.T) {
+func TestStore_SaveTokenMetadata_ValidationErrors(t *testing.T) {
 	store := New()
 	defer store.Stop()
 
@@ -1609,19 +1609,19 @@ func TestStore_SaveTokenMetadataWithFamily_ValidationErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			err := store.SaveTokenMetadata(context.Background(), tt.tokenID, storage.TokenMetadata{UserID: tt.userID, ClientID: tt.clientID, TokenType: "access", Audience: "", FamilyID: "family-1", Scopes: nil})
 			if err == nil {
-				t.Errorf("SaveTokenMetadataWithFamily() should fail for %s", tt.name)
+				t.Errorf("SaveTokenMetadata() should fail for %s", tt.name)
 			}
 		})
 	}
 }
 
-func TestStore_SaveTokenMetadataWithScopesAndAudience_DelegatesToFamily(t *testing.T) {
+func TestStore_SaveTokenMetadata_WithScopesAndAudience(t *testing.T) {
 	store := New()
 	defer store.Stop()
 
 	err := store.SaveTokenMetadata(context.Background(), "token-d", storage.TokenMetadata{UserID: "user-1", ClientID: "client-1", TokenType: "access", Audience: testAudienceURL, Scopes: []string{"read"}})
 	if err != nil {
-		t.Fatalf("SaveTokenMetadataWithScopesAndAudience() error = %v", err)
+		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
 
 	meta, err := store.GetTokenMetadata("token-d")

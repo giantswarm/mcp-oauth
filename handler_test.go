@@ -5873,7 +5873,7 @@ func TestHandler_ValidateToken_SessionIDFromContext_WithFamilyID(t *testing.T) {
 	}
 
 	if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: "mock-user-123", ClientID: "client-1", TokenType: "access", Audience: "", FamilyID: familyID, Scopes: nil}); err != nil {
-		t.Fatalf("SaveTokenMetadataWithFamily() error = %v", err)
+		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
 
 	var capturedSessionID string
@@ -5978,7 +5978,7 @@ func TestHandler_ValidateToken_UserInfoAndSessionIDCoexist(t *testing.T) {
 	}
 
 	if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: "mock-user-123", ClientID: "client-1", TokenType: "access", Audience: "", FamilyID: familyID, Scopes: nil}); err != nil {
-		t.Fatalf("SaveTokenMetadataWithFamily() error = %v", err)
+		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
 
 	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {

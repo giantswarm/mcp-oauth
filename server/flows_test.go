@@ -8276,7 +8276,7 @@ func TestServer_TokenRefreshHandler_CalledOnProactiveRefresh(t *testing.T) {
 
 	// Save token metadata so the handler can retrieve userID/familyID
 	if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: testMockUserID, ClientID: "test-client", TokenType: "access", Audience: "", FamilyID: "test-family-id", Scopes: nil}); err != nil {
-		t.Fatalf("SaveTokenMetadataWithFamily() error = %v", err)
+		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
 
 	_, err := srv.ValidateToken(ctx, accessToken)
@@ -8339,7 +8339,7 @@ func TestServer_TokenRefreshHandler_CalledOnExpiredTokenRefresh(t *testing.T) {
 	}
 
 	if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: testMockUserID, ClientID: "test-client", TokenType: "access", Audience: "", FamilyID: "expired-family-id", Scopes: nil}); err != nil {
-		t.Fatalf("SaveTokenMetadataWithFamily() error = %v", err)
+		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
 
 	_, err := srv.ValidateToken(ctx, accessToken)

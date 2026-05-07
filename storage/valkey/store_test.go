@@ -1068,12 +1068,12 @@ func TestTokenRevocationStore_GetTokensByUserClient(t *testing.T) {
 	}
 }
 
-func TestTokenRevocationStore_SaveTokenMetadataWithScopesAndAudience(t *testing.T) {
+func TestTokenRevocationStore_SaveTokenMetadata_WithScopesAndAudience(t *testing.T) {
 	s := testStore(t)
 
 	err := s.SaveTokenMetadata(context.Background(), "meta-token-1", storage.TokenMetadata{UserID: "user1", ClientID: "client1", TokenType: "access", Audience: testAudienceURL, Scopes: []string{"read", "write"}})
 	if err != nil {
-		t.Fatalf("SaveTokenMetadataWithScopesAndAudience failed: %v", err)
+		t.Fatalf("SaveTokenMetadata failed: %v", err)
 	}
 
 	meta, err := s.GetTokenMetadata("meta-token-1")
@@ -1726,12 +1726,12 @@ func TestStore_CountKeysByPattern(t *testing.T) {
 	}
 }
 
-func TestStore_SaveTokenMetadataWithFamily(t *testing.T) {
+func TestStore_SaveTokenMetadata_WithFamilyID(t *testing.T) {
 	s := testStore(t)
 
 	err := s.SaveTokenMetadata(context.Background(), "family-meta-1", storage.TokenMetadata{UserID: "user1", ClientID: "client1", TokenType: "access", Audience: testAudienceURL, FamilyID: "family-xyz", Scopes: []string{"openid", "email"}})
 	if err != nil {
-		t.Fatalf("SaveTokenMetadataWithFamily failed: %v", err)
+		t.Fatalf("SaveTokenMetadata failed: %v", err)
 	}
 
 	meta, err := s.GetTokenMetadata("family-meta-1")
@@ -1756,12 +1756,12 @@ func TestStore_SaveTokenMetadataWithFamily(t *testing.T) {
 	}
 }
 
-func TestStore_SaveTokenMetadataWithFamily_EmptyFamilyID(t *testing.T) {
+func TestStore_SaveTokenMetadata_EmptyFamilyID(t *testing.T) {
 	s := testStore(t)
 
 	err := s.SaveTokenMetadata(context.Background(), "family-meta-empty", storage.TokenMetadata{UserID: "user1", ClientID: "client1", TokenType: "refresh", Audience: "", FamilyID: "", Scopes: nil})
 	if err != nil {
-		t.Fatalf("SaveTokenMetadataWithFamily failed: %v", err)
+		t.Fatalf("SaveTokenMetadata failed: %v", err)
 	}
 
 	meta, err := s.GetTokenMetadata("family-meta-empty")
@@ -1774,12 +1774,12 @@ func TestStore_SaveTokenMetadataWithFamily_EmptyFamilyID(t *testing.T) {
 	}
 }
 
-func TestStore_SaveTokenMetadataWithScopesAndAudience_DelegatesToFamily(t *testing.T) {
+func TestStore_SaveTokenMetadata_WithScopesAndAudience(t *testing.T) {
 	s := testStore(t)
 
 	err := s.SaveTokenMetadata(context.Background(), "family-delegate-1", storage.TokenMetadata{UserID: "user1", ClientID: "client1", TokenType: "access", Audience: testAudienceURL, Scopes: []string{"read"}})
 	if err != nil {
-		t.Fatalf("SaveTokenMetadataWithScopesAndAudience failed: %v", err)
+		t.Fatalf("SaveTokenMetadata failed: %v", err)
 	}
 
 	meta, err := s.GetTokenMetadata("family-delegate-1")
