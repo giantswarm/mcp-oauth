@@ -125,6 +125,9 @@ func NewJWKSClientWithOptions(opts JWKSClientOptions) *JWKSClient {
 		if opts.AllowPrivateIP {
 			httpClient = NewPrivateIPAllowedHTTPClient(DefaultHTTPTimeout)
 		} else {
+			// SECURITY: SSRF-safe client validates resolved IPs at connection
+			// time (DNS rebinding protection) and blocks private, loopback, and
+			// link-local addresses.
 			httpClient = NewSSRFSafeHTTPClient(DefaultHTTPTimeout)
 		}
 	}
