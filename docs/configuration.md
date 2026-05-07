@@ -265,6 +265,52 @@ config := &server.Config{
 }
 ```
 
+### Access Token Format (Opaque vs JWT)
+
+The library issues access tokens in one of two formats. Default is opaque; JWT is opt-in.
+
+| Field | Type | Default | Required when | Notes |
+|---|---|---|---|---|
+| `AccessTokenFormat` | `server.AccessTokenFormat` | `AccessTokenFormatOpaque` | always (use default) | `AccessTokenFormatOpaque` (256-bit random key) or `AccessTokenFormatJWT` (RFC 9068 signed JWT). Empty string is treated as opaque for backward compatibility. Other values rejected at startup. |
+| `AccessTokenSigningKey` | `crypto.Signer` | `nil` | JWT mode | `*rsa.PrivateKey` or `*ecdsa.PrivateKey` (P-256 / P-384). Load from a mounted Secret, HSM, or KMS. Never check into source. |
+| `AccessTokenSigningKeyID` | `string` | `""` | JWT mode | Stable JWK `kid`. Rotated together with the key on operator changes. |
+| `AccessTokenSigningAlgorithm` | `string` | `""` | JWT mode | One of `RS256`, `RS384`, `RS512`, `ES256`, `ES384`. HMAC variants and `none` are rejected by design. Must match the key family. |
+
+**Validation rules** (`Config.Validate()`, run by `server.New`):
+
+- Opaque mode (default): no signing fields are needed; if any are set, they're ignored.
+- JWT mode: all three signing fields must be set.
+- Algorithm must be in the closed accepted set; HMAC and `none` are rejected.
+- Key family must match the algorithm: `RS*` requires `*rsa.PrivateKey`; `ES256` requires P-256; `ES384` requires P-384.
+
+**Example: JWT mode**
+
+```go
+key, _ := rsa.GenerateKey(rand.Reader, 4096) // load from secret in production
+
+cfg := &server.Config{
+    Issuer:                       "https://auth.example.com",
+    ResourceIdentifier:           "https://api.example.com",
+    AccessTokenFormat:            server.AccessTokenFormatJWT,
+    AccessTokenSigningKey:        key,
+    AccessTokenSigningKeyID:      "kid-2026-Q2",
+    AccessTokenSigningAlgorithm:  server.SigningAlgorithmRS256,
+    AccessTokenTTL:               900, // 15 min — recommended for stateless JWT mode
+}
+```
+
+**Example: opaque mode (default — same as v1)**
+
+```go
+cfg := &server.Config{
+    Issuer:             "https://auth.example.com",
+    ResourceIdentifier: "https://api.example.com",
+    AccessTokenTTL:     3600, // 1 hour — refresh-token rotation provides session control
+}
+```
+
+For the opaque-vs-JWT trade-off and threat model, see [SECURITY_ARCHITECTURE.md → Access Token Format Modes](../SECURITY_ARCHITECTURE.md#access-token-format-modes).
+
 ## Session & Token Lifecycle Callbacks
 
 The server provides three lifecycle callbacks that let consumers react to key events during OAuth session management. All callbacks are **synchronous** -- they execute in the HTTP request goroutine before the response is sent. If your handler performs slow or blocking operations (network calls, database writes), derive a new context with its own deadline and run the work asynchronously.

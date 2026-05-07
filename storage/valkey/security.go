@@ -185,6 +185,44 @@ func (s *Store) GetRefreshTokenFamily(ctx context.Context, refreshToken string) 
 	return getAndUnmarshal(op.ctx, s, s.refreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
 }
 
+// GetRefreshTokenFamilyByID returns family metadata indexed by family ID
+// (storage.RefreshTokenFamilyByIDStore). Lookups read one member of the
+// {prefix}family:{familyID} Set and follow it to the per-token metadata
+// hash; the family fields (FamilyID, UserID, ClientID, Revoked,
+// RevokedAt, IssuedAt) are identical across the Set's members so any
+// member is representative.
+//
+// Returns ErrRefreshTokenFamilyNotFound when the Set is empty (also when
+// the family was wiped by retention cleanup).
+func (s *Store) GetRefreshTokenFamilyByID(ctx context.Context, familyID string) (result *storage.RefreshTokenFamilyMetadata, err error) {
+	op := s.startTracedOp(ctx, "get_refresh_token_family_by_id")
+	defer op.end(&err)
+
+	if familyID == "" {
+		return nil, storage.ErrRefreshTokenFamilyNotFound
+	}
+
+	familySetKey := s.familyKey(familyID)
+	tokens, err := s.client.Do(op.ctx, s.client.B().Smembers().Key(familySetKey).Build()).AsStrSlice()
+	if err != nil {
+		if isNilError(err) {
+			return nil, storage.ErrRefreshTokenFamilyNotFound
+		}
+		return nil, fmt.Errorf("read family members: %w", err)
+	}
+	if len(tokens) == 0 {
+		return nil, storage.ErrRefreshTokenFamilyNotFound
+	}
+
+	for _, refreshToken := range tokens {
+		meta, err := getAndUnmarshal(op.ctx, s, s.refreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
+		if err == nil && meta != nil {
+			return meta, nil
+		}
+	}
+	return nil, storage.ErrRefreshTokenFamilyNotFound
+}
+
 // RevokeRefreshTokenFamily revokes all tokens in a family (for reuse detection)
 // This is called when token reuse is detected (OAuth 2.1 security requirement)
 func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) (err error) {

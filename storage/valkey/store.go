@@ -125,6 +125,7 @@ var (
 	_ storage.TokenRevocationStore                    = (*Store)(nil)
 	_ storage.TokenMetadataStoreWithFamily            = (*Store)(nil)
 	_ storage.TokenMetadataStoreWithScopesAndAudience = (*Store)(nil)
+	_ storage.RevokedTokenStore                       = (*Store)(nil)
 )
 
 // New creates a new Valkey-backed storage instance.

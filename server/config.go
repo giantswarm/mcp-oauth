@@ -2,11 +2,63 @@ package server
 
 import (
 	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/rsa"
+	"fmt"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 )
+
+// AccessTokenFormat selects how the server encodes access tokens.
+//
+// Use AccessTokenFormatOpaque (the default) to issue 256-bit random strings
+// keyed into the TokenStore. Use AccessTokenFormatJWT to issue signed JWTs
+// per RFC 9068 ("JWT Profile for OAuth 2.0 Access Tokens"); downstream
+// resource servers can then verify bearers locally against the published
+// JWKS without per-request introspection round-trips.
+type AccessTokenFormat string
+
+const (
+	// AccessTokenFormatOpaque issues 256-bit random strings as access tokens.
+	// Every bearer is a database key into TokenStore; validation requires
+	// a TokenStore lookup followed by a provider userinfo round-trip. This
+	// is the default — existing deployments behave identically when
+	// AccessTokenFormat is left empty.
+	AccessTokenFormatOpaque AccessTokenFormat = "opaque"
+
+	// AccessTokenFormatJWT issues signed JWTs as access tokens per RFC 9068.
+	// Validation is local: signature verification against the public key plus
+	// claim checks (iss, exp, aud, jti). Downstream resource servers fetch
+	// the public key from the server's JWKS endpoint.
+	AccessTokenFormatJWT AccessTokenFormat = "jwt"
+)
+
+// JWT signing algorithms accepted in AccessTokenFormatJWT mode. The set is
+// deliberately closed: HMAC variants are rejected because they require the
+// resource server to share a symmetric secret with the issuer, defeating the
+// "publish a JWKS, verify locally" model. "none" is rejected because it is
+// not signing.
+const (
+	SigningAlgorithmRS256 = "RS256"
+	SigningAlgorithmRS384 = "RS384"
+	SigningAlgorithmRS512 = "RS512"
+	SigningAlgorithmES256 = "ES256"
+	SigningAlgorithmES384 = "ES384"
+)
+
+// supportedSigningAlgorithms is the closed set of algorithms accepted for
+// access-token signing in AccessTokenFormatJWT mode.
+var supportedSigningAlgorithms = map[string]bool{
+	SigningAlgorithmRS256: true,
+	SigningAlgorithmRS384: true,
+	SigningAlgorithmRS512: true,
+	SigningAlgorithmES256: true,
+	SigningAlgorithmES384: true,
+}
 
 // DNSResolver is an interface for DNS resolution, allowing for dependency injection
 // in testing. The default implementation uses net.DefaultResolver.
@@ -51,6 +103,12 @@ const (
 
 	// EndpointPathProtectedResourceMetadata is the Protected Resource Metadata discovery path (RFC 9728)
 	EndpointPathProtectedResourceMetadata = "/.well-known/oauth-protected-resource"
+
+	// EndpointPathJWKS is the JSON Web Key Set discovery path (RFC 7517).
+	// In AccessTokenFormatJWT mode the server publishes the public half of the
+	// access-token signing key here so downstream resource servers can verify
+	// bearers locally. In AccessTokenFormatOpaque mode the endpoint returns 404.
+	EndpointPathJWKS = "/.well-known/jwks.json"
 )
 
 // Config holds OAuth server configuration
@@ -63,6 +121,52 @@ type Config struct {
 
 	// AccessTokenTTL is how long access tokens are valid
 	AccessTokenTTL int64 // seconds, default: 3600 (1 hour)
+
+	// AccessTokenFormat selects how the server encodes access tokens.
+	//
+	// AccessTokenFormatOpaque (default) — bearers are 256-bit random strings
+	// keyed into TokenStore; ValidateToken calls the upstream provider's
+	// userinfo endpoint on every request. Compatible with all providers
+	// (including GitHub OAuth Apps which do not issue JWTs upstream).
+	//
+	// AccessTokenFormatJWT — bearers are signed JWTs per RFC 9068. Downstream
+	// resource servers can verify locally against the published JWKS.
+	// Requires AccessTokenSigningKey, AccessTokenSigningKeyID, and
+	// AccessTokenSigningAlgorithm to be set.
+	//
+	// Default: "" (treated as AccessTokenFormatOpaque). Existing deployments
+	// are unaffected.
+	AccessTokenFormat AccessTokenFormat
+
+	// AccessTokenSigningKey is the private key used to sign access tokens in
+	// AccessTokenFormatJWT mode. Must be a *rsa.PrivateKey or *ecdsa.PrivateKey
+	// whose type matches AccessTokenSigningAlgorithm (RSA keys for RS*, ECDSA
+	// keys for ES*).
+	//
+	// Operators should load this from a mounted secret or KMS, never from
+	// source. Required when AccessTokenFormat is AccessTokenFormatJWT;
+	// ignored otherwise.
+	AccessTokenSigningKey crypto.Signer
+
+	// AccessTokenSigningKeyID is the JWK "kid" parameter advertised in JWT
+	// headers and the JWKS endpoint. Resource servers use this to pick the
+	// right verification key when the issuer publishes more than one. Must
+	// be a stable, non-empty identifier — rotating the key in operator
+	// configuration without changing the kid will silently break in-flight
+	// tokens whose verifiers cached the old material.
+	//
+	// Required when AccessTokenFormat is AccessTokenFormatJWT.
+	AccessTokenSigningKeyID string
+
+	// AccessTokenSigningAlgorithm is the JWS "alg" used to sign access tokens.
+	// Closed set: RS256, RS384, RS512, ES256, ES384. HMAC variants and
+	// "none" are rejected at construction time — HMAC defeats the
+	// publish-a-JWKS-and-verify-locally model, and "none" is not signing.
+	//
+	// Must match the type of AccessTokenSigningKey (RS* requires RSA, ES*
+	// requires ECDSA on the matching curve). Required when AccessTokenFormat
+	// is AccessTokenFormatJWT.
+	AccessTokenSigningAlgorithm string
 
 	// RefreshTokenTTL is how long refresh tokens are valid
 	RefreshTokenTTL int64 // seconds, default: 7776000 (90 days)
@@ -954,6 +1058,112 @@ func (c *Config) RevocationEndpoint() string {
 // IntrospectionEndpoint returns the full URL to the RFC 7662 token introspection endpoint
 func (c *Config) IntrospectionEndpoint() string {
 	return c.Issuer + EndpointPathIntrospect
+}
+
+// JWKSEndpoint returns the full URL to the JWKS discovery endpoint (RFC 7517).
+// Advertised in Authorization Server Metadata only when AccessTokenFormat is
+// AccessTokenFormatJWT.
+func (c *Config) JWKSEndpoint() string {
+	return c.Issuer + EndpointPathJWKS
+}
+
+// IsJWTAccessTokenFormat reports whether the server should issue JWTs as
+// access tokens. Empty AccessTokenFormat is treated as opaque so existing
+// deployments remain unaffected.
+func (c *Config) IsJWTAccessTokenFormat() bool {
+	return c.AccessTokenFormat == AccessTokenFormatJWT
+}
+
+// Validate enforces invariants that cannot be expressed in the type system.
+// It is called by [New] after [applySecureDefaults] and returns a non-nil
+// error if the configuration would produce a server that is unsafe to run.
+//
+// Currently this checks AccessTokenFormat consistency: in JWT mode the
+// signing key, kid, and algorithm must all be set, the algorithm must be in
+// the closed accepted set, and the algorithm must match the key type
+// (RS* with RSA, ES* with ECDSA on the matching curve). All other fields
+// are validated at construction time via applySecureDefaults / the
+// dedicated validate* helpers.
+func (c *Config) Validate() error {
+	if !c.IsJWTAccessTokenFormat() {
+		// AccessTokenFormatOpaque (or empty/unknown — treated as opaque).
+		// Reject anything that is not the explicit opaque value or empty so
+		// typos like "JWT" (uppercase) surface as configuration errors
+		// rather than silently downgrading to opaque.
+		switch c.AccessTokenFormat {
+		case "", AccessTokenFormatOpaque:
+			return nil
+		default:
+			return fmt.Errorf("AccessTokenFormat %q is not recognized (allowed: %q, %q)",
+				c.AccessTokenFormat, AccessTokenFormatOpaque, AccessTokenFormatJWT)
+		}
+	}
+
+	if c.AccessTokenSigningKey == nil {
+		return fmt.Errorf("AccessTokenSigningKey is required when AccessTokenFormat is %q", AccessTokenFormatJWT)
+	}
+	if c.AccessTokenSigningKeyID == "" {
+		return fmt.Errorf("AccessTokenSigningKeyID is required when AccessTokenFormat is %q", AccessTokenFormatJWT)
+	}
+	if c.AccessTokenSigningAlgorithm == "" {
+		return fmt.Errorf("AccessTokenSigningAlgorithm is required when AccessTokenFormat is %q", AccessTokenFormatJWT)
+	}
+	if !supportedSigningAlgorithms[c.AccessTokenSigningAlgorithm] {
+		return fmt.Errorf("AccessTokenSigningAlgorithm %q is not supported (allowed: %s); HMAC and \"none\" are rejected by design",
+			c.AccessTokenSigningAlgorithm, supportedSigningAlgorithmsList())
+	}
+	return validateSigningKeyMatchesAlgorithm(c.AccessTokenSigningKey, c.AccessTokenSigningAlgorithm)
+}
+
+// validateSigningKeyMatchesAlgorithm enforces that the configured private
+// key family (RSA or ECDSA) matches the configured JWS algorithm. This is
+// the construction-time defense against alg-confusion attacks: a
+// misconfigured server that pairs an RSA key with ES256 (or vice versa)
+// must fail to start, not start and emit unverifiable tokens.
+func validateSigningKeyMatchesAlgorithm(key crypto.Signer, alg string) error {
+	switch alg {
+	case SigningAlgorithmRS256, SigningAlgorithmRS384, SigningAlgorithmRS512:
+		if _, ok := key.(*rsa.PrivateKey); !ok {
+			return fmt.Errorf("AccessTokenSigningAlgorithm %q requires an *rsa.PrivateKey, got %T", alg, key)
+		}
+		return nil
+	case SigningAlgorithmES256:
+		return validateECDSAKeyForCurve(key, alg, "P-256")
+	case SigningAlgorithmES384:
+		return validateECDSAKeyForCurve(key, alg, "P-384")
+	default:
+		return fmt.Errorf("AccessTokenSigningAlgorithm %q is not supported", alg)
+	}
+}
+
+// validateECDSAKeyForCurve checks that key is an *ecdsa.PrivateKey on the
+// curve required by alg. ES256 requires P-256 and ES384 requires P-384;
+// RFC 7518 §3.1 binds curve to algorithm and any mismatch is treated as a
+// configuration error.
+func validateECDSAKeyForCurve(key crypto.Signer, alg, requiredCurve string) error {
+	ec, ok := key.(*ecdsa.PrivateKey)
+	if !ok {
+		return fmt.Errorf("AccessTokenSigningAlgorithm %q requires an *ecdsa.PrivateKey, got %T", alg, key)
+	}
+	if ec.Curve == nil {
+		return fmt.Errorf("AccessTokenSigningAlgorithm %q requires curve %s, ECDSA key has nil curve", alg, requiredCurve)
+	}
+	if ec.Curve.Params().Name != requiredCurve {
+		return fmt.Errorf("AccessTokenSigningAlgorithm %q requires curve %s, got %s", alg, requiredCurve, ec.Curve.Params().Name)
+	}
+	return nil
+}
+
+// supportedSigningAlgorithmsList returns the closed set of accepted
+// algorithms as a comma-separated string, sorted for deterministic error
+// messages.
+func supportedSigningAlgorithmsList() string {
+	algs := make([]string, 0, len(supportedSigningAlgorithms))
+	for a := range supportedSigningAlgorithms {
+		algs = append(algs, a)
+	}
+	sort.Strings(algs)
+	return strings.Join(algs, ", ")
 }
 
 // GetResourceIdentifier returns the resource identifier for this server

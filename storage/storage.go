@@ -181,6 +181,24 @@ type RefreshTokenFamilyStore interface {
 	RevokeRefreshTokenFamily(ctx context.Context, familyID string) error
 }
 
+// RefreshTokenFamilyByIDStore is an optional extension to
+// RefreshTokenFamilyStore that exposes a lookup by family ID. JWT-mode
+// access tokens carry family_id in their claims, but they do NOT carry
+// the refresh token, so the existing GetRefreshTokenFamily(refreshToken)
+// API cannot be reached from a JWT validation hot path. This lookup
+// closes that gap.
+//
+// Implementations must be safe to call concurrently with the rest of the
+// storage interface. Memory and Valkey both implement it.
+//
+// All methods accept context.Context for tracing and cancellation.
+type RefreshTokenFamilyByIDStore interface {
+	// GetRefreshTokenFamilyByID returns the family metadata for the given
+	// family ID. Returns ErrRefreshTokenFamilyNotFound when the family is
+	// unknown (also for revoked families that have aged out of retention).
+	GetRefreshTokenFamilyByID(ctx context.Context, familyID string) (*RefreshTokenFamilyMetadata, error)
+}
+
 // RefreshTokenFamilyMetadata contains metadata about a token family
 type RefreshTokenFamilyMetadata struct {
 	FamilyID   string
@@ -190,6 +208,36 @@ type RefreshTokenFamilyMetadata struct {
 	IssuedAt   time.Time
 	Revoked    bool
 	RevokedAt  time.Time // When this family was revoked (for forensics and cleanup)
+}
+
+// RevokedTokenStore tracks revoked self-issued JWT access tokens by jti.
+//
+// Self-issued JWTs (server.AccessTokenFormatJWT mode) are stateless: the
+// bearer carries every claim a resource server needs to validate it
+// locally. RFC 7009 token revocation must still take effect, however, so
+// the issuing server keeps a denylist of revoked jti values with their
+// original exp timestamps. Validation consults the denylist and rejects
+// matches; entries auto-expire at exp so the list stays bounded.
+//
+// The interface is optional: implementations are expected to mirror the
+// shape of TokenStore (memory + Valkey). Servers operating in opaque mode
+// do not require it — opaque revocation continues to use TokenStore
+// deletion. Servers operating in JWT mode without a RevokedTokenStore log
+// a warning at startup and accept revocation calls but do not enforce
+// them on subsequent validations.
+//
+// All methods accept context.Context for tracing and cancellation.
+type RevokedTokenStore interface {
+	// RevokeJTI marks the given JTI as revoked until the supplied
+	// expiration. Implementations MUST auto-expire the entry at expiresAt
+	// so the denylist stays bounded; an entry persisting past exp would
+	// only consume storage with no security value.
+	RevokeJTI(ctx context.Context, jti string, expiresAt time.Time) error
+
+	// IsJTIRevoked returns true if the JTI was previously revoked and the
+	// entry has not yet expired. Implementations MUST be safe to call from
+	// the validation hot path (no per-call allocation outside the lookup).
+	IsJTIRevoked(ctx context.Context, jti string) (bool, error)
 }
 
 // TokenRevocationStore supports bulk token revocation operations (OAuth 2.1 security).

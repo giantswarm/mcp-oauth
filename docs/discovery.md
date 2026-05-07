@@ -226,6 +226,53 @@ Describes the authorization server's capabilities, endpoints, and supported feat
 
 Note: `revocation_endpoint` and `introspection_endpoint` are only included when explicitly enabled via `EnableRevocationEndpoint` and `EnableIntrospectionEndpoint` configuration options.
 
+`jwks_uri` and `access_token_signing_alg_values_supported` appear only when `AccessTokenFormat` is `AccessTokenFormatJWT`. In opaque mode they are absent — the JWKS endpoint exists but returns 404, and advertising it would point clients at an endpoint with no keys.
+
+### JWKS Endpoint (RFC 7517)
+
+**Path**: `/.well-known/jwks.json`
+
+**Behavior**:
+- **JWT mode**: Returns the JSON Web Key Set containing the public half of `Config.AccessTokenSigningKey`, with `kid`, `alg`, `use="sig"`, and the key material. Cache-Control: `public, max-age=3600`. Content-Type: `application/jwk-set+json`.
+- **Opaque mode**: Returns 404. Resource servers do not need to verify locally; validation is delegated to the issuing OAuth server via `/oauth/introspect`.
+
+**Example response (JWT mode, RSA)**:
+
+```json
+{
+  "keys": [
+    {
+      "kty": "RSA",
+      "use": "sig",
+      "alg": "RS256",
+      "kid": "kid-2026-Q2",
+      "n": "0vx7agoebGcQSuuPiLJXZpt...",
+      "e": "AQAB"
+    }
+  ]
+}
+```
+
+**Example response (JWT mode, ECDSA P-256)**:
+
+```json
+{
+  "keys": [
+    {
+      "kty": "EC",
+      "use": "sig",
+      "alg": "ES256",
+      "kid": "kid-ec-1",
+      "crv": "P-256",
+      "x": "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU",
+      "y": "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0"
+    }
+  ]
+}
+```
+
+The set contains exactly one key; rotation is operator-driven (change `AccessTokenSigningKeyID` and `AccessTokenSigningKey` together, restart). Resource servers caching the JWKS for the advertised hour will refresh within an hour of the change.
+
 ### Key Fields
 
 - **`issuer`**: Canonical authorization server identifier

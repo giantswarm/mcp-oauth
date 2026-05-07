@@ -188,6 +188,30 @@ func (r *RedisStore) GetToken(userID string) (*oauth2.Token, error) {
 // ... implement remaining methods
 ```
 
+## Choosing a Token Format
+
+Before writing the server, decide what shape access tokens should have. The library supports two; the choice is operator-level and shapes the rest of the deployment.
+
+### Decision tree
+
+| Your situation | Choose | Why |
+|---|---|---|
+| Single-server deployment, MCP clients hit the OAuth server directly for every request | **Opaque** (default) | The library validates each bearer with one TokenStore lookup + one upstream userinfo call. No JWKS to publish, no signing key to manage. |
+| MCP-aware proxy (e.g. `agentgateway`) sits in front of the OAuth server and wants to validate bearers locally | **JWT** | Resource servers verify against the published JWKS. Eliminates a per-request HTTP round-trip to the OAuth server. |
+| Upstream IdP is GitHub OAuth Apps (not OIDC) | Either works | The signing key is the library's own — independent of GitHub's token shape. |
+| You rely on `Config.EncryptionKey` to protect sensitive upstream tokens at rest | **Opaque** | In opaque mode the bearer is a database key into an encrypted TokenStore; in JWT mode the access-token claims live in the bearer (refresh tokens stay opaque and encrypted in both modes). |
+| You need fine-grained, short-window revocation | **Opaque** | Revoke = delete the row. JWT mode revokes via `jti` denylist with auto-expiry — works, but in-flight tokens require short TTLs as the compensating control. |
+| You want the simplest deployment that matches v1 | **Opaque** (default) | Empty `AccessTokenFormat` is opaque. No new fields to set. |
+| You want short-lived bearers (5–15 min) and stateless validation downstream | **JWT** | Recommended TTL is 5–15 min in JWT mode; refresh-token rotation issues new JWTs. |
+
+### Rule of thumb
+
+- Default to opaque. It's what v1 was designed for, what every existing example uses, and what works in every topology.
+- Switch to JWT only when you have a concrete consumer that benefits from local validation against a published JWKS. The MCP-aware proxy use case is the obvious one.
+- The validator accepts both formats simultaneously, so progressive migration across instances is safe — no big-bang cutover required.
+
+For the full trade-off table and threat model, see [SECURITY_ARCHITECTURE.md → Access Token Format Modes](../SECURITY_ARCHITECTURE.md#access-token-format-modes). For the configuration reference, see [docs/configuration.md → Access Token Format](configuration.md#access-token-format-opaque-vs-jwt).
+
 ## Your First OAuth Server
 
 Here's a complete example that puts everything together:

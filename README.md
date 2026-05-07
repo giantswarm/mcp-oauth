@@ -14,6 +14,7 @@ A **provider-agnostic** OAuth 2.1 Authorization Server library for [Model Contex
 - **Provider Abstraction** - Google, GitHub, and Dex OAuth built-in, easy to add custom providers
 - **Storage Abstraction** - In-memory storage included, simple interface for custom backends
 - **OAuth 2.1 Security** - PKCE enforcement, refresh token rotation, secure defaults
+- **Access Token Formats** - Opaque (default) or signed JWT (RFC 9068) with published JWKS for local validation by MCP-aware proxies
 - **MCP 2025-11-25** - Protected Resource Metadata (RFC 9728), scope discovery, resource binding
 - **Silent Authentication** - OIDC prompt parameter support for seamless token refresh without user interaction
 - **Client ID Metadata Documents** - URL-based client IDs with dynamic metadata discovery

@@ -7067,7 +7067,10 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 			},
 		}
 
-		tokenResponse := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
+		tokenResponse, err := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
+		if err != nil {
+			t.Fatalf("generateAndStoreTokens() error = %v", err)
+		}
 
 		// Expiry should be capped to provider token's expiry (within a small tolerance)
 		timeDiff := tokenResponse.Expiry.Sub(providerExpiry).Abs()
@@ -7102,7 +7105,10 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 			},
 		}
 
-		tokenResponse := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
+		tokenResponse, err := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
+		if err != nil {
+			t.Fatalf("generateAndStoreTokens() error = %v", err)
+		}
 
 		// Expiry should be approximately now + AccessTokenTTL
 		expectedExpiry := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
@@ -7138,7 +7144,10 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 			},
 		}
 
-		tokenResponse := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
+		tokenResponse, err := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
+		if err != nil {
+			t.Fatalf("generateAndStoreTokens() error = %v", err)
+		}
 
 		expectedExpiry := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
 		timeDiff := tokenResponse.Expiry.Sub(expectedExpiry).Abs()
@@ -7160,7 +7169,10 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 			ProviderToken: nil,
 		}
 
-		tokenResponse := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
+		tokenResponse, err := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
+		if err != nil {
+			t.Fatalf("generateAndStoreTokens() error = %v", err)
+		}
 
 		expectedExpiry := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
 		timeDiff := tokenResponse.Expiry.Sub(expectedExpiry).Abs()
@@ -7385,7 +7397,10 @@ func TestServer_GenerateAndStoreTokens_PastExpiryIgnored(t *testing.T) {
 		},
 	}
 
-	tokenResponse := srv.generateAndStoreTokens(context.Background(), authCode, "test-client", "")
+	tokenResponse, err := srv.generateAndStoreTokens(context.Background(), authCode, "test-client", "")
+	if err != nil {
+		t.Fatalf("generateAndStoreTokens() error = %v", err)
+	}
 
 	// The expiry must be in the future (AccessTokenTTL), NOT the past provider expiry
 	if tokenResponse.Expiry.Before(time.Now()) {
