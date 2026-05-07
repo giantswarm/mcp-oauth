@@ -2,12 +2,14 @@ package server
 
 import (
 	"context"
+	"crypto"
 	"crypto/x509"
 	"fmt"
 	"testing"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/go-jose/go-jose/v4"
+	josejwt "github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 
@@ -16,6 +18,33 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
+
+// signForgeToken builds a forged JWT for negative-path tests using go-jose.
+// claims is serialized verbatim (so callers can include arbitrary keys for
+// the alg/typ/kid mutation tests). headerType is the typ extra header
+// ("at+jwt" by default for valid shape; tests override to exercise rejection).
+func signForgeToken(t *testing.T, alg jose.SignatureAlgorithm, key any, kid, headerType string, claims map[string]any) string {
+	t.Helper()
+	signingKey := jose.SigningKey{Algorithm: alg, Key: key}
+	if signer, ok := key.(crypto.Signer); ok {
+		signingKey.Key = jose.JSONWebKey{
+			Key:       signer,
+			KeyID:     kid,
+			Algorithm: string(alg),
+			Use:       "sig",
+		}
+	}
+	opts := &jose.SignerOptions{}
+	if headerType != "" {
+		opts.WithType(jose.ContentType(headerType))
+	}
+	opts.WithHeader(jose.HeaderKey("kid"), kid)
+	signer, err := jose.NewSigner(signingKey, opts)
+	require.NoError(t, err)
+	signed, err := josejwt.Signed(signer).Claims(claims).Serialize()
+	require.NoError(t, err)
+	return signed
+}
 
 // setupJWTFlowTestServer is the JWT-mode counterpart of setupFlowTestServer
 // (server/flows_test.go:37). It wires an RS256 signing key, a memory store
@@ -125,11 +154,13 @@ func TestValidateToken_SelfIssuedJWT_Expired(t *testing.T) {
 func TestValidateToken_SelfIssuedJWT_AlgConfusionRejected(t *testing.T) {
 	srv, _, _ := setupJWTFlowTestServer(t)
 
-	// Forge a JWT signed with HS256 using the public key bytes as the secret —
-	// the classic alg-confusion attack. The validator must reject it because
-	// alg pinning enforces the configured RS256 only.
+	// Forge a JWT signed with HS256 using a 32+ byte secret (the alg-confusion
+	// attack with the actual public key bytes as secret is exercised separately
+	// in TestValidateToken_SelfIssuedJWT_AlgConfusionWithPublicKeySecret). The
+	// validator must reject it because alg pinning enforces the configured
+	// RS256 only.
 	now := time.Now().UTC()
-	mapClaims := jwt.MapClaims{
+	mapClaims := map[string]any{
 		"iss":       srv.Config.Issuer,
 		"sub":       "attacker",
 		"aud":       srv.Config.GetResourceIdentifier(),
@@ -138,13 +169,9 @@ func TestValidateToken_SelfIssuedJWT_AlgConfusionRejected(t *testing.T) {
 		"jti":       "forged-jti",
 		"client_id": "any",
 	}
-	t1 := jwt.NewWithClaims(jwt.SigningMethodHS256, mapClaims)
-	t1.Header["typ"] = rfc9068TokenType
-	t1.Header["kid"] = srv.Config.AccessTokenSigningKeyID
-	signed, err := t1.SignedString([]byte("any-shared-secret"))
-	require.NoError(t, err)
+	signed := signForgeToken(t, jose.HS256, []byte("any-shared-secret-of-sufficient-length-32+"), srv.Config.AccessTokenSigningKeyID, rfc9068TokenType, mapClaims)
 
-	_, err = srv.ValidateToken(context.Background(), signed)
+	_, err := srv.ValidateToken(context.Background(), signed)
 	require.Error(t, err)
 }
 
@@ -152,7 +179,7 @@ func TestValidateToken_SelfIssuedJWT_TypHeaderRejected(t *testing.T) {
 	srv, _, _ := setupJWTFlowTestServer(t)
 
 	now := time.Now().UTC()
-	mapClaims := jwt.MapClaims{
+	mapClaims := map[string]any{
 		"iss":       srv.Config.Issuer,
 		"sub":       "user",
 		"aud":       srv.Config.GetResourceIdentifier(),
@@ -161,13 +188,9 @@ func TestValidateToken_SelfIssuedJWT_TypHeaderRejected(t *testing.T) {
 		"jti":       "j",
 		"client_id": "c",
 	}
-	t1 := jwt.NewWithClaims(jwt.SigningMethodRS256, mapClaims)
-	t1.Header["typ"] = "JWT" // not at+jwt
-	t1.Header["kid"] = srv.Config.AccessTokenSigningKeyID
-	signed, err := t1.SignedString(srv.Config.AccessTokenSigningKey)
-	require.NoError(t, err)
+	signed := signForgeToken(t, jose.RS256, srv.Config.AccessTokenSigningKey, srv.Config.AccessTokenSigningKeyID, "JWT", mapClaims)
 
-	_, err = srv.ValidateToken(context.Background(), signed)
+	_, err := srv.ValidateToken(context.Background(), signed)
 	require.Error(t, err)
 }
 
@@ -257,16 +280,15 @@ func TestGenerateAndStoreTokens_JWTMode(t *testing.T) {
 	require.True(t, isJWTShape(tokenResp.AccessToken), "JWT mode must produce a 3-segment access token")
 	require.False(t, isJWTShape(tokenResp.RefreshToken), "refresh tokens stay opaque even in JWT mode")
 
-	parsed, err := jwt.Parse(tokenResp.AccessToken, func(*jwt.Token) (any, error) {
-		return srv.Config.AccessTokenSigningKey.Public(), nil
-	})
+	parsed, err := josejwt.ParseSigned(tokenResp.AccessToken, []jose.SignatureAlgorithm{jose.RS256})
 	require.NoError(t, err)
-	claims := parsed.Claims.(jwt.MapClaims)
-	require.Equal(t, "user-1", claims["sub"])
-	require.Equal(t, "user@example.com", claims["email"])
-	require.Equal(t, "fam-1", claims["family_id"])
-	groups, _ := claims["groups"].([]any)
-	require.Equal(t, []any{"admins"}, groups)
+	var standard josejwt.Claims
+	var private rfc9068Claims
+	require.NoError(t, parsed.Claims(srv.Config.AccessTokenSigningKey.Public(), &standard, &private))
+	require.Equal(t, "user-1", standard.Subject)
+	require.Equal(t, "user@example.com", private.Email)
+	require.Equal(t, "fam-1", private.FamilyID)
+	require.Equal(t, []string{"admins"}, private.Groups)
 }
 
 // erroringFamilyByIDStore wraps a memory.Store and forces
@@ -370,7 +392,7 @@ func TestValidateToken_SelfIssuedJWT_AlgConfusionWithPublicKeySecret(t *testing.
 	require.NoError(t, err)
 
 	now := time.Now().UTC()
-	mapClaims := jwt.MapClaims{
+	mapClaims := map[string]any{
 		"iss":       srv.Config.Issuer,
 		"sub":       "attacker",
 		"aud":       srv.Config.GetResourceIdentifier(),
@@ -379,11 +401,7 @@ func TestValidateToken_SelfIssuedJWT_AlgConfusionWithPublicKeySecret(t *testing.
 		"jti":       "alg-confusion-jti",
 		"client_id": "any",
 	}
-	t1 := jwt.NewWithClaims(jwt.SigningMethodHS256, mapClaims)
-	t1.Header["typ"] = rfc9068TokenType
-	t1.Header["kid"] = srv.Config.AccessTokenSigningKeyID
-	signed, err := t1.SignedString(pubDER)
-	require.NoError(t, err)
+	signed := signForgeToken(t, jose.HS256, pubDER, srv.Config.AccessTokenSigningKeyID, rfc9068TokenType, mapClaims)
 
 	_, err = srv.ValidateToken(context.Background(), signed)
 	require.Error(t, err)
@@ -393,7 +411,7 @@ func TestValidateToken_SelfIssuedJWT_WrongKidRejected(t *testing.T) {
 	srv, _, _ := setupJWTFlowTestServer(t)
 
 	now := time.Now().UTC()
-	mapClaims := jwt.MapClaims{
+	mapClaims := map[string]any{
 		"iss":       srv.Config.Issuer,
 		"sub":       "user",
 		"aud":       srv.Config.GetResourceIdentifier(),
@@ -402,13 +420,9 @@ func TestValidateToken_SelfIssuedJWT_WrongKidRejected(t *testing.T) {
 		"jti":       "wrong-kid-jti",
 		"client_id": "c",
 	}
-	t1 := jwt.NewWithClaims(jwt.SigningMethodRS256, mapClaims)
-	t1.Header["typ"] = rfc9068TokenType
-	t1.Header["kid"] = "not-the-configured-kid"
-	signed, err := t1.SignedString(srv.Config.AccessTokenSigningKey)
-	require.NoError(t, err)
+	signed := signForgeToken(t, jose.RS256, srv.Config.AccessTokenSigningKey, "not-the-configured-kid", rfc9068TokenType, mapClaims)
 
-	_, err = srv.ValidateToken(context.Background(), signed)
+	_, err := srv.ValidateToken(context.Background(), signed)
 	require.Error(t, err)
 }
 
@@ -421,7 +435,7 @@ func TestValidateToken_SelfIssuedJWT_MultiAudienceWithTrustedMatchAccepted(t *te
 	// fail because checkJWTAudience only compared audiences[0] against the
 	// trusted list. With the multi-audience helper it must accept.
 	now := time.Now().UTC()
-	mapClaims := jwt.MapClaims{
+	mapClaims := map[string]any{
 		"iss":       srv.Config.Issuer,
 		"sub":       "user-multi-aud",
 		"aud":       []string{"unrelated", "trusted-aggregator"},
@@ -430,11 +444,7 @@ func TestValidateToken_SelfIssuedJWT_MultiAudienceWithTrustedMatchAccepted(t *te
 		"jti":       "multi-aud-jti",
 		"client_id": "c",
 	}
-	t1 := jwt.NewWithClaims(jwt.SigningMethodRS256, mapClaims)
-	t1.Header["typ"] = rfc9068TokenType
-	t1.Header["kid"] = srv.Config.AccessTokenSigningKeyID
-	signed, err := t1.SignedString(srv.Config.AccessTokenSigningKey)
-	require.NoError(t, err)
+	signed := signForgeToken(t, jose.RS256, srv.Config.AccessTokenSigningKey, srv.Config.AccessTokenSigningKeyID, rfc9068TokenType, mapClaims)
 
 	userInfo, err := srv.ValidateToken(context.Background(), signed)
 	require.NoError(t, err)
