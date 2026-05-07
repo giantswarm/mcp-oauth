@@ -23,8 +23,10 @@
 //	}
 //	defer inst.Shutdown(context.Background())
 //
-//	// Pass to server configuration
-//	server.SetInstrumentation(inst)
+//	// Pass to the server constructor as a functional option
+//	srv, err := server.New(provider, store, store, store, cfg, logger,
+//		server.WithInstrumentation(inst),
+//	)
 //
 // # Exporter Configuration
 //

@@ -315,17 +315,19 @@ For the opaque-vs-JWT trade-off and threat model, see [SECURITY_ARCHITECTURE.md 
 
 The server provides three lifecycle callbacks that let consumers react to key events during OAuth session management. All callbacks are **synchronous** -- they execute in the HTTP request goroutine before the response is sent. If your handler performs slow or blocking operations (network calls, database writes), derive a new context with its own deadline and run the work asynchronously.
 
-Register callbacks during server initialization, before the server starts handling requests.
+Register callbacks via functional options on `oauth.NewServer` / `server.New`.
 
 ### SessionCreationHandler
 
 Fires when a new session is created during authorization code exchange.
 
 ```go
-server.SetSessionCreationHandler(func(ctx context.Context, userID, familyID string, token *oauth2.Token) {
-    log.Printf("New session: user=%s session=%s", userID, familyID)
-    // Initialize per-session state, establish downstream connections, etc.
-})
+srv, err := oauth.NewServer(provider, store, store, store, cfg, logger,
+    oauth.WithSessionCreationHandler(func(ctx context.Context, userID, familyID string, token *oauth2.Token) {
+        log.Printf("New session: user=%s session=%s", userID, familyID)
+        // Initialize per-session state, establish downstream connections, etc.
+    }),
+)
 ```
 
 Requires the token store to implement `storage.RefreshTokenFamilyStore`. A warning is logged at registration if it does not.
@@ -335,7 +337,7 @@ Requires the token store to implement `storage.RefreshTokenFamilyStore`. A warni
 Fires when a session is revoked (e.g., on logout or token family revocation).
 
 ```go
-server.SetSessionRevocationHandler(func(ctx context.Context, userID, familyID string) {
+oauth.WithSessionRevocationHandler(func(ctx context.Context, userID, familyID string) {
     log.Printf("Session revoked: user=%s session=%s", userID, familyID)
     // Tear down per-session state, close downstream connections, etc.
 })
@@ -346,7 +348,7 @@ server.SetSessionRevocationHandler(func(ctx context.Context, userID, familyID st
 Fires after a provider token is refreshed, either proactively (near-expiry) or reactively (expired token encountered during validation). This eliminates the need for separate token polling or caching layers in consumers.
 
 ```go
-server.SetTokenRefreshHandler(func(ctx context.Context, userID, familyID string, newToken *oauth2.Token) {
+oauth.WithTokenRefreshHandler(func(ctx context.Context, userID, familyID string, newToken *oauth2.Token) {
     idToken, _ := newToken.Extra("id_token").(string)
     log.Printf("Token refreshed: user=%s session=%s has_id_token=%v", userID, familyID, idToken != "")
     // Update downstream caches, forward fresh ID tokens, etc.
@@ -360,7 +362,7 @@ The `userID` and `familyID` fields are populated only when the token store imple
 All three handlers run in the request goroutine. To avoid increasing response latency:
 
 ```go
-server.SetTokenRefreshHandler(func(ctx context.Context, userID, familyID string, newToken *oauth2.Token) {
+oauth.WithTokenRefreshHandler(func(ctx context.Context, userID, familyID string, newToken *oauth2.Token) {
     go func() {
         asyncCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
         defer cancel()
