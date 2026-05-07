@@ -659,36 +659,49 @@ func (s *Store) GetRefreshTokenFamily(_ context.Context, refreshToken string) (*
 }
 
 // GetActiveRefreshTokenByFamily returns the most recent (highest
-// generation) non-revoked refresh token for the family
-// (storage.ActiveRefreshTokenByFamilyStore). Linear scan, same shape as
-// GetRefreshTokenFamilyByID. Returns ErrRefreshTokenFamilyNotFound when
-// no live entry matches — including when the family was revoked.
-func (s *Store) GetActiveRefreshTokenByFamily(_ context.Context, familyID string) (string, error) {
+// generation) non-revoked refresh token for the family along with the
+// owning client ID (storage.ActiveRefreshTokenByFamilyStore). Linear
+// scan, same shape as GetRefreshTokenFamilyByID.
+//
+// Returns ErrRefreshTokenFamilyNotFound when no entry matches at all,
+// or ErrRefreshTokenFamilyRevoked when entries exist but every member
+// is revoked.
+func (s *Store) GetActiveRefreshTokenByFamily(_ context.Context, familyID string) (refreshToken, clientID string, err error) {
 	if familyID == "" {
-		return "", storage.ErrRefreshTokenFamilyNotFound
+		return "", "", storage.ErrRefreshTokenFamilyNotFound
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	var (
-		bestToken string
-		bestGen   int
-		found     bool
+		bestToken    string
+		bestClientID string
+		bestGen      int
+		bestFound    bool
+		anyEntry     bool
 	)
 	for token, family := range s.refreshTokenFamilies {
-		if family.FamilyID != familyID || family.Revoked {
+		if family.FamilyID != familyID {
 			continue
 		}
-		if !found || family.Generation > bestGen {
+		anyEntry = true
+		if family.Revoked {
+			continue
+		}
+		if !bestFound || family.Generation > bestGen {
 			bestToken = token
+			bestClientID = family.ClientID
 			bestGen = family.Generation
-			found = true
+			bestFound = true
 		}
 	}
-	if !found {
-		return "", storage.ErrRefreshTokenFamilyNotFound
+	if !bestFound {
+		if anyEntry {
+			return "", "", storage.ErrRefreshTokenFamilyRevoked
+		}
+		return "", "", storage.ErrRefreshTokenFamilyNotFound
 	}
-	return bestToken, nil
+	return bestToken, bestClientID, nil
 }
 
 // GetRefreshTokenFamilyByID returns family metadata indexed by family ID

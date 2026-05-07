@@ -28,10 +28,11 @@ import (
 //
 // Returns an error if:
 //   - the storage backend does not implement
-//     [storage.ActiveRefreshTokenByFamilyStore] or
-//     [storage.RefreshTokenFamilyByIDStore]
-//   - no active (non-revoked) refresh token is found for the family
-//   - the family has been revoked
+//     [storage.ActiveRefreshTokenByFamilyStore]
+//   - no entry for the family exists at all (wrapped
+//     [storage.ErrRefreshTokenFamilyNotFound])
+//   - the family exists but every member is revoked (wrapped
+//     [storage.ErrRefreshTokenFamilyRevoked])
 //   - the upstream provider's refresh call fails
 //
 // The same lifecycle hooks fire as for the public refresh-token-grant
@@ -71,41 +72,25 @@ func (s *Server) RefreshSession(ctx context.Context, familyID string) (*oauth2.T
 }
 
 // refreshSessionImpl is the un-coalesced body of RefreshSession. Looks up
-// the active refresh token + the owning client ID by family ID, then
-// delegates to the existing RefreshAccessToken path so rotation, reuse
-// detection, audit logging, and TokenRefreshHandler dispatch all behave
-// identically to the public token-endpoint flow.
+// the active refresh token + owning client ID with a single storage call,
+// then delegates to the existing RefreshAccessToken path so rotation,
+// reuse detection, audit logging, and TokenRefreshHandler dispatch all
+// behave identically to the public token-endpoint flow.
 func (s *Server) refreshSessionImpl(ctx context.Context, familyID string) (*oauth2.Token, error) {
 	activeStore, ok := s.tokenStore.(storage.ActiveRefreshTokenByFamilyStore)
 	if !ok {
 		return nil, fmt.Errorf("storage backend does not implement storage.ActiveRefreshTokenByFamilyStore — RefreshSession requires it")
 	}
-	indexed, ok := s.tokenStore.(storage.RefreshTokenFamilyByIDStore)
-	if !ok {
-		return nil, fmt.Errorf("storage backend does not implement storage.RefreshTokenFamilyByIDStore — RefreshSession requires it")
-	}
 
-	family, err := indexed.GetRefreshTokenFamilyByID(ctx, familyID)
-	if err != nil {
-		if errors.Is(err, storage.ErrRefreshTokenFamilyNotFound) {
-			return nil, fmt.Errorf("family %q: %w", familyID, err)
-		}
-		return nil, fmt.Errorf("lookup family by ID: %w", err)
-	}
-	if family == nil {
-		return nil, fmt.Errorf("family %q: %w", familyID, storage.ErrRefreshTokenFamilyNotFound)
-	}
-	if family.Revoked {
-		return nil, fmt.Errorf("family %q is revoked", familyID)
-	}
-
-	refreshToken, err := activeStore.GetActiveRefreshTokenByFamily(ctx, familyID)
-	if err != nil {
-		if errors.Is(err, storage.ErrRefreshTokenFamilyNotFound) {
-			return nil, fmt.Errorf("no active refresh token for family %q: %w", familyID, err)
-		}
+	refreshToken, clientID, err := activeStore.GetActiveRefreshTokenByFamily(ctx, familyID)
+	switch {
+	case errors.Is(err, storage.ErrRefreshTokenFamilyRevoked):
+		return nil, fmt.Errorf("family %q: %w", familyID, err)
+	case errors.Is(err, storage.ErrRefreshTokenFamilyNotFound):
+		return nil, fmt.Errorf("family %q: %w", familyID, err)
+	case err != nil:
 		return nil, fmt.Errorf("lookup active refresh token: %w", err)
 	}
 
-	return s.RefreshAccessToken(ctx, refreshToken, family.ClientID)
+	return s.RefreshAccessToken(ctx, refreshToken, clientID)
 }

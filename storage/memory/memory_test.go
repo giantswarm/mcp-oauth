@@ -373,44 +373,47 @@ func TestStore_GetActiveRefreshTokenByFamily(t *testing.T) {
 	expiresAt := time.Now().Add(90 * 24 * time.Hour)
 
 	t.Run("empty familyID returns NotFound", func(t *testing.T) {
-		_, err := store.GetActiveRefreshTokenByFamily(ctx, "")
+		_, _, err := store.GetActiveRefreshTokenByFamily(ctx, "")
 		if err != storage.ErrRefreshTokenFamilyNotFound {
 			t.Errorf("err = %v, want ErrRefreshTokenFamilyNotFound", err)
 		}
 	})
 
 	t.Run("unknown family returns NotFound", func(t *testing.T) {
-		_, err := store.GetActiveRefreshTokenByFamily(ctx, "no-such-family")
+		_, _, err := store.GetActiveRefreshTokenByFamily(ctx, "no-such-family")
 		if err != storage.ErrRefreshTokenFamilyNotFound {
 			t.Errorf("err = %v, want ErrRefreshTokenFamilyNotFound", err)
 		}
 	})
 
-	t.Run("returns highest-generation non-revoked token", func(t *testing.T) {
+	t.Run("returns highest-generation non-revoked token + clientID", func(t *testing.T) {
 		// Three rotations of the same family. Highest Generation wins.
 		for i, token := range []string{"rt-gen0", "rt-gen1", "rt-gen2"} {
-			if err := store.SaveRefreshTokenWithFamily(ctx, token, "u", "c", familyID, i, expiresAt); err != nil {
+			if err := store.SaveRefreshTokenWithFamily(ctx, token, "u", "client-from-rotation", familyID, i, expiresAt); err != nil {
 				t.Fatalf("seed %s: %v", token, err)
 			}
 		}
 
-		got, err := store.GetActiveRefreshTokenByFamily(ctx, familyID)
+		token, clientID, err := store.GetActiveRefreshTokenByFamily(ctx, familyID)
 		if err != nil {
 			t.Fatalf("err = %v", err)
 		}
-		if got != "rt-gen2" {
-			t.Errorf("active token = %q, want rt-gen2 (highest generation)", got)
+		if token != "rt-gen2" {
+			t.Errorf("active token = %q, want rt-gen2 (highest generation)", token)
+		}
+		if clientID != "client-from-rotation" {
+			t.Errorf("clientID = %q, want client-from-rotation", clientID)
 		}
 	})
 
-	t.Run("revoked family returns NotFound", func(t *testing.T) {
+	t.Run("revoked family returns Revoked sentinel", func(t *testing.T) {
 		if err := store.RevokeRefreshTokenFamily(ctx, familyID); err != nil {
 			t.Fatalf("revoke: %v", err)
 		}
 
-		_, err := store.GetActiveRefreshTokenByFamily(ctx, familyID)
-		if err != storage.ErrRefreshTokenFamilyNotFound {
-			t.Errorf("err = %v, want ErrRefreshTokenFamilyNotFound after revoke", err)
+		_, _, err := store.GetActiveRefreshTokenByFamily(ctx, familyID)
+		if err != storage.ErrRefreshTokenFamilyRevoked {
+			t.Errorf("err = %v, want ErrRefreshTokenFamilyRevoked after revoke", err)
 		}
 	})
 }

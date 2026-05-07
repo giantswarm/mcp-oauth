@@ -230,53 +230,80 @@ func (s *Store) GetRefreshTokenFamilyByID(ctx context.Context, familyID string) 
 }
 
 // GetActiveRefreshTokenByFamily returns the most recent (highest generation)
-// non-revoked refresh token for the family
-// (storage.ActiveRefreshTokenByFamilyStore). Iterates the same Set used by
-// GetRefreshTokenFamilyByID, fetches per-token metadata, and picks the
-// highest-Generation entry whose Revoked flag is unset.
+// non-revoked refresh token for the family along with the owning client ID
+// (storage.ActiveRefreshTokenByFamilyStore). Iterates the same Set used
+// by GetRefreshTokenFamilyByID, fetches per-token metadata, and picks
+// the highest-Generation entry whose Revoked flag is unset.
 //
-// Returns ErrRefreshTokenFamilyNotFound when the Set is empty, every
-// member's metadata is missing, or every member is revoked.
-func (s *Store) GetActiveRefreshTokenByFamily(ctx context.Context, familyID string) (active string, err error) {
+// Returns ErrRefreshTokenFamilyNotFound when the Set is empty, or
+// ErrRefreshTokenFamilyRevoked when entries exist but every reachable
+// member's metadata is revoked.
+func (s *Store) GetActiveRefreshTokenByFamily(ctx context.Context, familyID string) (refreshToken, clientID string, err error) {
 	op := s.startTracedOp(ctx, "get_active_refresh_token_by_family")
 	defer op.end(&err)
 
 	if familyID == "" {
-		return "", storage.ErrRefreshTokenFamilyNotFound
+		return "", "", storage.ErrRefreshTokenFamilyNotFound
 	}
 
-	familySetKey := s.familyKey(familyID)
-	tokens, err := s.client.Do(op.ctx, s.client.B().Smembers().Key(familySetKey).Build()).AsStrSlice()
+	tokens, err := s.readFamilyMembers(op.ctx, familyID)
 	if err != nil {
-		if isNilError(err) {
-			return "", storage.ErrRefreshTokenFamilyNotFound
-		}
-		return "", fmt.Errorf("read family members: %w", err)
+		return "", "", err
 	}
 	if len(tokens) == 0 {
-		return "", storage.ErrRefreshTokenFamilyNotFound
+		return "", "", storage.ErrRefreshTokenFamilyNotFound
 	}
 
-	var (
-		bestToken string
-		bestGen   int
-		found     bool
-	)
-	for _, refreshToken := range tokens {
-		meta, err := getAndUnmarshal(op.ctx, s, s.refreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
-		if err != nil || meta == nil || meta.Revoked {
+	bestToken, bestClientID, anyMetaSeen := s.pickActiveMember(op.ctx, tokens)
+	switch {
+	case bestToken != "":
+		return bestToken, bestClientID, nil
+	case anyMetaSeen:
+		return "", "", storage.ErrRefreshTokenFamilyRevoked
+	default:
+		return "", "", storage.ErrRefreshTokenFamilyNotFound
+	}
+}
+
+// readFamilyMembers reads the Set of refresh tokens belonging to a
+// family. Returns ErrRefreshTokenFamilyNotFound when the Set is missing
+// or unreadable as nil.
+func (s *Store) readFamilyMembers(ctx context.Context, familyID string) ([]string, error) {
+	familySetKey := s.familyKey(familyID)
+	tokens, err := s.client.Do(ctx, s.client.B().Smembers().Key(familySetKey).Build()).AsStrSlice()
+	if err != nil {
+		if isNilError(err) {
+			return nil, storage.ErrRefreshTokenFamilyNotFound
+		}
+		return nil, fmt.Errorf("read family members: %w", err)
+	}
+	return tokens, nil
+}
+
+// pickActiveMember walks the family member set and returns the
+// highest-generation non-revoked token + its client ID. The third
+// return value reports whether any parseable metadata was observed —
+// used by the caller to distinguish "family revoked" (every member
+// flagged Revoked) from "family not found" (no metadata reachable at
+// all, e.g. retention-cleanup deleted it).
+func (s *Store) pickActiveMember(ctx context.Context, tokens []string) (token, clientID string, anyMetaSeen bool) {
+	var bestGen int
+	for _, candidate := range tokens {
+		meta, err := getAndUnmarshal(ctx, s, s.refreshTokenMetaKey(candidate), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
+		if err != nil || meta == nil {
 			continue
 		}
-		if !found || meta.Generation > bestGen {
-			bestToken = refreshToken
+		anyMetaSeen = true
+		if meta.Revoked {
+			continue
+		}
+		if token == "" || meta.Generation > bestGen {
+			token = candidate
+			clientID = meta.ClientID
 			bestGen = meta.Generation
-			found = true
 		}
 	}
-	if !found {
-		return "", storage.ErrRefreshTokenFamilyNotFound
-	}
-	return bestToken, nil
+	return token, clientID, anyMetaSeen
 }
 
 // RevokeRefreshTokenFamily revokes all tokens in a family (for reuse detection)

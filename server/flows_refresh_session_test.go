@@ -84,12 +84,8 @@ func TestRefreshSession_RevokedFamily(t *testing.T) {
 
 	_, err := srv.RefreshSession(ctx, familyID)
 	require.Error(t, err, "RefreshSession on a revoked family must fail")
-	// The family-by-ID lookup runs first and short-circuits on
-	// family.Revoked, producing the explicit "is revoked" message.
-	// Pinning this string fails closed: a refactor that swallows the
-	// revoke check (e.g. by reordering the lookups) would no longer
-	// produce this text and the test would catch it.
-	require.Contains(t, err.Error(), "is revoked")
+	require.True(t, errors.Is(err, storage.ErrRefreshTokenFamilyRevoked),
+		"want wrapped ErrRefreshTokenFamilyRevoked, got %v", err)
 }
 
 func TestRefreshSession_ProviderRefreshFails(t *testing.T) {
