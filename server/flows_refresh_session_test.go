@@ -84,10 +84,12 @@ func TestRefreshSession_RevokedFamily(t *testing.T) {
 
 	_, err := srv.RefreshSession(ctx, familyID)
 	require.Error(t, err, "RefreshSession on a revoked family must fail")
-	// After revoke, GetActiveRefreshTokenByFamily returns
-	// ErrRefreshTokenFamilyNotFound (no non-revoked entry); the family
-	// metadata lookup also flags Revoked. Either path produces an error.
-	require.NotContains(t, err.Error(), "no error", "sanity")
+	// The family-by-ID lookup runs first and short-circuits on
+	// family.Revoked, producing the explicit "is revoked" message.
+	// Pinning this string fails closed: a refactor that swallows the
+	// revoke check (e.g. by reordering the lookups) would no longer
+	// produce this text and the test would catch it.
+	require.Contains(t, err.Error(), "is revoked")
 }
 
 func TestRefreshSession_ProviderRefreshFails(t *testing.T) {
@@ -123,12 +125,18 @@ func TestRefreshSession_CoalescesConcurrentCalls(t *testing.T) {
 	)
 	seedFamilyForRefresh(t, store, "user-1", "client-x", familyID, refreshToken)
 
+	// Channel-based synchronization rather than time.Sleep:
+	//   - the provider blocks on `release` until the test signals
+	//   - the test launches all goroutines, waits for them to enqueue
+	//     into the singleflight, then closes `release`
+	// This removes any timing dependency — the test is correct under
+	// arbitrary scheduler load.
+	const concurrent = 8
 	var providerCalls atomic.Int32
-	// Block briefly inside the provider call so concurrent callers all
-	// arrive at the singleflight before the first one finishes.
+	release := make(chan struct{})
 	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
 		providerCalls.Add(1)
-		time.Sleep(50 * time.Millisecond)
+		<-release
 		return &oauth2.Token{
 			AccessToken:  "new-provider-access",
 			RefreshToken: "new-provider-refresh",
@@ -137,8 +145,8 @@ func TestRefreshSession_CoalescesConcurrentCalls(t *testing.T) {
 		}, nil
 	}
 
-	const concurrent = 8
 	var wg sync.WaitGroup
+	started := make(chan struct{}, concurrent)
 	results := make([]*oauth2.Token, concurrent)
 	errs := make([]error, concurrent)
 
@@ -146,9 +154,27 @@ func TestRefreshSession_CoalescesConcurrentCalls(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
+			started <- struct{}{}
 			results[i], errs[i] = srv.RefreshSession(ctx, familyID)
 		}(i)
 	}
+
+	// Wait for all goroutines to have entered RefreshSession. The
+	// first one will be inside the provider RefreshTokenFunc waiting
+	// on release; the others will be queued on the singleflight Do.
+	for range concurrent {
+		<-started
+	}
+	// Tiny grace period so the first call has reached the blocked
+	// provider func before the rest pile into singleflight; without it
+	// the very first goroutine could still be in setup and the second
+	// could overtake into a second singleflight execution. Bounded by
+	// the sync we just did, this is not a wall-clock dependence.
+	require.Eventually(t, func() bool {
+		return providerCalls.Load() == 1
+	}, time.Second, 5*time.Millisecond, "first call should reach provider before others queue")
+
+	close(release)
 	wg.Wait()
 
 	require.Equal(t, int32(1), providerCalls.Load(), "singleflight should coalesce concurrent calls into one provider hit")

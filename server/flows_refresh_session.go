@@ -20,9 +20,11 @@ import (
 // Returns the new provider token. The caller can extract the id_token
 // from the Extra field via [ExtractIDToken] for SSO-forwarding flows.
 //
-// Concurrent calls for the same familyID are coalesced — only one
-// refresh hits the upstream provider; the rest wait for and share the
-// result. This matches the proactive-refresh path's coalescing behavior.
+// Overlapping in-process calls for the same familyID are coalesced —
+// only one refresh hits the upstream provider; the rest wait for and
+// share the result. Calls that arrive sequentially (after the previous
+// one returns) each run their own refresh, as expected. This matches
+// the proactive-refresh path's coalescing behavior.
 //
 // Returns an error if:
 //   - the storage backend does not implement
@@ -36,6 +38,24 @@ import (
 // path: TokenRefreshHandler is called with the userID + familyID + new
 // token, refresh-token rotation produces a new family generation, and
 // the new tokens are saved to the TokenStore.
+//
+// Failure semantics: if the call fails after the active refresh token
+// has been atomically deleted (e.g. the upstream provider's refresh
+// errors out), the family is left without a usable refresh token. The
+// caller should treat that as session-loss and propagate a 401 / force
+// re-authentication. This matches RefreshAccessToken behavior — it is
+// the standard OAuth 2.1 rotation contract, not a regression from this
+// API.
+//
+// Cross-process race: when storage is shared (Valkey, Postgres, …) and
+// another instance rotates the family between this call's lookup and
+// its atomic delete, the atomic delete returns "not found" and is
+// surfaced to the caller as an invalid-grant error. RefreshSession
+// does not retry across this race because the underlying error is
+// indistinguishable from a genuine reuse-detection event, and a naive
+// retry would falsely trigger family revocation on the rotated state.
+// Callers in distributed deployments that observe this should re-read
+// the cached entry — another instance has produced a fresh token.
 func (s *Server) RefreshSession(ctx context.Context, familyID string) (*oauth2.Token, error) {
 	if familyID == "" {
 		return nil, fmt.Errorf("familyID is required")
