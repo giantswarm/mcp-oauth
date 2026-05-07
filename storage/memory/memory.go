@@ -108,15 +108,16 @@ type Store struct {
 
 // Compile-time interface checks to ensure Store implements all storage interfaces
 var (
-	_ storage.TokenStore                  = (*Store)(nil)
-	_ storage.ClientStore                 = (*Store)(nil)
-	_ storage.FlowStore                   = (*Store)(nil)
-	_ storage.Combined                    = (*Store)(nil)
-	_ storage.RefreshTokenFamilyStore     = (*Store)(nil)
-	_ storage.TokenRevocationStore        = (*Store)(nil)
-	_ storage.TokenMetadataStore          = (*Store)(nil)
-	_ storage.RevokedTokenStore           = (*Store)(nil)
-	_ storage.RefreshTokenFamilyByIDStore = (*Store)(nil)
+	_ storage.TokenStore                      = (*Store)(nil)
+	_ storage.ClientStore                     = (*Store)(nil)
+	_ storage.FlowStore                       = (*Store)(nil)
+	_ storage.Combined                        = (*Store)(nil)
+	_ storage.RefreshTokenFamilyStore         = (*Store)(nil)
+	_ storage.TokenRevocationStore            = (*Store)(nil)
+	_ storage.TokenMetadataStore              = (*Store)(nil)
+	_ storage.RevokedTokenStore               = (*Store)(nil)
+	_ storage.RefreshTokenFamilyByIDStore     = (*Store)(nil)
+	_ storage.ActiveRefreshTokenByFamilyStore = (*Store)(nil)
 )
 
 // New creates a new in-memory store with default cleanup interval (1 minute)
@@ -655,6 +656,39 @@ func (s *Store) GetRefreshTokenFamily(_ context.Context, refreshToken string) (*
 		Revoked:    family.Revoked,
 		RevokedAt:  family.RevokedAt,
 	}, nil
+}
+
+// GetActiveRefreshTokenByFamily returns the most recent (highest
+// generation) non-revoked refresh token for the family
+// (storage.ActiveRefreshTokenByFamilyStore). Linear scan, same shape as
+// GetRefreshTokenFamilyByID. Returns ErrRefreshTokenFamilyNotFound when
+// no live entry matches — including when the family was revoked.
+func (s *Store) GetActiveRefreshTokenByFamily(_ context.Context, familyID string) (string, error) {
+	if familyID == "" {
+		return "", storage.ErrRefreshTokenFamilyNotFound
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var (
+		bestToken string
+		bestGen   int
+		found     bool
+	)
+	for token, family := range s.refreshTokenFamilies {
+		if family.FamilyID != familyID || family.Revoked {
+			continue
+		}
+		if !found || family.Generation > bestGen {
+			bestToken = token
+			bestGen = family.Generation
+			found = true
+		}
+	}
+	if !found {
+		return "", storage.ErrRefreshTokenFamilyNotFound
+	}
+	return bestToken, nil
 }
 
 // GetRefreshTokenFamilyByID returns family metadata indexed by family ID

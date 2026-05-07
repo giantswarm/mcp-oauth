@@ -194,6 +194,26 @@ type RefreshTokenFamilyByIDStore interface {
 	GetRefreshTokenFamilyByID(ctx context.Context, familyID string) (*RefreshTokenFamilyMetadata, error)
 }
 
+// ActiveRefreshTokenByFamilyStore is an optional extension that exposes
+// the most recent (highest-generation) non-revoked refresh token for a
+// family, looked up by family ID. Required by Server.RefreshSession,
+// which otherwise has no way to refresh a session given only the family
+// ID — the public refresh-token-grant path needs the refresh token
+// itself, which the caller does not have on the in-process refresh path.
+//
+// Implementations must return ErrRefreshTokenFamilyNotFound when no
+// active (non-revoked, non-expired) refresh token is found for the
+// family, including when the family was revoked.
+//
+// Memory and Valkey both implement this interface. Backends that don't
+// will cause Server.RefreshSession to return an error at call time.
+type ActiveRefreshTokenByFamilyStore interface {
+	// GetActiveRefreshTokenByFamily returns the most recent (highest
+	// generation) non-revoked refresh token for the family, or
+	// ErrRefreshTokenFamilyNotFound when none exists.
+	GetActiveRefreshTokenByFamily(ctx context.Context, familyID string) (string, error)
+}
+
 // RefreshTokenFamilyMetadata contains metadata about a token family
 type RefreshTokenFamilyMetadata struct {
 	FamilyID   string

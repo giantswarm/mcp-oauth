@@ -229,6 +229,56 @@ func (s *Store) GetRefreshTokenFamilyByID(ctx context.Context, familyID string) 
 	return nil, storage.ErrRefreshTokenFamilyNotFound
 }
 
+// GetActiveRefreshTokenByFamily returns the most recent (highest generation)
+// non-revoked refresh token for the family
+// (storage.ActiveRefreshTokenByFamilyStore). Iterates the same Set used by
+// GetRefreshTokenFamilyByID, fetches per-token metadata, and picks the
+// highest-Generation entry whose Revoked flag is unset.
+//
+// Returns ErrRefreshTokenFamilyNotFound when the Set is empty, every
+// member's metadata is missing, or every member is revoked.
+func (s *Store) GetActiveRefreshTokenByFamily(ctx context.Context, familyID string) (active string, err error) {
+	op := s.startTracedOp(ctx, "get_active_refresh_token_by_family")
+	defer op.end(&err)
+
+	if familyID == "" {
+		return "", storage.ErrRefreshTokenFamilyNotFound
+	}
+
+	familySetKey := s.familyKey(familyID)
+	tokens, err := s.client.Do(op.ctx, s.client.B().Smembers().Key(familySetKey).Build()).AsStrSlice()
+	if err != nil {
+		if isNilError(err) {
+			return "", storage.ErrRefreshTokenFamilyNotFound
+		}
+		return "", fmt.Errorf("read family members: %w", err)
+	}
+	if len(tokens) == 0 {
+		return "", storage.ErrRefreshTokenFamilyNotFound
+	}
+
+	var (
+		bestToken string
+		bestGen   int
+		found     bool
+	)
+	for _, refreshToken := range tokens {
+		meta, err := getAndUnmarshal(op.ctx, s, s.refreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
+		if err != nil || meta == nil || meta.Revoked {
+			continue
+		}
+		if !found || meta.Generation > bestGen {
+			bestToken = refreshToken
+			bestGen = meta.Generation
+			found = true
+		}
+	}
+	if !found {
+		return "", storage.ErrRefreshTokenFamilyNotFound
+	}
+	return bestToken, nil
+}
+
 // RevokeRefreshTokenFamily revokes all tokens in a family (for reuse detection)
 // This is called when token reuse is detected (OAuth 2.1 security requirement)
 func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) (err error) {

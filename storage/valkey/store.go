@@ -117,14 +117,15 @@ type Store struct {
 
 // Compile-time interface checks to ensure Store implements all storage interfaces
 var (
-	_ storage.TokenStore              = (*Store)(nil)
-	_ storage.ClientStore             = (*Store)(nil)
-	_ storage.FlowStore               = (*Store)(nil)
-	_ storage.Combined                = (*Store)(nil)
-	_ storage.RefreshTokenFamilyStore = (*Store)(nil)
-	_ storage.TokenRevocationStore    = (*Store)(nil)
-	_ storage.TokenMetadataStore      = (*Store)(nil)
-	_ storage.RevokedTokenStore       = (*Store)(nil)
+	_ storage.TokenStore                      = (*Store)(nil)
+	_ storage.ClientStore                     = (*Store)(nil)
+	_ storage.FlowStore                       = (*Store)(nil)
+	_ storage.Combined                        = (*Store)(nil)
+	_ storage.RefreshTokenFamilyStore         = (*Store)(nil)
+	_ storage.TokenRevocationStore            = (*Store)(nil)
+	_ storage.TokenMetadataStore              = (*Store)(nil)
+	_ storage.RevokedTokenStore               = (*Store)(nil)
+	_ storage.ActiveRefreshTokenByFamilyStore = (*Store)(nil)
 )
 
 // New creates a new Valkey-backed storage instance.

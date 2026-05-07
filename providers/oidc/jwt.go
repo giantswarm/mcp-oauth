@@ -405,7 +405,7 @@ func validateTimeAndIssuer(claims *IDTokenClaims, expectedIssuer string) error {
 		expected.Issuer = expectedIssuer
 	}
 
-	err := claims.Claims.ValidateWithLeeway(expected, DefaultClockSkewLeeway)
+	err := claims.ValidateWithLeeway(expected, DefaultClockSkewLeeway)
 	if err == nil {
 		return nil
 	}

@@ -364,6 +364,57 @@ func TestStore_SaveRefreshTokenWithFamily(t *testing.T) {
 	}
 }
 
+func TestStore_GetActiveRefreshTokenByFamily(t *testing.T) {
+	ctx := context.Background()
+	store := New()
+	defer store.Stop()
+
+	const familyID = "fam-active"
+	expiresAt := time.Now().Add(90 * 24 * time.Hour)
+
+	t.Run("empty familyID returns NotFound", func(t *testing.T) {
+		_, err := store.GetActiveRefreshTokenByFamily(ctx, "")
+		if err != storage.ErrRefreshTokenFamilyNotFound {
+			t.Errorf("err = %v, want ErrRefreshTokenFamilyNotFound", err)
+		}
+	})
+
+	t.Run("unknown family returns NotFound", func(t *testing.T) {
+		_, err := store.GetActiveRefreshTokenByFamily(ctx, "no-such-family")
+		if err != storage.ErrRefreshTokenFamilyNotFound {
+			t.Errorf("err = %v, want ErrRefreshTokenFamilyNotFound", err)
+		}
+	})
+
+	t.Run("returns highest-generation non-revoked token", func(t *testing.T) {
+		// Three rotations of the same family. Highest Generation wins.
+		for i, token := range []string{"rt-gen0", "rt-gen1", "rt-gen2"} {
+			if err := store.SaveRefreshTokenWithFamily(ctx, token, "u", "c", familyID, i, expiresAt); err != nil {
+				t.Fatalf("seed %s: %v", token, err)
+			}
+		}
+
+		got, err := store.GetActiveRefreshTokenByFamily(ctx, familyID)
+		if err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if got != "rt-gen2" {
+			t.Errorf("active token = %q, want rt-gen2 (highest generation)", got)
+		}
+	})
+
+	t.Run("revoked family returns NotFound", func(t *testing.T) {
+		if err := store.RevokeRefreshTokenFamily(ctx, familyID); err != nil {
+			t.Fatalf("revoke: %v", err)
+		}
+
+		_, err := store.GetActiveRefreshTokenByFamily(ctx, familyID)
+		if err != storage.ErrRefreshTokenFamilyNotFound {
+			t.Errorf("err = %v, want ErrRefreshTokenFamilyNotFound after revoke", err)
+		}
+	})
+}
+
 func TestStore_RevokeRefreshTokenFamily(t *testing.T) {
 	ctx := context.Background()
 	store := New()
