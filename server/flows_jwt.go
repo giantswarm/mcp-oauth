@@ -161,11 +161,10 @@ func (s *Server) checkJWTExpiration(claims jwt.MapClaims, tokenString string) er
 	return nil
 }
 
-// checkJWTAudience enforces RFC 8707 audience binding using the same
-// matching rules as the opaque path: the token's aud claim must equal the
-// server's ResourceIdentifier OR appear in TrustedAudiences. Constant-time
-// comparison is delegated to helpers.MatchAudienceSecure, matching the
-// existing audience checks elsewhere in the codebase.
+// checkJWTAudience enforces RFC 8707 audience binding. The token's aud
+// claim must equal the server's ResourceIdentifier OR appear in
+// TrustedAudiences. Multi-valued aud (RFC 7519 §4.1.3) is handled via
+// helpers.FindMatchingAudience, matching the SSO-forwarded-ID-token path.
 func (s *Server) checkJWTAudience(claims jwt.MapClaims, tokenString string) error {
 	expected := s.Config.GetResourceIdentifier()
 	audiences := audiencesFromClaim(claims["aud"])
@@ -179,7 +178,7 @@ func (s *Server) checkJWTAudience(claims jwt.MapClaims, tokenString string) erro
 			return nil
 		}
 	}
-	if helpers.MatchAudienceSecure(audiences[0], s.Config.TrustedAudiences) != "" {
+	if helpers.FindMatchingAudience(audiences, s.Config.TrustedAudiences) != "" {
 		return nil
 	}
 	s.logSelfIssuedJWTAuthFailure("audience_mismatch", tokenString)
@@ -219,6 +218,11 @@ func (s *Server) checkJWTRevocation(ctx context.Context, jti, tokenString string
 // startup warning already discourages running JWT mode without them). A
 // missing family_id claim is also silently skipped — issuance only sets
 // the claim when the token store supports families.
+//
+// Storage errors are treated as hard rejections (parity with
+// checkJWTRevocation): a transient backend failure must not silently
+// re-enable a revoked family. ErrRefreshTokenFamilyNotFound is the only
+// "not present" signal and is treated as legit absence.
 func (s *Server) checkJWTFamily(ctx context.Context, claims jwt.MapClaims, tokenString string) error {
 	familyID, _ := claims["family_id"].(string)
 	if familyID == "" {
@@ -229,7 +233,17 @@ func (s *Server) checkJWTFamily(ctx context.Context, claims jwt.MapClaims, token
 		return nil
 	}
 	meta, err := indexed.GetRefreshTokenFamilyByID(ctx, familyID)
-	if err != nil || meta == nil {
+	if errors.Is(err, storage.ErrRefreshTokenFamilyNotFound) {
+		return nil
+	}
+	if err != nil {
+		s.Logger.Warn("Failed to check JWT family revocation",
+			"error", err,
+			"family_id", familyID,
+			"token_suffix", helpers.TokenSuffix(tokenString, 8))
+		return fmt.Errorf("family revocation check failed: %w", err)
+	}
+	if meta == nil {
 		return nil
 	}
 	if meta.Revoked {

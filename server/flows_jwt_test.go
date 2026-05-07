@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/x509"
 	"testing"
 	"time"
 
@@ -294,6 +295,88 @@ func TestFamilyRevocation_InvalidatesInFlightJWT(t *testing.T) {
 	_, err = srv.ValidateToken(ctx, tok)
 	require.Error(t, err, "JWT must be rejected after family revocation")
 	require.Contains(t, err.Error(), "family")
+}
+
+func TestValidateToken_SelfIssuedJWT_AlgConfusionWithPublicKeySecret(t *testing.T) {
+	srv, _, _ := setupJWTFlowTestServer(t)
+
+	// Faithful alg-confusion repro: an attacker who has the JWKS public key
+	// signs HS256 using the DER-encoded public key bytes as the HMAC secret.
+	// The validator must reject this regardless of the secret because
+	// alg pinning fires before the secret is consulted.
+	pubDER, err := x509.MarshalPKIXPublicKey(srv.Config.AccessTokenSigningKey.Public())
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	mapClaims := jwt.MapClaims{
+		"iss":       srv.Config.Issuer,
+		"sub":       "attacker",
+		"aud":       srv.Config.GetResourceIdentifier(),
+		"exp":       now.Add(15 * time.Minute).Unix(),
+		"iat":       now.Unix(),
+		"jti":       "alg-confusion-jti",
+		"client_id": "any",
+	}
+	t1 := jwt.NewWithClaims(jwt.SigningMethodHS256, mapClaims)
+	t1.Header["typ"] = rfc9068TokenType
+	t1.Header["kid"] = srv.Config.AccessTokenSigningKeyID
+	signed, err := t1.SignedString(pubDER)
+	require.NoError(t, err)
+
+	_, err = srv.ValidateToken(context.Background(), signed)
+	require.Error(t, err)
+}
+
+func TestValidateToken_SelfIssuedJWT_WrongKidRejected(t *testing.T) {
+	srv, _, _ := setupJWTFlowTestServer(t)
+
+	now := time.Now().UTC()
+	mapClaims := jwt.MapClaims{
+		"iss":       srv.Config.Issuer,
+		"sub":       "user",
+		"aud":       srv.Config.GetResourceIdentifier(),
+		"exp":       now.Add(15 * time.Minute).Unix(),
+		"iat":       now.Unix(),
+		"jti":       "wrong-kid-jti",
+		"client_id": "c",
+	}
+	t1 := jwt.NewWithClaims(jwt.SigningMethodRS256, mapClaims)
+	t1.Header["typ"] = rfc9068TokenType
+	t1.Header["kid"] = "not-the-configured-kid"
+	signed, err := t1.SignedString(srv.Config.AccessTokenSigningKey)
+	require.NoError(t, err)
+
+	_, err = srv.ValidateToken(context.Background(), signed)
+	require.Error(t, err)
+}
+
+func TestValidateToken_SelfIssuedJWT_MultiAudienceWithTrustedMatchAccepted(t *testing.T) {
+	srv, _, _ := setupJWTFlowTestServer(t)
+	srv.Config.TrustedAudiences = []string{"trusted-aggregator"}
+
+	// Forge a JWT with the configured signing key but an array aud where
+	// only the second value matches TrustedAudiences. Pre-fix this would
+	// fail because checkJWTAudience only compared audiences[0] against the
+	// trusted list. With the multi-audience helper it must accept.
+	now := time.Now().UTC()
+	mapClaims := jwt.MapClaims{
+		"iss":       srv.Config.Issuer,
+		"sub":       "user-multi-aud",
+		"aud":       []string{"unrelated", "trusted-aggregator"},
+		"exp":       now.Add(15 * time.Minute).Unix(),
+		"iat":       now.Unix(),
+		"jti":       "multi-aud-jti",
+		"client_id": "c",
+	}
+	t1 := jwt.NewWithClaims(jwt.SigningMethodRS256, mapClaims)
+	t1.Header["typ"] = rfc9068TokenType
+	t1.Header["kid"] = srv.Config.AccessTokenSigningKeyID
+	signed, err := t1.SignedString(srv.Config.AccessTokenSigningKey)
+	require.NoError(t, err)
+
+	userInfo, err := srv.ValidateToken(context.Background(), signed)
+	require.NoError(t, err)
+	require.Equal(t, "user-multi-aud", userInfo.ID)
 }
 
 // isJWTShape returns true when s has the three dot-separated segments of a

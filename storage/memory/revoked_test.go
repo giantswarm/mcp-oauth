@@ -66,7 +66,7 @@ func TestRevokedTokenStore_LazilyAllocated(t *testing.T) {
 	t.Cleanup(func() { store.Stop() })
 	// In opaque-only deployments the revoked map should not be allocated
 	// before any RevokeJTI / IsJTIRevoked call.
-	require.Nil(t, store.revokedJTIs, "revokedJTIs must be lazy-initialized")
+	require.Nil(t, store.revokedJTIs.Load(), "revokedJTIs must be lazy-initialized")
 	_, _ = store.IsJTIRevoked(context.Background(), "any")
-	require.NotNil(t, store.revokedJTIs)
+	require.NotNil(t, store.revokedJTIs.Load())
 }

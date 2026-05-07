@@ -78,22 +78,29 @@ func (r *revokedJTIs) cleanupExpired() int {
 
 // RevokeJTI implements storage.RevokedTokenStore.
 func (s *Store) RevokeJTI(_ context.Context, jti string, expiresAt time.Time) error {
-	s.ensureRevokedJTIs()
-	return s.revokedJTIs.revoke(jti, expiresAt)
+	return s.ensureRevokedJTIs().revoke(jti, expiresAt)
 }
 
 // IsJTIRevoked implements storage.RevokedTokenStore.
 func (s *Store) IsJTIRevoked(_ context.Context, jti string) (bool, error) {
-	s.ensureRevokedJTIs()
-	return s.revokedJTIs.isRevoked(jti), nil
+	return s.ensureRevokedJTIs().isRevoked(jti), nil
 }
 
-// ensureRevokedJTIs lazily initializes the denylist on first use. The Store
-// is constructed via New / NewWithInterval which do not allocate this map
-// — keeping it lazy avoids paying for the allocation in deployments running
-// in opaque mode.
-func (s *Store) ensureRevokedJTIs() {
-	s.revokedOnce.Do(func() {
-		s.revokedJTIs = newRevokedJTIs()
-	})
+// ensureRevokedJTIs lazily initializes the denylist on first use and returns
+// the resolved value. The Store is constructed via New / NewWithInterval
+// which do not allocate this map — keeping it lazy avoids paying for the
+// allocation in deployments running in opaque mode.
+//
+// Concurrent callers race to allocate; CompareAndSwap ensures exactly one
+// allocation wins and all callers observe the same instance. Readers
+// (e.g. cleanup) load via the same atomic.Pointer for race-free visibility.
+func (s *Store) ensureRevokedJTIs() *revokedJTIs {
+	if r := s.revokedJTIs.Load(); r != nil {
+		return r
+	}
+	fresh := newRevokedJTIs()
+	if s.revokedJTIs.CompareAndSwap(nil, fresh) {
+		return fresh
+	}
+	return s.revokedJTIs.Load()
 }

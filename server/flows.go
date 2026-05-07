@@ -269,6 +269,14 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 // Step 1 is opt-in (AccessTokenFormatJWT), step 2 is opt-in
 // (TrustedAudiences), step 3 is always available. Rate limiting should be
 // done at the HTTP layer with IP address, not here with the token.
+//
+// Error responses: callers SHOULD respond with a single 401 form
+// regardless of the returned error class. The error message distinguishes
+// expired / revoked / audience-mismatch / family-revoked / unknown for
+// audit logs and operator dashboards; surfacing those distinctions to
+// the client enables token-state probing across all three branches
+// (opaque, SSO, self-issued JWT). Use the returned error for logging,
+// not for setting the response body.
 func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
 	// PRIORITY 1: Self-issued JWT (RFC 9068, AccessTokenFormatJWT mode).
 	// We peek at the unverified iss claim to decide whether to take this

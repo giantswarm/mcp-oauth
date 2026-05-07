@@ -100,9 +100,10 @@ type Store struct {
 
 	// Self-issued JWT access-token denylist (storage.RevokedTokenStore).
 	// Lazily initialized on first revocation/lookup so opaque-mode
-	// deployments don't pay for the allocation. See revoked.go.
-	revokedOnce sync.Once
-	revokedJTIs *revokedJTIs
+	// deployments don't pay for the allocation. atomic.Pointer publishes
+	// the initialized value race-free to readers (e.g. cleanup()) without
+	// requiring them to hold s.mu. See revoked.go.
+	revokedJTIs atomic.Pointer[revokedJTIs]
 }
 
 // Compile-time interface checks to ensure Store implements all storage interfaces
@@ -1183,10 +1184,10 @@ func (s *Store) cleanup() {
 	cleaned += s.cleanupExpiredRefreshTokens()
 	cleaned += s.cleanupRevokedFamilies()
 	cleaned += s.cleanupOrphanedMetadata()
-	if s.revokedJTIs != nil {
+	if r := s.revokedJTIs.Load(); r != nil {
 		// revokedJTIs has its own lock; safe to call while holding s.mu
 		// because the two locks never nest the other direction.
-		cleaned += s.revokedJTIs.cleanupExpired()
+		cleaned += r.cleanupExpired()
 	}
 
 	familyCount := len(s.refreshTokenFamilies)

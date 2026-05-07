@@ -802,11 +802,12 @@ func (h *Handler) RegisterOAuthRoutes(mux *http.ServeMux, opts OAuthRoutesOption
 	h.RegisterProtectedResourceMetadataRoutes(mux, opts.MCPPath)
 	h.RegisterAuthorizationServerMetadataRoutes(mux)
 
-	// JWKS endpoint is registered unconditionally so a future operator
-	// switch from opaque to JWT mode does not require re-registering
-	// routes. ServeJWKS self-gates on Config.AccessTokenFormat: it serves
-	// the key set in JWT mode and returns 404 in opaque mode.
-	mux.HandleFunc(server.EndpointPathJWKS, h.ServeJWKS)
+	// JWKS is registered only in JWT mode. AccessTokenFormat is fixed for
+	// the server's lifetime; in opaque mode the route falls through to
+	// the default-mux 404 and does not consume the discovery rate limit.
+	if h.server.Config.IsJWTAccessTokenFormat() {
+		mux.HandleFunc(server.EndpointPathJWKS, h.ServeJWKS)
+	}
 }
 
 // oauthCallbackPath is the provider-callback path. The server's own
