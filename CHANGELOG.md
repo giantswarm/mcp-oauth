@@ -32,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Server constructor now accepts functional options; the post-construction `Set*` methods are gone**
+  - `server.New` and `server.NewWithCombined` (and the root-package `oauth.NewServer` / `oauth.NewServerWithCombined`) take a variadic `...Option` parameter. New constructors: `WithEncryptor`, `WithAuditor`, `WithRateLimiter`, `WithUserRateLimiter`, `WithSecurityEventRateLimiter`, `WithClientRegistrationRateLimiter`, `WithMetadataFetchRateLimiter`, `WithSessionCreationHandler`, `WithSessionRevocationHandler`, `WithTokenRefreshHandler`, `WithInstrumentation`. `WithEncryptor` and `WithInstrumentation` propagate to the storage backend identically to the old setters.
+  - **Breaking**: `Server.SetEncryptor`, `SetAuditor`, `SetRateLimiter`, `SetUserRateLimiter`, `SetSecurityEventRateLimiter`, `SetClientRegistrationRateLimiter`, `SetMetadataFetchRateLimiter`, `SetSessionCreationHandler`, `SetSessionRevocationHandler`, `SetTokenRefreshHandler`, and `SetInstrumentation` are removed. Migration: pass the same value as a `With*` option to the constructor.
+  - **Breaking**: `Server.SetTokenFamilyRevocationHandler` and the `TokenFamilyRevocationHandler` type alias (deprecated since the `SessionRevocationHandler` rename) are removed. Use `WithSessionRevocationHandler`.
+  - The "partial-init" window between `New(...)` and the last `SetX` call is gone — the server is fully wired before it returns.
 - **`storage.TokenMetadataStore`* family collapsed into a single interface; scope helpers consolidated**
   - `storage.TokenMetadataStore`, `storage.TokenMetadataStoreWithAudience`, `storage.TokenMetadataStoreWithScopesAndAudience`, and `storage.TokenMetadataStoreWithFamily` collapsed into a single `storage.TokenMetadataStore` interface taking the existing `storage.TokenMetadata` struct. Adding a new metadata field is now a single-place change.
   - `Server.saveTokenMetadata` no longer fans out through a 4-way runtime type-assertion ladder; it makes one call.

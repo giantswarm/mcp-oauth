@@ -69,15 +69,16 @@ func TestTurnkeyWiring(t *testing.T) {
 		t.Fatalf("ProviderFromEnv: %v", err)
 	}
 
-	srv, err := server.NewWithCombined(provider, store, cfg, slog.Default())
+	// Attaching the encryptor via the WithEncryptor option is the documented
+	// path; prove it wires through without a panic, since the whole point of
+	// NewEncryptorFromEnv is to be composable with the server constructor.
+	srv, err := server.NewWithCombined(
+		provider, store, cfg, slog.Default(),
+		server.WithEncryptor(encryptor),
+	)
 	if err != nil {
 		t.Fatalf("server.NewWithCombined: %v", err)
 	}
-
-	// Attaching the encryptor is the documented post-construction step; prove
-	// it wires through without a panic, since the whole point of
-	// NewEncryptorFromEnv is to be composable with SetEncryptor.
-	srv.SetEncryptor(encryptor)
 
 	// Minimal behavioral spot-check: the constructed server should accept a
 	// healthy provider check. Not asking for a round-trip OAuth flow — that

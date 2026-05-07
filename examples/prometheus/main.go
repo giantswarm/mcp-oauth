@@ -18,6 +18,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/providers/google"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
@@ -49,7 +50,42 @@ func main() {
 		Level: slog.LevelInfo,
 	}))
 
-	// 4. Create OAuth server with Prometheus instrumentation enabled
+	// 4. Build optional dependencies
+	rateLimiter := security.NewRateLimiter(1, 10, logger)
+	defer rateLimiter.Stop()
+	auditor := security.NewAuditor(logger, true)
+
+	opts := []oauth.ServerOption{
+		oauth.WithRateLimiter(rateLimiter),
+		oauth.WithAuditor(auditor),
+	}
+	logger.Info("Rate limiting enabled", "requests_per_second", 1, "burst", 10)
+	logger.Info("Audit logging enabled")
+
+	if encKeyB64 := os.Getenv("OAUTH_ENCRYPTION_KEY"); encKeyB64 != "" {
+		encKey, err := security.KeyFromBase64(encKeyB64)
+		if err != nil {
+			log.Fatalf("Invalid encryption key: %v", err)
+		}
+		encryptor, _ := security.NewEncryptor(encKey)
+		opts = append(opts, oauth.WithEncryptor(encryptor))
+		logger.Info("Token encryption enabled")
+	}
+
+	// IMPORTANT: OpenTelemetry instrumentation with Prometheus metrics
+	inst, err := instrumentation.New(instrumentation.Config{
+		Enabled:         true,
+		ServiceName:     "mcp-oauth-prometheus-example",
+		ServiceVersion:  "1.0.0",
+		LogClientIPs:    getBoolEnv("LOG_CLIENT_IPS", false), // Privacy: disabled by default
+		MetricsExporter: "prometheus",                        // Export metrics in Prometheus format
+	})
+	if err != nil {
+		log.Fatalf("Failed to initialize instrumentation: %v", err)
+	}
+	opts = append(opts, oauth.WithInstrumentation(inst))
+
+	// 5. Create OAuth server
 	server, err := oauth.NewServer(
 		googleProvider,
 		store, // TokenStore
@@ -58,42 +94,12 @@ func main() {
 		&oauth.ServerConfig{
 			Issuer:            "http://localhost:8080",
 			AllowInsecureHTTP: true, // Required for HTTP on localhost (development only)
-
-			// IMPORTANT: OpenTelemetry instrumentation with Prometheus metrics
-			Instrumentation: oauth.InstrumentationConfig{
-				Enabled:         true,
-				ServiceName:     "mcp-oauth-prometheus-example",
-				ServiceVersion:  "1.0.0",
-				LogClientIPs:    getBoolEnv("LOG_CLIENT_IPS", false), // Privacy: disabled by default
-				MetricsExporter: "prometheus",                        // Export metrics in Prometheus format
-			},
 		},
 		logger,
+		opts...,
 	)
 	if err != nil {
 		log.Fatal(err)
-	}
-
-	// 5. Add rate limiting to demonstrate security metrics
-	// 1 request per second with burst of 10 = ~60 requests per minute
-	rateLimiter := security.NewRateLimiter(1, 10, logger)
-	server.SetRateLimiter(rateLimiter)
-	logger.Info("Rate limiting enabled", "requests_per_second", 1, "burst", 10)
-
-	// 6. Add audit logging for security events
-	auditor := security.NewAuditor(logger, true)
-	server.SetAuditor(auditor)
-	logger.Info("Audit logging enabled")
-
-	// 7. Optional: Add token encryption
-	if encKeyB64 := os.Getenv("OAUTH_ENCRYPTION_KEY"); encKeyB64 != "" {
-		encKey, err := security.KeyFromBase64(encKeyB64)
-		if err != nil {
-			log.Fatalf("Invalid encryption key: %v", err)
-		}
-		encryptor, _ := security.NewEncryptor(encKey)
-		server.SetEncryptor(encryptor)
-		logger.Info("Token encryption enabled")
 	}
 
 	// 8. Set up HTTP handlers

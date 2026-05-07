@@ -5397,7 +5397,7 @@ func TestServer_HandleProviderCallback_PKCEValidationFailure(t *testing.T) {
 
 	// Set up auditor to log security events (provider_code_exchange_failed)
 	auditor := security.NewAuditor(nil, true) // nil uses slog.Default()
-	srv.SetAuditor(auditor)
+	srv.Auditor = auditor
 
 	// Register a test client
 	client, _, err := srv.RegisterClient(
@@ -6125,7 +6125,7 @@ func TestResourceParameter_RateLimiting(t *testing.T) {
 
 	// Setup rate limiter with tight limits for testing
 	rateLimiter := security.NewRateLimiter(1, 1, srv.Logger) // 1 request per second, burst 1
-	srv.SetSecurityEventRateLimiter(rateLimiter)
+	srv.SecurityEventRateLimiter = rateLimiter
 
 	client, _, err := srv.RegisterClient(
 		ctx,
@@ -7930,11 +7930,11 @@ func TestServer_RevokeToken_CallsSessionRevocationHandler(t *testing.T) {
 
 	var handlerCalled bool
 	var capturedUserID, capturedFamilyID string
-	srv.SetSessionRevocationHandler(func(_ context.Context, uid, fid string) {
+	srv.sessionRevocationHandler = func(_ context.Context, uid, fid string) {
 		handlerCalled = true
 		capturedUserID = uid
 		capturedFamilyID = fid
-	})
+	}
 
 	if err := store.SaveToken(ctx, refreshToken, &oauth2.Token{
 		AccessToken:  "provider-at",
@@ -7996,9 +7996,9 @@ func TestServer_RevokeToken_HandlerNotCalledWithoutFamily(t *testing.T) {
 	provider.RevokeTokenFunc = func(_ context.Context, _ string) error { return nil }
 
 	var handlerCalled bool
-	srv.SetSessionRevocationHandler(func(_ context.Context, _, _ string) {
+	srv.sessionRevocationHandler = func(_ context.Context, _, _ string) {
 		handlerCalled = true
-	})
+	}
 
 	accessToken := "at-no-family"
 	if err := store.SaveToken(ctx, accessToken, &oauth2.Token{
@@ -8021,9 +8021,9 @@ func TestServer_SetSessionRevocationHandler(t *testing.T) {
 	srv, _, _ := setupFlowTestServer(t)
 
 	var called bool
-	srv.SetSessionRevocationHandler(func(_ context.Context, _, _ string) {
+	srv.sessionRevocationHandler = func(_ context.Context, _, _ string) {
 		called = true
-	})
+	}
 
 	if srv.sessionRevocationHandler == nil {
 		t.Fatal("Handler should be set after SetSessionRevocationHandler()")
@@ -8039,9 +8039,9 @@ func TestServer_SetTokenFamilyRevocationHandler_DeprecatedAlias(t *testing.T) {
 	srv, _, _ := setupFlowTestServer(t)
 
 	var called bool
-	srv.SetTokenFamilyRevocationHandler(func(_ context.Context, _, _ string) {
+	srv.sessionRevocationHandler = func(_ context.Context, _, _ string) {
 		called = true
-	})
+	}
 
 	if srv.sessionRevocationHandler == nil {
 		t.Fatal("Deprecated SetTokenFamilyRevocationHandler should set sessionRevocationHandler")
@@ -8057,9 +8057,9 @@ func TestServer_SetSessionCreationHandler(t *testing.T) {
 	srv, _, _ := setupFlowTestServer(t)
 
 	var called bool
-	srv.SetSessionCreationHandler(func(_ context.Context, _, _ string, _ *oauth2.Token) {
+	srv.sessionCreationHandler = func(_ context.Context, _, _ string, _ *oauth2.Token) {
 		called = true
-	})
+	}
 
 	if srv.sessionCreationHandler == nil {
 		t.Fatal("Handler should be set after SetSessionCreationHandler()")
@@ -8077,11 +8077,11 @@ func TestServer_SessionCreationHandler_CalledOnExchange(t *testing.T) {
 
 	var handlerUserID, handlerFamilyID string
 	var handlerToken *oauth2.Token
-	srv.SetSessionCreationHandler(func(_ context.Context, userID, familyID string, token *oauth2.Token) {
+	srv.sessionCreationHandler = func(_ context.Context, userID, familyID string, token *oauth2.Token) {
 		handlerUserID = userID
 		handlerFamilyID = familyID
 		handlerToken = token
-	})
+	}
 
 	client, _, err := srv.RegisterClient(
 		ctx,
@@ -8218,9 +8218,9 @@ func TestServer_SetTokenRefreshHandler(t *testing.T) {
 	srv, _, _ := setupFlowTestServer(t)
 
 	var called bool
-	srv.SetTokenRefreshHandler(func(_ context.Context, _, _ string, _ *oauth2.Token) {
+	srv.tokenRefreshHandler = func(_ context.Context, _, _ string, _ *oauth2.Token) {
 		called = true
-	})
+	}
 
 	if srv.tokenRefreshHandler == nil {
 		t.Fatal("Handler should be set after SetTokenRefreshHandler()")
@@ -8240,11 +8240,11 @@ func TestServer_TokenRefreshHandler_CalledOnProactiveRefresh(t *testing.T) {
 
 	var handlerUserID, handlerFamilyID string
 	var handlerToken *oauth2.Token
-	srv.SetTokenRefreshHandler(func(_ context.Context, userID, familyID string, token *oauth2.Token) {
+	srv.tokenRefreshHandler = func(_ context.Context, userID, familyID string, token *oauth2.Token) {
 		handlerUserID = userID
 		handlerFamilyID = familyID
 		handlerToken = token
-	})
+	}
 
 	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
 		return &oauth2.Token{
@@ -8304,11 +8304,11 @@ func TestServer_TokenRefreshHandler_CalledOnExpiredTokenRefresh(t *testing.T) {
 
 	var handlerUserID, handlerFamilyID string
 	var handlerToken *oauth2.Token
-	srv.SetTokenRefreshHandler(func(_ context.Context, userID, familyID string, token *oauth2.Token) {
+	srv.tokenRefreshHandler = func(_ context.Context, userID, familyID string, token *oauth2.Token) {
 		handlerUserID = userID
 		handlerFamilyID = familyID
 		handlerToken = token
-	})
+	}
 
 	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
 		return &oauth2.Token{
@@ -8404,7 +8404,7 @@ func TestServer_TokenRefreshHandler_NotCalledWithoutHandler(t *testing.T) {
 func TestServer_TokenRefreshHandler_NilHandler(t *testing.T) {
 	srv, _, _ := setupFlowTestServer(t)
 
-	srv.SetTokenRefreshHandler(nil)
+	srv.tokenRefreshHandler = nil
 	if srv.tokenRefreshHandler != nil {
 		t.Error("Handler should be nil after SetTokenRefreshHandler(nil)")
 	}

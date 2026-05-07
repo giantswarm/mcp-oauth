@@ -62,7 +62,7 @@ func TestServer_AuditLoggingClientIDMismatch(t *testing.T) {
 
 	// Set auditor with captured logger
 	auditor := security.NewAuditor(logger, true)
-	srv.SetAuditor(auditor)
+	srv.Auditor = auditor
 
 	// Register a client
 	client, _, err := srv.RegisterClient(
@@ -163,7 +163,7 @@ func TestServer_AuditLoggingRedirectURIMismatch(t *testing.T) {
 
 	// Set auditor with captured logger
 	auditor := security.NewAuditor(logger, true)
-	srv.SetAuditor(auditor)
+	srv.Auditor = auditor
 
 	// Register a client
 	client, _, err := srv.RegisterClient(
@@ -266,7 +266,7 @@ func TestServer_AuditEventProviderRevocationThresholdExceeded(t *testing.T) {
 
 	// Set auditor with captured logger
 	auditor := security.NewAuditor(logger, true)
-	srv.SetAuditor(auditor)
+	srv.Auditor = auditor
 
 	userID := "test_user_audit"
 	clientID := "test_client_audit"
@@ -342,7 +342,7 @@ func TestServer_AuditEventProviderRevocationCompleteFailure(t *testing.T) {
 
 	// Set auditor with captured logger
 	auditor := security.NewAuditor(logger, true)
-	srv.SetAuditor(auditor)
+	srv.Auditor = auditor
 
 	userID := "test_user_complete_fail"
 	clientID := "test_client_complete_fail"
@@ -412,7 +412,7 @@ func TestServer_AuditEventAuthorizationCodeReuse(t *testing.T) {
 
 	// Set auditor with captured logger
 	auditor := security.NewAuditor(logger, true)
-	srv.SetAuditor(auditor)
+	srv.Auditor = auditor
 
 	// Register a client
 	client, _, err := srv.RegisterClient(
