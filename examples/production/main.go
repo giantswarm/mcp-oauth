@@ -180,7 +180,8 @@ func main() {
 	}
 
 	// Log startup information
-	logger.Info("Starting MCP server with enhanced security",
+	logger.Info(
+		"Starting MCP server with enhanced security",
 		"addr", httpServer.Addr,
 		"encryption", "enabled",
 		"audit_logging", "enabled",
@@ -279,7 +280,8 @@ func mcpHandler(logger *slog.Logger) http.Handler {
 			return
 		}
 
-		logger.Info("MCP request",
+		logger.Info(
+			"MCP request",
 			"user", userInfo.Email,
 			"method", r.Method,
 			"path", r.URL.Path,
@@ -431,13 +433,15 @@ func getIntEnv(key string, defaultValue int) int {
 func logRequest(logger *slog.Logger, handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		logger.Info("Request",
+		logger.Info(
+			"Request",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"remote", r.RemoteAddr,
 		)
 		handler(w, r)
-		logger.Info("Response",
+		logger.Info(
+			"Response",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"duration", time.Since(start),

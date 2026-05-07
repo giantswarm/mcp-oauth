@@ -268,7 +268,8 @@ func (s *Store) countKeysByPattern(pattern string) int64 {
 	var cursor uint64
 
 	for {
-		result, err := s.client.Do(ctx,
+		result, err := s.client.Do(
+			ctx,
 			s.client.B().Scan().Cursor(cursor).Match(pattern).Count(scanBatchSize).Build(),
 		).AsScanEntry()
 		if err != nil {

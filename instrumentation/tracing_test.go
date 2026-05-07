@@ -397,7 +397,8 @@ func TestSetSpanAttributes(t *testing.T) {
 	defer span.End()
 
 	// Test setting attributes on span
-	SetSpanAttributes(span,
+	SetSpanAttributes(
+		span,
 		attribute.String("key1", "value1"),
 		attribute.Int("key2", 42),
 	)
@@ -407,7 +408,8 @@ func TestSetSpanAttributes(t *testing.T) {
 
 func TestSetSpanAttributes_NilSpan(_ *testing.T) {
 	// Test that nil-safe helper handles nil span
-	SetSpanAttributes(nil,
+	SetSpanAttributes(
+		nil,
 		attribute.String("key1", "value1"),
 		attribute.Int("key2", 42),
 	)

@@ -54,7 +54,8 @@ func TestServer_StartAuthorizationFlow_EmptyScope(t *testing.T) {
 	}
 
 	// Register a test client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypePublic, // MCP clients are typically public
 		TokenEndpointAuthMethodNone,
@@ -73,7 +74,8 @@ func TestServer_StartAuthorizationFlow_EmptyScope(t *testing.T) {
 	clientState := testutil.GenerateRandomString(43)
 
 	// Start authorization flow WITHOUT providing any scope parameter (empty string)
-	authURL, err := srv.StartAuthorizationFlow(ctx,
+	authURL, err := srv.StartAuthorizationFlow(
+		ctx,
 		client.ClientID,
 		"http://localhost:3000/callback",
 		"", // NO SCOPE PROVIDED - this is the key test case
@@ -171,7 +173,8 @@ func TestServer_StartAuthorizationFlow_WithExplicitScopes(t *testing.T) {
 	}
 
 	// Register a test client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypePublic,
 		TokenEndpointAuthMethodNone,
@@ -191,7 +194,8 @@ func TestServer_StartAuthorizationFlow_WithExplicitScopes(t *testing.T) {
 
 	// Start authorization flow WITH explicit scopes
 	requestedScope := "openid email https://www.googleapis.com/auth/gmail.readonly"
-	authURL, err := srv.StartAuthorizationFlow(ctx,
+	authURL, err := srv.StartAuthorizationFlow(
+		ctx,
 		client.ClientID,
 		"http://localhost:3000/callback",
 		requestedScope, // EXPLICIT SCOPES PROVIDED
@@ -263,7 +267,8 @@ func TestServer_StartAuthorizationFlow_ScopeIntersection(t *testing.T) {
 	}
 
 	// Register a test client with RESTRICTED scopes (only openid and email)
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Restricted Client",
 		ClientTypePublic,
 		TokenEndpointAuthMethodNone,
@@ -284,7 +289,8 @@ func TestServer_StartAuthorizationFlow_ScopeIntersection(t *testing.T) {
 	// Start authorization flow WITHOUT providing scopes
 	// Server should use intersection: provider wants [openid, email, profile, gmail.readonly]
 	// but client only allowed [openid, email] -> result should be [openid, email]
-	authURL, err := srv.StartAuthorizationFlow(ctx,
+	authURL, err := srv.StartAuthorizationFlow(
+		ctx,
 		client.ClientID,
 		"http://localhost:3000/callback",
 		"", // NO SCOPE PROVIDED

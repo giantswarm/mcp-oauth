@@ -270,7 +270,8 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 
 	// Add PKCE parameters if provided
 	if codeChallenge != "" && codeChallengeMethod != "" {
-		authCodeOpts = append(authCodeOpts,
+		authCodeOpts = append(
+			authCodeOpts,
 			oauth2.SetAuthURLParam("code_challenge", codeChallenge),
 			oauth2.SetAuthURLParam("code_challenge_method", codeChallengeMethod),
 		)
@@ -392,7 +393,8 @@ func (p *Provider) ValidateToken(ctx context.Context, accessToken string) (*prov
 			return nil, fmt.Errorf("invalid groups claim: %w", err)
 		}
 		if truncated {
-			p.logger.Warn("groups claim truncated for user",
+			p.logger.Warn(
+				"groups claim truncated for user",
 				"user_id", dexUserInfo.Sub,
 				"original_count", len(groups),
 				"limit", p.maxGroups,

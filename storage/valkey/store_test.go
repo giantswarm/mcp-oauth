@@ -65,7 +65,8 @@ func cleanupTestKeys(t *testing.T, s *Store) {
 
 	var cursor uint64
 	for {
-		result, err := s.client.Do(ctx,
+		result, err := s.client.Do(
+			ctx,
 			s.client.B().Scan().Cursor(cursor).Match(pattern).Count(100).Build(),
 		).AsScanEntry()
 		if err != nil {

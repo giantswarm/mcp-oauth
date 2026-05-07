@@ -127,7 +127,8 @@ func AddPKCEAttributes(span trace.Span, method string) {
 // AddTokenFamilyAttributes adds token family tracking attributes to a span (nil-safe)
 func AddTokenFamilyAttributes(span trace.Span, familyID string, generation int) {
 	if familyID != "" {
-		SetSpanAttributes(span,
+		SetSpanAttributes(
+			span,
 			attribute.String(AttrTokenFamilyID, familyID),
 			attribute.Int(AttrTokenGeneration, generation),
 		)
@@ -136,7 +137,8 @@ func AddTokenFamilyAttributes(span trace.Span, familyID string, generation int) 
 
 // AddStorageAttributes adds storage operation attributes to a span (nil-safe)
 func AddStorageAttributes(span trace.Span, operation, storageType string) {
-	SetSpanAttributes(span,
+	SetSpanAttributes(
+		span,
 		attribute.String(AttrStorageOperation, operation),
 		attribute.String(AttrStorageType, storageType),
 	)
@@ -144,7 +146,8 @@ func AddStorageAttributes(span trace.Span, operation, storageType string) {
 
 // AddProviderAttributes adds provider attributes to a span (nil-safe)
 func AddProviderAttributes(span trace.Span, providerName, operation string) {
-	SetSpanAttributes(span,
+	SetSpanAttributes(
+		span,
 		attribute.String(AttrProviderName, providerName),
 		attribute.String(AttrProviderOperation, operation),
 	)
@@ -152,7 +155,8 @@ func AddProviderAttributes(span trace.Span, providerName, operation string) {
 
 // AddHTTPAttributes adds HTTP request attributes to a span (nil-safe)
 func AddHTTPAttributes(span trace.Span, method, endpoint string, statusCode int) {
-	SetSpanAttributes(span,
+	SetSpanAttributes(
+		span,
 		attribute.String(AttrHTTPMethod, method),
 		attribute.String(AttrHTTPEndpoint, endpoint),
 		attribute.Int(AttrHTTPStatusCode, statusCode),

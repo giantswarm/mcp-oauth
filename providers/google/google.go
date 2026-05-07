@@ -152,7 +152,8 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 
 	// Add PKCE parameters if provided
 	if codeChallenge != "" && codeChallengeMethod != "" {
-		opts = append(opts,
+		opts = append(
+			opts,
 			oauth2.SetAuthURLParam("code_challenge", codeChallenge),
 			oauth2.SetAuthURLParam("code_challenge_method", codeChallengeMethod),
 		)

@@ -1845,7 +1845,8 @@ func TestHandler_ServeAuthorization_CompleteFlow(t *testing.T) {
 	defer store.Stop()
 
 	// Register a client first
-	client, _, err := handler.server.RegisterClient(ctx,
+	client, _, err := handler.server.RegisterClient(
+		ctx,
 		"Test Client",
 		"confidential",
 		"", // tokenEndpointAuthMethod
@@ -2060,7 +2061,8 @@ func TestHandler_ServeAuthorization_OIDCParameterForwarding(t *testing.T) {
 			handler := NewHandler(srv, nil)
 
 			// Register a client
-			client, _, err := srv.RegisterClient(ctx,
+			client, _, err := srv.RegisterClient(
+				ctx,
 				"Test Client",
 				"confidential",
 				"",
@@ -2398,7 +2400,8 @@ func TestHandler_ServeCallback(t *testing.T) {
 	defer store.Stop()
 
 	// Register a client
-	client, _, err := handler.server.RegisterClient(ctx,
+	client, _, err := handler.server.RegisterClient(
+		ctx,
 		"Test Client",
 		"confidential",
 		"", // tokenEndpointAuthMethod
@@ -2418,7 +2421,8 @@ func TestHandler_ServeCallback(t *testing.T) {
 
 	// State must be at least 32 characters for security
 	clientState := testutil.GenerateRandomString(43)
-	authURL, err := handler.server.StartAuthorizationFlow(ctx,
+	authURL, err := handler.server.StartAuthorizationFlow(
+		ctx,
 		client.ClientID,
 		"https://example.com/callback",
 		"openid email",
@@ -2537,7 +2541,8 @@ func TestHandler_ServeAuthorization_StateLength(t *testing.T) {
 	defer store.Stop()
 
 	// Register a test client
-	client, _, err := handler.server.RegisterClient(ctx,
+	client, _, err := handler.server.RegisterClient(
+		ctx,
 		"Test Client",
 		"confidential",
 		"", // tokenEndpointAuthMethod
@@ -2676,7 +2681,8 @@ func TestHandler_ServeAuthorization_ShortStateWithAllowNoState(t *testing.T) {
 	handler, store := setupTestHandlerWithAllowNoState(t)
 	defer store.Stop()
 
-	client, _, err := handler.server.RegisterClient(ctx,
+	client, _, err := handler.server.RegisterClient(
+		ctx,
 		"Test Client",
 		"confidential",
 		"",
@@ -2766,7 +2772,8 @@ func TestHandler_ServeToken_AuthorizationCode(t *testing.T) {
 	defer store.Stop()
 
 	// Register a client
-	client, secret, err := handler.server.RegisterClient(ctx,
+	client, secret, err := handler.server.RegisterClient(
+		ctx,
 		"Test Client",
 		"confidential",
 		"", // tokenEndpointAuthMethod
@@ -3579,7 +3586,8 @@ func TestHandler_ServeToken_InvalidClient(t *testing.T) {
 	defer store.Stop()
 
 	// Register a client
-	client, _, err := handler.server.RegisterClient(ctx,
+	client, _, err := handler.server.RegisterClient(
+		ctx,
 		"Test Client",
 		"confidential",
 		"", // tokenEndpointAuthMethod
@@ -3616,7 +3624,8 @@ func TestHandler_ServeToken_UnsupportedGrantType(t *testing.T) {
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
-	client, secret, err := handler.server.RegisterClient(ctx,
+	client, secret, err := handler.server.RegisterClient(
+		ctx,
 		"Test Client",
 		"confidential",
 		"", // tokenEndpointAuthMethod
@@ -3688,7 +3697,8 @@ func TestHandler_ServeTokenRevocation_Success(t *testing.T) {
 	defer store.Stop()
 
 	// Register a client
-	client, secret, err := handler.server.RegisterClient(ctx,
+	client, secret, err := handler.server.RegisterClient(
+		ctx,
 		"Test Client",
 		"confidential",
 		"", // tokenEndpointAuthMethod
@@ -3732,7 +3742,8 @@ func TestHandler_ServeTokenIntrospection(t *testing.T) {
 	defer store.Stop()
 
 	// Register a client
-	client, secret, err := handler.server.RegisterClient(ctx,
+	client, secret, err := handler.server.RegisterClient(
+		ctx,
 		"Test Client",
 		"confidential",
 		"", // tokenEndpointAuthMethod
@@ -5140,7 +5151,8 @@ func TestHandler_ServeCallback_CustomURLScheme(t *testing.T) {
 	defer store.Stop()
 
 	// Register a client with custom URL scheme redirect
-	client, _, err := handler.server.RegisterClient(ctx,
+	client, _, err := handler.server.RegisterClient(
+		ctx,
 		"Cursor Test Client",
 		"public",
 		"none", // Public client (no secret)
@@ -5160,7 +5172,8 @@ func TestHandler_ServeCallback_CustomURLScheme(t *testing.T) {
 
 	// State must be at least 32 characters for security
 	clientState := testutil.GenerateRandomString(43)
-	_, err = handler.server.StartAuthorizationFlow(ctx,
+	_, err = handler.server.StartAuthorizationFlow(
+		ctx,
 		client.ClientID,
 		"cursor://oauth/callback",
 		"openid email",
@@ -5253,7 +5266,8 @@ func TestHandler_ServeCallback_HTTPScheme(t *testing.T) {
 	defer store.Stop()
 
 	// Register a client with HTTPS redirect
-	client, _, err := handler.server.RegisterClient(ctx,
+	client, _, err := handler.server.RegisterClient(
+		ctx,
 		"Web App Client",
 		"confidential",
 		"", // tokenEndpointAuthMethod
@@ -5272,7 +5286,8 @@ func TestHandler_ServeCallback_HTTPScheme(t *testing.T) {
 	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	clientState := testutil.GenerateRandomString(43)
-	_, err = handler.server.StartAuthorizationFlow(ctx,
+	_, err = handler.server.StartAuthorizationFlow(
+		ctx,
 		client.ClientID,
 		"https://example.com/callback",
 		"openid email",
@@ -5329,7 +5344,8 @@ func TestHandler_ServeCallback_VSCodeScheme(t *testing.T) {
 	defer store.Stop()
 
 	// Register a client with VS Code scheme
-	client, _, err := handler.server.RegisterClient(ctx,
+	client, _, err := handler.server.RegisterClient(
+		ctx,
 		"VS Code Extension",
 		"public",
 		"none",
@@ -5347,7 +5363,8 @@ func TestHandler_ServeCallback_VSCodeScheme(t *testing.T) {
 	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
 	clientState := testutil.GenerateRandomString(43)
 
-	_, err = handler.server.StartAuthorizationFlow(ctx,
+	_, err = handler.server.StartAuthorizationFlow(
+		ctx,
 		client.ClientID,
 		"vscode://example.extension/callback",
 		"openid",
@@ -5715,7 +5732,8 @@ func TestHandler_ServeCallback_CustomURLScheme_WithBranding(t *testing.T) {
 	handler := NewHandler(srv, nil)
 
 	// Register a client with custom URL scheme redirect
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Branded Test Client",
 		"public",
 		"none",
@@ -5734,7 +5752,8 @@ func TestHandler_ServeCallback_CustomURLScheme_WithBranding(t *testing.T) {
 	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
 	clientState := testutil.GenerateRandomString(43)
 
-	_, err = srv.StartAuthorizationFlow(ctx,
+	_, err = srv.StartAuthorizationFlow(
+		ctx,
 		client.ClientID,
 		"cursor://oauth/callback",
 		"openid email",

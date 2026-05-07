@@ -137,7 +137,8 @@ func (h *Handler) validatePublicClientRegistration(w http.ResponseWriter, req *c
 			"client_type", req.ClientType, "ip", clientIP)
 		h.recordHTTPMetrics("register", http.MethodPost, http.StatusBadRequest, startTime)
 		if span != nil {
-			instrumentation.SetSpanAttributes(span,
+			instrumentation.SetSpanAttributes(
+				span,
 				attribute.String("oauth.client_type", "public"),
 				attribute.String("security.event", "public_client_registration_denied"),
 			)
@@ -793,7 +794,8 @@ func (h *Handler) RegisterOAuthRoutes(mux *http.ServeMux, opts OAuthRoutesOption
 	// but never preferred over the config entries. Log once so consumers
 	// notice the inconsistency instead of silently ignoring the MCPPath.
 	if opts.MCPPath != "" && len(h.server.Config.ResourceMetadataByPath) > 0 {
-		h.logger.Warn("RegisterOAuthRoutes: MCPPath is set alongside non-empty Config.ResourceMetadataByPath; the configuration map is preferred and MCPPath adds only a back-compat alias route",
+		h.logger.Warn(
+			"RegisterOAuthRoutes: MCPPath is set alongside non-empty Config.ResourceMetadataByPath; the configuration map is preferred and MCPPath adds only a back-compat alias route",
 			"mcp_path", opts.MCPPath,
 			"configured_paths", len(h.server.Config.ResourceMetadataByPath),
 		)
@@ -1226,7 +1228,8 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Add attributes to span
-	instrumentation.SetSpanAttributes(span,
+	instrumentation.SetSpanAttributes(
+		span,
 		attribute.String(instrumentation.AttrClientID, clientID),
 		attribute.String(instrumentation.AttrPKCEMethod, codeChallengeMethod),
 	)
@@ -1463,7 +1466,8 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	}
 
 	// Add span attributes
-	instrumentation.SetSpanAttributes(span,
+	instrumentation.SetSpanAttributes(
+		span,
 		attribute.String(instrumentation.AttrClientID, client.ClientID),
 		attribute.String(instrumentation.AttrClientType, client.ClientType),
 	)
@@ -1831,7 +1835,8 @@ func (h *Handler) getMaxClientsPerIP() int {
 // recordTrustedSchemeSpan records trusted scheme info in span.
 func (h *Handler) recordTrustedSchemeSpan(span trace.Span, registeredViaTrustedScheme bool, trustedScheme string) {
 	if span != nil && registeredViaTrustedScheme {
-		instrumentation.SetSpanAttributes(span,
+		instrumentation.SetSpanAttributes(
+			span,
 			attribute.String("oauth.registration_method", "trusted_scheme"),
 			attribute.String("oauth.trusted_scheme", trustedScheme),
 		)
@@ -1878,7 +1883,8 @@ func (h *Handler) auditTrustedSchemeRegistration(registeredViaTrustedScheme bool
 
 // setRegistrationSpanSuccess sets success attributes on the span.
 func (h *Handler) setRegistrationSpanSuccess(span trace.Span, client *storage.Client) {
-	instrumentation.SetSpanAttributes(span,
+	instrumentation.SetSpanAttributes(
+		span,
 		attribute.String(instrumentation.AttrClientID, client.ClientID),
 		attribute.String(instrumentation.AttrClientType, client.ClientType),
 	)

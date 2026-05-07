@@ -80,7 +80,8 @@ func (s *Store) validateRefreshTokenParams(refreshToken, userID, clientID, famil
 // saveRefreshTokenBasic saves the basic refresh token info.
 func (s *Store) saveRefreshTokenBasic(ctx context.Context, refreshToken, userID string, ttl time.Duration) error {
 	refreshKey := s.refreshTokenKey(refreshToken)
-	if err := s.client.Do(ctx,
+	if err := s.client.Do(
+		ctx,
 		s.client.B().Set().Key(refreshKey).Value(userID).Ex(ttl).Build(),
 	).Error(); err != nil {
 		return fmt.Errorf("failed to save refresh token: %w", err)
@@ -105,7 +106,8 @@ func (s *Store) saveFamilyMetadata(ctx context.Context, refreshToken, userID, cl
 	}
 
 	metaKey := s.refreshTokenMetaKey(refreshToken)
-	if err := s.client.Do(ctx,
+	if err := s.client.Do(
+		ctx,
 		s.client.B().Set().Key(metaKey).Value(string(metaData)).Ex(ttl).Build(),
 	).Error(); err != nil {
 		return fmt.Errorf("failed to save family metadata: %w", err)
@@ -116,7 +118,8 @@ func (s *Store) saveFamilyMetadata(ctx context.Context, refreshToken, userID, cl
 // addTokenToFamilySet adds the token to the family set for family-wide revocation.
 func (s *Store) addTokenToFamilySet(ctx context.Context, refreshToken, familyID string, ttl time.Duration) {
 	familySetKey := s.familyKey(familyID)
-	if err := s.client.Do(ctx,
+	if err := s.client.Do(
+		ctx,
 		s.client.B().Sadd().Key(familySetKey).Member(refreshToken).Build(),
 	).Error(); err != nil {
 		s.logger.Warn("Failed to add token to family set",
@@ -124,7 +127,8 @@ func (s *Store) addTokenToFamilySet(ctx context.Context, refreshToken, familyID 
 			"error", err)
 	}
 
-	if err := s.client.Do(ctx,
+	if err := s.client.Do(
+		ctx,
 		s.client.B().Expire().Key(familySetKey).Seconds(int64(ttl.Seconds())).Build(),
 	).Error(); err != nil {
 		s.logger.Warn("Failed to set TTL on family set",
@@ -151,7 +155,8 @@ func (s *Store) saveRefreshTokenMetadata(ctx context.Context, refreshToken, user
 	}
 
 	tokenMetaKey := s.tokenMetaKey(refreshToken)
-	if err := s.client.Do(ctx,
+	if err := s.client.Do(
+		ctx,
 		s.client.B().Set().Key(tokenMetaKey).Value(string(tokenMetaData)).Nx().Ex(ttl).Build(),
 	).Error(); err != nil {
 		if isNilError(err) {
@@ -167,7 +172,8 @@ func (s *Store) saveRefreshTokenMetadata(ctx context.Context, refreshToken, user
 // addTokenToUserClientSet adds the token to the user+client set for bulk revocation.
 func (s *Store) addTokenToUserClientSet(ctx context.Context, refreshToken, userID, clientID string) {
 	userClientKey := s.userClientKey(userID, clientID)
-	if err := s.client.Do(ctx,
+	if err := s.client.Do(
+		ctx,
 		s.client.B().Sadd().Key(userClientKey).Member(refreshToken).Build(),
 	).Error(); err != nil {
 		s.logger.Warn("Failed to add token to user+client set",
@@ -295,7 +301,8 @@ func (s *Store) markFamilyMetadataRevoked(ctx context.Context, token string, now
 
 	updatedData, _ := json.Marshal(&j)
 	retentionTTL := time.Duration(s.revokedFamilyRetentionDays) * 24 * time.Hour
-	if err := s.client.Do(ctx,
+	if err := s.client.Do(
+		ctx,
 		s.client.B().Set().Key(metaKey).Value(string(updatedData)).Ex(retentionTTL).Build(),
 	).Error(); err != nil {
 		s.logger.Debug("Failed to update family metadata during revocation",
@@ -380,14 +387,16 @@ func (s *Store) SaveTokenMetadataWithFamily(tokenID, userID, clientID, tokenType
 
 	metaKey := s.tokenMetaKey(tokenID)
 
-	if err := s.client.Do(ctx,
+	if err := s.client.Do(
+		ctx,
 		s.client.B().Set().Key(metaKey).Value(string(data)).Build(),
 	).Error(); err != nil {
 		return fmt.Errorf("failed to save token metadata: %w", err)
 	}
 
 	userClientKey := s.userClientKey(userID, clientID)
-	if err := s.client.Do(ctx,
+	if err := s.client.Do(
+		ctx,
 		s.client.B().Sadd().Key(userClientKey).Member(tokenID).Build(),
 	).Error(); err != nil {
 		s.logger.Warn("Failed to add token to user+client set",

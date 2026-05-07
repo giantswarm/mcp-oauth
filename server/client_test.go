@@ -71,7 +71,8 @@ func TestServer_RegisterClient(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client, secret, err := srv.RegisterClient(ctx,
+			client, secret, err := srv.RegisterClient(
+				ctx,
 				tt.clientName,
 				tt.clientType,
 				"", // tokenEndpointAuthMethod
@@ -186,7 +187,8 @@ func TestServer_RegisterClient_IPLimit(t *testing.T) {
 	maxPerIP := 2
 
 	// Register first client
-	_, _, err = srv.RegisterClient(ctx,
+	_, _, err = srv.RegisterClient(
+		ctx,
 		"Client 1",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -200,7 +202,8 @@ func TestServer_RegisterClient_IPLimit(t *testing.T) {
 	}
 
 	// Register second client
-	_, _, err = srv.RegisterClient(ctx,
+	_, _, err = srv.RegisterClient(
+		ctx,
 		"Client 2",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -214,7 +217,8 @@ func TestServer_RegisterClient_IPLimit(t *testing.T) {
 	}
 
 	// Third registration should fail (exceeds limit)
-	_, _, err = srv.RegisterClient(ctx,
+	_, _, err = srv.RegisterClient(
+		ctx,
 		"Client 3",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -245,7 +249,8 @@ func TestServer_ValidateClientCredentials(t *testing.T) {
 	}
 
 	// Register a client
-	client, secret, err := srv.RegisterClient(ctx,
+	client, secret, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -317,7 +322,8 @@ func TestServer_GetClient(t *testing.T) {
 	}
 
 	// Register a client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -459,7 +465,8 @@ func TestServer_RegisterClient_TokenEndpointAuthMethod(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client, secret, err := srv.RegisterClient(ctx,
+			client, secret, err := srv.RegisterClient(
+				ctx,
 				tt.clientName,
 				tt.clientType,
 				tt.tokenEndpointAuthMethod,

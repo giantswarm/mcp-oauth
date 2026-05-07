@@ -64,7 +64,8 @@ func TestServer_AuditLoggingClientIDMismatch(t *testing.T) {
 	srv.SetAuditor(auditor)
 
 	// Register a client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -85,7 +86,8 @@ func TestServer_AuditLoggingClientIDMismatch(t *testing.T) {
 
 	// Get authorization code
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(ctx,
+	_, err = srv.StartAuthorizationFlow(
+		ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -163,7 +165,8 @@ func TestServer_AuditLoggingRedirectURIMismatch(t *testing.T) {
 	srv.SetAuditor(auditor)
 
 	// Register a client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -184,7 +187,8 @@ func TestServer_AuditLoggingRedirectURIMismatch(t *testing.T) {
 
 	// Get authorization code
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(ctx,
+	_, err = srv.StartAuthorizationFlow(
+		ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -410,7 +414,8 @@ func TestServer_AuditEventAuthorizationCodeReuse(t *testing.T) {
 	srv.SetAuditor(auditor)
 
 	// Register a client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -431,7 +436,8 @@ func TestServer_AuditEventAuthorizationCodeReuse(t *testing.T) {
 
 	// Get authorization code
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(ctx,
+	_, err = srv.StartAuthorizationFlow(
+		ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",

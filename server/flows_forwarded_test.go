@@ -422,12 +422,15 @@ func (p *oauthOnlyProvider) DefaultScopes() []string { return nil }
 func (p *oauthOnlyProvider) AuthorizationURL(state, cc, ccm string, scopes []string, opts *providers.AuthorizationURLOptions) string {
 	return ""
 }
+
 func (p *oauthOnlyProvider) ExchangeCode(ctx context.Context, code, verifier string) (*oauth2.Token, error) {
 	return nil, nil
 }
+
 func (p *oauthOnlyProvider) ValidateToken(ctx context.Context, tok string) (*providers.UserInfo, error) {
 	return nil, nil
 }
+
 func (p *oauthOnlyProvider) RefreshToken(ctx context.Context, rt string) (*oauth2.Token, error) {
 	return nil, nil
 }

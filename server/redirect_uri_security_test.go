@@ -929,7 +929,8 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 		})
 		resolver := newMockDNSResolver()
 		// Mixed public and private IPs
-		resolver.setResult("mixed.example.com",
+		resolver.setResult(
+			"mixed.example.com",
 			net.ParseIP("93.184.216.34"), // Public
 			net.ParseIP("10.0.0.1"),      // Private - should block
 		)

@@ -321,7 +321,8 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken
 	metaKey := s.tokenMetaKey(refreshToken)
 
 	// Execute Lua script for atomic operation
-	result, err := s.client.Do(op.ctx,
+	result, err := s.client.Do(
+		op.ctx,
 		s.client.B().Eval().Script(luaScriptAtomicGetAndDeleteRefresh).
 			Numkeys(3).
 			Key(refreshKey, tokenKey, metaKey).
