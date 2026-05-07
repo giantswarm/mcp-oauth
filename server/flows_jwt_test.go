@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/x509"
+	"fmt"
 	"testing"
 	"time"
 
@@ -33,7 +34,7 @@ func setupJWTFlowTestServer(t *testing.T) (*Server, *memory.Store, *mock.Provide
 		ResourceIdentifier:          "https://api.example.com",
 		SupportedScopes:             []string{"openid", "email", "profile"},
 		AuthorizationCodeTTL:        600,
-		AccessTokenTTL:               3600,
+		AccessTokenTTL:              3600,
 		RequirePKCE:                 true,
 		AllowPKCEPlain:              false,
 		ClockSkewGracePeriod:        5,
@@ -129,12 +130,12 @@ func TestValidateToken_SelfIssuedJWT_AlgConfusionRejected(t *testing.T) {
 	// alg pinning enforces the configured RS256 only.
 	now := time.Now().UTC()
 	mapClaims := jwt.MapClaims{
-		"iss":      srv.Config.Issuer,
-		"sub":      "attacker",
-		"aud":      srv.Config.GetResourceIdentifier(),
-		"exp":      now.Add(15 * time.Minute).Unix(),
-		"iat":      now.Unix(),
-		"jti":      "forged-jti",
+		"iss":       srv.Config.Issuer,
+		"sub":       "attacker",
+		"aud":       srv.Config.GetResourceIdentifier(),
+		"exp":       now.Add(15 * time.Minute).Unix(),
+		"iat":       now.Unix(),
+		"jti":       "forged-jti",
 		"client_id": "any",
 	}
 	t1 := jwt.NewWithClaims(jwt.SigningMethodHS256, mapClaims)
@@ -268,6 +269,67 @@ func TestGenerateAndStoreTokens_JWTMode(t *testing.T) {
 	require.Equal(t, []any{"admins"}, groups)
 }
 
+// erroringFamilyByIDStore wraps a memory.Store and forces
+// GetRefreshTokenFamilyByID to return a transient backend error, so the
+// fail-closed path in checkJWTFamily can be exercised without a real outage.
+// The other methods promote through to the embedded store.
+type erroringFamilyByIDStore struct {
+	*memory.Store
+	familyByIDErr error
+}
+
+func (e *erroringFamilyByIDStore) GetRefreshTokenFamilyByID(_ context.Context, _ string) (*storage.RefreshTokenFamilyMetadata, error) {
+	return nil, e.familyByIDErr
+}
+
+// TestValidateToken_SelfIssuedJWT_FamilyCheckFailsClosedOnStorageError covers
+// F2: a transient error from RefreshTokenFamilyByIDStore must reject the JWT
+// rather than silently bypass the family-revocation defense (parity with
+// checkJWTRevocation). ErrRefreshTokenFamilyNotFound stays a legit silent skip.
+func TestValidateToken_SelfIssuedJWT_FamilyCheckFailsClosedOnStorageError(t *testing.T) {
+	store := memory.New()
+	t.Cleanup(func() { store.Stop() })
+	wrapped := &erroringFamilyByIDStore{
+		Store:         store,
+		familyByIDErr: fmt.Errorf("transient backend outage"),
+	}
+
+	provider := mock.NewProvider()
+	key := generateRSAKey(t)
+	cfg := &Config{
+		Issuer:                      "https://auth.example.com",
+		ResourceIdentifier:          "https://api.example.com",
+		AccessTokenTTL:              3600,
+		ClockSkewGracePeriod:        5,
+		AccessTokenFormat:           AccessTokenFormatJWT,
+		AccessTokenSigningKey:       key,
+		AccessTokenSigningKeyID:     "test-kid-1",
+		AccessTokenSigningAlgorithm: SigningAlgorithmRS256,
+	}
+
+	srv, err := New(provider, wrapped, wrapped, wrapped, cfg, nil)
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	tok, err := srv.accessTokenIssuer.Issue(context.Background(), AccessTokenClaims{
+		Subject:   "user-1",
+		Audience:  srv.Config.GetResourceIdentifier(),
+		ExpiresAt: now.Add(15 * time.Minute),
+		FamilyID:  "fam-transient-error",
+	})
+	require.NoError(t, err)
+
+	_, err = srv.ValidateToken(context.Background(), tok)
+	require.Error(t, err, "transient family-store error must reject the JWT (fail-closed)")
+	require.Contains(t, err.Error(), "family revocation check failed")
+
+	// ErrRefreshTokenFamilyNotFound is the legit silent-skip signal —
+	// validation must accept the JWT in that case (no family ever existed).
+	wrapped.familyByIDErr = storage.ErrRefreshTokenFamilyNotFound
+	_, err = srv.ValidateToken(context.Background(), tok)
+	require.NoError(t, err, "ErrRefreshTokenFamilyNotFound is silent-skip, not reject")
+}
+
 func TestFamilyRevocation_InvalidatesInFlightJWT(t *testing.T) {
 	srv, store, _ := setupJWTFlowTestServer(t)
 	ctx := context.Background()
@@ -390,5 +452,3 @@ func isJWTShape(s string) bool {
 	}
 	return dots == 2
 }
-
-
