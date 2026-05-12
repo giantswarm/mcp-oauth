@@ -433,4 +433,3 @@ func TestNilSafeHelpers_WithNilSpans(_ *testing.T) {
 
 	// Should not panic
 }
-

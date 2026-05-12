@@ -369,16 +369,16 @@ func TestStartAuthorizationFlow_OIDCParameterForwarding(t *testing.T) {
 				t.Error("StartAuthorizationFlow() returned empty authorization URL")
 			}
 
-			// Verify options were passed to provider
-			if tt.authOpts == nil {
-				if capturedOpts != nil {
-					t.Error("Expected nil authOpts to be passed to provider, got non-nil")
-				}
-			} else {
-				if capturedOpts == nil {
-					t.Fatal("Expected authOpts to be passed to provider, got nil")
-				}
-
+			// Verify options were passed to provider. On OIDC flows the server
+			// mints a `nonce` even when the client supplied no authOpts, so
+			// capturedOpts is non-nil whenever scope contains `openid`.
+			if capturedOpts == nil {
+				t.Fatal("Expected authOpts to be passed to provider, got nil")
+			}
+			if capturedOpts.Nonce == "" {
+				t.Error("Expected server-generated nonce on OIDC flow, got empty")
+			}
+			if tt.authOpts != nil {
 				if tt.wantPrompt != "" && capturedOpts.Prompt != tt.wantPrompt {
 					t.Errorf("prompt = %q, want %q", capturedOpts.Prompt, tt.wantPrompt)
 				}
@@ -702,15 +702,19 @@ func TestServer_HandleProviderCallback_ShortLivedToken(t *testing.T) {
 		}, nil
 	}
 
-	// Create server with custom ProviderTokenTTL
+	// Create server with custom ProviderTokenTTL. The mock provider returns a
+	// non-parseable id_token fixture, so the upstream nonce echo check is
+	// disabled here — this test exercises token-extension behaviour, not OIDC
+	// nonce validation (covered in flows_nonce_test.go).
 	config := &Config{
-		Issuer:               "https://auth.example.com",
-		SupportedScopes:      []string{"openid", "email", "profile"},
-		AuthorizationCodeTTL: 600,
-		AccessTokenTTL:       3600,
-		ProviderTokenTTL:     3600, // 1 hour - should extend the expired token
-		RequirePKCE:          true,
-		AllowPKCEPlain:       false,
+		Issuer:                      "https://auth.example.com",
+		SupportedScopes:             []string{"openid", "email", "profile"},
+		AuthorizationCodeTTL:        600,
+		AccessTokenTTL:              3600,
+		ProviderTokenTTL:            3600, // 1 hour - should extend the expired token
+		RequirePKCE:                 true,
+		AllowPKCEPlain:              false,
+		DisableNonceEchoRequirement: true,
 	}
 
 	srv, err := New(provider, store, store, store, config, nil)

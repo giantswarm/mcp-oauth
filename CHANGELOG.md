@@ -40,6 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Entries are validated at startup: HTTPS only, no fragment / userinfo, no loopback / private / link-local / unspecified IP literal hosts. Invalid entries are dropped.
   - New audit event `client_registered_via_trusted_redirect_uri` (`security.EventClientRegisteredViaTrustedRedirectURI`) carries the matched URI.
   - Env loader: `OAUTH_TRUSTED_REDIRECT_URIS` (comma-separated).
+- **OIDC `nonce` end-to-end (CWE-294)** (closes #305)
+  - `/authorize` accepts the `nonce` query parameter and forwards it to the upstream IdP. Forbidden on non-OIDC code flows (no `openid` scope); on OIDC flows the server mints a 256-bit nonce when the client supplied none.
+  - `providers.AuthorizationURLOptions` gains a `Nonce` field. The three in-tree providers (`dex`, `google`, `github`) honour it via the shared `ApplyAuthorizationURLOptions` helper / their own opt-in path; backwards-compatible — no signature changes.
+  - `storage.AuthorizationState` gains a `Nonce` field, persisted by both memory and Valkey backends.
+  - New `Config.RequireNonceEcho` (default `true`, opt out via `Config.DisableNonceEchoRequirement`). Upstream id_token must echo the issued nonce; mismatch or absent claim rejects the callback and emits a `security.EventProviderNonceMismatch` audit event (severity `high`). Comparison uses `crypto/subtle.ConstantTimeCompare`.
+  - New `oidc.ValidateNonceClaim(claim, expected)` + `oidc.ErrNonceMismatch` sentinel for callers that validate forwarded id_tokens elsewhere.
+  - `IDTokenClaims` gains a `Nonce` JSON tag for completeness.
+  - Authorization Server Metadata advertises `claims_supported: ["sub", "aud", "iss", "exp", "iat", "nonce"]`.
 - **`LogValue()` on `Server`, `storage/memory.Store`, and `storage/valkey.Store`** (slog.LogValuer)
   - Callers can attach a one-shot structured snapshot of the server / store posture to any log line: `logger.Info("oauth ready", "server", srv, "store", store)`. The library no longer emits this state on its own.
   - `Server.LogValue()` exposes `issuer`, `production_mode`, `access_token_format`, `encryption_at_rest`, `instrumentation_on`, a `redirect_uri_policy` group (`dns_validation`, `dns_validation_strict`, `authorization_time_validation`, `dns_timeout`, `allow_localhost`, `allow_private_ip`, `allow_link_local`), and `session_id_hmac_key_fingerprint` (sha256[:8] hex, omitted when unconfigured).
