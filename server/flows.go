@@ -931,13 +931,15 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 	return authURL, nil
 }
 
-// minClientNonceLength is the lower bound on client-supplied nonce entropy
-// (24 base64 chars yields 144 bits). Shorter values are replaced server-side.
+// minClientNonceLength is the lower bound on client-supplied nonce *length*.
+// 24 characters is a coarse proxy for entropy; the check does not validate
+// base64 or assert any particular charset — the upstream IdP is the authority
+// on the accepted nonce shape. Shorter values are replaced server-side.
 const minClientNonceLength = 24
 
 // resolveAuthorizationNonce returns the nonce to persist with the
 // AuthorizationState and the authOpts forwarded to the upstream IdP. Non-OIDC
-// scopes drop the nonce; OIDC scopes reuse a sufficiently entropic client value
+// scopes drop the nonce; OIDC scopes reuse a sufficiently long client value
 // or mint a server-side replacement.
 //
 // Caller-visible behaviour: a client-supplied nonce shorter than
@@ -946,9 +948,12 @@ const minClientNonceLength = 24
 // will see the substituted value on callback, not their own. The substitution
 // is logged at WARN level on the [Server.Logger]; there is no /authorize-time
 // 400 rejection because the parameter is otherwise spec-conforming.
-func (s *Server) resolveAuthorizationNonce(clientID, scope string, authOpts *providers.AuthorizationURLOptions) (string, *providers.AuthorizationURLOptions) {
+func (s *Server) resolveAuthorizationNonce(clientID, scope string, authOpts *providers.AuthorizationURLOptions) (nonce string, forwarded *providers.AuthorizationURLOptions) {
 	if !helpers.HasScope(scope, "openid") {
 		if authOpts != nil && authOpts.Nonce != "" {
+			s.Logger.Debug("Dropping client-supplied nonce on non-OIDC flow",
+				"client_id", clientID,
+				"scope", scope)
 			amended := *authOpts
 			amended.Nonce = ""
 			return "", &amended
@@ -1063,8 +1068,10 @@ func (s *Server) logProviderStateMismatch(ctx context.Context, clientID string) 
 }
 
 // validateUpstreamIDTokenNonce requires the upstream id_token's `nonce` claim
-// to equal authState.Nonce. No-op when authState has no nonce, the response
-// carries no id_token, or RequireNonceEcho is false.
+// to equal authState.Nonce. No-op when authState has no nonce or
+// RequireNonceEcho is false. When a nonce was bound, an absent id_token in
+// the provider response is rejected as a downgrade attempt — non-conformant
+// IdPs are the use case for DisableNonceEchoRequirement.
 //
 // The id_token claims are parsed without signature verification: this echo
 // check is defence-in-depth against authorization-response forgery, not the
@@ -1082,7 +1089,8 @@ func (s *Server) validateUpstreamIDTokenNonce(ctx context.Context, authState *st
 
 	idToken := ExtractIDToken(providerToken)
 	if idToken == "" {
-		return nil
+		s.logProviderNonceMismatch(ctx, authState.ClientID, "id_token_missing")
+		return fmt.Errorf("upstream id_token missing: %w", oidc.ErrNonceMismatch)
 	}
 
 	claims, parseErr := oidc.ParseUnverifiedClaims(idToken)
@@ -1092,8 +1100,12 @@ func (s *Server) validateUpstreamIDTokenNonce(ctx context.Context, authState *st
 	}
 
 	claimNonce, wrongType := extractNonceClaim(claims)
+	if wrongType {
+		s.logProviderNonceMismatch(ctx, authState.ClientID, "wrong_type")
+		return fmt.Errorf("upstream id_token nonce wrong_type: %w", oidc.ErrNonceMismatch)
+	}
 	if err := oidc.ValidateNonceClaim(claimNonce, authState.Nonce); err != nil {
-		reason := nonceMismatchReason(claimNonce, wrongType)
+		reason := nonceMismatchReason(claimNonce)
 		s.logProviderNonceMismatch(ctx, authState.ClientID, reason)
 		return fmt.Errorf("upstream id_token nonce %s: %w", reason, err)
 	}
@@ -1116,15 +1128,11 @@ func extractNonceClaim(claims map[string]any) (nonce string, wrongType bool) {
 	return s, false
 }
 
-func nonceMismatchReason(claimNonce string, wrongType bool) string {
-	switch {
-	case wrongType:
-		return "wrong_type"
-	case claimNonce == "":
+func nonceMismatchReason(claimNonce string) string {
+	if claimNonce == "" {
 		return "absent"
-	default:
-		return "mismatch"
 	}
+	return "mismatch"
 }
 
 // logProviderNonceMismatch emits the audit event for an upstream id_token

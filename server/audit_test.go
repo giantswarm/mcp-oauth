@@ -52,7 +52,8 @@ func TestServer_AuditLoggingClientIDMismatch(t *testing.T) {
 	logger, logBuf := captureLogger()
 
 	config := &Config{
-		Issuer: "https://auth.example.com",
+		Issuer:                      "https://auth.example.com",
+		DisableNonceEchoRequirement: true,
 	}
 
 	srv, err := New(provider, store, store, store, config, logger)
@@ -153,7 +154,8 @@ func TestServer_AuditLoggingRedirectURIMismatch(t *testing.T) {
 	logger, logBuf := captureLogger()
 
 	config := &Config{
-		Issuer: "https://auth.example.com",
+		Issuer:                      "https://auth.example.com",
+		DisableNonceEchoRequirement: true,
 	}
 
 	srv, err := New(provider, store, store, store, config, logger)
@@ -402,7 +404,8 @@ func TestServer_AuditEventAuthorizationCodeReuse(t *testing.T) {
 	logger, logBuf := captureLogger()
 
 	config := &Config{
-		Issuer: "https://auth.example.com",
+		Issuer:                      "https://auth.example.com",
+		DisableNonceEchoRequirement: true,
 	}
 
 	srv, err := New(provider, store, store, store, config, logger)

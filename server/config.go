@@ -763,8 +763,10 @@ type Config struct {
 	SessionIDHMACKey []byte
 
 	// RequireNonceEcho enforces upstream id_token `nonce` claim matching on the
-	// authorization-code callback. Default true; set DisableNonceEchoRequirement
-	// to opt out.
+	// authorization-code callback. Derived from DisableNonceEchoRequirement
+	// during config validation — operators should toggle the Disable* knob and
+	// leave this field alone (same X / DisableX pattern as
+	// ValidateRedirectURIAtAuthorization).
 	RequireNonceEcho bool
 
 	// DisableNonceEchoRequirement opts out of the upstream id_token `nonce`

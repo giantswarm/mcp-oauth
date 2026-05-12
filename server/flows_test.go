@@ -49,7 +49,10 @@ func setupFlowTestServer(t *testing.T) (*Server, *memory.Store, *mock.Provider) 
 		AccessTokenTTL:       3600,
 		RequirePKCE:          true,
 		AllowPKCEPlain:       false,
-		ClockSkewGracePeriod: 5, // 5 seconds grace period for testing
+		ClockSkewGracePeriod: 5,
+		// Mock provider returns no id_token; nonce echo is exercised in
+		// flows_nonce_test.go with its own fixture.
+		DisableNonceEchoRequirement: true,
 	}
 
 	srv, err := New(provider, store, store, store, config, nil)
@@ -5606,11 +5609,12 @@ func TestResourceParameter_AudienceValidation(t *testing.T) {
 		store,
 		store,
 		&Config{
-			Issuer:             "https://auth.example.com",
-			ResourceIdentifier: "https://mcp.example.com", // Explicit resource identifier
-			AccessTokenTTL:     3600,
-			RefreshTokenTTL:    86400,
-			RequirePKCE:        true,
+			Issuer:                      "https://auth.example.com",
+			ResourceIdentifier:          "https://mcp.example.com",
+			AccessTokenTTL:              3600,
+			RefreshTokenTTL:             86400,
+			RequirePKCE:                 true,
+			DisableNonceEchoRequirement: true,
 		},
 		nil,
 	)
@@ -5702,10 +5706,11 @@ func TestResourceParameter_AudienceValidation(t *testing.T) {
 			store,
 			store,
 			&Config{
-				Issuer:             "https://auth.example.com",
-				ResourceIdentifier: "https://different-mcp.example.com", // Different resource identifier
-				AccessTokenTTL:     3600,
-				RefreshTokenTTL:    86400,
+				Issuer:                      "https://auth.example.com",
+				ResourceIdentifier:          "https://different-mcp.example.com",
+				AccessTokenTTL:              3600,
+				RefreshTokenTTL:             86400,
+				DisableNonceEchoRequirement: true,
 			},
 			nil,
 		)
@@ -5861,11 +5866,12 @@ func TestResourceParameter_ConsistencyValidation(t *testing.T) {
 		store,
 		store,
 		&Config{
-			Issuer:             "https://auth.example.com",
-			ResourceIdentifier: "https://mcp.example.com",
-			AccessTokenTTL:     3600,
-			RefreshTokenTTL:    86400,
-			RequirePKCE:        true,
+			Issuer:                      "https://auth.example.com",
+			ResourceIdentifier:          "https://mcp.example.com",
+			AccessTokenTTL:              3600,
+			RefreshTokenTTL:             86400,
+			RequirePKCE:                 true,
+			DisableNonceEchoRequirement: true,
 		},
 		nil,
 	)
@@ -6108,11 +6114,12 @@ func TestResourceParameter_RateLimiting(t *testing.T) {
 		store,
 		store,
 		&Config{
-			Issuer:             "https://auth.example.com",
-			ResourceIdentifier: "https://mcp.example.com",
-			AccessTokenTTL:     3600,
-			RefreshTokenTTL:    86400,
-			RequirePKCE:        true,
+			Issuer:                      "https://auth.example.com",
+			ResourceIdentifier:          "https://mcp.example.com",
+			AccessTokenTTL:              3600,
+			RefreshTokenTTL:             86400,
+			RequirePKCE:                 true,
+			DisableNonceEchoRequirement: true,
 		},
 		nil,
 	)
@@ -6198,14 +6205,15 @@ func setupFlowTestServerWithNoStateParameter(t *testing.T) (*Server, *memory.Sto
 	provider := mock.NewProvider()
 
 	config := &Config{
-		Issuer:                "https://auth.example.com",
-		SupportedScopes:       []string{"openid", "email", "profile"},
-		AuthorizationCodeTTL:  600,
-		AccessTokenTTL:        3600,
-		RequirePKCE:           true,
-		AllowPKCEPlain:        false,
-		AllowNoStateParameter: true, // Allow empty state
-		ClockSkewGracePeriod:  5,
+		Issuer:                      "https://auth.example.com",
+		SupportedScopes:             []string{"openid", "email", "profile"},
+		AuthorizationCodeTTL:        600,
+		AccessTokenTTL:              3600,
+		RequirePKCE:                 true,
+		AllowPKCEPlain:              false,
+		AllowNoStateParameter:       true,
+		ClockSkewGracePeriod:        5,
+		DisableNonceEchoRequirement: true,
 	}
 
 	srv, err := New(provider, store, store, store, config, nil)

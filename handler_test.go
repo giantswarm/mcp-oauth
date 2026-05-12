@@ -44,6 +44,9 @@ func setupTestHandler(t *testing.T) (*Handler, *memory.Store) {
 
 	config := &server.Config{
 		Issuer: testIssuer,
+		// Mock provider returns no id_token; nonce echo is exercised in
+		// flows_nonce_test.go with its own fixture.
+		DisableNonceEchoRequirement: true,
 	}
 
 	srv, err := server.New(provider, store, store, store, config, nil)
@@ -78,6 +81,7 @@ func setupTestHandlerWithCORS(t *testing.T, allowedOrigins []string) (*Handler, 
 			AllowCredentials: true,
 			MaxAge:           3600,
 		},
+		DisableNonceEchoRequirement: true,
 	}
 
 	srv, err := server.New(provider, store, store, store, config, nil)
@@ -5765,6 +5769,7 @@ func TestHandler_ServeCallback_CustomURLScheme_WithBranding(t *testing.T) {
 				PrimaryColor: "#FF5733",
 			},
 		},
+		DisableNonceEchoRequirement: true,
 	}
 
 	srv, err := server.New(provider, store, store, store, config, nil)

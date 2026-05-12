@@ -2962,13 +2962,15 @@ func validatePrompt(prompt string) string {
 
 // parseOIDCOptions extracts and validates OIDC parameters from the query string
 // for upstream IdP forwarding. Returns nil when no valid parameters are present.
-// Oversized values for non-nonce params are silently dropped; oversized nonce
-// is a hard rejection.
+// Oversized values for non-nonce params are silently dropped. Oversized nonce
+// is a hard rejection because the parameter is a security primitive — silent
+// truncation would either skip enforcement or persist a value the client did
+// not actually send.
 func parseOIDCOptions(query url.Values) (*providers.AuthorizationURLOptions, error) {
 	prompt := validatePrompt(query.Get("prompt"))
-	loginHint := truncatedIfOversize(query.Get("login_hint"), MaxLoginHintLength)
-	idTokenHint := truncatedIfOversize(query.Get("id_token_hint"), MaxIDTokenHintLength)
-	acrValues := truncatedIfOversize(query.Get("acr_values"), MaxACRValuesLength)
+	loginHint := dropIfOversize(query.Get("login_hint"), MaxLoginHintLength)
+	idTokenHint := dropIfOversize(query.Get("id_token_hint"), MaxIDTokenHintLength)
+	acrValues := dropIfOversize(query.Get("acr_values"), MaxACRValuesLength)
 	maxAge := parseMaxAgeQueryValue(query.Get("max_age"))
 	nonce := query.Get("nonce")
 
@@ -2990,8 +2992,9 @@ func parseOIDCOptions(query url.Values) (*providers.AuthorizationURLOptions, err
 	}, nil
 }
 
-// truncatedIfOversize returns the empty string when v exceeds maxLen.
-func truncatedIfOversize(v string, maxLen int) string {
+// dropIfOversize returns the empty string when v exceeds maxLen — used for
+// OIDC parameters whose silent omission is preferable to truncation.
+func dropIfOversize(v string, maxLen int) string {
 	if len(v) > maxLen {
 		return ""
 	}

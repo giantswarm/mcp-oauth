@@ -265,6 +265,60 @@ func TestNonce_Replay_ProviderStateOneTime(t *testing.T) {
 	authCode2, _, err := fix.srv.HandleProviderCallback(context.Background(), providerState, "code")
 	require.Error(t, err, "replayed providerState must be rejected")
 	require.Nil(t, authCode2)
+	require.False(t, errors.Is(err, oidc.ErrNonceMismatch),
+		"replay must be rejected by the state-lookup path, not the nonce echo — a future change reordering the checks would silently break this guarantee; got %v", err)
+}
+
+func TestNonce_IDTokenMissing_Rejected(t *testing.T) {
+	fix := setupNonceFlow(t, true)
+	providerState, _ := fix.startOIDCFlow(t)
+	fix.echoIDToken("")
+
+	authCode, _, err := fix.srv.HandleProviderCallback(context.Background(), providerState, "code")
+	require.Error(t, err)
+	require.Nil(t, authCode)
+	require.True(t, errors.Is(err, oidc.ErrNonceMismatch),
+		"expected ErrNonceMismatch with reason id_token_missing, got %v", err)
+	require.Contains(t, err.Error(), "missing")
+
+	logOutput := fix.auditBuf.String()
+	require.True(t, containsAuditEvent(logOutput, security.EventProviderNonceMismatch),
+		"audit event %q not emitted on missing id_token; log: %s", security.EventProviderNonceMismatch, logOutput)
+	require.Contains(t, logOutput, "id_token_missing",
+		"audit reason should record id_token_missing")
+}
+
+func TestNonce_ClientNonceTooShort_ReplacedAndWarned(t *testing.T) {
+	fix := setupNonceFlow(t, true)
+
+	verifier := testutil.GenerateRandomString(testPKCEVerifierLength)
+	hash := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
+	clientState := testutil.GenerateRandomString(43)
+
+	const shortNonce = "ten-chars1" // < minClientNonceLength
+	_, err := fix.srv.StartAuthorizationFlow(
+		context.Background(),
+		fix.clientID,
+		"https://example.com/callback",
+		"openid email",
+		"",
+		challenge,
+		PKCEMethodS256,
+		clientState,
+		&providers.AuthorizationURLOptions{Nonce: shortNonce},
+	)
+	require.NoError(t, err)
+
+	authState, err := fix.store.GetAuthorizationState(context.Background(), clientState)
+	require.NoError(t, err)
+	require.NotEqual(t, shortNonce, authState.Nonce,
+		"server must substitute a client nonce below minClientNonceLength")
+	require.GreaterOrEqual(t, len(authState.Nonce), minClientNonceLength,
+		"substituted nonce must clear the length floor")
+	require.Contains(t, fix.auditBuf.String(),
+		"Client-supplied nonce below minimum length",
+		"WARN log expected so RPs can self-diagnose the unexpected echo value")
 }
 
 func TestNonce_NotOIDCFlow_NotEnforced(t *testing.T) {
