@@ -19,9 +19,10 @@ import (
 // passes input validation and reaches the rate-limit gate.
 const testStateMinLen = "abcdefghijklmnopqrstuvwx" // 24 chars, == MinStateLength
 
-// newTestServerForRateLimit returns a server with default body-size config and
-// a deterministic teardown. The caller assigns RateLimiter (or leaves it nil).
-func newTestServerForRateLimit(t *testing.T) *server.Server {
+// newOAuthTestServer returns a baseline test server with default config.
+// The caller wires whatever rate limiter the test needs (or leaves them
+// nil). Stop hooks are registered via t.Cleanup.
+func newOAuthTestServer(t *testing.T) *server.Server {
 	t.Helper()
 
 	store := memory.New()
@@ -39,19 +40,26 @@ func newTestServerForRateLimit(t *testing.T) *server.Server {
 func setupTestHandlerWithRateLimit(t *testing.T, burst int) *Handler {
 	t.Helper()
 
-	srv := newTestServerForRateLimit(t)
+	srv := newOAuthTestServer(t)
 	srv.RateLimiter = security.NewRateLimiter(0, burst, nil)
 	t.Cleanup(srv.RateLimiter.Stop)
 
 	return NewHandler(srv, nil)
 }
 
+// endpointCase is a shared request/response fixture for the four OAuth
+// flow endpoints exercised by the rate-limit tests. Each case builds a
+// fresh *http.Request with the given RemoteAddr and dispatches it through
+// the matching handler. Kept generic so other cross-endpoint properties
+// can reuse the table.
 type endpointCase struct {
 	name    string
 	request func(remoteAddr string) *http.Request
 	serve   func(h *Handler, w http.ResponseWriter, r *http.Request)
 }
 
+// oauthEndpointCases returns one case per CWE-307 endpoint:
+// /authorize, /token, /revoke, /introspect.
 func oauthEndpointCases() []endpointCase {
 	return []endpointCase{
 		{
@@ -167,7 +175,7 @@ func TestHandler_OAuthEndpoints_IPRateLimit_PerIP(t *testing.T) {
 func TestHandler_OAuthEndpoints_NoRateLimiter(t *testing.T) {
 	for _, tc := range oauthEndpointCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := newTestServerForRateLimit(t)
+			srv := newOAuthTestServer(t)
 			// srv.RateLimiter intentionally left nil
 			handler := NewHandler(srv, nil)
 
@@ -214,7 +222,7 @@ func TestHandler_IPRateLimit_IPv6BucketedBy64(t *testing.T) {
 // by the user rate limiter (keyed by client_id), so authenticated abusers
 // can't enumerate tokens at unbounded rate.
 func TestHandler_TokenEndpoint_PostAuthUserRateLimit(t *testing.T) {
-	srv := newTestServerForRateLimit(t)
+	srv := newOAuthTestServer(t)
 	srv.UserRateLimiter = security.NewRateLimiter(0, 1, nil) // 1 token, no refill
 	t.Cleanup(srv.UserRateLimiter.Stop)
 	handler := NewHandler(srv, nil)
@@ -282,7 +290,7 @@ func TestHandler_IPRateLimit_RetryAfterDerivedFromRate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv := newTestServerForRateLimit(t)
+			srv := newOAuthTestServer(t)
 			srv.RateLimiter = security.NewRateLimiter(tt.rate, 1, nil)
 			t.Cleanup(srv.RateLimiter.Stop)
 			handler := NewHandler(srv, nil)
