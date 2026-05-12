@@ -2604,46 +2604,44 @@ func TestHandler_ServeAuthorization_StateLength(t *testing.T) {
 	}
 
 	tests := []struct {
-		name       string
-		state      string
-		wantStatus int
-		wantError  bool
+		name           string
+		state          string
+		wantStatus     int
+		wantErrorParam string // empty when the request is expected to succeed
 	}{
 		{
-			name:       "state too short (1 char)",
-			state:      "x",
-			wantStatus: http.StatusBadRequest,
-			wantError:  true,
+			name:           "state too short (1 char)",
+			state:          "x",
+			wantStatus:     http.StatusFound,
+			wantErrorParam: ErrorCodeInvalidRequest,
 		},
 		{
-			name:       "state too short (10 chars)",
-			state:      "0123456789",
-			wantStatus: http.StatusBadRequest,
-			wantError:  true,
+			name:           "state too short (10 chars)",
+			state:          "0123456789",
+			wantStatus:     http.StatusFound,
+			wantErrorParam: ErrorCodeInvalidRequest,
 		},
 		{
-			name:       "state too short (23 chars, just under minimum)",
-			state:      "01234567890123456789012",
-			wantStatus: http.StatusBadRequest,
-			wantError:  true,
+			name:           "state too short (23 chars, just under minimum)",
+			state:          "01234567890123456789012",
+			wantStatus:     http.StatusFound,
+			wantErrorParam: ErrorCodeInvalidRequest,
 		},
 		{
 			name:       "state exactly minimum length (24 chars)",
 			state:      "012345678901234567890123",
 			wantStatus: http.StatusFound,
-			wantError:  false,
 		},
 		{
 			name:       "state above minimum length (64 chars)",
 			state:      "0123456789012345678901234567890123456789012345678901234567890123",
 			wantStatus: http.StatusFound,
-			wantError:  false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			url := fmt.Sprintf("/authorize?client_id=%s&redirect_uri=https://example.com/callback&scope=openid&state=%s&code_challenge=test-challenge&code_challenge_method=S256",
+			url := fmt.Sprintf("/authorize?client_id=%s&redirect_uri=https://example.com/callback&response_type=code&scope=openid&state=%s&code_challenge=test-challenge&code_challenge_method=S256",
 				client.ClientID, tt.state)
 			req := httptest.NewRequest(http.MethodGet, url, nil)
 			w := httptest.NewRecorder()
@@ -2652,6 +2650,10 @@ func TestHandler_ServeAuthorization_StateLength(t *testing.T) {
 
 			if w.Code != tt.wantStatus {
 				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+
+			if tt.wantErrorParam != "" {
+				assertAuthorizationErrorRedirect(t, w, "https://example.com/callback", tt.wantErrorParam, "state parameter", tt.state)
 			}
 		})
 	}
@@ -2767,7 +2769,7 @@ func TestHandler_ServeAuthorization_ShortStateWithAllowNoState(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			url := fmt.Sprintf("/authorize?client_id=%s&redirect_uri=https://example.com/callback&scope=openid&state=%s&code_challenge=test-challenge&code_challenge_method=S256",
+			url := fmt.Sprintf("/authorize?client_id=%s&redirect_uri=https://example.com/callback&response_type=code&scope=openid&state=%s&code_challenge=test-challenge&code_challenge_method=S256",
 				client.ClientID, tt.state)
 			req := httptest.NewRequest(http.MethodGet, url, nil)
 			w := httptest.NewRecorder()
@@ -2778,6 +2780,281 @@ func TestHandler_ServeAuthorization_ShortStateWithAllowNoState(t *testing.T) {
 				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
 			}
 		})
+	}
+}
+
+func assertAuthorizationErrorRedirect(t *testing.T, w *httptest.ResponseRecorder, expectedRedirect, expectedErrorCode, expectedErrorDescriptionSubstr, expectedState string) {
+	t.Helper()
+
+	if w.Code != http.StatusFound {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusFound)
+		return
+	}
+
+	location := w.Header().Get("Location")
+	if location == "" {
+		t.Fatal("Location header missing on error redirect")
+	}
+
+	parsed, err := url.Parse(location)
+	if err != nil {
+		t.Fatalf("Location header is not a valid URL: %v", err)
+	}
+
+	expected, err := url.Parse(expectedRedirect)
+	if err != nil {
+		t.Fatalf("expectedRedirect not parseable: %v", err)
+	}
+	if parsed.Scheme != expected.Scheme || parsed.Host != expected.Host || parsed.Path != expected.Path {
+		t.Errorf("redirect target = %s://%s%s, want %s://%s%s",
+			parsed.Scheme, parsed.Host, parsed.Path,
+			expected.Scheme, expected.Host, expected.Path)
+	}
+
+	q := parsed.Query()
+	if got := q.Get("error"); got != expectedErrorCode {
+		t.Errorf("error query param = %q, want %q", got, expectedErrorCode)
+	}
+	if got := q.Get("error_description"); got == "" {
+		t.Errorf("error_description query param missing")
+	} else if expectedErrorDescriptionSubstr != "" && !strings.Contains(got, expectedErrorDescriptionSubstr) {
+		t.Errorf("error_description = %q, want substring %q", got, expectedErrorDescriptionSubstr)
+	}
+	if got := q.Get("state"); got != expectedState {
+		t.Errorf("state query param = %q, want %q", got, expectedState)
+	}
+}
+
+func TestHandler_ServeAuthorization_NoResponseType_Rejected(t *testing.T) {
+	ctx := context.Background()
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	client, _, err := handler.server.RegisterClient(
+		ctx,
+		"Test Client",
+		"confidential",
+		"",
+		[]string{"https://example.com/callback"},
+		[]string{"openid"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	validState := testutil.GenerateRandomString(43)
+
+	tests := []struct {
+		name         string
+		responseType string
+	}{
+		{name: "response_type missing", responseType: ""},
+		{name: "response_type=token (implicit flow rejected)", responseType: "token"},
+		{name: "response_type=id_token (OIDC implicit rejected)", responseType: "id_token"},
+		{name: "response_type=code id_token (hybrid rejected)", responseType: "code id_token"},
+		{name: "response_type=unknown", responseType: "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reqURL := "/authorize?client_id=" + client.ClientID +
+				"&redirect_uri=https://example.com/callback" +
+				"&scope=openid" +
+				"&state=" + validState +
+				"&code_challenge=test-challenge" +
+				"&code_challenge_method=S256"
+			if tt.responseType != "" {
+				reqURL += "&response_type=" + url.QueryEscape(tt.responseType)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, reqURL, nil)
+			w := httptest.NewRecorder()
+			handler.ServeAuthorization(w, req)
+
+			assertAuthorizationErrorRedirect(t, w, "https://example.com/callback", ErrorCodeUnsupportedResponseType, "response_type must be one of [code]", validState)
+		})
+	}
+}
+
+func TestHandler_ServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *testing.T) {
+	ctx := context.Background()
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	client, _, err := handler.server.RegisterClient(
+		ctx,
+		"Test Client",
+		"confidential",
+		"",
+		[]string{"https://example.com/callback"},
+		[]string{"openid"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		state     string
+		wantState string // empty when the client did not send a state parameter
+	}{
+		{
+			name:      "state missing",
+			state:     "",
+			wantState: "",
+		},
+		{
+			name:      "state too short",
+			state:     "short",
+			wantState: "short",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reqURL := "/authorize?client_id=" + client.ClientID +
+				"&redirect_uri=https://example.com/callback" +
+				"&response_type=code" +
+				"&scope=openid" +
+				"&code_challenge=test-challenge" +
+				"&code_challenge_method=S256"
+			if tt.state != "" {
+				reqURL += "&state=" + tt.state
+			}
+
+			req := httptest.NewRequest(http.MethodGet, reqURL, nil)
+			w := httptest.NewRecorder()
+			handler.ServeAuthorization(w, req)
+
+			assertAuthorizationErrorRedirect(t, w, "https://example.com/callback", ErrorCodeInvalidRequest, "state parameter", tt.wantState)
+		})
+	}
+
+	t.Run("missing redirect_uri falls back to JSON 400", func(t *testing.T) {
+		reqURL := "/authorize?client_id=" + client.ClientID +
+			"&response_type=code" +
+			"&scope=openid" +
+			"&code_challenge=test-challenge" +
+			"&code_challenge_method=S256"
+
+		req := httptest.NewRequest(http.MethodGet, reqURL, nil)
+		w := httptest.NewRecorder()
+		handler.ServeAuthorization(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d (no parseable redirect_uri must JSON-error)", w.Code, http.StatusBadRequest)
+		}
+		var body map[string]string
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("response body is not JSON: %v", err)
+		}
+		if body["error"] != ErrorCodeInvalidRequest {
+			t.Errorf("error = %q, want %q", body["error"], ErrorCodeInvalidRequest)
+		}
+	})
+
+	t.Run("non-http redirect_uri falls back to JSON 400", func(t *testing.T) {
+		reqURL := "/authorize?client_id=" + client.ClientID +
+			"&redirect_uri=" + url.QueryEscape("javascript:alert(1)") +
+			"&response_type=code" +
+			"&scope=openid" +
+			"&code_challenge=test-challenge" +
+			"&code_challenge_method=S256"
+
+		req := httptest.NewRequest(http.MethodGet, reqURL, nil)
+		w := httptest.NewRecorder()
+		handler.ServeAuthorization(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d (non-http redirect_uri must JSON-error)", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	// Scheme-valid http(s) URL not registered for the client: must JSON-error,
+	// not redirect — otherwise /authorize error branches become an open-redirect
+	// gadget under RFC 6749 §4.1.2.1 + §3.1.2.4.
+	t.Run("scheme-valid but unregistered redirect_uri must JSON-error", func(t *testing.T) {
+		reqURL := "/authorize?client_id=" + client.ClientID +
+			"&redirect_uri=" + url.QueryEscape("https://attacker.example/landing") +
+			"&response_type=xxx" + // would otherwise hit the response_type branch
+			"&scope=openid" +
+			"&state=" + testutil.GenerateRandomString(43) +
+			"&code_challenge=test-challenge" +
+			"&code_challenge_method=S256"
+
+		req := httptest.NewRequest(http.MethodGet, reqURL, nil)
+		w := httptest.NewRecorder()
+		handler.ServeAuthorization(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+		}
+		if loc := w.Header().Get("Location"); loc != "" {
+			t.Errorf("Location header set to %q; unregistered redirect_uri must not redirect", loc)
+		}
+		var body map[string]string
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("response body is not JSON: %v", err)
+		}
+		if body["error"] != ErrorCodeInvalidRequest {
+			t.Errorf("error = %q, want %q", body["error"], ErrorCodeInvalidRequest)
+		}
+	})
+}
+
+// Native-app custom-scheme redirect URIs (RFC 8252 §7.1) cannot carry an HTTP
+// 302 redirect; respondAuthorizationError must fall back to JSON 400 for
+// those clients rather than attempt a Location redirect.
+func TestHandler_ServeAuthorization_CustomSchemeRedirectURI_FallsBackToJSON(t *testing.T) {
+	ctx := context.Background()
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	handler.server.Config.AllowedCustomSchemes = []string{"^myapp$"}
+
+	client, _, err := handler.server.RegisterClient(
+		ctx,
+		"Native App",
+		"public",
+		"",
+		[]string{"myapp://callback"},
+		[]string{"openid"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	validState := testutil.GenerateRandomString(43)
+	reqURL := "/authorize?client_id=" + client.ClientID +
+		"&redirect_uri=" + url.QueryEscape("myapp://callback") +
+		"&response_type=token" +
+		"&scope=openid" +
+		"&state=" + validState +
+		"&code_challenge=test-challenge" +
+		"&code_challenge_method=S256"
+
+	req := httptest.NewRequest(http.MethodGet, reqURL, nil)
+	w := httptest.NewRecorder()
+	handler.ServeAuthorization(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d (custom-scheme redirect_uri must JSON-error)", w.Code, http.StatusBadRequest)
+	}
+	if loc := w.Header().Get("Location"); loc != "" {
+		t.Errorf("Location header set to %q; custom-scheme redirect must not 302", loc)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response body is not JSON: %v", err)
+	}
+	if body["error"] != ErrorCodeUnsupportedResponseType {
+		t.Errorf("error = %q, want %q", body["error"], ErrorCodeUnsupportedResponseType)
 	}
 }
 

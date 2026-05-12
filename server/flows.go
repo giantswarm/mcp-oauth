@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"fmt"
 	"math"
+	"net/url"
 	"strings"
 	"time"
 
@@ -832,10 +833,33 @@ func (s *Server) rotateRefreshToken(ctx context.Context, oldRefreshToken, userID
 	return newRefreshToken, familyID, true
 }
 
-// StartAuthorizationFlow starts a new OAuth authorization flow
-// clientState is the state parameter from the client (REQUIRED for CSRF protection)
-// resource is the target resource server identifier per RFC 8707 (optional for backward compatibility)
-// authOpts contains optional OIDC parameters (prompt, login_hint, id_token_hint) for upstream IdP forwarding
+// ValidateRedirectURIForAuthorization resolves the redirect URI to its
+// canonical, registered form for the client. Callers redirecting /authorize
+// protocol errors back to the client MUST use this return value as the
+// redirect target — it provably originates from server-side storage, not from
+// the request, satisfying RFC 6749 §3.1.2.4.
+func (s *Server) ValidateRedirectURIForAuthorization(ctx context.Context, clientID, redirectURI string) (*url.URL, error) {
+	client, err := s.getOrFetchClient(ctx, clientID)
+	if err != nil {
+		s.logAuthFailure(ctx, "", clientID, ErrorCodeInvalidClient)
+		return nil, fmt.Errorf("%s: %w", ErrorCodeInvalidClient, err)
+	}
+	canonical, err := s.resolveRegisteredRedirectURI(client, redirectURI)
+	if err != nil {
+		s.logAuthFailure(ctx, "", clientID, ErrorCodeInvalidRedirectURI)
+		return nil, fmt.Errorf("%s: %w", ErrorCodeInvalidRedirectURI, err)
+	}
+	parsed, err := url.Parse(canonical)
+	if err != nil {
+		return nil, fmt.Errorf("%s: canonical redirect URI is not a valid URL: %w", ErrorCodeInvalidRedirectURI, err)
+	}
+	return parsed, nil
+}
+
+// StartAuthorizationFlow starts a new OAuth authorization flow.
+// clientState is the state parameter from the client (REQUIRED for CSRF protection).
+// resource is the target resource server identifier per RFC 8707 (optional for backward compatibility).
+// authOpts contains optional OIDC parameters (prompt, login_hint, id_token_hint) for upstream IdP forwarding.
 func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectURI, scope, resource, codeChallenge, codeChallengeMethod, clientState string, authOpts *providers.AuthorizationURLOptions) (string, error) {
 	// CRITICAL SECURITY: Validate state parameter from client for CSRF protection
 	if err := s.validateClientStateParameter(clientState); err != nil {

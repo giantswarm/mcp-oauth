@@ -9,18 +9,19 @@ import (
 
 // OAuth error codes as constants
 const (
-	ErrorCodeInvalidRequest       = "invalid_request"
-	ErrorCodeInvalidGrant         = "invalid_grant"
-	ErrorCodeInvalidClient        = "invalid_client"
-	ErrorCodeInvalidScope         = "invalid_scope"
-	ErrorCodeInvalidToken         = "invalid_token"
-	ErrorCodeInsufficientScope    = "insufficient_scope"
-	ErrorCodeUnauthorizedClient   = "unauthorized_client"
-	ErrorCodeUnsupportedGrantType = "unsupported_grant_type"
-	ErrorCodeServerError          = "server_error"
-	ErrorCodeAccessDenied         = "access_denied"
-	ErrorCodeInvalidRedirectURI   = "invalid_redirect_uri"
-	ErrorCodeRateLimitExceeded    = "rate_limit_exceeded"
+	ErrorCodeInvalidRequest          = "invalid_request"
+	ErrorCodeInvalidGrant            = "invalid_grant"
+	ErrorCodeInvalidClient           = "invalid_client"
+	ErrorCodeInvalidScope            = "invalid_scope"
+	ErrorCodeInvalidToken            = "invalid_token"
+	ErrorCodeInsufficientScope       = "insufficient_scope"
+	ErrorCodeUnauthorizedClient      = "unauthorized_client"
+	ErrorCodeUnsupportedGrantType    = "unsupported_grant_type"
+	ErrorCodeUnsupportedResponseType = "unsupported_response_type"
+	ErrorCodeServerError             = "server_error"
+	ErrorCodeAccessDenied            = "access_denied"
+	ErrorCodeInvalidRedirectURI      = "invalid_redirect_uri"
+	ErrorCodeRateLimitExceeded       = "rate_limit_exceeded"
 
 	// Silent authentication error codes (OIDC Core Section 3.1.2.6)
 	// These indicate the IdP requires user interaction and silent auth failed.
