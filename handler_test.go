@@ -2824,8 +2824,6 @@ func assertAuthorizationErrorRedirect(t *testing.T, w *httptest.ResponseRecorder
 	}
 }
 
-// Regression test for #303: /authorize must enforce response_type=code and
-// reject anything else with unsupported_response_type via the redirect path.
 func TestHandler_ServeAuthorization_NoResponseType_Rejected(t *testing.T) {
 	ctx := context.Background()
 	handler, store := setupTestHandler(t)
@@ -2879,10 +2877,6 @@ func TestHandler_ServeAuthorization_NoResponseType_Rejected(t *testing.T) {
 	}
 }
 
-// Regression test for #303: state-parameter failures redirect to the
-// registered redirect_uri per RFC 6749 §4.1.2.1, but unregistered or
-// non-http(s) redirect_uri values must JSON-error so the error path cannot
-// become an open-redirect gadget (RFC 6749 §3.1.2.4).
 func TestHandler_ServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *testing.T) {
 	ctx := context.Background()
 	handler, store := setupTestHandler(t)
