@@ -2506,8 +2506,10 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 		instrumentation.SetSpanAttributes(span, attribute.String(instrumentation.AttrClientID, clientID))
 	}
 
-	// Validate the token and build response
-	response := h.buildIntrospectionResponse(r.Context(), token, clientID, clientIP)
+	response := h.server.IntrospectToken(r.Context(), token, clientID)
+	if active, _ := response["active"].(bool); !active {
+		h.logger.Debug("Token introspection inactive", "ip", clientIP, "client_id", clientID)
+	}
 
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	w.Header().Set("Content-Type", "application/json")
@@ -2549,35 +2551,6 @@ func (h *Handler) authenticateIntrospectionClient(r *http.Request, clientIP stri
 		h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "introspection_missing_credentials")
 	}
 	return "", fmt.Errorf("client authentication required for token introspection")
-}
-
-// buildIntrospectionResponse creates the RFC 7662 introspection response.
-func (h *Handler) buildIntrospectionResponse(ctx context.Context, token, clientID, clientIP string) map[string]interface{} {
-	userInfo, err := h.server.ValidateToken(ctx, token)
-
-	response := map[string]interface{}{
-		"active": false,
-	}
-
-	if err != nil || userInfo == nil {
-		h.logger.Debug("Token introspection failed", "error", err, "ip", clientIP)
-		return response
-	}
-
-	response["active"] = true
-	response["sub"] = userInfo.ID
-	response["email"] = userInfo.Email
-	response["email_verified"] = userInfo.EmailVerified
-	response["token_type"] = "Bearer"
-
-	if userInfo.Name != "" {
-		response["name"] = userInfo.Name
-	}
-	if clientID != "" {
-		response["client_id"] = clientID
-	}
-
-	return response
 }
 
 // Context key for user info

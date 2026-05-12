@@ -274,7 +274,8 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 	// our iss bypass JWT-mode security by tripping the opaque or
 	// forwarded-token path.
 	if s.Config.IsJWTAccessTokenFormat() && s.looksLikeSelfIssuedJWT(accessToken) {
-		return s.validateSelfIssuedJWT(ctx, accessToken)
+		userInfo, _, err := s.validateSelfIssuedJWT(ctx, accessToken)
+		return userInfo, err
 	}
 
 	// PRIORITY 2: Forwarded ID token (JWT) from a trusted upstream service.
@@ -1560,6 +1561,8 @@ func (s *Server) fillUserInfoClaims(ctx context.Context, userID string, c *Acces
 		return
 	}
 	c.Email = info.Email
+	c.EmailVerified = info.EmailVerified
+	c.Name = info.Name
 	c.Groups = info.Groups
 }
 

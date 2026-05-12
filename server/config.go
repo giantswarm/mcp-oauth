@@ -801,6 +801,17 @@ type Config struct {
 	// Default: false (not yet implemented)
 	EnableIntrospectionEndpoint bool
 
+	// IntrospectionResourceServers lists client IDs permitted to introspect
+	// tokens they do not own. Empty means strict same-client gating.
+	//
+	// SECURITY: an allowlisted resource server receives the full RFC 7662 §2.2
+	// projection for any token issued to in-scope clients — including `sub`,
+	// `email`, `name`, `scope`, and `aud`. Allowlist only services that are
+	// already authorized to learn those attributes; this knob is not a
+	// substitute for token-binding or DPoP if the goal is to gate on the
+	// presenter rather than on the token's recipient.
+	IntrospectionResourceServers []string
+
 	// ClientMetadataCacheTTL is how long to cache fetched client metadata
 	// Caching reduces latency and prevents repeated fetches for the same client
 	// HTTP Cache-Control headers may override this value
@@ -1045,6 +1056,10 @@ func (c *Config) IsJWTAccessTokenFormat() bool {
 // are validated at construction time via applySecureDefaults / the
 // dedicated validate* helpers.
 func (c *Config) Validate() error {
+	if err := c.validateIntrospectionResourceServers(); err != nil {
+		return err
+	}
+
 	if !c.IsJWTAccessTokenFormat() {
 		// AccessTokenFormatOpaque (or empty/unknown — treated as opaque).
 		// Reject anything that is not the explicit opaque value or empty so
@@ -1073,6 +1088,19 @@ func (c *Config) Validate() error {
 			c.AccessTokenSigningAlgorithm, supportedSigningAlgorithmsList())
 	}
 	return validateSigningKeyMatchesAlgorithm(c.AccessTokenSigningKey, c.AccessTokenSigningAlgorithm)
+}
+
+// validateIntrospectionResourceServers rejects empty entries in the allowlist.
+// An empty string would never match a requesting client (the requester gate
+// bails when requestingClient == ""), so an empty entry can only mask
+// operator intent — fail closed at startup.
+func (c *Config) validateIntrospectionResourceServers() error {
+	for i, entry := range c.IntrospectionResourceServers {
+		if entry == "" {
+			return fmt.Errorf("IntrospectionResourceServers[%d] is empty", i)
+		}
+	}
+	return nil
 }
 
 // validateSigningKeyMatchesAlgorithm enforces that the configured private
