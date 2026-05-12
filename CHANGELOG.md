@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **All four authenticated endpoints reject Basic-Auth / form `client_id` mismatch** (RFC 6749 §2.3.1) — `/token` (authorization_code, refresh_token grants), `/revoke`, and `/introspect` return `400 invalid_client` with the description `client_id in Basic Authorization header does not match form parameter` when the Basic Authorization identity disagrees with the form `client_id`. Audited as `auth_failure` (reason `client_id_mismatch_basic_vs_form`); the audit record pins the Basic-Auth identity. `handleAuthorizationCodeGrant` now reads `oauthErr.Status` before recording the HTTP metric so a 400 is not relabelled as 401.
+- **`parseBasicAuth` rejects malformed `Authorization: Basic` headers** — the `ok` flag from `r.BasicAuth()` is now honoured, so an undecodable payload or missing colon is treated as "no credentials" rather than a silent client_id of garbage.
 - **`oauth_http_requests_total` now covers all `/token` and `ValidateToken` middleware paths**
   - The HTTP counter previously skipped `/token`'s `405` and unsupported-`grant_type` `400` responses, and the `ValidateToken` middleware's rate-limit `429`s. Dashboards summing by `endpoint` (new label `validate_token`) now see those.
 - **`oauth_http_requests_total` now records the 429 on `/register`'s IP-rate path**

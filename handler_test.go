@@ -29,7 +29,6 @@ import (
 )
 
 const (
-	testTokenTypeBearer         = "Bearer"
 	testClientRemoteAddr        = "192.168.1.100:12345"
 	testOriginApp               = "https://app.example.com"
 	testIssuer                  = "https://auth.example.com"
@@ -1570,8 +1569,8 @@ func TestHandler_writeTokenResponse(t *testing.T) {
 		t.Errorf("AccessToken = %q, want %q", tokenResp.AccessToken, token.AccessToken)
 	}
 
-	if tokenResp.TokenType != testTokenTypeBearer {
-		t.Errorf("TokenType = %q, want %q", tokenResp.TokenType, testTokenTypeBearer)
+	if tokenResp.TokenType != tokenTypeBearer {
+		t.Errorf("TokenType = %q, want %q", tokenResp.TokenType, tokenTypeBearer)
 	}
 }
 
@@ -1604,8 +1603,8 @@ func TestHandler_writeTokenResponse_WithIDToken(t *testing.T) {
 		t.Errorf("AccessToken = %q, want %q", tokenResp.AccessToken, tokenWithIDToken.AccessToken)
 	}
 
-	if tokenResp.TokenType != testTokenTypeBearer {
-		t.Errorf("TokenType = %q, want %q", tokenResp.TokenType, testTokenTypeBearer)
+	if tokenResp.TokenType != tokenTypeBearer {
+		t.Errorf("TokenType = %q, want %q", tokenResp.TokenType, tokenTypeBearer)
 	}
 
 	// Verify id_token is included in response (OIDC compliance)
@@ -3166,8 +3165,84 @@ func TestHandler_ServeToken_AuthorizationCode(t *testing.T) {
 		t.Error("RefreshToken should not be empty")
 	}
 
-	if tokenResp.TokenType != testTokenTypeBearer {
-		t.Errorf("TokenType = %q, want %q", tokenResp.TokenType, testTokenTypeBearer)
+	if tokenResp.TokenType != tokenTypeBearer {
+		t.Errorf("TokenType = %q, want %q", tokenResp.TokenType, tokenTypeBearer)
+	}
+}
+
+func TestHandler_ServeToken_AuthorizationCode_BasicAuthAndFormClientIDMismatch_Rejected(t *testing.T) {
+	ctx := context.Background()
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	client, secret, err := handler.server.RegisterClient(
+		ctx,
+		"Test Client",
+		"confidential",
+		"",
+		[]string{"https://example.com/callback"},
+		[]string{"openid"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	formData := url.Values{}
+	formData.Set("grant_type", "authorization_code")
+	formData.Set("code", "any-code")
+	formData.Set("redirect_uri", "https://example.com/callback")
+	formData.Set("client_id", "form-value-does-not-match")
+
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(formData.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(client.ClientID, secret)
+	w := httptest.NewRecorder()
+
+	handler.ServeToken(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body: %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+
+	var errResp ErrorResponse
+	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if errResp.Error != ErrorCodeInvalidClient {
+		t.Errorf("error = %q, want %q", errResp.Error, ErrorCodeInvalidClient)
+	}
+	if !strings.Contains(errResp.ErrorDescription, "does not match") {
+		t.Errorf("error_description = %q, want it to contain %q", errResp.ErrorDescription, "does not match")
+	}
+}
+
+func TestHandler_ServeToken_AuthorizationCode_UnknownBasicAuthClient(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	formData := url.Values{}
+	formData.Set("grant_type", "authorization_code")
+	formData.Set("code", "any-code")
+	formData.Set("redirect_uri", "https://example.com/callback")
+
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(formData.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth("client-that-was-never-registered", "any-secret")
+	w := httptest.NewRecorder()
+
+	handler.ServeToken(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d, body: %s", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+	var errResp ErrorResponse
+	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if errResp.Error != ErrorCodeInvalidClient {
+		t.Errorf("error = %q, want %q", errResp.Error, ErrorCodeInvalidClient)
 	}
 }
 
@@ -4119,6 +4194,33 @@ func TestHandler_ServeTokenIntrospection(t *testing.T) {
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
 	}
+}
+
+func TestHandler_ServeTokenIntrospection_BasicFormClientIDMismatchRejected(t *testing.T) {
+	ctx := context.Background()
+
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	client, secret, err := handler.server.RegisterClient(ctx, "Introspect Client", "confidential", "", []string{"https://example.com/cb"}, []string{"openid"}, "192.168.1.5", 10)
+	require.NoError(t, err)
+
+	form := url.Values{}
+	form.Set("token", "any-opaque-token")
+	form.Set("client_id", "form-value-does-not-match")
+
+	req := httptest.NewRequest(http.MethodPost, "/introspect", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(client.ClientID, secret)
+	w := httptest.NewRecorder()
+
+	handler.ServeTokenIntrospection(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
+	var response map[string]string
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&response))
+	require.Equal(t, ErrorCodeInvalidClient, response["error"])
+	require.Contains(t, response["error_description"], "does not match")
 }
 
 func seedOpaqueIntrospectionToken(t *testing.T, store *memory.Store, accessToken, userID, clientID, audience string, scopes []string, expiresAt time.Time) time.Time {
