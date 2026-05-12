@@ -44,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Entries are validated at startup: HTTPS only, no fragment / userinfo, no loopback / private / link-local / unspecified IP literal hosts. Invalid entries are dropped.
   - New audit event `client_registered_via_trusted_redirect_uri` (`security.EventClientRegisteredViaTrustedRedirectURI`) carries the matched URI.
   - Env loader: `OAUTH_TRUSTED_REDIRECT_URIS` (comma-separated).
+- **HTTP-level test coverage for the refresh-token grant** — `TestHandler_ServeToken_RefreshGrant_*` exercises `handleRefreshTokenGrant` and `authenticateRefreshTokenClient` end-to-end (0% → 100%), pinning the OAuth 2.1 Section 6 client-binding, client-authentication, reuse-detection, and expired-token branches against regressions.
 - **`LogValue()` on `Server`, `storage/memory.Store`, and `storage/valkey.Store`** (slog.LogValuer)
   - Callers can attach a one-shot structured snapshot of the server / store posture to any log line: `logger.Info("oauth ready", "server", srv, "store", store)`. The library no longer emits this state on its own.
   - `Server.LogValue()` exposes `issuer`, `production_mode`, `access_token_format`, `encryption_at_rest`, `instrumentation_on`, a `redirect_uri_policy` group (`dns_validation`, `dns_validation_strict`, `authorization_time_validation`, `dns_timeout`, `allow_localhost`, `allow_private_ip`, `allow_link_local`), and `session_id_hmac_key_fingerprint` (sha256[:8] hex, omitted when unconfigured).
