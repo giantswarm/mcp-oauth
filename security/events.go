@@ -42,6 +42,10 @@ const (
 	// This enables compatibility with MCP clients that don't support registration tokens.
 	EventClientRegisteredViaTrustedScheme = "client_registered_via_trusted_scheme"
 
+	// EventClientRegisteredViaTrustedRedirectURI is logged when a client is registered without a token
+	// because every redirect_uri matches the TrustedPublicRegistrationRedirectURIs allowlist.
+	EventClientRegisteredViaTrustedRedirectURI = "client_registered_via_trusted_redirect_uri"
+
 	// EventClientRegistrationRejected is logged when client registration is rejected for security reasons
 	EventClientRegistrationRejected = "client_registration_rejected"
 

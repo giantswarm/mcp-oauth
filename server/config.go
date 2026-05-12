@@ -491,6 +491,24 @@ type Config struct {
 	// This field is internal and should not be set directly by users.
 	trustedSchemesMap map[string]bool
 
+	// TrustedPublicRegistrationRedirectURIs lists fully-qualified HTTPS redirect URIs
+	// allowed to register without a RegistrationAccessToken. Matching is exact after
+	// RFC 3986 normalization: scheme and host are lowercased, the HTTPS default port
+	// (:443) is stripped, and trailing slashes are stripped from the path. Path and
+	// query are then compared case-sensitively. All redirect URIs in a registration
+	// request must be in this set; otherwise the token gate applies.
+	//
+	// Entries must be HTTPS, must not contain a fragment, userinfo, or a loopback,
+	// private, link-local, or unspecified IP literal host. Invalid entries are dropped
+	// at configuration time.
+	//
+	// Default: [].
+	TrustedPublicRegistrationRedirectURIs []string
+
+	// trustedRedirectURIsSet holds normalized entries from
+	// TrustedPublicRegistrationRedirectURIs for O(1) lookup.
+	trustedRedirectURIsSet map[string]bool
+
 	// DisableStrictSchemeMatching explicitly disables strict scheme matching for deployments
 	// that need to support clients with mixed redirect URI schemes (e.g., cursor:// AND https://).
 	//
@@ -1121,5 +1139,24 @@ func (c *Config) SetTrustedSchemesMap(schemes []string) {
 	for _, scheme := range schemes {
 		// Normalize to lowercase for case-insensitive matching (RFC 3986)
 		c.trustedSchemesMap[strings.ToLower(scheme)] = true
+	}
+}
+
+// SetTrustedRedirectURIsSet builds the pre-computed trusted redirect URI set from the
+// given URIs. URIs are normalized per RFC 3986 (lowercase scheme + host, default port
+// stripped). Invalid entries are skipped.
+func (c *Config) SetTrustedRedirectURIsSet(uris []string) {
+	if len(uris) == 0 {
+		c.trustedRedirectURIsSet = nil
+		return
+	}
+	c.trustedRedirectURIsSet = make(map[string]bool, len(uris))
+	for _, uri := range uris {
+		if normalized, err := normalizeTrustedRedirectURI(uri); err == nil {
+			c.trustedRedirectURIsSet[normalized] = true
+		}
+	}
+	if len(c.trustedRedirectURIsSet) == 0 {
+		c.trustedRedirectURIsSet = nil
 	}
 }

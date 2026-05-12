@@ -309,6 +309,63 @@ Strict scheme matching is automatically enabled when `TrustedPublicRegistrationS
 
 Registrations via trusted schemes are logged with event type `client_registered_via_trusted_scheme` for security monitoring.
 
+### Trusted HTTPS Redirect URIs (SaaS MCP Clients)
+
+For well-known SaaS MCP clients (e.g. Claude.ai) whose redirect URI is fixed, operator-known, and HTTPS, you can allowlist specific URIs without enabling `AllowPublicClientRegistration` globally or pre-registering the client out-of-band:
+
+```go
+config := &server.Config{
+    AllowPublicClientRegistration: false,
+    RegistrationAccessToken:       os.Getenv("REGISTRATION_TOKEN"),
+
+    TrustedPublicRegistrationRedirectURIs: []string{
+        "https://claude.ai/api/mcp/auth_callback",
+    },
+}
+```
+
+**Matching:**
+
+| Aspect | Behavior |
+|---|---|
+| Strictness | Every `redirect_uris` entry in the request must be in the allowlist; otherwise the token gate applies. |
+| Normalization | Scheme and host are lowercased; HTTPS default port (`:443`) is stripped; trailing slashes are stripped from the path. |
+| Path & query | Compared case-sensitively after normalization. |
+| Public clients | `token_endpoint_auth_method: "none"` succeeds when the request matches the allowlist. |
+
+**Configuration validation:**
+
+Entries are validated at startup; the following are dropped with an error log and the feature is disabled if no valid entries remain:
+
+- non-HTTPS schemes
+- URIs with a fragment or userinfo
+- IP literals that are loopback (`127.0.0.0/8`, `::1`), private (RFC 1918), link-local (`169.254.0.0/16`, `fe80::/10`), or unspecified (`0.0.0.0`, `::`)
+- the hostname `localhost`
+- duplicate entries after normalization
+
+**Threat model vs. trusted schemes:**
+
+| | Trusted scheme | Trusted HTTPS redirect URI |
+|---|---|---|
+| Allowlisted unit | URI scheme (`cursor`) | Full URI (`https://claude.ai/api/mcp/auth_callback`) |
+| Attack on the callback | Possible if attacker registers the same scheme on the user's OS | Not possible — attacker cannot host the operator-attested URL |
+| OS / platform dependency | Yes (varies per OS, see table above) | No |
+| Primary defense | PKCE + OS-level scheme registration | PKCE + operator attestation of the URL |
+
+This control is **narrower** than `TrustedPublicRegistrationSchemes`: only the specific URLs the operator vouches for can register, and they cannot be impersonated by an attacker who controls a different web server.
+
+**Operator responsibility:**
+
+Each entry vouches for a specific URL. Avoid allowlisting URLs on multi-tenant hosting (e.g. `https://*.github.io/...`, public pastebin / preview domains, or shared SaaS subdomains the operator does not control end-to-end) — any tenant on that host can host an attacker-controlled callback at the same URL. Allowlist only URLs whose host you trust the platform vendor for.
+
+**Combining with `TrustedPublicRegistrationSchemes`:**
+
+The two allowlists are independent — each is evaluated in strict mode. A registration request whose `redirect_uris` mixes a trusted scheme and a trusted HTTPS URI satisfies neither gate and is rejected. To onboard a custom-scheme client (e.g. Cursor) and a SaaS HTTPS client (e.g. Claude.ai) on the same server, register them as separate clients.
+
+**Audit Logging:**
+
+Registrations via the trusted HTTPS allowlist are logged with event type `client_registered_via_trusted_redirect_uri`. The matched URI is included in the event details.
+
 ### Development Configuration
 
 ```go

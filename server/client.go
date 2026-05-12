@@ -9,6 +9,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
@@ -235,4 +236,32 @@ func (s *Server) CanRegisterWithTrustedScheme(redirectURIs []string) (allowed bo
 	}
 
 	return true, firstTrustedScheme, nil
+}
+
+// CanRegisterWithTrustedRedirectURI reports whether a registration request can
+// proceed without a RegistrationAccessToken because every redirect URI in the
+// request matches an entry in TrustedPublicRegistrationRedirectURIs after RFC 3986
+// normalization. Strict matching is the only mode: a permissive variant (matching
+// any URI when at least one matches) would allow an attacker to attach arbitrary
+// callbacks alongside a trusted one. A single non-matching URI causes the request
+// to fall through to the token gate.
+//
+// Returns the first matched (canonical) URI for audit logging.
+func (s *Server) CanRegisterWithTrustedRedirectURI(redirectURIs []string) (allowed bool, matchedURI string, err error) {
+	if len(s.Config.trustedRedirectURIsSet) == 0 || len(redirectURIs) == 0 {
+		return false, "", nil
+	}
+
+	var firstMatch string
+	for _, uri := range redirectURIs {
+		canonical := helpers.NormalizeURL(uri)
+		if !s.Config.trustedRedirectURIsSet[canonical] {
+			return false, "", nil
+		}
+		if firstMatch == "" {
+			firstMatch = canonical
+		}
+	}
+
+	return true, firstMatch, nil
 }
