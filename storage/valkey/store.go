@@ -723,6 +723,7 @@ type authorizationStateJSON struct {
 	CodeChallengeMethod  string `json:"code_challenge_method,omitempty"`
 	ProviderState        string `json:"provider_state"`
 	ProviderCodeVerifier string `json:"provider_code_verifier,omitempty"`
+	Nonce                string `json:"nonce,omitempty"`
 	CreatedAt            int64  `json:"created_at"`
 	ExpiresAt            int64  `json:"expires_at"`
 }
@@ -739,6 +740,7 @@ func toAuthorizationStateJSON(state *storage.AuthorizationState) *authorizationS
 		CodeChallengeMethod:  state.CodeChallengeMethod,
 		ProviderState:        state.ProviderState,
 		ProviderCodeVerifier: state.ProviderCodeVerifier,
+		Nonce:                state.Nonce,
 		CreatedAt:            state.CreatedAt.Unix(),
 		ExpiresAt:            state.ExpiresAt.Unix(),
 	}
@@ -759,6 +761,7 @@ func fromAuthorizationStateJSON(j *authorizationStateJSON) *storage.Authorizatio
 		CodeChallengeMethod:  j.CodeChallengeMethod,
 		ProviderState:        j.ProviderState,
 		ProviderCodeVerifier: j.ProviderCodeVerifier,
+		Nonce:                j.Nonce,
 		CreatedAt:            time.Unix(j.CreatedAt, 0),
 		ExpiresAt:            time.Unix(j.ExpiresAt, 0),
 	}

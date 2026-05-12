@@ -397,6 +397,52 @@ func TestKeyFromHex_Invalid(t *testing.T) {
 
 func bytesToHex(b []byte) string { return hex.EncodeToString(b) }
 
+func TestDecodeKey(t *testing.T) {
+	key, err := GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+
+	t.Run("base64", func(t *testing.T) {
+		decoded, err := DecodeKey(KeyToBase64(key))
+		if err != nil {
+			t.Fatalf("DecodeKey(base64) error = %v", err)
+		}
+		if !bytes.Equal(decoded, key) {
+			t.Error("DecodeKey(base64) round-trip mismatch")
+		}
+	})
+
+	t.Run("hex", func(t *testing.T) {
+		decoded, err := DecodeKey(KeyToHex(key))
+		if err != nil {
+			t.Fatalf("DecodeKey(hex) error = %v", err)
+		}
+		if !bytes.Equal(decoded, key) {
+			t.Error("DecodeKey(hex) round-trip mismatch")
+		}
+	})
+}
+
+func TestDecodeKey_Invalid(t *testing.T) {
+	tests := []struct {
+		name    string
+		encoded string
+	}{
+		{"empty", ""},
+		{"neither base64 nor hex", "!!!not-a-key!!!"},
+		{"base64 wrong length", base64.StdEncoding.EncodeToString(make([]byte, 16))},
+		{"hex wrong length", hex.EncodeToString(make([]byte, 16))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := DecodeKey(tt.encoded); err == nil {
+				t.Errorf("DecodeKey(%q) succeeded, want error", tt.encoded)
+			}
+		})
+	}
+}
+
 func TestEncryptionFormat(t *testing.T) {
 	key := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, key); err != nil {

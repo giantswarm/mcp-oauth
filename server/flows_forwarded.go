@@ -99,6 +99,10 @@ type ForwardedIDTokenAcceptance struct {
 // direct "accept this forwarded token" use case exposed to aggregators and bridges
 // (e.g., Bedrock AgentCore → muster).
 //
+// No `nonce` enforcement: this server never issued a nonce for forwarded tokens,
+// so there is no expected value to bind against. Replay defence is the upstream's
+// responsibility.
+//
 // Preconditions (documented here because operators configuring a new bridge look at
 // this godoc first):
 //

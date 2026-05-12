@@ -3,6 +3,7 @@ package oidc
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -296,6 +297,10 @@ type IDTokenClaims struct {
 	Picture       string   `json:"picture,omitempty"`
 	Locale        string   `json:"locale,omitempty"`
 	Groups        []string `json:"groups,omitempty"`
+
+	// Nonce is the OIDC `nonce` claim. Callers compare it to the expected value
+	// via ValidateNonceClaim; this struct does not enforce equality.
+	Nonce string `json:"nonce,omitempty"`
 }
 
 // ErrIssuerMismatch is returned (wrapped) when a JWT's iss claim does not match
@@ -310,6 +315,25 @@ var ErrTokenExpired = errors.New("token expired")
 // ErrTokenNotValidYet is returned (wrapped) when a JWT's nbf claim is in the
 // future beyond the configured leeway.
 var ErrTokenNotValidYet = errors.New("token not valid yet")
+
+// ErrNonceMismatch is returned by ValidateNonceClaim when the expected nonce
+// is non-empty and either does not equal the claim or the claim is absent.
+var ErrNonceMismatch = errors.New("nonce mismatch")
+
+// ValidateNonceClaim returns nil when expectedNonce is empty; otherwise it
+// requires claimNonce to equal expectedNonce under a constant-time compare.
+func ValidateNonceClaim(claimNonce, expectedNonce string) error {
+	if expectedNonce == "" {
+		return nil
+	}
+	if claimNonce == "" {
+		return fmt.Errorf("%w: claim absent", ErrNonceMismatch)
+	}
+	if subtle.ConstantTimeCompare([]byte(claimNonce), []byte(expectedNonce)) != 1 {
+		return ErrNonceMismatch
+	}
+	return nil
+}
 
 // ValidateIDToken validates an ID token (JWT) using the provider's JWKS.
 // This is used for SSO token forwarding where ID tokens are passed as Bearer tokens.
