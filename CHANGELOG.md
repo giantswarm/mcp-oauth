@@ -134,6 +134,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`/authorize` validates `response_type` and redirects protocol errors per RFC 6749 §4.1.2.1 (#303)**
+  - `response_type` is now validated against the AS metadata (`response_types_supported: ["code"]`). Missing or non-`code` values are rejected with `unsupported_response_type`.
+  - `invalid_request` (missing or short `state`), `unsupported_response_type`, and `server_error` are now returned by redirecting to `redirect_uri` with `error` / `error_description` / `state` query parameters, matching RFC 6749 §4.1.2.1. Previously these were emitted as JSON `400` / `500` bodies, which conforming clients cannot correlate to the authorization request.
+  - `invalid_client` (missing `client_id`) and `invalid_redirect_uri` (missing / non-`http(s)` `redirect_uri`) continue to return JSON, per RFC 6749 §3.1.2.4 which forbids redirecting to an unvalidated URI.
+
 - **Treat email, profile, groups, offline_access as mandatory scopes (#252)**
   - `isMandatoryScope()` now returns true for `email`, `profile`, `groups`, and `offline_access` in addition to `openid` and cross-client audience scopes.
   - When an MCP client sends only custom scopes (e.g., `claudeai`), identity-critical scopes from the provider's defaults are now force-merged into the authorization request.

@@ -1286,6 +1286,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
 	codeChallenge := r.URL.Query().Get("code_challenge")
 	codeChallengeMethod := r.URL.Query().Get("code_challenge_method")
+	responseType := r.URL.Query().Get("response_type")
 
 	// Extract OIDC parameters for upstream IdP forwarding
 	authOpts := parseOIDCOptions(r.URL.Query())
@@ -1302,20 +1303,22 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	// Can be disabled for clients that don't support state (e.g., some MCP clients)
 	if state == "" && !h.server.Config.AllowNoStateParameter {
 		h.logger.Info("Authorization request rejected: state parameter missing", "client_id", clientID)
-		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusBadRequest, startTime)
-		instrumentation.SetSpanError(span, "state missing")
-		h.writeError(w, ErrorCodeInvalidRequest, "state parameter is required for CSRF protection", http.StatusBadRequest)
+		h.respondAuthorizationError(w, r, redirectURI, state, ErrorCodeInvalidRequest, "state parameter is required for CSRF protection", startTime, span, "state missing")
 		return
 	}
 	if state != "" && len(state) < MinStateLength && !h.server.Config.AllowNoStateParameter {
 		h.logger.Warn("Authorization request rejected: state parameter too short", "state_length", len(state), "min_required", MinStateLength, "client_id", clientID)
-		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusBadRequest, startTime)
-		instrumentation.SetSpanError(span, "state too short")
-		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at least %d characters for security", MinStateLength), http.StatusBadRequest)
+		h.respondAuthorizationError(w, r, redirectURI, state, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at least %d characters for security", MinStateLength), startTime, span, "state too short")
 		return
 	}
 
-	responseType := r.URL.Query().Get("response_type")
+	// RFC 6749 §3.1.1: only "code" response_type is supported; AS metadata
+	// advertises response_types_supported: ["code"].
+	if responseType != "code" {
+		h.logger.Info("Authorization request rejected: unsupported response_type", "response_type", responseType, "client_id", clientID)
+		h.respondAuthorizationError(w, r, redirectURI, state, ErrorCodeUnsupportedResponseType, "response_type must be \"code\"", startTime, span, "unsupported response_type")
+		return
+	}
 
 	// Add attributes to span
 	instrumentation.SetSpanAttributes(
@@ -1330,10 +1333,8 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	authURL, err := h.server.StartAuthorizationFlow(r.Context(), clientID, redirectURI, scope, resource, codeChallenge, codeChallengeMethod, state, authOpts)
 	if err != nil {
 		h.logger.Error("Failed to start authorization flow", "error", err)
-		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusInternalServerError, startTime)
 		instrumentation.RecordError(span, err)
-		instrumentation.SetSpanError(span, "authorization flow failed")
-		h.writeError(w, ErrorCodeServerError, "Failed to start authorization flow", http.StatusInternalServerError)
+		h.respondAuthorizationError(w, r, redirectURI, state, ErrorCodeServerError, "Failed to start authorization flow", startTime, span, "authorization flow failed")
 		return
 	}
 
@@ -1349,9 +1350,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	parsedAuthURL, err := url.Parse(authURL)
 	if err != nil || (parsedAuthURL.Scheme != "https" && parsedAuthURL.Scheme != "http") {
 		h.logger.Error("Provider returned invalid authorization URL", "error", err)
-		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusInternalServerError, startTime)
-		instrumentation.SetSpanError(span, "invalid authorization URL")
-		h.writeError(w, ErrorCodeServerError, "Failed to start authorization flow", http.StatusInternalServerError)
+		h.respondAuthorizationError(w, r, redirectURI, state, ErrorCodeServerError, "Failed to start authorization flow", startTime, span, "invalid authorization URL")
 		return
 	}
 	// #nosec G710 -- authURL is built by the configured provider's
@@ -2199,6 +2198,49 @@ func (h *Handler) writeError(w http.ResponseWriter, code, description string, st
 		"error":             code,
 		"error_description": description,
 	})
+}
+
+// respondAuthorizationError handles RFC 6749 §4.1.2.1 error returns from the
+// authorization endpoint. When the redirect URI parses as an http(s) URL it
+// appends error / error_description / state and redirects (302); otherwise it
+// falls back to the JSON 400 path because the spec forbids redirecting to a
+// missing or non-http(s) redirect URI.
+func (h *Handler) respondAuthorizationError(
+	w http.ResponseWriter,
+	r *http.Request,
+	redirectURI, state, code, description string,
+	startTime time.Time,
+	span trace.Span,
+	spanError string,
+) {
+	instrumentation.SetSpanError(span, spanError)
+	instrumentation.SetSpanAttributes(
+		span,
+		attribute.String(instrumentation.AttrError, code),
+		attribute.String(instrumentation.AttrErrorDescription, description),
+	)
+
+	parsed, err := url.Parse(redirectURI)
+	if err != nil || redirectURI == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+		h.recordHTTPMetrics(r.Context(), "authorization", http.MethodGet, http.StatusBadRequest, startTime)
+		h.writeError(w, code, description, http.StatusBadRequest)
+		return
+	}
+
+	q := parsed.Query()
+	q.Set("error", code)
+	q.Set("error_description", description)
+	if state != "" {
+		q.Set("state", state)
+	}
+	parsed.RawQuery = q.Encode()
+
+	h.recordHTTPMetrics(r.Context(), "authorization", http.MethodGet, http.StatusFound, startTime)
+	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+	// #nosec G710 -- redirect target is the client-supplied redirect_uri parsed
+	// and scheme-checked above. RFC 6749 §4.1.2.1 mandates redirecting errors
+	// to redirect_uri so the client can correlate them with the request.
+	http.Redirect(w, r, parsed.String(), http.StatusFound)
 }
 
 // writeUnauthorizedError writes a 401 Unauthorized response with endpoint-specific scope guidance.
