@@ -229,6 +229,9 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 		if authOpts.LoginHint != "" {
 			opts = append(opts, oauth2.SetAuthURLParam("login", authOpts.LoginHint))
 		}
+		if authOpts.Nonce != "" {
+			opts = append(opts, oauth2.SetAuthURLParam("nonce", authOpts.Nonce))
+		}
 		// GitHub doesn't support prompt=none for silent auth, but we can still pass
 		// custom parameters via Extra
 		for k, v := range authOpts.Extra {
