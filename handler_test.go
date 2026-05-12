@@ -3796,9 +3796,6 @@ func TestHandler_ServeTokenIntrospection(t *testing.T) {
 	}
 }
 
-// seedOpaqueIntrospectionToken seeds an opaque access token in the store with
-// matching TokenMetadata, returning the bearer string and the recorded
-// IssuedAt for the test to compare against the introspection response.
 func seedOpaqueIntrospectionToken(t *testing.T, store *memory.Store, accessToken, userID, clientID, audience string, scopes []string, expiresAt time.Time) time.Time {
 	t.Helper()
 	ctx := context.Background()
@@ -3826,9 +3823,6 @@ func seedOpaqueIntrospectionToken(t *testing.T, store *memory.Store, accessToken
 	return meta.IssuedAt
 }
 
-// TestIntrospect_CrossClient_ReturnsInactive verifies that a client introspecting
-// a token bound to a different client receives only {"active": false}, with no
-// claims or user attributes leaking through (RFC 7662 §2.2 + §2.1 gating).
 func TestIntrospect_CrossClient_ReturnsInactive(t *testing.T) {
 	ctx := context.Background()
 
@@ -3876,10 +3870,6 @@ func TestIntrospect_CrossClient_ReturnsInactive(t *testing.T) {
 	}
 }
 
-// TestIntrospect_AllowlistedResourceServer_Succeeds verifies that a client
-// listed in Config.IntrospectionResourceServers can introspect tokens it
-// does not own, and that the response carries the token's bound client_id
-// (not the requester's).
 func TestIntrospect_AllowlistedResourceServer_Succeeds(t *testing.T) {
 	ctx := context.Background()
 
@@ -3927,9 +3917,6 @@ func TestIntrospect_AllowlistedResourceServer_Succeeds(t *testing.T) {
 	}
 }
 
-// TestIntrospect_ResponseFields_Complete verifies the full RFC 7662 §2.2
-// response shape: active, sub, client_id, token_type, scope, aud, iss, exp,
-// iat are all populated from token metadata.
 func TestIntrospect_ResponseFields_Complete(t *testing.T) {
 	ctx := context.Background()
 
