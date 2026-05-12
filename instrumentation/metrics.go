@@ -99,7 +99,8 @@ type Metrics struct {
 
 // createCounter is a helper to reduce repetition when creating counters
 func createCounter(meter metric.Meter, name, desc, unit string) (metric.Int64Counter, error) {
-	counter, err := meter.Int64Counter(name,
+	counter, err := meter.Int64Counter(
+		name,
 		metric.WithDescription(desc),
 		metric.WithUnit(unit),
 	)
@@ -111,7 +112,8 @@ func createCounter(meter metric.Meter, name, desc, unit string) (metric.Int64Cou
 
 // createHistogram is a helper to reduce repetition when creating histograms
 func createHistogram(meter metric.Meter, name, desc, unit string) (metric.Float64Histogram, error) {
-	hist, err := meter.Float64Histogram(name,
+	hist, err := meter.Float64Histogram(
+		name,
 		metric.WithDescription(desc),
 		metric.WithUnit(unit),
 	)

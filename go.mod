@@ -5,6 +5,7 @@ go 1.25.0
 toolchain go1.26.3
 
 require (
+	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1

@@ -207,12 +207,12 @@ func main() {
             <li><strong>Refresh Tokens:</strong> Handles Dex's refresh token rotation</li>
         </ul>
         <p><strong>Issuer:</strong> ` + issuerURL + `</p>
-        ` + (func() string {
+        ` + func() string {
 			if connectorID != "" {
 				return `<p><strong>Connector:</strong> ` + connectorID + ` (connector selection will be skipped)</p>`
 			}
 			return `<p><strong>Connector:</strong> None specified (Dex will show connector selection)</p>`
-		})() + `
+		}() + `
     </div>
     <a href="/oauth/authorize?client_id=demo-client&response_type=code&scope=openid+profile+email+groups" class="button">
         Sign in with Dex

@@ -116,6 +116,17 @@ const (
 	// where an upstream MCP server's ID token is passed as a Bearer token to downstream services.
 	EventForwardedIDTokenAccepted = "forwarded_id_token_accepted"
 
+	// EventSelfIssuedJWTAccepted is logged when a self-issued JWT access token
+	// (server.AccessTokenFormatJWT mode, RFC 9068) is validated locally via
+	// signature verification against the configured public key. Useful for
+	// audit trails and for distinguishing local-validation hot-path bearers
+	// from opaque-storage bearers in dashboards.
+	EventSelfIssuedJWTAccepted = "self_issued_jwt_accepted"
+
+	// EventSelfIssuedJWTRevoked is logged when /oauth/revoke records a
+	// self-issued JWT access token's jti in the RevokedTokenStore denylist.
+	EventSelfIssuedJWTRevoked = "self_issued_jwt_revoked"
+
 	// Provider-related events
 
 	// EventInvalidProviderCallback is logged when provider callback validation fails

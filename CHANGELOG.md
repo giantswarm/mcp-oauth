@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **JWT access-token issuance mode (RFC 9068)**
+  - New `Config.AccessTokenFormat` (default `AccessTokenFormatOpaque`, opt-in `AccessTokenFormatJWT`). In JWT mode the server signs access tokens with `Config.AccessTokenSigningKey` (RSA or ECDSA P-256/P-384) under `Config.AccessTokenSigningKeyID`/`Config.AccessTokenSigningAlgorithm` (RS256/RS384/RS512/ES256/ES384). HMAC variants and `none` are rejected at startup as alg-confusion defense.
+  - New `/.well-known/jwks.json` endpoint publishes the public half (RFC 7517). Authorization Server Metadata gains `jwks_uri` and `access_token_signing_alg_values_supported` only in JWT mode; opaque mode is byte-identical to v1.
+  - New optional `storage.RevokedTokenStore` interface (memory + Valkey implementations) records revoked `jti`s with auto-expiry at the JWT's own `exp`. `/oauth/revoke` writes to the denylist; validation reads from it on every request.
+  - New optional `storage.RefreshTokenFamilyByIDStore` interface (memory + Valkey) lets JWT validation invalidate in-flight access tokens when the refresh-token family is revoked. Defense in depth on top of the `jti` denylist.
+  - New `providers.TokenSourceJWT` constant + `UserInfo.IsJWT()` so downstream consumers can dispatch on a self-issued JWT bearer (no upstream id_token in TokenStore for it).
+  - Validation pipeline is format-agnostic by design: a single `ValidateToken` call accepts self-issued JWT, forwarded ID token (existing `TrustedAudiences` path), and opaque bearers. Operators upgrading or running mixed deployments are not forced to coordinate format across instances.
+  - JWT validation is local: signature + typ (`at+jwt`) + iss + exp (with `ClockSkewGracePeriod`) + aud (RFC 8707, parity with the opaque branch) + jti denylist + family revocation. No upstream userinfo round-trip on the hot path.
+  - New `examples/jwt/` runnable example with end-to-end `curl` walkthrough.
+  - SECURITY_ARCHITECTURE.md gains an "Access Token Format Modes" section documenting threat model, mitigations, key management, and the opaque-vs-JWT trade-off.
+  - Refresh tokens stay opaque in both modes (rotation needs server state; there's no win from making them JWTs).
+  - Default behavior is unchanged: `AccessTokenFormat=""` → opaque, identical to v1.
 - **oauthconfig.StorageFromEnv switch now uses `storage.BackendMemory` / `storage.BackendValkey` instead of string literals**
   - Internal cleanup so the loader and the storage package share one source of truth for backend names. The constants were already exported from the `storage` package — consumers that branch on backend name (e.g. "refuse memory in production") should reference `storage.Backend*`.
 - **oauthconfig.FromEnv: loopback issuers bypass the http:// gate**

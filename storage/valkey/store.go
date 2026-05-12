@@ -125,6 +125,7 @@ var (
 	_ storage.TokenRevocationStore                    = (*Store)(nil)
 	_ storage.TokenMetadataStoreWithFamily            = (*Store)(nil)
 	_ storage.TokenMetadataStoreWithScopesAndAudience = (*Store)(nil)
+	_ storage.RevokedTokenStore                       = (*Store)(nil)
 )
 
 // New creates a new Valkey-backed storage instance.
@@ -267,7 +268,8 @@ func (s *Store) countKeysByPattern(pattern string) int64 {
 	var cursor uint64
 
 	for {
-		result, err := s.client.Do(ctx,
+		result, err := s.client.Do(
+			ctx,
 			s.client.B().Scan().Cursor(cursor).Match(pattern).Count(scanBatchSize).Build(),
 		).AsScanEntry()
 		if err != nil {

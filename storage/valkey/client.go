@@ -141,7 +141,8 @@ func (s *Store) ListClients(ctx context.Context) (result []*storage.Client, err 
 
 // scanClientKeys executes a SCAN command for client keys.
 func (s *Store) scanClientKeys(ctx context.Context, pattern string, cursor uint64) ([]string, uint64, error) {
-	result, err := s.client.Do(ctx,
+	result, err := s.client.Do(
+		ctx,
 		s.client.B().Scan().Cursor(cursor).Match(pattern).Count(scanBatchSize).Build(),
 	).AsScanEntry()
 	if err != nil {

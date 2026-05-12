@@ -40,7 +40,8 @@ func (s *Store) SaveAuthorizationState(ctx context.Context, state *storage.Autho
 
 	// Store the state data by StateID
 	stateKey := s.stateKey(state.StateID)
-	if err = s.client.Do(op.ctx,
+	if err = s.client.Do(
+		op.ctx,
 		s.client.B().Set().Key(stateKey).Value(string(data)).Ex(ttl).Build(),
 	).Error(); err != nil {
 		return fmt.Errorf("failed to save authorization state: %w", err)
@@ -48,7 +49,8 @@ func (s *Store) SaveAuthorizationState(ctx context.Context, state *storage.Autho
 
 	// Store a reverse lookup by provider state -> state ID
 	providerKey := s.providerStateKey(state.ProviderState)
-	if err = s.client.Do(op.ctx,
+	if err = s.client.Do(
+		op.ctx,
 		s.client.B().Set().Key(providerKey).Value(state.StateID).Ex(ttl).Build(),
 	).Error(); err != nil {
 		return fmt.Errorf("failed to save provider state lookup: %w", err)
@@ -166,7 +168,8 @@ func (s *Store) SaveAuthorizationCode(ctx context.Context, code *storage.Authori
 
 	key := s.codeKey(code.Code)
 
-	if err = s.client.Do(op.ctx,
+	if err = s.client.Do(
+		op.ctx,
 		s.client.B().Set().Key(key).Value(string(data)).Ex(ttl).Build(),
 	).Error(); err != nil {
 		return fmt.Errorf("failed to save authorization code: %w", err)
@@ -225,7 +228,8 @@ func (s *Store) AtomicCheckAndMarkAuthCodeUsed(ctx context.Context, code string)
 	key := s.codeKey(code)
 
 	// Execute Lua script for atomic operation
-	result, err := s.client.Do(op.ctx,
+	result, err := s.client.Do(
+		op.ctx,
 		s.client.B().Eval().Script(luaAtomicCheckAndMarkCodeUsed).
 			Numkeys(1).
 			Key(key).

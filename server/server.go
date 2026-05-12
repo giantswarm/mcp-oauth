@@ -94,6 +94,8 @@ type Server struct {
 	metadataCacheCleanupCancel    context.CancelFunc                      // Cancel function for cleanup goroutine
 	jwksClient                    *oidc.JWKSClient                        // JWKS client for SSO token forwarding validation
 	jwksClientOnce                sync.Once                               // Ensures JWKS client is initialized only once
+	accessTokenIssuer             AccessTokenIssuer                       // Issues access tokens (opaque random or signed JWT depending on Config.AccessTokenFormat)
+	revokedTokenStore             storage.RevokedTokenStore               // Tracks revoked self-issued JWT access tokens by jti (nil in opaque mode or when storage backend does not support it)
 	tokenPairs                    sync.Map                                // Maps client access token -> client refresh token for paired updates
 	tokenPairsByRefresh           sync.Map                                // Maps client refresh token -> client access token for pair cleanup
 	refreshGroup                  singleflight.Group                      // Deduplicates concurrent provider token refreshes per access token
@@ -160,6 +162,16 @@ func New(
 		return nil, err
 	}
 
+	if err := config.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid server config: %w", err)
+	}
+
+	if err := srv.initializeAccessTokenIssuer(); err != nil {
+		return nil, err
+	}
+
+	srv.attachRevokedTokenStore(tokenStore)
+
 	configureStorageRetention(tokenStore, config)
 	srv.initializeInstrumentation(tokenStore, clientStore, flowStore)
 	srv.initializeMetadataSupport()
@@ -167,6 +179,44 @@ func New(
 	srv.logForwardedSessionIDKeyFingerprint()
 
 	return srv, nil
+}
+
+// initializeAccessTokenIssuer wires the AccessTokenIssuer implementation
+// matching Config.AccessTokenFormat. Config.Validate has already accepted
+// the configuration by the time this runs, so any error here indicates a
+// programming error, not a misconfiguration.
+func (s *Server) initializeAccessTokenIssuer() error {
+	if s.Config.IsJWTAccessTokenFormat() {
+		issuer, err := newJWTIssuer(s.Config)
+		if err != nil {
+			return fmt.Errorf("initialize JWT access token issuer: %w", err)
+		}
+		s.accessTokenIssuer = issuer
+		s.Logger.Info("Access token format: JWT (RFC 9068)",
+			"alg", s.Config.AccessTokenSigningAlgorithm,
+			"kid", s.Config.AccessTokenSigningKeyID,
+			"jwks_uri", s.Config.JWKSEndpoint())
+		return nil
+	}
+	s.accessTokenIssuer = opaqueIssuer{}
+	return nil
+}
+
+// attachRevokedTokenStore wires the RevokedTokenStore from the token store
+// when both AccessTokenFormat is JWT and the backend implements the
+// interface. In opaque mode revocation continues to use TokenStore deletion;
+// the JWT denylist is unused.
+func (s *Server) attachRevokedTokenStore(tokenStore storage.TokenStore) {
+	if !s.Config.IsJWTAccessTokenFormat() {
+		return
+	}
+	rts, ok := tokenStore.(storage.RevokedTokenStore)
+	if !ok {
+		s.Logger.Warn("Access token format is JWT but storage backend does not implement storage.RevokedTokenStore — token revocation will be unenforceable for self-issued JWTs",
+			"recommendation", "use storage/memory or storage/valkey, both of which implement RevokedTokenStore")
+		return
+	}
+	s.revokedTokenStore = rts
 }
 
 // validateServerDependencies checks that all required dependencies are provided.

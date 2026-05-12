@@ -724,6 +724,113 @@ type RefreshTokenFamily struct {
 
 **Implementation**: `storage/memory/memory.go` - Refresh token family tracking
 
+### Access Token Format Modes
+
+The library issues access tokens in one of two formats. The choice is a server-level operator decision and is documented here so the trade-off is visible to anyone making it.
+
+#### Why opaque was the v1 default
+
+The original v1 design (commit `08fe123`, Nov 2025) was deliberate, not accidental:
+
+1. **Topology**. The library was conceived as an OAuth 2.1 *Resource Server* sitting in front of Google as the *Authorization Server* (`doc.go:1-10`). Google itself issues opaque access tokens; only `id_token`s are JWTs. Mirroring the upstream IdP's token shape gave a clean delegation model where every request becomes `TokenStore.Get(opaque) → provider.ValidateToken(...) → /userinfo`.
+2. **Encryption at rest**. `Config.EncryptionKey` enables AES-256-GCM encryption of the upstream provider's tokens (`id_token`, `access_token`, `refresh_token`, userinfo) inside `TokenStore`. The bearer the client holds is just a *database key* — the actual sensitive material never leaves the server. JWTs break this model because the bearer **is** the data.
+3. **Provider heterogeneity**. GitHub OAuth Apps don't issue JWTs at all. Keeping issuance always-opaque kept the `provider.ValidateToken(...)` seam single-shaped. Issuing JWTs from a GitHub-backed session would have introduced a two-validation-path leakage.
+4. **Revocation**. Opaque tokens revoke by row deletion. JWTs need a stateful denylist plus TTL bookkeeping.
+
+#### What changed
+
+The new deployment topology adds an MCP-aware proxy (e.g. `agentgateway`) in front of an MCP gateway (`muster`). Such proxies are themselves resource-server-shaped components and benefit from local bearer validation against a JWKS — no in-cluster HTTP round-trip per request. PR #266 (`AcceptForwardedIDToken`, Apr 2026) was the first crack in the all-opaque design; it added **inbound** JWT validation against `TrustedAudiences` via JWKS. JWT issuance mode extends the same direction: outbound, with the library signing access tokens itself and publishing the JWKS.
+
+#### Trade-off table
+
+| Property | Opaque mode | JWT mode |
+|---|---|---|
+| Bearer the client holds | server-side database key | self-describing signed payload |
+| Sensitive upstream tokens at rest | encrypted via `Config.EncryptionKey` | unchanged for refresh tokens; access-token claims live in the bearer (not at rest) |
+| Validation by downstream | `TokenStore.Get` + upstream `/userinfo` | local signature verification against published JWKS |
+| Revocation | row deletion | `jti` denylist + TTL (+ family revocation) |
+| Works with GitHub upstream | yes | yes — library's own signing key, not the upstream's |
+| Token lifetime guidance | longer acceptable (revocable) | shorter recommended (5–15 min) — compensating control for stateless revocation |
+
+The trade-off is explicit and operator-chosen. JWT mode is appropriate when the deployment has an MCP-aware proxy that benefits from local validation. Opaque mode remains appropriate otherwise. Default stays opaque so existing deployments are unaffected.
+
+#### Configuration
+
+```go
+&server.Config{
+    AccessTokenFormat:           server.AccessTokenFormatJWT,
+    AccessTokenSigningKey:       privateKey, // *rsa.PrivateKey or *ecdsa.PrivateKey (P-256/P-384)
+    AccessTokenSigningKeyID:     "kid-2026-Q1",
+    AccessTokenSigningAlgorithm: server.SigningAlgorithmRS256, // or RS384, RS512, ES256, ES384
+    AccessTokenTTL:              900, // 15 min recommended in JWT mode
+}
+```
+
+`Config.Validate()` rejects `none`, HMAC variants, missing fields, and key/alg-family mismatches at startup.
+
+#### JWT issuance flow
+
+```
+[client] /oauth/token (auth_code grant)
+   │
+   ▼
+[server] ExchangeAuthorizationCode
+   │
+   ├── load UserInfo (TokenStore.GetUserInfo)
+   ├── build AccessTokenClaims{sub, client_id, aud, scope, email, groups, family_id}
+   ├── jwtIssuer.Issue → at+jwt with kid header, signed by AccessTokenSigningKey
+   └── refresh_token = generateRandomToken() (still opaque)
+```
+
+#### JWT validation flow
+
+```
+[bearer] →  ValidateToken
+   │
+   ├── if iss == Config.Issuer  → self-issued JWT branch
+   │     ├── signature verify (alg+kid pinned)
+   │     ├── typ == "at+jwt"
+   │     ├── exp within ClockSkewGracePeriod
+   │     ├── aud == ResourceIdentifier OR in TrustedAudiences (RFC 8707)
+   │     ├── jti not in RevokedTokenStore (RFC 7009)
+   │     └── family_id, when present, references non-revoked family
+   │
+   ├── elif iss != Config.Issuer AND aud matches TrustedAudiences  → forwarded ID token branch (existing)
+   │
+   └── else  → opaque TokenStore + upstream userinfo (existing)
+```
+
+#### Threat model
+
+| Threat | Mitigation in this design | Implementing function |
+|---|---|---|
+| `alg: none` | Rejected at config validation; explicit keyfunc in `jwt.Parse` enforces configured alg | `Config.Validate`, `parseAndVerifyJWTSignature` |
+| HS256-with-public-key alg confusion | HMAC variants rejected at startup; key/alg type validated together | `validateSigningKeyMatchesAlgorithm` |
+| `kid` injection | Closed set of one key controlled by the server; unknown kid rejected | `parseAndVerifyJWTSignature` |
+| Token substitution across resource servers | RFC 8707 audience binding; same matching as opaque branch | `checkJWTAudience` |
+| Replay after revocation | jti denylist consulted on every validation; entries auto-expire at exp | `checkJWTRevocation`, `RevokedTokenStore` |
+| `typ` confusion with id_token | `typ: "at+jwt"` set on issuance, verified on validation per RFC 9068 §2.1 | `jwtIssuer.Issue`, `checkJWTHeaderAndIssuer` |
+| Token logging | Never log full JWTs; reuse `helpers.TokenSuffix(token, 8)` for trace fields | All log statements in `flows_jwt.go` |
+| JWKS exposed when not used | 404 in opaque mode; `jwks_uri` omitted from discovery | `ServeJWKS`, `addOptionalMetadata` |
+| Timing attacks on signature comparison | Use library parser (`golang-jwt/jwt/v5`); no bespoke crypto | (delegated) |
+| In-flight tokens after refresh-family revocation | `family_id` claim; family revocation invalidates all in-flight access tokens in the family | `checkJWTFamily`, `RefreshTokenFamilyByIDStore` |
+
+#### Key management
+
+- **Storage.** Load from a mounted Kubernetes Secret, an HSM, or a cloud KMS. The library accepts any `crypto.Signer`. Never check the key into source.
+- **Rotation.** Manual: change `AccessTokenSigningKeyID` and `AccessTokenSigningKey` together, then restart. The JWKS endpoint serves the new public key on Cache-Control: 3600s, so resource servers refresh within an hour. To shorten the window, rotate during a low-traffic period and verify the JWKS endpoint shows the new kid before generating new tokens.
+- **In-flight tokens during rotation.** Tokens signed by the old key continue to validate until they expire — there is no second key in the JWKS during the cutover. If you need overlap, run two server instances temporarily with their own kid each, behind a load balancer that hashes on bearer (not viable for general traffic), or accept the brief mass-reauth and keep TTLs short (5–15 min).
+- **Compromised key.** Issue an emergency new key + kid, restart, and revoke any high-risk in-flight tokens via `/oauth/revoke`. The denylist holds entries until each token's natural exp; with short TTLs the recovery window is bounded.
+
+#### Migration story
+
+Validation already accepts both formats. To switch from opaque to JWT:
+1. Set `AccessTokenFormat = AccessTokenFormatJWT` and the signing fields, restart.
+2. New sessions get JWT bearers; existing opaque bearers continue to validate until they expire or their refresh token rotates (the rotation issues a new JWT).
+3. No coordinated cutover needed across MCP server instances.
+
+To switch back, unset `AccessTokenFormat` (or set to opaque). New sessions get opaque bearers; existing JWT bearers continue to validate until expiry.
+
 ### Resource Parameter Security (RFC 8707)
 
 **Purpose**: Bind access tokens to specific resource servers to prevent token misuse across different services.

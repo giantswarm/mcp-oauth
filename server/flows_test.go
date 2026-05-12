@@ -65,7 +65,8 @@ func TestServer_StartAuthorizationFlow(t *testing.T) {
 	srv, store, _ := setupFlowTestServer(t)
 
 	// Register a test client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -166,7 +167,8 @@ func TestServer_StartAuthorizationFlow(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			authURL, err := srv.StartAuthorizationFlow(ctx,
+			authURL, err := srv.StartAuthorizationFlow(
+				ctx,
 				tt.clientID,
 				tt.redirectURI,
 				tt.scope,
@@ -213,7 +215,8 @@ func TestStartAuthorizationFlow_OIDCParameterForwarding(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Register a test client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"oidc-test-client",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -347,7 +350,8 @@ func TestStartAuthorizationFlow_OIDCParameterForwarding(t *testing.T) {
 			}
 			defer func() { provider.AuthorizationURLFunc = originalFunc }()
 
-			authURL, err := srv.StartAuthorizationFlow(ctx,
+			authURL, err := srv.StartAuthorizationFlow(
+				ctx,
 				client.ClientID,
 				"https://example.com/callback",
 				"openid email",
@@ -442,7 +446,8 @@ func TestServer_HandleProviderCallback(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Register a test client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -461,7 +466,8 @@ func TestServer_HandleProviderCallback(t *testing.T) {
 	clientState := testutil.GenerateRandomString(43)
 
 	// Start authorization flow
-	_, err = srv.StartAuthorizationFlow(ctx,
+	_, err = srv.StartAuthorizationFlow(
+		ctx,
 		client.ClientID,
 		"https://example.com/callback",
 		"openid email",
@@ -568,7 +574,8 @@ func TestServer_HandleProviderCallback_EmailLookup(t *testing.T) {
 	}
 
 	// Register a test client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"",
@@ -587,7 +594,8 @@ func TestServer_HandleProviderCallback_EmailLookup(t *testing.T) {
 	clientState := testutil.GenerateRandomString(43)
 
 	// Start authorization flow
-	_, err = srv.StartAuthorizationFlow(ctx,
+	_, err = srv.StartAuthorizationFlow(
+		ctx,
 		client.ClientID,
 		"https://example.com/callback",
 		"openid email",
@@ -711,7 +719,8 @@ func TestServer_HandleProviderCallback_ShortLivedToken(t *testing.T) {
 	}
 
 	// Register a test client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"",
@@ -730,7 +739,8 @@ func TestServer_HandleProviderCallback_ShortLivedToken(t *testing.T) {
 	clientState := testutil.GenerateRandomString(43)
 
 	// Start authorization flow
-	_, err = srv.StartAuthorizationFlow(ctx,
+	_, err = srv.StartAuthorizationFlow(
+		ctx,
 		client.ClientID,
 		"https://example.com/callback",
 		"openid email",
@@ -949,7 +959,8 @@ func TestServer_ExchangeAuthorizationCode(t *testing.T) {
 	srv, store, _ := setupFlowTestServer(t)
 
 	// Register a test client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -1143,7 +1154,8 @@ func TestServer_ExchangeAuthorizationCode_IDTokenForwarding(t *testing.T) {
 	srv, store, _ := setupFlowTestServer(t)
 
 	// Register a test client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"",
@@ -1226,7 +1238,8 @@ func TestServer_ExchangeAuthorizationCode_NoIDToken(t *testing.T) {
 	srv, store, _ := setupFlowTestServer(t)
 
 	// Register a test client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"",
@@ -1302,7 +1315,8 @@ func TestServer_ExchangeAuthorizationCode_PublicClient_PKCEEnforcement(t *testin
 	srv, store, _ := setupFlowTestServer(t)
 
 	// Register a public client (mobile app, SPA)
-	publicClient, _, err := srv.RegisterClient(ctx,
+	publicClient, _, err := srv.RegisterClient(
+		ctx,
 		"Public Mobile App",
 		ClientTypePublic,
 		"", // tokenEndpointAuthMethod
@@ -1316,7 +1330,8 @@ func TestServer_ExchangeAuthorizationCode_PublicClient_PKCEEnforcement(t *testin
 	}
 
 	// Register a confidential client (server-side web app)
-	confidentialClient, _, err := srv.RegisterClient(ctx,
+	confidentialClient, _, err := srv.RegisterClient(
+		ctx,
 		"Confidential Server App",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -1532,7 +1547,8 @@ func TestServer_ExchangeAuthorizationCode_AllowPublicClientsWithoutPKCE(t *testi
 			}
 
 			// Register a public client
-			publicClient, _, err := srv.RegisterClient(ctx,
+			publicClient, _, err := srv.RegisterClient(
+				ctx,
 				"Test Public Client",
 				ClientTypePublic,
 				"", // tokenEndpointAuthMethod
@@ -1634,7 +1650,8 @@ func TestServer_ExchangeAuthorizationCode_PublicClient_ReuseDetection(t *testing
 	srv, store, _ := setupFlowTestServer(t)
 
 	// Register a public client
-	publicClient, _, err := srv.RegisterClient(ctx,
+	publicClient, _, err := srv.RegisterClient(
+		ctx,
 		"Public Mobile App",
 		ClientTypePublic,
 		"", // tokenEndpointAuthMethod
@@ -2393,7 +2410,8 @@ func TestServer_RefreshTokenRotation(t *testing.T) {
 	srv.Config.RefreshTokenTTL = 86400 // 24 hours
 
 	// Register a client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -2414,7 +2432,8 @@ func TestServer_RefreshTokenRotation(t *testing.T) {
 
 	// Start auth flow and get tokens
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(ctx,
+	_, err = srv.StartAuthorizationFlow(
+		ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -2526,7 +2545,8 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 	srv.Config.RefreshTokenTTL = 86400 // 24 hours
 
 	// Register a client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -2547,7 +2567,8 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 
 	// Start auth flow and get initial tokens
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(ctx,
+	_, err = srv.StartAuthorizationFlow(
+		ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -2736,7 +2757,8 @@ func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
 	srv.Config.RefreshTokenTTL = 86400
 
 	// Register a client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -2757,7 +2779,8 @@ func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
 
 	// Get initial tokens
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(ctx,
+	_, err = srv.StartAuthorizationFlow(
+		ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -2864,7 +2887,8 @@ func TestServer_ConcurrentRefreshTokenReuse(t *testing.T) {
 	srv.Config.RefreshTokenTTL = 86400
 
 	// Register a client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -2885,7 +2909,8 @@ func TestServer_ConcurrentRefreshTokenReuse(t *testing.T) {
 
 	// Get initial tokens
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(ctx,
+	_, err = srv.StartAuthorizationFlow(
+		ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -3010,7 +3035,8 @@ func TestServer_ConcurrentAuthorizationCodeReuse(t *testing.T) {
 	srv, store, _ := setupFlowTestServer(t)
 
 	// Register a client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -3031,7 +3057,8 @@ func TestServer_ConcurrentAuthorizationCodeReuse(t *testing.T) {
 
 	// Get authorization code
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(ctx,
+	_, err = srv.StartAuthorizationFlow(
+		ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -3282,7 +3309,8 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 	srv, store, _ := setupFlowTestServer(t)
 
 	// Register a client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -3303,7 +3331,8 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 
 	// Start authorization flow
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(ctx,
+	_, err = srv.StartAuthorizationFlow(
+		ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -3427,7 +3456,8 @@ func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
 	srv.Config.RefreshTokenTTL = 86400 // 24 hours
 
 	// Register a client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client 2",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -3448,7 +3478,8 @@ func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
 
 	// Start authorization flow
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(ctx,
+	_, err = srv.StartAuthorizationFlow(
+		ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -3788,7 +3819,8 @@ func TestServer_ConcurrentReuseAndRevocation(t *testing.T) {
 	srv.Config.RefreshTokenTTL = 86400
 
 	// Register a client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -3809,7 +3841,8 @@ func TestServer_ConcurrentReuseAndRevocation(t *testing.T) {
 
 	// Get initial tokens
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(ctx,
+	_, err = srv.StartAuthorizationFlow(
+		ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -4363,7 +4396,8 @@ func TestServer_GenericErrorMessagesNoInfoLeakage(t *testing.T) {
 	srv, store, _ := setupFlowTestServer(t)
 
 	// Register a client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -4386,7 +4420,8 @@ func TestServer_GenericErrorMessagesNoInfoLeakage(t *testing.T) {
 
 	// Get a valid authorization code
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(ctx,
+	_, err = srv.StartAuthorizationFlow(
+		ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -4602,7 +4637,8 @@ func TestServer_AuthCodeReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 	srv.SecurityEventRateLimiter = nil
 
 	// Register a client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -4623,7 +4659,8 @@ func TestServer_AuthCodeReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 
 	// Get authorization code
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(ctx,
+	_, err = srv.StartAuthorizationFlow(
+		ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -4695,7 +4732,8 @@ func TestServer_RefreshTokenReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 	srv.Config.RefreshTokenTTL = 86400
 
 	// Register a client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -4716,7 +4754,8 @@ func TestServer_RefreshTokenReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 
 	// Get initial tokens
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(ctx,
+	_, err = srv.StartAuthorizationFlow(
+		ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -4981,7 +5020,8 @@ func TestStartAuthorizationFlow_ClientScopeValidation(t *testing.T) {
 	srv, _, _ := setupFlowTestServer(t)
 
 	// Register client with limited scopes
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Limited Client",
 		ClientTypePublic,
 		"", // tokenEndpointAuthMethod
@@ -5062,7 +5102,8 @@ func TestStartAuthorizationFlow_ClientScopeValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			authURL, err := srv.StartAuthorizationFlow(ctx,
+			authURL, err := srv.StartAuthorizationFlow(
+				ctx,
 				client.ClientID,
 				"https://example.com/callback",
 				tt.scope,
@@ -5101,7 +5142,8 @@ func TestExchangeAuthorizationCode_ClientScopeValidation(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Register client with limited scopes
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Limited Client",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -5252,7 +5294,8 @@ func TestClientScopeValidation_UnrestrictedClient(t *testing.T) {
 	srv, _, _ := setupFlowTestServer(t)
 
 	// Register client with NO scope restrictions (empty scopes array)
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Unrestricted Client",
 		ClientTypePublic,
 		"", // tokenEndpointAuthMethod
@@ -5281,7 +5324,8 @@ func TestClientScopeValidation_UnrestrictedClient(t *testing.T) {
 
 	for _, scope := range testScopes {
 		t.Run("unrestricted_"+scope, func(t *testing.T) {
-			authURL, err := srv.StartAuthorizationFlow(ctx,
+			authURL, err := srv.StartAuthorizationFlow(
+				ctx,
 				client.ClientID,
 				"https://example.com/callback",
 				scope,
@@ -5356,7 +5400,8 @@ func TestServer_HandleProviderCallback_PKCEValidationFailure(t *testing.T) {
 	srv.SetAuditor(auditor)
 
 	// Register a test client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"", // tokenEndpointAuthMethod
@@ -5376,7 +5421,8 @@ func TestServer_HandleProviderCallback_PKCEValidationFailure(t *testing.T) {
 	clientState := testutil.GenerateRandomString(43)
 
 	// Start authorization flow (this generates server-to-provider PKCE)
-	authURL, err := srv.StartAuthorizationFlow(ctx,
+	authURL, err := srv.StartAuthorizationFlow(
+		ctx,
 		client.ClientID,
 		"https://example.com/callback",
 		"openid email",
@@ -5660,7 +5706,8 @@ func TestResourceParameter_AudienceValidation(t *testing.T) {
 	}
 
 	// Register a client using the proper API
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"",
@@ -5913,7 +5960,8 @@ func TestResourceParameter_ConsistencyValidation(t *testing.T) {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"",
@@ -6006,7 +6054,8 @@ func TestResourceParameter_InvalidFormat(t *testing.T) {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypePublic,
 		"",
@@ -6162,7 +6211,8 @@ func TestResourceParameter_RateLimiting(t *testing.T) {
 	rateLimiter := security.NewRateLimiter(1, 1, srv.Logger) // 1 request per second, burst 1
 	srv.SetSecurityEventRateLimiter(rateLimiter)
 
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"",
@@ -6260,7 +6310,8 @@ func TestStartAuthorizationFlow_EmptyState(t *testing.T) {
 	srv, store, _ := setupFlowTestServerWithNoStateParameter(t)
 
 	// Register a test client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypePublic,
 		"", // tokenEndpointAuthMethod
@@ -6353,7 +6404,8 @@ func TestHandleProviderCallback_EmptyState(t *testing.T) {
 	srv, _, provider := setupFlowTestServerWithNoStateParameter(t)
 
 	// Register a test client
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypePublic,
 		"",
@@ -7067,7 +7119,10 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 			},
 		}
 
-		tokenResponse := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
+		tokenResponse, err := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
+		if err != nil {
+			t.Fatalf("generateAndStoreTokens() error = %v", err)
+		}
 
 		// Expiry should be capped to provider token's expiry (within a small tolerance)
 		timeDiff := tokenResponse.Expiry.Sub(providerExpiry).Abs()
@@ -7102,7 +7157,10 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 			},
 		}
 
-		tokenResponse := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
+		tokenResponse, err := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
+		if err != nil {
+			t.Fatalf("generateAndStoreTokens() error = %v", err)
+		}
 
 		// Expiry should be approximately now + AccessTokenTTL
 		expectedExpiry := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
@@ -7138,7 +7196,10 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 			},
 		}
 
-		tokenResponse := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
+		tokenResponse, err := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
+		if err != nil {
+			t.Fatalf("generateAndStoreTokens() error = %v", err)
+		}
 
 		expectedExpiry := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
 		timeDiff := tokenResponse.Expiry.Sub(expectedExpiry).Abs()
@@ -7160,7 +7221,10 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 			ProviderToken: nil,
 		}
 
-		tokenResponse := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
+		tokenResponse, err := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
+		if err != nil {
+			t.Fatalf("generateAndStoreTokens() error = %v", err)
+		}
 
 		expectedExpiry := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
 		timeDiff := tokenResponse.Expiry.Sub(expectedExpiry).Abs()
@@ -7385,7 +7449,10 @@ func TestServer_GenerateAndStoreTokens_PastExpiryIgnored(t *testing.T) {
 		},
 	}
 
-	tokenResponse := srv.generateAndStoreTokens(context.Background(), authCode, "test-client", "")
+	tokenResponse, err := srv.generateAndStoreTokens(context.Background(), authCode, "test-client", "")
+	if err != nil {
+		t.Fatalf("generateAndStoreTokens() error = %v", err)
+	}
 
 	// The expiry must be in the future (AccessTokenTTL), NOT the past provider expiry
 	if tokenResponse.Expiry.Before(time.Now()) {
@@ -7686,7 +7753,8 @@ func TestServer_ExchangeAuthorizationCode_FamilyIDInMetadata(t *testing.T) {
 	ctx := context.Background()
 	srv, store, _ := setupFlowTestServer(t)
 
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"",
@@ -7705,7 +7773,8 @@ func TestServer_ExchangeAuthorizationCode_FamilyIDInMetadata(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(ctx,
+	_, err = srv.StartAuthorizationFlow(
+		ctx,
 		clientID,
 		"https://example.com/callback",
 		"openid email",
@@ -7769,7 +7838,8 @@ func TestServer_RefreshAccessToken_FamilyIDInMetadata(t *testing.T) {
 	srv.Config.AllowRefreshTokenRotation = true
 	srv.Config.RefreshTokenTTL = 86400
 
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"",
@@ -7853,7 +7923,8 @@ func TestServer_RefreshAccessToken_PreservesScopesAndAudience(t *testing.T) {
 	srv.Config.AllowRefreshTokenRotation = true
 	srv.Config.RefreshTokenTTL = 86400
 
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Scope Test Client",
 		ClientTypeConfidential,
 		"",
@@ -8096,7 +8167,8 @@ func TestServer_SessionCreationHandler_CalledOnExchange(t *testing.T) {
 		handlerToken = token
 	})
 
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"",
@@ -8114,7 +8186,8 @@ func TestServer_SessionCreationHandler_CalledOnExchange(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(ctx,
+	_, err = srv.StartAuthorizationFlow(
+		ctx,
 		client.ClientID,
 		"https://example.com/callback",
 		"openid email",
@@ -8175,7 +8248,8 @@ func TestServer_SessionCreationHandler_NotCalledWithoutHandler(t *testing.T) {
 	ctx := context.Background()
 	srv, store, _ := setupFlowTestServer(t)
 
-	client, _, err := srv.RegisterClient(ctx,
+	client, _, err := srv.RegisterClient(
+		ctx,
 		"Test Client",
 		ClientTypeConfidential,
 		"",
@@ -8193,7 +8267,8 @@ func TestServer_SessionCreationHandler_NotCalledWithoutHandler(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(ctx,
+	_, err = srv.StartAuthorizationFlow(
+		ctx,
 		client.ClientID,
 		"https://example.com/callback",
 		"openid email",

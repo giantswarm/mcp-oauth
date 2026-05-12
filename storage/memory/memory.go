@@ -97,6 +97,13 @@ type Store struct {
 	revokedFamilyRetentionDays int64 // configurable retention period for revoked families
 	stopCleanup                chan struct{}
 	logger                     *slog.Logger
+
+	// Self-issued JWT access-token denylist (storage.RevokedTokenStore).
+	// Lazily initialized on first revocation/lookup so opaque-mode
+	// deployments don't pay for the allocation. atomic.Pointer publishes
+	// the initialized value race-free to readers (e.g. cleanup()) without
+	// requiring them to hold s.mu. See revoked.go.
+	revokedJTIs atomic.Pointer[revokedJTIs]
 }
 
 // Compile-time interface checks to ensure Store implements all storage interfaces
@@ -109,6 +116,8 @@ var (
 	_ storage.TokenRevocationStore                    = (*Store)(nil)
 	_ storage.TokenMetadataStoreWithFamily            = (*Store)(nil)
 	_ storage.TokenMetadataStoreWithScopesAndAudience = (*Store)(nil)
+	_ storage.RevokedTokenStore                       = (*Store)(nil)
+	_ storage.RefreshTokenFamilyByIDStore             = (*Store)(nil)
 )
 
 // New creates a new in-memory store with default cleanup interval (1 minute)
@@ -649,6 +658,34 @@ func (s *Store) GetRefreshTokenFamily(_ context.Context, refreshToken string) (*
 	}, nil
 }
 
+// GetRefreshTokenFamilyByID returns family metadata indexed by family ID
+// (storage.RefreshTokenFamilyByIDStore). The internal map is keyed by
+// refresh token, so this is a linear scan over an entry count bounded by
+// hardMaxFamilyMetadataEntries (50000). Cheap in practice; if it ever
+// shows up in a profile, add a parallel familyID -> refreshToken index.
+func (s *Store) GetRefreshTokenFamilyByID(_ context.Context, familyID string) (*storage.RefreshTokenFamilyMetadata, error) {
+	if familyID == "" {
+		return nil, storage.ErrRefreshTokenFamilyNotFound
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, family := range s.refreshTokenFamilies {
+		if family.FamilyID != familyID {
+			continue
+		}
+		return &storage.RefreshTokenFamilyMetadata{
+			FamilyID:   family.FamilyID,
+			UserID:     family.UserID,
+			ClientID:   family.ClientID,
+			Generation: family.Generation,
+			IssuedAt:   family.IssuedAt,
+			Revoked:    family.Revoked,
+			RevokedAt:  family.RevokedAt,
+		}, nil
+	}
+	return nil, storage.ErrRefreshTokenFamilyNotFound
+}
+
 // RevokeRefreshTokenFamily revokes all tokens in a family (for reuse detection)
 // This is called when token reuse is detected (OAuth 2.1 security requirement)
 func (s *Store) RevokeRefreshTokenFamily(_ context.Context, familyID string) error {
@@ -1147,6 +1184,11 @@ func (s *Store) cleanup() {
 	cleaned += s.cleanupExpiredRefreshTokens()
 	cleaned += s.cleanupRevokedFamilies()
 	cleaned += s.cleanupOrphanedMetadata()
+	if r := s.revokedJTIs.Load(); r != nil {
+		// revokedJTIs has its own lock; safe to call while holding s.mu
+		// because the two locks never nest the other direction.
+		cleaned += r.cleanupExpired()
+	}
 
 	familyCount := len(s.refreshTokenFamilies)
 	if familyCount > maxFamilyMetadataEntries {

@@ -329,4 +329,3 @@ func TestProviderFromEnv_WithPrefix(t *testing.T) {
 		t.Errorf("Name() = %q, want %s", p.Name(), githubProviderName)
 	}
 }
-

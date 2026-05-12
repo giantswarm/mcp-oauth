@@ -247,33 +247,62 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 	}
 }
 
-// ValidateToken validates an access token with local expiry check and provider validation.
-// This implements defense-in-depth by checking token expiry locally BEFORE delegating to
-// the provider, preventing expired tokens from being accepted due to clock skew.
+// ValidateToken validates an access token across all three accepted bearer
+// formats. Validation is format-agnostic by design — operators of one
+// server instance pick one issuance format, but operators running multiple
+// instances or upgrading progressively can rely on the validator accepting
+// every format their consumers have already received.
 //
-// Validation flow:
-// 1. Check if token is a JWT with a trusted audience (SSO token forwarding)
-// 2. If JWT with trusted audience, validate via JWKS signature verification
-// 3. Check if token exists in local storage
-// 4. If found, validate expiry locally (with ClockSkewGracePeriod)
-// 5. RFC 8707: Validate audience binding (token intended for this resource server)
-// 6. If expired locally, return error immediately (don't call provider)
-// 7. Validate with provider (external check - userinfo endpoint)
-// 8. Store updated user info
+// Validation pipeline:
 //
-// Note: Rate limiting should be done at the HTTP layer with IP address, not here with token
+//  1. Self-issued JWT (when AccessTokenFormatJWT mode is on AND the bearer
+//     is a JWT whose iss claim equals Config.Issuer). Local signature
+//     verification against the configured public key. No provider
+//     round-trip. See [Server.validateSelfIssuedJWT] for the security
+//     boundary checks (signature, typ, exp, aud, jti, family).
+//  2. Forwarded ID token (when the bearer is a JWT whose iss is something
+//     else AND its aud matches Config.TrustedAudiences). Verified via the
+//     upstream provider's JWKS for SSO token forwarding.
+//  3. Opaque token (TokenStore lookup, then provider userinfo). The
+//     catch-all for non-JWT bearers.
+//
+// Step 1 is opt-in (AccessTokenFormatJWT), step 2 is opt-in
+// (TrustedAudiences), step 3 is always available. Rate limiting should be
+// done at the HTTP layer with IP address, not here with the token.
+//
+// Error responses: callers SHOULD respond with a single 401 form
+// regardless of the returned error class. The error message distinguishes
+// expired / revoked / audience-mismatch / family-revoked / unknown for
+// audit logs and operator dashboards; surfacing those distinctions to
+// the client enables token-state probing across all three branches
+// (opaque, SSO, self-issued JWT). Use the returned error for logging,
+// not for setting the response body.
 func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
-	// PRIORITY 1: Check if this is a forwarded ID token (JWT) from a trusted upstream service
-	// This MUST happen BEFORE calling userinfo, as ID tokens cannot be validated via userinfo
+	// PRIORITY 1: Self-issued JWT (RFC 9068, AccessTokenFormatJWT mode).
+	// We peek at the unverified iss claim to decide whether to take this
+	// branch — the verified parse below re-checks signature, typ, iss,
+	// exp, aud, jti, and family_id before any authorization decision, so
+	// the unverified peek is safe.
+	//
+	// A bearer that claims iss == Config.Issuer is committed to this
+	// branch: any validation failure is a hard rejection. Falling through
+	// to other branches would let an attacker who forges a bearer with
+	// our iss bypass JWT-mode security by tripping the opaque or
+	// forwarded-token path.
+	if s.Config.IsJWTAccessTokenFormat() && s.looksLikeSelfIssuedJWT(accessToken) {
+		return s.validateSelfIssuedJWT(ctx, accessToken)
+	}
+
+	// PRIORITY 2: Forwarded ID token (JWT) from a trusted upstream service.
+	// Must run BEFORE the opaque path, as ID tokens cannot be validated via
+	// the upstream provider's userinfo endpoint.
 	if len(s.Config.TrustedAudiences) > 0 && oidc.IsJWT(accessToken) {
 		userInfo, err := s.validateForwardedIDToken(ctx, accessToken)
 		if err != nil {
-			// Log at debug level - not all JWTs are valid ID tokens, fallback to normal flow
 			s.Logger.Debug("Forwarded ID token validation failed, falling back to userinfo",
 				"error", err.Error(),
 				"token_suffix", helpers.TokenSuffix(accessToken, 8))
 		} else if userInfo != nil {
-			// ID token validated successfully - return the user info
 			s.Logger.Debug("Forwarded ID token validated via JWKS",
 				"user_id", userInfo.ID,
 				"token_suffix", helpers.TokenSuffix(accessToken, 8))
@@ -281,7 +310,7 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 		}
 	}
 
-	// PRIORITY 2: Standard token validation flow
+	// PRIORITY 3: Opaque token (TokenStore + upstream provider userinfo).
 	storedToken, err := s.validateStoredToken(ctx, accessToken)
 	if err != nil {
 		return nil, err
@@ -1162,7 +1191,10 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 		familyID = generateRandomToken()
 	}
 
-	tokenResponse := s.generateAndStoreTokens(ctx, authCode, clientID, familyID)
+	tokenResponse, err := s.generateAndStoreTokens(ctx, authCode, clientID, familyID)
+	if err != nil {
+		return nil, "", err
+	}
 
 	s.trackRefreshTokenFamily(ctx, tokenResponse.RefreshToken, authCode.UserID, clientID, familyID)
 
@@ -1259,19 +1291,31 @@ func (s *Server) logScopeValidationFailure(authCode *storage.AuthorizationCode, 
 }
 
 // generateAndStoreTokens generates and stores access and refresh tokens.
-func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.AuthorizationCode, clientID, familyID string) *oauth2.Token {
-	accessToken := generateRandomToken()
-	refreshToken := generateRandomToken()
-
+func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.AuthorizationCode, clientID, familyID string) (*oauth2.Token, error) {
 	var providerExpiry time.Time
 	if authCode.ProviderToken != nil {
 		providerExpiry = authCode.ProviderToken.Expiry
 	}
+	expiry := s.capTokenExpiry(providerExpiry)
+
+	tokenScopes := normalizeScopes(authCode.Scope)
+	accessToken, err := s.issueAccessToken(ctx, accessTokenIssueParams{
+		UserID:    authCode.UserID,
+		ClientID:  clientID,
+		Audience:  authCode.Audience,
+		Scopes:    tokenScopes,
+		ExpiresAt: expiry,
+		FamilyID:  familyID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("issue access token: %w", err)
+	}
+	refreshToken := generateRandomToken()
 
 	tokenResponse := &oauth2.Token{
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
-		Expiry:       s.capTokenExpiry(providerExpiry),
+		Expiry:       expiry,
 		TokenType:    "Bearer",
 	}
 
@@ -1295,7 +1339,6 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 	// Track AT -> RT pairing for refresh-time updates
 	s.registerTokenPair(accessToken, refreshToken)
 
-	tokenScopes := normalizeScopes(authCode.Scope)
 	s.saveTokenMetadata(tokenMetadataParams{
 		TokenID:   accessToken,
 		UserID:    authCode.UserID,
@@ -1315,7 +1358,59 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 		Scopes:    tokenScopes,
 	})
 
-	return tokenResponse
+	return tokenResponse, nil
+}
+
+// accessTokenIssueParams bundles the inputs to Server.issueAccessToken so
+// the call sites read clearly and so adding a new claim later is a one-place
+// change. All fields except UserID, ClientID, and ExpiresAt are optional —
+// the issuer drops empty values rather than emitting empty claims.
+type accessTokenIssueParams struct {
+	UserID    string
+	ClientID  string
+	Audience  string
+	Scopes    []string
+	ExpiresAt time.Time
+	FamilyID  string
+}
+
+// issueAccessToken builds AccessTokenClaims from the issuance context and
+// delegates to the configured AccessTokenIssuer. Email/groups are looked up
+// from the TokenStore in JWT mode only — opaque issuance ignores them so
+// the lookup is skipped to avoid an unnecessary storage round-trip.
+func (s *Server) issueAccessToken(ctx context.Context, p accessTokenIssueParams) (string, error) {
+	claims := AccessTokenClaims{
+		Subject:   p.UserID,
+		ClientID:  p.ClientID,
+		Audience:  p.Audience,
+		Scopes:    p.Scopes,
+		IssuedAt:  time.Now().UTC(),
+		ExpiresAt: p.ExpiresAt,
+		FamilyID:  p.FamilyID,
+	}
+	if s.Config.IsJWTAccessTokenFormat() {
+		s.fillUserInfoClaims(ctx, p.UserID, &claims)
+	}
+	return s.accessTokenIssuer.Issue(ctx, claims)
+}
+
+// fillUserInfoClaims is a best-effort lookup of UserInfo from the token
+// store to populate email and groups for JWT claims. A missing or errored
+// UserInfo only causes the optional claims to be omitted; access-token
+// issuance still succeeds.
+func (s *Server) fillUserInfoClaims(ctx context.Context, userID string, c *AccessTokenClaims) {
+	info, err := s.tokenStore.GetUserInfo(ctx, userID)
+	if err != nil {
+		s.Logger.Debug("UserInfo lookup failed during JWT access token issuance — email/groups claims omitted",
+			"error", err,
+			"user_id", userID)
+		return
+	}
+	if info == nil {
+		return
+	}
+	c.Email = info.Email
+	c.Groups = info.Groups
 }
 
 // trackRefreshTokenFamily tracks the refresh token with family support if available.
@@ -1391,9 +1486,6 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		return nil, fmt.Errorf("failed to refresh token with provider: %w", err)
 	}
 
-	// Generate new access token
-	newAccessToken := generateRandomToken()
-
 	// OAuth 2.1: Refresh Token Rotation
 	newRefreshToken, familyID, rotated := s.rotateRefreshToken(ctx, refreshToken, userID, clientID, familyStore, supportsFamilies)
 
@@ -1401,12 +1493,25 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	if newProviderToken != nil {
 		providerExpiry = newProviderToken.Expiry
 	}
+	expiry := s.capTokenExpiry(providerExpiry)
+
+	newAccessToken, err := s.issueAccessToken(ctx, accessTokenIssueParams{
+		UserID:    userID,
+		ClientID:  clientID,
+		Audience:  oldAudience,
+		Scopes:    oldScopes,
+		ExpiresAt: expiry,
+		FamilyID:  familyID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("issue access token on refresh: %w", err)
+	}
 
 	// Create token response using oauth2.Token
 	tokenResponse := &oauth2.Token{
 		AccessToken:  newAccessToken,
 		RefreshToken: newRefreshToken,
-		Expiry:       s.capTokenExpiry(providerExpiry),
+		Expiry:       expiry,
 		TokenType:    "Bearer",
 	}
 
@@ -1546,8 +1651,25 @@ func (s *Server) validateRefreshTokenClientBinding(ctx context.Context, storedCl
 	return nil
 }
 
-// RevokeToken revokes a token (access or refresh)
+// RevokeToken revokes a token (access or refresh).
+//
+// Three input shapes are accepted:
+//   - Self-issued JWT access token: jti is added to RevokedTokenStore so
+//     the next ValidateToken call rejects it. The denylist entry
+//     auto-expires at the JWT's own exp.
+//   - Opaque access token: TokenStore deletion.
+//   - Refresh token: TokenStore deletion + family revocation.
+//
+// Per RFC 7009 §2.2 revocation always returns success when the token is
+// not found or already invalid — clients have no way to distinguish "this
+// token was never issued" from "this token has been forgotten" from
+// "revocation succeeded", and surfacing those distinctions enables token
+// scanning attacks.
 func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP string) error {
+	if s.revokeSelfIssuedJWT(ctx, token, clientID, clientIP) {
+		return nil
+	}
+
 	// Get provider token
 	providerToken, err := s.tokenStore.GetToken(ctx, token)
 	if err != nil {

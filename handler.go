@@ -137,7 +137,8 @@ func (h *Handler) validatePublicClientRegistration(w http.ResponseWriter, req *c
 			"client_type", req.ClientType, "ip", clientIP)
 		h.recordHTTPMetrics("register", http.MethodPost, http.StatusBadRequest, startTime)
 		if span != nil {
-			instrumentation.SetSpanAttributes(span,
+			instrumentation.SetSpanAttributes(
+				span,
 				attribute.String("oauth.client_type", "public"),
 				attribute.String("security.event", "public_client_registration_denied"),
 			)
@@ -793,7 +794,8 @@ func (h *Handler) RegisterOAuthRoutes(mux *http.ServeMux, opts OAuthRoutesOption
 	// but never preferred over the config entries. Log once so consumers
 	// notice the inconsistency instead of silently ignoring the MCPPath.
 	if opts.MCPPath != "" && len(h.server.Config.ResourceMetadataByPath) > 0 {
-		h.logger.Warn("RegisterOAuthRoutes: MCPPath is set alongside non-empty Config.ResourceMetadataByPath; the configuration map is preferred and MCPPath adds only a back-compat alias route",
+		h.logger.Warn(
+			"RegisterOAuthRoutes: MCPPath is set alongside non-empty Config.ResourceMetadataByPath; the configuration map is preferred and MCPPath adds only a back-compat alias route",
 			"mcp_path", opts.MCPPath,
 			"configured_paths", len(h.server.Config.ResourceMetadataByPath),
 		)
@@ -801,6 +803,13 @@ func (h *Handler) RegisterOAuthRoutes(mux *http.ServeMux, opts OAuthRoutesOption
 
 	h.RegisterProtectedResourceMetadataRoutes(mux, opts.MCPPath)
 	h.RegisterAuthorizationServerMetadataRoutes(mux)
+
+	// JWKS is registered only in JWT mode. AccessTokenFormat is fixed for
+	// the server's lifetime; in opaque mode the route falls through to
+	// the default-mux 404 and does not consume the discovery rate limit.
+	if h.server.Config.IsJWTAccessTokenFormat() {
+		mux.HandleFunc(server.EndpointPathJWKS, h.ServeJWKS)
+	}
 }
 
 // oauthCallbackPath is the provider-callback path. The server's own
@@ -1080,6 +1089,17 @@ func (h *Handler) addOptionalMetadata(metadata map[string]any) {
 	if h.server.Config.EnableClientIDMetadataDocuments {
 		metadata["client_id_metadata_document_supported"] = true
 	}
+
+	// jwks_uri (RFC 8414) is advertised only in JWT mode. Advertising it in
+	// opaque mode would point clients at an endpoint that responds 404,
+	// which is worse than silence — clients that follow the URL would log
+	// errors on every discovery refresh.
+	if h.server.Config.IsJWTAccessTokenFormat() {
+		metadata["jwks_uri"] = h.server.Config.JWKSEndpoint()
+		metadata["access_token_signing_alg_values_supported"] = []string{
+			h.server.Config.AccessTokenSigningAlgorithm,
+		}
+	}
 }
 
 // isRegistrationAvailable checks if client registration is available.
@@ -1096,6 +1116,55 @@ func (h *Handler) ServeOpenIDConfiguration(w http.ResponseWriter, r *http.Reques
 	// OpenID Connect Discovery uses the same metadata as OAuth 2.0 AS Metadata
 	// This ensures compatibility with both OAuth 2.0 and OpenID Connect clients
 	h.ServeAuthorizationServerMetadata(w, r)
+}
+
+// ServeJWKS publishes the public half of the access-token signing key as a
+// JSON Web Key Set per RFC 7517. Returns 404 when the server is configured
+// for opaque-mode access tokens — the endpoint exists but advertising
+// nothing is the honest response.
+//
+// The handler reuses the discovery rate limiter so a hot loop against
+// /.well-known/jwks.json cannot starve the rest of the server. Cache-Control
+// is set to one hour: keys rotate manually (operator changes
+// AccessTokenSigningKeyID and restarts), and verifiers caching for an hour
+// is the conventional middle ground between churn and freshness.
+func (h *Handler) ServeJWKS(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
+	if h.checkDiscoveryRateLimit(w, r, clientIP) {
+		return
+	}
+
+	if !h.server.Config.IsJWTAccessTokenFormat() {
+		http.NotFound(w, r)
+		return
+	}
+
+	jwks, err := h.server.PublicJWKS()
+	if err != nil {
+		h.logger.Error("Failed to build JWKS for discovery endpoint",
+			"error", err,
+			"ip", clientIP)
+		http.Error(w, "JWKS unavailable", http.StatusInternalServerError)
+		return
+	}
+	if jwks == nil || len(jwks.Keys) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+
+	h.setCORSHeaders(w, r)
+	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+	w.Header().Set("Content-Type", "application/jwk-set+json")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+
+	if err := json.NewEncoder(w).Encode(jwks); err != nil {
+		h.logger.Warn("Failed to encode JWKS response", "error", err)
+	}
 }
 
 // ServeAuthorization handles OAuth authorization requests
@@ -1159,7 +1228,8 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Add attributes to span
-	instrumentation.SetSpanAttributes(span,
+	instrumentation.SetSpanAttributes(
+		span,
 		attribute.String(instrumentation.AttrClientID, clientID),
 		attribute.String(instrumentation.AttrPKCEMethod, codeChallengeMethod),
 	)
@@ -1396,7 +1466,8 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	}
 
 	// Add span attributes
-	instrumentation.SetSpanAttributes(span,
+	instrumentation.SetSpanAttributes(
+		span,
 		attribute.String(instrumentation.AttrClientID, client.ClientID),
 		attribute.String(instrumentation.AttrClientType, client.ClientType),
 	)
@@ -1764,7 +1835,8 @@ func (h *Handler) getMaxClientsPerIP() int {
 // recordTrustedSchemeSpan records trusted scheme info in span.
 func (h *Handler) recordTrustedSchemeSpan(span trace.Span, registeredViaTrustedScheme bool, trustedScheme string) {
 	if span != nil && registeredViaTrustedScheme {
-		instrumentation.SetSpanAttributes(span,
+		instrumentation.SetSpanAttributes(
+			span,
 			attribute.String("oauth.registration_method", "trusted_scheme"),
 			attribute.String("oauth.trusted_scheme", trustedScheme),
 		)
@@ -1811,7 +1883,8 @@ func (h *Handler) auditTrustedSchemeRegistration(registeredViaTrustedScheme bool
 
 // setRegistrationSpanSuccess sets success attributes on the span.
 func (h *Handler) setRegistrationSpanSuccess(span trace.Span, client *storage.Client) {
-	instrumentation.SetSpanAttributes(span,
+	instrumentation.SetSpanAttributes(
+		span,
 		attribute.String(instrumentation.AttrClientID, client.ClientID),
 		attribute.String(instrumentation.AttrClientType, client.ClientType),
 	)

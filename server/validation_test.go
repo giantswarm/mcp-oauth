@@ -1084,39 +1084,39 @@ func TestMatchesLoopbackRedirectURI(t *testing.T) {
 // flow with RFC 8252 port-agnostic matching enabled via AllowLocalhostRedirectURIs.
 func TestValidateRedirectURI_RFC8252LoopbackPort(t *testing.T) {
 	tests := []struct {
-		name                      string
-		redirectURI               string
-		registeredURIs            []string
+		name                       string
+		redirectURI                string
+		registeredURIs             []string
 		allowLocalhostRedirectURIs bool
-		wantErr                   bool
+		wantErr                    bool
 	}{
 		{
-			name:                      "loopback port matching enabled - matches",
-			redirectURI:               "http://localhost:49567/callback",
-			registeredURIs:            []string{"http://localhost/callback"},
+			name:                       "loopback port matching enabled - matches",
+			redirectURI:                "http://localhost:49567/callback",
+			registeredURIs:             []string{"http://localhost/callback"},
 			allowLocalhostRedirectURIs: true,
-			wantErr:                   false,
+			wantErr:                    false,
 		},
 		{
-			name:                      "loopback port matching disabled - rejects",
-			redirectURI:               "http://localhost:49567/callback",
-			registeredURIs:            []string{"http://localhost/callback"},
+			name:                       "loopback port matching disabled - rejects",
+			redirectURI:                "http://localhost:49567/callback",
+			registeredURIs:             []string{"http://localhost/callback"},
 			allowLocalhostRedirectURIs: false,
-			wantErr:                   true,
+			wantErr:                    true,
 		},
 		{
-			name:                      "non-loopback is never port-agnostic even when enabled",
-			redirectURI:               "https://example.com:8080/callback",
-			registeredURIs:            []string{"https://example.com/callback"},
+			name:                       "non-loopback is never port-agnostic even when enabled",
+			redirectURI:                "https://example.com:8080/callback",
+			registeredURIs:             []string{"https://example.com/callback"},
 			allowLocalhostRedirectURIs: true,
-			wantErr:                   true,
+			wantErr:                    true,
 		},
 		{
-			name:                      "exact match works regardless of setting",
-			redirectURI:               "http://localhost/callback",
-			registeredURIs:            []string{"http://localhost/callback"},
+			name:                       "exact match works regardless of setting",
+			redirectURI:                "http://localhost/callback",
+			registeredURIs:             []string{"http://localhost/callback"},
 			allowLocalhostRedirectURIs: false,
-			wantErr:                   false,
+			wantErr:                    false,
 		},
 	}
 

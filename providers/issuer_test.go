@@ -20,19 +20,24 @@ func (p *jwksProviderStub) DefaultScopes() []string { return nil }
 func (p *jwksProviderStub) AuthorizationURL(string, string, string, []string, *providers.AuthorizationURLOptions) string {
 	return ""
 }
+
 func (p *jwksProviderStub) ExchangeCode(context.Context, string, string) (*oauth2.Token, error) {
 	return nil, nil
 }
+
 func (p *jwksProviderStub) ValidateToken(context.Context, string) (*providers.UserInfo, error) {
 	return nil, nil
 }
+
 func (p *jwksProviderStub) RefreshToken(context.Context, string) (*oauth2.Token, error) {
 	return nil, nil
 }
 func (p *jwksProviderStub) RevokeToken(context.Context, string) error { return nil }
 func (p *jwksProviderStub) HealthCheck(context.Context) error         { return nil }
-func (p *jwksProviderStub) JWKSURI(context.Context) (string, error)   { return "https://jwks.example/keys", nil }
-func (p *jwksProviderStub) IssuerURL() string                         { return p.issuer }
+func (p *jwksProviderStub) JWKSURI(context.Context) (string, error) {
+	return "https://jwks.example/keys", nil
+}
+func (p *jwksProviderStub) IssuerURL() string { return p.issuer }
 
 // oauthOnlyStub is a Provider that deliberately does NOT implement
 // JWKSProvider — the case IssuerOf must return "" for (e.g. the in-tree
@@ -44,12 +49,15 @@ func (p *oauthOnlyStub) DefaultScopes() []string { return nil }
 func (p *oauthOnlyStub) AuthorizationURL(string, string, string, []string, *providers.AuthorizationURLOptions) string {
 	return ""
 }
+
 func (p *oauthOnlyStub) ExchangeCode(context.Context, string, string) (*oauth2.Token, error) {
 	return nil, nil
 }
+
 func (p *oauthOnlyStub) ValidateToken(context.Context, string) (*providers.UserInfo, error) {
 	return nil, nil
 }
+
 func (p *oauthOnlyStub) RefreshToken(context.Context, string) (*oauth2.Token, error) {
 	return nil, nil
 }

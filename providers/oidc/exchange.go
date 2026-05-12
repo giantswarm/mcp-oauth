@@ -326,7 +326,8 @@ func (c *TokenExchangeClient) Exchange(ctx context.Context, req TokenExchangeReq
 		return nil, fmt.Errorf("token exchange response missing access_token")
 	}
 
-	c.logger.Debug("Token exchange successful",
+	c.logger.Debug(
+		"Token exchange successful",
 		"token_endpoint", req.TokenEndpoint,
 		"connector_id", req.ConnectorID,
 		"issued_token_type", exchangeResp.IssuedTokenType,

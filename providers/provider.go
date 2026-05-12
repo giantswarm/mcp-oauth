@@ -128,6 +128,24 @@ const (
 	// The Bearer token IS the ID token forwarded from a trusted upstream service.
 	// There is no entry in the token store because the server didn't issue the token.
 	TokenSourceSSO TokenSource = "sso"
+
+	// TokenSourceJWT indicates the user was authenticated via a self-issued
+	// JWT access token (RFC 9068). The Bearer token IS a JWT signed by this
+	// server's own access-token signing key, with claims (sub, email,
+	// groups, etc.) carried in the bearer itself rather than looked up
+	// from a token store.
+	//
+	// Unlike TokenSourceSSO, the JWT was minted by this server, not by an
+	// upstream IdP — its signature verifies against this server's published
+	// JWKS. Unlike TokenSourceOAuth, there is no entry in the TokenStore
+	// keyed by the bearer (the bearer is not a database key).
+	//
+	// Downstream consumers must NOT pass a TokenSourceJWT bearer to a
+	// resource server that expects an upstream-IdP-signed id_token (e.g.
+	// the Kubernetes API authenticated against the upstream OIDC issuer).
+	// For those flows, fetch the upstream id_token by another path (e.g.
+	// the configured TokenRefreshHandler cache).
+	TokenSourceJWT TokenSource = "jwt"
 )
 
 // UserInfo represents user information from a provider
@@ -202,4 +220,20 @@ func (u *UserInfo) IsSSO() bool {
 // when this returns true.
 func (u *UserInfo) IsOAuth() bool {
 	return u == nil || u.TokenSource == TokenSourceOAuth || u.TokenSource == ""
+}
+
+// IsJWT returns true if this user was authenticated via a self-issued JWT
+// access token (RFC 9068). When true, the Bearer is a JWT signed by this
+// server's own access-token signing key — not the upstream IdP's — and
+// there is no entry in the TokenStore keyed by the bearer.
+//
+// Returns false for nil receivers, OAuth tokens, SSO tokens, empty
+// TokenSource, and unknown/invalid TokenSource values.
+//
+// Downstream consumers MUST NOT pass a TokenSourceJWT bearer to resource
+// servers expecting an upstream-IdP-signed id_token (e.g. Kubernetes
+// authenticated against the upstream OIDC issuer). The JWT is signed by
+// this OAuth server, not the upstream.
+func (u *UserInfo) IsJWT() bool {
+	return u != nil && u.TokenSource == TokenSourceJWT
 }

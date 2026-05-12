@@ -46,7 +46,8 @@ func (a *Auditor) LogEvent(event Event) {
 
 	event.Timestamp = time.Now()
 
-	a.logger.Info("security_audit",
+	a.logger.Info(
+		"security_audit",
 		"event_type", event.Type,
 		"user_id_hash", hashForLogging(event.UserID),
 		"client_id", event.ClientID,
