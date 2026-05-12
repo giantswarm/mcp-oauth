@@ -72,6 +72,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Token introspection (`/oauth/introspect`) now enforces a cross-client gate (#306)**
+  - **Breaking**: a client introspecting a token bound to a different client now receives `{"active": false}` per RFC 7662 §2.2 with no other claims populated. Previously any authenticated client could probe any token in the store and learn its active state plus user attributes.
+  - Migration: enroll resource servers that need to validate access tokens issued to user-agent clients in `Config.IntrospectionResourceServers []string` (new field). Same-client introspection is always allowed; cross-client requires explicit allowlisting.
+  - The `email` / `email_verified` / `name` / `sub` user attributes only flow on the authorized path, so a denied probe cannot enumerate users.
 - **`security.Auditor` methods take `context.Context`**
   - `LogEvent` and the 11 typed helpers (`LogTokenIssued`, `LogTokenRefreshed`, `LogTokenRevoked`, `LogAuthFailure`, `LogRateLimitExceeded`, `LogClientRegistrationRateLimitExceeded`, `LogClientRegistered`, `LogInvalidPKCE`, `LogTokenReuse`, `LogSuspiciousActivity`, `LogInvalidRedirect`) now take `ctx context.Context` as the first argument. The ctx is forwarded to the underlying `slog.Handler.Handle`, so otelslog-style handlers attach trace/span IDs to audit records.
   - **Breaking**: prepend `ctx` at every call site (`r.Context()` for HTTP-driven flows, `context.Background()` for background emissions).
@@ -134,6 +138,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`/oauth/introspect` response shape (RFC 7662 §2.2) (#306)**
+  - `client_id` now reflects the client the token was issued to, taken from stored token metadata (opaque) or the verified JWT `client_id` claim (JWT mode). Previously the field echoed back the requesting client, which is misleading and arguably spec-violating.
+  - `exp`, `iat`, `aud`, `iss`, `scope`, `sub`, `token_type` are populated from token metadata / JWT claims (opaque tokens read expiry from the stored provider token, `iat` from the metadata write time). `nbf` is included for JWT tokens that carry the claim; omitted otherwise per RFC 7662 §2.2 ("OPTIONAL").
+  - JWT access tokens (`AccessTokenFormatJWT`) project verified claims directly into the response — no metadata round-trip.
 - **Treat email, profile, groups, offline_access as mandatory scopes (#252)**
   - `isMandatoryScope()` now returns true for `email`, `profile`, `groups`, and `offline_access` in addition to `openid` and cross-client audience scopes.
   - When an MCP client sends only custom scopes (e.g., `claudeai`), identity-critical scopes from the provider's defaults are now force-merged into the authorization request.

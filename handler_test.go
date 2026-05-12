@@ -3796,6 +3796,211 @@ func TestHandler_ServeTokenIntrospection(t *testing.T) {
 	}
 }
 
+// seedOpaqueIntrospectionToken seeds an opaque access token in the store with
+// matching TokenMetadata, returning the bearer string and the recorded
+// IssuedAt for the test to compare against the introspection response.
+func seedOpaqueIntrospectionToken(t *testing.T, store *memory.Store, accessToken, userID, clientID, audience string, scopes []string, expiresAt time.Time) time.Time {
+	t.Helper()
+	ctx := context.Background()
+	providerToken := &oauth2.Token{
+		AccessToken: accessToken,
+		TokenType:   "Bearer",
+		Expiry:      expiresAt,
+	}
+	if err := store.SaveToken(ctx, accessToken, providerToken); err != nil {
+		t.Fatalf("SaveToken() error = %v", err)
+	}
+	if err := store.SaveTokenMetadata(ctx, accessToken, storage.TokenMetadata{
+		UserID:    userID,
+		ClientID:  clientID,
+		TokenType: "access",
+		Audience:  audience,
+		Scopes:    scopes,
+	}); err != nil {
+		t.Fatalf("SaveTokenMetadata() error = %v", err)
+	}
+	meta, err := store.GetTokenMetadata(accessToken)
+	if err != nil {
+		t.Fatalf("GetTokenMetadata() error = %v", err)
+	}
+	return meta.IssuedAt
+}
+
+// TestIntrospect_CrossClient_ReturnsInactive verifies that a client introspecting
+// a token bound to a different client receives only {"active": false}, with no
+// claims or user attributes leaking through (RFC 7662 §2.2 + §2.1 gating).
+func TestIntrospect_CrossClient_ReturnsInactive(t *testing.T) {
+	ctx := context.Background()
+
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	tokenOwner, _, err := handler.server.RegisterClient(ctx, "Owner Client", "confidential", "", []string{"https://example.com/cb-owner"}, []string{"openid"}, "192.168.1.1", 10)
+	if err != nil {
+		t.Fatalf("RegisterClient(owner) error = %v", err)
+	}
+	probingClient, probingSecret, err := handler.server.RegisterClient(ctx, "Probing Client", "confidential", "", []string{"https://example.com/cb-probe"}, []string{"openid"}, "192.168.1.2", 10)
+	if err != nil {
+		t.Fatalf("RegisterClient(probe) error = %v", err)
+	}
+
+	const accessToken = "opaque-access-token-cross-client"
+	seedOpaqueIntrospectionToken(t, store, accessToken, "user-1", tokenOwner.ClientID, "https://auth.example.com", []string{"openid", "email"}, time.Now().Add(time.Hour))
+
+	form := url.Values{}
+	form.Set("token", accessToken)
+
+	req := httptest.NewRequest(http.MethodPost, "/introspect", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(probingClient.ClientID, probingSecret)
+	w := httptest.NewRecorder()
+
+	handler.ServeTokenIntrospection(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var response map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if active, _ := response["active"].(bool); active {
+		t.Fatalf("active = true, want false for cross-client introspection (response=%v)", response)
+	}
+	for _, leaked := range []string{"sub", "email", "email_verified", "name", "client_id", "scope", "aud", "iss", "exp", "iat", "token_type"} {
+		if _, present := response[leaked]; present {
+			t.Errorf("cross-client probe leaked %q in response: %v", leaked, response)
+		}
+	}
+}
+
+// TestIntrospect_AllowlistedResourceServer_Succeeds verifies that a client
+// listed in Config.IntrospectionResourceServers can introspect tokens it
+// does not own, and that the response carries the token's bound client_id
+// (not the requester's).
+func TestIntrospect_AllowlistedResourceServer_Succeeds(t *testing.T) {
+	ctx := context.Background()
+
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	tokenOwner, _, err := handler.server.RegisterClient(ctx, "Owner Client", "confidential", "", []string{"https://example.com/cb-owner"}, []string{"openid"}, "192.168.1.1", 10)
+	if err != nil {
+		t.Fatalf("RegisterClient(owner) error = %v", err)
+	}
+	resourceServer, resourceSecret, err := handler.server.RegisterClient(ctx, "Resource Server", "confidential", "", []string{"https://example.com/cb-rs"}, []string{"openid"}, "192.168.1.3", 10)
+	if err != nil {
+		t.Fatalf("RegisterClient(rs) error = %v", err)
+	}
+
+	handler.server.Config.IntrospectionResourceServers = []string{resourceServer.ClientID}
+
+	const accessToken = "opaque-access-token-allowlist"
+	seedOpaqueIntrospectionToken(t, store, accessToken, "user-1", tokenOwner.ClientID, "https://auth.example.com", []string{"openid", "email"}, time.Now().Add(time.Hour))
+
+	form := url.Values{}
+	form.Set("token", accessToken)
+
+	req := httptest.NewRequest(http.MethodPost, "/introspect", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(resourceServer.ClientID, resourceSecret)
+	w := httptest.NewRecorder()
+
+	handler.ServeTokenIntrospection(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var response map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if active, _ := response["active"].(bool); !active {
+		t.Fatalf("active = false, want true (response=%v)", response)
+	}
+	if got, _ := response["client_id"].(string); got != tokenOwner.ClientID {
+		t.Errorf("client_id = %q, want %q (token-bound, not requester)", got, tokenOwner.ClientID)
+	}
+}
+
+// TestIntrospect_ResponseFields_Complete verifies the full RFC 7662 §2.2
+// response shape: active, sub, client_id, token_type, scope, aud, iss, exp,
+// iat are all populated from token metadata.
+func TestIntrospect_ResponseFields_Complete(t *testing.T) {
+	ctx := context.Background()
+
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	tokenOwner, ownerSecret, err := handler.server.RegisterClient(ctx, "Owner Client", "confidential", "", []string{"https://example.com/cb-owner"}, []string{"openid"}, "192.168.1.1", 10)
+	if err != nil {
+		t.Fatalf("RegisterClient(owner) error = %v", err)
+	}
+
+	const accessToken = "opaque-access-token-fields"
+	expiry := time.Now().Add(45 * time.Minute).Truncate(time.Second)
+	audience := testIssuer
+	scopes := []string{"openid", "email", "profile"}
+	issuedAt := seedOpaqueIntrospectionToken(t, store, accessToken, "user-1", tokenOwner.ClientID, audience, scopes, expiry)
+
+	form := url.Values{}
+	form.Set("token", accessToken)
+
+	req := httptest.NewRequest(http.MethodPost, "/introspect", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(tokenOwner.ClientID, ownerSecret)
+	w := httptest.NewRecorder()
+
+	handler.ServeTokenIntrospection(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var response map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if active, _ := response["active"].(bool); !active {
+		t.Fatalf("active = false, want true (response=%v)", response)
+	}
+	if got, _ := response["client_id"].(string); got != tokenOwner.ClientID {
+		t.Errorf("client_id = %q, want %q", got, tokenOwner.ClientID)
+	}
+	if got, _ := response["sub"].(string); got == "" {
+		t.Errorf("sub missing or empty (response=%v)", response)
+	}
+	if got, _ := response["token_type"].(string); got != "Bearer" {
+		t.Errorf("token_type = %q, want Bearer", got)
+	}
+	if got, _ := response["scope"].(string); got != helpers.JoinScopes(scopes) {
+		t.Errorf("scope = %q, want %q", got, helpers.JoinScopes(scopes))
+	}
+	if got, _ := response["aud"].(string); got != audience {
+		t.Errorf("aud = %q, want %q", got, audience)
+	}
+	if got, _ := response["iss"].(string); got != testIssuer {
+		t.Errorf("iss = %q, want %q", got, testIssuer)
+	}
+	expVal, ok := response["exp"].(float64)
+	if !ok {
+		t.Errorf("exp missing or not a number (response=%v)", response)
+	} else if int64(expVal) != expiry.Unix() {
+		t.Errorf("exp = %d, want %d", int64(expVal), expiry.Unix())
+	}
+	iatVal, ok := response["iat"].(float64)
+	if !ok {
+		t.Errorf("iat missing or not a number (response=%v)", response)
+	} else if int64(iatVal) != issuedAt.Unix() {
+		t.Errorf("iat = %d, want %d", int64(iatVal), issuedAt.Unix())
+	}
+}
+
 // CORS Tests
 
 func TestCORS_Disabled(t *testing.T) {
