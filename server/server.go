@@ -165,6 +165,10 @@ func New(
 		return nil, fmt.Errorf("invalid server config: %w", err)
 	}
 
+	if err := srv.validateIntrospectionAllowlistRegistered(cleanupCtx); err != nil {
+		return nil, fmt.Errorf("invalid server config: %w", err)
+	}
+
 	if err := srv.initializeAccessTokenIssuer(); err != nil {
 		return nil, err
 	}

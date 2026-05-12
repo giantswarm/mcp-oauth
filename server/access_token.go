@@ -39,6 +39,16 @@ type AccessTokenClaims struct {
 	// logs without an extra IdP round-trip.
 	Email string
 
+	// EmailVerified mirrors providers.UserInfo.EmailVerified. Emitted as the
+	// email_verified claim only when Email is non-empty, so that introspection
+	// of a JWT access token (RFC 7662 §2.2) projects the same identity
+	// attributes as the opaque branch.
+	EmailVerified bool
+
+	// Name mirrors providers.UserInfo.Name. Emitted as the OIDC standard name
+	// claim when non-empty; same parity rationale as EmailVerified.
+	Name string
+
 	// Groups are the user's group memberships from the upstream provider.
 	// Included verbatim under the "groups" claim when non-empty.
 	Groups []string
@@ -142,11 +152,13 @@ const rfc9068TokenType = "at+jwt"
 type rfc9068Claims struct {
 	josejwt.Claims
 
-	ClientID string   `json:"client_id,omitempty"`
-	Scope    string   `json:"scope,omitempty"`
-	Email    string   `json:"email,omitempty"`
-	Groups   []string `json:"groups,omitempty"`
-	FamilyID string   `json:"family_id,omitempty"`
+	ClientID      string   `json:"client_id,omitempty"`
+	Scope         string   `json:"scope,omitempty"`
+	Email         string   `json:"email,omitempty"`
+	EmailVerified *bool    `json:"email_verified,omitempty"`
+	Name          string   `json:"name,omitempty"`
+	Groups        []string `json:"groups,omitempty"`
+	FamilyID      string   `json:"family_id,omitempty"`
 }
 
 // Issue signs an RFC 9068 access token. The header carries alg/kid/typ; the
@@ -176,8 +188,13 @@ func (j *jwtIssuer) Issue(_ context.Context, c AccessTokenClaims) (string, error
 		ClientID: c.ClientID,
 		Scope:    helpers.JoinScopes(c.Scopes),
 		Email:    c.Email,
+		Name:     c.Name,
 		Groups:   c.Groups,
 		FamilyID: c.FamilyID,
+	}
+	if c.Email != "" {
+		verified := c.EmailVerified
+		claims.EmailVerified = &verified
 	}
 
 	signed, err := josejwt.Signed(j.signer).Claims(claims).Serialize()
