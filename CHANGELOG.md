@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **`storage/valkey.MaxTokenDataSize` raised to 600 KiB** (was 256 KiB) — admits enterprise OIDC id_tokens whose JWT embeds large `groups` claims (e.g. 500+ Active Directory / GitHub team memberships) without `SaveToken` returning `errInputTooLarge`. Closes #247.
+- **`storage/valkey.MaxTokenDataSize`** raised to 600 KiB (was 256 KiB). `SaveToken` now accepts larger OIDC id_tokens, including those carrying extensive `groups` claims.
 - **`Retry-After` is computed from the limiter's configured rate**
   - The IP, user, and discovery rate-limit `429` responses now set `Retry-After` to `1` second for any positive rate (sub-second precision isn't expressible per RFC 9110 §10.2.3) and fall back to `60` when the rate is 0. The client-registration limiter uses its configured window. Previously this header was a hardcoded `60` regardless of limiter configuration. New `RateLimiter.Rate()` / `ClientRegistrationRateLimiter.Window()` accessors expose the values.
 - **`oauth_http_requests_total{endpoint="authorize"}`** (was `"authorization"`)

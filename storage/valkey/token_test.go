@@ -2,12 +2,15 @@ package valkey
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
+
+	"github.com/giantswarm/mcp-oauth/security"
 )
 
 // TestSerializableTokenRoundTrip verifies that oauth2.Token can be serialized
@@ -212,29 +215,36 @@ func TestSerializableTokenOmitEmpty(t *testing.T) {
 	// Note: expiry with zero time may or may not be omitted depending on JSON encoding
 }
 
-// TestMaxTokenDataSize_FitsEnterpriseGroupsClaim pins the contract:
-// MaxTokenDataSize must admit an enterprise OIDC id_token whose JWT embeds
-// ~500 group memberships. The id_token alone is ~80KB for a population that
-// causes SaveToken to fail at the previous 256KB cap; rounded up with
-// access/refresh tokens and JSON framing this is well within 600KB.
-func TestMaxTokenDataSize_FitsEnterpriseGroupsClaim(t *testing.T) {
-	idTokenPayload := make([]byte, 500*1024)
-	for i := range idTokenPayload {
-		idTokenPayload[i] = 'a'
-	}
+// TestMaxTokenDataSize_FitsEncryptedEnterpriseIDToken pins MaxTokenDataSize
+// against the production SaveToken pipeline: encrypt sensitive fields, then
+// json.Marshal(serializableToken). AES-256-GCM + base64 expands the id_token
+// by ~4/3, so the constant must admit the expanded form rather than the raw
+// JWT. A 200 KiB raw id_token covers enterprise OIDC populations (Dex /
+// Keycloak fronting AD, GitHub Apps with hundreds of teams) and exceeds a
+// 256 KiB ceiling once encrypted.
+func TestMaxTokenDataSize_FitsEncryptedEnterpriseIDToken(t *testing.T) {
+	key, err := security.GenerateKey()
+	require.NoError(t, err)
+	encryptor, err := security.NewEncryptor(key)
+	require.NoError(t, err)
+
+	store := &Store{encryptor: encryptor}
 
 	token := (&oauth2.Token{
-		AccessToken:  "at-" + string(make([]byte, 256)),
-		RefreshToken: "rt-" + string(make([]byte, 256)),
+		AccessToken:  strings.Repeat("a", 256),
+		RefreshToken: strings.Repeat("r", 256),
 		TokenType:    "Bearer",
 		Expiry:       time.Now().Add(time.Hour),
-	}).WithExtra(map[string]any{
-		"id_token": string(idTokenPayload),
+	}).WithExtra(map[string]interface{}{
+		"id_token": strings.Repeat("j", 200*1024),
 		"scope":    "openid email profile groups offline_access",
 	})
 
-	data, err := json.Marshal(toSerializable(token))
+	encrypted, err := store.encryptToken(token)
+	require.NoError(t, err)
+
+	data, err := json.Marshal(toSerializable(encrypted))
 	require.NoError(t, err)
 	require.LessOrEqual(t, len(data), MaxTokenDataSize,
-		"500KB id_token must fit within MaxTokenDataSize=%d (got serialized size %d)", MaxTokenDataSize, len(data))
+		"encrypted 200 KiB id_token serialized to %d bytes; MaxTokenDataSize=%d", len(data), MaxTokenDataSize)
 }

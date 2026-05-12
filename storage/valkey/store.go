@@ -50,10 +50,11 @@ const (
 	// MaxIDLength is the maximum allowed length for identifiers (userID, clientID, familyID)
 	MaxIDLength = 256
 
-	// MaxTokenDataSize is the maximum size of serialized token data (600KB).
-	// Sized to admit enterprise OIDC id_tokens whose signed JWT embeds the full
-	// `groups` claim (e.g. ~500 GitHub teams / Active Directory groups produce
-	// a 40-60KB JWT, plus access_token, refresh_token, and Extra fields).
+	// MaxTokenDataSize bounds the serialized token written to Valkey, applied
+	// after AES-256-GCM + base64 expansion of the encrypted-at-rest fields
+	// (AccessToken, RefreshToken, id_token). 600 KiB admits raw id_tokens up
+	// to ~440 KiB once encrypted, covering enterprise OIDC populations whose
+	// JWTs embed a full `groups` claim.
 	MaxTokenDataSize = 600 * 1024
 )
 
