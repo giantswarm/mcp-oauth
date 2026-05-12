@@ -219,7 +219,7 @@ analyze-all: fmt-check vet lint gosec quality-check deps-check doc-check ## Run 
 ##@ Verification
 
 .PHONY: verify ci check-security
-verify: init-examples analyze-all fmt-all test-coverage ## Run all verification steps
+verify: init-examples fmt-all analyze-all test-coverage ## Run all verification steps
 	@echo "====> $@"
 
 ci: verify ## Run CI checks (alias for verify)
