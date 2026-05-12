@@ -115,6 +115,9 @@ package main
 
 import (
     "context"
+    "crypto/rand"
+    "crypto/sha256"
+    "encoding/base64"
     "log/slog"
     "net/http"
 
@@ -131,7 +134,7 @@ type AuthHandler struct {
 // TrySilentAuth attempts silent authentication first
 func (h *AuthHandler) TrySilentAuth(w http.ResponseWriter, r *http.Request, userEmail string) {
     state := generateSecureState()
-    pkce := oauth.GeneratePKCE()
+    challenge, verifier := newPKCEPair()
 
     // First, try silent auth
     opts := &providers.AuthorizationURLOptions{
@@ -141,14 +144,14 @@ func (h *AuthHandler) TrySilentAuth(w http.ResponseWriter, r *http.Request, user
 
     authURL := h.provider.AuthorizationURL(
         state,
-        pkce.Challenge,
+        challenge,
         "S256",
         []string{"openid", "email", "profile"},
         opts,
     )
 
-    // Store state and PKCE for callback
-    h.storeAuthState(state, pkce, true) // true = silent attempt
+    // Store state and PKCE verifier for the callback
+    h.storeAuthState(state, verifier, true) // true = silent attempt
 
     http.Redirect(w, r, authURL, http.StatusFound)
 }
@@ -183,7 +186,7 @@ func (h *AuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 func (h *AuthHandler) startInteractiveLogin(w http.ResponseWriter, r *http.Request, userEmail string) {
     state := generateSecureState()
-    pkce := oauth.GeneratePKCE()
+    challenge, verifier := newPKCEPair()
 
     // Interactive login - no prompt=none
     opts := &providers.AuthorizationURLOptions{
@@ -192,17 +195,33 @@ func (h *AuthHandler) startInteractiveLogin(w http.ResponseWriter, r *http.Reque
 
     authURL := h.provider.AuthorizationURL(
         state,
-        pkce.Challenge,
+        challenge,
         "S256",
         []string{"openid", "email", "profile"},
         opts,
     )
 
-    h.storeAuthState(state, pkce, false) // false = interactive
+    h.storeAuthState(state, verifier, false) // false = interactive
 
     http.Redirect(w, r, authURL, http.StatusFound)
 }
+
+// newPKCEPair returns an RFC 7636 S256 PKCE challenge and its verifier.
+// The verifier is the raw secret to keep server-side; the challenge is
+// what's sent in the authorization request.
+func newPKCEPair() (challenge, verifier string) {
+    b := make([]byte, 32)
+    if _, err := rand.Read(b); err != nil {
+        panic(err) // crypto/rand must not fail
+    }
+    verifier = base64.RawURLEncoding.EncodeToString(b)
+    sum := sha256.Sum256([]byte(verifier))
+    challenge = base64.RawURLEncoding.EncodeToString(sum[:])
+    return challenge, verifier
+}
 ```
+
+The helper uses `crypto/rand`, `crypto/sha256`, and `encoding/base64` from the standard library. There is no `oauth.GeneratePKCE` export — keep the verifier in your own per-flow state (the `authState` map above) and pass it to `Server.ExchangeAuthorizationCode` when the callback fires.
 
 ## Error Types
 

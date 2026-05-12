@@ -54,7 +54,15 @@ if err != nil {
 Implement the `providers.Provider` interface:
 
 ```go
-import "github.com/giantswarm/mcp-oauth/providers"
+import (
+    "context"
+    "fmt"
+    "time"
+
+    "golang.org/x/oauth2"
+
+    "github.com/giantswarm/mcp-oauth/providers"
+)
 
 type MyProvider struct {
     // your fields
@@ -64,35 +72,48 @@ func (p *MyProvider) Name() string {
     return "my-provider"
 }
 
-func (p *MyProvider) AuthorizationURL(state string, opts *providers.AuthOptions) string {
-    // Build authorization URL for your identity provider
+func (p *MyProvider) DefaultScopes() []string {
+    return []string{"openid", "email", "profile"}
+}
+
+// AuthorizationURL builds the URL to redirect the user to the upstream IdP.
+// codeChallenge and codeChallengeMethod are the PKCE parameters (pass empty
+// strings to disable). opts carries optional OIDC parameters (prompt,
+// login_hint, max_age, ...); nil means defaults.
+func (p *MyProvider) AuthorizationURL(state, codeChallenge, codeChallengeMethod string, scopes []string, opts *providers.AuthorizationURLOptions) string {
     return fmt.Sprintf("https://auth.example.com/authorize?state=%s", state)
 }
 
-func (p *MyProvider) ExchangeCode(ctx context.Context, code string, opts *providers.ExchangeOptions) (*providers.TokenResponse, error) {
-    // Exchange authorization code for tokens
-    return &providers.TokenResponse{
+// ExchangeCode exchanges the authorization code for tokens. codeVerifier is
+// the PKCE verifier (pass empty string if not using PKCE).
+func (p *MyProvider) ExchangeCode(ctx context.Context, code, codeVerifier string) (*oauth2.Token, error) {
+    return &oauth2.Token{
         AccessToken:  "...",
         RefreshToken: "...",
-        ExpiresIn:    3600,
+        Expiry:       time.Now().Add(time.Hour),
     }, nil
 }
 
 func (p *MyProvider) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
-    // Validate token and return user info
     return &providers.UserInfo{
         ID:    "user-123",
         Email: "user@example.com",
     }, nil
 }
 
-func (p *MyProvider) RefreshToken(ctx context.Context, refreshToken string) (*providers.TokenResponse, error) {
-    // Refresh an expired token
-    return &providers.TokenResponse{...}, nil
+func (p *MyProvider) RefreshToken(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+    return &oauth2.Token{
+        AccessToken:  "...",
+        RefreshToken: "...",
+        Expiry:       time.Now().Add(time.Hour),
+    }, nil
 }
 
 func (p *MyProvider) RevokeToken(ctx context.Context, token string) error {
-    // Revoke a token
+    return nil
+}
+
+func (p *MyProvider) HealthCheck(ctx context.Context) error {
     return nil
 }
 ```

@@ -72,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **docs: replace phantom API references across `doc.go`, `docs/security.md`, `docs/getting-started.md`, `docs/silent-authentication.md`, `server/doc.go`, and `SECURITY_ARCHITECTURE.md`**. Snippets now show `oauth.With*` options on `NewServer` instead of removed `Set*` setters, the real `providers.Provider` interface, the current `google.NewProvider(&google.Config{...})` and `memory.New()` constructors, a `crypto/rand` + `sha256` PKCE helper (no fictional `oauth.GeneratePKCE`), `go-jose/go-jose/v4` in the JWT threat-model row, and MCP spec date 2025-11-25 in the root package overview. `docs/README.md` index now links `silent-authentication.md`.
 - **`security.Auditor` methods take `context.Context`**
   - `LogEvent` and the 11 typed helpers (`LogTokenIssued`, `LogTokenRefreshed`, `LogTokenRevoked`, `LogAuthFailure`, `LogRateLimitExceeded`, `LogClientRegistrationRateLimitExceeded`, `LogClientRegistered`, `LogInvalidPKCE`, `LogTokenReuse`, `LogSuspiciousActivity`, `LogInvalidRedirect`) now take `ctx context.Context` as the first argument. The ctx is forwarded to the underlying `slog.Handler.Handle`, so otelslog-style handlers attach trace/span IDs to audit records.
   - **Breaking**: prepend `ctx` at every call site (`r.Context()` for HTTP-driven flows, `context.Background()` for background emissions).

@@ -51,9 +51,9 @@ Before deploying to production, verify these settings:
 
 ### Recommended
 
-- [ ] **Token Encryption**: Enable via `SetEncryptor()` for at-rest encryption
-- [ ] **Audit Logging**: Set up `Auditor` for security event logging
-- [ ] **Rate Limiting**: Configure IP, user, and client registration limits
+- [ ] **Token Encryption**: Pass `oauth.WithEncryptor(...)` to `oauth.NewServer` for at-rest encryption
+- [ ] **Audit Logging**: Pass `oauth.WithAuditor(...)` to `oauth.NewServer` for security event logging
+- [ ] **Rate Limiting**: Configure IP, user, and client registration limits via `oauth.WithRateLimiter`, `oauth.WithUserRateLimiter`, `oauth.WithClientRegistrationRateLimiter`
 - [ ] **Registration Protected**: Set `RegistrationAccessToken` or disable registration
 - [ ] **Proxy Configured**: Set `TrustProxy` and `TrustedProxyCount` if behind proxy
 - [ ] **Production Mode**: Set `ProductionMode=true` for strict redirect URI validation
@@ -93,9 +93,16 @@ if err != nil {
     log.Fatal(err)
 }
 
-// Attach to server
-server.SetEncryptor(encryptor)
+// Attach to server at construction time
+server, err := oauth.NewServer(
+    provider, tokenStore, clientStore, flowStore,
+    &oauth.ServerConfig{Issuer: "https://your-domain.com"},
+    logger,
+    oauth.WithEncryptor(encryptor),
+)
 ```
+
+`WithEncryptor` propagates the encryptor to the token store when the store implements `SetEncryptor(*security.Encryptor)` (memory and Valkey both do).
 
 **Key Management:**
 - Generate keys using `security.GenerateKey()` (32 bytes, cryptographically random)
@@ -119,8 +126,11 @@ ipRateLimiter := security.NewRateLimiter(
 )
 defer ipRateLimiter.Stop()
 
-srv, err := server.New(provider, tokenStore, clientStore, flowStore, config, logger,
-    server.WithRateLimiter(ipRateLimiter),
+server, err := oauth.NewServer(
+    provider, tokenStore, clientStore, flowStore,
+    &oauth.ServerConfig{Issuer: "https://your-domain.com"},
+    logger,
+    oauth.WithRateLimiter(ipRateLimiter),
 )
 ```
 
@@ -146,10 +156,15 @@ userRateLimiter := security.NewRateLimiter(
 )
 defer userRateLimiter.Stop()
 
-srv, err := server.New(provider, tokenStore, clientStore, flowStore, config, logger,
-    server.WithUserRateLimiter(userRateLimiter),
+server, err := oauth.NewServer(
+    provider, tokenStore, clientStore, flowStore,
+    &oauth.ServerConfig{Issuer: "https://your-domain.com"},
+    logger,
+    oauth.WithUserRateLimiter(userRateLimiter),
 )
 ```
+
+To layer both IP and user limits, pass both options on the same `oauth.NewServer` call.
 
 ### Client Registration Rate Limiting
 
@@ -160,8 +175,11 @@ Prevent resource exhaustion through registration/deletion cycles:
 clientRegRateLimiter := security.NewClientRegistrationRateLimiter(logger)
 defer clientRegRateLimiter.Stop()
 
-srv, err := server.New(provider, tokenStore, clientStore, flowStore, config, logger,
-    server.WithClientRegistrationRateLimiter(clientRegRateLimiter),
+server, err := oauth.NewServer(
+    provider, tokenStore, clientStore, flowStore,
+    &oauth.ServerConfig{Issuer: "https://your-domain.com"},
+    logger,
+    oauth.WithClientRegistrationRateLimiter(clientRegRateLimiter),
 )
 
 // Or with custom configuration
@@ -194,7 +212,13 @@ Log all security-relevant events:
 import "github.com/giantswarm/mcp-oauth/security"
 
 auditor := security.NewAuditor(logger, true) // true = verbose mode
-server.SetAuditor(auditor)
+
+server, err := oauth.NewServer(
+    provider, tokenStore, clientStore, flowStore,
+    &oauth.ServerConfig{Issuer: "https://your-domain.com"},
+    logger,
+    oauth.WithAuditor(auditor),
+)
 ```
 
 ### Logged Events

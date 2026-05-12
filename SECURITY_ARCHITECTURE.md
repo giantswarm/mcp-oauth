@@ -812,7 +812,7 @@ The trade-off is explicit and operator-chosen. JWT mode is appropriate when the 
 | `typ` confusion with id_token | `typ: "at+jwt"` set on issuance, verified on validation per RFC 9068 §2.1 | `jwtIssuer.Issue`, `checkJWTHeaderAndIssuer` |
 | Token logging | Never log full JWTs; reuse `helpers.TokenSuffix(token, 8)` for trace fields | All log statements in `flows_jwt.go` |
 | JWKS exposed when not used | 404 in opaque mode; `jwks_uri` omitted from discovery | `ServeJWKS`, `addOptionalMetadata` |
-| Timing attacks on signature comparison | Use library parser (`golang-jwt/jwt/v5`); no bespoke crypto | (delegated) |
+| Timing attacks on signature comparison | Use library parser (`go-jose/go-jose/v4`); no bespoke crypto | (delegated) |
 | In-flight tokens after refresh-family revocation | `family_id` claim; family revocation invalidates all in-flight access tokens in the family | `checkJWTFamily`, `RefreshTokenFamilyByIDStore` |
 
 #### Key management
