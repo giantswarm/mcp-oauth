@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`Server.RefreshSession(ctx, familyID)` for on-demand session refresh** (closes #285)
+  - In-process API to refresh an upstream provider token by family ID, callable from any goroutine. Reuses the existing `RefreshAccessToken` path (same rotation, reuse detection, audit, and `TokenRefreshHandler` dispatch) — just driven by family ID instead of by a refresh token in the request.
+  - Concurrent calls for the same family ID are coalesced via `singleflight`: only one provider refresh hits the upstream, the rest share the result.
+  - New optional `storage.ActiveRefreshTokenByFamilyStore` interface (memory + Valkey) returns the highest-generation non-revoked refresh token for a family. `RefreshSession` calls this to find the live token.
+  - Use case: an integrating server (e.g. `muster`) about to forward a cached ID token discovers it's expired. Pre-PR there was no way to force a refresh on the request thread without constructing a fake `/oauth/token` POST. Now: `srv.RefreshSession(ctx, familyID)` and re-read the cached entry.
 - **JWT access-token issuance mode (RFC 9068)**
   - New `Config.AccessTokenFormat` (default `AccessTokenFormatOpaque`, opt-in `AccessTokenFormatJWT`). In JWT mode the server signs access tokens with `Config.AccessTokenSigningKey` (RSA or ECDSA P-256/P-384) under `Config.AccessTokenSigningKeyID`/`Config.AccessTokenSigningAlgorithm` (RS256/RS384/RS512/ES256/ES384). HMAC variants and `none` are rejected at startup as alg-confusion defense.
   - New `/.well-known/jwks.json` endpoint publishes the public half (RFC 7517). Authorization Server Metadata gains `jwks_uri` and `access_token_signing_alg_values_supported` only in JWT mode; opaque mode is byte-identical to v1.

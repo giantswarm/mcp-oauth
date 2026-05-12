@@ -74,6 +74,13 @@ var (
 	// ErrRefreshTokenFamilyNotFound indicates the refresh token family does not exist.
 	// This is normal for tokens created before family tracking was enabled.
 	ErrRefreshTokenFamilyNotFound = errors.New("refresh token family not found")
+
+	// ErrRefreshTokenFamilyRevoked indicates the family exists but every
+	// member is revoked. Distinct from ErrRefreshTokenFamilyNotFound so
+	// callers can produce a better error message — "session was revoked"
+	// vs "no such session". The two states converge to NotFound after the
+	// revoked-family retention period elapses and the entries are wiped.
+	ErrRefreshTokenFamilyRevoked = errors.New("refresh token family is revoked")
 )
 
 // IsNotFoundError checks if an error indicates a "not found" condition.
@@ -192,6 +199,32 @@ type RefreshTokenFamilyByIDStore interface {
 	// family ID. Returns ErrRefreshTokenFamilyNotFound when the family is
 	// unknown (also for revoked families that have aged out of retention).
 	GetRefreshTokenFamilyByID(ctx context.Context, familyID string) (*RefreshTokenFamilyMetadata, error)
+}
+
+// ActiveRefreshTokenByFamilyStore is an optional extension that exposes
+// the most recent (highest-generation) non-revoked refresh token for a
+// family, looked up by family ID. Required by Server.RefreshSession,
+// which otherwise has no way to refresh a session given only the family
+// ID — the public refresh-token-grant path needs the refresh token
+// itself, which the caller does not have on the in-process refresh path.
+//
+// The method returns both the refresh token and the owning client ID in
+// one call so RefreshSession does not need a second lookup to get the
+// client ID for OAuth 2.1 refresh-token client binding validation.
+//
+// Memory and Valkey both implement this interface. Backends that don't
+// will cause Server.RefreshSession to return an error at call time.
+type ActiveRefreshTokenByFamilyStore interface {
+	// GetActiveRefreshTokenByFamily returns the most recent (highest
+	// generation) non-revoked refresh token for the family along with
+	// the owning client ID.
+	//
+	// Returns ErrRefreshTokenFamilyNotFound when no entry for the family
+	// exists in storage at all (never created, or aged out of revoked-
+	// family retention). Returns ErrRefreshTokenFamilyRevoked when the
+	// family exists but every member is revoked — a distinct state so
+	// callers can surface "session was revoked" vs "no such session".
+	GetActiveRefreshTokenByFamily(ctx context.Context, familyID string) (refreshToken, clientID string, err error)
 }
 
 // RefreshTokenFamilyMetadata contains metadata about a token family

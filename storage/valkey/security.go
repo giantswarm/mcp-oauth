@@ -208,13 +208,9 @@ func (s *Store) GetRefreshTokenFamilyByID(ctx context.Context, familyID string) 
 		return nil, storage.ErrRefreshTokenFamilyNotFound
 	}
 
-	familySetKey := s.familyKey(familyID)
-	tokens, err := s.client.Do(op.ctx, s.client.B().Smembers().Key(familySetKey).Build()).AsStrSlice()
+	tokens, err := s.getFamilyTokens(op.ctx, familyID)
 	if err != nil {
-		if isNilError(err) {
-			return nil, storage.ErrRefreshTokenFamilyNotFound
-		}
-		return nil, fmt.Errorf("read family members: %w", err)
+		return nil, err
 	}
 	if len(tokens) == 0 {
 		return nil, storage.ErrRefreshTokenFamilyNotFound
@@ -227,6 +223,68 @@ func (s *Store) GetRefreshTokenFamilyByID(ctx context.Context, familyID string) 
 		}
 	}
 	return nil, storage.ErrRefreshTokenFamilyNotFound
+}
+
+// GetActiveRefreshTokenByFamily returns the most recent (highest generation)
+// non-revoked refresh token for the family along with the owning client ID
+// (storage.ActiveRefreshTokenByFamilyStore). Iterates the same Set used
+// by GetRefreshTokenFamilyByID, fetches per-token metadata, and picks
+// the highest-Generation entry whose Revoked flag is unset.
+//
+// Returns ErrRefreshTokenFamilyNotFound when the Set is empty, or
+// ErrRefreshTokenFamilyRevoked when entries exist but every reachable
+// member's metadata is revoked.
+func (s *Store) GetActiveRefreshTokenByFamily(ctx context.Context, familyID string) (refreshToken, clientID string, err error) {
+	op := s.startTracedOp(ctx, "get_active_refresh_token_by_family")
+	defer op.end(&err)
+
+	if familyID == "" {
+		return "", "", storage.ErrRefreshTokenFamilyNotFound
+	}
+
+	tokens, err := s.getFamilyTokens(op.ctx, familyID)
+	if err != nil {
+		return "", "", err
+	}
+	if len(tokens) == 0 {
+		return "", "", storage.ErrRefreshTokenFamilyNotFound
+	}
+
+	bestToken, bestClientID, anyMetaSeen := s.pickActiveMember(op.ctx, tokens)
+	switch {
+	case bestToken != "":
+		return bestToken, bestClientID, nil
+	case anyMetaSeen:
+		return "", "", storage.ErrRefreshTokenFamilyRevoked
+	default:
+		return "", "", storage.ErrRefreshTokenFamilyNotFound
+	}
+}
+
+// pickActiveMember walks the family member set and returns the
+// highest-generation non-revoked token + its client ID. The third
+// return value reports whether any parseable metadata was observed —
+// used by the caller to distinguish "family revoked" (every member
+// flagged Revoked) from "family not found" (no metadata reachable at
+// all, e.g. retention-cleanup deleted it).
+func (s *Store) pickActiveMember(ctx context.Context, tokens []string) (token, clientID string, anyMetaSeen bool) {
+	var bestGen int
+	for _, candidate := range tokens {
+		meta, err := getAndUnmarshal(ctx, s, s.refreshTokenMetaKey(candidate), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
+		if err != nil || meta == nil {
+			continue
+		}
+		anyMetaSeen = true
+		if meta.Revoked {
+			continue
+		}
+		if token == "" || meta.Generation > bestGen {
+			token = candidate
+			clientID = meta.ClientID
+			bestGen = meta.Generation
+		}
+	}
+	return token, clientID, anyMetaSeen
 }
 
 // RevokeRefreshTokenFamily revokes all tokens in a family (for reuse detection)

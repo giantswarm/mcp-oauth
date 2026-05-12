@@ -108,15 +108,16 @@ type Store struct {
 
 // Compile-time interface checks to ensure Store implements all storage interfaces
 var (
-	_ storage.TokenStore                  = (*Store)(nil)
-	_ storage.ClientStore                 = (*Store)(nil)
-	_ storage.FlowStore                   = (*Store)(nil)
-	_ storage.Combined                    = (*Store)(nil)
-	_ storage.RefreshTokenFamilyStore     = (*Store)(nil)
-	_ storage.TokenRevocationStore        = (*Store)(nil)
-	_ storage.TokenMetadataStore          = (*Store)(nil)
-	_ storage.RevokedTokenStore           = (*Store)(nil)
-	_ storage.RefreshTokenFamilyByIDStore = (*Store)(nil)
+	_ storage.TokenStore                      = (*Store)(nil)
+	_ storage.ClientStore                     = (*Store)(nil)
+	_ storage.FlowStore                       = (*Store)(nil)
+	_ storage.Combined                        = (*Store)(nil)
+	_ storage.RefreshTokenFamilyStore         = (*Store)(nil)
+	_ storage.TokenRevocationStore            = (*Store)(nil)
+	_ storage.TokenMetadataStore              = (*Store)(nil)
+	_ storage.RevokedTokenStore               = (*Store)(nil)
+	_ storage.RefreshTokenFamilyByIDStore     = (*Store)(nil)
+	_ storage.ActiveRefreshTokenByFamilyStore = (*Store)(nil)
 )
 
 // New creates a new in-memory store with default cleanup interval (1 minute)
@@ -655,6 +656,52 @@ func (s *Store) GetRefreshTokenFamily(_ context.Context, refreshToken string) (*
 		Revoked:    family.Revoked,
 		RevokedAt:  family.RevokedAt,
 	}, nil
+}
+
+// GetActiveRefreshTokenByFamily returns the most recent (highest
+// generation) non-revoked refresh token for the family along with the
+// owning client ID (storage.ActiveRefreshTokenByFamilyStore). Linear
+// scan, same shape as GetRefreshTokenFamilyByID.
+//
+// Returns ErrRefreshTokenFamilyNotFound when no entry matches at all,
+// or ErrRefreshTokenFamilyRevoked when entries exist but every member
+// is revoked.
+func (s *Store) GetActiveRefreshTokenByFamily(_ context.Context, familyID string) (refreshToken, clientID string, err error) {
+	if familyID == "" {
+		return "", "", storage.ErrRefreshTokenFamilyNotFound
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var (
+		bestToken    string
+		bestClientID string
+		bestGen      int
+		bestFound    bool
+		anyEntry     bool
+	)
+	for token, family := range s.refreshTokenFamilies {
+		if family.FamilyID != familyID {
+			continue
+		}
+		anyEntry = true
+		if family.Revoked {
+			continue
+		}
+		if !bestFound || family.Generation > bestGen {
+			bestToken = token
+			bestClientID = family.ClientID
+			bestGen = family.Generation
+			bestFound = true
+		}
+	}
+	if !bestFound {
+		if anyEntry {
+			return "", "", storage.ErrRefreshTokenFamilyRevoked
+		}
+		return "", "", storage.ErrRefreshTokenFamilyNotFound
+	}
+	return bestToken, bestClientID, nil
 }
 
 // GetRefreshTokenFamilyByID returns family metadata indexed by family ID
