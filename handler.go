@@ -1190,6 +1190,12 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	// Set CORS headers for browser-based clients
 	h.setCORSHeaders(w, r)
 
+	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
+	if h.checkIPRateLimit(w, r, clientIP) {
+		h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusTooManyRequests, startTime)
+		return
+	}
+
 	// Parse query parameters
 	clientID := r.URL.Query().Get("client_id")
 	redirectURI := r.URL.Query().Get("redirect_uri")
@@ -1398,6 +1404,12 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 
 	// Set CORS headers for browser-based clients
 	h.setCORSHeaders(w, r)
+
+	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
+	if h.checkIPRateLimit(w, r, clientIP) {
+		h.recordHTTPMetrics("token", http.MethodPost, http.StatusTooManyRequests, startTime)
+		return
+	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config.MaxRequestBodySize)
 	if err := r.ParseForm(); err != nil {
@@ -1660,6 +1672,10 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 	h.setCORSHeaders(w, r)
 
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
+	if h.checkIPRateLimit(w, r, clientIP) {
+		h.recordHTTPMetrics("revoke", http.MethodPost, http.StatusTooManyRequests, startTime)
+		return
+	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config.MaxRequestBodySize)
 	if err := r.ParseForm(); err != nil {
@@ -2190,6 +2206,10 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 
 	h.setCORSHeaders(w, r)
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
+	if h.checkIPRateLimit(w, r, clientIP) {
+		h.recordHTTPMetrics("introspect", http.MethodPost, http.StatusTooManyRequests, startTime)
+		return
+	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config.MaxRequestBodySize)
 	if err := r.ParseForm(); err != nil {

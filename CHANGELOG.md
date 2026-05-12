@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **IP rate limiter now applied to `/authorize`, `/token`, `/revoke`, `/introspect`** (CWE-307, closes #302)
+  - These four handlers previously bypassed `server.RateLimiter`; only `ValidateToken`, discovery, JWKS, and client registration enforced it. They now call `checkIPRateLimit` at handler entry, returning `429` + `Retry-After: 60` + `error: rate_limit_exceeded` (same shape as the other rate-limited endpoints) and emitting the existing `rate_limit_exceeded` audit event / metric. No-op when no `RateLimiter` is configured.
+
 ### Added
 
 - **`LogValue()` on `Server`, `storage/memory.Store`, and `storage/valkey.Store`** (slog.LogValuer)
