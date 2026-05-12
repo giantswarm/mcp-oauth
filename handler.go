@@ -1152,6 +1152,7 @@ func (h *Handler) buildAuthServerMetadata() map[string]any {
 		// RFC 9207: advertise that authorization responses include the `iss` parameter
 		// so clients can verify the response came from the expected authorization server.
 		"authorization_response_iss_parameter_supported": true,
+		"claims_supported": []string{"sub", "aud", "iss", "exp", "iat", "nonce"},
 	}
 
 	h.addOptionalMetadata(metadata)
@@ -1288,7 +1289,13 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	codeChallengeMethod := r.URL.Query().Get("code_challenge_method")
 
 	// Extract OIDC parameters for upstream IdP forwarding
-	authOpts := parseOIDCOptions(r.URL.Query())
+	authOpts, err := parseOIDCOptions(r.URL.Query())
+	if err != nil {
+		h.recordHTTPMetrics(r.Context(), "authorization", http.MethodGet, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "invalid OIDC parameter")
+		h.writeError(w, ErrorCodeInvalidRequest, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	if clientID == "" {
 		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusBadRequest, startTime)
@@ -2931,58 +2938,26 @@ func validatePrompt(prompt string) string {
 	return normalized
 }
 
-// parseOIDCOptions extracts and validates OIDC parameters from the query string for upstream IdP forwarding.
-// Returns nil if no valid OIDC parameters are provided.
-//
-// Security: All parameters are validated for length and content to prevent DoS and injection attacks.
-// Invalid or oversized values are silently ignored (matching OIDC spec behavior where IdP handles validation).
-//
-// Supported parameters (per OpenID Connect Core 1.0 Section 3.1.2.1):
-//   - prompt: Controls authentication UX ("none", "login", "consent", "select_account")
-//   - login_hint: Pre-fills username/email at IdP (max 256 chars)
-//   - id_token_hint: Previously issued ID token for session binding (max 64KB)
-//   - max_age: Maximum authentication age in seconds (invalid values silently ignored)
-//   - acr_values: Authentication context class references (max 1024 chars)
-func parseOIDCOptions(query url.Values) *providers.AuthorizationURLOptions {
-	prompt := query.Get("prompt")
-	loginHint := query.Get("login_hint")
-	idTokenHint := query.Get("id_token_hint")
-	maxAgeStr := query.Get("max_age")
-	acrValues := query.Get("acr_values")
+// parseOIDCOptions extracts and validates OIDC parameters from the query string
+// for upstream IdP forwarding. Returns nil when no valid parameters are present.
+// Oversized values for non-nonce params are silently dropped. Oversized nonce
+// is a hard rejection because the parameter is a security primitive — silent
+// truncation would either skip enforcement or persist a value the client did
+// not actually send.
+func parseOIDCOptions(query url.Values) (*providers.AuthorizationURLOptions, error) {
+	prompt := validatePrompt(query.Get("prompt"))
+	loginHint := dropIfOversize(query.Get("login_hint"), MaxLoginHintLength)
+	idTokenHint := dropIfOversize(query.Get("id_token_hint"), MaxIDTokenHintLength)
+	acrValues := dropIfOversize(query.Get("acr_values"), MaxACRValuesLength)
+	maxAge := parseMaxAgeQueryValue(query.Get("max_age"))
+	nonce := query.Get("nonce")
 
-	// Validate and sanitize prompt parameter (whitelist validation)
-	prompt = validatePrompt(prompt)
-
-	// Enforce length limits on string parameters (defense-in-depth against DoS)
-	// Invalid/oversized values are silently ignored per OIDC spec behavior
-	if len(loginHint) > MaxLoginHintLength {
-		loginHint = "" // Reject oversized login_hint
-	}
-	if len(idTokenHint) > MaxIDTokenHintLength {
-		idTokenHint = "" // Reject oversized id_token_hint
-	}
-	if len(acrValues) > MaxACRValuesLength {
-		acrValues = "" // Reject oversized acr_values
+	if len(nonce) > MaxNonceLength {
+		return nil, fmt.Errorf("nonce parameter exceeds %d characters", MaxNonceLength)
 	}
 
-	// Parse max_age to integer (optional, only if provided)
-	var maxAge *int
-	if maxAgeStr != "" {
-		if len(maxAgeStr) > MaxMaxAgeLength {
-			maxAgeStr = ""
-		}
-		if maxAgeStr != "" {
-			if v, err := strconv.Atoi(maxAgeStr); err == nil && v >= 0 && v <= MaxMaxAgeSeconds {
-				maxAge = &v
-			}
-		}
-		// Invalid max_age values are silently ignored per OIDC spec behavior
-		// (providers handle validation, we forward what we can parse)
-	}
-
-	// Return nil if no valid OIDC parameters are provided
-	if prompt == "" && loginHint == "" && idTokenHint == "" && maxAge == nil && acrValues == "" {
-		return nil
+	if prompt == "" && loginHint == "" && idTokenHint == "" && maxAge == nil && acrValues == "" && nonce == "" {
+		return nil, nil
 	}
 
 	return &providers.AuthorizationURLOptions{
@@ -2991,7 +2966,30 @@ func parseOIDCOptions(query url.Values) *providers.AuthorizationURLOptions {
 		IDTokenHint: idTokenHint,
 		MaxAge:      maxAge,
 		ACRValues:   acrValues,
+		Nonce:       nonce,
+	}, nil
+}
+
+// dropIfOversize returns the empty string when v exceeds maxLen — used for
+// OIDC parameters whose silent omission is preferable to truncation.
+func dropIfOversize(v string, maxLen int) string {
+	if len(v) > maxLen {
+		return ""
 	}
+	return v
+}
+
+// parseMaxAgeQueryValue parses the OIDC max_age parameter to *int. Returns nil
+// for missing, oversized, non-numeric, negative, or out-of-range values.
+func parseMaxAgeQueryValue(raw string) *int {
+	if raw == "" || len(raw) > MaxMaxAgeLength {
+		return nil
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v < 0 || v > MaxMaxAgeSeconds {
+		return nil
+	}
+	return &v
 }
 
 // isMaxBytesError reports whether err was caused by the request body

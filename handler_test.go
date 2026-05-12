@@ -45,6 +45,9 @@ func setupTestHandler(t *testing.T) (*Handler, *memory.Store) {
 
 	config := &server.Config{
 		Issuer: testIssuer,
+		// Mock provider returns no id_token; nonce echo is exercised in
+		// flows_nonce_test.go with its own fixture.
+		DisableNonceEchoRequirement: true,
 	}
 
 	srv, err := server.New(provider, store, store, store, config, nil)
@@ -79,6 +82,7 @@ func setupTestHandlerWithCORS(t *testing.T, allowedOrigins []string) (*Handler, 
 			AllowCredentials: true,
 			MaxAge:           3600,
 		},
+		DisableNonceEchoRequirement: true,
 	}
 
 	srv, err := server.New(provider, store, store, store, config, nil)
@@ -1892,6 +1896,52 @@ func TestHandler_ServeAuthorization_CompleteFlow(t *testing.T) {
 	}
 }
 
+func TestHandler_ServeAuthorization_NonceTooLong(t *testing.T) {
+	ctx := context.Background()
+
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	client, _, err := handler.server.RegisterClient(
+		ctx,
+		"Nonce Length Test Client",
+		"confidential",
+		"",
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	verifier := testutil.GenerateRandomString(50)
+	hash := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
+	validState := testutil.GenerateRandomString(43)
+	oversizedNonce := strings.Repeat("a", MaxNonceLength+1)
+
+	query := url.Values{}
+	query.Set("client_id", client.ClientID)
+	query.Set("redirect_uri", "https://example.com/callback")
+	query.Set("scope", "openid email")
+	query.Set("response_type", "code")
+	query.Set("code_challenge", challenge)
+	query.Set("code_challenge_method", "S256")
+	query.Set("state", validState)
+	query.Set("nonce", oversizedNonce)
+
+	req := httptest.NewRequest(http.MethodGet, "/authorize?"+query.Encode(), nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeAuthorization(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d for nonce length > %d", w.Code, http.StatusBadRequest, MaxNonceLength)
+	}
+}
+
 // TestHandler_ServeAuthorization_OIDCParameterForwarding tests that OIDC parameters
 // from the query string are properly extracted and forwarded to the upstream IdP.
 // This enables silent re-authentication (prompt=none), user hints, session freshness
@@ -2107,36 +2157,30 @@ func TestHandler_ServeAuthorization_OIDCParameterForwarding(t *testing.T) {
 				return
 			}
 
-			// Verify OIDC options were forwarded correctly
-			hasAnyOIDCParam := tt.wantPrompt != "" || tt.wantLoginHint != "" ||
-				tt.wantIDTokenHint != "" || tt.wantMaxAge != nil || tt.wantACRValues != ""
-
-			if hasAnyOIDCParam {
-				if capturedOpts == nil {
-					t.Fatal("Expected authOpts to be passed to provider, got nil")
+			if capturedOpts == nil {
+				t.Fatal("Expected authOpts to be passed to provider, got nil")
+			}
+			if capturedOpts.Nonce == "" {
+				t.Error("Expected server-generated nonce on OIDC flow, got empty")
+			}
+			if tt.wantPrompt != "" && capturedOpts.Prompt != tt.wantPrompt {
+				t.Errorf("prompt = %q, want %q", capturedOpts.Prompt, tt.wantPrompt)
+			}
+			if tt.wantLoginHint != "" && capturedOpts.LoginHint != tt.wantLoginHint {
+				t.Errorf("login_hint = %q, want %q", capturedOpts.LoginHint, tt.wantLoginHint)
+			}
+			if tt.wantIDTokenHint != "" && capturedOpts.IDTokenHint != tt.wantIDTokenHint {
+				t.Errorf("id_token_hint = %q, want %q", capturedOpts.IDTokenHint, tt.wantIDTokenHint)
+			}
+			if tt.wantMaxAge != nil {
+				if capturedOpts.MaxAge == nil {
+					t.Error("max_age = nil, want non-nil")
+				} else if *capturedOpts.MaxAge != *tt.wantMaxAge {
+					t.Errorf("max_age = %d, want %d", *capturedOpts.MaxAge, *tt.wantMaxAge)
 				}
-				if tt.wantPrompt != "" && capturedOpts.Prompt != tt.wantPrompt {
-					t.Errorf("prompt = %q, want %q", capturedOpts.Prompt, tt.wantPrompt)
-				}
-				if tt.wantLoginHint != "" && capturedOpts.LoginHint != tt.wantLoginHint {
-					t.Errorf("login_hint = %q, want %q", capturedOpts.LoginHint, tt.wantLoginHint)
-				}
-				if tt.wantIDTokenHint != "" && capturedOpts.IDTokenHint != tt.wantIDTokenHint {
-					t.Errorf("id_token_hint = %q, want %q", capturedOpts.IDTokenHint, tt.wantIDTokenHint)
-				}
-				if tt.wantMaxAge != nil {
-					if capturedOpts.MaxAge == nil {
-						t.Error("max_age = nil, want non-nil")
-					} else if *capturedOpts.MaxAge != *tt.wantMaxAge {
-						t.Errorf("max_age = %d, want %d", *capturedOpts.MaxAge, *tt.wantMaxAge)
-					}
-				}
-				if tt.wantACRValues != "" && capturedOpts.ACRValues != tt.wantACRValues {
-					t.Errorf("acr_values = %q, want %q", capturedOpts.ACRValues, tt.wantACRValues)
-				}
-			} else if capturedOpts != nil {
-				// If no OIDC params expected, authOpts should be nil
-				t.Errorf("Expected authOpts to be nil, got %+v", capturedOpts)
+			}
+			if tt.wantACRValues != "" && capturedOpts.ACRValues != tt.wantACRValues {
+				t.Errorf("acr_values = %q, want %q", capturedOpts.ACRValues, tt.wantACRValues)
 			}
 		})
 	}
@@ -2301,7 +2345,10 @@ func TestParseOIDCOptions_Validation(t *testing.T) {
 				query.Set(k, v)
 			}
 
-			opts := parseOIDCOptions(query)
+			opts, err := parseOIDCOptions(query)
+			if err != nil {
+				t.Fatalf("parseOIDCOptions returned error: %v", err)
+			}
 
 			if tt.wantNil {
 				if opts != nil {
@@ -5862,6 +5909,7 @@ func TestHandler_ServeCallback_CustomURLScheme_WithBranding(t *testing.T) {
 				PrimaryColor: "#FF5733",
 			},
 		},
+		DisableNonceEchoRequirement: true,
 	}
 
 	srv, err := server.New(provider, store, store, store, config, nil)

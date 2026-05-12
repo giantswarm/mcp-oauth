@@ -146,6 +146,10 @@ const (
 	// EventProviderStateMismatch is logged when provider state parameter doesn't match
 	EventProviderStateMismatch = "provider_state_mismatch"
 
+	// EventProviderNonceMismatch is logged when an upstream id_token's `nonce`
+	// claim does not echo the value bound at /authorize.
+	EventProviderNonceMismatch = "provider_nonce_mismatch"
+
 	// EventProviderCodeExchangeFailed is logged when code exchange with provider fails (PKCE, etc.)
 	EventProviderCodeExchangeFailed = "provider_code_exchange_failed"
 

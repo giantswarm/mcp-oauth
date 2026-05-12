@@ -424,8 +424,10 @@ type AuthorizationState struct {
 	ProviderState string
 	// Server-to-Provider PKCE verifier (OAuth 2.1)
 	ProviderCodeVerifier string
-	CreatedAt            time.Time
-	ExpiresAt            time.Time
+	// Nonce is the OIDC nonce forwarded to the upstream IdP. Empty for non-OIDC flows.
+	Nonce     string
+	CreatedAt time.Time
+	ExpiresAt time.Time
 }
 
 // AuthorizationCode represents an issued authorization code

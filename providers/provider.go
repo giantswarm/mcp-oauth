@@ -42,6 +42,10 @@ type AuthorizationURLOptions struct {
 	// Used with prompt=none to identify the user for silent re-authentication.
 	IDTokenHint string
 
+	// Nonce is forwarded to the IdP and must be echoed back in the resulting
+	// id_token's `nonce` claim.
+	Nonce string
+
 	// Extra allows setting additional custom parameters not covered above.
 	// These are added as query parameters to the authorization URL.
 	Extra map[string]string
