@@ -213,7 +213,7 @@ func TestValidateTokenAudience_WithTrustedAudiences(t *testing.T) {
 			}
 
 			// Validate the token
-			err := srv.validateTokenAudience(accessToken)
+			err := srv.validateTokenAudience(context.Background(), accessToken)
 
 			if tt.expectError && err == nil {
 				t.Error("validateTokenAudience() expected error, got nil")
@@ -361,7 +361,7 @@ func TestLogCrossClientTokenAccepted(t *testing.T) {
 		Audience: "muster-client",
 	}
 
-	srv.logCrossClientTokenAccepted("test-token-12345678", metadata) //nolint:staticcheck // Testing the cross-client logging path
+	srv.logCrossClientTokenAccepted(context.Background(), "test-token-12345678", metadata) //nolint:staticcheck // Testing the cross-client logging path
 
 	// Verify log output
 	logOutput := logBuffer.String()
@@ -446,7 +446,7 @@ func TestTrustedAudiences_BackwardCompatibility(t *testing.T) {
 	if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: "user", ClientID: "client", TokenType: "access", Audience: "https://mcp.example.com"}); err != nil {
 		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
-	if err := srv.validateTokenAudience(accessToken); err != nil {
+	if err := srv.validateTokenAudience(context.Background(), accessToken); err != nil {
 		t.Errorf("Expected token with server's own audience to be accepted, got error: %v", err)
 	}
 
@@ -454,7 +454,7 @@ func TestTrustedAudiences_BackwardCompatibility(t *testing.T) {
 	if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: "user", ClientID: "client", TokenType: "access", Audience: "muster-client"}); err != nil {
 		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
-	if err := srv.validateTokenAudience(accessToken); err == nil {
+	if err := srv.validateTokenAudience(context.Background(), accessToken); err == nil {
 		t.Error("Expected token with different audience to be rejected")
 	}
 }

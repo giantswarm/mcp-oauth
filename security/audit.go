@@ -42,14 +42,20 @@ type Event struct {
 // LogEvent logs a security event with hashed PII. Attributes are emitted
 // under a single [slog.Group] named "audit" so consumers can split-route
 // audit records from operational logs in their slog.Handler.
-func (a *Auditor) LogEvent(event Event) {
+//
+// ctx is forwarded to the underlying [slog.Handler]; otelslog and similar
+// trace-aware handlers use it to attach trace/span IDs to the record.
+// Callers handling an HTTP request should pass r.Context(); background
+// emissions should pass [context.Background].
+func (a *Auditor) LogEvent(ctx context.Context, event Event) {
 	if !a.enabled {
+		recordAuditDrop(ctx, "disabled")
 		return
 	}
 
 	event.Timestamp = time.Now()
 
-	a.logger.LogAttrs(context.Background(), slog.LevelInfo, "security_audit",
+	a.logger.LogAttrs(ctx, slog.LevelInfo, "security_audit",
 		slog.Group("audit",
 			slog.String("event_type", event.Type),
 			slog.String("user_id_hash", hashForLogging(event.UserID)),
@@ -64,8 +70,8 @@ func (a *Auditor) LogEvent(event Event) {
 }
 
 // LogTokenIssued logs when a token is issued
-func (a *Auditor) LogTokenIssued(userID, clientID, ipAddress, scope string) {
-	a.LogEvent(Event{
+func (a *Auditor) LogTokenIssued(ctx context.Context, userID, clientID, ipAddress, scope string) {
+	a.LogEvent(ctx, Event{
 		Type:      EventTokenIssued,
 		UserID:    userID,
 		ClientID:  clientID,
@@ -77,8 +83,8 @@ func (a *Auditor) LogTokenIssued(userID, clientID, ipAddress, scope string) {
 }
 
 // LogTokenRefreshed logs when a token is refreshed
-func (a *Auditor) LogTokenRefreshed(userID, clientID, ipAddress string, rotated bool) {
-	a.LogEvent(Event{
+func (a *Auditor) LogTokenRefreshed(ctx context.Context, userID, clientID, ipAddress string, rotated bool) {
+	a.LogEvent(ctx, Event{
 		Type:      EventTokenRefreshed,
 		UserID:    userID,
 		ClientID:  clientID,
@@ -90,8 +96,8 @@ func (a *Auditor) LogTokenRefreshed(userID, clientID, ipAddress string, rotated 
 }
 
 // LogTokenRevoked logs when a token is revoked
-func (a *Auditor) LogTokenRevoked(userID, clientID, ipAddress, tokenType string) {
-	a.LogEvent(Event{
+func (a *Auditor) LogTokenRevoked(ctx context.Context, userID, clientID, ipAddress, tokenType string) {
+	a.LogEvent(ctx, Event{
 		Type:      EventTokenRevoked,
 		UserID:    userID,
 		ClientID:  clientID,
@@ -103,8 +109,8 @@ func (a *Auditor) LogTokenRevoked(userID, clientID, ipAddress, tokenType string)
 }
 
 // LogAuthFailure logs an authentication failure
-func (a *Auditor) LogAuthFailure(userID, clientID, ipAddress, reason string) {
-	a.LogEvent(Event{
+func (a *Auditor) LogAuthFailure(ctx context.Context, userID, clientID, ipAddress, reason string) {
+	a.LogEvent(ctx, Event{
 		Type:      EventAuthFailure,
 		UserID:    userID,
 		ClientID:  clientID,
@@ -116,8 +122,8 @@ func (a *Auditor) LogAuthFailure(userID, clientID, ipAddress, reason string) {
 }
 
 // LogRateLimitExceeded logs a rate limit violation
-func (a *Auditor) LogRateLimitExceeded(ipAddress, userID string) {
-	a.LogEvent(Event{
+func (a *Auditor) LogRateLimitExceeded(ctx context.Context, ipAddress, userID string) {
+	a.LogEvent(ctx, Event{
 		Type:      EventRateLimitExceeded,
 		UserID:    userID,
 		IPAddress: ipAddress,
@@ -125,8 +131,8 @@ func (a *Auditor) LogRateLimitExceeded(ipAddress, userID string) {
 }
 
 // LogClientRegistrationRateLimitExceeded logs when client registration rate limit is exceeded
-func (a *Auditor) LogClientRegistrationRateLimitExceeded(ipAddress string) {
-	a.LogEvent(Event{
+func (a *Auditor) LogClientRegistrationRateLimitExceeded(ctx context.Context, ipAddress string) {
+	a.LogEvent(ctx, Event{
 		Type:      EventClientRegistrationRateLimitExceeded,
 		IPAddress: ipAddress,
 		Details: map[string]any{
@@ -137,8 +143,8 @@ func (a *Auditor) LogClientRegistrationRateLimitExceeded(ipAddress string) {
 }
 
 // LogClientRegistered logs when a new client is registered
-func (a *Auditor) LogClientRegistered(clientID, clientType, ipAddress string) {
-	a.LogEvent(Event{
+func (a *Auditor) LogClientRegistered(ctx context.Context, clientID, clientType, ipAddress string) {
+	a.LogEvent(ctx, Event{
 		Type:      EventClientRegistered,
 		ClientID:  clientID,
 		IPAddress: ipAddress,
@@ -149,8 +155,8 @@ func (a *Auditor) LogClientRegistered(clientID, clientType, ipAddress string) {
 }
 
 // LogInvalidPKCE logs when PKCE validation fails
-func (a *Auditor) LogInvalidPKCE(clientID, ipAddress, reason string) {
-	a.LogEvent(Event{
+func (a *Auditor) LogInvalidPKCE(ctx context.Context, clientID, ipAddress, reason string) {
+	a.LogEvent(ctx, Event{
 		Type:      EventInvalidPKCE,
 		ClientID:  clientID,
 		IPAddress: ipAddress,
@@ -161,8 +167,8 @@ func (a *Auditor) LogInvalidPKCE(clientID, ipAddress, reason string) {
 }
 
 // LogTokenReuse logs when refresh token reuse is detected (security event)
-func (a *Auditor) LogTokenReuse(userID, ipAddress string) {
-	a.LogEvent(Event{
+func (a *Auditor) LogTokenReuse(ctx context.Context, userID, ipAddress string) {
+	a.LogEvent(ctx, Event{
 		Type:      EventTokenReuseDetected,
 		UserID:    userID,
 		IPAddress: ipAddress,
@@ -174,8 +180,8 @@ func (a *Auditor) LogTokenReuse(userID, ipAddress string) {
 }
 
 // LogSuspiciousActivity logs suspicious activity
-func (a *Auditor) LogSuspiciousActivity(userID, clientID, ipAddress, description string) {
-	a.LogEvent(Event{
+func (a *Auditor) LogSuspiciousActivity(ctx context.Context, userID, clientID, ipAddress, description string) {
+	a.LogEvent(ctx, Event{
 		Type:      EventSuspiciousActivity,
 		UserID:    userID,
 		ClientID:  clientID,
@@ -187,8 +193,8 @@ func (a *Auditor) LogSuspiciousActivity(userID, clientID, ipAddress, description
 }
 
 // LogInvalidRedirect logs invalid redirect URI attempts
-func (a *Auditor) LogInvalidRedirect(clientID, ipAddress, uri, reason string) {
-	a.LogEvent(Event{
+func (a *Auditor) LogInvalidRedirect(ctx context.Context, clientID, ipAddress, uri, reason string) {
+	a.LogEvent(ctx, Event{
 		Type:      EventInvalidRedirect,
 		ClientID:  clientID,
 		IPAddress: ipAddress,

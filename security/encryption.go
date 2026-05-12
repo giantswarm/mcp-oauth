@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"time"
 )
 
 // MinKeyDistinctBytes is the minimum number of distinct byte values an
@@ -83,10 +84,12 @@ func NewEncryptor(key []byte) (*Encryptor, error) {
 
 // Encrypt encrypts plaintext using AES-256-GCM.
 // Returns base64-encoded ciphertext.
-func (e *Encryptor) Encrypt(plaintext string) (string, error) {
+func (e *Encryptor) Encrypt(plaintext string) (out string, err error) {
 	if !e.enabled {
 		return plaintext, nil
 	}
+	start := time.Now()
+	defer func() { recordEncryption("encrypt", err, start) }()
 
 	block, err := aes.NewCipher(e.key)
 	if err != nil {
@@ -113,10 +116,12 @@ func (e *Encryptor) Encrypt(plaintext string) (string, error) {
 }
 
 // Decrypt decrypts base64-encoded ciphertext using AES-256-GCM.
-func (e *Encryptor) Decrypt(encoded string) (string, error) {
+func (e *Encryptor) Decrypt(encoded string) (out string, err error) {
 	if !e.enabled {
 		return encoded, nil
 	}
+	start := time.Now()
+	defer func() { recordEncryption("decrypt", err, start) }()
 
 	ciphertext, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {

@@ -837,3 +837,26 @@ func TestShutdown_MultipleCallsSafe(t *testing.T) {
 		t.Errorf("Third shutdown failed: %v", err3)
 	}
 }
+
+func TestInstrumentation_IsEnabled(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+		want bool
+	}{
+		{name: "default zero-value Config uses no-op providers", cfg: Config{}, want: false},
+		{name: "Enabled=true reports true", cfg: Config{Enabled: true}, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inst, err := New(tt.cfg)
+			if err != nil {
+				t.Fatalf("New(%+v) error = %v", tt.cfg, err)
+			}
+			if got := inst.IsEnabled(); got != tt.want {
+				t.Errorf("IsEnabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

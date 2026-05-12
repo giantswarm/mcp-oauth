@@ -2,6 +2,7 @@ package security
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"testing"
@@ -88,7 +89,7 @@ func TestAuditor_LogEvent(t *testing.T) {
 			buf.Reset()
 			auditor := NewAuditor(logger, tt.enabled)
 
-			auditor.LogEvent(tt.event)
+			auditor.LogEvent(context.Background(), tt.event)
 
 			hasLog := buf.Len() > 0
 			if hasLog != tt.wantLog {
@@ -110,7 +111,7 @@ func TestAuditor_LogTokenIssued(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	auditor := NewAuditor(logger, true)
 
-	auditor.LogTokenIssued("user-123", "client-456", "192.168.1.1", "openid email")
+	auditor.LogTokenIssued(context.Background(), "user-123", "client-456", "192.168.1.1", "openid email")
 
 	logOutput := buf.String()
 	if len(logOutput) == 0 {
@@ -123,7 +124,7 @@ func TestAuditor_LogTokenRefreshed(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	auditor := NewAuditor(logger, true)
 
-	auditor.LogTokenRefreshed("user-123", "client-456", "192.168.1.1", true)
+	auditor.LogTokenRefreshed(context.Background(), "user-123", "client-456", "192.168.1.1", true)
 
 	logOutput := buf.String()
 	if len(logOutput) == 0 {
@@ -136,7 +137,7 @@ func TestAuditor_LogTokenRevoked(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	auditor := NewAuditor(logger, true)
 
-	auditor.LogTokenRevoked("user-123", "client-456", "192.168.1.1", "refresh_token")
+	auditor.LogTokenRevoked(context.Background(), "user-123", "client-456", "192.168.1.1", "refresh_token")
 
 	logOutput := buf.String()
 	if len(logOutput) == 0 {
@@ -149,7 +150,7 @@ func TestAuditor_LogAuthFailure(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	auditor := NewAuditor(logger, true)
 
-	auditor.LogAuthFailure("user-123", "client-456", "192.168.1.1", "invalid credentials")
+	auditor.LogAuthFailure(context.Background(), "user-123", "client-456", "192.168.1.1", "invalid credentials")
 
 	logOutput := buf.String()
 	if len(logOutput) == 0 {
@@ -162,7 +163,7 @@ func TestAuditor_LogRateLimitExceeded(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	auditor := NewAuditor(logger, true)
 
-	auditor.LogRateLimitExceeded("192.168.1.1", "user-123")
+	auditor.LogRateLimitExceeded(context.Background(), "192.168.1.1", "user-123")
 
 	logOutput := buf.String()
 	if len(logOutput) == 0 {
@@ -175,7 +176,7 @@ func TestAuditor_LogClientRegistered(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	auditor := NewAuditor(logger, true)
 
-	auditor.LogClientRegistered("client-123", "confidential", "192.168.1.1")
+	auditor.LogClientRegistered(context.Background(), "client-123", "confidential", "192.168.1.1")
 
 	logOutput := buf.String()
 	if len(logOutput) == 0 {
@@ -188,7 +189,7 @@ func TestAuditor_LogInvalidPKCE(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	auditor := NewAuditor(logger, true)
 
-	auditor.LogInvalidPKCE("client-123", "192.168.1.1", "challenge mismatch")
+	auditor.LogInvalidPKCE(context.Background(), "client-123", "192.168.1.1", "challenge mismatch")
 
 	logOutput := buf.String()
 	if len(logOutput) == 0 {
@@ -201,7 +202,7 @@ func TestAuditor_LogTokenReuse(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	auditor := NewAuditor(logger, true)
 
-	auditor.LogTokenReuse("user-123", "192.168.1.1")
+	auditor.LogTokenReuse(context.Background(), "user-123", "192.168.1.1")
 
 	logOutput := buf.String()
 	if len(logOutput) == 0 {
@@ -214,7 +215,7 @@ func TestAuditor_LogSuspiciousActivity(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	auditor := NewAuditor(logger, true)
 
-	auditor.LogSuspiciousActivity("user-123", "client-456", "192.168.1.1", "unusual access pattern")
+	auditor.LogSuspiciousActivity(context.Background(), "user-123", "client-456", "192.168.1.1", "unusual access pattern")
 
 	logOutput := buf.String()
 	if len(logOutput) == 0 {
@@ -227,7 +228,7 @@ func TestAuditor_LogInvalidRedirect(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	auditor := NewAuditor(logger, true)
 
-	auditor.LogInvalidRedirect("client-123", "192.168.1.1", "https://evil.com", "not registered")
+	auditor.LogInvalidRedirect(context.Background(), "client-123", "192.168.1.1", "https://evil.com", "not registered")
 
 	logOutput := buf.String()
 	if len(logOutput) == 0 {
@@ -296,6 +297,38 @@ func Test_hashForLogging_Different(t *testing.T) {
 	}
 }
 
+// ctxKey is an unexported key type used by the ctx-propagation test.
+type ctxKey struct{}
+
+// ctxCapturingHandler records the ctx value passed to Handle on the most
+// recent record, so the test can assert that ctx threads through LogEvent.
+type ctxCapturingHandler struct {
+	got context.Context
+}
+
+func (h *ctxCapturingHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+func (h *ctxCapturingHandler) Handle(ctx context.Context, _ slog.Record) error {
+	h.got = ctx
+	return nil
+}
+func (h *ctxCapturingHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *ctxCapturingHandler) WithGroup(_ string) slog.Handler      { return h }
+
+// TestAuditor_LogEvent_ForwardsContext asserts that the ctx passed to
+// LogEvent reaches the underlying [slog.Handler.Handle] so otelslog and
+// similar trace-aware handlers can attach trace/span IDs.
+func TestAuditor_LogEvent_ForwardsContext(t *testing.T) {
+	cap := &ctxCapturingHandler{}
+	auditor := NewAuditor(slog.New(cap), true)
+
+	ctx := context.WithValue(context.Background(), ctxKey{}, "marker")
+	auditor.LogEvent(ctx, Event{Type: "test_event"})
+
+	require.NotNil(t, cap.got, "handler.Handle did not receive a ctx")
+	require.Equal(t, "marker", cap.got.Value(ctxKey{}),
+		"ctx value did not survive the Auditor → slog.Handler boundary")
+}
+
 // TestAuditor_LogEvent_EmitsAuditGroup asserts that LogEvent emits at INFO
 // and bundles every attribute under a single "audit" group so consumers can
 // route audit records separately from operational logs.
@@ -304,7 +337,7 @@ func TestAuditor_LogEvent_EmitsAuditGroup(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	auditor := NewAuditor(logger, true)
 
-	auditor.LogEvent(Event{
+	auditor.LogEvent(context.Background(), Event{
 		Type:      "test_event",
 		UserID:    "user-123",
 		ClientID:  "client-456",

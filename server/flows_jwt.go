@@ -78,10 +78,10 @@ func (s *Server) validateSelfIssuedJWT(ctx context.Context, tokenString string) 
 	if err := s.checkJWTHeaderAndIssuer(header, claims); err != nil {
 		return nil, err
 	}
-	if err := s.checkJWTExpiration(claims, tokenString); err != nil {
+	if err := s.checkJWTExpiration(ctx, claims, tokenString); err != nil {
 		return nil, err
 	}
-	if err := s.checkJWTAudience(claims, tokenString); err != nil {
+	if err := s.checkJWTAudience(ctx, claims, tokenString); err != nil {
 		return nil, err
 	}
 	jti, _ := claims["jti"].(string)
@@ -93,7 +93,7 @@ func (s *Server) validateSelfIssuedJWT(ctx context.Context, tokenString string) 
 	}
 
 	userInfo := userInfoFromJWTClaims(claims)
-	s.logSelfIssuedJWTAccepted(tokenString, userInfo, jti)
+	s.logSelfIssuedJWTAccepted(ctx, tokenString, userInfo, jti)
 	return userInfo, nil
 }
 
@@ -149,7 +149,7 @@ func (s *Server) checkJWTHeaderAndIssuer(header jose.Header, claims map[string]a
 
 // checkJWTExpiration enforces exp with the same ClockSkewGracePeriod the
 // opaque path uses, so tokens behave identically across formats.
-func (s *Server) checkJWTExpiration(claims map[string]any, tokenString string) error {
+func (s *Server) checkJWTExpiration(ctx context.Context, claims map[string]any, tokenString string) error {
 	expVal, ok := claims["exp"].(float64)
 	if !ok {
 		return fmt.Errorf("missing or invalid exp claim")
@@ -157,7 +157,7 @@ func (s *Server) checkJWTExpiration(claims map[string]any, tokenString string) e
 	exp := time.Unix(int64(expVal), 0)
 	gracePeriod := time.Duration(s.Config.ClockSkewGracePeriod) * time.Second
 	if time.Now().After(exp.Add(gracePeriod)) {
-		s.logSelfIssuedJWTAuthFailure("token_expired", tokenString)
+		s.logSelfIssuedJWTAuthFailure(ctx, "token_expired", tokenString)
 		return fmt.Errorf("access token expired")
 	}
 	return nil
@@ -167,11 +167,11 @@ func (s *Server) checkJWTExpiration(claims map[string]any, tokenString string) e
 // claim must equal the server's ResourceIdentifier OR appear in
 // TrustedAudiences. Multi-valued aud (RFC 7519 §4.1.3) is handled via
 // helpers.FindMatchingAudience, matching the SSO-forwarded-ID-token path.
-func (s *Server) checkJWTAudience(claims map[string]any, tokenString string) error {
+func (s *Server) checkJWTAudience(ctx context.Context, claims map[string]any, tokenString string) error {
 	expected := s.Config.GetResourceIdentifier()
 	audiences := audiencesFromClaim(claims["aud"])
 	if len(audiences) == 0 {
-		s.logSelfIssuedJWTAuthFailure("missing_aud", tokenString)
+		s.logSelfIssuedJWTAuthFailure(ctx, "missing_aud", tokenString)
 		return fmt.Errorf("token missing audience claim")
 	}
 
@@ -183,7 +183,7 @@ func (s *Server) checkJWTAudience(claims map[string]any, tokenString string) err
 	if helpers.FindMatchingAudience(audiences, s.Config.TrustedAudiences) != "" {
 		return nil
 	}
-	s.logSelfIssuedJWTAuthFailure("audience_mismatch", tokenString)
+	s.logSelfIssuedJWTAuthFailure(ctx, "audience_mismatch", tokenString)
 	return fmt.Errorf("token not intended for this resource server (RFC 8707 audience mismatch)")
 }
 
@@ -203,7 +203,7 @@ func (s *Server) checkJWTRevocation(ctx context.Context, jti, tokenString string
 		return fmt.Errorf("revocation check failed: %w", err)
 	}
 	if revoked {
-		s.logSelfIssuedJWTAuthFailure("token_revoked", tokenString)
+		s.logSelfIssuedJWTAuthFailure(ctx, "token_revoked", tokenString)
 		return fmt.Errorf("access token has been revoked")
 	}
 	return nil
@@ -249,7 +249,7 @@ func (s *Server) checkJWTFamily(ctx context.Context, claims map[string]any, toke
 		return nil
 	}
 	if meta.Revoked {
-		s.logSelfIssuedJWTAuthFailure("family_revoked", tokenString)
+		s.logSelfIssuedJWTAuthFailure(ctx, "family_revoked", tokenString)
 		return fmt.Errorf("access token family has been revoked")
 	}
 	return nil
@@ -308,14 +308,14 @@ func userInfoFromJWTClaims(claims map[string]any) *providers.UserInfo {
 // jti is logged in full because it is short-lived metadata, not a
 // credential — operators correlating audit events across services need the
 // complete identifier.
-func (s *Server) logSelfIssuedJWTAccepted(tokenString string, userInfo *providers.UserInfo, jti string) {
+func (s *Server) logSelfIssuedJWTAccepted(ctx context.Context, tokenString string, userInfo *providers.UserInfo, jti string) {
 	s.Logger.Debug("Self-issued JWT access token validated",
 		"user_id", userInfo.ID,
 		"jti", jti,
 		"token_suffix", helpers.TokenSuffix(tokenString, 8))
 
 	if s.Auditor != nil {
-		s.Auditor.LogEvent(security.Event{
+		s.Auditor.LogEvent(ctx, security.Event{
 			Type:   security.EventSelfIssuedJWTAccepted,
 			UserID: userInfo.ID,
 			Details: map[string]any{
@@ -373,7 +373,7 @@ func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID,
 
 	if s.Auditor != nil {
 		userID, _ := claims["sub"].(string)
-		s.Auditor.LogEvent(security.Event{
+		s.Auditor.LogEvent(ctx, security.Event{
 			Type:     security.EventSelfIssuedJWTRevoked,
 			UserID:   userID,
 			ClientID: clientID,
@@ -395,11 +395,11 @@ func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID,
 // logSelfIssuedJWTAuthFailure records a hard rejection for audit trails.
 // reason is a short machine-friendly tag (token_expired, audience_mismatch,
 // token_revoked, family_revoked, missing_aud) so dashboards can pivot on it.
-func (s *Server) logSelfIssuedJWTAuthFailure(reason, tokenString string) {
+func (s *Server) logSelfIssuedJWTAuthFailure(ctx context.Context, reason, tokenString string) {
 	s.Logger.Debug("Self-issued JWT access token rejected",
 		"reason", reason,
 		"token_suffix", helpers.TokenSuffix(tokenString, 8))
 	if s.Auditor != nil {
-		s.Auditor.LogAuthFailure("", "", "", reason)
+		s.Auditor.LogAuthFailure(ctx, "", "", "", reason)
 	}
 }

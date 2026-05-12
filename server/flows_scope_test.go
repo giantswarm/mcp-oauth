@@ -468,7 +468,7 @@ func TestResolveScopes(t *testing.T) {
 			client := &storage.Client{
 				Scopes: tt.clientScopes,
 			}
-			result := srv.resolveScopes(tt.requestedScope, client)
+			result := srv.resolveScopes(context.Background(), tt.requestedScope, client)
 			if result != tt.expected {
 				t.Errorf("resolveScopes() = %q, want %q", result, tt.expected)
 			}

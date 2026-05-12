@@ -41,6 +41,11 @@ const (
 
 	// Audit attributes
 	metricAttrEventType = "event_type"
+	metricAttrReason    = "reason"
+
+	// Token endpoint failure attributes
+	metricAttrGrantType = "grant_type"
+	metricAttrErrorCode = "error_code"
 )
 
 // Metrics holds all metric instruments for the OAuth library
@@ -83,10 +88,14 @@ type Metrics struct {
 
 	// Audit Metrics
 	AuditEventsTotal metric.Int64Counter
+	AuditDropsTotal  metric.Int64Counter // Audit events dropped (labels: reason — disabled, …)
 
 	// Encryption Metrics
 	EncryptionOperationsTotal metric.Int64Counter
 	EncryptionDuration        metric.Float64Histogram
+
+	// Token endpoint failures by grant_type + error_code (RFC 6749)
+	TokenEndpointFailures metric.Int64Counter
 
 	// CIMD (Client ID Metadata Document) Metrics
 	CIMDFetchTotal    metric.Int64Counter     // Total fetch attempts (labels: result=success/error/blocked)
@@ -216,6 +225,8 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 
 	// Audit Metrics
 	m.AuditEventsTotal = b.counter(securityMeter, "oauth.audit.events.total", "Total number of audit events", "{event}")
+	m.AuditDropsTotal = b.counter(securityMeter, "oauth.audit.drops.total", "Total number of audit events dropped (e.g. auditor disabled)", "{event}")
+	m.TokenEndpointFailures = b.counter(serverMeter, "oauth.token_endpoint.failures.total", "Token-endpoint failures by grant_type and RFC 6749 error_code", "{failure}")
 
 	// Encryption Metrics
 	m.EncryptionOperationsTotal = b.counter(securityMeter, "oauth.encryption.operations.total", "Total number of encryption/decryption operations", "{operation}")
@@ -440,16 +451,44 @@ func (m *Metrics) RecordAuditEvent(ctx context.Context, eventType string) {
 	))
 }
 
-// RecordEncryptionOperation records an encryption/decryption operation
-func (m *Metrics) RecordEncryptionOperation(ctx context.Context, operation string, durationMs float64) {
+// RecordTokenEndpointFailure records a token-endpoint failure labelled by
+// grant_type and the RFC 6749 error_code returned to the client.
+//
+// grantType: one of "authorization_code", "refresh_token",
+// "client_credentials", "password", or "" when the grant type was not
+// determinable. errorCode: an RFC 6749 token-endpoint error
+// ("invalid_request", "invalid_client", "invalid_grant",
+// "unauthorized_client", "unsupported_grant_type", "invalid_scope",
+// "server_error", …).
+func (m *Metrics) RecordTokenEndpointFailure(ctx context.Context, grantType, errorCode string) {
+	m.TokenEndpointFailures.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(metricAttrGrantType, grantType),
+		attribute.String(metricAttrErrorCode, errorCode),
+	))
+}
+
+// RecordAuditDrop records an audit-event drop labelled by reason.
+//
+// reason: "disabled" when the Auditor is configured but not enabled.
+// (Future: "handler_error" when slog.Handler.Handle returns an error,
+// pending a Handler-wrapper-based implementation.)
+func (m *Metrics) RecordAuditDrop(ctx context.Context, reason string) {
+	m.AuditDropsTotal.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(metricAttrReason, reason),
+	))
+}
+
+// RecordEncryptionOperation records an encryption/decryption operation.
+//
+// operation is "encrypt" or "decrypt"; result is "ok" or "fail".
+func (m *Metrics) RecordEncryptionOperation(ctx context.Context, operation, result string, durationMs float64) {
 	attrs := []attribute.KeyValue{
 		attribute.String(metricAttrOperation, operation),
+		attribute.String(metricAttrResult, result),
 	}
 
 	m.EncryptionOperationsTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
-	m.EncryptionDuration.Record(ctx, durationMs, metric.WithAttributes(
-		attribute.String(metricAttrOperation, operation),
-	))
+	m.EncryptionDuration.Record(ctx, durationMs, metric.WithAttributes(attrs...))
 }
 
 // RecordCIMDFetch records a Client ID Metadata Document fetch attempt.

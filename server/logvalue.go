@@ -22,7 +22,7 @@ func (s *Server) LogValue() slog.Value {
 		slog.Bool("production_mode", cfg.ProductionMode),
 		slog.String("access_token_format", string(cfg.AccessTokenFormat)),
 		slog.Bool("encryption_at_rest", s.Encryptor != nil && s.Encryptor.IsEnabled()),
-		slog.Bool("instrumentation_on", s.Instrumentation != nil),
+		slog.Bool("instrumentation_on", s.Instrumentation.IsEnabled()),
 		slog.Group("redirect_uri_policy",
 			slog.Bool("dns_validation", cfg.DNSValidation),
 			slog.Bool("dns_validation_strict", cfg.DNSValidationStrict),
