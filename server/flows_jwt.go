@@ -65,36 +65,40 @@ func (s *Server) looksLikeSelfIssuedJWT(tokenString string) bool {
 // typ, signature mismatch). Returns the wrapped underlying error for hard
 // rejections (revoked, expired, audience mismatch). Callers treat the
 // former as "fall through" and the latter as "reject".
-func (s *Server) validateSelfIssuedJWT(ctx context.Context, tokenString string) (*providers.UserInfo, error) {
+//
+// Returns the verified claim map alongside the UserInfo so callers that
+// need claim-level access (introspection, audit) don't need to re-parse +
+// re-verify the token, which would risk drift between the two pipelines.
+func (s *Server) validateSelfIssuedJWT(ctx context.Context, tokenString string) (*providers.UserInfo, map[string]any, error) {
 	if !s.Config.IsJWTAccessTokenFormat() {
-		return nil, errBearerNotSelfIssuedJWT
+		return nil, nil, errBearerNotSelfIssuedJWT
 	}
 
 	header, claims, err := s.parseAndVerifyJWTSignature(tokenString)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if err := s.checkJWTHeaderAndIssuer(header, claims); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := s.checkJWTExpiration(ctx, claims, tokenString); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := s.checkJWTAudience(ctx, claims, tokenString); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	jti, _ := claims["jti"].(string)
 	if err := s.checkJWTRevocation(ctx, jti, tokenString); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := s.checkJWTFamily(ctx, claims, tokenString); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	userInfo := userInfoFromJWTClaims(claims)
 	s.logSelfIssuedJWTAccepted(ctx, tokenString, userInfo, jti)
-	return userInfo, nil
+	return userInfo, claims, nil
 }
 
 // parseAndVerifyJWTSignature parses the JWT and verifies the signature
@@ -290,6 +294,12 @@ func userInfoFromJWTClaims(claims map[string]any) *providers.UserInfo {
 	}
 	if v, ok := claims["email"].(string); ok {
 		info.Email = v
+	}
+	if v, ok := claims["email_verified"].(bool); ok {
+		info.EmailVerified = v
+	}
+	if v, ok := claims["name"].(string); ok {
+		info.Name = v
 	}
 	switch g := claims["groups"].(type) {
 	case []string:

@@ -957,9 +957,9 @@ func TestValidateClientStateParameter_AllowNoState(t *testing.T) {
 	})
 }
 
-// TestMatchesLoopbackRedirectURI tests RFC 8252 Section 7.3 port-agnostic
+// TestCanonicalLoopbackRedirectURI_Match tests RFC 8252 §7.3 port-agnostic
 // matching for loopback redirect URIs.
-func TestMatchesLoopbackRedirectURI(t *testing.T) {
+func TestCanonicalLoopbackRedirectURI_Match(t *testing.T) {
 	tests := []struct {
 		name           string
 		requestedURI   string
@@ -1071,9 +1071,9 @@ func TestMatchesLoopbackRedirectURI(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := matchesLoopbackRedirectURI(tt.requestedURI, tt.registeredURIs)
+			_, got := canonicalLoopbackRedirectURI(tt.requestedURI, tt.registeredURIs)
 			if got != tt.want {
-				t.Errorf("matchesLoopbackRedirectURI(%q, %v) = %v, want %v",
+				t.Errorf("canonicalLoopbackRedirectURI(%q, %v) match = %v, want %v",
 					tt.requestedURI, tt.registeredURIs, got, tt.want)
 			}
 		})

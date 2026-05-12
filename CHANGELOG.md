@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`security.DecodeKey(s string) ([]byte, error)`**: convenience helper that tries [`KeyFromBase64`](security/encryption.go) then falls back to [`KeyFromHex`](security/encryption.go). Consolidates the dual-encoding decode pattern that consumers were re-implementing locally.
+- **`Server.ValidateRedirectURIForAuthorization(ctx, clientID, redirectURI) (*url.URL, error)`**: runs the client lookup and registered-redirect-URI check and returns the canonical `*url.URL` from server-side storage. Handlers redirecting `/authorize` protocol errors back to the client must use this value as the redirect target (RFC 6749 §3.1.2.4).
 
 ### Changed
 
@@ -87,6 +88,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Token introspection (`/oauth/introspect`) now enforces a cross-client gate (#306)**
+  - **Breaking**: a client introspecting a token bound to a different client receives `{"active": false}` per RFC 7662 §2.2 with no other claims populated.
+  - New `Config.IntrospectionResourceServers []string` allowlists resource servers permitted to introspect tokens they do not own. Empty entries are rejected at `Config.Validate`; entries not resolving to a registered client are rejected at `Server.New`; same-client introspection is always allowed.
+  - Cross-client denials emit `security.EventIntrospectionRequesterDenied` (severity `medium`, `reason` ∈ `{empty_requester, empty_token_bound_client, cross_client_probe}`).
+  - User attributes (`email`, `email_verified`, `name`, `sub`) flow only on the authorized path.
+- **RFC 9068 access tokens (JWT mode) now carry `email_verified` and `name` claims**
+  - `AccessTokenClaims.EmailVerified` and `AccessTokenClaims.Name` are populated from `providers.UserInfo` during issuance.
+  - Brings JWT-mode introspection into parity with opaque-mode introspection on identity attributes.
 - **`security.Auditor` methods take `context.Context`**
   - `LogEvent` and the 11 typed helpers (`LogTokenIssued`, `LogTokenRefreshed`, `LogTokenRevoked`, `LogAuthFailure`, `LogRateLimitExceeded`, `LogClientRegistrationRateLimitExceeded`, `LogClientRegistered`, `LogInvalidPKCE`, `LogTokenReuse`, `LogSuspiciousActivity`, `LogInvalidRedirect`) now take `ctx context.Context` as the first argument. The ctx is forwarded to the underlying `slog.Handler.Handle`, so otelslog-style handlers attach trace/span IDs to audit records.
   - **Breaking**: prepend `ctx` at every call site (`r.Context()` for HTTP-driven flows, `context.Background()` for background emissions).
@@ -148,6 +157,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Removes the need for downstream consumers (mcp-observability-platform, muster, mcp-prometheus) to set `srvCfg.AllowLocalhostRedirectURIs = true` and `srvCfg.TrustedPublicRegistrationSchemes = []string{...}` manually after `FromEnv()`.
 
 ### Fixed
+
+- **`/oauth/introspect` response shape (RFC 7662 §2.2) (#306)**
+  - `client_id` reflects the client the token was issued to (from stored token metadata for opaque tokens, from the verified `client_id` JWT claim in JWT mode).
+  - `exp`, `iat`, `aud`, `iss`, `scope`, `sub`, `token_type` are populated from token metadata or verified JWT claims. `nbf` is included only when the JWT carries it.
+  - `Cache-Control: no-store` + `Pragma: no-cache` are now set on the success path.
+  - JWT-mode introspection consumes the verified claim map returned by `validateSelfIssuedJWT` in a single pass (no re-parse, no drift between the two verification paths).
+
+- **`/authorize` validates `response_type` and redirects protocol errors per RFC 6749 §4.1.2.1 (#303)**
+  - Missing or non-`code` `response_type` is rejected with `unsupported_response_type`.
+  - `invalid_request` (missing or short `state`), `unsupported_response_type`, and `server_error` redirect to `redirect_uri` with `error` / `error_description` / `state` query parameters.
+  - `invalid_client` (missing or unregistered `client_id`) and `invalid_redirect_uri` (missing, non-`http(s)`, or not registered for the client) return JSON `400`.
 
 - **Treat email, profile, groups, offline_access as mandatory scopes (#252)**
   - `isMandatoryScope()` now returns true for `email`, `profile`, `groups`, and `offline_access` in addition to `openid` and cross-client audience scopes.
