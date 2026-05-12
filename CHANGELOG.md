@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`providers.EnsureTimeout(ctx, timeout) (context.Context, context.CancelFunc)`**: nil-safe context deadline helper. The three in-tree providers (dex, google, github) delegate their per-provider `ensureContextTimeout` methods to it. Closes (partial) #310.
+- **`providers.CloneScopes([]string) []string`**: nil-safe deep copy used by every provider's `DefaultScopes()` to prevent caller mutation.
+- **`providers.FilterScopes(requested, defaults []string, supported func(string) bool) []string`**: generic IdP scope-filter wrapping `CopyScopes` (mandatory-scope merge) + per-provider `supported` predicate. `filterDexScopes` / `filterGoogleScopes` collapse to single-line delegates.
+- **`providers/oidc.RevokeAtEndpoint(ctx, httpClient, endpoint, token, clientID, clientSecret) error`**: RFC 7009 revocation primitive. Pass empty `clientID` / `clientSecret` for endpoints that do not require client authentication (e.g. Google).
 - **`Config.DiscoveryCacheMaxAge time.Duration`** (default `1h`). Discovery endpoints (`/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource[...]`, `/.well-known/openid-configuration`) advertise `Cache-Control: public, max-age=<seconds>` per RFC 8414 §3 / RFC 9728 §3.
 - **OIDC Discovery 1.0 §3 metadata fields** on the AS metadata document: `subject_types_supported: ["public"]`, `id_token_signing_alg_values_supported` (always includes `RS256`), and `claims_supported`.
 - **`Config.EnableUserInfoEndpoint bool`** + **`EndpointPathUserInfo = "/oauth/userinfo"`** + **`Config.UserInfoEndpoint()`**. When enabled, `/oauth/userinfo` (OIDC Core 1.0 §5.3) is mounted behind `Handler.ValidateToken` and `userinfo_endpoint` is advertised in AS / OIDC discovery metadata. The `openid` scope is required; `profile`, `email`, and `groups` scopes gate the corresponding claims; `sub` is always returned. Each 2xx response emits `security.EventUserInfoServed` (`userinfo_served`) with the subject and the scope-derived claim groups returned, and the request is counted under `oauth_http_requests_total{endpoint="userinfo"}`.

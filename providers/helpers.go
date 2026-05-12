@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"golang.org/x/oauth2"
 )
@@ -140,6 +141,49 @@ func CopyScopes(requestedScopes, defaultScopes []string) []string {
 	}
 
 	return result
+}
+
+// EnsureTimeout returns ctx unchanged when it already has a deadline; otherwise
+// it returns context.WithTimeout(ctx, timeout). The cancel func is always
+// non-nil and safe to defer.
+func EnsureTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if _, hasDeadline := ctx.Deadline(); hasDeadline {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+// CloneScopes returns an independent copy of scopes (nil-safe). Used by every
+// provider's DefaultScopes() so callers cannot mutate the provider's slice.
+func CloneScopes(scopes []string) []string {
+	if scopes == nil {
+		return nil
+	}
+	out := make([]string, len(scopes))
+	copy(out, scopes)
+	return out
+}
+
+// FilterScopes applies the provider-specific `supported` predicate to the
+// merged copy that CopyScopes produces from requestedScopes+defaultScopes.
+// Mandatory-scope merging (openid, email, etc.) happens inside CopyScopes;
+// FilterScopes is the IdP-specific overlay that drops scopes the upstream
+// would reject (e.g. Google does not accept Dex audience scopes, and vice
+// versa).
+//
+// A nil predicate is treated as "accept everything".
+func FilterScopes(requestedScopes, defaultScopes []string, supported func(string) bool) []string {
+	merged := CopyScopes(requestedScopes, defaultScopes)
+	if supported == nil {
+		return merged
+	}
+	filtered := make([]string, 0, len(merged))
+	for _, s := range merged {
+		if supported(s) {
+			filtered = append(filtered, s)
+		}
+	}
+	return filtered
 }
 
 // ExchangeCodeWithPKCE is a shared helper for exchanging authorization codes with optional PKCE.
