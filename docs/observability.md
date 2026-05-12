@@ -114,10 +114,12 @@ instrumentation.Config{
 | Metric | Labels | Description |
 |--------|--------|-------------|
 | `oauth.authorization.started` | `client_id` | Authorization flows started |
+| `oauth.callback.processed` | `client_id`, `success` | Provider callbacks processed |
 | `oauth.code.exchanged` | `client_id`, `pkce_method` | Codes exchanged for tokens |
 | `oauth.token.refreshed` | `client_id`, `rotated` | Tokens refreshed |
 | `oauth.token.revoked` | `client_id` | Tokens revoked |
 | `oauth.client.registered` | `client_type` | Clients registered |
+| `oauth.token_endpoint.failures.total` | `grant_type`, `error_code` | Token-endpoint failures broken down by RFC 6749 `error_code` (`invalid_request`, `invalid_client`, `invalid_grant`, `unauthorized_client`, `unsupported_grant_type`, `invalid_scope`, `server_error`). Cardinality budget: ~8 × ~7 series. |
 
 ### Security
 
@@ -127,7 +129,26 @@ instrumentation.Config{
 | `oauth.pkce.validation_failed` | `method` | PKCE validation failures |
 | `oauth.code.reuse_detected` | - | Authorization code reuse attempts |
 | `oauth.token.reuse_detected` | - | Refresh token reuse attempts |
+| `oauth.refresh_token.legacy_rejected` | - | Legacy refresh tokens rejected for missing client binding (OAuth 2.1) |
+| `oauth.forwarded_id_token.accepted_total` | `issuer`, `audience`, `result` | Forwarded ID token acceptance attempts; `result` is a bounded enum (`ok`, `aud_mismatch`, `iss_mismatch`, `sig_invalid`, `expired`, `not_yet_valid`, `no_jwks`, `parse_error`) |
 | `oauth.redirect_uri.security_rejected` | `category`, `stage` | Redirect URI security validation failures (SSRF/XSS protection) |
+
+### Audit and Encryption
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `oauth.audit.events.total` | `event_type` | Audit events emitted by the security `Auditor` |
+| `oauth.audit.drops.total` | `reason` | Audit events dropped (`reason=disabled` when an `Auditor` is configured but its enabled flag is `false`) |
+| `oauth.encryption.operations.total` | `operation`, `result` | Token encryption/decryption calls; `operation` ∈ `{encrypt, decrypt}`, `result` ∈ `{ok, fail}` |
+| `oauth.encryption.duration` | `operation`, `result` | Encryption/decryption duration (ms) |
+
+### Client ID Metadata Document (MCP 2025-11-25)
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `oauth.cimd.fetch.total` | `result` | CIMD metadata fetch attempts (`result` ∈ `{success, error, blocked}`) |
+| `oauth.cimd.fetch.duration` | - | CIMD fetch duration (ms) |
+| `oauth.cimd.cache.total` | `operation` | CIMD cache operations (`operation` ∈ `{hit, miss, negative_hit}`) |
 
 **Redirect URI Security Categories:**
 
@@ -168,20 +189,21 @@ The `stage` label indicates when the rejection occurred:
 
 ## Distributed Tracing
 
-Spans are automatically created for all major operations:
+Spans are emitted from the HTTP layer and storage layer. The current emit
+set is:
 
-```
-http.request (from otelhttp)
-├── oauth.http.authorization
-│   └── oauth.server.start_authorization_flow
-│       ├── storage.save_authorization_state
-│       └── provider.google.authorization_url
-└── oauth.http.callback
-    └── oauth.server.handle_provider_callback
-        ├── storage.get_authorization_state
-        ├── provider.google.exchange_code
-        └── storage.save_token
-```
+| Span | Notable attributes |
+|------|--------------------|
+| `oauth.http.authorization` | `oauth.client_id`, `oauth.pkce.method`, `oauth.response_type`, `oauth.scope` |
+| `oauth.http.callback` | `oauth.client_id` |
+| `oauth.http.token_exchange` | `oauth.client_id`, `oauth.client_type`, `oauth.grant_type=authorization_code` |
+| `oauth.http.token_refresh` | `oauth.client_id`, `oauth.grant_type=refresh_token`, `oauth.client_authenticated` |
+| `oauth.http.token_revocation` | `oauth.client_id` |
+| `oauth.http.introspection` | `oauth.client_id`, `oauth.token_type` |
+| `storage.<operation>` | `operation`, `storage.backend` (one span per storage call when a Tracer is wired into the store) |
+
+`oauth.token.rotated=true` is added as a span attribute on whichever span
+covers a refresh-token rotation in `flows.go`.
 
 ### Trace Context
 

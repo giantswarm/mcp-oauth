@@ -1,8 +1,6 @@
 package instrumentation
 
 import (
-	"net/url"
-
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -35,7 +33,6 @@ const (
 	AttrGrantType        = "oauth.grant_type"        // OAuth grant type
 	AttrResponseType     = "oauth.response_type"     // OAuth response type
 	AttrClientType       = "oauth.client_type"       // Client type (public/confidential)
-	AttrRedirectURI      = "oauth.redirect_uri"      // Redirect URI (may contain sensitive data)
 	AttrState            = "oauth.state"             // OAuth state parameter
 	AttrProviderState    = "oauth.provider_state"    // Provider-specific state
 	AttrTokenType        = "oauth.token_type"        //nolint:gosec // Token type (Bearer, etc.) - NOT the actual token
@@ -178,33 +175,3 @@ func AddSecurityAttributes(span trace.Span, clientIP string) {
 	}
 }
 
-// SanitizeRedirectURI removes query parameters and fragments from a redirect URI
-// This prevents accidentally logging sensitive data that might be passed via query params
-//
-// SECURITY: While OAuth 2.1 best practices discourage sensitive data in redirect URIs,
-// this function provides defense-in-depth by stripping query parameters and fragments
-// before including the URI in traces or logs.
-//
-// Example:
-//
-//	uri := "https://example.com/callback?secret=abc123#fragment"
-//	sanitized := SanitizeRedirectURI(uri)
-//	// Result: "https://example.com/callback"
-func SanitizeRedirectURI(uri string) string {
-	if uri == "" {
-		return ""
-	}
-
-	parsed, err := url.Parse(uri)
-	if err != nil {
-		// If parsing fails, return just the scheme://host part if possible
-		// Fall back to returning empty string to avoid logging potentially malformed URLs
-		return ""
-	}
-
-	// Clear query parameters and fragment
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
-
-	return parsed.String()
-}

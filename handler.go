@@ -45,7 +45,7 @@ type clientRegistrationRequest struct {
 
 // checkClientRegistrationRateLimit checks if client registration is rate limited
 // Returns true if request should be rejected, false if allowed
-func (h *Handler) checkClientRegistrationRateLimit(w http.ResponseWriter, clientIP string, _ time.Time) bool {
+func (h *Handler) checkClientRegistrationRateLimit(ctx context.Context, w http.ResponseWriter, clientIP string, _ time.Time) bool {
 	if h.server.ClientRegistrationRateLimiter == nil {
 		return false
 	}
@@ -56,7 +56,7 @@ func (h *Handler) checkClientRegistrationRateLimit(w http.ResponseWriter, client
 			"max_per_window", h.server.Config.MaxRegistrationsPerHour,
 			"window", time.Duration(h.server.Config.RegistrationRateLimitWindow)*time.Second)
 		if h.server.Auditor != nil {
-			h.server.Auditor.LogClientRegistrationRateLimitExceeded(clientIP)
+			h.server.Auditor.LogClientRegistrationRateLimitExceeded(ctx, clientIP)
 		}
 		h.writeError(w, ErrorCodeInvalidRequest,
 			"Client registration rate limit exceeded. Please try again later.",
@@ -544,12 +544,12 @@ func (h *Handler) recordRateLimitExceeded(ctx context.Context, limitType, client
 		h.server.Instrumentation.Metrics().RecordRateLimitExceeded(ctx, limitType)
 	}
 	if h.server.Auditor != nil {
-		h.server.Auditor.LogEvent(security.Event{
+		h.server.Auditor.LogEvent(ctx, security.Event{
 			Type:      security.EventRateLimitExceeded,
 			IPAddress: clientIP,
 			Details:   map[string]any{"endpoint": endpoint},
 		})
-		h.server.Auditor.LogRateLimitExceeded(clientIP, userID)
+		h.server.Auditor.LogRateLimitExceeded(ctx, clientIP, userID)
 	}
 }
 
@@ -559,7 +559,7 @@ func (h *Handler) recordUserRateLimitExceeded(ctx context.Context, clientIP, use
 		h.server.Instrumentation.Metrics().RecordRateLimitExceeded(ctx, "user")
 	}
 	if h.server.Auditor != nil {
-		h.server.Auditor.LogRateLimitExceeded(clientIP, userID)
+		h.server.Auditor.LogRateLimitExceeded(ctx, clientIP, userID)
 	}
 }
 
@@ -1037,7 +1037,7 @@ func (h *Handler) checkDiscoveryRateLimit(w http.ResponseWriter, r *http.Request
 	}
 
 	if h.server.Auditor != nil {
-		h.server.Auditor.LogEvent(security.Event{
+		h.server.Auditor.LogEvent(r.Context(), security.Event{
 			Type:      security.EventRateLimitExceeded,
 			IPAddress: clientIP,
 			Details:   map[string]any{"endpoint": r.URL.Path},
@@ -1227,11 +1227,15 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	responseType := r.URL.Query().Get("response_type")
+
 	// Add attributes to span
 	instrumentation.SetSpanAttributes(
 		span,
 		attribute.String(instrumentation.AttrClientID, clientID),
 		attribute.String(instrumentation.AttrPKCEMethod, codeChallengeMethod),
+		attribute.String(instrumentation.AttrResponseType, responseType),
+		attribute.String(instrumentation.AttrScope, scope),
 	)
 
 	// Start authorization flow with client state (server also validates for defense in depth)
@@ -1246,7 +1250,9 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Record authorization started metric
-	h.recordAuthorizationStarted(clientID)
+	if m := h.metrics(); m != nil {
+		m.RecordAuthorizationStarted(context.Background(), clientID)
+	}
 
 	h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusFound, startTime)
 	instrumentation.SetSpanSuccess(span)
@@ -1299,7 +1305,9 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 		errorDesc := r.URL.Query().Get("error_description")
 		h.logger.Warn("Provider returned error", "error", errorParam, "description", errorDesc)
 		h.recordHTTPMetrics("callback", http.MethodGet, http.StatusBadRequest, startTime)
-		h.recordCallbackProcessed("", false)
+		if m := h.metrics(); m != nil {
+			m.RecordCallbackProcessed(context.Background(), "", false)
+		}
 		instrumentation.SetSpanError(span, errorParam)
 		h.writeError(w, errorParam, errorDesc, http.StatusBadRequest)
 		return
@@ -1313,7 +1321,9 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	// controls the client-facing state in the authorization request.
 	if state == "" || code == "" {
 		h.recordHTTPMetrics("callback", http.MethodGet, http.StatusBadRequest, startTime)
-		h.recordCallbackProcessed("", false)
+		if m := h.metrics(); m != nil {
+			m.RecordCallbackProcessed(context.Background(), "", false)
+		}
 		instrumentation.SetSpanError(span, "missing state or code")
 		h.writeError(w, ErrorCodeInvalidRequest, "state and code are required", http.StatusBadRequest)
 		return
@@ -1321,7 +1331,9 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	if len(state) < MinStateLength {
 		h.logger.Warn("Callback rejected: provider state too short", "state_length", len(state), "min_required", MinStateLength)
 		h.recordHTTPMetrics("callback", http.MethodGet, http.StatusBadRequest, startTime)
-		h.recordCallbackProcessed("", false)
+		if m := h.metrics(); m != nil {
+			m.RecordCallbackProcessed(context.Background(), "", false)
+		}
 		instrumentation.SetSpanError(span, "state too short")
 		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at least %d characters for security", MinStateLength), http.StatusBadRequest)
 		return
@@ -1333,7 +1345,9 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.logger.Error("Failed to handle callback", "error", err)
 		h.recordHTTPMetrics("callback", http.MethodGet, http.StatusInternalServerError, startTime)
-		h.recordCallbackProcessed("", false)
+		if m := h.metrics(); m != nil {
+			m.RecordCallbackProcessed(context.Background(), "", false)
+		}
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "callback handling failed")
 		h.writeError(w, ErrorCodeServerError, "Authorization failed", http.StatusInternalServerError)
@@ -1341,7 +1355,9 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Record successful callback
-	h.recordCallbackProcessed(authCode.ClientID, true)
+	if m := h.metrics(); m != nil {
+		m.RecordCallbackProcessed(context.Background(), authCode.ClientID, true)
+	}
 	instrumentation.SetSpanAttributes(span, attribute.String(instrumentation.AttrClientID, authCode.ClientID))
 	instrumentation.SetSpanSuccess(span)
 
@@ -1419,7 +1435,16 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 	case "refresh_token":
 		h.handleRefreshTokenGrant(w, r)
 	default:
+		h.recordTokenFailure(grantType, ErrorCodeUnsupportedGrantType)
 		h.writeError(w, ErrorCodeUnsupportedGrantType, fmt.Sprintf("Grant type %s not supported", grantType), http.StatusBadRequest)
+	}
+}
+
+// recordTokenFailure records a token-endpoint failure metric labelled by
+// grant_type + error_code. No-op when no instrumentation is wired.
+func (h *Handler) recordTokenFailure(grantType, errorCode string) {
+	if m := h.metrics(); m != nil {
+		m.RecordTokenEndpointFailure(context.Background(), grantType, errorCode)
 	}
 }
 
@@ -1444,6 +1469,7 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	codeVerifier := r.Form.Get("code_verifier")
 
 	if code == "" {
+		h.recordTokenFailure("authorization_code", ErrorCodeInvalidRequest)
 		h.recordHTTPMetrics("token", http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "code missing")
 		h.writeError(w, ErrorCodeInvalidRequest, "Required parameter 'code' missing", http.StatusBadRequest)
@@ -1458,8 +1484,10 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 		instrumentation.SetSpanError(span, "client authentication failed")
 		// authenticateClient returns Error, extract details
 		if oauthErr, ok := err.(*Error); ok {
+			h.recordTokenFailure("authorization_code", oauthErr.Code)
 			h.writeError(w, oauthErr.Code, oauthErr.Description, oauthErr.Status)
 		} else {
+			h.recordTokenFailure("authorization_code", ErrorCodeInvalidClient)
 			h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
 		}
 		return
@@ -1470,12 +1498,14 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 		span,
 		attribute.String(instrumentation.AttrClientID, client.ClientID),
 		attribute.String(instrumentation.AttrClientType, client.ClientType),
+		attribute.String(instrumentation.AttrGrantType, "authorization_code"),
 	)
 
 	// Exchange authorization code for tokens
 	tokenResponse, scope, err := h.server.ExchangeAuthorizationCode(ctx, code, client.ClientID, redirectURI, resource, codeVerifier)
 	if err != nil {
 		h.logger.Error("Failed to exchange authorization code", "client_id", client.ClientID, "ip", clientIP, "error", err)
+		h.recordTokenFailure("authorization_code", ErrorCodeInvalidGrant)
 		h.recordHTTPMetrics("token", http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "code exchange failed")
@@ -1492,7 +1522,9 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	if codeVerifier != "" {
 		pkceMethod = PKCEMethodS256
 	}
-	h.recordCodeExchanged(client.ClientID, pkceMethod)
+	if m := h.metrics(); m != nil {
+		m.RecordCodeExchange(context.Background(), client.ClientID, pkceMethod)
+	}
 
 	h.recordHTTPMetrics("token", http.MethodPost, http.StatusOK, startTime)
 	instrumentation.SetSpanSuccess(span)
@@ -1519,6 +1551,7 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	clientID := r.Form.Get("client_id")
 
 	if refreshToken == "" {
+		h.recordTokenFailure("refresh_token", ErrorCodeInvalidRequest)
 		h.recordHTTPMetrics("token", http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "refresh_token missing")
 		h.writeError(w, ErrorCodeInvalidRequest, "refresh_token is required", http.StatusBadRequest)
@@ -1533,7 +1566,11 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	instrumentation.SetSpanAttributes(span, attribute.String(instrumentation.AttrClientID, clientID))
+	instrumentation.SetSpanAttributes(
+		span,
+		attribute.String(instrumentation.AttrClientID, clientID),
+		attribute.String(instrumentation.AttrGrantType, "refresh_token"),
+	)
 	if clientAuthenticated {
 		instrumentation.SetSpanAttributes(span, attribute.Bool("oauth.client_authenticated", true))
 	}
@@ -1542,6 +1579,7 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	tokenResponse, err := h.server.RefreshAccessToken(ctx, refreshToken, clientID)
 	if err != nil {
 		h.logger.Error("Failed to refresh token", "client_id", clientID, "ip", clientIP, "error", err)
+		h.recordTokenFailure("refresh_token", ErrorCodeInvalidGrant)
 		h.recordHTTPMetrics("token", http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "token refresh failed")
@@ -1553,7 +1591,9 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 
 	// Record token refreshed metric (check if it was rotated)
 	rotated := h.server.Config.AllowRefreshTokenRotation
-	h.recordTokenRefreshed(clientID, rotated)
+	if m := h.metrics(); m != nil {
+		m.RecordTokenRefresh(context.Background(), clientID, rotated)
+	}
 
 	h.recordHTTPMetrics("token", http.MethodPost, http.StatusOK, startTime)
 	instrumentation.SetSpanSuccess(span)
@@ -1575,7 +1615,7 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 		if err := h.server.ValidateClientCredentials(ctx, clientID, authClientSecret); err != nil {
 			h.logger.Warn("Client authentication failed", "client_id", clientID, "ip", clientIP, "error", err)
 			if h.server.Auditor != nil {
-				h.server.Auditor.LogAuthFailure("", clientID, clientIP, "refresh_client_authentication_failed")
+				h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "refresh_client_authentication_failed")
 			}
 			h.recordHTTPMetrics("token", http.MethodPost, http.StatusUnauthorized, startTime)
 			instrumentation.RecordError(span, err)
@@ -1599,7 +1639,7 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 	if err != nil {
 		h.logger.Warn("Unknown client for refresh", "client_id", clientID, "ip", clientIP)
 		if h.server.Auditor != nil {
-			h.server.Auditor.LogAuthFailure("", clientID, clientIP, "refresh_unknown_client")
+			h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "refresh_unknown_client")
 		}
 		h.recordHTTPMetrics("token", http.MethodPost, http.StatusUnauthorized, startTime)
 		instrumentation.SetSpanError(span, "unknown client")
@@ -1614,8 +1654,8 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 			"security_event", "confidential_client_missing_auth",
 			"oauth_spec", "OAuth 2.1 Section 6")
 		if h.server.Auditor != nil {
-			h.server.Auditor.LogAuthFailure("", clientID, clientIP, "confidential_client_refresh_missing_auth")
-			h.server.Auditor.LogEvent(security.Event{
+			h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "confidential_client_refresh_missing_auth")
+			h.server.Auditor.LogEvent(ctx, security.Event{
 				Type:     security.EventAuthFailure,
 				ClientID: clientID,
 				Details: map[string]any{
@@ -1694,7 +1734,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 		if err := h.server.ValidateClientCredentials(ctx, clientID, authClientSecret); err != nil {
 			h.logger.Warn("Client authentication failed for revocation", "client_id", clientID, "ip", clientIP)
 			if h.server.Auditor != nil {
-				h.server.Auditor.LogAuthFailure("", clientID, clientIP, "revocation_auth_failed")
+				h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "revocation_auth_failed")
 			}
 			h.recordHTTPMetrics("revoke", http.MethodPost, http.StatusUnauthorized, startTime)
 			instrumentation.RecordError(span, err)
@@ -1715,7 +1755,9 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 	// Per RFC 7009, return 200 even if revocation fails
 
 	// Record token revoked metric
-	h.recordTokenRevoked(clientID)
+	if m := h.metrics(); m != nil {
+		m.RecordTokenRevocation(context.Background(), clientID)
+	}
 
 	h.recordHTTPMetrics("revoke", http.MethodPost, http.StatusOK, startTime)
 	instrumentation.SetSpanSuccess(span)
@@ -1743,7 +1785,7 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	h.setCORSHeaders(w, r)
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
-	if h.checkClientRegistrationRateLimit(w, clientIP, startTime) {
+	if h.checkClientRegistrationRateLimit(r.Context(), w, clientIP, startTime) {
 		return
 	}
 
@@ -1777,8 +1819,10 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	h.recordClientRegistered(client.ClientType)
-	h.auditTrustedSchemeRegistration(registeredViaTrustedScheme, trustedScheme, client, clientIP)
+	if m := h.metrics(); m != nil {
+		m.RecordClientRegistration(context.Background(), client.ClientType)
+	}
+	h.auditTrustedSchemeRegistration(r.Context(), registeredViaTrustedScheme, trustedScheme, client, clientIP)
 	h.recordHTTPMetrics("register", http.MethodPost, http.StatusCreated, startTime)
 	h.setRegistrationSpanSuccess(span, client)
 	h.writeRegistrationResponse(w, client, clientSecret)
@@ -1862,12 +1906,12 @@ func (h *Handler) handleRegistrationError(w http.ResponseWriter, err error, clie
 }
 
 // auditTrustedSchemeRegistration logs trusted scheme registration for security monitoring.
-func (h *Handler) auditTrustedSchemeRegistration(registeredViaTrustedScheme bool, trustedScheme string, client *storage.Client, clientIP string) {
+func (h *Handler) auditTrustedSchemeRegistration(ctx context.Context, registeredViaTrustedScheme bool, trustedScheme string, client *storage.Client, clientIP string) {
 	if !registeredViaTrustedScheme || h.server.Auditor == nil {
 		return
 	}
 
-	h.server.Auditor.LogEvent(security.Event{
+	h.server.Auditor.LogEvent(ctx, security.Event{
 		Type:     security.EventClientRegisteredViaTrustedScheme,
 		ClientID: client.ClientID,
 		Details: map[string]any{
@@ -1934,7 +1978,7 @@ func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string)
 
 	client, err := h.server.GetClient(r.Context(), clientID)
 	if err != nil {
-		h.logAuthFailure(clientID, clientIP, ErrorCodeInvalidClient, "Unknown client")
+		h.logAuthFailure(r.Context(), clientID, clientIP, ErrorCodeInvalidClient, "Unknown client")
 		return nil, ErrInvalidClient("Client authentication failed")
 	}
 
@@ -1952,12 +1996,12 @@ func (h *Handler) validateConfidentialClient(ctx context.Context, client *storag
 	}
 
 	if secret == "" {
-		h.logAuthFailure(client.ClientID, clientIP, "confidential_client_auth_required", "Confidential client missing credentials")
+		h.logAuthFailure(ctx, client.ClientID, clientIP, "confidential_client_auth_required", "Confidential client missing credentials")
 		return ErrInvalidClient("Client authentication required")
 	}
 
 	if err := h.server.ValidateClientCredentials(ctx, client.ClientID, secret); err != nil {
-		h.logAuthFailure(client.ClientID, clientIP, "client_authentication_failed", "Client authentication failed")
+		h.logAuthFailure(ctx, client.ClientID, clientIP, "client_authentication_failed", "Client authentication failed")
 		return ErrInvalidClient("Client authentication failed")
 	}
 
@@ -1965,10 +2009,10 @@ func (h *Handler) validateConfidentialClient(ctx context.Context, client *storag
 }
 
 // logAuthFailure logs authentication failures with optional auditing.
-func (h *Handler) logAuthFailure(clientID, clientIP, reason, message string) {
+func (h *Handler) logAuthFailure(ctx context.Context, clientID, clientIP, reason, message string) {
 	h.logger.Warn(message, "client_id", clientID, "ip", clientIP)
 	if h.server.Auditor != nil {
-		h.server.Auditor.LogAuthFailure("", clientID, clientIP, reason)
+		h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, reason)
 	}
 }
 
@@ -2182,6 +2226,13 @@ func (h *Handler) formatWWWAuthenticate(scope, errCode, errorDesc string) string
 // Security: Requires client authentication to prevent token scanning attacks
 func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
+	ctx := r.Context()
+
+	var span trace.Span
+	if h.tracer != nil {
+		ctx, span = h.tracer.Start(ctx, "oauth.http.introspection")
+		defer span.End()
+	}
 
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -2209,19 +2260,30 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	tokenType := r.Form.Get("token_type_hint")
+	if tokenType != "" && span != nil {
+		instrumentation.SetSpanAttributes(span, attribute.String(instrumentation.AttrTokenType, tokenType))
+	}
+
 	clientID, err := h.authenticateIntrospectionClient(r, clientIP)
 	if err != nil {
 		h.writeError(w, ErrorCodeInvalidClient, err.Error(), http.StatusUnauthorized)
 		return
 	}
 
+	if span != nil {
+		instrumentation.SetSpanAttributes(span, attribute.String(instrumentation.AttrClientID, clientID))
+	}
+
 	// Validate the token and build response
-	response := h.buildIntrospectionResponse(r.Context(), token, clientID, clientIP)
+	response := h.buildIntrospectionResponse(ctx, token, clientID, clientIP)
 
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(response)
+	h.recordHTTPMetrics("introspect", http.MethodPost, http.StatusOK, startTime)
+	instrumentation.SetSpanSuccess(span)
 }
 
 // authenticateIntrospectionClient validates client credentials for token introspection.
@@ -2234,7 +2296,7 @@ func (h *Handler) authenticateIntrospectionClient(r *http.Request, clientIP stri
 		if err := h.server.ValidateClientCredentials(ctx, authClientID, authClientSecret); err != nil {
 			h.logger.Warn("Client authentication failed for introspection", "client_id", authClientID, "ip", clientIP)
 			if h.server.Auditor != nil {
-				h.server.Auditor.LogAuthFailure("", authClientID, clientIP, "introspection_auth_failed")
+				h.server.Auditor.LogAuthFailure(ctx, "", authClientID, clientIP, "introspection_auth_failed")
 			}
 			return "", fmt.Errorf("client authentication failed")
 		}
@@ -2246,14 +2308,14 @@ func (h *Handler) authenticateIntrospectionClient(r *http.Request, clientIP stri
 	if clientID == "" {
 		h.logger.Warn("Token introspection rejected: missing client authentication", "ip", clientIP)
 		if h.server.Auditor != nil {
-			h.server.Auditor.LogAuthFailure("", "", clientIP, "introspection_missing_auth")
+			h.server.Auditor.LogAuthFailure(ctx, "", "", clientIP, "introspection_missing_auth")
 		}
 		return "", fmt.Errorf("client authentication required for token introspection")
 	}
 
 	h.logger.Warn("Token introspection rejected: client_id without credentials", "client_id", clientID, "ip", clientIP)
 	if h.server.Auditor != nil {
-		h.server.Auditor.LogAuthFailure("", clientID, clientIP, "introspection_missing_credentials")
+		h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "introspection_missing_credentials")
 	}
 	return "", fmt.Errorf("client authentication required for token introspection")
 }
@@ -2372,7 +2434,7 @@ func (h *Handler) validateTokenScopesFromMetadata(w http.ResponseWriter, r *http
 		"ip", clientIP)
 
 	if h.server.Auditor != nil {
-		h.server.Auditor.LogAuthFailure(userInfo.ID, "", clientIP, "insufficient_scope")
+		h.server.Auditor.LogAuthFailure(r.Context(), userInfo.ID, "", clientIP, "insufficient_scope")
 	}
 
 	var description string
@@ -2683,77 +2745,21 @@ func (h *Handler) ServePreflightRequest(w http.ResponseWriter, r *http.Request) 
 }
 
 // recordHTTPMetrics records HTTP request metrics (total count and duration)
+// metrics returns the Instrumentation Metrics holder, or nil when no
+// instrumentation is configured.
+func (h *Handler) metrics() *instrumentation.Metrics {
+	if h.server.Instrumentation == nil {
+		return nil
+	}
+	return h.server.Instrumentation.Metrics()
+}
+
+// recordHTTPMetrics records an HTTP request metric.
 func (h *Handler) recordHTTPMetrics(endpoint, method string, status int, startTime time.Time) {
-	if h.server.Instrumentation == nil {
-		return
+	if m := h.metrics(); m != nil {
+		duration := time.Since(startTime).Seconds() * 1000
+		m.RecordHTTPRequest(context.Background(), method, endpoint, status, duration)
 	}
-
-	metrics := h.server.Instrumentation.Metrics()
-	ctx := context.Background()
-
-	// Record total requests with duration
-	duration := time.Since(startTime).Seconds() * 1000 // convert to milliseconds
-	metrics.RecordHTTPRequest(ctx, method, endpoint, status, duration)
-}
-
-// recordAuthorizationStarted records when an authorization flow is started
-func (h *Handler) recordAuthorizationStarted(clientID string) {
-	if h.server.Instrumentation == nil {
-		return
-	}
-
-	metrics := h.server.Instrumentation.Metrics()
-	metrics.RecordAuthorizationStarted(context.Background(), clientID)
-}
-
-// recordCallbackProcessed records when a callback is processed
-func (h *Handler) recordCallbackProcessed(clientID string, success bool) {
-	if h.server.Instrumentation == nil {
-		return
-	}
-
-	metrics := h.server.Instrumentation.Metrics()
-	metrics.RecordCallbackProcessed(context.Background(), clientID, success)
-}
-
-// recordCodeExchanged records when an authorization code is exchanged
-func (h *Handler) recordCodeExchanged(clientID, pkceMethod string) {
-	if h.server.Instrumentation == nil {
-		return
-	}
-
-	metrics := h.server.Instrumentation.Metrics()
-	metrics.RecordCodeExchange(context.Background(), clientID, pkceMethod)
-}
-
-// recordTokenRefreshed records when a token is refreshed
-func (h *Handler) recordTokenRefreshed(clientID string, rotated bool) {
-	if h.server.Instrumentation == nil {
-		return
-	}
-
-	metrics := h.server.Instrumentation.Metrics()
-	metrics.RecordTokenRefresh(context.Background(), clientID, rotated)
-}
-
-// recordTokenRevoked records when a token is revoked
-func (h *Handler) recordTokenRevoked(clientID string) {
-	if h.server.Instrumentation == nil {
-		return
-	}
-
-	metrics := h.server.Instrumentation.Metrics()
-	metrics.RecordTokenRevocation(context.Background(), clientID)
-}
-
-// recordClientRegistered records when a client is registered
-func (h *Handler) recordClientRegistered(clientType string) {
-	if h.server.Instrumentation == nil {
-		return
-	}
-
-	metrics := h.server.Instrumentation.Metrics()
-	metrics.RecordClientRegistration(context.Background(), clientType)
 }
 
 // validPromptValues defines the allowed values for the OIDC prompt parameter.

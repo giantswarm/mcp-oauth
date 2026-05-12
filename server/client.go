@@ -78,7 +78,7 @@ func (s *Server) RegisterClient(ctx context.Context, clientName, clientType, tok
 		return nil, "", fmt.Errorf("failed to save client: %w", err)
 	}
 
-	s.trackClientIPAndLog(client, clientSecret, clientIP)
+	s.trackClientIPAndLog(ctx, client, clientSecret, clientIP)
 	return client, clientSecret, nil
 }
 
@@ -87,7 +87,7 @@ func (s *Server) validateRedirectURIsWithAudit(ctx context.Context, redirectURIs
 	if err := s.ValidateRedirectURIsForRegistration(ctx, redirectURIs); err != nil {
 		if s.Auditor != nil {
 			category := GetRedirectURIErrorCategory(err)
-			s.Auditor.LogEvent(security.Event{
+			s.Auditor.LogEvent(ctx, security.Event{
 				Type: security.EventClientRegistrationRejected,
 				Details: map[string]any{
 					"reason":    "redirect_uri_validation_failed",
@@ -139,13 +139,13 @@ func generateClientSecret(clientType string) (string, string, error) {
 }
 
 // trackClientIPAndLog tracks the IP for DoS protection and logs the registration.
-func (s *Server) trackClientIPAndLog(client *storage.Client, _ /* clientSecret - not logged for security */, clientIP string) {
+func (s *Server) trackClientIPAndLog(ctx context.Context, client *storage.Client, _ /* clientSecret - not logged for security */, clientIP string) {
 	if memStore, ok := s.clientStore.(*memory.Store); ok {
 		memStore.TrackClientIP(clientIP)
 	}
 
 	if s.Auditor != nil {
-		s.Auditor.LogClientRegistered(client.ClientID, client.ClientType, clientIP)
+		s.Auditor.LogClientRegistered(ctx, client.ClientID, client.ClientType, clientIP)
 	}
 
 	s.Logger.Debug("Registered new OAuth client",
