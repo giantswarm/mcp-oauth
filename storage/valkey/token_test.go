@@ -211,3 +211,30 @@ func TestSerializableTokenOmitEmpty(t *testing.T) {
 	assert.NotContains(t, parsed, "extra", "nil extra should be omitted")
 	// Note: expiry with zero time may or may not be omitted depending on JSON encoding
 }
+
+// TestMaxTokenDataSize_FitsEnterpriseGroupsClaim pins the contract:
+// MaxTokenDataSize must admit an enterprise OIDC id_token whose JWT embeds
+// ~500 group memberships. The id_token alone is ~80KB for a population that
+// causes SaveToken to fail at the previous 256KB cap; rounded up with
+// access/refresh tokens and JSON framing this is well within 600KB.
+func TestMaxTokenDataSize_FitsEnterpriseGroupsClaim(t *testing.T) {
+	idTokenPayload := make([]byte, 500*1024)
+	for i := range idTokenPayload {
+		idTokenPayload[i] = 'a'
+	}
+
+	token := (&oauth2.Token{
+		AccessToken:  "at-" + string(make([]byte, 256)),
+		RefreshToken: "rt-" + string(make([]byte, 256)),
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(time.Hour),
+	}).WithExtra(map[string]any{
+		"id_token": string(idTokenPayload),
+		"scope":    "openid email profile groups offline_access",
+	})
+
+	data, err := json.Marshal(toSerializable(token))
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(data), MaxTokenDataSize,
+		"500KB id_token must fit within MaxTokenDataSize=%d (got serialized size %d)", MaxTokenDataSize, len(data))
+}
