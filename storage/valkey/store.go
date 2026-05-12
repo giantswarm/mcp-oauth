@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -482,65 +483,38 @@ func validateStringLength(value string, maxLen int, fieldName string) error {
 // Key Helpers
 // ============================================================
 
-// tokenKey returns the key for a user's token: {prefix}:token:{userID}
-func (s *Store) tokenKey(userID string) string {
-	return fmt.Sprintf("%stoken:%s", s.prefix, userID)
+// keyOf returns "{prefix}{namespace}:{parts...}" — the schema every per-row
+// key helper in this file produces. Centralising the shape stops drift
+// (e.g. one helper omitting the trailing colon) and makes the namespace
+// taxonomy auditable at a glance.
+func (s *Store) keyOf(namespace string, parts ...string) string {
+	var b strings.Builder
+	b.Grow(len(s.prefix) + len(namespace) + 1 + len(parts)*16)
+	b.WriteString(s.prefix)
+	b.WriteString(namespace)
+	for _, p := range parts {
+		b.WriteByte(':')
+		b.WriteString(p)
+	}
+	return b.String()
 }
 
-// userInfoKey returns the key for user info: {prefix}:userinfo:{userID}
-func (s *Store) userInfoKey(userID string) string {
-	return fmt.Sprintf("%suserinfo:%s", s.prefix, userID)
-}
-
-// refreshTokenKey returns the key for a refresh token: {prefix}:refresh:{token}
-func (s *Store) refreshTokenKey(token string) string {
-	return fmt.Sprintf("%srefresh:%s", s.prefix, token)
-}
-
-// refreshTokenMetaKey returns the key for refresh token metadata: {prefix}:refresh:meta:{token}
+func (s *Store) tokenKey(userID string) string       { return s.keyOf("token", userID) }
+func (s *Store) userInfoKey(userID string) string    { return s.keyOf("userinfo", userID) }
+func (s *Store) refreshTokenKey(token string) string { return s.keyOf("refresh", token) }
 func (s *Store) refreshTokenMetaKey(token string) string {
-	return fmt.Sprintf("%srefresh:meta:%s", s.prefix, token)
+	return s.keyOf("refresh", "meta", token)
 }
-
-// clientKey returns the key for a client: {prefix}:client:{clientID}
-func (s *Store) clientKey(clientID string) string {
-	return fmt.Sprintf("%sclient:%s", s.prefix, clientID)
-}
-
-// clientIPKey returns the key for client IP tracking: {prefix}:client:ip:{ip}
-func (s *Store) clientIPKey(ip string) string {
-	return fmt.Sprintf("%sclient:ip:%s", s.prefix, ip)
-}
-
-// stateKey returns the key for an authorization state: {prefix}:state:{stateID}
-func (s *Store) stateKey(stateID string) string {
-	return fmt.Sprintf("%sstate:%s", s.prefix, stateID)
-}
-
-// providerStateKey returns the key for provider state lookup: {prefix}:state:provider:{state}
-func (s *Store) providerStateKey(state string) string {
-	return fmt.Sprintf("%sstate:provider:%s", s.prefix, state)
-}
-
-// codeKey returns the key for an authorization code: {prefix}:code:{code}
-func (s *Store) codeKey(code string) string {
-	return fmt.Sprintf("%scode:%s", s.prefix, code)
-}
-
-// tokenMetaKey returns the key for token metadata: {prefix}:meta:{tokenID}
-func (s *Store) tokenMetaKey(tokenID string) string {
-	return fmt.Sprintf("%smeta:%s", s.prefix, tokenID)
-}
-
-// userClientKey returns the key for user+client token tracking: {prefix}:userclient:{userID}:{clientID}
+func (s *Store) clientKey(clientID string) string     { return s.keyOf("client", clientID) }
+func (s *Store) clientIPKey(ip string) string         { return s.keyOf("client", "ip", ip) }
+func (s *Store) stateKey(stateID string) string       { return s.keyOf("state", stateID) }
+func (s *Store) providerStateKey(state string) string { return s.keyOf("state", "provider", state) }
+func (s *Store) codeKey(code string) string           { return s.keyOf("code", code) }
+func (s *Store) tokenMetaKey(tokenID string) string   { return s.keyOf("meta", tokenID) }
 func (s *Store) userClientKey(userID, clientID string) string {
-	return fmt.Sprintf("%suserclient:%s:%s", s.prefix, userID, clientID)
+	return s.keyOf("userclient", userID, clientID)
 }
-
-// familyKey returns the key for a token family: {prefix}:family:{familyID}
-func (s *Store) familyKey(familyID string) string {
-	return fmt.Sprintf("%sfamily:%s", s.prefix, familyID)
-}
+func (s *Store) familyKey(familyID string) string { return s.keyOf("family", familyID) }
 
 // ============================================================
 // Lua Scripts for Atomic Operations

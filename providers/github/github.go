@@ -195,15 +195,10 @@ func (p *Provider) Name() string {
 	return providerName
 }
 
-// DefaultScopes returns the provider's configured default scopes.
-// Returns a deep copy to prevent external modification.
+// DefaultScopes returns a deep copy of the provider's configured default
+// scopes so callers cannot mutate the provider's slice.
 func (p *Provider) DefaultScopes() []string {
-	if p.Scopes == nil {
-		return nil
-	}
-	scopes := make([]string, len(p.Scopes))
-	copy(scopes, p.Scopes)
-	return scopes
+	return providers.CloneScopes(p.Scopes)
 }
 
 // AuthorizationURL generates the GitHub OAuth authorization URL with optional PKCE.
@@ -251,14 +246,9 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	return config.AuthCodeURL(state, opts...)
 }
 
-// ensureContextTimeout ensures the context has a deadline, adding one if needed.
-// Returns a new context with timeout and a cancel function that should be deferred.
-// If the context already has a deadline, returns the original context with a no-op cancel.
+// ensureContextTimeout delegates to [providers.EnsureTimeout].
 func (p *Provider) ensureContextTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
-	if _, hasDeadline := ctx.Deadline(); hasDeadline {
-		return ctx, func() {}
-	}
-	return context.WithTimeout(ctx, p.requestTimeout)
+	return providers.EnsureTimeout(ctx, p.requestTimeout)
 }
 
 // ExchangeCode exchanges an authorization code for tokens with optional PKCE verification.
