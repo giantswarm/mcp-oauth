@@ -416,16 +416,24 @@ func (s *Server) getOrFetchClient(ctx context.Context, clientID string) (*storag
 		return nil, err
 	}
 
-	// SECURITY: Use singleflight to deduplicate concurrent fetches of the same URL
-	result, err, _ := s.metadataFetchGroup.Do(clientID, func() (interface{}, error) {
-		return s.fetchClientWithSingleflight(ctx, clientID)
+	// SECURITY: Use singleflight to deduplicate concurrent fetches of the same URL.
+	// DoChan + a leader ctx detached from caller cancellation: each caller
+	// selects on its own ctx vs the shared result channel. One caller's
+	// cancellation cannot poison the others, and the shared fetch completes
+	// and caches its result for any caller still listening or future
+	// cache readers.
+	ch := s.metadataFetchGroup.DoChan(clientID, func() (interface{}, error) {
+		return s.fetchClientWithSingleflight(context.WithoutCancel(ctx), clientID)
 	})
-
-	if err != nil {
-		return nil, err
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		return res.Val.(*storage.Client), nil
 	}
-
-	return result.(*storage.Client), nil
 }
 
 // fetchClientWithSingleflight performs the actual fetch within singleflight context.

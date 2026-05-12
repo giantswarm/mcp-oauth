@@ -239,7 +239,7 @@ Describes the authorization server's capabilities, endpoints, and supported feat
 }
 ```
 
-Note: `revocation_endpoint` and `introspection_endpoint` are only included when explicitly enabled via `EnableRevocationEndpoint` and `EnableIntrospectionEndpoint` configuration options.
+Note: `revocation_endpoint`, `introspection_endpoint`, and `userinfo_endpoint` are only included when explicitly enabled via `EnableRevocationEndpoint`, `EnableIntrospectionEndpoint`, and `EnableUserInfoEndpoint` configuration options.
 
 `jwks_uri` and `access_token_signing_alg_values_supported` appear only when `AccessTokenFormat` is `AccessTokenFormatJWT`. In opaque mode they are absent — the JWKS endpoint exists but returns 404, and advertising it would point clients at an endpoint with no keys.
 

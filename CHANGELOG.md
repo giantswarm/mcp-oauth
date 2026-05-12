@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`Config.DiscoveryCacheMaxAge time.Duration`** (default `1h`). Discovery endpoints (`/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource[...]`, `/.well-known/openid-configuration`) advertise `Cache-Control: public, max-age=<seconds>` per RFC 8414 §3 / RFC 9728 §3.
 - **OIDC Discovery 1.0 §3 metadata fields** on the AS metadata document: `subject_types_supported: ["public"]`, `id_token_signing_alg_values_supported` (always includes `RS256`), and `claims_supported`.
+- **`Config.EnableUserInfoEndpoint bool`** + **`EndpointPathUserInfo = "/oauth/userinfo"`** + **`Config.UserInfoEndpoint()`**. When enabled, `/oauth/userinfo` (OIDC Core 1.0 §5.3) is mounted behind `Handler.ValidateToken` and `userinfo_endpoint` is advertised in AS / OIDC discovery metadata. The `openid` scope is required; `profile`, `email`, and `groups` scopes gate the corresponding claims; `sub` is always returned.
+- **`ContextWithScopes` / `ScopesFromContext`**. The `ValidateToken` middleware stashes the access token's granted scopes in the request context.
 - **RFC 7591 client-registration response fields**: `client_id_issued_at` (always) and `client_secret_expires_at: 0` for confidential clients (RFC 7591 §3.2.1 sentinel for "never expires").
 - **`Config.MaxStateLength int`** (default `512`). `/authorize` and `/callback` reject `state` longer than the configured maximum with `invalid_request`.
 - **`security.DecodeKey(s string) ([]byte, error)`**: convenience helper that tries [`KeyFromBase64`](security/encryption.go) then falls back to [`KeyFromHex`](security/encryption.go). Consolidates the dual-encoding decode pattern that consumers were re-implementing locally.

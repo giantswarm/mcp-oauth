@@ -341,6 +341,73 @@ func TestDiscoveryClient_Discover_SingleflightCoalescesColdMisses(t *testing.T) 
 		"cold-cache callers must coalesce into a single upstream fetch (got %d)", atomic.LoadInt64(&fetches))
 }
 
+// TestDiscoveryClient_Discover_CallerCancelDoesNotPoisonOthers verifies that
+// when one coalesced caller cancels its context the others still receive the
+// shared fetch result (the leader's ctx is detached from the fetch).
+func TestDiscoveryClient_Discover_CallerCancelDoesNotPoisonOthers(t *testing.T) {
+	validDoc := DiscoveryDocument{
+		Issuer:                 "https://dex.example.com",
+		AuthorizationEndpoint:  "https://dex.example.com/auth",
+		TokenEndpoint:          "https://dex.example.com/token",
+		JWKSUri:                "https://dex.example.com/keys",
+		ResponseTypesSupported: []string{"code"},
+	}
+
+	release := make(chan struct{})
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(validDoc)
+	}))
+	defer server.Close()
+
+	client := newTestClient(server.Client(), 1*time.Hour)
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	defer cancelLeader()
+
+	type result struct {
+		doc *DiscoveryDocument
+		err error
+	}
+	leaderResult := make(chan result, 1)
+	joinerResult := make(chan result, 1)
+
+	var ready sync.WaitGroup
+	ready.Add(2)
+	go func() {
+		ready.Done()
+		doc, err := client.Discover(leaderCtx, server.URL)
+		leaderResult <- result{doc: doc, err: err}
+	}()
+	go func() {
+		ready.Done()
+		doc, err := client.Discover(context.Background(), server.URL)
+		joinerResult <- result{doc: doc, err: err}
+	}()
+
+	ready.Wait()
+	cancelLeader()
+
+	select {
+	case r := <-leaderResult:
+		require.ErrorIs(t, r.err, context.Canceled, "leader must observe its own cancellation")
+	case <-time.After(2 * time.Second):
+		t.Fatal("leader did not return within 2s of cancel")
+	}
+
+	close(release)
+
+	select {
+	case r := <-joinerResult:
+		require.NoError(t, r.err, "joiner must receive the shared fetch result, not the leader's cancellation")
+		require.NotNil(t, r.doc)
+		require.Equal(t, validDoc.Issuer, r.doc.Issuer)
+	case <-time.After(2 * time.Second):
+		t.Fatal("joiner did not return within 2s of upstream release")
+	}
+}
+
 func TestDiscoveryClient_validateDocument(t *testing.T) {
 	client := NewDiscoveryClient(nil, 1*time.Hour, slog.Default())
 

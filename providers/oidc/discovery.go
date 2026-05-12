@@ -168,18 +168,26 @@ func (c *DiscoveryClient) Discover(ctx context.Context, issuerURL string) (*Disc
 		return doc, nil
 	}
 
-	result, err, _ := c.fetchGroup.Do(issuerURL, func() (any, error) {
-		// Re-check the cache inside the singleflight to avoid a stampeded
-		// refetch when the first caller has just populated it.
+	// DoChan + a leader ctx detached from caller cancellation: each caller
+	// selects on its own ctx vs the shared result channel. One caller's
+	// cancellation cannot poison the others, and the shared fetch (bounded
+	// by http.Client.Timeout) completes and caches its result for any
+	// caller still listening or any future cache reader.
+	ch := c.fetchGroup.DoChan(issuerURL, func() (any, error) {
 		if doc, ok := c.cachedFresh(issuerURL); ok {
 			return doc, nil
 		}
-		return c.fetchAndCache(ctx, issuerURL)
+		return c.fetchAndCache(context.WithoutCancel(ctx), issuerURL)
 	})
-	if err != nil {
-		return nil, err
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		return res.Val.(*DiscoveryDocument), nil
 	}
-	return result.(*DiscoveryDocument), nil
 }
 
 // cachedFresh returns a cached document for issuerURL when its age is within

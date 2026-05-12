@@ -557,8 +557,13 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 		}
 
 		ctx := ContextWithUserInfo(r.Context(), userInfo)
-		if metadata != nil && metadata.FamilyID != "" {
-			ctx = ContextWithSessionID(ctx, metadata.FamilyID)
+		if metadata != nil {
+			if metadata.FamilyID != "" {
+				ctx = ContextWithSessionID(ctx, metadata.FamilyID)
+			}
+			if len(metadata.Scopes) > 0 {
+				ctx = ContextWithScopes(ctx, metadata.Scopes)
+			}
 		}
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -875,6 +880,13 @@ func (h *Handler) RegisterOAuthRoutes(mux *http.ServeMux, opts OAuthRoutesOption
 	// config. Only wire the route when the flag is on.
 	if h.server.Config.EnableIntrospectionEndpoint {
 		mux.HandleFunc(server.EndpointPathIntrospect, h.ServeTokenIntrospection)
+	}
+
+	// OIDC UserInfo (OIDC Core 1.0 §5.3) is opt-in. The handler runs behind
+	// ValidateToken so bearer authentication, scope/audience checks, and
+	// rate limiting all apply.
+	if h.server.Config.EnableUserInfoEndpoint {
+		mux.Handle(server.EndpointPathUserInfo, h.ValidateToken(http.HandlerFunc(h.ServeUserInfo)))
 	}
 
 	if !opts.IncludeMetadata {
@@ -1196,6 +1208,10 @@ func (h *Handler) addOptionalMetadata(metadata map[string]any) {
 
 	if h.server.Config.EnableIntrospectionEndpoint {
 		metadata["introspection_endpoint"] = h.server.Config.IntrospectionEndpoint()
+	}
+
+	if h.server.Config.EnableUserInfoEndpoint {
+		metadata["userinfo_endpoint"] = h.server.Config.UserInfoEndpoint()
 	}
 
 	if h.server.Config.EnableClientIDMetadataDocuments {
@@ -2570,6 +2586,79 @@ func (h *Handler) formatWWWAuthenticate(scope, errCode, errorDesc string) string
 	return "Bearer " + strings.Join(params, ", ")
 }
 
+// ServeUserInfo handles the OIDC UserInfo endpoint (OIDC Core 1.0 §5.3).
+// Accepts GET and POST. The [Handler.ValidateToken] middleware authenticates
+// the bearer access token and stashes the resolved [providers.UserInfo] and
+// granted scopes in the request context; this handler renders the claims
+// gated by those scopes.
+//
+// The `openid` scope is REQUIRED to access the endpoint. The `sub` claim is
+// always returned. `profile`, `email`, and `groups` scopes gate the
+// corresponding claim groups.
+func (h *Handler) ServeUserInfo(w http.ResponseWriter, r *http.Request) {
+	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.userinfo")
+	defer endSpan()
+
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		instrumentation.SetSpanError(span, "method not allowed")
+		w.Header().Set("Allow", "GET, POST")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	h.setCORSHeaders(w, r)
+	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+
+	userInfo, ok := UserInfoFromContext(r.Context())
+	if !ok || userInfo == nil {
+		instrumentation.SetSpanError(span, "user info missing from context")
+		h.writeUnauthorizedError(w, r, ErrorCodeInvalidToken, "User information unavailable")
+		return
+	}
+
+	scopes, _ := ScopesFromContext(r.Context())
+	scopeSet := make(map[string]struct{}, len(scopes))
+	for _, s := range scopes {
+		scopeSet[s] = struct{}{}
+	}
+	if _, ok := scopeSet["openid"]; !ok {
+		instrumentation.SetSpanError(span, "openid scope missing")
+		h.writeInsufficientScopeError(w, []string{"openid"}, "openid scope is required to call /userinfo")
+		return
+	}
+
+	claims := map[string]any{"sub": userInfo.ID}
+	if _, ok := scopeSet["profile"]; ok {
+		if userInfo.Name != "" {
+			claims["name"] = userInfo.Name
+		}
+		if userInfo.GivenName != "" {
+			claims["given_name"] = userInfo.GivenName
+		}
+		if userInfo.FamilyName != "" {
+			claims["family_name"] = userInfo.FamilyName
+		}
+		if userInfo.Picture != "" {
+			claims["picture"] = userInfo.Picture
+		}
+		if userInfo.Locale != "" {
+			claims["locale"] = userInfo.Locale
+		}
+	}
+	if _, ok := scopeSet["email"]; ok && userInfo.Email != "" {
+		claims["email"] = userInfo.Email
+		claims["email_verified"] = userInfo.EmailVerified
+	}
+	if _, ok := scopeSet["groups"]; ok && len(userInfo.Groups) > 0 {
+		claims["groups"] = userInfo.Groups
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(claims); err != nil {
+		h.logger.Warn("Failed to encode userinfo response", "error", err)
+	}
+}
+
 // ServeTokenIntrospection handles the RFC 7662 token introspection endpoint
 // This allows resource servers to validate access tokens
 // Security: Requires client authentication to prevent token scanning attacks
@@ -2723,6 +2812,21 @@ func ContextWithSessionID(ctx context.Context, sessionID string) context.Context
 func SessionIDFromContext(ctx context.Context) (string, bool) {
 	id, ok := ctx.Value(sessionIDKey{}).(string)
 	return id, ok && id != ""
+}
+
+type scopesKey struct{}
+
+// ContextWithScopes carries the scopes granted to the access token on the
+// current request. Set by [Handler.ValidateToken] from the token's metadata.
+func ContextWithScopes(ctx context.Context, scopes []string) context.Context {
+	return context.WithValue(ctx, scopesKey{}, scopes)
+}
+
+// ScopesFromContext returns the scopes granted to the access token on the
+// current request. The bool is false when no scopes are present in the context.
+func ScopesFromContext(ctx context.Context) ([]string, bool) {
+	scopes, ok := ctx.Value(scopesKey{}).([]string)
+	return scopes, ok
 }
 
 // getTokenMetadata retrieves token metadata from storage.
