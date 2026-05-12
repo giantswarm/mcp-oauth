@@ -2559,7 +2559,7 @@ func TestHandler_ServeAuthorization_StateLength(t *testing.T) {
 		name           string
 		state          string
 		wantStatus     int
-		wantErrorParam string // expected OAuth error code in redirect query (empty when expecting success or non-redirect)
+		wantErrorParam string // empty when the request is expected to succeed
 	}{
 		{
 			name:           "state too short (1 char)",
@@ -2735,9 +2735,8 @@ func TestHandler_ServeAuthorization_ShortStateWithAllowNoState(t *testing.T) {
 	}
 }
 
-// assertAuthorizationErrorRedirect verifies that w is a 302 redirect back to
-// expectedRedirect carrying the OAuth error / error_description / state query
-// parameters mandated by RFC 6749 §4.1.2.1.
+// assertAuthorizationErrorRedirect asserts a 302 redirect to expectedRedirect
+// with error, error_description, and state query parameters.
 func assertAuthorizationErrorRedirect(t *testing.T, w *httptest.ResponseRecorder, expectedRedirect, expectedErrorCode, expectedState string) {
 	t.Helper()
 
@@ -2853,7 +2852,7 @@ func TestServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *testing.T) 
 	tests := []struct {
 		name        string
 		state       string
-		wantState   string // state expected in the redirect query (empty for missing-state case)
+		wantState   string // empty when the client did not send a state parameter
 		description string
 	}{
 		{

@@ -1312,8 +1312,6 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// RFC 6749 §3.1.1: only "code" response_type is supported; AS metadata
-	// advertises response_types_supported: ["code"].
 	if responseType != "code" {
 		h.logger.Info("Authorization request rejected: unsupported response_type", "response_type", responseType, "client_id", clientID)
 		h.respondAuthorizationError(w, r, redirectURI, state, ErrorCodeUnsupportedResponseType, "response_type must be \"code\"", startTime, span, "unsupported response_type")
@@ -2200,11 +2198,10 @@ func (h *Handler) writeError(w http.ResponseWriter, code, description string, st
 	})
 }
 
-// respondAuthorizationError handles RFC 6749 §4.1.2.1 error returns from the
-// authorization endpoint. When the redirect URI parses as an http(s) URL it
-// appends error / error_description / state and redirects (302); otherwise it
-// falls back to the JSON 400 path because the spec forbids redirecting to a
-// missing or non-http(s) redirect URI.
+// respondAuthorizationError redirects (302) to redirectURI with error /
+// error_description / state when the URI is a valid http(s) URL. When it is
+// missing or non-http(s) it falls back to a JSON 400 to avoid an open-redirect
+// gadget against an unvalidated URI.
 func (h *Handler) respondAuthorizationError(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -2237,9 +2234,8 @@ func (h *Handler) respondAuthorizationError(
 
 	h.recordHTTPMetrics(r.Context(), "authorization", http.MethodGet, http.StatusFound, startTime)
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
-	// #nosec G710 -- redirect target is the client-supplied redirect_uri parsed
-	// and scheme-checked above. RFC 6749 §4.1.2.1 mandates redirecting errors
-	// to redirect_uri so the client can correlate them with the request.
+	// #nosec G710 -- redirect target was parsed and scheme-restricted to http(s)
+	// above; not an open redirect.
 	http.Redirect(w, r, parsed.String(), http.StatusFound)
 }
 
