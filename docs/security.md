@@ -124,6 +124,8 @@ server.SetRateLimiter(ipRateLimiter)
 
 When configured, the limiter is enforced at the entry of every unauthenticated OAuth surface: `/authorize`, `/token`, `/revoke`, `/introspect`, `/register`, the discovery documents (`/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`, `/.well-known/openid-configuration`), `/.well-known/jwks.json`, and the `ValidateToken` middleware. Exceeded requests return `429` with `Retry-After: 60` and emit a `rate_limit_exceeded` audit event.
 
+`/authorize` is hit by end-user browsers, whereas `/token`, `/revoke`, and `/introspect` are typically server-to-server. Size the IP limit so a single shared egress (corporate NAT, mobile carrier) does not throttle real users; if that risk is real, run a separate limiter in front of `/authorize` via your reverse proxy.
+
 ### User-Based Rate Limiting
 
 Additional limits for authenticated users:

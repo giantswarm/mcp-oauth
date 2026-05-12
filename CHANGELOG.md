@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **IP rate limiter now applied to `/authorize`, `/token`, `/revoke`, `/introspect`** (CWE-307, closes #302)
   - Exceeding the configured per-IP rate on any of these endpoints returns `429` with `Retry-After: 60` and `{"error":"rate_limit_exceeded"}`, and emits the `rate_limit_exceeded` audit event and metric. No-op when no `RateLimiter` is configured.
-- **OpenTelemetry spans now carry through `r.Context()` on `ServeCallback`, `handleAuthorizationCodeGrant`, `handleRefreshTokenGrant`, `ServeTokenRevocation`, `ServeTokenIntrospection`**
-  - These handlers opened a span via `tracer.Start` but did not re-attach the resulting context to the `*http.Request`. Downstream `recordHTTPMetrics`/`recordTokenFailure`/`recordAuthorizationStarted` calls that read `r.Context()` therefore lost the span association. `r = r.WithContext(ctx)` is now called inside each tracer block.
+- **OAuth handler spans are now propagated to all downstream metric and audit calls on `ServeCallback`, `handleAuthorizationCodeGrant`, `handleRefreshTokenGrant`, `ServeTokenRevocation`, `ServeTokenIntrospection`**
+  - Metrics and audit events recorded after `tracer.Start` are now linked to the active span instead of an unspanned context. Rate-limit 429 branches on these handlers also annotate the span.
 
 ### Added
 

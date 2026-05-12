@@ -1184,6 +1184,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 	if h.checkIPRateLimit(w, r, clientIP) {
+		instrumentation.SetSpanError(span, "rate limited")
 		h.recordHTTPMetrics(r.Context(), "authorization", http.MethodGet, http.StatusTooManyRequests, startTime)
 		return
 	}
@@ -1689,6 +1690,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 	if h.checkIPRateLimit(w, r, clientIP) {
+		instrumentation.SetSpanError(span, "rate limited")
 		h.recordHTTPMetrics(r.Context(), "revoke", http.MethodPost, http.StatusTooManyRequests, startTime)
 		return
 	}
@@ -2231,6 +2233,7 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 	h.setCORSHeaders(w, r)
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 	if h.checkIPRateLimit(w, r, clientIP) {
+		instrumentation.SetSpanError(span, "rate limited")
 		h.recordHTTPMetrics(r.Context(), "introspect", http.MethodPost, http.StatusTooManyRequests, startTime)
 		return
 	}
