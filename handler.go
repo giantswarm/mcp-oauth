@@ -39,7 +39,7 @@ const (
 // Stable strings — renaming any of these is a breaking change for
 // downstream dashboards.
 const (
-	endpointAuthorize = "authorize"
+	endpointAuthorize     = "authorize"
 	endpointCallback      = "callback"
 	endpointToken         = "token"
 	endpointRevoke        = "revoke"
