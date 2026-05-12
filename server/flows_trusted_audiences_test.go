@@ -180,7 +180,7 @@ func TestValidateTokenAudience_WithTrustedAudiences(t *testing.T) {
 			t.Cleanup(func() { store.Stop() })
 
 			var logBuffer bytes.Buffer
-			logger := slog.New(slog.NewTextHandler(&logBuffer, nil))
+			logger := slog.New(slog.NewTextHandler(&logBuffer, &slog.HandlerOptions{Level: slog.LevelDebug}))
 			auditor := security.NewAuditor(logger, true)
 
 			config := &Config{
@@ -300,7 +300,7 @@ func TestValidateTrustedAudiences(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var logBuffer bytes.Buffer
-			logger := slog.New(slog.NewTextHandler(&logBuffer, nil))
+			logger := slog.New(slog.NewTextHandler(&logBuffer, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 			config := &Config{
 				TrustedAudiences: tt.inputAudiences,

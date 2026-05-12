@@ -206,7 +206,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	allowPrivateIP := s.Config.AllowPrivateIPClientMetadata
 
 	if allowPrivateIP {
-		s.Logger.Info("CIMD fetch with private IP allowance enabled",
+		s.Logger.Debug("CIMD fetch with private IP allowance enabled",
 			"client_id", clientID,
 			"config", "AllowPrivateIPClientMetadata=true")
 	}
@@ -310,7 +310,7 @@ func (s *Server) processMetadataResponse(ctx context.Context, resp *http.Respons
 	})
 	s.recordCIMDFetchMetric(ctx, "success", fetchStart)
 
-	s.Logger.Info("Fetched client metadata from URL",
+	s.Logger.Debug("Fetched client metadata from URL",
 		"client_id", clientID,
 		"client_name", metadata.ClientName,
 		"redirect_uris", len(metadata.RedirectURIs),

@@ -123,7 +123,7 @@ func newClientRegistrationRateLimiterWithCleanupInterval(maxPerWindow int, windo
 	// Start background cleanup goroutine
 	go rl.cleanupLoop()
 
-	logger.Info("Client registration rate limiter initialized",
+	logger.Debug("Client registration rate limiter initialized",
 		"max_per_window", maxPerWindow,
 		"window", window,
 		"max_entries", maxEntries)

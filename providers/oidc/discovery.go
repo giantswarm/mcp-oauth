@@ -225,7 +225,7 @@ func (c *DiscoveryClient) Discover(ctx context.Context, issuerURL string) (*Disc
 		fetchedAt: c.timeProvider.Now(),
 	})
 
-	c.logger.Info("OIDC discovery successful",
+	c.logger.Debug("OIDC discovery successful",
 		"issuer", issuerURL,
 		"authorization_endpoint", doc.AuthorizationEndpoint,
 		"token_endpoint", doc.TokenEndpoint)

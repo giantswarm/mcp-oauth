@@ -459,7 +459,7 @@ func validateTrustedAudiences(config *Config, logger *slog.Logger) {
 	config.TrustedAudiences = validAudiences
 
 	if len(validAudiences) > 0 {
-		logger.Info("TrustedAudiences configured for SSO token forwarding",
+		logger.Debug("TrustedAudiences configured for SSO token forwarding",
 			"audiences", validAudiences,
 			"count", len(validAudiences))
 	}
@@ -677,7 +677,7 @@ func validateScheme(scheme string, index int, logger *slog.Logger) (string, bool
 // logTrustedSchemesConfig logs configuration summary for trusted schemes
 func logTrustedSchemesConfig(config *Config, logger *slog.Logger) {
 	effectiveStrictMatching := !config.DisableStrictSchemeMatching
-	logger.Info("TrustedPublicRegistrationSchemes configured",
+	logger.Debug("TrustedPublicRegistrationSchemes configured",
 		"schemes", config.TrustedPublicRegistrationSchemes,
 		"strict_matching", effectiveStrictMatching)
 

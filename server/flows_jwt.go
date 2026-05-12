@@ -384,7 +384,7 @@ func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID,
 			},
 		})
 	}
-	s.Logger.Info("Self-issued JWT access token revoked",
+	s.Logger.Debug("Self-issued JWT access token revoked",
 		"jti", jti,
 		"client_id", clientID,
 		"ip", clientIP,

@@ -91,7 +91,7 @@ func (h *Handler) authorizeClientRegistration(w http.ResponseWriter, r *http.Req
 
 	authHeader := r.Header.Get("Authorization")
 	if h.validateRegistrationToken(authHeader) {
-		h.logger.Info("Client registration authenticated with valid token")
+		h.logger.Debug("Client registration authenticated with valid token")
 		return false, "", true
 	}
 
@@ -109,7 +109,7 @@ func (h *Handler) authorizeClientRegistration(w http.ResponseWriter, r *http.Req
 	}
 
 	if allowed {
-		h.logger.Info("Client registration authorized via trusted scheme",
+		h.logger.Debug("Client registration authorized via trusted scheme",
 			"scheme", scheme, "client_ip", clientIP, "strict_matching", !h.server.Config.DisableStrictSchemeMatching)
 		return true, scheme, true
 	}
@@ -150,7 +150,7 @@ func (h *Handler) validatePublicClientRegistration(w http.ResponseWriter, req *c
 		return false
 	}
 
-	h.logger.Info("Public client registration authorized",
+	h.logger.Debug("Public client registration authorized",
 		"token_endpoint_auth_method", req.TokenEndpointAuthMethod, "client_type", req.ClientType,
 		"ip", clientIP, "via_trusted_scheme", registeredViaTrustedScheme)
 	return true
@@ -880,7 +880,7 @@ func (h *Handler) registerMetadataSubPath(mux *http.ServeMux, resourcePath strin
 		return
 	}
 
-	h.logger.Info("Registering metadata sub-path endpoint",
+	h.logger.Debug("Registering metadata sub-path endpoint",
 		"path", subPath,
 		"resource_path", resourcePath)
 
@@ -938,7 +938,7 @@ func (h *Handler) RegisterAuthorizationServerMetadataRoutes(mux *http.ServeMux) 
 	if issuerPath == "" || issuerPath == "/" {
 		// Single-tenant deployment
 		registerStandardEndpoints()
-		h.logger.Info("Registered authorization server metadata endpoints",
+		h.logger.Debug("Registered authorization server metadata endpoints",
 			"oauth_endpoint", "/.well-known/oauth-authorization-server",
 			"oidc_endpoint", "/.well-known/openid-configuration")
 		return
@@ -965,7 +965,7 @@ func (h *Handler) RegisterAuthorizationServerMetadataRoutes(mux *http.ServeMux) 
 	// Backward compatibility
 	registerStandardEndpoints()
 
-	h.logger.Info("Registered multi-tenant authorization server metadata endpoints",
+	h.logger.Debug("Registered multi-tenant authorization server metadata endpoints",
 		"issuer_path", issuerPath,
 		"oauth_path_insert", oauthPathInsert,
 		"oidc_path_insert", oidcPathInsert,
@@ -1370,7 +1370,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	// Browsers may fail silently on 302 redirects to custom schemes (cursor://, vscode://, etc.)
 	// Serve an HTML interstitial page that shows success and attempts JS redirect with manual fallback
 	if isCustomURLScheme(authCode.RedirectURI) {
-		h.logger.Info("Serving success interstitial for custom URL scheme",
+		h.logger.Debug("Serving success interstitial for custom URL scheme",
 			"client_id", authCode.ClientID,
 			"scheme", parsedRedirect.Scheme)
 		h.recordHTTPMetrics("callback", http.MethodGet, http.StatusOK, startTime)
@@ -1485,7 +1485,7 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	h.logger.Info("Token exchange successful", "client_id", client.ClientID, "ip", clientIP)
+	h.logger.Debug("Token exchange successful", "client_id", client.ClientID, "ip", clientIP)
 
 	// Record code exchanged metric
 	pkceMethod := ""

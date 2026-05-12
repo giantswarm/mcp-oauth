@@ -194,7 +194,7 @@ func (s *Server) initializeAccessTokenIssuer() error {
 			return fmt.Errorf("initialize JWT access token issuer: %w", err)
 		}
 		s.accessTokenIssuer = issuer
-		s.Logger.Info("Access token format: JWT (RFC 9068)",
+		s.Logger.Debug("Access token format: JWT (RFC 9068)",
 			"alg", s.Config.AccessTokenSigningAlgorithm,
 			"kid", s.Config.AccessTokenSigningKeyID,
 			"jwks_uri", s.Config.JWKSEndpoint())
@@ -267,7 +267,7 @@ func (s *Server) initializeMetadataSupport() {
 
 	// SECURITY: Initialize rate limiter for metadata fetches (10 req/min per domain)
 	s.metadataFetchRateLimiter = security.NewRateLimiter(10, 20, s.Logger)
-	s.Logger.Info("Initialized metadata fetch rate limiter",
+	s.Logger.Debug("Initialized metadata fetch rate limiter",
 		"rate", "10 requests/min per domain",
 		"burst", 20,
 		"purpose", "DoS protection")
@@ -342,7 +342,7 @@ func (s *Server) logMandatoryAudienceScopes(logger *slog.Logger, providerDefault
 	}
 
 	if len(audienceScopes) > 0 {
-		logger.Info("Mandatory cross-client audience scopes configured - these will be merged into ALL authorization requests",
+		logger.Debug("Mandatory cross-client audience scopes configured - these will be merged into ALL authorization requests",
 			"audience_scopes", audienceScopes,
 			"provider", s.provider.Name(),
 			"count", len(audienceScopes))
@@ -494,7 +494,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	var shutdownErr error
 
 	s.shutdownOnce.Do(func() {
-		s.Logger.Info("Starting graceful shutdown...")
+		s.Logger.Debug("Starting graceful shutdown...")
 		done := make(chan struct{})
 
 		go func() {
@@ -520,7 +520,7 @@ func (s *Server) performShutdown(ctx context.Context) {
 	s.stopMetadataCacheCleanup()
 	s.shutdownInstrumentation(ctx)
 	s.stopStorage()
-	s.Logger.Info("Graceful shutdown completed")
+	s.Logger.Debug("Graceful shutdown completed")
 }
 
 // stopRateLimiters stops all rate limiters.

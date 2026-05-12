@@ -132,10 +132,11 @@ func New() *Store {
 // Default: 90 days (if not set)
 func (s *Store) SetRevokedFamilyRetentionDays(days int64) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.revokedFamilyRetentionDays = days
-	s.logger.Info("Set revoked family retention period",
-		"retention_days", days)
+	s.mu.Unlock()
+	s.logger.Debug("revoked family retention period set",
+		"retention_days", days,
+		"store", s)
 }
 
 // NewWithInterval creates a new in-memory store with custom cleanup interval.
@@ -178,10 +179,10 @@ func (s *Store) SetLogger(logger *slog.Logger) {
 // SetEncryptor sets the token encryptor for encryption at rest
 func (s *Store) SetEncryptor(enc *security.Encryptor) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.encryptor = enc
+	s.mu.Unlock()
 	if enc != nil && enc.IsEnabled() {
-		s.logger.Info("Token encryption at rest enabled for storage")
+		s.logger.Debug("token encryption at rest enabled", "store", s)
 	}
 }
 
@@ -216,6 +217,7 @@ func (s *Store) SetInstrumentation(inst *instrumentation.Instrumentation) {
 		if err != nil {
 			s.logger.Warn("Failed to register storage size callbacks", "error", err)
 		}
+		s.logger.Debug("storage instrumentation enabled", "store", s)
 	}
 }
 

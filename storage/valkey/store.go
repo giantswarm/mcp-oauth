@@ -183,24 +183,21 @@ func New(cfg Config) (*Store, error) {
 		return nil, fmt.Errorf("failed to connect to valkey: %w", err)
 	}
 
-	logger.Info("Connected to Valkey storage",
-		"address", cfg.Address,
-		"db", cfg.DB,
-		"prefix", prefix)
-
-	return &Store{
+	s := &Store{
 		client:                     client,
 		prefix:                     prefix,
 		logger:                     logger,
 		revokedFamilyRetentionDays: retentionDays,
 		refreshTokenTTL:            refreshTokenTTL,
-	}, nil
+	}
+	logger.Debug("storage connected", "store", s)
+	return s, nil
 }
 
 // Close closes the Valkey client connection.
 func (s *Store) Close() {
 	s.client.Close()
-	s.logger.Info("Valkey storage connection closed")
+	s.logger.Debug("storage connection closed", "store", s)
 }
 
 // SetLogger sets a custom logger for the store.
@@ -213,10 +210,10 @@ func (s *Store) SetLogger(logger *slog.Logger) {
 // before storing in Valkey and decrypted when retrieved.
 func (s *Store) SetEncryptor(enc *security.Encryptor) {
 	s.encryptorMu.Lock()
-	defer s.encryptorMu.Unlock()
 	s.encryptor = enc
+	s.encryptorMu.Unlock()
 	if enc != nil && enc.IsEnabled() {
-		s.logger.Info("Token encryption at rest enabled for Valkey storage")
+		s.logger.Debug("token encryption at rest enabled", "store", s)
 	}
 }
 
@@ -254,8 +251,7 @@ func (s *Store) SetInstrumentation(inst *instrumentation.Instrumentation) {
 	if err != nil {
 		s.logger.Warn("Failed to register storage size callbacks", "error", err)
 	}
-
-	s.logger.Info("Valkey storage instrumentation enabled")
+	s.logger.Debug("storage instrumentation enabled", "store", s)
 }
 
 // countKeysByPattern counts keys matching a glob pattern using SCAN.
