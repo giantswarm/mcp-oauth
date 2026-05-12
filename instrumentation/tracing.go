@@ -174,3 +174,4 @@ func AddSecurityAttributes(span trace.Span, clientIP string) {
 		SetSpanAttributes(span, attribute.String(AttrClientIP, clientIP))
 	}
 }
+

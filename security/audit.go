@@ -55,10 +55,8 @@ func (a *Auditor) LogEvent(ctx context.Context, event Event) {
 
 	event.Timestamp = time.Now()
 
-	a.logger.LogAttrs(
-		ctx, slog.LevelInfo, "security_audit",
-		slog.Group(
-			"audit",
+	a.logger.LogAttrs(ctx, slog.LevelInfo, "security_audit",
+		slog.Group("audit",
 			slog.String("event_type", event.Type),
 			slog.String("user_id_hash", hashForLogging(event.UserID)),
 			slog.String("client_id", event.ClientID),
