@@ -135,9 +135,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`/authorize` validates `response_type` and redirects protocol errors per RFC 6749 §4.1.2.1 (#303)**
-  - `response_type` is now validated against the AS metadata (`response_types_supported: ["code"]`). Missing or non-`code` values are rejected with `unsupported_response_type`.
-  - `invalid_request` (missing or short `state`), `unsupported_response_type`, and `server_error` are now returned by redirecting to `redirect_uri` with `error` / `error_description` / `state` query parameters, matching RFC 6749 §4.1.2.1. Previously these were emitted as JSON `400` / `500` bodies, which conforming clients cannot correlate to the authorization request.
-  - `invalid_client` (missing `client_id`) and `invalid_redirect_uri` (missing / non-`http(s)` `redirect_uri`) continue to return JSON, per RFC 6749 §3.1.2.4 which forbids redirecting to an unvalidated URI.
+  - Missing or non-`code` `response_type` is rejected with `unsupported_response_type`.
+  - `invalid_request` (missing or short `state`), `unsupported_response_type`, and `server_error` redirect to `redirect_uri` with `error` / `error_description` / `state` query parameters.
+  - `invalid_client` (missing or unregistered `client_id`) and `invalid_redirect_uri` (missing, non-`http(s)`, or not registered for the client) return JSON `400`.
+  - New `Server.ValidateRedirectURIForAuthorization(ctx, clientID, redirectURI)` exposes the gate handlers must run before redirecting any /authorize error to redirectURI.
 
 - **Treat email, profile, groups, offline_access as mandatory scopes (#252)**
   - `isMandatoryScope()` now returns true for `email`, `profile`, `groups`, and `offline_access` in addition to `openid` and cross-client audience scopes.
@@ -668,7 +669,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     // Before (deprecated)
     err := oauth.NewOAuthError("invalid_request", "Missing parameter", 400)
     var oauthErr *oauth.OAuthError
-    
+
     // After (recommended)
     err := oauth.NewError("invalid_request", "Missing parameter", 400)
     var oauthErr *oauth.Error
@@ -775,7 +776,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Health Check**: Uses GitHub's `/rate_limit` endpoint for lightweight health monitoring
   - **Token Behavior**: Gracefully handles GitHub's non-expiring tokens (`ErrRefreshNotSupported`)
   - **Token Revocation**: Graceful degradation (returns nil) since GitHub lacks server-side revocation
-  - **Helper Methods**: 
+  - **Helper Methods**:
     - `GetUserOrganizations()` for listing user's organizations
     - `GetProviderToken()` for creating tokens for additional GitHub API calls
   - **Documentation**: Comprehensive `doc.go`, example application, and README with setup instructions
@@ -874,7 +875,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     * Discord, Figma, Linear, Raycast, Warp, Zed, Windsurf, and more
     * Unknown schemes show capitalized scheme name
   - **UX Design**: Modern, clean styling with success checkmark animation
-  - **Security**: 
+  - **Security**:
     * Uses `html/template` with proper escaping for XSS prevention
     * Hash-based Content-Security-Policy (CSP Level 2) for inline script allowlisting
     * Static inline script reads redirect URL from DOM to maintain stable SHA-256 hash
@@ -985,7 +986,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Caching: In-memory LRU cache with TTL support (default: 5 minutes) and HTTP Cache-Control respect
     - Validation: Ensures client_id in document matches URL exactly (security requirement)
     - Integration: Transparent integration with existing authorization flow via `GetClient()`
-  - **Configuration**: 
+  - **Configuration**:
     - `EnableClientIDMetadataDocuments` - Enable feature (default: false for backward compatibility)
     - `ClientMetadataFetchTimeout` - Timeout for metadata fetch (default: 10s)
     - `ClientMetadataCacheTTL` - Cache TTL (default: 5m)
@@ -1022,7 +1023,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Resource binding stored with authorization codes and tokens
   - **Configuration**: New `ResourceIdentifier` field in `server.Config` (defaults to `Issuer` if not set)
   - **Backward Compatibility**: Resource parameter is optional to maintain compatibility with existing clients
-  - **Storage Changes**: 
+  - **Storage Changes**:
     - Added `Resource` field to `storage.AuthorizationState`
     - Added `Resource` and `Audience` fields to `storage.AuthorizationCode`
   - **Validation**: Resource must be absolute HTTPS URI (or HTTP for localhost development)
@@ -1048,7 +1049,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Scope string length validation to prevent DoS attacks**
   - **Problem**: No limit on scope parameter length could allow DoS attacks via extremely long scope strings
   - **Risk**: Potential resource exhaustion through processing and validating arbitrarily long scope strings
-  - **Solution**: 
+  - **Solution**:
     - Added `MaxScopeLength` configuration parameter (default: 1000 characters)
     - Scope length validated early in authorization flow before parsing/processing
     - Clear error messages when limit exceeded
@@ -1064,7 +1065,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Problem**: Scopes from client authorization requests were not being passed to Google during provider authorization redirect
   - **Impact**: Google returned tokens without user info (no scopes = no permissions = no data), causing userID extraction to fail and token storage to fail with "userID cannot be empty" errors
   - **Root Cause**: The Provider interface's `AuthorizationURL` method didn't accept scopes parameter, so only provider's hardcoded scopes were used
-  - **Solution**: 
+  - **Solution**:
     - Modified `Provider.AuthorizationURL()` interface to accept `scopes []string` parameter
     - Updated Google provider to use client-requested scopes when provided, falling back to configured defaults when empty
     - Updated server flows to parse and pass client scopes to provider
@@ -1083,7 +1084,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Impact**: Initial implementation had confusing semantics around defaults
   - **Solution**: Renamed to `DisableWWWAuthenticateMetadata` following the library's "secure by default" principle
   - **Field change**: `EnableWWWAuthenticateMetadata` → `DisableWWWAuthenticateMetadata` (inverted logic)
-  - **Default behavior**: 
+  - **Default behavior**:
     - `DisableWWWAuthenticateMetadata: false` (default) → Full metadata ENABLED (secure by default)
     - `DisableWWWAuthenticateMetadata: true` → Minimal headers for backward compatibility
   - **Breaking Change**: 🔴 **YES** - Field renamed for clarity
@@ -1448,7 +1449,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Non-localhost HTTP deployments blocked unless explicitly allowed
   - Clear error messages guide developers to secure configuration
   - OAuth 2.1 compliance: HTTPS required for all production endpoints
-  - **Migration**: 
+  - **Migration**:
     - For localhost development: Add `AllowInsecureHTTP: true` to suppress warnings
     - For production HTTP (not recommended): Add `AllowInsecureHTTP: true` and review security risks
     - **Recommended**: Switch to HTTPS for all environments
@@ -1586,4 +1587,3 @@ See [SECURITY.md](SECURITY.md) for our security policy and how to report vulnera
 ## License
 
 This project is licensed under the Apache License 2.0 - see [LICENSE](LICENSE) for details.
-

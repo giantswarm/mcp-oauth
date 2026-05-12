@@ -2735,8 +2735,6 @@ func TestHandler_ServeAuthorization_ShortStateWithAllowNoState(t *testing.T) {
 	}
 }
 
-// assertAuthorizationErrorRedirect asserts a 302 redirect to expectedRedirect
-// with error, error_description, and state query parameters.
 func assertAuthorizationErrorRedirect(t *testing.T, w *httptest.ResponseRecorder, expectedRedirect, expectedErrorCode, expectedState string) {
 	t.Helper()
 
@@ -2777,7 +2775,7 @@ func assertAuthorizationErrorRedirect(t *testing.T, w *httptest.ResponseRecorder
 	}
 }
 
-func TestServeAuthorization_NoResponseType_Rejected(t *testing.T) {
+func TestHandler_ServeAuthorization_NoResponseType_Rejected(t *testing.T) {
 	ctx := context.Background()
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
@@ -2830,7 +2828,7 @@ func TestServeAuthorization_NoResponseType_Rejected(t *testing.T) {
 	}
 }
 
-func TestServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *testing.T) {
+func TestHandler_ServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *testing.T) {
 	ctx := context.Background()
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
@@ -2850,22 +2848,19 @@ func TestServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *testing.T) 
 	}
 
 	tests := []struct {
-		name        string
-		state       string
-		wantState   string // empty when the client did not send a state parameter
-		description string
+		name      string
+		state     string
+		wantState string // empty when the client did not send a state parameter
 	}{
 		{
-			name:        "state missing",
-			state:       "",
-			wantState:   "",
-			description: "missing state must redirect with invalid_request",
+			name:      "state missing",
+			state:     "",
+			wantState: "",
 		},
 		{
-			name:        "state too short",
-			state:       "short",
-			wantState:   "short",
-			description: "state below MinStateLength must redirect with invalid_request and echo the client state",
+			name:      "state too short",
+			state:     "short",
+			wantState: "short",
 		},
 	}
 
@@ -2926,6 +2921,37 @@ func TestServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *testing.T) 
 
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("status = %d, want %d (non-http redirect_uri must JSON-error)", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	// Scheme-valid http(s) URL not registered for the client: must JSON-error,
+	// not redirect — otherwise /authorize error branches become an open-redirect
+	// gadget under RFC 6749 §4.1.2.1 + §3.1.2.4.
+	t.Run("scheme-valid but unregistered redirect_uri must JSON-error", func(t *testing.T) {
+		reqURL := "/authorize?client_id=" + client.ClientID +
+			"&redirect_uri=" + url.QueryEscape("https://attacker.example/landing") +
+			"&response_type=xxx" + // would otherwise hit the response_type branch
+			"&scope=openid" +
+			"&state=" + testutil.GenerateRandomString(43) +
+			"&code_challenge=test-challenge" +
+			"&code_challenge_method=S256"
+
+		req := httptest.NewRequest(http.MethodGet, reqURL, nil)
+		w := httptest.NewRecorder()
+		handler.ServeAuthorization(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+		}
+		if loc := w.Header().Get("Location"); loc != "" {
+			t.Errorf("Location header set to %q; unregistered redirect_uri must not redirect", loc)
+		}
+		var body map[string]string
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("response body is not JSON: %v", err)
+		}
+		if body["error"] != ErrorCodeInvalidRequest {
+			t.Errorf("error = %q, want %q", body["error"], ErrorCodeInvalidRequest)
 		}
 	})
 }

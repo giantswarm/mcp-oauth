@@ -835,6 +835,24 @@ func (s *Server) rotateRefreshToken(ctx context.Context, oldRefreshToken, userID
 // clientState is the state parameter from the client (REQUIRED for CSRF protection)
 // resource is the target resource server identifier per RFC 8707 (optional for backward compatibility)
 // authOpts contains optional OIDC parameters (prompt, login_hint, id_token_hint) for upstream IdP forwarding
+// ValidateRedirectURIForAuthorization runs the client lookup and registered
+// redirect-URI check that StartAuthorizationFlow performs. Handlers must
+// invoke it before redirecting any /authorize error to redirectURI: until
+// both checks pass redirectURI is attacker-controllable and a redirect would
+// be an open-redirect gadget under RFC 6749 §4.1.2.1 + §3.1.2.4.
+func (s *Server) ValidateRedirectURIForAuthorization(ctx context.Context, clientID, redirectURI string) error {
+	client, err := s.getOrFetchClient(ctx, clientID)
+	if err != nil {
+		s.logAuthFailure(ctx, "", clientID, ErrorCodeInvalidClient)
+		return fmt.Errorf("%s: %w", ErrorCodeInvalidClient, err)
+	}
+	if err := s.validateRedirectURI(client, redirectURI); err != nil {
+		s.logAuthFailure(ctx, "", clientID, ErrorCodeInvalidRedirectURI)
+		return fmt.Errorf("%s: %w", ErrorCodeInvalidRedirectURI, err)
+	}
+	return nil
+}
+
 func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectURI, scope, resource, codeChallenge, codeChallengeMethod, clientState string, authOpts *providers.AuthorizationURLOptions) (string, error) {
 	// CRITICAL SECURITY: Validate state parameter from client for CSRF protection
 	if err := s.validateClientStateParameter(clientState); err != nil {
