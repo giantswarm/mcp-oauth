@@ -541,52 +541,19 @@ func (s *Server) TokenStore() storage.TokenStore {
 	return s.tokenStore
 }
 
-// tokenMetadataParams bundles the parameters for saveTokenMetadata to avoid
-// a long positional-string parameter list that is easy to misorder.
-type tokenMetadataParams struct {
-	TokenID   string
-	UserID    string
-	ClientID  string
-	TokenType string
-	Audience  string
-	FamilyID  string
-	Scopes    []string
-}
-
-// saveTokenMetadata saves token metadata using the most capable store method available.
-// It tries methods in order of capability:
-// 1. SaveTokenMetadataWithFamily (newest - includes family ID, scopes, and audience)
-// 2. SaveTokenMetadataWithScopesAndAudience (includes scopes and audience)
-// 3. SaveTokenMetadataWithAudience (includes audience only)
-// 4. SaveTokenMetadata (basic - no audience or scopes)
-//
-// This ensures backward compatibility with stores that don't support the newest methods.
-func (s *Server) saveTokenMetadata(p tokenMetadataParams) {
-	if store, ok := s.tokenStore.(storage.TokenMetadataStoreWithFamily); ok {
-		if err := store.SaveTokenMetadataWithFamily(p.TokenID, p.UserID, p.ClientID, p.TokenType, p.Audience, p.FamilyID, p.Scopes); err != nil {
-			s.Logger.Warn("Failed to save token metadata with family", "error", err)
-		}
+// saveTokenMetadata writes token metadata to the configured store. Backends
+// that do not implement storage.TokenMetadataStore are silently skipped —
+// metadata is observability scaffolding (audit, scope validation, family
+// bookkeeping) and a missing implementation reduces observability rather
+// than breaking the OAuth flow. metadata.IssuedAt on the input is ignored;
+// backends populate it from the wall clock at write time.
+func (s *Server) saveTokenMetadata(ctx context.Context, tokenID string, metadata storage.TokenMetadata) {
+	store, ok := s.tokenStore.(storage.TokenMetadataStore)
+	if !ok {
 		return
 	}
-
-	if store, ok := s.tokenStore.(storage.TokenMetadataStoreWithScopesAndAudience); ok {
-		if err := store.SaveTokenMetadataWithScopesAndAudience(p.TokenID, p.UserID, p.ClientID, p.TokenType, p.Audience, p.Scopes); err != nil {
-			s.Logger.Warn("Failed to save token metadata with scopes and audience", "error", err)
-		}
-		return
-	}
-
-	if store, ok := s.tokenStore.(storage.TokenMetadataStoreWithAudience); ok {
-		if err := store.SaveTokenMetadataWithAudience(p.TokenID, p.UserID, p.ClientID, p.TokenType, p.Audience); err != nil {
-			s.Logger.Warn("Failed to save token metadata with audience", "error", err)
-		}
-		return
-	}
-
-	if store, ok := s.tokenStore.(storage.TokenMetadataStore); ok {
-		if err := store.SaveTokenMetadata(p.TokenID, p.UserID, p.ClientID, p.TokenType); err != nil {
-			s.Logger.Warn("Failed to save token metadata", "error", err)
-		}
+	if err := store.SaveTokenMetadata(ctx, tokenID, metadata); err != nil {
+		s.Logger.Warn("Failed to save token metadata", "error", err)
 	}
 }
 

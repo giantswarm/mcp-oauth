@@ -32,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`storage.TokenMetadataStore`* family collapsed into a single interface; scope helpers consolidated**
+  - `storage.TokenMetadataStore`, `storage.TokenMetadataStoreWithAudience`, `storage.TokenMetadataStoreWithScopesAndAudience`, and `storage.TokenMetadataStoreWithFamily` collapsed into a single `storage.TokenMetadataStore` interface taking the existing `storage.TokenMetadata` struct. Adding a new metadata field is now a single-place change.
+  - `Server.saveTokenMetadata` no longer fans out through a 4-way runtime type-assertion ladder; it makes one call.
+  - `internal/helpers.SplitScopes` and `internal/helpers.JoinScopes` replace the three local `joinScopes` (server/access_token.go), `normalizeScopes` (server/flows.go), and `parseScopes` (server/cimd_cache.go) helpers. `SplitScopes` uses `strings.Fields` (any whitespace splits, matching the prior `parseScopes` behavior) — a tab-character-in-scope edge case that the old `normalizeScopes` preserved as a literal is now treated as a separator. RFC 6749 §3.3 specifies space-delimited scopes only, so legitimate inputs are unaffected.
+  - **Breaking** for consumers who directly invoked `store.SaveTokenMetadataWithFamily(tokenID, userID, clientID, tokenType, audience, familyID, scopes)` etc. Migration: `store.SaveTokenMetadata(ctx, tokenID, storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: tokenType, Audience: audience, FamilyID: familyID, Scopes: scopes})`. The new method takes a `context.Context` first argument, matching the rest of the storage interfaces.
 - **JWT/JWKS handling consolidated onto `github.com/go-jose/go-jose/v4`; `github.com/golang-jwt/jwt/v5` removed as a dependency**
   - `providers/oidc.JWK`, `providers/oidc.JWKS`, `providers/oidc.JWKSClient.FetchJWKS` now use `jose.JSONWebKey` / `jose.JSONWebKeySet`. The custom RSA/ECDSA public-key reconstruction from base64url N/E/X/Y is gone.
   - `providers/oidc.IDTokenClaims` embeds `josejwt.Claims` instead of `golang-jwt`'s `RegisteredClaims`; the registered-claim field set is preserved (`Issuer`, `Subject`, `Audience`, `IssuedAt`, `NotBefore`) — `ExpiresAt` is now `Expiry` per go-jose naming.

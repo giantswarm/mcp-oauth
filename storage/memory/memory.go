@@ -108,16 +108,15 @@ type Store struct {
 
 // Compile-time interface checks to ensure Store implements all storage interfaces
 var (
-	_ storage.TokenStore                              = (*Store)(nil)
-	_ storage.ClientStore                             = (*Store)(nil)
-	_ storage.FlowStore                               = (*Store)(nil)
-	_ storage.Combined                                = (*Store)(nil)
-	_ storage.RefreshTokenFamilyStore                 = (*Store)(nil)
-	_ storage.TokenRevocationStore                    = (*Store)(nil)
-	_ storage.TokenMetadataStoreWithFamily            = (*Store)(nil)
-	_ storage.TokenMetadataStoreWithScopesAndAudience = (*Store)(nil)
-	_ storage.RevokedTokenStore                       = (*Store)(nil)
-	_ storage.RefreshTokenFamilyByIDStore             = (*Store)(nil)
+	_ storage.TokenStore                  = (*Store)(nil)
+	_ storage.ClientStore                 = (*Store)(nil)
+	_ storage.FlowStore                   = (*Store)(nil)
+	_ storage.Combined                    = (*Store)(nil)
+	_ storage.RefreshTokenFamilyStore     = (*Store)(nil)
+	_ storage.TokenRevocationStore        = (*Store)(nil)
+	_ storage.TokenMetadataStore          = (*Store)(nil)
+	_ storage.RevokedTokenStore           = (*Store)(nil)
+	_ storage.RefreshTokenFamilyByIDStore = (*Store)(nil)
 )
 
 // New creates a new in-memory store with default cleanup interval (1 minute)
@@ -1205,51 +1204,28 @@ func (s *Store) cleanup() {
 // TokenRevocationStore Implementation (OAuth 2.1 Security)
 // ============================================================
 
-// SaveTokenMetadata saves metadata for a token (for revocation tracking)
-// This should be called whenever a token is issued to a user for a client
-func (s *Store) SaveTokenMetadata(tokenID, userID, clientID, tokenType string) error {
-	return s.SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenType, "")
-}
-
-// SaveTokenMetadataWithAudience saves metadata for a token including RFC 8707 audience
-// This should be called whenever a token is issued to a user for a client
-func (s *Store) SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenType, audience string) error {
-	return s.SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID, tokenType, audience, nil)
-}
-
-// SaveTokenMetadataWithScopesAndAudience saves metadata for a token including RFC 8707 audience and MCP 2025-11-25 scopes
-// This should be called whenever a token is issued to a user for a client
-func (s *Store) SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID, tokenType, audience string, scopes []string) error {
-	return s.SaveTokenMetadataWithFamily(tokenID, userID, clientID, tokenType, audience, "", scopes)
-}
-
-// SaveTokenMetadataWithFamily saves metadata for a token including audience, scopes, and refresh token family ID.
-// The familyID links the token to a session (refresh token family) for per-session state tracking.
-func (s *Store) SaveTokenMetadataWithFamily(tokenID, userID, clientID, tokenType, audience, familyID string, scopes []string) error {
-	if tokenID == "" || userID == "" || clientID == "" {
+// SaveTokenMetadata saves metadata for a token. Implements
+// storage.TokenMetadataStore. The metadata's IssuedAt is overwritten with
+// time.Now() at the call site so callers do not have to populate it.
+func (s *Store) SaveTokenMetadata(_ context.Context, tokenID string, metadata storage.TokenMetadata) error {
+	if tokenID == "" || metadata.UserID == "" || metadata.ClientID == "" {
 		return fmt.Errorf("tokenID, userID, and clientID cannot be empty")
 	}
+
+	metadata.IssuedAt = time.Now()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.tokenMetadata[tokenID] = &storage.TokenMetadata{
-		UserID:    userID,
-		ClientID:  clientID,
-		IssuedAt:  time.Now(),
-		TokenType: tokenType,
-		Audience:  audience,
-		Scopes:    scopes,
-		FamilyID:  familyID,
-	}
+	s.tokenMetadata[tokenID] = &metadata
 
 	s.logger.Debug("Saved token metadata",
-		"token_type", tokenType,
-		"user_id", userID,
-		"client_id", clientID,
-		"audience", audience,
-		"scopes", scopes,
-		"family_id", familyID)
+		"token_type", metadata.TokenType,
+		"user_id", metadata.UserID,
+		"client_id", metadata.ClientID,
+		"audience", metadata.Audience,
+		"scopes", metadata.Scopes,
+		"family_id", metadata.FamilyID)
 
 	return nil
 }
