@@ -36,8 +36,7 @@ const (
 )
 
 // Endpoint labels for `oauth_http_requests_total{endpoint="..."}` etc.
-// Stable strings — renaming any of these is a breaking change for
-// downstream dashboards.
+// Future renames are breaking changes for downstream dashboards.
 const (
 	endpointAuthorize     = "authorize"
 	endpointCallback      = "callback"

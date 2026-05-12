@@ -7,19 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Security
-
-- **IP rate limiter now applied to `/authorize`, `/token`, `/revoke`, `/introspect`** (CWE-307, closes #302)
-  - Exceeding the configured per-IP rate on any of these endpoints returns `429` with `Retry-After` and `{"error":"rate_limit_exceeded"}`, and emits the `rate_limit_exceeded` audit event and metric. No-op when no `RateLimiter` is configured.
-- **Rate-limit keys now bucket IPv6 to a `/64`**
-  - The CWE-307 closure is no longer bypassable by an attacker holding an IPv6 `/64` (the typical end-site allocation): `security.RateLimitBucket` maps every `/128` in the same `/64` to a single key. IPv4 is unchanged. Applies to the IP, discovery, and client-registration rate limiters.
-- **Post-authentication rate limit on `/token` and `/revoke` (the issue's optional second pass)**
-  - After successful client authentication, requests are also bounded by the `UserRateLimiter` keyed on `client_id`. Caps authenticated abusers (e.g. a single compromised client enumerating refresh tokens). Applies to confidential clients on `/token` and `/revoke`; public clients (PKCE on `/token`) remain bounded by the IP limit only since their `client_id` is public and attacker-controllable.
-
 ### Changed
 
 - **`Retry-After` is computed from the limiter's configured rate**
-  - The IP, user, and discovery rate-limit `429` responses now set `Retry-After` to `1` second for any positive rate (sub-second precision isn't expressible per RFC 9110 §10.2.3) and fall back to `60` when the rate is 0. The client-registration limiter uses its configured window. Previously this header was a hardcoded `60` regardless of limiter configuration. New `RateLimiter.Rate()` / `RateLimiter.Burst()` / `ClientRegistrationRateLimiter.Window()` accessors expose the values.
+  - The IP, user, and discovery rate-limit `429` responses now set `Retry-After` to `1` second for any positive rate (sub-second precision isn't expressible per RFC 9110 §10.2.3) and fall back to `60` when the rate is 0. The client-registration limiter uses its configured window. Previously this header was a hardcoded `60` regardless of limiter configuration. New `RateLimiter.Rate()` / `ClientRegistrationRateLimiter.Window()` accessors expose the values.
 - **`oauth_http_requests_total{endpoint="authorize"}`** (was `"authorization"`)
   - Renamed for path parity with `/authorize` (matching `token`, `revoke`, `introspect`, `register`, `callback`).
 
@@ -31,6 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The IP-gate 429 on `/register` was previously missing from the HTTP counter.
 - **OAuth handler spans are now propagated to all downstream metric and audit calls on `/callback`, `/token`, `/revoke`, `/introspect`**
   - Metrics and audit events recorded after `tracer.Start` are now linked to the active span instead of an unspanned context. `/token` now opens a top-level `oauth.http.token` span at handler entry so rate-limit 429s on `/token` also appear in traces (the per-grant `oauth.http.token_exchange` / `oauth.http.token_refresh` spans become children).
+
+### Security
+
+- **IP rate limiter now applied to `/authorize`, `/token`, `/revoke`, `/introspect`** (CWE-307, closes #302)
+  - Exceeding the configured per-IP rate on any of these endpoints returns `429` with `Retry-After` and `{"error":"rate_limit_exceeded"}`, and emits the `rate_limit_exceeded` audit event and metric. No-op when no `RateLimiter` is configured.
+- **Rate-limit keys now bucket IPv6 to a `/64`**
+  - The CWE-307 closure is no longer bypassable by an attacker holding an IPv6 `/64` (the typical end-site allocation): `security.RateLimitBucket` maps every `/128` in the same `/64` to a single key. IPv4 is unchanged. Applies to the IP, discovery, and client-registration rate limiters.
+- **Post-authentication rate limit on `/token` and `/revoke` (the issue's optional second pass)**
+  - After successful client authentication, requests are also bounded by the `UserRateLimiter` keyed on `client_id`. Caps authenticated abusers (e.g. a single compromised client enumerating refresh tokens). Applies to confidential clients on `/token` and `/revoke`; public clients (PKCE on `/token`) remain bounded by the IP limit only since their `client_id` is public and attacker-controllable.
 
 ### Added
 

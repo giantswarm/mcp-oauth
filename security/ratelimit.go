@@ -102,11 +102,6 @@ func (rl *RateLimiter) Rate() int {
 	return rl.rate
 }
 
-// Burst returns the configured token-bucket burst size.
-func (rl *RateLimiter) Burst() int {
-	return rl.burst
-}
-
 // Allow checks if a request from the given identifier is allowed.
 // Implements LRU eviction when max entries limit is reached.
 func (rl *RateLimiter) Allow(identifier string) bool {
