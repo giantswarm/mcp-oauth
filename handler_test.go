@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
@@ -3869,6 +3870,33 @@ func TestHandler_ServeTokenIntrospection(t *testing.T) {
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
 	}
+}
+
+func TestHandler_ServeTokenIntrospection_BasicFormClientIDMismatchRejected(t *testing.T) {
+	ctx := context.Background()
+
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	client, secret, err := handler.server.RegisterClient(ctx, "Introspect Client", "confidential", "", []string{"https://example.com/cb"}, []string{"openid"}, "192.168.1.5", 10)
+	require.NoError(t, err)
+
+	form := url.Values{}
+	form.Set("token", "any-opaque-token")
+	form.Set("client_id", "form-value-does-not-match")
+
+	req := httptest.NewRequest(http.MethodPost, "/introspect", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(client.ClientID, secret)
+	w := httptest.NewRecorder()
+
+	handler.ServeTokenIntrospection(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
+	var response map[string]string
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&response))
+	require.Equal(t, ErrorCodeInvalidClient, response["error"])
+	require.Contains(t, response["error_description"], "does not match")
 }
 
 // CORS Tests

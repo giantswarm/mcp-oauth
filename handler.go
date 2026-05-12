@@ -2143,7 +2143,7 @@ func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string)
 	formClientID := clientID
 
 	// RFC 6749 §2.3.1: if both Basic Auth and form client_id are supplied,
-	// they MUST identify the same client; reject silent override.
+	// they MUST identify the same client.
 	if basicClientID != "" && formClientID != "" && basicClientID != formClientID {
 		h.logAuthFailure(r.Context(), basicClientID, clientIP, "client_id_mismatch_basic_vs_form", "client_id in Basic Authorization header does not match form parameter")
 		return nil, NewError(ErrorCodeInvalidClient, "client_id in Basic Authorization header does not match form parameter", http.StatusBadRequest)

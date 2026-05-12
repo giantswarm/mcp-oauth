@@ -20,7 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Token, refresh, and revocation endpoints reject Basic-Auth / form `client_id` mismatch** (RFC 6749 §2.3.1) — when both an HTTP Basic Authorization header and a form `client_id` parameter are supplied and disagree, the request is rejected with `400 invalid_client` and the description `client_id in Basic Authorization header does not match form parameter`. Audited as `auth_failure` with `reason=client_id_mismatch_basic_vs_form`.
+- **All four authenticated endpoints reject Basic-Auth / form `client_id` mismatch** (RFC 6749 §2.3.1) — `/token` (authorization_code, refresh_token grants), `/revoke`, and `/introspect` return `400 invalid_client` with the description `client_id in Basic Authorization header does not match form parameter` when the Basic Authorization identity disagrees with the form `client_id`. Audited as `auth_failure` (reason `client_id_mismatch_basic_vs_form`); the audit record pins the Basic-Auth identity. `handleAuthorizationCodeGrant` now reads `oauthErr.Status` before recording the HTTP metric so a 400 is not relabelled as 401.
+- **`parseBasicAuth` rejects malformed `Authorization: Basic` headers** — the `ok` flag from `r.BasicAuth()` is now honoured, so an undecodable payload or missing colon is treated as "no credentials" rather than a silent client_id of garbage.
 - **`oauth_http_requests_total` now covers all `/token` and `ValidateToken` middleware paths**
   - The HTTP counter previously skipped `/token`'s `405` and unsupported-`grant_type` `400` responses, and the `ValidateToken` middleware's rate-limit `429`s. Dashboards summing by `endpoint` (new label `validate_token`) now see those.
 - **`oauth_http_requests_total` now records the 429 on `/register`'s IP-rate path**
@@ -45,7 +46,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Entries are validated at startup: HTTPS only, no fragment / userinfo, no loopback / private / link-local / unspecified IP literal hosts. Invalid entries are dropped.
   - New audit event `client_registered_via_trusted_redirect_uri` (`security.EventClientRegisteredViaTrustedRedirectURI`) carries the matched URI.
   - Env loader: `OAUTH_TRUSTED_REDIRECT_URIS` (comma-separated).
-- **HTTP-level test coverage for the refresh-token grant** — `TestHandler_ServeToken_RefreshGrant_*` exercises `handleRefreshTokenGrant` and `authenticateRefreshTokenClient` end-to-end (0% → 100%), pinning the OAuth 2.1 Section 6 client-binding, client-authentication, reuse-detection, and expired-token branches against regressions.
 - **`LogValue()` on `Server`, `storage/memory.Store`, and `storage/valkey.Store`** (slog.LogValuer)
   - Callers can attach a one-shot structured snapshot of the server / store posture to any log line: `logger.Info("oauth ready", "server", srv, "store", store)`. The library no longer emits this state on its own.
   - `Server.LogValue()` exposes `issuer`, `production_mode`, `access_token_format`, `encryption_at_rest`, `instrumentation_on`, a `redirect_uri_policy` group (`dns_validation`, `dns_validation_strict`, `authorization_time_validation`, `dns_timeout`, `allow_localhost`, `allow_private_ip`, `allow_link_local`), and `session_id_hmac_key_fingerprint` (sha256[:8] hex, omitted when unconfigured).
