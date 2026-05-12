@@ -40,6 +40,9 @@ func applySecureDefaults(config *Config, logger *slog.Logger) *Config {
 	// Validate trusted public registration schemes configuration
 	validateTrustedPublicRegistrationSchemes(config, logger)
 
+	// Validate trusted public registration HTTPS redirect URIs allowlist
+	validateTrustedPublicRegistrationRedirectURIs(config, logger)
+
 	// Validate ProviderTokenTTL configuration (SSO token forwarding)
 	validateProviderTokenTTLConfig(config, logger)
 
