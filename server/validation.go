@@ -212,26 +212,6 @@ func (s *Server) resolveRegisteredRedirectURI(client *storage.Client, redirectUR
 	return "", fmt.Errorf("redirect URI not registered for client")
 }
 
-// matchesLoopbackRedirectURI checks if a redirect URI matches any registered URI
-// using RFC 8252 Section 7.3 port-agnostic matching for loopback addresses.
-//
-// Per RFC 8252:
-//   - Section 7.3: "The authorization server MUST allow any port to be specified at
-//     the time of the request for loopback IP redirect URIs, to accommodate clients
-//     that obtain an available ephemeral port from the operating system at the time
-//     of the request."
-//   - Section 8.3: "The redirect URI MUST NOT be compared against pre-registered
-//     URIs using simple string matching [...] the comparison MUST be done by comparing
-//     scheme, host, and path."
-//
-// This function only applies port-agnostic matching when the requested redirect URI
-// targets a loopback address (localhost, 127.0.0.0/8, ::1). Non-loopback URIs are
-// never matched by this function — they require exact string matching.
-func matchesLoopbackRedirectURI(requestedURI string, registeredURIs []string) bool {
-	_, ok := canonicalLoopbackRedirectURI(requestedURI, registeredURIs)
-	return ok
-}
-
 // canonicalLoopbackRedirectURI returns the canonical URI for a loopback
 // port-agnostic match (RFC 8252 §7.3 + §8.3). Scheme, host, and path are
 // taken from the matched registered URI; only the port is taken from the

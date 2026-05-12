@@ -2652,7 +2652,7 @@ func TestHandler_ServeAuthorization_StateLength(t *testing.T) {
 			}
 
 			if tt.wantErrorParam != "" {
-				assertAuthorizationErrorRedirect(t, w, "https://example.com/callback", tt.wantErrorParam, tt.state)
+				assertAuthorizationErrorRedirect(t, w, "https://example.com/callback", tt.wantErrorParam, "state parameter", tt.state)
 			}
 		})
 	}
@@ -2782,7 +2782,7 @@ func TestHandler_ServeAuthorization_ShortStateWithAllowNoState(t *testing.T) {
 	}
 }
 
-func assertAuthorizationErrorRedirect(t *testing.T, w *httptest.ResponseRecorder, expectedRedirect, expectedErrorCode, expectedState string) {
+func assertAuthorizationErrorRedirect(t *testing.T, w *httptest.ResponseRecorder, expectedRedirect, expectedErrorCode, expectedErrorDescriptionSubstr, expectedState string) {
 	t.Helper()
 
 	if w.Code != http.StatusFound {
@@ -2814,14 +2814,18 @@ func assertAuthorizationErrorRedirect(t *testing.T, w *httptest.ResponseRecorder
 	if got := q.Get("error"); got != expectedErrorCode {
 		t.Errorf("error query param = %q, want %q", got, expectedErrorCode)
 	}
-	if q.Get("error_description") == "" {
+	if got := q.Get("error_description"); got == "" {
 		t.Errorf("error_description query param missing")
+	} else if expectedErrorDescriptionSubstr != "" && !strings.Contains(got, expectedErrorDescriptionSubstr) {
+		t.Errorf("error_description = %q, want substring %q", got, expectedErrorDescriptionSubstr)
 	}
 	if got := q.Get("state"); got != expectedState {
 		t.Errorf("state query param = %q, want %q", got, expectedState)
 	}
 }
 
+// Regression test for #303: /authorize must enforce response_type=code and
+// reject anything else with unsupported_response_type via the redirect path.
 func TestHandler_ServeAuthorization_NoResponseType_Rejected(t *testing.T) {
 	ctx := context.Background()
 	handler, store := setupTestHandler(t)
@@ -2870,11 +2874,15 @@ func TestHandler_ServeAuthorization_NoResponseType_Rejected(t *testing.T) {
 			w := httptest.NewRecorder()
 			handler.ServeAuthorization(w, req)
 
-			assertAuthorizationErrorRedirect(t, w, "https://example.com/callback", ErrorCodeUnsupportedResponseType, validState)
+			assertAuthorizationErrorRedirect(t, w, "https://example.com/callback", ErrorCodeUnsupportedResponseType, "response_type must be one of [code]", validState)
 		})
 	}
 }
 
+// Regression test for #303: state-parameter failures redirect to the
+// registered redirect_uri per RFC 6749 §4.1.2.1, but unregistered or
+// non-http(s) redirect_uri values must JSON-error so the error path cannot
+// become an open-redirect gadget (RFC 6749 §3.1.2.4).
 func TestHandler_ServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *testing.T) {
 	ctx := context.Background()
 	handler, store := setupTestHandler(t)
@@ -2927,7 +2935,7 @@ func TestHandler_ServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *tes
 			w := httptest.NewRecorder()
 			handler.ServeAuthorization(w, req)
 
-			assertAuthorizationErrorRedirect(t, w, "https://example.com/callback", ErrorCodeInvalidRequest, tt.wantState)
+			assertAuthorizationErrorRedirect(t, w, "https://example.com/callback", ErrorCodeInvalidRequest, "state parameter", tt.wantState)
 		})
 	}
 
@@ -3001,6 +3009,58 @@ func TestHandler_ServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *tes
 			t.Errorf("error = %q, want %q", body["error"], ErrorCodeInvalidRequest)
 		}
 	})
+}
+
+// Native-app custom-scheme redirect URIs (RFC 8252 §7.1) cannot carry an HTTP
+// 302 redirect; respondAuthorizationError must fall back to JSON 400 for
+// those clients rather than attempt a Location redirect.
+func TestHandler_ServeAuthorization_CustomSchemeRedirectURI_FallsBackToJSON(t *testing.T) {
+	ctx := context.Background()
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	handler.server.Config.AllowedCustomSchemes = []string{"^myapp$"}
+
+	client, _, err := handler.server.RegisterClient(
+		ctx,
+		"Native App",
+		"public",
+		"",
+		[]string{"myapp://callback"},
+		[]string{"openid"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	validState := testutil.GenerateRandomString(43)
+	reqURL := "/authorize?client_id=" + client.ClientID +
+		"&redirect_uri=" + url.QueryEscape("myapp://callback") +
+		"&response_type=token" +
+		"&scope=openid" +
+		"&state=" + validState +
+		"&code_challenge=test-challenge" +
+		"&code_challenge_method=S256"
+
+	req := httptest.NewRequest(http.MethodGet, reqURL, nil)
+	w := httptest.NewRecorder()
+	handler.ServeAuthorization(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d (custom-scheme redirect_uri must JSON-error)", w.Code, http.StatusBadRequest)
+	}
+	if loc := w.Header().Get("Location"); loc != "" {
+		t.Errorf("Location header set to %q; custom-scheme redirect must not 302", loc)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response body is not JSON: %v", err)
+	}
+	if body["error"] != ErrorCodeUnsupportedResponseType {
+		t.Errorf("error = %q, want %q", body["error"], ErrorCodeUnsupportedResponseType)
+	}
 }
 
 func TestHandler_ServeCallback_ShortProviderStateAlwaysRejected(t *testing.T) {
