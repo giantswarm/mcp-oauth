@@ -3,6 +3,7 @@
 package security
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"log/slog"
@@ -38,7 +39,9 @@ type Event struct {
 	Timestamp time.Time
 }
 
-// LogEvent logs a security event with hashed PII
+// LogEvent logs a security event with hashed PII. Attributes are emitted
+// under a single [slog.Group] named "audit" so consumers can split-route
+// audit records from operational logs in their slog.Handler.
 func (a *Auditor) LogEvent(event Event) {
 	if !a.enabled {
 		return
@@ -46,16 +49,17 @@ func (a *Auditor) LogEvent(event Event) {
 
 	event.Timestamp = time.Now()
 
-	a.logger.Info(
-		"security_audit",
-		"event_type", event.Type,
-		"user_id_hash", hashForLogging(event.UserID),
-		"client_id", event.ClientID,
-		"ip_address", event.IPAddress,
-		"user_agent", event.UserAgent,
-		"request_id", event.RequestID,
-		"details", event.Details,
-		"timestamp", event.Timestamp,
+	a.logger.LogAttrs(context.Background(), slog.LevelInfo, "security_audit",
+		slog.Group("audit",
+			slog.String("event_type", event.Type),
+			slog.String("user_id_hash", hashForLogging(event.UserID)),
+			slog.String("client_id", event.ClientID),
+			slog.String("ip_address", event.IPAddress),
+			slog.String("user_agent", event.UserAgent),
+			slog.String("request_id", event.RequestID),
+			slog.Any("details", event.Details),
+			slog.Time("timestamp", event.Timestamp),
+		),
 	)
 }
 

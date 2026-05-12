@@ -148,7 +148,7 @@ func (s *Server) trackClientIPAndLog(client *storage.Client, _ /* clientSecret -
 		s.Auditor.LogClientRegistered(client.ClientID, client.ClientType, clientIP)
 	}
 
-	s.Logger.Info("Registered new OAuth client",
+	s.Logger.Debug("Registered new OAuth client",
 		"client_id", client.ClientID,
 		"client_name", client.ClientName,
 		"client_type", client.ClientType,

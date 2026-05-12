@@ -444,7 +444,7 @@ func (s *Server) fetchClientWithSingleflight(ctx context.Context, clientID strin
 	}
 
 	s.recordCIMDCacheMetric(ctx, "miss")
-	s.Logger.Info("Fetching client metadata from URL", "client_id", clientID)
+	s.Logger.Debug("Fetching client metadata from URL", "client_id", clientID)
 
 	metadata, suggestedTTL, fetchErr := s.fetchClientMetadata(ctx, clientID)
 	if fetchErr != nil {

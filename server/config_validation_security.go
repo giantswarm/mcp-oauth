@@ -230,16 +230,9 @@ func logCoreSecurityWarnings(config *Config, logger *slog.Logger) {
 	}
 }
 
-// logRedirectURISecurityStatus logs the redirect URI security configuration status.
+// logRedirectURISecurityStatus emits WARN entries for any explicitly
+// disabled redirect-URI security feature.
 func logRedirectURISecurityStatus(config *Config, logger *slog.Logger) {
-	// Log current security status
-	logger.Info("Redirect URI security status",
-		"production_mode", config.ProductionMode,
-		"dns_validation", config.DNSValidation,
-		"dns_validation_strict", config.DNSValidationStrict,
-		"authorization_time_validation", config.ValidateRedirectURIAtAuthorization,
-		"dns_timeout", config.DNSValidationTimeout)
-
 	// Warn about explicitly disabled security features
 	if config.DisableProductionMode {
 		logger.Warn("SECURITY WARNING: ProductionMode is DISABLED",
@@ -264,9 +257,8 @@ func logRedirectURISecurityStatus(config *Config, logger *slog.Logger) {
 			"recommendation", "Only disable if authorization latency is critical")
 	}
 
-	// Info about Allow* escape hatches
 	if config.AllowLocalhostRedirectURIs {
-		logger.Info("Localhost redirect URIs are ALLOWED (RFC 8252 native app support)",
+		logger.Debug("Localhost redirect URIs are ALLOWED (RFC 8252 native app support)",
 			"note", "HTTP allowed on loopback for native apps",
 			"learn_more", "https://datatracker.ietf.org/doc/html/rfc8252#section-7.3")
 	}

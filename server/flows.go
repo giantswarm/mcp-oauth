@@ -213,7 +213,7 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 
 	s.fireTokenRefreshHandler(ctx, accessToken, newProviderToken)
 
-	s.Logger.Info("Token proactively refreshed",
+	s.Logger.Debug("Token proactively refreshed",
 		"old_expiry", storedToken.Expiry,
 		"new_expiry", newProviderToken.Expiry,
 		"token_suffix", helpers.TokenSuffix(accessToken, 8))
@@ -375,7 +375,7 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 
 		s.fireTokenRefreshHandler(ctx, accessToken, newProviderToken)
 
-		s.Logger.Info("Expired provider token refreshed during validation",
+		s.Logger.Debug("Expired provider token refreshed during validation",
 			"old_expiry", storedToken.Expiry,
 			"new_expiry", newProviderToken.Expiry,
 			"token_suffix", helpers.TokenSuffix(accessToken, 8))
@@ -809,7 +809,7 @@ func (s *Server) rotateRefreshToken(ctx context.Context, oldRefreshToken, userID
 	_ = s.tokenStore.DeleteToken(ctx, oldRefreshToken)
 	s.unregisterTokenPairByRefresh(oldRefreshToken)
 
-	s.Logger.Info("Refresh token rotated (OAuth 2.1)",
+	s.Logger.Debug("Refresh token rotated (OAuth 2.1)",
 		"user_id", userID, "generation", generation, "family_tracking", supportsFamilies)
 
 	// Save with family tracking if supported
@@ -1680,7 +1680,7 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP stri
 		s.Auditor.LogTokenRevoked("", clientID, clientIP, "access_or_refresh")
 	}
 
-	s.Logger.Info("Token revoked", "client_id", clientID, "ip", clientIP)
+	s.Logger.Debug("Token revoked", "client_id", clientID, "ip", clientIP)
 	return nil
 }
 
@@ -1708,7 +1708,7 @@ func (s *Server) revokeTokenFamilyIfNeeded(ctx context.Context, family *storage.
 		s.Logger.Warn("Failed to revoke refresh token family", "family_id", family.FamilyID, "error", err)
 		return
 	}
-	s.Logger.Info("Revoked refresh token family on explicit revocation",
+	s.Logger.Debug("Revoked refresh token family on explicit revocation",
 		"family_id", family.FamilyID, "client_id", clientID, "ip", clientIP)
 
 	if s.sessionRevocationHandler != nil {
@@ -1861,7 +1861,7 @@ func (s *Server) RevokeAllTokensForUserClient(ctx context.Context, userID, clien
 		failureRate = float64(failedAtProvider) / float64(totalTokensToRevoke)
 	}
 
-	s.Logger.Info("Provider revocation complete",
+	s.Logger.Debug("Provider revocation complete",
 		"user_id", userID, "client_id", clientID, "revoked_at_provider", revokedAtProvider,
 		"failed_at_provider", failedAtProvider, "total_tokens", totalTokensToRevoke,
 		"failure_rate", fmt.Sprintf("%.2f%%", failureRate*100))
@@ -1929,7 +1929,7 @@ func (s *Server) revokeTokenWithRetry(ctx context.Context, token, tokenType, use
 		if err == nil {
 			// Success - log if this wasn't the first attempt
 			if attempt > 0 {
-				s.Logger.Info("Provider token revocation succeeded after retry",
+				s.Logger.Debug("Provider token revocation succeeded after retry",
 					"token_type", tokenType,
 					"attempt", attempt+1,
 					"max_retries", maxRetries,

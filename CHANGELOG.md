@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`LogValue()` on `Server`, `storage/memory.Store`, and `storage/valkey.Store`** (slog.LogValuer)
+  - Callers can attach a one-shot structured snapshot of the server / store posture to any log line: `logger.Info("oauth ready", "server", srv, "store", store)`. The library no longer emits this state on its own.
+  - `Server.LogValue()` exposes `issuer`, `production_mode`, `access_token_format`, `encryption_at_rest`, `instrumentation_on`, a `redirect_uri_policy` group (`dns_validation`, `dns_validation_strict`, `authorization_time_validation`, `dns_timeout`, `allow_localhost`, `allow_private_ip`, `allow_link_local`), and `session_id_hmac_key_fingerprint` (sha256[:8] hex, omitted when unconfigured).
+  - `memory.Store.LogValue()` / `valkey.Store.LogValue()` expose `backend`, `encryption_at_rest`, `instrumentation_on`.
 - **`Server.RefreshSession(ctx, familyID)` for on-demand session refresh** (closes #285)
   - In-process API to refresh an upstream provider token by family ID, callable from any goroutine. Reuses the existing `RefreshAccessToken` path (same rotation, reuse detection, audit, and `TokenRefreshHandler` dispatch) — just driven by family ID instead of by a refresh token in the request.
   - Concurrent calls for the same family ID are coalesced via `singleflight`: only one provider refresh hits the upstream, the rest share the result.
@@ -37,6 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Startup chatter downgraded from INFO to DEBUG; audit logs grouped under `slog.Group("audit", ...)`**
+  - Every "X enabled / Using Y / Initialized Z / Registered W" line that fired once at startup is now `slog.LevelDebug`. Affected sites span `server`, `storage/memory`, `storage/valkey`, `security/client_registration_ratelimit`, `providers/oidc`, plus per-request lifecycle Infos (`Token proactively refreshed`, `Refresh token rotated`, `Token revoked`, `Token exchange successful`, ...). WARN/ERROR security warnings are unchanged.
+  - The Server-side "Redirect URI security status" Info is removed; the same fields are reachable via `Server.LogValue()`.
+  - `Auditor.LogEvent` now emits via `slog.LogAttrs` with every audit field bundled in a single `slog.Group("audit", ...)`. Consumers can route audit records separately by inspecting the group in their `slog.Handler`. The level stays at `INFO` and the message stays `"security_audit"`.
+  - Consumers compile unchanged; only their log volume changes. Crank to `slog.LevelDebug` to recover the prior verbosity.
 - **Server constructor now accepts functional options; the post-construction `Set*` methods are gone**
   - `server.New` and `server.NewWithCombined` (and the root-package `oauth.NewServer` / `oauth.NewServerWithCombined`) take a variadic `...Option` parameter. New constructors: `WithEncryptor`, `WithAuditor`, `WithRateLimiter`, `WithUserRateLimiter`, `WithSecurityEventRateLimiter`, `WithClientRegistrationRateLimiter`, `WithMetadataFetchRateLimiter`, `WithSessionCreationHandler`, `WithSessionRevocationHandler`, `WithTokenRefreshHandler`, `WithInstrumentation`. `WithEncryptor` and `WithInstrumentation` propagate to the storage backend identically to the old setters.
   - **Breaking**: `Server.SetEncryptor`, `SetAuditor`, `SetRateLimiter`, `SetUserRateLimiter`, `SetSecurityEventRateLimiter`, `SetClientRegistrationRateLimiter`, `SetMetadataFetchRateLimiter`, `SetSessionCreationHandler`, `SetSessionRevocationHandler`, `SetTokenRefreshHandler`, and `SetInstrumentation` are removed. Migration: pass the same value as a `With*` option to the constructor.

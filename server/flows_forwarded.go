@@ -242,7 +242,7 @@ func (s *Server) logForwardedSessionIDKeyFingerprint() {
 		return
 	}
 	sum := sha256.Sum256(s.Config.SessionIDHMACKey)
-	s.Logger.Info("Forwarded-ID-token session correlation: SessionIDHMACKey is configured",
+	s.Logger.Debug("Forwarded-ID-token session correlation: SessionIDHMACKey is configured",
 		"key_fingerprint", hex.EncodeToString(sum[:8]),
 		"key_bytes", len(s.Config.SessionIDHMACKey),
 		"purpose", "All MCP servers in a correlation set must report the same key_fingerprint; a mismatch silently breaks cross-hop session-ID correlation")

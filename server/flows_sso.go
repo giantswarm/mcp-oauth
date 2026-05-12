@@ -161,7 +161,7 @@ func (s *Server) idTokenClaimsToUserInfo(claims *oidc.IDTokenClaims) *providers.
 
 // logForwardedIDTokenAccepted logs a security event when a forwarded ID token is accepted.
 func (s *Server) logForwardedIDTokenAccepted(tokenString, matchedAudience, validatedIssuer string, userInfo *providers.UserInfo) {
-	s.Logger.Info("Forwarded ID token accepted via TrustedAudiences (SSO)",
+	s.Logger.Debug("Forwarded ID token accepted via TrustedAudiences (SSO)",
 		"user_id", userInfo.ID,
 		"email", userInfo.Email,
 		"matched_audience", matchedAudience,

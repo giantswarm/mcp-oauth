@@ -2,8 +2,11 @@ package security
 
 import (
 	"bytes"
+	"encoding/json"
 	"log/slog"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewAuditor(t *testing.T) {
@@ -291,4 +294,39 @@ func Test_hashForLogging_Different(t *testing.T) {
 	if hash1 == hash2 {
 		t.Error("hashForLogging() should return different hashes for different inputs")
 	}
+}
+
+// TestAuditor_LogEvent_EmitsAuditGroup asserts that LogEvent emits at INFO
+// and bundles every attribute under a single "audit" group so consumers can
+// route audit records separately from operational logs.
+func TestAuditor_LogEvent_EmitsAuditGroup(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	auditor := NewAuditor(logger, true)
+
+	auditor.LogEvent(Event{
+		Type:      "test_event",
+		UserID:    "user-123",
+		ClientID:  "client-456",
+		IPAddress: "192.168.1.1",
+		Details:   map[string]any{"key": "value"},
+	})
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &payload))
+
+	require.Equal(t, "INFO", payload["level"])
+	require.Equal(t, "security_audit", payload["msg"])
+
+	audit, ok := payload["audit"].(map[string]any)
+	require.True(t, ok, "expected audit group in payload, got %v", payload)
+	require.Equal(t, "test_event", audit["event_type"])
+	require.Equal(t, "client-456", audit["client_id"])
+	require.Equal(t, "192.168.1.1", audit["ip_address"])
+	require.NotEmpty(t, audit["user_id_hash"], "user_id must be hashed, not raw")
+	require.NotEqual(t, "user-123", audit["user_id_hash"], "user_id must not be emitted as raw")
+
+	details, ok := audit["details"].(map[string]any)
+	require.True(t, ok, "expected details map under audit group, got %v", audit)
+	require.Equal(t, "value", details["key"])
 }
