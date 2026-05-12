@@ -206,4 +206,7 @@ const (
 	// MaxMaxAgeSeconds caps max_age to a reasonable window (31 days).
 	// Values above this are ignored to reduce DoS risk from huge integers.
 	MaxMaxAgeSeconds = 31 * 24 * 60 * 60
+
+	// MaxNonceLength is the maximum length for the OIDC `nonce` parameter.
+	MaxNonceLength = 256
 )

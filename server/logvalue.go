@@ -23,7 +23,8 @@ func (s *Server) LogValue() slog.Value {
 		slog.String("access_token_format", string(cfg.AccessTokenFormat)),
 		slog.Bool("encryption_at_rest", s.Encryptor != nil && s.Encryptor.IsEnabled()),
 		slog.Bool("instrumentation_on", s.Instrumentation.IsEnabled()),
-		slog.Group("redirect_uri_policy",
+		slog.Group(
+			"redirect_uri_policy",
 			slog.Bool("dns_validation", cfg.DNSValidation),
 			slog.Bool("dns_validation_strict", cfg.DNSValidationStrict),
 			slog.Bool("authorization_time_validation", cfg.ValidateRedirectURIAtAuthorization),

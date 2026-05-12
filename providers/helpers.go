@@ -47,6 +47,9 @@ func ApplyAuthorizationURLOptions(opts *AuthorizationURLOptions) []oauth2.AuthCo
 	if opts.IDTokenHint != "" {
 		result = append(result, oauth2.SetAuthURLParam("id_token_hint", opts.IDTokenHint))
 	}
+	if opts.Nonce != "" {
+		result = append(result, oauth2.SetAuthURLParam("nonce", opts.Nonce))
+	}
 	for k, v := range opts.Extra {
 		result = append(result, oauth2.SetAuthURLParam(k, v))
 	}

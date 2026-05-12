@@ -75,6 +75,9 @@ func buildOIDCParams(opts *providers.AuthorizationURLOptions) string {
 	if opts.ACRValues != "" {
 		params += "&acr_values=" + url.QueryEscape(opts.ACRValues)
 	}
+	if opts.Nonce != "" {
+		params += "&nonce=" + url.QueryEscape(opts.Nonce)
+	}
 	return params
 }
 
