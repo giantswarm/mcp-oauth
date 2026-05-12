@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`security.DecodeKey(s string) ([]byte, error)`**: convenience helper that tries [`KeyFromBase64`](security/encryption.go) then falls back to [`KeyFromHex`](security/encryption.go). Consolidates the dual-encoding decode pattern that consumers were re-implementing locally.
 - **`storage/valkey.Config.MaxTokenDataSize`**: per-store override for the encrypted-token serialization ceiling. `OAUTH_VALKEY_MAX_TOKEN_DATA_SIZE` exposes the same knob via environment. Values are bounded by `MinMaxTokenDataSize` (64 KiB) and `MaxMaxTokenDataSize` (8 MiB); `New` rejects out-of-range values.
 - **`security.EventProviderTokenStorageFailed`**: audit event emitted on every provider-token persistence failure, with stable `reason` enum (`missing_subject`, `save_user_info_by_id`, `save_token_by_id`, `save_user_info_by_email`, `save_token_by_email`).
+- **`oauth_provider_token_storage_failed_total{reason}`**: counter that mirrors `EventProviderTokenStorageFailed`; the `reason` label uses the same enum so dashboards can join audit and metric streams.
 
 ### Changed
 

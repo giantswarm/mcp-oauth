@@ -70,6 +70,7 @@ type Metrics struct {
 	RedirectURISecurityRejected metric.Int64Counter // Redirect URI validation failures by category
 	LegacyRefreshTokenRejected  metric.Int64Counter // Legacy refresh tokens rejected (missing client binding)
 	ForwardedIDTokenAccepted    metric.Int64Counter // Forwarded ID token acceptance attempts (labels: issuer, audience, result)
+	ProviderTokenStorageFailed  metric.Int64Counter // Provider token / UserInfo persistence failures (label: reason)
 
 	// Storage Metrics
 	StorageOperationTotal    metric.Int64Counter
@@ -208,6 +209,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 	m.RedirectURISecurityRejected = b.counter(securityMeter, "oauth.redirect_uri.security_rejected", "Number of redirect URI validation failures (SSRF/XSS protection)", "{rejection}")
 	m.LegacyRefreshTokenRejected = b.counter(securityMeter, "oauth.refresh_token.legacy_rejected", "Number of legacy refresh tokens rejected due to missing client binding (OAuth 2.1 compliance)", "{token}")
 	m.ForwardedIDTokenAccepted = b.counter(securityMeter, "oauth.forwarded_id_token.accepted_total", "Number of forwarded ID token acceptance attempts (labels: issuer, audience, result — result is a bounded enum: ok|aud_mismatch|iss_mismatch|sig_invalid|expired|not_yet_valid|no_jwks|parse_error)", "{attempt}")
+	m.ProviderTokenStorageFailed = b.counter(securityMeter, "oauth.provider_token.storage_failed", "Provider token (or UserInfo) persistence failures keyed by reason (missing_subject, save_user_info_by_id, save_token_by_id, save_user_info_by_email, save_token_by_email)", "{failure}")
 
 	// Storage Metrics
 	m.StorageOperationTotal = b.counter(storageMeter, "storage.operation.total", "Total number of storage operations", "{operation}")
@@ -352,6 +354,15 @@ func (m *Metrics) RecordTokenReuseDetected(ctx context.Context) {
 // This metric tracks rejected tokens for observability and security monitoring.
 func (m *Metrics) RecordLegacyRefreshTokenRejected(ctx context.Context) {
 	m.LegacyRefreshTokenRejected.Add(ctx, 1)
+}
+
+// RecordProviderTokenStorageFailed records a provider-token persistence
+// failure. reason is the same stable enum carried on
+// [security.EventProviderTokenStorageFailed].
+func (m *Metrics) RecordProviderTokenStorageFailed(ctx context.Context, reason string) {
+	m.ProviderTokenStorageFailed.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(metricAttrReason, reason),
+	))
 }
 
 // ForwardedIDTokenResult is the bounded result enum for the

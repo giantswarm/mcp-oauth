@@ -97,6 +97,9 @@ func TestMetrics_RecordSecurityEvents(t *testing.T) {
 
 	metrics.RecordTokenReuseDetected(ctx)
 
+	metrics.RecordProviderTokenStorageFailed(ctx, "save_token_by_id")
+	metrics.RecordProviderTokenStorageFailed(ctx, "save_user_info_by_email")
+
 	// Test redirect URI security rejection metrics
 	metrics.RecordRedirectURISecurityRejected(ctx, "blocked_scheme", "registration")
 	metrics.RecordRedirectURISecurityRejected(ctx, "private_ip", "registration")

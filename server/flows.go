@@ -1215,10 +1215,13 @@ func (s *Server) saveUserInfoAndToken(ctx context.Context, userInfo *providers.U
 	return nil
 }
 
-// auditProviderTokenStorageFailed emits a stable audit event for each
-// provider-token persistence failure path. The reason enum is the stable
+// auditProviderTokenStorageFailed emits the stable audit event and metric for
+// each provider-token persistence failure path. The reason enum is the stable
 // dimension dashboards split on.
 func (s *Server) auditProviderTokenStorageFailed(ctx context.Context, userInfo *providers.UserInfo, reason, detail string) {
+	if s.Instrumentation != nil {
+		s.Instrumentation.Metrics().RecordProviderTokenStorageFailed(ctx, reason)
+	}
 	if s.Auditor == nil {
 		return
 	}
