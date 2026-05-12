@@ -26,6 +26,7 @@ func clearStorageEnv(t *testing.T) {
 		"OAUTH_VALKEY_TLS",
 		"OAUTH_VALKEY_TLS_INSECURE_SKIP_VERIFY",
 		"OAUTH_VALKEY_REFRESH_TOKEN_TTL",
+		"OAUTH_VALKEY_MAX_TOKEN_DATA_SIZE",
 	} {
 		t.Setenv(v, "")
 	}
@@ -100,6 +101,30 @@ func TestStorageFromEnv_ValkeyBadTLSBool(t *testing.T) {
 	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
 	if err == nil || !strings.Contains(err.Error(), "VALKEY_TLS") {
 		t.Fatalf("expected VALKEY_TLS bool parse error, got %v", err)
+	}
+}
+
+func TestStorageFromEnv_ValkeyBadMaxTokenDataSize(t *testing.T) {
+	clearStorageEnv(t)
+	t.Setenv("OAUTH_STORAGE_BACKEND", "valkey")
+	t.Setenv("OAUTH_VALKEY_ADDR", "unreachable:0")
+	t.Setenv("OAUTH_VALKEY_MAX_TOKEN_DATA_SIZE", "not-an-int")
+
+	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
+	if err == nil || !strings.Contains(err.Error(), "VALKEY_MAX_TOKEN_DATA_SIZE") {
+		t.Fatalf("expected VALKEY_MAX_TOKEN_DATA_SIZE parse error, got %v", err)
+	}
+}
+
+func TestStorageFromEnv_ValkeyMaxTokenDataSizeOutOfRange(t *testing.T) {
+	clearStorageEnv(t)
+	t.Setenv("OAUTH_STORAGE_BACKEND", "valkey")
+	t.Setenv("OAUTH_VALKEY_ADDR", "unreachable:0")
+	t.Setenv("OAUTH_VALKEY_MAX_TOKEN_DATA_SIZE", "1024") // below MinMaxTokenDataSize
+
+	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
+	if err == nil || !strings.Contains(err.Error(), "MaxTokenDataSize") {
+		t.Fatalf("expected MaxTokenDataSize range error, got %v", err)
 	}
 }
 

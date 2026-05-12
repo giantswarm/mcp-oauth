@@ -50,10 +50,23 @@ const (
 	// MaxIDLength is the maximum allowed length for identifiers (userID, clientID, familyID)
 	MaxIDLength = 256
 
-	// MaxTokenDataSize is the maximum size of serialized token data (256KB).
-	// This prevents memory exhaustion from large token payloads while accommodating
-	// enterprise OIDC tokens that embed large groups claims in signed JWTs.
-	MaxTokenDataSize = 256 * 1024
+	// DefaultMaxTokenDataSize is the default ceiling on the serialized token
+	// written to Valkey, applied after AES-256-GCM + base64 expansion of the
+	// encrypted-at-rest fields (AccessToken, RefreshToken, id_token). 600 KiB
+	// admits raw id_tokens up to ~440 KiB once encrypted, covering enterprise
+	// OIDC populations whose JWTs embed a full `groups` claim. Override per
+	// store via [Config.MaxTokenDataSize].
+	DefaultMaxTokenDataSize = 600 * 1024
+
+	// MinMaxTokenDataSize is the lower bound accepted for
+	// [Config.MaxTokenDataSize]. A smaller ceiling cannot fit an encrypted
+	// minimal OIDC id_token with even a short groups claim.
+	MinMaxTokenDataSize = 64 * 1024
+
+	// MaxMaxTokenDataSize is the upper bound accepted for
+	// [Config.MaxTokenDataSize]. Values larger than this are rejected to
+	// preserve a DoS budget at the SaveToken boundary.
+	MaxMaxTokenDataSize = 8 * 1024 * 1024
 )
 
 // Validation error messages (generic to prevent information leakage)
@@ -91,6 +104,12 @@ type Config struct {
 	// token. This should match the MCP server's refresh token lifetime so that
 	// Valkey automatically evicts orphaned provider tokens. Default: 90 days
 	RefreshTokenTTL time.Duration
+
+	// MaxTokenDataSize bounds the serialized token written by [Store.SaveToken],
+	// applied after encryption and JSON framing. Zero selects
+	// [DefaultMaxTokenDataSize]. Values outside [[MinMaxTokenDataSize],
+	// [MaxMaxTokenDataSize]] cause [New] to return an error.
+	MaxTokenDataSize int
 }
 
 // Store is a Valkey-backed implementation of all storage interfaces.
@@ -101,6 +120,7 @@ type Store struct {
 	logger                     *slog.Logger
 	revokedFamilyRetentionDays int
 	refreshTokenTTL            time.Duration
+	maxTokenDataSize           int
 
 	// encryptor provides optional token encryption at rest
 	// Access must be synchronized via encryptorMu
@@ -155,6 +175,14 @@ func New(cfg Config) (*Store, error) {
 		refreshTokenTTL = DefaultRefreshTokenTTL
 	}
 
+	maxTokenDataSize := cfg.MaxTokenDataSize
+	if maxTokenDataSize == 0 {
+		maxTokenDataSize = DefaultMaxTokenDataSize
+	}
+	if maxTokenDataSize < MinMaxTokenDataSize || maxTokenDataSize > MaxMaxTokenDataSize {
+		return nil, fmt.Errorf("MaxTokenDataSize=%d out of range [%d,%d]", maxTokenDataSize, MinMaxTokenDataSize, MaxMaxTokenDataSize)
+	}
+
 	// Build client options
 	opts := valkeygo.ClientOption{
 		InitAddress: []string{cfg.Address},
@@ -189,6 +217,7 @@ func New(cfg Config) (*Store, error) {
 		logger:                     logger,
 		revokedFamilyRetentionDays: retentionDays,
 		refreshTokenTTL:            refreshTokenTTL,
+		maxTokenDataSize:           maxTokenDataSize,
 	}
 	logger.Debug("storage connected", "store", s)
 	return s, nil

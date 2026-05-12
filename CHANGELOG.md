@@ -10,10 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`security.DecodeKey(s string) ([]byte, error)`**: convenience helper that tries [`KeyFromBase64`](security/encryption.go) then falls back to [`KeyFromHex`](security/encryption.go). Consolidates the dual-encoding decode pattern that consumers were re-implementing locally.
+- **`storage/valkey.Config.MaxTokenDataSize`**: per-store override for the encrypted-token serialization ceiling. `OAUTH_VALKEY_MAX_TOKEN_DATA_SIZE` exposes the same knob via environment. Values are bounded by `MinMaxTokenDataSize` (64 KiB) and `MaxMaxTokenDataSize` (8 MiB); `New` rejects out-of-range values.
+- **`security.EventProviderTokenStorageFailed`**: audit event emitted on every provider-token persistence failure, with stable `reason` enum (`missing_subject`, `save_user_info_by_id`, `save_token_by_id`, `save_user_info_by_email`, `save_token_by_email`).
+- **`oauth_provider_token_storage_failed_total{reason}`**: counter that mirrors `EventProviderTokenStorageFailed`; the `reason` label uses the same enum so dashboards can join audit and metric streams.
 - **`Server.ValidateRedirectURIForAuthorization(ctx, clientID, redirectURI) (*url.URL, error)`**: runs the client lookup and registered-redirect-URI check and returns the canonical `*url.URL` from server-side storage. Handlers redirecting `/authorize` protocol errors back to the client must use this value as the redirect target (RFC 6749 §3.1.2.4).
 
 ### Changed
 
+- **`storage/valkey.DefaultMaxTokenDataSize`** raised to 600 KiB (was the previous 256 KiB constant `MaxTokenDataSize`, now removed). `SaveToken` accepts larger OIDC id_tokens, including those carrying extensive `groups` claims. Operators needing a different ceiling set `Config.MaxTokenDataSize` (or `OAUTH_VALKEY_MAX_TOKEN_DATA_SIZE`).
+- **OAuth provider-token storage failures are no longer silently swallowed**. `HandleProviderCallback` returns an error when persisting the provider token or `UserInfo` keyed by the subject ID fails, instead of completing the auth flow against an empty store (which previously manifested as broken SSO token forwarding). Email-keyed save failures remain best-effort but are now audited.
 - **`Retry-After` is computed from the limiter's configured rate**
   - The IP, user, and discovery rate-limit `429` responses now set `Retry-After` to `1` second for any positive rate (sub-second precision isn't expressible per RFC 9110 §10.2.3) and fall back to `60` when the rate is 0. The client-registration limiter uses its configured window. Previously this header was a hardcoded `60` regardless of limiter configuration. New `RateLimiter.Rate()` / `ClientRegistrationRateLimiter.Window()` accessors expose the values.
 - **`oauth_http_requests_total{endpoint="authorize"}`** (was `"authorization"`)

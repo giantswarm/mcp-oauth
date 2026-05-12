@@ -30,6 +30,8 @@ import (
 //   - OAUTH_VALKEY_TLS                       (optional; "true" enables TLS)
 //   - OAUTH_VALKEY_TLS_INSECURE_SKIP_VERIFY  (optional; dev only)
 //   - OAUTH_VALKEY_REFRESH_TOKEN_TTL         (optional Go duration)
+//   - OAUTH_VALKEY_MAX_TOKEN_DATA_SIZE       (optional bytes; default 600 KiB,
+//     range [64 KiB, 8 MiB])
 //
 // Pass the returned [storage.Combined] to [server.NewWithCombined].
 func StorageFromEnv(logger *slog.Logger) (storage.Combined, func() error, error) {
@@ -93,14 +95,20 @@ func newValkeyFromEnv(prefix string, logger *slog.Logger) (storage.Combined, fun
 		return nil, nil, err
 	}
 
+	maxTokenDataSize, err := optionalPositiveInt(prefix + "VALKEY_MAX_TOKEN_DATA_SIZE")
+	if err != nil {
+		return nil, nil, err
+	}
+
 	cfg := valkey.Config{
-		Address:         addr,
-		Password:        password,
-		DB:              db,
-		KeyPrefix:       os.Getenv(prefix + "VALKEY_KEY_PREFIX"),
-		TLS:             valkeytls.New(valkeytls.Options{Enabled: tlsEnabled, InsecureSkipVerify: tlsInsecure}),
-		Logger:          logger,
-		RefreshTokenTTL: refreshTTL,
+		Address:          addr,
+		Password:         password,
+		DB:               db,
+		KeyPrefix:        os.Getenv(prefix + "VALKEY_KEY_PREFIX"),
+		TLS:              valkeytls.New(valkeytls.Options{Enabled: tlsEnabled, InsecureSkipVerify: tlsInsecure}),
+		Logger:           logger,
+		RefreshTokenTTL:  refreshTTL,
+		MaxTokenDataSize: maxTokenDataSize,
 	}
 	store, err := valkey.New(cfg)
 	if err != nil {

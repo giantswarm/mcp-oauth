@@ -90,7 +90,7 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 	}
 
 	// Validate serialized size
-	if len(data) > MaxTokenDataSize {
+	if len(data) > s.maxTokenDataSize {
 		return errInputTooLarge
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -100,6 +101,28 @@ func TestNew_InvalidAddress(t *testing.T) {
 	_, err := New(Config{Address: "invalid:99999"})
 	if err == nil {
 		t.Error("Expected error for invalid address")
+	}
+}
+
+func TestNew_MaxTokenDataSize_OutOfRange(t *testing.T) {
+	cases := []struct {
+		name  string
+		value int
+	}{
+		{"below minimum", MinMaxTokenDataSize - 1},
+		{"above maximum", MaxMaxTokenDataSize + 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := New(Config{Address: "localhost:6379", MaxTokenDataSize: tc.value})
+			if err == nil {
+				t.Errorf("New() with MaxTokenDataSize=%d: expected error, got nil", tc.value)
+				return
+			}
+			if !strings.Contains(err.Error(), "MaxTokenDataSize") {
+				t.Errorf("New() error = %q; want error mentioning MaxTokenDataSize", err)
+			}
+		})
 	}
 }
 

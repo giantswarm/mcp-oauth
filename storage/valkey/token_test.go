@@ -2,12 +2,15 @@ package valkey
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
+
+	"github.com/giantswarm/mcp-oauth/security"
 )
 
 // TestSerializableTokenRoundTrip verifies that oauth2.Token can be serialized
@@ -210,4 +213,38 @@ func TestSerializableTokenOmitEmpty(t *testing.T) {
 	assert.NotContains(t, parsed, "refresh_token", "empty refresh_token should be omitted")
 	assert.NotContains(t, parsed, "extra", "nil extra should be omitted")
 	// Note: expiry with zero time may or may not be omitted depending on JSON encoding
+}
+
+// TestMaxTokenDataSize_FitsEncryptedEnterpriseIDToken pins
+// DefaultMaxTokenDataSize against the production SaveToken pipeline: encrypt
+// sensitive fields, then json.Marshal(serializableToken). AES-256-GCM +
+// base64 expands the id_token by ~4/3, so the constant must admit the
+// expanded form rather than the raw JWT. A 200 KiB raw id_token covers
+// enterprise OIDC populations (Dex / Keycloak fronting AD, GitHub Apps with
+// hundreds of teams) and exceeds a 256 KiB ceiling once encrypted.
+func TestMaxTokenDataSize_FitsEncryptedEnterpriseIDToken(t *testing.T) {
+	key, err := security.GenerateKey()
+	require.NoError(t, err)
+	encryptor, err := security.NewEncryptor(key)
+	require.NoError(t, err)
+
+	store := &Store{encryptor: encryptor}
+
+	token := (&oauth2.Token{
+		AccessToken:  strings.Repeat("a", 256),
+		RefreshToken: strings.Repeat("r", 256),
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(time.Hour),
+	}).WithExtra(map[string]interface{}{
+		"id_token": strings.Repeat("j", 200*1024),
+		"scope":    "openid email profile groups offline_access",
+	})
+
+	encrypted, err := store.encryptToken(token)
+	require.NoError(t, err)
+
+	data, err := json.Marshal(toSerializable(encrypted))
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(data), DefaultMaxTokenDataSize,
+		"encrypted 200 KiB id_token serialized to %d bytes; DefaultMaxTokenDataSize=%d", len(data), DefaultMaxTokenDataSize)
 }
