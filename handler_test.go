@@ -2846,6 +2846,82 @@ func TestHandler_ServeToken_AuthorizationCode(t *testing.T) {
 	}
 }
 
+func TestHandler_ServeToken_AuthorizationCode_BasicAuthAndFormClientIDMismatch_Rejected(t *testing.T) {
+	ctx := context.Background()
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	client, secret, err := handler.server.RegisterClient(
+		ctx,
+		"Test Client",
+		"confidential",
+		"",
+		[]string{"https://example.com/callback"},
+		[]string{"openid"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	formData := url.Values{}
+	formData.Set("grant_type", "authorization_code")
+	formData.Set("code", "any-code")
+	formData.Set("redirect_uri", "https://example.com/callback")
+	formData.Set("client_id", "form-value-does-not-match")
+
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(formData.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(client.ClientID, secret)
+	w := httptest.NewRecorder()
+
+	handler.ServeToken(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body: %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+
+	var errResp ErrorResponse
+	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if errResp.Error != ErrorCodeInvalidClient {
+		t.Errorf("error = %q, want %q", errResp.Error, ErrorCodeInvalidClient)
+	}
+	if !strings.Contains(errResp.ErrorDescription, "does not match") {
+		t.Errorf("error_description = %q, want it to contain %q", errResp.ErrorDescription, "does not match")
+	}
+}
+
+func TestHandler_ServeToken_AuthorizationCode_UnknownBasicAuthClient(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	formData := url.Values{}
+	formData.Set("grant_type", "authorization_code")
+	formData.Set("code", "any-code")
+	formData.Set("redirect_uri", "https://example.com/callback")
+
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(formData.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth("client-that-was-never-registered", "any-secret")
+	w := httptest.NewRecorder()
+
+	handler.ServeToken(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d, body: %s", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+	var errResp ErrorResponse
+	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if errResp.Error != ErrorCodeInvalidClient {
+		t.Errorf("error = %q, want %q", errResp.Error, ErrorCodeInvalidClient)
+	}
+}
+
 func TestHandler_ServeClientRegistration_Success(t *testing.T) {
 	handler, store := setupTestHandler(t)
 	defer store.Stop()

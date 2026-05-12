@@ -1693,12 +1693,27 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 // Returns (clientID, clientAuthenticated, error).
 // If error is returned, the HTTP response has already been written.
 func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.ResponseWriter, r *http.Request, clientID, clientIP string, startTime time.Time, span trace.Span) (string, bool, error) {
-	authClientID, authClientSecret := h.parseBasicAuth(r)
+	basicClientID, basicClientSecret := h.parseBasicAuth(r)
+	formClientID := clientID
+
+	// RFC 6749 §2.3.1: if both Basic Auth and form client_id are supplied,
+	// they MUST identify the same client; reject silent override.
+	if basicClientID != "" && formClientID != "" && basicClientID != formClientID {
+		h.logger.Warn("client_id mismatch between Basic Authorization header and form parameter",
+			"basic_client_id", basicClientID, "form_client_id", formClientID, "ip", clientIP)
+		if h.server.Auditor != nil {
+			h.server.Auditor.LogAuthFailure(ctx, "", basicClientID, clientIP, "client_id_mismatch_basic_vs_form")
+		}
+		h.recordHTTPMetrics(r.Context(), "token", http.MethodPost, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "client_id mismatch basic vs form")
+		h.writeError(w, ErrorCodeInvalidClient, "client_id in Basic Authorization header does not match form parameter", http.StatusBadRequest)
+		return "", false, fmt.Errorf("client_id mismatch between Basic Authorization header and form parameter")
+	}
 
 	// Case 1: Basic Auth credentials provided - validate them
-	if authClientID != "" {
-		clientID = authClientID
-		if err := h.server.ValidateClientCredentials(ctx, clientID, authClientSecret); err != nil {
+	if basicClientID != "" {
+		clientID = basicClientID
+		if err := h.server.ValidateClientCredentials(ctx, clientID, basicClientSecret); err != nil {
 			h.logger.Warn("Client authentication failed", "client_id", clientID, "ip", clientIP, "error", err)
 			if h.server.Auditor != nil {
 				h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "refresh_client_authentication_failed")
@@ -1811,12 +1826,27 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get client credentials from Authorization header (if present)
+	basicClientID, basicClientSecret := h.parseBasicAuth(r)
+	formClientID := clientID
+
+	// RFC 6749 §2.3.1: if both Basic Auth and form client_id are supplied,
+	// they MUST identify the same client.
+	if basicClientID != "" && formClientID != "" && basicClientID != formClientID {
+		h.logger.Warn("client_id mismatch between Basic Authorization header and form parameter",
+			"basic_client_id", basicClientID, "form_client_id", formClientID, "ip", clientIP)
+		if h.server.Auditor != nil {
+			h.server.Auditor.LogAuthFailure(r.Context(), "", basicClientID, clientIP, "client_id_mismatch_basic_vs_form")
+		}
+		h.recordHTTPMetrics(r.Context(), endpointRevoke, http.MethodPost, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "client_id mismatch basic vs form")
+		h.writeError(w, ErrorCodeInvalidClient, "client_id in Basic Authorization header does not match form parameter", http.StatusBadRequest)
+		return
+	}
+
 	clientAuthenticated := false
-	if authClientID, authClientSecret := h.parseBasicAuth(r); authClientID != "" {
-		clientID = authClientID
-		// Validate client credentials
-		if err := h.server.ValidateClientCredentials(r.Context(), clientID, authClientSecret); err != nil {
+	if basicClientID != "" {
+		clientID = basicClientID
+		if err := h.server.ValidateClientCredentials(r.Context(), clientID, basicClientSecret); err != nil {
 			h.logger.Warn("Client authentication failed for revocation", "client_id", clientID, "ip", clientIP)
 			if h.server.Auditor != nil {
 				h.server.Auditor.LogAuthFailure(r.Context(), "", clientID, clientIP, "revocation_auth_failed")
@@ -2086,9 +2116,19 @@ func (h *Handler) parseBasicAuth(r *http.Request) (username, password string) {
 // authenticateClient validates client credentials from either Basic Auth or form parameters
 // Returns the validated client or an error with the OAuth error code
 func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string) (*storage.Client, error) {
-	authClientID, authClientSecret := h.parseBasicAuth(r)
-	if authClientID != "" {
-		clientID = authClientID
+	basicClientID, basicClientSecret := h.parseBasicAuth(r)
+	formClientID := clientID
+
+	// RFC 6749 §2.3.1: if both Basic Auth and form client_id are supplied,
+	// they MUST identify the same client; reject silent override.
+	if basicClientID != "" && formClientID != "" && basicClientID != formClientID {
+		h.logAuthFailure(r.Context(), basicClientID, clientIP, "client_id_mismatch_basic_vs_form", "client_id in Basic Authorization header does not match form parameter")
+		return nil, NewError(ErrorCodeInvalidClient, "client_id in Basic Authorization header does not match form parameter", http.StatusBadRequest)
+	}
+
+	authClientSecret := basicClientSecret
+	if basicClientID != "" {
+		clientID = basicClientID
 	}
 
 	if clientID == "" {

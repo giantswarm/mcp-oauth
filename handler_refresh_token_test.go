@@ -95,7 +95,7 @@ func (e *refreshTestEnv) seedRefreshToken(t *testing.T, clientID, userID, family
 }
 
 // seedLegacyRefreshToken stores a refresh token without family metadata so the
-// stored client_id is empty — the legacy branch in validateRefreshTokenClientBinding.
+// stored client_id is empty.
 func (e *refreshTestEnv) seedLegacyRefreshToken(t *testing.T, userID string, expiresAt time.Time) string {
 	t.Helper()
 	refreshToken := "legacy-rt-" + userID
@@ -243,10 +243,7 @@ func TestHandler_ServeToken_RefreshGrant_ConfidentialClient_NoAuth(t *testing.T)
 	require.True(t, auditAuthFailureWithReason(t, env.auditBuf, "confidential_client_refresh_missing_auth"))
 }
 
-// Basic Auth client_id wins over the form client_id silently. A future change
-// that adds strict mismatch detection (returning invalid_client) breaks this
-// test by design.
-func TestHandler_ServeToken_RefreshGrant_BasicAuthOverridesFormClientID(t *testing.T) {
+func TestHandler_ServeToken_RefreshGrant_BasicAuthAndFormClientIDMismatch_Rejected(t *testing.T) {
 	env := newRefreshTestEnv(t)
 	clientID, secret := env.registerClient(t, ClientTypeConfidential)
 	refreshToken := env.seedRefreshToken(t, clientID, "user-mismatch", "family-mismatch", time.Now().Add(time.Hour))
@@ -255,6 +252,25 @@ func TestHandler_ServeToken_RefreshGrant_BasicAuthOverridesFormClientID(t *testi
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 	form.Set("client_id", "form-value-does-not-match")
+
+	recorder := doRefreshRequest(env.handler, form, [2]string{clientID, secret})
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code, "body: %s", recorder.Body.String())
+	response := decodeErrorResponse(t, recorder)
+	require.Equal(t, ErrorCodeInvalidClient, response.Error)
+	require.Contains(t, response.ErrorDescription, "does not match")
+	require.True(t, auditAuthFailureWithReason(t, env.auditBuf, "client_id_mismatch_basic_vs_form"))
+}
+
+func TestHandler_ServeToken_RefreshGrant_BasicAuthAndMatchingFormClientID_OK(t *testing.T) {
+	env := newRefreshTestEnv(t)
+	clientID, secret := env.registerClient(t, ClientTypeConfidential)
+	refreshToken := env.seedRefreshToken(t, clientID, "user-match", "family-match", time.Now().Add(time.Hour))
+
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", refreshToken)
+	form.Set("client_id", clientID)
 
 	recorder := doRefreshRequest(env.handler, form, [2]string{clientID, secret})
 

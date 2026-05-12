@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Token, refresh, and revocation endpoints reject Basic-Auth / form `client_id` mismatch** (RFC 6749 §2.3.1) — when both an HTTP Basic Authorization header and a form `client_id` parameter are supplied and disagree, the request is rejected with `400 invalid_client` and the description `client_id in Basic Authorization header does not match form parameter`. Audited as `auth_failure` with `reason=client_id_mismatch_basic_vs_form`.
 - **`oauth_http_requests_total` now covers all `/token` and `ValidateToken` middleware paths**
   - The HTTP counter previously skipped `/token`'s `405` and unsupported-`grant_type` `400` responses, and the `ValidateToken` middleware's rate-limit `429`s. Dashboards summing by `endpoint` (new label `validate_token`) now see those.
 - **`oauth_http_requests_total` now records the 429 on `/register`'s IP-rate path**
