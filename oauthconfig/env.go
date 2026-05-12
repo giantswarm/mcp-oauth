@@ -102,6 +102,10 @@ func FromEnvWithPrefix(prefix string) (*server.Config, error) {
 		cfg.TrustedPublicRegistrationSchemes = splitAndTrim(raw, ",")
 	}
 
+	if raw := os.Getenv(prefix + "TRUSTED_REDIRECT_URIS"); raw != "" {
+		cfg.TrustedPublicRegistrationRedirectURIs = splitAndTrim(raw, ",")
+	}
+
 	return cfg, nil
 }
 

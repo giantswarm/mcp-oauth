@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`Config.TrustedPublicRegistrationRedirectURIs`** — HTTPS redirect-URI allowlist for unauthenticated dynamic client registration.
+  - Every `redirect_uris` entry in the request must be in the allowlist; matching is exact after RFC 3986 host normalization (lowercase scheme + host, default `:443` stripped; path and query case-sensitive).
+  - Public clients (`token_endpoint_auth_method: "none"`) succeed via this gate.
+  - Entries are validated at startup: HTTPS only, no fragment / userinfo, no loopback / private / link-local / unspecified IP literal hosts. Invalid entries are dropped.
+  - New audit event `client_registered_via_trusted_redirect_uri` (`security.EventClientRegisteredViaTrustedRedirectURI`) carries the matched URI.
+  - Env loader: `OAUTH_TRUSTED_REDIRECT_URIS` (comma-separated).
 - **`LogValue()` on `Server`, `storage/memory.Store`, and `storage/valkey.Store`** (slog.LogValuer)
   - Callers can attach a one-shot structured snapshot of the server / store posture to any log line: `logger.Info("oauth ready", "server", srv, "store", store)`. The library no longer emits this state on its own.
   - `Server.LogValue()` exposes `issuer`, `production_mode`, `access_token_format`, `encryption_at_rest`, `instrumentation_on`, a `redirect_uri_policy` group (`dns_validation`, `dns_validation_strict`, `authorization_time_validation`, `dns_timeout`, `allow_localhost`, `allow_private_ip`, `allow_link_local`), and `session_id_hmac_key_fingerprint` (sha256[:8] hex, omitted when unconfigured).
