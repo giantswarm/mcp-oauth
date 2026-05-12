@@ -39,7 +39,7 @@ const (
 // Stable strings — renaming any of these is a breaking change for
 // downstream dashboards.
 const (
-	endpointAuthorization = "authorization"
+	endpointAuthorize = "authorize"
 	endpointCallback      = "callback"
 	endpointToken         = "token"
 	endpointRevoke        = "revoke"
@@ -496,7 +496,7 @@ func (h *Handler) buildInterstitialData(redirectURL, appName string, branding *s
 func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		startTime := time.Now()
-		clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
+		clientIP := h.clientIP(r)
 
 		if h.checkIPRateLimit(w, r, clientIP) {
 			h.recordHTTPMetrics(r.Context(), endpointValidateToken, r.Method, http.StatusTooManyRequests, startTime)
@@ -537,21 +537,20 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 
 // retryAfterSecondsForRate returns a Retry-After hint in seconds for a token-
 // bucket limiter at the given rate (requests/second). Rate 0 (no refill)
-// falls back to a constant since the next refill time is unbounded.
+// falls back to a constant since the next refill time is unbounded. Any
+// positive rate yields 1s — sub-second precision isn't expressible in
+// Retry-After (RFC 9110 §10.2.3).
 func retryAfterSecondsForRate(rate int) int {
 	if rate <= 0 {
 		return defaultRetryAfterSeconds
 	}
-	// ceil(1/rate): time until one token is back. Always at least 1s so
-	// clients don't tight-loop on a fractional-rate response.
-	seconds := 1 / rate
-	if 1%rate != 0 {
-		seconds++
-	}
-	if seconds < 1 {
-		return 1
-	}
-	return seconds
+	return 1
+}
+
+// clientIP resolves the request's client IP using the server's proxy-trust
+// configuration. Threaded into every handler that gates by IP or logs IP.
+func (h *Handler) clientIP(r *http.Request) string {
+	return security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 }
 
 // gateIPRateLimit applies the IP rate limit at handler entry. On reject it
@@ -560,7 +559,7 @@ func retryAfterSecondsForRate(rate int) int {
 // clientIP for the caller to use downstream, and ok=true when the request
 // should proceed. span must be non-nil; obtain one via startHandlerSpan.
 func (h *Handler) gateIPRateLimit(w http.ResponseWriter, r *http.Request, span trace.Span, endpoint, method string, startTime time.Time) (clientIP string, ok bool) {
-	clientIP = security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
+	clientIP = h.clientIP(r)
 	if !h.checkIPRateLimit(w, r, clientIP) {
 		return clientIP, true
 	}
@@ -1073,7 +1072,7 @@ func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 		return
 	}
 
-	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
+	clientIP := h.clientIP(r)
 	if h.checkDiscoveryRateLimit(w, r, clientIP) {
 		return
 	}
@@ -1198,7 +1197,7 @@ func (h *Handler) ServeJWKS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
+	clientIP := h.clientIP(r)
 	if h.checkDiscoveryRateLimit(w, r, clientIP) {
 		return
 	}
@@ -1239,7 +1238,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	defer endSpan()
 
 	if r.Method != http.MethodGet {
-		h.recordHTTPMetrics(r.Context(), endpointAuthorization, http.MethodGet, http.StatusMethodNotAllowed, startTime)
+		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusMethodNotAllowed, startTime)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -1247,7 +1246,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	// Set CORS headers for browser-based clients
 	h.setCORSHeaders(w, r)
 
-	if _, ok := h.gateIPRateLimit(w, r, span, endpointAuthorization, http.MethodGet, startTime); !ok {
+	if _, ok := h.gateIPRateLimit(w, r, span, endpointAuthorize, http.MethodGet, startTime); !ok {
 		return
 	}
 
@@ -1264,7 +1263,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	authOpts := parseOIDCOptions(r.URL.Query())
 
 	if clientID == "" {
-		h.recordHTTPMetrics(r.Context(), endpointAuthorization, http.MethodGet, http.StatusBadRequest, startTime)
+		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "client_id missing")
 		h.writeError(w, ErrorCodeInvalidRequest, "client_id is required", http.StatusBadRequest)
 		return
@@ -1275,14 +1274,14 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	// Can be disabled for clients that don't support state (e.g., some MCP clients)
 	if state == "" && !h.server.Config.AllowNoStateParameter {
 		h.logger.Info("Authorization request rejected: state parameter missing", "client_id", clientID)
-		h.recordHTTPMetrics(r.Context(), endpointAuthorization, http.MethodGet, http.StatusBadRequest, startTime)
+		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "state missing")
 		h.writeError(w, ErrorCodeInvalidRequest, "state parameter is required for CSRF protection", http.StatusBadRequest)
 		return
 	}
 	if state != "" && len(state) < MinStateLength && !h.server.Config.AllowNoStateParameter {
 		h.logger.Warn("Authorization request rejected: state parameter too short", "state_length", len(state), "min_required", MinStateLength, "client_id", clientID)
-		h.recordHTTPMetrics(r.Context(), endpointAuthorization, http.MethodGet, http.StatusBadRequest, startTime)
+		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "state too short")
 		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at least %d characters for security", MinStateLength), http.StatusBadRequest)
 		return
@@ -1303,7 +1302,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	authURL, err := h.server.StartAuthorizationFlow(r.Context(), clientID, redirectURI, scope, resource, codeChallenge, codeChallengeMethod, state, authOpts)
 	if err != nil {
 		h.logger.Error("Failed to start authorization flow", "error", err)
-		h.recordHTTPMetrics(r.Context(), endpointAuthorization, http.MethodGet, http.StatusInternalServerError, startTime)
+		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusInternalServerError, startTime)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "authorization flow failed")
 		h.writeError(w, ErrorCodeServerError, "Failed to start authorization flow", http.StatusInternalServerError)
@@ -1313,7 +1312,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	// Record authorization started metric
 	h.recordAuthorizationStarted(r.Context(), clientID)
 
-	h.recordHTTPMetrics(r.Context(), endpointAuthorization, http.MethodGet, http.StatusFound, startTime)
+	h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusFound, startTime)
 	instrumentation.SetSpanSuccess(span)
 
 	// Parse and validate scheme before redirecting. authURL is built by the
@@ -1322,7 +1321,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	parsedAuthURL, err := url.Parse(authURL)
 	if err != nil || (parsedAuthURL.Scheme != "https" && parsedAuthURL.Scheme != "http") {
 		h.logger.Error("Provider returned invalid authorization URL", "error", err)
-		h.recordHTTPMetrics(r.Context(), endpointAuthorization, http.MethodGet, http.StatusInternalServerError, startTime)
+		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusInternalServerError, startTime)
 		instrumentation.SetSpanError(span, "invalid authorization URL")
 		h.writeError(w, ErrorCodeServerError, "Failed to start authorization flow", http.StatusInternalServerError)
 		return
@@ -1844,7 +1843,7 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	}
 
 	h.setCORSHeaders(w, r)
-	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
+	clientIP := h.clientIP(r)
 
 	if h.checkClientRegistrationRateLimit(r.Context(), w, clientIP, startTime) {
 		return

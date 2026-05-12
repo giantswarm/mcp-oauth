@@ -19,7 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **`Retry-After` is computed from the limiter's configured rate**
-  - The IP, user, and discovery rate-limit `429` responses now set `Retry-After` to `ceil(1 / rps)` (minimum `1`, falling back to `60` when the rate is 0). The client-registration limiter uses its configured window. Previously this header was a hardcoded `60` regardless of limiter configuration. New `RateLimiter.Rate()` / `RateLimiter.Burst()` / `ClientRegistrationRateLimiter.Window()` accessors expose the values.
+  - The IP, user, and discovery rate-limit `429` responses now set `Retry-After` to `1` second for any positive rate (sub-second precision isn't expressible per RFC 9110 §10.2.3) and fall back to `60` when the rate is 0. The client-registration limiter uses its configured window. Previously this header was a hardcoded `60` regardless of limiter configuration. New `RateLimiter.Rate()` / `RateLimiter.Burst()` / `ClientRegistrationRateLimiter.Window()` accessors expose the values.
+- **`oauth_http_requests_total{endpoint="authorize"}`** (was `"authorization"`)
+  - Renamed for path parity with `/authorize` (matching `token`, `revoke`, `introspect`, `register`, `callback`).
 
 ### Fixed
 
