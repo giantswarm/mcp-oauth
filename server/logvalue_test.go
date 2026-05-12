@@ -17,12 +17,7 @@ import (
 // captureHandler is a slog.Handler that retains every record it sees so
 // tests can assert on level distribution and attributes.
 type captureHandler struct {
-	mu      *bytes.Buffer
 	records []slog.Record
-}
-
-func newCaptureHandler() *captureHandler {
-	return &captureHandler{mu: &bytes.Buffer{}}
 }
 
 func (h *captureHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
@@ -44,8 +39,8 @@ func (h *captureHandler) infoLines() []string {
 }
 
 func TestServer_New_EmitsNoInfo(t *testing.T) {
-	cap := newCaptureHandler()
-	logger := slog.New(cap)
+	h := &captureHandler{}
+	logger := slog.New(h)
 
 	_, err := New(
 		mock.NewProvider(),
@@ -55,7 +50,7 @@ func TestServer_New_EmitsNoInfo(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	if got := cap.infoLines(); len(got) != 0 {
+	if got := h.infoLines(); len(got) != 0 {
 		t.Fatalf("server.New emitted %d INFO record(s); want 0:\n%s",
 			len(got), strings.Join(got, "\n"))
 	}

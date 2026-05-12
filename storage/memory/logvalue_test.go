@@ -37,8 +37,8 @@ func (h *captureHandler) infoLines() []string {
 }
 
 func TestStore_Construction_EmitsNoInfo(t *testing.T) {
-	cap := &captureHandler{}
-	logger := slog.New(cap)
+	h := &captureHandler{}
+	logger := slog.New(h)
 
 	store := New()
 	store.SetLogger(logger)
@@ -51,7 +51,7 @@ func TestStore_Construction_EmitsNoInfo(t *testing.T) {
 	store.SetEncryptor(enc)
 	store.SetInstrumentation(nil) // nil-safe path
 
-	if got := cap.infoLines(); len(got) != 0 {
+	if got := h.infoLines(); len(got) != 0 {
 		t.Fatalf("store construction emitted %d INFO record(s); want 0:\n%s",
 			len(got), strings.Join(got, "\n"))
 	}
