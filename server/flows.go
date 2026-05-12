@@ -1121,11 +1121,11 @@ func extractNonceClaim(claims map[string]any) (nonce string, wrongType bool) {
 	if !ok || raw == nil {
 		return "", false
 	}
-	s, isString := raw.(string)
+	value, isString := raw.(string)
 	if !isString {
 		return "", true
 	}
-	return s, false
+	return value, false
 }
 
 func nonceMismatchReason(claimNonce string) string {

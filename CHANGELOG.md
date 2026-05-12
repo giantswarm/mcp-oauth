@@ -41,13 +41,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - New audit event `client_registered_via_trusted_redirect_uri` (`security.EventClientRegisteredViaTrustedRedirectURI`) carries the matched URI.
   - Env loader: `OAUTH_TRUSTED_REDIRECT_URIS` (comma-separated).
 - **OIDC `nonce` end-to-end (CWE-294)** (closes #305)
-  - `/authorize` accepts the `nonce` query parameter and forwards it to the upstream IdP. Forbidden on non-OIDC code flows (no `openid` scope); on OIDC flows the server mints a 256-bit nonce when the client supplied none.
+  - `/authorize` accepts the `nonce` query parameter and forwards it to the upstream IdP. On OIDC flows the server mints a 256-bit nonce when the client supplied none; on non-OIDC flows (no `openid` scope) a client-supplied nonce is dropped (debug-logged, no rejection).
   - `providers.AuthorizationURLOptions` gains a `Nonce` field; additive, no signature changes.
   - `storage.AuthorizationState` gains a `Nonce` field, persisted by both memory and Valkey backends.
   - New `Config.RequireNonceEcho` (default `true`, opt out via `Config.DisableNonceEchoRequirement`). Upstream id_token must echo the issued nonce; the callback is rejected and `security.EventProviderNonceMismatch` is emitted (severity `high`, `reason` ∈ `{mismatch, absent, wrong_type, id_token_missing, id_token_parse_failed}`). Comparison uses `crypto/subtle.ConstantTimeCompare`.
   - New `oidc.ValidateNonceClaim(claim, expected)` + `oidc.ErrNonceMismatch` sentinel.
   - `IDTokenClaims` gains a `Nonce` JSON tag.
   - Authorization Server Metadata advertises `claims_supported: ["sub", "aud", "iss", "exp", "iat", "nonce"]`.
+  - Consumers using mock providers that omit `id_token` for OIDC-scoped flows must opt out via `DisableNonceEchoRequirement` or update fixtures to issue an `id_token` with the bound nonce echoed back.
 - **`LogValue()` on `Server`, `storage/memory.Store`, and `storage/valkey.Store`** (slog.LogValuer)
   - Callers can attach a one-shot structured snapshot of the server / store posture to any log line: `logger.Info("oauth ready", "server", srv, "store", store)`. The library no longer emits this state on its own.
   - `Server.LogValue()` exposes `issuer`, `production_mode`, `access_token_format`, `encryption_at_rest`, `instrumentation_on`, a `redirect_uri_policy` group (`dns_validation`, `dns_validation_strict`, `authorization_time_validation`, `dns_timeout`, `allow_localhost`, `allow_private_ip`, `allow_link_local`), and `session_id_hmac_key_fingerprint` (sha256[:8] hex, omitted when unconfigured).
