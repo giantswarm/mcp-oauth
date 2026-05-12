@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`security.DecodeKey(s string) ([]byte, error)`**: convenience helper that tries [`KeyFromBase64`](security/encryption.go) then falls back to [`KeyFromHex`](security/encryption.go). Consolidates the dual-encoding decode pattern that consumers were re-implementing locally.
+- **`Server.ValidateRedirectURIForAuthorization(ctx, clientID, redirectURI) (*url.URL, error)`**: runs the client lookup and registered-redirect-URI check and returns the canonical `*url.URL` from server-side storage. Handlers redirecting `/authorize` protocol errors back to the client must use this value as the redirect target (RFC 6749 §3.1.2.4).
 
 ### Changed
 
@@ -146,6 +147,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Removes the need for downstream consumers (mcp-observability-platform, muster, mcp-prometheus) to set `srvCfg.AllowLocalhostRedirectURIs = true` and `srvCfg.TrustedPublicRegistrationSchemes = []string{...}` manually after `FromEnv()`.
 
 ### Fixed
+
+- **`/authorize` validates `response_type` and redirects protocol errors per RFC 6749 §4.1.2.1 (#303)**
+  - Missing or non-`code` `response_type` is rejected with `unsupported_response_type`.
+  - `invalid_request` (missing or short `state`), `unsupported_response_type`, and `server_error` redirect to `redirect_uri` with `error` / `error_description` / `state` query parameters.
+  - `invalid_client` (missing or unregistered `client_id`) and `invalid_redirect_uri` (missing, non-`http(s)`, or not registered for the client) return JSON `400`.
 
 - **Treat email, profile, groups, offline_access as mandatory scopes (#252)**
   - `isMandatoryScope()` now returns true for `email`, `profile`, `groups`, and `offline_access` in addition to `openid` and cross-client audience scopes.
