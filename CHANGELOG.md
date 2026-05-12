@@ -7,9 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+### Tests
 
-- **`security.ValidateKeyEntropy` doc accuracy** — now states explicitly that the check is a backstop against placeholders only; derived-but-weak keys (e.g. SHA-256 of a dictionary word) are not caught.
+- **Fuzz coverage** for four parsing / validation primitives: `ParseCallbackQuery` (types.go), `providers/oidc.ValidateExternalURL`, `Server.computePKCEChallenge` (S256 method), and `server.validateCodeVerifierFormat`. Seed corpora committed; each is panic-clean against a 2s exploratory burst. Closes (partial) #311.
+- **Coverage gaps closed** for `Handler.handleRegistrationError` (HTTP-error mapping for the registration-limit vs generic branches) and `Server.handleRefreshTokenError` (classification of not-found / expired / transient errors).
+- **AEAD authentication regression test** in `security/encryption_test.go` — a single-bit flip of the ciphertext tag must fail `Decrypt`. Catches a regression where AES-GCM gets swapped for a non-authenticated mode.
 
 ### Security
 
