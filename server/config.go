@@ -790,6 +790,17 @@ type Config struct {
 	// Default: false (not yet implemented)
 	EnableIntrospectionEndpoint bool
 
+	// IntrospectionResourceServers lists client IDs permitted to introspect tokens
+	// they don't own. Typically resource servers that need to validate access tokens
+	// issued to user-agent clients (RFC 7662 §2.1 explicitly contemplates this).
+	//
+	// When the requesting client matches the token's bound client_id the request
+	// is always allowed; otherwise the requester must appear in this list or the
+	// response is {"active": false} per RFC 7662 §2.2 with no claim leakage.
+	//
+	// Default: nil (strict same-client gating).
+	IntrospectionResourceServers []string
+
 	// ClientMetadataCacheTTL is how long to cache fetched client metadata
 	// Caching reduces latency and prevents repeated fetches for the same client
 	// HTTP Cache-Control headers may override this value
