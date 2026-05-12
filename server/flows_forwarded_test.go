@@ -4,19 +4,18 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/go-jose/go-jose/v4"
+	josejwt "github.com/go-jose/go-jose/v4/jwt"
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
@@ -50,14 +49,12 @@ func newForwardedTokenHarness(t *testing.T, opts ...func(*Config)) *forwardedTok
 	}
 
 	const keyID = "test-key-1"
-	jwks := oidc.JWKS{
-		Keys: []oidc.JWK{{
-			Kty: "RSA",
-			Use: "sig",
-			Kid: keyID,
-			Alg: "RS256",
-			N:   base64.RawURLEncoding.EncodeToString(privateKey.N.Bytes()),
-			E:   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privateKey.E)).Bytes()),
+	jwks := jose.JSONWebKeySet{
+		Keys: []jose.JSONWebKey{{
+			Key:       privateKey.Public(),
+			KeyID:     keyID,
+			Algorithm: "RS256",
+			Use:       "sig",
 		}},
 	}
 
@@ -121,16 +118,36 @@ func newForwardedTokenHarness(t *testing.T, opts ...func(*Config)) *forwardedTok
 }
 
 // signToken creates a valid RS256-signed JWT with the given registered claims.
-func (h *forwardedTokenHarness) signToken(t *testing.T, claims jwt.RegisteredClaims) string {
+func (h *forwardedTokenHarness) signToken(t *testing.T, claims josejwt.Claims) string {
 	t.Helper()
-	idClaims := &oidc.IDTokenClaims{
-		RegisteredClaims: claims,
-		Email:            "user@test.example",
-		Name:             "Test User",
+	return signTestRS256Token(t, h.privateKey, h.keyID, oidc.IDTokenClaims{
+		Claims: claims,
+		Email:  "user@test.example",
+		Name:   "Test User",
+	})
+}
+
+// signTestRS256Token signs a token using go-jose with the given private RSA
+// key, kid, and full claim payload. Used by both the harness and the
+// invalid-signature test which signs with a deliberately wrong key.
+func signTestRS256Token(t *testing.T, privateKey *rsa.PrivateKey, kid string, claims any) string {
+	t.Helper()
+	signingKey := jose.SigningKey{
+		Algorithm: jose.RS256,
+		Key: jose.JSONWebKey{
+			Key:       privateKey,
+			KeyID:     kid,
+			Algorithm: "RS256",
+			Use:       "sig",
+		},
 	}
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, idClaims)
-	token.Header["kid"] = h.keyID
-	signed, err := token.SignedString(h.privateKey)
+	opts := (&jose.SignerOptions{}).WithType("JWT")
+	opts.WithHeader(jose.HeaderKey("kid"), kid)
+	signer, err := jose.NewSigner(signingKey, opts)
+	if err != nil {
+		t.Fatalf("create signer: %v", err)
+	}
+	signed, err := josejwt.Signed(signer).Claims(claims).Serialize()
 	if err != nil {
 		t.Fatalf("sign token: %v", err)
 	}
@@ -138,14 +155,14 @@ func (h *forwardedTokenHarness) signToken(t *testing.T, claims jwt.RegisteredCla
 }
 
 // validClaims returns a claims set that should pass all checks.
-func (h *forwardedTokenHarness) validClaims() jwt.RegisteredClaims {
+func (h *forwardedTokenHarness) validClaims() josejwt.Claims {
 	now := time.Now()
-	return jwt.RegisteredClaims{
-		Subject:   "user-subject-123",
-		Issuer:    h.issuer,
-		Audience:  []string{h.audience},
-		IssuedAt:  jwt.NewNumericDate(now),
-		ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
+	return josejwt.Claims{
+		Subject:  "user-subject-123",
+		Issuer:   h.issuer,
+		Audience: josejwt.Audience{h.audience},
+		IssuedAt: josejwt.NewNumericDate(now),
+		Expiry:   josejwt.NewNumericDate(now.Add(time.Hour)),
 	}
 }
 
@@ -237,13 +254,7 @@ func TestAcceptForwardedIDToken_InvalidSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
-	idClaims := &oidc.IDTokenClaims{RegisteredClaims: h.validClaims()}
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, idClaims)
-	token.Header["kid"] = h.keyID
-	bad, err := token.SignedString(otherKey)
-	if err != nil {
-		t.Fatalf("sign: %v", err)
-	}
+	bad := signTestRS256Token(t, otherKey, h.keyID, oidc.IDTokenClaims{Claims: h.validClaims()})
 
 	_, err = h.srv.AcceptForwardedIDToken(context.Background(), bad)
 	if err == nil {
@@ -258,8 +269,8 @@ func TestAcceptForwardedIDToken_ExpiredJWT(t *testing.T) {
 	h := newForwardedTokenHarness(t)
 	claims := h.validClaims()
 	past := time.Now().Add(-2 * time.Hour)
-	claims.IssuedAt = jwt.NewNumericDate(past)
-	claims.ExpiresAt = jwt.NewNumericDate(past.Add(time.Minute))
+	claims.IssuedAt = josejwt.NewNumericDate(past)
+	claims.Expiry = josejwt.NewNumericDate(past.Add(time.Minute))
 	tok := h.signToken(t, claims)
 
 	_, err := h.srv.AcceptForwardedIDToken(context.Background(), tok)
@@ -363,8 +374,8 @@ func TestClassifyForwardedTokenError(t *testing.T) {
 	// Wrap errForwardedTokenParseFailed the same way validateAndParseForwardedIDToken does.
 	parseWrapped := fmt.Errorf("%w: junk", errForwardedTokenParseFailed)
 	issuerWrapped := fmt.Errorf("ID token signature validation failed: %w: got \"x\", expected \"y\"", oidc.ErrIssuerMismatch)
-	expiredWrapped := fmt.Errorf("ID token signature validation failed: %w", jwt.ErrTokenExpired)
-	nbfWrapped := fmt.Errorf("ID token signature validation failed: %w", jwt.ErrTokenNotValidYet)
+	expiredWrapped := fmt.Errorf("ID token signature validation failed: %w", oidc.ErrTokenExpired)
+	nbfWrapped := fmt.Errorf("ID token signature validation failed: %w", oidc.ErrTokenNotValidYet)
 
 	cases := []struct {
 		name string
@@ -391,7 +402,7 @@ func TestAcceptForwardedIDToken_ExpiresAtMatchesExp(t *testing.T) {
 	h := newForwardedTokenHarness(t)
 	claims := h.validClaims()
 	exp := time.Now().Add(23 * time.Minute).Truncate(time.Second)
-	claims.ExpiresAt = jwt.NewNumericDate(exp)
+	claims.Expiry = josejwt.NewNumericDate(exp)
 	tok := h.signToken(t, claims)
 
 	acc, err := h.srv.AcceptForwardedIDToken(context.Background(), tok)

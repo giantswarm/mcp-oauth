@@ -137,28 +137,23 @@ type TokenStore interface {
 	AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken string) (userID string, clientID string, providerToken *oauth2.Token, err error)
 }
 
-// TokenMetadataStore is the basic interface for storing token metadata.
-// This allows tracking which tokens belong to which user and client for revocation purposes.
+// TokenMetadataStore stores write-side token metadata used for audit
+// (which user / client a token was issued to), audience binding
+// (RFC 8707), scope validation (MCP 2025-11-25), and refresh-token-family
+// bookkeeping (OAuth 2.1 reuse detection). The whole metadata payload
+// travels in a single TokenMetadata struct so adding a new field is a
+// single-place change rather than a new interface.
+//
+// Revocation does not flow through this interface — opaque tokens are
+// revoked via TokenStore.DeleteToken and self-issued JWTs via
+// RevokedTokenStore.RevokeJTI. TokenMetadata is the read-side payload
+// for scope validation and audit.
 type TokenMetadataStore interface {
-	SaveTokenMetadata(tokenID, userID, clientID, tokenType string) error
-}
-
-// TokenMetadataStoreWithAudience extends TokenMetadataStore with RFC 8707 audience support.
-// This allows binding tokens to specific resource servers to prevent token theft.
-type TokenMetadataStoreWithAudience interface {
-	SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenType, audience string) error
-}
-
-// TokenMetadataStoreWithScopesAndAudience extends with MCP 2025-11-25 scope support.
-// This allows tracking which scopes were granted to a token for scope validation.
-type TokenMetadataStoreWithScopesAndAudience interface {
-	SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID, tokenType, audience string, scopes []string) error
-}
-
-// TokenMetadataStoreWithFamily extends with refresh token family ID support.
-// This allows tracking which session (token family) a token belongs to.
-type TokenMetadataStoreWithFamily interface {
-	SaveTokenMetadataWithFamily(tokenID, userID, clientID, tokenType, audience, familyID string, scopes []string) error
+	// SaveTokenMetadata persists metadata for the given tokenID.
+	// metadata.IssuedAt is ignored on input; implementations populate it
+	// from the wall clock at write time so the stored value reflects
+	// actual write time and cannot be forged by a caller.
+	SaveTokenMetadata(ctx context.Context, tokenID string, metadata TokenMetadata) error
 }
 
 // TokenMetadataGetter provides read access to token metadata.
@@ -421,12 +416,19 @@ type AuthorizationCode struct {
 	Used                bool
 }
 
-// TokenMetadata tracks ownership and audience information for a token (RFC 8707)
-// Used for revocation by user+client and audience validation
+// TokenMetadata tracks ownership, audience (RFC 8707), and scope
+// (MCP 2025-11-25) information for an issued token. The same struct
+// is used for input to TokenMetadataStore.SaveTokenMetadata and for
+// output from TokenMetadataGetter.GetTokenMetadata.
+//
+// IssuedAt is server-set on write — the field is ignored on input and
+// populated by the backend from the wall clock at write time. Read it
+// after a GetTokenMetadata call; do not trust it on a caller-built
+// instance.
 type TokenMetadata struct {
 	UserID    string    // User who owns this token
 	ClientID  string    // Client who owns this token
-	IssuedAt  time.Time // When this token was issued
+	IssuedAt  time.Time // Server-set on write; ignored on input
 	TokenType string    // "access" or "refresh"
 	Audience  string    // RFC 8707: Intended resource server identifier (for audience validation)
 	Scopes    []string  // MCP 2025-11-25: Scopes granted to this token (for scope validation)

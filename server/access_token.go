@@ -3,11 +3,12 @@ package server
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
-	"github.com/golang-jwt/jwt/v5"
+	josejwt "github.com/go-jose/go-jose/v4/jwt"
+
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 )
 
 // AccessTokenClaims is the input passed to AccessTokenIssuer.Issue. It carries
@@ -97,27 +98,35 @@ func (o opaqueIssuer) Issue(_ context.Context, _ AccessTokenClaims) (string, err
 // constructor wires this implementation in when Config.AccessTokenFormat is
 // AccessTokenFormatJWT and Config.Validate has accepted the key/alg pair.
 type jwtIssuer struct {
-	signer    jwt.SigningMethod
-	key       any
-	kid       string
-	issuer    string
-	tokenType string
+	signer jose.Signer
+	issuer string
 }
 
 // newJWTIssuer constructs a jwtIssuer from a validated configuration. The
 // caller MUST have already run Config.Validate so that key/alg compatibility
 // is guaranteed. issuer is the OAuth Issuer URL that becomes the iss claim.
 func newJWTIssuer(cfg *Config) (*jwtIssuer, error) {
-	signer, err := signingMethodForAlgorithm(cfg.AccessTokenSigningAlgorithm)
+	alg := jose.SignatureAlgorithm(cfg.AccessTokenSigningAlgorithm)
+	signingKey := jose.SigningKey{
+		Algorithm: alg,
+		Key: jose.JSONWebKey{
+			Key:       cfg.AccessTokenSigningKey,
+			KeyID:     cfg.AccessTokenSigningKeyID,
+			Algorithm: cfg.AccessTokenSigningAlgorithm,
+			Use:       "sig",
+		},
+	}
+	opts := &jose.SignerOptions{}
+	opts.WithType(rfc9068TokenType)
+	opts.WithHeader(jose.HeaderKey("kid"), cfg.AccessTokenSigningKeyID)
+
+	signer, err := jose.NewSigner(signingKey, opts)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create JWT signer: %w", err)
 	}
 	return &jwtIssuer{
-		signer:    signer,
-		key:       cfg.AccessTokenSigningKey,
-		kid:       cfg.AccessTokenSigningKeyID,
-		issuer:    cfg.Issuer,
-		tokenType: rfc9068TokenType,
+		signer: signer,
+		issuer: cfg.Issuer,
 	}, nil
 }
 
@@ -125,6 +134,20 @@ func newJWTIssuer(cfg *Config) (*jwtIssuer, error) {
 // use it to distinguish access tokens from id_tokens during validation —
 // confusing the two enables a class of token-substitution attacks.
 const rfc9068TokenType = "at+jwt"
+
+// rfc9068Claims is the on-the-wire claim shape for an RFC 9068 access token.
+// Standard registered claims live on the embedded josejwt.Claims; the rest
+// are RFC 9068 §2.2 plus the OIDC-style email/groups extras carried for
+// downstream consumers.
+type rfc9068Claims struct {
+	josejwt.Claims
+
+	ClientID string   `json:"client_id,omitempty"`
+	Scope    string   `json:"scope,omitempty"`
+	Email    string   `json:"email,omitempty"`
+	Groups   []string `json:"groups,omitempty"`
+	FamilyID string   `json:"family_id,omitempty"`
+}
 
 // Issue signs an RFC 9068 access token. The header carries alg/kid/typ; the
 // payload carries the standard claims plus optional email/groups when set on
@@ -141,69 +164,27 @@ func (j *jwtIssuer) Issue(_ context.Context, c AccessTokenClaims) (string, error
 		jti = generateRandomToken()
 	}
 
-	mapClaims := jwt.MapClaims{
-		"iss":       j.issuer,
-		"sub":       c.Subject,
-		"aud":       c.Audience,
-		"exp":       c.ExpiresAt.Unix(),
-		"iat":       c.IssuedAt.Unix(),
-		"jti":       jti,
-		"client_id": c.ClientID,
-	}
-	if scope := joinScopes(c.Scopes); scope != "" {
-		mapClaims["scope"] = scope
-	}
-	if c.Email != "" {
-		mapClaims["email"] = c.Email
-	}
-	if len(c.Groups) > 0 {
-		mapClaims["groups"] = c.Groups
-	}
-	if c.FamilyID != "" {
-		mapClaims["family_id"] = c.FamilyID
+	claims := rfc9068Claims{
+		Claims: josejwt.Claims{
+			Issuer:   j.issuer,
+			Subject:  c.Subject,
+			Audience: josejwt.Audience{c.Audience},
+			Expiry:   josejwt.NewNumericDate(c.ExpiresAt),
+			IssuedAt: josejwt.NewNumericDate(c.IssuedAt),
+			ID:       jti,
+		},
+		ClientID: c.ClientID,
+		Scope:    helpers.JoinScopes(c.Scopes),
+		Email:    c.Email,
+		Groups:   c.Groups,
+		FamilyID: c.FamilyID,
 	}
 
-	tok := jwt.NewWithClaims(j.signer, mapClaims)
-	tok.Header["typ"] = j.tokenType
-	tok.Header["kid"] = j.kid
-
-	signed, err := tok.SignedString(j.key)
+	signed, err := josejwt.Signed(j.signer).Claims(claims).Serialize()
 	if err != nil {
 		return "", fmt.Errorf("sign access token: %w", err)
 	}
 	return signed, nil
-}
-
-// signingMethodForAlgorithm returns the golang-jwt SigningMethod for an
-// algorithm string. Only the closed set documented in
-// supportedSigningAlgorithms is recognized.
-func signingMethodForAlgorithm(alg string) (jwt.SigningMethod, error) {
-	switch alg {
-	case SigningAlgorithmRS256:
-		return jwt.SigningMethodRS256, nil
-	case SigningAlgorithmRS384:
-		return jwt.SigningMethodRS384, nil
-	case SigningAlgorithmRS512:
-		return jwt.SigningMethodRS512, nil
-	case SigningAlgorithmES256:
-		return jwt.SigningMethodES256, nil
-	case SigningAlgorithmES384:
-		return jwt.SigningMethodES384, nil
-	default:
-		return nil, fmt.Errorf("unsupported signing algorithm %q", alg)
-	}
-}
-
-// joinScopes concatenates non-empty scopes with single spaces per RFC 6749
-// §3.3 scope encoding. Empty entries are dropped to avoid stray separators.
-func joinScopes(scopes []string) string {
-	out := scopes[:0:0]
-	for _, s := range scopes {
-		if s != "" {
-			out = append(out, s)
-		}
-	}
-	return strings.Join(out, " ")
 }
 
 // publicJWKFromConfig returns a single public JWK for the configured access

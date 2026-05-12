@@ -13,25 +13,33 @@ The library provides OpenTelemetry (OTEL) instrumentation for metrics, distribut
 
 ## Quick Start
 
-Enable instrumentation in your server configuration:
+Build the instrumentation pipeline yourself with `instrumentation.New`, then pass it to the server via `oauth.WithInstrumentation`. The same pipeline can be shared with other components in the process.
 
 ```go
-import "github.com/giantswarm/mcp-oauth/instrumentation"
+import (
+    oauth "github.com/giantswarm/mcp-oauth"
+    "github.com/giantswarm/mcp-oauth/instrumentation"
+)
+
+inst, err := instrumentation.New(instrumentation.Config{
+    Enabled:         true,
+    ServiceName:     "my-oauth-server",
+    ServiceVersion:  "1.0.0",
+    MetricsExporter: "prometheus",
+    TracesExporter:  "otlp",
+    OTLPEndpoint:    "localhost:4318",
+})
+if err != nil {
+    log.Fatalf("init instrumentation: %v", err)
+}
 
 server, _ := oauth.NewServer(
     provider, tokenStore, clientStore, flowStore,
     &oauth.ServerConfig{
         Issuer: "https://your-domain.com",
-        Instrumentation: oauth.InstrumentationConfig{
-            Enabled:         true,
-            ServiceName:     "my-oauth-server",
-            ServiceVersion:  "1.0.0",
-            MetricsExporter: "prometheus",
-            TracesExporter:  "otlp",
-            OTLPEndpoint:    "localhost:4318",
-        },
     },
     logger,
+    oauth.WithInstrumentation(inst),
 )
 
 // Expose Prometheus metrics endpoint
@@ -59,10 +67,12 @@ http.Handle("/metrics", promhttp.Handler())
 
 ### Configuration Examples
 
+All examples build `instrumentation.Config` and pass the result via `oauth.WithInstrumentation(inst)` to `oauth.NewServer`.
+
 **Production: Prometheus + OTLP traces**
 
 ```go
-Instrumentation: oauth.InstrumentationConfig{
+instrumentation.Config{
     Enabled:         true,
     MetricsExporter: "prometheus",
     TracesExporter:  "otlp",
@@ -73,7 +83,7 @@ Instrumentation: oauth.InstrumentationConfig{
 **Development: stdout for local debugging**
 
 ```go
-Instrumentation: oauth.InstrumentationConfig{
+instrumentation.Config{
     Enabled:         true,
     MetricsExporter: "stdout",
     TracesExporter:  "stdout",
@@ -83,7 +93,7 @@ Instrumentation: oauth.InstrumentationConfig{
 **Minimal: Metrics only, no tracing**
 
 ```go
-Instrumentation: oauth.InstrumentationConfig{
+instrumentation.Config{
     Enabled:         true,
     MetricsExporter: "prometheus",
     TracesExporter:  "none",
@@ -223,13 +233,7 @@ Only metadata about tokens (type, expiry, family ID) is recorded.
 
 ### Minimal Data Collection
 
-For privacy-sensitive environments:
-
-```go
-Instrumentation: oauth.InstrumentationConfig{
-    Enabled: false, // No data collection
-}
-```
+For privacy-sensitive environments, simply omit `oauth.WithInstrumentation` from `oauth.NewServer`. The library uses no-op providers when no instrumentation is configured (zero overhead, no data collection).
 
 ## Integration Examples
 
@@ -266,7 +270,7 @@ docker run -d --name jaeger \
 ```
 
 ```go
-Instrumentation: oauth.InstrumentationConfig{
+instrumentation.Config{
     Enabled:        true,
     TracesExporter: "otlp",
     OTLPEndpoint:   "localhost:4318",

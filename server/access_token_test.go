@@ -8,8 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/go-jose/go-jose/v4"
+	josejwt "github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/require"
+
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 )
 
 func TestOpaqueIssuer_IssueProducesRandomToken(t *testing.T) {
@@ -53,34 +56,30 @@ func TestJWTIssuer_RFC9068ClaimShape(t *testing.T) {
 	require.NotEmpty(t, tokenString)
 	require.Equal(t, 3, strings.Count(tokenString, ".")+1, "JWT must have three segments")
 
-	parsed, err := jwt.Parse(tokenString, func(t *jwt.Token) (any, error) {
-		return key.Public(), nil
-	})
+	parsed, err := josejwt.ParseSigned(tokenString, []jose.SignatureAlgorithm{jose.RS256})
 	require.NoError(t, err)
-	require.True(t, parsed.Valid)
+	require.Len(t, parsed.Headers, 1)
+	require.Equal(t, "RS256", parsed.Headers[0].Algorithm)
+	require.Equal(t, "kid-1", parsed.Headers[0].KeyID)
+	typ, _ := parsed.Headers[0].ExtraHeaders[jose.HeaderType].(string)
+	require.Equal(t, rfc9068TokenType, typ)
 
-	require.Equal(t, "RS256", parsed.Method.Alg())
-	require.Equal(t, rfc9068TokenType, parsed.Header["typ"])
-	require.Equal(t, "kid-1", parsed.Header["kid"])
+	var standard josejwt.Claims
+	var private rfc9068Claims
+	require.NoError(t, parsed.Claims(key.Public(), &standard, &private))
 
-	claims, ok := parsed.Claims.(jwt.MapClaims)
-	require.True(t, ok)
-	require.Equal(t, "https://auth.example.com", claims["iss"])
-	require.Equal(t, "user-42", claims["sub"])
-	require.Equal(t, "client-abc", claims["client_id"])
-	require.Equal(t, "https://api.example.com", claims["aud"])
-	require.Equal(t, "openid profile", claims["scope"])
-	require.Equal(t, "user@example.com", claims["email"])
-	require.Equal(t, "family-xyz", claims["family_id"])
+	require.Equal(t, "https://auth.example.com", standard.Issuer)
+	require.Equal(t, "user-42", standard.Subject)
+	require.Equal(t, josejwt.Audience{"https://api.example.com"}, standard.Audience)
+	require.NotNil(t, standard.Expiry)
+	require.InDelta(t, now.Add(15*time.Minute).Unix(), int64(*standard.Expiry), 1)
+	require.NotEmpty(t, standard.ID)
 
-	groups, ok := claims["groups"].([]any)
-	require.True(t, ok, "groups should serialize as JSON array")
-	require.Equal(t, []any{"admins", "engineering"}, groups)
-
-	// jti must be present and non-empty even when caller did not supply one
-	require.NotEmpty(t, claims["jti"])
-	// exp matches caller value
-	require.InDelta(t, float64(now.Add(15*time.Minute).Unix()), claims["exp"], 1)
+	require.Equal(t, "client-abc", private.ClientID)
+	require.Equal(t, "openid profile", private.Scope)
+	require.Equal(t, "user@example.com", private.Email)
+	require.Equal(t, "family-xyz", private.FamilyID)
+	require.Equal(t, []string{"admins", "engineering"}, private.Groups)
 }
 
 func TestJWTIssuer_RequiresExpiry(t *testing.T) {
@@ -117,10 +116,11 @@ func TestJWTIssuer_PreservesCallerJTI(t *testing.T) {
 		JTI:       "caller-supplied-jti",
 	})
 	require.NoError(t, err)
-	parsed, err := jwt.Parse(tokenString, func(*jwt.Token) (any, error) { return key.Public(), nil })
+	parsed, err := josejwt.ParseSigned(tokenString, []jose.SignatureAlgorithm{jose.RS256})
 	require.NoError(t, err)
-	claims := parsed.Claims.(jwt.MapClaims)
-	require.Equal(t, "caller-supplied-jti", claims["jti"])
+	var standard josejwt.Claims
+	require.NoError(t, parsed.Claims(key.Public(), &standard))
+	require.Equal(t, "caller-supplied-jti", standard.ID)
 }
 
 func TestPublicJWKFromConfig_OpaqueModeReturnsNil(t *testing.T) {
@@ -167,9 +167,9 @@ func TestPublicJWKFromConfig_ECDSAEncoding(t *testing.T) {
 }
 
 func TestJoinScopes(t *testing.T) {
-	require.Equal(t, "", joinScopes(nil))
-	require.Equal(t, "", joinScopes([]string{}))
-	require.Equal(t, "openid", joinScopes([]string{"openid"}))
-	require.Equal(t, "openid profile email", joinScopes([]string{"openid", "profile", "email"}))
-	require.Equal(t, "openid email", joinScopes([]string{"openid", "", "email"}), "empties dropped")
+	require.Equal(t, "", helpers.JoinScopes(nil))
+	require.Equal(t, "", helpers.JoinScopes([]string{}))
+	require.Equal(t, "openid", helpers.JoinScopes([]string{"openid"}))
+	require.Equal(t, "openid profile email", helpers.JoinScopes([]string{"openid", "profile", "email"}))
+	require.Equal(t, "openid email", helpers.JoinScopes([]string{"openid", "", "email"}), "empties dropped")
 }

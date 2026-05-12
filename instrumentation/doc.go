@@ -23,8 +23,10 @@
 //	}
 //	defer inst.Shutdown(context.Background())
 //
-//	// Pass to server configuration
-//	server.SetInstrumentation(inst)
+//	// Pass to the server constructor as a functional option
+//	srv, err := server.New(provider, store, store, store, cfg, logger,
+//		server.WithInstrumentation(inst),
+//	)
 //
 // # Exporter Configuration
 //
@@ -247,15 +249,16 @@
 //
 // ### Strategy 1: Disable client_id in Metrics (Recommended for >1000 clients)
 //
-// Set IncludeClientIDInMetrics: false in your configuration:
+// Set IncludeClientIDInMetrics: false when constructing instrumentation:
 //
-//	config := server.Config{
-//	    Instrumentation: server.InstrumentationConfig{
-//	        Enabled: true,
-//	        IncludeClientIDInMetrics: false, // Low cardinality mode
-//	        MetricsExporter: "prometheus",
-//	    },
-//	}
+//	inst, _ := instrumentation.New(instrumentation.Config{
+//	    Enabled:                  true,
+//	    IncludeClientIDInMetrics: false, // Low cardinality mode
+//	    MetricsExporter:          "prometheus",
+//	})
+//	srv, _ := server.New(provider, store, store, store, cfg, logger,
+//	    server.WithInstrumentation(inst),
+//	)
 //
 // This provides aggregate metrics across all clients while keeping cardinality low.
 // Use traces (not metrics) for per-client debugging.

@@ -6,7 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/go-jose/go-jose/v4"
+	josejwt "github.com/go-jose/go-jose/v4/jwt"
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/providers"
@@ -69,17 +70,12 @@ func (s *Server) validateSelfIssuedJWT(ctx context.Context, tokenString string) 
 		return nil, errBearerNotSelfIssuedJWT
 	}
 
-	parsed, err := s.parseAndVerifyJWTSignature(tokenString)
+	header, claims, err := s.parseAndVerifyJWTSignature(tokenString)
 	if err != nil {
 		return nil, err
 	}
 
-	claims, ok := parsed.Claims.(jwt.MapClaims)
-	if !ok {
-		return nil, fmt.Errorf("unexpected claims type %T", parsed.Claims)
-	}
-
-	if err := s.checkJWTHeaderAndIssuer(parsed, claims); err != nil {
+	if err := s.checkJWTHeaderAndIssuer(header, claims); err != nil {
 		return nil, err
 	}
 	if err := s.checkJWTExpiration(claims, tokenString); err != nil {
@@ -101,40 +97,46 @@ func (s *Server) validateSelfIssuedJWT(ctx context.Context, tokenString string) 
 	return userInfo, nil
 }
 
-// parseAndVerifyJWTSignature parses the JWT with the configured public key
-// and a keyfunc that pins the algorithm. The pinning matters: a token with
-// header "alg":"HS256" must be rejected even if the configured algorithm
-// is RS256 — otherwise an attacker who knows the public key can swap the
-// alg and forge tokens (the classic alg-confusion attack).
-func (s *Server) parseAndVerifyJWTSignature(tokenString string) (*jwt.Token, error) {
-	expectedAlg := s.Config.AccessTokenSigningAlgorithm
+// parseAndVerifyJWTSignature parses the JWT and verifies the signature
+// against the configured public key. The algorithm allowlist passed to
+// jose.ParseSigned is exactly the one configured algorithm — any other alg
+// (notably HS256, which would enable the alg-confusion attack) is rejected
+// at parse time. The kid header is matched against the configured kid so
+// a token signed with the right alg but a different kid cannot be replayed
+// against this server.
+//
+// Returns the verified header and the claim map. Errors are wrapped with
+// errBearerNotSelfIssuedJWT so callers above can distinguish "fall through
+// to the next branch" from "verified-bad and reject".
+func (s *Server) parseAndVerifyJWTSignature(tokenString string) (jose.Header, map[string]any, error) {
+	expectedAlg := jose.SignatureAlgorithm(s.Config.AccessTokenSigningAlgorithm)
 	expectedKID := s.Config.AccessTokenSigningKeyID
 	publicKey := s.Config.AccessTokenSigningKey.Public()
 
-	parsed, err := jwt.Parse(tokenString, func(t *jwt.Token) (any, error) {
-		if t.Method.Alg() != expectedAlg {
-			return nil, fmt.Errorf("unexpected signing algorithm %q (expected %q)", t.Method.Alg(), expectedAlg)
-		}
-		kid, _ := t.Header["kid"].(string)
-		if kid != expectedKID {
-			return nil, fmt.Errorf("unexpected kid %q (expected %q)", kid, expectedKID)
-		}
-		return publicKey, nil
-	}, jwt.WithoutClaimsValidation()) // we run our own validations below for ClockSkewGracePeriod parity
+	parsed, err := josejwt.ParseSigned(tokenString, []jose.SignatureAlgorithm{expectedAlg})
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", errBearerNotSelfIssuedJWT, err)
+		return jose.Header{}, nil, fmt.Errorf("%w: %w", errBearerNotSelfIssuedJWT, err)
 	}
-	if !parsed.Valid {
-		return nil, fmt.Errorf("%w: parsed JWT is not valid", errBearerNotSelfIssuedJWT)
+	if len(parsed.Headers) != 1 {
+		return jose.Header{}, nil, fmt.Errorf("%w: expected single signature, got %d", errBearerNotSelfIssuedJWT, len(parsed.Headers))
 	}
-	return parsed, nil
+	header := parsed.Headers[0]
+	if header.KeyID != expectedKID {
+		return jose.Header{}, nil, fmt.Errorf("%w: unexpected kid %q (expected %q)", errBearerNotSelfIssuedJWT, header.KeyID, expectedKID)
+	}
+
+	claims := map[string]any{}
+	if err := parsed.Claims(publicKey, &claims); err != nil {
+		return jose.Header{}, nil, fmt.Errorf("%w: %w", errBearerNotSelfIssuedJWT, err)
+	}
+	return header, claims, nil
 }
 
 // checkJWTHeaderAndIssuer enforces the typ header and iss claim. typ is
 // RFC 9068 §2.1 (access tokens MUST carry "at+jwt") so a stolen id_token
 // cannot be substituted as an access token. iss is RFC 7519 §4.1.1.
-func (s *Server) checkJWTHeaderAndIssuer(parsed *jwt.Token, claims jwt.MapClaims) error {
-	typ, _ := parsed.Header["typ"].(string)
+func (s *Server) checkJWTHeaderAndIssuer(header jose.Header, claims map[string]any) error {
+	typ, _ := header.ExtraHeaders[jose.HeaderType].(string)
 	if typ != rfc9068TokenType {
 		return fmt.Errorf("%w: typ header is %q (expected %q)", errBearerNotSelfIssuedJWT, typ, rfc9068TokenType)
 	}
@@ -147,7 +149,7 @@ func (s *Server) checkJWTHeaderAndIssuer(parsed *jwt.Token, claims jwt.MapClaims
 
 // checkJWTExpiration enforces exp with the same ClockSkewGracePeriod the
 // opaque path uses, so tokens behave identically across formats.
-func (s *Server) checkJWTExpiration(claims jwt.MapClaims, tokenString string) error {
+func (s *Server) checkJWTExpiration(claims map[string]any, tokenString string) error {
 	expVal, ok := claims["exp"].(float64)
 	if !ok {
 		return fmt.Errorf("missing or invalid exp claim")
@@ -165,7 +167,7 @@ func (s *Server) checkJWTExpiration(claims jwt.MapClaims, tokenString string) er
 // claim must equal the server's ResourceIdentifier OR appear in
 // TrustedAudiences. Multi-valued aud (RFC 7519 §4.1.3) is handled via
 // helpers.FindMatchingAudience, matching the SSO-forwarded-ID-token path.
-func (s *Server) checkJWTAudience(claims jwt.MapClaims, tokenString string) error {
+func (s *Server) checkJWTAudience(claims map[string]any, tokenString string) error {
 	expected := s.Config.GetResourceIdentifier()
 	audiences := audiencesFromClaim(claims["aud"])
 	if len(audiences) == 0 {
@@ -223,7 +225,7 @@ func (s *Server) checkJWTRevocation(ctx context.Context, jti, tokenString string
 // checkJWTRevocation): a transient backend failure must not silently
 // re-enable a revoked family. ErrRefreshTokenFamilyNotFound is the only
 // "not present" signal and is treated as legit absence.
-func (s *Server) checkJWTFamily(ctx context.Context, claims jwt.MapClaims, tokenString string) error {
+func (s *Server) checkJWTFamily(ctx context.Context, claims map[string]any, tokenString string) error {
 	familyID, _ := claims["family_id"].(string)
 	if familyID == "" {
 		return nil
@@ -279,7 +281,7 @@ func audiencesFromClaim(v any) []string {
 // userInfoFromJWTClaims reconstructs UserInfo from validated JWT claims.
 // TokenSource is set to TokenSourceJWT so downstream consumers can dispatch
 // correctly (no TokenStore lookup will succeed for a JWT bearer).
-func userInfoFromJWTClaims(claims jwt.MapClaims) *providers.UserInfo {
+func userInfoFromJWTClaims(claims map[string]any) *providers.UserInfo {
 	info := &providers.UserInfo{
 		TokenSource: providers.TokenSourceJWT,
 	}
@@ -343,7 +345,7 @@ func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID,
 		return true
 	}
 
-	parsed, err := s.parseAndVerifyJWTSignature(tokenString)
+	_, claims, err := s.parseAndVerifyJWTSignature(tokenString)
 	if err != nil {
 		// Bearer was peeked as self-issued but failed verification —
 		// suspicious (forged or expired). Treat as success per RFC 7009.
@@ -352,7 +354,6 @@ func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID,
 			"token_suffix", helpers.TokenSuffix(tokenString, 8))
 		return true
 	}
-	claims, _ := parsed.Claims.(jwt.MapClaims)
 	jti, _ := claims["jti"].(string)
 	expVal, _ := claims["exp"].(float64)
 	if jti == "" || expVal == 0 {

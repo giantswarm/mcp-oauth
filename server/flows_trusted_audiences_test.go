@@ -208,8 +208,8 @@ func TestValidateTokenAudience_WithTrustedAudiences(t *testing.T) {
 			}
 
 			// Save token metadata with the test audience
-			if err := store.SaveTokenMetadataWithAudience(accessToken, "test-user", "test-client", "access", tt.tokenAudience); err != nil {
-				t.Fatalf("SaveTokenMetadataWithAudience() error = %v", err)
+			if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: "test-user", ClientID: "test-client", TokenType: "access", Audience: tt.tokenAudience}); err != nil {
+				t.Fatalf("SaveTokenMetadata() error = %v", err)
 			}
 
 			// Validate the token
@@ -443,16 +443,16 @@ func TestTrustedAudiences_BackwardCompatibility(t *testing.T) {
 	}
 
 	// Test 1: Server's own audience should be accepted
-	if err := store.SaveTokenMetadataWithAudience(accessToken, "user", "client", "access", "https://mcp.example.com"); err != nil {
-		t.Fatalf("SaveTokenMetadataWithAudience() error = %v", err)
+	if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: "user", ClientID: "client", TokenType: "access", Audience: "https://mcp.example.com"}); err != nil {
+		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
 	if err := srv.validateTokenAudience(accessToken); err != nil {
 		t.Errorf("Expected token with server's own audience to be accepted, got error: %v", err)
 	}
 
 	// Test 2: Different audience should be rejected
-	if err := store.SaveTokenMetadataWithAudience(accessToken, "user", "client", "access", "muster-client"); err != nil {
-		t.Fatalf("SaveTokenMetadataWithAudience() error = %v", err)
+	if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: "user", ClientID: "client", TokenType: "access", Audience: "muster-client"}); err != nil {
+		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
 	if err := srv.validateTokenAudience(accessToken); err == nil {
 		t.Error("Expected token with different audience to be rejected")

@@ -16,6 +16,7 @@ import (
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/security"
+	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
@@ -61,7 +62,7 @@ func TestServer_AuditLoggingClientIDMismatch(t *testing.T) {
 
 	// Set auditor with captured logger
 	auditor := security.NewAuditor(logger, true)
-	srv.SetAuditor(auditor)
+	srv.Auditor = auditor
 
 	// Register a client
 	client, _, err := srv.RegisterClient(
@@ -162,7 +163,7 @@ func TestServer_AuditLoggingRedirectURIMismatch(t *testing.T) {
 
 	// Set auditor with captured logger
 	auditor := security.NewAuditor(logger, true)
-	srv.SetAuditor(auditor)
+	srv.Auditor = auditor
 
 	// Register a client
 	client, _, err := srv.RegisterClient(
@@ -265,7 +266,7 @@ func TestServer_AuditEventProviderRevocationThresholdExceeded(t *testing.T) {
 
 	// Set auditor with captured logger
 	auditor := security.NewAuditor(logger, true)
-	srv.SetAuditor(auditor)
+	srv.Auditor = auditor
 
 	userID := "test_user_audit"
 	clientID := "test_client_audit"
@@ -286,7 +287,7 @@ func TestServer_AuditEventProviderRevocationThresholdExceeded(t *testing.T) {
 		if err := store.SaveToken(ctx, tokenID, token); err != nil {
 			t.Fatalf("SaveToken() error = %v", err)
 		}
-		if err := store.SaveTokenMetadata(tokenID, userID, clientID, "access"); err != nil {
+		if err := store.SaveTokenMetadata(context.Background(), tokenID, storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
 			t.Fatalf("SaveTokenMetadata() error = %v", err)
 		}
 	}
@@ -341,7 +342,7 @@ func TestServer_AuditEventProviderRevocationCompleteFailure(t *testing.T) {
 
 	// Set auditor with captured logger
 	auditor := security.NewAuditor(logger, true)
-	srv.SetAuditor(auditor)
+	srv.Auditor = auditor
 
 	userID := "test_user_complete_fail"
 	clientID := "test_client_complete_fail"
@@ -362,7 +363,7 @@ func TestServer_AuditEventProviderRevocationCompleteFailure(t *testing.T) {
 		if err := store.SaveToken(ctx, tokenID, token); err != nil {
 			t.Fatalf("SaveToken() error = %v", err)
 		}
-		if err := store.SaveTokenMetadata(tokenID, userID, clientID, "access"); err != nil {
+		if err := store.SaveTokenMetadata(context.Background(), tokenID, storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
 			t.Fatalf("SaveTokenMetadata() error = %v", err)
 		}
 	}
@@ -411,7 +412,7 @@ func TestServer_AuditEventAuthorizationCodeReuse(t *testing.T) {
 
 	// Set auditor with captured logger
 	auditor := security.NewAuditor(logger, true)
-	srv.SetAuditor(auditor)
+	srv.Auditor = auditor
 
 	// Register a client
 	client, _, err := srv.RegisterClient(

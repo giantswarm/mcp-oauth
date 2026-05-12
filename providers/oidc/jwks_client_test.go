@@ -2,28 +2,71 @@ package oidc
 
 import (
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
-	"encoding/base64"
 	"encoding/json"
 	"log/slog"
-	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/go-jose/go-jose/v4"
+	josejwt "github.com/go-jose/go-jose/v4/jwt"
 )
 
-// testKeyID is a constant for the test RSA key ID used across tests.
+// testKeyID is a constant for the test key ID used across tests.
 const testKeyID = "test-key-1"
 
+// signTestToken signs a JWT for use in test fixtures using go-jose. It
+// mirrors the signing path used by the production server-issued JWT path
+// so the test exercises the real verification logic.
+func signTestToken(t *testing.T, key crypto.Signer, alg jose.SignatureAlgorithm, kid string, claims any) string {
+	t.Helper()
+	signingKey := jose.SigningKey{
+		Algorithm: alg,
+		Key: jose.JSONWebKey{
+			Key:       key,
+			KeyID:     kid,
+			Algorithm: string(alg),
+			Use:       "sig",
+		},
+	}
+	opts := &jose.SignerOptions{}
+	opts.WithType("JWT")
+	opts.WithHeader(jose.HeaderKey("kid"), kid)
+	signer, err := jose.NewSigner(signingKey, opts)
+	if err != nil {
+		t.Fatalf("create signer: %v", err)
+	}
+	signed, err := josejwt.Signed(signer).Claims(claims).Serialize()
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+	return signed
+}
+
+// publicJWKS builds a one-key jose.JSONWebKeySet from a private signer for
+// use with FetchJWKS test fixtures.
+func publicJWKS(t *testing.T, key crypto.Signer, alg, kid string) jose.JSONWebKeySet {
+	t.Helper()
+	jwk := jose.JSONWebKey{
+		Key:       key.Public(),
+		KeyID:     kid,
+		Algorithm: alg,
+		Use:       "sig",
+	}
+	if !jwk.IsPublic() {
+		t.Fatalf("derived JWK is not public-only")
+	}
+	return jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}}
+}
+
 func TestJWKSClient_Creation(t *testing.T) {
-	// Test that client is created with defaults
 	client := NewJWKSClient(nil, 0, nil)
 	if client == nil {
 		t.Fatal("NewJWKSClient returned nil")
@@ -32,7 +75,6 @@ func TestJWKSClient_Creation(t *testing.T) {
 		t.Errorf("Expected default cacheTTL %v, got %v", DefaultCacheTTL, client.cacheTTL)
 	}
 
-	// Test with custom values
 	customHTTP := &http.Client{Timeout: 5 * time.Second}
 	customClient := NewJWKSClient(customHTTP, 30*time.Minute, slog.Default())
 	if customClient == nil {
@@ -88,7 +130,6 @@ func TestFetchJWKS_AllowPrivateIP(t *testing.T) {
 	t.Run("private IP URL rejected without AllowPrivateIP", func(t *testing.T) {
 		client := NewJWKSClient(nil, 0, slog.Default())
 
-		// Try to fetch from a private IP (should fail URL validation)
 		_, err := client.FetchJWKS(context.Background(), "https://192.168.1.1/jwks")
 		if err == nil {
 			t.Error("Expected error when fetching from private IP without AllowPrivateIP")
@@ -104,16 +145,12 @@ func TestFetchJWKS_AllowPrivateIP(t *testing.T) {
 			Logger:         slog.Default(),
 		})
 
-		// Try to fetch from a private IP
-		// This will fail at the HTTP level (connection refused) but should pass URL validation
 		_, err := client.FetchJWKS(context.Background(), "https://192.168.1.1/jwks")
 		if err == nil {
-			// If no error, that's unexpected but means validation passed
 			t.Log("Fetch unexpectedly succeeded (maybe host is reachable?)")
 			return
 		}
 
-		// The error should be about connection/fetch failure, NOT about private IP validation
 		if strings.Contains(err.Error(), "private IP") {
 			t.Errorf("Expected private IP check to be bypassed, got: %v", err)
 		}
@@ -125,7 +162,6 @@ func TestFetchJWKS_AllowPrivateIP(t *testing.T) {
 			Logger:         slog.Default(),
 		})
 
-		// HTTP should still be rejected even with AllowPrivateIP
 		_, err := client.FetchJWKS(context.Background(), "http://192.168.1.1/jwks")
 		if err == nil {
 			t.Error("Expected error for HTTP URL even with AllowPrivateIP")
@@ -150,8 +186,6 @@ func TestFetchJWKS_AllowPrivateIP(t *testing.T) {
 			Logger:         slog.Default(),
 		})
 
-		// Try to fetch from loopback
-		// Will fail at HTTP level but should pass URL validation
 		_, err := client.FetchJWKS(context.Background(), "https://127.0.0.1/jwks")
 		if err != nil && strings.Contains(err.Error(), "loopback") {
 			t.Errorf("Expected loopback check to be bypassed, got: %v", err)
@@ -160,72 +194,48 @@ func TestFetchJWKS_AllowPrivateIP(t *testing.T) {
 }
 
 func TestValidateIDToken_Integration(t *testing.T) {
-	// Generate RSA key for signing
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("Failed to generate RSA key: %v", err)
 	}
 
-	// Create JWKS
-	testJWKS := JWKS{
-		Keys: []JWK{
-			{
-				Kty: "RSA",
-				Use: "sig",
-				Kid: testKeyID,
-				Alg: "RS256",
-				N:   base64.RawURLEncoding.EncodeToString(privateKey.N.Bytes()),
-				E:   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privateKey.E)).Bytes()),
-			},
-		},
-	}
+	jwks := publicJWKS(t, privateKey, "RS256", testKeyID)
 
-	// Create JWKS server
 	jwksServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(testJWKS); err != nil {
+		if err := json.NewEncoder(w).Encode(jwks); err != nil {
 			t.Errorf("Failed to encode JWKS: %v", err)
 		}
 	}))
 	defer jwksServer.Close()
 
-	// Create a valid signed JWT
-	claims := &IDTokenClaims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   "user123",
-			Issuer:    "https://auth.example.com",
-			Audience:  []string{"client-a", "client-b"},
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-		},
-		Email:         "user@example.com",
-		EmailVerified: true,
-		Name:          "Test User",
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	token.Header["kid"] = testKeyID
-
-	signedToken, err := token.SignedString(privateKey)
-	if err != nil {
-		t.Fatalf("Failed to sign token: %v", err)
-	}
-
-	// Create JWKS client that skips HTTPS validation for test server
 	client := &JWKSClient{
 		httpClient:   jwksServer.Client(),
 		cacheTTL:     1 * time.Minute,
 		timeProvider: realTime{},
 		logger:       slog.Default(),
 	}
-
-	// Manually add to cache since we can't use the test server URL (localhost)
+	// Manually pre-populate cache because httptest's URL is localhost,
+	// which the SSRF guard would otherwise block.
 	client.cache.Store(jwksServer.URL, &cachedJWKS{
-		keys:      &testJWKS,
+		keys:      &jwks,
 		fetchedAt: time.Now(),
 	})
 
-	// Test valid token
+	validClaims := IDTokenClaims{
+		Claims: josejwt.Claims{
+			Subject:  "user123",
+			Issuer:   "https://auth.example.com",
+			Audience: josejwt.Audience{"client-a", "client-b"},
+			Expiry:   josejwt.NewNumericDate(time.Now().Add(time.Hour)),
+			IssuedAt: josejwt.NewNumericDate(time.Now()),
+		},
+		Email:         "user@example.com",
+		EmailVerified: true,
+		Name:          "Test User",
+	}
+	signedToken := signTestToken(t, privateKey, jose.RS256, testKeyID, validClaims)
+
 	t.Run("valid token", func(t *testing.T) {
 		validatedClaims, err := ValidateIDToken(
 			context.Background(),
@@ -248,7 +258,6 @@ func TestValidateIDToken_Integration(t *testing.T) {
 		}
 	})
 
-	// Test audience mismatch
 	t.Run("audience mismatch", func(t *testing.T) {
 		_, err := ValidateIDToken(
 			context.Background(),
@@ -264,7 +273,6 @@ func TestValidateIDToken_Integration(t *testing.T) {
 		}
 	})
 
-	// Test issuer mismatch
 	t.Run("issuer mismatch", func(t *testing.T) {
 		_, err := ValidateIDToken(
 			context.Background(),
@@ -280,28 +288,20 @@ func TestValidateIDToken_Integration(t *testing.T) {
 		}
 	})
 
-	// Test nbf (Not Before) claim - token with future nbf within leeway should be accepted
 	t.Run("nbf within leeway accepted", func(t *testing.T) {
-		// Create a token with nbf 10 seconds in the future (within 30-second leeway)
-		nbfClaims := &IDTokenClaims{
-			RegisteredClaims: jwt.RegisteredClaims{
+		nbfClaims := IDTokenClaims{
+			Claims: josejwt.Claims{
 				Subject:   "user-nbf",
 				Issuer:    "https://auth.example.com",
-				Audience:  []string{"client-a"},
-				ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
-				IssuedAt:  jwt.NewNumericDate(time.Now()),
-				NotBefore: jwt.NewNumericDate(time.Now().Add(10 * time.Second)), // 10s in future
+				Audience:  josejwt.Audience{"client-a"},
+				Expiry:    josejwt.NewNumericDate(time.Now().Add(time.Hour)),
+				IssuedAt:  josejwt.NewNumericDate(time.Now()),
+				NotBefore: josejwt.NewNumericDate(time.Now().Add(10 * time.Second)),
 			},
 			Email: "nbf-user@example.com",
 		}
 
-		nbfToken := jwt.NewWithClaims(jwt.SigningMethodRS256, nbfClaims)
-		nbfToken.Header["kid"] = testKeyID
-
-		signedNbfToken, err := nbfToken.SignedString(privateKey)
-		if err != nil {
-			t.Fatalf("Failed to sign nbf token: %v", err)
-		}
+		signedNbfToken := signTestToken(t, privateKey, jose.RS256, testKeyID, nbfClaims)
 
 		validatedClaims, err := ValidateIDToken(
 			context.Background(),
@@ -321,27 +321,19 @@ func TestValidateIDToken_Integration(t *testing.T) {
 		}
 	})
 
-	// Test nbf (Not Before) claim - token with future nbf outside leeway should be rejected
 	t.Run("nbf outside leeway rejected", func(t *testing.T) {
-		// Create a token with nbf 60 seconds in the future (outside 30-second leeway)
-		nbfClaims := &IDTokenClaims{
-			RegisteredClaims: jwt.RegisteredClaims{
+		nbfClaims := IDTokenClaims{
+			Claims: josejwt.Claims{
 				Subject:   "user-nbf-future",
 				Issuer:    "https://auth.example.com",
-				Audience:  []string{"client-a"},
-				ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
-				IssuedAt:  jwt.NewNumericDate(time.Now()),
-				NotBefore: jwt.NewNumericDate(time.Now().Add(60 * time.Second)), // 60s in future
+				Audience:  josejwt.Audience{"client-a"},
+				Expiry:    josejwt.NewNumericDate(time.Now().Add(time.Hour)),
+				IssuedAt:  josejwt.NewNumericDate(time.Now()),
+				NotBefore: josejwt.NewNumericDate(time.Now().Add(60 * time.Second)),
 			},
 		}
 
-		nbfToken := jwt.NewWithClaims(jwt.SigningMethodRS256, nbfClaims)
-		nbfToken.Header["kid"] = testKeyID
-
-		signedNbfToken, err := nbfToken.SignedString(privateKey)
-		if err != nil {
-			t.Fatalf("Failed to sign nbf token: %v", err)
-		}
+		signedNbfToken := signTestToken(t, privateKey, jose.RS256, testKeyID, nbfClaims)
 
 		_, err = ValidateIDToken(
 			context.Background(),
@@ -357,26 +349,18 @@ func TestValidateIDToken_Integration(t *testing.T) {
 		}
 	})
 
-	// Test expired token within leeway should be accepted
 	t.Run("expired within leeway accepted", func(t *testing.T) {
-		// Create a token that expired 10 seconds ago (within 30-second leeway)
-		expiredClaims := &IDTokenClaims{
-			RegisteredClaims: jwt.RegisteredClaims{
-				Subject:   "user-expired-leeway",
-				Issuer:    "https://auth.example.com",
-				Audience:  []string{"client-a"},
-				ExpiresAt: jwt.NewNumericDate(time.Now().Add(-10 * time.Second)), // 10s ago
-				IssuedAt:  jwt.NewNumericDate(time.Now().Add(-time.Hour)),
+		expiredClaims := IDTokenClaims{
+			Claims: josejwt.Claims{
+				Subject:  "user-expired-leeway",
+				Issuer:   "https://auth.example.com",
+				Audience: josejwt.Audience{"client-a"},
+				Expiry:   josejwt.NewNumericDate(time.Now().Add(-10 * time.Second)),
+				IssuedAt: josejwt.NewNumericDate(time.Now().Add(-time.Hour)),
 			},
 		}
 
-		expiredToken := jwt.NewWithClaims(jwt.SigningMethodRS256, expiredClaims)
-		expiredToken.Header["kid"] = testKeyID
-
-		signedExpiredToken, err := expiredToken.SignedString(privateKey)
-		if err != nil {
-			t.Fatalf("Failed to sign expired token: %v", err)
-		}
+		signedExpiredToken := signTestToken(t, privateKey, jose.RS256, testKeyID, expiredClaims)
 
 		validatedClaims, err := ValidateIDToken(
 			context.Background(),
@@ -396,26 +380,18 @@ func TestValidateIDToken_Integration(t *testing.T) {
 		}
 	})
 
-	// Test expired token outside leeway should be rejected
 	t.Run("expired outside leeway rejected", func(t *testing.T) {
-		// Create a token that expired 60 seconds ago (outside 30-second leeway)
-		expiredClaims := &IDTokenClaims{
-			RegisteredClaims: jwt.RegisteredClaims{
-				Subject:   "user-expired",
-				Issuer:    "https://auth.example.com",
-				Audience:  []string{"client-a"},
-				ExpiresAt: jwt.NewNumericDate(time.Now().Add(-60 * time.Second)), // 60s ago
-				IssuedAt:  jwt.NewNumericDate(time.Now().Add(-time.Hour)),
+		expiredClaims := IDTokenClaims{
+			Claims: josejwt.Claims{
+				Subject:  "user-expired",
+				Issuer:   "https://auth.example.com",
+				Audience: josejwt.Audience{"client-a"},
+				Expiry:   josejwt.NewNumericDate(time.Now().Add(-60 * time.Second)),
+				IssuedAt: josejwt.NewNumericDate(time.Now().Add(-time.Hour)),
 			},
 		}
 
-		expiredToken := jwt.NewWithClaims(jwt.SigningMethodRS256, expiredClaims)
-		expiredToken.Header["kid"] = testKeyID
-
-		signedExpiredToken, err := expiredToken.SignedString(privateKey)
-		if err != nil {
-			t.Fatalf("Failed to sign expired token: %v", err)
-		}
+		signedExpiredToken := signTestToken(t, privateKey, jose.RS256, testKeyID, expiredClaims)
 
 		_, err = ValidateIDToken(
 			context.Background(),
@@ -430,81 +406,176 @@ func TestValidateIDToken_Integration(t *testing.T) {
 			t.Error("Expected error for token expired 60 seconds ago")
 		}
 	})
+
+	t.Run("HS256 alg-confusion rejected", func(t *testing.T) {
+		// An attacker who has the public key signs with HS256 using the
+		// public key bytes as the HMAC secret. josejwt.ParseSigned must
+		// reject the token at parse time because HS256 is not in the
+		// asymmetric allowlist.
+		hmacSigner, err := jose.NewSigner(
+			jose.SigningKey{Algorithm: jose.HS256, Key: []byte("any-shared-secret-of-sufficient-length-32+")},
+			(&jose.SignerOptions{}).WithType("JWT"),
+		)
+		if err != nil {
+			t.Fatalf("create HMAC signer: %v", err)
+		}
+		forged, err := josejwt.Signed(hmacSigner).Claims(validClaims).Serialize()
+		if err != nil {
+			t.Fatalf("sign forged token: %v", err)
+		}
+		_, err = ValidateIDToken(
+			context.Background(),
+			forged,
+			client,
+			jwksServer.URL,
+			"https://auth.example.com",
+			[]string{"client-a"},
+		)
+		if err == nil {
+			t.Error("Expected HS256 forge to be rejected")
+		}
+	})
+
+	t.Run("ES256 with EC key succeeds", func(t *testing.T) {
+		ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatalf("generate EC key: %v", err)
+		}
+		ecJWKS := publicJWKS(t, ecKey, "ES256", "ec-kid")
+		ecClient := &JWKSClient{
+			httpClient:   jwksServer.Client(),
+			cacheTTL:     1 * time.Minute,
+			timeProvider: realTime{},
+			logger:       slog.Default(),
+		}
+		const ecJWKSURL = "https://ec-test/jwks"
+		ecClient.cache.Store(ecJWKSURL, &cachedJWKS{keys: &ecJWKS, fetchedAt: time.Now()})
+
+		ecClaims := IDTokenClaims{
+			Claims: josejwt.Claims{
+				Subject:  "ec-user",
+				Issuer:   "https://auth.example.com",
+				Audience: josejwt.Audience{"client-a"},
+				Expiry:   josejwt.NewNumericDate(time.Now().Add(time.Hour)),
+			},
+		}
+		ecToken := signTestToken(t, ecKey, jose.ES256, "ec-kid", ecClaims)
+
+		validatedClaims, err := ValidateIDToken(
+			context.Background(),
+			ecToken,
+			ecClient,
+			ecJWKSURL,
+			"https://auth.example.com",
+			[]string{"client-a"},
+		)
+		if err != nil {
+			t.Errorf("ValidateIDToken() with EC key error: %v", err)
+		}
+		if validatedClaims != nil && validatedClaims.Subject != "ec-user" {
+			t.Errorf("Subject = %q, want %q", validatedClaims.Subject, "ec-user")
+		}
+	})
+
+	t.Run("unknown kid rejected", func(t *testing.T) {
+		// Token signed with a different key whose kid does not exist in
+		// the published JWKS.
+		otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("generate other key: %v", err)
+		}
+		otherToken := signTestToken(t, otherKey, jose.RS256, "unknown-kid", validClaims)
+
+		_, err = ValidateIDToken(
+			context.Background(),
+			otherToken,
+			client,
+			jwksServer.URL,
+			"https://auth.example.com",
+			[]string{"client-a"},
+		)
+		if err == nil {
+			t.Error("Expected unknown kid to be rejected")
+		}
+	})
+
+	t.Run("multiple keys at same kid (rotation overlap) accepted", func(t *testing.T) {
+		// RFC 7517 §4.5 allows multiple keys with the same kid. The
+		// rotation-overlap pattern: publish both old and new under the
+		// same kid for a brief window so verifiers caching either key
+		// still pass while the rotation propagates. The validator must
+		// try each in turn and succeed on the matching one.
+		oldKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("generate old key: %v", err)
+		}
+		newKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("generate new key: %v", err)
+		}
+
+		const overlapKid = "rotating-kid"
+		jwksWithBoth := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{
+			// Old key first — keys[0] wouldn't match a token signed with the new key.
+			{Key: oldKey.Public(), KeyID: overlapKid, Algorithm: "RS256", Use: "sig"},
+			{Key: newKey.Public(), KeyID: overlapKid, Algorithm: "RS256", Use: "sig"},
+		}}
+		const overlapURL = "https://overlap-test/jwks"
+		client.cache.Store(overlapURL, &cachedJWKS{keys: &jwksWithBoth, fetchedAt: time.Now()})
+
+		// Sign with the SECOND key — keys[0] (old) won't verify; the
+		// loop must fall through to keys[1].
+		signedByNew := signTestToken(t, newKey, jose.RS256, overlapKid, validClaims)
+		got, err := ValidateIDToken(
+			context.Background(), signedByNew, client, overlapURL,
+			"https://auth.example.com", []string{"client-a"},
+		)
+		if err != nil {
+			t.Errorf("multi-key rotation: validation should succeed when second key matches, got %v", err)
+		}
+		if got != nil && got.Subject != "user123" {
+			t.Errorf("Subject = %q, want user123", got.Subject)
+		}
+
+		// Sign with neither key (signature mismatch on every kid match) — must reject.
+		strangerKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("generate stranger key: %v", err)
+		}
+		signedByStranger := signTestToken(t, strangerKey, jose.RS256, overlapKid, validClaims)
+		if _, err := ValidateIDToken(
+			context.Background(), signedByStranger, client, overlapURL,
+			"https://auth.example.com", []string{"client-a"},
+		); err == nil {
+			t.Error("multi-key rotation: validation must reject a token whose signature matches none of the keys")
+		}
+	})
 }
 
 func TestFetchJWKS(t *testing.T) {
-	// Create a test JWKS
-	testJWKS := JWKS{
-		Keys: []JWK{
-			{
-				Kty: "RSA",
-				Use: "sig",
-				Kid: "test-key",
-				Alg: "RS256",
-				N:   "test-n",
-				E:   "test-e",
-			},
-		},
-	}
+	privateKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	testJWKS := publicJWKS(t, privateKey, "RS256", "test-key")
 
-	t.Run("successful fetch", func(t *testing.T) {
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(testJWKS)
-		}))
-		defer server.Close()
-
+	t.Run("successful cache hit", func(t *testing.T) {
 		client := &JWKSClient{
-			httpClient:   server.Client(),
+			httpClient:   http.DefaultClient,
 			cacheTTL:     1 * time.Hour,
 			timeProvider: realTime{},
 			logger:       slog.Default(),
 		}
-
-		// Pre-populate cache to test cache hit path
-		client.cache.Store(server.URL, &cachedJWKS{
+		const url = "https://example.com/jwks"
+		client.cache.Store(url, &cachedJWKS{
 			keys:      &testJWKS,
 			fetchedAt: time.Now(),
 		})
 
-		// Should hit cache
-		jwks, err := client.FetchJWKS(context.Background(), server.URL)
+		jwks, err := client.FetchJWKS(context.Background(), url)
 		if err != nil {
 			t.Errorf("FetchJWKS() error: %v", err)
 			return
 		}
 		if len(jwks.Keys) != 1 {
 			t.Errorf("Expected 1 key, got %d", len(jwks.Keys))
-		}
-	})
-
-	t.Run("cache miss and fetch", func(t *testing.T) {
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(testJWKS)
-		}))
-		defer server.Close()
-
-		// Create client that bypasses HTTPS validation for test server
-		client := &JWKSClient{
-			httpClient:   server.Client(),
-			cacheTTL:     1 * time.Hour,
-			timeProvider: realTime{},
-			logger:       slog.Default(),
-		}
-
-		// Store an expired cache entry
-		client.cache.Store(server.URL, &cachedJWKS{
-			keys:      &testJWKS,
-			fetchedAt: time.Now().Add(-2 * time.Hour), // Expired
-		})
-
-		// Need to bypass HTTPS check for localhost test server
-		// We'll test the cache hit path instead
-		cached, _ := client.cache.Load(server.URL)
-		doc := cached.(*cachedJWKS)
-		if doc.keys == nil {
-			t.Error("Expected cached keys")
 		}
 	})
 
@@ -516,59 +587,28 @@ func TestFetchJWKS(t *testing.T) {
 			t.Error("Expected error for non-HTTPS URI")
 		}
 	})
-
-	t.Run("fetch error - server error", func(t *testing.T) {
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusInternalServerError)
-		}))
-		defer server.Close()
-
-		client := &JWKSClient{
-			httpClient:   server.Client(),
-			cacheTTL:     1 * time.Hour,
-			timeProvider: realTime{},
-			logger:       slog.Default(),
-		}
-
-		// Pre-cache to avoid HTTPS validation
-		client.cache.Store(server.URL, &cachedJWKS{
-			keys:      &testJWKS,
-			fetchedAt: time.Now().Add(-2 * time.Hour), // Expired to force fetch
-		})
-
-		// Even though cache is expired, we can't actually test the network fetch
-		// without bypassing HTTPS validation
-		cached, _ := client.cache.Load(server.URL)
-		if cached == nil {
-			t.Error("Expected cache entry")
-		}
-	})
 }
 
 func TestClearCache(t *testing.T) {
 	client := NewJWKSClient(nil, 0, slog.Default())
 
-	// Add some entries to the cache
 	client.cache.Store("https://example1.com/jwks", &cachedJWKS{
-		keys:      &JWKS{Keys: []JWK{{Kid: "key1"}}},
+		keys:      &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{KeyID: "key1"}}},
 		fetchedAt: time.Now(),
 	})
 	client.cache.Store("https://example2.com/jwks", &cachedJWKS{
-		keys:      &JWKS{Keys: []JWK{{Kid: "key2"}}},
+		keys:      &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{KeyID: "key2"}}},
 		fetchedAt: time.Now(),
 	})
 
-	// Verify entries exist
 	_, ok1 := client.cache.Load("https://example1.com/jwks")
 	_, ok2 := client.cache.Load("https://example2.com/jwks")
 	if !ok1 || !ok2 {
 		t.Fatal("Expected cache entries to exist before clearing")
 	}
 
-	// Clear the cache
 	client.ClearCache()
 
-	// Verify entries are gone
 	_, ok1 = client.cache.Load("https://example1.com/jwks")
 	_, ok2 = client.cache.Load("https://example2.com/jwks")
 	if ok1 || ok2 {
@@ -576,177 +616,11 @@ func TestClearCache(t *testing.T) {
 	}
 }
 
-func TestCreateKeyFunc_Errors(t *testing.T) {
-	// Generate real keys for testing
-	rsaKey, _ := rsa.GenerateKey(rand.Reader, 2048)
-	ecKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-
-	jwks := &JWKS{
-		Keys: []JWK{
-			{
-				Kid: "rsa-key",
-				Kty: "RSA",
-				N:   base64.RawURLEncoding.EncodeToString(rsaKey.N.Bytes()),
-				E:   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(rsaKey.E)).Bytes()),
-			},
-			{
-				Kid: "ec-key",
-				Kty: "EC",
-				Crv: "P-256",
-				X:   base64.RawURLEncoding.EncodeToString(ecKey.X.Bytes()),
-				Y:   base64.RawURLEncoding.EncodeToString(ecKey.Y.Bytes()),
-			},
-		},
-	}
-
-	keyFunc := createKeyFunc(jwks)
-
-	t.Run("key not found", func(t *testing.T) {
-		token := &jwt.Token{
-			Method: jwt.SigningMethodRS256,
-			Header: map[string]any{
-				"alg": "RS256",
-				"kid": "non-existent-key",
-			},
-		}
-
-		_, err := keyFunc(token)
-		if err == nil {
-			t.Error("Expected error for non-existent key")
-		}
-	})
-
-	t.Run("missing kid header", func(t *testing.T) {
-		token := &jwt.Token{
-			Method: jwt.SigningMethodRS256,
-			Header: map[string]any{
-				"alg": "RS256",
-				// No kid
-			},
-		}
-
-		_, err := keyFunc(token)
-		if err == nil {
-			t.Error("Expected error for missing kid")
-		}
-	})
-
-	t.Run("HS256 rejected - algorithm confusion attack prevention", func(t *testing.T) {
-		// This tests protection against CVE-2015-9235 style attacks
-		token := &jwt.Token{
-			Method: jwt.SigningMethodHS256, // HMAC - should be rejected
-			Header: map[string]any{
-				"alg": "HS256",
-				"kid": "rsa-key",
-			},
-		}
-
-		_, err := keyFunc(token)
-		if err == nil {
-			t.Error("Expected error for HS256 (algorithm confusion prevention)")
-		}
-		if !strings.Contains(err.Error(), "only RSA and ECDSA are allowed") {
-			t.Errorf("Expected error about allowed algorithms, got: %v", err)
-		}
-	})
-
-	t.Run("RS256 with RSA key succeeds", func(t *testing.T) {
-		token := &jwt.Token{
-			Method: jwt.SigningMethodRS256,
-			Header: map[string]any{
-				"alg": "RS256",
-				"kid": "rsa-key",
-			},
-		}
-
-		key, err := keyFunc(token)
-		if err != nil {
-			t.Errorf("Unexpected error for RS256 with RSA key: %v", err)
-		}
-		if _, ok := key.(*rsa.PublicKey); !ok {
-			t.Errorf("Expected *rsa.PublicKey, got %T", key)
-		}
-	})
-
-	t.Run("ES256 with EC key succeeds", func(t *testing.T) {
-		token := &jwt.Token{
-			Method: jwt.SigningMethodES256,
-			Header: map[string]any{
-				"alg": "ES256",
-				"kid": "ec-key",
-			},
-		}
-
-		key, err := keyFunc(token)
-		if err != nil {
-			t.Errorf("Unexpected error for ES256 with EC key: %v", err)
-		}
-		if _, ok := key.(*ecdsa.PublicKey); !ok {
-			t.Errorf("Expected *ecdsa.PublicKey, got %T", key)
-		}
-	})
-
-	t.Run("RS256 with EC key fails - key type mismatch", func(t *testing.T) {
-		token := &jwt.Token{
-			Method: jwt.SigningMethodRS256,
-			Header: map[string]any{
-				"alg": "RS256",
-				"kid": "ec-key", // EC key, but RSA algorithm
-			},
-		}
-
-		_, err := keyFunc(token)
-		if err == nil {
-			t.Error("Expected error for algorithm/key type mismatch")
-		}
-		if !strings.Contains(err.Error(), "requires RSA key") {
-			t.Errorf("Expected error about RSA key requirement, got: %v", err)
-		}
-	})
-
-	t.Run("ES256 with RSA key fails - key type mismatch", func(t *testing.T) {
-		token := &jwt.Token{
-			Method: jwt.SigningMethodES256,
-			Header: map[string]any{
-				"alg": "ES256",
-				"kid": "rsa-key", // RSA key, but ECDSA algorithm
-			},
-		}
-
-		_, err := keyFunc(token)
-		if err == nil {
-			t.Error("Expected error for algorithm/key type mismatch")
-		}
-		if !strings.Contains(err.Error(), "requires EC key") {
-			t.Errorf("Expected error about EC key requirement, got: %v", err)
-		}
-	})
-
-	t.Run("PS256 (RSA-PSS) with RSA key succeeds", func(t *testing.T) {
-		token := &jwt.Token{
-			Method: jwt.SigningMethodPS256,
-			Header: map[string]any{
-				"alg": "PS256",
-				"kid": "rsa-key",
-			},
-		}
-
-		key, err := keyFunc(token)
-		if err != nil {
-			t.Errorf("Unexpected error for PS256 with RSA key: %v", err)
-		}
-		if _, ok := key.(*rsa.PublicKey); !ok {
-			t.Errorf("Expected *rsa.PublicKey, got %T", key)
-		}
-	})
-}
-
 // TestFetchJWKS_SecurityLimits tests the security limits on JWKS fetching.
 func TestFetchJWKS_SecurityLimits(t *testing.T) {
 	t.Run("SSRF protection - reject private IP", func(t *testing.T) {
 		client := NewJWKSClient(nil, 0, slog.Default())
 
-		// Attempt to fetch from a private IP (should be rejected)
 		_, err := client.FetchJWKS(context.Background(), "https://192.168.1.1/jwks")
 		if err == nil {
 			t.Error("Expected error for private IP JWKS URI")
@@ -759,7 +633,6 @@ func TestFetchJWKS_SecurityLimits(t *testing.T) {
 	t.Run("SSRF protection - reject loopback", func(t *testing.T) {
 		client := NewJWKSClient(nil, 0, slog.Default())
 
-		// Attempt to fetch from loopback (should be rejected)
 		_, err := client.FetchJWKS(context.Background(), "https://127.0.0.1/jwks")
 		if err == nil {
 			t.Error("Expected error for loopback JWKS URI")
@@ -772,7 +645,6 @@ func TestFetchJWKS_SecurityLimits(t *testing.T) {
 	t.Run("SSRF protection - reject link-local (metadata service)", func(t *testing.T) {
 		client := NewJWKSClient(nil, 0, slog.Default())
 
-		// Attempt to fetch from link-local address (AWS metadata service)
 		_, err := client.FetchJWKS(context.Background(), "https://169.254.169.254/jwks")
 		if err == nil {
 			t.Error("Expected error for link-local JWKS URI")
@@ -794,64 +666,25 @@ func TestFetchJWKS_SecurityLimits(t *testing.T) {
 		}
 	})
 
-	t.Run("reject JWKS with too many keys", func(t *testing.T) {
-		// Create a JWKS with more than maxJWKSKeyCount keys
-		tooManyKeys := make([]JWK, maxJWKSKeyCount+1)
-		for i := range tooManyKeys {
-			tooManyKeys[i] = JWK{
-				Kid: "key-" + string(rune('0'+i%10)),
-				Kty: "RSA",
-				N:   "test",
-				E:   "AQAB",
-			}
-		}
-		oversizedJWKS := JWKS{Keys: tooManyKeys}
-
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(oversizedJWKS)
-		}))
-		defer server.Close()
-
-		// Create client with the test server's HTTP client
-		client := &JWKSClient{
-			httpClient:   server.Client(),
-			cacheTTL:     1 * time.Hour,
-			timeProvider: realTime{},
-			logger:       slog.Default(),
-		}
-
-		// We can't bypass the SSRF check easily in an integration test,
-		// but we can verify the constant is set correctly and document
-		// that the key count validation happens after successful fetch.
-		// The SSRF check will reject localhost, which is the expected behavior.
-
-		// Verify the constant is set correctly
+	t.Run("max key count constant is correct", func(t *testing.T) {
 		if maxJWKSKeyCount != 100 {
 			t.Errorf("maxJWKSKeyCount = %d, want 100", maxJWKSKeyCount)
-		}
-
-		// Verify SSRF protection blocks localhost (expected behavior)
-		_, err := client.FetchJWKS(context.Background(), server.URL)
-		if err == nil {
-			t.Error("Expected error due to SSRF protection blocking localhost")
 		}
 	})
 
 	t.Run("accept JWKS at key limit", func(t *testing.T) {
-		// Create a JWKS with exactly maxJWKSKeyCount keys
-		maxKeys := make([]JWK, maxJWKSKeyCount)
+		maxKeys := make([]jose.JSONWebKey, maxJWKSKeyCount)
+		privateKey, _ := rsa.GenerateKey(rand.Reader, 2048)
 		for i := range maxKeys {
-			maxKeys[i] = JWK{
-				Kid: "key-" + string(rune('0'+i%10)),
-				Kty: "RSA",
-				N:   "test",
-				E:   "AQAB",
+			maxKeys[i] = jose.JSONWebKey{
+				Key:       privateKey.Public(),
+				KeyID:     "key-" + string(rune('0'+i%10)),
+				Algorithm: "RS256",
+				Use:       "sig",
 			}
 		}
-		maxJWKS := JWKS{Keys: maxKeys}
+		maxJWKS := jose.JSONWebKeySet{Keys: maxKeys}
 
-		// Pre-populate cache to test that valid JWKS at the limit is accepted
 		client := NewJWKSClient(nil, 0, slog.Default())
 		client.cache.Store("https://example.com/jwks", &cachedJWKS{
 			keys:      &maxJWKS,

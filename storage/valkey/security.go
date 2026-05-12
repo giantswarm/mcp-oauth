@@ -331,56 +331,32 @@ func (s *Store) deleteKey(ctx context.Context, key, description, tokenPrefix str
 // TokenRevocationStore Implementation
 // ============================================================
 
-// SaveTokenMetadata saves metadata for a token (for revocation tracking)
-func (s *Store) SaveTokenMetadata(tokenID, userID, clientID, tokenType string) error {
-	return s.SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenType, "")
-}
-
-// SaveTokenMetadataWithAudience saves metadata for a token including RFC 8707 audience
-func (s *Store) SaveTokenMetadataWithAudience(tokenID, userID, clientID, tokenType, audience string) error {
-	return s.SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID, tokenType, audience, nil)
-}
-
-// SaveTokenMetadataWithScopesAndAudience saves metadata for a token including RFC 8707 audience and MCP 2025-11-25 scopes
-func (s *Store) SaveTokenMetadataWithScopesAndAudience(tokenID, userID, clientID, tokenType, audience string, scopes []string) error {
-	return s.SaveTokenMetadataWithFamily(tokenID, userID, clientID, tokenType, audience, "", scopes)
-}
-
-// SaveTokenMetadataWithFamily saves metadata for a token including audience, scopes, and refresh token family ID.
-// The familyID links the token to a session (refresh token family) for per-session state tracking.
-func (s *Store) SaveTokenMetadataWithFamily(tokenID, userID, clientID, tokenType, audience, familyID string, scopes []string) error {
-	if tokenID == "" || userID == "" || clientID == "" {
+// SaveTokenMetadata saves metadata for a token. Implements
+// storage.TokenMetadataStore. The metadata's IssuedAt is overwritten with
+// time.Now() so callers do not have to populate it.
+func (s *Store) SaveTokenMetadata(ctx context.Context, tokenID string, metadata storage.TokenMetadata) error {
+	if tokenID == "" || metadata.UserID == "" || metadata.ClientID == "" {
 		return fmt.Errorf("tokenID, userID, and clientID cannot be empty")
 	}
 
 	if err := validateStringLength(tokenID, MaxTokenLength, "tokenID"); err != nil {
 		return err
 	}
-	if err := validateStringLength(userID, MaxIDLength, "userID"); err != nil {
+	if err := validateStringLength(metadata.UserID, MaxIDLength, "userID"); err != nil {
 		return err
 	}
-	if err := validateStringLength(clientID, MaxIDLength, "clientID"); err != nil {
+	if err := validateStringLength(metadata.ClientID, MaxIDLength, "clientID"); err != nil {
 		return err
 	}
-	if familyID != "" {
-		if err := validateStringLength(familyID, MaxIDLength, "familyID"); err != nil {
+	if metadata.FamilyID != "" {
+		if err := validateStringLength(metadata.FamilyID, MaxIDLength, "familyID"); err != nil {
 			return err
 		}
 	}
 
-	ctx := context.Background()
+	metadata.IssuedAt = time.Now()
 
-	meta := &storage.TokenMetadata{
-		UserID:    userID,
-		ClientID:  clientID,
-		IssuedAt:  time.Now(),
-		TokenType: tokenType,
-		Audience:  audience,
-		Scopes:    scopes,
-		FamilyID:  familyID,
-	}
-
-	data, err := json.Marshal(toTokenMetadataJSON(meta))
+	data, err := json.Marshal(toTokenMetadataJSON(&metadata))
 	if err != nil {
 		return fmt.Errorf("failed to marshal token metadata: %w", err)
 	}
@@ -394,24 +370,24 @@ func (s *Store) SaveTokenMetadataWithFamily(tokenID, userID, clientID, tokenType
 		return fmt.Errorf("failed to save token metadata: %w", err)
 	}
 
-	userClientKey := s.userClientKey(userID, clientID)
+	userClientKey := s.userClientKey(metadata.UserID, metadata.ClientID)
 	if err := s.client.Do(
 		ctx,
 		s.client.B().Sadd().Key(userClientKey).Member(tokenID).Build(),
 	).Error(); err != nil {
 		s.logger.Warn("Failed to add token to user+client set",
-			"user_id", userID,
-			"client_id", clientID,
+			"user_id", metadata.UserID,
+			"client_id", metadata.ClientID,
 			"error", err)
 	}
 
 	s.logger.Debug("Saved token metadata",
-		"token_type", tokenType,
-		"user_id", userID,
-		"client_id", clientID,
-		"audience", audience,
-		"scopes", scopes,
-		"family_id", familyID)
+		"token_type", metadata.TokenType,
+		"user_id", metadata.UserID,
+		"client_id", metadata.ClientID,
+		"audience", metadata.Audience,
+		"scopes", metadata.Scopes,
+		"family_id", metadata.FamilyID)
 
 	return nil
 }

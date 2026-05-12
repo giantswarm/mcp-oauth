@@ -43,7 +43,12 @@ func main() {
 		Level: slog.LevelInfo,
 	}))
 
-	// 4. Create OAuth server with MCP 2025-11-25 features
+	// 4. Optional dependencies (auditor + rate limiter)
+	auditor := security.NewAuditor(logger, true)
+	rateLimiter := security.NewRateLimiter(10, 20, logger)
+	defer rateLimiter.Stop()
+
+	// 5. Create OAuth server with MCP 2025-11-25 features
 	server, err := oauth.NewServer(
 		googleProvider,
 		store, // TokenStore
@@ -116,18 +121,12 @@ func main() {
 			// AllowRefreshTokenRotation: true,      // Token rotation
 		},
 		logger,
+		oauth.WithAuditor(auditor),
+		oauth.WithRateLimiter(rateLimiter),
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	// 5. Add security features (optional but recommended)
-	auditor := security.NewAuditor(logger, true)
-	server.SetAuditor(auditor)
-
-	rateLimiter := security.NewRateLimiter(10, 20, logger)
-	defer rateLimiter.Stop()
-	server.SetRateLimiter(rateLimiter)
 
 	// 6. Create HTTP handler
 	handler := oauth.NewHandler(server, logger)

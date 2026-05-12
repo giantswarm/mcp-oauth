@@ -64,11 +64,6 @@ type SessionRevocationHandler func(ctx context.Context, userID, familyID string)
 //   - newToken: the freshly obtained provider token (contains id_token in Extra for OIDC flows)
 type TokenRefreshHandler func(ctx context.Context, userID, familyID string, newToken *oauth2.Token)
 
-// TokenFamilyRevocationHandler is the old name for SessionRevocationHandler.
-//
-// Deprecated: Use SessionRevocationHandler instead.
-type TokenFamilyRevocationHandler = SessionRevocationHandler
-
 // Server implements the OAuth 2.1 server logic (provider-agnostic).
 // It coordinates the OAuth flow using a Provider and storage backends.
 type Server struct {
@@ -109,11 +104,10 @@ type Server struct {
 // awkward call site where the same *Store value is passed three times to [New]
 // because TokenStore/ClientStore/FlowStore are separate parameters:
 //
-//	// Old:
-//	srv, err := server.New(provider, store, store, store, cfg, logger)
-//
-//	// New:
-//	srv, err := server.NewWithCombined(provider, store, cfg, logger)
+//	srv, err := server.NewWithCombined(provider, store, cfg, logger,
+//	    server.WithEncryptor(enc),
+//	    server.WithAuditor(aud),
+//	)
 //
 // [New] is unchanged so callers that split persistence across different
 // backing stores (e.g. Postgres tokens + memory flows) keep working.
@@ -122,13 +116,16 @@ func NewWithCombined(
 	store storage.Combined,
 	config *Config,
 	logger *slog.Logger,
+	opts ...Option,
 ) (*Server, error) {
-	// Delegate to New with the same value in all three slots. The embedded
-	// interfaces guarantee the method sets match.
-	return New(provider, store, store, store, config, logger)
+	return New(provider, store, store, store, config, logger, opts...)
 }
 
-// New creates a new OAuth server
+// New creates a new OAuth server. Functional options configure optional
+// dependencies (encryptor, auditor, rate limiters, lifecycle handlers,
+// instrumentation) and are applied after the server has been wired with
+// its stores and the access-token issuer; option callbacks that propagate
+// state to the storage backend can rely on the store being attached.
 func New(
 	provider providers.Provider,
 	tokenStore storage.TokenStore,
@@ -136,6 +133,7 @@ func New(
 	flowStore storage.FlowStore,
 	config *Config,
 	logger *slog.Logger,
+	opts ...Option,
 ) (*Server, error) {
 	if err := validateServerDependencies(provider, tokenStore, clientStore, flowStore); err != nil {
 		return nil, err
@@ -173,10 +171,13 @@ func New(
 	srv.attachRevokedTokenStore(tokenStore)
 
 	configureStorageRetention(tokenStore, config)
-	srv.initializeInstrumentation(tokenStore, clientStore, flowStore)
 	srv.initializeMetadataSupport()
 	srv.validateProviderDefaultScopes(logger)
 	srv.logForwardedSessionIDKeyFingerprint()
+
+	for _, opt := range opts {
+		opt(srv)
+	}
 
 	return srv, nil
 }
@@ -254,68 +255,6 @@ func configureStorageRetention(tokenStore storage.TokenStore, config *Config) {
 	}
 	if setter, ok := tokenStore.(retentionSetter); ok {
 		setter.SetRevokedFamilyRetentionDays(config.RevokedFamilyRetentionDays)
-	}
-}
-
-// initializeInstrumentation sets up OpenTelemetry instrumentation if enabled.
-func (s *Server) initializeInstrumentation(tokenStore storage.TokenStore, clientStore storage.ClientStore, flowStore storage.FlowStore) {
-	if !s.Config.Instrumentation.Enabled {
-		return
-	}
-
-	instConfig := buildInstrumentationConfig(s.Config.Instrumentation)
-	inst, err := instrumentation.New(instConfig)
-	if err != nil {
-		s.Logger.Warn("Failed to initialize instrumentation, continuing without it", "error", err)
-		return
-	}
-
-	s.Instrumentation = inst
-	s.tracer = inst.Tracer("server")
-	propagateInstrumentation(inst, tokenStore, clientStore, flowStore)
-
-	s.Logger.Info("Instrumentation initialized",
-		"service_name", instConfig.ServiceName,
-		"service_version", instConfig.ServiceVersion)
-}
-
-// buildInstrumentationConfig creates an instrumentation config with defaults.
-func buildInstrumentationConfig(cfg InstrumentationConfig) instrumentation.Config {
-	serviceName := cfg.ServiceName
-	if serviceName == "" {
-		serviceName = "mcp-oauth"
-	}
-	serviceVersion := cfg.ServiceVersion
-	if serviceVersion == "" {
-		serviceVersion = "unknown"
-	}
-
-	return instrumentation.Config{
-		Enabled:                  true,
-		ServiceName:              serviceName,
-		ServiceVersion:           serviceVersion,
-		LogClientIPs:             cfg.LogClientIPs,
-		IncludeClientIDInMetrics: cfg.IncludeClientIDInMetrics,
-		MetricsExporter:          cfg.MetricsExporter,
-		TracesExporter:           cfg.TracesExporter,
-		OTLPEndpoint:             cfg.OTLPEndpoint,
-		OTLPInsecure:             cfg.OTLPInsecure,
-	}
-}
-
-// propagateInstrumentation propagates instrumentation to storage layers that support it.
-func propagateInstrumentation(inst *instrumentation.Instrumentation, tokenStore storage.TokenStore, clientStore storage.ClientStore, flowStore storage.FlowStore) {
-	type instrumentationSetter interface {
-		SetInstrumentation(*instrumentation.Instrumentation)
-	}
-	if setter, ok := tokenStore.(instrumentationSetter); ok {
-		setter.SetInstrumentation(inst)
-	}
-	if setter, ok := clientStore.(instrumentationSetter); ok {
-		setter.SetInstrumentation(inst)
-	}
-	if setter, ok := flowStore.(instrumentationSetter); ok {
-		setter.SetInstrumentation(inst)
 	}
 }
 
@@ -415,178 +354,25 @@ func isAudienceScope(scope string) bool {
 		scope[:len(providers.CrossClientAudienceScopePrefix)] == providers.CrossClientAudienceScopePrefix
 }
 
-// SetEncryptor sets the token encryptor for server and storage
-func (s *Server) SetEncryptor(enc *security.Encryptor) {
-	s.Encryptor = enc
-
-	// Also set encryptor on storage if it's a memory store
-	type encryptorSetter interface {
-		SetEncryptor(*security.Encryptor)
-	}
-	if setter, ok := s.tokenStore.(encryptorSetter); ok {
-		setter.SetEncryptor(enc)
-	}
-}
-
-// SetAuditor sets the security auditor
-func (s *Server) SetAuditor(aud *security.Auditor) {
-	s.Auditor = aud
-}
-
-// SetRateLimiter sets the IP-based rate limiter
-func (s *Server) SetRateLimiter(rl *security.RateLimiter) {
-	s.RateLimiter = rl
-}
-
-// SetUserRateLimiter sets the user-based rate limiter for authenticated requests
-func (s *Server) SetUserRateLimiter(rl *security.RateLimiter) {
-	s.UserRateLimiter = rl
-}
-
-// SetSecurityEventRateLimiter sets the rate limiter for security event logging
-// This prevents DoS attacks via log flooding from repeated security events
-func (s *Server) SetSecurityEventRateLimiter(rl *security.RateLimiter) {
-	s.SecurityEventRateLimiter = rl
-}
-
-// SetClientRegistrationRateLimiter sets the time-windowed rate limiter for client registrations
-// This prevents resource exhaustion through repeated registration/deletion cycles
-func (s *Server) SetClientRegistrationRateLimiter(rl *security.ClientRegistrationRateLimiter) {
-	s.ClientRegistrationRateLimiter = rl
-}
-
-// SetMetadataFetchRateLimiter sets the per-domain rate limiter for Client ID Metadata Document fetches
-// This prevents abuse and DoS attacks via repeated metadata fetches from different URLs
-// Recommended: 10 requests per minute per domain
-func (s *Server) SetMetadataFetchRateLimiter(rl *security.RateLimiter) {
-	s.metadataFetchRateLimiter = rl
-}
-
-// SetSessionCreationHandler sets a callback that fires synchronously when a new
-// token family is created during authorization code exchange. This lets consumers
-// initialize per-session state (e.g., establish SSO connections to downstream servers).
-// Must be called during server initialization, before the server starts handling requests.
-//
-// The handler is only invoked when the token store implements
-// [storage.RefreshTokenFamilyStore]. A warning is logged at registration time
-// if the current store does not support families.
-func (s *Server) SetSessionCreationHandler(handler SessionCreationHandler) {
-	s.sessionCreationHandler = handler
-	if handler != nil {
-		if _, ok := s.tokenStore.(storage.RefreshTokenFamilyStore); !ok {
-			s.Logger.Warn("SessionCreationHandler registered but token store does not support refresh token families -- handler will never fire")
-		}
-	}
-}
-
-// SetSessionRevocationHandler sets a callback that fires when a token family is
-// revoked (e.g., on logout). This lets consumers clean up per-session state.
-// Must be called during server initialization, before the server starts handling requests.
-func (s *Server) SetSessionRevocationHandler(handler SessionRevocationHandler) {
-	s.sessionRevocationHandler = handler
-}
-
-// SetTokenRefreshHandler sets a callback that fires synchronously after a
-// provider token is refreshed (proactively near expiry, or reactively when
-// an expired token is encountered during validation). This lets consumers
-// react to refresh events immediately, eliminating the need for separate
-// ID token caching layers.
-// Must be called during server initialization, before the server starts handling requests.
-//
-// The handler always fires on refresh events. However, userID and familyID
-// are only populated when the token store implements
-// [storage.TokenMetadataGetter]. A warning is logged at registration time
-// if the current store does not support metadata lookups.
-func (s *Server) SetTokenRefreshHandler(handler TokenRefreshHandler) {
-	s.tokenRefreshHandler = handler
-	if handler != nil {
-		if _, ok := s.tokenStore.(storage.TokenMetadataGetter); !ok {
-			s.Logger.Warn("TokenRefreshHandler registered but token store does not support TokenMetadataGetter -- handler will not receive userID/familyID")
-		}
-	}
-}
-
-// SetTokenFamilyRevocationHandler is the old name for SetSessionRevocationHandler.
-//
-// Deprecated: Use SetSessionRevocationHandler instead.
-func (s *Server) SetTokenFamilyRevocationHandler(handler TokenFamilyRevocationHandler) {
-	s.SetSessionRevocationHandler(handler)
-}
-
-// SetInstrumentation sets the OpenTelemetry instrumentation for server and storage
-func (s *Server) SetInstrumentation(inst *instrumentation.Instrumentation) {
-	s.Instrumentation = inst
-	if inst != nil {
-		s.tracer = inst.Tracer("server")
-
-		// Also set instrumentation on storage if it supports it
-		type instrumentationSetter interface {
-			SetInstrumentation(*instrumentation.Instrumentation)
-		}
-		if setter, ok := s.tokenStore.(instrumentationSetter); ok {
-			setter.SetInstrumentation(inst)
-		}
-		if setter, ok := s.clientStore.(instrumentationSetter); ok {
-			setter.SetInstrumentation(inst)
-		}
-		if setter, ok := s.flowStore.(instrumentationSetter); ok {
-			setter.SetInstrumentation(inst)
-		}
-	}
-}
-
 // TokenStore returns the token store used by the server.
 // This allows the handler to access token metadata for scope validation.
 func (s *Server) TokenStore() storage.TokenStore {
 	return s.tokenStore
 }
 
-// tokenMetadataParams bundles the parameters for saveTokenMetadata to avoid
-// a long positional-string parameter list that is easy to misorder.
-type tokenMetadataParams struct {
-	TokenID   string
-	UserID    string
-	ClientID  string
-	TokenType string
-	Audience  string
-	FamilyID  string
-	Scopes    []string
-}
-
-// saveTokenMetadata saves token metadata using the most capable store method available.
-// It tries methods in order of capability:
-// 1. SaveTokenMetadataWithFamily (newest - includes family ID, scopes, and audience)
-// 2. SaveTokenMetadataWithScopesAndAudience (includes scopes and audience)
-// 3. SaveTokenMetadataWithAudience (includes audience only)
-// 4. SaveTokenMetadata (basic - no audience or scopes)
-//
-// This ensures backward compatibility with stores that don't support the newest methods.
-func (s *Server) saveTokenMetadata(p tokenMetadataParams) {
-	if store, ok := s.tokenStore.(storage.TokenMetadataStoreWithFamily); ok {
-		if err := store.SaveTokenMetadataWithFamily(p.TokenID, p.UserID, p.ClientID, p.TokenType, p.Audience, p.FamilyID, p.Scopes); err != nil {
-			s.Logger.Warn("Failed to save token metadata with family", "error", err)
-		}
+// saveTokenMetadata writes token metadata to the configured store. Backends
+// that do not implement storage.TokenMetadataStore are silently skipped —
+// metadata is observability scaffolding (audit, scope validation, family
+// bookkeeping) and a missing implementation reduces observability rather
+// than breaking the OAuth flow. metadata.IssuedAt on the input is ignored;
+// backends populate it from the wall clock at write time.
+func (s *Server) saveTokenMetadata(ctx context.Context, tokenID string, metadata storage.TokenMetadata) {
+	store, ok := s.tokenStore.(storage.TokenMetadataStore)
+	if !ok {
 		return
 	}
-
-	if store, ok := s.tokenStore.(storage.TokenMetadataStoreWithScopesAndAudience); ok {
-		if err := store.SaveTokenMetadataWithScopesAndAudience(p.TokenID, p.UserID, p.ClientID, p.TokenType, p.Audience, p.Scopes); err != nil {
-			s.Logger.Warn("Failed to save token metadata with scopes and audience", "error", err)
-		}
-		return
-	}
-
-	if store, ok := s.tokenStore.(storage.TokenMetadataStoreWithAudience); ok {
-		if err := store.SaveTokenMetadataWithAudience(p.TokenID, p.UserID, p.ClientID, p.TokenType, p.Audience); err != nil {
-			s.Logger.Warn("Failed to save token metadata with audience", "error", err)
-		}
-		return
-	}
-
-	if store, ok := s.tokenStore.(storage.TokenMetadataStore); ok {
-		if err := store.SaveTokenMetadata(p.TokenID, p.UserID, p.ClientID, p.TokenType); err != nil {
-			s.Logger.Warn("Failed to save token metadata", "error", err)
-		}
+	if err := store.SaveTokenMetadata(ctx, tokenID, metadata); err != nil {
+		s.Logger.Warn("Failed to save token metadata", "error", err)
 	}
 }
 

@@ -78,9 +78,9 @@ func FromEnvWithPrefix(prefix string) (*server.Config, error) {
 	}
 
 	// The encryption key is NOT read here because *server.Config does not
-	// carry one — token-at-rest encryption is attached via server.SetEncryptor
-	// after the server is constructed. See [NewEncryptorFromEnv] for the
-	// corresponding loader.
+	// carry one — token-at-rest encryption is wired via the
+	// server.WithEncryptor option at construction. See [NewEncryptorFromEnv]
+	// for the corresponding loader.
 
 	if err := loadSessionIDHMACKey(prefix, cfg); err != nil {
 		return nil, err
@@ -183,16 +183,16 @@ func loadSessionIDHMACKey(prefix string, cfg *server.Config) error {
 
 // NewEncryptorFromEnv reads OAUTH_ENCRYPTION_KEY (or OAUTH_ENCRYPTION_KEY_FILE)
 // as a 32-byte AES-GCM key and returns a *security.Encryptor ready to pass to
-// server.SetEncryptor. Returns (nil, nil) when no key is configured — callers
-// can decide whether to require encryption.
+// the server.WithEncryptor option. Returns (nil, nil) when no key is
+// configured — callers can decide whether to require encryption.
 //
 // The key may be encoded as either base64 (canonical, produced by
 // `openssl rand -base64 32`) or hex (`openssl rand -hex 32`). Base64 is tried
 // first; on any failure (decode error or wrong length) the value is retried as
 // hex. base64 is the recommended form.
 //
-// Separate from [FromEnv] because token-at-rest encryption is wired via
-// server.SetEncryptor after server construction, not through *server.Config.
+// Separate from [FromEnv] because token-at-rest encryption is wired via the
+// server.WithEncryptor option at construction, not through *server.Config.
 func NewEncryptorFromEnv() (*security.Encryptor, error) {
 	return NewEncryptorFromEnvWithPrefix("OAUTH_")
 }
