@@ -2412,11 +2412,6 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	w.Header().Set("Content-Type", "application/json")
-	// RFC 7662 §2.2: introspection responses MUST NOT be cached by
-	// intermediaries because the activity / claims they reflect can change
-	// out-of-band (token revocation, family expiry).
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Pragma", "no-cache")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(response)
 	h.recordHTTPMetrics(r.Context(), endpointIntrospect, http.MethodPost, http.StatusOK, startTime)

@@ -9,10 +9,11 @@ This guide covers security configuration for production deployments. For deep te
 3. [Token Encryption](#token-encryption)
 4. [Rate Limiting](#rate-limiting)
 5. [Audit Logging](#audit-logging)
-6. [Client Registration Protection](#client-registration-protection)
-7. [Redirect URI Security](#redirect-uri-security)
-8. [SSO Token Forwarding](#sso-token-forwarding)
-9. [Legacy Client Support](#legacy-client-support)
+6. [Token Introspection (RFC 7662)](#token-introspection-rfc-7662)
+7. [Client Registration Protection](#client-registration-protection)
+8. [Redirect URI Security](#redirect-uri-security)
+9. [SSO Token Forwarding](#sso-token-forwarding)
+10. [Legacy Client Support](#legacy-client-support)
 
 ## Secure Defaults
 
@@ -210,6 +211,7 @@ server.SetAuditor(auditor)
 | `token_reuse_detected` | Refresh token reuse (theft indicator) |
 | `invalid_pkce` | PKCE validation failure |
 | `client_registered` | New client registered |
+| `introspection_requester_denied` | Cross-client introspection probe (see [Token Introspection](#token-introspection-rfc-7662)) |
 
 ### Monitoring Recommendations
 
@@ -218,6 +220,35 @@ Set up alerts for:
 - `token_reuse_detected` - Possible token theft
 - `rate_limit_exceeded` - Possible abuse
 - Spikes in `auth_failure` - Brute force attempt
+- Spikes in `introspection_requester_denied` with `reason=cross_client_probe` - DCR client enumerating tokens it does not own
+
+## Token Introspection (RFC 7662)
+
+`/oauth/introspect` is opt-in via `Config.EnableIntrospectionEndpoint`. When enabled, the endpoint enforces a **cross-client gate**: a client receives the RFC 7662 §2.2 response only for tokens it owns, or for tokens whose `client_id` it is enrolled for via `Config.IntrospectionResourceServers`. Every other probe returns `{"active": false}` with no other claims — byte-identical to an unknown-token response.
+
+### Why the gate
+
+Without it, any DCR-registered client could introspect any token in the store and learn (a) whether it is active and (b) the bound user's `sub` / `email` / `email_verified` / `name`. That is a passive token / user enumeration channel. The gate closes the channel while preserving introspection's legitimate use case (resource servers validating tokens issued to their own clients).
+
+### Configuration
+
+```go
+srvCfg.EnableIntrospectionEndpoint = true
+srvCfg.IntrospectionResourceServers = []string{
+    "rs-billing-api",   // resource server allowed to introspect tokens
+    "rs-files-api",     // …issued to any DCR client targeting this RS
+}
+```
+
+Empty entries are rejected at `Config.Validate`. Unregistered client IDs are rejected at `Server.New`. Same-client probes are always allowed and do not require enrolment.
+
+### Response shape
+
+`client_id` reflects the **token-bound** client, not the requester. `exp`, `iat`, `aud`, `iss`, `scope`, `sub`, `token_type` are projected from token metadata (opaque mode) or the verified JWT claims (JWT mode). `nbf` is projected when the JWT carries it. User attributes (`email`, `email_verified`, `name`) are projected on the authorized path only.
+
+### Auditing
+
+Cross-client denials emit `introspection_requester_denied` (severity `medium`) with `reason ∈ {empty_requester, empty_token_bound_client, cross_client_probe}`. The wire response hides the denial from the caller; the audit record preserves it for SIEM ingestion.
 
 ## Client Registration Protection
 

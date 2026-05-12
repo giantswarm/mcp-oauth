@@ -3890,10 +3890,10 @@ func TestHandler_ServeTokenIntrospection_OpaquePath(t *testing.T) {
 			wantFieldsPresent: []string{"client_id", "sub", "token_type", "scope", "aud", "iss", "exp", "iat"},
 		},
 		{
-			name:              "cross-client probe denied — no field leakage",
-			requester:         "probe",
-			wantActive:        false,
-			wantFieldsAbsent:  []string{"sub", "email", "email_verified", "name", "client_id", "scope", "aud", "iss", "exp", "iat", "token_type"},
+			name:             "cross-client probe denied — no field leakage",
+			requester:        "probe",
+			wantActive:       false,
+			wantFieldsAbsent: []string{"sub", "email", "email_verified", "name", "client_id", "scope", "aud", "iss", "exp", "iat", "token_type"},
 		},
 		{
 			name:                  "allowlisted resource server sees token-owner client_id",
@@ -3945,8 +3945,10 @@ func TestHandler_ServeTokenIntrospection_OpaquePath(t *testing.T) {
 			handler.ServeTokenIntrospection(w, req)
 
 			require.Equal(t, http.StatusOK, w.Code)
-			require.Equal(t, "no-store", w.Header().Get("Cache-Control"),
+			require.Contains(t, w.Header().Get("Cache-Control"), "no-store",
 				"RFC 7662 §2.2 requires Cache-Control: no-store on introspection responses")
+			require.Equal(t, "no-cache", w.Header().Get("Pragma"),
+				"HTTP/1.0 intermediaries honour Pragma: no-cache")
 
 			var response map[string]any
 			require.NoError(t, json.NewDecoder(w.Body).Decode(&response))

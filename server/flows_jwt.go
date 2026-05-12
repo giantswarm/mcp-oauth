@@ -295,6 +295,12 @@ func userInfoFromJWTClaims(claims map[string]any) *providers.UserInfo {
 	if v, ok := claims["email"].(string); ok {
 		info.Email = v
 	}
+	if v, ok := claims["email_verified"].(bool); ok {
+		info.EmailVerified = v
+	}
+	if v, ok := claims["name"].(string); ok {
+		info.Name = v
+	}
 	switch g := claims["groups"].(type) {
 	case []string:
 		info.Groups = append(info.Groups, g...)

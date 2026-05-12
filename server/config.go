@@ -1091,9 +1091,9 @@ func (c *Config) Validate() error {
 }
 
 // validateIntrospectionResourceServers rejects empty entries in the allowlist.
-// An empty string would never match a requesting client (introspectionRequester
-// Allowed bails when requestingClient == "") so it can only mask operator
-// intent — fail closed at startup.
+// An empty string would never match a requesting client (the requester gate
+// bails when requestingClient == ""), so an empty entry can only mask
+// operator intent — fail closed at startup.
 func (c *Config) validateIntrospectionResourceServers() error {
 	for i, entry := range c.IntrospectionResourceServers {
 		if entry == "" {

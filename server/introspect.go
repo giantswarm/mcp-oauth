@@ -2,13 +2,36 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"slices"
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/providers"
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
+
+// validateIntrospectionAllowlistRegistered verifies every entry in
+// Config.IntrospectionResourceServers resolves to a registered client. Catches
+// operator typos that would otherwise silently deny every probe.
+//
+// A backend that returns transient errors during startup is treated as fatal
+// here: bringing up a server with an unverifiable allowlist would leave the
+// gate's correctness in an unknown state.
+func (s *Server) validateIntrospectionAllowlistRegistered(ctx context.Context) error {
+	for i, clientID := range s.Config.IntrospectionResourceServers {
+		_, err := s.clientStore.GetClient(ctx, clientID)
+		if errors.Is(err, storage.ErrClientNotFound) {
+			return fmt.Errorf("IntrospectionResourceServers[%d] %q is not a registered client", i, clientID)
+		}
+		if err != nil {
+			return fmt.Errorf("IntrospectionResourceServers[%d] %q lookup failed: %w", i, clientID, err)
+		}
+	}
+	return nil
+}
 
 // IntrospectToken returns the RFC 7662 introspection payload for accessToken,
 // or {"active": false} when requestingClient is not authorized to learn it.
@@ -17,9 +40,7 @@ import (
 //
 // Callers MUST authenticate requestingClient before invoking this method.
 // The cross-client gate trusts that identifier as-is; passing an attacker-
-// supplied or unauthenticated value defeats the gate entirely. The in-tree
-// caller is [Handler.ServeTokenIntrospection], which runs
-// authenticateIntrospectionClient first.
+// supplied or unauthenticated value defeats the gate entirely.
 func (s *Server) IntrospectToken(ctx context.Context, accessToken, requestingClient string) map[string]any {
 	if s.Config.IsJWTAccessTokenFormat() && s.looksLikeSelfIssuedJWT(accessToken) {
 		return s.introspectSelfIssuedJWT(ctx, accessToken, requestingClient)
@@ -34,22 +55,50 @@ func inactiveIntrospectionResponse() map[string]any {
 	return map[string]any{"active": false}
 }
 
-// introspectSelfIssuedJWT runs the same verification pipeline as
-// [Server.validateSelfIssuedJWT] and projects the verified claim set into the
-// RFC 7662 §2.2 response — single pass, no re-verification, no drift between
-// the two paths.
+// introspectSelfIssuedJWT projects the verified claim set into the RFC 7662
+// §2.2 response.
+//
+// Gate ordering: the cross-client check runs against the UNVERIFIED client_id
+// claim first, so a probe for a JWT the requester does not own is rejected
+// before the heavy validation pipeline runs. The verified claim is re-checked
+// after validation; signature verification ensures an attacker cannot forge a
+// matching unverified client_id to bypass the gate (signature would fail and
+// the response stays inactive). This collapses the timing distinction between
+// "valid JWT I don't own" and "garbage JWT" — both return inactive after a
+// single unverified parse.
 func (s *Server) introspectSelfIssuedJWT(ctx context.Context, accessToken, requestingClient string) map[string]any {
+	unverifiedBoundClient := unverifiedClientIDClaim(accessToken)
+	if !s.introspectionRequesterAllowed(ctx, requestingClient, unverifiedBoundClient) {
+		return inactiveIntrospectionResponse()
+	}
+
 	userInfo, claims, err := s.validateSelfIssuedJWT(ctx, accessToken)
 	if err != nil || userInfo == nil {
 		return inactiveIntrospectionResponse()
 	}
 
-	tokenBoundClient, _ := claims["client_id"].(string)
-	if !s.introspectionRequesterAllowed(ctx, requestingClient, tokenBoundClient) {
+	verifiedBoundClient, _ := claims["client_id"].(string)
+	if verifiedBoundClient != unverifiedBoundClient &&
+		!s.introspectionRequesterAllowed(ctx, requestingClient, verifiedBoundClient) {
 		return inactiveIntrospectionResponse()
 	}
 
-	return introspectionResponseFromJWTClaims(claims, tokenBoundClient)
+	return introspectionResponseFromJWTClaims(claims, verifiedBoundClient)
+}
+
+// unverifiedClientIDClaim returns the client_id claim from accessToken without
+// verifying the signature. Used only for the introspection gate's early
+// reject path; the verified claim is re-checked after full validation.
+func unverifiedClientIDClaim(accessToken string) string {
+	if !oidc.IsJWT(accessToken) {
+		return ""
+	}
+	claims, err := oidc.ParseUnverifiedClaims(accessToken)
+	if err != nil {
+		return ""
+	}
+	v, _ := claims["client_id"].(string)
+	return v
 }
 
 func introspectionResponseFromJWTClaims(claims map[string]any, tokenBoundClient string) map[string]any {
@@ -64,19 +113,25 @@ func introspectionResponseFromJWTClaims(claims map[string]any, tokenBoundClient 
 	copyClaimString(response, claims, "iss")
 	copyClaimString(response, claims, "scope")
 	copyClaimString(response, claims, "email")
+	copyClaimString(response, claims, "name")
+	copyClaimBool(response, claims, "email_verified")
 	copyClaimUnixTime(response, claims, "exp")
 	copyClaimUnixTime(response, claims, "iat")
 	copyClaimUnixTime(response, claims, "nbf")
 	if aud := audiencesFromClaim(claims["aud"]); len(aud) == 1 {
 		response["aud"] = aud[0]
-	} else if len(aud) > 1 {
-		response["aud"] = aud
 	}
 	return response
 }
 
 func copyClaimString(dst, claims map[string]any, key string) {
 	if v, ok := claims[key].(string); ok && v != "" {
+		dst[key] = v
+	}
+}
+
+func copyClaimBool(dst, claims map[string]any, key string) {
+	if v, ok := claims[key].(bool); ok {
 		dst[key] = v
 	}
 }

@@ -1537,6 +1537,8 @@ func (s *Server) fillUserInfoClaims(ctx context.Context, userID string, c *Acces
 		return
 	}
 	c.Email = info.Email
+	c.EmailVerified = info.EmailVerified
+	c.Name = info.Name
 	c.Groups = info.Groups
 }
 
