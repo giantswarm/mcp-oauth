@@ -1758,7 +1758,7 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	}
 
 	if r.Method != http.MethodPost {
-		h.recordHTTPMetrics(r.Context(), "register", http.MethodPost, http.StatusMethodNotAllowed, startTime)
+		h.recordHTTPMetrics(ctx, "register", http.MethodPost, http.StatusMethodNotAllowed, startTime)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -1766,7 +1766,7 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	h.setCORSHeaders(w, r)
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
-	if h.checkClientRegistrationRateLimit(r.Context(), w, clientIP, startTime) {
+	if h.checkClientRegistrationRateLimit(ctx, w, clientIP, startTime) {
 		return
 	}
 
@@ -1775,7 +1775,7 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	req, err := h.parseAndValidateRegistrationRequest(w, r, clientIP)
 	if err != nil {
 		if isMaxBytesError(err) {
-			h.recordHTTPMetrics(r.Context(), "register", http.MethodPost, http.StatusRequestEntityTooLarge, startTime)
+			h.recordHTTPMetrics(ctx, "register", http.MethodPost, http.StatusRequestEntityTooLarge, startTime)
 			instrumentation.RecordError(span, err)
 			instrumentation.SetSpanError(span, "request body too large")
 		}
@@ -1787,7 +1787,7 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if !h.validatePublicClientRegistration(r.Context(), w, req, clientIP, registeredViaTrustedScheme, startTime, span) {
+	if !h.validatePublicClientRegistration(ctx, w, req, clientIP, registeredViaTrustedScheme, startTime, span) {
 		return
 	}
 
@@ -1796,12 +1796,12 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	maxClients := h.getMaxClientsPerIP()
 	client, clientSecret, err := h.server.RegisterClient(ctx, req.ClientName, req.ClientType, req.TokenEndpointAuthMethod, req.RedirectURIs, req.Scopes, clientIP, maxClients)
 	if err != nil {
-		h.handleRegistrationError(r.Context(), w, err, clientIP, startTime, span)
+		h.handleRegistrationError(ctx, w, err, clientIP, startTime, span)
 		return
 	}
 
-	h.recordClientRegistered(r.Context(), client.ClientType)
-	h.auditTrustedSchemeRegistration(r.Context(), registeredViaTrustedScheme, trustedScheme, client, clientIP)
+	h.recordClientRegistered(ctx, client.ClientType)
+	h.auditTrustedSchemeRegistration(ctx, registeredViaTrustedScheme, trustedScheme, client, clientIP)
 	h.recordHTTPMetrics(ctx, "register", http.MethodPost, http.StatusCreated, startTime)
 	h.setRegistrationSpanSuccess(span, client)
 	h.writeRegistrationResponse(w, client, clientSecret)

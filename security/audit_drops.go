@@ -15,6 +15,13 @@ var auditDropFn auditDropRecorder
 // event is dropped. Setting nil disables the hook. Intended to be called
 // once at startup from instrumentation wiring code; not safe to swap at
 // request time (no synchronization on the package-level global).
+//
+// The hook is process-wide. Constructing a second [instrumentation.Instrumentation]
+// re-registers it, so audit drops from any [Auditor] in the process
+// route to the most recently constructed Instrumentation's meter — even
+// if a different Auditor is attached to a different Server. Production
+// deployments build one Server; tests that spin up multiple in parallel
+// will see the second one win.
 func SetAuditDropRecorder(fn auditDropRecorder) {
 	auditDropFn = fn
 }
