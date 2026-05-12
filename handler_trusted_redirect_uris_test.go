@@ -119,7 +119,7 @@ func TestHandler_ServeClientRegistration_TrustedRedirectURIs(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodPost, "/register", bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
-			req.RemoteAddr = "192.168.1.100:12345"
+			req.RemoteAddr = testClientRemoteAddr
 			if tt.provideToken {
 				req.Header.Set("Authorization", "Bearer "+tt.registrationAccessToken)
 			}
@@ -153,12 +153,6 @@ func TestHandler_IsRegistrationAvailable_TrustedRedirectURIs(t *testing.T) {
 	require.True(t, handler.isRegistrationAvailable(), "allowlist enables DCR")
 }
 
-// TestHandler_ServeClientRegistration_TrustedSchemesAndRedirectURIs_Combined
-// exercises a request that mixes a trusted scheme entry and a trusted HTTPS
-// entry. Each allowlist is independently strict, so a mixed-URI request is
-// rejected: the scheme gate sees a non-cursor URI and bails, then the
-// HTTPS gate sees a non-https URI and bails. Operators wanting Cursor +
-// Claude.ai must register them as separate clients.
 func TestHandler_ServeClientRegistration_TrustedSchemesAndRedirectURIs_Combined(t *testing.T) {
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
@@ -180,7 +174,7 @@ func TestHandler_ServeClientRegistration_TrustedSchemesAndRedirectURIs_Combined(
 	require.NoError(t, err)
 	req := httptest.NewRequest(http.MethodPost, "/register", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.RemoteAddr = "192.168.1.100:12345"
+	req.RemoteAddr = testClientRemoteAddr
 
 	w := httptest.NewRecorder()
 	handler.ServeClientRegistration(w, req)

@@ -342,6 +342,10 @@ This control is **narrower** than `TrustedPublicRegistrationSchemes`: only the s
 
 Each entry vouches for a specific URL. Avoid allowlisting URLs on multi-tenant hosting (e.g. `https://*.github.io/...`, public pastebin / preview domains, or shared SaaS subdomains the operator does not control end-to-end) — any tenant on that host can host an attacker-controlled callback at the same URL. Allowlist only URLs whose host you trust the platform vendor for.
 
+**Combining with `TrustedPublicRegistrationSchemes`:**
+
+The two allowlists are independent — each is evaluated in strict mode. A registration request whose `redirect_uris` mixes a trusted scheme and a trusted HTTPS URI satisfies neither gate and is rejected. To onboard a custom-scheme client (e.g. Cursor) and a SaaS HTTPS client (e.g. Claude.ai) on the same server, register them as separate clients.
+
 **Audit Logging:**
 
 Registrations via the trusted HTTPS allowlist are logged with event type `client_registered_via_trusted_redirect_uri`. The matched URI is included in the event details.
