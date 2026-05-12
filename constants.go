@@ -83,10 +83,10 @@ const (
 	// This value is used as the default for server.Config.MinStateLength.
 	MinStateLength = 24
 
-	// MaxStateLength caps the `state` parameter length. RFC 6749 leaves the
-	// bound unspecified; capping at 512 chars matches Google's auth surface
-	// and stops audit-log inflation / DoS via oversized state values without
-	// breaking the common JWT-encoded-state pattern (~256-380 chars).
+	// MaxStateLength caps the `state` parameter length to prevent audit-log
+	// inflation / DoS via oversized state values; 512 characters accommodates
+	// the common JWT-encoded-state pattern (~256-380 chars).
+	// This value is used as the default for server.Config.MaxStateLength.
 	MaxStateLength = 512
 )
 

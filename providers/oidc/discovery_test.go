@@ -310,20 +310,25 @@ func TestDiscoveryClient_Discover_SingleflightCoalescesColdMisses(t *testing.T) 
 
 	client := newTestClient(server.Client(), 1*time.Hour)
 
-	var wg sync.WaitGroup
+	var (
+		ready sync.WaitGroup
+		wg    sync.WaitGroup
+	)
+	ready.Add(concurrency)
 	docs := make([]*DiscoveryDocument, concurrency)
 	errs := make([]error, concurrency)
 	for i := 0; i < concurrency; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
+			ready.Done()
 			docs[idx], errs[idx] = client.Discover(context.Background(), server.URL)
 		}(i)
 	}
 
-	// Give every goroutine a chance to enter Discover and queue on
-	// singleflight before the upstream returns.
-	time.Sleep(50 * time.Millisecond)
+	// Wait for every goroutine to start before unblocking the upstream so
+	// the singleflight join window is as wide as possible.
+	ready.Wait()
 	close(release)
 	wg.Wait()
 

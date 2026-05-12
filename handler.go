@@ -1142,11 +1142,9 @@ func (h *Handler) checkDiscoveryRateLimit(w http.ResponseWriter, r *http.Request
 	return true
 }
 
-// buildAuthServerMetadata builds the RFC 8414 authorization server metadata.
-// The document doubles as OpenID Connect Discovery 1.0 §3 metadata —
-// `subject_types_supported`, `id_token_signing_alg_values_supported`, and
-// `claims_supported` are emitted unconditionally so OIDC clients can validate
-// the issuer without a second fetch.
+// buildAuthServerMetadata returns the metadata served at both
+// /.well-known/oauth-authorization-server (RFC 8414) and
+// /.well-known/openid-configuration (OIDC Discovery 1.0 §3).
 func (h *Handler) buildAuthServerMetadata() map[string]any {
 	metadata := map[string]any{
 		"issuer":                                h.server.Config.Issuer,
@@ -1159,25 +1157,27 @@ func (h *Handler) buildAuthServerMetadata() map[string]any {
 		// RFC 9207: advertise that authorization responses include the `iss` parameter
 		// so clients can verify the response came from the expected authorization server.
 		"authorization_response_iss_parameter_supported": true,
-		"claims_supported":                  []string{"sub", "aud", "iss", "exp", "iat", "nonce"},
-		"subject_types_supported":           []string{"public"},
-		"id_token_signing_alg_values_supported": []string{h.idTokenSigningAlg()},
+		"claims_supported":                      []string{"sub", "aud", "iss", "exp", "iat", "nonce"},
+		"subject_types_supported":               []string{"public"},
+		"id_token_signing_alg_values_supported": h.idTokenSigningAlgs(),
 	}
 
 	h.addOptionalMetadata(metadata)
 	return metadata
 }
 
-// idTokenSigningAlg returns the alg advertised in id_token_signing_alg_values_supported.
-// In JWT access-token mode the server's own signing key is the authority on
-// the alg; in opaque mode the server does not sign id_tokens itself, so it
-// publishes RS256 as the conventional default — OIDC Discovery §3 requires
-// the field to be present and non-empty.
-func (h *Handler) idTokenSigningAlg() string {
-	if h.server.Config.IsJWTAccessTokenFormat() && h.server.Config.AccessTokenSigningAlgorithm != "" {
-		return h.server.Config.AccessTokenSigningAlgorithm
+// idTokenSigningAlgs returns the alg values advertised in
+// id_token_signing_alg_values_supported. OIDC Discovery 1.0 §3 mandates that
+// RS256 be included; in JWT access-token mode the server's own signing alg
+// is appended when distinct.
+func (h *Handler) idTokenSigningAlgs() []string {
+	algs := []string{"RS256"}
+	if h.server.Config.IsJWTAccessTokenFormat() {
+		if alg := h.server.Config.AccessTokenSigningAlgorithm; alg != "" && alg != "RS256" {
+			algs = append(algs, alg)
+		}
 	}
-	return "RS256"
+	return algs
 }
 
 // addOptionalMetadata adds optional endpoints based on configuration.
@@ -1337,11 +1337,13 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, ErrorCodeInvalidRequest, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if len(state) > MaxStateLength {
-		h.logger.Warn("Authorization request rejected: state parameter too long", "state_length", len(state), "max_allowed", MaxStateLength, "client_id", clientID)
+
+	maxStateLength := h.server.Config.MaxStateLength
+	if len(state) > maxStateLength {
+		h.logger.Warn("Authorization request rejected: state parameter too long", "state_length", len(state), "max_allowed", maxStateLength, "client_id", clientID)
 		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "state too long")
-		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at most %d characters", MaxStateLength), http.StatusBadRequest)
+		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at most %d characters", maxStateLength), http.StatusBadRequest)
 		return
 	}
 
@@ -1464,20 +1466,22 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, ErrorCodeInvalidRequest, "state and code are required", http.StatusBadRequest)
 		return
 	}
-	if len(state) < MinStateLength {
-		h.logger.Warn("Callback rejected: provider state too short", "state_length", len(state), "min_required", MinStateLength)
+	minStateLength := h.server.Config.MinStateLength
+	maxStateLength := h.server.Config.MaxStateLength
+	if len(state) < minStateLength {
+		h.logger.Warn("Callback rejected: provider state too short", "state_length", len(state), "min_required", minStateLength)
 		h.recordHTTPMetrics(r.Context(), endpointCallback, http.MethodGet, http.StatusBadRequest, startTime)
 		h.recordCallbackProcessed(r.Context(), "", false)
 		instrumentation.SetSpanError(span, "state too short")
-		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at least %d characters for security", MinStateLength), http.StatusBadRequest)
+		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at least %d characters for security", minStateLength), http.StatusBadRequest)
 		return
 	}
-	if len(state) > MaxStateLength {
-		h.logger.Warn("Callback rejected: provider state too long", "state_length", len(state), "max_allowed", MaxStateLength)
+	if len(state) > maxStateLength {
+		h.logger.Warn("Callback rejected: provider state too long", "state_length", len(state), "max_allowed", maxStateLength)
 		h.recordHTTPMetrics(r.Context(), endpointCallback, http.MethodGet, http.StatusBadRequest, startTime)
 		h.recordCallbackProcessed(r.Context(), "", false)
 		instrumentation.SetSpanError(span, "state too long")
-		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at most %d characters", MaxStateLength), http.StatusBadRequest)
+		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at most %d characters", maxStateLength), http.StatusBadRequest)
 		return
 	}
 
@@ -2416,10 +2420,11 @@ func (h *Handler) checkAuthorizationStateParam(state, clientID string) *authoriz
 			spanError:   "state missing",
 		}
 	}
-	if len(state) < MinStateLength {
-		h.logger.Warn("Authorization request rejected: state parameter too short", "state_length", len(state), "min_required", MinStateLength, "client_id", clientID)
+	minStateLength := h.server.Config.MinStateLength
+	if len(state) < minStateLength {
+		h.logger.Warn("Authorization request rejected: state parameter too short", "state_length", len(state), "min_required", minStateLength, "client_id", clientID)
 		return &authorizationStateRejection{
-			description: fmt.Sprintf("state parameter must be at least %d characters for security", MinStateLength),
+			description: fmt.Sprintf("state parameter must be at least %d characters for security", minStateLength),
 			spanError:   "state too short",
 		}
 	}

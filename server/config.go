@@ -430,6 +430,11 @@ type Config struct {
 	// Default: 24 characters (144 bits of entropy)
 	MinStateLength int // default: 24
 
+	// MaxStateLength caps the `state` parameter length to prevent audit-log
+	// inflation / DoS via oversized state values.
+	// Default: 512 characters (accommodates common JWT-encoded-state payloads).
+	MaxStateLength int // default: 512
+
 	// AllowNoStateParameter allows authorization requests without the state parameter.
 	// WARNING: Disabling state parameter validation weakens CSRF protection!
 	// The state parameter is REQUIRED by OAuth 2.1 for CSRF attack prevention.

@@ -30,6 +30,9 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 	if config.MinStateLength == 0 {
 		config.MinStateLength = 24 // OAuth 2.1: 128+ bits entropy recommended, 24 chars = 144 bits
 	}
+	if config.MaxStateLength == 0 {
+		config.MaxStateLength = 512 // accommodates common JWT-encoded-state payloads (~256-380 chars)
+	}
 
 	// Redirect URI security defaults - SECURE BY DEFAULT
 	// These security features are enabled by default following the library's principle

@@ -220,6 +220,21 @@ Describes the authorization server's capabilities, endpoints, and supported feat
     "openid",
     "profile",
     "email"
+  ],
+  "authorization_response_iss_parameter_supported": true,
+  "claims_supported": [
+    "sub",
+    "aud",
+    "iss",
+    "exp",
+    "iat",
+    "nonce"
+  ],
+  "subject_types_supported": [
+    "public"
+  ],
+  "id_token_signing_alg_values_supported": [
+    "RS256"
   ]
 }
 ```
@@ -227,6 +242,8 @@ Describes the authorization server's capabilities, endpoints, and supported feat
 Note: `revocation_endpoint` and `introspection_endpoint` are only included when explicitly enabled via `EnableRevocationEndpoint` and `EnableIntrospectionEndpoint` configuration options.
 
 `jwks_uri` and `access_token_signing_alg_values_supported` appear only when `AccessTokenFormat` is `AccessTokenFormatJWT`. In opaque mode they are absent — the JWKS endpoint exists but returns 404, and advertising it would point clients at an endpoint with no keys.
+
+Responses set `Cache-Control: public, max-age=<seconds>` (RFC 8414 §3) using `Config.DiscoveryCacheMaxAge` (default `1h`).
 
 ### JWKS Endpoint (RFC 7517)
 
