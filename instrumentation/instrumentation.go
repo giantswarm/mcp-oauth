@@ -18,6 +18,8 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
+
+	"github.com/giantswarm/mcp-oauth/security"
 )
 
 const (
@@ -171,7 +173,21 @@ func New(config Config) (*Instrumentation, error) {
 		return nil, fmt.Errorf("failed to create metrics: %w", err)
 	}
 
+	inst.registerSecurityHooks()
+
 	return inst, nil
+}
+
+// registerSecurityHooks wires the security package's metric callbacks to
+// the instruments owned by this Instrumentation. Resetting an inst (or
+// constructing a second one) replaces the previously registered hooks.
+func (i *Instrumentation) registerSecurityHooks() {
+	security.SetEncryptionMetricRecorder(func(ctx context.Context, operation, result string, durationMs float64) {
+		i.metrics.RecordEncryptionOperation(ctx, operation, result, durationMs)
+	})
+	security.SetAuditDropRecorder(func(ctx context.Context, reason string) {
+		i.metrics.RecordAuditDrop(ctx, reason)
+	})
 }
 
 // initializeProviders initializes metric and trace providers based on configuration
@@ -378,6 +394,13 @@ func (i *Instrumentation) TracerProvider() trace.TracerProvider {
 // MeterProvider returns the underlying meter provider
 func (i *Instrumentation) MeterProvider() metric.MeterProvider {
 	return i.meterProvider
+}
+
+// IsEnabled reports whether real exporters were wired (vs. the default
+// no-op providers). Useful for callers that want to skip work or branch
+// on whether observability is actually being collected.
+func (i *Instrumentation) IsEnabled() bool {
+	return i.config.Enabled
 }
 
 // ShouldLogClientIPs returns whether client IP addresses should be logged

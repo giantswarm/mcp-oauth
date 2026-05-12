@@ -196,8 +196,8 @@ func TestMetrics_RecordEncryptionOperations(t *testing.T) {
 	metrics := inst.Metrics()
 
 	// Test encryption metrics
-	metrics.RecordEncryptionOperation(ctx, "encrypt", 5.67)
-	metrics.RecordEncryptionOperation(ctx, "decrypt", 4.32)
+	metrics.RecordEncryptionOperation(ctx, "encrypt", "ok", 5.67)
+	metrics.RecordEncryptionOperation(ctx, "decrypt", "ok", 4.32)
 
 	// All should complete without panic
 }
@@ -309,7 +309,7 @@ func TestMetrics_NoOpBehavior(t *testing.T) {
 	metrics.RecordStorageOperation(ctx, "save", "success", 5.0)
 	metrics.RecordProviderAPICall(ctx, "google", "exchange", 200, 100.0, nil)
 	metrics.RecordAuditEvent(ctx, "test_event")
-	metrics.RecordEncryptionOperation(ctx, "encrypt", 5.0)
+	metrics.RecordEncryptionOperation(ctx, "encrypt", "ok", 5.0)
 	metrics.RecordCIMDFetch(ctx, "success", 100.0)
 	metrics.RecordCIMDCache(ctx, "hit")
 

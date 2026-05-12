@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -617,7 +618,7 @@ func (s *Server) validateResourceParameter(resource string) error {
 // validateResourceConsistency validates resource parameter consistency between authorization and token requests
 // Per RFC 8707, if the authorization request included a resource parameter, the token request must include
 // the same resource parameter value
-func (s *Server) validateResourceConsistency(resource string, authCode *storage.AuthorizationCode, clientID, code string) error {
+func (s *Server) validateResourceConsistency(ctx context.Context, resource string, authCode *storage.AuthorizationCode, clientID, code string) error {
 	// If neither authorization nor token request has resource, validation passes
 	if resource == "" && authCode.Resource == "" {
 		return nil
@@ -626,7 +627,7 @@ func (s *Server) validateResourceConsistency(resource string, authCode *storage.
 	// Validate resource format if provided in token request
 	if resource != "" {
 		if err := s.validateResourceParameter(resource); err != nil {
-			return s.logAuthCodeValidationFailure("invalid_resource_format", clientID, authCode.UserID, helpers.SafeTruncate(code, 8))
+			return s.logAuthCodeValidationFailure(ctx, "invalid_resource_format", clientID, authCode.UserID, helpers.SafeTruncate(code, 8))
 		}
 	}
 
@@ -646,7 +647,7 @@ func (s *Server) validateResourceConsistency(resource string, authCode *storage.
 				"user_id", authCode.UserID)
 		}
 		if s.Auditor != nil {
-			s.Auditor.LogEvent(security.Event{
+			s.Auditor.LogEvent(ctx, security.Event{
 				Type:     security.EventResourceMismatch,
 				UserID:   authCode.UserID,
 				ClientID: clientID,
@@ -657,7 +658,7 @@ func (s *Server) validateResourceConsistency(resource string, authCode *storage.
 				},
 			})
 		}
-		return s.logAuthCodeValidationFailure("resource_mismatch", clientID, authCode.UserID, helpers.SafeTruncate(code, 8))
+		return s.logAuthCodeValidationFailure(ctx, "resource_mismatch", clientID, authCode.UserID, helpers.SafeTruncate(code, 8))
 	}
 
 	return nil

@@ -180,6 +180,17 @@ func New(
 		opt(srv)
 	}
 
+	// Guarantee a non-nil Instrumentation so call sites can record metrics
+	// unconditionally. instrumentation.New with the zero-value Config falls
+	// back to no-op meter/tracer providers — zero overhead, no exporters.
+	if srv.Instrumentation == nil {
+		inst, err := instrumentation.New(instrumentation.Config{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create no-op instrumentation: %w", err)
+		}
+		srv.Instrumentation = inst
+	}
+
 	return srv, nil
 }
 
@@ -556,10 +567,9 @@ func (s *Server) stopMetadataCacheCleanup() {
 }
 
 // shutdownInstrumentation shuts down the instrumentation subsystem.
+// A no-op instrumentation (the default when no exporter is wired) has
+// nothing to flush and returns immediately.
 func (s *Server) shutdownInstrumentation(ctx context.Context) {
-	if s.Instrumentation == nil {
-		return
-	}
 	s.Logger.Debug("Shutting down instrumentation...")
 	if err := s.Instrumentation.Shutdown(ctx); err != nil {
 		s.Logger.Warn("Failed to shutdown instrumentation", "error", err)

@@ -343,7 +343,7 @@ func (s *Server) tryGetCachedClient(ctx context.Context, clientID string) (*stor
 	}
 
 	s.recordCIMDCacheMetric(ctx, "hit")
-	s.logMetadataFetchEvent("client_metadata_cache_hit", clientID, map[string]any{"source": "cache"})
+	s.logMetadataFetchEvent(ctx, "client_metadata_cache_hit", clientID, map[string]any{"source": "cache"})
 	s.Logger.Debug("Using cached client metadata", "client_id", clientID)
 	return cachedClient, true
 }
@@ -357,7 +357,7 @@ func (s *Server) checkNegativeCache(ctx context.Context, clientID string) error 
 	}
 
 	s.recordCIMDCacheMetric(ctx, "negative_hit")
-	s.logMetadataFetchEvent("client_metadata_negative_cache_hit", clientID, map[string]any{
+	s.logMetadataFetchEvent(ctx, "client_metadata_negative_cache_hit", clientID, map[string]any{
 		"source": "negative_cache", "cached_error": errorMsg,
 	})
 	s.Logger.Debug("Client ID in negative cache", "client_id", clientID, "cached_error", errorMsg)
@@ -365,7 +365,7 @@ func (s *Server) checkNegativeCache(ctx context.Context, clientID string) error 
 }
 
 // checkMetadataFetchRateLimit checks if fetching metadata for this clientID is rate limited
-func (s *Server) checkMetadataFetchRateLimit(_ context.Context, clientID string) error {
+func (s *Server) checkMetadataFetchRateLimit(ctx context.Context, clientID string) error {
 	if s.metadataFetchRateLimiter == nil {
 		return nil
 	}
@@ -377,7 +377,7 @@ func (s *Server) checkMetadataFetchRateLimit(_ context.Context, clientID string)
 	domain := u.Hostname()
 
 	if !s.metadataFetchRateLimiter.Allow(domain) {
-		s.logMetadataFetchEvent("client_metadata_rate_limited", clientID, map[string]any{
+		s.logMetadataFetchEvent(ctx, "client_metadata_rate_limited", clientID, map[string]any{
 			"domain": domain, "reason": "rate_limit_exceeded",
 		})
 		return fmt.Errorf("rate limit exceeded for metadata fetches from domain: %s", domain)
@@ -448,7 +448,7 @@ func (s *Server) fetchClientWithSingleflight(ctx context.Context, clientID strin
 
 	metadata, suggestedTTL, fetchErr := s.fetchClientMetadata(ctx, clientID)
 	if fetchErr != nil {
-		s.handleMetadataFetchFailure(clientID, fetchErr)
+		s.handleMetadataFetchFailure(ctx, clientID, fetchErr)
 		return nil, fmt.Errorf("failed to fetch client metadata: %w", fetchErr)
 	}
 
@@ -456,7 +456,7 @@ func (s *Server) fetchClientWithSingleflight(ctx context.Context, clientID strin
 }
 
 // handleMetadataFetchFailure handles failed metadata fetches.
-func (s *Server) handleMetadataFetchFailure(clientID string, fetchErr error) {
+func (s *Server) handleMetadataFetchFailure(ctx context.Context, clientID string, fetchErr error) {
 	s.metadataCache.mu.Lock()
 	s.metadataCache.metrics.fetchFails++
 	s.metadataCache.mu.Unlock()
@@ -464,7 +464,7 @@ func (s *Server) handleMetadataFetchFailure(clientID string, fetchErr error) {
 	s.metadataCache.SetNegative(clientID, fetchErr.Error())
 
 	if s.Auditor != nil {
-		s.Auditor.LogEvent(security.Event{
+		s.Auditor.LogEvent(ctx, security.Event{
 			Type:     "client_metadata_fetch_failed_cached",
 			ClientID: clientID,
 			Details: map[string]any{

@@ -181,7 +181,7 @@ func (s *Server) AcceptForwardedIDToken(ctx context.Context, bearerToken string)
 		ExpiresAt: expiresAt,
 	}
 
-	s.logForwardedIDTokenAccepted(bearerToken, matchedAudience, expectedIssuer, userInfo)
+	s.logForwardedIDTokenAccepted(ctx, bearerToken, matchedAudience, expectedIssuer, userInfo)
 	s.recordForwardedIDTokenAccepted(ctx, providerName, claims.Issuer, matchedAudience, instrumentation.ForwardedIDTokenResultOK)
 
 	return acceptance, nil
