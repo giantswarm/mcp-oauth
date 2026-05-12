@@ -201,3 +201,22 @@ func KeyFromHex(s string) ([]byte, error) {
 func KeyToHex(key []byte) string {
 	return hex.EncodeToString(key)
 }
+
+// DecodeKey decodes an AES-256 token-encryption key from either base64
+// (what `openssl rand -base64 32` produces) or hex (`openssl rand -hex 32`).
+// Detection tries base64 first and falls back to hex. The returned key
+// is guaranteed to be 32 bytes.
+//
+// DecodeKey is a convenience over [KeyFromBase64] and [KeyFromHex] for
+// operators who configure the same secret across tools that emit different
+// encodings.
+func DecodeKey(s string) ([]byte, error) {
+	if key, err := KeyFromBase64(s); err == nil {
+		return key, nil
+	}
+	key, err := KeyFromHex(s)
+	if err != nil {
+		return nil, fmt.Errorf("encryption key is neither valid base64 nor hex: %w", err)
+	}
+	return key, nil
+}
