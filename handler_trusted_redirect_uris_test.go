@@ -86,7 +86,7 @@ func TestHandler_ServeClientRegistration_TrustedRedirectURIs(t *testing.T) {
 			wantStatus:              http.StatusCreated,
 		},
 		{
-			name:                          "public client via allowlist without token_endpoint_auth_method=none still ok",
+			name:                          "confidential client via allowlist (default auth method) ok",
 			trustedURIs:                   []string{"https://claude.ai/api/mcp/auth_callback"},
 			registrationAccessToken:       trustedRedirectURITestToken,
 			allowPublicClientRegistration: false,
@@ -151,4 +151,39 @@ func TestHandler_IsRegistrationAvailable_TrustedRedirectURIs(t *testing.T) {
 
 	handler.server.Config.TrustedPublicRegistrationRedirectURIs = []string{"https://claude.ai/cb"}
 	require.True(t, handler.isRegistrationAvailable(), "allowlist enables DCR")
+}
+
+// TestHandler_ServeClientRegistration_TrustedSchemesAndRedirectURIs_Combined
+// exercises a request that mixes a trusted scheme entry and a trusted HTTPS
+// entry. Each allowlist is independently strict, so a mixed-URI request is
+// rejected: the scheme gate sees a non-cursor URI and bails, then the
+// HTTPS gate sees a non-https URI and bails. Operators wanting Cursor +
+// Claude.ai must register them as separate clients.
+func TestHandler_ServeClientRegistration_TrustedSchemesAndRedirectURIs_Combined(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	handler.server.Config.RegistrationAccessToken = trustedRedirectURITestToken
+	handler.server.Config.AllowPublicClientRegistration = false
+	handler.server.Config.TrustedPublicRegistrationSchemes = []string{"cursor"}
+	handler.server.Config.SetTrustedSchemesMap([]string{"cursor"})
+	handler.server.Config.TrustedPublicRegistrationRedirectURIs = []string{"https://claude.ai/cb"}
+	handler.server.Config.SetTrustedRedirectURIsSet([]string{"https://claude.ai/cb"})
+	handler.server.Config.ProductionMode = false
+
+	regReq := ClientRegistrationRequest{
+		ClientName:              "Mixed Client",
+		TokenEndpointAuthMethod: "none",
+		RedirectURIs:            []string{"cursor://cb", "https://claude.ai/cb"},
+	}
+	body, err := json.Marshal(regReq)
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPost, "/register", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "192.168.1.100:12345"
+
+	w := httptest.NewRecorder()
+	handler.ServeClientRegistration(w, req)
+
+	require.Equal(t, http.StatusUnauthorized, w.Code, "body: %s", w.Body.String())
 }

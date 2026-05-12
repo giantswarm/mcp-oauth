@@ -493,8 +493,9 @@ type Config struct {
 
 	// TrustedPublicRegistrationRedirectURIs lists fully-qualified HTTPS redirect URIs
 	// allowed to register without a RegistrationAccessToken. Matching is exact after
-	// RFC 3986 host normalization (lowercase scheme + host, default port stripped);
-	// path and query are compared case-sensitively. All redirect URIs in a registration
+	// RFC 3986 normalization: scheme and host are lowercased, the HTTPS default port
+	// (:443) is stripped, and trailing slashes are stripped from the path. Path and
+	// query are then compared case-sensitively. All redirect URIs in a registration
 	// request must be in this set; otherwise the token gate applies.
 	//
 	// Entries must be HTTPS, must not contain a fragment, userinfo, or a loopback,

@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`Config.TrustedPublicRegistrationRedirectURIs`** — HTTPS redirect-URI allowlist for unauthenticated dynamic client registration.
-  - Every `redirect_uris` entry in the request must be in the allowlist; matching is exact after RFC 3986 host normalization (lowercase scheme + host, default `:443` stripped; path and query case-sensitive).
+  - Every `redirect_uris` entry in the request must be in the allowlist; matching is exact after RFC 3986 normalization (lowercase scheme + host, HTTPS default `:443` stripped, trailing slashes stripped from the path; path and query then case-sensitive).
   - Public clients (`token_endpoint_auth_method: "none"`) succeed via this gate.
   - Entries are validated at startup: HTTPS only, no fragment / userinfo, no loopback / private / link-local / unspecified IP literal hosts. Invalid entries are dropped.
   - New audit event `client_registered_via_trusted_redirect_uri` (`security.EventClientRegisteredViaTrustedRedirectURI`) carries the matched URI.

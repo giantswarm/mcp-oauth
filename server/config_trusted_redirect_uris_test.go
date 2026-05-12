@@ -44,10 +44,14 @@ func TestValidateTrustedPublicRegistrationRedirectURIs(t *testing.T) {
 			wantLogged: []string{"only https is allowed"},
 		},
 		{
-			name:       "loopback rejected",
-			input:      []string{"https://localhost/cb", "https://127.0.0.1/cb"},
-			wantSet:    nil,
-			wantLogged: []string{"loopback host is not allowed"},
+			name:    "loopback rejected (both entries)",
+			input:   []string{"https://localhost/cb", "https://127.0.0.1/cb"},
+			wantSet: nil,
+			wantLogged: []string{
+				`uri=https://localhost/cb`,
+				`uri=https://127.0.0.1/cb`,
+				"loopback host is not allowed",
+			},
 		},
 		{
 			name:       "private IP rejected",
@@ -128,6 +132,22 @@ func TestValidateTrustedPublicRegistrationRedirectURIs(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateTrustedPublicRegistrationRedirectURIs_RedundantWithAllowPublic(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	cfg := &Config{
+		Issuer:                                "https://auth.example.com",
+		AllowPublicClientRegistration:         true,
+		TrustedPublicRegistrationRedirectURIs: []string{"https://claude.ai/cb"},
+	}
+	applySecureDefaults(cfg, logger)
+
+	require.Contains(t, buf.String(), "TrustedPublicRegistrationRedirectURIs is redundant when AllowPublicClientRegistration=true")
 }
 
 func TestNormalizeTrustedRedirectURI_Errors(t *testing.T) {

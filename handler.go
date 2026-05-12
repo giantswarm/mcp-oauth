@@ -83,16 +83,15 @@ func (h *Handler) validateRegistrationToken(authHeader string) bool {
 
 // Registration auth gate names used in audit, tracing, and logs.
 const (
-	registrationAuthPathTrustedScheme      = "trusted_scheme"
-	registrationAuthPathTrustedRedirectURI = "trusted_redirect_uri"
+	registrationAuthGateTrustedScheme      = "trusted_scheme"
+	registrationAuthGateTrustedRedirectURI = "trusted_redirect_uri"
 )
 
-// registrationAuthResult captures which gate authorized a DCR request so audit,
-// tracing, and public-client checks can branch without parallel flags.
+// registrationAuthResult identifies which gate authorized a DCR request.
 type registrationAuthResult struct {
 	viaTrustedAllowlist bool
-	path                string
-	match               string
+	gate                string
+	matched             string
 }
 
 // authorizeClientRegistration checks whether a DCR request is authorized via the
@@ -115,8 +114,8 @@ func (h *Handler) authorizeClientRegistration(w http.ResponseWriter, r *http.Req
 	if authHeader != "" {
 		h.logger.Warn("Invalid registration token provided, falling back to trusted allowlists",
 			"client_ip", clientIP,
-			"trusted_schemes_configured", len(h.server.Config.TrustedPublicRegistrationSchemes) > 0,
-			"trusted_redirect_uris_configured", len(h.server.Config.TrustedPublicRegistrationRedirectURIs) > 0)
+			"has_trusted_schemes_configured", len(h.server.Config.TrustedPublicRegistrationSchemes) > 0,
+			"has_trusted_redirect_uris_configured", len(h.server.Config.TrustedPublicRegistrationRedirectURIs) > 0)
 	}
 
 	allowed, scheme, err := h.server.CanRegisterWithTrustedScheme(req.RedirectURIs)
@@ -128,7 +127,7 @@ func (h *Handler) authorizeClientRegistration(w http.ResponseWriter, r *http.Req
 	if allowed {
 		h.logger.Debug("Client registration authorized via trusted scheme",
 			"scheme", scheme, "client_ip", clientIP, "strict_matching", !h.server.Config.DisableStrictSchemeMatching)
-		return registrationAuthResult{viaTrustedAllowlist: true, path: registrationAuthPathTrustedScheme, match: scheme}, true
+		return registrationAuthResult{viaTrustedAllowlist: true, gate: registrationAuthGateTrustedScheme, matched: scheme}, true
 	}
 
 	allowed, uri, err := h.server.CanRegisterWithTrustedRedirectURI(req.RedirectURIs)
@@ -140,13 +139,13 @@ func (h *Handler) authorizeClientRegistration(w http.ResponseWriter, r *http.Req
 	if allowed {
 		h.logger.Debug("Client registration authorized via trusted redirect URI",
 			"redirect_uri", uri, "client_ip", clientIP)
-		return registrationAuthResult{viaTrustedAllowlist: true, path: registrationAuthPathTrustedRedirectURI, match: uri}, true
+		return registrationAuthResult{viaTrustedAllowlist: true, gate: registrationAuthGateTrustedRedirectURI, matched: uri}, true
 	}
 
 	h.logger.Warn("Client registration rejected: missing or invalid authorization",
 		"client_ip", clientIP, "has_token", authHeader != "",
-		"trusted_schemes_configured", len(h.server.Config.TrustedPublicRegistrationSchemes) > 0,
-		"trusted_redirect_uris_configured", len(h.server.Config.TrustedPublicRegistrationRedirectURIs) > 0)
+		"has_trusted_schemes_configured", len(h.server.Config.TrustedPublicRegistrationSchemes) > 0,
+		"has_trusted_redirect_uris_configured", len(h.server.Config.TrustedPublicRegistrationRedirectURIs) > 0)
 	h.writeError(w, ErrorCodeInvalidToken,
 		"Registration requires authentication. Provide a valid registration token or use a trusted redirect URI or scheme.",
 		http.StatusUnauthorized)
@@ -182,7 +181,7 @@ func (h *Handler) validatePublicClientRegistration(ctx context.Context, w http.R
 
 	h.logger.Debug("Public client registration authorized",
 		"token_endpoint_auth_method", req.TokenEndpointAuthMethod, "client_type", req.ClientType,
-		"ip", clientIP, "via_trusted_allowlist", auth.viaTrustedAllowlist, "auth_path", auth.path)
+		"ip", clientIP, "via_trusted_allowlist", auth.viaTrustedAllowlist, "auth_gate", auth.gate)
 	return true
 }
 
@@ -1891,11 +1890,22 @@ func (h *Handler) recordTrustedAllowlistSpan(span trace.Span, auth registrationA
 	if span == nil || !auth.viaTrustedAllowlist {
 		return
 	}
-	instrumentation.SetSpanAttributes(
-		span,
-		attribute.String("oauth.registration_method", auth.path),
-		attribute.String("oauth.trusted_match", auth.match),
-	)
+	switch auth.gate {
+	case registrationAuthGateTrustedScheme:
+		instrumentation.SetSpanAttributes(
+			span,
+			attribute.String("oauth.registration_method", auth.gate),
+			attribute.String("oauth.trusted_scheme", auth.matched),
+		)
+	case registrationAuthGateTrustedRedirectURI:
+		instrumentation.SetSpanAttributes(
+			span,
+			attribute.String("oauth.registration_method", auth.gate),
+			attribute.String("oauth.trusted_redirect_uri", auth.matched),
+		)
+	default:
+		h.logger.Warn("Skipping span attrs for unknown registration auth gate", "gate", auth.gate)
+	}
 }
 
 // handleRegistrationError handles client registration errors.
@@ -1930,14 +1940,20 @@ func (h *Handler) auditTrustedAllowlistRegistration(ctx context.Context, auth re
 	}
 
 	var eventType string
-	switch auth.path {
-	case registrationAuthPathTrustedRedirectURI:
-		eventType = security.EventClientRegisteredViaTrustedRedirectURI
-		details["redirect_uri"] = auth.match
-	default:
+	switch auth.gate {
+	case registrationAuthGateTrustedScheme:
 		eventType = security.EventClientRegisteredViaTrustedScheme
-		details["scheme"] = auth.match
+		details["scheme"] = auth.matched
 		details["strict_matching"] = !h.server.Config.DisableStrictSchemeMatching
+		details["security_context"] = "unauthenticated_registration_via_trusted_scheme"
+	case registrationAuthGateTrustedRedirectURI:
+		eventType = security.EventClientRegisteredViaTrustedRedirectURI
+		details["redirect_uri"] = auth.matched
+		details["security_context"] = "unauthenticated_registration_via_trusted_redirect_uri"
+	default:
+		h.logger.Warn("Skipping audit for unknown registration auth gate",
+			"gate", auth.gate, "client_id", client.ClientID, "client_ip", clientIP)
+		return
 	}
 
 	h.server.Auditor.LogEvent(ctx, security.Event{

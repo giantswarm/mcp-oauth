@@ -313,8 +313,8 @@ config := &server.Config{
 | Aspect | Behavior |
 |---|---|
 | Strictness | Every `redirect_uris` entry in the request must be in the allowlist; otherwise the token gate applies. |
-| Normalization | Scheme and host are lowercased; the HTTPS default port (`:443`) is stripped. |
-| Path & query | Compared case-sensitively, byte-for-byte. |
+| Normalization | Scheme and host are lowercased; HTTPS default port (`:443`) is stripped; trailing slashes are stripped from the path. |
+| Path & query | Compared case-sensitively after normalization. |
 | Public clients | `token_endpoint_auth_method: "none"` succeeds when the request matches the allowlist. |
 
 **Configuration validation:**
@@ -337,6 +337,10 @@ Entries are validated at startup; the following are dropped with an error log an
 | Primary defense | PKCE + OS-level scheme registration | PKCE + operator attestation of the URL |
 
 This control is **narrower** than `TrustedPublicRegistrationSchemes`: only the specific URLs the operator vouches for can register, and they cannot be impersonated by an attacker who controls a different web server.
+
+**Operator responsibility:**
+
+Each entry vouches for a specific URL. Avoid allowlisting URLs on multi-tenant hosting (e.g. `https://*.github.io/...`, public pastebin / preview domains, or shared SaaS subdomains the operator does not control end-to-end) — any tenant on that host can host an attacker-controlled callback at the same URL. Allowlist only URLs whose host you trust the platform vendor for.
 
 **Audit Logging:**
 

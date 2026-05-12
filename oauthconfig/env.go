@@ -86,11 +86,8 @@ func FromEnvWithPrefix(prefix string) (*server.Config, error) {
 		return nil, err
 	}
 
-	if raw := os.Getenv(prefix + "TRUSTED_AUDIENCES"); raw != "" {
-		cfg.TrustedAudiences = splitAndTrim(raw, ",")
-		if err := dex.ValidateAudiences(cfg.TrustedAudiences); err != nil {
-			return nil, fmt.Errorf("%sTRUSTED_AUDIENCES: %w", prefix, err)
-		}
+	if err := loadTrustedAllowlistsFromEnv(prefix, cfg); err != nil {
+		return nil, err
 	}
 
 	cfg.AllowLocalhostRedirectURIs, err = optionalBool(prefix+"ALLOW_LOCALHOST_REDIRECT_URIS", false)
@@ -98,15 +95,26 @@ func FromEnvWithPrefix(prefix string) (*server.Config, error) {
 		return nil, err
 	}
 
-	if raw := os.Getenv(prefix + "TRUSTED_REDIRECT_SCHEMES"); raw != "" {
-		cfg.TrustedPublicRegistrationSchemes = splitAndTrim(raw, ",")
-	}
-
-	if raw := os.Getenv(prefix + "TRUSTED_REDIRECT_URIS"); raw != "" {
-		cfg.TrustedPublicRegistrationRedirectURIs = splitAndTrim(raw, ",")
-	}
-
 	return cfg, nil
+}
+
+// loadTrustedAllowlistsFromEnv loads the comma-separated allowlist env vars
+// (TRUSTED_AUDIENCES, TRUSTED_REDIRECT_SCHEMES, TRUSTED_REDIRECT_URIS) into cfg.
+func loadTrustedAllowlistsFromEnv(prefix string, cfg *server.Config) error {
+	loadCSVIfSet(prefix+"TRUSTED_AUDIENCES", &cfg.TrustedAudiences)
+	if err := dex.ValidateAudiences(cfg.TrustedAudiences); err != nil {
+		return fmt.Errorf("%sTRUSTED_AUDIENCES: %w", prefix, err)
+	}
+	loadCSVIfSet(prefix+"TRUSTED_REDIRECT_SCHEMES", &cfg.TrustedPublicRegistrationSchemes)
+	loadCSVIfSet(prefix+"TRUSTED_REDIRECT_URIS", &cfg.TrustedPublicRegistrationRedirectURIs)
+	return nil
+}
+
+// loadCSVIfSet writes splitAndTrim(value, ",") into dst when the named env var is set.
+func loadCSVIfSet(name string, dst *[]string) {
+	if raw := os.Getenv(name); raw != "" {
+		*dst = splitAndTrim(raw, ",")
+	}
 }
 
 // validateIssuerScheme rejects a plain-HTTP issuer unless the operator has
