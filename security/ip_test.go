@@ -181,7 +181,7 @@ func TestRateLimitBucket(t *testing.T) {
 		want string
 	}{
 		{"IPv4 unchanged", "203.0.113.42", "203.0.113.42"},
-		{"IPv4-mapped IPv6 unchanged", "::ffff:203.0.113.42", "::ffff:203.0.113.42"},
+		{"IPv4-mapped IPv6 canonicalized to IPv4 bucket", "::ffff:203.0.113.42", "203.0.113.42"},
 		{"IPv6 collapses to /64", "2001:db8::1", "2001:db8::/64"},
 		{"IPv6 different /128 same /64", "2001:db8::dead:beef", "2001:db8::/64"},
 		{"IPv6 different /64 different bucket", "2001:db8:1::1", "2001:db8:1::/64"},

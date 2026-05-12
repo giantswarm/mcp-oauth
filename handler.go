@@ -557,7 +557,7 @@ func (h *Handler) clientIP(r *http.Request) string {
 // has already written the 429 response, recorded the HTTP counter, and
 // annotated the span; the caller just returns. Returns the resolved
 // clientIP for the caller to use downstream, and ok=true when the request
-// should proceed. span must be non-nil; obtain one via startHandlerSpan.
+// should proceed.
 func (h *Handler) gateIPRateLimit(w http.ResponseWriter, r *http.Request, span trace.Span, endpoint, method string, startTime time.Time) (clientIP string, ok bool) {
 	clientIP = h.clientIP(r)
 	if !h.checkIPRateLimit(w, r, clientIP) {
@@ -578,8 +578,7 @@ func (h *Handler) recordRateLimitReject(ctx context.Context, span trace.Span, en
 // The four check*RateLimit helpers below share a "true means rejected"
 // return convention: on `true`, the helper has already written the 429
 // response (and recorded its own metric/audit), and the caller must
-// return immediately. The convention is intentional — flipping it is a
-// repo-wide rename out of scope for this PR.
+// return immediately.
 
 // checkIPRateLimit checks if the client IP is rate limited. Returns true if limited.
 func (h *Handler) checkIPRateLimit(w http.ResponseWriter, r *http.Request, clientIP string) bool {
