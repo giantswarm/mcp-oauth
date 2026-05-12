@@ -1038,6 +1038,10 @@ func (c *Config) IsJWTAccessTokenFormat() bool {
 // are validated at construction time via applySecureDefaults / the
 // dedicated validate* helpers.
 func (c *Config) Validate() error {
+	if err := c.validateIntrospectionResourceServers(); err != nil {
+		return err
+	}
+
 	if !c.IsJWTAccessTokenFormat() {
 		// AccessTokenFormatOpaque (or empty/unknown — treated as opaque).
 		// Reject anything that is not the explicit opaque value or empty so
@@ -1066,6 +1070,19 @@ func (c *Config) Validate() error {
 			c.AccessTokenSigningAlgorithm, supportedSigningAlgorithmsList())
 	}
 	return validateSigningKeyMatchesAlgorithm(c.AccessTokenSigningKey, c.AccessTokenSigningAlgorithm)
+}
+
+// validateIntrospectionResourceServers rejects empty entries in the allowlist.
+// An empty string would never match a requesting client (introspectionRequester
+// Allowed bails when requestingClient == "") so it can only mask operator
+// intent — fail closed at startup.
+func (c *Config) validateIntrospectionResourceServers() error {
+	for i, entry := range c.IntrospectionResourceServers {
+		if entry == "" {
+			return fmt.Errorf("IntrospectionResourceServers[%d] is empty", i)
+		}
+	}
+	return nil
 }
 
 // validateSigningKeyMatchesAlgorithm enforces that the configured private

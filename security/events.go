@@ -131,6 +131,13 @@ const (
 	// self-issued JWT access token's jti in the RevokedTokenStore denylist.
 	EventSelfIssuedJWTRevoked = "self_issued_jwt_revoked"
 
+	// EventIntrospectionRequesterDenied is logged when /oauth/introspect is
+	// called by a client that is neither the token's client_id nor on the
+	// IntrospectionResourceServers allowlist. The endpoint returns
+	// {"active": false} per RFC 7662 §2.2 so the denial is invisible to the
+	// caller, but the audit record preserves the cross-client probe attempt.
+	EventIntrospectionRequesterDenied = "introspection_requester_denied"
+
 	// Provider-related events
 
 	// EventInvalidProviderCallback is logged when provider callback validation fails

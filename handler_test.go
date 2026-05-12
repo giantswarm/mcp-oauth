@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
@@ -3823,168 +3824,115 @@ func seedOpaqueIntrospectionToken(t *testing.T, store *memory.Store, accessToken
 	return meta.IssuedAt
 }
 
-func TestIntrospect_CrossClient_ReturnsInactive(t *testing.T) {
+func TestHandler_ServeTokenIntrospection_OpaquePath(t *testing.T) {
 	ctx := context.Background()
 
-	handler, store := setupTestHandler(t)
-	defer store.Stop()
-
-	tokenOwner, _, err := handler.server.RegisterClient(ctx, "Owner Client", "confidential", "", []string{"https://example.com/cb-owner"}, []string{"openid"}, "192.168.1.1", 10)
-	if err != nil {
-		t.Fatalf("RegisterClient(owner) error = %v", err)
-	}
-	probingClient, probingSecret, err := handler.server.RegisterClient(ctx, "Probing Client", "confidential", "", []string{"https://example.com/cb-probe"}, []string{"openid"}, "192.168.1.2", 10)
-	if err != nil {
-		t.Fatalf("RegisterClient(probe) error = %v", err)
-	}
-
-	const accessToken = "opaque-access-token-cross-client"
-	seedOpaqueIntrospectionToken(t, store, accessToken, "user-1", tokenOwner.ClientID, "https://auth.example.com", []string{"openid", "email"}, time.Now().Add(time.Hour))
-
-	form := url.Values{}
-	form.Set("token", accessToken)
-
-	req := httptest.NewRequest(http.MethodPost, "/introspect", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetBasicAuth(probingClient.ClientID, probingSecret)
-	w := httptest.NewRecorder()
-
-	handler.ServeTokenIntrospection(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
-	}
-
-	var response map[string]any
-	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-		t.Fatalf("decode response: %v", err)
+	tests := []struct {
+		name                  string
+		requester             string // "owner", "probe", "rs" — picks which client makes the request
+		allowlistResourceSrv  bool   // wire IntrospectionResourceServers with the rs client
+		wantActive            bool
+		wantFieldsPresent     []string // beyond "active"
+		wantFieldsAbsent      []string
+		wantClientIDIsTokenRS bool // when active, assert client_id is the token's owner not requester
+	}{
+		{
+			name:              "token owner sees full RFC 7662 §2.2 projection",
+			requester:         "owner",
+			wantActive:        true,
+			wantFieldsPresent: []string{"client_id", "sub", "token_type", "scope", "aud", "iss", "exp", "iat"},
+		},
+		{
+			name:              "cross-client probe denied — no field leakage",
+			requester:         "probe",
+			wantActive:        false,
+			wantFieldsAbsent:  []string{"sub", "email", "email_verified", "name", "client_id", "scope", "aud", "iss", "exp", "iat", "token_type"},
+		},
+		{
+			name:                  "allowlisted resource server sees token-owner client_id",
+			requester:             "rs",
+			allowlistResourceSrv:  true,
+			wantActive:            true,
+			wantFieldsPresent:     []string{"client_id", "sub"},
+			wantClientIDIsTokenRS: true,
+		},
 	}
 
-	if active, _ := response["active"].(bool); active {
-		t.Fatalf("active = true, want false for cross-client introspection (response=%v)", response)
-	}
-	for _, leaked := range []string{"sub", "email", "email_verified", "name", "client_id", "scope", "aud", "iss", "exp", "iat", "token_type"} {
-		if _, present := response[leaked]; present {
-			t.Errorf("cross-client probe leaked %q in response: %v", leaked, response)
-		}
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler, store := setupTestHandler(t)
+			defer store.Stop()
 
-func TestIntrospect_AllowlistedResourceServer_Succeeds(t *testing.T) {
-	ctx := context.Background()
+			tokenOwner, ownerSecret, err := handler.server.RegisterClient(ctx, "Owner Client", "confidential", "", []string{"https://example.com/cb-owner"}, []string{"openid"}, "192.168.1.1", 10)
+			require.NoError(t, err)
+			probingClient, probingSecret, err := handler.server.RegisterClient(ctx, "Probing Client", "confidential", "", []string{"https://example.com/cb-probe"}, []string{"openid"}, "192.168.1.2", 10)
+			require.NoError(t, err)
+			resourceServer, resourceSecret, err := handler.server.RegisterClient(ctx, "Resource Server", "confidential", "", []string{"https://example.com/cb-rs"}, []string{"openid"}, "192.168.1.3", 10)
+			require.NoError(t, err)
 
-	handler, store := setupTestHandler(t)
-	defer store.Stop()
+			if tt.allowlistResourceSrv {
+				handler.server.Config.IntrospectionResourceServers = []string{resourceServer.ClientID}
+			}
 
-	tokenOwner, _, err := handler.server.RegisterClient(ctx, "Owner Client", "confidential", "", []string{"https://example.com/cb-owner"}, []string{"openid"}, "192.168.1.1", 10)
-	if err != nil {
-		t.Fatalf("RegisterClient(owner) error = %v", err)
-	}
-	resourceServer, resourceSecret, err := handler.server.RegisterClient(ctx, "Resource Server", "confidential", "", []string{"https://example.com/cb-rs"}, []string{"openid"}, "192.168.1.3", 10)
-	if err != nil {
-		t.Fatalf("RegisterClient(rs) error = %v", err)
-	}
+			const accessToken = "opaque-access-token"
+			expiry := time.Now().Add(45 * time.Minute).Truncate(time.Second)
+			audience := testIssuer
+			scopes := []string{"openid", "email", "profile"}
+			issuedAt := seedOpaqueIntrospectionToken(t, store, accessToken, "user-1", tokenOwner.ClientID, audience, scopes, expiry)
 
-	handler.server.Config.IntrospectionResourceServers = []string{resourceServer.ClientID}
+			form := url.Values{}
+			form.Set("token", accessToken)
+			req := httptest.NewRequest(http.MethodPost, "/introspect", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	const accessToken = "opaque-access-token-allowlist"
-	seedOpaqueIntrospectionToken(t, store, accessToken, "user-1", tokenOwner.ClientID, "https://auth.example.com", []string{"openid", "email"}, time.Now().Add(time.Hour))
+			switch tt.requester {
+			case "owner":
+				req.SetBasicAuth(tokenOwner.ClientID, ownerSecret)
+			case "probe":
+				req.SetBasicAuth(probingClient.ClientID, probingSecret)
+			case "rs":
+				req.SetBasicAuth(resourceServer.ClientID, resourceSecret)
+			}
 
-	form := url.Values{}
-	form.Set("token", accessToken)
+			w := httptest.NewRecorder()
+			handler.ServeTokenIntrospection(w, req)
 
-	req := httptest.NewRequest(http.MethodPost, "/introspect", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetBasicAuth(resourceServer.ClientID, resourceSecret)
-	w := httptest.NewRecorder()
+			require.Equal(t, http.StatusOK, w.Code)
+			require.Equal(t, "no-store", w.Header().Get("Cache-Control"),
+				"RFC 7662 §2.2 requires Cache-Control: no-store on introspection responses")
 
-	handler.ServeTokenIntrospection(w, req)
+			var response map[string]any
+			require.NoError(t, json.NewDecoder(w.Body).Decode(&response))
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
-	}
+			active, _ := response["active"].(bool)
+			require.Equal(t, tt.wantActive, active, "response: %v", response)
 
-	var response map[string]any
-	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+			for _, key := range tt.wantFieldsPresent {
+				require.Contains(t, response, key, "expected %q present (response=%v)", key, response)
+			}
+			for _, key := range tt.wantFieldsAbsent {
+				require.NotContains(t, response, key, "denied probe leaked %q (response=%v)", key, response)
+			}
 
-	if active, _ := response["active"].(bool); !active {
-		t.Fatalf("active = false, want true (response=%v)", response)
-	}
-	if got, _ := response["client_id"].(string); got != tokenOwner.ClientID {
-		t.Errorf("client_id = %q, want %q (token-bound, not requester)", got, tokenOwner.ClientID)
-	}
-}
-
-func TestIntrospect_ResponseFields_Complete(t *testing.T) {
-	ctx := context.Background()
-
-	handler, store := setupTestHandler(t)
-	defer store.Stop()
-
-	tokenOwner, ownerSecret, err := handler.server.RegisterClient(ctx, "Owner Client", "confidential", "", []string{"https://example.com/cb-owner"}, []string{"openid"}, "192.168.1.1", 10)
-	if err != nil {
-		t.Fatalf("RegisterClient(owner) error = %v", err)
-	}
-
-	const accessToken = "opaque-access-token-fields"
-	expiry := time.Now().Add(45 * time.Minute).Truncate(time.Second)
-	audience := testIssuer
-	scopes := []string{"openid", "email", "profile"}
-	issuedAt := seedOpaqueIntrospectionToken(t, store, accessToken, "user-1", tokenOwner.ClientID, audience, scopes, expiry)
-
-	form := url.Values{}
-	form.Set("token", accessToken)
-
-	req := httptest.NewRequest(http.MethodPost, "/introspect", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetBasicAuth(tokenOwner.ClientID, ownerSecret)
-	w := httptest.NewRecorder()
-
-	handler.ServeTokenIntrospection(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
-	}
-
-	var response map[string]any
-	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-
-	if active, _ := response["active"].(bool); !active {
-		t.Fatalf("active = false, want true (response=%v)", response)
-	}
-	if got, _ := response["client_id"].(string); got != tokenOwner.ClientID {
-		t.Errorf("client_id = %q, want %q", got, tokenOwner.ClientID)
-	}
-	if got, _ := response["sub"].(string); got == "" {
-		t.Errorf("sub missing or empty (response=%v)", response)
-	}
-	if got, _ := response["token_type"].(string); got != "Bearer" {
-		t.Errorf("token_type = %q, want Bearer", got)
-	}
-	if got, _ := response["scope"].(string); got != helpers.JoinScopes(scopes) {
-		t.Errorf("scope = %q, want %q", got, helpers.JoinScopes(scopes))
-	}
-	if got, _ := response["aud"].(string); got != audience {
-		t.Errorf("aud = %q, want %q", got, audience)
-	}
-	if got, _ := response["iss"].(string); got != testIssuer {
-		t.Errorf("iss = %q, want %q", got, testIssuer)
-	}
-	expVal, ok := response["exp"].(float64)
-	if !ok {
-		t.Errorf("exp missing or not a number (response=%v)", response)
-	} else if int64(expVal) != expiry.Unix() {
-		t.Errorf("exp = %d, want %d", int64(expVal), expiry.Unix())
-	}
-	iatVal, ok := response["iat"].(float64)
-	if !ok {
-		t.Errorf("iat missing or not a number (response=%v)", response)
-	} else if int64(iatVal) != issuedAt.Unix() {
-		t.Errorf("iat = %d, want %d", int64(iatVal), issuedAt.Unix())
+			if tt.wantActive {
+				require.Equal(t, "Bearer", response["token_type"])
+				if tt.wantClientIDIsTokenRS {
+					require.Equal(t, tokenOwner.ClientID, response["client_id"],
+						"client_id must reflect the token's owner, not the introspecting RS")
+				}
+				if scope, ok := response["scope"].(string); ok {
+					require.Equal(t, helpers.JoinScopes(scopes), scope)
+				}
+				if exp, ok := response["exp"].(float64); ok {
+					require.Equal(t, expiry.Unix(), int64(exp))
+				}
+				if iat, ok := response["iat"].(float64); ok {
+					require.Equal(t, issuedAt.Unix(), int64(iat))
+				}
+				require.Equal(t, audience, response["aud"])
+				require.Equal(t, testIssuer, response["iss"])
+			}
+		})
 	}
 }
 
