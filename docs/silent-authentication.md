@@ -221,7 +221,7 @@ func newPKCEPair() (challenge, verifier string) {
 }
 ```
 
-The helper uses `crypto/rand`, `crypto/sha256`, and `encoding/base64` from the standard library. There is no `oauth.GeneratePKCE` export — keep the verifier in your own per-flow state (the `authState` map above) and pass it to `Server.ExchangeAuthorizationCode` when the callback fires.
+The helper uses `crypto/rand`, `crypto/sha256`, and `encoding/base64` from the standard library. Keep the verifier in your own per-flow state (the `authState` map above) and pass it to `Server.ExchangeAuthorizationCode` when the callback fires.
 
 ## Error Types
 

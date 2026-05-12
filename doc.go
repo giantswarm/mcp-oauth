@@ -6,9 +6,9 @@
 // at the type level; the upstream IdP is injected via the
 // [providers.Provider] interface.
 //
-// The package aligns with the Model Context Protocol authorization
-// specification dated 2025-11-25. The previous 2025-06-18 revision is also
-// supported (backward compatible).
+// The package implements the Model Context Protocol authorization
+// specification dated 2025-11-25 and the 2025-06-18 revision; both are
+// supported on the same endpoints.
 //
 // Architecture:
 //   - MCP Server: OAuth 2.1 Resource Server (advertises this library's issuer)

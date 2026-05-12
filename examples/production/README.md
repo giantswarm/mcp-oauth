@@ -602,29 +602,29 @@ gitleaks protect --staged
 
 ### Rate Limiting
 
-The production setup uses **multiple layers of rate limiting** for defense in depth:
+The production setup uses **multiple layers of rate limiting** for defense in depth. Each limiter is constructed up front and wired into the server via functional options on `oauth.NewServer`:
 
-1. **IP-based Rate Limiting**: Prevents DoS attacks from external sources
-   ```go
-   rateLimiter := security.NewRateLimiter(10, 20, logger)
-   defer rateLimiter.Stop()
-   // Pass to server.New as an option:
-   //   server.New(..., server.WithRateLimiter(rateLimiter))
-   ```
+```go
+// 1. IP-based limiter — stops DoS before authentication.
+rateLimiter := security.NewRateLimiter(10, 20, logger)
+defer rateLimiter.Stop()
 
-2. **User-based Rate Limiting**: Prevents abuse from authenticated users
-   ```go
-   userRateLimiter := security.NewRateLimiter(100, 200, logger)
-   defer userRateLimiter.Stop()
-   // server.New(..., server.WithUserRateLimiter(userRateLimiter))
-   ```
+// 2. User-based limiter — bounds authenticated abuse.
+userRateLimiter := security.NewRateLimiter(100, 200, logger)
+defer userRateLimiter.Stop()
 
-3. **Client Registration Rate Limiting**: Prevents registration DoS
-   ```go
-   clientRegRateLimiter := security.NewClientRegistrationRateLimiter(logger)
-   defer clientRegRateLimiter.Stop()
-   // server.New(..., server.WithClientRegistrationRateLimiter(clientRegRateLimiter))
-   ```
+// 3. Client-registration limiter — prevents register/delete cycle DoS.
+clientRegRateLimiter := security.NewClientRegistrationRateLimiter(logger)
+defer clientRegRateLimiter.Stop()
+
+server, err := oauth.NewServer(
+    provider, tokenStore, clientStore, flowStore,
+    config, logger,
+    oauth.WithRateLimiter(rateLimiter),
+    oauth.WithUserRateLimiter(userRateLimiter),
+    oauth.WithClientRegistrationRateLimiter(clientRegRateLimiter),
+)
+```
 
 **Why multiple layers?**
 - IP limiting stops attacks before authentication
