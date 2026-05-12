@@ -694,6 +694,7 @@ func (h *Handler) ServeProtectedResourceMetadata(w http.ResponseWriter, r *http.
 	h.setCORSHeaders(w, r)
 
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+	security.SetDiscoveryCacheHeaders(w, h.server.Config.DiscoveryCacheMaxAge)
 
 	// Extract the resource path from the request URL
 	// Request path: /.well-known/oauth-protected-resource/mcp/files
@@ -1107,6 +1108,7 @@ func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 
 	h.setCORSHeaders(w, r)
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+	security.SetDiscoveryCacheHeaders(w, h.server.Config.DiscoveryCacheMaxAge)
 
 	metadata := h.buildAuthServerMetadata()
 
@@ -1141,6 +1143,10 @@ func (h *Handler) checkDiscoveryRateLimit(w http.ResponseWriter, r *http.Request
 }
 
 // buildAuthServerMetadata builds the RFC 8414 authorization server metadata.
+// The document doubles as OpenID Connect Discovery 1.0 §3 metadata —
+// `subject_types_supported`, `id_token_signing_alg_values_supported`, and
+// `claims_supported` are emitted unconditionally so OIDC clients can validate
+// the issuer without a second fetch.
 func (h *Handler) buildAuthServerMetadata() map[string]any {
 	metadata := map[string]any{
 		"issuer":                                h.server.Config.Issuer,
@@ -1153,11 +1159,25 @@ func (h *Handler) buildAuthServerMetadata() map[string]any {
 		// RFC 9207: advertise that authorization responses include the `iss` parameter
 		// so clients can verify the response came from the expected authorization server.
 		"authorization_response_iss_parameter_supported": true,
-		"claims_supported": []string{"sub", "aud", "iss", "exp", "iat", "nonce"},
+		"claims_supported":                  []string{"sub", "aud", "iss", "exp", "iat", "nonce"},
+		"subject_types_supported":           []string{"public"},
+		"id_token_signing_alg_values_supported": []string{h.idTokenSigningAlg()},
 	}
 
 	h.addOptionalMetadata(metadata)
 	return metadata
+}
+
+// idTokenSigningAlg returns the alg advertised in id_token_signing_alg_values_supported.
+// In JWT access-token mode the server's own signing key is the authority on
+// the alg; in opaque mode the server does not sign id_tokens itself, so it
+// publishes RS256 as the conventional default — OIDC Discovery §3 requires
+// the field to be present and non-empty.
+func (h *Handler) idTokenSigningAlg() string {
+	if h.server.Config.IsJWTAccessTokenFormat() && h.server.Config.AccessTokenSigningAlgorithm != "" {
+		return h.server.Config.AccessTokenSigningAlgorithm
+	}
+	return "RS256"
 }
 
 // addOptionalMetadata adds optional endpoints based on configuration.
@@ -1317,6 +1337,13 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, ErrorCodeInvalidRequest, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if len(state) > MaxStateLength {
+		h.logger.Warn("Authorization request rejected: state parameter too long", "state_length", len(state), "max_allowed", MaxStateLength, "client_id", clientID)
+		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "state too long")
+		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at most %d characters", MaxStateLength), http.StatusBadRequest)
+		return
+	}
 
 	if rejection := h.checkAuthorizationStateParam(state, clientID); rejection != nil {
 		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
@@ -1443,6 +1470,14 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 		h.recordCallbackProcessed(r.Context(), "", false)
 		instrumentation.SetSpanError(span, "state too short")
 		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at least %d characters for security", MinStateLength), http.StatusBadRequest)
+		return
+	}
+	if len(state) > MaxStateLength {
+		h.logger.Warn("Callback rejected: provider state too long", "state_length", len(state), "max_allowed", MaxStateLength)
+		h.recordHTTPMetrics(r.Context(), endpointCallback, http.MethodGet, http.StatusBadRequest, startTime)
+		h.recordCallbackProcessed(r.Context(), "", false)
+		instrumentation.SetSpanError(span, "state too long")
+		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at most %d characters", MaxStateLength), http.StatusBadRequest)
 		return
 	}
 
@@ -2111,11 +2146,15 @@ func (h *Handler) setRegistrationSpanSuccess(span trace.Span, client *storage.Cl
 	instrumentation.SetSpanSuccess(span)
 }
 
-// writeRegistrationResponse writes the client registration response.
+// writeRegistrationResponse writes the client registration response per
+// RFC 7591 §3.2.1. `client_id_issued_at` is always present; for confidential
+// clients the response also carries `client_secret` plus
+// `client_secret_expires_at: 0` (the spec sentinel for "never expires").
 func (h *Handler) writeRegistrationResponse(w http.ResponseWriter, client *storage.Client, clientSecret string) {
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	response := map[string]any{
 		"client_id":                  client.ClientID,
+		"client_id_issued_at":        client.CreatedAt.Unix(),
 		"client_name":                client.ClientName,
 		"client_type":                client.ClientType,
 		"redirect_uris":              client.RedirectURIs,
@@ -2126,6 +2165,7 @@ func (h *Handler) writeRegistrationResponse(w http.ResponseWriter, client *stora
 
 	if clientSecret != "" {
 		response["client_secret"] = clientSecret
+		response["client_secret_expires_at"] = 0
 	}
 
 	w.Header().Set("Content-Type", "application/json")

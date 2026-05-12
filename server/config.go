@@ -294,6 +294,14 @@ type Config struct {
 	// Default: 1048576 (1 MiB, generous for OAuth form data which is typically a few KB)
 	MaxRequestBodySize int64 // bytes, default: 1048576 (1 MiB)
 
+	// DiscoveryCacheMaxAge is the max-age advertised on Cache-Control for the
+	// three discovery endpoints (/.well-known/oauth-authorization-server,
+	// /.well-known/oauth-protected-resource, /.well-known/openid-configuration)
+	// per RFC 8414 §3 and RFC 9728 §3.
+	// Zero or negative selects the 1h default. Set to a very small value to
+	// effectively disable intermediary caching.
+	DiscoveryCacheMaxAge time.Duration // default: 1h
+
 	// DefaultChallengeScopes are the scopes to include in WWW-Authenticate challenges
 	// When a 401 Unauthorized response is returned, these scopes indicate what
 	// permissions would be needed to access the resource.

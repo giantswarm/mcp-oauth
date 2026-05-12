@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -47,6 +49,8 @@ type cachedDocument struct {
 // It provides SSRF protection and HTTPS enforcement for all discovered endpoints.
 //
 // The client is thread-safe and can be used concurrently from multiple goroutines.
+// Cold-cache fetches for the same issuer URL are coalesced via singleflight so
+// a fleet bounce cannot stampede the IdP.
 type DiscoveryClient struct {
 	httpClient     *http.Client
 	cache          sync.Map // issuerURL -> *cachedDocument
@@ -54,6 +58,7 @@ type DiscoveryClient struct {
 	logger         *slog.Logger
 	skipValidation bool // Internal: skip URL validation for testing only
 	timeProvider   timeProvider
+	fetchGroup     singleflight.Group
 }
 
 // NewDiscoveryClient creates a new OIDC discovery client with default configuration.
@@ -159,23 +164,46 @@ func (c *DiscoveryClient) Discover(ctx context.Context, issuerURL string) (*Disc
 		}
 	}
 
-	// Check cache first
-	if cached, ok := c.cache.Load(issuerURL); ok {
-		doc, ok := cached.(*cachedDocument)
-		switch {
-		case !ok:
-			c.logger.Error("cache corruption: invalid type", "issuer", issuerURL)
-			c.cache.Delete(issuerURL)
-			// Continue to fetch fresh document
-		case c.timeProvider.Since(doc.fetchedAt) < c.cacheTTL:
-			c.logger.Debug("OIDC discovery cache hit", "issuer", issuerURL)
-			return doc.document, nil
-		default:
-			c.logger.Debug("OIDC discovery cache expired", "issuer", issuerURL)
-		}
+	if doc, ok := c.cachedFresh(issuerURL); ok {
+		return doc, nil
 	}
 
-	// Fetch discovery document
+	result, err, _ := c.fetchGroup.Do(issuerURL, func() (any, error) {
+		// Re-check the cache inside the singleflight to avoid a stampeded
+		// refetch when the first caller has just populated it.
+		if doc, ok := c.cachedFresh(issuerURL); ok {
+			return doc, nil
+		}
+		return c.fetchAndCache(ctx, issuerURL)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.(*DiscoveryDocument), nil
+}
+
+// cachedFresh returns a cached document for issuerURL when its age is within
+// cacheTTL; ok is false on cache miss, expiry, or corruption.
+func (c *DiscoveryClient) cachedFresh(issuerURL string) (*DiscoveryDocument, bool) {
+	cached, ok := c.cache.Load(issuerURL)
+	if !ok {
+		return nil, false
+	}
+	doc, ok := cached.(*cachedDocument)
+	if !ok {
+		c.logger.Error("cache corruption: invalid type", "issuer", issuerURL)
+		c.cache.Delete(issuerURL)
+		return nil, false
+	}
+	if c.timeProvider.Since(doc.fetchedAt) >= c.cacheTTL {
+		c.logger.Debug("OIDC discovery cache expired", "issuer", issuerURL)
+		return nil, false
+	}
+	c.logger.Debug("OIDC discovery cache hit", "issuer", issuerURL)
+	return doc.document, true
+}
+
+func (c *DiscoveryClient) fetchAndCache(ctx context.Context, issuerURL string) (*DiscoveryDocument, error) {
 	discoveryURL := issuerURL
 	if len(discoveryURL) == 0 {
 		return nil, fmt.Errorf("issuer URL is empty")
@@ -219,7 +247,6 @@ func (c *DiscoveryClient) Discover(ctx context.Context, issuerURL string) (*Disc
 		return nil, fmt.Errorf("invalid discovery document: %w", err)
 	}
 
-	// Cache the document
 	c.cache.Store(issuerURL, &cachedDocument{
 		document:  &doc,
 		fetchedAt: c.timeProvider.Now(),

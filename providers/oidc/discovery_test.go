@@ -7,8 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // mockTime implements timeProvider for deterministic testing.
@@ -270,6 +274,66 @@ func TestDiscoveryClient_Discover(t *testing.T) {
 			t.Error("Discover() should return error when context is cancelled")
 		}
 	})
+}
+
+// TestDiscoveryClient_Discover_SingleflightCoalescesColdMisses confirms that
+// N concurrent cold-cache callers for the same issuer fire a single HTTP
+// fetch. Eliminates fleet-bounce stampede against the IdP.
+func TestDiscoveryClient_Discover_SingleflightCoalescesColdMisses(t *testing.T) {
+	const concurrency = 32
+
+	validDoc := DiscoveryDocument{
+		Issuer:                 "https://dex.example.com",
+		AuthorizationEndpoint:  "https://dex.example.com/auth",
+		TokenEndpoint:          "https://dex.example.com/token",
+		UserInfoEndpoint:       "https://dex.example.com/userinfo",
+		JWKSUri:                "https://dex.example.com/keys",
+		ResponseTypesSupported: []string{"code"},
+	}
+
+	var (
+		fetches int64
+		release = make(chan struct{})
+	)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/openid-configuration" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		atomic.AddInt64(&fetches, 1)
+		<-release // hold the in-flight request until all callers are queued
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(validDoc)
+	}))
+	defer server.Close()
+
+	client := newTestClient(server.Client(), 1*time.Hour)
+
+	var wg sync.WaitGroup
+	docs := make([]*DiscoveryDocument, concurrency)
+	errs := make([]error, concurrency)
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			docs[idx], errs[idx] = client.Discover(context.Background(), server.URL)
+		}(i)
+	}
+
+	// Give every goroutine a chance to enter Discover and queue on
+	// singleflight before the upstream returns.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	for i, err := range errs {
+		require.NoError(t, err, "caller %d", i)
+		require.NotNil(t, docs[i])
+		require.Equal(t, validDoc.Issuer, docs[i].Issuer)
+	}
+	require.EqualValues(t, 1, atomic.LoadInt64(&fetches),
+		"cold-cache callers must coalesce into a single upstream fetch (got %d)", atomic.LoadInt64(&fetches))
 }
 
 func TestDiscoveryClient_validateDocument(t *testing.T) {

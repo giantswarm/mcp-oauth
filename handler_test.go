@@ -1409,6 +1409,118 @@ func TestHandler_ServeOpenIDConfiguration(t *testing.T) {
 	}
 }
 
+func TestHandler_ServeAuthorizationServerMetadata_CacheControl(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	w := httptest.NewRecorder()
+	handler.ServeAuthorizationServerMetadata(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, "public, max-age=3600", w.Header().Get("Cache-Control"),
+		"discovery responses must advertise RFC 8414 §3 cache headers")
+	require.Empty(t, w.Header().Get("Pragma"),
+		"Pragma must not leak the legacy no-cache from SetSecurityHeaders")
+	require.Equal(t, "nosniff", w.Header().Get("X-Content-Type-Options"),
+		"other security headers must survive the cache-policy override")
+	require.Equal(t, "no-referrer", w.Header().Get("Referrer-Policy"))
+}
+
+func TestHandler_ServeProtectedResourceMetadata_CacheControl(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil)
+	w := httptest.NewRecorder()
+	handler.ServeProtectedResourceMetadata(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, "public, max-age=3600", w.Header().Get("Cache-Control"))
+	require.Empty(t, w.Header().Get("Pragma"))
+}
+
+func TestHandler_ServeAuthorizationServerMetadata_OIDCRequiredFields(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/openid-configuration", nil)
+	w := httptest.NewRecorder()
+	handler.ServeOpenIDConfiguration(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var meta map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&meta))
+
+	require.ElementsMatch(t, []any{"public"}, meta["subject_types_supported"])
+	require.Contains(t, meta["id_token_signing_alg_values_supported"], "RS256",
+		"OIDC Discovery §3 requires id_token_signing_alg_values_supported non-empty")
+	require.Subset(t, meta["claims_supported"], []any{"sub", "iss", "aud", "exp", "iat", "nonce"})
+
+	// userinfo_endpoint is intentionally absent until /userinfo is implemented.
+	require.NotContains(t, meta, "userinfo_endpoint")
+}
+
+func TestHandler_ServeAuthorizationServerMetadata_CacheMaxAgeOverride(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+	handler.server.Config.DiscoveryCacheMaxAge = 90 * time.Second
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	w := httptest.NewRecorder()
+	handler.ServeAuthorizationServerMetadata(w, req)
+
+	require.Equal(t, "public, max-age=90", w.Header().Get("Cache-Control"))
+}
+
+func TestHandler_ServeAuthorization_StateTooLong(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	oversized := strings.Repeat("a", MaxStateLength+1)
+	target := "/authorize?client_id=any&redirect_uri=https%3A%2F%2Fexample.com%2Fcb&response_type=code&code_challenge=c&code_challenge_method=S256&state=" + oversized
+
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	w := httptest.NewRecorder()
+	handler.ServeAuthorization(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code, "state > MaxStateLength must be rejected; body: %s", w.Body.String())
+}
+
+func TestHandler_ServeClientRegistration_RFC7591Fields(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+	handler.server.Config.AllowPublicClientRegistration = true
+
+	body, err := json.Marshal(ClientRegistrationRequest{
+		RedirectURIs:            []string{"https://example.com/callback"},
+		TokenEndpointAuthMethod: "client_secret_basic",
+		GrantTypes:              []string{"authorization_code"},
+		ResponseTypes:           []string{"code"},
+		ClientName:              "RFC 7591 Client",
+		ClientType:              "confidential",
+	})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/oauth/register", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeClientRegistration(w, req)
+	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
+
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+
+	issuedAt, ok := resp["client_id_issued_at"].(float64)
+	require.True(t, ok, "client_id_issued_at must be present and numeric (response=%v)", resp)
+	require.GreaterOrEqual(t, int64(issuedAt), time.Now().Add(-5*time.Second).Unix())
+
+	// Confidential client → client_secret + client_secret_expires_at:0 (never).
+	require.NotEmpty(t, resp["client_secret"])
+	require.Equal(t, float64(0), resp["client_secret_expires_at"],
+		"client_secret_expires_at == 0 signals 'never expires' per RFC 7591 §3.2.1")
+}
+
 func TestHandler_ServeClientRegistration(t *testing.T) {
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
