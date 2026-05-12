@@ -14,15 +14,15 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
-// setupTestHandlerWithRateLimit returns a handler whose server has an IP rate
-// limiter sized to allow `burst` requests before returning 429. Refill rate is
-// 0/s so the (burst+1)-th request inside the window is reliably rejected.
-func setupTestHandlerWithRateLimit(t *testing.T, burst int) (*Handler, *memory.Store) {
+// rate=0 with burst=N yields a no-refill bucket: exactly N requests pass, the
+// (N+1)-th is rejected for the rest of the test.
+func setupTestHandlerWithRateLimit(t *testing.T, burst int) *Handler {
 	t.Helper()
 
 	store := memory.New()
-	provider := mock.NewProvider()
+	t.Cleanup(store.Stop)
 
+	provider := mock.NewProvider()
 	config := &server.Config{
 		Issuer:             testIssuer,
 		MaxRequestBodySize: 1 << 16,
@@ -33,13 +33,11 @@ func setupTestHandlerWithRateLimit(t *testing.T, burst int) (*Handler, *memory.S
 		t.Fatalf("server.New() error = %v", err)
 	}
 	srv.RateLimiter = security.NewRateLimiter(0, burst, nil)
-	t.Cleanup(func() { srv.RateLimiter.Stop() })
+	t.Cleanup(srv.RateLimiter.Stop)
 
-	return NewHandler(srv, nil), store
+	return NewHandler(srv, nil)
 }
 
-// TestHandler_OAuthEndpoints_IPRateLimit covers CWE-307: the OAuth flow
-// endpoints must reject the (burst+1)-th request from the same IP with 429.
 func TestHandler_OAuthEndpoints_IPRateLimit(t *testing.T) {
 	const burst = 2
 
@@ -95,8 +93,7 @@ func TestHandler_OAuthEndpoints_IPRateLimit(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			handler, store := setupTestHandlerWithRateLimit(t, burst)
-			defer store.Stop()
+			handler := setupTestHandlerWithRateLimit(t, burst)
 
 			for i := 0; i < burst; i++ {
 				w := httptest.NewRecorder()
@@ -127,11 +124,8 @@ func TestHandler_OAuthEndpoints_IPRateLimit(t *testing.T) {
 	}
 }
 
-// TestHandler_OAuthEndpoints_IPRateLimit_PerIP confirms the limiter keys on
-// client IP — exhausting one IP must not affect a different IP.
 func TestHandler_OAuthEndpoints_IPRateLimit_PerIP(t *testing.T) {
-	handler, store := setupTestHandlerWithRateLimit(t, 1)
-	defer store.Stop()
+	handler := setupTestHandlerWithRateLimit(t, 1)
 
 	exhaust := func(remoteAddr string) int {
 		body := url.Values{"grant_type": {"x"}}.Encode()

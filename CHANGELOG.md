@@ -10,7 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **IP rate limiter now applied to `/authorize`, `/token`, `/revoke`, `/introspect`** (CWE-307, closes #302)
-  - These four handlers previously bypassed `server.RateLimiter`; only `ValidateToken`, discovery, JWKS, and client registration enforced it. They now call `checkIPRateLimit` at handler entry, returning `429` + `Retry-After: 60` + `error: rate_limit_exceeded` (same shape as the other rate-limited endpoints) and emitting the existing `rate_limit_exceeded` audit event / metric. No-op when no `RateLimiter` is configured.
+  - Exceeding the configured per-IP rate on any of these endpoints returns `429` with `Retry-After: 60` and `{"error":"rate_limit_exceeded"}`, and emits the `rate_limit_exceeded` audit event and metric. No-op when no `RateLimiter` is configured.
+- **OpenTelemetry spans now carry through `r.Context()` on `ServeCallback`, `handleAuthorizationCodeGrant`, `handleRefreshTokenGrant`, `ServeTokenRevocation`, `ServeTokenIntrospection`**
+  - These handlers opened a span via `tracer.Start` but did not re-attach the resulting context to the `*http.Request`. Downstream `recordHTTPMetrics`/`recordTokenFailure`/`recordAuthorizationStarted` calls that read `r.Context()` therefore lost the span association. `r = r.WithContext(ctx)` is now called inside each tracer block.
 
 ### Added
 

@@ -1165,13 +1165,11 @@ func (h *Handler) ServeJWKS(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 
-	// Create span if tracing is enabled
 	var span trace.Span
-	ctx := r.Context()
 	if h.tracer != nil {
-		ctx, span = h.tracer.Start(ctx, "oauth.http.authorization")
+		var ctx context.Context
+		ctx, span = h.tracer.Start(r.Context(), "oauth.http.authorization")
 		defer span.End()
-		// Update request context to include span context
 		r = r.WithContext(ctx)
 	}
 
@@ -1186,7 +1184,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 	if h.checkIPRateLimit(w, r, clientIP) {
-		h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusTooManyRequests, startTime)
+		h.recordHTTPMetrics(r.Context(), "authorization", http.MethodGet, http.StatusTooManyRequests, startTime)
 		return
 	}
 
@@ -1239,7 +1237,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	)
 
 	// Start authorization flow with client state (server also validates for defense in depth)
-	authURL, err := h.server.StartAuthorizationFlow(ctx, clientID, redirectURI, scope, resource, codeChallenge, codeChallengeMethod, state, authOpts)
+	authURL, err := h.server.StartAuthorizationFlow(r.Context(), clientID, redirectURI, scope, resource, codeChallenge, codeChallengeMethod, state, authOpts)
 	if err != nil {
 		h.logger.Error("Failed to start authorization flow", "error", err)
 		h.recordHTTPMetrics(r.Context(), "authorization", http.MethodGet, http.StatusInternalServerError, startTime)
@@ -1275,13 +1273,13 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 // ServeCallback handles the OAuth provider callback
 func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
-	ctx := r.Context()
 
-	// Create span if tracing is enabled
 	var span trace.Span
 	if h.tracer != nil {
-		ctx, span = h.tracer.Start(ctx, "oauth.http.callback")
+		var ctx context.Context
+		ctx, span = h.tracer.Start(r.Context(), "oauth.http.callback")
 		defer span.End()
+		r = r.WithContext(ctx)
 	}
 
 	if r.Method != http.MethodGet {
@@ -1333,7 +1331,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Handle callback (state here is the provider state, not client state)
 	// Server also validates state length for defense in depth
-	authCode, clientState, err := h.server.HandleProviderCallback(ctx, state, code)
+	authCode, clientState, err := h.server.HandleProviderCallback(r.Context(), state, code)
 	if err != nil {
 		h.logger.Error("Failed to handle callback", "error", err)
 		h.recordHTTPMetrics(r.Context(), "callback", http.MethodGet, http.StatusInternalServerError, startTime)
@@ -1405,7 +1403,7 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 	if h.checkIPRateLimit(w, r, clientIP) {
-		h.recordHTTPMetrics("token", http.MethodPost, http.StatusTooManyRequests, startTime)
+		h.recordHTTPMetrics(r.Context(), "token", http.MethodPost, http.StatusTooManyRequests, startTime)
 		return
 	}
 
@@ -1425,9 +1423,9 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 
 	switch grantType {
 	case "authorization_code":
-		h.handleAuthorizationCodeGrant(w, r)
+		h.handleAuthorizationCodeGrant(w, r, clientIP)
 	case "refresh_token":
-		h.handleRefreshTokenGrant(w, r)
+		h.handleRefreshTokenGrant(w, r, clientIP)
 	default:
 		h.recordTokenFailure(r.Context(), grantType, ErrorCodeUnsupportedGrantType)
 		h.writeError(w, ErrorCodeUnsupportedGrantType, fmt.Sprintf("Grant type %s not supported", grantType), http.StatusBadRequest)
@@ -1447,18 +1445,16 @@ func (h *Handler) recordTokenFailure(ctx context.Context, grantType, errorCode s
 	h.server.Instrumentation.Metrics().RecordTokenEndpointFailure(ctx, grantType, errorCode)
 }
 
-func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Request, clientIP string) {
 	startTime := time.Now()
-	ctx := r.Context()
 
-	// Create span if tracing is enabled
 	var span trace.Span
 	if h.tracer != nil {
-		ctx, span = h.tracer.Start(ctx, "oauth.http.token_exchange")
+		var ctx context.Context
+		ctx, span = h.tracer.Start(r.Context(), "oauth.http.token_exchange")
 		defer span.End()
+		r = r.WithContext(ctx)
 	}
-
-	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
 	// Read from already-parsed form (ParseForm called by ServeToken)
 	code := r.Form.Get("code")
@@ -1501,7 +1497,7 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	)
 
 	// Exchange authorization code for tokens
-	tokenResponse, scope, err := h.server.ExchangeAuthorizationCode(ctx, code, client.ClientID, redirectURI, resource, codeVerifier)
+	tokenResponse, scope, err := h.server.ExchangeAuthorizationCode(r.Context(), code, client.ClientID, redirectURI, resource, codeVerifier)
 	if err != nil {
 		h.logger.Error("Failed to exchange authorization code", "client_id", client.ClientID, "ip", clientIP, "error", err)
 		h.recordTokenFailure(r.Context(), "authorization_code", ErrorCodeInvalidGrant)
@@ -1530,18 +1526,16 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	h.writeTokenResponse(w, tokenResponse, scope)
 }
 
-func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request, clientIP string) {
 	startTime := time.Now()
-	ctx := r.Context()
 
-	// Create span if tracing is enabled
 	var span trace.Span
 	if h.tracer != nil {
-		ctx, span = h.tracer.Start(ctx, "oauth.http.token_refresh")
+		var ctx context.Context
+		ctx, span = h.tracer.Start(r.Context(), "oauth.http.token_refresh")
 		defer span.End()
+		r = r.WithContext(ctx)
 	}
-
-	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
 	// Read from already-parsed form (ParseForm called by ServeToken)
 	refreshToken := r.Form.Get("refresh_token")
@@ -1557,7 +1551,7 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 
 	// OAUTH 2.1 SECURITY: Authenticate client for refresh token grant
 	// Confidential clients MUST authenticate; public clients may use client_id only
-	clientID, clientAuthenticated, err := h.authenticateRefreshTokenClient(ctx, w, r, clientID, clientIP, startTime, span)
+	clientID, clientAuthenticated, err := h.authenticateRefreshTokenClient(r.Context(), w, r, clientID, clientIP, startTime, span)
 	if err != nil {
 		// Error already written to response by authenticateRefreshTokenClient
 		return
@@ -1573,7 +1567,7 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	}
 
 	// Refresh token
-	tokenResponse, err := h.server.RefreshAccessToken(ctx, refreshToken, clientID)
+	tokenResponse, err := h.server.RefreshAccessToken(r.Context(), refreshToken, clientID)
 	if err != nil {
 		h.logger.Error("Failed to refresh token", "client_id", clientID, "ip", clientIP, "error", err)
 		h.recordTokenFailure(r.Context(), "refresh_token", ErrorCodeInvalidGrant)
@@ -1676,13 +1670,12 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 // ServeTokenRevocation handles the RFC 7009 token revocation endpoint
 func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
-	ctx := r.Context()
-
-	// Create span if tracing is enabled
 	var span trace.Span
 	if h.tracer != nil {
-		ctx, span = h.tracer.Start(ctx, "oauth.http.token_revocation")
+		var ctx context.Context
+		ctx, span = h.tracer.Start(r.Context(), "oauth.http.token_revocation")
 		defer span.End()
+		r = r.WithContext(ctx)
 	}
 
 	if r.Method != http.MethodPost {
@@ -1696,7 +1689,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 	if h.checkIPRateLimit(w, r, clientIP) {
-		h.recordHTTPMetrics("revoke", http.MethodPost, http.StatusTooManyRequests, startTime)
+		h.recordHTTPMetrics(r.Context(), "revoke", http.MethodPost, http.StatusTooManyRequests, startTime)
 		return
 	}
 
@@ -1730,10 +1723,10 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 	if authClientID, authClientSecret := h.parseBasicAuth(r); authClientID != "" {
 		clientID = authClientID
 		// Validate client credentials
-		if err := h.server.ValidateClientCredentials(ctx, clientID, authClientSecret); err != nil {
+		if err := h.server.ValidateClientCredentials(r.Context(), clientID, authClientSecret); err != nil {
 			h.logger.Warn("Client authentication failed for revocation", "client_id", clientID, "ip", clientIP)
 			if h.server.Auditor != nil {
-				h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "revocation_auth_failed")
+				h.server.Auditor.LogAuthFailure(r.Context(), "", clientID, clientIP, "revocation_auth_failed")
 			}
 			h.recordHTTPMetrics(r.Context(), "revoke", http.MethodPost, http.StatusUnauthorized, startTime)
 			instrumentation.RecordError(span, err)
@@ -1746,7 +1739,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 	instrumentation.SetSpanAttributes(span, attribute.String(instrumentation.AttrClientID, clientID))
 
 	// Revoke token
-	if err := h.server.RevokeToken(ctx, token, clientID, clientIP); err != nil {
+	if err := h.server.RevokeToken(r.Context(), token, clientID, clientIP); err != nil {
 		h.logger.Error("Failed to revoke token", "client_id", clientID, "ip", clientIP, "error", err)
 		instrumentation.RecordError(span, err)
 		// Per RFC 7009, don't fail the request even if revocation failed
@@ -2221,12 +2214,12 @@ func (h *Handler) formatWWWAuthenticate(scope, errCode, errorDesc string) string
 // Security: Requires client authentication to prevent token scanning attacks
 func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
-	ctx := r.Context()
-
 	var span trace.Span
 	if h.tracer != nil {
-		ctx, span = h.tracer.Start(ctx, "oauth.http.introspection")
+		var ctx context.Context
+		ctx, span = h.tracer.Start(r.Context(), "oauth.http.introspection")
 		defer span.End()
+		r = r.WithContext(ctx)
 	}
 
 	if r.Method != http.MethodPost {
@@ -2238,7 +2231,7 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 	h.setCORSHeaders(w, r)
 	clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 	if h.checkIPRateLimit(w, r, clientIP) {
-		h.recordHTTPMetrics("introspect", http.MethodPost, http.StatusTooManyRequests, startTime)
+		h.recordHTTPMetrics(r.Context(), "introspect", http.MethodPost, http.StatusTooManyRequests, startTime)
 		return
 	}
 
@@ -2280,7 +2273,7 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 	}
 
 	// Validate the token and build response
-	response := h.buildIntrospectionResponse(ctx, token, clientID, clientIP)
+	response := h.buildIntrospectionResponse(r.Context(), token, clientID, clientIP)
 
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	w.Header().Set("Content-Type", "application/json")
