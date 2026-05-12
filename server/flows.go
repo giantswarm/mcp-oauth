@@ -836,21 +836,23 @@ func (s *Server) rotateRefreshToken(ctx context.Context, oldRefreshToken, userID
 // resource is the target resource server identifier per RFC 8707 (optional for backward compatibility)
 // authOpts contains optional OIDC parameters (prompt, login_hint, id_token_hint) for upstream IdP forwarding
 // ValidateRedirectURIForAuthorization runs the client lookup and registered
-// redirect-URI check that StartAuthorizationFlow performs. Handlers must
-// invoke it before redirecting any /authorize error to redirectURI: until
-// both checks pass redirectURI is attacker-controllable and a redirect would
-// be an open-redirect gadget under RFC 6749 §4.1.2.1 + §3.1.2.4.
-func (s *Server) ValidateRedirectURIForAuthorization(ctx context.Context, clientID, redirectURI string) error {
+// redirect-URI check that StartAuthorizationFlow performs. Returns the
+// canonical URI from client.RedirectURIs on success; the handler MUST use
+// that value as the redirect target so open-redirect static analysis can see
+// the allowlist match. RFC 6749 §4.1.2.1 + §3.1.2.4: until both checks pass
+// the request URI is attacker-controllable.
+func (s *Server) ValidateRedirectURIForAuthorization(ctx context.Context, clientID, redirectURI string) (string, error) {
 	client, err := s.getOrFetchClient(ctx, clientID)
 	if err != nil {
 		s.logAuthFailure(ctx, "", clientID, ErrorCodeInvalidClient)
-		return fmt.Errorf("%s: %w", ErrorCodeInvalidClient, err)
+		return "", fmt.Errorf("%s: %w", ErrorCodeInvalidClient, err)
 	}
-	if err := s.validateRedirectURI(client, redirectURI); err != nil {
+	canonical, err := s.resolveRegisteredRedirectURI(client, redirectURI)
+	if err != nil {
 		s.logAuthFailure(ctx, "", clientID, ErrorCodeInvalidRedirectURI)
-		return fmt.Errorf("%s: %w", ErrorCodeInvalidRedirectURI, err)
+		return "", fmt.Errorf("%s: %w", ErrorCodeInvalidRedirectURI, err)
 	}
-	return nil
+	return canonical, nil
 }
 
 func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectURI, scope, resource, codeChallenge, codeChallengeMethod, clientState string, authOpts *providers.AuthorizationURLOptions) (string, error) {

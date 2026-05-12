@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
+	"net"
 	"net/url"
 	"regexp"
 	"strings"
@@ -175,29 +176,40 @@ func isLocalhostHostname(hostname string) bool {
 //
 // For all other URIs, exact string matching is used per OAuth 2.1.
 func (s *Server) validateRedirectURI(client *storage.Client, redirectURI string) error {
-	// First check if URI is registered
-	found := false
+	_, err := s.resolveRegisteredRedirectURI(client, redirectURI)
+	return err
+}
+
+// resolveRegisteredRedirectURI returns the canonical URI from
+// client.RedirectURIs that matches redirectURI under the same rules as
+// validateRedirectURI: exact match by default, plus optional RFC 8252 §7.3
+// port-agnostic loopback match when AllowLocalhostRedirectURIs is set. For
+// loopback the canonical URI substitutes the request's port into the
+// registered scheme/host/path so the bound native-app port survives the
+// round-trip; for non-loopback the canonical URI is the registered element
+// verbatim. Callers writing the URI back into a redirect Location header
+// should pass the canonical value so the redirect target provably originates
+// from server-controlled storage.
+func (s *Server) resolveRegisteredRedirectURI(client *storage.Client, redirectURI string) (string, error) {
 	for _, uri := range client.RedirectURIs {
 		if uri == redirectURI {
-			found = true
-			break
+			if err := validateRedirectURISecurityEnhanced(uri, s.Config.Issuer, s.Config.AllowedCustomSchemes); err != nil {
+				return "", err
+			}
+			return uri, nil
 		}
 	}
 
-	// If exact match failed and localhost redirect URIs are allowed,
-	// try RFC 8252 port-agnostic matching for loopback addresses
-	if !found && s.Config.AllowLocalhostRedirectURIs {
-		if matchesLoopbackRedirectURI(redirectURI, client.RedirectURIs) {
-			found = true
+	if s.Config.AllowLocalhostRedirectURIs {
+		if canonical, ok := canonicalLoopbackRedirectURI(redirectURI, client.RedirectURIs); ok {
+			if err := validateRedirectURISecurityEnhanced(canonical, s.Config.Issuer, s.Config.AllowedCustomSchemes); err != nil {
+				return "", err
+			}
+			return canonical, nil
 		}
 	}
 
-	if !found {
-		return fmt.Errorf("redirect URI not registered for client")
-	}
-
-	// Perform security validation on the URI with custom scheme support
-	return validateRedirectURISecurityEnhanced(redirectURI, s.Config.Issuer, s.Config.AllowedCustomSchemes)
+	return "", fmt.Errorf("redirect URI not registered for client")
 }
 
 // matchesLoopbackRedirectURI checks if a redirect URI matches any registered URI
@@ -216,43 +228,52 @@ func (s *Server) validateRedirectURI(client *storage.Client, redirectURI string)
 // targets a loopback address (localhost, 127.0.0.0/8, ::1). Non-loopback URIs are
 // never matched by this function — they require exact string matching.
 func matchesLoopbackRedirectURI(requestedURI string, registeredURIs []string) bool {
+	_, ok := canonicalLoopbackRedirectURI(requestedURI, registeredURIs)
+	return ok
+}
+
+// canonicalLoopbackRedirectURI returns the canonical URI for a loopback
+// port-agnostic match (RFC 8252 §7.3 + §8.3). Scheme, host, and path are
+// taken from the matched registered URI; only the port is taken from the
+// request (the native app binds an ephemeral port, so RFC 8252 mandates the
+// request port wins on the redirect leg). Returns ok=false when no registered
+// loopback URI matches.
+func canonicalLoopbackRedirectURI(requestedURI string, registeredURIs []string) (string, bool) {
 	parsed, err := url.Parse(requestedURI)
 	if err != nil {
-		return false
+		return "", false
 	}
-
-	// Only apply port-agnostic matching for loopback addresses
 	hostname := parsed.Hostname()
 	if !isLoopbackAddress(hostname) {
-		return false
+		return "", false
 	}
 
 	requestedScheme := strings.ToLower(parsed.Scheme)
 	requestedHost := strings.ToLower(hostname)
 	requestedPath := parsed.Path
+	requestedPort := parsed.Port()
 
 	for _, registered := range registeredURIs {
 		registeredParsed, err := url.Parse(registered)
 		if err != nil {
 			continue
 		}
-
 		registeredHost := registeredParsed.Hostname()
-
-		// Only match against registered URIs that are also loopback
 		if !isLoopbackAddress(registeredHost) {
 			continue
 		}
-
-		// Compare scheme, host, and path — exclude port (RFC 8252 Section 8.3)
-		if strings.ToLower(registeredParsed.Scheme) == requestedScheme &&
-			strings.ToLower(registeredHost) == requestedHost &&
-			registeredParsed.Path == requestedPath {
-			return true
+		if strings.ToLower(registeredParsed.Scheme) != requestedScheme ||
+			strings.ToLower(registeredHost) != requestedHost ||
+			registeredParsed.Path != requestedPath {
+			continue
 		}
+		canonical := *registeredParsed
+		if requestedPort != "" {
+			canonical.Host = net.JoinHostPort(registeredHost, requestedPort)
+		}
+		return canonical.String(), true
 	}
-
-	return false
+	return "", false
 }
 
 // validateScopes validates that requested scopes are allowed
