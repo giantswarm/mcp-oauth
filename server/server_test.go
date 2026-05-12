@@ -125,113 +125,72 @@ func TestNew_MissingFlowStore(t *testing.T) {
 	}
 }
 
-func TestServer_SetEncryptor(t *testing.T) {
+// TestServer_OptionsAreAppliedAndPropagate verifies the With* constructor
+// options install dependencies on the server and, where applicable,
+// propagate them to the storage backend. Replaces the per-setter tests
+// that were tautological after Set* methods were converted to options.
+func TestServer_OptionsAreAppliedAndPropagate(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
 	provider := mock.NewProvider()
-
-	srv, err := New(provider, store, store, store, &Config{Issuer: "https://test.example.com"}, nil)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
 
 	key, err := security.GenerateKey()
 	if err != nil {
 		t.Fatalf("GenerateKey() error = %v", err)
 	}
-
 	enc, err := security.NewEncryptor(key)
 	if err != nil {
 		t.Fatalf("NewEncryptor() error = %v", err)
 	}
 
-	srv.SetEncryptor(enc)
-
-	if srv.Encryptor == nil {
-		t.Error("Encryptor should be set")
-	}
-}
-
-func TestServer_SetAuditor(t *testing.T) {
-	store := memory.New()
-	defer store.Stop()
-
-	provider := mock.NewProvider()
-
-	srv, err := New(provider, store, store, store, &Config{Issuer: "https://test.example.com"}, nil)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
 	auditor := security.NewAuditor(nil, true)
-	srv.SetAuditor(auditor)
-
-	if srv.Auditor == nil {
-		t.Error("Auditor should be set")
-	}
-}
-
-func TestServer_SetRateLimiter(t *testing.T) {
-	store := memory.New()
-	defer store.Stop()
-
-	provider := mock.NewProvider()
-
-	srv, err := New(provider, store, store, store, &Config{Issuer: "https://test.example.com"}, nil)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
 	rl := security.NewRateLimiter(10, 20, nil)
 	defer rl.Stop()
+	userRL := security.NewRateLimiter(5, 10, nil)
+	defer userRL.Stop()
+	secEventRL := security.NewRateLimiter(1, 5, nil)
+	defer secEventRL.Stop()
 
-	srv.SetRateLimiter(rl)
-
-	if srv.RateLimiter == nil {
-		t.Error("RateLimiter should be set")
-	}
-}
-
-func TestServer_SetUserRateLimiter(t *testing.T) {
-	store := memory.New()
-	defer store.Stop()
-
-	provider := mock.NewProvider()
-
-	srv, err := New(provider, store, store, store, &Config{Issuer: "https://test.example.com"}, nil)
+	srv, err := New(
+		provider, store, store, store, &Config{Issuer: "https://test.example.com"}, nil,
+		WithEncryptor(enc),
+		WithAuditor(auditor),
+		WithRateLimiter(rl),
+		WithUserRateLimiter(userRL),
+		WithSecurityEventRateLimiter(secEventRL),
+	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	rl := security.NewRateLimiter(5, 10, nil)
-	defer rl.Stop()
-
-	srv.SetUserRateLimiter(rl)
-
-	if srv.UserRateLimiter == nil {
-		t.Error("UserRateLimiter should be set")
+	if srv.Encryptor != enc {
+		t.Error("WithEncryptor: server Encryptor not set to the option value")
 	}
-}
-
-func TestServer_SetSecurityEventRateLimiter(t *testing.T) {
-	store := memory.New()
-	defer store.Stop()
-
-	provider := mock.NewProvider()
-
-	srv, err := New(provider, store, store, store, &Config{Issuer: "https://test.example.com"}, nil)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
+	if srv.Auditor != auditor {
+		t.Error("WithAuditor: server Auditor not set to the option value")
+	}
+	if srv.RateLimiter != rl {
+		t.Error("WithRateLimiter: server RateLimiter not set to the option value")
+	}
+	if srv.UserRateLimiter != userRL {
+		t.Error("WithUserRateLimiter: server UserRateLimiter not set to the option value")
+	}
+	if srv.SecurityEventRateLimiter != secEventRL {
+		t.Error("WithSecurityEventRateLimiter: server SecurityEventRateLimiter not set to the option value")
 	}
 
-	rl := security.NewRateLimiter(1, 5, nil)
-	defer rl.Stop()
-
-	srv.SetSecurityEventRateLimiter(rl)
-
-	if srv.SecurityEventRateLimiter == nil {
-		t.Error("SecurityEventRateLimiter should be set")
+	// WithEncryptor also propagates to a storage backend that exposes
+	// SetEncryptor — the memory store does. The propagation hook is
+	// the only behavior the deleted Set* methods had beyond a field
+	// write, so it gets explicit coverage here.
+	type encryptorReader interface {
+		Encryptor() *security.Encryptor
+	}
+	if reader, ok := any(store).(encryptorReader); ok {
+		if reader.Encryptor() != enc {
+			t.Error("WithEncryptor: encryptor not propagated to the token store")
+		}
 	}
 }
 
@@ -534,10 +493,10 @@ func TestServer_Shutdown(t *testing.T) {
 	}
 
 	// Add rate limiters to test their shutdown
-	srv.SetRateLimiter(security.NewRateLimiter(10, 20, nil))
-	srv.SetUserRateLimiter(security.NewRateLimiter(5, 10, nil))
-	srv.SetSecurityEventRateLimiter(security.NewRateLimiter(100, 200, nil))
-	srv.SetClientRegistrationRateLimiter(security.NewClientRegistrationRateLimiter(nil))
+	srv.RateLimiter = security.NewRateLimiter(10, 20, nil)
+	srv.UserRateLimiter = security.NewRateLimiter(5, 10, nil)
+	srv.SecurityEventRateLimiter = security.NewRateLimiter(100, 200, nil)
+	srv.ClientRegistrationRateLimiter = security.NewClientRegistrationRateLimiter(nil)
 
 	// Shutdown with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -627,8 +586,8 @@ func TestServer_ShutdownWithTimeout(t *testing.T) {
 	}
 
 	// Add rate limiters
-	srv.SetRateLimiter(security.NewRateLimiter(10, 20, nil))
-	srv.SetUserRateLimiter(security.NewRateLimiter(5, 10, nil))
+	srv.RateLimiter = security.NewRateLimiter(10, 20, nil)
+	srv.UserRateLimiter = security.NewRateLimiter(5, 10, nil)
 
 	// Test convenience method
 	err = srv.ShutdownWithTimeout(5 * time.Second)

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/providers/google"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
@@ -55,10 +56,46 @@ func main() {
 	store := memory.NewWithInterval(1 * time.Minute)
 	defer store.Stop()
 
-	// 3. Create OAuth server with production-grade security configuration
-	// SECURITY: This demonstrates secure-by-default configuration.
-	// All security features are enabled by default and can be selectively
-	// disabled ONLY if needed for backward compatibility with legacy clients.
+	// 3. Build security dependencies before server construction so they are
+	// passed via functional options. Secure-by-default applies regardless;
+	// these options layer additional defense (encryption at rest, audit
+	// logging, multi-tier rate limiting).
+	encryptor, err := security.NewEncryptor(encryptionKey)
+	if err != nil {
+		log.Fatalf("Failed to create encryptor: %v", err)
+	}
+	auditor := security.NewAuditor(logger, true)
+
+	// Multi-layered rate limiting:
+	// 1. IP-based — DoS from external sources
+	rateLimiter := security.NewRateLimiter(10, 20, logger)
+	defer rateLimiter.Stop()
+	// 2. User-based — abuse from authenticated users
+	userRateLimiter := security.NewRateLimiter(100, 200, logger)
+	defer userRateLimiter.Stop()
+	// 3. Security-event — log flooding from attack attempts
+	securityEventRateLimiter := security.NewRateLimiter(1, 5, logger)
+	defer securityEventRateLimiter.Stop()
+	// 4. Client registration — registration/deletion cycle DoS
+	clientRegRateLimiter := security.NewClientRegistrationRateLimiter(logger)
+	defer clientRegRateLimiter.Stop()
+
+	// 5. OpenTelemetry instrumentation. Built outside the constructor so
+	// the same pipeline can be shared with other components in the
+	// process; pass via WithInstrumentation.
+	inst, err := instrumentation.New(instrumentation.Config{
+		Enabled:         getBoolEnv("ENABLE_INSTRUMENTATION", true),
+		ServiceName:     getEnvOrDefault("SERVICE_NAME", "mcp-oauth-production"),
+		ServiceVersion:  getEnvOrDefault("SERVICE_VERSION", "1.0.0"),
+		MetricsExporter: getEnvOrDefault("METRICS_EXPORTER", "prometheus"),
+		TracesExporter:  getEnvOrDefault("TRACES_EXPORTER", "otlp"),
+		OTLPEndpoint:    getEnvOrDefault("OTLP_ENDPOINT", "localhost:4318"),
+	})
+	if err != nil {
+		log.Fatalf("Failed to initialize instrumentation: %v", err)
+	}
+
+	// 6. Create OAuth server with production-grade security configuration
 	server, err := oauth.NewServer(
 		googleProvider,
 		store, // TokenStore
@@ -99,17 +136,6 @@ func main() {
 				"https://www.googleapis.com/auth/calendar.readonly",
 			},
 
-			// OpenTelemetry instrumentation for observability (metrics and tracing)
-			// Enable this in production to monitor OAuth operations
-			Instrumentation: oauth.InstrumentationConfig{
-				Enabled:         getBoolEnv("ENABLE_INSTRUMENTATION", true),
-				ServiceName:     getEnvOrDefault("SERVICE_NAME", "mcp-oauth-production"),
-				ServiceVersion:  getEnvOrDefault("SERVICE_VERSION", "1.0.0"),
-				MetricsExporter: getEnvOrDefault("METRICS_EXPORTER", "prometheus"),  // "prometheus", "stdout", "none"
-				TracesExporter:  getEnvOrDefault("TRACES_EXPORTER", "otlp"),         // "otlp", "stdout", "none"
-				OTLPEndpoint:    getEnvOrDefault("OTLP_ENDPOINT", "localhost:4318"), // For OTLP traces
-			},
-
 			// CORS configuration (optional, only for browser-based clients)
 			// Uncomment and configure if you have browser-based MCP clients
 			// CORS: oauth.CORSConfig{
@@ -122,47 +148,17 @@ func main() {
 			// },
 		},
 		logger,
+		oauth.WithEncryptor(encryptor),
+		oauth.WithAuditor(auditor),
+		oauth.WithRateLimiter(rateLimiter),
+		oauth.WithUserRateLimiter(userRateLimiter),
+		oauth.WithSecurityEventRateLimiter(securityEventRateLimiter),
+		oauth.WithClientRegistrationRateLimiter(clientRegRateLimiter),
+		oauth.WithInstrumentation(inst),
 	)
 	if err != nil {
 		log.Fatalf("Failed to create OAuth server: %v", err)
 	}
-
-	// 4. Add security features
-	// Enable token encryption
-	encryptor, err := security.NewEncryptor(encryptionKey)
-	if err != nil {
-		log.Fatalf("Failed to create encryptor: %v", err)
-	}
-	server.SetEncryptor(encryptor)
-
-	// Enable audit logging
-	auditor := security.NewAuditor(logger, true)
-	server.SetAuditor(auditor)
-
-	// Enable rate limiting (multi-layered approach)
-	// 1. IP-based rate limiting (prevents DoS from external sources)
-	rateLimiter := security.NewRateLimiter(10, 20, logger) // 10 req/s per IP, burst 20
-	defer rateLimiter.Stop()                               // Important: cleanup background goroutines
-	server.SetRateLimiter(rateLimiter)
-
-	// 2. User-based rate limiting (prevents abuse from authenticated users)
-	userRateLimiter := security.NewRateLimiter(100, 200, logger) // 100 req/s per user, burst 200
-	defer userRateLimiter.Stop()                                 // Important: cleanup background goroutines
-	server.SetUserRateLimiter(userRateLimiter)
-
-	// 3. Security event rate limiting (prevents log flooding from attack attempts)
-	// This limits logging of security events like code reuse, token reuse detection
-	// to prevent attackers from causing DoS via excessive logging
-	securityEventRateLimiter := security.NewRateLimiter(1, 5, logger) // 1 event/s per user+client, burst 5
-	defer securityEventRateLimiter.Stop()                             // Important: cleanup background goroutines
-	server.SetSecurityEventRateLimiter(securityEventRateLimiter)
-
-	// 4. Client registration rate limiting (prevents registration/deletion cycle DoS)
-	// Time-windowed rate limiting to prevent resource exhaustion through
-	// repeated client registration/deletion cycles
-	clientRegRateLimiter := security.NewClientRegistrationRateLimiter(logger) // 10 registrations per hour per IP
-	defer clientRegRateLimiter.Stop()                                         // Important: cleanup background goroutines
-	server.SetClientRegistrationRateLimiter(clientRegRateLimiter)
 
 	// 5. Create HTTP handler
 	handler := oauth.NewHandler(server, logger)

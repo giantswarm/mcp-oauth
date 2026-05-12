@@ -44,9 +44,31 @@ func main() {
 		Level: slog.LevelInfo,
 	}))
 
-	// 4. Create OAuth server
-	// Security: Secure by default! PKCE (S256 only) is enabled by default.
-	// All security settings follow OAuth 2.1 best practices.
+	// 4. Construct optional dependencies. Build everything first so we can
+	// pass them as functional options to NewServer in a single call.
+	auditor := security.NewAuditor(logger, true)
+	rateLimiter := security.NewRateLimiter(10, 20, logger)
+	defer rateLimiter.Stop() // Important: cleanup background goroutines
+
+	opts := []oauth.ServerOption{
+		oauth.WithAuditor(auditor),
+		oauth.WithRateLimiter(rateLimiter),
+	}
+
+	encKeyB64 := os.Getenv("OAUTH_ENCRYPTION_KEY")
+	if encKeyB64 != "" {
+		encKey, err := security.KeyFromBase64(encKeyB64)
+		if err != nil {
+			log.Fatalf("Invalid encryption key: %v", err)
+		}
+		encryptor, _ := security.NewEncryptor(encKey)
+		opts = append(opts, oauth.WithEncryptor(encryptor))
+		logger.Info("Token encryption enabled")
+	}
+
+	// 5. Create OAuth server with secure defaults plus optional dependencies.
+	// PKCE S256, refresh-token rotation, and the rest of the OAuth 2.1
+	// hardening apply automatically.
 	server, err := oauth.NewServer(
 		googleProvider,
 		store, // TokenStore
@@ -55,47 +77,27 @@ func main() {
 		&oauth.ServerConfig{
 			Issuer:            "http://localhost:8080",
 			AllowInsecureHTTP: true, // Required for HTTP on localhost (development only)
-			// Secure defaults (applied automatically if not set):
-			// - RequirePKCE: true (mandatory PKCE)
-			// - AllowPKCEPlain: false (only S256 method)
-			// - AllowRefreshTokenRotation: true (token rotation)
-			// - TrustProxy: false (don't trust proxy headers)
 
-			// Optional: Enable OpenTelemetry instrumentation for observability
-			// Uncomment to enable metrics and distributed tracing:
-			// Instrumentation: oauth.InstrumentationConfig{
-			//     Enabled:         true,
-			//     ServiceName:     "mcp-oauth-basic",
-			//     ServiceVersion:  "1.0.0",
-			//     MetricsExporter: "stdout",  // Options: "prometheus", "stdout", "none"
-			//     TracesExporter:  "stdout",  // Options: "otlp", "stdout", "none"
-			//     OTLPEndpoint:    "localhost:4318", // Required if TracesExporter="otlp"
-			// },
+			// To enable OpenTelemetry instrumentation:
+			//
+			//   inst, _ := instrumentation.New(instrumentation.Config{
+			//       Enabled:         true,
+			//       ServiceName:     "mcp-oauth-basic",
+			//       ServiceVersion:  "1.0.0",
+			//       MetricsExporter: "stdout",
+			//       TracesExporter:  "stdout",
+			//   })
+			//   opts = append(opts, oauth.WithInstrumentation(inst))
+			//
+			// See examples/prometheus and examples/production for a full
+			// instrumentation setup.
 		},
 		logger,
+		opts...,
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	// 5. Optional: Add security features
-	encKeyB64 := os.Getenv("OAUTH_ENCRYPTION_KEY")
-	if encKeyB64 != "" {
-		encKey, err := security.KeyFromBase64(encKeyB64)
-		if err != nil {
-			log.Fatalf("Invalid encryption key: %v", err)
-		}
-		encryptor, _ := security.NewEncryptor(encKey)
-		server.SetEncryptor(encryptor)
-		logger.Info("Token encryption enabled")
-	}
-
-	auditor := security.NewAuditor(logger, true)
-	server.SetAuditor(auditor)
-
-	rateLimiter := security.NewRateLimiter(10, 20, logger)
-	defer rateLimiter.Stop() // Important: cleanup background goroutines
-	server.SetRateLimiter(rateLimiter)
 
 	// 6. Create HTTP handler
 	handler := oauth.NewHandler(server, logger)

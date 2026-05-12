@@ -57,6 +57,10 @@ func main() {
 	//
 	// This is ideal for MCP scenarios where servers and clients have no
 	// pre-existing relationship.
+	auditor := security.NewAuditor(logger, true)
+	rateLimiter := security.NewRateLimiter(10, 20, logger)
+	defer rateLimiter.Stop()
+
 	server, err := oauth.NewServer(
 		googleProvider,
 		store, // TokenStore
@@ -91,18 +95,12 @@ func main() {
 			// - Negative caching for failed fetches
 		},
 		logger,
+		oauth.WithAuditor(auditor),
+		oauth.WithRateLimiter(rateLimiter),
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	// 5. Add security features
-	auditor := security.NewAuditor(logger, true)
-	server.SetAuditor(auditor)
-
-	rateLimiter := security.NewRateLimiter(10, 20, logger)
-	defer rateLimiter.Stop()
-	server.SetRateLimiter(rateLimiter)
 
 	// 6. Create HTTP handler
 	handler := oauth.NewHandler(server, logger)
