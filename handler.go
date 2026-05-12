@@ -1152,9 +1152,6 @@ func (h *Handler) buildAuthServerMetadata() map[string]any {
 		// RFC 9207: advertise that authorization responses include the `iss` parameter
 		// so clients can verify the response came from the expected authorization server.
 		"authorization_response_iss_parameter_supported": true,
-		// OpenID Connect Core 1.0 §5.1: claims the server understands and may
-		// honour. `nonce` is advertised because the authorization endpoint accepts
-		// the request parameter and the callback validates the upstream echo.
 		"claims_supported": []string{"sub", "aud", "iss", "exp", "iat", "nonce"},
 	}
 
@@ -2963,21 +2960,10 @@ func validatePrompt(prompt string) string {
 	return normalized
 }
 
-// parseOIDCOptions extracts and validates OIDC parameters from the query string for upstream IdP forwarding.
-// Returns nil if no valid OIDC parameters are provided.
-//
-// Security: All parameters are validated for length and content to prevent DoS and injection attacks.
-// Invalid or oversized values are silently ignored (matching OIDC spec behavior where IdP handles validation),
-// except for the `nonce` parameter when `openid` scope is present — an oversized or too-short nonce on an OIDC
-// flow is a hard rejection so callers don't silently lose the replay-defence binding.
-//
-// Supported parameters (per OpenID Connect Core 1.0 Section 3.1.2.1):
-//   - prompt: Controls authentication UX ("none", "login", "consent", "select_account")
-//   - login_hint: Pre-fills username/email at IdP (max 256 chars)
-//   - id_token_hint: Previously issued ID token for session binding (max 64KB)
-//   - max_age: Maximum authentication age in seconds (invalid values silently ignored)
-//   - acr_values: Authentication context class references (max 1024 chars)
-//   - nonce: Replay-defence binding, forwarded to IdP and validated on callback
+// parseOIDCOptions extracts and validates OIDC parameters from the query string
+// for upstream IdP forwarding. Returns nil when no valid parameters are present.
+// Oversized values for non-nonce params are silently dropped; oversized nonce
+// is a hard rejection.
 func parseOIDCOptions(query url.Values) (*providers.AuthorizationURLOptions, error) {
 	prompt := validatePrompt(query.Get("prompt"))
 	loginHint := truncatedIfOversize(query.Get("login_hint"), MaxLoginHintLength)
@@ -3004,9 +2990,7 @@ func parseOIDCOptions(query url.Values) (*providers.AuthorizationURLOptions, err
 	}, nil
 }
 
-// truncatedIfOversize returns the empty string when v exceeds maxLen. The
-// matching OIDC parameters silently drop oversized values per the upstream
-// IdP's own validation contract.
+// truncatedIfOversize returns the empty string when v exceeds maxLen.
 func truncatedIfOversize(v string, maxLen int) string {
 	if len(v) > maxLen {
 		return ""
@@ -3015,8 +2999,7 @@ func truncatedIfOversize(v string, maxLen int) string {
 }
 
 // parseMaxAgeQueryValue parses the OIDC max_age parameter to *int. Returns nil
-// for missing, oversized, non-numeric, negative, or out-of-range values; the
-// IdP applies the canonical validation when the parameter is forwarded.
+// for missing, oversized, non-numeric, negative, or out-of-range values.
 func parseMaxAgeQueryValue(raw string) *int {
 	if raw == "" || len(raw) > MaxMaxAgeLength {
 		return nil

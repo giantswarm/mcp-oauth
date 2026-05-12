@@ -298,11 +298,8 @@ type IDTokenClaims struct {
 	Locale        string   `json:"locale,omitempty"`
 	Groups        []string `json:"groups,omitempty"`
 
-	// Nonce is the OIDC `nonce` claim echoed back from the upstream IdP. The
-	// JWT validator does not enforce equality with an expected value; callers
-	// holding the expected nonce (e.g. the authorization-code callback path)
-	// pass this claim through ValidateNonceClaim for a constant-time compare.
-	// OpenID Connect Core 1.0 §3.1.3.7.
+	// Nonce is the OIDC `nonce` claim. Callers compare it to the expected value
+	// via ValidateNonceClaim; this struct does not enforce equality.
 	Nonce string `json:"nonce,omitempty"`
 }
 
@@ -323,13 +320,8 @@ var ErrTokenNotValidYet = errors.New("token not valid yet")
 // is non-empty and either does not equal the claim or the claim is absent.
 var ErrNonceMismatch = errors.New("nonce mismatch")
 
-// ValidateNonceClaim enforces the OIDC `nonce` echo on a parsed id_token.
-// When expectedNonce is empty the function is a no-op and returns nil (the
-// authorization request did not bind a nonce, so nothing is checked). When
-// expectedNonce is non-empty the claim MUST be present and equal under a
-// constant-time comparison, otherwise ErrNonceMismatch is returned.
-//
-// OpenID Connect Core 1.0 §3.1.3.7. CWE-294 replay defence.
+// ValidateNonceClaim returns nil when expectedNonce is empty; otherwise it
+// requires claimNonce to equal expectedNonce under a constant-time compare.
 func ValidateNonceClaim(claimNonce, expectedNonce string) error {
 	if expectedNonce == "" {
 		return nil
@@ -337,6 +329,7 @@ func ValidateNonceClaim(claimNonce, expectedNonce string) error {
 	if claimNonce == "" {
 		return fmt.Errorf("%w: claim absent", ErrNonceMismatch)
 	}
+	// constant-time compare to defeat timing oracles
 	if subtle.ConstantTimeCompare([]byte(claimNonce), []byte(expectedNonce)) != 1 {
 		return ErrNonceMismatch
 	}

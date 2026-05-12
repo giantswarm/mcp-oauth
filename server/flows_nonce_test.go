@@ -19,10 +19,8 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
-// makeIDTokenWithNonce builds a syntactically valid JWS that carries the
-// requested `nonce` claim (or omits it when nonce is the sentinel "").
-// The signature is a placeholder — the callback path only parses claims
-// for the nonce echo check; full signature verification happens elsewhere.
+// makeIDTokenWithNonce builds a JWS carrying the requested `nonce` claim, or
+// omits the claim when nonce is "". Signature is a placeholder.
 func makeIDTokenWithNonce(t *testing.T, nonce string) string {
 	t.Helper()
 	header := map[string]string{"alg": "RS256", "typ": "JWT", "kid": "test"}
@@ -45,10 +43,6 @@ func makeIDTokenWithNonce(t *testing.T, nonce string) string {
 	return encode(headerBytes) + "." + encode(payloadBytes) + ".sig"
 }
 
-// nonceFlowFixture wires a server and provider for the four nonce tests.
-// The provider's ExchangeCodeFunc is parameterised by the caller so each
-// test can vary the id_token (mismatched, missing, well-formed) without
-// re-doing the boilerplate.
 type nonceFlowFixture struct {
 	srv      *Server
 	store    *memory.Store
@@ -98,9 +92,6 @@ func setupNonceFlow(t *testing.T, requireNonce bool) *nonceFlowFixture {
 	}
 }
 
-// startOIDCFlow runs StartAuthorizationFlow with `openid email` scope and
-// returns the provider state and the persisted nonce. The caller decides
-// what id_token to echo back.
 func (f *nonceFlowFixture) startOIDCFlow(t *testing.T) (providerState, expectedNonce string) {
 	t.Helper()
 
@@ -130,8 +121,6 @@ func (f *nonceFlowFixture) startOIDCFlow(t *testing.T) (providerState, expectedN
 	return authState.ProviderState, authState.Nonce
 }
 
-// startNonOIDCFlow runs StartAuthorizationFlow without the openid scope.
-// The persisted authState must not carry a nonce.
 func (f *nonceFlowFixture) startNonOIDCFlow(t *testing.T) string {
 	t.Helper()
 
@@ -161,8 +150,6 @@ func (f *nonceFlowFixture) startNonOIDCFlow(t *testing.T) string {
 	return authState.ProviderState
 }
 
-// echoIDToken installs an ExchangeCodeFunc that returns a token with the
-// given id_token (or no id_token when idToken is empty).
 func (f *nonceFlowFixture) echoIDToken(idToken string) {
 	f.provider.ExchangeCodeFunc = func(_ context.Context, _, _ string) (*oauth2.Token, error) {
 		token := &oauth2.Token{
@@ -216,8 +203,6 @@ func TestNonce_NotOIDCFlow_NotEnforced(t *testing.T) {
 	fix := setupNonceFlow(t, true)
 	providerState := fix.startNonOIDCFlow(t)
 
-	// Even an id_token carrying a wildly mismatched nonce must not trip the
-	// check when the authorization request had no `openid` scope.
 	fix.echoIDToken(makeIDTokenWithNonce(t, "some-other-nonce-that-would-mismatch-1234"))
 
 	authCode, _, err := fix.srv.HandleProviderCallback(context.Background(), providerState, "code")
@@ -225,21 +210,16 @@ func TestNonce_NotOIDCFlow_NotEnforced(t *testing.T) {
 	require.NotNil(t, authCode)
 }
 
-// TestNonce_DisableNonceEchoRequirement_Bypasses confirms that the opt-out
-// config flag for non-conformant IdPs short-circuits the echo check.
 func TestNonce_DisableNonceEchoRequirement_Bypasses(t *testing.T) {
 	fix := setupNonceFlow(t, false)
 	providerState, _ := fix.startOIDCFlow(t)
-	fix.echoIDToken(makeIDTokenWithNonce(t, "")) // claim absent
+	fix.echoIDToken(makeIDTokenWithNonce(t, ""))
 
 	authCode, _, err := fix.srv.HandleProviderCallback(context.Background(), providerState, "code")
 	require.NoError(t, err, "DisableNonceEchoRequirement must bypass the echo check")
 	require.NotNil(t, authCode)
 }
 
-// TestValidateNonceClaim_ConstantTimeAndSentinel exercises the standalone
-// validator: empty expected ⇒ skip; absent claim ⇒ ErrNonceMismatch; mismatch
-// ⇒ ErrNonceMismatch; equal ⇒ nil.
 func TestValidateNonceClaim_ConstantTimeAndSentinel(t *testing.T) {
 	t.Parallel()
 
@@ -271,9 +251,6 @@ func TestValidateNonceClaim_ConstantTimeAndSentinel(t *testing.T) {
 	}
 }
 
-// TestNonce_ForwardedToProviderURL confirms that the nonce minted server-side
-// is propagated all the way to the upstream IdP via the provider's
-// AuthorizationURL output.
 func TestNonce_ForwardedToProviderURL(t *testing.T) {
 	fix := setupNonceFlow(t, true)
 
@@ -303,9 +280,6 @@ func TestNonce_ForwardedToProviderURL(t *testing.T) {
 	require.Contains(t, authURL, "nonce="+authState.Nonce)
 }
 
-// TestNonce_ClientSuppliedPassesThrough confirms that a client-supplied nonce
-// of sufficient entropy is preserved (no replacement) all the way through to
-// the authorization URL and the persisted state.
 func TestNonce_ClientSuppliedPassesThrough(t *testing.T) {
 	fix := setupNonceFlow(t, true)
 

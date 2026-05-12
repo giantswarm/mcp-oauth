@@ -2106,10 +2106,6 @@ func TestHandler_ServeAuthorization_OIDCParameterForwarding(t *testing.T) {
 				return
 			}
 
-			// Verify OIDC options were forwarded correctly. The /authorize
-			// scope contains `openid`, so the server mints a nonce and
-			// authOpts is always non-nil regardless of client-supplied
-			// parameters.
 			if capturedOpts == nil {
 				t.Fatal("Expected authOpts to be passed to provider, got nil")
 			}

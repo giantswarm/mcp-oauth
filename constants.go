@@ -208,7 +208,5 @@ const (
 	MaxMaxAgeSeconds = 31 * 24 * 60 * 60
 
 	// MaxNonceLength is the maximum length for the OIDC `nonce` parameter.
-	// Sized to comfortably accommodate UUID v4 and 32-byte base64 random
-	// nonces issued by common SDKs while bounding work on untrusted input.
 	MaxNonceLength = 256
 )

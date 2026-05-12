@@ -369,9 +369,6 @@ func TestStartAuthorizationFlow_OIDCParameterForwarding(t *testing.T) {
 				t.Error("StartAuthorizationFlow() returned empty authorization URL")
 			}
 
-			// Verify options were passed to provider. On OIDC flows the server
-			// mints a `nonce` even when the client supplied no authOpts, so
-			// capturedOpts is non-nil whenever scope contains `openid`.
 			if capturedOpts == nil {
 				t.Fatal("Expected authOpts to be passed to provider, got nil")
 			}
@@ -702,16 +699,12 @@ func TestServer_HandleProviderCallback_ShortLivedToken(t *testing.T) {
 		}, nil
 	}
 
-	// Create server with custom ProviderTokenTTL. The mock provider returns a
-	// non-parseable id_token fixture, so the upstream nonce echo check is
-	// disabled here — this test exercises token-extension behaviour, not OIDC
-	// nonce validation (covered in flows_nonce_test.go).
 	config := &Config{
 		Issuer:                      "https://auth.example.com",
 		SupportedScopes:             []string{"openid", "email", "profile"},
 		AuthorizationCodeTTL:        600,
 		AccessTokenTTL:              3600,
-		ProviderTokenTTL:            3600, // 1 hour - should extend the expired token
+		ProviderTokenTTL:            3600,
 		RequirePKCE:                 true,
 		AllowPKCEPlain:              false,
 		DisableNonceEchoRequirement: true,

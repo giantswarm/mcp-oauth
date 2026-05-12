@@ -42,11 +42,8 @@ type AuthorizationURLOptions struct {
 	// Used with prompt=none to identify the user for silent re-authentication.
 	IDTokenHint string
 
-	// Nonce binds the upstream ID token to the authorization request to defend
-	// against ID-token replay (CWE-294). When non-empty the value is forwarded
-	// to the IdP and MUST be echoed back in the resulting id_token's `nonce`
-	// claim; the server validates the echo at callback time.
-	// OpenID Connect Core 1.0 §3.1.2.1 / §3.1.3.7.
+	// Nonce is forwarded to the IdP and must be echoed back in the resulting
+	// id_token's `nonce` claim. Constant-time compared on callback.
 	Nonce string
 
 	// Extra allows setting additional custom parameters not covered above.

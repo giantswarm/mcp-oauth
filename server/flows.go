@@ -897,12 +897,8 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 	// Generate PKCE for server-to-provider leg (OAuth 2.1)
 	providerCodeChallenge, providerCodeVerifier := generatePKCEPair()
 
-	// Resolve the effective OIDC nonce. Only meaningful when `openid` is in
-	// scope — non-OIDC code flows don't get an id_token to validate.
 	effectiveNonce, authOpts := s.resolveAuthorizationNonce(clientID, scope, authOpts)
 
-	// Log authorization flow start after nonce resolution so the audit
-	// record reflects the value actually forwarded to the upstream IdP.
 	s.logAuthorizationFlowStarted(ctx, clientID, redirectURI, scope, codeChallengeMethod, resource, authOpts)
 
 	// Save authorization state with both client and server PKCE parameters and resource binding
@@ -930,33 +926,19 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 	// If client didn't request scopes, pass empty slice and provider will use its defaults
 	requestedScopes := helpers.SplitScopes(scope)
 
-	// Generate authorization URL with server-generated PKCE and requested scopes
-	// Forward OIDC parameters (prompt, login_hint, id_token_hint, nonce) to upstream IdP
 	authURL := s.provider.AuthorizationURL(providerState, providerCodeChallenge, "S256", requestedScopes, authOpts)
 
 	return authURL, nil
 }
 
-// minClientNonceLength mirrors MinStateLength: a client-supplied OIDC nonce
-// must carry at least 128 bits of entropy (24 base64 chars yields 144). A
-// shorter value is replaced with a server-minted one rather than rejecting
-// the request — the goal is to enforce replay-binding strength, not to
-// surface configuration nits to the end user.
+// minClientNonceLength is the lower bound on client-supplied nonce entropy
+// (24 base64 chars yields 144 bits). Shorter values are replaced server-side.
 const minClientNonceLength = 24
 
-// resolveAuthorizationNonce computes the nonce to persist with the
-// AuthorizationState and to forward to the upstream IdP. It returns the
-// possibly-amended authOpts to keep the caller from re-marshalling.
-//
-// Behavior:
-//   - Non-OIDC flows (no `openid` scope): the nonce is dropped from authOpts
-//     and not stored. The upstream id_token, if any, will not be validated
-//     against a nonce.
-//   - OIDC flow with client-supplied nonce: the client value is reused.
-//   - OIDC flow without client nonce: the server mints a high-entropy value
-//     and threads it through to the upstream IdP. This guarantees every
-//     OIDC code flow this server initiates is replay-bound regardless of
-//     whether the calling MCP client emitted a nonce of its own.
+// resolveAuthorizationNonce returns the nonce to persist with the
+// AuthorizationState and the authOpts forwarded to the upstream IdP. Non-OIDC
+// scopes drop the nonce; OIDC scopes reuse a sufficiently entropic client value
+// or mint a server-side replacement.
 func (s *Server) resolveAuthorizationNonce(clientID, scope string, authOpts *providers.AuthorizationURLOptions) (string, *providers.AuthorizationURLOptions) {
 	if !helpers.HasScope(scope, "openid") {
 		if authOpts != nil && authOpts.Nonce != "" {
@@ -1073,15 +1055,9 @@ func (s *Server) logProviderStateMismatch(ctx context.Context, clientID string) 
 	}
 }
 
-// validateUpstreamIDTokenNonce enforces the OIDC `nonce` echo on the upstream
-// id_token returned with the authorization code. The check is a no-op when:
-//   - the AuthorizationState carries no nonce (non-OIDC flow), or
-//   - the upstream response carries no id_token (the request was not OIDC), or
-//   - Config.RequireNonceEcho is false (operator opt-out for non-conformant IdPs).
-//
-// On enforcement failure the call returns an error and emits the
-// EventProviderNonceMismatch audit event with severity=high so the rejection
-// surfaces in security dashboards without depending on log scraping.
+// validateUpstreamIDTokenNonce requires the upstream id_token's `nonce` claim
+// to equal authState.Nonce. No-op when authState has no nonce, the response
+// carries no id_token, or RequireNonceEcho is false.
 func (s *Server) validateUpstreamIDTokenNonce(ctx context.Context, authState *storage.AuthorizationState, providerToken *oauth2.Token) error {
 	if authState == nil || authState.Nonce == "" {
 		return nil
@@ -1114,8 +1090,8 @@ func (s *Server) validateUpstreamIDTokenNonce(ctx context.Context, authState *st
 	return nil
 }
 
-// logProviderNonceMismatch records the high-severity audit event for an
-// upstream id_token nonce echo failure. CWE-294 replay defence.
+// logProviderNonceMismatch emits the audit event for an upstream id_token
+// nonce echo failure. severity=high — replay-attack indicator.
 func (s *Server) logProviderNonceMismatch(ctx context.Context, clientID, reason string) {
 	if s.Auditor == nil {
 		return
@@ -2208,7 +2184,7 @@ func (s *Server) logAuthorizationFlowStarted(ctx context.Context, clientID, redi
 			details["id_token_hint_provided"] = true
 		}
 		if authOpts.Nonce != "" {
-			// Record nonce presence without leaking the value into audit storage.
+			// presence only — value is sensitive
 			details["nonce_bound"] = true
 		}
 	}
