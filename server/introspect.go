@@ -14,6 +14,12 @@ import (
 // or {"active": false} when requestingClient is not authorized to learn it.
 // Denied probes return no other fields so the endpoint is not an oracle for
 // token or user enumeration.
+//
+// Callers MUST authenticate requestingClient before invoking this method.
+// The cross-client gate trusts that identifier as-is; passing an attacker-
+// supplied or unauthenticated value defeats the gate entirely. The in-tree
+// caller is [Handler.ServeTokenIntrospection], which runs
+// authenticateIntrospectionClient first.
 func (s *Server) IntrospectToken(ctx context.Context, accessToken, requestingClient string) map[string]any {
 	if s.Config.IsJWTAccessTokenFormat() && s.looksLikeSelfIssuedJWT(accessToken) {
 		return s.introspectSelfIssuedJWT(ctx, accessToken, requestingClient)
