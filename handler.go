@@ -45,7 +45,7 @@ type clientRegistrationRequest struct {
 
 // checkClientRegistrationRateLimit checks if client registration is rate limited
 // Returns true if request should be rejected, false if allowed
-func (h *Handler) checkClientRegistrationRateLimit(ctx context.Context, w http.ResponseWriter, clientIP string, _ time.Time) bool {
+func (h *Handler) checkClientRegistrationRateLimit(ctx context.Context, w http.ResponseWriter, clientIP string, startTime time.Time) bool {
 	if h.server.ClientRegistrationRateLimiter == nil {
 		return false
 	}
@@ -58,6 +58,7 @@ func (h *Handler) checkClientRegistrationRateLimit(ctx context.Context, w http.R
 		if h.server.Auditor != nil {
 			h.server.Auditor.LogClientRegistrationRateLimitExceeded(ctx, clientIP)
 		}
+		h.recordHTTPMetrics(ctx, "register", http.MethodPost, http.StatusTooManyRequests, startTime)
 		h.writeError(w, ErrorCodeInvalidRequest,
 			"Client registration rate limit exceeded. Please try again later.",
 			http.StatusTooManyRequests)
