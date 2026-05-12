@@ -45,6 +45,7 @@ const (
 	endpointRevoke        = "revoke"
 	endpointIntrospect    = "introspect"
 	endpointRegister      = "register"
+	endpointValidateToken = "validate_token"
 )
 
 // clientRegistrationRequest represents the JSON request for client registration
@@ -494,9 +495,11 @@ func (h *Handler) buildInterstitialData(redirectURL, appName string, branding *s
 // ValidateToken is middleware that validates OAuth tokens
 func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startTime := time.Now()
 		clientIP := security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 
 		if h.checkIPRateLimit(w, r, clientIP) {
+			h.recordHTTPMetrics(r.Context(), endpointValidateToken, r.Method, http.StatusTooManyRequests, startTime)
 			return
 		}
 
@@ -520,6 +523,7 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 		}
 
 		if h.checkUserRateLimit(w, r, userInfo.ID, clientIP) {
+			h.recordHTTPMetrics(r.Context(), endpointValidateToken, r.Method, http.StatusTooManyRequests, startTime)
 			return
 		}
 
@@ -554,15 +558,22 @@ func retryAfterSecondsForRate(rate int) int {
 // has already written the 429 response, recorded the HTTP counter, and
 // annotated the span; the caller just returns. Returns the resolved
 // clientIP for the caller to use downstream, and ok=true when the request
-// should proceed.
+// should proceed. span must be non-nil; obtain one via startHandlerSpan.
 func (h *Handler) gateIPRateLimit(w http.ResponseWriter, r *http.Request, span trace.Span, endpoint, method string, startTime time.Time) (clientIP string, ok bool) {
 	clientIP = security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
 	if !h.checkIPRateLimit(w, r, clientIP) {
 		return clientIP, true
 	}
-	instrumentation.SetSpanError(span, "rate limited")
-	h.recordHTTPMetrics(r.Context(), endpoint, method, http.StatusTooManyRequests, startTime)
+	h.recordRateLimitReject(r.Context(), span, endpoint, method, startTime)
 	return "", false
+}
+
+// recordRateLimitReject runs the side-effects common to every rate-limit
+// reject path: span annotation + HTTP counter. The check*RateLimit helper
+// has already written the 429 response and recorded its own metric/audit.
+func (h *Handler) recordRateLimitReject(ctx context.Context, span trace.Span, endpoint, method string, startTime time.Time) {
+	instrumentation.SetSpanError(span, "rate limited")
+	h.recordHTTPMetrics(ctx, endpoint, method, http.StatusTooManyRequests, startTime)
 }
 
 // The four check*RateLimit helpers below share a "true means rejected"
@@ -1440,7 +1451,12 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 
+	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.token")
+	defer endSpan()
+
 	if r.Method != http.MethodPost {
+		h.recordHTTPMetrics(r.Context(), endpointToken, r.Method, http.StatusMethodNotAllowed, startTime)
+		instrumentation.SetSpanError(span, "method not allowed")
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -1448,7 +1464,7 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 	// Set CORS headers for browser-based clients
 	h.setCORSHeaders(w, r)
 
-	clientIP, ok := h.gateIPRateLimit(w, r, nil, endpointToken, http.MethodPost, startTime)
+	clientIP, ok := h.gateIPRateLimit(w, r, span, endpointToken, http.MethodPost, startTime)
 	if !ok {
 		return
 	}
@@ -1474,6 +1490,8 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 		h.handleRefreshTokenGrant(w, r, clientIP)
 	default:
 		h.recordTokenFailure(r.Context(), grantType, ErrorCodeUnsupportedGrantType)
+		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "unsupported grant_type")
 		h.writeError(w, ErrorCodeUnsupportedGrantType, fmt.Sprintf("Grant type %s not supported", grantType), http.StatusBadRequest)
 	}
 }
@@ -1529,11 +1547,12 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Post-auth rate limit, keyed by client_id. /token has no end-user
-	// context, so the authenticated principal here is the client.
-	if h.checkUserRateLimit(w, r, client.ClientID, clientIP) {
-		instrumentation.SetSpanError(span, "rate limited")
-		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusTooManyRequests, startTime)
+	// Post-auth rate limit, keyed by client_id. Confidential-only: public
+	// clients have no secret to compromise, and rate-limiting by a public
+	// client_id is attacker-controllable. Public clients stay bounded by
+	// the IP limit.
+	if client.ClientType == ClientTypeConfidential && h.checkUserRateLimit(w, r, client.ClientID, clientIP) {
+		h.recordRateLimitReject(r.Context(), span, endpointToken, http.MethodPost, startTime)
 		return
 	}
 
@@ -1612,8 +1631,7 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 		// Post-auth rate limit for confidential clients, keyed by client_id.
 		// Public clients have no authentication step, only an IP-rate bound.
 		if h.checkUserRateLimit(w, r, clientID, clientIP) {
-			instrumentation.SetSpanError(span, "rate limited")
-			h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusTooManyRequests, startTime)
+			h.recordRateLimitReject(r.Context(), span, endpointToken, http.MethodPost, startTime)
 			return
 		}
 	}
@@ -1789,8 +1807,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 
 	// Post-auth rate limit for authenticated clients, keyed by client_id.
 	if clientAuthenticated && h.checkUserRateLimit(w, r, clientID, clientIP) {
-		instrumentation.SetSpanError(span, "rate limited")
-		h.recordHTTPMetrics(r.Context(), endpointRevoke, http.MethodPost, http.StatusTooManyRequests, startTime)
+		h.recordRateLimitReject(r.Context(), span, endpointRevoke, http.MethodPost, startTime)
 		return
 	}
 

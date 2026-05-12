@@ -274,6 +274,55 @@ func TestHandler_TokenEndpoint_PostAuthUserRateLimit(t *testing.T) {
 	}
 }
 
+// TestHandler_TokenEndpoint_PublicClientSkipsUserRateLimit pins the
+// confidential-only contract: a public PKCE client must not be bounded by
+// the user rate limiter (its client_id is attacker-controllable; the IP
+// limit is the only meaningful bound for public clients).
+func TestHandler_TokenEndpoint_PublicClientSkipsUserRateLimit(t *testing.T) {
+	srv := newOAuthTestServer(t)
+	srv.UserRateLimiter = security.NewRateLimiter(0, 1, nil)
+	t.Cleanup(srv.UserRateLimiter.Stop)
+	handler := NewHandler(srv, nil)
+
+	client, _, err := handler.server.RegisterClient(
+		context.Background(),
+		"Public Test Client",
+		"public",
+		"",
+		[]string{"https://example.com/callback"},
+		[]string{"openid"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	send := func() int {
+		body := url.Values{
+			"grant_type":    {"authorization_code"},
+			"code":          {"invalid-code-causes-exchange-failure"},
+			"redirect_uri":  {"https://example.com/callback"},
+			"client_id":     {client.ClientID},
+			"code_verifier": {"verifier-not-validated-here"},
+		}.Encode()
+		req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = testClientRemoteAddr
+		w := httptest.NewRecorder()
+		handler.ServeToken(w, req)
+		return w.Code
+	}
+
+	// Burst of requests well past the user limiter's burst=1 — none must 429
+	// since the user limit is gated on confidential-client status.
+	for i := 0; i < 5; i++ {
+		if code := send(); code == http.StatusTooManyRequests {
+			t.Fatalf("public-client request %d returned 429 — user limiter applied incorrectly", i+1)
+		}
+	}
+}
+
 // TestHandler_IPRateLimit_RetryAfterDerivedFromRate confirms that the
 // Retry-After hint reflects the limiter's configured rate rather than a
 // fixed constant.

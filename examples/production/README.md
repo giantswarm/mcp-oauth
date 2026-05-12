@@ -608,21 +608,22 @@ The production setup uses **multiple layers of rate limiting** for defense in de
    ```go
    rateLimiter := security.NewRateLimiter(10, 20, logger)
    defer rateLimiter.Stop()
-   server.SetRateLimiter(rateLimiter)
+   // Pass to server.New as an option:
+   //   server.New(..., server.WithRateLimiter(rateLimiter))
    ```
 
 2. **User-based Rate Limiting**: Prevents abuse from authenticated users
    ```go
    userRateLimiter := security.NewRateLimiter(100, 200, logger)
    defer userRateLimiter.Stop()
-   server.SetUserRateLimiter(userRateLimiter)
+   // server.New(..., server.WithUserRateLimiter(userRateLimiter))
    ```
 
 3. **Client Registration Rate Limiting**: Prevents registration DoS
    ```go
    clientRegRateLimiter := security.NewClientRegistrationRateLimiter(logger)
    defer clientRegRateLimiter.Stop()
-   server.SetClientRegistrationRateLimiter(clientRegRateLimiter)
+   // server.New(..., server.WithClientRegistrationRateLimiter(clientRegRateLimiter))
    ```
 
 **Why multiple layers?**

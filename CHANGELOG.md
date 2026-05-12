@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Rate-limit keys now bucket IPv6 to a `/64`**
   - The CWE-307 closure is no longer bypassable by an attacker holding an IPv6 `/64` (the typical end-site allocation): `security.RateLimitBucket` maps every `/128` in the same `/64` to a single key. IPv4 is unchanged. Applies to the IP, discovery, and client-registration rate limiters.
 - **Post-authentication rate limit on `/token` and `/revoke` (the issue's optional second pass)**
-  - After successful client authentication, requests are also bounded by the `UserRateLimiter` keyed on `client_id`. Caps authenticated abusers (e.g. a single compromised client enumerating refresh tokens). Applies to confidential clients on `/token` and to `/revoke` requests carrying Basic Auth; public clients on `/token` remain bounded by the IP limit only.
+  - After successful client authentication, requests are also bounded by the `UserRateLimiter` keyed on `client_id`. Caps authenticated abusers (e.g. a single compromised client enumerating refresh tokens). Applies to confidential clients on `/token` and `/revoke`; public clients (PKCE on `/token`) remain bounded by the IP limit only since their `client_id` is public and attacker-controllable.
 
 ### Changed
 
@@ -23,10 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`oauth_http_requests_total` now covers all `/token` and `ValidateToken` middleware paths**
+  - The HTTP counter previously skipped `/token`'s `405` and unsupported-`grant_type` `400` responses, and the `ValidateToken` middleware's rate-limit `429`s. Dashboards summing by `endpoint` (new label `validate_token`) now see those.
 - **`oauth_http_requests_total` now records the 429 on `/register`'s IP-rate path**
-  - The IP-gate 429 on `/register` was the only `recordHTTPMetrics`-aware endpoint missing the rate-limit status from the HTTP counter. Dashboards summing 429s by endpoint will now see registration IP-rate rejections.
+  - The IP-gate 429 on `/register` was previously missing from the HTTP counter.
 - **OAuth handler spans are now propagated to all downstream metric and audit calls on `/callback`, `/token`, `/revoke`, `/introspect`**
-  - Metrics and audit events recorded after `tracer.Start` are now linked to the active span instead of an unspanned context. Rate-limit 429 branches on these handlers also annotate the span.
+  - Metrics and audit events recorded after `tracer.Start` are now linked to the active span instead of an unspanned context. `/token` now opens a top-level `oauth.http.token` span at handler entry so rate-limit 429s on `/token` also appear in traces (the per-grant `oauth.http.token_exchange` / `oauth.http.token_refresh` spans become children).
 
 ### Added
 
