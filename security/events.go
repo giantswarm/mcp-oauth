@@ -139,6 +139,11 @@ const (
 	// EventProviderStateMismatch is logged when provider state parameter doesn't match
 	EventProviderStateMismatch = "provider_state_mismatch"
 
+	// EventProviderNonceMismatch is logged when an upstream id_token's `nonce`
+	// claim does not match the nonce issued at /authorize time, or when the
+	// claim is absent while RequireNonceEcho is enabled. CWE-294 replay defense.
+	EventProviderNonceMismatch = "provider_nonce_mismatch"
+
 	// EventProviderCodeExchangeFailed is logged when code exchange with provider fails (PKCE, etc.)
 	EventProviderCodeExchangeFailed = "provider_code_exchange_failed"
 

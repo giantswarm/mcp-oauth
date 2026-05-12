@@ -3,6 +3,7 @@ package oidc
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -296,6 +297,13 @@ type IDTokenClaims struct {
 	Picture       string   `json:"picture,omitempty"`
 	Locale        string   `json:"locale,omitempty"`
 	Groups        []string `json:"groups,omitempty"`
+
+	// Nonce is the OIDC `nonce` claim echoed back from the upstream IdP. The
+	// JWT validator does not enforce equality with an expected value; callers
+	// holding the expected nonce (e.g. the authorization-code callback path)
+	// pass this claim through ValidateNonceClaim for a constant-time compare.
+	// OpenID Connect Core 1.0 §3.1.3.7.
+	Nonce string `json:"nonce,omitempty"`
 }
 
 // ErrIssuerMismatch is returned (wrapped) when a JWT's iss claim does not match
@@ -310,6 +318,30 @@ var ErrTokenExpired = errors.New("token expired")
 // ErrTokenNotValidYet is returned (wrapped) when a JWT's nbf claim is in the
 // future beyond the configured leeway.
 var ErrTokenNotValidYet = errors.New("token not valid yet")
+
+// ErrNonceMismatch is returned by ValidateNonceClaim when the expected nonce
+// is non-empty and either does not equal the claim or the claim is absent.
+var ErrNonceMismatch = errors.New("nonce mismatch")
+
+// ValidateNonceClaim enforces the OIDC `nonce` echo on a parsed id_token.
+// When expectedNonce is empty the function is a no-op and returns nil (the
+// authorization request did not bind a nonce, so nothing is checked). When
+// expectedNonce is non-empty the claim MUST be present and equal under a
+// constant-time comparison, otherwise ErrNonceMismatch is returned.
+//
+// OpenID Connect Core 1.0 §3.1.3.7. CWE-294 replay defence.
+func ValidateNonceClaim(claimNonce, expectedNonce string) error {
+	if expectedNonce == "" {
+		return nil
+	}
+	if claimNonce == "" {
+		return fmt.Errorf("%w: claim absent", ErrNonceMismatch)
+	}
+	if subtle.ConstantTimeCompare([]byte(claimNonce), []byte(expectedNonce)) != 1 {
+		return ErrNonceMismatch
+	}
+	return nil
+}
 
 // ValidateIDToken validates an ID token (JWT) using the provider's JWKS.
 // This is used for SSO token forwarding where ID tokens are passed as Bearer tokens.

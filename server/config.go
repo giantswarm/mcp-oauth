@@ -762,6 +762,27 @@ type Config struct {
 	// manager or mounted file (not from an environment variable).
 	SessionIDHMACKey []byte
 
+	// RequireNonceEcho controls upstream id_token `nonce` claim enforcement on
+	// the OIDC authorization-code callback. When the /authorize request was
+	// made with `openid` scope and the client (or this server) supplied a
+	// `nonce`, the upstream id_token MUST echo it back; mismatch or absence
+	// rejects the callback and emits a high-severity audit event.
+	//
+	// Set via DisableNonceEchoRequirement=true to opt out for non-conformant
+	// IdPs that drop the claim. Opting out removes the ID-token replay
+	// defence described in CWE-294 and OpenID Connect Core 1.0 §3.1.3.7.
+	//
+	// Default: true (secure-by-default, applied automatically by
+	// applySecurityDefaults when DisableNonceEchoRequirement is false).
+	RequireNonceEcho bool
+
+	// DisableNonceEchoRequirement explicitly disables the upstream id_token
+	// `nonce` echo check. WARNING: Disabling removes the ID-token replay
+	// defence (CWE-294). Only set this for deployments behind a known
+	// non-conformant IdP that drops the nonce claim.
+	// Default: false (RequireNonceEcho is enabled).
+	DisableNonceEchoRequirement bool
+
 	// EnableClientIDMetadataDocuments enables URL-based client_id support per MCP 2025-11-25
 	// When enabled, clients can use HTTPS URLs as client identifiers, and the authorization
 	// server will fetch client metadata from that URL following draft-ietf-oauth-client-id-metadata-document-00
