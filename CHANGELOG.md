@@ -10,7 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - **IP rate limiter now applied to `/authorize`, `/token`, `/revoke`, `/introspect`** (CWE-307, closes #302)
-  - Exceeding the configured per-IP rate on any of these endpoints returns `429` with `Retry-After: 60` and `{"error":"rate_limit_exceeded"}`, and emits the `rate_limit_exceeded` audit event and metric. No-op when no `RateLimiter` is configured.
+  - Exceeding the configured per-IP rate on any of these endpoints returns `429` with `Retry-After` and `{"error":"rate_limit_exceeded"}`, and emits the `rate_limit_exceeded` audit event and metric. No-op when no `RateLimiter` is configured.
+- **Rate-limit keys now bucket IPv6 to a `/64`**
+  - The CWE-307 closure is no longer bypassable by an attacker holding an IPv6 `/64` (the typical end-site allocation): `security.RateLimitBucket` maps every `/128` in the same `/64` to a single key. IPv4 is unchanged. Applies to the IP, discovery, and client-registration rate limiters.
+- **Post-authentication rate limit on `/token` and `/revoke` (the issue's optional second pass)**
+  - After successful client authentication, requests are also bounded by the `UserRateLimiter` keyed on `client_id`. Caps authenticated abusers (e.g. a single compromised client enumerating refresh tokens). Applies to confidential clients on `/token` and to `/revoke` requests carrying Basic Auth; public clients on `/token` remain bounded by the IP limit only.
+
+### Changed
+
+- **`Retry-After` is computed from the limiter's configured rate**
+  - The IP, user, and discovery rate-limit `429` responses now set `Retry-After` to `ceil(1 / rps)` (minimum `1`, falling back to `60` when the rate is 0). The client-registration limiter uses its configured window. Previously this header was a hardcoded `60` regardless of limiter configuration. New `RateLimiter.Rate()` / `RateLimiter.Burst()` / `ClientRegistrationRateLimiter.Window()` accessors expose the values.
 
 ### Fixed
 

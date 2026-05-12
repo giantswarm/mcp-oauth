@@ -126,6 +126,12 @@ When configured, the limiter is enforced at the entry of every unauthenticated O
 
 `/authorize` is hit by end-user browsers, whereas `/token`, `/revoke`, and `/introspect` are typically server-to-server. Size the IP limit so a single shared egress (corporate NAT, mobile carrier) does not throttle real users; if that risk is real, run a separate limiter in front of `/authorize` via your reverse proxy.
 
+IPv6 clients are bucketed to the `/64` prefix (the conventional end-site allocation) so an attacker holding a `/64` cannot rotate 2^64 addresses to bypass the per-IP limit. IPv4 is keyed by the full address. The bucket helper is exported as `security.RateLimitBucket(ip)`.
+
+The `Retry-After` value on a 429 is computed from the limiter's configured rate (`ceil(1/rps)` for the token-bucket limiters, the configured window for the client-registration limiter). Operators tuning rate / burst do not need to update Retry-After separately.
+
+`/token` and `/revoke` additionally enforce the user rate limiter (`server.WithUserRateLimiter(...)`) after client authentication completes, keyed on `client_id`. This bounds a compromised confidential client that already holds valid credentials. Public clients (no Basic Auth) remain bounded by the IP limit only.
+
 ### User-Based Rate Limiting
 
 Additional limits for authenticated users:

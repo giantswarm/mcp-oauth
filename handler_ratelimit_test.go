@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -176,6 +177,133 @@ func TestHandler_OAuthEndpoints_NoRateLimiter(t *testing.T) {
 				if w.Code == http.StatusTooManyRequests {
 					t.Fatalf("request %d returned 429 with no rate limiter configured", i+1)
 				}
+			}
+		})
+	}
+}
+
+// TestHandler_IPRateLimit_IPv6BucketedBy64 confirms the CWE-307 closure isn't
+// bypassable by walking a /64: two distinct IPv6 /128s within the same /64
+// share a bucket; a /128 in a different /64 does not.
+func TestHandler_IPRateLimit_IPv6BucketedBy64(t *testing.T) {
+	handler := setupTestHandlerWithRateLimit(t, 1)
+
+	send := func(remoteAddr string) int {
+		body := url.Values{"grant_type": {"x"}}.Encode()
+		req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = remoteAddr
+		w := httptest.NewRecorder()
+		handler.ServeToken(w, req)
+		return w.Code
+	}
+
+	if code := send("[2001:db8::1]:1111"); code == http.StatusTooManyRequests {
+		t.Fatalf("first request from 2001:db8::1 returned 429: %d", code)
+	}
+	if code := send("[2001:db8::2]:1111"); code != http.StatusTooManyRequests {
+		t.Fatalf("second /64-sibling 2001:db8::2 should hit shared bucket: status = %d, want 429", code)
+	}
+	if code := send("[2001:db8:1::1]:1111"); code == http.StatusTooManyRequests {
+		t.Fatalf("different /64 (2001:db8:1::/64) should not be rate-limited: %d", code)
+	}
+}
+
+// TestHandler_TokenEndpoint_PostAuthUserRateLimit confirms the issue's
+// optional second pass: a successfully-authenticated client is also bounded
+// by the user rate limiter (keyed by client_id), so authenticated abusers
+// can't enumerate tokens at unbounded rate.
+func TestHandler_TokenEndpoint_PostAuthUserRateLimit(t *testing.T) {
+	srv := newTestServerForRateLimit(t)
+	srv.UserRateLimiter = security.NewRateLimiter(0, 1, nil) // 1 token, no refill
+	t.Cleanup(srv.UserRateLimiter.Stop)
+	handler := NewHandler(srv, nil)
+
+	client, secret, err := handler.server.RegisterClient(
+		context.Background(),
+		"Test Client",
+		"confidential",
+		"",
+		[]string{"https://example.com/callback"},
+		[]string{"openid"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	send := func() *httptest.ResponseRecorder {
+		body := url.Values{
+			"grant_type":   {"authorization_code"},
+			"code":         {"invalid-code-causes-exchange-failure"},
+			"redirect_uri": {"https://example.com/callback"},
+		}.Encode()
+		req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.SetBasicAuth(client.ClientID, secret)
+		req.RemoteAddr = testClientRemoteAddr
+		w := httptest.NewRecorder()
+		handler.ServeToken(w, req)
+		return w
+	}
+
+	first := send()
+	if first.Code == http.StatusTooManyRequests {
+		t.Fatalf("first authenticated request returned 429: %d", first.Code)
+	}
+
+	second := send()
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("second authenticated request: status = %d, want 429", second.Code)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(second.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["error"] != ErrorCodeRateLimitExceeded {
+		t.Errorf("error = %q, want %q", body["error"], ErrorCodeRateLimitExceeded)
+	}
+}
+
+// TestHandler_IPRateLimit_RetryAfterDerivedFromRate confirms that the
+// Retry-After hint reflects the limiter's configured rate rather than a
+// fixed constant.
+func TestHandler_IPRateLimit_RetryAfterDerivedFromRate(t *testing.T) {
+	tests := []struct {
+		name string
+		rate int
+		want string
+	}{
+		{"rate 10 rps → 1s (ceil)", 10, "1"},
+		{"rate 1 rps → 1s", 1, "1"},
+		{"rate 0 (no refill) → 60s fallback", 0, "60"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := newTestServerForRateLimit(t)
+			srv.RateLimiter = security.NewRateLimiter(tt.rate, 1, nil)
+			t.Cleanup(srv.RateLimiter.Stop)
+			handler := NewHandler(srv, nil)
+
+			body := url.Values{"grant_type": {"x"}}.Encode()
+			send := func() *httptest.ResponseRecorder {
+				req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(body))
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				req.RemoteAddr = testClientRemoteAddr
+				w := httptest.NewRecorder()
+				handler.ServeToken(w, req)
+				return w
+			}
+			send() // consume the single bucket token
+			w := send()
+
+			if w.Code != http.StatusTooManyRequests {
+				t.Fatalf("status = %d, want %d", w.Code, http.StatusTooManyRequests)
+			}
+			if got := w.Header().Get("Retry-After"); got != tt.want {
+				t.Errorf("Retry-After = %q, want %q", got, tt.want)
 			}
 		})
 	}

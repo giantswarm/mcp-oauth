@@ -95,6 +95,18 @@ func NewRateLimiterWithFullConfig(requestsPerSecond, burst, maxEntries int, clea
 	return rl
 }
 
+// Rate returns the configured requests-per-second. Callers computing a
+// Retry-After hint should treat 0 as "unspecified" and fall back to a
+// constant.
+func (rl *RateLimiter) Rate() int {
+	return rl.rate
+}
+
+// Burst returns the configured token-bucket burst size.
+func (rl *RateLimiter) Burst() int {
+	return rl.burst
+}
+
 // Allow checks if a request from the given identifier is allowed.
 // Implements LRU eviction when max entries limit is reached.
 func (rl *RateLimiter) Allow(identifier string) bool {

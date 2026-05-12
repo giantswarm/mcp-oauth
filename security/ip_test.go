@@ -173,3 +173,27 @@ func TestGetClientIP_TrustedProxyCount(t *testing.T) {
 		})
 	}
 }
+
+func TestRateLimitBucket(t *testing.T) {
+	tests := []struct {
+		name string
+		ip   string
+		want string
+	}{
+		{"IPv4 unchanged", "203.0.113.42", "203.0.113.42"},
+		{"IPv4-mapped IPv6 unchanged", "::ffff:203.0.113.42", "::ffff:203.0.113.42"},
+		{"IPv6 collapses to /64", "2001:db8::1", "2001:db8::/64"},
+		{"IPv6 different /128 same /64", "2001:db8::dead:beef", "2001:db8::/64"},
+		{"IPv6 different /64 different bucket", "2001:db8:1::1", "2001:db8:1::/64"},
+		{"unparseable input returned verbatim", "not-an-ip", "not-an-ip"},
+		{"empty input returned verbatim", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RateLimitBucket(tt.ip); got != tt.want {
+				t.Errorf("RateLimitBucket(%q) = %q, want %q", tt.ip, got, tt.want)
+			}
+		})
+	}
+}

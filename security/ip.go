@@ -3,6 +3,7 @@ package security
 import (
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 )
 
@@ -90,4 +91,25 @@ func extractIPFromRemoteAddr(remoteAddr string) string {
 		return remoteAddr
 	}
 	return host
+}
+
+// RateLimitBucket returns the rate-limit key for an IP. For IPv4 it returns
+// the address unchanged. For IPv6 it returns the /64 prefix (the typical
+// end-site allocation): without this, an attacker holding a /64 can rotate
+// 2^64 addresses to bypass per-IP limits and defeat the CWE-307 closure.
+// Unparseable inputs are returned verbatim so the limiter still keys on
+// something stable.
+func RateLimitBucket(ip string) string {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	if addr.Is4() || addr.Is4In6() {
+		return ip
+	}
+	prefix, err := addr.Prefix(64)
+	if err != nil {
+		return ip
+	}
+	return prefix.String()
 }

@@ -50,7 +50,7 @@ func (h *Handler) checkClientRegistrationRateLimit(ctx context.Context, w http.R
 		return false
 	}
 
-	if !h.server.ClientRegistrationRateLimiter.Allow(clientIP) {
+	if !h.server.ClientRegistrationRateLimiter.Allow(security.RateLimitBucket(clientIP)) {
 		h.logger.Warn("Client registration rate limit exceeded",
 			"ip", clientIP,
 			"max_per_window", h.server.Config.MaxRegistrationsPerHour,
@@ -59,6 +59,11 @@ func (h *Handler) checkClientRegistrationRateLimit(ctx context.Context, w http.R
 			h.server.Auditor.LogClientRegistrationRateLimitExceeded(ctx, clientIP)
 		}
 		h.recordHTTPMetrics(ctx, "register", http.MethodPost, http.StatusTooManyRequests, startTime)
+		retryAfter := int(h.server.ClientRegistrationRateLimiter.Window().Seconds())
+		if retryAfter < 1 {
+			retryAfter = 60
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 		h.writeError(w, ErrorCodeInvalidRequest,
 			"Client registration rate limit exceeded. Please try again later.",
 			http.StatusTooManyRequests)
@@ -513,15 +518,34 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 	})
 }
 
+// retryAfterSecondsForRate returns a Retry-After hint in seconds for a token-
+// bucket limiter at the given rate (requests/second). Rate 0 (no refill)
+// falls back to a constant since the next refill time is unbounded.
+func retryAfterSecondsForRate(rate int) int {
+	if rate <= 0 {
+		return 60
+	}
+	// ceil(1/rate): time until one token is back. Always at least 1s so
+	// clients don't tight-loop on a fractional-rate response.
+	seconds := 1 / rate
+	if 1%rate != 0 {
+		seconds++
+	}
+	if seconds < 1 {
+		return 1
+	}
+	return seconds
+}
+
 // checkIPRateLimit checks if the client IP is rate limited. Returns true if limited.
 func (h *Handler) checkIPRateLimit(w http.ResponseWriter, r *http.Request, clientIP string) bool {
-	if h.server.RateLimiter == nil || h.server.RateLimiter.Allow(clientIP) {
+	if h.server.RateLimiter == nil || h.server.RateLimiter.Allow(security.RateLimitBucket(clientIP)) {
 		return false
 	}
 
 	h.logger.Warn("Rate limit exceeded", "ip", clientIP)
 	h.recordRateLimitExceeded(r.Context(), "ip", clientIP, "", r.URL.Path)
-	w.Header().Set("Retry-After", "60")
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSecondsForRate(h.server.RateLimiter.Rate())))
 	h.writeError(w, ErrorCodeRateLimitExceeded, "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
 	return true
 }
@@ -534,7 +558,7 @@ func (h *Handler) checkUserRateLimit(w http.ResponseWriter, r *http.Request, use
 
 	h.logger.Warn("User rate limit exceeded", "user_id", userID, "ip", clientIP)
 	h.recordUserRateLimitExceeded(r.Context(), clientIP, userID)
-	w.Header().Set("Retry-After", "60")
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSecondsForRate(h.server.UserRateLimiter.Rate())))
 	h.writeError(w, ErrorCodeRateLimitExceeded, "Rate limit exceeded for user. Please try again later.", http.StatusTooManyRequests)
 	return true
 }
@@ -1021,7 +1045,7 @@ func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 // checkDiscoveryRateLimit checks rate limit for discovery endpoints.
 // Returns true if rate limit exceeded and response was written.
 func (h *Handler) checkDiscoveryRateLimit(w http.ResponseWriter, r *http.Request, clientIP string) bool {
-	if h.server.RateLimiter == nil || h.server.RateLimiter.Allow(clientIP) {
+	if h.server.RateLimiter == nil || h.server.RateLimiter.Allow(security.RateLimitBucket(clientIP)) {
 		return false
 	}
 
@@ -1039,7 +1063,7 @@ func (h *Handler) checkDiscoveryRateLimit(w http.ResponseWriter, r *http.Request
 		})
 	}
 
-	w.Header().Set("Retry-After", "60")
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSecondsForRate(h.server.RateLimiter.Rate())))
 	http.Error(w, "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
 	return true
 }
@@ -1490,6 +1514,14 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// Post-auth rate limit, keyed by client_id. /token has no end-user
+	// context, so the authenticated principal here is the client.
+	if h.checkUserRateLimit(w, r, client.ClientID, clientIP) {
+		instrumentation.SetSpanError(span, "rate limited")
+		h.recordHTTPMetrics(r.Context(), "token", http.MethodPost, http.StatusTooManyRequests, startTime)
+		return
+	}
+
 	// Add span attributes
 	instrumentation.SetSpanAttributes(
 		span,
@@ -1566,6 +1598,14 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	)
 	if clientAuthenticated {
 		instrumentation.SetSpanAttributes(span, attribute.Bool("oauth.client_authenticated", true))
+
+		// Post-auth rate limit for confidential clients, keyed by client_id.
+		// Public clients have no authentication step, only an IP-rate bound.
+		if h.checkUserRateLimit(w, r, clientID, clientIP) {
+			instrumentation.SetSpanError(span, "rate limited")
+			h.recordHTTPMetrics(r.Context(), "token", http.MethodPost, http.StatusTooManyRequests, startTime)
+			return
+		}
 	}
 
 	// Refresh token
@@ -1723,6 +1763,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get client credentials from Authorization header (if present)
+	clientAuthenticated := false
 	if authClientID, authClientSecret := h.parseBasicAuth(r); authClientID != "" {
 		clientID = authClientID
 		// Validate client credentials
@@ -1737,9 +1778,17 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 			h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
 			return
 		}
+		clientAuthenticated = true
 	}
 
 	instrumentation.SetSpanAttributes(span, attribute.String(instrumentation.AttrClientID, clientID))
+
+	// Post-auth rate limit for authenticated clients, keyed by client_id.
+	if clientAuthenticated && h.checkUserRateLimit(w, r, clientID, clientIP) {
+		instrumentation.SetSpanError(span, "rate limited")
+		h.recordHTTPMetrics(r.Context(), "revoke", http.MethodPost, http.StatusTooManyRequests, startTime)
+		return
+	}
 
 	// Revoke token
 	if err := h.server.RevokeToken(r.Context(), token, clientID, clientIP); err != nil {
