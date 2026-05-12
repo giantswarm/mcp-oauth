@@ -136,16 +136,29 @@ func decodeErrorResponse(t *testing.T, recorder *httptest.ResponseRecorder) Erro
 	return response
 }
 
-func auditEventLogged(t *testing.T, auditBuf *bytes.Buffer, eventType string) bool {
+// scanAuditRecords decodes one JSON record per non-empty line in auditBuf.
+// Unparseable non-empty lines fail the test so a log-format regression
+// surfaces loudly instead of producing a silent false-negative from the
+// downstream auditEventLogged / auditAuthFailureWithReason helpers.
+func scanAuditRecords(t *testing.T, auditBuf *bytes.Buffer) []map[string]any {
 	t.Helper()
-	for _, line := range strings.Split(strings.TrimRight(auditBuf.String(), "\n"), "\n") {
+	out := make([]map[string]any, 0)
+	for i, line := range strings.Split(strings.TrimRight(auditBuf.String(), "\n"), "\n") {
 		if line == "" {
 			continue
 		}
 		var record map[string]any
 		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			continue
+			t.Fatalf("audit log line %d is not JSON: %v\nline: %s", i, err, line)
 		}
+		out = append(out, record)
+	}
+	return out
+}
+
+func auditEventLogged(t *testing.T, auditBuf *bytes.Buffer, eventType string) bool {
+	t.Helper()
+	for _, record := range scanAuditRecords(t, auditBuf) {
 		audit, ok := record["audit"].(map[string]any)
 		if !ok {
 			continue
@@ -159,14 +172,7 @@ func auditEventLogged(t *testing.T, auditBuf *bytes.Buffer, eventType string) bo
 
 func auditAuthFailureWithReason(t *testing.T, auditBuf *bytes.Buffer, reason string) bool {
 	t.Helper()
-	for _, line := range strings.Split(strings.TrimRight(auditBuf.String(), "\n"), "\n") {
-		if line == "" {
-			continue
-		}
-		var record map[string]any
-		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			continue
-		}
+	for _, record := range scanAuditRecords(t, auditBuf) {
 		audit, ok := record["audit"].(map[string]any)
 		if !ok {
 			continue
@@ -185,226 +191,246 @@ func auditAuthFailureWithReason(t *testing.T, auditBuf *bytes.Buffer, reason str
 	return false
 }
 
-func TestHandler_ServeToken_RefreshGrant_HappyPath_ConfidentialClient(t *testing.T) {
-	env := newRefreshTestEnv(t)
-	clientID, secret := env.registerClient(t, ClientTypeConfidential)
-	refreshToken := env.seedRefreshToken(t, clientID, "user-confidential", "family-conf", time.Now().Add(time.Hour))
-
-	form := url.Values{}
-	form.Set("grant_type", "refresh_token")
-	form.Set("refresh_token", refreshToken)
-
-	recorder := doRefreshRequest(env.handler, form, [2]string{clientID, secret})
-
-	require.Equal(t, http.StatusOK, recorder.Code, "body: %s", recorder.Body.String())
-	response := decodeTokenResponse(t, recorder)
-	require.NotEmpty(t, response.AccessToken)
-	require.NotEmpty(t, response.RefreshToken)
-	require.NotEqual(t, refreshToken, response.RefreshToken, "rotation must mint a new refresh token")
-	require.Equal(t, testTokenTypeBearer, response.TokenType)
-	require.True(t, auditEventLogged(t, env.auditBuf, security.EventTokenRefreshed))
+// refreshGrantInputs is what the per-case setup closure returns to the table
+// runner: the form body, the Basic Auth pair, and whether to issue a prior
+// successful refresh first (covers the reuse-detection case where the second
+// request must run after the token has already rotated).
+type refreshGrantInputs struct {
+	form               url.Values
+	basicAuth          [2]string
+	preRefreshFirstHit bool
 }
 
-func TestHandler_ServeToken_RefreshGrant_HappyPath_PublicClient(t *testing.T) {
-	env := newRefreshTestEnv(t)
-	clientID, _ := env.registerClient(t, ClientTypePublic)
-	refreshToken := env.seedRefreshToken(t, clientID, "user-public", "family-pub", time.Now().Add(time.Hour))
+func TestHandler_ServeToken_RefreshGrant(t *testing.T) {
+	tests := []struct {
+		name             string
+		setup            func(t *testing.T, env *refreshTestEnv) refreshGrantInputs
+		wantStatus       int
+		wantErrorCode    string // empty on success
+		wantErrorContain string // optional substring of error_description
+		wantAuditEvents  []string
+		wantAuditReasons []string
+		assertRotation   bool // happy path only: response.RefreshToken != seeded
+	}{
+		{
+			name: "happy path / confidential client / Basic Auth",
+			setup: func(t *testing.T, env *refreshTestEnv) refreshGrantInputs {
+				clientID, secret := env.registerClient(t, ClientTypeConfidential)
+				rt := env.seedRefreshToken(t, clientID, "user-c", "family-c", time.Now().Add(time.Hour))
+				return refreshGrantInputs{
+					form:      formWith("grant_type", "refresh_token", "refresh_token", rt),
+					basicAuth: [2]string{clientID, secret},
+				}
+			},
+			wantStatus:      http.StatusOK,
+			wantAuditEvents: []string{security.EventTokenRefreshed},
+			assertRotation:  true,
+		},
+		{
+			name: "happy path / public client / client_id only",
+			setup: func(t *testing.T, env *refreshTestEnv) refreshGrantInputs {
+				clientID, _ := env.registerClient(t, ClientTypePublic)
+				rt := env.seedRefreshToken(t, clientID, "user-p", "family-p", time.Now().Add(time.Hour))
+				return refreshGrantInputs{
+					form: formWith("grant_type", "refresh_token", "refresh_token", rt, "client_id", clientID),
+				}
+			},
+			wantStatus:      http.StatusOK,
+			wantAuditEvents: []string{security.EventTokenRefreshed},
+			assertRotation:  true,
+		},
+		{
+			name: "confidential client without authentication is rejected",
+			setup: func(t *testing.T, env *refreshTestEnv) refreshGrantInputs {
+				clientID, _ := env.registerClient(t, ClientTypeConfidential)
+				rt := env.seedRefreshToken(t, clientID, "user-noauth", "family-noauth", time.Now().Add(time.Hour))
+				return refreshGrantInputs{
+					form: formWith("grant_type", "refresh_token", "refresh_token", rt, "client_id", clientID),
+				}
+			},
+			wantStatus:       http.StatusUnauthorized,
+			wantErrorCode:    ErrorCodeInvalidClient,
+			wantAuditReasons: []string{"confidential_client_refresh_missing_auth"},
+		},
+		{
+			name: "basic / form client_id mismatch is rejected (RFC 6749 §2.3.1)",
+			setup: func(t *testing.T, env *refreshTestEnv) refreshGrantInputs {
+				clientID, secret := env.registerClient(t, ClientTypeConfidential)
+				rt := env.seedRefreshToken(t, clientID, "user-mm", "family-mm", time.Now().Add(time.Hour))
+				return refreshGrantInputs{
+					form:      formWith("grant_type", "refresh_token", "refresh_token", rt, "client_id", "form-value-does-not-match"),
+					basicAuth: [2]string{clientID, secret},
+				}
+			},
+			wantStatus:       http.StatusBadRequest,
+			wantErrorCode:    ErrorCodeInvalidClient,
+			wantErrorContain: "does not match",
+			wantAuditReasons: []string{"client_id_mismatch_basic_vs_form"},
+		},
+		{
+			name: "basic + matching form client_id succeeds",
+			setup: func(t *testing.T, env *refreshTestEnv) refreshGrantInputs {
+				clientID, secret := env.registerClient(t, ClientTypeConfidential)
+				rt := env.seedRefreshToken(t, clientID, "user-match", "family-match", time.Now().Add(time.Hour))
+				return refreshGrantInputs{
+					form:      formWith("grant_type", "refresh_token", "refresh_token", rt, "client_id", clientID),
+					basicAuth: [2]string{clientID, secret},
+				}
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "cross-client refresh token binding is rejected",
+			setup: func(t *testing.T, env *refreshTestEnv) refreshGrantInputs {
+				clientA, _ := env.registerClient(t, ClientTypeConfidential)
+				clientB, secretB := env.registerClient(t, ClientTypeConfidential)
+				rt := env.seedRefreshToken(t, clientA, "user-x", "family-x", time.Now().Add(time.Hour))
+				return refreshGrantInputs{
+					form:      formWith("grant_type", "refresh_token", "refresh_token", rt),
+					basicAuth: [2]string{clientB, secretB},
+				}
+			},
+			wantStatus:      http.StatusBadRequest,
+			wantErrorCode:   ErrorCodeInvalidGrant,
+			wantAuditEvents: []string{security.EventRefreshTokenClientBindingMismatch},
+		},
+		{
+			name: "reused refresh token is rejected on the second hit",
+			setup: func(t *testing.T, env *refreshTestEnv) refreshGrantInputs {
+				clientID, secret := env.registerClient(t, ClientTypeConfidential)
+				rt := env.seedRefreshToken(t, clientID, "user-r", "family-r", time.Now().Add(time.Hour))
+				return refreshGrantInputs{
+					form:               formWith("grant_type", "refresh_token", "refresh_token", rt),
+					basicAuth:          [2]string{clientID, secret},
+					preRefreshFirstHit: true,
+				}
+			},
+			wantStatus:      http.StatusBadRequest,
+			wantErrorCode:   ErrorCodeInvalidGrant,
+			wantAuditEvents: []string{security.EventRefreshTokenReuseDetected},
+		},
+		{
+			name: "expired refresh token is rejected",
+			setup: func(t *testing.T, env *refreshTestEnv) refreshGrantInputs {
+				clientID, secret := env.registerClient(t, ClientTypeConfidential)
+				rt := env.seedRefreshToken(t, clientID, "user-e", "family-e", time.Now().Add(-time.Hour))
+				return refreshGrantInputs{
+					form:      formWith("grant_type", "refresh_token", "refresh_token", rt),
+					basicAuth: [2]string{clientID, secret},
+				}
+			},
+			wantStatus:    http.StatusBadRequest,
+			wantErrorCode: ErrorCodeInvalidGrant,
+		},
+		{
+			name: "legacy refresh token without client binding is rejected",
+			setup: func(t *testing.T, env *refreshTestEnv) refreshGrantInputs {
+				clientID, secret := env.registerClient(t, ClientTypeConfidential)
+				rt := env.seedLegacyRefreshToken(t, "user-l", time.Now().Add(time.Hour))
+				return refreshGrantInputs{
+					form:      formWith("grant_type", "refresh_token", "refresh_token", rt),
+					basicAuth: [2]string{clientID, secret},
+				}
+			},
+			wantStatus:      http.StatusBadRequest,
+			wantErrorCode:   ErrorCodeInvalidGrant,
+			wantAuditEvents: []string{security.EventRefreshTokenMissingClientBinding},
+		},
+		{
+			name: "missing refresh_token parameter is rejected",
+			setup: func(t *testing.T, env *refreshTestEnv) refreshGrantInputs {
+				clientID, secret := env.registerClient(t, ClientTypeConfidential)
+				return refreshGrantInputs{
+					form:      formWith("grant_type", "refresh_token"),
+					basicAuth: [2]string{clientID, secret},
+				}
+			},
+			wantStatus:    http.StatusBadRequest,
+			wantErrorCode: ErrorCodeInvalidRequest,
+		},
+		{
+			name: "missing client_id on a public-client refresh is rejected",
+			setup: func(t *testing.T, env *refreshTestEnv) refreshGrantInputs {
+				return refreshGrantInputs{
+					form: formWith("grant_type", "refresh_token", "refresh_token", "any-refresh-token"),
+				}
+			},
+			wantStatus:    http.StatusBadRequest,
+			wantErrorCode: ErrorCodeInvalidRequest,
+		},
+		{
+			name: "unknown client is rejected",
+			setup: func(t *testing.T, env *refreshTestEnv) refreshGrantInputs {
+				return refreshGrantInputs{
+					form: formWith("grant_type", "refresh_token", "refresh_token", "any-refresh-token", "client_id", "client-that-was-never-registered"),
+				}
+			},
+			wantStatus:    http.StatusUnauthorized,
+			wantErrorCode: ErrorCodeInvalidClient,
+		},
+		{
+			name: "bad client secret is rejected",
+			setup: func(t *testing.T, env *refreshTestEnv) refreshGrantInputs {
+				clientID, _ := env.registerClient(t, ClientTypeConfidential)
+				return refreshGrantInputs{
+					form:      formWith("grant_type", "refresh_token", "refresh_token", "any-refresh-token"),
+					basicAuth: [2]string{clientID, "wrong-secret"},
+				}
+			},
+			wantStatus:    http.StatusUnauthorized,
+			wantErrorCode: ErrorCodeInvalidClient,
+		},
+	}
 
-	form := url.Values{}
-	form.Set("grant_type", "refresh_token")
-	form.Set("refresh_token", refreshToken)
-	form.Set("client_id", clientID)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newRefreshTestEnv(t)
+			inputs := tc.setup(t, env)
 
-	recorder := doRefreshRequest(env.handler, form, [2]string{})
+			if inputs.preRefreshFirstHit {
+				first := doRefreshRequest(env.handler, inputs.form, inputs.basicAuth)
+				require.Equal(t, http.StatusOK, first.Code, "first hit body: %s", first.Body.String())
+			}
 
-	require.Equal(t, http.StatusOK, recorder.Code, "body: %s", recorder.Body.String())
-	response := decodeTokenResponse(t, recorder)
-	require.NotEmpty(t, response.AccessToken)
-	require.NotEmpty(t, response.RefreshToken)
-	require.NotEqual(t, refreshToken, response.RefreshToken)
-	require.True(t, auditEventLogged(t, env.auditBuf, security.EventTokenRefreshed))
+			seededRefreshToken := inputs.form.Get("refresh_token")
+			recorder := doRefreshRequest(env.handler, inputs.form, inputs.basicAuth)
+			require.Equal(t, tc.wantStatus, recorder.Code, "body: %s", recorder.Body.String())
+
+			if tc.wantErrorCode != "" {
+				response := decodeErrorResponse(t, recorder)
+				require.Equal(t, tc.wantErrorCode, response.Error)
+				if tc.wantErrorContain != "" {
+					require.Contains(t, response.ErrorDescription, tc.wantErrorContain)
+				}
+			} else {
+				response := decodeTokenResponse(t, recorder)
+				require.NotEmpty(t, response.AccessToken)
+				require.NotEmpty(t, response.RefreshToken)
+				if tc.assertRotation && seededRefreshToken != "" {
+					require.NotEqual(t, seededRefreshToken, response.RefreshToken, "rotation must mint a new refresh token")
+				}
+				require.Equal(t, tokenTypeBearer, response.TokenType)
+			}
+
+			for _, event := range tc.wantAuditEvents {
+				require.True(t, auditEventLogged(t, env.auditBuf, event), "audit event %q not emitted", event)
+			}
+			for _, reason := range tc.wantAuditReasons {
+				require.True(t, auditAuthFailureWithReason(t, env.auditBuf, reason), "auth_failure with reason %q not emitted", reason)
+			}
+		})
+	}
 }
 
-func TestHandler_ServeToken_RefreshGrant_ConfidentialClient_NoAuth(t *testing.T) {
-	env := newRefreshTestEnv(t)
-	clientID, _ := env.registerClient(t, ClientTypeConfidential)
-	refreshToken := env.seedRefreshToken(t, clientID, "user-noauth", "family-noauth", time.Now().Add(time.Hour))
-
+// formWith builds a url.Values from a flat key,value,key,value,... slice. Panics
+// on an odd argument count — the test author controls the call site.
+func formWith(kv ...string) url.Values {
+	if len(kv)%2 != 0 {
+		panic("formWith: odd number of arguments")
+	}
 	form := url.Values{}
-	form.Set("grant_type", "refresh_token")
-	form.Set("refresh_token", refreshToken)
-	form.Set("client_id", clientID)
-
-	recorder := doRefreshRequest(env.handler, form, [2]string{})
-
-	require.Equal(t, http.StatusUnauthorized, recorder.Code, "body: %s", recorder.Body.String())
-	response := decodeErrorResponse(t, recorder)
-	require.Equal(t, ErrorCodeInvalidClient, response.Error)
-	require.True(t, auditAuthFailureWithReason(t, env.auditBuf, "confidential_client_refresh_missing_auth"))
-}
-
-func TestHandler_ServeToken_RefreshGrant_BasicAuthAndFormClientIDMismatch_Rejected(t *testing.T) {
-	env := newRefreshTestEnv(t)
-	clientID, secret := env.registerClient(t, ClientTypeConfidential)
-	refreshToken := env.seedRefreshToken(t, clientID, "user-mismatch", "family-mismatch", time.Now().Add(time.Hour))
-
-	form := url.Values{}
-	form.Set("grant_type", "refresh_token")
-	form.Set("refresh_token", refreshToken)
-	form.Set("client_id", "form-value-does-not-match")
-
-	recorder := doRefreshRequest(env.handler, form, [2]string{clientID, secret})
-
-	require.Equal(t, http.StatusBadRequest, recorder.Code, "body: %s", recorder.Body.String())
-	response := decodeErrorResponse(t, recorder)
-	require.Equal(t, ErrorCodeInvalidClient, response.Error)
-	require.Contains(t, response.ErrorDescription, "does not match")
-	require.True(t, auditAuthFailureWithReason(t, env.auditBuf, "client_id_mismatch_basic_vs_form"))
-}
-
-func TestHandler_ServeToken_RefreshGrant_BasicAuthAndMatchingFormClientID_OK(t *testing.T) {
-	env := newRefreshTestEnv(t)
-	clientID, secret := env.registerClient(t, ClientTypeConfidential)
-	refreshToken := env.seedRefreshToken(t, clientID, "user-match", "family-match", time.Now().Add(time.Hour))
-
-	form := url.Values{}
-	form.Set("grant_type", "refresh_token")
-	form.Set("refresh_token", refreshToken)
-	form.Set("client_id", clientID)
-
-	recorder := doRefreshRequest(env.handler, form, [2]string{clientID, secret})
-
-	require.Equal(t, http.StatusOK, recorder.Code, "body: %s", recorder.Body.String())
-	response := decodeTokenResponse(t, recorder)
-	require.NotEmpty(t, response.AccessToken)
-	require.NotEmpty(t, response.RefreshToken)
-}
-
-func TestHandler_ServeToken_RefreshGrant_WrongClientBinding(t *testing.T) {
-	env := newRefreshTestEnv(t)
-	clientA, _ := env.registerClient(t, ClientTypeConfidential)
-	clientB, secretB := env.registerClient(t, ClientTypeConfidential)
-
-	refreshToken := env.seedRefreshToken(t, clientA, "user-binding", "family-binding", time.Now().Add(time.Hour))
-
-	form := url.Values{}
-	form.Set("grant_type", "refresh_token")
-	form.Set("refresh_token", refreshToken)
-
-	recorder := doRefreshRequest(env.handler, form, [2]string{clientB, secretB})
-
-	require.Equal(t, http.StatusBadRequest, recorder.Code, "body: %s", recorder.Body.String())
-	response := decodeErrorResponse(t, recorder)
-	require.Equal(t, ErrorCodeInvalidGrant, response.Error)
-	require.True(t, auditEventLogged(t, env.auditBuf, security.EventRefreshTokenClientBindingMismatch))
-}
-
-func TestHandler_ServeToken_RefreshGrant_ReusedRefreshToken(t *testing.T) {
-	env := newRefreshTestEnv(t)
-	clientID, secret := env.registerClient(t, ClientTypeConfidential)
-	refreshToken := env.seedRefreshToken(t, clientID, "user-reuse", "family-reuse", time.Now().Add(time.Hour))
-
-	form := url.Values{}
-	form.Set("grant_type", "refresh_token")
-	form.Set("refresh_token", refreshToken)
-
-	firstRecorder := doRefreshRequest(env.handler, form, [2]string{clientID, secret})
-	require.Equal(t, http.StatusOK, firstRecorder.Code, "first refresh body: %s", firstRecorder.Body.String())
-
-	secondRecorder := doRefreshRequest(env.handler, form, [2]string{clientID, secret})
-	require.Equal(t, http.StatusBadRequest, secondRecorder.Code, "second refresh body: %s", secondRecorder.Body.String())
-	response := decodeErrorResponse(t, secondRecorder)
-	require.Equal(t, ErrorCodeInvalidGrant, response.Error)
-	require.True(t, auditEventLogged(t, env.auditBuf, security.EventRefreshTokenReuseDetected))
-}
-
-func TestHandler_ServeToken_RefreshGrant_ExpiredRefreshToken(t *testing.T) {
-	env := newRefreshTestEnv(t)
-	clientID, secret := env.registerClient(t, ClientTypeConfidential)
-	refreshToken := env.seedRefreshToken(t, clientID, "user-expired", "family-expired", time.Now().Add(-time.Hour))
-
-	form := url.Values{}
-	form.Set("grant_type", "refresh_token")
-	form.Set("refresh_token", refreshToken)
-
-	recorder := doRefreshRequest(env.handler, form, [2]string{clientID, secret})
-
-	require.Equal(t, http.StatusBadRequest, recorder.Code, "body: %s", recorder.Body.String())
-	response := decodeErrorResponse(t, recorder)
-	require.Equal(t, ErrorCodeInvalidGrant, response.Error)
-}
-
-func TestHandler_ServeToken_RefreshGrant_LegacyRefreshTokenWithoutBinding(t *testing.T) {
-	env := newRefreshTestEnv(t)
-	clientID, secret := env.registerClient(t, ClientTypeConfidential)
-	refreshToken := env.seedLegacyRefreshToken(t, "user-legacy", time.Now().Add(time.Hour))
-
-	form := url.Values{}
-	form.Set("grant_type", "refresh_token")
-	form.Set("refresh_token", refreshToken)
-
-	recorder := doRefreshRequest(env.handler, form, [2]string{clientID, secret})
-
-	require.Equal(t, http.StatusBadRequest, recorder.Code, "body: %s", recorder.Body.String())
-	response := decodeErrorResponse(t, recorder)
-	require.Equal(t, ErrorCodeInvalidGrant, response.Error)
-	require.True(t, auditEventLogged(t, env.auditBuf, security.EventRefreshTokenMissingClientBinding))
-}
-
-func TestHandler_ServeToken_RefreshGrant_MissingRefreshToken(t *testing.T) {
-	env := newRefreshTestEnv(t)
-	clientID, secret := env.registerClient(t, ClientTypeConfidential)
-
-	form := url.Values{}
-	form.Set("grant_type", "refresh_token")
-
-	recorder := doRefreshRequest(env.handler, form, [2]string{clientID, secret})
-
-	require.Equal(t, http.StatusBadRequest, recorder.Code, "body: %s", recorder.Body.String())
-	response := decodeErrorResponse(t, recorder)
-	require.Equal(t, ErrorCodeInvalidRequest, response.Error)
-}
-
-func TestHandler_ServeToken_RefreshGrant_MissingClientID_PublicClient(t *testing.T) {
-	env := newRefreshTestEnv(t)
-
-	form := url.Values{}
-	form.Set("grant_type", "refresh_token")
-	form.Set("refresh_token", "any-refresh-token")
-
-	recorder := doRefreshRequest(env.handler, form, [2]string{})
-
-	require.Equal(t, http.StatusBadRequest, recorder.Code, "body: %s", recorder.Body.String())
-	response := decodeErrorResponse(t, recorder)
-	require.Equal(t, ErrorCodeInvalidRequest, response.Error)
-}
-
-func TestHandler_ServeToken_RefreshGrant_UnknownClient(t *testing.T) {
-	env := newRefreshTestEnv(t)
-
-	form := url.Values{}
-	form.Set("grant_type", "refresh_token")
-	form.Set("refresh_token", "any-refresh-token")
-	form.Set("client_id", "client-that-was-never-registered")
-
-	recorder := doRefreshRequest(env.handler, form, [2]string{})
-
-	require.Equal(t, http.StatusUnauthorized, recorder.Code, "body: %s", recorder.Body.String())
-	response := decodeErrorResponse(t, recorder)
-	require.Equal(t, ErrorCodeInvalidClient, response.Error)
-}
-
-func TestHandler_ServeToken_RefreshGrant_BadClientSecret(t *testing.T) {
-	env := newRefreshTestEnv(t)
-	clientID, _ := env.registerClient(t, ClientTypeConfidential)
-
-	form := url.Values{}
-	form.Set("grant_type", "refresh_token")
-	form.Set("refresh_token", "any-refresh-token")
-
-	recorder := doRefreshRequest(env.handler, form, [2]string{clientID, "wrong-secret"})
-
-	require.Equal(t, http.StatusUnauthorized, recorder.Code, "body: %s", recorder.Body.String())
-	response := decodeErrorResponse(t, recorder)
-	require.Equal(t, ErrorCodeInvalidClient, response.Error)
+	for i := 0; i < len(kv); i += 2 {
+		form.Set(kv[i], kv[i+1])
+	}
+	return form
 }

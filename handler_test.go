@@ -28,7 +28,6 @@ import (
 )
 
 const (
-	testTokenTypeBearer         = "Bearer"
 	testClientRemoteAddr        = "192.168.1.100:12345"
 	testOriginApp               = "https://app.example.com"
 	testIssuer                  = "https://auth.example.com"
@@ -1565,8 +1564,8 @@ func TestHandler_writeTokenResponse(t *testing.T) {
 		t.Errorf("AccessToken = %q, want %q", tokenResp.AccessToken, token.AccessToken)
 	}
 
-	if tokenResp.TokenType != testTokenTypeBearer {
-		t.Errorf("TokenType = %q, want %q", tokenResp.TokenType, testTokenTypeBearer)
+	if tokenResp.TokenType != tokenTypeBearer {
+		t.Errorf("TokenType = %q, want %q", tokenResp.TokenType, tokenTypeBearer)
 	}
 }
 
@@ -1599,8 +1598,8 @@ func TestHandler_writeTokenResponse_WithIDToken(t *testing.T) {
 		t.Errorf("AccessToken = %q, want %q", tokenResp.AccessToken, tokenWithIDToken.AccessToken)
 	}
 
-	if tokenResp.TokenType != testTokenTypeBearer {
-		t.Errorf("TokenType = %q, want %q", tokenResp.TokenType, testTokenTypeBearer)
+	if tokenResp.TokenType != tokenTypeBearer {
+		t.Errorf("TokenType = %q, want %q", tokenResp.TokenType, tokenTypeBearer)
 	}
 
 	// Verify id_token is included in response (OIDC compliance)
@@ -2841,8 +2840,8 @@ func TestHandler_ServeToken_AuthorizationCode(t *testing.T) {
 		t.Error("RefreshToken should not be empty")
 	}
 
-	if tokenResp.TokenType != testTokenTypeBearer {
-		t.Errorf("TokenType = %q, want %q", tokenResp.TokenType, testTokenTypeBearer)
+	if tokenResp.TokenType != tokenTypeBearer {
+		t.Errorf("TokenType = %q, want %q", tokenResp.TokenType, tokenTypeBearer)
 	}
 }
 
