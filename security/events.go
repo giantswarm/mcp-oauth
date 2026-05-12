@@ -159,4 +159,10 @@ const (
 
 	// EventProactiveRefreshFailed is logged when proactive token refresh fails
 	EventProactiveRefreshFailed = "proactive_refresh_failed"
+
+	// EventProviderTokenStorageFailed is logged when persisting the upstream
+	// provider token (or its associated UserInfo) to the token store fails.
+	// Dashboards key off this event to surface SSO-token-forwarding outages
+	// that previously manifested only as silent post-auth breakage.
+	EventProviderTokenStorageFailed = "provider_token_storage_failed"
 )

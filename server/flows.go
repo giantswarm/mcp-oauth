@@ -1014,7 +1014,9 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 		return nil, "", fmt.Errorf("failed to get user info: %w", err)
 	}
 
-	s.saveUserInfoAndToken(ctx, userInfo, providerToken)
+	if err := s.saveUserInfoAndToken(ctx, userInfo, providerToken); err != nil {
+		return nil, "", fmt.Errorf("failed to persist provider token: %w", err)
+	}
 
 	authCodeObj, err := s.createAndSaveAuthorizationCode(ctx, authState, userInfo, providerToken)
 	if err != nil {
@@ -1172,42 +1174,67 @@ func (s *Server) exchangeCodeWithProvider(ctx context.Context, code, providerVer
 	return providerToken, nil
 }
 
-// saveUserInfoAndToken saves user info and token by ID and by email.
-// Tokens are always saved by both ID and email (when email is available) to ensure
-// downstream consumers can reliably retrieve tokens by email, regardless of whether
-// the OIDC provider's subject claim differs from the email (e.g., Dex uses base64-encoded subjects).
+// saveUserInfoAndToken persists the provider token + UserInfo keyed by user
+// subject ID (required) and email (best-effort). ID-keyed failures are fatal:
+// they surface to the OAuth flow rather than producing a successful auth code
+// against an empty token store, which would manifest as silently broken SSO.
+// Email-keyed failures are audited and logged but do not fail the flow, since
+// ID-keyed lookups remain functional.
 //
-// IMPORTANT: Provider tokens are saved with an extended expiry (ProviderTokenTTL) to ensure
-// they remain available for SSO token forwarding, even if the original access token has
-// a short lifetime. The original token data (including refresh_token) is preserved.
-func (s *Server) saveUserInfoAndToken(ctx context.Context, userInfo *providers.UserInfo, providerToken *oauth2.Token) {
-	// Create a copy of the token with extended expiry for storage purposes
-	// This ensures the token remains available for SSO token forwarding even if
-	// the provider's access token has a short lifetime (e.g., 5 minutes from Dex)
+// Provider tokens are stored with an extended expiry (ProviderTokenTTL) so
+// SSO token forwarding outlives short upstream access-token lifetimes; the
+// original RefreshToken is preserved on the persisted copy.
+func (s *Server) saveUserInfoAndToken(ctx context.Context, userInfo *providers.UserInfo, providerToken *oauth2.Token) error {
 	tokenForStorage := s.extendTokenExpiryForStorage(providerToken)
 
-	// Save by ID (required - ID should always be present from provider's subject claim)
-	if userInfo.ID != "" {
-		if err := s.tokenStore.SaveUserInfo(ctx, userInfo.ID, userInfo); err != nil {
-			s.Logger.Warn("Failed to save user info", "error", err)
-		}
-		if err := s.tokenStore.SaveToken(ctx, userInfo.ID, tokenForStorage); err != nil {
-			s.Logger.Warn("Failed to save provider token", "error", err)
-		}
-	} else {
-		s.Logger.Warn("UserInfo has empty ID, skipping ID-based storage")
+	if userInfo.ID == "" {
+		s.auditProviderTokenStorageFailed(ctx, userInfo, "missing_subject", "ID-keyed storage skipped")
+		return fmt.Errorf("UserInfo.ID is empty; provider did not supply a subject claim")
 	}
 
-	// Always save by email if available (regardless of whether it equals ID)
-	// This ensures downstream consumers can reliably lookup tokens by email
-	if userInfo.Email != "" {
-		if err := s.tokenStore.SaveUserInfo(ctx, userInfo.Email, userInfo); err != nil {
-			s.Logger.Warn("Failed to save user info by email", "error", err)
-		}
-		if err := s.tokenStore.SaveToken(ctx, userInfo.Email, tokenForStorage); err != nil {
-			s.Logger.Warn("Failed to save provider token by email", "error", err)
-		}
+	if err := s.tokenStore.SaveUserInfo(ctx, userInfo.ID, userInfo); err != nil {
+		s.auditProviderTokenStorageFailed(ctx, userInfo, "save_user_info_by_id", err.Error())
+		return fmt.Errorf("save user info by id: %w", err)
 	}
+	if err := s.tokenStore.SaveToken(ctx, userInfo.ID, tokenForStorage); err != nil {
+		s.auditProviderTokenStorageFailed(ctx, userInfo, "save_token_by_id", err.Error())
+		return fmt.Errorf("save provider token by id: %w", err)
+	}
+
+	if userInfo.Email == "" {
+		return nil
+	}
+	if err := s.tokenStore.SaveUserInfo(ctx, userInfo.Email, userInfo); err != nil {
+		s.Logger.Warn("Failed to save user info by email", "error", err)
+		s.auditProviderTokenStorageFailed(ctx, userInfo, "save_user_info_by_email", err.Error())
+	}
+	if err := s.tokenStore.SaveToken(ctx, userInfo.Email, tokenForStorage); err != nil {
+		s.Logger.Warn("Failed to save provider token by email", "error", err)
+		s.auditProviderTokenStorageFailed(ctx, userInfo, "save_token_by_email", err.Error())
+	}
+	return nil
+}
+
+// auditProviderTokenStorageFailed emits a stable audit event for each
+// provider-token persistence failure path. The reason enum is the stable
+// dimension dashboards split on.
+func (s *Server) auditProviderTokenStorageFailed(ctx context.Context, userInfo *providers.UserInfo, reason, detail string) {
+	if s.Auditor == nil {
+		return
+	}
+	userID := ""
+	if userInfo != nil {
+		userID = userInfo.ID
+	}
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type:   security.EventProviderTokenStorageFailed,
+		UserID: userID,
+		Details: map[string]any{
+			"reason":   reason,
+			"severity": "high",
+			"detail":   detail,
+		},
+	})
 }
 
 // extendTokenExpiryForStorage creates a copy of the token with an extended expiry

@@ -215,13 +215,13 @@ func TestSerializableTokenOmitEmpty(t *testing.T) {
 	// Note: expiry with zero time may or may not be omitted depending on JSON encoding
 }
 
-// TestMaxTokenDataSize_FitsEncryptedEnterpriseIDToken pins MaxTokenDataSize
-// against the production SaveToken pipeline: encrypt sensitive fields, then
-// json.Marshal(serializableToken). AES-256-GCM + base64 expands the id_token
-// by ~4/3, so the constant must admit the expanded form rather than the raw
-// JWT. A 200 KiB raw id_token covers enterprise OIDC populations (Dex /
-// Keycloak fronting AD, GitHub Apps with hundreds of teams) and exceeds a
-// 256 KiB ceiling once encrypted.
+// TestMaxTokenDataSize_FitsEncryptedEnterpriseIDToken pins
+// DefaultMaxTokenDataSize against the production SaveToken pipeline: encrypt
+// sensitive fields, then json.Marshal(serializableToken). AES-256-GCM +
+// base64 expands the id_token by ~4/3, so the constant must admit the
+// expanded form rather than the raw JWT. A 200 KiB raw id_token covers
+// enterprise OIDC populations (Dex / Keycloak fronting AD, GitHub Apps with
+// hundreds of teams) and exceeds a 256 KiB ceiling once encrypted.
 func TestMaxTokenDataSize_FitsEncryptedEnterpriseIDToken(t *testing.T) {
 	key, err := security.GenerateKey()
 	require.NoError(t, err)
@@ -245,6 +245,6 @@ func TestMaxTokenDataSize_FitsEncryptedEnterpriseIDToken(t *testing.T) {
 
 	data, err := json.Marshal(toSerializable(encrypted))
 	require.NoError(t, err)
-	require.LessOrEqual(t, len(data), MaxTokenDataSize,
-		"encrypted 200 KiB id_token serialized to %d bytes; MaxTokenDataSize=%d", len(data), MaxTokenDataSize)
+	require.LessOrEqual(t, len(data), DefaultMaxTokenDataSize,
+		"encrypted 200 KiB id_token serialized to %d bytes; DefaultMaxTokenDataSize=%d", len(data), DefaultMaxTokenDataSize)
 }
