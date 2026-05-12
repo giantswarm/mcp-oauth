@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Tests
+
+- **Fuzz coverage** for four parsing / validation primitives: `ParseCallbackQuery` (types.go), `providers/oidc.ValidateExternalURL`, `Server.computePKCEChallenge` (S256 method), and `server.validateCodeVerifierFormat`. Seed corpora committed; each is panic-clean against a 2s exploratory burst. Closes (partial) #311.
+- **Coverage gaps closed** for `Handler.handleRegistrationError` (HTTP-error mapping for the registration-limit vs generic branches) and `Server.handleRefreshTokenError` (classification of not-found / expired / transient errors).
+- **AEAD authentication regression test** in `security/encryption_test.go` — a single-bit flip of the ciphertext tag must fail `Decrypt`. Catches a regression where AES-GCM gets swapped for a non-authenticated mode.
+
 ### Security
 
 - **Token-at-rest ciphertext envelope is now versioned (`0x01 ‖ kid ‖ nonce ‖ ct`)** — sets up future key rotation by tagging every new write with a 1-byte `kid`. Decrypt accepts both v1 and the legacy v0 (`nonce ‖ ct`) layout, falling through on AEAD-verification failure so the ~1/256 of v0 rows whose first nonce byte coincides with the v1 tag still decode. Rolling upgrades across a multi-replica fleet require updating every replica before allowing v1 writes — old replicas cannot read v1. Memory-only deployments are unaffected. Closes (partial) #309.
