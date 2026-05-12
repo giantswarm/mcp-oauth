@@ -1293,7 +1293,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	// Extract OIDC parameters for upstream IdP forwarding
 	authOpts, err := parseOIDCOptions(r.URL.Query())
 	if err != nil {
-		h.recordHTTPMetrics(r.Context(), "authorization", http.MethodGet, http.StatusBadRequest, startTime)
+		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "invalid OIDC parameter")
 		h.writeError(w, ErrorCodeInvalidRequest, err.Error(), http.StatusBadRequest)
 		return
