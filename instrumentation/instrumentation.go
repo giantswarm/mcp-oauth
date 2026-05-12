@@ -396,6 +396,13 @@ func (i *Instrumentation) MeterProvider() metric.MeterProvider {
 	return i.meterProvider
 }
 
+// IsEnabled reports whether real exporters were wired (vs. the default
+// no-op providers). Useful for callers that want to skip work or branch
+// on whether observability is actually being collected.
+func (i *Instrumentation) IsEnabled() bool {
+	return i.config.Enabled
+}
+
 // ShouldLogClientIPs returns whether client IP addresses should be logged
 // This respects the LogClientIPs configuration for privacy compliance
 func (i *Instrumentation) ShouldLogClientIPs() bool {

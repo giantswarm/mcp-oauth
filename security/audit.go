@@ -49,7 +49,7 @@ type Event struct {
 // emissions should pass [context.Background].
 func (a *Auditor) LogEvent(ctx context.Context, event Event) {
 	if !a.enabled {
-		recordAuditDrop(ctx, a, "disabled")
+		recordAuditDrop(ctx, "disabled")
 		return
 	}
 

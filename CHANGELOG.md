@@ -41,15 +41,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Audit + token-endpoint + encryption observability: ctx threading, new failure counters, OAuth-semantic span attributes**
-  - `security.Auditor.LogEvent` and all 11 typed helpers now take `context.Context` as the first argument; the ctx is forwarded to the underlying `slog.Handler.Handle` so otelslog-style handlers attach trace/span IDs to audit records. **Breaking** for direct callers of the typed helpers: prepend `ctx` (use `r.Context()` for HTTP-driven flows, `context.Background()` for non-request emissions).
-  - New `oauth.token_endpoint.failures.total{grant_type, error_code}` counter (RFC 6749 error codes). Wired into the token endpoint's `authorization_code` and `refresh_token` failure branches in `flows.go`.
-  - New `oauth.audit.drops.total{reason}` counter. `reason=disabled` fires when an `Auditor` is configured but its enabled flag is `false`. Hook is registered automatically by `instrumentation.New(...)`.
-  - `oauth.encryption.operations.total` and `oauth.encryption.duration` gain a `result` label (`ok`/`fail`). `Encryptor.Encrypt` and `Encryptor.Decrypt` now record the metric automatically on every call. **Breaking** for direct callers of `Metrics.RecordEncryptionOperation` (added a `result string` argument).
-  - Authorization, token-exchange, token-refresh, and introspection spans now set the OAuth-semantic attributes they previously declared but never populated: `AttrResponseType`, `AttrScope`, `AttrGrantType`. Refresh rotation in `flows.go` sets `AttrTokenRotated=true` on the active span.
-  - New `oauth.http.introspection` span on the RFC 7662 introspection endpoint, carrying `oauth.client_id` and `oauth.token_type`. (The hand-off called this "userinfo"; mcp-oauth doesn't expose a userinfo endpoint — introspection is the closest analogue.)
-  - Dead-code removal: `instrumentation.SanitizeRedirectURI` and `instrumentation.AttrRedirectURI` (declared but unused); six repetitive `Handler.recordX` wrappers replaced with a single `Handler.metrics()` accessor and inline `m.RecordX(ctx, ...)` calls.
-  - `docs/observability.md`: fictional spans (`oauth.server.start_authorization_flow`, `storage.save_authorization_state`, `provider.google.exchange_code`) replaced with the actual emit list; metrics tables now include `oauth.audit.events.total`, `oauth.audit.drops.total`, `oauth.encryption.*`, `oauth.cimd.*`, `oauth.refresh_token.legacy_rejected`, `oauth.forwarded_id_token.accepted_total`, and the new `oauth.token_endpoint.failures.total`.
+- **`security.Auditor` methods take `context.Context`**
+  - `LogEvent` and the 11 typed helpers (`LogTokenIssued`, `LogTokenRefreshed`, `LogTokenRevoked`, `LogAuthFailure`, `LogRateLimitExceeded`, `LogClientRegistrationRateLimitExceeded`, `LogClientRegistered`, `LogInvalidPKCE`, `LogTokenReuse`, `LogSuspiciousActivity`, `LogInvalidRedirect`) now take `ctx context.Context` as the first argument. The ctx is forwarded to the underlying `slog.Handler.Handle`, so otelslog-style handlers attach trace/span IDs to audit records.
+  - **Breaking**: prepend `ctx` at every call site (`r.Context()` for HTTP-driven flows, `context.Background()` for background emissions).
+- **`Server.Instrumentation` is always non-nil**
+  - When the caller does not pass `WithInstrumentation(...)`, `server.New` initializes a default `instrumentation.New(Config{})` — no-op meter and tracer providers, zero exporter overhead. Call sites no longer guard with `if h.server.Instrumentation != nil { ... }`.
+  - New `instrumentation.Instrumentation.IsEnabled()` reports whether real exporters were wired (vs. the default no-op).
+  - **Breaking** for callers that introspected `srv.Instrumentation == nil` to detect "observability not configured" — check `srv.Instrumentation.IsEnabled()` instead.
+- **New metrics**
+  - `oauth.token_endpoint.failures.total{grant_type, error_code}` — token-endpoint failures by grant_type and RFC 6749 error_code. `grant_type` is coerced to `"unknown"` for non-standard values to bound cardinality.
+  - `oauth.audit.drops.total{reason}` — audit events dropped. `reason="disabled"` fires when an `Auditor` is configured with `enabled=false`.
+  - `oauth.encryption.operations.total{operation, result}` and `oauth.encryption.duration{operation, result}` gain a `result` label (`ok`/`fail`). `Encryptor.Encrypt` and `Encryptor.Decrypt` now record the metric automatically on every call.
+  - **Breaking** for direct callers of `Metrics.RecordEncryptionOperation` (new `result string` argument).
+- **OAuth-semantic span attributes**
+  - `oauth.http.authorization` sets `oauth.response_type` and `oauth.scope`.
+  - `oauth.http.token_exchange` sets `oauth.grant_type=authorization_code`.
+  - `oauth.http.token_refresh` sets `oauth.grant_type=refresh_token`.
+  - Refresh rotation in `server/flows.go` sets `oauth.token.rotated=true` on the active span.
+  - New `oauth.http.introspection` span on the RFC 7662 introspection endpoint, carrying `oauth.client_id` and `oauth.token_type`.
+- **Removed unused observability surface**
+  - `instrumentation.SanitizeRedirectURI` and `instrumentation.AttrRedirectURI` (declared but never referenced).
+- **`docs/observability.md`** rewritten against the actual emit set. Now covers `oauth.audit.events.total`, `oauth.audit.drops.total`, `oauth.encryption.*`, `oauth.cimd.*`, `oauth.refresh_token.legacy_rejected`, `oauth.forwarded_id_token.accepted_total`, and `oauth.token_endpoint.failures.total`.
 - **Startup chatter downgraded from INFO to DEBUG; audit logs grouped under `slog.Group("audit", ...)`**
   - Every "X enabled / Using Y / Initialized Z / Registered W" line that fired once at startup is now `slog.LevelDebug`. Affected sites span `server`, `storage/memory`, `storage/valkey`, `security/client_registration_ratelimit`, `providers/oidc`, plus per-request lifecycle Infos (`Token proactively refreshed`, `Refresh token rotated`, `Token revoked`, `Token exchange successful`, ...). WARN/ERROR security warnings are unchanged.
   - The Server-side "Redirect URI security status" Info is removed; the same fields are reachable via `Server.LogValue()`.

@@ -16,7 +16,9 @@ var encryptionMetricFn encryptionMetricRecorder
 
 // SetEncryptionMetricRecorder registers a callback invoked on every
 // completed Encrypt/Decrypt. Setting nil disables the hook (zero overhead
-// when no metrics backend is wired).
+// when no metrics backend is wired). Intended to be called once at
+// startup from instrumentation wiring code; not safe to swap at request
+// time (no synchronization on the package-level global).
 func SetEncryptionMetricRecorder(fn encryptionMetricRecorder) {
 	encryptionMetricFn = fn
 }

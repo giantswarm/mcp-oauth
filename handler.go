@@ -125,7 +125,7 @@ func (h *Handler) authorizeClientRegistration(w http.ResponseWriter, r *http.Req
 
 // validatePublicClientRegistration validates public client registration is allowed
 // Returns true if allowed, false if rejected
-func (h *Handler) validatePublicClientRegistration(w http.ResponseWriter, req *clientRegistrationRequest, clientIP string, registeredViaTrustedScheme bool, startTime time.Time, span trace.Span) bool {
+func (h *Handler) validatePublicClientRegistration(ctx context.Context, w http.ResponseWriter, req *clientRegistrationRequest, clientIP string, registeredViaTrustedScheme bool, startTime time.Time, span trace.Span) bool {
 	isPublicClientRequest := req.TokenEndpointAuthMethod == TokenEndpointAuthMethodNone || req.ClientType == ClientTypePublic
 	if !isPublicClientRequest {
 		return true
@@ -135,7 +135,7 @@ func (h *Handler) validatePublicClientRegistration(w http.ResponseWriter, req *c
 		h.logger.Warn("Public client registration rejected (not allowed by configuration)",
 			"token_endpoint_auth_method", req.TokenEndpointAuthMethod,
 			"client_type", req.ClientType, "ip", clientIP)
-		h.recordHTTPMetrics("register", http.MethodPost, http.StatusBadRequest, startTime)
+		h.recordHTTPMetrics(ctx, "register", http.MethodPost, http.StatusBadRequest, startTime)
 		if span != nil {
 			instrumentation.SetSpanAttributes(
 				span,
@@ -540,9 +540,7 @@ func (h *Handler) checkUserRateLimit(w http.ResponseWriter, r *http.Request, use
 
 // recordRateLimitExceeded records rate limit metrics and audit events.
 func (h *Handler) recordRateLimitExceeded(ctx context.Context, limitType, clientIP, userID, endpoint string) {
-	if h.server.Instrumentation != nil {
-		h.server.Instrumentation.Metrics().RecordRateLimitExceeded(ctx, limitType)
-	}
+	h.server.Instrumentation.Metrics().RecordRateLimitExceeded(ctx, limitType)
 	if h.server.Auditor != nil {
 		h.server.Auditor.LogEvent(ctx, security.Event{
 			Type:      security.EventRateLimitExceeded,
@@ -555,9 +553,7 @@ func (h *Handler) recordRateLimitExceeded(ctx context.Context, limitType, client
 
 // recordUserRateLimitExceeded records user rate limit metrics and audit events.
 func (h *Handler) recordUserRateLimitExceeded(ctx context.Context, clientIP, userID string) {
-	if h.server.Instrumentation != nil {
-		h.server.Instrumentation.Metrics().RecordRateLimitExceeded(ctx, "user")
-	}
+	h.server.Instrumentation.Metrics().RecordRateLimitExceeded(ctx, "user")
 	if h.server.Auditor != nil {
 		h.server.Auditor.LogRateLimitExceeded(ctx, clientIP, userID)
 	}
@@ -1032,9 +1028,7 @@ func (h *Handler) checkDiscoveryRateLimit(w http.ResponseWriter, r *http.Request
 		"ip", clientIP,
 		"endpoint", "authorization_server_metadata")
 
-	if h.server.Instrumentation != nil {
-		h.server.Instrumentation.Metrics().RecordRateLimitExceeded(r.Context(), "ip")
-	}
+	h.server.Instrumentation.Metrics().RecordRateLimitExceeded(r.Context(), "ip")
 
 	if h.server.Auditor != nil {
 		h.server.Auditor.LogEvent(r.Context(), security.Event{
@@ -1182,7 +1176,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method != http.MethodGet {
-		h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusMethodNotAllowed, startTime)
+		h.recordHTTPMetrics(r.Context(), "authorization", http.MethodGet, http.StatusMethodNotAllowed, startTime)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -1203,7 +1197,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	authOpts := parseOIDCOptions(r.URL.Query())
 
 	if clientID == "" {
-		h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusBadRequest, startTime)
+		h.recordHTTPMetrics(r.Context(), "authorization", http.MethodGet, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "client_id missing")
 		h.writeError(w, ErrorCodeInvalidRequest, "client_id is required", http.StatusBadRequest)
 		return
@@ -1214,14 +1208,14 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	// Can be disabled for clients that don't support state (e.g., some MCP clients)
 	if state == "" && !h.server.Config.AllowNoStateParameter {
 		h.logger.Info("Authorization request rejected: state parameter missing", "client_id", clientID)
-		h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusBadRequest, startTime)
+		h.recordHTTPMetrics(r.Context(), "authorization", http.MethodGet, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "state missing")
 		h.writeError(w, ErrorCodeInvalidRequest, "state parameter is required for CSRF protection", http.StatusBadRequest)
 		return
 	}
 	if state != "" && len(state) < MinStateLength && !h.server.Config.AllowNoStateParameter {
 		h.logger.Warn("Authorization request rejected: state parameter too short", "state_length", len(state), "min_required", MinStateLength, "client_id", clientID)
-		h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusBadRequest, startTime)
+		h.recordHTTPMetrics(r.Context(), "authorization", http.MethodGet, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "state too short")
 		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at least %d characters for security", MinStateLength), http.StatusBadRequest)
 		return
@@ -1242,7 +1236,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	authURL, err := h.server.StartAuthorizationFlow(ctx, clientID, redirectURI, scope, resource, codeChallenge, codeChallengeMethod, state, authOpts)
 	if err != nil {
 		h.logger.Error("Failed to start authorization flow", "error", err)
-		h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusInternalServerError, startTime)
+		h.recordHTTPMetrics(r.Context(), "authorization", http.MethodGet, http.StatusInternalServerError, startTime)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "authorization flow failed")
 		h.writeError(w, ErrorCodeServerError, "Failed to start authorization flow", http.StatusInternalServerError)
@@ -1250,11 +1244,9 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Record authorization started metric
-	if m := h.metrics(); m != nil {
-		m.RecordAuthorizationStarted(context.Background(), clientID)
-	}
+	h.recordAuthorizationStarted(r.Context(), clientID)
 
-	h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusFound, startTime)
+	h.recordHTTPMetrics(r.Context(), "authorization", http.MethodGet, http.StatusFound, startTime)
 	instrumentation.SetSpanSuccess(span)
 
 	// Parse and validate scheme before redirecting. authURL is built by the
@@ -1263,7 +1255,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	parsedAuthURL, err := url.Parse(authURL)
 	if err != nil || (parsedAuthURL.Scheme != "https" && parsedAuthURL.Scheme != "http") {
 		h.logger.Error("Provider returned invalid authorization URL", "error", err)
-		h.recordHTTPMetrics("authorization", http.MethodGet, http.StatusInternalServerError, startTime)
+		h.recordHTTPMetrics(r.Context(), "authorization", http.MethodGet, http.StatusInternalServerError, startTime)
 		instrumentation.SetSpanError(span, "invalid authorization URL")
 		h.writeError(w, ErrorCodeServerError, "Failed to start authorization flow", http.StatusInternalServerError)
 		return
@@ -1287,7 +1279,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method != http.MethodGet {
-		h.recordHTTPMetrics("callback", http.MethodGet, http.StatusMethodNotAllowed, startTime)
+		h.recordHTTPMetrics(r.Context(), "callback", http.MethodGet, http.StatusMethodNotAllowed, startTime)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -1304,10 +1296,8 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	if errorParam != "" {
 		errorDesc := r.URL.Query().Get("error_description")
 		h.logger.Warn("Provider returned error", "error", errorParam, "description", errorDesc)
-		h.recordHTTPMetrics("callback", http.MethodGet, http.StatusBadRequest, startTime)
-		if m := h.metrics(); m != nil {
-			m.RecordCallbackProcessed(context.Background(), "", false)
-		}
+		h.recordHTTPMetrics(r.Context(), "callback", http.MethodGet, http.StatusBadRequest, startTime)
+		h.recordCallbackProcessed(r.Context(), "", false)
 		instrumentation.SetSpanError(span, errorParam)
 		h.writeError(w, errorParam, errorDesc, http.StatusBadRequest)
 		return
@@ -1320,20 +1310,16 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	// and minimum length are enforced unconditionally -- AllowNoStateParameter only
 	// controls the client-facing state in the authorization request.
 	if state == "" || code == "" {
-		h.recordHTTPMetrics("callback", http.MethodGet, http.StatusBadRequest, startTime)
-		if m := h.metrics(); m != nil {
-			m.RecordCallbackProcessed(context.Background(), "", false)
-		}
+		h.recordHTTPMetrics(r.Context(), "callback", http.MethodGet, http.StatusBadRequest, startTime)
+		h.recordCallbackProcessed(r.Context(), "", false)
 		instrumentation.SetSpanError(span, "missing state or code")
 		h.writeError(w, ErrorCodeInvalidRequest, "state and code are required", http.StatusBadRequest)
 		return
 	}
 	if len(state) < MinStateLength {
 		h.logger.Warn("Callback rejected: provider state too short", "state_length", len(state), "min_required", MinStateLength)
-		h.recordHTTPMetrics("callback", http.MethodGet, http.StatusBadRequest, startTime)
-		if m := h.metrics(); m != nil {
-			m.RecordCallbackProcessed(context.Background(), "", false)
-		}
+		h.recordHTTPMetrics(r.Context(), "callback", http.MethodGet, http.StatusBadRequest, startTime)
+		h.recordCallbackProcessed(r.Context(), "", false)
 		instrumentation.SetSpanError(span, "state too short")
 		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at least %d characters for security", MinStateLength), http.StatusBadRequest)
 		return
@@ -1344,10 +1330,8 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	authCode, clientState, err := h.server.HandleProviderCallback(ctx, state, code)
 	if err != nil {
 		h.logger.Error("Failed to handle callback", "error", err)
-		h.recordHTTPMetrics("callback", http.MethodGet, http.StatusInternalServerError, startTime)
-		if m := h.metrics(); m != nil {
-			m.RecordCallbackProcessed(context.Background(), "", false)
-		}
+		h.recordHTTPMetrics(r.Context(), "callback", http.MethodGet, http.StatusInternalServerError, startTime)
+		h.recordCallbackProcessed(r.Context(), "", false)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "callback handling failed")
 		h.writeError(w, ErrorCodeServerError, "Authorization failed", http.StatusInternalServerError)
@@ -1355,9 +1339,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Record successful callback
-	if m := h.metrics(); m != nil {
-		m.RecordCallbackProcessed(context.Background(), authCode.ClientID, true)
-	}
+	h.recordCallbackProcessed(r.Context(), authCode.ClientID, true)
 	instrumentation.SetSpanAttributes(span, attribute.String(instrumentation.AttrClientID, authCode.ClientID))
 	instrumentation.SetSpanSuccess(span)
 
@@ -1370,7 +1352,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	parsedRedirect, err := url.Parse(authCode.RedirectURI)
 	if err != nil {
 		h.logger.Error("Stored redirect URI failed to parse", "error", err, "client_id", authCode.ClientID)
-		h.recordHTTPMetrics("callback", http.MethodGet, http.StatusInternalServerError, startTime)
+		h.recordHTTPMetrics(r.Context(), "callback", http.MethodGet, http.StatusInternalServerError, startTime)
 		instrumentation.SetSpanError(span, "invalid stored redirect URI")
 		h.writeError(w, ErrorCodeServerError, "Authorization failed", http.StatusInternalServerError)
 		return
@@ -1389,13 +1371,13 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 		h.logger.Debug("Serving success interstitial for custom URL scheme",
 			"client_id", authCode.ClientID,
 			"scheme", parsedRedirect.Scheme)
-		h.recordHTTPMetrics("callback", http.MethodGet, http.StatusOK, startTime)
+		h.recordHTTPMetrics(r.Context(), "callback", http.MethodGet, http.StatusOK, startTime)
 		h.serveSuccessInterstitial(w, r, redirectURL)
 		return
 	}
 
 	// Standard HTTP/HTTPS redirects work reliably
-	h.recordHTTPMetrics("callback", http.MethodGet, http.StatusFound, startTime)
+	h.recordHTTPMetrics(r.Context(), "callback", http.MethodGet, http.StatusFound, startTime)
 	// #nosec G710 -- redirectURL is built from authCode.RedirectURI, which was
 	// allowlist-validated against client.RedirectURIs and re-validated by
 	// ValidateRedirectURIAtAuthorizationTime when the authorization state was
@@ -1418,11 +1400,11 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config.MaxRequestBodySize)
 	if err := r.ParseForm(); err != nil {
 		if isMaxBytesError(err) {
-			h.recordHTTPMetrics("token", http.MethodPost, http.StatusRequestEntityTooLarge, startTime)
+			h.recordHTTPMetrics(r.Context(), "token", http.MethodPost, http.StatusRequestEntityTooLarge, startTime)
 			h.writeError(w, ErrorCodeInvalidRequest, "Request body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
-		h.recordHTTPMetrics("token", http.MethodPost, http.StatusBadRequest, startTime)
+		h.recordHTTPMetrics(r.Context(), "token", http.MethodPost, http.StatusBadRequest, startTime)
 		h.writeError(w, ErrorCodeInvalidRequest, "Failed to parse request", http.StatusBadRequest)
 		return
 	}
@@ -1435,17 +1417,22 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 	case "refresh_token":
 		h.handleRefreshTokenGrant(w, r)
 	default:
-		h.recordTokenFailure(grantType, ErrorCodeUnsupportedGrantType)
+		h.recordTokenFailure(r.Context(), grantType, ErrorCodeUnsupportedGrantType)
 		h.writeError(w, ErrorCodeUnsupportedGrantType, fmt.Sprintf("Grant type %s not supported", grantType), http.StatusBadRequest)
 	}
 }
 
 // recordTokenFailure records a token-endpoint failure metric labelled by
-// grant_type + error_code. No-op when no instrumentation is wired.
-func (h *Handler) recordTokenFailure(grantType, errorCode string) {
-	if m := h.metrics(); m != nil {
-		m.RecordTokenEndpointFailure(context.Background(), grantType, errorCode)
+// grant_type + RFC 6749 error_code. Unknown grant_types are coerced to
+// "unknown" to bound label cardinality (a malformed client request with
+// grant_type=<random> would otherwise mint a fresh series per probe).
+func (h *Handler) recordTokenFailure(ctx context.Context, grantType, errorCode string) {
+	switch grantType {
+	case "authorization_code", "refresh_token", "client_credentials", "password":
+	default:
+		grantType = "unknown"
 	}
+	h.server.Instrumentation.Metrics().RecordTokenEndpointFailure(ctx, grantType, errorCode)
 }
 
 func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Request) {
@@ -1469,8 +1456,8 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	codeVerifier := r.Form.Get("code_verifier")
 
 	if code == "" {
-		h.recordTokenFailure("authorization_code", ErrorCodeInvalidRequest)
-		h.recordHTTPMetrics("token", http.MethodPost, http.StatusBadRequest, startTime)
+		h.recordTokenFailure(r.Context(), "authorization_code", ErrorCodeInvalidRequest)
+		h.recordHTTPMetrics(r.Context(), "token", http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "code missing")
 		h.writeError(w, ErrorCodeInvalidRequest, "Required parameter 'code' missing", http.StatusBadRequest)
 		return
@@ -1479,15 +1466,15 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	// Authenticate client
 	client, err := h.authenticateClient(r, clientID, clientIP)
 	if err != nil {
-		h.recordHTTPMetrics("token", http.MethodPost, http.StatusUnauthorized, startTime)
+		h.recordHTTPMetrics(r.Context(), "token", http.MethodPost, http.StatusUnauthorized, startTime)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "client authentication failed")
 		// authenticateClient returns Error, extract details
 		if oauthErr, ok := err.(*Error); ok {
-			h.recordTokenFailure("authorization_code", oauthErr.Code)
+			h.recordTokenFailure(r.Context(), "authorization_code", oauthErr.Code)
 			h.writeError(w, oauthErr.Code, oauthErr.Description, oauthErr.Status)
 		} else {
-			h.recordTokenFailure("authorization_code", ErrorCodeInvalidClient)
+			h.recordTokenFailure(r.Context(), "authorization_code", ErrorCodeInvalidClient)
 			h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
 		}
 		return
@@ -1505,8 +1492,8 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	tokenResponse, scope, err := h.server.ExchangeAuthorizationCode(ctx, code, client.ClientID, redirectURI, resource, codeVerifier)
 	if err != nil {
 		h.logger.Error("Failed to exchange authorization code", "client_id", client.ClientID, "ip", clientIP, "error", err)
-		h.recordTokenFailure("authorization_code", ErrorCodeInvalidGrant)
-		h.recordHTTPMetrics("token", http.MethodPost, http.StatusBadRequest, startTime)
+		h.recordTokenFailure(r.Context(), "authorization_code", ErrorCodeInvalidGrant)
+		h.recordHTTPMetrics(r.Context(), "token", http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "code exchange failed")
 		// SECURITY: Don't leak internal error details to client
@@ -1522,11 +1509,9 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	if codeVerifier != "" {
 		pkceMethod = PKCEMethodS256
 	}
-	if m := h.metrics(); m != nil {
-		m.RecordCodeExchange(context.Background(), client.ClientID, pkceMethod)
-	}
+	h.recordCodeExchanged(r.Context(), client.ClientID, pkceMethod)
 
-	h.recordHTTPMetrics("token", http.MethodPost, http.StatusOK, startTime)
+	h.recordHTTPMetrics(r.Context(), "token", http.MethodPost, http.StatusOK, startTime)
 	instrumentation.SetSpanSuccess(span)
 
 	// Return tokens
@@ -1551,8 +1536,8 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	clientID := r.Form.Get("client_id")
 
 	if refreshToken == "" {
-		h.recordTokenFailure("refresh_token", ErrorCodeInvalidRequest)
-		h.recordHTTPMetrics("token", http.MethodPost, http.StatusBadRequest, startTime)
+		h.recordTokenFailure(r.Context(), "refresh_token", ErrorCodeInvalidRequest)
+		h.recordHTTPMetrics(r.Context(), "token", http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "refresh_token missing")
 		h.writeError(w, ErrorCodeInvalidRequest, "refresh_token is required", http.StatusBadRequest)
 		return
@@ -1579,8 +1564,8 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	tokenResponse, err := h.server.RefreshAccessToken(ctx, refreshToken, clientID)
 	if err != nil {
 		h.logger.Error("Failed to refresh token", "client_id", clientID, "ip", clientIP, "error", err)
-		h.recordTokenFailure("refresh_token", ErrorCodeInvalidGrant)
-		h.recordHTTPMetrics("token", http.MethodPost, http.StatusBadRequest, startTime)
+		h.recordTokenFailure(r.Context(), "refresh_token", ErrorCodeInvalidGrant)
+		h.recordHTTPMetrics(r.Context(), "token", http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "token refresh failed")
 		// SECURITY: Don't leak internal error details to client
@@ -1591,11 +1576,9 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 
 	// Record token refreshed metric (check if it was rotated)
 	rotated := h.server.Config.AllowRefreshTokenRotation
-	if m := h.metrics(); m != nil {
-		m.RecordTokenRefresh(context.Background(), clientID, rotated)
-	}
+	h.recordTokenRefreshed(r.Context(), clientID, rotated)
 
-	h.recordHTTPMetrics("token", http.MethodPost, http.StatusOK, startTime)
+	h.recordHTTPMetrics(r.Context(), "token", http.MethodPost, http.StatusOK, startTime)
 	instrumentation.SetSpanSuccess(span)
 
 	// Return tokens
@@ -1617,7 +1600,7 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 			if h.server.Auditor != nil {
 				h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "refresh_client_authentication_failed")
 			}
-			h.recordHTTPMetrics("token", http.MethodPost, http.StatusUnauthorized, startTime)
+			h.recordHTTPMetrics(r.Context(), "token", http.MethodPost, http.StatusUnauthorized, startTime)
 			instrumentation.RecordError(span, err)
 			instrumentation.SetSpanError(span, "client authentication failed")
 			h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
@@ -1628,7 +1611,7 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 
 	// Case 2: No Basic Auth - check if client_id was provided
 	if clientID == "" {
-		h.recordHTTPMetrics("token", http.MethodPost, http.StatusBadRequest, startTime)
+		h.recordHTTPMetrics(r.Context(), "token", http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "client_id missing")
 		h.writeError(w, ErrorCodeInvalidRequest, "client_id is required", http.StatusBadRequest)
 		return "", false, fmt.Errorf("client_id required")
@@ -1641,7 +1624,7 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 		if h.server.Auditor != nil {
 			h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "refresh_unknown_client")
 		}
-		h.recordHTTPMetrics("token", http.MethodPost, http.StatusUnauthorized, startTime)
+		h.recordHTTPMetrics(r.Context(), "token", http.MethodPost, http.StatusUnauthorized, startTime)
 		instrumentation.SetSpanError(span, "unknown client")
 		h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
 		return "", false, err
@@ -1668,7 +1651,7 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 				},
 			})
 		}
-		h.recordHTTPMetrics("token", http.MethodPost, http.StatusUnauthorized, startTime)
+		h.recordHTTPMetrics(r.Context(), "token", http.MethodPost, http.StatusUnauthorized, startTime)
 		instrumentation.SetSpanError(span, "confidential client requires authentication")
 		h.writeError(w, ErrorCodeInvalidClient, "Client authentication required", http.StatusUnauthorized)
 		return "", false, fmt.Errorf("confidential client requires authentication")
@@ -1691,7 +1674,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method != http.MethodPost {
-		h.recordHTTPMetrics("revoke", http.MethodPost, http.StatusMethodNotAllowed, startTime)
+		h.recordHTTPMetrics(r.Context(), "revoke", http.MethodPost, http.StatusMethodNotAllowed, startTime)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -1704,13 +1687,13 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config.MaxRequestBodySize)
 	if err := r.ParseForm(); err != nil {
 		if isMaxBytesError(err) {
-			h.recordHTTPMetrics("revoke", http.MethodPost, http.StatusRequestEntityTooLarge, startTime)
+			h.recordHTTPMetrics(r.Context(), "revoke", http.MethodPost, http.StatusRequestEntityTooLarge, startTime)
 			instrumentation.RecordError(span, err)
 			instrumentation.SetSpanError(span, "request body too large")
 			h.writeError(w, ErrorCodeInvalidRequest, "Request body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
-		h.recordHTTPMetrics("revoke", http.MethodPost, http.StatusBadRequest, startTime)
+		h.recordHTTPMetrics(r.Context(), "revoke", http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "parse form failed")
 		h.writeError(w, ErrorCodeInvalidRequest, "Failed to parse request", http.StatusBadRequest)
@@ -1721,7 +1704,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 	clientID := r.Form.Get("client_id")
 
 	if token == "" {
-		h.recordHTTPMetrics("revoke", http.MethodPost, http.StatusBadRequest, startTime)
+		h.recordHTTPMetrics(r.Context(), "revoke", http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "token missing")
 		h.writeError(w, ErrorCodeInvalidRequest, "token is required", http.StatusBadRequest)
 		return
@@ -1736,7 +1719,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 			if h.server.Auditor != nil {
 				h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "revocation_auth_failed")
 			}
-			h.recordHTTPMetrics("revoke", http.MethodPost, http.StatusUnauthorized, startTime)
+			h.recordHTTPMetrics(r.Context(), "revoke", http.MethodPost, http.StatusUnauthorized, startTime)
 			instrumentation.RecordError(span, err)
 			instrumentation.SetSpanError(span, "client authentication failed")
 			h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
@@ -1755,11 +1738,9 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 	// Per RFC 7009, return 200 even if revocation fails
 
 	// Record token revoked metric
-	if m := h.metrics(); m != nil {
-		m.RecordTokenRevocation(context.Background(), clientID)
-	}
+	h.recordTokenRevoked(r.Context(), clientID)
 
-	h.recordHTTPMetrics("revoke", http.MethodPost, http.StatusOK, startTime)
+	h.recordHTTPMetrics(r.Context(), "revoke", http.MethodPost, http.StatusOK, startTime)
 	instrumentation.SetSpanSuccess(span)
 
 	// Return success (per RFC 7009)
@@ -1777,7 +1758,7 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	}
 
 	if r.Method != http.MethodPost {
-		h.recordHTTPMetrics("register", http.MethodPost, http.StatusMethodNotAllowed, startTime)
+		h.recordHTTPMetrics(r.Context(), "register", http.MethodPost, http.StatusMethodNotAllowed, startTime)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -1794,7 +1775,7 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	req, err := h.parseAndValidateRegistrationRequest(w, r, clientIP)
 	if err != nil {
 		if isMaxBytesError(err) {
-			h.recordHTTPMetrics("register", http.MethodPost, http.StatusRequestEntityTooLarge, startTime)
+			h.recordHTTPMetrics(r.Context(), "register", http.MethodPost, http.StatusRequestEntityTooLarge, startTime)
 			instrumentation.RecordError(span, err)
 			instrumentation.SetSpanError(span, "request body too large")
 		}
@@ -1806,7 +1787,7 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if !h.validatePublicClientRegistration(w, req, clientIP, registeredViaTrustedScheme, startTime, span) {
+	if !h.validatePublicClientRegistration(r.Context(), w, req, clientIP, registeredViaTrustedScheme, startTime, span) {
 		return
 	}
 
@@ -1815,15 +1796,13 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	maxClients := h.getMaxClientsPerIP()
 	client, clientSecret, err := h.server.RegisterClient(ctx, req.ClientName, req.ClientType, req.TokenEndpointAuthMethod, req.RedirectURIs, req.Scopes, clientIP, maxClients)
 	if err != nil {
-		h.handleRegistrationError(w, err, clientIP, startTime, span)
+		h.handleRegistrationError(r.Context(), w, err, clientIP, startTime, span)
 		return
 	}
 
-	if m := h.metrics(); m != nil {
-		m.RecordClientRegistration(context.Background(), client.ClientType)
-	}
+	h.recordClientRegistered(r.Context(), client.ClientType)
 	h.auditTrustedSchemeRegistration(r.Context(), registeredViaTrustedScheme, trustedScheme, client, clientIP)
-	h.recordHTTPMetrics("register", http.MethodPost, http.StatusCreated, startTime)
+	h.recordHTTPMetrics(ctx, "register", http.MethodPost, http.StatusCreated, startTime)
 	h.setRegistrationSpanSuccess(span, client)
 	h.writeRegistrationResponse(w, client, clientSecret)
 }
@@ -1888,10 +1867,10 @@ func (h *Handler) recordTrustedSchemeSpan(span trace.Span, registeredViaTrustedS
 }
 
 // handleRegistrationError handles client registration errors.
-func (h *Handler) handleRegistrationError(w http.ResponseWriter, err error, clientIP string, startTime time.Time, span trace.Span) {
+func (h *Handler) handleRegistrationError(ctx context.Context, w http.ResponseWriter, err error, clientIP string, startTime time.Time, span trace.Span) {
 	if strings.Contains(err.Error(), "registration limit") {
 		h.logger.Warn("Client registration limit exceeded", "ip", clientIP, "error", err)
-		h.recordHTTPMetrics("register", http.MethodPost, http.StatusTooManyRequests, startTime)
+		h.recordHTTPMetrics(ctx, "register", http.MethodPost, http.StatusTooManyRequests, startTime)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "registration limit exceeded")
 		h.writeError(w, ErrorCodeInvalidRequest, "Client registration limit exceeded", http.StatusTooManyRequests)
@@ -1899,7 +1878,7 @@ func (h *Handler) handleRegistrationError(w http.ResponseWriter, err error, clie
 	}
 
 	h.logger.Error("Failed to register client", "ip", clientIP, "error", err)
-	h.recordHTTPMetrics("register", http.MethodPost, http.StatusInternalServerError, startTime)
+	h.recordHTTPMetrics(ctx, "register", http.MethodPost, http.StatusInternalServerError, startTime)
 	instrumentation.RecordError(span, err)
 	instrumentation.SetSpanError(span, "registration failed")
 	h.writeError(w, ErrorCodeServerError, "Failed to register client", http.StatusInternalServerError)
@@ -2235,6 +2214,7 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 	}
 
 	if r.Method != http.MethodPost {
+		instrumentation.SetSpanError(span, "method not allowed")
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -2245,17 +2225,20 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config.MaxRequestBodySize)
 	if err := r.ParseForm(); err != nil {
 		if isMaxBytesError(err) {
-			h.recordHTTPMetrics("introspect", http.MethodPost, http.StatusRequestEntityTooLarge, startTime)
+			instrumentation.SetSpanError(span, "request body too large")
+			h.recordHTTPMetrics(r.Context(), "introspect", http.MethodPost, http.StatusRequestEntityTooLarge, startTime)
 			h.writeError(w, ErrorCodeInvalidRequest, "Request body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
-		h.recordHTTPMetrics("introspect", http.MethodPost, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "failed to parse request")
+		h.recordHTTPMetrics(r.Context(), "introspect", http.MethodPost, http.StatusBadRequest, startTime)
 		h.writeError(w, ErrorCodeInvalidRequest, "Failed to parse request", http.StatusBadRequest)
 		return
 	}
 
 	token := r.Form.Get("token")
 	if token == "" {
+		instrumentation.SetSpanError(span, "token parameter missing")
 		h.writeError(w, ErrorCodeInvalidRequest, "token parameter is required", http.StatusBadRequest)
 		return
 	}
@@ -2267,6 +2250,7 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 
 	clientID, err := h.authenticateIntrospectionClient(r, clientIP)
 	if err != nil {
+		instrumentation.SetSpanError(span, "client authentication failed")
 		h.writeError(w, ErrorCodeInvalidClient, err.Error(), http.StatusUnauthorized)
 		return
 	}
@@ -2282,7 +2266,7 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(response)
-	h.recordHTTPMetrics("introspect", http.MethodPost, http.StatusOK, startTime)
+	h.recordHTTPMetrics(r.Context(), "introspect", http.MethodPost, http.StatusOK, startTime)
 	instrumentation.SetSpanSuccess(span)
 }
 
@@ -2744,22 +2728,40 @@ func (h *Handler) ServePreflightRequest(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// recordHTTPMetrics records HTTP request metrics (total count and duration)
-// metrics returns the Instrumentation Metrics holder, or nil when no
-// instrumentation is configured.
-func (h *Handler) metrics() *instrumentation.Metrics {
-	if h.server.Instrumentation == nil {
-		return nil
-	}
-	return h.server.Instrumentation.Metrics()
+// recordHTTPMetrics records an HTTP request metric.
+func (h *Handler) recordHTTPMetrics(ctx context.Context, endpoint, method string, status int, startTime time.Time) {
+	duration := time.Since(startTime).Seconds() * 1000
+	h.server.Instrumentation.Metrics().RecordHTTPRequest(ctx, method, endpoint, status, duration)
 }
 
-// recordHTTPMetrics records an HTTP request metric.
-func (h *Handler) recordHTTPMetrics(endpoint, method string, status int, startTime time.Time) {
-	if m := h.metrics(); m != nil {
-		duration := time.Since(startTime).Seconds() * 1000
-		m.RecordHTTPRequest(context.Background(), method, endpoint, status, duration)
-	}
+// recordAuthorizationStarted records when an authorization flow is started.
+func (h *Handler) recordAuthorizationStarted(ctx context.Context, clientID string) {
+	h.server.Instrumentation.Metrics().RecordAuthorizationStarted(ctx, clientID)
+}
+
+// recordCallbackProcessed records when a callback is processed.
+func (h *Handler) recordCallbackProcessed(ctx context.Context, clientID string, success bool) {
+	h.server.Instrumentation.Metrics().RecordCallbackProcessed(ctx, clientID, success)
+}
+
+// recordCodeExchanged records when an authorization code is exchanged.
+func (h *Handler) recordCodeExchanged(ctx context.Context, clientID, pkceMethod string) {
+	h.server.Instrumentation.Metrics().RecordCodeExchange(ctx, clientID, pkceMethod)
+}
+
+// recordTokenRefreshed records when a token is refreshed.
+func (h *Handler) recordTokenRefreshed(ctx context.Context, clientID string, rotated bool) {
+	h.server.Instrumentation.Metrics().RecordTokenRefresh(ctx, clientID, rotated)
+}
+
+// recordTokenRevoked records when a token is revoked.
+func (h *Handler) recordTokenRevoked(ctx context.Context, clientID string) {
+	h.server.Instrumentation.Metrics().RecordTokenRevocation(ctx, clientID)
+}
+
+// recordClientRegistered records when a client is registered.
+func (h *Handler) recordClientRegistered(ctx context.Context, clientType string) {
+	h.server.Instrumentation.Metrics().RecordClientRegistration(ctx, clientType)
 }
 
 // validPromptValues defines the allowed values for the OIDC prompt parameter.
