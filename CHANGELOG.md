@@ -88,7 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Token introspection (`/oauth/introspect`) now enforces a cross-client gate (#306)**
   - **Breaking**: a client introspecting a token bound to a different client receives `{"active": false}` per RFC 7662 §2.2 with no other claims populated.
   - New `Config.IntrospectionResourceServers []string` allowlists resource servers permitted to introspect tokens they do not own. Empty entries are rejected at startup; same-client introspection is always allowed.
-  - Cross-client denials emit `security.EventIntrospectionRequesterDenied` (severity `medium`, `reason` ∈ `{empty_client_id, cross_client_probe}`).
+  - Cross-client denials emit `security.EventIntrospectionRequesterDenied` (severity `medium`, `reason` ∈ `{empty_requester, empty_token_bound_client, cross_client_probe}`).
   - User attributes (`email`, `email_verified`, `name`, `sub`) flow only on the authorized path.
 - **`security.Auditor` methods take `context.Context`**
   - `LogEvent` and the 11 typed helpers (`LogTokenIssued`, `LogTokenRefreshed`, `LogTokenRevoked`, `LogAuthFailure`, `LogRateLimitExceeded`, `LogClientRegistrationRateLimitExceeded`, `LogClientRegistered`, `LogInvalidPKCE`, `LogTokenReuse`, `LogSuspiciousActivity`, `LogInvalidRedirect`) now take `ctx context.Context` as the first argument. The ctx is forwarded to the underlying `slog.Handler.Handle`, so otelslog-style handlers attach trace/span IDs to audit records.

@@ -2,7 +2,7 @@ package server
 
 import (
 	"context"
-	"encoding/json"
+	"slices"
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/providers"
@@ -82,16 +82,8 @@ func copyClaimString(dst, claims map[string]any, key string) {
 }
 
 func copyClaimUnixTime(dst, claims map[string]any, key string) {
-	switch v := claims[key].(type) {
-	case float64:
+	if v, ok := claims[key].(float64); ok {
 		dst[key] = int64(v)
-	case json.Number:
-		// jose's Claims decoder uses float64 by default but the underlying
-		// json decoder can be configured for json.Number — accept both so a
-		// future decode-mode change does not silently drop exp/iat/nbf.
-		if n, err := v.Int64(); err == nil {
-			dst[key] = n
-		}
 	}
 }
 
@@ -153,17 +145,19 @@ func (s *Server) introspectionResponseFromOpaqueToken(ctx context.Context, acces
 // EventIntrospectionRequesterDenied so cross-client probes are visible in the
 // audit log even though the RFC 7662 §2.2 response hides them from the caller.
 func (s *Server) introspectionRequesterAllowed(ctx context.Context, requestingClient, tokenBoundClient string) bool {
-	if tokenBoundClient == "" || requestingClient == "" {
-		s.logIntrospectionRequesterDenied(ctx, requestingClient, tokenBoundClient, "empty_client_id")
+	if requestingClient == "" {
+		s.logIntrospectionRequesterDenied(ctx, requestingClient, tokenBoundClient, "empty_requester")
+		return false
+	}
+	if tokenBoundClient == "" {
+		s.logIntrospectionRequesterDenied(ctx, requestingClient, tokenBoundClient, "empty_token_bound_client")
 		return false
 	}
 	if requestingClient == tokenBoundClient {
 		return true
 	}
-	for _, allowed := range s.Config.IntrospectionResourceServers {
-		if allowed == requestingClient {
-			return true
-		}
+	if slices.Contains(s.Config.IntrospectionResourceServers, requestingClient) {
+		return true
 	}
 	s.logIntrospectionRequesterDenied(ctx, requestingClient, tokenBoundClient, "cross_client_probe")
 	return false
