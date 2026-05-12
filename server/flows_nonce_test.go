@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -16,12 +17,24 @@ import (
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
+	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
 // makeIDTokenWithNonce builds a JWS carrying the requested `nonce` claim, or
 // omits the claim when nonce is "". Signature is a placeholder.
 func makeIDTokenWithNonce(t *testing.T, nonce string) string {
+	t.Helper()
+	if nonce == "" {
+		return makeIDTokenWithRawNonceClaim(t, nil)
+	}
+	return makeIDTokenWithRawNonceClaim(t, nonce)
+}
+
+// makeIDTokenWithRawNonceClaim builds a JWS whose `nonce` claim takes an
+// arbitrary JSON value (string, number, array, ...). Pass nil to omit the
+// claim entirely. Signature is a placeholder.
+func makeIDTokenWithRawNonceClaim(t *testing.T, nonceValue any) string {
 	t.Helper()
 	header := map[string]string{"alg": "RS256", "typ": "JWT", "kid": "test"}
 	headerBytes, err := json.Marshal(header)
@@ -33,8 +46,8 @@ func makeIDTokenWithNonce(t *testing.T, nonce string) string {
 		"aud":   "test-client",
 		"email": "test@example.com",
 	}
-	if nonce != "" {
-		payload["nonce"] = nonce
+	if nonceValue != nil {
+		payload["nonce"] = nonceValue
 	}
 	payloadBytes, err := json.Marshal(payload)
 	require.NoError(t, err)
@@ -48,6 +61,7 @@ type nonceFlowFixture struct {
 	store    *memory.Store
 	provider *mock.Provider
 	clientID string
+	auditBuf *bytes.Buffer
 }
 
 func setupNonceFlow(t *testing.T, requireNonce bool) *nonceFlowFixture {
@@ -57,6 +71,8 @@ func setupNonceFlow(t *testing.T, requireNonce bool) *nonceFlowFixture {
 	t.Cleanup(func() { store.Stop() })
 
 	provider := mock.NewProvider()
+
+	logger, auditBuf := captureLogger()
 
 	config := &Config{
 		Issuer:                      "https://auth.example.com",
@@ -69,8 +85,9 @@ func setupNonceFlow(t *testing.T, requireNonce bool) *nonceFlowFixture {
 		DisableNonceEchoRequirement: !requireNonce,
 	}
 
-	srv, err := New(provider, store, store, store, config, nil)
+	srv, err := New(provider, store, store, store, config, logger)
 	require.NoError(t, err)
+	srv.Auditor = security.NewAuditor(logger, true)
 
 	client, _, err := srv.RegisterClient(
 		context.Background(),
@@ -89,6 +106,7 @@ func setupNonceFlow(t *testing.T, requireNonce bool) *nonceFlowFixture {
 		store:    store,
 		provider: provider,
 		clientID: client.ClientID,
+		auditBuf: auditBuf,
 	}
 }
 
@@ -184,6 +202,14 @@ func TestNonce_Mismatch_Rejected(t *testing.T) {
 	require.Nil(t, authCode)
 	require.True(t, errors.Is(err, oidc.ErrNonceMismatch),
 		"expected ErrNonceMismatch, got %v", err)
+
+	logOutput := fix.auditBuf.String()
+	require.True(t, containsAuditEvent(logOutput, security.EventProviderNonceMismatch),
+		"audit event %q not emitted on mismatch; log: %s", security.EventProviderNonceMismatch, logOutput)
+	require.Contains(t, logOutput, "mismatch",
+		"audit reason should record %q", "mismatch")
+	require.Contains(t, logOutput, "high",
+		"audit severity should be %q for replay-attack indicator", "high")
 }
 
 func TestNonce_MissingInIDToken_Rejected(t *testing.T) {
@@ -197,6 +223,48 @@ func TestNonce_MissingInIDToken_Rejected(t *testing.T) {
 	require.True(t, errors.Is(err, oidc.ErrNonceMismatch),
 		"expected ErrNonceMismatch (claim absent), got %v", err)
 	require.Contains(t, err.Error(), "absent")
+
+	logOutput := fix.auditBuf.String()
+	require.True(t, containsAuditEvent(logOutput, security.EventProviderNonceMismatch),
+		"audit event %q not emitted on absent claim; log: %s", security.EventProviderNonceMismatch, logOutput)
+	require.Contains(t, logOutput, "absent",
+		"audit reason should record %q", "absent")
+}
+
+func TestNonce_WrongTypeClaim_AuditedAsWrongType(t *testing.T) {
+	fix := setupNonceFlow(t, true)
+	providerState, _ := fix.startOIDCFlow(t)
+	fix.echoIDToken(makeIDTokenWithRawNonceClaim(t, 42))
+
+	authCode, _, err := fix.srv.HandleProviderCallback(context.Background(), providerState, "code")
+	require.Error(t, err)
+	require.Nil(t, authCode)
+	require.True(t, errors.Is(err, oidc.ErrNonceMismatch),
+		"wrong-type claim must be rejected as nonce mismatch, got %v", err)
+	require.Contains(t, err.Error(), "wrong_type")
+
+	logOutput := fix.auditBuf.String()
+	require.True(t, containsAuditEvent(logOutput, security.EventProviderNonceMismatch),
+		"audit event %q not emitted on wrong-type claim; log: %s", security.EventProviderNonceMismatch, logOutput)
+	require.Contains(t, logOutput, "wrong_type",
+		"audit reason should distinguish wrong_type from absent/mismatch")
+}
+
+func TestNonce_Replay_ProviderStateOneTime(t *testing.T) {
+	fix := setupNonceFlow(t, true)
+	providerState, expected := fix.startOIDCFlow(t)
+	fix.echoIDToken(makeIDTokenWithNonce(t, expected))
+
+	authCode, _, err := fix.srv.HandleProviderCallback(context.Background(), providerState, "code")
+	require.NoError(t, err)
+	require.NotNil(t, authCode, "first callback must succeed")
+
+	// Replaying the same providerState must fail. The state is deleted after the
+	// first consumption — the second call cannot retrieve authState.Nonce and
+	// the entire callback is rejected before the echo check fires.
+	authCode2, _, err := fix.srv.HandleProviderCallback(context.Background(), providerState, "code")
+	require.Error(t, err, "replayed providerState must be rejected")
+	require.Nil(t, authCode2)
 }
 
 func TestNonce_NotOIDCFlow_NotEnforced(t *testing.T) {

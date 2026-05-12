@@ -43,7 +43,7 @@ type AuthorizationURLOptions struct {
 	IDTokenHint string
 
 	// Nonce is forwarded to the IdP and must be echoed back in the resulting
-	// id_token's `nonce` claim. Constant-time compared on callback.
+	// id_token's `nonce` claim.
 	Nonce string
 
 	// Extra allows setting additional custom parameters not covered above.

@@ -1891,6 +1891,52 @@ func TestHandler_ServeAuthorization_CompleteFlow(t *testing.T) {
 	}
 }
 
+func TestHandler_ServeAuthorization_NonceTooLong(t *testing.T) {
+	ctx := context.Background()
+
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	client, _, err := handler.server.RegisterClient(
+		ctx,
+		"Nonce Length Test Client",
+		"confidential",
+		"",
+		[]string{"https://example.com/callback"},
+		[]string{"openid", "email"},
+		"192.168.1.100",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+
+	verifier := testutil.GenerateRandomString(50)
+	hash := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
+	validState := testutil.GenerateRandomString(43)
+	oversizedNonce := strings.Repeat("a", MaxNonceLength+1)
+
+	query := url.Values{}
+	query.Set("client_id", client.ClientID)
+	query.Set("redirect_uri", "https://example.com/callback")
+	query.Set("scope", "openid email")
+	query.Set("response_type", "code")
+	query.Set("code_challenge", challenge)
+	query.Set("code_challenge_method", "S256")
+	query.Set("state", validState)
+	query.Set("nonce", oversizedNonce)
+
+	req := httptest.NewRequest(http.MethodGet, "/authorize?"+query.Encode(), nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeAuthorization(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d for nonce length > %d", w.Code, http.StatusBadRequest, MaxNonceLength)
+	}
+}
+
 // TestHandler_ServeAuthorization_OIDCParameterForwarding tests that OIDC parameters
 // from the query string are properly extracted and forwarded to the upstream IdP.
 // This enables silent re-authentication (prompt=none), user hints, session freshness

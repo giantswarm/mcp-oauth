@@ -329,7 +329,6 @@ func ValidateNonceClaim(claimNonce, expectedNonce string) error {
 	if claimNonce == "" {
 		return fmt.Errorf("%w: claim absent", ErrNonceMismatch)
 	}
-	// constant-time compare to defeat timing oracles
 	if subtle.ConstantTimeCompare([]byte(claimNonce), []byte(expectedNonce)) != 1 {
 		return ErrNonceMismatch
 	}

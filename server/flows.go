@@ -939,6 +939,13 @@ const minClientNonceLength = 24
 // AuthorizationState and the authOpts forwarded to the upstream IdP. Non-OIDC
 // scopes drop the nonce; OIDC scopes reuse a sufficiently entropic client value
 // or mint a server-side replacement.
+//
+// Caller-visible behaviour: a client-supplied nonce shorter than
+// [minClientNonceLength] is silently replaced with a server-generated value.
+// RPs that rely on the upstream id_token echoing the client's original nonce
+// will see the substituted value on callback, not their own. The substitution
+// is logged at WARN level on the [Server.Logger]; there is no /authorize-time
+// 400 rejection because the parameter is otherwise spec-conforming.
 func (s *Server) resolveAuthorizationNonce(clientID, scope string, authOpts *providers.AuthorizationURLOptions) (string, *providers.AuthorizationURLOptions) {
 	if !helpers.HasScope(scope, "openid") {
 		if authOpts != nil && authOpts.Nonce != "" {
@@ -1058,6 +1065,13 @@ func (s *Server) logProviderStateMismatch(ctx context.Context, clientID string) 
 // validateUpstreamIDTokenNonce requires the upstream id_token's `nonce` claim
 // to equal authState.Nonce. No-op when authState has no nonce, the response
 // carries no id_token, or RequireNonceEcho is false.
+//
+// The id_token claims are parsed without signature verification: this echo
+// check is defence-in-depth against authorization-response forgery, not the
+// primary signature gate. Providers implementing [providers.JWKSProvider]
+// run the OIDC Verifier on the SSO path; for OAuth-only providers (e.g.
+// GitHub) the upstream token is a confidential channel and the nonce echo
+// is the only replay defence available at this seam.
 func (s *Server) validateUpstreamIDTokenNonce(ctx context.Context, authState *storage.AuthorizationState, providerToken *oauth2.Token) error {
 	if authState == nil || authState.Nonce == "" {
 		return nil
@@ -1077,17 +1091,40 @@ func (s *Server) validateUpstreamIDTokenNonce(ctx context.Context, authState *st
 		return fmt.Errorf("upstream id_token parse failed: %w", parseErr)
 	}
 
-	claimNonce, _ := claims["nonce"].(string)
+	claimNonce, wrongType := extractNonceClaim(claims)
 	if err := oidc.ValidateNonceClaim(claimNonce, authState.Nonce); err != nil {
-		reason := "mismatch"
-		if claimNonce == "" {
-			reason = "absent"
-		}
+		reason := nonceMismatchReason(claimNonce, wrongType)
 		s.logProviderNonceMismatch(ctx, authState.ClientID, reason)
 		return fmt.Errorf("upstream id_token nonce %s: %w", reason, err)
 	}
 
 	return nil
+}
+
+// extractNonceClaim returns the `nonce` claim as a string. wrongType is true
+// when the claim is present but not a JSON string (e.g. a number or array) —
+// distinguishable from an absent claim for audit forensics.
+func extractNonceClaim(claims map[string]any) (nonce string, wrongType bool) {
+	raw, ok := claims["nonce"]
+	if !ok || raw == nil {
+		return "", false
+	}
+	s, isString := raw.(string)
+	if !isString {
+		return "", true
+	}
+	return s, false
+}
+
+func nonceMismatchReason(claimNonce string, wrongType bool) string {
+	switch {
+	case wrongType:
+		return "wrong_type"
+	case claimNonce == "":
+		return "absent"
+	default:
+		return "mismatch"
+	}
 }
 
 // logProviderNonceMismatch emits the audit event for an upstream id_token
@@ -1596,9 +1633,11 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		TokenType:    "Bearer",
 	}
 
-	// OIDC Compliance: Forward id_token from refreshed provider token to client
-	// Per OpenID Connect Core 1.0 Section 12.2, some providers return a new id_token
-	// on refresh. When present, forward it to enable silent re-authentication flows.
+	// Per OpenID Connect Core 1.0 §12.2, the refreshed id_token (when present) is
+	// not required to carry the original Authentication Request's `nonce` claim:
+	// nonce is bound to the auth request, not the refresh. No echo validation
+	// here — the upstream Verifier (when configured) is the authority on
+	// signature, iss, aud, and exp. Parity with [flows_forwarded.go].
 	if idToken := ExtractIDToken(newProviderToken); idToken != "" {
 		tokenResponse = tokenResponse.WithExtra(map[string]interface{}{
 			"id_token": idToken,

@@ -768,7 +768,7 @@ type Config struct {
 	RequireNonceEcho bool
 
 	// DisableNonceEchoRequirement opts out of the upstream id_token `nonce`
-	// echo check. Only set for IdPs that drop the claim.
+	// echo check.
 	DisableNonceEchoRequirement bool
 
 	// EnableClientIDMetadataDocuments enables URL-based client_id support per MCP 2025-11-25

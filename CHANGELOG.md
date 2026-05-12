@@ -44,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `/authorize` accepts the `nonce` query parameter and forwards it to the upstream IdP. Forbidden on non-OIDC code flows (no `openid` scope); on OIDC flows the server mints a 256-bit nonce when the client supplied none.
   - `providers.AuthorizationURLOptions` gains a `Nonce` field. The three in-tree providers (`dex`, `google`, `github`) honour it via the shared `ApplyAuthorizationURLOptions` helper / their own opt-in path; backwards-compatible — no signature changes.
   - `storage.AuthorizationState` gains a `Nonce` field, persisted by both memory and Valkey backends.
-  - New `Config.RequireNonceEcho` (default `true`, opt out via `Config.DisableNonceEchoRequirement`). Upstream id_token must echo the issued nonce; mismatch or absent claim rejects the callback and emits a `security.EventProviderNonceMismatch` audit event (severity `high`). Comparison uses `crypto/subtle.ConstantTimeCompare`.
+  - New `Config.RequireNonceEcho` (default `true`, opt out via `Config.DisableNonceEchoRequirement`). Upstream id_token must echo the issued nonce; mismatch / absent / wrong-type claim rejects the callback and emits a `security.EventProviderNonceMismatch` audit event (severity `high`, `reason` ∈ `{mismatch, absent, wrong_type, id_token_parse_failed}`). Comparison uses `crypto/subtle.ConstantTimeCompare`.
   - New `oidc.ValidateNonceClaim(claim, expected)` + `oidc.ErrNonceMismatch` sentinel for callers that validate forwarded id_tokens elsewhere.
   - `IDTokenClaims` gains a `Nonce` JSON tag for completeness.
   - Authorization Server Metadata advertises `claims_supported: ["sub", "aud", "iss", "exp", "iat", "nonce"]`.
