@@ -2106,36 +2106,34 @@ func TestHandler_ServeAuthorization_OIDCParameterForwarding(t *testing.T) {
 				return
 			}
 
-			// Verify OIDC options were forwarded correctly
-			hasAnyOIDCParam := tt.wantPrompt != "" || tt.wantLoginHint != "" ||
-				tt.wantIDTokenHint != "" || tt.wantMaxAge != nil || tt.wantACRValues != ""
-
-			if hasAnyOIDCParam {
-				if capturedOpts == nil {
-					t.Fatal("Expected authOpts to be passed to provider, got nil")
+			// Verify OIDC options were forwarded correctly. The /authorize
+			// scope contains `openid`, so the server mints a nonce and
+			// authOpts is always non-nil regardless of client-supplied
+			// parameters.
+			if capturedOpts == nil {
+				t.Fatal("Expected authOpts to be passed to provider, got nil")
+			}
+			if capturedOpts.Nonce == "" {
+				t.Error("Expected server-generated nonce on OIDC flow, got empty")
+			}
+			if tt.wantPrompt != "" && capturedOpts.Prompt != tt.wantPrompt {
+				t.Errorf("prompt = %q, want %q", capturedOpts.Prompt, tt.wantPrompt)
+			}
+			if tt.wantLoginHint != "" && capturedOpts.LoginHint != tt.wantLoginHint {
+				t.Errorf("login_hint = %q, want %q", capturedOpts.LoginHint, tt.wantLoginHint)
+			}
+			if tt.wantIDTokenHint != "" && capturedOpts.IDTokenHint != tt.wantIDTokenHint {
+				t.Errorf("id_token_hint = %q, want %q", capturedOpts.IDTokenHint, tt.wantIDTokenHint)
+			}
+			if tt.wantMaxAge != nil {
+				if capturedOpts.MaxAge == nil {
+					t.Error("max_age = nil, want non-nil")
+				} else if *capturedOpts.MaxAge != *tt.wantMaxAge {
+					t.Errorf("max_age = %d, want %d", *capturedOpts.MaxAge, *tt.wantMaxAge)
 				}
-				if tt.wantPrompt != "" && capturedOpts.Prompt != tt.wantPrompt {
-					t.Errorf("prompt = %q, want %q", capturedOpts.Prompt, tt.wantPrompt)
-				}
-				if tt.wantLoginHint != "" && capturedOpts.LoginHint != tt.wantLoginHint {
-					t.Errorf("login_hint = %q, want %q", capturedOpts.LoginHint, tt.wantLoginHint)
-				}
-				if tt.wantIDTokenHint != "" && capturedOpts.IDTokenHint != tt.wantIDTokenHint {
-					t.Errorf("id_token_hint = %q, want %q", capturedOpts.IDTokenHint, tt.wantIDTokenHint)
-				}
-				if tt.wantMaxAge != nil {
-					if capturedOpts.MaxAge == nil {
-						t.Error("max_age = nil, want non-nil")
-					} else if *capturedOpts.MaxAge != *tt.wantMaxAge {
-						t.Errorf("max_age = %d, want %d", *capturedOpts.MaxAge, *tt.wantMaxAge)
-					}
-				}
-				if tt.wantACRValues != "" && capturedOpts.ACRValues != tt.wantACRValues {
-					t.Errorf("acr_values = %q, want %q", capturedOpts.ACRValues, tt.wantACRValues)
-				}
-			} else if capturedOpts != nil {
-				// If no OIDC params expected, authOpts should be nil
-				t.Errorf("Expected authOpts to be nil, got %+v", capturedOpts)
+			}
+			if tt.wantACRValues != "" && capturedOpts.ACRValues != tt.wantACRValues {
+				t.Errorf("acr_values = %q, want %q", capturedOpts.ACRValues, tt.wantACRValues)
 			}
 		})
 	}
@@ -2300,7 +2298,10 @@ func TestParseOIDCOptions_Validation(t *testing.T) {
 				query.Set(k, v)
 			}
 
-			opts := parseOIDCOptions(query)
+			opts, err := parseOIDCOptions(query)
+			if err != nil {
+				t.Fatalf("parseOIDCOptions returned error: %v", err)
+			}
 
 			if tt.wantNil {
 				if opts != nil {
