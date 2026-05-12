@@ -12,19 +12,37 @@ import (
 
 // Auditor handles security event logging with PII protection.
 type Auditor struct {
-	logger  *slog.Logger
-	enabled bool
+	logger      *slog.Logger
+	enabled     bool
+	redactPII   bool
 }
 
-// NewAuditor creates a new security auditor
-func NewAuditor(logger *slog.Logger, enabled bool) *Auditor {
+// AuditorOption configures an [Auditor].
+type AuditorOption func(*Auditor)
+
+// WithPIIRedaction toggles hashing of the auxiliary identity fields
+// (client_id, ip_address, user_agent) in every audit record. The user_id
+// is hashed regardless. Default off — existing slog sinks continue to
+// receive cleartext values. Enable for sinks routed to a regulated
+// (PCI, HIPAA, GDPR) store where compliance demands minimisation of
+// auxiliary PII.
+func WithPIIRedaction(redact bool) AuditorOption {
+	return func(a *Auditor) { a.redactPII = redact }
+}
+
+// NewAuditor creates a new security auditor. opts apply after defaults.
+func NewAuditor(logger *slog.Logger, enabled bool, opts ...AuditorOption) *Auditor {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Auditor{
+	a := &Auditor{
 		logger:  logger,
 		enabled: enabled,
 	}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a
 }
 
 // Event represents a security audit event
@@ -55,15 +73,27 @@ func (a *Auditor) LogEvent(ctx context.Context, event Event) {
 
 	event.Timestamp = time.Now()
 
+	clientIDKey, clientIDValue := "client_id", event.ClientID
+	ipKey, ipValue := "ip_address", event.IPAddress
+	uaKey, uaValue := "user_agent", event.UserAgent
+	if a.redactPII {
+		clientIDKey = "client_id_hash"
+		clientIDValue = hashForLogging(event.ClientID)
+		ipKey = "ip_address_hash"
+		ipValue = hashForLogging(event.IPAddress)
+		uaKey = "user_agent_hash"
+		uaValue = hashForLogging(event.UserAgent)
+	}
+
 	a.logger.LogAttrs(
 		ctx, slog.LevelInfo, "security_audit",
 		slog.Group(
 			"audit",
 			slog.String("event_type", event.Type),
 			slog.String("user_id_hash", hashForLogging(event.UserID)),
-			slog.String("client_id", event.ClientID),
-			slog.String("ip_address", event.IPAddress),
-			slog.String("user_agent", event.UserAgent),
+			slog.String(clientIDKey, clientIDValue),
+			slog.String(ipKey, ipValue),
+			slog.String(uaKey, uaValue),
 			slog.String("request_id", event.RequestID),
 			slog.Any("details", event.Details),
 			slog.Time("timestamp", event.Timestamp),

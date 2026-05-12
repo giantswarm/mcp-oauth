@@ -2,13 +2,16 @@ package oauthconfig
 
 import (
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/providers/dex"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/server"
@@ -137,22 +140,10 @@ func validateIssuerScheme(issuer string, allowInsecure bool, prefix string) erro
 	if !strings.EqualFold(u.Scheme, "http") {
 		return nil
 	}
-	if isLoopbackHost(u.Hostname()) {
+	if helpers.IsLoopbackHostname(u.Hostname()) {
 		return nil
 	}
 	return fmt.Errorf("%sISSUER uses http:// but %sALLOW_INSECURE_HTTP is not set; refusing to run an OAuth server over plain HTTP without an explicit opt-in", prefix, prefix)
-}
-
-// isLoopbackHost reports whether host is one of the loopback identifiers
-// used to bypass the http-issuer gate: "localhost", "127.0.0.1", or "::1".
-// Pure string match — no DNS resolution. Comparison is case-insensitive on
-// the textual identifier ("Localhost" matches) per RFC 3986 §3.2.2.
-func isLoopbackHost(host string) bool {
-	switch strings.ToLower(host) {
-	case "localhost", "127.0.0.1", "::1":
-		return true
-	}
-	return false
 }
 
 func loadDurationSecondsIfSet(name string, dst *int64) error {
@@ -307,9 +298,17 @@ func optionalPositiveInt(name string) (int, error) {
 // from a sibling "<NAME>_FILE" path (k8s mounted-secret convention). When both
 // are set, the _FILE variant wins. A single trailing newline is trimmed from
 // file contents (projected-volume files commonly carry one).
+//
+// File mode is checked: a `_FILE` whose group or world readable bits are set
+// emits a WARN on [slog.Default]. Set OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS=true
+// to upgrade the warning into an error. Windows is exempt because Unix mode
+// bits are not meaningful there.
 func optionalSecret(name string) (string, error) {
 	if raw := os.Getenv(name + "_FILE"); raw != "" {
 		path := filepath.Clean(raw)
+		if err := checkSecretFilePermissions(name, path); err != nil {
+			return "", err
+		}
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return "", fmt.Errorf("%s_FILE: %w", name, err)
@@ -317,6 +316,33 @@ func optionalSecret(name string) (string, error) {
 		return strings.TrimSuffix(string(b), "\n"), nil
 	}
 	return os.Getenv(name), nil
+}
+
+// checkSecretFilePermissions warns (or errors, under OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS)
+// when a secret file is readable by anyone other than the owner. CWE-732.
+func checkSecretFilePermissions(name, path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		// Read will surface the same error with full context; bail silently here.
+		return nil
+	}
+	perm := info.Mode().Perm()
+	if perm&0o044 == 0 {
+		return nil
+	}
+	mustFail := strings.EqualFold(os.Getenv("OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS"), "true")
+	if mustFail {
+		return fmt.Errorf("%s_FILE %q is group/world readable (mode %#o); restrict to 0600 or set OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS=false", name, path, perm)
+	}
+	slog.Default().Warn("Secret file is group/world readable — restrict to 0600 to prevent local-account exfiltration",
+		"env_var", name+"_FILE",
+		"path", path,
+		"mode", fmt.Sprintf("%#o", perm),
+		"cwe", "CWE-732")
+	return nil
 }
 
 // splitAndTrim splits s on sep, trims whitespace from each entry, and drops

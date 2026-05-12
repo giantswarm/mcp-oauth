@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Token-at-rest ciphertext envelope is now versioned (`0x01 ‖ kid ‖ nonce ‖ ct`)** — sets up future key rotation by tagging every new write with a 1-byte `kid`. Ciphertexts produced by previous releases (no version tag) remain readable on first decrypt; no operator action is required. Closes (partial) #309.
+- **`security.KeyRing` interface** seam under `security.Encryptor`. The built-in single-key implementation produces and consumes the v1 envelope; consumers wiring external KMS / multi-key rotation supply their own `KeyRing`. Public API of `*Encryptor` is unchanged.
+- **`security.WithPIIRedaction(bool)` option on `security.NewAuditor`** — when enabled, audit records emit `client_id_hash`, `ip_address_hash`, and `user_agent_hash` (truncated SHA-256) instead of the cleartext fields. `user_id_hash` is unchanged. Default off — existing slog sinks continue to receive cleartext. CWE-532.
+- **`OAUTH_*_FILE` secret-file permission check** — `oauthconfig.optionalSecret` warns when a `_FILE` path is group or world readable, and hard-fails when `OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS=true`. Suppressed on Windows. CWE-732.
+- **`oauthconfig.FromEnv` loopback detection** now accepts the full `127.0.0.0/8` range and `::ffff:127.0.0.1` via `helpers.IsLoopbackHostname` — `127.1`, `127.0.0.255`, and IPv4-mapped IPv6 loopback values now bypass the http-issuer gate alongside `localhost`, `127.0.0.1`, and `::1`.
+
 ### Added
 
 - **`Config.DiscoveryCacheMaxAge time.Duration`** (default `1h`). Discovery endpoints (`/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource[...]`, `/.well-known/openid-configuration`) advertise `Cache-Control: public, max-age=<seconds>` per RFC 8414 §3 / RFC 9728 §3.
@@ -26,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`storage/valkey.DefaultMaxTokenDataSize`** raised to 600 KiB (was the previous 256 KiB constant `MaxTokenDataSize`, now removed). `SaveToken` accepts larger OIDC id_tokens, including those carrying extensive `groups` claims. Operators needing a different ceiling set `Config.MaxTokenDataSize` (or `OAUTH_VALKEY_MAX_TOKEN_DATA_SIZE`).
 - **OAuth provider-token storage failures are no longer silently swallowed**. `HandleProviderCallback` returns an error when persisting the provider token or `UserInfo` keyed by the subject ID fails, instead of completing the auth flow against an empty store (which previously manifested as broken SSO token forwarding). Email-keyed save failures remain best-effort but are now audited.
 - **`providers/oidc.DiscoveryClient.Discover`** coalesces concurrent cold-cache callers for the same issuer URL via `singleflight`. Closes #307.
+- **`security.ValidateKeyEntropy` doc accuracy** — now states explicitly that the check is a backstop against placeholders only; derived-but-weak keys (e.g. SHA-256 of a dictionary word) are not caught.
 - **`Retry-After` is computed from the limiter's configured rate**
   - The IP, user, and discovery rate-limit `429` responses now set `Retry-After` to `1` second for any positive rate (sub-second precision isn't expressible per RFC 9110 §10.2.3) and fall back to `60` when the rate is 0. The client-registration limiter uses its configured window. Previously this header was a hardcoded `60` regardless of limiter configuration. New `RateLimiter.Rate()` / `ClientRegistrationRateLimiter.Window()` accessors expose the values.
 - **`oauth_http_requests_total{endpoint="authorize"}`** (was `"authorization"`)
