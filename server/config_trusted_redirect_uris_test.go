@@ -186,12 +186,12 @@ func TestNormalizeTrustedRedirectURI_Canonical(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]string{
-		"https://example.com/cb":                    "https://example.com/cb",
-		"https://EXAMPLE.com/cb":                    "https://example.com/cb",
-		"https://example.com:443/cb":                "https://example.com/cb",
-		"https://example.com/cb?x=1":                "https://example.com/cb?x=1",
-		"https://example.com/Path/Case":             "https://example.com/Path/Case",
-		"https://claude.ai/api/mcp/auth_callback":   "https://claude.ai/api/mcp/auth_callback",
+		"https://example.com/cb":                      "https://example.com/cb",
+		"https://EXAMPLE.com/cb":                      "https://example.com/cb",
+		"https://example.com:443/cb":                  "https://example.com/cb",
+		"https://example.com/cb?x=1":                  "https://example.com/cb?x=1",
+		"https://example.com/Path/Case":               "https://example.com/Path/Case",
+		"https://claude.ai/api/mcp/auth_callback":     "https://claude.ai/api/mcp/auth_callback",
 		"https://claude.ai:443/api/mcp/auth_callback": "https://claude.ai/api/mcp/auth_callback",
 	}
 
