@@ -1778,6 +1778,37 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 	return clientID, false, nil
 }
 
+// authenticateRevocationClient resolves the client for /revoke. It enforces
+// the RFC 6749 §2.3.1 Basic / form client_id agreement, validates Basic-Auth
+// credentials when supplied, and returns (resolvedClientID, authenticated, ok).
+// ok=false means the HTTP response has already been written; the caller must
+// return immediately. RFC 7009 allows unauthenticated revocation for public
+// clients, so a missing Basic header is not itself an error.
+func (h *Handler) authenticateRevocationClient(w http.ResponseWriter, r *http.Request, formClientID, clientIP string, startTime time.Time, span trace.Span) (string, bool, bool) {
+	basicClientID, basicClientSecret := h.parseBasicAuth(r)
+
+	if h.rejectBasicFormClientIDMismatch(w, r, basicClientID, formClientID, clientIP, endpointRevoke, "", span, startTime) {
+		return "", false, false
+	}
+
+	if basicClientID == "" {
+		return formClientID, false, true
+	}
+
+	if err := h.server.ValidateClientCredentials(r.Context(), basicClientID, basicClientSecret); err != nil {
+		h.logger.Warn("Client authentication failed for revocation", "client_id", basicClientID, "ip", clientIP)
+		if h.server.Auditor != nil {
+			h.server.Auditor.LogAuthFailure(r.Context(), "", basicClientID, clientIP, "revocation_auth_failed")
+		}
+		h.recordHTTPMetrics(r.Context(), endpointRevoke, http.MethodPost, http.StatusUnauthorized, startTime)
+		instrumentation.RecordError(span, err)
+		instrumentation.SetSpanError(span, "client authentication failed")
+		h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
+		return "", false, false
+	}
+	return basicClientID, true, true
+}
+
 // ServeTokenRevocation handles the RFC 7009 token revocation endpoint
 func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
@@ -1825,28 +1856,11 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	basicClientID, basicClientSecret := h.parseBasicAuth(r)
-
-	if h.rejectBasicFormClientIDMismatch(w, r, basicClientID, clientID, clientIP, endpointRevoke, "", span, startTime) {
+	resolvedClientID, clientAuthenticated, ok := h.authenticateRevocationClient(w, r, clientID, clientIP, startTime, span)
+	if !ok {
 		return
 	}
-
-	clientAuthenticated := false
-	if basicClientID != "" {
-		clientID = basicClientID
-		if err := h.server.ValidateClientCredentials(r.Context(), clientID, basicClientSecret); err != nil {
-			h.logger.Warn("Client authentication failed for revocation", "client_id", clientID, "ip", clientIP)
-			if h.server.Auditor != nil {
-				h.server.Auditor.LogAuthFailure(r.Context(), "", clientID, clientIP, "revocation_auth_failed")
-			}
-			h.recordHTTPMetrics(r.Context(), endpointRevoke, http.MethodPost, http.StatusUnauthorized, startTime)
-			instrumentation.RecordError(span, err)
-			instrumentation.SetSpanError(span, "client authentication failed")
-			h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
-			return
-		}
-		clientAuthenticated = true
-	}
+	clientID = resolvedClientID
 
 	instrumentation.SetSpanAttributes(span, attribute.String(instrumentation.AttrClientID, clientID))
 
