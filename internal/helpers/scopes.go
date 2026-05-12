@@ -13,6 +13,20 @@ func SplitScopes(scope string) []string {
 	return fields
 }
 
+// HasScope reports whether the given space-delimited scope string contains the
+// named scope as a discrete entry. Case-sensitive per RFC 6749 §3.3.
+func HasScope(scope, want string) bool {
+	if want == "" {
+		return false
+	}
+	for _, s := range strings.Fields(scope) {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
 // JoinScopes concatenates non-empty scopes with single spaces per RFC 6749
 // §3.3 scope encoding. Empty entries are dropped to avoid stray separators.
 // Returns an empty string for nil/empty input.

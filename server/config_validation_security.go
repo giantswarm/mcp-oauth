@@ -51,6 +51,9 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 	if !config.DisableAuthorizationTimeValidation {
 		config.ValidateRedirectURIAtAuthorization = true
 	}
+	if !config.DisableNonceEchoRequirement {
+		config.RequireNonceEcho = true
+	}
 
 	// Default blocked schemes (always dangerous) - use canonical list from validation.go
 	if len(config.BlockedRedirectSchemes) == 0 {
@@ -255,6 +258,12 @@ func logRedirectURISecurityStatus(config *Config, logger *slog.Logger) {
 		logger.Warn("SECURITY WARNING: Authorization-time validation is DISABLED",
 			"risk", "DNS rebinding attacks possible after registration (TOCTOU)",
 			"recommendation", "Only disable if authorization latency is critical")
+	}
+	if config.DisableNonceEchoRequirement {
+		logger.Warn("SECURITY WARNING: OIDC nonce echo enforcement is DISABLED",
+			"risk", "Upstream ID-token replay attacks possible (CWE-294)",
+			"recommendation", "Only disable for non-conformant IdPs that drop the nonce claim",
+			"learn_more", "https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation")
 	}
 
 	if config.AllowLocalhostRedirectURIs {
