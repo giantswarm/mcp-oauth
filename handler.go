@@ -2268,8 +2268,13 @@ type authorizationError struct {
 //
 // Callers MUST validate redirectURI against the client's registered URIs
 // before invoking this helper — see Server.ValidateRedirectURIForAuthorization.
-// The scheme gate below is defence-in-depth, not the primary authoritativeness
-// check.
+// The scheme gate is intentionally narrower than the authoritativeness check:
+// it accepts only http(s) so a misregistered registration can't be coaxed into
+// emitting a 302 with arbitrary scheme. Custom URL schemes admitted by
+// Config.AllowedCustomSchemes (RFC 8252 native apps) therefore receive a
+// JSON 400 here even though the success path issues an interstitial for them
+// — that gap matches the pre-PR error behaviour. A follow-up should mirror
+// serveSuccessInterstitial for the error path; not in scope for #303.
 func (h *Handler) respondAuthorizationError(w http.ResponseWriter, r *http.Request, e authorizationError) {
 	instrumentation.SetSpanError(e.span, e.spanError)
 	instrumentation.SetSpanAttributes(
