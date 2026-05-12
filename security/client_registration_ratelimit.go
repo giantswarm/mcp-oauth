@@ -131,8 +131,15 @@ func newClientRegistrationRateLimiterWithCleanupInterval(maxPerWindow int, windo
 	return rl
 }
 
-// Allow checks if a client registration from the given IP is allowed
-// Returns true if allowed, false if rate limit exceeded
+// Window returns the configured time window. Callers computing a
+// Retry-After hint can use this as an upper bound for when the bucket
+// will refill.
+func (rl *ClientRegistrationRateLimiter) Window() time.Duration {
+	return rl.window
+}
+
+// Allow checks if a client registration from the given IP is allowed.
+// Returns true if allowed, false if rate limit exceeded.
 func (rl *ClientRegistrationRateLimiter) Allow(ip string) bool {
 	now := time.Now()
 	windowStart := now.Add(-rl.window)

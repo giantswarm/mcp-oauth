@@ -119,8 +119,20 @@ ipRateLimiter := security.NewRateLimiter(
 )
 defer ipRateLimiter.Stop()
 
-server.SetRateLimiter(ipRateLimiter)
+srv, err := server.New(provider, tokenStore, clientStore, flowStore, config, logger,
+    server.WithRateLimiter(ipRateLimiter),
+)
 ```
+
+When configured, the limiter is enforced at the entry of every unauthenticated OAuth surface: `/authorize`, `/token`, `/revoke`, `/introspect`, `/register`, the discovery documents (`/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`, `/.well-known/openid-configuration`), `/.well-known/jwks.json`, and the `ValidateToken` middleware. Exceeded requests return `429` with `Retry-After` and emit a `rate_limit_exceeded` audit event.
+
+`/authorize` is hit by end-user browsers, whereas `/token`, `/revoke`, and `/introspect` are typically server-to-server. Size the IP limit so a single shared egress (corporate NAT, mobile carrier) does not throttle real users; if that risk is real, run a separate limiter in front of `/authorize` via your reverse proxy.
+
+IPv6 clients are bucketed to the `/64` prefix (the conventional end-site allocation) so an attacker holding a `/64` cannot rotate 2^64 addresses to bypass the per-IP limit. IPv4 is keyed by the full address. The bucket helper is exported as `security.RateLimitBucket(ip)`.
+
+The `Retry-After` value on a 429 is computed from the limiter's configured rate (`ceil(1/rps)` for the token-bucket limiters, the configured window for the client-registration limiter). Operators tuning rate / burst do not need to update Retry-After separately.
+
+`/token` and `/revoke` additionally enforce the user rate limiter (`server.WithUserRateLimiter(...)`) after client authentication completes, keyed on `client_id`. This bounds a compromised confidential client that already holds valid credentials. Public clients (no Basic Auth) remain bounded by the IP limit only.
 
 ### User-Based Rate Limiting
 
@@ -134,7 +146,9 @@ userRateLimiter := security.NewRateLimiter(
 )
 defer userRateLimiter.Stop()
 
-server.SetUserRateLimiter(userRateLimiter)
+srv, err := server.New(provider, tokenStore, clientStore, flowStore, config, logger,
+    server.WithUserRateLimiter(userRateLimiter),
+)
 ```
 
 ### Client Registration Rate Limiting
@@ -146,7 +160,9 @@ Prevent resource exhaustion through registration/deletion cycles:
 clientRegRateLimiter := security.NewClientRegistrationRateLimiter(logger)
 defer clientRegRateLimiter.Stop()
 
-server.SetClientRegistrationRateLimiter(clientRegRateLimiter)
+srv, err := server.New(provider, tokenStore, clientStore, flowStore, config, logger,
+    server.WithClientRegistrationRateLimiter(clientRegRateLimiter),
+)
 
 // Or with custom configuration
 clientRegRateLimiter := security.NewClientRegistrationRateLimiterWithConfig(
