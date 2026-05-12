@@ -8,7 +8,7 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
-	github.com/valkey-io/valkey-go v1.0.74
+	github.com/valkey-io/valkey-go v1.0.75
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.43.0
 	go.opentelemetry.io/otel/exporters/prometheus v0.65.0
