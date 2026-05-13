@@ -557,17 +557,27 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 			return
 		}
 
-		ctx := ContextWithUserInfo(r.Context(), userInfo)
-		if metadata != nil {
-			if metadata.FamilyID != "" {
-				ctx = ContextWithSessionID(ctx, metadata.FamilyID)
-			}
-			if len(metadata.Scopes) > 0 {
-				ctx = ContextWithScopes(ctx, metadata.Scopes)
-			}
-		}
+		ctx := contextWithValidatedToken(r.Context(), userInfo, metadata)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// contextWithValidatedToken stamps the authenticated UserInfo on ctx and,
+// when metadata is available, also propagates the session ID (refresh-token
+// family) and the access token's granted scopes. Zero-valued metadata fields
+// are skipped so downstream consumers can distinguish "absent" from "empty".
+func contextWithValidatedToken(ctx context.Context, userInfo *providers.UserInfo, metadata *storage.TokenMetadata) context.Context {
+	ctx = ContextWithUserInfo(ctx, userInfo)
+	if metadata == nil {
+		return ctx
+	}
+	if metadata.FamilyID != "" {
+		ctx = ContextWithSessionID(ctx, metadata.FamilyID)
+	}
+	if len(metadata.Scopes) > 0 {
+		ctx = ContextWithScopes(ctx, metadata.Scopes)
+	}
+	return ctx
 }
 
 // retryAfterSecondsForRate returns a Retry-After hint in seconds for a token-
@@ -2590,6 +2600,50 @@ func (h *Handler) formatWWWAuthenticate(scope, errCode, errorDesc string) string
 	return "Bearer " + strings.Join(params, ", ")
 }
 
+// buildUserInfoClaims projects userInfo onto the OIDC §5.3 claim map, gated by
+// the access token's granted scopes. `sub` is always emitted; `profile`,
+// `email`, `groups` scopes admit their corresponding claim groups when the
+// underlying field is non-empty. The returned `emitted` slice names the scope
+// groups that contributed at least one claim — used for the audit record.
+func buildUserInfoClaims(userInfo *providers.UserInfo, scopeSet map[string]struct{}) (map[string]any, []string) {
+	emitted := []string{"sub"}
+	claims := map[string]any{"sub": userInfo.ID}
+	if _, ok := scopeSet["profile"]; ok {
+		addProfileClaims(claims, userInfo)
+		emitted = append(emitted, "profile")
+	}
+	if _, ok := scopeSet["email"]; ok && userInfo.Email != "" {
+		claims["email"] = userInfo.Email
+		claims["email_verified"] = userInfo.EmailVerified
+		emitted = append(emitted, "email")
+	}
+	if _, ok := scopeSet["groups"]; ok && len(userInfo.Groups) > 0 {
+		claims["groups"] = userInfo.Groups
+		emitted = append(emitted, "groups")
+	}
+	return claims, emitted
+}
+
+// addProfileClaims copies the `profile`-scope claim group from userInfo into
+// claims, skipping fields the upstream did not populate.
+func addProfileClaims(claims map[string]any, userInfo *providers.UserInfo) {
+	if userInfo.Name != "" {
+		claims["name"] = userInfo.Name
+	}
+	if userInfo.GivenName != "" {
+		claims["given_name"] = userInfo.GivenName
+	}
+	if userInfo.FamilyName != "" {
+		claims["family_name"] = userInfo.FamilyName
+	}
+	if userInfo.Picture != "" {
+		claims["picture"] = userInfo.Picture
+	}
+	if userInfo.Locale != "" {
+		claims["locale"] = userInfo.Locale
+	}
+}
+
 // ServeUserInfo handles the OIDC UserInfo endpoint (OIDC Core 1.0 §5.3).
 // Accepts GET and POST. The [Handler.ValidateToken] middleware authenticates
 // the bearer access token and stashes the resolved [providers.UserInfo] and
@@ -2646,35 +2700,7 @@ func (h *Handler) ServeUserInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	emitted := []string{"sub"}
-	claims := map[string]any{"sub": userInfo.ID}
-	if _, ok := scopeSet["profile"]; ok {
-		if userInfo.Name != "" {
-			claims["name"] = userInfo.Name
-		}
-		if userInfo.GivenName != "" {
-			claims["given_name"] = userInfo.GivenName
-		}
-		if userInfo.FamilyName != "" {
-			claims["family_name"] = userInfo.FamilyName
-		}
-		if userInfo.Picture != "" {
-			claims["picture"] = userInfo.Picture
-		}
-		if userInfo.Locale != "" {
-			claims["locale"] = userInfo.Locale
-		}
-		emitted = append(emitted, "profile")
-	}
-	if _, ok := scopeSet["email"]; ok && userInfo.Email != "" {
-		claims["email"] = userInfo.Email
-		claims["email_verified"] = userInfo.EmailVerified
-		emitted = append(emitted, "email")
-	}
-	if _, ok := scopeSet["groups"]; ok && len(userInfo.Groups) > 0 {
-		claims["groups"] = userInfo.Groups
-		emitted = append(emitted, "groups")
-	}
+	claims, emitted := buildUserInfoClaims(userInfo, scopeSet)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(claims); err != nil {
