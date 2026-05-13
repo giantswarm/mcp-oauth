@@ -1,4 +1,4 @@
-package oauth
+package handler
 
 import (
 	_ "embed"
@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/server"
@@ -54,7 +55,7 @@ func (h *Handler) ServeProtectedResourceMetadata(w http.ResponseWriter, r *http.
 // extractResourcePath extracts the resource path from a Protected Resource Metadata URL.
 // For example: "/.well-known/oauth-protected-resource/mcp/files" -> "/mcp/files"
 func (h *Handler) extractResourcePath(requestPath string) string {
-	prefix := MetadataPathProtectedResource
+	prefix := oauth.MetadataPathProtectedResource
 	if strings.HasPrefix(requestPath, prefix) {
 		resourcePath := strings.TrimPrefix(requestPath, prefix)
 		if resourcePath == "" {
@@ -175,11 +176,11 @@ func (h *Handler) buildProtectedResourceMetadata(resourcePath string, pathConfig
 //	// This registers routes for all configured paths automatically
 func (h *Handler) RegisterProtectedResourceMetadataRoutes(mux *http.ServeMux, mcpPath string) {
 	// Always register root metadata endpoint
-	mux.HandleFunc(MetadataPathProtectedResource, h.ServeProtectedResourceMetadata)
+	mux.HandleFunc(oauth.MetadataPathProtectedResource, h.ServeProtectedResourceMetadata)
 
 	// Track registered paths to avoid duplicate registrations
 	registeredPaths := make(map[string]bool)
-	registeredPaths[MetadataPathProtectedResource] = true
+	registeredPaths[oauth.MetadataPathProtectedResource] = true
 
 	// Register explicit mcpPath if provided (backward compatibility)
 	if mcpPath != "" && mcpPath != "/" {
@@ -206,7 +207,7 @@ func (h *Handler) registerMetadataSubPath(mux *http.ServeMux, resourcePath strin
 
 	// Clean and normalize the path
 	cleanPath := path.Clean("/" + strings.TrimPrefix(resourcePath, "/"))
-	subPath := MetadataPathProtectedResource + cleanPath
+	subPath := oauth.MetadataPathProtectedResource + cleanPath
 
 	// Skip if already registered
 	if registered[subPath] {
@@ -391,10 +392,10 @@ func (h *Handler) buildAuthServerMetadata() map[string]any {
 		"issuer":                                h.server.Config.Issuer,
 		"authorization_endpoint":                h.server.Config.AuthorizationEndpoint(),
 		"token_endpoint":                        h.server.Config.TokenEndpoint(),
-		"response_types_supported":              DefaultResponseTypes,
+		"response_types_supported":              oauth.DefaultResponseTypes,
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
-		"code_challenge_methods_supported":      []string{PKCEMethodS256},
-		"token_endpoint_auth_methods_supported": SupportedTokenAuthMethods,
+		"code_challenge_methods_supported":      []string{oauth.PKCEMethodS256},
+		"token_endpoint_auth_methods_supported": oauth.SupportedTokenAuthMethods,
 		// RFC 9207: advertise that authorization responses include the `iss` parameter
 		// so clients can verify the response came from the expected authorization server.
 		"authorization_response_iss_parameter_supported": true,

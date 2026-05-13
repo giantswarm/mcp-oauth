@@ -1,4 +1,4 @@
-package oauth
+package handler
 
 import (
 	"bytes"
@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,7 +19,7 @@ func TestHandler_ServeClientRegistration_RFC7591Fields(t *testing.T) {
 	defer store.Stop()
 	handler.server.Config.AllowPublicClientRegistration = true
 
-	body, err := json.Marshal(ClientRegistrationRequest{
+	body, err := json.Marshal(oauth.ClientRegistrationRequest{
 		RedirectURIs:            []string{"https://example.com/callback"},
 		TokenEndpointAuthMethod: "client_secret_basic",
 		GrantTypes:              []string{"authorization_code"},
@@ -52,7 +53,7 @@ func TestHandler_ServeClientRegistration(t *testing.T) {
 	defer store.Stop()
 
 	// Create registration request
-	regReq := ClientRegistrationRequest{
+	regReq := oauth.ClientRegistrationRequest{
 		RedirectURIs:            []string{"https://example.com/callback"},
 		TokenEndpointAuthMethod: "client_secret_basic",
 		GrantTypes:              []string{"authorization_code"},
@@ -86,7 +87,7 @@ func TestHandler_ServeClientRegistration_Success(t *testing.T) {
 	// Enable public registration for this test
 	handler.server.Config.AllowPublicClientRegistration = true
 
-	regReq := ClientRegistrationRequest{
+	regReq := oauth.ClientRegistrationRequest{
 		RedirectURIs:            []string{"https://example.com/callback"},
 		TokenEndpointAuthMethod: "client_secret_basic",
 		GrantTypes:              []string{"authorization_code"},
@@ -107,7 +108,7 @@ func TestHandler_ServeClientRegistration_Success(t *testing.T) {
 		t.Errorf("status = %d, want %d, body: %s", w.Code, http.StatusCreated, w.Body.String())
 	}
 
-	var resp ClientRegistrationResponse
+	var resp oauth.ClientRegistrationResponse
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -190,7 +191,7 @@ func TestHandler_ServeClientRegistration_TokenEndpointAuthMethod(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			regReq := ClientRegistrationRequest{
+			regReq := oauth.ClientRegistrationRequest{
 				RedirectURIs:            []string{"https://example.com/callback"},
 				TokenEndpointAuthMethod: tt.tokenEndpointAuthMethod,
 				GrantTypes:              []string{"authorization_code"},
@@ -212,7 +213,7 @@ func TestHandler_ServeClientRegistration_TokenEndpointAuthMethod(t *testing.T) {
 			}
 
 			if tt.wantStatus == http.StatusCreated {
-				var resp ClientRegistrationResponse
+				var resp oauth.ClientRegistrationResponse
 				if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 					t.Fatalf("failed to decode response: %v", err)
 				}
@@ -323,7 +324,7 @@ func TestHandler_ServeClientRegistration_PublicClientPolicy(t *testing.T) {
 				handler.server.Config.RegistrationAccessToken = testRegistrationToken
 			}
 
-			regReq := ClientRegistrationRequest{
+			regReq := oauth.ClientRegistrationRequest{
 				RedirectURIs:            []string{"https://example.com/callback"},
 				TokenEndpointAuthMethod: tt.tokenEndpointAuthMethod,
 				ClientType:              tt.clientType,
@@ -358,7 +359,7 @@ func TestHandler_ServeClientRegistration_PublicClientPolicy(t *testing.T) {
 			}
 
 			if tt.wantStatus == http.StatusCreated {
-				var resp ClientRegistrationResponse
+				var resp oauth.ClientRegistrationResponse
 				if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 					t.Fatalf("failed to decode response: %v", err)
 				}
@@ -541,7 +542,7 @@ func TestHandler_ServeClientRegistration_TrustedSchemes(t *testing.T) {
 				handler.server.Config.SetTrustedSchemesMap(tt.trustedSchemes)
 			}
 
-			regReq := ClientRegistrationRequest{
+			regReq := oauth.ClientRegistrationRequest{
 				ClientName:              "Test Client",
 				ClientType:              tt.clientType,
 				TokenEndpointAuthMethod: tt.tokenEndpointAuthMethod,
@@ -577,7 +578,7 @@ func TestHandler_ServeClientRegistration_TrustedSchemes(t *testing.T) {
 			}
 
 			if tt.wantStatus == http.StatusCreated {
-				var resp ClientRegistrationResponse
+				var resp oauth.ClientRegistrationResponse
 				if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 					t.Fatalf("failed to decode response: %v", err)
 				}
@@ -659,7 +660,7 @@ func TestHandler_ServeClientRegistration_ClientNameValidation(t *testing.T) {
 
 	for i, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			regReq := ClientRegistrationRequest{
+			regReq := oauth.ClientRegistrationRequest{
 				RedirectURIs:            []string{"https://example.com/callback"},
 				TokenEndpointAuthMethod: "client_secret_basic",
 				GrantTypes:              []string{"authorization_code"},
@@ -689,7 +690,7 @@ func TestHandler_ServeClientRegistration_ClientNameValidation(t *testing.T) {
 				}
 			} else {
 				// Verify successful registration
-				var resp ClientRegistrationResponse
+				var resp oauth.ClientRegistrationResponse
 				if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 					t.Fatalf("failed to decode response: %v", err)
 				}

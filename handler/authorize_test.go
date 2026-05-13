@@ -1,4 +1,4 @@
-package oauth
+package handler
 
 import (
 	"context"
@@ -15,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
@@ -26,7 +27,7 @@ func TestHandler_ServeAuthorization_StateTooLong(t *testing.T) {
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
-	oversized := strings.Repeat("a", MaxStateLength+1)
+	oversized := strings.Repeat("a", oauth.MaxStateLength+1)
 	target := "/authorize?client_id=any&redirect_uri=https%3A%2F%2Fexample.com%2Fcb&response_type=code&code_challenge=c&code_challenge_method=S256&state=" + oversized
 
 	req := httptest.NewRequest(http.MethodGet, target, nil)
@@ -127,7 +128,7 @@ func TestHandler_ServeAuthorization_NonceTooLong(t *testing.T) {
 	hash := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
 	validState := testutil.GenerateRandomString(43)
-	oversizedNonce := strings.Repeat("a", MaxNonceLength+1)
+	oversizedNonce := strings.Repeat("a", oauth.MaxNonceLength+1)
 
 	query := url.Values{}
 	query.Set("client_id", client.ClientID)
@@ -145,7 +146,7 @@ func TestHandler_ServeAuthorization_NonceTooLong(t *testing.T) {
 	handler.ServeAuthorization(w, req)
 
 	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d for nonce length > %d", w.Code, http.StatusBadRequest, MaxNonceLength)
+		t.Errorf("status = %d, want %d for nonce length > %d", w.Code, http.StatusBadRequest, oauth.MaxNonceLength)
 	}
 }
 
@@ -257,7 +258,7 @@ func TestHandler_ServeAuthorization_OIDCParameterForwarding(t *testing.T) {
 		{
 			name: "oversized max_age length is ignored",
 			queryParams: map[string]string{
-				"max_age": strings.Repeat("9", MaxMaxAgeLength+1),
+				"max_age": strings.Repeat("9", oauth.MaxMaxAgeLength+1),
 				"prompt":  "login",
 			},
 			wantPrompt:  "login",
@@ -267,7 +268,7 @@ func TestHandler_ServeAuthorization_OIDCParameterForwarding(t *testing.T) {
 		{
 			name: "max_age above allowed range is ignored",
 			queryParams: map[string]string{
-				"max_age": strconv.Itoa(MaxMaxAgeSeconds + 1),
+				"max_age": strconv.Itoa(oauth.MaxMaxAgeSeconds + 1),
 				"prompt":  "login",
 			},
 			wantPrompt:  "login",
@@ -316,7 +317,7 @@ func TestHandler_ServeAuthorization_OIDCParameterForwarding(t *testing.T) {
 				t.Fatalf("server.New() error = %v", err)
 			}
 
-			handler := NewHandler(srv, nil)
+			handler := New(srv, nil)
 
 			// Register a client
 			client, _, err := srv.RegisterClient(
@@ -457,7 +458,7 @@ func TestParseOIDCOptions_Validation(t *testing.T) {
 		},
 		{
 			name:        "prompt exceeds max length",
-			queryParams: map[string]string{"prompt": string(make([]byte, MaxPromptLength+1))},
+			queryParams: map[string]string{"prompt": string(make([]byte, oauth.MaxPromptLength+1))},
 			wantNil:     true,
 			description: "Oversized prompt should be rejected",
 		},
@@ -469,14 +470,14 @@ func TestParseOIDCOptions_Validation(t *testing.T) {
 		},
 		{
 			name:        "login_hint exceeds max length",
-			queryParams: map[string]string{"login_hint": string(make([]byte, MaxLoginHintLength+1))},
+			queryParams: map[string]string{"login_hint": string(make([]byte, oauth.MaxLoginHintLength+1))},
 			wantNil:     true,
 			description: "Oversized login_hint should be rejected",
 		},
 		{
 			name:          "login_hint at max length",
-			queryParams:   map[string]string{"login_hint": string(make([]byte, MaxLoginHintLength))},
-			wantLoginHint: string(make([]byte, MaxLoginHintLength)),
+			queryParams:   map[string]string{"login_hint": string(make([]byte, oauth.MaxLoginHintLength))},
+			wantLoginHint: string(make([]byte, oauth.MaxLoginHintLength)),
 			description:   "login_hint at exactly max length should be accepted",
 		},
 		{
@@ -487,7 +488,7 @@ func TestParseOIDCOptions_Validation(t *testing.T) {
 		},
 		{
 			name:        "id_token_hint exceeds max length (64KB)",
-			queryParams: map[string]string{"id_token_hint": string(make([]byte, MaxIDTokenHintLength+1))},
+			queryParams: map[string]string{"id_token_hint": string(make([]byte, oauth.MaxIDTokenHintLength+1))},
 			wantNil:     true,
 			description: "Oversized id_token_hint should be rejected",
 		},
@@ -499,7 +500,7 @@ func TestParseOIDCOptions_Validation(t *testing.T) {
 		},
 		{
 			name:        "acr_values exceeds max length",
-			queryParams: map[string]string{"acr_values": string(make([]byte, MaxACRValuesLength+1))},
+			queryParams: map[string]string{"acr_values": string(make([]byte, oauth.MaxACRValuesLength+1))},
 			wantNil:     true,
 			description: "Oversized acr_values should be rejected",
 		},
@@ -511,13 +512,13 @@ func TestParseOIDCOptions_Validation(t *testing.T) {
 		},
 		{
 			name:        "max_age exceeds length limit",
-			queryParams: map[string]string{"max_age": strings.Repeat("9", MaxMaxAgeLength+1)},
+			queryParams: map[string]string{"max_age": strings.Repeat("9", oauth.MaxMaxAgeLength+1)},
 			wantNil:     true,
 			description: "Overlong max_age should be ignored",
 		},
 		{
 			name:        "max_age exceeds range",
-			queryParams: map[string]string{"max_age": strconv.Itoa(MaxMaxAgeSeconds + 1)},
+			queryParams: map[string]string{"max_age": strconv.Itoa(oauth.MaxMaxAgeSeconds + 1)},
 			wantNil:     true,
 			description: "Out-of-range max_age should be ignored",
 		},
@@ -635,8 +636,8 @@ func TestValidatePrompt(t *testing.T) {
 		{"login  consent", "login consent", "extra whitespace normalized"},
 		{"login\tconsent", "login consent", "tab normalized to single space"},
 		{"login\nconsent", "login consent", "newline normalized to single space"},
-		{string(make([]byte, MaxPromptLength)), "", "at max length with invalid content"},
-		{string(make([]byte, MaxPromptLength+1)), "", "exceeds max length"},
+		{string(make([]byte, oauth.MaxPromptLength)), "", "at max length with invalid content"},
+		{string(make([]byte, oauth.MaxPromptLength+1)), "", "exceeds max length"},
 	}
 
 	for _, tt := range tests {
@@ -820,19 +821,19 @@ func TestHandler_ServeAuthorization_StateLength(t *testing.T) {
 			name:           "state too short (1 char)",
 			state:          "x",
 			wantStatus:     http.StatusFound,
-			wantErrorParam: ErrorCodeInvalidRequest,
+			wantErrorParam: oauth.ErrorCodeInvalidRequest,
 		},
 		{
 			name:           "state too short (10 chars)",
 			state:          "0123456789",
 			wantStatus:     http.StatusFound,
-			wantErrorParam: ErrorCodeInvalidRequest,
+			wantErrorParam: oauth.ErrorCodeInvalidRequest,
 		},
 		{
 			name:           "state too short (23 chars, just under minimum)",
 			state:          "01234567890123456789012",
 			wantStatus:     http.StatusFound,
-			wantErrorParam: ErrorCodeInvalidRequest,
+			wantErrorParam: oauth.ErrorCodeInvalidRequest,
 		},
 		{
 			name:       "state exactly minimum length (24 chars)",
@@ -1018,7 +1019,7 @@ func TestHandler_ServeAuthorization_NoResponseType_Rejected(t *testing.T) {
 			w := httptest.NewRecorder()
 			handler.ServeAuthorization(w, req)
 
-			assertAuthorizationErrorRedirect(t, w, "https://example.com/callback", ErrorCodeUnsupportedResponseType, "response_type must be one of [code]", validState)
+			assertAuthorizationErrorRedirect(t, w, "https://example.com/callback", oauth.ErrorCodeUnsupportedResponseType, "response_type must be one of [code]", validState)
 		})
 	}
 }
@@ -1075,7 +1076,7 @@ func TestHandler_ServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *tes
 			w := httptest.NewRecorder()
 			handler.ServeAuthorization(w, req)
 
-			assertAuthorizationErrorRedirect(t, w, "https://example.com/callback", ErrorCodeInvalidRequest, "state parameter", tt.wantState)
+			assertAuthorizationErrorRedirect(t, w, "https://example.com/callback", oauth.ErrorCodeInvalidRequest, "state parameter", tt.wantState)
 		})
 	}
 
@@ -1097,8 +1098,8 @@ func TestHandler_ServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *tes
 		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 			t.Fatalf("response body is not JSON: %v", err)
 		}
-		if body["error"] != ErrorCodeInvalidRequest {
-			t.Errorf("error = %q, want %q", body["error"], ErrorCodeInvalidRequest)
+		if body["error"] != oauth.ErrorCodeInvalidRequest {
+			t.Errorf("error = %q, want %q", body["error"], oauth.ErrorCodeInvalidRequest)
 		}
 	})
 
@@ -1145,8 +1146,8 @@ func TestHandler_ServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *tes
 		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 			t.Fatalf("response body is not JSON: %v", err)
 		}
-		if body["error"] != ErrorCodeInvalidRequest {
-			t.Errorf("error = %q, want %q", body["error"], ErrorCodeInvalidRequest)
+		if body["error"] != oauth.ErrorCodeInvalidRequest {
+			t.Errorf("error = %q, want %q", body["error"], oauth.ErrorCodeInvalidRequest)
 		}
 	})
 }
@@ -1198,8 +1199,8 @@ func TestHandler_ServeAuthorization_CustomSchemeRedirectURI_FallsBackToJSON(t *t
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("response body is not JSON: %v", err)
 	}
-	if body["error"] != ErrorCodeUnsupportedResponseType {
-		t.Errorf("error = %q, want %q", body["error"], ErrorCodeUnsupportedResponseType)
+	if body["error"] != oauth.ErrorCodeUnsupportedResponseType {
+		t.Errorf("error = %q, want %q", body["error"], oauth.ErrorCodeUnsupportedResponseType)
 	}
 }
 
@@ -1839,7 +1840,7 @@ func TestHandler_ServeSuccessInterstitial_Branding(t *testing.T) {
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := NewHandler(srv, nil)
+	handler := New(srv, nil)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/oauth/callback", nil)
@@ -1916,7 +1917,7 @@ func TestHandler_ServeSuccessInterstitial_CustomTemplate(t *testing.T) {
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := NewHandler(srv, nil)
+	handler := New(srv, nil)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/oauth/callback", nil)
@@ -1974,7 +1975,7 @@ func TestHandler_ServeSuccessInterstitial_CustomHandler(t *testing.T) {
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := NewHandler(srv, nil)
+	handler := New(srv, nil)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/oauth/callback", nil)
@@ -2053,7 +2054,7 @@ func TestHandler_ServeCallback_CustomURLScheme_WithBranding(t *testing.T) {
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := NewHandler(srv, nil)
+	handler := New(srv, nil)
 
 	// Register a client with custom URL scheme redirect
 	client, _, err := srv.RegisterClient(
@@ -2142,7 +2143,7 @@ func TestHandler_ServeSuccessInterstitial_AppNamePlaceholder(t *testing.T) {
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := NewHandler(srv, nil)
+	handler := New(srv, nil)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/oauth/callback", nil)

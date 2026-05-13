@@ -1,4 +1,4 @@
-package oauth
+package handler
 
 import (
 	"context"
@@ -39,13 +39,13 @@ const (
 // Handler is a thin HTTP adapter for the OAuth Server.
 // It handles HTTP requests and delegates to the Server for business logic.
 type Handler struct {
-	server *Server
+	server *server.Server
 	logger *slog.Logger
 	tracer trace.Tracer // OpenTelemetry tracer for HTTP layer
 }
 
 // NewHandler creates a new HTTP handler
-func NewHandler(server *Server, logger *slog.Logger) *Handler {
+func New(server *server.Server, logger *slog.Logger) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}

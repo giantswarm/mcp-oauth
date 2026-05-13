@@ -1,4 +1,4 @@
-package oauth
+package handler
 
 import (
 	"bytes"
@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/stretchr/testify/require"
 )
 
@@ -107,7 +108,7 @@ func TestHandler_ServeClientRegistration_TrustedRedirectURIs(t *testing.T) {
 			handler.server.Config.SetTrustedRedirectURIsSet(tt.trustedURIs)
 			handler.server.Config.ProductionMode = false
 
-			regReq := ClientRegistrationRequest{
+			regReq := oauth.ClientRegistrationRequest{
 				ClientName:              "Test Client",
 				ClientType:              tt.clientType,
 				TokenEndpointAuthMethod: tt.tokenEndpointAuthMethod,
@@ -134,7 +135,7 @@ func TestHandler_ServeClientRegistration_TrustedRedirectURIs(t *testing.T) {
 			}
 
 			if tt.wantStatus == http.StatusCreated {
-				var resp ClientRegistrationResponse
+				var resp oauth.ClientRegistrationResponse
 				require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
 				require.NotEmpty(t, resp.ClientID)
 				require.Equal(t, len(tt.redirectURIs), len(resp.RedirectURIs))
@@ -165,7 +166,7 @@ func TestHandler_ServeClientRegistration_TrustedSchemesAndRedirectURIs_Combined(
 	handler.server.Config.SetTrustedRedirectURIsSet([]string{"https://claude.ai/cb"})
 	handler.server.Config.ProductionMode = false
 
-	regReq := ClientRegistrationRequest{
+	regReq := oauth.ClientRegistrationRequest{
 		ClientName:              "Mixed Client",
 		TokenEndpointAuthMethod: "none",
 		RedirectURIs:            []string{"cursor://cb", "https://claude.ai/cb"},

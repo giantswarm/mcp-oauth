@@ -1,4 +1,4 @@
-package oauth
+package handler
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
@@ -50,7 +51,7 @@ func TestHandler_writeTokenResponse(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	var tokenResp TokenResponse
+	var tokenResp oauth.TokenResponse
 	if err := json.NewDecoder(w.Body).Decode(&tokenResp); err != nil {
 		t.Fatalf("failed to decode token response: %v", err)
 	}
@@ -84,7 +85,7 @@ func TestHandler_writeTokenResponse_WithIDToken(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	var tokenResp TokenResponse
+	var tokenResp oauth.TokenResponse
 	if err := json.NewDecoder(w.Body).Decode(&tokenResp); err != nil {
 		t.Fatalf("failed to decode token response: %v", err)
 	}
@@ -119,7 +120,7 @@ func TestHandler_writeTokenResponse_WithoutIDToken(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	var tokenResp TokenResponse
+	var tokenResp oauth.TokenResponse
 	if err := json.NewDecoder(w.Body).Decode(&tokenResp); err != nil {
 		t.Fatalf("failed to decode token response: %v", err)
 	}
@@ -230,7 +231,7 @@ func TestHandler_ServeToken_AuthorizationCode(t *testing.T) {
 		t.Errorf("status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
 	}
 
-	var tokenResp TokenResponse
+	var tokenResp oauth.TokenResponse
 	if err := json.NewDecoder(w.Body).Decode(&tokenResp); err != nil {
 		t.Fatalf("failed to decode token response: %v", err)
 	}
@@ -284,12 +285,12 @@ func TestHandler_ServeToken_AuthorizationCode_BasicAuthAndFormClientIDMismatch_R
 		t.Fatalf("status = %d, want %d, body: %s", w.Code, http.StatusBadRequest, w.Body.String())
 	}
 
-	var errResp ErrorResponse
+	var errResp oauth.ErrorResponse
 	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
 		t.Fatalf("failed to decode error response: %v", err)
 	}
-	if errResp.Error != ErrorCodeInvalidClient {
-		t.Errorf("error = %q, want %q", errResp.Error, ErrorCodeInvalidClient)
+	if errResp.Error != oauth.ErrorCodeInvalidClient {
+		t.Errorf("error = %q, want %q", errResp.Error, oauth.ErrorCodeInvalidClient)
 	}
 	if !strings.Contains(errResp.ErrorDescription, "does not match") {
 		t.Errorf("error_description = %q, want it to contain %q", errResp.ErrorDescription, "does not match")
@@ -315,12 +316,12 @@ func TestHandler_ServeToken_AuthorizationCode_UnknownBasicAuthClient(t *testing.
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d, body: %s", w.Code, http.StatusUnauthorized, w.Body.String())
 	}
-	var errResp ErrorResponse
+	var errResp oauth.ErrorResponse
 	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
 		t.Fatalf("failed to decode error response: %v", err)
 	}
-	if errResp.Error != ErrorCodeInvalidClient {
-		t.Errorf("error = %q, want %q", errResp.Error, ErrorCodeInvalidClient)
+	if errResp.Error != oauth.ErrorCodeInvalidClient {
+		t.Errorf("error = %q, want %q", errResp.Error, oauth.ErrorCodeInvalidClient)
 	}
 }
 

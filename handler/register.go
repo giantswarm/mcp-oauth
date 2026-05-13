@@ -1,4 +1,4 @@
-package oauth
+package handler
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -56,7 +57,7 @@ func (h *Handler) checkClientRegistrationRateLimit(ctx context.Context, w http.R
 			retryAfter = 60
 		}
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-		h.writeError(w, ErrorCodeInvalidRequest,
+		h.writeError(w, oauth.ErrorCodeInvalidRequest,
 			"Client registration rate limit exceeded. Please try again later.",
 			http.StatusTooManyRequests)
 		return true
@@ -113,7 +114,7 @@ func (h *Handler) authorizeClientRegistration(w http.ResponseWriter, r *http.Req
 	allowed, scheme, err := h.server.CanRegisterWithTrustedScheme(req.RedirectURIs)
 	if err != nil {
 		h.logger.Warn("Client registration rejected: invalid redirect URI", "client_ip", clientIP, "error", err)
-		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("Invalid redirect URI: %v", err), http.StatusBadRequest)
+		h.writeError(w, oauth.ErrorCodeInvalidRequest, fmt.Sprintf("Invalid redirect URI: %v", err), http.StatusBadRequest)
 		return result, false
 	}
 	if allowed {
@@ -125,7 +126,7 @@ func (h *Handler) authorizeClientRegistration(w http.ResponseWriter, r *http.Req
 	allowed, uri, err := h.server.CanRegisterWithTrustedRedirectURI(req.RedirectURIs)
 	if err != nil {
 		h.logger.Warn("Client registration rejected: invalid redirect URI", "client_ip", clientIP, "error", err)
-		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("Invalid redirect URI: %v", err), http.StatusBadRequest)
+		h.writeError(w, oauth.ErrorCodeInvalidRequest, fmt.Sprintf("Invalid redirect URI: %v", err), http.StatusBadRequest)
 		return result, false
 	}
 	if allowed {
@@ -138,7 +139,7 @@ func (h *Handler) authorizeClientRegistration(w http.ResponseWriter, r *http.Req
 		"client_ip", clientIP, "has_token", authHeader != "",
 		"has_trusted_schemes_configured", len(h.server.Config.TrustedPublicRegistrationSchemes) > 0,
 		"has_trusted_redirect_uris_configured", len(h.server.Config.TrustedPublicRegistrationRedirectURIs) > 0)
-	h.writeError(w, ErrorCodeInvalidToken,
+	h.writeError(w, oauth.ErrorCodeInvalidToken,
 		"Registration requires authentication. Provide a valid registration token or use a trusted redirect URI or scheme.",
 		http.StatusUnauthorized)
 	return result, false
@@ -147,7 +148,7 @@ func (h *Handler) authorizeClientRegistration(w http.ResponseWriter, r *http.Req
 // validatePublicClientRegistration validates public client registration is allowed
 // Returns true if allowed, false if rejected
 func (h *Handler) validatePublicClientRegistration(ctx context.Context, w http.ResponseWriter, req *clientRegistrationRequest, clientIP string, auth registrationAuthResult, startTime time.Time, span trace.Span) bool {
-	isPublicClientRequest := req.TokenEndpointAuthMethod == TokenEndpointAuthMethodNone || req.ClientType == ClientTypePublic
+	isPublicClientRequest := req.TokenEndpointAuthMethod == oauth.TokenEndpointAuthMethodNone || req.ClientType == oauth.ClientTypePublic
 	if !isPublicClientRequest {
 		return true
 	}
@@ -165,7 +166,7 @@ func (h *Handler) validatePublicClientRegistration(ctx context.Context, w http.R
 			)
 			instrumentation.SetSpanError(span, "public client registration not allowed")
 		}
-		h.writeError(w, ErrorCodeInvalidRequest,
+		h.writeError(w, oauth.ErrorCodeInvalidRequest,
 			"Public client registration is not enabled on this server. Contact the server administrator.",
 			http.StatusBadRequest)
 		return false
@@ -239,10 +240,10 @@ func (h *Handler) parseAndValidateRegistrationRequest(w http.ResponseWriter, r *
 	var req clientRegistrationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		if isMaxBytesError(err) {
-			h.writeError(w, ErrorCodeInvalidRequest, "Request body too large", http.StatusRequestEntityTooLarge)
+			h.writeError(w, oauth.ErrorCodeInvalidRequest, "Request body too large", http.StatusRequestEntityTooLarge)
 			return nil, err
 		}
-		h.writeError(w, ErrorCodeInvalidRequest, "Invalid JSON", http.StatusBadRequest)
+		h.writeError(w, oauth.ErrorCodeInvalidRequest, "Invalid JSON", http.StatusBadRequest)
 		return nil, err
 	}
 
@@ -250,14 +251,14 @@ func (h *Handler) parseAndValidateRegistrationRequest(w http.ResponseWriter, r *
 	if err := helpers.ValidateClientName(req.ClientName); err != nil {
 		h.logger.Warn("Invalid client_name in registration request",
 			"client_name_length", len(req.ClientName), "error", err, "ip", clientIP)
-		h.writeError(w, ErrorCodeInvalidRequest, err.Error(), http.StatusBadRequest)
+		h.writeError(w, oauth.ErrorCodeInvalidRequest, err.Error(), http.StatusBadRequest)
 		return nil, err
 	}
 
 	if req.TokenEndpointAuthMethod != "" && !isValidAuthMethod(req.TokenEndpointAuthMethod) {
 		h.logger.Warn("Unsupported token_endpoint_auth_method requested",
-			"method", req.TokenEndpointAuthMethod, "supported_methods", SupportedTokenAuthMethods, "ip", clientIP)
-		h.writeError(w, ErrorCodeInvalidRequest,
+			"method", req.TokenEndpointAuthMethod, "supported_methods", oauth.SupportedTokenAuthMethods, "ip", clientIP)
+		h.writeError(w, oauth.ErrorCodeInvalidRequest,
 			fmt.Sprintf("Unsupported token_endpoint_auth_method: %s", req.TokenEndpointAuthMethod),
 			http.StatusBadRequest)
 		return nil, fmt.Errorf("unsupported auth method")
@@ -304,7 +305,7 @@ func (h *Handler) handleRegistrationError(ctx context.Context, w http.ResponseWr
 		h.recordHTTPMetrics(ctx, endpointRegister, http.MethodPost, http.StatusTooManyRequests, startTime)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "registration limit exceeded")
-		h.writeError(w, ErrorCodeInvalidRequest, "Client registration limit exceeded", http.StatusTooManyRequests)
+		h.writeError(w, oauth.ErrorCodeInvalidRequest, "Client registration limit exceeded", http.StatusTooManyRequests)
 		return
 	}
 
@@ -312,7 +313,7 @@ func (h *Handler) handleRegistrationError(ctx context.Context, w http.ResponseWr
 	h.recordHTTPMetrics(ctx, endpointRegister, http.MethodPost, http.StatusInternalServerError, startTime)
 	instrumentation.RecordError(span, err)
 	instrumentation.SetSpanError(span, "registration failed")
-	h.writeError(w, ErrorCodeServerError, "Failed to register client", http.StatusInternalServerError)
+	h.writeError(w, oauth.ErrorCodeServerError, "Failed to register client", http.StatusInternalServerError)
 }
 
 // auditTrustedAllowlistRegistration logs unauthenticated DCR via either trusted

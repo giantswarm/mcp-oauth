@@ -22,6 +22,7 @@ import (
 	"time"
 
 	oauth "github.com/giantswarm/mcp-oauth"
+	oauthhandler "github.com/giantswarm/mcp-oauth/handler"
 	"github.com/giantswarm/mcp-oauth/providers/dex"
 	"github.com/giantswarm/mcp-oauth/server"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
@@ -86,15 +87,15 @@ func main() {
 		log.Fatalf("Failed to create OAuth server: %v", err)
 	}
 
-	handler := oauth.NewHandler(srv, logger)
+	handler := oauthhandler.New(srv, logger)
 	mux := http.NewServeMux()
-	handler.RegisterOAuthRoutes(mux, oauth.OAuthRoutesOptions{IncludeMetadata: true})
+	handler.RegisterOAuthRoutes(mux, oauthhandler.OAuthRoutesOptions{IncludeMetadata: true})
 
 	// Protected echo endpoint — wraps ValidateToken so the JWT is verified
 	// locally on every request (signature + typ + iss + exp + aud + jti +
 	// family) before the handler runs.
 	mux.Handle("/api/whoami", handler.ValidateToken(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		userInfo, _ := oauth.UserInfoFromContext(r.Context())
+		userInfo, _ := oauthhandler.UserInfoFromContext(r.Context())
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"sub":          userInfo.ID,

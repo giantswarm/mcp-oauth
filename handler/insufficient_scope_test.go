@@ -1,4 +1,4 @@
-package oauth
+package handler
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/server"
@@ -37,7 +38,7 @@ func TestWriteInsufficientScopeError(t *testing.T) {
 			requiredScopes:  []string{"files:read"},
 			description:     "File read access required",
 			wantStatus:      http.StatusForbidden,
-			wantError:       ErrorCodeInsufficientScope,
+			wantError:       oauth.ErrorCodeInsufficientScope,
 			wantScopeHeader: "files:read",
 		},
 		{
@@ -45,7 +46,7 @@ func TestWriteInsufficientScopeError(t *testing.T) {
 			requiredScopes:  []string{"files:read", "files:write", "user:profile"},
 			description:     "File and profile access required",
 			wantStatus:      http.StatusForbidden,
-			wantError:       ErrorCodeInsufficientScope,
+			wantError:       oauth.ErrorCodeInsufficientScope,
 			wantScopeHeader: "files:read files:write user:profile",
 		},
 		{
@@ -53,7 +54,7 @@ func TestWriteInsufficientScopeError(t *testing.T) {
 			requiredScopes:  []string{},
 			description:     "No scopes needed",
 			wantStatus:      http.StatusForbidden,
-			wantError:       ErrorCodeInsufficientScope,
+			wantError:       oauth.ErrorCodeInsufficientScope,
 			wantScopeHeader: "",
 		},
 	}
@@ -79,7 +80,7 @@ func TestWriteInsufficientScopeError(t *testing.T) {
 				t.Fatalf("Failed to create server: %v", err)
 			}
 
-			handler := NewHandler(srv, nil)
+			handler := New(srv, nil)
 
 			// Create response recorder
 			w := httptest.NewRecorder()
@@ -203,7 +204,7 @@ func TestGetRequiredScopes(t *testing.T) {
 				t.Fatalf("Failed to create server: %v", err)
 			}
 
-			handler := NewHandler(srv, nil)
+			handler := New(srv, nil)
 
 			req := httptest.NewRequest(http.MethodGet, tt.requestPath, nil)
 			scopes := handler.getRequiredScopes(req)
@@ -308,14 +309,14 @@ func TestValidateTokenWithScopeValidation(t *testing.T) {
 			tokenScopes:    []string{"files:read"},
 			requiredScopes: []string{"files:read", "files:write"},
 			wantStatus:     http.StatusForbidden,
-			wantError:      ErrorCodeInsufficientScope,
+			wantError:      oauth.ErrorCodeInsufficientScope,
 		},
 		{
 			name:           "no token scopes with required scopes",
 			tokenScopes:    []string{},
 			requiredScopes: []string{"files:read"},
 			wantStatus:     http.StatusForbidden,
-			wantError:      ErrorCodeInsufficientScope,
+			wantError:      oauth.ErrorCodeInsufficientScope,
 		},
 		{
 			name:           "no required scopes",
@@ -354,7 +355,7 @@ func TestValidateTokenWithScopeValidation(t *testing.T) {
 			}
 
 			// Create handler
-			handler := NewHandler(srv, nil)
+			handler := New(srv, nil)
 
 			// Create a test token
 			accessToken := "test_access_token"
@@ -419,7 +420,7 @@ func TestValidateTokenWithScopeValidation(t *testing.T) {
 
 				// Verify WWW-Authenticate header
 				wwwAuth := w.Header().Get("WWW-Authenticate")
-				if !strings.Contains(wwwAuth, ErrorCodeInsufficientScope) {
+				if !strings.Contains(wwwAuth, oauth.ErrorCodeInsufficientScope) {
 					t.Errorf("WWW-Authenticate header missing insufficient_scope: %s", wwwAuth)
 				}
 			}
@@ -452,7 +453,7 @@ func TestValidateTokenWithoutScopeMetadata(t *testing.T) {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 
-	handler := NewHandler(srv, nil)
+	handler := New(srv, nil)
 
 	// Create a test token WITHOUT metadata
 	accessToken := "test_access_token_no_metadata"
@@ -502,8 +503,8 @@ func TestValidateTokenWithoutScopeMetadata(t *testing.T) {
 		t.Fatalf("Failed to unmarshal response: %v", err)
 	}
 
-	if body["error"] != ErrorCodeInsufficientScope {
-		t.Errorf("Error code = %s, want %s", body["error"], ErrorCodeInsufficientScope)
+	if body["error"] != oauth.ErrorCodeInsufficientScope {
+		t.Errorf("Error code = %s, want %s", body["error"], oauth.ErrorCodeInsufficientScope)
 	}
 }
 
@@ -627,7 +628,7 @@ func TestGetRequiredScopesPathNormalization(t *testing.T) {
 				t.Fatalf("Failed to create server: %v", err)
 			}
 
-			handler := NewHandler(srv, nil)
+			handler := New(srv, nil)
 
 			req := httptest.NewRequest(http.MethodGet, tt.requestPath, nil)
 			scopes := handler.getRequiredScopes(req)
@@ -717,7 +718,7 @@ func TestGetRequiredScopesLongestPrefixMatch(t *testing.T) {
 				t.Fatalf("Failed to create server: %v", err)
 			}
 
-			handler := NewHandler(srv, nil)
+			handler := New(srv, nil)
 
 			req := httptest.NewRequest(http.MethodGet, tt.requestPath, nil)
 			scopes := handler.getRequiredScopes(req)
@@ -758,7 +759,7 @@ func TestValidateTokenScopesLongPathSanitization(t *testing.T) {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 
-	handler := NewHandler(srv, nil)
+	handler := New(srv, nil)
 
 	// Create a test token with insufficient scopes
 	accessToken := "test_access_token"
@@ -949,7 +950,7 @@ func TestGetRequiredScopesMethodBased(t *testing.T) {
 				t.Fatalf("Failed to create server: %v", err)
 			}
 
-			handler := NewHandler(srv, nil)
+			handler := New(srv, nil)
 
 			req := httptest.NewRequest(tt.method, tt.requestPath, nil)
 			scopes := handler.getRequiredScopes(req)
@@ -1015,7 +1016,7 @@ func TestHideEndpointPathInErrors(t *testing.T) {
 				t.Fatalf("Failed to create server: %v", err)
 			}
 
-			handler := NewHandler(srv, nil)
+			handler := New(srv, nil)
 
 			// Create test token with insufficient scopes
 			accessToken := "test_token_hide_path"

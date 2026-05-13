@@ -234,6 +234,7 @@ import (
     "os"
 
     oauth "github.com/giantswarm/mcp-oauth"
+    "github.com/giantswarm/mcp-oauth/handler"
     "github.com/giantswarm/mcp-oauth/providers/google"
     "github.com/giantswarm/mcp-oauth/storage/memory"
 )
@@ -271,7 +272,7 @@ func main() {
     }
 
     // 4. Create handler
-    handler := oauth.NewHandler(server, nil)
+    h := handler.New(server, nil)
 
     // 5. Setup routes
     mux := http.NewServeMux()
@@ -284,10 +285,10 @@ func main() {
     // POST /oauth/register
     // POST /oauth/revoke
     
-    handler.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
+    h.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
 
     // Your protected MCP endpoint
-    mux.Handle("/mcp", handler.ValidateToken(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+    mux.Handle("/mcp", h.ValidateToken(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         w.Write([]byte("Hello from protected MCP endpoint!"))
     })))
 

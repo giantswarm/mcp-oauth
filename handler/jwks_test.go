@@ -1,4 +1,4 @@
-package oauth
+package handler
 
 import (
 	"crypto/rand"
@@ -33,7 +33,7 @@ func newJWTModeHandler(t *testing.T) *Handler {
 	}
 	srv, err := server.New(provider, store, store, store, cfg, nil)
 	require.NoError(t, err)
-	return NewHandler(srv, nil)
+	return New(srv, nil)
 }
 
 func TestServeJWKS_OpaqueModeReturns404(t *testing.T) {

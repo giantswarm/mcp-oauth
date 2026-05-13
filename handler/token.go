@@ -1,4 +1,4 @@
-package oauth
+package handler
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/oauth2"
 
+	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/server"
@@ -44,11 +45,11 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		if isMaxBytesError(err) {
 			h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusRequestEntityTooLarge, startTime)
-			h.writeError(w, ErrorCodeInvalidRequest, "Request body too large", http.StatusRequestEntityTooLarge)
+			h.writeError(w, oauth.ErrorCodeInvalidRequest, "Request body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
-		h.writeError(w, ErrorCodeInvalidRequest, "Failed to parse request", http.StatusBadRequest)
+		h.writeError(w, oauth.ErrorCodeInvalidRequest, "Failed to parse request", http.StatusBadRequest)
 		return
 	}
 
@@ -60,10 +61,10 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 	case "refresh_token":
 		h.handleRefreshTokenGrant(w, r, clientIP)
 	default:
-		h.recordTokenFailure(r.Context(), grantType, ErrorCodeUnsupportedGrantType)
+		h.recordTokenFailure(r.Context(), grantType, oauth.ErrorCodeUnsupportedGrantType)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "unsupported grant_type")
-		h.writeError(w, ErrorCodeUnsupportedGrantType, fmt.Sprintf("Grant type %s not supported", grantType), http.StatusBadRequest)
+		h.writeError(w, oauth.ErrorCodeUnsupportedGrantType, fmt.Sprintf("Grant type %s not supported", grantType), http.StatusBadRequest)
 	}
 }
 
@@ -94,10 +95,10 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	codeVerifier := r.Form.Get("code_verifier")
 
 	if code == "" {
-		h.recordTokenFailure(r.Context(), "authorization_code", ErrorCodeInvalidRequest)
+		h.recordTokenFailure(r.Context(), "authorization_code", oauth.ErrorCodeInvalidRequest)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "code missing")
-		h.writeError(w, ErrorCodeInvalidRequest, "Required parameter 'code' missing", http.StatusBadRequest)
+		h.writeError(w, oauth.ErrorCodeInvalidRequest, "Required parameter 'code' missing", http.StatusBadRequest)
 		return
 	}
 
@@ -109,14 +110,14 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 		// authenticateClient returns *Error; read its Status before recording
 		// the HTTP metric so a 400 (client_id mismatch) is not mis-labelled as
 		// 401 (unauthorized) in dashboards.
-		if oauthErr, ok := err.(*Error); ok {
+		if oauthErr, ok := err.(*oauth.Error); ok {
 			h.recordTokenFailure(r.Context(), "authorization_code", oauthErr.Code)
 			h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, oauthErr.Status, startTime)
 			h.writeError(w, oauthErr.Code, oauthErr.Description, oauthErr.Status)
 		} else {
-			h.recordTokenFailure(r.Context(), "authorization_code", ErrorCodeInvalidClient)
+			h.recordTokenFailure(r.Context(), "authorization_code", oauth.ErrorCodeInvalidClient)
 			h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusUnauthorized, startTime)
-			h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
+			h.writeError(w, oauth.ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
 		}
 		return
 	}
@@ -125,7 +126,7 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	// clients have no secret to compromise, and rate-limiting by a public
 	// client_id is attacker-controllable. Public clients stay bounded by
 	// the IP limit.
-	if client.ClientType == ClientTypeConfidential && h.checkUserRateLimit(w, r, client.ClientID, clientIP) {
+	if client.ClientType == oauth.ClientTypeConfidential && h.checkUserRateLimit(w, r, client.ClientID, clientIP) {
 		h.recordRateLimitReject(r.Context(), span, endpointToken, http.MethodPost, startTime)
 		return
 	}
@@ -142,13 +143,13 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	tokenResponse, scope, err := h.server.ExchangeAuthorizationCode(r.Context(), code, client.ClientID, redirectURI, resource, codeVerifier)
 	if err != nil {
 		h.logger.Error("Failed to exchange authorization code", "client_id", client.ClientID, "ip", clientIP, "error", err)
-		h.recordTokenFailure(r.Context(), "authorization_code", ErrorCodeInvalidGrant)
+		h.recordTokenFailure(r.Context(), "authorization_code", oauth.ErrorCodeInvalidGrant)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "code exchange failed")
 		// SECURITY: Don't leak internal error details to client
 		// Audit logging is done in ExchangeAuthorizationCode
-		h.writeError(w, ErrorCodeInvalidGrant, "Authorization code is invalid or expired", http.StatusBadRequest)
+		h.writeError(w, oauth.ErrorCodeInvalidGrant, "Authorization code is invalid or expired", http.StatusBadRequest)
 		return
 	}
 
@@ -157,7 +158,7 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	// Record code exchanged metric
 	pkceMethod := ""
 	if codeVerifier != "" {
-		pkceMethod = PKCEMethodS256
+		pkceMethod = oauth.PKCEMethodS256
 	}
 	h.recordCodeExchanged(r.Context(), client.ClientID, pkceMethod)
 
@@ -179,10 +180,10 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	clientID := r.Form.Get("client_id")
 
 	if refreshToken == "" {
-		h.recordTokenFailure(r.Context(), "refresh_token", ErrorCodeInvalidRequest)
+		h.recordTokenFailure(r.Context(), "refresh_token", oauth.ErrorCodeInvalidRequest)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "refresh_token missing")
-		h.writeError(w, ErrorCodeInvalidRequest, "refresh_token is required", http.StatusBadRequest)
+		h.writeError(w, oauth.ErrorCodeInvalidRequest, "refresh_token is required", http.StatusBadRequest)
 		return
 	}
 
@@ -214,13 +215,13 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	tokenResponse, err := h.server.RefreshAccessToken(r.Context(), refreshToken, clientID)
 	if err != nil {
 		h.logger.Error("Failed to refresh token", "client_id", clientID, "ip", clientIP, "error", err)
-		h.recordTokenFailure(r.Context(), "refresh_token", ErrorCodeInvalidGrant)
+		h.recordTokenFailure(r.Context(), "refresh_token", oauth.ErrorCodeInvalidGrant)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "token refresh failed")
 		// SECURITY: Don't leak internal error details to client
 		// Audit logging is already done in RefreshAccessToken
-		h.writeError(w, ErrorCodeInvalidGrant, "Refresh token is invalid or expired", http.StatusBadRequest)
+		h.writeError(w, oauth.ErrorCodeInvalidGrant, "Refresh token is invalid or expired", http.StatusBadRequest)
 		return
 	}
 
@@ -257,7 +258,7 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 			h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusUnauthorized, startTime)
 			instrumentation.RecordError(span, err)
 			instrumentation.SetSpanError(span, "client authentication failed")
-			h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
+			h.writeError(w, oauth.ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
 			return "", false, err
 		}
 		return clientID, true, nil
@@ -267,7 +268,7 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 	if clientID == "" {
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "client_id missing")
-		h.writeError(w, ErrorCodeInvalidRequest, "client_id is required", http.StatusBadRequest)
+		h.writeError(w, oauth.ErrorCodeInvalidRequest, "client_id is required", http.StatusBadRequest)
 		return "", false, fmt.Errorf("client_id required")
 	}
 
@@ -280,12 +281,12 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 		}
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusUnauthorized, startTime)
 		instrumentation.SetSpanError(span, "unknown client")
-		h.writeError(w, ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
+		h.writeError(w, oauth.ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
 		return "", false, err
 	}
 
 	// OAUTH 2.1 SECURITY: Confidential clients MUST authenticate
-	if client.ClientType == ClientTypeConfidential {
+	if client.ClientType == oauth.ClientTypeConfidential {
 		h.logger.Warn("Confidential client attempted refresh without authentication",
 			"client_id", clientID, "ip", clientIP,
 			"security_event", "confidential_client_missing_auth",
@@ -307,7 +308,7 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 		}
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusUnauthorized, startTime)
 		instrumentation.SetSpanError(span, "confidential client requires authentication")
-		h.writeError(w, ErrorCodeInvalidClient, "Client authentication required", http.StatusUnauthorized)
+		h.writeError(w, oauth.ErrorCodeInvalidClient, "Client authentication required", http.StatusUnauthorized)
 		return "", false, fmt.Errorf("confidential client requires authentication")
 	}
 
@@ -354,11 +355,11 @@ func (h *Handler) rejectBasicFormClientIDMismatch(
 		h.server.Auditor.LogAuthFailure(r.Context(), "", basicClientID, clientIP, "client_id_mismatch_basic_vs_form")
 	}
 	if tokenFailureGrant != "" {
-		h.recordTokenFailure(r.Context(), tokenFailureGrant, ErrorCodeInvalidClient)
+		h.recordTokenFailure(r.Context(), tokenFailureGrant, oauth.ErrorCodeInvalidClient)
 	}
 	h.recordHTTPMetrics(r.Context(), endpoint, http.MethodPost, http.StatusBadRequest, startTime)
 	instrumentation.SetSpanError(span, "client_id mismatch basic vs form")
-	h.writeError(w, ErrorCodeInvalidClient, "client_id in Basic Authorization header does not match form parameter", http.StatusBadRequest)
+	h.writeError(w, oauth.ErrorCodeInvalidClient, "client_id in Basic Authorization header does not match form parameter", http.StatusBadRequest)
 	return true
 }
 
@@ -372,7 +373,7 @@ func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string)
 	// they MUST identify the same client.
 	if basicClientID != "" && formClientID != "" && basicClientID != formClientID {
 		h.logAuthFailure(r.Context(), basicClientID, clientIP, "client_id_mismatch_basic_vs_form", "client_id in Basic Authorization header does not match form parameter")
-		return nil, NewError(ErrorCodeInvalidClient, "client_id in Basic Authorization header does not match form parameter", http.StatusBadRequest)
+		return nil, oauth.NewError(oauth.ErrorCodeInvalidClient, "client_id in Basic Authorization header does not match form parameter", http.StatusBadRequest)
 	}
 
 	authClientSecret := basicClientSecret
@@ -381,13 +382,13 @@ func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string)
 	}
 
 	if clientID == "" {
-		return nil, ErrInvalidRequest("client_id is required")
+		return nil, oauth.ErrInvalidRequest("client_id is required")
 	}
 
 	client, err := h.server.GetClient(r.Context(), clientID)
 	if err != nil {
-		h.logAuthFailure(r.Context(), clientID, clientIP, ErrorCodeInvalidClient, "Unknown client")
-		return nil, ErrInvalidClient("Client authentication failed")
+		h.logAuthFailure(r.Context(), clientID, clientIP, oauth.ErrorCodeInvalidClient, "Unknown client")
+		return nil, oauth.ErrInvalidClient("Client authentication failed")
 	}
 
 	if err := h.validateConfidentialClient(r.Context(), client, authClientSecret, clientIP); err != nil {
@@ -399,18 +400,18 @@ func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string)
 
 // validateConfidentialClient validates credentials for confidential clients.
 func (h *Handler) validateConfidentialClient(ctx context.Context, client *storage.Client, secret, clientIP string) error {
-	if client.ClientType != ClientTypeConfidential {
+	if client.ClientType != oauth.ClientTypeConfidential {
 		return nil
 	}
 
 	if secret == "" {
 		h.logAuthFailure(ctx, client.ClientID, clientIP, "confidential_client_auth_required", "Confidential client missing credentials")
-		return ErrInvalidClient("Client authentication required")
+		return oauth.ErrInvalidClient("Client authentication required")
 	}
 
 	if err := h.server.ValidateClientCredentials(ctx, client.ClientID, secret); err != nil {
 		h.logAuthFailure(ctx, client.ClientID, clientIP, "client_authentication_failed", "Client authentication failed")
-		return ErrInvalidClient("Client authentication failed")
+		return oauth.ErrInvalidClient("Client authentication failed")
 	}
 
 	return nil
@@ -457,7 +458,7 @@ func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *oauth2.Token,
 
 // isValidAuthMethod checks if the given token endpoint auth method is supported
 func isValidAuthMethod(method string) bool {
-	for _, supported := range SupportedTokenAuthMethods {
+	for _, supported := range oauth.SupportedTokenAuthMethods {
 		if method == supported {
 			return true
 		}

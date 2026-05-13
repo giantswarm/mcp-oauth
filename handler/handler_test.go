@@ -1,4 +1,4 @@
-package oauth
+package handler
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 
+	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/server"
 	"github.com/giantswarm/mcp-oauth/storage"
@@ -46,14 +47,14 @@ func setupTestHandler(t *testing.T) (*Handler, *memory.Store) {
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := NewHandler(srv, nil)
+	handler := New(srv, nil)
 	return handler, store
 }
 
 // decodeProtectedResourceMetadata decodes Protected Resource Metadata from the response body
-func decodeProtectedResourceMetadata(t *testing.T, w *httptest.ResponseRecorder) *ProtectedResourceMetadata {
+func decodeProtectedResourceMetadata(t *testing.T, w *httptest.ResponseRecorder) *oauth.ProtectedResourceMetadata {
 	t.Helper()
-	var meta ProtectedResourceMetadata
+	var meta oauth.ProtectedResourceMetadata
 	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
 		t.Fatalf("failed to decode Protected Resource Metadata: %v", err)
 	}
@@ -81,7 +82,7 @@ func setupTestHandlerWithCORS(t *testing.T, allowedOrigins []string) (*Handler, 
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := NewHandler(srv, nil)
+	handler := New(srv, nil)
 	return handler, store
 }
 
@@ -100,7 +101,7 @@ func TestNewHandler(t *testing.T) {
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := NewHandler(srv, nil)
+	handler := New(srv, nil)
 	if handler == nil {
 		t.Fatal("NewHandler() returned nil")
 	}
@@ -132,7 +133,7 @@ func setupUserInfoTest(t *testing.T, scopes []string) (*Handler, *memory.Store, 
 		Scopes:    scopes,
 	}))
 
-	return NewHandler(srv, nil), store, accessToken
+	return New(srv, nil), store, accessToken
 }
 
 func decodeUserInfoResponse(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
@@ -149,19 +150,19 @@ func TestHandler_writeError(t *testing.T) {
 
 	w := httptest.NewRecorder()
 
-	handler.writeError(w, ErrorCodeInvalidRequest, "test error", http.StatusBadRequest)
+	handler.writeError(w, oauth.ErrorCodeInvalidRequest, "test error", http.StatusBadRequest)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
 
-	var errResp ErrorResponse
+	var errResp oauth.ErrorResponse
 	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
 		t.Fatalf("failed to decode error response: %v", err)
 	}
 
-	if errResp.Error != ErrorCodeInvalidRequest {
-		t.Errorf("Error = %q, want %q", errResp.Error, ErrorCodeInvalidRequest)
+	if errResp.Error != oauth.ErrorCodeInvalidRequest {
+		t.Errorf("Error = %q, want %q", errResp.Error, oauth.ErrorCodeInvalidRequest)
 	}
 
 	if errResp.ErrorDescription != "test error" {
@@ -185,7 +186,7 @@ func setupTestHandlerWithBodyLimit(t *testing.T, maxBodySize int64) (*Handler, *
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := NewHandler(srv, nil)
+	handler := New(srv, nil)
 	return handler, store
 }
 
@@ -221,7 +222,7 @@ func setupTestHandlerWithAllowNoState(t *testing.T) (*Handler, *memory.Store) {
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := NewHandler(srv, nil)
+	handler := New(srv, nil)
 	return handler, store
 }
 

@@ -22,9 +22,13 @@
 //   - [github.com/giantswarm/mcp-oauth/oauthconfig] — env-driven loaders
 //     ([oauthconfig.FromEnv], [oauthconfig.NewEncryptorFromEnv]) for
 //     standard `OAUTH_*` environment variables.
-//   - This root package — the HTTP adapter ([Handler]) that translates
-//     `*server.Server` into routes via [Handler.RegisterOAuthRoutes] /
-//     [Handler.RegisterProtectedResourceMetadataRoutes].
+//   - [github.com/giantswarm/mcp-oauth/handler] — the HTTP adapter
+//     ([handler.Handler]) that translates `*server.Server` into routes via
+//     [handler.Handler.RegisterOAuthRoutes] /
+//     [handler.Handler.RegisterProtectedResourceMetadataRoutes].
+//   - This root package — protocol-level types ([Error], [TokenResponse],
+//     [ProtectedResourceMetadata], …) and thin re-exports / convenience
+//     constructors for [server.Server] ([NewServer], [WithEncryptor], …).
 //
 // # Security defaults
 //
@@ -79,7 +83,7 @@
 //		"net/http"
 //		"os"
 //
-//		oauth "github.com/giantswarm/mcp-oauth"
+//		"github.com/giantswarm/mcp-oauth/handler"
 //		"github.com/giantswarm/mcp-oauth/oauthconfig"
 //		"github.com/giantswarm/mcp-oauth/providers/google"
 //		"github.com/giantswarm/mcp-oauth/server"
@@ -112,18 +116,18 @@
 //			log.Fatal(err)
 //		}
 //
-//		handler := oauth.NewHandler(srv, slog.Default())
+//		h := handler.New(srv, slog.Default())
 //
 //		mux := http.NewServeMux()
-//		handler.RegisterOAuthRoutes(mux, oauth.OAuthRoutesOptions{IncludeMetadata: true})
-//		mux.Handle("/mcp", handler.ValidateToken(mcpHandler))
+//		h.RegisterOAuthRoutes(mux, handler.OAuthRoutesOptions{IncludeMetadata: true})
+//		mux.Handle("/mcp", h.ValidateToken(mcpHandler))
 //		log.Fatal(http.ListenAndServe(":8080", mux))
 //	}
 //
 // The library does not provide MCP itself — `mcpHandler` is whatever your
 // MCP transport exposes. The OAuth layer protects it via
-// [Handler.ValidateToken], which extracts the bearer token, validates it
-// against the configured provider (or self-issued JWT in JWT-AT mode), and
+// [handler.Handler.ValidateToken], which extracts the bearer token, validates
+// it against the configured provider (or self-issued JWT in JWT-AT mode), and
 // stashes the resolved [providers.UserInfo] in the request context for
-// [UserInfoFromContext].
+// [handler.UserInfoFromContext].
 package oauth

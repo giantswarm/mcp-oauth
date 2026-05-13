@@ -1,4 +1,4 @@
-package oauth
+package handler
 
 import (
 	"encoding/json"
@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/server"
@@ -51,7 +52,7 @@ func TestHandler_ServeProtectedResourceMetadata_WithScopes(t *testing.T) {
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := NewHandler(srv, nil)
+	handler := New(srv, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil)
 	w := httptest.NewRecorder()
@@ -519,7 +520,7 @@ func TestHandler_ServeProtectedResourceMetadata_SubPathDiscovery(t *testing.T) {
 				t.Fatalf("server.New() error = %v", err)
 			}
 
-			handler := NewHandler(srv, nil)
+			handler := New(srv, nil)
 
 			req := httptest.NewRequest(http.MethodGet, tt.resourcePath, nil)
 			w := httptest.NewRecorder()
@@ -585,7 +586,7 @@ func TestHandler_RegisterProtectedResourceMetadataRoutes_WithResourceMetadataByP
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := NewHandler(srv, nil)
+	handler := New(srv, nil)
 	mux := http.NewServeMux()
 
 	// Register without explicit mcpPath (only uses ResourceMetadataByPath)
@@ -656,7 +657,7 @@ func TestHandler_RegisterProtectedResourceMetadataRoutes_DuplicatePaths(t *testi
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := NewHandler(srv, nil)
+	handler := New(srv, nil)
 	mux := http.NewServeMux()
 
 	// Register with mcpPath that duplicates ResourceMetadataByPath entry
@@ -751,7 +752,7 @@ func TestHandler_findPathConfig(t *testing.T) {
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := NewHandler(srv, nil)
+	handler := New(srv, nil)
 
 	tests := []struct {
 		resourcePath   string
@@ -818,7 +819,7 @@ func TestHandler_buildProtectedResourceMetadata(t *testing.T) {
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := NewHandler(srv, nil)
+	handler := New(srv, nil)
 
 	t.Run("nil pathConfig uses defaults", func(t *testing.T) {
 		metadata := handler.buildProtectedResourceMetadata("/mcp", nil)
@@ -917,7 +918,7 @@ func TestHandler_ServeAuthorizationServerMetadata(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	var meta AuthorizationServerMetadata
+	var meta oauth.AuthorizationServerMetadata
 	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -1004,7 +1005,7 @@ func TestHandler_ServeAuthorizationServerMetadata_NoRegistration(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	var meta AuthorizationServerMetadata
+	var meta oauth.AuthorizationServerMetadata
 	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -1043,7 +1044,7 @@ func TestHandler_ServeAuthorizationServerMetadata_PublicRegistration(t *testing.
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	var meta AuthorizationServerMetadata
+	var meta oauth.AuthorizationServerMetadata
 	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -1075,7 +1076,7 @@ func TestHandler_ServeAuthorizationServerMetadata_TrustedSchemes(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	var meta AuthorizationServerMetadata
+	var meta oauth.AuthorizationServerMetadata
 	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -1111,7 +1112,7 @@ func TestHandler_ServeAuthorizationServerMetadata_EnhancedFields(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	var meta AuthorizationServerMetadata
+	var meta oauth.AuthorizationServerMetadata
 	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -1200,7 +1201,7 @@ func TestHandler_ServeAuthorizationServerMetadata_DisabledEndpoints(t *testing.T
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	var meta AuthorizationServerMetadata
+	var meta oauth.AuthorizationServerMetadata
 	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -1235,7 +1236,7 @@ func TestHandler_ServeAuthorizationServerMetadata_NoScopes(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	var meta AuthorizationServerMetadata
+	var meta oauth.AuthorizationServerMetadata
 	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -1277,7 +1278,7 @@ func TestHandler_ServeOpenIDConfiguration(t *testing.T) {
 	}
 
 	// Decode both responses
-	var metaAS, metaOIDC AuthorizationServerMetadata
+	var metaAS, metaOIDC oauth.AuthorizationServerMetadata
 	if err := json.NewDecoder(wAS.Body).Decode(&metaAS); err != nil {
 		t.Fatalf("failed to decode AS metadata: %v", err)
 	}
