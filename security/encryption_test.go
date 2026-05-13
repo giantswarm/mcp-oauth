@@ -464,23 +464,119 @@ func TestEncryptionFormat(t *testing.T) {
 		t.Fatalf("failed to decode base64: %v", err)
 	}
 
-	// GCM nonce is 12 bytes
-	const expectedNonceSize = 12
-	if len(decoded) < expectedNonceSize {
-		t.Errorf("encrypted data too short for nonce: got %d bytes, need at least %d", len(decoded), expectedNonceSize)
-	}
-
-	// Verify nonce is first 12 bytes
-	nonceFromEncrypted := decoded[:expectedNonceSize]
-	if len(nonceFromEncrypted) != expectedNonceSize {
-		t.Errorf("expected %d-byte nonce prefix, got %d", expectedNonceSize, len(nonceFromEncrypted))
-	}
-
-	// Verify the rest is ciphertext + tag (16 bytes for GCM tag)
-	// For plaintext "test" (4 bytes), we expect: 12 (nonce) + 4 (plaintext) + 16 (tag) = 32 bytes
-	const expectedTotalSize = expectedNonceSize + 4 + 16
+	// v1 envelope: 0x01 || kid || nonce || ct(plaintext + tag)
+	const (
+		envelopeHeaderSize = 2 // tag + kid
+		expectedNonceSize  = 12
+		gcmTagSize         = 16
+	)
+	// "test" = 4 bytes → 2 + 12 + 4 + 16 = 34 bytes
+	const expectedTotalSize = envelopeHeaderSize + expectedNonceSize + 4 + gcmTagSize
 	if len(decoded) != expectedTotalSize {
 		t.Errorf("expected total size %d bytes, got %d", expectedTotalSize, len(decoded))
+	}
+	if decoded[0] != envelopeV1Tag {
+		t.Errorf("expected envelope tag 0x%02x, got 0x%02x", envelopeV1Tag, decoded[0])
+	}
+	if decoded[1] != 0 {
+		t.Errorf("expected single-key kid=0, got %d", decoded[1])
+	}
+}
+
+// TestEncryptor_DecryptV0LegacyEnvelope verifies that ciphertexts produced
+// by the pre-KeyRing release (raw `nonce || ct`, no version tag) remain
+// readable. Rolling-upgrade safety: existing Valkey rows must not need
+// re-encryption.
+func TestEncryptor_DecryptV0LegacyEnvelope(t *testing.T) {
+	key := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		t.Fatalf("failed to generate key: %v", err)
+	}
+
+	enc, err := NewEncryptor(key)
+	if err != nil {
+		t.Fatalf("NewEncryptor() error = %v", err)
+	}
+
+	// Hand-roll a v0 envelope using the same AEAD the Encryptor holds.
+	aead, err := enc.ring.AEAD(0)
+	if err != nil {
+		t.Fatalf("AEAD(0) error = %v", err)
+	}
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		t.Fatalf("failed to read nonce: %v", err)
+	}
+	const plaintext = "legacy-row-from-previous-release"
+	ct := aead.Seal(nil, nonce, []byte(plaintext), nil)
+	legacy := base64.StdEncoding.EncodeToString(append(nonce, ct...))
+
+	got, err := enc.Decrypt(legacy)
+	if err != nil {
+		t.Fatalf("Decrypt(v0 envelope) error = %v", err)
+	}
+	if got != plaintext {
+		t.Errorf("v0 envelope decrypted to %q, want %q", got, plaintext)
+	}
+}
+
+// TestEncryptor_DecryptV0EnvelopeWithLeading0x01NonceByte pins the bug-fix:
+// a v0 ciphertext whose first nonce byte happens to be 0x01 (~1/256 of legacy
+// rows) must still decrypt. The decoder treats AEAD verification as the
+// v0/v1 disambiguator and falls through to v0 on v1 Open failure, instead of
+// returning an error.
+func TestEncryptor_DecryptV0EnvelopeWithLeading0x01NonceByte(t *testing.T) {
+	key := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		t.Fatalf("failed to generate key: %v", err)
+	}
+
+	enc, err := NewEncryptor(key)
+	if err != nil {
+		t.Fatalf("NewEncryptor() error = %v", err)
+	}
+
+	aead, err := enc.ring.AEAD(0)
+	if err != nil {
+		t.Fatalf("AEAD(0) error = %v", err)
+	}
+
+	// Pin the first nonce byte to 0x01 so the envelope's leading byte
+	// collides with envelopeV1Tag; the rest is fresh entropy.
+	nonce := make([]byte, aead.NonceSize())
+	nonce[0] = envelopeV1Tag
+	if _, err := io.ReadFull(rand.Reader, nonce[1:]); err != nil {
+		t.Fatalf("failed to read nonce remainder: %v", err)
+	}
+
+	const plaintext = "v0-row-with-colliding-first-nonce-byte"
+	ct := aead.Seal(nil, nonce, []byte(plaintext), nil)
+	legacy := base64.StdEncoding.EncodeToString(append(nonce, ct...))
+
+	got, err := enc.Decrypt(legacy)
+	if err != nil {
+		t.Fatalf("Decrypt(v0 with leading 0x01 nonce) error = %v — fall-through to v0 path failed", err)
+	}
+	if got != plaintext {
+		t.Errorf("got %q, want %q", got, plaintext)
+	}
+}
+
+func TestEncryptor_DecryptV1UnknownKID(t *testing.T) {
+	key := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		t.Fatalf("failed to generate key: %v", err)
+	}
+	enc, err := NewEncryptor(key)
+	if err != nil {
+		t.Fatalf("NewEncryptor() error = %v", err)
+	}
+
+	// v1 envelope with a kid that the single-key ring does not recognise.
+	envelope := []byte{envelopeV1Tag, 0x99}
+	envelope = append(envelope, make([]byte, 12+16)...) // nonce + tag-shaped padding
+	if _, err := enc.Decrypt(base64.StdEncoding.EncodeToString(envelope)); err == nil {
+		t.Error("Decrypt should fail with unknown kid")
 	}
 }
 

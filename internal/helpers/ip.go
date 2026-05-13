@@ -1,7 +1,10 @@
 // Package helpers provides common utility functions used across the mcp-oauth library.
 package helpers
 
-import "net"
+import (
+	"net"
+	"strings"
+)
 
 // IPClassification represents the security classification of an IP address.
 // This is used for SSRF protection in redirect URI validation and client ID metadata fetching.
@@ -105,11 +108,12 @@ func IsPrivateOrInternal(ip net.IP) bool {
 // IsLoopbackHostname checks if a hostname represents a loopback address.
 // This includes the entire 127.0.0.0/8 range (RFC 1122) and IPv6 ::1.
 // Expects hostname without port (as returned by url.URL.Hostname()).
+// Hostname matching is case-insensitive per RFC 3986 §3.2.2.
 //
 // Note: This function does NOT consider 0.0.0.0 as loopback (it's "unspecified").
 func IsLoopbackHostname(hostname string) bool {
-	// Handle "localhost" hostname directly
-	if hostname == "localhost" {
+	// Handle the "localhost" registered name (case-insensitive per RFC 3986 §3.2.2).
+	if strings.EqualFold(hostname, "localhost") {
 		return true
 	}
 

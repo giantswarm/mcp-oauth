@@ -363,3 +363,56 @@ func TestAuditor_LogEvent_EmitsAuditGroup(t *testing.T) {
 	require.True(t, ok, "expected details map under audit group, got %v", audit)
 	require.Equal(t, "value", details["key"])
 }
+
+func TestAuditor_WithPIIRedaction(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	auditor := NewAuditor(logger, true, WithPIIRedaction(true))
+
+	auditor.LogEvent(context.Background(), Event{
+		Type:      "test_event",
+		UserID:    "user-123",
+		ClientID:  "client-456",
+		IPAddress: "192.168.1.1",
+		UserAgent: "curl/8.1",
+	})
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &payload))
+	audit, ok := payload["audit"].(map[string]any)
+	require.True(t, ok)
+
+	// Cleartext keys must disappear when redaction is on.
+	require.NotContains(t, audit, "client_id")
+	require.NotContains(t, audit, "ip_address")
+	require.NotContains(t, audit, "user_agent")
+
+	require.NotEmpty(t, audit["client_id_hash"])
+	require.NotEqual(t, "client-456", audit["client_id_hash"])
+	require.NotEmpty(t, audit["ip_address_hash"])
+	require.NotEqual(t, "192.168.1.1", audit["ip_address_hash"])
+	require.NotEmpty(t, audit["user_agent_hash"])
+	require.NotEqual(t, "curl/8.1", audit["user_agent_hash"])
+}
+
+func TestAuditor_DefaultLeavesAuxFieldsCleartext(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	auditor := NewAuditor(logger, true) // no WithPIIRedaction
+
+	auditor.LogEvent(context.Background(), Event{
+		Type:      "test_event",
+		UserID:    "user-123",
+		ClientID:  "client-456",
+		IPAddress: "192.168.1.1",
+	})
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &payload))
+	audit := payload["audit"].(map[string]any)
+
+	require.Equal(t, "client-456", audit["client_id"], "default emits cleartext for backward compat")
+	require.Equal(t, "192.168.1.1", audit["ip_address"])
+	require.NotContains(t, audit, "client_id_hash")
+	require.NotContains(t, audit, "ip_address_hash")
+}
