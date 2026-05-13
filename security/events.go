@@ -138,6 +138,12 @@ const (
 	// caller, but the audit record preserves the cross-client probe attempt.
 	EventIntrospectionRequesterDenied = "introspection_requester_denied"
 
+	// EventUserInfoServed is logged when /oauth/userinfo (OIDC Core 1.0 §5.3)
+	// returns claims to an authenticated caller. The audit record carries the
+	// subject and the scope-derived claim groups that were emitted so
+	// operators can audit personal-data egress.
+	EventUserInfoServed = "userinfo_served"
+
 	// Provider-related events
 
 	// EventInvalidProviderCallback is logged when provider callback validation fails

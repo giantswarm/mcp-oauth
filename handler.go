@@ -46,6 +46,7 @@ const (
 	endpointIntrospect    = "introspect"
 	endpointRegister      = "register"
 	endpointValidateToken = "validate_token"
+	endpointUserInfo      = "userinfo"
 )
 
 // clientRegistrationRequest represents the JSON request for client registration
@@ -1354,6 +1355,9 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// State-too-long is handled inline rather than via checkAuthorizationStateParam:
+	// an oversized state cannot be safely echoed back in a redirect URL, so the
+	// response stays a direct 400 instead of a redirect with `error=invalid_request`.
 	maxStateLength := h.server.Config.MaxStateLength
 	if len(state) > maxStateLength {
 		h.logger.Warn("Authorization request rejected: state parameter too long", "state_length", len(state), "max_allowed", maxStateLength, "client_id", clientID)
@@ -2596,12 +2600,14 @@ func (h *Handler) formatWWWAuthenticate(scope, errCode, errorDesc string) string
 // always returned. `profile`, `email`, and `groups` scopes gate the
 // corresponding claim groups.
 func (h *Handler) ServeUserInfo(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
 	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.userinfo")
 	defer endSpan()
 
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		instrumentation.SetSpanError(span, "method not allowed")
 		w.Header().Set("Allow", "GET, POST")
+		h.recordHTTPMetrics(r.Context(), endpointUserInfo, r.Method, http.StatusMethodNotAllowed, startTime)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -2612,7 +2618,19 @@ func (h *Handler) ServeUserInfo(w http.ResponseWriter, r *http.Request) {
 	userInfo, ok := UserInfoFromContext(r.Context())
 	if !ok || userInfo == nil {
 		instrumentation.SetSpanError(span, "user info missing from context")
+		h.recordHTTPMetrics(r.Context(), endpointUserInfo, r.Method, http.StatusUnauthorized, startTime)
 		h.writeUnauthorizedError(w, r, ErrorCodeInvalidToken, "User information unavailable")
+		return
+	}
+
+	// OIDC Core 1.0 §5.3.2 — `sub` is REQUIRED in the response. A token that
+	// validated but carries no subject is an upstream bug; refuse rather than
+	// emit a spec-violating claims set.
+	if userInfo.ID == "" {
+		instrumentation.SetSpanError(span, "user info missing sub")
+		h.logger.Error("ServeUserInfo: resolved UserInfo has empty ID; refusing to emit sub-less response")
+		h.recordHTTPMetrics(r.Context(), endpointUserInfo, r.Method, http.StatusInternalServerError, startTime)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 
@@ -2623,10 +2641,12 @@ func (h *Handler) ServeUserInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, ok := scopeSet["openid"]; !ok {
 		instrumentation.SetSpanError(span, "openid scope missing")
+		h.recordHTTPMetrics(r.Context(), endpointUserInfo, r.Method, http.StatusForbidden, startTime)
 		h.writeInsufficientScopeError(w, []string{"openid"}, "openid scope is required to call /userinfo")
 		return
 	}
 
+	emitted := []string{"sub"}
 	claims := map[string]any{"sub": userInfo.ID}
 	if _, ok := scopeSet["profile"]; ok {
 		if userInfo.Name != "" {
@@ -2644,18 +2664,37 @@ func (h *Handler) ServeUserInfo(w http.ResponseWriter, r *http.Request) {
 		if userInfo.Locale != "" {
 			claims["locale"] = userInfo.Locale
 		}
+		emitted = append(emitted, "profile")
 	}
 	if _, ok := scopeSet["email"]; ok && userInfo.Email != "" {
 		claims["email"] = userInfo.Email
 		claims["email_verified"] = userInfo.EmailVerified
+		emitted = append(emitted, "email")
 	}
 	if _, ok := scopeSet["groups"]; ok && len(userInfo.Groups) > 0 {
 		claims["groups"] = userInfo.Groups
+		emitted = append(emitted, "groups")
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(claims); err != nil {
 		h.logger.Warn("Failed to encode userinfo response", "error", err)
+		h.recordHTTPMetrics(r.Context(), endpointUserInfo, r.Method, http.StatusInternalServerError, startTime)
+		return
+	}
+
+	h.recordHTTPMetrics(r.Context(), endpointUserInfo, r.Method, http.StatusOK, startTime)
+	instrumentation.SetSpanSuccess(span)
+
+	if h.server.Auditor != nil {
+		h.server.Auditor.LogEvent(r.Context(), security.Event{
+			Type:      security.EventUserInfoServed,
+			UserID:    userInfo.ID,
+			IPAddress: h.clientIP(r),
+			Details: map[string]any{
+				"claim_groups": emitted,
+			},
+		})
 	}
 }
 

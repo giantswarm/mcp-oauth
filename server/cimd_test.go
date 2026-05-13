@@ -1220,6 +1220,41 @@ func TestFetchClientMetadata_AllowPrivateIP(t *testing.T) {
 	})
 }
 
+// TestGetOrFetchClient_SingleflightHonoursCallerContextCancel pins the
+// DoChan + per-caller select pattern in getOrFetchClient: a caller whose ctx
+// is already cancelled gets context.Canceled directly, without waiting on the
+// upstream fetch. The detached leader-ctx contract (context.WithoutCancel)
+// guarantees the inner fetch goroutine survives the caller's cancellation —
+// joiners still receive whatever the fetch produces.
+//
+// Coalescence + joiner-isolation across two callers are pinned structurally
+// by the identical pattern's tests in providers/oidc/discovery_test.go.
+func TestGetOrFetchClient_SingleflightHonoursCallerContextCancel(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	config := &Config{
+		EnableClientIDMetadataDocuments: true,
+		ClientMetadataFetchTimeout:      5 * time.Second,
+		ClientMetadataCacheTTL:          5 * time.Minute,
+	}
+	srv := &Server{
+		Config:        config,
+		Logger:        logger,
+		metadataCache: newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
+	}
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := srv.getOrFetchClient(canceledCtx, "https://cimd.example.com/client-metadata.json")
+	if err == nil {
+		t.Fatal("getOrFetchClient with pre-canceled ctx must return an error")
+	}
+	if !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("getOrFetchClient with pre-canceled ctx must surface context.Canceled, got: %v", err)
+	}
+}
+
 // TestGetOrFetchClient_URLClientID_NegativeCacheHit tests that failed URL clients return cached error
 func TestGetOrFetchClient_URLClientID_NegativeCacheHit(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
