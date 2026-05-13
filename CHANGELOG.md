@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Tests
 
+- **`t.Context()` in `server/introspect_test.go` and `server/flows_refresh_session_test.go`** — replaces `context.Background()` at every call site (19 occurrences) so the test's context is cancelled at `t.Cleanup` time and any spawned goroutines unwind with the test. Closes (partial) #311.
 - **Fuzz coverage** for four parsing / validation primitives: `ParseCallbackQuery` (types.go), `providers/oidc.ValidateExternalURL`, `Server.computePKCEChallenge` (S256 method), and `server.validateCodeVerifierFormat`. Seed corpora committed; each is panic-clean against a 2s exploratory burst. Closes (partial) #311.
 - **Coverage gaps closed** for `Handler.handleRegistrationError` (HTTP-error mapping for the registration-limit vs generic branches) and `Server.handleRefreshTokenError` (classification of not-found / expired / transient errors).
 - **AEAD authentication regression test** in `security/encryption_test.go` — a single-bit flip of the ciphertext tag must fail `Decrypt`. Catches a regression where AES-GCM gets swapped for a non-authenticated mode.

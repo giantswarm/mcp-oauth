@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"log/slog"
 	"testing"
@@ -73,17 +72,17 @@ func newJWTIntrospectionServer(t *testing.T) (srv *Server, accessToken, ownerCli
 	srv, err := New(mock.NewProvider(), store, store, store, cfg, nil)
 	require.NoError(t, err)
 
-	owner, _, err := srv.RegisterClient(context.Background(), "Owner", ClientTypeConfidential, "", []string{"https://example.com/cb-owner"}, []string{"openid"}, "192.168.1.1", 10)
+	owner, _, err := srv.RegisterClient(t.Context(), "Owner", ClientTypeConfidential, "", []string{"https://example.com/cb-owner"}, []string{"openid"}, "192.168.1.1", 10)
 	require.NoError(t, err)
-	probe, _, err := srv.RegisterClient(context.Background(), "Probe", ClientTypeConfidential, "", []string{"https://example.com/cb-probe"}, []string{"openid"}, "192.168.1.2", 10)
+	probe, _, err := srv.RegisterClient(t.Context(), "Probe", ClientTypeConfidential, "", []string{"https://example.com/cb-probe"}, []string{"openid"}, "192.168.1.2", 10)
 	require.NoError(t, err)
-	rs, _, err := srv.RegisterClient(context.Background(), "Resource Server", ClientTypeConfidential, "", []string{"https://example.com/cb-rs"}, []string{"openid"}, "192.168.1.3", 10)
+	rs, _, err := srv.RegisterClient(t.Context(), "Resource Server", ClientTypeConfidential, "", []string{"https://example.com/cb-rs"}, []string{"openid"}, "192.168.1.3", 10)
 	require.NoError(t, err)
 
 	now := time.Now().UTC()
 	issuer, err := newJWTIssuer(cfg)
 	require.NoError(t, err)
-	token, err := issuer.Issue(context.Background(), AccessTokenClaims{
+	token, err := issuer.Issue(t.Context(), AccessTokenClaims{
 		Subject:       "user-42",
 		ClientID:      owner.ClientID,
 		Audience:      cfg.GetResourceIdentifier(),
@@ -102,7 +101,7 @@ func newJWTIntrospectionServer(t *testing.T) (srv *Server, accessToken, ownerCli
 func TestServer_IntrospectToken_JWTPath_OwnerSeesProjection(t *testing.T) {
 	srv, token, owner, _, _ := newJWTIntrospectionServer(t)
 
-	response := srv.IntrospectToken(context.Background(), token, owner)
+	response := srv.IntrospectToken(t.Context(), token, owner)
 
 	require.Equal(t, true, response["active"])
 	require.Equal(t, "Bearer", response["token_type"])
@@ -123,7 +122,7 @@ func TestServer_IntrospectToken_JWTPath_OwnerSeesProjection(t *testing.T) {
 func TestServer_IntrospectToken_JWTPath_CrossClientDenied(t *testing.T) {
 	srv, token, _, probe, _ := newJWTIntrospectionServer(t)
 
-	response := srv.IntrospectToken(context.Background(), token, probe)
+	response := srv.IntrospectToken(t.Context(), token, probe)
 
 	require.Equal(t, false, response["active"])
 	for _, leaked := range []string{"sub", "email", "client_id", "scope", "aud", "iss", "exp", "iat", "token_type"} {
@@ -135,7 +134,7 @@ func TestServer_IntrospectToken_JWTPath_AllowlistedResourceServer(t *testing.T) 
 	srv, token, owner, _, rs := newJWTIntrospectionServer(t)
 	srv.Config.IntrospectionResourceServers = []string{rs}
 
-	response := srv.IntrospectToken(context.Background(), token, rs)
+	response := srv.IntrospectToken(t.Context(), token, rs)
 
 	require.Equal(t, true, response["active"])
 	require.Equal(t, owner, response["client_id"], "client_id must reflect the token's owner, not the introspecting RS")
@@ -165,7 +164,7 @@ func TestServer_IntrospectToken_JWTPath_GarbageToken_RejectedBeforeValidation(t 
 		"eyJpc3MiOiJodHRwczovL2F1dGguZXhhbXBsZS5jb20iLCJjbGllbnRfaWQiOiIiLCJzdWIiOiJ4In0." +
 		"aW52YWxpZF9zaWduYXR1cmU"
 
-	response := srv.IntrospectToken(context.Background(), garbage, owner)
+	response := srv.IntrospectToken(t.Context(), garbage, owner)
 	require.Equal(t, false, response["active"])
 	require.Len(t, response, 1, "garbage JWT must return only {active: false}")
 }
@@ -175,7 +174,7 @@ func TestServer_IntrospectToken_JWTPath_CrossClientDenied_EmitsAuditEvent(t *tes
 	auditor, buf := newRecordingAuditor()
 	srv.Auditor = auditor
 
-	response := srv.IntrospectToken(context.Background(), token, probe)
+	response := srv.IntrospectToken(t.Context(), token, probe)
 	require.Equal(t, false, response["active"])
 
 	records := decodeAuditRecords(t, buf.Bytes())
@@ -187,7 +186,7 @@ func TestServer_IntrospectToken_JWTPath_CrossClientDenied_EmitsAuditEvent(t *tes
 }
 
 func TestServer_IntrospectToken_OpaquePath_CrossClientDenied_EmitsAuditEvent(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := memory.New()
 	t.Cleanup(func() { store.Stop() })
 

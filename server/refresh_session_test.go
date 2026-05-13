@@ -21,7 +21,7 @@ import (
 // refresh token used so tests can assert it gets rotated.
 func seedFamilyForRefresh(t *testing.T, store *memory.Store, userID, clientID, familyID, refreshToken string) {
 	t.Helper()
-	ctx := context.Background()
+	ctx := t.Context()
 	require.NoError(t, store.SaveRefreshTokenWithFamily(
 		ctx, refreshToken, userID, clientID, familyID, 0, time.Now().Add(24*time.Hour),
 	))
@@ -36,7 +36,7 @@ func seedFamilyForRefresh(t *testing.T, store *memory.Store, userID, clientID, f
 
 func TestRefreshSession_HappyPath(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	const (
 		userID       = "user-1"
@@ -68,14 +68,14 @@ func TestRefreshSession_HappyPath(t *testing.T) {
 func TestRefreshSession_FamilyNotFound(t *testing.T) {
 	srv, _, _ := setupFlowTestServer(t)
 
-	_, err := srv.RefreshSession(context.Background(), "no-such-family")
+	_, err := srv.RefreshSession(t.Context(), "no-such-family")
 	require.Error(t, err)
 	require.True(t, errors.Is(err, storage.ErrRefreshTokenFamilyNotFound), "want wrapped ErrRefreshTokenFamilyNotFound, got %v", err)
 }
 
 func TestRefreshSession_RevokedFamily(t *testing.T) {
 	srv, store, _ := setupFlowTestServer(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	const familyID = "fam-revoked"
 	seedFamilyForRefresh(t, store, "user-1", "client-x", familyID, "rt-revoked")
@@ -90,7 +90,7 @@ func TestRefreshSession_RevokedFamily(t *testing.T) {
 
 func TestRefreshSession_ProviderRefreshFails(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	const familyID = "fam-provider-fail"
 	seedFamilyForRefresh(t, store, "user-1", "client-x", familyID, "rt-provider-fail")
@@ -106,14 +106,14 @@ func TestRefreshSession_ProviderRefreshFails(t *testing.T) {
 
 func TestRefreshSession_RequiresFamilyID(t *testing.T) {
 	srv, _, _ := setupFlowTestServer(t)
-	_, err := srv.RefreshSession(context.Background(), "")
+	_, err := srv.RefreshSession(t.Context(), "")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "familyID is required")
 }
 
 func TestRefreshSession_CoalescesConcurrentCalls(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	const (
 		familyID     = "fam-coalesce"
@@ -206,7 +206,7 @@ func TestRefreshSession_SingleflightIgnoresCanceledLeaderContext(t *testing.T) {
 		}, nil
 	}
 
-	canceledCtx, cancel := context.WithCancel(context.Background())
+	canceledCtx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	_, err := srv.RefreshSession(canceledCtx, familyID)
