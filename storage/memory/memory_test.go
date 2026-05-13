@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/oauth2"
 
@@ -1481,7 +1482,7 @@ func TestStore_ConcurrentClientAccess(t *testing.T) {
 
 func TestStore_CleanupExpiredTokens(t *testing.T) {
 	ctx := context.Background()
-	store := NewWithInterval(time.Hour)
+	store := NewWithInterval(20 * time.Millisecond)
 	defer store.Stop()
 
 	code := testutil.GenerateTestAuthorizationCode()
@@ -1490,17 +1491,15 @@ func TestStore_CleanupExpiredTokens(t *testing.T) {
 		t.Fatalf("SaveAuthorizationCode() error = %v", err)
 	}
 
-	store.RunCleanup()
-
-	_, err := store.GetAuthorizationCode(ctx, code.Code)
-	if err == nil {
-		t.Error("Expired authorization code should be cleaned up")
-	}
+	require.Eventually(t, func() bool {
+		_, err := store.GetAuthorizationCode(ctx, code.Code)
+		return err != nil
+	}, time.Second, 5*time.Millisecond, "expired authorization code should be cleaned up")
 }
 
 func TestStore_CleanupExpiredTokens_WithRefreshToken(t *testing.T) {
 	ctx := context.Background()
-	store := NewWithInterval(time.Hour)
+	store := NewWithInterval(20 * time.Millisecond)
 	defer store.Stop()
 
 	refreshTokenKey := "mcp-refresh-token-1" //nolint:gosec // test value, not a real credential
@@ -1519,7 +1518,12 @@ func TestStore_CleanupExpiredTokens_WithRefreshToken(t *testing.T) {
 		t.Fatalf("SaveRefreshToken() error = %v", err)
 	}
 
-	store.RunCleanup()
+	// Hold across at least one cleanup tick — the entry must survive
+	// while the refresh token mapping is active.
+	require.Never(t, func() bool {
+		_, err := store.GetToken(ctx, refreshTokenKey)
+		return err != nil
+	}, 100*time.Millisecond, 20*time.Millisecond, "token must survive while refresh mapping is active")
 
 	got, err := store.GetToken(ctx, refreshTokenKey)
 	if err != nil {
@@ -1533,17 +1537,15 @@ func TestStore_CleanupExpiredTokens_WithRefreshToken(t *testing.T) {
 		t.Fatalf("DeleteRefreshToken() error = %v", err)
 	}
 
-	store.RunCleanup()
-
-	_, err = store.GetToken(ctx, refreshTokenKey)
-	if err == nil {
-		t.Error("GetToken() should fail after refresh token mapping is removed (orphan cleanup)")
-	}
+	require.Eventually(t, func() bool {
+		_, err := store.GetToken(ctx, refreshTokenKey)
+		return err != nil
+	}, time.Second, 5*time.Millisecond, "orphan token must be cleaned up after refresh mapping removal")
 }
 
 func TestStore_CleanupExpiredTokens_WithRefreshToken_NoMapping(t *testing.T) {
 	ctx := context.Background()
-	store := NewWithInterval(time.Hour)
+	store := NewWithInterval(20 * time.Millisecond)
 	defer store.Stop()
 
 	providerToken := &oauth2.Token{
@@ -1557,14 +1559,11 @@ func TestStore_CleanupExpiredTokens_WithRefreshToken_NoMapping(t *testing.T) {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
 
-	store.RunCleanup()
-
-	// Token should be cleaned up because there's no active refresh token
-	// mapping and the access token is expired.
-	_, err := store.GetToken(ctx, "user-id-key")
-	if err == nil {
-		t.Error("GetToken() should fail for orphaned token with no refresh mapping")
-	}
+	// Orphan: no active refresh token mapping, access token expired.
+	require.Eventually(t, func() bool {
+		_, err := store.GetToken(ctx, "user-id-key")
+		return err != nil
+	}, time.Second, 5*time.Millisecond, "orphan token without refresh mapping must be cleaned up")
 }
 
 func TestStore_SetLogger(_ *testing.T) {
