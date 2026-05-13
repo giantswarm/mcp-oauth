@@ -7,8 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // mockTime implements timeProvider for deterministic testing.
@@ -270,6 +274,138 @@ func TestDiscoveryClient_Discover(t *testing.T) {
 			t.Error("Discover() should return error when context is cancelled")
 		}
 	})
+}
+
+// TestDiscoveryClient_Discover_SingleflightCoalescesColdMisses confirms that
+// N concurrent cold-cache callers for the same issuer fire a single HTTP
+// fetch. Eliminates fleet-bounce stampede against the IdP.
+func TestDiscoveryClient_Discover_SingleflightCoalescesColdMisses(t *testing.T) {
+	const concurrency = 32
+
+	validDoc := DiscoveryDocument{
+		Issuer:                 "https://dex.example.com",
+		AuthorizationEndpoint:  "https://dex.example.com/auth",
+		TokenEndpoint:          "https://dex.example.com/token",
+		UserInfoEndpoint:       "https://dex.example.com/userinfo",
+		JWKSUri:                "https://dex.example.com/keys",
+		ResponseTypesSupported: []string{"code"},
+	}
+
+	var (
+		fetches int64
+		release = make(chan struct{})
+	)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/openid-configuration" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		atomic.AddInt64(&fetches, 1)
+		<-release // hold the in-flight request until all callers are queued
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(validDoc)
+	}))
+	defer server.Close()
+
+	client := newTestClient(server.Client(), 1*time.Hour)
+
+	var (
+		ready sync.WaitGroup
+		wg    sync.WaitGroup
+	)
+	ready.Add(concurrency)
+	docs := make([]*DiscoveryDocument, concurrency)
+	errs := make([]error, concurrency)
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			ready.Done()
+			docs[idx], errs[idx] = client.Discover(context.Background(), server.URL)
+		}(i)
+	}
+
+	// Wait for every goroutine to start before unblocking the upstream so
+	// the singleflight join window is as wide as possible.
+	ready.Wait()
+	close(release)
+	wg.Wait()
+
+	for i, err := range errs {
+		require.NoError(t, err, "caller %d", i)
+		require.NotNil(t, docs[i])
+		require.Equal(t, validDoc.Issuer, docs[i].Issuer)
+	}
+	require.EqualValues(t, 1, atomic.LoadInt64(&fetches),
+		"cold-cache callers must coalesce into a single upstream fetch (got %d)", atomic.LoadInt64(&fetches))
+}
+
+// TestDiscoveryClient_Discover_CallerCancelDoesNotPoisonOthers verifies that
+// when one coalesced caller cancels its context the others still receive the
+// shared fetch result (the leader's ctx is detached from the fetch).
+func TestDiscoveryClient_Discover_CallerCancelDoesNotPoisonOthers(t *testing.T) {
+	validDoc := DiscoveryDocument{
+		Issuer:                 "https://dex.example.com",
+		AuthorizationEndpoint:  "https://dex.example.com/auth",
+		TokenEndpoint:          "https://dex.example.com/token",
+		JWKSUri:                "https://dex.example.com/keys",
+		ResponseTypesSupported: []string{"code"},
+	}
+
+	release := make(chan struct{})
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(validDoc)
+	}))
+	defer server.Close()
+
+	client := newTestClient(server.Client(), 1*time.Hour)
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	defer cancelLeader()
+
+	type result struct {
+		doc *DiscoveryDocument
+		err error
+	}
+	leaderResult := make(chan result, 1)
+	joinerResult := make(chan result, 1)
+
+	var ready sync.WaitGroup
+	ready.Add(2)
+	go func() {
+		ready.Done()
+		doc, err := client.Discover(leaderCtx, server.URL)
+		leaderResult <- result{doc: doc, err: err}
+	}()
+	go func() {
+		ready.Done()
+		doc, err := client.Discover(context.Background(), server.URL)
+		joinerResult <- result{doc: doc, err: err}
+	}()
+
+	ready.Wait()
+	cancelLeader()
+
+	select {
+	case r := <-leaderResult:
+		require.ErrorIs(t, r.err, context.Canceled, "leader must observe its own cancellation")
+	case <-time.After(2 * time.Second):
+		t.Fatal("leader did not return within 2s of cancel")
+	}
+
+	close(release)
+
+	select {
+	case r := <-joinerResult:
+		require.NoError(t, r.err, "joiner must receive the shared fetch result, not the leader's cancellation")
+		require.NotNil(t, r.doc)
+		require.Equal(t, validDoc.Issuer, r.doc.Issuer)
+	case <-time.After(2 * time.Second):
+		t.Fatal("joiner did not return within 2s of upstream release")
+	}
 }
 
 func TestDiscoveryClient_validateDocument(t *testing.T) {

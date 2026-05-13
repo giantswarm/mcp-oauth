@@ -131,6 +131,9 @@ func applyRateLimitDefaults(config *Config) {
 	if config.MaxRequestBodySize <= 0 {
 		config.MaxRequestBodySize = 1 << 20 // 1 MiB
 	}
+	if config.DiscoveryCacheMaxAge <= 0 {
+		config.DiscoveryCacheMaxAge = time.Hour
+	}
 }
 
 // applyCleanupIntervalDefaults sets defaults for cleanup interval configuration.

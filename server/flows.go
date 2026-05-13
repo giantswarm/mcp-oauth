@@ -349,12 +349,11 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 			return nil, fmt.Errorf("access token expired (local validation)")
 		}
 
-		// Singleflight: deduplicate concurrent refresh attempts for the same token
+		// Singleflight: deduplicate concurrent refresh attempts for the same token.
+		// Detach the leader's ctx from caller cancellation so one cancelled
+		// caller does not fail all coalesced waiters.
 		result, err, _ := s.refreshGroup.Do(accessToken, func() (interface{}, error) {
-			// Use a context detached from caller cancellation so one canceled
-			// leader request does not fail all coalesced waiters.
-			refreshCtx := context.WithoutCancel(ctx)
-			return s.provider.RefreshToken(refreshCtx, storedToken.RefreshToken)
+			return s.provider.RefreshToken(context.WithoutCancel(ctx), storedToken.RefreshToken)
 		})
 
 		if err != nil {

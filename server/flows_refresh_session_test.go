@@ -179,3 +179,36 @@ func TestRefreshSession_CoalescesConcurrentCalls(t *testing.T) {
 		require.NotNil(t, results[i], "call %d", i)
 	}
 }
+
+// TestRefreshSession_SingleflightIgnoresCanceledLeaderContext pins the
+// leader-detach contract on the refreshSessionGroup: a cancelled caller's
+// context must not propagate into the upstream RefreshToken call, otherwise
+// the joiner of a coalesced refresh would observe a spurious cancellation
+// error.
+func TestRefreshSession_SingleflightIgnoresCanceledLeaderContext(t *testing.T) {
+	srv, store, provider := setupFlowTestServer(t)
+
+	const (
+		familyID     = "fam-canceled-leader"
+		refreshToken = "rt-canceled-leader"
+	)
+	seedFamilyForRefresh(t, store, "user-1", "client-x", familyID, refreshToken)
+
+	provider.RefreshTokenFunc = func(ctx context.Context, _ string) (*oauth2.Token, error) {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("refresh context unexpectedly canceled: %w", ctx.Err())
+		}
+		return &oauth2.Token{
+			AccessToken:  "provider-access-new",
+			RefreshToken: "provider-refresh-new",
+			Expiry:       time.Now().Add(30 * time.Minute),
+			TokenType:    "Bearer",
+		}, nil
+	}
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := srv.RefreshSession(canceledCtx, familyID)
+	require.NoError(t, err, "RefreshSession must complete the underlying provider refresh even when the caller's ctx is already canceled")
+}

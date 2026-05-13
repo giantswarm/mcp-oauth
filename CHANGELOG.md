@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`Config.DiscoveryCacheMaxAge time.Duration`** (default `1h`). Discovery endpoints (`/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource[...]`, `/.well-known/openid-configuration`) advertise `Cache-Control: public, max-age=<seconds>` per RFC 8414 §3 / RFC 9728 §3.
+- **OIDC Discovery 1.0 §3 metadata fields** on the AS metadata document: `subject_types_supported: ["public"]`, `id_token_signing_alg_values_supported` (always includes `RS256`), and `claims_supported`.
+- **`Config.EnableUserInfoEndpoint bool`** + **`EndpointPathUserInfo = "/oauth/userinfo"`** + **`Config.UserInfoEndpoint()`**. When enabled, `/oauth/userinfo` (OIDC Core 1.0 §5.3) is mounted behind `Handler.ValidateToken` and `userinfo_endpoint` is advertised in AS / OIDC discovery metadata. The `openid` scope is required; `profile`, `email`, and `groups` scopes gate the corresponding claims; `sub` is always returned. Each 2xx response emits `security.EventUserInfoServed` (`userinfo_served`) with the subject and the scope-derived claim groups returned, and the request is counted under `oauth_http_requests_total{endpoint="userinfo"}`.
+- **`ContextWithScopes` / `ScopesFromContext`**. The `ValidateToken` middleware stashes the access token's granted scopes in the request context.
+- **RFC 7591 client-registration response fields**: `client_id_issued_at` (always) and `client_secret_expires_at: 0` for confidential clients (RFC 7591 §3.2.1 sentinel for "never expires").
+- **`Config.MaxStateLength int`** (default `512`). `/authorize` and `/callback` reject `state` longer than the configured maximum with `invalid_request`.
 - **`security.DecodeKey(s string) ([]byte, error)`**: convenience helper that tries [`KeyFromBase64`](security/encryption.go) then falls back to [`KeyFromHex`](security/encryption.go). Consolidates the dual-encoding decode pattern that consumers were re-implementing locally.
 - **`storage/valkey.Config.MaxTokenDataSize`**: per-store override for the encrypted-token serialization ceiling. `OAUTH_VALKEY_MAX_TOKEN_DATA_SIZE` exposes the same knob via environment. Values are bounded by `MinMaxTokenDataSize` (64 KiB) and `MaxMaxTokenDataSize` (8 MiB); `New` rejects out-of-range values.
 - **`security.EventProviderTokenStorageFailed`**: audit event emitted on every provider-token persistence failure, with stable `reason` enum (`missing_subject`, `save_user_info_by_id`, `save_token_by_id`, `save_user_info_by_email`, `save_token_by_email`).
@@ -19,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`storage/valkey.DefaultMaxTokenDataSize`** raised to 600 KiB (was the previous 256 KiB constant `MaxTokenDataSize`, now removed). `SaveToken` accepts larger OIDC id_tokens, including those carrying extensive `groups` claims. Operators needing a different ceiling set `Config.MaxTokenDataSize` (or `OAUTH_VALKEY_MAX_TOKEN_DATA_SIZE`).
 - **OAuth provider-token storage failures are no longer silently swallowed**. `HandleProviderCallback` returns an error when persisting the provider token or `UserInfo` keyed by the subject ID fails, instead of completing the auth flow against an empty store (which previously manifested as broken SSO token forwarding). Email-keyed save failures remain best-effort but are now audited.
+- **`providers/oidc.DiscoveryClient.Discover`** coalesces concurrent cold-cache callers for the same issuer URL via `singleflight`. Closes #307.
 - **`Retry-After` is computed from the limiter's configured rate**
   - The IP, user, and discovery rate-limit `429` responses now set `Retry-After` to `1` second for any positive rate (sub-second precision isn't expressible per RFC 9110 §10.2.3) and fall back to `60` when the rate is 0. The client-registration limiter uses its configured window. Previously this header was a hardcoded `60` regardless of limiter configuration. New `RateLimiter.Rate()` / `ClientRegistrationRateLimiter.Window()` accessors expose the values.
 - **`oauth_http_requests_total{endpoint="authorize"}`** (was `"authorization"`)

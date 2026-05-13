@@ -28,17 +28,13 @@ const (
 	// TokenExpiringThreshold is the minimum time before a token is considered expiring
 	TokenExpiringThreshold = 60 // seconds
 
-	// ClockSkewGrace is the grace period (in seconds) for clock skew when validating token expiration
-	//
-	// Security Rationale:
-	//   - Prevents false expiration errors due to minor time differences between systems
-	//   - Balances security (minimize token lifetime extension) with usability
-	//   - 5 seconds is a conservative value that handles typical NTP drift
-	//
-	// Trade-offs:
-	//   - Allows tokens to be used up to 5 seconds beyond their true expiration
-	//   - This is acceptable for most use cases and improves reliability
-	//   - For high-security scenarios, consider reducing or removing this grace period
+	// ClockSkewGrace is the grace period (in seconds) for clock skew when
+	// validating tokens this server issued — 5s handles typical NTP drift
+	// without materially extending token lifetime. Upstream-issued tokens
+	// (forwarded id_tokens, JWKS-verified IdP tokens) use a larger leeway
+	// because cross-organisation NTP skew is harder to bound; see
+	// [github.com/giantswarm/mcp-oauth/providers/oidc.DefaultClockSkewLeeway]
+	// (30s).
 	ClockSkewGrace = 5 // seconds
 )
 
@@ -86,6 +82,12 @@ const (
 	// 24 characters provides 144 bits of entropy in base64, exceeding the 128-bit minimum.
 	// This value is used as the default for server.Config.MinStateLength.
 	MinStateLength = 24
+
+	// MaxStateLength caps the `state` parameter length to prevent audit-log
+	// inflation / DoS via oversized state values; 512 characters accommodates
+	// the common JWT-encoded-state pattern (~256-380 chars).
+	// This value is used as the default for server.Config.MaxStateLength.
+	MaxStateLength = 512
 )
 
 // Redirect URI validation constants

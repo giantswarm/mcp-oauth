@@ -363,6 +363,10 @@ func (s *Server) validateClientStateParameter(state string) error {
 		return fmt.Errorf("state parameter must be at least %d characters for security", s.Config.MinStateLength)
 	}
 
+	if len(state) > s.Config.MaxStateLength {
+		return fmt.Errorf("state parameter must be at most %d characters", s.Config.MaxStateLength)
+	}
+
 	return nil
 }
 
@@ -381,6 +385,10 @@ func (s *Server) validateProviderStateParameter(state string) error {
 
 	if len(state) < s.Config.MinStateLength {
 		return fmt.Errorf("provider state parameter must be at least %d characters for security", s.Config.MinStateLength)
+	}
+
+	if len(state) > s.Config.MaxStateLength {
+		return fmt.Errorf("provider state parameter must be at most %d characters", s.Config.MaxStateLength)
 	}
 
 	return nil

@@ -1409,6 +1409,255 @@ func TestHandler_ServeOpenIDConfiguration(t *testing.T) {
 	}
 }
 
+func TestHandler_ServeAuthorizationServerMetadata_CacheControl(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	w := httptest.NewRecorder()
+	handler.ServeAuthorizationServerMetadata(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, "public, max-age=3600", w.Header().Get("Cache-Control"),
+		"discovery responses must advertise RFC 8414 §3 cache headers")
+	require.Empty(t, w.Header().Get("Pragma"),
+		"Pragma must not leak the legacy no-cache from SetSecurityHeaders")
+	require.Equal(t, "nosniff", w.Header().Get("X-Content-Type-Options"),
+		"other security headers must survive the cache-policy override")
+	require.Equal(t, "no-referrer", w.Header().Get("Referrer-Policy"))
+}
+
+func TestHandler_ServeProtectedResourceMetadata_CacheControl(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil)
+	w := httptest.NewRecorder()
+	handler.ServeProtectedResourceMetadata(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, "public, max-age=3600", w.Header().Get("Cache-Control"))
+	require.Empty(t, w.Header().Get("Pragma"))
+}
+
+func TestHandler_ServeAuthorizationServerMetadata_OIDCRequiredFields(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/openid-configuration", nil)
+	w := httptest.NewRecorder()
+	handler.ServeOpenIDConfiguration(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var meta map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&meta))
+
+	require.ElementsMatch(t, []any{"public"}, meta["subject_types_supported"])
+	require.Contains(t, meta["id_token_signing_alg_values_supported"], "RS256",
+		"OIDC Discovery §3 requires id_token_signing_alg_values_supported non-empty")
+	require.Subset(t, meta["claims_supported"], []any{"sub", "iss", "aud", "exp", "iat", "nonce"})
+
+	// userinfo_endpoint is intentionally absent until /userinfo is implemented.
+	require.NotContains(t, meta, "userinfo_endpoint")
+}
+
+func TestHandler_ServeAuthorizationServerMetadata_CacheMaxAgeOverride(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+	handler.server.Config.DiscoveryCacheMaxAge = 90 * time.Second
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	w := httptest.NewRecorder()
+	handler.ServeAuthorizationServerMetadata(w, req)
+
+	require.Equal(t, "public, max-age=90", w.Header().Get("Cache-Control"))
+}
+
+func TestHandler_ServeAuthorization_StateTooLong(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	oversized := strings.Repeat("a", MaxStateLength+1)
+	target := "/authorize?client_id=any&redirect_uri=https%3A%2F%2Fexample.com%2Fcb&response_type=code&code_challenge=c&code_challenge_method=S256&state=" + oversized
+
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	w := httptest.NewRecorder()
+	handler.ServeAuthorization(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code, "state > MaxStateLength must be rejected; body: %s", w.Body.String())
+}
+
+func TestHandler_ServeClientRegistration_RFC7591Fields(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+	handler.server.Config.AllowPublicClientRegistration = true
+
+	body, err := json.Marshal(ClientRegistrationRequest{
+		RedirectURIs:            []string{"https://example.com/callback"},
+		TokenEndpointAuthMethod: "client_secret_basic",
+		GrantTypes:              []string{"authorization_code"},
+		ResponseTypes:           []string{"code"},
+		ClientName:              "RFC 7591 Client",
+		ClientType:              "confidential",
+	})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/oauth/register", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeClientRegistration(w, req)
+	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
+
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+
+	issuedAt, ok := resp["client_id_issued_at"].(float64)
+	require.True(t, ok, "client_id_issued_at must be present and numeric (response=%v)", resp)
+	require.GreaterOrEqual(t, int64(issuedAt), time.Now().Add(-5*time.Second).Unix())
+
+	// Confidential client → client_secret + client_secret_expires_at:0 (never).
+	require.NotEmpty(t, resp["client_secret"])
+	require.Equal(t, float64(0), resp["client_secret_expires_at"],
+		"client_secret_expires_at == 0 signals 'never expires' per RFC 7591 §3.2.1")
+}
+
+func setupUserInfoTest(t *testing.T, scopes []string) (*Handler, *memory.Store, string) {
+	t.Helper()
+	store := memory.New()
+	provider := mock.NewProvider()
+	srv, err := server.New(provider, store, store, store, &server.Config{
+		Issuer:                 "https://auth.example.com",
+		EnableUserInfoEndpoint: true,
+	}, nil)
+	require.NoError(t, err)
+
+	const accessToken = "userinfo-access-token"
+	require.NoError(t, store.SaveToken(context.Background(), accessToken, &oauth2.Token{
+		AccessToken: accessToken,
+		Expiry:      time.Now().Add(time.Hour),
+	}))
+	require.NoError(t, store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{
+		UserID:    "mock-user-123",
+		ClientID:  "test-client",
+		TokenType: "access",
+		Scopes:    scopes,
+	}))
+
+	return NewHandler(srv, nil), store, accessToken
+}
+
+func decodeUserInfoResponse(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	require.Equal(t, "application/json", w.Header().Get("Content-Type"))
+	var claims map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&claims))
+	return claims
+}
+
+func TestHandler_ServeUserInfo(t *testing.T) {
+	t.Run("rejects when openid scope missing", func(t *testing.T) {
+		handler, store, token := setupUserInfoTest(t, []string{"profile", "email"})
+		defer store.Stop()
+
+		req := httptest.NewRequest(http.MethodGet, server.EndpointPathUserInfo, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		handler.ValidateToken(http.HandlerFunc(handler.ServeUserInfo)).ServeHTTP(w, req)
+
+		require.Equal(t, http.StatusForbidden, w.Code)
+		require.Contains(t, w.Header().Get("WWW-Authenticate"), ErrorCodeInsufficientScope)
+	})
+
+	t.Run("openid only returns sub", func(t *testing.T) {
+		handler, store, token := setupUserInfoTest(t, []string{"openid"})
+		defer store.Stop()
+
+		req := httptest.NewRequest(http.MethodGet, server.EndpointPathUserInfo, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		handler.ValidateToken(http.HandlerFunc(handler.ServeUserInfo)).ServeHTTP(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		claims := decodeUserInfoResponse(t, w)
+		require.Equal(t, "mock-user-123", claims["sub"])
+		require.NotContains(t, claims, "name")
+		require.NotContains(t, claims, "email")
+	})
+
+	t.Run("profile scope unlocks profile claims", func(t *testing.T) {
+		handler, store, token := setupUserInfoTest(t, []string{"openid", "profile"})
+		defer store.Stop()
+
+		req := httptest.NewRequest(http.MethodPost, server.EndpointPathUserInfo, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		handler.ValidateToken(http.HandlerFunc(handler.ServeUserInfo)).ServeHTTP(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		claims := decodeUserInfoResponse(t, w)
+		require.Equal(t, "mock-user-123", claims["sub"])
+		require.Equal(t, "Mock User", claims["name"])
+		require.Equal(t, "Mock", claims["given_name"])
+		require.Equal(t, "User", claims["family_name"])
+		require.NotContains(t, claims, "email")
+	})
+
+	t.Run("email scope unlocks email claims", func(t *testing.T) {
+		handler, store, token := setupUserInfoTest(t, []string{"openid", "email"})
+		defer store.Stop()
+
+		req := httptest.NewRequest(http.MethodGet, server.EndpointPathUserInfo, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		handler.ValidateToken(http.HandlerFunc(handler.ServeUserInfo)).ServeHTTP(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		claims := decodeUserInfoResponse(t, w)
+		require.Equal(t, "mock-user-123", claims["sub"])
+		require.Equal(t, "mock@example.com", claims["email"])
+		require.Equal(t, true, claims["email_verified"])
+		require.NotContains(t, claims, "name")
+	})
+
+	t.Run("metadata advertises endpoint when enabled", func(t *testing.T) {
+		handler, store, _ := setupUserInfoTest(t, []string{"openid"})
+		defer store.Stop()
+
+		req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+		w := httptest.NewRecorder()
+		handler.ServeAuthorizationServerMetadata(w, req)
+		require.Equal(t, http.StatusOK, w.Code)
+		var meta map[string]any
+		require.NoError(t, json.NewDecoder(w.Body).Decode(&meta))
+		require.Equal(t, "https://auth.example.com"+server.EndpointPathUserInfo, meta["userinfo_endpoint"])
+	})
+
+	t.Run("metadata omits endpoint when disabled", func(t *testing.T) {
+		handler, store := setupTestHandler(t)
+		defer store.Stop()
+
+		req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+		w := httptest.NewRecorder()
+		handler.ServeAuthorizationServerMetadata(w, req)
+		var meta map[string]any
+		require.NoError(t, json.NewDecoder(w.Body).Decode(&meta))
+		require.NotContains(t, meta, "userinfo_endpoint")
+	})
+
+	t.Run("rejects unsupported methods", func(t *testing.T) {
+		handler, store, token := setupUserInfoTest(t, []string{"openid"})
+		defer store.Stop()
+
+		req := httptest.NewRequest(http.MethodDelete, server.EndpointPathUserInfo, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		handler.ValidateToken(http.HandlerFunc(handler.ServeUserInfo)).ServeHTTP(w, req)
+
+		require.Equal(t, http.StatusMethodNotAllowed, w.Code)
+		require.Equal(t, "GET, POST", w.Header().Get("Allow"))
+	})
+}
+
 func TestHandler_ServeClientRegistration(t *testing.T) {
 	handler, store := setupTestHandler(t)
 	defer store.Stop()

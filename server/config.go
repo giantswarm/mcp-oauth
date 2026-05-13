@@ -101,6 +101,11 @@ const (
 	// EndpointPathIntrospect is the token introspection endpoint path (RFC 7662)
 	EndpointPathIntrospect = "/oauth/introspect"
 
+	// EndpointPathUserInfo is the OIDC UserInfo endpoint path (OIDC Core 1.0 §5.3).
+	// Returns claims about the authenticated user, gated by the access token's
+	// granted scopes (openid required; profile/email/groups gate corresponding claims).
+	EndpointPathUserInfo = "/oauth/userinfo"
+
 	// EndpointPathProtectedResourceMetadata is the Protected Resource Metadata discovery path (RFC 9728)
 	EndpointPathProtectedResourceMetadata = "/.well-known/oauth-protected-resource"
 
@@ -294,6 +299,14 @@ type Config struct {
 	// Default: 1048576 (1 MiB, generous for OAuth form data which is typically a few KB)
 	MaxRequestBodySize int64 // bytes, default: 1048576 (1 MiB)
 
+	// DiscoveryCacheMaxAge is the max-age advertised on Cache-Control for the
+	// three discovery endpoints (/.well-known/oauth-authorization-server,
+	// /.well-known/oauth-protected-resource, /.well-known/openid-configuration)
+	// per RFC 8414 §3 and RFC 9728 §3.
+	// Zero or negative selects the 1h default. Set to a very small value to
+	// effectively disable intermediary caching.
+	DiscoveryCacheMaxAge time.Duration // default: 1h
+
 	// DefaultChallengeScopes are the scopes to include in WWW-Authenticate challenges
 	// When a 401 Unauthorized response is returned, these scopes indicate what
 	// permissions would be needed to access the resource.
@@ -421,6 +434,11 @@ type Config struct {
 	// OAuth 2.1 recommends at least 128 bits (16 bytes) of entropy.
 	// Default: 24 characters (144 bits of entropy)
 	MinStateLength int // default: 24
+
+	// MaxStateLength caps the `state` parameter length to prevent audit-log
+	// inflation / DoS via oversized state values.
+	// Default: 512 characters (accommodates common JWT-encoded-state payloads).
+	MaxStateLength int // default: 512
 
 	// AllowNoStateParameter allows authorization requests without the state parameter.
 	// WARNING: Disabling state parameter validation weakens CSRF protection!
@@ -812,6 +830,15 @@ type Config struct {
 	// presenter rather than on the token's recipient.
 	IntrospectionResourceServers []string
 
+	// EnableUserInfoEndpoint controls whether the OIDC UserInfo endpoint
+	// (OIDC Core 1.0 §5.3) is mounted and advertised. When true:
+	//   - /oauth/userinfo is registered (RegisterOAuthRoutes).
+	//   - `userinfo_endpoint` is included in the AS / OIDC discovery metadata.
+	// Requires bearer-token-protected requests with the `openid` scope; the
+	// `profile`, `email`, and `groups` scopes gate corresponding claims.
+	// Default: false (opt-in to avoid exposing user data without operator consent).
+	EnableUserInfoEndpoint bool
+
 	// ClientMetadataCacheTTL is how long to cache fetched client metadata
 	// Caching reduces latency and prevents repeated fetches for the same client
 	// HTTP Cache-Control headers may override this value
@@ -1029,6 +1056,11 @@ func (c *Config) RevocationEndpoint() string {
 // IntrospectionEndpoint returns the full URL to the RFC 7662 token introspection endpoint
 func (c *Config) IntrospectionEndpoint() string {
 	return c.Issuer + EndpointPathIntrospect
+}
+
+// UserInfoEndpoint returns the full URL to the OIDC Core 1.0 §5.3 UserInfo endpoint.
+func (c *Config) UserInfoEndpoint() string {
+	return c.Issuer + EndpointPathUserInfo
 }
 
 // JWKSEndpoint returns the full URL to the JWKS discovery endpoint (RFC 7517).

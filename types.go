@@ -75,6 +75,19 @@ type AuthorizationServerMetadata struct {
 	// allowing clients talking to multiple authorization servers to detect mix-up
 	// attacks.
 	AuthorizationResponseIssParameterSupported bool `json:"authorization_response_iss_parameter_supported,omitempty"`
+
+	// ClaimsSupported lists the claim names this server may emit in id_tokens
+	// (OpenID Connect Discovery 1.0 §3).
+	ClaimsSupported []string `json:"claims_supported,omitempty"`
+
+	// SubjectTypesSupported lists the OIDC subject-identifier types this server
+	// supports (`public` only — pairwise sub is not implemented).
+	SubjectTypesSupported []string `json:"subject_types_supported,omitempty"`
+
+	// IDTokenSigningAlgValuesSupported lists JWS `alg` values the server may use
+	// to sign id_tokens. Required by OIDC Discovery 1.0 §3 even when the server
+	// does not issue id_tokens itself.
+	IDTokenSigningAlgValuesSupported []string `json:"id_token_signing_alg_values_supported,omitempty"`
 }
 
 // ==================== Dynamic Client Registration (RFC 7591) Types ====================

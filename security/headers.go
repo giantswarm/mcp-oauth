@@ -3,6 +3,8 @@ package security
 import (
 	"net/http"
 	"net/url"
+	"strconv"
+	"time"
 )
 
 // InterstitialScriptHash is the SHA-256 hash of the static inline script used in the
@@ -16,6 +18,21 @@ import (
 //
 //	echo -n '<script content>' | openssl dgst -sha256 -binary | base64
 const InterstitialScriptHash = "sha256-BSPDdcxaKPs2IRkTMWvH7KxMRr/MuFv1HaDJlxd1UTI="
+
+// SetDiscoveryCacheHeaders overrides the Cache-Control + Pragma policy set by
+// [SetSecurityHeaders] for the three discovery endpoints
+// (/.well-known/oauth-authorization-server, /.well-known/oauth-protected-resource,
+// /.well-known/openid-configuration). RFC 8414 §3 and RFC 9728 §3 advertise these
+// as cacheable; CDN-fronted deployments need a positive Cache-Control. Call after
+// SetSecurityHeaders; the other headers are unchanged.
+func SetDiscoveryCacheHeaders(w http.ResponseWriter, maxAge time.Duration) {
+	seconds := int64(maxAge.Seconds())
+	if seconds <= 0 {
+		seconds = 3600
+	}
+	w.Header().Set("Cache-Control", "public, max-age="+strconv.FormatInt(seconds, 10))
+	w.Header().Del("Pragma")
+}
 
 // SetSecurityHeaders sets comprehensive security headers on HTTP responses
 // These headers protect against various web vulnerabilities

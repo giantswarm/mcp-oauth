@@ -63,8 +63,11 @@ func (s *Server) RefreshSession(ctx context.Context, familyID string) (*oauth2.T
 		return nil, fmt.Errorf("familyID is required")
 	}
 
+	// Detach the leader's ctx from caller cancellation so one cancelled caller
+	// does not fail all coalesced waiters; the shared refresh survives the
+	// leader giving up.
 	result, err, _ := s.refreshSessionGroup.Do(familyID, func() (any, error) {
-		return s.refreshSessionImpl(ctx, familyID)
+		return s.refreshSessionImpl(context.WithoutCancel(ctx), familyID)
 	})
 	if err != nil {
 		return nil, err

@@ -46,6 +46,7 @@ const (
 	endpointIntrospect    = "introspect"
 	endpointRegister      = "register"
 	endpointValidateToken = "validate_token"
+	endpointUserInfo      = "userinfo"
 )
 
 // clientRegistrationRequest represents the JSON request for client registration
@@ -556,12 +557,27 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 			return
 		}
 
-		ctx := ContextWithUserInfo(r.Context(), userInfo)
-		if metadata != nil && metadata.FamilyID != "" {
-			ctx = ContextWithSessionID(ctx, metadata.FamilyID)
-		}
+		ctx := contextWithValidatedToken(r.Context(), userInfo, metadata)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// contextWithValidatedToken stamps the authenticated UserInfo on ctx and,
+// when metadata is available, also propagates the session ID (refresh-token
+// family) and the access token's granted scopes. Zero-valued metadata fields
+// are skipped so downstream consumers can distinguish "absent" from "empty".
+func contextWithValidatedToken(ctx context.Context, userInfo *providers.UserInfo, metadata *storage.TokenMetadata) context.Context {
+	ctx = ContextWithUserInfo(ctx, userInfo)
+	if metadata == nil {
+		return ctx
+	}
+	if metadata.FamilyID != "" {
+		ctx = ContextWithSessionID(ctx, metadata.FamilyID)
+	}
+	if len(metadata.Scopes) > 0 {
+		ctx = ContextWithScopes(ctx, metadata.Scopes)
+	}
+	return ctx
 }
 
 // retryAfterSecondsForRate returns a Retry-After hint in seconds for a token-
@@ -694,6 +710,7 @@ func (h *Handler) ServeProtectedResourceMetadata(w http.ResponseWriter, r *http.
 	h.setCORSHeaders(w, r)
 
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+	security.SetDiscoveryCacheHeaders(w, h.server.Config.DiscoveryCacheMaxAge)
 
 	// Extract the resource path from the request URL
 	// Request path: /.well-known/oauth-protected-resource/mcp/files
@@ -874,6 +891,13 @@ func (h *Handler) RegisterOAuthRoutes(mux *http.ServeMux, opts OAuthRoutesOption
 	// config. Only wire the route when the flag is on.
 	if h.server.Config.EnableIntrospectionEndpoint {
 		mux.HandleFunc(server.EndpointPathIntrospect, h.ServeTokenIntrospection)
+	}
+
+	// OIDC UserInfo (OIDC Core 1.0 §5.3) is opt-in. The handler runs behind
+	// ValidateToken so bearer authentication, scope/audience checks, and
+	// rate limiting all apply.
+	if h.server.Config.EnableUserInfoEndpoint {
+		mux.Handle(server.EndpointPathUserInfo, h.ValidateToken(http.HandlerFunc(h.ServeUserInfo)))
 	}
 
 	if !opts.IncludeMetadata {
@@ -1107,6 +1131,7 @@ func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 
 	h.setCORSHeaders(w, r)
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+	security.SetDiscoveryCacheHeaders(w, h.server.Config.DiscoveryCacheMaxAge)
 
 	metadata := h.buildAuthServerMetadata()
 
@@ -1140,7 +1165,9 @@ func (h *Handler) checkDiscoveryRateLimit(w http.ResponseWriter, r *http.Request
 	return true
 }
 
-// buildAuthServerMetadata builds the RFC 8414 authorization server metadata.
+// buildAuthServerMetadata returns the metadata served at both
+// /.well-known/oauth-authorization-server (RFC 8414) and
+// /.well-known/openid-configuration (OIDC Discovery 1.0 §3).
 func (h *Handler) buildAuthServerMetadata() map[string]any {
 	metadata := map[string]any{
 		"issuer":                                h.server.Config.Issuer,
@@ -1153,11 +1180,27 @@ func (h *Handler) buildAuthServerMetadata() map[string]any {
 		// RFC 9207: advertise that authorization responses include the `iss` parameter
 		// so clients can verify the response came from the expected authorization server.
 		"authorization_response_iss_parameter_supported": true,
-		"claims_supported": []string{"sub", "aud", "iss", "exp", "iat", "nonce"},
+		"claims_supported":                      []string{"sub", "aud", "iss", "exp", "iat", "nonce"},
+		"subject_types_supported":               []string{"public"},
+		"id_token_signing_alg_values_supported": h.idTokenSigningAlgs(),
 	}
 
 	h.addOptionalMetadata(metadata)
 	return metadata
+}
+
+// idTokenSigningAlgs returns the alg values advertised in
+// id_token_signing_alg_values_supported. OIDC Discovery 1.0 §3 mandates that
+// RS256 be included; in JWT access-token mode the server's own signing alg
+// is appended when distinct.
+func (h *Handler) idTokenSigningAlgs() []string {
+	algs := []string{"RS256"}
+	if h.server.Config.IsJWTAccessTokenFormat() {
+		if alg := h.server.Config.AccessTokenSigningAlgorithm; alg != "" && alg != "RS256" {
+			algs = append(algs, alg)
+		}
+	}
+	return algs
 }
 
 // addOptionalMetadata adds optional endpoints based on configuration.
@@ -1176,6 +1219,10 @@ func (h *Handler) addOptionalMetadata(metadata map[string]any) {
 
 	if h.server.Config.EnableIntrospectionEndpoint {
 		metadata["introspection_endpoint"] = h.server.Config.IntrospectionEndpoint()
+	}
+
+	if h.server.Config.EnableUserInfoEndpoint {
+		metadata["userinfo_endpoint"] = h.server.Config.UserInfoEndpoint()
 	}
 
 	if h.server.Config.EnableClientIDMetadataDocuments {
@@ -1318,6 +1365,18 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// State-too-long is handled inline rather than via checkAuthorizationStateParam:
+	// an oversized state cannot be safely echoed back in a redirect URL, so the
+	// response stays a direct 400 instead of a redirect with `error=invalid_request`.
+	maxStateLength := h.server.Config.MaxStateLength
+	if len(state) > maxStateLength {
+		h.logger.Warn("Authorization request rejected: state parameter too long", "state_length", len(state), "max_allowed", maxStateLength, "client_id", clientID)
+		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "state too long")
+		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at most %d characters", maxStateLength), http.StatusBadRequest)
+		return
+	}
+
 	if rejection := h.checkAuthorizationStateParam(state, clientID); rejection != nil {
 		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
 			redirectURI: canonicalRedirectURI,
@@ -1437,12 +1496,22 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, ErrorCodeInvalidRequest, "state and code are required", http.StatusBadRequest)
 		return
 	}
-	if len(state) < MinStateLength {
-		h.logger.Warn("Callback rejected: provider state too short", "state_length", len(state), "min_required", MinStateLength)
+	minStateLength := h.server.Config.MinStateLength
+	maxStateLength := h.server.Config.MaxStateLength
+	if len(state) < minStateLength {
+		h.logger.Warn("Callback rejected: provider state too short", "state_length", len(state), "min_required", minStateLength)
 		h.recordHTTPMetrics(r.Context(), endpointCallback, http.MethodGet, http.StatusBadRequest, startTime)
 		h.recordCallbackProcessed(r.Context(), "", false)
 		instrumentation.SetSpanError(span, "state too short")
-		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at least %d characters for security", MinStateLength), http.StatusBadRequest)
+		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at least %d characters for security", minStateLength), http.StatusBadRequest)
+		return
+	}
+	if len(state) > maxStateLength {
+		h.logger.Warn("Callback rejected: provider state too long", "state_length", len(state), "max_allowed", maxStateLength)
+		h.recordHTTPMetrics(r.Context(), endpointCallback, http.MethodGet, http.StatusBadRequest, startTime)
+		h.recordCallbackProcessed(r.Context(), "", false)
+		instrumentation.SetSpanError(span, "state too long")
+		h.writeError(w, ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at most %d characters", maxStateLength), http.StatusBadRequest)
 		return
 	}
 
@@ -2111,11 +2180,15 @@ func (h *Handler) setRegistrationSpanSuccess(span trace.Span, client *storage.Cl
 	instrumentation.SetSpanSuccess(span)
 }
 
-// writeRegistrationResponse writes the client registration response.
+// writeRegistrationResponse writes the client registration response per
+// RFC 7591 §3.2.1. `client_id_issued_at` is always present; for confidential
+// clients the response also carries `client_secret` plus
+// `client_secret_expires_at: 0` (the spec sentinel for "never expires").
 func (h *Handler) writeRegistrationResponse(w http.ResponseWriter, client *storage.Client, clientSecret string) {
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	response := map[string]any{
 		"client_id":                  client.ClientID,
+		"client_id_issued_at":        client.CreatedAt.Unix(),
 		"client_name":                client.ClientName,
 		"client_type":                client.ClientType,
 		"redirect_uris":              client.RedirectURIs,
@@ -2126,6 +2199,7 @@ func (h *Handler) writeRegistrationResponse(w http.ResponseWriter, client *stora
 
 	if clientSecret != "" {
 		response["client_secret"] = clientSecret
+		response["client_secret_expires_at"] = 0
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -2376,10 +2450,11 @@ func (h *Handler) checkAuthorizationStateParam(state, clientID string) *authoriz
 			spanError:   "state missing",
 		}
 	}
-	if len(state) < MinStateLength {
-		h.logger.Warn("Authorization request rejected: state parameter too short", "state_length", len(state), "min_required", MinStateLength, "client_id", clientID)
+	minStateLength := h.server.Config.MinStateLength
+	if len(state) < minStateLength {
+		h.logger.Warn("Authorization request rejected: state parameter too short", "state_length", len(state), "min_required", minStateLength, "client_id", clientID)
 		return &authorizationStateRejection{
-			description: fmt.Sprintf("state parameter must be at least %d characters for security", MinStateLength),
+			description: fmt.Sprintf("state parameter must be at least %d characters for security", minStateLength),
 			spanError:   "state too short",
 		}
 	}
@@ -2523,6 +2598,130 @@ func (h *Handler) formatWWWAuthenticate(scope, errCode, errorDesc string) string
 	// Format: "Bearer param1="value1", param2="value2"" per RFC 6750 Section 3
 	// Note: Space after "Bearer", then comma-space between parameters
 	return "Bearer " + strings.Join(params, ", ")
+}
+
+// buildUserInfoClaims projects userInfo onto the OIDC §5.3 claim map, gated by
+// the access token's granted scopes. `sub` is always emitted; `profile`,
+// `email`, `groups` scopes admit their corresponding claim groups when the
+// underlying field is non-empty. The returned `emitted` slice names the scope
+// groups that contributed at least one claim — used for the audit record.
+func buildUserInfoClaims(userInfo *providers.UserInfo, scopeSet map[string]struct{}) (map[string]any, []string) {
+	emitted := []string{"sub"}
+	claims := map[string]any{"sub": userInfo.ID}
+	if _, ok := scopeSet["profile"]; ok {
+		addProfileClaims(claims, userInfo)
+		emitted = append(emitted, "profile")
+	}
+	if _, ok := scopeSet["email"]; ok && userInfo.Email != "" {
+		claims["email"] = userInfo.Email
+		claims["email_verified"] = userInfo.EmailVerified
+		emitted = append(emitted, "email")
+	}
+	if _, ok := scopeSet["groups"]; ok && len(userInfo.Groups) > 0 {
+		claims["groups"] = userInfo.Groups
+		emitted = append(emitted, "groups")
+	}
+	return claims, emitted
+}
+
+// addProfileClaims copies the `profile`-scope claim group from userInfo into
+// claims, skipping fields the upstream did not populate.
+func addProfileClaims(claims map[string]any, userInfo *providers.UserInfo) {
+	if userInfo.Name != "" {
+		claims["name"] = userInfo.Name
+	}
+	if userInfo.GivenName != "" {
+		claims["given_name"] = userInfo.GivenName
+	}
+	if userInfo.FamilyName != "" {
+		claims["family_name"] = userInfo.FamilyName
+	}
+	if userInfo.Picture != "" {
+		claims["picture"] = userInfo.Picture
+	}
+	if userInfo.Locale != "" {
+		claims["locale"] = userInfo.Locale
+	}
+}
+
+// ServeUserInfo handles the OIDC UserInfo endpoint (OIDC Core 1.0 §5.3).
+// Accepts GET and POST. The [Handler.ValidateToken] middleware authenticates
+// the bearer access token and stashes the resolved [providers.UserInfo] and
+// granted scopes in the request context; this handler renders the claims
+// gated by those scopes.
+//
+// The `openid` scope is REQUIRED to access the endpoint. The `sub` claim is
+// always returned. `profile`, `email`, and `groups` scopes gate the
+// corresponding claim groups.
+func (h *Handler) ServeUserInfo(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.userinfo")
+	defer endSpan()
+
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		instrumentation.SetSpanError(span, "method not allowed")
+		w.Header().Set("Allow", "GET, POST")
+		h.recordHTTPMetrics(r.Context(), endpointUserInfo, r.Method, http.StatusMethodNotAllowed, startTime)
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	h.setCORSHeaders(w, r)
+	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+
+	userInfo, ok := UserInfoFromContext(r.Context())
+	if !ok || userInfo == nil {
+		instrumentation.SetSpanError(span, "user info missing from context")
+		h.recordHTTPMetrics(r.Context(), endpointUserInfo, r.Method, http.StatusUnauthorized, startTime)
+		h.writeUnauthorizedError(w, r, ErrorCodeInvalidToken, "User information unavailable")
+		return
+	}
+
+	// OIDC Core 1.0 §5.3.2 — `sub` is REQUIRED in the response. A token that
+	// validated but carries no subject is an upstream bug; refuse rather than
+	// emit a spec-violating claims set.
+	if userInfo.ID == "" {
+		instrumentation.SetSpanError(span, "user info missing sub")
+		h.logger.Error("ServeUserInfo: resolved UserInfo has empty ID; refusing to emit sub-less response")
+		h.recordHTTPMetrics(r.Context(), endpointUserInfo, r.Method, http.StatusInternalServerError, startTime)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	scopes, _ := ScopesFromContext(r.Context())
+	scopeSet := make(map[string]struct{}, len(scopes))
+	for _, s := range scopes {
+		scopeSet[s] = struct{}{}
+	}
+	if _, ok := scopeSet["openid"]; !ok {
+		instrumentation.SetSpanError(span, "openid scope missing")
+		h.recordHTTPMetrics(r.Context(), endpointUserInfo, r.Method, http.StatusForbidden, startTime)
+		h.writeInsufficientScopeError(w, []string{"openid"}, "openid scope is required to call /userinfo")
+		return
+	}
+
+	claims, emitted := buildUserInfoClaims(userInfo, scopeSet)
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(claims); err != nil {
+		h.logger.Warn("Failed to encode userinfo response", "error", err)
+		h.recordHTTPMetrics(r.Context(), endpointUserInfo, r.Method, http.StatusInternalServerError, startTime)
+		return
+	}
+
+	h.recordHTTPMetrics(r.Context(), endpointUserInfo, r.Method, http.StatusOK, startTime)
+	instrumentation.SetSpanSuccess(span)
+
+	if h.server.Auditor != nil {
+		h.server.Auditor.LogEvent(r.Context(), security.Event{
+			Type:      security.EventUserInfoServed,
+			UserID:    userInfo.ID,
+			IPAddress: h.clientIP(r),
+			Details: map[string]any{
+				"claim_groups": emitted,
+			},
+		})
+	}
 }
 
 // ServeTokenIntrospection handles the RFC 7662 token introspection endpoint
@@ -2678,6 +2877,21 @@ func ContextWithSessionID(ctx context.Context, sessionID string) context.Context
 func SessionIDFromContext(ctx context.Context) (string, bool) {
 	id, ok := ctx.Value(sessionIDKey{}).(string)
 	return id, ok && id != ""
+}
+
+type scopesKey struct{}
+
+// ContextWithScopes carries the scopes granted to the access token on the
+// current request. Set by [Handler.ValidateToken] from the token's metadata.
+func ContextWithScopes(ctx context.Context, scopes []string) context.Context {
+	return context.WithValue(ctx, scopesKey{}, scopes)
+}
+
+// ScopesFromContext returns the scopes granted to the access token on the
+// current request. The bool is false when no scopes are present in the context.
+func ScopesFromContext(ctx context.Context) ([]string, bool) {
+	scopes, ok := ctx.Value(scopesKey{}).([]string)
+	return scopes, ok
 }
 
 // getTokenMetadata retrieves token metadata from storage.
