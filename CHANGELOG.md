@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`security.ValidateKeyEntropy` doc accuracy** — now states explicitly that the check is a backstop against placeholders only; derived-but-weak keys (e.g. SHA-256 of a dictionary word) are not caught.
+
 ### Security
 
 - **Token-at-rest ciphertext envelope is now versioned (`0x01 ‖ kid ‖ nonce ‖ ct`)** — sets up future key rotation by tagging every new write with a 1-byte `kid`. Decrypt accepts both v1 and the legacy v0 (`nonce ‖ ct`) layout, falling through on AEAD-verification failure so the ~1/256 of v0 rows whose first nonce byte coincides with the v1 tag still decode. Rolling upgrades across a multi-replica fleet require updating every replica before allowing v1 writes — old replicas cannot read v1. Memory-only deployments are unaffected. Closes (partial) #309.
@@ -34,7 +38,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`storage/valkey.DefaultMaxTokenDataSize`** raised to 600 KiB (was the previous 256 KiB constant `MaxTokenDataSize`, now removed). `SaveToken` accepts larger OIDC id_tokens, including those carrying extensive `groups` claims. Operators needing a different ceiling set `Config.MaxTokenDataSize` (or `OAUTH_VALKEY_MAX_TOKEN_DATA_SIZE`).
 - **OAuth provider-token storage failures are no longer silently swallowed**. `HandleProviderCallback` returns an error when persisting the provider token or `UserInfo` keyed by the subject ID fails, instead of completing the auth flow against an empty store (which previously manifested as broken SSO token forwarding). Email-keyed save failures remain best-effort but are now audited.
 - **`providers/oidc.DiscoveryClient.Discover`** coalesces concurrent cold-cache callers for the same issuer URL via `singleflight`. Closes #307.
-- **`security.ValidateKeyEntropy` doc accuracy** — now states explicitly that the check is a backstop against placeholders only; derived-but-weak keys (e.g. SHA-256 of a dictionary word) are not caught.
 - **`Retry-After` is computed from the limiter's configured rate**
   - The IP, user, and discovery rate-limit `429` responses now set `Retry-After` to `1` second for any positive rate (sub-second precision isn't expressible per RFC 9110 §10.2.3) and fall back to `60` when the rate is 0. The client-registration limiter uses its configured window. Previously this header was a hardcoded `60` regardless of limiter configuration. New `RateLimiter.Rate()` / `ClientRegistrationRateLimiter.Window()` accessors expose the values.
 - **`oauth_http_requests_total{endpoint="authorize"}`** (was `"authorization"`)
