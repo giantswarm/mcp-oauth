@@ -478,11 +478,18 @@ func TestTokenExchangeClient_Exchange(t *testing.T) {
 	})
 
 	t.Run("context cancellation", func(t *testing.T) {
+		// Closing `release` before server.Close() lets the outstanding
+		// handler return — httptest.Server.Close waits for in-flight
+		// handlers to exit.
+		release := make(chan struct{})
 		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			time.Sleep(1 * time.Second)
+			<-release
 			_ = json.NewEncoder(w).Encode(validResponse)
 		}))
-		defer server.Close()
+		t.Cleanup(func() {
+			close(release)
+			server.Close()
+		})
 
 		client := newTestTokenExchangeClient(server.Client())
 

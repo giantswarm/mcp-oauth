@@ -1481,21 +1481,17 @@ func TestStore_ConcurrentClientAccess(t *testing.T) {
 
 func TestStore_CleanupExpiredTokens(t *testing.T) {
 	ctx := context.Background()
-	// Use short cleanup interval for testing
-	store := NewWithInterval(100 * time.Millisecond)
+	store := NewWithInterval(time.Hour)
 	defer store.Stop()
 
-	// Save expired authorization code
 	code := testutil.GenerateTestAuthorizationCode()
 	code.ExpiresAt = time.Now().Add(-1 * time.Minute)
 	if err := store.SaveAuthorizationCode(ctx, code); err != nil {
 		t.Fatalf("SaveAuthorizationCode() error = %v", err)
 	}
 
-	// Wait for cleanup
-	time.Sleep(200 * time.Millisecond)
+	store.RunCleanup()
 
-	// Code should be cleaned up
 	_, err := store.GetAuthorizationCode(ctx, code.Code)
 	if err == nil {
 		t.Error("Expired authorization code should be cleaned up")
@@ -1504,7 +1500,7 @@ func TestStore_CleanupExpiredTokens(t *testing.T) {
 
 func TestStore_CleanupExpiredTokens_WithRefreshToken(t *testing.T) {
 	ctx := context.Background()
-	store := NewWithInterval(100 * time.Millisecond)
+	store := NewWithInterval(time.Hour)
 	defer store.Stop()
 
 	refreshTokenKey := "mcp-refresh-token-1" //nolint:gosec // test value, not a real credential
@@ -1519,15 +1515,12 @@ func TestStore_CleanupExpiredTokens_WithRefreshToken(t *testing.T) {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
 
-	// Simulate an active MCP refresh token mapping for this key
 	if err := store.SaveRefreshToken(ctx, refreshTokenKey, "user-1", time.Now().Add(90*24*time.Hour)); err != nil {
 		t.Fatalf("SaveRefreshToken() error = %v", err)
 	}
 
-	// Wait for cleanup to run
-	time.Sleep(200 * time.Millisecond)
+	store.RunCleanup()
 
-	// Token should still exist because the refresh token mapping is active
 	got, err := store.GetToken(ctx, refreshTokenKey)
 	if err != nil {
 		t.Fatalf("GetToken() should succeed while refresh token mapping is active: %v", err)
@@ -1536,15 +1529,12 @@ func TestStore_CleanupExpiredTokens_WithRefreshToken(t *testing.T) {
 		t.Errorf("AccessToken = %q, want %q", got.AccessToken, "provider-access")
 	}
 
-	// Now delete the refresh token mapping (simulating expiry/consumption)
 	if err := store.DeleteRefreshToken(ctx, refreshTokenKey); err != nil {
 		t.Fatalf("DeleteRefreshToken() error = %v", err)
 	}
 
-	// Wait for cleanup to run again
-	time.Sleep(200 * time.Millisecond)
+	store.RunCleanup()
 
-	// Token should now be cleaned up as an orphan
 	_, err = store.GetToken(ctx, refreshTokenKey)
 	if err == nil {
 		t.Error("GetToken() should fail after refresh token mapping is removed (orphan cleanup)")
@@ -1553,11 +1543,9 @@ func TestStore_CleanupExpiredTokens_WithRefreshToken(t *testing.T) {
 
 func TestStore_CleanupExpiredTokens_WithRefreshToken_NoMapping(t *testing.T) {
 	ctx := context.Background()
-	store := NewWithInterval(100 * time.Millisecond)
+	store := NewWithInterval(time.Hour)
 	defer store.Stop()
 
-	// Save a provider token with a RefreshToken under a user ID key.
-	// No corresponding refresh token mapping exists for this key.
 	providerToken := &oauth2.Token{
 		AccessToken:  "provider-access",
 		RefreshToken: "provider-refresh",
@@ -1569,8 +1557,7 @@ func TestStore_CleanupExpiredTokens_WithRefreshToken_NoMapping(t *testing.T) {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
 
-	// Wait for cleanup to run
-	time.Sleep(200 * time.Millisecond)
+	store.RunCleanup()
 
 	// Token should be cleaned up because there's no active refresh token
 	// mapping and the access token is expired.

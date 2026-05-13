@@ -438,7 +438,8 @@ func TestFetchClientMetadata(t *testing.T) {
 
 // TestMetadataCache tests the client metadata cache
 func TestMetadataCache(t *testing.T) {
-	cache := newClientMetadataCache(5*time.Minute, 100)
+	clock := newMockClock(time.Now())
+	cache := newClientMetadataCacheWithClock(5*time.Minute, 100, clock)
 
 	metadata := &ClientMetadata{
 		ClientID:     "https://example.com/client",
@@ -465,7 +466,7 @@ func TestMetadataCache(t *testing.T) {
 
 	// Test cache expiry
 	cache.Set("https://example.com/expired", metadata, client, 1*time.Millisecond)
-	time.Sleep(10 * time.Millisecond)
+	clock.Advance(10 * time.Millisecond)
 	_, ok = cache.Get("https://example.com/expired")
 	if ok {
 		t.Error("expected cache miss for expired entry, got hit")
@@ -493,7 +494,7 @@ func TestMetadataCache(t *testing.T) {
 
 	// Test cleanup
 	cache.Set("https://example.com/cleanup", metadata, client, 1*time.Millisecond)
-	time.Sleep(10 * time.Millisecond)
+	clock.Advance(10 * time.Millisecond)
 	removed := cache.CleanupExpired()
 	if removed == 0 {
 		t.Error("expected at least 1 expired entry to be cleaned up")

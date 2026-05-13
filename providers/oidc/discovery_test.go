@@ -258,11 +258,18 @@ func TestDiscoveryClient_Discover(t *testing.T) {
 	})
 
 	t.Run("context cancellation", func(t *testing.T) {
+		// Closing `release` before server.Close() lets the outstanding
+		// handler return — httptest.Server.Close waits for in-flight
+		// handlers to exit.
+		release := make(chan struct{})
 		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			time.Sleep(1 * time.Second) // Simulate slow response
+			<-release
 			_ = json.NewEncoder(w).Encode(validDoc)
 		}))
-		defer server.Close()
+		t.Cleanup(func() {
+			close(release)
+			server.Close()
+		})
 
 		client := newTestClient(server.Client(), 1*time.Hour)
 

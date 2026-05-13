@@ -250,14 +250,18 @@ func TestTokenStore_SaveToken_WithRefreshToken_NoShortTTL(t *testing.T) {
 		t.Fatalf("SaveToken failed: %v", err)
 	}
 
-	// Wait for the access token expiry to pass.
-	time.Sleep(3 * time.Second)
+	// Server-side TTL must be -1 (no expiry). -2 would mean the key is missing.
+	ttl, err := s.client.Do(ctx, s.client.B().Ttl().Key(s.tokenKey("user-rt-ttl")).Build()).AsInt64()
+	if err != nil {
+		t.Fatalf("TTL query failed: %v", err)
+	}
+	if ttl != -1 {
+		t.Errorf("expected TTL=-1 (no expiry), got %d", ttl)
+	}
 
-	// The key must still exist because tokens with a RefreshToken are stored
-	// without TTL (matching the memory store's cleanup behavior).
 	got, err := s.GetToken(ctx, "user-rt-ttl")
 	if err != nil {
-		t.Fatalf("GetToken failed after access token expiry: %v (token was prematurely evicted)", err)
+		t.Fatalf("GetToken failed: %v", err)
 	}
 	if got.AccessToken != "short-lived-access" {
 		t.Errorf("AccessToken = %q, want %q", got.AccessToken, "short-lived-access")
@@ -316,8 +320,8 @@ func TestTokenStore_SaveToken_WithoutRefreshToken_HasTTL(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 
-	// Token without RefreshToken and with a short expiry should be evicted
-	// after the TTL (existing behavior preserved).
+	// Token without RefreshToken and a short expiry must be persisted with
+	// a TTL bounded by that expiry.
 	token := &oauth2.Token{
 		AccessToken: "short-no-rt",
 		TokenType:   "Bearer",
@@ -329,15 +333,15 @@ func TestTokenStore_SaveToken_WithoutRefreshToken_HasTTL(t *testing.T) {
 		t.Fatalf("SaveToken failed: %v", err)
 	}
 
-	// Wait for the TTL to expire.
-	time.Sleep(3 * time.Second)
-
-	_, err = s.GetToken(ctx, "user-short-no-rt")
-	if err == nil {
-		t.Error("Expected error: token without RefreshToken should be evicted after TTL")
+	ttl, err := s.client.Do(ctx, s.client.B().Ttl().Key(s.tokenKey("user-short-no-rt")).Build()).AsInt64()
+	if err != nil {
+		t.Fatalf("TTL query failed: %v", err)
 	}
-	if !storage.IsNotFoundError(err) {
-		t.Errorf("Expected ErrTokenNotFound, got: %v", err)
+	if ttl <= 0 {
+		t.Errorf("expected positive TTL, got %d", ttl)
+	}
+	if ttl > 3 {
+		t.Errorf("TTL %ds exceeds the configured 2s access-token expiry", ttl)
 	}
 }
 

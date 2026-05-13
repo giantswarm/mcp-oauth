@@ -226,6 +226,13 @@ func (s *Store) Stop() {
 	close(s.stopCleanup)
 }
 
+// RunCleanup runs a single cleanup pass synchronously and returns once
+// the pass has completed. The background loop continues to fire on
+// [cleanupInterval] regardless.
+func (s *Store) RunCleanup() {
+	s.cleanup()
+}
+
 // ============================================================
 // TokenStore Implementation
 // ============================================================
