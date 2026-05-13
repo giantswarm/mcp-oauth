@@ -208,7 +208,7 @@ func TestServer_IntrospectToken_OpaquePath_CrossClientDenied_EmitsAuditEvent(t *
 	auditor, buf := newRecordingAuditor()
 	srv.Auditor = auditor
 
-	const accessToken = "opaque-audit-token"
+	const accessToken = "opaque-audit-token" //nolint:gosec // G101 false positive — test fixture label, not a credential
 	require.NoError(t, store.SaveTokenMetadata(ctx, accessToken, storage.TokenMetadata{
 		UserID:    "user-1",
 		ClientID:  owner.ClientID,
