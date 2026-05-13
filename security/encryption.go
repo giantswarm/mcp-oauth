@@ -61,14 +61,21 @@ const (
 	envelopeV1Tag byte = 0x01
 )
 
-// KeyRing produces ciphertext keyed under one of a (possibly small) set of
-// AES-256 keys. The ring is constructed up front and is immutable for the
-// life of the Encryptor; rotation is a future concern that pivots on the
-// `kid` byte already embedded in the v1 envelope.
+// KeyRing resolves AES-256 keys keyed by a 1-byte `kid`. `ActiveKID` returns
+// the id stamped into every new ciphertext; `AEAD(kid)` resolves any
+// historical id present in stored rows. The built-in [NewEncryptor] wires a
+// [singleKeyRing] with kid = 0 because in-tree consumers need exactly one
+// key today.
 //
-// A single-key ring is the only built-in implementation today
-// (singleKeyRing, used implicitly by NewEncryptor). Library consumers
-// wiring an external KMS or multi-key rotation supply their own.
+// Multi-key consumers (external KMS, scheduled rotation, dual-write windows)
+// supply their own implementation. Notes for those implementations:
+//
+//   - `ActiveKID` is invoked on every Encrypt; implementations that want
+//     to change the active id at runtime MUST make this call goroutine-safe.
+//     The built-in `singleKeyRing` returns a constant and is trivially safe.
+//   - The Encryptor does not yet expose which kid authenticated a given
+//     decrypted row, so re-encrypt-on-read rotation is not implementable
+//     against today's [Encryptor.Decrypt]. Tracked in #335.
 type KeyRing interface {
 	// ActiveKID returns the kid byte stamped into newly-emitted ciphertexts.
 	ActiveKID() byte
@@ -78,8 +85,8 @@ type KeyRing interface {
 	AEAD(kid byte) (cipher.AEAD, error)
 }
 
-// singleKeyRing implements [KeyRing] with one key, kid = 0. Existing
-// Encryptor consumers see no behaviour change beyond the v1 envelope.
+// singleKeyRing implements [KeyRing] with one key, kid = 0. The built-in
+// behind [NewEncryptor]; consumers needing rotation provide their own.
 type singleKeyRing struct {
 	aead cipher.AEAD
 }

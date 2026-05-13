@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -301,8 +300,7 @@ func optionalPositiveInt(name string) (int, error) {
 //
 // File mode is checked: a `_FILE` whose group or world readable bits are set
 // emits a WARN on [slog.Default]. Set OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS=true
-// to upgrade the warning into an error. Windows is exempt because Unix mode
-// bits are not meaningful there.
+// to upgrade the warning into an error.
 func optionalSecret(name string) (string, error) {
 	if raw := os.Getenv(name + "_FILE"); raw != "" {
 		path := filepath.Clean(raw)
@@ -321,9 +319,6 @@ func optionalSecret(name string) (string, error) {
 // checkSecretFilePermissions warns (or errors, under OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS)
 // when a secret file is readable by anyone other than the owner. CWE-732.
 func checkSecretFilePermissions(name, path string) error {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
 	info, err := os.Stat(path)
 	if err != nil {
 		// Read will surface the same error with full context; bail silently here.

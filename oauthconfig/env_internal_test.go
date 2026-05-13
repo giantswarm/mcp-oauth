@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -13,9 +12,6 @@ import (
 )
 
 func TestOptionalSecret_TightPermissionsNoWarn(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix mode bits not meaningful on Windows")
-	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secret")
 	require.NoError(t, os.WriteFile(path, []byte("s3cret"), 0o600))
@@ -33,9 +29,6 @@ func TestOptionalSecret_TightPermissionsNoWarn(t *testing.T) {
 }
 
 func TestOptionalSecret_WorldReadableWarns(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix mode bits not meaningful on Windows")
-	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secret")
 	require.NoError(t, os.WriteFile(path, []byte("leak-risk"), 0o644))
@@ -55,9 +48,6 @@ func TestOptionalSecret_WorldReadableWarns(t *testing.T) {
 }
 
 func TestOptionalSecret_HardFailWhenStrictModeOn(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix mode bits not meaningful on Windows")
-	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secret")
 	require.NoError(t, os.WriteFile(path, []byte("leak-risk"), 0o644))
