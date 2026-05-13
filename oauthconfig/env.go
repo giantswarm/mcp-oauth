@@ -318,10 +318,15 @@ func optionalSecret(name string) (string, error) {
 	return os.Getenv(name), nil
 }
 
+// goosWindows is the runtime.GOOS value Windows reports. Centralised because
+// Unix mode-bit checks must short-circuit on Windows and goconst flags it
+// otherwise.
+const goosWindows = "windows"
+
 // checkSecretFilePermissions warns (or errors, under OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS)
 // when a secret file is readable by anyone other than the owner. CWE-732.
 func checkSecretFilePermissions(name, path string) error {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		return nil
 	}
 	info, err := os.Stat(path)

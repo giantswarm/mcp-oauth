@@ -12,9 +12,9 @@ import (
 
 // Auditor handles security event logging with PII protection.
 type Auditor struct {
-	logger      *slog.Logger
-	enabled     bool
-	redactPII   bool
+	logger    *slog.Logger
+	enabled   bool
+	redactPII bool
 }
 
 // AuditorOption configures an [Auditor].

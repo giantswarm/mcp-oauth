@@ -13,7 +13,7 @@ import (
 )
 
 func TestOptionalSecret_TightPermissionsNoWarn(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		t.Skip("Unix mode bits not meaningful on Windows")
 	}
 	dir := t.TempDir()
@@ -33,7 +33,7 @@ func TestOptionalSecret_TightPermissionsNoWarn(t *testing.T) {
 }
 
 func TestOptionalSecret_WorldReadableWarns(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		t.Skip("Unix mode bits not meaningful on Windows")
 	}
 	dir := t.TempDir()
@@ -55,7 +55,7 @@ func TestOptionalSecret_WorldReadableWarns(t *testing.T) {
 }
 
 func TestOptionalSecret_HardFailWhenStrictModeOn(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		t.Skip("Unix mode bits not meaningful on Windows")
 	}
 	dir := t.TempDir()
