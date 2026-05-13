@@ -349,89 +349,11 @@ func TestProvider_AuthorizationURL_FiltersOfflineAccess(t *testing.T) {
 	}
 }
 
-// TestFilterGoogleScopes_DropsUnsupportedScopes verifies that filterGoogleScopes
-// drops scopes that Google does not recognize, preventing authorization failures.
-func TestFilterGoogleScopes_DropsUnsupportedScopes(t *testing.T) {
-	defaultScopes := []string{"openid", "email", "profile"}
-
-	tests := []struct {
-		name           string
-		requested      []string
-		wantContain    []string
-		wantNotContain []string
-	}{
-		{
-			name:           "drops Dex-specific groups scope",
-			requested:      []string{"openid", "email", "groups"},
-			wantContain:    []string{"openid", "email"},
-			wantNotContain: []string{"groups"},
-		},
-		{
-			name:           "drops non-standard scopes like claudeai",
-			requested:      []string{"openid", "claudeai"},
-			wantContain:    []string{"openid"},
-			wantNotContain: []string{"claudeai"},
-		},
-		{
-			name:           "keeps Google API scopes",
-			requested:      []string{"openid", "https://www.googleapis.com/auth/gmail.readonly"},
-			wantContain:    []string{"openid", "https://www.googleapis.com/auth/gmail.readonly"},
-			wantNotContain: nil,
-		},
-		{
-			name:           "drops offline_access",
-			requested:      []string{"openid", "offline_access"},
-			wantContain:    []string{"openid"},
-			wantNotContain: []string{"offline_access"},
-		},
-		{
-			name:           "drops multiple unsupported scopes",
-			requested:      []string{"openid", "groups", "claudeai", "offline_access", "custom:scope"},
-			wantContain:    []string{"openid"},
-			wantNotContain: []string{"groups", "claudeai", "offline_access", "custom:scope"},
-		},
-		{
-			name:        "keeps all standard OIDC scopes",
-			requested:   []string{"openid", "email", "profile"},
-			wantContain: []string{"openid", "email", "profile"},
-		},
-		{
-			name:        "uses defaults when requested is nil",
-			requested:   nil,
-			wantContain: []string{"openid", "email", "profile"},
-		},
-		{
-			name:           "injects openid from defaults when missing in requested",
-			requested:      []string{"email", "groups"},
-			wantContain:    []string{"email", "openid"},
-			wantNotContain: []string{"groups"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := filterGoogleScopes(tt.requested, defaultScopes)
-
-			resultSet := make(map[string]bool, len(result))
-			for _, s := range result {
-				resultSet[s] = true
-			}
-
-			for _, want := range tt.wantContain {
-				if !resultSet[want] {
-					t.Errorf("filterGoogleScopes() should contain %q, got %v", want, result)
-				}
-			}
-			for _, notWant := range tt.wantNotContain {
-				if resultSet[notWant] {
-					t.Errorf("filterGoogleScopes() should NOT contain %q, got %v", notWant, result)
-				}
-			}
-		})
-	}
-}
-
-// TestIsGoogleSupportedScope tests the scope classification function.
+// TestIsGoogleSupportedScope pins the Google-specific scope predicate:
+// standard OIDC scopes and the Google API URL prefix are accepted; Dex
+// scopes, offline_access, and arbitrary custom scopes are dropped. The
+// generic CopyScopes / FilterScopes machinery this predicate plugs into
+// is covered in providers/helpers_test.go.
 func TestIsGoogleSupportedScope(t *testing.T) {
 	tests := []struct {
 		scope    string

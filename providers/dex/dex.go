@@ -180,13 +180,6 @@ func isDexSupportedScope(scope string) bool {
 	}
 }
 
-// filterDexScopes returns the merged copy of requestedScopes+defaultScopes
-// (mandatory-scope merging via [providers.CopyScopes] is applied inside
-// [providers.FilterScopes]) filtered by [isDexSupportedScope].
-func filterDexScopes(requestedScopes, defaultScopes []string) []string {
-	return providers.FilterScopes(requestedScopes, defaultScopes, isDexSupportedScope)
-}
-
 // resolveScopes returns validated scopes, using defaults if none provided.
 func resolveScopes(configScopes []string) ([]string, error) {
 	scopes := configScopes
@@ -273,12 +266,10 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	// Apply optional OIDC parameters (Dex supports standard OIDC params)
 	authCodeOpts = append(authCodeOpts, providers.ApplyAuthorizationURLOptions(authOpts)...)
 
-	// Filter scopes to only include Dex-supported values.
-	// This prevents authorization failures when clients send non-standard scopes
-	// (e.g., "claudeai") that Dex would reject with "Unrecognized scope(s)".
-	// filterDexScopes also handles deep copying and force-merging mandatory scopes
-	// (openid, audience:server:client_id:*) from defaults via CopyScopes internally.
-	scopesToUse := filterDexScopes(scopes, p.Scopes)
+	// FilterScopes drops scopes Dex would reject ("Unrecognized scope(s)"),
+	// deep-copies the input, and force-merges mandatory scopes (openid,
+	// audience:server:client_id:*) from defaults via CopyScopes internally.
+	scopesToUse := providers.FilterScopes(scopes, p.Scopes, isDexSupportedScope)
 
 	// Create a config with the determined scopes
 	config := *p.Config
@@ -299,15 +290,10 @@ func ensureOpenIDScope(scopes []string) []string {
 	return append(scopes, scopeOpenID)
 }
 
-// ensureContextTimeout delegates to [providers.EnsureTimeout].
-func (p *Provider) ensureContextTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
-	return providers.EnsureTimeout(ctx, p.requestTimeout)
-}
-
 // ExchangeCode exchanges an authorization code for tokens with PKCE verification.
 // Returns standard oauth2.Token.
 func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier string) (*oauth2.Token, error) {
-	ctx, cancel := p.ensureContextTimeout(ctx)
+	ctx, cancel := providers.EnsureTimeout(ctx, p.requestTimeout)
 	defer cancel()
 
 	return providers.ExchangeCodeWithPKCE(ctx, p, p.httpClient, code, verifier)
@@ -316,7 +302,7 @@ func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier strin
 // ValidateToken validates an access token by calling Dex's userinfo endpoint.
 // It parses user information including groups claim if available.
 func (p *Provider) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
-	ctx, cancel := p.ensureContextTimeout(ctx)
+	ctx, cancel := providers.EnsureTimeout(ctx, p.requestTimeout)
 	defer cancel()
 
 	// Get discovery document to find userinfo endpoint
@@ -402,7 +388,7 @@ func (p *Provider) ValidateToken(ctx context.Context, accessToken string) (*prov
 // on every refresh operation. The oauth2 library automatically captures this new token.
 // Returns standard oauth2.Token with the new refresh token.
 func (p *Provider) RefreshToken(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
-	ctx, cancel := p.ensureContextTimeout(ctx)
+	ctx, cancel := providers.EnsureTimeout(ctx, p.requestTimeout)
 	defer cancel()
 
 	// Use custom HTTP client
@@ -429,7 +415,7 @@ func (p *Provider) RefreshToken(ctx context.Context, refreshToken string) (*oaut
 // RevokeToken revokes a token at Dex's revocation endpoint if available.
 // Gracefully degrades if revocation endpoint is not supported.
 func (p *Provider) RevokeToken(ctx context.Context, token string) error {
-	ctx, cancel := p.ensureContextTimeout(ctx)
+	ctx, cancel := providers.EnsureTimeout(ctx, p.requestTimeout)
 	defer cancel()
 
 	doc, err := p.discoveryClient.Discover(ctx, p.issuerURL)
@@ -453,7 +439,7 @@ func (p *Provider) RevokeToken(ctx context.Context, token string) error {
 //   - Error messages may contain HTTP status codes that could leak provider state information
 //   - For public health endpoints, return generic "healthy/unhealthy" status only
 func (p *Provider) HealthCheck(ctx context.Context) error {
-	ctx, cancel := p.ensureContextTimeout(ctx)
+	ctx, cancel := providers.EnsureTimeout(ctx, p.requestTimeout)
 	defer cancel()
 
 	// Attempt to fetch discovery document
@@ -468,7 +454,7 @@ func (p *Provider) HealthCheck(ctx context.Context) error {
 // JWKSURI returns the JWKS URI for Dex from the discovery document.
 // This implements the JWKSProvider interface for SSO token forwarding.
 func (p *Provider) JWKSURI(ctx context.Context) (string, error) {
-	ctx, cancel := p.ensureContextTimeout(ctx)
+	ctx, cancel := providers.EnsureTimeout(ctx, p.requestTimeout)
 	defer cancel()
 
 	doc, err := p.discoveryClient.Discover(ctx, p.issuerURL)

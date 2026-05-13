@@ -1057,38 +1057,6 @@ func TestProvider_GetProviderToken(t *testing.T) {
 	}
 }
 
-func TestProvider_ensureContextTimeout(t *testing.T) {
-	provider, err := NewProvider(&Config{
-		ClientID:       testClientID,
-		ClientSecret:   testClientSecret,
-		RequestTimeout: 5 * time.Second,
-	})
-	if err != nil {
-		t.Fatalf("NewProvider() error = %v", err)
-	}
-
-	// Test with context without deadline
-	ctx1 := context.Background()
-	newCtx, cancel := provider.ensureContextTimeout(ctx1)
-	defer cancel()
-
-	if _, hasDeadline := newCtx.Deadline(); !hasDeadline {
-		t.Error("ensureContextTimeout() should add deadline when none exists")
-	}
-
-	// Test with context with deadline
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel2()
-
-	newCtx2, cancel3 := provider.ensureContextTimeout(ctx2)
-	defer cancel3()
-
-	// Should return same context
-	if newCtx2 != ctx2 {
-		t.Error("ensureContextTimeout() should return original context when deadline exists")
-	}
-}
-
 // mockUserTransport redirects GitHub API requests to test server.
 type mockUserTransport struct {
 	server *httptest.Server
