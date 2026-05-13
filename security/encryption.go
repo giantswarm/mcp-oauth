@@ -184,21 +184,23 @@ func (e *Encryptor) Decrypt(encoded string) (out string, err error) {
 	}
 	nonceSize := aead.NonceSize()
 
-	// v1 envelope starts with the tag byte. Length check ensures the
-	// payload also has room for kid + nonce + at least the AEAD tag.
+	// v1 envelope is identified by a leading 0x01 byte. The tag alone is
+	// ambiguous: any v0 ciphertext whose first nonce byte happens to be
+	// 0x01 (~1/256 of legacy rows) looks structurally identical. Treat
+	// AEAD verification as the disambiguator — on v1 Open failure fall
+	// through to v0 instead of returning an error. The cost is one extra
+	// AEAD Open on the colliding fraction; the alternative would silently
+	// break ~0.4% of legacy ciphertexts on first decrypt after upgrade.
 	if len(raw) >= 2+nonceSize+aead.Overhead() && raw[0] == envelopeV1Tag {
 		kid := raw[1]
-		kidAEAD, err := e.ring.AEAD(kid)
-		if err != nil {
-			return "", err
+		if kidAEAD, kidErr := e.ring.AEAD(kid); kidErr == nil {
+			nonce := raw[2 : 2+nonceSize]
+			ct := raw[2+nonceSize:]
+			if pt, openErr := kidAEAD.Open(nil, nonce, ct, nil); openErr == nil {
+				return string(pt), nil
+			}
 		}
-		nonce := raw[2 : 2+nonceSize]
-		ct := raw[2+nonceSize:]
-		pt, err := kidAEAD.Open(nil, nonce, ct, nil)
-		if err != nil {
-			return "", fmt.Errorf("failed to decrypt: %w", err)
-		}
-		return string(pt), nil
+		// fall through to v0 — leading 0x01 collided with a v0 nonce byte.
 	}
 
 	// v0 fallback for ciphertexts written by previous releases.

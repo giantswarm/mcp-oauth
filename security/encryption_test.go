@@ -520,6 +520,48 @@ func TestEncryptor_DecryptV0LegacyEnvelope(t *testing.T) {
 	}
 }
 
+// TestEncryptor_DecryptV0EnvelopeWithLeading0x01NonceByte pins the bug-fix:
+// a v0 ciphertext whose first nonce byte happens to be 0x01 (~1/256 of legacy
+// rows) must still decrypt. The decoder treats AEAD verification as the
+// v0/v1 disambiguator and falls through to v0 on v1 Open failure, instead of
+// returning an error.
+func TestEncryptor_DecryptV0EnvelopeWithLeading0x01NonceByte(t *testing.T) {
+	key := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		t.Fatalf("failed to generate key: %v", err)
+	}
+
+	enc, err := NewEncryptor(key)
+	if err != nil {
+		t.Fatalf("NewEncryptor() error = %v", err)
+	}
+
+	aead, err := enc.ring.AEAD(0)
+	if err != nil {
+		t.Fatalf("AEAD(0) error = %v", err)
+	}
+
+	// Pin the first nonce byte to 0x01 so the envelope's leading byte
+	// collides with envelopeV1Tag; the rest is fresh entropy.
+	nonce := make([]byte, aead.NonceSize())
+	nonce[0] = envelopeV1Tag
+	if _, err := io.ReadFull(rand.Reader, nonce[1:]); err != nil {
+		t.Fatalf("failed to read nonce remainder: %v", err)
+	}
+
+	const plaintext = "v0-row-with-colliding-first-nonce-byte"
+	ct := aead.Seal(nil, nonce, []byte(plaintext), nil)
+	legacy := base64.StdEncoding.EncodeToString(append(nonce, ct...))
+
+	got, err := enc.Decrypt(legacy)
+	if err != nil {
+		t.Fatalf("Decrypt(v0 with leading 0x01 nonce) error = %v — fall-through to v0 path failed", err)
+	}
+	if got != plaintext {
+		t.Errorf("got %q, want %q", got, plaintext)
+	}
+}
+
 func TestEncryptor_DecryptV1UnknownKID(t *testing.T) {
 	key := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, key); err != nil {
