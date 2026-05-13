@@ -432,12 +432,12 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	// Record authorization started metric
 	h.recordAuthorizationStarted(r.Context(), clientID)
 
-	h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusFound, startTime)
-	instrumentation.SetSpanSuccess(span)
-
 	// Parse and validate scheme before redirecting. authURL is built by the
 	// configured provider's AuthorizationURL(); the parse + scheme check is
 	// defense in depth against a misconfigured provider returning a non-HTTP URL.
+	// SetSpanSuccess is deferred until past this check — OTel SetStatus is
+	// monotonic (Ok > Error), so marking success early would silently swallow
+	// the SetSpanError call inside respondAuthorizationError below.
 	parsedAuthURL, err := url.Parse(authURL)
 	if err != nil || (parsedAuthURL.Scheme != "https" && parsedAuthURL.Scheme != "http") {
 		h.logger.Error("Provider returned invalid authorization URL", "error", err)
@@ -450,6 +450,9 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+
+	h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusFound, startTime)
+	instrumentation.SetSpanSuccess(span)
 	// #nosec G710 -- authURL is built by the configured provider's
 	// AuthorizationURL() (server-controlled host) and re-validated above to be
 	// http/https. Not user-controllable; not an open redirect.
@@ -471,6 +474,10 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Set CORS headers for browser-based clients
 	h.setCORSHeaders(w, r)
+
+	if _, ok := h.gateIPRateLimit(w, r, span, endpointCallback, http.MethodGet, startTime); !ok {
+		return
+	}
 
 	// Parse callback parameters
 	state := r.URL.Query().Get("state")

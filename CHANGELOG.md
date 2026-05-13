@@ -14,12 +14,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Tests
 
+- **`/authorize` observability is pinned**: span attributes (`oauth.error`, `oauth.error_description`), span error reason, and the `auth_failure` audit event (with `reason=invalid_client` / `invalid_redirect_uri`, `clientID` populated, `userID` empty) are now asserted on every `respondAuthorizationError` and `ValidateRedirectURIForAuthorization` failure branch. Closes #330.
 - **Fuzz coverage** for four parsing / validation primitives: `ParseCallbackQuery` (types.go), `providers/oidc.ValidateExternalURL`, `Server.computePKCEChallenge` (S256 method), and `server.validateCodeVerifierFormat`. Seed corpora committed; each is panic-clean against a 2s exploratory burst. Closes (partial) #311.
 - **Coverage gaps closed** for `Handler.handleRegistrationError` (HTTP-error mapping for the registration-limit vs generic branches) and `Server.handleRefreshTokenError` (classification of not-found / expired / transient errors).
 - **AEAD authentication regression test** in `security/encryption_test.go` — a single-bit flip of the ciphertext tag must fail `Decrypt`. Catches a regression where AES-GCM gets swapped for a non-authenticated mode.
 
+### Fixed
+
+- **`/authorize` "invalid authorization URL" branch now records `oauth.error=server_error` on its span.** Previously the handler called `instrumentation.SetSpanSuccess` before the URL parse / scheme check, so the later `SetSpanError` on the invalid-URL fallback was a no-op (OTel's `SetStatus` is monotonic, `Ok` outranks `Error`). Surfaced by the new observability tests for #330.
+
 ### Security
 
+- **`/oauth/callback` is now gated by the IP rate limiter** alongside `/authorize`, `/token`, `/revoke`, `/introspect`. The gap left by #302 left an unauthenticated brute-force surface against the provider-state value space (CWE-307). Rejects emit `oauth_http_requests_total{endpoint="callback",status="429"}`, `oauth_rate_limit_exceeded_total{limiter_type="ip"}`, and a `rate_limit_exceeded` audit record. Closes #339.
 - **Token-at-rest ciphertext envelope is now versioned (`0x01 ‖ kid ‖ nonce ‖ ct`)** — sets up future key rotation by tagging every new write with a 1-byte `kid`. Decrypt accepts both v1 and the legacy v0 (`nonce ‖ ct`) layout, falling through on AEAD-verification failure so the ~1/256 of v0 rows whose first nonce byte coincides with the v1 tag still decode. Rolling upgrades across a multi-replica fleet require updating every replica before allowing v1 writes — old replicas cannot read v1. Memory-only deployments are unaffected. Closes (partial) #309.
 - **`security.KeyRing` interface** seam under `security.Encryptor`. The built-in single-key implementation produces and consumes the v1 envelope; consumers wiring external KMS / multi-key rotation supply their own `KeyRing`. Public API of `*Encryptor` is unchanged.
 - **`security.WithPIIRedaction(bool)` option on `security.NewAuditor`** — when enabled, audit records emit `client_id_hash`, `ip_address_hash`, and `user_agent_hash` (truncated SHA-256) instead of the cleartext fields. `user_id_hash` is unchanged. Default off — existing slog sinks continue to receive cleartext. CWE-532.

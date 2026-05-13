@@ -60,7 +60,7 @@ type endpointCase struct {
 }
 
 // oauthEndpointCases returns one case per CWE-307 endpoint:
-// /authorize, /token, /revoke, /introspect.
+// /authorize, /callback, /token, /revoke, /introspect.
 func oauthEndpointCases() []endpointCase {
 	return []endpointCase{
 		{
@@ -71,6 +71,15 @@ func oauthEndpointCases() []endpointCase {
 				return req
 			},
 			serve: func(h *Handler, w http.ResponseWriter, r *http.Request) { h.ServeAuthorization(w, r) },
+		},
+		{
+			name: "ServeCallback",
+			request: func(remoteAddr string) *http.Request {
+				req := httptest.NewRequest(http.MethodGet, "/oauth/callback?state="+testStateMinLen+"&code=x", nil)
+				req.RemoteAddr = remoteAddr
+				return req
+			},
+			serve: func(h *Handler, w http.ResponseWriter, r *http.Request) { h.ServeCallback(w, r) },
 		},
 		{
 			name: "ServeToken",
