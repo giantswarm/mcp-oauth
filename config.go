@@ -108,7 +108,7 @@ type SecurityConfig struct {
 	AllowedCustomSchemes []string
 
 	// EncryptionKey is the AES-256 key (32 bytes) for token encryption at rest.
-	// Nil disables encryption. Generate with oauth.GenerateEncryptionKey().
+	// Nil disables encryption. Generate with security.GenerateKey().
 	EncryptionKey []byte
 
 	// EnableAuditLogging enables security audit logging.

@@ -39,14 +39,23 @@
 //
 // Example usage:
 //
-//	provider := google.NewProvider(clientID, clientSecret, redirectURL)
-//	store := memory.NewStore()
+//	provider, err := google.NewProvider(&google.Config{
+//	    ClientID:     clientID,
+//	    ClientSecret: clientSecret,
+//	    RedirectURL:  redirectURL,
+//	})
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	store := memory.New()
 //
 //	config := &server.Config{
-//	    Issuer: "https://auth.example.com",
+//	    Issuer:      "https://auth.example.com",
 //	    RequirePKCE: true,
 //	}
 //
+//	// The same store backs the TokenStore, ClientStore, and FlowStore
+//	// interfaces here because memory.Store implements all three.
 //	srv, err := server.New(provider, store, store, store, config, logger)
 //	if err != nil {
 //	    log.Fatal(err)

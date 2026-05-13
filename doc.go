@@ -1,137 +1,129 @@
-// Package oauth provides OAuth 2.1 authentication for the MCP server.
+// Package oauth provides an OAuth 2.1 / OIDC authorization server library
+// intended to back an MCP server, aligned with the MCP 2025-11-25 OAuth
+// profile. It implements the Protected-Resource role (token validation +
+// metadata) and the Authorization-Server role (authorize / token / revoke /
+// introspect / register / userinfo / discovery endpoints).
 //
-// This package implements OAuth 2.1 authentication according to the Model Context Protocol
-// (MCP) specification dated 2025-06-18. The MCP server acts as an OAuth 2.1 Resource Server,
-// using Google as the Authorization Server for secure authentication.
+// # Architecture
 //
-// Architecture:
-//   - MCP Server: OAuth 2.1 Resource Server (validates Google tokens)
-//   - Google: OAuth 2.1 Authorization Server (issues tokens, handles user auth)
-//   - MCP Client: OAuth 2.1 Client (handles OAuth flow, includes tokens in requests)
+// The package is split into:
+//   - [github.com/giantswarm/mcp-oauth/server] — the protocol engine
+//     ([server.Server], state machines for the authorization-code flow,
+//     PKCE, refresh-token rotation, JWKS, introspection).
+//   - [github.com/giantswarm/mcp-oauth/providers] — pluggable upstream IdP
+//     adapters (built-in: [providers/dex], [providers/google],
+//     [providers/github]).
+//   - [github.com/giantswarm/mcp-oauth/storage] — persistence interfaces;
+//     in-tree backends in [storage/memory] and [storage/valkey].
+//   - [github.com/giantswarm/mcp-oauth/security] — primitives:
+//     [security.Encryptor] (AES-256-GCM at rest with KeyRing seam),
+//     [security.Auditor], [security.RateLimiter], scopes / WWW-Authenticate
+//     helpers.
+//   - [github.com/giantswarm/mcp-oauth/oauthconfig] — env-driven loaders
+//     ([oauthconfig.FromEnv], [oauthconfig.NewEncryptorFromEnv]) for
+//     standard `OAUTH_*` environment variables.
+//   - This root package — the HTTP adapter ([Handler]) that translates
+//     `*server.Server` into routes via [Handler.RegisterOAuthRoutes] /
+//     [Handler.RegisterProtectedResourceMetadataRoutes].
 //
-// Key Features:
-//   - Protected Resource Metadata (RFC 9728) - advertises Google as authorization server
-//   - Bearer token validation via Google's userinfo endpoint
-//   - Automatic token refresh with rotation (OAuth 2.1 security best practice)
-//   - Rate limiting per IP address and per user with token bucket algorithm
-//   - Secure token storage with optional AES-256-GCM encryption at rest
-//   - Token expiration handling with automatic cleanup
-//   - Token revocation endpoint (RFC 7009)
-//   - Comprehensive audit logging for security events
-//   - Client type enforcement (public vs confidential)
-//   - PKCE S256 enforcement (plain method disabled for security)
-//   - Integration with Google APIs (Gmail, Drive, Calendar, etc.)
+// # Security defaults
 //
-// Security Features (Production-Ready):
+// Library defaults aim for spec-compliant secure-by-default behaviour:
+//   - PKCE required; only S256 accepted (RFC 7636 + OAuth 2.1).
+//   - Refresh-token rotation on; reuse detection revokes the family.
+//   - `state` parameter required and length-bounded (configurable via
+//     [server.Config.MinStateLength] / [server.Config.MaxStateLength]).
+//   - Per-IP and per-user rate limiters guard hot endpoints.
+//   - Bearer-token comparisons are constant-time.
+//   - Token-at-rest encryption available via [security.NewEncryptor] +
+//     [server.WithEncryptor]; the ciphertext envelope is versioned with a
+//     1-byte `kid` for future rotation.
+//   - OIDC `nonce` is required end-to-end when scoped `openid` (CWE-294).
+//   - SSRF protection on the client-metadata-document and discovery
+//     fetchers.
 //
-// 1. Token Encryption at Rest (AES-256-GCM):
-//   - Tokens can be encrypted in memory using AES-256-GCM
-//   - Authenticated encryption prevents tampering
-//   - Configure via Security.EncryptionKey (32 bytes)
-//   - Use GenerateEncryptionKey() or load from secure storage (KMS, Vault)
+// Insecure opt-outs (e.g. [server.Config.AllowNoStateParameter],
+// [server.Config.AllowInsecureHTTP]) emit a startup WARN.
 //
-// 2. Refresh Token Rotation (OAuth 2.1):
-//   - New refresh token issued on each use
-//   - Old refresh token invalidated immediately
-//   - Detects stolen tokens via reuse detection
-//   - Enabled by default (disable via Security.DisableRefreshTokenRotation)
+// # Compliance
 //
-// 3. Comprehensive Audit Logging:
-//   - All authentication events logged with structured logging
-//   - Security events: failed auth, rate limits, invalid tokens, token reuse
-//   - All sensitive data (tokens, emails) hashed before logging (SHA-256)
-//   - Enabled by default (disable via Security.EnableAuditLogging=false)
+// Implemented:
+//   - RFC 6749 (OAuth 2.0 / OAuth 2.1 draft)
+//   - RFC 6750 (Bearer token usage + WWW-Authenticate)
+//   - RFC 7009 (Token revocation)
+//   - RFC 7517 / 7518 / 7519 (JWS / JWA / JWT) via go-jose/v4
+//   - RFC 7591 (Dynamic Client Registration; response includes
+//     `client_id_issued_at`, `client_secret_expires_at`)
+//   - RFC 7636 (PKCE — S256 only)
+//   - RFC 7662 (Token introspection §2.2 shape + cross-client gate)
+//   - RFC 8414 (Authorization Server Metadata + Cache-Control)
+//   - RFC 8707 (Resource indicators + audience binding)
+//   - RFC 9068 (JWT-profile access tokens)
+//   - RFC 9207 (`iss` response parameter)
+//   - RFC 9728 (Protected Resource Metadata)
+//   - OIDC Core 1.0 §3 + §5.3 (`/userinfo`)
+//   - OIDC Discovery 1.0 §3 (subject_types_supported,
+//     id_token_signing_alg_values_supported, claims_supported)
 //
-// 4. Client Type Validation:
-//   - Public clients (mobile, SPA) must use "none" auth method
-//   - Confidential clients must use client_secret_basic or client_secret_post
-//   - Prevents security violations (confidential client without secret)
+// # Example
 //
-// 5. PKCE Security:
-//   - Only S256 method supported (plain method disabled per OAuth 2.1)
-//   - 43-128 character code_verifier enforced
-//   - Prevents authorization code interception attacks
+// A minimal in-memory server using the Google provider, encryption-at-rest
+// from environment, and the standard `OAUTH_*` env loader. See the
+// `examples/` directory for full end-to-end programs.
 //
-// 6. Token Revocation (RFC 7009):
-//   - Clients can revoke access and refresh tokens
-//   - Client authentication required
-//   - All revocations logged for audit trail
+//	package main
 //
-// 7. Cryptographically Secure Token Generation:
-//   - All tokens generated using crypto/rand (not math/rand)
-//   - 48-byte access and refresh tokens (384 bits of entropy)
-//   - 32-byte client IDs and secrets
+//	import (
+//		"log"
+//		"log/slog"
+//		"net/http"
+//		"os"
 //
-// Security Considerations:
-//   - Token Storage: Tokens can be encrypted at rest with AES-256-GCM. Enable via
-//     Security.EncryptionKey for production deployments.
-//   - Logging: All sensitive data (tokens, emails, PII) is hashed before logging using
-//     SHA256 to prevent exposure in log files. Only use structured logging.
-//   - Clock Skew: A 5-second grace period is applied to token expiration checks to handle
-//     time synchronization issues between systems.
-//   - Refresh Token Protection: Tokens with valid refresh tokens are preserved even if
-//     the access token expires, allowing automatic renewal.
-//   - Rate Limiting: Per-IP and per-user rate limiting prevents brute force attacks and
-//     DoS attempts. Configure based on your threat model.
+//		oauth "github.com/giantswarm/mcp-oauth"
+//		"github.com/giantswarm/mcp-oauth/oauthconfig"
+//		"github.com/giantswarm/mcp-oauth/providers/google"
+//		"github.com/giantswarm/mcp-oauth/server"
+//		"github.com/giantswarm/mcp-oauth/storage/memory"
+//	)
 //
-// Compliance:
-//   - OAuth 2.1 Draft: Implements key security improvements
-//   - RFC 6749: OAuth 2.0 Authorization Framework
-//   - RFC 6750: Bearer Token Usage
-//   - RFC 7009: Token Revocation
-//   - RFC 7591: Dynamic Client Registration
-//   - RFC 7636: PKCE (S256 only)
-//   - RFC 8414: Authorization Server Metadata
-//   - RFC 9728: Protected Resource Metadata
+//	func main() {
+//		cfg, err := oauthconfig.FromEnv()
+//		if err != nil {
+//			log.Fatal(err)
+//		}
 //
-// The package is designed to be used by the MCP server's HTTP and SSE transports
-// to add OAuth protection to their endpoints.
+//		enc, err := oauthconfig.NewEncryptorFromEnv()
+//		if err != nil {
+//			log.Fatal(err)
+//		}
 //
-// Example usage:
-//
-//	// Generate encryption key for production (do this once, store securely)
-//	encKey, _ := oauth.GenerateEncryptionKey()
-//	// Or load from environment: oauth.EncryptionKeyFromBase64(os.Getenv("OAUTH_ENCRYPTION_KEY"))
-//
-//	// Create OAuth handler with full security features
-//	handler, err := oauth.NewHandler(&oauth.Config{
-//		Resource: "https://mcp.example.com",
-//		SupportedScopes: []string{
-//			"https://www.googleapis.com/auth/gmail.readonly",
-//			// ... other Google scopes
-//		},
-//		GoogleAuth: oauth.GoogleAuthConfig{
+//		provider, err := google.NewProvider(&google.Config{
 //			ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 //			ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
-//		},
-//		RateLimit: oauth.RateLimitConfig{
-//			Rate:     10,
-//			Burst:    20,
-//			UserRate: 100,
-//			UserBurst: 200,
-//		},
-//		Security: oauth.SecurityConfig{
-//			EncryptionKey: encKey,                      // Enable encryption
-//			EnableAuditLogging: true,                   // Enable audit logs
-//			DisableRefreshTokenRotation: false,         // Enable rotation
-//			AllowPublicClientRegistration: false,       // Require auth
-//			RegistrationAccessToken: "secure-token",    // Registration token
-//			RefreshTokenTTL: 90 * 24 * time.Hour,      // 90 days
-//		},
-//	})
-//	if err != nil {
-//		log.Fatal(err)
+//			RedirectURL:  cfg.Issuer + "/oauth/callback",
+//		})
+//		if err != nil {
+//			log.Fatal(err)
+//		}
+//
+//		store := memory.New()
+//		srv, err := server.New(provider, store, store, store, cfg, slog.Default(), server.WithEncryptor(enc))
+//		if err != nil {
+//			log.Fatal(err)
+//		}
+//
+//		handler := oauth.NewHandler(srv, slog.Default())
+//
+//		mux := http.NewServeMux()
+//		handler.RegisterOAuthRoutes(mux, oauth.OAuthRoutesOptions{IncludeMetadata: true})
+//		mux.Handle("/mcp", handler.ValidateToken(mcpHandler))
+//		log.Fatal(http.ListenAndServe(":8080", mux))
 //	}
 //
-//	// Protect MCP endpoints
-//	http.Handle("/mcp", handler.ValidateGoogleToken(mcpHandler))
-//
-//	// Serve metadata endpoints
-//	http.HandleFunc("/.well-known/oauth-protected-resource",
-//		handler.ServeProtectedResourceMetadata)
-//	http.HandleFunc("/.well-known/oauth-authorization-server",
-//		handler.ServeAuthorizationServerMetadata)
-//
-//	// Token revocation endpoint (RFC 7009)
-//	http.HandleFunc("/oauth/revoke", handler.ServeTokenRevocation)
+// The library does not provide MCP itself — `mcpHandler` is whatever your
+// MCP transport exposes. The OAuth layer protects it via
+// [Handler.ValidateToken], which extracts the bearer token, validates it
+// against the configured provider (or self-issued JWT in JWT-AT mode), and
+// stashes the resolved [providers.UserInfo] in the request context for
+// [UserInfoFromContext].
 package oauth
