@@ -117,7 +117,7 @@ func TestRefreshSession_CoalescesConcurrentCalls(t *testing.T) {
 
 	const (
 		familyID     = "fam-coalesce"
-		refreshToken = "rt-coalesce"
+		refreshToken = "rt-coalesce" //nolint:gosec // G101 false positive — test fixture label, not a credential
 	)
 	seedFamilyForRefresh(t, store, "user-1", "client-x", familyID, refreshToken)
 
