@@ -115,6 +115,9 @@ package main
 
 import (
     "context"
+    "crypto/rand"
+    "crypto/sha256"
+    "encoding/base64"
     "log/slog"
     "net/http"
 
@@ -128,10 +131,36 @@ type AuthHandler struct {
     logger   *slog.Logger
 }
 
+// pkcePair is a 43-char base64url-encoded verifier and its S256 challenge.
+type pkcePair struct{ Verifier, Challenge string }
+
+// newPKCE generates a verifier (43 chars, 256 bits of entropy) and its
+// S256 challenge per RFC 7636 §4.1-§4.2. The library does not expose a
+// public PKCE helper because the only acceptable construction is the
+// stdlib one shown here.
+func newPKCE() pkcePair {
+    var buf [32]byte
+    _, _ = rand.Read(buf[:])
+    verifier := base64.RawURLEncoding.EncodeToString(buf[:])
+    sum := sha256.Sum256([]byte(verifier))
+    return pkcePair{
+        Verifier:  verifier,
+        Challenge: base64.RawURLEncoding.EncodeToString(sum[:]),
+    }
+}
+
+// newState generates a 32-byte cryptographically random state value
+// (RFC 6749 §10.12 — CSRF binding for the authorization request).
+func newState() string {
+    var buf [32]byte
+    _, _ = rand.Read(buf[:])
+    return base64.RawURLEncoding.EncodeToString(buf[:])
+}
+
 // TrySilentAuth attempts silent authentication first
 func (h *AuthHandler) TrySilentAuth(w http.ResponseWriter, r *http.Request, userEmail string) {
-    state := generateSecureState()
-    pkce := oauth.GeneratePKCE()
+    state := newState()
+    pkce := newPKCE()
 
     // First, try silent auth
     opts := &providers.AuthorizationURLOptions{
@@ -182,8 +211,8 @@ func (h *AuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AuthHandler) startInteractiveLogin(w http.ResponseWriter, r *http.Request, userEmail string) {
-    state := generateSecureState()
-    pkce := oauth.GeneratePKCE()
+    state := newState()
+    pkce := newPKCE()
 
     // Interactive login - no prompt=none
     opts := &providers.AuthorizationURLOptions{
