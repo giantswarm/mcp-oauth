@@ -52,7 +52,7 @@ Before deploying to production, verify these settings:
 
 ### Recommended
 
-- [ ] **Token Encryption**: Enable via `SetEncryptor()` for at-rest encryption
+- [ ] **Token Encryption**: Pass `server.WithEncryptor(enc)` at construction for at-rest encryption
 - [ ] **Audit Logging**: Set up `Auditor` for security event logging
 - [ ] **Rate Limiting**: Configure IP, user, and client registration limits
 - [ ] **Registration Protected**: Set `RegistrationAccessToken` or disable registration
@@ -94,9 +94,14 @@ if err != nil {
     log.Fatal(err)
 }
 
-// Attach to server
-server.SetEncryptor(encryptor)
+// Pass at server construction (functional option).
+srv, err := server.New(provider, store, store, store, cfg, logger, server.WithEncryptor(encryptor))
 ```
+
+The ciphertext envelope is versioned (`0x01 || kid || nonce || ct`); legacy
+`nonce || ct` payloads produced by previous releases remain readable on
+decrypt. Operators wanting external KMS or multi-key rotation supply their
+own [`security.KeyRing`](../security/encryption.go).
 
 **Key Management:**
 - Generate keys using `security.GenerateKey()` (32 bytes, cryptographically random)
@@ -194,8 +199,11 @@ Log all security-relevant events:
 ```go
 import "github.com/giantswarm/mcp-oauth/security"
 
-auditor := security.NewAuditor(logger, true) // true = verbose mode
-server.SetAuditor(auditor)
+auditor := security.NewAuditor(logger, true) // true = enabled
+// Set security.WithPIIRedaction(true) to hash client_id / IP / user_agent
+// (user_id is always hashed) for regulated audit sinks.
+
+srv, err := server.New(provider, store, store, store, cfg, logger, server.WithAuditor(auditor))
 ```
 
 ### Logged Events

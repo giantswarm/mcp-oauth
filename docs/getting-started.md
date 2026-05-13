@@ -54,48 +54,57 @@ if err != nil {
 Implement the `providers.Provider` interface:
 
 ```go
-import "github.com/giantswarm/mcp-oauth/providers"
+import (
+    "context"
+    "fmt"
+    "net/url"
+
+    "github.com/giantswarm/mcp-oauth/providers"
+    "golang.org/x/oauth2"
+)
 
 type MyProvider struct {
     // your fields
 }
 
-func (p *MyProvider) Name() string {
-    return "my-provider"
+func (p *MyProvider) Name() string { return "my-provider" }
+
+func (p *MyProvider) DefaultScopes() []string {
+    return []string{"openid", "email"}
 }
 
-func (p *MyProvider) AuthorizationURL(state string, opts *providers.AuthOptions) string {
-    // Build authorization URL for your identity provider
-    return fmt.Sprintf("https://auth.example.com/authorize?state=%s", state)
+func (p *MyProvider) AuthorizationURL(state, codeChallenge, codeChallengeMethod string, scopes []string, opts *providers.AuthorizationURLOptions) string {
+    q := url.Values{"state": {state}}
+    if codeChallenge != "" {
+        q.Set("code_challenge", codeChallenge)
+        q.Set("code_challenge_method", codeChallengeMethod)
+    }
+    return fmt.Sprintf("https://auth.example.com/authorize?%s", q.Encode())
 }
 
-func (p *MyProvider) ExchangeCode(ctx context.Context, code string, opts *providers.ExchangeOptions) (*providers.TokenResponse, error) {
-    // Exchange authorization code for tokens
-    return &providers.TokenResponse{
-        AccessToken:  "...",
-        RefreshToken: "...",
-        ExpiresIn:    3600,
-    }, nil
+func (p *MyProvider) ExchangeCode(ctx context.Context, code, codeVerifier string) (*oauth2.Token, error) {
+    // POST to the upstream token endpoint, then return the canonical oauth2.Token.
+    return &oauth2.Token{AccessToken: "...", RefreshToken: "..."}, nil
 }
 
 func (p *MyProvider) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
-    // Validate token and return user info
-    return &providers.UserInfo{
-        ID:    "user-123",
-        Email: "user@example.com",
-    }, nil
+    return &providers.UserInfo{ID: "user-123", Email: "user@example.com"}, nil
 }
 
-func (p *MyProvider) RefreshToken(ctx context.Context, refreshToken string) (*providers.TokenResponse, error) {
-    // Refresh an expired token
-    return &providers.TokenResponse{...}, nil
+func (p *MyProvider) RefreshToken(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+    return &oauth2.Token{AccessToken: "...", RefreshToken: "..."}, nil
 }
 
-func (p *MyProvider) RevokeToken(ctx context.Context, token string) error {
-    // Revoke a token
-    return nil
-}
+func (p *MyProvider) RevokeToken(ctx context.Context, token string) error { return nil }
+
+func (p *MyProvider) HealthCheck(ctx context.Context) error { return nil }
 ```
+
+The full interface is in [providers/provider.go](../providers/provider.go).
+Tokens flow through the standard `*golang.org/x/oauth2.Token` (Extras like
+`id_token`, `expires_in`, `scope` are preserved via the oauth2 library's
+`Extra` map); audience binding, JWKS-based ID-token validation, and silent
+auth are layered on as optional extensions.
 
 ## Storage
 
