@@ -1,4 +1,4 @@
-package oauth
+package handler
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace/noop"
 )
@@ -27,13 +28,13 @@ func TestHandleRegistrationError(t *testing.T) {
 			name:       "registration limit triggers 429 invalid_request",
 			err:        errors.New("client registration limit exceeded for IP 192.0.2.1"),
 			wantStatus: http.StatusTooManyRequests,
-			wantCode:   ErrorCodeInvalidRequest,
+			wantCode:   oauth.ErrorCodeInvalidRequest,
 		},
 		{
 			name:       "generic error triggers 500 server_error",
 			err:        errors.New("backend storage unavailable"),
 			wantStatus: http.StatusInternalServerError,
-			wantCode:   ErrorCodeServerError,
+			wantCode:   oauth.ErrorCodeServerError,
 		},
 	}
 

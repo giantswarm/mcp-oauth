@@ -1,4 +1,4 @@
-package oauth
+package handler
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/server"
@@ -44,7 +45,7 @@ func setupTestHandlerWithRateLimit(t *testing.T, burst int) *Handler {
 	srv.RateLimiter = security.NewRateLimiter(0, burst, nil)
 	t.Cleanup(srv.RateLimiter.Stop)
 
-	return NewHandler(srv, nil)
+	return New(srv, nil)
 }
 
 // endpointCase is a shared request/response fixture for the four OAuth
@@ -139,8 +140,8 @@ func TestHandler_OAuthEndpoints_IPRateLimit(t *testing.T) {
 			if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
 				t.Fatalf("decode body: %v", err)
 			}
-			if body["error"] != ErrorCodeRateLimitExceeded {
-				t.Errorf("error = %q, want %q", body["error"], ErrorCodeRateLimitExceeded)
+			if body["error"] != oauth.ErrorCodeRateLimitExceeded {
+				t.Errorf("error = %q, want %q", body["error"], oauth.ErrorCodeRateLimitExceeded)
 			}
 		})
 	}
@@ -177,7 +178,7 @@ func TestHandler_OAuthEndpoints_NoRateLimiter(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := newOAuthTestServer(t)
 			// srv.RateLimiter intentionally left nil
-			handler := NewHandler(srv, nil)
+			handler := New(srv, nil)
 
 			for i := 0; i < 50; i++ {
 				w := httptest.NewRecorder()
@@ -225,7 +226,7 @@ func TestHandler_TokenEndpoint_PostAuthUserRateLimit(t *testing.T) {
 	srv := newOAuthTestServer(t)
 	srv.UserRateLimiter = security.NewRateLimiter(0, 1, nil) // 1 token, no refill
 	t.Cleanup(srv.UserRateLimiter.Stop)
-	handler := NewHandler(srv, nil)
+	handler := New(srv, nil)
 
 	client, secret, err := handler.server.RegisterClient(
 		context.Background(),
@@ -269,8 +270,8 @@ func TestHandler_TokenEndpoint_PostAuthUserRateLimit(t *testing.T) {
 	if err := json.NewDecoder(second.Body).Decode(&body); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	if body["error"] != ErrorCodeRateLimitExceeded {
-		t.Errorf("error = %q, want %q", body["error"], ErrorCodeRateLimitExceeded)
+	if body["error"] != oauth.ErrorCodeRateLimitExceeded {
+		t.Errorf("error = %q, want %q", body["error"], oauth.ErrorCodeRateLimitExceeded)
 	}
 }
 
@@ -282,7 +283,7 @@ func TestHandler_TokenEndpoint_PublicClientSkipsUserRateLimit(t *testing.T) {
 	srv := newOAuthTestServer(t)
 	srv.UserRateLimiter = security.NewRateLimiter(0, 1, nil)
 	t.Cleanup(srv.UserRateLimiter.Stop)
-	handler := NewHandler(srv, nil)
+	handler := New(srv, nil)
 
 	client, _, err := handler.server.RegisterClient(
 		context.Background(),
@@ -342,7 +343,7 @@ func TestHandler_IPRateLimit_RetryAfterDerivedFromRate(t *testing.T) {
 			srv := newOAuthTestServer(t)
 			srv.RateLimiter = security.NewRateLimiter(tt.rate, 1, nil)
 			t.Cleanup(srv.RateLimiter.Stop)
-			handler := NewHandler(srv, nil)
+			handler := New(srv, nil)
 
 			body := url.Values{"grant_type": {"x"}}.Encode()
 			send := func() *httptest.ResponseRecorder {

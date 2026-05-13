@@ -18,6 +18,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	oauth "github.com/giantswarm/mcp-oauth"
+	oauthhandler "github.com/giantswarm/mcp-oauth/handler"
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/providers/google"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -103,7 +104,7 @@ func main() {
 	}
 
 	// 8. Set up HTTP handlers
-	handler := oauth.NewHandler(server, logger)
+	handler := oauthhandler.New(server, logger)
 	mux := http.NewServeMux()
 
 	// OAuth endpoints

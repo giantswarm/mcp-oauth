@@ -15,6 +15,7 @@ import (
 	"os"
 
 	oauth "github.com/giantswarm/mcp-oauth"
+	oauthhandler "github.com/giantswarm/mcp-oauth/handler"
 	"github.com/giantswarm/mcp-oauth/providers/google"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
@@ -82,7 +83,7 @@ func main() {
 	}
 
 	// 5. Create HTTP handler
-	handler := oauth.NewHandler(server, logger)
+	handler := oauthhandler.New(server, logger)
 
 	setupRoutes(handler)
 
@@ -95,7 +96,7 @@ func main() {
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
 
-func setupRoutes(handler *oauth.Handler) {
+func setupRoutes(handler *oauthhandler.Handler) {
 	// OAuth metadata endpoints
 	http.HandleFunc("/.well-known/oauth-protected-resource",
 		handler.ServeProtectedResourceMetadata)
@@ -128,7 +129,7 @@ func setupRoutes(handler *oauth.Handler) {
 // Handler for Gmail API requests
 func gmailHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		userInfo, _ := oauth.UserInfoFromContext(r.Context())
+		userInfo, _ := oauthhandler.UserInfoFromContext(r.Context())
 
 		// In production, use the access token to call Gmail API
 		// token := oauth.AccessTokenFromContext(r.Context())
@@ -148,7 +149,7 @@ func gmailHandler() http.Handler {
 // Handler for Google Drive API requests
 func driveHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		userInfo, _ := oauth.UserInfoFromContext(r.Context())
+		userInfo, _ := oauthhandler.UserInfoFromContext(r.Context())
 
 		response := map[string]interface{}{
 			"service": "Google Drive API",
@@ -164,7 +165,7 @@ func driveHandler() http.Handler {
 // Handler for Google Calendar API requests
 func calendarHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		userInfo, _ := oauth.UserInfoFromContext(r.Context())
+		userInfo, _ := oauthhandler.UserInfoFromContext(r.Context())
 
 		response := map[string]interface{}{
 			"service": "Google Calendar API",
@@ -180,7 +181,7 @@ func calendarHandler() http.Handler {
 // Handler for Google Contacts API requests
 func contactsHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		userInfo, _ := oauth.UserInfoFromContext(r.Context())
+		userInfo, _ := oauthhandler.UserInfoFromContext(r.Context())
 
 		response := map[string]interface{}{
 			"service": "Google Contacts API",
@@ -196,7 +197,7 @@ func contactsHandler() http.Handler {
 // General MCP handler
 func mcpHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		userInfo, _ := oauth.UserInfoFromContext(r.Context())
+		userInfo, _ := oauthhandler.UserInfoFromContext(r.Context())
 
 		response := map[string]interface{}{
 			"message": "MCP server with multiple Google API scopes",

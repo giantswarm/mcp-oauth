@@ -18,6 +18,7 @@ import (
 	"time"
 
 	oauth "github.com/giantswarm/mcp-oauth"
+	oauthhandler "github.com/giantswarm/mcp-oauth/handler"
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/providers/google"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -161,7 +162,7 @@ func main() {
 	}
 
 	// 5. Create HTTP handler
-	handler := oauth.NewHandler(server, logger)
+	handler := oauthhandler.New(server, logger)
 
 	// Setup HTTP routes
 	mux := setupRoutes(handler, logger)
@@ -202,7 +203,7 @@ func main() {
 	log.Fatal(httpServer.ListenAndServe())
 }
 
-func setupRoutes(handler *oauth.Handler, logger *slog.Logger) *http.ServeMux {
+func setupRoutes(handler *oauthhandler.Handler, logger *slog.Logger) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	// OAuth metadata endpoints
@@ -269,7 +270,7 @@ type mcpUser struct {
 
 func mcpHandler(logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		userInfo, ok := oauth.UserInfoFromContext(r.Context())
+		userInfo, ok := oauthhandler.UserInfoFromContext(r.Context())
 		if !ok {
 			logger.Error("No user info in context")
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)

@@ -13,6 +13,7 @@ import (
 	"os"
 
 	oauth "github.com/giantswarm/mcp-oauth"
+	oauthhandler "github.com/giantswarm/mcp-oauth/handler"
 	"github.com/giantswarm/mcp-oauth/providers/google"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
@@ -100,7 +101,7 @@ func main() {
 	}
 
 	// 6. Create HTTP handler
-	handler := oauth.NewHandler(server, logger)
+	handler := oauthhandler.New(server, logger)
 
 	// 7. Setup routes
 	mux := http.NewServeMux()
@@ -196,7 +197,7 @@ type mcpUser struct {
 func mcpHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Get authenticated user info from context
-		userInfo, ok := oauth.UserInfoFromContext(r.Context())
+		userInfo, ok := oauthhandler.UserInfoFromContext(r.Context())
 		if !ok {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return

@@ -1,4 +1,4 @@
-package oauth
+package handler
 
 import (
 	"encoding/json"
@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/giantswarm/mcp-oauth/providers/mock"
+	"github.com/giantswarm/mcp-oauth/server"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
@@ -14,7 +15,7 @@ import (
 // single-tenant deployments (no path in issuer) register standard endpoints
 func TestRegisterAuthorizationServerMetadataRoutes_SingleTenant(t *testing.T) {
 	// Single-tenant issuer (no path component)
-	config := &ServerConfig{
+	config := &server.Config{
 		Issuer: "https://auth.example.com",
 	}
 
@@ -22,12 +23,12 @@ func TestRegisterAuthorizationServerMetadataRoutes_SingleTenant(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	server, err := NewServer(provider, store, store, store, config, nil)
+	server, err := server.New(provider, store, store, store, config, nil)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 
-	handler := NewHandler(server, nil)
+	handler := New(server, nil)
 	mux := http.NewServeMux()
 
 	// Register routes
@@ -71,7 +72,7 @@ func TestRegisterAuthorizationServerMetadataRoutes_SingleTenant(t *testing.T) {
 // multi-tenant deployments (path in issuer) register path insertion endpoints
 func TestRegisterAuthorizationServerMetadataRoutes_MultiTenant(t *testing.T) {
 	// Multi-tenant issuer with path component
-	config := &ServerConfig{
+	config := &server.Config{
 		Issuer: "https://auth.example.com/tenant1",
 	}
 
@@ -79,12 +80,12 @@ func TestRegisterAuthorizationServerMetadataRoutes_MultiTenant(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	server, err := NewServer(provider, store, store, store, config, nil)
+	server, err := server.New(provider, store, store, store, config, nil)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 
-	handler := NewHandler(server, nil)
+	handler := New(server, nil)
 	mux := http.NewServeMux()
 
 	// Register routes
@@ -167,7 +168,7 @@ func TestRegisterAuthorizationServerMetadataRoutes_MultiTenant(t *testing.T) {
 // deeply nested paths work correctly (e.g., /org/tenant/env)
 func TestRegisterAuthorizationServerMetadataRoutes_NestedPath(t *testing.T) {
 	// Multi-level tenant path
-	config := &ServerConfig{
+	config := &server.Config{
 		Issuer: "https://auth.example.com/org1/tenant1/prod",
 	}
 
@@ -175,12 +176,12 @@ func TestRegisterAuthorizationServerMetadataRoutes_NestedPath(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
-	server, err := NewServer(provider, store, store, store, config, nil)
+	server, err := server.New(provider, store, store, store, config, nil)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 
-	handler := NewHandler(server, nil)
+	handler := New(server, nil)
 	mux := http.NewServeMux()
 
 	// Register routes
@@ -292,7 +293,7 @@ func TestExtractIssuerPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			config := &ServerConfig{
+			config := &server.Config{
 				Issuer: tt.issuer,
 			}
 
@@ -300,12 +301,12 @@ func TestExtractIssuerPath(t *testing.T) {
 			store := memory.New()
 			defer store.Stop()
 
-			server, err := NewServer(provider, store, store, store, config, nil)
+			server, err := server.New(provider, store, store, store, config, nil)
 			if err != nil {
 				t.Fatalf("Failed to create server: %v", err)
 			}
 
-			handler := NewHandler(server, nil)
+			handler := New(server, nil)
 			gotPath := handler.extractIssuerPath()
 
 			if gotPath != tt.wantPath {

@@ -47,14 +47,15 @@ The library automatically exposes this endpoint when you register routes:
 ```go
 import (
     oauth "github.com/giantswarm/mcp-oauth"
+    "github.com/giantswarm/mcp-oauth/handler"
 )
 
 func main() {
-    handler := oauth.NewHandler(server, nil)
+    h := handler.New(server, nil)
     mux := http.NewServeMux()
     
     // Register Protected Resource Metadata endpoint
-    handler.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
+    h.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
     
     http.ListenAndServe(":8080", mux)
 }
@@ -96,6 +97,7 @@ Different protected resources on the same domain can advertise different authori
 ```go
 import (
     oauth "github.com/giantswarm/mcp-oauth"
+    "github.com/giantswarm/mcp-oauth/handler"
     "github.com/giantswarm/mcp-oauth/server"
 )
 
@@ -116,14 +118,14 @@ func main() {
         },
     }
     
-    handler := oauth.NewHandler(server, nil)
+    h := handler.New(server, nil)
     mux := http.NewServeMux()
     
     // Automatically registers:
     // - /.well-known/oauth-protected-resource (default)
     // - /.well-known/oauth-protected-resource/mcp/files
     // - /.well-known/oauth-protected-resource/mcp/admin
-    handler.RegisterProtectedResourceMetadataRoutes(mux, "")
+    h.RegisterProtectedResourceMetadataRoutes(mux, "")
 }
 ```
 
@@ -545,7 +547,7 @@ HTTP/1.1 200 OK
 1. **Always Enable Discovery**
    ```go
    // Register discovery routes for all protected resources
-   handler.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
+   h.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
    ```
 
 2. **Configure Meaningful Scopes**

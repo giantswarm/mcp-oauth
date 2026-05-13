@@ -17,6 +17,7 @@ import (
 	"time"
 
 	oauth "github.com/giantswarm/mcp-oauth"
+	oauthhandler "github.com/giantswarm/mcp-oauth/handler"
 	"github.com/giantswarm/mcp-oauth/providers/dex"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
@@ -91,7 +92,7 @@ func main() {
 	}
 
 	// Create HTTP handler
-	handler := oauth.NewHandler(server, logger)
+	handler := oauthhandler.New(server, logger)
 
 	// Setup routes
 	mux := http.NewServeMux()
@@ -110,7 +111,7 @@ func main() {
 	// Protected endpoint demonstrating group access
 	resourceHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Extract user info from context (set by ValidateToken middleware)
-		userInfo, _ := oauth.UserInfoFromContext(r.Context())
+		userInfo, _ := oauthhandler.UserInfoFromContext(r.Context())
 
 		// Check if user is in required group (example: "developers")
 		hasAccess := false

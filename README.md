@@ -57,6 +57,7 @@ import (
     "os"
 
     oauth "github.com/giantswarm/mcp-oauth"
+    "github.com/giantswarm/mcp-oauth/handler"
     "github.com/giantswarm/mcp-oauth/providers/google"
     "github.com/giantswarm/mcp-oauth/storage/memory"
 )
@@ -87,11 +88,11 @@ func main() {
     )
 
     // 4. Create HTTP handler and routes
-    handler := oauth.NewHandler(server, nil)
+    h := handler.New(server, nil)
     mux := http.NewServeMux()
-    
-    handler.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
-    mux.Handle("/mcp", handler.ValidateToken(yourMCPHandler))
+
+    h.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
+    mux.Handle("/mcp", h.ValidateToken(yourMCPHandler))
 
     http.ListenAndServe(":8080", mux)
 }
