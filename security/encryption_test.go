@@ -580,6 +580,37 @@ func TestEncryptor_DecryptV1UnknownKID(t *testing.T) {
 	}
 }
 
+// TestDecrypt_TagTamperRejected confirms that AES-GCM's authentication tag
+// is enforced: a single-bit mutation of the envelope's tail fails to decrypt.
+// Catches a regression where Decrypt would silently fall through (e.g. a
+// switch to non-AEAD CBC mode).
+func TestDecrypt_TagTamperRejected(t *testing.T) {
+	key := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		t.Fatalf("failed to generate key: %v", err)
+	}
+	enc, err := NewEncryptor(key)
+	if err != nil {
+		t.Fatalf("NewEncryptor: %v", err)
+	}
+
+	encoded, err := enc.Encrypt("tag-tamper-fixture")
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("base64 decode: %v", err)
+	}
+	raw[len(raw)-1] ^= 0x01
+	tampered := base64.StdEncoding.EncodeToString(raw)
+
+	if _, err := enc.Decrypt(tampered); err == nil {
+		t.Fatal("Decrypt accepted a ciphertext with a flipped tag byte — AEAD authentication is not enforced")
+	}
+}
+
 func TestNonceUniqueness(t *testing.T) {
 	key := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, key); err != nil {
