@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 	"golang.org/x/oauth2/google"
 
 	"github.com/giantswarm/mcp-oauth/providers"
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 )
 
 // Provider implements the providers.Provider interface for Google OAuth.
@@ -99,15 +99,10 @@ func (p *Provider) Name() string {
 	return "google"
 }
 
-// DefaultScopes returns the provider's configured default scopes.
-// Returns a deep copy to prevent external modification.
+// DefaultScopes returns a deep copy of the provider's configured default
+// scopes so callers cannot mutate the provider's slice.
 func (p *Provider) DefaultScopes() []string {
-	if p.Scopes == nil {
-		return nil
-	}
-	scopes := make([]string, len(p.Scopes))
-	copy(scopes, p.Scopes)
-	return scopes
+	return providers.CloneScopes(p.Scopes)
 }
 
 // isGoogleSupportedScope returns true if the scope is recognized by Google's OAuth endpoints.
@@ -126,21 +121,6 @@ func isGoogleSupportedScope(scope string) bool {
 	default:
 		return strings.HasPrefix(scope, "https://www.googleapis.com/")
 	}
-}
-
-// filterGoogleScopes creates a deep copy of scopes and filters out any scopes that
-// Google does not support. This prevents authorization failures when clients send
-// provider-specific scopes (e.g., Dex's "groups") or non-standard scopes (e.g., "claudeai")
-// to a Google provider.
-func filterGoogleScopes(requestedScopes, defaultScopes []string) []string {
-	sourceScopes := providers.CopyScopes(requestedScopes, defaultScopes)
-	filtered := make([]string, 0, len(sourceScopes))
-	for _, s := range sourceScopes {
-		if isGoogleSupportedScope(s) {
-			filtered = append(filtered, s)
-		}
-	}
-	return filtered
 }
 
 // AuthorizationURL generates the Google OAuth authorization URL with optional PKCE.
@@ -172,27 +152,17 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	// Apply optional OIDC parameters
 	opts = append(opts, providers.ApplyAuthorizationURLOptions(authOpts)...)
 
-	// Create a config with filtered scopes
+	// Drop scopes Google would reject (e.g. Dex audience scopes) while
+	// preserving mandatory openid scopes via CopyScopes.
 	config := *p.Config
-	config.Scopes = filterGoogleScopes(scopes, p.Scopes)
+	config.Scopes = providers.FilterScopes(scopes, p.Scopes, isGoogleSupportedScope)
 	return config.AuthCodeURL(state, opts...)
-}
-
-// ensureContextTimeout ensures the context has a deadline, adding one if needed.
-// Returns a new context with timeout and a cancel function that should be deferred.
-// If the context already has a deadline, returns the original context with a no-op cancel.
-func (p *Provider) ensureContextTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
-	if _, hasDeadline := ctx.Deadline(); hasDeadline {
-		// Context already has deadline, return no-op cancel
-		return ctx, func() {}
-	}
-	return context.WithTimeout(ctx, p.requestTimeout)
 }
 
 // ExchangeCode exchanges an authorization code for tokens with optional PKCE verification.
 // Returns standard oauth2.Token. See SECURITY_ARCHITECTURE.md for security model details.
 func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier string) (*oauth2.Token, error) {
-	ctx, cancel := p.ensureContextTimeout(ctx)
+	ctx, cancel := providers.EnsureTimeout(ctx, p.requestTimeout)
 	defer cancel()
 
 	return providers.ExchangeCodeWithPKCE(ctx, p, p.httpClient, code, verifier)
@@ -200,7 +170,7 @@ func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier strin
 
 // ValidateToken validates an access token by calling Google's userinfo endpoint
 func (p *Provider) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
-	ctx, cancel := p.ensureContextTimeout(ctx)
+	ctx, cancel := providers.EnsureTimeout(ctx, p.requestTimeout)
 	defer cancel()
 
 	// Create HTTP client with the token using oauth2.Config.Client
@@ -260,7 +230,7 @@ func (p *Provider) ValidateToken(ctx context.Context, accessToken string) (*prov
 // RefreshToken refreshes an expired token
 // Returns standard oauth2.Token directly
 func (p *Provider) RefreshToken(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
-	ctx, cancel := p.ensureContextTimeout(ctx)
+	ctx, cancel := providers.EnsureTimeout(ctx, p.requestTimeout)
 	defer cancel()
 
 	// Use custom HTTP client
@@ -281,34 +251,14 @@ func (p *Provider) RefreshToken(ctx context.Context, refreshToken string) (*oaut
 	return newToken, nil
 }
 
-// RevokeToken revokes a token at Google's revocation endpoint
+// RevokeToken revokes a token at Google's public revocation endpoint. The
+// endpoint does not require client authentication (RFC 7009 §2.1 allows
+// public clients to call /revoke without credentials), so no Basic-Auth is
+// sent.
 func (p *Provider) RevokeToken(ctx context.Context, token string) error {
-	ctx, cancel := p.ensureContextTimeout(ctx)
+	ctx, cancel := providers.EnsureTimeout(ctx, p.requestTimeout)
 	defer cancel()
-
-	revokeURL := "https://oauth2.googleapis.com/revoke"
-	data := url.Values{}
-	data.Set("token", token)
-
-	req, err := http.NewRequestWithContext(ctx, "POST", revokeURL, strings.NewReader(data.Encode()))
-	if err != nil {
-		return fmt.Errorf("failed to create revoke request: %w", err)
-	}
-
-	// Set content type for form data
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to revoke token: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("token revocation failed with status %d", resp.StatusCode)
-	}
-
-	return nil
+	return oidc.RevokeAtEndpoint(ctx, p.httpClient, "https://oauth2.googleapis.com/revoke", token, "", "")
 }
 
 // HealthCheck verifies that Google's OAuth endpoints are reachable.
@@ -337,7 +287,7 @@ func (p *Provider) RevokeToken(ctx context.Context, token string) error {
 //	    return
 //	}
 func (p *Provider) HealthCheck(ctx context.Context) error {
-	ctx, cancel := p.ensureContextTimeout(ctx)
+	ctx, cancel := providers.EnsureTimeout(ctx, p.requestTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", "https://accounts.google.com/.well-known/openid-configuration", nil)

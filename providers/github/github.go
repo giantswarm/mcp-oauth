@@ -195,15 +195,10 @@ func (p *Provider) Name() string {
 	return providerName
 }
 
-// DefaultScopes returns the provider's configured default scopes.
-// Returns a deep copy to prevent external modification.
+// DefaultScopes returns a deep copy of the provider's configured default
+// scopes so callers cannot mutate the provider's slice.
 func (p *Provider) DefaultScopes() []string {
-	if p.Scopes == nil {
-		return nil
-	}
-	scopes := make([]string, len(p.Scopes))
-	copy(scopes, p.Scopes)
-	return scopes
+	return providers.CloneScopes(p.Scopes)
 }
 
 // AuthorizationURL generates the GitHub OAuth authorization URL with optional PKCE.
@@ -251,20 +246,10 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	return config.AuthCodeURL(state, opts...)
 }
 
-// ensureContextTimeout ensures the context has a deadline, adding one if needed.
-// Returns a new context with timeout and a cancel function that should be deferred.
-// If the context already has a deadline, returns the original context with a no-op cancel.
-func (p *Provider) ensureContextTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
-	if _, hasDeadline := ctx.Deadline(); hasDeadline {
-		return ctx, func() {}
-	}
-	return context.WithTimeout(ctx, p.requestTimeout)
-}
-
 // ExchangeCode exchanges an authorization code for tokens with optional PKCE verification.
 // Returns standard oauth2.Token. Note: GitHub OAuth Apps don't return refresh tokens.
 func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier string) (*oauth2.Token, error) {
-	ctx, cancel := p.ensureContextTimeout(ctx)
+	ctx, cancel := providers.EnsureTimeout(ctx, p.requestTimeout)
 	defer cancel()
 
 	return providers.ExchangeCodeWithPKCE(ctx, p, p.httpClient, code, verifier)
@@ -273,7 +258,7 @@ func (p *Provider) ExchangeCode(ctx context.Context, code string, verifier strin
 // ValidateToken validates an access token by calling GitHub's user endpoint.
 // It retrieves user information and optionally validates organization membership.
 func (p *Provider) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
-	ctx, cancel := p.ensureContextTimeout(ctx)
+	ctx, cancel := providers.EnsureTimeout(ctx, p.requestTimeout)
 	defer cancel()
 
 	// Fetch user info from GitHub
@@ -485,7 +470,7 @@ func (p *Provider) RevokeToken(_ context.Context, _ string) error {
 //   - DO NOT expose error details to untrusted clients
 //   - For public endpoints, return generic "healthy/unhealthy" status only
 func (p *Provider) HealthCheck(ctx context.Context) error {
-	ctx, cancel := p.ensureContextTimeout(ctx)
+	ctx, cancel := providers.EnsureTimeout(ctx, p.requestTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", rateLimitURL, nil)
@@ -515,7 +500,7 @@ func (p *Provider) HealthCheck(ctx context.Context) error {
 //
 // Requires the "read:org" scope.
 func (p *Provider) GetUserOrganizations(ctx context.Context, accessToken string) ([]string, error) {
-	ctx, cancel := p.ensureContextTimeout(ctx)
+	ctx, cancel := providers.EnsureTimeout(ctx, p.requestTimeout)
 	defer cancel()
 
 	return p.fetchUserOrganizations(ctx, accessToken)
