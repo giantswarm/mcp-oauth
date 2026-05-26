@@ -317,16 +317,14 @@ func (s *Server) logSelfIssuedJWTAccepted(ctx context.Context, tokenString strin
 		"jti", jti,
 		"token_suffix", helpers.TokenSuffix(tokenString, 8))
 
-	if s.Auditor != nil {
-		s.Auditor.LogEvent(ctx, security.Event{
-			Type:   security.EventSelfIssuedJWTAccepted,
-			UserID: userInfo.ID,
-			Details: map[string]any{
-				"validation_method": "self_issued_jwt",
-				"jti":               jti,
-			},
-		})
-	}
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type:   security.EventSelfIssuedJWTAccepted,
+		UserID: userInfo.ID,
+		Details: map[string]any{
+			"validation_method": "self_issued_jwt",
+			"jti":               jti,
+		},
+	})
 }
 
 // revokeSelfIssuedJWT extracts the jti and exp from a self-issued JWT and
@@ -374,19 +372,17 @@ func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID,
 		return true
 	}
 
-	if s.Auditor != nil {
-		userID, _ := claims["sub"].(string)
-		s.Auditor.LogEvent(ctx, security.Event{
-			Type:     security.EventSelfIssuedJWTRevoked,
-			UserID:   userID,
-			ClientID: clientID,
-			Details: map[string]any{
-				"jti":        jti,
-				"expires_at": expiresAt.Unix(),
-				"ip":         clientIP,
-			},
-		})
-	}
+	userID, _ := claims["sub"].(string)
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type:     security.EventSelfIssuedJWTRevoked,
+		UserID:   userID,
+		ClientID: clientID,
+		Details: map[string]any{
+			"jti":        jti,
+			"expires_at": expiresAt.Unix(),
+			"ip":         clientIP,
+		},
+	})
 	s.Logger.Debug("Self-issued JWT access token revoked",
 		"jti", jti,
 		"client_id", clientID,
@@ -402,7 +398,5 @@ func (s *Server) logSelfIssuedJWTAuthFailure(ctx context.Context, reason, tokenS
 	s.Logger.Debug("Self-issued JWT access token rejected",
 		"reason", reason,
 		"token_suffix", helpers.TokenSuffix(tokenString, 8))
-	if s.Auditor != nil {
-		s.Auditor.LogAuthFailure(ctx, "", "", "", reason)
-	}
+	s.Auditor.LogAuthFailure(ctx, "", "", "", reason)
 }

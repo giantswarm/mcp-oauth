@@ -551,9 +551,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	parsedRedirect, err := url.Parse(authCode.RedirectURI)
 	if err != nil {
 		h.logger.Error("Stored redirect URI failed to parse", "ip", clientIP, "error", err, "client_id", authCode.ClientID)
-		h.recordHTTPMetrics(r.Context(), endpointCallback, http.MethodGet, http.StatusInternalServerError, startTime)
-		instrumentation.SetSpanError(span, "invalid stored redirect URI")
-		h.writeError(w, oauth.ErrorCodeServerError, "Authorization failed", http.StatusInternalServerError)
+		h.failRequest(w, r, span, endpointCallback, http.MethodGet, http.StatusInternalServerError, oauth.ErrorCodeServerError, "Authorization failed", startTime)
 		return
 	}
 	q := parsedRedirect.Query()

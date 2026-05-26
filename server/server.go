@@ -195,6 +195,10 @@ func New(
 		srv.Instrumentation = inst
 	}
 
+	if srv.Auditor == nil {
+		srv.Auditor = security.NewAuditor(nil, false)
+	}
+
 	return srv, nil
 }
 

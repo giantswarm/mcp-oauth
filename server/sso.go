@@ -168,22 +168,19 @@ func (s *Server) logForwardedIDTokenAccepted(ctx context.Context, tokenString, m
 		"issuer_validated", validatedIssuer != "",
 		"token_suffix", helpers.TokenSuffix(tokenString, 8))
 
-	if s.Auditor != nil {
-		details := map[string]any{
-			"matched_audience":    matchedAudience,
-			"email":               userInfo.Email,
-			"validation_method":   "jwks",
-			"sso_token_forwarded": true,
-			"issuer_validated":    validatedIssuer != "",
-		}
-		// Include validated issuer in audit log for security forensics
-		if validatedIssuer != "" {
-			details["validated_issuer"] = validatedIssuer
-		}
-		s.Auditor.LogEvent(ctx, security.Event{
-			Type:    security.EventForwardedIDTokenAccepted,
-			UserID:  userInfo.ID,
-			Details: details,
-		})
+	details := map[string]any{
+		"matched_audience":    matchedAudience,
+		"email":               userInfo.Email,
+		"validation_method":   "jwks",
+		"sso_token_forwarded": true,
+		"issuer_validated":    validatedIssuer != "",
 	}
+	if validatedIssuer != "" {
+		details["validated_issuer"] = validatedIssuer
+	}
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type:    security.EventForwardedIDTokenAccepted,
+		UserID:  userInfo.ID,
+		Details: details,
+	})
 }
