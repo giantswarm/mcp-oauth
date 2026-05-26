@@ -83,7 +83,7 @@ func (s *Server) RegisterClientV2(ctx context.Context, clientName, clientType, t
 		return nil, err
 	}
 
-	registrationToken, registrationTokenHash, err := generateRegistrationAccessToken()
+	registrationToken, registrationTokenHash, err := GenerateRegistrationAccessToken()
 	if err != nil {
 		return nil, err
 	}
@@ -171,14 +171,8 @@ func generateClientSecret(clientType string) (string, string, error) {
 	return clientSecret, string(hash), nil
 }
 
-// generateRegistrationAccessToken mints a high-entropy per-client registration
+// GenerateRegistrationAccessToken mints a high-entropy per-client registration
 // access token (RFC 7592) and returns the plaintext and its bcrypt hash.
-func generateRegistrationAccessToken() (plaintext, hash string, err error) {
-	return GenerateRegistrationAccessToken()
-}
-
-// GenerateRegistrationAccessToken is the exported variant used by the handler
-// package when rotating the token on PUT /oauth/register/{client_id}.
 func GenerateRegistrationAccessToken() (plaintext, hash string, err error) {
 	token := generateRandomToken()
 	h, err := bcrypt.GenerateFromPassword([]byte(token), bcrypt.DefaultCost)
@@ -217,12 +211,12 @@ func (s *Server) GetClient(ctx context.Context, clientID string) (*storage.Clien
 	return s.getOrFetchClient(ctx, clientID)
 }
 
-// SaveClient persists an updated client record (for use by handler).
+// SaveClient persists an updated client record.
 func (s *Server) SaveClient(ctx context.Context, client *storage.Client) error {
 	return s.clientStore.SaveClient(ctx, client)
 }
 
-// DeleteClient removes a client by ID (for use by handler — RFC 7592 DELETE).
+// DeleteClient removes a client by ID (RFC 7592 §2.4).
 func (s *Server) DeleteClient(ctx context.Context, clientID string) error {
 	return s.clientStore.DeleteClient(ctx, clientID)
 }

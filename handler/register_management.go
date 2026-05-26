@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -93,19 +92,12 @@ func (h *Handler) authenticateManagementRequest(w http.ResponseWriter, r *http.R
 		return nil, false
 	}
 
-	// Verify path client_id matches the bearer-authenticated client (prevents
-	// one client using its token to manage another's registration).
-	if subtle.ConstantTimeCompare([]byte(client.ClientID), []byte(clientID)) != 1 {
-		h.writeError(w, oauth.ErrorCodeInvalidRequest, "client_id mismatch", http.StatusForbidden)
-		return nil, false
-	}
-
 	return client, true
 }
 
-// writeClientMetadata serialises the stored client to the RFC 7592 §3 shape.
-func (h *Handler) writeClientMetadata(w http.ResponseWriter, client *storage.Client) {
-	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+// buildClientResponseBody returns the RFC 7592 §3 fields common to GET and PUT
+// responses. Callers append method-specific fields before writing.
+func (h *Handler) buildClientResponseBody(client *storage.Client) map[string]any {
 	body := map[string]any{
 		"client_id":                  client.ClientID,
 		"client_id_issued_at":        client.CreatedAt.Unix(),
@@ -123,6 +115,13 @@ func (h *Handler) writeClientMetadata(w http.ResponseWriter, client *storage.Cli
 	if len(client.Scopes) > 0 {
 		body["scope"] = strings.Join(client.Scopes, " ")
 	}
+	return body
+}
+
+// writeClientMetadata serialises the stored client to the RFC 7592 §3 shape.
+func (h *Handler) writeClientMetadata(w http.ResponseWriter, client *storage.Client) {
+	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+	body := h.buildClientResponseBody(client)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(body)
 }
@@ -181,21 +180,8 @@ func (h *Handler) handleClientManagementPut(w http.ResponseWriter, r *http.Reque
 
 	h.recordHTTPMetrics(r.Context(), "client_management", http.MethodPut, http.StatusOK, startTime)
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
-	body := map[string]any{
-		"client_id":                  updated.ClientID,
-		"client_id_issued_at":        updated.CreatedAt.Unix(),
-		"client_name":                updated.ClientName,
-		"client_type":                updated.ClientType,
-		"redirect_uris":              updated.RedirectURIs,
-		"token_endpoint_auth_method": updated.TokenEndpointAuthMethod,
-		"grant_types":                updated.GrantTypes,
-		"response_types":             updated.ResponseTypes,
-		"registration_access_token":  newToken,
-		"registration_client_uri":    h.server.Config.Issuer + server.EndpointPathClientManagement + updated.ClientID,
-	}
-	if len(updated.Scopes) > 0 {
-		body["scope"] = strings.Join(updated.Scopes, " ")
-	}
+	body := h.buildClientResponseBody(&updated)
+	body["registration_access_token"] = newToken
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(body)
 }
