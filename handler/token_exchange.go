@@ -50,7 +50,14 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "dpop proof invalid")
-		h.writeError(w, "invalid_dpop_proof", err.Error(), http.StatusBadRequest)
+		if errors.Is(err, server.ErrDPoPNonceInvalid) {
+			if provider := h.server.DPoPNonceProvider(); provider != nil {
+				w.Header().Set("DPoP-Nonce", provider.Nonce(r.Context()))
+			}
+			h.writeError(w, oauth.ErrorCodeUseDPoPNonce, "A DPoP nonce is required.", http.StatusBadRequest)
+			return
+		}
+		h.writeError(w, oauth.ErrorCodeInvalidDPoPProof, err.Error(), http.StatusBadRequest)
 		return
 	}
 

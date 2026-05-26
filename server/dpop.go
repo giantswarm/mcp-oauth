@@ -18,6 +18,10 @@ const (
 	dpopTypHeader    = "dpop+jwt"
 	dpopMaxClockSkew = 5 * time.Minute
 	dpopProofTTL     = 5 * time.Minute
+
+	// DPoPSupportedAlgs is the space-separated list of accepted DPoP proof
+	// signature algorithms, used in WWW-Authenticate challenges (RFC 9449 §7.1).
+	DPoPSupportedAlgs = "RS256 RS384 RS512 ES256 ES384 ES512 PS256 PS384 PS512"
 )
 
 // DPoPProofClaims holds the validated output of a DPoP proof JWT.
@@ -31,15 +35,22 @@ type DPoPProofClaims struct {
 // dpopRawClaims is the on-the-wire shape of a DPoP proof JWT body.
 type dpopRawClaims struct {
 	josejwt.Claims
-	HTM string `json:"htm"`
-	HTU string `json:"htu"`
-	ATH string `json:"ath,omitempty"`
+	HTM   string `json:"htm"`
+	HTU   string `json:"htu"`
+	ATH   string `json:"ath,omitempty"`
+	Nonce string `json:"nonce,omitempty"` // RFC 9449 §8 — server-issued nonce
 }
 
 // ValidateDPoPProof parses and validates a DPoP proof JWT per RFC 9449 §4.3.
 // method and uri are the HTTP method and URI of the current request.
 // accessToken is non-empty only at the resource server (enables ath check).
-func ValidateDPoPProof(ctx context.Context, proof, method, uri, accessToken string, replay DPoPReplayCache, now time.Time) (*DPoPProofClaims, error) {
+// nonces is optional: when non-nil, the proof must carry a currently valid
+// server-issued nonce (RFC 9449 §8); a missing or stale nonce returns
+// [ErrDPoPNonceInvalid] so callers can respond with use_dpop_nonce.
+//
+// Nonce check occurs before replay recording: a proof rejected for a bad nonce
+// does not consume its JTI in the replay cache.
+func ValidateDPoPProof(ctx context.Context, proof, method, uri, accessToken string, replay DPoPReplayCache, nonces DPoPNonceProvider, now time.Time) (*DPoPProofClaims, error) {
 	embeddedJWK, claims, err := parseDPoPJWS(proof)
 	if err != nil {
 		return nil, err
@@ -47,6 +58,15 @@ func ValidateDPoPProof(ctx context.Context, proof, method, uri, accessToken stri
 
 	if err := validateDPoPClaims(claims, method, uri, accessToken, now); err != nil {
 		return nil, err
+	}
+
+	// Nonce check (RFC 9449 §8) — must precede replay recording so a proof with
+	// an invalid nonce does not consume its JTI in the cache. The client retries
+	// with a new proof (and a new JTI) after receiving use_dpop_nonce.
+	if nonces != nil {
+		if !nonces.Valid(ctx, claims.Nonce) {
+			return nil, ErrDPoPNonceInvalid
+		}
 	}
 
 	seen, err := replay.Seen(ctx, claims.ID, dpopProofTTL)

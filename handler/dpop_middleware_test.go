@@ -49,6 +49,30 @@ func buildDPoPProofWithATH(t *testing.T, key *ecdsa.PrivateKey, method, htu, jti
 	return raw
 }
 
+func buildDPoPProofWithNonce(t *testing.T, key *ecdsa.PrivateKey, method, htu, jti, nonce, accessToken string) string {
+	t.Helper()
+	pubJWK := jose.JSONWebKey{Key: key.Public(), Algorithm: string(jose.ES256)}
+	sig, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.ES256, Key: key},
+		(&jose.SignerOptions{}).WithType("dpop+jwt").WithHeader("jwk", pubJWK),
+	)
+	require.NoError(t, err)
+	claims := map[string]any{
+		"jti":   jti,
+		"htm":   method,
+		"htu":   htu,
+		"iat":   time.Now().Unix(),
+		"nonce": nonce,
+	}
+	if accessToken != "" {
+		hash := sha256.Sum256([]byte(accessToken))
+		claims["ath"] = base64.RawURLEncoding.EncodeToString(hash[:])
+	}
+	raw, err := josejwt.Signed(sig).Claims(claims).Serialize()
+	require.NoError(t, err)
+	return raw
+}
+
 func TestDPoPMiddleware_BearerPassthrough(t *testing.T) {
 	called := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -56,7 +80,7 @@ func TestDPoPMiddleware_BearerPassthrough(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	mw := DPoPMiddleware(nil, nil)(next)
+	mw := DPoPMiddleware(nil, nil, nil)(next)
 
 	r := httptest.NewRequest(http.MethodGet, "/resource", nil)
 	r.Header.Set("Authorization", "Bearer some-token")
@@ -77,7 +101,7 @@ func TestDPoPMiddleware_DPoPValid(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	mw := DPoPMiddleware(cache, nil)(next)
+	mw := DPoPMiddleware(cache, nil, nil)(next)
 
 	const accessToken = "some-access-token"
 	r := httptest.NewRequest(http.MethodGet, "http://api.example.com/resource", nil)
@@ -97,7 +121,7 @@ func TestDPoPMiddleware_DPoPMissingProof(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	mw := DPoPMiddleware(nil, nil)(next)
+	mw := DPoPMiddleware(nil, nil, nil)(next)
 
 	r := httptest.NewRequest(http.MethodGet, "/resource", nil)
 	r.Header.Set("Authorization", "DPoP some-access-token")
@@ -109,6 +133,9 @@ func TestDPoPMiddleware_DPoPMissingProof(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, w.Code)
 	require.Equal(t, "application/json", w.Header().Get("Content-Type"))
 	require.Contains(t, w.Body.String(), "invalid_request")
+	// RFC 9449 §7.1: WWW-Authenticate must be present on every 401.
+	require.Contains(t, w.Header().Get("WWW-Authenticate"), "DPoP")
+	require.Contains(t, w.Header().Get("WWW-Authenticate"), "invalid_request")
 }
 
 func TestDPoPMiddleware_DPoPInvalidProof(t *testing.T) {
@@ -118,7 +145,7 @@ func TestDPoPMiddleware_DPoPInvalidProof(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	mw := DPoPMiddleware(cache, nil)(next)
+	mw := DPoPMiddleware(cache, nil, nil)(next)
 
 	const accessToken = "some-access-token"
 	// Proof has htm=POST but request is GET — validation rejects before ath check.
@@ -134,6 +161,10 @@ func TestDPoPMiddleware_DPoPInvalidProof(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, w.Code)
 	require.Equal(t, "application/json", w.Header().Get("Content-Type"))
 	require.Contains(t, w.Body.String(), "invalid_dpop_proof")
+	// RFC 9449 §7.1: WWW-Authenticate must be present on every 401.
+	require.Contains(t, w.Header().Get("WWW-Authenticate"), "DPoP")
+	require.Contains(t, w.Header().Get("WWW-Authenticate"), "invalid_dpop_proof")
+	require.Contains(t, w.Header().Get("WWW-Authenticate"), "algs=")
 }
 
 func TestDPoPMiddleware_TrustedProxyHTU(t *testing.T) {
@@ -146,7 +177,7 @@ func TestDPoPMiddleware_TrustedProxyHTU(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	mw := DPoPMiddleware(cache, []*net.IPNet{proxyNet})(next)
+	mw := DPoPMiddleware(cache, nil, []*net.IPNet{proxyNet})(next)
 
 	// The DPoP proof is bound to the external HTTPS URL that the client sees.
 	const accessToken = "some-access-token"
@@ -177,7 +208,7 @@ func TestDPoPMiddleware_UntrustedProxyHeadersIgnored(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	mw := DPoPMiddleware(cache, []*net.IPNet{proxyNet})(next)
+	mw := DPoPMiddleware(cache, nil, []*net.IPNet{proxyNet})(next)
 
 	// Proof bound to the external URL. Remote address is NOT in trusted CIDR,
 	// so X-Forwarded-* are ignored and htu is derived from the raw request URL.
@@ -197,4 +228,56 @@ func TestDPoPMiddleware_UntrustedProxyHeadersIgnored(t *testing.T) {
 
 	require.Equal(t, http.StatusUnauthorized, w.Code)
 	require.Contains(t, w.Body.String(), "invalid_dpop_proof")
+}
+
+func TestDPoPMiddleware_NonceRequired(t *testing.T) {
+	now := time.Now().UTC()
+	nonceProvider := server.NewHMACNonceProvider([]byte("test-key"), time.Minute, func() time.Time { return now })
+	key := newTestDPoPKey(t)
+	cache := server.NewMemoryDPoPReplayCache()
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	mw := DPoPMiddleware(cache, nonceProvider, nil)(next)
+
+	const accessToken = "some-access-token"
+
+	t.Run("missing nonce returns use_dpop_nonce with DPoP-Nonce header", func(t *testing.T) {
+		proof := buildDPoPProofWithATH(t, key, "GET", "http://api.example.com/resource", "jti-no-nonce", accessToken)
+		r := httptest.NewRequest(http.MethodGet, "http://api.example.com/resource", nil)
+		r.Header.Set("Authorization", "DPoP "+accessToken)
+		r.Header.Set("DPoP", proof)
+		w := httptest.NewRecorder()
+
+		mw.ServeHTTP(w, r)
+
+		require.Equal(t, http.StatusUnauthorized, w.Code)
+		require.Contains(t, w.Body.String(), "use_dpop_nonce")
+		// RFC 9449 §8: DPoP-Nonce response header required.
+		require.NotEmpty(t, w.Header().Get("DPoP-Nonce"))
+		// RFC 9449 §7.1: WWW-Authenticate required on 401.
+		require.Contains(t, w.Header().Get("WWW-Authenticate"), "use_dpop_nonce")
+	})
+
+	t.Run("valid nonce accepted", func(t *testing.T) {
+		called := false
+		next2 := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusOK)
+		})
+		mw2 := DPoPMiddleware(cache, nonceProvider, nil)(next2)
+
+		nonce := nonceProvider.Nonce(t.Context())
+		proof := buildDPoPProofWithNonce(t, key, "GET", "http://api.example.com/resource", "jti-with-nonce", nonce, accessToken)
+		r := httptest.NewRequest(http.MethodGet, "http://api.example.com/resource", nil)
+		r.Header.Set("Authorization", "DPoP "+accessToken)
+		r.Header.Set("DPoP", proof)
+		w := httptest.NewRecorder()
+
+		mw2.ServeHTTP(w, r)
+
+		require.True(t, called)
+		require.Equal(t, http.StatusOK, w.Code)
+	})
 }

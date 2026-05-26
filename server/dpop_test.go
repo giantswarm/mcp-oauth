@@ -55,7 +55,7 @@ func TestValidateDPoPProof_Valid(t *testing.T) {
 		"iat": now.Unix(),
 	})
 
-	got, err := ValidateDPoPProof(t.Context(), proof, "POST", "https://auth.example.com/oauth/token", "", cache, now)
+	got, err := ValidateDPoPProof(t.Context(), proof, "POST", "https://auth.example.com/oauth/token", "", cache, nil, now)
 	require.NoError(t, err)
 	require.Equal(t, dpopJKTFor(t, key), got.JKT)
 }
@@ -72,7 +72,7 @@ func TestValidateDPoPProof_WrongMethod(t *testing.T) {
 		"iat": now.Unix(),
 	})
 
-	_, err := ValidateDPoPProof(t.Context(), proof, "POST", "https://auth.example.com/oauth/token", "", cache, now)
+	_, err := ValidateDPoPProof(t.Context(), proof, "POST", "https://auth.example.com/oauth/token", "", cache, nil, now)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "htm")
 }
@@ -89,7 +89,7 @@ func TestValidateDPoPProof_WrongURI(t *testing.T) {
 		"iat": now.Unix(),
 	})
 
-	_, err := ValidateDPoPProof(t.Context(), proof, "POST", "https://other.example.com/oauth/token", "", cache, now)
+	_, err := ValidateDPoPProof(t.Context(), proof, "POST", "https://other.example.com/oauth/token", "", cache, nil, now)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "htu")
 }
@@ -107,7 +107,7 @@ func TestValidateDPoPProof_Expired(t *testing.T) {
 		"iat": stale.Unix(),
 	})
 
-	_, err := ValidateDPoPProof(t.Context(), proof, "POST", "https://auth.example.com/oauth/token", "", cache, now)
+	_, err := ValidateDPoPProof(t.Context(), proof, "POST", "https://auth.example.com/oauth/token", "", cache, nil, now)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "clock skew")
 }
@@ -124,11 +124,11 @@ func TestValidateDPoPProof_Replay(t *testing.T) {
 		"iat": now.Unix(),
 	})
 
-	_, err := ValidateDPoPProof(t.Context(), proof, "POST", "https://auth.example.com/oauth/token", "", cache, now)
+	_, err := ValidateDPoPProof(t.Context(), proof, "POST", "https://auth.example.com/oauth/token", "", cache, nil, now)
 	require.NoError(t, err)
 
 	// Second call with the same proof must fail.
-	_, err = ValidateDPoPProof(t.Context(), proof, "POST", "https://auth.example.com/oauth/token", "", cache, now)
+	_, err = ValidateDPoPProof(t.Context(), proof, "POST", "https://auth.example.com/oauth/token", "", cache, nil, now)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "replay")
 }
@@ -152,7 +152,7 @@ func TestValidateDPoPProof_MissingJWK(t *testing.T) {
 	}).Serialize()
 	require.NoError(t, err)
 
-	_, err = ValidateDPoPProof(t.Context(), proof, "POST", "https://auth.example.com/oauth/token", "", cache, now)
+	_, err = ValidateDPoPProof(t.Context(), proof, "POST", "https://auth.example.com/oauth/token", "", cache, nil, now)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "jwk")
 }
@@ -174,7 +174,7 @@ func TestValidateDPoPProof_ATH(t *testing.T) {
 			"iat": now.Unix(),
 			"ath": ath,
 		})
-		_, err := ValidateDPoPProof(t.Context(), proof, "GET", "https://api.example.com/resource", accessToken, cache, now)
+		_, err := ValidateDPoPProof(t.Context(), proof, "GET", "https://api.example.com/resource", accessToken, cache, nil, now)
 		require.NoError(t, err)
 	})
 
@@ -186,9 +186,86 @@ func TestValidateDPoPProof_ATH(t *testing.T) {
 			"iat": now.Unix(),
 			"ath": "wrong-hash",
 		})
-		_, err := ValidateDPoPProof(t.Context(), proof, "GET", "https://api.example.com/resource", accessToken, cache, now)
+		_, err := ValidateDPoPProof(t.Context(), proof, "GET", "https://api.example.com/resource", accessToken, cache, nil, now)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "ath")
+	})
+}
+
+func TestValidateDPoPProof_Nonce(t *testing.T) {
+	key := newDPoPKey(t)
+	now := time.Now().UTC()
+	provider := NewHMACNonceProvider([]byte("test-secret"), time.Minute, func() time.Time { return now })
+
+	t.Run("valid nonce accepted", func(t *testing.T) {
+		cache := NewMemoryDPoPReplayCache()
+		nonce := provider.Nonce(t.Context())
+		proof := signDPoPProof(t, key, map[string]any{
+			"jti":   "jti-nonce-ok",
+			"htm":   "POST",
+			"htu":   "https://auth.example.com/oauth/token",
+			"iat":   now.Unix(),
+			"nonce": nonce,
+		})
+		_, err := ValidateDPoPProof(t.Context(), proof, "POST", "https://auth.example.com/oauth/token", "", cache, provider, now)
+		require.NoError(t, err)
+	})
+
+	t.Run("missing nonce returns ErrDPoPNonceInvalid", func(t *testing.T) {
+		cache := NewMemoryDPoPReplayCache()
+		proof := signDPoPProof(t, key, map[string]any{
+			"jti": "jti-nonce-absent",
+			"htm": "POST",
+			"htu": "https://auth.example.com/oauth/token",
+			"iat": now.Unix(),
+		})
+		_, err := ValidateDPoPProof(t.Context(), proof, "POST", "https://auth.example.com/oauth/token", "", cache, provider, now)
+		require.ErrorIs(t, err, ErrDPoPNonceInvalid)
+	})
+
+	t.Run("stale nonce returns ErrDPoPNonceInvalid", func(t *testing.T) {
+		cache := NewMemoryDPoPReplayCache()
+		// Nonce from two windows ago is no longer valid (only cur and cur-1 accepted).
+		staleProvider := NewHMACNonceProvider([]byte("test-secret"), time.Minute, func() time.Time {
+			return now.Add(-2 * time.Minute)
+		})
+		staleNonce := staleProvider.Nonce(t.Context())
+		proof := signDPoPProof(t, key, map[string]any{
+			"jti":   "jti-nonce-stale",
+			"htm":   "POST",
+			"htu":   "https://auth.example.com/oauth/token",
+			"iat":   now.Unix(),
+			"nonce": staleNonce,
+		})
+		_, err := ValidateDPoPProof(t.Context(), proof, "POST", "https://auth.example.com/oauth/token", "", cache, provider, now)
+		require.ErrorIs(t, err, ErrDPoPNonceInvalid)
+	})
+
+	t.Run("bad nonce does not consume JTI", func(t *testing.T) {
+		// If a proof is rejected for a bad nonce, the client retries with a new
+		// nonce — but may reuse the same JTI. Confirm the JTI is not recorded.
+		cache := NewMemoryDPoPReplayCache()
+		proof := signDPoPProof(t, key, map[string]any{
+			"jti":   "jti-nonce-retry",
+			"htm":   "POST",
+			"htu":   "https://auth.example.com/oauth/token",
+			"iat":   now.Unix(),
+			"nonce": "bad-nonce",
+		})
+		_, err := ValidateDPoPProof(t.Context(), proof, "POST", "https://auth.example.com/oauth/token", "", cache, provider, now)
+		require.ErrorIs(t, err, ErrDPoPNonceInvalid)
+
+		// Retry with the correct nonce; must succeed (JTI not burned).
+		nonce := provider.Nonce(t.Context())
+		proof2 := signDPoPProof(t, key, map[string]any{
+			"jti":   "jti-nonce-retry",
+			"htm":   "POST",
+			"htu":   "https://auth.example.com/oauth/token",
+			"iat":   now.Unix(),
+			"nonce": nonce,
+		})
+		_, err = ValidateDPoPProof(t.Context(), proof2, "POST", "https://auth.example.com/oauth/token", "", cache, provider, now)
+		require.NoError(t, err)
 	})
 }
 

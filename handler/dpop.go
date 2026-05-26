@@ -17,7 +17,7 @@ func (h *Handler) extractDPoPJKT(r *http.Request) (string, error) {
 	if proof == "" {
 		return "", nil
 	}
-	claims, err := server.ValidateDPoPProof(r.Context(), proof, r.Method, dpopHTU(r, h.server.TrustedProxyCIDRs()), "", h.server.DPoPReplayCache(), time.Now())
+	claims, err := server.ValidateDPoPProof(r.Context(), proof, r.Method, dpopHTU(r, h.server.TrustedProxyCIDRs()), "", h.server.DPoPReplayCache(), h.server.DPoPNonceProvider(), time.Now())
 	if err != nil {
 		return "", err
 	}

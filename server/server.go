@@ -101,6 +101,8 @@ type Server struct {
 	subjectValidators map[string]SubjectTokenValidator
 	// dpopReplayCache is used to detect replayed DPoP proof JTIs.
 	dpopReplayCache DPoPReplayCache
+	// dpopNonceProvider enforces RFC 9449 §8 nonces when non-nil.
+	dpopNonceProvider DPoPNonceProvider
 	// trustedProxyCIDRs lists networks whose X-Forwarded-Proto/Host headers
 	// are trusted for DPoP htu reconstruction.
 	trustedProxyCIDRs []*net.IPNet
@@ -407,6 +409,12 @@ func (s *Server) DPoPReplayCache() DPoPReplayCache {
 // TrustedProxyCIDRs returns the list of CIDRs trusted for DPoP htu reconstruction.
 func (s *Server) TrustedProxyCIDRs() []*net.IPNet {
 	return s.trustedProxyCIDRs
+}
+
+// DPoPNonceProvider returns the configured nonce provider, or nil when
+// RFC 9449 §8 nonce enforcement is not enabled.
+func (s *Server) DPoPNonceProvider() DPoPNonceProvider {
+	return s.dpopNonceProvider
 }
 
 // saveTokenMetadata writes token metadata to the configured store. Backends
