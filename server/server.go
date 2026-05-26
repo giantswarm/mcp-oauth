@@ -384,8 +384,8 @@ func (s *Server) TokenStore() storage.TokenStore {
 // that do not implement storage.TokenMetadataStore are silently skipped —
 // metadata is observability scaffolding (audit, scope validation, family
 // bookkeeping) and a missing implementation reduces observability rather
-// than breaking the OAuth flow. metadata.IssuedAt on the input is ignored;
-// backends populate it from the wall clock at write time.
+// than breaking the OAuth flow. Callers are responsible for setting
+// metadata.IssuedAt and metadata.ExpiresAt.
 func (s *Server) saveTokenMetadata(ctx context.Context, tokenID string, metadata storage.TokenMetadata) {
 	store, ok := s.tokenStore.(storage.TokenMetadataStore)
 	if !ok {

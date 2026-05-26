@@ -169,9 +169,8 @@ type TokenStore interface {
 // for scope validation and audit.
 type TokenMetadataStore interface {
 	// SaveTokenMetadata persists metadata for the given tokenID.
-	// metadata.IssuedAt is ignored on input; implementations populate it
-	// from the wall clock at write time so the stored value reflects
-	// actual write time and cannot be forged by a caller.
+	// Callers are responsible for setting IssuedAt and ExpiresAt;
+	// backends persist them without modification.
 	SaveTokenMetadata(ctx context.Context, tokenID string, metadata TokenMetadata) error
 }
 
@@ -486,14 +485,14 @@ func (c *AuthorizationCode) HasExpired() bool { return security.IsTokenExpired(c
 // is used for input to TokenMetadataStore.SaveTokenMetadata and for
 // output from TokenMetadataGetter.GetTokenMetadata.
 //
-// IssuedAt is server-set on write — the field is ignored on input and
-// populated by the backend from the wall clock at write time. Read it
-// after a GetTokenMetadata call; do not trust it on a caller-built
-// instance.
+// Both IssuedAt and ExpiresAt are issuer-set: the caller is responsible
+// for populating them from the issuance context before calling
+// SaveTokenMetadata. Backends persist the values as-is.
 type TokenMetadata struct {
 	UserID    string    // User who owns this token
 	ClientID  string    // Client who owns this token
-	IssuedAt  time.Time // Server-set on write; ignored on input
+	IssuedAt  time.Time // Issuer-set: the instant the token was issued
+	ExpiresAt time.Time // Issuer-set: the instant the token expires; zero means unknown
 	TokenType string    // "access" or "refresh"
 	Audience  string    // RFC 8707: Intended resource server identifier (for audience validation)
 	Scopes    []string  // MCP 2025-11-25: Scopes granted to this token (for scope validation)
