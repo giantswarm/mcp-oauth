@@ -95,6 +95,9 @@ type Server struct {
 	tokenPairsByRefresh           sync.Map                                // Maps client refresh token -> client access token for pair cleanup
 	refreshGroup                  singleflight.Group                      // Deduplicates concurrent provider token refreshes per access token
 	refreshSessionGroup           singleflight.Group                      // Deduplicates concurrent RefreshSession calls per family ID
+	// subjectValidators is the registry for RFC 8693 token-exchange validators,
+	// keyed by subject_token_type URN.
+	subjectValidators             map[string]SubjectTokenValidator
 	Logger                        *slog.Logger
 	Config                        *Config
 	shutdownOnce                  sync.Once // Ensures Shutdown is called only once
@@ -374,6 +377,12 @@ func isAudienceScope(scope string) bool {
 // This allows the handler to access token metadata for scope validation.
 func (s *Server) TokenStore() storage.TokenStore {
 	return s.tokenStore
+}
+
+// SubjectValidatorFor returns the SubjectTokenValidator registered for the
+// given subject_token_type URN, or nil if none is registered.
+func (s *Server) SubjectValidatorFor(tokenType string) SubjectTokenValidator {
+	return s.subjectValidators[tokenType]
 }
 
 // saveTokenMetadata writes token metadata to the configured store. Backends

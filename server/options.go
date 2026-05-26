@@ -108,6 +108,37 @@ func WithTokenRefreshHandler(handler TokenRefreshHandler) Option {
 	}
 }
 
+// WithTrustedIssuers registers an OIDCValidator built from issuers for both
+// urn:ietf:params:oauth:token-type:id_token and
+// urn:ietf:params:oauth:token-type:access_token subject_token_type values.
+// These validators are consulted by the RFC 8693 token-exchange handler.
+func WithTrustedIssuers(issuers []TrustedIssuer) Option {
+	return func(s *Server) {
+		v, err := NewOIDCValidator(issuers)
+		if err != nil {
+			s.Logger.Error("failed to initialise trusted issuer validator", "error", err)
+			return
+		}
+		if s.subjectValidators == nil {
+			s.subjectValidators = make(map[string]SubjectTokenValidator)
+		}
+		s.subjectValidators[SubjectTokenTypeIDToken] = v
+		s.subjectValidators[SubjectTokenTypeAccessToken] = v
+	}
+}
+
+// WithSubjectTokenValidator registers a custom SubjectTokenValidator for the
+// given subject_token_type URN. Use this to register K8sSAValidator or any
+// other validator alongside or instead of OIDCValidator.
+func WithSubjectTokenValidator(tokenType string, v SubjectTokenValidator) Option {
+	return func(s *Server) {
+		if s.subjectValidators == nil {
+			s.subjectValidators = make(map[string]SubjectTokenValidator)
+		}
+		s.subjectValidators[tokenType] = v
+	}
+}
+
 // WithInstrumentation installs an OpenTelemetry pipeline on the server.
 // Build the *instrumentation.Instrumentation with instrumentation.New and
 // pass it here. The same instance can be shared with other components in
