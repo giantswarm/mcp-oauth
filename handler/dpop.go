@@ -1,9 +1,11 @@
 package handler
 
 import (
+	"net"
 	"net/http"
 	"time"
 
+	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/server"
 )
 
@@ -15,7 +17,7 @@ func (h *Handler) extractDPoPJKT(r *http.Request) (string, error) {
 	if proof == "" {
 		return "", nil
 	}
-	claims, err := server.ValidateDPoPProof(r.Context(), proof, r.Method, dpopHTU(r), "", h.server.DPoPReplayCache(), time.Now())
+	claims, err := server.ValidateDPoPProof(r.Context(), proof, r.Method, dpopHTU(r, h.server.TrustedProxyCIDRs()), "", h.server.DPoPReplayCache(), time.Now())
 	if err != nil {
 		return "", err
 	}
@@ -23,10 +25,22 @@ func (h *Handler) extractDPoPJKT(r *http.Request) (string, error) {
 }
 
 // dpopHTU returns the URI for DPoP htu validation: path + host, no query, no fragment.
-func dpopHTU(r *http.Request) string {
+// When the direct connection originates from a trusted proxy CIDR, X-Forwarded-Proto
+// and X-Forwarded-Host are used to reconstruct the external URL seen by the client.
+func dpopHTU(r *http.Request, trustedProxies []*net.IPNet) string {
 	u := *r.URL
 	u.RawQuery = ""
 	u.Fragment = ""
+
+	if security.IsTrustedProxy(r.RemoteAddr, trustedProxies) {
+		if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+			u.Scheme = proto
+		}
+		if host := r.Header.Get("X-Forwarded-Host"); host != "" {
+			u.Host = host
+		}
+	}
+
 	if u.Host == "" {
 		u.Host = r.Host
 	}
@@ -39,3 +53,4 @@ func dpopHTU(r *http.Request) string {
 	}
 	return u.String()
 }
+

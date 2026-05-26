@@ -93,6 +93,26 @@ func extractIPFromRemoteAddr(remoteAddr string) string {
 	return host
 }
 
+// IsTrustedProxy reports whether the direct connection identified by remoteAddr
+// (host:port or bare host) falls within one of the provided CIDRs. Use this
+// to decide whether X-Forwarded-Proto/Host headers should be trusted for URL
+// reconstruction (e.g. DPoP htu) when sitting behind a reverse proxy.
+func IsTrustedProxy(remoteAddr string, cidrs []*net.IPNet) bool {
+	if len(cidrs) == 0 {
+		return false
+	}
+	ip := net.ParseIP(extractIPFromRemoteAddr(remoteAddr))
+	if ip == nil {
+		return false
+	}
+	for _, cidr := range cidrs {
+		if cidr.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 // RateLimitBucket returns the rate-limit key for an IP. IPv4 (including the
 // IPv4-mapped IPv6 form `::ffff:a.b.c.d`) is canonicalized to its IPv4
 // string so both representations share a bucket. IPv6 returns the /64

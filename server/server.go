@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"net"
 	"sync"
 	"time"
 
@@ -100,7 +101,10 @@ type Server struct {
 	subjectValidators map[string]SubjectTokenValidator
 	// dpopReplayCache is used to detect replayed DPoP proof JTIs.
 	dpopReplayCache DPoPReplayCache
-	Logger          *slog.Logger
+	// trustedProxyCIDRs lists networks whose X-Forwarded-Proto/Host headers
+	// are trusted for DPoP htu reconstruction.
+	trustedProxyCIDRs []*net.IPNet
+	Logger            *slog.Logger
 	Config                        *Config
 	shutdownOnce                  sync.Once // Ensures Shutdown is called only once
 }
@@ -398,6 +402,11 @@ func (s *Server) SubjectValidatorFor(tokenType string) SubjectTokenValidator {
 // DPoPReplayCache returns the configured DPoP replay cache, or nil if none was set.
 func (s *Server) DPoPReplayCache() DPoPReplayCache {
 	return s.dpopReplayCache
+}
+
+// TrustedProxyCIDRs returns the list of CIDRs trusted for DPoP htu reconstruction.
+func (s *Server) TrustedProxyCIDRs() []*net.IPNet {
+	return s.trustedProxyCIDRs
 }
 
 // saveTokenMetadata writes token metadata to the configured store. Backends

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -14,7 +15,11 @@ import (
 // Requests with "Authorization: Bearer <token>" are passed through unchanged.
 // Requests with no Authorization header are also passed through (authentication
 // is the responsibility of the next handler).
-func DPoPMiddleware(replayCache server.DPoPReplayCache) func(http.Handler) http.Handler {
+//
+// trustedProxies lists CIDRs whose X-Forwarded-Proto and X-Forwarded-Host
+// headers are trusted for htu reconstruction. Pass nil when the server is
+// directly exposed (no reverse proxy in front).
+func DPoPMiddleware(replayCache server.DPoPReplayCache, trustedProxies []*net.IPNet) func(http.Handler) http.Handler {
 	if replayCache == nil {
 		replayCache = server.NewMemoryDPoPReplayCache()
 	}
@@ -31,7 +36,7 @@ func DPoPMiddleware(replayCache server.DPoPReplayCache) func(http.Handler) http.
 				writeDPoPError(w, "invalid_request", "DPoP proof required", http.StatusUnauthorized)
 				return
 			}
-			htu := dpopHTU(r)
+			htu := dpopHTU(r, trustedProxies)
 			_, err := server.ValidateDPoPProof(r.Context(), proof, r.Method, htu, accessToken, replayCache, time.Now())
 			if err != nil {
 				writeDPoPError(w, "invalid_dpop_proof", err.Error(), http.StatusUnauthorized)
