@@ -394,23 +394,8 @@ func (s *Store) deleteKey(ctx context.Context, key, description, tokenPrefix str
 // and persisted as-is. When ExpiresAt is non-zero the key TTL is set
 // accordingly so stale metadata is evicted automatically.
 func (s *Store) SaveTokenMetadata(ctx context.Context, tokenID string, metadata storage.TokenMetadata) error {
-	if tokenID == "" || metadata.UserID == "" || metadata.ClientID == "" {
-		return fmt.Errorf("tokenID, userID, and clientID cannot be empty")
-	}
-
-	if err := validateStringLength(tokenID, MaxTokenLength, "tokenID"); err != nil {
+	if err := validateTokenMetadataArgs(tokenID, metadata); err != nil {
 		return err
-	}
-	if err := validateStringLength(metadata.UserID, MaxIDLength, "userID"); err != nil {
-		return err
-	}
-	if err := validateStringLength(metadata.ClientID, MaxIDLength, "clientID"); err != nil {
-		return err
-	}
-	if metadata.FamilyID != "" {
-		if err := validateStringLength(metadata.FamilyID, MaxIDLength, "familyID"); err != nil {
-			return err
-		}
 	}
 
 	data, err := json.Marshal(toTokenMetadataJSON(&metadata))
@@ -418,17 +403,7 @@ func (s *Store) SaveTokenMetadata(ctx context.Context, tokenID string, metadata 
 		return fmt.Errorf("failed to marshal token metadata: %w", err)
 	}
 
-	metaKey := s.tokenMetaKey(tokenID)
-
-	doSet := func() error {
-		if !metadata.ExpiresAt.IsZero() {
-			if ttl := calculateTTL(metadata.ExpiresAt); ttl > 0 {
-				return s.client.Do(ctx, s.client.B().Set().Key(metaKey).Value(string(data)).ExSeconds(int64(ttl.Seconds())).Build()).Error()
-			}
-		}
-		return s.client.Do(ctx, s.client.B().Set().Key(metaKey).Value(string(data)).Build()).Error()
-	}
-	if err := doSet(); err != nil {
+	if err := s.setTokenMetaKey(ctx, s.tokenMetaKey(tokenID), string(data), metadata.ExpiresAt); err != nil {
 		return fmt.Errorf("failed to save token metadata: %w", err)
 	}
 
@@ -452,6 +427,34 @@ func (s *Store) SaveTokenMetadata(ctx context.Context, tokenID string, metadata 
 		"family_id", metadata.FamilyID)
 
 	return nil
+}
+
+func validateTokenMetadataArgs(tokenID string, metadata storage.TokenMetadata) error {
+	if tokenID == "" || metadata.UserID == "" || metadata.ClientID == "" {
+		return fmt.Errorf("tokenID, userID, and clientID cannot be empty")
+	}
+	if err := validateStringLength(tokenID, MaxTokenLength, "tokenID"); err != nil {
+		return err
+	}
+	if err := validateStringLength(metadata.UserID, MaxIDLength, "userID"); err != nil {
+		return err
+	}
+	if err := validateStringLength(metadata.ClientID, MaxIDLength, "clientID"); err != nil {
+		return err
+	}
+	if metadata.FamilyID != "" {
+		return validateStringLength(metadata.FamilyID, MaxIDLength, "familyID")
+	}
+	return nil
+}
+
+func (s *Store) setTokenMetaKey(ctx context.Context, key, value string, expiresAt time.Time) error {
+	if !expiresAt.IsZero() {
+		if ttl := calculateTTL(expiresAt); ttl > 0 {
+			return s.client.Do(ctx, s.client.B().Set().Key(key).Value(value).ExSeconds(int64(ttl.Seconds())).Build()).Error()
+		}
+	}
+	return s.client.Do(ctx, s.client.B().Set().Key(key).Value(value).Build()).Error()
 }
 
 // GetTokenMetadata retrieves metadata for a token (including RFC 8707 audience)
