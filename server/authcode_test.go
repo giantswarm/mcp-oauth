@@ -130,7 +130,7 @@ func TestServer_StartAuthorizationFlow(t *testing.T) {
 			authURL, err := srv.StartAuthorizationFlow(
 				ctx,
 				tt.clientID,
-				tt.redirectURI,
+				mustParseURL(t, tt.redirectURI),
 				tt.scope,
 				"", // resource parameter (optional)
 				tt.codeChallenge,
@@ -313,7 +313,7 @@ func TestStartAuthorizationFlow_OIDCParameterForwarding(t *testing.T) {
 			authURL, err := srv.StartAuthorizationFlow(
 				ctx,
 				client.ClientID,
-				"https://example.com/callback",
+				mustParseURL(t, "https://example.com/callback"),
 				"openid email",
 				"", // resource parameter
 				validChallenge,
@@ -426,7 +426,7 @@ func TestServer_HandleProviderCallback(t *testing.T) {
 	_, err = srv.StartAuthorizationFlow(
 		ctx,
 		client.ClientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"", // resource parameter (optional)
 		validChallenge,
@@ -554,7 +554,7 @@ func TestServer_HandleProviderCallback_EmailLookup(t *testing.T) {
 	_, err = srv.StartAuthorizationFlow(
 		ctx,
 		client.ClientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"",
 		validChallenge,
@@ -699,7 +699,7 @@ func TestServer_HandleProviderCallback_ShortLivedToken(t *testing.T) {
 	_, err = srv.StartAuthorizationFlow(
 		ctx,
 		client.ClientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"",
 		validChallenge,
@@ -1726,7 +1726,7 @@ func TestServer_ConcurrentAuthorizationCodeReuse(t *testing.T) {
 	_, err = srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"", // resource parameter (optional)
 		codeChallenge,
@@ -1844,7 +1844,7 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 	_, err = srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"", // resource parameter (optional)
 		codeChallenge,
@@ -1991,7 +1991,7 @@ func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
 	_, err = srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"", // resource parameter (optional)
 		codeChallenge,
@@ -2115,7 +2115,7 @@ func TestServer_GenericErrorMessagesNoInfoLeakage(t *testing.T) {
 	_, err = srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"", // resource parameter (optional)
 		codeChallenge,
@@ -2270,7 +2270,7 @@ func TestServer_AuthCodeReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 	_, err = srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"", // resource parameter (optional)
 		codeChallenge,
@@ -2420,7 +2420,7 @@ func TestStartAuthorizationFlow_ClientScopeValidation(t *testing.T) {
 			authURL, err := srv.StartAuthorizationFlow(
 				ctx,
 				client.ClientID,
-				"https://example.com/callback",
+				mustParseURL(t, "https://example.com/callback"),
 				tt.scope,
 				"", // resource parameter (optional)
 				validChallenge,
@@ -2642,7 +2642,7 @@ func TestClientScopeValidation_UnrestrictedClient(t *testing.T) {
 			authURL, err := srv.StartAuthorizationFlow(
 				ctx,
 				client.ClientID,
-				"https://example.com/callback",
+				mustParseURL(t, "https://example.com/callback"),
 				scope,
 				"", // resource parameter (optional)
 				validChallenge,
@@ -2739,7 +2739,7 @@ func TestServer_HandleProviderCallback_PKCEValidationFailure(t *testing.T) {
 	authURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		client.ClientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"", // resource parameter (optional)
 		clientChallenge,
@@ -2861,7 +2861,7 @@ func TestStartAuthorizationFlow_ScopeLengthValidation(t *testing.T) {
 			_, err := srv.StartAuthorizationFlow(
 				ctx,
 				client.ClientID,
-				client.RedirectURIs[0],
+				mustParseURL(t, client.RedirectURIs[0]),
 				tt.scope,
 				"", // resource parameter (optional)
 				codeChallenge,
@@ -2961,7 +2961,7 @@ func TestResourceParameter_AudienceValidation(t *testing.T) {
 		_, err := srv.StartAuthorizationFlow(
 			ctx,
 			client.ClientID,
-			client.RedirectURIs[0],
+			mustParseURL(t, client.RedirectURIs[0]),
 			"openid email",
 			"https://mcp.example.com", // Resource matches server's identifier
 			codeChallenge,
@@ -3040,7 +3040,7 @@ func TestResourceParameter_AudienceValidation(t *testing.T) {
 		_, err = srv.StartAuthorizationFlow(
 			ctx,
 			client.ClientID,
-			client.RedirectURIs[0],
+			mustParseURL(t, client.RedirectURIs[0]),
 			"openid email",
 			"https://mcp.example.com", // Resource for first server
 			codeChallenge,
@@ -3100,7 +3100,7 @@ func TestResourceParameter_AudienceValidation(t *testing.T) {
 		_, err := srv.StartAuthorizationFlow(
 			ctx,
 			client.ClientID,
-			client.RedirectURIs[0],
+			mustParseURL(t, client.RedirectURIs[0]),
 			"openid email",
 			"", // No resource parameter (backward compatibility)
 			codeChallenge,
@@ -3217,7 +3217,7 @@ func TestResourceParameter_ConsistencyValidation(t *testing.T) {
 		_, err := srv.StartAuthorizationFlow(
 			ctx,
 			client.ClientID,
-			client.RedirectURIs[0],
+			mustParseURL(t, client.RedirectURIs[0]),
 			"openid email",
 			"https://mcp.example.com", // Resource A
 			codeChallenge,
@@ -3347,7 +3347,7 @@ func TestResourceParameter_InvalidFormat(t *testing.T) {
 			_, err := srv.StartAuthorizationFlow(
 				ctx,
 				client.ClientID,
-				client.RedirectURIs[0],
+				mustParseURL(t, client.RedirectURIs[0]),
 				"openid email",
 				tt.resource,
 				codeChallenge,
@@ -3467,7 +3467,7 @@ func TestResourceParameter_RateLimiting(t *testing.T) {
 	_, err = srv.StartAuthorizationFlow(
 		ctx,
 		client.ClientID,
-		client.RedirectURIs[0],
+		mustParseURL(t, client.RedirectURIs[0]),
 		"openid email",
 		"https://mcp.example.com", // Resource A
 		codeChallenge,
@@ -3539,7 +3539,7 @@ func TestStartAuthorizationFlow_EmptyState(t *testing.T) {
 		authURL, err := srv.StartAuthorizationFlow(
 			ctx,
 			client.ClientID,
-			client.RedirectURIs[0],
+			mustParseURL(t, client.RedirectURIs[0]),
 			"openid",
 			"", // resource
 			validChallenge,
@@ -3561,7 +3561,7 @@ func TestStartAuthorizationFlow_EmptyState(t *testing.T) {
 		_, err := srv.StartAuthorizationFlow(
 			ctx,
 			client.ClientID,
-			client.RedirectURIs[0],
+			mustParseURL(t, client.RedirectURIs[0]),
 			"openid",
 			"",
 			validChallenge,
@@ -3583,7 +3583,7 @@ func TestStartAuthorizationFlow_EmptyState(t *testing.T) {
 		authURL, err := srv.StartAuthorizationFlow(
 			ctx,
 			client.ClientID,
-			client.RedirectURIs[0],
+			mustParseURL(t, client.RedirectURIs[0]),
 			"openid",
 			"",
 			validChallenge,
@@ -3634,7 +3634,7 @@ func TestHandleProviderCallback_EmptyState(t *testing.T) {
 		authURL, err := srv.StartAuthorizationFlow(
 			ctx,
 			client.ClientID,
-			client.RedirectURIs[0],
+			mustParseURL(t, client.RedirectURIs[0]),
 			"openid",
 			"",
 			validChallenge,
@@ -3681,7 +3681,7 @@ func TestHandleProviderCallback_EmptyState(t *testing.T) {
 		authURL, err := srv.StartAuthorizationFlow(
 			ctx,
 			client.ClientID,
-			client.RedirectURIs[0],
+			mustParseURL(t, client.RedirectURIs[0]),
 			"openid",
 			"",
 			validChallenge,
@@ -3923,7 +3923,7 @@ func TestServer_ExchangeAuthorizationCode_FamilyIDInMetadata(t *testing.T) {
 	_, err = srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"",
 		codeChallenge,
@@ -4031,7 +4031,7 @@ func TestServer_SessionCreationHandler_CalledOnExchange(t *testing.T) {
 	_, err = srv.StartAuthorizationFlow(
 		ctx,
 		client.ClientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"",
 		codeChallenge,
@@ -4112,7 +4112,7 @@ func TestServer_SessionCreationHandler_NotCalledWithoutHandler(t *testing.T) {
 	_, err = srv.StartAuthorizationFlow(
 		ctx,
 		client.ClientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"",
 		codeChallenge,

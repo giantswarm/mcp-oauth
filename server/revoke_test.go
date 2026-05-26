@@ -445,7 +445,7 @@ func TestServer_ConcurrentReuseAndRevocation(t *testing.T) {
 	_, err = srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"", // resource parameter (optional)
 		codeChallenge,

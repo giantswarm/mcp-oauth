@@ -77,7 +77,7 @@ func TestServer_StartAuthorizationFlow_EmptyScope(t *testing.T) {
 	authURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		client.ClientID,
-		"http://localhost:3000/callback",
+		mustParseURL(t, "http://localhost:3000/callback"),
 		"", // NO SCOPE PROVIDED - this is the key test case
 		"", // resource parameter (optional)
 		validChallenge,
@@ -197,7 +197,7 @@ func TestServer_StartAuthorizationFlow_WithExplicitScopes(t *testing.T) {
 	authURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		client.ClientID,
-		"http://localhost:3000/callback",
+		mustParseURL(t, "http://localhost:3000/callback"),
 		requestedScope, // EXPLICIT SCOPES PROVIDED
 		"",
 		validChallenge,
@@ -292,7 +292,7 @@ func TestServer_StartAuthorizationFlow_ScopeIntersection(t *testing.T) {
 	authURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		client.ClientID,
-		"http://localhost:3000/callback",
+		mustParseURL(t, "http://localhost:3000/callback"),
 		"", // NO SCOPE PROVIDED
 		"",
 		validChallenge,

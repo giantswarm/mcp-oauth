@@ -122,7 +122,7 @@ func (f *nonceFlowFixture) startOIDCFlow(t *testing.T) (providerState, expectedN
 	_, err := f.srv.StartAuthorizationFlow(
 		ctx,
 		f.clientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"",
 		challenge,
@@ -151,7 +151,7 @@ func (f *nonceFlowFixture) startNonOIDCFlow(t *testing.T) string {
 	_, err := f.srv.StartAuthorizationFlow(
 		ctx,
 		f.clientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"email",
 		"",
 		challenge,
@@ -300,7 +300,7 @@ func TestNonce_ClientNonceTooShort_ReplacedAndWarned(t *testing.T) {
 	_, err := fix.srv.StartAuthorizationFlow(
 		context.Background(),
 		fix.clientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"",
 		challenge,
@@ -384,7 +384,7 @@ func TestNonce_ForwardedToProviderURL(t *testing.T) {
 	authURL, err := fix.srv.StartAuthorizationFlow(
 		context.Background(),
 		fix.clientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"",
 		challenge,
@@ -416,7 +416,7 @@ func TestNonce_ClientSuppliedPassesThrough(t *testing.T) {
 	_, err := fix.srv.StartAuthorizationFlow(
 		context.Background(),
 		fix.clientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"",
 		challenge,
