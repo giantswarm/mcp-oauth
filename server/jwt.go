@@ -160,7 +160,7 @@ func (s *Server) checkJWTExpiration(ctx context.Context, claims map[string]any, 
 	}
 	exp := time.Unix(int64(expVal), 0)
 	gracePeriod := time.Duration(s.Config.ClockSkewGracePeriod) * time.Second
-	if time.Now().After(exp.Add(gracePeriod)) {
+	if security.IsTokenExpiredWithGracePeriod(exp, gracePeriod) {
 		s.logSelfIssuedJWTAuthFailure(ctx, "token_expired", tokenString)
 		return fmt.Errorf("access token expired")
 	}
@@ -172,19 +172,12 @@ func (s *Server) checkJWTExpiration(ctx context.Context, claims map[string]any, 
 // TrustedAudiences. Multi-valued aud (RFC 7519 §4.1.3) is handled via
 // helpers.FindMatchingAudience, matching the SSO-forwarded-ID-token path.
 func (s *Server) checkJWTAudience(ctx context.Context, claims map[string]any, tokenString string) error {
-	expected := s.Config.GetResourceIdentifier()
 	audiences := audiencesFromClaim(claims["aud"])
 	if len(audiences) == 0 {
 		s.logSelfIssuedJWTAuthFailure(ctx, "missing_aud", tokenString)
 		return fmt.Errorf("token missing audience claim")
 	}
-
-	for _, candidate := range audiences {
-		if helpers.NormalizeURL(candidate) == helpers.NormalizeURL(expected) {
-			return nil
-		}
-	}
-	if helpers.FindMatchingAudience(audiences, s.Config.TrustedAudiences) != "" {
+	if helpers.AudienceMatchesResourceOrTrusted(audiences, s.Config.GetResourceIdentifier(), s.Config.TrustedAudiences) {
 		return nil
 	}
 	s.logSelfIssuedJWTAuthFailure(ctx, "audience_mismatch", tokenString)
@@ -324,16 +317,14 @@ func (s *Server) logSelfIssuedJWTAccepted(ctx context.Context, tokenString strin
 		"jti", jti,
 		"token_suffix", helpers.TokenSuffix(tokenString, 8))
 
-	if s.Auditor != nil {
-		s.Auditor.LogEvent(ctx, security.Event{
-			Type:   security.EventSelfIssuedJWTAccepted,
-			UserID: userInfo.ID,
-			Details: map[string]any{
-				"validation_method": "self_issued_jwt",
-				"jti":               jti,
-			},
-		})
-	}
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type:   security.EventSelfIssuedJWTAccepted,
+		UserID: userInfo.ID,
+		Details: map[string]any{
+			"validation_method": "self_issued_jwt",
+			"jti":               jti,
+		},
+	})
 }
 
 // revokeSelfIssuedJWT extracts the jti and exp from a self-issued JWT and
@@ -381,19 +372,17 @@ func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID,
 		return true
 	}
 
-	if s.Auditor != nil {
-		userID, _ := claims["sub"].(string)
-		s.Auditor.LogEvent(ctx, security.Event{
-			Type:     security.EventSelfIssuedJWTRevoked,
-			UserID:   userID,
-			ClientID: clientID,
-			Details: map[string]any{
-				"jti":        jti,
-				"expires_at": expiresAt.Unix(),
-				"ip":         clientIP,
-			},
-		})
-	}
+	userID, _ := claims["sub"].(string)
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type:     security.EventSelfIssuedJWTRevoked,
+		UserID:   userID,
+		ClientID: clientID,
+		Details: map[string]any{
+			"jti":        jti,
+			"expires_at": expiresAt.Unix(),
+			"ip":         clientIP,
+		},
+	})
 	s.Logger.Debug("Self-issued JWT access token revoked",
 		"jti", jti,
 		"client_id", clientID,
@@ -409,7 +398,5 @@ func (s *Server) logSelfIssuedJWTAuthFailure(ctx context.Context, reason, tokenS
 	s.Logger.Debug("Self-issued JWT access token rejected",
 		"reason", reason,
 		"token_suffix", helpers.TokenSuffix(tokenString, 8))
-	if s.Auditor != nil {
-		s.Auditor.LogAuthFailure(ctx, "", "", "", reason)
-	}
+	s.Auditor.LogAuthFailure(ctx, "", "", "", reason)
 }

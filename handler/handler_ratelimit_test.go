@@ -108,6 +108,46 @@ func oauthEndpointCases() []endpointCase {
 			},
 			serve: func(h *Handler, w http.ResponseWriter, r *http.Request) { h.ServeTokenIntrospection(w, r) },
 		},
+		{
+			name: "ServeCallback",
+			request: func(remoteAddr string) *http.Request {
+				req := httptest.NewRequest(http.MethodGet, "/callback?state="+testStateMinLen+"&code=x", nil)
+				req.RemoteAddr = remoteAddr
+				return req
+			},
+			serve: func(h *Handler, w http.ResponseWriter, r *http.Request) { h.ServeCallback(w, r) },
+		},
+		{
+			name: "ServeAuthorizationServerMetadata",
+			request: func(remoteAddr string) *http.Request {
+				req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+				req.RemoteAddr = remoteAddr
+				return req
+			},
+			serve: func(h *Handler, w http.ResponseWriter, r *http.Request) {
+				h.ServeAuthorizationServerMetadata(w, r)
+			},
+		},
+		{
+			name: "ServeJWKS",
+			request: func(remoteAddr string) *http.Request {
+				req := httptest.NewRequest(http.MethodGet, "/oauth/jwks.json", nil)
+				req.RemoteAddr = remoteAddr
+				return req
+			},
+			serve: func(h *Handler, w http.ResponseWriter, r *http.Request) { h.ServeJWKS(w, r) },
+		},
+		{
+			name: "ServeClientRegistration",
+			request: func(remoteAddr string) *http.Request {
+				body := url.Values{"client_name": {"x"}, "redirect_uris": {"https://example.com/cb"}}.Encode()
+				req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(body))
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				req.RemoteAddr = remoteAddr
+				return req
+			},
+			serve: func(h *Handler, w http.ResponseWriter, r *http.Request) { h.ServeClientRegistration(w, r) },
+		},
 	}
 }
 

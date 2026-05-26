@@ -35,9 +35,7 @@ func (h *Handler) authenticateRevocationClient(w http.ResponseWriter, r *http.Re
 
 	if err := h.server.ValidateClientCredentials(r.Context(), basicClientID, basicClientSecret); err != nil {
 		h.logger.Warn("Client authentication failed for revocation", "client_id", basicClientID, "ip", clientIP)
-		if h.server.Auditor != nil {
-			h.server.Auditor.LogAuthFailure(r.Context(), "", basicClientID, clientIP, "revocation_auth_failed")
-		}
+		h.server.Auditor.LogAuthFailure(r.Context(), "", basicClientID, clientIP, "revocation_auth_failed")
 		h.recordHTTPMetrics(r.Context(), endpointRevoke, http.MethodPost, http.StatusUnauthorized, startTime)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "client authentication failed")
@@ -88,9 +86,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 	clientID := r.Form.Get("client_id")
 
 	if token == "" {
-		h.recordHTTPMetrics(r.Context(), endpointRevoke, http.MethodPost, http.StatusBadRequest, startTime)
-		instrumentation.SetSpanError(span, "token missing")
-		h.writeError(w, oauth.ErrorCodeInvalidRequest, "token is required", http.StatusBadRequest)
+		h.failRequest(w, r, span, endpointRevoke, http.MethodPost, http.StatusBadRequest, oauth.ErrorCodeInvalidRequest, "token is required", startTime)
 		return
 	}
 
@@ -216,9 +212,7 @@ func (h *Handler) authenticateIntrospectionClient(r *http.Request, clientIP stri
 	if authClientID != "" {
 		if err := h.server.ValidateClientCredentials(ctx, authClientID, authClientSecret); err != nil {
 			h.logger.Warn("Client authentication failed for introspection", "client_id", authClientID, "ip", clientIP)
-			if h.server.Auditor != nil {
-				h.server.Auditor.LogAuthFailure(ctx, "", authClientID, clientIP, "introspection_auth_failed")
-			}
+			h.server.Auditor.LogAuthFailure(ctx, "", authClientID, clientIP, "introspection_auth_failed")
 			return "", fmt.Errorf("client authentication failed")
 		}
 		return authClientID, nil
@@ -228,16 +222,12 @@ func (h *Handler) authenticateIntrospectionClient(r *http.Request, clientIP stri
 	clientID := r.Form.Get("client_id")
 	if clientID == "" {
 		h.logger.Warn("Token introspection rejected: missing client authentication", "ip", clientIP)
-		if h.server.Auditor != nil {
-			h.server.Auditor.LogAuthFailure(ctx, "", "", clientIP, "introspection_missing_auth")
-		}
+		h.server.Auditor.LogAuthFailure(ctx, "", "", clientIP, "introspection_missing_auth")
 		return "", fmt.Errorf("client authentication required for token introspection")
 	}
 
 	h.logger.Warn("Token introspection rejected: client_id without credentials", "client_id", clientID, "ip", clientIP)
-	if h.server.Auditor != nil {
-		h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "introspection_missing_credentials")
-	}
+	h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "introspection_missing_credentials")
 	return "", fmt.Errorf("client authentication required for token introspection")
 }
 

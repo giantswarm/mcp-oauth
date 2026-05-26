@@ -61,13 +61,13 @@ server, err := oauth.NewServer(
     store, store, store, // TokenStore, ClientStore, FlowStore
     &oauth.ServerConfig{
         Issuer: "https://your-server.com",
-        
+
         // Enable Client ID Metadata Documents
         EnableClientIDMetadataDocuments: true,
-        
+
         // Optional: Configure metadata fetch timeout (default: 10s)
         ClientMetadataFetchTimeout: 10 * time.Second,
-        
+
         // Optional: Configure cache TTL (default: 5 minutes)
         ClientMetadataCacheTTL: 5 * time.Minute,
     },
@@ -344,7 +344,7 @@ SSRF protection blocked the request because the hostname resolves to a private I
 
 The server couldn't fetch your metadata document.
 
-**Solution**: 
+**Solution**:
 - Verify the URL is accessible
 - Check the server returns `application/json` content type
 - Ensure the response is valid JSON
@@ -398,4 +398,3 @@ A previous fetch attempt failed and is cached.
 
 - [MCP Specification 2025-11-25](https://spec.modelcontextprotocol.io/specification/2025-11-25/)
 - [draft-ietf-oauth-client-id-metadata-document-00](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/)
-

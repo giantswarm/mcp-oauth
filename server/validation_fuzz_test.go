@@ -10,7 +10,10 @@ import (
 // is deterministic and matches a hand-rolled SHA-256(verifier) for every
 // input the fuzzer produces.
 func FuzzComputePKCEChallenge_S256(f *testing.F) {
-	srv := &Server{}
+	srv := &Server{
+		Instrumentation: testInstrumentation(f),
+		Auditor:         testAuditor(),
+	}
 	for _, seed := range []string{
 		"abcDEF-._~",
 		"43-char-verifier-aaaaaaaaaaaaaaaaaaaaaaaaaaaa",

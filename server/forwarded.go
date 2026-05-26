@@ -217,13 +217,8 @@ func (s *Server) deriveForwardedSessionID(bearerToken string) string {
 	return "ext-" + hex.EncodeToString(digest[:sessionIDDigestBytes])
 }
 
-// recordForwardedIDTokenAccepted emits the forwarded-ID-token metric. Safe when
-// Instrumentation is unconfigured. Threads ctx through so OTel trace correlation
-// survives on the metric.
+// recordForwardedIDTokenAccepted emits the forwarded-ID-token metric.
 func (s *Server) recordForwardedIDTokenAccepted(ctx context.Context, provider, issuer, audience string, result instrumentation.ForwardedIDTokenResult) {
-	if s.Instrumentation == nil {
-		return
-	}
 	s.Instrumentation.Metrics().RecordForwardedIDTokenAccepted(ctx, provider, issuer, audience, result)
 }
 

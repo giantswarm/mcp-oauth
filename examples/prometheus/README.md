@@ -90,7 +90,7 @@ scrape_configs:
 - `oauth_http_requests_total{method, endpoint, status}` - Total HTTP requests
 - `oauth_http_request_duration_milliseconds{endpoint}` - Request duration histogram
 
-### OAuth Flow Metrics  
+### OAuth Flow Metrics
 - `oauth_authorization_started{client_id}` - Authorization flows started
 - `oauth_callback_processed{client_id, success}` - Callbacks processed
 - `oauth_code_exchanged{client_id, pkce_method}` - Codes exchanged for tokens
@@ -127,8 +127,8 @@ rate(oauth_http_requests_total[5m])
 
 Calculate error rate:
 ```promql
-rate(oauth_http_requests_total{status=~"5.."}[5m]) 
-/ 
+rate(oauth_http_requests_total{status=~"5.."}[5m])
+/
 rate(oauth_http_requests_total[5m])
 ```
 
@@ -157,8 +157,8 @@ groups:
     rules:
       - alert: HighErrorRate
         expr: |
-          rate(oauth_http_requests_total{status=~"5.."}[5m]) 
-          / 
+          rate(oauth_http_requests_total{status=~"5.."}[5m])
+          /
           rate(oauth_http_requests_total[5m]) > 0.05
         for: 5m
         annotations:
@@ -193,4 +193,3 @@ Import the included Grafana dashboard JSON to visualize all metrics.
 - [OpenTelemetry Documentation](https://opentelemetry.io/docs/)
 - [Prometheus Documentation](https://prometheus.io/docs/)
 - [Grafana Documentation](https://grafana.com/docs/)
-
