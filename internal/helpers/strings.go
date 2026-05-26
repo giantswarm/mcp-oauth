@@ -267,3 +267,14 @@ func FindMatchingAudience(tokenAudiences, trustedAudiences []string) string {
 	}
 	return ""
 }
+
+// AudienceMatchesResourceOrTrusted reports true if any element of audiences
+// matches resourceIdentifier (URL-normalized) or any of trustedAudiences.
+// This is the canonical two-step check used across JWT, opaque, and SSO
+// validation paths per RFC 8707.
+func AudienceMatchesResourceOrTrusted(audiences []string, resourceIdentifier string, trustedAudiences []string) bool {
+	combined := make([]string, 0, 1+len(trustedAudiences))
+	combined = append(combined, resourceIdentifier)
+	combined = append(combined, trustedAudiences...)
+	return FindMatchingAudience(audiences, combined) != ""
+}

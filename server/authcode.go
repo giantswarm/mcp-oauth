@@ -144,7 +144,7 @@ func (s *Server) handleCodeReuseDetection(ctx context.Context, authCode *storage
 // validatePublicClientPKCE validates that public clients use PKCE
 // Returns error if public client is not using PKCE and it's required
 func (s *Server) validatePublicClientPKCE(ctx context.Context, client *storage.Client, authCode *storage.AuthorizationCode, _ string) error {
-	if client.ClientType != ClientTypePublic || authCode.CodeChallenge != "" {
+	if !client.IsPublic() || authCode.CodeChallenge != "" {
 		return nil // Not a public client or PKCE is used
 	}
 
