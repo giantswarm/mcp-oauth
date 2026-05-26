@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -227,6 +228,86 @@ func TestServer_IntrospectToken_OpaquePath_CrossClientDenied_EmitsAuditEvent(t *
 	require.Equal(t, "medium", records[0].Details["severity"])
 	require.Equal(t, "cross_client_probe", records[0].Details["reason"])
 	require.Equal(t, owner.ClientID, records[0].Details["token_bound_client"])
+}
+
+func TestServer_IntrospectToken_OpaquePath_OwnerSeesExpAndIat(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	t.Cleanup(func() { store.Stop() })
+
+	cfg := &Config{
+		Issuer:            "https://auth.example.com",
+		AccessTokenFormat: AccessTokenFormatOpaque,
+	}
+	require.NoError(t, cfg.Validate())
+
+	srv, err := New(mock.NewProvider(), store, store, store, cfg, nil)
+	require.NoError(t, err)
+
+	owner, _, err := srv.RegisterClient(ctx, "Owner", ClientTypeConfidential, "", []string{"https://example.com/cb"}, []string{"openid"}, "192.168.1.1", 10)
+	require.NoError(t, err)
+
+	const accessToken = "opaque-owner-token" //nolint:gosec
+	issuedAt := time.Now().Truncate(time.Second)
+	expiresAt := issuedAt.Add(time.Hour)
+
+	require.NoError(t, store.SaveToken(ctx, accessToken, &oauth2.Token{AccessToken: accessToken}))
+	require.NoError(t, store.SaveTokenMetadata(ctx, accessToken, storage.TokenMetadata{
+		UserID:    "user-1",
+		ClientID:  owner.ClientID,
+		IssuedAt:  issuedAt,
+		ExpiresAt: expiresAt,
+		TokenType: "access",
+		Audience:  cfg.GetResourceIdentifier(),
+		Scopes:    []string{"openid", "email"},
+	}))
+
+	response := srv.IntrospectToken(ctx, accessToken, owner.ClientID)
+
+	require.Equal(t, true, response["active"])
+	require.Equal(t, "Bearer", response["token_type"])
+	require.Equal(t, owner.ClientID, response["client_id"])
+
+	expVal, hasExp := response["exp"].(int64)
+	require.True(t, hasExp, "exp must be present in opaque introspection response (got %T)", response["exp"])
+	require.Equal(t, expiresAt.Unix(), expVal)
+
+	iatVal, hasIat := response["iat"].(int64)
+	require.True(t, hasIat, "iat must be present in opaque introspection response (got %T)", response["iat"])
+	require.Equal(t, issuedAt.Unix(), iatVal)
+}
+
+func TestServer_IntrospectToken_OpaquePath_ZeroExpiresAt_OmitsExp(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	t.Cleanup(func() { store.Stop() })
+
+	cfg := &Config{
+		Issuer:            "https://auth.example.com",
+		AccessTokenFormat: AccessTokenFormatOpaque,
+	}
+	require.NoError(t, cfg.Validate())
+
+	srv, err := New(mock.NewProvider(), store, store, store, cfg, nil)
+	require.NoError(t, err)
+
+	owner, _, err := srv.RegisterClient(ctx, "Owner", ClientTypeConfidential, "", []string{"https://example.com/cb"}, []string{"openid"}, "192.168.1.1", 10)
+	require.NoError(t, err)
+
+	const accessToken = "opaque-no-exp-token" //nolint:gosec
+	require.NoError(t, store.SaveToken(ctx, accessToken, &oauth2.Token{AccessToken: accessToken}))
+	require.NoError(t, store.SaveTokenMetadata(ctx, accessToken, storage.TokenMetadata{
+		UserID:    "user-1",
+		ClientID:  owner.ClientID,
+		TokenType: "access",
+		Audience:  cfg.GetResourceIdentifier(),
+		Scopes:    []string{"openid"},
+	}))
+
+	response := srv.IntrospectToken(ctx, accessToken, owner.ClientID)
+
+	require.Equal(t, true, response["active"])
+	require.NotContains(t, response, "exp", "exp must be absent when ExpiresAt is zero")
 }
 
 func TestNew_RejectsUnregisteredIntrospectionResourceServer(t *testing.T) {

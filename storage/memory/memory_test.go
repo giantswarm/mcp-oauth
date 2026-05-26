@@ -1690,3 +1690,60 @@ func TestStore_SaveTokenMetadata_WithScopesAndAudience(t *testing.T) {
 		t.Errorf("Audience = %q, want %q", meta.Audience, testAudienceURL)
 	}
 }
+
+func TestStore_SaveTokenMetadata_IssuedAtExpiresAtRoundTrip(t *testing.T) {
+	store := New()
+	defer store.Stop()
+
+	issuedAt := time.Now().Truncate(time.Second)
+	expiresAt := issuedAt.Add(time.Hour)
+
+	err := store.SaveTokenMetadata(t.Context(), "tok-exp", storage.TokenMetadata{
+		UserID:    "user-1",
+		ClientID:  "client-1",
+		TokenType: "access",
+		IssuedAt:  issuedAt,
+		ExpiresAt: expiresAt,
+	})
+	if err != nil {
+		t.Fatalf("SaveTokenMetadata() error = %v", err)
+	}
+
+	meta, err := store.GetTokenMetadata("tok-exp")
+	if err != nil {
+		t.Fatalf("GetTokenMetadata() error = %v", err)
+	}
+
+	if !meta.IssuedAt.Equal(issuedAt) {
+		t.Errorf("IssuedAt = %v, want %v", meta.IssuedAt, issuedAt)
+	}
+	if !meta.ExpiresAt.Equal(expiresAt) {
+		t.Errorf("ExpiresAt = %v, want %v", meta.ExpiresAt, expiresAt)
+	}
+}
+
+func TestStore_SaveTokenMetadata_ZeroTimestamps(t *testing.T) {
+	store := New()
+	defer store.Stop()
+
+	err := store.SaveTokenMetadata(t.Context(), "tok-zero", storage.TokenMetadata{
+		UserID:    "user-1",
+		ClientID:  "client-1",
+		TokenType: "access",
+	})
+	if err != nil {
+		t.Fatalf("SaveTokenMetadata() error = %v", err)
+	}
+
+	meta, err := store.GetTokenMetadata("tok-zero")
+	if err != nil {
+		t.Fatalf("GetTokenMetadata() error = %v", err)
+	}
+
+	if !meta.IssuedAt.IsZero() {
+		t.Errorf("IssuedAt = %v, want zero", meta.IssuedAt)
+	}
+	if !meta.ExpiresAt.IsZero() {
+		t.Errorf("ExpiresAt = %v, want zero", meta.ExpiresAt)
+	}
+}

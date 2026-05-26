@@ -1267,14 +1267,12 @@ func (s *Store) cleanup() {
 // ============================================================
 
 // SaveTokenMetadata saves metadata for a token. Implements
-// storage.TokenMetadataStore. The metadata's IssuedAt is overwritten with
-// time.Now() at the call site so callers do not have to populate it.
+// storage.TokenMetadataStore. IssuedAt and ExpiresAt are set by the caller
+// and persisted as-is.
 func (s *Store) SaveTokenMetadata(_ context.Context, tokenID string, metadata storage.TokenMetadata) error {
 	if tokenID == "" || metadata.UserID == "" || metadata.ClientID == "" {
 		return fmt.Errorf("tokenID, userID, and clientID cannot be empty")
 	}
-
-	metadata.IssuedAt = time.Now()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

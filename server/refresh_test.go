@@ -1455,6 +1455,12 @@ func TestServer_RefreshAccessToken_FamilyIDInMetadata(t *testing.T) {
 	if newATMeta.FamilyID != origFamilyID {
 		t.Errorf("New AT FamilyID = %q, want %q (same family after refresh)", newATMeta.FamilyID, origFamilyID)
 	}
+	if newATMeta.ExpiresAt.IsZero() {
+		t.Error("New AT ExpiresAt must be set after refresh")
+	}
+	if !newATMeta.IssuedAt.Before(newATMeta.ExpiresAt) {
+		t.Errorf("New AT IssuedAt (%v) must be before ExpiresAt (%v)", newATMeta.IssuedAt, newATMeta.ExpiresAt)
+	}
 
 	newRTMeta, err := store.GetTokenMetadata(token2.RefreshToken)
 	if err != nil {
@@ -1462,6 +1468,9 @@ func TestServer_RefreshAccessToken_FamilyIDInMetadata(t *testing.T) {
 	}
 	if newRTMeta.FamilyID != origFamilyID {
 		t.Errorf("New RT FamilyID = %q, want %q (same family after refresh)", newRTMeta.FamilyID, origFamilyID)
+	}
+	if newRTMeta.ExpiresAt.IsZero() {
+		t.Error("New RT ExpiresAt must be set after refresh")
 	}
 }
 

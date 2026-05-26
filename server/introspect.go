@@ -166,7 +166,7 @@ func (s *Server) introspectOpaqueToken(ctx context.Context, accessToken, request
 	return s.introspectionResponseFromOpaqueToken(ctx, accessToken, tokenMetadata, userInfo)
 }
 
-func (s *Server) introspectionResponseFromOpaqueToken(ctx context.Context, accessToken string, tokenMetadata *storage.TokenMetadata, userInfo *providers.UserInfo) map[string]any {
+func (s *Server) introspectionResponseFromOpaqueToken(_ context.Context, _ string, tokenMetadata *storage.TokenMetadata, userInfo *providers.UserInfo) map[string]any {
 	response := map[string]any{
 		"active":     true,
 		"token_type": "Bearer",
@@ -190,8 +190,8 @@ func (s *Server) introspectionResponseFromOpaqueToken(ctx context.Context, acces
 	if !tokenMetadata.IssuedAt.IsZero() {
 		response["iat"] = tokenMetadata.IssuedAt.Unix()
 	}
-	if storedToken, err := s.tokenStore.GetToken(ctx, accessToken); err == nil && storedToken != nil && !storedToken.Expiry.IsZero() {
-		response["exp"] = storedToken.Expiry.Unix()
+	if !tokenMetadata.ExpiresAt.IsZero() {
+		response["exp"] = tokenMetadata.ExpiresAt.Unix()
 	}
 	return response
 }

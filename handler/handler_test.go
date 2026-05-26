@@ -286,7 +286,8 @@ func TestHandler_ParseForm_Error(t *testing.T) {
 
 func seedOpaqueIntrospectionToken(t *testing.T, store *memory.Store, accessToken, userID, clientID, audience string, scopes []string, expiresAt time.Time) time.Time {
 	t.Helper()
-	ctx := context.Background()
+	ctx := t.Context()
+	issuedAt := time.Now().Truncate(time.Second)
 	providerToken := &oauth2.Token{
 		AccessToken: accessToken,
 		TokenType:   "Bearer",
@@ -298,17 +299,15 @@ func seedOpaqueIntrospectionToken(t *testing.T, store *memory.Store, accessToken
 	if err := store.SaveTokenMetadata(ctx, accessToken, storage.TokenMetadata{
 		UserID:    userID,
 		ClientID:  clientID,
+		IssuedAt:  issuedAt,
+		ExpiresAt: expiresAt,
 		TokenType: "access",
 		Audience:  audience,
 		Scopes:    scopes,
 	}); err != nil {
 		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
-	meta, err := store.GetTokenMetadata(accessToken)
-	if err != nil {
-		t.Fatalf("GetTokenMetadata() error = %v", err)
-	}
-	return meta.IssuedAt
+	return issuedAt
 }
 
 func mustParseURL(t *testing.T, s string) *url.URL {
