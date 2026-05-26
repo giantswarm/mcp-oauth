@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace/noop"
 )
@@ -26,7 +28,7 @@ func TestHandleRegistrationError(t *testing.T) {
 	}{
 		{
 			name:       "registration limit triggers 429 invalid_request",
-			err:        errors.New("client registration limit exceeded for IP 192.0.2.1"),
+			err:        fmt.Errorf("%w: 192.0.2.1 (5/5)", storage.ErrClientIPLimitExceeded),
 			wantStatus: http.StatusTooManyRequests,
 			wantCode:   oauth.ErrorCodeInvalidRequest,
 		},

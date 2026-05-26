@@ -30,7 +30,9 @@ func (s *Server) logAuthCodeValidationFailure(ctx context.Context, reason, clien
 		"user_id", userID,
 		"code_prefix", codePrefix)
 
-	s.Auditor.LogAuthFailure(ctx, userID, clientID, "", reason)
+	if s.Auditor != nil {
+		s.Auditor.LogAuthFailure(ctx, userID, clientID, "", reason)
+	}
 
 	// Return generic error per RFC 6749 (don't reveal details to attacker)
 	return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
@@ -99,7 +101,10 @@ func (s *Server) validateScopesForAuthFlow(ctx context.Context, clientID, scope 
 // handleCodeReuseDetection handles authorization code reuse security event
 // Revokes all tokens and logs the security event per OAuth 2.1 requirements
 func (s *Server) handleCodeReuseDetection(ctx context.Context, authCode *storage.AuthorizationCode, clientID, code string, span trace.Span) error {
-	s.Instrumentation.Metrics().RecordCodeReuseDetected(ctx)
+	// Record code reuse detection metric
+	if s.Instrumentation != nil {
+		s.Instrumentation.Metrics().RecordCodeReuseDetected(ctx)
+	}
 
 	if span != nil {
 		span.SetAttributes(
@@ -120,15 +125,17 @@ func (s *Server) handleCodeReuseDetection(ctx context.Context, authCode *storage
 		s.Logger.Error("Failed to revoke tokens after code reuse detection", "error", err)
 	}
 
-	s.Auditor.LogEvent(ctx, security.Event{
-		Type:     security.EventAuthorizationCodeReuseDetected,
-		UserID:   authCode.UserID,
-		ClientID: clientID,
-		Details: map[string]any{
-			"severity": "critical", "action": "all_tokens_revoked", "oauth_spec": "OAuth 2.1 Section 4.1.2",
-		},
-	})
-	s.Auditor.LogAuthFailure(ctx, authCode.UserID, clientID, "", "authorization_code_reuse")
+	if s.Auditor != nil {
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type:     security.EventAuthorizationCodeReuseDetected,
+			UserID:   authCode.UserID,
+			ClientID: clientID,
+			Details: map[string]any{
+				"severity": "critical", "action": "all_tokens_revoked", "oauth_spec": "OAuth 2.1 Section 4.1.2",
+			},
+		})
+		s.Auditor.LogAuthFailure(ctx, authCode.UserID, clientID, "", "authorization_code_reuse")
+	}
 
 	_ = s.flowStore.DeleteAuthorizationCode(ctx, code)
 	return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
@@ -146,15 +153,17 @@ func (s *Server) validatePublicClientPKCE(ctx context.Context, client *storage.C
 			"client_id", client.ClientID, "user_id", authCode.UserID,
 			"client_type", client.ClientType, "oauth_spec", OAuthSpecVersion)
 
-		s.Auditor.LogEvent(ctx, security.Event{
-			Type:     security.EventPKCERequiredForPublicClient,
-			UserID:   authCode.UserID,
-			ClientID: client.ClientID,
-			Details: map[string]any{
-				"severity": "high", "client_type": client.ClientType, "oauth_spec": OAuthSpecVersion,
-			},
-		})
-		s.Auditor.LogAuthFailure(ctx, authCode.UserID, client.ClientID, "", "pkce_required_for_public_client")
+		if s.Auditor != nil {
+			s.Auditor.LogEvent(ctx, security.Event{
+				Type:     security.EventPKCERequiredForPublicClient,
+				UserID:   authCode.UserID,
+				ClientID: client.ClientID,
+				Details: map[string]any{
+					"severity": "high", "client_type": client.ClientType, "oauth_spec": OAuthSpecVersion,
+				},
+			})
+			s.Auditor.LogAuthFailure(ctx, authCode.UserID, client.ClientID, "", "pkce_required_for_public_client")
+		}
 		return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 	}
 
@@ -162,14 +171,16 @@ func (s *Server) validatePublicClientPKCE(ctx context.Context, client *storage.C
 	s.Logger.Warn("INSECURE: Public client token exchange without PKCE allowed by configuration",
 		"client_id", client.ClientID, "user_id", authCode.UserID, "security_risk", "authorization_code_theft")
 
-	s.Auditor.LogEvent(ctx, security.Event{
-		Type:     security.EventInsecurePublicClientWithoutPKCE,
-		UserID:   authCode.UserID,
-		ClientID: client.ClientID,
-		Details: map[string]any{
-			"severity": "warning", "client_type": client.ClientType, "config": "AllowPublicClientsWithoutPKCE=true",
-		},
-	})
+	if s.Auditor != nil {
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type:     security.EventInsecurePublicClientWithoutPKCE,
+			UserID:   authCode.UserID,
+			ClientID: client.ClientID,
+			Details: map[string]any{
+				"severity": "warning", "client_type": client.ClientType, "config": "AllowPublicClientsWithoutPKCE=true",
+			},
+		})
+	}
 	return nil
 }
 
@@ -180,7 +191,9 @@ func (s *Server) validatePKCEWithAudit(ctx context.Context, authCode *storage.Au
 	}
 
 	if err := s.validatePKCE(authCode.CodeChallenge, authCode.CodeChallengeMethod, codeVerifier); err != nil {
-		s.Instrumentation.Metrics().RecordPKCEValidationFailed(ctx, authCode.CodeChallengeMethod)
+		if s.Instrumentation != nil {
+			s.Instrumentation.Metrics().RecordPKCEValidationFailed(ctx, authCode.CodeChallengeMethod)
+		}
 
 		if span != nil {
 			span.SetAttributes(
@@ -191,13 +204,15 @@ func (s *Server) validatePKCEWithAudit(ctx context.Context, authCode *storage.Au
 			span.SetStatus(codes.Error, "PKCE validation failed")
 		}
 
-		s.Auditor.LogEvent(ctx, security.Event{
-			Type:     security.EventPKCEValidationFailed,
-			UserID:   authCode.UserID,
-			ClientID: clientID,
-			Details:  map[string]any{"reason": err.Error()},
-		})
-		s.Auditor.LogAuthFailure(ctx, authCode.UserID, clientID, "", fmt.Sprintf("pkce_validation_failed: %v", err))
+		if s.Auditor != nil {
+			s.Auditor.LogEvent(ctx, security.Event{
+				Type:     security.EventPKCEValidationFailed,
+				UserID:   authCode.UserID,
+				ClientID: clientID,
+				Details:  map[string]any{"reason": err.Error()},
+			})
+			s.Auditor.LogAuthFailure(ctx, authCode.UserID, clientID, "", fmt.Sprintf("pkce_validation_failed: %v", err))
+		}
 		return fmt.Errorf("PKCE validation failed: %w", err)
 	}
 	return nil
@@ -237,7 +252,7 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID string, re
 	// CRITICAL SECURITY: Validate state parameter from client for CSRF protection
 	if err := s.validateClientStateParameter(clientState); err != nil {
 		s.logAuthFailure(ctx, "", clientID, "invalid_state_parameter")
-		return "", fmt.Errorf("%w (OAuth 2.0 Security BCP)", err)
+		return "", fmt.Errorf("oauth security bcp violation: %w", err)
 	}
 
 	// Generate server-side state if client didn't provide one
@@ -450,19 +465,23 @@ func (s *Server) validateAndRetrieveAuthState(ctx context.Context, providerState
 
 // logInvalidProviderCallback logs an invalid provider callback event.
 func (s *Server) logInvalidProviderCallback(ctx context.Context, reason string) {
-	s.Auditor.LogEvent(ctx, security.Event{
-		Type:    security.EventInvalidProviderCallback,
-		Details: map[string]any{"reason": reason},
-	})
+	if s.Auditor != nil {
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type:    security.EventInvalidProviderCallback,
+			Details: map[string]any{"reason": reason},
+		})
+	}
 }
 
 // logProviderStateMismatch logs a provider state mismatch event.
 func (s *Server) logProviderStateMismatch(ctx context.Context, clientID string) {
-	s.Auditor.LogEvent(ctx, security.Event{
-		Type:     security.EventProviderStateMismatch,
-		ClientID: clientID,
-		Details:  map[string]any{"severity": "critical"},
-	})
+	if s.Auditor != nil {
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type:     security.EventProviderStateMismatch,
+			ClientID: clientID,
+			Details:  map[string]any{"severity": "critical"},
+		})
+	}
 }
 
 // validateUpstreamIDTokenNonce requires the upstream id_token's `nonce` claim
@@ -536,6 +555,9 @@ func nonceMismatchReason(claimNonce string) string {
 // logProviderNonceMismatch emits the audit event for an upstream id_token
 // nonce echo failure. severity=high — replay-attack indicator.
 func (s *Server) logProviderNonceMismatch(ctx context.Context, clientID, reason string) {
+	if s.Auditor == nil {
+		return
+	}
 	s.Auditor.LogEvent(ctx, security.Event{
 		Type:     security.EventProviderNonceMismatch,
 		ClientID: clientID,
@@ -550,16 +572,18 @@ func (s *Server) logProviderNonceMismatch(ctx context.Context, clientID, reason 
 func (s *Server) exchangeCodeWithProvider(ctx context.Context, code, providerVerifier string, authState *storage.AuthorizationState, providerState string) (*oauth2.Token, error) {
 	providerToken, err := s.provider.ExchangeCode(ctx, code, providerVerifier)
 	if err != nil {
-		s.Auditor.LogEvent(ctx, security.Event{
-			Type: security.EventProviderCodeExchangeFailed,
-			Details: map[string]any{
-				"provider":     s.provider.Name(),
-				"error":        err.Error(),
-				"pkce_enabled": providerVerifier != "",
-				"client_id":    authState.ClientID,
-				"state_id":     helpers.SafeTruncate(providerState, 16),
-			},
-		})
+		if s.Auditor != nil {
+			s.Auditor.LogEvent(ctx, security.Event{
+				Type: security.EventProviderCodeExchangeFailed,
+				Details: map[string]any{
+					"provider":     s.provider.Name(),
+					"error":        err.Error(),
+					"pkce_enabled": providerVerifier != "",
+					"client_id":    authState.ClientID,
+					"state_id":     helpers.SafeTruncate(providerState, 16),
+				},
+			})
+		}
 		return nil, fmt.Errorf("failed to exchange code with provider: %w", err)
 	}
 	return providerToken, nil
@@ -610,7 +634,12 @@ func (s *Server) saveUserInfoAndToken(ctx context.Context, userInfo *providers.U
 // each provider-token persistence failure path. The reason enum is the stable
 // dimension dashboards split on.
 func (s *Server) auditProviderTokenStorageFailed(ctx context.Context, userInfo *providers.UserInfo, reason, detail string) {
-	s.Instrumentation.Metrics().RecordProviderTokenStorageFailed(ctx, reason)
+	if s.Instrumentation != nil {
+		s.Instrumentation.Metrics().RecordProviderTokenStorageFailed(ctx, reason)
+	}
+	if s.Auditor == nil {
+		return
+	}
 	userID := ""
 	if userInfo != nil {
 		userID = userInfo.ID
@@ -702,15 +731,17 @@ func (s *Server) createAndSaveAuthorizationCode(ctx context.Context, authState *
 
 // logAuthorizationCodeIssued logs an authorization code issued event.
 func (s *Server) logAuthorizationCodeIssued(ctx context.Context, userID, clientID, scope string) {
-	s.Auditor.LogEvent(ctx, security.Event{
-		Type:     security.EventAuthorizationCodeIssued,
-		UserID:   userID,
-		ClientID: clientID,
-		Details: map[string]any{
-			"scope":                 scope,
-			"client_state_returned": true,
-		},
-	})
+	if s.Auditor != nil {
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type:     security.EventAuthorizationCodeIssued,
+			UserID:   userID,
+			ClientID: clientID,
+			Details: map[string]any{
+				"scope":                 scope,
+				"client_state_returned": true,
+			},
+		})
+	}
 }
 
 // ExchangeAuthorizationCode exchanges an authorization code for tokens
@@ -744,7 +775,9 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 		s.sessionCreationHandler(ctx, authCode.UserID, familyID, tokenResponse)
 	}
 
-	s.Auditor.LogTokenIssued(ctx, authCode.UserID, clientID, "", authCode.Scope)
+	if s.Auditor != nil {
+		s.Auditor.LogTokenIssued(ctx, authCode.UserID, clientID, "", authCode.Scope)
+	}
 
 	s.recordExchangeSuccess(span, authCode)
 	return tokenResponse, authCode.Scope, nil
@@ -821,11 +854,13 @@ func (s *Server) logScopeValidationFailure(ctx context.Context, authCode *storag
 		"reason", err.Error(), "client_id", clientID, "user_id", authCode.UserID,
 		"requested_scope", authCode.Scope, "code_prefix", helpers.SafeTruncate(code, 8))
 
-	s.Auditor.LogEvent(ctx, security.Event{
-		Type: security.EventScopeEscalationAttempt, UserID: authCode.UserID, ClientID: clientID,
-		Details: map[string]any{"severity": "high", "requested_scope": authCode.Scope},
-	})
-	s.Auditor.LogAuthFailure(ctx, authCode.UserID, clientID, "", fmt.Sprintf("scope_validation_failed: %v", err))
+	if s.Auditor != nil {
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type: security.EventScopeEscalationAttempt, UserID: authCode.UserID, ClientID: clientID,
+			Details: map[string]any{"severity": "high", "requested_scope": authCode.Scope},
+		})
+		s.Auditor.LogAuthFailure(ctx, authCode.UserID, clientID, "", fmt.Sprintf("scope_validation_failed: %v", err))
+	}
 }
 
 // generateAndStoreTokens generates and stores access and refresh tokens.
@@ -987,6 +1022,10 @@ func (s *Server) recordExchangeSuccess(span trace.Span, authCode *storage.Author
 // logAuthorizationFlowStarted logs the authorization flow start event with all relevant details.
 // This helper reduces cyclomatic complexity in StartAuthorizationFlow.
 func (s *Server) logAuthorizationFlowStarted(ctx context.Context, clientID, redirectURI, scope, codeChallengeMethod, resource string, authOpts *providers.AuthorizationURLOptions) {
+	if s.Auditor == nil {
+		return
+	}
+
 	details := map[string]any{
 		"redirect_uri":          redirectURI,
 		"scope":                 scope,

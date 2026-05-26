@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -48,7 +49,9 @@ func (h *Handler) checkClientRegistrationRateLimit(ctx context.Context, w http.R
 			"ip", clientIP,
 			"max_per_window", h.server.Config.MaxRegistrationsPerHour,
 			"window", time.Duration(h.server.Config.RegistrationRateLimitWindow)*time.Second)
-		h.server.Auditor.LogClientRegistrationRateLimitExceeded(ctx, clientIP)
+		if h.server.Auditor != nil {
+			h.server.Auditor.LogClientRegistrationRateLimitExceeded(ctx, clientIP)
+		}
 		h.recordHTTPMetrics(ctx, endpointRegister, http.MethodPost, http.StatusTooManyRequests, startTime)
 		retryAfter := int(h.server.ClientRegistrationRateLimiter.Window().Seconds())
 		if retryAfter < 1 {
@@ -190,7 +193,11 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	}
 
 	h.setCORSHeaders(w, r)
-	clientIP := h.clientIP(r)
+
+	clientIP, ok := h.gateIPRateLimit(w, r, span, endpointRegister, http.MethodPost, startTime)
+	if !ok {
+		return
+	}
 
 	if h.checkClientRegistrationRateLimit(r.Context(), w, clientIP, startTime) {
 		return
@@ -298,7 +305,7 @@ func (h *Handler) recordTrustedAllowlistSpan(span trace.Span, auth registrationA
 
 // handleRegistrationError handles client registration errors.
 func (h *Handler) handleRegistrationError(ctx context.Context, w http.ResponseWriter, err error, clientIP string, startTime time.Time, span trace.Span) {
-	if strings.Contains(err.Error(), "registration limit") {
+	if errors.Is(err, storage.ErrClientIPLimitExceeded) {
 		h.logger.Warn("Client registration limit exceeded", "ip", clientIP, "error", err)
 		h.recordHTTPMetrics(ctx, endpointRegister, http.MethodPost, http.StatusTooManyRequests, startTime)
 		instrumentation.RecordError(span, err)
@@ -317,7 +324,7 @@ func (h *Handler) handleRegistrationError(ctx context.Context, w http.ResponseWr
 // auditTrustedAllowlistRegistration logs unauthenticated DCR via either trusted
 // allowlist (scheme or HTTPS redirect URI) for security monitoring.
 func (h *Handler) auditTrustedAllowlistRegistration(ctx context.Context, auth registrationAuthResult, client *storage.Client, clientIP string) {
-	if !auth.viaTrustedAllowlist {
+	if !auth.viaTrustedAllowlist || h.server.Auditor == nil {
 		return
 	}
 
