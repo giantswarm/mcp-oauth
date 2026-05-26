@@ -106,6 +106,7 @@ func TestDPoPMiddleware_DPoPMissingProof(t *testing.T) {
 	mw.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusUnauthorized, w.Code)
+	require.Equal(t, "application/json", w.Header().Get("Content-Type"))
 	require.Contains(t, w.Body.String(), "invalid_request")
 }
 
@@ -130,5 +131,6 @@ func TestDPoPMiddleware_DPoPInvalidProof(t *testing.T) {
 	mw.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusUnauthorized, w.Code)
+	require.Equal(t, "application/json", w.Header().Get("Content-Type"))
 	require.Contains(t, w.Body.String(), "invalid_dpop_proof")
 }
