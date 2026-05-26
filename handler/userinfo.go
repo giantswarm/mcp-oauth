@@ -124,14 +124,12 @@ func (h *Handler) ServeUserInfo(w http.ResponseWriter, r *http.Request) {
 	h.recordHTTPMetrics(r.Context(), endpointUserInfo, r.Method, http.StatusOK, startTime)
 	instrumentation.SetSpanSuccess(span)
 
-	if h.server.Auditor != nil {
-		h.server.Auditor.LogEvent(r.Context(), security.Event{
-			Type:      security.EventUserInfoServed,
-			UserID:    userInfo.ID,
-			IPAddress: h.clientIP(r),
-			Details: map[string]any{
-				"claim_groups": emitted,
-			},
-		})
-	}
+	h.server.Auditor.LogEvent(r.Context(), security.Event{
+		Type:      security.EventUserInfoServed,
+		UserID:    userInfo.ID,
+		IPAddress: h.clientIP(r),
+		Details: map[string]any{
+			"claim_groups": emitted,
+		},
+	})
 }

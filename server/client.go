@@ -118,17 +118,15 @@ func (s *Server) RegisterClientV2(ctx context.Context, clientName, clientType, t
 // validateRedirectURIsWithAudit validates redirect URIs and logs failures for auditing.
 func (s *Server) validateRedirectURIsWithAudit(ctx context.Context, redirectURIs []string, clientIP string) error {
 	if err := s.ValidateRedirectURIsForRegistration(ctx, redirectURIs); err != nil {
-		if s.Auditor != nil {
-			category := GetRedirectURIErrorCategory(err)
-			s.Auditor.LogEvent(ctx, security.Event{
-				Type: security.EventClientRegistrationRejected,
-				Details: map[string]any{
-					"reason":    "redirect_uri_validation_failed",
-					"category":  category,
-					"client_ip": clientIP,
-				},
-			})
-		}
+		category := GetRedirectURIErrorCategory(err)
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type: security.EventClientRegistrationRejected,
+			Details: map[string]any{
+				"reason":    "redirect_uri_validation_failed",
+				"category":  category,
+				"client_ip": clientIP,
+			},
+		})
 		s.Logger.Warn("Client registration rejected: redirect URI validation failed",
 			"error", err.Error(),
 			"client_ip", clientIP)
@@ -188,9 +186,7 @@ func (s *Server) trackClientIPAndLog(ctx context.Context, client *storage.Client
 		memStore.TrackClientIP(clientIP)
 	}
 
-	if s.Auditor != nil {
-		s.Auditor.LogClientRegistered(ctx, client.ClientID, client.ClientType, clientIP)
-	}
+	s.Auditor.LogClientRegistered(ctx, client.ClientID, client.ClientType, clientIP)
 
 	s.Logger.Debug("Registered new OAuth client",
 		"client_id", client.ClientID,

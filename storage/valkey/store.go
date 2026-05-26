@@ -73,7 +73,6 @@ const (
 // Validation error messages (generic to prevent information leakage)
 var (
 	errInvalidCredentials = fmt.Errorf("invalid client credentials")
-	errRateLimitExceeded  = fmt.Errorf("rate limit exceeded")
 	errInputTooLarge      = fmt.Errorf("input exceeds maximum allowed size")
 )
 

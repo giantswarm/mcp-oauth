@@ -490,13 +490,11 @@ func (s *Server) calculateFetchTimeout(ctx context.Context) time.Duration {
 
 // logMetadataFetchEvent logs an audit event for metadata fetch operations
 func (s *Server) logMetadataFetchEvent(ctx context.Context, eventType, clientID string, details map[string]any) {
-	if s.Auditor != nil {
-		s.Auditor.LogEvent(ctx, security.Event{
-			Type:     eventType,
-			ClientID: clientID,
-			Details:  details,
-		})
-	}
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type:     eventType,
+		ClientID: clientID,
+		Details:  details,
+	})
 }
 
 // createMetadataHTTPClient creates an HTTP client configured for metadata fetching
@@ -512,13 +510,10 @@ func (s *Server) createMetadataHTTPClient(ctx context.Context, timeout time.Dura
 	}
 }
 
-// recordCIMDFetchMetric records CIMD fetch metrics if instrumentation is enabled
+// recordCIMDFetchMetric records CIMD fetch metrics.
 func (s *Server) recordCIMDFetchMetric(ctx context.Context, result string, fetchStart time.Time) {
-	if s.Instrumentation != nil {
-		// Use Seconds() * 1000 for sub-millisecond precision (consistent with handler.go)
-		durationMs := time.Since(fetchStart).Seconds() * 1000
-		s.Instrumentation.Metrics().RecordCIMDFetch(ctx, result, durationMs)
-	}
+	durationMs := time.Since(fetchStart).Seconds() * 1000
+	s.Instrumentation.Metrics().RecordCIMDFetch(ctx, result, durationMs)
 }
 
 // hasLocalhostRedirectURIsOnly checks if all redirect URIs point to localhost

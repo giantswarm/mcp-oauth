@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -49,9 +50,7 @@ func (h *Handler) checkClientRegistrationRateLimit(ctx context.Context, w http.R
 			"ip", clientIP,
 			"max_per_window", h.server.Config.MaxRegistrationsPerHour,
 			"window", time.Duration(h.server.Config.RegistrationRateLimitWindow)*time.Second)
-		if h.server.Auditor != nil {
-			h.server.Auditor.LogClientRegistrationRateLimitExceeded(ctx, clientIP)
-		}
+		h.server.Auditor.LogClientRegistrationRateLimitExceeded(ctx, clientIP)
 		h.recordHTTPMetrics(ctx, endpointRegister, http.MethodPost, http.StatusTooManyRequests, startTime)
 		retryAfter := int(h.server.ClientRegistrationRateLimiter.Window().Seconds())
 		if retryAfter < 1 {
@@ -124,12 +123,7 @@ func (h *Handler) authorizeClientRegistration(w http.ResponseWriter, r *http.Req
 		return registrationAuthResult{viaTrustedAllowlist: true, gate: registrationAuthGateTrustedScheme, matched: scheme}, true
 	}
 
-	allowed, uri, err := h.server.CanRegisterWithTrustedRedirectURI(req.RedirectURIs)
-	if err != nil {
-		h.logger.Warn("Client registration rejected: invalid redirect URI", "client_ip", clientIP, "error", err)
-		h.writeError(w, oauth.ErrorCodeInvalidRequest, fmt.Sprintf("Invalid redirect URI: %v", err), http.StatusBadRequest)
-		return result, false
-	}
+	allowed, uri, _ := h.server.CanRegisterWithTrustedRedirectURI(req.RedirectURIs)
 	if allowed {
 		h.logger.Debug("Client registration authorized via trusted redirect URI",
 			"redirect_uri", uri, "client_ip", clientIP)
@@ -193,7 +187,11 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	}
 
 	h.setCORSHeaders(w, r)
-	clientIP := h.clientIP(r)
+
+	clientIP, ok := h.gateIPRateLimit(w, r, span, endpointRegister, http.MethodPost, startTime)
+	if !ok {
+		return
+	}
 
 	if h.checkClientRegistrationRateLimit(r.Context(), w, clientIP, startTime) {
 		return
@@ -301,7 +299,7 @@ func (h *Handler) recordTrustedAllowlistSpan(span trace.Span, auth registrationA
 
 // handleRegistrationError handles client registration errors.
 func (h *Handler) handleRegistrationError(ctx context.Context, w http.ResponseWriter, err error, clientIP string, startTime time.Time, span trace.Span) {
-	if strings.Contains(err.Error(), "registration limit") {
+	if errors.Is(err, storage.ErrClientIPLimitExceeded) {
 		h.logger.Warn("Client registration limit exceeded", "ip", clientIP, "error", err)
 		h.recordHTTPMetrics(ctx, endpointRegister, http.MethodPost, http.StatusTooManyRequests, startTime)
 		instrumentation.RecordError(span, err)
@@ -320,7 +318,7 @@ func (h *Handler) handleRegistrationError(ctx context.Context, w http.ResponseWr
 // auditTrustedAllowlistRegistration logs unauthenticated DCR via either trusted
 // allowlist (scheme or HTTPS redirect URI) for security monitoring.
 func (h *Handler) auditTrustedAllowlistRegistration(ctx context.Context, auth registrationAuthResult, client *storage.Client, clientIP string) {
-	if !auth.viaTrustedAllowlist || h.server.Auditor == nil {
+	if !auth.viaTrustedAllowlist {
 		return
 	}
 

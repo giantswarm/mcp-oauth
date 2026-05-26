@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 )
 
 // OAuth error codes as constants
@@ -193,13 +192,7 @@ func IsSilentAuthError(err error) bool {
 		return true
 	}
 
-	// Also check error message for known OAuth error codes
-	// This handles cases where the error wasn't wrapped as SilentAuthError
-	errStr := err.Error()
-	return strings.Contains(errStr, ErrorCodeLoginRequired) ||
-		strings.Contains(errStr, ErrorCodeConsentRequired) ||
-		strings.Contains(errStr, ErrorCodeInteractionRequired) ||
-		strings.Contains(errStr, ErrorCodeAccountSelectionRequired)
+	return false
 }
 
 // ParseOAuthError parses an OAuth error response and returns the appropriate error type.

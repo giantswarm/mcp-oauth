@@ -27,21 +27,17 @@ func (s *Server) handleRefreshTokenReuseDetection(ctx context.Context, refreshTo
 	// Family exists but token was already deleted/rotated → REUSE DETECTED!
 	if family.Revoked {
 		// Attempted use of token from previously revoked family
-		if s.Auditor != nil {
-			s.Auditor.LogEvent(ctx, security.Event{
-				Type: security.EventRevokedTokenFamilyReuseAttempt, UserID: family.UserID, ClientID: clientID,
-				Details: map[string]any{"severity": "critical", "family_id": family.FamilyID},
-			})
-		}
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type: security.EventRevokedTokenFamilyReuseAttempt, UserID: family.UserID, ClientID: clientID,
+			Details: map[string]any{"severity": "critical", "family_id": family.FamilyID},
+		})
 		s.Logger.Error("Attempted use of revoked token family",
 			"user_id", family.UserID, "family_id", helpers.SafeTruncate(family.FamilyID, 8))
 		return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 	}
 
 	// Token is deleted but family exists and NOT revoked → FRESH REUSE DETECTED!
-	if s.Instrumentation != nil {
-		s.Instrumentation.Metrics().RecordTokenReuseDetected(ctx)
-	}
+	s.Instrumentation.Metrics().RecordTokenReuseDetected(ctx)
 
 	if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(family.UserID+":"+clientID) {
 		s.Logger.Error("Refresh token reuse detected - token was rotated but still being used",
@@ -58,16 +54,14 @@ func (s *Server) handleRefreshTokenReuseDetection(ctx context.Context, refreshTo
 		s.Logger.Error("Failed to revoke user tokens", "error", err)
 	}
 
-	if s.Auditor != nil {
-		s.Auditor.LogEvent(ctx, security.Event{
-			Type: security.EventRefreshTokenReuseDetected, UserID: family.UserID, ClientID: clientID,
-			Details: map[string]any{
-				"severity": "critical", "family_id": family.FamilyID, "generation": family.Generation,
-				"action": "family_and_tokens_revoked",
-			},
-		})
-		s.Auditor.LogTokenReuse(ctx, family.UserID, clientID)
-	}
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type: security.EventRefreshTokenReuseDetected, UserID: family.UserID, ClientID: clientID,
+		Details: map[string]any{
+			"severity": "critical", "family_id": family.FamilyID, "generation": family.Generation,
+			"action": "family_and_tokens_revoked",
+		},
+	})
+	s.Auditor.LogTokenReuse(ctx, family.UserID, clientID)
 
 	return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 }
@@ -88,21 +82,17 @@ func (s *Server) handleRefreshTokenError(ctx context.Context, err error, refresh
 	if !isNotFoundOrExpired {
 		s.Logger.Warn("Transient error during refresh token validation",
 			"error", err.Error(), "client_id", clientID, "token_suffix", helpers.TokenSuffix(refreshToken, 8))
-		if s.Auditor != nil {
-			s.Auditor.LogEvent(ctx, security.Event{
-				Type: security.EventAuthFailure, ClientID: clientID,
-				Details: map[string]any{"reason": "transient_storage_error"},
-			})
-		}
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type: security.EventAuthFailure, ClientID: clientID,
+			Details: map[string]any{"reason": "transient_storage_error"},
+		})
 		return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 	}
 
 	// Regular invalid token error
 	s.Logger.Debug("Refresh token validation failed",
 		"reason", err.Error(), "client_id", clientID, "token_suffix", helpers.TokenSuffix(refreshToken, 8))
-	if s.Auditor != nil {
-		s.Auditor.LogAuthFailure(ctx, "", clientID, "", "invalid_refresh_token")
-	}
+	s.Auditor.LogAuthFailure(ctx, "", clientID, "", "invalid_refresh_token")
 	return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
 }
 
@@ -266,9 +256,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		Scopes:    oldScopes,
 	})
 
-	if s.Auditor != nil {
-		s.Auditor.LogTokenRefreshed(ctx, userID, clientID, "", rotated)
-	}
+	s.Auditor.LogTokenRefreshed(ctx, userID, clientID, "", rotated)
 
 	return tokenResponse, nil
 }
@@ -276,30 +264,25 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 // handleLegacyRefreshToken rejects refresh tokens that lack client binding.
 // OAuth 2.1 Section 6 requires client binding - tokens without it are invalid.
 func (s *Server) handleLegacyRefreshToken(ctx context.Context, requestingClientID, userID string) error {
-	// Record metric for observability (tracking rejected legacy tokens)
-	if s.Instrumentation != nil {
-		s.Instrumentation.Metrics().RecordLegacyRefreshTokenRejected(ctx)
-	}
+	s.Instrumentation.Metrics().RecordLegacyRefreshTokenRejected(ctx)
 
 	s.Logger.Warn("Refresh token rejected - missing client binding",
 		"user_id", userID,
 		"requesting_client_id", requestingClientID,
 		"reason", "OAuth 2.1 Section 6 requires client binding")
 
-	if s.Auditor != nil {
-		s.Auditor.LogEvent(ctx, security.Event{
-			Type:     security.EventRefreshTokenMissingClientBinding,
-			UserID:   userID,
-			ClientID: requestingClientID,
-			Details: map[string]any{
-				"severity":      "high",
-				"action":        "rejected",
-				"security_risk": "cross_client_token_theft_prevented",
-				"oauth_spec":    "OAuth 2.1 Section 6",
-			},
-		})
-		s.Auditor.LogAuthFailure(ctx, userID, requestingClientID, "", "refresh_token_missing_client_binding")
-	}
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type:     security.EventRefreshTokenMissingClientBinding,
+		UserID:   userID,
+		ClientID: requestingClientID,
+		Details: map[string]any{
+			"severity":      "high",
+			"action":        "rejected",
+			"security_risk": "cross_client_token_theft_prevented",
+			"oauth_spec":    "OAuth 2.1 Section 6",
+		},
+	})
+	s.Auditor.LogAuthFailure(ctx, userID, requestingClientID, "", "refresh_token_missing_client_binding")
 
 	// Return generic error per OAuth spec (don't reveal details to attacker)
 	return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
@@ -334,21 +317,19 @@ func (s *Server) validateRefreshTokenClientBinding(ctx context.Context, storedCl
 				"oauth_spec", "OAuth 2.1 Section 6")
 		}
 
-		if s.Auditor != nil {
-			s.Auditor.LogEvent(ctx, security.Event{
-				Type:     security.EventRefreshTokenClientBindingMismatch,
-				UserID:   userID,
-				ClientID: requestingClientID,
-				Details: map[string]any{
-					"severity":             "critical",
-					"stored_client_id":     storedClientID,
-					"requesting_client_id": requestingClientID,
-					"attack_indicator":     "cross_client_token_theft_attempt",
-					"oauth_spec":           "OAuth 2.1 Section 6",
-				},
-			})
-			s.Auditor.LogAuthFailure(ctx, userID, requestingClientID, "", "refresh_token_client_binding_mismatch")
-		}
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type:     security.EventRefreshTokenClientBindingMismatch,
+			UserID:   userID,
+			ClientID: requestingClientID,
+			Details: map[string]any{
+				"severity":             "critical",
+				"stored_client_id":     storedClientID,
+				"requesting_client_id": requestingClientID,
+				"attack_indicator":     "cross_client_token_theft_attempt",
+				"oauth_spec":           "OAuth 2.1 Section 6",
+			},
+		})
+		s.Auditor.LogAuthFailure(ctx, userID, requestingClientID, "", "refresh_token_client_binding_mismatch")
 
 		// Return generic error per OAuth spec (don't reveal details to attacker)
 		return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)

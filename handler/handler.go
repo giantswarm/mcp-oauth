@@ -55,10 +55,7 @@ func New(server *server.Server, logger *slog.Logger) *Handler {
 		logger: logger,
 	}
 
-	// Initialize tracer if instrumentation is enabled
-	if server.Instrumentation != nil {
-		h.tracer = server.Instrumentation.Tracer("http")
-	}
+	h.tracer = server.Instrumentation.Tracer("http")
 
 	return h
 }
@@ -232,12 +229,16 @@ func (h *Handler) startHandlerSpan(r *http.Request, name string) (*http.Request,
 	return r.WithContext(ctx), span, func() { span.End() }
 }
 
+func (h *Handler) failRequest(w http.ResponseWriter, r *http.Request, span trace.Span, endpoint, method string, status int, code, description string, startTime time.Time) {
+	instrumentation.SetSpanError(span, description)
+	h.recordHTTPMetrics(r.Context(), endpoint, method, status, startTime)
+	h.writeError(w, code, description, status)
+}
+
 // logAuthFailure logs authentication failures with optional auditing.
 func (h *Handler) logAuthFailure(ctx context.Context, clientID, clientIP, reason, message string) {
 	h.logger.Warn(message, "client_id", clientID, "ip", clientIP)
-	if h.server.Auditor != nil {
-		h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, reason)
-	}
+	h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, reason)
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, code, description string, status int) {

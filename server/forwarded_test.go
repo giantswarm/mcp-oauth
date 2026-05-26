@@ -90,10 +90,12 @@ func newForwardedTokenHarness(t *testing.T, opts ...func(*Config)) *forwardedTok
 	}
 
 	srv := &Server{
-		Config:     cfg,
-		Logger:     slog.Default(),
-		provider:   mockProvider,
-		tokenStore: store,
+		Config:          cfg,
+		Logger:          slog.Default(),
+		provider:        mockProvider,
+		tokenStore:      store,
+		Instrumentation: testInstrumentation(t),
+		Auditor:         testAuditor(),
 	}
 
 	// Inject a JWKS client that trusts the test TLS server and permits loopback
@@ -323,11 +325,13 @@ func TestAcceptForwardedIDToken_HMACKeyChangesSessionID(t *testing.T) {
 	cfg2 := *h.srv.Config
 	cfg2.SessionIDHMACKey = []byte("per-deployment-secret-key-32-byte")
 	srv2 := &Server{
-		Config:     &cfg2,
-		Logger:     h.srv.Logger,
-		provider:   h.srv.provider,
-		tokenStore: h.srv.tokenStore,
-		jwksClient: h.srv.jwksClient,
+		Config:          &cfg2,
+		Logger:          h.srv.Logger,
+		provider:        h.srv.provider,
+		tokenStore:      h.srv.tokenStore,
+		jwksClient:      h.srv.jwksClient,
+		Instrumentation: testInstrumentation(t),
+		Auditor:         testAuditor(),
 	}
 	srv2.jwksClientOnce.Do(func() {}) // prevent re-init of jwksClient
 

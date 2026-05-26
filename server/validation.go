@@ -655,18 +655,16 @@ func (s *Server) validateResourceConsistency(ctx context.Context, resource strin
 				"client_id", clientID,
 				"user_id", authCode.UserID)
 		}
-		if s.Auditor != nil {
-			s.Auditor.LogEvent(ctx, security.Event{
-				Type:     security.EventResourceMismatch,
-				UserID:   authCode.UserID,
-				ClientID: clientID,
-				Details: map[string]any{
-					"expected_resource": authCode.Resource,
-					"provided_resource": resource,
-					"severity":          "high",
-				},
-			})
-		}
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type:     security.EventResourceMismatch,
+			UserID:   authCode.UserID,
+			ClientID: clientID,
+			Details: map[string]any{
+				"expected_resource": authCode.Resource,
+				"provided_resource": resource,
+				"severity":          "high",
+			},
+		})
 		return s.logAuthCodeValidationFailure(ctx, "resource_mismatch", clientID, authCode.UserID, helpers.SafeTruncate(code, 8))
 	}
 
