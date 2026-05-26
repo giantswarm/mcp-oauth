@@ -232,9 +232,7 @@ func (h *Handler) failRequest(w http.ResponseWriter, r *http.Request, span trace
 // logAuthFailure logs authentication failures with optional auditing.
 func (h *Handler) logAuthFailure(ctx context.Context, clientID, clientIP, reason, message string) {
 	h.logger.Warn(message, "client_id", clientID, "ip", clientIP)
-	if h.server.Auditor != nil {
-		h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, reason)
-	}
+	h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, reason)
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, code, description string, status int) {

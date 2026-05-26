@@ -246,9 +246,7 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 		clientID = basicClientID
 		if err := h.server.ValidateClientCredentials(ctx, clientID, basicClientSecret); err != nil {
 			h.logger.Warn("Client authentication failed", "client_id", clientID, "ip", clientIP, "error", err)
-			if h.server.Auditor != nil {
-				h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "refresh_client_authentication_failed")
-			}
+			h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "refresh_client_authentication_failed")
 			h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusUnauthorized, startTime)
 			instrumentation.RecordError(span, err)
 			instrumentation.SetSpanError(span, "client authentication failed")
@@ -268,9 +266,7 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 	client, err := h.server.GetClient(ctx, clientID)
 	if err != nil {
 		h.logger.Warn("Unknown client for refresh", "client_id", clientID, "ip", clientIP)
-		if h.server.Auditor != nil {
-			h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "refresh_unknown_client")
-		}
+		h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "refresh_unknown_client")
 		h.failRequest(w, r, span, endpointToken, http.MethodPost, http.StatusUnauthorized, oauth.ErrorCodeInvalidClient, "Client authentication failed", startTime)
 		return "", false, err
 	}
@@ -281,21 +277,19 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 			"client_id", clientID, "ip", clientIP,
 			"security_event", "confidential_client_missing_auth",
 			"oauth_spec", "OAuth 2.1 Section 6")
-		if h.server.Auditor != nil {
-			h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "confidential_client_refresh_missing_auth")
-			h.server.Auditor.LogEvent(ctx, security.Event{
-				Type:     security.EventAuthFailure,
-				ClientID: clientID,
-				Details: map[string]any{
-					"severity":     "high",
-					"client_type":  "confidential",
-					"auth_missing": true,
-					"endpoint":     "refresh_token",
-					"ip":           clientIP,
-					"oauth_spec":   "OAuth 2.1 Section 6",
-				},
-			})
-		}
+		h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "confidential_client_refresh_missing_auth")
+		h.server.Auditor.LogEvent(ctx, security.Event{
+			Type:     security.EventAuthFailure,
+			ClientID: clientID,
+			Details: map[string]any{
+				"severity":     "high",
+				"client_type":  "confidential",
+				"auth_missing": true,
+				"endpoint":     "refresh_token",
+				"ip":           clientIP,
+				"oauth_spec":   "OAuth 2.1 Section 6",
+			},
+		})
 		h.failRequest(w, r, span, endpointToken, http.MethodPost, http.StatusUnauthorized, oauth.ErrorCodeInvalidClient, "Client authentication required", startTime)
 		return "", false, fmt.Errorf("confidential client requires authentication")
 	}
@@ -336,12 +330,7 @@ func (h *Handler) rejectBasicFormClientIDMismatch(
 	}
 	h.logger.Warn("client_id mismatch between Basic Authorization header and form parameter",
 		"basic_client_id", basicClientID, "form_client_id", formClientID, "ip", clientIP, "endpoint", endpoint)
-	if h.server.Auditor != nil {
-		// Audit pins the Basic-Auth value: that is the authenticated identity
-		// the request claimed, and forensics care about who tried to authenticate
-		// rather than the form value the attacker may have synthesised.
-		h.server.Auditor.LogAuthFailure(r.Context(), "", basicClientID, clientIP, "client_id_mismatch_basic_vs_form")
-	}
+	h.server.Auditor.LogAuthFailure(r.Context(), "", basicClientID, clientIP, "client_id_mismatch_basic_vs_form")
 	if tokenFailureGrant != "" {
 		h.recordTokenFailure(r.Context(), tokenFailureGrant, oauth.ErrorCodeInvalidClient)
 	}

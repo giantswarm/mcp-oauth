@@ -391,15 +391,8 @@ func GetRedirectURIErrorCategory(err error) string {
 }
 
 // recordRedirectURISecurityMetric records a redirect URI security rejection metric.
-// This is called internally when validation fails.
 func (s *Server) recordRedirectURISecurityMetric(ctx context.Context, category, stage string) {
-	if s.Instrumentation == nil {
-		return
-	}
-	// Store the result to avoid calling Metrics() twice (defensive against caching differences)
-	if m := s.Instrumentation.Metrics(); m != nil {
-		m.RecordRedirectURISecurityRejected(ctx, category, stage)
-	}
+	s.Instrumentation.Metrics().RecordRedirectURISecurityRejected(ctx, category, stage)
 }
 
 // ValidateRedirectURIAtAuthorizationTime performs security validation on a redirect URI

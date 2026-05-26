@@ -104,22 +104,18 @@ func (h *Handler) checkUserRateLimit(w http.ResponseWriter, r *http.Request, use
 // recordRateLimitExceeded records rate limit metrics and audit events.
 func (h *Handler) recordRateLimitExceeded(ctx context.Context, limitType, clientIP, userID, endpoint string) {
 	h.server.Instrumentation.Metrics().RecordRateLimitExceeded(ctx, limitType)
-	if h.server.Auditor != nil {
-		h.server.Auditor.LogEvent(ctx, security.Event{
-			Type:      security.EventRateLimitExceeded,
-			IPAddress: clientIP,
-			Details:   map[string]any{"endpoint": endpoint},
-		})
-		h.server.Auditor.LogRateLimitExceeded(ctx, clientIP, userID)
-	}
+	h.server.Auditor.LogEvent(ctx, security.Event{
+		Type:      security.EventRateLimitExceeded,
+		IPAddress: clientIP,
+		Details:   map[string]any{"endpoint": endpoint},
+	})
+	h.server.Auditor.LogRateLimitExceeded(ctx, clientIP, userID)
 }
 
 // recordUserRateLimitExceeded records user rate limit metrics and audit events.
 func (h *Handler) recordUserRateLimitExceeded(ctx context.Context, clientIP, userID string) {
 	h.server.Instrumentation.Metrics().RecordRateLimitExceeded(ctx, "user")
-	if h.server.Auditor != nil {
-		h.server.Auditor.LogRateLimitExceeded(ctx, clientIP, userID)
-	}
+	h.server.Auditor.LogRateLimitExceeded(ctx, clientIP, userID)
 }
 
 // extractBearerToken extracts the Bearer token from the Authorization header.
@@ -378,9 +374,7 @@ func (h *Handler) validateTokenScopesFromMetadata(w http.ResponseWriter, r *http
 		"required_scopes", requiredScopes,
 		"ip", clientIP)
 
-	if h.server.Auditor != nil {
-		h.server.Auditor.LogAuthFailure(r.Context(), userInfo.ID, "", clientIP, "insufficient_scope")
-	}
+	h.server.Auditor.LogAuthFailure(r.Context(), userInfo.ID, "", clientIP, "insufficient_scope")
 
 	var description string
 	if h.server.Config.HideEndpointPathInErrors {

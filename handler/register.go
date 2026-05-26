@@ -48,9 +48,7 @@ func (h *Handler) checkClientRegistrationRateLimit(ctx context.Context, w http.R
 			"ip", clientIP,
 			"max_per_window", h.server.Config.MaxRegistrationsPerHour,
 			"window", time.Duration(h.server.Config.RegistrationRateLimitWindow)*time.Second)
-		if h.server.Auditor != nil {
-			h.server.Auditor.LogClientRegistrationRateLimitExceeded(ctx, clientIP)
-		}
+		h.server.Auditor.LogClientRegistrationRateLimitExceeded(ctx, clientIP)
 		h.recordHTTPMetrics(ctx, endpointRegister, http.MethodPost, http.StatusTooManyRequests, startTime)
 		retryAfter := int(h.server.ClientRegistrationRateLimiter.Window().Seconds())
 		if retryAfter < 1 {
@@ -319,7 +317,7 @@ func (h *Handler) handleRegistrationError(ctx context.Context, w http.ResponseWr
 // auditTrustedAllowlistRegistration logs unauthenticated DCR via either trusted
 // allowlist (scheme or HTTPS redirect URI) for security monitoring.
 func (h *Handler) auditTrustedAllowlistRegistration(ctx context.Context, auth registrationAuthResult, client *storage.Client, clientIP string) {
-	if !auth.viaTrustedAllowlist || h.server.Auditor == nil {
+	if !auth.viaTrustedAllowlist {
 		return
 	}
 

@@ -371,13 +371,11 @@ func (h *Handler) checkDiscoveryRateLimit(w http.ResponseWriter, r *http.Request
 
 	h.server.Instrumentation.Metrics().RecordRateLimitExceeded(r.Context(), "ip")
 
-	if h.server.Auditor != nil {
-		h.server.Auditor.LogEvent(r.Context(), security.Event{
-			Type:      security.EventRateLimitExceeded,
-			IPAddress: clientIP,
-			Details:   map[string]any{"endpoint": r.URL.Path},
-		})
-	}
+	h.server.Auditor.LogEvent(r.Context(), security.Event{
+		Type:      security.EventRateLimitExceeded,
+		IPAddress: clientIP,
+		Details:   map[string]any{"endpoint": r.URL.Path},
+	})
 
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSecondsForRate(h.server.RateLimiter.Rate())))
 	http.Error(w, "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
