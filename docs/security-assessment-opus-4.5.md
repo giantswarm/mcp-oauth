@@ -1,8 +1,8 @@
 # Security Assessment Report: mcp-oauth
 
-**Assessment Conducted By:** Claude Opus 4.5 (Anthropic)  
-**Assessment Date:** January 2026  
-**Library Version:** OAuth 2.1 Authorization Server for MCP  
+**Assessment Conducted By:** Claude Opus 4.5 (Anthropic)
+**Assessment Date:** January 2026
+**Library Version:** OAuth 2.1 Authorization Server for MCP
 **Assessment Scope:** Full codebase security review
 
 ---
@@ -106,7 +106,7 @@ func generateRandomToken() string {
 func (s *Server) handleRefreshTokenReuseDetection(ctx context.Context, ...) error {
     family, famErr := familyStore.GetRefreshTokenFamily(ctx, refreshToken)
     // ... token family tracking with generation counters ...
-    
+
     // Token is deleted but family exists → REUSE DETECTED!
     // Revoke entire token family
     if err := familyStore.RevokeRefreshTokenFamily(ctx, family.FamilyID); err != nil {
@@ -134,12 +134,12 @@ AES-256-GCM implementation:
 func (e *Encryptor) Encrypt(plaintext string) (string, error) {
     block, err := aes.NewCipher(e.key)
     gcm, err := cipher.NewGCM(block)
-    
+
     nonce := make([]byte, gcm.NonceSize())
     if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
         return "", fmt.Errorf("failed to generate nonce: %w", err)
     }
-    
+
     ciphertext := gcm.Seal(nil, nonce, []byte(plaintext), nil)
     // Prepend nonce to ciphertext for storage
     nonce = append(nonce, ciphertext...)
@@ -162,7 +162,7 @@ func (e *Encryptor) Encrypt(plaintext string) (string, error) {
 func (s *Store) ValidateClientSecret(ctx context.Context, clientID, clientSecret string) error {
     // SECURITY: Always perform the same operations to prevent timing attacks
     hashToCompare := storage.DummyBcryptHash
-    
+
     if err == nil {
         if client.ClientType == "public" {
             isPublicClient = true
@@ -170,7 +170,7 @@ func (s *Store) ValidateClientSecret(ctx context.Context, clientID, clientSecret
             hashToCompare = client.ClientSecretHash
         }
     }
-    
+
     // ALWAYS perform bcrypt comparison (constant-time by design)
     bcryptErr := bcrypt.CompareHashAndPassword([]byte(hashToCompare), []byte(clientSecret))
 }
@@ -209,7 +209,7 @@ func SSRFSafeDialContext(dialer *net.Dialer) func(ctx context.Context, network, 
     return func(ctx context.Context, network, addr string) (net.Conn, error) {
         // Resolve the hostname to IP addresses
         ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
-        
+
         // SECURITY: Validate ALL resolved IPs before attempting any connection
         for _, ip := range ips {
             if isPrivateOrRestrictedIP(ip) {
@@ -309,14 +309,14 @@ Token bucket algorithm with LRU eviction:
 func (rl *RateLimiter) Allow(identifier string) bool {
     rl.mu.Lock()
     defer rl.mu.Unlock()
-    
+
     if elem, exists := rl.limiters[identifier]; exists {
         rl.lruList.MoveToFront(elem)
         entry := elem.Value.(*rateLimiterEntry)
         entry.lastAccess = now
         return entry.limiter.Allow()
     }
-    
+
     // Need to create new limiter - check if at capacity
     if rl.maxEntries > 0 && len(rl.limiters) >= rl.maxEntries {
         rl.evictLRU()  // Prevents unbounded memory growth
@@ -378,12 +378,12 @@ func SetSecurityHeaders(w http.ResponseWriter, serverURL string) {
     w.Header().Set("X-XSS-Protection", "1; mode=block")
     w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
     w.Header().Set("Referrer-Policy", "no-referrer")
-    
+
     // HSTS for HTTPS deployments
     if parsed.Scheme == "https" {
         w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     }
-    
+
     // Prevent caching of sensitive responses
     w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, private")
     w.Header().Set("Pragma", "no-cache")

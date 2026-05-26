@@ -364,7 +364,6 @@ func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 	_ = json.NewEncoder(w).Encode(metadata)
 }
 
-
 // buildAuthServerMetadata returns the metadata served at both
 // /.well-known/oauth-authorization-server (RFC 8414) and
 // /.well-known/openid-configuration (OIDC Discovery 1.0 §3).

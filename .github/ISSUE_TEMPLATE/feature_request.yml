@@ -83,4 +83,3 @@ body:
         - label: This feature aligns with the project's goals
           required: true
         - label: I would be willing to help implement this feature
-

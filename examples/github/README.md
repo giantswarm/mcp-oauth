@@ -152,7 +152,7 @@ If you see this error, ensure:
 2. The organization membership is public, OR
 3. The app has been granted access to read private organization memberships
 
-### "Email not found" 
+### "Email not found"
 
 If the email is empty:
 1. Ensure the `user:email` scope is included
@@ -164,4 +164,3 @@ If you see 403 errors:
 1. Check GitHub API rate limit headers
 2. Reduce request frequency
 3. Consider caching user info locally
-
