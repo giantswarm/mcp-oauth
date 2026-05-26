@@ -78,10 +78,7 @@ func (h *Handler) handleTokenExchangeError(
 func (h *Handler) writeTokenExchangeResponse(w http.ResponseWriter, result *server.TokenExchangeResult) {
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 
-	expiresIn := int64(time.Until(result.ExpiresAt).Seconds())
-	if expiresIn < 0 {
-		expiresIn = 0
-	}
+	expiresIn := max(int64(time.Until(result.ExpiresAt).Seconds()), 0)
 
 	response := map[string]any{
 		"access_token":      result.AccessToken,
