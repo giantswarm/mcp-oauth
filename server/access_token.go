@@ -82,6 +82,12 @@ type AccessTokenClaims struct {
 	// JKT is the JWK thumbprint of the DPoP public key this token is bound to
 	// (RFC 9449 §6.1). Non-empty only when the token was requested with a DPoP proof.
 	JKT string
+
+	// Extra holds application-defined claims merged into the JWT body verbatim.
+	// Keys colliding with standard JWT claims (sub, iss, aud, exp, iat, jti,
+	// scope, client_id, etc.) will overwrite them — callers are responsible
+	// for using non-conflicting claim names. Nil is a no-op.
+	Extra map[string]any
 }
 
 // Actor is the RFC 8693 §4.4 act claim: the acting party in a delegation chain.
@@ -220,7 +226,11 @@ func (j *jwtIssuer) Issue(_ context.Context, c AccessTokenClaims) (string, error
 		claims.EmailVerified = &verified
 	}
 
-	signed, err := josejwt.Signed(j.signer).Claims(claims).Serialize()
+	builder := josejwt.Signed(j.signer).Claims(claims)
+	if len(c.Extra) > 0 {
+		builder = builder.Claims(c.Extra)
+	}
+	signed, err := builder.Serialize()
 	if err != nil {
 		return "", fmt.Errorf("sign access token: %w", err)
 	}

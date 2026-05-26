@@ -243,3 +243,100 @@ func TestNew_RejectsUnregisteredIntrospectionResourceServer(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "IntrospectionResourceServers[0] \"not-registered\" is not a registered client")
 }
+
+func TestServer_IntrospectToken_OpaquePath_ExtraClaimsForwarded(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	t.Cleanup(func() { store.Stop() })
+
+	cfg := &Config{
+		Issuer:            "https://auth.example.com",
+		AccessTokenFormat: AccessTokenFormatOpaque,
+	}
+	require.NoError(t, cfg.Validate())
+
+	srv, err := New(mock.NewProvider(), store, store, store, cfg, nil)
+	require.NoError(t, err)
+
+	owner, _, err := srv.RegisterClient(ctx, "Owner", ClientTypeConfidential, "", []string{"https://example.com/cb"}, []string{"openid"}, "192.168.1.1", 10)
+	require.NoError(t, err)
+
+	const accessToken = "opaque-extra-token" //nolint:gosec // G101 false positive — test fixture label
+	require.NoError(t, store.SaveTokenMetadata(ctx, accessToken, storage.TokenMetadata{
+		UserID:    "user-1",
+		ClientID:  owner.ClientID,
+		TokenType: "access",
+		Audience:  cfg.GetResourceIdentifier(),
+		Scopes:    []string{"openid"},
+		ExtraClaims: map[string]any{
+			"allowed_backends": []any{"backend-a", "backend-b"},
+			"muster_sid":       "sess-abc123",
+		},
+	}))
+
+	response := srv.IntrospectToken(ctx, accessToken, owner.ClientID)
+
+	require.Equal(t, true, response["active"])
+	require.Equal(t, "sess-abc123", response["muster_sid"])
+	require.Equal(t, []any{"backend-a", "backend-b"}, response["allowed_backends"])
+}
+
+func TestServer_IntrospectToken_OpaquePath_NilExtraClaimsOK(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	t.Cleanup(func() { store.Stop() })
+
+	cfg := &Config{
+		Issuer:            "https://auth.example.com",
+		AccessTokenFormat: AccessTokenFormatOpaque,
+	}
+	require.NoError(t, cfg.Validate())
+
+	srv, err := New(mock.NewProvider(), store, store, store, cfg, nil)
+	require.NoError(t, err)
+
+	owner, _, err := srv.RegisterClient(ctx, "Owner", ClientTypeConfidential, "", []string{"https://example.com/cb"}, []string{"openid"}, "192.168.1.1", 10)
+	require.NoError(t, err)
+
+	const accessToken = "opaque-nil-extra-token" //nolint:gosec // G101 false positive — test fixture label
+	require.NoError(t, store.SaveTokenMetadata(ctx, accessToken, storage.TokenMetadata{
+		UserID:    "user-1",
+		ClientID:  owner.ClientID,
+		TokenType: "access",
+		Audience:  cfg.GetResourceIdentifier(),
+		Scopes:    []string{"openid"},
+		// ExtraClaims intentionally nil
+	}))
+
+	response := srv.IntrospectToken(ctx, accessToken, owner.ClientID)
+	require.Equal(t, true, response["active"])
+}
+
+func TestServer_IntrospectToken_JWTPath_AppClaimsForwarded(t *testing.T) {
+	srv, _, ownerClientID, _, _ := newJWTIntrospectionServer(t)
+
+	// Issue a JWT that includes application-defined claims.
+	cfg := srv.Config
+	issuer, err := newJWTIssuer(cfg)
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	token, err := issuer.Issue(t.Context(), AccessTokenClaims{
+		Subject:   "user-app",
+		ClientID:  ownerClientID,
+		Audience:  cfg.GetResourceIdentifier(),
+		Scopes:    []string{"openid"},
+		IssuedAt:  now,
+		ExpiresAt: now.Add(15 * time.Minute),
+		Extra: map[string]any{
+			"allowed_backends": []any{"backend-x"},
+			"muster_sid":       "sess-xyz",
+		},
+	})
+	require.NoError(t, err)
+
+	response := srv.IntrospectToken(t.Context(), token, ownerClientID)
+	require.Equal(t, true, response["active"])
+	require.Equal(t, "sess-xyz", response["muster_sid"])
+	require.Equal(t, []any{"backend-x"}, response["allowed_backends"])
+}
