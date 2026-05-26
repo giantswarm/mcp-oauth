@@ -871,7 +871,7 @@ func (s *Store) ValidateClientSecret(ctx context.Context, clientID, clientSecret
 	isPublicClient := false
 
 	if err == nil {
-		if client.ClientType == "public" {
+		if client.IsPublic() {
 			isPublicClient = true
 		} else if client.ClientSecretHash != "" {
 			hashToCompare = client.ClientSecretHash
@@ -950,7 +950,7 @@ func (s *Store) GetAuthorizationState(_ context.Context, stateID string) (*stora
 	}
 
 	// Check if expired with clock skew grace period
-	if security.IsTokenExpired(state.ExpiresAt) {
+	if state.HasExpired() {
 		return nil, fmt.Errorf("%w: authorization state expired", storage.ErrTokenExpired)
 	}
 
@@ -969,7 +969,7 @@ func (s *Store) GetAuthorizationStateByProviderState(_ context.Context, provider
 	}
 
 	// Check if expired with clock skew grace period
-	if security.IsTokenExpired(state.ExpiresAt) {
+	if state.HasExpired() {
 		return nil, fmt.Errorf("%w: authorization state expired", storage.ErrTokenExpired)
 	}
 
@@ -1039,7 +1039,7 @@ func (s *Store) GetAuthorizationCode(_ context.Context, code string) (*storage.A
 	}
 
 	// Check if expired with clock skew grace period
-	if security.IsTokenExpired(authCode.ExpiresAt) {
+	if authCode.HasExpired() {
 		return nil, fmt.Errorf("%w: authorization code expired", storage.ErrTokenExpired)
 	}
 
@@ -1069,7 +1069,7 @@ func (s *Store) AtomicCheckAndMarkAuthCodeUsed(_ context.Context, code string) (
 	}
 
 	// Check if expired with clock skew grace period
-	if security.IsTokenExpired(authCode.ExpiresAt) {
+	if authCode.HasExpired() {
 		// Expired - return nil to prevent information leakage
 		return nil, fmt.Errorf("%w: authorization code expired", storage.ErrTokenExpired)
 	}
@@ -1151,7 +1151,7 @@ func (s *Store) cleanupExpiredTokens() int {
 func (s *Store) cleanupExpiredAuthStates() int {
 	cleaned := 0
 	for stateID, state := range s.authStates {
-		if security.IsTokenExpired(state.ExpiresAt) {
+		if state.HasExpired() {
 			delete(s.authStates, stateID)
 			cleaned++
 		}
@@ -1163,7 +1163,7 @@ func (s *Store) cleanupExpiredAuthStates() int {
 func (s *Store) cleanupExpiredAuthCodes() int {
 	cleaned := 0
 	for code, authCode := range s.authCodes {
-		if security.IsTokenExpired(authCode.ExpiresAt) {
+		if authCode.HasExpired() {
 			delete(s.authCodes, code)
 			cleaned++
 		}

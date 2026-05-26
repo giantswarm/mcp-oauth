@@ -680,7 +680,7 @@ func TestHandler_ServeCallback(t *testing.T) {
 	authURL, err := handler.server.StartAuthorizationFlow(
 		ctx,
 		client.ClientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"", // resource parameter (optional)
 		challenge,
@@ -1499,7 +1499,7 @@ func TestHandler_ServeCallback_CustomURLScheme(t *testing.T) {
 	_, err = handler.server.StartAuthorizationFlow(
 		ctx,
 		client.ClientID,
-		"cursor://oauth/callback",
+		mustParseURL(t, "cursor://oauth/callback"),
 		"openid email",
 		"", // resource parameter (optional)
 		challenge,
@@ -1613,7 +1613,7 @@ func TestHandler_ServeCallback_HTTPScheme(t *testing.T) {
 	_, err = handler.server.StartAuthorizationFlow(
 		ctx,
 		client.ClientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"",
 		challenge,
@@ -1690,7 +1690,7 @@ func TestHandler_ServeCallback_VSCodeScheme(t *testing.T) {
 	_, err = handler.server.StartAuthorizationFlow(
 		ctx,
 		client.ClientID,
-		"vscode://example.extension/callback",
+		mustParseURL(t, "vscode://example.extension/callback"),
 		"openid",
 		"",
 		challenge,
@@ -2080,7 +2080,7 @@ func TestHandler_ServeCallback_CustomURLScheme_WithBranding(t *testing.T) {
 	_, err = srv.StartAuthorizationFlow(
 		ctx,
 		client.ClientID,
-		"cursor://oauth/callback",
+		mustParseURL(t, "cursor://oauth/callback"),
 		"openid email",
 		"",
 		challenge,

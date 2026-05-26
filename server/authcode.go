@@ -144,7 +144,7 @@ func (s *Server) handleCodeReuseDetection(ctx context.Context, authCode *storage
 // validatePublicClientPKCE validates that public clients use PKCE
 // Returns error if public client is not using PKCE and it's required
 func (s *Server) validatePublicClientPKCE(ctx context.Context, client *storage.Client, authCode *storage.AuthorizationCode, _ string) error {
-	if client.ClientType != ClientTypePublic || authCode.CodeChallenge != "" {
+	if !client.IsPublic() || authCode.CodeChallenge != "" {
 		return nil // Not a public client or PKCE is used
 	}
 
@@ -242,10 +242,13 @@ func (s *Server) ValidateRedirectURIForAuthorization(ctx context.Context, client
 }
 
 // StartAuthorizationFlow starts a new OAuth authorization flow.
+// redirectURI must be a canonical, registered URI obtained from [ValidateRedirectURIForAuthorization].
+// This function re-runs the registered-URI check as defense-in-depth but the canonical value is what
+// is stored in the authorization state and used as the redirect target.
 // clientState is the state parameter from the client (REQUIRED for CSRF protection).
 // resource is the target resource server identifier per RFC 8707 (optional for backward compatibility).
 // authOpts contains optional OIDC parameters (prompt, login_hint, id_token_hint) for upstream IdP forwarding.
-func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectURI, scope, resource, codeChallenge, codeChallengeMethod, clientState string, authOpts *providers.AuthorizationURLOptions) (string, error) {
+func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID string, redirectURI *url.URL, scope, resource, codeChallenge, codeChallengeMethod, clientState string, authOpts *providers.AuthorizationURLOptions) (string, error) {
 	// CRITICAL SECURITY: Validate state parameter from client for CSRF protection
 	if err := s.validateClientStateParameter(clientState); err != nil {
 		s.logAuthFailure(ctx, "", clientID, "invalid_state_parameter")
@@ -271,17 +274,19 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 		return "", fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
 	}
 
+	redirectURIStr := redirectURI.String()
+
 	// Validate redirect URI
-	if err := s.validateRedirectURI(client, redirectURI); err != nil {
+	if err := s.validateRedirectURI(client, redirectURIStr); err != nil {
 		s.logAuthFailure(ctx, "", clientID, ErrorCodeInvalidRedirectURI)
 		return "", fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
 	}
 
 	// SECURITY: Authorization-time redirect URI validation (TOCTOU protection)
-	if err := s.ValidateRedirectURIAtAuthorizationTime(ctx, redirectURI); err != nil {
+	if err := s.ValidateRedirectURIAtAuthorizationTime(ctx, redirectURIStr); err != nil {
 		s.logAuthFailure(ctx, "", clientID, "redirect_uri_security_violation")
 		s.Logger.Warn("Redirect URI failed authorization-time security validation",
-			"client_id", clientID, "redirect_uri", sanitizeURIForLogging(redirectURI), "error", err.Error())
+			"client_id", clientID, "redirect_uri", sanitizeURIForLogging(redirectURIStr), "error", err.Error())
 		return "", fmt.Errorf("%s: redirect URI failed security validation", ErrorCodeInvalidRequest)
 	}
 
@@ -309,7 +314,7 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 
 	effectiveNonce, authOpts := s.resolveAuthorizationNonce(clientID, scope, authOpts)
 
-	s.logAuthorizationFlowStarted(ctx, clientID, redirectURI, scope, codeChallengeMethod, resource, authOpts)
+	s.logAuthorizationFlowStarted(ctx, clientID, redirectURIStr, scope, codeChallengeMethod, resource, authOpts)
 
 	// Save authorization state with both client and server PKCE parameters and resource binding
 	// Use trackingState (which may be server-generated if client didn't provide state)
@@ -317,7 +322,7 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID, redirectU
 		StateID:              trackingState,
 		OriginalClientState:  clientState, // Empty if client didn't provide state
 		ClientID:             clientID,
-		RedirectURI:          redirectURI,
+		RedirectURI:          redirectURIStr,
 		Scope:                scope,
 		Resource:             resource, // RFC 8707: Bind authorization to target resource server
 		CodeChallenge:        codeChallenge,

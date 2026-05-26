@@ -75,7 +75,7 @@ func (s *Store) ValidateClientSecret(ctx context.Context, clientID, clientSecret
 	isPublicClient := false
 
 	if clientErr == nil {
-		if client.ClientType == "public" {
+		if client.IsPublic() {
 			isPublicClient = true
 		} else if client.ClientSecretHash != "" {
 			hashToCompare = client.ClientSecretHash

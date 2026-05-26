@@ -54,7 +54,7 @@ func TestServer_RefreshTokenRotation(t *testing.T) {
 	_, err = srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"", // resource parameter (optional)
 		codeChallenge,
@@ -189,7 +189,7 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 	_, err = srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"", // resource parameter (optional)
 		codeChallenge,
@@ -401,7 +401,7 @@ func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
 	_, err = srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"", // resource parameter (optional)
 		codeChallenge,
@@ -531,7 +531,7 @@ func TestServer_ConcurrentRefreshTokenReuse(t *testing.T) {
 	_, err = srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"", // resource parameter (optional)
 		codeChallenge,
@@ -684,7 +684,7 @@ func TestServer_RefreshTokenReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 	_, err = srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
-		"https://example.com/callback",
+		mustParseURL(t, "https://example.com/callback"),
 		"openid email",
 		"", // resource parameter (optional)
 		codeChallenge,
@@ -1404,7 +1404,7 @@ func TestServer_RefreshAccessToken_FamilyIDInMetadata(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(ctx, clientID, "https://example.com/callback", "openid email", "", codeChallenge, PKCEMethodS256, clientState, nil)
+	_, err = srv.StartAuthorizationFlow(ctx, clientID, mustParseURL(t, "https://example.com/callback"), "openid email", "", codeChallenge, PKCEMethodS256, clientState, nil)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
@@ -1489,7 +1489,7 @@ func TestServer_RefreshAccessToken_PreservesScopesAndAudience(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(ctx, clientID, "https://example.com/callback", "openid email profile", "", codeChallenge, PKCEMethodS256, clientState, nil)
+	_, err = srv.StartAuthorizationFlow(ctx, clientID, mustParseURL(t, "https://example.com/callback"), "openid email profile", "", codeChallenge, PKCEMethodS256, clientState, nil)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
