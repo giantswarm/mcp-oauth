@@ -429,6 +429,10 @@ func (h *Handler) addOptionalMetadata(metadata map[string]any) {
 		metadata["client_id_metadata_document_supported"] = true
 	}
 
+	if h.server.Config.EnableClientManagementEndpoint {
+		metadata["registration_management_endpoint"] = h.server.Config.ClientManagementEndpoint()
+	}
+
 	// jwks_uri (RFC 8414) is advertised only in JWT mode. Advertising it in
 	// opaque mode would point clients at an endpoint that responds 404,
 	// which is worse than silence — clients that follow the URL would log
