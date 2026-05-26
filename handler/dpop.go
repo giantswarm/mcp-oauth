@@ -15,11 +15,7 @@ func (h *Handler) extractDPoPJKT(r *http.Request) (string, error) {
 	if proof == "" {
 		return "", nil
 	}
-	cache := h.server.DPoPReplayCache()
-	if cache == nil {
-		cache = server.NewMemoryDPoPReplayCache()
-	}
-	claims, err := server.ValidateDPoPProof(r.Context(), proof, r.Method, dpopHTU(r), "", cache, time.Now())
+	claims, err := server.ValidateDPoPProof(r.Context(), proof, r.Method, dpopHTU(r), "", h.server.DPoPReplayCache(), time.Now())
 	if err != nil {
 		return "", err
 	}

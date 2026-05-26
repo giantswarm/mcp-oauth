@@ -20,16 +20,12 @@ const (
 	dpopProofTTL     = 5 * time.Minute
 )
 
-// DPoPProofClaims holds the parsed, validated claims from a DPoP proof JWT.
+// DPoPProofClaims holds the validated output of a DPoP proof JWT.
+// JKT is the only field callers need: it is the JWK thumbprint to bind into
+// the issued access token cnf claim.
 type DPoPProofClaims struct {
-	// JTI is the unique proof identifier (replay key).
-	JTI string
 	// JKT is the JWK thumbprint of the public key that signed the proof.
 	JKT string
-	// HTM is the HTTP method the proof was bound to.
-	HTM string
-	// HTU is the HTTP URI the proof was bound to.
-	HTU string
 }
 
 // dpopRawClaims is the on-the-wire shape of a DPoP proof JWT body.
@@ -126,12 +122,7 @@ func ValidateDPoPProof(ctx context.Context, proof, method, uri, accessToken stri
 	}
 	jkt := base64.RawURLEncoding.EncodeToString(thumb)
 
-	return &DPoPProofClaims{
-		JTI: claims.ID,
-		JKT: jkt,
-		HTM: strings.ToUpper(claims.HTM),
-		HTU: stripQueryAndFragment(claims.HTU),
-	}, nil
+	return &DPoPProofClaims{JKT: jkt}, nil
 }
 
 // stripQueryAndFragment removes query string and fragment from a URI per RFC 9449.
@@ -145,11 +136,11 @@ func stripQueryAndFragment(uri string) string {
 	return uri
 }
 
-// dpopCnf builds the cnf claim map for a DPoP-bound access token.
+// newConfirmation builds the cnf claim for a DPoP-bound access token.
 // Returns nil when jkt is empty so the claim is omitted from the JWT.
-func dpopCnf(jkt string) map[string]any {
+func newConfirmation(jkt string) *Confirmation {
 	if jkt == "" {
 		return nil
 	}
-	return map[string]any{"jkt": jkt}
+	return &Confirmation{JKT: jkt}
 }

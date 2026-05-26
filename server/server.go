@@ -99,7 +99,6 @@ type Server struct {
 	// keyed by subject_token_type URN.
 	subjectValidators map[string]SubjectTokenValidator
 	// dpopReplayCache is used to detect replayed DPoP proof JTIs.
-	// When nil, a per-request in-memory cache is used (no cross-request replay protection).
 	dpopReplayCache DPoPReplayCache
 	Logger          *slog.Logger
 	Config                        *Config
@@ -188,6 +187,10 @@ func New(
 
 	for _, opt := range opts {
 		opt(srv)
+	}
+
+	if srv.dpopReplayCache == nil {
+		srv.dpopReplayCache = NewMemoryDPoPReplayCache()
 	}
 
 	// Guarantee a non-nil Instrumentation so call sites can record metrics

@@ -60,10 +60,7 @@ func (s *Server) ExchangeSubjectToken(
 		IssuedAt:  now,
 		ExpiresAt: expiresAt,
 		JTI:       generateRandomToken(),
-		Act: map[string]any{
-			"iss": identity.Issuer,
-			"sub": identity.Subject,
-		},
+		Act: &Actor{Iss: identity.Issuer, Sub: identity.Subject},
 		JKT: dpopJKT,
 	})
 	if err != nil {

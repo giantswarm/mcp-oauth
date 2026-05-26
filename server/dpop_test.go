@@ -57,9 +57,6 @@ func TestValidateDPoPProof_Valid(t *testing.T) {
 
 	got, err := ValidateDPoPProof(t.Context(), proof, "POST", "https://auth.example.com/oauth/token", "", cache, now)
 	require.NoError(t, err)
-	require.Equal(t, "unique-jti-1", got.JTI)
-	require.Equal(t, "POST", got.HTM)
-	require.Equal(t, "https://auth.example.com/oauth/token", got.HTU)
 	require.Equal(t, dpopJKTFor(t, key), got.JKT)
 }
 

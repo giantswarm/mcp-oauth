@@ -77,11 +77,22 @@ type AccessTokenClaims struct {
 
 	// Act carries the RFC 8693 §4.4 actor claim. Non-nil only for token-exchange
 	// issued tokens.
-	Act map[string]any
+	Act *Actor
 
 	// JKT is the JWK thumbprint of the DPoP public key this token is bound to
 	// (RFC 9449 §6.1). Non-empty only when the token was requested with a DPoP proof.
 	JKT string
+}
+
+// Actor is the RFC 8693 §4.4 act claim: the acting party in a delegation chain.
+type Actor struct {
+	Iss string `json:"iss,omitempty"`
+	Sub string `json:"sub,omitempty"`
+}
+
+// Confirmation is the RFC 9449 §6.1 cnf claim: proof-of-possession key binding.
+type Confirmation struct {
+	JKT string `json:"jkt,omitempty"`
 }
 
 // AccessTokenIssuer encodes AccessTokenClaims into a bearer string. Two
@@ -160,15 +171,15 @@ const rfc9068TokenType = "at+jwt"
 type rfc9068Claims struct {
 	josejwt.Claims
 
-	ClientID      string         `json:"client_id,omitempty"`
-	Scope         string         `json:"scope,omitempty"`
-	Email         string         `json:"email,omitempty"`
-	EmailVerified *bool          `json:"email_verified,omitempty"`
-	Name          string         `json:"name,omitempty"`
-	Groups        []string       `json:"groups,omitempty"`
-	FamilyID      string         `json:"family_id,omitempty"`
-	Act           map[string]any `json:"act,omitempty"`
-	Cnf           map[string]any `json:"cnf,omitempty"`
+	ClientID      string        `json:"client_id,omitempty"`
+	Scope         string        `json:"scope,omitempty"`
+	Email         string        `json:"email,omitempty"`
+	EmailVerified *bool         `json:"email_verified,omitempty"`
+	Name          string        `json:"name,omitempty"`
+	Groups        []string      `json:"groups,omitempty"`
+	FamilyID      string        `json:"family_id,omitempty"`
+	Act           *Actor        `json:"act,omitempty"`
+	Cnf           *Confirmation `json:"cnf,omitempty"`
 }
 
 // Issue signs an RFC 9068 access token. The header carries alg/kid/typ; the
@@ -202,7 +213,7 @@ func (j *jwtIssuer) Issue(_ context.Context, c AccessTokenClaims) (string, error
 		Groups:   c.Groups,
 		FamilyID: c.FamilyID,
 		Act:      c.Act,
-		Cnf:      dpopCnf(c.JKT),
+		Cnf:      newConfirmation(c.JKT),
 	}
 	if c.Email != "" {
 		verified := c.EmailVerified

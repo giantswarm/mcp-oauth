@@ -82,8 +82,8 @@ func TestExchangeSubjectToken_IssuedToken(t *testing.T) {
 	require.Equal(t, testSubject, standard.Subject)
 	require.Equal(t, josejwt.Audience{"https://api.example.com"}, standard.Audience)
 	require.NotNil(t, private.Act)
-	require.Equal(t, testIssuer, private.Act["iss"])
-	require.Equal(t, testSubject, private.Act["sub"])
+	require.Equal(t, testIssuer, private.Act.Iss)
+	require.Equal(t, testSubject, private.Act.Sub)
 	require.Equal(t, "read", private.Scope)
 }
 
@@ -301,5 +301,5 @@ func TestExchangeSubjectToken_DPoP(t *testing.T) {
 	require.NoError(t, parsed.Claims(signingKey.Public(), &claims))
 
 	require.NotNil(t, claims.Cnf, "cnf claim must be present for DPoP-bound token")
-	require.Equal(t, jkt, claims.Cnf["jkt"], "cnf.jkt must match the DPoP key thumbprint")
+	require.Equal(t, jkt, claims.Cnf.JKT, "cnf.jkt must match the DPoP key thumbprint")
 }
