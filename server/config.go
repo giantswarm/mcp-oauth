@@ -95,6 +95,10 @@ const (
 	// EndpointPathRegister is the dynamic client registration endpoint path (RFC 7591)
 	EndpointPathRegister = "/oauth/register"
 
+	// EndpointPathClientManagement is the per-client management base path (RFC 7592).
+	// The actual routes are GET/PUT/DELETE /oauth/register/{client_id}.
+	EndpointPathClientManagement = "/oauth/register/"
+
 	// EndpointPathRevoke is the token revocation endpoint path (RFC 7009)
 	EndpointPathRevoke = "/oauth/revoke"
 
@@ -839,6 +843,15 @@ type Config struct {
 	// Default: false (opt-in to avoid exposing user data without operator consent).
 	EnableUserInfoEndpoint bool
 
+	// EnableClientManagementEndpoint controls whether RFC 7592 client management
+	// routes (GET/PUT/DELETE /oauth/register/{client_id}) are mounted. When true:
+	//   - management routes are registered (RegisterOAuthRoutes).
+	//   - `registration_management_endpoint` is included in AS metadata (RFC 8414 §2).
+	//   - `registration_access_token` and `registration_client_uri` are included in
+	//     new DCR responses (RFC 7591 §3.2.1).
+	// Default: false.
+	EnableClientManagementEndpoint bool
+
 	// ClientMetadataCacheTTL is how long to cache fetched client metadata
 	// Caching reduces latency and prevents repeated fetches for the same client
 	// HTTP Cache-Control headers may override this value
@@ -1061,6 +1074,12 @@ func (c *Config) IntrospectionEndpoint() string {
 // UserInfoEndpoint returns the full URL to the OIDC Core 1.0 §5.3 UserInfo endpoint.
 func (c *Config) UserInfoEndpoint() string {
 	return c.Issuer + EndpointPathUserInfo
+}
+
+// ClientManagementEndpoint returns the base URL for the RFC 7592 client
+// management endpoint. Individual client endpoints append "/{client_id}".
+func (c *Config) ClientManagementEndpoint() string {
+	return c.Issuer + EndpointPathClientManagement
 }
 
 // JWKSEndpoint returns the full URL to the JWKS discovery endpoint (RFC 7517).
