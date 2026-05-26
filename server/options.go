@@ -139,6 +139,24 @@ func WithSubjectTokenValidator(tokenType string, v SubjectTokenValidator) Option
 	}
 }
 
+// WithKubernetesSATrust registers a K8sSAValidator for projected ServiceAccount
+// tokens from the given clusters. It handles both
+// SubjectTokenTypeJWT and SubjectTokenTypeAccessToken.
+func WithKubernetesSATrust(trusts []KubernetesSATrust) Option {
+	return func(s *Server) {
+		v, err := NewK8sSAValidator(trusts)
+		if err != nil {
+			s.Logger.Error("failed to initialise Kubernetes SA validator", "error", err)
+			return
+		}
+		if s.subjectValidators == nil {
+			s.subjectValidators = make(map[string]SubjectTokenValidator)
+		}
+		s.subjectValidators[SubjectTokenTypeJWT] = v
+		s.subjectValidators[SubjectTokenTypeAccessToken] = v
+	}
+}
+
 // WithInstrumentation installs an OpenTelemetry pipeline on the server.
 // Build the *instrumentation.Instrumentation with instrumentation.New and
 // pass it here. The same instance can be shared with other components in
