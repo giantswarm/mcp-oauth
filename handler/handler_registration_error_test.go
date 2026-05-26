@@ -18,7 +18,7 @@ import (
 
 // TestHandleRegistrationError pins the two response shapes that
 // handleRegistrationError emits: 429 for registration-limit errors,
-// 500 for everything else. Coverage gap noted on the umbrella.
+// 500 for everything else.
 func TestHandleRegistrationError(t *testing.T) {
 	tests := []struct {
 		name       string
