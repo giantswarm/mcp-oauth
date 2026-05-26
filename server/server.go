@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"net"
 	"sync"
 	"time"
 
@@ -97,8 +98,13 @@ type Server struct {
 	refreshSessionGroup           singleflight.Group                      // Deduplicates concurrent RefreshSession calls per family ID
 	// subjectValidators is the registry for RFC 8693 token-exchange validators,
 	// keyed by subject_token_type URN.
-	subjectValidators             map[string]SubjectTokenValidator
-	Logger                        *slog.Logger
+	subjectValidators map[string]SubjectTokenValidator
+	// dpopReplayCache is used to detect replayed DPoP proof JTIs.
+	dpopReplayCache DPoPReplayCache
+	// trustedProxyCIDRs lists networks whose X-Forwarded-Proto/Host headers
+	// are trusted for DPoP htu reconstruction.
+	trustedProxyCIDRs []*net.IPNet
+	Logger            *slog.Logger
 	Config                        *Config
 	shutdownOnce                  sync.Once // Ensures Shutdown is called only once
 }
@@ -185,6 +191,10 @@ func New(
 
 	for _, opt := range opts {
 		opt(srv)
+	}
+
+	if srv.dpopReplayCache == nil {
+		srv.dpopReplayCache = NewMemoryDPoPReplayCache()
 	}
 
 	// Guarantee a non-nil Instrumentation so call sites can record metrics
@@ -387,6 +397,16 @@ func (s *Server) TokenStore() storage.TokenStore {
 // given subject_token_type URN, or nil if none is registered.
 func (s *Server) SubjectValidatorFor(tokenType string) SubjectTokenValidator {
 	return s.subjectValidators[tokenType]
+}
+
+// DPoPReplayCache returns the configured DPoP replay cache, or nil if none was set.
+func (s *Server) DPoPReplayCache() DPoPReplayCache {
+	return s.dpopReplayCache
+}
+
+// TrustedProxyCIDRs returns the list of CIDRs trusted for DPoP htu reconstruction.
+func (s *Server) TrustedProxyCIDRs() []*net.IPNet {
+	return s.trustedProxyCIDRs
 }
 
 // saveTokenMetadata writes token metadata to the configured store. Backends

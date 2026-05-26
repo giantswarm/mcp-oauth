@@ -1,6 +1,7 @@
 package security
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -193,6 +194,34 @@ func TestRateLimitBucket(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := RateLimitBucket(tt.ip); got != tt.want {
 				t.Errorf("RateLimitBucket(%q) = %q, want %q", tt.ip, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsTrustedProxy(t *testing.T) {
+	_, private10, _ := net.ParseCIDR("10.0.0.0/8")
+	_, loopback, _ := net.ParseCIDR("127.0.0.0/8")
+
+	cases := []struct {
+		name       string
+		remoteAddr string
+		cidrs      []*net.IPNet
+		want       bool
+	}{
+		{"in-range host:port", "10.1.2.3:9000", []*net.IPNet{private10}, true},
+		{"in-range bare-host", "10.1.2.3", []*net.IPNet{private10}, true},
+		{"out-of-range", "203.0.113.1:80", []*net.IPNet{private10}, false},
+		{"nil cidrs", "10.1.2.3:80", nil, false},
+		{"empty cidrs", "10.1.2.3:80", []*net.IPNet{}, false},
+		{"multiple cidrs match second", "127.0.0.1:80", []*net.IPNet{private10, loopback}, true},
+		{"multiple cidrs no match", "1.2.3.4:80", []*net.IPNet{private10, loopback}, false},
+		{"unparseable addr", "not-an-ip", []*net.IPNet{private10}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsTrustedProxy(tc.remoteAddr, tc.cidrs); got != tc.want {
+				t.Errorf("IsTrustedProxy(%q) = %v, want %v", tc.remoteAddr, got, tc.want)
 			}
 		})
 	}

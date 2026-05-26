@@ -21,10 +21,12 @@ type TokenExchangeResult struct {
 // ExchangeSubjectToken validates subjectToken using the registered SubjectTokenValidator
 // for subjectTokenType, then issues a signed JWT access token. resource becomes the aud
 // claim (required per RFC 8707). scope is intersected against the per-issuer AllowedScopes
-// envelope from TrustedIssuer configuration.
+// envelope from TrustedIssuer configuration. dpopJKT is the JWK thumbprint from a
+// validated DPoP proof; when non-empty it is written into the cnf.jkt claim of the
+// issued JWT per RFC 9449 §6.1. Pass empty string when no DPoP proof was presented.
 func (s *Server) ExchangeSubjectToken(
 	ctx context.Context,
-	subjectToken, subjectTokenType, resource, scope string,
+	subjectToken, subjectTokenType, resource, scope, dpopJKT string,
 ) (*TokenExchangeResult, error) {
 	if !s.Config.IsJWTAccessTokenFormat() {
 		return nil, fmt.Errorf("token exchange requires JWT access token mode (set AccessTokenFormat=jwt)")
@@ -58,10 +60,8 @@ func (s *Server) ExchangeSubjectToken(
 		IssuedAt:  now,
 		ExpiresAt: expiresAt,
 		JTI:       generateRandomToken(),
-		Act: map[string]any{
-			"iss": identity.Issuer,
-			"sub": identity.Subject,
-		},
+		Act: &Actor{Iss: identity.Issuer, Sub: identity.Subject},
+		JKT: dpopJKT,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue exchange token: %w", err)
