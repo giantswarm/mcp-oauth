@@ -468,6 +468,11 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	clientIP, ok := h.gateIPRateLimit(w, r, span, endpointCallback, http.MethodGet, startTime)
+	if !ok {
+		return
+	}
+
 	// Set CORS headers for browser-based clients
 	h.setCORSHeaders(w, r)
 
@@ -479,7 +484,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	// Check for provider errors
 	if errorParam != "" {
 		errorDesc := r.URL.Query().Get("error_description")
-		h.logger.Warn("Provider returned error", "error", errorParam, "description", errorDesc)
+		h.logger.Warn("Provider returned error", "ip", clientIP, "error", errorParam, "description", errorDesc)
 		h.recordHTTPMetrics(r.Context(), endpointCallback, http.MethodGet, http.StatusBadRequest, startTime)
 		h.recordCallbackProcessed(r.Context(), "", false)
 		instrumentation.SetSpanError(span, errorParam)
@@ -503,7 +508,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	minStateLength := h.server.Config.MinStateLength
 	maxStateLength := h.server.Config.MaxStateLength
 	if len(state) < minStateLength {
-		h.logger.Warn("Callback rejected: provider state too short", "state_length", len(state), "min_required", minStateLength)
+		h.logger.Warn("Callback rejected: provider state too short", "ip", clientIP, "state_length", len(state), "min_required", minStateLength)
 		h.recordHTTPMetrics(r.Context(), endpointCallback, http.MethodGet, http.StatusBadRequest, startTime)
 		h.recordCallbackProcessed(r.Context(), "", false)
 		instrumentation.SetSpanError(span, "state too short")
@@ -511,7 +516,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(state) > maxStateLength {
-		h.logger.Warn("Callback rejected: provider state too long", "state_length", len(state), "max_allowed", maxStateLength)
+		h.logger.Warn("Callback rejected: provider state too long", "ip", clientIP, "state_length", len(state), "max_allowed", maxStateLength)
 		h.recordHTTPMetrics(r.Context(), endpointCallback, http.MethodGet, http.StatusBadRequest, startTime)
 		h.recordCallbackProcessed(r.Context(), "", false)
 		instrumentation.SetSpanError(span, "state too long")
@@ -523,7 +528,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	// Server also validates state length for defense in depth
 	authCode, clientState, err := h.server.HandleProviderCallback(r.Context(), state, code)
 	if err != nil {
-		h.logger.Error("Failed to handle callback", "error", err)
+		h.logger.Error("Failed to handle callback", "ip", clientIP, "error", err)
 		h.recordHTTPMetrics(r.Context(), endpointCallback, http.MethodGet, http.StatusInternalServerError, startTime)
 		h.recordCallbackProcessed(r.Context(), "", false)
 		instrumentation.RecordError(span, err)
@@ -545,7 +550,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	// build the response URL through url.Values rather than string concatenation.
 	parsedRedirect, err := url.Parse(authCode.RedirectURI)
 	if err != nil {
-		h.logger.Error("Stored redirect URI failed to parse", "error", err, "client_id", authCode.ClientID)
+		h.logger.Error("Stored redirect URI failed to parse", "ip", clientIP, "error", err, "client_id", authCode.ClientID)
 		h.failRequest(w, r, span, endpointCallback, http.MethodGet, http.StatusInternalServerError, oauth.ErrorCodeServerError, "Authorization failed", startTime)
 		return
 	}

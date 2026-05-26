@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"net/url"
 	"path"
-	"strconv"
 	"strings"
+	"time"
 
 	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
@@ -338,13 +338,18 @@ func (h *Handler) extractIssuerPath() string {
 
 // ServeAuthorizationServerMetadata serves RFC 8414 Authorization Server Metadata
 func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+
+	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.discovery")
+	defer endSpan()
+
 	if r.Method != http.MethodGet {
+		h.recordHTTPMetrics(r.Context(), endpointDiscovery, http.MethodGet, http.StatusMethodNotAllowed, startTime)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	clientIP := h.clientIP(r)
-	if h.checkDiscoveryRateLimit(w, r, clientIP) {
+	if _, ok := h.gateIPRateLimit(w, r, span, endpointDiscovery, http.MethodGet, startTime); !ok {
 		return
 	}
 
@@ -354,32 +359,9 @@ func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 
 	metadata := h.buildAuthServerMetadata()
 
+	h.recordHTTPMetrics(r.Context(), endpointDiscovery, http.MethodGet, http.StatusOK, startTime)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(metadata)
-}
-
-// checkDiscoveryRateLimit checks rate limit for discovery endpoints.
-// Returns true if rate limit exceeded and response was written.
-func (h *Handler) checkDiscoveryRateLimit(w http.ResponseWriter, r *http.Request, clientIP string) bool {
-	if h.server.RateLimiter == nil || h.server.RateLimiter.Allow(security.RateLimitBucket(clientIP)) {
-		return false
-	}
-
-	h.logger.Warn("Rate limit exceeded on discovery endpoint",
-		"ip", clientIP,
-		"endpoint", "authorization_server_metadata")
-
-	h.server.Instrumentation.Metrics().RecordRateLimitExceeded(r.Context(), "ip")
-
-	h.server.Auditor.LogEvent(r.Context(), security.Event{
-		Type:      security.EventRateLimitExceeded,
-		IPAddress: clientIP,
-		Details:   map[string]any{"endpoint": r.URL.Path},
-	})
-
-	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSecondsForRate(h.server.RateLimiter.Rate())))
-	http.Error(w, "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
-	return true
 }
 
 // buildAuthServerMetadata returns the metadata served at both
@@ -484,23 +466,28 @@ func (h *Handler) ServeOpenIDConfiguration(w http.ResponseWriter, r *http.Reques
 // for opaque-mode access tokens — the endpoint exists but advertising
 // nothing is the honest response.
 //
-// The handler reuses the discovery rate limiter so a hot loop against
-// /.well-known/jwks.json cannot starve the rest of the server. Cache-Control
-// is set to one hour: keys rotate manually (operator changes
+// Cache-Control is set to one hour: keys rotate manually (operator changes
 // AccessTokenSigningKeyID and restarts), and verifiers caching for an hour
 // is the conventional middle ground between churn and freshness.
 func (h *Handler) ServeJWKS(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+
+	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.jwks")
+	defer endSpan()
+
 	if r.Method != http.MethodGet {
+		h.recordHTTPMetrics(r.Context(), endpointJWKS, http.MethodGet, http.StatusMethodNotAllowed, startTime)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	clientIP := h.clientIP(r)
-	if h.checkDiscoveryRateLimit(w, r, clientIP) {
+	clientIP, ok := h.gateIPRateLimit(w, r, span, endpointJWKS, http.MethodGet, startTime)
+	if !ok {
 		return
 	}
 
 	if !h.server.Config.IsJWTAccessTokenFormat() {
+		h.recordHTTPMetrics(r.Context(), endpointJWKS, http.MethodGet, http.StatusNotFound, startTime)
 		http.NotFound(w, r)
 		return
 	}
@@ -510,16 +497,19 @@ func (h *Handler) ServeJWKS(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("Failed to build JWKS for discovery endpoint",
 			"error", err,
 			"ip", clientIP)
+		h.recordHTTPMetrics(r.Context(), endpointJWKS, http.MethodGet, http.StatusInternalServerError, startTime)
 		http.Error(w, "JWKS unavailable", http.StatusInternalServerError)
 		return
 	}
 	if jwks == nil || len(jwks.Keys) == 0 {
+		h.recordHTTPMetrics(r.Context(), endpointJWKS, http.MethodGet, http.StatusNotFound, startTime)
 		http.NotFound(w, r)
 		return
 	}
 
 	h.setCORSHeaders(w, r)
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+	h.recordHTTPMetrics(r.Context(), endpointJWKS, http.MethodGet, http.StatusOK, startTime)
 	w.Header().Set("Content-Type", "application/jwk-set+json")
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 

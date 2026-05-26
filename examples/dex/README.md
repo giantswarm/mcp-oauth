@@ -186,4 +186,3 @@ if !hasAccess {
 - [Dex connector_id Parameter](https://dexidp.io/docs/configuration/custom-scopes-claims-clients/#authentication-through-connector_id)
 - [Dex Refresh Token Rotation](https://dexidp.io/docs/configuration/custom-scopes-claims-clients/#refresh-token-rotation)
 - [mcp-oauth Library Documentation](../../README.md)
-

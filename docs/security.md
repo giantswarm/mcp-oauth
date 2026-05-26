@@ -186,7 +186,7 @@ config := &server.Config{
     // Time-windowed limits
     MaxRegistrationsPerHour:     10,
     RegistrationRateLimitWindow: 3600, // seconds
-    
+
     // Static limit
     MaxClientsPerIP: 10,
 }
@@ -271,10 +271,10 @@ The `AllowPublicClientRegistration` setting controls two aspects:
 config := &server.Config{
     // Require authentication and deny public clients
     AllowPublicClientRegistration: false,
-    
+
     // Registration token (generate: openssl rand -base64 32)
     RegistrationAccessToken: os.Getenv("REGISTRATION_TOKEN"),
-    
+
     // Limit per IP
     MaxClientsPerIP: 10,
 }
@@ -294,7 +294,7 @@ config := &server.Config{
     // Require token for most clients
     AllowPublicClientRegistration: false,
     RegistrationAccessToken: os.Getenv("REGISTRATION_TOKEN"),
-    
+
     // Allow unauthenticated registration for IDE clients
     TrustedPublicRegistrationSchemes: []string{
         "cursor",
@@ -302,7 +302,7 @@ config := &server.Config{
         "vscode-insiders",
         "windsurf",
     },
-    
+
     // Strict scheme matching is enabled by default when TrustedPublicRegistrationSchemes is set
     // To allow mixed schemes (not recommended), set DisableStrictSchemeMatching: true
 }
@@ -411,7 +411,7 @@ Registrations via the trusted HTTPS allowlist are logged with event type `client
 config := &server.Config{
     // Allow unauthenticated registration and public clients
     AllowPublicClientRegistration: true,
-    
+
     // Still limit per IP
     MaxClientsPerIP: 10,
 }
@@ -447,11 +447,11 @@ If you need to reduce security for specific use cases, use the `Allow*` flags:
 config := &server.Config{
     // Native app support (RFC 8252) - allows HTTP on localhost/loopback
     AllowLocalhostRedirectURIs: true,
-    
+
     // Internal/VPN deployments - allows RFC 1918 private IPs
     // WARNING: Enables SSRF to internal networks
     AllowPrivateIPRedirectURIs: true,
-    
+
     // Rarely needed - allows link-local addresses
     // WARNING: Enables SSRF to cloud metadata services (169.254.169.254)
     AllowLinkLocalRedirectURIs: true,
@@ -466,13 +466,13 @@ To completely disable security features (e.g., for local development), use the e
 config := &server.Config{
     // Disable HTTPS requirement for non-loopback (development only!)
     DisableProductionMode: true,
-    
+
     // Disable DNS validation (if latency is unacceptable)
     DisableDNSValidation: true,
-    
+
     // Use fail-open DNS validation (if DNS is unreliable)
     DisableDNSValidationStrict: true,
-    
+
     // Skip authorization-time re-validation (if latency is critical)
     DisableAuthorizationTimeValidation: true,
 }
@@ -593,7 +593,7 @@ This approach is critical for ID token forwarding scenarios. Many Identity Provi
 config := &server.Config{
     Issuer:             "https://auth.example.com",
     ResourceIdentifier: "https://mcp-kubernetes.example.com",
-    
+
     // Accept tokens issued to the muster aggregator
     TrustedAudiences: []string{
         "muster-client",
@@ -684,7 +684,7 @@ If your Identity Provider (e.g., Dex) runs on a private network, JWKS fetching w
 config := &server.Config{
     Issuer:             "https://dex.internal.example.com",
     TrustedAudiences:   []string{"muster-client"},
-    
+
     // Allow JWKS fetching from private IdP
     // WARNING: Reduces SSRF protection for JWKS endpoints only
     AllowPrivateIPJWKS: true,
@@ -814,7 +814,7 @@ If you need to support older clients that don't support PKCE or S256:
 ```go
 config := &server.Config{
     Issuer: "https://your-domain.com",
-    
+
     // WARNING: Only enable for backward compatibility
     RequirePKCE:    false, // Allow clients without PKCE
     AllowPKCEPlain: true,  // Allow 'plain' method (insecure)
@@ -847,4 +847,3 @@ This library implements OAuth 2.1 security best practices:
 - [Configuration Guide](./configuration.md) - All configuration options
 - [Security Architecture](../SECURITY_ARCHITECTURE.md) - Deep technical details
 - [Discovery Mechanisms](./discovery.md) - OAuth discovery security
-

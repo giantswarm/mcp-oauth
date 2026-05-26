@@ -407,18 +407,18 @@ type Combined interface {
 
 // Client represents a registered OAuth client
 type Client struct {
-	ClientID                        string
-	ClientSecretHash                string // bcrypt hash
-	ClientType                      string // ClientTypePublic or ClientTypeConfidential
-	RedirectURIs                    []string
-	TokenEndpointAuthMethod         string
-	GrantTypes                      []string
-	ResponseTypes                   []string
-	ClientName                      string
-	Scopes                          []string
-	CreatedAt                       time.Time
-	UpdatedAt                       time.Time
-	RegistrationAccessTokenHash     string // bcrypt hash of the per-client registration access token (RFC 7592)
+	ClientID                    string
+	ClientSecretHash            string // bcrypt hash
+	ClientType                  string // ClientTypePublic or ClientTypeConfidential
+	RedirectURIs                []string
+	TokenEndpointAuthMethod     string
+	GrantTypes                  []string
+	ResponseTypes               []string
+	ClientName                  string
+	Scopes                      []string
+	CreatedAt                   time.Time
+	UpdatedAt                   time.Time
+	RegistrationAccessTokenHash string // bcrypt hash of the per-client registration access token (RFC 7592)
 }
 
 // IsPublic reports whether the client is a public client (no secret).

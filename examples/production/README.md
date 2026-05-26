@@ -101,28 +101,28 @@ func getEncryptionKey(ctx context.Context) (string, error) {
     if err != nil {
         return "", fmt.Errorf("failed to load AWS config: %w", err)
     }
-    
+
     svc := secretsmanager.NewFromConfig(cfg)
-    
+
     // Add timeout for secret retrieval
     ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
     defer cancel()
-    
+
     input := &secretsmanager.GetSecretValueInput{
         SecretId: aws.String("oauth-encryption-key"),
         VersionStage: aws.String("AWSCURRENT"), // Explicit version for production
     }
-    
+
     result, err := svc.GetSecretValue(ctx, input)
     if err != nil {
         return "", fmt.Errorf("failed to retrieve secret: %w", err)
     }
-    
+
     // Nil safety check
     if result.SecretString == nil {
         return "", fmt.Errorf("secret value is nil")
     }
-    
+
     return *result.SecretString, nil
 }
 ```
@@ -547,10 +547,10 @@ If secrets are leaked or compromised, follow this immediate response procedure:
    ```bash
    # Install git-filter-repo
    pip install git-filter-repo
-   
+
    # Remove secret from entire history
    git filter-repo --path .env --invert-paths
-   
+
    # Or use BFG Repo-Cleaner for specific strings
    bfg --replace-text secrets.txt  # File with secret=REMOVED mappings
    ```
@@ -910,4 +910,3 @@ For production, use valid certificates from Let's Encrypt or your CA.
 - Set up CI/CD pipeline
 - Load testing and performance tuning
 - Security audit and penetration testing
-

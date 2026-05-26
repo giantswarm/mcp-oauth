@@ -3,9 +3,10 @@ package server
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/security"
-	"github.com/stretchr/testify/require"
 )
 
 func testInstrumentation(t testing.TB) *instrumentation.Instrumentation {

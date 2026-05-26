@@ -9,4 +9,3 @@ contact_links:
   - name: Documentation
     url: https://pkg.go.dev/github.com/giantswarm/mcp-oauth
     about: Read the API documentation
-

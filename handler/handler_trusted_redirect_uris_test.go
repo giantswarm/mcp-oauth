@@ -7,8 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/stretchr/testify/require"
+
+	oauth "github.com/giantswarm/mcp-oauth"
 )
 
 const trustedRedirectURITestToken = "test-registration-token-trusted-uris-12345"

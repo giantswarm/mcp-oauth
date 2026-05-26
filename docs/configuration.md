@@ -23,7 +23,7 @@ import "github.com/giantswarm/mcp-oauth/server"
 config := &server.Config{
     // Required: Your server's canonical URL
     Issuer: "https://auth.example.com",
-    
+
     // Optional: All other fields have sensible defaults
 }
 ```
@@ -59,15 +59,15 @@ config := &server.Config{
 config := &server.Config{
     Issuer:          "https://auth.example.com",
     SupportedScopes: []string{"openid", "email", "profile", "mcp:access"},
-    
+
     // Security (all defaults are secure)
     RequirePKCE:               true,
     AllowPKCEPlain:            false,
     AllowRefreshTokenRotation: true,
-    
+
     // Discovery
     DefaultChallengeScopes: []string{"mcp:access"},
-    
+
     // Resource binding
     ResourceIdentifier: "https://api.example.com",
 }
@@ -80,7 +80,7 @@ Enable CORS (Cross-Origin Resource Sharing) for browser-based MCP clients:
 ```go
 config := &server.Config{
     Issuer: "https://auth.example.com",
-    
+
     CORS: server.CORSConfig{
         AllowedOrigins: []string{
             "https://app.example.com",
@@ -121,7 +121,7 @@ When running behind a reverse proxy (nginx, HAProxy, CloudFlare):
 ```go
 config := &server.Config{
     Issuer: "https://auth.example.com",
-    
+
     TrustProxy:        true,  // Enable proxy header trust
     TrustedProxyCount: 2,     // Number of proxies in chain
 }
@@ -154,7 +154,7 @@ When OAuth redirects to custom URL schemes (like `cursor://`, `vscode://`), brow
 ```go
 config := &server.Config{
     Issuer: "https://auth.example.com",
-    
+
     Interstitial: &server.InterstitialConfig{
         Branding: &server.InterstitialBranding{
             LogoURL:            "https://cdn.example.com/logo.svg",
@@ -219,12 +219,12 @@ config := &server.Config{
         CustomHandler: func(w http.ResponseWriter, r *http.Request) {
             redirectURL := oauth.InterstitialRedirectURL(r.Context())
             appName := oauth.InterstitialAppName(r.Context())
-            
+
             // Set security headers (recommended)
             security.SetInterstitialSecurityHeaders(w, "https://auth.example.com")
-            
+
             w.Header().Set("Content-Type", "text/html")
-            fmt.Fprintf(w, "<html><body><a href='%s'>Open %s</a></body></html>", 
+            fmt.Fprintf(w, "<html><body><a href='%s'>Open %s</a></body></html>",
                 redirectURL, appName)
         },
     },
@@ -241,7 +241,7 @@ The server can refresh tokens before they expire, improving user experience:
 config := &server.Config{
     // Refresh tokens when they expire within this window (seconds)
     TokenRefreshThreshold: 300, // 5 minutes (default)
-    
+
     // Grace period for clock synchronization issues (seconds)
     ClockSkewGracePeriod: 5,
 }
@@ -379,13 +379,13 @@ Control dynamic client registration:
 config := &server.Config{
     // Require authentication for /oauth/register
     AllowPublicClientRegistration: false,
-    
+
     // Registration access token (share only with trusted developers)
     RegistrationAccessToken: os.Getenv("REGISTRATION_TOKEN"),
-    
+
     // Limit registrations per IP
     MaxClientsPerIP: 10,
-    
+
     // Rate limiting
     MaxRegistrationsPerHour:     10,
     RegistrationRateLimitWindow: 3600, // seconds
@@ -449,7 +449,7 @@ config := &server.Config{
         "files:write",
         "admin:access",
     },
-    
+
     // Scopes to advertise in 401 challenges
     DefaultChallengeScopes: []string{"mcp:access"},
 }
@@ -466,7 +466,7 @@ config := &server.Config{
         "/api/files/*":  {"files:read", "files:write"},
         "/api/admin/*":  {"admin:access"},
     },
-    
+
     // Method + path requirements
     EndpointMethodScopeRequirements: map[string]map[string][]string{
         "/api/files/*": {
@@ -503,4 +503,3 @@ See [Discovery Mechanisms](./discovery.md) for more on per-path metadata.
 - [Security Guide](./security.md) - Security features and production checklist
 - [Observability](./observability.md) - Metrics and tracing
 - [Discovery Mechanisms](./discovery.md) - OAuth discovery configuration
-

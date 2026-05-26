@@ -35,4 +35,3 @@ This folder contains the documentation for the mcp-oauth library.
 - [Examples](../examples/) - Runnable examples
 - [API Reference](https://pkg.go.dev/github.com/giantswarm/mcp-oauth) - Godoc
 - [Changelog](../CHANGELOG.md) - Version history
-
