@@ -132,7 +132,7 @@ func (s *Server) rotateRefreshToken(ctx context.Context, oldRefreshToken, userID
 	}
 
 	// Save with family tracking if supported
-	refreshTokenExpiry := time.Now().Add(time.Duration(s.Config.RefreshTokenTTL) * time.Second)
+	refreshTokenExpiry := s.refreshTokenExpiry(time.Now())
 	if supportsFamilies && familyID != "" {
 		if err := familyStore.SaveRefreshTokenWithFamily(ctx, newRefreshToken, userID, clientID, familyID, generation, refreshTokenExpiry); err != nil {
 			s.Logger.Warn("Failed to save refresh token with family", "error", err)
@@ -186,6 +186,8 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		return nil, fmt.Errorf("failed to refresh token with provider: %w", err)
 	}
 
+	now := time.Now()
+
 	// OAuth 2.1: Refresh Token Rotation
 	newRefreshToken, familyID, rotated := s.rotateRefreshToken(ctx, refreshToken, userID, clientID, familyStore, supportsFamilies)
 
@@ -193,7 +195,8 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	if newProviderToken != nil {
 		providerExpiry = newProviderToken.Expiry
 	}
-	expiry := s.capTokenExpiry(providerExpiry)
+	expiry := s.capTokenExpiry(now, providerExpiry)
+	refreshExpiry := s.refreshTokenExpiry(now)
 
 	newAccessToken, err := s.issueAccessToken(ctx, accessTokenIssueParams{
 		UserID:    userID,
@@ -242,6 +245,8 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	s.saveTokenMetadata(ctx, newAccessToken, storage.TokenMetadata{
 		UserID:    userID,
 		ClientID:  clientID,
+		IssuedAt:  now,
+		ExpiresAt: expiry,
 		TokenType: "access",
 		Audience:  oldAudience,
 		FamilyID:  familyID,
@@ -250,6 +255,8 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	s.saveTokenMetadata(ctx, newRefreshToken, storage.TokenMetadata{
 		UserID:    userID,
 		ClientID:  clientID,
+		IssuedAt:  now,
+		ExpiresAt: refreshExpiry,
 		TokenType: "refresh",
 		Audience:  oldAudience,
 		FamilyID:  familyID,

@@ -77,7 +77,7 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 // grant_type=<random> would otherwise mint a fresh series per probe).
 func (h *Handler) recordTokenFailure(ctx context.Context, grantType, errorCode string) {
 	switch grantType {
-	case "authorization_code", "refresh_token", "client_credentials", "password":
+	case "authorization_code", "refresh_token", "client_credentials", "password", server.GrantTypeTokenExchange:
 	default:
 		grantType = "unknown"
 	}

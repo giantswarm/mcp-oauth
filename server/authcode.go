@@ -865,11 +865,13 @@ func (s *Server) logScopeValidationFailure(ctx context.Context, authCode *storag
 
 // generateAndStoreTokens generates and stores access and refresh tokens.
 func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.AuthorizationCode, clientID, familyID string) (*oauth2.Token, error) {
+	now := time.Now()
 	var providerExpiry time.Time
 	if authCode.ProviderToken != nil {
 		providerExpiry = authCode.ProviderToken.Expiry
 	}
-	expiry := s.capTokenExpiry(providerExpiry)
+	expiry := s.capTokenExpiry(now, providerExpiry)
+	refreshExpiry := s.refreshTokenExpiry(now)
 
 	tokenScopes := helpers.SplitScopes(authCode.Scope)
 	accessToken, err := s.issueAccessToken(ctx, accessTokenIssueParams{
@@ -915,6 +917,8 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 	s.saveTokenMetadata(ctx, accessToken, storage.TokenMetadata{
 		UserID:    authCode.UserID,
 		ClientID:  clientID,
+		IssuedAt:  now,
+		ExpiresAt: expiry,
 		TokenType: "access",
 		Audience:  authCode.Audience,
 		FamilyID:  familyID,
@@ -923,6 +927,8 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 	s.saveTokenMetadata(ctx, refreshToken, storage.TokenMetadata{
 		UserID:    authCode.UserID,
 		ClientID:  clientID,
+		IssuedAt:  now,
+		ExpiresAt: refreshExpiry,
 		TokenType: "refresh",
 		Audience:  authCode.Audience,
 		FamilyID:  familyID,
@@ -989,7 +995,7 @@ func (s *Server) fillUserInfoClaims(ctx context.Context, userID string, c *Acces
 // trackRefreshTokenFamily tracks the refresh token with family support if available.
 // If familyID is provided it is used; otherwise a new one is generated.
 func (s *Server) trackRefreshTokenFamily(ctx context.Context, refreshToken, userID, clientID, familyID string) {
-	refreshTokenExpiry := time.Now().Add(time.Duration(s.Config.RefreshTokenTTL) * time.Second)
+	refreshTokenExpiry := s.refreshTokenExpiry(time.Now())
 
 	if familyStore, ok := s.tokenStore.(storage.RefreshTokenFamilyStore); ok {
 		if familyID == "" {
