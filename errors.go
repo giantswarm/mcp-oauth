@@ -22,6 +22,10 @@ const (
 	ErrorCodeInvalidRedirectURI      = "invalid_redirect_uri"
 	ErrorCodeRateLimitExceeded       = "rate_limit_exceeded"
 
+	// DPoP error codes (RFC 9449)
+	ErrorCodeInvalidDPoPProof = "invalid_dpop_proof"
+	ErrorCodeUseDPoPNonce     = "use_dpop_nonce"
+
 	// Silent authentication error codes (OIDC Core Section 3.1.2.6)
 	// These indicate the IdP requires user interaction and silent auth failed.
 	ErrorCodeLoginRequired            = "login_required"

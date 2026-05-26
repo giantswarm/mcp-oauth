@@ -18,6 +18,10 @@ const (
 	dpopTypHeader    = "dpop+jwt"
 	dpopMaxClockSkew = 5 * time.Minute
 	dpopProofTTL     = 5 * time.Minute
+
+	// DPoPSupportedAlgs is the space-separated list of accepted DPoP proof
+	// signature algorithms, used in WWW-Authenticate challenges (RFC 9449 §7.1).
+	DPoPSupportedAlgs = "RS256 RS384 RS512 ES256 ES384 ES512 PS256 PS384 PS512"
 )
 
 // DPoPProofClaims holds the validated output of a DPoP proof JWT.
@@ -31,15 +35,22 @@ type DPoPProofClaims struct {
 // dpopRawClaims is the on-the-wire shape of a DPoP proof JWT body.
 type dpopRawClaims struct {
 	josejwt.Claims
-	HTM string `json:"htm"`
-	HTU string `json:"htu"`
-	ATH string `json:"ath,omitempty"`
+	HTM   string `json:"htm"`
+	HTU   string `json:"htu"`
+	ATH   string `json:"ath,omitempty"`
+	Nonce string `json:"nonce,omitempty"` // RFC 9449 §8 — server-issued nonce
 }
 
 // ValidateDPoPProof parses and validates a DPoP proof JWT per RFC 9449 §4.3.
 // method and uri are the HTTP method and URI of the current request.
 // accessToken is non-empty only at the resource server (enables ath check).
-func ValidateDPoPProof(ctx context.Context, proof, method, uri, accessToken string, replay DPoPReplayCache, now time.Time) (*DPoPProofClaims, error) {
+// nonces is optional: when non-nil, the proof must carry a currently valid
+// server-issued nonce (RFC 9449 §8); a missing or stale nonce returns
+// [ErrDPoPNonceInvalid] so callers can respond with use_dpop_nonce.
+//
+// Nonce check occurs before replay recording: a proof rejected for a bad nonce
+// does not consume its JTI in the replay cache.
+func ValidateDPoPProof(ctx context.Context, proof, method, uri, accessToken string, replay DPoPReplayCache, nonces DPoPNonceProvider, now time.Time) (*DPoPProofClaims, error) {
 	jws, err := jose.ParseSigned(proof, []jose.SignatureAlgorithm{
 		jose.RS256, jose.RS384, jose.RS512,
 		jose.ES256, jose.ES384, jose.ES512,
@@ -100,11 +111,24 @@ func ValidateDPoPProof(ctx context.Context, proof, method, uri, accessToken stri
 		return nil, fmt.Errorf("dpop: iat is outside allowed clock skew window")
 	}
 
+	// ath: SHA-256 of the raw access token bytes (RFC 9449 §4.3, resource server only).
+	// Plain string comparison is safe here: ath is SHA-256 of the bearer token,
+	// a value that is already transmitted in the clear, so timing leaks carry no
+	// exploitable information.
 	if accessToken != "" {
 		hash := sha256.Sum256([]byte(accessToken))
 		expected := base64.RawURLEncoding.EncodeToString(hash[:])
 		if claims.ATH != expected {
 			return nil, fmt.Errorf("dpop: ath claim does not match access token hash")
+		}
+	}
+
+	// Nonce check (RFC 9449 §8) — must precede replay recording so a proof with
+	// an invalid nonce does not consume its JTI in the cache. The client retries
+	// with a new proof (and a new JTI) after receiving use_dpop_nonce.
+	if nonces != nil {
+		if !nonces.Valid(ctx, claims.Nonce) {
+			return nil, ErrDPoPNonceInvalid
 		}
 	}
 

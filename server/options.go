@@ -172,6 +172,16 @@ func WithDPoPReplayCache(cache DPoPReplayCache) Option {
 	}
 }
 
+// WithDPoPNonceProvider enables RFC 9449 §8 nonce enforcement. When set,
+// [ValidateDPoPProof] requires every DPoP proof to carry a currently-valid
+// server-issued nonce; proofs without one are rejected with [ErrDPoPNonceInvalid].
+// Pass [NewHMACNonceProvider] for a stateless HMAC-based implementation.
+func WithDPoPNonceProvider(provider DPoPNonceProvider) Option {
+	return func(s *Server) {
+		s.dpopNonceProvider = provider
+	}
+}
+
 // WithTrustedProxyCIDRs registers the CIDRs from which X-Forwarded-Proto and
 // X-Forwarded-Host headers are trusted for DPoP htu URL reconstruction. Required
 // when the server runs behind agw, Envoy, or any reverse proxy that terminates TLS.
