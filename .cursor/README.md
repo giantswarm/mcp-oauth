@@ -29,4 +29,3 @@ These rules ensure that AI-assisted development:
 Cursor AI will automatically apply these rules when working in this repository. The rules are declared with `alwaysApply: true` and apply to all files (`globs: **/*`).
 
 To modify or add rules, edit the `.mdc` files in the `rules/` directory.
-

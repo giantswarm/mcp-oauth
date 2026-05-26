@@ -301,14 +301,14 @@ func TestIsSilentAuthError(t *testing.T) {
 			expected: false,
 		},
 		{
-			name:     "error string containing login_required",
+			name:     "plain string containing login_required not detected",
 			err:      fmt.Errorf("error: login_required"),
-			expected: true,
+			expected: false,
 		},
 		{
-			name:     "error string containing consent_required",
+			name:     "plain string containing consent_required not detected",
 			err:      fmt.Errorf("error: consent_required"),
-			expected: true,
+			expected: false,
 		},
 	}
 

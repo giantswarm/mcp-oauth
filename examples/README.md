@@ -294,4 +294,3 @@ For production use, see the [production example](./production) and consider:
 - Review the [troubleshooting sections](./production/README.md#troubleshooting)
 - Open an [issue](https://github.com/giantswarm/mcp-oauth/issues) if you find bugs
 - Start a [discussion](https://github.com/giantswarm/mcp-oauth/discussions) for questions
-

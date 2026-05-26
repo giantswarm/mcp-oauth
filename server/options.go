@@ -30,7 +30,11 @@ func WithEncryptor(enc *security.Encryptor) Option {
 }
 
 // WithAuditor sets the security auditor used for OAuth audit events.
+// Passing nil panics; use security.NewAuditor(nil, false) for a noop.
 func WithAuditor(aud *security.Auditor) Option {
+	if aud == nil {
+		panic("WithAuditor: nil auditor; use security.NewAuditor(nil, false) for a noop")
+	}
 	return func(s *Server) { s.Auditor = aud }
 }
 

@@ -41,9 +41,6 @@ func (s *Server) capTokenExpiry(providerExpiry time.Time) time.Time {
 	return expiry
 }
 
-// logAuthFailure logs an authentication failure if auditor is configured
 func (s *Server) logAuthFailure(ctx context.Context, userID, clientID, reason string) {
-	if s.Auditor != nil {
-		s.Auditor.LogAuthFailure(ctx, userID, clientID, "", reason)
-	}
+	s.Auditor.LogAuthFailure(ctx, userID, clientID, "", reason)
 }

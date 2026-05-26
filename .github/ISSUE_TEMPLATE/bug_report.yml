@@ -109,4 +109,3 @@ body:
           required: true
         - label: I am using a supported version of the library
           required: true
-

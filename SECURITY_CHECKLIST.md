@@ -166,7 +166,7 @@ By checking this box, I confirm that:
 - [ ] Security-sensitive changes have been tested
 - [ ] I understand the security implications of this change
 
-**Reviewer:** ____________________  
+**Reviewer:** ____________________
 **Date:** ____________________
 
 ---
@@ -187,4 +187,3 @@ The following are automatically enforced by CI/CD:
 - [OAuth 2.1 Security Best Practices](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics)
 - [Go Security Practices](https://golang.org/doc/security/)
 - [SSRF Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html)
-

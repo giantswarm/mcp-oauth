@@ -252,7 +252,7 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID string, re
 	// CRITICAL SECURITY: Validate state parameter from client for CSRF protection
 	if err := s.validateClientStateParameter(clientState); err != nil {
 		s.logAuthFailure(ctx, "", clientID, "invalid_state_parameter")
-		return "", fmt.Errorf("%w (OAuth 2.0 Security BCP)", err)
+		return "", fmt.Errorf("oauth security bcp violation: %w", err)
 	}
 
 	// Generate server-side state if client didn't provide one

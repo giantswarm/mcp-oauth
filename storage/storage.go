@@ -89,6 +89,10 @@ var (
 	// vs "no such session". The two states converge to NotFound after the
 	// revoked-family retention period elapses and the entries are wiped.
 	ErrRefreshTokenFamilyRevoked = errors.New("refresh token family is revoked")
+
+	// ErrClientIPLimitExceeded is returned by CheckIPLimit when the IP has reached
+	// the maximum number of registered clients.
+	ErrClientIPLimitExceeded = errors.New("client registration limit exceeded")
 )
 
 // IsNotFoundError checks if an error indicates a "not found" condition.
@@ -305,6 +309,10 @@ type ClientStore interface {
 	// ListClients lists all registered clients (for admin purposes)
 	ListClients(ctx context.Context) ([]*Client, error)
 
+	// DeleteClient removes a registered client by ID. Returns ErrClientNotFound
+	// when no client with that ID exists.
+	DeleteClient(ctx context.Context, clientID string) error
+
 	// CheckIPLimit checks if an IP has reached the client registration limit
 	CheckIPLimit(ctx context.Context, ip string, maxClientsPerIP int) error
 }
@@ -399,16 +407,18 @@ type Combined interface {
 
 // Client represents a registered OAuth client
 type Client struct {
-	ClientID                string
-	ClientSecretHash        string // bcrypt hash
-	ClientType              string // ClientTypePublic or ClientTypeConfidential
-	RedirectURIs            []string
-	TokenEndpointAuthMethod string
-	GrantTypes              []string
-	ResponseTypes           []string
-	ClientName              string
-	Scopes                  []string
-	CreatedAt               time.Time
+	ClientID                    string
+	ClientSecretHash            string // bcrypt hash
+	ClientType                  string // ClientTypePublic or ClientTypeConfidential
+	RedirectURIs                []string
+	TokenEndpointAuthMethod     string
+	GrantTypes                  []string
+	ResponseTypes               []string
+	ClientName                  string
+	Scopes                      []string
+	CreatedAt                   time.Time
+	UpdatedAt                   time.Time
+	RegistrationAccessTokenHash string // bcrypt hash of the per-client registration access token (RFC 7592)
 }
 
 // IsPublic reports whether the client is a public client (no secret).

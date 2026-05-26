@@ -167,7 +167,7 @@ func main() {
     </a>
     <h2>Try the Protected API</h2>
     <p>After logging in, access: <a href="/api/resource">/api/resource</a></p>
-    
+
     <h2>API Documentation</h2>
     <ul>
         <li><code>GET /.well-known/oauth-authorization-server</code> - Authorization server metadata</li>

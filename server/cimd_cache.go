@@ -471,17 +471,15 @@ func (s *Server) handleMetadataFetchFailure(ctx context.Context, clientID string
 
 	s.metadataCache.SetNegative(clientID, fetchErr.Error())
 
-	if s.Auditor != nil {
-		s.Auditor.LogEvent(ctx, security.Event{
-			Type:     "client_metadata_fetch_failed_cached",
-			ClientID: clientID,
-			Details: map[string]any{
-				"error":          fetchErr.Error(),
-				"negative_cache": "stored",
-				"cache_purpose":  "prevent_rapid_retry",
-			},
-		})
-	}
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type:     "client_metadata_fetch_failed_cached",
+		ClientID: clientID,
+		Details: map[string]any{
+			"error":          fetchErr.Error(),
+			"negative_cache": "stored",
+			"cache_purpose":  "prevent_rapid_retry",
+		},
+	})
 }
 
 // cacheAndReturnClient caches metadata and returns the client.
@@ -539,9 +537,7 @@ func metadataToClient(metadata *ClientMetadata) *storage.Client {
 	}
 }
 
-// recordCIMDCacheMetric records CIMD cache metrics if instrumentation is enabled
+// recordCIMDCacheMetric records CIMD cache metrics.
 func (s *Server) recordCIMDCacheMetric(ctx context.Context, operation string) {
-	if s.Instrumentation != nil {
-		s.Instrumentation.Metrics().RecordCIMDCache(ctx, operation)
-	}
+	s.Instrumentation.Metrics().RecordCIMDCache(ctx, operation)
 }
