@@ -176,6 +176,12 @@ func (h *Handler) RegisterOAuthRoutes(mux *http.ServeMux, opts OAuthRoutesOption
 		mux.Handle(server.EndpointPathUserInfo, h.ValidateToken(http.HandlerFunc(h.ServeUserInfo)))
 	}
 
+	// RFC 7592 client management is opt-in. The trailing slash registers all
+	// /oauth/register/{client_id} sub-paths via net/http prefix matching.
+	if h.server.Config.EnableClientManagementEndpoint {
+		mux.HandleFunc(server.EndpointPathClientManagement, h.ServeClientManagement)
+	}
+
 	if !opts.IncludeMetadata {
 		return
 	}
