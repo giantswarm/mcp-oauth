@@ -119,14 +119,14 @@ func (v *K8sSAValidator) checkSARestrictions(subject string, trust KubernetesSAT
 	}
 
 	if len(trust.AllowedNamespaces) > 0 {
-		if !containsString(trust.AllowedNamespaces, ns) {
+		if !slices.Contains(trust.AllowedNamespaces, ns) {
 			return fmt.Errorf("namespace %q is not in the allowed list", ns)
 		}
 	}
 
 	if len(trust.AllowedServiceAccounts) > 0 {
 		qualified := ns + "/" + name
-		if !containsString(trust.AllowedServiceAccounts, qualified) {
+		if !slices.Contains(trust.AllowedServiceAccounts, qualified) {
 			return fmt.Errorf("service account %q is not in the allowed list", qualified)
 		}
 	}
@@ -145,6 +145,3 @@ func parseSASubject(subject string) (namespace, name string, ok bool) {
 	return
 }
 
-func containsString(slice []string, s string) bool {
-	return slices.Contains(slice, s)
-}

@@ -140,8 +140,7 @@ func WithSubjectTokenValidator(tokenType string, v SubjectTokenValidator) Option
 }
 
 // WithKubernetesSATrust registers a K8sSAValidator for projected ServiceAccount
-// tokens from the given clusters. It handles both
-// SubjectTokenTypeJWT and SubjectTokenTypeAccessToken.
+// tokens from the given clusters under the SubjectTokenTypeJWT token type.
 func WithKubernetesSATrust(trusts []KubernetesSATrust) Option {
 	return func(s *Server) {
 		v, err := NewK8sSAValidator(trusts)
@@ -153,7 +152,6 @@ func WithKubernetesSATrust(trusts []KubernetesSATrust) Option {
 			s.subjectValidators = make(map[string]SubjectTokenValidator)
 		}
 		s.subjectValidators[SubjectTokenTypeJWT] = v
-		s.subjectValidators[SubjectTokenTypeAccessToken] = v
 	}
 }
 
