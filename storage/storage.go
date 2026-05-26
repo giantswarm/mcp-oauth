@@ -10,6 +10,14 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/providers"
+	"github.com/giantswarm/mcp-oauth/security"
+)
+
+// Client type constants used for ClientType field comparisons.
+// Use these instead of bare string literals to avoid silent drift across backends.
+const (
+	ClientTypePublic       = "public"
+	ClientTypeConfidential = "confidential"
 )
 
 // DummyBcryptHash is a pre-computed bcrypt hash used for timing attack mitigation.
@@ -393,7 +401,7 @@ type Combined interface {
 type Client struct {
 	ClientID                string
 	ClientSecretHash        string // bcrypt hash
-	ClientType              string // "public" or "confidential"
+	ClientType              string // ClientTypePublic or ClientTypeConfidential
 	RedirectURIs            []string
 	TokenEndpointAuthMethod string
 	GrantTypes              []string
@@ -402,6 +410,12 @@ type Client struct {
 	Scopes                  []string
 	CreatedAt               time.Time
 }
+
+// IsPublic reports whether the client is a public client (no secret).
+func (c *Client) IsPublic() bool { return c.ClientType == ClientTypePublic }
+
+// IsConfidential reports whether the client is a confidential client (has secret).
+func (c *Client) IsConfidential() bool { return c.ClientType == ClientTypeConfidential }
 
 // AuthorizationState represents the state of an ongoing authorization flow
 type AuthorizationState struct {
@@ -430,6 +444,9 @@ type AuthorizationState struct {
 	ExpiresAt time.Time
 }
 
+// HasExpired reports whether the authorization state has expired (with default clock-skew grace).
+func (s *AuthorizationState) HasExpired() bool { return security.IsTokenExpired(s.ExpiresAt) }
+
 // AuthorizationCode represents an issued authorization code
 type AuthorizationCode struct {
 	Code        string
@@ -450,6 +467,9 @@ type AuthorizationCode struct {
 	ExpiresAt           time.Time
 	Used                bool
 }
+
+// HasExpired reports whether the authorization code has expired (with default clock-skew grace).
+func (c *AuthorizationCode) HasExpired() bool { return security.IsTokenExpired(c.ExpiresAt) }
 
 // TokenMetadata tracks ownership, audience (RFC 8707), and scope
 // (MCP 2025-11-25) information for an issued token. The same struct

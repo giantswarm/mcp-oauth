@@ -160,7 +160,7 @@ func (s *Server) checkJWTExpiration(ctx context.Context, claims map[string]any, 
 	}
 	exp := time.Unix(int64(expVal), 0)
 	gracePeriod := time.Duration(s.Config.ClockSkewGracePeriod) * time.Second
-	if time.Now().After(exp.Add(gracePeriod)) {
+	if security.IsTokenExpiredWithGracePeriod(exp, gracePeriod) {
 		s.logSelfIssuedJWTAuthFailure(ctx, "token_expired", tokenString)
 		return fmt.Errorf("access token expired")
 	}
@@ -172,19 +172,12 @@ func (s *Server) checkJWTExpiration(ctx context.Context, claims map[string]any, 
 // TrustedAudiences. Multi-valued aud (RFC 7519 §4.1.3) is handled via
 // helpers.FindMatchingAudience, matching the SSO-forwarded-ID-token path.
 func (s *Server) checkJWTAudience(ctx context.Context, claims map[string]any, tokenString string) error {
-	expected := s.Config.GetResourceIdentifier()
 	audiences := audiencesFromClaim(claims["aud"])
 	if len(audiences) == 0 {
 		s.logSelfIssuedJWTAuthFailure(ctx, "missing_aud", tokenString)
 		return fmt.Errorf("token missing audience claim")
 	}
-
-	for _, candidate := range audiences {
-		if helpers.NormalizeURL(candidate) == helpers.NormalizeURL(expected) {
-			return nil
-		}
-	}
-	if helpers.FindMatchingAudience(audiences, s.Config.TrustedAudiences) != "" {
+	if helpers.AudienceMatchesResourceOrTrusted(audiences, s.Config.GetResourceIdentifier(), s.Config.TrustedAudiences) {
 		return nil
 	}
 	s.logSelfIssuedJWTAuthFailure(ctx, "audience_mismatch", tokenString)

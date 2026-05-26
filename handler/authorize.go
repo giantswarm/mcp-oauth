@@ -414,8 +414,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		attribute.String(instrumentation.AttrScope, scope),
 	)
 
-	// Start authorization flow with client state (server also validates for defense in depth)
-	authURL, err := h.server.StartAuthorizationFlow(r.Context(), clientID, redirectURI, scope, resource, codeChallenge, codeChallengeMethod, state, authOpts)
+	authURL, err := h.server.StartAuthorizationFlow(r.Context(), clientID, canonicalRedirectURI, scope, resource, codeChallenge, codeChallengeMethod, state, authOpts)
 	if err != nil {
 		h.logger.Error("Failed to start authorization flow", "error", err)
 		instrumentation.RecordError(span, err)

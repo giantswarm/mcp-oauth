@@ -310,3 +310,12 @@ func seedOpaqueIntrospectionToken(t *testing.T, store *memory.Store, accessToken
 	}
 	return meta.IssuedAt
 }
+
+func mustParseURL(t *testing.T, s string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(s)
+	if err != nil {
+		t.Fatalf("url.Parse(%q): %v", s, err)
+	}
+	return u
+}
