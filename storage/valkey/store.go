@@ -772,49 +772,61 @@ func fromAuthorizationStateJSON(j *authorizationStateJSON) *storage.Authorizatio
 
 // clientJSON is the JSON representation of an OAuth client
 type clientJSON struct {
-	ClientID                string   `json:"client_id"`
-	ClientSecretHash        string   `json:"client_secret_hash,omitempty"`
-	ClientType              string   `json:"client_type"`
-	RedirectURIs            []string `json:"redirect_uris"`
-	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method,omitempty"`
-	GrantTypes              []string `json:"grant_types,omitempty"`
-	ResponseTypes           []string `json:"response_types,omitempty"`
-	ClientName              string   `json:"client_name,omitempty"`
-	Scopes                  []string `json:"scopes,omitempty"`
-	CreatedAt               int64    `json:"created_at"`
+	ClientID                        string   `json:"client_id"`
+	ClientSecretHash                string   `json:"client_secret_hash,omitempty"`
+	ClientType                      string   `json:"client_type"`
+	RedirectURIs                    []string `json:"redirect_uris"`
+	TokenEndpointAuthMethod         string   `json:"token_endpoint_auth_method,omitempty"`
+	GrantTypes                      []string `json:"grant_types,omitempty"`
+	ResponseTypes                   []string `json:"response_types,omitempty"`
+	ClientName                      string   `json:"client_name,omitempty"`
+	Scopes                          []string `json:"scopes,omitempty"`
+	CreatedAt                       int64    `json:"created_at"`
+	UpdatedAt                       int64    `json:"updated_at,omitempty"`
+	RegistrationAccessTokenHash     string   `json:"registration_access_token_hash,omitempty"`
 }
 
 func toClientJSON(client *storage.Client) *clientJSON {
-	return &clientJSON{
-		ClientID:                client.ClientID,
-		ClientSecretHash:        client.ClientSecretHash,
-		ClientType:              client.ClientType,
-		RedirectURIs:            client.RedirectURIs,
-		TokenEndpointAuthMethod: client.TokenEndpointAuthMethod,
-		GrantTypes:              client.GrantTypes,
-		ResponseTypes:           client.ResponseTypes,
-		ClientName:              client.ClientName,
-		Scopes:                  client.Scopes,
-		CreatedAt:               client.CreatedAt.Unix(),
+	j := &clientJSON{
+		ClientID:                    client.ClientID,
+		ClientSecretHash:            client.ClientSecretHash,
+		ClientType:                  client.ClientType,
+		RedirectURIs:                client.RedirectURIs,
+		TokenEndpointAuthMethod:     client.TokenEndpointAuthMethod,
+		GrantTypes:                  client.GrantTypes,
+		ResponseTypes:               client.ResponseTypes,
+		ClientName:                  client.ClientName,
+		Scopes:                      client.Scopes,
+		CreatedAt:                   client.CreatedAt.Unix(),
+		RegistrationAccessTokenHash: client.RegistrationAccessTokenHash,
 	}
+	if !client.UpdatedAt.IsZero() {
+		j.UpdatedAt = client.UpdatedAt.Unix()
+	}
+	return j
 }
 
 func fromClientJSON(j *clientJSON) *storage.Client {
 	if j == nil {
 		return nil
 	}
-	return &storage.Client{
-		ClientID:                j.ClientID,
-		ClientSecretHash:        j.ClientSecretHash,
-		ClientType:              j.ClientType,
-		RedirectURIs:            j.RedirectURIs,
-		TokenEndpointAuthMethod: j.TokenEndpointAuthMethod,
-		GrantTypes:              j.GrantTypes,
-		ResponseTypes:           j.ResponseTypes,
-		ClientName:              j.ClientName,
-		Scopes:                  j.Scopes,
-		CreatedAt:               time.Unix(j.CreatedAt, 0),
+	c := &storage.Client{
+		ClientID:                    j.ClientID,
+		ClientSecretHash:            j.ClientSecretHash,
+		ClientType:                  j.ClientType,
+		RedirectURIs:                j.RedirectURIs,
+		TokenEndpointAuthMethod:     j.TokenEndpointAuthMethod,
+		GrantTypes:                  j.GrantTypes,
+		ResponseTypes:               j.ResponseTypes,
+		ClientName:                  j.ClientName,
+		Scopes:                      j.Scopes,
+		CreatedAt:                   time.Unix(j.CreatedAt, 0),
+		RegistrationAccessTokenHash: j.RegistrationAccessTokenHash,
 	}
+	if j.UpdatedAt != 0 {
+		c.UpdatedAt = time.Unix(j.UpdatedAt, 0)
+	}
+	return c
 }
 
 // refreshTokenFamilyJSON is the JSON representation of refresh token family metadata
