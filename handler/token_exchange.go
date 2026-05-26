@@ -25,18 +25,21 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 	scope := r.Form.Get("scope")
 
 	if subjectToken == "" {
+		h.logger.Debug("token exchange: subject_token missing", "ip", clientIP)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "subject_token missing")
 		h.writeError(w, oauth.ErrorCodeInvalidRequest, "subject_token is required", http.StatusBadRequest)
 		return
 	}
 	if subjectTokenType == "" {
+		h.logger.Debug("token exchange: subject_token_type missing", "ip", clientIP)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "subject_token_type missing")
 		h.writeError(w, oauth.ErrorCodeInvalidRequest, "subject_token_type is required", http.StatusBadRequest)
 		return
 	}
 	if resource == "" {
+		h.logger.Debug("token exchange: resource missing", "ip", clientIP)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "resource missing")
 		h.writeError(w, oauth.ErrorCodeInvalidRequest, "resource is required (RFC 8707)", http.StatusBadRequest)
@@ -57,6 +60,7 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	h.logger.Debug("token exchange successful", "ip", clientIP, "scope", result.Scope)
 	h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusOK, startTime)
 	instrumentation.SetSpanSuccess(span)
 	h.writeTokenExchangeResponse(w, result)

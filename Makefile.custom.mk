@@ -92,7 +92,7 @@ mod-verify: ## Verify go.mod dependencies
 	@echo "====> $@"
 	go mod verify
 
-mod-tidy-check: clean-examples ## Check if go mod tidy would make changes
+mod-tidy-check: ## Check if go mod tidy would make changes
 	@echo "====> $@"
 	@cp go.mod go.mod.backup
 	@cp go.sum go.sum.backup

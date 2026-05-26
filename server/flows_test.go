@@ -133,8 +133,9 @@ func TestCapTokenExpiry(t *testing.T) {
 	srv.Config.AccessTokenTTL = 3600
 
 	t.Run("provider expires sooner - caps to provider", func(t *testing.T) {
-		providerExpiry := time.Now().Add(10 * time.Minute)
-		expiry := srv.capTokenExpiry(providerExpiry)
+		now := time.Now()
+		providerExpiry := now.Add(10 * time.Minute)
+		expiry := srv.capTokenExpiry(now, providerExpiry)
 		diff := expiry.Sub(providerExpiry).Abs()
 		if diff > 2*time.Second {
 			t.Errorf("expiry = %v, want close to %v (diff: %v)", expiry, providerExpiry, diff)
@@ -142,9 +143,10 @@ func TestCapTokenExpiry(t *testing.T) {
 	})
 
 	t.Run("provider expires later - uses AccessTokenTTL", func(t *testing.T) {
-		providerExpiry := time.Now().Add(2 * time.Hour)
-		expiry := srv.capTokenExpiry(providerExpiry)
-		expected := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
+		now := time.Now()
+		providerExpiry := now.Add(2 * time.Hour)
+		expiry := srv.capTokenExpiry(now, providerExpiry)
+		expected := now.Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
 		diff := expiry.Sub(expected).Abs()
 		if diff > 2*time.Second {
 			t.Errorf("expiry = %v, want close to %v (diff: %v)", expiry, expected, diff)
@@ -152,12 +154,13 @@ func TestCapTokenExpiry(t *testing.T) {
 	})
 
 	t.Run("provider expiry in the past - uses AccessTokenTTL", func(t *testing.T) {
-		providerExpiry := time.Now().Add(-30 * time.Second)
-		expiry := srv.capTokenExpiry(providerExpiry)
-		if expiry.Before(time.Now()) {
+		now := time.Now()
+		providerExpiry := now.Add(-30 * time.Second)
+		expiry := srv.capTokenExpiry(now, providerExpiry)
+		if expiry.Before(now) {
 			t.Errorf("expiry = %v, must not be in the past", expiry)
 		}
-		expected := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
+		expected := now.Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
 		diff := expiry.Sub(expected).Abs()
 		if diff > 2*time.Second {
 			t.Errorf("expiry = %v, want close to %v (diff: %v)", expiry, expected, diff)
@@ -165,8 +168,9 @@ func TestCapTokenExpiry(t *testing.T) {
 	})
 
 	t.Run("zero expiry - uses AccessTokenTTL", func(t *testing.T) {
-		expiry := srv.capTokenExpiry(time.Time{})
-		expected := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
+		now := time.Now()
+		expiry := srv.capTokenExpiry(now, time.Time{})
+		expected := now.Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
 		diff := expiry.Sub(expected).Abs()
 		if diff > 2*time.Second {
 			t.Errorf("expiry = %v, want close to %v (diff: %v)", expiry, expected, diff)
