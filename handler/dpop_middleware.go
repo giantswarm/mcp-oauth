@@ -34,52 +34,60 @@ func DPoPMiddleware(replayCache server.DPoPReplayCache, nonceProvider server.DPo
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			auth := r.Header.Get("Authorization")
-			if !strings.HasPrefix(strings.ToLower(auth), "dpop ") {
-				next.ServeHTTP(w, r)
-				return
-			}
-			accessToken := auth[len("DPoP "):] // preserve original token value
-			proof := r.Header.Get("DPoP")
-			if proof == "" {
-				writeDPoPError(w,
-					dpopWWWAuthenticate(oauth.ErrorCodeInvalidRequest, "DPoP proof required"),
-					"",
-					oauth.ErrorCodeInvalidRequest,
-					"DPoP proof required",
-					http.StatusUnauthorized,
-				)
-				return
-			}
-			htu := dpopHTU(r, trustedProxies)
-			_, err := server.ValidateDPoPProof(r.Context(), proof, r.Method, htu, accessToken, replayCache, nonceProvider, time.Now())
-			if err != nil {
-				if errors.Is(err, server.ErrDPoPNonceInvalid) {
-					nonce := ""
-					if nonceProvider != nil {
-						nonce = nonceProvider.Nonce(r.Context())
-					}
-					writeDPoPError(w,
-						dpopWWWAuthenticate(oauth.ErrorCodeUseDPoPNonce, "Resource server requires nonce in DPoP proof"),
-						nonce,
-						oauth.ErrorCodeUseDPoPNonce,
-						"Resource server requires nonce in DPoP proof",
-						http.StatusUnauthorized,
-					)
-					return
-				}
-				writeDPoPError(w,
-					dpopWWWAuthenticate(oauth.ErrorCodeInvalidDPoPProof, err.Error()),
-					"",
-					oauth.ErrorCodeInvalidDPoPProof,
-					err.Error(),
-					http.StatusUnauthorized,
-				)
-				return
-			}
-			next.ServeHTTP(w, r)
+			serveDPoP(w, r, next, replayCache, nonceProvider, trustedProxies)
 		})
 	}
+}
+
+func serveDPoP(w http.ResponseWriter, r *http.Request, next http.Handler, replayCache server.DPoPReplayCache, nonceProvider server.DPoPNonceProvider, trustedProxies []*net.IPNet) {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(strings.ToLower(auth), "dpop ") {
+		next.ServeHTTP(w, r)
+		return
+	}
+	accessToken := auth[len("DPoP "):] // preserve original token value
+	proof := r.Header.Get("DPoP")
+	if proof == "" {
+		writeDPoPError(w,
+			dpopWWWAuthenticate(oauth.ErrorCodeInvalidRequest, "DPoP proof required"),
+			"",
+			oauth.ErrorCodeInvalidRequest,
+			"DPoP proof required",
+			http.StatusUnauthorized,
+		)
+		return
+	}
+	htu := dpopHTU(r, trustedProxies)
+	_, err := server.ValidateDPoPProof(r.Context(), proof, r.Method, htu, accessToken, replayCache, nonceProvider, time.Now())
+	if err != nil {
+		writeDPoPValidationError(w, r, err, nonceProvider)
+		return
+	}
+	next.ServeHTTP(w, r)
+}
+
+func writeDPoPValidationError(w http.ResponseWriter, r *http.Request, err error, nonceProvider server.DPoPNonceProvider) {
+	if errors.Is(err, server.ErrDPoPNonceInvalid) {
+		nonce := ""
+		if nonceProvider != nil {
+			nonce = nonceProvider.Nonce(r.Context())
+		}
+		writeDPoPError(w,
+			dpopWWWAuthenticate(oauth.ErrorCodeUseDPoPNonce, "Resource server requires nonce in DPoP proof"),
+			nonce,
+			oauth.ErrorCodeUseDPoPNonce,
+			"Resource server requires nonce in DPoP proof",
+			http.StatusUnauthorized,
+		)
+		return
+	}
+	writeDPoPError(w,
+		dpopWWWAuthenticate(oauth.ErrorCodeInvalidDPoPProof, err.Error()),
+		"",
+		oauth.ErrorCodeInvalidDPoPProof,
+		err.Error(),
+		http.StatusUnauthorized,
+	)
 }
 
 // dpopWWWAuthenticate formats the WWW-Authenticate header value for DPoP
