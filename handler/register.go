@@ -19,6 +19,7 @@ import (
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/security"
+	"github.com/giantswarm/mcp-oauth/server"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
@@ -220,17 +221,17 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	h.recordTrustedAllowlistSpan(span, auth)
 
 	maxClients := h.getMaxClientsPerIP()
-	client, clientSecret, err := h.server.RegisterClient(r.Context(), req.ClientName, req.ClientType, req.TokenEndpointAuthMethod, req.RedirectURIs, req.Scopes, clientIP, maxClients)
+	result, err := h.server.RegisterClientV2(r.Context(), req.ClientName, req.ClientType, req.TokenEndpointAuthMethod, req.RedirectURIs, req.Scopes, clientIP, maxClients)
 	if err != nil {
 		h.handleRegistrationError(r.Context(), w, err, clientIP, startTime, span)
 		return
 	}
 
-	h.recordClientRegistered(r.Context(), client.ClientType)
-	h.auditTrustedAllowlistRegistration(r.Context(), auth, client, clientIP)
+	h.recordClientRegistered(r.Context(), result.Client.ClientType)
+	h.auditTrustedAllowlistRegistration(r.Context(), auth, result.Client, clientIP)
 	h.recordHTTPMetrics(r.Context(), endpointRegister, http.MethodPost, http.StatusCreated, startTime)
-	h.setRegistrationSpanSuccess(span, client)
-	h.writeRegistrationResponse(w, client, clientSecret)
+	h.setRegistrationSpanSuccess(span, result.Client)
+	h.writeRegistrationResponse(w, result.Client, result.ClientSecret, result.RegistrationToken)
 }
 
 // parseAndValidateRegistrationRequest parses the request and validates auth method.
@@ -365,7 +366,9 @@ func (h *Handler) setRegistrationSpanSuccess(span trace.Span, client *storage.Cl
 // RFC 7591 §3.2.1. `client_id_issued_at` is always present; for confidential
 // clients the response also carries `client_secret` plus
 // `client_secret_expires_at: 0` (the spec sentinel for "never expires").
-func (h *Handler) writeRegistrationResponse(w http.ResponseWriter, client *storage.Client, clientSecret string) {
+// When EnableClientManagementEndpoint is on, `registration_access_token` and
+// `registration_client_uri` are also included (RFC 7592 §3).
+func (h *Handler) writeRegistrationResponse(w http.ResponseWriter, client *storage.Client, clientSecret, registrationToken string) {
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	response := map[string]any{
 		"client_id":                  client.ClientID,
@@ -381,6 +384,11 @@ func (h *Handler) writeRegistrationResponse(w http.ResponseWriter, client *stora
 	if clientSecret != "" {
 		response["client_secret"] = clientSecret
 		response["client_secret_expires_at"] = 0
+	}
+
+	if h.server.Config.EnableClientManagementEndpoint && registrationToken != "" {
+		response["registration_access_token"] = registrationToken
+		response["registration_client_uri"] = h.server.Config.Issuer + server.EndpointPathRegister + "/" + client.ClientID
 	}
 
 	w.Header().Set("Content-Type", "application/json")

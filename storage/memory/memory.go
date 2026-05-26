@@ -518,6 +518,19 @@ func (s *Store) SaveClient(ctx context.Context, client *storage.Client) error {
 	return nil
 }
 
+// DeleteClient removes a registered client by ID.
+func (s *Store) DeleteClient(_ context.Context, clientID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.clients[clientID]; !ok {
+		return storage.ErrClientNotFound
+	}
+	delete(s.clients, clientID)
+	s.clientsCountAtomic.Add(-1)
+	return nil
+}
+
 // CheckIPLimit checks if an IP has reached the client registration limit
 func (s *Store) CheckIPLimit(_ context.Context, ip string, maxClientsPerIP int) error {
 	s.mu.RLock()

@@ -199,6 +199,22 @@ func (s *Store) clientMapToSlice(clientMap map[string]*storage.Client) []*storag
 	return clients
 }
 
+// DeleteClient removes a registered client by ID.
+func (s *Store) DeleteClient(ctx context.Context, clientID string) (err error) {
+	op := s.startTracedOp(ctx, "delete_client")
+	defer op.end(&err)
+
+	key := s.clientKey(clientID)
+	n, err := s.client.Do(op.ctx, s.client.B().Del().Key(key).Build()).AsInt64()
+	if err != nil {
+		return fmt.Errorf("failed to delete client: %w", err)
+	}
+	if n == 0 {
+		return storage.ErrClientNotFound
+	}
+	return nil
+}
+
 // CheckIPLimit checks if an IP has reached the client registration limit
 func (s *Store) CheckIPLimit(ctx context.Context, ip string, maxClientsPerIP int) (err error) {
 	op := s.startTracedOp(ctx, "check_ip_limit")
