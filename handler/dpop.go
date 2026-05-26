@@ -46,9 +46,9 @@ func dpopHTU(r *http.Request, trustedProxies []*net.IPNet) string {
 	}
 	if u.Scheme == "" {
 		if r.TLS != nil {
-			u.Scheme = "https"
+			u.Scheme = server.SchemeHTTPS
 		} else {
-			u.Scheme = "http"
+			u.Scheme = server.SchemeHTTP
 		}
 	}
 	return u.String()

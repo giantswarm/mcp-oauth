@@ -438,7 +438,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	// configured provider's AuthorizationURL(); the parse + scheme check is
 	// defense in depth against a misconfigured provider returning a non-HTTP URL.
 	parsedAuthURL, err := url.Parse(authURL)
-	if err != nil || (parsedAuthURL.Scheme != "https" && parsedAuthURL.Scheme != "http") {
+	if err != nil || (parsedAuthURL.Scheme != oauth.SchemeHTTPS && parsedAuthURL.Scheme != oauth.SchemeHTTP) {
 		h.logger.Error("Provider returned invalid authorization URL", "error", err)
 		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
 			redirectURI: canonicalRedirectURI,
@@ -607,7 +607,7 @@ func (h *Handler) respondAuthorizationError(w http.ResponseWriter, r *http.Reque
 		attribute.String(instrumentation.AttrErrorDescription, e.description),
 	)
 
-	if e.redirectURI == nil || (e.redirectURI.Scheme != "https" && e.redirectURI.Scheme != "http") {
+	if e.redirectURI == nil || (e.redirectURI.Scheme != oauth.SchemeHTTPS && e.redirectURI.Scheme != oauth.SchemeHTTP) {
 		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusBadRequest, startTime)
 		h.writeError(w, e.code, e.description, http.StatusBadRequest)
 		return
