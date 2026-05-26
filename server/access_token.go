@@ -74,6 +74,31 @@ type AccessTokenClaims struct {
 	// Empty when the underlying token store does not implement
 	// RefreshTokenFamilyStore.
 	FamilyID string
+
+	// Act carries the RFC 8693 §4.4 actor claim. Non-nil only for token-exchange
+	// issued tokens.
+	Act *Actor
+
+	// JKT is the JWK thumbprint of the DPoP public key this token is bound to
+	// (RFC 9449 §6.1). Non-empty only when the token was requested with a DPoP proof.
+	JKT string
+
+	// Extra holds application-defined claims merged into the JWT body verbatim.
+	// Keys colliding with standard JWT claims (sub, iss, aud, exp, iat, jti,
+	// scope, client_id, etc.) will overwrite them — callers are responsible
+	// for using non-conflicting claim names. Nil is a no-op.
+	Extra map[string]any
+}
+
+// Actor is the RFC 8693 §4.4 act claim: the acting party in a delegation chain.
+type Actor struct {
+	Iss string `json:"iss,omitempty"`
+	Sub string `json:"sub,omitempty"`
+}
+
+// Confirmation is the RFC 9449 §6.1 cnf claim: proof-of-possession key binding.
+type Confirmation struct {
+	JKT string `json:"jkt,omitempty"`
 }
 
 // AccessTokenIssuer encodes AccessTokenClaims into a bearer string. Two
@@ -152,13 +177,15 @@ const rfc9068TokenType = "at+jwt"
 type rfc9068Claims struct {
 	josejwt.Claims
 
-	ClientID      string   `json:"client_id,omitempty"`
-	Scope         string   `json:"scope,omitempty"`
-	Email         string   `json:"email,omitempty"`
-	EmailVerified *bool    `json:"email_verified,omitempty"`
-	Name          string   `json:"name,omitempty"`
-	Groups        []string `json:"groups,omitempty"`
-	FamilyID      string   `json:"family_id,omitempty"`
+	ClientID      string        `json:"client_id,omitempty"`
+	Scope         string        `json:"scope,omitempty"`
+	Email         string        `json:"email,omitempty"`
+	EmailVerified *bool         `json:"email_verified,omitempty"`
+	Name          string        `json:"name,omitempty"`
+	Groups        []string      `json:"groups,omitempty"`
+	FamilyID      string        `json:"family_id,omitempty"`
+	Act           *Actor        `json:"act,omitempty"`
+	Cnf           *Confirmation `json:"cnf,omitempty"`
 }
 
 // Issue signs an RFC 9068 access token. The header carries alg/kid/typ; the
@@ -191,13 +218,19 @@ func (j *jwtIssuer) Issue(_ context.Context, c AccessTokenClaims) (string, error
 		Name:     c.Name,
 		Groups:   c.Groups,
 		FamilyID: c.FamilyID,
+		Act:      c.Act,
+		Cnf:      newConfirmation(c.JKT),
 	}
 	if c.Email != "" {
 		verified := c.EmailVerified
 		claims.EmailVerified = &verified
 	}
 
-	signed, err := josejwt.Signed(j.signer).Claims(claims).Serialize()
+	builder := josejwt.Signed(j.signer).Claims(claims)
+	if len(c.Extra) > 0 {
+		builder = builder.Claims(c.Extra)
+	}
+	signed, err := builder.Serialize()
 	if err != nil {
 		return "", fmt.Errorf("sign access token: %w", err)
 	}

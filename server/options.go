@@ -1,6 +1,8 @@
 package server
 
 import (
+	"net"
+
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
@@ -140,6 +142,53 @@ func WithSubjectTokenValidator(tokenType string, v SubjectTokenValidator) Option
 			s.subjectValidators = make(map[string]SubjectTokenValidator)
 		}
 		s.subjectValidators[tokenType] = v
+	}
+}
+
+// WithKubernetesSATrust registers a K8sSAValidator for projected ServiceAccount
+// tokens from the given clusters under the SubjectTokenTypeJWT token type.
+func WithKubernetesSATrust(trusts []KubernetesSATrust) Option {
+	return func(s *Server) {
+		v, err := NewK8sSAValidator(trusts)
+		if err != nil {
+			s.Logger.Error("failed to initialise Kubernetes SA validator", "error", err)
+			return
+		}
+		if s.subjectValidators == nil {
+			s.subjectValidators = make(map[string]SubjectTokenValidator)
+		}
+		s.subjectValidators[SubjectTokenTypeJWT] = v
+	}
+}
+
+// WithDPoPReplayCache sets the DPoP proof replay cache. When set, the server
+// uses this cache to detect replayed DPoP proofs across requests. When not
+// set, each request creates a transient in-memory cache with no cross-request
+// replay protection — use NewMemoryDPoPReplayCache() for single-process
+// deployments, or a Valkey-backed implementation for multi-instance deployments.
+func WithDPoPReplayCache(cache DPoPReplayCache) Option {
+	return func(s *Server) {
+		s.dpopReplayCache = cache
+	}
+}
+
+// WithDPoPNonceProvider enables RFC 9449 §8 nonce enforcement. When set,
+// [ValidateDPoPProof] requires every DPoP proof to carry a currently-valid
+// server-issued nonce; proofs without one are rejected with [ErrDPoPNonceInvalid].
+// Pass [NewHMACNonceProvider] for a stateless HMAC-based implementation.
+func WithDPoPNonceProvider(provider DPoPNonceProvider) Option {
+	return func(s *Server) {
+		s.dpopNonceProvider = provider
+	}
+}
+
+// WithTrustedProxyCIDRs registers the CIDRs from which X-Forwarded-Proto and
+// X-Forwarded-Host headers are trusted for DPoP htu URL reconstruction. Required
+// when the server runs behind agw, Envoy, or any reverse proxy that terminates TLS.
+// Leave unset (or pass nil) when the server is directly exposed.
+func WithTrustedProxyCIDRs(cidrs []*net.IPNet) Option {
+	return func(s *Server) {
+		s.trustedProxyCIDRs = cidrs
 	}
 }
 

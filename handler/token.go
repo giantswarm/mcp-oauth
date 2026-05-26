@@ -61,6 +61,8 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 		h.handleAuthorizationCodeGrant(w, r, clientIP)
 	case "refresh_token":
 		h.handleRefreshTokenGrant(w, r, clientIP)
+	case server.GrantTypeTokenExchange:
+		h.handleTokenExchangeGrant(w, r, clientIP)
 	default:
 		h.recordTokenFailure(r.Context(), grantType, oauth.ErrorCodeUnsupportedGrantType)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
@@ -75,7 +77,7 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 // grant_type=<random> would otherwise mint a fresh series per probe).
 func (h *Handler) recordTokenFailure(ctx context.Context, grantType, errorCode string) {
 	switch grantType {
-	case "authorization_code", "refresh_token", "client_credentials", "password":
+	case "authorization_code", "refresh_token", "client_credentials", "password", server.GrantTypeTokenExchange:
 	default:
 		grantType = "unknown"
 	}

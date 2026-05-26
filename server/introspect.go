@@ -101,6 +101,18 @@ func unverifiedClientIDClaim(accessToken string) string {
 	return v
 }
 
+// jwtStandardClaims is the set of JWT claim names projected explicitly by
+// introspectionResponseFromJWTClaims. Any claim not in this set is forwarded
+// verbatim so that application-defined claims (e.g. allowed_backends, muster_sid)
+// added to the JWT body reach the introspection caller without server changes.
+var jwtStandardClaims = map[string]struct{}{
+	"active": {}, "token_type": {}, "client_id": {},
+	"sub": {}, "iss": {}, "aud": {}, "scope": {},
+	"email": {}, "email_verified": {}, "name": {},
+	"exp": {}, "iat": {}, "nbf": {}, "jti": {},
+	"cnf": {}, "at_hash": {}, "nonce": {},
+}
+
 func introspectionResponseFromJWTClaims(claims map[string]any, tokenBoundClient string) map[string]any {
 	response := map[string]any{
 		"active":     true,
@@ -120,6 +132,12 @@ func introspectionResponseFromJWTClaims(claims map[string]any, tokenBoundClient 
 	copyClaimUnixTime(response, claims, "nbf")
 	if aud := audiencesFromClaim(claims["aud"]); len(aud) == 1 {
 		response["aud"] = aud[0]
+	}
+	// Forward any application-defined claims not in the standard set.
+	for k, v := range claims {
+		if _, known := jwtStandardClaims[k]; !known {
+			response[k] = v
+		}
 	}
 	return response
 }
@@ -192,6 +210,9 @@ func (s *Server) introspectionResponseFromOpaqueToken(_ context.Context, _ strin
 	}
 	if !tokenMetadata.ExpiresAt.IsZero() {
 		response["exp"] = tokenMetadata.ExpiresAt.Unix()
+	}
+	for k, v := range tokenMetadata.ExtraClaims {
+		response[k] = v
 	}
 	return response
 }

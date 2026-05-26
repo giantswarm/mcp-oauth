@@ -373,7 +373,7 @@ func (h *Handler) buildAuthServerMetadata() map[string]any {
 		"authorization_endpoint":                h.server.Config.AuthorizationEndpoint(),
 		"token_endpoint":                        h.server.Config.TokenEndpoint(),
 		"response_types_supported":              oauth.DefaultResponseTypes,
-		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
+		"grant_types_supported":                 []string{"authorization_code", "refresh_token", server.GrantTypeTokenExchange},
 		"code_challenge_methods_supported":      []string{oauth.PKCEMethodS256},
 		"token_endpoint_auth_methods_supported": oauth.SupportedTokenAuthMethods,
 		// RFC 9207: advertise that authorization responses include the `iss` parameter
