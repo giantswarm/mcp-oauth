@@ -864,7 +864,8 @@ func fromRefreshTokenFamilyJSON(j *refreshTokenFamilyJSON) *storage.RefreshToken
 type tokenMetadataJSON struct {
 	UserID    string   `json:"user_id"`
 	ClientID  string   `json:"client_id"`
-	IssuedAt  int64    `json:"issued_at"`
+	IssuedAt  int64    `json:"issued_at,omitempty"`
+	ExpiresAt int64    `json:"expires_at,omitempty"`
 	TokenType string   `json:"token_type"`
 	Audience  string   `json:"audience,omitempty"`
 	Scopes    []string `json:"scopes,omitempty"`
@@ -872,30 +873,42 @@ type tokenMetadataJSON struct {
 }
 
 func toTokenMetadataJSON(meta *storage.TokenMetadata) *tokenMetadataJSON {
-	return &tokenMetadataJSON{
+	j := &tokenMetadataJSON{
 		UserID:    meta.UserID,
 		ClientID:  meta.ClientID,
-		IssuedAt:  meta.IssuedAt.Unix(),
 		TokenType: meta.TokenType,
 		Audience:  meta.Audience,
 		Scopes:    meta.Scopes,
 		FamilyID:  meta.FamilyID,
 	}
+	if !meta.IssuedAt.IsZero() {
+		j.IssuedAt = meta.IssuedAt.Unix()
+	}
+	if !meta.ExpiresAt.IsZero() {
+		j.ExpiresAt = meta.ExpiresAt.Unix()
+	}
+	return j
 }
 
 func fromTokenMetadataJSON(j *tokenMetadataJSON) *storage.TokenMetadata {
 	if j == nil {
 		return nil
 	}
-	return &storage.TokenMetadata{
+	meta := &storage.TokenMetadata{
 		UserID:    j.UserID,
 		ClientID:  j.ClientID,
-		IssuedAt:  time.Unix(j.IssuedAt, 0),
 		TokenType: j.TokenType,
 		Audience:  j.Audience,
 		Scopes:    j.Scopes,
 		FamilyID:  j.FamilyID,
 	}
+	if j.IssuedAt > 0 {
+		meta.IssuedAt = time.Unix(j.IssuedAt, 0)
+	}
+	if j.ExpiresAt > 0 {
+		meta.ExpiresAt = time.Unix(j.ExpiresAt, 0)
+	}
+	return meta
 }
 
 // ============================================================

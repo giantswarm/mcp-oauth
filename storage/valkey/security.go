@@ -390,8 +390,9 @@ func (s *Store) deleteKey(ctx context.Context, key, description, tokenPrefix str
 // ============================================================
 
 // SaveTokenMetadata saves metadata for a token. Implements
-// storage.TokenMetadataStore. The metadata's IssuedAt is overwritten with
-// time.Now() so callers do not have to populate it.
+// storage.TokenMetadataStore. IssuedAt and ExpiresAt are set by the caller
+// and persisted as-is. When ExpiresAt is non-zero the key TTL is set
+// accordingly so stale metadata is evicted automatically.
 func (s *Store) SaveTokenMetadata(ctx context.Context, tokenID string, metadata storage.TokenMetadata) error {
 	if tokenID == "" || metadata.UserID == "" || metadata.ClientID == "" {
 		return fmt.Errorf("tokenID, userID, and clientID cannot be empty")
@@ -412,8 +413,6 @@ func (s *Store) SaveTokenMetadata(ctx context.Context, tokenID string, metadata 
 		}
 	}
 
-	metadata.IssuedAt = time.Now()
-
 	data, err := json.Marshal(toTokenMetadataJSON(&metadata))
 	if err != nil {
 		return fmt.Errorf("failed to marshal token metadata: %w", err)
@@ -421,10 +420,14 @@ func (s *Store) SaveTokenMetadata(ctx context.Context, tokenID string, metadata 
 
 	metaKey := s.tokenMetaKey(tokenID)
 
-	if err := s.client.Do(
-		ctx,
-		s.client.B().Set().Key(metaKey).Value(string(data)).Build(),
-	).Error(); err != nil {
+	doSet := func() error {
+		if !metadata.ExpiresAt.IsZero() {
+			ttl := calculateTTL(metadata.ExpiresAt)
+			return s.client.Do(ctx, s.client.B().Set().Key(metaKey).Value(string(data)).ExSeconds(int64(ttl.Seconds())).Build()).Error()
+		}
+		return s.client.Do(ctx, s.client.B().Set().Key(metaKey).Value(string(data)).Build()).Error()
+	}
+	if err := doSet(); err != nil {
 		return fmt.Errorf("failed to save token metadata: %w", err)
 	}
 
