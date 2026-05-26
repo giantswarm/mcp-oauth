@@ -24,7 +24,8 @@ func (h *Handler) ServeClientManagement(w http.ResponseWriter, r *http.Request) 
 	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.client_management")
 	defer endSpan()
 
-	if _, ok := h.gateIPRateLimit(w, r, span, "client_management", r.Method, startTime); !ok {
+	clientIP, ok := h.gateIPRateLimit(w, r, span, endpointClientManagement, r.Method, startTime)
+	if !ok {
 		return
 	}
 
@@ -34,21 +35,21 @@ func (h *Handler) ServeClientManagement(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	client, ok := h.authenticateManagementRequest(w, r, clientID)
+	client, ok := h.authenticateManagementRequest(w, r, clientID, clientIP)
 	if !ok {
 		return
 	}
 
 	switch r.Method {
 	case http.MethodGet:
-		h.recordHTTPMetrics(r.Context(), "client_management", http.MethodGet, http.StatusOK, startTime)
+		h.recordHTTPMetrics(r.Context(), endpointClientManagement, http.MethodGet, http.StatusOK, startTime)
 		h.writeClientMetadata(w, client)
 	case http.MethodPut:
-		h.handleClientManagementPut(w, r, client, startTime)
+		h.handleClientManagementPut(w, r, client, clientIP, startTime)
 	case http.MethodDelete:
-		h.handleClientManagementDelete(w, r, client, startTime)
+		h.handleClientManagementDelete(w, r, client, clientIP, startTime)
 	default:
-		h.recordHTTPMetrics(r.Context(), "client_management", r.Method, http.StatusMethodNotAllowed, startTime)
+		h.recordHTTPMetrics(r.Context(), endpointClientManagement, r.Method, http.StatusMethodNotAllowed, startTime)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
@@ -56,10 +57,11 @@ func (h *Handler) ServeClientManagement(w http.ResponseWriter, r *http.Request) 
 // authenticateManagementRequest extracts the client, looks up the stored hash,
 // and constant-time-compares the Bearer token. Returns the client and true on
 // success; writes the appropriate error response and returns false on failure.
-func (h *Handler) authenticateManagementRequest(w http.ResponseWriter, r *http.Request, clientID string) (*storage.Client, bool) {
+func (h *Handler) authenticateManagementRequest(w http.ResponseWriter, r *http.Request, clientID, clientIP string) (*storage.Client, bool) {
 	authHeader := r.Header.Get("Authorization")
 	parts := strings.SplitN(authHeader, " ", 2)
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") || parts[1] == "" {
+		h.logger.Warn("Client management: missing or malformed Bearer token", "ip", clientIP, "client_id", clientID)
 		w.Header().Set("WWW-Authenticate", `Bearer realm="client_management"`)
 		h.writeError(w, oauth.ErrorCodeInvalidToken, "Bearer token required", http.StatusUnauthorized)
 		return nil, false
@@ -71,9 +73,11 @@ func (h *Handler) authenticateManagementRequest(w http.ResponseWriter, r *http.R
 		if storage.IsNotFoundError(err) {
 			// Perform a dummy bcrypt comparison to prevent timing-based enumeration.
 			_ = bcrypt.CompareHashAndPassword([]byte(storage.DummyBcryptHash), []byte(bearerToken))
+			h.logger.Warn("Client management: client not found", "ip", clientIP, "client_id", clientID)
 			h.writeError(w, oauth.ErrorCodeInvalidToken, "client not found", http.StatusNotFound)
 			return nil, false
 		}
+		h.logger.Error("Client management: failed to retrieve client", "ip", clientIP, "client_id", clientID, "error", err)
 		h.writeError(w, oauth.ErrorCodeServerError, "failed to retrieve client", http.StatusInternalServerError)
 		return nil, false
 	}
@@ -81,12 +85,14 @@ func (h *Handler) authenticateManagementRequest(w http.ResponseWriter, r *http.R
 	if client.RegistrationAccessTokenHash == "" {
 		// Legacy client registered before RFC 7592 support — no token was issued.
 		_ = bcrypt.CompareHashAndPassword([]byte(storage.DummyBcryptHash), []byte(bearerToken))
+		h.logger.Warn("Client management: client not eligible for management", "ip", clientIP, "client_id", clientID)
 		w.Header().Set("WWW-Authenticate", `Bearer realm="client_management"`)
 		h.writeError(w, oauth.ErrorCodeInvalidToken, "client not eligible for management", http.StatusUnauthorized)
 		return nil, false
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(client.RegistrationAccessTokenHash), []byte(bearerToken)); err != nil {
+		h.logger.Warn("Client management: invalid registration_access_token", "ip", clientIP, "client_id", clientID)
 		w.Header().Set("WWW-Authenticate", `Bearer realm="client_management"`)
 		h.writeError(w, oauth.ErrorCodeInvalidToken, "invalid registration_access_token", http.StatusUnauthorized)
 		return nil, false
@@ -129,13 +135,13 @@ func (h *Handler) writeClientMetadata(w http.ResponseWriter, client *storage.Cli
 // handleClientManagementPut handles PUT /oauth/register/{client_id}.
 // It validates the request body (same rules as DCR), replaces mutable fields,
 // and rotates the registration access token per RFC 7592 §2.3.
-func (h *Handler) handleClientManagementPut(w http.ResponseWriter, r *http.Request, existing *storage.Client, startTime time.Time) {
+func (h *Handler) handleClientManagementPut(w http.ResponseWriter, r *http.Request, existing *storage.Client, clientIP string, startTime time.Time) {
 	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config.MaxRequestBodySize)
 
 	var req clientRegistrationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		if isMaxBytesError(err) {
-			h.recordHTTPMetrics(r.Context(), "client_management", http.MethodPut, http.StatusRequestEntityTooLarge, startTime)
+			h.recordHTTPMetrics(r.Context(), endpointClientManagement, http.MethodPut, http.StatusRequestEntityTooLarge, startTime)
 			h.writeError(w, oauth.ErrorCodeInvalidRequest, "Request body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
@@ -151,6 +157,7 @@ func (h *Handler) handleClientManagementPut(w http.ResponseWriter, r *http.Reque
 
 	newToken, newHash, err := server.GenerateRegistrationAccessToken()
 	if err != nil {
+		h.logger.Error("Client management: failed to rotate registration token", "ip", clientIP, "client_id", existing.ClientID, "error", err)
 		h.writeError(w, oauth.ErrorCodeServerError, "failed to rotate registration token", http.StatusInternalServerError)
 		return
 	}
@@ -173,12 +180,13 @@ func (h *Handler) handleClientManagementPut(w http.ResponseWriter, r *http.Reque
 	updated.RegistrationAccessTokenHash = newHash
 
 	if err := h.server.SaveClient(r.Context(), &updated); err != nil {
-		h.recordHTTPMetrics(r.Context(), "client_management", http.MethodPut, http.StatusInternalServerError, startTime)
+		h.logger.Error("Client management: failed to update client", "ip", clientIP, "client_id", existing.ClientID, "error", err)
+		h.recordHTTPMetrics(r.Context(), endpointClientManagement, http.MethodPut, http.StatusInternalServerError, startTime)
 		h.writeError(w, oauth.ErrorCodeServerError, "failed to update client", http.StatusInternalServerError)
 		return
 	}
 
-	h.recordHTTPMetrics(r.Context(), "client_management", http.MethodPut, http.StatusOK, startTime)
+	h.recordHTTPMetrics(r.Context(), endpointClientManagement, http.MethodPut, http.StatusOK, startTime)
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	body := h.buildClientResponseBody(&updated)
 	body["registration_access_token"] = newToken
@@ -187,18 +195,19 @@ func (h *Handler) handleClientManagementPut(w http.ResponseWriter, r *http.Reque
 }
 
 // handleClientManagementDelete handles DELETE /oauth/register/{client_id}.
-func (h *Handler) handleClientManagementDelete(w http.ResponseWriter, r *http.Request, client *storage.Client, startTime time.Time) {
+func (h *Handler) handleClientManagementDelete(w http.ResponseWriter, r *http.Request, client *storage.Client, clientIP string, startTime time.Time) {
 	if err := h.server.DeleteClient(r.Context(), client.ClientID); err != nil {
 		if storage.IsNotFoundError(err) {
-			h.recordHTTPMetrics(r.Context(), "client_management", http.MethodDelete, http.StatusNotFound, startTime)
+			h.recordHTTPMetrics(r.Context(), endpointClientManagement, http.MethodDelete, http.StatusNotFound, startTime)
 			h.writeError(w, oauth.ErrorCodeInvalidRequest, "client not found", http.StatusNotFound)
 			return
 		}
-		h.recordHTTPMetrics(r.Context(), "client_management", http.MethodDelete, http.StatusInternalServerError, startTime)
+		h.logger.Error("Client management: failed to delete client", "ip", clientIP, "client_id", client.ClientID, "error", err)
+		h.recordHTTPMetrics(r.Context(), endpointClientManagement, http.MethodDelete, http.StatusInternalServerError, startTime)
 		h.writeError(w, oauth.ErrorCodeServerError, "failed to delete client", http.StatusInternalServerError)
 		return
 	}
 
-	h.recordHTTPMetrics(r.Context(), "client_management", http.MethodDelete, http.StatusNoContent, startTime)
+	h.recordHTTPMetrics(r.Context(), endpointClientManagement, http.MethodDelete, http.StatusNoContent, startTime)
 	w.WriteHeader(http.StatusNoContent)
 }

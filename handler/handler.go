@@ -26,14 +26,17 @@ const (
 // Endpoint labels for `oauth_http_requests_total{endpoint="..."}` etc.
 // Future renames are breaking changes for downstream dashboards.
 const (
-	endpointAuthorize     = "authorize"
-	endpointCallback      = "callback"
-	endpointToken         = "token"
-	endpointRevoke        = "revoke"
-	endpointIntrospect    = "introspect"
-	endpointRegister      = "register"
-	endpointValidateToken = "validate_token"
-	endpointUserInfo      = "userinfo"
+	endpointAuthorize        = "authorize"
+	endpointCallback         = "callback"
+	endpointToken            = "token"
+	endpointRevoke           = "revoke"
+	endpointIntrospect       = "introspect"
+	endpointRegister         = "register"
+	endpointValidateToken    = "validate_token"
+	endpointUserInfo         = "userinfo"
+	endpointDiscovery        = "discovery"
+	endpointJWKS             = "jwks"
+	endpointClientManagement = "client_management"
 )
 
 // Handler is a thin HTTP adapter for the OAuth Server.
