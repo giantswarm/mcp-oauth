@@ -78,6 +78,10 @@ type AccessTokenClaims struct {
 	// Act carries the RFC 8693 §4.4 actor claim. Non-nil only for token-exchange
 	// issued tokens.
 	Act map[string]any
+
+	// JKT is the JWK thumbprint of the DPoP public key this token is bound to
+	// (RFC 9449 §6.1). Non-empty only when the token was requested with a DPoP proof.
+	JKT string
 }
 
 // AccessTokenIssuer encodes AccessTokenClaims into a bearer string. Two
@@ -164,6 +168,7 @@ type rfc9068Claims struct {
 	Groups        []string       `json:"groups,omitempty"`
 	FamilyID      string         `json:"family_id,omitempty"`
 	Act           map[string]any `json:"act,omitempty"`
+	Cnf           map[string]any `json:"cnf,omitempty"`
 }
 
 // Issue signs an RFC 9068 access token. The header carries alg/kid/typ; the
@@ -197,6 +202,7 @@ func (j *jwtIssuer) Issue(_ context.Context, c AccessTokenClaims) (string, error
 		Groups:   c.Groups,
 		FamilyID: c.FamilyID,
 		Act:      c.Act,
+		Cnf:      dpopCnf(c.JKT),
 	}
 	if c.Email != "" {
 		verified := c.EmailVerified

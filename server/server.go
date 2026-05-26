@@ -97,8 +97,11 @@ type Server struct {
 	refreshSessionGroup           singleflight.Group                      // Deduplicates concurrent RefreshSession calls per family ID
 	// subjectValidators is the registry for RFC 8693 token-exchange validators,
 	// keyed by subject_token_type URN.
-	subjectValidators             map[string]SubjectTokenValidator
-	Logger                        *slog.Logger
+	subjectValidators map[string]SubjectTokenValidator
+	// dpopReplayCache is used to detect replayed DPoP proof JTIs.
+	// When nil, a per-request in-memory cache is used (no cross-request replay protection).
+	dpopReplayCache DPoPReplayCache
+	Logger          *slog.Logger
 	Config                        *Config
 	shutdownOnce                  sync.Once // Ensures Shutdown is called only once
 }
@@ -383,6 +386,11 @@ func (s *Server) TokenStore() storage.TokenStore {
 // given subject_token_type URN, or nil if none is registered.
 func (s *Server) SubjectValidatorFor(tokenType string) SubjectTokenValidator {
 	return s.subjectValidators[tokenType]
+}
+
+// DPoPReplayCache returns the configured DPoP replay cache, or nil if none was set.
+func (s *Server) DPoPReplayCache() DPoPReplayCache {
+	return s.dpopReplayCache
 }
 
 // saveTokenMetadata writes token metadata to the configured store. Backends

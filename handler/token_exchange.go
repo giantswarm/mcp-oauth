@@ -43,7 +43,15 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	result, err := h.server.ExchangeSubjectToken(r.Context(), subjectToken, subjectTokenType, resource, scope)
+	dpopJKT, err := h.extractDPoPJKT(r)
+	if err != nil {
+		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "dpop proof invalid")
+		h.writeError(w, "invalid_dpop_proof", err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	result, err := h.server.ExchangeSubjectToken(r.Context(), subjectToken, subjectTokenType, resource, scope, dpopJKT)
 	if err != nil {
 		h.handleTokenExchangeError(w, r, err, clientIP, startTime, span)
 		return

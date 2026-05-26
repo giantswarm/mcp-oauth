@@ -157,6 +157,17 @@ func WithKubernetesSATrust(trusts []KubernetesSATrust) Option {
 	}
 }
 
+// WithDPoPReplayCache sets the DPoP proof replay cache. When set, the server
+// uses this cache to detect replayed DPoP proofs across requests. When not
+// set, each request creates a transient in-memory cache with no cross-request
+// replay protection — use NewMemoryDPoPReplayCache() for single-process
+// deployments, or a Redis/Valkey-backed implementation for multi-instance deployments.
+func WithDPoPReplayCache(cache DPoPReplayCache) Option {
+	return func(s *Server) {
+		s.dpopReplayCache = cache
+	}
+}
+
 // WithInstrumentation installs an OpenTelemetry pipeline on the server.
 // Build the *instrumentation.Instrumentation with instrumentation.New and
 // pass it here. The same instance can be shared with other components in
