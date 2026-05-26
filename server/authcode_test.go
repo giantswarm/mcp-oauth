@@ -12,6 +12,8 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
@@ -1101,6 +1103,51 @@ func TestServer_ExchangeAuthorizationCode(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestServer_ExchangeAuthorizationCode_MetadataExpiresAt(t *testing.T) {
+	ctx := t.Context()
+	srv, store, _ := setupFlowTestServer(t)
+	srv.Config.AccessTokenTTL = 3600
+	srv.Config.RefreshTokenTTL = 86400
+
+	client, _, err := srv.RegisterClient(ctx, "Test Client", ClientTypeConfidential, "",
+		[]string{"https://example.com/callback"}, []string{"openid"}, "192.168.1.1", 10)
+	require.NoError(t, err)
+
+	verifier := testutil.GenerateRandomString(testPKCEVerifierLength)
+	hash := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	authCode := &storage.AuthorizationCode{
+		Code:                testutil.GenerateRandomString(32),
+		ClientID:            client.ClientID,
+		RedirectURI:         "https://example.com/callback",
+		Scope:               "openid",
+		CodeChallenge:       challenge,
+		CodeChallengeMethod: PKCEMethodS256,
+		UserID:              "user-1",
+		ProviderToken:       &oauth2.Token{AccessToken: "pat", RefreshToken: "prt", Expiry: time.Now().Add(2 * time.Hour)},
+		CreatedAt:           time.Now(),
+		ExpiresAt:           time.Now().Add(10 * time.Minute),
+	}
+	require.NoError(t, store.SaveAuthorizationCode(ctx, authCode))
+
+	before := time.Now()
+	token, _, err := srv.ExchangeAuthorizationCode(ctx, authCode.Code, client.ClientID, "https://example.com/callback", "", verifier)
+	require.NoError(t, err)
+
+	atMeta, err := store.GetTokenMetadata(token.AccessToken)
+	require.NoError(t, err)
+	require.False(t, atMeta.ExpiresAt.IsZero(), "access token ExpiresAt must be set")
+	require.False(t, atMeta.IssuedAt.IsZero(), "access token IssuedAt must be set")
+	require.True(t, atMeta.IssuedAt.Before(atMeta.ExpiresAt), "IssuedAt must be before ExpiresAt")
+	require.WithinDuration(t, before.Add(time.Duration(srv.Config.AccessTokenTTL)*time.Second), atMeta.ExpiresAt, 5*time.Second)
+
+	rtMeta, err := store.GetTokenMetadata(token.RefreshToken)
+	require.NoError(t, err)
+	require.False(t, rtMeta.ExpiresAt.IsZero(), "refresh token ExpiresAt must be set")
+	require.WithinDuration(t, before.Add(time.Duration(srv.Config.RefreshTokenTTL)*time.Second), rtMeta.ExpiresAt, 5*time.Second)
 }
 
 // TestServer_ExchangeAuthorizationCode_IDTokenForwarding verifies that the id_token
