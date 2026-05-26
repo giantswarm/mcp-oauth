@@ -25,11 +25,6 @@ func newTestDPoPKey(t *testing.T) *ecdsa.PrivateKey {
 	return key
 }
 
-func buildDPoPProof(t *testing.T, key *ecdsa.PrivateKey, method, htu, jti string) string {
-	t.Helper()
-	return buildDPoPProofWithATH(t, key, method, htu, jti, "")
-}
-
 func buildDPoPProofWithATH(t *testing.T, key *ecdsa.PrivateKey, method, htu, jti, accessToken string) string {
 	t.Helper()
 	pubJWK := jose.JSONWebKey{Key: key.Public(), Algorithm: string(jose.ES256)}
@@ -51,11 +46,6 @@ func buildDPoPProofWithATH(t *testing.T, key *ecdsa.PrivateKey, method, htu, jti
 	raw, err := josejwt.Signed(sig).Claims(claims).Serialize()
 	require.NoError(t, err)
 	return raw
-}
-
-func athFor(accessToken string) string {
-	hash := sha256.Sum256([]byte(accessToken))
-	return base64.RawURLEncoding.EncodeToString(hash[:])
 }
 
 func TestDPoPMiddleware_BearerPassthrough(t *testing.T) {
