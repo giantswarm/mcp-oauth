@@ -10,11 +10,11 @@ jobs:
   verify:
     name: Verify
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v6
-    
+
     - name: Determine Go version from toolchain directive
       id: go-version
       run: |
@@ -39,10 +39,10 @@ jobs:
 
     - name: Install analysis tools
       run: make install-analyze-tools
-    
+
     - name: Run make verify
       run: make verify
-    
+
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v6
       with:

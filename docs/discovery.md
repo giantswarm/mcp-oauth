@@ -53,10 +53,10 @@ import (
 func main() {
     h := handler.New(server, nil)
     mux := http.NewServeMux()
-    
+
     // Register Protected Resource Metadata endpoint
     h.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
-    
+
     http.ListenAndServe(":8080", mux)
 }
 ```
@@ -105,7 +105,7 @@ func main() {
     config := &server.Config{
         Issuer:          "https://auth.example.com",
         SupportedScopes: []string{"default:scope"},  // Server-wide default
-        
+
         // Per-path metadata configuration
         ResourceMetadataByPath: map[string]server.ProtectedResourceConfig{
             "/mcp/files": {
@@ -117,10 +117,10 @@ func main() {
             },
         },
     }
-    
+
     h := handler.New(server, nil)
     mux := http.NewServeMux()
-    
+
     // Automatically registers:
     // - /.well-known/oauth-protected-resource (default)
     // - /.well-known/oauth-protected-resource/mcp/files
@@ -142,7 +142,7 @@ func main() {
 
 The library uses longest-prefix matching to find the most specific configuration:
 
-- Request to `/.well-known/oauth-protected-resource/mcp/files/admin/users` 
+- Request to `/.well-known/oauth-protected-resource/mcp/files/admin/users`
 - Configured paths: `/mcp`, `/mcp/files`, `/mcp/files/admin`
 - Matched: `/mcp/files/admin` (longest match)
 
@@ -309,7 +309,7 @@ func discoverAuthServer(issuer string) (*Config, error) {
     // Fetch metadata
     resp := GET(issuer + "/.well-known/oauth-authorization-server")
     metadata := parseJSON(resp)
-    
+
     // Configure OAuth client
     return &Config{
         AuthURL:      metadata.authorization_endpoint,
@@ -348,10 +348,10 @@ WWW-Authenticate: Bearer resource_metadata="https://mcp.example.com/.well-known/
 ```go
 &server.Config{
     Issuer: "https://auth.example.com",
-    
+
     // Configure scopes to advertise in WWW-Authenticate challenges
     DefaultChallengeScopes: []string{"mcp:access", "files:read"},
-    
+
     // Enhanced WWW-Authenticate headers enabled by default
     // DisableWWWAuthenticateMetadata: false,
 }
@@ -441,10 +441,10 @@ client_id: https://client.example.com/.well-known/client-configuration
 &server.Config{
     // Enable Client ID Metadata Document support
     EnableClientIDMetadataDocuments: true,
-    
+
     // Configure caching (default: 5 minutes)
     ClientMetadataCacheTTL: 5 * time.Minute,
-    
+
     // Configure timeout for fetching metadata (default: 10 seconds)
     ClientMetadataFetchTimeout: 10 * time.Second,
 }
@@ -570,7 +570,7 @@ HTTP/1.1 200 OK
        "/api/files/*": {"files:access"},
        "/api/admin/*": {"admin:access"},
    }
-   
+
    // Avoid: Too granular
    EndpointScopeRequirements: map[string][]string{
        "/api/files/read":   {"files:read:doc:type:pdf"},
@@ -606,7 +606,7 @@ HTTP/1.1 200 OK
    // Pseudocode
    func accessResource(url string) error {
        resp := GET(url)
-       
+
        if resp.StatusCode == 401 {
            // Try discovery
            metadata := discoverFromWWWAuthenticate(resp)
@@ -615,7 +615,7 @@ HTTP/1.1 200 OK
                return GET(url, token)
            }
        }
-       
+
        return handleResponse(resp)
    }
    ```
@@ -659,4 +659,3 @@ HTTP/1.1 200 OK
 - [RFC 8414 - Authorization Server Metadata](https://datatracker.ietf.org/doc/html/rfc8414)
 - [RFC 9728 - Protected Resource Metadata](https://datatracker.ietf.org/doc/html/rfc9728)
 - [MCP Specification 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization)
-

@@ -422,8 +422,9 @@ func (s *Store) SaveTokenMetadata(ctx context.Context, tokenID string, metadata 
 
 	doSet := func() error {
 		if !metadata.ExpiresAt.IsZero() {
-			ttl := calculateTTL(metadata.ExpiresAt)
-			return s.client.Do(ctx, s.client.B().Set().Key(metaKey).Value(string(data)).ExSeconds(int64(ttl.Seconds())).Build()).Error()
+			if ttl := calculateTTL(metadata.ExpiresAt); ttl > 0 {
+				return s.client.Do(ctx, s.client.B().Set().Key(metaKey).Value(string(data)).ExSeconds(int64(ttl.Seconds())).Build()).Error()
+			}
 		}
 		return s.client.Do(ctx, s.client.B().Set().Key(metaKey).Value(string(data)).Build()).Error()
 	}

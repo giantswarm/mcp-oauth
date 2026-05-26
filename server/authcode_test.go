@@ -1136,7 +1136,6 @@ func TestServer_ExchangeAuthorizationCode_MetadataExpiresAt(t *testing.T) {
 	before := time.Now()
 	token, _, err := srv.ExchangeAuthorizationCode(ctx, authCode.Code, client.ClientID, "https://example.com/callback", "", verifier)
 	require.NoError(t, err)
-	after := time.Now()
 
 	atMeta, err := store.GetTokenMetadata(token.AccessToken)
 	require.NoError(t, err)
@@ -1144,7 +1143,6 @@ func TestServer_ExchangeAuthorizationCode_MetadataExpiresAt(t *testing.T) {
 	require.False(t, atMeta.IssuedAt.IsZero(), "access token IssuedAt must be set")
 	require.True(t, atMeta.IssuedAt.Before(atMeta.ExpiresAt), "IssuedAt must be before ExpiresAt")
 	require.WithinDuration(t, before.Add(time.Duration(srv.Config.AccessTokenTTL)*time.Second), atMeta.ExpiresAt, 5*time.Second)
-	_ = after
 
 	rtMeta, err := store.GetTokenMetadata(token.RefreshToken)
 	require.NoError(t, err)

@@ -79,16 +79,16 @@ Please follow our [Security Policy](SECURITY.md) to report vulnerabilities respo
    ```bash
    # Run all tests
    go test ./...
-   
+
    # Run with coverage
    go test -cover ./...
-   
+
    # Run with race detector
    go test -race ./...
-   
+
    # Run linters (if golangci-lint is installed)
    golangci-lint run
-   
+
    # Format code
    go fmt ./...
    ```
@@ -103,7 +103,7 @@ Please follow our [Security Policy](SECURITY.md) to report vulnerabilities respo
    git add .
    git commit -m "feat: add new feature X"
    ```
-   
+
    Follow [Conventional Commits](https://www.conventionalcommits.org/):
    - `feat:` new features
    - `fix:` bug fixes
@@ -298,4 +298,3 @@ Contributors will be recognized in:
 - Release notes (for significant contributions)
 
 Thank you for contributing to mcp-oauth!
-

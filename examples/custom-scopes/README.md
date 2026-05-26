@@ -233,10 +233,10 @@ After receiving the access token, you can call Google APIs:
 ```go
 func callGmailAPI(accessToken string) {
     client := &http.Client{}
-    req, _ := http.NewRequest("GET", 
+    req, _ := http.NewRequest("GET",
         "https://gmail.googleapis.com/gmail/v1/users/me/messages", nil)
     req.Header.Add("Authorization", "Bearer "+accessToken)
-    
+
     resp, err := client.Do(req)
     // Handle response...
 }
@@ -252,7 +252,7 @@ func getEmails(accessToken string) {
     config := &oauth2.Config{...}
     token := &oauth2.Token{AccessToken: accessToken}
     client := config.Client(ctx, token)
-    
+
     srv, err := gmail.New(client)
     messages, err := srv.Users.Messages.List("me").Do()
     // Process messages...
@@ -289,4 +289,3 @@ If the user denies access to a scope:
 - [Drive API Scopes](https://developers.google.com/drive/api/guides/api-specific-auth)
 - [Calendar API Scopes](https://developers.google.com/calendar/api/auth)
 - [People API Scopes](https://developers.google.com/people/api/rest/v1/people/get)
-

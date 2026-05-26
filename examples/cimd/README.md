@@ -178,4 +178,3 @@ Optional fields:
 - [CIMD Documentation](../../docs/cimd.md) - Complete reference
 - [Security Guide](../../docs/security.md) - Security best practices
 - [MCP 2025-11-25](../../docs/mcp-2025-11-25.md) - Specification details
-

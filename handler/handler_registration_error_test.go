@@ -10,10 +10,11 @@ import (
 	"testing"
 	"time"
 
-	oauth "github.com/giantswarm/mcp-oauth"
-	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace/noop"
+
+	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/storage"
 )
 
 // TestHandleRegistrationError pins the two response shapes that
