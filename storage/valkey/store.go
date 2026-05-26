@@ -771,18 +771,18 @@ func fromAuthorizationStateJSON(j *authorizationStateJSON) *storage.Authorizatio
 
 // clientJSON is the JSON representation of an OAuth client
 type clientJSON struct {
-	ClientID                        string   `json:"client_id"`
-	ClientSecretHash                string   `json:"client_secret_hash,omitempty"`
-	ClientType                      string   `json:"client_type"`
-	RedirectURIs                    []string `json:"redirect_uris"`
-	TokenEndpointAuthMethod         string   `json:"token_endpoint_auth_method,omitempty"`
-	GrantTypes                      []string `json:"grant_types,omitempty"`
-	ResponseTypes                   []string `json:"response_types,omitempty"`
-	ClientName                      string   `json:"client_name,omitempty"`
-	Scopes                          []string `json:"scopes,omitempty"`
-	CreatedAt                       int64    `json:"created_at"`
-	UpdatedAt                       int64    `json:"updated_at,omitempty"`
-	RegistrationAccessTokenHash     string   `json:"registration_access_token_hash,omitempty"`
+	ClientID                    string   `json:"client_id"`
+	ClientSecretHash            string   `json:"client_secret_hash,omitempty"`
+	ClientType                  string   `json:"client_type"`
+	RedirectURIs                []string `json:"redirect_uris"`
+	TokenEndpointAuthMethod     string   `json:"token_endpoint_auth_method,omitempty"`
+	GrantTypes                  []string `json:"grant_types,omitempty"`
+	ResponseTypes               []string `json:"response_types,omitempty"`
+	ClientName                  string   `json:"client_name,omitempty"`
+	Scopes                      []string `json:"scopes,omitempty"`
+	CreatedAt                   int64    `json:"created_at"`
+	UpdatedAt                   int64    `json:"updated_at,omitempty"`
+	RegistrationAccessTokenHash string   `json:"registration_access_token_hash,omitempty"`
 }
 
 func toClientJSON(client *storage.Client) *clientJSON {
