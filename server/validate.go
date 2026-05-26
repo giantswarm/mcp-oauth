@@ -18,9 +18,7 @@ import (
 // isTokenExpiredLocally checks if a token is expired considering clock skew grace period.
 // Returns true if the token is expired beyond the grace period.
 func (s *Server) isTokenExpiredLocally(token *oauth2.Token) bool {
-	gracePeriod := time.Duration(s.Config.ClockSkewGracePeriod) * time.Second
-	expiryWithGrace := token.Expiry.Add(gracePeriod)
-	return time.Now().After(expiryWithGrace)
+	return security.IsTokenExpiredWithGracePeriod(token.Expiry, time.Duration(s.Config.ClockSkewGracePeriod)*time.Second)
 }
 
 // preserveRefreshToken returns a copy of newToken with the old refresh token
