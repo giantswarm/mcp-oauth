@@ -41,7 +41,7 @@ func (s *Server) ExchangeSubjectToken(
 	if err != nil {
 		s.Logger.Debug("token exchange: subject token validation failed",
 			"subject_token_type", subjectTokenType, "error", err)
-		return nil, fmt.Errorf("invalid_grant: %w", err)
+		return nil, fmt.Errorf("subject token validation: %w", err)
 	}
 
 	grantedScope := grantedExchangeScope(scope, identity.AllowedScopes)
@@ -60,8 +60,8 @@ func (s *Server) ExchangeSubjectToken(
 		IssuedAt:  now,
 		ExpiresAt: expiresAt,
 		JTI:       generateRandomToken(),
-		Act: &Actor{Iss: identity.Issuer, Sub: identity.Subject},
-		JKT: dpopJKT,
+		Act:       &Actor{Iss: identity.Issuer, Sub: identity.Subject},
+		JKT:       dpopJKT,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue exchange token: %w", err)

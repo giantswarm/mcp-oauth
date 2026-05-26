@@ -26,11 +26,11 @@ func DPoPMiddleware(replayCache server.DPoPReplayCache, trustedProxies []*net.IP
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			auth := r.Header.Get("Authorization")
-			if !strings.HasPrefix(auth, "DPoP ") {
+			if !strings.HasPrefix(strings.ToLower(auth), "dpop ") {
 				next.ServeHTTP(w, r)
 				return
 			}
-			accessToken := strings.TrimPrefix(auth, "DPoP ")
+			accessToken := auth[len("DPoP "):] // preserve original token value
 			proof := r.Header.Get("DPoP")
 			if proof == "" {
 				writeDPoPError(w, "invalid_request", "DPoP proof required", http.StatusUnauthorized)

@@ -40,72 +40,13 @@ type dpopRawClaims struct {
 // method and uri are the HTTP method and URI of the current request.
 // accessToken is non-empty only at the resource server (enables ath check).
 func ValidateDPoPProof(ctx context.Context, proof, method, uri, accessToken string, replay DPoPReplayCache, now time.Time) (*DPoPProofClaims, error) {
-	jws, err := jose.ParseSigned(proof, []jose.SignatureAlgorithm{
-		jose.RS256, jose.RS384, jose.RS512,
-		jose.ES256, jose.ES384, jose.ES512,
-		jose.PS256, jose.PS384, jose.PS512,
-	})
+	embeddedJWK, claims, err := parseDPoPJWS(proof)
 	if err != nil {
-		return nil, fmt.Errorf("dpop: parse proof: %w", err)
+		return nil, err
 	}
 
-	if len(jws.Signatures) != 1 {
-		return nil, fmt.Errorf("dpop: proof must have exactly one signature")
-	}
-
-	header := jws.Signatures[0].Header
-
-	// typ is stored in ExtraHeaders for non-standard header parameters.
-	typ, _ := header.ExtraHeaders[jose.HeaderType].(string)
-	if !strings.EqualFold(typ, dpopTypHeader) {
-		return nil, fmt.Errorf("dpop: typ header must be %q, got %q", dpopTypHeader, typ)
-	}
-
-	// go-jose parses the jwk header directly into header.JSONWebKey.
-	embeddedJWK := header.JSONWebKey
-	if embeddedJWK == nil {
-		return nil, fmt.Errorf("dpop: jwk header is required")
-	}
-	if !embeddedJWK.IsPublic() {
-		return nil, fmt.Errorf("dpop: jwk header must contain a public key")
-	}
-
-	payload, err := jws.Verify(embeddedJWK)
-	if err != nil {
-		return nil, fmt.Errorf("dpop: signature verification failed: %w", err)
-	}
-
-	var claims dpopRawClaims
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return nil, fmt.Errorf("dpop: parse claims: %w", err)
-	}
-
-	if claims.ID == "" {
-		return nil, fmt.Errorf("dpop: jti claim is required")
-	}
-
-	if !strings.EqualFold(claims.HTM, method) {
-		return nil, fmt.Errorf("dpop: htm claim %q does not match request method %q", claims.HTM, method)
-	}
-
-	if stripQueryAndFragment(uri) != stripQueryAndFragment(claims.HTU) {
-		return nil, fmt.Errorf("dpop: htu claim %q does not match request uri %q", claims.HTU, uri)
-	}
-
-	if claims.IssuedAt == nil {
-		return nil, fmt.Errorf("dpop: iat claim is required")
-	}
-	iat := claims.IssuedAt.Time()
-	if now.Sub(iat) > dpopMaxClockSkew || iat.Sub(now) > dpopMaxClockSkew {
-		return nil, fmt.Errorf("dpop: iat is outside allowed clock skew window")
-	}
-
-	if accessToken != "" {
-		hash := sha256.Sum256([]byte(accessToken))
-		expected := base64.RawURLEncoding.EncodeToString(hash[:])
-		if claims.ATH != expected {
-			return nil, fmt.Errorf("dpop: ath claim does not match access token hash")
-		}
+	if err := validateDPoPClaims(claims, method, uri, accessToken, now); err != nil {
+		return nil, err
 	}
 
 	seen, err := replay.Seen(ctx, claims.ID, dpopProofTTL)
@@ -120,9 +61,77 @@ func ValidateDPoPProof(ctx context.Context, proof, method, uri, accessToken stri
 	if err != nil {
 		return nil, fmt.Errorf("dpop: compute JWK thumbprint: %w", err)
 	}
-	jkt := base64.RawURLEncoding.EncodeToString(thumb)
+	return &DPoPProofClaims{JKT: base64.RawURLEncoding.EncodeToString(thumb)}, nil
+}
 
-	return &DPoPProofClaims{JKT: jkt}, nil
+// parseDPoPJWS parses the JWS, validates the header, and verifies the signature.
+func parseDPoPJWS(proof string) (*jose.JSONWebKey, dpopRawClaims, error) {
+	jws, err := jose.ParseSigned(proof, []jose.SignatureAlgorithm{
+		jose.RS256, jose.RS384, jose.RS512,
+		jose.ES256, jose.ES384, jose.ES512,
+		jose.PS256, jose.PS384, jose.PS512,
+	})
+	if err != nil {
+		return nil, dpopRawClaims{}, fmt.Errorf("dpop: parse proof: %w", err)
+	}
+	if len(jws.Signatures) != 1 {
+		return nil, dpopRawClaims{}, fmt.Errorf("dpop: proof must have exactly one signature")
+	}
+
+	header := jws.Signatures[0].Header
+	// typ is stored in ExtraHeaders for non-standard header parameters.
+	typ, _ := header.ExtraHeaders[jose.HeaderType].(string)
+	if !strings.EqualFold(typ, dpopTypHeader) {
+		return nil, dpopRawClaims{}, fmt.Errorf("dpop: typ header must be %q, got %q", dpopTypHeader, typ)
+	}
+
+	// go-jose parses the jwk header directly into header.JSONWebKey.
+	embeddedJWK := header.JSONWebKey
+	if embeddedJWK == nil {
+		return nil, dpopRawClaims{}, fmt.Errorf("dpop: jwk header is required")
+	}
+	if !embeddedJWK.IsPublic() {
+		return nil, dpopRawClaims{}, fmt.Errorf("dpop: jwk header must contain a public key")
+	}
+
+	payload, err := jws.Verify(embeddedJWK)
+	if err != nil {
+		return nil, dpopRawClaims{}, fmt.Errorf("dpop: signature verification failed: %w", err)
+	}
+
+	var claims dpopRawClaims
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, dpopRawClaims{}, fmt.Errorf("dpop: parse claims: %w", err)
+	}
+	return embeddedJWK, claims, nil
+}
+
+// validateDPoPClaims checks the semantic validity of DPoP proof claims.
+func validateDPoPClaims(claims dpopRawClaims, method, uri, accessToken string, now time.Time) error {
+	if claims.ID == "" {
+		return fmt.Errorf("dpop: jti claim is required")
+	}
+	if !strings.EqualFold(claims.HTM, method) {
+		return fmt.Errorf("dpop: htm claim %q does not match request method %q", claims.HTM, method)
+	}
+	if stripQueryAndFragment(uri) != stripQueryAndFragment(claims.HTU) {
+		return fmt.Errorf("dpop: htu claim %q does not match request uri %q", claims.HTU, uri)
+	}
+	if claims.IssuedAt == nil {
+		return fmt.Errorf("dpop: iat claim is required")
+	}
+	iat := claims.IssuedAt.Time()
+	if now.Sub(iat) > dpopMaxClockSkew || iat.Sub(now) > dpopMaxClockSkew {
+		return fmt.Errorf("dpop: iat is outside allowed clock skew window")
+	}
+	if accessToken != "" {
+		hash := sha256.Sum256([]byte(accessToken))
+		expected := base64.RawURLEncoding.EncodeToString(hash[:])
+		if claims.ATH != expected {
+			return fmt.Errorf("dpop: ath claim does not match access token hash")
+		}
+	}
+	return nil
 }
 
 // stripQueryAndFragment removes query string and fragment from a URI per RFC 9449.
