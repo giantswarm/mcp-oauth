@@ -323,7 +323,7 @@ func (m *ClientStore) getHashAndClientType(client *storage.Client, found bool) (
 	if !found {
 		return dummyHash, false
 	}
-	if client.ClientType == "public" {
+	if client.IsPublic() {
 		return dummyHash, true
 	}
 	if client.ClientSecretHash != "" {
@@ -459,7 +459,7 @@ func (m *FlowStore) defaultGetAuthState(_ context.Context, stateID string) (*sto
 	if !ok {
 		return nil, storage.ErrAuthorizationStateNotFound
 	}
-	if !state.ExpiresAt.IsZero() && time.Now().After(state.ExpiresAt) {
+	if state.HasExpired() {
 		return nil, storage.ErrTokenExpired
 	}
 	return state, nil
@@ -499,7 +499,7 @@ func (m *FlowStore) defaultGetAuthCode(_ context.Context, code string) (*storage
 	if !ok {
 		return nil, storage.ErrAuthorizationCodeNotFound
 	}
-	if !authCode.ExpiresAt.IsZero() && time.Now().After(authCode.ExpiresAt) {
+	if authCode.HasExpired() {
 		return nil, storage.ErrTokenExpired
 	}
 	return authCode, nil
@@ -519,7 +519,7 @@ func (m *FlowStore) defaultAtomicCheckAndMarkCodeUsed(_ context.Context, code st
 	if !ok {
 		return nil, storage.ErrAuthorizationCodeNotFound
 	}
-	if !authCode.ExpiresAt.IsZero() && time.Now().After(authCode.ExpiresAt) {
+	if authCode.HasExpired() {
 		return nil, storage.ErrTokenExpired
 	}
 	if authCode.Used {
