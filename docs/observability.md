@@ -355,4 +355,3 @@ histogram_quantile(0.99, rate(oauth_http_request_duration_bucket[5m]))
 - [Security Guide](./security.md) - Security event monitoring
 - [Configuration Guide](./configuration.md) - Server configuration
 - [instrumentation package docs](https://pkg.go.dev/github.com/giantswarm/mcp-oauth/instrumentation) - API reference
-

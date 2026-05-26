@@ -58,14 +58,14 @@ For production deployments:
    Save the returned `client_id` for the next step.
 
 4. **Start authorization flow**:
-   
+
    Open in browser (replace `CLIENT_ID` with the one from step 3):
    ```
    http://localhost:8080/oauth/authorize?client_id=CLIENT_ID&redirect_uri=http://localhost:3000/callback&scope=https://www.googleapis.com/auth/gmail.readonly&state=random-state&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&response_type=code
    ```
 
 5. **Exchange code for token**:
-   
+
    After authorization, you'll get a code in the redirect. Exchange it:
    ```bash
    curl -X POST http://localhost:8080/oauth/token \
@@ -98,4 +98,3 @@ See the [production example](../production) for:
 - Rate limiting
 - Comprehensive audit logging
 - Production-ready security settings
-

@@ -10,8 +10,12 @@ import (
 	"testing"
 	"time"
 
-	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace/noop"
+
+	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/security"
+	"github.com/giantswarm/mcp-oauth/storage"
 )
 
 func TestHandler_ServeClientRegistration_RFC7591Fields(t *testing.T) {
@@ -721,3 +725,92 @@ func TestHandler_ServeClientRegistration_InvalidJSON(t *testing.T) {
 }
 
 // Empty redirect URIs are apparently allowed, so this test is removed
+
+func TestHandler_checkClientRegistrationRateLimit_Reject(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	// Limit of 1 with sub-second window so retryAfter<1 branch is also hit.
+	rl := security.NewClientRegistrationRateLimiterWithConfig(1, time.Millisecond, 100, nil)
+	t.Cleanup(rl.Stop)
+	handler.server.ClientRegistrationRateLimiter = rl
+	handler.server.Config.MaxRegistrationsPerHour = 1
+	handler.server.Config.RegistrationRateLimitWindow = 0
+
+	const ip = "192.0.2.77"
+	rl.Allow(security.RateLimitBucket(ip)) // consume the one allowed slot
+
+	w := httptest.NewRecorder()
+	rejected := handler.checkClientRegistrationRateLimit(t.Context(), w, ip, time.Now())
+
+	require.True(t, rejected)
+	require.Equal(t, http.StatusTooManyRequests, w.Code)
+	require.NotEmpty(t, w.Header().Get("Retry-After"))
+}
+
+func TestHandler_authorizeClientRegistration_InvalidTokenLogs(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	handler.server.Config.RegistrationAccessToken = "correct-token"
+
+	req := httptest.NewRequest(http.MethodPost, "/register", nil)
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	w := httptest.NewRecorder()
+
+	_, ok := handler.authorizeClientRegistration(w, req, &clientRegistrationRequest{
+		RedirectURIs: []string{"https://example.com/callback"},
+	}, "192.0.2.1")
+
+	require.False(t, ok)
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+func TestHandler_authorizeClientRegistration_TrustedSchemeInvalidURI(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	handler.server.Config.TrustedPublicRegistrationSchemes = []string{"myapp"}
+	handler.server.Config.SetTrustedSchemesMap([]string{"myapp"})
+	handler.server.Config.RegistrationAccessToken = "secret"
+
+	// A URI with no scheme triggers the error path in CanRegisterWithTrustedScheme.
+	req := httptest.NewRequest(http.MethodPost, "/register", nil)
+	w := httptest.NewRecorder()
+
+	_, ok := handler.authorizeClientRegistration(w, req, &clientRegistrationRequest{
+		RedirectURIs: []string{"no-scheme-uri"},
+	}, "192.0.2.1")
+
+	require.False(t, ok)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestHandler_getMaxClientsPerIP_Default(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	handler.server.Config.MaxClientsPerIP = 0
+	require.Equal(t, 10, handler.getMaxClientsPerIP())
+}
+
+func TestHandler_recordTrustedAllowlistSpan_UnknownGate(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	auth := registrationAuthResult{viaTrustedAllowlist: true, gate: "unknown-gate"}
+	handler.recordTrustedAllowlistSpan(noop.Span{}, auth)
+}
+
+func TestHandler_auditTrustedAllowlistRegistration_UnknownGate(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	auth := registrationAuthResult{viaTrustedAllowlist: true, gate: "unknown-gate"}
+	client := &storage.Client{
+		ClientID:     "test-client",
+		ClientType:   oauth.ClientTypeConfidential,
+		RedirectURIs: []string{"https://example.com/callback"},
+	}
+	handler.auditTrustedAllowlistRegistration(t.Context(), auth, client, "192.0.2.1")
+}

@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/security"
+	"github.com/giantswarm/mcp-oauth/server"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
@@ -48,9 +50,7 @@ func (h *Handler) checkClientRegistrationRateLimit(ctx context.Context, w http.R
 			"ip", clientIP,
 			"max_per_window", h.server.Config.MaxRegistrationsPerHour,
 			"window", time.Duration(h.server.Config.RegistrationRateLimitWindow)*time.Second)
-		if h.server.Auditor != nil {
-			h.server.Auditor.LogClientRegistrationRateLimitExceeded(ctx, clientIP)
-		}
+		h.server.Auditor.LogClientRegistrationRateLimitExceeded(ctx, clientIP)
 		h.recordHTTPMetrics(ctx, endpointRegister, http.MethodPost, http.StatusTooManyRequests, startTime)
 		retryAfter := int(h.server.ClientRegistrationRateLimiter.Window().Seconds())
 		if retryAfter < 1 {
@@ -123,12 +123,7 @@ func (h *Handler) authorizeClientRegistration(w http.ResponseWriter, r *http.Req
 		return registrationAuthResult{viaTrustedAllowlist: true, gate: registrationAuthGateTrustedScheme, matched: scheme}, true
 	}
 
-	allowed, uri, err := h.server.CanRegisterWithTrustedRedirectURI(req.RedirectURIs)
-	if err != nil {
-		h.logger.Warn("Client registration rejected: invalid redirect URI", "client_ip", clientIP, "error", err)
-		h.writeError(w, oauth.ErrorCodeInvalidRequest, fmt.Sprintf("Invalid redirect URI: %v", err), http.StatusBadRequest)
-		return result, false
-	}
+	allowed, uri, _ := h.server.CanRegisterWithTrustedRedirectURI(req.RedirectURIs)
 	if allowed {
 		h.logger.Debug("Client registration authorized via trusted redirect URI",
 			"redirect_uri", uri, "client_ip", clientIP)
@@ -192,7 +187,11 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	}
 
 	h.setCORSHeaders(w, r)
-	clientIP := h.clientIP(r)
+
+	clientIP, ok := h.gateIPRateLimit(w, r, span, endpointRegister, http.MethodPost, startTime)
+	if !ok {
+		return
+	}
 
 	if h.checkClientRegistrationRateLimit(r.Context(), w, clientIP, startTime) {
 		return
@@ -222,17 +221,17 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	h.recordTrustedAllowlistSpan(span, auth)
 
 	maxClients := h.getMaxClientsPerIP()
-	client, clientSecret, err := h.server.RegisterClient(r.Context(), req.ClientName, req.ClientType, req.TokenEndpointAuthMethod, req.RedirectURIs, req.Scopes, clientIP, maxClients)
+	result, err := h.server.RegisterClientV2(r.Context(), req.ClientName, req.ClientType, req.TokenEndpointAuthMethod, req.RedirectURIs, req.Scopes, clientIP, maxClients)
 	if err != nil {
 		h.handleRegistrationError(r.Context(), w, err, clientIP, startTime, span)
 		return
 	}
 
-	h.recordClientRegistered(r.Context(), client.ClientType)
-	h.auditTrustedAllowlistRegistration(r.Context(), auth, client, clientIP)
+	h.recordClientRegistered(r.Context(), result.Client.ClientType)
+	h.auditTrustedAllowlistRegistration(r.Context(), auth, result.Client, clientIP)
 	h.recordHTTPMetrics(r.Context(), endpointRegister, http.MethodPost, http.StatusCreated, startTime)
-	h.setRegistrationSpanSuccess(span, client)
-	h.writeRegistrationResponse(w, client, clientSecret)
+	h.setRegistrationSpanSuccess(span, result.Client)
+	h.writeRegistrationResponse(w, result.Client, result.ClientSecret, result.RegistrationToken)
 }
 
 // parseAndValidateRegistrationRequest parses the request and validates auth method.
@@ -300,7 +299,7 @@ func (h *Handler) recordTrustedAllowlistSpan(span trace.Span, auth registrationA
 
 // handleRegistrationError handles client registration errors.
 func (h *Handler) handleRegistrationError(ctx context.Context, w http.ResponseWriter, err error, clientIP string, startTime time.Time, span trace.Span) {
-	if strings.Contains(err.Error(), "registration limit") {
+	if errors.Is(err, storage.ErrClientIPLimitExceeded) {
 		h.logger.Warn("Client registration limit exceeded", "ip", clientIP, "error", err)
 		h.recordHTTPMetrics(ctx, endpointRegister, http.MethodPost, http.StatusTooManyRequests, startTime)
 		instrumentation.RecordError(span, err)
@@ -319,7 +318,7 @@ func (h *Handler) handleRegistrationError(ctx context.Context, w http.ResponseWr
 // auditTrustedAllowlistRegistration logs unauthenticated DCR via either trusted
 // allowlist (scheme or HTTPS redirect URI) for security monitoring.
 func (h *Handler) auditTrustedAllowlistRegistration(ctx context.Context, auth registrationAuthResult, client *storage.Client, clientIP string) {
-	if !auth.viaTrustedAllowlist || h.server.Auditor == nil {
+	if !auth.viaTrustedAllowlist {
 		return
 	}
 
@@ -367,7 +366,9 @@ func (h *Handler) setRegistrationSpanSuccess(span trace.Span, client *storage.Cl
 // RFC 7591 §3.2.1. `client_id_issued_at` is always present; for confidential
 // clients the response also carries `client_secret` plus
 // `client_secret_expires_at: 0` (the spec sentinel for "never expires").
-func (h *Handler) writeRegistrationResponse(w http.ResponseWriter, client *storage.Client, clientSecret string) {
+// When EnableClientManagementEndpoint is on, `registration_access_token` and
+// `registration_client_uri` are also included (RFC 7592 §3).
+func (h *Handler) writeRegistrationResponse(w http.ResponseWriter, client *storage.Client, clientSecret, registrationToken string) {
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	response := map[string]any{
 		"client_id":                  client.ClientID,
@@ -383,6 +384,11 @@ func (h *Handler) writeRegistrationResponse(w http.ResponseWriter, client *stora
 	if clientSecret != "" {
 		response["client_secret"] = clientSecret
 		response["client_secret_expires_at"] = 0
+	}
+
+	if h.server.Config.EnableClientManagementEndpoint && registrationToken != "" {
+		response["registration_access_token"] = registrationToken
+		response["registration_client_uri"] = h.server.Config.Issuer + server.EndpointPathRegister + "/" + client.ClientID
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -25,4 +25,3 @@ clean: clean-examples ## Clean build artifacts and coverage files
 	rm -f coverage.out coverage.html coverage_security.out
 	rm -rf dist/ build/
 	go clean
-

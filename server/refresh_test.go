@@ -870,14 +870,16 @@ func TestServer_ValidateRefreshTokenClientBinding_WithAuditor(t *testing.T) {
 		}
 	})
 
-	t.Run("mismatch without auditor should not panic", func(t *testing.T) {
+	t.Run("mismatch returns invalid_grant error", func(t *testing.T) {
 		srv, _, _ := setupFlowTestServer(t)
-		srv.Auditor = nil // Explicitly set to nil
 
 		err := srv.validateRefreshTokenClientBinding(context.Background(), "original-client", "attacker-client", "user-123")
 
 		if err == nil {
 			t.Fatal("expected error for mismatched client IDs")
+		}
+		if !strings.Contains(err.Error(), "invalid_grant") {
+			t.Errorf("expected error to contain 'invalid_grant', got %v", err)
 		}
 	})
 }

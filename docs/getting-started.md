@@ -124,7 +124,7 @@ defer store.Stop() // Clean up background goroutines
 The in-memory storage implements all three storage interfaces:
 
 - `TokenStore` - Access and refresh tokens
-- `ClientStore` - OAuth client registrations  
+- `ClientStore` - OAuth client registrations
 - `FlowStore` - Authorization flow state
 
 ### Custom Storage
@@ -284,7 +284,7 @@ func main() {
     // POST /oauth/token
     // POST /oauth/register
     // POST /oauth/revoke
-    
+
     h.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
 
     // Your protected MCP endpoint
@@ -343,4 +343,3 @@ curl -i http://localhost:8080/mcp
 - [Security Guide](./security.md) - Production security settings
 - [Discovery Mechanisms](./discovery.md) - OAuth discovery features
 - [Examples](../examples/) - More complete examples
-

@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **All public HTTP endpoints now uniformly gated by `gateIPRateLimit` (CWE-307).** `/oauth/callback` was missing the gate entirely (closes #339). `/oauth/register`, `/.well-known/oauth-authorization-server`, `/.well-known/openid-configuration`, and `/oauth/jwks.json` used hand-rolled per-endpoint equivalents that skipped OTel span attributes, endpoint-tagged HTTP metrics, and the JSON error body; replaced with `gateIPRateLimit` throughout. `checkDiscoveryRateLimit` deleted. `ServeClientRegistration` retains its hourly `ClientRegistrationRateLimiter` as a second pass after the IP bucket check. `handleRegistrationError` now matches via `errors.Is(err, storage.ErrClientIPLimitExceeded)` instead of string comparison.
 - **Token-at-rest ciphertext envelope is now versioned (`0x01 ‖ kid ‖ nonce ‖ ct`)** — sets up future key rotation by tagging every new write with a 1-byte `kid`. Decrypt accepts both v1 and the legacy v0 (`nonce ‖ ct`) layout, falling through on AEAD-verification failure so the ~1/256 of v0 rows whose first nonce byte coincides with the v1 tag still decode. Rolling upgrades across a multi-replica fleet require updating every replica before allowing v1 writes — old replicas cannot read v1. Memory-only deployments are unaffected. Closes (partial) #309.
 - **`security.KeyRing` interface** seam under `security.Encryptor`. The built-in single-key implementation produces and consumes the v1 envelope; consumers wiring external KMS / multi-key rotation supply their own `KeyRing`. Public API of `*Encryptor` is unchanged.
 - **`security.WithPIIRedaction(bool)` option on `security.NewAuditor`** — when enabled, audit records emit `client_id_hash`, `ip_address_hash`, and `user_agent_hash` (truncated SHA-256) instead of the cleartext fields. `user_id_hash` is unchanged. Default off — existing slog sinks continue to receive cleartext. CWE-532.
@@ -28,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **RFC 7592 Dynamic Client Registration Management** (`GET/PUT/DELETE /oauth/register/{client_id}`). Opt-in via `Config.EnableClientManagementEndpoint`. When enabled: DCR responses include `registration_access_token` and `registration_client_uri`; `registration_management_endpoint` is advertised in AS metadata (RFC 8414 §2); PUT replaces mutable fields and rotates the token (old token immediately invalid); DELETE returns 204. Legacy clients have `RegistrationAccessTokenHash == ""` and get 401 after a constant-time dummy comparison. New API: `Config.ClientManagementEndpoint()`, `Server.SaveClient`, `Server.DeleteClient`, `server.GenerateRegistrationAccessToken`. Storage changes: `storage.Client` gains `RegistrationAccessTokenHash` and `UpdatedAt`; `ClientStore` gains `DeleteClient`. Closes #331.
 - **`providers.EnsureTimeout(ctx, timeout) (context.Context, context.CancelFunc)`**: nil-safe context deadline helper. The three in-tree providers (dex, google, github) delegate their per-provider `ensureContextTimeout` methods to it. Closes (partial) #310.
 - **`providers.CloneScopes([]string) []string`**: nil-safe deep copy used by every provider's `DefaultScopes()` to prevent caller mutation.
 - **`providers.FilterScopes(requested, defaults []string, supported func(string) bool) []string`**: generic IdP scope-filter wrapping `CopyScopes` (mandatory-scope merge) + per-provider `supported` predicate. `filterDexScopes` / `filterGoogleScopes` collapse to single-line delegates.
@@ -735,7 +737,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     // Before (deprecated)
     err := oauth.NewOAuthError("invalid_request", "Missing parameter", 400)
     var oauthErr *oauth.OAuthError
-    
+
     // After (recommended)
     err := oauth.NewError("invalid_request", "Missing parameter", 400)
     var oauthErr *oauth.Error
@@ -842,7 +844,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Health Check**: Uses GitHub's `/rate_limit` endpoint for lightweight health monitoring
   - **Token Behavior**: Gracefully handles GitHub's non-expiring tokens (`ErrRefreshNotSupported`)
   - **Token Revocation**: Graceful degradation (returns nil) since GitHub lacks server-side revocation
-  - **Helper Methods**: 
+  - **Helper Methods**:
     - `GetUserOrganizations()` for listing user's organizations
     - `GetProviderToken()` for creating tokens for additional GitHub API calls
   - **Documentation**: Comprehensive `doc.go`, example application, and README with setup instructions
@@ -941,7 +943,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     * Discord, Figma, Linear, Raycast, Warp, Zed, Windsurf, and more
     * Unknown schemes show capitalized scheme name
   - **UX Design**: Modern, clean styling with success checkmark animation
-  - **Security**: 
+  - **Security**:
     * Uses `html/template` with proper escaping for XSS prevention
     * Hash-based Content-Security-Policy (CSP Level 2) for inline script allowlisting
     * Static inline script reads redirect URL from DOM to maintain stable SHA-256 hash
@@ -1052,7 +1054,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Caching: In-memory LRU cache with TTL support (default: 5 minutes) and HTTP Cache-Control respect
     - Validation: Ensures client_id in document matches URL exactly (security requirement)
     - Integration: Transparent integration with existing authorization flow via `GetClient()`
-  - **Configuration**: 
+  - **Configuration**:
     - `EnableClientIDMetadataDocuments` - Enable feature (default: false for backward compatibility)
     - `ClientMetadataFetchTimeout` - Timeout for metadata fetch (default: 10s)
     - `ClientMetadataCacheTTL` - Cache TTL (default: 5m)
@@ -1089,7 +1091,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Resource binding stored with authorization codes and tokens
   - **Configuration**: New `ResourceIdentifier` field in `server.Config` (defaults to `Issuer` if not set)
   - **Backward Compatibility**: Resource parameter is optional to maintain compatibility with existing clients
-  - **Storage Changes**: 
+  - **Storage Changes**:
     - Added `Resource` field to `storage.AuthorizationState`
     - Added `Resource` and `Audience` fields to `storage.AuthorizationCode`
   - **Validation**: Resource must be absolute HTTPS URI (or HTTP for localhost development)
@@ -1115,7 +1117,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Scope string length validation to prevent DoS attacks**
   - **Problem**: No limit on scope parameter length could allow DoS attacks via extremely long scope strings
   - **Risk**: Potential resource exhaustion through processing and validating arbitrarily long scope strings
-  - **Solution**: 
+  - **Solution**:
     - Added `MaxScopeLength` configuration parameter (default: 1000 characters)
     - Scope length validated early in authorization flow before parsing/processing
     - Clear error messages when limit exceeded
@@ -1131,7 +1133,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Problem**: Scopes from client authorization requests were not being passed to Google during provider authorization redirect
   - **Impact**: Google returned tokens without user info (no scopes = no permissions = no data), causing userID extraction to fail and token storage to fail with "userID cannot be empty" errors
   - **Root Cause**: The Provider interface's `AuthorizationURL` method didn't accept scopes parameter, so only provider's hardcoded scopes were used
-  - **Solution**: 
+  - **Solution**:
     - Modified `Provider.AuthorizationURL()` interface to accept `scopes []string` parameter
     - Updated Google provider to use client-requested scopes when provided, falling back to configured defaults when empty
     - Updated server flows to parse and pass client scopes to provider
@@ -1150,7 +1152,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Impact**: Initial implementation had confusing semantics around defaults
   - **Solution**: Renamed to `DisableWWWAuthenticateMetadata` following the library's "secure by default" principle
   - **Field change**: `EnableWWWAuthenticateMetadata` → `DisableWWWAuthenticateMetadata` (inverted logic)
-  - **Default behavior**: 
+  - **Default behavior**:
     - `DisableWWWAuthenticateMetadata: false` (default) → Full metadata ENABLED (secure by default)
     - `DisableWWWAuthenticateMetadata: true` → Minimal headers for backward compatibility
   - **Breaking Change**: 🔴 **YES** - Field renamed for clarity
@@ -1515,7 +1517,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Non-localhost HTTP deployments blocked unless explicitly allowed
   - Clear error messages guide developers to secure configuration
   - OAuth 2.1 compliance: HTTPS required for all production endpoints
-  - **Migration**: 
+  - **Migration**:
     - For localhost development: Add `AllowInsecureHTTP: true` to suppress warnings
     - For production HTTP (not recommended): Add `AllowInsecureHTTP: true` and review security risks
     - **Recommended**: Switch to HTTPS for all environments
@@ -1653,4 +1655,3 @@ See [SECURITY.md](SECURITY.md) for our security policy and how to report vulnera
 ## License
 
 This project is licensed under the Apache License 2.0 - see [LICENSE](LICENSE) for details.
-
