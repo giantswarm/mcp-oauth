@@ -89,6 +89,10 @@ var (
 	// vs "no such session". The two states converge to NotFound after the
 	// revoked-family retention period elapses and the entries are wiped.
 	ErrRefreshTokenFamilyRevoked = errors.New("refresh token family is revoked")
+
+	// ErrClientIPLimitExceeded is returned by CheckIPLimit when the IP has reached
+	// the maximum number of registered clients.
+	ErrClientIPLimitExceeded = errors.New("client registration limit exceeded")
 )
 
 // IsNotFoundError checks if an error indicates a "not found" condition.

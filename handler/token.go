@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -110,7 +111,8 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 		// authenticateClient returns *Error; read its Status before recording
 		// the HTTP metric so a 400 (client_id mismatch) is not mis-labelled as
 		// 401 (unauthorized) in dashboards.
-		if oauthErr, ok := err.(*oauth.Error); ok {
+		var oauthErr *oauth.Error
+		if errors.As(err, &oauthErr) {
 			h.recordTokenFailure(r.Context(), "authorization_code", oauthErr.Code)
 			h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, oauthErr.Status, startTime)
 			h.writeError(w, oauthErr.Code, oauthErr.Description, oauthErr.Status)

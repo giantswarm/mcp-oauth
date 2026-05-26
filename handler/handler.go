@@ -34,6 +34,8 @@ const (
 	endpointRegister      = "register"
 	endpointValidateToken = "validate_token"
 	endpointUserInfo      = "userinfo"
+	endpointDiscovery     = "discovery"
+	endpointJWKS          = "jwks"
 )
 
 // Handler is a thin HTTP adapter for the OAuth Server.

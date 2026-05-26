@@ -468,6 +468,10 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if _, ok := h.gateIPRateLimit(w, r, span, endpointCallback, http.MethodGet, startTime); !ok {
+		return
+	}
+
 	// Set CORS headers for browser-based clients
 	h.setCORSHeaders(w, r)
 
