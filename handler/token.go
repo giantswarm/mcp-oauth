@@ -60,6 +60,8 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 		h.handleAuthorizationCodeGrant(w, r, clientIP)
 	case "refresh_token":
 		h.handleRefreshTokenGrant(w, r, clientIP)
+	case server.GrantTypeTokenExchange:
+		h.handleTokenExchangeGrant(w, r, clientIP)
 	default:
 		h.recordTokenFailure(r.Context(), grantType, oauth.ErrorCodeUnsupportedGrantType)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)

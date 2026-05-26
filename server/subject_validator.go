@@ -18,6 +18,9 @@ type SubjectIdentity struct {
 	Subject string
 	// Issuer is the original token's iss claim; becomes act.iss in the issued token.
 	Issuer string
+	// AllowedScopes is the maximum scope envelope for this identity,
+	// from TrustedIssuer.AllowedScopes. Nil means no restriction.
+	AllowedScopes []string
 }
 
 // TrustedIssuer configures a trusted external token issuer for OIDCValidator.
@@ -33,6 +36,9 @@ type TrustedIssuer struct {
 	// AllowedAudiences is the list of accepted aud values. An empty list accepts
 	// any audience (not recommended for production).
 	AllowedAudiences []string
+	// AllowedScopes caps the scopes that can be issued for tokens from this issuer.
+	// Nil means no per-issuer restriction.
+	AllowedScopes []string
 }
 
 // OIDCValidator validates tokens from statically configured trusted issuers.
@@ -100,8 +106,9 @@ func (v *OIDCValidator) Validate(ctx context.Context, subjectToken, subjectToken
 	}
 
 	return SubjectIdentity{
-		Subject: claims.Subject,
-		Issuer:  claims.Issuer,
+		Subject:       claims.Subject,
+		Issuer:        claims.Issuer,
+		AllowedScopes: ti.AllowedScopes,
 	}, nil
 }
 

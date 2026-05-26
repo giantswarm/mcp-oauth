@@ -74,6 +74,10 @@ type AccessTokenClaims struct {
 	// Empty when the underlying token store does not implement
 	// RefreshTokenFamilyStore.
 	FamilyID string
+
+	// Act carries the RFC 8693 §4.4 actor claim. Non-nil only for token-exchange
+	// issued tokens.
+	Act map[string]any
 }
 
 // AccessTokenIssuer encodes AccessTokenClaims into a bearer string. Two
@@ -152,13 +156,14 @@ const rfc9068TokenType = "at+jwt"
 type rfc9068Claims struct {
 	josejwt.Claims
 
-	ClientID      string   `json:"client_id,omitempty"`
-	Scope         string   `json:"scope,omitempty"`
-	Email         string   `json:"email,omitempty"`
-	EmailVerified *bool    `json:"email_verified,omitempty"`
-	Name          string   `json:"name,omitempty"`
-	Groups        []string `json:"groups,omitempty"`
-	FamilyID      string   `json:"family_id,omitempty"`
+	ClientID      string         `json:"client_id,omitempty"`
+	Scope         string         `json:"scope,omitempty"`
+	Email         string         `json:"email,omitempty"`
+	EmailVerified *bool          `json:"email_verified,omitempty"`
+	Name          string         `json:"name,omitempty"`
+	Groups        []string       `json:"groups,omitempty"`
+	FamilyID      string         `json:"family_id,omitempty"`
+	Act           map[string]any `json:"act,omitempty"`
 }
 
 // Issue signs an RFC 9068 access token. The header carries alg/kid/typ; the
@@ -191,6 +196,7 @@ func (j *jwtIssuer) Issue(_ context.Context, c AccessTokenClaims) (string, error
 		Name:     c.Name,
 		Groups:   c.Groups,
 		FamilyID: c.FamilyID,
+		Act:      c.Act,
 	}
 	if c.Email != "" {
 		verified := c.EmailVerified
