@@ -62,9 +62,7 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 		h.handleRefreshTokenGrant(w, r, clientIP)
 	default:
 		h.recordTokenFailure(r.Context(), grantType, oauth.ErrorCodeUnsupportedGrantType)
-		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
-		instrumentation.SetSpanError(span, "unsupported grant_type")
-		h.writeError(w, oauth.ErrorCodeUnsupportedGrantType, fmt.Sprintf("Grant type %s not supported", grantType), http.StatusBadRequest)
+		h.failRequest(w, r, span, endpointToken, http.MethodPost, http.StatusBadRequest, oauth.ErrorCodeUnsupportedGrantType, fmt.Sprintf("Grant type %s not supported", grantType), startTime)
 	}
 }
 
@@ -96,9 +94,7 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 
 	if code == "" {
 		h.recordTokenFailure(r.Context(), "authorization_code", oauth.ErrorCodeInvalidRequest)
-		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
-		instrumentation.SetSpanError(span, "code missing")
-		h.writeError(w, oauth.ErrorCodeInvalidRequest, "Required parameter 'code' missing", http.StatusBadRequest)
+		h.failRequest(w, r, span, endpointToken, http.MethodPost, http.StatusBadRequest, oauth.ErrorCodeInvalidRequest, "Required parameter 'code' missing", startTime)
 		return
 	}
 
@@ -181,9 +177,7 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 
 	if refreshToken == "" {
 		h.recordTokenFailure(r.Context(), "refresh_token", oauth.ErrorCodeInvalidRequest)
-		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
-		instrumentation.SetSpanError(span, "refresh_token missing")
-		h.writeError(w, oauth.ErrorCodeInvalidRequest, "refresh_token is required", http.StatusBadRequest)
+		h.failRequest(w, r, span, endpointToken, http.MethodPost, http.StatusBadRequest, oauth.ErrorCodeInvalidRequest, "refresh_token is required", startTime)
 		return
 	}
 
@@ -266,9 +260,7 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 
 	// Case 2: No Basic Auth - check if client_id was provided
 	if clientID == "" {
-		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
-		instrumentation.SetSpanError(span, "client_id missing")
-		h.writeError(w, oauth.ErrorCodeInvalidRequest, "client_id is required", http.StatusBadRequest)
+		h.failRequest(w, r, span, endpointToken, http.MethodPost, http.StatusBadRequest, oauth.ErrorCodeInvalidRequest, "client_id is required", startTime)
 		return "", false, fmt.Errorf("client_id required")
 	}
 
@@ -279,9 +271,7 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 		if h.server.Auditor != nil {
 			h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "refresh_unknown_client")
 		}
-		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusUnauthorized, startTime)
-		instrumentation.SetSpanError(span, "unknown client")
-		h.writeError(w, oauth.ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
+		h.failRequest(w, r, span, endpointToken, http.MethodPost, http.StatusUnauthorized, oauth.ErrorCodeInvalidClient, "Client authentication failed", startTime)
 		return "", false, err
 	}
 
@@ -306,9 +296,7 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 				},
 			})
 		}
-		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusUnauthorized, startTime)
-		instrumentation.SetSpanError(span, "confidential client requires authentication")
-		h.writeError(w, oauth.ErrorCodeInvalidClient, "Client authentication required", http.StatusUnauthorized)
+		h.failRequest(w, r, span, endpointToken, http.MethodPost, http.StatusUnauthorized, oauth.ErrorCodeInvalidClient, "Client authentication required", startTime)
 		return "", false, fmt.Errorf("confidential client requires authentication")
 	}
 
@@ -357,9 +345,7 @@ func (h *Handler) rejectBasicFormClientIDMismatch(
 	if tokenFailureGrant != "" {
 		h.recordTokenFailure(r.Context(), tokenFailureGrant, oauth.ErrorCodeInvalidClient)
 	}
-	h.recordHTTPMetrics(r.Context(), endpoint, http.MethodPost, http.StatusBadRequest, startTime)
-	instrumentation.SetSpanError(span, "client_id mismatch basic vs form")
-	h.writeError(w, oauth.ErrorCodeInvalidClient, "client_id in Basic Authorization header does not match form parameter", http.StatusBadRequest)
+	h.failRequest(w, r, span, endpoint, http.MethodPost, http.StatusBadRequest, oauth.ErrorCodeInvalidClient, "client_id in Basic Authorization header does not match form parameter", startTime)
 	return true
 }
 

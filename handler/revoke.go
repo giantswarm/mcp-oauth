@@ -88,9 +88,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 	clientID := r.Form.Get("client_id")
 
 	if token == "" {
-		h.recordHTTPMetrics(r.Context(), endpointRevoke, http.MethodPost, http.StatusBadRequest, startTime)
-		instrumentation.SetSpanError(span, "token missing")
-		h.writeError(w, oauth.ErrorCodeInvalidRequest, "token is required", http.StatusBadRequest)
+		h.failRequest(w, r, span, endpointRevoke, http.MethodPost, http.StatusBadRequest, oauth.ErrorCodeInvalidRequest, "token is required", startTime)
 		return
 	}
 
