@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
@@ -136,22 +137,14 @@ func (v *K8sSAValidator) checkSARestrictions(subject string, trust KubernetesSAT
 // parseSASubject parses "system:serviceaccount:<namespace>:<name>".
 func parseSASubject(subject string) (namespace, name string, ok bool) {
 	const prefix = "system:serviceaccount:"
-	if !strings.HasPrefix(subject, prefix) {
+	rest, found := strings.CutPrefix(subject, prefix)
+	if !found {
 		return "", "", false
 	}
-	rest := subject[len(prefix):]
-	idx := strings.Index(rest, ":")
-	if idx < 0 {
-		return "", "", false
-	}
-	return rest[:idx], rest[idx+1:], true
+	namespace, name, ok = strings.Cut(rest, ":")
+	return
 }
 
 func containsString(slice []string, s string) bool {
-	for _, v := range slice {
-		if v == s {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(slice, s)
 }
