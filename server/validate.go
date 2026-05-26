@@ -18,9 +18,7 @@ import (
 // isTokenExpiredLocally checks if a token is expired considering clock skew grace period.
 // Returns true if the token is expired beyond the grace period.
 func (s *Server) isTokenExpiredLocally(token *oauth2.Token) bool {
-	gracePeriod := time.Duration(s.Config.ClockSkewGracePeriod) * time.Second
-	expiryWithGrace := token.Expiry.Add(gracePeriod)
-	return time.Now().After(expiryWithGrace)
+	return security.IsTokenExpiredWithGracePeriod(token.Expiry, time.Duration(s.Config.ClockSkewGracePeriod)*time.Second)
 }
 
 // preserveRefreshToken returns a copy of newToken with the old refresh token
@@ -107,16 +105,14 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 			"token_suffix", helpers.TokenSuffix(accessToken, 8),
 			"time_until_expiry", timeUntilExpiry)
 
-		if s.Auditor != nil {
-			s.Auditor.LogEvent(ctx, security.Event{
-				Type: security.EventProactiveRefreshFailed,
-				Details: map[string]any{
-					"error":             err.Error(),
-					"time_until_expiry": timeUntilExpiry.String(),
-					"fallback":          "validation",
-				},
-			})
-		}
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type: security.EventProactiveRefreshFailed,
+			Details: map[string]any{
+				"error":             err.Error(),
+				"time_until_expiry": timeUntilExpiry.String(),
+				"fallback":          "validation",
+			},
+		})
 		return
 	}
 
@@ -133,16 +129,14 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 		"new_expiry", newProviderToken.Expiry,
 		"token_suffix", helpers.TokenSuffix(accessToken, 8))
 
-	if s.Auditor != nil {
-		s.Auditor.LogEvent(ctx, security.Event{
-			Type: security.EventTokenProactivelyRefreshed,
-			Details: map[string]any{
-				"old_expiry": storedToken.Expiry,
-				"new_expiry": newProviderToken.Expiry,
-				"threshold":  refreshThreshold.String(),
-			},
-		})
-	}
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type: security.EventTokenProactivelyRefreshed,
+		Details: map[string]any{
+			"old_expiry": storedToken.Expiry,
+			"new_expiry": newProviderToken.Expiry,
+			"threshold":  refreshThreshold.String(),
+		},
+	})
 }
 
 // ValidateToken validates an access token across all three accepted bearer
@@ -221,9 +215,7 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 	// Validate with provider (userinfo endpoint)
 	userInfo, err := s.provider.ValidateToken(ctx, tokenForProviderValidation)
 	if err != nil {
-		if s.Auditor != nil {
-			s.Auditor.LogAuthFailure(ctx, "", "", "", err.Error())
-		}
+		s.Auditor.LogAuthFailure(ctx, "", "", "", err.Error())
 		return nil, err
 	}
 
@@ -256,9 +248,7 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 				"grace_period_seconds", s.Config.ClockSkewGracePeriod,
 				"token_suffix", helpers.TokenSuffix(accessToken, 8))
 
-			if s.Auditor != nil {
-				s.Auditor.LogAuthFailure(ctx, "", "", "", "token_expired_locally")
-			}
+			s.Auditor.LogAuthFailure(ctx, "", "", "", "token_expired_locally")
 
 			return nil, fmt.Errorf("access token expired (local validation)")
 		}
@@ -277,9 +267,7 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 				"refresh_error", err,
 				"token_suffix", helpers.TokenSuffix(accessToken, 8))
 
-			if s.Auditor != nil {
-				s.Auditor.LogAuthFailure(ctx, "", "", "", "token_expired_locally")
-			}
+			s.Auditor.LogAuthFailure(ctx, "", "", "", "token_expired_locally")
 
 			return nil, fmt.Errorf("access token expired (local validation, refresh failed: %w)", err)
 		}
@@ -369,19 +357,17 @@ func (s *Server) logCrossClientTokenAccepted(ctx context.Context, accessToken st
 		"client_id", metadata.ClientID,
 		"token_suffix", helpers.TokenSuffix(accessToken, 8))
 
-	if s.Auditor != nil {
-		s.Auditor.LogEvent(ctx, security.Event{
-			Type:     security.EventCrossClientTokenAccepted,
-			UserID:   metadata.UserID,
-			ClientID: metadata.ClientID,
-			Details: map[string]any{
-				"original_audience":   metadata.Audience,
-				"server_identifier":   s.Config.GetResourceIdentifier(),
-				"trusted_via":         "TrustedAudiences",
-				"sso_token_forwarded": true,
-			},
-		})
-	}
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type:     security.EventCrossClientTokenAccepted,
+		UserID:   metadata.UserID,
+		ClientID: metadata.ClientID,
+		Details: map[string]any{
+			"original_audience":   metadata.Audience,
+			"server_identifier":   s.Config.GetResourceIdentifier(),
+			"trusted_via":         "TrustedAudiences",
+			"sso_token_forwarded": true,
+		},
+	})
 }
 
 // logAudienceMismatch logs an audience mismatch security event.
@@ -395,20 +381,18 @@ func (s *Server) logAudienceMismatch(ctx context.Context, accessToken string, me
 			"client_id", metadata.ClientID)
 	}
 
-	if s.Auditor != nil {
-		s.Auditor.LogEvent(ctx, security.Event{
-			Type:     security.EventResourceMismatch,
-			UserID:   metadata.UserID,
-			ClientID: metadata.ClientID,
-			Details: map[string]any{
-				"severity":          "critical",
-				"token_audience":    metadata.Audience,
-				"server_identifier": expectedAudience,
-				"attack_indicator":  "token_replay_to_wrong_resource_server",
-			},
-		})
-		s.Auditor.LogAuthFailure(ctx, metadata.UserID, metadata.ClientID, "", "audience_mismatch")
-	}
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type:     security.EventResourceMismatch,
+		UserID:   metadata.UserID,
+		ClientID: metadata.ClientID,
+		Details: map[string]any{
+			"severity":          "critical",
+			"token_audience":    metadata.Audience,
+			"server_identifier": expectedAudience,
+			"attack_indicator":  "token_replay_to_wrong_resource_server",
+		},
+	})
+	s.Auditor.LogAuthFailure(ctx, metadata.UserID, metadata.ClientID, "", "audience_mismatch")
 }
 
 // selectTokenForProviderValidation determines which token to use for provider validation.

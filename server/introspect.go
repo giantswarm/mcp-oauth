@@ -219,9 +219,6 @@ func (s *Server) introspectionRequesterAllowed(ctx context.Context, requestingCl
 }
 
 func (s *Server) logIntrospectionRequesterDenied(ctx context.Context, requestingClient, tokenBoundClient, reason string) {
-	if s.Auditor == nil {
-		return
-	}
 	s.Auditor.LogEvent(ctx, security.Event{
 		Type:     security.EventIntrospectionRequesterDenied,
 		ClientID: requestingClient,

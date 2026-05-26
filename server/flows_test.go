@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"net/url"
 	"testing"
 	"time"
 
@@ -171,4 +172,13 @@ func TestCapTokenExpiry(t *testing.T) {
 			t.Errorf("expiry = %v, want close to %v (diff: %v)", expiry, expected, diff)
 		}
 	})
+}
+
+func mustParseURL(t *testing.T, s string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(s)
+	if err != nil {
+		t.Fatalf("url.Parse(%q): %v", s, err)
+	}
+	return u
 }

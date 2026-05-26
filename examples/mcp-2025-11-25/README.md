@@ -192,11 +192,11 @@ The DELETE request will return `403 insufficient_scope` because it requires both
    ```bash
    # Client tries to access protected resource
    curl -i http://localhost:8080/mcp
-   
+
    # 401 response includes resource_metadata URL
    # Client fetches metadata
    curl http://localhost:8080/.well-known/oauth-protected-resource
-   
+
    # Client discovers authorization server
    curl http://localhost:8080/.well-known/oauth-authorization-server
    ```
@@ -214,7 +214,7 @@ The DELETE request will return `403 insufficient_scope` because it requires both
    ```
 
 4. **Start authorization flow:**
-   
+
    Open in browser:
    ```
    http://localhost:8080/oauth/authorize?client_id=<client_id>&redirect_uri=http://localhost:3000/callback&response_type=code&scope=mcp:access files:read&state=random-state&code_challenge=<challenge>&code_challenge_method=S256
@@ -242,13 +242,13 @@ The DELETE request will return `403 insufficient_scope` because it requires both
         "mcp:access", "files:read", "files:write", "admin:access", "user:profile",
     },
     DefaultChallengeScopes: []string{"mcp:access"},
-    
+
     // Endpoint-specific scopes (MCP 2025-11-25)
     EndpointScopeRequirements: map[string][]string{
         "/api/files/*":  {"files:read", "files:write"},
         "/api/admin/*":  {"admin:access"},
     },
-    
+
     // Method-specific scopes (MCP 2025-11-25)
     EndpointMethodScopeRequirements: map[string]map[string][]string{
         "/api/files/*": {
@@ -256,7 +256,7 @@ The DELETE request will return `403 insufficient_scope` because it requires both
             "DELETE": {"files:delete", "admin:access"},
         },
     },
-    
+
     // Enhanced WWW-Authenticate (enabled by default)
     DisableWWWAuthenticateMetadata: false,
 }
@@ -284,4 +284,3 @@ This example demonstrates:
 - [Discovery Mechanisms](../../docs/discovery.md)
 - [Security Architecture](../../SECURITY_ARCHITECTURE.md)
 - [Main README](../../README.md)
-

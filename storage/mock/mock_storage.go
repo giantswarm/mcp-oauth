@@ -256,6 +256,7 @@ type ClientStore struct {
 	SaveClientFunc     func(ctx context.Context, client *storage.Client) error
 	GetClientFunc      func(ctx context.Context, clientID string) (*storage.Client, error)
 	ValidateSecretFunc func(ctx context.Context, clientID, clientSecret string) error
+	DeleteClientFunc   func(ctx context.Context, clientID string) error
 	ListClientsFunc    func(ctx context.Context) ([]*storage.Client, error)
 	CheckIPLimitFunc   func(ctx context.Context, ip string, maxClientsPerIP int) error
 	CallCounts         map[string]int
@@ -278,6 +279,7 @@ func (m *ClientStore) initDefaultFuncs() {
 	m.SaveClientFunc = m.defaultSaveClient
 	m.GetClientFunc = m.defaultGetClient
 	m.ValidateSecretFunc = m.defaultValidateSecret
+	m.DeleteClientFunc = m.defaultDeleteClient
 	m.ListClientsFunc = m.defaultListClients
 	m.CheckIPLimitFunc = m.defaultCheckIPLimit
 }
@@ -323,7 +325,7 @@ func (m *ClientStore) getHashAndClientType(client *storage.Client, found bool) (
 	if !found {
 		return dummyHash, false
 	}
-	if client.ClientType == "public" {
+	if client.IsPublic() {
 		return dummyHash, true
 	}
 	if client.ClientSecretHash != "" {
@@ -345,6 +347,16 @@ func (m *ClientStore) evaluateValidation(clientFound, isPublicClient bool, bcryp
 	if bcryptErr != nil {
 		return fmt.Errorf("invalid client credentials")
 	}
+	return nil
+}
+
+func (m *ClientStore) defaultDeleteClient(_ context.Context, clientID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.clients[clientID]; !ok {
+		return storage.ErrClientNotFound
+	}
+	delete(m.clients, clientID)
 	return nil
 }
 
@@ -389,6 +401,12 @@ func (m *ClientStore) ValidateClientSecret(ctx context.Context, clientID, client
 func (m *ClientStore) ListClients(ctx context.Context) ([]*storage.Client, error) {
 	m.CallCounts["ListClients"]++
 	return m.ListClientsFunc(ctx)
+}
+
+// DeleteClient removes a registered client by ID.
+func (m *ClientStore) DeleteClient(ctx context.Context, clientID string) error {
+	m.CallCounts["DeleteClient"]++
+	return m.DeleteClientFunc(ctx, clientID)
 }
 
 // CheckIPLimit checks if an IP has reached the client registration limit
@@ -459,7 +477,7 @@ func (m *FlowStore) defaultGetAuthState(_ context.Context, stateID string) (*sto
 	if !ok {
 		return nil, storage.ErrAuthorizationStateNotFound
 	}
-	if !state.ExpiresAt.IsZero() && time.Now().After(state.ExpiresAt) {
+	if state.HasExpired() {
 		return nil, storage.ErrTokenExpired
 	}
 	return state, nil
@@ -499,7 +517,7 @@ func (m *FlowStore) defaultGetAuthCode(_ context.Context, code string) (*storage
 	if !ok {
 		return nil, storage.ErrAuthorizationCodeNotFound
 	}
-	if !authCode.ExpiresAt.IsZero() && time.Now().After(authCode.ExpiresAt) {
+	if authCode.HasExpired() {
 		return nil, storage.ErrTokenExpired
 	}
 	return authCode, nil
@@ -519,7 +537,7 @@ func (m *FlowStore) defaultAtomicCheckAndMarkCodeUsed(_ context.Context, code st
 	if !ok {
 		return nil, storage.ErrAuthorizationCodeNotFound
 	}
-	if !authCode.ExpiresAt.IsZero() && time.Now().After(authCode.ExpiresAt) {
+	if authCode.HasExpired() {
 		return nil, storage.ErrTokenExpired
 	}
 	if authCode.Used {

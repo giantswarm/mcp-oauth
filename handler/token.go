@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -112,7 +113,8 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 		// authenticateClient returns *Error; read its Status before recording
 		// the HTTP metric so a 400 (client_id mismatch) is not mis-labelled as
 		// 401 (unauthorized) in dashboards.
-		if oauthErr, ok := err.(*oauth.Error); ok {
+		var oauthErr *oauth.Error
+		if errors.As(err, &oauthErr) {
 			h.recordTokenFailure(r.Context(), "authorization_code", oauthErr.Code)
 			h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, oauthErr.Status, startTime)
 			h.writeError(w, oauthErr.Code, oauthErr.Description, oauthErr.Status)
@@ -128,7 +130,7 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	// clients have no secret to compromise, and rate-limiting by a public
 	// client_id is attacker-controllable. Public clients stay bounded by
 	// the IP limit.
-	if client.ClientType == oauth.ClientTypeConfidential && h.checkUserRateLimit(w, r, client.ClientID, clientIP) {
+	if client.IsConfidential() && h.checkUserRateLimit(w, r, client.ClientID, clientIP) {
 		h.recordRateLimitReject(r.Context(), span, endpointToken, http.MethodPost, startTime)
 		return
 	}
@@ -288,7 +290,7 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 	}
 
 	// OAUTH 2.1 SECURITY: Confidential clients MUST authenticate
-	if client.ClientType == oauth.ClientTypeConfidential {
+	if client.IsConfidential() {
 		h.logger.Warn("Confidential client attempted refresh without authentication",
 			"client_id", clientID, "ip", clientIP,
 			"security_event", "confidential_client_missing_auth",
@@ -402,7 +404,7 @@ func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string)
 
 // validateConfidentialClient validates credentials for confidential clients.
 func (h *Handler) validateConfidentialClient(ctx context.Context, client *storage.Client, secret, clientIP string) error {
-	if client.ClientType != oauth.ClientTypeConfidential {
+	if !client.IsConfidential() {
 		return nil
 	}
 

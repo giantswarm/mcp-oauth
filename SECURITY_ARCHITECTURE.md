@@ -204,7 +204,7 @@ The library supports using HTTPS URLs as `client_id` values, where the URL point
 func validateAndSanitizeMetadataURL(clientID string) (string, error) {
     // Resolve hostname to IP addresses
     ips, err := net.LookupIP(hostname)
-    
+
     // Block private/internal ranges
     for _, ip := range ips {
         if isPrivateIP(ip) {
@@ -226,7 +226,7 @@ Transport: &http.Transport{
     DialContext: func(dialCtx context.Context, network, addr string) {
         // Re-resolve DNS at connection time
         ips, err := net.DefaultResolver.LookupIPAddr(dialCtx, host)
-        
+
         // Validate each resolved IP
         for _, ipAddr := range ips {
             if isPrivateIP(ipAddr.IP) {
@@ -298,13 +298,13 @@ result, err, _ := s.metadataFetchGroup.Do(clientID, func() {
 func isURLClientID(clientID string) bool {
     // MUST be HTTPS only
     if u.Scheme != "https" { return false }
-    
+
     // SECURITY: Reject userinfo (credentials in URL)
     if u.User != nil { return false }
-    
+
     // SECURITY: Reject query parameters (injection prevention)
     if u.RawQuery != "" { return false }
-    
+
     // SECURITY: Reject fragments (path traversal prevention)
     if u.Fragment != "" { return false }
 }
@@ -445,7 +445,7 @@ func ValidateIssuerURL(issuerURL string) error {
     if u.Scheme != "https" {
         return fmt.Errorf("issuer URL must use HTTPS")
     }
-    
+
     // 2. Block private IP ranges
     if ip := net.ParseIP(host); ip != nil {
         if ip.IsLoopback() { /* 127.0.0.1, ::1 */ }
@@ -556,7 +556,7 @@ func ValidateConnectorID(connectorID string) error {
     if !connectorIDRegex.MatchString(connectorID) {
         return fmt.Errorf("invalid characters")
     }
-    
+
     // Length limit (prevents DoS)
     if len(connectorID) > 64 {
         return fmt.Errorf("exceeds maximum length")
@@ -888,22 +888,22 @@ Client → Presents same token to https://admin.example.com ❌ REJECTED (401)
 // Pseudocode
 func validateToken(token, expectedResource string) error {
     claims := parseToken(token)
-    
+
     // Check issuer matches our server
     if claims.Issuer != config.Issuer {
         return ErrInvalidIssuer
     }
-    
+
     // Check audience matches configured resource identifier
     if config.ResourceIdentifier != "" && claims.Audience != config.ResourceIdentifier {
         return ErrInvalidAudience
     }
-    
+
     // Check expiration
     if claims.ExpiresAt < now() {
         return ErrTokenExpired
     }
-    
+
     return nil
 }
 ```
@@ -1067,7 +1067,7 @@ done
 &server.Config{
     // Good: General, non-descriptive scopes
     DefaultChallengeScopes: []string{"mcp:access"},
-    
+
     // Avoid: Overly specific scopes that reveal internal structure
     // DefaultChallengeScopes: []string{"internal:admin:database:users:write"},
 }
@@ -1187,4 +1187,3 @@ When adding new security features:
 ---
 
 **Security Disclosure**: For security vulnerabilities, please see SECURITY.md for responsible disclosure procedures.
-

@@ -4,19 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
-	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace/noop"
+
+	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/storage"
 )
 
 // TestHandleRegistrationError pins the two response shapes that
 // handleRegistrationError emits: 429 for registration-limit errors,
-// 500 for everything else. Coverage gap noted on the umbrella.
+// 500 for everything else.
 func TestHandleRegistrationError(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -26,7 +29,7 @@ func TestHandleRegistrationError(t *testing.T) {
 	}{
 		{
 			name:       "registration limit triggers 429 invalid_request",
-			err:        errors.New("client registration limit exceeded for IP 192.0.2.1"),
+			err:        fmt.Errorf("%w: 192.0.2.1 (5/5)", storage.ErrClientIPLimitExceeded),
 			wantStatus: http.StatusTooManyRequests,
 			wantCode:   oauth.ErrorCodeInvalidRequest,
 		},

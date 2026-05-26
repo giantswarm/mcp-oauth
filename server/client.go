@@ -47,56 +47,86 @@ const (
 // Security: This function validates redirect URIs against the security configuration
 // (ProductionMode, AllowPrivateIPRedirectURIs, etc.) to prevent SSRF and open redirect attacks.
 func (s *Server) RegisterClient(ctx context.Context, clientName, clientType, tokenEndpointAuthMethod string, redirectURIs []string, scopes []string, clientIP string, maxClientsPerIP int) (*storage.Client, string, error) {
-	if err := s.clientStore.CheckIPLimit(ctx, clientIP, maxClientsPerIP); err != nil {
+	result, err := s.RegisterClientV2(ctx, clientName, clientType, tokenEndpointAuthMethod, redirectURIs, scopes, clientIP, maxClientsPerIP)
+	if err != nil {
 		return nil, "", err
+	}
+	return result.Client, result.ClientSecret, nil
+}
+
+// RegisterClientResult carries both the client secret and the per-client
+// registration access token issued at registration time (RFC 7591 §3.2.1 /
+// RFC 7592 §2). The registration token is returned in plaintext exactly once
+// and must be included in the DCR response by the handler.
+type RegisterClientResult struct {
+	Client            *storage.Client
+	ClientSecret      string // empty for public clients
+	RegistrationToken string // plaintext registration access token (RFC 7592)
+}
+
+// RegisterClientV2 is the registration path that carries the registration
+// access token back to the handler. It replaces RegisterClient once all call
+// sites are migrated.
+func (s *Server) RegisterClientV2(ctx context.Context, clientName, clientType, tokenEndpointAuthMethod string, redirectURIs []string, scopes []string, clientIP string, maxClientsPerIP int) (*RegisterClientResult, error) {
+	if err := s.clientStore.CheckIPLimit(ctx, clientIP, maxClientsPerIP); err != nil {
+		return nil, err
 	}
 
 	if err := s.validateRedirectURIsWithAudit(ctx, redirectURIs, clientIP); err != nil {
-		return nil, "", err
+		return nil, err
 	}
 
 	clientID := generateRandomToken()
 	clientType, tokenEndpointAuthMethod = resolveClientTypeAndAuthMethod(clientType, tokenEndpointAuthMethod)
 	clientSecret, clientSecretHash, err := generateClientSecret(clientType)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 
+	registrationToken, registrationTokenHash, err := GenerateRegistrationAccessToken()
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now()
 	client := &storage.Client{
-		ClientID:                clientID,
-		ClientSecretHash:        clientSecretHash,
-		ClientType:              clientType,
-		RedirectURIs:            redirectURIs,
-		TokenEndpointAuthMethod: tokenEndpointAuthMethod,
-		GrantTypes:              []string{"authorization_code", "refresh_token"},
-		ResponseTypes:           []string{"code"},
-		ClientName:              clientName,
-		Scopes:                  scopes,
-		CreatedAt:               time.Now(),
+		ClientID:                    clientID,
+		ClientSecretHash:            clientSecretHash,
+		ClientType:                  clientType,
+		RedirectURIs:                redirectURIs,
+		TokenEndpointAuthMethod:     tokenEndpointAuthMethod,
+		GrantTypes:                  []string{"authorization_code", "refresh_token"},
+		ResponseTypes:               []string{"code"},
+		ClientName:                  clientName,
+		Scopes:                      scopes,
+		CreatedAt:                   now,
+		RegistrationAccessTokenHash: registrationTokenHash,
 	}
 
 	if err := s.clientStore.SaveClient(ctx, client); err != nil {
-		return nil, "", fmt.Errorf("failed to save client: %w", err)
+		return nil, fmt.Errorf("failed to save client: %w", err)
 	}
 
 	s.trackClientIPAndLog(ctx, client, clientSecret, clientIP)
-	return client, clientSecret, nil
+	return &RegisterClientResult{
+		Client:            client,
+		ClientSecret:      clientSecret,
+		RegistrationToken: registrationToken,
+	}, nil
 }
 
 // validateRedirectURIsWithAudit validates redirect URIs and logs failures for auditing.
 func (s *Server) validateRedirectURIsWithAudit(ctx context.Context, redirectURIs []string, clientIP string) error {
 	if err := s.ValidateRedirectURIsForRegistration(ctx, redirectURIs); err != nil {
-		if s.Auditor != nil {
-			category := GetRedirectURIErrorCategory(err)
-			s.Auditor.LogEvent(ctx, security.Event{
-				Type: security.EventClientRegistrationRejected,
-				Details: map[string]any{
-					"reason":    "redirect_uri_validation_failed",
-					"category":  category,
-					"client_ip": clientIP,
-				},
-			})
-		}
+		category := GetRedirectURIErrorCategory(err)
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type: security.EventClientRegistrationRejected,
+			Details: map[string]any{
+				"reason":    "redirect_uri_validation_failed",
+				"category":  category,
+				"client_ip": clientIP,
+			},
+		})
 		s.Logger.Warn("Client registration rejected: redirect URI validation failed",
 			"error", err.Error(),
 			"client_ip", clientIP)
@@ -139,15 +169,24 @@ func generateClientSecret(clientType string) (string, string, error) {
 	return clientSecret, string(hash), nil
 }
 
+// GenerateRegistrationAccessToken mints a high-entropy per-client registration
+// access token (RFC 7592) and returns the plaintext and its bcrypt hash.
+func GenerateRegistrationAccessToken() (plaintext, hash string, err error) {
+	token := generateRandomToken()
+	h, err := bcrypt.GenerateFromPassword([]byte(token), bcrypt.DefaultCost)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to hash registration access token: %w", err)
+	}
+	return token, string(h), nil
+}
+
 // trackClientIPAndLog tracks the IP for DoS protection and logs the registration.
 func (s *Server) trackClientIPAndLog(ctx context.Context, client *storage.Client, _ /* clientSecret - not logged for security */, clientIP string) {
 	if memStore, ok := s.clientStore.(*memory.Store); ok {
 		memStore.TrackClientIP(clientIP)
 	}
 
-	if s.Auditor != nil {
-		s.Auditor.LogClientRegistered(ctx, client.ClientID, client.ClientType, clientIP)
-	}
+	s.Auditor.LogClientRegistered(ctx, client.ClientID, client.ClientType, clientIP)
 
 	s.Logger.Debug("Registered new OAuth client",
 		"client_id", client.ClientID,
@@ -166,6 +205,16 @@ func (s *Server) ValidateClientCredentials(ctx context.Context, clientID, client
 // Supports both pre-registered clients and URL-based Client ID Metadata Documents (MCP 2025-11-25)
 func (s *Server) GetClient(ctx context.Context, clientID string) (*storage.Client, error) {
 	return s.getOrFetchClient(ctx, clientID)
+}
+
+// SaveClient persists an updated client record.
+func (s *Server) SaveClient(ctx context.Context, client *storage.Client) error {
+	return s.clientStore.SaveClient(ctx, client)
+}
+
+// DeleteClient removes a client by ID (RFC 7592 §2.4).
+func (s *Server) DeleteClient(ctx context.Context, clientID string) error {
+	return s.clientStore.DeleteClient(ctx, clientID)
 }
 
 // CanRegisterWithTrustedScheme checks if a registration request can proceed without

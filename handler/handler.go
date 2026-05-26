@@ -26,14 +26,17 @@ const (
 // Endpoint labels for `oauth_http_requests_total{endpoint="..."}` etc.
 // Future renames are breaking changes for downstream dashboards.
 const (
-	endpointAuthorize     = "authorize"
-	endpointCallback      = "callback"
-	endpointToken         = "token"
-	endpointRevoke        = "revoke"
-	endpointIntrospect    = "introspect"
-	endpointRegister      = "register"
-	endpointValidateToken = "validate_token"
-	endpointUserInfo      = "userinfo"
+	endpointAuthorize        = "authorize"
+	endpointCallback         = "callback"
+	endpointToken            = "token"
+	endpointRevoke           = "revoke"
+	endpointIntrospect       = "introspect"
+	endpointRegister         = "register"
+	endpointValidateToken    = "validate_token"
+	endpointUserInfo         = "userinfo"
+	endpointDiscovery        = "discovery"
+	endpointJWKS             = "jwks"
+	endpointClientManagement = "client_management"
 )
 
 // Handler is a thin HTTP adapter for the OAuth Server.
@@ -55,10 +58,7 @@ func New(server *server.Server, logger *slog.Logger) *Handler {
 		logger: logger,
 	}
 
-	// Initialize tracer if instrumentation is enabled
-	if server.Instrumentation != nil {
-		h.tracer = server.Instrumentation.Tracer("http")
-	}
+	h.tracer = server.Instrumentation.Tracer("http")
 
 	return h
 }
@@ -179,6 +179,12 @@ func (h *Handler) RegisterOAuthRoutes(mux *http.ServeMux, opts OAuthRoutesOption
 		mux.Handle(server.EndpointPathUserInfo, h.ValidateToken(http.HandlerFunc(h.ServeUserInfo)))
 	}
 
+	// RFC 7592 client management is opt-in. The trailing slash registers all
+	// /oauth/register/{client_id} sub-paths via net/http prefix matching.
+	if h.server.Config.EnableClientManagementEndpoint {
+		mux.HandleFunc(server.EndpointPathClientManagement, h.ServeClientManagement)
+	}
+
 	if !opts.IncludeMetadata {
 		return
 	}
@@ -226,12 +232,16 @@ func (h *Handler) startHandlerSpan(r *http.Request, name string) (*http.Request,
 	return r.WithContext(ctx), span, func() { span.End() }
 }
 
+func (h *Handler) failRequest(w http.ResponseWriter, r *http.Request, span trace.Span, endpoint, method string, status int, code, description string, startTime time.Time) {
+	instrumentation.SetSpanError(span, description)
+	h.recordHTTPMetrics(r.Context(), endpoint, method, status, startTime)
+	h.writeError(w, code, description, status)
+}
+
 // logAuthFailure logs authentication failures with optional auditing.
 func (h *Handler) logAuthFailure(ctx context.Context, clientID, clientIP, reason, message string) {
 	h.logger.Warn(message, "client_id", clientID, "ip", clientIP)
-	if h.server.Auditor != nil {
-		h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, reason)
-	}
+	h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, reason)
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, code, description string, status int) {

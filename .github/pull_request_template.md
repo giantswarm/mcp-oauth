@@ -25,9 +25,9 @@ Related to #
 
 <!-- Describe the changes in detail -->
 
-- 
-- 
-- 
+-
+-
+-
 
 ## Testing
 
@@ -36,9 +36,9 @@ Related to #
 - [ ] All existing tests pass
 - [ ] Added new tests for the changes
 - [ ] Tested manually with the following steps:
-  1. 
-  2. 
-  3. 
+  1.
+  2.
+  3.
 
 ## Security Considerations
 
@@ -98,4 +98,3 @@ Migration guide:
 ## Additional Notes
 
 <!-- Any additional information for reviewers -->
-

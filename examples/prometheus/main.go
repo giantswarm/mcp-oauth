@@ -149,7 +149,7 @@ func main() {
 <body>
     <h1>🔒 OAuth 2.1 Server with Prometheus Metrics</h1>
     <p>This server demonstrates OpenTelemetry instrumentation with Prometheus metrics export.</p>
-    
+
     <h2>📊 Metrics Endpoint</h2>
     <div class="endpoint">
         <strong>Prometheus Metrics:</strong> <a href="/metrics">/metrics</a><br>
@@ -179,8 +179,8 @@ storage_tokens_count
 rate(oauth_rate_limit_exceeded[5m])
 
 # Error rate
-rate(oauth_http_requests_total{status=~"5.."}[5m]) 
-/ 
+rate(oauth_http_requests_total{status=~"5.."}[5m])
+/
 rate(oauth_http_requests_total[5m])
     </pre>
 

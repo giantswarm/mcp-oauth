@@ -186,7 +186,7 @@ func TestNewK8sSAValidator_Errors(t *testing.T) {
 	})
 }
 
-func TestWithKubernetesSATrust_RegistersBothTypes(t *testing.T) {
+func TestWithKubernetesSATrust_RegistersJWTType(t *testing.T) {
 	key := newTestECKey(t)
 	const kid = "k8s-test-key"
 	jwksURL, _ := serveStaticJWKS(t, key, kid)
@@ -200,6 +200,6 @@ func TestWithKubernetesSATrust_RegistersBothTypes(t *testing.T) {
 	}})(srv)
 
 	require.NotNil(t, srv.SubjectValidatorFor(SubjectTokenTypeJWT))
-	require.NotNil(t, srv.SubjectValidatorFor(SubjectTokenTypeAccessToken))
+	require.Nil(t, srv.SubjectValidatorFor(SubjectTokenTypeAccessToken))
 	require.Nil(t, srv.SubjectValidatorFor(SubjectTokenTypeIDToken))
 }
