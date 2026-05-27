@@ -313,22 +313,26 @@ func mcpHandler(logger *slog.Logger) http.Handler {
 func healthHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"ok"}`))
+	if _, err := w.Write([]byte(`{"status":"ok"}`)); err != nil {
+		log.Printf("write response: %v", err)
+	}
 }
 
 func readinessHandler(w http.ResponseWriter, _ *http.Request) {
 	// Add actual readiness checks here (database, external services, etc.)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"ready"}`))
+	if _, err := w.Write([]byte(`{"status":"ready"}`)); err != nil {
+		log.Printf("write response: %v", err)
+	}
 }
 
 func metricsHandler(w http.ResponseWriter, _ *http.Request) {
 	// Implement metrics export (Prometheus, etc.)
 	w.Header().Set("Content-Type", "text/plain")
-	w.Write([]byte("# HELP oauth_requests_total Total OAuth requests\n"))
-	w.Write([]byte("# TYPE oauth_requests_total counter\n"))
-	w.Write([]byte("oauth_requests_total 0\n"))
+	if _, err := w.Write([]byte("# HELP oauth_requests_total Total OAuth requests\n# TYPE oauth_requests_total counter\noauth_requests_total 0\n")); err != nil {
+		log.Printf("write response: %v", err)
+	}
 }
 
 // Helper functions
@@ -372,7 +376,7 @@ func loadEncryptionKey() ([]byte, error) {
 
 	// Try to load from file
 	if keyFile := os.Getenv("OAUTH_ENCRYPTION_KEY_FILE"); keyFile != "" {
-		data, err := os.ReadFile(keyFile)
+		data, err := os.ReadFile(keyFile) // #nosec G304,G703 — path comes from operator-controlled env var, not user input
 		if err != nil {
 			return nil, fmt.Errorf("read key file: %w", err)
 		}

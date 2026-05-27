@@ -55,9 +55,9 @@ func main() {
 		log.Fatalf("Failed to create Dex provider: %v", err)
 	}
 
-	log.Printf("Created Dex provider for issuer: %s", issuerURL)
+	log.Printf("Created Dex provider for issuer: %s", issuerURL) //nolint:gosec // G706: issuerURL is operator-supplied config, not user input
 	if connectorID != "" {
-		log.Printf("Using connector: %s (will skip Dex connector selection)", connectorID)
+		log.Printf("Using connector: %s (will skip Dex connector selection)", connectorID) //nolint:gosec // G706: connectorID is operator-supplied config, not user input
 	}
 
 	// Create in-memory storage (use persistent storage in production)
@@ -224,7 +224,9 @@ func main() {
 </body>
 </html>`
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprint(w, html)
+		if _, err := fmt.Fprint(w, html); err != nil {
+			log.Printf("write response: %v", err)
+		}
 	})
 
 	// Health check endpoint
@@ -235,12 +237,16 @@ func main() {
 		if err := dexProvider.HealthCheck(ctx); err != nil {
 			log.Printf("Health check failed: %v", err)
 			w.WriteHeader(http.StatusServiceUnavailable)
-			fmt.Fprintf(w, "unhealthy: %v", err)
+			if _, werr := fmt.Fprintf(w, "unhealthy: %v", err); werr != nil {
+				log.Printf("write response: %v", werr)
+			}
 			return
 		}
 
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "healthy")
+		if _, err := fmt.Fprint(w, "healthy"); err != nil {
+			log.Printf("write response: %v", err)
+		}
 	})
 
 	// Start server
@@ -250,7 +256,14 @@ func main() {
 	if len(trustedAudiences) > 0 {
 		log.Printf("Forwarded-ID-token acceptance enabled (TrustedAudiences: %v); POST a Dex-issued JWT as Bearer to /api/forwarded", trustedAudiences)
 	}
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	srv := &http.Server{
+		Addr:         addr,
+		Handler:      mux,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
 }
