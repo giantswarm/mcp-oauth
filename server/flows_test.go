@@ -27,7 +27,7 @@ const (
 func setupFlowTestServer(t *testing.T) (*Server, *memory.Store, *mock.Provider) {
 	t.Helper()
 
-	store := memory.New(memory.Config{})
+	store := memory.New()
 	t.Cleanup(func() { store.Stop() })
 
 	provider := mock.NewProvider()
@@ -68,7 +68,7 @@ func setupValidTokenProvider() func(context.Context, string) (*providers.UserInf
 func setupFlowTestServerWithNoStateParameter(t *testing.T) (*Server, *memory.Store, *mock.Provider) {
 	t.Helper()
 
-	store := memory.New(memory.Config{})
+	store := memory.New()
 	t.Cleanup(func() { store.Stop() })
 
 	provider := mock.NewProvider()
