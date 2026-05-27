@@ -11,8 +11,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/internal/constants"
+	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/security"
 )
 
@@ -99,9 +99,12 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 	instrumentation.SetSpanAttributes(span, attribute.String(instrumentation.AttrClientID, clientID))
 
 	// Post-auth rate limit for authenticated clients, keyed by client_id.
-	if clientAuthenticated && h.checkUserRateLimit(w, r, clientID, clientIP) {
-		h.recordRateLimitReject(r.Context(), span, endpointRevoke, http.MethodPost, startTime)
-		return
+	if clientAuthenticated {
+		if retryAfter, limited := h.checkUserRateLimited(r.Context(), clientID, clientIP); limited {
+			h.writeUserRateLimitError(w, retryAfter)
+			h.recordRateLimitReject(r.Context(), span, endpointRevoke, http.MethodPost, startTime)
+			return
+		}
 	}
 
 	// Revoke token
