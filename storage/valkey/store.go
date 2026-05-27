@@ -179,21 +179,7 @@ func New(cfg Config, opts ...Option) (*Store, error) {
 		return nil, fmt.Errorf("MaxTokenDataSize=%d out of range [%d,%d]", maxTokenDataSize, MinMaxTokenDataSize, MaxMaxTokenDataSize)
 	}
 
-	// Build client options
-	clientOpts := valkeygo.ClientOption{
-		InitAddress: []string{cfg.Address},
-		SelectDB:    cfg.DB,
-	}
-
-	if cfg.Password != "" {
-		clientOpts.Password = cfg.Password
-	}
-
-	if cfg.TLS != nil {
-		clientOpts.TLSConfig = cfg.TLS
-	}
-
-	client, err := valkeygo.NewClient(clientOpts)
+	client, err := valkeygo.NewClient(buildClientOpts(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create valkey client: %w", err)
 	}
@@ -220,23 +206,7 @@ func New(cfg Config, opts ...Option) (*Store, error) {
 		opt(s)
 	}
 
-	if s.inst != nil {
-		s.tracer = s.inst.Tracer("storage")
-		s.meter = s.inst.Meter("storage")
-		if err := s.inst.RegisterStorageSizeCallbacks(
-			func() int64 { return s.countKeysByPattern(s.prefix + "token:*") },
-			func() int64 { return s.countKeysByPattern(s.prefix + "client:*") },
-			func() int64 { return s.countKeysByPattern(s.prefix + "state:*") },
-			func() int64 { return s.countKeysByPattern(s.prefix + "family:*") },
-			func() int64 { return s.countKeysByPattern(s.prefix + "refresh:*") },
-		); err != nil {
-			logger.Warn("Failed to register storage size callbacks", "error", err)
-		}
-		logger.Debug("storage instrumentation enabled", "store", s)
-	}
-	if s.encryptor != nil && s.encryptor.IsEnabled() {
-		logger.Debug("token encryption at rest enabled", "store", s)
-	}
+	s.wireInstrumentation(logger)
 
 	logger.Debug("storage connected", "store", s)
 	return s, nil
@@ -260,6 +230,43 @@ func WithEncryptor(enc *security.Encryptor) Option {
 // WithInstrumentation wires OpenTelemetry tracing and metrics into the store.
 func WithInstrumentation(inst *instrumentation.Instrumentation) Option {
 	return func(s *Store) { s.inst = inst }
+}
+
+// buildClientOpts converts a Config into the valkey-go client option struct.
+func buildClientOpts(cfg Config) valkeygo.ClientOption {
+	opts := valkeygo.ClientOption{
+		InitAddress: []string{cfg.Address},
+		SelectDB:    cfg.DB,
+	}
+	if cfg.Password != "" {
+		opts.Password = cfg.Password
+	}
+	if cfg.TLS != nil {
+		opts.TLSConfig = cfg.TLS
+	}
+	return opts
+}
+
+// wireInstrumentation activates OTel tracing/metrics and logs initial state.
+// Called once at the end of New after all options have been applied.
+func (s *Store) wireInstrumentation(logger *slog.Logger) {
+	if s.inst != nil {
+		s.tracer = s.inst.Tracer("storage")
+		s.meter = s.inst.Meter("storage")
+		if err := s.inst.RegisterStorageSizeCallbacks(
+			func() int64 { return s.countKeysByPattern(s.prefix + "token:*") },
+			func() int64 { return s.countKeysByPattern(s.prefix + "client:*") },
+			func() int64 { return s.countKeysByPattern(s.prefix + "state:*") },
+			func() int64 { return s.countKeysByPattern(s.prefix + "family:*") },
+			func() int64 { return s.countKeysByPattern(s.prefix + "refresh:*") },
+		); err != nil {
+			logger.Warn("Failed to register storage size callbacks", "error", err)
+		}
+		logger.Debug("storage instrumentation enabled", "store", s)
+	}
+	if s.encryptor != nil && s.encryptor.IsEnabled() {
+		logger.Debug("token encryption at rest enabled", "store", s)
+	}
 }
 
 // countKeysByPattern counts keys matching a glob pattern using SCAN.
