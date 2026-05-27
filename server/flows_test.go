@@ -41,7 +41,7 @@ func setupFlowTestServer(t *testing.T) (*Server, *memory.Store, *mock.Provider) 
 		AllowPKCEPlain:       false,
 		ClockSkewGracePeriod: 5,
 		// Mock provider returns no id_token; nonce echo is exercised in
-		// flows_nonce_test.go with its own fixture.
+		// nonce_test.go with its own fixture.
 		DisableNonceEchoRequirement: true,
 	}
 
