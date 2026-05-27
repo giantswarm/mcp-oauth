@@ -34,7 +34,7 @@ func clearStorageEnv(t *testing.T) {
 
 func TestStorageFromEnv_DefaultIsMemory(t *testing.T) {
 	clearStorageEnv(t)
-	store, closeFn, err := oauthconfig.StorageFromEnv(slog.Default())
+	store, closeFn, err := oauthconfig.StorageFromEnv(nil, nil, slog.Default())
 	if err != nil {
 		t.Fatalf("StorageFromEnv: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestStorageFromEnv_MemoryExplicit(t *testing.T) {
 	clearStorageEnv(t)
 	t.Setenv("OAUTH_STORAGE_BACKEND", "memory")
 
-	store, closeFn, err := oauthconfig.StorageFromEnv(slog.Default())
+	store, closeFn, err := oauthconfig.StorageFromEnv(nil, nil, slog.Default())
 	if err != nil {
 		t.Fatalf("StorageFromEnv: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestStorageFromEnv_UnknownBackend(t *testing.T) {
 	clearStorageEnv(t)
 	t.Setenv("OAUTH_STORAGE_BACKEND", "postgres")
 
-	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
+	_, _, err := oauthconfig.StorageFromEnv(nil, nil, slog.Default())
 	if err == nil || !strings.Contains(err.Error(), "unknown backend") {
 		t.Fatalf("expected unknown-backend error, got %v", err)
 	}
@@ -74,7 +74,7 @@ func TestStorageFromEnv_ValkeyMissingAddress(t *testing.T) {
 	clearStorageEnv(t)
 	t.Setenv("OAUTH_STORAGE_BACKEND", "valkey")
 
-	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
+	_, _, err := oauthconfig.StorageFromEnv(nil, nil, slog.Default())
 	if err == nil || !strings.Contains(err.Error(), "VALKEY_ADDR") {
 		t.Fatalf("expected VALKEY_ADDR required error, got %v", err)
 	}
@@ -86,7 +86,7 @@ func TestStorageFromEnv_ValkeyBadDB(t *testing.T) {
 	t.Setenv("OAUTH_VALKEY_ADDR", "unreachable:0")
 	t.Setenv("OAUTH_VALKEY_DB", "not-a-number")
 
-	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
+	_, _, err := oauthconfig.StorageFromEnv(nil, nil, slog.Default())
 	if err == nil || !strings.Contains(err.Error(), "VALKEY_DB") {
 		t.Fatalf("expected VALKEY_DB parse error, got %v", err)
 	}
@@ -98,7 +98,7 @@ func TestStorageFromEnv_ValkeyBadTLSBool(t *testing.T) {
 	t.Setenv("OAUTH_VALKEY_ADDR", "unreachable:0")
 	t.Setenv("OAUTH_VALKEY_TLS", "maybe")
 
-	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
+	_, _, err := oauthconfig.StorageFromEnv(nil, nil, slog.Default())
 	if err == nil || !strings.Contains(err.Error(), "VALKEY_TLS") {
 		t.Fatalf("expected VALKEY_TLS bool parse error, got %v", err)
 	}
@@ -110,7 +110,7 @@ func TestStorageFromEnv_ValkeyBadMaxTokenDataSize(t *testing.T) {
 	t.Setenv("OAUTH_VALKEY_ADDR", "unreachable:0")
 	t.Setenv("OAUTH_VALKEY_MAX_TOKEN_DATA_SIZE", "not-an-int")
 
-	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
+	_, _, err := oauthconfig.StorageFromEnv(nil, nil, slog.Default())
 	if err == nil || !strings.Contains(err.Error(), "VALKEY_MAX_TOKEN_DATA_SIZE") {
 		t.Fatalf("expected VALKEY_MAX_TOKEN_DATA_SIZE parse error, got %v", err)
 	}
@@ -122,7 +122,7 @@ func TestStorageFromEnv_ValkeyMaxTokenDataSizeOutOfRange(t *testing.T) {
 	t.Setenv("OAUTH_VALKEY_ADDR", "unreachable:0")
 	t.Setenv("OAUTH_VALKEY_MAX_TOKEN_DATA_SIZE", "1024") // below MinMaxTokenDataSize
 
-	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
+	_, _, err := oauthconfig.StorageFromEnv(nil, nil, slog.Default())
 	if err == nil || !strings.Contains(err.Error(), "MaxTokenDataSize") {
 		t.Fatalf("expected MaxTokenDataSize range error, got %v", err)
 	}
@@ -134,7 +134,7 @@ func TestStorageFromEnv_ValkeyBadRefreshTTL(t *testing.T) {
 	t.Setenv("OAUTH_VALKEY_ADDR", "unreachable:0")
 	t.Setenv("OAUTH_VALKEY_REFRESH_TOKEN_TTL", "not-a-duration")
 
-	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
+	_, _, err := oauthconfig.StorageFromEnv(nil, nil, slog.Default())
 	if err == nil || !strings.Contains(err.Error(), "VALKEY_REFRESH_TOKEN_TTL") {
 		t.Fatalf("expected VALKEY_REFRESH_TOKEN_TTL parse error, got %v", err)
 	}
@@ -155,7 +155,7 @@ func TestStorageFromEnv_ValkeyPasswordFilePrecedence(t *testing.T) {
 
 	// Connection will fail — we only care that the loader accepted the _FILE
 	// variant without erroring on password parsing.
-	_, _, err := oauthconfig.StorageFromEnv(slog.Default())
+	_, _, err := oauthconfig.StorageFromEnv(nil, nil, slog.Default())
 	if err == nil {
 		t.Fatal("expected connection error against unreachable address")
 	}
@@ -170,7 +170,7 @@ func TestStorageFromEnvWithPrefix(t *testing.T) {
 	clearStorageEnv(t)
 	t.Setenv("MUSTER_OAUTH_STORAGE_BACKEND", "memory")
 
-	store, closeFn, err := oauthconfig.StorageFromEnvWithPrefix("MUSTER_OAUTH_", slog.Default())
+	store, closeFn, err := oauthconfig.StorageFromEnvWithPrefix("MUSTER_OAUTH_", nil, nil, slog.Default())
 	if err != nil {
 		t.Fatalf("StorageFromEnvWithPrefix: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestStorageFromEnv_ValkeyLive(t *testing.T) {
 	t.Setenv("OAUTH_VALKEY_KEY_PREFIX", "oauthconfigtest:")
 	t.Setenv("OAUTH_VALKEY_REFRESH_TOKEN_TTL", "1h")
 
-	store, closeFn, err := oauthconfig.StorageFromEnv(slog.Default())
+	store, closeFn, err := oauthconfig.StorageFromEnv(nil, nil, slog.Default())
 	if err != nil {
 		t.Fatalf("StorageFromEnv against live valkey: %v", err)
 	}

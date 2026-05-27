@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
 
 	valkeygo "github.com/valkey-io/valkey-go"
@@ -122,17 +121,13 @@ type Store struct {
 	refreshTokenTTL            time.Duration
 	maxTokenDataSize           int
 
-	// encryptor provides optional token encryption at rest
-	// Access must be synchronized via encryptorMu
-	encryptor   *security.Encryptor
-	encryptorMu sync.RWMutex
+	// encryptor provides optional token encryption at rest; immutable after New.
+	encryptor *security.Encryptor
 
-	// Instrumentation for metrics and tracing
-	// Access must be synchronized via instMu
+	// Instrumentation fields; immutable after New.
 	inst   *instrumentation.Instrumentation
 	tracer trace.Tracer
 	meter  metric.Meter
-	instMu sync.RWMutex
 }
 
 // Compile-time interface checks to ensure Store implements all storage interfaces
@@ -148,9 +143,10 @@ var (
 	_ storage.ActiveRefreshTokenByFamilyStore = (*Store)(nil)
 )
 
-// New creates a new Valkey-backed storage instance.
-// Returns an error if the connection cannot be established.
-func New(cfg Config) (*Store, error) {
+// New creates a new Valkey-backed storage instance. All dependencies
+// (encryptor, instrumentation) are supplied at construction via options and
+// are immutable afterward. Returns an error if the connection cannot be established.
+func New(cfg Config, opts ...Option) (*Store, error) {
 	if cfg.Address == "" {
 		return nil, fmt.Errorf("valkey address is required")
 	}
@@ -184,20 +180,20 @@ func New(cfg Config) (*Store, error) {
 	}
 
 	// Build client options
-	opts := valkeygo.ClientOption{
+	clientOpts := valkeygo.ClientOption{
 		InitAddress: []string{cfg.Address},
 		SelectDB:    cfg.DB,
 	}
 
 	if cfg.Password != "" {
-		opts.Password = cfg.Password
+		clientOpts.Password = cfg.Password
 	}
 
 	if cfg.TLS != nil {
-		opts.TLSConfig = cfg.TLS
+		clientOpts.TLSConfig = cfg.TLS
 	}
 
-	client, err := valkeygo.NewClient(opts)
+	client, err := valkeygo.NewClient(clientOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create valkey client: %w", err)
 	}
@@ -219,6 +215,29 @@ func New(cfg Config) (*Store, error) {
 		refreshTokenTTL:            refreshTokenTTL,
 		maxTokenDataSize:           maxTokenDataSize,
 	}
+
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	if s.inst != nil {
+		s.tracer = s.inst.Tracer("storage")
+		s.meter = s.inst.Meter("storage")
+		if err := s.inst.RegisterStorageSizeCallbacks(
+			func() int64 { return s.countKeysByPattern(s.prefix + "token:*") },
+			func() int64 { return s.countKeysByPattern(s.prefix + "client:*") },
+			func() int64 { return s.countKeysByPattern(s.prefix + "state:*") },
+			func() int64 { return s.countKeysByPattern(s.prefix + "family:*") },
+			func() int64 { return s.countKeysByPattern(s.prefix + "refresh:*") },
+		); err != nil {
+			logger.Warn("Failed to register storage size callbacks", "error", err)
+		}
+		logger.Debug("storage instrumentation enabled", "store", s)
+	}
+	if s.encryptor != nil && s.encryptor.IsEnabled() {
+		logger.Debug("token encryption at rest enabled", "store", s)
+	}
+
 	logger.Debug("storage connected", "store", s)
 	return s, nil
 }
@@ -229,58 +248,18 @@ func (s *Store) Close() {
 	s.logger.Debug("storage connection closed", "store", s)
 }
 
-// SetLogger sets a custom logger for the store.
-func (s *Store) SetLogger(logger *slog.Logger) {
-	s.logger = logger
+// Option configures a Store at construction time.
+type Option func(*Store)
+
+// WithEncryptor enables AES-256-GCM encryption at rest for all stored tokens.
+// Encryption is optional; omit to store tokens in plaintext.
+func WithEncryptor(enc *security.Encryptor) Option {
+	return func(s *Store) { s.encryptor = enc }
 }
 
-// SetEncryptor sets the token encryptor for encryption at rest.
-// When set, oauth2.Token access and refresh tokens will be encrypted
-// before storing in Valkey and decrypted when retrieved.
-func (s *Store) SetEncryptor(enc *security.Encryptor) {
-	s.encryptorMu.Lock()
-	s.encryptor = enc
-	s.encryptorMu.Unlock()
-	if enc != nil && enc.IsEnabled() {
-		s.logger.Debug("token encryption at rest enabled", "store", s)
-	}
-}
-
-// getEncryptor returns the current encryptor (thread-safe)
-func (s *Store) getEncryptor() *security.Encryptor {
-	s.encryptorMu.RLock()
-	defer s.encryptorMu.RUnlock()
-	return s.encryptor
-}
-
-// SetInstrumentation sets OpenTelemetry instrumentation for the store.
-// This enables tracing and metrics for storage operations.
-// This method should be called once during initialization before any storage operations.
-func (s *Store) SetInstrumentation(inst *instrumentation.Instrumentation) {
-	if inst == nil {
-		return
-	}
-
-	s.instMu.Lock()
-	s.inst = inst
-	s.tracer = inst.Tracer("storage")
-	s.meter = inst.Meter("storage")
-	s.instMu.Unlock()
-
-	// Register storage size callbacks for Prometheus gauges.
-	// These callbacks use SCAN operations to count keys, which is efficient
-	// for periodic metrics scraping but not for high-frequency access.
-	err := inst.RegisterStorageSizeCallbacks(
-		func() int64 { return s.countKeysByPattern(s.prefix + "token:*") },
-		func() int64 { return s.countKeysByPattern(s.prefix + "client:*") },
-		func() int64 { return s.countKeysByPattern(s.prefix + "state:*") },
-		func() int64 { return s.countKeysByPattern(s.prefix + "family:*") },
-		func() int64 { return s.countKeysByPattern(s.prefix + "refresh:*") },
-	)
-	if err != nil {
-		s.logger.Warn("Failed to register storage size callbacks", "error", err)
-	}
-	s.logger.Debug("storage instrumentation enabled", "store", s)
+// WithInstrumentation wires OpenTelemetry tracing and metrics into the store.
+func WithInstrumentation(inst *instrumentation.Instrumentation) Option {
+	return func(s *Store) { s.inst = inst }
 }
 
 // countKeysByPattern counts keys matching a glob pattern using SCAN.
@@ -332,11 +311,7 @@ func (t *tracedOp) end(errPtr *error) {
 		t.span.End()
 	}
 
-	t.store.instMu.RLock()
-	inst := t.store.inst
-	t.store.instMu.RUnlock()
-
-	if inst == nil {
+	if t.store.inst == nil {
 		return
 	}
 
@@ -353,7 +328,7 @@ func (t *tracedOp) end(errPtr *error) {
 		t.span.SetStatus(codes.Ok, "")
 	}
 
-	inst.Metrics().RecordStorageOperation(t.ctx, t.operation, result, durationMs)
+	t.store.inst.Metrics().RecordStorageOperation(t.ctx, t.operation, result, durationMs)
 }
 
 // startTracedOp starts a traced storage operation with span and timing.
@@ -368,10 +343,6 @@ func (t *tracedOp) end(errPtr *error) {
 //	    return nil
 //	}
 func (s *Store) startTracedOp(ctx context.Context, operation string) *tracedOp {
-	s.instMu.RLock()
-	tracer := s.tracer
-	s.instMu.RUnlock()
-
 	op := &tracedOp{
 		ctx:       ctx,
 		operation: operation,
@@ -379,12 +350,12 @@ func (s *Store) startTracedOp(ctx context.Context, operation string) *tracedOp {
 		store:     s,
 	}
 
-	if tracer == nil {
+	if s.tracer == nil {
 		op.span = trace.SpanFromContext(ctx)
 		return op
 	}
 
-	ctx, span := tracer.Start(ctx, "storage."+operation,
+	ctx, span := s.tracer.Start(ctx, "storage."+operation,
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(
 			attribute.String("operation", operation),
@@ -408,7 +379,7 @@ type tokenTransformFuncs struct {
 // Returns a new token with transformed fields, leaving the original unchanged.
 // IMPORTANT: Preserves the Extra field (id_token, scope) which is critical for OIDC flows.
 func (s *Store) transformTokenFields(token *oauth2.Token, funcs tokenTransformFuncs) (*oauth2.Token, error) {
-	enc := s.getEncryptor()
+	enc := s.encryptor
 	if enc == nil || !enc.IsEnabled() {
 		return token, nil
 	}
@@ -452,7 +423,7 @@ func (s *Store) transformTokenFields(token *oauth2.Token, funcs tokenTransformFu
 // Returns a new token with encrypted fields, leaving the original unchanged.
 func (s *Store) encryptToken(token *oauth2.Token) (*oauth2.Token, error) {
 	return s.transformTokenFields(token, tokenTransformFuncs{
-		transformString: s.getEncryptor().Encrypt,
+		transformString: s.encryptor.Encrypt,
 		transformExtra:  storage.EncryptExtraFields,
 		accessErrFmt:    "failed to encrypt access token: %w",
 		refreshErrFmt:   "failed to encrypt refresh token: %w",
@@ -463,7 +434,7 @@ func (s *Store) encryptToken(token *oauth2.Token) (*oauth2.Token, error) {
 // Returns a new token with decrypted fields, leaving the original unchanged.
 func (s *Store) decryptToken(token *oauth2.Token) (*oauth2.Token, error) {
 	return s.transformTokenFields(token, tokenTransformFuncs{
-		transformString: s.getEncryptor().Decrypt,
+		transformString: s.encryptor.Decrypt,
 		transformExtra:  storage.DecryptExtraFields,
 		accessErrFmt:    "failed to decrypt access token: %w",
 		refreshErrFmt:   "failed to decrypt refresh token: %w",

@@ -40,16 +40,16 @@ func TestStore_Construction_EmitsNoInfo(t *testing.T) {
 	h := &captureHandler{}
 	logger := slog.New(h)
 
-	store := New()
-	store.SetLogger(logger)
-	store.SetRevokedFamilyRetentionDays(30)
-
 	key, err := security.GenerateKey()
 	require.NoError(t, err)
 	enc, err := security.NewEncryptor(key)
 	require.NoError(t, err)
-	store.SetEncryptor(enc)
-	store.SetInstrumentation(nil) // nil-safe path
+
+	_ = New(
+		WithLogger(logger),
+		WithRevokedFamilyRetentionDays(30),
+		WithEncryptor(enc),
+	)
 
 	if got := h.infoLines(); len(got) != 0 {
 		t.Fatalf("store construction emitted %d INFO record(s); want 0:\n%s",
@@ -73,15 +73,16 @@ func TestStore_LogValue_ReflectsPosture(t *testing.T) {
 	require.Equal(t, false, got["encryption_at_rest"])
 	require.Equal(t, false, got["instrumentation_on"])
 
-	// Enable encryption and verify the snapshot updates.
+	// A store built with an encryptor reports encryption_at_rest=true.
 	key, err := security.GenerateKey()
 	require.NoError(t, err)
 	enc, err := security.NewEncryptor(key)
 	require.NoError(t, err)
-	store.SetEncryptor(enc)
+	storeWithEnc := New(WithEncryptor(enc))
+	defer storeWithEnc.Stop()
 
 	buf.Reset()
-	logger.Info("snapshot", "store", store)
+	logger.Info("snapshot", "store", storeWithEnc)
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &payload))
 	got = payload["store"].(map[string]any)
 	require.Equal(t, true, got["encryption_at_rest"])

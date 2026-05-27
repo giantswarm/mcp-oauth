@@ -28,12 +28,6 @@ type ForwardedIDTokenAcceptance = server.ForwardedIDTokenAcceptance
 // Config.TrustedAudiences. Callers typically respond with 401.
 var ErrTrustedAudienceMismatch = server.ErrTrustedAudienceMismatch
 
-// WithEncryptor configures the token encryptor and propagates it to the
-// token store. See [server.WithEncryptor].
-func WithEncryptor(enc *security.Encryptor) ServerOption {
-	return server.WithEncryptor(enc)
-}
-
 // WithAuditor configures the security auditor. See [server.WithAuditor].
 func WithAuditor(aud *security.Auditor) ServerOption { return server.WithAuditor(aud) }
 

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`memory.WithEncryptor`, `memory.WithInstrumentation`, `memory.WithLogger`, `memory.WithCleanupInterval`, `memory.WithRevokedFamilyRetentionDays`**: functional options for `memory.New`. All cross-cutting dependencies are now supplied at construction; the store is immutable afterward.
+- **`valkey.WithEncryptor`, `valkey.WithInstrumentation`**: functional options for `valkey.New`. Same construction-time wiring as memory.
+
+### Changed
+
+- **BREAKING — `memory.New` now accepts `...Option`** (was `func New() *Store`). Pass `memory.WithEncryptor(enc)`, `memory.WithInstrumentation(inst)`, etc. at construction instead of calling `SetX` after the fact.
+- **BREAKING — `valkey.New` now accepts `...Option`** (was `func New(cfg Config) (*Store, error)`). Signature is now `func New(cfg Config, opts ...Option) (*Store, error)`.
+- **BREAKING — `oauthconfig.StorageFromEnv` and `StorageFromEnvWithPrefix` signatures changed.** Both now accept `enc *security.Encryptor, inst *instrumentation.Instrumentation` before the `logger` argument, and wire them into the constructed store.
+- Encryption at rest is wired on the store (`memory.WithEncryptor` / `valkey.WithEncryptor`), not the server. Remove any `server.WithEncryptor` / `oauth.WithEncryptor` calls and pass the encryptor directly to the store constructor.
+- `server.Config.RevokedFamilyRetentionDays` removed; set the retention period on the memory store via `memory.WithRevokedFamilyRetentionDays` instead.
+
+### Removed
+
+- `memory.SetEncryptor`, `memory.SetInstrumentation`, `memory.SetLogger`, `memory.SetRevokedFamilyRetentionDays` — replaced by construction-time options.
+- `memory.NewWithInterval` — replaced by `memory.New(memory.WithCleanupInterval(d))`.
+- `valkey.SetEncryptor`, `valkey.SetInstrumentation`, `valkey.SetLogger` — replaced by construction-time options.
+- `server.WithEncryptor` / `oauth.WithEncryptor` — the server no longer holds an encryptor; wire it on the store.
+- `server.Server.Encryptor` field — removed alongside `WithEncryptor`.
+- `server.Config.RevokedFamilyRetentionDays` — moved to `memory.WithRevokedFamilyRetentionDays`.
+
 ### Security
 
 - **Startup `WARN` for development-only overrides.** `AllowInsecureHTTP`, `AllowPrivateIPClientMetadata`, and `AllowPrivateIPJWKS` now emit a `slog.LevelWarn` entry at server initialisation when set, making it harder to accidentally leave these flags enabled in production. `AllowPrivateIPClientMetadata` and `AllowPrivateIPJWKS` previously logged from `server.New` only; the warnings are now unified under `logCoreSecurityWarnings` alongside all other security-posture checks. All three flags are documented in `docs/security.md` under a new "Development-only overrides" subsection. Closes #342.

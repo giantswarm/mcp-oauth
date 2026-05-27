@@ -11,17 +11,17 @@ import (
 //
 //	logger.Info("oauth server initialized", "server", srv)
 //
-// Fields are limited to state that is either derived (encryption-enabled,
-// instrumentation-wired) or mutated by [applySecureDefaults] (production
-// mode, redirect-URI validation flags) — i.e. state the caller's
-// pre-build Config does not faithfully reflect.
+// Fields are limited to state that is either derived (instrumentation-wired)
+// or mutated by [applySecureDefaults] (production mode, redirect-URI
+// validation flags) — i.e. state the caller's pre-build Config does not
+// faithfully reflect. Encryption status is reported by the store's own
+// LogValue; the server no longer holds the encryptor.
 func (s *Server) LogValue() slog.Value {
 	cfg := s.Config
 	attrs := []slog.Attr{
 		slog.String("issuer", cfg.Issuer),
 		slog.Bool("production_mode", cfg.ProductionMode),
 		slog.String("access_token_format", string(cfg.AccessTokenFormat)),
-		slog.Bool("encryption_at_rest", s.Encryptor != nil && s.Encryptor.IsEnabled()),
 		slog.Bool("instrumentation_on", s.Instrumentation.IsEnabled()),
 		slog.Group(
 			"redirect_uri_policy",

@@ -6,7 +6,9 @@ import (
 	"os"
 	"time"
 
+	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/oauthconfig/internal/valkeytls"
+	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 	"github.com/giantswarm/mcp-oauth/storage/valkey"
@@ -21,6 +23,9 @@ import (
 // for valkey. It is always safe to call and always returns nil (close errors
 // are swallowed and logged by the backend).
 //
+// enc and inst are wired into the store at construction. Both may be nil:
+// omitting enc leaves tokens unencrypted, omitting inst disables OTel.
+//
 // Valkey-specific variables (read only when OAUTH_STORAGE_BACKEND=valkey):
 //
 //   - OAUTH_VALKEY_ADDR                   (required when OAUTH_STORAGE_BACKEND=valkey)
@@ -34,17 +39,17 @@ import (
 //     range [64 KiB, 8 MiB])
 //
 // Pass the returned [storage.Combined] to [server.NewWithCombined].
-func StorageFromEnv(logger *slog.Logger) (storage.Combined, func() error, error) {
-	return StorageFromEnvWithPrefix("OAUTH_", logger)
+func StorageFromEnv(enc *security.Encryptor, inst *instrumentation.Instrumentation, logger *slog.Logger) (storage.Combined, func() error, error) {
+	return StorageFromEnvWithPrefix("OAUTH_", enc, inst, logger)
 }
 
 // StorageFromEnvWithPrefix is [StorageFromEnv] with a caller-supplied prefix
 // applied to STORAGE_BACKEND and VALKEY_*. The prefix is applied verbatim;
 // include a trailing underscore if you want one. Useful for consumers that
 // scope their env vars to their product name, e.g.
-// StorageFromEnvWithPrefix("MUSTER_OAUTH_", logger) reads
+// StorageFromEnvWithPrefix("MUSTER_OAUTH_", enc, inst, logger) reads
 // MUSTER_OAUTH_STORAGE_BACKEND and MUSTER_OAUTH_VALKEY_*.
-func StorageFromEnvWithPrefix(prefix string, logger *slog.Logger) (storage.Combined, func() error, error) {
+func StorageFromEnvWithPrefix(prefix string, enc *security.Encryptor, inst *instrumentation.Instrumentation, logger *slog.Logger) (storage.Combined, func() error, error) {
 	backend := os.Getenv(prefix + "STORAGE_BACKEND")
 	if backend == "" {
 		backend = storage.BackendMemory
@@ -52,10 +57,10 @@ func StorageFromEnvWithPrefix(prefix string, logger *slog.Logger) (storage.Combi
 
 	switch backend {
 	case storage.BackendMemory:
-		store := memory.New()
+		store := memory.New(memory.WithEncryptor(enc), memory.WithInstrumentation(inst))
 		return store, func() error { store.Stop(); return nil }, nil
 	case storage.BackendValkey:
-		return newValkeyFromEnv(prefix, logger)
+		return newValkeyFromEnv(prefix, enc, inst, logger)
 	default:
 		return nil, nil, fmt.Errorf("%sSTORAGE_BACKEND: unknown backend %q (want %q or %q)", prefix, backend, storage.BackendMemory, storage.BackendValkey)
 	}
@@ -65,7 +70,7 @@ func StorageFromEnvWithPrefix(prefix string, logger *slog.Logger) (storage.Combi
 // variables. Returns a close func that invokes Store.Close and always returns
 // nil (Valkey close errors are logged by the backend; surfacing them would
 // complicate caller shutdown flows).
-func newValkeyFromEnv(prefix string, logger *slog.Logger) (storage.Combined, func() error, error) {
+func newValkeyFromEnv(prefix string, enc *security.Encryptor, inst *instrumentation.Instrumentation, logger *slog.Logger) (storage.Combined, func() error, error) {
 	addr := os.Getenv(prefix + "VALKEY_ADDR")
 	if addr == "" {
 		return nil, nil, fmt.Errorf("%sVALKEY_ADDR is required when %sSTORAGE_BACKEND=valkey", prefix, prefix)
@@ -110,7 +115,7 @@ func newValkeyFromEnv(prefix string, logger *slog.Logger) (storage.Combined, fun
 		RefreshTokenTTL:  refreshTTL,
 		MaxTokenDataSize: maxTokenDataSize,
 	}
-	store, err := valkey.New(cfg)
+	store, err := valkey.New(cfg, valkey.WithEncryptor(enc), valkey.WithInstrumentation(inst))
 	if err != nil {
 		return nil, nil, fmt.Errorf("valkey.New: %w", err)
 	}

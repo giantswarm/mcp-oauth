@@ -57,6 +57,31 @@ func testStore(t *testing.T) *Store {
 	return store
 }
 
+// testStoreWithOpts is like testStore but applies additional options at construction.
+func testStoreWithOpts(t *testing.T, opts ...Option) *Store {
+	t.Helper()
+
+	addr := os.Getenv("VALKEY_TEST_ADDR")
+	if addr == "" {
+		addr = "localhost:6379"
+	}
+
+	prefix := fmt.Sprintf("mcptest:%s:", t.Name())
+
+	store, err := New(Config{Address: addr, KeyPrefix: prefix}, opts...)
+	if err != nil {
+		t.Skipf("Skipping test: could not connect to Valkey at %s: %v", addr, err)
+	}
+
+	t.Cleanup(func() {
+		cleanupTestKeys(t, store)
+		store.Close()
+	})
+
+	cleanupTestKeys(t, store)
+	return store
+}
+
 // cleanupTestKeys removes all test keys from Valkey
 func cleanupTestKeys(t *testing.T, s *Store) {
 	t.Helper()
@@ -1244,21 +1269,18 @@ func TestCalculateTTL(t *testing.T) {
 // ============================================================
 
 func TestTokenStore_Encryption(t *testing.T) {
-	s := testStore(t)
 	ctx := context.Background()
 
-	// Generate encryption key (32 bytes for AES-256)
 	key, err := security.GenerateKey()
 	if err != nil {
 		t.Fatalf("Failed to generate encryption key: %v", err)
 	}
-
 	encryptor, err := security.NewEncryptor(key)
 	if err != nil {
 		t.Fatalf("Failed to create encryptor: %v", err)
 	}
 
-	s.SetEncryptor(encryptor)
+	s := testStoreWithOpts(t, WithEncryptor(encryptor))
 
 	token := &oauth2.Token{
 		AccessToken:  "secret-access-token",
@@ -1289,16 +1311,14 @@ func TestTokenStore_Encryption(t *testing.T) {
 }
 
 func TestTokenStore_EncryptionDisabled(t *testing.T) {
-	s := testStore(t)
 	ctx := context.Background()
 
-	// Create encryptor with nil key (disabled)
 	encryptor, err := security.NewEncryptor(nil)
 	if err != nil {
 		t.Fatalf("Failed to create disabled encryptor: %v", err)
 	}
 
-	s.SetEncryptor(encryptor)
+	s := testStoreWithOpts(t, WithEncryptor(encryptor))
 
 	token := &oauth2.Token{
 		AccessToken:  "plaintext-access-token",
@@ -1329,21 +1349,18 @@ func TestTokenStore_EncryptionDisabled(t *testing.T) {
 // preserves the Extra field (id_token, scope) which is critical for OIDC flows.
 // This is a regression test for issue #133.
 func TestTokenStore_Encryption_PreservesExtraField(t *testing.T) {
-	s := testStore(t)
 	ctx := context.Background()
 
-	// Set up encryption
 	key, err := security.GenerateKey()
 	if err != nil {
 		t.Fatalf("GenerateKey() error = %v", err)
 	}
-
 	encryptor, err := security.NewEncryptor(key)
 	if err != nil {
 		t.Fatalf("NewEncryptor() error = %v", err)
 	}
 
-	s.SetEncryptor(encryptor)
+	s := testStoreWithOpts(t, WithEncryptor(encryptor))
 
 	// Create token with Extra fields (simulating OIDC provider response)
 	baseToken := &oauth2.Token{
@@ -1442,21 +1459,18 @@ func TestTokenStore_WithoutEncryption_PreservesExtraField(t *testing.T) {
 // TestTokenStore_Encryption_IDTokenIsEncrypted verifies that id_token is actually
 // encrypted when stored, not just preserved. This is a security test.
 func TestTokenStore_Encryption_IDTokenIsEncrypted(t *testing.T) {
-	s := testStore(t)
 	ctx := context.Background()
 
-	// Set up encryption
 	key, err := security.GenerateKey()
 	if err != nil {
 		t.Fatalf("GenerateKey() error = %v", err)
 	}
-
 	encryptor, err := security.NewEncryptor(key)
 	if err != nil {
 		t.Fatalf("NewEncryptor() error = %v", err)
 	}
 
-	s.SetEncryptor(encryptor)
+	s := testStoreWithOpts(t, WithEncryptor(encryptor))
 
 	// Create token with id_token
 	baseToken := &oauth2.Token{
@@ -1635,25 +1649,16 @@ func TestValidation_GenericErrorMessages(t *testing.T) {
 // Instrumentation Tests
 // ============================================================
 
-func TestStore_SetInstrumentation(t *testing.T) {
-	s := testStore(t)
+func TestStore_WithInstrumentation(t *testing.T) {
 	ctx := context.Background()
 
-	// Create instrumentation with noop provider (instrumentation disabled)
-	inst, err := instrumentation.New(instrumentation.Config{
-		Enabled: false,
-	})
+	inst, err := instrumentation.New(instrumentation.Config{Enabled: false})
 	if err != nil {
 		t.Fatalf("Failed to create instrumentation: %v", err)
 	}
 
-	// Should not panic with nil instrumentation
-	s.SetInstrumentation(nil)
+	s := testStoreWithOpts(t, WithInstrumentation(inst))
 
-	// Should work with valid instrumentation
-	s.SetInstrumentation(inst)
-
-	// Verify storage operations still work with instrumentation enabled
 	token := &oauth2.Token{
 		AccessToken:  "instrumented-token",
 		RefreshToken: "instrumented-refresh",
@@ -1676,11 +1681,9 @@ func TestStore_SetInstrumentation(t *testing.T) {
 	}
 }
 
-func TestStore_SetInstrumentation_WithPrometheus(t *testing.T) {
-	s := testStore(t)
+func TestStore_WithInstrumentation_Prometheus(t *testing.T) {
 	ctx := context.Background()
 
-	// Create instrumentation with Prometheus exporter (real metrics)
 	inst, err := instrumentation.New(instrumentation.Config{
 		Enabled:         true,
 		MetricsExporter: "prometheus",
@@ -1694,10 +1697,8 @@ func TestStore_SetInstrumentation_WithPrometheus(t *testing.T) {
 		}
 	}()
 
-	// Set instrumentation (should register storage size callbacks)
-	s.SetInstrumentation(inst)
+	s := testStoreWithOpts(t, WithInstrumentation(inst))
 
-	// Add some data to the store
 	client := &storage.Client{
 		ClientID:     "metric-client",
 		ClientType:   "public",
@@ -1712,9 +1713,6 @@ func TestStore_SetInstrumentation_WithPrometheus(t *testing.T) {
 	}
 	_ = s.SaveToken(ctx, "metric-user", token)
 
-	// Verify metrics are available (they use SCAN which should find our data)
-	// We can't easily verify the actual metric values, but we can verify
-	// that the instrumentation was set up without errors
 	if s.inst == nil {
 		t.Error("Instrumentation should be set on store")
 	}

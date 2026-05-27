@@ -28,7 +28,7 @@
 //     [handler.Handler.RegisterProtectedResourceMetadataRoutes].
 //   - This root package — protocol-level types ([Error], [TokenResponse],
 //     [ProtectedResourceMetadata], …) and thin re-exports / convenience
-//     constructors for [server.Server] ([NewServer], [WithEncryptor], …).
+//     constructors for [server.Server] ([NewServer], …).
 //
 // # Security defaults
 //
@@ -40,8 +40,8 @@
 //   - Per-IP and per-user rate limiters guard hot endpoints.
 //   - Bearer-token comparisons are constant-time.
 //   - Token-at-rest encryption available via [security.NewEncryptor] +
-//     [server.WithEncryptor]; the ciphertext envelope is versioned with a
-//     1-byte `kid` for future rotation.
+//     [memory.WithEncryptor] / [valkey.WithEncryptor]; the ciphertext
+//     envelope is versioned with a 1-byte `kid` for future rotation.
 //   - OIDC `nonce` is required end-to-end when scoped `openid` (CWE-294).
 //   - SSRF protection on the client-metadata-document and discovery
 //     fetchers.
@@ -110,8 +110,8 @@
 //			log.Fatal(err)
 //		}
 //
-//		store := memory.New()
-//		srv, err := server.New(provider, store, store, store, cfg, slog.Default(), server.WithEncryptor(enc))
+//		store := memory.New(memory.WithEncryptor(enc))
+//		srv, err := server.New(provider, store, store, store, cfg, slog.Default())
 //		if err != nil {
 //			log.Fatal(err)
 //		}

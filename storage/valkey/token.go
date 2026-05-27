@@ -124,8 +124,7 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 		return fmt.Errorf("failed to save token: %w", err)
 	}
 
-	enc := s.getEncryptor()
-	if enc != nil && enc.IsEnabled() {
+	if s.encryptor != nil && s.encryptor.IsEnabled() {
 		s.logger.Debug("Saved encrypted token", "user_id", userID)
 	} else {
 		s.logger.Debug("Saved token", "user_id", userID)

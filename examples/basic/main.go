@@ -36,26 +36,18 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// 2. Create storage (in-memory for simplicity)
-	store := memory.New()
-	defer store.Stop()
-
 	// 3. Create logger
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
 
 	// 4. Construct optional dependencies. Build everything first so we can
-	// pass them as functional options to NewServer in a single call.
+	// pass them as functional options to the store and NewServer.
 	auditor := security.NewAuditor(logger, true)
 	rateLimiter := security.NewRateLimiter(10, 20, logger)
 	defer rateLimiter.Stop() // Important: cleanup background goroutines
 
-	opts := []oauth.ServerOption{
-		oauth.WithAuditor(auditor),
-		oauth.WithRateLimiter(rateLimiter),
-	}
-
+	var storeOpts []memory.Option
 	encKeyB64 := os.Getenv("OAUTH_ENCRYPTION_KEY")
 	if encKeyB64 != "" {
 		encKey, err := security.KeyFromBase64(encKeyB64)
@@ -63,8 +55,17 @@ func main() {
 			log.Fatalf("Invalid encryption key: %v", err)
 		}
 		encryptor, _ := security.NewEncryptor(encKey)
-		opts = append(opts, oauth.WithEncryptor(encryptor))
+		storeOpts = append(storeOpts, memory.WithEncryptor(encryptor))
 		logger.Info("Token encryption enabled")
+	}
+
+	// 2. Create storage (in-memory for simplicity)
+	store := memory.New(storeOpts...)
+	defer store.Stop()
+
+	opts := []oauth.ServerOption{
+		oauth.WithAuditor(auditor),
+		oauth.WithRateLimiter(rateLimiter),
 	}
 
 	// 5. Create OAuth server with secure defaults plus optional dependencies.

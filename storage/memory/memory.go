@@ -120,32 +120,46 @@ var (
 	_ storage.ActiveRefreshTokenByFamilyStore = (*Store)(nil)
 )
 
-// New creates a new in-memory store with default cleanup interval (1 minute)
-// and default revoked family retention (90 days)
-func New() *Store {
-	return NewWithInterval(time.Minute)
+// Option configures a Store at construction time.
+type Option func(*Store)
+
+// WithEncryptor enables AES-256-GCM encryption at rest for all stored tokens.
+// Encryption is optional; omit to store tokens in plaintext.
+func WithEncryptor(enc *security.Encryptor) Option {
+	return func(s *Store) { s.encryptor = enc }
 }
 
-// SetRevokedFamilyRetentionDays sets the retention period for revoked token family metadata.
-// This should be called after New() and before starting the server.
-// The retention period is used for forensics and security auditing.
-// Default: 90 days (if not set)
-func (s *Store) SetRevokedFamilyRetentionDays(days int64) {
-	s.mu.Lock()
-	s.revokedFamilyRetentionDays = days
-	s.mu.Unlock()
-	s.logger.Debug("revoked family retention period set",
-		"retention_days", days,
-		"store", s)
+// WithInstrumentation wires OpenTelemetry tracing and metrics into the store.
+func WithInstrumentation(inst *instrumentation.Instrumentation) Option {
+	return func(s *Store) { s.instrumentation = inst }
 }
 
-// NewWithInterval creates a new in-memory store with custom cleanup interval.
-// If cleanupInterval is 0 or negative, uses default of 1 minute.
-func NewWithInterval(cleanupInterval time.Duration) *Store {
-	if cleanupInterval <= 0 {
-		cleanupInterval = time.Minute
+// WithLogger replaces the default slog.Default() logger.
+func WithLogger(logger *slog.Logger) Option {
+	return func(s *Store) { s.logger = logger }
+}
+
+// WithCleanupInterval sets the background cleanup tick interval.
+// Values ≤ 0 are clamped to 1 minute.
+func WithCleanupInterval(d time.Duration) Option {
+	return func(s *Store) {
+		if d <= 0 {
+			d = time.Minute
+		}
+		s.cleanupInterval = d
 	}
+}
 
+// WithRevokedFamilyRetentionDays sets how long revoked token family metadata
+// is kept for security forensics. Default is 90 days.
+func WithRevokedFamilyRetentionDays(days int64) Option {
+	return func(s *Store) { s.revokedFamilyRetentionDays = days }
+}
+
+// New creates a new in-memory store. All dependencies (encryptor,
+// instrumentation, logger) are supplied at construction via options and are
+// immutable afterward.
+func New(opts ...Option) *Store {
 	s := &Store{
 		tokens:                     make(map[string]*oauth2.Token),
 		userInfo:                   make(map[string]*providers.UserInfo),
@@ -157,68 +171,36 @@ func NewWithInterval(cleanupInterval time.Duration) *Store {
 		clientsPerIP:               make(map[string]int),
 		authStates:                 make(map[string]*storage.AuthorizationState),
 		authCodes:                  make(map[string]*storage.AuthorizationCode),
-		cleanupInterval:            cleanupInterval,
-		revokedFamilyRetentionDays: 90, // default: 90 days for security auditing
+		cleanupInterval:            time.Minute,
+		revokedFamilyRetentionDays: 90,
 		stopCleanup:                make(chan struct{}),
 		logger:                     slog.Default(),
 	}
 
-	// Start background cleanup
-	go s.cleanupLoop()
-
-	return s
-}
-
-// SetLogger sets a custom logger
-func (s *Store) SetLogger(logger *slog.Logger) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.logger = logger
-}
-
-// SetEncryptor sets the token encryptor for encryption at rest
-func (s *Store) SetEncryptor(enc *security.Encryptor) {
-	s.mu.Lock()
-	s.encryptor = enc
-	s.mu.Unlock()
-	if enc != nil && enc.IsEnabled() {
-		s.logger.Debug("token encryption at rest enabled", "store", s)
-	}
-}
-
-// SetInstrumentation sets OpenTelemetry instrumentation for the store
-func (s *Store) SetInstrumentation(inst *instrumentation.Instrumentation) {
-	s.mu.Lock()
-	s.instrumentation = inst
-	if inst != nil {
-		s.tracer = inst.Tracer("storage")
-		s.meter = inst.Meter("storage")
+	for _, opt := range opts {
+		opt(s)
 	}
 
-	// Initialize atomic counters with current counts
-	s.tokensCountAtomic.Store(int64(len(s.tokens)))
-	s.clientsCountAtomic.Store(int64(len(s.clients)))
-	s.authStatesCountAtomic.Store(int64(len(s.authStates)))
-	s.familiesCountAtomic.Store(int64(len(s.refreshTokenFamilies)))
-	s.refreshTokensCountAtomic.Store(int64(len(s.refreshTokens)))
-	s.mu.Unlock()
-
-	if inst != nil {
-		// Register storage size callbacks using atomic counters (lock-free)
-		// These callbacks provide real-time visibility into storage size for
-		// capacity planning, memory leak detection, and DoS attack monitoring
-		err := inst.RegisterStorageSizeCallbacks(
+	if s.instrumentation != nil {
+		s.tracer = s.instrumentation.Tracer("storage")
+		s.meter = s.instrumentation.Meter("storage")
+		if err := s.instrumentation.RegisterStorageSizeCallbacks(
 			func() int64 { return s.tokensCountAtomic.Load() },
 			func() int64 { return s.clientsCountAtomic.Load() },
 			func() int64 { return s.authStatesCountAtomic.Load() },
 			func() int64 { return s.familiesCountAtomic.Load() },
 			func() int64 { return s.refreshTokensCountAtomic.Load() },
-		)
-		if err != nil {
+		); err != nil {
 			s.logger.Warn("Failed to register storage size callbacks", "error", err)
 		}
 		s.logger.Debug("storage instrumentation enabled", "store", s)
 	}
+	if s.encryptor != nil && s.encryptor.IsEnabled() {
+		s.logger.Debug("token encryption at rest enabled", "store", s)
+	}
+
+	go s.cleanupLoop()
+	return s
 }
 
 // Stop gracefully stops the cleanup goroutine
