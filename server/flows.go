@@ -4,26 +4,23 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 )
 
-// OAuth 2.0 error codes from RFC 6749.
-// Note: These are intentionally duplicated from errors.go to avoid circular imports
-// (root package imports server for type aliases, server can't import root).
-// Keep these in sync with errors.go.
+// OAuth 2.0 / 2.1 error codes and spec version re-exported from internal/constants
+// so that server-package code can reference them without a circular import.
 const (
-	ErrorCodeInvalidClient      = "invalid_client"
-	ErrorCodeInvalidRequest     = "invalid_request"
-	ErrorCodeInvalidRedirectURI = "invalid_redirect_uri"
-	ErrorCodeInvalidScope       = "invalid_scope"
-	ErrorCodeInvalidGrant       = "invalid_grant"
+	ErrorCodeInvalidClient      = constants.ErrorCodeInvalidClient
+	ErrorCodeInvalidRequest     = constants.ErrorCodeInvalidRequest
+	ErrorCodeInvalidRedirectURI = constants.ErrorCodeInvalidRedirectURI
+	ErrorCodeInvalidScope       = constants.ErrorCodeInvalidScope
+	ErrorCodeInvalidGrant       = constants.ErrorCodeInvalidGrant
+	OAuthSpecVersion            = constants.OAuthSpecVersion
 )
-
-// OAuthSpecVersion is the OAuth specification version this library implements.
-// Note: This is intentionally duplicated from constants.go to avoid circular imports.
-// Keep in sync with constants.go.
-const OAuthSpecVersion = "OAuth 2.1"
 
 var errInvalidGrant = errors.New(ErrorCodeInvalidGrant + ": invalid grant")
+
 
 // registerTokenPair records the AT -> RT pairing so that provider token refreshes
 // triggered by one key can also update the other.

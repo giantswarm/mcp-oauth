@@ -19,7 +19,6 @@ import (
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
-	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
@@ -59,7 +58,7 @@ type Store struct {
 	// Token storage (encrypted at rest if encryptor is set)
 	// Now uses oauth2.Token directly
 	tokens   map[string]*oauth2.Token
-	userInfo map[string]*providers.UserInfo
+	userInfo map[string]*storage.UserInfo
 
 	// Refresh token tracking (for rotation and security)
 	refreshTokens        map[string]string              // refresh token -> user ID
@@ -162,7 +161,7 @@ func WithRevokedFamilyRetentionDays(days int64) Option {
 func New(opts ...Option) *Store {
 	s := &Store{
 		tokens:                     make(map[string]*oauth2.Token),
-		userInfo:                   make(map[string]*providers.UserInfo),
+		userInfo:                   make(map[string]*storage.UserInfo),
 		refreshTokens:              make(map[string]string),
 		refreshTokenExpiries:       make(map[string]time.Time),
 		refreshTokenFamilies:       make(map[string]*RefreshTokenFamily),
@@ -429,7 +428,7 @@ func (s *Store) DeleteToken(ctx context.Context, userID string) error {
 }
 
 // SaveUserInfo saves user information
-func (s *Store) SaveUserInfo(ctx context.Context, userID string, info *providers.UserInfo) error {
+func (s *Store) SaveUserInfo(ctx context.Context, userID string, info *storage.UserInfo) error {
 	ctx, span := s.startStorageSpan(ctx, "save_user_info")
 	defer span.End()
 
@@ -457,7 +456,7 @@ func (s *Store) SaveUserInfo(ctx context.Context, userID string, info *providers
 }
 
 // GetUserInfo retrieves user information
-func (s *Store) GetUserInfo(ctx context.Context, userID string) (*providers.UserInfo, error) {
+func (s *Store) GetUserInfo(ctx context.Context, userID string) (*storage.UserInfo, error) {
 	return lookupWithTracing(ctx, s, "get_user_info", s.userInfo, userID, storage.ErrUserInfoNotFound)
 }
 

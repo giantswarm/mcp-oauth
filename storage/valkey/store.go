@@ -17,7 +17,6 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
-	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
@@ -961,7 +960,7 @@ type userInfoJSON struct {
 	EmailVerified bool   `json:"email_verified,omitempty"`
 }
 
-func toUserInfoJSON(info *providers.UserInfo) *userInfoJSON {
+func toUserInfoJSON(info *storage.UserInfo) *userInfoJSON {
 	return &userInfoJSON{
 		ID:            info.ID,
 		Email:         info.Email,
@@ -971,11 +970,11 @@ func toUserInfoJSON(info *providers.UserInfo) *userInfoJSON {
 	}
 }
 
-func fromUserInfoJSON(j *userInfoJSON) *providers.UserInfo {
+func fromUserInfoJSON(j *userInfoJSON) *storage.UserInfo {
 	if j == nil {
 		return nil
 	}
-	return &providers.UserInfo{
+	return &storage.UserInfo{
 		ID:            j.ID,
 		Email:         j.Email,
 		Name:          j.Name,

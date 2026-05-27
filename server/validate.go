@@ -224,7 +224,18 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 	userInfo.TokenSource = providers.TokenSourceOAuth
 
 	// Store user info
-	if err := s.tokenStore.SaveUserInfo(ctx, userInfo.ID, userInfo); err != nil {
+	storedInfo := &storage.UserInfo{
+		ID:            userInfo.ID,
+		Email:         userInfo.Email,
+		EmailVerified: userInfo.EmailVerified,
+		Name:          userInfo.Name,
+		GivenName:     userInfo.GivenName,
+		FamilyName:    userInfo.FamilyName,
+		Picture:       userInfo.Picture,
+		Locale:        userInfo.Locale,
+		Groups:        userInfo.Groups,
+	}
+	if err := s.tokenStore.SaveUserInfo(ctx, userInfo.ID, storedInfo); err != nil {
 		s.Logger.Warn("Failed to save user info", "error", err)
 	}
 

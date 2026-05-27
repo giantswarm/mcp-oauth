@@ -10,7 +10,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/oauth2"
 
-	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
@@ -18,13 +17,13 @@ import (
 type TokenStore struct {
 	mu                     sync.RWMutex
 	tokens                 map[string]*oauth2.Token
-	userInfo               map[string]*providers.UserInfo
+	userInfo               map[string]*storage.UserInfo
 	refreshTokens          map[string]refreshTokenInfo
 	SaveTokenFunc          func(ctx context.Context, userID string, token *oauth2.Token) error
 	GetTokenFunc           func(ctx context.Context, userID string) (*oauth2.Token, error)
 	DeleteTokenFunc        func(ctx context.Context, userID string) error
-	SaveUserInfoFunc       func(ctx context.Context, userID string, info *providers.UserInfo) error
-	GetUserInfoFunc        func(ctx context.Context, userID string) (*providers.UserInfo, error)
+	SaveUserInfoFunc       func(ctx context.Context, userID string, info *storage.UserInfo) error
+	GetUserInfoFunc        func(ctx context.Context, userID string) (*storage.UserInfo, error)
 	SaveRefreshFunc        func(ctx context.Context, refreshToken, userID string, expiresAt time.Time) error
 	GetRefreshFunc         func(ctx context.Context, refreshToken string) (string, error)
 	DeleteRefreshFunc      func(ctx context.Context, refreshToken string) error
@@ -42,7 +41,7 @@ type refreshTokenInfo struct {
 func NewTokenStore() *TokenStore {
 	m := &TokenStore{
 		tokens:        make(map[string]*oauth2.Token),
-		userInfo:      make(map[string]*providers.UserInfo),
+		userInfo:      make(map[string]*storage.UserInfo),
 		refreshTokens: make(map[string]refreshTokenInfo),
 		CallCounts:    make(map[string]int),
 	}
@@ -88,14 +87,14 @@ func (m *TokenStore) defaultDeleteToken(_ context.Context, userID string) error 
 	return nil
 }
 
-func (m *TokenStore) defaultSaveUserInfo(_ context.Context, userID string, info *providers.UserInfo) error {
+func (m *TokenStore) defaultSaveUserInfo(_ context.Context, userID string, info *storage.UserInfo) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.userInfo[userID] = info
 	return nil
 }
 
-func (m *TokenStore) defaultGetUserInfo(_ context.Context, userID string) (*providers.UserInfo, error) {
+func (m *TokenStore) defaultGetUserInfo(_ context.Context, userID string) (*storage.UserInfo, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	info, ok := m.userInfo[userID]
@@ -179,13 +178,13 @@ func (m *TokenStore) DeleteToken(ctx context.Context, userID string) error {
 }
 
 // SaveUserInfo saves user information
-func (m *TokenStore) SaveUserInfo(ctx context.Context, userID string, info *providers.UserInfo) error {
+func (m *TokenStore) SaveUserInfo(ctx context.Context, userID string, info *storage.UserInfo) error {
 	m.CallCounts["SaveUserInfo"]++
 	return m.SaveUserInfoFunc(ctx, userID, info)
 }
 
 // GetUserInfo retrieves user information
-func (m *TokenStore) GetUserInfo(ctx context.Context, userID string) (*providers.UserInfo, error) {
+func (m *TokenStore) GetUserInfo(ctx context.Context, userID string) (*storage.UserInfo, error) {
 	m.CallCounts["GetUserInfo"]++
 	return m.GetUserInfoFunc(ctx, userID)
 }

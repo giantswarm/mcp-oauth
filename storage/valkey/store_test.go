@@ -13,7 +13,6 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
-	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
@@ -373,7 +372,7 @@ func TestTokenStore_SaveAndGetUserInfo(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 
-	info := &providers.UserInfo{
+	info := &storage.UserInfo{
 		ID:            "user1",
 		Email:         "user@example.com",
 		Name:          "Test User",
@@ -1145,7 +1144,7 @@ func TestValidation_EmptyUserID(t *testing.T) {
 	ctx := context.Background()
 
 	// All methods should return errors for empty userID
-	if err := s.SaveUserInfo(ctx, "", &providers.UserInfo{}); err == nil {
+	if err := s.SaveUserInfo(ctx, "", &storage.UserInfo{}); err == nil {
 		t.Error("SaveUserInfo should fail with empty userID")
 	}
 

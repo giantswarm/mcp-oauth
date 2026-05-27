@@ -12,7 +12,6 @@ import (
 	"golang.org/x/oauth2"
 
 	oauth "github.com/giantswarm/mcp-oauth"
-	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/server"
 	"github.com/giantswarm/mcp-oauth/storage"
@@ -362,7 +361,7 @@ func TestValidateTokenWithScopeValidation(t *testing.T) {
 			userID := testUserID
 
 			// Store user info
-			userInfo := &providers.UserInfo{
+			userInfo := &storage.UserInfo{
 				ID:            userID,
 				Email:         "test@example.com",
 				EmailVerified: true,
@@ -460,7 +459,7 @@ func TestValidateTokenWithoutScopeMetadata(t *testing.T) {
 	userID := "test_user"
 
 	// Store user info
-	userInfo := &providers.UserInfo{
+	userInfo := &storage.UserInfo{
 		ID:            userID,
 		Email:         "test@example.com",
 		EmailVerified: true,
@@ -766,7 +765,7 @@ func TestValidateTokenScopesLongPathSanitization(t *testing.T) {
 	userID := "test_user"
 
 	// Store user info
-	userInfo := &providers.UserInfo{
+	userInfo := &storage.UserInfo{
 		ID:            userID,
 		Email:         "test@example.com",
 		EmailVerified: true,
@@ -1022,7 +1021,7 @@ func TestHideEndpointPathInErrors(t *testing.T) {
 			accessToken := "test_token_hide_path"
 			userID := testUserID
 
-			userInfo := &providers.UserInfo{
+			userInfo := &storage.UserInfo{
 				ID:            userID,
 				Email:         "test@example.com",
 				EmailVerified: true,

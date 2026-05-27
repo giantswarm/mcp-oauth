@@ -9,7 +9,6 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 )
 
@@ -117,6 +116,20 @@ func IsCodeReuseError(err error) bool {
 	return errors.Is(err, ErrAuthorizationCodeUsed)
 }
 
+// UserInfo holds identity claims for a user as stored by this server.
+// Providers map their own types to this struct before calling SaveUserInfo.
+type UserInfo struct {
+	ID            string
+	Email         string
+	EmailVerified bool
+	Name          string
+	GivenName     string
+	FamilyName    string
+	Picture       string
+	Locale        string
+	Groups        []string
+}
+
 // TokenStore defines the interface for storing and retrieving tokens.
 // This allows using in-memory, Redis, database, or other storage backends.
 // Now uses golang.org/x/oauth2.Token directly.
@@ -132,10 +145,10 @@ type TokenStore interface {
 	DeleteToken(ctx context.Context, userID string) error
 
 	// SaveUserInfo saves user information
-	SaveUserInfo(ctx context.Context, userID string, info *providers.UserInfo) error
+	SaveUserInfo(ctx context.Context, userID string, info *UserInfo) error
 
 	// GetUserInfo retrieves user information
-	GetUserInfo(ctx context.Context, userID string) (*providers.UserInfo, error)
+	GetUserInfo(ctx context.Context, userID string) (*UserInfo, error)
 
 	// SaveRefreshToken saves a refresh token mapping to user ID with expiry
 	SaveRefreshToken(ctx context.Context, refreshToken, userID string, expiresAt time.Time) error
@@ -497,5 +510,6 @@ type TokenMetadata struct {
 	Audience    string         // RFC 8707: Intended resource server identifier (for audience validation)
 	Scopes      []string       // MCP 2025-11-25: Scopes granted to this token (for scope validation)
 	FamilyID    string         // Refresh token family ID for session tracking
+	JKT         string         // JWK thumbprint for DPoP-bound tokens (RFC 9449 §6.1); empty = bearer
 	ExtraClaims map[string]any // Application-defined claims forwarded verbatim in introspection responses.
 }

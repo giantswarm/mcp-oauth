@@ -143,8 +143,10 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 		attribute.String(instrumentation.AttrGrantType, "authorization_code"),
 	)
 
+	dpopJKT, _ := h.extractDPoPJKT(r)
+
 	// Exchange authorization code for tokens
-	tokenResponse, scope, err := h.server.ExchangeAuthorizationCode(r.Context(), code, client.ClientID, redirectURI, resource, codeVerifier)
+	tokenResponse, scope, err := h.server.ExchangeAuthorizationCode(r.Context(), code, client.ClientID, redirectURI, resource, codeVerifier, dpopJKT)
 	if err != nil {
 		h.logger.Error("Failed to exchange authorization code", "client_id", client.ClientID, "ip", clientIP, "error", err)
 		h.recordTokenFailure(r.Context(), "authorization_code", oauth.ErrorCodeInvalidGrant)

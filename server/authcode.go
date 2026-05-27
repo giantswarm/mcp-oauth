@@ -607,7 +607,19 @@ func (s *Server) saveUserInfoAndToken(ctx context.Context, userInfo *providers.U
 		return fmt.Errorf("UserInfo.ID is empty; provider did not supply a subject claim")
 	}
 
-	if err := s.tokenStore.SaveUserInfo(ctx, userInfo.ID, userInfo); err != nil {
+	storedInfo := &storage.UserInfo{
+		ID:            userInfo.ID,
+		Email:         userInfo.Email,
+		EmailVerified: userInfo.EmailVerified,
+		Name:          userInfo.Name,
+		GivenName:     userInfo.GivenName,
+		FamilyName:    userInfo.FamilyName,
+		Picture:       userInfo.Picture,
+		Locale:        userInfo.Locale,
+		Groups:        userInfo.Groups,
+	}
+
+	if err := s.tokenStore.SaveUserInfo(ctx, userInfo.ID, storedInfo); err != nil {
 		s.auditProviderTokenStorageFailed(ctx, userInfo, "save_user_info_by_id", err.Error())
 		return fmt.Errorf("save user info by id: %w", err)
 	}
@@ -619,7 +631,7 @@ func (s *Server) saveUserInfoAndToken(ctx context.Context, userInfo *providers.U
 	if userInfo.Email == "" {
 		return nil
 	}
-	if err := s.tokenStore.SaveUserInfo(ctx, userInfo.Email, userInfo); err != nil {
+	if err := s.tokenStore.SaveUserInfo(ctx, userInfo.Email, storedInfo); err != nil {
 		s.Logger.Warn("Failed to save user info by email", "error", err)
 		s.auditProviderTokenStorageFailed(ctx, userInfo, "save_user_info_by_email", err.Error())
 	}
@@ -744,10 +756,10 @@ func (s *Server) logAuthorizationCodeIssued(ctx context.Context, userID, clientI
 	}
 }
 
-// ExchangeAuthorizationCode exchanges an authorization code for tokens
-// Returns oauth2.Token directly
-// resource parameter is optional per RFC 8707 for backward compatibility
-func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, redirectURI, resource, codeVerifier string) (*oauth2.Token, string, error) {
+// ExchangeAuthorizationCode exchanges an authorization code for tokens.
+// dpopJKT is the JWK thumbprint from the DPoP proof header; empty string for
+// bearer-only clients. resource is optional per RFC 8707.
+func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, redirectURI, resource, codeVerifier, dpopJKT string) (*oauth2.Token, string, error) {
 	ctx, span := s.startExchangeSpan(ctx, clientID)
 	if span != nil {
 		defer span.End()
@@ -764,7 +776,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 		familyID = generateRandomToken()
 	}
 
-	tokenResponse, err := s.generateAndStoreTokens(ctx, authCode, clientID, familyID)
+	tokenResponse, err := s.generateAndStoreTokens(ctx, authCode, clientID, familyID, dpopJKT)
 	if err != nil {
 		return nil, "", err
 	}
@@ -864,7 +876,7 @@ func (s *Server) logScopeValidationFailure(ctx context.Context, authCode *storag
 }
 
 // generateAndStoreTokens generates and stores access and refresh tokens.
-func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.AuthorizationCode, clientID, familyID string) (*oauth2.Token, error) {
+func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.AuthorizationCode, clientID, familyID, dpopJKT string) (*oauth2.Token, error) {
 	now := time.Now()
 	var providerExpiry time.Time
 	if authCode.ProviderToken != nil {
@@ -881,6 +893,7 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 		Scopes:    tokenScopes,
 		ExpiresAt: expiry,
 		FamilyID:  familyID,
+		JKT:       dpopJKT,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("issue access token: %w", err)
@@ -922,6 +935,7 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 		Audience:  authCode.Audience,
 		FamilyID:  familyID,
 		Scopes:    tokenScopes,
+		JKT:       dpopJKT,
 	}, refreshExpiry)
 
 	return tokenResponse, nil
@@ -938,6 +952,7 @@ type accessTokenIssueParams struct {
 	Scopes    []string
 	ExpiresAt time.Time
 	FamilyID  string
+	JKT       string
 }
 
 // issueAccessToken builds AccessTokenClaims from the issuance context and
@@ -953,6 +968,7 @@ func (s *Server) issueAccessToken(ctx context.Context, p accessTokenIssueParams)
 		IssuedAt:  time.Now().UTC(),
 		ExpiresAt: p.ExpiresAt,
 		FamilyID:  p.FamilyID,
+		JKT:       p.JKT,
 	}
 	if s.Config.IsJWTAccessTokenFormat() {
 		s.fillUserInfoClaims(ctx, p.UserID, &claims)

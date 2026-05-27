@@ -128,6 +128,7 @@ func TestServer_AuditLoggingClientIDMismatch(t *testing.T) {
 		"https://example.com/callback",
 		"", // resource parameter (optional)
 		codeVerifier,
+		"",
 	)
 
 	if err == nil {
@@ -230,6 +231,7 @@ func TestServer_AuditLoggingRedirectURIMismatch(t *testing.T) {
 		wrongRedirectURI,
 		"", // resource parameter (optional)
 		codeVerifier,
+		"",
 	)
 
 	if err == nil {
@@ -479,6 +481,7 @@ func TestServer_AuditEventAuthorizationCodeReuse(t *testing.T) {
 		"https://example.com/callback",
 		"", // resource parameter (optional)
 		codeVerifier,
+		"",
 	)
 	if err != nil {
 		t.Fatalf("First ExchangeAuthorizationCode() error = %v", err)
@@ -492,6 +495,7 @@ func TestServer_AuditEventAuthorizationCodeReuse(t *testing.T) {
 		"https://example.com/callback",
 		"", // resource parameter (optional)
 		codeVerifier,
+		"",
 	)
 	if err == nil {
 		t.Fatal("Second exchange should fail (code reuse)")

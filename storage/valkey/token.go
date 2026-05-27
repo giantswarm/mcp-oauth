@@ -9,7 +9,6 @@ import (
 	valkeygo "github.com/valkey-io/valkey-go"
 	"golang.org/x/oauth2"
 
-	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
@@ -186,7 +185,7 @@ func (s *Store) DeleteToken(ctx context.Context, userID string) (err error) {
 }
 
 // SaveUserInfo saves user information
-func (s *Store) SaveUserInfo(ctx context.Context, userID string, info *providers.UserInfo) (err error) {
+func (s *Store) SaveUserInfo(ctx context.Context, userID string, info *storage.UserInfo) (err error) {
 	op := s.startTracedOp(ctx, "save_user_info")
 	defer op.end(&err)
 
@@ -212,7 +211,7 @@ func (s *Store) SaveUserInfo(ctx context.Context, userID string, info *providers
 }
 
 // GetUserInfo retrieves user information
-func (s *Store) GetUserInfo(ctx context.Context, userID string) (result *providers.UserInfo, err error) {
+func (s *Store) GetUserInfo(ctx context.Context, userID string) (result *storage.UserInfo, err error) {
 	op := s.startTracedOp(ctx, "get_user_info")
 	defer op.end(&err)
 

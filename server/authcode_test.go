@@ -1059,6 +1059,7 @@ func TestServer_ExchangeAuthorizationCode(t *testing.T) {
 							tt.redirectURI,
 							"", // resource parameter (optional)
 							tt.codeVerifier,
+							"",
 						)
 
 						if (err != nil) != tt.wantErr {
@@ -1081,6 +1082,7 @@ func TestServer_ExchangeAuthorizationCode(t *testing.T) {
 				tt.redirectURI,
 				"", // resource parameter (optional)
 				tt.codeVerifier,
+				"",
 			)
 
 			if (err != nil) != tt.wantErr {
@@ -1134,7 +1136,7 @@ func TestServer_ExchangeAuthorizationCode_MetadataExpiresAt(t *testing.T) {
 	require.NoError(t, store.SaveAuthorizationCode(ctx, authCode))
 
 	before := time.Now()
-	token, _, err := srv.ExchangeAuthorizationCode(ctx, authCode.Code, client.ClientID, "https://example.com/callback", "", verifier)
+	token, _, err := srv.ExchangeAuthorizationCode(ctx, authCode.Code, client.ClientID, "https://example.com/callback", "", verifier, "")
 	require.NoError(t, err)
 
 	atMeta, err := store.GetTokenMetadata(token.AccessToken)
@@ -1214,6 +1216,7 @@ func TestServer_ExchangeAuthorizationCode_IDTokenForwarding(t *testing.T) {
 		"https://example.com/callback",
 		"",
 		validVerifier,
+		"",
 	)
 	if err != nil {
 		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
@@ -1294,6 +1297,7 @@ func TestServer_ExchangeAuthorizationCode_NoIDToken(t *testing.T) {
 		"https://example.com/callback",
 		"",
 		validVerifier,
+		"",
 	)
 	if err != nil {
 		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
@@ -1440,6 +1444,7 @@ func TestServer_ExchangeAuthorizationCode_PublicClient_PKCEEnforcement(t *testin
 				"https://example.com/callback",
 				"", // resource parameter (optional)
 				tt.codeVerifier,
+				"",
 			)
 
 			// Verify error behavior
@@ -1608,6 +1613,7 @@ func TestServer_ExchangeAuthorizationCode_AllowPublicClientsWithoutPKCE(t *testi
 				"https://example.com/callback",
 				"", // resource parameter (optional)
 				codeVerifier,
+				"",
 			)
 
 			// Verify error behavior
@@ -1704,6 +1710,7 @@ func TestServer_ExchangeAuthorizationCode_PublicClient_ReuseDetection(t *testing
 		"https://example.com/callback",
 		"", // resource parameter (optional)
 		validVerifier,
+		"",
 	)
 	if err != nil {
 		t.Fatalf("First ExchangeAuthorizationCode() error = %v", err)
@@ -1722,6 +1729,7 @@ func TestServer_ExchangeAuthorizationCode_PublicClient_ReuseDetection(t *testing
 		"https://example.com/callback",
 		"", // resource parameter (optional)
 		validVerifier,
+		"",
 	)
 
 	if err == nil {
@@ -1820,6 +1828,7 @@ func TestServer_ConcurrentAuthorizationCodeReuse(t *testing.T) {
 				"https://example.com/callback",
 				"", // resource parameter (optional)
 				codeVerifier,
+				"",
 			)
 			results <- result{success: err == nil, token: token, err: err}
 		}()
@@ -1933,6 +1942,7 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 		"https://example.com/callback",
 		"", // resource parameter (optional)
 		codeVerifier,
+		"",
 	)
 	if err != nil {
 		t.Fatalf("First ExchangeAuthorizationCode() error = %v", err)
@@ -1970,6 +1980,7 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 		"https://example.com/callback",
 		"", // resource parameter (optional)
 		codeVerifier,
+		"",
 	)
 	if err == nil {
 		t.Fatal("Second ExchangeAuthorizationCode() should have failed due to code reuse")
@@ -2075,6 +2086,7 @@ func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
 		"https://example.com/callback",
 		"", // resource parameter (optional)
 		codeVerifier,
+		"",
 	)
 	if err != nil {
 		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
@@ -2108,6 +2120,7 @@ func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
 		"https://example.com/callback",
 		"", // resource parameter (optional)
 		codeVerifier,
+		"",
 	)
 	if err == nil {
 		t.Fatal("Code reuse should have been detected")
@@ -2252,6 +2265,7 @@ func TestServer_GenericErrorMessagesNoInfoLeakage(t *testing.T) {
 				tt.redirectURI,
 				"", // resource parameter (optional)
 				tt.codeVerifier,
+				"",
 			)
 
 			if err == nil {
@@ -2353,6 +2367,7 @@ func TestServer_AuthCodeReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 		"https://example.com/callback",
 		"", // resource parameter (optional)
 		codeVerifier,
+		"",
 	)
 	if err != nil {
 		t.Fatalf("First ExchangeAuthorizationCode() error = %v", err)
@@ -2366,6 +2381,7 @@ func TestServer_AuthCodeReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 		"https://example.com/callback",
 		"", // resource parameter (optional)
 		codeVerifier,
+		"",
 	)
 	if err == nil {
 		t.Fatal("Second exchange should fail (code reuse)")
@@ -2615,6 +2631,7 @@ func TestExchangeAuthorizationCode_ClientScopeValidation(t *testing.T) {
 				"https://example.com/callback",
 				"", // resource parameter (optional)
 				validVerifier,
+				"",
 			)
 
 			if tt.wantErr {
@@ -3041,6 +3058,7 @@ func TestResourceParameter_AudienceValidation(t *testing.T) {
 			client.RedirectURIs[0],
 			"https://mcp.example.com", // Resource matches
 			codeVerifier,
+			"",
 		)
 		if err != nil {
 			t.Fatalf("Failed to exchange authorization code: %v", err)
@@ -3119,6 +3137,7 @@ func TestResourceParameter_AudienceValidation(t *testing.T) {
 			client.RedirectURIs[0],
 			"https://mcp.example.com",
 			codeVerifier,
+			"",
 		)
 		if err != nil {
 			t.Fatalf("Failed to exchange authorization code: %v", err)
@@ -3178,6 +3197,7 @@ func TestResourceParameter_AudienceValidation(t *testing.T) {
 			client.RedirectURIs[0],
 			"", // No resource parameter
 			codeVerifier,
+			"",
 		)
 		if err != nil {
 			t.Fatalf("Failed to exchange authorization code: %v", err)
@@ -3296,6 +3316,7 @@ func TestResourceParameter_ConsistencyValidation(t *testing.T) {
 			client.RedirectURIs[0],
 			"https://different-mcp.example.com", // Resource B (different!)
 			codeVerifier,
+			"",
 		)
 		if err == nil {
 			t.Fatal("Expected resource mismatch error but exchange succeeded")
@@ -3546,6 +3567,7 @@ func TestResourceParameter_RateLimiting(t *testing.T) {
 		client.RedirectURIs[0],
 		"https://different-mcp.example.com", // Resource B (wrong)
 		codeVerifier,
+		"",
 	)
 	if err == nil {
 		t.Fatal("Expected resource mismatch error")
@@ -3790,7 +3812,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 			},
 		}
 
-		tokenResponse, err := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
+		tokenResponse, err := srv.generateAndStoreTokens(ctx, authCode, "test-client", "", "")
 		if err != nil {
 			t.Fatalf("generateAndStoreTokens() error = %v", err)
 		}
@@ -3828,7 +3850,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 			},
 		}
 
-		tokenResponse, err := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
+		tokenResponse, err := srv.generateAndStoreTokens(ctx, authCode, "test-client", "", "")
 		if err != nil {
 			t.Fatalf("generateAndStoreTokens() error = %v", err)
 		}
@@ -3867,7 +3889,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 			},
 		}
 
-		tokenResponse, err := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
+		tokenResponse, err := srv.generateAndStoreTokens(ctx, authCode, "test-client", "", "")
 		if err != nil {
 			t.Fatalf("generateAndStoreTokens() error = %v", err)
 		}
@@ -3892,7 +3914,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 			ProviderToken: nil,
 		}
 
-		tokenResponse, err := srv.generateAndStoreTokens(ctx, authCode, "test-client", "")
+		tokenResponse, err := srv.generateAndStoreTokens(ctx, authCode, "test-client", "", "")
 		if err != nil {
 			t.Fatalf("generateAndStoreTokens() error = %v", err)
 		}
@@ -3925,7 +3947,7 @@ func TestServer_GenerateAndStoreTokens_PastExpiryIgnored(t *testing.T) {
 		},
 	}
 
-	tokenResponse, err := srv.generateAndStoreTokens(context.Background(), authCode, "test-client", "")
+	tokenResponse, err := srv.generateAndStoreTokens(context.Background(), authCode, "test-client", "", "")
 	if err != nil {
 		t.Fatalf("generateAndStoreTokens() error = %v", err)
 	}
@@ -3992,7 +4014,7 @@ func TestServer_ExchangeAuthorizationCode_FamilyIDInMetadata(t *testing.T) {
 		t.Fatalf("HandleProviderCallback() error = %v", err)
 	}
 
-	token, _, err := srv.ExchangeAuthorizationCode(ctx, authCodeObj.Code, clientID, "https://example.com/callback", "", codeVerifier)
+	token, _, err := srv.ExchangeAuthorizationCode(ctx, authCodeObj.Code, clientID, "https://example.com/callback", "", codeVerifier, "")
 	if err != nil {
 		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
 	}
@@ -4100,7 +4122,7 @@ func TestServer_SessionCreationHandler_CalledOnExchange(t *testing.T) {
 		t.Fatalf("HandleProviderCallback() error = %v", err)
 	}
 
-	token, _, err := srv.ExchangeAuthorizationCode(ctx, authCodeObj.Code, client.ClientID, "https://example.com/callback", "", codeVerifier)
+	token, _, err := srv.ExchangeAuthorizationCode(ctx, authCodeObj.Code, client.ClientID, "https://example.com/callback", "", codeVerifier, "")
 	if err != nil {
 		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
 	}
@@ -4181,7 +4203,7 @@ func TestServer_SessionCreationHandler_NotCalledWithoutHandler(t *testing.T) {
 		t.Fatalf("HandleProviderCallback() error = %v", err)
 	}
 
-	_, _, err = srv.ExchangeAuthorizationCode(ctx, authCodeObj.Code, client.ClientID, "https://example.com/callback", "", codeVerifier)
+	_, _, err = srv.ExchangeAuthorizationCode(ctx, authCodeObj.Code, client.ClientID, "https://example.com/callback", "", codeVerifier, "")
 	if err != nil {
 		t.Fatalf("ExchangeAuthorizationCode() should succeed without handler, got error = %v", err)
 	}
