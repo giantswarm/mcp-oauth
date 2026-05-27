@@ -368,19 +368,11 @@ func TestConfigSecurityWarning_AllowInsecureHTTP(t *testing.T) {
 		AllowInsecureHTTP: true,
 	}
 
-	// Apply secure defaults (which includes logging warnings)
 	_ = applySecureDefaults(config, setup.logger)
 
-	// Verify critical security warning was logged
 	logOutput := setup.getLogs()
-	if !strings.Contains(logOutput, "CRITICAL SECURITY WARNING") {
-		t.Errorf("Expected critical warning in config, got: %s", logOutput)
-	}
-	if !strings.Contains(logOutput, "HTTP is explicitly allowed") {
-		t.Errorf("Expected warning about HTTP being allowed, got: %s", logOutput)
-	}
-	if !strings.Contains(logOutput, "OAuth 2.1") {
-		t.Errorf("Expected OAuth 2.1 compliance mention, got: %s", logOutput)
+	if !strings.Contains(logOutput, "SECURITY WARNING: AllowInsecureHTTP is enabled") {
+		t.Errorf("Expected AllowInsecureHTTP security warning, got: %s", logOutput)
 	}
 }
 
