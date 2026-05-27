@@ -18,6 +18,7 @@ import (
 
 	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/giantswarm/mcp-oauth/instrumentation"
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/server"
@@ -347,14 +348,14 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "invalid OIDC parameter")
-		h.writeError(w, oauth.ErrorCodeInvalidRequest, err.Error(), http.StatusBadRequest)
+		h.writeError(w, constants.ErrorCodeInvalidRequest, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	if clientID == "" {
 		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "client_id missing")
-		h.writeError(w, oauth.ErrorCodeInvalidRequest, "client_id is required", http.StatusBadRequest)
+		h.writeError(w, constants.ErrorCodeInvalidRequest, "client_id is required", http.StatusBadRequest)
 		return
 	}
 
@@ -366,7 +367,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		h.logger.Info("Authorization request rejected: invalid client or redirect_uri", "client_id", clientID, "error", err)
 		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "invalid client or redirect_uri")
-		h.writeError(w, oauth.ErrorCodeInvalidRequest, err.Error(), http.StatusBadRequest)
+		h.writeError(w, constants.ErrorCodeInvalidRequest, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -378,7 +379,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		h.logger.Warn("Authorization request rejected: state parameter too long", "state_length", len(state), "max_allowed", maxStateLength, "client_id", clientID)
 		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "state too long")
-		h.writeError(w, oauth.ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at most %d characters", maxStateLength), http.StatusBadRequest)
+		h.writeError(w, constants.ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at most %d characters", maxStateLength), http.StatusBadRequest)
 		return
 	}
 
@@ -386,7 +387,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
 			redirectURI: canonicalRedirectURI,
 			state:       state,
-			code:        oauth.ErrorCodeInvalidRequest,
+			code:        constants.ErrorCodeInvalidRequest,
 			description: rejection.description,
 			spanError:   rejection.spanError,
 		})
@@ -398,7 +399,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
 			redirectURI: canonicalRedirectURI,
 			state:       state,
-			code:        oauth.ErrorCodeUnsupportedResponseType,
+			code:        constants.ErrorCodeUnsupportedResponseType,
 			description: fmt.Sprintf("response_type must be one of [%s]", strings.Join(oauth.DefaultResponseTypes, ", ")),
 			spanError:   "unsupported response_type",
 		})
@@ -421,7 +422,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
 			redirectURI: canonicalRedirectURI,
 			state:       state,
-			code:        oauth.ErrorCodeServerError,
+			code:        constants.ErrorCodeServerError,
 			description: "Failed to start authorization flow",
 			spanError:   "authorization flow failed",
 		})
@@ -440,7 +441,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
 			redirectURI: canonicalRedirectURI,
 			state:       state,
-			code:        oauth.ErrorCodeServerError,
+			code:        constants.ErrorCodeServerError,
 			description: "Failed to start authorization flow",
 			spanError:   "invalid authorization URL",
 		})
@@ -503,7 +504,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 		h.recordHTTPMetrics(r.Context(), endpointCallback, http.MethodGet, http.StatusBadRequest, startTime)
 		h.recordCallbackProcessed(r.Context(), "", false)
 		instrumentation.SetSpanError(span, "missing state or code")
-		h.writeError(w, oauth.ErrorCodeInvalidRequest, "state and code are required", http.StatusBadRequest)
+		h.writeError(w, constants.ErrorCodeInvalidRequest, "state and code are required", http.StatusBadRequest)
 		return
 	}
 	minStateLength := h.server.Config.MinStateLength
@@ -513,7 +514,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 		h.recordHTTPMetrics(r.Context(), endpointCallback, http.MethodGet, http.StatusBadRequest, startTime)
 		h.recordCallbackProcessed(r.Context(), "", false)
 		instrumentation.SetSpanError(span, "state too short")
-		h.writeError(w, oauth.ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at least %d characters for security", minStateLength), http.StatusBadRequest)
+		h.writeError(w, constants.ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at least %d characters for security", minStateLength), http.StatusBadRequest)
 		return
 	}
 	if len(state) > maxStateLength {
@@ -521,7 +522,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 		h.recordHTTPMetrics(r.Context(), endpointCallback, http.MethodGet, http.StatusBadRequest, startTime)
 		h.recordCallbackProcessed(r.Context(), "", false)
 		instrumentation.SetSpanError(span, "state too long")
-		h.writeError(w, oauth.ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at most %d characters", maxStateLength), http.StatusBadRequest)
+		h.writeError(w, constants.ErrorCodeInvalidRequest, fmt.Sprintf("state parameter must be at most %d characters", maxStateLength), http.StatusBadRequest)
 		return
 	}
 
@@ -534,7 +535,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 		h.recordCallbackProcessed(r.Context(), "", false)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "callback handling failed")
-		h.writeError(w, oauth.ErrorCodeServerError, "Authorization failed", http.StatusInternalServerError)
+		h.writeError(w, constants.ErrorCodeServerError, "Authorization failed", http.StatusInternalServerError)
 		return
 	}
 
@@ -552,7 +553,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	parsedRedirect, err := url.Parse(authCode.RedirectURI)
 	if err != nil {
 		h.logger.Error("Stored redirect URI failed to parse", "ip", clientIP, "error", err, "client_id", authCode.ClientID)
-		h.failRequest(w, r, span, endpointCallback, http.MethodGet, http.StatusInternalServerError, oauth.ErrorCodeServerError, "Authorization failed", startTime)
+		h.failRequest(w, r, span, endpointCallback, http.MethodGet, http.StatusInternalServerError, constants.ErrorCodeServerError, "Authorization failed", startTime)
 		return
 	}
 	q := parsedRedirect.Query()

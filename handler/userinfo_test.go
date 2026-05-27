@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/server"
 )
 
@@ -23,7 +23,7 @@ func TestHandler_ServeUserInfo(t *testing.T) {
 		handler.ValidateToken(http.HandlerFunc(handler.ServeUserInfo)).ServeHTTP(w, req)
 
 		require.Equal(t, http.StatusForbidden, w.Code)
-		require.Contains(t, w.Header().Get("WWW-Authenticate"), oauth.ErrorCodeInsufficientScope)
+		require.Contains(t, w.Header().Get("WWW-Authenticate"), constants.ErrorCodeInsufficientScope)
 	})
 
 	t.Run("openid only returns sub", func(t *testing.T) {

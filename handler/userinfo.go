@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/giantswarm/mcp-oauth/instrumentation"
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 )
@@ -85,7 +85,7 @@ func (h *Handler) ServeUserInfo(w http.ResponseWriter, r *http.Request) {
 	if !ok || userInfo == nil {
 		instrumentation.SetSpanError(span, "user info missing from context")
 		h.recordHTTPMetrics(r.Context(), endpointUserInfo, r.Method, http.StatusUnauthorized, startTime)
-		h.writeUnauthorizedError(w, r, oauth.ErrorCodeInvalidToken, "User information unavailable")
+		h.writeUnauthorizedError(w, r, constants.ErrorCodeInvalidToken, "User information unavailable")
 		return
 	}
 

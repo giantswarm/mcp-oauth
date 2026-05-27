@@ -4,34 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-)
 
-// OAuth error codes as constants
-const (
-	ErrorCodeInvalidRequest          = "invalid_request"
-	ErrorCodeInvalidGrant            = "invalid_grant"
-	ErrorCodeInvalidClient           = "invalid_client"
-	ErrorCodeInvalidScope            = "invalid_scope"
-	ErrorCodeInvalidToken            = "invalid_token"
-	ErrorCodeInsufficientScope       = "insufficient_scope"
-	ErrorCodeUnauthorizedClient      = "unauthorized_client"
-	ErrorCodeUnsupportedGrantType    = "unsupported_grant_type"
-	ErrorCodeUnsupportedResponseType = "unsupported_response_type"
-	ErrorCodeServerError             = "server_error"
-	ErrorCodeAccessDenied            = "access_denied"
-	ErrorCodeInvalidRedirectURI      = "invalid_redirect_uri"
-	ErrorCodeRateLimitExceeded       = "rate_limit_exceeded"
-
-	// DPoP error codes (RFC 9449)
-	ErrorCodeInvalidDPoPProof = "invalid_dpop_proof"
-	ErrorCodeUseDPoPNonce     = "use_dpop_nonce"
-
-	// Silent authentication error codes (OIDC Core Section 3.1.2.6)
-	// These indicate the IdP requires user interaction and silent auth failed.
-	ErrorCodeLoginRequired            = "login_required"
-	ErrorCodeConsentRequired          = "consent_required"
-	ErrorCodeInteractionRequired      = "interaction_required"
-	ErrorCodeAccountSelectionRequired = "account_selection_required"
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 )
 
 // Error represents an OAuth 2.0 error response.
@@ -75,57 +49,57 @@ var NewOAuthError = NewError
 var (
 	// ErrInvalidRequest indicates the request is malformed or missing required parameters
 	ErrInvalidRequest = func(desc string) *Error {
-		return NewError(ErrorCodeInvalidRequest, desc, http.StatusBadRequest)
+		return NewError(constants.ErrorCodeInvalidRequest, desc, http.StatusBadRequest)
 	}
 
 	// ErrInvalidGrant indicates the authorization code or refresh token is invalid or expired
 	ErrInvalidGrant = func(desc string) *Error {
-		return NewError(ErrorCodeInvalidGrant, desc, http.StatusBadRequest)
+		return NewError(constants.ErrorCodeInvalidGrant, desc, http.StatusBadRequest)
 	}
 
 	// ErrInvalidClient indicates client authentication failed
 	ErrInvalidClient = func(desc string) *Error {
-		return NewError(ErrorCodeInvalidClient, desc, http.StatusUnauthorized)
+		return NewError(constants.ErrorCodeInvalidClient, desc, http.StatusUnauthorized)
 	}
 
 	// ErrInvalidScope indicates the requested scope is invalid or unsupported
 	ErrInvalidScope = func(desc string) *Error {
-		return NewError(ErrorCodeInvalidScope, desc, http.StatusBadRequest)
+		return NewError(constants.ErrorCodeInvalidScope, desc, http.StatusBadRequest)
 	}
 
 	// ErrInvalidToken indicates the access token is invalid or expired
 	ErrInvalidToken = func(desc string) *Error {
-		return NewError(ErrorCodeInvalidToken, desc, http.StatusUnauthorized)
+		return NewError(constants.ErrorCodeInvalidToken, desc, http.StatusUnauthorized)
 	}
 
 	// ErrInsufficientScope indicates the access token lacks required scopes
 	ErrInsufficientScope = func(desc string) *Error {
-		return NewError(ErrorCodeInsufficientScope, desc, http.StatusForbidden)
+		return NewError(constants.ErrorCodeInsufficientScope, desc, http.StatusForbidden)
 	}
 
 	// ErrUnauthorizedClient indicates the client is not authorized for the requested grant type
 	ErrUnauthorizedClient = func(desc string) *Error {
-		return NewError(ErrorCodeUnauthorizedClient, desc, http.StatusBadRequest)
+		return NewError(constants.ErrorCodeUnauthorizedClient, desc, http.StatusBadRequest)
 	}
 
 	// ErrUnsupportedGrantType indicates the grant type is not supported
 	ErrUnsupportedGrantType = func(desc string) *Error {
-		return NewError(ErrorCodeUnsupportedGrantType, desc, http.StatusBadRequest)
+		return NewError(constants.ErrorCodeUnsupportedGrantType, desc, http.StatusBadRequest)
 	}
 
 	// ErrServerError indicates an internal server error occurred
 	ErrServerError = func(desc string) *Error {
-		return NewError(ErrorCodeServerError, desc, http.StatusInternalServerError)
+		return NewError(constants.ErrorCodeServerError, desc, http.StatusInternalServerError)
 	}
 
 	// ErrAccessDenied indicates the user or authorization server denied the request
 	ErrAccessDenied = func(desc string) *Error {
-		return NewError(ErrorCodeAccessDenied, desc, http.StatusForbidden)
+		return NewError(constants.ErrorCodeAccessDenied, desc, http.StatusForbidden)
 	}
 
 	// ErrInvalidRedirectURI indicates the redirect URI is invalid or not registered
 	ErrInvalidRedirectURI = func(desc string) *Error {
-		return NewError(ErrorCodeInvalidRedirectURI, desc, http.StatusBadRequest)
+		return NewError(constants.ErrorCodeInvalidRedirectURI, desc, http.StatusBadRequest)
 	}
 )
 
@@ -219,7 +193,7 @@ func ParseOAuthError(errorCode, errorDescription string) error {
 	}
 
 	switch errorCode {
-	case ErrorCodeLoginRequired, ErrorCodeConsentRequired, ErrorCodeInteractionRequired, ErrorCodeAccountSelectionRequired:
+	case constants.ErrorCodeLoginRequired, constants.ErrorCodeConsentRequired, constants.ErrorCodeInteractionRequired, constants.ErrorCodeAccountSelectionRequired:
 		return &SilentAuthError{Code: errorCode, Description: errorDescription}
 	default:
 		if errorDescription != "" {

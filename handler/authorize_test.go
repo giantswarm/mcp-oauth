@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
@@ -821,19 +822,19 @@ func TestHandler_ServeAuthorization_StateLength(t *testing.T) {
 			name:           "state too short (1 char)",
 			state:          "x",
 			wantStatus:     http.StatusFound,
-			wantErrorParam: oauth.ErrorCodeInvalidRequest,
+			wantErrorParam: constants.ErrorCodeInvalidRequest,
 		},
 		{
 			name:           "state too short (10 chars)",
 			state:          "0123456789",
 			wantStatus:     http.StatusFound,
-			wantErrorParam: oauth.ErrorCodeInvalidRequest,
+			wantErrorParam: constants.ErrorCodeInvalidRequest,
 		},
 		{
 			name:           "state too short (23 chars, just under minimum)",
 			state:          "01234567890123456789012",
 			wantStatus:     http.StatusFound,
-			wantErrorParam: oauth.ErrorCodeInvalidRequest,
+			wantErrorParam: constants.ErrorCodeInvalidRequest,
 		},
 		{
 			name:       "state exactly minimum length (24 chars)",
@@ -1019,7 +1020,7 @@ func TestHandler_ServeAuthorization_NoResponseType_Rejected(t *testing.T) {
 			w := httptest.NewRecorder()
 			handler.ServeAuthorization(w, req)
 
-			assertAuthorizationErrorRedirect(t, w, "https://example.com/callback", oauth.ErrorCodeUnsupportedResponseType, "response_type must be one of [code]", validState)
+			assertAuthorizationErrorRedirect(t, w, "https://example.com/callback", constants.ErrorCodeUnsupportedResponseType, "response_type must be one of [code]", validState)
 		})
 	}
 }
@@ -1076,7 +1077,7 @@ func TestHandler_ServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *tes
 			w := httptest.NewRecorder()
 			handler.ServeAuthorization(w, req)
 
-			assertAuthorizationErrorRedirect(t, w, "https://example.com/callback", oauth.ErrorCodeInvalidRequest, "state parameter", tt.wantState)
+			assertAuthorizationErrorRedirect(t, w, "https://example.com/callback", constants.ErrorCodeInvalidRequest, "state parameter", tt.wantState)
 		})
 	}
 
@@ -1098,8 +1099,8 @@ func TestHandler_ServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *tes
 		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 			t.Fatalf("response body is not JSON: %v", err)
 		}
-		if body["error"] != oauth.ErrorCodeInvalidRequest {
-			t.Errorf("error = %q, want %q", body["error"], oauth.ErrorCodeInvalidRequest)
+		if body["error"] != constants.ErrorCodeInvalidRequest {
+			t.Errorf("error = %q, want %q", body["error"], constants.ErrorCodeInvalidRequest)
 		}
 	})
 
@@ -1146,8 +1147,8 @@ func TestHandler_ServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *tes
 		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 			t.Fatalf("response body is not JSON: %v", err)
 		}
-		if body["error"] != oauth.ErrorCodeInvalidRequest {
-			t.Errorf("error = %q, want %q", body["error"], oauth.ErrorCodeInvalidRequest)
+		if body["error"] != constants.ErrorCodeInvalidRequest {
+			t.Errorf("error = %q, want %q", body["error"], constants.ErrorCodeInvalidRequest)
 		}
 	})
 }
@@ -1199,8 +1200,8 @@ func TestHandler_ServeAuthorization_CustomSchemeRedirectURI_FallsBackToJSON(t *t
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("response body is not JSON: %v", err)
 	}
-	if body["error"] != oauth.ErrorCodeUnsupportedResponseType {
-		t.Errorf("error = %q, want %q", body["error"], oauth.ErrorCodeUnsupportedResponseType)
+	if body["error"] != constants.ErrorCodeUnsupportedResponseType {
+		t.Errorf("error = %q, want %q", body["error"], constants.ErrorCodeUnsupportedResponseType)
 	}
 }
 

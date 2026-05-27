@@ -15,6 +15,7 @@ import (
 	"golang.org/x/oauth2"
 
 	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/server"
 	"github.com/giantswarm/mcp-oauth/storage"
@@ -150,7 +151,7 @@ func TestHandler_writeError(t *testing.T) {
 
 	w := httptest.NewRecorder()
 
-	handler.writeError(w, oauth.ErrorCodeInvalidRequest, "test error", http.StatusBadRequest)
+	handler.writeError(w, constants.ErrorCodeInvalidRequest, "test error", http.StatusBadRequest)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
@@ -161,8 +162,8 @@ func TestHandler_writeError(t *testing.T) {
 		t.Fatalf("failed to decode error response: %v", err)
 	}
 
-	if errResp.Error != oauth.ErrorCodeInvalidRequest {
-		t.Errorf("Error = %q, want %q", errResp.Error, oauth.ErrorCodeInvalidRequest)
+	if errResp.Error != constants.ErrorCodeInvalidRequest {
+		t.Errorf("Error = %q, want %q", errResp.Error, constants.ErrorCodeInvalidRequest)
 	}
 
 	if errResp.ErrorDescription != "test error" {

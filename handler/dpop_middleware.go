@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/server"
 )
 
@@ -49,9 +49,9 @@ func serveDPoP(w http.ResponseWriter, r *http.Request, next http.Handler, replay
 	proof := r.Header.Get("DPoP")
 	if proof == "" {
 		writeDPoPError(w,
-			dpopWWWAuthenticate(oauth.ErrorCodeInvalidRequest, "DPoP proof required"),
+			dpopWWWAuthenticate(constants.ErrorCodeInvalidRequest, "DPoP proof required"),
 			"",
-			oauth.ErrorCodeInvalidRequest,
+			constants.ErrorCodeInvalidRequest,
 			"DPoP proof required",
 			http.StatusUnauthorized,
 		)
@@ -73,18 +73,18 @@ func writeDPoPValidationError(w http.ResponseWriter, r *http.Request, err error,
 			nonce = nonceProvider.Nonce(r.Context())
 		}
 		writeDPoPError(w,
-			dpopWWWAuthenticate(oauth.ErrorCodeUseDPoPNonce, "Resource server requires nonce in DPoP proof"),
+			dpopWWWAuthenticate(constants.ErrorCodeUseDPoPNonce, "Resource server requires nonce in DPoP proof"),
 			nonce,
-			oauth.ErrorCodeUseDPoPNonce,
+			constants.ErrorCodeUseDPoPNonce,
 			"Resource server requires nonce in DPoP proof",
 			http.StatusUnauthorized,
 		)
 		return
 	}
 	writeDPoPError(w,
-		dpopWWWAuthenticate(oauth.ErrorCodeInvalidDPoPProof, err.Error()),
+		dpopWWWAuthenticate(constants.ErrorCodeInvalidDPoPProof, err.Error()),
 		"",
-		oauth.ErrorCodeInvalidDPoPProof,
+		constants.ErrorCodeInvalidDPoPProof,
 		err.Error(),
 		http.StatusUnauthorized,
 	)

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 )
 
 func TestError_Error(t *testing.T) {
@@ -50,19 +52,19 @@ func TestNewError(t *testing.T) {
 	}{
 		{
 			name:        "bad request",
-			code:        ErrorCodeInvalidRequest,
+			code:        constants.ErrorCodeInvalidRequest,
 			description: "Test error",
 			status:      http.StatusBadRequest,
 		},
 		{
 			name:        "unauthorized",
-			code:        ErrorCodeInvalidClient,
+			code:        constants.ErrorCodeInvalidClient,
 			description: "Client authentication failed",
 			status:      http.StatusUnauthorized,
 		},
 		{
 			name:        "internal server error",
-			code:        ErrorCodeServerError,
+			code:        constants.ErrorCodeServerError,
 			description: "Something went wrong",
 			status:      http.StatusInternalServerError,
 		},
@@ -90,17 +92,17 @@ func TestErrorConstants(t *testing.T) {
 		code     string
 		expected string
 	}{
-		{"invalid_request", ErrorCodeInvalidRequest, "invalid_request"},
-		{"invalid_grant", ErrorCodeInvalidGrant, "invalid_grant"},
-		{"invalid_client", ErrorCodeInvalidClient, "invalid_client"},
-		{"invalid_scope", ErrorCodeInvalidScope, "invalid_scope"},
-		{"invalid_token", ErrorCodeInvalidToken, "invalid_token"},
-		{"unauthorized_client", ErrorCodeUnauthorizedClient, "unauthorized_client"},
-		{"unsupported_grant_type", ErrorCodeUnsupportedGrantType, "unsupported_grant_type"},
-		{"server_error", ErrorCodeServerError, "server_error"},
-		{"access_denied", ErrorCodeAccessDenied, "access_denied"},
-		{"invalid_redirect_uri", ErrorCodeInvalidRedirectURI, "invalid_redirect_uri"},
-		{"rate_limit_exceeded", ErrorCodeRateLimitExceeded, "rate_limit_exceeded"},
+		{"invalid_request", constants.ErrorCodeInvalidRequest, "invalid_request"},
+		{"invalid_grant", constants.ErrorCodeInvalidGrant, "invalid_grant"},
+		{"invalid_client", constants.ErrorCodeInvalidClient, "invalid_client"},
+		{"invalid_scope", constants.ErrorCodeInvalidScope, "invalid_scope"},
+		{"invalid_token", constants.ErrorCodeInvalidToken, "invalid_token"},
+		{"unauthorized_client", constants.ErrorCodeUnauthorizedClient, "unauthorized_client"},
+		{"unsupported_grant_type", constants.ErrorCodeUnsupportedGrantType, "unsupported_grant_type"},
+		{"server_error", constants.ErrorCodeServerError, "server_error"},
+		{"access_denied", constants.ErrorCodeAccessDenied, "access_denied"},
+		{"invalid_redirect_uri", constants.ErrorCodeInvalidRedirectURI, "invalid_redirect_uri"},
+		{"rate_limit_exceeded", constants.ErrorCodeRateLimitExceeded, "rate_limit_exceeded"},
 	}
 
 	for _, tt := range tests {
@@ -122,61 +124,61 @@ func TestErrorConstructors(t *testing.T) {
 		{
 			name:           "ErrInvalidRequest",
 			constructor:    ErrInvalidRequest,
-			expectedCode:   ErrorCodeInvalidRequest,
+			expectedCode:   constants.ErrorCodeInvalidRequest,
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
 			name:           "ErrInvalidGrant",
 			constructor:    ErrInvalidGrant,
-			expectedCode:   ErrorCodeInvalidGrant,
+			expectedCode:   constants.ErrorCodeInvalidGrant,
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
 			name:           "ErrInvalidClient",
 			constructor:    ErrInvalidClient,
-			expectedCode:   ErrorCodeInvalidClient,
+			expectedCode:   constants.ErrorCodeInvalidClient,
 			expectedStatus: http.StatusUnauthorized,
 		},
 		{
 			name:           "ErrInvalidScope",
 			constructor:    ErrInvalidScope,
-			expectedCode:   ErrorCodeInvalidScope,
+			expectedCode:   constants.ErrorCodeInvalidScope,
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
 			name:           "ErrInvalidToken",
 			constructor:    ErrInvalidToken,
-			expectedCode:   ErrorCodeInvalidToken,
+			expectedCode:   constants.ErrorCodeInvalidToken,
 			expectedStatus: http.StatusUnauthorized,
 		},
 		{
 			name:           "ErrUnauthorizedClient",
 			constructor:    ErrUnauthorizedClient,
-			expectedCode:   ErrorCodeUnauthorizedClient,
+			expectedCode:   constants.ErrorCodeUnauthorizedClient,
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
 			name:           "ErrUnsupportedGrantType",
 			constructor:    ErrUnsupportedGrantType,
-			expectedCode:   ErrorCodeUnsupportedGrantType,
+			expectedCode:   constants.ErrorCodeUnsupportedGrantType,
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
 			name:           "ErrServerError",
 			constructor:    ErrServerError,
-			expectedCode:   ErrorCodeServerError,
+			expectedCode:   constants.ErrorCodeServerError,
 			expectedStatus: http.StatusInternalServerError,
 		},
 		{
 			name:           "ErrAccessDenied",
 			constructor:    ErrAccessDenied,
-			expectedCode:   ErrorCodeAccessDenied,
+			expectedCode:   constants.ErrorCodeAccessDenied,
 			expectedStatus: http.StatusForbidden,
 		},
 		{
 			name:           "ErrInvalidRedirectURI",
 			constructor:    ErrInvalidRedirectURI,
-			expectedCode:   ErrorCodeInvalidRedirectURI,
+			expectedCode:   constants.ErrorCodeInvalidRedirectURI,
 			expectedStatus: http.StatusBadRequest,
 		},
 	}
@@ -207,25 +209,25 @@ func TestSilentAuthError_Error(t *testing.T) {
 	}{
 		{
 			name:        "login_required with description",
-			code:        ErrorCodeLoginRequired,
+			code:        constants.ErrorCodeLoginRequired,
 			description: "User must authenticate",
 			want:        "silent authentication failed: login_required - User must authenticate",
 		},
 		{
 			name:        "consent_required without description",
-			code:        ErrorCodeConsentRequired,
+			code:        constants.ErrorCodeConsentRequired,
 			description: "",
 			want:        "silent authentication failed: consent_required",
 		},
 		{
 			name:        "interaction_required with description",
-			code:        ErrorCodeInteractionRequired,
+			code:        constants.ErrorCodeInteractionRequired,
 			description: "UI required",
 			want:        "silent authentication failed: interaction_required - UI required",
 		},
 		{
 			name:        "account_selection_required without description",
-			code:        ErrorCodeAccountSelectionRequired,
+			code:        constants.ErrorCodeAccountSelectionRequired,
 			description: "",
 			want:        "silent authentication failed: account_selection_required",
 		},
@@ -257,27 +259,27 @@ func TestIsSilentAuthError(t *testing.T) {
 		},
 		{
 			name:     "login_required SilentAuthError",
-			err:      &SilentAuthError{Code: ErrorCodeLoginRequired},
+			err:      &SilentAuthError{Code: constants.ErrorCodeLoginRequired},
 			expected: true,
 		},
 		{
 			name:     "consent_required SilentAuthError",
-			err:      &SilentAuthError{Code: ErrorCodeConsentRequired},
+			err:      &SilentAuthError{Code: constants.ErrorCodeConsentRequired},
 			expected: true,
 		},
 		{
 			name:     "interaction_required SilentAuthError",
-			err:      &SilentAuthError{Code: ErrorCodeInteractionRequired},
+			err:      &SilentAuthError{Code: constants.ErrorCodeInteractionRequired},
 			expected: true,
 		},
 		{
 			name:     "account_selection_required SilentAuthError",
-			err:      &SilentAuthError{Code: ErrorCodeAccountSelectionRequired},
+			err:      &SilentAuthError{Code: constants.ErrorCodeAccountSelectionRequired},
 			expected: true,
 		},
 		{
 			name:     "wrapped SilentAuthError",
-			err:      fmt.Errorf("wrapped: %w", &SilentAuthError{Code: ErrorCodeLoginRequired}),
+			err:      fmt.Errorf("wrapped: %w", &SilentAuthError{Code: constants.ErrorCodeLoginRequired}),
 			expected: true,
 		},
 		{
@@ -338,42 +340,42 @@ func TestParseOAuthError(t *testing.T) {
 		},
 		{
 			name:             "login_required returns SilentAuthError",
-			errorCode:        ErrorCodeLoginRequired,
+			errorCode:        constants.ErrorCodeLoginRequired,
 			errorDescription: "User must authenticate",
 			wantSilentAuth:   true,
 			wantMessage:      "silent authentication failed: login_required - User must authenticate",
 		},
 		{
 			name:             "consent_required returns SilentAuthError",
-			errorCode:        ErrorCodeConsentRequired,
+			errorCode:        constants.ErrorCodeConsentRequired,
 			errorDescription: "",
 			wantSilentAuth:   true,
 			wantMessage:      "silent authentication failed: consent_required",
 		},
 		{
 			name:             "interaction_required returns SilentAuthError",
-			errorCode:        ErrorCodeInteractionRequired,
+			errorCode:        constants.ErrorCodeInteractionRequired,
 			errorDescription: "UI required",
 			wantSilentAuth:   true,
 			wantMessage:      "silent authentication failed: interaction_required - UI required",
 		},
 		{
 			name:             "account_selection_required returns SilentAuthError",
-			errorCode:        ErrorCodeAccountSelectionRequired,
+			errorCode:        constants.ErrorCodeAccountSelectionRequired,
 			errorDescription: "",
 			wantSilentAuth:   true,
 			wantMessage:      "silent authentication failed: account_selection_required",
 		},
 		{
 			name:             "invalid_grant returns generic error",
-			errorCode:        ErrorCodeInvalidGrant,
+			errorCode:        constants.ErrorCodeInvalidGrant,
 			errorDescription: "Token expired",
 			wantSilentAuth:   false,
 			wantMessage:      "oauth error: invalid_grant - Token expired",
 		},
 		{
 			name:             "access_denied returns generic error",
-			errorCode:        ErrorCodeAccessDenied,
+			errorCode:        constants.ErrorCodeAccessDenied,
 			errorDescription: "",
 			wantSilentAuth:   false,
 			wantMessage:      "oauth error: access_denied",
@@ -434,10 +436,10 @@ func TestSilentAuthErrorConstants(t *testing.T) {
 		code     string
 		expected string
 	}{
-		{"login_required", ErrorCodeLoginRequired, "login_required"},
-		{"consent_required", ErrorCodeConsentRequired, "consent_required"},
-		{"interaction_required", ErrorCodeInteractionRequired, "interaction_required"},
-		{"account_selection_required", ErrorCodeAccountSelectionRequired, "account_selection_required"},
+		{"login_required", constants.ErrorCodeLoginRequired, "login_required"},
+		{"consent_required", constants.ErrorCodeConsentRequired, "consent_required"},
+		{"interaction_required", constants.ErrorCodeInteractionRequired, "interaction_required"},
+		{"account_selection_required", constants.ErrorCodeAccountSelectionRequired, "account_selection_required"},
 	}
 
 	for _, tt := range tests {

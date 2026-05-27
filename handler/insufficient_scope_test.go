@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/server"
 	"github.com/giantswarm/mcp-oauth/storage"
@@ -37,7 +37,7 @@ func TestWriteInsufficientScopeError(t *testing.T) {
 			requiredScopes:  []string{"files:read"},
 			description:     "File read access required",
 			wantStatus:      http.StatusForbidden,
-			wantError:       oauth.ErrorCodeInsufficientScope,
+			wantError:       constants.ErrorCodeInsufficientScope,
 			wantScopeHeader: "files:read",
 		},
 		{
@@ -45,7 +45,7 @@ func TestWriteInsufficientScopeError(t *testing.T) {
 			requiredScopes:  []string{"files:read", "files:write", "user:profile"},
 			description:     "File and profile access required",
 			wantStatus:      http.StatusForbidden,
-			wantError:       oauth.ErrorCodeInsufficientScope,
+			wantError:       constants.ErrorCodeInsufficientScope,
 			wantScopeHeader: "files:read files:write user:profile",
 		},
 		{
@@ -53,7 +53,7 @@ func TestWriteInsufficientScopeError(t *testing.T) {
 			requiredScopes:  []string{},
 			description:     "No scopes needed",
 			wantStatus:      http.StatusForbidden,
-			wantError:       oauth.ErrorCodeInsufficientScope,
+			wantError:       constants.ErrorCodeInsufficientScope,
 			wantScopeHeader: "",
 		},
 	}
@@ -308,14 +308,14 @@ func TestValidateTokenWithScopeValidation(t *testing.T) {
 			tokenScopes:    []string{"files:read"},
 			requiredScopes: []string{"files:read", "files:write"},
 			wantStatus:     http.StatusForbidden,
-			wantError:      oauth.ErrorCodeInsufficientScope,
+			wantError:      constants.ErrorCodeInsufficientScope,
 		},
 		{
 			name:           "no token scopes with required scopes",
 			tokenScopes:    []string{},
 			requiredScopes: []string{"files:read"},
 			wantStatus:     http.StatusForbidden,
-			wantError:      oauth.ErrorCodeInsufficientScope,
+			wantError:      constants.ErrorCodeInsufficientScope,
 		},
 		{
 			name:           "no required scopes",
@@ -419,7 +419,7 @@ func TestValidateTokenWithScopeValidation(t *testing.T) {
 
 				// Verify WWW-Authenticate header
 				wwwAuth := w.Header().Get("WWW-Authenticate")
-				if !strings.Contains(wwwAuth, oauth.ErrorCodeInsufficientScope) {
+				if !strings.Contains(wwwAuth, constants.ErrorCodeInsufficientScope) {
 					t.Errorf("WWW-Authenticate header missing insufficient_scope: %s", wwwAuth)
 				}
 			}
@@ -502,8 +502,8 @@ func TestValidateTokenWithoutScopeMetadata(t *testing.T) {
 		t.Fatalf("Failed to unmarshal response: %v", err)
 	}
 
-	if body["error"] != oauth.ErrorCodeInsufficientScope {
-		t.Errorf("Error code = %s, want %s", body["error"], oauth.ErrorCodeInsufficientScope)
+	if body["error"] != constants.ErrorCodeInsufficientScope {
+		t.Errorf("Error code = %s, want %s", body["error"], constants.ErrorCodeInsufficientScope)
 	}
 }
 

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
@@ -36,7 +36,7 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 		userInfo, err := h.server.ValidateToken(r.Context(), accessToken)
 		if err != nil {
 			h.logger.Warn("Token validation failed", "ip", clientIP, "error", err)
-			h.writeUnauthorizedError(w, r, oauth.ErrorCodeInvalidToken, "Token validation failed")
+			h.writeUnauthorizedError(w, r, constants.ErrorCodeInvalidToken, "Token validation failed")
 			return
 		}
 
@@ -84,7 +84,7 @@ func (h *Handler) checkIPRateLimit(w http.ResponseWriter, r *http.Request, clien
 	h.logger.Warn("Rate limit exceeded", "ip", clientIP)
 	h.recordRateLimitExceeded(r.Context(), "ip", clientIP, "", r.URL.Path)
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSecondsForRate(h.server.RateLimiter.Rate())))
-	h.writeError(w, oauth.ErrorCodeRateLimitExceeded, "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
+	h.writeError(w, constants.ErrorCodeRateLimitExceeded, "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
 	return true
 }
 
@@ -97,7 +97,7 @@ func (h *Handler) checkUserRateLimit(w http.ResponseWriter, r *http.Request, use
 	h.logger.Warn("User rate limit exceeded", "user_id", userID, "ip", clientIP)
 	h.recordUserRateLimitExceeded(r.Context(), clientIP, userID)
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSecondsForRate(h.server.UserRateLimiter.Rate())))
-	h.writeError(w, oauth.ErrorCodeRateLimitExceeded, "Rate limit exceeded for user. Please try again later.", http.StatusTooManyRequests)
+	h.writeError(w, constants.ErrorCodeRateLimitExceeded, "Rate limit exceeded for user. Please try again later.", http.StatusTooManyRequests)
 	return true
 }
 
@@ -123,13 +123,13 @@ func (h *Handler) recordUserRateLimitExceeded(ctx context.Context, clientIP, use
 func (h *Handler) extractBearerToken(w http.ResponseWriter, r *http.Request) (string, bool) {
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
-		h.writeUnauthorizedError(w, r, oauth.ErrorCodeInvalidToken, "Missing Authorization header")
+		h.writeUnauthorizedError(w, r, constants.ErrorCodeInvalidToken, "Missing Authorization header")
 		return "", false
 	}
 
 	parts := strings.SplitN(authHeader, " ", 2)
 	if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-		h.writeUnauthorizedError(w, r, oauth.ErrorCodeInvalidToken, "Invalid Authorization header format")
+		h.writeUnauthorizedError(w, r, constants.ErrorCodeInvalidToken, "Invalid Authorization header format")
 		return "", false
 	}
 
@@ -208,13 +208,13 @@ func (h *Handler) writeInsufficientScopeError(w http.ResponseWriter, requiredSco
 	scope := strings.Join(requiredScopes, " ")
 
 	// Use formatWWWAuthenticate to build the header with error details
-	w.Header().Set("WWW-Authenticate", h.formatWWWAuthenticate(scope, oauth.ErrorCodeInsufficientScope, description))
+	w.Header().Set("WWW-Authenticate", h.formatWWWAuthenticate(scope, constants.ErrorCodeInsufficientScope, description))
 
 	// Write JSON error response body
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
 	_ = json.NewEncoder(w).Encode(map[string]string{
-		"error":             oauth.ErrorCodeInsufficientScope,
+		"error":             constants.ErrorCodeInsufficientScope,
 		"error_description": description,
 	})
 }

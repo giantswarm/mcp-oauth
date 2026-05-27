@@ -16,6 +16,7 @@ import (
 	"golang.org/x/oauth2"
 
 	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/server"
@@ -250,7 +251,7 @@ func TestHandler_ServeToken_RefreshGrant(t *testing.T) {
 				}
 			},
 			wantStatus:       http.StatusUnauthorized,
-			wantErrorCode:    oauth.ErrorCodeInvalidClient,
+			wantErrorCode:    constants.ErrorCodeInvalidClient,
 			wantAuditReasons: []string{"confidential_client_refresh_missing_auth"},
 		},
 		{
@@ -264,7 +265,7 @@ func TestHandler_ServeToken_RefreshGrant(t *testing.T) {
 				}
 			},
 			wantStatus:       http.StatusBadRequest,
-			wantErrorCode:    oauth.ErrorCodeInvalidClient,
+			wantErrorCode:    constants.ErrorCodeInvalidClient,
 			wantErrorContain: "does not match",
 			wantAuditReasons: []string{"client_id_mismatch_basic_vs_form"},
 		},
@@ -292,7 +293,7 @@ func TestHandler_ServeToken_RefreshGrant(t *testing.T) {
 				}
 			},
 			wantStatus:      http.StatusBadRequest,
-			wantErrorCode:   oauth.ErrorCodeInvalidGrant,
+			wantErrorCode:   constants.ErrorCodeInvalidGrant,
 			wantAuditEvents: []string{security.EventRefreshTokenClientBindingMismatch},
 		},
 		{
@@ -307,7 +308,7 @@ func TestHandler_ServeToken_RefreshGrant(t *testing.T) {
 				}
 			},
 			wantStatus:      http.StatusBadRequest,
-			wantErrorCode:   oauth.ErrorCodeInvalidGrant,
+			wantErrorCode:   constants.ErrorCodeInvalidGrant,
 			wantAuditEvents: []string{security.EventRefreshTokenReuseDetected},
 		},
 		{
@@ -321,7 +322,7 @@ func TestHandler_ServeToken_RefreshGrant(t *testing.T) {
 				}
 			},
 			wantStatus:    http.StatusBadRequest,
-			wantErrorCode: oauth.ErrorCodeInvalidGrant,
+			wantErrorCode: constants.ErrorCodeInvalidGrant,
 		},
 		{
 			name: "legacy refresh token without client binding is rejected",
@@ -334,7 +335,7 @@ func TestHandler_ServeToken_RefreshGrant(t *testing.T) {
 				}
 			},
 			wantStatus:      http.StatusBadRequest,
-			wantErrorCode:   oauth.ErrorCodeInvalidGrant,
+			wantErrorCode:   constants.ErrorCodeInvalidGrant,
 			wantAuditEvents: []string{security.EventRefreshTokenMissingClientBinding},
 		},
 		{
@@ -347,7 +348,7 @@ func TestHandler_ServeToken_RefreshGrant(t *testing.T) {
 				}
 			},
 			wantStatus:    http.StatusBadRequest,
-			wantErrorCode: oauth.ErrorCodeInvalidRequest,
+			wantErrorCode: constants.ErrorCodeInvalidRequest,
 		},
 		{
 			name: "missing client_id on a public-client refresh is rejected",
@@ -357,7 +358,7 @@ func TestHandler_ServeToken_RefreshGrant(t *testing.T) {
 				}
 			},
 			wantStatus:    http.StatusBadRequest,
-			wantErrorCode: oauth.ErrorCodeInvalidRequest,
+			wantErrorCode: constants.ErrorCodeInvalidRequest,
 		},
 		{
 			name: "unknown client is rejected",
@@ -367,7 +368,7 @@ func TestHandler_ServeToken_RefreshGrant(t *testing.T) {
 				}
 			},
 			wantStatus:    http.StatusUnauthorized,
-			wantErrorCode: oauth.ErrorCodeInvalidClient,
+			wantErrorCode: constants.ErrorCodeInvalidClient,
 		},
 		{
 			name: "bad client secret is rejected",
@@ -379,7 +380,7 @@ func TestHandler_ServeToken_RefreshGrant(t *testing.T) {
 				}
 			},
 			wantStatus:    http.StatusUnauthorized,
-			wantErrorCode: oauth.ErrorCodeInvalidClient,
+			wantErrorCode: constants.ErrorCodeInvalidClient,
 		},
 	}
 

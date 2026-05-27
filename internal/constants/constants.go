@@ -5,12 +5,34 @@ package constants
 
 // OAuth 2.0 / 2.1 error codes (RFC 6749 §4.1.2.1, §5.2).
 const (
-	ErrorCodeInvalidClient      = "invalid_client"
-	ErrorCodeInvalidRequest     = "invalid_request"
-	ErrorCodeInvalidRedirectURI = "invalid_redirect_uri"
-	ErrorCodeInvalidScope       = "invalid_scope"
-	ErrorCodeInvalidGrant       = "invalid_grant"
-	OAuthSpecVersion            = "OAuth 2.1"
+	ErrorCodeInvalidClient           = "invalid_client"
+	ErrorCodeInvalidRequest          = "invalid_request"
+	ErrorCodeInvalidRedirectURI      = "invalid_redirect_uri"
+	ErrorCodeInvalidScope            = "invalid_scope"
+	ErrorCodeInvalidGrant            = "invalid_grant"
+	ErrorCodeInvalidToken            = "invalid_token"
+	ErrorCodeInsufficientScope       = "insufficient_scope"
+	ErrorCodeUnauthorizedClient      = "unauthorized_client"
+	ErrorCodeUnsupportedGrantType    = "unsupported_grant_type"
+	ErrorCodeUnsupportedResponseType = "unsupported_response_type"
+	ErrorCodeServerError             = "server_error"
+	ErrorCodeAccessDenied            = "access_denied"
+	ErrorCodeRateLimitExceeded       = "rate_limit_exceeded"
+	OAuthSpecVersion                 = "OAuth 2.1"
+)
+
+// DPoP error codes (RFC 9449).
+const (
+	ErrorCodeInvalidDPoPProof = "invalid_dpop_proof"
+	ErrorCodeUseDPoPNonce     = "use_dpop_nonce"
+)
+
+// OIDC silent-auth error codes (OIDC Core §3.1.2.6).
+const (
+	ErrorCodeLoginRequired            = "login_required"
+	ErrorCodeConsentRequired          = "consent_required"
+	ErrorCodeInteractionRequired      = "interaction_required"
+	ErrorCodeAccountSelectionRequired = "account_selection_required"
 )
 
 // PKCE validation bounds (RFC 7636 §4.1).
