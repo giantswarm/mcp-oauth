@@ -240,6 +240,12 @@ func logCoreSecurityWarnings(config *Config, logger *slog.Logger) {
 			"cwe", "CWE-918",
 			"note", "Development only")
 	}
+	if config.AllowPrivateIPJWKS {
+		logger.Warn("SECURITY WARNING: AllowPrivateIPJWKS is enabled",
+			"risk", "JWKS endpoints can resolve to private/internal IP addresses — SSRF possible",
+			"recommendation", "Unset for production deployments; use only for private IdP deployments (e.g., internal Dex)",
+			"cwe", "CWE-918")
+	}
 }
 
 // logRedirectURISecurityStatus emits WARN entries for any explicitly

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **Startup `WARN` for development-only overrides.** `AllowInsecureHTTP` and `AllowPrivateIPClientMetadata` now emit a `slog.LevelWarn` entry at server initialisation when set, making it harder to accidentally leave either flag enabled in production. `AllowPrivateIPClientMetadata` previously logged from `server.New` only; the warning is now unified under `logCoreSecurityWarnings` alongside all other security-posture checks. Both flags are documented in `docs/security.md` under a new "Development-only overrides" subsection. Closes #342.
+- **Startup `WARN` for development-only overrides.** `AllowInsecureHTTP`, `AllowPrivateIPClientMetadata`, and `AllowPrivateIPJWKS` now emit a `slog.LevelWarn` entry at server initialisation when set, making it harder to accidentally leave these flags enabled in production. `AllowPrivateIPClientMetadata` and `AllowPrivateIPJWKS` previously logged from `server.New` only; the warnings are now unified under `logCoreSecurityWarnings` alongside all other security-posture checks. All three flags are documented in `docs/security.md` under a new "Development-only overrides" subsection. Closes #342.
 
 ### Changed
 

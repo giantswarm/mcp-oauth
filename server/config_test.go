@@ -269,6 +269,17 @@ func TestLogSecurityWarnings(t *testing.T) {
 				"SECURITY WARNING: AllowPrivateIPClientMetadata is enabled",
 			},
 		},
+		{
+			name: "AllowPrivateIPJWKS warning",
+			config: &Config{
+				RequirePKCE:             true,
+				RegistrationAccessToken: "token",
+				AllowPrivateIPJWKS:      true,
+			},
+			expectedWarnings: []string{
+				"SECURITY WARNING: AllowPrivateIPJWKS is enabled",
+			},
+		},
 	}
 
 	for _, tt := range tests {
