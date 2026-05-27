@@ -274,13 +274,11 @@ func (s *Server) validateHostnameWithDNS(ctx context.Context, hostname, rawURI s
 	resolveCtx, cancel := context.WithTimeout(ctx, s.Config.DNSValidationTimeout)
 	defer cancel()
 
-	// Use configured resolver or default
 	resolver := s.Config.DNSResolver
 	if resolver == nil {
-		resolver = &defaultDNSResolver{}
+		resolver = net.DefaultResolver
 	}
 
-	// Resolve hostname
 	ips, err := resolver.LookupIP(resolveCtx, "ip", hostname)
 	if err != nil {
 		// DNS resolution failed
