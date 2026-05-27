@@ -54,6 +54,7 @@ type TrustedIssuer struct {
 // It accepts the following subject_token_type values:
 //   - urn:ietf:params:oauth:token-type:id_token
 //   - urn:ietf:params:oauth:token-type:access_token
+//   - urn:ietf:params:oauth:token-type:jwt
 type OIDCValidator struct {
 	issuers    map[string]TrustedIssuer
 	jwksClient *oidc.JWKSClient
@@ -115,10 +116,6 @@ func (v *OIDCValidator) Validate(ctx context.Context, subjectToken, subjectToken
 	}
 
 	if len(ti.AllowedClaims) > 0 {
-		rawClaims, err := oidc.ParseUnverifiedClaims(subjectToken)
-		if err != nil {
-			return SubjectIdentity{}, fmt.Errorf("parsing token claims: %w", err)
-		}
 		for claimName, pattern := range ti.AllowedClaims {
 			claimValue, _ := rawClaims[claimName].(string)
 			if err := matchClaimPattern(pattern, claimValue); err != nil {
