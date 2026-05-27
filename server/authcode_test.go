@@ -1038,14 +1038,12 @@ func TestServer_ExchangeAuthorizationCode(t *testing.T) {
 					_ = store.SaveAuthorizationCode(ctx, freshCode)
 					if tt.name == "wrong redirect URI" || tt.name == "invalid code verifier" {
 						tt := struct {
-							name         string
 							code         string
 							clientID     string
 							redirectURI  string
 							codeVerifier string
 							wantErr      bool
 						}{
-							name:         tt.name,
 							code:         freshCode.Code,
 							clientID:     tt.clientID,
 							redirectURI:  tt.redirectURI,
