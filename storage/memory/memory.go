@@ -1457,7 +1457,9 @@ func (s *Store) GetTokensByUserClient(_ context.Context, userID, clientID string
 // Returns a context with the span attached and the span itself
 func (s *Store) startStorageSpan(ctx context.Context, operation string) (context.Context, trace.Span) {
 	if s.tracer == nil {
-		return ctx, trace.SpanFromContext(ctx)
+		// Return a noop span so callers can unconditionally defer span.End() without
+		// accidentally ending the parent span extracted from ctx.
+		return ctx, trace.SpanFromContext(context.Background())
 	}
 
 	ctx, span := s.tracer.Start(ctx, fmt.Sprintf("storage.%s", operation),
