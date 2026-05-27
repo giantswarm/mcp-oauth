@@ -114,7 +114,7 @@ func TestServer_IntrospectToken_JWTPath_OwnerSeesProjection(t *testing.T) {
 	require.Equal(t, "user@example.com", response["email"])
 	require.Equal(t, true, response["email_verified"], "JWT mode must project email_verified for parity with opaque mode")
 	require.Equal(t, "User Forty-Two", response["name"], "JWT mode must project name for parity with opaque mode")
-	require.Equal(t, srv.Config.GetResourceIdentifier(), response["aud"])
+	require.Equal(t, srv.config.GetResourceIdentifier(), response["aud"])
 	require.Contains(t, response, "exp")
 	require.Contains(t, response, "iat")
 	_, expIsInt := response["exp"].(int64)
@@ -134,7 +134,7 @@ func TestServer_IntrospectToken_JWTPath_CrossClientDenied(t *testing.T) {
 
 func TestServer_IntrospectToken_JWTPath_AllowlistedResourceServer(t *testing.T) {
 	srv, token, owner, _, rs := newJWTIntrospectionServer(t)
-	srv.Config.IntrospectionResourceServers = []string{rs}
+	srv.config.IntrospectionResourceServers = []string{rs}
 
 	response := srv.IntrospectToken(context.Background(), token, rs)
 
@@ -174,7 +174,7 @@ func TestServer_IntrospectToken_JWTPath_GarbageToken_RejectedBeforeValidation(t 
 func TestServer_IntrospectToken_JWTPath_CrossClientDenied_EmitsAuditEvent(t *testing.T) {
 	srv, token, _, probe, _ := newJWTIntrospectionServer(t)
 	auditor, buf := newRecordingAuditor()
-	srv.Auditor = auditor
+	srv.auditor = auditor
 
 	response := srv.IntrospectToken(context.Background(), token, probe)
 	require.Equal(t, false, response["active"])
@@ -207,7 +207,7 @@ func TestServer_IntrospectToken_OpaquePath_CrossClientDenied_EmitsAuditEvent(t *
 	require.NoError(t, err)
 
 	auditor, buf := newRecordingAuditor()
-	srv.Auditor = auditor
+	srv.auditor = auditor
 
 	const accessToken = "opaque-audit-token" //nolint:gosec // G101 false positive — test fixture label, not a credential
 	require.NoError(t, store.SaveTokenMetadata(ctx, accessToken, storage.TokenMetadata{
@@ -397,7 +397,7 @@ func TestServer_IntrospectToken_JWTPath_AppClaimsForwarded(t *testing.T) {
 	srv, _, ownerClientID, _, _ := newJWTIntrospectionServer(t)
 
 	// Issue a JWT that includes application-defined claims.
-	cfg := srv.Config
+	cfg := srv.config
 	issuer, err := newJWTIssuer(cfg)
 	require.NoError(t, err)
 

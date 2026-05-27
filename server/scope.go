@@ -29,7 +29,7 @@ func (s *Server) resolveScopes(ctx context.Context, requestedScope string, clien
 	if len(client.Scopes) == 0 {
 		// Client has no restrictions, use all provider defaults
 		resolvedScopes = strings.Join(defaultScopes, " ")
-		s.Auditor.LogEvent(ctx, security.Event{
+		s.auditor.LogEvent(ctx, security.Event{
 			Type:     security.EventScopeDefaultsApplied,
 			ClientID: client.ClientID,
 			Details: map[string]any{
@@ -43,7 +43,7 @@ func (s *Server) resolveScopes(ctx context.Context, requestedScope string, clien
 		// Build intersection - only provider defaults that client is authorized for
 		authorizedScopes := intersectScopes(defaultScopes, client.Scopes)
 		resolvedScopes = strings.Join(authorizedScopes, " ")
-		s.Auditor.LogEvent(ctx, security.Event{
+		s.auditor.LogEvent(ctx, security.Event{
 			Type:     security.EventScopeDefaultsApplied,
 			ClientID: client.ClientID,
 			Details: map[string]any{

@@ -95,7 +95,7 @@ func (h *Handler) handleTokenExchangeError(
 }
 
 func (h *Handler) writeTokenExchangeResponse(w http.ResponseWriter, result *server.TokenExchangeResult) {
-	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+	security.SetSecurityHeaders(w, h.server.Config().Issuer)
 
 	expiresIn := max(int64(time.Until(result.ExpiresAt).Seconds()), 0)
 

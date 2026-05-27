@@ -59,11 +59,11 @@ var (
 // OAuth endpoints except localhost development.
 func (s *Server) validateHTTPSEnforcement() error {
 	// Skip validation if Issuer is empty (will fail elsewhere with more appropriate error)
-	if s.Config.Issuer == "" {
+	if s.config.Issuer == "" {
 		return nil
 	}
 
-	issuerURL, err := url.Parse(s.Config.Issuer)
+	issuerURL, err := url.Parse(s.config.Issuer)
 	if err != nil {
 		return fmt.Errorf("invalid issuer URL: %w", err)
 	}
@@ -79,9 +79,9 @@ func (s *Server) validateHTTPSEnforcement() error {
 
 		// Allow localhost for development (with warning)
 		if isLocalhostHostname(hostname) {
-			if !s.Config.AllowInsecureHTTP {
-				s.Logger.Warn("⚠️  DEVELOPMENT WARNING: Running OAuth over HTTP on localhost",
-					"issuer", s.Config.Issuer,
+			if !s.config.AllowInsecureHTTP {
+				s.logger.Warn("⚠️  DEVELOPMENT WARNING: Running OAuth over HTTP on localhost",
+					"issuer", s.config.Issuer,
 					"risk", "Credentials exposed on local network",
 					"recommendation", "Use HTTPS even in development for production-like testing",
 					"to_suppress", "Set AllowInsecureHTTP=true in Config",
@@ -91,7 +91,7 @@ func (s *Server) validateHTTPSEnforcement() error {
 		}
 
 		// Non-localhost HTTP is blocked unless explicitly allowed
-		if !s.Config.AllowInsecureHTTP {
+		if !s.config.AllowInsecureHTTP {
 			return fmt.Errorf(
 				"SECURITY ERROR: Issuer must use HTTPS in production (got %s://%s). "+
 					"OAuth over HTTP exposes tokens and credentials to interception. "+
@@ -103,8 +103,8 @@ func (s *Server) validateHTTPSEnforcement() error {
 		}
 
 		// Log critical warning if HTTP is explicitly allowed on non-localhost
-		s.Logger.Error("🚨 CRITICAL SECURITY WARNING: Running OAuth server over HTTP",
-			"issuer", s.Config.Issuer,
+		s.logger.Error("🚨 CRITICAL SECURITY WARNING: Running OAuth server over HTTP",
+			"issuer", s.config.Issuer,
 			"hostname", hostname,
 			"risk", "All tokens and credentials exposed to network sniffing and MITM attacks",
 			"action_required", "Switch to HTTPS immediately",
@@ -168,16 +168,16 @@ func (s *Server) validateRedirectURI(client *storage.Client, redirectURI string)
 func (s *Server) resolveRegisteredRedirectURI(client *storage.Client, redirectURI string) (string, error) {
 	for _, uri := range client.RedirectURIs {
 		if uri == redirectURI {
-			if err := validateRedirectURISecurityEnhanced(uri, s.Config.Issuer, s.Config.AllowedCustomSchemes); err != nil {
+			if err := validateRedirectURISecurityEnhanced(uri, s.config.Issuer, s.config.AllowedCustomSchemes); err != nil {
 				return "", err
 			}
 			return uri, nil
 		}
 	}
 
-	if s.Config.AllowLocalhostRedirectURIs {
+	if s.config.AllowLocalhostRedirectURIs {
 		if canonical, ok := canonicalLoopbackRedirectURI(redirectURI, client.RedirectURIs); ok {
-			if err := validateRedirectURISecurityEnhanced(canonical, s.Config.Issuer, s.Config.AllowedCustomSchemes); err != nil {
+			if err := validateRedirectURISecurityEnhanced(canonical, s.config.Issuer, s.config.AllowedCustomSchemes); err != nil {
 				return "", err
 			}
 			return canonical, nil
@@ -234,7 +234,7 @@ func canonicalLoopbackRedirectURI(requestedURI string, registeredURIs []string) 
 // validateScopes validates that requested scopes are allowed
 func (s *Server) validateScopes(scope string) error {
 	// If no scopes configured, allow all
-	if len(s.Config.SupportedScopes) == 0 {
+	if len(s.config.SupportedScopes) == 0 {
 		return nil
 	}
 
@@ -248,7 +248,7 @@ func (s *Server) validateScopes(scope string) error {
 	// Check each requested scope against supported scopes
 	for _, reqScope := range requestedScopes {
 		found := false
-		for _, supportedScope := range s.Config.SupportedScopes {
+		for _, supportedScope := range s.config.SupportedScopes {
 			if reqScope == supportedScope {
 				found = true
 				break
@@ -328,18 +328,18 @@ func (s *Server) validateClientScopes(requestedScope string, clientScopes []stri
 // enough to make attacks infeasible.
 func (s *Server) validateClientStateParameter(state string) error {
 	if state == "" {
-		if s.Config.AllowNoStateParameter {
+		if s.config.AllowNoStateParameter {
 			return nil
 		}
 		return fmt.Errorf("state parameter is required for CSRF protection")
 	}
 
-	if len(state) < s.Config.MinStateLength && !s.Config.AllowNoStateParameter {
-		return fmt.Errorf("state parameter must be at least %d characters for security", s.Config.MinStateLength)
+	if len(state) < s.config.MinStateLength && !s.config.AllowNoStateParameter {
+		return fmt.Errorf("state parameter must be at least %d characters for security", s.config.MinStateLength)
 	}
 
-	if len(state) > s.Config.MaxStateLength {
-		return fmt.Errorf("state parameter must be at most %d characters", s.Config.MaxStateLength)
+	if len(state) > s.config.MaxStateLength {
+		return fmt.Errorf("state parameter must be at most %d characters", s.config.MaxStateLength)
 	}
 
 	return nil
@@ -358,12 +358,12 @@ func (s *Server) validateProviderStateParameter(state string) error {
 		return fmt.Errorf("provider state parameter is required")
 	}
 
-	if len(state) < s.Config.MinStateLength {
-		return fmt.Errorf("provider state parameter must be at least %d characters for security", s.Config.MinStateLength)
+	if len(state) < s.config.MinStateLength {
+		return fmt.Errorf("provider state parameter must be at least %d characters for security", s.config.MinStateLength)
 	}
 
-	if len(state) > s.Config.MaxStateLength {
-		return fmt.Errorf("provider state parameter must be at most %d characters", s.Config.MaxStateLength)
+	if len(state) > s.config.MaxStateLength {
+		return fmt.Errorf("provider state parameter must be at most %d characters", s.config.MaxStateLength)
 	}
 
 	return nil
@@ -405,15 +405,15 @@ func (s *Server) computePKCEChallenge(verifier, method string) (string, error) {
 		return base64.RawURLEncoding.EncodeToString(hash[:]), nil
 
 	case PKCEMethodPlain:
-		if !s.Config.AllowPKCEPlain {
+		if !s.config.AllowPKCEPlain {
 			return "", fmt.Errorf("'%s' code_challenge_method is not allowed (configure AllowPKCEPlain=true if needed for legacy clients)", PKCEMethodPlain)
 		}
-		s.Logger.Warn("Using insecure 'plain' PKCE method", "recommendation", "Upgrade client to use S256")
+		s.logger.Warn("Using insecure 'plain' PKCE method", "recommendation", "Upgrade client to use S256")
 		return verifier, nil
 
 	default:
 		supportedMethods := "S256"
-		if s.Config.AllowPKCEPlain {
+		if s.config.AllowPKCEPlain {
 			supportedMethods = "S256, plain"
 		}
 		return "", fmt.Errorf("unsupported code_challenge_method: %s (supported: %s)", method, supportedMethods)
@@ -578,7 +578,7 @@ func (s *Server) validateResourceParameter(resource string) error {
 				return fmt.Errorf("resource must use HTTPS (HTTP only allowed for localhost)")
 			}
 			// Warn about HTTP even on localhost
-			s.Logger.Warn("Resource parameter using HTTP on localhost",
+			s.logger.Warn("Resource parameter using HTTP on localhost",
 				"resource", resource,
 				"recommendation", "Use HTTPS in production")
 		} else {
@@ -623,14 +623,14 @@ func (s *Server) validateResourceConsistency(ctx context.Context, resource strin
 	normalizedExpected := helpers.NormalizeURL(authCode.Resource)
 	if normalizedResource != normalizedExpected {
 		// Rate limit logging to prevent DoS via repeated resource mismatch attempts
-		if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(authCode.UserID+":"+clientID+":resource_mismatch") {
-			s.Logger.Debug("Resource parameter mismatch",
+		if s.securityEventRateLimiter == nil || s.securityEventRateLimiter.Allow(authCode.UserID+":"+clientID+":resource_mismatch") {
+			s.logger.Debug("Resource parameter mismatch",
 				"expected", authCode.Resource,
 				"provided", resource,
 				"client_id", clientID,
 				"user_id", authCode.UserID)
 		}
-		s.Auditor.LogEvent(ctx, security.Event{
+		s.auditor.LogEvent(ctx, security.Event{
 			Type:     security.EventResourceMismatch,
 			UserID:   authCode.UserID,
 			ClientID: clientID,

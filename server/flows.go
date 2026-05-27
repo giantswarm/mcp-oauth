@@ -33,7 +33,7 @@ func (s *Server) registerTokenPair(accessToken, refreshToken string) {
 // the underlying provider token can deliver. Provider tokens with zero or past
 // expiry are ignored. now is the caller's issuance instant.
 func (s *Server) capTokenExpiry(now, providerExpiry time.Time) time.Time {
-	expiry := now.Add(time.Duration(s.Config.AccessTokenTTL) * time.Second)
+	expiry := now.Add(time.Duration(s.config.AccessTokenTTL) * time.Second)
 	if !providerExpiry.IsZero() && providerExpiry.After(now) && providerExpiry.Before(expiry) {
 		expiry = providerExpiry
 	}
@@ -43,9 +43,9 @@ func (s *Server) capTokenExpiry(now, providerExpiry time.Time) time.Time {
 // refreshTokenExpiry returns the expiry instant for a newly-issued refresh
 // token, derived from now and Config.RefreshTokenTTL.
 func (s *Server) refreshTokenExpiry(now time.Time) time.Time {
-	return now.Add(time.Duration(s.Config.RefreshTokenTTL) * time.Second)
+	return now.Add(time.Duration(s.config.RefreshTokenTTL) * time.Second)
 }
 
 func (s *Server) logAuthFailure(ctx context.Context, userID, clientID, reason string) {
-	s.Auditor.LogAuthFailure(ctx, userID, clientID, "", reason)
+	s.auditor.LogAuthFailure(ctx, userID, clientID, "", reason)
 }

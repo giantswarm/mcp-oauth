@@ -33,11 +33,11 @@ func TestNew(t *testing.T) {
 		t.Fatal("New() returned nil")
 	}
 
-	if srv.Config.Issuer != "https://auth.example.com" {
-		t.Errorf("Issuer = %q, want %q", srv.Config.Issuer, "https://auth.example.com")
+	if srv.config.Issuer != "https://auth.example.com" {
+		t.Errorf("Issuer = %q, want %q", srv.config.Issuer, "https://auth.example.com")
 	}
 
-	if srv.Logger == nil {
+	if srv.logger == nil {
 		t.Error("Logger should not be nil")
 	}
 }
@@ -58,7 +58,7 @@ func TestNew_WithLogger(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	if srv.Logger != logger {
+	if srv.logger != logger {
 		t.Error("Logger should match provided logger")
 	}
 }
@@ -74,7 +74,7 @@ func TestNew_NilConfig(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	if srv.Config == nil {
+	if srv.config == nil {
 		t.Error("Config should not be nil when nil is passed")
 	}
 }
@@ -152,16 +152,16 @@ func TestServer_OptionsAreAppliedAndPropagate(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	if srv.Auditor != auditor {
+	if srv.auditor != auditor {
 		t.Error("WithAuditor: server Auditor not set to the option value")
 	}
-	if srv.RateLimiter != rl {
+	if srv.rateLimiter != rl {
 		t.Error("WithRateLimiter: server RateLimiter not set to the option value")
 	}
-	if srv.UserRateLimiter != userRL {
+	if srv.userRateLimiter != userRL {
 		t.Error("WithUserRateLimiter: server UserRateLimiter not set to the option value")
 	}
-	if srv.SecurityEventRateLimiter != secEventRL {
+	if srv.securityEventRateLimiter != secEventRL {
 		t.Error("WithSecurityEventRateLimiter: server SecurityEventRateLimiter not set to the option value")
 	}
 }
@@ -186,16 +186,16 @@ func TestServer_ProviderRevocationConfigDefaults(t *testing.T) {
 	}
 
 	// Verify defaults were applied
-	if srv.Config.ProviderRevocationTimeout != 10 {
-		t.Errorf("ProviderRevocationTimeout = %d, want 10 (default)", srv.Config.ProviderRevocationTimeout)
+	if srv.config.ProviderRevocationTimeout != 10 {
+		t.Errorf("ProviderRevocationTimeout = %d, want 10 (default)", srv.config.ProviderRevocationTimeout)
 	}
 
-	if srv.Config.ProviderRevocationMaxRetries != 3 {
-		t.Errorf("ProviderRevocationMaxRetries = %d, want 3 (default)", srv.Config.ProviderRevocationMaxRetries)
+	if srv.config.ProviderRevocationMaxRetries != 3 {
+		t.Errorf("ProviderRevocationMaxRetries = %d, want 3 (default)", srv.config.ProviderRevocationMaxRetries)
 	}
 
-	if srv.Config.ProviderRevocationFailureThreshold != 0.5 {
-		t.Errorf("ProviderRevocationFailureThreshold = %f, want 0.5 (default)", srv.Config.ProviderRevocationFailureThreshold)
+	if srv.config.ProviderRevocationFailureThreshold != 0.5 {
+		t.Errorf("ProviderRevocationFailureThreshold = %f, want 0.5 (default)", srv.config.ProviderRevocationFailureThreshold)
 	}
 }
 
@@ -221,16 +221,16 @@ func TestServer_ProviderRevocationConfigCustomValues(t *testing.T) {
 	}
 
 	// Verify custom values were preserved
-	if srv.Config.ProviderRevocationTimeout != 30 {
-		t.Errorf("ProviderRevocationTimeout = %d, want 30 (custom)", srv.Config.ProviderRevocationTimeout)
+	if srv.config.ProviderRevocationTimeout != 30 {
+		t.Errorf("ProviderRevocationTimeout = %d, want 30 (custom)", srv.config.ProviderRevocationTimeout)
 	}
 
-	if srv.Config.ProviderRevocationMaxRetries != 5 {
-		t.Errorf("ProviderRevocationMaxRetries = %d, want 5 (custom)", srv.Config.ProviderRevocationMaxRetries)
+	if srv.config.ProviderRevocationMaxRetries != 5 {
+		t.Errorf("ProviderRevocationMaxRetries = %d, want 5 (custom)", srv.config.ProviderRevocationMaxRetries)
 	}
 
-	if srv.Config.ProviderRevocationFailureThreshold != 0.3 {
-		t.Errorf("ProviderRevocationFailureThreshold = %f, want 0.3 (custom)", srv.Config.ProviderRevocationFailureThreshold)
+	if srv.config.ProviderRevocationFailureThreshold != 0.3 {
+		t.Errorf("ProviderRevocationFailureThreshold = %f, want 0.3 (custom)", srv.config.ProviderRevocationFailureThreshold)
 	}
 }
 
@@ -430,10 +430,10 @@ func TestServer_Shutdown(t *testing.T) {
 	}
 
 	// Add rate limiters to test their shutdown
-	srv.RateLimiter = security.NewRateLimiter(10, 20, nil)
-	srv.UserRateLimiter = security.NewRateLimiter(5, 10, nil)
-	srv.SecurityEventRateLimiter = security.NewRateLimiter(100, 200, nil)
-	srv.ClientRegistrationRateLimiter = security.NewClientRegistrationRateLimiter(nil)
+	srv.rateLimiter = security.NewRateLimiter(10, 20, nil)
+	srv.userRateLimiter = security.NewRateLimiter(5, 10, nil)
+	srv.securityEventRateLimiter = security.NewRateLimiter(100, 200, nil)
+	srv.clientRegistrationRateLimiter = security.NewClientRegistrationRateLimiter(nil)
 
 	// Shutdown with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -523,8 +523,8 @@ func TestServer_ShutdownWithTimeout(t *testing.T) {
 	}
 
 	// Add rate limiters
-	srv.RateLimiter = security.NewRateLimiter(10, 20, nil)
-	srv.UserRateLimiter = security.NewRateLimiter(5, 10, nil)
+	srv.rateLimiter = security.NewRateLimiter(10, 20, nil)
+	srv.userRateLimiter = security.NewRateLimiter(5, 10, nil)
 
 	// Test convenience method
 	err = srv.ShutdownWithTimeout(5 * time.Second)

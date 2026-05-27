@@ -49,8 +49,8 @@ func (h *Handler) ServeProtectedResourceMetadata(w http.ResponseWriter, r *http.
 	}
 
 	h.setCORSHeaders(w, r)
-	security.SetSecurityHeaders(w, h.server.Config.Issuer)
-	security.SetDiscoveryCacheHeaders(w, h.server.Config.DiscoveryCacheMaxAge)
+	security.SetSecurityHeaders(w, h.server.Config().Issuer)
+	security.SetDiscoveryCacheHeaders(w, h.server.Config().DiscoveryCacheMaxAge)
 
 	resourcePath := h.extractResourcePath(r.URL.Path)
 	pathConfig := h.findPathConfig(resourcePath)
@@ -84,14 +84,14 @@ func (h *Handler) extractResourcePath(requestPath string) string {
 // one wins. If two paths have equal length, the result may vary between runs,
 // but this is an unlikely edge case in practice.
 func (h *Handler) findPathConfig(resourcePath string) *server.ProtectedResourceConfig {
-	if len(h.server.Config.ResourceMetadataByPath) == 0 {
+	if len(h.server.Config().ResourceMetadataByPath) == 0 {
 		return nil
 	}
 
 	var bestMatch string
 	var bestConfig *server.ProtectedResourceConfig
 
-	for configPath, config := range h.server.Config.ResourceMetadataByPath {
+	for configPath, config := range h.server.Config().ResourceMetadataByPath {
 		// Normalize the config path
 		normalizedConfigPath := path.Clean("/" + strings.TrimPrefix(configPath, "/"))
 
@@ -113,8 +113,8 @@ func (h *Handler) findPathConfig(resourcePath string) *server.ProtectedResourceC
 // It uses path-specific configuration if provided, falling back to server defaults.
 func (h *Handler) buildProtectedResourceMetadata(resourcePath string, pathConfig *server.ProtectedResourceConfig) map[string]any {
 	// Default values from server configuration
-	resource := h.server.Config.GetResourceIdentifier()
-	authServers := []string{h.server.Config.Issuer}
+	resource := h.server.Config().GetResourceIdentifier()
+	authServers := []string{h.server.Config().Issuer}
 	bearerMethods := []string{"header"}
 	var scopesSupported []string
 
@@ -125,7 +125,7 @@ func (h *Handler) buildProtectedResourceMetadata(resourcePath string, pathConfig
 			resource = pathConfig.ResourceIdentifier
 		} else if resourcePath != "/" && resourcePath != "" {
 			// For sub-paths, append the path to the base resource identifier
-			resource = h.server.Config.GetResourceIdentifier() + resourcePath
+			resource = h.server.Config().GetResourceIdentifier() + resourcePath
 		}
 
 		// Use path-specific authorization servers if configured
@@ -145,8 +145,8 @@ func (h *Handler) buildProtectedResourceMetadata(resourcePath string, pathConfig
 	}
 
 	// Fall back to server-wide scopes if no path-specific scopes
-	if len(scopesSupported) == 0 && len(h.server.Config.SupportedScopes) > 0 {
-		scopesSupported = h.server.Config.SupportedScopes
+	if len(scopesSupported) == 0 && len(h.server.Config().SupportedScopes) > 0 {
+		scopesSupported = h.server.Config().SupportedScopes
 	}
 
 	metadata := map[string]any{
@@ -197,7 +197,7 @@ func (h *Handler) RegisterProtectedResourceMetadataRoutes(mux *http.ServeMux, mc
 	}
 
 	// Register paths from ResourceMetadataByPath configuration (MCP 2025-11-25)
-	for configPath := range h.server.Config.ResourceMetadataByPath {
+	for configPath := range h.server.Config().ResourceMetadataByPath {
 		h.registerMetadataSubPath(mux, configPath, registeredPaths)
 	}
 }
@@ -322,14 +322,14 @@ func (h *Handler) RegisterAuthorizationServerMetadataRoutes(mux *http.ServeMux) 
 // Returns empty string if the issuer has no path or only "/".
 // Example: "https://auth.example.com/tenant1" -> "/tenant1"
 func (h *Handler) extractIssuerPath() string {
-	if h.server.Config.Issuer == "" {
+	if h.server.Config().Issuer == "" {
 		return ""
 	}
 
-	parsed, err := url.Parse(h.server.Config.Issuer)
+	parsed, err := url.Parse(h.server.Config().Issuer)
 	if err != nil {
 		h.logger.Warn("Failed to parse issuer URL for path extraction",
-			"issuer", h.server.Config.Issuer,
+			"issuer", h.server.Config().Issuer,
 			"error", err)
 		return ""
 	}
@@ -369,8 +369,8 @@ func (h *Handler) serveAuthServerMetadata(w http.ResponseWriter, r *http.Request
 	}
 
 	h.setCORSHeaders(w, r)
-	security.SetSecurityHeaders(w, h.server.Config.Issuer)
-	security.SetDiscoveryCacheHeaders(w, h.server.Config.DiscoveryCacheMaxAge)
+	security.SetSecurityHeaders(w, h.server.Config().Issuer)
+	security.SetDiscoveryCacheHeaders(w, h.server.Config().DiscoveryCacheMaxAge)
 
 	metadata := h.buildAuthServerMetadata()
 
@@ -384,9 +384,9 @@ func (h *Handler) serveAuthServerMetadata(w http.ResponseWriter, r *http.Request
 // /.well-known/openid-configuration (OIDC Discovery 1.0 §3).
 func (h *Handler) buildAuthServerMetadata() map[string]any {
 	metadata := map[string]any{
-		"issuer":                                h.server.Config.Issuer,
-		"authorization_endpoint":                h.server.Config.AuthorizationEndpoint(),
-		"token_endpoint":                        h.server.Config.TokenEndpoint(),
+		"issuer":                                h.server.Config().Issuer,
+		"authorization_endpoint":                h.server.Config().AuthorizationEndpoint(),
+		"token_endpoint":                        h.server.Config().TokenEndpoint(),
 		"response_types_supported":              oauth.DefaultResponseTypes,
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token", server.GrantTypeTokenExchange},
 		"code_challenge_methods_supported":      []string{constants.PKCEMethodS256},
@@ -409,8 +409,8 @@ func (h *Handler) buildAuthServerMetadata() map[string]any {
 // is appended when distinct.
 func (h *Handler) idTokenSigningAlgs() []string {
 	algs := []string{"RS256"}
-	if h.server.Config.IsJWTAccessTokenFormat() {
-		if alg := h.server.Config.AccessTokenSigningAlgorithm; alg != "" && alg != "RS256" {
+	if h.server.Config().IsJWTAccessTokenFormat() {
+		if alg := h.server.Config().AccessTokenSigningAlgorithm; alg != "" && alg != "RS256" {
 			algs = append(algs, alg)
 		}
 	}
@@ -419,52 +419,52 @@ func (h *Handler) idTokenSigningAlgs() []string {
 
 // addOptionalMetadata adds optional endpoints based on configuration.
 func (h *Handler) addOptionalMetadata(metadata map[string]any) {
-	if len(h.server.Config.SupportedScopes) > 0 {
-		metadata["scopes_supported"] = h.server.Config.SupportedScopes
+	if len(h.server.Config().SupportedScopes) > 0 {
+		metadata["scopes_supported"] = h.server.Config().SupportedScopes
 	}
 
 	if h.isRegistrationAvailable() {
-		metadata["registration_endpoint"] = h.server.Config.RegistrationEndpoint()
+		metadata["registration_endpoint"] = h.server.Config().RegistrationEndpoint()
 	}
 
-	if h.server.Config.EnableRevocationEndpoint {
-		metadata["revocation_endpoint"] = h.server.Config.RevocationEndpoint()
+	if h.server.Config().EnableRevocationEndpoint {
+		metadata["revocation_endpoint"] = h.server.Config().RevocationEndpoint()
 	}
 
-	if h.server.Config.EnableIntrospectionEndpoint {
-		metadata["introspection_endpoint"] = h.server.Config.IntrospectionEndpoint()
+	if h.server.Config().EnableIntrospectionEndpoint {
+		metadata["introspection_endpoint"] = h.server.Config().IntrospectionEndpoint()
 	}
 
-	if h.server.Config.EnableUserInfoEndpoint {
-		metadata["userinfo_endpoint"] = h.server.Config.UserInfoEndpoint()
+	if h.server.Config().EnableUserInfoEndpoint {
+		metadata["userinfo_endpoint"] = h.server.Config().UserInfoEndpoint()
 	}
 
-	if h.server.Config.EnableClientIDMetadataDocuments {
+	if h.server.Config().EnableClientIDMetadataDocuments {
 		metadata["client_id_metadata_document_supported"] = true
 	}
 
-	if h.server.Config.EnableClientManagementEndpoint {
-		metadata["registration_management_endpoint"] = h.server.Config.ClientManagementEndpoint()
+	if h.server.Config().EnableClientManagementEndpoint {
+		metadata["registration_management_endpoint"] = h.server.Config().ClientManagementEndpoint()
 	}
 
 	// jwks_uri (RFC 8414) is advertised only in JWT mode. Advertising it in
 	// opaque mode would point clients at an endpoint that responds 404,
 	// which is worse than silence — clients that follow the URL would log
 	// errors on every discovery refresh.
-	if h.server.Config.IsJWTAccessTokenFormat() {
-		metadata["jwks_uri"] = h.server.Config.JWKSEndpoint()
+	if h.server.Config().IsJWTAccessTokenFormat() {
+		metadata["jwks_uri"] = h.server.Config().JWKSEndpoint()
 		metadata["access_token_signing_alg_values_supported"] = []string{
-			h.server.Config.AccessTokenSigningAlgorithm,
+			h.server.Config().AccessTokenSigningAlgorithm,
 		}
 	}
 }
 
 // isRegistrationAvailable checks if client registration is available.
 func (h *Handler) isRegistrationAvailable() bool {
-	return h.server.Config.AllowPublicClientRegistration ||
-		h.server.Config.RegistrationAccessToken != "" ||
-		len(h.server.Config.TrustedPublicRegistrationSchemes) > 0 ||
-		len(h.server.Config.TrustedPublicRegistrationRedirectURIs) > 0
+	return h.server.Config().AllowPublicClientRegistration ||
+		h.server.Config().RegistrationAccessToken != "" ||
+		len(h.server.Config().TrustedPublicRegistrationSchemes) > 0 ||
+		len(h.server.Config().TrustedPublicRegistrationRedirectURIs) > 0
 }
 
 // ServeOpenIDConfiguration handles OpenID Connect Discovery 1.0 requests.
@@ -503,7 +503,7 @@ func (h *Handler) ServeJWKS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.server.Config.IsJWTAccessTokenFormat() {
+	if !h.server.Config().IsJWTAccessTokenFormat() {
 		h.recordHTTPMetrics(r.Context(), endpointJWKS, http.MethodGet, http.StatusNotFound, startTime)
 		http.NotFound(w, r)
 		return
@@ -525,7 +525,7 @@ func (h *Handler) ServeJWKS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.setCORSHeaders(w, r)
-	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+	security.SetSecurityHeaders(w, h.server.Config().Issuer)
 	h.recordHTTPMetrics(r.Context(), endpointJWKS, http.MethodGet, http.StatusOK, startTime)
 	w.Header().Set("Content-Type", "application/jwk-set+json")
 	w.Header().Set("Cache-Control", "public, max-age=3600")

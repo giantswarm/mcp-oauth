@@ -59,7 +59,7 @@ func New(server *server.Server, logger *slog.Logger) *Handler {
 		logger: logger,
 	}
 
-	h.tracer = server.Instrumentation.Tracer("http")
+	h.tracer = server.Instrumentation().Tracer("http")
 
 	return h
 }
@@ -79,7 +79,7 @@ func retryAfterSecondsForRate(rate int) int {
 // clientIP resolves the request's client IP using the server's proxy-trust
 // configuration. Threaded into every handler that gates by IP or logs IP.
 func (h *Handler) clientIP(r *http.Request) string {
-	return security.GetClientIP(r, h.server.Config.TrustProxy, h.server.Config.TrustedProxyCount)
+	return security.GetClientIP(r, h.server.Config().TrustProxy, h.server.Config().TrustedProxyCount)
 }
 
 // gateIPRateLimit applies the IP rate limit at handler entry. On reject it
@@ -164,20 +164,20 @@ func (h *Handler) RegisterOAuthRoutes(mux *http.ServeMux, opts OAuthRoutesOption
 	// not self-gate on Config.EnableIntrospectionEndpoint — registering it
 	// unconditionally would expose an endpoint the operator disabled in
 	// config. Only wire the route when the flag is on.
-	if h.server.Config.EnableIntrospectionEndpoint {
+	if h.server.Config().EnableIntrospectionEndpoint {
 		mux.HandleFunc(server.EndpointPathIntrospect, h.ServeTokenIntrospection)
 	}
 
 	// OIDC UserInfo (OIDC Core 1.0 §5.3) is opt-in. The handler runs behind
 	// ValidateToken so bearer authentication, scope/audience checks, and
 	// rate limiting all apply.
-	if h.server.Config.EnableUserInfoEndpoint {
+	if h.server.Config().EnableUserInfoEndpoint {
 		mux.Handle(server.EndpointPathUserInfo, h.ValidateToken(http.HandlerFunc(h.ServeUserInfo)))
 	}
 
 	// RFC 7592 client management is opt-in. The trailing slash registers all
 	// /oauth/register/{client_id} sub-paths via net/http prefix matching.
-	if h.server.Config.EnableClientManagementEndpoint {
+	if h.server.Config().EnableClientManagementEndpoint {
 		mux.HandleFunc(server.EndpointPathClientManagement, h.ServeClientManagement)
 	}
 
@@ -191,11 +191,11 @@ func (h *Handler) RegisterOAuthRoutes(mux *http.ServeMux, opts OAuthRoutesOption
 	// configured paths, so a different MCPPath value would be registered
 	// but never preferred over the config entries. Log once so consumers
 	// notice the inconsistency instead of silently ignoring the MCPPath.
-	if opts.MCPPath != "" && len(h.server.Config.ResourceMetadataByPath) > 0 {
+	if opts.MCPPath != "" && len(h.server.Config().ResourceMetadataByPath) > 0 {
 		h.logger.Warn(
 			"RegisterOAuthRoutes: MCPPath is set alongside non-empty Config.ResourceMetadataByPath; the configuration map is preferred and MCPPath adds only a back-compat alias route",
 			"mcp_path", opts.MCPPath,
-			"configured_paths", len(h.server.Config.ResourceMetadataByPath),
+			"configured_paths", len(h.server.Config().ResourceMetadataByPath),
 		)
 	}
 
@@ -205,7 +205,7 @@ func (h *Handler) RegisterOAuthRoutes(mux *http.ServeMux, opts OAuthRoutesOption
 	// JWKS is registered only in JWT mode. AccessTokenFormat is fixed for
 	// the server's lifetime; in opaque mode the route falls through to
 	// the default-mux 404 and does not consume the discovery rate limit.
-	if h.server.Config.IsJWTAccessTokenFormat() {
+	if h.server.Config().IsJWTAccessTokenFormat() {
 		mux.HandleFunc(server.EndpointPathJWKS, h.ServeJWKS)
 	}
 }
@@ -237,20 +237,20 @@ func (h *Handler) failRequest(w http.ResponseWriter, r *http.Request, span trace
 // logAuthFailure logs authentication failures with optional auditing.
 func (h *Handler) logAuthFailure(ctx context.Context, clientID, clientIP, reason, message string) {
 	h.logger.Warn(message, "client_id", clientID, "ip", clientIP)
-	h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, reason)
+	h.server.Auditor().LogAuthFailure(ctx, "", clientID, clientIP, reason)
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, code, description string, status int) {
-	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+	security.SetSecurityHeaders(w, h.server.Config().Issuer)
 
 	// MCP 2025-11-25: Include WWW-Authenticate header for 401 responses
 	// This helps clients discover the authorization server and required scopes
 	if status == http.StatusUnauthorized {
-		if !h.server.Config.DisableWWWAuthenticateMetadata {
+		if !h.server.Config().DisableWWWAuthenticateMetadata {
 			// Full MCP 2025-11-25 compliant header with discovery metadata (default)
 			scope := ""
-			if len(h.server.Config.DefaultChallengeScopes) > 0 {
-				scope = strings.Join(h.server.Config.DefaultChallengeScopes, " ")
+			if len(h.server.Config().DefaultChallengeScopes) > 0 {
+				scope = strings.Join(h.server.Config().DefaultChallengeScopes, " ")
 			}
 			w.Header().Set("WWW-Authenticate", h.formatWWWAuthenticate(scope, code, description))
 		} else {

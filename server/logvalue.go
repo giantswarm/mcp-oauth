@@ -17,12 +17,12 @@ import (
 // faithfully reflect. Encryption status is reported by the store's own
 // LogValue; the server no longer holds the encryptor.
 func (s *Server) LogValue() slog.Value {
-	cfg := s.Config
+	cfg := s.config
 	attrs := []slog.Attr{
 		slog.String("issuer", cfg.Issuer),
 		slog.Bool("production_mode", cfg.ProductionMode),
 		slog.String("access_token_format", string(cfg.AccessTokenFormat)),
-		slog.Bool("instrumentation_on", s.Instrumentation.IsEnabled()),
+		slog.Bool("instrumentation_on", s.instrumentation.IsEnabled()),
 		slog.Group(
 			"redirect_uri_policy",
 			slog.Bool("dns_validation", cfg.DNSValidation),

@@ -532,7 +532,7 @@ func TestCORS_CredentialsDisabled(t *testing.T) {
 	defer store.Stop()
 
 	// Configure CORS with credentials disabled
-	handler.server.Config.CORS = server.CORSConfig{
+	handler.server.Config().CORS = server.CORSConfig{
 		AllowedOrigins:   []string{testOriginApp},
 		AllowCredentials: false,
 		MaxAge:           3600,
@@ -560,7 +560,7 @@ func TestCORS_CustomMaxAge(t *testing.T) {
 	defer store.Stop()
 
 	// Configure CORS with custom max age
-	handler.server.Config.CORS = server.CORSConfig{
+	handler.server.Config().CORS = server.CORSConfig{
 		AllowedOrigins:   []string{testOriginApp},
 		AllowCredentials: true,
 		MaxAge:           7200, // 2 hours

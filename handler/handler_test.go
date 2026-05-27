@@ -32,6 +32,11 @@ const (
 
 func setupTestHandler(t *testing.T) (*Handler, *memory.Store) {
 	t.Helper()
+	return setupTestHandlerWithOpts(t)
+}
+
+func setupTestHandlerWithOpts(t *testing.T, opts ...server.Option) (*Handler, *memory.Store) {
+	t.Helper()
 
 	store := memory.New()
 	provider := mock.NewProvider()
@@ -43,7 +48,7 @@ func setupTestHandler(t *testing.T) (*Handler, *memory.Store) {
 		DisableNonceEchoRequirement: true,
 	}
 
-	srv, err := server.New(provider, store, store, store, config, nil)
+	srv, err := server.New(provider, store, store, store, config, nil, opts...)
 	if err != nil {
 		t.Fatalf("server.New() error = %v", err)
 	}

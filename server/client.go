@@ -119,7 +119,7 @@ func (s *Server) RegisterClientV2(ctx context.Context, clientName, clientType, t
 func (s *Server) validateRedirectURIsWithAudit(ctx context.Context, redirectURIs []string, clientIP string) error {
 	if err := s.ValidateRedirectURIsForRegistration(ctx, redirectURIs); err != nil {
 		category := GetRedirectURIErrorCategory(err)
-		s.Auditor.LogEvent(ctx, security.Event{
+		s.auditor.LogEvent(ctx, security.Event{
 			Type: security.EventClientRegistrationRejected,
 			Details: map[string]any{
 				"reason":    "redirect_uri_validation_failed",
@@ -127,7 +127,7 @@ func (s *Server) validateRedirectURIsWithAudit(ctx context.Context, redirectURIs
 				"client_ip": clientIP,
 			},
 		})
-		s.Logger.Warn("Client registration rejected: redirect URI validation failed",
+		s.logger.Warn("Client registration rejected: redirect URI validation failed",
 			"error", err.Error(),
 			"client_ip", clientIP)
 		return fmt.Errorf("invalid_redirect_uri: %w", err)
@@ -186,9 +186,9 @@ func (s *Server) trackClientIPAndLog(ctx context.Context, client *storage.Client
 		memStore.TrackClientIP(clientIP)
 	}
 
-	s.Auditor.LogClientRegistered(ctx, client.ClientID, client.ClientType, clientIP)
+	s.auditor.LogClientRegistered(ctx, client.ClientID, client.ClientType, clientIP)
 
-	s.Logger.Debug("Registered new OAuth client",
+	s.logger.Debug("Registered new OAuth client",
 		"client_id", client.ClientID,
 		"client_name", client.ClientName,
 		"client_type", client.ClientType,
@@ -238,7 +238,7 @@ func (s *Server) DeleteClient(ctx context.Context, clientID string) error {
 func (s *Server) CanRegisterWithTrustedScheme(redirectURIs []string) (allowed bool, scheme string, err error) {
 	// No trusted schemes configured - require token
 	// Use the pre-computed map for O(1) lookup
-	if len(s.Config.trustedSchemesMap) == 0 {
+	if len(s.config.trustedSchemesMap) == 0 {
 		return false, "", nil
 	}
 
@@ -248,7 +248,7 @@ func (s *Server) CanRegisterWithTrustedScheme(redirectURIs []string) (allowed bo
 	}
 
 	// Strict matching is enabled by default unless explicitly disabled
-	strictMatching := !s.Config.DisableStrictSchemeMatching
+	strictMatching := !s.config.DisableStrictSchemeMatching
 
 	var firstTrustedScheme string
 	trustedCount := 0
@@ -267,7 +267,7 @@ func (s *Server) CanRegisterWithTrustedScheme(redirectURIs []string) (allowed bo
 			return false, "", fmt.Errorf("redirect URI missing scheme: %s", uri)
 		}
 
-		if s.Config.trustedSchemesMap[uriScheme] {
+		if s.config.trustedSchemesMap[uriScheme] {
 			trustedCount++
 			if firstTrustedScheme == "" {
 				firstTrustedScheme = uriScheme
@@ -297,14 +297,14 @@ func (s *Server) CanRegisterWithTrustedScheme(redirectURIs []string) (allowed bo
 //
 // Returns the first matched (canonical) URI for audit logging.
 func (s *Server) CanRegisterWithTrustedRedirectURI(redirectURIs []string) (allowed bool, matchedURI string, err error) {
-	if len(s.Config.trustedRedirectURIsSet) == 0 || len(redirectURIs) == 0 {
+	if len(s.config.trustedRedirectURIsSet) == 0 || len(redirectURIs) == 0 {
 		return false, "", nil
 	}
 
 	var firstMatch string
 	for _, uri := range redirectURIs {
 		canonical := helpers.NormalizeURL(uri)
-		if !s.Config.trustedRedirectURIsSet[canonical] {
+		if !s.config.trustedRedirectURIsSet[canonical] {
 			return false, "", nil
 		}
 		if firstMatch == "" {

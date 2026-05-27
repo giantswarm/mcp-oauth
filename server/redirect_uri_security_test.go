@@ -631,14 +631,14 @@ func TestConfigDefaults(t *testing.T) {
 		})
 		// AllowLocalhostRedirectURIs should respect the explicit false setting
 		// (secure by default - only allow if explicitly enabled)
-		if server.Config.AllowLocalhostRedirectURIs {
+		if server.config.AllowLocalhostRedirectURIs {
 			t.Error("Expected AllowLocalhostRedirectURIs to be false when explicitly set")
 		}
 	})
 
 	t.Run("BlockedRedirectSchemes has defaults", func(t *testing.T) {
 		server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
-		if len(server.Config.BlockedRedirectSchemes) == 0 {
+		if len(server.config.BlockedRedirectSchemes) == 0 {
 			t.Error("Expected BlockedRedirectSchemes to have default values")
 		}
 
@@ -646,7 +646,7 @@ func TestConfigDefaults(t *testing.T) {
 		expected := []string{"javascript", "data", "file"}
 		for _, scheme := range expected {
 			found := false
-			for _, blocked := range server.Config.BlockedRedirectSchemes {
+			for _, blocked := range server.config.BlockedRedirectSchemes {
 				if blocked == scheme {
 					found = true
 					break
@@ -665,7 +665,7 @@ func TestValidateRedirectURIAtAuthorizationTime(t *testing.T) {
 	t.Run("Skipped when disabled", func(t *testing.T) {
 		server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
 		// ValidateRedirectURIAtAuthorization defaults to false
-		server.Config.ValidateRedirectURIAtAuthorization = false
+		server.config.ValidateRedirectURIAtAuthorization = false
 
 		// Should return nil even for invalid URIs when disabled
 		err := server.ValidateRedirectURIAtAuthorizationTime(ctx, "javascript:alert('xss')")
@@ -676,7 +676,7 @@ func TestValidateRedirectURIAtAuthorizationTime(t *testing.T) {
 
 	t.Run("Validates when enabled", func(t *testing.T) {
 		server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
-		server.Config.ValidateRedirectURIAtAuthorization = true
+		server.config.ValidateRedirectURIAtAuthorization = true
 
 		// Should fail for blocked schemes
 		err := server.ValidateRedirectURIAtAuthorizationTime(ctx, "javascript:alert('xss')")
@@ -693,7 +693,7 @@ func TestValidateRedirectURIAtAuthorizationTime(t *testing.T) {
 
 	t.Run("Validates private IPs at authorization time", func(t *testing.T) {
 		server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
-		server.Config.ValidateRedirectURIAtAuthorization = true
+		server.config.ValidateRedirectURIAtAuthorization = true
 
 		err := server.ValidateRedirectURIAtAuthorizationTime(ctx, "https://10.0.0.1/callback")
 		if err == nil {
@@ -753,7 +753,7 @@ func TestDNSValidationStrict(t *testing.T) {
 			allowLocalhost: true,
 			dnsValidation:  true,
 		})
-		if !server.Config.DNSValidationStrict {
+		if !server.config.DNSValidationStrict {
 			t.Error("Expected DNSValidationStrict to default to true (secure by default)")
 		}
 	})
@@ -764,7 +764,7 @@ func TestDNSValidationStrict(t *testing.T) {
 			allowLocalhost: true,
 			dnsValidation:  true,
 		})
-		if !server.Config.DNSValidationStrict {
+		if !server.config.DNSValidationStrict {
 			t.Error("Expected DNSValidationStrict to be true when DNSValidation is enabled")
 		}
 	})
@@ -923,7 +923,7 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 		})
 		resolver := newMockDNSResolver()
 		resolver.setResult("evil.example.com", net.ParseIP("10.0.0.1"))
-		server.Config.DNSResolver = resolver.resolver()
+		server.config.DNSResolver = resolver.resolver()
 
 		err := server.ValidateRedirectURIForRegistration(ctx, "https://evil.example.com/callback")
 		if err == nil {
@@ -943,7 +943,7 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 		})
 		resolver := newMockDNSResolver()
 		resolver.setResult("internal.example.com", net.ParseIP("192.168.1.100"))
-		server.Config.DNSResolver = resolver.resolver()
+		server.config.DNSResolver = resolver.resolver()
 
 		err := server.ValidateRedirectURIForRegistration(ctx, "https://internal.example.com/callback")
 		if err != nil {
@@ -960,7 +960,7 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 		resolver := newMockDNSResolver()
 		// AWS metadata service IP
 		resolver.setResult("metadata.attacker.com", net.ParseIP("169.254.169.254"))
-		server.Config.DNSResolver = resolver.resolver()
+		server.config.DNSResolver = resolver.resolver()
 
 		err := server.ValidateRedirectURIForRegistration(ctx, "https://metadata.attacker.com/callback")
 		if err == nil {
@@ -979,7 +979,7 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 		})
 		resolver := newMockDNSResolver()
 		resolver.setResult("app.example.com", net.ParseIP("93.184.216.34"))
-		server.Config.DNSResolver = resolver.resolver()
+		server.config.DNSResolver = resolver.resolver()
 
 		err := server.ValidateRedirectURIForRegistration(ctx, "https://app.example.com/callback")
 		if err != nil {
@@ -993,13 +993,13 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 			allowLocalhost: true,
 			dnsValidation:  true,
 		})
-		server.Config.DNSValidationStrict = true
+		server.config.DNSValidationStrict = true
 		resolver := newMockDNSResolver()
 		resolver.setError("unreachable.example.com", &net.DNSError{
 			Err:  "no such host",
 			Name: "unreachable.example.com",
 		})
-		server.Config.DNSResolver = resolver.resolver()
+		server.config.DNSResolver = resolver.resolver()
 
 		err := server.ValidateRedirectURIForRegistration(ctx, "https://unreachable.example.com/callback")
 		if err == nil {
@@ -1016,14 +1016,14 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 			allowLocalhost: true,
 			dnsValidation:  true,
 		})
-		server.Config.DNSValidationStrict = false // Permissive (default)
+		server.config.DNSValidationStrict = false // Permissive (default)
 		resolver := newMockDNSResolver()
 		resolver.setError("flaky.example.com", &net.DNSError{
 			Err:         "temporary failure",
 			Name:        "flaky.example.com",
 			IsTemporary: true,
 		})
-		server.Config.DNSResolver = resolver.resolver()
+		server.config.DNSResolver = resolver.resolver()
 
 		err := server.ValidateRedirectURIForRegistration(ctx, "https://flaky.example.com/callback")
 		if err != nil {
@@ -1044,7 +1044,7 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 			net.ParseIP("93.184.216.34"), // Public
 			net.ParseIP("10.0.0.1"),      // Private - should block
 		)
-		server.Config.DNSResolver = resolver.resolver()
+		server.config.DNSResolver = resolver.resolver()
 
 		err := server.ValidateRedirectURIForRegistration(ctx, "https://mixed.example.com/callback")
 		if err == nil {
@@ -1064,7 +1064,7 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 		resolver := newMockDNSResolver()
 		// IPv6 Unique Local Address (fc00::/7)
 		resolver.setResult("ipv6internal.example.com", net.ParseIP("fd00::1"))
-		server.Config.DNSResolver = resolver.resolver()
+		server.config.DNSResolver = resolver.resolver()
 
 		err := server.ValidateRedirectURIForRegistration(ctx, "https://ipv6internal.example.com/callback")
 		if err == nil {
@@ -1083,7 +1083,7 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 		})
 		resolver := newMockDNSResolver()
 		resolver.setResult("ipv6linklocal.example.com", net.ParseIP("fe80::1"))
-		server.Config.DNSResolver = resolver.resolver()
+		server.config.DNSResolver = resolver.resolver()
 
 		err := server.ValidateRedirectURIForRegistration(ctx, "https://ipv6linklocal.example.com/callback")
 		if err == nil {
@@ -1108,11 +1108,11 @@ func TestAuthorizationTimeValidationWithMockDNS(t *testing.T) {
 			allowLocalhost: true,
 			dnsValidation:  true,
 		})
-		server.Config.ValidateRedirectURIAtAuthorization = true
+		server.config.ValidateRedirectURIAtAuthorization = true
 		resolver := newMockDNSResolver()
 		// Now the attacker has changed DNS to point to internal network
 		resolver.setResult("evil.example.com", net.ParseIP("10.0.0.1"))
-		server.Config.DNSResolver = resolver.resolver()
+		server.config.DNSResolver = resolver.resolver()
 
 		err := server.ValidateRedirectURIAtAuthorizationTime(ctx, "https://evil.example.com/callback")
 		if err == nil {
@@ -1129,10 +1129,10 @@ func TestAuthorizationTimeValidationWithMockDNS(t *testing.T) {
 			allowLocalhost: true,
 			dnsValidation:  true,
 		})
-		server.Config.ValidateRedirectURIAtAuthorization = true
+		server.config.ValidateRedirectURIAtAuthorization = true
 		resolver := newMockDNSResolver()
 		resolver.setResult("app.example.com", net.ParseIP("93.184.216.34"))
-		server.Config.DNSResolver = resolver.resolver()
+		server.config.DNSResolver = resolver.resolver()
 
 		err := server.ValidateRedirectURIAtAuthorizationTime(ctx, "https://app.example.com/callback")
 		if err != nil {
@@ -1162,7 +1162,7 @@ func TestRedirectURISecurityMetrics(t *testing.T) {
 
 	t.Run("Metrics recorded on authorization-time validation failure", func(t *testing.T) {
 		server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
-		server.Config.ValidateRedirectURIAtAuthorization = true
+		server.config.ValidateRedirectURIAtAuthorization = true
 
 		// Trigger a private IP error at authorization time
 		err := server.ValidateRedirectURIAtAuthorizationTime(ctx, "https://10.0.0.1/callback")
@@ -1208,7 +1208,7 @@ func TestRedirectURISecurityMetrics(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create server: %v", err)
 		}
-		server.Instrumentation = inst
+		server.instrumentation = inst
 
 		// This should record a metric via instrumentation
 		validationErr := server.ValidateRedirectURIForRegistration(ctx, "javascript:alert('xss')")
@@ -1242,14 +1242,14 @@ func TestValidateRedirectURIForRegistration_IPBypassAttempts(t *testing.T) {
 			allowLocalhost: true,
 			dnsValidation:  true,
 		})
-		server.Config.DNSValidationStrict = true
+		server.config.DNSValidationStrict = true
 
 		resolver := newMockDNSResolver()
 		// Simulate DNS failure for these invalid "hostnames"
 		resolver.setError("0177.0.0.1", &net.DNSError{Err: "no such host", Name: "0177.0.0.1"})
 		resolver.setError("012.0.0.1", &net.DNSError{Err: "no such host", Name: "012.0.0.1"})
 		resolver.setError("0300.0250.0.1", &net.DNSError{Err: "no such host", Name: "0300.0250.0.1"})
-		server.Config.DNSResolver = resolver.resolver()
+		server.config.DNSResolver = resolver.resolver()
 
 		octalTests := []struct {
 			name string
@@ -1284,13 +1284,13 @@ func TestValidateRedirectURIForRegistration_IPBypassAttempts(t *testing.T) {
 			allowLocalhost: true,
 			dnsValidation:  true,
 		})
-		server.Config.DNSValidationStrict = true
+		server.config.DNSValidationStrict = true
 
 		resolver := newMockDNSResolver()
 		resolver.setError("0x7f.0.0.1", &net.DNSError{Err: "no such host", Name: "0x7f.0.0.1"})
 		resolver.setError("0x7f000001", &net.DNSError{Err: "no such host", Name: "0x7f000001"})
 		resolver.setError("0x0a.0.0.1", &net.DNSError{Err: "no such host", Name: "0x0a.0.0.1"})
-		server.Config.DNSResolver = resolver.resolver()
+		server.config.DNSResolver = resolver.resolver()
 
 		hexTests := []struct {
 			name string
@@ -1323,12 +1323,12 @@ func TestValidateRedirectURIForRegistration_IPBypassAttempts(t *testing.T) {
 			allowLocalhost: true,
 			dnsValidation:  true,
 		})
-		server.Config.DNSValidationStrict = true
+		server.config.DNSValidationStrict = true
 
 		resolver := newMockDNSResolver()
 		resolver.setError("2130706433", &net.DNSError{Err: "no such host", Name: "2130706433"})
 		resolver.setError("167772161", &net.DNSError{Err: "no such host", Name: "167772161"})
-		server.Config.DNSResolver = resolver.resolver()
+		server.config.DNSResolver = resolver.resolver()
 
 		decimalTests := []struct {
 			name string

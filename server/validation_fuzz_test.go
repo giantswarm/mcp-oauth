@@ -11,8 +11,8 @@ import (
 // input the fuzzer produces.
 func FuzzComputePKCEChallenge_S256(f *testing.F) {
 	srv := &Server{
-		Instrumentation: testInstrumentation(f),
-		Auditor:         testAuditor(),
+		instrumentation: testInstrumentation(f),
+		auditor: testAuditor(),
 	}
 	for _, seed := range []string{
 		"abcDEF-._~",

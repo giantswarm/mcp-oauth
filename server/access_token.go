@@ -285,5 +285,5 @@ func publicJWKSFromConfig(cfg *Config) (*jose.JSONWebKeySet, error) {
 // Exported so the http.Handler in the root oauth package can build the
 // response without reaching into server-package internals.
 func (s *Server) PublicJWKS() (*jose.JSONWebKeySet, error) {
-	return publicJWKSFromConfig(s.Config)
+	return publicJWKSFromConfig(s.config)
 }

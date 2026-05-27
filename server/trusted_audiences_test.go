@@ -102,9 +102,9 @@ func TestIsTrustedAudience(t *testing.T) {
 			}
 
 			srv := &Server{
-				Config:          config,
-				Instrumentation: testInstrumentation(t),
-				Auditor:         testAuditor(),
+				config: config,
+				instrumentation: testInstrumentation(t),
+				auditor: testAuditor(),
 			}
 
 			got := srv.isTrustedAudience(tt.audience)
@@ -192,12 +192,12 @@ func TestValidateTokenAudience_WithTrustedAudiences(t *testing.T) {
 			}
 
 			srv := &Server{
-				Config:          config,
+				config: config,
 				tokenStore:      store,
 				flowStore:       store,
-				Auditor:         auditor,
-				Logger:          logger,
-				Instrumentation: testInstrumentation(t),
+				auditor: auditor,
+				logger: logger,
+				instrumentation: testInstrumentation(t),
 			}
 
 			// Save a token with metadata
@@ -353,10 +353,10 @@ func TestLogCrossClientTokenAccepted(t *testing.T) {
 	}
 
 	srv := &Server{
-		Config:          config,
-		Auditor:         auditor,
-		Logger:          logger,
-		Instrumentation: testInstrumentation(t),
+		config: config,
+		auditor: auditor,
+		logger: logger,
+		instrumentation: testInstrumentation(t),
 	}
 
 	metadata := &storage.TokenMetadata{
@@ -400,9 +400,9 @@ func TestTrustedAudiences_ConstantTimeComparison(t *testing.T) {
 	}
 
 	srv := &Server{
-		Config:          config,
-		Instrumentation: testInstrumentation(t),
-		Auditor:         testAuditor(),
+		config: config,
+		instrumentation: testInstrumentation(t),
+		auditor: testAuditor(),
 	}
 
 	// These should both use the same code path with constant-time comparison
@@ -435,11 +435,11 @@ func TestTrustedAudiences_BackwardCompatibility(t *testing.T) {
 	}
 
 	srv := &Server{
-		Config:          config,
+		config: config,
 		tokenStore:      store,
-		Logger:          logger,
-		Instrumentation: testInstrumentation(t),
-		Auditor:         testAuditor(),
+		logger: logger,
+		instrumentation: testInstrumentation(t),
+		auditor: testAuditor(),
 	}
 
 	// Save a token with metadata for server's own audience
@@ -481,9 +481,9 @@ func TestTrustedAudiences_URLNormalization(t *testing.T) {
 	}
 
 	srv := &Server{
-		Config:          config,
-		Instrumentation: testInstrumentation(t),
-		Auditor:         testAuditor(),
+		config: config,
+		instrumentation: testInstrumentation(t),
+		auditor: testAuditor(),
 	}
 
 	// With trailing slash normalization, these should match
@@ -555,11 +555,11 @@ func TestFindMatchingTrustedAudience(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := &Server{
-				Config: &Config{
+				config: &Config{
 					TrustedAudiences: tt.trustedAudiences,
 				},
-				Instrumentation: testInstrumentation(t),
-				Auditor:         testAuditor(),
+				instrumentation: testInstrumentation(t),
+				auditor: testAuditor(),
 			}
 
 			got := srv.findMatchingTrustedAudience(tt.tokenAudiences)
@@ -595,13 +595,13 @@ func TestValidateToken_JWTBeforeUserinfo(t *testing.T) {
 	mockProvider := mock.NewProvider()
 
 	srv := &Server{
-		Config:          config,
+		config: config,
 		tokenStore:      store,
 		flowStore:       store,
 		provider:        mockProvider,
-		Logger:          logger,
-		Instrumentation: testInstrumentation(t),
-		Auditor:         testAuditor(),
+		logger: logger,
+		instrumentation: testInstrumentation(t),
+		auditor: testAuditor(),
 	}
 
 	// Test with an opaque token (not a JWT) - should call userinfo
@@ -674,13 +674,13 @@ func TestValidateToken_IssuerValidation(t *testing.T) {
 		}
 
 		srv := &Server{
-			Config:          config,
+			config: config,
 			tokenStore:      store,
 			flowStore:       store,
 			provider:        mockProvider,
-			Logger:          logger,
-			Instrumentation: testInstrumentation(t),
-			Auditor:         testAuditor(),
+			logger: logger,
+			instrumentation: testInstrumentation(t),
+			auditor: testAuditor(),
 		}
 
 		// Use test JWT with valid structure but invalid signature
@@ -698,13 +698,13 @@ func TestValidateToken_IssuerValidation(t *testing.T) {
 		mockProvider.ResetCallCounts()
 
 		srv := &Server{
-			Config:          config,
+			config: config,
 			tokenStore:      store,
 			flowStore:       store,
 			provider:        mockProvider,
-			Logger:          logger,
-			Instrumentation: testInstrumentation(t),
-			Auditor:         testAuditor(),
+			logger: logger,
+			instrumentation: testInstrumentation(t),
+			auditor: testAuditor(),
 		}
 
 		// Use test JWT with valid structure but invalid signature
@@ -726,13 +726,13 @@ func TestValidateToken_IssuerValidation(t *testing.T) {
 		}
 
 		srv := &Server{
-			Config:          config,
+			config: config,
 			tokenStore:      store,
 			flowStore:       store,
 			provider:        mockProvider,
-			Logger:          logger,
-			Instrumentation: testInstrumentation(t),
-			Auditor:         testAuditor(),
+			logger: logger,
+			instrumentation: testInstrumentation(t),
+			auditor: testAuditor(),
 		}
 
 		// Use test JWT with valid structure but invalid signature
@@ -813,10 +813,10 @@ func TestGetJWKSClient_AllowPrivateIPJWKS(t *testing.T) {
 		}
 
 		srv := &Server{
-			Config:          config,
-			Logger:          slog.Default(),
-			Instrumentation: testInstrumentation(t),
-			Auditor:         testAuditor(),
+			config: config,
+			logger: slog.Default(),
+			instrumentation: testInstrumentation(t),
+			auditor: testAuditor(),
 		}
 
 		client := srv.getJWKSClient()
@@ -832,10 +832,10 @@ func TestGetJWKSClient_AllowPrivateIPJWKS(t *testing.T) {
 		}
 
 		srv := &Server{
-			Config:          config,
-			Logger:          slog.Default(),
-			Instrumentation: testInstrumentation(t),
-			Auditor:         testAuditor(),
+			config: config,
+			logger: slog.Default(),
+			instrumentation: testInstrumentation(t),
+			auditor: testAuditor(),
 		}
 
 		client := srv.getJWKSClient()
@@ -851,10 +851,10 @@ func TestGetJWKSClient_AllowPrivateIPJWKS(t *testing.T) {
 		}
 
 		srv := &Server{
-			Config:          config,
-			Logger:          slog.Default(),
-			Instrumentation: testInstrumentation(t),
-			Auditor:         testAuditor(),
+			config: config,
+			logger: slog.Default(),
+			instrumentation: testInstrumentation(t),
+			auditor: testAuditor(),
 		}
 
 		client1 := srv.getJWKSClient()
@@ -872,10 +872,10 @@ func TestGetJWKSClient_AllowPrivateIPJWKS(t *testing.T) {
 		}
 
 		srv := &Server{
-			Config:          config,
-			Logger:          slog.Default(),
-			Instrumentation: testInstrumentation(t),
-			Auditor:         testAuditor(),
+			config: config,
+			logger: slog.Default(),
+			instrumentation: testInstrumentation(t),
+			auditor: testAuditor(),
 		}
 
 		client := srv.getJWKSClient()
@@ -905,10 +905,10 @@ func TestGetJWKSClient_AllowPrivateIPJWKS(t *testing.T) {
 		}
 
 		srv := &Server{
-			Config:          config,
-			Logger:          slog.Default(),
-			Instrumentation: testInstrumentation(t),
-			Auditor:         testAuditor(),
+			config: config,
+			logger: slog.Default(),
+			instrumentation: testInstrumentation(t),
+			auditor: testAuditor(),
 		}
 
 		client := srv.getJWKSClient()
@@ -940,10 +940,10 @@ func TestGetJWKSClient_AllowPrivateIPJWKS(t *testing.T) {
 		}
 
 		srv := &Server{
-			Config:          config,
-			Logger:          slog.Default(),
-			Instrumentation: testInstrumentation(t),
-			Auditor:         testAuditor(),
+			config: config,
+			logger: slog.Default(),
+			instrumentation: testInstrumentation(t),
+			auditor: testAuditor(),
 		}
 
 		client := srv.getJWKSClient()
@@ -986,13 +986,13 @@ func TestValidateToken_TokenSource_OAuth(t *testing.T) {
 	mockProvider := mock.NewProvider()
 
 	srv := &Server{
-		Config:          config,
+		config: config,
 		tokenStore:      store,
 		flowStore:       store,
 		provider:        mockProvider,
-		Logger:          logger,
-		Instrumentation: testInstrumentation(t),
-		Auditor:         testAuditor(),
+		logger: logger,
+		instrumentation: testInstrumentation(t),
+		auditor: testAuditor(),
 	}
 
 	// Opaque token validated via userinfo endpoint should have TokenSourceOAuth
@@ -1035,12 +1035,12 @@ func TestValidateToken_TokenSource_SSO(t *testing.T) {
 	}
 
 	srv := &Server{
-		Config:          config,
+		config: config,
 		tokenStore:      store,
 		flowStore:       store,
-		Logger:          logger,
-		Instrumentation: testInstrumentation(t),
-		Auditor:         testAuditor(),
+		logger: logger,
+		instrumentation: testInstrumentation(t),
+		auditor: testAuditor(),
 	}
 
 	// Test idTokenClaimsToUserInfo sets TokenSourceSSO

@@ -130,7 +130,7 @@ func TestPreserveRefreshToken(t *testing.T) {
 // TestCapTokenExpiry tests the capTokenExpiry helper function.
 func TestCapTokenExpiry(t *testing.T) {
 	srv, _, _ := setupFlowTestServer(t)
-	srv.Config.AccessTokenTTL = 3600
+	srv.config.AccessTokenTTL = 3600
 
 	t.Run("provider expires sooner - caps to provider", func(t *testing.T) {
 		now := time.Now()
@@ -146,7 +146,7 @@ func TestCapTokenExpiry(t *testing.T) {
 		now := time.Now()
 		providerExpiry := now.Add(2 * time.Hour)
 		expiry := srv.capTokenExpiry(now, providerExpiry)
-		expected := now.Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
+		expected := now.Add(time.Duration(srv.config.AccessTokenTTL) * time.Second)
 		diff := expiry.Sub(expected).Abs()
 		if diff > 2*time.Second {
 			t.Errorf("expiry = %v, want close to %v (diff: %v)", expiry, expected, diff)
@@ -160,7 +160,7 @@ func TestCapTokenExpiry(t *testing.T) {
 		if expiry.Before(now) {
 			t.Errorf("expiry = %v, must not be in the past", expiry)
 		}
-		expected := now.Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
+		expected := now.Add(time.Duration(srv.config.AccessTokenTTL) * time.Second)
 		diff := expiry.Sub(expected).Abs()
 		if diff > 2*time.Second {
 			t.Errorf("expiry = %v, want close to %v (diff: %v)", expiry, expected, diff)
@@ -170,7 +170,7 @@ func TestCapTokenExpiry(t *testing.T) {
 	t.Run("zero expiry - uses AccessTokenTTL", func(t *testing.T) {
 		now := time.Now()
 		expiry := srv.capTokenExpiry(now, time.Time{})
-		expected := now.Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
+		expected := now.Add(time.Duration(srv.config.AccessTokenTTL) * time.Second)
 		diff := expiry.Sub(expected).Abs()
 		if diff > 2*time.Second {
 			t.Errorf("expiry = %v, want close to %v (diff: %v)", expiry, expected, diff)

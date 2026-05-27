@@ -104,7 +104,7 @@ func TestSaveUserInfoAndToken_IDPathFailureIsFatal(t *testing.T) {
 			}
 			srv, err := New(provider, fts, mem, mem, config, logger)
 			require.NoError(t, err)
-			srv.Auditor = security.NewAuditor(logger, true)
+			srv.auditor = security.NewAuditor(logger, true)
 
 			err = srv.saveUserInfoAndToken(context.Background(), testUserInfo(), testProviderToken())
 			require.Error(t, err)
@@ -155,7 +155,7 @@ func TestSaveUserInfoAndToken_EmailPathFailureIsBestEffort(t *testing.T) {
 			}
 			srv, err := New(provider, fts, mem, mem, config, logger)
 			require.NoError(t, err)
-			srv.Auditor = security.NewAuditor(logger, true)
+			srv.auditor = security.NewAuditor(logger, true)
 
 			err = srv.saveUserInfoAndToken(context.Background(), testUserInfo(), testProviderToken())
 			require.NoError(t, err, "email-keyed failures must not fail the auth flow")
@@ -179,7 +179,7 @@ func TestSaveUserInfoAndToken_MissingSubjectIsFatal(t *testing.T) {
 	}
 	srv, err := New(provider, mem, mem, mem, config, logger)
 	require.NoError(t, err)
-	srv.Auditor = security.NewAuditor(logger, true)
+	srv.auditor = security.NewAuditor(logger, true)
 
 	err = srv.saveUserInfoAndToken(context.Background(), &providers.UserInfo{Email: testUserEmail}, testProviderToken())
 	require.Error(t, err)

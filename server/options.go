@@ -17,33 +17,33 @@ func WithAuditor(aud *security.Auditor) Option {
 	if aud == nil {
 		panic("WithAuditor: nil auditor; use security.NewAuditor(nil, false) for a noop")
 	}
-	return func(s *Server) { s.Auditor = aud }
+	return func(s *Server) { s.auditor = aud }
 }
 
 // WithRateLimiter sets the IP-based rate limiter consulted on every
 // authenticated request.
 func WithRateLimiter(rl *security.RateLimiter) Option {
-	return func(s *Server) { s.RateLimiter = rl }
+	return func(s *Server) { s.rateLimiter = rl }
 }
 
 // WithUserRateLimiter sets the user-based rate limiter applied after
 // authentication. Use alongside WithRateLimiter for layered protection.
 func WithUserRateLimiter(rl *security.RateLimiter) Option {
-	return func(s *Server) { s.UserRateLimiter = rl }
+	return func(s *Server) { s.userRateLimiter = rl }
 }
 
 // WithSecurityEventRateLimiter sets the rate limiter that bounds the
 // emission of security-event log lines. Prevents log flooding from
 // repeated failures (e.g. a malformed-token attack against /oauth/token).
 func WithSecurityEventRateLimiter(rl *security.RateLimiter) Option {
-	return func(s *Server) { s.SecurityEventRateLimiter = rl }
+	return func(s *Server) { s.securityEventRateLimiter = rl }
 }
 
 // WithClientRegistrationRateLimiter sets the time-windowed rate limiter
 // for /oauth/register. Prevents resource exhaustion via repeated
 // registration / deletion cycles.
 func WithClientRegistrationRateLimiter(rl *security.ClientRegistrationRateLimiter) Option {
-	return func(s *Server) { s.ClientRegistrationRateLimiter = rl }
+	return func(s *Server) { s.clientRegistrationRateLimiter = rl }
 }
 
 // WithMetadataFetchRateLimiter sets the per-domain rate limiter for
@@ -65,7 +65,7 @@ func WithSessionCreationHandler(handler SessionCreationHandler) Option {
 			return
 		}
 		if _, ok := s.tokenStore.(storage.RefreshTokenFamilyStore); !ok {
-			s.Logger.Warn("SessionCreationHandler registered but token store does not support refresh token families -- handler will never fire")
+			s.logger.Warn("SessionCreationHandler registered but token store does not support refresh token families -- handler will never fire")
 		}
 	}
 }
@@ -89,7 +89,7 @@ func WithTokenRefreshHandler(handler TokenRefreshHandler) Option {
 			return
 		}
 		if _, ok := s.tokenStore.(storage.TokenMetadataGetter); !ok {
-			s.Logger.Warn("TokenRefreshHandler registered but token store does not support TokenMetadataGetter -- handler will not receive userID/familyID")
+			s.logger.Warn("TokenRefreshHandler registered but token store does not support TokenMetadataGetter -- handler will not receive userID/familyID")
 		}
 	}
 }
@@ -107,7 +107,7 @@ func WithTrustedIssuers(issuers []TrustedIssuer) Option {
 	return func(s *Server) {
 		v, err := NewOIDCValidator(issuers)
 		if err != nil {
-			s.Logger.Error("failed to initialise trusted issuer validator", "error", err)
+			s.logger.Error("failed to initialise trusted issuer validator", "error", err)
 			return
 		}
 		if s.subjectValidators == nil {
@@ -169,7 +169,7 @@ func WithTrustedProxyCIDRs(cidrs []*net.IPNet) Option {
 // server and the store share one pipeline.
 func WithInstrumentation(inst *instrumentation.Instrumentation) Option {
 	return func(s *Server) {
-		s.Instrumentation = inst
+		s.instrumentation = inst
 		if inst == nil {
 			return
 		}

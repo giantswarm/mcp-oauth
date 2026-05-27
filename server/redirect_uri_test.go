@@ -10,7 +10,7 @@ import (
 func TestServer_ValidateRedirectURIForAuthorization(t *testing.T) {
 	ctx := context.Background()
 	srv, _, _ := setupFlowTestServer(t)
-	srv.Config.AllowLocalhostRedirectURIs = true
+	srv.config.AllowLocalhostRedirectURIs = true
 
 	client, _, err := srv.RegisterClient(
 		ctx,

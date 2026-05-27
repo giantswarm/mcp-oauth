@@ -211,7 +211,7 @@ func TestHandler_ServeTokenIntrospection_OpaquePath(t *testing.T) {
 			require.NoError(t, err)
 
 			if tt.allowlistResourceSrv {
-				handler.server.Config.IntrospectionResourceServers = []string{resourceServer.ClientID}
+				handler.server.Config().IntrospectionResourceServers = []string{resourceServer.ClientID}
 			}
 
 			const accessToken = "opaque-access-token"

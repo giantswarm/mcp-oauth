@@ -168,13 +168,13 @@ func TestServer_ValidateToken_LocalExpiry(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Save original config and restore after test
-			originalGrace := srv.Config.ClockSkewGracePeriod
+			originalGrace := srv.config.ClockSkewGracePeriod
 			t.Cleanup(func() {
-				srv.Config.ClockSkewGracePeriod = originalGrace
+				srv.config.ClockSkewGracePeriod = originalGrace
 			})
 
 			// Set clock skew grace period for this test
-			srv.Config.ClockSkewGracePeriod = tt.clockSkewGrace
+			srv.config.ClockSkewGracePeriod = tt.clockSkewGrace
 
 			// Configure provider refresh behavior per test case
 			if tt.refreshFails {
@@ -248,13 +248,13 @@ func TestServer_ValidateToken_ClockSkewScenarios(t *testing.T) {
 	}
 
 	// Save original config and restore after all subtests
-	originalGrace := srv.Config.ClockSkewGracePeriod
+	originalGrace := srv.config.ClockSkewGracePeriod
 	t.Cleanup(func() {
-		srv.Config.ClockSkewGracePeriod = originalGrace
+		srv.config.ClockSkewGracePeriod = originalGrace
 	})
 
 	// Configure grace period
-	srv.Config.ClockSkewGracePeriod = 5
+	srv.config.ClockSkewGracePeriod = 5
 
 	t.Run("token expired locally with refresh failure - local validation wins", func(t *testing.T) {
 		accessToken := "locally-expired-token"
@@ -331,7 +331,7 @@ func TestServer_ValidateToken_ProactiveRefresh(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Configure refresh threshold (5 minutes)
-	srv.Config.TokenRefreshThreshold = 300 // 5 minutes
+	srv.config.TokenRefreshThreshold = 300 // 5 minutes
 
 	tests := []struct {
 		name              string
@@ -504,7 +504,7 @@ func TestServer_ValidateToken_ProactiveRefresh_Failure(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Configure refresh threshold
-	srv.Config.TokenRefreshThreshold = 300 // 5 minutes
+	srv.config.TokenRefreshThreshold = 300 // 5 minutes
 
 	// Configure provider refresh to fail
 	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
@@ -613,7 +613,7 @@ func TestServer_ValidateToken_ProactiveRefresh_CustomThreshold(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Set custom threshold
-			srv.Config.TokenRefreshThreshold = tt.refreshThreshold
+			srv.config.TokenRefreshThreshold = tt.refreshThreshold
 
 			// Track refresh calls
 			refreshCalled := false
@@ -787,7 +787,7 @@ func TestServer_ValidateToken_RefreshOnExpiry(t *testing.T) {
 func TestServer_ValidateToken_RefreshUpdatesRTMapping(t *testing.T) {
 	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
-	srv.Config.AccessTokenTTL = 3600
+	srv.config.AccessTokenTTL = 3600
 
 	rotatedProviderRT := "provider-rt-v2"
 	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {

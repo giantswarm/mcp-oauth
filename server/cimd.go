@@ -203,10 +203,10 @@ func createSSRFProtectedTransport(_ context.Context, allowPrivateIP bool) *http.
 //   - Size limit: prevents memory exhaustion and validates full document read
 func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*ClientMetadata, time.Duration, error) {
 	fetchStart := time.Now()
-	allowPrivateIP := s.Config.AllowPrivateIPClientMetadata
+	allowPrivateIP := s.config.AllowPrivateIPClientMetadata
 
 	if allowPrivateIP {
-		s.Logger.Debug("CIMD fetch with private IP allowance enabled",
+		s.logger.Debug("CIMD fetch with private IP allowance enabled",
 			"client_id", clientID,
 			"config", "AllowPrivateIPClientMetadata=true")
 	}
@@ -252,7 +252,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
-			s.Logger.Warn("Failed to close response body", "error", closeErr)
+			s.logger.Warn("Failed to close response body", "error", closeErr)
 		}
 	}()
 
@@ -300,7 +300,7 @@ func (s *Server) processMetadataResponse(ctx context.Context, resp *http.Respons
 
 	setClientMetadataDefaults(&metadata)
 
-	suggestedTTL := parseSuggestedTTL(resp, clientID, s.Logger)
+	suggestedTTL := parseSuggestedTTL(resp, clientID, s.logger)
 
 	s.logMetadataFetchEvent(ctx, "client_metadata_fetched", clientID, map[string]any{
 		"client_name":     metadata.ClientName,
@@ -310,7 +310,7 @@ func (s *Server) processMetadataResponse(ctx context.Context, resp *http.Respons
 	})
 	s.recordCIMDFetchMetric(ctx, "success", fetchStart)
 
-	s.Logger.Debug("Fetched client metadata from URL",
+	s.logger.Debug("Fetched client metadata from URL",
 		"client_id", clientID,
 		"client_name", metadata.ClientName,
 		"redirect_uris", len(metadata.RedirectURIs),
@@ -415,7 +415,7 @@ func (s *Server) validateFetchedClientMetadata(ctx context.Context, metadata *Cl
 
 	// Validate client_name to prevent stored XSS and log injection (defense-in-depth)
 	if err := helpers.ValidateClientName(metadata.ClientName); err != nil {
-		s.Logger.Warn("Invalid client_name in fetched metadata",
+		s.logger.Warn("Invalid client_name in fetched metadata",
 			"client_id", expectedClientID, "error", err)
 		return fmt.Errorf("invalid client metadata: %w", err)
 	}
@@ -470,15 +470,15 @@ func setClientMetadataDefaults(metadata *ClientMetadata) {
 // Returns the configured timeout or a shorter one if context deadline is sooner
 func (s *Server) calculateFetchTimeout(ctx context.Context) time.Duration {
 	timeout := 10 * time.Second
-	if s.Config.ClientMetadataFetchTimeout > 0 {
-		timeout = s.Config.ClientMetadataFetchTimeout
+	if s.config.ClientMetadataFetchTimeout > 0 {
+		timeout = s.config.ClientMetadataFetchTimeout
 	}
 
 	if deadline, ok := ctx.Deadline(); ok {
 		timeUntilDeadline := time.Until(deadline)
 		if timeUntilDeadline > 0 && timeUntilDeadline < timeout {
-			s.Logger.Debug("Using context deadline for metadata fetch",
-				"original_timeout", s.Config.ClientMetadataFetchTimeout,
+			s.logger.Debug("Using context deadline for metadata fetch",
+				"original_timeout", s.config.ClientMetadataFetchTimeout,
 				"adjusted_timeout", timeUntilDeadline,
 				"reason", "context deadline")
 			return timeUntilDeadline
@@ -490,7 +490,7 @@ func (s *Server) calculateFetchTimeout(ctx context.Context) time.Duration {
 
 // logMetadataFetchEvent logs an audit event for metadata fetch operations
 func (s *Server) logMetadataFetchEvent(ctx context.Context, eventType, clientID string, details map[string]any) {
-	s.Auditor.LogEvent(ctx, security.Event{
+	s.auditor.LogEvent(ctx, security.Event{
 		Type:     eventType,
 		ClientID: clientID,
 		Details:  details,
@@ -513,7 +513,7 @@ func (s *Server) createMetadataHTTPClient(ctx context.Context, timeout time.Dura
 // recordCIMDFetchMetric records CIMD fetch metrics.
 func (s *Server) recordCIMDFetchMetric(ctx context.Context, result string, fetchStart time.Time) {
 	durationMs := time.Since(fetchStart).Seconds() * 1000
-	s.Instrumentation.Metrics().RecordCIMDFetch(ctx, result, durationMs)
+	s.instrumentation.Metrics().RecordCIMDFetch(ctx, result, durationMs)
 }
 
 // hasLocalhostRedirectURIsOnly checks if all redirect URIs point to localhost

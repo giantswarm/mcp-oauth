@@ -201,8 +201,8 @@ func (s *Server) AcceptForwardedIDToken(ctx context.Context, bearerToken string)
 // so the results are ignored.
 func (s *Server) deriveForwardedSessionID(bearerToken string) string {
 	var digest []byte
-	if len(s.Config.SessionIDHMACKey) > 0 {
-		mac := hmac.New(sha256.New, s.Config.SessionIDHMACKey)
+	if len(s.config.SessionIDHMACKey) > 0 {
+		mac := hmac.New(sha256.New, s.config.SessionIDHMACKey)
 		_, _ = mac.Write([]byte(forwardedSessionIDLabel))
 		_, _ = mac.Write([]byte{0x00})
 		_, _ = mac.Write([]byte(bearerToken))
@@ -219,7 +219,7 @@ func (s *Server) deriveForwardedSessionID(bearerToken string) string {
 
 // recordForwardedIDTokenAccepted emits the forwarded-ID-token metric.
 func (s *Server) recordForwardedIDTokenAccepted(ctx context.Context, provider, issuer, audience string, result instrumentation.ForwardedIDTokenResult) {
-	s.Instrumentation.Metrics().RecordForwardedIDTokenAccepted(ctx, provider, issuer, audience, result)
+	s.instrumentation.Metrics().RecordForwardedIDTokenAccepted(ctx, provider, issuer, audience, result)
 }
 
 // logForwardedSessionIDKeyFingerprint emits a one-shot startup log line when
@@ -237,13 +237,13 @@ func (s *Server) recordForwardedIDTokenAccepted(ctx context.Context, provider, i
 //
 // Safe to call when SessionIDHMACKey is empty (it becomes a no-op).
 func (s *Server) logForwardedSessionIDKeyFingerprint() {
-	if len(s.Config.SessionIDHMACKey) == 0 {
+	if len(s.config.SessionIDHMACKey) == 0 {
 		return
 	}
-	sum := sha256.Sum256(s.Config.SessionIDHMACKey)
-	s.Logger.Debug("Forwarded-ID-token session correlation: SessionIDHMACKey is configured",
+	sum := sha256.Sum256(s.config.SessionIDHMACKey)
+	s.logger.Debug("Forwarded-ID-token session correlation: SessionIDHMACKey is configured",
 		"key_fingerprint", hex.EncodeToString(sum[:8]),
-		"key_bytes", len(s.Config.SessionIDHMACKey),
+		"key_bytes", len(s.config.SessionIDHMACKey),
 		"purpose", "All MCP servers in a correlation set must report the same key_fingerprint; a mismatch silently breaks cross-hop session-ID correlation")
 }
 

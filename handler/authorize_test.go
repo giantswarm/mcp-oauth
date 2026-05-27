@@ -1161,7 +1161,7 @@ func TestHandler_ServeAuthorization_CustomSchemeRedirectURI_FallsBackToJSON(t *t
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
-	handler.server.Config.AllowedCustomSchemes = []string{"^myapp$"}
+	handler.server.Config().AllowedCustomSchemes = []string{"^myapp$"}
 
 	client, _, err := handler.server.RegisterClient(
 		ctx,

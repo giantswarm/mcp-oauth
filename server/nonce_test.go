@@ -87,7 +87,7 @@ func setupNonceFlow(t *testing.T, requireNonce bool) *nonceFlowFixture {
 
 	srv, err := New(provider, store, store, store, config, logger)
 	require.NoError(t, err)
-	srv.Auditor = security.NewAuditor(logger, true)
+	srv.auditor = security.NewAuditor(logger, true)
 
 	client, _, err := srv.RegisterClient(
 		context.Background(),

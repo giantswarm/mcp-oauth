@@ -65,7 +65,7 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP stri
 	// Revoke at provider
 	if providerToken.AccessToken != "" {
 		if err := s.provider.RevokeToken(ctx, providerToken.AccessToken); err != nil {
-			s.Logger.Warn("Failed to revoke token at provider", "error", err)
+			s.logger.Warn("Failed to revoke token at provider", "error", err)
 			// Continue with local deletion even if provider revocation fails
 		}
 	}
@@ -76,15 +76,15 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP stri
 
 	// Delete locally
 	if err := s.tokenStore.DeleteToken(ctx, token); err != nil {
-		s.Logger.Warn("Failed to delete token locally", "error", err)
+		s.logger.Warn("Failed to delete token locally", "error", err)
 	}
 	s.unregisterTokenPairIfPresent(token)
 
 	s.revokeTokenFamilyIfNeeded(ctx, family, clientID, clientIP)
 
-	s.Auditor.LogTokenRevoked(ctx, "", clientID, clientIP, "access_or_refresh")
+	s.auditor.LogTokenRevoked(ctx, "", clientID, clientIP, "access_or_refresh")
 
-	s.Logger.Debug("Token revoked", "client_id", clientID, "ip", clientIP)
+	s.logger.Debug("Token revoked", "client_id", clientID, "ip", clientIP)
 	return nil
 }
 
@@ -109,17 +109,17 @@ func (s *Server) revokeTokenFamilyIfNeeded(ctx context.Context, family *storage.
 		return
 	}
 	if err := familyStore.RevokeRefreshTokenFamily(ctx, family.FamilyID); err != nil {
-		s.Logger.Warn("Failed to revoke refresh token family", "family_id", family.FamilyID, "error", err)
+		s.logger.Warn("Failed to revoke refresh token family", "family_id", family.FamilyID, "error", err)
 		return
 	}
-	s.Logger.Debug("Revoked refresh token family on explicit revocation",
+	s.logger.Debug("Revoked refresh token family on explicit revocation",
 		"family_id", family.FamilyID, "client_id", clientID, "ip", clientIP)
 
 	if s.sessionRevocationHandler != nil {
 		s.sessionRevocationHandler(ctx, family.UserID, family.FamilyID)
 	}
 
-	s.Auditor.LogEvent(ctx, security.Event{
+	s.auditor.LogEvent(ctx, security.Event{
 		Type:     security.EventRefreshTokenFamilyRevoked,
 		UserID:   family.UserID,
 		ClientID: clientID,
@@ -151,10 +151,10 @@ func (s *Server) revokeTokenFamilyIfNeeded(ctx context.Context, family *storage.
 // - Returns error if storage doesn't support TokenRevocationStore (OAuth 2.1 compliance failure)
 // handleRevocationNotSupported handles the case when storage doesn't support revocation
 func (s *Server) handleRevocationNotSupported(ctx context.Context, userID, clientID string) error {
-	s.Logger.Error("CRITICAL: Token storage does not support TokenRevocationStore - OAuth 2.1 NOT compliant",
+	s.logger.Error("CRITICAL: Token storage does not support TokenRevocationStore - OAuth 2.1 NOT compliant",
 		"user_id", userID, "client_id", clientID)
 
-	s.Auditor.LogEvent(ctx, security.Event{
+	s.auditor.LogEvent(ctx, security.Event{
 		Type: security.EventTokenRevocationNotSupported, UserID: userID, ClientID: clientID,
 		Details: map[string]any{"severity": "critical", "message": "Storage backend does not support bulk token revocation - OAuth 2.1 compliance FAILED"},
 	})
@@ -172,7 +172,7 @@ func (s *Server) revokeTokensAtProvider(ctx context.Context, tokens []string, us
 	for _, tokenID := range tokens {
 		providerToken, err := s.tokenStore.GetToken(ctx, tokenID)
 		if err != nil {
-			s.Logger.Warn("Could not get provider token for revocation",
+			s.logger.Warn("Could not get provider token for revocation",
 				"token_id", helpers.SafeTruncate(tokenID, 8), "error", err)
 			continue
 		}
@@ -201,30 +201,30 @@ func (s *Server) revokeTokensAtProvider(ctx context.Context, tokens []string, us
 
 // checkProviderRevocationFailure checks if provider revocation failure rate exceeds threshold
 func (s *Server) checkProviderRevocationFailure(ctx context.Context, userID, clientID string, totalTokens, revokedCount, failedCount int, failureRate float64) error {
-	if totalTokens > 0 && failureRate > s.Config.ProviderRevocationFailureThreshold {
-		s.Logger.Error("CRITICAL: Provider revocation failure rate exceeds threshold",
+	if totalTokens > 0 && failureRate > s.config.ProviderRevocationFailureThreshold {
+		s.logger.Error("CRITICAL: Provider revocation failure rate exceeds threshold",
 			"user_id", userID, "client_id", clientID,
 			"failure_rate", fmt.Sprintf("%.2f%%", failureRate*100),
-			"threshold", fmt.Sprintf("%.2f%%", s.Config.ProviderRevocationFailureThreshold*100),
+			"threshold", fmt.Sprintf("%.2f%%", s.config.ProviderRevocationFailureThreshold*100),
 			"failed_count", failedCount, "total_count", totalTokens)
 
-		s.Auditor.LogEvent(ctx, security.Event{
+		s.auditor.LogEvent(ctx, security.Event{
 			Type: security.EventProviderRevocationThresholdExceeded, UserID: userID, ClientID: clientID,
 			Details: map[string]any{
-				"severity": "critical", "failure_rate": failureRate, "threshold": s.Config.ProviderRevocationFailureThreshold,
+				"severity": "critical", "failure_rate": failureRate, "threshold": s.config.ProviderRevocationFailureThreshold,
 				"failed_count": failedCount, "total_count": totalTokens, "oauth_spec": "OAuth 2.1 Section 4.1.2",
 			},
 		})
 
 		return fmt.Errorf("provider revocation failure rate %.2f%% exceeds threshold %.2f%% (%d/%d failed)",
-			failureRate*100, s.Config.ProviderRevocationFailureThreshold*100, failedCount, totalTokens)
+			failureRate*100, s.config.ProviderRevocationFailureThreshold*100, failedCount, totalTokens)
 	}
 
 	if revokedCount == 0 && totalTokens > 0 {
-		s.Logger.Error("CRITICAL: All provider revocations failed - tokens still valid at provider!",
+		s.logger.Error("CRITICAL: All provider revocations failed - tokens still valid at provider!",
 			"user_id", userID, "client_id", clientID, "token_count", totalTokens)
 
-		s.Auditor.LogEvent(ctx, security.Event{
+		s.auditor.LogEvent(ctx, security.Event{
 			Type: security.EventProviderRevocationCompleteFailure, UserID: userID, ClientID: clientID,
 			Details: map[string]any{"severity": "critical", "token_count": totalTokens, "oauth_spec": "OAuth 2.1 Section 4.1.2"},
 		})
@@ -257,7 +257,7 @@ func (s *Server) RevokeAllTokensForUserClient(ctx context.Context, userID, clien
 		failureRate = float64(failedAtProvider) / float64(totalTokensToRevoke)
 	}
 
-	s.Logger.Debug("Provider revocation complete",
+	s.logger.Debug("Provider revocation complete",
 		"user_id", userID, "client_id", clientID, "revoked_at_provider", revokedAtProvider,
 		"failed_at_provider", failedAtProvider, "total_tokens", totalTokensToRevoke,
 		"failure_rate", fmt.Sprintf("%.2f%%", failureRate*100))
@@ -269,7 +269,7 @@ func (s *Server) RevokeAllTokensForUserClient(ctx context.Context, userID, clien
 	// Now revoke locally
 	revokedCount, err := revocationStore.RevokeAllTokensForUserClient(ctx, userID, clientID)
 	if err != nil {
-		s.Logger.Error("Failed to revoke tokens locally",
+		s.logger.Error("Failed to revoke tokens locally",
 			"user_id", userID,
 			"client_id", clientID,
 			"error", err)
@@ -281,14 +281,14 @@ func (s *Server) RevokeAllTokensForUserClient(ctx context.Context, userID, clien
 	}
 
 	// Log the revocation
-	s.Logger.Warn("Revoked all tokens for user+client due to security event",
+	s.logger.Warn("Revoked all tokens for user+client due to security event",
 		"user_id", userID,
 		"client_id", clientID,
 		"tokens_revoked_locally", revokedCount,
 		"tokens_revoked_at_provider", revokedAtProvider,
 		"reason", "reuse_detection")
 
-	s.Auditor.LogEvent(ctx, security.Event{
+	s.auditor.LogEvent(ctx, security.Event{
 		Type:     security.EventAllTokensRevoked,
 		UserID:   userID,
 		ClientID: clientID,
@@ -308,8 +308,8 @@ func (s *Server) RevokeAllTokensForUserClient(ctx context.Context, userID, clien
 // Returns nil if revocation succeeds within the retry limit, or an error if all attempts fail.
 // Implements exponential backoff: 100ms, 200ms, 400ms, 800ms, 1600ms between retries.
 func (s *Server) revokeTokenWithRetry(ctx context.Context, token, tokenType, userID, clientID string) error {
-	maxRetries := s.Config.ProviderRevocationMaxRetries
-	timeout := time.Duration(s.Config.ProviderRevocationTimeout) * time.Second
+	maxRetries := s.config.ProviderRevocationMaxRetries
+	timeout := time.Duration(s.config.ProviderRevocationTimeout) * time.Second
 
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -323,7 +323,7 @@ func (s *Server) revokeTokenWithRetry(ctx context.Context, token, tokenType, use
 		if err == nil {
 			// Success - log if this wasn't the first attempt
 			if attempt > 0 {
-				s.Logger.Debug("Provider token revocation succeeded after retry",
+				s.logger.Debug("Provider token revocation succeeded after retry",
 					"token_type", tokenType,
 					"attempt", attempt+1,
 					"max_retries", maxRetries,
@@ -341,7 +341,7 @@ func (s *Server) revokeTokenWithRetry(ctx context.Context, token, tokenType, use
 			backoffDuration := time.Duration(100*math.Pow(2, float64(attempt))) * time.Millisecond
 
 			// Don't log transient failures at high severity - only on final failure
-			s.Logger.Debug("Provider token revocation failed, retrying",
+			s.logger.Debug("Provider token revocation failed, retrying",
 				"token_type", tokenType,
 				"attempt", attempt+1,
 				"max_retries", maxRetries,
@@ -359,7 +359,7 @@ func (s *Server) revokeTokenWithRetry(ctx context.Context, token, tokenType, use
 	}
 
 	// All attempts failed
-	s.Logger.Warn("Provider token revocation failed after all retries",
+	s.logger.Warn("Provider token revocation failed after all retries",
 		"token_type", tokenType,
 		"attempts", maxRetries+1,
 		"user_id", userID,

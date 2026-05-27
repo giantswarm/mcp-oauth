@@ -118,10 +118,10 @@ func TestDiscoveryHandlers_SpanNames(t *testing.T) {
 // TestServeProtectedResourceMetadata_RateLimitAnnotatesSpan verifies that when
 // the IP rate limit is exhausted on PRM, the handler records the 429 on the span.
 func TestServeProtectedResourceMetadata_RateLimitAnnotatesSpan(t *testing.T) {
-	srv := newOAuthTestServer(t)
 	// burst=1, rate=0: first request passes, second is rejected.
-	srv.RateLimiter = security.NewRateLimiter(0, 1, nil)
-	t.Cleanup(srv.RateLimiter.Stop)
+	rl := security.NewRateLimiter(0, 1, nil)
+	t.Cleanup(rl.Stop)
+	srv := newOAuthTestServer(t, server.WithRateLimiter(rl))
 
 	h := New(srv, nil)
 	sr := installSpanRecorder(t, h)

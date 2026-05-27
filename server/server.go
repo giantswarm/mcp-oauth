@@ -75,12 +75,12 @@ type Server struct {
 	sessionCreationHandler        SessionCreationHandler
 	sessionRevocationHandler      SessionRevocationHandler
 	tokenRefreshHandler           TokenRefreshHandler
-	Auditor                       *security.Auditor
-	RateLimiter                   *security.RateLimiter                   // IP-based rate limiter
-	UserRateLimiter               *security.RateLimiter                   // User-based rate limiter (authenticated requests)
-	SecurityEventRateLimiter      *security.RateLimiter                   // Rate limiter for security event logging (DoS prevention)
-	ClientRegistrationRateLimiter *security.ClientRegistrationRateLimiter // Time-windowed rate limiter for client registrations
-	Instrumentation               *instrumentation.Instrumentation        // OpenTelemetry instrumentation
+	auditor                       *security.Auditor
+	rateLimiter                   *security.RateLimiter
+	userRateLimiter               *security.RateLimiter
+	securityEventRateLimiter      *security.RateLimiter
+	clientRegistrationRateLimiter *security.ClientRegistrationRateLimiter
+	instrumentation               *instrumentation.Instrumentation
 	tracer                        trace.Tracer                            // OpenTelemetry tracer for server operations
 	metadataCache                 *clientMetadataCache                    // Cache for URL-based client metadata (MCP 2025-11-25)
 	metadataFetchGroup            singleflight.Group                      // Deduplicates concurrent metadata fetches (DoS protection)
@@ -105,9 +105,9 @@ type Server struct {
 	// trustedProxyCIDRs lists networks whose X-Forwarded-Proto/Host headers
 	// are trusted for DPoP htu reconstruction.
 	trustedProxyCIDRs []*net.IPNet
-	Logger            *slog.Logger
-	Config            *Config
-	shutdownOnce      sync.Once // Ensures Shutdown is called only once
+	logger            *slog.Logger
+	config            *Config
+	shutdownOnce      sync.Once
 }
 
 // NewWithCombined is an additive constructor for backends that implement the
@@ -160,8 +160,8 @@ func New(
 		tokenStore:                 tokenStore,
 		clientStore:                clientStore,
 		flowStore:                  flowStore,
-		Config:                     config,
-		Logger:                     logger,
+		config:                     config,
+		logger:                     logger,
 		metadataCache:              newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
 		metadataCacheCleanupCtx:    cleanupCtx,
 		metadataCacheCleanupCancel: cleanupCancel,
@@ -197,19 +197,19 @@ func New(
 		srv.dpopReplayCache = NewMemoryDPoPReplayCache()
 	}
 
-	// Guarantee a non-nil Instrumentation so call sites can record metrics
+	// Guarantee a non-nil instrumentation so call sites can record metrics
 	// unconditionally. instrumentation.New with the zero-value Config falls
 	// back to no-op meter/tracer providers — zero overhead, no exporters.
-	if srv.Instrumentation == nil {
+	if srv.instrumentation == nil {
 		inst, err := instrumentation.New(instrumentation.Config{})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create no-op instrumentation: %w", err)
 		}
-		srv.Instrumentation = inst
+		srv.instrumentation = inst
 	}
 
-	if srv.Auditor == nil {
-		srv.Auditor = security.NewAuditor(nil, false)
+	if srv.auditor == nil {
+		srv.auditor = security.NewAuditor(nil, false)
 	}
 
 	return srv, nil
@@ -220,16 +220,16 @@ func New(
 // the configuration by the time this runs, so any error here indicates a
 // programming error, not a misconfiguration.
 func (s *Server) initializeAccessTokenIssuer() error {
-	if s.Config.IsJWTAccessTokenFormat() {
-		issuer, err := newJWTIssuer(s.Config)
+	if s.config.IsJWTAccessTokenFormat() {
+		issuer, err := newJWTIssuer(s.config)
 		if err != nil {
 			return fmt.Errorf("initialize JWT access token issuer: %w", err)
 		}
 		s.accessTokenIssuer = issuer
-		s.Logger.Debug("Access token format: JWT (RFC 9068)",
-			"alg", s.Config.AccessTokenSigningAlgorithm,
-			"kid", s.Config.AccessTokenSigningKeyID,
-			"jwks_uri", s.Config.JWKSEndpoint())
+		s.logger.Debug("Access token format: JWT (RFC 9068)",
+			"alg", s.config.AccessTokenSigningAlgorithm,
+			"kid", s.config.AccessTokenSigningKeyID,
+			"jwks_uri", s.config.JWKSEndpoint())
 		return nil
 	}
 	s.accessTokenIssuer = opaqueIssuer{}
@@ -241,12 +241,12 @@ func (s *Server) initializeAccessTokenIssuer() error {
 // interface. In opaque mode revocation continues to use TokenStore deletion;
 // the JWT denylist is unused.
 func (s *Server) attachRevokedTokenStore(tokenStore storage.TokenStore) {
-	if !s.Config.IsJWTAccessTokenFormat() {
+	if !s.config.IsJWTAccessTokenFormat() {
 		return
 	}
 	rts, ok := tokenStore.(storage.RevokedTokenStore)
 	if !ok {
-		s.Logger.Warn("Access token format is JWT but storage backend does not implement storage.RevokedTokenStore — token revocation will be unenforceable for self-issued JWTs",
+		s.logger.Warn("Access token format is JWT but storage backend does not implement storage.RevokedTokenStore — token revocation will be unenforceable for self-issued JWTs",
 			"recommendation", "use storage/memory or storage/valkey, both of which implement RevokedTokenStore")
 		return
 	}
@@ -283,19 +283,19 @@ func applyDefaults(config *Config, logger *slog.Logger) (*Config, *slog.Logger) 
 
 // initializeMetadataSupport initializes client ID metadata document support if enabled.
 func (s *Server) initializeMetadataSupport() {
-	if !s.Config.EnableClientIDMetadataDocuments {
+	if !s.config.EnableClientIDMetadataDocuments {
 		return
 	}
 
 	// SECURITY: Initialize rate limiter for metadata fetches (10 req/min per domain)
-	s.metadataFetchRateLimiter = security.NewRateLimiter(10, 20, s.Logger)
-	s.Logger.Debug("Initialized metadata fetch rate limiter",
+	s.metadataFetchRateLimiter = security.NewRateLimiter(10, 20, s.logger)
+	s.logger.Debug("Initialized metadata fetch rate limiter",
 		"rate", "10 requests/min per domain",
 		"burst", 20,
 		"purpose", "DoS protection")
 
 	go s.metadataCacheCleanupLoop()
-	s.Logger.Debug("Started metadata cache cleanup goroutine")
+	s.logger.Debug("Started metadata cache cleanup goroutine")
 }
 
 // validateProviderDefaultScopes checks if provider default scopes are supported by server configuration.
@@ -310,7 +310,7 @@ func (s *Server) validateProviderDefaultScopes(logger *slog.Logger) {
 	s.logMandatoryAudienceScopes(logger, providerDefaults)
 
 	// Skip validation if no supported scopes configured (allow-all mode)
-	if len(s.Config.SupportedScopes) == 0 {
+	if len(s.config.SupportedScopes) == 0 {
 		return
 	}
 
@@ -319,8 +319,8 @@ func (s *Server) validateProviderDefaultScopes(logger *slog.Logger) {
 	}
 
 	// Build a set of supported scopes for efficient lookup
-	supportedSet := make(map[string]bool, len(s.Config.SupportedScopes))
-	for _, scope := range s.Config.SupportedScopes {
+	supportedSet := make(map[string]bool, len(s.config.SupportedScopes))
+	for _, scope := range s.config.SupportedScopes {
 		supportedSet[scope] = true
 	}
 
@@ -330,7 +330,7 @@ func (s *Server) validateProviderDefaultScopes(logger *slog.Logger) {
 			logger.Warn("Provider default scope not in server supported scopes - clients relying on defaults may encounter errors",
 				"scope", scope,
 				"provider", s.provider.Name(),
-				"supported_scopes", s.Config.SupportedScopes)
+				"supported_scopes", s.config.SupportedScopes)
 		}
 	}
 }
@@ -400,7 +400,7 @@ func (s *Server) saveTokenMetadata(ctx context.Context, tokenID string, metadata
 		return
 	}
 	if err := store.SaveTokenMetadata(ctx, tokenID, metadata); err != nil {
-		s.Logger.Warn("Failed to save token metadata", "error", err)
+		s.logger.Warn("Failed to save token metadata", "error", err)
 	}
 }
 
@@ -484,12 +484,12 @@ func (s *Server) metadataCacheCleanupLoop() {
 		case <-ticker.C:
 			removed := s.metadataCache.CleanupExpired()
 			if removed > 0 {
-				s.Logger.Debug("Cleaned expired metadata cache entries",
+				s.logger.Debug("Cleaned expired metadata cache entries",
 					"count", removed,
 					"cache_size", s.metadataCache.Size())
 			}
 		case <-s.metadataCacheCleanupCtx.Done():
-			s.Logger.Debug("Metadata cache cleanup goroutine stopped")
+			s.logger.Debug("Metadata cache cleanup goroutine stopped")
 			return
 		}
 	}
@@ -534,7 +534,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	var shutdownErr error
 
 	s.shutdownOnce.Do(func() {
-		s.Logger.Debug("Starting graceful shutdown...")
+		s.logger.Debug("Starting graceful shutdown...")
 		done := make(chan struct{})
 
 		go func() {
@@ -547,7 +547,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			// Shutdown completed successfully
 		case <-ctx.Done():
 			shutdownErr = fmt.Errorf("shutdown cancelled: %w", ctx.Err())
-			s.Logger.Warn("Shutdown timed out or was cancelled", "error", shutdownErr)
+			s.logger.Warn("Shutdown timed out or was cancelled", "error", shutdownErr)
 		}
 	})
 
@@ -560,29 +560,29 @@ func (s *Server) performShutdown(ctx context.Context) {
 	s.stopMetadataCacheCleanup()
 	s.shutdownInstrumentation(ctx)
 	s.stopStorage()
-	s.Logger.Debug("Graceful shutdown completed")
+	s.logger.Debug("Graceful shutdown completed")
 }
 
 // stopRateLimiters stops all rate limiters.
 func (s *Server) stopRateLimiters() {
-	if s.RateLimiter != nil {
-		s.Logger.Debug("Stopping IP rate limiter...")
-		s.RateLimiter.Stop()
+	if s.rateLimiter != nil {
+		s.logger.Debug("Stopping IP rate limiter...")
+		s.rateLimiter.Stop()
 	}
-	if s.UserRateLimiter != nil {
-		s.Logger.Debug("Stopping user rate limiter...")
-		s.UserRateLimiter.Stop()
+	if s.userRateLimiter != nil {
+		s.logger.Debug("Stopping user rate limiter...")
+		s.userRateLimiter.Stop()
 	}
-	if s.SecurityEventRateLimiter != nil {
-		s.Logger.Debug("Stopping security event rate limiter...")
-		s.SecurityEventRateLimiter.Stop()
+	if s.securityEventRateLimiter != nil {
+		s.logger.Debug("Stopping security event rate limiter...")
+		s.securityEventRateLimiter.Stop()
 	}
-	if s.ClientRegistrationRateLimiter != nil {
-		s.Logger.Debug("Stopping client registration rate limiter...")
-		s.ClientRegistrationRateLimiter.Stop()
+	if s.clientRegistrationRateLimiter != nil {
+		s.logger.Debug("Stopping client registration rate limiter...")
+		s.clientRegistrationRateLimiter.Stop()
 	}
 	if s.metadataFetchRateLimiter != nil {
-		s.Logger.Debug("Stopping metadata fetch rate limiter...")
+		s.logger.Debug("Stopping metadata fetch rate limiter...")
 		s.metadataFetchRateLimiter.Stop()
 	}
 }
@@ -590,7 +590,7 @@ func (s *Server) stopRateLimiters() {
 // stopMetadataCacheCleanup stops the metadata cache cleanup goroutine.
 func (s *Server) stopMetadataCacheCleanup() {
 	if s.metadataCacheCleanupCancel != nil {
-		s.Logger.Debug("Stopping metadata cache cleanup goroutine...")
+		s.logger.Debug("Stopping metadata cache cleanup goroutine...")
 		s.metadataCacheCleanupCancel()
 	}
 }
@@ -599,9 +599,9 @@ func (s *Server) stopMetadataCacheCleanup() {
 // A no-op instrumentation (the default when no exporter is wired) has
 // nothing to flush and returns immediately.
 func (s *Server) shutdownInstrumentation(ctx context.Context) {
-	s.Logger.Debug("Shutting down instrumentation...")
-	if err := s.Instrumentation.Shutdown(ctx); err != nil {
-		s.Logger.Warn("Failed to shutdown instrumentation", "error", err)
+	s.logger.Debug("Shutting down instrumentation...")
+	if err := s.instrumentation.Shutdown(ctx); err != nil {
+		s.logger.Warn("Failed to shutdown instrumentation", "error", err)
 	}
 }
 
@@ -611,7 +611,7 @@ func (s *Server) stopStorage() {
 		Stop()
 	}
 	if store, ok := s.tokenStore.(stoppableStore); ok {
-		s.Logger.Debug("Stopping storage cleanup...")
+		s.logger.Debug("Stopping storage cleanup...")
 		store.Stop()
 	}
 }

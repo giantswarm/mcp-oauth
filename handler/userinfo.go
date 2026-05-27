@@ -79,7 +79,7 @@ func (h *Handler) ServeUserInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.setCORSHeaders(w, r)
-	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+	security.SetSecurityHeaders(w, h.server.Config().Issuer)
 
 	userInfo, ok := UserInfoFromContext(r.Context())
 	if !ok || userInfo == nil {
@@ -124,7 +124,7 @@ func (h *Handler) ServeUserInfo(w http.ResponseWriter, r *http.Request) {
 	h.recordHTTPMetrics(r.Context(), endpointUserInfo, r.Method, http.StatusOK, startTime)
 	instrumentation.SetSpanSuccess(span)
 
-	h.server.Auditor.LogEvent(r.Context(), security.Event{
+	h.server.Auditor().LogEvent(r.Context(), security.Event{
 		Type:      security.EventUserInfoServed,
 		UserID:    userInfo.ID,
 		IPAddress: h.clientIP(r),

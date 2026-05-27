@@ -35,7 +35,7 @@ func (h *Handler) authenticateRevocationClient(w http.ResponseWriter, r *http.Re
 
 	if err := h.server.ValidateClientCredentials(r.Context(), basicClientID, basicClientSecret); err != nil {
 		h.logger.Warn("Client authentication failed for revocation", "client_id", basicClientID, "ip", clientIP)
-		h.server.Auditor.LogAuthFailure(r.Context(), "", basicClientID, clientIP, "revocation_auth_failed")
+		h.server.Auditor().LogAuthFailure(r.Context(), "", basicClientID, clientIP, "revocation_auth_failed")
 		h.recordHTTPMetrics(r.Context(), endpointRevoke, http.MethodPost, http.StatusUnauthorized, startTime)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "client authentication failed")
@@ -66,7 +66,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config.MaxRequestBodySize)
+	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config().MaxRequestBodySize)
 	if err := r.ParseForm(); err != nil {
 		if isMaxBytesError(err) {
 			h.recordHTTPMetrics(r.Context(), endpointRevoke, http.MethodPost, http.StatusRequestEntityTooLarge, startTime)
@@ -122,7 +122,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 	instrumentation.SetSpanSuccess(span)
 
 	// Return success (per RFC 7009)
-	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+	security.SetSecurityHeaders(w, h.server.Config().Issuer)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -147,7 +147,7 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config.MaxRequestBodySize)
+	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config().MaxRequestBodySize)
 	if err := r.ParseForm(); err != nil {
 		if isMaxBytesError(err) {
 			instrumentation.SetSpanError(span, "request body too large")
@@ -198,7 +198,7 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 		h.logger.Debug("Token introspection inactive", "ip", clientIP, "client_id", clientID)
 	}
 
-	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+	security.SetSecurityHeaders(w, h.server.Config().Issuer)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(response)
@@ -215,7 +215,7 @@ func (h *Handler) authenticateIntrospectionClient(r *http.Request, clientIP stri
 	if authClientID != "" {
 		if err := h.server.ValidateClientCredentials(ctx, authClientID, authClientSecret); err != nil {
 			h.logger.Warn("Client authentication failed for introspection", "client_id", authClientID, "ip", clientIP)
-			h.server.Auditor.LogAuthFailure(ctx, "", authClientID, clientIP, "introspection_auth_failed")
+			h.server.Auditor().LogAuthFailure(ctx, "", authClientID, clientIP, "introspection_auth_failed")
 			return "", fmt.Errorf("client authentication failed")
 		}
 		return authClientID, nil
@@ -225,16 +225,16 @@ func (h *Handler) authenticateIntrospectionClient(r *http.Request, clientIP stri
 	clientID := r.Form.Get("client_id")
 	if clientID == "" {
 		h.logger.Warn("Token introspection rejected: missing client authentication", "ip", clientIP)
-		h.server.Auditor.LogAuthFailure(ctx, "", "", clientIP, "introspection_missing_auth")
+		h.server.Auditor().LogAuthFailure(ctx, "", "", clientIP, "introspection_missing_auth")
 		return "", fmt.Errorf("client authentication required for token introspection")
 	}
 
 	h.logger.Warn("Token introspection rejected: client_id without credentials", "client_id", clientID, "ip", clientIP)
-	h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "introspection_missing_credentials")
+	h.server.Auditor().LogAuthFailure(ctx, "", clientID, clientIP, "introspection_missing_credentials")
 	return "", fmt.Errorf("client authentication required for token introspection")
 }
 
 // recordTokenRevoked records when a token is revoked.
 func (h *Handler) recordTokenRevoked(ctx context.Context, clientID string) {
-	h.server.Instrumentation.Metrics().RecordTokenRevocation(ctx, clientID)
+	h.server.Instrumentation().Metrics().RecordTokenRevocation(ctx, clientID)
 }

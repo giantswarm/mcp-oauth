@@ -35,12 +35,13 @@ func installSpanRecorder(t *testing.T, h *Handler) *tracetest.SpanRecorder {
 	return sr
 }
 
-// installAuditCapture wires a JSON-buffer auditor onto the server.
-func installAuditCapture(h *Handler) *bytes.Buffer {
+// installAuditCapture creates a handler wired with a JSON-buffer auditor for log capture.
+func installAuditCapture(t *testing.T) (*Handler, *memory.Store, *bytes.Buffer) {
+	t.Helper()
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	h.server.Auditor = security.NewAuditor(logger, true)
-	return &buf
+	h, store := setupTestHandlerWithOpts(t, server.WithAuditor(security.NewAuditor(logger, true)))
+	return h, store, &buf
 }
 
 // findAuthSpan returns the recorded "oauth.http.authorization" span.
@@ -272,9 +273,8 @@ func TestServeAuthorization_ClientValidationGate_EmitsAuditEvent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			handler, store := setupTestHandler(t)
+			handler, store, buf := installAuditCapture(t)
 			defer store.Stop()
-			buf := installAuditCapture(handler)
 
 			clientID := tt.setupStore(t, handler)
 

@@ -274,7 +274,7 @@ func TestServer_RevokeAllTokensProviderFailure(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Use default threshold (50%) - should fail when 100% of provider revocations fail
-	srv.Config.ProviderRevocationMaxRetries = 0 // No retries for faster test
+	srv.config.ProviderRevocationMaxRetries = 0 // No retries for faster test
 
 	userID := "test_user_789"
 	clientID := "test_client_123"
@@ -350,8 +350,8 @@ func TestServer_RevokeAllTokensProviderTimeout(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Set a short timeout for testing (1 second)
-	srv.Config.ProviderRevocationTimeout = 1
-	srv.Config.ProviderRevocationMaxRetries = 0 // No retries for faster test
+	srv.config.ProviderRevocationTimeout = 1
+	srv.config.ProviderRevocationMaxRetries = 0 // No retries for faster test
 
 	userID := "test_user_timeout"
 	clientID := "test_client_timeout"
@@ -405,7 +405,7 @@ func TestServer_RevokeAllTokensProviderTimeout(t *testing.T) {
 		t.Errorf("Revocation took too long (%v), timeout not respected", elapsed)
 	}
 
-	t.Logf("Provider timeout test passed: operation completed in %v and correctly failed (timeout was %ds)", elapsed, srv.Config.ProviderRevocationTimeout)
+	t.Logf("Provider timeout test passed: operation completed in %v and correctly failed (timeout was %ds)", elapsed, srv.config.ProviderRevocationTimeout)
 }
 
 // TestServer_ConcurrentReuseAndRevocation tests that concurrent token reuse attempts
@@ -416,8 +416,8 @@ func TestServer_ConcurrentReuseAndRevocation(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Enable refresh token rotation
-	srv.Config.AllowRefreshTokenRotation = true
-	srv.Config.RefreshTokenTTL = 86400
+	srv.config.AllowRefreshTokenRotation = true
+	srv.config.RefreshTokenTTL = 86400
 
 	// Register a client
 	client, _, err := srv.RegisterClient(
@@ -593,9 +593,9 @@ func TestServer_ProviderRevocationRetrySuccess(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Configure retry settings
-	srv.Config.ProviderRevocationMaxRetries = 3
-	srv.Config.ProviderRevocationTimeout = 5
-	srv.Config.ProviderRevocationFailureThreshold = 0.5
+	srv.config.ProviderRevocationMaxRetries = 3
+	srv.config.ProviderRevocationTimeout = 5
+	srv.config.ProviderRevocationFailureThreshold = 0.5
 
 	userID := "test_user_retry"
 	clientID := "test_client_retry"
@@ -663,9 +663,9 @@ func TestServer_ProviderRevocationFailureThreshold(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Configure strict threshold: >50% must succeed
-	srv.Config.ProviderRevocationMaxRetries = 0 // No retries for faster test
-	srv.Config.ProviderRevocationTimeout = 5
-	srv.Config.ProviderRevocationFailureThreshold = 0.5 // 50% threshold
+	srv.config.ProviderRevocationMaxRetries = 0 // No retries for faster test
+	srv.config.ProviderRevocationTimeout = 5
+	srv.config.ProviderRevocationFailureThreshold = 0.5 // 50% threshold
 
 	userID := "test_user_threshold"
 	clientID := "test_client_threshold"
@@ -722,9 +722,9 @@ func TestServer_ProviderRevocationWithinThreshold(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Configure threshold: >50% must succeed
-	srv.Config.ProviderRevocationMaxRetries = 0
-	srv.Config.ProviderRevocationTimeout = 5
-	srv.Config.ProviderRevocationFailureThreshold = 0.5 // 50% threshold
+	srv.config.ProviderRevocationMaxRetries = 0
+	srv.config.ProviderRevocationTimeout = 5
+	srv.config.ProviderRevocationFailureThreshold = 0.5 // 50% threshold
 
 	userID := "test_user_within"
 	clientID := "test_client_within"
@@ -785,9 +785,9 @@ func TestServer_ProviderRevocationExponentialBackoff(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Configure multiple retries to test backoff
-	srv.Config.ProviderRevocationMaxRetries = 3
-	srv.Config.ProviderRevocationTimeout = 5
-	srv.Config.ProviderRevocationFailureThreshold = 1.0 // Allow all failures for this test
+	srv.config.ProviderRevocationMaxRetries = 3
+	srv.config.ProviderRevocationTimeout = 5
+	srv.config.ProviderRevocationFailureThreshold = 1.0 // Allow all failures for this test
 
 	userID := "test_user_backoff"
 	clientID := "test_client_backoff"
@@ -858,8 +858,8 @@ func TestServer_ProviderRevocationContextCancellation(t *testing.T) {
 	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
-	srv.Config.ProviderRevocationMaxRetries = 10 // Many retries
-	srv.Config.ProviderRevocationTimeout = 5
+	srv.config.ProviderRevocationMaxRetries = 10 // Many retries
+	srv.config.ProviderRevocationTimeout = 5
 
 	userID := "test_user_cancel"
 	clientID := "test_client_cancel"
@@ -935,8 +935,8 @@ func TestServer_ProviderRevocationExactlyAtThreshold(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Set threshold to exactly 0.5 (50%)
-	srv.Config.ProviderRevocationFailureThreshold = 0.5
-	srv.Config.ProviderRevocationMaxRetries = 0
+	srv.config.ProviderRevocationFailureThreshold = 0.5
+	srv.config.ProviderRevocationMaxRetries = 0
 
 	userID := "test_user_exact_threshold"
 	clientID := "test_client_exact_threshold"
@@ -1037,8 +1037,8 @@ func TestServer_ProviderRevocationSingleTokenFailure(t *testing.T) {
 	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
-	srv.Config.ProviderRevocationMaxRetries = 0
-	srv.Config.ProviderRevocationFailureThreshold = 0.5 // 50% threshold
+	srv.config.ProviderRevocationMaxRetries = 0
+	srv.config.ProviderRevocationFailureThreshold = 0.5 // 50% threshold
 
 	userID := "test_user_single"
 	clientID := "test_client_single"
@@ -1125,9 +1125,9 @@ func TestServer_ProviderRevocationDifferentErrorTypes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			srv, store, provider := setupFlowTestServer(t)
 
-			srv.Config.ProviderRevocationMaxRetries = tt.maxRetries
-			srv.Config.ProviderRevocationTimeout = 5
-			srv.Config.ProviderRevocationFailureThreshold = 1.0 // Allow all failures for this test
+			srv.config.ProviderRevocationMaxRetries = tt.maxRetries
+			srv.config.ProviderRevocationTimeout = 5
+			srv.config.ProviderRevocationFailureThreshold = 1.0 // Allow all failures for this test
 
 			userID := "test_user_errors"
 			clientID := "test_client_errors"
@@ -1183,8 +1183,8 @@ func TestServer_ConcurrentProviderRevocationCalls(t *testing.T) {
 	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
-	srv.Config.ProviderRevocationMaxRetries = 0
-	srv.Config.ProviderRevocationTimeout = 5
+	srv.config.ProviderRevocationMaxRetries = 0
+	srv.config.ProviderRevocationTimeout = 5
 
 	// Configure provider with artificial delay
 	var callMu sync.Mutex

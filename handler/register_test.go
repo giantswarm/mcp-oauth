@@ -15,13 +15,14 @@ import (
 
 	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/giantswarm/mcp-oauth/security"
+	"github.com/giantswarm/mcp-oauth/server"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
 func TestHandler_ServeClientRegistration_RFC7591Fields(t *testing.T) {
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
-	handler.server.Config.AllowPublicClientRegistration = true
+	handler.server.Config().AllowPublicClientRegistration = true
 
 	body, err := json.Marshal(oauth.ClientRegistrationRequest{
 		RedirectURIs:            []string{"https://example.com/callback"},
@@ -89,7 +90,7 @@ func TestHandler_ServeClientRegistration_Success(t *testing.T) {
 	defer store.Stop()
 
 	// Enable public registration for this test
-	handler.server.Config.AllowPublicClientRegistration = true
+	handler.server.Config().AllowPublicClientRegistration = true
 
 	regReq := oauth.ClientRegistrationRequest{
 		RedirectURIs:            []string{"https://example.com/callback"},
@@ -128,8 +129,8 @@ func TestHandler_ServeClientRegistration_Success(t *testing.T) {
 func TestHandler_ServeClientRegistration_TokenEndpointAuthMethod(t *testing.T) {
 	handler, _ := setupTestHandler(t)
 	// Enable public registration for these tests
-	handler.server.Config.AllowPublicClientRegistration = true
-	handler.server.Config.AllowPublicClientsWithoutPKCE = true
+	handler.server.Config().AllowPublicClientRegistration = true
+	handler.server.Config().AllowPublicClientsWithoutPKCE = true
 
 	tests := []struct {
 		name                    string
@@ -320,12 +321,12 @@ func TestHandler_ServeClientRegistration_PublicClientPolicy(t *testing.T) {
 			defer store.Stop()
 
 			// Configure the policy for this test
-			handler.server.Config.AllowPublicClientRegistration = tt.allowPublicClientRegistration
-			handler.server.Config.AllowPublicClientsWithoutPKCE = true // Not relevant for registration test
+			handler.server.Config().AllowPublicClientRegistration = tt.allowPublicClientRegistration
+			handler.server.Config().AllowPublicClientsWithoutPKCE = true // Not relevant for registration test
 
 			// Set registration token when authentication is required
 			if !tt.allowPublicClientRegistration {
-				handler.server.Config.RegistrationAccessToken = testRegistrationToken
+				handler.server.Config().RegistrationAccessToken = testRegistrationToken
 			}
 
 			regReq := oauth.ClientRegistrationRequest{
@@ -534,16 +535,16 @@ func TestHandler_ServeClientRegistration_TrustedSchemes(t *testing.T) {
 			defer store.Stop()
 
 			// Configure server with trusted schemes and pre-computed map
-			handler.server.Config.TrustedPublicRegistrationSchemes = tt.trustedSchemes
-			handler.server.Config.DisableStrictSchemeMatching = tt.disableStrictSchemeMatching
-			handler.server.Config.RegistrationAccessToken = tt.registrationAccessToken
-			handler.server.Config.AllowPublicClientRegistration = tt.allowPublicClientRegistration
+			handler.server.Config().TrustedPublicRegistrationSchemes = tt.trustedSchemes
+			handler.server.Config().DisableStrictSchemeMatching = tt.disableStrictSchemeMatching
+			handler.server.Config().RegistrationAccessToken = tt.registrationAccessToken
+			handler.server.Config().AllowPublicClientRegistration = tt.allowPublicClientRegistration
 			// Disable production mode for tests to allow custom schemes without full validation
-			handler.server.Config.ProductionMode = false
+			handler.server.Config().ProductionMode = false
 
 			// Build pre-computed trusted schemes map (normally done by config validation)
 			if len(tt.trustedSchemes) > 0 {
-				handler.server.Config.SetTrustedSchemesMap(tt.trustedSchemes)
+				handler.server.Config().SetTrustedSchemesMap(tt.trustedSchemes)
 			}
 
 			regReq := oauth.ClientRegistrationRequest{
@@ -605,7 +606,7 @@ func TestHandler_ServeClientRegistration_ClientNameValidation(t *testing.T) {
 	defer store.Stop()
 
 	// Enable public registration for this test
-	handler.server.Config.AllowPublicClientRegistration = true
+	handler.server.Config().AllowPublicClientRegistration = true
 
 	tests := []struct {
 		name           string
@@ -710,7 +711,7 @@ func TestHandler_ServeClientRegistration_InvalidJSON(t *testing.T) {
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
-	handler.server.Config.AllowPublicClientRegistration = true
+	handler.server.Config().AllowPublicClientRegistration = true
 
 	req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader("invalid json"))
 	req.Header.Set("Content-Type", "application/json")
@@ -727,15 +728,13 @@ func TestHandler_ServeClientRegistration_InvalidJSON(t *testing.T) {
 // Empty redirect URIs are apparently allowed, so this test is removed
 
 func TestHandler_checkClientRegistrationRateLimit_Reject(t *testing.T) {
-	handler, store := setupTestHandler(t)
-	defer store.Stop()
-
 	// Limit of 1 with sub-second window so retryAfter<1 branch is also hit.
 	rl := security.NewClientRegistrationRateLimiterWithConfig(1, time.Millisecond, 100, nil)
 	t.Cleanup(rl.Stop)
-	handler.server.ClientRegistrationRateLimiter = rl
-	handler.server.Config.MaxRegistrationsPerHour = 1
-	handler.server.Config.RegistrationRateLimitWindow = 0
+	handler, store := setupTestHandlerWithOpts(t, server.WithClientRegistrationRateLimiter(rl))
+	defer store.Stop()
+	handler.server.Config().MaxRegistrationsPerHour = 1
+	handler.server.Config().RegistrationRateLimitWindow = 0
 
 	const ip = "192.0.2.77"
 	rl.Allow(security.RateLimitBucket(ip)) // consume the one allowed slot
@@ -752,7 +751,7 @@ func TestHandler_authorizeClientRegistration_InvalidTokenLogs(t *testing.T) {
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
-	handler.server.Config.RegistrationAccessToken = "correct-token"
+	handler.server.Config().RegistrationAccessToken = "correct-token"
 
 	req := httptest.NewRequest(http.MethodPost, "/register", nil)
 	req.Header.Set("Authorization", "Bearer wrong-token")
@@ -770,9 +769,9 @@ func TestHandler_authorizeClientRegistration_TrustedSchemeInvalidURI(t *testing.
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
-	handler.server.Config.TrustedPublicRegistrationSchemes = []string{"myapp"}
-	handler.server.Config.SetTrustedSchemesMap([]string{"myapp"})
-	handler.server.Config.RegistrationAccessToken = "secret"
+	handler.server.Config().TrustedPublicRegistrationSchemes = []string{"myapp"}
+	handler.server.Config().SetTrustedSchemesMap([]string{"myapp"})
+	handler.server.Config().RegistrationAccessToken = "secret"
 
 	// A URI with no scheme triggers the error path in CanRegisterWithTrustedScheme.
 	req := httptest.NewRequest(http.MethodPost, "/register", nil)
@@ -790,7 +789,7 @@ func TestHandler_getMaxClientsPerIP_Default(t *testing.T) {
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
-	handler.server.Config.MaxClientsPerIP = 0
+	handler.server.Config().MaxClientsPerIP = 0
 	require.Equal(t, 10, handler.getMaxClientsPerIP())
 }
 

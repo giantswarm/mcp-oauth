@@ -42,7 +42,7 @@ func (s *Server) looksLikeSelfIssuedJWT(tokenString string) bool {
 		return false
 	}
 	iss, _ := claims["iss"].(string)
-	return iss != "" && iss == s.Config.Issuer
+	return iss != "" && iss == s.config.Issuer
 }
 
 // validateSelfIssuedJWT verifies a bearer that this server (or a peer
@@ -70,7 +70,7 @@ func (s *Server) looksLikeSelfIssuedJWT(tokenString string) bool {
 // need claim-level access (introspection, audit) don't need to re-parse +
 // re-verify the token, which would risk drift between the two pipelines.
 func (s *Server) validateSelfIssuedJWT(ctx context.Context, tokenString string) (*providers.UserInfo, map[string]any, error) {
-	if !s.Config.IsJWTAccessTokenFormat() {
+	if !s.config.IsJWTAccessTokenFormat() {
 		return nil, nil, errBearerNotSelfIssuedJWT
 	}
 
@@ -113,9 +113,9 @@ func (s *Server) validateSelfIssuedJWT(ctx context.Context, tokenString string) 
 // errBearerNotSelfIssuedJWT so callers above can distinguish "fall through
 // to the next branch" from "verified-bad and reject".
 func (s *Server) parseAndVerifyJWTSignature(tokenString string) (jose.Header, map[string]any, error) {
-	expectedAlg := jose.SignatureAlgorithm(s.Config.AccessTokenSigningAlgorithm)
-	expectedKID := s.Config.AccessTokenSigningKeyID
-	publicKey := s.Config.AccessTokenSigningKey.Public()
+	expectedAlg := jose.SignatureAlgorithm(s.config.AccessTokenSigningAlgorithm)
+	expectedKID := s.config.AccessTokenSigningKeyID
+	publicKey := s.config.AccessTokenSigningKey.Public()
 
 	parsed, err := josejwt.ParseSigned(tokenString, []jose.SignatureAlgorithm{expectedAlg})
 	if err != nil {
@@ -145,8 +145,8 @@ func (s *Server) checkJWTHeaderAndIssuer(header jose.Header, claims map[string]a
 		return fmt.Errorf("%w: typ header is %q (expected %q)", errBearerNotSelfIssuedJWT, typ, rfc9068TokenType)
 	}
 	iss, _ := claims["iss"].(string)
-	if iss != s.Config.Issuer {
-		return fmt.Errorf("%w: iss claim is %q (expected %q)", errBearerNotSelfIssuedJWT, iss, s.Config.Issuer)
+	if iss != s.config.Issuer {
+		return fmt.Errorf("%w: iss claim is %q (expected %q)", errBearerNotSelfIssuedJWT, iss, s.config.Issuer)
 	}
 	return nil
 }
@@ -159,7 +159,7 @@ func (s *Server) checkJWTExpiration(ctx context.Context, claims map[string]any, 
 		return fmt.Errorf("missing or invalid exp claim")
 	}
 	exp := time.Unix(int64(expVal), 0)
-	gracePeriod := time.Duration(s.Config.ClockSkewGracePeriod) * time.Second
+	gracePeriod := time.Duration(s.config.ClockSkewGracePeriod) * time.Second
 	if security.IsTokenExpiredWithGracePeriod(exp, gracePeriod) {
 		s.logSelfIssuedJWTAuthFailure(ctx, "token_expired", tokenString)
 		return fmt.Errorf("access token expired")
@@ -177,7 +177,7 @@ func (s *Server) checkJWTAudience(ctx context.Context, claims map[string]any, to
 		s.logSelfIssuedJWTAuthFailure(ctx, "missing_aud", tokenString)
 		return fmt.Errorf("token missing audience claim")
 	}
-	if helpers.AudienceMatchesResourceOrTrusted(audiences, s.Config.GetResourceIdentifier(), s.Config.TrustedAudiences) {
+	if helpers.AudienceMatchesResourceOrTrusted(audiences, s.config.GetResourceIdentifier(), s.config.TrustedAudiences) {
 		return nil
 	}
 	s.logSelfIssuedJWTAuthFailure(ctx, "audience_mismatch", tokenString)
@@ -194,7 +194,7 @@ func (s *Server) checkJWTRevocation(ctx context.Context, jti, tokenString string
 	}
 	revoked, err := s.revokedTokenStore.IsJTIRevoked(ctx, jti)
 	if err != nil {
-		s.Logger.Warn("Failed to check JWT revocation list",
+		s.logger.Warn("Failed to check JWT revocation list",
 			"error", err,
 			"token_suffix", helpers.TokenSuffix(tokenString, 8))
 		return fmt.Errorf("revocation check failed: %w", err)
@@ -236,7 +236,7 @@ func (s *Server) checkJWTFamily(ctx context.Context, claims map[string]any, toke
 		return nil
 	}
 	if err != nil {
-		s.Logger.Warn("Failed to check JWT family revocation",
+		s.logger.Warn("Failed to check JWT family revocation",
 			"error", err,
 			"family_id", familyID,
 			"token_suffix", helpers.TokenSuffix(tokenString, 8))
@@ -312,12 +312,12 @@ func userInfoFromJWTClaims(claims map[string]any) *providers.UserInfo {
 // credential — operators correlating audit events across services need the
 // complete identifier.
 func (s *Server) logSelfIssuedJWTAccepted(ctx context.Context, tokenString string, userInfo *providers.UserInfo, jti string) {
-	s.Logger.Debug("Self-issued JWT access token validated",
+	s.logger.Debug("Self-issued JWT access token validated",
 		"user_id", userInfo.ID,
 		"jti", jti,
 		"token_suffix", helpers.TokenSuffix(tokenString, 8))
 
-	s.Auditor.LogEvent(ctx, security.Event{
+	s.auditor.LogEvent(ctx, security.Event{
 		Type:   security.EventSelfIssuedJWTAccepted,
 		UserID: userInfo.ID,
 		Details: map[string]any{
@@ -334,14 +334,14 @@ func (s *Server) logSelfIssuedJWTAccepted(ctx context.Context, tokenString strin
 // false when the input is not a JWT or not one we issued, so the caller
 // can fall through to opaque revocation.
 func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID, clientIP string) bool {
-	if !s.Config.IsJWTAccessTokenFormat() || !s.looksLikeSelfIssuedJWT(tokenString) {
+	if !s.config.IsJWTAccessTokenFormat() || !s.looksLikeSelfIssuedJWT(tokenString) {
 		return false
 	}
 	if s.revokedTokenStore == nil {
 		// Operator was warned at startup; we still consume the bearer so
 		// the caller does not also try opaque revocation, which would log
 		// a misleading "token not found" path.
-		s.Logger.Warn("Cannot revoke self-issued JWT: RevokedTokenStore not configured",
+		s.logger.Warn("Cannot revoke self-issued JWT: RevokedTokenStore not configured",
 			"token_suffix", helpers.TokenSuffix(tokenString, 8))
 		return true
 	}
@@ -350,7 +350,7 @@ func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID,
 	if err != nil {
 		// Bearer was peeked as self-issued but failed verification —
 		// suspicious (forged or expired). Treat as success per RFC 7009.
-		s.Logger.Debug("Self-issued JWT revocation: signature/parse failed",
+		s.logger.Debug("Self-issued JWT revocation: signature/parse failed",
 			"error", err,
 			"token_suffix", helpers.TokenSuffix(tokenString, 8))
 		return true
@@ -358,14 +358,14 @@ func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID,
 	jti, _ := claims["jti"].(string)
 	expVal, _ := claims["exp"].(float64)
 	if jti == "" || expVal == 0 {
-		s.Logger.Debug("Self-issued JWT missing jti or exp during revocation",
+		s.logger.Debug("Self-issued JWT missing jti or exp during revocation",
 			"token_suffix", helpers.TokenSuffix(tokenString, 8))
 		return true
 	}
 	expiresAt := time.Unix(int64(expVal), 0)
 
 	if err := s.revokedTokenStore.RevokeJTI(ctx, jti, expiresAt); err != nil {
-		s.Logger.Warn("Failed to write revoked JWT jti to denylist",
+		s.logger.Warn("Failed to write revoked JWT jti to denylist",
 			"error", err,
 			"jti", jti,
 			"token_suffix", helpers.TokenSuffix(tokenString, 8))
@@ -373,7 +373,7 @@ func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID,
 	}
 
 	userID, _ := claims["sub"].(string)
-	s.Auditor.LogEvent(ctx, security.Event{
+	s.auditor.LogEvent(ctx, security.Event{
 		Type:     security.EventSelfIssuedJWTRevoked,
 		UserID:   userID,
 		ClientID: clientID,
@@ -383,7 +383,7 @@ func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID,
 			"ip":         clientIP,
 		},
 	})
-	s.Logger.Debug("Self-issued JWT access token revoked",
+	s.logger.Debug("Self-issued JWT access token revoked",
 		"jti", jti,
 		"client_id", clientID,
 		"ip", clientIP,
@@ -395,8 +395,8 @@ func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID,
 // reason is a short machine-friendly tag (token_expired, audience_mismatch,
 // token_revoked, family_revoked, missing_aud) so dashboards can pivot on it.
 func (s *Server) logSelfIssuedJWTAuthFailure(ctx context.Context, reason, tokenString string) {
-	s.Logger.Debug("Self-issued JWT access token rejected",
+	s.logger.Debug("Self-issued JWT access token rejected",
 		"reason", reason,
 		"token_suffix", helpers.TokenSuffix(tokenString, 8))
-	s.Auditor.LogAuthFailure(ctx, "", "", "", reason)
+	s.auditor.LogAuthFailure(ctx, "", "", "", reason)
 }

@@ -53,13 +53,13 @@ func (s *Server) validateAndParseForwardedIDToken(ctx context.Context, tokenStri
 		return nil, "", nil
 	}
 
-	s.Logger.Debug("JWT audience matches TrustedAudiences, validating via JWKS",
+	s.logger.Debug("JWT audience matches TrustedAudiences, validating via JWKS",
 		"matched_audience", matchedAudience,
 		"token_suffix", helpers.TokenSuffix(tokenString, 8))
 
 	jwksProvider, ok := s.provider.(providers.JWKSProvider)
 	if !ok {
-		s.Logger.Warn("Provider does not support JWKS validation, cannot validate forwarded ID token",
+		s.logger.Warn("Provider does not support JWKS validation, cannot validate forwarded ID token",
 			"provider", s.provider.Name())
 		return nil, "", fmt.Errorf("provider %s does not support JWKS validation", s.provider.Name())
 	}
@@ -71,7 +71,7 @@ func (s *Server) validateAndParseForwardedIDToken(ctx context.Context, tokenStri
 
 	expectedIssuer := jwksProvider.IssuerURL()
 	if expectedIssuer != "" {
-		s.Logger.Debug("Validating JWT issuer against provider",
+		s.logger.Debug("Validating JWT issuer against provider",
 			"expected_issuer", expectedIssuer,
 			"token_suffix", helpers.TokenSuffix(tokenString, 8))
 	}
@@ -82,7 +82,7 @@ func (s *Server) validateAndParseForwardedIDToken(ctx context.Context, tokenStri
 		s.getJWKSClient(),
 		jwksURI,
 		expectedIssuer,
-		s.Config.TrustedAudiences,
+		s.config.TrustedAudiences,
 	)
 	if err != nil {
 		return nil, "", fmt.Errorf("ID token signature validation failed: %w", err)
@@ -123,7 +123,7 @@ func (s *Server) validateForwardedIDToken(ctx context.Context, tokenString strin
 // and constant-time comparison across the codebase.
 // Returns the matched audience or empty string if no match.
 func (s *Server) findMatchingTrustedAudience(tokenAudiences []string) string {
-	return helpers.FindMatchingAudience(tokenAudiences, s.Config.TrustedAudiences)
+	return helpers.FindMatchingAudience(tokenAudiences, s.config.TrustedAudiences)
 }
 
 // getJWKSClient returns or creates a JWKS client for JWT validation.
@@ -135,8 +135,8 @@ func (s *Server) findMatchingTrustedAudience(tokenAudiences []string) string {
 func (s *Server) getJWKSClient() *oidc.JWKSClient {
 	s.jwksClientOnce.Do(func() {
 		s.jwksClient = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
-			Logger:         s.Logger,
-			AllowPrivateIP: s.Config.AllowPrivateIPJWKS,
+			Logger:         s.logger,
+			AllowPrivateIP: s.config.AllowPrivateIPJWKS,
 		})
 	})
 	return s.jwksClient
@@ -161,7 +161,7 @@ func (s *Server) idTokenClaimsToUserInfo(claims *oidc.IDTokenClaims) *providers.
 
 // logForwardedIDTokenAccepted logs a security event when a forwarded ID token is accepted.
 func (s *Server) logForwardedIDTokenAccepted(ctx context.Context, tokenString, matchedAudience, validatedIssuer string, userInfo *providers.UserInfo) {
-	s.Logger.Debug("Forwarded ID token accepted via TrustedAudiences (SSO)",
+	s.logger.Debug("Forwarded ID token accepted via TrustedAudiences (SSO)",
 		"user_id", userInfo.ID,
 		"email", userInfo.Email,
 		"matched_audience", matchedAudience,
@@ -178,7 +178,7 @@ func (s *Server) logForwardedIDTokenAccepted(ctx context.Context, tokenString, m
 	if validatedIssuer != "" {
 		details["validated_issuer"] = validatedIssuer
 	}
-	s.Auditor.LogEvent(ctx, security.Event{
+	s.auditor.LogEvent(ctx, security.Event{
 		Type:    security.EventForwardedIDTokenAccepted,
 		UserID:  userInfo.ID,
 		Details: details,

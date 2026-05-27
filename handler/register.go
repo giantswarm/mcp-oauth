@@ -42,18 +42,18 @@ type clientRegistrationRequest struct {
 // checkClientRegistrationRateLimit checks if client registration is rate limited
 // Returns true if request should be rejected, false if allowed
 func (h *Handler) checkClientRegistrationRateLimit(ctx context.Context, w http.ResponseWriter, clientIP string, startTime time.Time) bool {
-	if h.server.ClientRegistrationRateLimiter == nil {
+	if h.server.ClientRegistrationRateLimiter() == nil {
 		return false
 	}
 
-	if !h.server.ClientRegistrationRateLimiter.Allow(security.RateLimitBucket(clientIP)) {
+	if !h.server.ClientRegistrationRateLimiter().Allow(security.RateLimitBucket(clientIP)) {
 		h.logger.Warn("Client registration rate limit exceeded",
 			"ip", clientIP,
-			"max_per_window", h.server.Config.MaxRegistrationsPerHour,
-			"window", time.Duration(h.server.Config.RegistrationRateLimitWindow)*time.Second)
-		h.server.Auditor.LogClientRegistrationRateLimitExceeded(ctx, clientIP)
+			"max_per_window", h.server.Config().MaxRegistrationsPerHour,
+			"window", time.Duration(h.server.Config().RegistrationRateLimitWindow)*time.Second)
+		h.server.Auditor().LogClientRegistrationRateLimitExceeded(ctx, clientIP)
 		h.recordHTTPMetrics(ctx, endpointRegister, http.MethodPost, http.StatusTooManyRequests, startTime)
-		retryAfter := int(h.server.ClientRegistrationRateLimiter.Window().Seconds())
+		retryAfter := int(h.server.ClientRegistrationRateLimiter().Window().Seconds())
 		if retryAfter < 1 {
 			retryAfter = 60
 		}
@@ -69,7 +69,7 @@ func (h *Handler) checkClientRegistrationRateLimit(ctx context.Context, w http.R
 // validateRegistrationToken validates the registration access token
 // Returns true if valid token was provided
 func (h *Handler) validateRegistrationToken(authHeader string) bool {
-	if authHeader == "" || h.server.Config.RegistrationAccessToken == "" {
+	if authHeader == "" || h.server.Config().RegistrationAccessToken == "" {
 		return false
 	}
 
@@ -78,7 +78,7 @@ func (h *Handler) validateRegistrationToken(authHeader string) bool {
 		return false
 	}
 
-	return subtle.ConstantTimeCompare([]byte(parts[1]), []byte(h.server.Config.RegistrationAccessToken)) == 1
+	return subtle.ConstantTimeCompare([]byte(parts[1]), []byte(h.server.Config().RegistrationAccessToken)) == 1
 }
 
 // registrationAuthResult identifies which gate authorized a DCR request.
@@ -94,7 +94,7 @@ type registrationAuthResult struct {
 func (h *Handler) authorizeClientRegistration(w http.ResponseWriter, r *http.Request, req *clientRegistrationRequest, clientIP string) (registrationAuthResult, bool) {
 	var result registrationAuthResult
 
-	if h.server.Config.AllowPublicClientRegistration {
+	if h.server.Config().AllowPublicClientRegistration {
 		h.logger.Warn("Unauthenticated client registration (DoS risk)", "client_ip", clientIP)
 		return result, true
 	}
@@ -108,8 +108,8 @@ func (h *Handler) authorizeClientRegistration(w http.ResponseWriter, r *http.Req
 	if authHeader != "" {
 		h.logger.Warn("Invalid registration token provided, falling back to trusted allowlists",
 			"client_ip", clientIP,
-			"has_trusted_schemes_configured", len(h.server.Config.TrustedPublicRegistrationSchemes) > 0,
-			"has_trusted_redirect_uris_configured", len(h.server.Config.TrustedPublicRegistrationRedirectURIs) > 0)
+			"has_trusted_schemes_configured", len(h.server.Config().TrustedPublicRegistrationSchemes) > 0,
+			"has_trusted_redirect_uris_configured", len(h.server.Config().TrustedPublicRegistrationRedirectURIs) > 0)
 	}
 
 	allowed, scheme, err := h.server.CanRegisterWithTrustedScheme(req.RedirectURIs)
@@ -120,7 +120,7 @@ func (h *Handler) authorizeClientRegistration(w http.ResponseWriter, r *http.Req
 	}
 	if allowed {
 		h.logger.Debug("Client registration authorized via trusted scheme",
-			"scheme", scheme, "client_ip", clientIP, "strict_matching", !h.server.Config.DisableStrictSchemeMatching)
+			"scheme", scheme, "client_ip", clientIP, "strict_matching", !h.server.Config().DisableStrictSchemeMatching)
 		return registrationAuthResult{viaTrustedAllowlist: true, gate: registrationAuthGateTrustedScheme, matched: scheme}, true
 	}
 
@@ -133,8 +133,8 @@ func (h *Handler) authorizeClientRegistration(w http.ResponseWriter, r *http.Req
 
 	h.logger.Warn("Client registration rejected: missing or invalid authorization",
 		"client_ip", clientIP, "has_token", authHeader != "",
-		"has_trusted_schemes_configured", len(h.server.Config.TrustedPublicRegistrationSchemes) > 0,
-		"has_trusted_redirect_uris_configured", len(h.server.Config.TrustedPublicRegistrationRedirectURIs) > 0)
+		"has_trusted_schemes_configured", len(h.server.Config().TrustedPublicRegistrationSchemes) > 0,
+		"has_trusted_redirect_uris_configured", len(h.server.Config().TrustedPublicRegistrationRedirectURIs) > 0)
 	h.writeError(w, constants.ErrorCodeInvalidToken,
 		"Registration requires authentication. Provide a valid registration token or use a trusted redirect URI or scheme.",
 		http.StatusUnauthorized)
@@ -149,7 +149,7 @@ func (h *Handler) validatePublicClientRegistration(ctx context.Context, w http.R
 		return true
 	}
 
-	if !h.server.Config.AllowPublicClientRegistration && !auth.viaTrustedAllowlist {
+	if !h.server.Config().AllowPublicClientRegistration && !auth.viaTrustedAllowlist {
 		h.logger.Warn("Public client registration rejected (not allowed by configuration)",
 			"token_endpoint_auth_method", req.TokenEndpointAuthMethod,
 			"client_type", req.ClientType, "ip", clientIP)
@@ -198,7 +198,7 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config.MaxRequestBodySize)
+	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config().MaxRequestBodySize)
 
 	req, err := h.parseAndValidateRegistrationRequest(w, r, clientIP)
 	if err != nil {
@@ -269,10 +269,10 @@ func (h *Handler) parseAndValidateRegistrationRequest(w http.ResponseWriter, r *
 
 // getMaxClientsPerIP returns the max clients per IP with default.
 func (h *Handler) getMaxClientsPerIP() int {
-	if h.server.Config.MaxClientsPerIP == 0 {
+	if h.server.Config().MaxClientsPerIP == 0 {
 		return 10
 	}
-	return h.server.Config.MaxClientsPerIP
+	return h.server.Config().MaxClientsPerIP
 }
 
 // recordTrustedAllowlistSpan records the allowlist gate used in the span, if any.
@@ -334,7 +334,7 @@ func (h *Handler) auditTrustedAllowlistRegistration(ctx context.Context, auth re
 	case registrationAuthGateTrustedScheme:
 		eventType = security.EventClientRegisteredViaTrustedScheme
 		details["scheme"] = auth.matched
-		details["strict_matching"] = !h.server.Config.DisableStrictSchemeMatching
+		details["strict_matching"] = !h.server.Config().DisableStrictSchemeMatching
 		details["security_context"] = "unauthenticated_registration_via_trusted_scheme"
 	case registrationAuthGateTrustedRedirectURI:
 		eventType = security.EventClientRegisteredViaTrustedRedirectURI
@@ -346,7 +346,7 @@ func (h *Handler) auditTrustedAllowlistRegistration(ctx context.Context, auth re
 		return
 	}
 
-	h.server.Auditor.LogEvent(ctx, security.Event{
+	h.server.Auditor().LogEvent(ctx, security.Event{
 		Type:     eventType,
 		ClientID: client.ClientID,
 		Details:  details,
@@ -370,7 +370,7 @@ func (h *Handler) setRegistrationSpanSuccess(span trace.Span, client *storage.Cl
 // When EnableClientManagementEndpoint is on, `registration_access_token` and
 // `registration_client_uri` are also included (RFC 7592 §3).
 func (h *Handler) writeRegistrationResponse(w http.ResponseWriter, client *storage.Client, clientSecret, registrationToken string) {
-	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+	security.SetSecurityHeaders(w, h.server.Config().Issuer)
 	response := map[string]any{
 		"client_id":                  client.ClientID,
 		"client_id_issued_at":        client.CreatedAt.Unix(),
@@ -387,9 +387,9 @@ func (h *Handler) writeRegistrationResponse(w http.ResponseWriter, client *stora
 		response["client_secret_expires_at"] = 0
 	}
 
-	if h.server.Config.EnableClientManagementEndpoint && registrationToken != "" {
+	if h.server.Config().EnableClientManagementEndpoint && registrationToken != "" {
 		response["registration_access_token"] = registrationToken
-		response["registration_client_uri"] = h.server.Config.Issuer + server.EndpointPathRegister + "/" + client.ClientID
+		response["registration_client_uri"] = h.server.Config().Issuer + server.EndpointPathRegister + "/" + client.ClientID
 	}
 
 	w.Header().Set("Content-Type", "application/json")

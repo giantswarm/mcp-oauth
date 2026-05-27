@@ -21,7 +21,7 @@ import (
 // here: bringing up a server with an unverifiable allowlist would leave the
 // gate's correctness in an unknown state.
 func (s *Server) validateIntrospectionAllowlistRegistered(ctx context.Context) error {
-	for i, clientID := range s.Config.IntrospectionResourceServers {
+	for i, clientID := range s.config.IntrospectionResourceServers {
 		_, err := s.clientStore.GetClient(ctx, clientID)
 		if errors.Is(err, storage.ErrClientNotFound) {
 			return fmt.Errorf("IntrospectionResourceServers[%d] %q is not a registered client", i, clientID)
@@ -42,7 +42,7 @@ func (s *Server) validateIntrospectionAllowlistRegistered(ctx context.Context) e
 // The cross-client gate trusts that identifier as-is; passing an attacker-
 // supplied or unauthenticated value defeats the gate entirely.
 func (s *Server) IntrospectToken(ctx context.Context, accessToken, requestingClient string) map[string]any {
-	if s.Config.IsJWTAccessTokenFormat() && s.looksLikeSelfIssuedJWT(accessToken) {
+	if s.config.IsJWTAccessTokenFormat() && s.looksLikeSelfIssuedJWT(accessToken) {
 		return s.introspectSelfIssuedJWT(ctx, accessToken, requestingClient)
 	}
 	return s.introspectOpaqueToken(ctx, accessToken, requestingClient)
@@ -195,7 +195,7 @@ func (s *Server) introspectionResponseFromOpaqueToken(_ context.Context, _ strin
 		"token_type": "Bearer",
 		"client_id":  tokenMetadata.ClientID,
 		"sub":        userInfo.ID,
-		"iss":        s.Config.Issuer,
+		"iss":        s.config.Issuer,
 	}
 	if userInfo.Email != "" {
 		response["email"] = userInfo.Email
@@ -237,7 +237,7 @@ func (s *Server) introspectionRequesterAllowed(ctx context.Context, requestingCl
 	if requestingClient == tokenBoundClient {
 		return true
 	}
-	if slices.Contains(s.Config.IntrospectionResourceServers, requestingClient) {
+	if slices.Contains(s.config.IntrospectionResourceServers, requestingClient) {
 		return true
 	}
 	s.logIntrospectionRequesterDenied(ctx, requestingClient, tokenBoundClient, "cross_client_probe")
@@ -245,7 +245,7 @@ func (s *Server) introspectionRequesterAllowed(ctx context.Context, requestingCl
 }
 
 func (s *Server) logIntrospectionRequesterDenied(ctx context.Context, requestingClient, tokenBoundClient, reason string) {
-	s.Auditor.LogEvent(ctx, security.Event{
+	s.auditor.LogEvent(ctx, security.Event{
 		Type:     security.EventIntrospectionRequesterDenied,
 		ClientID: requestingClient,
 		Details: map[string]any{

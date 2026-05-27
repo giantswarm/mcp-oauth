@@ -1110,8 +1110,8 @@ func TestServer_ExchangeAuthorizationCode(t *testing.T) {
 func TestServer_ExchangeAuthorizationCode_MetadataExpiresAt(t *testing.T) {
 	ctx := t.Context()
 	srv, store, _ := setupFlowTestServer(t)
-	srv.Config.AccessTokenTTL = 3600
-	srv.Config.RefreshTokenTTL = 86400
+	srv.config.AccessTokenTTL = 3600
+	srv.config.RefreshTokenTTL = 86400
 
 	client, _, err := srv.RegisterClient(ctx, "Test Client", ClientTypeConfidential, "",
 		[]string{"https://example.com/callback"}, []string{"openid"}, "192.168.1.1", 10)
@@ -1144,12 +1144,12 @@ func TestServer_ExchangeAuthorizationCode_MetadataExpiresAt(t *testing.T) {
 	require.False(t, atMeta.ExpiresAt.IsZero(), "access token ExpiresAt must be set")
 	require.False(t, atMeta.IssuedAt.IsZero(), "access token IssuedAt must be set")
 	require.True(t, atMeta.IssuedAt.Before(atMeta.ExpiresAt), "IssuedAt must be before ExpiresAt")
-	require.WithinDuration(t, before.Add(time.Duration(srv.Config.AccessTokenTTL)*time.Second), atMeta.ExpiresAt, 5*time.Second)
+	require.WithinDuration(t, before.Add(time.Duration(srv.config.AccessTokenTTL)*time.Second), atMeta.ExpiresAt, 5*time.Second)
 
 	rtMeta, err := store.GetTokenMetadata(token.RefreshToken)
 	require.NoError(t, err)
 	require.False(t, rtMeta.ExpiresAt.IsZero(), "refresh token ExpiresAt must be set")
-	require.WithinDuration(t, before.Add(time.Duration(srv.Config.RefreshTokenTTL)*time.Second), rtMeta.ExpiresAt, 5*time.Second)
+	require.WithinDuration(t, before.Add(time.Duration(srv.config.RefreshTokenTTL)*time.Second), rtMeta.ExpiresAt, 5*time.Second)
 }
 
 // TestServer_ExchangeAuthorizationCode_IDTokenForwarding verifies that the id_token
@@ -2020,8 +2020,8 @@ func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
 	srv, store, _ := setupFlowTestServer(t)
 
 	// Enable refresh token rotation
-	srv.Config.AllowRefreshTokenRotation = true
-	srv.Config.RefreshTokenTTL = 86400 // 24 hours
+	srv.config.AllowRefreshTokenRotation = true
+	srv.config.RefreshTokenTTL = 86400 // 24 hours
 
 	// Register a client
 	client, _, err := srv.RegisterClient(
@@ -2303,7 +2303,7 @@ func TestServer_AuthCodeReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 	srv, store, _ := setupFlowTestServer(t)
 
 	// IMPORTANT: Don't set SecurityEventRateLimiter (leave as nil)
-	srv.SecurityEventRateLimiter = nil
+	srv.securityEventRateLimiter = nil
 
 	// Register a client
 	client, _, err := srv.RegisterClient(
@@ -2776,7 +2776,7 @@ func TestServer_HandleProviderCallback_PKCEValidationFailure(t *testing.T) {
 
 	// Set up auditor to log security events (provider_code_exchange_failed)
 	auditor := security.NewAuditor(nil, true) // nil uses slog.Default()
-	srv.Auditor = auditor
+	srv.auditor = auditor
 
 	// Register a test client
 	client, _, err := srv.RegisterClient(
@@ -2869,8 +2869,8 @@ func TestStartAuthorizationFlow_ScopeLengthValidation(t *testing.T) {
 
 	// Create server with custom MaxScopeLength and allow all scopes
 	srv, _, _ := setupFlowTestServer(t)
-	srv.Config.MaxScopeLength = 50          // Set low limit for testing
-	srv.Config.SupportedScopes = []string{} // Allow all scopes (no validation)
+	srv.config.MaxScopeLength = 50          // Set low limit for testing
+	srv.config.SupportedScopes = []string{} // Allow all scopes (no validation)
 
 	// Register a test client
 	client, _, err := srv.RegisterClient(ctx, "test-client", ClientTypeConfidential, TokenEndpointAuthMethodBasic, []string{"https://example.com/callback"}, []string{}, "127.0.0.1", 10)
@@ -2942,12 +2942,12 @@ func TestStartAuthorizationFlow_ScopeLengthValidation(t *testing.T) {
 				if !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("Error message should contain %q, got: %v", tt.errMsg, err)
 				}
-				t.Logf("✓ Correctly rejected scope with length %d (limit: %d): %v", len(tt.scope), srv.Config.MaxScopeLength, err)
+				t.Logf("✓ Correctly rejected scope with length %d (limit: %d): %v", len(tt.scope), srv.config.MaxScopeLength, err)
 			} else {
 				if err != nil {
 					t.Errorf("Unexpected error: %v", err)
 				}
-				t.Logf("✓ Correctly accepted scope with length %d (limit: %d)", len(tt.scope), srv.Config.MaxScopeLength)
+				t.Logf("✓ Correctly accepted scope with length %d (limit: %d)", len(tt.scope), srv.config.MaxScopeLength)
 			}
 		})
 	}
@@ -3511,8 +3511,8 @@ func TestResourceParameter_RateLimiting(t *testing.T) {
 	}
 
 	// Setup rate limiter with tight limits for testing
-	rateLimiter := security.NewRateLimiter(1, 1, srv.Logger) // 1 request per second, burst 1
-	srv.SecurityEventRateLimiter = rateLimiter
+	rateLimiter := security.NewRateLimiter(1, 1, srv.logger) // 1 request per second, burst 1
+	srv.securityEventRateLimiter = rateLimiter
 
 	client, _, err := srv.RegisterClient(
 		ctx,
@@ -3797,7 +3797,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 
 	t.Run("provider token expires before AccessTokenTTL - should cap expiry", func(t *testing.T) {
 		srv, store, _ := setupFlowTestServer(t)
-		srv.Config.AccessTokenTTL = 3600 // 1 hour
+		srv.config.AccessTokenTTL = 3600 // 1 hour
 
 		providerExpiry := time.Now().Add(10 * time.Minute) // 10 minutes
 		authCode := &storage.AuthorizationCode{
@@ -3836,7 +3836,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 
 	t.Run("provider token expires after AccessTokenTTL - should use AccessTokenTTL", func(t *testing.T) {
 		srv, store, _ := setupFlowTestServer(t)
-		srv.Config.AccessTokenTTL = 3600 // 1 hour
+		srv.config.AccessTokenTTL = 3600 // 1 hour
 
 		authCode := &storage.AuthorizationCode{
 			Code:     "test-code-2",
@@ -3856,7 +3856,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 		}
 
 		// Expiry should be approximately now + AccessTokenTTL
-		expectedExpiry := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
+		expectedExpiry := time.Now().Add(time.Duration(srv.config.AccessTokenTTL) * time.Second)
 		timeDiff := tokenResponse.Expiry.Sub(expectedExpiry).Abs()
 		if timeDiff > 2*time.Second {
 			t.Errorf("Token expiry = %v, want close to %v (diff: %v)",
@@ -3875,7 +3875,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 
 	t.Run("provider token with zero expiry - should use AccessTokenTTL", func(t *testing.T) {
 		srv, _, _ := setupFlowTestServer(t)
-		srv.Config.AccessTokenTTL = 3600 // 1 hour
+		srv.config.AccessTokenTTL = 3600 // 1 hour
 
 		authCode := &storage.AuthorizationCode{
 			Code:     "test-code-3",
@@ -3894,7 +3894,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 			t.Fatalf("generateAndStoreTokens() error = %v", err)
 		}
 
-		expectedExpiry := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
+		expectedExpiry := time.Now().Add(time.Duration(srv.config.AccessTokenTTL) * time.Second)
 		timeDiff := tokenResponse.Expiry.Sub(expectedExpiry).Abs()
 		if timeDiff > 2*time.Second {
 			t.Errorf("Token expiry = %v, want close to %v (diff: %v)",
@@ -3904,7 +3904,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 
 	t.Run("nil provider token - should use AccessTokenTTL", func(t *testing.T) {
 		srv, _, _ := setupFlowTestServer(t)
-		srv.Config.AccessTokenTTL = 3600 // 1 hour
+		srv.config.AccessTokenTTL = 3600 // 1 hour
 
 		authCode := &storage.AuthorizationCode{
 			Code:          "test-code-4",
@@ -3919,7 +3919,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 			t.Fatalf("generateAndStoreTokens() error = %v", err)
 		}
 
-		expectedExpiry := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
+		expectedExpiry := time.Now().Add(time.Duration(srv.config.AccessTokenTTL) * time.Second)
 		timeDiff := tokenResponse.Expiry.Sub(expectedExpiry).Abs()
 		if timeDiff > 2*time.Second {
 			t.Errorf("Token expiry = %v, want close to %v (diff: %v)",
@@ -3933,7 +3933,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 // uses AccessTokenTTL instead of a past timestamp).
 func TestServer_GenerateAndStoreTokens_PastExpiryIgnored(t *testing.T) {
 	srv, _, _ := setupFlowTestServer(t)
-	srv.Config.AccessTokenTTL = 3600
+	srv.config.AccessTokenTTL = 3600
 
 	authCode := &storage.AuthorizationCode{
 		Code:     "test-code-past",
@@ -3957,7 +3957,7 @@ func TestServer_GenerateAndStoreTokens_PastExpiryIgnored(t *testing.T) {
 		t.Errorf("Token expiry = %v, must be in the future but is in the past", tokenResponse.Expiry)
 	}
 
-	expectedExpiry := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
+	expectedExpiry := time.Now().Add(time.Duration(srv.config.AccessTokenTTL) * time.Second)
 	timeDiff := tokenResponse.Expiry.Sub(expectedExpiry).Abs()
 	if timeDiff > 2*time.Second {
 		t.Errorf("Token expiry = %v, want close to %v (diff: %v)",

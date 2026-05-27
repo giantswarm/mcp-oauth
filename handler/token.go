@@ -43,7 +43,7 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config.MaxRequestBodySize)
+	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config().MaxRequestBodySize)
 	if err := r.ParseForm(); err != nil {
 		if isMaxBytesError(err) {
 			h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusRequestEntityTooLarge, startTime)
@@ -82,7 +82,7 @@ func (h *Handler) recordTokenFailure(ctx context.Context, grantType, errorCode s
 	default:
 		grantType = "unknown"
 	}
-	h.server.Instrumentation.Metrics().RecordTokenEndpointFailure(ctx, grantType, errorCode)
+	h.server.Instrumentation().Metrics().RecordTokenEndpointFailure(ctx, grantType, errorCode)
 }
 
 func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Request, clientIP string) {
@@ -246,7 +246,7 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	}
 
 	// Record token refreshed metric (check if it was rotated)
-	rotated := h.server.Config.AllowRefreshTokenRotation
+	rotated := h.server.Config().AllowRefreshTokenRotation
 	h.recordTokenRefreshed(r.Context(), clientID, rotated)
 
 	h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusOK, startTime)
@@ -272,8 +272,8 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 		clientID = basicClientID
 		if err := h.server.ValidateClientCredentials(ctx, clientID, basicClientSecret); err != nil {
 			h.logger.Warn("Client authentication failed", "client_id", clientID, "ip", clientIP, "error", err)
-			if h.server.Auditor != nil {
-				h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "refresh_client_authentication_failed")
+			if h.server.Auditor() != nil {
+				h.server.Auditor().LogAuthFailure(ctx, "", clientID, clientIP, "refresh_client_authentication_failed")
 			}
 			h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusUnauthorized, startTime)
 			instrumentation.RecordError(span, err)
@@ -296,8 +296,8 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 	client, err := h.server.GetClient(ctx, clientID)
 	if err != nil {
 		h.logger.Warn("Unknown client for refresh", "client_id", clientID, "ip", clientIP)
-		if h.server.Auditor != nil {
-			h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "refresh_unknown_client")
+		if h.server.Auditor() != nil {
+			h.server.Auditor().LogAuthFailure(ctx, "", clientID, clientIP, "refresh_unknown_client")
 		}
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusUnauthorized, startTime)
 		instrumentation.SetSpanError(span, "unknown client")
@@ -311,9 +311,9 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 			"client_id", clientID, "ip", clientIP,
 			"security_event", "confidential_client_missing_auth",
 			"oauth_spec", "OAuth 2.1 Section 6")
-		if h.server.Auditor != nil {
-			h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "confidential_client_refresh_missing_auth")
-			h.server.Auditor.LogEvent(ctx, security.Event{
+		if h.server.Auditor() != nil {
+			h.server.Auditor().LogAuthFailure(ctx, "", clientID, clientIP, "confidential_client_refresh_missing_auth")
+			h.server.Auditor().LogEvent(ctx, security.Event{
 				Type:     security.EventAuthFailure,
 				ClientID: clientID,
 				Details: map[string]any{
@@ -368,11 +368,11 @@ func (h *Handler) rejectBasicFormClientIDMismatch(
 	}
 	h.logger.Warn("client_id mismatch between Basic Authorization header and form parameter",
 		"basic_client_id", basicClientID, "form_client_id", formClientID, "ip", clientIP, "endpoint", endpoint)
-	if h.server.Auditor != nil {
+	if h.server.Auditor() != nil {
 		// Audit pins the Basic-Auth value: that is the authenticated identity
 		// the request claimed, and forensics care about who tried to authenticate
 		// rather than the form value the attacker may have synthesised.
-		h.server.Auditor.LogAuthFailure(r.Context(), "", basicClientID, clientIP, "client_id_mismatch_basic_vs_form")
+		h.server.Auditor().LogAuthFailure(r.Context(), "", basicClientID, clientIP, "client_id_mismatch_basic_vs_form")
 	}
 	if tokenFailureGrant != "" {
 		h.recordTokenFailure(r.Context(), tokenFailureGrant, constants.ErrorCodeInvalidClient)
@@ -438,7 +438,7 @@ func (h *Handler) validateConfidentialClient(ctx context.Context, client *storag
 }
 
 func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *oauth2.Token, scope string) {
-	security.SetSecurityHeaders(w, h.server.Config.Issuer)
+	security.SetSecurityHeaders(w, h.server.Config().Issuer)
 
 	expiresIn := int64(time.Until(token.Expiry).Seconds())
 	if expiresIn < 0 {
@@ -488,10 +488,10 @@ func isValidAuthMethod(method string) bool {
 
 // recordCodeExchanged records when an authorization code is exchanged.
 func (h *Handler) recordCodeExchanged(ctx context.Context, clientID, pkceMethod string) {
-	h.server.Instrumentation.Metrics().RecordCodeExchange(ctx, clientID, pkceMethod)
+	h.server.Instrumentation().Metrics().RecordCodeExchange(ctx, clientID, pkceMethod)
 }
 
 // recordTokenRefreshed records when a token is refreshed.
 func (h *Handler) recordTokenRefreshed(ctx context.Context, clientID string, rotated bool) {
-	h.server.Instrumentation.Metrics().RecordTokenRefresh(ctx, clientID, rotated)
+	h.server.Instrumentation().Metrics().RecordTokenRefresh(ctx, clientID, rotated)
 }

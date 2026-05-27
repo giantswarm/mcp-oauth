@@ -28,7 +28,7 @@ func (s *Server) ExchangeSubjectToken(
 	ctx context.Context,
 	subjectToken, subjectTokenType, resource, scope, dpopJKT string,
 ) (*TokenExchangeResult, error) {
-	if !s.Config.IsJWTAccessTokenFormat() {
+	if !s.config.IsJWTAccessTokenFormat() {
 		return nil, fmt.Errorf("token exchange requires JWT access token mode (set AccessTokenFormat=jwt)")
 	}
 
@@ -39,7 +39,7 @@ func (s *Server) ExchangeSubjectToken(
 
 	identity, err := v.Validate(ctx, subjectToken, subjectTokenType)
 	if err != nil {
-		s.Logger.Debug("token exchange: subject token validation failed",
+		s.logger.Debug("token exchange: subject token validation failed",
 			"subject_token_type", subjectTokenType, "error", err)
 		return nil, fmt.Errorf("subject token validation: %w", err)
 	}
@@ -47,7 +47,7 @@ func (s *Server) ExchangeSubjectToken(
 	grantedScope := grantedExchangeScope(scope, identity.AllowedScopes)
 
 	now := time.Now().UTC()
-	ttl := time.Duration(s.Config.AccessTokenTTL) * time.Second
+	ttl := time.Duration(s.config.AccessTokenTTL) * time.Second
 	if ttl <= 0 {
 		ttl = 10 * time.Minute
 	}
@@ -67,7 +67,7 @@ func (s *Server) ExchangeSubjectToken(
 		return nil, fmt.Errorf("failed to issue exchange token: %w", err)
 	}
 
-	s.Logger.Debug("token exchange: issued token",
+	s.logger.Debug("token exchange: issued token",
 		"sub", identity.Subject, "iss_act", identity.Issuer,
 		"aud", resource, "scope", grantedScope, "exp", expiresAt)
 

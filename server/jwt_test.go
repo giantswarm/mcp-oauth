@@ -85,7 +85,7 @@ func TestValidateToken_SelfIssuedJWT_HappyPath(t *testing.T) {
 	tok, err := srv.accessTokenIssuer.Issue(context.Background(), AccessTokenClaims{
 		Subject:   "user-1",
 		ClientID:  "client-x",
-		Audience:  srv.Config.GetResourceIdentifier(),
+		Audience:  srv.config.GetResourceIdentifier(),
 		Scopes:    []string{"openid"},
 		Email:     "u@example.com",
 		IssuedAt:  now,
@@ -120,7 +120,7 @@ func TestValidateToken_SelfIssuedJWT_AudienceMismatch(t *testing.T) {
 
 func TestValidateToken_SelfIssuedJWT_AudienceMatchesTrusted(t *testing.T) {
 	srv, _, _ := setupJWTFlowTestServer(t)
-	srv.Config.TrustedAudiences = []string{"trusted-aggregator"}
+	srv.config.TrustedAudiences = []string{"trusted-aggregator"}
 
 	now := time.Now().UTC()
 	tok, err := srv.accessTokenIssuer.Issue(context.Background(), AccessTokenClaims{
@@ -140,7 +140,7 @@ func TestValidateToken_SelfIssuedJWT_Expired(t *testing.T) {
 
 	tok, err := srv.accessTokenIssuer.Issue(context.Background(), AccessTokenClaims{
 		Subject:   "u",
-		Audience:  srv.Config.GetResourceIdentifier(),
+		Audience:  srv.config.GetResourceIdentifier(),
 		IssuedAt:  time.Now().Add(-2 * time.Hour),
 		ExpiresAt: time.Now().Add(-time.Hour),
 	})
@@ -161,15 +161,15 @@ func TestValidateToken_SelfIssuedJWT_AlgConfusionRejected(t *testing.T) {
 	// RS256 only.
 	now := time.Now().UTC()
 	mapClaims := map[string]any{
-		"iss":       srv.Config.Issuer,
+		"iss":       srv.config.Issuer,
 		"sub":       "attacker",
-		"aud":       srv.Config.GetResourceIdentifier(),
+		"aud":       srv.config.GetResourceIdentifier(),
 		"exp":       now.Add(15 * time.Minute).Unix(),
 		"iat":       now.Unix(),
 		"jti":       "forged-jti",
 		"client_id": "any",
 	}
-	signed := signForgeToken(t, jose.HS256, []byte("any-shared-secret-of-sufficient-length-32+"), srv.Config.AccessTokenSigningKeyID, rfc9068TokenType, mapClaims)
+	signed := signForgeToken(t, jose.HS256, []byte("any-shared-secret-of-sufficient-length-32+"), srv.config.AccessTokenSigningKeyID, rfc9068TokenType, mapClaims)
 
 	_, err := srv.ValidateToken(context.Background(), signed)
 	require.Error(t, err)
@@ -180,15 +180,15 @@ func TestValidateToken_SelfIssuedJWT_TypHeaderRejected(t *testing.T) {
 
 	now := time.Now().UTC()
 	mapClaims := map[string]any{
-		"iss":       srv.Config.Issuer,
+		"iss":       srv.config.Issuer,
 		"sub":       "user",
-		"aud":       srv.Config.GetResourceIdentifier(),
+		"aud":       srv.config.GetResourceIdentifier(),
 		"exp":       now.Add(15 * time.Minute).Unix(),
 		"iat":       now.Unix(),
 		"jti":       "j",
 		"client_id": "c",
 	}
-	signed := signForgeToken(t, jose.RS256, srv.Config.AccessTokenSigningKey, srv.Config.AccessTokenSigningKeyID, "JWT", mapClaims)
+	signed := signForgeToken(t, jose.RS256, srv.config.AccessTokenSigningKey, srv.config.AccessTokenSigningKeyID, "JWT", mapClaims)
 
 	_, err := srv.ValidateToken(context.Background(), signed)
 	require.Error(t, err)
@@ -199,7 +199,7 @@ func TestRevokeToken_SelfIssuedJWT(t *testing.T) {
 	now := time.Now().UTC()
 	tok, err := srv.accessTokenIssuer.Issue(context.Background(), AccessTokenClaims{
 		Subject:   "user-1",
-		Audience:  srv.Config.GetResourceIdentifier(),
+		Audience:  srv.config.GetResourceIdentifier(),
 		ExpiresAt: now.Add(15 * time.Minute),
 	})
 	require.NoError(t, err)
@@ -221,7 +221,7 @@ func TestRevokeToken_RevokingExpiredJWTIsNoop(t *testing.T) {
 	srv, _, _ := setupJWTFlowTestServer(t)
 	tok, err := srv.accessTokenIssuer.Issue(context.Background(), AccessTokenClaims{
 		Subject:   "user-1",
-		Audience:  srv.Config.GetResourceIdentifier(),
+		Audience:  srv.config.GetResourceIdentifier(),
 		ExpiresAt: time.Now().Add(-time.Hour),
 	})
 	require.NoError(t, err)
@@ -284,7 +284,7 @@ func TestGenerateAndStoreTokens_JWTMode(t *testing.T) {
 	require.NoError(t, err)
 	var standard josejwt.Claims
 	var private rfc9068Claims
-	require.NoError(t, parsed.Claims(srv.Config.AccessTokenSigningKey.Public(), &standard, &private))
+	require.NoError(t, parsed.Claims(srv.config.AccessTokenSigningKey.Public(), &standard, &private))
 	require.Equal(t, "user-1", standard.Subject)
 	require.Equal(t, "user@example.com", private.Email)
 	require.Equal(t, "fam-1", private.FamilyID)
@@ -335,7 +335,7 @@ func TestValidateToken_SelfIssuedJWT_FamilyCheckFailsClosedOnStorageError(t *tes
 	now := time.Now().UTC()
 	tok, err := srv.accessTokenIssuer.Issue(context.Background(), AccessTokenClaims{
 		Subject:   "user-1",
-		Audience:  srv.Config.GetResourceIdentifier(),
+		Audience:  srv.config.GetResourceIdentifier(),
 		ExpiresAt: now.Add(15 * time.Minute),
 		FamilyID:  "fam-transient-error",
 	})
@@ -360,7 +360,7 @@ func TestFamilyRevocation_InvalidatesInFlightJWT(t *testing.T) {
 	now := time.Now().UTC()
 	tok, err := srv.accessTokenIssuer.Issue(ctx, AccessTokenClaims{
 		Subject:   "user-1",
-		Audience:  srv.Config.GetResourceIdentifier(),
+		Audience:  srv.config.GetResourceIdentifier(),
 		ExpiresAt: now.Add(15 * time.Minute),
 		FamilyID:  "fam-revoke",
 	})
@@ -388,20 +388,20 @@ func TestValidateToken_SelfIssuedJWT_AlgConfusionWithPublicKeySecret(t *testing.
 	// signs HS256 using the DER-encoded public key bytes as the HMAC secret.
 	// The validator must reject this regardless of the secret because
 	// alg pinning fires before the secret is consulted.
-	pubDER, err := x509.MarshalPKIXPublicKey(srv.Config.AccessTokenSigningKey.Public())
+	pubDER, err := x509.MarshalPKIXPublicKey(srv.config.AccessTokenSigningKey.Public())
 	require.NoError(t, err)
 
 	now := time.Now().UTC()
 	mapClaims := map[string]any{
-		"iss":       srv.Config.Issuer,
+		"iss":       srv.config.Issuer,
 		"sub":       "attacker",
-		"aud":       srv.Config.GetResourceIdentifier(),
+		"aud":       srv.config.GetResourceIdentifier(),
 		"exp":       now.Add(15 * time.Minute).Unix(),
 		"iat":       now.Unix(),
 		"jti":       "alg-confusion-jti",
 		"client_id": "any",
 	}
-	signed := signForgeToken(t, jose.HS256, pubDER, srv.Config.AccessTokenSigningKeyID, rfc9068TokenType, mapClaims)
+	signed := signForgeToken(t, jose.HS256, pubDER, srv.config.AccessTokenSigningKeyID, rfc9068TokenType, mapClaims)
 
 	_, err = srv.ValidateToken(context.Background(), signed)
 	require.Error(t, err)
@@ -412,15 +412,15 @@ func TestValidateToken_SelfIssuedJWT_WrongKidRejected(t *testing.T) {
 
 	now := time.Now().UTC()
 	mapClaims := map[string]any{
-		"iss":       srv.Config.Issuer,
+		"iss":       srv.config.Issuer,
 		"sub":       "user",
-		"aud":       srv.Config.GetResourceIdentifier(),
+		"aud":       srv.config.GetResourceIdentifier(),
 		"exp":       now.Add(15 * time.Minute).Unix(),
 		"iat":       now.Unix(),
 		"jti":       "wrong-kid-jti",
 		"client_id": "c",
 	}
-	signed := signForgeToken(t, jose.RS256, srv.Config.AccessTokenSigningKey, "not-the-configured-kid", rfc9068TokenType, mapClaims)
+	signed := signForgeToken(t, jose.RS256, srv.config.AccessTokenSigningKey, "not-the-configured-kid", rfc9068TokenType, mapClaims)
 
 	_, err := srv.ValidateToken(context.Background(), signed)
 	require.Error(t, err)
@@ -428,7 +428,7 @@ func TestValidateToken_SelfIssuedJWT_WrongKidRejected(t *testing.T) {
 
 func TestValidateToken_SelfIssuedJWT_MultiAudienceWithTrustedMatchAccepted(t *testing.T) {
 	srv, _, _ := setupJWTFlowTestServer(t)
-	srv.Config.TrustedAudiences = []string{"trusted-aggregator"}
+	srv.config.TrustedAudiences = []string{"trusted-aggregator"}
 
 	// Forge a JWT with the configured signing key but an array aud where
 	// only the second value matches TrustedAudiences. Pre-fix this would
@@ -436,7 +436,7 @@ func TestValidateToken_SelfIssuedJWT_MultiAudienceWithTrustedMatchAccepted(t *te
 	// trusted list. With the multi-audience helper it must accept.
 	now := time.Now().UTC()
 	mapClaims := map[string]any{
-		"iss":       srv.Config.Issuer,
+		"iss":       srv.config.Issuer,
 		"sub":       "user-multi-aud",
 		"aud":       []string{"unrelated", "trusted-aggregator"},
 		"exp":       now.Add(15 * time.Minute).Unix(),
@@ -444,7 +444,7 @@ func TestValidateToken_SelfIssuedJWT_MultiAudienceWithTrustedMatchAccepted(t *te
 		"jti":       "multi-aud-jti",
 		"client_id": "c",
 	}
-	signed := signForgeToken(t, jose.RS256, srv.Config.AccessTokenSigningKey, srv.Config.AccessTokenSigningKeyID, rfc9068TokenType, mapClaims)
+	signed := signForgeToken(t, jose.RS256, srv.config.AccessTokenSigningKey, srv.config.AccessTokenSigningKeyID, rfc9068TokenType, mapClaims)
 
 	userInfo, err := srv.ValidateToken(context.Background(), signed)
 	require.NoError(t, err)

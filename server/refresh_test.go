@@ -25,8 +25,8 @@ func TestServer_RefreshTokenRotation(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Enable refresh token rotation
-	srv.Config.AllowRefreshTokenRotation = true
-	srv.Config.RefreshTokenTTL = 86400 // 24 hours
+	srv.config.AllowRefreshTokenRotation = true
+	srv.config.RefreshTokenTTL = 86400 // 24 hours
 
 	// Register a client
 	client, _, err := srv.RegisterClient(
@@ -161,8 +161,8 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Enable refresh token rotation (required for reuse detection)
-	srv.Config.AllowRefreshTokenRotation = true
-	srv.Config.RefreshTokenTTL = 86400 // 24 hours
+	srv.config.AllowRefreshTokenRotation = true
+	srv.config.RefreshTokenTTL = 86400 // 24 hours
 
 	// Register a client
 	client, _, err := srv.RegisterClient(
@@ -374,8 +374,8 @@ func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Enable refresh token rotation
-	srv.Config.AllowRefreshTokenRotation = true
-	srv.Config.RefreshTokenTTL = 86400
+	srv.config.AllowRefreshTokenRotation = true
+	srv.config.RefreshTokenTTL = 86400
 
 	// Register a client
 	client, _, err := srv.RegisterClient(
@@ -505,8 +505,8 @@ func TestServer_ConcurrentRefreshTokenReuse(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Enable refresh token rotation
-	srv.Config.AllowRefreshTokenRotation = true
-	srv.Config.RefreshTokenTTL = 86400
+	srv.config.AllowRefreshTokenRotation = true
+	srv.config.RefreshTokenTTL = 86400
 
 	// Register a client
 	client, _, err := srv.RegisterClient(
@@ -658,9 +658,9 @@ func TestServer_RefreshTokenReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 
 	// IMPORTANT: Don't set SecurityEventRateLimiter (leave as nil)
-	srv.SecurityEventRateLimiter = nil
-	srv.Config.AllowRefreshTokenRotation = true
-	srv.Config.RefreshTokenTTL = 86400
+	srv.securityEventRateLimiter = nil
+	srv.config.AllowRefreshTokenRotation = true
+	srv.config.RefreshTokenTTL = 86400
 
 	// Register a client
 	client, _, err := srv.RegisterClient(
@@ -848,7 +848,7 @@ func TestServer_ValidateRefreshTokenClientBinding_WithAuditor(t *testing.T) {
 		srv, _, _ := setupFlowTestServer(t)
 
 		// Create a real auditor with a discard logger
-		srv.Auditor = security.NewAuditor(slog.Default(), true)
+		srv.auditor = security.NewAuditor(slog.Default(), true)
 
 		err := srv.validateRefreshTokenClientBinding(context.Background(), "original-client", "attacker-client", "user-123")
 
@@ -864,7 +864,7 @@ func TestServer_ValidateRefreshTokenClientBinding_WithAuditor(t *testing.T) {
 		srv, _, _ := setupFlowTestServer(t)
 
 		// Create a real auditor with a discard logger
-		srv.Auditor = security.NewAuditor(slog.Default(), true)
+		srv.auditor = security.NewAuditor(slog.Default(), true)
 
 		err := srv.validateRefreshTokenClientBinding(context.Background(), "", "requesting-client", "user-456")
 		if err == nil {
@@ -894,7 +894,7 @@ func TestServer_ValidateRefreshTokenClientBinding_WithRateLimiter(t *testing.T) 
 	srv, _, _ := setupFlowTestServer(t)
 
 	// Set up a rate limiter that blocks after first call
-	srv.SecurityEventRateLimiter = security.NewRateLimiter(1, 1, slog.Default()) // 1 request per second
+	srv.securityEventRateLimiter = security.NewRateLimiter(1, 1, slog.Default()) // 1 request per second
 
 	// First call should succeed (and log)
 	err1 := srv.validateRefreshTokenClientBinding(context.Background(), "original", "attacker", "user-123")
@@ -1229,7 +1229,7 @@ func TestServer_RefreshAccessToken_IDTokenForwarding(t *testing.T) {
 func TestServer_RefreshAccessToken_ExpiryCap(t *testing.T) {
 	t.Run("provider returns token expiring before AccessTokenTTL - should cap expiry", func(t *testing.T) {
 		srv, store, provider := setupFlowTestServer(t)
-		srv.Config.AccessTokenTTL = 3600 // 1 hour
+		srv.config.AccessTokenTTL = 3600 // 1 hour
 
 		providerExpiry := time.Now().Add(10 * time.Minute)
 		provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
@@ -1277,7 +1277,7 @@ func TestServer_RefreshAccessToken_ExpiryCap(t *testing.T) {
 
 	t.Run("provider returns token expiring after AccessTokenTTL - should use AccessTokenTTL", func(t *testing.T) {
 		srv, store, provider := setupFlowTestServer(t)
-		srv.Config.AccessTokenTTL = 3600 // 1 hour
+		srv.config.AccessTokenTTL = 3600 // 1 hour
 
 		provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
 			return &oauth2.Token{
@@ -1313,7 +1313,7 @@ func TestServer_RefreshAccessToken_ExpiryCap(t *testing.T) {
 		}
 
 		// Expiry should be approximately now + AccessTokenTTL
-		expectedExpiry := time.Now().Add(time.Duration(srv.Config.AccessTokenTTL) * time.Second)
+		expectedExpiry := time.Now().Add(time.Duration(srv.config.AccessTokenTTL) * time.Second)
 		timeDiff := newToken.Expiry.Sub(expectedExpiry).Abs()
 		if timeDiff > 2*time.Second {
 			t.Errorf("Token expiry = %v, want close to %v (diff: %v)",
@@ -1388,8 +1388,8 @@ func TestServer_RefreshAccessToken_CleansUpOldTokenPair(t *testing.T) {
 func TestServer_RefreshAccessToken_FamilyIDInMetadata(t *testing.T) {
 	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
-	srv.Config.AllowRefreshTokenRotation = true
-	srv.Config.RefreshTokenTTL = 86400
+	srv.config.AllowRefreshTokenRotation = true
+	srv.config.RefreshTokenTTL = 86400
 
 	client, _, err := srv.RegisterClient(
 		ctx,
@@ -1482,8 +1482,8 @@ func TestServer_RefreshAccessToken_FamilyIDInMetadata(t *testing.T) {
 func TestServer_RefreshAccessToken_PreservesScopesAndAudience(t *testing.T) {
 	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
-	srv.Config.AllowRefreshTokenRotation = true
-	srv.Config.RefreshTokenTTL = 86400
+	srv.config.AllowRefreshTokenRotation = true
+	srv.config.RefreshTokenTTL = 86400
 
 	client, _, err := srv.RegisterClient(
 		ctx,
@@ -1587,7 +1587,7 @@ func TestServer_TokenRefreshHandler_CalledOnProactiveRefresh(t *testing.T) {
 	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
-	srv.Config.TokenRefreshThreshold = 300 // 5 minutes
+	srv.config.TokenRefreshThreshold = 300 // 5 minutes
 
 	var handlerUserID, handlerFamilyID string
 	var handlerToken *oauth2.Token
@@ -1716,7 +1716,7 @@ func TestServer_TokenRefreshHandler_NotCalledWithoutHandler(t *testing.T) {
 	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
-	srv.Config.TokenRefreshThreshold = 300
+	srv.config.TokenRefreshThreshold = 300
 
 	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
 		return &oauth2.Token{

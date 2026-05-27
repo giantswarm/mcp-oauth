@@ -89,7 +89,7 @@ func TestHandler_ServeProtectedResourceMetadata_WithoutScopes(t *testing.T) {
 	defer store.Stop()
 
 	// Ensure SupportedScopes is empty (default)
-	handler.server.Config.SupportedScopes = []string{}
+	handler.server.Config().SupportedScopes = []string{}
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil)
 	w := httptest.NewRecorder()
@@ -166,7 +166,7 @@ func TestHandler_RegisterProtectedResourceMetadataRoutes(t *testing.T) {
 			handler, store := setupTestHandler(t)
 			defer store.Stop()
 
-			handler.server.Config.SupportedScopes = []string{"test:scope"}
+			handler.server.Config().SupportedScopes = []string{"test:scope"}
 
 			mux := http.NewServeMux()
 			handler.RegisterProtectedResourceMetadataRoutes(mux, tt.mcpPath)
@@ -272,7 +272,7 @@ func TestHandler_RegisterProtectedResourceMetadataRoutes_SecurityValidation(t *t
 			handler, store := setupTestHandler(t)
 			defer store.Stop()
 
-			handler.server.Config.SupportedScopes = []string{"test:scope"}
+			handler.server.Config().SupportedScopes = []string{"test:scope"}
 
 			// First verify the validation function works correctly
 			err := handler.validateMetadataPath(tt.mcpPath)
@@ -907,7 +907,7 @@ func TestHandler_ServeAuthorizationServerMetadata(t *testing.T) {
 	defer store.Stop()
 
 	// Enable client registration by setting a registration access token
-	handler.server.Config.RegistrationAccessToken = "test-token"
+	handler.server.Config().RegistrationAccessToken = "test-token"
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
 	w := httptest.NewRecorder()
@@ -992,9 +992,9 @@ func TestHandler_ServeAuthorizationServerMetadata_NoRegistration(t *testing.T) {
 	defer store.Stop()
 
 	// Ensure client registration is disabled (neither token, public registration, nor trusted schemes)
-	handler.server.Config.AllowPublicClientRegistration = false
-	handler.server.Config.RegistrationAccessToken = ""
-	handler.server.Config.TrustedPublicRegistrationSchemes = nil
+	handler.server.Config().AllowPublicClientRegistration = false
+	handler.server.Config().RegistrationAccessToken = ""
+	handler.server.Config().TrustedPublicRegistrationSchemes = nil
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
 	w := httptest.NewRecorder()
@@ -1032,8 +1032,8 @@ func TestHandler_ServeAuthorizationServerMetadata_PublicRegistration(t *testing.
 	defer store.Stop()
 
 	// Enable public client registration (no token required)
-	handler.server.Config.AllowPublicClientRegistration = true
-	handler.server.Config.RegistrationAccessToken = ""
+	handler.server.Config().AllowPublicClientRegistration = true
+	handler.server.Config().RegistrationAccessToken = ""
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
 	w := httptest.NewRecorder()
@@ -1063,9 +1063,9 @@ func TestHandler_ServeAuthorizationServerMetadata_TrustedSchemes(t *testing.T) {
 	defer store.Stop()
 
 	// Configure trusted schemes for Cursor/VSCode (without token or public registration)
-	handler.server.Config.AllowPublicClientRegistration = false
-	handler.server.Config.RegistrationAccessToken = ""
-	handler.server.Config.TrustedPublicRegistrationSchemes = []string{"cursor", "vscode"}
+	handler.server.Config().AllowPublicClientRegistration = false
+	handler.server.Config().RegistrationAccessToken = ""
+	handler.server.Config().TrustedPublicRegistrationSchemes = []string{"cursor", "vscode"}
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
 	w := httptest.NewRecorder()
@@ -1096,12 +1096,12 @@ func TestHandler_ServeAuthorizationServerMetadata_EnhancedFields(t *testing.T) {
 	defer store.Stop()
 
 	// Configure supported scopes
-	handler.server.Config.SupportedScopes = []string{"openid", "profile", "email", "files:read", "files:write"}
+	handler.server.Config().SupportedScopes = []string{"openid", "profile", "email", "files:read", "files:write"}
 
 	// Enable enhanced endpoints for testing
-	handler.server.Config.EnableClientIDMetadataDocuments = true
-	handler.server.Config.EnableRevocationEndpoint = true
-	handler.server.Config.EnableIntrospectionEndpoint = true
+	handler.server.Config().EnableClientIDMetadataDocuments = true
+	handler.server.Config().EnableRevocationEndpoint = true
+	handler.server.Config().EnableIntrospectionEndpoint = true
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
 	w := httptest.NewRecorder()
@@ -1188,9 +1188,9 @@ func TestHandler_ServeAuthorizationServerMetadata_DisabledEndpoints(t *testing.T
 	defer store.Stop()
 
 	// Explicitly disable endpoints (though false is default)
-	handler.server.Config.EnableRevocationEndpoint = false
-	handler.server.Config.EnableIntrospectionEndpoint = false
-	handler.server.Config.EnableClientIDMetadataDocuments = false
+	handler.server.Config().EnableRevocationEndpoint = false
+	handler.server.Config().EnableIntrospectionEndpoint = false
+	handler.server.Config().EnableClientIDMetadataDocuments = false
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
 	w := httptest.NewRecorder()
@@ -1225,7 +1225,7 @@ func TestHandler_ServeAuthorizationServerMetadata_NoScopes(t *testing.T) {
 	defer store.Stop()
 
 	// Ensure no scopes are configured
-	handler.server.Config.SupportedScopes = nil
+	handler.server.Config().SupportedScopes = nil
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
 	w := httptest.NewRecorder()
@@ -1254,10 +1254,10 @@ func TestHandler_ServeOpenIDConfiguration(t *testing.T) {
 	defer store.Stop()
 
 	// Configure server with some settings
-	handler.server.Config.SupportedScopes = []string{"openid", "profile"}
-	handler.server.Config.EnableClientIDMetadataDocuments = true
-	handler.server.Config.EnableRevocationEndpoint = true
-	handler.server.Config.EnableIntrospectionEndpoint = true
+	handler.server.Config().SupportedScopes = []string{"openid", "profile"}
+	handler.server.Config().EnableClientIDMetadataDocuments = true
+	handler.server.Config().EnableRevocationEndpoint = true
+	handler.server.Config().EnableIntrospectionEndpoint = true
 
 	// Request Authorization Server Metadata
 	reqAS := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
@@ -1364,7 +1364,7 @@ func TestHandler_ServeAuthorizationServerMetadata_OIDCRequiredFields(t *testing.
 func TestHandler_ServeAuthorizationServerMetadata_CacheMaxAgeOverride(t *testing.T) {
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
-	handler.server.Config.DiscoveryCacheMaxAge = 90 * time.Second
+	handler.server.Config().DiscoveryCacheMaxAge = 90 * time.Second
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
 	w := httptest.NewRecorder()

@@ -129,7 +129,7 @@ func (s *Server) validateRedirectURIInternal(ctx context.Context, redirectURI st
 
 	// Step 3: Handle custom schemes (for native apps)
 	// Custom schemes are validated separately via validateCustomScheme in validation.go
-	if err := validateCustomScheme(scheme, s.Config.AllowedCustomSchemes); err != nil {
+	if err := validateCustomScheme(scheme, s.config.AllowedCustomSchemes); err != nil {
 		return newRedirectURISecurityError(
 			RedirectURIErrorCategoryBlockedScheme,
 			redirectURI,
@@ -149,7 +149,7 @@ func (s *Server) validateRedirectURIInternal(ctx context.Context, redirectURI st
 func (s *Server) validateSchemeNotBlocked(scheme, rawURI string) error {
 	// Normalize scheme to lowercase for case-insensitive comparison (defense in depth)
 	normalizedScheme := strings.ToLower(scheme)
-	for _, blocked := range s.Config.BlockedRedirectSchemes {
+	for _, blocked := range s.config.BlockedRedirectSchemes {
 		if normalizedScheme == strings.ToLower(blocked) {
 			return newRedirectURISecurityError(
 				RedirectURIErrorCategoryBlockedScheme,
@@ -174,7 +174,7 @@ func (s *Server) validateHTTPRedirectURI(ctx context.Context, parsed *url.URL, r
 
 	// Step 1: Handle loopback addresses (localhost, 127.x.x.x, ::1)
 	if isLoopback {
-		if !s.Config.AllowLocalhostRedirectURIs {
+		if !s.config.AllowLocalhostRedirectURIs {
 			return newRedirectURISecurityError(
 				RedirectURIErrorCategoryLoopback,
 				rawURI,
@@ -187,7 +187,7 @@ func (s *Server) validateHTTPRedirectURI(ctx context.Context, parsed *url.URL, r
 	}
 
 	// Step 2: In ProductionMode, non-loopback HTTP is not allowed
-	if s.Config.ProductionMode && scheme == SchemeHTTP {
+	if s.config.ProductionMode && scheme == SchemeHTTP {
 		return newRedirectURISecurityError(
 			RedirectURIErrorCategoryHTTPNotAllowed,
 			rawURI,
@@ -202,7 +202,7 @@ func (s *Server) validateHTTPRedirectURI(ctx context.Context, parsed *url.URL, r
 	}
 
 	// Step 4: Hostname-based validation (optionally with DNS resolution)
-	if s.Config.DNSValidation {
+	if s.config.DNSValidation {
 		return s.validateHostnameWithDNS(ctx, hostname, rawURI)
 	}
 
@@ -231,7 +231,7 @@ func (s *Server) validateIPAddress(ip net.IP, rawURI string) error {
 
 	// Check for private IP ranges (RFC 1918)
 	if ip.IsPrivate() {
-		if !s.Config.AllowPrivateIPRedirectURIs {
+		if !s.config.AllowPrivateIPRedirectURIs {
 			return newRedirectURISecurityError(
 				RedirectURIErrorCategoryPrivateIP,
 				rawURI,
@@ -243,7 +243,7 @@ func (s *Server) validateIPAddress(ip net.IP, rawURI string) error {
 
 	// Check for link-local addresses (169.254.x.x, fe80::/10) and link-local multicast
 	// This is critical for cloud security - blocks access to metadata services (169.254.169.254)
-	if helpers.IsLinkLocal(ip) && !s.Config.AllowLinkLocalRedirectURIs {
+	if helpers.IsLinkLocal(ip) && !s.config.AllowLinkLocalRedirectURIs {
 		return newRedirectURISecurityError(
 			RedirectURIErrorCategoryLinkLocal,
 			rawURI,
@@ -271,10 +271,10 @@ func (s *Server) validateIPAddress(ip net.IP, rawURI string) error {
 // at authorization time.
 func (s *Server) validateHostnameWithDNS(ctx context.Context, hostname, rawURI string) error {
 	// Create timeout context for DNS resolution
-	resolveCtx, cancel := context.WithTimeout(ctx, s.Config.DNSValidationTimeout)
+	resolveCtx, cancel := context.WithTimeout(ctx, s.config.DNSValidationTimeout)
 	defer cancel()
 
-	resolver := s.Config.DNSResolver
+	resolver := s.config.DNSResolver
 	if resolver == nil {
 		resolver = net.DefaultResolver
 	}
@@ -282,9 +282,9 @@ func (s *Server) validateHostnameWithDNS(ctx context.Context, hostname, rawURI s
 	ips, err := resolver.LookupIP(resolveCtx, "ip", hostname)
 	if err != nil {
 		// DNS resolution failed
-		if s.Config.DNSValidationStrict {
+		if s.config.DNSValidationStrict {
 			// Strict mode: fail-closed - block registration on DNS failure
-			s.Logger.Warn("DNS resolution failed during redirect URI validation (strict mode - blocking)",
+			s.logger.Warn("DNS resolution failed during redirect URI validation (strict mode - blocking)",
 				"hostname", hostname,
 				"error", err,
 				"action", "blocking_registration",
@@ -298,7 +298,7 @@ func (s *Server) validateHostnameWithDNS(ctx context.Context, hostname, rawURI s
 		}
 		// Default mode: fail-open - log warning but allow registration
 		// This prevents false positives for legitimate hostnames with temporary DNS issues
-		s.Logger.Warn("DNS resolution failed during redirect URI validation (allowing registration)",
+		s.logger.Warn("DNS resolution failed during redirect URI validation (allowing registration)",
 			"hostname", hostname,
 			"error", err,
 			"action", "allowing_registration",
@@ -310,7 +310,7 @@ func (s *Server) validateHostnameWithDNS(ctx context.Context, hostname, rawURI s
 	// Check each resolved IP
 	for _, ip := range ips {
 		// Check for private IPs
-		if ip.IsPrivate() && !s.Config.AllowPrivateIPRedirectURIs {
+		if ip.IsPrivate() && !s.config.AllowPrivateIPRedirectURIs {
 			return newRedirectURISecurityError(
 				RedirectURIErrorCategoryDNSPrivateIP,
 				rawURI,
@@ -320,7 +320,7 @@ func (s *Server) validateHostnameWithDNS(ctx context.Context, hostname, rawURI s
 		}
 
 		// Check for link-local IPs (unicast and multicast)
-		if helpers.IsLinkLocal(ip) && !s.Config.AllowLinkLocalRedirectURIs {
+		if helpers.IsLinkLocal(ip) && !s.config.AllowLinkLocalRedirectURIs {
 			return newRedirectURISecurityError(
 				RedirectURIErrorCategoryDNSLinkLocal,
 				rawURI,
@@ -390,7 +390,7 @@ func GetRedirectURIErrorCategory(err error) string {
 
 // recordRedirectURISecurityMetric records a redirect URI security rejection metric.
 func (s *Server) recordRedirectURISecurityMetric(ctx context.Context, category, stage string) {
-	s.Instrumentation.Metrics().RecordRedirectURISecurityRejected(ctx, category, stage)
+	s.instrumentation.Metrics().RecordRedirectURISecurityRejected(ctx, category, stage)
 }
 
 // ValidateRedirectURIAtAuthorizationTime performs security validation on a redirect URI
@@ -413,7 +413,7 @@ func (s *Server) recordRedirectURISecurityMetric(ctx context.Context, category, 
 // is still performed separately by validateRedirectURI().
 func (s *Server) ValidateRedirectURIAtAuthorizationTime(ctx context.Context, redirectURI string) error {
 	// Skip if authorization-time validation is disabled
-	if !s.Config.ValidateRedirectURIAtAuthorization {
+	if !s.config.ValidateRedirectURIAtAuthorization {
 		return nil
 	}
 

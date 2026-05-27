@@ -18,7 +18,7 @@ import (
 // isTokenExpiredLocally checks if a token is expired considering clock skew grace period.
 // Returns true if the token is expired beyond the grace period.
 func (s *Server) isTokenExpiredLocally(token *oauth2.Token) bool {
-	return security.IsTokenExpiredWithGracePeriod(token.Expiry, time.Duration(s.Config.ClockSkewGracePeriod)*time.Second)
+	return security.IsTokenExpiredWithGracePeriod(token.Expiry, time.Duration(s.config.ClockSkewGracePeriod)*time.Second)
 }
 
 // preserveRefreshToken returns a copy of newToken with the old refresh token
@@ -39,11 +39,11 @@ func preserveRefreshToken(newToken *oauth2.Token, oldRefreshToken string) *oauth
 // mapping from becoming stale when the provider rotates refresh tokens.
 func (s *Server) updateProviderTokenMappings(ctx context.Context, accessToken string, newProviderToken *oauth2.Token) {
 	if saveErr := s.tokenStore.SaveToken(ctx, accessToken, newProviderToken); saveErr != nil {
-		s.Logger.Warn("Failed to save refreshed provider token for access key", "error", saveErr)
+		s.logger.Warn("Failed to save refreshed provider token for access key", "error", saveErr)
 	}
 	if pairedRT, ok := s.tokenPairs.Load(accessToken); ok {
 		if saveErr := s.tokenStore.SaveToken(ctx, pairedRT.(string), newProviderToken); saveErr != nil {
-			s.Logger.Warn("Failed to save refreshed provider token for refresh key", "error", saveErr)
+			s.logger.Warn("Failed to save refreshed provider token for refresh key", "error", saveErr)
 		}
 	}
 }
@@ -62,7 +62,7 @@ func (s *Server) fireTokenRefreshHandler(ctx context.Context, accessToken string
 			userID = meta.UserID
 			familyID = meta.FamilyID
 		} else if err != nil {
-			s.Logger.Debug("Failed to retrieve token metadata for refresh handler",
+			s.logger.Debug("Failed to retrieve token metadata for refresh handler",
 				"error", err,
 				"token_suffix", helpers.TokenSuffix(accessToken, 8))
 		}
@@ -78,7 +78,7 @@ func (s *Server) shouldProactivelyRefresh(token *oauth2.Token) bool {
 		return false
 	}
 
-	refreshThreshold := time.Duration(s.Config.TokenRefreshThreshold) * time.Second
+	refreshThreshold := time.Duration(s.config.TokenRefreshThreshold) * time.Second
 	timeUntilExpiry := time.Until(token.Expiry)
 
 	return timeUntilExpiry > 0 && timeUntilExpiry <= refreshThreshold
@@ -87,10 +87,10 @@ func (s *Server) shouldProactivelyRefresh(token *oauth2.Token) bool {
 // attemptProactiveRefresh attempts to refresh a token that is near expiry.
 // This is a graceful operation - failures are logged but don't affect the validation flow.
 func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string, storedToken *oauth2.Token) {
-	refreshThreshold := time.Duration(s.Config.TokenRefreshThreshold) * time.Second
+	refreshThreshold := time.Duration(s.config.TokenRefreshThreshold) * time.Second
 	timeUntilExpiry := time.Until(storedToken.Expiry)
 
-	s.Logger.Debug("Token near expiry, attempting proactive refresh",
+	s.logger.Debug("Token near expiry, attempting proactive refresh",
 		"expiry", storedToken.Expiry,
 		"time_until_expiry", timeUntilExpiry,
 		"refresh_threshold", refreshThreshold,
@@ -100,12 +100,12 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 	newProviderToken, err := s.provider.RefreshToken(ctx, storedToken.RefreshToken)
 	if err != nil {
 		// Refresh failed - log warning but continue with validation (graceful degradation)
-		s.Logger.Warn("Proactive token refresh failed, falling back to validation",
+		s.logger.Warn("Proactive token refresh failed, falling back to validation",
 			"error", err,
 			"token_suffix", helpers.TokenSuffix(accessToken, 8),
 			"time_until_expiry", timeUntilExpiry)
 
-		s.Auditor.LogEvent(ctx, security.Event{
+		s.auditor.LogEvent(ctx, security.Event{
 			Type: security.EventProactiveRefreshFailed,
 			Details: map[string]any{
 				"error":             err.Error(),
@@ -124,12 +124,12 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 
 	s.fireTokenRefreshHandler(ctx, accessToken, newProviderToken)
 
-	s.Logger.Debug("Token proactively refreshed",
+	s.logger.Debug("Token proactively refreshed",
 		"old_expiry", storedToken.Expiry,
 		"new_expiry", newProviderToken.Expiry,
 		"token_suffix", helpers.TokenSuffix(accessToken, 8))
 
-	s.Auditor.LogEvent(ctx, security.Event{
+	s.auditor.LogEvent(ctx, security.Event{
 		Type: security.EventTokenProactivelyRefreshed,
 		Details: map[string]any{
 			"old_expiry": storedToken.Expiry,
@@ -181,7 +181,7 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 	// to other branches would let an attacker who forges a bearer with
 	// our iss bypass JWT-mode security by tripping the opaque or
 	// forwarded-token path.
-	if s.Config.IsJWTAccessTokenFormat() && s.looksLikeSelfIssuedJWT(accessToken) {
+	if s.config.IsJWTAccessTokenFormat() && s.looksLikeSelfIssuedJWT(accessToken) {
 		userInfo, _, err := s.validateSelfIssuedJWT(ctx, accessToken)
 		return userInfo, err
 	}
@@ -189,14 +189,14 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 	// PRIORITY 2: Forwarded ID token (JWT) from a trusted upstream service.
 	// Must run BEFORE the opaque path, as ID tokens cannot be validated via
 	// the upstream provider's userinfo endpoint.
-	if len(s.Config.TrustedAudiences) > 0 && oidc.IsJWT(accessToken) {
+	if len(s.config.TrustedAudiences) > 0 && oidc.IsJWT(accessToken) {
 		userInfo, err := s.validateForwardedIDToken(ctx, accessToken)
 		if err != nil {
-			s.Logger.Debug("Forwarded ID token validation failed, falling back to userinfo",
+			s.logger.Debug("Forwarded ID token validation failed, falling back to userinfo",
 				"error", err.Error(),
 				"token_suffix", helpers.TokenSuffix(accessToken, 8))
 		} else if userInfo != nil {
-			s.Logger.Debug("Forwarded ID token validated via JWKS",
+			s.logger.Debug("Forwarded ID token validated via JWKS",
 				"user_id", userInfo.ID,
 				"token_suffix", helpers.TokenSuffix(accessToken, 8))
 			return userInfo, nil
@@ -215,7 +215,7 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 	// Validate with provider (userinfo endpoint)
 	userInfo, err := s.provider.ValidateToken(ctx, tokenForProviderValidation)
 	if err != nil {
-		s.Auditor.LogAuthFailure(ctx, "", "", "", err.Error())
+		s.auditor.LogAuthFailure(ctx, "", "", "", err.Error())
 		return nil, err
 	}
 
@@ -225,7 +225,7 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 
 	// Store user info
 	if err := s.tokenStore.SaveUserInfo(ctx, userInfo.ID, providerUserInfoToStorage(userInfo)); err != nil {
-		s.Logger.Warn("Failed to save user info", "error", err)
+		s.logger.Warn("Failed to save user info", "error", err)
 	}
 
 	return userInfo, nil
@@ -243,12 +243,12 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 	// Token found - validate expiry with grace period for clock skew
 	if s.isTokenExpiredLocally(storedToken) {
 		if storedToken.RefreshToken == "" {
-			s.Logger.Debug("Token expired locally",
+			s.logger.Debug("Token expired locally",
 				"expiry", storedToken.Expiry,
-				"grace_period_seconds", s.Config.ClockSkewGracePeriod,
+				"grace_period_seconds", s.config.ClockSkewGracePeriod,
 				"token_suffix", helpers.TokenSuffix(accessToken, 8))
 
-			s.Auditor.LogAuthFailure(ctx, "", "", "", "token_expired_locally")
+			s.auditor.LogAuthFailure(ctx, "", "", "", "token_expired_locally")
 
 			return nil, fmt.Errorf("access token expired (local validation)")
 		}
@@ -261,13 +261,13 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 		})
 
 		if err != nil {
-			s.Logger.Debug("Token expired locally and refresh failed",
+			s.logger.Debug("Token expired locally and refresh failed",
 				"expiry", storedToken.Expiry,
-				"grace_period_seconds", s.Config.ClockSkewGracePeriod,
+				"grace_period_seconds", s.config.ClockSkewGracePeriod,
 				"refresh_error", err,
 				"token_suffix", helpers.TokenSuffix(accessToken, 8))
 
-			s.Auditor.LogAuthFailure(ctx, "", "", "", "token_expired_locally")
+			s.auditor.LogAuthFailure(ctx, "", "", "", "token_expired_locally")
 
 			return nil, fmt.Errorf("access token expired (local validation, refresh failed: %w)", err)
 		}
@@ -278,16 +278,16 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 
 		s.fireTokenRefreshHandler(ctx, accessToken, newProviderToken)
 
-		s.Logger.Debug("Expired provider token refreshed during validation",
+		s.logger.Debug("Expired provider token refreshed during validation",
 			"old_expiry", storedToken.Expiry,
 			"new_expiry", newProviderToken.Expiry,
 			"token_suffix", helpers.TokenSuffix(accessToken, 8))
 		storedToken = newProviderToken
 	}
 
-	s.Logger.Debug("Token passed local expiry validation",
+	s.logger.Debug("Token passed local expiry validation",
 		"expiry", storedToken.Expiry,
-		"grace_period_seconds", s.Config.ClockSkewGracePeriod)
+		"grace_period_seconds", s.config.ClockSkewGracePeriod)
 
 	// RFC 8707: Validate audience binding
 	if err := s.validateTokenAudience(ctx, accessToken); err != nil {
@@ -318,13 +318,13 @@ func (s *Server) validateTokenAudience(ctx context.Context, accessToken string) 
 		return nil
 	}
 
-	expectedAudience := s.Config.GetResourceIdentifier()
+	expectedAudience := s.config.GetResourceIdentifier()
 	normalizedAudience := helpers.NormalizeURL(metadata.Audience)
 	normalizedExpected := helpers.NormalizeURL(expectedAudience)
 
 	// Check if audience matches this server's own resource identifier
 	if subtle.ConstantTimeCompare([]byte(normalizedAudience), []byte(normalizedExpected)) == 1 {
-		s.Logger.Debug("Token audience validation passed",
+		s.logger.Debug("Token audience validation passed",
 			"audience", metadata.Audience,
 			"token_suffix", helpers.TokenSuffix(accessToken, 8))
 		return nil
@@ -345,25 +345,25 @@ func (s *Server) validateTokenAudience(ctx context.Context, accessToken string) 
 // This enables SSO scenarios where tokens issued to trusted upstream services are accepted.
 // Uses helpers.MatchAudienceSecure for consistent URL normalization and constant-time comparison.
 func (s *Server) isTrustedAudience(audience string) bool {
-	return helpers.MatchAudienceSecure(audience, s.Config.TrustedAudiences) != ""
+	return helpers.MatchAudienceSecure(audience, s.config.TrustedAudiences) != ""
 }
 
 // logCrossClientTokenAccepted logs when a token is accepted via TrustedAudiences.
 // This audit event helps track SSO token usage patterns for security monitoring.
 func (s *Server) logCrossClientTokenAccepted(ctx context.Context, accessToken string, metadata *storage.TokenMetadata) {
-	s.Logger.Debug("Token accepted via TrustedAudiences (SSO token forwarding)",
+	s.logger.Debug("Token accepted via TrustedAudiences (SSO token forwarding)",
 		"token_audience", metadata.Audience,
 		"user_id", metadata.UserID,
 		"client_id", metadata.ClientID,
 		"token_suffix", helpers.TokenSuffix(accessToken, 8))
 
-	s.Auditor.LogEvent(ctx, security.Event{
+	s.auditor.LogEvent(ctx, security.Event{
 		Type:     security.EventCrossClientTokenAccepted,
 		UserID:   metadata.UserID,
 		ClientID: metadata.ClientID,
 		Details: map[string]any{
 			"original_audience":   metadata.Audience,
-			"server_identifier":   s.Config.GetResourceIdentifier(),
+			"server_identifier":   s.config.GetResourceIdentifier(),
 			"trusted_via":         "TrustedAudiences",
 			"sso_token_forwarded": true,
 		},
@@ -372,8 +372,8 @@ func (s *Server) logCrossClientTokenAccepted(ctx context.Context, accessToken st
 
 // logAudienceMismatch logs an audience mismatch security event.
 func (s *Server) logAudienceMismatch(ctx context.Context, accessToken string, metadata *storage.TokenMetadata, expectedAudience string) {
-	if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(metadata.UserID+":"+metadata.ClientID+":audience_mismatch") {
-		s.Logger.Warn("Token audience mismatch - token not intended for this resource server",
+	if s.securityEventRateLimiter == nil || s.securityEventRateLimiter.Allow(metadata.UserID+":"+metadata.ClientID+":audience_mismatch") {
+		s.logger.Warn("Token audience mismatch - token not intended for this resource server",
 			"token_audience", metadata.Audience,
 			"server_identifier", expectedAudience,
 			"token_suffix", helpers.TokenSuffix(accessToken, 8),
@@ -381,7 +381,7 @@ func (s *Server) logAudienceMismatch(ctx context.Context, accessToken string, me
 			"client_id", metadata.ClientID)
 	}
 
-	s.Auditor.LogEvent(ctx, security.Event{
+	s.auditor.LogEvent(ctx, security.Event{
 		Type:     security.EventResourceMismatch,
 		UserID:   metadata.UserID,
 		ClientID: metadata.ClientID,
@@ -392,7 +392,7 @@ func (s *Server) logAudienceMismatch(ctx context.Context, accessToken string, me
 			"attack_indicator":  "token_replay_to_wrong_resource_server",
 		},
 	})
-	s.Auditor.LogAuthFailure(ctx, metadata.UserID, metadata.ClientID, "", "audience_mismatch")
+	s.auditor.LogAuthFailure(ctx, metadata.UserID, metadata.ClientID, "", "audience_mismatch")
 }
 
 // selectTokenForProviderValidation determines which token to use for provider validation.
