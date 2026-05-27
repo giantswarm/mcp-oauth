@@ -117,20 +117,8 @@ func (v *OIDCValidator) Validate(ctx context.Context, subjectToken, subjectToken
 		return SubjectIdentity{}, fmt.Errorf("subject token validation failed: %w", err)
 	}
 
-	if len(ti.AllowedClaims) > 0 {
-		for claimName, pattern := range ti.AllowedClaims {
-			raw, present := rawClaims[claimName]
-			if !present {
-				return SubjectIdentity{}, fmt.Errorf("claim %q: not present in token", claimName)
-			}
-			claimValue, ok := raw.(string)
-			if !ok {
-				return SubjectIdentity{}, fmt.Errorf("claim %q: value has non-string type %T", claimName, raw)
-			}
-			if err := matchClaimPattern(pattern, claimValue); err != nil {
-				return SubjectIdentity{}, fmt.Errorf("claim %q: %w", claimName, err)
-			}
-		}
+	if err := checkAllowedClaims(ti.AllowedClaims, rawClaims); err != nil {
+		return SubjectIdentity{}, err
 	}
 
 	return SubjectIdentity{
@@ -138,6 +126,25 @@ func (v *OIDCValidator) Validate(ctx context.Context, subjectToken, subjectToken
 		Issuer:        claims.Issuer,
 		AllowedScopes: ti.AllowedScopes,
 	}, nil
+}
+
+// checkAllowedClaims verifies that every claim in allowed is present in raw and
+// matches its pattern. raw is the unverified JWT payload map.
+func checkAllowedClaims(allowed map[string]string, raw map[string]any) error {
+	for claimName, pattern := range allowed {
+		rawVal, present := raw[claimName]
+		if !present {
+			return fmt.Errorf("claim %q: not present in token", claimName)
+		}
+		claimValue, ok := rawVal.(string)
+		if !ok {
+			return fmt.Errorf("claim %q: value has non-string type %T", claimName, rawVal)
+		}
+		if err := matchClaimPattern(pattern, claimValue); err != nil {
+			return fmt.Errorf("claim %q: %w", claimName, err)
+		}
+	}
+	return nil
 }
 
 // matchClaimPattern matches value against a glob pattern using path.Match
