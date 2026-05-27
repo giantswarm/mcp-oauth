@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `memory.SetEncryptor`, `memory.SetInstrumentation`, `memory.SetLogger`, `memory.SetRevokedFamilyRetentionDays` — replaced by construction-time options.
 - **`dpop/valkey` package removed.** The Valkey-backed DPoP replay cache is now at `storage/valkey.NewDPoPReplayCache`. Update imports from `github.com/giantswarm/mcp-oauth/dpop/valkey` to `github.com/giantswarm/mcp-oauth/storage/valkey` and replace `valkey.New(client, prefix)` with `valkey.NewDPoPReplayCache(client, prefix)`.
-- **`server.Clock` interface and `server.DNSResolver` interface removed.** Both were test-only seams exported from production packages. `clientMetadataCache` now calls `time.Now()` directly (use `testing/synctest` for TTL tests). `Config.DNSResolver` is now `*net.Resolver`; pass a `*net.Resolver` with a custom `Dial` for tests that need to intercept DNS.
+- **`server.Clock` interface and `server.DNSResolver` interface removed.** `Config.DNSResolver` is now `*net.Resolver`; pass a `*net.Resolver` with a custom `Dial` function to intercept DNS in tests.
 - `memory.NewWithInterval` — replaced by `memory.New(memory.WithCleanupInterval(d))`.
 - `valkey.SetEncryptor`, `valkey.SetInstrumentation`, `valkey.SetLogger` — replaced by construction-time options.
 - `server.WithEncryptor` / `oauth.WithEncryptor` — the server no longer holds an encryptor; wire it on the store.

@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -793,9 +792,9 @@ func (d *testDNSDialer) setResult(host string, ips ...net.IP) {
 	d.mu.Unlock()
 }
 
-func (d *testDNSDialer) setError(host string, _ error) {
+func (d *testDNSDialer) setError(host string, err error) {
 	d.mu.Lock()
-	d.errs[host] = struct{ error }{errors.New("dns failure")}
+	d.errs[host] = err
 	d.mu.Unlock()
 }
 
