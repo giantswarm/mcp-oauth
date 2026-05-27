@@ -480,6 +480,27 @@ config := &server.Config{
 
 **WARNING:** These `Disable*` fields significantly weaken security. Only use them in trusted development environments, never in production.
 
+### Development-only overrides
+
+The following flags exist for non-production scenarios. Each emits a startup `WARN` log entry when set.
+
+| Field | Risk | Dev use case |
+|---|---|---|
+| `AllowInsecureHTTP` | Bearer tokens transmitted in clear — full credential exposure | Non-loopback HTTP test environments. RFC 8252 §7.3 loopback HTTP (`http://localhost`) is always permitted without this flag. |
+| `AllowPrivateIPClientMetadata` | SSRF into cluster — CIMD metadata URLs resolve to private / loopback IPs (CWE-918) | CIMD fetch against internal metadata endpoints during development |
+| `AllowPrivateIPJWKS` | SSRF into cluster — JWKS endpoints resolve to private / loopback IPs (CWE-918) | Private IdP deployments (e.g., internal Dex) where the JWKS URI is on an RFC 1918 address |
+
+```go
+// Development / private-network only — never set in internet-facing production
+config := &server.Config{
+    AllowInsecureHTTP:            true, // http:// issuer/redirect outside loopback
+    AllowPrivateIPClientMetadata: true, // CIMD fetches to RFC 1918 / loopback addresses
+    AllowPrivateIPJWKS:           true, // JWKS fetch to RFC 1918 / loopback addresses
+}
+```
+
+**WARNING:** These flags bypass production security invariants and must not appear in internet-facing deployments.
+
 ### Native App Support (RFC 8252)
 
 For native/CLI apps that need localhost redirects:

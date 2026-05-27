@@ -247,6 +247,39 @@ func TestLogSecurityWarnings(t *testing.T) {
 				"Public client registration is ENABLED",
 			},
 		},
+		{
+			name: "AllowInsecureHTTP warning",
+			config: &Config{
+				RequirePKCE:             true,
+				RegistrationAccessToken: "token",
+				AllowInsecureHTTP:       true,
+			},
+			expectedWarnings: []string{
+				"SECURITY WARNING: AllowInsecureHTTP is enabled",
+			},
+		},
+		{
+			name: "AllowPrivateIPClientMetadata warning",
+			config: &Config{
+				RequirePKCE:                  true,
+				RegistrationAccessToken:      "token",
+				AllowPrivateIPClientMetadata: true,
+			},
+			expectedWarnings: []string{
+				"SECURITY WARNING: AllowPrivateIPClientMetadata is enabled",
+			},
+		},
+		{
+			name: "AllowPrivateIPJWKS warning",
+			config: &Config{
+				RequirePKCE:             true,
+				RegistrationAccessToken: "token",
+				AllowPrivateIPJWKS:      true,
+			},
+			expectedWarnings: []string{
+				"SECURITY WARNING: AllowPrivateIPJWKS is enabled",
+			},
+		},
 	}
 
 	for _, tt := range tests {

@@ -228,11 +228,23 @@ func logCoreSecurityWarnings(config *Config, logger *slog.Logger) {
 			"recommendation", "Set RegistrationAccessToken or enable AllowPublicClientRegistration")
 	}
 	if config.AllowInsecureHTTP {
-		logger.Error("CRITICAL SECURITY WARNING: HTTP is explicitly allowed",
-			"risk", "All OAuth tokens and credentials exposed to network interception",
-			"recommendation", "Use HTTPS in all environments",
-			"compliance", "OAuth 2.1 requires HTTPS for all endpoints",
-			"learn_more", "https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-10#section-4.1.1")
+		logger.Warn("SECURITY WARNING: AllowInsecureHTTP is enabled",
+			"risk", "http:// issuer / redirect URIs accepted outside loopback — tokens exposed in clear",
+			"recommendation", "Unset for production deployments",
+			"note", "Development only — RFC 8252 §7.3 loopback HTTP is permitted without this flag")
+	}
+	if config.AllowPrivateIPClientMetadata {
+		logger.Warn("SECURITY WARNING: AllowPrivateIPClientMetadata is enabled",
+			"risk", "CIMD fetches to private-IP / loopback ranges allowed — SSRF into cluster possible",
+			"recommendation", "Unset for production deployments",
+			"cwe", "CWE-918",
+			"note", "Development only")
+	}
+	if config.AllowPrivateIPJWKS {
+		logger.Warn("SECURITY WARNING: AllowPrivateIPJWKS is enabled",
+			"risk", "JWKS endpoints can resolve to private/internal IP addresses — SSRF possible",
+			"recommendation", "Unset for production deployments; use only for private IdP deployments (e.g., internal Dex)",
+			"cwe", "CWE-918")
 	}
 }
 
