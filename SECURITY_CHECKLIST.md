@@ -57,6 +57,9 @@ This checklist should be completed for all pull requests that modify security-se
 - [ ] Refresh token rotation implemented correctly
 - [ ] Token revocation works as expected
 - [ ] Session fixation attacks prevented
+- [ ] DPoP-bound tokens rejected when presented as plain Bearer (sender-constraint bypass)
+- [ ] DPoP proof key matches token `cnf.jkt` (key-substitution attack)
+- [ ] DPoP replay cache is shared across all pods (not per-process) in multi-pod deployments
 
 ### 7. Cryptography ✓
 
