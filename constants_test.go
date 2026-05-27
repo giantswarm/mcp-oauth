@@ -1,9 +1,10 @@
 package oauth
 
 import (
-	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"testing"
 	"time"
+
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 )
 
 func TestTimeConstants(t *testing.T) {

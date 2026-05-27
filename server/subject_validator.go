@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"fmt"
+	"path"
+	"strings"
 
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
 )
@@ -39,12 +41,22 @@ type TrustedIssuer struct {
 	// AllowedScopes caps the scopes that can be issued for tokens from this issuer.
 	// Nil means no per-issuer restriction.
 	AllowedScopes []string
+	// AllowedClaims constrains which tokens are accepted by requiring each named
+	// claim to match its pattern. Keys are JWT claim names; values are exact
+	// strings or glob patterns where '*' matches any sequence of characters
+	// (including '/') and '?' matches any single character. Use '*' freely
+	// across path segments, e.g. "system:serviceaccount:ns:*" or
+	// "repo:org/repo:*". Absent claims and claims with non-string values
+	// (numbers, arrays, objects) are rejected. Nil or empty means no claim
+	// restrictions.
+	AllowedClaims map[string]string
 }
 
 // OIDCValidator validates tokens from statically configured trusted issuers.
 // It accepts the following subject_token_type values:
 //   - urn:ietf:params:oauth:token-type:id_token
 //   - urn:ietf:params:oauth:token-type:access_token
+//   - urn:ietf:params:oauth:token-type:jwt
 type OIDCValidator struct {
 	issuers    map[string]TrustedIssuer
 	jwksClient *oidc.JWKSClient
@@ -81,7 +93,7 @@ func newOIDCValidatorWithClient(issuers []TrustedIssuer, client *oidc.JWKSClient
 // boundary.
 func (v *OIDCValidator) Validate(ctx context.Context, subjectToken, subjectTokenType string) (SubjectIdentity, error) {
 	switch subjectTokenType {
-	case SubjectTokenTypeIDToken, SubjectTokenTypeAccessToken:
+	case SubjectTokenTypeIDToken, SubjectTokenTypeAccessToken, SubjectTokenTypeJWT:
 	default:
 		return SubjectIdentity{}, fmt.Errorf("unsupported subject_token_type: %q", subjectTokenType)
 	}
@@ -105,6 +117,10 @@ func (v *OIDCValidator) Validate(ctx context.Context, subjectToken, subjectToken
 		return SubjectIdentity{}, fmt.Errorf("subject token validation failed: %w", err)
 	}
 
+	if err := checkAllowedClaims(ti.AllowedClaims, rawClaims); err != nil {
+		return SubjectIdentity{}, err
+	}
+
 	return SubjectIdentity{
 		Subject:       claims.Subject,
 		Issuer:        claims.Issuer,
@@ -112,8 +128,49 @@ func (v *OIDCValidator) Validate(ctx context.Context, subjectToken, subjectToken
 	}, nil
 }
 
-// Token-type URN constants shared between OIDCValidator, K8sSAValidator, and
-// the token-exchange handler.
+// checkAllowedClaims verifies that every claim in allowed is present in raw and
+// matches its pattern. raw is the unverified JWT payload map.
+func checkAllowedClaims(allowed map[string]string, raw map[string]any) error {
+	for claimName, pattern := range allowed {
+		rawVal, present := raw[claimName]
+		if !present {
+			return fmt.Errorf("claim %q: not present in token", claimName)
+		}
+		claimValue, ok := rawVal.(string)
+		if !ok {
+			return fmt.Errorf("claim %q: value has non-string type %T", claimName, rawVal)
+		}
+		if err := matchClaimPattern(pattern, claimValue); err != nil {
+			return fmt.Errorf("claim %q: %w", claimName, err)
+		}
+	}
+	return nil
+}
+
+// matchClaimPattern matches value against a glob pattern using path.Match
+// semantics, but with '/' stripped of its separator role so '*' spans the
+// whole string (including slashes). This lets patterns like
+// "repo:org/repo:*" match GHA subjects that contain '/'.
+func matchClaimPattern(pattern, value string) error {
+	// Replace '/' with '\x01' in both sides so path.Match never sees a
+	// separator; any other path.Match feature (?, [...]) is preserved.
+	// \x01 is safe: JWT claims are printable Unicode, so it cannot appear
+	// in a real claim value or operator-supplied pattern.
+	const sep, placeholder = "/", "\x01"
+	matched, err := path.Match(
+		strings.ReplaceAll(pattern, sep, placeholder),
+		strings.ReplaceAll(value, sep, placeholder),
+	)
+	if err != nil {
+		return fmt.Errorf("invalid pattern %q: %w", pattern, err)
+	}
+	if !matched {
+		return fmt.Errorf("value %q does not match allowed pattern %q", value, pattern)
+	}
+	return nil
+}
+
+// Token-type URN constants shared between OIDCValidator and the token-exchange handler.
 const (
 	SubjectTokenTypeIDToken     = "urn:ietf:params:oauth:token-type:id_token"
 	SubjectTokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token"
