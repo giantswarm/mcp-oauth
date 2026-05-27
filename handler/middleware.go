@@ -13,6 +13,7 @@ import (
 
 	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/providers"
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
@@ -43,6 +44,33 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 		// Single metadata lookup: used for both scope validation and session ID
 		metadata := h.getTokenMetadata(accessToken)
 
+		// Enforce DPoP sender-constraint (RFC 9449 §6.1, §7).
+		// tokenJKT is the key thumbprint the token was bound to at issuance.
+		// proofJKT is the thumbprint of the key that signed the DPoP proof on
+		// this request, set in context by DPoPMiddleware.
+		tokenJKT := jktFromToken(accessToken, metadata)
+		proofJKT := dpopProofJKTFromContext(r.Context())
+		if tokenJKT != "" {
+			if proofJKT == "" {
+				// #383: DPoP-bound token presented as plain Bearer — reject.
+				h.logger.Warn("DPoP-bound token presented without DPoP proof",
+					"ip", clientIP,
+					"token_suffix", accessToken[max(0, len(accessToken)-8):])
+				h.server.Auditor.LogAuthFailure(r.Context(), "", "", clientIP, "dpop_bound_token_bearer_bypass")
+				h.writeUnauthorizedError(w, r, constants.ErrorCodeInvalidToken, "DPoP-bound token must be presented with a DPoP proof")
+				return
+			}
+			if proofJKT != tokenJKT {
+				// #384: Proof was signed with a different key than the one bound to the token.
+				h.logger.Warn("DPoP proof key does not match token cnf.jkt",
+					"ip", clientIP,
+					"token_suffix", accessToken[max(0, len(accessToken)-8):])
+				h.server.Auditor.LogAuthFailure(r.Context(), "", "", clientIP, "dpop_key_binding_mismatch")
+				h.writeUnauthorizedError(w, r, constants.ErrorCodeInvalidToken, "DPoP proof key does not match token binding")
+				return
+			}
+		}
+
 		if !h.validateTokenScopesFromMetadata(w, r, metadata, userInfo, clientIP) {
 			return
 		}
@@ -55,6 +83,26 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 		ctx := contextWithValidatedToken(r.Context(), userInfo, metadata)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// jktFromToken returns the JWK thumbprint bound to the token. For opaque tokens
+// it reads from stored metadata; for self-issued JWTs it parses the cnf.jkt
+// claim without re-verifying the signature (safe: token was verified by
+// ValidateToken immediately before this call).
+func jktFromToken(accessToken string, metadata *storage.TokenMetadata) string {
+	if metadata != nil && metadata.JKT != "" {
+		return metadata.JKT
+	}
+	if !oidc.IsJWT(accessToken) {
+		return ""
+	}
+	claims, err := oidc.ParseUnverifiedClaims(accessToken)
+	if err != nil {
+		return ""
+	}
+	cnf, _ := claims["cnf"].(map[string]any)
+	jkt, _ := cnf["jkt"].(string)
+	return jkt
 }
 
 // contextWithValidatedToken stamps the authenticated UserInfo on ctx and,
