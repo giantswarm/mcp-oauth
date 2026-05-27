@@ -107,7 +107,9 @@ func main() {
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		_, _ = fmt.Fprintf(w, indexHTML, keyID)
+		if _, err := fmt.Fprintf(w, indexHTML, keyID); err != nil {
+			log.Printf("write response: %v", err)
+		}
 	})
 
 	log.Printf("Listening on :8080")

@@ -130,7 +130,9 @@ func setupRoutes(handler *oauthhandler.Handler) {
 
 	http.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("OK"))
+		if _, err := w.Write([]byte("OK")); err != nil {
+			log.Printf("write response: %v", err)
+		}
 	})
 }
 

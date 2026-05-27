@@ -224,7 +224,9 @@ func main() {
 </body>
 </html>`
 		w.Header().Set("Content-Type", "text/html")
-		_, _ = fmt.Fprint(w, html)
+		if _, err := fmt.Fprint(w, html); err != nil {
+			log.Printf("write response: %v", err)
+		}
 	})
 
 	// Health check endpoint
@@ -235,12 +237,16 @@ func main() {
 		if err := dexProvider.HealthCheck(ctx); err != nil {
 			log.Printf("Health check failed: %v", err)
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = fmt.Fprintf(w, "unhealthy: %v", err)
+			if _, werr := fmt.Fprintf(w, "unhealthy: %v", err); werr != nil {
+				log.Printf("write response: %v", werr)
+			}
 			return
 		}
 
 		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, "healthy")
+		if _, err := fmt.Fprint(w, "healthy"); err != nil {
+			log.Printf("write response: %v", err)
+		}
 	})
 
 	// Start server

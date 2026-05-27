@@ -177,7 +177,9 @@ func main() {
 	// Health check (unprotected)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprintf(w, "OK - Provider: %s\n", googleProvider.Name())
+		if _, err := fmt.Fprintf(w, "OK - Provider: %s\n", googleProvider.Name()); err != nil {
+			log.Printf("write response: %v", err)
+		}
 	})
 
 	// Start server
@@ -261,7 +263,9 @@ func mcpHandler(name string) http.Handler {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(response))
+		if _, err := w.Write([]byte(response)); err != nil {
+			log.Printf("write response: %v", err)
+		}
 	})
 }
 

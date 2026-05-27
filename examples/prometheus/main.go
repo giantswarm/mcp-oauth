@@ -126,13 +126,15 @@ func main() {
 	// Health check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"status":"healthy"}`)
+		if _, err := fmt.Fprintf(w, `{"status":"healthy"}`); err != nil {
+			log.Printf("write response: %v", err)
+		}
 	})
 
 	// Home page with links
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		_, _ = fmt.Fprintf(w, `
+		if _, err := fmt.Fprintf(w, `
 <!DOCTYPE html>
 <html>
 <head>
@@ -193,7 +195,9 @@ rate(oauth_http_requests_total[5m])
     </ol>
 </body>
 </html>
-		`)
+		`); err != nil {
+			log.Printf("write response: %v", err)
+		}
 	})
 
 	// 9. Start HTTP server with graceful shutdown

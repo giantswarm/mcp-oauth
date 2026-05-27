@@ -153,7 +153,9 @@ func main() {
 	// Health check
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprintf(w, "OK - Provider: %s\n", googleProvider.Name())
+		if _, err := fmt.Fprintf(w, "OK - Provider: %s\n", googleProvider.Name()); err != nil {
+			log.Printf("write response: %v", err)
+		}
 	})
 
 	// Start server

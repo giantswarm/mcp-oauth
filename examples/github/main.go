@@ -179,7 +179,9 @@ func main() {
 </body>
 </html>`
 		w.Header().Set("Content-Type", "text/html")
-		_, _ = fmt.Fprint(w, html)
+		if _, err := fmt.Fprint(w, html); err != nil {
+			log.Printf("write response: %v", err)
+		}
 	})
 
 	// Health check endpoint
@@ -192,12 +194,16 @@ func main() {
 			// Log error for internal monitoring, but don't expose details to clients
 			log.Printf("Health check failed: %v", err)
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = fmt.Fprint(w, "unhealthy")
+			if _, err := fmt.Fprint(w, "unhealthy"); err != nil {
+				log.Printf("write response: %v", err)
+			}
 			return
 		}
 
 		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, "healthy")
+		if _, err := fmt.Fprint(w, "healthy"); err != nil {
+			log.Printf("write response: %v", err)
+		}
 	})
 
 	// Start server
