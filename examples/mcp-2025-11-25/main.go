@@ -11,12 +11,19 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	oauth "github.com/giantswarm/mcp-oauth"
 	oauthhandler "github.com/giantswarm/mcp-oauth/handler"
 	"github.com/giantswarm/mcp-oauth/providers/google"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
+)
+
+const (
+	scopeFilesRead   = "files:read"
+	scopeFilesWrite  = "files:write"
+	scopeAdminAccess = "admin:access"
 )
 
 func main() {
@@ -65,11 +72,11 @@ func main() {
 			// List all scopes your resource server supports
 			// This appears in Protected Resource Metadata (/.well-known/oauth-protected-resource)
 			SupportedScopes: []string{
-				"mcp:access",   // General MCP access
-				"files:read",   // Read files
-				"files:write",  // Write/modify files
-				"admin:access", // Administrative access
-				"user:profile", // User profile information
+				"mcp:access",      // General MCP access
+				scopeFilesRead,    // Read files
+				scopeFilesWrite,   // Write/modify files
+				scopeAdminAccess,  // Administrative access
+				"user:profile",    // User profile information
 			},
 
 			// Feature 2: WWW-Authenticate Scope Guidance
@@ -90,8 +97,8 @@ func main() {
 			// Define which scopes are required for specific API endpoints
 			// When a token lacks required scopes, server returns 403 with insufficient_scope error
 			EndpointScopeRequirements: map[string][]string{
-				"/api/files/*": {"files:read", "files:write"},
-				"/api/admin/*": {"admin:access"},
+				"/api/files/*": {scopeFilesRead, scopeFilesWrite},
+				"/api/admin/*": {scopeAdminAccess},
 				"/api/profile": {"user:profile"},
 			},
 
@@ -99,10 +106,10 @@ func main() {
 			// Different HTTP methods can require different scopes
 			EndpointMethodScopeRequirements: map[string]map[string][]string{
 				"/api/files/*": {
-					"GET":    {"files:read"},                   // Read-only
-					"POST":   {"files:write"},                  // Create new
-					"PUT":    {"files:write"},                  // Modify existing
-					"DELETE": {"files:delete", "admin:access"}, // Delete requires admin
+					"GET":    {scopeFilesRead},                    // Read-only
+					"POST":   {scopeFilesWrite},                   // Create new
+					"PUT":    {scopeFilesWrite},                   // Modify existing
+					"DELETE": {"files:delete", scopeAdminAccess},  // Delete requires admin
 				},
 			},
 
@@ -170,7 +177,7 @@ func main() {
 	// Health check (unprotected)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "OK - Provider: %s\n", googleProvider.Name())
+		_, _ = fmt.Fprintf(w, "OK - Provider: %s\n", googleProvider.Name())
 	})
 
 	// Start server
@@ -211,7 +218,14 @@ func main() {
 	log.Println("  curl http://localhost:8080/.well-known/oauth-authorization-server")
 	log.Println()
 
-	log.Fatal(http.ListenAndServe(addr, mux))
+	srv := &http.Server{
+		Addr:         addr,
+		Handler:      mux,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+	log.Fatal(srv.ListenAndServe())
 }
 
 func mcpHandler(name string) http.Handler {
@@ -247,7 +261,7 @@ func mcpHandler(name string) http.Handler {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(response))
+		_, _ = w.Write([]byte(response))
 	})
 }
 

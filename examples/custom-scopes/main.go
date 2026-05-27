@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	oauth "github.com/giantswarm/mcp-oauth"
 	oauthhandler "github.com/giantswarm/mcp-oauth/handler"
@@ -93,7 +94,14 @@ func main() {
 	for _, scope := range scopes {
 		log.Printf("  - %s", scope)
 	}
-	log.Fatal(http.ListenAndServe(addr, nil))
+	httpSrv := &http.Server{
+		Addr:         addr,
+		Handler:      http.DefaultServeMux,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+	log.Fatal(httpSrv.ListenAndServe())
 }
 
 func setupRoutes(handler *oauthhandler.Handler) {
@@ -122,9 +130,16 @@ func setupRoutes(handler *oauthhandler.Handler) {
 
 	http.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	})
 }
+
+const (
+	keyService = "service"
+	keyUser    = "user"
+	keyMessage = "message"
+	keyExample = "example"
+)
 
 // Handler for Gmail API requests
 func gmailHandler() http.Handler {
@@ -136,10 +151,10 @@ func gmailHandler() http.Handler {
 		// Call Gmail API with token...
 
 		response := map[string]interface{}{
-			"service": "Gmail API",
-			"user":    userInfo.Email,
-			"message": "Access Gmail API here with the user's token",
-			"example": "GET https://gmail.googleapis.com/gmail/v1/users/me/messages",
+			keyService: "Gmail API",
+			keyUser:    userInfo.Email,
+			keyMessage: "Access Gmail API here with the user's token",
+			keyExample: "GET https://gmail.googleapis.com/gmail/v1/users/me/messages",
 		}
 
 		writeJSON(w, response)
@@ -152,10 +167,10 @@ func driveHandler() http.Handler {
 		userInfo, _ := oauthhandler.UserInfoFromContext(r.Context())
 
 		response := map[string]interface{}{
-			"service": "Google Drive API",
-			"user":    userInfo.Email,
-			"message": "Access Google Drive API here with the user's token",
-			"example": "GET https://www.googleapis.com/drive/v3/files",
+			keyService: "Google Drive API",
+			keyUser:    userInfo.Email,
+			keyMessage: "Access Google Drive API here with the user's token",
+			keyExample: "GET https://www.googleapis.com/drive/v3/files",
 		}
 
 		writeJSON(w, response)
@@ -168,10 +183,10 @@ func calendarHandler() http.Handler {
 		userInfo, _ := oauthhandler.UserInfoFromContext(r.Context())
 
 		response := map[string]interface{}{
-			"service": "Google Calendar API",
-			"user":    userInfo.Email,
-			"message": "Access Google Calendar API here with the user's token",
-			"example": "GET https://www.googleapis.com/calendar/v3/calendars/primary/events",
+			keyService: "Google Calendar API",
+			keyUser:    userInfo.Email,
+			keyMessage: "Access Google Calendar API here with the user's token",
+			keyExample: "GET https://www.googleapis.com/calendar/v3/calendars/primary/events",
 		}
 
 		writeJSON(w, response)
@@ -184,10 +199,10 @@ func contactsHandler() http.Handler {
 		userInfo, _ := oauthhandler.UserInfoFromContext(r.Context())
 
 		response := map[string]interface{}{
-			"service": "Google Contacts API",
-			"user":    userInfo.Email,
-			"message": "Access Google Contacts API here with the user's token",
-			"example": "GET https://people.googleapis.com/v1/people/me/connections",
+			keyService: "Google Contacts API",
+			keyUser:    userInfo.Email,
+			keyMessage: "Access Google Contacts API here with the user's token",
+			keyExample: "GET https://people.googleapis.com/v1/people/me/connections",
 		}
 
 		writeJSON(w, response)
@@ -200,8 +215,8 @@ func mcpHandler() http.Handler {
 		userInfo, _ := oauthhandler.UserInfoFromContext(r.Context())
 
 		response := map[string]interface{}{
-			"message": "MCP server with multiple Google API scopes",
-			"user": map[string]string{
+			keyMessage: "MCP server with multiple Google API scopes",
+			keyUser: map[string]string{
 				"email": userInfo.Email,
 				"name":  userInfo.Name,
 				"id":    userInfo.ID,

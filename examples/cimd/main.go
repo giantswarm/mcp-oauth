@@ -126,7 +126,7 @@ func main() {
 	// Health check
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "OK - Provider: %s, CIMD: enabled\n", googleProvider.Name())
+		_, _ = fmt.Fprintf(w, "OK - Provider: %s, CIMD: enabled\n", googleProvider.Name())
 	})
 
 	// Start server
@@ -153,7 +153,14 @@ func main() {
 	log.Printf("  - PKCE required for all URL-based clients")
 	log.Printf("\nExample usage with CIMD:")
 	log.Printf("  client_id=https://example.com/oauth/client.json")
-	log.Fatal(http.ListenAndServe(addr, mux))
+	srv := &http.Server{
+		Addr:         addr,
+		Handler:      mux,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+	log.Fatal(srv.ListenAndServe())
 }
 
 // mcpResponse represents the JSON response from the MCP endpoint.

@@ -57,7 +57,7 @@ func main() {
 
 	log.Printf("Created GitHub OAuth provider")
 	if len(allowedOrgs) > 0 {
-		log.Printf("Restricting login to organizations: %v", allowedOrgs)
+		log.Printf("Restricting login to organizations: %v", allowedOrgs) //nolint:gosec // G706: allowedOrgs is operator-supplied config, not user input
 	}
 
 	// Create in-memory storage (use persistent storage in production)
@@ -179,7 +179,7 @@ func main() {
 </body>
 </html>`
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprint(w, html)
+		_, _ = fmt.Fprint(w, html)
 	})
 
 	// Health check endpoint
@@ -192,19 +192,26 @@ func main() {
 			// Log error for internal monitoring, but don't expose details to clients
 			log.Printf("Health check failed: %v", err)
 			w.WriteHeader(http.StatusServiceUnavailable)
-			fmt.Fprint(w, "unhealthy")
+			_, _ = fmt.Fprint(w, "unhealthy")
 			return
 		}
 
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "healthy")
+		_, _ = fmt.Fprint(w, "healthy")
 	})
 
 	// Start server
 	addr := ":8080"
 	log.Printf("Starting server on http://localhost%s", addr)
 	log.Printf("Visit http://localhost%s to sign in with GitHub", addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	srv := &http.Server{
+		Addr:         addr,
+		Handler:      mux,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
 }
