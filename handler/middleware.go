@@ -92,12 +92,12 @@ func contextWithValidatedToken(ctx context.Context, userInfo *providers.UserInfo
 // checkIPRateLimited reports whether clientIP is currently rate-limited.
 // When limited it logs the event, records observability, and returns the
 // Retry-After seconds the caller should surface in the HTTP response.
-func (h *Handler) checkIPRateLimited(ctx context.Context, clientIP, endpoint string) (retryAfter int, limited bool) {
+func (h *Handler) checkIPRateLimited(ctx context.Context, clientIP, urlPath string) (retryAfter int, limited bool) {
 	if h.server.RateLimiter == nil || h.server.RateLimiter.Allow(security.RateLimitBucket(clientIP)) {
 		return 0, false
 	}
 	h.logger.Warn("Rate limit exceeded", "ip", clientIP)
-	h.recordRateLimitExceeded(ctx, "ip", clientIP, "", endpoint)
+	h.recordRateLimitExceeded(ctx, "ip", clientIP, "", urlPath)
 	return retryAfterSecondsForRate(h.server.RateLimiter.Rate()), true
 }
 
