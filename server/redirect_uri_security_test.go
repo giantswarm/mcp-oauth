@@ -2,11 +2,17 @@ package server
 
 import (
 	"context"
+	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/url"
 	"os"
+	"strings"
+	"sync"
 	"testing"
+
+	"golang.org/x/net/dns/dnsmessage"
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
@@ -47,9 +53,7 @@ func newTestServerWithSecurityConfig(cfg testSecurityConfig) *Server {
 	store := memory.New()
 	provider := mock.NewProvider()
 
-	// Create mock DNS resolver that returns public IPs by default
-	// This prevents tests from depending on real DNS resolution
-	mockResolver := newMockDNSResolver()
+	defaultDialer := newMockDNSResolver()
 
 	config := &Config{
 		Issuer: "https://auth.example.com",
@@ -64,7 +68,7 @@ func newTestServerWithSecurityConfig(cfg testSecurityConfig) *Server {
 		AllowLinkLocalRedirectURIs: cfg.allowLinkLocal,
 		// Always set these explicitly for tests
 		BlockedRedirectSchemes: []string{"javascript", "data", "file", "vbscript", "about", "ftp", "blob", "ms-appx", "ms-appx-web"},
-		DNSResolver:            mockResolver, // Use mock resolver to avoid real DNS
+		DNSResolver:            defaultDialer.resolver(),
 	}
 
 	server, err := New(provider, store, store, store, config, logger)
@@ -768,38 +772,138 @@ func TestDNSValidationStrict(t *testing.T) {
 	})
 }
 
-// mockDNSResolver implements DNSResolver for testing.
-type mockDNSResolver struct {
-	// results maps hostname to resolved IPs
+// testDNSDialer drives net.Resolver via an in-memory DNS server so tests can
+// inject per-hostname IP mappings without a custom interface.
+type testDNSDialer struct {
+	mu      sync.RWMutex
 	results map[string][]net.IP
-	// errors maps hostname to error
-	errors map[string]error
+	errs    map[string]error
 }
 
-func newMockDNSResolver() *mockDNSResolver {
-	return &mockDNSResolver{
+func newMockDNSResolver() *testDNSDialer {
+	return &testDNSDialer{
 		results: make(map[string][]net.IP),
-		errors:  make(map[string]error),
+		errs:    make(map[string]error),
 	}
 }
 
-func (m *mockDNSResolver) LookupIP(_ context.Context, _, host string) ([]net.IP, error) {
-	if err, ok := m.errors[host]; ok {
-		return nil, err
-	}
-	if ips, ok := m.results[host]; ok {
-		return ips, nil
-	}
-	// Default: return a public IP if not configured
-	return []net.IP{net.ParseIP("93.184.216.34")}, nil
+func (d *testDNSDialer) setResult(host string, ips ...net.IP) {
+	d.mu.Lock()
+	d.results[host] = ips
+	d.mu.Unlock()
 }
 
-func (m *mockDNSResolver) setResult(host string, ips ...net.IP) {
-	m.results[host] = ips
+func (d *testDNSDialer) setError(host string, _ error) {
+	d.mu.Lock()
+	d.errs[host] = struct{ error }{errors.New("dns failure")}
+	d.mu.Unlock()
 }
 
-func (m *mockDNSResolver) setError(host string, err error) {
-	m.errors[host] = err
+// resolver returns a *net.Resolver backed by this dialer.
+func (d *testDNSDialer) resolver() *net.Resolver {
+	return &net.Resolver{PreferGo: true, Dial: d.dial}
+}
+
+func (d *testDNSDialer) dial(_ context.Context, _, _ string) (net.Conn, error) {
+	client, server := net.Pipe()
+	go d.serveConn(server)
+	return client, nil
+}
+
+func (d *testDNSDialer) serveConn(conn net.Conn) {
+	defer func() { _ = conn.Close() }()
+	var lenBuf [2]byte
+	if _, err := io.ReadFull(conn, lenBuf[:]); err != nil {
+		return
+	}
+	msgLen := int(lenBuf[0])<<8 | int(lenBuf[1])
+	buf := make([]byte, msgLen)
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		return
+	}
+	resp := d.buildResponse(buf)
+	if len(resp) == 0 {
+		return
+	}
+	out := make([]byte, 2+len(resp))
+	out[0] = byte(len(resp) >> 8)
+	out[1] = byte(len(resp))
+	copy(out[2:], resp)
+	_, _ = conn.Write(out)
+}
+
+func (d *testDNSDialer) buildResponse(query []byte) []byte {
+	var parser dnsmessage.Parser
+	header, err := parser.Start(query)
+	if err != nil {
+		return nil
+	}
+	qs, err := parser.AllQuestions()
+	if err != nil || len(qs) == 0 {
+		return nil
+	}
+	q := qs[0]
+	hostname := strings.TrimSuffix(q.Name.String(), ".")
+
+	d.mu.RLock()
+	_, hasErr := d.errs[hostname]
+	ips, hasResult := d.results[hostname]
+	d.mu.RUnlock()
+
+	if hasErr {
+		b := dnsmessage.NewBuilder(make([]byte, 0, 64), dnsmessage.Header{
+			ID: header.ID, Response: true, RCode: dnsmessage.RCodeServerFailure,
+		})
+		msg, _ := b.Finish()
+		return msg
+	}
+
+	if !hasResult {
+		if q.Type == dnsmessage.TypeA {
+			ips = []net.IP{net.ParseIP("93.184.216.34")}
+		}
+	}
+
+	b := dnsmessage.NewBuilder(make([]byte, 0, 512), dnsmessage.Header{
+		ID: header.ID, Response: true, Authoritative: true, RCode: dnsmessage.RCodeSuccess,
+	})
+	b.EnableCompression()
+	if err := b.StartQuestions(); err != nil {
+		return nil
+	}
+	if err := b.Question(q); err != nil {
+		return nil
+	}
+	if err := b.StartAnswers(); err != nil {
+		return nil
+	}
+	for _, ip := range ips {
+		switch q.Type {
+		case dnsmessage.TypeA:
+			if ip4 := ip.To4(); ip4 != nil {
+				var a [4]byte
+				copy(a[:], ip4)
+				_ = b.AResource(dnsmessage.ResourceHeader{
+					Name: q.Name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: 60,
+				}, dnsmessage.AResource{A: a})
+			}
+		case dnsmessage.TypeAAAA:
+			if ip.To4() == nil {
+				if ip6 := ip.To16(); ip6 != nil {
+					var a [16]byte
+					copy(a[:], ip6)
+					_ = b.AAAAResource(dnsmessage.ResourceHeader{
+						Name: q.Name, Type: dnsmessage.TypeAAAA, Class: dnsmessage.ClassINET, TTL: 60,
+					}, dnsmessage.AAAAResource{AAAA: a})
+				}
+			}
+		}
+	}
+	msg, err := b.Finish()
+	if err != nil {
+		return nil
+	}
+	return msg
 }
 
 func TestDNSValidationWithMockResolver(t *testing.T) {
@@ -813,7 +917,7 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 		})
 		resolver := newMockDNSResolver()
 		resolver.setResult("evil.example.com", net.ParseIP("10.0.0.1"))
-		server.Config.DNSResolver = resolver
+		server.Config.DNSResolver = resolver.resolver()
 
 		err := server.ValidateRedirectURIForRegistration(ctx, "https://evil.example.com/callback")
 		if err == nil {
@@ -833,7 +937,7 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 		})
 		resolver := newMockDNSResolver()
 		resolver.setResult("internal.example.com", net.ParseIP("192.168.1.100"))
-		server.Config.DNSResolver = resolver
+		server.Config.DNSResolver = resolver.resolver()
 
 		err := server.ValidateRedirectURIForRegistration(ctx, "https://internal.example.com/callback")
 		if err != nil {
@@ -850,7 +954,7 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 		resolver := newMockDNSResolver()
 		// AWS metadata service IP
 		resolver.setResult("metadata.attacker.com", net.ParseIP("169.254.169.254"))
-		server.Config.DNSResolver = resolver
+		server.Config.DNSResolver = resolver.resolver()
 
 		err := server.ValidateRedirectURIForRegistration(ctx, "https://metadata.attacker.com/callback")
 		if err == nil {
@@ -869,7 +973,7 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 		})
 		resolver := newMockDNSResolver()
 		resolver.setResult("app.example.com", net.ParseIP("93.184.216.34"))
-		server.Config.DNSResolver = resolver
+		server.Config.DNSResolver = resolver.resolver()
 
 		err := server.ValidateRedirectURIForRegistration(ctx, "https://app.example.com/callback")
 		if err != nil {
@@ -889,7 +993,7 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 			Err:  "no such host",
 			Name: "unreachable.example.com",
 		})
-		server.Config.DNSResolver = resolver
+		server.Config.DNSResolver = resolver.resolver()
 
 		err := server.ValidateRedirectURIForRegistration(ctx, "https://unreachable.example.com/callback")
 		if err == nil {
@@ -913,7 +1017,7 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 			Name:        "flaky.example.com",
 			IsTemporary: true,
 		})
-		server.Config.DNSResolver = resolver
+		server.Config.DNSResolver = resolver.resolver()
 
 		err := server.ValidateRedirectURIForRegistration(ctx, "https://flaky.example.com/callback")
 		if err != nil {
@@ -934,7 +1038,7 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 			net.ParseIP("93.184.216.34"), // Public
 			net.ParseIP("10.0.0.1"),      // Private - should block
 		)
-		server.Config.DNSResolver = resolver
+		server.Config.DNSResolver = resolver.resolver()
 
 		err := server.ValidateRedirectURIForRegistration(ctx, "https://mixed.example.com/callback")
 		if err == nil {
@@ -954,7 +1058,7 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 		resolver := newMockDNSResolver()
 		// IPv6 Unique Local Address (fc00::/7)
 		resolver.setResult("ipv6internal.example.com", net.ParseIP("fd00::1"))
-		server.Config.DNSResolver = resolver
+		server.Config.DNSResolver = resolver.resolver()
 
 		err := server.ValidateRedirectURIForRegistration(ctx, "https://ipv6internal.example.com/callback")
 		if err == nil {
@@ -973,7 +1077,7 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 		})
 		resolver := newMockDNSResolver()
 		resolver.setResult("ipv6linklocal.example.com", net.ParseIP("fe80::1"))
-		server.Config.DNSResolver = resolver
+		server.Config.DNSResolver = resolver.resolver()
 
 		err := server.ValidateRedirectURIForRegistration(ctx, "https://ipv6linklocal.example.com/callback")
 		if err == nil {
@@ -1002,7 +1106,7 @@ func TestAuthorizationTimeValidationWithMockDNS(t *testing.T) {
 		resolver := newMockDNSResolver()
 		// Now the attacker has changed DNS to point to internal network
 		resolver.setResult("evil.example.com", net.ParseIP("10.0.0.1"))
-		server.Config.DNSResolver = resolver
+		server.Config.DNSResolver = resolver.resolver()
 
 		err := server.ValidateRedirectURIAtAuthorizationTime(ctx, "https://evil.example.com/callback")
 		if err == nil {
@@ -1022,7 +1126,7 @@ func TestAuthorizationTimeValidationWithMockDNS(t *testing.T) {
 		server.Config.ValidateRedirectURIAtAuthorization = true
 		resolver := newMockDNSResolver()
 		resolver.setResult("app.example.com", net.ParseIP("93.184.216.34"))
-		server.Config.DNSResolver = resolver
+		server.Config.DNSResolver = resolver.resolver()
 
 		err := server.ValidateRedirectURIAtAuthorizationTime(ctx, "https://app.example.com/callback")
 		if err != nil {
@@ -1139,7 +1243,7 @@ func TestValidateRedirectURIForRegistration_IPBypassAttempts(t *testing.T) {
 		resolver.setError("0177.0.0.1", &net.DNSError{Err: "no such host", Name: "0177.0.0.1"})
 		resolver.setError("012.0.0.1", &net.DNSError{Err: "no such host", Name: "012.0.0.1"})
 		resolver.setError("0300.0250.0.1", &net.DNSError{Err: "no such host", Name: "0300.0250.0.1"})
-		server.Config.DNSResolver = resolver
+		server.Config.DNSResolver = resolver.resolver()
 
 		octalTests := []struct {
 			name string
@@ -1180,7 +1284,7 @@ func TestValidateRedirectURIForRegistration_IPBypassAttempts(t *testing.T) {
 		resolver.setError("0x7f.0.0.1", &net.DNSError{Err: "no such host", Name: "0x7f.0.0.1"})
 		resolver.setError("0x7f000001", &net.DNSError{Err: "no such host", Name: "0x7f000001"})
 		resolver.setError("0x0a.0.0.1", &net.DNSError{Err: "no such host", Name: "0x0a.0.0.1"})
-		server.Config.DNSResolver = resolver
+		server.Config.DNSResolver = resolver.resolver()
 
 		hexTests := []struct {
 			name string
@@ -1218,7 +1322,7 @@ func TestValidateRedirectURIForRegistration_IPBypassAttempts(t *testing.T) {
 		resolver := newMockDNSResolver()
 		resolver.setError("2130706433", &net.DNSError{Err: "no such host", Name: "2130706433"})
 		resolver.setError("167772161", &net.DNSError{Err: "no such host", Name: "167772161"})
-		server.Config.DNSResolver = resolver
+		server.Config.DNSResolver = resolver.resolver()
 
 		decimalTests := []struct {
 			name string
