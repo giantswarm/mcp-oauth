@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/oauth2"
 
@@ -258,16 +259,16 @@ func TestTokenStore_SaveToken_NilToken(t *testing.T) {
 
 func TestTokenStore_SaveToken_WithRefreshToken_NoShortTTL(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
-	// A provider token with a short-lived access token (30 min) but a refresh
-	// token present. Valkey must NOT use the access token expiry as the key
-	// TTL, otherwise the key is evicted before the MCP refresh token expires.
+	// A provider token with a short-lived access token but a refresh token
+	// present. Valkey must NOT use the access token expiry as the key TTL,
+	// otherwise the key is evicted before the MCP refresh token expires.
 	token := &oauth2.Token{
 		AccessToken:  "short-lived-access",
 		RefreshToken: "long-lived-refresh",
 		TokenType:    "Bearer",
-		Expiry:       time.Now().Add(2 * time.Second),
+		Expiry:       time.Now().Add(50 * time.Millisecond),
 	}
 
 	err := s.SaveToken(ctx, "user-rt-ttl", token)
@@ -275,14 +276,17 @@ func TestTokenStore_SaveToken_WithRefreshToken_NoShortTTL(t *testing.T) {
 		t.Fatalf("SaveToken failed: %v", err)
 	}
 
-	// Wait for the access token expiry to pass.
-	time.Sleep(3 * time.Second)
+	// Poll for 300ms confirming the key is never evicted despite the access
+	// token expiry having passed (token has a RefreshToken so uses long TTL).
+	require.Never(t, func() bool {
+		_, err := s.GetToken(ctx, "user-rt-ttl")
+		return err != nil
+	}, 300*time.Millisecond, 10*time.Millisecond,
+		"token with RefreshToken must not be evicted after access token expiry")
 
-	// The key must still exist because tokens with a RefreshToken are stored
-	// without TTL (matching the memory store's cleanup behavior).
 	got, err := s.GetToken(ctx, "user-rt-ttl")
 	if err != nil {
-		t.Fatalf("GetToken failed after access token expiry: %v (token was prematurely evicted)", err)
+		t.Fatalf("GetToken failed: %v", err)
 	}
 	if got.AccessToken != "short-lived-access" {
 		t.Errorf("AccessToken = %q, want %q", got.AccessToken, "short-lived-access")
@@ -339,14 +343,14 @@ func TestTokenStore_SaveToken_WithoutRefreshToken_ExpiredReject(t *testing.T) {
 
 func TestTokenStore_SaveToken_WithoutRefreshToken_HasTTL(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Token without RefreshToken and with a short expiry should be evicted
 	// after the TTL (existing behavior preserved).
 	token := &oauth2.Token{
 		AccessToken: "short-no-rt",
 		TokenType:   "Bearer",
-		Expiry:      time.Now().Add(2 * time.Second),
+		Expiry:      time.Now().Add(50 * time.Millisecond),
 	}
 
 	err := s.SaveToken(ctx, "user-short-no-rt", token)
@@ -354,16 +358,11 @@ func TestTokenStore_SaveToken_WithoutRefreshToken_HasTTL(t *testing.T) {
 		t.Fatalf("SaveToken failed: %v", err)
 	}
 
-	// Wait for the TTL to expire.
-	time.Sleep(3 * time.Second)
-
-	_, err = s.GetToken(ctx, "user-short-no-rt")
-	if err == nil {
-		t.Error("Expected error: token without RefreshToken should be evicted after TTL")
-	}
-	if !storage.IsNotFoundError(err) {
-		t.Errorf("Expected ErrTokenNotFound, got: %v", err)
-	}
+	require.Eventually(t, func() bool {
+		_, err := s.GetToken(ctx, "user-short-no-rt")
+		return storage.IsNotFoundError(err)
+	}, 5*time.Second, 50*time.Millisecond,
+		"token without RefreshToken should be evicted after TTL")
 }
 
 // ============================================================

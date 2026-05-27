@@ -27,7 +27,7 @@ const (
 func setupFlowTestServer(t *testing.T) (*Server, *memory.Store, *mock.Provider) {
 	t.Helper()
 
-	store := memory.New()
+	store := memory.New(memory.Config{})
 	t.Cleanup(func() { store.Stop() })
 
 	provider := mock.NewProvider()
@@ -41,7 +41,7 @@ func setupFlowTestServer(t *testing.T) (*Server, *memory.Store, *mock.Provider) 
 		AllowPKCEPlain:       false,
 		ClockSkewGracePeriod: 5,
 		// Mock provider returns no id_token; nonce echo is exercised in
-		// flows_nonce_test.go with its own fixture.
+		// nonce_test.go with its own fixture.
 		DisableNonceEchoRequirement: true,
 	}
 
@@ -68,7 +68,7 @@ func setupValidTokenProvider() func(context.Context, string) (*providers.UserInf
 func setupFlowTestServerWithNoStateParameter(t *testing.T) (*Server, *memory.Store, *mock.Provider) {
 	t.Helper()
 
-	store := memory.New()
+	store := memory.New(memory.Config{})
 	t.Cleanup(func() { store.Stop() })
 
 	provider := mock.NewProvider()

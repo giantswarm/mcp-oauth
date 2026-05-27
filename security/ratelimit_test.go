@@ -3,8 +3,11 @@ package security
 import (
 	"fmt"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewRateLimiter(t *testing.T) {
@@ -92,13 +95,10 @@ func TestRateLimiter_Allow_RefillOverTime(t *testing.T) {
 		t.Error("Allow() should return false when rate limited")
 	}
 
-	// Wait for token refill (500ms for 1 token at 2 req/s)
-	time.Sleep(550 * time.Millisecond)
-
-	// Should be allowed again
-	if !rl.Allow(identifier) {
-		t.Error("Allow() should be allowed after token refill")
-	}
+	// Poll until a token refills (2 req/s → refills in ~500ms).
+	require.Eventually(t, func() bool {
+		return rl.Allow(identifier)
+	}, time.Second, 10*time.Millisecond, "Allow() should be permitted after token refill")
 }
 
 func TestRateLimiter_Cleanup(t *testing.T) {
@@ -258,10 +258,14 @@ func TestRateLimiter_Stop_WhileActive(t *testing.T) {
 	done := make(chan bool, numWorkers)
 	stop := make(chan bool)
 
+	var started sync.WaitGroup
+	started.Add(numWorkers)
+
 	// Workers continuously making requests
 	for i := 0; i < numWorkers; i++ {
 		go func(id int) {
 			identifier := fmt.Sprintf("worker-%d", id)
+			started.Done()
 			for {
 				select {
 				case <-stop:
@@ -274,8 +278,8 @@ func TestRateLimiter_Stop_WhileActive(t *testing.T) {
 		}(i)
 	}
 
-	// Let workers run for a bit
-	time.Sleep(50 * time.Millisecond)
+	// Wait until all workers are running before stopping.
+	started.Wait()
 
 	// Stop the rate limiter while workers are active
 	rl.Stop()
