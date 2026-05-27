@@ -17,7 +17,7 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
-// PKCE validation constants (RFC 7636) — sourced from internal/constants.
+// PKCE validation constants (RFC 7636).
 const (
 	MinCodeVerifierLength = constants.MinCodeVerifierLength
 	MaxCodeVerifierLength = constants.MaxCodeVerifierLength
@@ -25,8 +25,7 @@ const (
 	PKCEMethodPlain       = constants.PKCEMethodPlain
 )
 
-// MaxResourceLength is the maximum allowed length for the resource parameter
-// (RFC 8707). Sourced from internal/constants.
+// MaxResourceLength is the maximum allowed length for the resource parameter (RFC 8707).
 const MaxResourceLength = constants.MaxResourceLength
 
 var (
@@ -34,7 +33,7 @@ var (
 	AllowedHTTPSchemes = constants.AllowedHTTPSchemes
 
 	// DefaultBlockedRedirectSchemes is the canonical list of URI schemes that
-	// must never appear in redirect URIs. Sourced from internal/constants.
+	// must never appear in redirect URIs.
 	DefaultBlockedRedirectSchemes = constants.DefaultBlockedRedirectSchemes
 
 	// DangerousSchemes is an alias for DefaultBlockedRedirectSchemes.
@@ -42,8 +41,7 @@ var (
 	// Deprecated: Use DefaultBlockedRedirectSchemes instead.
 	DangerousSchemes = constants.DefaultBlockedRedirectSchemes
 
-	// DefaultRFC3986SchemePattern is the regex that validates custom URI schemes
-	// (RFC 3986 §3.1). Sourced from internal/constants.
+	// DefaultRFC3986SchemePattern is the regex that validates custom URI schemes (RFC 3986 §3.1).
 	DefaultRFC3986SchemePattern = constants.DefaultRFC3986SchemePattern
 )
 

@@ -599,6 +599,20 @@ func (s *Server) exchangeCodeWithProvider(ctx context.Context, code, providerVer
 // Provider tokens are stored with an extended expiry (ProviderTokenTTL) so
 // SSO token forwarding outlives short upstream access-token lifetimes; the
 // original RefreshToken is preserved on the persisted copy.
+func providerUserInfoToStorage(u *providers.UserInfo) *storage.UserInfo {
+	return &storage.UserInfo{
+		ID:            u.ID,
+		Email:         u.Email,
+		EmailVerified: u.EmailVerified,
+		Name:          u.Name,
+		GivenName:     u.GivenName,
+		FamilyName:    u.FamilyName,
+		Picture:       u.Picture,
+		Locale:        u.Locale,
+		Groups:        u.Groups,
+	}
+}
+
 func (s *Server) saveUserInfoAndToken(ctx context.Context, userInfo *providers.UserInfo, providerToken *oauth2.Token) error {
 	tokenForStorage := s.extendTokenExpiryForStorage(providerToken)
 
@@ -607,17 +621,7 @@ func (s *Server) saveUserInfoAndToken(ctx context.Context, userInfo *providers.U
 		return fmt.Errorf("UserInfo.ID is empty; provider did not supply a subject claim")
 	}
 
-	storedInfo := &storage.UserInfo{
-		ID:            userInfo.ID,
-		Email:         userInfo.Email,
-		EmailVerified: userInfo.EmailVerified,
-		Name:          userInfo.Name,
-		GivenName:     userInfo.GivenName,
-		FamilyName:    userInfo.FamilyName,
-		Picture:       userInfo.Picture,
-		Locale:        userInfo.Locale,
-		Groups:        userInfo.Groups,
-	}
+	storedInfo := providerUserInfoToStorage(userInfo)
 
 	if err := s.tokenStore.SaveUserInfo(ctx, userInfo.ID, storedInfo); err != nil {
 		s.auditProviderTokenStorageFailed(ctx, userInfo, "save_user_info_by_id", err.Error())
