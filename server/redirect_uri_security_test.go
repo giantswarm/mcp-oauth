@@ -42,7 +42,6 @@ func defaultTestSecurityConfig() testSecurityConfig {
 
 // newTestServerWithSecurityConfig creates a test server with specific redirect URI security settings.
 // Note: This creates a server with a mock DNS resolver to avoid real DNS lookups in tests.
-// The mock resolver returns a public IP (93.184.216.34) for all hostnames by default.
 //
 // Security features are controlled via the testSecurityConfig struct for readability:
 // - productionMode=false sets DisableProductionMode=true (allows HTTP on non-loopback)
@@ -853,14 +852,22 @@ func (d *testDNSDialer) buildResponse(query []byte) []byte {
 		b := dnsmessage.NewBuilder(make([]byte, 0, 64), dnsmessage.Header{
 			ID: header.ID, Response: true, RCode: dnsmessage.RCodeServerFailure,
 		})
+		_ = b.StartQuestions()
+		_ = b.Question(q)
 		msg, _ := b.Finish()
 		return msg
 	}
 
 	if !hasResult {
-		if q.Type == dnsmessage.TypeA {
-			ips = []net.IP{net.ParseIP("93.184.216.34")}
-		}
+		// Return NXDOMAIN for unregistered hostnames so search-domain-appended
+		// queries (present on GitHub Actions runners) don't accidentally succeed.
+		b := dnsmessage.NewBuilder(make([]byte, 0, 64), dnsmessage.Header{
+			ID: header.ID, Response: true, Authoritative: true, RCode: dnsmessage.RCodeNameError,
+		})
+		_ = b.StartQuestions()
+		_ = b.Question(q)
+		msg, _ := b.Finish()
+		return msg
 	}
 
 	b := dnsmessage.NewBuilder(make([]byte, 0, 512), dnsmessage.Header{
