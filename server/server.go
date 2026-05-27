@@ -106,8 +106,8 @@ type Server struct {
 	// are trusted for DPoP htu reconstruction.
 	trustedProxyCIDRs []*net.IPNet
 	Logger            *slog.Logger
-	Config                        *Config
-	shutdownOnce                  sync.Once // Ensures Shutdown is called only once
+	Config            *Config
+	shutdownOnce      sync.Once // Ensures Shutdown is called only once
 }
 
 // NewWithCombined is an additive constructor for backends that implement the
@@ -402,6 +402,14 @@ func (s *Server) saveTokenMetadata(ctx context.Context, tokenID string, metadata
 	if err := store.SaveTokenMetadata(ctx, tokenID, metadata); err != nil {
 		s.Logger.Warn("Failed to save token metadata", "error", err)
 	}
+}
+
+func (s *Server) saveTokenPairMetadata(ctx context.Context, accessToken, refreshToken string, base storage.TokenMetadata, refreshExpiresAt time.Time) {
+	base.TokenType = "access"
+	s.saveTokenMetadata(ctx, accessToken, base)
+	base.TokenType = "refresh"
+	base.ExpiresAt = refreshExpiresAt
+	s.saveTokenMetadata(ctx, refreshToken, base)
 }
 
 const (

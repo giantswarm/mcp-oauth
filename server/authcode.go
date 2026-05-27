@@ -35,7 +35,7 @@ func (s *Server) logAuthCodeValidationFailure(ctx context.Context, reason, clien
 	}
 
 	// Return generic error per RFC 6749 (don't reveal details to attacker)
-	return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+	return errInvalidGrant
 }
 
 // validatePKCEForAuthFlow validates PKCE parameters for authorization flow start
@@ -138,7 +138,7 @@ func (s *Server) handleCodeReuseDetection(ctx context.Context, authCode *storage
 	}
 
 	_ = s.flowStore.DeleteAuthorizationCode(ctx, code)
-	return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+	return errInvalidGrant
 }
 
 // validatePublicClientPKCE validates that public clients use PKCE
@@ -164,7 +164,7 @@ func (s *Server) validatePublicClientPKCE(ctx context.Context, client *storage.C
 			})
 			s.Auditor.LogAuthFailure(ctx, authCode.UserID, client.ClientID, "", "pkce_required_for_public_client")
 		}
-		return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+		return errInvalidGrant
 	}
 
 	// Warn about insecure configuration
@@ -838,7 +838,7 @@ func (s *Server) validateCodeParameters(ctx context.Context, authCode *storage.A
 func (s *Server) validateScopesAndPKCE(ctx context.Context, authCode *storage.AuthorizationCode, client *storage.Client, clientID, code, codeVerifier string, span trace.Span) error {
 	if err := s.validateClientScopes(authCode.Scope, client.Scopes); err != nil {
 		s.logScopeValidationFailure(ctx, authCode, clientID, code, err)
-		return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+		return errInvalidGrant
 	}
 
 	if err := s.validatePublicClientPKCE(ctx, client, authCode, code); err != nil {
@@ -914,26 +914,15 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 	// Track AT -> RT pairing for refresh-time updates
 	s.registerTokenPair(accessToken, refreshToken)
 
-	s.saveTokenMetadata(ctx, accessToken, storage.TokenMetadata{
+	s.saveTokenPairMetadata(ctx, accessToken, refreshToken, storage.TokenMetadata{
 		UserID:    authCode.UserID,
 		ClientID:  clientID,
 		IssuedAt:  now,
 		ExpiresAt: expiry,
-		TokenType: "access",
 		Audience:  authCode.Audience,
 		FamilyID:  familyID,
 		Scopes:    tokenScopes,
-	})
-	s.saveTokenMetadata(ctx, refreshToken, storage.TokenMetadata{
-		UserID:    authCode.UserID,
-		ClientID:  clientID,
-		IssuedAt:  now,
-		ExpiresAt: refreshExpiry,
-		TokenType: "refresh",
-		Audience:  authCode.Audience,
-		FamilyID:  familyID,
-		Scopes:    tokenScopes,
-	})
+	}, refreshExpiry)
 
 	return tokenResponse, nil
 }

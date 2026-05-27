@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	vk "github.com/valkey-io/valkey-go"
 	"github.com/stretchr/testify/require"
+	vk "github.com/valkey-io/valkey-go"
 
 	dpopvalkey "github.com/giantswarm/mcp-oauth/dpop/valkey"
 )

@@ -144,4 +144,3 @@ func parseSASubject(subject string) (namespace, name string, ok bool) {
 	namespace, name, ok = strings.Cut(rest, ":")
 	return
 }
-

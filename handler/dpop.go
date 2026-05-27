@@ -53,4 +53,3 @@ func dpopHTU(r *http.Request, trustedProxies []*net.IPNet) string {
 	}
 	return u.String()
 }
-

@@ -72,11 +72,11 @@ func main() {
 			// List all scopes your resource server supports
 			// This appears in Protected Resource Metadata (/.well-known/oauth-protected-resource)
 			SupportedScopes: []string{
-				"mcp:access",      // General MCP access
-				scopeFilesRead,    // Read files
-				scopeFilesWrite,   // Write/modify files
-				scopeAdminAccess,  // Administrative access
-				"user:profile",    // User profile information
+				"mcp:access",     // General MCP access
+				scopeFilesRead,   // Read files
+				scopeFilesWrite,  // Write/modify files
+				scopeAdminAccess, // Administrative access
+				"user:profile",   // User profile information
 			},
 
 			// Feature 2: WWW-Authenticate Scope Guidance
@@ -106,10 +106,10 @@ func main() {
 			// Different HTTP methods can require different scopes
 			EndpointMethodScopeRequirements: map[string]map[string][]string{
 				"/api/files/*": {
-					"GET":    {scopeFilesRead},                    // Read-only
-					"POST":   {scopeFilesWrite},                   // Create new
-					"PUT":    {scopeFilesWrite},                   // Modify existing
-					"DELETE": {"files:delete", scopeAdminAccess},  // Delete requires admin
+					"GET":    {scopeFilesRead},                   // Read-only
+					"POST":   {scopeFilesWrite},                  // Create new
+					"PUT":    {scopeFilesWrite},                  // Modify existing
+					"DELETE": {"files:delete", scopeAdminAccess}, // Delete requires admin
 				},
 			},
 
