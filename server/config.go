@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/rsa"
@@ -58,24 +57,6 @@ var supportedSigningAlgorithms = map[string]bool{
 	SigningAlgorithmRS512: true,
 	SigningAlgorithmES256: true,
 	SigningAlgorithmES384: true,
-}
-
-// DNSResolver is an interface for DNS resolution, allowing for dependency injection
-// in testing. The default implementation uses net.DefaultResolver.
-//
-// This interface is intentionally minimal - it only exposes the method needed
-// for redirect URI validation.
-type DNSResolver interface {
-	// LookupIP looks up host using the local resolver.
-	// It returns a slice of that host's IPv4 and IPv6 addresses.
-	LookupIP(ctx context.Context, network, host string) ([]net.IP, error)
-}
-
-// defaultDNSResolver wraps net.DefaultResolver to implement DNSResolver.
-type defaultDNSResolver struct{}
-
-func (d *defaultDNSResolver) LookupIP(ctx context.Context, network, host string) ([]net.IP, error) {
-	return net.DefaultResolver.LookupIP(ctx, network, host)
 }
 
 // URI scheme constants (shared with validation.go)
@@ -673,11 +654,9 @@ type Config struct {
 	// Default: 2 seconds
 	DNSValidationTimeout time.Duration
 
-	// DNSResolver is the resolver used for DNS lookups during redirect URI validation.
-	// This is primarily for testing - allows injecting a mock resolver.
-	// If nil, the default net.DefaultResolver is used.
-	// Default: nil (uses net.DefaultResolver)
-	DNSResolver DNSResolver
+	// DNSResolver overrides the resolver used for DNS lookups during redirect URI
+	// validation. If nil, net.DefaultResolver is used.
+	DNSResolver *net.Resolver
 
 	// ValidateRedirectURIAtAuthorization enables re-validation of redirect URIs during
 	// authorization requests, not just at client registration time.

@@ -12,16 +12,6 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
-// Clock interface for time operations, allowing for deterministic testing
-type Clock interface {
-	Now() time.Time
-}
-
-// realClock implements Clock using the standard time package
-type realClock struct{}
-
-func (realClock) Now() time.Time { return time.Now() }
-
 // clientMetadataCache implements an in-memory LRU cache for URL-based client metadata
 // with TTL support and HTTP Cache-Control header respect
 type clientMetadataCache struct {
@@ -35,9 +25,6 @@ type clientMetadataCache struct {
 	negativeEntries    map[string]*negativeCacheEntry
 	negativeTTL        time.Duration
 	maxNegativeEntries int
-
-	// Clock for time operations (injectable for testing)
-	clock Clock
 
 	// Metrics for monitoring cache performance
 	metrics cacheMetrics
@@ -83,24 +70,13 @@ const DefaultMaxNegativeEntries = 500
 // Each repeated failure for the same client ID extends the TTL by this amount
 const negativeCacheBackoffIncrement = time.Minute
 
-// newClientMetadataCache creates a new metadata cache
 func newClientMetadataCache(defaultTTL time.Duration, maxEntries int) *clientMetadataCache {
-	return newClientMetadataCacheWithClock(defaultTTL, maxEntries, realClock{})
-}
-
-// newClientMetadataCacheWithClock creates a new metadata cache with a custom clock
-// This allows for deterministic testing without time.Sleep
-func newClientMetadataCacheWithClock(defaultTTL time.Duration, maxEntries int, clock Clock) *clientMetadataCache {
 	if maxEntries <= 0 {
-		maxEntries = 1000 // Default: cache up to 1000 unique URL clients
+		maxEntries = 1000
 	}
 	if defaultTTL <= 0 {
-		defaultTTL = 5 * time.Minute // Default: 5 minute TTL
+		defaultTTL = 5 * time.Minute
 	}
-	if clock == nil {
-		clock = realClock{}
-	}
-
 	return &clientMetadataCache{
 		entries:            make(map[string]*cachedMetadataEntry),
 		maxEntries:         maxEntries,
@@ -108,7 +84,6 @@ func newClientMetadataCacheWithClock(defaultTTL time.Duration, maxEntries int, c
 		negativeEntries:    make(map[string]*negativeCacheEntry),
 		negativeTTL:        DefaultNegativeCacheTTL,
 		maxNegativeEntries: DefaultMaxNegativeEntries,
-		clock:              clock,
 	}
 }
 
@@ -124,7 +99,7 @@ func (c *clientMetadataCache) Get(clientID string) (*storage.Client, bool) {
 	}
 
 	// Check if expired
-	now := c.clock.Now()
+	now := time.Now()
 	if now.After(entry.expiresAt) {
 		c.metrics.misses++
 		return nil, false
@@ -148,7 +123,7 @@ func (c *clientMetadataCache) Set(clientID string, metadata *ClientMetadata, cli
 		ttl = c.defaultTTL
 	}
 
-	now := c.clock.Now()
+	now := time.Now()
 	c.entries[clientID] = &cachedMetadataEntry{
 		metadata:  metadata,
 		client:    client,
@@ -173,7 +148,7 @@ func (c *clientMetadataCache) GetNegative(clientID string) (string, bool) {
 	}
 
 	// Check if expired
-	now := c.clock.Now()
+	now := time.Now()
 	if now.After(entry.expiresAt) {
 		// Clean up expired entry
 		delete(c.negativeEntries, clientID)
@@ -191,7 +166,7 @@ func (c *clientMetadataCache) SetNegative(clientID string, errorMsg string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	now := c.clock.Now()
+	now := time.Now()
 
 	// Check if we already have a negative entry - increment attempts
 	if existing, ok := c.negativeEntries[clientID]; ok {
@@ -282,7 +257,7 @@ func (c *clientMetadataCache) CleanupExpired() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	now := c.clock.Now()
+	now := time.Now()
 	removed := 0
 
 	// Clean up positive cache entries
