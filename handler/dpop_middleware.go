@@ -100,15 +100,11 @@ func serveDPoP(w http.ResponseWriter, r *http.Request, next http.Handler, replay
 		return
 	}
 
-	// Normalize Authorization to Bearer so downstream ValidateToken middleware
-	// can extract the token without needing to know the DPoP scheme.
-	r2 := r.Clone(r.Context())
+	// Normalize to Bearer and store proof JKT for sender-constraint enforcement (RFC 9449 §6.1).
+	ctx := context.WithValue(r.Context(), dpopProofJKTKeyType{}, proofClaims.JKT)
+	r2 := r.Clone(ctx)
 	r2.Header.Set("Authorization", "Bearer "+accessToken)
-
-	// Store the validated proof JKT so ValidateToken can enforce sender-constraint
-	// (RFC 9449 §6.1): the token's cnf.jkt must match the proof's key.
-	ctx := context.WithValue(r2.Context(), dpopProofJKTKeyType{}, proofClaims.JKT)
-	next.ServeHTTP(w, r2.WithContext(ctx))
+	next.ServeHTTP(w, r2)
 }
 
 func writeDPoPValidationError(w http.ResponseWriter, r *http.Request, err error, nonceProvider server.DPoPNonceProvider) {

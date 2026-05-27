@@ -1426,7 +1426,7 @@ func TestHandler_ValidateToken_SessionIDFromContext_WithFamilyID(t *testing.T) {
 	accessToken := "session-test-at"
 	familyID := "family-session-abc"
 
-	ctx := context.Background()
+	ctx := t.Context()
 	if err := store.SaveToken(ctx, accessToken, &oauth2.Token{
 		AccessToken: "provider-access",
 		Expiry:      time.Now().Add(time.Hour),
@@ -1480,7 +1480,7 @@ func TestHandler_ValidateToken_SessionIDFromContext_WithoutFamilyID(t *testing.T
 
 	accessToken := "session-test-no-family"
 
-	ctx := context.Background()
+	ctx := t.Context()
 	if err := store.SaveToken(ctx, accessToken, &oauth2.Token{
 		AccessToken: "provider-access",
 		Expiry:      time.Now().Add(time.Hour),
@@ -1531,7 +1531,7 @@ func TestHandler_ValidateToken_UserInfoAndSessionIDCoexist(t *testing.T) {
 	accessToken := "coexist-test-at"
 	familyID := "family-coexist-xyz"
 
-	ctx := context.Background()
+	ctx := t.Context()
 	if err := store.SaveToken(ctx, accessToken, &oauth2.Token{
 		AccessToken: "provider-access",
 		Expiry:      time.Now().Add(time.Hour),
@@ -1615,7 +1615,7 @@ func setupDPoPTestHandler(t *testing.T, accessToken, jkt string) (*Handler, *mem
 		t.Fatalf("server.New: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	if err := store.SaveToken(ctx, accessToken, &oauth2.Token{
 		AccessToken: "provider-at",
 		Expiry:      time.Now().Add(time.Hour),
@@ -1635,7 +1635,7 @@ func setupDPoPTestHandler(t *testing.T, accessToken, jkt string) (*Handler, *mem
 }
 
 // TestValidateToken_DPoPBoundToken_BearerBypass verifies that a DPoP-bound opaque
-// token presented as plain Bearer is rejected (issue #383).
+// token presented as plain Bearer is rejected.
 func TestValidateToken_DPoPBoundToken_BearerBypass(t *testing.T) {
 	const (
 		accessToken = "dpop-bound-opaque-token"
@@ -1664,7 +1664,7 @@ func TestValidateToken_DPoPBoundToken_BearerBypass(t *testing.T) {
 }
 
 // TestValidateToken_DPoPBoundToken_KeyMismatch verifies that a DPoP proof whose
-// key thumbprint does not match the token's cnf.jkt is rejected (issue #384).
+// key thumbprint does not match the token's cnf.jkt is rejected.
 func TestValidateToken_DPoPBoundToken_KeyMismatch(t *testing.T) {
 	const (
 		accessToken = "dpop-bound-opaque-token-2"
@@ -1680,7 +1680,7 @@ func TestValidateToken_DPoPBoundToken_KeyMismatch(t *testing.T) {
 	})
 
 	// Inject a proof JKT that differs from the token's bound JKT.
-	ctx := context.WithValue(context.Background(), dpopProofJKTKeyType{}, proofJKT)
+	ctx := context.WithValue(t.Context(), dpopProofJKTKeyType{}, proofJKT)
 	req := httptest.NewRequest(http.MethodGet, "/resource", nil).WithContext(ctx)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	w := httptest.NewRecorder()
@@ -1710,7 +1710,7 @@ func TestValidateToken_DPoPBoundToken_ValidProof(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	ctx := context.WithValue(context.Background(), dpopProofJKTKeyType{}, boundJKT)
+	ctx := context.WithValue(t.Context(), dpopProofJKTKeyType{}, boundJKT)
 	req := httptest.NewRequest(http.MethodGet, "/resource", nil).WithContext(ctx)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	w := httptest.NewRecorder()

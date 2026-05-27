@@ -44,31 +44,8 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 		// Single metadata lookup: used for both scope validation and session ID
 		metadata := h.getTokenMetadata(accessToken)
 
-		// Enforce DPoP sender-constraint (RFC 9449 §6.1, §7).
-		// tokenJKT is the key thumbprint the token was bound to at issuance.
-		// proofJKT is the thumbprint of the key that signed the DPoP proof on
-		// this request, set in context by DPoPMiddleware.
-		tokenJKT := jktFromToken(accessToken, metadata)
-		proofJKT := dpopProofJKTFromContext(r.Context())
-		if tokenJKT != "" {
-			if proofJKT == "" {
-				// #383: DPoP-bound token presented as plain Bearer — reject.
-				h.logger.Warn("DPoP-bound token presented without DPoP proof",
-					"ip", clientIP,
-					"token_suffix", accessToken[max(0, len(accessToken)-8):])
-				h.server.Auditor.LogAuthFailure(r.Context(), "", "", clientIP, "dpop_bound_token_bearer_bypass")
-				h.writeUnauthorizedError(w, r, constants.ErrorCodeInvalidToken, "DPoP-bound token must be presented with a DPoP proof")
-				return
-			}
-			if proofJKT != tokenJKT {
-				// #384: Proof was signed with a different key than the one bound to the token.
-				h.logger.Warn("DPoP proof key does not match token cnf.jkt",
-					"ip", clientIP,
-					"token_suffix", accessToken[max(0, len(accessToken)-8):])
-				h.server.Auditor.LogAuthFailure(r.Context(), "", "", clientIP, "dpop_key_binding_mismatch")
-				h.writeUnauthorizedError(w, r, constants.ErrorCodeInvalidToken, "DPoP proof key does not match token binding")
-				return
-			}
+		if h.checkDPoPBinding(w, r, accessToken, metadata, clientIP) {
+			return
 		}
 
 		if !h.validateTokenScopesFromMetadata(w, r, metadata, userInfo, clientIP) {
@@ -121,6 +98,33 @@ func contextWithValidatedToken(ctx context.Context, userInfo *providers.UserInfo
 		ctx = ContextWithScopes(ctx, metadata.Scopes)
 	}
 	return ctx
+}
+
+// checkDPoPBinding enforces RFC 9449 §6.1 sender-constraint. Returns true if the
+// check failed and the response has already been written.
+func (h *Handler) checkDPoPBinding(w http.ResponseWriter, r *http.Request, accessToken string, metadata *storage.TokenMetadata, clientIP string) bool {
+	tokenJKT := jktFromToken(accessToken, metadata)
+	if tokenJKT == "" {
+		return false
+	}
+	proofJKT := dpopProofJKTFromContext(r.Context())
+	if proofJKT == "" {
+		h.logger.Warn("DPoP-bound token presented without DPoP proof",
+			"ip", clientIP,
+			"token_suffix", accessToken[max(0, len(accessToken)-8):])
+		h.server.Auditor.LogAuthFailure(r.Context(), "", "", clientIP, "dpop_bound_token_bearer_bypass")
+		h.writeUnauthorizedError(w, r, constants.ErrorCodeInvalidToken, "DPoP-bound token must be presented with a DPoP proof")
+		return true
+	}
+	if proofJKT != tokenJKT {
+		h.logger.Warn("DPoP proof key does not match token cnf.jkt",
+			"ip", clientIP,
+			"token_suffix", accessToken[max(0, len(accessToken)-8):])
+		h.server.Auditor.LogAuthFailure(r.Context(), "", "", clientIP, "dpop_key_binding_mismatch")
+		h.writeUnauthorizedError(w, r, constants.ErrorCodeInvalidToken, "DPoP proof key does not match token binding")
+		return true
+	}
+	return false
 }
 
 // checkIPRateLimit checks if the client IP is rate limited. Returns true if limited.
