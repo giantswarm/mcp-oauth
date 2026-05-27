@@ -39,6 +39,7 @@ const (
 	AttrExpiresIn        = "oauth.expires_in"        // Token expiry duration
 	AttrError            = "oauth.error"             // Error code
 	AttrErrorDescription = "oauth.error_description" // Error description
+	AttrDiscovery        = "oauth.discovery"         // Discovery endpoint kind (authorization_server, openid_configuration, protected_resource, jwks)
 
 	// SECURITY WARNING: NEVER log actual credential values (authorization codes, access tokens,
 	// refresh tokens) in traces or logs. Use only metadata like "token_present", "code_validated",

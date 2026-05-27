@@ -9,7 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/server"
@@ -26,28 +30,32 @@ import (
 // "/mcp/files" and "/mcp/files/admin", a request for "/mcp/files/admin/users"
 // would match "/mcp/files/admin".
 func (h *Handler) ServeProtectedResourceMetadata(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+
+	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.discovery.prm")
+	defer endSpan()
+
+	instrumentation.SetSpanAttributes(span, attribute.String(instrumentation.AttrDiscovery, "protected_resource"))
+
 	if r.Method != http.MethodGet {
+		h.recordHTTPMetrics(r.Context(), endpointProtectedResource, http.MethodGet, http.StatusMethodNotAllowed, startTime)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Set CORS headers for browser-based clients
-	h.setCORSHeaders(w, r)
+	if _, ok := h.gateIPRateLimit(w, r, span, endpointProtectedResource, http.MethodGet, startTime); !ok {
+		return
+	}
 
+	h.setCORSHeaders(w, r)
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	security.SetDiscoveryCacheHeaders(w, h.server.Config.DiscoveryCacheMaxAge)
 
-	// Extract the resource path from the request URL
-	// Request path: /.well-known/oauth-protected-resource/mcp/files
-	// Resource path: /mcp/files
 	resourcePath := h.extractResourcePath(r.URL.Path)
-
-	// Look up path-specific configuration
 	pathConfig := h.findPathConfig(resourcePath)
-
-	// Build metadata response
 	metadata := h.buildProtectedResourceMetadata(resourcePath, pathConfig)
 
+	h.recordHTTPMetrics(r.Context(), endpointProtectedResource, http.MethodGet, http.StatusOK, startTime)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(metadata)
 }
@@ -338,10 +346,16 @@ func (h *Handler) extractIssuerPath() string {
 
 // ServeAuthorizationServerMetadata serves RFC 8414 Authorization Server Metadata
 func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *http.Request) {
-	startTime := time.Now()
-
-	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.discovery")
+	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.discovery.as")
 	defer endSpan()
+	instrumentation.SetSpanAttributes(span, attribute.String(instrumentation.AttrDiscovery, "authorization_server"))
+	h.serveAuthServerMetadata(w, r, span)
+}
+
+// serveAuthServerMetadata is the shared render path for AS-metadata and OIDC-config.
+// The span is opened by the caller so each endpoint carries its own span name.
+func (h *Handler) serveAuthServerMetadata(w http.ResponseWriter, r *http.Request, span trace.Span) {
+	startTime := time.Now()
 
 	if r.Method != http.MethodGet {
 		h.recordHTTPMetrics(r.Context(), endpointDiscovery, http.MethodGet, http.StatusMethodNotAllowed, startTime)
@@ -452,13 +466,13 @@ func (h *Handler) isRegistrationAvailable() bool {
 		len(h.server.Config.TrustedPublicRegistrationRedirectURIs) > 0
 }
 
-// ServeOpenIDConfiguration handles OpenID Connect Discovery 1.0 requests
-// Per RFC 8414 Section 5, this endpoint returns the same metadata as the
-// Authorization Server Metadata endpoint for compatibility with OpenID Connect clients
+// ServeOpenIDConfiguration handles OpenID Connect Discovery 1.0 requests.
+// Returns the same metadata as the AS-metadata endpoint per RFC 8414 §5.
 func (h *Handler) ServeOpenIDConfiguration(w http.ResponseWriter, r *http.Request) {
-	// OpenID Connect Discovery uses the same metadata as OAuth 2.0 AS Metadata
-	// This ensures compatibility with both OAuth 2.0 and OpenID Connect clients
-	h.ServeAuthorizationServerMetadata(w, r)
+	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.discovery.oidc")
+	defer endSpan()
+	instrumentation.SetSpanAttributes(span, attribute.String(instrumentation.AttrDiscovery, "openid_configuration"))
+	h.serveAuthServerMetadata(w, r, span)
 }
 
 // ServeJWKS publishes the public half of the access-token signing key as a
@@ -474,6 +488,8 @@ func (h *Handler) ServeJWKS(w http.ResponseWriter, r *http.Request) {
 
 	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.jwks")
 	defer endSpan()
+
+	instrumentation.SetSpanAttributes(span, attribute.String(instrumentation.AttrDiscovery, "jwks"))
 
 	if r.Method != http.MethodGet {
 		h.recordHTTPMetrics(r.Context(), endpointJWKS, http.MethodGet, http.StatusMethodNotAllowed, startTime)
