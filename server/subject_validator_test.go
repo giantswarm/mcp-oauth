@@ -215,6 +215,52 @@ func TestNewOIDCValidator_Errors(t *testing.T) {
 	})
 }
 
+// TestMatchClaimPattern covers matchClaimPattern in isolation so the matrix
+// of pattern/value combinations is cheap (no JWT signing overhead).
+func TestMatchClaimPattern(t *testing.T) {
+	// testSubject = "repo:org/repo:ref:refs/heads/main"
+	for _, tc := range []struct {
+		pattern string
+		value   string
+		wantErr bool
+	}{
+		// exact match
+		{"repo:org/repo:ref:refs/heads/main", "repo:org/repo:ref:refs/heads/main", false},
+		// exact mismatch
+		{"repo:org/repo:ref:refs/heads/main", "repo:org/repo:ref:refs/heads/feat", true},
+		// * spans the whole string including /
+		{"repo:org/repo:*", "repo:org/repo:ref:refs/heads/main", false},
+		// * at start
+		{"*:refs/heads/main", "repo:org/repo:ref:refs/heads/main", false},
+		// * in the middle
+		{"repo:org/repo:ref:*/main", "repo:org/repo:ref:refs/heads/main", false},
+		// * does not match when prefix is wrong
+		{"repo:org/other:*", "repo:org/repo:ref:refs/heads/main", true},
+		// ? matches a single character
+		{"repo:org/repo:ref:refs/heads/mai?", "repo:org/repo:ref:refs/heads/main", false},
+		// ? does not match two characters
+		{"repo:org/repo:ref:refs/heads/ma?", "repo:org/repo:ref:refs/heads/main", true},
+		// K8s SA glob
+		{"system:serviceaccount:ai-platform:*", "system:serviceaccount:ai-platform:my-svc", false},
+		// K8s SA glob: wrong namespace
+		{"system:serviceaccount:ai-platform:*", "system:serviceaccount:other:my-svc", true},
+		// absent claim value (empty string)
+		{"somevalue", "", true},
+		// wildcard matches empty remainder
+		{"repo:org/repo:*", "repo:org/repo:", false},
+		// character class
+		{"repo:org/repo:ref:refs/heads/mai[mn]", "repo:org/repo:ref:refs/heads/main", false},
+		{"repo:org/repo:ref:refs/heads/mai[mn]", "repo:org/repo:ref:refs/heads/maix", true},
+	} {
+		err := matchClaimPattern(tc.pattern, tc.value)
+		if tc.wantErr {
+			require.Error(t, err, "pattern=%q value=%q", tc.pattern, tc.value)
+		} else {
+			require.NoError(t, err, "pattern=%q value=%q", tc.pattern, tc.value)
+		}
+	}
+}
+
 func TestOIDCValidator_AllowedClaims(t *testing.T) {
 	key := newTestECKey(t)
 	const kid = "test-key-1"
@@ -230,77 +276,76 @@ func TestOIDCValidator_AllowedClaims(t *testing.T) {
 		})
 	}
 
-	t.Run("claim match", func(t *testing.T) {
-		v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
-			Issuer:           testIssuer,
-			JwksURL:          jwksURL,
-			AllowedAudiences: []string{testAudience},
-			AllowedClaims:    map[string]string{"sub": testSubject},
-		}}, jwksClient)
-		require.NoError(t, err)
+	for _, tc := range []struct {
+		name          string
+		allowedClaims map[string]string
+		sub           string
+		wantErr       bool
+	}{
+		{
+			name:          "exact match",
+			allowedClaims: map[string]string{"sub": testSubject},
+			sub:           testSubject,
+		},
+		{
+			name:          "exact mismatch",
+			allowedClaims: map[string]string{"sub": "repo:org/other:ref:refs/heads/main"},
+			sub:           testSubject,
+			wantErr:       true,
+		},
+		{
+			name:          "glob across slash",
+			allowedClaims: map[string]string{"sub": "repo:org/repo:*"},
+			sub:           testSubject,
+		},
+		{
+			name:          "glob wrong org",
+			allowedClaims: map[string]string{"sub": "repo:org/other:*"},
+			sub:           testSubject,
+			wantErr:       true,
+		},
+		{
+			name:          "absent claim treated as empty",
+			allowedClaims: map[string]string{"nonexistent_claim": "somevalue"},
+			sub:           testSubject,
+			wantErr:       true,
+		},
+		{
+			name:          "no AllowedClaims — no restriction",
+			allowedClaims: nil,
+			sub:           testSubject,
+		},
+		{
+			name:          "K8s SA glob — allowed namespace",
+			allowedClaims: map[string]string{"sub": "system:serviceaccount:ai-platform:*"},
+			sub:           "system:serviceaccount:ai-platform:my-svc",
+		},
+		{
+			name:          "K8s SA glob — wrong namespace",
+			allowedClaims: map[string]string{"sub": "system:serviceaccount:ai-platform:*"},
+			sub:           "system:serviceaccount:other:my-svc",
+			wantErr:       true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
+				Issuer:           testIssuer,
+				JwksURL:          jwksURL,
+				AllowedAudiences: []string{testAudience},
+				AllowedClaims:    tc.allowedClaims,
+			}}, jwksClient)
+			require.NoError(t, err)
 
-		identity, err := v.Validate(t.Context(), makeToken(testSubject), SubjectTokenTypeIDToken)
-		require.NoError(t, err)
-		require.Equal(t, testSubject, identity.Subject)
-	})
-
-	t.Run("claim mismatch", func(t *testing.T) {
-		v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
-			Issuer:           testIssuer,
-			JwksURL:          jwksURL,
-			AllowedAudiences: []string{testAudience},
-			AllowedClaims:    map[string]string{"sub": "repo:org/other:*"},
-		}}, jwksClient)
-		require.NoError(t, err)
-
-		_, err = v.Validate(t.Context(), makeToken(testSubject), SubjectTokenTypeIDToken)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "does not match allowed pattern")
-	})
-
-	t.Run("glob match", func(t *testing.T) {
-		// testSubject = "repo:org/repo:ref:refs/heads/main"
-		// path.Match treats '/' as a separator, so '*' only spans one segment.
-		// The pattern below matches the final segment (branch name) with '*'.
-		v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
-			Issuer:           testIssuer,
-			JwksURL:          jwksURL,
-			AllowedAudiences: []string{testAudience},
-			AllowedClaims:    map[string]string{"sub": "repo:org/repo:ref:refs/heads/*"},
-		}}, jwksClient)
-		require.NoError(t, err)
-
-		identity, err := v.Validate(t.Context(), makeToken(testSubject), SubjectTokenTypeIDToken)
-		require.NoError(t, err)
-		require.Equal(t, testSubject, identity.Subject)
-	})
-
-	t.Run("absent claim", func(t *testing.T) {
-		v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
-			Issuer:           testIssuer,
-			JwksURL:          jwksURL,
-			AllowedAudiences: []string{testAudience},
-			AllowedClaims:    map[string]string{"nonexistent_claim": "somevalue"},
-		}}, jwksClient)
-		require.NoError(t, err)
-
-		_, err = v.Validate(t.Context(), makeToken(testSubject), SubjectTokenTypeIDToken)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "does not match allowed pattern")
-	})
-
-	t.Run("no AllowedClaims means no restriction", func(t *testing.T) {
-		v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
-			Issuer:           testIssuer,
-			JwksURL:          jwksURL,
-			AllowedAudiences: []string{testAudience},
-		}}, jwksClient)
-		require.NoError(t, err)
-
-		identity, err := v.Validate(t.Context(), makeToken(testSubject), SubjectTokenTypeIDToken)
-		require.NoError(t, err)
-		require.Equal(t, testSubject, identity.Subject)
-	})
+			identity, err := v.Validate(t.Context(), makeToken(tc.sub), SubjectTokenTypeIDToken)
+			if tc.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "does not match allowed pattern")
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, tc.sub, identity.Subject)
+			}
+		})
+	}
 }
 
 func TestWithTrustedIssuers_RegistersValidators(t *testing.T) {

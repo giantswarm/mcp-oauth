@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"strings"
 
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
 )
@@ -42,8 +43,10 @@ type TrustedIssuer struct {
 	AllowedScopes []string
 	// AllowedClaims constrains which tokens are accepted by requiring each named
 	// claim to match its pattern. Keys are JWT claim names; values are exact
-	// strings or path.Match glob patterns (e.g. "system:serviceaccount:ns:*").
-	// Nil or empty means no claim restrictions.
+	// strings or glob patterns where '*' matches any sequence of characters
+	// (including '/') and '?' matches any single character. Use '*' freely
+	// across path segments, e.g. "system:serviceaccount:ns:*" or
+	// "repo:org/repo:*". Nil or empty means no claim restrictions.
 	AllowedClaims map[string]string
 }
 
@@ -118,12 +121,8 @@ func (v *OIDCValidator) Validate(ctx context.Context, subjectToken, subjectToken
 		}
 		for claimName, pattern := range ti.AllowedClaims {
 			claimValue, _ := rawClaims[claimName].(string)
-			matched, err := path.Match(pattern, claimValue)
-			if err != nil {
-				return SubjectIdentity{}, fmt.Errorf("claim %q: invalid pattern %q: %w", claimName, pattern, err)
-			}
-			if !matched {
-				return SubjectIdentity{}, fmt.Errorf("claim %q: value %q does not match allowed pattern %q", claimName, claimValue, pattern)
+			if err := matchClaimPattern(pattern, claimValue); err != nil {
+				return SubjectIdentity{}, fmt.Errorf("claim %q: %w", claimName, err)
 			}
 		}
 	}
@@ -133,6 +132,27 @@ func (v *OIDCValidator) Validate(ctx context.Context, subjectToken, subjectToken
 		Issuer:        claims.Issuer,
 		AllowedScopes: ti.AllowedScopes,
 	}, nil
+}
+
+// matchClaimPattern matches value against a glob pattern using path.Match
+// semantics, but with '/' stripped of its separator role so '*' spans the
+// whole string (including slashes). This lets patterns like
+// "repo:org/repo:*" match GHA subjects that contain '/'.
+func matchClaimPattern(pattern, value string) error {
+	// Replace '/' with '\x01' in both sides so path.Match never sees a
+	// separator; any other path.Match feature (?, [...]) is preserved.
+	const sep, placeholder = "/", "\x01"
+	matched, err := path.Match(
+		strings.ReplaceAll(pattern, sep, placeholder),
+		strings.ReplaceAll(value, sep, placeholder),
+	)
+	if err != nil {
+		return fmt.Errorf("invalid pattern %q: %w", pattern, err)
+	}
+	if !matched {
+		return fmt.Errorf("value %q does not match allowed pattern %q", value, pattern)
+	}
+	return nil
 }
 
 // Token-type URN constants shared between OIDCValidator and the token-exchange handler.
