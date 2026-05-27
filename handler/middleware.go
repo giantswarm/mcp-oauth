@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/providers"
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
@@ -44,9 +46,13 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 		// Single metadata lookup: used for DPoP binding, scope validation, and session ID
 		metadata := h.getTokenMetadata(accessToken)
 
-		if err := validateDPoPBinding(r, metadata); err != nil {
-			h.logger.Warn("DPoP binding validation failed", "ip", clientIP, "error", err)
-			h.writeUnauthorizedError(w, r, constants.ErrorCodeInvalidToken, "Token validation failed")
+		if err := validateDPoPBinding(r, accessToken, metadata); err != nil {
+			var v dpopViolation
+			if errors.As(err, &v) {
+				h.logger.Warn(v.logMsg, "ip", clientIP, "token_suffix", accessToken[max(0, len(accessToken)-8):])
+				h.server.Auditor.LogAuthFailure(r.Context(), "", "", clientIP, v.auditReason)
+			}
+			h.writeUnauthorizedError(w, r, constants.ErrorCodeInvalidToken, err.Error())
 			return
 		}
 
@@ -366,19 +372,55 @@ func (h *Handler) getTokenMetadata(accessToken string) *storage.TokenMetadata {
 	return metadata
 }
 
-// validateDPoPBinding enforces sender-constraint for DPoP-bound tokens (RFC 9449).
-// If the token metadata records a JKT, the request must carry a matching DPoP
-// proof JKT in context (placed there by DPoPMiddleware). Returns nil for bearer tokens.
-func validateDPoPBinding(r *http.Request, metadata *storage.TokenMetadata) error {
-	if metadata == nil || metadata.JKT == "" {
+// jktFromToken returns the JWK thumbprint bound to the token. For opaque tokens
+// it reads from stored metadata; for self-issued JWTs it parses the cnf.jkt
+// claim without re-verifying the signature (safe: token was verified by
+// ValidateToken immediately before this call).
+func jktFromToken(accessToken string, metadata *storage.TokenMetadata) string {
+	if metadata != nil && metadata.JKT != "" {
+		return metadata.JKT
+	}
+	if !oidc.IsJWT(accessToken) {
+		return ""
+	}
+	claims, err := oidc.ParseUnverifiedClaims(accessToken)
+	if err != nil {
+		return ""
+	}
+	cnf, _ := claims["cnf"].(map[string]any)
+	jkt, _ := cnf["jkt"].(string)
+	return jkt
+}
+
+type dpopViolation struct {
+	auditReason string
+	logMsg      string
+	userMsg     string
+}
+
+func (v dpopViolation) Error() string { return v.userMsg }
+
+// validateDPoPBinding enforces RFC 9449 §6.1 sender-constraint without writing
+// a response. Returns a dpopViolation error describing the failure, or nil.
+func validateDPoPBinding(r *http.Request, accessToken string, metadata *storage.TokenMetadata) error {
+	tokenJKT := jktFromToken(accessToken, metadata)
+	if tokenJKT == "" {
 		return nil
 	}
 	proofJKT := dpopProofJKTFromContext(r.Context())
 	if proofJKT == "" {
-		return fmt.Errorf("DPoP proof required for sender-constrained token")
+		return dpopViolation{
+			auditReason: "dpop_bound_token_bearer_bypass",
+			logMsg:      "DPoP-bound token presented without DPoP proof",
+			userMsg:     "DPoP-bound token must be presented with a DPoP proof",
+		}
 	}
-	if proofJKT != metadata.JKT {
-		return fmt.Errorf("DPoP proof key does not match token binding")
+	if proofJKT != tokenJKT {
+		return dpopViolation{
+			auditReason: "dpop_key_binding_mismatch",
+			logMsg:      "DPoP proof key does not match token cnf.jkt",
+			userMsg:     "DPoP proof key does not match token binding",
+		}
 	}
 	return nil
 }

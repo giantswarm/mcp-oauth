@@ -147,8 +147,19 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 		attribute.String(instrumentation.AttrGrantType, "authorization_code"),
 	)
 
+	dpopJKT, err := h.extractDPoPJKT(r)
+	if err != nil {
+		h.logger.Warn("Invalid DPoP proof on code exchange", "client_id", client.ClientID, "ip", clientIP, "error", err)
+		h.recordTokenFailure(r.Context(), "authorization_code", constants.ErrorCodeInvalidDPoPProof)
+		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
+		instrumentation.RecordError(span, err)
+		instrumentation.SetSpanError(span, "invalid dpop proof")
+		h.writeError(w, constants.ErrorCodeInvalidDPoPProof, "DPoP proof validation failed", http.StatusBadRequest)
+		return
+	}
+
 	// Exchange authorization code for tokens
-	tokenResponse, scope, err := h.server.ExchangeAuthorizationCode(r.Context(), code, client.ClientID, redirectURI, resource, codeVerifier, dpopProofJKTFromContext(r.Context()))
+	tokenResponse, scope, err := h.server.ExchangeAuthorizationCode(r.Context(), code, client.ClientID, redirectURI, resource, codeVerifier, dpopJKT)
 	if err != nil {
 		h.logger.Error("Failed to exchange authorization code", "client_id", client.ClientID, "ip", clientIP, "error", err)
 		h.recordTokenFailure(r.Context(), "authorization_code", constants.ErrorCodeInvalidGrant)
