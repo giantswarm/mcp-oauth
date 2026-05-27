@@ -197,7 +197,6 @@ func TestServer_ProviderRevocationConfigDefaults(t *testing.T) {
 	if srv.Config.ProviderRevocationFailureThreshold != 0.5 {
 		t.Errorf("ProviderRevocationFailureThreshold = %f, want 0.5 (default)", srv.Config.ProviderRevocationFailureThreshold)
 	}
-
 }
 
 // TestServer_ProviderRevocationConfigCustomValues tests custom values are preserved
@@ -233,7 +232,6 @@ func TestServer_ProviderRevocationConfigCustomValues(t *testing.T) {
 	if srv.Config.ProviderRevocationFailureThreshold != 0.3 {
 		t.Errorf("ProviderRevocationFailureThreshold = %f, want 0.3 (custom)", srv.Config.ProviderRevocationFailureThreshold)
 	}
-
 }
 
 // TestGenerateRandomToken_Length validates that generated tokens meet minimum length requirements

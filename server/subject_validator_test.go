@@ -277,11 +277,11 @@ func TestOIDCValidator_AllowedClaims(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name             string
-		allowedClaims    map[string]string
-		sub              string
-		wantErr          bool
-		wantErrContains  string
+		name            string
+		allowedClaims   map[string]string
+		sub             string
+		wantErr         bool
+		wantErrContains string
 	}{
 		{
 			name:          "exact match",
