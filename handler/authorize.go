@@ -431,9 +431,6 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	// Record authorization started metric
 	h.recordAuthorizationStarted(r.Context(), clientID)
 
-	h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusFound, startTime)
-	instrumentation.SetSpanSuccess(span)
-
 	// Parse and validate scheme before redirecting. authURL is built by the
 	// configured provider's AuthorizationURL(); the parse + scheme check is
 	// defense in depth against a misconfigured provider returning a non-HTTP URL.
@@ -449,6 +446,10 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+
+	h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusFound, startTime)
+	instrumentation.SetSpanSuccess(span)
+
 	// #nosec G710 -- authURL is built by the configured provider's
 	// AuthorizationURL() (server-controlled host) and re-validated above to be
 	// http/https. Not user-controllable; not an open redirect.
