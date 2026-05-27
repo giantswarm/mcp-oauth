@@ -382,7 +382,7 @@ func TestOIDCValidator_AllowedClaims_NonStringValue(t *testing.T) {
 			Expiry:   josejwt.NewNumericDate(time.Now().Add(time.Hour)),
 			IssuedAt: josejwt.NewNumericDate(time.Now()),
 		}).
-		Claims(map[string]interface{}{"numeric_claim": 42}).
+		Claims(map[string]any{"numeric_claim": 42}).
 		Serialize()
 	require.NoError(t, err)
 
