@@ -13,8 +13,9 @@ This document provides a deep technical reference for the security implementatio
 5. [Client Authentication](#client-authentication)
 6. [Client ID Metadata Documents Security](#client-id-metadata-documents-security)
 7. [Token Security](#token-security)
-8. [Attack Mitigation](#attack-mitigation)
-9. [Security Checklist](#security-checklist)
+8. [DPoP Sender-Constraint (RFC 9449)](#dpop-sender-constraint-rfc-9449)
+9. [Attack Mitigation](#attack-mitigation)
+10. [Security Checklist](#security-checklist)
 
 ## Overview
 
@@ -918,6 +919,24 @@ func validateToken(token, expectedResource string) error {
 - `token_audience_mismatch`: Token used for wrong resource
 - `token_validation_failed`: General validation failure
 - `invalid_issuer`: Token from unknown issuer
+
+## DPoP Sender-Constraint (RFC 9449)
+
+DPoP binds access tokens to the client's private key. The implementation enforces two independent properties:
+
+**1. Key binding at `ValidateToken`** — when a token's `cnf.jkt` claim (or `storage.TokenMetadata.JKT` for opaque tokens) is non-empty, the token must be presented as `Authorization: DPoP <token>`, not `Authorization: Bearer`. A bound token presented as Bearer is rejected with `401 invalid_token`. This closes the sender-constraint bypass where a stolen JWT could be replayed as a plain Bearer token.
+
+**2. Proof key matching at `ValidateToken`** — after `DPoPMiddleware` validates the proof and stores the proof JKT in the request context, `ValidateToken` compares it against the token's bound JKT. A mismatch (attacker uses their own key to produce a valid proof for a stolen token) is rejected with `401 invalid_token`. This closes the key-substitution attack that the `ath` claim alone does not prevent.
+
+**Middleware pipeline:**
+
+```
+DPoPMiddleware → ValidateToken → handler
+```
+
+`DPoPMiddleware` normalises `Authorization: DPoP <token>` to `Authorization: Bearer <token>` after proof validation, and stores the proof JKT in the request context. `ValidateToken` reads it. Reversing the order breaks sender-constraint.
+
+**Multi-pod replay protection** — use `server.WithDPoPReplayCache(sharedStore)` to back the replay cache with the distributed store (e.g., Valkey). Without a shared cache each pod maintains an independent JTI set, so a proof replayed to a different pod succeeds. See [DPoP guide](./docs/dpop.md).
 
 ## Attack Mitigation
 
