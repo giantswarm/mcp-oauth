@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	oauth "github.com/giantswarm/mcp-oauth"
 	oauthhandler "github.com/giantswarm/mcp-oauth/handler"
@@ -153,14 +154,16 @@ func main() {
 	// Health check
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "OK - Provider: %s\n", googleProvider.Name())
+		if _, err := fmt.Fprintf(w, "OK - Provider: %s\n", googleProvider.Name()); err != nil {
+			log.Printf("write response: %v", err)
+		}
 	})
 
 	// Start server
 	addr := ":8080"
 	log.Printf("🚀 Starting MCP OAuth Server on %s", addr)
 	log.Printf("📦 Provider: %s", googleProvider.Name())
-	log.Printf("🔐 Security: encryption=%v, audit=%v, ratelimit=%v",
+	log.Printf("🔐 Security: encryption=%v, audit=%v, ratelimit=%v", //nolint:gosec // G706: values are booleans derived from env var presence, not injected strings
 		encKeyB64 != "", true, true)
 	log.Printf("\nEndpoints:")
 	log.Printf("  Discovery (MCP 2025-11-25):")
@@ -178,7 +181,14 @@ func main() {
 	log.Printf("  - Protected Resource Metadata discovery")
 	log.Printf("  - Enhanced WWW-Authenticate headers with scope guidance")
 	log.Printf("  - OAuth 2.1 security (PKCE, token rotation)")
-	log.Fatal(http.ListenAndServe(addr, mux))
+	srv := &http.Server{
+		Addr:         addr,
+		Handler:      mux,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+	log.Fatal(srv.ListenAndServe())
 }
 
 // mcpResponse represents the JSON response from the MCP endpoint.

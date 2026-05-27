@@ -107,13 +107,22 @@ func main() {
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		_, _ = fmt.Fprintf(w, indexHTML, keyID)
+		if _, err := fmt.Fprintf(w, indexHTML, keyID); err != nil {
+			log.Printf("write response: %v", err)
+		}
 	})
 
 	log.Printf("Listening on :8080")
 	log.Printf("JWKS: http://localhost:8080/.well-known/jwks.json (kid=%s)", keyID)
 	log.Printf("Discovery: http://localhost:8080/.well-known/oauth-authorization-server")
-	if err := http.ListenAndServe(":8080", mux); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	httpSrv := &http.Server{
+		Addr:         ":8080",
+		Handler:      mux,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("Server failed: %v", err)
 	}
 }
