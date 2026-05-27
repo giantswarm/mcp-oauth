@@ -37,7 +37,7 @@ func (f *failingTokenStore) SaveToken(ctx context.Context, userID string, token 
 	return f.TokenStore.SaveToken(ctx, userID, token)
 }
 
-func (f *failingTokenStore) SaveUserInfo(ctx context.Context, userID string, info *providers.UserInfo) error {
+func (f *failingTokenStore) SaveUserInfo(ctx context.Context, userID string, info *storage.UserInfo) error {
 	if userID == testUserID && f.saveUserInfoByIDErr != nil {
 		return f.saveUserInfoByIDErr
 	}

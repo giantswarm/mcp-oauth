@@ -11,8 +11,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
-	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/giantswarm/mcp-oauth/instrumentation"
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/security"
 )
 
@@ -39,7 +39,7 @@ func (h *Handler) authenticateRevocationClient(w http.ResponseWriter, r *http.Re
 		h.recordHTTPMetrics(r.Context(), endpointRevoke, http.MethodPost, http.StatusUnauthorized, startTime)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "client authentication failed")
-		h.writeError(w, oauth.ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
+		h.writeError(w, constants.ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
 		return "", false, false
 	}
 	return basicClientID, true, true
@@ -72,13 +72,13 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 			h.recordHTTPMetrics(r.Context(), endpointRevoke, http.MethodPost, http.StatusRequestEntityTooLarge, startTime)
 			instrumentation.RecordError(span, err)
 			instrumentation.SetSpanError(span, "request body too large")
-			h.writeError(w, oauth.ErrorCodeInvalidRequest, "Request body too large", http.StatusRequestEntityTooLarge)
+			h.writeError(w, constants.ErrorCodeInvalidRequest, "Request body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
 		h.recordHTTPMetrics(r.Context(), endpointRevoke, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "parse form failed")
-		h.writeError(w, oauth.ErrorCodeInvalidRequest, "Failed to parse request", http.StatusBadRequest)
+		h.writeError(w, constants.ErrorCodeInvalidRequest, "Failed to parse request", http.StatusBadRequest)
 		return
 	}
 
@@ -86,7 +86,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 	clientID := r.Form.Get("client_id")
 
 	if token == "" {
-		h.failRequest(w, r, span, endpointRevoke, http.MethodPost, http.StatusBadRequest, oauth.ErrorCodeInvalidRequest, "token is required", startTime)
+		h.failRequest(w, r, span, endpointRevoke, http.MethodPost, http.StatusBadRequest, constants.ErrorCodeInvalidRequest, "token is required", startTime)
 		return
 	}
 
@@ -149,19 +149,19 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 		if isMaxBytesError(err) {
 			instrumentation.SetSpanError(span, "request body too large")
 			h.recordHTTPMetrics(r.Context(), endpointIntrospect, http.MethodPost, http.StatusRequestEntityTooLarge, startTime)
-			h.writeError(w, oauth.ErrorCodeInvalidRequest, "Request body too large", http.StatusRequestEntityTooLarge)
+			h.writeError(w, constants.ErrorCodeInvalidRequest, "Request body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
 		instrumentation.SetSpanError(span, "failed to parse request")
 		h.recordHTTPMetrics(r.Context(), endpointIntrospect, http.MethodPost, http.StatusBadRequest, startTime)
-		h.writeError(w, oauth.ErrorCodeInvalidRequest, "Failed to parse request", http.StatusBadRequest)
+		h.writeError(w, constants.ErrorCodeInvalidRequest, "Failed to parse request", http.StatusBadRequest)
 		return
 	}
 
 	token := r.Form.Get("token")
 	if token == "" {
 		instrumentation.SetSpanError(span, "token parameter missing")
-		h.writeError(w, oauth.ErrorCodeInvalidRequest, "token parameter is required", http.StatusBadRequest)
+		h.writeError(w, constants.ErrorCodeInvalidRequest, "token parameter is required", http.StatusBadRequest)
 		return
 	}
 
@@ -182,7 +182,7 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 	clientID, err := h.authenticateIntrospectionClient(r, clientIP)
 	if err != nil {
 		instrumentation.SetSpanError(span, "client authentication failed")
-		h.writeError(w, oauth.ErrorCodeInvalidClient, err.Error(), http.StatusUnauthorized)
+		h.writeError(w, constants.ErrorCodeInvalidClient, err.Error(), http.StatusUnauthorized)
 		return
 	}
 

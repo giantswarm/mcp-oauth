@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/server"
@@ -180,8 +180,8 @@ func TestHandler_OAuthEndpoints_IPRateLimit(t *testing.T) {
 			if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
 				t.Fatalf("decode body: %v", err)
 			}
-			if body["error"] != oauth.ErrorCodeRateLimitExceeded {
-				t.Errorf("error = %q, want %q", body["error"], oauth.ErrorCodeRateLimitExceeded)
+			if body["error"] != constants.ErrorCodeRateLimitExceeded {
+				t.Errorf("error = %q, want %q", body["error"], constants.ErrorCodeRateLimitExceeded)
 			}
 		})
 	}
@@ -310,8 +310,8 @@ func TestHandler_TokenEndpoint_PostAuthUserRateLimit(t *testing.T) {
 	if err := json.NewDecoder(second.Body).Decode(&body); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	if body["error"] != oauth.ErrorCodeRateLimitExceeded {
-		t.Errorf("error = %q, want %q", body["error"], oauth.ErrorCodeRateLimitExceeded)
+	if body["error"] != constants.ErrorCodeRateLimitExceeded {
+		t.Errorf("error = %q, want %q", body["error"], constants.ErrorCodeRateLimitExceeded)
 	}
 }
 

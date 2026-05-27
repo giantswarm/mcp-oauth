@@ -8,8 +8,8 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
-	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/giantswarm/mcp-oauth/instrumentation"
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/server"
 )
@@ -28,21 +28,21 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 		h.logger.Debug("token exchange: subject_token missing", "ip", clientIP)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "subject_token missing")
-		h.writeError(w, oauth.ErrorCodeInvalidRequest, "subject_token is required", http.StatusBadRequest)
+		h.writeError(w, constants.ErrorCodeInvalidRequest, "subject_token is required", http.StatusBadRequest)
 		return
 	}
 	if subjectTokenType == "" {
 		h.logger.Debug("token exchange: subject_token_type missing", "ip", clientIP)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "subject_token_type missing")
-		h.writeError(w, oauth.ErrorCodeInvalidRequest, "subject_token_type is required", http.StatusBadRequest)
+		h.writeError(w, constants.ErrorCodeInvalidRequest, "subject_token_type is required", http.StatusBadRequest)
 		return
 	}
 	if resource == "" {
 		h.logger.Debug("token exchange: resource missing", "ip", clientIP)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "resource missing")
-		h.writeError(w, oauth.ErrorCodeInvalidRequest, "resource is required (RFC 8707)", http.StatusBadRequest)
+		h.writeError(w, constants.ErrorCodeInvalidRequest, "resource is required (RFC 8707)", http.StatusBadRequest)
 		return
 	}
 
@@ -54,10 +54,10 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 			if provider := h.server.DPoPNonceProvider(); provider != nil {
 				w.Header().Set("DPoP-Nonce", provider.Nonce(r.Context()))
 			}
-			h.writeError(w, oauth.ErrorCodeUseDPoPNonce, "A DPoP nonce is required.", http.StatusBadRequest)
+			h.writeError(w, constants.ErrorCodeUseDPoPNonce, "A DPoP nonce is required.", http.StatusBadRequest)
 			return
 		}
-		h.writeError(w, oauth.ErrorCodeInvalidDPoPProof, err.Error(), http.StatusBadRequest)
+		h.writeError(w, constants.ErrorCodeInvalidDPoPProof, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -83,7 +83,7 @@ func (h *Handler) handleTokenExchangeError(
 			"type", unsupported.TokenType(), "ip", clientIP)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "unsupported subject_token_type")
-		h.writeError(w, oauth.ErrorCodeUnsupportedGrantType,
+		h.writeError(w, constants.ErrorCodeUnsupportedGrantType,
 			"no validator registered for subject_token_type "+unsupported.TokenType(),
 			http.StatusBadRequest)
 		return
@@ -91,7 +91,7 @@ func (h *Handler) handleTokenExchangeError(
 	h.logger.Debug("token exchange failed", "ip", clientIP, "error", err)
 	h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 	instrumentation.SetSpanError(span, "token exchange failed")
-	h.writeError(w, oauth.ErrorCodeInvalidGrant, "subject token invalid or rejected", http.StatusBadRequest)
+	h.writeError(w, constants.ErrorCodeInvalidGrant, "subject token invalid or rejected", http.StatusBadRequest)
 }
 
 func (h *Handler) writeTokenExchangeResponse(w http.ResponseWriter, result *server.TokenExchangeResult) {

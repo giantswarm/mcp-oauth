@@ -55,12 +55,6 @@ const (
 
 // PKCE and token generation constants
 const (
-	// MinCodeVerifierLength is the minimum length for PKCE code_verifier (RFC 7636)
-	MinCodeVerifierLength = 43
-
-	// MaxCodeVerifierLength is the maximum length for PKCE code_verifier (RFC 7636)
-	MaxCodeVerifierLength = 128
-
 	// ClientIDTokenLength is the length of generated client IDs
 	ClientIDTokenLength = 32
 
@@ -92,14 +86,8 @@ const (
 
 // Redirect URI validation constants
 var (
-	// AllowedHTTPSchemes lists allowed HTTP-based redirect URI schemes
-	AllowedHTTPSchemes = []string{"http", "https"}
-
 	// DangerousSchemes lists URI schemes that must never be allowed for security
 	DangerousSchemes = []string{"javascript", "data", "file", "vbscript", "about"}
-
-	// DefaultRFC3986SchemePattern is the default regex pattern for custom URI schemes (RFC 3986)
-	DefaultRFC3986SchemePattern = []string{"^[a-z][a-z0-9+.-]*$"}
 
 	// LoopbackAddresses lists recognized loopback addresses for development
 	LoopbackAddresses = []string{"localhost", "127.0.0.1", "::1", "[::1]"}
@@ -140,21 +128,6 @@ const (
 
 	// TokenEndpointAuthMethodPost represents POST form parameters
 	TokenEndpointAuthMethodPost = "client_secret_post"
-)
-
-// PKCE code challenge methods
-const (
-	// PKCEMethodS256 is the SHA256 code challenge method (recommended, OAuth 2.1)
-	PKCEMethodS256 = "S256"
-
-	// PKCEMethodPlain is the plain code challenge method (deprecated, insecure)
-	PKCEMethodPlain = "plain"
-)
-
-// OAuth specification version
-const (
-	// OAuthSpecVersion is the OAuth specification version this library implements
-	OAuthSpecVersion = "OAuth 2.1"
 )
 
 // URI schemes

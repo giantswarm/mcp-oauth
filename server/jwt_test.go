@@ -253,7 +253,7 @@ func TestGenerateAndStoreTokens_JWTMode(t *testing.T) {
 	ctx := context.Background()
 
 	// Pre-seed UserInfo so JWT claims are populated.
-	require.NoError(t, store.SaveUserInfo(ctx, "user-1", &providers.UserInfo{
+	require.NoError(t, store.SaveUserInfo(ctx, "user-1", &storage.UserInfo{
 		ID:     "user-1",
 		Email:  "user@example.com",
 		Groups: []string{"admins"},
@@ -273,7 +273,7 @@ func TestGenerateAndStoreTokens_JWTMode(t *testing.T) {
 		ExpiresAt: time.Now().Add(10 * time.Minute),
 	}
 
-	tokenResp, err := srv.generateAndStoreTokens(ctx, authCode, "client-x", "fam-1")
+	tokenResp, err := srv.generateAndStoreTokens(ctx, authCode, "client-x", "fam-1", "")
 	require.NoError(t, err)
 	require.NotEmpty(t, tokenResp.AccessToken)
 	require.NotEmpty(t, tokenResp.RefreshToken)

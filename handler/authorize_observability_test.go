@@ -15,7 +15,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
-	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
@@ -131,7 +131,7 @@ func TestServeAuthorization_RespondAuthorizationError_PinsSpanAttributes(t *test
 		require.Equal(t, "state missing", span.Status.Description)
 		v, ok := spanAttrString(span, attribute.Key(instrumentation.AttrError))
 		require.True(t, ok, "span missing %s attribute", instrumentation.AttrError)
-		require.Equal(t, oauth.ErrorCodeInvalidRequest, v)
+		require.Equal(t, constants.ErrorCodeInvalidRequest, v)
 		_, ok = spanAttrString(span, attribute.Key(instrumentation.AttrErrorDescription))
 		require.True(t, ok, "span missing %s attribute", instrumentation.AttrErrorDescription)
 	})
@@ -152,7 +152,7 @@ func TestServeAuthorization_RespondAuthorizationError_PinsSpanAttributes(t *test
 		require.Equal(t, "state too short", span.Status.Description)
 		v, ok := spanAttrString(span, attribute.Key(instrumentation.AttrError))
 		require.True(t, ok)
-		require.Equal(t, oauth.ErrorCodeInvalidRequest, v)
+		require.Equal(t, constants.ErrorCodeInvalidRequest, v)
 		_, ok = spanAttrString(span, attribute.Key(instrumentation.AttrErrorDescription))
 		require.True(t, ok)
 	})
@@ -173,7 +173,7 @@ func TestServeAuthorization_RespondAuthorizationError_PinsSpanAttributes(t *test
 		require.Equal(t, "unsupported response_type", span.Status.Description)
 		v, ok := spanAttrString(span, attribute.Key(instrumentation.AttrError))
 		require.True(t, ok)
-		require.Equal(t, oauth.ErrorCodeUnsupportedResponseType, v)
+		require.Equal(t, constants.ErrorCodeUnsupportedResponseType, v)
 		_, ok = spanAttrString(span, attribute.Key(instrumentation.AttrErrorDescription))
 		require.True(t, ok)
 	})
@@ -196,7 +196,7 @@ func TestServeAuthorization_RespondAuthorizationError_PinsSpanAttributes(t *test
 		require.Equal(t, "authorization flow failed", span.Status.Description)
 		v, ok := spanAttrString(span, attribute.Key(instrumentation.AttrError))
 		require.True(t, ok)
-		require.Equal(t, oauth.ErrorCodeServerError, v)
+		require.Equal(t, constants.ErrorCodeServerError, v)
 		_, ok = spanAttrString(span, attribute.Key(instrumentation.AttrErrorDescription))
 		require.True(t, ok)
 	})
@@ -232,7 +232,7 @@ func TestServeAuthorization_RespondAuthorizationError_PinsSpanAttributes(t *test
 		require.Equal(t, "invalid authorization URL", span.Status.Description)
 		v, ok := spanAttrString(span, attribute.Key(instrumentation.AttrError))
 		require.True(t, ok)
-		require.Equal(t, oauth.ErrorCodeServerError, v)
+		require.Equal(t, constants.ErrorCodeServerError, v)
 		_, ok = spanAttrString(span, attribute.Key(instrumentation.AttrErrorDescription))
 		require.True(t, ok)
 	})

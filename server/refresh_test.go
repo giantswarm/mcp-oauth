@@ -87,6 +87,7 @@ func TestServer_RefreshTokenRotation(t *testing.T) {
 		"https://example.com/callback",
 		"", // resource parameter (optional)
 		codeVerifier,
+		"",
 	)
 	if err != nil {
 		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
@@ -222,6 +223,7 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 		"https://example.com/callback",
 		"", // resource parameter (optional)
 		codeVerifier,
+		"",
 	)
 	if err != nil {
 		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
@@ -434,6 +436,7 @@ func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
 		"https://example.com/callback",
 		"", // resource parameter (optional)
 		codeVerifier,
+		"",
 	)
 	if err != nil {
 		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
@@ -564,6 +567,7 @@ func TestServer_ConcurrentRefreshTokenReuse(t *testing.T) {
 		"https://example.com/callback",
 		"", // resource parameter (optional)
 		codeVerifier,
+		"",
 	)
 	if err != nil {
 		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
@@ -717,6 +721,7 @@ func TestServer_RefreshTokenReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 		"https://example.com/callback",
 		"", // resource parameter (optional)
 		codeVerifier,
+		"",
 	)
 	if err != nil {
 		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
@@ -1421,7 +1426,7 @@ func TestServer_RefreshAccessToken_FamilyIDInMetadata(t *testing.T) {
 		t.Fatalf("HandleProviderCallback() error = %v", err)
 	}
 
-	token, _, err := srv.ExchangeAuthorizationCode(ctx, authCodeObj.Code, clientID, "https://example.com/callback", "", codeVerifier)
+	token, _, err := srv.ExchangeAuthorizationCode(ctx, authCodeObj.Code, clientID, "https://example.com/callback", "", codeVerifier, "")
 	if err != nil {
 		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
 	}
@@ -1515,7 +1520,7 @@ func TestServer_RefreshAccessToken_PreservesScopesAndAudience(t *testing.T) {
 		t.Fatalf("HandleProviderCallback() error = %v", err)
 	}
 
-	token, _, err := srv.ExchangeAuthorizationCode(ctx, authCodeObj.Code, clientID, "https://example.com/callback", "", codeVerifier)
+	token, _, err := srv.ExchangeAuthorizationCode(ctx, authCodeObj.Code, clientID, "https://example.com/callback", "", codeVerifier, "")
 	if err != nil {
 		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)
 	}

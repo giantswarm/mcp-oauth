@@ -13,6 +13,7 @@ import (
 	"time"
 
 	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
@@ -289,8 +290,8 @@ func TestHandler_ServeToken_AuthorizationCode_BasicAuthAndFormClientIDMismatch_R
 	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
 		t.Fatalf("failed to decode error response: %v", err)
 	}
-	if errResp.Error != oauth.ErrorCodeInvalidClient {
-		t.Errorf("error = %q, want %q", errResp.Error, oauth.ErrorCodeInvalidClient)
+	if errResp.Error != constants.ErrorCodeInvalidClient {
+		t.Errorf("error = %q, want %q", errResp.Error, constants.ErrorCodeInvalidClient)
 	}
 	if !strings.Contains(errResp.ErrorDescription, "does not match") {
 		t.Errorf("error_description = %q, want it to contain %q", errResp.ErrorDescription, "does not match")
@@ -320,8 +321,8 @@ func TestHandler_ServeToken_AuthorizationCode_UnknownBasicAuthClient(t *testing.
 	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
 		t.Fatalf("failed to decode error response: %v", err)
 	}
-	if errResp.Error != oauth.ErrorCodeInvalidClient {
-		t.Errorf("error = %q, want %q", errResp.Error, oauth.ErrorCodeInvalidClient)
+	if errResp.Error != constants.ErrorCodeInvalidClient {
+		t.Errorf("error = %q, want %q", errResp.Error, constants.ErrorCodeInvalidClient)
 	}
 }
 
