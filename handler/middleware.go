@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/providers"
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
@@ -43,6 +45,16 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 		// Single metadata lookup: used for both scope validation and session ID
 		metadata := h.getTokenMetadata(accessToken)
 
+		if err := validateDPoPBinding(r, accessToken, metadata); err != nil {
+			var v dpopViolation
+			if errors.As(err, &v) {
+				h.logger.Warn(v.logMsg, "ip", clientIP, "token_suffix", accessToken[max(0, len(accessToken)-8):])
+				h.server.Auditor.LogAuthFailure(r.Context(), "", "", clientIP, v.auditReason)
+			}
+			h.writeUnauthorizedError(w, r, constants.ErrorCodeInvalidToken, err.Error())
+			return
+		}
+
 		if !h.validateTokenScopesFromMetadata(w, r, metadata, userInfo, clientIP) {
 			return
 		}
@@ -55,6 +67,26 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 		ctx := contextWithValidatedToken(r.Context(), userInfo, metadata)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// jktFromToken returns the JWK thumbprint bound to the token. For opaque tokens
+// it reads from stored metadata; for self-issued JWTs it parses the cnf.jkt
+// claim without re-verifying the signature (safe: token was verified by
+// ValidateToken immediately before this call).
+func jktFromToken(accessToken string, metadata *storage.TokenMetadata) string {
+	if metadata != nil && metadata.JKT != "" {
+		return metadata.JKT
+	}
+	if !oidc.IsJWT(accessToken) {
+		return ""
+	}
+	claims, err := oidc.ParseUnverifiedClaims(accessToken)
+	if err != nil {
+		return ""
+	}
+	cnf, _ := claims["cnf"].(map[string]any)
+	jkt, _ := cnf["jkt"].(string)
+	return jkt
 }
 
 // contextWithValidatedToken stamps the authenticated UserInfo on ctx and,
@@ -73,6 +105,39 @@ func contextWithValidatedToken(ctx context.Context, userInfo *providers.UserInfo
 		ctx = ContextWithScopes(ctx, metadata.Scopes)
 	}
 	return ctx
+}
+
+type dpopViolation struct {
+	auditReason string
+	logMsg      string
+	userMsg     string
+}
+
+func (v dpopViolation) Error() string { return v.userMsg }
+
+// validateDPoPBinding enforces RFC 9449 §6.1 sender-constraint without writing
+// a response. Returns a dpopViolation error describing the failure, or nil.
+func validateDPoPBinding(r *http.Request, accessToken string, metadata *storage.TokenMetadata) error {
+	tokenJKT := jktFromToken(accessToken, metadata)
+	if tokenJKT == "" {
+		return nil
+	}
+	proofJKT := dpopProofJKTFromContext(r.Context())
+	if proofJKT == "" {
+		return dpopViolation{
+			auditReason: "dpop_bound_token_bearer_bypass",
+			logMsg:      "DPoP-bound token presented without DPoP proof",
+			userMsg:     "DPoP-bound token must be presented with a DPoP proof",
+		}
+	}
+	if proofJKT != tokenJKT {
+		return dpopViolation{
+			auditReason: "dpop_key_binding_mismatch",
+			logMsg:      "DPoP proof key does not match token cnf.jkt",
+			userMsg:     "DPoP proof key does not match token binding",
+		}
+	}
+	return nil
 }
 
 // checkIPRateLimit checks if the client IP is rate limited. Returns true if limited.

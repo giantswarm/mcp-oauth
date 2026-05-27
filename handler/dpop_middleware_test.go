@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -280,4 +281,83 @@ func TestDPoPMiddleware_NonceRequired(t *testing.T) {
 		require.True(t, called)
 		require.Equal(t, http.StatusOK, w.Code)
 	})
+}
+
+func TestDPoPMiddleware_ProofJKTStoredInContext(t *testing.T) {
+	key := newTestDPoPKey(t)
+	cache := server.NewMemoryDPoPReplayCache()
+
+	var capturedJKT string
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedJKT = dpopProofJKTFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+
+	mw := DPoPMiddleware(cache, nil, nil)(next)
+
+	const accessToken = "some-access-token"
+	r := httptest.NewRequest(http.MethodGet, "http://api.example.com/resource", nil)
+	r.Header.Set("Authorization", "DPoP "+accessToken)
+	proof := buildDPoPProofWithATH(t, key, "GET", "http://api.example.com/resource", "jti-ctx-1", accessToken)
+	r.Header.Set("DPoP", proof)
+	w := httptest.NewRecorder()
+
+	mw.ServeHTTP(w, r)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.NotEmpty(t, capturedJKT, "proof JKT must be stored in context after successful validation")
+}
+
+func TestDPoPMiddleware_NormalizesAuthorizationToBearer(t *testing.T) {
+	key := newTestDPoPKey(t)
+	cache := server.NewMemoryDPoPReplayCache()
+
+	var capturedAuthHeader string
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAuthHeader = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	mw := DPoPMiddleware(cache, nil, nil)(next)
+
+	const accessToken = "some-access-token"
+	r := httptest.NewRequest(http.MethodGet, "http://api.example.com/resource", nil)
+	r.Header.Set("Authorization", "DPoP "+accessToken)
+	proof := buildDPoPProofWithATH(t, key, "GET", "http://api.example.com/resource", "jti-norm-1", accessToken)
+	r.Header.Set("DPoP", proof)
+	w := httptest.NewRecorder()
+
+	mw.ServeHTTP(w, r)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.True(t, strings.HasPrefix(capturedAuthHeader, "Bearer "),
+		"Authorization header must be normalized to Bearer scheme, got: %s", capturedAuthHeader)
+	require.Contains(t, capturedAuthHeader, accessToken)
+}
+
+func TestHandlerDPoPMiddleware_Method(t *testing.T) {
+	h, store := setupTestHandler(t)
+	defer store.Stop()
+
+	key := newTestDPoPKey(t)
+
+	var capturedJKT string
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedJKT = dpopProofJKTFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+
+	mw := h.DPoPMiddleware()(next)
+
+	const accessToken = "some-access-token"
+	r := httptest.NewRequest(http.MethodGet, "http://api.example.com/resource", nil)
+	r.Header.Set("Authorization", "DPoP "+accessToken)
+	proof := buildDPoPProofWithATH(t, key, "GET", "http://api.example.com/resource", "jti-handler-1", accessToken)
+	r.Header.Set("DPoP", proof)
+	w := httptest.NewRecorder()
+
+	mw.ServeHTTP(w, r)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.NotEmpty(t, capturedJKT)
 }

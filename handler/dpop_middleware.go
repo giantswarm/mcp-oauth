@@ -1,9 +1,11 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -12,6 +14,16 @@ import (
 	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/server"
 )
+
+type dpopProofJKTKeyType struct{}
+
+// dpopProofJKTFromContext returns the DPoP proof JKT stored by DPoPMiddleware
+// after successful proof validation. Empty string means no DPoP proof was validated
+// for this request (Bearer scheme or no Authorization header).
+func dpopProofJKTFromContext(ctx context.Context) string {
+	jkt, _ := ctx.Value(dpopProofJKTKeyType{}).(string)
+	return jkt
+}
 
 // DPoPMiddleware returns an http.Handler middleware that enforces DPoP proof
 // validation when the request carries an "Authorization: DPoP <token>" header
@@ -28,13 +40,37 @@ import (
 // trustedProxies lists CIDRs whose X-Forwarded-Proto and X-Forwarded-Host
 // headers are trusted for htu reconstruction. Pass nil when the server is
 // directly exposed.
+//
+// When replayCache is nil the middleware falls back to an in-process cache and
+// logs a warning. In multi-pod deployments this silently degrades to per-pod
+// replay protection; pass a shared cache via WithDPoPReplayCache to avoid this.
+// Prefer [Handler.DPoPMiddleware] when using handler.Handler — it reads the
+// cache from the server so split-wiring is impossible.
 func DPoPMiddleware(replayCache server.DPoPReplayCache, nonceProvider server.DPoPNonceProvider, trustedProxies []*net.IPNet) func(http.Handler) http.Handler {
 	if replayCache == nil {
+		slog.Warn("DPoPMiddleware: replayCache is nil; using in-process replay cache — not safe in multi-pod deployments")
 		replayCache = server.NewMemoryDPoPReplayCache()
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			serveDPoP(w, r, next, replayCache, nonceProvider, trustedProxies)
+		})
+	}
+}
+
+// DPoPMiddleware returns an http.Handler middleware that enforces DPoP proof
+// validation, reading the replay cache, nonce provider, and trusted proxy CIDRs
+// from the server. This eliminates the split-wiring problem of the package-level
+// [DPoPMiddleware] function: both the issuance path and the resource path share
+// the same cache instance automatically.
+func (h *Handler) DPoPMiddleware() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			serveDPoP(w, r, next,
+				h.server.DPoPReplayCache(),
+				h.server.DPoPNonceProvider(),
+				h.server.TrustedProxyCIDRs(),
+			)
 		})
 	}
 }
@@ -58,12 +94,17 @@ func serveDPoP(w http.ResponseWriter, r *http.Request, next http.Handler, replay
 		return
 	}
 	htu := dpopHTU(r, trustedProxies)
-	_, err := server.ValidateDPoPProof(r.Context(), proof, r.Method, htu, accessToken, replayCache, nonceProvider, time.Now())
+	proofClaims, err := server.ValidateDPoPProof(r.Context(), proof, r.Method, htu, accessToken, replayCache, nonceProvider, time.Now())
 	if err != nil {
 		writeDPoPValidationError(w, r, err, nonceProvider)
 		return
 	}
-	next.ServeHTTP(w, r)
+
+	// Normalize to Bearer and store proof JKT for sender-constraint enforcement (RFC 9449 §6.1).
+	ctx := context.WithValue(r.Context(), dpopProofJKTKeyType{}, proofClaims.JKT)
+	r2 := r.Clone(ctx)
+	r2.Header.Set("Authorization", "Bearer "+accessToken)
+	next.ServeHTTP(w, r2)
 }
 
 func writeDPoPValidationError(w http.ResponseWriter, r *http.Request, err error, nonceProvider server.DPoPNonceProvider) {

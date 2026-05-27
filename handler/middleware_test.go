@@ -12,6 +12,8 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
@@ -1424,7 +1426,7 @@ func TestHandler_ValidateToken_SessionIDFromContext_WithFamilyID(t *testing.T) {
 	accessToken := "session-test-at"
 	familyID := "family-session-abc"
 
-	ctx := context.Background()
+	ctx := t.Context()
 	if err := store.SaveToken(ctx, accessToken, &oauth2.Token{
 		AccessToken: "provider-access",
 		Expiry:      time.Now().Add(time.Hour),
@@ -1478,7 +1480,7 @@ func TestHandler_ValidateToken_SessionIDFromContext_WithoutFamilyID(t *testing.T
 
 	accessToken := "session-test-no-family"
 
-	ctx := context.Background()
+	ctx := t.Context()
 	if err := store.SaveToken(ctx, accessToken, &oauth2.Token{
 		AccessToken: "provider-access",
 		Expiry:      time.Now().Add(time.Hour),
@@ -1529,7 +1531,7 @@ func TestHandler_ValidateToken_UserInfoAndSessionIDCoexist(t *testing.T) {
 	accessToken := "coexist-test-at"
 	familyID := "family-coexist-xyz"
 
-	ctx := context.Background()
+	ctx := t.Context()
 	if err := store.SaveToken(ctx, accessToken, &oauth2.Token{
 		AccessToken: "provider-access",
 		Expiry:      time.Now().Add(time.Hour),
@@ -1598,4 +1600,147 @@ func TestSessionIDFromContext_EmptyString(t *testing.T) {
 	if ok {
 		t.Error("SessionIDFromContext() should return false for empty string")
 	}
+}
+
+// setupDPoPTestHandler returns a handler backed by a memory store and a
+// pre-saved opaque access token. When jkt is non-empty, the token metadata
+// records a DPoP binding.
+func setupDPoPTestHandler(t *testing.T, accessToken, jkt string) (*Handler, *memory.Store) {
+	t.Helper()
+	store := memory.New()
+	provider := mock.NewProvider()
+	config := &server.Config{Issuer: testIssuer, DisableNonceEchoRequirement: true}
+	srv, err := server.New(provider, store, store, store, config, nil)
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+
+	ctx := t.Context()
+	if err := store.SaveToken(ctx, accessToken, &oauth2.Token{
+		AccessToken: "provider-at",
+		Expiry:      time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+	if err := store.SaveTokenMetadata(ctx, accessToken, storage.TokenMetadata{
+		UserID:    "user-1",
+		ClientID:  "client-1",
+		TokenType: "access",
+		JKT:       jkt,
+	}); err != nil {
+		t.Fatalf("SaveTokenMetadata: %v", err)
+	}
+
+	return New(srv, nil), store
+}
+
+// TestValidateToken_DPoPBoundToken_BearerBypass verifies that a DPoP-bound opaque
+// token presented as plain Bearer is rejected.
+func TestValidateToken_DPoPBoundToken_BearerBypass(t *testing.T) {
+	const (
+		accessToken = "dpop-bound-opaque-token"
+		boundJKT    = "some-jwk-thumbprint"
+	)
+
+	handler, store := setupDPoPTestHandler(t, accessToken, boundJKT)
+	defer store.Stop()
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// No DPoP proof context: simulates Authorization: Bearer <token> request
+	// that bypassed DPoPMiddleware (or DPoPMiddleware was not in the chain).
+	req := httptest.NewRequest(http.MethodGet, "/resource", nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	w := httptest.NewRecorder()
+
+	handler.ValidateToken(next).ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+	var body map[string]string
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&body))
+	require.Equal(t, "invalid_token", body["error"])
+}
+
+// TestValidateToken_DPoPBoundToken_KeyMismatch verifies that a DPoP proof whose
+// key thumbprint does not match the token's cnf.jkt is rejected.
+func TestValidateToken_DPoPBoundToken_KeyMismatch(t *testing.T) {
+	const (
+		accessToken = "dpop-bound-opaque-token-2"
+		boundJKT    = "token-bound-jkt"
+		proofJKT    = "different-proof-jkt"
+	)
+
+	handler, store := setupDPoPTestHandler(t, accessToken, boundJKT)
+	defer store.Stop()
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Inject a proof JKT that differs from the token's bound JKT.
+	ctx := context.WithValue(t.Context(), dpopProofJKTKeyType{}, proofJKT)
+	req := httptest.NewRequest(http.MethodGet, "/resource", nil).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	w := httptest.NewRecorder()
+
+	handler.ValidateToken(next).ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+	var body map[string]string
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&body))
+	require.Equal(t, "invalid_token", body["error"])
+}
+
+// TestValidateToken_DPoPBoundToken_ValidProof verifies that a DPoP-bound token
+// presented with a matching proof JKT in context is accepted.
+func TestValidateToken_DPoPBoundToken_ValidProof(t *testing.T) {
+	const (
+		accessToken = "dpop-bound-opaque-token-3"
+		boundJKT    = "matching-jkt-value"
+	)
+
+	handler, store := setupDPoPTestHandler(t, accessToken, boundJKT)
+	defer store.Stop()
+
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	ctx := context.WithValue(t.Context(), dpopProofJKTKeyType{}, boundJKT)
+	req := httptest.NewRequest(http.MethodGet, "/resource", nil).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	w := httptest.NewRecorder()
+
+	handler.ValidateToken(next).ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.True(t, called, "next handler must be reached for valid DPoP-bound token")
+}
+
+// TestValidateToken_UnboundToken_NoProof verifies that an unbound (plain Bearer)
+// token without a DPoP proof in context is accepted normally.
+func TestValidateToken_UnboundToken_NoProof(t *testing.T) {
+	const accessToken = "plain-bearer-token"
+
+	handler, store := setupDPoPTestHandler(t, accessToken, "" /* no JKT */)
+	defer store.Stop()
+
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/resource", nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	w := httptest.NewRecorder()
+
+	handler.ValidateToken(next).ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.True(t, called)
 }
