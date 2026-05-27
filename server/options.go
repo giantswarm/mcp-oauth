@@ -94,9 +94,10 @@ func WithTokenRefreshHandler(handler TokenRefreshHandler) Option {
 	}
 }
 
-// WithTrustedIssuers registers an OIDCValidator built from issuers for both
-// urn:ietf:params:oauth:token-type:id_token and
-// urn:ietf:params:oauth:token-type:access_token subject_token_type values.
+// WithTrustedIssuers registers an OIDCValidator built from issuers for
+// urn:ietf:params:oauth:token-type:id_token,
+// urn:ietf:params:oauth:token-type:access_token, and
+// urn:ietf:params:oauth:token-type:jwt subject_token_type values.
 // These validators are consulted by the RFC 8693 token-exchange handler.
 func WithTrustedIssuers(issuers []TrustedIssuer) Option {
 	return func(s *Server) {
@@ -110,34 +111,19 @@ func WithTrustedIssuers(issuers []TrustedIssuer) Option {
 		}
 		s.subjectValidators[SubjectTokenTypeIDToken] = v
 		s.subjectValidators[SubjectTokenTypeAccessToken] = v
+		s.subjectValidators[SubjectTokenTypeJWT] = v
 	}
 }
 
 // WithSubjectTokenValidator registers a custom SubjectTokenValidator for the
-// given subject_token_type URN. Use this to register K8sSAValidator or any
-// other validator alongside or instead of OIDCValidator.
+// given subject_token_type URN. Use this to register a custom validator
+// alongside or instead of OIDCValidator.
 func WithSubjectTokenValidator(tokenType string, v SubjectTokenValidator) Option {
 	return func(s *Server) {
 		if s.subjectValidators == nil {
 			s.subjectValidators = make(map[string]SubjectTokenValidator)
 		}
 		s.subjectValidators[tokenType] = v
-	}
-}
-
-// WithKubernetesSATrust registers a K8sSAValidator for projected ServiceAccount
-// tokens from the given clusters under the SubjectTokenTypeJWT token type.
-func WithKubernetesSATrust(trusts []KubernetesSATrust) Option {
-	return func(s *Server) {
-		v, err := NewK8sSAValidator(trusts)
-		if err != nil {
-			s.Logger.Error("failed to initialise Kubernetes SA validator", "error", err)
-			return
-		}
-		if s.subjectValidators == nil {
-			s.subjectValidators = make(map[string]SubjectTokenValidator)
-		}
-		s.subjectValidators[SubjectTokenTypeJWT] = v
 	}
 }
 

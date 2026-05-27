@@ -215,6 +215,94 @@ func TestNewOIDCValidator_Errors(t *testing.T) {
 	})
 }
 
+func TestOIDCValidator_AllowedClaims(t *testing.T) {
+	key := newTestECKey(t)
+	const kid = "test-key-1"
+	jwksURL, jwksClient := serveStaticJWKS(t, key, kid)
+
+	makeToken := func(sub string) string {
+		return signSubjectToken(t, key, kid, josejwt.Claims{
+			Issuer:   testIssuer,
+			Subject:  sub,
+			Audience: josejwt.Audience{testAudience},
+			Expiry:   josejwt.NewNumericDate(time.Now().Add(time.Hour)),
+			IssuedAt: josejwt.NewNumericDate(time.Now()),
+		})
+	}
+
+	t.Run("claim match", func(t *testing.T) {
+		v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
+			Issuer:           testIssuer,
+			JwksURL:          jwksURL,
+			AllowedAudiences: []string{testAudience},
+			AllowedClaims:    map[string]string{"sub": testSubject},
+		}}, jwksClient)
+		require.NoError(t, err)
+
+		identity, err := v.Validate(t.Context(), makeToken(testSubject), SubjectTokenTypeIDToken)
+		require.NoError(t, err)
+		require.Equal(t, testSubject, identity.Subject)
+	})
+
+	t.Run("claim mismatch", func(t *testing.T) {
+		v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
+			Issuer:           testIssuer,
+			JwksURL:          jwksURL,
+			AllowedAudiences: []string{testAudience},
+			AllowedClaims:    map[string]string{"sub": "repo:org/other:*"},
+		}}, jwksClient)
+		require.NoError(t, err)
+
+		_, err = v.Validate(t.Context(), makeToken(testSubject), SubjectTokenTypeIDToken)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "does not match allowed pattern")
+	})
+
+	t.Run("glob match", func(t *testing.T) {
+		// testSubject = "repo:org/repo:ref:refs/heads/main"
+		// path.Match treats '/' as a separator, so '*' only spans one segment.
+		// The pattern below matches the final segment (branch name) with '*'.
+		v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
+			Issuer:           testIssuer,
+			JwksURL:          jwksURL,
+			AllowedAudiences: []string{testAudience},
+			AllowedClaims:    map[string]string{"sub": "repo:org/repo:ref:refs/heads/*"},
+		}}, jwksClient)
+		require.NoError(t, err)
+
+		identity, err := v.Validate(t.Context(), makeToken(testSubject), SubjectTokenTypeIDToken)
+		require.NoError(t, err)
+		require.Equal(t, testSubject, identity.Subject)
+	})
+
+	t.Run("absent claim", func(t *testing.T) {
+		v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
+			Issuer:           testIssuer,
+			JwksURL:          jwksURL,
+			AllowedAudiences: []string{testAudience},
+			AllowedClaims:    map[string]string{"nonexistent_claim": "somevalue"},
+		}}, jwksClient)
+		require.NoError(t, err)
+
+		_, err = v.Validate(t.Context(), makeToken(testSubject), SubjectTokenTypeIDToken)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "does not match allowed pattern")
+	})
+
+	t.Run("no AllowedClaims means no restriction", func(t *testing.T) {
+		v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
+			Issuer:           testIssuer,
+			JwksURL:          jwksURL,
+			AllowedAudiences: []string{testAudience},
+		}}, jwksClient)
+		require.NoError(t, err)
+
+		identity, err := v.Validate(t.Context(), makeToken(testSubject), SubjectTokenTypeIDToken)
+		require.NoError(t, err)
+		require.Equal(t, testSubject, identity.Subject)
+	})
+}
+
 func TestWithTrustedIssuers_RegistersValidators(t *testing.T) {
 	key := newTestECKey(t)
 	const kid = "test-key-1"
@@ -231,5 +319,5 @@ func TestWithTrustedIssuers_RegistersValidators(t *testing.T) {
 
 	require.NotNil(t, srv.SubjectValidatorFor(SubjectTokenTypeIDToken))
 	require.NotNil(t, srv.SubjectValidatorFor(SubjectTokenTypeAccessToken))
-	require.Nil(t, srv.SubjectValidatorFor(SubjectTokenTypeJWT))
+	require.NotNil(t, srv.SubjectValidatorFor(SubjectTokenTypeJWT))
 }

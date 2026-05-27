@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"path"
 
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
 )
@@ -39,6 +40,11 @@ type TrustedIssuer struct {
 	// AllowedScopes caps the scopes that can be issued for tokens from this issuer.
 	// Nil means no per-issuer restriction.
 	AllowedScopes []string
+	// AllowedClaims constrains which tokens are accepted by requiring each named
+	// claim to match its pattern. Keys are JWT claim names; values are exact
+	// strings or path.Match glob patterns (e.g. "system:serviceaccount:ns:*").
+	// Nil or empty means no claim restrictions.
+	AllowedClaims map[string]string
 }
 
 // OIDCValidator validates tokens from statically configured trusted issuers.
@@ -81,7 +87,7 @@ func newOIDCValidatorWithClient(issuers []TrustedIssuer, client *oidc.JWKSClient
 // boundary.
 func (v *OIDCValidator) Validate(ctx context.Context, subjectToken, subjectTokenType string) (SubjectIdentity, error) {
 	switch subjectTokenType {
-	case SubjectTokenTypeIDToken, SubjectTokenTypeAccessToken:
+	case SubjectTokenTypeIDToken, SubjectTokenTypeAccessToken, SubjectTokenTypeJWT:
 	default:
 		return SubjectIdentity{}, fmt.Errorf("unsupported subject_token_type: %q", subjectTokenType)
 	}
@@ -105,6 +111,23 @@ func (v *OIDCValidator) Validate(ctx context.Context, subjectToken, subjectToken
 		return SubjectIdentity{}, fmt.Errorf("subject token validation failed: %w", err)
 	}
 
+	if len(ti.AllowedClaims) > 0 {
+		rawClaims, err := oidc.ParseUnverifiedClaims(subjectToken)
+		if err != nil {
+			return SubjectIdentity{}, fmt.Errorf("parsing token claims: %w", err)
+		}
+		for claimName, pattern := range ti.AllowedClaims {
+			claimValue, _ := rawClaims[claimName].(string)
+			matched, err := path.Match(pattern, claimValue)
+			if err != nil {
+				return SubjectIdentity{}, fmt.Errorf("claim %q: invalid pattern %q: %w", claimName, pattern, err)
+			}
+			if !matched {
+				return SubjectIdentity{}, fmt.Errorf("claim %q: value %q does not match allowed pattern %q", claimName, claimValue, pattern)
+			}
+		}
+	}
+
 	return SubjectIdentity{
 		Subject:       claims.Subject,
 		Issuer:        claims.Issuer,
@@ -112,8 +135,7 @@ func (v *OIDCValidator) Validate(ctx context.Context, subjectToken, subjectToken
 	}, nil
 }
 
-// Token-type URN constants shared between OIDCValidator, K8sSAValidator, and
-// the token-exchange handler.
+// Token-type URN constants shared between OIDCValidator and the token-exchange handler.
 const (
 	SubjectTokenTypeIDToken     = "urn:ietf:params:oauth:token-type:id_token"
 	SubjectTokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token"
