@@ -107,11 +107,6 @@ func applyProviderRevocationDefaults(config *Config) {
 		config.ProviderRevocationFailureThreshold = 0.5
 	}
 
-	if config.RevokedFamilyRetentionDays == 0 {
-		config.RevokedFamilyRetentionDays = 90 // 90 days
-	} else if config.RevokedFamilyRetentionDays < 1 {
-		config.RevokedFamilyRetentionDays = 7 // Minimum 1 week
-	}
 }
 
 // applyRateLimitDefaults sets defaults for rate limiting configuration.
@@ -152,7 +147,6 @@ func validateProviderRevocationConfig(config *Config, logger *slog.Logger) {
 	origTimeout := config.ProviderRevocationTimeout
 	origRetries := config.ProviderRevocationMaxRetries
 	origThreshold := config.ProviderRevocationFailureThreshold
-	origRetention := config.RevokedFamilyRetentionDays
 
 	hasInvalidValues := false
 
@@ -183,22 +177,12 @@ func validateProviderRevocationConfig(config *Config, logger *slog.Logger) {
 		hasInvalidValues = true
 	}
 
-	// Validate and correct retention
-	if origRetention != 0 && origRetention < 1 {
-		logger.Warn("CONFIGURATION WARNING: Invalid RevokedFamilyRetentionDays corrected",
-			"provided_value", origRetention,
-			"corrected_to", config.RevokedFamilyRetentionDays,
-			"reason", "retention must be at least 1 day")
-		hasInvalidValues = true
-	}
-
 	// Log final configuration if everything is valid
 	if !hasInvalidValues {
 		logger.Debug("Provider revocation configuration validated",
 			"timeout_seconds", config.ProviderRevocationTimeout,
 			"max_retries", config.ProviderRevocationMaxRetries,
-			"failure_threshold", config.ProviderRevocationFailureThreshold,
-			"retention_days", config.RevokedFamilyRetentionDays)
+			"failure_threshold", config.ProviderRevocationFailureThreshold)
 	}
 }
 

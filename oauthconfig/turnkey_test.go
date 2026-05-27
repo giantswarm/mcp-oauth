@@ -58,7 +58,7 @@ func TestTurnkeyWiring(t *testing.T) {
 		t.Fatal("NewEncryptorFromEnv returned nil despite ENCRYPTION_KEY set")
 	}
 
-	store, closeFn, err := oauthconfig.StorageFromEnv(slog.Default())
+	store, closeFn, err := oauthconfig.StorageFromEnv(encryptor, nil, slog.Default())
 	if err != nil {
 		t.Fatalf("StorageFromEnv: %v", err)
 	}
@@ -69,12 +69,8 @@ func TestTurnkeyWiring(t *testing.T) {
 		t.Fatalf("ProviderFromEnv: %v", err)
 	}
 
-	// Attaching the encryptor via the WithEncryptor option is the documented
-	// path; prove it wires through without a panic, since the whole point of
-	// NewEncryptorFromEnv is to be composable with the server constructor.
 	srv, err := server.NewWithCombined(
 		provider, store, cfg, slog.Default(),
-		server.WithEncryptor(encryptor),
 	)
 	if err != nil {
 		t.Fatalf("server.NewWithCombined: %v", err)

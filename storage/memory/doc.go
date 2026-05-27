@@ -16,9 +16,16 @@
 //
 // Example usage:
 //
+//	// Plain store (no encryption, default 1m cleanup interval):
 //	store := memory.New()
 //	defer store.Stop()
 //
-//	// Use store for TokenStore, ClientStore, and FlowStore interfaces
+//	// With encryption at rest and a custom cleanup interval:
+//	key, _ := security.GenerateKey()
+//	enc, _ := security.NewEncryptor(key)
+//	store := memory.New(memory.WithEncryptor(enc), memory.WithCleanupInterval(30*time.Second))
+//	defer store.Stop()
+//
+//	// Use store for TokenStore, ClientStore, and FlowStore interfaces:
 //	server, _ := oauth.NewServer(provider, store, store, store, config, logger)
 package memory

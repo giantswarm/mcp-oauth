@@ -11,17 +11,9 @@ import (
 //
 //	logger.Info("storage initialized", "store", store)
 func (s *Store) LogValue() slog.Value {
-	s.encryptorMu.RLock()
-	enc := s.encryptor
-	s.encryptorMu.RUnlock()
-
-	s.instMu.RLock()
-	inst := s.inst
-	s.instMu.RUnlock()
-
 	return slog.GroupValue(
 		slog.String("backend", storage.BackendValkey),
-		slog.Bool("encryption_at_rest", enc != nil && enc.IsEnabled()),
-		slog.Bool("instrumentation_on", inst != nil),
+		slog.Bool("encryption_at_rest", s.encryptor != nil && s.encryptor.IsEnabled()),
+		slog.Bool("instrumentation_on", s.inst != nil),
 	)
 }

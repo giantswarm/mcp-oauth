@@ -53,11 +53,7 @@ func main() {
 		log.Fatalf("Failed to create Google provider: %v", err)
 	}
 
-	// 2. Create storage (in-memory with custom cleanup interval for production)
-	store := memory.NewWithInterval(1 * time.Minute)
-	defer store.Stop()
-
-	// 3. Build security dependencies before server construction so they are
+	// 2. Build security dependencies before store construction so they can be
 	// passed via functional options. Secure-by-default applies regardless;
 	// these options layer additional defense (encryption at rest, audit
 	// logging, multi-tier rate limiting).
@@ -81,9 +77,8 @@ func main() {
 	clientRegRateLimiter := security.NewClientRegistrationRateLimiter(logger)
 	defer clientRegRateLimiter.Stop()
 
-	// 5. OpenTelemetry instrumentation. Built outside the constructor so
-	// the same pipeline can be shared with other components in the
-	// process; pass via WithInstrumentation.
+	// 3. OpenTelemetry instrumentation. Built outside the constructors so
+	// the same pipeline can be shared with both the store and the server.
 	inst, err := instrumentation.New(instrumentation.Config{
 		Enabled:         getBoolEnv("ENABLE_INSTRUMENTATION", true),
 		ServiceName:     getEnvOrDefault("SERVICE_NAME", "mcp-oauth-production"),
@@ -96,7 +91,15 @@ func main() {
 		log.Fatalf("Failed to initialize instrumentation: %v", err)
 	}
 
-	// 6. Create OAuth server with production-grade security configuration
+	// 4. Create storage with all cross-cutting deps wired at construction.
+	store := memory.New(
+		memory.WithCleanupInterval(time.Minute),
+		memory.WithEncryptor(encryptor),
+		memory.WithInstrumentation(inst),
+	)
+	defer store.Stop()
+
+	// 5. Create OAuth server with production-grade security configuration
 	server, err := oauth.NewServer(
 		googleProvider,
 		store, // TokenStore
@@ -149,7 +152,6 @@ func main() {
 			// },
 		},
 		logger,
-		oauth.WithEncryptor(encryptor),
 		oauth.WithAuditor(auditor),
 		oauth.WithRateLimiter(rateLimiter),
 		oauth.WithUserRateLimiter(userRateLimiter),
@@ -161,7 +163,7 @@ func main() {
 		log.Fatalf("Failed to create OAuth server: %v", err)
 	}
 
-	// 5. Create HTTP handler
+	// 6. Create HTTP handler
 	handler := oauthhandler.New(server, logger)
 
 	// Setup HTTP routes

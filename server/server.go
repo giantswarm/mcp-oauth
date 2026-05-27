@@ -75,7 +75,6 @@ type Server struct {
 	sessionCreationHandler        SessionCreationHandler
 	sessionRevocationHandler      SessionRevocationHandler
 	tokenRefreshHandler           TokenRefreshHandler
-	Encryptor                     *security.Encryptor
 	Auditor                       *security.Auditor
 	RateLimiter                   *security.RateLimiter                   // IP-based rate limiter
 	UserRateLimiter               *security.RateLimiter                   // User-based rate limiter (authenticated requests)
@@ -186,7 +185,6 @@ func New(
 
 	srv.attachRevokedTokenStore(tokenStore)
 
-	configureStorageRetention(tokenStore, config)
 	srv.initializeMetadataSupport()
 	srv.validateProviderDefaultScopes(logger)
 	srv.logForwardedSessionIDKeyFingerprint()
@@ -281,16 +279,6 @@ func applyDefaults(config *Config, logger *slog.Logger) (*Config, *slog.Logger) 
 		logger = slog.Default()
 	}
 	return applySecureDefaults(config, logger), logger
-}
-
-// configureStorageRetention sets retention days on storage if it supports it.
-func configureStorageRetention(tokenStore storage.TokenStore, config *Config) {
-	type retentionSetter interface {
-		SetRevokedFamilyRetentionDays(days int64)
-	}
-	if setter, ok := tokenStore.(retentionSetter); ok {
-		setter.SetRevokedFamilyRetentionDays(config.RevokedFamilyRetentionDays)
-	}
 }
 
 // initializeMetadataSupport initializes client ID metadata document support if enabled.

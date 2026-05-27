@@ -52,7 +52,7 @@ Before deploying to production, verify these settings:
 
 ### Recommended
 
-- [ ] **Token Encryption**: Pass `server.WithEncryptor(enc)` at construction for at-rest encryption
+- [ ] **Token Encryption**: Pass `memory.WithEncryptor(enc)` / `valkey.WithEncryptor(enc)` to the store constructor for at-rest encryption
 - [ ] **Audit Logging**: Set up `Auditor` for security event logging
 - [ ] **Rate Limiting**: Configure IP, user, and client registration limits
 - [ ] **Registration Protected**: Set `RegistrationAccessToken` or disable registration
@@ -94,8 +94,9 @@ if err != nil {
     log.Fatal(err)
 }
 
-// Pass at server construction (functional option).
-srv, err := server.New(provider, store, store, store, cfg, logger, server.WithEncryptor(encryptor))
+// Wire into the store at construction.
+store := memory.New(memory.WithEncryptor(encryptor))
+srv, err := server.New(provider, store, store, store, cfg, logger)
 ```
 
 The ciphertext envelope is versioned (`0x01 || kid || nonce || ct`); legacy

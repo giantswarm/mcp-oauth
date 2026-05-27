@@ -8,28 +8,8 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
-// Option configures a Server during construction. Options are applied
-// after the server has been wired with stores, the access-token issuer,
-// and the metadata support goroutine — so option functions that propagate
-// state to the storage backend (WithEncryptor, WithInstrumentation) can
-// rely on the store being attached.
+// Option configures a Server during construction.
 type Option func(*Server)
-
-// WithEncryptor sets the token encryptor on the server and propagates it
-// to the token store when the store implements an SetEncryptor hook.
-// Token-at-rest encryption applies to upstream provider tokens stored in
-// TokenStore — the bearer the client holds is never the encrypted payload.
-func WithEncryptor(enc *security.Encryptor) Option {
-	return func(s *Server) {
-		s.Encryptor = enc
-		type encryptorSetter interface {
-			SetEncryptor(*security.Encryptor)
-		}
-		if setter, ok := s.tokenStore.(encryptorSetter); ok {
-			setter.SetEncryptor(enc)
-		}
-	}
-}
 
 // WithAuditor sets the security auditor used for OAuth audit events.
 // Passing nil panics; use security.NewAuditor(nil, false) for a noop.
@@ -194,10 +174,9 @@ func WithTrustedProxyCIDRs(cidrs []*net.IPNet) Option {
 
 // WithInstrumentation installs an OpenTelemetry pipeline on the server.
 // Build the *instrumentation.Instrumentation with instrumentation.New and
-// pass it here. The same instance can be shared with other components in
-// the process — that's the reason the OAuth library does not own the
-// pipeline construction. Propagates the instrumentation to storage
-// backends that implement SetInstrumentation.
+// pass it here. The same instance should be passed to the storage constructor
+// (memory.WithInstrumentation / valkey.WithInstrumentation) so both the
+// server and the store share one pipeline.
 func WithInstrumentation(inst *instrumentation.Instrumentation) Option {
 	return func(s *Server) {
 		s.Instrumentation = inst
@@ -205,18 +184,5 @@ func WithInstrumentation(inst *instrumentation.Instrumentation) Option {
 			return
 		}
 		s.tracer = inst.Tracer("server")
-
-		type instrumentationSetter interface {
-			SetInstrumentation(*instrumentation.Instrumentation)
-		}
-		if setter, ok := s.tokenStore.(instrumentationSetter); ok {
-			setter.SetInstrumentation(inst)
-		}
-		if setter, ok := s.clientStore.(instrumentationSetter); ok {
-			setter.SetInstrumentation(inst)
-		}
-		if setter, ok := s.flowStore.(instrumentationSetter); ok {
-			setter.SetInstrumentation(inst)
-		}
 	}
 }

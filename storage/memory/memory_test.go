@@ -995,21 +995,18 @@ func TestStore_DeleteAuthorizationCode(t *testing.T) {
 
 func TestStore_TokenEncryption(t *testing.T) {
 	ctx := context.Background()
-	store := New()
-	defer store.Stop()
 
-	// Set up encryption
 	key, err := security.GenerateKey()
 	if err != nil {
 		t.Fatalf("GenerateKey() error = %v", err)
 	}
-
 	encryptor, err := security.NewEncryptor(key)
 	if err != nil {
 		t.Fatalf("NewEncryptor() error = %v", err)
 	}
 
-	store.SetEncryptor(encryptor)
+	store := New(WithEncryptor(encryptor))
+	defer store.Stop()
 
 	// Save token
 	token := testutil.GenerateTestToken()
@@ -1037,21 +1034,18 @@ func TestStore_TokenEncryption(t *testing.T) {
 // This is a regression test for issue #133.
 func TestStore_TokenEncryption_PreservesExtraField(t *testing.T) {
 	ctx := context.Background()
-	store := New()
-	defer store.Stop()
 
-	// Set up encryption
 	key, err := security.GenerateKey()
 	if err != nil {
 		t.Fatalf("GenerateKey() error = %v", err)
 	}
-
 	encryptor, err := security.NewEncryptor(key)
 	if err != nil {
 		t.Fatalf("NewEncryptor() error = %v", err)
 	}
 
-	store.SetEncryptor(encryptor)
+	store := New(WithEncryptor(encryptor))
+	defer store.Stop()
 
 	// Create token with Extra fields (simulating OIDC provider response)
 	baseToken := testutil.GenerateTestToken()
@@ -1350,21 +1344,18 @@ func TestEncryptExtraFields_DisabledEncryptor(t *testing.T) {
 // encrypted in storage, not just preserved. This is a security test.
 func TestStore_TokenEncryption_IDTokenIsEncrypted(t *testing.T) {
 	ctx := context.Background()
-	store := New()
-	defer store.Stop()
 
-	// Set up encryption
 	key, err := security.GenerateKey()
 	if err != nil {
 		t.Fatalf("GenerateKey() error = %v", err)
 	}
-
 	encryptor, err := security.NewEncryptor(key)
 	if err != nil {
 		t.Fatalf("NewEncryptor() error = %v", err)
 	}
 
-	store.SetEncryptor(encryptor)
+	store := New(WithEncryptor(encryptor))
+	defer store.Stop()
 
 	// Create token with id_token
 	baseToken := testutil.GenerateTestToken()
@@ -1482,7 +1473,7 @@ func TestStore_ConcurrentClientAccess(t *testing.T) {
 func TestStore_CleanupExpiredTokens(t *testing.T) {
 	ctx := context.Background()
 	// Use short cleanup interval for testing
-	store := NewWithInterval(100 * time.Millisecond)
+	store := New(WithCleanupInterval(100 * time.Millisecond))
 	defer store.Stop()
 
 	// Save expired authorization code
@@ -1504,7 +1495,7 @@ func TestStore_CleanupExpiredTokens(t *testing.T) {
 
 func TestStore_CleanupExpiredTokens_WithRefreshToken(t *testing.T) {
 	ctx := context.Background()
-	store := NewWithInterval(100 * time.Millisecond)
+	store := New(WithCleanupInterval(100 * time.Millisecond))
 	defer store.Stop()
 
 	refreshTokenKey := "mcp-refresh-token-1" //nolint:gosec // test value, not a real credential
@@ -1553,7 +1544,7 @@ func TestStore_CleanupExpiredTokens_WithRefreshToken(t *testing.T) {
 
 func TestStore_CleanupExpiredTokens_WithRefreshToken_NoMapping(t *testing.T) {
 	ctx := context.Background()
-	store := NewWithInterval(100 * time.Millisecond)
+	store := New(WithCleanupInterval(100 * time.Millisecond))
 	defer store.Stop()
 
 	// Save a provider token with a RefreshToken under a user ID key.
@@ -1580,14 +1571,10 @@ func TestStore_CleanupExpiredTokens_WithRefreshToken_NoMapping(t *testing.T) {
 	}
 }
 
-func TestStore_SetLogger(_ *testing.T) {
-	store := New()
-	defer store.Stop()
-
+func TestStore_WithLogger(_ *testing.T) {
 	logger := &slog.Logger{}
-	store.SetLogger(logger)
-
-	// Logger should be set (we can't easily test this without reflection)
+	store := New(WithLogger(logger))
+	defer store.Stop()
 	// Just verify no panic
 }
 

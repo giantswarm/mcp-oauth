@@ -76,7 +76,6 @@ func TestServer_LogValue_ExposesEffectiveConfig(t *testing.T) {
 	require.True(t, ok, "expected server group in log payload, got %v", payload)
 	require.Equal(t, "https://oauth.example.com", server["issuer"])
 	require.Equal(t, true, server["production_mode"], "applySecureDefaults should flip production_mode on")
-	require.Equal(t, false, server["encryption_at_rest"])
 	require.Equal(t, false, server["instrumentation_on"])
 
 	policy, ok := server["redirect_uri_policy"].(map[string]any)

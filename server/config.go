@@ -257,12 +257,6 @@ type Config struct {
 	// Default: 0.5 (50% - at least half must succeed)
 	ProviderRevocationFailureThreshold float64 // default: 0.5
 
-	// RevokedFamilyRetentionDays is the number of days to retain revoked token family metadata
-	// for forensics and security auditing. After this period, revoked family metadata is deleted.
-	// Longer retention enables better security incident investigation but uses more memory.
-	// Default: 90 days (recommended for security compliance and forensics)
-	RevokedFamilyRetentionDays int64 // days, default: 90
-
 	// SupportedScopes lists the scopes that are allowed for clients
 	// If empty, all scopes are allowed
 	SupportedScopes []string

@@ -42,10 +42,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// 2. Create storage (in-memory for simplicity)
-	store := memory.New()
-	defer store.Stop()
-
 	// 3. Create logger
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
@@ -55,23 +51,8 @@ func main() {
 	rateLimiter := security.NewRateLimiter(1, 10, logger)
 	defer rateLimiter.Stop()
 	auditor := security.NewAuditor(logger, true)
-
-	opts := []oauth.ServerOption{
-		oauth.WithRateLimiter(rateLimiter),
-		oauth.WithAuditor(auditor),
-	}
 	logger.Info("Rate limiting enabled", "requests_per_second", 1, "burst", 10)
 	logger.Info("Audit logging enabled")
-
-	if encKeyB64 := os.Getenv("OAUTH_ENCRYPTION_KEY"); encKeyB64 != "" {
-		encKey, err := security.KeyFromBase64(encKeyB64)
-		if err != nil {
-			log.Fatalf("Invalid encryption key: %v", err)
-		}
-		encryptor, _ := security.NewEncryptor(encKey)
-		opts = append(opts, oauth.WithEncryptor(encryptor))
-		logger.Info("Token encryption enabled")
-	}
 
 	// IMPORTANT: OpenTelemetry instrumentation with Prometheus metrics
 	inst, err := instrumentation.New(instrumentation.Config{
@@ -84,7 +65,28 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize instrumentation: %v", err)
 	}
-	opts = append(opts, oauth.WithInstrumentation(inst))
+
+	var storeOpts []memory.Option
+	storeOpts = append(storeOpts, memory.WithInstrumentation(inst))
+	if encKeyB64 := os.Getenv("OAUTH_ENCRYPTION_KEY"); encKeyB64 != "" {
+		encKey, err := security.KeyFromBase64(encKeyB64)
+		if err != nil {
+			log.Fatalf("Invalid encryption key: %v", err)
+		}
+		encryptor, _ := security.NewEncryptor(encKey)
+		storeOpts = append(storeOpts, memory.WithEncryptor(encryptor))
+		logger.Info("Token encryption enabled")
+	}
+
+	// 2. Create storage (in-memory for simplicity)
+	store := memory.New(storeOpts...)
+	defer store.Stop()
+
+	opts := []oauth.ServerOption{
+		oauth.WithRateLimiter(rateLimiter),
+		oauth.WithAuditor(auditor),
+		oauth.WithInstrumentation(inst),
+	}
 
 	// 5. Create OAuth server
 	server, err := oauth.NewServer(

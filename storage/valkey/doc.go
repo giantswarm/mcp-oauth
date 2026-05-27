@@ -73,7 +73,7 @@
 //   - Constant-time bcrypt comparison prevents timing attacks in client validation
 //   - TLS support enables encrypted connections to Valkey servers
 //   - Family metadata is retained for configurable period for security forensics
-//   - Optional token encryption at rest via SetEncryptor() using AES-256-GCM
+//   - Optional token encryption at rest via WithEncryptor() using AES-256-GCM
 //   - Input size validation prevents DoS attacks via oversized payloads
 //   - Generic error messages prevent information leakage
 //
@@ -84,7 +84,7 @@
 //
 //	key, _ := security.GenerateKey()
 //	encryptor, _ := security.NewEncryptor(key)
-//	store.SetEncryptor(encryptor)
+//	store, err := valkey.New(cfg, valkey.WithEncryptor(encryptor))
 //
 // When enabled, tokens are encrypted with AES-256-GCM before storage and
 // automatically decrypted when retrieved.
