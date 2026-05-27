@@ -106,7 +106,6 @@ func applyProviderRevocationDefaults(config *Config) {
 	} else if config.ProviderRevocationFailureThreshold < 0.0 || config.ProviderRevocationFailureThreshold > 1.0 {
 		config.ProviderRevocationFailureThreshold = 0.5
 	}
-
 }
 
 // applyRateLimitDefaults sets defaults for rate limiting configuration.

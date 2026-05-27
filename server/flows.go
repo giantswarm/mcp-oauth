@@ -21,7 +21,6 @@ const (
 
 var errInvalidGrant = errors.New(ErrorCodeInvalidGrant + ": invalid grant")
 
-
 // registerTokenPair records the AT -> RT pairing so that provider token refreshes
 // triggered by one key can also update the other.
 func (s *Server) registerTokenPair(accessToken, refreshToken string) {

@@ -66,7 +66,8 @@ func DPoPMiddleware(replayCache server.DPoPReplayCache, nonceProvider server.DPo
 func (h *Handler) DPoPMiddleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			serveDPoP(w, r, next,
+			serveDPoP(
+				w, r, next,
 				h.server.DPoPReplayCache(),
 				h.server.DPoPNonceProvider(),
 				h.server.TrustedProxyCIDRs(),
@@ -84,7 +85,8 @@ func serveDPoP(w http.ResponseWriter, r *http.Request, next http.Handler, replay
 	accessToken := auth[len("DPoP "):] // preserve original token value
 	proof := r.Header.Get("DPoP")
 	if proof == "" {
-		writeDPoPError(w,
+		writeDPoPError(
+			w,
 			dpopWWWAuthenticate(constants.ErrorCodeInvalidRequest, "DPoP proof required"),
 			"",
 			constants.ErrorCodeInvalidRequest,
@@ -113,7 +115,8 @@ func writeDPoPValidationError(w http.ResponseWriter, r *http.Request, err error,
 		if nonceProvider != nil {
 			nonce = nonceProvider.Nonce(r.Context())
 		}
-		writeDPoPError(w,
+		writeDPoPError(
+			w,
 			dpopWWWAuthenticate(constants.ErrorCodeUseDPoPNonce, "Resource server requires nonce in DPoP proof"),
 			nonce,
 			constants.ErrorCodeUseDPoPNonce,
@@ -122,7 +125,8 @@ func writeDPoPValidationError(w http.ResponseWriter, r *http.Request, err error,
 		)
 		return
 	}
-	writeDPoPError(w,
+	writeDPoPError(
+		w,
 		dpopWWWAuthenticate(constants.ErrorCodeInvalidDPoPProof, err.Error()),
 		"",
 		constants.ErrorCodeInvalidDPoPProof,

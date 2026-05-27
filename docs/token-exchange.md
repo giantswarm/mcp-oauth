@@ -35,24 +35,51 @@ srv, _ := oauth.NewServer(
 )
 ```
 
-`WithTrustedIssuers` registers an `OIDCValidator` for both `urn:ietf:params:oauth:token-type:id_token` and `urn:ietf:params:oauth:token-type:access_token`. The `Issuer` and `JwksURL` are independent — set `JwksURL` explicitly when the issuer's discovery document is unavailable or its JWKS is hosted separately.
+`WithTrustedIssuers` registers an `OIDCValidator` for `id_token`, `access_token`, and `jwt` subject token types. The `Issuer` and `JwksURL` are independent — set `JwksURL` explicitly when the issuer's discovery document is unavailable or its JWKS is hosted separately.
 
 `AllowedScopes` caps the scopes the server will include in the issued token for this issuer. `nil` means no restriction.
 
-### Trusting Kubernetes ServiceAccount tokens
+### Restricting which tokens are accepted (AllowedClaims)
+
+`AllowedClaims` adds a claim-level gate after signature verification. Each entry requires the named JWT claim to match a pattern. Patterns support `*` (matches any sequence of characters, including `/`) and `?` (matches any single character). An absent claim or a non-string claim value is rejected.
+
+**Kubernetes ServiceAccount tokens** — restrict to a specific namespace:
 
 ```go
-server.WithKubernetesSATrust([]server.KubernetesSATrust{
+server.WithTrustedIssuers([]server.TrustedIssuer{
     {
-        Issuer:                 "https://kubernetes.default.svc",
-        JwksURL:                "https://kubernetes.default.svc/openid/v1/jwks",
-        AllowedNamespaces:      []string{"my-namespace"},      // optional; nil = any
-        AllowedServiceAccounts: []string{"my-sa"},             // optional; nil = any
+        Issuer:  "https://kubernetes.default.svc.cluster.local",
+        JwksURL: "https://kubernetes.default.svc.cluster.local/openid/v1/jwks",
+        AllowedClaims: map[string]string{
+            "sub": "system:serviceaccount:ai-platform:*",
+        },
     },
 })
 ```
 
-K8s SA tokens use `subject_token_type=urn:ietf:params:oauth:token-type:jwt`.
+The `sub` claim of a projected SA token has the form `system:serviceaccount:<namespace>:<name>`. The pattern above accepts any SA in the `ai-platform` namespace and rejects all others.
+
+To restrict to a single SA: `"sub": "system:serviceaccount:ai-platform:my-worker"`.
+
+**GitHub Actions OIDC tokens** — restrict to a specific repository:
+
+```go
+server.WithTrustedIssuers([]server.TrustedIssuer{
+    {
+        Issuer:           "https://token.actions.githubusercontent.com",
+        JwksURL:          "https://token.actions.githubusercontent.com/.well-known/jwks",
+        AllowedAudiences: []string{"https://mcp.example.com"},
+        AllowedClaims: map[string]string{
+            "sub":        "repo:org/repo:*",   // any branch/tag/environment in the repo
+            "repository": "org/repo",           // belt-and-suspenders: exact repo match
+        },
+    },
+})
+```
+
+Multiple entries in `AllowedClaims` are ANDed: all must match.
+
+K8s SA and GHA tokens both use `subject_token_type=urn:ietf:params:oauth:token-type:jwt`.
 
 ### Custom validators
 
@@ -68,7 +95,7 @@ server.WithSubjectTokenValidator("urn:example:custom-token-type", myValidator)
 |---|---|---|
 | `urn:ietf:params:oauth:token-type:id_token` | `OIDCValidator` | OIDC ID token |
 | `urn:ietf:params:oauth:token-type:access_token` | `OIDCValidator` | Opaque or JWT access token |
-| `urn:ietf:params:oauth:token-type:jwt` | `K8sSAValidator` | Kubernetes projected SA token |
+| `urn:ietf:params:oauth:token-type:jwt` | `OIDCValidator` | Kubernetes projected SA token, GHA OIDC token |
 
 ## Client request
 
