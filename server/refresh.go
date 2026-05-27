@@ -33,7 +33,7 @@ func (s *Server) handleRefreshTokenReuseDetection(ctx context.Context, refreshTo
 		})
 		s.Logger.Error("Attempted use of revoked token family",
 			"user_id", family.UserID, "family_id", helpers.SafeTruncate(family.FamilyID, 8))
-		return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+		return errInvalidGrant
 	}
 
 	// Token is deleted but family exists and NOT revoked → FRESH REUSE DETECTED!
@@ -63,7 +63,7 @@ func (s *Server) handleRefreshTokenReuseDetection(ctx context.Context, refreshTo
 	})
 	s.Auditor.LogTokenReuse(ctx, family.UserID, clientID)
 
-	return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+	return errInvalidGrant
 }
 
 // handleRefreshTokenError handles errors from refresh token validation
@@ -86,14 +86,14 @@ func (s *Server) handleRefreshTokenError(ctx context.Context, err error, refresh
 			Type: security.EventAuthFailure, ClientID: clientID,
 			Details: map[string]any{"reason": "transient_storage_error"},
 		})
-		return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+		return errInvalidGrant
 	}
 
 	// Regular invalid token error
 	s.Logger.Debug("Refresh token validation failed",
 		"reason", err.Error(), "client_id", clientID, "token_suffix", helpers.TokenSuffix(refreshToken, 8))
 	s.Auditor.LogAuthFailure(ctx, "", clientID, "", "invalid_refresh_token")
-	return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+	return errInvalidGrant
 }
 
 // rotateRefreshToken handles OAuth 2.1 refresh token rotation with family tracking.
@@ -242,26 +242,15 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	// Track AT -> RT pairing for refresh-time updates
 	s.registerTokenPair(newAccessToken, newRefreshToken)
 
-	s.saveTokenMetadata(ctx, newAccessToken, storage.TokenMetadata{
+	s.saveTokenPairMetadata(ctx, newAccessToken, newRefreshToken, storage.TokenMetadata{
 		UserID:    userID,
 		ClientID:  clientID,
 		IssuedAt:  now,
 		ExpiresAt: expiry,
-		TokenType: "access",
 		Audience:  oldAudience,
 		FamilyID:  familyID,
 		Scopes:    oldScopes,
-	})
-	s.saveTokenMetadata(ctx, newRefreshToken, storage.TokenMetadata{
-		UserID:    userID,
-		ClientID:  clientID,
-		IssuedAt:  now,
-		ExpiresAt: refreshExpiry,
-		TokenType: "refresh",
-		Audience:  oldAudience,
-		FamilyID:  familyID,
-		Scopes:    oldScopes,
-	})
+	}, refreshExpiry)
 
 	s.Auditor.LogTokenRefreshed(ctx, userID, clientID, "", rotated)
 
@@ -292,7 +281,7 @@ func (s *Server) handleLegacyRefreshToken(ctx context.Context, requestingClientI
 	s.Auditor.LogAuthFailure(ctx, userID, requestingClientID, "", "refresh_token_missing_client_binding")
 
 	// Return generic error per OAuth spec (don't reveal details to attacker)
-	return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+	return errInvalidGrant
 }
 
 // validateRefreshTokenClientBinding validates that the requesting client matches
@@ -339,7 +328,7 @@ func (s *Server) validateRefreshTokenClientBinding(ctx context.Context, storedCl
 		s.Auditor.LogAuthFailure(ctx, userID, requestingClientID, "", "refresh_token_client_binding_mismatch")
 
 		// Return generic error per OAuth spec (don't reveal details to attacker)
-		return fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+		return errInvalidGrant
 	}
 
 	s.Logger.Debug("Refresh token client binding validated",

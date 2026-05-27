@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -21,6 +22,8 @@ const (
 // Note: This is intentionally duplicated from constants.go to avoid circular imports.
 // Keep in sync with constants.go.
 const OAuthSpecVersion = "OAuth 2.1"
+
+var errInvalidGrant = errors.New(ErrorCodeInvalidGrant + ": invalid grant")
 
 // registerTokenPair records the AT -> RT pairing so that provider token refreshes
 // triggered by one key can also update the other.

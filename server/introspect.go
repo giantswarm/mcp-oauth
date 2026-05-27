@@ -132,6 +132,11 @@ func introspectionResponseFromJWTClaims(claims map[string]any, tokenBoundClient 
 	copyClaimUnixTime(response, claims, "nbf")
 	if aud := audiencesFromClaim(claims["aud"]); len(aud) == 1 {
 		response["aud"] = aud[0]
+	} else if len(aud) > 1 {
+		response["aud"] = aud
+	}
+	if cnf, ok := claims["cnf"]; ok {
+		response["cnf"] = cnf
 	}
 	// Forward any application-defined claims not in the standard set.
 	for k, v := range claims {

@@ -236,7 +236,6 @@ func TestServer_ProviderRevocationConfigCustomValues(t *testing.T) {
 
 }
 
-
 // TestGenerateRandomToken_Length validates that generated tokens meet minimum length requirements
 // This ensures sufficient entropy for security-critical tokens.
 func TestGenerateRandomToken_Length(t *testing.T) {
