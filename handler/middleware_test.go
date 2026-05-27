@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/server"
@@ -153,8 +153,8 @@ func TestHandler_RequestBodyTooLarge(t *testing.T) {
 			if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
 				t.Fatalf("failed to decode error response: %v", err)
 			}
-			if errResp["error"] != oauth.ErrorCodeInvalidRequest {
-				t.Errorf("error = %q, want %q", errResp["error"], oauth.ErrorCodeInvalidRequest)
+			if errResp["error"] != constants.ErrorCodeInvalidRequest {
+				t.Errorf("error = %q, want %q", errResp["error"], constants.ErrorCodeInvalidRequest)
 			}
 			if !strings.Contains(errResp["error_description"], "too large") {
 				t.Errorf("error_description = %q, want it to contain 'too large'", errResp["error_description"])

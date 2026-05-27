@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace/noop"
 
-	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
@@ -31,13 +31,13 @@ func TestHandleRegistrationError(t *testing.T) {
 			name:       "registration limit triggers 429 invalid_request",
 			err:        fmt.Errorf("%w: 192.0.2.1 (5/5)", storage.ErrClientIPLimitExceeded),
 			wantStatus: http.StatusTooManyRequests,
-			wantCode:   oauth.ErrorCodeInvalidRequest,
+			wantCode:   constants.ErrorCodeInvalidRequest,
 		},
 		{
 			name:       "generic error triggers 500 server_error",
 			err:        errors.New("backend storage unavailable"),
 			wantStatus: http.StatusInternalServerError,
-			wantCode:   oauth.ErrorCodeServerError,
+			wantCode:   constants.ErrorCodeServerError,
 		},
 	}
 

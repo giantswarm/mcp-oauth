@@ -12,7 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
 )
@@ -160,7 +160,7 @@ func TestHandler_ServeTokenIntrospection_BasicFormClientIDMismatchRejected(t *te
 	require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
 	var response map[string]string
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&response))
-	require.Equal(t, oauth.ErrorCodeInvalidClient, response["error"])
+	require.Equal(t, constants.ErrorCodeInvalidClient, response["error"])
 	require.Contains(t, response["error_description"], "does not match")
 }
 

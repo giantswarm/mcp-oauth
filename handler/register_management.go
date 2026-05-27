@@ -8,7 +8,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	oauth "github.com/giantswarm/mcp-oauth"
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/server"
 	"github.com/giantswarm/mcp-oauth/storage"
@@ -31,7 +31,7 @@ func (h *Handler) ServeClientManagement(w http.ResponseWriter, r *http.Request) 
 
 	clientID := strings.TrimPrefix(r.URL.Path, server.EndpointPathClientManagement)
 	if clientID == "" {
-		h.writeError(w, oauth.ErrorCodeInvalidRequest, "missing client_id in path", http.StatusBadRequest)
+		h.writeError(w, constants.ErrorCodeInvalidRequest, "missing client_id in path", http.StatusBadRequest)
 		return
 	}
 
@@ -63,7 +63,7 @@ func (h *Handler) authenticateManagementRequest(w http.ResponseWriter, r *http.R
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") || parts[1] == "" {
 		h.logger.Warn("Client management: missing or malformed Bearer token", "ip", clientIP, "client_id", clientID)
 		w.Header().Set("WWW-Authenticate", `Bearer realm="client_management"`)
-		h.writeError(w, oauth.ErrorCodeInvalidToken, "Bearer token required", http.StatusUnauthorized)
+		h.writeError(w, constants.ErrorCodeInvalidToken, "Bearer token required", http.StatusUnauthorized)
 		return nil, false
 	}
 	bearerToken := parts[1]
@@ -74,11 +74,11 @@ func (h *Handler) authenticateManagementRequest(w http.ResponseWriter, r *http.R
 			// Perform a dummy bcrypt comparison to prevent timing-based enumeration.
 			_ = bcrypt.CompareHashAndPassword([]byte(storage.DummyBcryptHash), []byte(bearerToken))
 			h.logger.Warn("Client management: client not found", "ip", clientIP, "client_id", clientID)
-			h.writeError(w, oauth.ErrorCodeInvalidToken, "client not found", http.StatusNotFound)
+			h.writeError(w, constants.ErrorCodeInvalidToken, "client not found", http.StatusNotFound)
 			return nil, false
 		}
 		h.logger.Error("Client management: failed to retrieve client", "ip", clientIP, "client_id", clientID, "error", err)
-		h.writeError(w, oauth.ErrorCodeServerError, "failed to retrieve client", http.StatusInternalServerError)
+		h.writeError(w, constants.ErrorCodeServerError, "failed to retrieve client", http.StatusInternalServerError)
 		return nil, false
 	}
 
@@ -87,14 +87,14 @@ func (h *Handler) authenticateManagementRequest(w http.ResponseWriter, r *http.R
 		_ = bcrypt.CompareHashAndPassword([]byte(storage.DummyBcryptHash), []byte(bearerToken))
 		h.logger.Warn("Client management: client not eligible for management", "ip", clientIP, "client_id", clientID)
 		w.Header().Set("WWW-Authenticate", `Bearer realm="client_management"`)
-		h.writeError(w, oauth.ErrorCodeInvalidToken, "client not eligible for management", http.StatusUnauthorized)
+		h.writeError(w, constants.ErrorCodeInvalidToken, "client not eligible for management", http.StatusUnauthorized)
 		return nil, false
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(client.RegistrationAccessTokenHash), []byte(bearerToken)); err != nil {
 		h.logger.Warn("Client management: invalid registration_access_token", "ip", clientIP, "client_id", clientID)
 		w.Header().Set("WWW-Authenticate", `Bearer realm="client_management"`)
-		h.writeError(w, oauth.ErrorCodeInvalidToken, "invalid registration_access_token", http.StatusUnauthorized)
+		h.writeError(w, constants.ErrorCodeInvalidToken, "invalid registration_access_token", http.StatusUnauthorized)
 		return nil, false
 	}
 
@@ -142,15 +142,15 @@ func (h *Handler) handleClientManagementPut(w http.ResponseWriter, r *http.Reque
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		if isMaxBytesError(err) {
 			h.recordHTTPMetrics(r.Context(), endpointClientManagement, http.MethodPut, http.StatusRequestEntityTooLarge, startTime)
-			h.writeError(w, oauth.ErrorCodeInvalidRequest, "Request body too large", http.StatusRequestEntityTooLarge)
+			h.writeError(w, constants.ErrorCodeInvalidRequest, "Request body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
-		h.writeError(w, oauth.ErrorCodeInvalidRequest, "Invalid JSON", http.StatusBadRequest)
+		h.writeError(w, constants.ErrorCodeInvalidRequest, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
 	if req.TokenEndpointAuthMethod != "" && !isValidAuthMethod(req.TokenEndpointAuthMethod) {
-		h.writeError(w, oauth.ErrorCodeInvalidRequest,
+		h.writeError(w, constants.ErrorCodeInvalidRequest,
 			"unsupported token_endpoint_auth_method", http.StatusBadRequest)
 		return
 	}
@@ -158,7 +158,7 @@ func (h *Handler) handleClientManagementPut(w http.ResponseWriter, r *http.Reque
 	newToken, newHash, err := server.GenerateRegistrationAccessToken()
 	if err != nil {
 		h.logger.Error("Client management: failed to rotate registration token", "ip", clientIP, "client_id", existing.ClientID, "error", err)
-		h.writeError(w, oauth.ErrorCodeServerError, "failed to rotate registration token", http.StatusInternalServerError)
+		h.writeError(w, constants.ErrorCodeServerError, "failed to rotate registration token", http.StatusInternalServerError)
 		return
 	}
 
@@ -182,7 +182,7 @@ func (h *Handler) handleClientManagementPut(w http.ResponseWriter, r *http.Reque
 	if err := h.server.SaveClient(r.Context(), &updated); err != nil {
 		h.logger.Error("Client management: failed to update client", "ip", clientIP, "client_id", existing.ClientID, "error", err)
 		h.recordHTTPMetrics(r.Context(), endpointClientManagement, http.MethodPut, http.StatusInternalServerError, startTime)
-		h.writeError(w, oauth.ErrorCodeServerError, "failed to update client", http.StatusInternalServerError)
+		h.writeError(w, constants.ErrorCodeServerError, "failed to update client", http.StatusInternalServerError)
 		return
 	}
 
@@ -199,12 +199,12 @@ func (h *Handler) handleClientManagementDelete(w http.ResponseWriter, r *http.Re
 	if err := h.server.DeleteClient(r.Context(), client.ClientID); err != nil {
 		if storage.IsNotFoundError(err) {
 			h.recordHTTPMetrics(r.Context(), endpointClientManagement, http.MethodDelete, http.StatusNotFound, startTime)
-			h.writeError(w, oauth.ErrorCodeInvalidRequest, "client not found", http.StatusNotFound)
+			h.writeError(w, constants.ErrorCodeInvalidRequest, "client not found", http.StatusNotFound)
 			return
 		}
 		h.logger.Error("Client management: failed to delete client", "ip", clientIP, "client_id", client.ClientID, "error", err)
 		h.recordHTTPMetrics(r.Context(), endpointClientManagement, http.MethodDelete, http.StatusInternalServerError, startTime)
-		h.writeError(w, oauth.ErrorCodeServerError, "failed to delete client", http.StatusInternalServerError)
+		h.writeError(w, constants.ErrorCodeServerError, "failed to delete client", http.StatusInternalServerError)
 		return
 	}
 

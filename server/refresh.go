@@ -159,10 +159,12 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	// below will fail and these values won't be used.
 	var oldScopes []string
 	var oldAudience string
+	var oldJKT string
 	if metaGetter, ok := s.tokenStore.(storage.TokenMetadataGetter); ok {
 		if oldMeta, err := metaGetter.GetTokenMetadata(refreshToken); err == nil && oldMeta != nil {
 			oldScopes = oldMeta.Scopes
 			oldAudience = oldMeta.Audience
+			oldJKT = oldMeta.JKT
 		}
 	}
 
@@ -205,6 +207,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		Scopes:    oldScopes,
 		ExpiresAt: expiry,
 		FamilyID:  familyID,
+		JKT:       oldJKT,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("issue access token on refresh: %w", err)
@@ -250,6 +253,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		Audience:  oldAudience,
 		FamilyID:  familyID,
 		Scopes:    oldScopes,
+		JKT:       oldJKT,
 	}, refreshExpiry)
 
 	s.Auditor.LogTokenRefreshed(ctx, userID, clientID, "", rotated)

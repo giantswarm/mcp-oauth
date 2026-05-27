@@ -478,6 +478,7 @@ func TestServer_ConcurrentReuseAndRevocation(t *testing.T) {
 		"https://example.com/callback",
 		"", // resource parameter (optional)
 		codeVerifier,
+		"",
 	)
 	if err != nil {
 		t.Fatalf("ExchangeAuthorizationCode() error = %v", err)

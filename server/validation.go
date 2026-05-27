@@ -11,63 +11,38 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
-// Note: PKCE and URI validation constants are intentionally duplicated from constants.go
-// to avoid circular imports (root package imports server, server can't import root).
-// Keep these in sync with constants.go.
-
-// PKCE validation constants (RFC 7636)
+// PKCE validation constants (RFC 7636).
 const (
-	MinCodeVerifierLength = 43
-	MaxCodeVerifierLength = 128
-	PKCEMethodS256        = "S256"
-	PKCEMethodPlain       = "plain"
+	MinCodeVerifierLength = constants.MinCodeVerifierLength
+	MaxCodeVerifierLength = constants.MaxCodeVerifierLength
+	PKCEMethodS256        = constants.PKCEMethodS256
+	PKCEMethodPlain       = constants.PKCEMethodPlain
 )
 
-// Resource parameter validation constants (RFC 8707)
-const (
-	// MaxResourceLength is the maximum allowed length for resource parameter
-	// RFC 3986 suggests 2048 characters as a reasonable URI length limit
-	MaxResourceLength = 2048
-)
-
-// Note: SchemeHTTP and SchemeHTTPS constants are defined in config.go
+// MaxResourceLength is the maximum allowed length for the resource parameter (RFC 8707).
+const MaxResourceLength = constants.MaxResourceLength
 
 var (
-	// AllowedHTTPSchemes lists allowed HTTP-based redirect URI schemes
-	AllowedHTTPSchemes = []string{SchemeHTTP, SchemeHTTPS}
+	// AllowedHTTPSchemes lists the allowed HTTP(S) redirect URI schemes.
+	AllowedHTTPSchemes = constants.AllowedHTTPSchemes
 
-	// DefaultBlockedRedirectSchemes is the canonical list of URI schemes that are blocked
-	// for redirect URIs. These schemes can be used for XSS attacks (javascript:, data:, blob:)
-	// or local file/app access (file:, ms-appx:). This is the single source of truth for blocked schemes.
-	// Used by Config.BlockedRedirectSchemes default and validateCustomScheme.
-	//
-	// Blocked schemes:
-	// - javascript: XSS attacks via script execution
-	// - data: XSS attacks via inline content
-	// - file: Local filesystem access
-	// - vbscript: Legacy XSS (IE)
-	// - about: Browser internals access
-	// - ftp: Insecure protocol
-	// - blob: XSS via Blob URLs (browser exploit vector)
-	// - ms-appx: Windows app package access
-	// - ms-appx-web: Windows app web content access
-	DefaultBlockedRedirectSchemes = []string{
-		"javascript", "data", "file", "vbscript", "about", "ftp",
-		"blob", "ms-appx", "ms-appx-web",
-	}
+	// DefaultBlockedRedirectSchemes is the canonical list of URI schemes that
+	// must never appear in redirect URIs.
+	DefaultBlockedRedirectSchemes = constants.DefaultBlockedRedirectSchemes
 
-	// DangerousSchemes is an alias for backward compatibility.
+	// DangerousSchemes is an alias for DefaultBlockedRedirectSchemes.
 	//
 	// Deprecated: Use DefaultBlockedRedirectSchemes instead.
-	DangerousSchemes = DefaultBlockedRedirectSchemes
+	DangerousSchemes = constants.DefaultBlockedRedirectSchemes
 
-	// DefaultRFC3986SchemePattern is the default regex pattern for custom URI schemes (RFC 3986)
-	DefaultRFC3986SchemePattern = []string{"^[a-z][a-z0-9+.-]*$"}
+	// DefaultRFC3986SchemePattern is the regex that validates custom URI schemes (RFC 3986 §3.1).
+	DefaultRFC3986SchemePattern = constants.DefaultRFC3986SchemePattern
 )
 
 // validateHTTPSEnforcement ensures that the OAuth server is running over HTTPS

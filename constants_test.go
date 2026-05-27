@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"testing"
 	"time"
 )
@@ -40,8 +41,8 @@ func TestIntegerConstants(t *testing.T) {
 		{"DefaultMaxClientsPerIP", DefaultMaxClientsPerIP, 10},
 		{"DefaultRateLimitRate", DefaultRateLimitRate, 10},
 		{"DefaultRateLimitBurst", DefaultRateLimitBurst, 20},
-		{"MinCodeVerifierLength", MinCodeVerifierLength, 43},
-		{"MaxCodeVerifierLength", MaxCodeVerifierLength, 128},
+		{"constants.MinCodeVerifierLength", constants.MinCodeVerifierLength, 43},
+		{"constants.MaxCodeVerifierLength", constants.MaxCodeVerifierLength, 128},
 		{"ClientIDTokenLength", ClientIDTokenLength, 32},
 		{"ClientSecretTokenLength", ClientSecretTokenLength, 48},
 		{"AccessTokenLength", AccessTokenLength, 48},
@@ -67,8 +68,8 @@ func TestStringConstants(t *testing.T) {
 		{"DefaultTokenEndpointAuthMethod", DefaultTokenEndpointAuthMethod, "client_secret_basic"},
 		{"ClientTypeConfidential", ClientTypeConfidential, "confidential"},
 		{"ClientTypePublic", ClientTypePublic, "public"},
-		{"PKCEMethodS256", PKCEMethodS256, "S256"},
-		{"PKCEMethodPlain", PKCEMethodPlain, "plain"},
+		{"constants.PKCEMethodS256", constants.PKCEMethodS256, "S256"},
+		{"constants.PKCEMethodPlain", constants.PKCEMethodPlain, "plain"},
 		{"SchemeHTTP", SchemeHTTP, "http"},
 		{"SchemeHTTPS", SchemeHTTPS, "https"},
 	}
@@ -83,14 +84,14 @@ func TestStringConstants(t *testing.T) {
 }
 
 func TestSliceConstants(t *testing.T) {
-	t.Run("AllowedHTTPSchemes", func(t *testing.T) {
+	t.Run("constants.AllowedHTTPSchemes", func(t *testing.T) {
 		expected := []string{"http", "https"}
-		if len(AllowedHTTPSchemes) != len(expected) {
-			t.Errorf("len(AllowedHTTPSchemes) = %d, want %d", len(AllowedHTTPSchemes), len(expected))
+		if len(constants.AllowedHTTPSchemes) != len(expected) {
+			t.Errorf("len(constants.AllowedHTTPSchemes) = %d, want %d", len(constants.AllowedHTTPSchemes), len(expected))
 		}
-		for i, scheme := range AllowedHTTPSchemes {
+		for i, scheme := range constants.AllowedHTTPSchemes {
 			if scheme != expected[i] {
-				t.Errorf("AllowedHTTPSchemes[%d] = %q, want %q", i, scheme, expected[i])
+				t.Errorf("constants.AllowedHTTPSchemes[%d] = %q, want %q", i, scheme, expected[i])
 			}
 		}
 	})
@@ -124,12 +125,12 @@ func TestSliceConstants(t *testing.T) {
 	})
 
 	t.Run("SupportedCodeChallengeMethods", func(t *testing.T) {
-		expected := []string{PKCEMethodS256}
+		expected := []string{constants.PKCEMethodS256}
 		if len(SupportedCodeChallengeMethods) != len(expected) {
 			t.Errorf("len(SupportedCodeChallengeMethods) = %d, want %d", len(SupportedCodeChallengeMethods), len(expected))
 		}
-		if SupportedCodeChallengeMethods[0] != PKCEMethodS256 {
-			t.Errorf("SupportedCodeChallengeMethods[0] = %q, want %q", SupportedCodeChallengeMethods[0], PKCEMethodS256)
+		if SupportedCodeChallengeMethods[0] != constants.PKCEMethodS256 {
+			t.Errorf("SupportedCodeChallengeMethods[0] = %q, want %q", SupportedCodeChallengeMethods[0], constants.PKCEMethodS256)
 		}
 	})
 
@@ -143,16 +144,16 @@ func TestSliceConstants(t *testing.T) {
 
 func TestPKCELengthConstraints(t *testing.T) {
 	// Verify PKCE length constraints match RFC 7636
-	if MinCodeVerifierLength < 43 {
-		t.Errorf("MinCodeVerifierLength = %d, should be at least 43 per RFC 7636", MinCodeVerifierLength)
+	if constants.MinCodeVerifierLength < 43 {
+		t.Errorf("constants.MinCodeVerifierLength = %d, should be at least 43 per RFC 7636", constants.MinCodeVerifierLength)
 	}
 
-	if MaxCodeVerifierLength > 128 {
-		t.Errorf("MaxCodeVerifierLength = %d, should be at most 128 per RFC 7636", MaxCodeVerifierLength)
+	if constants.MaxCodeVerifierLength > 128 {
+		t.Errorf("constants.MaxCodeVerifierLength = %d, should be at most 128 per RFC 7636", constants.MaxCodeVerifierLength)
 	}
 
-	if MinCodeVerifierLength > MaxCodeVerifierLength {
-		t.Errorf("MinCodeVerifierLength (%d) > MaxCodeVerifierLength (%d)", MinCodeVerifierLength, MaxCodeVerifierLength)
+	if constants.MinCodeVerifierLength > constants.MaxCodeVerifierLength {
+		t.Errorf("constants.MinCodeVerifierLength (%d) > constants.MaxCodeVerifierLength (%d)", constants.MinCodeVerifierLength, constants.MaxCodeVerifierLength)
 	}
 }
 

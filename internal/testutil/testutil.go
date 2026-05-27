@@ -13,7 +13,6 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
@@ -73,8 +72,8 @@ func GenerateTestTokenWithExpiry(expiry time.Time) *oauth2.Token {
 }
 
 // GenerateTestUserInfo creates test user information
-func GenerateTestUserInfo() *providers.UserInfo {
-	return &providers.UserInfo{
+func GenerateTestUserInfo() *storage.UserInfo {
+	return &storage.UserInfo{
 		ID:            "test-user-123",
 		Email:         "test@example.com",
 		EmailVerified: true,
