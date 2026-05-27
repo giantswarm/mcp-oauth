@@ -407,11 +407,14 @@ func (s *Server) saveTokenMetadata(ctx context.Context, tokenID string, metadata
 // saveTokenPairMetadata saves metadata for an AT/RT pair. base.ExpiresAt is the access-token expiry;
 // refreshExpiresAt is used for the refresh token.
 func (s *Server) saveTokenPairMetadata(ctx context.Context, accessToken, refreshToken string, base storage.TokenMetadata, refreshExpiresAt time.Time) {
-	base.TokenType = "access"
-	s.saveTokenMetadata(ctx, accessToken, base)
-	base.TokenType = "refresh"
-	base.ExpiresAt = refreshExpiresAt
-	s.saveTokenMetadata(ctx, refreshToken, base)
+	at := base
+	at.TokenType = "access"
+	s.saveTokenMetadata(ctx, accessToken, at)
+
+	rt := base
+	rt.TokenType = "refresh"
+	rt.ExpiresAt = refreshExpiresAt
+	s.saveTokenMetadata(ctx, refreshToken, rt)
 }
 
 const (

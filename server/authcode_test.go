@@ -647,7 +647,7 @@ func TestServer_HandleProviderCallback_ShortLivedToken(t *testing.T) {
 			Expiry:       expiredExpiry, // Already expired!
 		}
 		// Include id_token in extras
-		return token.WithExtra(map[string]interface{}{
+		return token.WithExtra(map[string]any{
 			"id_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test.signature",
 		}), nil
 	}
@@ -841,7 +841,7 @@ func TestServer_ExtendTokenExpiryForStorage(t *testing.T) {
 					RefreshToken: "refresh",
 					Expiry:       time.Now().Add(-1 * time.Minute),
 				}
-				return t.WithExtra(map[string]interface{}{
+				return t.WithExtra(map[string]any{
 					"id_token":   "test-id-token",
 					"scope":      "openid email",
 					"expires_in": float64(300), // 5 minutes - JSON numbers decode as float64
@@ -858,7 +858,7 @@ func TestServer_ExtendTokenExpiryForStorage(t *testing.T) {
 					RefreshToken: "refresh",
 					Expiry:       time.Now().Add(-1 * time.Minute),
 				}
-				return t.WithExtra(map[string]interface{}{
+				return t.WithExtra(map[string]any{
 					"scope": "openid profile",
 				})
 			}(),
@@ -1038,12 +1038,14 @@ func TestServer_ExchangeAuthorizationCode(t *testing.T) {
 					_ = store.SaveAuthorizationCode(ctx, freshCode)
 					if tt.name == "wrong redirect URI" || tt.name == "invalid code verifier" {
 						tt := struct {
+							name         string
 							code         string
 							clientID     string
 							redirectURI  string
 							codeVerifier string
 							wantErr      bool
 						}{
+							name:         tt.name,
 							code:         freshCode.Code,
 							clientID:     tt.clientID,
 							redirectURI:  tt.redirectURI,
@@ -1060,12 +1062,12 @@ func TestServer_ExchangeAuthorizationCode(t *testing.T) {
 						)
 
 						if (err != nil) != tt.wantErr {
-							t.Errorf("ExchangeAuthorizationCode() error = %v, wantErr %v", err, tt.wantErr)
+							t.Errorf("%s: ExchangeAuthorizationCode() error = %v, wantErr %v", tt.name, err, tt.wantErr)
 							return
 						}
 
 						if !tt.wantErr && token == nil {
-							t.Error("ExchangeAuthorizationCode() returned nil token")
+							t.Errorf("%s: ExchangeAuthorizationCode() returned nil token", tt.name)
 						}
 						return
 					}
@@ -1180,7 +1182,7 @@ func TestServer_ExchangeAuthorizationCode_IDTokenForwarding(t *testing.T) {
 		AccessToken:  "provider-access-token",
 		RefreshToken: "provider-refresh-token",
 		Expiry:       time.Now().Add(1 * time.Hour),
-	}).WithExtra(map[string]interface{}{
+	}).WithExtra(map[string]any{
 		"id_token": testIDToken,
 	})
 
@@ -1809,7 +1811,7 @@ func TestServer_ConcurrentAuthorizationCodeReuse(t *testing.T) {
 	results := make(chan result, numConcurrent)
 
 	// All goroutines start roughly at the same time
-	for i := 0; i < numConcurrent; i++ {
+	for range numConcurrent {
 		go func() {
 			token, _, err := srv.ExchangeAuthorizationCode(
 				context.Background(),
@@ -1827,7 +1829,7 @@ func TestServer_ConcurrentAuthorizationCodeReuse(t *testing.T) {
 	successCount := 0
 	failCount := 0
 	var successfulToken *oauth2.Token
-	for i := 0; i < numConcurrent; i++ {
+	for range numConcurrent {
 		res := <-results
 		if res.success {
 			successCount++
