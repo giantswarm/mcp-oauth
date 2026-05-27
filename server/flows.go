@@ -2,7 +2,7 @@ package server
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"time"
 )
 
@@ -23,7 +23,7 @@ const (
 // Keep in sync with constants.go.
 const OAuthSpecVersion = "OAuth 2.1"
 
-var errInvalidGrant = fmt.Errorf("%s: invalid grant", ErrorCodeInvalidGrant)
+var errInvalidGrant = errors.New(ErrorCodeInvalidGrant + ": invalid grant")
 
 // registerTokenPair records the AT -> RT pairing so that provider token refreshes
 // triggered by one key can also update the other.
