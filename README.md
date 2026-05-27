@@ -116,6 +116,9 @@ go get github.com/giantswarm/mcp-oauth
 | [MCP 2025-11-25](./docs/mcp-2025-11-25.md) | New specification features and migration |
 | [Silent Authentication](./docs/silent-authentication.md) | OIDC prompt parameter for seamless re-authentication |
 | [Client ID Metadata Documents](./docs/cimd.md) | URL-based client IDs with dynamic metadata discovery |
+| [DPoP (RFC 9449)](./docs/dpop.md) | Sender-constraint setup, middleware wiring, multi-pod replay cache |
+| [Token Exchange (RFC 8693)](./docs/token-exchange.md) | Service-to-service and Kubernetes SA token exchange |
+| [Client Management (RFC 7592)](./docs/client-management.md) | Per-client read/update/delete for dynamically registered clients |
 | [Security Architecture](./SECURITY_ARCHITECTURE.md) | Deep-dive into security implementation |
 
 ## Examples
