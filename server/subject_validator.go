@@ -46,7 +46,9 @@ type TrustedIssuer struct {
 	// strings or glob patterns where '*' matches any sequence of characters
 	// (including '/') and '?' matches any single character. Use '*' freely
 	// across path segments, e.g. "system:serviceaccount:ns:*" or
-	// "repo:org/repo:*". Nil or empty means no claim restrictions.
+	// "repo:org/repo:*". Absent claims and claims with non-string values
+	// (numbers, arrays, objects) are rejected. Nil or empty means no claim
+	// restrictions.
 	AllowedClaims map[string]string
 }
 
@@ -117,7 +119,14 @@ func (v *OIDCValidator) Validate(ctx context.Context, subjectToken, subjectToken
 
 	if len(ti.AllowedClaims) > 0 {
 		for claimName, pattern := range ti.AllowedClaims {
-			claimValue, _ := rawClaims[claimName].(string)
+			raw, present := rawClaims[claimName]
+			if !present {
+				return SubjectIdentity{}, fmt.Errorf("claim %q: not present in token", claimName)
+			}
+			claimValue, ok := raw.(string)
+			if !ok {
+				return SubjectIdentity{}, fmt.Errorf("claim %q: value has non-string type %T", claimName, raw)
+			}
 			if err := matchClaimPattern(pattern, claimValue); err != nil {
 				return SubjectIdentity{}, fmt.Errorf("claim %q: %w", claimName, err)
 			}
@@ -138,6 +147,8 @@ func (v *OIDCValidator) Validate(ctx context.Context, subjectToken, subjectToken
 func matchClaimPattern(pattern, value string) error {
 	// Replace '/' with '\x01' in both sides so path.Match never sees a
 	// separator; any other path.Match feature (?, [...]) is preserved.
+	// \x01 is safe: JWT claims are printable Unicode, so it cannot appear
+	// in a real claim value or operator-supplied pattern.
 	const sep, placeholder = "/", "\x01"
 	matched, err := path.Match(
 		strings.ReplaceAll(pattern, sep, placeholder),

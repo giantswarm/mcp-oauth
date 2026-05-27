@@ -30,7 +30,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `server.WithEncryptor` / `oauth.WithEncryptor` — the server no longer holds an encryptor; wire it on the store.
 - `server.Server.Encryptor` field — removed alongside `WithEncryptor`.
 - `server.Config.RevokedFamilyRetentionDays` — moved to `memory.WithRevokedFamilyRetentionDays`.
-- **`server.K8sSAValidator`, `server.KubernetesSATrust`, `server.NewK8sSAValidator`, `server.WithKubernetesSATrust` removed.** Replace with `TrustedIssuer.AllowedClaims`. See migration examples in the PR description.
+- **`server.K8sSAValidator`, `server.KubernetesSATrust`, `server.NewK8sSAValidator`, `server.WithKubernetesSATrust` removed.** Replace with `TrustedIssuer.AllowedClaims`:
+  ```go
+  // Kubernetes SA — any SA in the ai-platform namespace
+  TrustedIssuer{
+      Issuer:        "https://kubernetes.default.svc.cluster.local",
+      JwksURL:       "...",
+      AllowedClaims: map[string]string{
+          "sub": "system:serviceaccount:ai-platform:*",
+      },
+  }
+
+  // GitHub Actions — any branch in a specific repo
+  TrustedIssuer{
+      Issuer:        "https://token.actions.githubusercontent.com",
+      JwksURL:       "...",
+      AllowedClaims: map[string]string{
+          "sub":        "repo:org/repo:*",
+          "repository": "org/repo",
+      },
+  }
+  ```
 
 ### Security
 

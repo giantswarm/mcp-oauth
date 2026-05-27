@@ -98,7 +98,11 @@ func WithTokenRefreshHandler(handler TokenRefreshHandler) Option {
 // urn:ietf:params:oauth:token-type:id_token,
 // urn:ietf:params:oauth:token-type:access_token, and
 // urn:ietf:params:oauth:token-type:jwt subject_token_type values.
-// These validators are consulted by the RFC 8693 token-exchange handler.
+// All three types are registered against the same validator, so workload JWT
+// exchange (projected SA tokens, GHA OIDC) is implicitly enabled for every
+// issuer listed here. Use TrustedIssuer.AllowedClaims to restrict which tokens
+// are accepted per issuer. These validators are consulted by the RFC 8693
+// token-exchange handler.
 func WithTrustedIssuers(issuers []TrustedIssuer) Option {
 	return func(s *Server) {
 		v, err := NewOIDCValidator(issuers)

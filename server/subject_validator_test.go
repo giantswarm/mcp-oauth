@@ -277,10 +277,11 @@ func TestOIDCValidator_AllowedClaims(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name          string
-		allowedClaims map[string]string
-		sub           string
-		wantErr       bool
+		name             string
+		allowedClaims    map[string]string
+		sub              string
+		wantErr          bool
+		wantErrContains  string
 	}{
 		{
 			name:          "exact match",
@@ -288,10 +289,11 @@ func TestOIDCValidator_AllowedClaims(t *testing.T) {
 			sub:           testSubject,
 		},
 		{
-			name:          "exact mismatch",
-			allowedClaims: map[string]string{"sub": "repo:org/other:ref:refs/heads/main"},
-			sub:           testSubject,
-			wantErr:       true,
+			name:            "exact mismatch",
+			allowedClaims:   map[string]string{"sub": "repo:org/other:ref:refs/heads/main"},
+			sub:             testSubject,
+			wantErr:         true,
+			wantErrContains: "does not match allowed pattern",
 		},
 		{
 			name:          "glob across slash",
@@ -299,16 +301,18 @@ func TestOIDCValidator_AllowedClaims(t *testing.T) {
 			sub:           testSubject,
 		},
 		{
-			name:          "glob wrong org",
-			allowedClaims: map[string]string{"sub": "repo:org/other:*"},
-			sub:           testSubject,
-			wantErr:       true,
+			name:            "glob wrong org",
+			allowedClaims:   map[string]string{"sub": "repo:org/other:*"},
+			sub:             testSubject,
+			wantErr:         true,
+			wantErrContains: "does not match allowed pattern",
 		},
 		{
-			name:          "absent claim treated as empty",
-			allowedClaims: map[string]string{"nonexistent_claim": "somevalue"},
-			sub:           testSubject,
-			wantErr:       true,
+			name:            "absent claim is rejected",
+			allowedClaims:   map[string]string{"nonexistent_claim": "somevalue"},
+			sub:             testSubject,
+			wantErr:         true,
+			wantErrContains: "not present in token",
 		},
 		{
 			name:          "no AllowedClaims — no restriction",
@@ -321,10 +325,11 @@ func TestOIDCValidator_AllowedClaims(t *testing.T) {
 			sub:           "system:serviceaccount:ai-platform:my-svc",
 		},
 		{
-			name:          "K8s SA glob — wrong namespace",
-			allowedClaims: map[string]string{"sub": "system:serviceaccount:ai-platform:*"},
-			sub:           "system:serviceaccount:other:my-svc",
-			wantErr:       true,
+			name:            "K8s SA glob — wrong namespace",
+			allowedClaims:   map[string]string{"sub": "system:serviceaccount:ai-platform:*"},
+			sub:             "system:serviceaccount:other:my-svc",
+			wantErr:         true,
+			wantErrContains: "does not match allowed pattern",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -339,13 +344,59 @@ func TestOIDCValidator_AllowedClaims(t *testing.T) {
 			identity, err := v.Validate(t.Context(), makeToken(tc.sub), SubjectTokenTypeIDToken)
 			if tc.wantErr {
 				require.Error(t, err)
-				require.Contains(t, err.Error(), "does not match allowed pattern")
+				require.Contains(t, err.Error(), tc.wantErrContains)
 			} else {
 				require.NoError(t, err)
 				require.Equal(t, tc.sub, identity.Subject)
 			}
 		})
 	}
+}
+
+func TestOIDCValidator_AllowedClaims_NonStringValue(t *testing.T) {
+	key := newTestECKey(t)
+	const kid = "test-key-1"
+	jwksURL, jwksClient := serveStaticJWKS(t, key, kid)
+
+	// Build a token with a numeric custom claim alongside the standard fields.
+	signingKey := jose.SigningKey{
+		Algorithm: jose.ES256,
+		Key: jose.JSONWebKey{
+			Key:       key,
+			KeyID:     kid,
+			Algorithm: string(jose.ES256),
+			Use:       "sig",
+		},
+	}
+	opts := &jose.SignerOptions{}
+	opts.WithType("JWT")
+	opts.WithHeader(jose.HeaderKey("kid"), kid)
+	signer, err := jose.NewSigner(signingKey, opts)
+	require.NoError(t, err)
+
+	token, err := josejwt.Signed(signer).
+		Claims(josejwt.Claims{
+			Issuer:   testIssuer,
+			Subject:  testSubject,
+			Audience: josejwt.Audience{testAudience},
+			Expiry:   josejwt.NewNumericDate(time.Now().Add(time.Hour)),
+			IssuedAt: josejwt.NewNumericDate(time.Now()),
+		}).
+		Claims(map[string]interface{}{"numeric_claim": 42}).
+		Serialize()
+	require.NoError(t, err)
+
+	v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
+		Issuer:           testIssuer,
+		JwksURL:          jwksURL,
+		AllowedAudiences: []string{testAudience},
+		AllowedClaims:    map[string]string{"numeric_claim": "42"},
+	}}, jwksClient)
+	require.NoError(t, err)
+
+	_, err = v.Validate(t.Context(), token, SubjectTokenTypeIDToken)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "non-string type")
 }
 
 func TestWithTrustedIssuers_RegistersValidators(t *testing.T) {
