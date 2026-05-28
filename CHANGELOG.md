@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`nbf` on access tokens.** RFC 9068 JWT access tokens carry `nbf = iat`. RFC 7662 introspection responses emit `nbf = iat` in both JWT and opaque modes.
+
 - **Multi-issuer Bearer validation at `ValidateToken`**: JWTs whose `iss` matches a `WithTrustedIssuers` entry are accepted as Bearer access tokens. Each entry's `AllowedAudiences` defaults to the server's `ResourceIdentifier` when empty; `AllowedClaims` applies as before. RFC 9068 §4 `typ: at+jwt` is enforced on this path.
 - **`SubjectIdentity.Claims`**: the verified `*oidc.IDTokenClaims` is now returned alongside `Subject`, `Issuer`, and `AllowedScopes`.
 - **`server.ErrIssuerNotTrusted`**: sentinel returned by `OIDCValidator.Validate` when the token is not a JWT, has no `iss`, or its `iss` is not configured. Use `errors.Is` to fall through to other validation paths.

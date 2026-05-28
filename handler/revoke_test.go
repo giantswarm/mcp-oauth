@@ -180,13 +180,13 @@ func TestHandler_ServeTokenIntrospection_OpaquePath(t *testing.T) {
 			name:              "token owner sees full RFC 7662 §2.2 projection",
 			requester:         "owner",
 			wantActive:        true,
-			wantFieldsPresent: []string{"client_id", "sub", "token_type", "scope", "aud", "iss", "exp", "iat"},
+			wantFieldsPresent: []string{"client_id", "sub", "token_type", "scope", "aud", "iss", "exp", "iat", "nbf"},
 		},
 		{
 			name:             "cross-client probe denied — no field leakage",
 			requester:        "probe",
 			wantActive:       false,
-			wantFieldsAbsent: []string{"sub", "email", "email_verified", "name", "client_id", "scope", "aud", "iss", "exp", "iat", "token_type"},
+			wantFieldsAbsent: []string{"sub", "email", "email_verified", "name", "client_id", "scope", "aud", "iss", "exp", "iat", "nbf", "token_type"},
 		},
 		{
 			name:                  "allowlisted resource server sees token-owner client_id",
@@ -270,6 +270,9 @@ func TestHandler_ServeTokenIntrospection_OpaquePath(t *testing.T) {
 				}
 				if iat, ok := response["iat"].(float64); ok {
 					require.Equal(t, issuedAt.Unix(), int64(iat))
+				}
+				if nbf, ok := response["nbf"].(float64); ok {
+					require.Equal(t, issuedAt.Unix(), int64(nbf))
 				}
 				require.Equal(t, audience, response["aud"])
 				require.Equal(t, testIssuer, response["iss"])
