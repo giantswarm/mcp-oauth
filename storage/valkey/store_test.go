@@ -746,7 +746,9 @@ func TestTokenStore_AtomicGetAndDeleteRefreshToken_MalformedTokenJSON(t *testing
 
 // TestTokenStore_AtomicGetAndDeleteRefreshToken_DecryptError exercises the
 // decryptToken error branch: an encryptor is configured but the provider
-// token field is not a valid ciphertext.
+// token field is not a valid ciphertext. Models config drift across a deploy
+// (e.g., encryption enabled retroactively while plaintext tokens still exist
+// at rest) so the surfaced error must be opaque, never ErrTokenNotFound.
 func TestTokenStore_AtomicGetAndDeleteRefreshToken_DecryptError(t *testing.T) {
 	key, err := security.GenerateKey()
 	require.NoError(t, err)

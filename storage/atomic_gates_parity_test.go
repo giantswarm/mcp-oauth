@@ -1,13 +1,14 @@
 package storage_test
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	valkeygo "github.com/valkey-io/valkey-go"
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/storage"
@@ -19,6 +20,10 @@ import (
 // produce identical outcomes for the OAuth 2.1 single-use enforcement gates
 // (RFC 6749 §4.1.2 authorization code reuse, refresh-token reuse). Divergence
 // here would mean one backend silently allows replay where the other rejects.
+//
+// The factory returns storage.Combined deliberately, to keep assertions
+// backend-agnostic; backend-specific behaviour belongs in the per-backend
+// test files.
 func TestAtomicGates_BackendParity(t *testing.T) {
 	backends := []struct {
 		name    string
@@ -84,11 +89,7 @@ func TestAtomicGates_BackendParity(t *testing.T) {
 			t.Run("refresh_token_unknown_returns_not_found", func(t *testing.T) {
 				s := b.factory(t)
 				_, _, _, err := s.AtomicGetAndDeleteRefreshToken(t.Context(), "parity-rt-unknown")
-				require.ErrorIs(t, err, storage.ErrTokenNotFound)
-				require.True(t,
-					errors.Is(err, storage.ErrTokenNotFound),
-					"backends MUST agree on the sentinel error type",
-				)
+				require.ErrorIs(t, err, storage.ErrTokenNotFound, "backends MUST agree on the sentinel error type")
 			})
 		})
 	}
@@ -110,10 +111,48 @@ func newValkeyBackend(t *testing.T) storage.Combined {
 	}
 
 	prefix := fmt.Sprintf("mcptest-parity:%s:", t.Name())
+
+	flushValkeyPrefix(t, addr, prefix)
+
 	s, err := valkey.New(valkey.Config{Address: addr, KeyPrefix: prefix})
 	if err != nil {
 		t.Skipf("skipping valkey parity: could not connect to %s: %v", addr, err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		flushValkeyPrefix(t, addr, prefix)
+		s.Close()
+	})
 	return s
+}
+
+// flushValkeyPrefix SCAN+DELs every key matching prefix+"*". Mirrors the
+// cleanupTestKeys ritual used by storage/valkey/store_test.go so the parity
+// test is resilient to keys left over from a crashed prior run with the same
+// t.Name().
+func flushValkeyPrefix(t *testing.T, addr, prefix string) {
+	t.Helper()
+
+	client, err := valkeygo.NewClient(valkeygo.ClientOption{InitAddress: []string{addr}})
+	if err != nil {
+		return
+	}
+	defer client.Close()
+
+	ctx := context.Background()
+	pattern := prefix + "*"
+	var cursor uint64
+	for {
+		entry, err := client.Do(ctx, client.B().Scan().Cursor(cursor).Match(pattern).Count(100).Build()).AsScanEntry()
+		if err != nil {
+			t.Logf("warning: failed to scan for cleanup: %v", err)
+			return
+		}
+		for _, key := range entry.Elements {
+			_ = client.Do(ctx, client.B().Del().Key(key).Build())
+		}
+		cursor = entry.Cursor
+		if cursor == 0 {
+			return
+		}
+	}
 }
