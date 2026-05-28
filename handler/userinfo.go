@@ -116,7 +116,7 @@ func (h *Handler) ServeUserInfo(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(claims); err != nil {
-		h.logger.Warn("Failed to encode userinfo response", "error", err)
+		h.logger.Warn("failed to write JSON response", "error", err)
 		h.recordHTTPMetrics(r.Context(), endpointUserInfo, r.Method, http.StatusInternalServerError, startTime)
 		return
 	}

@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	_ "embed"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -201,12 +200,10 @@ func (h *Handler) writeUnauthorizedError(w http.ResponseWriter, r *http.Request,
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
-	if err := json.NewEncoder(w).Encode(map[string]string{
+	h.writeJSON(w, map[string]string{
 		"error":             code,
 		"error_description": description,
-	}); err != nil {
-		h.logger.Warn("Failed to encode unauthorized error response", "error", err)
-	}
+	})
 }
 
 // writeInsufficientScopeError writes a 403 Forbidden response with insufficient_scope error.
@@ -236,15 +233,12 @@ func (h *Handler) writeInsufficientScopeError(w http.ResponseWriter, requiredSco
 	// Use formatWWWAuthenticate to build the header with error details
 	w.Header().Set("WWW-Authenticate", h.formatWWWAuthenticate(scope, constants.ErrorCodeInsufficientScope, description))
 
-	// Write JSON error response body
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
-	if err := json.NewEncoder(w).Encode(map[string]string{
+	h.writeJSON(w, map[string]string{
 		"error":             constants.ErrorCodeInsufficientScope,
 		"error_description": description,
-	}); err != nil {
-		h.logger.Warn("Failed to encode insufficient scope error response", "error", err)
-	}
+	})
 }
 
 // formatWWWAuthenticate formats the WWW-Authenticate header value per RFC 6750 and RFC 9728

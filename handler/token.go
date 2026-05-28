@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	_ "embed"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -473,9 +472,7 @@ func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *oauth2.Token,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		h.logger.Warn("Failed to encode token response", "error", err)
-	}
+	h.writeJSON(w, response)
 }
 
 // isValidAuthMethod checks if the given token endpoint auth method is supported

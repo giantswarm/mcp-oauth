@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	_ "embed"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -201,9 +200,7 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		h.logger.Warn("Failed to encode introspection response", "error", err)
-	}
+	h.writeJSON(w, response)
 	h.recordHTTPMetrics(r.Context(), endpointIntrospect, http.MethodPost, http.StatusOK, startTime)
 	instrumentation.SetSpanSuccess(span)
 }

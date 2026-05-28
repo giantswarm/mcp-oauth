@@ -2,7 +2,6 @@ package handler
 
 import (
 	_ "embed"
-	"encoding/json"
 	"net/http"
 	"net/url"
 	"path"
@@ -58,9 +57,7 @@ func (h *Handler) ServeProtectedResourceMetadata(w http.ResponseWriter, r *http.
 
 	h.recordHTTPMetrics(r.Context(), endpointProtectedResource, http.MethodGet, http.StatusOK, startTime)
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(metadata); err != nil {
-		h.logger.Warn("Failed to encode protected resource metadata response", "error", err)
-	}
+	h.writeJSON(w, metadata)
 }
 
 // extractResourcePath extracts the resource path from a Protected Resource Metadata URL.
@@ -378,9 +375,7 @@ func (h *Handler) serveAuthServerMetadata(w http.ResponseWriter, r *http.Request
 
 	h.recordHTTPMetrics(r.Context(), endpointDiscovery, http.MethodGet, http.StatusOK, startTime)
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(metadata); err != nil {
-		h.logger.Warn("Failed to encode authorization server metadata response", "error", err)
-	}
+	h.writeJSON(w, metadata)
 }
 
 // buildAuthServerMetadata returns the metadata served at both
@@ -534,7 +529,5 @@ func (h *Handler) ServeJWKS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/jwk-set+json")
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 
-	if err := json.NewEncoder(w).Encode(jwks); err != nil {
-		h.logger.Warn("Failed to encode JWKS response", "error", err)
-	}
+	h.writeJSON(w, jwks)
 }

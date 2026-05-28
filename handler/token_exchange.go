@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -117,7 +116,5 @@ func (h *Handler) writeTokenExchangeResponse(w http.ResponseWriter, result *serv
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		h.logger.Warn("Failed to encode token exchange response", "error", err)
-	}
+	h.writeJSON(w, response)
 }
