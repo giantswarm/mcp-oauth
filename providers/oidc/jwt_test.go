@@ -7,6 +7,7 @@ import (
 	"time"
 
 	josejwt "github.com/go-jose/go-jose/v4/jwt"
+	"github.com/stretchr/testify/require"
 )
 
 func TestIsJWT(t *testing.T) {
@@ -290,6 +291,93 @@ func TestParseAndValidateToken_TimeValidation(t *testing.T) {
 			t.Errorf("DefaultClockSkewLeeway = %v, want %v", DefaultClockSkewLeeway, expected)
 		}
 	})
+}
+
+func TestValidateNonceClaim(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		claimNonce     string
+		expectedNonce  string
+		wantErr        error
+		wantErrMessage string
+	}{
+		{
+			name:          "match",
+			claimNonce:    "abc",
+			expectedNonce: "abc",
+			wantErr:       nil,
+		},
+		{
+			name:          "mismatch",
+			claimNonce:    "abc",
+			expectedNonce: "xyz",
+			wantErr:       ErrNonceMismatch,
+		},
+		{
+			name:           "missing in claims",
+			claimNonce:     "",
+			expectedNonce:  "abc",
+			wantErr:        ErrNonceMismatch,
+			wantErrMessage: "claim absent",
+		},
+		{
+			name:          "missing expectation",
+			claimNonce:    "abc",
+			expectedNonce: "",
+			wantErr:       nil,
+		},
+		{
+			name:          "both empty",
+			claimNonce:    "",
+			expectedNonce: "",
+			wantErr:       nil,
+		},
+		{
+			name:          "same length different content",
+			claimNonce:    "aaaa",
+			expectedNonce: "bbbb",
+			wantErr:       ErrNonceMismatch,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_ = t.Context()
+
+			err := ValidateNonceClaim(tt.claimNonce, tt.expectedNonce)
+
+			if tt.wantErr == nil {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorIs(t, err, tt.wantErr)
+			if tt.wantErrMessage != "" {
+				require.Contains(t, err.Error(), tt.wantErrMessage)
+			}
+		})
+	}
+}
+
+// TestIDTokenClaims_NonStringNonce documents the first line of nonce-defence
+// in depth: ValidateNonceClaim only sees a string, because the typed
+// IDTokenClaims.Nonce field rejects a non-string JSON value during claim
+// extraction. A token with "nonce": 42 fails before the comparison runs.
+func TestIDTokenClaims_NonStringNonce(t *testing.T) {
+	t.Parallel()
+	_ = t.Context()
+
+	payload, err := json.Marshal(map[string]any{
+		"sub":   "user",
+		"nonce": 42,
+	})
+	require.NoError(t, err)
+
+	var claims IDTokenClaims
+	err = json.Unmarshal(payload, &claims)
+	require.Error(t, err, "non-string nonce must not unmarshal into IDTokenClaims.Nonce")
 }
 
 // createTestJWTWithClaims creates a JWT token for testing purposes.
