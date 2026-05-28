@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	_ "embed"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -201,7 +200,7 @@ func (h *Handler) writeUnauthorizedError(w http.ResponseWriter, r *http.Request,
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
-	_ = json.NewEncoder(w).Encode(map[string]string{
+	h.writeJSON(w, map[string]string{
 		"error":             code,
 		"error_description": description,
 	})
@@ -234,10 +233,9 @@ func (h *Handler) writeInsufficientScopeError(w http.ResponseWriter, requiredSco
 	// Use formatWWWAuthenticate to build the header with error details
 	w.Header().Set("WWW-Authenticate", h.formatWWWAuthenticate(scope, constants.ErrorCodeInsufficientScope, description))
 
-	// Write JSON error response body
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
-	_ = json.NewEncoder(w).Encode(map[string]string{
+	h.writeJSON(w, map[string]string{
 		"error":             constants.ErrorCodeInsufficientScope,
 		"error_description": description,
 	})

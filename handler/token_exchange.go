@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -117,5 +116,5 @@ func (h *Handler) writeTokenExchangeResponse(w http.ResponseWriter, result *serv
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(response)
+	h.writeJSON(w, response)
 }

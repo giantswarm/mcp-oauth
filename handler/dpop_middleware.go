@@ -53,7 +53,7 @@ func DPoPMiddleware(replayCache server.DPoPReplayCache, nonceProvider server.DPo
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			serveDPoP(w, r, next, replayCache, nonceProvider, trustedProxies)
+			serveDPoP(w, r, next, replayCache, nonceProvider, trustedProxies, slog.Default())
 		})
 	}
 }
@@ -71,12 +71,13 @@ func (h *Handler) DPoPMiddleware() func(http.Handler) http.Handler {
 				h.server.DPoPReplayCache(),
 				h.server.DPoPNonceProvider(),
 				h.server.TrustedProxyCIDRs(),
+				h.logger,
 			)
 		})
 	}
 }
 
-func serveDPoP(w http.ResponseWriter, r *http.Request, next http.Handler, replayCache server.DPoPReplayCache, nonceProvider server.DPoPNonceProvider, trustedProxies []*net.IPNet) {
+func serveDPoP(w http.ResponseWriter, r *http.Request, next http.Handler, replayCache server.DPoPReplayCache, nonceProvider server.DPoPNonceProvider, trustedProxies []*net.IPNet, logger *slog.Logger) {
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(strings.ToLower(auth), "dpop ") {
 		next.ServeHTTP(w, r)
@@ -86,7 +87,7 @@ func serveDPoP(w http.ResponseWriter, r *http.Request, next http.Handler, replay
 	proof := r.Header.Get("DPoP")
 	if proof == "" {
 		writeDPoPError(
-			w,
+			w, logger,
 			dpopWWWAuthenticate(constants.ErrorCodeInvalidRequest, "DPoP proof required"),
 			"",
 			constants.ErrorCodeInvalidRequest,
@@ -98,7 +99,7 @@ func serveDPoP(w http.ResponseWriter, r *http.Request, next http.Handler, replay
 	htu := dpopHTU(r, trustedProxies)
 	proofClaims, err := server.ValidateDPoPProof(r.Context(), proof, r.Method, htu, accessToken, replayCache, nonceProvider, time.Now())
 	if err != nil {
-		writeDPoPValidationError(w, r, err, nonceProvider)
+		writeDPoPValidationError(w, r, err, nonceProvider, logger)
 		return
 	}
 
@@ -109,14 +110,14 @@ func serveDPoP(w http.ResponseWriter, r *http.Request, next http.Handler, replay
 	next.ServeHTTP(w, r2)
 }
 
-func writeDPoPValidationError(w http.ResponseWriter, r *http.Request, err error, nonceProvider server.DPoPNonceProvider) {
+func writeDPoPValidationError(w http.ResponseWriter, r *http.Request, err error, nonceProvider server.DPoPNonceProvider, logger *slog.Logger) {
 	if errors.Is(err, server.ErrDPoPNonceInvalid) {
 		nonce := ""
 		if nonceProvider != nil {
 			nonce = nonceProvider.Nonce(r.Context())
 		}
 		writeDPoPError(
-			w,
+			w, logger,
 			dpopWWWAuthenticate(constants.ErrorCodeUseDPoPNonce, "Resource server requires nonce in DPoP proof"),
 			nonce,
 			constants.ErrorCodeUseDPoPNonce,
@@ -126,7 +127,7 @@ func writeDPoPValidationError(w http.ResponseWriter, r *http.Request, err error,
 		return
 	}
 	writeDPoPError(
-		w,
+		w, logger,
 		dpopWWWAuthenticate(constants.ErrorCodeInvalidDPoPProof, err.Error()),
 		"",
 		constants.ErrorCodeInvalidDPoPProof,
@@ -146,7 +147,7 @@ func dpopWWWAuthenticate(code, description string) string {
 // writeDPoPError writes a JSON DPoP error response.
 // wwwAuth is written as the WWW-Authenticate header when non-empty (RFC 9449 §7.1).
 // dpopNonce is written as the DPoP-Nonce header when non-empty (RFC 9449 §8).
-func writeDPoPError(w http.ResponseWriter, wwwAuth, dpopNonce, code, description string, status int) {
+func writeDPoPError(w http.ResponseWriter, logger *slog.Logger, wwwAuth, dpopNonce, code, description string, status int) {
 	if wwwAuth != "" {
 		w.Header().Set("WWW-Authenticate", wwwAuth)
 	}
@@ -155,9 +156,10 @@ func writeDPoPError(w http.ResponseWriter, wwwAuth, dpopNonce, code, description
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	//nolint:errcheck — encoding map[string]string never fails
-	_ = json.NewEncoder(w).Encode(map[string]string{
+	if err := json.NewEncoder(w).Encode(map[string]string{
 		"error":             code,
 		"error_description": description,
-	})
+	}); err != nil {
+		logger.Warn("failed to write JSON response", "error", err, "code", code)
+	}
 }

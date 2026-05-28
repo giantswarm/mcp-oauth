@@ -394,7 +394,7 @@ func (h *Handler) writeRegistrationResponse(w http.ResponseWriter, client *stora
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(response)
+	h.writeJSON(w, response)
 }
 
 // Helper methods
