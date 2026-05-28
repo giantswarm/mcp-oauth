@@ -626,6 +626,34 @@ func TestExchangeSubjectToken_NoOptions_BackwardCompat(t *testing.T) {
 	require.NotContains(t, rawClaims, "groups")
 }
 
+func TestExchangeSubjectToken_EmailVerifiedFalseWithEmail(t *testing.T) {
+	srv, signingKey, subjectToken := setupExchangeOptionsTest(t)
+
+	result, err := srv.ExchangeSubjectToken(
+		t.Context(),
+		subjectToken,
+		SubjectTokenTypeIDToken,
+		"https://api.example.com",
+		"read",
+		"",
+		ExchangeOptions{
+			Email:         "unverified@machine.giantswarm.io",
+			EmailVerified: false,
+		},
+	)
+	require.NoError(t, err)
+
+	parsed, err := josejwt.ParseSigned(result.AccessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+
+	var rawClaims map[string]any
+	require.NoError(t, parsed.Claims(signingKey.Public(), &rawClaims))
+
+	require.Equal(t, "unverified@machine.giantswarm.io", rawClaims["email"])
+	require.Contains(t, rawClaims, "email_verified", "email_verified must be emitted when Email is set")
+	require.Equal(t, false, rawClaims["email_verified"])
+}
+
 func TestExchangeSubjectToken_ExtraOverridesEmailVerified(t *testing.T) {
 	srv, signingKey, subjectToken := setupExchangeOptionsTest(t)
 

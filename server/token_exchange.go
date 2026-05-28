@@ -21,9 +21,14 @@ type TokenExchangeResult struct {
 }
 
 // ExchangeOptions carries optional identity claims to inject into the access
-// token issued by ExchangeSubjectToken. Zero-value fields are not emitted into
-// the JWT. Extra is merged into the JWT body after the standard claims and
-// overwrites any colliding keys.
+// token issued by ExchangeSubjectToken.
+//
+// String and slice fields are omitted from the JWT when empty. EmailVerified is
+// emitted only when Email is also non-empty (consistent with AccessTokenClaims
+// semantics). Extra is merged into the JWT body after the standard claims; keys
+// that collide with registered claim names (sub, iss, aud, exp, nbf, iat, jti,
+// scope, client_id) overwrite them — callers are responsible for using
+// non-conflicting names.
 type ExchangeOptions struct {
 	Email         string
 	EmailVerified bool
@@ -41,8 +46,8 @@ type ExchangeOptions struct {
 //
 // opts is an optional ExchangeOptions whose identity fields are emitted as
 // standard JWT claims (email, email_verified, name, groups) and whose Extra
-// map is merged verbatim into the JWT body. When opts is omitted no identity
-// claims are added. If multiple ExchangeOptions are passed only the first is used.
+// map is merged verbatim into the JWT body. Omitting opts adds no identity
+// claims. Only the first element is used when multiple are provided.
 func (s *Server) ExchangeSubjectToken(
 	ctx context.Context,
 	subjectToken, subjectTokenType, resource, scope, dpopJKT string,
