@@ -347,8 +347,11 @@ func TestExchangeSubjectToken_Audit_JWTModeRequired(t *testing.T) {
 		"https://api.example.com", "", "")
 	require.Error(t, err)
 
-	require.True(t, containsAuthFailure(buf.String(), "token_exchange_jwt_mode_required"),
-		"missing jwt-mode-required audit failure in: %s", buf.String())
+	out := buf.String()
+	require.True(t, containsAuthFailure(out, "token_exchange_jwt_mode_required"),
+		"missing jwt-mode-required audit failure in: %s", out)
+	require.Contains(t, out, GrantTypeTokenExchange,
+		"audit event must carry grant_type for dashboarding")
 }
 
 func TestExchangeSubjectToken_Audit_UnsupportedSubjectTokenType(t *testing.T) {
@@ -370,17 +373,21 @@ func TestExchangeSubjectToken_Audit_UnsupportedSubjectTokenType(t *testing.T) {
 	srv, err := New(mock.NewProvider(), store, store, store, cfg, logger)
 	require.NoError(t, err)
 	srv.Auditor = security.NewAuditor(logger, true)
-	// No validators registered → unsupported_subject_token_type path.
 
-	_, err = srv.ExchangeSubjectToken(t.Context(), "tok",
-		"urn:ietf:params:oauth:token-type:saml2",
+	const badType = "urn:ietf:params:oauth:token-type:saml2"
+	_, err = srv.ExchangeSubjectToken(t.Context(), "tok", badType,
 		"https://api.example.com", "", "")
 	require.Error(t, err)
 	var unsupported *TokenExchangeUnsupportedTypeError
 	require.ErrorAs(t, err, &unsupported)
 
-	require.True(t, containsAuthFailure(buf.String(), "unsupported_subject_token_type"),
-		"missing unsupported_subject_token_type audit failure in: %s", buf.String())
+	out := buf.String()
+	require.True(t, containsAuthFailure(out, "unsupported_subject_token_type"),
+		"missing unsupported_subject_token_type audit failure in: %s", out)
+	require.Contains(t, out, badType,
+		"audit event must carry the rejected subject_token_type for dashboarding")
+	require.Contains(t, out, GrantTypeTokenExchange,
+		"audit event must carry grant_type for dashboarding")
 }
 
 func TestExchangeSubjectToken_Audit_SubjectTokenValidationFailure(t *testing.T) {
@@ -390,8 +397,11 @@ func TestExchangeSubjectToken_Audit_SubjectTokenValidationFailure(t *testing.T) 
 		SubjectTokenTypeIDToken, "https://api.example.com", "", "")
 	require.Error(t, err)
 
-	require.True(t, containsAuthFailure(buf.String(), "subject_token_validation_failed"),
-		"missing subject_token_validation_failed audit failure in: %s", buf.String())
+	out := buf.String()
+	require.True(t, containsAuthFailure(out, "subject_token_validation_failed"),
+		"missing subject_token_validation_failed audit failure in: %s", out)
+	require.Contains(t, out, SubjectTokenTypeIDToken,
+		"audit event must carry the subject_token_type for dashboarding")
 }
 
 func TestExchangeSubjectToken_Audit_AccessTokenIssueFailure(t *testing.T) {
@@ -403,8 +413,13 @@ func TestExchangeSubjectToken_Audit_AccessTokenIssueFailure(t *testing.T) {
 		SubjectTokenTypeIDToken, "https://api.example.com", "read", "")
 	require.Error(t, err)
 
-	require.True(t, containsAuthFailure(buf.String(), "access_token_issue_failed"),
-		"missing access_token_issue_failed audit failure in: %s", buf.String())
+	out := buf.String()
+	require.True(t, containsAuthFailure(out, "access_token_issue_failed"),
+		"missing access_token_issue_failed audit failure in: %s", out)
+	require.Contains(t, out, "https://api.example.com",
+		"audit event must record the audience on issuance failure")
+	require.Contains(t, out, "act_iss",
+		"audit event must record the upstream actor issuer on issuance failure")
 }
 
 func TestExchangeSubjectToken_DPoP(t *testing.T) {
