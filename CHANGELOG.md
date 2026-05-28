@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING — `oauthconfig.StorageFromEnv` and `StorageFromEnvWithPrefix` signatures changed.** Both now accept `enc *security.Encryptor, inst *instrumentation.Instrumentation` before the `logger` argument, and wire them into the constructed store.
 - Encryption at rest is wired on the store (`memory.WithEncryptor` / `valkey.WithEncryptor`), not the server. Remove any `server.WithEncryptor` / `oauth.WithEncryptor` calls and pass the encryptor directly to the store constructor.
 - `server.Config.RevokedFamilyRetentionDays` removed; set the retention period on the memory store via `memory.WithRevokedFamilyRetentionDays` instead.
+- Internal security workflows (gitleaks, OSSF Scorecard, fix-vulnerabilities) SHA-pin the `giantswarm/github-workflows` reference instead of tracking `@main` (H7).
 
 ### Removed
 
