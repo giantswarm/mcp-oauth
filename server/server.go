@@ -98,6 +98,10 @@ type Server struct {
 	// subjectValidators is the registry for RFC 8693 token-exchange validators,
 	// keyed by subject_token_type URN.
 	subjectValidators map[string]SubjectTokenValidator
+	// trustedIssuerValidator is the OIDCValidator built from WithTrustedIssuers.
+	// Non-nil enables the trusted-issuer Bearer branch in ValidateToken;
+	// token-exchange uses the same instance via subjectValidators.
+	trustedIssuerValidator *OIDCValidator
 	// dpopReplayCache is used to detect replayed DPoP proof JTIs.
 	dpopReplayCache DPoPReplayCache
 	// dpopNonceProvider enforces RFC 9449 §8 nonces when non-nil.
