@@ -2,13 +2,17 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/oauth2"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -988,6 +992,244 @@ func TestStore_DeleteAuthorizationCode(t *testing.T) {
 	if err == nil {
 		t.Error("GetAuthorizationCode() should return error after deletion")
 	}
+}
+
+// ============================================================
+// Atomic single-use enforcement (OAuth 2.1 / RFC 6749 §4.1.2)
+// ============================================================
+
+func TestStore_AtomicCheckAndMarkAuthCodeUsed(t *testing.T) {
+	tests := []struct {
+		name         string
+		prepare      func(t *testing.T, s *Store) string
+		wantSentinel error
+		wantUsedFlag bool
+	}{
+		{
+			name: "first use succeeds",
+			prepare: func(t *testing.T, s *Store) string {
+				code := testutil.GenerateTestAuthorizationCode()
+				require.NoError(t, s.SaveAuthorizationCode(t.Context(), code))
+				return code.Code
+			},
+		},
+		{
+			name: "second use returns reuse sentinel",
+			prepare: func(t *testing.T, s *Store) string {
+				code := testutil.GenerateTestAuthorizationCode()
+				require.NoError(t, s.SaveAuthorizationCode(t.Context(), code))
+				_, err := s.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code.Code)
+				require.NoError(t, err)
+				return code.Code
+			},
+			wantSentinel: storage.ErrAuthorizationCodeUsed,
+			wantUsedFlag: true,
+		},
+		{
+			name: "unknown code returns not-found",
+			prepare: func(_ *testing.T, _ *Store) string {
+				return "nonexistent-code"
+			},
+			wantSentinel: storage.ErrAuthorizationCodeNotFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := New(WithCleanupInterval(time.Hour))
+			t.Cleanup(store.Stop)
+
+			code := tt.prepare(t, store)
+			got, err := store.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code)
+
+			if tt.wantSentinel == nil {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				return
+			}
+
+			require.ErrorIs(t, err, tt.wantSentinel)
+			if tt.wantUsedFlag {
+				require.NotNil(t, got, "reuse case must surface the stored code for forensics")
+				require.True(t, got.Used)
+			} else {
+				require.Nil(t, got, "non-reuse failures must not leak code data")
+			}
+		})
+	}
+}
+
+func TestStore_AtomicCheckAndMarkAuthCodeUsed_Expired(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := New(WithCleanupInterval(time.Hour))
+		t.Cleanup(store.Stop)
+
+		code := testutil.GenerateTestAuthorizationCode()
+		code.ExpiresAt = time.Now().Add(1 * time.Minute)
+		require.NoError(t, store.SaveAuthorizationCode(t.Context(), code))
+
+		// Advance virtual time past expiry + clock skew grace period.
+		time.Sleep(2 * time.Minute)
+		synctest.Wait()
+
+		got, err := store.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code.Code)
+		require.ErrorIs(t, err, storage.ErrTokenExpired)
+		require.Nil(t, got)
+	})
+}
+
+func TestStore_AtomicCheckAndMarkAuthCodeUsed_Concurrent(t *testing.T) {
+	const n = 100
+
+	store := New(WithCleanupInterval(time.Hour))
+	t.Cleanup(store.Stop)
+
+	code := testutil.GenerateTestAuthorizationCode()
+	require.NoError(t, store.SaveAuthorizationCode(t.Context(), code))
+
+	var success, reuse atomic.Int32
+	ready := make(chan struct{})
+	g, ctx := errgroup.WithContext(t.Context())
+	for range n {
+		g.Go(func() error {
+			<-ready
+			_, err := store.AtomicCheckAndMarkAuthCodeUsed(ctx, code.Code)
+			switch {
+			case err == nil:
+				success.Add(1)
+				return nil
+			case errors.Is(err, storage.ErrAuthorizationCodeUsed):
+				reuse.Add(1)
+				return nil
+			default:
+				return err
+			}
+		})
+	}
+	close(ready)
+	require.NoError(t, g.Wait())
+
+	// SECURITY: exactly one goroutine must succeed; all others see reuse.
+	require.Equal(t, int32(1), success.Load(), "more than one success would break OAuth 2.1 §4.1.2")
+	require.Equal(t, int32(n-1), reuse.Load())
+}
+
+func TestStore_AtomicGetAndDeleteRefreshToken(t *testing.T) {
+	tests := []struct {
+		name         string
+		prepare      func(t *testing.T, s *Store) string
+		wantSentinel error
+	}{
+		{
+			name: "first use succeeds",
+			prepare: func(t *testing.T, s *Store) string {
+				const refreshToken = "rt-first-use"
+				providerToken := testutil.GenerateTestToken()
+				require.NoError(t, s.SaveToken(t.Context(), refreshToken, providerToken))
+				require.NoError(t, s.SaveRefreshToken(t.Context(), refreshToken, testUserID, time.Now().Add(time.Hour)))
+				return refreshToken
+			},
+		},
+		{
+			name: "second use returns not-found sentinel",
+			prepare: func(t *testing.T, s *Store) string {
+				const refreshToken = "rt-reuse"
+				providerToken := testutil.GenerateTestToken()
+				require.NoError(t, s.SaveToken(t.Context(), refreshToken, providerToken))
+				require.NoError(t, s.SaveRefreshToken(t.Context(), refreshToken, testUserID, time.Now().Add(time.Hour)))
+				_, _, _, err := s.AtomicGetAndDeleteRefreshToken(t.Context(), refreshToken)
+				require.NoError(t, err)
+				return refreshToken
+			},
+			wantSentinel: storage.ErrTokenNotFound,
+		},
+		{
+			name: "unknown refresh token returns not-found",
+			prepare: func(_ *testing.T, _ *Store) string {
+				return "no-such-refresh-token"
+			},
+			wantSentinel: storage.ErrTokenNotFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := New(WithCleanupInterval(time.Hour))
+			t.Cleanup(store.Stop)
+
+			refreshToken := tt.prepare(t, store)
+			userID, _, providerToken, err := store.AtomicGetAndDeleteRefreshToken(t.Context(), refreshToken)
+
+			if tt.wantSentinel == nil {
+				require.NoError(t, err)
+				require.Equal(t, testUserID, userID)
+				require.NotNil(t, providerToken)
+				return
+			}
+
+			require.ErrorIs(t, err, tt.wantSentinel)
+			require.Empty(t, userID)
+			require.Nil(t, providerToken)
+		})
+	}
+}
+
+func TestStore_AtomicGetAndDeleteRefreshToken_Expired(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := New(WithCleanupInterval(time.Hour))
+		t.Cleanup(store.Stop)
+
+		const refreshToken = "rt-expired"
+		providerToken := testutil.GenerateTestToken()
+		require.NoError(t, store.SaveToken(t.Context(), refreshToken, providerToken))
+		require.NoError(t, store.SaveRefreshToken(t.Context(), refreshToken, testUserID, time.Now().Add(1*time.Minute)))
+
+		time.Sleep(2 * time.Minute)
+		synctest.Wait()
+
+		userID, clientID, gotToken, err := store.AtomicGetAndDeleteRefreshToken(t.Context(), refreshToken)
+		require.ErrorIs(t, err, storage.ErrTokenExpired)
+		require.Empty(t, userID)
+		require.Empty(t, clientID)
+		require.Nil(t, gotToken)
+	})
+}
+
+func TestStore_AtomicGetAndDeleteRefreshToken_Concurrent(t *testing.T) {
+	const n = 100
+
+	store := New(WithCleanupInterval(time.Hour))
+	t.Cleanup(store.Stop)
+
+	const refreshToken = "rt-concurrent"
+	providerToken := testutil.GenerateTestToken()
+	require.NoError(t, store.SaveToken(t.Context(), refreshToken, providerToken))
+	require.NoError(t, store.SaveRefreshToken(t.Context(), refreshToken, testUserID, time.Now().Add(time.Hour)))
+
+	var success, notFound atomic.Int32
+	ready := make(chan struct{})
+	g, ctx := errgroup.WithContext(t.Context())
+	for range n {
+		g.Go(func() error {
+			<-ready
+			_, _, _, err := store.AtomicGetAndDeleteRefreshToken(ctx, refreshToken)
+			switch {
+			case err == nil:
+				success.Add(1)
+				return nil
+			case errors.Is(err, storage.ErrTokenNotFound):
+				notFound.Add(1)
+				return nil
+			default:
+				return err
+			}
+		})
+	}
+	close(ready)
+	require.NoError(t, g.Wait())
+
+	require.Equal(t, int32(1), success.Load(), "more than one success would allow refresh token reuse")
+	require.Equal(t, int32(n-1), notFound.Load())
 }
 
 // ============================================================
