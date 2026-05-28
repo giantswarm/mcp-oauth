@@ -766,7 +766,6 @@ func TestServer_CanRegisterWithTrustedScheme(t *testing.T) {
 
 // TestServer_RegisterClient_NoIPTrackerNoPanic confirms that registering a client
 // against a ClientStore that does not implement ClientIPTracker does not panic.
-// This exercises the optional-interface branch in trackClientIPAndLog.
 func TestServer_RegisterClient_NoIPTrackerNoPanic(t *testing.T) {
 	ctx := t.Context()
 	combined := mockstorage.NewCombined()

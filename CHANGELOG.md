@@ -35,7 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+<<<<<<< HEAD
 - Client IP tracking now uses the `storage.ClientIPTracker` optional interface instead of a concrete `*memory.Store` type assertion.
+=======
+- Client IP tracking now uses the `storage.ClientIPTracker` optional interface instead of a concrete `*memory.Store` type assertion (H4).
+>>>>>>> 88a17c0 (chore: consolidate CHANGELOG entries, trim comment)
 - **BREAKING — `SubjectTokenValidator.Validate` signature** is now `Validate(ctx, tokenString string, defaultAudiences []string) (*SubjectIdentity, error)` (was `Validate(ctx, subjectToken, subjectTokenType string) (SubjectIdentity, error)`). The `subject_token_type` URN gate moved into `ExchangeSubjectToken`; the return is a pointer; `defaultAudiences` applies when the matched issuer's `AllowedAudiences` is empty (`nil` accepts any audience).
 - `WithTrustedIssuers` now also registers its `OIDCValidator` for `ValidateToken`; token-exchange behavior is unchanged.
 - **BREAKING — `memory.New` now accepts `...Option`** (was `func New() *Store`). Pass `memory.WithEncryptor(enc)`, `memory.WithInstrumentation(inst)`, etc. at construction instead of calling `SetX` after the fact.
@@ -46,7 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+<<<<<<< HEAD
 - `oidc.NewTestDiscoveryClient` is no longer exported. Test helpers live in `internal/testutil`. The `dex.Config.skipValidation` field has been removed.
+=======
+- **Breaking:** `oidc.NewTestDiscoveryClient` is no longer exported. Test helpers live in `internal/testutil`. The `dex.Config.skipValidation` field has been removed. (H8)
+>>>>>>> 88a17c0 (chore: consolidate CHANGELOG entries, trim comment)
 - `memory.SetEncryptor`, `memory.SetInstrumentation`, `memory.SetLogger`, `memory.SetRevokedFamilyRetentionDays` — replaced by construction-time options.
 - **`dpop/valkey` package removed.** The Valkey-backed DPoP replay cache is now at `storage/valkey.NewDPoPReplayCache`. Update imports from `github.com/giantswarm/mcp-oauth/dpop/valkey` to `github.com/giantswarm/mcp-oauth/storage/valkey` and replace `valkey.New(client, prefix)` with `valkey.NewDPoPReplayCache(client, prefix)`.
 - **`server.Clock` interface and `server.DNSResolver` interface removed.** `clientMetadataCache` now calls `time.Now()` directly; use `testing/synctest` for TTL-sensitive tests. `Config.DNSResolver` is now `*net.Resolver`; pass a `*net.Resolver` with a custom `Dial` function to intercept DNS in tests.
