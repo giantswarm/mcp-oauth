@@ -225,27 +225,9 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 		return userInfo, err
 	}
 
-	// PRIORITY 2: Trusted-issuer JWT (WithTrustedIssuers). ErrIssuerNotTrusted
-	// means the bearer isn't for any configured peer and the next branch is
-	// allowed to handle it; any other error is a hard reject so a peer-signed
-	// token with a bad audience or wrong typ cannot succeed at a later branch.
-	if s.trustedIssuerValidator != nil {
-		identity, err := s.trustedIssuerValidator.Validate(ctx, accessToken, []string{s.Config.GetResourceIdentifier()})
-		switch {
-		case err == nil:
-			if err := checkRFC9068TypeHeader(accessToken); err != nil {
-				s.Auditor.LogAuthFailure(ctx, identity.Subject, "", "", "trusted_issuer_typ_invalid")
-				return nil, fmt.Errorf("trusted issuer JWT: %w", err)
-			}
-			userInfo := s.idTokenClaimsToUserInfo(identity.Claims)
-			s.logTrustedIssuerJWTAccepted(ctx, accessToken, identity.Issuer, userInfo)
-			return userInfo, nil
-		case errors.Is(err, ErrIssuerNotTrusted):
-			// Fall through.
-		default:
-			s.Auditor.LogAuthFailure(ctx, "", "", "", "trusted_issuer_jwt_invalid")
-			return nil, fmt.Errorf("trusted issuer JWT validation failed: %w", err)
-		}
+	// PRIORITY 2: Trusted-issuer JWT (WithTrustedIssuers).
+	if userInfo, err := s.validateTrustedIssuerJWT(ctx, accessToken); userInfo != nil || err != nil {
+		return userInfo, err
 	}
 
 	// PRIORITY 3: Forwarded ID token (JWT) from a trusted upstream service.
@@ -408,6 +390,33 @@ func (s *Server) validateTokenAudience(ctx context.Context, accessToken string) 
 // Uses helpers.MatchAudienceSecure for consistent URL normalization and constant-time comparison.
 func (s *Server) isTrustedAudience(audience string) bool {
 	return helpers.MatchAudienceSecure(audience, s.Config.TrustedAudiences) != ""
+}
+
+// validateTrustedIssuerJWT runs the WithTrustedIssuers Bearer branch of
+// ValidateToken. Returns (nil, nil) when no validator is configured or the
+// token's iss is not a configured peer (caller falls through); (userInfo,
+// nil) on success; (nil, err) on any other validation failure (caller
+// returns the error). The RFC 9068 typ enforcement runs only after the
+// JWS signature has been verified by Validate.
+func (s *Server) validateTrustedIssuerJWT(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+	if s.trustedIssuerValidator == nil {
+		return nil, nil
+	}
+	identity, err := s.trustedIssuerValidator.Validate(ctx, accessToken, []string{s.Config.GetResourceIdentifier()})
+	if errors.Is(err, ErrIssuerNotTrusted) {
+		return nil, nil
+	}
+	if err != nil {
+		s.Auditor.LogAuthFailure(ctx, "", "", "", "trusted_issuer_jwt_invalid")
+		return nil, fmt.Errorf("trusted issuer JWT validation failed: %w", err)
+	}
+	if err := checkRFC9068TypeHeader(accessToken); err != nil {
+		s.Auditor.LogAuthFailure(ctx, identity.Subject, "", "", "trusted_issuer_typ_invalid")
+		return nil, fmt.Errorf("trusted issuer JWT: %w", err)
+	}
+	userInfo := s.idTokenClaimsToUserInfo(identity.Claims)
+	s.logTrustedIssuerJWTAccepted(ctx, accessToken, identity.Issuer, userInfo)
+	return userInfo, nil
 }
 
 // logTrustedIssuerJWTAccepted records a successful Bearer validation against
