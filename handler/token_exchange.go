@@ -25,21 +25,24 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 	scope := r.Form.Get("scope")
 
 	if subjectToken == "" {
-		h.logger.Debug("token exchange: subject_token missing", "ip", clientIP)
+		h.logAuthFailure(r.Context(), "", clientIP, "token_exchange_subject_token_missing",
+			"token exchange: subject_token missing")
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "subject_token missing")
 		h.writeError(w, constants.ErrorCodeInvalidRequest, "subject_token is required", http.StatusBadRequest)
 		return
 	}
 	if subjectTokenType == "" {
-		h.logger.Debug("token exchange: subject_token_type missing", "ip", clientIP)
+		h.logAuthFailure(r.Context(), "", clientIP, "token_exchange_subject_token_type_missing",
+			"token exchange: subject_token_type missing")
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "subject_token_type missing")
 		h.writeError(w, constants.ErrorCodeInvalidRequest, "subject_token_type is required", http.StatusBadRequest)
 		return
 	}
 	if resource == "" {
-		h.logger.Debug("token exchange: resource missing", "ip", clientIP)
+		h.logAuthFailure(r.Context(), "", clientIP, "token_exchange_resource_missing",
+			"token exchange: resource missing")
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "resource missing")
 		h.writeError(w, constants.ErrorCodeInvalidRequest, "resource is required (RFC 8707)", http.StatusBadRequest)
@@ -54,9 +57,13 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 			if provider := h.server.DPoPNonceProvider(); provider != nil {
 				w.Header().Set("DPoP-Nonce", provider.Nonce(r.Context()))
 			}
+			h.logAuthFailure(r.Context(), "", clientIP, "token_exchange_dpop_nonce_required",
+				"token exchange: dpop nonce required")
 			h.writeError(w, constants.ErrorCodeUseDPoPNonce, "A DPoP nonce is required.", http.StatusBadRequest)
 			return
 		}
+		h.logAuthFailure(r.Context(), "", clientIP, "token_exchange_dpop_proof_invalid",
+			"token exchange: dpop proof invalid")
 		h.writeError(w, constants.ErrorCodeInvalidDPoPProof, err.Error(), http.StatusBadRequest)
 		return
 	}

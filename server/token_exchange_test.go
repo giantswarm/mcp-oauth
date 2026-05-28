@@ -1,6 +1,10 @@
 package server
 
 import (
+	"bytes"
+	"context"
+	"crypto/ecdsa"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/mcp-oauth/providers/mock"
+	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
@@ -233,6 +238,187 @@ func TestExchangeSubjectToken_RequiresJWTMode(t *testing.T) {
 	_, err := srv.ExchangeSubjectToken(t.Context(), "tok", SubjectTokenTypeIDToken, "https://api.example.com", "", "")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "JWT access token mode")
+}
+
+// failingAccessTokenIssuer always returns an error from Issue.
+type failingAccessTokenIssuer struct{ err error }
+
+func (f failingAccessTokenIssuer) Issue(context.Context, AccessTokenClaims) (string, error) {
+	return "", f.err
+}
+
+const auditExchangeKID = "audit-exchange-key"
+
+// newAuditExchangeTestServer builds an exchange-ready Server wired to a
+// buffer-backed slog logger. The returned EC key matches the registered
+// SubjectTokenValidator so callers can mint subject tokens that pass
+// validation.
+func newAuditExchangeTestServer(t *testing.T) (*Server, *bytes.Buffer, *ecdsa.PrivateKey) {
+	t.Helper()
+
+	ecKey := newTestECKey(t)
+	jwksURL, jwksClient := serveStaticJWKS(t, ecKey, auditExchangeKID)
+
+	store := memory.New()
+	t.Cleanup(func() { store.Stop() })
+
+	logger, buf := captureLogger()
+
+	cfg := &Config{
+		Issuer:                      "https://auth.example.com",
+		ResourceIdentifier:          "https://api.example.com",
+		SupportedScopes:             []string{"read", "write"},
+		AccessTokenTTL:              600,
+		AccessTokenFormat:           AccessTokenFormatJWT,
+		AccessTokenSigningKey:       generateRSAKey(t),
+		AccessTokenSigningKeyID:     "audit-kid",
+		AccessTokenSigningAlgorithm: SigningAlgorithmRS256,
+		DisableNonceEchoRequirement: true,
+	}
+
+	srv, err := New(mock.NewProvider(), store, store, store, cfg, logger)
+	require.NoError(t, err)
+	srv.Auditor = security.NewAuditor(logger, true)
+
+	v, err := newOIDCValidatorWithClient(
+		[]TrustedIssuer{{Issuer: testIssuer, JwksURL: jwksURL}},
+		jwksClient,
+	)
+	require.NoError(t, err)
+	srv.subjectValidators = map[string]SubjectTokenValidator{
+		SubjectTokenTypeIDToken: v,
+	}
+
+	return srv, buf, ecKey
+}
+
+func makeAuditSubjectToken(t *testing.T, key *ecdsa.PrivateKey) string {
+	t.Helper()
+	return signSubjectToken(t, key, auditExchangeKID, josejwt.Claims{
+		Issuer:   testIssuer,
+		Subject:  testSubject,
+		Audience: josejwt.Audience{testAudience},
+		Expiry:   josejwt.NewNumericDate(time.Now().Add(time.Hour)),
+		IssuedAt: josejwt.NewNumericDate(time.Now()),
+	})
+}
+
+func TestExchangeSubjectToken_Audit_Success(t *testing.T) {
+	srv, buf, key := newAuditExchangeTestServer(t)
+
+	result, err := srv.ExchangeSubjectToken(
+		t.Context(),
+		makeAuditSubjectToken(t, key),
+		SubjectTokenTypeIDToken,
+		"https://api.example.com",
+		"read",
+		"",
+	)
+	require.NoError(t, err)
+	require.NotEmpty(t, result.AccessToken)
+
+	out := buf.String()
+	require.True(t, containsAuditEvent(out, security.EventTokenIssued),
+		"expected token_issued audit event, got: %s", out)
+	require.Contains(t, out, GrantTypeTokenExchange,
+		"audit event must carry grant_type so dashboards can split exchange issuances")
+	require.Contains(t, out, "https://api.example.com",
+		"audit event must record the audience")
+	require.Contains(t, out, "act_iss")
+}
+
+func TestExchangeSubjectToken_Audit_JWTModeRequired(t *testing.T) {
+	store := memory.New()
+	t.Cleanup(func() { store.Stop() })
+
+	logger, buf := captureLogger()
+
+	cfg := &Config{
+		Issuer:                      "https://auth.example.com",
+		DisableNonceEchoRequirement: true,
+	}
+
+	srv, err := New(mock.NewProvider(), store, store, store, cfg, logger)
+	require.NoError(t, err)
+	srv.Auditor = security.NewAuditor(logger, true)
+
+	_, err = srv.ExchangeSubjectToken(t.Context(), "tok", SubjectTokenTypeIDToken,
+		"https://api.example.com", "", "")
+	require.Error(t, err)
+
+	out := buf.String()
+	require.True(t, containsAuthFailure(out, "token_exchange_jwt_mode_required"),
+		"missing jwt-mode-required audit failure in: %s", out)
+	require.Contains(t, out, GrantTypeTokenExchange,
+		"audit event must carry grant_type for dashboarding")
+}
+
+func TestExchangeSubjectToken_Audit_UnsupportedSubjectTokenType(t *testing.T) {
+	store := memory.New()
+	t.Cleanup(func() { store.Stop() })
+
+	logger, buf := captureLogger()
+
+	cfg := &Config{
+		Issuer:                      "https://auth.example.com",
+		AccessTokenTTL:              600,
+		AccessTokenFormat:           AccessTokenFormatJWT,
+		AccessTokenSigningKey:       generateRSAKey(t),
+		AccessTokenSigningKeyID:     "audit-unsupported-kid",
+		AccessTokenSigningAlgorithm: SigningAlgorithmRS256,
+		DisableNonceEchoRequirement: true,
+	}
+
+	srv, err := New(mock.NewProvider(), store, store, store, cfg, logger)
+	require.NoError(t, err)
+	srv.Auditor = security.NewAuditor(logger, true)
+
+	const badType = "urn:ietf:params:oauth:token-type:saml2"
+	_, err = srv.ExchangeSubjectToken(t.Context(), "tok", badType,
+		"https://api.example.com", "", "")
+	require.Error(t, err)
+	var unsupported *TokenExchangeUnsupportedTypeError
+	require.ErrorAs(t, err, &unsupported)
+
+	out := buf.String()
+	require.True(t, containsAuthFailure(out, "unsupported_subject_token_type"),
+		"missing unsupported_subject_token_type audit failure in: %s", out)
+	require.Contains(t, out, badType,
+		"audit event must carry the rejected subject_token_type for dashboarding")
+	require.Contains(t, out, GrantTypeTokenExchange,
+		"audit event must carry grant_type for dashboarding")
+}
+
+func TestExchangeSubjectToken_Audit_SubjectTokenValidationFailure(t *testing.T) {
+	srv, buf, _ := newAuditExchangeTestServer(t)
+
+	_, err := srv.ExchangeSubjectToken(t.Context(), "not-a-real-token",
+		SubjectTokenTypeIDToken, "https://api.example.com", "", "")
+	require.Error(t, err)
+
+	out := buf.String()
+	require.True(t, containsAuthFailure(out, "subject_token_validation_failed"),
+		"missing subject_token_validation_failed audit failure in: %s", out)
+	require.Contains(t, out, SubjectTokenTypeIDToken,
+		"audit event must carry the subject_token_type for dashboarding")
+}
+
+func TestExchangeSubjectToken_Audit_AccessTokenIssueFailure(t *testing.T) {
+	srv, buf, key := newAuditExchangeTestServer(t)
+
+	srv.accessTokenIssuer = failingAccessTokenIssuer{err: fmt.Errorf("signer down")}
+
+	_, err := srv.ExchangeSubjectToken(t.Context(), makeAuditSubjectToken(t, key),
+		SubjectTokenTypeIDToken, "https://api.example.com", "read", "")
+	require.Error(t, err)
+
+	out := buf.String()
+	require.True(t, containsAuthFailure(out, "access_token_issue_failed"),
+		"missing access_token_issue_failed audit failure in: %s", out)
+	require.Contains(t, out, "https://api.example.com",
+		"audit event must record the audience on issuance failure")
+	require.Contains(t, out, "act_iss",
+		"audit event must record the upstream actor issuer on issuance failure")
 }
 
 func TestExchangeSubjectToken_DPoP(t *testing.T) {
