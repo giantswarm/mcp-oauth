@@ -50,6 +50,14 @@ type TrustedIssuer struct {
 	// (numbers, arrays, objects) are rejected. Nil or empty means no claim
 	// restrictions.
 	AllowedClaims map[string]string
+	// AllowPrivateIPJWKS allows JwksURL to resolve to a private or loopback IP
+	// address. Set this when the JWKS endpoint is an in-cluster service (e.g.
+	// the Kubernetes API server's /openid/v1/jwks) that is not reachable via a
+	// public address.
+	//
+	// WARNING: Disables SSRF protection for this issuer's JWKS fetch. Only set
+	// when JwksURL is a known, controlled in-cluster endpoint.
+	AllowPrivateIPJWKS bool
 }
 
 // OIDCValidator validates tokens from statically configured trusted issuers.
@@ -58,19 +66,33 @@ type TrustedIssuer struct {
 //   - urn:ietf:params:oauth:token-type:access_token
 //   - urn:ietf:params:oauth:token-type:jwt
 type OIDCValidator struct {
-	issuers    map[string]TrustedIssuer
-	jwksClient *oidc.JWKSClient
+	issuers          map[string]TrustedIssuer
+	safeClient       *oidc.JWKSClient
+	permissiveClient *oidc.JWKSClient // non-nil only when at least one issuer sets AllowPrivateIPJWKS
 }
 
 // NewOIDCValidator constructs an OIDCValidator for the given trusted issuers.
-// An SSRF-safe JWKS client is created automatically.
+// SSRF-safe JWKS fetches are the default; set AllowPrivateIPJWKS on an issuer
+// to opt out per-issuer.
 func NewOIDCValidator(issuers []TrustedIssuer) (*OIDCValidator, error) {
-	return newOIDCValidatorWithClient(issuers, oidc.NewJWKSClient(nil, 0, nil))
+	safe := oidc.NewJWKSClient(nil, 0, nil)
+	var permissive *oidc.JWKSClient
+	for _, ti := range issuers {
+		if ti.AllowPrivateIPJWKS {
+			permissive = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{AllowPrivateIP: true})
+			break
+		}
+	}
+	return newOIDCValidatorWithClients(issuers, safe, permissive)
 }
 
 // newOIDCValidatorWithClient is the internal constructor used by tests to inject
-// a custom JWKS client (e.g. one configured to allow private IPs for httptest).
+// a custom JWKS client; both client slots are set to client.
 func newOIDCValidatorWithClient(issuers []TrustedIssuer, client *oidc.JWKSClient) (*OIDCValidator, error) {
+	return newOIDCValidatorWithClients(issuers, client, client)
+}
+
+func newOIDCValidatorWithClients(issuers []TrustedIssuer, safeClient, permissiveClient *oidc.JWKSClient) (*OIDCValidator, error) {
 	if len(issuers) == 0 {
 		return nil, fmt.Errorf("at least one trusted issuer is required")
 	}
@@ -84,7 +106,7 @@ func newOIDCValidatorWithClient(issuers []TrustedIssuer, client *oidc.JWKSClient
 		}
 		m[ti.Issuer] = ti
 	}
-	return &OIDCValidator{issuers: m, jwksClient: client}, nil
+	return &OIDCValidator{issuers: m, safeClient: safeClient, permissiveClient: permissiveClient}, nil
 }
 
 // Validate verifies the subject token and returns the verified identity.
@@ -112,7 +134,11 @@ func (v *OIDCValidator) Validate(ctx context.Context, subjectToken, subjectToken
 		return SubjectIdentity{}, fmt.Errorf("untrusted issuer: %q", iss)
 	}
 
-	claims, err := oidc.ValidateIDToken(ctx, subjectToken, v.jwksClient, ti.JwksURL, ti.Issuer, ti.AllowedAudiences)
+	jwksClient := v.safeClient
+	if ti.AllowPrivateIPJWKS && v.permissiveClient != nil {
+		jwksClient = v.permissiveClient
+	}
+	claims, err := oidc.ValidateIDToken(ctx, subjectToken, jwksClient, ti.JwksURL, ti.Issuer, ti.AllowedAudiences)
 	if err != nil {
 		return SubjectIdentity{}, fmt.Errorf("subject token validation failed: %w", err)
 	}

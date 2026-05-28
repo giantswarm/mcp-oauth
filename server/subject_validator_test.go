@@ -417,3 +417,48 @@ func TestWithTrustedIssuers_RegistersValidators(t *testing.T) {
 	require.NotNil(t, srv.SubjectValidatorFor(SubjectTokenTypeAccessToken))
 	require.NotNil(t, srv.SubjectValidatorFor(SubjectTokenTypeJWT))
 }
+
+func TestOIDCValidator_AllowPrivateIPJWKS(t *testing.T) {
+	key := newTestECKey(t)
+	const kid = "test-key"
+	jwksURL, jwksClient := serveStaticJWKS(t, key, kid)
+
+	// httptest TLS cert mismatch prevents using NewOIDCValidator directly; inject
+	// the configured client so AllowPrivateIPJWKS routing is still exercised.
+	v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
+		Issuer:             testIssuer,
+		JwksURL:            jwksURL,
+		AllowedAudiences:   []string{testAudience},
+		AllowPrivateIPJWKS: true,
+	}}, jwksClient)
+	require.NoError(t, err)
+
+	token := signSubjectToken(t, key, kid, josejwt.Claims{
+		Issuer:   testIssuer,
+		Subject:  testSubject,
+		Audience: josejwt.Audience{testAudience},
+		Expiry:   josejwt.NewNumericDate(time.Now().Add(time.Hour)),
+		IssuedAt: josejwt.NewNumericDate(time.Now()),
+	})
+
+	identity, err := v.Validate(t.Context(), token, SubjectTokenTypeIDToken)
+	require.NoError(t, err)
+	require.Equal(t, testSubject, identity.Subject)
+}
+
+func TestNewOIDCValidator_AllowPrivateIPJWKS_CreatesPermissiveClient(t *testing.T) {
+	withPrivate, err := NewOIDCValidator([]TrustedIssuer{{
+		Issuer:             testIssuer,
+		JwksURL:            "https://example.com/jwks",
+		AllowPrivateIPJWKS: true,
+	}})
+	require.NoError(t, err)
+	require.NotNil(t, withPrivate.permissiveClient)
+
+	withoutPrivate, err := NewOIDCValidator([]TrustedIssuer{{
+		Issuer:  testIssuer,
+		JwksURL: "https://example.com/jwks",
+	}})
+	require.NoError(t, err)
+	require.Nil(t, withoutPrivate.permissiveClient)
+}
