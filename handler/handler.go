@@ -26,17 +26,17 @@ const (
 // Endpoint labels for `oauth_http_requests_total{endpoint="..."}` etc.
 // Future renames are breaking changes for downstream dashboards.
 const (
-	endpointAuthorize         = "authorize"
-	endpointCallback          = "callback"
-	endpointToken             = "token"
-	endpointRevoke            = "revoke"
-	endpointIntrospect        = "introspect"
-	endpointRegister          = "register"
-	endpointValidateToken     = "validate_token"
-	endpointUserInfo          = "userinfo"
-	endpointDiscovery         = "discovery"
-	endpointJWKS              = "jwks"
-	endpointClientManagement  = "client_management"
+	endpointAuthorize        = "authorize"
+	endpointCallback         = "callback"
+	endpointToken            = "token"
+	endpointRevoke           = "revoke"
+	endpointIntrospect       = "introspect"
+	endpointRegister         = "register"
+	endpointValidateToken    = "validate_token"
+	endpointUserInfo         = "userinfo"
+	endpointDiscovery        = "discovery"
+	endpointJWKS             = "jwks"
+	endpointClientManagement = "client_management"
 	endpointProtectedResource = "protected_resource"
 )
 
@@ -83,31 +83,26 @@ func (h *Handler) clientIP(r *http.Request) string {
 }
 
 // gateIPRateLimit applies the IP rate limit at handler entry. On reject it
-// has already written the 429 response, recorded the HTTP counter, and
-// annotated the span; the caller just returns. Returns the resolved
-// clientIP for the caller to use downstream, and ok=true when the request
-// should proceed.
+// writes the 429 response, records the HTTP counter, and annotates the span;
+// the caller just returns. Returns the resolved clientIP for the caller to use
+// downstream, and ok=true when the request should proceed.
 func (h *Handler) gateIPRateLimit(w http.ResponseWriter, r *http.Request, span trace.Span, endpoint, method string, startTime time.Time) (clientIP string, ok bool) {
 	clientIP = h.clientIP(r)
-	if !h.checkIPRateLimit(w, r, clientIP) {
+	retryAfter, limited := h.checkIPRateLimited(r.Context(), clientIP, r.URL.Path)
+	if !limited {
 		return clientIP, true
 	}
+	h.writeIPRateLimitError(w, retryAfter)
 	h.recordRateLimitReject(r.Context(), span, endpoint, method, startTime)
 	return "", false
 }
 
-// recordRateLimitReject runs the side-effects common to every rate-limit
-// reject path: span annotation + HTTP counter. The check*RateLimit helper
-// has already written the 429 response and recorded its own metric/audit.
+// recordRateLimitReject annotates the span and records the HTTP counter for a
+// rate-limit rejection. The caller is responsible for writing the 429 response.
 func (h *Handler) recordRateLimitReject(ctx context.Context, span trace.Span, endpoint, method string, startTime time.Time) {
 	instrumentation.SetSpanError(span, "rate limited")
 	h.recordHTTPMetrics(ctx, endpoint, method, http.StatusTooManyRequests, startTime)
 }
-
-// The four check*RateLimit helpers below share a "true means rejected"
-// return convention: on `true`, the helper has already written the 429
-// response (and recorded its own metric/audit), and the caller must
-// return immediately.
 
 // OAuthRoutesOptions controls the bundle registered by [Handler.RegisterOAuthRoutes].
 type OAuthRoutesOptions struct {

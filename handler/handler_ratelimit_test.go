@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -405,4 +407,98 @@ func TestHandler_IPRateLimit_RetryAfterDerivedFromRate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCheckIPRateLimited_NilLimiter(t *testing.T) {
+	srv := newOAuthTestServer(t)
+	h := New(srv, nil)
+
+	retryAfter, limited := h.checkIPRateLimited(t.Context(), "10.0.0.1", "/token")
+	require.False(t, limited)
+	require.Zero(t, retryAfter)
+}
+
+func TestCheckIPRateLimited_NotExhausted(t *testing.T) {
+	srv := newOAuthTestServer(t)
+	srv.RateLimiter = security.NewRateLimiter(0, 2, nil)
+	t.Cleanup(srv.RateLimiter.Stop)
+	h := New(srv, nil)
+
+	retryAfter, limited := h.checkIPRateLimited(t.Context(), "10.0.0.1", "/token")
+	require.False(t, limited)
+	require.Zero(t, retryAfter)
+}
+
+func TestCheckIPRateLimited_Exhausted(t *testing.T) {
+	srv := newOAuthTestServer(t)
+	srv.RateLimiter = security.NewRateLimiter(0, 1, nil)
+	t.Cleanup(srv.RateLimiter.Stop)
+	h := New(srv, nil)
+
+	srv.RateLimiter.Allow(security.RateLimitBucket("10.0.0.1")) // consume the single token
+
+	retryAfter, limited := h.checkIPRateLimited(t.Context(), "10.0.0.1", "/token")
+	require.True(t, limited)
+	require.Greater(t, retryAfter, 0)
+}
+
+func TestCheckUserRateLimited_NilLimiter(t *testing.T) {
+	srv := newOAuthTestServer(t)
+	h := New(srv, nil)
+
+	retryAfter, limited := h.checkUserRateLimited(t.Context(), "user-1", "10.0.0.1")
+	require.False(t, limited)
+	require.Zero(t, retryAfter)
+}
+
+func TestCheckUserRateLimited_NotExhausted(t *testing.T) {
+	srv := newOAuthTestServer(t)
+	srv.UserRateLimiter = security.NewRateLimiter(0, 2, nil)
+	t.Cleanup(srv.UserRateLimiter.Stop)
+	h := New(srv, nil)
+
+	retryAfter, limited := h.checkUserRateLimited(t.Context(), "user-1", "10.0.0.1")
+	require.False(t, limited)
+	require.Zero(t, retryAfter)
+}
+
+func TestCheckUserRateLimited_Exhausted(t *testing.T) {
+	srv := newOAuthTestServer(t)
+	srv.UserRateLimiter = security.NewRateLimiter(0, 1, nil)
+	t.Cleanup(srv.UserRateLimiter.Stop)
+	h := New(srv, nil)
+
+	srv.UserRateLimiter.Allow("user-1") // consume the single token
+
+	retryAfter, limited := h.checkUserRateLimited(t.Context(), "user-1", "10.0.0.1")
+	require.True(t, limited)
+	require.Greater(t, retryAfter, 0)
+}
+
+func TestCheckIPRateLimited_PerBucket(t *testing.T) {
+	srv := newOAuthTestServer(t)
+	srv.RateLimiter = security.NewRateLimiter(0, 1, nil)
+	t.Cleanup(srv.RateLimiter.Stop)
+	h := New(srv, nil)
+
+	srv.RateLimiter.Allow(security.RateLimitBucket("10.0.0.1"))
+
+	_, limited1 := h.checkIPRateLimited(t.Context(), "10.0.0.1", "/token")
+	_, limited2 := h.checkIPRateLimited(t.Context(), "10.0.0.2", "/token")
+	require.True(t, limited1, "exhausted IP must be limited")
+	require.False(t, limited2, "different IP must not be limited")
+}
+
+func TestCheckUserRateLimited_PerUser(t *testing.T) {
+	srv := newOAuthTestServer(t)
+	srv.UserRateLimiter = security.NewRateLimiter(0, 1, nil)
+	t.Cleanup(srv.UserRateLimiter.Stop)
+	h := New(srv, nil)
+
+	srv.UserRateLimiter.Allow("user-1")
+
+	_, limited1 := h.checkUserRateLimited(t.Context(), "user-1", "10.0.0.1")
+	_, limited2 := h.checkUserRateLimited(t.Context(), "user-2", "10.0.0.1")
+	require.True(t, limited1, "exhausted user must be limited")
+	require.False(t, limited2, "different user must not be limited")
 }

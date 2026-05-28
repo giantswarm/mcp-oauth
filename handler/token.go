@@ -131,9 +131,12 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	// clients have no secret to compromise, and rate-limiting by a public
 	// client_id is attacker-controllable. Public clients stay bounded by
 	// the IP limit.
-	if client.IsConfidential() && h.checkUserRateLimit(w, r, client.ClientID, clientIP) {
-		h.recordRateLimitReject(r.Context(), span, endpointToken, http.MethodPost, startTime)
-		return
+	if client.IsConfidential() {
+		if retryAfter, limited := h.checkUserRateLimited(r.Context(), client.ClientID, clientIP); limited {
+			h.writeUserRateLimitError(w, retryAfter)
+			h.recordRateLimitReject(r.Context(), span, endpointToken, http.MethodPost, startTime)
+			return
+		}
 	}
 
 	// Add span attributes
@@ -221,7 +224,8 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 
 		// Post-auth rate limit for confidential clients, keyed by client_id.
 		// Public clients have no authentication step, only an IP-rate bound.
-		if h.checkUserRateLimit(w, r, clientID, clientIP) {
+		if retryAfter, limited := h.checkUserRateLimited(r.Context(), clientID, clientIP); limited {
+			h.writeUserRateLimitError(w, retryAfter)
 			h.recordRateLimitReject(r.Context(), span, endpointToken, http.MethodPost, startTime)
 			return
 		}

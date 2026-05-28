@@ -25,7 +25,8 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 		startTime := time.Now()
 		clientIP := h.clientIP(r)
 
-		if h.checkIPRateLimit(w, r, clientIP) {
+		if retryAfter, limited := h.checkIPRateLimited(r.Context(), clientIP, r.URL.Path); limited {
+			h.writeIPRateLimitError(w, retryAfter)
 			h.recordHTTPMetrics(r.Context(), endpointValidateToken, r.Method, http.StatusTooManyRequests, startTime)
 			return
 		}
@@ -42,7 +43,7 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 			return
 		}
 
-		// Single metadata lookup: used for both scope validation and session ID
+		// Single metadata lookup: used for DPoP binding, scope validation, and session ID
 		metadata := h.getTokenMetadata(accessToken)
 
 		if err := validateDPoPBinding(r, accessToken, metadata); err != nil {
@@ -59,7 +60,8 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 			return
 		}
 
-		if h.checkUserRateLimit(w, r, userInfo.ID, clientIP) {
+		if retryAfter, limited := h.checkUserRateLimited(r.Context(), userInfo.ID, clientIP); limited {
+			h.writeUserRateLimitError(w, retryAfter)
 			h.recordHTTPMetrics(r.Context(), endpointValidateToken, r.Method, http.StatusTooManyRequests, startTime)
 			return
 		}
@@ -67,26 +69,6 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 		ctx := contextWithValidatedToken(r.Context(), userInfo, metadata)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
-}
-
-// jktFromToken returns the JWK thumbprint bound to the token. For opaque tokens
-// it reads from stored metadata; for self-issued JWTs it parses the cnf.jkt
-// claim without re-verifying the signature (safe: token was verified by
-// ValidateToken immediately before this call).
-func jktFromToken(accessToken string, metadata *storage.TokenMetadata) string {
-	if metadata != nil && metadata.JKT != "" {
-		return metadata.JKT
-	}
-	if !oidc.IsJWT(accessToken) {
-		return ""
-	}
-	claims, err := oidc.ParseUnverifiedClaims(accessToken)
-	if err != nil {
-		return ""
-	}
-	cnf, _ := claims["cnf"].(map[string]any)
-	jkt, _ := cnf["jkt"].(string)
-	return jkt
 }
 
 // contextWithValidatedToken stamps the authenticated UserInfo on ctx and,
@@ -107,63 +89,40 @@ func contextWithValidatedToken(ctx context.Context, userInfo *providers.UserInfo
 	return ctx
 }
 
-type dpopViolation struct {
-	auditReason string
-	logMsg      string
-	userMsg     string
-}
-
-func (v dpopViolation) Error() string { return v.userMsg }
-
-// validateDPoPBinding enforces RFC 9449 §6.1 sender-constraint without writing
-// a response. Returns a dpopViolation error describing the failure, or nil.
-func validateDPoPBinding(r *http.Request, accessToken string, metadata *storage.TokenMetadata) error {
-	tokenJKT := jktFromToken(accessToken, metadata)
-	if tokenJKT == "" {
-		return nil
-	}
-	proofJKT := dpopProofJKTFromContext(r.Context())
-	if proofJKT == "" {
-		return dpopViolation{
-			auditReason: "dpop_bound_token_bearer_bypass",
-			logMsg:      "DPoP-bound token presented without DPoP proof",
-			userMsg:     "DPoP-bound token must be presented with a DPoP proof",
-		}
-	}
-	if proofJKT != tokenJKT {
-		return dpopViolation{
-			auditReason: "dpop_key_binding_mismatch",
-			logMsg:      "DPoP proof key does not match token cnf.jkt",
-			userMsg:     "DPoP proof key does not match token binding",
-		}
-	}
-	return nil
-}
-
-// checkIPRateLimit checks if the client IP is rate limited. Returns true if limited.
-func (h *Handler) checkIPRateLimit(w http.ResponseWriter, r *http.Request, clientIP string) bool {
+// checkIPRateLimited reports whether clientIP is currently rate-limited.
+// When limited it logs the event, records observability, and returns the
+// Retry-After seconds the caller should surface in the HTTP response.
+func (h *Handler) checkIPRateLimited(ctx context.Context, clientIP, urlPath string) (retryAfter int, limited bool) {
 	if h.server.RateLimiter == nil || h.server.RateLimiter.Allow(security.RateLimitBucket(clientIP)) {
-		return false
+		return 0, false
 	}
-
 	h.logger.Warn("Rate limit exceeded", "ip", clientIP)
-	h.recordRateLimitExceeded(r.Context(), "ip", clientIP, "", r.URL.Path)
-	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSecondsForRate(h.server.RateLimiter.Rate())))
-	h.writeError(w, constants.ErrorCodeRateLimitExceeded, "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
-	return true
+	h.recordRateLimitExceeded(ctx, "ip", clientIP, "", urlPath)
+	return retryAfterSecondsForRate(h.server.RateLimiter.Rate()), true
 }
 
-// checkUserRateLimit checks if the user is rate limited. Returns true if limited.
-func (h *Handler) checkUserRateLimit(w http.ResponseWriter, r *http.Request, userID, clientIP string) bool {
+// checkUserRateLimited reports whether userID is currently rate-limited.
+// When limited it logs the event, records observability, and returns the
+// Retry-After seconds the caller should surface in the HTTP response.
+func (h *Handler) checkUserRateLimited(ctx context.Context, userID, clientIP string) (retryAfter int, limited bool) {
 	if h.server.UserRateLimiter == nil || h.server.UserRateLimiter.Allow(userID) {
-		return false
+		return 0, false
 	}
-
 	h.logger.Warn("User rate limit exceeded", "user_id", userID, "ip", clientIP)
-	h.recordUserRateLimitExceeded(r.Context(), clientIP, userID)
-	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSecondsForRate(h.server.UserRateLimiter.Rate())))
+	h.recordUserRateLimitExceeded(ctx, clientIP, userID)
+	return retryAfterSecondsForRate(h.server.UserRateLimiter.Rate()), true
+}
+
+// writeIPRateLimitError writes a 429 response for an IP rate-limit rejection.
+func (h *Handler) writeIPRateLimitError(w http.ResponseWriter, retryAfter int) {
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	h.writeError(w, constants.ErrorCodeRateLimitExceeded, "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
+}
+
+// writeUserRateLimitError writes a 429 response for a per-user rate-limit rejection.
+func (h *Handler) writeUserRateLimitError(w http.ResponseWriter, retryAfter int) {
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 	h.writeError(w, constants.ErrorCodeRateLimitExceeded, "Rate limit exceeded for user. Please try again later.", http.StatusTooManyRequests)
-	return true
 }
 
 // recordRateLimitExceeded records rate limit metrics and audit events.
@@ -411,6 +370,59 @@ func (h *Handler) getTokenMetadata(accessToken string) *storage.TokenMetadata {
 	}
 
 	return metadata
+}
+
+// jktFromToken returns the JWK thumbprint bound to the token. For opaque tokens
+// it reads from stored metadata; for self-issued JWTs it parses the cnf.jkt
+// claim without re-verifying the signature (safe: token was verified by
+// ValidateToken immediately before this call).
+func jktFromToken(accessToken string, metadata *storage.TokenMetadata) string {
+	if metadata != nil && metadata.JKT != "" {
+		return metadata.JKT
+	}
+	if !oidc.IsJWT(accessToken) {
+		return ""
+	}
+	claims, err := oidc.ParseUnverifiedClaims(accessToken)
+	if err != nil {
+		return ""
+	}
+	cnf, _ := claims["cnf"].(map[string]any)
+	jkt, _ := cnf["jkt"].(string)
+	return jkt
+}
+
+type dpopViolation struct {
+	auditReason string
+	logMsg      string
+	userMsg     string
+}
+
+func (v dpopViolation) Error() string { return v.userMsg }
+
+// validateDPoPBinding enforces RFC 9449 §6.1 sender-constraint without writing
+// a response. Returns a dpopViolation error describing the failure, or nil.
+func validateDPoPBinding(r *http.Request, accessToken string, metadata *storage.TokenMetadata) error {
+	tokenJKT := jktFromToken(accessToken, metadata)
+	if tokenJKT == "" {
+		return nil
+	}
+	proofJKT := dpopProofJKTFromContext(r.Context())
+	if proofJKT == "" {
+		return dpopViolation{
+			auditReason: "dpop_bound_token_bearer_bypass",
+			logMsg:      "DPoP-bound token presented without DPoP proof",
+			userMsg:     "DPoP-bound token must be presented with a DPoP proof",
+		}
+	}
+	if proofJKT != tokenJKT {
+		return dpopViolation{
+			auditReason: "dpop_key_binding_mismatch",
+			logMsg:      "DPoP proof key does not match token cnf.jkt",
+			userMsg:     "DPoP proof key does not match token binding",
+		}
+	}
+	return nil
 }
 
 // validateTokenScopesFromMetadata checks if the token has required scopes using
