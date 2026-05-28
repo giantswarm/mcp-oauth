@@ -261,10 +261,12 @@ func (h *Handler) writeError(w http.ResponseWriter, code, description string, st
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{
+	if err := json.NewEncoder(w).Encode(map[string]string{
 		"error":             code,
 		"error_description": description,
-	})
+	}); err != nil {
+		h.logger.Warn("Failed to encode error response", "error", err, "code", code)
+	}
 }
 
 // dropIfOversize returns the empty string when v exceeds maxLen — used for

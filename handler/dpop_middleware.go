@@ -155,9 +155,10 @@ func writeDPoPError(w http.ResponseWriter, wwwAuth, dpopNonce, code, description
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	//nolint:errcheck — encoding map[string]string never fails
-	_ = json.NewEncoder(w).Encode(map[string]string{
+	if err := json.NewEncoder(w).Encode(map[string]string{
 		"error":             code,
 		"error_description": description,
-	})
+	}); err != nil {
+		slog.Warn("Failed to encode DPoP error response", "error", err, "code", code)
+	}
 }

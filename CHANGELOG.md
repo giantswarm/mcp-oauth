@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **JSON encode errors on response writes** at the discovery, token, and registration endpoints are now logged instead of silently swallowed. The HTTP status was already committed by the time `json.NewEncoder(w).Encode(...)` runs, so the response stays the same; operators now have a signal when a broken pipe or slow-client write truncates the body.
+- **JSON encode errors on response writes** are now logged instead of silently swallowed across all handler endpoints (discovery, token, token-exchange, introspection, registration, client management, userinfo, JWKS, and error responses). The HTTP status is unchanged.
 
 - **`security.SetEncryptionMetricRecorder`**: replaced unprotected package-level variable with `atomic.Pointer`, eliminating a data race when multiple goroutines register or clear the hook concurrently (e.g., parallel test suites).
 

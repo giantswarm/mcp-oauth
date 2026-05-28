@@ -129,7 +129,9 @@ func (h *Handler) writeClientMetadata(w http.ResponseWriter, client *storage.Cli
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	body := h.buildClientResponseBody(client)
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(body)
+	if err := json.NewEncoder(w).Encode(body); err != nil {
+		h.logger.Warn("Failed to encode client metadata response", "error", err)
+	}
 }
 
 // handleClientManagementPut handles PUT /oauth/register/{client_id}.
@@ -191,7 +193,9 @@ func (h *Handler) handleClientManagementPut(w http.ResponseWriter, r *http.Reque
 	body := h.buildClientResponseBody(&updated)
 	body["registration_access_token"] = newToken
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(body)
+	if err := json.NewEncoder(w).Encode(body); err != nil {
+		h.logger.Warn("Failed to encode client management update response", "error", err)
+	}
 }
 
 // handleClientManagementDelete handles DELETE /oauth/register/{client_id}.
