@@ -226,6 +226,6 @@ func TestConfigIsJWTAccessTokenFormat(t *testing.T) {
 }
 
 func TestConfigJWKSEndpoint(t *testing.T) {
-	cfg := &Config{Issuer: "https://auth.example.com"}
+	cfg := &Config{Issuer: testAuthIssuer}
 	require.Equal(t, "https://auth.example.com/.well-known/jwks.json", cfg.JWKSEndpoint())
 }

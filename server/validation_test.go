@@ -11,6 +11,9 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
+// testAuthIssuer is the issuer URL used in server construction tests.
+const testAuthIssuer = "https://auth.example.com"
+
 // testServerSetup holds common test dependencies
 type testServerSetup struct {
 	provider *mock.Provider
@@ -469,7 +472,7 @@ func TestHTTPSEnforcement_WithPort(t *testing.T) {
 func TestValidateClientStateParameter(t *testing.T) {
 	setup := newTestServerSetup(false)
 	srv, err := setup.createServer(&Config{
-		Issuer:         "https://auth.example.com",
+		Issuer:         testAuthIssuer,
 		RequirePKCE:    true,
 		AllowPKCEPlain: false,
 	})
@@ -570,7 +573,7 @@ func TestValidateClientStateParameter(t *testing.T) {
 func TestValidateClientStateParameter_TimingAttackResistance(t *testing.T) {
 	setup := newTestServerSetup(false)
 	srv, err := setup.createServer(&Config{
-		Issuer:         "https://auth.example.com",
+		Issuer:         testAuthIssuer,
 		RequirePKCE:    true,
 		AllowPKCEPlain: false,
 	})
@@ -614,7 +617,7 @@ func TestValidateClientStateParameter_TimingAttackResistance(t *testing.T) {
 func TestValidateClientScopes(t *testing.T) {
 	setup := newTestServerSetup(false)
 	srv, err := setup.createServer(&Config{
-		Issuer:         "https://auth.example.com",
+		Issuer:         testAuthIssuer,
 		RequirePKCE:    true,
 		AllowPKCEPlain: false,
 	})
@@ -782,7 +785,7 @@ func TestValidateClientScopes(t *testing.T) {
 func TestValidateClientScopes_SecurityScenarios(t *testing.T) {
 	setup := newTestServerSetup(false)
 	srv, err := setup.createServer(&Config{
-		Issuer:         "https://auth.example.com",
+		Issuer:         testAuthIssuer,
 		RequirePKCE:    true,
 		AllowPKCEPlain: false,
 	})
@@ -863,7 +866,7 @@ func TestValidateClientStateParameter_AllowNoState(t *testing.T) {
 	t.Run("empty state rejected when AllowNoStateParameter=false (default)", func(t *testing.T) {
 		setup := newTestServerSetup(false)
 		srv, err := setup.createServer(&Config{
-			Issuer:                "https://auth.example.com",
+			Issuer:                testAuthIssuer,
 			RequirePKCE:           true,
 			AllowNoStateParameter: false,
 		})
@@ -880,7 +883,7 @@ func TestValidateClientStateParameter_AllowNoState(t *testing.T) {
 	t.Run("empty state allowed when AllowNoStateParameter=true", func(t *testing.T) {
 		setup := newTestServerSetup(false)
 		srv, err := setup.createServer(&Config{
-			Issuer:                "https://auth.example.com",
+			Issuer:                testAuthIssuer,
 			RequirePKCE:           true,
 			AllowNoStateParameter: true,
 		})
@@ -899,7 +902,7 @@ func TestValidateClientStateParameter_AllowNoState(t *testing.T) {
 
 		setup1 := newTestServerSetup(false)
 		srv1, err := setup1.createServer(&Config{
-			Issuer:                "https://auth.example.com",
+			Issuer:                testAuthIssuer,
 			RequirePKCE:           true,
 			AllowNoStateParameter: false,
 		})
@@ -912,7 +915,7 @@ func TestValidateClientStateParameter_AllowNoState(t *testing.T) {
 
 		setup2 := newTestServerSetup(false)
 		srv2, err := setup2.createServer(&Config{
-			Issuer:                "https://auth.example.com",
+			Issuer:                testAuthIssuer,
 			RequirePKCE:           true,
 			AllowNoStateParameter: true,
 		})
@@ -927,7 +930,7 @@ func TestValidateClientStateParameter_AllowNoState(t *testing.T) {
 	t.Run("short non-empty state accepted when AllowNoStateParameter=true", func(t *testing.T) {
 		setup := newTestServerSetup(false)
 		srv, err := setup.createServer(&Config{
-			Issuer:                "https://auth.example.com",
+			Issuer:                testAuthIssuer,
 			RequirePKCE:           true,
 			AllowNoStateParameter: true,
 		})
@@ -944,7 +947,7 @@ func TestValidateClientStateParameter_AllowNoState(t *testing.T) {
 	t.Run("short non-empty state rejected when AllowNoStateParameter=false", func(t *testing.T) {
 		setup := newTestServerSetup(false)
 		srv, err := setup.createServer(&Config{
-			Issuer:                "https://auth.example.com",
+			Issuer:                testAuthIssuer,
 			RequirePKCE:           true,
 			AllowNoStateParameter: false,
 		})
@@ -1157,7 +1160,7 @@ func TestValidateProviderStateParameter(t *testing.T) {
 	t.Run("empty provider state always rejected", func(t *testing.T) {
 		setup := newTestServerSetup(false)
 		srv, err := setup.createServer(&Config{
-			Issuer:                "https://auth.example.com",
+			Issuer:                testAuthIssuer,
 			RequirePKCE:           true,
 			AllowNoStateParameter: true,
 		})
@@ -1174,7 +1177,7 @@ func TestValidateProviderStateParameter(t *testing.T) {
 	t.Run("short provider state rejected even with AllowNoStateParameter=true", func(t *testing.T) {
 		setup := newTestServerSetup(false)
 		srv, err := setup.createServer(&Config{
-			Issuer:                "https://auth.example.com",
+			Issuer:                testAuthIssuer,
 			RequirePKCE:           true,
 			AllowNoStateParameter: true,
 		})
@@ -1191,7 +1194,7 @@ func TestValidateProviderStateParameter(t *testing.T) {
 	t.Run("valid-length provider state accepted", func(t *testing.T) {
 		setup := newTestServerSetup(false)
 		srv, err := setup.createServer(&Config{
-			Issuer:                "https://auth.example.com",
+			Issuer:                testAuthIssuer,
 			RequirePKCE:           true,
 			AllowNoStateParameter: false,
 		})

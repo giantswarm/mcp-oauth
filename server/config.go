@@ -13,10 +13,7 @@ import (
 	"time"
 )
 
-// ErrMissingIssuer is returned by Config.Validate when Config.Issuer is
-// empty. RFC 8414 §2 requires the issuer field; an empty value would
-// miswire every endpoint URL the server builds via Issuer concatenation
-// (authorize, token, jwks, register).
+// ErrMissingIssuer is returned by Config.Validate when Config.Issuer is empty (RFC 8414 §2).
 var ErrMissingIssuer = errors.New("issuer is required")
 
 // AccessTokenFormat selects how the server encodes access tokens.
