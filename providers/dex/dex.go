@@ -84,9 +84,10 @@ type Config struct {
 	// WARNING: Reduces SSRF protection. Only enable for private IdP deployments.
 	AllowPrivateIP bool
 
-	// skipValidation is for tests only — bypasses SSRF issuer-URL validation so
-	// test servers on localhost are reachable. Must never be set in production code.
-	skipValidation bool
+	// discoveryClient overrides the OIDC discovery client. Nil means
+	// NewProvider constructs one from the other config fields. Same-package
+	// tests use this to inject a client pointed at a loopback httptest server.
+	discoveryClient *oidc.DiscoveryClient
 }
 
 // NewProvider creates a new Dex OAuth provider.
@@ -115,7 +116,7 @@ func NewProvider(cfg *Config) (*Provider, error) {
 			"cwe", "CWE-918",
 		)
 	}
-	discoveryClient := createDiscoveryClient(cfg.skipValidation, httpClient)
+	discoveryClient := resolveDiscoveryClient(cfg.discoveryClient, httpClient)
 
 	doc, err := performOIDCDiscovery(discoveryClient, cfg.IssuerURL, requestTimeout)
 	if err != nil {
@@ -160,8 +161,10 @@ func validateRequiredConfig(cfg *Config) error {
 		return fmt.Errorf("issuer URL is required")
 	}
 
-	// SECURITY: Validate issuer URL with SSRF protection (skip for tests)
-	if !cfg.skipValidation {
+	// SECURITY: Validate issuer URL with SSRF protection.
+	// When a discovery client is injected (tests only), skip URL validation:
+	// the injected client is already bound to a trusted server.
+	if cfg.discoveryClient == nil {
 		if err := oidc.ValidateIssuerURL(cfg.IssuerURL); err != nil {
 			return fmt.Errorf("invalid issuer URL: %w", err)
 		}
@@ -236,10 +239,11 @@ func resolveHTTPClient(client *http.Client, allowPrivateIP bool, timeout time.Du
 	return &http.Client{Timeout: timeout}
 }
 
-// createDiscoveryClient creates an OIDC discovery client.
-func createDiscoveryClient(skipValidation bool, httpClient *http.Client) *oidc.DiscoveryClient {
-	if skipValidation {
-		return oidc.NewTestDiscoveryClient(httpClient, 1*time.Hour, nil)
+// resolveDiscoveryClient returns override when non-nil, otherwise constructs a
+// production discovery client from httpClient.
+func resolveDiscoveryClient(override *oidc.DiscoveryClient, httpClient *http.Client) *oidc.DiscoveryClient {
+	if override != nil {
+		return override
 	}
 	return oidc.NewDiscoveryClient(httpClient, 1*time.Hour, nil)
 }

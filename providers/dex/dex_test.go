@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
 )
 
@@ -19,15 +20,17 @@ import (
 // from issue #218 where users had 303 groups and were blocked by the previous limit of 100.
 const enterpriseGroupCount = 303
 
-// Helper function to create test config for a given server
+// testConfig builds a Config pointing at a loopback httptest server.
+// An injected discovery client bypasses SSRF URL validation so that
+// tests can use httptest.NewTLSServer on loopback addresses.
 func testConfig(server *httptest.Server, options ...func(*Config)) *Config {
 	cfg := &Config{
-		IssuerURL:      server.URL,
-		ClientID:       "test-client",
-		ClientSecret:   "test-secret",
-		RedirectURL:    "http://localhost:8080/callback",
-		HTTPClient:     server.Client(), // Use test server's HTTP client (trusts test TLS cert)
-		skipValidation: true,            // Skip SSRF validation for test servers on localhost
+		IssuerURL:       server.URL,
+		ClientID:        "test-client",
+		ClientSecret:    "test-secret",
+		RedirectURL:     "http://localhost:8080/callback",
+		HTTPClient:      server.Client(),
+		discoveryClient: testutil.NewDiscoveryClient(server.Client(), 1*time.Hour, nil),
 	}
 
 	for _, opt := range options {
