@@ -24,17 +24,19 @@ const testStateMinLen = "abcdefghijklmnopqrstuvwx" // 24 chars, == MinStateLengt
 
 // newOAuthTestServer returns a baseline test server with default config.
 // Stop hooks are registered via t.Cleanup.
-func newOAuthTestServer(t *testing.T, opts ...server.Option) *server.Server {
+// The config is validated by server.New and returned alongside the server.
+func newOAuthTestServer(t *testing.T, opts ...server.Option) (*server.Server, *server.Config) {
 	t.Helper()
 
 	store := memory.New()
 	t.Cleanup(store.Stop)
 
-	srv, err := server.New(mock.NewProvider(), store, store, store, &server.Config{Issuer: testIssuer}, nil, opts...)
+	cfg := &server.Config{Issuer: testIssuer}
+	srv, err := server.New(mock.NewProvider(), store, store, store, cfg, nil, opts...)
 	if err != nil {
 		t.Fatalf("server.New() error = %v", err)
 	}
-	return srv
+	return srv, cfg
 }
 
 // rate=0 with burst=N yields a no-refill bucket: exactly N requests pass, the
@@ -44,9 +46,9 @@ func setupTestHandlerWithRateLimit(t *testing.T, burst int) *Handler {
 
 	rl := security.NewRateLimiter(0, burst, nil)
 	t.Cleanup(rl.Stop)
-	srv := newOAuthTestServer(t, server.WithRateLimiter(rl))
+	srv, cfg := newOAuthTestServer(t, server.WithRateLimiter(rl))
 
-	return New(srv, nil)
+	return New(srv, cfg, nil)
 }
 
 // endpointCase is a shared request/response fixture for the four OAuth
@@ -217,9 +219,9 @@ func TestHandler_OAuthEndpoints_IPRateLimit_PerIP(t *testing.T) {
 func TestHandler_OAuthEndpoints_NoRateLimiter(t *testing.T) {
 	for _, tc := range oauthEndpointCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := newOAuthTestServer(t)
+			srv, cfg := newOAuthTestServer(t)
 			// srv.RateLimiter intentionally left nil
-			handler := New(srv, nil)
+			handler := New(srv, cfg, nil)
 
 			for i := 0; i < 50; i++ {
 				w := httptest.NewRecorder()
@@ -266,8 +268,8 @@ func TestHandler_IPRateLimit_IPv6BucketedBy64(t *testing.T) {
 func TestHandler_TokenEndpoint_PostAuthUserRateLimit(t *testing.T) {
 	rl := security.NewRateLimiter(0, 1, nil) // 1 token, no refill
 	t.Cleanup(rl.Stop)
-	srv := newOAuthTestServer(t, server.WithUserRateLimiter(rl))
-	handler := New(srv, nil)
+	srv, cfg := newOAuthTestServer(t, server.WithUserRateLimiter(rl))
+	handler := New(srv, cfg, nil)
 
 	client, secret, err := handler.server.RegisterClient(
 		context.Background(),
@@ -323,8 +325,8 @@ func TestHandler_TokenEndpoint_PostAuthUserRateLimit(t *testing.T) {
 func TestHandler_TokenEndpoint_PublicClientSkipsUserRateLimit(t *testing.T) {
 	rl := security.NewRateLimiter(0, 1, nil)
 	t.Cleanup(rl.Stop)
-	srv := newOAuthTestServer(t, server.WithUserRateLimiter(rl))
-	handler := New(srv, nil)
+	srv, cfg := newOAuthTestServer(t, server.WithUserRateLimiter(rl))
+	handler := New(srv, cfg, nil)
 
 	client, _, err := handler.server.RegisterClient(
 		context.Background(),
@@ -383,8 +385,8 @@ func TestHandler_IPRateLimit_RetryAfterDerivedFromRate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			rl := security.NewRateLimiter(tt.rate, 1, nil)
 			t.Cleanup(rl.Stop)
-			srv := newOAuthTestServer(t, server.WithRateLimiter(rl))
-			handler := New(srv, nil)
+			srv, cfg := newOAuthTestServer(t, server.WithRateLimiter(rl))
+			handler := New(srv, cfg, nil)
 
 			body := url.Values{"grant_type": {"x"}}.Encode()
 			send := func() *httptest.ResponseRecorder {
@@ -409,8 +411,8 @@ func TestHandler_IPRateLimit_RetryAfterDerivedFromRate(t *testing.T) {
 }
 
 func TestCheckIPRateLimited_NilLimiter(t *testing.T) {
-	srv := newOAuthTestServer(t)
-	h := New(srv, nil)
+	srv, cfg := newOAuthTestServer(t)
+	h := New(srv, cfg, nil)
 
 	retryAfter, limited := h.checkIPRateLimited(t.Context(), "10.0.0.1", "/token")
 	require.False(t, limited)
@@ -420,8 +422,8 @@ func TestCheckIPRateLimited_NilLimiter(t *testing.T) {
 func TestCheckIPRateLimited_NotExhausted(t *testing.T) {
 	rl := security.NewRateLimiter(0, 2, nil)
 	t.Cleanup(rl.Stop)
-	srv := newOAuthTestServer(t, server.WithRateLimiter(rl))
-	h := New(srv, nil)
+	srv, cfg := newOAuthTestServer(t, server.WithRateLimiter(rl))
+	h := New(srv, cfg, nil)
 
 	retryAfter, limited := h.checkIPRateLimited(t.Context(), "10.0.0.1", "/token")
 	require.False(t, limited)
@@ -432,8 +434,8 @@ func TestCheckIPRateLimited_Exhausted(t *testing.T) {
 	rl := security.NewRateLimiter(0, 1, nil)
 	t.Cleanup(rl.Stop)
 	rl.Allow(security.RateLimitBucket("10.0.0.1")) // consume the single token
-	srv := newOAuthTestServer(t, server.WithRateLimiter(rl))
-	h := New(srv, nil)
+	srv, cfg := newOAuthTestServer(t, server.WithRateLimiter(rl))
+	h := New(srv, cfg, nil)
 
 	retryAfter, limited := h.checkIPRateLimited(t.Context(), "10.0.0.1", "/token")
 	require.True(t, limited)
@@ -441,8 +443,8 @@ func TestCheckIPRateLimited_Exhausted(t *testing.T) {
 }
 
 func TestCheckUserRateLimited_NilLimiter(t *testing.T) {
-	srv := newOAuthTestServer(t)
-	h := New(srv, nil)
+	srv, cfg := newOAuthTestServer(t)
+	h := New(srv, cfg, nil)
 
 	retryAfter, limited := h.checkUserRateLimited(t.Context(), "user-1", "10.0.0.1")
 	require.False(t, limited)
@@ -452,8 +454,8 @@ func TestCheckUserRateLimited_NilLimiter(t *testing.T) {
 func TestCheckUserRateLimited_NotExhausted(t *testing.T) {
 	rl := security.NewRateLimiter(0, 2, nil)
 	t.Cleanup(rl.Stop)
-	srv := newOAuthTestServer(t, server.WithUserRateLimiter(rl))
-	h := New(srv, nil)
+	srv, cfg := newOAuthTestServer(t, server.WithUserRateLimiter(rl))
+	h := New(srv, cfg, nil)
 
 	retryAfter, limited := h.checkUserRateLimited(t.Context(), "user-1", "10.0.0.1")
 	require.False(t, limited)
@@ -464,8 +466,8 @@ func TestCheckUserRateLimited_Exhausted(t *testing.T) {
 	rl := security.NewRateLimiter(0, 1, nil)
 	t.Cleanup(rl.Stop)
 	rl.Allow("user-1") // consume the single token
-	srv := newOAuthTestServer(t, server.WithUserRateLimiter(rl))
-	h := New(srv, nil)
+	srv, cfg := newOAuthTestServer(t, server.WithUserRateLimiter(rl))
+	h := New(srv, cfg, nil)
 
 	retryAfter, limited := h.checkUserRateLimited(t.Context(), "user-1", "10.0.0.1")
 	require.True(t, limited)
@@ -476,8 +478,8 @@ func TestCheckIPRateLimited_PerBucket(t *testing.T) {
 	rl := security.NewRateLimiter(0, 1, nil)
 	t.Cleanup(rl.Stop)
 	rl.Allow(security.RateLimitBucket("10.0.0.1"))
-	srv := newOAuthTestServer(t, server.WithRateLimiter(rl))
-	h := New(srv, nil)
+	srv, cfg := newOAuthTestServer(t, server.WithRateLimiter(rl))
+	h := New(srv, cfg, nil)
 
 	_, limited1 := h.checkIPRateLimited(t.Context(), "10.0.0.1", "/token")
 	_, limited2 := h.checkIPRateLimited(t.Context(), "10.0.0.2", "/token")
@@ -489,8 +491,8 @@ func TestCheckUserRateLimited_PerUser(t *testing.T) {
 	rl := security.NewRateLimiter(0, 1, nil)
 	t.Cleanup(rl.Stop)
 	rl.Allow("user-1")
-	srv := newOAuthTestServer(t, server.WithUserRateLimiter(rl))
-	h := New(srv, nil)
+	srv, cfg := newOAuthTestServer(t, server.WithUserRateLimiter(rl))
+	h := New(srv, cfg, nil)
 
 	_, limited1 := h.checkUserRateLimited(t.Context(), "user-1", "10.0.0.1")
 	_, limited2 := h.checkUserRateLimited(t.Context(), "user-2", "10.0.0.1")

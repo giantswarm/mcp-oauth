@@ -33,7 +33,7 @@ func newJWTModeHandler(t *testing.T) *Handler {
 	}
 	srv, err := server.New(provider, store, store, store, cfg, nil)
 	require.NoError(t, err)
-	return New(srv, nil)
+	return New(srv, cfg, nil)
 }
 
 func TestServeJWKS_OpaqueModeReturns404(t *testing.T) {

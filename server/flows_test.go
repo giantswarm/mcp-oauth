@@ -64,6 +64,33 @@ func setupValidTokenProvider() func(context.Context, string) (*providers.UserInf
 	}
 }
 
+func setupFlowTestServerWithOpts(t *testing.T, opts ...Option) (*Server, *memory.Store, *mock.Provider) {
+	t.Helper()
+
+	store := memory.New()
+	t.Cleanup(func() { store.Stop() })
+
+	provider := mock.NewProvider()
+
+	config := &Config{
+		Issuer:               "https://auth.example.com",
+		SupportedScopes:      []string{"openid", "email", "profile"},
+		AuthorizationCodeTTL: 600,
+		AccessTokenTTL:       3600,
+		RequirePKCE:          true,
+		AllowPKCEPlain:       false,
+		ClockSkewGracePeriod: 5,
+		DisableNonceEchoRequirement: true,
+	}
+
+	srv, err := New(provider, store, store, store, config, nil, opts...)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	return srv, store, provider
+}
+
 // setupFlowTestServerWithNoStateParameter creates a test server with AllowNoStateParameter=true
 func setupFlowTestServerWithNoStateParameter(t *testing.T) (*Server, *memory.Store, *mock.Provider) {
 	t.Helper()

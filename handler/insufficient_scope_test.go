@@ -79,7 +79,7 @@ func TestWriteInsufficientScopeError(t *testing.T) {
 				t.Fatalf("Failed to create server: %v", err)
 			}
 
-			handler := New(srv, nil)
+			handler := New(srv, &server.Config{Issuer: "https://example.com"}, nil)
 
 			// Create response recorder
 			w := httptest.NewRecorder()
@@ -188,22 +188,23 @@ func TestGetRequiredScopes(t *testing.T) {
 			defer store.Stop()
 			mockProvider := mock.NewProvider()
 
+			srvConfig := &server.Config{
+				Issuer:                    "https://example.com",
+				EndpointScopeRequirements: tt.config,
+			}
 			srv, err := server.New(
 				mockProvider,
 				store,
 				store,
 				store,
-				&server.Config{
-					Issuer:                    "https://example.com",
-					EndpointScopeRequirements: tt.config,
-				},
+				srvConfig,
 				nil,
 			)
 			if err != nil {
 				t.Fatalf("Failed to create server: %v", err)
 			}
 
-			handler := New(srv, nil)
+			handler := New(srv, srvConfig, nil)
 
 			req := httptest.NewRequest(http.MethodGet, tt.requestPath, nil)
 			scopes := handler.getRequiredScopes(req)
@@ -338,15 +339,16 @@ func TestValidateTokenWithScopeValidation(t *testing.T) {
 				endpointScopes["/protected"] = tt.requiredScopes
 			}
 
+			srvConfig := &server.Config{
+				Issuer:                    "https://example.com",
+				EndpointScopeRequirements: endpointScopes,
+			}
 			srv, err := server.New(
 				mockProvider,
 				store,
 				store,
 				store,
-				&server.Config{
-					Issuer:                    "https://example.com",
-					EndpointScopeRequirements: endpointScopes,
-				},
+				srvConfig,
 				nil,
 			)
 			if err != nil {
@@ -354,7 +356,7 @@ func TestValidateTokenWithScopeValidation(t *testing.T) {
 			}
 
 			// Create handler
-			handler := New(srv, nil)
+			handler := New(srv, srvConfig, nil)
 
 			// Create a test token
 			accessToken := "test_access_token"
@@ -435,24 +437,25 @@ func TestValidateTokenWithoutScopeMetadata(t *testing.T) {
 	mockProvider := mock.NewProvider()
 
 	// Configure endpoint to require scopes
+	srvConfig := &server.Config{
+		Issuer: "https://example.com",
+		EndpointScopeRequirements: map[string][]string{
+			"/protected": {"files:read"},
+		},
+	}
 	srv, err := server.New(
 		mockProvider,
 		store,
 		store,
 		store,
-		&server.Config{
-			Issuer: "https://example.com",
-			EndpointScopeRequirements: map[string][]string{
-				"/protected": {"files:read"},
-			},
-		},
+		srvConfig,
 		nil,
 	)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 
-	handler := New(srv, nil)
+	handler := New(srv, srvConfig, nil)
 
 	// Create a test token WITHOUT metadata
 	accessToken := "test_access_token_no_metadata"
@@ -612,22 +615,23 @@ func TestGetRequiredScopesPathNormalization(t *testing.T) {
 			defer store.Stop()
 			mockProvider := mock.NewProvider()
 
+			srvConfig := &server.Config{
+				Issuer:                    "https://example.com",
+				EndpointScopeRequirements: tt.config,
+			}
 			srv, err := server.New(
 				mockProvider,
 				store,
 				store,
 				store,
-				&server.Config{
-					Issuer:                    "https://example.com",
-					EndpointScopeRequirements: tt.config,
-				},
+				srvConfig,
 				nil,
 			)
 			if err != nil {
 				t.Fatalf("Failed to create server: %v", err)
 			}
 
-			handler := New(srv, nil)
+			handler := New(srv, srvConfig, nil)
 
 			req := httptest.NewRequest(http.MethodGet, tt.requestPath, nil)
 			scopes := handler.getRequiredScopes(req)
@@ -702,22 +706,23 @@ func TestGetRequiredScopesLongestPrefixMatch(t *testing.T) {
 			defer store.Stop()
 			mockProvider := mock.NewProvider()
 
+			srvConfig := &server.Config{
+				Issuer:                    "https://example.com",
+				EndpointScopeRequirements: tt.config,
+			}
 			srv, err := server.New(
 				mockProvider,
 				store,
 				store,
 				store,
-				&server.Config{
-					Issuer:                    "https://example.com",
-					EndpointScopeRequirements: tt.config,
-				},
+				srvConfig,
 				nil,
 			)
 			if err != nil {
 				t.Fatalf("Failed to create server: %v", err)
 			}
 
-			handler := New(srv, nil)
+			handler := New(srv, srvConfig, nil)
 
 			req := httptest.NewRequest(http.MethodGet, tt.requestPath, nil)
 			scopes := handler.getRequiredScopes(req)
@@ -741,24 +746,25 @@ func TestValidateTokenScopesLongPathSanitization(t *testing.T) {
 	mockProvider := mock.NewProvider()
 
 	// Configure endpoint to require scopes
+	srvConfig := &server.Config{
+		Issuer: "https://example.com",
+		EndpointScopeRequirements: map[string][]string{
+			"/*": {"files:read"},
+		},
+	}
 	srv, err := server.New(
 		mockProvider,
 		store,
 		store,
 		store,
-		&server.Config{
-			Issuer: "https://example.com",
-			EndpointScopeRequirements: map[string][]string{
-				"/*": {"files:read"},
-			},
-		},
+		srvConfig,
 		nil,
 	)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 
-	handler := New(srv, nil)
+	handler := New(srv, srvConfig, nil)
 
 	// Create a test token with insufficient scopes
 	accessToken := "test_access_token"
@@ -933,23 +939,24 @@ func TestGetRequiredScopesMethodBased(t *testing.T) {
 			defer store.Stop()
 			mockProvider := mock.NewProvider()
 
+			srvConfig := &server.Config{
+				Issuer:                          "https://example.com",
+				EndpointScopeRequirements:       tt.pathScope,
+				EndpointMethodScopeRequirements: tt.methodScope,
+			}
 			srv, err := server.New(
 				mockProvider,
 				store,
 				store,
 				store,
-				&server.Config{
-					Issuer:                          "https://example.com",
-					EndpointScopeRequirements:       tt.pathScope,
-					EndpointMethodScopeRequirements: tt.methodScope,
-				},
+				srvConfig,
 				nil,
 			)
 			if err != nil {
 				t.Fatalf("Failed to create server: %v", err)
 			}
 
-			handler := New(srv, nil)
+			handler := New(srv, srvConfig, nil)
 
 			req := httptest.NewRequest(tt.method, tt.requestPath, nil)
 			scopes := handler.getRequiredScopes(req)
@@ -997,25 +1004,26 @@ func TestHideEndpointPathInErrors(t *testing.T) {
 			defer store.Stop()
 			mockProvider := mock.NewProvider()
 
+			srvConfig := &server.Config{
+				Issuer: "https://example.com",
+				EndpointScopeRequirements: map[string][]string{
+					"/protected": {"files:read"},
+				},
+				HideEndpointPathInErrors: tt.hideEndpointPath,
+			}
 			srv, err := server.New(
 				mockProvider,
 				store,
 				store,
 				store,
-				&server.Config{
-					Issuer: "https://example.com",
-					EndpointScopeRequirements: map[string][]string{
-						"/protected": {"files:read"},
-					},
-					HideEndpointPathInErrors: tt.hideEndpointPath,
-				},
+				srvConfig,
 				nil,
 			)
 			if err != nil {
 				t.Fatalf("Failed to create server: %v", err)
 			}
 
-			handler := New(srv, nil)
+			handler := New(srv, srvConfig, nil)
 
 			// Create test token with insufficient scopes
 			accessToken := "test_token_hide_path"

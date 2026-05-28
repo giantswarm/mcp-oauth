@@ -89,15 +89,16 @@ func main() {
 	}
 
 	// 5. Create OAuth server
+	cfg := &oauth.ServerConfig{
+		Issuer:            "http://localhost:8080",
+		AllowInsecureHTTP: true, // Required for HTTP on localhost (development only)
+	}
 	server, err := oauth.NewServer(
 		googleProvider,
 		store, // TokenStore
 		store, // ClientStore
 		store, // FlowStore
-		&oauth.ServerConfig{
-			Issuer:            "http://localhost:8080",
-			AllowInsecureHTTP: true, // Required for HTTP on localhost (development only)
-		},
+		cfg,
 		logger,
 		opts...,
 	)
@@ -106,7 +107,7 @@ func main() {
 	}
 
 	// 8. Set up HTTP handlers
-	handler := oauthhandler.New(server, logger)
+	handler := oauthhandler.New(server, cfg, logger)
 	mux := http.NewServeMux()
 
 	// OAuth endpoints

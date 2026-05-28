@@ -68,26 +68,27 @@ func main() {
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
+	cfg := &oauth.ServerConfig{
+		Issuer:                      "http://localhost:8080",
+		ResourceIdentifier:          "http://localhost:8080",
+		AllowInsecureHTTP:           true, // localhost only — required for HTTP issuer
+		AccessTokenTTL:              900,  // 15 min, recommended for stateless JWT mode
+		AccessTokenFormat:           server.AccessTokenFormatJWT,
+		AccessTokenSigningKey:       signingKey,
+		AccessTokenSigningKeyID:     keyID,
+		AccessTokenSigningAlgorithm: server.SigningAlgorithmRS256,
+	}
 	srv, err := oauth.NewServer(
 		dexProvider,
 		store, store, store,
-		&oauth.ServerConfig{
-			Issuer:                      "http://localhost:8080",
-			ResourceIdentifier:          "http://localhost:8080",
-			AllowInsecureHTTP:           true, // localhost only — required for HTTP issuer
-			AccessTokenTTL:              900,  // 15 min, recommended for stateless JWT mode
-			AccessTokenFormat:           server.AccessTokenFormatJWT,
-			AccessTokenSigningKey:       signingKey,
-			AccessTokenSigningKeyID:     keyID,
-			AccessTokenSigningAlgorithm: server.SigningAlgorithmRS256,
-		},
+		cfg,
 		logger,
 	)
 	if err != nil {
 		log.Fatalf("Failed to create OAuth server: %v", err)
 	}
 
-	handler := oauthhandler.New(srv, logger)
+	handler := oauthhandler.New(srv, cfg, logger)
 	mux := http.NewServeMux()
 	handler.RegisterOAuthRoutes(mux, oauthhandler.OAuthRoutesOptions{IncludeMetadata: true})
 

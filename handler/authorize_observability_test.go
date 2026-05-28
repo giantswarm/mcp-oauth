@@ -217,7 +217,7 @@ func TestServeAuthorization_RespondAuthorizationError_PinsSpanAttributes(t *test
 		}
 		srv, err := server.New(provider, store, store, store, cfg, nil)
 		require.NoError(t, err)
-		handler := New(srv, nil)
+		handler := New(srv, cfg, nil)
 
 		sr := installSpanRecorder(t, handler)
 		clientID := registerMinimalClient(t, handler)

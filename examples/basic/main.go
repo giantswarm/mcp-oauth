@@ -72,29 +72,30 @@ func main() {
 	// 5. Create OAuth server with secure defaults plus optional dependencies.
 	// PKCE S256, refresh-token rotation, and the rest of the OAuth 2.1
 	// hardening apply automatically.
+	cfg := &oauth.ServerConfig{
+		Issuer:            "http://localhost:8080",
+		AllowInsecureHTTP: true, // Required for HTTP on localhost (development only)
+
+		// To enable OpenTelemetry instrumentation:
+		//
+		//   inst, _ := instrumentation.New(instrumentation.Config{
+		//       Enabled:         true,
+		//       ServiceName:     "mcp-oauth-basic",
+		//       ServiceVersion:  "1.0.0",
+		//       MetricsExporter: "stdout",
+		//       TracesExporter:  "stdout",
+		//   })
+		//   opts = append(opts, oauth.WithInstrumentation(inst))
+		//
+		// See examples/prometheus and examples/production for a full
+		// instrumentation setup.
+	}
 	server, err := oauth.NewServer(
 		googleProvider,
 		store, // TokenStore
 		store, // ClientStore
 		store, // FlowStore
-		&oauth.ServerConfig{
-			Issuer:            "http://localhost:8080",
-			AllowInsecureHTTP: true, // Required for HTTP on localhost (development only)
-
-			// To enable OpenTelemetry instrumentation:
-			//
-			//   inst, _ := instrumentation.New(instrumentation.Config{
-			//       Enabled:         true,
-			//       ServiceName:     "mcp-oauth-basic",
-			//       ServiceVersion:  "1.0.0",
-			//       MetricsExporter: "stdout",
-			//       TracesExporter:  "stdout",
-			//   })
-			//   opts = append(opts, oauth.WithInstrumentation(inst))
-			//
-			// See examples/prometheus and examples/production for a full
-			// instrumentation setup.
-		},
+		cfg,
 		logger,
 		opts...,
 	)
@@ -103,7 +104,7 @@ func main() {
 	}
 
 	// 6. Create HTTP handler
-	handler := oauthhandler.New(server, logger)
+	handler := oauthhandler.New(server, cfg, logger)
 
 	// 7. Setup routes
 	mux := http.NewServeMux()

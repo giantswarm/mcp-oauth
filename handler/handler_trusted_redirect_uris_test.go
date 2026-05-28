@@ -103,11 +103,11 @@ func TestHandler_ServeClientRegistration_TrustedRedirectURIs(t *testing.T) {
 			handler, store := setupTestHandler(t)
 			defer store.Stop()
 
-			handler.server.Config().RegistrationAccessToken = tt.registrationAccessToken
-			handler.server.Config().AllowPublicClientRegistration = tt.allowPublicClientRegistration
-			handler.server.Config().TrustedPublicRegistrationRedirectURIs = tt.trustedURIs
-			handler.server.Config().SetTrustedRedirectURIsSet(tt.trustedURIs)
-			handler.server.Config().ProductionMode = false
+			handler.config.RegistrationAccessToken = tt.registrationAccessToken
+			handler.config.AllowPublicClientRegistration = tt.allowPublicClientRegistration
+			handler.config.TrustedPublicRegistrationRedirectURIs = tt.trustedURIs
+			handler.config.SetTrustedRedirectURIsSet(tt.trustedURIs)
+			handler.config.ProductionMode = false
 
 			regReq := oauth.ClientRegistrationRequest{
 				ClientName:              "Test Client",
@@ -151,7 +151,7 @@ func TestHandler_IsRegistrationAvailable_TrustedRedirectURIs(t *testing.T) {
 
 	require.False(t, handler.isRegistrationAvailable(), "no gate configured")
 
-	handler.server.Config().TrustedPublicRegistrationRedirectURIs = []string{"https://claude.ai/cb"}
+	handler.config.TrustedPublicRegistrationRedirectURIs = []string{"https://claude.ai/cb"}
 	require.True(t, handler.isRegistrationAvailable(), "allowlist enables DCR")
 }
 
@@ -159,13 +159,13 @@ func TestHandler_ServeClientRegistration_TrustedSchemesAndRedirectURIs_Combined(
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
-	handler.server.Config().RegistrationAccessToken = trustedRedirectURITestToken
-	handler.server.Config().AllowPublicClientRegistration = false
-	handler.server.Config().TrustedPublicRegistrationSchemes = []string{"cursor"}
-	handler.server.Config().SetTrustedSchemesMap([]string{"cursor"})
-	handler.server.Config().TrustedPublicRegistrationRedirectURIs = []string{"https://claude.ai/cb"}
-	handler.server.Config().SetTrustedRedirectURIsSet([]string{"https://claude.ai/cb"})
-	handler.server.Config().ProductionMode = false
+	handler.config.RegistrationAccessToken = trustedRedirectURITestToken
+	handler.config.AllowPublicClientRegistration = false
+	handler.config.TrustedPublicRegistrationSchemes = []string{"cursor"}
+	handler.config.SetTrustedSchemesMap([]string{"cursor"})
+	handler.config.TrustedPublicRegistrationRedirectURIs = []string{"https://claude.ai/cb"}
+	handler.config.SetTrustedRedirectURIsSet([]string{"https://claude.ai/cb"})
+	handler.config.ProductionMode = false
 
 	regReq := oauth.ClientRegistrationRequest{
 		ClientName:              "Mixed Client",

@@ -400,7 +400,7 @@ func TestCORS_WildcardOrigin(t *testing.T) {
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := New(srv, nil)
+	handler := New(srv, config, nil)
 
 	origins := []string{
 		"https://app.example.com",
@@ -532,7 +532,7 @@ func TestCORS_CredentialsDisabled(t *testing.T) {
 	defer store.Stop()
 
 	// Configure CORS with credentials disabled
-	handler.server.Config().CORS = server.CORSConfig{
+	handler.config.CORS = server.CORSConfig{
 		AllowedOrigins:   []string{testOriginApp},
 		AllowCredentials: false,
 		MaxAge:           3600,
@@ -560,7 +560,7 @@ func TestCORS_CustomMaxAge(t *testing.T) {
 	defer store.Stop()
 
 	// Configure CORS with custom max age
-	handler.server.Config().CORS = server.CORSConfig{
+	handler.config.CORS = server.CORSConfig{
 		AllowedOrigins:   []string{testOriginApp},
 		AllowCredentials: true,
 		MaxAge:           7200, // 2 hours
@@ -832,7 +832,7 @@ func TestHandler_WriteError401WithWWWAuthenticate(t *testing.T) {
 				t.Fatalf("server.New() error = %v", err)
 			}
 
-			handler := New(srv, nil)
+			handler := New(srv, config, nil)
 
 			w := httptest.NewRecorder()
 			handler.writeError(w, "test_error", "Test error description", tt.status)
@@ -892,7 +892,7 @@ func TestHandler_ValidateToken401ResponseWithWWWAuthenticate(t *testing.T) {
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := New(srv, nil)
+	handler := New(srv, config, nil)
 
 	// Create a test endpoint that requires authentication
 	testEndpoint := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1024,7 +1024,7 @@ func TestHandler_WriteError401BackwardCompatibilityMode(t *testing.T) {
 				t.Fatalf("server.New() error = %v", err)
 			}
 
-			handler := New(srv, nil)
+			handler := New(srv, config, nil)
 
 			w := httptest.NewRecorder()
 			handler.writeError(w, "invalid_token", "Token validation failed", http.StatusUnauthorized)
@@ -1149,7 +1149,7 @@ func TestHandler_GetChallengeScopes(t *testing.T) {
 				t.Fatalf("server.New() error = %v", err)
 			}
 
-			handler := New(srv, nil)
+			handler := New(srv, config, nil)
 
 			// Create test request
 			req := httptest.NewRequest(tt.requestMethod, tt.requestPath, nil)
@@ -1234,7 +1234,7 @@ func TestHandler_WriteUnauthorizedError(t *testing.T) {
 				t.Fatalf("server.New() error = %v", err)
 			}
 
-			handler := New(srv, nil)
+			handler := New(srv, config, nil)
 
 			w := httptest.NewRecorder()
 			req := httptest.NewRequest(tt.requestMethod, tt.requestPath, nil)
@@ -1359,7 +1359,7 @@ func TestHandler_ValidateTokenWithEndpointSpecificWWWAuthenticate(t *testing.T) 
 				t.Fatalf("server.New() error = %v", err)
 			}
 
-			handler := New(srv, nil)
+			handler := New(srv, config, nil)
 
 			// Create test handler that is protected by ValidateToken middleware
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1421,7 +1421,7 @@ func TestHandler_ValidateToken_SessionIDFromContext_WithFamilyID(t *testing.T) {
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := New(srv, nil)
+	handler := New(srv, config, nil)
 
 	accessToken := "session-test-at"
 	familyID := "family-session-abc"
@@ -1476,7 +1476,7 @@ func TestHandler_ValidateToken_SessionIDFromContext_WithoutFamilyID(t *testing.T
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := New(srv, nil)
+	handler := New(srv, config, nil)
 
 	accessToken := "session-test-no-family"
 
@@ -1526,7 +1526,7 @@ func TestHandler_ValidateToken_UserInfoAndSessionIDCoexist(t *testing.T) {
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := New(srv, nil)
+	handler := New(srv, config, nil)
 
 	accessToken := "coexist-test-at"
 	familyID := "family-coexist-xyz"
@@ -1631,7 +1631,7 @@ func setupDPoPTestHandler(t *testing.T, accessToken, jkt string) (*Handler, *mem
 		t.Fatalf("SaveTokenMetadata: %v", err)
 	}
 
-	return New(srv, nil), store
+	return New(srv, config, nil), store
 }
 
 // TestValidateToken_DPoPBoundToken_BearerBypass verifies that a DPoP-bound opaque

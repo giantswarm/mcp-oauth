@@ -75,16 +75,17 @@ func main() {
 	trustedAudiences := splitCSV(os.Getenv("TRUSTED_AUDIENCES"))
 
 	// Create OAuth server
+	cfg := &oauth.ServerConfig{
+		Issuer:            "http://localhost:8080",
+		AllowInsecureHTTP: true, // Required for HTTP on localhost (development only)
+		TrustedAudiences:  trustedAudiences,
+	}
 	server, err := oauth.NewServer(
 		dexProvider,
 		store, // TokenStore
 		store, // ClientStore
 		store, // FlowStore
-		&oauth.ServerConfig{
-			Issuer:            "http://localhost:8080",
-			AllowInsecureHTTP: true, // Required for HTTP on localhost (development only)
-			TrustedAudiences:  trustedAudiences,
-		},
+		cfg,
 		logger,
 	)
 	if err != nil {
@@ -92,7 +93,7 @@ func main() {
 	}
 
 	// Create HTTP handler
-	handler := oauthhandler.New(server, logger)
+	handler := oauthhandler.New(server, cfg, logger)
 
 	// Setup routes
 	mux := http.NewServeMux()

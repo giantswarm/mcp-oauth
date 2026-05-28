@@ -28,7 +28,7 @@ func TestRegisterAuthorizationServerMetadataRoutes_SingleTenant(t *testing.T) {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 
-	handler := New(server, nil)
+	handler := New(server, config, nil)
 	mux := http.NewServeMux()
 
 	// Register routes
@@ -85,7 +85,7 @@ func TestRegisterAuthorizationServerMetadataRoutes_MultiTenant(t *testing.T) {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 
-	handler := New(server, nil)
+	handler := New(server, config, nil)
 	mux := http.NewServeMux()
 
 	// Register routes
@@ -181,7 +181,7 @@ func TestRegisterAuthorizationServerMetadataRoutes_NestedPath(t *testing.T) {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 
-	handler := New(server, nil)
+	handler := New(server, config, nil)
 	mux := http.NewServeMux()
 
 	// Register routes
@@ -306,7 +306,7 @@ func TestExtractIssuerPath(t *testing.T) {
 				t.Fatalf("Failed to create server: %v", err)
 			}
 
-			handler := New(server, nil)
+			handler := New(server, config, nil)
 			gotPath := handler.extractIssuerPath()
 
 			if gotPath != tt.wantPath {

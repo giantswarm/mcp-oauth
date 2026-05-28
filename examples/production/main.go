@@ -100,57 +100,58 @@ func main() {
 	defer store.Stop()
 
 	// 5. Create OAuth server with production-grade security configuration
+	cfg := &oauth.ServerConfig{
+		Issuer: getEnvOrDefault("MCP_RESOURCE", "https://mcp.example.com"),
+
+		// Secure defaults (enabled automatically):
+		// RequirePKCE: true              - Mandatory PKCE for all clients (OAuth 2.1)
+		// AllowPKCEPlain: false          - Only S256 method allowed
+		// AllowRefreshTokenRotation: true - Token rotation (OAuth 2.1)
+		// TrustProxy: false              - Don't trust proxy headers by default
+
+		// Optional: Override defaults for backward compatibility
+		// ONLY enable these if you have legacy clients that don't support PKCE
+		// RequirePKCE: getBoolEnv("OAUTH_REQUIRE_PKCE", true),
+		// AllowPKCEPlain: getBoolEnv("OAUTH_ALLOW_PKCE_PLAIN", false),
+
+		// Proxy configuration (only enable if behind trusted reverse proxy)
+		TrustProxy:        getBoolEnv("TRUST_PROXY", false), // Secure by default
+		TrustedProxyCount: getIntEnv("TRUSTED_PROXY_COUNT", 1),
+
+		// Token lifetimes
+		RefreshTokenTTL:      90 * 24 * 60 * 60, // 90 days in seconds
+		ClockSkewGracePeriod: 5,                 // 5 seconds grace period
+
+		// Rate limiting
+		MaxClientsPerIP: 10,
+
+		// Scope validation (optional)
+		SupportedScopes: []string{
+			"openid",
+			"email",
+			"profile",
+			"https://www.googleapis.com/auth/gmail.readonly",
+			"https://www.googleapis.com/auth/drive.readonly",
+			"https://www.googleapis.com/auth/calendar.readonly",
+		},
+
+		// CORS configuration (optional, only for browser-based clients)
+		// Uncomment and configure if you have browser-based MCP clients
+		// CORS: oauth.CORSConfig{
+		// 	AllowedOrigins: []string{
+		// 		"https://app.example.com",
+		// 		"https://dashboard.example.com",
+		// 	},
+		// 	AllowCredentials: true,  // Required for OAuth with credentials
+		// 	MaxAge:           3600,  // 1 hour preflight cache
+		// },
+	}
 	server, err := oauth.NewServer(
 		googleProvider,
 		store, // TokenStore
 		store, // ClientStore
 		store, // FlowStore
-		&oauth.ServerConfig{
-			Issuer: getEnvOrDefault("MCP_RESOURCE", "https://mcp.example.com"),
-
-			// Secure defaults (enabled automatically):
-			// RequirePKCE: true              - Mandatory PKCE for all clients (OAuth 2.1)
-			// AllowPKCEPlain: false          - Only S256 method allowed
-			// AllowRefreshTokenRotation: true - Token rotation (OAuth 2.1)
-			// TrustProxy: false              - Don't trust proxy headers by default
-
-			// Optional: Override defaults for backward compatibility
-			// ONLY enable these if you have legacy clients that don't support PKCE
-			// RequirePKCE: getBoolEnv("OAUTH_REQUIRE_PKCE", true),
-			// AllowPKCEPlain: getBoolEnv("OAUTH_ALLOW_PKCE_PLAIN", false),
-
-			// Proxy configuration (only enable if behind trusted reverse proxy)
-			TrustProxy:        getBoolEnv("TRUST_PROXY", false), // Secure by default
-			TrustedProxyCount: getIntEnv("TRUSTED_PROXY_COUNT", 1),
-
-			// Token lifetimes
-			RefreshTokenTTL:      90 * 24 * 60 * 60, // 90 days in seconds
-			ClockSkewGracePeriod: 5,                 // 5 seconds grace period
-
-			// Rate limiting
-			MaxClientsPerIP: 10,
-
-			// Scope validation (optional)
-			SupportedScopes: []string{
-				"openid",
-				"email",
-				"profile",
-				"https://www.googleapis.com/auth/gmail.readonly",
-				"https://www.googleapis.com/auth/drive.readonly",
-				"https://www.googleapis.com/auth/calendar.readonly",
-			},
-
-			// CORS configuration (optional, only for browser-based clients)
-			// Uncomment and configure if you have browser-based MCP clients
-			// CORS: oauth.CORSConfig{
-			// 	AllowedOrigins: []string{
-			// 		"https://app.example.com",
-			// 		"https://dashboard.example.com",
-			// 	},
-			// 	AllowCredentials: true,  // Required for OAuth with credentials
-			// 	MaxAge:           3600,  // 1 hour preflight cache
-			// },
-		},
+		cfg,
 		logger,
 		oauth.WithAuditor(auditor),
 		oauth.WithRateLimiter(rateLimiter),
@@ -164,7 +165,7 @@ func main() {
 	}
 
 	// 6. Create HTTP handler
-	handler := oauthhandler.New(server, logger)
+	handler := oauthhandler.New(server, cfg, logger)
 
 	// Setup HTTP routes
 	mux := setupRoutes(handler, logger)

@@ -195,7 +195,7 @@ func (h *Handler) serveSuccessInterstitial(w http.ResponseWriter, r *http.Reques
 	// Extract app name from the redirect URL scheme
 	appName := getAppNameFromScheme(redirectURL)
 
-	interstitialCfg := h.server.Config().Interstitial
+	interstitialCfg := h.config.Interstitial
 
 	// Priority 1: Custom handler (full control)
 	// The handler is responsible for setting all headers and writing the response
@@ -244,7 +244,7 @@ func (h *Handler) serveCustomInterstitialTemplate(w http.ResponseWriter, templat
 
 	// Set security headers and write the buffered response
 	// Note: Custom templates may need different CSP headers for their scripts
-	security.SetInterstitialSecurityHeaders(w, h.server.Config().Issuer)
+	security.SetInterstitialSecurityHeaders(w, h.config.Issuer)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = buf.WriteTo(w)
 }
@@ -273,7 +273,7 @@ func (h *Handler) serveDefaultInterstitial(w http.ResponseWriter, redirectURL, a
 	}
 
 	// Set security headers with CSP hash exception for the inline redirect script
-	security.SetInterstitialSecurityHeaders(w, h.server.Config().Issuer)
+	security.SetInterstitialSecurityHeaders(w, h.config.Issuer)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = buf.WriteTo(w)
 }
@@ -374,7 +374,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	// State-too-long is handled inline rather than via checkAuthorizationStateParam:
 	// an oversized state cannot be safely echoed back in a redirect URL, so the
 	// response stays a direct 400 instead of a redirect with `error=invalid_request`.
-	maxStateLength := h.server.Config().MaxStateLength
+	maxStateLength := h.config.MaxStateLength
 	if len(state) > maxStateLength {
 		h.logger.Warn("Authorization request rejected: state parameter too long", "state_length", len(state), "max_allowed", maxStateLength, "client_id", clientID)
 		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusBadRequest, startTime)
@@ -507,8 +507,8 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, constants.ErrorCodeInvalidRequest, "state and code are required", http.StatusBadRequest)
 		return
 	}
-	minStateLength := h.server.Config().MinStateLength
-	maxStateLength := h.server.Config().MaxStateLength
+	minStateLength := h.config.MinStateLength
+	maxStateLength := h.config.MaxStateLength
 	if len(state) < minStateLength {
 		h.logger.Warn("Callback rejected: provider state too short", "ip", clientIP, "state_length", len(state), "min_required", minStateLength)
 		h.recordHTTPMetrics(r.Context(), endpointCallback, http.MethodGet, http.StatusBadRequest, startTime)
@@ -559,7 +559,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	q := parsedRedirect.Query()
 	q.Set("code", authCode.Code)
 	q.Set("state", clientState)
-	q.Set("iss", h.server.Config().Issuer)
+	q.Set("iss", h.config.Issuer)
 	parsedRedirect.RawQuery = q.Encode()
 	redirectURL := parsedRedirect.String()
 
@@ -625,7 +625,7 @@ func (h *Handler) respondAuthorizationError(w http.ResponseWriter, r *http.Reque
 	redirect.RawQuery = q.Encode()
 
 	h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusFound, startTime)
-	security.SetSecurityHeaders(w, h.server.Config().Issuer)
+	security.SetSecurityHeaders(w, h.config.Issuer)
 	http.Redirect(w, r, redirect.String(), http.StatusFound)
 }
 
@@ -640,7 +640,7 @@ type authorizationStateRejection struct {
 // HTTP layer. Returns nil when state is acceptable (or when
 // AllowNoStateParameter is set for clients that cannot send state).
 func (h *Handler) checkAuthorizationStateParam(state, clientID string) *authorizationStateRejection {
-	if h.server.Config().AllowNoStateParameter {
+	if h.config.AllowNoStateParameter {
 		return nil
 	}
 	if state == "" {
@@ -650,7 +650,7 @@ func (h *Handler) checkAuthorizationStateParam(state, clientID string) *authoriz
 			spanError:   "state missing",
 		}
 	}
-	minStateLength := h.server.Config().MinStateLength
+	minStateLength := h.config.MinStateLength
 	if len(state) < minStateLength {
 		h.logger.Warn("Authorization request rejected: state parameter too short", "state_length", len(state), "min_required", minStateLength, "client_id", clientID)
 		return &authorizationStateRejection{

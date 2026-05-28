@@ -187,10 +187,10 @@ func (h *Handler) extractBearerToken(w http.ResponseWriter, r *http.Request) (st
 //   - code: OAuth error code (e.g., "invalid_token")
 //   - description: Human-readable error description
 func (h *Handler) writeUnauthorizedError(w http.ResponseWriter, r *http.Request, code, description string) {
-	security.SetSecurityHeaders(w, h.server.Config().Issuer)
+	security.SetSecurityHeaders(w, h.config.Issuer)
 
 	// MCP 2025-11-25: Include WWW-Authenticate header with endpoint-specific scope guidance
-	if !h.server.Config().DisableWWWAuthenticateMetadata {
+	if !h.config.DisableWWWAuthenticateMetadata {
 		// Get endpoint-specific scopes (or fallback to defaults)
 		scope := h.getChallengeScopes(r)
 		w.Header().Set("WWW-Authenticate", h.formatWWWAuthenticate(scope, code, description))
@@ -226,7 +226,7 @@ func (h *Handler) writeUnauthorizedError(w http.ResponseWriter, r *http.Request,
 //   - requiredScopes: List of scopes needed to access the resource
 //   - description: Optional human-readable error description
 func (h *Handler) writeInsufficientScopeError(w http.ResponseWriter, requiredScopes []string, description string) {
-	security.SetSecurityHeaders(w, h.server.Config().Issuer)
+	security.SetSecurityHeaders(w, h.config.Issuer)
 
 	// Build scope string for WWW-Authenticate header
 	scope := strings.Join(requiredScopes, " ")
@@ -265,7 +265,7 @@ func (h *Handler) formatWWWAuthenticate(scope, errCode, errorDesc string) string
 	// Include resource_metadata URL when using WWW-Authenticate discovery (MCP 2025-11-25)
 	// Note: MCP servers must implement EITHER WWW-Authenticate OR well-known URI discovery.
 	// When using WWW-Authenticate (this implementation), resource_metadata parameter is required.
-	resourceMetadataURL := h.server.Config().ProtectedResourceMetadataEndpoint()
+	resourceMetadataURL := h.config.ProtectedResourceMetadataEndpoint()
 	params = append(params, fmt.Sprintf(`resource_metadata="%s"`, resourceMetadataURL))
 
 	// Optional: Include scope if configured
@@ -454,7 +454,7 @@ func (h *Handler) validateTokenScopesFromMetadata(w http.ResponseWriter, r *http
 	h.server.Auditor().LogAuthFailure(r.Context(), userInfo.ID, "", clientIP, "insufficient_scope")
 
 	var description string
-	if h.server.Config().HideEndpointPathInErrors {
+	if h.config.HideEndpointPathInErrors {
 		// SECURITY: Hide endpoint path to prevent information disclosure
 		description = "Token lacks required scopes for this endpoint"
 	} else {
@@ -495,8 +495,8 @@ func (h *Handler) validateTokenScopesFromMetadata(w http.ResponseWriter, r *http
 // Returns an empty slice if no scope requirements are configured for the path.
 func (h *Handler) getRequiredScopes(r *http.Request) []string {
 	// Check if any scope requirements are configured
-	hasMethodScopes := h.server.Config().EndpointMethodScopeRequirements != nil
-	hasPathScopes := h.server.Config().EndpointScopeRequirements != nil
+	hasMethodScopes := h.config.EndpointMethodScopeRequirements != nil
+	hasPathScopes := h.config.EndpointScopeRequirements != nil
 
 	if !hasMethodScopes && !hasPathScopes {
 		return nil
@@ -529,7 +529,7 @@ func (h *Handler) getRequiredScopes(r *http.Request) []string {
 // Returns nil if no matching configuration is found.
 func (h *Handler) getMethodScopesForPath(normalizedPath, method string) []string {
 	// First, try exact path match
-	if methodMap, ok := h.server.Config().EndpointMethodScopeRequirements[normalizedPath]; ok {
+	if methodMap, ok := h.config.EndpointMethodScopeRequirements[normalizedPath]; ok {
 		if scopes := getScopesFromMethodMap(methodMap, method); scopes != nil {
 			return scopes
 		}
@@ -545,7 +545,7 @@ func (h *Handler) findLongestPrefixMethodMap(normalizedPath string) map[string][
 	var longestPrefix string
 	var matchedMethodMap map[string][]string
 
-	for pattern, methodMap := range h.server.Config().EndpointMethodScopeRequirements {
+	for pattern, methodMap := range h.config.EndpointMethodScopeRequirements {
 		if !strings.HasSuffix(pattern, "/*") {
 			continue
 		}
@@ -578,7 +578,7 @@ func getScopesFromMethodMap(methodMap map[string][]string, method string) []stri
 // Returns nil if no matching configuration is found.
 func (h *Handler) getPathScopes(normalizedPath string) []string {
 	// First, try exact match
-	if scopes, ok := h.server.Config().EndpointScopeRequirements[normalizedPath]; ok {
+	if scopes, ok := h.config.EndpointScopeRequirements[normalizedPath]; ok {
 		return scopes
 	}
 
@@ -587,7 +587,7 @@ func (h *Handler) getPathScopes(normalizedPath string) []string {
 	var longestPrefix string
 	var matchedScopes []string
 
-	for pattern, scopes := range h.server.Config().EndpointScopeRequirements {
+	for pattern, scopes := range h.config.EndpointScopeRequirements {
 		if strings.HasSuffix(pattern, "/*") {
 			prefix := strings.TrimSuffix(pattern, "*")
 			// Check if this prefix matches and is longer than current match
@@ -655,8 +655,8 @@ func (h *Handler) getChallengeScopes(r *http.Request) string {
 
 	// Priority 2: Fallback to default challenge scopes
 	// These are generic scopes that apply across the application
-	if len(h.server.Config().DefaultChallengeScopes) > 0 {
-		return strings.Join(h.server.Config().DefaultChallengeScopes, " ")
+	if len(h.config.DefaultChallengeScopes) > 0 {
+		return strings.Join(h.config.DefaultChallengeScopes, " ")
 	}
 
 	// Priority 3: No scope guidance available
@@ -669,7 +669,7 @@ func (h *Handler) getChallengeScopes(r *http.Request) string {
 // Only applies if AllowedOrigins is configured, Origin header is present, and origin is allowed.
 func (h *Handler) setCORSHeaders(w http.ResponseWriter, r *http.Request) {
 	// Skip if CORS not configured
-	if len(h.server.Config().CORS.AllowedOrigins) == 0 {
+	if len(h.config.CORS.AllowedOrigins) == 0 {
 		return
 	}
 
@@ -694,12 +694,12 @@ func (h *Handler) setCORSHeaders(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Vary", "Origin")
 
 	// Set credentials header if enabled (required for Bearer tokens)
-	if h.server.Config().CORS.AllowCredentials {
+	if h.config.CORS.AllowCredentials {
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 	}
 
 	// Set preflight cache duration
-	maxAge := h.server.Config().CORS.MaxAge
+	maxAge := h.config.CORS.MaxAge
 	if maxAge == 0 {
 		maxAge = defaultCORSMaxAge
 	}
@@ -720,7 +720,7 @@ func (h *Handler) setCORSHeaders(w http.ResponseWriter, r *http.Request) {
 // Supports exact matching and wildcard "*" for development.
 func (h *Handler) isAllowedOrigin(origin string) bool {
 	// Check for wildcard (allow all origins)
-	for _, allowed := range h.server.Config().CORS.AllowedOrigins {
+	for _, allowed := range h.config.CORS.AllowedOrigins {
 		if allowed == "*" {
 			h.logger.Warn("⚠️  CORS: Wildcard origin (*) allows ALL origins",
 				"risk", "CSRF attacks possible from any website",

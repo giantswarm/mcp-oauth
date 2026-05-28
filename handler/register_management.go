@@ -113,7 +113,7 @@ func (h *Handler) buildClientResponseBody(client *storage.Client) map[string]any
 		"token_endpoint_auth_method": client.TokenEndpointAuthMethod,
 		"grant_types":                client.GrantTypes,
 		"response_types":             client.ResponseTypes,
-		"registration_client_uri":    h.server.Config().Issuer + server.EndpointPathClientManagement + client.ClientID,
+		"registration_client_uri":    h.config.Issuer + server.EndpointPathClientManagement + client.ClientID,
 	}
 	if !client.UpdatedAt.IsZero() {
 		body["client_updated_at"] = client.UpdatedAt.Unix()
@@ -126,7 +126,7 @@ func (h *Handler) buildClientResponseBody(client *storage.Client) map[string]any
 
 // writeClientMetadata serialises the stored client to the RFC 7592 §3 shape.
 func (h *Handler) writeClientMetadata(w http.ResponseWriter, client *storage.Client) {
-	security.SetSecurityHeaders(w, h.server.Config().Issuer)
+	security.SetSecurityHeaders(w, h.config.Issuer)
 	body := h.buildClientResponseBody(client)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(body)
@@ -136,7 +136,7 @@ func (h *Handler) writeClientMetadata(w http.ResponseWriter, client *storage.Cli
 // It validates the request body (same rules as DCR), replaces mutable fields,
 // and rotates the registration access token per RFC 7592 §2.3.
 func (h *Handler) handleClientManagementPut(w http.ResponseWriter, r *http.Request, existing *storage.Client, clientIP string, startTime time.Time) {
-	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config().MaxRequestBodySize)
+	r.Body = http.MaxBytesReader(w, r.Body, h.config.MaxRequestBodySize)
 
 	var req clientRegistrationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -187,7 +187,7 @@ func (h *Handler) handleClientManagementPut(w http.ResponseWriter, r *http.Reque
 	}
 
 	h.recordHTTPMetrics(r.Context(), endpointClientManagement, http.MethodPut, http.StatusOK, startTime)
-	security.SetSecurityHeaders(w, h.server.Config().Issuer)
+	security.SetSecurityHeaders(w, h.config.Issuer)
 	body := h.buildClientResponseBody(&updated)
 	body["registration_access_token"] = newToken
 	w.Header().Set("Content-Type", "application/json")

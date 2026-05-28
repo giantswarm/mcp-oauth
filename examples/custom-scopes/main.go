@@ -66,17 +66,18 @@ func main() {
 
 	// 4. Create OAuth server
 	// Note: PKCE is now mandatory for all clients (OAuth 2.1)
+	cfg := &oauth.ServerConfig{
+		Issuer:                    getEnvOrDefault("MCP_RESOURCE", "http://localhost:8080"),
+		AllowInsecureHTTP:         true, // Required for HTTP on localhost (development only)
+		AllowRefreshTokenRotation: true,
+		SupportedScopes:           scopes, // Validate requested scopes
+	}
 	server, err := oauth.NewServer(
 		googleProvider,
 		store, // TokenStore
 		store, // ClientStore
 		store, // FlowStore
-		&oauth.ServerConfig{
-			Issuer:                    getEnvOrDefault("MCP_RESOURCE", "http://localhost:8080"),
-			AllowInsecureHTTP:         true, // Required for HTTP on localhost (development only)
-			AllowRefreshTokenRotation: true,
-			SupportedScopes:           scopes, // Validate requested scopes
-		},
+		cfg,
 		logger,
 	)
 	if err != nil {
@@ -84,7 +85,7 @@ func main() {
 	}
 
 	// 5. Create HTTP handler
-	handler := oauthhandler.New(server, logger)
+	handler := oauthhandler.New(server, cfg, logger)
 
 	setupRoutes(handler)
 

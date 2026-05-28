@@ -57,77 +57,78 @@ func main() {
 	defer rateLimiter.Stop()
 
 	// 5. Create OAuth server with MCP 2025-11-25 features
+	cfg := &oauth.ServerConfig{
+		Issuer:            "http://localhost:8080",
+		AllowInsecureHTTP: true, // Required for HTTP on localhost (development only)
+
+		// === MCP 2025-11-25 Features ===
+
+		// Feature 1: Scope Configuration
+		// List all scopes your resource server supports
+		// This appears in Protected Resource Metadata (/.well-known/oauth-protected-resource)
+		SupportedScopes: []string{
+			"mcp:access",     // General MCP access
+			scopeFilesRead,   // Read files
+			scopeFilesWrite,  // Write/modify files
+			scopeAdminAccess, // Administrative access
+			"user:profile",   // User profile information
+		},
+
+		// Feature 2: WWW-Authenticate Scope Guidance
+		// Default scopes to advertise in 401 Unauthorized responses
+		// Per MCP 2025-11-25: Helps clients discover required scopes
+		DefaultChallengeScopes: []string{
+			"mcp:access", // Basic scope for general access
+		},
+
+		// Feature 3: Enhanced WWW-Authenticate Headers (enabled by default)
+		// When false: Full MCP 2025-11-25 compliance with discovery support
+		// - Includes resource_metadata URL for authorization server discovery
+		// - Includes scope parameter (from DefaultChallengeScopes or endpoint-specific)
+		// - Includes error and error_description parameters
+		DisableWWWAuthenticateMetadata: false, // default: false (metadata ENABLED)
+
+		// Feature 4: Endpoint-Specific Scope Requirements
+		// Define which scopes are required for specific API endpoints
+		// When a token lacks required scopes, server returns 403 with insufficient_scope error
+		EndpointScopeRequirements: map[string][]string{
+			"/api/files/*": {scopeFilesRead, scopeFilesWrite},
+			"/api/admin/*": {scopeAdminAccess},
+			"/api/profile": {"user:profile"},
+		},
+
+		// Feature 5: Method-Specific Scope Requirements
+		// Different HTTP methods can require different scopes
+		EndpointMethodScopeRequirements: map[string]map[string][]string{
+			"/api/files/*": {
+				"GET":    {scopeFilesRead},                   // Read-only
+				"POST":   {scopeFilesWrite},                  // Create new
+				"PUT":    {scopeFilesWrite},                  // Modify existing
+				"DELETE": {"files:delete", scopeAdminAccess}, // Delete requires admin
+			},
+		},
+
+		// Feature 6: Resource Parameter (RFC 8707) - Token Audience Binding
+		// Set ResourceIdentifier to bind tokens to this resource server
+		// ResourceIdentifier: "http://localhost:8080",
+
+		// Feature 7: Client ID Metadata Documents
+		// Enable distributed client verification via HTTPS metadata URLs
+		// EnableClientIDMetadataDocuments: true,
+		// ClientMetadataCacheTTL: 5 * time.Minute,   // Cache metadata
+		// ClientMetadataFetchTimeout: 10 * time.Second, // Fetch timeout
+
+		// === OAuth 2.1 Security (enabled by default) ===
+		// RequirePKCE: true,                   // Mandatory PKCE
+		// AllowPKCEPlain: false,                // Only S256 method
+		// AllowRefreshTokenRotation: true,      // Token rotation
+	}
 	server, err := oauth.NewServer(
 		googleProvider,
 		store, // TokenStore
 		store, // ClientStore
 		store, // FlowStore
-		&oauth.ServerConfig{
-			Issuer:            "http://localhost:8080",
-			AllowInsecureHTTP: true, // Required for HTTP on localhost (development only)
-
-			// === MCP 2025-11-25 Features ===
-
-			// Feature 1: Scope Configuration
-			// List all scopes your resource server supports
-			// This appears in Protected Resource Metadata (/.well-known/oauth-protected-resource)
-			SupportedScopes: []string{
-				"mcp:access",     // General MCP access
-				scopeFilesRead,   // Read files
-				scopeFilesWrite,  // Write/modify files
-				scopeAdminAccess, // Administrative access
-				"user:profile",   // User profile information
-			},
-
-			// Feature 2: WWW-Authenticate Scope Guidance
-			// Default scopes to advertise in 401 Unauthorized responses
-			// Per MCP 2025-11-25: Helps clients discover required scopes
-			DefaultChallengeScopes: []string{
-				"mcp:access", // Basic scope for general access
-			},
-
-			// Feature 3: Enhanced WWW-Authenticate Headers (enabled by default)
-			// When false: Full MCP 2025-11-25 compliance with discovery support
-			// - Includes resource_metadata URL for authorization server discovery
-			// - Includes scope parameter (from DefaultChallengeScopes or endpoint-specific)
-			// - Includes error and error_description parameters
-			DisableWWWAuthenticateMetadata: false, // default: false (metadata ENABLED)
-
-			// Feature 4: Endpoint-Specific Scope Requirements
-			// Define which scopes are required for specific API endpoints
-			// When a token lacks required scopes, server returns 403 with insufficient_scope error
-			EndpointScopeRequirements: map[string][]string{
-				"/api/files/*": {scopeFilesRead, scopeFilesWrite},
-				"/api/admin/*": {scopeAdminAccess},
-				"/api/profile": {"user:profile"},
-			},
-
-			// Feature 5: Method-Specific Scope Requirements
-			// Different HTTP methods can require different scopes
-			EndpointMethodScopeRequirements: map[string]map[string][]string{
-				"/api/files/*": {
-					"GET":    {scopeFilesRead},                   // Read-only
-					"POST":   {scopeFilesWrite},                  // Create new
-					"PUT":    {scopeFilesWrite},                  // Modify existing
-					"DELETE": {"files:delete", scopeAdminAccess}, // Delete requires admin
-				},
-			},
-
-			// Feature 6: Resource Parameter (RFC 8707) - Token Audience Binding
-			// Set ResourceIdentifier to bind tokens to this resource server
-			// ResourceIdentifier: "http://localhost:8080",
-
-			// Feature 7: Client ID Metadata Documents
-			// Enable distributed client verification via HTTPS metadata URLs
-			// EnableClientIDMetadataDocuments: true,
-			// ClientMetadataCacheTTL: 5 * time.Minute,   // Cache metadata
-			// ClientMetadataFetchTimeout: 10 * time.Second, // Fetch timeout
-
-			// === OAuth 2.1 Security (enabled by default) ===
-			// RequirePKCE: true,                   // Mandatory PKCE
-			// AllowPKCEPlain: false,                // Only S256 method
-			// AllowRefreshTokenRotation: true,      // Token rotation
-		},
+		cfg,
 		logger,
 		oauth.WithAuditor(auditor),
 		oauth.WithRateLimiter(rateLimiter),
@@ -137,7 +138,7 @@ func main() {
 	}
 
 	// 6. Create HTTP handler
-	handler := oauthhandler.New(server, logger)
+	handler := oauthhandler.New(server, cfg, logger)
 
 	// 7. Setup routes
 	mux := http.NewServeMux()

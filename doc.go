@@ -116,7 +116,7 @@
 //			log.Fatal(err)
 //		}
 //
-//		h := handler.New(srv, slog.Default())
+//		h := handler.New(srv, cfg, slog.Default())
 //
 //		mux := http.NewServeMux()
 //		h.RegisterOAuthRoutes(mux, handler.OAuthRoutesOptions{IncludeMetadata: true})

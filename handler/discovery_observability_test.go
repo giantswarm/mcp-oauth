@@ -121,9 +121,9 @@ func TestServeProtectedResourceMetadata_RateLimitAnnotatesSpan(t *testing.T) {
 	// burst=1, rate=0: first request passes, second is rejected.
 	rl := security.NewRateLimiter(0, 1, nil)
 	t.Cleanup(rl.Stop)
-	srv := newOAuthTestServer(t, server.WithRateLimiter(rl))
+	srv, cfg := newOAuthTestServer(t, server.WithRateLimiter(rl))
 
-	h := New(srv, nil)
+	h := New(srv, cfg, nil)
 	sr := installSpanRecorder(t, h)
 
 	hit := func() *httptest.ResponseRecorder {

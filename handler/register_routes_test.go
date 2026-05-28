@@ -35,7 +35,7 @@ func newRegisterRoutesHandler(t *testing.T, cfg *server.Config) (*Handler, *memo
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	return New(srv, logger), store, &buf
+	return New(srv, cfg, logger), store, &buf
 }
 
 // assertMuxResolves checks that mux resolves path to a handler registered at

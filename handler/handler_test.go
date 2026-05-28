@@ -32,10 +32,15 @@ const (
 
 func setupTestHandler(t *testing.T) (*Handler, *memory.Store) {
 	t.Helper()
-	return setupTestHandlerWithOpts(t)
+	return setupTestHandlerWithConfig(t, nil)
 }
 
 func setupTestHandlerWithOpts(t *testing.T, opts ...server.Option) (*Handler, *memory.Store) {
+	t.Helper()
+	return setupTestHandlerWithConfig(t, nil, opts...)
+}
+
+func setupTestHandlerWithConfig(t *testing.T, cfgFn func(*server.Config), opts ...server.Option) (*Handler, *memory.Store) {
 	t.Helper()
 
 	store := memory.New()
@@ -47,14 +52,16 @@ func setupTestHandlerWithOpts(t *testing.T, opts ...server.Option) (*Handler, *m
 		// flows_nonce_test.go with its own fixture.
 		DisableNonceEchoRequirement: true,
 	}
+	if cfgFn != nil {
+		cfgFn(config)
+	}
 
 	srv, err := server.New(provider, store, store, store, config, nil, opts...)
 	if err != nil {
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := New(srv, nil)
-	return handler, store
+	return New(srv, config, nil), store
 }
 
 // decodeProtectedResourceMetadata decodes Protected Resource Metadata from the response body
@@ -69,27 +76,13 @@ func decodeProtectedResourceMetadata(t *testing.T, w *httptest.ResponseRecorder)
 
 func setupTestHandlerWithCORS(t *testing.T, allowedOrigins []string) (*Handler, *memory.Store) {
 	t.Helper()
-
-	store := memory.New()
-	provider := mock.NewProvider()
-
-	config := &server.Config{
-		Issuer: "https://auth.example.com",
-		CORS: server.CORSConfig{
+	return setupTestHandlerWithConfig(t, func(c *server.Config) {
+		c.CORS = server.CORSConfig{
 			AllowedOrigins:   allowedOrigins,
 			AllowCredentials: true,
 			MaxAge:           3600,
-		},
-		DisableNonceEchoRequirement: true,
-	}
-
-	srv, err := server.New(provider, store, store, store, config, nil)
-	if err != nil {
-		t.Fatalf("server.New() error = %v", err)
-	}
-
-	handler := New(srv, nil)
-	return handler, store
+		}
+	})
 }
 
 func TestNewHandler(t *testing.T) {
@@ -107,7 +100,7 @@ func TestNewHandler(t *testing.T) {
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := New(srv, nil)
+	handler := New(srv, config, nil)
 	if handler == nil {
 		t.Fatal("NewHandler() returned nil")
 	}
@@ -121,10 +114,11 @@ func setupUserInfoTest(t *testing.T, scopes []string) (*Handler, *memory.Store, 
 	t.Helper()
 	store := memory.New()
 	provider := mock.NewProvider()
-	srv, err := server.New(provider, store, store, store, &server.Config{
+	config := &server.Config{
 		Issuer:                 "https://auth.example.com",
 		EnableUserInfoEndpoint: true,
-	}, nil)
+	}
+	srv, err := server.New(provider, store, store, store, config, nil)
 	require.NoError(t, err)
 
 	const accessToken = "userinfo-access-token"
@@ -139,7 +133,7 @@ func setupUserInfoTest(t *testing.T, scopes []string) (*Handler, *memory.Store, 
 		Scopes:    scopes,
 	}))
 
-	return New(srv, nil), store, accessToken
+	return New(srv, config, nil), store, accessToken
 }
 
 func decodeUserInfoResponse(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
@@ -178,22 +172,9 @@ func TestHandler_writeError(t *testing.T) {
 
 func setupTestHandlerWithBodyLimit(t *testing.T, maxBodySize int64) (*Handler, *memory.Store) {
 	t.Helper()
-
-	store := memory.New()
-	provider := mock.NewProvider()
-
-	config := &server.Config{
-		Issuer:             testIssuer,
-		MaxRequestBodySize: maxBodySize,
-	}
-
-	srv, err := server.New(provider, store, store, store, config, nil)
-	if err != nil {
-		t.Fatalf("server.New() error = %v", err)
-	}
-
-	handler := New(srv, nil)
-	return handler, store
+	return setupTestHandlerWithConfig(t, func(c *server.Config) {
+		c.MaxRequestBodySize = maxBodySize
+	})
 }
 
 func TestIsMaxBytesError(t *testing.T) {
@@ -214,22 +195,9 @@ func TestIsMaxBytesError(t *testing.T) {
 
 func setupTestHandlerWithAllowNoState(t *testing.T) (*Handler, *memory.Store) {
 	t.Helper()
-
-	store := memory.New()
-	provider := mock.NewProvider()
-
-	config := &server.Config{
-		Issuer:                testIssuer,
-		AllowNoStateParameter: true,
-	}
-
-	srv, err := server.New(provider, store, store, store, config, nil)
-	if err != nil {
-		t.Fatalf("server.New() error = %v", err)
-	}
-
-	handler := New(srv, nil)
-	return handler, store
+	return setupTestHandlerWithConfig(t, func(c *server.Config) {
+		c.AllowNoStateParameter = true
+	})
 }
 
 func assertAuthorizationErrorRedirect(t *testing.T, w *httptest.ResponseRecorder, expectedRedirect, expectedErrorCode, expectedErrorDescriptionSubstr, expectedState string) {

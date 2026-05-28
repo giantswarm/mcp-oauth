@@ -318,7 +318,7 @@ func TestHandler_ServeAuthorization_OIDCParameterForwarding(t *testing.T) {
 				t.Fatalf("server.New() error = %v", err)
 			}
 
-			handler := New(srv, nil)
+			handler := New(srv, config, nil)
 
 			// Register a client
 			client, _, err := srv.RegisterClient(
@@ -1161,7 +1161,7 @@ func TestHandler_ServeAuthorization_CustomSchemeRedirectURI_FallsBackToJSON(t *t
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
-	handler.server.Config().AllowedCustomSchemes = []string{"^myapp$"}
+	handler.config.AllowedCustomSchemes = []string{"^myapp$"}
 
 	client, _, err := handler.server.RegisterClient(
 		ctx,
@@ -1841,7 +1841,7 @@ func TestHandler_ServeSuccessInterstitial_Branding(t *testing.T) {
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := New(srv, nil)
+	handler := New(srv, config, nil)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/oauth/callback", nil)
@@ -1918,7 +1918,7 @@ func TestHandler_ServeSuccessInterstitial_CustomTemplate(t *testing.T) {
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := New(srv, nil)
+	handler := New(srv, config, nil)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/oauth/callback", nil)
@@ -1976,7 +1976,7 @@ func TestHandler_ServeSuccessInterstitial_CustomHandler(t *testing.T) {
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := New(srv, nil)
+	handler := New(srv, config, nil)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/oauth/callback", nil)
@@ -2055,7 +2055,7 @@ func TestHandler_ServeCallback_CustomURLScheme_WithBranding(t *testing.T) {
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := New(srv, nil)
+	handler := New(srv, config, nil)
 
 	// Register a client with custom URL scheme redirect
 	client, _, err := srv.RegisterClient(
@@ -2144,7 +2144,7 @@ func TestHandler_ServeSuccessInterstitial_AppNamePlaceholder(t *testing.T) {
 		t.Fatalf("server.New() error = %v", err)
 	}
 
-	handler := New(srv, nil)
+	handler := New(srv, config, nil)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/oauth/callback", nil)

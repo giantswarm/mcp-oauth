@@ -62,39 +62,40 @@ func main() {
 	rateLimiter := security.NewRateLimiter(10, 20, logger)
 	defer rateLimiter.Stop()
 
+	cfg := &oauth.ServerConfig{
+		Issuer:            "http://localhost:8080",
+		AllowInsecureHTTP: true, // Required for HTTP on localhost (development only)
+
+		// ========== CIMD Configuration ==========
+
+		// Enable Client ID Metadata Documents support (MCP 2025-11-25)
+		// When enabled, clients can use HTTPS URLs as their client_id
+		// and the server will fetch client metadata from that URL.
+		EnableClientIDMetadataDocuments: true,
+
+		// Timeout for fetching metadata from client URLs (default: 10s)
+		// Protects against slow or unresponsive metadata endpoints.
+		ClientMetadataFetchTimeout: 10 * time.Second,
+
+		// How long to cache fetched client metadata (default: 5 minutes)
+		// HTTP Cache-Control headers may override this value.
+		// Cached entries reduce latency and external requests.
+		ClientMetadataCacheTTL: 5 * time.Minute,
+
+		// ========== Security Features ==========
+		// The following security features are automatically enabled:
+		// - SSRF protection (blocks private/internal IPs)
+		// - DNS rebinding protection (validates IPs at connection time)
+		// - PKCE required for all CIMD clients (public clients)
+		// - Rate limiting per domain
+		// - Negative caching for failed fetches
+	}
 	server, err := oauth.NewServer(
 		googleProvider,
 		store, // TokenStore
 		store, // ClientStore
 		store, // FlowStore
-		&oauth.ServerConfig{
-			Issuer:            "http://localhost:8080",
-			AllowInsecureHTTP: true, // Required for HTTP on localhost (development only)
-
-			// ========== CIMD Configuration ==========
-
-			// Enable Client ID Metadata Documents support (MCP 2025-11-25)
-			// When enabled, clients can use HTTPS URLs as their client_id
-			// and the server will fetch client metadata from that URL.
-			EnableClientIDMetadataDocuments: true,
-
-			// Timeout for fetching metadata from client URLs (default: 10s)
-			// Protects against slow or unresponsive metadata endpoints.
-			ClientMetadataFetchTimeout: 10 * time.Second,
-
-			// How long to cache fetched client metadata (default: 5 minutes)
-			// HTTP Cache-Control headers may override this value.
-			// Cached entries reduce latency and external requests.
-			ClientMetadataCacheTTL: 5 * time.Minute,
-
-			// ========== Security Features ==========
-			// The following security features are automatically enabled:
-			// - SSRF protection (blocks private/internal IPs)
-			// - DNS rebinding protection (validates IPs at connection time)
-			// - PKCE required for all CIMD clients (public clients)
-			// - Rate limiting per domain
-			// - Negative caching for failed fetches
-		},
+		cfg,
 		logger,
 		oauth.WithAuditor(auditor),
 		oauth.WithRateLimiter(rateLimiter),
@@ -104,7 +105,7 @@ func main() {
 	}
 
 	// 6. Create HTTP handler
-	handler := oauthhandler.New(server, logger)
+	handler := oauthhandler.New(server, cfg, logger)
 
 	// 7. Setup routes
 	mux := http.NewServeMux()

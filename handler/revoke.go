@@ -66,7 +66,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config().MaxRequestBodySize)
+	r.Body = http.MaxBytesReader(w, r.Body, h.config.MaxRequestBodySize)
 	if err := r.ParseForm(); err != nil {
 		if isMaxBytesError(err) {
 			h.recordHTTPMetrics(r.Context(), endpointRevoke, http.MethodPost, http.StatusRequestEntityTooLarge, startTime)
@@ -122,7 +122,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 	instrumentation.SetSpanSuccess(span)
 
 	// Return success (per RFC 7009)
-	security.SetSecurityHeaders(w, h.server.Config().Issuer)
+	security.SetSecurityHeaders(w, h.config.Issuer)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -147,7 +147,7 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config().MaxRequestBodySize)
+	r.Body = http.MaxBytesReader(w, r.Body, h.config.MaxRequestBodySize)
 	if err := r.ParseForm(); err != nil {
 		if isMaxBytesError(err) {
 			instrumentation.SetSpanError(span, "request body too large")
@@ -198,7 +198,7 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 		h.logger.Debug("Token introspection inactive", "ip", clientIP, "client_id", clientID)
 	}
 
-	security.SetSecurityHeaders(w, h.server.Config().Issuer)
+	security.SetSecurityHeaders(w, h.config.Issuer)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(response)

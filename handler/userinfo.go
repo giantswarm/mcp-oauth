@@ -79,7 +79,7 @@ func (h *Handler) ServeUserInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.setCORSHeaders(w, r)
-	security.SetSecurityHeaders(w, h.server.Config().Issuer)
+	security.SetSecurityHeaders(w, h.config.Issuer)
 
 	userInfo, ok := UserInfoFromContext(r.Context())
 	if !ok || userInfo == nil {

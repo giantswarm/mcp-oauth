@@ -51,7 +51,7 @@ func newRefreshTestEnv(t *testing.T) *refreshTestEnv {
 	require.NoError(t, err)
 
 	return &refreshTestEnv{
-		handler:  New(srv, logger),
+		handler:  New(srv, config, logger),
 		store:    store,
 		auditBuf: auditBuf,
 	}
