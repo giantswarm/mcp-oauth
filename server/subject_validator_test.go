@@ -100,17 +100,10 @@ func TestOIDCValidator_ValidToken(t *testing.T) {
 		IssuedAt: josejwt.NewNumericDate(time.Now()),
 	})
 
-	for _, tt := range []struct{ name, tokenType string }{
-		{"id_token type", SubjectTokenTypeIDToken},
-		{"access_token type", SubjectTokenTypeAccessToken},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			identity, err := v.Validate(t.Context(), token, tt.tokenType)
-			require.NoError(t, err)
-			require.Equal(t, testSubject, identity.Subject)
-			require.Equal(t, testIssuer, identity.Issuer)
-		})
-	}
+	identity, err := v.Validate(t.Context(), token, nil)
+	require.NoError(t, err)
+	require.Equal(t, testSubject, identity.Subject)
+	require.Equal(t, testIssuer, identity.Issuer)
 }
 
 func TestOIDCValidator_WrongIssuer(t *testing.T) {
@@ -133,7 +126,7 @@ func TestOIDCValidator_WrongIssuer(t *testing.T) {
 		IssuedAt: josejwt.NewNumericDate(time.Now()),
 	})
 
-	_, err = v.Validate(t.Context(), token, SubjectTokenTypeIDToken)
+	_, err = v.Validate(t.Context(), token, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "untrusted issuer")
 }
@@ -158,7 +151,7 @@ func TestOIDCValidator_ExpiredToken(t *testing.T) {
 		IssuedAt: josejwt.NewNumericDate(time.Now().Add(-3 * time.Hour)),
 	})
 
-	_, err = v.Validate(t.Context(), token, SubjectTokenTypeIDToken)
+	_, err = v.Validate(t.Context(), token, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "expired")
 }
@@ -183,21 +176,9 @@ func TestOIDCValidator_WrongAudience(t *testing.T) {
 		IssuedAt: josejwt.NewNumericDate(time.Now()),
 	})
 
-	_, err = v.Validate(t.Context(), token, SubjectTokenTypeIDToken)
+	_, err = v.Validate(t.Context(), token, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "audience")
-}
-
-func TestOIDCValidator_UnsupportedTokenType(t *testing.T) {
-	v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
-		Issuer:  testIssuer,
-		JwksURL: "https://example.com/jwks",
-	}}, oidc.NewJWKSClient(nil, 0, nil))
-	require.NoError(t, err)
-
-	_, err = v.Validate(t.Context(), "sometoken", "urn:ietf:params:oauth:token-type:saml2")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "unsupported subject_token_type")
 }
 
 func TestNewOIDCValidator_Errors(t *testing.T) {
@@ -341,7 +322,7 @@ func TestOIDCValidator_AllowedClaims(t *testing.T) {
 			}}, jwksClient)
 			require.NoError(t, err)
 
-			identity, err := v.Validate(t.Context(), makeToken(tc.sub), SubjectTokenTypeIDToken)
+			identity, err := v.Validate(t.Context(), makeToken(tc.sub), nil)
 			if tc.wantErr {
 				require.Error(t, err)
 				require.Contains(t, err.Error(), tc.wantErrContains)
@@ -394,7 +375,7 @@ func TestOIDCValidator_AllowedClaims_NonStringValue(t *testing.T) {
 	}}, jwksClient)
 	require.NoError(t, err)
 
-	_, err = v.Validate(t.Context(), token, SubjectTokenTypeIDToken)
+	_, err = v.Validate(t.Context(), token, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "non-string type")
 }
@@ -441,7 +422,7 @@ func TestOIDCValidator_AllowPrivateIPJWKS(t *testing.T) {
 		IssuedAt: josejwt.NewNumericDate(time.Now()),
 	})
 
-	identity, err := v.Validate(t.Context(), token, SubjectTokenTypeIDToken)
+	identity, err := v.Validate(t.Context(), token, nil)
 	require.NoError(t, err)
 	require.Equal(t, testSubject, identity.Subject)
 }

@@ -94,17 +94,23 @@ func WithTokenRefreshHandler(handler TokenRefreshHandler) Option {
 	}
 }
 
-// WithTrustedIssuers registers an OIDCValidator built from issuers for
-// urn:ietf:params:oauth:token-type:id_token,
-// urn:ietf:params:oauth:token-type:access_token, and
-// urn:ietf:params:oauth:token-type:jwt subject_token_type values.
-// All three types are registered against the same validator, so workload JWT
-// exchange (projected SA tokens, GHA OIDC) is implicitly enabled for every
-// issuer listed here. Use TrustedIssuer.AllowedClaims to restrict which tokens
-// are accepted per issuer. These validators are consulted by the RFC 8693
-// token-exchange handler.
+// WithTrustedIssuers registers external JWT issuers whose tokens this server
+// accepts. The same validator is consulted in two places:
+//
+//   - RFC 8693 token exchange: subject_token of type id_token, access_token,
+//     or jwt is routed to the matching issuer entry.
+//   - ValidateToken: a Bearer JWT at /mcp is accepted when its iss matches
+//     a configured entry. Signature is verified via the entry's JWKS; aud
+//     is checked against AllowedAudiences (defaulting to the server's
+//     ResourceIdentifier when empty); RFC 9068 typ=at+jwt is enforced.
+//
+// Use TrustedIssuer.AllowedClaims to constrain accepted subjects per issuer.
+// Empty list is a no-op.
 func WithTrustedIssuers(issuers []TrustedIssuer) Option {
 	return func(s *Server) {
+		if len(issuers) == 0 {
+			return
+		}
 		v, err := NewOIDCValidator(issuers)
 		if err != nil {
 			s.Logger.Error("failed to initialise trusted issuer validator", "error", err)
@@ -116,6 +122,7 @@ func WithTrustedIssuers(issuers []TrustedIssuer) Option {
 		s.subjectValidators[SubjectTokenTypeIDToken] = v
 		s.subjectValidators[SubjectTokenTypeAccessToken] = v
 		s.subjectValidators[SubjectTokenTypeJWT] = v
+		s.trustedIssuerValidator = v
 	}
 }
 
