@@ -1,14 +1,18 @@
 package valkey_test
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	vk "github.com/valkey-io/valkey-go"
+	"golang.org/x/sync/errgroup"
 
+	"github.com/giantswarm/mcp-oauth/server"
 	valkeystore "github.com/giantswarm/mcp-oauth/storage/valkey"
 )
 
@@ -30,66 +34,137 @@ func testDPoPClient(t *testing.T) vk.Client {
 	return client
 }
 
-func TestDPoPReplayCache_NewJTI(t *testing.T) {
-	client := testDPoPClient(t)
-	prefix := fmt.Sprintf("dpoptest:%s:", t.Name())
-	cache := valkeystore.NewDPoPReplayCache(client, prefix)
-
-	seen, err := cache.Seen(t.Context(), "jti-new-1", 5*time.Minute)
-	require.NoError(t, err)
-	require.False(t, seen, "first occurrence should not be seen")
+func flushDPoPPrefix(t *testing.T, client vk.Client, prefix string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var cursor uint64
+	for {
+		entry, err := client.Do(
+			ctx,
+			client.B().Scan().Cursor(cursor).Match(prefix+"*").Count(100).Build(),
+		).AsScanEntry()
+		if err != nil {
+			return
+		}
+		for _, key := range entry.Elements {
+			_ = client.Do(ctx, client.B().Del().Key(key).Build()).Error()
+		}
+		cursor = entry.Cursor
+		if cursor == 0 {
+			return
+		}
+	}
 }
 
-func TestDPoPReplayCache_ReplayedJTI(t *testing.T) {
+func newTestDPoPCache(t *testing.T) server.DPoPReplayCache {
+	t.Helper()
 	client := testDPoPClient(t)
 	prefix := fmt.Sprintf("dpoptest:%s:", t.Name())
-	cache := valkeystore.NewDPoPReplayCache(client, prefix)
+	flushDPoPPrefix(t, client, prefix)
+	t.Cleanup(func() { flushDPoPPrefix(t, client, prefix) })
+	return valkeystore.NewDPoPReplayCache(client, prefix)
+}
 
-	seen, err := cache.Seen(t.Context(), "jti-replay-1", 5*time.Minute)
+func TestDPoPReplayCache_FirstUseReturnsFalse(t *testing.T) {
+	cache := newTestDPoPCache(t)
+
+	seen, err := cache.Seen(t.Context(), "jti-new", 5*time.Minute)
+	require.NoError(t, err)
+	require.False(t, seen, "first occurrence must not be reported as seen")
+}
+
+func TestDPoPReplayCache_ReplayWithinTTLReturnsTrue(t *testing.T) {
+	cache := newTestDPoPCache(t)
+
+	seen, err := cache.Seen(t.Context(), "jti-replay", 5*time.Minute)
 	require.NoError(t, err)
 	require.False(t, seen)
 
-	seen, err = cache.Seen(t.Context(), "jti-replay-1", 5*time.Minute)
+	seen, err = cache.Seen(t.Context(), "jti-replay", 5*time.Minute)
 	require.NoError(t, err)
-	require.True(t, seen, "second occurrence must be detected as replay")
+	require.True(t, seen, "second occurrence within TTL must be detected as replay")
 }
 
-func TestDPoPReplayCache_DifferentJTIsAreIndependent(t *testing.T) {
-	client := testDPoPClient(t)
-	prefix := fmt.Sprintf("dpoptest:%s:", t.Name())
-	cache := valkeystore.NewDPoPReplayCache(client, prefix)
+func TestDPoPReplayCache_DistinctJTIsAreIndependent(t *testing.T) {
+	cache := newTestDPoPCache(t)
 
 	for i := range 5 {
 		jti := fmt.Sprintf("jti-distinct-%d", i)
 		seen, err := cache.Seen(t.Context(), jti, 5*time.Minute)
 		require.NoError(t, err)
-		require.False(t, seen, "each distinct JTI must be treated as new")
+		require.Falsef(t, seen, "distinct JTI %q must be treated as new", jti)
 	}
 }
 
-func TestDPoPReplayCache_TTLExpiry(t *testing.T) {
-	client := testDPoPClient(t)
-	prefix := fmt.Sprintf("dpoptest:%s:", t.Name())
-	cache := valkeystore.NewDPoPReplayCache(client, prefix)
+// TTL eviction happens on the Valkey server's clock, which testing/synctest
+// cannot fake. Poll the cache itself with require.Never / require.Eventually
+// to exercise real TTL semantics without a fixed wall-clock Sleep.
+func TestDPoPReplayCache_TTLIsHonoured(t *testing.T) {
+	cache := newTestDPoPCache(t)
+	const jti = "jti-ttl"
+	const ttl = 1 * time.Second // Valkey SET EX granularity is one second
 
-	seen, err := cache.Seen(t.Context(), "jti-ttl-1", 1*time.Second)
+	seen, err := cache.Seen(t.Context(), jti, ttl)
 	require.NoError(t, err)
 	require.False(t, seen)
 
-	seen, err = cache.Seen(t.Context(), "jti-ttl-1", 1*time.Second)
-	require.NoError(t, err)
-	require.True(t, seen)
+	require.Never(t, func() bool {
+		got, err := cache.Seen(t.Context(), jti, ttl)
+		return err != nil || !got
+	}, 500*time.Millisecond, 50*time.Millisecond,
+		"JTI must remain seen during its TTL window")
 
-	time.Sleep(2 * time.Second)
-	seen, err = cache.Seen(t.Context(), "jti-ttl-1", 1*time.Second)
-	require.NoError(t, err)
-	require.False(t, seen, "JTI should be accepted again after TTL expiry")
+	require.Eventually(t, func() bool {
+		got, err := cache.Seen(t.Context(), jti, ttl)
+		return err == nil && !got
+	}, 5*time.Second, 50*time.Millisecond,
+		"JTI must be evicted once its TTL elapses")
 }
 
-func TestDPoPReplayCache_KeyPrefix(t *testing.T) {
+func TestDPoPReplayCache_ConcurrentFirstUseHasOneWinner(t *testing.T) {
+	const n = 100
+	cache := newTestDPoPCache(t)
+
+	var newJTI, replay atomic.Int32
+	ready := make(chan struct{})
+	g, ctx := errgroup.WithContext(t.Context())
+	for range n {
+		g.Go(func() error {
+			<-ready
+			seen, err := cache.Seen(ctx, "jti-concurrent", 5*time.Minute)
+			if err != nil {
+				return err
+			}
+			if seen {
+				replay.Add(1)
+			} else {
+				newJTI.Add(1)
+			}
+			return nil
+		})
+	}
+	close(ready)
+	require.NoError(t, g.Wait())
+
+	require.Equal(t, int32(1), newJTI.Load(),
+		"more than one goroutine seeing the JTI as new would break RFC 9449 §11.1 uniqueness")
+	require.Equal(t, int32(n-1), replay.Load())
+}
+
+func TestDPoPReplayCache_DifferentPrefixesAreIsolated(t *testing.T) {
 	client := testDPoPClient(t)
-	cacheA := valkeystore.NewDPoPReplayCache(client, fmt.Sprintf("dpoptest:%s:a:", t.Name()))
-	cacheB := valkeystore.NewDPoPReplayCache(client, fmt.Sprintf("dpoptest:%s:b:", t.Name()))
+	prefixA := fmt.Sprintf("dpoptest:%s:a:", t.Name())
+	prefixB := fmt.Sprintf("dpoptest:%s:b:", t.Name())
+	flushDPoPPrefix(t, client, prefixA)
+	flushDPoPPrefix(t, client, prefixB)
+	t.Cleanup(func() {
+		flushDPoPPrefix(t, client, prefixA)
+		flushDPoPPrefix(t, client, prefixB)
+	})
+
+	cacheA := valkeystore.NewDPoPReplayCache(client, prefixA)
+	cacheB := valkeystore.NewDPoPReplayCache(client, prefixB)
 
 	seen, err := cacheA.Seen(t.Context(), "jti-shared", 5*time.Minute)
 	require.NoError(t, err)
@@ -97,5 +172,5 @@ func TestDPoPReplayCache_KeyPrefix(t *testing.T) {
 
 	seen, err = cacheB.Seen(t.Context(), "jti-shared", 5*time.Minute)
 	require.NoError(t, err)
-	require.False(t, seen, "different prefix must not see the other cache's entry")
+	require.False(t, seen, "different prefixes must not share key space")
 }
