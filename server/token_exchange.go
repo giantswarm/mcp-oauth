@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/giantswarm/mcp-oauth/security"
 )
 
 // GrantTypeTokenExchange is the grant_type value for RFC 8693 token exchange.
@@ -29,11 +31,13 @@ func (s *Server) ExchangeSubjectToken(
 	subjectToken, subjectTokenType, resource, scope, dpopJKT string,
 ) (*TokenExchangeResult, error) {
 	if !s.Config.IsJWTAccessTokenFormat() {
+		s.logAuthFailure(ctx, "", "", "token_exchange_jwt_mode_required")
 		return nil, fmt.Errorf("token exchange requires JWT access token mode (set AccessTokenFormat=jwt)")
 	}
 
 	v := s.SubjectValidatorFor(subjectTokenType)
 	if v == nil {
+		s.logAuthFailure(ctx, "", "", fmt.Sprintf("unsupported_subject_token_type: %s", subjectTokenType))
 		return nil, &TokenExchangeUnsupportedTypeError{tokenType: subjectTokenType}
 	}
 
@@ -41,6 +45,7 @@ func (s *Server) ExchangeSubjectToken(
 	if err != nil {
 		s.Logger.Debug("token exchange: subject token validation failed",
 			"subject_token_type", subjectTokenType, "error", err)
+		s.logAuthFailure(ctx, "", "", fmt.Sprintf("subject_token_validation_failed: %v", err))
 		return nil, fmt.Errorf("subject token validation: %w", err)
 	}
 
@@ -64,12 +69,25 @@ func (s *Server) ExchangeSubjectToken(
 		JKT:       dpopJKT,
 	})
 	if err != nil {
+		s.logAuthFailure(ctx, identity.Subject, "", fmt.Sprintf("access_token_issue_failed: %v", err))
 		return nil, fmt.Errorf("failed to issue exchange token: %w", err)
 	}
 
 	s.Logger.Debug("token exchange: issued token",
 		"sub", identity.Subject, "iss_act", identity.Issuer,
 		"aud", resource, "scope", grantedScope, "exp", expiresAt)
+
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type:   security.EventTokenIssued,
+		UserID: identity.Subject,
+		Details: map[string]any{
+			"grant_type":         GrantTypeTokenExchange,
+			"subject_token_type": subjectTokenType,
+			"audience":           resource,
+			"scope":              grantedScope,
+			"act_iss":            identity.Issuer,
+		},
+	})
 
 	return &TokenExchangeResult{
 		AccessToken:     tokenStr,

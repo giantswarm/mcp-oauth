@@ -40,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`Server.ExchangeSubjectToken` now emits audit events on every branch.** Successful exchanges fire `EventTokenIssued` with `grant_type=urn:ietf:params:oauth:grant-type:token-exchange`, the audience, granted scope, and the upstream actor issuer. JWT-mode misconfiguration, unsupported `subject_token_type`, subject-token validator rejection, and access-token issuance failure each fire `EventAuthFailure` with a distinct reason so dashboards can split them. Prior to this change RFC 8693 was the only token-issuing path that bypassed the audit log.
+
 - **Startup `WARN` for development-only overrides.** `AllowInsecureHTTP`, `AllowPrivateIPClientMetadata`, and `AllowPrivateIPJWKS` now emit a `slog.LevelWarn` entry at server initialisation when set, making it harder to accidentally leave these flags enabled in production. `AllowPrivateIPClientMetadata` and `AllowPrivateIPJWKS` previously logged from `server.New` only; the warnings are now unified under `logCoreSecurityWarnings` alongside all other security-posture checks. All three flags are documented in `docs/security.md` under a new "Development-only overrides" subsection. Closes #342.
 
 ### Changed
