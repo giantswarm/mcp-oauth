@@ -166,6 +166,62 @@ func TestPublicJWKFromConfig_ECDSAEncoding(t *testing.T) {
 	require.Equal(t, "ES256", jwk.Algorithm)
 }
 
+func TestJWTIssuer_ExtraRejectsRegisteredClaims(t *testing.T) {
+	key := generateRSAKey(t)
+	cfg := &Config{
+		Issuer:                      "https://auth.example.com",
+		AccessTokenFormat:           AccessTokenFormatJWT,
+		AccessTokenSigningKey:       key,
+		AccessTokenSigningKeyID:     "kid-1",
+		AccessTokenSigningAlgorithm: SigningAlgorithmRS256,
+	}
+	issuer, err := newJWTIssuer(cfg)
+	require.NoError(t, err)
+
+	base := AccessTokenClaims{
+		Subject:   "u",
+		Audience:  "a",
+		ExpiresAt: time.Now().Add(time.Minute),
+	}
+
+	for _, claim := range []string{"iss", "sub", "aud", "exp", "nbf", "iat", "jti"} {
+		t.Run(claim, func(t *testing.T) {
+			c := base
+			c.Extra = map[string]any{claim: "injected"}
+			_, err := issuer.Issue(t.Context(), c)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), claim)
+		})
+	}
+}
+
+func TestJWTIssuer_ExtraAllowsOIDCClaims(t *testing.T) {
+	key := generateRSAKey(t)
+	cfg := &Config{
+		Issuer:                      "https://auth.example.com",
+		AccessTokenFormat:           AccessTokenFormatJWT,
+		AccessTokenSigningKey:       key,
+		AccessTokenSigningKeyID:     "kid-1",
+		AccessTokenSigningAlgorithm: SigningAlgorithmRS256,
+	}
+	issuer, err := newJWTIssuer(cfg)
+	require.NoError(t, err)
+
+	tokenString, err := issuer.Issue(t.Context(), AccessTokenClaims{
+		Subject:   "u",
+		Audience:  "a",
+		ExpiresAt: time.Now().Add(time.Minute),
+		Extra:     map[string]any{"principal_kind": "machine"},
+	})
+	require.NoError(t, err)
+
+	parsed, err := josejwt.ParseSigned(tokenString, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+	var rawClaims map[string]any
+	require.NoError(t, parsed.Claims(key.Public(), &rawClaims))
+	require.Equal(t, "machine", rawClaims["principal_kind"])
+}
+
 func TestJoinScopes(t *testing.T) {
 	require.Equal(t, "", helpers.JoinScopes(nil))
 	require.Equal(t, "", helpers.JoinScopes([]string{}))
