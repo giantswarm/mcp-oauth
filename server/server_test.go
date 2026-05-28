@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/providers/mock"
@@ -21,7 +22,7 @@ func TestNew(t *testing.T) {
 	provider := mock.NewProvider()
 
 	config := &Config{
-		Issuer: "https://auth.example.com",
+		Issuer: testAuthIssuer,
 	}
 
 	srv, err := New(provider, store, store, store, config, nil)
@@ -33,8 +34,8 @@ func TestNew(t *testing.T) {
 		t.Fatal("New() returned nil")
 	}
 
-	if srv.Config.Issuer != "https://auth.example.com" {
-		t.Errorf("Issuer = %q, want %q", srv.Config.Issuer, "https://auth.example.com")
+	if srv.Config.Issuer != testAuthIssuer {
+		t.Errorf("Issuer = %q, want %q", srv.Config.Issuer, testAuthIssuer)
 	}
 
 	if srv.Logger == nil {
@@ -50,7 +51,7 @@ func TestNew_WithLogger(t *testing.T) {
 	logger := slog.Default()
 
 	config := &Config{
-		Issuer: "https://auth.example.com",
+		Issuer: testAuthIssuer,
 	}
 
 	srv, err := New(provider, store, store, store, config, logger)
@@ -63,20 +64,14 @@ func TestNew_WithLogger(t *testing.T) {
 	}
 }
 
-func TestNew_NilConfig(t *testing.T) {
+func TestNew_NilConfig_Rejected(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
 
 	provider := mock.NewProvider()
 
-	srv, err := New(provider, store, store, store, nil, nil)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	if srv.Config == nil {
-		t.Error("Config should not be nil when nil is passed")
-	}
+	_, err := New(provider, store, store, store, nil, nil)
+	require.ErrorIs(t, err, ErrMissingIssuer)
 }
 
 func TestNew_MissingProvider(t *testing.T) {
@@ -176,7 +171,7 @@ func TestServer_ProviderRevocationConfigDefaults(t *testing.T) {
 
 	// Create server with empty config (should apply defaults)
 	config := &Config{
-		Issuer: "https://auth.example.com",
+		Issuer: testAuthIssuer,
 		// Don't set provider revocation fields - should use defaults
 	}
 
@@ -209,7 +204,7 @@ func TestServer_ProviderRevocationConfigCustomValues(t *testing.T) {
 
 	// Create server with custom config values
 	config := &Config{
-		Issuer:                             "https://auth.example.com",
+		Issuer:                             testAuthIssuer,
 		ProviderRevocationTimeout:          30,
 		ProviderRevocationMaxRetries:       5,
 		ProviderRevocationFailureThreshold: 0.3,
@@ -421,7 +416,7 @@ func TestServer_Shutdown(t *testing.T) {
 	provider := mock.NewProvider()
 
 	config := &Config{
-		Issuer: "https://auth.example.com",
+		Issuer: testAuthIssuer,
 	}
 
 	srv, err := New(provider, store, store, store, config, nil)
@@ -463,7 +458,7 @@ func TestServer_Shutdown_WithoutRateLimiters(t *testing.T) {
 	provider := mock.NewProvider()
 
 	config := &Config{
-		Issuer: "https://auth.example.com",
+		Issuer: testAuthIssuer,
 	}
 
 	srv, err := New(provider, store, store, store, config, nil)
@@ -487,7 +482,7 @@ func TestServer_Shutdown_ContextCancellation(t *testing.T) {
 	provider := mock.NewProvider()
 
 	config := &Config{
-		Issuer: "https://auth.example.com",
+		Issuer: testAuthIssuer,
 	}
 
 	srv, err := New(provider, store, store, store, config, nil)
@@ -514,7 +509,7 @@ func TestServer_ShutdownWithTimeout(t *testing.T) {
 	provider := mock.NewProvider()
 
 	config := &Config{
-		Issuer: "https://auth.example.com",
+		Issuer: testAuthIssuer,
 	}
 
 	srv, err := New(provider, store, store, store, config, nil)
@@ -545,7 +540,7 @@ func TestServer_ShutdownWithTimeout_ShortTimeout(t *testing.T) {
 	provider := mock.NewProvider()
 
 	config := &Config{
-		Issuer: "https://auth.example.com",
+		Issuer: testAuthIssuer,
 	}
 
 	srv, err := New(provider, store, store, store, config, nil)
@@ -655,7 +650,7 @@ func TestLogMandatoryAudienceScopes(t *testing.T) {
 
 		// Create server - it will log during initialization
 		config := &Config{
-			Issuer: "https://auth.example.com",
+			Issuer: testAuthIssuer,
 		}
 
 		srv, err := New(provider, store, store, store, config, slog.Default())
@@ -680,7 +675,7 @@ func TestLogMandatoryAudienceScopes(t *testing.T) {
 		}
 
 		config := &Config{
-			Issuer: "https://auth.example.com",
+			Issuer: testAuthIssuer,
 		}
 
 		srv, err := New(provider, store, store, store, config, slog.Default())
@@ -703,7 +698,7 @@ func TestLogMandatoryAudienceScopes(t *testing.T) {
 		}
 
 		config := &Config{
-			Issuer: "https://auth.example.com",
+			Issuer: testAuthIssuer,
 		}
 
 		srv, err := New(provider, store, store, store, config, slog.Default())
