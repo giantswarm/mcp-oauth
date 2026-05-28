@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`nbf` claim on RFC 9068 JWT access tokens.** Set equal to `iat`; satisfies RFC 9068 §2.2 (SHOULD) and unblocks strict verifiers that reject tokens without it. Opaque tokens are unaffected.
+
 - **`TrustedIssuer.AllowPrivateIPJWKS`**: opt-in bool allowing a trusted issuer's `JwksURL` to resolve to a private or loopback address.
 
 - **`memory.WithEncryptor`, `memory.WithInstrumentation`, `memory.WithLogger`, `memory.WithCleanupInterval`, `memory.WithRevokedFamilyRetentionDays`**: functional options for `memory.New`. All cross-cutting dependencies are now supplied at construction; the store is immutable afterward.
