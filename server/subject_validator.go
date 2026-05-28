@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"strings"
@@ -9,21 +10,28 @@ import (
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
 )
 
-// SubjectTokenValidator validates incoming subject tokens for RFC 8693 token exchange.
+// SubjectTokenValidator verifies a JWT against a set of trusted issuers and
+// returns the verified identity. defaultAudiences applies when the matched
+// issuer's AllowedAudiences is empty; pass nil to accept any audience.
 type SubjectTokenValidator interface {
-	Validate(ctx context.Context, subjectToken, subjectTokenType string) (SubjectIdentity, error)
+	Validate(ctx context.Context, tokenString string, defaultAudiences []string) (*SubjectIdentity, error)
 }
 
-// SubjectIdentity carries the verified identity extracted from a subject token.
+// SubjectIdentity carries the verified identity extracted from a JWT.
+// Claims is the full verified payload; callers that only need the
+// canonical fields can use Subject, Issuer, and AllowedScopes directly.
 type SubjectIdentity struct {
-	// Subject is the verbatim workload identity; becomes the sub claim in the issued token.
-	Subject string
-	// Issuer is the original token's iss claim; becomes act.iss in the issued token.
-	Issuer string
-	// AllowedScopes is the maximum scope envelope for this identity,
-	// from TrustedIssuer.AllowedScopes. Nil means no restriction.
+	Subject       string
+	Issuer        string
 	AllowedScopes []string
+	Claims        *oidc.IDTokenClaims
 }
+
+// ErrIssuerNotTrusted is returned by Validate when the token is not a JWT,
+// has no iss claim, or its iss is not in the configured issuer set.
+// Resource-server callers may use errors.Is to fall through to other
+// validation paths.
+var ErrIssuerNotTrusted = errors.New("untrusted issuer")
 
 // TrustedIssuer configures a trusted external token issuer for OIDCValidator.
 // The JwksURL and Issuer are intentionally independent: the JWKS location is
@@ -60,11 +68,10 @@ type TrustedIssuer struct {
 	AllowPrivateIPJWKS bool
 }
 
-// OIDCValidator validates tokens from statically configured trusted issuers.
-// It accepts the following subject_token_type values:
-//   - urn:ietf:params:oauth:token-type:id_token
-//   - urn:ietf:params:oauth:token-type:access_token
-//   - urn:ietf:params:oauth:token-type:jwt
+// OIDCValidator validates JWTs from statically configured trusted issuers.
+// The unverified iss claim routes the token to its TrustedIssuer entry;
+// signature, audience, and AllowedClaims checks against that entry are
+// the security boundary.
 type OIDCValidator struct {
 	issuers          map[string]TrustedIssuer
 	safeClient       *oidc.JWKSClient
@@ -109,48 +116,53 @@ func newOIDCValidatorWithClients(issuers []TrustedIssuer, safeClient, permissive
 	return &OIDCValidator{issuers: m, safeClient: safeClient, permissiveClient: permissiveClient}, nil
 }
 
-// Validate verifies the subject token and returns the verified identity.
-// The unverified iss claim is used only to route to the correct TrustedIssuer
-// config; the full signature + claim validation that follows is the security
-// boundary.
-func (v *OIDCValidator) Validate(ctx context.Context, subjectToken, subjectTokenType string) (SubjectIdentity, error) {
-	switch subjectTokenType {
-	case SubjectTokenTypeIDToken, SubjectTokenTypeAccessToken, SubjectTokenTypeJWT:
-	default:
-		return SubjectIdentity{}, fmt.Errorf("unsupported subject_token_type: %q", subjectTokenType)
+// Validate verifies a JWT against the configured trusted issuers. The
+// unverified iss claim routes to the matching TrustedIssuer entry; the
+// signature, audience, and AllowedClaims checks that follow are the
+// security boundary. defaultAudiences applies when the matched entry's
+// AllowedAudiences is empty.
+//
+// Returns ErrIssuerNotTrusted (wrapped) when the token cannot be routed
+// to a configured issuer (not a JWT, missing iss, or iss not in the set).
+func (v *OIDCValidator) Validate(ctx context.Context, tokenString string, defaultAudiences []string) (*SubjectIdentity, error) {
+	if !oidc.IsJWT(tokenString) {
+		return nil, fmt.Errorf("%w: not a JWT", ErrIssuerNotTrusted)
 	}
-
-	rawClaims, err := oidc.ParseUnverifiedClaims(subjectToken)
+	rawClaims, err := oidc.ParseUnverifiedClaims(tokenString)
 	if err != nil {
-		return SubjectIdentity{}, fmt.Errorf("invalid subject_token: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrIssuerNotTrusted, err)
 	}
 	iss, _ := rawClaims["iss"].(string)
 	if iss == "" {
-		return SubjectIdentity{}, fmt.Errorf("subject_token missing iss claim")
+		return nil, fmt.Errorf("%w: missing iss claim", ErrIssuerNotTrusted)
 	}
-
 	ti, ok := v.issuers[iss]
 	if !ok {
-		return SubjectIdentity{}, fmt.Errorf("untrusted issuer: %q", iss)
+		return nil, fmt.Errorf("%w: %q", ErrIssuerNotTrusted, iss)
 	}
 
 	jwksClient := v.safeClient
 	if ti.AllowPrivateIPJWKS && v.permissiveClient != nil {
 		jwksClient = v.permissiveClient
 	}
-	claims, err := oidc.ValidateIDToken(ctx, subjectToken, jwksClient, ti.JwksURL, ti.Issuer, ti.AllowedAudiences)
+	audiences := ti.AllowedAudiences
+	if len(audiences) == 0 {
+		audiences = defaultAudiences
+	}
+
+	claims, err := oidc.ValidateIDToken(ctx, tokenString, jwksClient, ti.JwksURL, ti.Issuer, audiences)
 	if err != nil {
-		return SubjectIdentity{}, fmt.Errorf("subject token validation failed: %w", err)
+		return nil, fmt.Errorf("token validation failed: %w", err)
 	}
-
 	if err := checkAllowedClaims(ti.AllowedClaims, rawClaims); err != nil {
-		return SubjectIdentity{}, err
+		return nil, err
 	}
 
-	return SubjectIdentity{
+	return &SubjectIdentity{
 		Subject:       claims.Subject,
 		Issuer:        claims.Issuer,
 		AllowedScopes: ti.AllowedScopes,
+		Claims:        claims,
 	}, nil
 }
 

@@ -263,11 +263,8 @@ func TestExtractIssuerPath(t *testing.T) {
 			issuer:   "https://auth.example.com/tenant1/",
 			wantPath: "/tenant1",
 		},
-		{
-			name:     "empty_issuer",
-			issuer:   "",
-			wantPath: "",
-		},
+		// empty_issuer case omitted: Config.Validate now rejects empty Issuer
+		// (ErrMissingIssuer), so server.New never produces a server with Issuer="".
 		// SECURITY: Path traversal attack attempts - verify sanitization
 		{
 			name:     "path_with_dots_normalized",

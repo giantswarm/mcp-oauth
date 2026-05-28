@@ -12,9 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **JSON encode errors on response writes** are now logged instead of silently swallowed across all handler endpoints (discovery, token, token-exchange, introspection, registration, client management, userinfo, JWKS, and error responses). The HTTP status is unchanged.
 
 - **`security.SetEncryptionMetricRecorder`**: replaced unprotected package-level variable with `atomic.Pointer`, eliminating a data race when multiple goroutines register or clear the hook concurrently (e.g., parallel test suites).
+- **`Config.Validate`** now returns `ErrMissingIssuer` when `Issuer` is empty. `server.New(...)` called with a nil or empty-`Issuer` config fails to start instead of returning a half-configured server.
 
 ### Added
 
+- **Multi-issuer Bearer validation at `ValidateToken`**: JWTs whose `iss` matches a `WithTrustedIssuers` entry are accepted as Bearer access tokens. Each entry's `AllowedAudiences` defaults to the server's `ResourceIdentifier` when empty; `AllowedClaims` applies as before. RFC 9068 §4 `typ: at+jwt` is enforced on this path.
+- **`SubjectIdentity.Claims`**: the verified `*oidc.IDTokenClaims` is now returned alongside `Subject`, `Issuer`, and `AllowedScopes`.
+- **`server.ErrIssuerNotTrusted`**: sentinel returned by `OIDCValidator.Validate` when the token is not a JWT, has no `iss`, or its `iss` is not configured. Use `errors.Is` to fall through to other validation paths.
 - **`TrustedIssuer.AllowPrivateIPJWKS`**: opt-in bool allowing a trusted issuer's `JwksURL` to resolve to a private or loopback address.
 
 - **`memory.WithEncryptor`, `memory.WithInstrumentation`, `memory.WithLogger`, `memory.WithCleanupInterval`, `memory.WithRevokedFamilyRetentionDays`**: functional options for `memory.New`. All cross-cutting dependencies are now supplied at construction; the store is immutable afterward.
@@ -22,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — `SubjectTokenValidator.Validate` signature** is now `Validate(ctx, tokenString string, defaultAudiences []string) (*SubjectIdentity, error)` (was `Validate(ctx, subjectToken, subjectTokenType string) (SubjectIdentity, error)`). The `subject_token_type` URN gate moved into `ExchangeSubjectToken`; the return is a pointer; `defaultAudiences` applies when the matched issuer's `AllowedAudiences` is empty (`nil` accepts any audience).
+- `WithTrustedIssuers` now also registers its `OIDCValidator` for `ValidateToken`; token-exchange behavior is unchanged.
 - **BREAKING — `memory.New` now accepts `...Option`** (was `func New() *Store`). Pass `memory.WithEncryptor(enc)`, `memory.WithInstrumentation(inst)`, etc. at construction instead of calling `SetX` after the fact.
 - **BREAKING — `valkey.New` now accepts `...Option`** (was `func New(cfg Config) (*Store, error)`). Signature is now `func New(cfg Config, opts ...Option) (*Store, error)`.
 - **BREAKING — `oauthconfig.StorageFromEnv` and `StorageFromEnvWithPrefix` signatures changed.** Both now accept `enc *security.Encryptor, inst *instrumentation.Instrumentation` before the `logger` argument, and wire them into the constructed store.

@@ -4,6 +4,7 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/rsa"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -11,6 +12,9 @@ import (
 	"strings"
 	"time"
 )
+
+// ErrMissingIssuer is returned by Config.Validate when Config.Issuer is empty (RFC 8414 §2).
+var ErrMissingIssuer = errors.New("issuer is required")
 
 // AccessTokenFormat selects how the server encodes access tokens.
 //
@@ -1080,6 +1084,10 @@ func (c *Config) IsJWTAccessTokenFormat() bool {
 // are validated at construction time via applySecureDefaults / the
 // dedicated validate* helpers.
 func (c *Config) Validate() error {
+	if c.Issuer == "" {
+		return ErrMissingIssuer
+	}
+
 	if err := c.validateIntrospectionResourceServers(); err != nil {
 		return err
 	}

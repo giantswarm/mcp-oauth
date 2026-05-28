@@ -35,7 +35,7 @@ srv, _ := oauth.NewServer(
 )
 ```
 
-`WithTrustedIssuers` registers an `OIDCValidator` for `id_token`, `access_token`, and `jwt` subject token types. The `Issuer` and `JwksURL` are independent — set `JwksURL` explicitly when the issuer's discovery document is unavailable or its JWKS is hosted separately.
+`WithTrustedIssuers` registers an `OIDCValidator` for `id_token`, `access_token`, and `jwt` subject token types **and** as a Bearer validator on `ValidateToken`. A peer-issued JWT presented at `/mcp` is accepted when its `iss` matches a configured entry; the audience is checked against the entry's `AllowedAudiences` (or the server's `ResourceIdentifier` when empty), and RFC 9068 §4 requires the `typ: at+jwt` header on this path. The `Issuer` and `JwksURL` are independent — set `JwksURL` explicitly when the issuer's discovery document is unavailable or its JWKS is hosted separately.
 
 `AllowedScopes` caps the scopes the server will include in the issued token for this issuer. `nil` means no restriction.
 
