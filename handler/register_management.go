@@ -129,7 +129,7 @@ func (h *Handler) writeClientMetadata(w http.ResponseWriter, client *storage.Cli
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	body := h.buildClientResponseBody(client)
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(body)
+	h.writeJSON(w, body)
 }
 
 // handleClientManagementPut handles PUT /oauth/register/{client_id}.
@@ -191,7 +191,7 @@ func (h *Handler) handleClientManagementPut(w http.ResponseWriter, r *http.Reque
 	body := h.buildClientResponseBody(&updated)
 	body["registration_access_token"] = newToken
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(body)
+	h.writeJSON(w, body)
 }
 
 // handleClientManagementDelete handles DELETE /oauth/register/{client_id}.

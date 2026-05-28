@@ -212,6 +212,7 @@ func (s *Server) introspectionResponseFromOpaqueToken(_ context.Context, _ strin
 	}
 	if !tokenMetadata.IssuedAt.IsZero() {
 		response["iat"] = tokenMetadata.IssuedAt.Unix()
+		response["nbf"] = tokenMetadata.IssuedAt.Unix()
 	}
 	if !tokenMetadata.ExpiresAt.IsZero() {
 		response["exp"] = tokenMetadata.ExpiresAt.Unix()
