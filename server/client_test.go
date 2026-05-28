@@ -8,6 +8,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/giantswarm/mcp-oauth/providers/mock"
+	mockstorage "github.com/giantswarm/mcp-oauth/storage/mock"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
@@ -760,5 +761,40 @@ func TestServer_CanRegisterWithTrustedScheme(t *testing.T) {
 				t.Errorf("scheme = %q, want %q", scheme, tt.wantScheme)
 			}
 		})
+	}
+}
+
+// TestServer_RegisterClient_NoIPTrackerNoPanic confirms that registering a client
+// against a ClientStore that does not implement ClientIPTracker does not panic.
+// This exercises the optional-interface branch in trackClientIPAndLog.
+func TestServer_RegisterClient_NoIPTrackerNoPanic(t *testing.T) {
+	ctx := t.Context()
+	combined := mockstorage.NewCombined()
+
+	provider := mock.NewProvider()
+	config := &Config{Issuer: "https://auth.example.com"}
+
+	srv, err := New(provider, combined, combined, combined, config, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// combined does not implement storage.ClientIPTracker; the server must
+	// skip IP tracking gracefully rather than panicking.
+	client, _, err := srv.RegisterClient(
+		ctx,
+		"stub client",
+		ClientTypeConfidential,
+		"",
+		[]string{"https://example.com/callback"},
+		[]string{"openid"},
+		"10.0.0.1",
+		100,
+	)
+	if err != nil {
+		t.Fatalf("RegisterClient() unexpected error: %v", err)
+	}
+	if client == nil {
+		t.Fatal("RegisterClient() returned nil client")
 	}
 }

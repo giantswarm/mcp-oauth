@@ -254,8 +254,10 @@ func (s *Store) CheckIPLimit(ctx context.Context, ip string, maxClientsPerIP int
 	return nil
 }
 
-// TrackClientIP increments the client count for an IP address
-func (s *Store) TrackClientIP(ctx context.Context, ip string) (err error) {
+// TrackClientIP increments the client count for an IP address.
+// The clientID parameter is accepted for interface compatibility but is not
+// stored separately; only the IP address is tracked.
+func (s *Store) TrackClientIP(ctx context.Context, _ /* clientID */ string, ip string) (err error) {
 	op := s.startTracedOp(ctx, "track_client_ip")
 	defer op.end(&err)
 

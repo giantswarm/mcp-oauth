@@ -766,7 +766,7 @@ func TestStore_CheckIPLimit(t *testing.T) {
 
 	// Register clients for this IP
 	for i := 0; i < maxClients; i++ {
-		store.TrackClientIP(ip)
+		_ = store.TrackClientIP(ctx, "", ip)
 	}
 
 	// Should fail after reaching limit

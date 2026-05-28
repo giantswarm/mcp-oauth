@@ -947,7 +947,7 @@ func TestClientStore_CheckIPLimit(t *testing.T) {
 
 	// Track some clients
 	for i := 0; i < 3; i++ {
-		_ = s.TrackClientIP(ctx, "192.168.1.2")
+		_ = s.TrackClientIP(ctx, "", "192.168.1.2")
 	}
 
 	// Check limit
@@ -958,7 +958,7 @@ func TestClientStore_CheckIPLimit(t *testing.T) {
 
 	// Track more to exceed limit
 	for i := 0; i < 3; i++ {
-		_ = s.TrackClientIP(ctx, "192.168.1.2")
+		_ = s.TrackClientIP(ctx, "", "192.168.1.2")
 	}
 
 	err = s.CheckIPLimit(ctx, "192.168.1.2", 5)
@@ -2080,7 +2080,7 @@ func TestValidation_GenericErrorMessages(t *testing.T) {
 	// Test that CheckIPLimit returns generic error when limit exceeded
 	// First, set up an IP that has exceeded the limit
 	for i := 0; i < 5; i++ {
-		_ = s.TrackClientIP(ctx, "192.168.99.99")
+		_ = s.TrackClientIP(ctx, "", "192.168.99.99")
 	}
 
 	err = s.CheckIPLimit(ctx, "192.168.99.99", 3)
