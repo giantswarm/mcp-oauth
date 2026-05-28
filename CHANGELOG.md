@@ -5,7 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
 
 ### Fixed
 
@@ -910,7 +909,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Testing**: 87.2% test coverage with comprehensive unit tests
   - **Example**: New `examples/github/` demonstrating organization-based access control
 
-## [0.2.0] - 2025-11-27
+## [0.2.0](https://github.com/giantswarm/mcp-oauth/releases/tag/v0.2.0) (2025-11-27)
 
 ### Added
 
@@ -1607,7 +1606,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub workflows for CI/CD
 - Issue and PR templates
 
-## [1.0.0] - 2025-11-23
 
 ### Added
 - OAuth 2.1 Authorization Server implementation (proxying to Google)
