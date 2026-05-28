@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/giantswarm/mcp-oauth/security"
 )
 
 // GrantTypeTokenExchange is the grant_type value for RFC 8693 token exchange.
@@ -29,11 +31,26 @@ func (s *Server) ExchangeSubjectToken(
 	subjectToken, subjectTokenType, resource, scope, dpopJKT string,
 ) (*TokenExchangeResult, error) {
 	if !s.Config.IsJWTAccessTokenFormat() {
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type: security.EventAuthFailure,
+			Details: map[string]any{
+				"reason":     "token_exchange_jwt_mode_required",
+				"grant_type": GrantTypeTokenExchange,
+			},
+		})
 		return nil, fmt.Errorf("token exchange requires JWT access token mode (set AccessTokenFormat=jwt)")
 	}
 
 	v := s.SubjectValidatorFor(subjectTokenType)
 	if v == nil {
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type: security.EventAuthFailure,
+			Details: map[string]any{
+				"reason":             "unsupported_subject_token_type",
+				"grant_type":         GrantTypeTokenExchange,
+				"subject_token_type": subjectTokenType,
+			},
+		})
 		return nil, &TokenExchangeUnsupportedTypeError{tokenType: subjectTokenType}
 	}
 
@@ -41,6 +58,15 @@ func (s *Server) ExchangeSubjectToken(
 	if err != nil {
 		s.Logger.Debug("token exchange: subject token validation failed",
 			"subject_token_type", subjectTokenType, "error", err)
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type: security.EventAuthFailure,
+			Details: map[string]any{
+				"reason":             "subject_token_validation_failed",
+				"grant_type":         GrantTypeTokenExchange,
+				"subject_token_type": subjectTokenType,
+				"error":              err.Error(),
+			},
+		})
 		return nil, fmt.Errorf("subject token validation: %w", err)
 	}
 
@@ -64,12 +90,36 @@ func (s *Server) ExchangeSubjectToken(
 		JKT:       dpopJKT,
 	})
 	if err != nil {
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type:   security.EventAuthFailure,
+			UserID: identity.Subject,
+			Details: map[string]any{
+				"reason":             "access_token_issue_failed",
+				"grant_type":         GrantTypeTokenExchange,
+				"subject_token_type": subjectTokenType,
+				"audience":           resource,
+				"act_iss":            identity.Issuer,
+				"error":              err.Error(),
+			},
+		})
 		return nil, fmt.Errorf("failed to issue exchange token: %w", err)
 	}
 
 	s.Logger.Debug("token exchange: issued token",
 		"sub", identity.Subject, "iss_act", identity.Issuer,
 		"aud", resource, "scope", grantedScope, "exp", expiresAt)
+
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type:   security.EventTokenIssued,
+		UserID: identity.Subject,
+		Details: map[string]any{
+			"grant_type":         GrantTypeTokenExchange,
+			"subject_token_type": subjectTokenType,
+			"audience":           resource,
+			"scope":              grantedScope,
+			"act_iss":            identity.Issuer,
+		},
+	})
 
 	return &TokenExchangeResult{
 		AccessToken:     tokenStr,
