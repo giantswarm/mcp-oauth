@@ -3,9 +3,12 @@ package server
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
+	josejwt "github.com/go-jose/go-jose/v4/jwt"
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
@@ -14,6 +17,34 @@ import (
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
+
+// checkRFC9068TypeHeader enforces RFC 9068 §4: a JWT access token presented
+// to a resource server MUST carry the typ header value "at+jwt". The check
+// runs on the verified token; reading the header from a re-parse is safe
+// because the JWS signature covers the header bytes.
+func checkRFC9068TypeHeader(tokenString string) error {
+	parsed, err := josejwt.ParseSigned(tokenString, supportedAccessTokenAlgs)
+	if err != nil {
+		return fmt.Errorf("parse JWT header: %w", err)
+	}
+	if len(parsed.Headers) == 0 {
+		return errors.New("JWT has no header")
+	}
+	typ, _ := parsed.Headers[0].ExtraHeaders[jose.HeaderType].(string)
+	if typ != rfc9068TokenType {
+		return fmt.Errorf("typ header is %q, expected %q (RFC 9068 §4)", typ, rfc9068TokenType)
+	}
+	return nil
+}
+
+// supportedAccessTokenAlgs lists the asymmetric signing algorithms accepted
+// for JWT access tokens. HMAC and "none" are absent by design (RFC 9068 §4
+// alg confusion mitigations).
+var supportedAccessTokenAlgs = []jose.SignatureAlgorithm{
+	jose.RS256, jose.RS384, jose.RS512,
+	jose.ES256, jose.ES384, jose.ES512,
+	jose.PS256, jose.PS384, jose.PS512,
+}
 
 // isTokenExpiredLocally checks if a token is expired considering clock skew grace period.
 // Returns true if the token is expired beyond the grace period.
@@ -139,8 +170,8 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 	})
 }
 
-// ValidateToken validates an access token across all three accepted bearer
-// formats. Validation is format-agnostic by design — operators of one
+// ValidateToken validates an access token across every accepted bearer
+// format. Validation is format-agnostic by design — operators of one
 // server instance pick one issuance format, but operators running multiple
 // instances or upgrading progressively can rely on the validator accepting
 // every format their consumers have already received.
@@ -152,15 +183,23 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 //     verification against the configured public key. No provider
 //     round-trip. See [Server.validateSelfIssuedJWT] for the security
 //     boundary checks (signature, typ, exp, aud, jti, family).
-//  2. Forwarded ID token (when the bearer is a JWT whose iss is something
-//     else AND its aud matches Config.TrustedAudiences). Verified via the
-//     upstream provider's JWKS for SSO token forwarding.
-//  3. Opaque token (TokenStore lookup, then provider userinfo). The
+//  2. Trusted-issuer JWT (when WithTrustedIssuers is configured AND the
+//     bearer's iss matches a configured entry). Signature verified via the
+//     entry's JWKS; aud checked against the entry's AllowedAudiences
+//     (defaulting to Config.GetResourceIdentifier when empty); RFC 9068 §4
+//     typ=at+jwt enforced. A non-matching iss returns ErrIssuerNotTrusted
+//     and falls through to subsequent branches; any other validation
+//     failure is a hard rejection.
+//  3. Forwarded ID token (when the bearer is a JWT whose aud matches
+//     Config.TrustedAudiences). Verified via the upstream provider's JWKS
+//     for SSO token forwarding.
+//  4. Opaque token (TokenStore lookup, then provider userinfo). The
 //     catch-all for non-JWT bearers.
 //
-// Step 1 is opt-in (AccessTokenFormatJWT), step 2 is opt-in
-// (TrustedAudiences), step 3 is always available. Rate limiting should be
-// done at the HTTP layer with IP address, not here with the token.
+// Steps 1, 2, and 3 are opt-in (AccessTokenFormatJWT, WithTrustedIssuers,
+// TrustedAudiences respectively); step 4 is always available. Rate
+// limiting should be done at the HTTP layer with IP address, not here
+// with the token.
 //
 // Error responses: callers SHOULD respond with a single 401 form
 // regardless of the returned error class. The error message distinguishes
@@ -186,7 +225,12 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 		return userInfo, err
 	}
 
-	// PRIORITY 2: Forwarded ID token (JWT) from a trusted upstream service.
+	// PRIORITY 2: Trusted-issuer JWT (WithTrustedIssuers).
+	if userInfo, err := s.validateTrustedIssuerJWT(ctx, accessToken); userInfo != nil || err != nil {
+		return userInfo, err
+	}
+
+	// PRIORITY 3: Forwarded ID token (JWT) from a trusted upstream service.
 	// Must run BEFORE the opaque path, as ID tokens cannot be validated via
 	// the upstream provider's userinfo endpoint.
 	if len(s.Config.TrustedAudiences) > 0 && oidc.IsJWT(accessToken) {
@@ -203,7 +247,7 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 		}
 	}
 
-	// PRIORITY 3: Opaque token (TokenStore + upstream provider userinfo).
+	// PRIORITY 4: Opaque token (TokenStore + upstream provider userinfo).
 	storedToken, err := s.validateStoredToken(ctx, accessToken)
 	if err != nil {
 		return nil, err
@@ -346,6 +390,52 @@ func (s *Server) validateTokenAudience(ctx context.Context, accessToken string) 
 // Uses helpers.MatchAudienceSecure for consistent URL normalization and constant-time comparison.
 func (s *Server) isTrustedAudience(audience string) bool {
 	return helpers.MatchAudienceSecure(audience, s.Config.TrustedAudiences) != ""
+}
+
+// validateTrustedIssuerJWT runs the WithTrustedIssuers Bearer branch of
+// ValidateToken. Returns (nil, nil) when no validator is configured or the
+// token's iss is not a configured peer (caller falls through); (userInfo,
+// nil) on success; (nil, err) on any other validation failure (caller
+// returns the error). The RFC 9068 typ enforcement runs only after the
+// JWS signature has been verified by Validate.
+func (s *Server) validateTrustedIssuerJWT(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+	if s.trustedIssuerValidator == nil {
+		return nil, nil
+	}
+	identity, err := s.trustedIssuerValidator.Validate(ctx, accessToken, []string{s.Config.GetResourceIdentifier()})
+	if errors.Is(err, ErrIssuerNotTrusted) {
+		return nil, nil
+	}
+	if err != nil {
+		s.Auditor.LogAuthFailure(ctx, "", "", "", "trusted_issuer_jwt_invalid")
+		return nil, fmt.Errorf("trusted issuer JWT validation failed: %w", err)
+	}
+	if err := checkRFC9068TypeHeader(accessToken); err != nil {
+		s.Auditor.LogAuthFailure(ctx, identity.Subject, "", "", "trusted_issuer_typ_invalid")
+		return nil, fmt.Errorf("trusted issuer JWT: %w", err)
+	}
+	userInfo := s.idTokenClaimsToUserInfo(identity.Claims)
+	s.logTrustedIssuerJWTAccepted(ctx, accessToken, identity.Issuer, userInfo)
+	return userInfo, nil
+}
+
+// logTrustedIssuerJWTAccepted records a successful Bearer validation against
+// a WithTrustedIssuers entry.
+func (s *Server) logTrustedIssuerJWTAccepted(ctx context.Context, accessToken, issuer string, userInfo *providers.UserInfo) {
+	s.Logger.Debug("Trusted-issuer JWT accepted",
+		"issuer", issuer,
+		"user_id", userInfo.ID,
+		"email", userInfo.Email,
+		"token_suffix", helpers.TokenSuffix(accessToken, 8))
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type:   security.EventForwardedIDTokenAccepted,
+		UserID: userInfo.ID,
+		Details: map[string]any{
+			"validation_method": "trusted_issuer_jwks",
+			"trusted_issuer":    issuer,
+			"email":             userInfo.Email,
+		},
+	})
 }
 
 // logCrossClientTokenAccepted logs when a token is accepted via TrustedAudiences.

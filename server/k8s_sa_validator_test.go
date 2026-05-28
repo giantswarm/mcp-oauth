@@ -35,7 +35,7 @@ func TestTrustedIssuer_AllowedClaims_GlobMatch(t *testing.T) {
 	}}, jwksClient)
 	require.NoError(t, err)
 
-	identity, err := v.Validate(t.Context(), token, SubjectTokenTypeJWT)
+	identity, err := v.Validate(t.Context(), token, nil)
 	require.NoError(t, err)
 	require.Equal(t, subject, identity.Subject)
 }
@@ -61,7 +61,7 @@ func TestTrustedIssuer_AllowedClaims_BlockedNamespace(t *testing.T) {
 	}}, jwksClient)
 	require.NoError(t, err)
 
-	_, err = v.Validate(t.Context(), token, SubjectTokenTypeJWT)
+	_, err = v.Validate(t.Context(), token, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "does not match allowed pattern")
 }
@@ -88,7 +88,7 @@ func TestTrustedIssuer_AllowedClaims_ExactMatch(t *testing.T) {
 	}}, jwksClient)
 	require.NoError(t, err)
 
-	identity, err := v.Validate(t.Context(), token, SubjectTokenTypeJWT)
+	identity, err := v.Validate(t.Context(), token, nil)
 	require.NoError(t, err)
 	require.Equal(t, subject, identity.Subject)
 }
@@ -114,7 +114,7 @@ func TestTrustedIssuer_AllowedClaims_BlockedByName(t *testing.T) {
 	}}, jwksClient)
 	require.NoError(t, err)
 
-	_, err = v.Validate(t.Context(), token, SubjectTokenTypeJWT)
+	_, err = v.Validate(t.Context(), token, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "does not match allowed pattern")
 }
@@ -140,19 +140,7 @@ func TestTrustedIssuer_NoAllowedClaims_AnySubPasses(t *testing.T) {
 	}}, jwksClient)
 	require.NoError(t, err)
 
-	identity, err := v.Validate(t.Context(), token, SubjectTokenTypeJWT)
+	identity, err := v.Validate(t.Context(), token, nil)
 	require.NoError(t, err)
 	require.Equal(t, subject, identity.Subject)
-}
-
-func TestTrustedIssuer_AllowedClaims_UnsupportedTokenType(t *testing.T) {
-	v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
-		Issuer:  testK8sIssuer,
-		JwksURL: "https://example.com/jwks",
-	}}, nil)
-	require.NoError(t, err)
-
-	_, err = v.Validate(t.Context(), "sometoken", "urn:ietf:params:oauth:token-type:saml2")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "unsupported subject_token_type")
 }

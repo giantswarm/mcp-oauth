@@ -31,8 +31,11 @@ type fakeSubjectValidator struct {
 	err      error
 }
 
-func (f *fakeSubjectValidator) Validate(_ context.Context, _, _ string) (server.SubjectIdentity, error) {
-	return f.identity, f.err
+func (f *fakeSubjectValidator) Validate(_ context.Context, _ string, _ []string) (*server.SubjectIdentity, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &f.identity, nil
 }
 
 type tokenExchangeHarnessOption func(*tokenExchangeHarnessConfig)
