@@ -97,9 +97,6 @@ func TestDPoPReplayCache_DistinctJTIsAreIndependent(t *testing.T) {
 	}
 }
 
-// TTL eviction happens on the Valkey server's clock, which testing/synctest
-// cannot fake. Poll the cache itself with require.Never / require.Eventually
-// to exercise real TTL semantics without a fixed wall-clock Sleep.
 func TestDPoPReplayCache_TTLIsHonoured(t *testing.T) {
 	cache := newTestDPoPCache(t)
 	const jti = "jti-ttl"
