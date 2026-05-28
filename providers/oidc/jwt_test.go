@@ -7,6 +7,7 @@ import (
 	"time"
 
 	josejwt "github.com/go-jose/go-jose/v4/jwt"
+	"github.com/stretchr/testify/require"
 )
 
 func TestIsJWT(t *testing.T) {
@@ -243,32 +244,91 @@ func TestValidateAudience(t *testing.T) {
 	}
 }
 
-func TestValidateTimeAndIssuer_IssuerMismatch(t *testing.T) {
+func TestValidateTimeAndIssuer(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now()
-	claims := &IDTokenClaims{
-		Claims: josejwt.Claims{
-			Issuer: "https://auth.example.com",
-			Expiry: josejwt.NewNumericDate(now.Add(time.Hour)),
+	beyondLeeway := DefaultClockSkewLeeway + time.Minute
+
+	tests := []struct {
+		name           string
+		claims         *IDTokenClaims
+		expectedIssuer string
+		wantErr        error
+	}{
+		{
+			name: "happy path",
+			claims: &IDTokenClaims{Claims: josejwt.Claims{
+				Issuer: "https://auth.example.com",
+				Expiry: josejwt.NewNumericDate(now.Add(time.Hour)),
+			}},
+			expectedIssuer: "https://auth.example.com",
+			wantErr:        nil,
+		},
+		{
+			name: "issuer mismatch",
+			claims: &IDTokenClaims{Claims: josejwt.Claims{
+				Issuer: "https://auth.example.com",
+				Expiry: josejwt.NewNumericDate(now.Add(time.Hour)),
+			}},
+			expectedIssuer: "https://other.example.com",
+			wantErr:        ErrIssuerMismatch,
+		},
+		{
+			name: "no expected issuer skips check",
+			claims: &IDTokenClaims{Claims: josejwt.Claims{
+				Issuer: "https://anything.example.com",
+				Expiry: josejwt.NewNumericDate(now.Add(time.Hour)),
+			}},
+			expectedIssuer: "",
+			wantErr:        nil,
+		},
+		{
+			name: "token expired beyond leeway",
+			claims: &IDTokenClaims{Claims: josejwt.Claims{
+				Issuer: "https://auth.example.com",
+				Expiry: josejwt.NewNumericDate(now.Add(-beyondLeeway)),
+			}},
+			expectedIssuer: "https://auth.example.com",
+			wantErr:        ErrTokenExpired,
+		},
+		{
+			name: "token not valid yet beyond leeway",
+			claims: &IDTokenClaims{Claims: josejwt.Claims{
+				Issuer:    "https://auth.example.com",
+				NotBefore: josejwt.NewNumericDate(now.Add(beyondLeeway)),
+				Expiry:    josejwt.NewNumericDate(now.Add(time.Hour)),
+			}},
+			expectedIssuer: "https://auth.example.com",
+			wantErr:        ErrTokenNotValidYet,
+		},
+		{
+			// iat in the far future triggers go-jose ErrIssuedInTheFuture,
+			// which is wrapped by the default branch as a generic validation error.
+			name: "iat in the future hits default error branch",
+			claims: &IDTokenClaims{Claims: josejwt.Claims{
+				Issuer:   "https://auth.example.com",
+				IssuedAt: josejwt.NewNumericDate(now.Add(beyondLeeway)),
+				Expiry:   josejwt.NewNumericDate(now.Add(time.Hour)),
+			}},
+			expectedIssuer: "https://auth.example.com",
+			wantErr:        josejwt.ErrIssuedInTheFuture,
 		},
 	}
 
-	err := validateTimeAndIssuer(claims, "https://other.example.com")
-	if err == nil {
-		t.Fatal("validateTimeAndIssuer() expected error, got nil")
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_ = t.Context()
 
-func TestValidateTimeAndIssuer_NoExpectedIssuerSkipsCheck(t *testing.T) {
-	now := time.Now()
-	claims := &IDTokenClaims{
-		Claims: josejwt.Claims{
-			Issuer: "https://anything.example.com",
-			Expiry: josejwt.NewNumericDate(now.Add(time.Hour)),
-		},
-	}
+			err := validateTimeAndIssuer(tt.claims, tt.expectedIssuer)
 
-	if err := validateTimeAndIssuer(claims, ""); err != nil {
-		t.Errorf("validateTimeAndIssuer() with empty expected issuer should pass, got: %v", err)
+			if tt.wantErr == nil {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorIs(t, err, tt.wantErr)
+		})
 	}
 }
 
@@ -290,6 +350,93 @@ func TestParseAndValidateToken_TimeValidation(t *testing.T) {
 			t.Errorf("DefaultClockSkewLeeway = %v, want %v", DefaultClockSkewLeeway, expected)
 		}
 	})
+}
+
+func TestValidateNonceClaim(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		claimNonce     string
+		expectedNonce  string
+		wantErr        error
+		wantErrMessage string
+	}{
+		{
+			name:          "match",
+			claimNonce:    "abc",
+			expectedNonce: "abc",
+			wantErr:       nil,
+		},
+		{
+			name:          "mismatch",
+			claimNonce:    "abc",
+			expectedNonce: "xyz",
+			wantErr:       ErrNonceMismatch,
+		},
+		{
+			name:           "missing in claims",
+			claimNonce:     "",
+			expectedNonce:  "abc",
+			wantErr:        ErrNonceMismatch,
+			wantErrMessage: "claim absent",
+		},
+		{
+			name:          "missing expectation",
+			claimNonce:    "abc",
+			expectedNonce: "",
+			wantErr:       nil,
+		},
+		{
+			name:          "both empty",
+			claimNonce:    "",
+			expectedNonce: "",
+			wantErr:       nil,
+		},
+		{
+			name:          "same length different content",
+			claimNonce:    "aaaa",
+			expectedNonce: "bbbb",
+			wantErr:       ErrNonceMismatch,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_ = t.Context()
+
+			err := ValidateNonceClaim(tt.claimNonce, tt.expectedNonce)
+
+			if tt.wantErr == nil {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorIs(t, err, tt.wantErr)
+			if tt.wantErrMessage != "" {
+				require.Contains(t, err.Error(), tt.wantErrMessage)
+			}
+		})
+	}
+}
+
+// TestIDTokenClaims_NonStringNonce documents the first line of nonce-defence
+// in depth: ValidateNonceClaim only sees a string, because the typed
+// IDTokenClaims.Nonce field rejects a non-string JSON value during claim
+// extraction. A token with "nonce": 42 fails before the comparison runs.
+func TestIDTokenClaims_NonStringNonce(t *testing.T) {
+	t.Parallel()
+	_ = t.Context()
+
+	payload, err := json.Marshal(map[string]any{
+		"sub":   "user",
+		"nonce": 42,
+	})
+	require.NoError(t, err)
+
+	var claims IDTokenClaims
+	err = json.Unmarshal(payload, &claims)
+	require.Error(t, err, "non-string nonce must not unmarshal into IDTokenClaims.Nonce")
 }
 
 // createTestJWTWithClaims creates a JWT token for testing purposes.

@@ -2,15 +2,19 @@ package valkey
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/oauth2"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -455,6 +459,362 @@ func TestTokenStore_DeleteRefreshToken(t *testing.T) {
 	if err != storage.ErrTokenNotFound {
 		t.Errorf("Token should be deleted, got: %v", err)
 	}
+}
+
+// ============================================================
+// Atomic single-use enforcement (OAuth 2.1 / RFC 6749 §4.1.2)
+// ============================================================
+
+func TestFlowStore_AtomicCheckAndMarkAuthCodeUsed_Table(t *testing.T) {
+	tests := []struct {
+		name         string
+		prepare      func(t *testing.T, s *Store) string
+		wantSentinel error
+		wantUsedFlag bool
+	}{
+		{
+			name: "first use succeeds",
+			prepare: func(t *testing.T, s *Store) string {
+				code := &storage.AuthorizationCode{
+					Code:      "ac-first-use",
+					ClientID:  "client-1",
+					UserID:    testUserID,
+					CreatedAt: time.Now(),
+					ExpiresAt: time.Now().Add(5 * time.Minute),
+				}
+				require.NoError(t, s.SaveAuthorizationCode(t.Context(), code))
+				return code.Code
+			},
+		},
+		{
+			name: "second use returns reuse sentinel",
+			prepare: func(t *testing.T, s *Store) string {
+				code := &storage.AuthorizationCode{
+					Code:      "ac-reuse",
+					ClientID:  "client-1",
+					UserID:    testUserID,
+					CreatedAt: time.Now(),
+					ExpiresAt: time.Now().Add(5 * time.Minute),
+				}
+				require.NoError(t, s.SaveAuthorizationCode(t.Context(), code))
+				_, err := s.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code.Code)
+				require.NoError(t, err)
+				return code.Code
+			},
+			wantSentinel: storage.ErrAuthorizationCodeUsed,
+			wantUsedFlag: true,
+		},
+		{
+			name: "unknown code returns not-found",
+			prepare: func(_ *testing.T, _ *Store) string {
+				return "ac-nonexistent"
+			},
+			wantSentinel: storage.ErrAuthorizationCodeNotFound,
+		},
+		{
+			name: "expired code returns expired sentinel",
+			prepare: func(t *testing.T, s *Store) string {
+				// Bypass SaveAuthorizationCode (which rejects past expiry) by
+				// writing a long-TTL key with a past expires_at in the JSON.
+				// This exercises the Lua expiry-check branch.
+				code := "ac-expired"
+				j := authorizationCodeJSON{
+					Code:      code,
+					ClientID:  "client-1",
+					UserID:    testUserID,
+					CreatedAt: time.Now().Add(-10 * time.Minute).Unix(),
+					ExpiresAt: time.Now().Add(-1 * time.Minute).Unix(),
+					Used:      false,
+				}
+				data, err := json.Marshal(j)
+				require.NoError(t, err)
+				require.NoError(t, s.client.Do(
+					t.Context(),
+					s.client.B().Set().Key(s.codeKey(code)).Value(string(data)).Ex(time.Hour).Build(),
+				).Error())
+				return code
+			},
+			wantSentinel: storage.ErrTokenExpired,
+		},
+		{
+			name: "already-used code with malformed body still surfaces reuse sentinel",
+			prepare: func(t *testing.T, s *Store) string {
+				// Lua's cjson tolerates a string expires_at; Go's json.Unmarshal
+				// does not. Exercises the reuse path where the inner JSON cannot
+				// be decoded for forensics — caller must still see the sentinel.
+				code := "ac-reuse-malformed"
+				raw := `{"code":"ac-reuse-malformed","client_id":"client-1","user_id":"user-1","expires_at":"not-a-number","used":true}`
+				require.NoError(t, s.client.Do(
+					t.Context(),
+					s.client.B().Set().Key(s.codeKey(code)).Value(raw).Ex(time.Hour).Build(),
+				).Error())
+				return code
+			},
+			wantSentinel: storage.ErrAuthorizationCodeUsed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := testStore(t)
+
+			code := tt.prepare(t, s)
+			got, err := s.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code)
+
+			if tt.wantSentinel == nil {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				return
+			}
+
+			require.ErrorIs(t, err, tt.wantSentinel)
+			if tt.wantUsedFlag {
+				require.NotNil(t, got, "reuse case must surface the stored code for forensics")
+				require.True(t, got.Used)
+			} else {
+				require.Nil(t, got, "non-reuse failures must not leak code data")
+			}
+		})
+	}
+}
+
+// TestFlowStore_AtomicCheckAndMarkAuthCodeUsed_MalformedSuccessJSON exercises
+// the Go-side json.Unmarshal error branch in the success path: Lua's cjson
+// accepts a string `expires_at`, Go's typed unmarshal does not.
+func TestFlowStore_AtomicCheckAndMarkAuthCodeUsed_MalformedSuccessJSON(t *testing.T) {
+	s := testStore(t)
+
+	const code = "ac-malformed-success"
+	raw := `{"code":"ac-malformed-success","client_id":"client-1","user_id":"user-1","expires_at":"not-a-number","used":false}`
+	require.NoError(t, s.client.Do(
+		t.Context(),
+		s.client.B().Set().Key(s.codeKey(code)).Value(raw).Ex(time.Hour).Build(),
+	).Error())
+
+	got, err := s.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code)
+	require.Error(t, err)
+	require.Nil(t, got)
+	require.NotErrorIs(t, err, storage.ErrAuthorizationCodeUsed)
+	require.NotErrorIs(t, err, storage.ErrAuthorizationCodeNotFound)
+}
+
+func TestFlowStore_AtomicCheckAndMarkAuthCodeUsed_ConcurrentN100(t *testing.T) {
+	const n = 100
+
+	s := testStore(t)
+
+	code := &storage.AuthorizationCode{
+		Code:      "ac-concurrent-100",
+		ClientID:  "client-1",
+		UserID:    testUserID,
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+	}
+	require.NoError(t, s.SaveAuthorizationCode(t.Context(), code))
+
+	var success, reuse atomic.Int32
+	ready := make(chan struct{})
+	g, ctx := errgroup.WithContext(t.Context())
+	for range n {
+		g.Go(func() error {
+			<-ready
+			_, err := s.AtomicCheckAndMarkAuthCodeUsed(ctx, code.Code)
+			switch {
+			case err == nil:
+				success.Add(1)
+				return nil
+			case errors.Is(err, storage.ErrAuthorizationCodeUsed):
+				reuse.Add(1)
+				return nil
+			default:
+				return err
+			}
+		})
+	}
+	close(ready)
+	require.NoError(t, g.Wait())
+
+	require.Equal(t, int32(1), success.Load(), "more than one success would break OAuth 2.1 §4.1.2")
+	require.Equal(t, int32(n-1), reuse.Load())
+}
+
+func TestTokenStore_AtomicGetAndDeleteRefreshToken(t *testing.T) {
+	tests := []struct {
+		name         string
+		prepare      func(t *testing.T, s *Store) string
+		wantSentinel error
+	}{
+		{
+			name: "first use succeeds",
+			prepare: func(t *testing.T, s *Store) string {
+				const refreshToken = "rt-first-use"
+				providerToken := &oauth2.Token{
+					AccessToken:  "provider-access",
+					RefreshToken: "provider-refresh",
+					TokenType:    "Bearer",
+					Expiry:       time.Now().Add(time.Hour),
+				}
+				require.NoError(t, s.SaveToken(t.Context(), refreshToken, providerToken))
+				require.NoError(t, s.SaveRefreshToken(t.Context(), refreshToken, testUserID, time.Now().Add(time.Hour)))
+				return refreshToken
+			},
+		},
+		{
+			name: "second use returns not-found sentinel",
+			prepare: func(t *testing.T, s *Store) string {
+				const refreshToken = "rt-reuse"
+				providerToken := &oauth2.Token{
+					AccessToken:  "provider-access",
+					RefreshToken: "provider-refresh",
+					TokenType:    "Bearer",
+					Expiry:       time.Now().Add(time.Hour),
+				}
+				require.NoError(t, s.SaveToken(t.Context(), refreshToken, providerToken))
+				require.NoError(t, s.SaveRefreshToken(t.Context(), refreshToken, testUserID, time.Now().Add(time.Hour)))
+				_, _, _, err := s.AtomicGetAndDeleteRefreshToken(t.Context(), refreshToken)
+				require.NoError(t, err)
+				return refreshToken
+			},
+			wantSentinel: storage.ErrTokenNotFound,
+		},
+		{
+			name: "unknown refresh token returns not-found",
+			prepare: func(_ *testing.T, _ *Store) string {
+				return "rt-nonexistent"
+			},
+			wantSentinel: storage.ErrTokenNotFound,
+		},
+		{
+			name: "refresh mapping without provider token returns not-found",
+			prepare: func(t *testing.T, s *Store) string {
+				// Exercises the TOKEN_NOT_FOUND branch of the Lua script: the
+				// refresh-token→userID mapping exists but the provider token
+				// has been evicted (TTL mismatch, manual deletion, etc.).
+				const refreshToken = "rt-orphan-mapping"
+				require.NoError(t, s.SaveRefreshToken(t.Context(), refreshToken, testUserID, time.Now().Add(time.Hour)))
+				return refreshToken
+			},
+			wantSentinel: storage.ErrTokenNotFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := testStore(t)
+
+			refreshToken := tt.prepare(t, s)
+			userID, _, providerToken, err := s.AtomicGetAndDeleteRefreshToken(t.Context(), refreshToken)
+
+			if tt.wantSentinel == nil {
+				require.NoError(t, err)
+				require.Equal(t, testUserID, userID)
+				require.NotNil(t, providerToken)
+				return
+			}
+
+			require.ErrorIs(t, err, tt.wantSentinel)
+			require.Empty(t, userID)
+			require.Nil(t, providerToken)
+		})
+	}
+}
+
+// TestTokenStore_AtomicGetAndDeleteRefreshToken_MalformedTokenJSON exercises
+// the Go-side json.Unmarshal error branch in the success path: Lua's cjson
+// accepts a JSON array as a "token", Go's typed unmarshal into serializableToken
+// does not.
+func TestTokenStore_AtomicGetAndDeleteRefreshToken_MalformedTokenJSON(t *testing.T) {
+	s := testStore(t)
+
+	const refreshToken = "rt-malformed-token"
+	require.NoError(t, s.client.Do(
+		t.Context(),
+		s.client.B().Set().Key(s.refreshTokenKey(refreshToken)).Value(testUserID).Ex(time.Hour).Build(),
+	).Error())
+	require.NoError(t, s.client.Do(
+		t.Context(),
+		s.client.B().Set().Key(s.tokenKey(refreshToken)).Value(`[1,2,3]`).Ex(time.Hour).Build(),
+	).Error())
+
+	userID, clientID, gotToken, err := s.AtomicGetAndDeleteRefreshToken(t.Context(), refreshToken)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, storage.ErrTokenNotFound)
+	require.Empty(t, userID)
+	require.Empty(t, clientID)
+	require.Nil(t, gotToken)
+}
+
+// TestTokenStore_AtomicGetAndDeleteRefreshToken_DecryptError exercises the
+// decryptToken error branch: an encryptor is configured but the provider
+// token field is not a valid ciphertext. Models config drift across a deploy
+// (e.g., encryption enabled retroactively while plaintext tokens still exist
+// at rest) so the surfaced error must be opaque, never ErrTokenNotFound.
+func TestTokenStore_AtomicGetAndDeleteRefreshToken_DecryptError(t *testing.T) {
+	key, err := security.GenerateKey()
+	require.NoError(t, err)
+	enc, err := security.NewEncryptor(key)
+	require.NoError(t, err)
+
+	s := testStoreWithOpts(t, WithEncryptor(enc))
+
+	const refreshToken = "rt-decrypt-error"
+	require.NoError(t, s.client.Do(
+		t.Context(),
+		s.client.B().Set().Key(s.refreshTokenKey(refreshToken)).Value(testUserID).Ex(time.Hour).Build(),
+	).Error())
+	// Plain (un-encrypted) access token JSON — decryptToken will reject it.
+	require.NoError(t, s.client.Do(
+		t.Context(),
+		s.client.B().Set().Key(s.tokenKey(refreshToken)).Value(`{"access_token":"plaintext-not-a-ciphertext","token_type":"Bearer"}`).Ex(time.Hour).Build(),
+	).Error())
+
+	userID, clientID, gotToken, err := s.AtomicGetAndDeleteRefreshToken(t.Context(), refreshToken)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, storage.ErrTokenNotFound)
+	require.Empty(t, userID)
+	require.Empty(t, clientID)
+	require.Nil(t, gotToken)
+}
+
+func TestTokenStore_AtomicGetAndDeleteRefreshToken_ConcurrentN100(t *testing.T) {
+	const n = 100
+
+	s := testStore(t)
+
+	const refreshToken = "rt-concurrent-100"
+	providerToken := &oauth2.Token{
+		AccessToken:  "provider-access",
+		RefreshToken: "provider-refresh",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(time.Hour),
+	}
+	require.NoError(t, s.SaveToken(t.Context(), refreshToken, providerToken))
+	require.NoError(t, s.SaveRefreshToken(t.Context(), refreshToken, testUserID, time.Now().Add(time.Hour)))
+
+	var success, notFound atomic.Int32
+	ready := make(chan struct{})
+	g, ctx := errgroup.WithContext(t.Context())
+	for range n {
+		g.Go(func() error {
+			<-ready
+			_, _, _, err := s.AtomicGetAndDeleteRefreshToken(ctx, refreshToken)
+			switch {
+			case err == nil:
+				success.Add(1)
+				return nil
+			case errors.Is(err, storage.ErrTokenNotFound):
+				notFound.Add(1)
+				return nil
+			default:
+				return err
+			}
+		})
+	}
+	close(ready)
+	require.NoError(t, g.Wait())
+
+	require.Equal(t, int32(1), success.Load(), "more than one success would allow refresh token reuse")
+	require.Equal(t, int32(n-1), notFound.Load())
 }
 
 // ============================================================
