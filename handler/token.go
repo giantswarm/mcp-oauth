@@ -473,7 +473,9 @@ func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *oauth2.Token,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(response)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		h.logger.Warn("Failed to encode token response", "error", err)
+	}
 }
 
 // isValidAuthMethod checks if the given token endpoint auth method is supported

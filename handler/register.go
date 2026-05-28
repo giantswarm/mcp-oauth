@@ -394,7 +394,9 @@ func (h *Handler) writeRegistrationResponse(w http.ResponseWriter, client *stora
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(response)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		h.logger.Warn("Failed to encode registration response", "error", err)
+	}
 }
 
 // Helper methods
