@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`nbf` claim on RFC 9068 JWT access tokens.** Set equal to `iat`; satisfies RFC 9068 §2.2 (SHOULD) and unblocks strict verifiers that reject tokens without it. Opaque tokens are unaffected.
+- **`nbf` on access tokens.** RFC 9068 JWT access tokens carry `nbf = iat` (satisfies RFC 9068 §2.2 SHOULD; unblocks strict verifiers that reject tokens without `nbf`). RFC 7662 introspection responses emit `nbf = iat` in both JWT and opaque modes so the two paths stay symmetrical.
 
 - **`TrustedIssuer.AllowPrivateIPJWKS`**: opt-in bool allowing a trusted issuer's `JwksURL` to resolve to a private or loopback address.
 
