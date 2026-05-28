@@ -240,8 +240,7 @@ func TestExchangeSubjectToken_RequiresJWTMode(t *testing.T) {
 	require.Contains(t, err.Error(), "JWT access token mode")
 }
 
-// failingAccessTokenIssuer always returns an error from Issue. Used to drive
-// the post-validation issuance branch of ExchangeSubjectToken in tests.
+// failingAccessTokenIssuer always returns an error from Issue.
 type failingAccessTokenIssuer struct{ err error }
 
 func (f failingAccessTokenIssuer) Issue(context.Context, AccessTokenClaims) (string, error) {
@@ -251,9 +250,9 @@ func (f failingAccessTokenIssuer) Issue(context.Context, AccessTokenClaims) (str
 const auditExchangeKID = "audit-exchange-key"
 
 // newAuditExchangeTestServer builds an exchange-ready Server wired to a
-// buffer-backed slog logger so audit emissions can be asserted from log
-// output. The returned EC key matches the registered SubjectTokenValidator
-// so callers can mint subject tokens that pass validation.
+// buffer-backed slog logger. The returned EC key matches the registered
+// SubjectTokenValidator so callers can mint subject tokens that pass
+// validation.
 func newAuditExchangeTestServer(t *testing.T) (*Server, *bytes.Buffer, *ecdsa.PrivateKey) {
 	t.Helper()
 
