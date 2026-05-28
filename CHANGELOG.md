@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`security.SetEncryptionMetricRecorder`**: replaced unprotected package-level variable with `atomic.Pointer`, eliminating a data race when multiple goroutines register or clear the hook concurrently (e.g., parallel test suites).
+- **`Config.Validate`** now returns `ErrMissingIssuer` when `Issuer` is empty. RFC 8414 §2 lists `issuer` as REQUIRED, and an empty value silently miswires every URL the server builds by string-concatenating onto `Issuer`. `server.New(...)` called with a nil or empty-Issuer config now fails to start instead of returning a half-configured server. (M1)
 
 ### Added
 

@@ -263,11 +263,6 @@ func TestExtractIssuerPath(t *testing.T) {
 			issuer:   "https://auth.example.com/tenant1/",
 			wantPath: "/tenant1",
 		},
-		{
-			name:     "empty_issuer",
-			issuer:   "",
-			wantPath: "",
-		},
 		// SECURITY: Path traversal attack attempts - verify sanitization
 		{
 			name:     "path_with_dots_normalized",

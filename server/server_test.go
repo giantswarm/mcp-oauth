@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/providers/mock"
@@ -69,14 +70,8 @@ func TestNew_NilConfig(t *testing.T) {
 
 	provider := mock.NewProvider()
 
-	srv, err := New(provider, store, store, store, nil, nil)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	if srv.Config == nil {
-		t.Error("Config should not be nil when nil is passed")
-	}
+	_, err := New(provider, store, store, store, nil, nil)
+	require.ErrorIs(t, err, ErrMissingIssuer)
 }
 
 func TestNew_MissingProvider(t *testing.T) {

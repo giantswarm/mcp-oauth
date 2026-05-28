@@ -28,23 +28,29 @@ func generateECKey(t *testing.T, curve elliptic.Curve) *ecdsa.PrivateKey {
 	return k
 }
 
+func TestConfigValidate_MissingIssuer(t *testing.T) {
+	err := (&Config{}).Validate()
+	require.ErrorIs(t, err, ErrMissingIssuer)
+}
+
 func TestConfigValidate_OpaqueMode(t *testing.T) {
 	t.Run("empty AccessTokenFormat is opaque and accepted", func(t *testing.T) {
-		require.NoError(t, (&Config{}).Validate())
+		require.NoError(t, (&Config{Issuer: testIssuer}).Validate())
 	})
 
 	t.Run("explicit opaque is accepted", func(t *testing.T) {
-		require.NoError(t, (&Config{AccessTokenFormat: AccessTokenFormatOpaque}).Validate())
+		require.NoError(t, (&Config{Issuer: testIssuer, AccessTokenFormat: AccessTokenFormatOpaque}).Validate())
 	})
 
 	t.Run("unknown AccessTokenFormat is rejected", func(t *testing.T) {
-		err := (&Config{AccessTokenFormat: "JWT"}).Validate() // wrong case
+		err := (&Config{Issuer: testIssuer, AccessTokenFormat: "JWT"}).Validate() // wrong case
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "not recognized")
 	})
 
 	t.Run("opaque mode ignores signing key fields", func(t *testing.T) {
 		cfg := &Config{
+			Issuer:                      testIssuer,
 			AccessTokenFormat:           AccessTokenFormatOpaque,
 			AccessTokenSigningKey:       generateRSAKey(t),
 			AccessTokenSigningKeyID:     "k1",
@@ -63,6 +69,7 @@ func TestConfigValidate_JWTMode_RequiredFields(t *testing.T) {
 		{
 			name: "missing key",
 			cfg: &Config{
+				Issuer:                      testIssuer,
 				AccessTokenFormat:           AccessTokenFormatJWT,
 				AccessTokenSigningKeyID:     "k1",
 				AccessTokenSigningAlgorithm: SigningAlgorithmRS256,
@@ -72,6 +79,7 @@ func TestConfigValidate_JWTMode_RequiredFields(t *testing.T) {
 		{
 			name: "missing kid",
 			cfg: &Config{
+				Issuer:                      testIssuer,
 				AccessTokenFormat:           AccessTokenFormatJWT,
 				AccessTokenSigningKey:       generateRSAKey(t),
 				AccessTokenSigningAlgorithm: SigningAlgorithmRS256,
@@ -81,6 +89,7 @@ func TestConfigValidate_JWTMode_RequiredFields(t *testing.T) {
 		{
 			name: "missing alg",
 			cfg: &Config{
+				Issuer:                  testIssuer,
 				AccessTokenFormat:       AccessTokenFormatJWT,
 				AccessTokenSigningKey:   generateRSAKey(t),
 				AccessTokenSigningKeyID: "k1",
@@ -104,6 +113,7 @@ func TestConfigValidate_JWTMode_AlgorithmAccepted(t *testing.T) {
 	} {
 		t.Run(alg, func(t *testing.T) {
 			cfg := &Config{
+				Issuer:                      testIssuer,
 				AccessTokenFormat:           AccessTokenFormatJWT,
 				AccessTokenSigningKey:       generateRSAKey(t),
 				AccessTokenSigningKeyID:     "rsa-1",
@@ -114,6 +124,7 @@ func TestConfigValidate_JWTMode_AlgorithmAccepted(t *testing.T) {
 	}
 	t.Run(SigningAlgorithmES256, func(t *testing.T) {
 		cfg := &Config{
+			Issuer:                      testIssuer,
 			AccessTokenFormat:           AccessTokenFormatJWT,
 			AccessTokenSigningKey:       generateECKey(t, elliptic.P256()),
 			AccessTokenSigningKeyID:     "ec-1",
@@ -123,6 +134,7 @@ func TestConfigValidate_JWTMode_AlgorithmAccepted(t *testing.T) {
 	})
 	t.Run(SigningAlgorithmES384, func(t *testing.T) {
 		cfg := &Config{
+			Issuer:                      testIssuer,
 			AccessTokenFormat:           AccessTokenFormatJWT,
 			AccessTokenSigningKey:       generateECKey(t, elliptic.P384()),
 			AccessTokenSigningKeyID:     "ec-2",
@@ -136,6 +148,7 @@ func TestConfigValidate_JWTMode_AlgorithmRejected(t *testing.T) {
 	for _, alg := range []string{"none", "HS256", "HS384", "HS512", "RS128", ""} {
 		t.Run(alg, func(t *testing.T) {
 			cfg := &Config{
+				Issuer:                      testIssuer,
 				AccessTokenFormat:           AccessTokenFormatJWT,
 				AccessTokenSigningKey:       generateRSAKey(t),
 				AccessTokenSigningKeyID:     "k1",
@@ -155,6 +168,7 @@ func TestConfigValidate_JWTMode_AlgorithmRejected(t *testing.T) {
 func TestConfigValidate_JWTMode_KeyAlgMismatch(t *testing.T) {
 	t.Run("RSA key with ES256 alg rejected", func(t *testing.T) {
 		cfg := &Config{
+			Issuer:                      testIssuer,
 			AccessTokenFormat:           AccessTokenFormatJWT,
 			AccessTokenSigningKey:       generateRSAKey(t),
 			AccessTokenSigningKeyID:     "k1",
@@ -167,6 +181,7 @@ func TestConfigValidate_JWTMode_KeyAlgMismatch(t *testing.T) {
 
 	t.Run("ECDSA key with RS256 alg rejected", func(t *testing.T) {
 		cfg := &Config{
+			Issuer:                      testIssuer,
 			AccessTokenFormat:           AccessTokenFormatJWT,
 			AccessTokenSigningKey:       generateECKey(t, elliptic.P256()),
 			AccessTokenSigningKeyID:     "k1",
@@ -179,6 +194,7 @@ func TestConfigValidate_JWTMode_KeyAlgMismatch(t *testing.T) {
 
 	t.Run("ECDSA P-384 key with ES256 alg rejected", func(t *testing.T) {
 		cfg := &Config{
+			Issuer:                      testIssuer,
 			AccessTokenFormat:           AccessTokenFormatJWT,
 			AccessTokenSigningKey:       generateECKey(t, elliptic.P384()),
 			AccessTokenSigningKeyID:     "k1",
@@ -191,6 +207,7 @@ func TestConfigValidate_JWTMode_KeyAlgMismatch(t *testing.T) {
 
 	t.Run("ECDSA P-256 key with ES384 alg rejected", func(t *testing.T) {
 		cfg := &Config{
+			Issuer:                      testIssuer,
 			AccessTokenFormat:           AccessTokenFormatJWT,
 			AccessTokenSigningKey:       generateECKey(t, elliptic.P256()),
 			AccessTokenSigningKeyID:     "k1",
