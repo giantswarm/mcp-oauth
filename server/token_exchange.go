@@ -20,15 +20,33 @@ type TokenExchangeResult struct {
 	IssuedTokenType string
 }
 
+// ExchangeOptions carries optional identity claims to inject into the access
+// token issued by ExchangeSubjectToken. Zero-value fields are not emitted into
+// the JWT. Extra is merged into the JWT body after the standard claims and
+// overwrites any colliding keys.
+type ExchangeOptions struct {
+	Email         string
+	EmailVerified bool
+	Name          string
+	Groups        []string
+	Extra         map[string]any
+}
+
 // ExchangeSubjectToken validates subjectToken using the registered SubjectTokenValidator
 // for subjectTokenType, then issues a signed JWT access token. resource becomes the aud
 // claim (required per RFC 8707). scope is intersected against the per-issuer AllowedScopes
 // envelope from TrustedIssuer configuration. dpopJKT is the JWK thumbprint from a
 // validated DPoP proof; when non-empty it is written into the cnf.jkt claim of the
 // issued JWT per RFC 9449 §6.1. Pass empty string when no DPoP proof was presented.
+//
+// opts is an optional ExchangeOptions whose identity fields are emitted as
+// standard JWT claims (email, email_verified, name, groups) and whose Extra
+// map is merged verbatim into the JWT body. When opts is omitted no identity
+// claims are added. If multiple ExchangeOptions are passed only the first is used.
 func (s *Server) ExchangeSubjectToken(
 	ctx context.Context,
 	subjectToken, subjectTokenType, resource, scope, dpopJKT string,
+	opts ...ExchangeOptions,
 ) (*TokenExchangeResult, error) {
 	if !s.Config.IsJWTAccessTokenFormat() {
 		s.Auditor.LogEvent(ctx, security.Event{
@@ -93,15 +111,25 @@ func (s *Server) ExchangeSubjectToken(
 	}
 	expiresAt := now.Add(ttl)
 
+	var o ExchangeOptions
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+
 	tokenStr, err := s.accessTokenIssuer.Issue(ctx, AccessTokenClaims{
-		Subject:   identity.Subject,
-		Audience:  resource,
-		Scopes:    strings.Fields(grantedScope),
-		IssuedAt:  now,
-		ExpiresAt: expiresAt,
-		JTI:       generateRandomToken(),
-		Act:       &Actor{Iss: identity.Issuer, Sub: identity.Subject},
-		JKT:       dpopJKT,
+		Subject:       identity.Subject,
+		Audience:      resource,
+		Scopes:        strings.Fields(grantedScope),
+		IssuedAt:      now,
+		ExpiresAt:     expiresAt,
+		JTI:           generateRandomToken(),
+		Act:           &Actor{Iss: identity.Issuer, Sub: identity.Subject},
+		JKT:           dpopJKT,
+		Email:         o.Email,
+		EmailVerified: o.EmailVerified,
+		Name:          o.Name,
+		Groups:        o.Groups,
+		Extra:         o.Extra,
 	})
 	if err != nil {
 		s.Auditor.LogEvent(ctx, security.Event{

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/rsa"
 	"fmt"
 	"strings"
 	"testing"
@@ -488,4 +489,166 @@ func TestExchangeSubjectToken_DPoP(t *testing.T) {
 
 	require.NotNil(t, claims.Cnf, "cnf claim must be present for DPoP-bound token")
 	require.Equal(t, jkt, claims.Cnf.JKT, "cnf.jkt must match the DPoP key thumbprint")
+}
+
+// setupExchangeOptionsTest builds a JWT-mode Server with a single OIDCValidator
+// registered for SubjectTokenTypeIDToken and returns the server, its signing
+// key (for verifying issued tokens), and a freshly minted subject token ready
+// to be exchanged.
+func setupExchangeOptionsTest(t *testing.T) (*Server, *rsa.PrivateKey, string) {
+	t.Helper()
+
+	key := newTestECKey(t)
+	const kid = "exchange-options-key"
+	jwksURL, jwksClient := serveStaticJWKS(t, key, kid)
+
+	store := memory.New()
+	t.Cleanup(func() { store.Stop() })
+
+	signingKey := generateRSAKey(t)
+
+	cfg := &Config{
+		Issuer:                      "https://auth.example.com",
+		ResourceIdentifier:          "https://api.example.com",
+		SupportedScopes:             []string{"read", "write"},
+		AccessTokenTTL:              600,
+		AccessTokenFormat:           AccessTokenFormatJWT,
+		AccessTokenSigningKey:       signingKey,
+		AccessTokenSigningKeyID:     "options-kid",
+		AccessTokenSigningAlgorithm: SigningAlgorithmRS256,
+		DisableNonceEchoRequirement: true,
+	}
+
+	srv, err := New(mock.NewProvider(), store, store, store, cfg, nil)
+	require.NoError(t, err)
+
+	v, err := newOIDCValidatorWithClient([]TrustedIssuer{{Issuer: testIssuer, JwksURL: jwksURL}}, jwksClient)
+	require.NoError(t, err)
+	srv.subjectValidators = map[string]SubjectTokenValidator{
+		SubjectTokenTypeIDToken: v,
+	}
+
+	subjectToken := signSubjectToken(t, key, kid, josejwt.Claims{
+		Issuer:   testIssuer,
+		Subject:  testSubject,
+		Audience: josejwt.Audience{testAudience},
+		Expiry:   josejwt.NewNumericDate(time.Now().Add(time.Hour)),
+		IssuedAt: josejwt.NewNumericDate(time.Now()),
+	})
+
+	return srv, signingKey, subjectToken
+}
+
+func TestExchangeSubjectToken_WithIdentityClaims(t *testing.T) {
+	srv, signingKey, subjectToken := setupExchangeOptionsTest(t)
+
+	result, err := srv.ExchangeSubjectToken(
+		t.Context(),
+		subjectToken,
+		SubjectTokenTypeIDToken,
+		"https://api.example.com",
+		"read",
+		"",
+		ExchangeOptions{
+			Email:         "klaus-sre@machine.giantswarm.io",
+			EmailVerified: true,
+			Name:          "Klaus SRE Agent",
+			Groups:        []string{"klaus-sre", "machine"},
+		},
+	)
+	require.NoError(t, err)
+
+	parsed, err := josejwt.ParseSigned(result.AccessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+
+	var private rfc9068Claims
+	require.NoError(t, parsed.Claims(signingKey.Public(), &private))
+
+	require.Equal(t, "klaus-sre@machine.giantswarm.io", private.Email)
+	require.NotNil(t, private.EmailVerified)
+	require.True(t, *private.EmailVerified)
+	require.Equal(t, "Klaus SRE Agent", private.Name)
+	require.Equal(t, []string{"klaus-sre", "machine"}, private.Groups)
+	require.NotNil(t, private.Act, "act claim must still be set after identity injection")
+}
+
+func TestExchangeSubjectToken_WithExtraClaims(t *testing.T) {
+	srv, signingKey, subjectToken := setupExchangeOptionsTest(t)
+
+	result, err := srv.ExchangeSubjectToken(
+		t.Context(),
+		subjectToken,
+		SubjectTokenTypeIDToken,
+		"https://api.example.com",
+		"read",
+		"",
+		ExchangeOptions{
+			Extra: map[string]any{
+				"principal_kind": "machine",
+				"installation":   "glean",
+			},
+		},
+	)
+	require.NoError(t, err)
+
+	parsed, err := josejwt.ParseSigned(result.AccessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+
+	var rawClaims map[string]any
+	require.NoError(t, parsed.Claims(signingKey.Public(), &rawClaims))
+
+	require.Equal(t, "machine", rawClaims["principal_kind"])
+	require.Equal(t, "glean", rawClaims["installation"])
+}
+
+func TestExchangeSubjectToken_NoOptions_BackwardCompat(t *testing.T) {
+	srv, signingKey, subjectToken := setupExchangeOptionsTest(t)
+
+	result, err := srv.ExchangeSubjectToken(
+		t.Context(),
+		subjectToken,
+		SubjectTokenTypeIDToken,
+		"https://api.example.com",
+		"read",
+		"",
+	)
+	require.NoError(t, err)
+
+	parsed, err := josejwt.ParseSigned(result.AccessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+
+	var rawClaims map[string]any
+	require.NoError(t, parsed.Claims(signingKey.Public(), &rawClaims))
+
+	require.NotContains(t, rawClaims, "email")
+	require.NotContains(t, rawClaims, "email_verified")
+	require.NotContains(t, rawClaims, "name")
+	require.NotContains(t, rawClaims, "groups")
+}
+
+func TestExchangeSubjectToken_ExtraOverridesEmailVerified(t *testing.T) {
+	srv, signingKey, subjectToken := setupExchangeOptionsTest(t)
+
+	result, err := srv.ExchangeSubjectToken(
+		t.Context(),
+		subjectToken,
+		SubjectTokenTypeIDToken,
+		"https://api.example.com",
+		"read",
+		"",
+		ExchangeOptions{
+			Email:         "x@y.example",
+			EmailVerified: false,
+			Extra:         map[string]any{"email_verified": true},
+		},
+	)
+	require.NoError(t, err)
+
+	parsed, err := josejwt.ParseSigned(result.AccessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+
+	var rawClaims map[string]any
+	require.NoError(t, parsed.Claims(signingKey.Public(), &rawClaims))
+
+	require.Equal(t, true, rawClaims["email_verified"])
 }
