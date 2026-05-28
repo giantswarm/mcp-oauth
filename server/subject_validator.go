@@ -72,9 +72,8 @@ type OIDCValidator struct {
 }
 
 // NewOIDCValidator constructs an OIDCValidator for the given trusted issuers.
-// JWKS clients are created automatically: a private-IP-blocking client is used
-// by default; issuers with AllowPrivateIPJWKS set share a second client that
-// permits private-IP resolution.
+// SSRF-safe JWKS fetches are the default; set AllowPrivateIPJWKS on an issuer
+// to opt out per-issuer.
 func NewOIDCValidator(issuers []TrustedIssuer) (*OIDCValidator, error) {
 	safe := oidc.NewJWKSClient(nil, 0, nil)
 	var permissive *oidc.JWKSClient
@@ -88,8 +87,7 @@ func NewOIDCValidator(issuers []TrustedIssuer) (*OIDCValidator, error) {
 }
 
 // newOIDCValidatorWithClient is the internal constructor used by tests to inject
-// a custom JWKS client. Both safe and permissive slots are set to client, so
-// AllowPrivateIPJWKS routing works transparently in tests.
+// a custom JWKS client; both client slots are set to client.
 func newOIDCValidatorWithClient(issuers []TrustedIssuer, client *oidc.JWKSClient) (*OIDCValidator, error) {
 	return newOIDCValidatorWithClients(issuers, client, client)
 }

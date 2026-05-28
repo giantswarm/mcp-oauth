@@ -423,18 +423,8 @@ func TestOIDCValidator_AllowPrivateIPJWKS(t *testing.T) {
 	const kid = "test-key"
 	jwksURL, jwksClient := serveStaticJWKS(t, key, kid)
 
-	// NewOIDCValidator with AllowPrivateIPJWKS=true must create a permissive
-	// client. The test server is localhost (private IP), so validation succeeds
-	// only if the permissive client is used for this issuer.
-	//
-	// We call NewOIDCValidator directly (not the test-helper path) to exercise
-	// the production client-selection logic. The returned validator's internal
-	// permissiveClient will be an SSRF-safe-by-default client that has
-	// AllowPrivateIP=true, but we can't reach the httptest TLS server with it
-	// because it uses a custom TLS cert. Use newOIDCValidatorWithClient so the
-	// injected client (already configured for the httptest cert) is used for both
-	// slots — the important thing is that AllowPrivateIPJWKS=true routes to the
-	// permissive slot and a valid token is accepted.
+	// httptest TLS cert mismatch prevents using NewOIDCValidator directly; inject
+	// the configured client so AllowPrivateIPJWKS routing is still exercised.
 	v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
 		Issuer:             testIssuer,
 		JwksURL:            jwksURL,
@@ -457,8 +447,6 @@ func TestOIDCValidator_AllowPrivateIPJWKS(t *testing.T) {
 }
 
 func TestNewOIDCValidator_AllowPrivateIPJWKS_CreatesPermissiveClient(t *testing.T) {
-	// Verify that NewOIDCValidator creates a non-nil permissiveClient when at
-	// least one issuer sets AllowPrivateIPJWKS, and leaves it nil otherwise.
 	withPrivate, err := NewOIDCValidator([]TrustedIssuer{{
 		Issuer:             testIssuer,
 		JwksURL:            "https://example.com/jwks",
