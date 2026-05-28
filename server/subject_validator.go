@@ -11,17 +11,15 @@ import (
 )
 
 // SubjectTokenValidator verifies a JWT against a set of trusted issuers and
-// returns the verified identity. Implementations are consulted both by the
-// RFC 8693 token-exchange handler (for subject_token) and by ValidateToken
-// (for Bearer JWTs at /mcp).
+// returns the verified identity. defaultAudiences applies when the matched
+// issuer's AllowedAudiences is empty; pass nil to accept any audience.
 type SubjectTokenValidator interface {
 	Validate(ctx context.Context, tokenString string, defaultAudiences []string) (*SubjectIdentity, error)
 }
 
-// SubjectIdentity carries the verified identity extracted from a JWT. Subject,
-// Issuer, and AllowedScopes drive RFC 8693 token-exchange issuance. Claims
-// carries the full verified payload for callers that need email, groups, or
-// other claims (notably the /mcp ValidateToken path constructing UserInfo).
+// SubjectIdentity carries the verified identity extracted from a JWT.
+// Claims is the full verified payload; callers that only need the
+// canonical fields can use Subject, Issuer, and AllowedScopes directly.
 type SubjectIdentity struct {
 	Subject       string
 	Issuer        string
@@ -30,10 +28,9 @@ type SubjectIdentity struct {
 }
 
 // ErrIssuerNotTrusted is returned by Validate when the token is not a JWT,
-// its iss claim is absent, or its iss is not in the configured trusted
-// issuer set. Callers presenting it at a resource server may use
-// errors.Is to fall through to alternative validation paths; the
-// token-exchange handler treats it as a hard rejection.
+// has no iss claim, or its iss is not in the configured issuer set.
+// Resource-server callers may use errors.Is to fall through to other
+// validation paths.
 var ErrIssuerNotTrusted = errors.New("untrusted issuer")
 
 // TrustedIssuer configures a trusted external token issuer for OIDCValidator.
@@ -71,11 +68,10 @@ type TrustedIssuer struct {
 	AllowPrivateIPJWKS bool
 }
 
-// OIDCValidator validates tokens from statically configured trusted issuers.
-// It accepts the following subject_token_type values:
-//   - urn:ietf:params:oauth:token-type:id_token
-//   - urn:ietf:params:oauth:token-type:access_token
-//   - urn:ietf:params:oauth:token-type:jwt
+// OIDCValidator validates JWTs from statically configured trusted issuers.
+// The unverified iss claim routes the token to its TrustedIssuer entry;
+// signature, audience, and AllowedClaims checks against that entry are
+// the security boundary.
 type OIDCValidator struct {
 	issuers          map[string]TrustedIssuer
 	safeClient       *oidc.JWKSClient

@@ -97,23 +97,15 @@ func WithTokenRefreshHandler(handler TokenRefreshHandler) Option {
 // WithTrustedIssuers registers external JWT issuers whose tokens this server
 // accepts. The same validator is consulted in two places:
 //
-//   - The RFC 8693 token-exchange handler validates the subject_token against
-//     these issuers when the requested subject_token_type is
-//     urn:ietf:params:oauth:token-type:id_token,
-//     urn:ietf:params:oauth:token-type:access_token, or
-//     urn:ietf:params:oauth:token-type:jwt.
-//   - ValidateToken accepts a Bearer JWT directly at /mcp when its iss claim
-//     matches one of the configured issuers, validating signature via that
-//     issuer's JWKS and the aud claim against the entry's AllowedAudiences
-//     (defaulting to the server's ResourceIdentifier when AllowedAudiences
-//     is empty). This makes the option suitable for peer machine IdPs — for
-//     example, a sibling muster acting as a token broker that issues tokens
-//     for service-account principals — without exposing the primary provider's
-//     signing key to those peers.
+//   - RFC 8693 token exchange: subject_token of type id_token, access_token,
+//     or jwt is routed to the matching issuer entry.
+//   - ValidateToken: a Bearer JWT at /mcp is accepted when its iss matches
+//     a configured entry. Signature is verified via the entry's JWKS; aud
+//     is checked against AllowedAudiences (defaulting to the server's
+//     ResourceIdentifier when empty); RFC 9068 typ=at+jwt is enforced.
 //
-// Use TrustedIssuer.AllowedClaims to restrict which tokens are accepted per
-// issuer (typical: pin sub to a service-account namespace). Empty list is a
-// no-op.
+// Use TrustedIssuer.AllowedClaims to constrain accepted subjects per issuer.
+// Empty list is a no-op.
 func WithTrustedIssuers(issuers []TrustedIssuer) Option {
 	return func(s *Server) {
 		if len(issuers) == 0 {

@@ -170,8 +170,8 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 	})
 }
 
-// ValidateToken validates an access token across all three accepted bearer
-// formats. Validation is format-agnostic by design — operators of one
+// ValidateToken validates an access token across every accepted bearer
+// format. Validation is format-agnostic by design — operators of one
 // server instance pick one issuance format, but operators running multiple
 // instances or upgrading progressively can rely on the validator accepting
 // every format their consumers have already received.
@@ -183,15 +183,23 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 //     verification against the configured public key. No provider
 //     round-trip. See [Server.validateSelfIssuedJWT] for the security
 //     boundary checks (signature, typ, exp, aud, jti, family).
-//  2. Forwarded ID token (when the bearer is a JWT whose iss is something
-//     else AND its aud matches Config.TrustedAudiences). Verified via the
-//     upstream provider's JWKS for SSO token forwarding.
-//  3. Opaque token (TokenStore lookup, then provider userinfo). The
+//  2. Trusted-issuer JWT (when WithTrustedIssuers is configured AND the
+//     bearer's iss matches a configured entry). Signature verified via the
+//     entry's JWKS; aud checked against the entry's AllowedAudiences
+//     (defaulting to Config.GetResourceIdentifier when empty); RFC 9068 §4
+//     typ=at+jwt enforced. A non-matching iss returns ErrIssuerNotTrusted
+//     and falls through to subsequent branches; any other validation
+//     failure is a hard rejection.
+//  3. Forwarded ID token (when the bearer is a JWT whose aud matches
+//     Config.TrustedAudiences). Verified via the upstream provider's JWKS
+//     for SSO token forwarding.
+//  4. Opaque token (TokenStore lookup, then provider userinfo). The
 //     catch-all for non-JWT bearers.
 //
-// Step 1 is opt-in (AccessTokenFormatJWT), step 2 is opt-in
-// (TrustedAudiences), step 3 is always available. Rate limiting should be
-// done at the HTTP layer with IP address, not here with the token.
+// Steps 1, 2, and 3 are opt-in (AccessTokenFormatJWT, WithTrustedIssuers,
+// TrustedAudiences respectively); step 4 is always available. Rate
+// limiting should be done at the HTTP layer with IP address, not here
+// with the token.
 //
 // Error responses: callers SHOULD respond with a single 401 form
 // regardless of the returned error class. The error message distinguishes
@@ -217,6 +225,10 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 		return userInfo, err
 	}
 
+	// PRIORITY 2: Trusted-issuer JWT (WithTrustedIssuers). ErrIssuerNotTrusted
+	// means the bearer isn't for any configured peer and the next branch is
+	// allowed to handle it; any other error is a hard reject so a peer-signed
+	// token with a bad audience or wrong typ cannot succeed at a later branch.
 	if s.trustedIssuerValidator != nil {
 		identity, err := s.trustedIssuerValidator.Validate(ctx, accessToken, []string{s.Config.GetResourceIdentifier()})
 		switch {
@@ -229,14 +241,14 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 			s.logTrustedIssuerJWTAccepted(ctx, accessToken, identity.Issuer, userInfo)
 			return userInfo, nil
 		case errors.Is(err, ErrIssuerNotTrusted):
-			// Token not for any trusted peer; fall through to remaining branches.
+			// Fall through.
 		default:
 			s.Auditor.LogAuthFailure(ctx, "", "", "", "trusted_issuer_jwt_invalid")
 			return nil, fmt.Errorf("trusted issuer JWT validation failed: %w", err)
 		}
 	}
 
-	// PRIORITY 2: Forwarded ID token (JWT) from a trusted upstream service.
+	// PRIORITY 3: Forwarded ID token (JWT) from a trusted upstream service.
 	// Must run BEFORE the opaque path, as ID tokens cannot be validated via
 	// the upstream provider's userinfo endpoint.
 	if len(s.Config.TrustedAudiences) > 0 && oidc.IsJWT(accessToken) {
@@ -253,7 +265,7 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 		}
 	}
 
-	// PRIORITY 3: Opaque token (TokenStore + upstream provider userinfo).
+	// PRIORITY 4: Opaque token (TokenStore + upstream provider userinfo).
 	storedToken, err := s.validateStoredToken(ctx, accessToken)
 	if err != nil {
 		return nil, err
