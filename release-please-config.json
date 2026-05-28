@@ -1,5 +1,8 @@
 {
   "release-type": "simple",
+  "packages": {
+    ".": {}
+  },
   "changelog-sections": [
     {"type": "feat",     "section": "### Added"},
     {"type": "fix",      "section": "### Fixed"},
