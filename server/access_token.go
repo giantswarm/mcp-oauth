@@ -205,9 +205,9 @@ func (j *jwtIssuer) Issue(_ context.Context, c AccessTokenClaims) (string, error
 
 	claims := rfc9068Claims{
 		Claims: josejwt.Claims{
-			Issuer:   j.issuer,
-			Subject:  c.Subject,
-			Audience: josejwt.Audience{c.Audience},
+			Issuer:    j.issuer,
+			Subject:   c.Subject,
+			Audience:  josejwt.Audience{c.Audience},
 			Expiry:    josejwt.NewNumericDate(c.ExpiresAt),
 			IssuedAt:  josejwt.NewNumericDate(c.IssuedAt),
 			NotBefore: josejwt.NewNumericDate(c.IssuedAt),

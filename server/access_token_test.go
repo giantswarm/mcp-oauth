@@ -74,6 +74,7 @@ func TestJWTIssuer_RFC9068ClaimShape(t *testing.T) {
 	require.NotNil(t, standard.Expiry)
 	require.InDelta(t, now.Add(15*time.Minute).Unix(), int64(*standard.Expiry), 1)
 	require.NotNil(t, standard.IssuedAt)
+	require.InDelta(t, now.Unix(), int64(*standard.IssuedAt), 1)
 	require.NotNil(t, standard.NotBefore)
 	require.Equal(t, int64(*standard.IssuedAt), int64(*standard.NotBefore))
 	require.NotEmpty(t, standard.ID)
