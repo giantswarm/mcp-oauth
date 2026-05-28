@@ -81,20 +81,20 @@ type Server struct {
 	securityEventRateLimiter      *security.RateLimiter
 	clientRegistrationRateLimiter *security.ClientRegistrationRateLimiter
 	instrumentation               *instrumentation.Instrumentation
-	tracer                        trace.Tracer                            // OpenTelemetry tracer for server operations
-	metadataCache                 *clientMetadataCache                    // Cache for URL-based client metadata (MCP 2025-11-25)
-	metadataFetchGroup            singleflight.Group                      // Deduplicates concurrent metadata fetches (DoS protection)
-	metadataFetchRateLimiter      *security.RateLimiter                   // Per-domain rate limiter for metadata fetches
-	metadataCacheCleanupCtx       context.Context                         // Context for metadata cache cleanup goroutine
-	metadataCacheCleanupCancel    context.CancelFunc                      // Cancel function for cleanup goroutine
-	jwksClient                    *oidc.JWKSClient                        // JWKS client for SSO token forwarding validation
-	jwksClientOnce                sync.Once                               // Ensures JWKS client is initialized only once
-	accessTokenIssuer             AccessTokenIssuer                       // Issues access tokens (opaque random or signed JWT depending on Config.AccessTokenFormat)
-	revokedTokenStore             storage.RevokedTokenStore               // Tracks revoked self-issued JWT access tokens by jti (nil in opaque mode or when storage backend does not support it)
-	tokenPairs                    sync.Map                                // Maps client access token -> client refresh token for paired updates
-	tokenPairsByRefresh           sync.Map                                // Maps client refresh token -> client access token for pair cleanup
-	refreshGroup                  singleflight.Group                      // Deduplicates concurrent provider token refreshes per access token
-	refreshSessionGroup           singleflight.Group                      // Deduplicates concurrent RefreshSession calls per family ID
+	tracer                        trace.Tracer              // OpenTelemetry tracer for server operations
+	metadataCache                 *clientMetadataCache      // Cache for URL-based client metadata (MCP 2025-11-25)
+	metadataFetchGroup            singleflight.Group        // Deduplicates concurrent metadata fetches (DoS protection)
+	metadataFetchRateLimiter      *security.RateLimiter     // Per-domain rate limiter for metadata fetches
+	metadataCacheCleanupCtx       context.Context           // Context for metadata cache cleanup goroutine
+	metadataCacheCleanupCancel    context.CancelFunc        // Cancel function for cleanup goroutine
+	jwksClient                    *oidc.JWKSClient          // JWKS client for SSO token forwarding validation
+	jwksClientOnce                sync.Once                 // Ensures JWKS client is initialized only once
+	accessTokenIssuer             AccessTokenIssuer         // Issues access tokens (opaque random or signed JWT depending on Config.AccessTokenFormat)
+	revokedTokenStore             storage.RevokedTokenStore // Tracks revoked self-issued JWT access tokens by jti (nil in opaque mode or when storage backend does not support it)
+	tokenPairs                    sync.Map                  // Maps client access token -> client refresh token for paired updates
+	tokenPairsByRefresh           sync.Map                  // Maps client refresh token -> client access token for pair cleanup
+	refreshGroup                  singleflight.Group        // Deduplicates concurrent provider token refreshes per access token
+	refreshSessionGroup           singleflight.Group        // Deduplicates concurrent RefreshSession calls per family ID
 	// subjectValidators is the registry for RFC 8693 token-exchange validators,
 	// keyed by subject_token_type URN.
 	subjectValidators map[string]SubjectTokenValidator

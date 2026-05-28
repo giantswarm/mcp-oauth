@@ -424,7 +424,7 @@ func TestResolveScopes(t *testing.T) {
 	srv := &Server{
 		provider:        provider,
 		instrumentation: testInstrumentation(t),
-		auditor: testAuditor(),
+		auditor:         testAuditor(),
 	}
 
 	tests := []struct {

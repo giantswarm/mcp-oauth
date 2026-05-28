@@ -372,9 +372,9 @@ func TestFetchClientMetadata(t *testing.T) {
 			ClientMetadataFetchTimeout:      10 * time.Second,
 			EnableClientIDMetadataDocuments: true,
 		},
-		logger: logger,
+		logger:          logger,
 		instrumentation: testInstrumentation(t),
-		auditor: testAuditor(),
+		auditor:         testAuditor(),
 	}
 
 	// Test successful fetch
@@ -411,9 +411,9 @@ func TestFetchClientMetadata(t *testing.T) {
 				ClientMetadataFetchTimeout:      10 * time.Second,
 				EnableClientIDMetadataDocuments: true,
 			},
-			logger: logger,
+			logger:          logger,
 			instrumentation: testInstrumentation(t),
-			auditor: testAuditor(),
+			auditor:         testAuditor(),
 		}
 
 		// Create server that returns wrong client_id
@@ -612,11 +612,11 @@ func TestMetadataFetchRateLimiting(t *testing.T) {
 	}
 
 	srv := &Server{
-		config: config,
-		logger: logger,
+		config:          config,
+		logger:          logger,
 		metadataCache:   newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
 		instrumentation: testInstrumentation(t),
-		auditor: testAuditor(),
+		auditor:         testAuditor(),
 	}
 
 	// Set up strict rate limiter: 2 requests per second, burst of 2
@@ -730,9 +730,9 @@ func TestRedirectURIValidation(t *testing.T) {
 					ClientMetadataFetchTimeout:      5 * time.Second,
 					EnableClientIDMetadataDocuments: true,
 				},
-				logger: logger,
+				logger:          logger,
 				instrumentation: testInstrumentation(t),
-				auditor: testAuditor(),
+				auditor:         testAuditor(),
 			}
 
 			clientID := serverURL + "/client"
@@ -1038,12 +1038,12 @@ func TestGetOrFetchClient_NonURLClientID(t *testing.T) {
 	}
 
 	srv := &Server{
-		config: config,
-		logger: logger,
+		config:          config,
+		logger:          logger,
 		clientStore:     clientStore,
 		metadataCache:   newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
 		instrumentation: testInstrumentation(t),
-		auditor: testAuditor(),
+		auditor:         testAuditor(),
 	}
 
 	// Test that non-URL client IDs use normal client store lookup
@@ -1068,11 +1068,11 @@ func TestGetOrFetchClient_URLClientID_CIMDDisabled(t *testing.T) {
 	}
 
 	srv := &Server{
-		config: config,
-		logger: logger,
+		config:          config,
+		logger:          logger,
 		metadataCache:   newClientMetadataCache(5*time.Minute, 1000),
 		instrumentation: testInstrumentation(t),
-		auditor: testAuditor(),
+		auditor:         testAuditor(),
 	}
 
 	// Test that URL client IDs are rejected when CIMD is disabled
@@ -1095,11 +1095,11 @@ func TestGetOrFetchClient_URLClientID_CacheHit(t *testing.T) {
 	}
 
 	srv := &Server{
-		config: config,
-		logger: logger,
+		config:          config,
+		logger:          logger,
 		metadataCache:   newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
 		instrumentation: testInstrumentation(t),
-		auditor: testAuditor(),
+		auditor:         testAuditor(),
 	}
 
 	// Pre-populate cache with a URL client
@@ -1155,9 +1155,9 @@ func TestFetchClientMetadata_AllowPrivateIP(t *testing.T) {
 				EnableClientIDMetadataDocuments: true,
 				AllowPrivateIPClientMetadata:    false, // SSRF protection enabled (default)
 			},
-			logger: logger,
+			logger:          logger,
 			instrumentation: testInstrumentation(t),
-			auditor: testAuditor(),
+			auditor:         testAuditor(),
 		}
 
 		clientID := ts.URL + "/client-metadata.json"
@@ -1181,9 +1181,9 @@ func TestFetchClientMetadata_AllowPrivateIP(t *testing.T) {
 				EnableClientIDMetadataDocuments: true,
 				AllowPrivateIPClientMetadata:    true, // Allow private IPs for internal networks
 			},
-			logger: logger,
+			logger:          logger,
 			instrumentation: testInstrumentation(t),
-			auditor: testAuditor(),
+			auditor:         testAuditor(),
 		}
 
 		clientID := ts.URL + "/client-metadata.json"
@@ -1230,11 +1230,11 @@ func TestGetOrFetchClient_SingleflightHonoursCallerContextCancel(t *testing.T) {
 		ClientMetadataCacheTTL:          5 * time.Minute,
 	}
 	srv := &Server{
-		config: config,
-		logger: logger,
+		config:          config,
+		logger:          logger,
 		metadataCache:   newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
 		instrumentation: testInstrumentation(t),
-		auditor: testAuditor(),
+		auditor:         testAuditor(),
 	}
 
 	canceledCtx, cancel := context.WithCancel(context.Background())
@@ -1259,11 +1259,11 @@ func TestGetOrFetchClient_URLClientID_NegativeCacheHit(t *testing.T) {
 	}
 
 	srv := &Server{
-		config: config,
-		logger: logger,
+		config:          config,
+		logger:          logger,
 		metadataCache:   newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
 		instrumentation: testInstrumentation(t),
-		auditor: testAuditor(),
+		auditor:         testAuditor(),
 	}
 
 	// Pre-populate negative cache
@@ -1346,9 +1346,9 @@ func TestFetchClientMetadata_ClientNameValidation(t *testing.T) {
 					EnableClientIDMetadataDocuments: true,
 					AllowPrivateIPClientMetadata:    true, // Allow private IPs to bypass SSRF for testing
 				},
-				logger: logger,
+				logger:          logger,
 				instrumentation: testInstrumentation(t),
-				auditor: testAuditor(),
+				auditor:         testAuditor(),
 			}
 
 			clientID := ts.URL + "/client-metadata.json"

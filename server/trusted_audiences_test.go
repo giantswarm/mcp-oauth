@@ -102,9 +102,9 @@ func TestIsTrustedAudience(t *testing.T) {
 			}
 
 			srv := &Server{
-				config: config,
+				config:          config,
 				instrumentation: testInstrumentation(t),
-				auditor: testAuditor(),
+				auditor:         testAuditor(),
 			}
 
 			got := srv.isTrustedAudience(tt.audience)
@@ -192,11 +192,11 @@ func TestValidateTokenAudience_WithTrustedAudiences(t *testing.T) {
 			}
 
 			srv := &Server{
-				config: config,
+				config:          config,
 				tokenStore:      store,
 				flowStore:       store,
-				auditor: auditor,
-				logger: logger,
+				auditor:         auditor,
+				logger:          logger,
 				instrumentation: testInstrumentation(t),
 			}
 
@@ -353,9 +353,9 @@ func TestLogCrossClientTokenAccepted(t *testing.T) {
 	}
 
 	srv := &Server{
-		config: config,
-		auditor: auditor,
-		logger: logger,
+		config:          config,
+		auditor:         auditor,
+		logger:          logger,
 		instrumentation: testInstrumentation(t),
 	}
 
@@ -400,9 +400,9 @@ func TestTrustedAudiences_ConstantTimeComparison(t *testing.T) {
 	}
 
 	srv := &Server{
-		config: config,
+		config:          config,
 		instrumentation: testInstrumentation(t),
-		auditor: testAuditor(),
+		auditor:         testAuditor(),
 	}
 
 	// These should both use the same code path with constant-time comparison
@@ -435,11 +435,11 @@ func TestTrustedAudiences_BackwardCompatibility(t *testing.T) {
 	}
 
 	srv := &Server{
-		config: config,
+		config:          config,
 		tokenStore:      store,
-		logger: logger,
+		logger:          logger,
 		instrumentation: testInstrumentation(t),
-		auditor: testAuditor(),
+		auditor:         testAuditor(),
 	}
 
 	// Save a token with metadata for server's own audience
@@ -481,9 +481,9 @@ func TestTrustedAudiences_URLNormalization(t *testing.T) {
 	}
 
 	srv := &Server{
-		config: config,
+		config:          config,
 		instrumentation: testInstrumentation(t),
-		auditor: testAuditor(),
+		auditor:         testAuditor(),
 	}
 
 	// With trailing slash normalization, these should match
@@ -559,7 +559,7 @@ func TestFindMatchingTrustedAudience(t *testing.T) {
 					TrustedAudiences: tt.trustedAudiences,
 				},
 				instrumentation: testInstrumentation(t),
-				auditor: testAuditor(),
+				auditor:         testAuditor(),
 			}
 
 			got := srv.findMatchingTrustedAudience(tt.tokenAudiences)
@@ -595,13 +595,13 @@ func TestValidateToken_JWTBeforeUserinfo(t *testing.T) {
 	mockProvider := mock.NewProvider()
 
 	srv := &Server{
-		config: config,
+		config:          config,
 		tokenStore:      store,
 		flowStore:       store,
 		provider:        mockProvider,
-		logger: logger,
+		logger:          logger,
 		instrumentation: testInstrumentation(t),
-		auditor: testAuditor(),
+		auditor:         testAuditor(),
 	}
 
 	// Test with an opaque token (not a JWT) - should call userinfo
@@ -674,13 +674,13 @@ func TestValidateToken_IssuerValidation(t *testing.T) {
 		}
 
 		srv := &Server{
-			config: config,
+			config:          config,
 			tokenStore:      store,
 			flowStore:       store,
 			provider:        mockProvider,
-			logger: logger,
+			logger:          logger,
 			instrumentation: testInstrumentation(t),
-			auditor: testAuditor(),
+			auditor:         testAuditor(),
 		}
 
 		// Use test JWT with valid structure but invalid signature
@@ -698,13 +698,13 @@ func TestValidateToken_IssuerValidation(t *testing.T) {
 		mockProvider.ResetCallCounts()
 
 		srv := &Server{
-			config: config,
+			config:          config,
 			tokenStore:      store,
 			flowStore:       store,
 			provider:        mockProvider,
-			logger: logger,
+			logger:          logger,
 			instrumentation: testInstrumentation(t),
-			auditor: testAuditor(),
+			auditor:         testAuditor(),
 		}
 
 		// Use test JWT with valid structure but invalid signature
@@ -726,13 +726,13 @@ func TestValidateToken_IssuerValidation(t *testing.T) {
 		}
 
 		srv := &Server{
-			config: config,
+			config:          config,
 			tokenStore:      store,
 			flowStore:       store,
 			provider:        mockProvider,
-			logger: logger,
+			logger:          logger,
 			instrumentation: testInstrumentation(t),
-			auditor: testAuditor(),
+			auditor:         testAuditor(),
 		}
 
 		// Use test JWT with valid structure but invalid signature
@@ -813,10 +813,10 @@ func TestGetJWKSClient_AllowPrivateIPJWKS(t *testing.T) {
 		}
 
 		srv := &Server{
-			config: config,
-			logger: slog.Default(),
+			config:          config,
+			logger:          slog.Default(),
 			instrumentation: testInstrumentation(t),
-			auditor: testAuditor(),
+			auditor:         testAuditor(),
 		}
 
 		client := srv.getJWKSClient()
@@ -832,10 +832,10 @@ func TestGetJWKSClient_AllowPrivateIPJWKS(t *testing.T) {
 		}
 
 		srv := &Server{
-			config: config,
-			logger: slog.Default(),
+			config:          config,
+			logger:          slog.Default(),
 			instrumentation: testInstrumentation(t),
-			auditor: testAuditor(),
+			auditor:         testAuditor(),
 		}
 
 		client := srv.getJWKSClient()
@@ -851,10 +851,10 @@ func TestGetJWKSClient_AllowPrivateIPJWKS(t *testing.T) {
 		}
 
 		srv := &Server{
-			config: config,
-			logger: slog.Default(),
+			config:          config,
+			logger:          slog.Default(),
 			instrumentation: testInstrumentation(t),
-			auditor: testAuditor(),
+			auditor:         testAuditor(),
 		}
 
 		client1 := srv.getJWKSClient()
@@ -872,10 +872,10 @@ func TestGetJWKSClient_AllowPrivateIPJWKS(t *testing.T) {
 		}
 
 		srv := &Server{
-			config: config,
-			logger: slog.Default(),
+			config:          config,
+			logger:          slog.Default(),
 			instrumentation: testInstrumentation(t),
-			auditor: testAuditor(),
+			auditor:         testAuditor(),
 		}
 
 		client := srv.getJWKSClient()
@@ -905,10 +905,10 @@ func TestGetJWKSClient_AllowPrivateIPJWKS(t *testing.T) {
 		}
 
 		srv := &Server{
-			config: config,
-			logger: slog.Default(),
+			config:          config,
+			logger:          slog.Default(),
 			instrumentation: testInstrumentation(t),
-			auditor: testAuditor(),
+			auditor:         testAuditor(),
 		}
 
 		client := srv.getJWKSClient()
@@ -940,10 +940,10 @@ func TestGetJWKSClient_AllowPrivateIPJWKS(t *testing.T) {
 		}
 
 		srv := &Server{
-			config: config,
-			logger: slog.Default(),
+			config:          config,
+			logger:          slog.Default(),
 			instrumentation: testInstrumentation(t),
-			auditor: testAuditor(),
+			auditor:         testAuditor(),
 		}
 
 		client := srv.getJWKSClient()
@@ -986,13 +986,13 @@ func TestValidateToken_TokenSource_OAuth(t *testing.T) {
 	mockProvider := mock.NewProvider()
 
 	srv := &Server{
-		config: config,
+		config:          config,
 		tokenStore:      store,
 		flowStore:       store,
 		provider:        mockProvider,
-		logger: logger,
+		logger:          logger,
 		instrumentation: testInstrumentation(t),
-		auditor: testAuditor(),
+		auditor:         testAuditor(),
 	}
 
 	// Opaque token validated via userinfo endpoint should have TokenSourceOAuth
@@ -1035,12 +1035,12 @@ func TestValidateToken_TokenSource_SSO(t *testing.T) {
 	}
 
 	srv := &Server{
-		config: config,
+		config:          config,
 		tokenStore:      store,
 		flowStore:       store,
-		logger: logger,
+		logger:          logger,
 		instrumentation: testInstrumentation(t),
-		auditor: testAuditor(),
+		auditor:         testAuditor(),
 	}
 
 	// Test idTokenClaimsToUserInfo sets TokenSourceSSO

@@ -12,7 +12,7 @@ import (
 func FuzzComputePKCEChallenge_S256(f *testing.F) {
 	srv := &Server{
 		instrumentation: testInstrumentation(f),
-		auditor: testAuditor(),
+		auditor:         testAuditor(),
 	}
 	for _, seed := range []string{
 		"abcDEF-._~",
