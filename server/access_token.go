@@ -83,10 +83,12 @@ type AccessTokenClaims struct {
 	// (RFC 9449 §6.1). Non-empty only when the token was requested with a DPoP proof.
 	JKT string
 
-	// Extra holds application-defined claims merged into the JWT body verbatim.
-	// Keys colliding with standard JWT claims (sub, iss, aud, exp, iat, jti,
-	// scope, client_id, etc.) will overwrite them — callers are responsible
-	// for using non-conflicting claim names. Nil is a no-op.
+	// Extra holds application-defined claims merged into the JWT body verbatim
+	// after the standard claims. Keys must not collide with RFC 7519 §4.1
+	// registered claim names (iss, sub, aud, exp, nbf, iat, jti) — Issue
+	// returns an error if they do. OIDC-profile claims (email, name, groups,
+	// email_verified) set via struct fields are not guarded and can be
+	// overridden by Extra. Nil is a no-op.
 	Extra map[string]any
 }
 
@@ -170,6 +172,14 @@ func newJWTIssuer(cfg *Config) (*jwtIssuer, error) {
 // confusing the two enables a class of token-substitution attacks.
 const rfc9068TokenType = "at+jwt"
 
+// jwtReservedClaims is the set of RFC 7519 §4.1 registered claim names that
+// Issue sets explicitly. Allowing Extra to override them would let callers
+// extend token lifetime (exp), forge issuers (iss), or substitute subjects (sub).
+var jwtReservedClaims = map[string]struct{}{
+	"iss": {}, "sub": {}, "aud": {},
+	"exp": {}, "nbf": {}, "iat": {}, "jti": {},
+}
+
 // rfc9068Claims is the on-the-wire claim shape for an RFC 9068 access token.
 // Standard registered claims live on the embedded josejwt.Claims; the rest
 // are RFC 9068 §2.2 plus the OIDC-style email/groups extras carried for
@@ -229,6 +239,11 @@ func (j *jwtIssuer) Issue(_ context.Context, c AccessTokenClaims) (string, error
 
 	builder := josejwt.Signed(j.signer).Claims(claims)
 	if len(c.Extra) > 0 {
+		for k := range c.Extra {
+			if _, reserved := jwtReservedClaims[k]; reserved {
+				return "", fmt.Errorf("Extra map contains reserved JWT claim %q", k)
+			}
+		}
 		builder = builder.Claims(c.Extra)
 	}
 	signed, err := builder.Serialize()

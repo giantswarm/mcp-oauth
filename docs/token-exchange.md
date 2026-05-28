@@ -133,6 +133,33 @@ The issued access token contains an `act` claim per RFC 8693 §4.4:
 
 `act.iss` records the original issuer; `act.sub` records the original subject. The delegation chain is preserved if the issued token is exchanged again.
 
+## Injecting identity claims
+
+Programmatic callers wrapping `Server.ExchangeSubjectToken` (for example a broker that resolves a Kubernetes ServiceAccount `sub` to a machine principal, or an on-behalf-of flow that needs to carry the original user's identity) can populate the issued JWT's `email`, `email_verified`, `name`, `groups`, and arbitrary extra top-level claims by passing an `ExchangeOptions`:
+
+```go
+result, err := srv.ExchangeSubjectToken(
+    ctx,
+    subjectToken,
+    subjectTokenType,
+    resource,
+    scope,
+    dpopJKT,
+    server.ExchangeOptions{
+        Email:         "klaus-sre@machine.giantswarm.io",
+        EmailVerified: true,
+        Groups:        []string{"klaus-sre"},
+        Extra:         map[string]any{"principal_kind": "machine"},
+    },
+)
+```
+
+The resulting JWT carries `email`, `email_verified: true`, `groups: ["klaus-sre"]`, and `principal_kind: "machine"` alongside the standard exchanged-token claims (`sub`, `iss`, `aud`, `act`, etc).
+
+`Extra` is merged into the JWT body after the standard claims. RFC 7519 §4.1 registered claim names (`iss`, `sub`, `aud`, `exp`, `nbf`, `iat`, `jti`) are rejected — `ExchangeSubjectToken` returns an error if `Extra` contains any of them. OIDC-profile claims already set via struct fields (`email`, `name`, `groups`, `email_verified`) are not guarded and `Extra` can override them.
+
+This is library API only: the HTTP `/oauth/token` endpoint does not extract these from the request form. Use it from in-process wrappers that have already resolved the identity out-of-band.
+
 ## Route registration
 
 Token exchange is handled by `ServeToken` — no separate route is required. It activates automatically when the `grant_type` is `urn:ietf:params:oauth:grant-type:token-exchange` and at least one `SubjectTokenValidator` is registered. No `SubjectTokenValidator` = token exchange returns `unsupported_grant_type`.

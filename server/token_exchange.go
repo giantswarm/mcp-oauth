@@ -20,15 +20,42 @@ type TokenExchangeResult struct {
 	IssuedTokenType string
 }
 
+// ExchangeOptions carries optional identity claims to inject into the access
+// token issued by ExchangeSubjectToken.
+//
+// String and slice fields are omitted from the JWT when empty. EmailVerified is
+// emitted only when Email is also non-empty (consistent with AccessTokenClaims
+// semantics). Extra is merged into the JWT body after the standard claims; RFC
+// 7519 §4.1 registered claim names (iss, sub, aud, exp, nbf, iat, jti) are
+// rejected — Issue returns an error if Extra contains any of them. OIDC profile
+// claims set via struct fields (email, name, groups, email_verified) are not
+// guarded and can be overridden by Extra.
+type ExchangeOptions struct {
+	Email string
+	// EmailVerified indicates whether Email has been verified by the identity
+	// source. Zero value is false and is emitted as email_verified: false
+	// whenever Email is non-empty — set explicitly when verification is guaranteed.
+	EmailVerified bool
+	Name          string
+	Groups        []string
+	Extra         map[string]any
+}
+
 // ExchangeSubjectToken validates subjectToken using the registered SubjectTokenValidator
 // for subjectTokenType, then issues a signed JWT access token. resource becomes the aud
 // claim (required per RFC 8707). scope is intersected against the per-issuer AllowedScopes
 // envelope from TrustedIssuer configuration. dpopJKT is the JWK thumbprint from a
 // validated DPoP proof; when non-empty it is written into the cnf.jkt claim of the
 // issued JWT per RFC 9449 §6.1. Pass empty string when no DPoP proof was presented.
+//
+// opts is an optional ExchangeOptions whose identity fields are emitted as
+// standard JWT claims (email, email_verified, name, groups) and whose Extra
+// map is merged verbatim into the JWT body. Omitting opts adds no identity
+// claims. Only the first element is used when multiple are provided.
 func (s *Server) ExchangeSubjectToken(
 	ctx context.Context,
 	subjectToken, subjectTokenType, resource, scope, dpopJKT string,
+	opts ...ExchangeOptions,
 ) (*TokenExchangeResult, error) {
 	if !s.Config.IsJWTAccessTokenFormat() {
 		s.Auditor.LogEvent(ctx, security.Event{
@@ -93,15 +120,25 @@ func (s *Server) ExchangeSubjectToken(
 	}
 	expiresAt := now.Add(ttl)
 
+	var o ExchangeOptions
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+
 	tokenStr, err := s.accessTokenIssuer.Issue(ctx, AccessTokenClaims{
-		Subject:   identity.Subject,
-		Audience:  resource,
-		Scopes:    strings.Fields(grantedScope),
-		IssuedAt:  now,
-		ExpiresAt: expiresAt,
-		JTI:       generateRandomToken(),
-		Act:       &Actor{Iss: identity.Issuer, Sub: identity.Subject},
-		JKT:       dpopJKT,
+		Subject:       identity.Subject,
+		Audience:      resource,
+		Scopes:        strings.Fields(grantedScope),
+		IssuedAt:      now,
+		ExpiresAt:     expiresAt,
+		JTI:           generateRandomToken(),
+		Act:           &Actor{Iss: identity.Issuer, Sub: identity.Subject},
+		JKT:           dpopJKT,
+		Email:         o.Email,
+		EmailVerified: o.EmailVerified,
+		Name:          o.Name,
+		Groups:        o.Groups,
+		Extra:         o.Extra,
 	})
 	if err != nil {
 		s.Auditor.LogEvent(ctx, security.Event{
