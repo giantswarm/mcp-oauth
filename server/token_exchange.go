@@ -32,12 +32,18 @@ func (s *Server) ExchangeSubjectToken(
 		return nil, fmt.Errorf("token exchange requires JWT access token mode (set AccessTokenFormat=jwt)")
 	}
 
+	switch subjectTokenType {
+	case SubjectTokenTypeIDToken, SubjectTokenTypeAccessToken, SubjectTokenTypeJWT:
+	default:
+		return nil, &TokenExchangeUnsupportedTypeError{tokenType: subjectTokenType}
+	}
+
 	v := s.SubjectValidatorFor(subjectTokenType)
 	if v == nil {
 		return nil, &TokenExchangeUnsupportedTypeError{tokenType: subjectTokenType}
 	}
 
-	identity, err := v.Validate(ctx, subjectToken, subjectTokenType)
+	identity, err := v.Validate(ctx, subjectToken, nil)
 	if err != nil {
 		s.Logger.Debug("token exchange: subject token validation failed",
 			"subject_token_type", subjectTokenType, "error", err)

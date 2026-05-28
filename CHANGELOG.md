@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Multi-issuer Bearer validation at `ValidateToken`**: JWTs whose `iss` claim matches a `WithTrustedIssuers` entry are accepted as Bearer access tokens at `/mcp` in addition to the existing token-exchange subject-token path. Each entry's `AllowedAudiences` gates accepted audiences (defaults to the server's `ResourceIdentifier` when empty); `AllowedClaims` is applied as before. RFC 9068 §4 `typ: at+jwt` is enforced on this path to prevent ID-token confusion. Enables a sibling machine IdP (e.g. a muster broker issuing tokens for service-account principals) to mint Bearers acceptable at peer resource servers without sharing the primary provider's signing key.
+- **`SubjectIdentity.Claims`**: the verified `*oidc.IDTokenClaims` is returned alongside `Subject`/`Issuer`/`AllowedScopes`, so callers needing `email`/`groups`/other claims don't have to re-parse the token.
+- **`server.ErrIssuerNotTrusted`**: sentinel returned by `OIDCValidator.Validate` when the token is not a JWT, has no `iss`, or its `iss` is not in the configured set. Callers use `errors.Is` to fall through to other validation branches; token-exchange treats it as a hard rejection.
 - **`TrustedIssuer.AllowPrivateIPJWKS`**: opt-in bool allowing a trusted issuer's `JwksURL` to resolve to a private or loopback address.
 
 - **`memory.WithEncryptor`, `memory.WithInstrumentation`, `memory.WithLogger`, `memory.WithCleanupInterval`, `memory.WithRevokedFamilyRetentionDays`**: functional options for `memory.New`. All cross-cutting dependencies are now supplied at construction; the store is immutable afterward.
@@ -20,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — `SubjectTokenValidator.Validate` signature** is now `Validate(ctx, tokenString string, defaultAudiences []string) (*SubjectIdentity, error)` (was `Validate(ctx, subjectToken, subjectTokenType string) (SubjectIdentity, error)`). The `subject_token_type` URN gate moved up into `ExchangeSubjectToken`; the return is a pointer; `defaultAudiences` applies when the matched `TrustedIssuer`'s `AllowedAudiences` is empty (passed `nil` by token-exchange callers to preserve "accept any" semantics).
+- `WithTrustedIssuers` now also registers its `OIDCValidator` for `ValidateToken` on the Bearer-at-/mcp path. Token-exchange behavior is unchanged.
 - **BREAKING — `memory.New` now accepts `...Option`** (was `func New() *Store`). Pass `memory.WithEncryptor(enc)`, `memory.WithInstrumentation(inst)`, etc. at construction instead of calling `SetX` after the fact.
 - **BREAKING — `valkey.New` now accepts `...Option`** (was `func New(cfg Config) (*Store, error)`). Signature is now `func New(cfg Config, opts ...Option) (*Store, error)`.
 - **BREAKING — `oauthconfig.StorageFromEnv` and `StorageFromEnvWithPrefix` signatures changed.** Both now accept `enc *security.Encryptor, inst *instrumentation.Instrumentation` before the `logger` argument, and wire them into the constructed store.
