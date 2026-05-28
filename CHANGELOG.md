@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`TrustedIssuer.AllowPrivateIPJWKS`**: opt-in field that allows a trusted issuer's `JwksURL` to resolve to a private or loopback address. Needed for in-cluster JWKS endpoints such as the Kubernetes API server's `/openid/v1/jwks`. When true, `OIDCValidator` routes JWKS fetches for that issuer through a dedicated permissive client; all other issuers continue to use the default SSRF-safe client.
+
 - **`memory.WithEncryptor`, `memory.WithInstrumentation`, `memory.WithLogger`, `memory.WithCleanupInterval`, `memory.WithRevokedFamilyRetentionDays`**: functional options for `memory.New`. All cross-cutting dependencies are now supplied at construction; the store is immutable afterward.
 - **`valkey.WithEncryptor`, `valkey.WithInstrumentation`**: functional options for `valkey.New`. Same construction-time wiring as memory.
 
