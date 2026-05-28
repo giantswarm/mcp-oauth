@@ -44,6 +44,14 @@ func (s *Server) ExchangeSubjectToken(
 	switch subjectTokenType {
 	case SubjectTokenTypeIDToken, SubjectTokenTypeAccessToken, SubjectTokenTypeJWT:
 	default:
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type: security.EventAuthFailure,
+			Details: map[string]any{
+				"reason":             "unsupported_subject_token_type",
+				"grant_type":         GrantTypeTokenExchange,
+				"subject_token_type": subjectTokenType,
+			},
+		})
 		return nil, &TokenExchangeUnsupportedTypeError{tokenType: subjectTokenType}
 	}
 
