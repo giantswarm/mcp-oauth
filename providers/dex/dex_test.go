@@ -962,3 +962,114 @@ func TestTooManyScopes(t *testing.T) {
 		t.Errorf("NewProvider() error = %v, want error about scopes", err)
 	}
 }
+
+func TestResolveHTTPClient(t *testing.T) {
+	timeout := 5 * time.Second
+	custom := &http.Client{Timeout: 99 * time.Second}
+
+	tests := []struct {
+		name           string
+		client         *http.Client
+		allowPrivateIP bool
+		wantSame       *http.Client // non-nil: pointer equality check
+		wantTimeout    time.Duration
+	}{
+		{
+			name:           "explicit client returned unchanged",
+			client:         custom,
+			allowPrivateIP: false,
+			wantSame:       custom,
+		},
+		{
+			name:           "explicit client with allowPrivateIP returned unchanged",
+			client:         custom,
+			allowPrivateIP: true,
+			wantSame:       custom,
+		},
+		{
+			name:           "nil client without allowPrivateIP returns plain client",
+			client:         nil,
+			allowPrivateIP: false,
+			wantTimeout:    timeout,
+		},
+		{
+			name:           "nil client with allowPrivateIP returns private-IP-allowed client",
+			client:         nil,
+			allowPrivateIP: true,
+			wantTimeout:    timeout,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveHTTPClient(tt.client, tt.allowPrivateIP, timeout)
+			if got == nil {
+				t.Fatal("resolveHTTPClient() returned nil")
+			}
+			if tt.wantSame != nil && got != tt.wantSame {
+				t.Errorf("resolveHTTPClient() returned different client; want same pointer")
+			}
+		})
+	}
+}
+
+func TestAllowPrivateIP_WarningEmitted(t *testing.T) {
+	server := setupMockDexServer(t)
+	defer server.Close()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	// HTTPClient = nil overrides testConfig's default (server.Client()), so the warning
+	// fires. Discovery then fails because NewPrivateIPAllowedHTTPClient does not trust
+	// the test server's self-signed cert — that's expected. We only care that the
+	// warning was emitted to the custom logger before the failure.
+	_, _ = NewProvider(testConfig(server, func(cfg *Config) {
+		cfg.AllowPrivateIP = true
+		cfg.HTTPClient = nil
+		cfg.Logger = logger
+	}))
+
+	if !strings.Contains(buf.String(), "CWE-918") {
+		t.Errorf("expected CWE-918 warning in log output; got: %q", buf.String())
+	}
+}
+
+func TestAllowPrivateIP_WarningEmittedWithExplicitClient(t *testing.T) {
+	server := setupMockDexServer(t)
+	defer server.Close()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	_, err := NewProvider(testConfig(server, func(cfg *Config) {
+		cfg.AllowPrivateIP = true
+		// HTTPClient is already set by testConfig (server.Client()); keep it
+		cfg.Logger = logger
+	}))
+	if err != nil {
+		t.Fatalf("NewProvider() failed: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "CWE-918") {
+		t.Errorf("expected CWE-918 warning even when HTTPClient is explicitly set; got: %q", buf.String())
+	}
+}
+
+// TestAllowPrivateIP_IPLiteralStillRejected confirms that AllowPrivateIP does not
+// bypass static URL validation: an IP-literal private IssuerURL is rejected even
+// when the flag is set, because the flag only lifts the transport-level check.
+func TestAllowPrivateIP_IPLiteralStillRejected(t *testing.T) {
+	_, err := NewProvider(&Config{
+		IssuerURL:      "https://10.0.0.1",
+		ClientID:       "client",
+		ClientSecret:   "secret",
+		AllowPrivateIP: true,
+	})
+	if err == nil {
+		t.Fatal("NewProvider() succeeded, want error for private IP literal")
+	}
+	if !strings.Contains(err.Error(), "invalid issuer URL") {
+		t.Errorf("NewProvider() error = %v, want error containing 'invalid issuer URL'", err)
+	}
+}

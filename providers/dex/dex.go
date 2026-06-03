@@ -70,9 +70,22 @@ type Config struct {
 	// Default: slog.Default()
 	Logger *slog.Logger
 
-	// skipValidation skips SSRF protection for issuer URLs
-	// INTERNAL USE ONLY: This is for testing with localhost test servers
-	// Production code must NEVER set this to true
+	// AllowPrivateIP allows the Dex issuer URL to resolve to a private or
+	// loopback IP address during OIDC discovery and token endpoint calls. Required
+	// when Dex is fronted by an internal-only load balancer (e.g. Azure internal LB,
+	// air-gapped clusters) where the public hostname resolves to an RFC 1918 address.
+	// Emits a startup warning when set.
+	//
+	// Note: IP-literal private addresses in IssuerURL (e.g. https://10.0.0.1) are
+	// still rejected by URL validation regardless of this flag. This flag only lifts
+	// the transport-level SSRF check for hostnames that resolve to private IPs at
+	// connection time.
+	//
+	// WARNING: Reduces SSRF protection. Only enable for private IdP deployments.
+	AllowPrivateIP bool
+
+	// skipValidation is for tests only — bypasses SSRF issuer-URL validation so
+	// test servers on localhost are reachable. Must never be set in production code.
 	skipValidation bool
 }
 
@@ -88,8 +101,20 @@ func NewProvider(cfg *Config) (*Provider, error) {
 		return nil, err
 	}
 
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	requestTimeout := resolveTimeout(cfg.RequestTimeout)
-	httpClient := resolveHTTPClient(cfg.HTTPClient, requestTimeout)
+	httpClient := resolveHTTPClient(cfg.HTTPClient, cfg.AllowPrivateIP, requestTimeout)
+	if cfg.AllowPrivateIP {
+		logger.Warn("SECURITY WARNING: AllowPrivateIP is enabled for Dex OIDC discovery and token endpoints",
+			"risk", "OIDC discovery and token endpoints can resolve to private/internal IP addresses — SSRF possible",
+			"recommendation", "Only enable when the IdP is behind an internal-only load balancer; ensure the issuer URL is not attacker-controlled",
+			"cwe", "CWE-918",
+		)
+	}
 	discoveryClient := createDiscoveryClient(cfg.skipValidation, httpClient)
 
 	doc, err := performOIDCDiscovery(discoveryClient, cfg.IssuerURL, requestTimeout)
@@ -100,11 +125,6 @@ func NewProvider(cfg *Config) (*Provider, error) {
 	maxGroups := cfg.MaxGroups
 	if maxGroups <= 0 {
 		maxGroups = oidc.DefaultMaxGroups
-	}
-
-	logger := cfg.Logger
-	if logger == nil {
-		logger = slog.Default()
 	}
 
 	return &Provider{
@@ -202,10 +222,16 @@ func resolveTimeout(timeout time.Duration) time.Duration {
 	return timeout
 }
 
-// resolveHTTPClient returns the HTTP client, creating one if not provided.
-func resolveHTTPClient(client *http.Client, timeout time.Duration) *http.Client {
+// resolveHTTPClient returns the HTTP client to use for Dex API calls and OIDC
+// discovery. When allowPrivateIP is true and no explicit client is provided, a
+// client without SSRF protection is returned so that Dex issuer URLs resolving
+// to RFC 1918 addresses (e.g. internal load balancers) are reachable.
+func resolveHTTPClient(client *http.Client, allowPrivateIP bool, timeout time.Duration) *http.Client {
 	if client != nil {
 		return client
+	}
+	if allowPrivateIP {
+		return oidc.NewPrivateIPAllowedHTTPClient(timeout)
 	}
 	return &http.Client{Timeout: timeout}
 }
