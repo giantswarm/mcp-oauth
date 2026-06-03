@@ -71,16 +71,15 @@ type Config struct {
 	Logger *slog.Logger
 
 	// AllowPrivateIP allows the Dex issuer URL to resolve to a private or
-	// loopback IP address during OIDC discovery. Required when Dex is
-	// fronted by an internal-only load balancer (e.g. Azure internal LB,
+	// loopback IP address during OIDC discovery and token endpoint calls. Required
+	// when Dex is fronted by an internal-only load balancer (e.g. Azure internal LB,
 	// air-gapped clusters) where the public hostname resolves to an RFC 1918
 	// address. Emits a startup warning when set.
 	// WARNING: Reduces SSRF protection. Only enable for private IdP deployments.
 	AllowPrivateIP bool
 
-	// skipValidation skips SSRF protection for issuer URLs
-	// INTERNAL USE ONLY: This is for testing with localhost test servers
-	// Production code must NEVER set this to true
+	// skipValidation is for tests only — bypasses SSRF issuer-URL validation so
+	// test servers on localhost are reachable. Must never be set in production code.
 	skipValidation bool
 }
 
@@ -96,12 +95,18 @@ func NewProvider(cfg *Config) (*Provider, error) {
 		return nil, err
 	}
 
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	requestTimeout := resolveTimeout(cfg.RequestTimeout)
+	// httpClient is used for both OIDC discovery and token endpoint calls.
 	httpClient := resolveHTTPClient(cfg.HTTPClient, cfg.AllowPrivateIP, requestTimeout)
 	if cfg.AllowPrivateIP && cfg.HTTPClient == nil {
-		slog.Warn("SECURITY WARNING: AllowPrivateIP is enabled for Dex OIDC discovery",
+		logger.Warn("SECURITY WARNING: AllowPrivateIP is enabled for Dex OIDC discovery and token endpoints",
 			"risk", "OIDC discovery and token endpoints can resolve to private/internal IP addresses — SSRF possible",
-			"recommendation", "Unset for production deployments; use only for private IdP deployments (e.g., internal load balancer fronting Dex)",
+			"recommendation", "Only enable when the IdP is behind an internal-only load balancer; ensure the issuer URL is not attacker-controlled",
 			"cwe", "CWE-918",
 		)
 	}
@@ -115,11 +120,6 @@ func NewProvider(cfg *Config) (*Provider, error) {
 	maxGroups := cfg.MaxGroups
 	if maxGroups <= 0 {
 		maxGroups = oidc.DefaultMaxGroups
-	}
-
-	logger := cfg.Logger
-	if logger == nil {
-		logger = slog.Default()
 	}
 
 	return &Provider{
