@@ -1950,21 +1950,23 @@ func TestFlowStore_AtomicCheckAndMarkAuthCodeUsed_Concurrent(t *testing.T) {
 // accepted — key components are hashed to a fixed 64-byte value before being used as
 // Valkey keys, so there is no length limit on caller-supplied values.
 func TestValidation_LargeTokensAccepted(t *testing.T) {
+	const wantUserID = "large-token-user"
+
 	s := testStore(t)
 	ctx := t.Context()
 
 	// ~900-byte token (realistic full JWT in AccessTokenFormatJWT mode)
 	largeToken := strings.Repeat("a", 900)
 
-	if err := s.SaveRefreshToken(ctx, largeToken, "user1", time.Now().Add(time.Hour)); err != nil {
+	if err := s.SaveRefreshToken(ctx, largeToken, wantUserID, time.Now().Add(time.Hour)); err != nil {
 		t.Errorf("SaveRefreshToken with 900-byte token: %v", err)
 	}
 	userID, err := s.GetRefreshTokenInfo(ctx, largeToken)
 	if err != nil {
 		t.Errorf("GetRefreshTokenInfo with 900-byte token: %v", err)
 	}
-	if userID != "user1" {
-		t.Errorf("got userID %q, want %q", userID, "user1")
+	if userID != wantUserID {
+		t.Errorf("got userID %q, want %q", userID, wantUserID)
 	}
 
 	// ~400-byte Dex Kubernetes-connector subject (base64-protobuf)

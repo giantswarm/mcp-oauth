@@ -61,10 +61,12 @@ func (s *Store) validateRefreshTokenParams(refreshToken, userID, clientID, famil
 	if userID == "" {
 		return fmt.Errorf("userID cannot be empty")
 	}
+	if clientID == "" {
+		return fmt.Errorf("clientID cannot be empty")
+	}
 	if familyID == "" {
 		return fmt.Errorf("family ID cannot be empty")
 	}
-
 	return nil
 }
 
