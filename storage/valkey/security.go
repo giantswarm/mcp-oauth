@@ -65,16 +65,7 @@ func (s *Store) validateRefreshTokenParams(refreshToken, userID, clientID, famil
 		return fmt.Errorf("family ID cannot be empty")
 	}
 
-	if err := validateStringLength(refreshToken, MaxTokenLength, "refreshToken"); err != nil {
-		return err
-	}
-	if err := validateStringLength(userID, MaxIDLength, "userID"); err != nil {
-		return err
-	}
-	if err := validateStringLength(clientID, MaxIDLength, "clientID"); err != nil {
-		return err
-	}
-	return validateStringLength(familyID, MaxIDLength, "familyID")
+	return nil
 }
 
 // saveRefreshTokenBasic saves the basic refresh token info.
@@ -433,18 +424,6 @@ func validateTokenMetadataArgs(tokenID string, metadata storage.TokenMetadata) e
 	if tokenID == "" || metadata.UserID == "" || metadata.ClientID == "" {
 		return fmt.Errorf("tokenID, userID, and clientID cannot be empty")
 	}
-	if err := validateStringLength(tokenID, MaxTokenLength, "tokenID"); err != nil {
-		return err
-	}
-	if err := validateStringLength(metadata.UserID, MaxIDLength, "userID"); err != nil {
-		return err
-	}
-	if err := validateStringLength(metadata.ClientID, MaxIDLength, "clientID"); err != nil {
-		return err
-	}
-	if metadata.FamilyID != "" {
-		return validateStringLength(metadata.FamilyID, MaxIDLength, "familyID")
-	}
 	return nil
 }
 
@@ -517,10 +496,7 @@ func (s *Store) validateRevocationParams(userID, clientID string) error {
 	if userID == "" || clientID == "" {
 		return fmt.Errorf("userID and clientID cannot be empty")
 	}
-	if err := validateStringLength(userID, MaxIDLength, "userID"); err != nil {
-		return err
-	}
-	return validateStringLength(clientID, MaxIDLength, "clientID")
+	return nil
 }
 
 // getTokensForUserClient retrieves all token IDs for a user+client combination.

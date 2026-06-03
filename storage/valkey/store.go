@@ -2,7 +2,9 @@ package valkey
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -41,13 +43,6 @@ const (
 
 	// connectionVerifyTimeout is the timeout for initial connection verification
 	connectionVerifyTimeout = 5 * time.Second
-
-	// MaxTokenLength is the maximum allowed length for token strings (512 bytes)
-	// This prevents DoS attacks via excessively large tokens
-	MaxTokenLength = 512
-
-	// MaxIDLength is the maximum allowed length for identifiers (userID, clientID, familyID)
-	MaxIDLength = 256
 
 	// DefaultMaxTokenDataSize is the default ceiling on the serialized token
 	// written to Valkey, applied after AES-256-GCM + base64 expansion of the
@@ -447,12 +442,13 @@ func (s *Store) decryptToken(token *oauth2.Token) (*oauth2.Token, error) {
 	})
 }
 
-// validateStringLength checks if a string exceeds the maximum allowed length
-func validateStringLength(value string, maxLen int, fieldName string) error {
-	if len(value) > maxLen {
-		return fmt.Errorf("%s exceeds maximum length of %d bytes", fieldName, maxLen)
-	}
-	return nil
+// hashKeyComponent returns the hex-encoded SHA-256 of s for use as a Valkey key
+// component. This bounds key length to 64 bytes regardless of input length, which
+// prevents DoS via oversized keys (long JWTs, Dex base64-protobuf subjects, etc.)
+// while keeping the guard one-way and symmetric across every read/write/delete path.
+func hashKeyComponent(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }
 
 // ============================================================
@@ -475,22 +471,37 @@ func (s *Store) keyOf(namespace string, parts ...string) string {
 	return b.String()
 }
 
-func (s *Store) tokenKey(userID string) string       { return s.keyOf("token", userID) }
-func (s *Store) userInfoKey(userID string) string    { return s.keyOf("userinfo", userID) }
-func (s *Store) refreshTokenKey(token string) string { return s.keyOf("refresh", token) }
-func (s *Store) refreshTokenMetaKey(token string) string {
-	return s.keyOf("refresh", "meta", token)
-}
+// Keys for server-minted, length-bounded values (codes, states, client IDs) remain
+// unhashed so SCAN patterns stay human-readable.
 func (s *Store) clientKey(clientID string) string     { return s.keyOf("client", clientID) }
 func (s *Store) clientIPKey(ip string) string         { return s.keyOf("client", "ip", ip) }
 func (s *Store) stateKey(stateID string) string       { return s.keyOf("state", stateID) }
 func (s *Store) providerStateKey(state string) string { return s.keyOf("state", "provider", state) }
 func (s *Store) codeKey(code string) string           { return s.keyOf("code", code) }
-func (s *Store) tokenMetaKey(tokenID string) string   { return s.keyOf("meta", tokenID) }
-func (s *Store) userClientKey(userID, clientID string) string {
-	return s.keyOf("userclient", userID, clientID)
+
+// Keys for caller-supplied values that may be unbounded (JWTs, IdP subjects, refresh
+// tokens) are hashed to a fixed 64-byte hex string. This prevents oversized-key DoS
+// without any caller-side length constraint. Raw values are stored as Valkey values,
+// not keys, so retrieval is unaffected.
+func (s *Store) tokenKey(userID string) string { return s.keyOf("token", hashKeyComponent(userID)) }
+func (s *Store) userInfoKey(userID string) string {
+	return s.keyOf("userinfo", hashKeyComponent(userID))
 }
-func (s *Store) familyKey(familyID string) string { return s.keyOf("family", familyID) }
+func (s *Store) refreshTokenKey(token string) string {
+	return s.keyOf("refresh", hashKeyComponent(token))
+}
+func (s *Store) refreshTokenMetaKey(token string) string {
+	return s.keyOf("refresh", "meta", hashKeyComponent(token))
+}
+func (s *Store) tokenMetaKey(tokenID string) string {
+	return s.keyOf("meta", hashKeyComponent(tokenID))
+}
+func (s *Store) userClientKey(userID, clientID string) string {
+	return s.keyOf("userclient", hashKeyComponent(userID), hashKeyComponent(clientID))
+}
+func (s *Store) familyKey(familyID string) string {
+	return s.keyOf("family", hashKeyComponent(familyID))
+}
 
 // ============================================================
 // Lua Scripts for Atomic Operations
