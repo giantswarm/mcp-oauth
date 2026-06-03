@@ -1990,6 +1990,30 @@ func TestValidation_LargeTokensAccepted(t *testing.T) {
 	}
 }
 
+func TestValidation_LargeTokensAccepted_RefreshFamily(t *testing.T) {
+	s := testStore(t)
+	ctx := t.Context()
+
+	largeRefresh := strings.Repeat("r", 900)
+	largeSub := strings.Repeat("s", 400)
+	clientID := "client1"
+	familyID := "family-" + strings.Repeat("f", 50)
+
+	if err := s.SaveRefreshTokenWithFamily(ctx, largeRefresh, largeSub, clientID, familyID, 1, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("SaveRefreshTokenWithFamily with large token/subject: %v", err)
+	}
+	meta, err := s.GetRefreshTokenFamily(ctx, largeRefresh)
+	if err != nil {
+		t.Fatalf("GetRefreshTokenFamily: %v", err)
+	}
+	if meta.UserID != largeSub {
+		t.Errorf("got UserID %q, want large subject", meta.UserID)
+	}
+	if meta.ClientID != clientID {
+		t.Errorf("got ClientID %q, want %q", meta.ClientID, clientID)
+	}
+}
+
 func TestValidation_GenericErrorMessages(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

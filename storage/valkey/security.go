@@ -387,8 +387,8 @@ func (s *Store) deleteKey(ctx context.Context, key, description, tokenPrefix str
 // and persisted as-is. When ExpiresAt is non-zero the key TTL is set
 // accordingly so stale metadata is evicted automatically.
 func (s *Store) SaveTokenMetadata(ctx context.Context, tokenID string, metadata storage.TokenMetadata) error {
-	if err := validateTokenMetadataArgs(tokenID, metadata); err != nil {
-		return err
+	if tokenID == "" || metadata.UserID == "" || metadata.ClientID == "" {
+		return fmt.Errorf("tokenID, userID, and clientID cannot be empty")
 	}
 
 	data, err := json.Marshal(toTokenMetadataJSON(&metadata))
@@ -419,13 +419,6 @@ func (s *Store) SaveTokenMetadata(ctx context.Context, tokenID string, metadata 
 		"scopes", metadata.Scopes,
 		"family_id", metadata.FamilyID)
 
-	return nil
-}
-
-func validateTokenMetadataArgs(tokenID string, metadata storage.TokenMetadata) error {
-	if tokenID == "" || metadata.UserID == "" || metadata.ClientID == "" {
-		return fmt.Errorf("tokenID, userID, and clientID cannot be empty")
-	}
 	return nil
 }
 
