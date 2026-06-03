@@ -73,8 +73,14 @@ type Config struct {
 	// AllowPrivateIP allows the Dex issuer URL to resolve to a private or
 	// loopback IP address during OIDC discovery and token endpoint calls. Required
 	// when Dex is fronted by an internal-only load balancer (e.g. Azure internal LB,
-	// air-gapped clusters) where the public hostname resolves to an RFC 1918
-	// address. Emits a startup warning when set.
+	// air-gapped clusters) where the public hostname resolves to an RFC 1918 address.
+	// Emits a startup warning when set.
+	//
+	// Note: IP-literal private addresses in IssuerURL (e.g. https://10.0.0.1) are
+	// still rejected by URL validation regardless of this flag. This flag only lifts
+	// the transport-level SSRF check for hostnames that resolve to private IPs at
+	// connection time.
+	//
 	// WARNING: Reduces SSRF protection. Only enable for private IdP deployments.
 	AllowPrivateIP bool
 
