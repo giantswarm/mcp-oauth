@@ -70,6 +70,14 @@ type Config struct {
 	// Default: slog.Default()
 	Logger *slog.Logger
 
+	// AllowPrivateIP allows the Dex issuer URL to resolve to a private or
+	// loopback IP address during OIDC discovery. Required when Dex is
+	// fronted by an internal-only load balancer (e.g. Azure internal LB,
+	// air-gapped clusters) where the public hostname resolves to an RFC 1918
+	// address. Emits a startup warning when set.
+	// WARNING: Reduces SSRF protection. Only enable for private IdP deployments.
+	AllowPrivateIP bool
+
 	// skipValidation skips SSRF protection for issuer URLs
 	// INTERNAL USE ONLY: This is for testing with localhost test servers
 	// Production code must NEVER set this to true
@@ -89,7 +97,14 @@ func NewProvider(cfg *Config) (*Provider, error) {
 	}
 
 	requestTimeout := resolveTimeout(cfg.RequestTimeout)
-	httpClient := resolveHTTPClient(cfg.HTTPClient, requestTimeout)
+	httpClient := resolveHTTPClient(cfg.HTTPClient, cfg.AllowPrivateIP, requestTimeout)
+	if cfg.AllowPrivateIP && cfg.HTTPClient == nil {
+		slog.Warn("SECURITY WARNING: AllowPrivateIP is enabled for Dex OIDC discovery",
+			"risk", "OIDC discovery and token endpoints can resolve to private/internal IP addresses — SSRF possible",
+			"recommendation", "Unset for production deployments; use only for private IdP deployments (e.g., internal load balancer fronting Dex)",
+			"cwe", "CWE-918",
+		)
+	}
 	discoveryClient := createDiscoveryClient(cfg.skipValidation, httpClient)
 
 	doc, err := performOIDCDiscovery(discoveryClient, cfg.IssuerURL, requestTimeout)
@@ -202,10 +217,16 @@ func resolveTimeout(timeout time.Duration) time.Duration {
 	return timeout
 }
 
-// resolveHTTPClient returns the HTTP client, creating one if not provided.
-func resolveHTTPClient(client *http.Client, timeout time.Duration) *http.Client {
+// resolveHTTPClient returns the HTTP client to use for Dex API calls and OIDC
+// discovery. When allowPrivateIP is true and no explicit client is provided, a
+// client without SSRF protection is returned so that Dex issuer URLs resolving
+// to RFC 1918 addresses (e.g. internal load balancers) are reachable.
+func resolveHTTPClient(client *http.Client, allowPrivateIP bool, timeout time.Duration) *http.Client {
 	if client != nil {
 		return client
+	}
+	if allowPrivateIP {
+		return oidc.NewPrivateIPAllowedHTTPClient(timeout)
 	}
 	return &http.Client{Timeout: timeout}
 }

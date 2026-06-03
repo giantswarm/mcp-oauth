@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `dex.Config.AllowPrivateIP`: allows the Dex issuer URL to resolve to a private/loopback IP during OIDC discovery and token endpoint calls. Required for clusters where the public Dex hostname resolves to an internal load balancer (e.g. Azure internal LB). Emits a `CWE-918` startup warning. Consumers set `muster.muster.oauth.server.dex.allowPrivateIPOIDC: true`.
+
 ### Fixed
 
 - **JSON encode errors on response writes** are now logged instead of silently swallowed across all handler endpoints (discovery, token, token-exchange, introspection, registration, client management, userinfo, JWKS, and error responses). The HTTP status is unchanged.
