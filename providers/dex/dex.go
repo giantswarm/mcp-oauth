@@ -107,9 +107,8 @@ func NewProvider(cfg *Config) (*Provider, error) {
 	}
 
 	requestTimeout := resolveTimeout(cfg.RequestTimeout)
-	// httpClient is used for both OIDC discovery and token endpoint calls.
 	httpClient := resolveHTTPClient(cfg.HTTPClient, cfg.AllowPrivateIP, requestTimeout)
-	if cfg.AllowPrivateIP && cfg.HTTPClient == nil {
+	if cfg.AllowPrivateIP {
 		logger.Warn("SECURITY WARNING: AllowPrivateIP is enabled for Dex OIDC discovery and token endpoints",
 			"risk", "OIDC discovery and token endpoints can resolve to private/internal IP addresses — SSRF possible",
 			"recommendation", "Only enable when the IdP is behind an internal-only load balancer; ensure the issuer URL is not attacker-controlled",

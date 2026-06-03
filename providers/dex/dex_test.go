@@ -1035,7 +1035,7 @@ func TestAllowPrivateIP_WarningEmitted(t *testing.T) {
 	}
 }
 
-func TestAllowPrivateIP_NoWarningWithExplicitClient(t *testing.T) {
+func TestAllowPrivateIP_WarningEmittedWithExplicitClient(t *testing.T) {
 	server := setupMockDexServer(t)
 	defer server.Close()
 
@@ -1051,8 +1051,8 @@ func TestAllowPrivateIP_NoWarningWithExplicitClient(t *testing.T) {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
 
-	if strings.Contains(buf.String(), "CWE-918") {
-		t.Errorf("unexpected CWE-918 warning when HTTPClient is explicitly set; got: %s", buf.String())
+	if !strings.Contains(buf.String(), "CWE-918") {
+		t.Errorf("expected CWE-918 warning even when HTTPClient is explicitly set; got: %q", buf.String())
 	}
 }
 
