@@ -1946,30 +1946,45 @@ func TestFlowStore_AtomicCheckAndMarkAuthCodeUsed_Concurrent(t *testing.T) {
 // Input Validation Tests
 // ============================================================
 
-func TestValidation_InputTooLarge(t *testing.T) {
+// TestValidation_LargeTokensAccepted verifies that long tokens and subject strings are
+// accepted — key components are hashed to a fixed 64-byte value before being used as
+// Valkey keys, so there is no length limit on caller-supplied values.
+func TestValidation_LargeTokensAccepted(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
-	// Create a string that exceeds MaxTokenLength
-	largeToken := make([]byte, MaxTokenLength+1)
-	for i := range largeToken {
-		largeToken[i] = 'a'
+	// ~900-byte token (realistic full JWT in AccessTokenFormatJWT mode)
+	largeToken := strings.Repeat("a", 900)
+
+	if err := s.SaveRefreshToken(ctx, largeToken, "user1", time.Now().Add(time.Hour)); err != nil {
+		t.Errorf("SaveRefreshToken with 900-byte token: %v", err)
+	}
+	userID, err := s.GetRefreshTokenInfo(ctx, largeToken)
+	if err != nil {
+		t.Errorf("GetRefreshTokenInfo with 900-byte token: %v", err)
+	}
+	if userID != "user1" {
+		t.Errorf("got userID %q, want %q", userID, "user1")
 	}
 
-	err := s.SaveRefreshToken(ctx, string(largeToken), "user", time.Now().Add(time.Hour))
-	if err == nil {
-		t.Error("Expected error for oversized refresh token")
-	}
+	// ~400-byte Dex Kubernetes-connector subject (base64-protobuf)
+	largeSub := strings.Repeat("b", 400)
 
-	// Create a string that exceeds MaxIDLength
-	largeID := make([]byte, MaxIDLength+1)
-	for i := range largeID {
-		largeID[i] = 'a'
+	meta := storage.TokenMetadata{
+		UserID:    largeSub,
+		ClientID:  "testclient",
+		Scopes:    []string{"openid"},
+		ExpiresAt: time.Now().Add(time.Hour),
 	}
-
-	err = s.SaveRefreshToken(ctx, "token", string(largeID), time.Now().Add(time.Hour))
-	if err == nil {
-		t.Error("Expected error for oversized userID")
+	if err := s.SaveTokenMetadata(ctx, "tokenid1", meta); err != nil {
+		t.Errorf("SaveTokenMetadata with 400-byte userID: %v", err)
+	}
+	got, err := s.GetTokenMetadata("tokenid1")
+	if err != nil {
+		t.Errorf("GetTokenMetadata: %v", err)
+	}
+	if got.UserID != largeSub {
+		t.Errorf("got UserID %q, want large subject", got.UserID)
 	}
 }
 

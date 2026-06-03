@@ -69,11 +69,6 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 		return fmt.Errorf("token cannot be nil")
 	}
 
-	// Validate input lengths to prevent DoS
-	if err = validateStringLength(userID, MaxIDLength, "userID"); err != nil {
-		return err
-	}
-
 	// Encrypt token if encryptor is configured
 	tokenToStore, err := s.encryptToken(token)
 	if err != nil {
@@ -243,14 +238,6 @@ func (s *Store) SaveRefreshToken(ctx context.Context, refreshToken, userID strin
 	}
 	if userID == "" {
 		return fmt.Errorf("userID cannot be empty")
-	}
-
-	// Validate input lengths to prevent DoS
-	if err = validateStringLength(refreshToken, MaxTokenLength, "refreshToken"); err != nil {
-		return err
-	}
-	if err = validateStringLength(userID, MaxIDLength, "userID"); err != nil {
-		return err
 	}
 
 	key := s.refreshTokenKey(refreshToken)
