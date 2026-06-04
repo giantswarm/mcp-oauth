@@ -27,9 +27,7 @@ func (m *mockTime) Since(t time.Time) time.Duration { return m.now.Sub(t) }
 // This allows tests to use httptest servers (which use loopback addresses)
 // without triggering SSRF protection.
 func newTestClient(httpClient *http.Client, ttl time.Duration) *DiscoveryClient {
-	client := NewDiscoveryClient(httpClient, ttl, slog.Default())
-	client.skipValidation = true // Bypass SSRF validation for test servers
-	return client
+	return NewDiscoveryClientWithOptions(httpClient, ttl, slog.Default(), WithSkipValidation())
 }
 
 func TestNewDiscoveryClient(t *testing.T) {

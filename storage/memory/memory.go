@@ -117,6 +117,7 @@ var (
 	_ storage.RevokedTokenStore               = (*Store)(nil)
 	_ storage.RefreshTokenFamilyByIDStore     = (*Store)(nil)
 	_ storage.ActiveRefreshTokenByFamilyStore = (*Store)(nil)
+	_ storage.ClientIPTracker                 = (*Store)(nil)
 )
 
 // Option configures a Store at construction time.

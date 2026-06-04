@@ -182,7 +182,9 @@ func GenerateRegistrationAccessToken() (plaintext, hash string, err error) {
 // trackClientIPAndLog tracks the IP for DoS protection and logs the registration.
 func (s *Server) trackClientIPAndLog(ctx context.Context, client *storage.Client, _ /* clientSecret - not logged for security */, clientIP string) {
 	if tracker, ok := s.clientStore.(storage.ClientIPTracker); ok {
-		_ = tracker.TrackClientIP(ctx, client.ClientID, clientIP)
+		if err := tracker.TrackClientIP(context.WithoutCancel(ctx), client.ClientID, clientIP); err != nil {
+			s.Logger.Warn("failed to track client IP", "client_id", client.ClientID, "ip", clientIP, "error", err)
+		}
 	}
 
 	s.Auditor.LogClientRegistered(ctx, client.ClientID, client.ClientType, clientIP)

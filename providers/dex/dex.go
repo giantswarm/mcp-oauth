@@ -116,7 +116,7 @@ func NewProvider(cfg *Config) (*Provider, error) {
 			"cwe", "CWE-918",
 		)
 	}
-	discoveryClient := resolveDiscoveryClient(cfg.discoveryClient, httpClient)
+	discoveryClient := resolveDiscoveryClient(cfg.discoveryClient, httpClient, logger)
 
 	doc, err := performOIDCDiscovery(discoveryClient, cfg.IssuerURL, requestTimeout)
 	if err != nil {
@@ -241,11 +241,11 @@ func resolveHTTPClient(client *http.Client, allowPrivateIP bool, timeout time.Du
 
 // resolveDiscoveryClient returns override when non-nil, otherwise constructs a
 // production discovery client from httpClient.
-func resolveDiscoveryClient(override *oidc.DiscoveryClient, httpClient *http.Client) *oidc.DiscoveryClient {
+func resolveDiscoveryClient(override *oidc.DiscoveryClient, httpClient *http.Client, logger *slog.Logger) *oidc.DiscoveryClient {
 	if override != nil {
 		return override
 	}
-	return oidc.NewDiscoveryClient(httpClient, 1*time.Hour, nil)
+	return oidc.NewDiscoveryClient(httpClient, 1*time.Hour, logger)
 }
 
 // performOIDCDiscovery performs OIDC discovery to fetch endpoints.

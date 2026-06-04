@@ -19,7 +19,7 @@ This checklist should be completed for all pull requests that modify security-se
 - [ ] Link-local addresses blocked (169.254.169.254 - metadata services)
 - [ ] HTTPS enforced for all external communications
 - [ ] HTTP redirects validated to prevent SSRF via redirects
-- [ ] `skipValidation` flag ONLY used in test files with `NewTestDiscoveryClient`
+- [ ] `oidc.WithSkipValidation()` only used via `internal/testutil.NewDiscoveryClient` in test files
 
 ### 3. Input Validation ✓
 
@@ -140,8 +140,7 @@ This checklist should be completed for all pull requests that modify security-se
 ## Test Security
 
 - [ ] Test-only security bypasses have build tags or clear documentation
-- [ ] `NewTestDiscoveryClient` only used in `*_test.go` files
-- [ ] `skipValidation` only set to `true` in test code
+- [ ] `oidc.WithSkipValidation()` only called via `internal/testutil.NewDiscoveryClient` in `*_test.go` files
 - [ ] Test servers use `httptest.Server` (not real external services)
 - [ ] No test credentials committed to repository
 
