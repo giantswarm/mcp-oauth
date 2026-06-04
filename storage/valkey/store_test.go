@@ -1437,8 +1437,8 @@ func TestTokenRevocationStore_RevokeAllTokensForUserClient(t *testing.T) {
 	_ = s.SaveRefreshTokenWithFamily(ctx, "user-client-token-2", "revoke-user", "revoke-client", "uc-family", 2, time.Now().Add(time.Hour))
 
 	// Also save token metadata for these
-	_ = s.SaveTokenMetadata(context.Background(), "user-client-token-1", storage.TokenMetadata{UserID: "revoke-user", ClientID: "revoke-client", TokenType: "refresh"})
-	_ = s.SaveTokenMetadata(context.Background(), "user-client-token-2", storage.TokenMetadata{UserID: "revoke-user", ClientID: "revoke-client", TokenType: "refresh"})
+	_ = s.SaveTokenMetadata(context.Background(), "user-client-token-1", storage.TokenMetadata{UserID: "revoke-user", ClientID: "revoke-client", TokenType: nsRefresh})
+	_ = s.SaveTokenMetadata(context.Background(), "user-client-token-2", storage.TokenMetadata{UserID: "revoke-user", ClientID: "revoke-client", TokenType: nsRefresh})
 
 	// Revoke all
 	count, err := s.RevokeAllTokensForUserClient(ctx, "revoke-user", "revoke-client")
@@ -2225,7 +2225,7 @@ func TestStore_SaveTokenMetadata_WithFamilyID(t *testing.T) {
 func TestStore_SaveTokenMetadata_EmptyFamilyID(t *testing.T) {
 	s := testStore(t)
 
-	err := s.SaveTokenMetadata(context.Background(), "family-meta-empty", storage.TokenMetadata{UserID: "user1", ClientID: "client1", TokenType: "refresh", Audience: "", FamilyID: "", Scopes: nil})
+	err := s.SaveTokenMetadata(context.Background(), "family-meta-empty", storage.TokenMetadata{UserID: "user1", ClientID: "client1", TokenType: nsRefresh, Audience: "", FamilyID: "", Scopes: nil})
 	if err != nil {
 		t.Fatalf("SaveTokenMetadata failed: %v", err)
 	}

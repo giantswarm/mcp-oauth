@@ -147,7 +147,7 @@ func (s *Store) saveRefreshTokenMetadata(ctx context.Context, refreshToken, user
 		UserID:    userID,
 		ClientID:  clientID,
 		IssuedAt:  time.Now(),
-		TokenType: "refresh",
+		TokenType: nsRefresh,
 		FamilyID:  familyID,
 	}
 
@@ -544,7 +544,10 @@ func (s *Store) validateRevocationParams(userID, clientID string) error {
 	if userID == "" || clientID == "" {
 		return fmt.Errorf("userID and clientID cannot be empty")
 	}
-	return nil
+	if err := validateInputLength(userID); err != nil {
+		return err
+	}
+	return validateInputLength(clientID)
 }
 
 // getTokensForUserClient retrieves all token IDs for a user+client combination.

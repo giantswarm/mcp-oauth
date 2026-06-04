@@ -173,10 +173,10 @@ func (s *Store) DeleteToken(ctx context.Context, userID string) (err error) {
 	op := s.startTracedOp(ctx, "delete_token")
 	defer op.end(&err)
 
-	key := s.tokenKey(userID)
-
-	if err = s.client.Do(op.ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
-		return fmt.Errorf("failed to delete token: %w", err)
+	for _, key := range []string{s.tokenKey(userID), s.legacyTokenKey(userID)} {
+		if err = s.client.Do(op.ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
+			return fmt.Errorf("failed to delete token: %w", err)
+		}
 	}
 
 	s.logger.Debug("Deleted token", "user_id", userID)
@@ -292,10 +292,10 @@ func (s *Store) DeleteRefreshToken(ctx context.Context, refreshToken string) (er
 	op := s.startTracedOp(ctx, "delete_refresh_token")
 	defer op.end(&err)
 
-	key := s.refreshTokenKey(refreshToken)
-
-	if err = s.client.Do(op.ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
-		return fmt.Errorf("failed to delete refresh token: %w", err)
+	for _, key := range []string{s.refreshTokenKey(refreshToken), s.legacyRefreshTokenKey(refreshToken)} {
+		if err = s.client.Do(op.ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
+			return fmt.Errorf("failed to delete refresh token: %w", err)
+		}
 	}
 
 	s.logger.Debug("Deleted refresh token (rotation)")
@@ -321,7 +321,7 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken
 		return "", "", nil, fmt.Errorf("failed to execute atomic refresh token operation: %w", err)
 	}
 	// Legacy fallback for tokens written by pre-migration pods.
-	if result == "NOT_FOUND" {
+	if result == luaResultNotFound {
 		result, err = s.runAtomicGetAndDelete(op.ctx,
 			s.legacyRefreshTokenKey(refreshToken),
 			s.legacyTokenKey(refreshToken),
@@ -332,7 +332,7 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken
 	}
 
 	switch result {
-	case "NOT_FOUND":
+	case luaResultNotFound:
 		return "", "", nil, fmt.Errorf("%w: "+storage.ErrMsgRefreshTokenNotFoundOrUsed, storage.ErrTokenNotFound)
 	case "EXPIRED":
 		return "", "", nil, fmt.Errorf("%w: refresh token expired", storage.ErrTokenExpired)

@@ -55,6 +55,13 @@ const (
 	MaxTokenLength = 512
 	MaxIDLength    = 256
 
+	// luaResultNotFound is the sentinel string returned by Lua atomic scripts
+	// when the target key does not exist in Valkey.
+	luaResultNotFound = "NOT_FOUND"
+
+	// nsRefresh is the Valkey key namespace for refresh token entries.
+	nsRefresh = "refresh"
+
 	// DefaultMaxTokenDataSize is the default ceiling on the serialized token
 	// written to Valkey, applied after AES-256-GCM + base64 expansion of the
 	// encrypted-at-rest fields (AccessToken, RefreshToken, id_token). 600 KiB
@@ -499,10 +506,10 @@ func (s *Store) userInfoKey(userID string) string {
 	return s.keyOf("userinfo", hashKeyComponent(userID))
 }
 func (s *Store) refreshTokenKey(token string) string {
-	return s.keyOf("refresh", hashKeyComponent(token))
+	return s.keyOf(nsRefresh, hashKeyComponent(token))
 }
 func (s *Store) refreshTokenMetaKey(token string) string {
-	return s.keyOf("refresh", "meta", hashKeyComponent(token))
+	return s.keyOf(nsRefresh, "meta", hashKeyComponent(token))
 }
 func (s *Store) tokenMetaKey(tokenID string) string {
 	return s.keyOf("meta", hashKeyComponent(tokenID))
@@ -524,16 +531,17 @@ func (s *Store) legacyUserInfoKey(userID string) string {
 	return s.keyOf("userinfo", userID)
 }
 func (s *Store) legacyRefreshTokenKey(token string) string {
-	return s.keyOf("refresh", token)
+	return s.keyOf(nsRefresh, token)
 }
 func (s *Store) legacyRefreshTokenMetaKey(token string) string {
-	return s.keyOf("refresh", "meta", token)
+	return s.keyOf(nsRefresh, "meta", token)
 }
 func (s *Store) legacyTokenMetaKey(tokenID string) string { return s.keyOf("meta", tokenID) }
 func (s *Store) legacyUserClientKey(userID, clientID string) string {
 	return s.keyOf("userclient", userID, clientID)
 }
 func (s *Store) legacyFamilyKey(familyID string) string { return s.keyOf("family", familyID) }
+func (s *Store) legacyClientIPKey(ip string) string     { return s.keyOf("client", "ip", ip) }
 
 // ============================================================
 // Lua Scripts for Atomic Operations
