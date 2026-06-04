@@ -363,7 +363,15 @@ func (s *Store) getFamilyTokens(ctx context.Context, familyID string) ([]string,
 	if legacyErr != nil && !isNilError(legacyErr) {
 		return nil, fmt.Errorf("failed to get legacy family members: %w", legacyErr)
 	}
-	return append(tokens, legacyTokens...), nil
+	seen := make(map[string]struct{}, len(tokens)+len(legacyTokens))
+	result := make([]string, 0, len(tokens)+len(legacyTokens))
+	for _, t := range append(tokens, legacyTokens...) {
+		if _, dup := seen[t]; !dup {
+			seen[t] = struct{}{}
+			result = append(result, t)
+		}
+	}
+	return result, nil
 }
 
 // revokeTokenInFamily revokes a single token within a family.
