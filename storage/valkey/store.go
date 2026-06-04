@@ -55,9 +55,10 @@ const (
 	MaxTokenLength = 512
 	MaxIDLength    = 256
 
-	// luaResultNotFound is the sentinel string returned by Lua atomic scripts
-	// when the target key does not exist in Valkey.
+	// luaResultNotFound and luaResultExpired are sentinels returned by Lua
+	// atomic scripts to indicate key state.
 	luaResultNotFound = "NOT_FOUND"
+	luaResultExpired  = "EXPIRED"
 
 	// nsRefresh is the Valkey key namespace for refresh token entries.
 	nsRefresh = "refresh"
@@ -492,7 +493,7 @@ func (s *Store) keyOf(namespace string, parts ...string) string {
 // Keys for server-minted, length-bounded values (codes, states, client IDs) remain
 // unhashed so SCAN patterns stay human-readable.
 func (s *Store) clientKey(clientID string) string     { return s.keyOf("client", clientID) }
-func (s *Store) clientIPKey(ip string) string         { return s.keyOf("client", "ip", hashKeyComponent(ip)) }
+func (s *Store) clientIPKey(ip string) string         { return s.keyOf("client", "ip", ip) }
 func (s *Store) stateKey(stateID string) string       { return s.keyOf("state", stateID) }
 func (s *Store) providerStateKey(state string) string { return s.keyOf("state", "provider", state) }
 func (s *Store) codeKey(code string) string           { return s.keyOf("code", code) }
@@ -541,7 +542,6 @@ func (s *Store) legacyUserClientKey(userID, clientID string) string {
 	return s.keyOf("userclient", userID, clientID)
 }
 func (s *Store) legacyFamilyKey(familyID string) string { return s.keyOf("family", familyID) }
-func (s *Store) legacyClientIPKey(ip string) string     { return s.keyOf("client", "ip", ip) }
 
 // ============================================================
 // Lua Scripts for Atomic Operations

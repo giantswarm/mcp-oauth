@@ -173,11 +173,10 @@ func (s *Store) DeleteToken(ctx context.Context, userID string) (err error) {
 	op := s.startTracedOp(ctx, "delete_token")
 	defer op.end(&err)
 
-	for _, key := range []string{s.tokenKey(userID), s.legacyTokenKey(userID)} {
-		if err = s.client.Do(op.ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
-			return fmt.Errorf("failed to delete token: %w", err)
-		}
+	if err = s.client.Do(op.ctx, s.client.B().Del().Key(s.tokenKey(userID)).Build()).Error(); err != nil {
+		return fmt.Errorf("failed to delete token: %w", err)
 	}
+	s.deleteKey(op.ctx, s.legacyTokenKey(userID), "legacy token", safeTruncate(userID, tokenIDLogLength))
 
 	s.logger.Debug("Deleted token", "user_id", userID)
 	return nil
@@ -205,6 +204,7 @@ func (s *Store) SaveUserInfo(ctx context.Context, userID string, info *storage.U
 	if err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error(); err != nil {
 		return fmt.Errorf("failed to save user info: %w", err)
 	}
+	s.deleteKey(op.ctx, s.legacyUserInfoKey(userID), "legacy user info", safeTruncate(userID, tokenIDLogLength))
 
 	return nil
 }
@@ -292,11 +292,10 @@ func (s *Store) DeleteRefreshToken(ctx context.Context, refreshToken string) (er
 	op := s.startTracedOp(ctx, "delete_refresh_token")
 	defer op.end(&err)
 
-	for _, key := range []string{s.refreshTokenKey(refreshToken), s.legacyRefreshTokenKey(refreshToken)} {
-		if err = s.client.Do(op.ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
-			return fmt.Errorf("failed to delete refresh token: %w", err)
-		}
+	if err = s.client.Do(op.ctx, s.client.B().Del().Key(s.refreshTokenKey(refreshToken)).Build()).Error(); err != nil {
+		return fmt.Errorf("failed to delete refresh token: %w", err)
 	}
+	s.deleteKey(op.ctx, s.legacyRefreshTokenKey(refreshToken), "legacy refresh token", safeTruncate(refreshToken, tokenIDLogLength))
 
 	s.logger.Debug("Deleted refresh token (rotation)")
 	return nil
@@ -334,7 +333,7 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken
 	switch result {
 	case luaResultNotFound:
 		return "", "", nil, fmt.Errorf("%w: "+storage.ErrMsgRefreshTokenNotFoundOrUsed, storage.ErrTokenNotFound)
-	case "EXPIRED":
+	case luaResultExpired:
 		return "", "", nil, fmt.Errorf("%w: refresh token expired", storage.ErrTokenExpired)
 	case "TOKEN_NOT_FOUND":
 		return "", "", nil, fmt.Errorf("%w: provider token not found", storage.ErrTokenNotFound)

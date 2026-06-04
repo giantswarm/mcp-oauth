@@ -3,6 +3,7 @@ package valkey
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -282,8 +283,8 @@ func (s *Store) pickActiveMember(ctx context.Context, tokens []string) (token, c
 	var bestGen int
 	for _, candidate := range tokens {
 		meta, err := getAndUnmarshal(ctx, s, s.refreshTokenMetaKey(candidate), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
-		if err != nil || meta == nil {
-			// Legacy fallback for metadata written by pre-migration pods.
+		if errors.Is(err, storage.ErrRefreshTokenFamilyNotFound) {
+			// Key not found under hashed format: try legacy key written by pre-migration pods.
 			meta, err = getAndUnmarshal(ctx, s, s.legacyRefreshTokenMetaKey(candidate), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
 		}
 		if err != nil || meta == nil {
@@ -614,22 +615,14 @@ func (s *Store) revokeIndividualTokens(ctx context.Context, tokenIDs []string) i
 // deleteTokenAndMetadata deletes a token and all its associated metadata.
 // Both hashed (current) and legacy (pre-migration) key formats are deleted.
 func (s *Store) deleteTokenAndMetadata(ctx context.Context, tokenID string) {
-	tokenPrefix := safeTruncate(tokenID, tokenIDLogLength)
-
-	for _, key := range []string{s.tokenKey(tokenID), s.legacyTokenKey(tokenID)} {
-		if err := s.client.Do(ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
-			s.logger.Debug("Failed to delete token during user+client revocation", "token_prefix", tokenPrefix, "error", err)
-		}
-	}
-	for _, key := range []string{s.refreshTokenKey(tokenID), s.legacyRefreshTokenKey(tokenID)} {
-		if err := s.client.Do(ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
-			s.logger.Debug("Failed to delete refresh token during user+client revocation", "token_prefix", tokenPrefix, "error", err)
-		}
-	}
-	for _, key := range []string{s.tokenMetaKey(tokenID), s.legacyTokenMetaKey(tokenID)} {
-		if err := s.client.Do(ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
-			s.logger.Debug("Failed to delete token metadata during user+client revocation", "token_prefix", tokenPrefix, "error", err)
-		}
+	if err := s.client.Do(ctx, s.client.B().Del().Key(
+		s.tokenKey(tokenID), s.legacyTokenKey(tokenID),
+		s.refreshTokenKey(tokenID), s.legacyRefreshTokenKey(tokenID),
+		s.tokenMetaKey(tokenID), s.legacyTokenMetaKey(tokenID),
+	).Build()).Error(); err != nil {
+		s.logger.Debug("Failed to delete token keys during user+client revocation",
+			"token_prefix", safeTruncate(tokenID, tokenIDLogLength),
+			"error", err)
 	}
 }
 

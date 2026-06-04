@@ -227,10 +227,6 @@ func (s *Store) CheckIPLimit(ctx context.Context, ip string, maxClientsPerIP int
 	key := s.clientIPKey(ip)
 
 	countStr, err := s.client.Do(op.ctx, s.client.B().Get().Key(key).Build()).ToString()
-	if err != nil && isNilError(err) {
-		// Legacy fallback: check old unhashed key written by pre-migration pods.
-		countStr, err = s.client.Do(op.ctx, s.client.B().Get().Key(s.legacyClientIPKey(ip)).Build()).ToString()
-	}
 	if err != nil {
 		if isNilError(err) {
 			// No registrations yet for this IP
