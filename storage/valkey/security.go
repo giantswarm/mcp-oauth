@@ -293,7 +293,12 @@ func (s *Store) pickActiveMember(ctx context.Context, tokens []string) (token, c
 	var bestGen int
 	for _, candidate := range tokens {
 		meta, err := getAndUnmarshal(ctx, s, s.refreshTokenMetaKey(candidate), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
-		if errors.Is(err, storage.ErrRefreshTokenFamilyNotFound) {
+		if err != nil {
+			if !errors.Is(err, storage.ErrRefreshTokenFamilyNotFound) {
+				s.logger.Warn("pickActiveMember: storage error reading candidate metadata",
+					"token_prefix", safeTruncate(candidate, tokenIDLogLength), "error", err)
+				continue
+			}
 			// Key not found under hashed format: try legacy key written by pre-migration pods.
 			meta, err = getAndUnmarshal(ctx, s, s.legacyRefreshTokenMetaKey(candidate), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
 		}
@@ -605,22 +610,20 @@ func (s *Store) identifyFamilies(ctx context.Context, tokenIDs []string) map[str
 	families := make(map[string]bool)
 	for _, tokenID := range tokenIDs {
 		data, err := s.client.Do(ctx, s.client.B().Get().Key(s.refreshTokenMetaKey(tokenID)).Build()).ToString()
+		if isNilError(err) {
+			// Key not found under hashed format: try legacy key written by pre-migration pods.
+			data, err = s.client.Do(ctx, s.client.B().Get().Key(s.legacyRefreshTokenMetaKey(tokenID)).Build()).ToString()
+		}
 		if err != nil {
-			if isNilError(err) {
-				// Key not found under hashed format: try legacy key written by pre-migration pods.
-				data, err = s.client.Do(ctx, s.client.B().Get().Key(s.legacyRefreshTokenMetaKey(tokenID)).Build()).ToString()
-			}
-			if err != nil && !isNilError(err) {
+			if !isNilError(err) {
 				s.logger.Warn("identifyFamilies: storage error, family may be missed during revocation",
 					"token_prefix", safeTruncate(tokenID, tokenIDLogLength), "error", err)
-				continue
 			}
+			continue
 		}
-		if err == nil {
-			var j refreshTokenFamilyJSON
-			if err := json.Unmarshal([]byte(data), &j); err == nil && j.FamilyID != "" {
-				families[j.FamilyID] = true
-			}
+		var j refreshTokenFamilyJSON
+		if err := json.Unmarshal([]byte(data), &j); err == nil && j.FamilyID != "" {
+			families[j.FamilyID] = true
 		}
 	}
 	return families

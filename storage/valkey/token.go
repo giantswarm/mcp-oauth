@@ -176,7 +176,9 @@ func (s *Store) DeleteToken(ctx context.Context, userID string) (err error) {
 	if err = s.client.Do(op.ctx, s.client.B().Del().Key(s.tokenKey(userID)).Build()).Error(); err != nil {
 		return fmt.Errorf("failed to delete token: %w", err)
 	}
-	s.deleteKey(op.ctx, s.legacyTokenKey(userID), "legacy token", safeTruncate(userID, tokenIDLogLength))
+	if err = s.client.Do(op.ctx, s.client.B().Del().Key(s.legacyTokenKey(userID)).Build()).Error(); err != nil {
+		return fmt.Errorf("failed to delete legacy token: %w", err)
+	}
 
 	s.logger.Debug("Deleted token", "user_id", userID)
 	return nil
@@ -298,7 +300,9 @@ func (s *Store) DeleteRefreshToken(ctx context.Context, refreshToken string) (er
 	if err = s.client.Do(op.ctx, s.client.B().Del().Key(s.refreshTokenKey(refreshToken)).Build()).Error(); err != nil {
 		return fmt.Errorf("failed to delete refresh token: %w", err)
 	}
-	s.deleteKey(op.ctx, s.legacyRefreshTokenKey(refreshToken), "legacy refresh token", safeTruncate(refreshToken, tokenIDLogLength))
+	if err = s.client.Do(op.ctx, s.client.B().Del().Key(s.legacyRefreshTokenKey(refreshToken)).Build()).Error(); err != nil {
+		return fmt.Errorf("failed to delete legacy refresh token: %w", err)
+	}
 
 	s.logger.Debug("Deleted refresh token (rotation)")
 	return nil
