@@ -1590,8 +1590,8 @@ func TestValidateInputLength(t *testing.T) {
 	if err := validateInputLength(strings.Repeat("a", maxInputValueLength)); err != nil {
 		t.Errorf("at-limit input rejected: %v", err)
 	}
-	if err := validateInputLength(strings.Repeat("a", maxInputValueLength+1)); err != errInputTooLarge {
-		t.Errorf("over-limit input: got %v, want errInputTooLarge", err)
+	if err := validateInputLength(strings.Repeat("a", maxInputValueLength+1)); err != ErrInputTooLarge {
+		t.Errorf("over-limit input: got %v, want ErrInputTooLarge", err)
 	}
 	if err := validateInputLength(""); err != nil {
 		t.Errorf("empty string rejected: %v", err)
@@ -2032,34 +2032,34 @@ func TestValidation_OversizedInputRejected(t *testing.T) {
 
 	oversized := strings.Repeat("x", maxInputValueLength+1)
 
-	if err := s.SaveRefreshToken(ctx, oversized, "user", time.Now().Add(time.Hour)); err != errInputTooLarge {
-		t.Errorf("SaveRefreshToken with oversized token: got %v, want errInputTooLarge", err)
+	if err := s.SaveRefreshToken(ctx, oversized, "user", time.Now().Add(time.Hour)); err != ErrInputTooLarge {
+		t.Errorf("SaveRefreshToken with oversized token: got %v, want ErrInputTooLarge", err)
 	}
-	if err := s.SaveRefreshToken(ctx, "token", oversized, time.Now().Add(time.Hour)); err != errInputTooLarge {
-		t.Errorf("SaveRefreshToken with oversized userID: got %v, want errInputTooLarge", err)
+	if err := s.SaveRefreshToken(ctx, "token", oversized, time.Now().Add(time.Hour)); err != ErrInputTooLarge {
+		t.Errorf("SaveRefreshToken with oversized userID: got %v, want ErrInputTooLarge", err)
 	}
 
 	meta := storage.TokenMetadata{
 		UserID:   oversized,
 		ClientID: "client",
 	}
-	if err := s.SaveTokenMetadata(ctx, "tokenid", meta); err != errInputTooLarge {
-		t.Errorf("SaveTokenMetadata with oversized userID: got %v, want errInputTooLarge", err)
+	if err := s.SaveTokenMetadata(ctx, "tokenid", meta); err != ErrInputTooLarge {
+		t.Errorf("SaveTokenMetadata with oversized userID: got %v, want ErrInputTooLarge", err)
 	}
 
 	meta2 := storage.TokenMetadata{
 		UserID:   "user",
 		ClientID: "client",
 	}
-	if err := s.SaveTokenMetadata(ctx, oversized, meta2); err != errInputTooLarge {
-		t.Errorf("SaveTokenMetadata with oversized tokenID: got %v, want errInputTooLarge", err)
+	if err := s.SaveTokenMetadata(ctx, oversized, meta2); err != ErrInputTooLarge {
+		t.Errorf("SaveTokenMetadata with oversized tokenID: got %v, want ErrInputTooLarge", err)
 	}
 
-	if err := s.SaveRefreshTokenWithFamily(ctx, oversized, "user", "client", "family", 1, time.Now().Add(time.Hour)); err != errInputTooLarge {
-		t.Errorf("SaveRefreshTokenWithFamily with oversized refreshToken: got %v, want errInputTooLarge", err)
+	if err := s.SaveRefreshTokenWithFamily(ctx, oversized, "user", "client", "family", 1, time.Now().Add(time.Hour)); err != ErrInputTooLarge {
+		t.Errorf("SaveRefreshTokenWithFamily with oversized refreshToken: got %v, want ErrInputTooLarge", err)
 	}
-	if err := s.SaveRefreshTokenWithFamily(ctx, "token", "user", "client", oversized, 1, time.Now().Add(time.Hour)); err != errInputTooLarge {
-		t.Errorf("SaveRefreshTokenWithFamily with oversized familyID: got %v, want errInputTooLarge", err)
+	if err := s.SaveRefreshTokenWithFamily(ctx, "token", "user", "client", oversized, 1, time.Now().Add(time.Hour)); err != ErrInputTooLarge {
+		t.Errorf("SaveRefreshTokenWithFamily with oversized familyID: got %v, want ErrInputTooLarge", err)
 	}
 }
 

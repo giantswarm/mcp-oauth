@@ -590,7 +590,15 @@ func (s *Store) getTokensForUserClient(ctx context.Context, userID, clientID str
 	if legacyErr != nil && !isNilError(legacyErr) {
 		return nil, fmt.Errorf("failed to get tokens for user+client (legacy): %w", legacyErr)
 	}
-	return append(tokenIDs, legacyIDs...), nil
+	seen := make(map[string]struct{}, len(tokenIDs)+len(legacyIDs))
+	result := make([]string, 0, len(tokenIDs)+len(legacyIDs))
+	for _, id := range append(tokenIDs, legacyIDs...) {
+		if _, dup := seen[id]; !dup {
+			seen[id] = struct{}{}
+			result = append(result, id)
+		}
+	}
+	return result, nil
 }
 
 // revokeFamiliesForTokens identifies and revokes all token families for the given tokens.
@@ -610,7 +618,7 @@ func (s *Store) identifyFamilies(ctx context.Context, tokenIDs []string) map[str
 	families := make(map[string]bool)
 	for _, tokenID := range tokenIDs {
 		data, err := s.client.Do(ctx, s.client.B().Get().Key(s.refreshTokenMetaKey(tokenID)).Build()).ToString()
-		if isNilError(err) {
+		if err != nil && isNilError(err) {
 			// Key not found under hashed format: try legacy key written by pre-migration pods.
 			data, err = s.client.Do(ctx, s.client.B().Get().Key(s.legacyRefreshTokenMetaKey(tokenID)).Build()).ToString()
 		}
@@ -663,7 +671,9 @@ func (s *Store) deleteUserClientSet(ctx context.Context, userID, clientID string
 }
 
 // GetTokensByUserClient retrieves all token IDs for a user+client combination.
-// This is primarily for testing and debugging purposes.
+// Both hashed (current) and legacy (pre-migration) sets are unioned and deduplicated.
+// This is used by Server.RevokeAllTokensForUserClient for provider-side revocation;
+// missing legacy tokens would leave pre-migration tokens unrevoked at the provider.
 func (s *Store) GetTokensByUserClient(ctx context.Context, userID, clientID string) (tokens []string, err error) {
 	op := s.startTracedOp(ctx, "get_tokens_by_user_client")
 	defer op.end(&err)

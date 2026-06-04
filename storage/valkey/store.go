@@ -93,7 +93,9 @@ const (
 // Validation error messages (generic to prevent information leakage)
 var (
 	errInvalidCredentials = fmt.Errorf("invalid client credentials")
-	errInputTooLarge      = fmt.Errorf("input exceeds maximum allowed size")
+	// ErrInputTooLarge is returned when a caller-supplied value exceeds maxInputValueLength.
+	// Callers can use errors.Is to distinguish this from storage-layer errors.
+	ErrInputTooLarge = fmt.Errorf("input exceeds maximum allowed size")
 )
 
 // Config holds configuration for the Valkey storage backend.
@@ -989,12 +991,12 @@ func getAndUnmarshal[J any, T any](
 	return fromJSON(&j), nil
 }
 
-// validateInputLength returns errInputTooLarge when s exceeds maxInputValueLength.
+// validateInputLength returns ErrInputTooLarge when s exceeds maxInputValueLength.
 // Applied to caller-supplied values before they are stored as Valkey values or
 // set members. Key components are separately bounded by hashKeyComponent.
 func validateInputLength(s string) error {
 	if len(s) > maxInputValueLength {
-		return errInputTooLarge
+		return ErrInputTooLarge
 	}
 	return nil
 }
