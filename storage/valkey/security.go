@@ -223,6 +223,10 @@ func (s *Store) GetRefreshTokenFamilyByID(ctx context.Context, familyID string) 
 		return nil, storage.ErrRefreshTokenFamilyNotFound
 	}
 
+	// Non-not-found errors (transport failures, unmarshal errors) are returned
+	// immediately rather than silently falling through to ErrRefreshTokenFamilyNotFound.
+	// Fail-closed is correct here: swallowing a storage error and returning
+	// "family not found" would allow a compromised token family to appear legitimate.
 	for _, refreshToken := range tokens {
 		meta, err := getAndUnmarshal(op.ctx, s, s.refreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
 		if err == nil && meta != nil {
@@ -372,13 +376,22 @@ func (s *Store) revokeTokenInFamily(ctx context.Context, token string, now time.
 func (s *Store) markFamilyMetadataRevoked(ctx context.Context, token string, now time.Time, tokenPrefix string) {
 	metaKey := s.refreshTokenMetaKey(token)
 	data, err := s.client.Do(ctx, s.client.B().Get().Key(metaKey).Build()).ToString()
-	if err != nil && isNilError(err) {
-		// Legacy fallback for tokens written by pre-migration pods.
+	if err != nil {
+		if !isNilError(err) {
+			s.logger.Warn("Failed to read family metadata for revocation — key may be unrevoked",
+				"token_prefix", tokenPrefix, "error", err)
+			return
+		}
+		// Key not found under hashed format: try legacy key written by pre-migration pods.
 		metaKey = s.legacyRefreshTokenMetaKey(token)
 		data, err = s.client.Do(ctx, s.client.B().Get().Key(metaKey).Build()).ToString()
-	}
-	if err != nil {
-		return
+		if err != nil {
+			if !isNilError(err) {
+				s.logger.Warn("Failed to read legacy family metadata for revocation — key may be unrevoked",
+					"token_prefix", tokenPrefix, "error", err)
+			}
+			return
+		}
 	}
 
 	var j refreshTokenFamilyJSON
@@ -405,12 +418,14 @@ func (s *Store) markFamilyMetadataRevoked(ctx context.Context, token string, now
 // Both hashed (current) and legacy (pre-migration) key formats are deleted so
 // that revocation works for tokens written by older pods during a rolling deploy.
 func (s *Store) deleteTokenKeys(ctx context.Context, token, tokenPrefix string) {
-	s.deleteKey(ctx, s.refreshTokenKey(token), "refresh token", tokenPrefix)
-	s.deleteKey(ctx, s.legacyRefreshTokenKey(token), "legacy refresh token", tokenPrefix)
-	s.deleteKey(ctx, s.tokenKey(token), "provider token", tokenPrefix)
-	s.deleteKey(ctx, s.legacyTokenKey(token), "legacy provider token", tokenPrefix)
-	s.deleteKey(ctx, s.tokenMetaKey(token), "token metadata", tokenPrefix)
-	s.deleteKey(ctx, s.legacyTokenMetaKey(token), "legacy token metadata", tokenPrefix)
+	if err := s.client.Do(ctx, s.client.B().Del().Key(
+		s.refreshTokenKey(token), s.legacyRefreshTokenKey(token),
+		s.tokenKey(token), s.legacyTokenKey(token),
+		s.tokenMetaKey(token), s.legacyTokenMetaKey(token),
+	).Build()).Error(); err != nil {
+		s.logger.Debug("Failed to delete token keys during family revocation",
+			"token_prefix", tokenPrefix, "error", err)
+	}
 }
 
 // deleteKey deletes a single key and logs any errors.
@@ -558,8 +573,12 @@ func (s *Store) validateRevocationParams(userID, clientID string) error {
 }
 
 // getTokensForUserClient retrieves all token IDs for a user+client combination.
-// Both hashed (current) and legacy (pre-migration) sets are unioned so that
-// tokens issued by old pods during a rolling deploy are included in revocation.
+// Both hashed (current) and legacy (pre-migration) sets are always read and
+// unioned. Short-circuiting on the first non-empty result is intentionally
+// avoided: during a rolling deploy both sets may have members, and
+// RevokeAllTokensForUserClient must revoke every token regardless of which pod
+// issued it. The second SMEMBERS is a no-op (empty result) once all legacy keys
+// have expired after migration.
 func (s *Store) getTokensForUserClient(ctx context.Context, userID, clientID string) ([]string, error) {
 	tokenIDs, err := s.client.Do(ctx, s.client.B().Smembers().Key(s.userClientKey(userID, clientID)).Build()).AsStrSlice()
 	if err != nil && !isNilError(err) {
