@@ -106,37 +106,24 @@ func NewDiscoveryClient(httpClient *http.Client, cacheTTL time.Duration, logger 
 	}
 }
 
-// NewTestDiscoveryClient creates a discovery client that skips SSRF validation.
-//
-// ⚠️  CRITICAL SECURITY WARNING ⚠️
-//
-// This function bypasses ALL security protections including:
-//   - Private IP blocking (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
-//   - Loopback blocking (127.0.0.1, ::1)
-//   - Link-local blocking (169.254.169.254 - AWS metadata service)
-//   - HTTPS enforcement
-//
-// NEVER USE THIS IN PRODUCTION CODE!
-//
-// This function exists ONLY for unit tests with httptest.Server on localhost.
-// The forbidigo linter is configured to detect and prevent misuse.
-//
-// Intended Use (test files only):
-//
-//	func TestOIDCProvider(t *testing.T) {
-//	    testServer := httptest.NewTLSServer(mockOIDCHandler)
-//	    defer testServer.Close()
-//	    client := oidc.NewTestDiscoveryClient(testServer.Client(), 1*time.Hour, nil)
-//	    // ... test code ...
-//	}
-//
-// Security Enforcement:
-//   - Linter rules prevent usage outside *_test.go files
-//   - Code review must verify all usages are in test code
-//   - CI/CD should fail if this appears in production code paths
-func NewTestDiscoveryClient(httpClient *http.Client, cacheTTL time.Duration, logger *slog.Logger) *DiscoveryClient {
+// WithSkipValidation returns a [DiscoveryOption] that disables SSRF and HTTPS
+// validation on the discovery client. Intended exclusively for unit tests that
+// spin up httptest servers on loopback addresses. Production callers must not
+// use this option — it bypasses all URL security checks.
+func WithSkipValidation() DiscoveryOption {
+	return func(c *DiscoveryClient) { c.skipValidation = true }
+}
+
+// DiscoveryOption is a functional option for [NewDiscoveryClientWithOptions].
+type DiscoveryOption func(*DiscoveryClient)
+
+// NewDiscoveryClientWithOptions creates a discovery client applying the given
+// options after default initialization. Use [WithSkipValidation] only in tests.
+func NewDiscoveryClientWithOptions(httpClient *http.Client, cacheTTL time.Duration, logger *slog.Logger, opts ...DiscoveryOption) *DiscoveryClient {
 	client := NewDiscoveryClient(httpClient, cacheTTL, logger)
-	client.skipValidation = true
+	for _, opt := range opts {
+		opt(client)
+	}
 	return client
 }
 

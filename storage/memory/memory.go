@@ -117,6 +117,7 @@ var (
 	_ storage.RevokedTokenStore               = (*Store)(nil)
 	_ storage.RefreshTokenFamilyByIDStore     = (*Store)(nil)
 	_ storage.ActiveRefreshTokenByFamilyStore = (*Store)(nil)
+	_ storage.ClientIPTracker                 = (*Store)(nil)
 )
 
 // Option configures a Store at construction time.
@@ -529,11 +530,14 @@ func (s *Store) CheckIPLimit(_ context.Context, ip string, maxClientsPerIP int) 
 	return nil
 }
 
-// TrackClientIP increments the client count for an IP address
-func (s *Store) TrackClientIP(ip string) {
+// TrackClientIP increments the registration count for the given IP address.
+// The clientID parameter is accepted for interface compatibility but is not
+// persisted by the in-memory store.
+func (s *Store) TrackClientIP(_ context.Context, _ /* clientID */ string, ip string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.clientsPerIP[ip]++
+	return nil
 }
 
 // ============================================================

@@ -329,6 +329,12 @@ type ClientStore interface {
 	CheckIPLimit(ctx context.Context, ip string, maxClientsPerIP int) error
 }
 
+// ClientIPTracker is an optional capability implemented by ClientStore
+// implementations that can record the most recent client IP per client_id.
+type ClientIPTracker interface {
+	TrackClientIP(ctx context.Context, clientID, ip string) error
+}
+
 // FlowStore defines the interface for managing OAuth authorization flows.
 //
 // # Understanding StateID vs ProviderState
