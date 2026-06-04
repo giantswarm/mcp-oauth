@@ -1437,8 +1437,8 @@ func TestTokenRevocationStore_RevokeAllTokensForUserClient(t *testing.T) {
 	_ = s.SaveRefreshTokenWithFamily(ctx, "user-client-token-2", "revoke-user", "revoke-client", "uc-family", 2, time.Now().Add(time.Hour))
 
 	// Also save token metadata for these
-	_ = s.SaveTokenMetadata(context.Background(), "user-client-token-1", storage.TokenMetadata{UserID: "revoke-user", ClientID: "revoke-client", TokenType: "refresh"})
-	_ = s.SaveTokenMetadata(context.Background(), "user-client-token-2", storage.TokenMetadata{UserID: "revoke-user", ClientID: "revoke-client", TokenType: "refresh"})
+	_ = s.SaveTokenMetadata(context.Background(), "user-client-token-1", storage.TokenMetadata{UserID: "revoke-user", ClientID: "revoke-client", TokenType: nsRefresh})
+	_ = s.SaveTokenMetadata(context.Background(), "user-client-token-2", storage.TokenMetadata{UserID: "revoke-user", ClientID: "revoke-client", TokenType: nsRefresh})
 
 	// Revoke all
 	count, err := s.RevokeAllTokensForUserClient(ctx, "revoke-user", "revoke-client")
@@ -1585,6 +1585,18 @@ func TestValidation_InvalidAuthorizationCode(t *testing.T) {
 // ============================================================
 // Helper Function Tests
 // ============================================================
+
+func TestValidateInputLength(t *testing.T) {
+	if err := validateInputLength(strings.Repeat("a", maxInputValueLength)); err != nil {
+		t.Errorf("at-limit input rejected: %v", err)
+	}
+	if err := validateInputLength(strings.Repeat("a", maxInputValueLength+1)); err != ErrInputTooLarge {
+		t.Errorf("over-limit input: got %v, want ErrInputTooLarge", err)
+	}
+	if err := validateInputLength(""); err != nil {
+		t.Errorf("empty string rejected: %v", err)
+	}
+}
 
 func TestSafeTruncate(t *testing.T) {
 	tests := []struct {
@@ -1946,30 +1958,108 @@ func TestFlowStore_AtomicCheckAndMarkAuthCodeUsed_Concurrent(t *testing.T) {
 // Input Validation Tests
 // ============================================================
 
-func TestValidation_InputTooLarge(t *testing.T) {
+// TestValidation_LargeTokensAccepted verifies that realistic large inputs (900-byte
+// JWTs, 400-byte Dex subjects) are accepted. Key components are hashed to 64 bytes;
+// stored values are accepted up to maxInputValueLength (16 KiB).
+func TestValidation_LargeTokensAccepted(t *testing.T) {
+	const wantUserID = "large-token-user"
+
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
-	// Create a string that exceeds MaxTokenLength
-	largeToken := make([]byte, MaxTokenLength+1)
-	for i := range largeToken {
-		largeToken[i] = 'a'
+	// ~900-byte token (realistic full JWT in AccessTokenFormatJWT mode)
+	largeToken := strings.Repeat("a", 900)
+
+	if err := s.SaveRefreshToken(ctx, largeToken, wantUserID, time.Now().Add(time.Hour)); err != nil {
+		t.Errorf("SaveRefreshToken with 900-byte token: %v", err)
+	}
+	userID, err := s.GetRefreshTokenInfo(ctx, largeToken)
+	if err != nil {
+		t.Errorf("GetRefreshTokenInfo with 900-byte token: %v", err)
+	}
+	if userID != wantUserID {
+		t.Errorf("got userID %q, want %q", userID, wantUserID)
 	}
 
-	err := s.SaveRefreshToken(ctx, string(largeToken), "user", time.Now().Add(time.Hour))
-	if err == nil {
-		t.Error("Expected error for oversized refresh token")
+	// ~400-byte Dex Kubernetes-connector subject (base64-protobuf)
+	largeSub := strings.Repeat("b", 400)
+
+	meta := storage.TokenMetadata{
+		UserID:    largeSub,
+		ClientID:  "testclient",
+		Scopes:    []string{"openid"},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	if err := s.SaveTokenMetadata(ctx, "tokenid1", meta); err != nil {
+		t.Errorf("SaveTokenMetadata with 400-byte userID: %v", err)
+	}
+	got, err := s.GetTokenMetadata("tokenid1")
+	if err != nil {
+		t.Errorf("GetTokenMetadata: %v", err)
+	}
+	if got.UserID != largeSub {
+		t.Errorf("got UserID %q, want large subject", got.UserID)
+	}
+}
+
+func TestValidation_LargeTokensAccepted_RefreshFamily(t *testing.T) {
+	s := testStore(t)
+	ctx := t.Context()
+
+	largeRefresh := strings.Repeat("r", 900)
+	largeSub := strings.Repeat("s", 400)
+	clientID := "client1"
+	familyID := "family-" + strings.Repeat("f", 50)
+
+	if err := s.SaveRefreshTokenWithFamily(ctx, largeRefresh, largeSub, clientID, familyID, 1, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("SaveRefreshTokenWithFamily with large token/subject: %v", err)
+	}
+	meta, err := s.GetRefreshTokenFamily(ctx, largeRefresh)
+	if err != nil {
+		t.Fatalf("GetRefreshTokenFamily: %v", err)
+	}
+	if meta.UserID != largeSub {
+		t.Errorf("got UserID %q, want large subject", meta.UserID)
+	}
+	if meta.ClientID != clientID {
+		t.Errorf("got ClientID %q, want %q", meta.ClientID, clientID)
+	}
+}
+
+func TestValidation_OversizedInputRejected(t *testing.T) {
+	s := testStore(t)
+	ctx := t.Context()
+
+	oversized := strings.Repeat("x", maxInputValueLength+1)
+
+	if err := s.SaveRefreshToken(ctx, oversized, "user", time.Now().Add(time.Hour)); err != ErrInputTooLarge {
+		t.Errorf("SaveRefreshToken with oversized token: got %v, want ErrInputTooLarge", err)
+	}
+	if err := s.SaveRefreshToken(ctx, "token", oversized, time.Now().Add(time.Hour)); err != ErrInputTooLarge {
+		t.Errorf("SaveRefreshToken with oversized userID: got %v, want ErrInputTooLarge", err)
 	}
 
-	// Create a string that exceeds MaxIDLength
-	largeID := make([]byte, MaxIDLength+1)
-	for i := range largeID {
-		largeID[i] = 'a'
+	meta := storage.TokenMetadata{
+		UserID:   oversized,
+		ClientID: "client",
+	}
+	if err := s.SaveTokenMetadata(ctx, "tokenid", meta); err != ErrInputTooLarge {
+		t.Errorf("SaveTokenMetadata with oversized userID: got %v, want ErrInputTooLarge", err)
 	}
 
-	err = s.SaveRefreshToken(ctx, "token", string(largeID), time.Now().Add(time.Hour))
-	if err == nil {
-		t.Error("Expected error for oversized userID")
+	meta2 := storage.TokenMetadata{
+		UserID:   "user",
+		ClientID: "client",
+	}
+	if err := s.SaveTokenMetadata(ctx, oversized, meta2); err != ErrInputTooLarge {
+		t.Errorf("SaveTokenMetadata with oversized tokenID: got %v, want ErrInputTooLarge", err)
+	}
+
+	if err := s.SaveRefreshTokenWithFamily(ctx, oversized, "user", "client", "family", 1, time.Now().Add(time.Hour)); err != ErrInputTooLarge {
+		t.Errorf("SaveRefreshTokenWithFamily with oversized refreshToken: got %v, want ErrInputTooLarge", err)
+	}
+	if err := s.SaveRefreshTokenWithFamily(ctx, "token", "user", "client", oversized, 1, time.Now().Add(time.Hour)); err != ErrInputTooLarge {
+		t.Errorf("SaveRefreshTokenWithFamily with oversized familyID: got %v, want ErrInputTooLarge", err)
 	}
 }
 
@@ -2138,7 +2228,7 @@ func TestStore_SaveTokenMetadata_WithFamilyID(t *testing.T) {
 func TestStore_SaveTokenMetadata_EmptyFamilyID(t *testing.T) {
 	s := testStore(t)
 
-	err := s.SaveTokenMetadata(context.Background(), "family-meta-empty", storage.TokenMetadata{UserID: "user1", ClientID: "client1", TokenType: "refresh", Audience: "", FamilyID: "", Scopes: nil})
+	err := s.SaveTokenMetadata(context.Background(), "family-meta-empty", storage.TokenMetadata{UserID: "user1", ClientID: "client1", TokenType: nsRefresh, Audience: "", FamilyID: "", Scopes: nil})
 	if err != nil {
 		t.Fatalf("SaveTokenMetadata failed: %v", err)
 	}

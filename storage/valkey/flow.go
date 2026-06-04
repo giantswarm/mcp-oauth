@@ -241,9 +241,9 @@ func (s *Store) AtomicCheckAndMarkAuthCodeUsed(ctx context.Context, code string)
 	}
 
 	switch {
-	case result == "NOT_FOUND":
+	case result == luaResultNotFound:
 		return nil, storage.ErrAuthorizationCodeNotFound
-	case result == "EXPIRED":
+	case result == luaResultExpired:
 		return nil, fmt.Errorf("%w: authorization code expired", storage.ErrTokenExpired)
 	case strings.HasPrefix(result, "ALREADY_USED:"):
 		// Parse the code data to return for reuse detection

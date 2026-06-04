@@ -2,7 +2,9 @@ package valkey
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -42,12 +44,32 @@ const (
 	// connectionVerifyTimeout is the timeout for initial connection verification
 	connectionVerifyTimeout = 5 * time.Second
 
-	// MaxTokenLength is the maximum allowed length for token strings (512 bytes)
-	// This prevents DoS attacks via excessively large tokens
-	MaxTokenLength = 512
+	// maxInputValueLength is the upper bound on any single caller-supplied string
+	// (userID, clientID, tokenID, refreshToken, familyID). This allows realistic
+	// JWTs (~900 B) and Dex base64-protobuf subjects (~400 B) while preventing
+	// unbounded allocations in stored values and set members.
+	maxInputValueLength = 16 * 1024
 
-	// MaxIDLength is the maximum allowed length for identifiers (userID, clientID, familyID)
-	MaxIDLength = 256
+	// MaxInputLength is the maximum allowed length for any caller-supplied string
+	// (tokenID, userID, clientID, refreshToken, familyID). Key components are
+	// separately bounded by hashing (see hashKeyComponent).
+	MaxInputLength = maxInputValueLength
+
+	// MaxTokenLength and MaxIDLength are retained for API compatibility.
+	// Deprecated: use MaxInputLength. These values no longer reflect the enforced
+	// limit (MaxInputLength = 16 KiB); callers or downstream consumers using them
+	// for pre-validation must remove that check — it will falsely reject valid JWTs
+	// and long IdP subjects (e.g. Dex Kubernetes-connector base64-protobuf subjects).
+	MaxTokenLength = 512
+	MaxIDLength    = 256
+
+	// luaResultNotFound and luaResultExpired are sentinels returned by Lua
+	// atomic scripts to indicate key state.
+	luaResultNotFound = "NOT_FOUND"
+	luaResultExpired  = "EXPIRED"
+
+	// nsRefresh is the Valkey key namespace for refresh token entries.
+	nsRefresh = "refresh"
 
 	// DefaultMaxTokenDataSize is the default ceiling on the serialized token
 	// written to Valkey, applied after AES-256-GCM + base64 expansion of the
@@ -71,7 +93,9 @@ const (
 // Validation error messages (generic to prevent information leakage)
 var (
 	errInvalidCredentials = fmt.Errorf("invalid client credentials")
-	errInputTooLarge      = fmt.Errorf("input exceeds maximum allowed size")
+	// ErrInputTooLarge is returned when a caller-supplied value exceeds maxInputValueLength.
+	// Callers can use errors.Is to distinguish this from storage-layer errors.
+	ErrInputTooLarge = fmt.Errorf("input exceeds maximum allowed size")
 )
 
 // Config holds configuration for the Valkey storage backend.
@@ -447,12 +471,13 @@ func (s *Store) decryptToken(token *oauth2.Token) (*oauth2.Token, error) {
 	})
 }
 
-// validateStringLength checks if a string exceeds the maximum allowed length
-func validateStringLength(value string, maxLen int, fieldName string) error {
-	if len(value) > maxLen {
-		return fmt.Errorf("%s exceeds maximum length of %d bytes", fieldName, maxLen)
-	}
-	return nil
+// hashKeyComponent returns the hex-encoded SHA-256 of s for use as a Valkey key
+// component. This bounds key length to 64 bytes regardless of input length, which
+// prevents DoS via oversized keys (long JWTs, Dex base64-protobuf subjects, etc.)
+// while keeping the guard one-way and symmetric across every read/write/delete path.
+func hashKeyComponent(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }
 
 // ============================================================
@@ -475,22 +500,58 @@ func (s *Store) keyOf(namespace string, parts ...string) string {
 	return b.String()
 }
 
-func (s *Store) tokenKey(userID string) string       { return s.keyOf("token", userID) }
-func (s *Store) userInfoKey(userID string) string    { return s.keyOf("userinfo", userID) }
-func (s *Store) refreshTokenKey(token string) string { return s.keyOf("refresh", token) }
-func (s *Store) refreshTokenMetaKey(token string) string {
-	return s.keyOf("refresh", "meta", token)
-}
+// Keys for server-minted, length-bounded values (codes, states, client IDs) remain
+// unhashed so SCAN patterns stay human-readable.
 func (s *Store) clientKey(clientID string) string     { return s.keyOf("client", clientID) }
 func (s *Store) clientIPKey(ip string) string         { return s.keyOf("client", "ip", ip) }
 func (s *Store) stateKey(stateID string) string       { return s.keyOf("state", stateID) }
 func (s *Store) providerStateKey(state string) string { return s.keyOf("state", "provider", state) }
 func (s *Store) codeKey(code string) string           { return s.keyOf("code", code) }
-func (s *Store) tokenMetaKey(tokenID string) string   { return s.keyOf("meta", tokenID) }
+
+// Keys for caller-supplied values that may be unbounded (JWTs, IdP subjects, refresh
+// tokens) are hashed to a fixed 64-byte hex string. This prevents oversized-key DoS
+// without any caller-side length constraint. Raw values are stored as Valkey values,
+// not keys, so retrieval is unaffected.
+func (s *Store) tokenKey(userID string) string { return s.keyOf("token", hashKeyComponent(userID)) }
+func (s *Store) userInfoKey(userID string) string {
+	return s.keyOf("userinfo", hashKeyComponent(userID))
+}
+func (s *Store) refreshTokenKey(token string) string {
+	return s.keyOf(nsRefresh, hashKeyComponent(token))
+}
+func (s *Store) refreshTokenMetaKey(token string) string {
+	return s.keyOf(nsRefresh, "meta", hashKeyComponent(token))
+}
+func (s *Store) tokenMetaKey(tokenID string) string {
+	return s.keyOf("meta", hashKeyComponent(tokenID))
+}
 func (s *Store) userClientKey(userID, clientID string) string {
+	return s.keyOf("userclient", hashKeyComponent(userID), hashKeyComponent(clientID))
+}
+func (s *Store) familyKey(familyID string) string {
+	return s.keyOf("family", hashKeyComponent(familyID))
+}
+
+// Legacy (pre-hash) key helpers. Used only as fallback in read and delete paths
+// during rolling deploys after the key-format migration. Keys written by old pods
+// used the raw input as the key component; new pods write hashed keys. Once all
+// pre-migration keys have expired (at most DefaultRefreshTokenTTL = 90 days after
+// the migration) these helpers can be removed.
+func (s *Store) legacyTokenKey(userID string) string { return s.keyOf("token", userID) }
+func (s *Store) legacyUserInfoKey(userID string) string {
+	return s.keyOf("userinfo", userID)
+}
+func (s *Store) legacyRefreshTokenKey(token string) string {
+	return s.keyOf(nsRefresh, token)
+}
+func (s *Store) legacyRefreshTokenMetaKey(token string) string {
+	return s.keyOf(nsRefresh, "meta", token)
+}
+func (s *Store) legacyTokenMetaKey(tokenID string) string { return s.keyOf("meta", tokenID) }
+func (s *Store) legacyUserClientKey(userID, clientID string) string {
 	return s.keyOf("userclient", userID, clientID)
 }
-func (s *Store) familyKey(familyID string) string { return s.keyOf("family", familyID) }
+func (s *Store) legacyFamilyKey(familyID string) string { return s.keyOf("family", familyID) }
 
 // ============================================================
 // Lua Scripts for Atomic Operations
@@ -928,6 +989,30 @@ func getAndUnmarshal[J any, T any](
 	}
 
 	return fromJSON(&j), nil
+}
+
+// validateInputLength returns ErrInputTooLarge when s exceeds maxInputValueLength.
+// Applied to caller-supplied values before they are stored as Valkey values or
+// set members. Key components are separately bounded by hashKeyComponent.
+func validateInputLength(s string) error {
+	if len(s) > maxInputValueLength {
+		return ErrInputTooLarge
+	}
+	return nil
+}
+
+// runAtomicGetAndDelete executes luaScriptAtomicGetAndDeleteRefresh with the
+// given keys and returns the raw Lua result string.
+func (s *Store) runAtomicGetAndDelete(ctx context.Context, refreshKey, tokenKey, metaKey string) (string, error) {
+	return s.client.Do(
+		ctx,
+		s.client.B().Eval().Script(luaScriptAtomicGetAndDeleteRefresh).
+			Numkeys(3).
+			Key(refreshKey, tokenKey, metaKey).
+			Arg(fmt.Sprintf("%d", time.Now().Unix())).
+			Arg("-1").
+			Build(),
+	).ToString()
 }
 
 // safeTruncate safely truncates a string to n characters.
