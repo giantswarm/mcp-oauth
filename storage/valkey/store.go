@@ -57,8 +57,9 @@ const (
 
 	// MaxTokenLength and MaxIDLength are retained for API compatibility.
 	// Deprecated: use MaxInputLength. These values no longer reflect the enforced
-	// limit (MaxInputLength = 16 KiB); callers using them for pre-validation will
-	// falsely reject valid JWTs and long IdP subjects.
+	// limit (MaxInputLength = 16 KiB); callers or downstream consumers using them
+	// for pre-validation must remove that check — it will falsely reject valid JWTs
+	// and long IdP subjects (e.g. Dex Kubernetes-connector base64-protobuf subjects).
 	MaxTokenLength = 512
 	MaxIDLength    = 256
 

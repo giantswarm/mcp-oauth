@@ -173,11 +173,10 @@ func (s *Store) DeleteToken(ctx context.Context, userID string) (err error) {
 	op := s.startTracedOp(ctx, "delete_token")
 	defer op.end(&err)
 
-	if err = s.client.Do(op.ctx, s.client.B().Del().Key(s.tokenKey(userID)).Build()).Error(); err != nil {
+	if err = s.client.Do(op.ctx, s.client.B().Del().Key(
+		s.tokenKey(userID), s.legacyTokenKey(userID),
+	).Build()).Error(); err != nil {
 		return fmt.Errorf("failed to delete token: %w", err)
-	}
-	if err = s.client.Do(op.ctx, s.client.B().Del().Key(s.legacyTokenKey(userID)).Build()).Error(); err != nil {
-		return fmt.Errorf("failed to delete legacy token: %w", err)
 	}
 
 	s.logger.Debug("Deleted token", "user_id", userID)
@@ -222,6 +221,9 @@ func (s *Store) GetUserInfo(ctx context.Context, userID string) (result *storage
 	data, err := s.client.Do(op.ctx, s.client.B().Get().Key(s.userInfoKey(userID)).Build()).ToString()
 	if err != nil && isNilError(err) {
 		data, err = s.client.Do(op.ctx, s.client.B().Get().Key(s.legacyUserInfoKey(userID)).Build()).ToString()
+		if err == nil {
+			s.deleteKey(op.ctx, s.legacyUserInfoKey(userID), "legacy user info", safeTruncate(userID, tokenIDLogLength))
+		}
 	}
 	if err != nil {
 		if isNilError(err) {
@@ -297,11 +299,10 @@ func (s *Store) DeleteRefreshToken(ctx context.Context, refreshToken string) (er
 	op := s.startTracedOp(ctx, "delete_refresh_token")
 	defer op.end(&err)
 
-	if err = s.client.Do(op.ctx, s.client.B().Del().Key(s.refreshTokenKey(refreshToken)).Build()).Error(); err != nil {
+	if err = s.client.Do(op.ctx, s.client.B().Del().Key(
+		s.refreshTokenKey(refreshToken), s.legacyRefreshTokenKey(refreshToken),
+	).Build()).Error(); err != nil {
 		return fmt.Errorf("failed to delete refresh token: %w", err)
-	}
-	if err = s.client.Do(op.ctx, s.client.B().Del().Key(s.legacyRefreshTokenKey(refreshToken)).Build()).Error(); err != nil {
-		return fmt.Errorf("failed to delete legacy refresh token: %w", err)
 	}
 
 	s.logger.Debug("Deleted refresh token (rotation)")

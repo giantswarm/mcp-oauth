@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **SSO token forwarding broken for JWT-format access tokens and Dex Kubernetes-connector subjects.** Valkey key helpers enforced hard byte limits (512 B for tokens, 256 B for IDs) that full JWTs (~500-900 B) and Dex base64-protobuf subjects (~280-400 B) routinely exceeded. When a limit fired the write was silently dropped (logged at `Warn`), so token metadata was never stored and every affected SSO request failed. Key components are now hashed (SHA-256, 64-byte hex) before use, bounding key length regardless of input size. All read, write, delete, and Lua atomic paths use the same helper so the fix is symmetric. A `MaxInputLength` (16 KiB) guard on the stored value replaces the old per-field limits. Legacy (pre-hash) key formats are read as a fallback during rolling deploys and removed lazily on first write or read. `MaxTokenLength` and `MaxIDLength` are deprecated; downstream callers using them for pre-validation must remove that check.
+
 - **JSON encode errors on response writes** are now logged instead of silently swallowed across all handler endpoints (discovery, token, token-exchange, introspection, registration, client management, userinfo, JWKS, and error responses). The HTTP status is unchanged.
 
 - **`security.SetEncryptionMetricRecorder`**: replaced unprotected package-level variable with `atomic.Pointer`, eliminating a data race when multiple goroutines register or clear the hook concurrently (e.g., parallel test suites).

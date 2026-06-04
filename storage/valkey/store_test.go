@@ -2058,6 +2058,9 @@ func TestValidation_OversizedInputRejected(t *testing.T) {
 	if err := s.SaveRefreshTokenWithFamily(ctx, oversized, "user", "client", "family", 1, time.Now().Add(time.Hour)); err != errInputTooLarge {
 		t.Errorf("SaveRefreshTokenWithFamily with oversized refreshToken: got %v, want errInputTooLarge", err)
 	}
+	if err := s.SaveRefreshTokenWithFamily(ctx, "token", "user", "client", oversized, 1, time.Now().Add(time.Hour)); err != errInputTooLarge {
+		t.Errorf("SaveRefreshTokenWithFamily with oversized familyID: got %v, want errInputTooLarge", err)
+	}
 }
 
 func TestValidation_GenericErrorMessages(t *testing.T) {
