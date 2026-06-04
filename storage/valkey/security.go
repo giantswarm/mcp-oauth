@@ -676,6 +676,9 @@ func (s *Store) GetTokensByUserClient(ctx context.Context, userID, clientID stri
 	// deploy both sets may have members; callers such as Server.RevokeAllTokensForUserClient
 	// use this result for provider-side revocation and in-process unregistration,
 	// so missing legacy tokens would leave pre-migration tokens unrevoked at the provider.
+	// Deduplicate: a token written across both sets (edge case during rolling deploy) would
+	// otherwise be double-revoked at the provider, which some providers reject, causing
+	// checkProviderRevocationFailure to abort the local revocation step.
 	tokens, err = s.client.Do(op.ctx, s.client.B().Smembers().Key(s.userClientKey(userID, clientID)).Build()).AsStrSlice()
 	if err != nil && !isNilError(err) {
 		return nil, fmt.Errorf("failed to get tokens for user+client: %w", err)
@@ -684,7 +687,14 @@ func (s *Store) GetTokensByUserClient(ctx context.Context, userID, clientID stri
 	if legacyErr != nil && !isNilError(legacyErr) {
 		return nil, fmt.Errorf("failed to get tokens for user+client (legacy): %w", legacyErr)
 	}
-	combined := append(tokens, legacyTokens...)
+	seen := make(map[string]struct{}, len(tokens)+len(legacyTokens))
+	combined := make([]string, 0, len(tokens)+len(legacyTokens))
+	for _, t := range append(tokens, legacyTokens...) {
+		if _, dup := seen[t]; !dup {
+			seen[t] = struct{}{}
+			combined = append(combined, t)
+		}
+	}
 	if len(combined) == 0 {
 		return []string{}, nil
 	}

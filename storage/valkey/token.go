@@ -221,9 +221,6 @@ func (s *Store) GetUserInfo(ctx context.Context, userID string) (result *storage
 	data, err := s.client.Do(op.ctx, s.client.B().Get().Key(s.userInfoKey(userID)).Build()).ToString()
 	if err != nil && isNilError(err) {
 		data, err = s.client.Do(op.ctx, s.client.B().Get().Key(s.legacyUserInfoKey(userID)).Build()).ToString()
-		if err == nil {
-			s.deleteKey(op.ctx, s.legacyUserInfoKey(userID), "legacy user info", safeTruncate(userID, tokenIDLogLength))
-		}
 	}
 	if err != nil {
 		if isNilError(err) {
