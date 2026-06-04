@@ -350,18 +350,15 @@ func (s *Store) getFamilyTokens(ctx context.Context, familyID string) ([]string,
 	if err != nil && !isNilError(err) {
 		return nil, fmt.Errorf("failed to get family members: %w", err)
 	}
-	if len(tokens) > 0 {
-		return tokens, nil
+	// Always union with the legacy set: during a rolling deploy both sets may have
+	// members (old pods write to legacyFamilyKey, new pods to familyKey), and
+	// revocation must cover all of them. Short-circuiting on len(tokens)>0 would
+	// miss tokens issued by pre-migration pods. Same reasoning as getTokensForUserClient.
+	legacyTokens, legacyErr := s.client.Do(ctx, s.client.B().Smembers().Key(s.legacyFamilyKey(familyID)).Build()).AsStrSlice()
+	if legacyErr != nil && !isNilError(legacyErr) {
+		return nil, fmt.Errorf("failed to get legacy family members: %w", legacyErr)
 	}
-	// Legacy fallback: try unhashed key written by pre-migration pods.
-	tokens, err = s.client.Do(ctx, s.client.B().Smembers().Key(s.legacyFamilyKey(familyID)).Build()).AsStrSlice()
-	if err != nil {
-		if isNilError(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to get family members: %w", err)
-	}
-	return tokens, nil
+	return append(tokens, legacyTokens...), nil
 }
 
 // revokeTokenInFamily revokes a single token within a family.
@@ -608,9 +605,16 @@ func (s *Store) identifyFamilies(ctx context.Context, tokenIDs []string) map[str
 	families := make(map[string]bool)
 	for _, tokenID := range tokenIDs {
 		data, err := s.client.Do(ctx, s.client.B().Get().Key(s.refreshTokenMetaKey(tokenID)).Build()).ToString()
-		if err != nil && isNilError(err) {
-			// Legacy fallback for metadata written by pre-migration pods.
-			data, err = s.client.Do(ctx, s.client.B().Get().Key(s.legacyRefreshTokenMetaKey(tokenID)).Build()).ToString()
+		if err != nil {
+			if isNilError(err) {
+				// Key not found under hashed format: try legacy key written by pre-migration pods.
+				data, err = s.client.Do(ctx, s.client.B().Get().Key(s.legacyRefreshTokenMetaKey(tokenID)).Build()).ToString()
+			}
+			if err != nil && !isNilError(err) {
+				s.logger.Warn("identifyFamilies: storage error, family may be missed during revocation",
+					"token_prefix", safeTruncate(tokenID, tokenIDLogLength), "error", err)
+				continue
+			}
 		}
 		if err == nil {
 			var j refreshTokenFamilyJSON
