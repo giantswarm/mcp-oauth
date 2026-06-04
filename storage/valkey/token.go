@@ -68,6 +68,9 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 	if token == nil {
 		return fmt.Errorf("token cannot be nil")
 	}
+	if err = validateInputLength(userID); err != nil {
+		return err
+	}
 
 	// Encrypt token if encryptor is configured
 	tokenToStore, err := s.encryptToken(token)
@@ -131,9 +134,10 @@ func (s *Store) GetToken(ctx context.Context, userID string) (result *oauth2.Tok
 	op := s.startTracedOp(ctx, "get_token")
 	defer op.end(&err)
 
-	key := s.tokenKey(userID)
-
-	data, err := s.client.Do(op.ctx, s.client.B().Get().Key(key).Build()).ToString()
+	data, err := s.client.Do(op.ctx, s.client.B().Get().Key(s.tokenKey(userID)).Build()).ToString()
+	if err != nil && isNilError(err) {
+		data, err = s.client.Do(op.ctx, s.client.B().Get().Key(s.legacyTokenKey(userID)).Build()).ToString()
+	}
 	if err != nil {
 		if isNilError(err) {
 			return nil, storage.ErrTokenNotFound
@@ -210,9 +214,10 @@ func (s *Store) GetUserInfo(ctx context.Context, userID string) (result *storage
 	op := s.startTracedOp(ctx, "get_user_info")
 	defer op.end(&err)
 
-	key := s.userInfoKey(userID)
-
-	data, err := s.client.Do(op.ctx, s.client.B().Get().Key(key).Build()).ToString()
+	data, err := s.client.Do(op.ctx, s.client.B().Get().Key(s.userInfoKey(userID)).Build()).ToString()
+	if err != nil && isNilError(err) {
+		data, err = s.client.Do(op.ctx, s.client.B().Get().Key(s.legacyUserInfoKey(userID)).Build()).ToString()
+	}
 	if err != nil {
 		if isNilError(err) {
 			return nil, fmt.Errorf("%w: %s", storage.ErrUserInfoNotFound, userID)
@@ -239,6 +244,12 @@ func (s *Store) SaveRefreshToken(ctx context.Context, refreshToken, userID strin
 	if userID == "" {
 		return fmt.Errorf("userID cannot be empty")
 	}
+	if err = validateInputLength(refreshToken); err != nil {
+		return err
+	}
+	if err = validateInputLength(userID); err != nil {
+		return err
+	}
 
 	key := s.refreshTokenKey(refreshToken)
 
@@ -261,9 +272,10 @@ func (s *Store) GetRefreshTokenInfo(ctx context.Context, refreshToken string) (u
 	op := s.startTracedOp(ctx, "get_refresh_token_info")
 	defer op.end(&err)
 
-	key := s.refreshTokenKey(refreshToken)
-
-	userID, err = s.client.Do(op.ctx, s.client.B().Get().Key(key).Build()).ToString()
+	userID, err = s.client.Do(op.ctx, s.client.B().Get().Key(s.refreshTokenKey(refreshToken)).Build()).ToString()
+	if err != nil && isNilError(err) {
+		userID, err = s.client.Do(op.ctx, s.client.B().Get().Key(s.legacyRefreshTokenKey(refreshToken)).Build()).ToString()
+	}
 	if err != nil {
 		if isNilError(err) {
 			return "", storage.ErrTokenNotFound
@@ -300,23 +312,23 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken
 	op := s.startTracedOp(ctx, "atomic_get_and_delete_refresh_token")
 	defer op.end(&err)
 
-	// Build key names for the Lua script
-	refreshKey := s.refreshTokenKey(refreshToken)
-	tokenKey := s.tokenKey(refreshToken)
-	metaKey := s.tokenMetaKey(refreshToken)
-
-	// Execute Lua script for atomic operation
-	result, err := s.client.Do(
-		op.ctx,
-		s.client.B().Eval().Script(luaScriptAtomicGetAndDeleteRefresh).
-			Numkeys(3).
-			Key(refreshKey, tokenKey, metaKey).
-			Arg(fmt.Sprintf("%d", time.Now().Unix())).
-			Arg("-1"). // No separate expiry check, TTL handles it
-			Build(),
-	).ToString()
+	// Execute Lua script for atomic operation.
+	result, err := s.runAtomicGetAndDelete(op.ctx,
+		s.refreshTokenKey(refreshToken),
+		s.tokenKey(refreshToken),
+		s.tokenMetaKey(refreshToken))
 	if err != nil {
 		return "", "", nil, fmt.Errorf("failed to execute atomic refresh token operation: %w", err)
+	}
+	// Legacy fallback for tokens written by pre-migration pods.
+	if result == "NOT_FOUND" {
+		result, err = s.runAtomicGetAndDelete(op.ctx,
+			s.legacyRefreshTokenKey(refreshToken),
+			s.legacyTokenKey(refreshToken),
+			s.legacyTokenMetaKey(refreshToken))
+		if err != nil {
+			return "", "", nil, fmt.Errorf("failed to execute atomic refresh token operation: %w", err)
+		}
 	}
 
 	switch result {

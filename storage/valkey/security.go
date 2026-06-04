@@ -67,7 +67,16 @@ func (s *Store) validateRefreshTokenParams(refreshToken, userID, clientID, famil
 	if familyID == "" {
 		return fmt.Errorf("family ID cannot be empty")
 	}
-	return nil
+	if err := validateInputLength(refreshToken); err != nil {
+		return err
+	}
+	if err := validateInputLength(userID); err != nil {
+		return err
+	}
+	if err := validateInputLength(clientID); err != nil {
+		return err
+	}
+	return validateInputLength(familyID)
 }
 
 // saveRefreshTokenBasic saves the basic refresh token info.
@@ -181,7 +190,11 @@ func (s *Store) GetRefreshTokenFamily(ctx context.Context, refreshToken string) 
 	op := s.startTracedOp(ctx, "get_refresh_token_family")
 	defer op.end(&err)
 
-	return getAndUnmarshal(op.ctx, s, s.refreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
+	result, err = getAndUnmarshal(op.ctx, s, s.refreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
+	if err == storage.ErrRefreshTokenFamilyNotFound {
+		return getAndUnmarshal(op.ctx, s, s.legacyRefreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
+	}
+	return result, err
 }
 
 // GetRefreshTokenFamilyByID returns family metadata indexed by family ID
@@ -211,6 +224,11 @@ func (s *Store) GetRefreshTokenFamilyByID(ctx context.Context, familyID string) 
 
 	for _, refreshToken := range tokens {
 		meta, err := getAndUnmarshal(op.ctx, s, s.refreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
+		if err == nil && meta != nil {
+			return meta, nil
+		}
+		// Legacy fallback for metadata written by pre-migration pods.
+		meta, err = getAndUnmarshal(op.ctx, s, s.legacyRefreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
 		if err == nil && meta != nil {
 			return meta, nil
 		}
@@ -265,6 +283,10 @@ func (s *Store) pickActiveMember(ctx context.Context, tokens []string) (token, c
 	for _, candidate := range tokens {
 		meta, err := getAndUnmarshal(ctx, s, s.refreshTokenMetaKey(candidate), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
 		if err != nil || meta == nil {
+			// Legacy fallback for metadata written by pre-migration pods.
+			meta, err = getAndUnmarshal(ctx, s, s.legacyRefreshTokenMetaKey(candidate), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
+		}
+		if err != nil || meta == nil {
 			continue
 		}
 		anyMetaSeen = true
@@ -313,12 +335,18 @@ func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) (
 
 // getFamilyTokens retrieves all tokens in a family.
 func (s *Store) getFamilyTokens(ctx context.Context, familyID string) ([]string, error) {
-	familySetKey := s.familyKey(familyID)
-
-	tokens, err := s.client.Do(ctx, s.client.B().Smembers().Key(familySetKey).Build()).AsStrSlice()
+	tokens, err := s.client.Do(ctx, s.client.B().Smembers().Key(s.familyKey(familyID)).Build()).AsStrSlice()
+	if err != nil && !isNilError(err) {
+		return nil, fmt.Errorf("failed to get family members: %w", err)
+	}
+	if len(tokens) > 0 {
+		return tokens, nil
+	}
+	// Legacy fallback: try unhashed key written by pre-migration pods.
+	tokens, err = s.client.Do(ctx, s.client.B().Smembers().Key(s.legacyFamilyKey(familyID)).Build()).AsStrSlice()
 	if err != nil {
 		if isNilError(err) {
-			return nil, nil // Family doesn't exist or is empty
+			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get family members: %w", err)
 	}
@@ -336,8 +364,12 @@ func (s *Store) revokeTokenInFamily(ctx context.Context, token string, now time.
 // markFamilyMetadataRevoked updates family metadata to mark as revoked.
 func (s *Store) markFamilyMetadataRevoked(ctx context.Context, token string, now time.Time, tokenPrefix string) {
 	metaKey := s.refreshTokenMetaKey(token)
-
 	data, err := s.client.Do(ctx, s.client.B().Get().Key(metaKey).Build()).ToString()
+	if err != nil && isNilError(err) {
+		// Legacy fallback for tokens written by pre-migration pods.
+		metaKey = s.legacyRefreshTokenMetaKey(token)
+		data, err = s.client.Do(ctx, s.client.B().Get().Key(metaKey).Build()).ToString()
+	}
 	if err != nil {
 		return
 	}
@@ -363,10 +395,15 @@ func (s *Store) markFamilyMetadataRevoked(ctx context.Context, token string, now
 }
 
 // deleteTokenKeys deletes all keys associated with a token.
+// Both hashed (current) and legacy (pre-migration) key formats are deleted so
+// that revocation works for tokens written by older pods during a rolling deploy.
 func (s *Store) deleteTokenKeys(ctx context.Context, token, tokenPrefix string) {
 	s.deleteKey(ctx, s.refreshTokenKey(token), "refresh token", tokenPrefix)
+	s.deleteKey(ctx, s.legacyRefreshTokenKey(token), "legacy refresh token", tokenPrefix)
 	s.deleteKey(ctx, s.tokenKey(token), "provider token", tokenPrefix)
+	s.deleteKey(ctx, s.legacyTokenKey(token), "legacy provider token", tokenPrefix)
 	s.deleteKey(ctx, s.tokenMetaKey(token), "token metadata", tokenPrefix)
+	s.deleteKey(ctx, s.legacyTokenMetaKey(token), "legacy token metadata", tokenPrefix)
 }
 
 // deleteKey deletes a single key and logs any errors.
@@ -389,6 +426,20 @@ func (s *Store) deleteKey(ctx context.Context, key, description, tokenPrefix str
 func (s *Store) SaveTokenMetadata(ctx context.Context, tokenID string, metadata storage.TokenMetadata) error {
 	if tokenID == "" || metadata.UserID == "" || metadata.ClientID == "" {
 		return fmt.Errorf("tokenID, userID, and clientID cannot be empty")
+	}
+	if err := validateInputLength(tokenID); err != nil {
+		return err
+	}
+	if err := validateInputLength(metadata.UserID); err != nil {
+		return err
+	}
+	if err := validateInputLength(metadata.ClientID); err != nil {
+		return err
+	}
+	if metadata.FamilyID != "" {
+		if err := validateInputLength(metadata.FamilyID); err != nil {
+			return err
+		}
 	}
 
 	data, err := json.Marshal(toTokenMetadataJSON(&metadata))
@@ -434,9 +485,11 @@ func (s *Store) setTokenMetaKey(ctx context.Context, key, value string, expiresA
 // GetTokenMetadata retrieves metadata for a token (including RFC 8707 audience)
 func (s *Store) GetTokenMetadata(tokenID string) (*storage.TokenMetadata, error) {
 	ctx := context.Background()
-	metaKey := s.tokenMetaKey(tokenID)
 
-	data, err := s.client.Do(ctx, s.client.B().Get().Key(metaKey).Build()).ToString()
+	data, err := s.client.Do(ctx, s.client.B().Get().Key(s.tokenMetaKey(tokenID)).Build()).ToString()
+	if err != nil && isNilError(err) {
+		data, err = s.client.Do(ctx, s.client.B().Get().Key(s.legacyTokenMetaKey(tokenID)).Build()).ToString()
+	}
 	if err != nil {
 		if isNilError(err) {
 			return nil, fmt.Errorf("token metadata not found")
@@ -496,8 +549,15 @@ func (s *Store) validateRevocationParams(userID, clientID string) error {
 
 // getTokensForUserClient retrieves all token IDs for a user+client combination.
 func (s *Store) getTokensForUserClient(ctx context.Context, userID, clientID string) ([]string, error) {
-	userClientKey := s.userClientKey(userID, clientID)
-	tokenIDs, err := s.client.Do(ctx, s.client.B().Smembers().Key(userClientKey).Build()).AsStrSlice()
+	tokenIDs, err := s.client.Do(ctx, s.client.B().Smembers().Key(s.userClientKey(userID, clientID)).Build()).AsStrSlice()
+	if err != nil && !isNilError(err) {
+		return nil, fmt.Errorf("failed to get tokens for user+client: %w", err)
+	}
+	if len(tokenIDs) > 0 {
+		return tokenIDs, nil
+	}
+	// Legacy fallback: try unhashed key written by pre-migration pods.
+	tokenIDs, err = s.client.Do(ctx, s.client.B().Smembers().Key(s.legacyUserClientKey(userID, clientID)).Build()).AsStrSlice()
 	if err != nil {
 		if isNilError(err) {
 			return nil, nil
@@ -523,8 +583,11 @@ func (s *Store) revokeFamiliesForTokens(ctx context.Context, tokenIDs []string) 
 func (s *Store) identifyFamilies(ctx context.Context, tokenIDs []string) map[string]bool {
 	families := make(map[string]bool)
 	for _, tokenID := range tokenIDs {
-		metaKey := s.refreshTokenMetaKey(tokenID)
-		data, err := s.client.Do(ctx, s.client.B().Get().Key(metaKey).Build()).ToString()
+		data, err := s.client.Do(ctx, s.client.B().Get().Key(s.refreshTokenMetaKey(tokenID)).Build()).ToString()
+		if err != nil && isNilError(err) {
+			// Legacy fallback for metadata written by pre-migration pods.
+			data, err = s.client.Do(ctx, s.client.B().Get().Key(s.legacyRefreshTokenMetaKey(tokenID)).Build()).ToString()
+		}
 		if err == nil {
 			var j refreshTokenFamilyJSON
 			if err := json.Unmarshal([]byte(data), &j); err == nil && j.FamilyID != "" {
@@ -546,27 +609,33 @@ func (s *Store) revokeIndividualTokens(ctx context.Context, tokenIDs []string) i
 }
 
 // deleteTokenAndMetadata deletes a token and all its associated metadata.
+// Both hashed (current) and legacy (pre-migration) key formats are deleted.
 func (s *Store) deleteTokenAndMetadata(ctx context.Context, tokenID string) {
 	tokenPrefix := safeTruncate(tokenID, tokenIDLogLength)
 
-	if err := s.client.Do(ctx, s.client.B().Del().Key(s.tokenKey(tokenID)).Build()).Error(); err != nil {
-		s.logger.Debug("Failed to delete token during user+client revocation", "token_prefix", tokenPrefix, "error", err)
+	for _, key := range []string{s.tokenKey(tokenID), s.legacyTokenKey(tokenID)} {
+		if err := s.client.Do(ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
+			s.logger.Debug("Failed to delete token during user+client revocation", "token_prefix", tokenPrefix, "error", err)
+		}
 	}
-
-	if err := s.client.Do(ctx, s.client.B().Del().Key(s.refreshTokenKey(tokenID)).Build()).Error(); err != nil {
-		s.logger.Debug("Failed to delete refresh token during user+client revocation", "token_prefix", tokenPrefix, "error", err)
+	for _, key := range []string{s.refreshTokenKey(tokenID), s.legacyRefreshTokenKey(tokenID)} {
+		if err := s.client.Do(ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
+			s.logger.Debug("Failed to delete refresh token during user+client revocation", "token_prefix", tokenPrefix, "error", err)
+		}
 	}
-
-	if err := s.client.Do(ctx, s.client.B().Del().Key(s.tokenMetaKey(tokenID)).Build()).Error(); err != nil {
-		s.logger.Debug("Failed to delete token metadata during user+client revocation", "token_prefix", tokenPrefix, "error", err)
+	for _, key := range []string{s.tokenMetaKey(tokenID), s.legacyTokenMetaKey(tokenID)} {
+		if err := s.client.Do(ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
+			s.logger.Debug("Failed to delete token metadata during user+client revocation", "token_prefix", tokenPrefix, "error", err)
+		}
 	}
 }
 
-// deleteUserClientSet deletes the user+client token set.
+// deleteUserClientSet deletes the user+client token set (both key formats).
 func (s *Store) deleteUserClientSet(ctx context.Context, userID, clientID string) {
-	userClientKey := s.userClientKey(userID, clientID)
-	if err := s.client.Do(ctx, s.client.B().Del().Key(userClientKey).Build()).Error(); err != nil {
-		s.logger.Warn("Failed to delete user+client set", "user_id", userID, "client_id", clientID, "error", err)
+	for _, key := range []string{s.userClientKey(userID, clientID), s.legacyUserClientKey(userID, clientID)} {
+		if err := s.client.Do(ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
+			s.logger.Warn("Failed to delete user+client set", "user_id", userID, "client_id", clientID, "error", err)
+		}
 	}
 }
 

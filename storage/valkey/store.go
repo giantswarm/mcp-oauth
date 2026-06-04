@@ -44,6 +44,17 @@ const (
 	// connectionVerifyTimeout is the timeout for initial connection verification
 	connectionVerifyTimeout = 5 * time.Second
 
+	// maxInputValueLength is the upper bound on any single caller-supplied string
+	// (userID, clientID, tokenID, refreshToken, familyID). This allows realistic
+	// JWTs (~900 B) and Dex base64-protobuf subjects (~400 B) while preventing
+	// unbounded allocations in stored values and set members.
+	maxInputValueLength = 16 * 1024
+
+	// MaxTokenLength and MaxIDLength are retained for API compatibility.
+	// Deprecated: use maxInputValueLength; these thresholds are no longer enforced.
+	MaxTokenLength = 512
+	MaxIDLength    = 256
+
 	// DefaultMaxTokenDataSize is the default ceiling on the serialized token
 	// written to Valkey, applied after AES-256-GCM + base64 expansion of the
 	// encrypted-at-rest fields (AccessToken, RefreshToken, id_token). 600 KiB
@@ -474,7 +485,7 @@ func (s *Store) keyOf(namespace string, parts ...string) string {
 // Keys for server-minted, length-bounded values (codes, states, client IDs) remain
 // unhashed so SCAN patterns stay human-readable.
 func (s *Store) clientKey(clientID string) string     { return s.keyOf("client", clientID) }
-func (s *Store) clientIPKey(ip string) string         { return s.keyOf("client", "ip", ip) }
+func (s *Store) clientIPKey(ip string) string         { return s.keyOf("client", "ip", hashKeyComponent(ip)) }
 func (s *Store) stateKey(stateID string) string       { return s.keyOf("state", stateID) }
 func (s *Store) providerStateKey(state string) string { return s.keyOf("state", "provider", state) }
 func (s *Store) codeKey(code string) string           { return s.keyOf("code", code) }
@@ -502,6 +513,27 @@ func (s *Store) userClientKey(userID, clientID string) string {
 func (s *Store) familyKey(familyID string) string {
 	return s.keyOf("family", hashKeyComponent(familyID))
 }
+
+// Legacy (pre-hash) key helpers. Used only as fallback in read and delete paths
+// during rolling deploys after the key-format migration. Keys written by old pods
+// used the raw input as the key component; new pods write hashed keys. Once all
+// pre-migration keys have expired (at most DefaultRefreshTokenTTL = 90 days after
+// the migration) these helpers can be removed.
+func (s *Store) legacyTokenKey(userID string) string { return s.keyOf("token", userID) }
+func (s *Store) legacyUserInfoKey(userID string) string {
+	return s.keyOf("userinfo", userID)
+}
+func (s *Store) legacyRefreshTokenKey(token string) string {
+	return s.keyOf("refresh", token)
+}
+func (s *Store) legacyRefreshTokenMetaKey(token string) string {
+	return s.keyOf("refresh", "meta", token)
+}
+func (s *Store) legacyTokenMetaKey(tokenID string) string { return s.keyOf("meta", tokenID) }
+func (s *Store) legacyUserClientKey(userID, clientID string) string {
+	return s.keyOf("userclient", userID, clientID)
+}
+func (s *Store) legacyFamilyKey(familyID string) string { return s.keyOf("family", familyID) }
 
 // ============================================================
 // Lua Scripts for Atomic Operations
@@ -939,6 +971,30 @@ func getAndUnmarshal[J any, T any](
 	}
 
 	return fromJSON(&j), nil
+}
+
+// validateInputLength returns errInputTooLarge when s exceeds maxInputValueLength.
+// Applied to caller-supplied values before they are stored as Valkey values or
+// set members. Key components are separately bounded by hashKeyComponent.
+func validateInputLength(s string) error {
+	if len(s) > maxInputValueLength {
+		return errInputTooLarge
+	}
+	return nil
+}
+
+// runAtomicGetAndDelete executes luaScriptAtomicGetAndDeleteRefresh with the
+// given keys and returns the raw Lua result string.
+func (s *Store) runAtomicGetAndDelete(ctx context.Context, refreshKey, tokenKey, metaKey string) (string, error) {
+	return s.client.Do(
+		ctx,
+		s.client.B().Eval().Script(luaScriptAtomicGetAndDeleteRefresh).
+			Numkeys(3).
+			Key(refreshKey, tokenKey, metaKey).
+			Arg(fmt.Sprintf("%d", time.Now().Unix())).
+			Arg("-1").
+			Build(),
+	).ToString()
 }
 
 // safeTruncate safely truncates a string to n characters.

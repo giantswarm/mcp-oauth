@@ -1586,6 +1586,18 @@ func TestValidation_InvalidAuthorizationCode(t *testing.T) {
 // Helper Function Tests
 // ============================================================
 
+func TestValidateInputLength(t *testing.T) {
+	if err := validateInputLength(strings.Repeat("a", maxInputValueLength)); err != nil {
+		t.Errorf("at-limit input rejected: %v", err)
+	}
+	if err := validateInputLength(strings.Repeat("a", maxInputValueLength+1)); err != errInputTooLarge {
+		t.Errorf("over-limit input: got %v, want errInputTooLarge", err)
+	}
+	if err := validateInputLength(""); err != nil {
+		t.Errorf("empty string rejected: %v", err)
+	}
+}
+
 func TestSafeTruncate(t *testing.T) {
 	tests := []struct {
 		input string
@@ -1946,9 +1958,9 @@ func TestFlowStore_AtomicCheckAndMarkAuthCodeUsed_Concurrent(t *testing.T) {
 // Input Validation Tests
 // ============================================================
 
-// TestValidation_LargeTokensAccepted verifies that long tokens and subject strings are
-// accepted — key components are hashed to a fixed 64-byte value before being used as
-// Valkey keys, so there is no length limit on caller-supplied values.
+// TestValidation_LargeTokensAccepted verifies that realistic large inputs (900-byte
+// JWTs, 400-byte Dex subjects) are accepted. Key components are hashed to 64 bytes;
+// stored values are accepted up to maxInputValueLength (16 KiB).
 func TestValidation_LargeTokensAccepted(t *testing.T) {
 	const wantUserID = "large-token-user"
 
@@ -2011,6 +2023,40 @@ func TestValidation_LargeTokensAccepted_RefreshFamily(t *testing.T) {
 	}
 	if meta.ClientID != clientID {
 		t.Errorf("got ClientID %q, want %q", meta.ClientID, clientID)
+	}
+}
+
+func TestValidation_OversizedInputRejected(t *testing.T) {
+	s := testStore(t)
+	ctx := t.Context()
+
+	oversized := strings.Repeat("x", maxInputValueLength+1)
+
+	if err := s.SaveRefreshToken(ctx, oversized, "user", time.Now().Add(time.Hour)); err != errInputTooLarge {
+		t.Errorf("SaveRefreshToken with oversized token: got %v, want errInputTooLarge", err)
+	}
+	if err := s.SaveRefreshToken(ctx, "token", oversized, time.Now().Add(time.Hour)); err != errInputTooLarge {
+		t.Errorf("SaveRefreshToken with oversized userID: got %v, want errInputTooLarge", err)
+	}
+
+	meta := storage.TokenMetadata{
+		UserID:   oversized,
+		ClientID: "client",
+	}
+	if err := s.SaveTokenMetadata(ctx, "tokenid", meta); err != errInputTooLarge {
+		t.Errorf("SaveTokenMetadata with oversized userID: got %v, want errInputTooLarge", err)
+	}
+
+	meta2 := storage.TokenMetadata{
+		UserID:   "user",
+		ClientID: "client",
+	}
+	if err := s.SaveTokenMetadata(ctx, oversized, meta2); err != errInputTooLarge {
+		t.Errorf("SaveTokenMetadata with oversized tokenID: got %v, want errInputTooLarge", err)
+	}
+
+	if err := s.SaveRefreshTokenWithFamily(ctx, oversized, "user", "client", "family", 1, time.Now().Add(time.Hour)); err != errInputTooLarge {
+		t.Errorf("SaveRefreshTokenWithFamily with oversized refreshToken: got %v, want errInputTooLarge", err)
 	}
 }
 
