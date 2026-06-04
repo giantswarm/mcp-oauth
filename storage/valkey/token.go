@@ -193,6 +193,9 @@ func (s *Store) SaveUserInfo(ctx context.Context, userID string, info *storage.U
 	if info == nil {
 		return fmt.Errorf("userInfo cannot be nil")
 	}
+	if err = validateInputLength(userID); err != nil {
+		return err
+	}
 
 	data, err := json.Marshal(toUserInfoJSON(info))
 	if err != nil {

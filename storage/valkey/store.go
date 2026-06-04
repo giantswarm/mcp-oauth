@@ -50,8 +50,15 @@ const (
 	// unbounded allocations in stored values and set members.
 	maxInputValueLength = 16 * 1024
 
+	// MaxInputLength is the maximum allowed length for any caller-supplied string
+	// (tokenID, userID, clientID, refreshToken, familyID). Key components are
+	// separately bounded by hashing (see hashKeyComponent).
+	MaxInputLength = maxInputValueLength
+
 	// MaxTokenLength and MaxIDLength are retained for API compatibility.
-	// Deprecated: use maxInputValueLength; these thresholds are no longer enforced.
+	// Deprecated: use MaxInputLength. These values no longer reflect the enforced
+	// limit (MaxInputLength = 16 KiB); callers using them for pre-validation will
+	// falsely reject valid JWTs and long IdP subjects.
 	MaxTokenLength = 512
 	MaxIDLength    = 256
 

@@ -192,7 +192,7 @@ func (s *Store) GetRefreshTokenFamily(ctx context.Context, refreshToken string) 
 	defer op.end(&err)
 
 	result, err = getAndUnmarshal(op.ctx, s, s.refreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
-	if err == storage.ErrRefreshTokenFamilyNotFound {
+	if errors.Is(err, storage.ErrRefreshTokenFamilyNotFound) {
 		return getAndUnmarshal(op.ctx, s, s.legacyRefreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
 	}
 	return result, err
@@ -228,10 +228,16 @@ func (s *Store) GetRefreshTokenFamilyByID(ctx context.Context, familyID string) 
 		if err == nil && meta != nil {
 			return meta, nil
 		}
+		if !errors.Is(err, storage.ErrRefreshTokenFamilyNotFound) {
+			return nil, err
+		}
 		// Legacy fallback for metadata written by pre-migration pods.
 		meta, err = getAndUnmarshal(op.ctx, s, s.legacyRefreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
 		if err == nil && meta != nil {
 			return meta, nil
+		}
+		if !errors.Is(err, storage.ErrRefreshTokenFamilyNotFound) {
+			return nil, err
 		}
 	}
 	return nil, storage.ErrRefreshTokenFamilyNotFound
@@ -552,23 +558,18 @@ func (s *Store) validateRevocationParams(userID, clientID string) error {
 }
 
 // getTokensForUserClient retrieves all token IDs for a user+client combination.
+// Both hashed (current) and legacy (pre-migration) sets are unioned so that
+// tokens issued by old pods during a rolling deploy are included in revocation.
 func (s *Store) getTokensForUserClient(ctx context.Context, userID, clientID string) ([]string, error) {
 	tokenIDs, err := s.client.Do(ctx, s.client.B().Smembers().Key(s.userClientKey(userID, clientID)).Build()).AsStrSlice()
 	if err != nil && !isNilError(err) {
 		return nil, fmt.Errorf("failed to get tokens for user+client: %w", err)
 	}
-	if len(tokenIDs) > 0 {
-		return tokenIDs, nil
+	legacyIDs, legacyErr := s.client.Do(ctx, s.client.B().Smembers().Key(s.legacyUserClientKey(userID, clientID)).Build()).AsStrSlice()
+	if legacyErr != nil && !isNilError(legacyErr) {
+		return nil, fmt.Errorf("failed to get tokens for user+client (legacy): %w", legacyErr)
 	}
-	// Legacy fallback: try unhashed key written by pre-migration pods.
-	tokenIDs, err = s.client.Do(ctx, s.client.B().Smembers().Key(s.legacyUserClientKey(userID, clientID)).Build()).AsStrSlice()
-	if err != nil {
-		if isNilError(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to get tokens for user+client: %w", err)
-	}
-	return tokenIDs, nil
+	return append(tokenIDs, legacyIDs...), nil
 }
 
 // revokeFamiliesForTokens identifies and revokes all token families for the given tokens.
