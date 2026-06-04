@@ -655,10 +655,10 @@ func (s *Store) deleteTokenAndMetadata(ctx context.Context, tokenID string) {
 
 // deleteUserClientSet deletes the user+client token set (both key formats).
 func (s *Store) deleteUserClientSet(ctx context.Context, userID, clientID string) {
-	for _, key := range []string{s.userClientKey(userID, clientID), s.legacyUserClientKey(userID, clientID)} {
-		if err := s.client.Do(ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
-			s.logger.Warn("Failed to delete user+client set", "user_id", userID, "client_id", clientID, "error", err)
-		}
+	if err := s.client.Do(ctx, s.client.B().Del().Key(
+		s.userClientKey(userID, clientID), s.legacyUserClientKey(userID, clientID),
+	).Build()).Error(); err != nil {
+		s.logger.Warn("Failed to delete user+client set", "user_id", userID, "client_id", clientID, "error", err)
 	}
 }
 
@@ -672,15 +672,21 @@ func (s *Store) GetTokensByUserClient(ctx context.Context, userID, clientID stri
 		return nil, fmt.Errorf("userID and clientID cannot be empty")
 	}
 
-	userClientKey := s.userClientKey(userID, clientID)
-
-	tokens, err = s.client.Do(op.ctx, s.client.B().Smembers().Key(userClientKey).Build()).AsStrSlice()
-	if err != nil {
-		if isNilError(err) {
-			return []string{}, nil
-		}
+	// Union hashed (current) and legacy (pre-migration) sets. During a rolling
+	// deploy both sets may have members; callers such as Server.RevokeAllTokensForUserClient
+	// use this result for provider-side revocation and in-process unregistration,
+	// so missing legacy tokens would leave pre-migration tokens unrevoked at the provider.
+	tokens, err = s.client.Do(op.ctx, s.client.B().Smembers().Key(s.userClientKey(userID, clientID)).Build()).AsStrSlice()
+	if err != nil && !isNilError(err) {
 		return nil, fmt.Errorf("failed to get tokens for user+client: %w", err)
 	}
-
-	return tokens, nil
+	legacyTokens, legacyErr := s.client.Do(op.ctx, s.client.B().Smembers().Key(s.legacyUserClientKey(userID, clientID)).Build()).AsStrSlice()
+	if legacyErr != nil && !isNilError(legacyErr) {
+		return nil, fmt.Errorf("failed to get tokens for user+client (legacy): %w", legacyErr)
+	}
+	combined := append(tokens, legacyTokens...)
+	if len(combined) == 0 {
+		return []string{}, nil
+	}
+	return combined, nil
 }
