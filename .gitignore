@@ -62,3 +62,6 @@ examples/production/production
 examples/custom-scopes/custom-scopes
 examples/prometheus/prometheus
 examples/jwt/jwt
+
+# graphify knowledge graph (regenerable, rebuilt by the post-commit hook)
+graphify-out/
