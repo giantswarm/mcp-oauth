@@ -168,7 +168,7 @@ func TestValidateToken_TrustedIssuer_UnknownIssFallsThroughToOpaque(t *testing.T
 	srv.trustedIssuerValidator = v
 
 	provider.ValidateTokenFunc = func(_ context.Context, accessToken string) (*providers.UserInfo, error) {
-		if accessToken == "opaque-bearer" {
+		if accessToken == "opaque-bearer" { //nolint:gosec // G101 false positive — test fixture label, not a credential
 			return &providers.UserInfo{ID: "opaque-user", Email: "u@example.com"}, nil
 		}
 		return nil, errors.New("not configured")

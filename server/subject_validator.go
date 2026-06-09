@@ -210,7 +210,7 @@ func matchClaimPattern(pattern, value string) error {
 
 // Token-type URN constants shared between OIDCValidator and the token-exchange handler.
 const (
-	SubjectTokenTypeIDToken     = "urn:ietf:params:oauth:token-type:id_token"
-	SubjectTokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token"
-	SubjectTokenTypeJWT         = "urn:ietf:params:oauth:token-type:jwt"
+	SubjectTokenTypeIDToken     = "urn:ietf:params:oauth:token-type:id_token"     // #nosec G101 -- RFC 8693 token-type URN identifier, not a credential
+	SubjectTokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token" // #nosec G101 -- RFC 8693 token-type URN identifier, not a credential
+	SubjectTokenTypeJWT         = "urn:ietf:params:oauth:token-type:jwt"          // #nosec G101 -- RFC 8693 token-type URN identifier, not a credential
 )

@@ -690,7 +690,7 @@ func TestTokenStore_AtomicGetAndDeleteRefreshToken(t *testing.T) {
 				// Exercises the TOKEN_NOT_FOUND branch of the Lua script: the
 				// refresh-token→userID mapping exists but the provider token
 				// has been evicted (TTL mismatch, manual deletion, etc.).
-				const refreshToken = "rt-orphan-mapping"
+				const refreshToken = "rt-orphan-mapping" //nolint:gosec // G101 false positive — test fixture label, not a credential
 				require.NoError(t, s.SaveRefreshToken(t.Context(), refreshToken, testUserID, time.Now().Add(time.Hour)))
 				return refreshToken
 			},
@@ -726,7 +726,7 @@ func TestTokenStore_AtomicGetAndDeleteRefreshToken(t *testing.T) {
 func TestTokenStore_AtomicGetAndDeleteRefreshToken_MalformedTokenJSON(t *testing.T) {
 	s := testStore(t)
 
-	const refreshToken = "rt-malformed-token"
+	const refreshToken = "rt-malformed-token" //nolint:gosec // G101 false positive — test fixture label, not a credential
 	require.NoError(t, s.client.Do(
 		t.Context(),
 		s.client.B().Set().Key(s.refreshTokenKey(refreshToken)).Value(testUserID).Ex(time.Hour).Build(),
@@ -757,7 +757,7 @@ func TestTokenStore_AtomicGetAndDeleteRefreshToken_DecryptError(t *testing.T) {
 
 	s := testStoreWithOpts(t, WithEncryptor(enc))
 
-	const refreshToken = "rt-decrypt-error"
+	const refreshToken = "rt-decrypt-error" //nolint:gosec // G101 false positive — test fixture label, not a credential
 	require.NoError(t, s.client.Do(
 		t.Context(),
 		s.client.B().Set().Key(s.refreshTokenKey(refreshToken)).Value(testUserID).Ex(time.Hour).Build(),
@@ -781,7 +781,7 @@ func TestTokenStore_AtomicGetAndDeleteRefreshToken_ConcurrentN100(t *testing.T) 
 
 	s := testStore(t)
 
-	const refreshToken = "rt-concurrent-100"
+	const refreshToken = "rt-concurrent-100" //nolint:gosec // G101 false positive — test fixture label, not a credential
 	providerToken := &oauth2.Token{
 		AccessToken:  "provider-access",
 		RefreshToken: "provider-refresh",

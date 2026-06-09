@@ -1638,7 +1638,7 @@ func setupDPoPTestHandler(t *testing.T, accessToken, jkt string) (*Handler, *mem
 // token presented as plain Bearer is rejected.
 func TestValidateToken_DPoPBoundToken_BearerBypass(t *testing.T) {
 	const (
-		accessToken = "dpop-bound-opaque-token"
+		accessToken = "dpop-bound-opaque-token" //nolint:gosec // G101 false positive — test fixture label, not a credential
 		boundJKT    = "some-jwk-thumbprint"
 	)
 
@@ -1667,7 +1667,7 @@ func TestValidateToken_DPoPBoundToken_BearerBypass(t *testing.T) {
 // key thumbprint does not match the token's cnf.jkt is rejected.
 func TestValidateToken_DPoPBoundToken_KeyMismatch(t *testing.T) {
 	const (
-		accessToken = "dpop-bound-opaque-token-2"
+		accessToken = "dpop-bound-opaque-token-2" //nolint:gosec // G101 false positive — test fixture label, not a credential
 		boundJKT    = "token-bound-jkt"
 		proofJKT    = "different-proof-jkt"
 	)
@@ -1697,7 +1697,7 @@ func TestValidateToken_DPoPBoundToken_KeyMismatch(t *testing.T) {
 // presented with a matching proof JKT in context is accepted.
 func TestValidateToken_DPoPBoundToken_ValidProof(t *testing.T) {
 	const (
-		accessToken = "dpop-bound-opaque-token-3"
+		accessToken = "dpop-bound-opaque-token-3" //nolint:gosec // G101 false positive — test fixture label, not a credential
 		boundJKT    = "matching-jkt-value"
 	)
 

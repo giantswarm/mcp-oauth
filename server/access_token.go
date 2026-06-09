@@ -241,7 +241,7 @@ func (j *jwtIssuer) Issue(_ context.Context, c AccessTokenClaims) (string, error
 	if len(c.Extra) > 0 {
 		for k := range c.Extra {
 			if _, reserved := jwtReservedClaims[k]; reserved {
-				return "", fmt.Errorf("Extra map contains reserved JWT claim %q", k)
+				return "", fmt.Errorf("extra map contains reserved JWT claim %q", k)
 			}
 		}
 		builder = builder.Claims(c.Extra)

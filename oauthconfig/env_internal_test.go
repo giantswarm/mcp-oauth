@@ -31,7 +31,7 @@ func TestOptionalSecret_TightPermissionsNoWarn(t *testing.T) {
 func TestOptionalSecret_WorldReadableWarns(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secret")
-	require.NoError(t, os.WriteFile(path, []byte("leak-risk"), 0o644))
+	require.NoError(t, os.WriteFile(path, []byte("leak-risk"), 0o644)) //nolint:gosec // G306 intentional: world-readable mode exercises the permission-warning path under test
 
 	var buf bytes.Buffer
 	prev := slog.Default()
@@ -50,7 +50,7 @@ func TestOptionalSecret_WorldReadableWarns(t *testing.T) {
 func TestOptionalSecret_HardFailWhenStrictModeOn(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secret")
-	require.NoError(t, os.WriteFile(path, []byte("leak-risk"), 0o644))
+	require.NoError(t, os.WriteFile(path, []byte("leak-risk"), 0o644)) //nolint:gosec // G306 intentional: world-readable mode exercises the strict-mode hard-fail path under test
 
 	t.Setenv("OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS", "true")
 	t.Setenv("OAUTH_TEST_SECRET_FILE", path)
