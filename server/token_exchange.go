@@ -10,7 +10,7 @@ import (
 )
 
 // GrantTypeTokenExchange is the grant_type value for RFC 8693 token exchange.
-const GrantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
+const GrantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange" // #nosec G101 -- RFC 8693 grant-type URN identifier, not a credential
 
 // TokenExchangeResult holds the output of a successful token exchange.
 type TokenExchangeResult struct {

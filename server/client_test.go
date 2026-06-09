@@ -8,8 +8,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/giantswarm/mcp-oauth/providers/mock"
-	mockstorage "github.com/giantswarm/mcp-oauth/storage/mock"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
+	mockstorage "github.com/giantswarm/mcp-oauth/storage/mock"
 )
 
 func TestServer_RegisterClient(t *testing.T) {
