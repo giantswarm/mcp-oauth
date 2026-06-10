@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.199] - 2026-06-10
+
 ### Added
 
 - `dex.Config.AllowPrivateIP`: allows the Dex issuer URL to resolve to a private/loopback IP during OIDC discovery and token endpoint calls. Required for clusters where the public Dex hostname resolves to an internal load balancer (e.g. Azure internal LB). Emits a startup warning when enabled.
@@ -1650,8 +1652,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rate limiting to prevent DoS and brute force attacks
 - Token expiration with automatic cleanup
 
-[Unreleased]: https://github.com/giantswarm/mcp-oauth/compare/v0.2.198...HEAD
-
+[Unreleased]: https://github.com/giantswarm/mcp-oauth/compare/v0.2.199...HEAD
+[0.2.199]: https://github.com/giantswarm/mcp-oauth/compare/v0.2.198...v0.2.199
 ## Release History
 
 ### Version Numbering
