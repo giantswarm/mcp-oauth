@@ -964,10 +964,22 @@ type accessTokenIssueParams struct {
 // from the TokenStore in JWT mode only — opaque issuance ignores them so
 // the lookup is skipped to avoid an unnecessary storage round-trip.
 func (s *Server) issueAccessToken(ctx context.Context, p accessTokenIssueParams) (string, error) {
+	// RFC 9068 §2.2 requires the aud claim in JWT access tokens. Clients
+	// that omit the RFC 8707 resource parameter (e.g. generic OAuth
+	// libraries that predate resource indicators) would otherwise receive
+	// a token without audience binding, which downstream JWT validators
+	// (such as gateways in front of the resource server) rightly reject.
+	// Default to this server's own resource identifier — the only audience
+	// such a token could legitimately be used for. This also applies on
+	// refresh grants, so grants created before this default self-heal.
+	audience := p.Audience
+	if audience == "" {
+		audience = s.Config.GetResourceIdentifier()
+	}
 	claims := AccessTokenClaims{
 		Subject:   p.UserID,
 		ClientID:  p.ClientID,
-		Audience:  p.Audience,
+		Audience:  audience,
 		Scopes:    p.Scopes,
 		IssuedAt:  time.Now().UTC(),
 		ExpiresAt: p.ExpiresAt,
