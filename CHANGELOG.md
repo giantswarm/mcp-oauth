@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.199] - 2026-06-10
+
 ### Added
 
 - `dex.Config.AllowPrivateIP`: allows the Dex issuer URL to resolve to a private/loopback IP during OIDC discovery and token endpoint calls. Required for clusters where the public Dex hostname resolves to an internal load balancer (e.g. Azure internal LB). Emits a startup warning when enabled.
@@ -72,7 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING — HTTP adapter moved to `handler/` subpackage.** The HTTP layer that lived in the root `oauth` package (handler, middleware, route registration, endpoint serve methods, CORS, rate limit, scope plumbing) now lives in `github.com/giantswarm/mcp-oauth/handler`. The root `oauth` package retains protocol-level types (`Error`, `TokenResponse`, `ProtectedResourceMetadata`, etc.) and convenience constructors for `server.Server`. Migration: `oauth.NewHandler(srv, log)` → `handler.New(srv, log)`; `*oauth.Handler` → `*handler.Handler`; `oauth.OAuthRoutesOptions` → `handler.OAuthRoutesOptions`; `oauth.UserInfoFromContext` / `oauth.SessionIDFromContext` / `oauth.ContextWith*` → `handler.UserInfoFromContext` / `handler.SessionIDFromContext` / `handler.ContextWith*`; `oauth.InterstitialRedirectURL` / `oauth.InterstitialAppName` → `handler.InterstitialRedirectURL` / `handler.InterstitialAppName`. The `oauth.NewHandler` name is also dropped in favour of `handler.New` (idiomatic Go constructor naming in the new package). Closes #292, #343.
 - **`server/flows.go` and root `handler.go` split by endpoint group.** Mechanical cut, no logic changes — each method moves to a new file unmodified. `server/flows.go` becomes a thin residue of shared helpers; per-flow files are `server/authcode.go`, `server/refresh.go`, `server/revoke.go`, `server/validate.go`, `server/scope.go`. Existing `server/flows_jwt.go` / `flows_sso.go` / `flows_forwarded.go` / `flows_refresh_session.go` lose the `flows_` prefix. The handler split lives in `handler/authorize.go`, `handler/token.go`, `handler/register.go`, `handler/revoke.go`, `handler/discovery.go`, `handler/middleware.go`, `handler/userinfo.go`, `handler/metrics.go`.
 
-### Tests
+### Changed
 
 - **Fuzz coverage** for four parsing / validation primitives: `ParseCallbackQuery` (types.go), `providers/oidc.ValidateExternalURL`, `Server.computePKCEChallenge` (S256 method), and `server.validateCodeVerifierFormat`. Seed corpora committed; each is panic-clean against a 2s exploratory burst. Closes (partial) #311.
 - **Coverage gaps closed** for `Handler.handleRegistrationError` (HTTP-error mapping for the registration-limit vs generic branches) and `Server.handleRefreshTokenError` (classification of not-found / expired / transient errors).
@@ -376,7 +378,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Count limit: Max 50 audiences (prevents DoS via excessive processing)
   - **Reference**: [Dex Cross-Client Trust Documentation](https://dexidp.io/docs/custom-scopes-claims-clients/#cross-client-trust-and-authorized-party)
 
-### Documentation
+### Changed
 
 - **Documented Dex limitation: `prompt=none` not supported (#197)**
   - Updated `docs/silent-authentication.md` to correctly reflect that Dex does **not** honor `prompt=none`
@@ -1650,8 +1652,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rate limiting to prevent DoS and brute force attacks
 - Token expiration with automatic cleanup
 
-[Unreleased]: https://github.com/giantswarm/mcp-oauth/compare/v0.2.198...HEAD
-
+[Unreleased]: https://github.com/giantswarm/mcp-oauth/compare/v0.2.199...HEAD
+[0.2.199]: https://github.com/giantswarm/mcp-oauth/compare/v0.2.198...v0.2.199
 ## Release History
 
 ### Version Numbering
