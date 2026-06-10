@@ -92,20 +92,31 @@ mod-verify: ## Verify go.mod dependencies
 	@echo "====> $@"
 	go mod verify
 
-mod-tidy-check: ## Check if go mod tidy would make changes
+mod-tidy-check: ## Check if go mod tidy would make changes (single-module layout)
 	@echo "====> $@"
+	@# Examples ship as generated go.mod sub-module stubs (see init-examples) so the
+	@# analysis tools above can carve them out of the root module. The platform-standard
+	@# pre-commit `go-mod-tidy` hook, however, runs on a plain checkout where those stubs
+	@# do not exist, so it tidies the ROOT module with the examples INCLUDED. We must
+	@# check tidiness against that same single-module layout; otherwise the two checks
+	@# demand contradictory go.mod states (an example-only dependency such as
+	@# prometheus/client_golang would be required as direct by the hook but indirect
+	@# here). Remove the stubs for the check, then regenerate them so the remaining
+	@# verify steps keep the examples carved out.
+	@$(MAKE) --no-print-directory clean-examples >/dev/null
 	@cp go.mod go.mod.backup
 	@cp go.sum go.sum.backup
-	@go mod tidy
-	@if ! diff -q go.mod go.mod.backup >/dev/null 2>&1 || ! diff -q go.sum go.sum.backup >/dev/null 2>&1; then \
+	@go mod tidy; status=$$?; \
+	if [ $$status -eq 0 ] && { ! diff -q go.mod go.mod.backup >/dev/null 2>&1 || ! diff -q go.sum go.sum.backup >/dev/null 2>&1; }; then \
 		echo "go.mod or go.sum would be modified by 'go mod tidy'"; \
 		diff go.mod go.mod.backup || true; \
-		mv go.mod.backup go.mod; \
-		mv go.sum.backup go.sum; \
-		exit 1; \
-	fi
-	@rm -f go.mod.backup go.sum.backup
-	@echo "go.mod is tidy"
+		status=1; \
+	fi; \
+	mv go.mod.backup go.mod; \
+	mv go.sum.backup go.sum; \
+	$(MAKE) --no-print-directory init-examples; \
+	if [ $$status -ne 0 ]; then exit 1; fi; \
+	echo "go.mod is tidy"
 
 mod-outdated: ## Check for outdated dependencies (informational)
 	@echo "====> $@"
