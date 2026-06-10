@@ -1650,6 +1650,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rate limiting to prevent DoS and brute force attacks
 - Token expiration with automatic cleanup
 
+[Unreleased]: https://github.com/giantswarm/mcp-oauth/compare/v0.2.198...HEAD
+
 ## Release History
 
 ### Version Numbering
