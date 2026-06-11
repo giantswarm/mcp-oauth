@@ -68,47 +68,9 @@ func (s *Server) ExchangeSubjectToken(
 		return nil, fmt.Errorf("token exchange requires JWT access token mode (set AccessTokenFormat=jwt)")
 	}
 
-	switch subjectTokenType {
-	case SubjectTokenTypeIDToken, SubjectTokenTypeAccessToken, SubjectTokenTypeJWT:
-	default:
-		s.Auditor.LogEvent(ctx, security.Event{
-			Type: security.EventAuthFailure,
-			Details: map[string]any{
-				"reason":             "unsupported_subject_token_type",
-				"grant_type":         GrantTypeTokenExchange,
-				"subject_token_type": subjectTokenType,
-			},
-		})
-		return nil, &TokenExchangeUnsupportedTypeError{tokenType: subjectTokenType}
-	}
-
-	v := s.SubjectValidatorFor(subjectTokenType)
-	if v == nil {
-		s.Auditor.LogEvent(ctx, security.Event{
-			Type: security.EventAuthFailure,
-			Details: map[string]any{
-				"reason":             "unsupported_subject_token_type",
-				"grant_type":         GrantTypeTokenExchange,
-				"subject_token_type": subjectTokenType,
-			},
-		})
-		return nil, &TokenExchangeUnsupportedTypeError{tokenType: subjectTokenType}
-	}
-
-	identity, err := v.Validate(ctx, subjectToken, nil)
+	identity, err := s.validateExchangeSubjectToken(ctx, subjectToken, subjectTokenType)
 	if err != nil {
-		s.Logger.Debug("token exchange: subject token validation failed",
-			"subject_token_type", subjectTokenType, "error", err)
-		s.Auditor.LogEvent(ctx, security.Event{
-			Type: security.EventAuthFailure,
-			Details: map[string]any{
-				"reason":             "subject_token_validation_failed",
-				"grant_type":         GrantTypeTokenExchange,
-				"subject_token_type": subjectTokenType,
-				"error":              err.Error(),
-			},
-		})
-		return nil, fmt.Errorf("subject token validation: %w", err)
+		return nil, err
 	}
 
 	grantedScope := grantedExchangeScope(scope, identity.AllowedScopes)
@@ -178,6 +140,58 @@ func (s *Server) ExchangeSubjectToken(
 		Scope:           grantedScope,
 		IssuedTokenType: SubjectTokenTypeAccessToken,
 	}, nil
+}
+
+// validateExchangeSubjectToken routes subjectToken to the SubjectTokenValidator
+// registered for subjectTokenType and returns the verified identity. Audit
+// events for the failure paths are emitted here so the local-issuance flow
+// (ExchangeSubjectToken) and the brokered flow (BrokerExchangeSubjectToken)
+// share identical validation semantics.
+func (s *Server) validateExchangeSubjectToken(ctx context.Context, subjectToken, subjectTokenType string) (*SubjectIdentity, error) {
+	switch subjectTokenType {
+	case SubjectTokenTypeIDToken, SubjectTokenTypeAccessToken, SubjectTokenTypeJWT:
+	default:
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type: security.EventAuthFailure,
+			Details: map[string]any{
+				"reason":             "unsupported_subject_token_type",
+				"grant_type":         GrantTypeTokenExchange,
+				"subject_token_type": subjectTokenType,
+			},
+		})
+		return nil, &TokenExchangeUnsupportedTypeError{tokenType: subjectTokenType}
+	}
+
+	v := s.SubjectValidatorFor(subjectTokenType)
+	if v == nil {
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type: security.EventAuthFailure,
+			Details: map[string]any{
+				"reason":             "unsupported_subject_token_type",
+				"grant_type":         GrantTypeTokenExchange,
+				"subject_token_type": subjectTokenType,
+			},
+		})
+		return nil, &TokenExchangeUnsupportedTypeError{tokenType: subjectTokenType}
+	}
+
+	identity, err := v.Validate(ctx, subjectToken, nil)
+	if err != nil {
+		s.Logger.Debug("token exchange: subject token validation failed",
+			"subject_token_type", subjectTokenType, "error", err)
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type: security.EventAuthFailure,
+			Details: map[string]any{
+				"reason":             "subject_token_validation_failed",
+				"grant_type":         GrantTypeTokenExchange,
+				"subject_token_type": subjectTokenType,
+				"error":              err.Error(),
+			},
+		})
+		return nil, fmt.Errorf("subject token validation: %w", err)
+	}
+
+	return identity, nil
 }
 
 // TokenExchangeUnsupportedTypeError is returned when no validator is registered

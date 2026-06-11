@@ -98,6 +98,10 @@ type Server struct {
 	// subjectValidators is the registry for RFC 8693 token-exchange validators,
 	// keyed by subject_token_type URN.
 	subjectValidators map[string]SubjectTokenValidator
+	// exchanger maps requested audiences to downstream tokens for the
+	// brokered RFC 8693 flow. Nil disables brokered exchange (audience
+	// requests are rejected with invalid_target).
+	exchanger Exchanger
 	// trustedIssuerValidator is the OIDCValidator built from WithTrustedIssuers.
 	// Non-nil enables the trusted-issuer Bearer branch in ValidateToken;
 	// token-exchange uses the same instance via subjectValidators.

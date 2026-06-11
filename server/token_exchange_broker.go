@@ -1,0 +1,200 @@
+package server
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"slices"
+	"time"
+
+	"github.com/giantswarm/mcp-oauth/security"
+)
+
+// ErrInvalidTarget is returned by BrokerExchangeSubjectToken when the
+// requested audience cannot be served: no Exchanger is configured, the
+// client's allowlist does not contain the audience, or the Exchanger
+// itself reports the audience as unknown. Handlers map it to the RFC 8693
+// §2.2.2 invalid_target error response.
+var ErrInvalidTarget = errors.New("requested audience is not allowed for this client")
+
+// ExchangerRequest carries the validated inputs of a brokered RFC 8693
+// token exchange to the host's Exchanger implementation. The subject token
+// has already been validated (signature, issuer, audience, expiry) and the
+// requesting client has been authenticated and allowlist-checked before the
+// Exchanger is invoked.
+type ExchangerRequest struct {
+	// Audience is the RFC 8693 audience parameter: the logical name of the
+	// downstream target the client wants a token for. The host maps it to a
+	// downstream issuer and credentials.
+	Audience string
+	// Resource is the RFC 8707 resource parameter, when the client supplied
+	// one alongside audience. May be empty.
+	Resource string
+	// Scope is the raw requested scope string. May be empty.
+	Scope string
+	// ClientID is the authenticated broker client that issued the request.
+	ClientID string
+	// Subject is the verified identity extracted from the subject token.
+	Subject *SubjectIdentity
+	// SubjectToken is the raw subject token. Hosts typically forward it
+	// verbatim as the subject_token of their own downstream exchange.
+	SubjectToken string
+	// SubjectTokenType is the RFC 8693 token-type URN of SubjectToken.
+	SubjectTokenType string
+}
+
+// ExchangerResult is the downstream token returned by an Exchanger.
+type ExchangerResult struct {
+	// AccessToken is the downstream token returned to the client verbatim.
+	AccessToken string
+	// IssuedTokenType is the RFC 8693 issued_token_type URN. Empty defaults
+	// to urn:ietf:params:oauth:token-type:access_token.
+	IssuedTokenType string
+	// ExpiresAt is the downstream token's expiry. It bounds the expires_in
+	// reported to the client — brokered tokens never outlive the downstream
+	// token, and no refresh token is issued; clients re-exchange instead.
+	ExpiresAt time.Time
+	// Scope is the scope granted by the downstream issuer. May be empty.
+	Scope string
+}
+
+// Exchanger maps a requested audience to a downstream token. Hosts (e.g. an
+// MCP aggregator acting as a token broker) implement it to perform the
+// downstream exchange — typically an RFC 8693 request against a remote
+// issuer using host-held credentials. mcp-oauth stays generic: it owns
+// subject-token validation, client authentication, allowlist policy, and
+// audit; the host owns the audience→issuer mapping.
+//
+// Returning an error wrapping ErrInvalidTarget signals that the audience is
+// unknown to the host; any other error is reported to the client as a
+// generic invalid_grant without leaking detail.
+type Exchanger interface {
+	Exchange(ctx context.Context, req *ExchangerRequest) (*ExchangerResult, error)
+}
+
+// Exchanger returns the configured Exchanger, or nil when brokered token
+// exchange is disabled.
+func (s *Server) Exchanger() Exchanger {
+	return s.exchanger
+}
+
+// BrokerExchangeSubjectToken implements the brokered RFC 8693 flow: a
+// confidential client presents a subject token and an audience, and receives
+// a downstream token minted by the configured Exchanger.
+//
+// Policy enforced here:
+//   - an Exchanger must be configured and the audience must be in the
+//     client's Config.TokenExchangeClientAudiences allowlist, otherwise
+//     ErrInvalidTarget is returned
+//   - the subject token is validated like any other token-exchange subject
+//     token (registered SubjectTokenValidator: signature, issuer, audience,
+//     expiry)
+//   - no refresh token is ever issued; the result's expiry is the downstream
+//     token's expiry and clients are expected to re-exchange
+//
+// Every outcome is audited. Success events carry the client ID, subject,
+// requested audience, granted scope, and the deterministic cross-hop session
+// ID derived from the subject token (same derivation as forwarded-token
+// acceptance, so broker audit lines correlate with downstream MCP audit
+// lines for the same token).
+func (s *Server) BrokerExchangeSubjectToken(
+	ctx context.Context,
+	clientID, subjectToken, subjectTokenType, audience, resource, scope string,
+) (*TokenExchangeResult, error) {
+	sessionID := s.deriveForwardedSessionID(subjectToken)
+
+	if s.exchanger == nil {
+		s.auditBrokerExchangeFailure(ctx, clientID, audience, sessionID, "token_exchange_no_exchanger", nil)
+		return nil, fmt.Errorf("%w: no exchanger configured", ErrInvalidTarget)
+	}
+
+	if !slices.Contains(s.Config.TokenExchangeClientAudiences[clientID], audience) {
+		s.auditBrokerExchangeFailure(ctx, clientID, audience, sessionID, "token_exchange_audience_not_allowed", nil)
+		return nil, fmt.Errorf("%w: audience %q", ErrInvalidTarget, audience)
+	}
+
+	identity, err := s.validateExchangeSubjectToken(ctx, subjectToken, subjectTokenType)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := s.exchanger.Exchange(ctx, &ExchangerRequest{
+		Audience:         audience,
+		Resource:         resource,
+		Scope:            scope,
+		ClientID:         clientID,
+		Subject:          identity,
+		SubjectToken:     subjectToken,
+		SubjectTokenType: subjectTokenType,
+	})
+	if err != nil {
+		s.Logger.Debug("brokered token exchange: downstream exchange failed",
+			"client_id", clientID, "audience", audience, "error", err)
+		s.auditBrokerExchangeFailure(ctx, clientID, audience, sessionID, "token_exchange_downstream_failed", map[string]any{
+			"sub":   identity.Subject,
+			"error": err.Error(),
+		})
+		if errors.Is(err, ErrInvalidTarget) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("downstream exchange: %w", err)
+	}
+	if result == nil || result.AccessToken == "" {
+		s.auditBrokerExchangeFailure(ctx, clientID, audience, sessionID, "token_exchange_downstream_empty_token", map[string]any{
+			"sub": identity.Subject,
+		})
+		return nil, fmt.Errorf("downstream exchange returned no token")
+	}
+
+	issuedTokenType := result.IssuedTokenType
+	if issuedTokenType == "" {
+		issuedTokenType = SubjectTokenTypeAccessToken
+	}
+
+	s.Logger.Debug("brokered token exchange: issued downstream token",
+		"client_id", clientID, "sub", identity.Subject, "iss_act", identity.Issuer,
+		"audience", audience, "scope", result.Scope, "exp", result.ExpiresAt,
+		"session_id", sessionID)
+
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type:     security.EventTokenIssued,
+		UserID:   identity.Subject,
+		ClientID: clientID,
+		Details: map[string]any{
+			"grant_type":         GrantTypeTokenExchange,
+			"exchange":           "brokered",
+			"subject_token_type": subjectTokenType,
+			"audience":           audience,
+			"scope":              result.Scope,
+			"act_iss":            identity.Issuer,
+			"session_id":         sessionID,
+		},
+	})
+
+	return &TokenExchangeResult{
+		AccessToken:     result.AccessToken,
+		ExpiresAt:       result.ExpiresAt,
+		Scope:           result.Scope,
+		IssuedTokenType: issuedTokenType,
+	}, nil
+}
+
+// auditBrokerExchangeFailure emits the auth-failure audit event shared by all
+// brokered-exchange rejection paths. extra is merged over the base details.
+func (s *Server) auditBrokerExchangeFailure(ctx context.Context, clientID, audience, sessionID, reason string, extra map[string]any) {
+	details := map[string]any{
+		"reason":     reason,
+		"grant_type": GrantTypeTokenExchange,
+		"exchange":   "brokered",
+		"audience":   audience,
+		"session_id": sessionID,
+	}
+	for k, v := range extra {
+		details[k] = v
+	}
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type:     security.EventAuthFailure,
+		ClientID: clientID,
+		Details:  details,
+	})
+}

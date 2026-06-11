@@ -733,6 +733,20 @@ type Config struct {
 	// Default: nil (only tokens for this server's ResourceIdentifier are accepted)
 	TrustedAudiences []string
 
+	// TokenExchangeClientAudiences is the per-client allowlist for the
+	// brokered RFC 8693 token-exchange flow. Keys are client IDs; values are
+	// the audiences each client may request via the `audience` parameter.
+	// A client requesting an audience not in its list receives invalid_target
+	// (RFC 8693 §2.2.2).
+	//
+	// Only consulted when an Exchanger is configured (server.WithExchanger).
+	// Entries should reference confidential clients only — the broker path
+	// rejects public clients because an unauthenticated client_id would make
+	// the allowlist spoofable.
+	//
+	// Default: nil (no client may request any audience).
+	TokenExchangeClientAudiences map[string][]string
+
 	// SessionIDHMACKey optionally replaces the default SHA-256 session-ID derivation
 	// in Server.AcceptForwardedIDToken with HMAC-SHA-256 keyed by this value.
 	//

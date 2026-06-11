@@ -126,6 +126,19 @@ func WithTrustedIssuers(issuers []TrustedIssuer) Option {
 	}
 }
 
+// WithExchanger enables the brokered RFC 8693 token-exchange flow. When a
+// client sends an `audience` parameter with the token-exchange grant, the
+// server validates the subject token, enforces the per-client audience
+// allowlist (Config.TokenExchangeClientAudiences), and delegates the
+// downstream exchange to e. The host owns the audience→downstream-issuer
+// mapping; mcp-oauth owns validation, policy, and audit.
+//
+// Without this option, requests carrying an audience parameter are rejected
+// with invalid_target.
+func WithExchanger(e Exchanger) Option {
+	return func(s *Server) { s.exchanger = e }
+}
+
 // WithSubjectTokenValidator registers a custom SubjectTokenValidator for the
 // given subject_token_type URN. Use this to register a custom validator
 // alongside or instead of OIDCValidator.
