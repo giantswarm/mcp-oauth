@@ -5,8 +5,10 @@ import (
 	"net/http"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -21,6 +23,7 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 	subjectToken := r.Form.Get("subject_token")
 	subjectTokenType := r.Form.Get("subject_token_type")
 	resource := r.Form.Get("resource")
+	audience := r.Form.Get("audience")
 	scope := r.Form.Get("scope")
 
 	if subjectToken == "" {
@@ -39,6 +42,14 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 		h.writeError(w, constants.ErrorCodeInvalidRequest, "subject_token_type is required", http.StatusBadRequest)
 		return
 	}
+	// An audience parameter selects the brokered flow (RFC 8693 audience →
+	// downstream token via the host Exchanger). Without it, the local flow
+	// issues a JWT bound to the mandatory RFC 8707 resource.
+	if audience != "" {
+		h.handleBrokeredTokenExchange(w, r, clientIP, subjectToken, subjectTokenType, audience, resource, scope, startTime, span)
+		return
+	}
+
 	if resource == "" {
 		h.logAuthFailure(r.Context(), "", clientIP, "token_exchange_resource_missing",
 			"token exchange: resource missing")
@@ -77,6 +88,110 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 	h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusOK, startTime)
 	instrumentation.SetSpanSuccess(span)
 	h.writeTokenExchangeResponse(w, result)
+}
+
+// handleBrokeredTokenExchange serves RFC 8693 requests that carry an
+// audience parameter: the authenticated client asks the broker for a
+// downstream token. Client authentication is mandatory (the per-client
+// audience allowlist is meaningless for a spoofable client_id, so public
+// clients are rejected). DPoP binding is not supported on this path — the
+// issued token is minted by a downstream issuer that never saw the proof.
+func (h *Handler) handleBrokeredTokenExchange(
+	w http.ResponseWriter, r *http.Request,
+	clientIP, subjectToken, subjectTokenType, audience, resource, scope string,
+	startTime time.Time, span trace.Span,
+) {
+	client, err := h.authenticateClient(r, r.Form.Get("client_id"), clientIP)
+	if err != nil {
+		instrumentation.RecordError(span, err)
+		instrumentation.SetSpanError(span, "client authentication failed")
+		var oauthErr *oauth.Error
+		if errors.As(err, &oauthErr) {
+			h.recordTokenFailure(r.Context(), server.GrantTypeTokenExchange, oauthErr.Code)
+			h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, oauthErr.Status, startTime)
+			h.writeError(w, oauthErr.Code, oauthErr.Description, oauthErr.Status)
+		} else {
+			h.recordTokenFailure(r.Context(), server.GrantTypeTokenExchange, constants.ErrorCodeInvalidClient)
+			h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusUnauthorized, startTime)
+			h.writeError(w, constants.ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
+		}
+		return
+	}
+
+	instrumentation.SetSpanAttributes(span,
+		attribute.String(instrumentation.AttrClientID, client.ClientID),
+		attribute.String(instrumentation.AttrGrantType, server.GrantTypeTokenExchange),
+		attribute.String("oauth.token_exchange.audience", audience),
+	)
+
+	if !client.IsConfidential() {
+		h.logAuthFailure(r.Context(), client.ClientID, clientIP, "token_exchange_public_client_audience",
+			"brokered token exchange rejected: public client requested audience")
+		h.recordTokenFailure(r.Context(), server.GrantTypeTokenExchange, constants.ErrorCodeUnauthorizedClient)
+		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "public client not allowed")
+		h.writeError(w, constants.ErrorCodeUnauthorizedClient,
+			"brokered token exchange requires a confidential client", http.StatusBadRequest)
+		return
+	}
+
+	if r.Header.Get("DPoP") != "" {
+		h.recordTokenFailure(r.Context(), server.GrantTypeTokenExchange, constants.ErrorCodeInvalidRequest)
+		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "dpop not supported for brokered exchange")
+		h.writeError(w, constants.ErrorCodeInvalidRequest,
+			"DPoP binding is not supported for brokered token exchange", http.StatusBadRequest)
+		return
+	}
+
+	result, err := h.server.BrokerExchangeSubjectToken(r.Context(),
+		client.ClientID, subjectToken, subjectTokenType, audience, resource, scope)
+	if err != nil {
+		h.handleBrokeredTokenExchangeError(w, r, err, client.ClientID, clientIP, audience, startTime, span)
+		return
+	}
+
+	h.logger.Debug("brokered token exchange successful",
+		"client_id", client.ClientID, "audience", audience, "ip", clientIP, "scope", result.Scope)
+	h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusOK, startTime)
+	instrumentation.SetSpanSuccess(span)
+	h.writeTokenExchangeResponse(w, result)
+}
+
+func (h *Handler) handleBrokeredTokenExchangeError(
+	w http.ResponseWriter, r *http.Request, err error,
+	clientID, clientIP, audience string,
+	startTime time.Time, span trace.Span,
+) {
+	instrumentation.RecordError(span, err)
+
+	var unsupported *server.TokenExchangeUnsupportedTypeError
+	switch {
+	case errors.Is(err, server.ErrInvalidTarget):
+		h.logger.Debug("brokered token exchange: invalid target",
+			"client_id", clientID, "audience", audience, "ip", clientIP)
+		h.recordTokenFailure(r.Context(), server.GrantTypeTokenExchange, constants.ErrorCodeInvalidTarget)
+		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "invalid target")
+		h.writeError(w, constants.ErrorCodeInvalidTarget,
+			"the requested audience cannot be served", http.StatusBadRequest)
+	case errors.As(err, &unsupported):
+		h.logger.Debug("brokered token exchange: unsupported subject_token_type",
+			"type", unsupported.TokenType(), "client_id", clientID, "ip", clientIP)
+		h.recordTokenFailure(r.Context(), server.GrantTypeTokenExchange, constants.ErrorCodeUnsupportedGrantType)
+		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "unsupported subject_token_type")
+		h.writeError(w, constants.ErrorCodeUnsupportedGrantType,
+			"no validator registered for subject_token_type "+unsupported.TokenType(), http.StatusBadRequest)
+	default:
+		h.logger.Debug("brokered token exchange failed",
+			"client_id", clientID, "audience", audience, "ip", clientIP, "error", err)
+		h.recordTokenFailure(r.Context(), server.GrantTypeTokenExchange, constants.ErrorCodeInvalidGrant)
+		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "brokered exchange failed")
+		// SECURITY: don't leak downstream-exchange detail to the client.
+		h.writeError(w, constants.ErrorCodeInvalidGrant, "subject token invalid or rejected", http.StatusBadRequest)
+	}
 }
 
 func (h *Handler) handleTokenExchangeError(

@@ -21,6 +21,11 @@ const (
 	OAuthSpecVersion                 = "OAuth 2.1"
 )
 
+// Token-exchange error codes (RFC 8693 §2.2.2).
+const (
+	ErrorCodeInvalidTarget = "invalid_target"
+)
+
 // DPoP error codes (RFC 9449).
 const (
 	ErrorCodeInvalidDPoPProof = "invalid_dpop_proof"

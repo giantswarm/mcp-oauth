@@ -160,6 +160,64 @@ The resulting JWT carries `email`, `email_verified: true`, `groups: ["klaus-sre"
 
 This is library API only: the HTTP `/oauth/token` endpoint does not extract these from the request form. Use it from in-process wrappers that have already resolved the identity out-of-band.
 
+## Brokered exchange (audience parameter)
+
+When the client sends an RFC 8693 `audience` parameter, the server acts as a **token broker** instead of issuing a local JWT: it validates the subject token, enforces policy, and delegates the downstream exchange to a host-provided `Exchanger`. The returned token comes from the downstream issuer verbatim — useful when the target (e.g. a Kubernetes API server behind its own Dex) will not accept tokens minted by this server.
+
+### Host setup
+
+```go
+type myExchanger struct{ /* audience -> downstream Dex issuer + credentials */ }
+
+func (e *myExchanger) Exchange(ctx context.Context, req *server.ExchangerRequest) (*server.ExchangerResult, error) {
+    // req.Subject is the validated identity; req.SubjectToken is the raw token,
+    // typically forwarded as the subject_token of the downstream RFC 8693 request.
+    token, expiry, err := e.exchangeAtRemoteDex(ctx, req.Audience, req.SubjectToken, req.Scope)
+    if err != nil {
+        return nil, err // reported to the client as a generic invalid_grant
+    }
+    return &server.ExchangerResult{AccessToken: token, ExpiresAt: expiry}, nil
+}
+
+srv, _ := server.New(provider, store, store, store,
+    &server.Config{
+        Issuer: "https://broker.example.com",
+        // Per-client audience allowlist: which audiences each broker client
+        // may request. A miss returns invalid_target (RFC 8693 §2.2.2).
+        TokenExchangeClientAudiences: map[string][]string{
+            "backstage-backend-client-id": {"gaggle", "gauss"},
+        },
+    },
+    logger,
+    server.WithTrustedIssuers([]server.TrustedIssuer{ /* subject-token issuers */ }),
+    server.WithExchanger(&myExchanger{}),
+)
+```
+
+Return an error wrapping `server.ErrInvalidTarget` from `Exchange` to signal an audience the host cannot map; the client receives `invalid_target`.
+
+### Policy enforced by the broker path
+
+- **Client authentication is mandatory** and only confidential clients are accepted — the allowlist is keyed by client ID, which is spoofable for public clients (`unauthorized_client` otherwise).
+- **Per-client audience allowlist**: `Config.TokenExchangeClientAudiences`; a client requesting an audience outside its list gets `invalid_target`. Without `WithExchanger`, every audience request gets `invalid_target`.
+- **No refresh tokens** are issued; `expires_in` is bounded by the downstream token's expiry and clients are expected to re-exchange.
+- **DPoP is rejected** on this path (`invalid_request`) — the downstream issuer never saw the proof, so the binding would be a lie.
+- **Audit**: success and failure events carry the client ID, subject, requested audience, granted scope, and the deterministic cross-hop session ID (`ext-<hex>`, same derivation as forwarded-token acceptance, keyed by `Config.SessionIDHMACKey`) so broker audit lines correlate with downstream MCP server audit lines for the same token.
+
+### Client request
+
+```
+POST /oauth/token
+Authorization: Basic <client_id:client_secret>
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+&subject_token=<id-token>
+&subject_token_type=urn:ietf:params:oauth:token-type:id_token
+&audience=gaggle
+&scope=openid groups
+```
+
 ## Route registration
 
-Token exchange is handled by `ServeToken` — no separate route is required. It activates automatically when the `grant_type` is `urn:ietf:params:oauth:grant-type:token-exchange` and at least one `SubjectTokenValidator` is registered. No `SubjectTokenValidator` = token exchange returns `unsupported_grant_type`.
+Token exchange is handled by `ServeToken` — no separate route is required. It activates automatically when the `grant_type` is `urn:ietf:params:oauth:grant-type:token-exchange` and at least one `SubjectTokenValidator` is registered. No `SubjectTokenValidator` = token exchange returns `unsupported_grant_type`. The brokered flow additionally requires `server.WithExchanger`.
