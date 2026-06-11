@@ -66,6 +66,13 @@ type TrustedIssuer struct {
 	// WARNING: Disables SSRF protection for this issuer's JWKS fetch. Only set
 	// when JwksURL is a known, controlled in-cluster endpoint.
 	AllowPrivateIPJWKS bool
+	// AcceptedTypHeaders lists the JWT typ header values accepted when a
+	// Bearer token from this issuer is presented to the resource server.
+	// Empty defaults to ["at+jwt"] (RFC 9068 §4). Issuers that mint plain
+	// JWTs need an explicit list: Kubernetes ServiceAccount tokens carry no
+	// typ header at all, so use [""] to accept them. Signature, audience,
+	// and claim checks still apply unchanged.
+	AcceptedTypHeaders []string
 }
 
 // OIDCValidator validates JWTs from statically configured trusted issuers.
@@ -114,6 +121,16 @@ func newOIDCValidatorWithClients(issuers []TrustedIssuer, safeClient, permissive
 		m[ti.Issuer] = ti
 	}
 	return &OIDCValidator{issuers: m, safeClient: safeClient, permissiveClient: permissiveClient}, nil
+}
+
+// BearerTypHeaders returns the JWT typ header values accepted for Bearer
+// tokens from the given issuer, defaulting to ["at+jwt"] (RFC 9068 §4) when
+// the issuer is unknown or has no AcceptedTypHeaders configured.
+func (v *OIDCValidator) BearerTypHeaders(issuer string) []string {
+	if ti, ok := v.issuers[issuer]; ok && len(ti.AcceptedTypHeaders) > 0 {
+		return ti.AcceptedTypHeaders
+	}
+	return []string{rfc9068TokenType}
 }
 
 // Validate verifies a JWT against the configured trusted issuers. The

@@ -102,7 +102,8 @@ func WithTokenRefreshHandler(handler TokenRefreshHandler) Option {
 //   - ValidateToken: a Bearer JWT at /mcp is accepted when its iss matches
 //     a configured entry. Signature is verified via the entry's JWKS; aud
 //     is checked against AllowedAudiences (defaulting to the server's
-//     ResourceIdentifier when empty); RFC 9068 typ=at+jwt is enforced.
+//     ResourceIdentifier when empty); the typ header is checked against
+//     AcceptedTypHeaders (default RFC 9068 typ=at+jwt).
 //
 // Use TrustedIssuer.AllowedClaims to constrain accepted subjects per issuer.
 // Empty list is a no-op.
