@@ -188,8 +188,10 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 //     entry's JWKS; aud checked against the entry's AllowedAudiences
 //     (defaulting to Config.GetResourceIdentifier when empty); RFC 9068 §4
 //     typ=at+jwt enforced. A non-matching iss returns ErrIssuerNotTrusted
-//     and falls through to subsequent branches; any other validation
-//     failure is a hard rejection.
+//     and falls through to subsequent branches; a typ failure on a token
+//     whose aud is in Config.TrustedAudiences falls through to the
+//     forwarded-ID-token branch (it is an ID token, not an access token);
+//     any other validation failure is a hard rejection.
 //  3. Forwarded ID token (when the bearer is a JWT whose aud matches
 //     Config.TrustedAudiences). Verified via the upstream provider's JWKS
 //     for SSO token forwarding.
@@ -392,12 +394,32 @@ func (s *Server) isTrustedAudience(audience string) bool {
 	return helpers.MatchAudienceSecure(audience, s.Config.TrustedAudiences) != ""
 }
 
+// hasTrustedAudience reports whether any of the token's audiences is in the
+// TrustedAudiences list.
+func (s *Server) hasTrustedAudience(audiences []string) bool {
+	for _, aud := range audiences {
+		if s.isTrustedAudience(aud) {
+			return true
+		}
+	}
+	return false
+}
+
 // validateTrustedIssuerJWT runs the WithTrustedIssuers Bearer branch of
 // ValidateToken. Returns (nil, nil) when no validator is configured or the
 // token's iss is not a configured peer (caller falls through); (userInfo,
 // nil) on success; (nil, err) on any other validation failure (caller
 // returns the error). The RFC 9068 typ enforcement runs only after the
 // JWS signature has been verified by Validate.
+//
+// A token that fails only the typ check but carries an audience listed in
+// Config.TrustedAudiences is not an access token at all — it is an ID
+// token forwarded by a trusted upstream service (SSO token forwarding).
+// Hard-rejecting it here would shadow the forwarded-ID-token branch
+// whenever the upstream issuer is also configured as a trusted issuer
+// (e.g. for RFC 8693 subject-token validation). Such tokens fall through
+// instead; the forwarded-ID-token branch re-validates them independently
+// against the server's own provider JWKS.
 func (s *Server) validateTrustedIssuerJWT(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
 	if s.trustedIssuerValidator == nil {
 		return nil, nil
@@ -411,6 +433,12 @@ func (s *Server) validateTrustedIssuerJWT(ctx context.Context, accessToken strin
 		return nil, fmt.Errorf("trusted issuer JWT validation failed: %w", err)
 	}
 	if err := checkRFC9068TypeHeader(accessToken); err != nil {
+		if identity.Claims != nil && s.hasTrustedAudience(identity.Claims.Audience) {
+			s.Logger.Debug("Trusted-issuer JWT without at+jwt typ carries a trusted audience, deferring to forwarded ID token validation",
+				"issuer", identity.Issuer,
+				"token_suffix", helpers.TokenSuffix(accessToken, 8))
+			return nil, nil
+		}
 		s.Auditor.LogAuthFailure(ctx, identity.Subject, "", "", "trusted_issuer_typ_invalid")
 		return nil, fmt.Errorf("trusted issuer JWT: %w", err)
 	}
