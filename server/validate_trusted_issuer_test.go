@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/mcp-oauth/providers"
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 )
 
 // signSubjectTokenWithType is signSubjectToken with a caller-controlled typ
@@ -150,6 +151,39 @@ func TestValidateToken_TrustedIssuer_RejectsWrongAudience(t *testing.T) {
 	_, err = srv.ValidateToken(context.Background(), token)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "trusted issuer JWT validation failed")
+}
+
+// TestValidateToken_TrustedIssuer_IDTokenFallsThroughToForwarded covers the
+// gazelle-style deployment where the server's main OIDC provider is ALSO
+// configured as a trusted issuer (for RFC 8693 subject-token validation).
+// A forwarded ID token (typ != at+jwt) from that issuer whose aud is in
+// TrustedAudiences must not be hard-rejected by the trusted-issuer branch;
+// it falls through to the forwarded-ID-token branch and is accepted there.
+func TestValidateToken_TrustedIssuer_IDTokenFallsThroughToForwarded(t *testing.T) {
+	h := newForwardedTokenHarness(t)
+
+	tiJWKSClient := oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
+		HTTPClient:     h.jwksServer.Client(),
+		AllowPrivateIP: true,
+	})
+	v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
+		Issuer:           h.issuer,
+		JwksURL:          h.jwksServer.URL,
+		AllowedAudiences: []string{h.audience},
+	}}, tiJWKSClient)
+	require.NoError(t, err)
+	h.srv.trustedIssuerValidator = v
+
+	// signToken signs with typ "JWT" — an ID token, not an RFC 9068 access
+	// token. aud is in TrustedAudiences, so the trusted-issuer branch must
+	// defer instead of hard-rejecting on the typ check.
+	tok := h.signToken(t, h.validClaims())
+
+	userInfo, err := h.srv.ValidateToken(context.Background(), tok)
+	require.NoError(t, err)
+	require.NotNil(t, userInfo)
+	require.Equal(t, "user-subject-123", userInfo.ID)
+	require.Equal(t, providers.TokenSourceSSO, userInfo.TokenSource)
 }
 
 func TestValidateToken_TrustedIssuer_UnknownIssFallsThroughToOpaque(t *testing.T) {
