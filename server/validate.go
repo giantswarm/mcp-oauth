@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -18,11 +19,12 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
-// checkRFC9068TypeHeader enforces RFC 9068 §4: a JWT access token presented
-// to a resource server MUST carry the typ header value "at+jwt". The check
-// runs on the verified token; reading the header from a re-parse is safe
-// because the JWS signature covers the header bytes.
-func checkRFC9068TypeHeader(tokenString string) error {
+// checkTypeHeader verifies the JWT typ header against an accepted set. An
+// empty string in accepted matches a token with no typ header (Kubernetes
+// ServiceAccount tokens omit it). The check runs on the verified token;
+// reading the header from a re-parse is safe because the JWS signature
+// covers the header bytes.
+func checkTypeHeader(tokenString string, accepted []string) error {
 	parsed, err := josejwt.ParseSigned(tokenString, supportedAccessTokenAlgs)
 	if err != nil {
 		return fmt.Errorf("parse JWT header: %w", err)
@@ -31,10 +33,10 @@ func checkRFC9068TypeHeader(tokenString string) error {
 		return errors.New("JWT has no header")
 	}
 	typ, _ := parsed.Headers[0].ExtraHeaders[jose.HeaderType].(string)
-	if typ != rfc9068TokenType {
-		return fmt.Errorf("typ header is %q, expected %q (RFC 9068 §4)", typ, rfc9068TokenType)
+	if slices.Contains(accepted, typ) {
+		return nil
 	}
-	return nil
+	return fmt.Errorf("typ header is %q, accepted %q (RFC 9068 §4 unless overridden per issuer)", typ, accepted)
 }
 
 // supportedAccessTokenAlgs lists the asymmetric signing algorithms accepted
@@ -186,8 +188,9 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 //  2. Trusted-issuer JWT (when WithTrustedIssuers is configured AND the
 //     bearer's iss matches a configured entry). Signature verified via the
 //     entry's JWKS; aud checked against the entry's AllowedAudiences
-//     (defaulting to Config.GetResourceIdentifier when empty); RFC 9068 §4
-//     typ=at+jwt enforced. A non-matching iss returns ErrIssuerNotTrusted
+//     (defaulting to Config.GetResourceIdentifier when empty); typ header
+//     checked against the entry's AcceptedTypHeaders (default RFC 9068 §4
+//     at+jwt). A non-matching iss returns ErrIssuerNotTrusted
 //     and falls through to subsequent branches; a typ failure on a token
 //     whose aud is in Config.TrustedAudiences falls through to the
 //     forwarded-ID-token branch (it is an ID token, not an access token);
@@ -409,8 +412,9 @@ func (s *Server) hasTrustedAudience(audiences []string) bool {
 // ValidateToken. Returns (nil, nil) when no validator is configured or the
 // token's iss is not a configured peer (caller falls through); (userInfo,
 // nil) on success; (nil, err) on any other validation failure (caller
-// returns the error). The RFC 9068 typ enforcement runs only after the
-// JWS signature has been verified by Validate.
+// returns the error). The typ header enforcement (per-issuer
+// AcceptedTypHeaders, default RFC 9068 at+jwt) runs only after the JWS
+// signature has been verified by Validate.
 //
 // A token that fails only the typ check but carries an audience listed in
 // Config.TrustedAudiences is not an access token at all — it is an ID
@@ -432,9 +436,9 @@ func (s *Server) validateTrustedIssuerJWT(ctx context.Context, accessToken strin
 		s.Auditor.LogAuthFailure(ctx, "", "", "", "trusted_issuer_jwt_invalid")
 		return nil, fmt.Errorf("trusted issuer JWT validation failed: %w", err)
 	}
-	if err := checkRFC9068TypeHeader(accessToken); err != nil {
+	if err := checkTypeHeader(accessToken, s.trustedIssuerValidator.BearerTypHeaders(identity.Issuer)); err != nil {
 		if identity.Claims != nil && s.hasTrustedAudience(identity.Claims.Audience) {
-			s.Logger.Debug("Trusted-issuer JWT without at+jwt typ carries a trusted audience, deferring to forwarded ID token validation",
+			s.Logger.Debug("Trusted-issuer JWT failed typ check but carries a trusted audience, deferring to forwarded ID token validation",
 				"issuer", identity.Issuer,
 				"token_suffix", helpers.TokenSuffix(accessToken, 8))
 			return nil, nil

@@ -229,3 +229,71 @@ func TestValidateToken_TrustedIssuer_UnknownIssFallsThroughToOpaque(t *testing.T
 	require.Error(t, err)
 	require.NotContains(t, err.Error(), "trusted issuer JWT")
 }
+
+func TestValidateToken_TrustedIssuer_AcceptedTypHeaders_K8sSAToken(t *testing.T) {
+	key := newTestECKey(t)
+	const kid = "ti-kid"
+	jwksURL, jwksClient := serveStaticJWKS(t, key, kid)
+
+	srv, _, _ := setupFlowTestServer(t)
+
+	v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
+		Issuer:             testIssuer,
+		JwksURL:            jwksURL,
+		AllowedAudiences:   []string{srv.Config.GetResourceIdentifier()},
+		AcceptedTypHeaders: []string{"", "JWT"},
+	}}, jwksClient)
+	require.NoError(t, err)
+	srv.trustedIssuerValidator = v
+
+	claims := josejwt.Claims{
+		Issuer:   testIssuer,
+		Subject:  testSubject,
+		Audience: josejwt.Audience{srv.Config.GetResourceIdentifier()},
+		Expiry:   josejwt.NewNumericDate(time.Now().Add(time.Hour)),
+		IssuedAt: josejwt.NewNumericDate(time.Now()),
+	}
+
+	// Kubernetes SA tokens carry no typ header at all.
+	noTyp := signSubjectTokenWithType(t, key, kid, "", claims)
+	userInfo, err := srv.ValidateToken(context.Background(), noTyp)
+	require.NoError(t, err)
+	require.Equal(t, testSubject, userInfo.ID)
+
+	plainJWT := signSubjectTokenWithType(t, key, kid, "JWT", claims)
+	userInfo, err = srv.ValidateToken(context.Background(), plainJWT)
+	require.NoError(t, err)
+	require.Equal(t, testSubject, userInfo.ID)
+
+	// at+jwt is no longer in the accepted set once overridden.
+	atJWT := signSubjectTokenWithType(t, key, kid, rfc9068TokenType, claims)
+	_, err = srv.ValidateToken(context.Background(), atJWT)
+	require.Error(t, err)
+}
+
+func TestValidateToken_TrustedIssuer_DefaultTypStillRejectsMissingTyp(t *testing.T) {
+	key := newTestECKey(t)
+	const kid = "ti-kid"
+	jwksURL, jwksClient := serveStaticJWKS(t, key, kid)
+
+	srv, _, _ := setupFlowTestServer(t)
+
+	v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
+		Issuer:           testIssuer,
+		JwksURL:          jwksURL,
+		AllowedAudiences: []string{srv.Config.GetResourceIdentifier()},
+	}}, jwksClient)
+	require.NoError(t, err)
+	srv.trustedIssuerValidator = v
+
+	noTyp := signSubjectTokenWithType(t, key, kid, "", josejwt.Claims{
+		Issuer:   testIssuer,
+		Subject:  testSubject,
+		Audience: josejwt.Audience{srv.Config.GetResourceIdentifier()},
+		Expiry:   josejwt.NewNumericDate(time.Now().Add(time.Hour)),
+		IssuedAt: josejwt.NewNumericDate(time.Now()),
+	})
+	_, err = srv.ValidateToken(context.Background(), noTyp)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "RFC 9068")
+}
