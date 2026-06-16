@@ -31,6 +31,15 @@ type JWKSClient struct {
 	logger         *slog.Logger
 	timeProvider   timeProvider
 	allowPrivateIP bool // When true, SSRF protection is disabled for private IdP deployments
+
+	// refetchBackoff bounds unknown-kid-triggered refetches (0 uses
+	// DefaultJWKSRefetchBackoff). refetchMu makes the per-URI "has the backoff
+	// window elapsed?" check-and-record atomic so concurrent validations of
+	// tokens carrying the same new kid trigger at most one network refetch;
+	// lastRefetch records the last refetch attempt time per jwksURI.
+	refetchBackoff time.Duration
+	refetchMu      sync.Mutex
+	lastRefetch    sync.Map // jwksURI -> time.Time
 }
 
 // cachedJWKS holds a JWKS with its fetch timestamp.
@@ -149,6 +158,7 @@ func NewJWKSClientWithOptions(opts JWKSClientOptions) *JWKSClient {
 		logger:         logger,
 		timeProvider:   realTime{},
 		allowPrivateIP: opts.AllowPrivateIP,
+		refetchBackoff: DefaultJWKSRefetchBackoff,
 	}
 }
 
@@ -163,31 +173,61 @@ func NewJWKSClientWithOptions(opts JWKSClientOptions) *JWKSClient {
 //   - Key Count Limit: Limits JWKS to 100 keys to prevent memory exhaustion
 //   - Caching: Reduces attack surface by caching valid responses
 func (c *JWKSClient) FetchJWKS(ctx context.Context, jwksURI string) (*jose.JSONWebKeySet, error) {
+	return c.fetchJWKS(ctx, jwksURI, false)
+}
+
+// cachedFresh returns the cached JWKS for jwksURI when present and still within
+// the cache TTL.
+func (c *JWKSClient) cachedFresh(jwksURI string) (*jose.JSONWebKeySet, bool) {
+	cached, ok := c.cache.Load(jwksURI)
+	if !ok {
+		return nil, false
+	}
+	doc, ok := cached.(*cachedJWKS)
+	if !ok || c.timeProvider.Since(doc.fetchedAt) >= c.cacheTTL {
+		return nil, false
+	}
+	return doc.keys, true
+}
+
+// validateJWKSURL enforces the SSRF/HTTPS policy for a JWKS fetch: private and
+// loopback addresses are rejected unless allowPrivateIP is set, and HTTPS is
+// always required.
+func (c *JWKSClient) validateJWKSURL(jwksURI string, logger *slog.Logger) error {
+	if c.allowPrivateIP {
+		if err := ValidateHTTPSURL(jwksURI, "JWKS URI"); err != nil {
+			return fmt.Errorf("invalid JWKS URI: %w", err)
+		}
+		logger.Debug("Fetching JWKS with private IP allowance", "uri", jwksURI, "allow_private_ip", true)
+		return nil
+	}
+	if err := ValidateExternalURL(jwksURI, "JWKS URI"); err != nil {
+		return fmt.Errorf("invalid JWKS URI: %w", err)
+	}
+	logger.Debug("Fetching JWKS", "uri", jwksURI)
+	return nil
+}
+
+// fetchJWKS is FetchJWKS with an explicit cache-bypass switch. forceRefresh
+// skips the cache-freshness check and always performs a network fetch (still
+// subject to SSRF/HTTPS validation and the size/key-count limits), then
+// refreshes the cache. It is used by the unknown-kid refetch path to pick up
+// an issuer's rotated signing key without waiting for the cache TTL.
+func (c *JWKSClient) fetchJWKS(ctx context.Context, jwksURI string, forceRefresh bool) (*jose.JSONWebKeySet, error) {
 	logger := c.logger
 	if logger == nil {
 		logger = slog.Default()
 	}
 
-	if cached, ok := c.cache.Load(jwksURI); ok {
-		doc, ok := cached.(*cachedJWKS)
-		if ok && c.timeProvider.Since(doc.fetchedAt) < c.cacheTTL {
+	if !forceRefresh {
+		if keys, ok := c.cachedFresh(jwksURI); ok {
 			logger.Debug("JWKS cache hit", "uri", jwksURI)
-			return doc.keys, nil
+			return keys, nil
 		}
 	}
 
-	if c.allowPrivateIP {
-		if err := ValidateHTTPSURL(jwksURI, "JWKS URI"); err != nil {
-			return nil, fmt.Errorf("invalid JWKS URI: %w", err)
-		}
-		logger.Debug("Fetching JWKS with private IP allowance",
-			"uri", jwksURI,
-			"allow_private_ip", true)
-	} else {
-		if err := ValidateExternalURL(jwksURI, "JWKS URI"); err != nil {
-			return nil, fmt.Errorf("invalid JWKS URI: %w", err)
-		}
-		logger.Debug("Fetching JWKS", "uri", jwksURI)
+	if err := c.validateJWKSURL(jwksURI, logger); err != nil {
+		return nil, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jwksURI, nil)
@@ -225,6 +265,41 @@ func (c *JWKSClient) FetchJWKS(ctx context.Context, jwksURI string) (*jose.JSONW
 	logger.Debug("JWKS fetched successfully", "uri", jwksURI, "key_count", len(jwks.Keys))
 
 	return &jwks, nil
+}
+
+// refetchForUnknownKid forces a single bounded JWKS refetch after a token
+// presented a kid absent from the cached set — the issuer has likely rotated
+// its signing key. The refetch is rate-limited to one network fetch per
+// refetchBackoff per URI (negative caching), so a flood of tokens carrying
+// genuinely bogus kids cannot hammer the issuer's JWKS endpoint. Returns the
+// refreshed key set and true on a successful refetch; returns false when the
+// backoff window has not elapsed or the refetch failed, in which case the
+// caller rejects with the original unknown-kid error.
+func (c *JWKSClient) refetchForUnknownKid(ctx context.Context, jwksURI string) (*jose.JSONWebKeySet, bool) {
+	backoff := c.refetchBackoff
+	if backoff <= 0 {
+		backoff = DefaultJWKSRefetchBackoff
+	}
+
+	// Record the attempt under the lock before fetching so a concurrent
+	// validation of another token with the same new kid sees the window as
+	// open and skips its own refetch.
+	c.refetchMu.Lock()
+	if last, ok := c.lastRefetch.Load(jwksURI); ok {
+		if lt, ok := last.(time.Time); ok && c.timeProvider.Since(lt) < backoff {
+			c.refetchMu.Unlock()
+			return nil, false
+		}
+	}
+	c.lastRefetch.Store(jwksURI, c.timeProvider.Now())
+	c.refetchMu.Unlock()
+
+	jwks, err := c.fetchJWKS(ctx, jwksURI, true)
+	if err != nil {
+		c.logger.Warn("JWKS refetch after unknown kid failed", "uri", jwksURI, "error", err)
+		return nil, false
+	}
+	return jwks, true
 }
 
 // IsJWT checks if a token string looks like a JWT (has 3 parts separated by dots).
@@ -303,6 +378,12 @@ type IDTokenClaims struct {
 	Nonce string `json:"nonce,omitempty"`
 }
 
+// ErrKeyNotFound is returned (wrapped) when a JWT's kid header does not match
+// any key in the JWKS. ValidateIDToken uses errors.Is against this to decide
+// whether to force a bounded JWKS refetch (the issuer may have rotated its
+// signing key after the JWKS was cached).
+var ErrKeyNotFound = errors.New("key not found in JWKS")
+
 // ErrIssuerMismatch is returned (wrapped) when a JWT's iss claim does not match
 // the expected issuer.
 var ErrIssuerMismatch = errors.New("issuer mismatch")
@@ -355,6 +436,15 @@ func ValidateIDToken(ctx context.Context, tokenString string, jwksClient *JWKSCl
 	}
 
 	claims, err := parseAndValidateToken(tokenString, jwks)
+	if errors.Is(err, ErrKeyNotFound) {
+		// The cached JWKS predates an issuer key rotation: the token's kid is
+		// absent from the cached set, but the issuer is now serving it. Force a
+		// bounded refetch and retry once before rejecting, so a single rotation
+		// doesn't fail every token until the process restarts.
+		if refreshed, ok := jwksClient.refetchForUnknownKid(ctx, jwksURI); ok {
+			claims, err = parseAndValidateToken(tokenString, refreshed)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -389,7 +479,7 @@ func parseAndValidateToken(tokenString string, jwks *jose.JSONWebKeySet) (*IDTok
 	}
 	keys := jwks.Key(kid)
 	if len(keys) == 0 {
-		return nil, fmt.Errorf("key %s not found in JWKS", kid)
+		return nil, fmt.Errorf("%w: kid %s", ErrKeyNotFound, kid)
 	}
 
 	// RFC 7517 §4.5 allows multiple keys with the same kid (used during

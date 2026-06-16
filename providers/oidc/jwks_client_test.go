@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -548,6 +549,135 @@ func TestValidateIDToken_Integration(t *testing.T) {
 			"https://auth.example.com", []string{"client-a"},
 		); err == nil {
 			t.Error("multi-key rotation: validation must reject a token whose signature matches none of the keys")
+		}
+	})
+}
+
+// TestValidateIDToken_RefetchOnUnknownKid covers the rotation-safety fix: a
+// token whose kid is absent from the cached JWKS triggers a single bounded
+// refetch (the issuer rotated its signing key), and genuinely bogus kids are
+// rate-limited so they can't hammer the JWKS endpoint.
+func TestValidateIDToken_RefetchOnUnknownKid(t *testing.T) {
+	oldKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate old key: %v", err)
+	}
+	newKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate new key: %v", err)
+	}
+	oldJWKS := publicJWKS(t, oldKey, "RS256", "old-kid")
+	newJWKS := publicJWKS(t, newKey, "RS256", "new-kid")
+
+	var (
+		mu       sync.Mutex
+		served   = oldJWKS
+		fetchCnt int
+	)
+	jwksServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		fetchCnt++
+		cur := served
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(cur); err != nil {
+			t.Errorf("encode JWKS: %v", err)
+		}
+	}))
+	defer jwksServer.Close()
+
+	// allowPrivateIP lets the forced refetch reach the loopback httptest server
+	// (production fetches go to a public Dex hostname). The cache is
+	// pre-populated with the pre-rotation JWKS, fresh, so the refetch is
+	// triggered by the unknown kid and not by cache-TTL expiry.
+	newClient := func(tp timeProvider, backoff time.Duration) *JWKSClient {
+		c := &JWKSClient{
+			httpClient:     jwksServer.Client(),
+			cacheTTL:       1 * time.Hour,
+			timeProvider:   tp,
+			logger:         slog.Default(),
+			allowPrivateIP: true,
+			refetchBackoff: backoff,
+		}
+		c.cache.Store(jwksServer.URL, &cachedJWKS{keys: &oldJWKS, fetchedAt: tp.Now()})
+		return c
+	}
+
+	validClaims := IDTokenClaims{
+		Claims: josejwt.Claims{
+			Subject:  "rotated-user",
+			Issuer:   "https://auth.example.com",
+			Audience: josejwt.Audience{"client-a"},
+			Expiry:   josejwt.NewNumericDate(time.Now().Add(time.Hour)),
+			IssuedAt: josejwt.NewNumericDate(time.Now()),
+		},
+	}
+
+	t.Run("token signed by rotated key validates after refetch", func(t *testing.T) {
+		mu.Lock()
+		served = newJWKS
+		fetchCnt = 0
+		mu.Unlock()
+
+		client := newClient(realTime{}, DefaultJWKSRefetchBackoff)
+		token := signTestToken(t, newKey, jose.RS256, "new-kid", validClaims)
+
+		got, err := ValidateIDToken(context.Background(), token, client, jwksServer.URL,
+			"https://auth.example.com", []string{"client-a"})
+		if err != nil {
+			t.Fatalf("expected validation to succeed after refetch, got: %v", err)
+		}
+		if got.Subject != "rotated-user" {
+			t.Errorf("Subject = %q, want rotated-user", got.Subject)
+		}
+		mu.Lock()
+		n := fetchCnt
+		mu.Unlock()
+		if n != 1 {
+			t.Errorf("expected exactly 1 refetch, got %d", n)
+		}
+	})
+
+	t.Run("bogus kid triggers at most one refetch per backoff window", func(t *testing.T) {
+		// Server keeps serving the old JWKS, so the bogus kid never appears:
+		// every validation misses and would refetch if not rate-limited.
+		mu.Lock()
+		served = oldJWKS
+		fetchCnt = 0
+		mu.Unlock()
+
+		mt := &mockTime{now: time.Now()}
+		client := newClient(mt, time.Minute)
+		bogusKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("generate bogus key: %v", err)
+		}
+		bogus := signTestToken(t, bogusKey, jose.RS256, "bogus-kid", validClaims)
+
+		for i := 0; i < 3; i++ {
+			if _, err := ValidateIDToken(context.Background(), bogus, client, jwksServer.URL,
+				"https://auth.example.com", []string{"client-a"}); err == nil {
+				t.Fatal("expected validation to fail for bogus kid")
+			}
+		}
+		mu.Lock()
+		n := fetchCnt
+		mu.Unlock()
+		if n != 1 {
+			t.Fatalf("expected exactly 1 refetch within backoff window, got %d", n)
+		}
+
+		// Advance past the backoff window: the next miss may refetch again.
+		mt.now = mt.now.Add(2 * time.Minute)
+		if _, err := ValidateIDToken(context.Background(), bogus, client, jwksServer.URL,
+			"https://auth.example.com", []string{"client-a"}); err == nil {
+			t.Fatal("expected validation to fail for bogus kid")
+		}
+		mu.Lock()
+		n = fetchCnt
+		mu.Unlock()
+		if n != 2 {
+			t.Errorf("expected a second refetch after backoff elapsed, got %d total", n)
 		}
 	})
 }
