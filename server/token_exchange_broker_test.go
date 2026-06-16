@@ -16,6 +16,8 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
+const brokerTestUserSub = "user@example.com"
+
 type stubSubjectValidator struct {
 	identity SubjectIdentity
 	err      error
@@ -94,7 +96,7 @@ func newBrokerTestServer(t *testing.T, exchanger Exchanger, allowlist map[string
 
 func happyBrokerValidator() SubjectTokenValidator {
 	return &stubSubjectValidator{identity: SubjectIdentity{
-		Subject: "user@example.com",
+		Subject: brokerTestUserSub,
 		Issuer:  "https://dex.example.com",
 	}}
 }
@@ -179,7 +181,7 @@ func TestBrokerExchangeSubjectToken_HappyPath(t *testing.T) {
 	require.Equal(t, "backstage", ex.gotReq.ClientID)
 	require.Equal(t, "subject-jwt", ex.gotReq.SubjectToken)
 	require.Equal(t, SubjectTokenTypeIDToken, ex.gotReq.SubjectTokenType)
-	require.Equal(t, "user@example.com", ex.gotReq.Subject.Subject)
+	require.Equal(t, brokerTestUserSub, ex.gotReq.Subject.Subject)
 	require.Equal(t, "https://dex.example.com", ex.gotReq.Subject.Issuer)
 
 	// Audit carries client ID, audience, scope, and the deterministic session ID.
@@ -313,7 +315,7 @@ func TestBrokerExchangeSubjectToken_ActorPresent(t *testing.T) {
 		byToken: map[string]*SubjectIdentity{
 			"actor-jwt": &actorIdentity,
 		},
-		defaultIdentity: &SubjectIdentity{Subject: "user@example.com", Issuer: "https://dex.example.com"},
+		defaultIdentity: &SubjectIdentity{Subject: brokerTestUserSub, Issuer: "https://dex.example.com"},
 	}
 	ex := &stubExchanger{result: &ExchangerResult{
 		AccessToken: "downstream-token",
@@ -366,7 +368,7 @@ func TestBrokerExchangeSubjectToken_ActorUntrustedIssuer(t *testing.T) {
 		byErr: map[string]error{
 			"actor-jwt": untrustedErr,
 		},
-		defaultIdentity: &SubjectIdentity{Subject: "user@example.com", Issuer: "https://dex.example.com"},
+		defaultIdentity: &SubjectIdentity{Subject: brokerTestUserSub, Issuer: "https://dex.example.com"},
 	}
 	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "downstream-token"}}
 	srv, buf := newBrokerTestServer(t, ex,
@@ -512,7 +514,7 @@ func TestWorkloadExchangeSubjectToken_DelegationUsesActorSubject(t *testing.T) {
 		ExpiresAt:   time.Now().Add(time.Minute),
 	}}
 	actorSub := "system:serviceaccount:ns:actor"
-	subjectSub := "user@example.com"
+	subjectSub := brokerTestUserSub
 	validator := &stubTokenValidator{
 		byToken: map[string]*SubjectIdentity{
 			"actor-jwt": {Subject: actorSub, Issuer: "https://kube.example.com"},
@@ -538,7 +540,7 @@ func TestWorkloadExchangeSubjectToken_DelegationUsesActorSubject(t *testing.T) {
 func TestWorkloadExchangeSubjectToken_DelegationDeniedOnSubjectSubject(t *testing.T) {
 	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "x"}}
 	actorSub := "system:serviceaccount:ns:actor"
-	subjectSub := "user@example.com"
+	subjectSub := brokerTestUserSub
 	validator := &stubTokenValidator{
 		byToken: map[string]*SubjectIdentity{
 			"actor-jwt": {Subject: actorSub, Issuer: "https://kube.example.com"},
