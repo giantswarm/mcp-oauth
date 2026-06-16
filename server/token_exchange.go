@@ -68,7 +68,7 @@ func (s *Server) ExchangeSubjectToken(
 		return nil, fmt.Errorf("token exchange requires JWT access token mode (set AccessTokenFormat=jwt)")
 	}
 
-	identity, err := s.validateExchangeSubjectToken(ctx, subjectToken, subjectTokenType, nil)
+	identity, err := s.validateExchangeSubjectToken(ctx, subjectToken, subjectTokenType, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -151,8 +151,10 @@ func (s *Server) ExchangeSubjectToken(
 // on the workload-authenticated path when no actor_token is present, so the
 // caller-authenticating token is bound to this broker's issuer and cannot be
 // replayed from a different audience context.
-func (s *Server) validateExchangeSubjectToken(ctx context.Context, subjectToken, subjectTokenType string, defaultAudiences []string) (*SubjectIdentity, error) {
-	return s.validateExchangeToken(ctx, subjectToken, subjectTokenType, "subject", defaultAudiences)
+// extra is merged into every failure audit event; pass brokered flow context
+// (exchange, client_id, audience, session_id) from BrokerExchangeSubjectToken.
+func (s *Server) validateExchangeSubjectToken(ctx context.Context, subjectToken, subjectTokenType string, defaultAudiences []string, extra map[string]any) (*SubjectIdentity, error) {
+	return s.validateExchangeToken(ctx, subjectToken, subjectTokenType, "subject", defaultAudiences, extra)
 }
 
 // validateExchangeActorToken validates the RFC 8693 actor token and returns
@@ -161,8 +163,10 @@ func (s *Server) validateExchangeSubjectToken(ctx context.Context, subjectToken,
 // The broker's own issuer is passed as the default audience so actor tokens
 // from issuers with no AllowedAudiences configured are still bound to this
 // broker and cannot be replayed from a different audience context.
-func (s *Server) validateExchangeActorToken(ctx context.Context, actorToken, actorTokenType string) (*SubjectIdentity, error) {
-	return s.validateExchangeToken(ctx, actorToken, actorTokenType, "actor", []string{s.Config.Issuer})
+// extra is merged into every failure audit event; pass brokered flow context
+// (exchange, client_id, audience, session_id) from BrokerExchangeSubjectToken.
+func (s *Server) validateExchangeActorToken(ctx context.Context, actorToken, actorTokenType string, extra map[string]any) (*SubjectIdentity, error) {
+	return s.validateExchangeToken(ctx, actorToken, actorTokenType, "actor", []string{s.Config.Issuer}, extra)
 }
 
 // validateExchangeToken routes token to the SubjectTokenValidator registered
@@ -170,21 +174,31 @@ func (s *Server) validateExchangeActorToken(ctx context.Context, actorToken, act
 // it drives audit reason strings and detail keys so subject and actor failures
 // produce distinct, unambiguous audit events. defaultAudiences is forwarded to
 // Validate and applies only when the matched issuer entry has no AllowedAudiences.
-func (s *Server) validateExchangeToken(ctx context.Context, token, tokenType, role string, defaultAudiences []string) (*SubjectIdentity, error) {
+// extra is merged into every failure audit event; use it to inject flow-level context
+// (exchange, client_id, audience, session_id) so a single event carries both the
+// validation detail and the brokered-flow correlation fields.
+func (s *Server) validateExchangeToken(ctx context.Context, token, tokenType, role string, defaultAudiences []string, extra map[string]any) (*SubjectIdentity, error) {
 	typeKey := role + "_token_type"
 	unsupportedReason := "unsupported_" + role + "_token_type"
 	validationFailedReason := role + "_token_validation_failed"
+
+	auditDetails := func(base map[string]any) map[string]any {
+		for k, v := range extra {
+			base[k] = v
+		}
+		return base
+	}
 
 	switch tokenType {
 	case SubjectTokenTypeIDToken, SubjectTokenTypeAccessToken, SubjectTokenTypeJWT:
 	default:
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type: security.EventAuthFailure,
-			Details: map[string]any{
+			Details: auditDetails(map[string]any{
 				"reason":     unsupportedReason,
 				"grant_type": GrantTypeTokenExchange,
 				typeKey:      tokenType,
-			},
+			}),
 		})
 		return nil, &TokenExchangeUnsupportedTypeError{tokenType: tokenType, role: role}
 	}
@@ -193,11 +207,11 @@ func (s *Server) validateExchangeToken(ctx context.Context, token, tokenType, ro
 	if v == nil {
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type: security.EventAuthFailure,
-			Details: map[string]any{
+			Details: auditDetails(map[string]any{
 				"reason":     unsupportedReason,
 				"grant_type": GrantTypeTokenExchange,
 				typeKey:      tokenType,
-			},
+			}),
 		})
 		return nil, &TokenExchangeUnsupportedTypeError{tokenType: tokenType, role: role}
 	}
@@ -208,12 +222,12 @@ func (s *Server) validateExchangeToken(ctx context.Context, token, tokenType, ro
 			typeKey, tokenType, "error", err)
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type: security.EventAuthFailure,
-			Details: map[string]any{
+			Details: auditDetails(map[string]any{
 				"reason":     validationFailedReason,
 				"grant_type": GrantTypeTokenExchange,
 				typeKey:      tokenType,
 				"error":      err.Error(),
-			},
+			}),
 		})
 		return nil, fmt.Errorf("%s token validation: %w", role, err)
 	}
