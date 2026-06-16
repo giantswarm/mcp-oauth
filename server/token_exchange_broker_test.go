@@ -16,7 +16,10 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
-const brokerTestUserSub = "user@example.com"
+const (
+	brokerTestUserSub  = "user@example.com"
+	brokerTestActorSub = "system:serviceaccount:ns:actor"
+)
 
 type stubSubjectValidator struct {
 	identity SubjectIdentity
@@ -541,7 +544,7 @@ func TestWorkloadExchangeSubjectToken_DelegationUsesActorSubject(t *testing.T) {
 		AccessToken: "workload-token",
 		ExpiresAt:   time.Now().Add(time.Minute),
 	}}
-	actorSub := "system:serviceaccount:ns:actor"
+	actorSub := brokerTestActorSub
 	subjectSub := brokerTestUserSub
 	validator := &stubTokenValidator{
 		byToken: map[string]*SubjectIdentity{
@@ -570,7 +573,7 @@ func TestWorkloadExchangeSubjectToken_DelegationUsesActorSubject(t *testing.T) {
 
 func TestWorkloadExchangeSubjectToken_DelegationDeniedWhenNoPolicyConfigured(t *testing.T) {
 	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "x"}}
-	actorSub := "system:serviceaccount:ns:actor"
+	actorSub := brokerTestActorSub
 	subjectSub := brokerTestUserSub
 	validator := &stubTokenValidator{
 		byToken: map[string]*SubjectIdentity{
@@ -595,7 +598,7 @@ func TestWorkloadExchangeSubjectToken_DelegationDeniedWhenNoPolicyConfigured(t *
 
 func TestWorkloadExchangeSubjectToken_DelegationDeniedByPolicy(t *testing.T) {
 	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "x"}}
-	actorSub := "system:serviceaccount:ns:actor"
+	actorSub := brokerTestActorSub
 	subjectSub := brokerTestUserSub
 	validator := &stubTokenValidator{
 		byToken: map[string]*SubjectIdentity{
