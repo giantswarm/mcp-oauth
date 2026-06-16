@@ -302,8 +302,8 @@ func TestHandleBrokeredTokenExchange_ActorTokenForwarded(t *testing.T) {
 	ex := &stubExchanger{result: happyDownstreamResult()}
 	h := setupBrokeredExchangeHandler(t, ex, []string{"gaggle"}, "confidential")
 	// fakeSubjectValidator returns "user@example.com" for both tokens; allow that actor for that subject.
-	h.srv.Config.ActorDelegationPolicy = map[string][]string{
-		"user@example.com": {"user@example.com"},
+	h.srv.Config.ActorDelegationPolicy = []server.DelegationGrant{
+		{ActorSubject: "user@example.com", SubjectSubject: "user@example.com"},
 	}
 
 	form := brokeredExchangeForm()
@@ -330,7 +330,7 @@ type workloadExchangeHarness struct {
 	logs    *bytes.Buffer
 }
 
-func setupWorkloadExchangeHandler(t *testing.T, exchanger server.Exchanger, workloadAudiences map[string][]string) *workloadExchangeHarness {
+func setupWorkloadExchangeHandler(t *testing.T, exchanger server.Exchanger, workloadAudiences []server.WorkloadGrant) *workloadExchangeHarness {
 	t.Helper()
 
 	store := memory.New()
@@ -383,7 +383,7 @@ func TestHandleWorkloadTokenExchange_HappyPath(t *testing.T) {
 	const sub = "system:serviceaccount:ns:robot"
 	ex := &stubExchanger{result: happyDownstreamResult()}
 	h := setupWorkloadExchangeHandler(t, ex,
-		map[string][]string{sub: {"target-service"}})
+		[]server.WorkloadGrant{{Subject: sub, Audiences: []string{"target-service"}}})
 
 	req := newTokenExchangeRequest(workloadExchangeForm())
 	w := httptest.NewRecorder()
@@ -407,7 +407,7 @@ func TestHandleWorkloadTokenExchange_AudienceNotAllowed(t *testing.T) {
 	const sub = "system:serviceaccount:ns:robot"
 	ex := &stubExchanger{result: happyDownstreamResult()}
 	h := setupWorkloadExchangeHandler(t, ex,
-		map[string][]string{sub: {"allowed-service"}})
+		[]server.WorkloadGrant{{Subject: sub, Audiences: []string{"allowed-service"}}})
 
 	form := workloadExchangeForm()
 	form.Set("audience", "other-service")
@@ -426,7 +426,7 @@ func TestHandleWorkloadTokenExchange_GateOff_FallsBackToClientAuth(t *testing.T)
 	// reach authenticateClient and fail with invalid_request (client_id missing).
 	const sub = "system:serviceaccount:ns:robot"
 	ex := &stubExchanger{result: happyDownstreamResult()}
-	h := setupWorkloadExchangeHandler(t, ex, map[string][]string{sub: {"target-service"}})
+	h := setupWorkloadExchangeHandler(t, ex, []server.WorkloadGrant{{Subject: sub, Audiences: []string{"target-service"}}})
 	h.srv.Config.EnableWorkloadTokenExchange = false
 
 	req := newTokenExchangeRequest(workloadExchangeForm())
@@ -440,7 +440,7 @@ func TestHandleWorkloadTokenExchange_GateOff_FallsBackToClientAuth(t *testing.T)
 func TestHandleWorkloadTokenExchange_DPoPRejected(t *testing.T) {
 	const sub = "system:serviceaccount:ns:robot"
 	ex := &stubExchanger{result: happyDownstreamResult()}
-	h := setupWorkloadExchangeHandler(t, ex, map[string][]string{sub: {"target-service"}})
+	h := setupWorkloadExchangeHandler(t, ex, []server.WorkloadGrant{{Subject: sub, Audiences: []string{"target-service"}}})
 
 	req := newTokenExchangeRequest(workloadExchangeForm())
 	req.Header.Set("DPoP", "some-proof")

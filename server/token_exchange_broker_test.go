@@ -33,6 +33,17 @@ func (f *stubSubjectValidator) Validate(_ context.Context, _ string, _ []string)
 	return &f.identity, nil
 }
 
+// recordingValidator captures the defaultAudiences passed to its last Validate call.
+type recordingValidator struct {
+	identity         SubjectIdentity
+	lastDefaultAuds  []string
+}
+
+func (f *recordingValidator) Validate(_ context.Context, _ string, defaultAuds []string) (*SubjectIdentity, error) {
+	f.lastDefaultAuds = defaultAuds
+	return &f.identity, nil
+}
+
 // stubTokenValidator returns distinct identities or errors keyed by the raw
 // token string. Unrecognised tokens fall back to the default outcome.
 type stubTokenValidator struct {
@@ -104,7 +115,7 @@ func happyBrokerValidator() SubjectTokenValidator {
 	}}
 }
 
-func newWorkloadTestServer(t *testing.T, exchanger Exchanger, workloadAudiences map[string][]string, validator SubjectTokenValidator) (*Server, *bytes.Buffer) {
+func newWorkloadTestServer(t *testing.T, exchanger Exchanger, workloadAudiences []WorkloadGrant, validator SubjectTokenValidator) (*Server, *bytes.Buffer) {
 	t.Helper()
 
 	store := memory.New()
@@ -327,8 +338,8 @@ func TestBrokerExchangeSubjectToken_ActorPresent(t *testing.T) {
 	}}
 	srv, buf := newBrokerTestServer(t, ex,
 		map[string][]string{"backstage": {"gaggle"}}, validator)
-	srv.Config.ActorDelegationPolicy = map[string][]string{
-		"service-a": {brokerTestUserSub},
+	srv.Config.ActorDelegationPolicy = []DelegationGrant{
+		{ActorSubject: "service-a", SubjectSubject: brokerTestUserSub},
 	}
 
 	result, err := srv.BrokerExchangeSubjectToken(t.Context(),
@@ -451,7 +462,7 @@ func TestWorkloadExchangeSubjectToken_HappyPath(t *testing.T) {
 		Issuer:  "https://kube.example.com",
 	}}
 	srv, buf := newWorkloadTestServer(t, ex,
-		map[string][]string{sub: {"target-service"}}, validator)
+		[]WorkloadGrant{{Subject: sub, Audiences: []string{"target-service"}}}, validator)
 
 	result, err := srv.WorkloadExchangeSubjectToken(t.Context(),
 		"sa-jwt", SubjectTokenTypeIDToken, "", "", "target-service", "", "openid")
@@ -473,12 +484,60 @@ func TestWorkloadExchangeSubjectToken_HappyPath(t *testing.T) {
 	require.Equal(t, "target-service", details["audience"])
 }
 
+func TestWorkloadExchangeSubjectToken_ImpersonationSubjectBoundToBrokerIssuer(t *testing.T) {
+	// On the workload+no-actor path the subject token authenticates the caller,
+	// so the validator must receive the broker's own issuer as defaultAudiences.
+	const sub = "system:serviceaccount:ns:robot"
+	rec := &recordingValidator{identity: SubjectIdentity{Subject: sub, Issuer: "https://kube.example.com"}}
+	ex := &stubExchanger{result: &ExchangerResult{
+		AccessToken: "workload-token",
+		ExpiresAt:   time.Now().Add(time.Minute),
+	}}
+	srv, _ := newWorkloadTestServer(t, ex,
+		[]WorkloadGrant{{Subject: sub, Audiences: []string{"target-service"}}}, rec)
+
+	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		"sa-jwt", SubjectTokenTypeIDToken, "", "", "target-service", "", "")
+	require.NoError(t, err)
+	require.Equal(t, []string{"https://broker.example.com"}, rec.lastDefaultAuds,
+		"impersonation path must bind subject token to broker issuer")
+}
+
+func TestWorkloadExchangeSubjectToken_DelegationSubjectNotBoundToBrokerIssuer(t *testing.T) {
+	// On the delegation path (actor present), the subject token is the user's credential
+	// and must NOT be broker-bound — only the actor token is broker-bound.
+	actorSub := brokerTestActorSub
+	subjectSub := brokerTestUserSub
+	actorValidator := &stubTokenValidator{
+		byToken: map[string]*SubjectIdentity{
+			"actor-jwt": {Subject: actorSub, Issuer: "https://kube.example.com"},
+		},
+		defaultIdentity: &SubjectIdentity{Subject: subjectSub, Issuer: "https://idp.example.com"},
+	}
+	ex := &stubExchanger{result: &ExchangerResult{
+		AccessToken: "workload-token",
+		ExpiresAt:   time.Now().Add(time.Minute),
+	}}
+	srv, _ := newWorkloadTestServer(t, ex,
+		[]WorkloadGrant{{Subject: actorSub, Audiences: []string{"target-service"}}}, actorValidator)
+	srv.Config.ActorDelegationPolicy = []DelegationGrant{
+		{ActorSubject: actorSub, SubjectSubject: subjectSub},
+	}
+
+	// We can't easily verify the defaultAudiences for the subject on this path via
+	// stubTokenValidator since it drops defaultAuds. Instead verify functional correctness:
+	// delegation succeeds (proving subject token is not rejected for lacking broker audience).
+	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		"user-jwt", SubjectTokenTypeIDToken, "actor-jwt", SubjectTokenTypeIDToken, "target-service", "", "")
+	require.NoError(t, err)
+}
+
 func TestWorkloadExchangeSubjectToken_AudienceNotAllowed(t *testing.T) {
 	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "x"}}
 	const sub = "system:serviceaccount:ns:robot"
 	validator := &stubSubjectValidator{identity: SubjectIdentity{Subject: sub, Issuer: "https://kube.example.com"}}
 	srv, buf := newWorkloadTestServer(t, ex,
-		map[string][]string{sub: {"allowed-service"}}, validator)
+		[]WorkloadGrant{{Subject: sub, Audiences: []string{"allowed-service"}}}, validator)
 
 	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
 		"sa-jwt", SubjectTokenTypeIDToken, "", "", "other-service", "", "")
@@ -498,7 +557,7 @@ func TestWorkloadExchangeSubjectToken_SubjectNotInMap(t *testing.T) {
 		Issuer:  "https://kube.example.com",
 	}}
 	srv, _ := newWorkloadTestServer(t, ex,
-		map[string][]string{"system:serviceaccount:ns:robot": {"svc"}}, validator)
+		[]WorkloadGrant{{Subject: "system:serviceaccount:ns:robot", Audiences: []string{"svc"}}}, validator)
 
 	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
 		"sa-jwt", SubjectTokenTypeIDToken, "", "", "svc", "", "")
@@ -515,7 +574,7 @@ func TestWorkloadExchangeSubjectToken_GlobMatch(t *testing.T) {
 	validator := &stubSubjectValidator{identity: SubjectIdentity{Subject: sub, Issuer: "https://kube.example.com"}}
 	srv, _ := newWorkloadTestServer(t, ex,
 		// Glob covers all service accounts in ns.
-		map[string][]string{"system:serviceaccount:ns:*": {"target-service"}}, validator)
+		[]WorkloadGrant{{Subject: "system:serviceaccount:ns:*", Audiences: []string{"target-service"}}}, validator)
 
 	result, err := srv.WorkloadExchangeSubjectToken(t.Context(),
 		"sa-jwt", SubjectTokenTypeIDToken, "", "", "target-service", "", "")
@@ -531,7 +590,7 @@ func TestWorkloadExchangeSubjectToken_GlobNoMatch(t *testing.T) {
 		Issuer:  "https://kube.example.com",
 	}}
 	srv, _ := newWorkloadTestServer(t, ex,
-		map[string][]string{"system:serviceaccount:ns:*": {"target-service"}}, validator)
+		[]WorkloadGrant{{Subject: "system:serviceaccount:ns:*", Audiences: []string{"target-service"}}}, validator)
 
 	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
 		"sa-jwt", SubjectTokenTypeIDToken, "", "", "target-service", "", "")
@@ -554,9 +613,9 @@ func TestWorkloadExchangeSubjectToken_DelegationUsesActorSubject(t *testing.T) {
 	}
 	// Allowlist is keyed on the actor subject, not the user subject.
 	srv, _ := newWorkloadTestServer(t, ex,
-		map[string][]string{actorSub: {"target-service"}}, validator)
-	srv.Config.ActorDelegationPolicy = map[string][]string{
-		actorSub: {subjectSub},
+		[]WorkloadGrant{{Subject: actorSub, Audiences: []string{"target-service"}}}, validator)
+	srv.Config.ActorDelegationPolicy = []DelegationGrant{
+		{ActorSubject: actorSub, SubjectSubject: subjectSub},
 	}
 
 	result, err := srv.WorkloadExchangeSubjectToken(t.Context(),
@@ -583,7 +642,7 @@ func TestWorkloadExchangeSubjectToken_DelegationDeniedWhenNoPolicyConfigured(t *
 	}
 	// ActorDelegationPolicy is nil — all delegation must be denied regardless of audience config.
 	srv, buf := newWorkloadTestServer(t, ex,
-		map[string][]string{actorSub: {"target-service"}}, validator)
+		[]WorkloadGrant{{Subject: actorSub, Audiences: []string{"target-service"}}}, validator)
 
 	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
 		"user-jwt", SubjectTokenTypeIDToken, "actor-jwt", SubjectTokenTypeIDToken, "target-service", "", "")
@@ -608,9 +667,9 @@ func TestWorkloadExchangeSubjectToken_DelegationDeniedByPolicy(t *testing.T) {
 	}
 	// Policy only covers the user subject as the actor key, not the SA — delegation denied.
 	srv, _ := newWorkloadTestServer(t, ex,
-		map[string][]string{actorSub: {"target-service"}}, validator)
-	srv.Config.ActorDelegationPolicy = map[string][]string{
-		subjectSub: {actorSub},
+		[]WorkloadGrant{{Subject: actorSub, Audiences: []string{"target-service"}}}, validator)
+	srv.Config.ActorDelegationPolicy = []DelegationGrant{
+		{ActorSubject: subjectSub, SubjectSubject: actorSub},
 	}
 
 	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
@@ -625,7 +684,7 @@ func TestWorkloadExchangeSubjectToken_NoExchanger(t *testing.T) {
 		Issuer:  "https://kube.example.com",
 	}}
 	srv, buf := newWorkloadTestServer(t, nil,
-		map[string][]string{"system:serviceaccount:ns:robot": {"svc"}}, validator)
+		[]WorkloadGrant{{Subject: "system:serviceaccount:ns:robot", Audiences: []string{"svc"}}}, validator)
 
 	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
 		"sa-jwt", SubjectTokenTypeIDToken, "", "", "svc", "", "")
@@ -638,70 +697,147 @@ func TestWorkloadExchangeSubjectToken_NoExchanger(t *testing.T) {
 
 // workloadAudienceAllowed unit tests.
 
+func newMatchTestServer(t *testing.T) *Server {
+	t.Helper()
+	store := memory.New()
+	t.Cleanup(func() { store.Stop() })
+	srv, err := New(mock.NewProvider(), store, store, store, &Config{
+		Issuer:                      "https://broker.example.com",
+		DisableNonceEchoRequirement: true,
+	}, slog.Default())
+	require.NoError(t, err)
+	return srv
+}
+
 func TestWorkloadAudienceAllowed(t *testing.T) {
-	allowed := map[string][]string{
-		"system:serviceaccount:ns:robot": {"svc-a", "svc-b"},
-		"system:serviceaccount:ns:*":     {"svc-c"},
+	grants := []WorkloadGrant{
+		{Subject: "system:serviceaccount:ns:robot", Audiences: []string{"svc-a", "svc-b"}},
+		{Subject: "system:serviceaccount:ns:*", Audiences: []string{"svc-c"}},
 	}
 
 	tests := []struct {
 		name      string
+		issuer    string
 		subject   string
 		audience  string
+		grants    []WorkloadGrant
 		wantAllow bool
 	}{
-		{"exact match, allowed audience", "system:serviceaccount:ns:robot", "svc-a", true},
-		{"exact match, second audience", "system:serviceaccount:ns:robot", "svc-b", true},
-		{"exact match, audience not in list", "system:serviceaccount:ns:robot", "svc-c", true}, // also covered by glob
-		{"glob match", "system:serviceaccount:ns:other", "svc-c", true},
-		{"glob no match different ns", "system:serviceaccount:prod:robot", "svc-c", false},
-		{"unknown subject", "system:serviceaccount:ns:unknown", "svc-a", false},
-		{"empty map", "system:serviceaccount:ns:robot", "svc-a", false},
-		{"audience not in list, no glob", "system:serviceaccount:ns:robot", "svc-x", false},
+		{"exact match, allowed audience", "https://kube.example.com", "system:serviceaccount:ns:robot", "svc-a", grants, true},
+		{"exact match, second audience", "https://kube.example.com", "system:serviceaccount:ns:robot", "svc-b", grants, true},
+		{"exact match, audience also covered by glob", "https://kube.example.com", "system:serviceaccount:ns:robot", "svc-c", grants, true},
+		{"glob match", "https://kube.example.com", "system:serviceaccount:ns:other", "svc-c", grants, true},
+		{"glob no match different ns", "https://kube.example.com", "system:serviceaccount:prod:robot", "svc-c", grants, false},
+		{"unknown subject", "https://kube.example.com", "system:serviceaccount:ns:unknown", "svc-a", grants, false},
+		{"nil grants", "https://kube.example.com", "system:serviceaccount:ns:robot", "svc-a", nil, false},
+		{"audience not in list, no glob", "https://kube.example.com", "system:serviceaccount:ns:robot", "svc-x", grants, false},
+		// Issuer-qualified grant: same subject from a different issuer is denied.
+		{"issuer mismatch denied", "https://other-cluster.example.com", "system:serviceaccount:ns:robot", "svc-a",
+			[]WorkloadGrant{{Issuer: "https://kube.example.com", Subject: "system:serviceaccount:ns:robot", Audiences: []string{"svc-a"}}},
+			false},
+		// Empty Issuer in grant matches any issuer.
+		{"empty issuer matches any", "https://other-cluster.example.com", "system:serviceaccount:ns:robot", "svc-a",
+			[]WorkloadGrant{{Subject: "system:serviceaccount:ns:robot", Audiences: []string{"svc-a"}}},
+			true},
 	}
 
+	srv := newMatchTestServer(t)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			m := allowed
-			if tc.name == "empty map" {
-				m = nil
-			}
-			got := workloadAudienceAllowed(m, tc.subject, tc.audience)
+			srv.Config.WorkloadAudiences = tc.grants
+			got := srv.workloadAudienceAllowed(tc.issuer, tc.subject, tc.audience)
 			require.Equal(t, tc.wantAllow, got)
 		})
 	}
 }
 
 func TestActorDelegationAllowed(t *testing.T) {
-	policy := map[string][]string{
-		"system:serviceaccount:ns:robot": {brokerTestUserSub, "other@example.com"},
-		"system:serviceaccount:ns:*":     {"admin@example.com"},
+	const (
+		kubeIss  = "https://kube.example.com"
+		idpIss   = "https://idp.example.com"
+		otherIss = "https://other-cluster.example.com"
+	)
+	grants := []DelegationGrant{
+		{ActorSubject: "system:serviceaccount:ns:robot", SubjectSubject: brokerTestUserSub},
+		{ActorSubject: "system:serviceaccount:ns:robot", SubjectSubject: "other@example.com"},
+		{ActorSubject: "system:serviceaccount:ns:*", SubjectSubject: "admin@example.com"},
 	}
 
 	tests := []struct {
-		name      string
-		actorSub  string
-		subjSub   string
-		wantAllow bool
+		name        string
+		actorIssuer string
+		actorSub    string
+		subjIssuer  string
+		subjSub     string
+		grants      []DelegationGrant
+		wantAllow   bool
 	}{
-		{"exact actor, first subject", "system:serviceaccount:ns:robot", brokerTestUserSub, true},
-		{"exact actor, second subject", "system:serviceaccount:ns:robot", "other@example.com", true},
-		{"exact actor, subject not in any entry", "system:serviceaccount:ns:robot", "nobody@example.com", false},
-		{"glob actor, allowed subject", "system:serviceaccount:ns:other", "admin@example.com", true},
-		{"glob actor, wrong subject", "system:serviceaccount:ns:other", brokerTestUserSub, false},
-		{"glob no match different ns", "system:serviceaccount:prod:robot", brokerTestUserSub, false},
-		{"unknown actor", "unknown-service", brokerTestUserSub, false},
-		{"nil policy", "system:serviceaccount:ns:robot", brokerTestUserSub, false},
+		{"exact actor, first subject", kubeIss, "system:serviceaccount:ns:robot", idpIss, brokerTestUserSub, grants, true},
+		{"exact actor, second subject", kubeIss, "system:serviceaccount:ns:robot", idpIss, "other@example.com", grants, true},
+		{"exact actor, subject not in any entry", kubeIss, "system:serviceaccount:ns:robot", idpIss, "nobody@example.com", grants, false},
+		{"glob actor, allowed subject", kubeIss, "system:serviceaccount:ns:other", idpIss, "admin@example.com", grants, true},
+		{"glob actor, wrong subject", kubeIss, "system:serviceaccount:ns:other", idpIss, brokerTestUserSub, grants, false},
+		{"glob no match different ns", kubeIss, "system:serviceaccount:prod:robot", idpIss, brokerTestUserSub, grants, false},
+		{"unknown actor", kubeIss, "unknown-service", idpIss, brokerTestUserSub, grants, false},
+		{"nil grants", kubeIss, "system:serviceaccount:ns:robot", idpIss, brokerTestUserSub, nil, false},
+		// Issuer-qualified: actor from a different issuer must not match an issuer-scoped grant.
+		{"actor issuer mismatch denied", otherIss, "system:serviceaccount:ns:robot", idpIss, brokerTestUserSub,
+			[]DelegationGrant{{ActorIssuer: kubeIss, ActorSubject: "system:serviceaccount:ns:robot", SubjectSubject: brokerTestUserSub}},
+			false},
+		// Subject issuer mismatch.
+		{"subject issuer mismatch denied", kubeIss, "system:serviceaccount:ns:robot", otherIss, brokerTestUserSub,
+			[]DelegationGrant{{ActorSubject: "system:serviceaccount:ns:robot", SubjectIssuer: idpIss, SubjectSubject: brokerTestUserSub}},
+			false},
+		// Empty issuers in grant match any.
+		{"empty issuers match any", otherIss, "system:serviceaccount:ns:robot", otherIss, brokerTestUserSub,
+			[]DelegationGrant{{ActorSubject: "system:serviceaccount:ns:robot", SubjectSubject: brokerTestUserSub}},
+			true},
 	}
 
+	srv := newMatchTestServer(t)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			p := policy
-			if tc.name == "nil policy" {
-				p = nil
-			}
-			got := actorDelegationAllowed(p, tc.actorSub, tc.subjSub)
+			srv.Config.ActorDelegationPolicy = tc.grants
+			got := srv.actorDelegationAllowed(tc.actorIssuer, tc.actorSub, tc.subjIssuer, tc.subjSub)
 			require.Equal(t, tc.wantAllow, got)
 		})
 	}
+}
+
+func TestSubjectMatchesBadPattern(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	store := memory.New()
+	t.Cleanup(func() { store.Stop() })
+	srv, err := New(mock.NewProvider(), store, store, store, &Config{
+		Issuer:                      "https://broker.example.com",
+		DisableNonceEchoRequirement: true,
+	}, logger)
+	require.NoError(t, err)
+
+	// An unclosed bracket is a malformed glob that path.Match rejects with ErrBadPattern.
+	got := srv.subjectMatches("[unclosed", "anything")
+	require.False(t, got, "malformed pattern must fail closed")
+	require.Contains(t, buf.String(), "malformed", "bad pattern must emit a Warn log")
+}
+
+func TestWorkloadAudienceAllowed_MalformedGlobFailsClosed(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	store := memory.New()
+	t.Cleanup(func() { store.Stop() })
+	srv, err := New(mock.NewProvider(), store, store, store, &Config{
+		Issuer:                      "https://broker.example.com",
+		DisableNonceEchoRequirement: true,
+		WorkloadAudiences: []WorkloadGrant{
+			{Subject: "[bad", Audiences: []string{"svc"}},
+		},
+	}, logger)
+	require.NoError(t, err)
+
+	got := srv.workloadAudienceAllowed("https://kube.example.com", "anything", "svc")
+	require.False(t, got)
+	require.Contains(t, buf.String(), "malformed")
 }

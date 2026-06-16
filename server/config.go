@@ -105,6 +105,33 @@ const (
 	EndpointPathJWKS = "/.well-known/jwks.json"
 )
 
+// WorkloadGrant authorizes a workload identity to request specific RFC 8693 audiences on the
+// workload-authenticated exchange path. Issuer is matched exactly against the validated token's
+// iss claim; Subject is matched by glob (path.Match semantics, * spans slashes). An empty Issuer
+// field matches any trusted issuer.
+type WorkloadGrant struct {
+	// Issuer is the exact token issuer URL. Empty matches any trusted issuer.
+	Issuer string
+	// Subject is a glob pattern matched against the token's sub claim.
+	Subject string
+	// Audiences lists the RFC 8693 audience values the matching workload may request.
+	Audiences []string
+}
+
+// DelegationGrant authorizes an actor (identified by ActorIssuer + ActorSubject) to act on behalf
+// of subjects matching SubjectIssuer + SubjectSubject. Issuers are matched exactly; subjects by glob
+// (path.Match semantics, * spans slashes). An empty issuer field matches any trusted issuer.
+type DelegationGrant struct {
+	// ActorIssuer is the exact issuer URL of the actor's token. Empty matches any trusted issuer.
+	ActorIssuer string
+	// ActorSubject is a glob pattern matched against the actor token's sub claim.
+	ActorSubject string
+	// SubjectIssuer is the exact issuer URL of the subject's token. Empty matches any trusted issuer.
+	SubjectIssuer string
+	// SubjectSubject is a glob pattern matched against the subject token's sub claim.
+	SubjectSubject string
+}
+
 // Config holds OAuth server configuration
 type Config struct {
 	// Issuer is the server's issuer identifier (base URL)
@@ -749,33 +776,33 @@ type Config struct {
 
 	// WorkloadAudiences is the per-workload allowlist for the
 	// workload-authenticated token-exchange flow (EnableWorkloadTokenExchange).
-	// Keys are workload subjects (the sub claim of a validated SA token, e.g.
-	// system:serviceaccount:<ns>:<name>), matched exactly or by glob (*
-	// matches any sequence including slashes, so "system:serviceaccount:ns:*"
-	// matches every service account in ns). Values are the audiences that a
-	// matching workload may request via the RFC 8693 audience parameter.
+	// Each WorkloadGrant binds an issuer+subject pattern to a set of permitted
+	// audience values. Issuer is matched exactly; Subject is matched by glob
+	// (* spans slashes, so "system:serviceaccount:ns:*" matches every SA in ns).
+	// An empty Issuer in a grant matches any trusted issuer.
 	//
 	// When an actor_token is present (delegation), authorization uses the
-	// actor's subject; otherwise the subject token's sub is used (impersonation).
+	// actor's issuer and subject; otherwise the subject token's iss/sub are used
+	// (impersonation).
 	//
 	// Only consulted when EnableWorkloadTokenExchange is true and an Exchanger
 	// is configured (server.WithExchanger). Default: nil (no workload may
 	// request any audience).
-	WorkloadAudiences map[string][]string
+	WorkloadAudiences []WorkloadGrant
 
 	// ActorDelegationPolicy is the authorization gate for RFC 8693 delegated
 	// token exchange: it controls which actors are permitted to act on behalf
-	// of which subjects. Keys are actor subject patterns (the sub claim of a
-	// validated actor token, e.g. system:serviceaccount:<ns>:<name>), matched
-	// exactly or by glob (* matches any sequence including slashes). Values are
-	// the subject patterns the matching actor may represent.
+	// of which subjects. Each DelegationGrant identifies an actor by
+	// issuer+subject pattern and a set of subject issuer+subject patterns that
+	// actor may represent. Issuers are matched exactly; subjects by glob.
+	// An empty issuer field in a grant matches any trusted issuer.
 	//
 	// Consulted on both the client-authenticated and workload-authenticated
 	// exchange paths whenever an actor_token is present. When nil (the
 	// default) all delegation requests are rejected — an actor_token will
-	// never be forwarded to the Exchanger unless this map is explicitly
+	// never be forwarded to the Exchanger unless this policy is explicitly
 	// configured.
-	ActorDelegationPolicy map[string][]string
+	ActorDelegationPolicy []DelegationGrant
 
 	// EnableWorkloadTokenExchange enables the workload-authenticated
 	// token-exchange path: a brokered RFC 8693 request with no OAuth client

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"slices"
 	"time"
 
@@ -127,7 +128,7 @@ func (s *Server) BrokerExchangeSubjectToken(
 		return nil, fmt.Errorf("%w: audience %q", ErrInvalidTarget, audience)
 	}
 
-	identity, err := s.validateExchangeSubjectToken(ctx, subjectToken, subjectTokenType)
+	identity, err := s.validateExchangeSubjectToken(ctx, subjectToken, subjectTokenType, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +139,7 @@ func (s *Server) BrokerExchangeSubjectToken(
 		if err != nil {
 			return nil, err
 		}
-		if !actorDelegationAllowed(s.Config.ActorDelegationPolicy, actor.Subject, identity.Subject) {
+		if !s.actorDelegationAllowed(actor.Issuer, actor.Subject, identity.Issuer, identity.Subject) {
 			s.auditExchangeFailure(ctx, "brokered", clientID, audience, sessionID, "actor_delegation_not_authorized", map[string]any{
 				"actor_sub": actor.Subject,
 				"sub":       identity.Subject,
@@ -183,7 +184,16 @@ func (s *Server) WorkloadExchangeSubjectToken(
 		return nil, fmt.Errorf("%w: no exchanger configured", ErrInvalidTarget)
 	}
 
-	identity, err := s.validateExchangeSubjectToken(ctx, subjectToken, subjectTokenType)
+	// On the workload+impersonation path (no actor), the subject token is itself
+	// the caller-authenticating credential, so bind it to the broker issuer as
+	// default audience — the same anti-replay treatment applied to actor tokens.
+	// On the delegation path (actor present) the subject is the user's token and
+	// must not be broker-bound; only the actor token is bound.
+	var subjDefaultAud []string
+	if actorToken == "" {
+		subjDefaultAud = []string{s.Config.Issuer}
+	}
+	identity, err := s.validateExchangeSubjectToken(ctx, subjectToken, subjectTokenType, subjDefaultAud)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +204,7 @@ func (s *Server) WorkloadExchangeSubjectToken(
 		if err != nil {
 			return nil, err
 		}
-		if !actorDelegationAllowed(s.Config.ActorDelegationPolicy, actor.Subject, identity.Subject) {
+		if !s.actorDelegationAllowed(actor.Issuer, actor.Subject, identity.Issuer, identity.Subject) {
 			s.auditExchangeFailure(ctx, "workload", "", audience, sessionID, "actor_delegation_not_authorized", map[string]any{
 				"actor_sub": actor.Subject,
 				"sub":       identity.Subject,
@@ -203,12 +213,14 @@ func (s *Server) WorkloadExchangeSubjectToken(
 		}
 	}
 
+	workloadIssuer := identity.Issuer
 	workloadSubject := identity.Subject
 	if actor != nil {
+		workloadIssuer = actor.Issuer
 		workloadSubject = actor.Subject
 	}
 
-	if !workloadAudienceAllowed(s.Config.WorkloadAudiences, workloadSubject, audience) {
+	if !s.workloadAudienceAllowed(workloadIssuer, workloadSubject, audience) {
 		s.auditExchangeFailure(ctx, "workload", "", audience, sessionID, "token_exchange_audience_not_allowed", map[string]any{
 			"sub": workloadSubject,
 		})
@@ -220,40 +232,67 @@ func (s *Server) WorkloadExchangeSubjectToken(
 		audience, resource, scope, sessionID, identity, actor)
 }
 
-// workloadAudienceAllowed reports whether the workload identified by subject
-// is allowed to request audience. Keys in allowed are matched exactly or by
-// glob (matchClaimPattern semantics: * spans the whole string including any
-// separators, so "system:serviceaccount:ns:*" matches every service account
-// in ns).
-func workloadAudienceAllowed(allowed map[string][]string, subject, audience string) bool {
-	for pattern, auds := range allowed {
-		if pattern != subject && matchClaimPattern(pattern, subject) != nil {
+// workloadAudienceAllowed reports whether the workload identified by issuer+subject
+// is allowed to request audience. Each WorkloadGrant in Config.WorkloadAudiences is
+// checked: Issuer is matched exactly (empty = any); Subject by glob (* spans slashes).
+func (s *Server) workloadAudienceAllowed(issuer, subject, audience string) bool {
+	for _, g := range s.Config.WorkloadAudiences {
+		if !s.issuerMatches(g.Issuer, issuer) {
 			continue
 		}
-		if slices.Contains(auds, audience) {
+		if !s.subjectMatches(g.Subject, subject) {
+			continue
+		}
+		if slices.Contains(g.Audiences, audience) {
 			return true
 		}
 	}
 	return false
 }
 
-// actorDelegationAllowed reports whether the actor identified by actorSub is
-// authorized to act on behalf of the subject identified by subjectSub.
-// policy is Config.ActorDelegationPolicy: keys are actor subject patterns,
-// values are the subject patterns that actor may represent. A nil policy
+// actorDelegationAllowed reports whether the actor identified by actorIssuer+actorSub is
+// authorized to act on behalf of the subject identified by subjectIssuer+subjectSub.
+// Config.ActorDelegationPolicy is the list of DelegationGrants. A nil/empty policy
 // denies all delegation.
-func actorDelegationAllowed(policy map[string][]string, actorSub, subjectSub string) bool {
-	for actorPattern, subjectPatterns := range policy {
-		if actorPattern != actorSub && matchClaimPattern(actorPattern, actorSub) != nil {
+func (s *Server) actorDelegationAllowed(actorIssuer, actorSub, subjectIssuer, subjectSub string) bool {
+	for _, g := range s.Config.ActorDelegationPolicy {
+		if !s.issuerMatches(g.ActorIssuer, actorIssuer) {
 			continue
 		}
-		for _, sp := range subjectPatterns {
-			if sp == subjectSub || matchClaimPattern(sp, subjectSub) == nil {
-				return true
-			}
+		if !s.subjectMatches(g.ActorSubject, actorSub) {
+			continue
+		}
+		if !s.issuerMatches(g.SubjectIssuer, subjectIssuer) {
+			continue
+		}
+		if s.subjectMatches(g.SubjectSubject, subjectSub) {
+			return true
 		}
 	}
 	return false
+}
+
+// issuerMatches reports whether the grant's issuer pattern matches the token issuer.
+// An empty pattern matches any issuer.
+func (s *Server) issuerMatches(pattern, issuer string) bool {
+	return pattern == "" || pattern == issuer
+}
+
+// subjectMatches reports whether value matches pattern using matchClaimPattern
+// semantics (exact equality or glob with * spanning slashes). A malformed pattern
+// is logged as a warning and treated as no-match (fail-closed).
+func (s *Server) subjectMatches(pattern, value string) bool {
+	if pattern == value {
+		return true
+	}
+	err := matchClaimPattern(pattern, value)
+	if err != nil {
+		if errors.Is(err, path.ErrBadPattern) {
+			s.Logger.Warn("grant subject pattern is malformed — check configuration", "pattern", pattern)
+		}
+		return false
+	}
+	return true
 }
 
 // dispatchDownstreamExchange calls the Exchanger and emits the outcome audit
