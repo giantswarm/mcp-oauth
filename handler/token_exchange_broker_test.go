@@ -281,3 +281,23 @@ func TestHandleBrokeredTokenExchange_NoAudienceFallsBackToLocalPath(t *testing.T
 	requireOAuthError(t, w, http.StatusBadRequest, constants.ErrorCodeInvalidRequest)
 	require.Nil(t, ex.gotReq)
 }
+
+func TestHandleBrokeredTokenExchange_ActorTokenForwarded(t *testing.T) {
+	ex := &stubExchanger{result: happyDownstreamResult()}
+	h := setupBrokeredExchangeHandler(t, ex, []string{"gaggle"}, "confidential")
+
+	form := brokeredExchangeForm()
+	form.Set("actor_token", "actor-jwt")
+	form.Set("actor_token_type", server.SubjectTokenTypeIDToken)
+	req := newTokenExchangeRequest(form)
+	req.SetBasicAuth(h.clientID, h.clientSecret)
+	w := httptest.NewRecorder()
+	h.handler.ServeToken(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	require.NotNil(t, ex.gotReq)
+	require.Equal(t, "actor-jwt", ex.gotReq.ActorToken)
+	require.Equal(t, server.SubjectTokenTypeIDToken, ex.gotReq.ActorTokenType)
+	// Actor identity comes from the same fakeSubjectValidator used for the subject.
+	require.NotNil(t, ex.gotReq.Actor)
+}

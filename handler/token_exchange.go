@@ -22,6 +22,8 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 
 	subjectToken := r.Form.Get("subject_token")
 	subjectTokenType := r.Form.Get("subject_token_type")
+	actorToken := r.Form.Get("actor_token")
+	actorTokenType := r.Form.Get("actor_token_type")
 	resource := r.Form.Get("resource")
 	audience := r.Form.Get("audience")
 	scope := r.Form.Get("scope")
@@ -46,7 +48,7 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 	// downstream token via the host Exchanger). Without it, the local flow
 	// issues a JWT bound to the mandatory RFC 8707 resource.
 	if audience != "" {
-		h.handleBrokeredTokenExchange(w, r, clientIP, subjectToken, subjectTokenType, audience, resource, scope, startTime, span)
+		h.handleBrokeredTokenExchange(w, r, clientIP, subjectToken, subjectTokenType, actorToken, actorTokenType, audience, resource, scope, startTime, span)
 		return
 	}
 
@@ -96,9 +98,11 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 // audience allowlist is meaningless for a spoofable client_id, so public
 // clients are rejected). DPoP binding is not supported on this path — the
 // issued token is minted by a downstream issuer that never saw the proof.
+// actorToken and actorTokenType are RFC 8693 delegation params; both may be
+// empty when no actor_token was presented.
 func (h *Handler) handleBrokeredTokenExchange(
 	w http.ResponseWriter, r *http.Request,
-	clientIP, subjectToken, subjectTokenType, audience, resource, scope string,
+	clientIP, subjectToken, subjectTokenType, actorToken, actorTokenType, audience, resource, scope string,
 	startTime time.Time, span trace.Span,
 ) {
 	client, err := h.authenticateClient(r, r.Form.Get("client_id"), clientIP)
@@ -145,7 +149,7 @@ func (h *Handler) handleBrokeredTokenExchange(
 	}
 
 	result, err := h.server.BrokerExchangeSubjectToken(r.Context(),
-		client.ClientID, subjectToken, subjectTokenType, audience, resource, scope)
+		client.ClientID, subjectToken, subjectTokenType, actorToken, actorTokenType, audience, resource, scope)
 	if err != nil {
 		h.handleBrokeredTokenExchangeError(w, r, err, client.ClientID, clientIP, audience, startTime, span)
 		return

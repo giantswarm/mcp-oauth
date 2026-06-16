@@ -18,10 +18,11 @@ import (
 var ErrInvalidTarget = errors.New("requested audience is not allowed for this client")
 
 // ExchangerRequest carries the validated inputs of a brokered RFC 8693
-// token exchange to the host's Exchanger implementation. The subject token
-// has already been validated (signature, issuer, audience, expiry) and the
-// requesting client has been authenticated and allowlist-checked before the
-// Exchanger is invoked.
+// token exchange to the host's Exchanger implementation. The subject and
+// actor tokens have already been validated (signature, issuer, audience,
+// expiry) against the server's trusted issuers before the Exchanger is
+// invoked. ClientID is the authenticated broker client on the
+// client-authenticated path; it is empty on the workload-authenticated path.
 type ExchangerRequest struct {
 	// Audience is the RFC 8693 audience parameter: the logical name of the
 	// downstream target the client wants a token for. The host maps it to a
@@ -32,7 +33,9 @@ type ExchangerRequest struct {
 	Resource string
 	// Scope is the raw requested scope string. May be empty.
 	Scope string
-	// ClientID is the authenticated broker client that issued the request.
+	// ClientID is the authenticated broker client that issued the request on
+	// the client-authenticated path. Empty when the request was authenticated
+	// by the subject or actor token itself (workload path).
 	ClientID string
 	// Subject is the verified identity extracted from the subject token.
 	Subject *SubjectIdentity
@@ -41,6 +44,15 @@ type ExchangerRequest struct {
 	SubjectToken string
 	// SubjectTokenType is the RFC 8693 token-type URN of SubjectToken.
 	SubjectTokenType string
+	// ActorToken is the raw RFC 8693 actor_token, forwarded verbatim.
+	// Empty when no actor_token was presented.
+	ActorToken string
+	// ActorTokenType is the RFC 8693 token-type URN of ActorToken.
+	// Empty when ActorToken is empty.
+	ActorTokenType string
+	// Actor is the verified identity of the acting party (RFC 8693 §4.4
+	// delegation chain). Nil when no actor_token was presented.
+	Actor *SubjectIdentity
 }
 
 // ExchangerResult is the downstream token returned by an Exchanger.
@@ -62,8 +74,8 @@ type ExchangerResult struct {
 // MCP aggregator acting as a token broker) implement it to perform the
 // downstream exchange — typically an RFC 8693 request against a remote
 // issuer using host-held credentials. mcp-oauth stays generic: it owns
-// subject-token validation, client authentication, allowlist policy, and
-// audit; the host owns the audience→issuer mapping.
+// subject-token validation, allowlist policy, and audit; the host owns the
+// audience→issuer mapping.
 //
 // Returning an error wrapping ErrInvalidTarget signals that the audience is
 // unknown to the host; any other error is reported to the client as a
@@ -78,17 +90,19 @@ func (s *Server) Exchanger() Exchanger {
 	return s.exchanger
 }
 
-// BrokerExchangeSubjectToken implements the brokered RFC 8693 flow: a
-// confidential client presents a subject token and an audience, and receives
-// a downstream token minted by the configured Exchanger.
+// BrokerExchangeSubjectToken implements the client-authenticated brokered
+// RFC 8693 flow: a confidential client presents a subject token and an
+// audience, and receives a downstream token minted by the configured
+// Exchanger. When actorToken is non-empty the actor token is validated
+// against the server's trusted issuers and the verified actor identity is
+// forwarded to the Exchanger (RFC 8693 §4.4 delegation chain).
 //
 // Policy enforced here:
 //   - an Exchanger must be configured and the audience must be in the
 //     client's Config.TokenExchangeClientAudiences allowlist, otherwise
 //     ErrInvalidTarget is returned
-//   - the subject token is validated like any other token-exchange subject
-//     token (registered SubjectTokenValidator: signature, issuer, audience,
-//     expiry)
+//   - subject and actor tokens are validated by the registered
+//     SubjectTokenValidator (signature, issuer, audience, expiry)
 //   - no refresh token is ever issued; the result's expiry is the downstream
 //     token's expiry and clients are expected to re-exchange
 //
@@ -99,23 +113,31 @@ func (s *Server) Exchanger() Exchanger {
 // lines for the same token).
 func (s *Server) BrokerExchangeSubjectToken(
 	ctx context.Context,
-	clientID, subjectToken, subjectTokenType, audience, resource, scope string,
+	clientID, subjectToken, subjectTokenType, actorToken, actorTokenType, audience, resource, scope string,
 ) (*TokenExchangeResult, error) {
 	sessionID := s.deriveForwardedSessionID(subjectToken)
 
 	if s.exchanger == nil {
-		s.auditBrokerExchangeFailure(ctx, clientID, audience, sessionID, "token_exchange_no_exchanger", nil)
+		s.auditExchangeFailure(ctx, "brokered", clientID, audience, sessionID, "token_exchange_no_exchanger", nil)
 		return nil, fmt.Errorf("%w: no exchanger configured", ErrInvalidTarget)
 	}
 
 	if !slices.Contains(s.Config.TokenExchangeClientAudiences[clientID], audience) {
-		s.auditBrokerExchangeFailure(ctx, clientID, audience, sessionID, "token_exchange_audience_not_allowed", nil)
+		s.auditExchangeFailure(ctx, "brokered", clientID, audience, sessionID, "token_exchange_audience_not_allowed", nil)
 		return nil, fmt.Errorf("%w: audience %q", ErrInvalidTarget, audience)
 	}
 
 	identity, err := s.validateExchangeSubjectToken(ctx, subjectToken, subjectTokenType)
 	if err != nil {
 		return nil, err
+	}
+
+	var actor *SubjectIdentity
+	if actorToken != "" {
+		actor, err = s.validateExchangeActorToken(ctx, actorToken, actorTokenType)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	result, err := s.exchanger.Exchange(ctx, &ExchangerRequest{
@@ -126,11 +148,14 @@ func (s *Server) BrokerExchangeSubjectToken(
 		Subject:          identity,
 		SubjectToken:     subjectToken,
 		SubjectTokenType: subjectTokenType,
+		ActorToken:       actorToken,
+		ActorTokenType:   actorTokenType,
+		Actor:            actor,
 	})
 	if err != nil {
 		s.Logger.Debug("brokered token exchange: downstream exchange failed",
 			"client_id", clientID, "audience", audience, "error", err)
-		s.auditBrokerExchangeFailure(ctx, clientID, audience, sessionID, "token_exchange_downstream_failed", map[string]any{
+		s.auditExchangeFailure(ctx, "brokered", clientID, audience, sessionID, "token_exchange_downstream_failed", map[string]any{
 			"sub":   identity.Subject,
 			"error": err.Error(),
 		})
@@ -140,7 +165,7 @@ func (s *Server) BrokerExchangeSubjectToken(
 		return nil, fmt.Errorf("downstream exchange: %w", err)
 	}
 	if result == nil || result.AccessToken == "" {
-		s.auditBrokerExchangeFailure(ctx, clientID, audience, sessionID, "token_exchange_downstream_empty_token", map[string]any{
+		s.auditExchangeFailure(ctx, "brokered", clientID, audience, sessionID, "token_exchange_downstream_empty_token", map[string]any{
 			"sub": identity.Subject,
 		})
 		return nil, fmt.Errorf("downstream exchange returned no token")
@@ -156,19 +181,24 @@ func (s *Server) BrokerExchangeSubjectToken(
 		"audience", audience, "scope", result.Scope, "exp", result.ExpiresAt,
 		"session_id", sessionID)
 
+	successDetails := map[string]any{
+		"grant_type":         GrantTypeTokenExchange,
+		"exchange":           "brokered",
+		"subject_token_type": subjectTokenType,
+		"audience":           audience,
+		"scope":              result.Scope,
+		"act_iss":            identity.Issuer,
+		"session_id":         sessionID,
+	}
+	if actor != nil {
+		successDetails["actor_iss"] = actor.Issuer
+		successDetails["actor_sub"] = actor.Subject
+	}
 	s.Auditor.LogEvent(ctx, security.Event{
 		Type:     security.EventTokenIssued,
 		UserID:   identity.Subject,
 		ClientID: clientID,
-		Details: map[string]any{
-			"grant_type":         GrantTypeTokenExchange,
-			"exchange":           "brokered",
-			"subject_token_type": subjectTokenType,
-			"audience":           audience,
-			"scope":              result.Scope,
-			"act_iss":            identity.Issuer,
-			"session_id":         sessionID,
-		},
+		Details:  successDetails,
 	})
 
 	return &TokenExchangeResult{
@@ -179,13 +209,14 @@ func (s *Server) BrokerExchangeSubjectToken(
 	}, nil
 }
 
-// auditBrokerExchangeFailure emits the auth-failure audit event shared by all
-// brokered-exchange rejection paths. extra is merged over the base details.
-func (s *Server) auditBrokerExchangeFailure(ctx context.Context, clientID, audience, sessionID, reason string, extra map[string]any) {
+// auditExchangeFailure emits the auth-failure audit event for brokered and
+// workload exchange rejection paths. exchange is "brokered" or "workload".
+// extra is merged over the base details.
+func (s *Server) auditExchangeFailure(ctx context.Context, exchange, clientID, audience, sessionID, reason string, extra map[string]any) {
 	details := map[string]any{
 		"reason":     reason,
 		"grant_type": GrantTypeTokenExchange,
-		"exchange":   "brokered",
+		"exchange":   exchange,
 		"audience":   audience,
 		"session_id": sessionID,
 	}

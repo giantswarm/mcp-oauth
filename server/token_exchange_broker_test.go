@@ -28,6 +28,28 @@ func (f *stubSubjectValidator) Validate(_ context.Context, _ string, _ []string)
 	return &f.identity, nil
 }
 
+// stubTokenValidator returns distinct identities or errors keyed by the raw
+// token string. Unrecognised tokens fall back to the default outcome.
+type stubTokenValidator struct {
+	byToken map[string]*SubjectIdentity
+	byErr   map[string]error
+	defaultIdentity *SubjectIdentity
+	defaultErr      error
+}
+
+func (f *stubTokenValidator) Validate(_ context.Context, token string, _ []string) (*SubjectIdentity, error) {
+	if err, ok := f.byErr[token]; ok {
+		return nil, err
+	}
+	if id, ok := f.byToken[token]; ok {
+		return id, nil
+	}
+	if f.defaultErr != nil {
+		return nil, f.defaultErr
+	}
+	return f.defaultIdentity, nil
+}
+
 type stubExchanger struct {
 	gotReq *ExchangerRequest
 	result *ExchangerResult
@@ -113,7 +135,7 @@ func TestBrokerExchangeSubjectToken_HappyPath(t *testing.T) {
 		map[string][]string{"backstage": {"gaggle", "gauss"}}, happyBrokerValidator())
 
 	result, err := srv.BrokerExchangeSubjectToken(t.Context(),
-		"backstage", "subject-jwt", SubjectTokenTypeIDToken, "gaggle", "", "openid groups")
+		"backstage", "subject-jwt", SubjectTokenTypeIDToken, "", "", "gaggle", "", "openid groups")
 	require.NoError(t, err)
 
 	// Pass-through of the downstream token, expiry bounded by it, no refresh token by construction.
@@ -150,7 +172,7 @@ func TestBrokerExchangeSubjectToken_DefaultIssuedTokenType(t *testing.T) {
 		map[string][]string{"backstage": {"gaggle"}}, happyBrokerValidator())
 
 	result, err := srv.BrokerExchangeSubjectToken(t.Context(),
-		"backstage", "subject-jwt", SubjectTokenTypeIDToken, "gaggle", "", "")
+		"backstage", "subject-jwt", SubjectTokenTypeIDToken, "", "", "gaggle", "", "")
 	require.NoError(t, err)
 	require.Equal(t, SubjectTokenTypeIDToken, result.IssuedTokenType)
 }
@@ -161,7 +183,7 @@ func TestBrokerExchangeSubjectToken_AudienceNotAllowed(t *testing.T) {
 		map[string][]string{"backstage": {"gaggle"}}, happyBrokerValidator())
 
 	_, err := srv.BrokerExchangeSubjectToken(t.Context(),
-		"backstage", "subject-jwt", SubjectTokenTypeIDToken, "other-mc", "", "")
+		"backstage", "subject-jwt", SubjectTokenTypeIDToken, "", "", "other-mc", "", "")
 	require.ErrorIs(t, err, ErrInvalidTarget)
 	require.Nil(t, ex.gotReq, "exchanger must not be invoked on allowlist miss")
 
@@ -176,7 +198,7 @@ func TestBrokerExchangeSubjectToken_UnknownClient(t *testing.T) {
 		map[string][]string{"backstage": {"gaggle"}}, happyBrokerValidator())
 
 	_, err := srv.BrokerExchangeSubjectToken(t.Context(),
-		"unknown-client", "subject-jwt", SubjectTokenTypeIDToken, "gaggle", "", "")
+		"unknown-client", "subject-jwt", SubjectTokenTypeIDToken, "", "", "gaggle", "", "")
 	require.ErrorIs(t, err, ErrInvalidTarget)
 }
 
@@ -185,7 +207,7 @@ func TestBrokerExchangeSubjectToken_NoExchanger(t *testing.T) {
 		map[string][]string{"backstage": {"gaggle"}}, happyBrokerValidator())
 
 	_, err := srv.BrokerExchangeSubjectToken(t.Context(),
-		"backstage", "subject-jwt", SubjectTokenTypeIDToken, "gaggle", "", "")
+		"backstage", "subject-jwt", SubjectTokenTypeIDToken, "", "", "gaggle", "", "")
 	require.ErrorIs(t, err, ErrInvalidTarget)
 
 	details := auditDetails(t, buf, security.EventAuthFailure)
@@ -199,7 +221,7 @@ func TestBrokerExchangeSubjectToken_SubjectValidationFailure(t *testing.T) {
 		&stubSubjectValidator{err: fmt.Errorf("token expired")})
 
 	_, err := srv.BrokerExchangeSubjectToken(t.Context(),
-		"backstage", "bad-token", SubjectTokenTypeIDToken, "gaggle", "", "")
+		"backstage", "bad-token", SubjectTokenTypeIDToken, "", "", "gaggle", "", "")
 	require.Error(t, err)
 	require.NotErrorIs(t, err, ErrInvalidTarget)
 	require.Nil(t, ex.gotReq, "exchanger must not be invoked on subject validation failure")
@@ -214,7 +236,7 @@ func TestBrokerExchangeSubjectToken_UnsupportedSubjectTokenType(t *testing.T) {
 		map[string][]string{"backstage": {"gaggle"}}, happyBrokerValidator())
 
 	_, err := srv.BrokerExchangeSubjectToken(t.Context(),
-		"backstage", "subject", "urn:ietf:params:oauth:token-type:saml2", "gaggle", "", "")
+		"backstage", "subject", "urn:ietf:params:oauth:token-type:saml2", "", "", "gaggle", "", "")
 	var unsupported *TokenExchangeUnsupportedTypeError
 	require.ErrorAs(t, err, &unsupported)
 }
@@ -225,7 +247,7 @@ func TestBrokerExchangeSubjectToken_DownstreamFailure(t *testing.T) {
 		map[string][]string{"backstage": {"gaggle"}}, happyBrokerValidator())
 
 	_, err := srv.BrokerExchangeSubjectToken(t.Context(),
-		"backstage", "subject-jwt", SubjectTokenTypeIDToken, "gaggle", "", "")
+		"backstage", "subject-jwt", SubjectTokenTypeIDToken, "", "", "gaggle", "", "")
 	require.Error(t, err)
 	require.NotErrorIs(t, err, ErrInvalidTarget)
 
@@ -239,7 +261,7 @@ func TestBrokerExchangeSubjectToken_DownstreamInvalidTarget(t *testing.T) {
 		map[string][]string{"backstage": {"gaggle"}}, happyBrokerValidator())
 
 	_, err := srv.BrokerExchangeSubjectToken(t.Context(),
-		"backstage", "subject-jwt", SubjectTokenTypeIDToken, "gaggle", "", "")
+		"backstage", "subject-jwt", SubjectTokenTypeIDToken, "", "", "gaggle", "", "")
 	require.ErrorIs(t, err, ErrInvalidTarget)
 }
 
@@ -249,9 +271,84 @@ func TestBrokerExchangeSubjectToken_DownstreamEmptyToken(t *testing.T) {
 		map[string][]string{"backstage": {"gaggle"}}, happyBrokerValidator())
 
 	_, err := srv.BrokerExchangeSubjectToken(t.Context(),
-		"backstage", "subject-jwt", SubjectTokenTypeIDToken, "gaggle", "", "")
+		"backstage", "subject-jwt", SubjectTokenTypeIDToken, "", "", "gaggle", "", "")
 	require.Error(t, err)
 
 	details := auditDetails(t, buf, security.EventAuthFailure)
 	require.Equal(t, "token_exchange_downstream_empty_token", details["reason"])
+}
+
+func TestBrokerExchangeSubjectToken_ActorPresent(t *testing.T) {
+	actorIdentity := SubjectIdentity{Subject: "service-a", Issuer: "https://idp.example.com"}
+	validator := &stubTokenValidator{
+		byToken: map[string]*SubjectIdentity{
+			"actor-jwt": &actorIdentity,
+		},
+		defaultIdentity: &SubjectIdentity{Subject: "user@example.com", Issuer: "https://dex.example.com"},
+	}
+	ex := &stubExchanger{result: &ExchangerResult{
+		AccessToken: "downstream-token",
+		ExpiresAt:   time.Now().Add(15 * time.Minute),
+		Scope:       "openid",
+	}}
+	srv, buf := newBrokerTestServer(t, ex,
+		map[string][]string{"backstage": {"gaggle"}}, validator)
+
+	result, err := srv.BrokerExchangeSubjectToken(t.Context(),
+		"backstage", "subject-jwt", SubjectTokenTypeIDToken, "actor-jwt", SubjectTokenTypeIDToken, "gaggle", "", "openid")
+	require.NoError(t, err)
+	require.Equal(t, "downstream-token", result.AccessToken)
+
+	// Exchanger receives both validated identities and raw actor token.
+	require.NotNil(t, ex.gotReq)
+	require.NotNil(t, ex.gotReq.Actor)
+	require.Equal(t, "service-a", ex.gotReq.Actor.Subject)
+	require.Equal(t, "https://idp.example.com", ex.gotReq.Actor.Issuer)
+	require.Equal(t, "actor-jwt", ex.gotReq.ActorToken)
+	require.Equal(t, SubjectTokenTypeIDToken, ex.gotReq.ActorTokenType)
+
+	// Success audit carries actor fields.
+	details := auditDetails(t, buf, security.EventTokenIssued)
+	require.Equal(t, "https://idp.example.com", details["actor_iss"])
+	require.Equal(t, "service-a", details["actor_sub"])
+}
+
+func TestBrokerExchangeSubjectToken_ActorAbsent(t *testing.T) {
+	ex := &stubExchanger{result: &ExchangerResult{
+		AccessToken: "downstream-token",
+		ExpiresAt:   time.Now().Add(15 * time.Minute),
+	}}
+	srv, _ := newBrokerTestServer(t, ex,
+		map[string][]string{"backstage": {"gaggle"}}, happyBrokerValidator())
+
+	_, err := srv.BrokerExchangeSubjectToken(t.Context(),
+		"backstage", "subject-jwt", SubjectTokenTypeIDToken, "", "", "gaggle", "", "")
+	require.NoError(t, err)
+
+	require.NotNil(t, ex.gotReq)
+	require.Nil(t, ex.gotReq.Actor)
+	require.Empty(t, ex.gotReq.ActorToken)
+	require.Empty(t, ex.gotReq.ActorTokenType)
+}
+
+func TestBrokerExchangeSubjectToken_ActorUntrustedIssuer(t *testing.T) {
+	untrustedErr := fmt.Errorf("issuer not trusted")
+	validator := &stubTokenValidator{
+		byErr: map[string]error{
+			"actor-jwt": untrustedErr,
+		},
+		defaultIdentity: &SubjectIdentity{Subject: "user@example.com", Issuer: "https://dex.example.com"},
+	}
+	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "downstream-token"}}
+	srv, buf := newBrokerTestServer(t, ex,
+		map[string][]string{"backstage": {"gaggle"}}, validator)
+
+	_, err := srv.BrokerExchangeSubjectToken(t.Context(),
+		"backstage", "subject-jwt", SubjectTokenTypeIDToken, "actor-jwt", SubjectTokenTypeIDToken, "gaggle", "", "")
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrInvalidTarget)
+	require.Nil(t, ex.gotReq, "exchanger must not be invoked when actor validation fails")
+
+	details := auditDetails(t, buf, security.EventAuthFailure)
+	require.Equal(t, "actor_token_validation_failed", details["reason"])
 }

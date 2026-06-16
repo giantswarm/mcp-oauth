@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `server.ExchangerRequest` now carries `ActorToken string`, `ActorTokenType string`, and `Actor *server.SubjectIdentity`. The brokered token-exchange endpoint accepts RFC 8693 `actor_token` and `actor_token_type` form parameters; when present the actor token is validated against the server's trusted issuers (same validator path as the subject token) and the verified actor identity is forwarded to the `Exchanger`. Absent actor params leave `Actor` nil and `BrokerExchangeSubjectToken` behaves identically to before.
+
 - `server.TrustedIssuer.AcceptedTypHeaders`: per-issuer list of accepted JWT `typ` header values for Bearer validation. Empty keeps the RFC 9068 §4 default (`at+jwt`). Kubernetes ServiceAccount tokens carry no `typ` header, so the previously unconditional `at+jwt` requirement made the documented K8s SA trust use case impossible; configure `[""]` (optionally with `"JWT"`) on the cluster issuer entry to accept them. Signature, issuer, audience, and claim checks are unchanged.
 
 ## [0.2.199] - 2026-06-10

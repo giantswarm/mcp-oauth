@@ -142,53 +142,70 @@ func (s *Server) ExchangeSubjectToken(
 	}, nil
 }
 
-// validateExchangeSubjectToken routes subjectToken to the SubjectTokenValidator
-// registered for subjectTokenType and returns the verified identity. Audit
-// events for the failure paths are emitted here so the local-issuance flow
-// (ExchangeSubjectToken) and the brokered flow (BrokerExchangeSubjectToken)
-// share identical validation semantics.
+// validateExchangeSubjectToken validates the RFC 8693 subject token and returns
+// the verified identity. Audit failure events use the "subject" role — reasons
+// are subject_token_validation_failed and unsupported_subject_token_type.
 func (s *Server) validateExchangeSubjectToken(ctx context.Context, subjectToken, subjectTokenType string) (*SubjectIdentity, error) {
-	switch subjectTokenType {
+	return s.validateExchangeToken(ctx, subjectToken, subjectTokenType, "subject")
+}
+
+// validateExchangeActorToken validates the RFC 8693 actor token and returns
+// the verified actor identity. Audit failure events use the "actor" role —
+// reasons are actor_token_validation_failed and unsupported_actor_token_type.
+func (s *Server) validateExchangeActorToken(ctx context.Context, actorToken, actorTokenType string) (*SubjectIdentity, error) {
+	return s.validateExchangeToken(ctx, actorToken, actorTokenType, "actor")
+}
+
+// validateExchangeToken routes token to the SubjectTokenValidator registered
+// for tokenType and returns the verified identity. role is "subject" or "actor";
+// it drives audit reason strings and detail keys so subject and actor failures
+// produce distinct, unambiguous audit events.
+func (s *Server) validateExchangeToken(ctx context.Context, token, tokenType, role string) (*SubjectIdentity, error) {
+	typeKey := role + "_token_type"
+	unsupportedReason := "unsupported_" + role + "_token_type"
+	validationFailedReason := role + "_token_validation_failed"
+
+	switch tokenType {
 	case SubjectTokenTypeIDToken, SubjectTokenTypeAccessToken, SubjectTokenTypeJWT:
 	default:
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type: security.EventAuthFailure,
 			Details: map[string]any{
-				"reason":             "unsupported_subject_token_type",
-				"grant_type":         GrantTypeTokenExchange,
-				"subject_token_type": subjectTokenType,
+				"reason":     unsupportedReason,
+				"grant_type": GrantTypeTokenExchange,
+				typeKey:      tokenType,
 			},
 		})
-		return nil, &TokenExchangeUnsupportedTypeError{tokenType: subjectTokenType}
+		return nil, &TokenExchangeUnsupportedTypeError{tokenType: tokenType}
 	}
 
-	v := s.SubjectValidatorFor(subjectTokenType)
+	v := s.SubjectValidatorFor(tokenType)
 	if v == nil {
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type: security.EventAuthFailure,
 			Details: map[string]any{
-				"reason":             "unsupported_subject_token_type",
-				"grant_type":         GrantTypeTokenExchange,
-				"subject_token_type": subjectTokenType,
+				"reason":     unsupportedReason,
+				"grant_type": GrantTypeTokenExchange,
+				typeKey:      tokenType,
 			},
 		})
-		return nil, &TokenExchangeUnsupportedTypeError{tokenType: subjectTokenType}
+		return nil, &TokenExchangeUnsupportedTypeError{tokenType: tokenType}
 	}
 
-	identity, err := v.Validate(ctx, subjectToken, nil)
+	identity, err := v.Validate(ctx, token, nil)
 	if err != nil {
-		s.Logger.Debug("token exchange: subject token validation failed",
-			"subject_token_type", subjectTokenType, "error", err)
+		s.Logger.Debug("token exchange: "+role+" token validation failed",
+			typeKey, tokenType, "error", err)
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type: security.EventAuthFailure,
 			Details: map[string]any{
-				"reason":             "subject_token_validation_failed",
-				"grant_type":         GrantTypeTokenExchange,
-				"subject_token_type": subjectTokenType,
-				"error":              err.Error(),
+				"reason":     validationFailedReason,
+				"grant_type": GrantTypeTokenExchange,
+				typeKey:      tokenType,
+				"error":      err.Error(),
 			},
 		})
-		return nil, fmt.Errorf("subject token validation: %w", err)
+		return nil, fmt.Errorf("%s token validation: %w", role, err)
 	}
 
 	return identity, nil
