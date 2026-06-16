@@ -31,8 +31,8 @@ func (f *stubSubjectValidator) Validate(_ context.Context, _ string, _ []string)
 // stubTokenValidator returns distinct identities or errors keyed by the raw
 // token string. Unrecognised tokens fall back to the default outcome.
 type stubTokenValidator struct {
-	byToken map[string]*SubjectIdentity
-	byErr   map[string]error
+	byToken         map[string]*SubjectIdentity
+	byErr           map[string]error
 	defaultIdentity *SubjectIdentity
 	defaultErr      error
 }
