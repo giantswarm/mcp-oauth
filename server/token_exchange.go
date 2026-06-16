@@ -146,21 +146,25 @@ func (s *Server) ExchangeSubjectToken(
 // the verified identity. Audit failure events use the "subject" role — reasons
 // are subject_token_validation_failed and unsupported_subject_token_type.
 func (s *Server) validateExchangeSubjectToken(ctx context.Context, subjectToken, subjectTokenType string) (*SubjectIdentity, error) {
-	return s.validateExchangeToken(ctx, subjectToken, subjectTokenType, "subject")
+	return s.validateExchangeToken(ctx, subjectToken, subjectTokenType, "subject", nil)
 }
 
 // validateExchangeActorToken validates the RFC 8693 actor token and returns
 // the verified actor identity. Audit failure events use the "actor" role —
 // reasons are actor_token_validation_failed and unsupported_actor_token_type.
+// The broker's own issuer is passed as the default audience so actor tokens
+// from issuers with no AllowedAudiences configured are still bound to this
+// broker and cannot be replayed from a different audience context.
 func (s *Server) validateExchangeActorToken(ctx context.Context, actorToken, actorTokenType string) (*SubjectIdentity, error) {
-	return s.validateExchangeToken(ctx, actorToken, actorTokenType, "actor")
+	return s.validateExchangeToken(ctx, actorToken, actorTokenType, "actor", []string{s.Config.Issuer})
 }
 
 // validateExchangeToken routes token to the SubjectTokenValidator registered
 // for tokenType and returns the verified identity. role is "subject" or "actor";
 // it drives audit reason strings and detail keys so subject and actor failures
-// produce distinct, unambiguous audit events.
-func (s *Server) validateExchangeToken(ctx context.Context, token, tokenType, role string) (*SubjectIdentity, error) {
+// produce distinct, unambiguous audit events. defaultAudiences is forwarded to
+// Validate and applies only when the matched issuer entry has no AllowedAudiences.
+func (s *Server) validateExchangeToken(ctx context.Context, token, tokenType, role string, defaultAudiences []string) (*SubjectIdentity, error) {
 	typeKey := role + "_token_type"
 	unsupportedReason := "unsupported_" + role + "_token_type"
 	validationFailedReason := role + "_token_validation_failed"
@@ -192,7 +196,7 @@ func (s *Server) validateExchangeToken(ctx context.Context, token, tokenType, ro
 		return nil, &TokenExchangeUnsupportedTypeError{tokenType: tokenType, role: role}
 	}
 
-	identity, err := v.Validate(ctx, token, nil)
+	identity, err := v.Validate(ctx, token, defaultAudiences)
 	if err != nil {
 		s.Logger.Debug("token exchange: "+role+" token validation failed",
 			typeKey, tokenType, "error", err)

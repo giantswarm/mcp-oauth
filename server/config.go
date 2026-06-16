@@ -763,6 +763,20 @@ type Config struct {
 	// request any audience).
 	WorkloadAudiences map[string][]string
 
+	// ActorDelegationPolicy is the authorization gate for RFC 8693 delegated
+	// token exchange: it controls which actors are permitted to act on behalf
+	// of which subjects. Keys are actor subject patterns (the sub claim of a
+	// validated actor token, e.g. system:serviceaccount:<ns>:<name>), matched
+	// exactly or by glob (* matches any sequence including slashes). Values are
+	// the subject patterns the matching actor may represent.
+	//
+	// Consulted on both the client-authenticated and workload-authenticated
+	// exchange paths whenever an actor_token is present. When nil (the
+	// default) all delegation requests are rejected — an actor_token will
+	// never be forwarded to the Exchanger unless this map is explicitly
+	// configured.
+	ActorDelegationPolicy map[string][]string
+
 	// EnableWorkloadTokenExchange enables the workload-authenticated
 	// token-exchange path: a brokered RFC 8693 request with no OAuth client
 	// credentials is authenticated solely by the subject/actor token itself

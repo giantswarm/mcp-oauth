@@ -301,6 +301,10 @@ func TestHandleBrokeredTokenExchange_ActorTokenMissingType(t *testing.T) {
 func TestHandleBrokeredTokenExchange_ActorTokenForwarded(t *testing.T) {
 	ex := &stubExchanger{result: happyDownstreamResult()}
 	h := setupBrokeredExchangeHandler(t, ex, []string{"gaggle"}, "confidential")
+	// fakeSubjectValidator returns "user@example.com" for both tokens; allow that actor for that subject.
+	h.srv.Config.ActorDelegationPolicy = map[string][]string{
+		"user@example.com": {"user@example.com"},
+	}
 
 	form := brokeredExchangeForm()
 	form.Set("actor_token", "actor-jwt")

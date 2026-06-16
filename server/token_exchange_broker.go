@@ -138,6 +138,13 @@ func (s *Server) BrokerExchangeSubjectToken(
 		if err != nil {
 			return nil, err
 		}
+		if !actorDelegationAllowed(s.Config.ActorDelegationPolicy, actor.Subject, identity.Subject) {
+			s.auditExchangeFailure(ctx, "brokered", clientID, audience, sessionID, "actor_delegation_not_authorized", map[string]any{
+				"actor_sub": actor.Subject,
+				"sub":       identity.Subject,
+			})
+			return nil, fmt.Errorf("%w: actor %q is not authorized to act for subject %q", ErrInvalidTarget, actor.Subject, identity.Subject)
+		}
 	} else {
 		actorTokenType = ""
 	}
@@ -187,6 +194,13 @@ func (s *Server) WorkloadExchangeSubjectToken(
 		if err != nil {
 			return nil, err
 		}
+		if !actorDelegationAllowed(s.Config.ActorDelegationPolicy, actor.Subject, identity.Subject) {
+			s.auditExchangeFailure(ctx, "workload", "", audience, sessionID, "actor_delegation_not_authorized", map[string]any{
+				"actor_sub": actor.Subject,
+				"sub":       identity.Subject,
+			})
+			return nil, fmt.Errorf("%w: actor %q is not authorized to act for subject %q", ErrInvalidTarget, actor.Subject, identity.Subject)
+		}
 	}
 
 	workloadSubject := identity.Subject
@@ -218,6 +232,25 @@ func workloadAudienceAllowed(allowed map[string][]string, subject, audience stri
 		}
 		if slices.Contains(auds, audience) {
 			return true
+		}
+	}
+	return false
+}
+
+// actorDelegationAllowed reports whether the actor identified by actorSub is
+// authorized to act on behalf of the subject identified by subjectSub.
+// policy is Config.ActorDelegationPolicy: keys are actor subject patterns,
+// values are the subject patterns that actor may represent. A nil policy
+// denies all delegation.
+func actorDelegationAllowed(policy map[string][]string, actorSub, subjectSub string) bool {
+	for actorPattern, subjectPatterns := range policy {
+		if actorPattern != actorSub && matchClaimPattern(actorPattern, actorSub) != nil {
+			continue
+		}
+		for _, sp := range subjectPatterns {
+			if sp == subjectSub || matchClaimPattern(sp, subjectSub) == nil {
+				return true
+			}
 		}
 	}
 	return false
@@ -270,7 +303,7 @@ func (s *Server) dispatchDownstreamExchange(
 	}
 
 	s.Logger.Debug(exchange+" token exchange: issued downstream token",
-		"client_id", clientID, "sub", identity.Subject, "iss_act", identity.Issuer,
+		"client_id", clientID, "sub", identity.Subject, "subject_iss", identity.Issuer,
 		"audience", audience, "scope", result.Scope, "exp", result.ExpiresAt,
 		"session_id", sessionID)
 
@@ -280,7 +313,7 @@ func (s *Server) dispatchDownstreamExchange(
 		"subject_token_type": subjectTokenType,
 		"audience":           audience,
 		"scope":              result.Scope,
-		"act_iss":            identity.Issuer,
+		"subject_iss":        identity.Issuer,
 		"session_id":         sessionID,
 	}
 	if actor != nil {

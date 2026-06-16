@@ -324,6 +324,9 @@ func TestBrokerExchangeSubjectToken_ActorPresent(t *testing.T) {
 	}}
 	srv, buf := newBrokerTestServer(t, ex,
 		map[string][]string{"backstage": {"gaggle"}}, validator)
+	srv.Config.ActorDelegationPolicy = map[string][]string{
+		"service-a": {brokerTestUserSub},
+	}
 
 	result, err := srv.BrokerExchangeSubjectToken(t.Context(),
 		"backstage", "subject-jwt", SubjectTokenTypeIDToken, "actor-jwt", SubjectTokenTypeIDToken, "gaggle", "", "openid")
@@ -338,8 +341,9 @@ func TestBrokerExchangeSubjectToken_ActorPresent(t *testing.T) {
 	require.Equal(t, "actor-jwt", ex.gotReq.ActorToken)
 	require.Equal(t, SubjectTokenTypeIDToken, ex.gotReq.ActorTokenType)
 
-	// Success audit carries actor fields.
+	// Success audit carries actor and subject issuer fields.
 	details := auditDetails(t, buf, security.EventTokenIssued)
+	require.Equal(t, "https://dex.example.com", details["subject_iss"])
 	require.Equal(t, "https://idp.example.com", details["actor_iss"])
 	require.Equal(t, "service-a", details["actor_sub"])
 }
@@ -403,6 +407,30 @@ func TestBrokerExchangeSubjectToken_ActorTokenTypeNormalizedWhenActorAbsent(t *t
 	require.Nil(t, ex.gotReq.Actor)
 	require.Empty(t, ex.gotReq.ActorToken)
 	require.Empty(t, ex.gotReq.ActorTokenType, "ActorTokenType must be empty when ActorToken is empty")
+}
+
+func TestBrokerExchangeSubjectToken_ActorDelegationDeniedWhenNoPolicyConfigured(t *testing.T) {
+	actorIdentity := SubjectIdentity{Subject: "service-a", Issuer: "https://idp.example.com"}
+	validator := &stubTokenValidator{
+		byToken: map[string]*SubjectIdentity{
+			"actor-jwt": &actorIdentity,
+		},
+		defaultIdentity: &SubjectIdentity{Subject: brokerTestUserSub, Issuer: "https://dex.example.com"},
+	}
+	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "downstream-token", ExpiresAt: time.Now().Add(time.Minute)}}
+	// ActorDelegationPolicy is nil — delegation must be denied even though both tokens validate.
+	srv, buf := newBrokerTestServer(t, ex,
+		map[string][]string{"backstage": {"gaggle"}}, validator)
+
+	_, err := srv.BrokerExchangeSubjectToken(t.Context(),
+		"backstage", "subject-jwt", SubjectTokenTypeIDToken, "actor-jwt", SubjectTokenTypeIDToken, "gaggle", "", "")
+	require.ErrorIs(t, err, ErrInvalidTarget)
+	require.Nil(t, ex.gotReq, "exchanger must not be invoked when delegation is denied")
+
+	details := auditDetails(t, buf, security.EventAuthFailure)
+	require.Equal(t, "actor_delegation_not_authorized", details["reason"])
+	require.Equal(t, "service-a", details["actor_sub"])
+	require.Equal(t, brokerTestUserSub, details["sub"])
 }
 
 // Workload-authenticated exchange tests.
@@ -524,6 +552,9 @@ func TestWorkloadExchangeSubjectToken_DelegationUsesActorSubject(t *testing.T) {
 	// Allowlist is keyed on the actor subject, not the user subject.
 	srv, _ := newWorkloadTestServer(t, ex,
 		map[string][]string{actorSub: {"target-service"}}, validator)
+	srv.Config.ActorDelegationPolicy = map[string][]string{
+		actorSub: {subjectSub},
+	}
 
 	result, err := srv.WorkloadExchangeSubjectToken(t.Context(),
 		"user-jwt", SubjectTokenTypeIDToken, "actor-jwt", SubjectTokenTypeIDToken, "target-service", "", "")
@@ -537,7 +568,7 @@ func TestWorkloadExchangeSubjectToken_DelegationUsesActorSubject(t *testing.T) {
 	require.Equal(t, actorSub, ex.gotReq.Actor.Subject)
 }
 
-func TestWorkloadExchangeSubjectToken_DelegationDeniedOnSubjectSubject(t *testing.T) {
+func TestWorkloadExchangeSubjectToken_DelegationDeniedWhenNoPolicyConfigured(t *testing.T) {
 	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "x"}}
 	actorSub := "system:serviceaccount:ns:actor"
 	subjectSub := brokerTestUserSub
@@ -547,9 +578,37 @@ func TestWorkloadExchangeSubjectToken_DelegationDeniedOnSubjectSubject(t *testin
 		},
 		defaultIdentity: &SubjectIdentity{Subject: subjectSub, Issuer: "https://idp.example.com"},
 	}
-	// Allowlist only covers the user subject — should be denied because we key on actor.
+	// ActorDelegationPolicy is nil — all delegation must be denied regardless of audience config.
+	srv, buf := newWorkloadTestServer(t, ex,
+		map[string][]string{actorSub: {"target-service"}}, validator)
+
+	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		"user-jwt", SubjectTokenTypeIDToken, "actor-jwt", SubjectTokenTypeIDToken, "target-service", "", "")
+	require.ErrorIs(t, err, ErrInvalidTarget)
+	require.Nil(t, ex.gotReq)
+
+	details := auditDetails(t, buf, security.EventAuthFailure)
+	require.Equal(t, "actor_delegation_not_authorized", details["reason"])
+	require.Equal(t, actorSub, details["actor_sub"])
+	require.Equal(t, subjectSub, details["sub"])
+}
+
+func TestWorkloadExchangeSubjectToken_DelegationDeniedByPolicy(t *testing.T) {
+	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "x"}}
+	actorSub := "system:serviceaccount:ns:actor"
+	subjectSub := brokerTestUserSub
+	validator := &stubTokenValidator{
+		byToken: map[string]*SubjectIdentity{
+			"actor-jwt": {Subject: actorSub, Issuer: "https://kube.example.com"},
+		},
+		defaultIdentity: &SubjectIdentity{Subject: subjectSub, Issuer: "https://idp.example.com"},
+	}
+	// Policy only covers the user subject as the actor key, not the SA — delegation denied.
 	srv, _ := newWorkloadTestServer(t, ex,
-		map[string][]string{subjectSub: {"target-service"}}, validator)
+		map[string][]string{actorSub: {"target-service"}}, validator)
+	srv.Config.ActorDelegationPolicy = map[string][]string{
+		subjectSub: {actorSub},
+	}
 
 	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
 		"user-jwt", SubjectTokenTypeIDToken, "actor-jwt", SubjectTokenTypeIDToken, "target-service", "", "")
@@ -605,6 +664,40 @@ func TestWorkloadAudienceAllowed(t *testing.T) {
 				m = nil
 			}
 			got := workloadAudienceAllowed(m, tc.subject, tc.audience)
+			require.Equal(t, tc.wantAllow, got)
+		})
+	}
+}
+
+func TestActorDelegationAllowed(t *testing.T) {
+	policy := map[string][]string{
+		"system:serviceaccount:ns:robot": {brokerTestUserSub, "other@example.com"},
+		"system:serviceaccount:ns:*":     {"admin@example.com"},
+	}
+
+	tests := []struct {
+		name      string
+		actorSub  string
+		subjSub   string
+		wantAllow bool
+	}{
+		{"exact actor, first subject", "system:serviceaccount:ns:robot", brokerTestUserSub, true},
+		{"exact actor, second subject", "system:serviceaccount:ns:robot", "other@example.com", true},
+		{"exact actor, subject not in any entry", "system:serviceaccount:ns:robot", "nobody@example.com", false},
+		{"glob actor, allowed subject", "system:serviceaccount:ns:other", "admin@example.com", true},
+		{"glob actor, wrong subject", "system:serviceaccount:ns:other", brokerTestUserSub, false},
+		{"glob no match different ns", "system:serviceaccount:prod:robot", brokerTestUserSub, false},
+		{"unknown actor", "unknown-service", brokerTestUserSub, false},
+		{"nil policy", "system:serviceaccount:ns:robot", brokerTestUserSub, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := policy
+			if tc.name == "nil policy" {
+				p = nil
+			}
+			got := actorDelegationAllowed(p, tc.actorSub, tc.subjSub)
 			require.Equal(t, tc.wantAllow, got)
 		})
 	}
