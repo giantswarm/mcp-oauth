@@ -99,6 +99,35 @@ func happyBrokerValidator() SubjectTokenValidator {
 	}}
 }
 
+func newWorkloadTestServer(t *testing.T, exchanger Exchanger, workloadAudiences map[string][]string, validator SubjectTokenValidator) (*Server, *bytes.Buffer) {
+	t.Helper()
+
+	store := memory.New()
+	t.Cleanup(func() { store.Stop() })
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	cfg := &Config{
+		Issuer:                      "https://broker.example.com",
+		DisableNonceEchoRequirement: true,
+		EnableWorkloadTokenExchange: true,
+		WorkloadAudiences:           workloadAudiences,
+	}
+
+	opts := []Option{WithAuditor(security.NewAuditor(logger, true))}
+	if exchanger != nil {
+		opts = append(opts, WithExchanger(exchanger))
+	}
+	if validator != nil {
+		opts = append(opts, WithSubjectTokenValidator(SubjectTokenTypeIDToken, validator))
+	}
+
+	srv, err := New(mock.NewProvider(), store, store, store, cfg, logger, opts...)
+	require.NoError(t, err)
+	return srv, &buf
+}
+
 func auditDetails(t *testing.T, buf *bytes.Buffer, eventType string) map[string]any {
 	t.Helper()
 	for _, line := range bytes.Split(buf.Bytes(), []byte("\n")) {
@@ -372,4 +401,209 @@ func TestBrokerExchangeSubjectToken_ActorTokenTypeNormalizedWhenActorAbsent(t *t
 	require.Nil(t, ex.gotReq.Actor)
 	require.Empty(t, ex.gotReq.ActorToken)
 	require.Empty(t, ex.gotReq.ActorTokenType, "ActorTokenType must be empty when ActorToken is empty")
+}
+
+// Workload-authenticated exchange tests.
+
+func TestWorkloadExchangeSubjectToken_HappyPath(t *testing.T) {
+	expiry := time.Now().Add(15 * time.Minute).UTC().Truncate(time.Second)
+	ex := &stubExchanger{result: &ExchangerResult{
+		AccessToken: "workload-token",
+		ExpiresAt:   expiry,
+		Scope:       "openid",
+	}}
+	const sub = "system:serviceaccount:ns:robot"
+	validator := &stubSubjectValidator{identity: SubjectIdentity{
+		Subject: sub,
+		Issuer:  "https://kube.example.com",
+	}}
+	srv, buf := newWorkloadTestServer(t, ex,
+		map[string][]string{sub: {"target-service"}}, validator)
+
+	result, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		"sa-jwt", SubjectTokenTypeIDToken, "", "", "target-service", "", "openid")
+	require.NoError(t, err)
+	require.Equal(t, "workload-token", result.AccessToken)
+	require.Equal(t, expiry, result.ExpiresAt)
+	require.Equal(t, SubjectTokenTypeAccessToken, result.IssuedTokenType)
+
+	// Exchanger received empty ClientID on the workload path.
+	require.NotNil(t, ex.gotReq)
+	require.Empty(t, ex.gotReq.ClientID)
+	require.Equal(t, "target-service", ex.gotReq.Audience)
+	require.Equal(t, sub, ex.gotReq.Subject.Subject)
+
+	// Audit carries exchange="workload" and no ClientID.
+	details := auditDetails(t, buf, security.EventTokenIssued)
+	require.Equal(t, "workload", details["exchange"])
+	require.Empty(t, details["__client_id"])
+	require.Equal(t, "target-service", details["audience"])
+}
+
+func TestWorkloadExchangeSubjectToken_AudienceNotAllowed(t *testing.T) {
+	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "x"}}
+	const sub = "system:serviceaccount:ns:robot"
+	validator := &stubSubjectValidator{identity: SubjectIdentity{Subject: sub, Issuer: "https://kube.example.com"}}
+	srv, buf := newWorkloadTestServer(t, ex,
+		map[string][]string{sub: {"allowed-service"}}, validator)
+
+	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		"sa-jwt", SubjectTokenTypeIDToken, "", "", "other-service", "", "")
+	require.ErrorIs(t, err, ErrInvalidTarget)
+	require.Nil(t, ex.gotReq, "exchanger must not be invoked on allowlist miss")
+
+	details := auditDetails(t, buf, security.EventAuthFailure)
+	require.Equal(t, "token_exchange_audience_not_allowed", details["reason"])
+	require.Equal(t, "workload", details["exchange"])
+	require.Empty(t, details["__client_id"])
+}
+
+func TestWorkloadExchangeSubjectToken_SubjectNotInMap(t *testing.T) {
+	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "x"}}
+	validator := &stubSubjectValidator{identity: SubjectIdentity{
+		Subject: "system:serviceaccount:other:robot",
+		Issuer:  "https://kube.example.com",
+	}}
+	srv, _ := newWorkloadTestServer(t, ex,
+		map[string][]string{"system:serviceaccount:ns:robot": {"svc"}}, validator)
+
+	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		"sa-jwt", SubjectTokenTypeIDToken, "", "", "svc", "", "")
+	require.ErrorIs(t, err, ErrInvalidTarget)
+	require.Nil(t, ex.gotReq)
+}
+
+func TestWorkloadExchangeSubjectToken_GlobMatch(t *testing.T) {
+	ex := &stubExchanger{result: &ExchangerResult{
+		AccessToken: "workload-token",
+		ExpiresAt:   time.Now().Add(time.Minute),
+	}}
+	const sub = "system:serviceaccount:ns:robot"
+	validator := &stubSubjectValidator{identity: SubjectIdentity{Subject: sub, Issuer: "https://kube.example.com"}}
+	srv, _ := newWorkloadTestServer(t, ex,
+		// Glob covers all service accounts in ns.
+		map[string][]string{"system:serviceaccount:ns:*": {"target-service"}}, validator)
+
+	result, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		"sa-jwt", SubjectTokenTypeIDToken, "", "", "target-service", "", "")
+	require.NoError(t, err)
+	require.Equal(t, "workload-token", result.AccessToken)
+}
+
+func TestWorkloadExchangeSubjectToken_GlobNoMatch(t *testing.T) {
+	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "x"}}
+	// Subject is in a different namespace than the glob.
+	validator := &stubSubjectValidator{identity: SubjectIdentity{
+		Subject: "system:serviceaccount:other:robot",
+		Issuer:  "https://kube.example.com",
+	}}
+	srv, _ := newWorkloadTestServer(t, ex,
+		map[string][]string{"system:serviceaccount:ns:*": {"target-service"}}, validator)
+
+	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		"sa-jwt", SubjectTokenTypeIDToken, "", "", "target-service", "", "")
+	require.ErrorIs(t, err, ErrInvalidTarget)
+	require.Nil(t, ex.gotReq)
+}
+
+func TestWorkloadExchangeSubjectToken_DelegationUsesActorSubject(t *testing.T) {
+	ex := &stubExchanger{result: &ExchangerResult{
+		AccessToken: "workload-token",
+		ExpiresAt:   time.Now().Add(time.Minute),
+	}}
+	actorSub := "system:serviceaccount:ns:actor"
+	subjectSub := "user@example.com"
+	validator := &stubTokenValidator{
+		byToken: map[string]*SubjectIdentity{
+			"actor-jwt": {Subject: actorSub, Issuer: "https://kube.example.com"},
+		},
+		defaultIdentity: &SubjectIdentity{Subject: subjectSub, Issuer: "https://idp.example.com"},
+	}
+	// Allowlist is keyed on the actor subject, not the user subject.
+	srv, _ := newWorkloadTestServer(t, ex,
+		map[string][]string{actorSub: {"target-service"}}, validator)
+
+	result, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		"user-jwt", SubjectTokenTypeIDToken, "actor-jwt", SubjectTokenTypeIDToken, "target-service", "", "")
+	require.NoError(t, err)
+	require.Equal(t, "workload-token", result.AccessToken)
+
+	// Exchanger got both identities.
+	require.NotNil(t, ex.gotReq)
+	require.Equal(t, subjectSub, ex.gotReq.Subject.Subject)
+	require.NotNil(t, ex.gotReq.Actor)
+	require.Equal(t, actorSub, ex.gotReq.Actor.Subject)
+}
+
+func TestWorkloadExchangeSubjectToken_DelegationDeniedOnSubjectSubject(t *testing.T) {
+	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "x"}}
+	actorSub := "system:serviceaccount:ns:actor"
+	subjectSub := "user@example.com"
+	validator := &stubTokenValidator{
+		byToken: map[string]*SubjectIdentity{
+			"actor-jwt": {Subject: actorSub, Issuer: "https://kube.example.com"},
+		},
+		defaultIdentity: &SubjectIdentity{Subject: subjectSub, Issuer: "https://idp.example.com"},
+	}
+	// Allowlist only covers the user subject — should be denied because we key on actor.
+	srv, _ := newWorkloadTestServer(t, ex,
+		map[string][]string{subjectSub: {"target-service"}}, validator)
+
+	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		"user-jwt", SubjectTokenTypeIDToken, "actor-jwt", SubjectTokenTypeIDToken, "target-service", "", "")
+	require.ErrorIs(t, err, ErrInvalidTarget)
+	require.Nil(t, ex.gotReq)
+}
+
+func TestWorkloadExchangeSubjectToken_NoExchanger(t *testing.T) {
+	validator := &stubSubjectValidator{identity: SubjectIdentity{
+		Subject: "system:serviceaccount:ns:robot",
+		Issuer:  "https://kube.example.com",
+	}}
+	srv, buf := newWorkloadTestServer(t, nil,
+		map[string][]string{"system:serviceaccount:ns:robot": {"svc"}}, validator)
+
+	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		"sa-jwt", SubjectTokenTypeIDToken, "", "", "svc", "", "")
+	require.ErrorIs(t, err, ErrInvalidTarget)
+
+	details := auditDetails(t, buf, security.EventAuthFailure)
+	require.Equal(t, "token_exchange_no_exchanger", details["reason"])
+	require.Equal(t, "workload", details["exchange"])
+}
+
+// workloadAudienceAllowed unit tests.
+
+func TestWorkloadAudienceAllowed(t *testing.T) {
+	allowed := map[string][]string{
+		"system:serviceaccount:ns:robot": {"svc-a", "svc-b"},
+		"system:serviceaccount:ns:*":     {"svc-c"},
+	}
+
+	tests := []struct {
+		name      string
+		subject   string
+		audience  string
+		wantAllow bool
+	}{
+		{"exact match, allowed audience", "system:serviceaccount:ns:robot", "svc-a", true},
+		{"exact match, second audience", "system:serviceaccount:ns:robot", "svc-b", true},
+		{"exact match, audience not in list", "system:serviceaccount:ns:robot", "svc-c", true}, // also covered by glob
+		{"glob match", "system:serviceaccount:ns:other", "svc-c", true},
+		{"glob no match different ns", "system:serviceaccount:prod:robot", "svc-c", false},
+		{"unknown subject", "system:serviceaccount:ns:unknown", "svc-a", false},
+		{"empty map", "system:serviceaccount:ns:robot", "svc-a", false},
+		{"audience not in list, no glob", "system:serviceaccount:ns:robot", "svc-x", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := allowed
+			if tc.name == "empty map" {
+				m = nil
+			}
+			got := workloadAudienceAllowed(m, tc.subject, tc.audience)
+			require.Equal(t, tc.wantAllow, got)
+		})
+	}
 }

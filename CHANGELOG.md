@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `server.TrustedIssuer.AcceptedTypHeaders`: per-issuer list of accepted JWT `typ` header values for Bearer validation. Empty keeps the RFC 9068 §4 default (`at+jwt`). Kubernetes ServiceAccount tokens carry no `typ` header, so the previously unconditional `at+jwt` requirement made the documented K8s SA trust use case impossible; configure `[""]` (optionally with `"JWT"`) on the cluster issuer entry to accept them. Signature, issuer, audience, and claim checks are unchanged.
 
+- `server.Config.WorkloadAudiences map[string][]string`: per-workload audience allowlist for the workload-authenticated token-exchange path. Keys are workload subjects (e.g. `system:serviceaccount:<ns>:<name>`), matched exactly or by glob (`*` spans the whole string including separators). Values are the audiences the matching workload may request. Only consulted when `EnableWorkloadTokenExchange` is true and an `Exchanger` is configured.
+
+- `server.Config.EnableWorkloadTokenExchange bool`: enables the workload-authenticated RFC 8693 token-exchange path. When true and a brokered request carries no OAuth client credentials, the request is authenticated solely by the subject/actor token itself (validated against `TrustedIssuers`) and authorized against `WorkloadAudiences`. When an `actor_token` is present, authorization uses the actor subject (delegation); otherwise the subject token's `sub` is used (impersonation). Default false: requests with no client credentials continue to be rejected with `invalid_client`.
+
 ## [0.2.199] - 2026-06-10
 
 ### Added

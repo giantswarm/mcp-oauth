@@ -747,6 +747,31 @@ type Config struct {
 	// Default: nil (no client may request any audience).
 	TokenExchangeClientAudiences map[string][]string
 
+	// WorkloadAudiences is the per-workload allowlist for the
+	// workload-authenticated token-exchange flow (EnableWorkloadTokenExchange).
+	// Keys are workload subjects (the sub claim of a validated SA token, e.g.
+	// system:serviceaccount:<ns>:<name>), matched exactly or by glob (*
+	// matches any sequence including slashes, so "system:serviceaccount:ns:*"
+	// matches every service account in ns). Values are the audiences that a
+	// matching workload may request via the RFC 8693 audience parameter.
+	//
+	// When an actor_token is present (delegation), authorization uses the
+	// actor's subject; otherwise the subject token's sub is used (impersonation).
+	//
+	// Only consulted when EnableWorkloadTokenExchange is true and an Exchanger
+	// is configured (server.WithExchanger). Default: nil (no workload may
+	// request any audience).
+	WorkloadAudiences map[string][]string
+
+	// EnableWorkloadTokenExchange enables the workload-authenticated
+	// token-exchange path: a brokered RFC 8693 request with no OAuth client
+	// credentials is authenticated solely by the subject/actor token itself
+	// and authorized against WorkloadAudiences.
+	//
+	// Default false: requests with no client credentials continue to be
+	// rejected with invalid_client (existing behaviour).
+	EnableWorkloadTokenExchange bool
+
 	// SessionIDHMACKey optionally replaces the default SHA-256 session-ID derivation
 	// in Server.AcceptForwardedIDToken with HMAC-SHA-256 keyed by this value.
 	//

@@ -142,6 +142,97 @@ func (s *Server) BrokerExchangeSubjectToken(
 		actorTokenType = ""
 	}
 
+	return s.dispatchDownstreamExchange(ctx, "brokered", clientID,
+		subjectToken, subjectTokenType, actorToken, actorTokenType,
+		audience, resource, scope, sessionID, identity, actor)
+}
+
+// WorkloadExchangeSubjectToken implements the workload-authenticated brokered
+// RFC 8693 flow: no OAuth client credentials are required. The requesting
+// workload authenticates by presenting its own SA token as the subject_token;
+// for delegation (RFC 8693 §4.4) an actor_token may also be provided. Both
+// tokens are validated against the server's TrustedIssuers before the
+// allowlist is checked.
+//
+// Policy enforced here:
+//   - an Exchanger must be configured; ErrInvalidTarget otherwise
+//   - subject and actor tokens are validated by the registered
+//     SubjectTokenValidator (signature, issuer, audience, expiry)
+//   - when actor_token is present, authorization uses actor.Subject
+//     (delegation); otherwise subject.Subject is used (impersonation)
+//   - the acting subject must match a Config.WorkloadAudiences key (exact or
+//     glob) whose value list contains the requested audience; ErrInvalidTarget
+//     on miss
+//
+// Every outcome is audited with exchange kind "workload" and empty ClientID.
+func (s *Server) WorkloadExchangeSubjectToken(
+	ctx context.Context,
+	subjectToken, subjectTokenType, actorToken, actorTokenType, audience, resource, scope string,
+) (*TokenExchangeResult, error) {
+	sessionID := s.deriveForwardedSessionID(subjectToken)
+
+	if s.exchanger == nil {
+		s.auditExchangeFailure(ctx, "workload", "", audience, sessionID, "token_exchange_no_exchanger", nil)
+		return nil, fmt.Errorf("%w: no exchanger configured", ErrInvalidTarget)
+	}
+
+	identity, err := s.validateExchangeSubjectToken(ctx, subjectToken, subjectTokenType)
+	if err != nil {
+		return nil, err
+	}
+
+	var actor *SubjectIdentity
+	if actorToken != "" {
+		actor, err = s.validateExchangeActorToken(ctx, actorToken, actorTokenType)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	workloadSubject := identity.Subject
+	if actor != nil {
+		workloadSubject = actor.Subject
+	}
+
+	if !workloadAudienceAllowed(s.Config.WorkloadAudiences, workloadSubject, audience) {
+		s.auditExchangeFailure(ctx, "workload", "", audience, sessionID, "token_exchange_audience_not_allowed", map[string]any{
+			"sub": workloadSubject,
+		})
+		return nil, fmt.Errorf("%w: audience %q", ErrInvalidTarget, audience)
+	}
+
+	return s.dispatchDownstreamExchange(ctx, "workload", "",
+		subjectToken, subjectTokenType, actorToken, actorTokenType,
+		audience, resource, scope, sessionID, identity, actor)
+}
+
+// workloadAudienceAllowed reports whether the workload identified by subject
+// is allowed to request audience. Keys in allowed are matched exactly or by
+// glob (matchClaimPattern semantics: * spans the whole string including any
+// separators, so "system:serviceaccount:ns:*" matches every service account
+// in ns).
+func workloadAudienceAllowed(allowed map[string][]string, subject, audience string) bool {
+	for pattern, auds := range allowed {
+		if pattern != subject && matchClaimPattern(pattern, subject) != nil {
+			continue
+		}
+		if slices.Contains(auds, audience) {
+			return true
+		}
+	}
+	return false
+}
+
+// dispatchDownstreamExchange calls the Exchanger and emits the outcome audit
+// event. exchange is "brokered" or "workload"; clientID is empty on the
+// workload path. identity and actor must already be validated before calling.
+func (s *Server) dispatchDownstreamExchange(
+	ctx context.Context,
+	exchange, clientID,
+	subjectToken, subjectTokenType, actorToken, actorTokenType,
+	audience, resource, scope, sessionID string,
+	identity *SubjectIdentity, actor *SubjectIdentity,
+) (*TokenExchangeResult, error) {
 	result, err := s.exchanger.Exchange(ctx, &ExchangerRequest{
 		Audience:         audience,
 		Resource:         resource,
@@ -155,9 +246,9 @@ func (s *Server) BrokerExchangeSubjectToken(
 		Actor:            actor,
 	})
 	if err != nil {
-		s.Logger.Debug("brokered token exchange: downstream exchange failed",
+		s.Logger.Debug(exchange+" token exchange: downstream exchange failed",
 			"client_id", clientID, "audience", audience, "error", err)
-		s.auditExchangeFailure(ctx, "brokered", clientID, audience, sessionID, "token_exchange_downstream_failed", map[string]any{
+		s.auditExchangeFailure(ctx, exchange, clientID, audience, sessionID, "token_exchange_downstream_failed", map[string]any{
 			"sub":   identity.Subject,
 			"error": err.Error(),
 		})
@@ -167,7 +258,7 @@ func (s *Server) BrokerExchangeSubjectToken(
 		return nil, fmt.Errorf("downstream exchange: %w", err)
 	}
 	if result == nil || result.AccessToken == "" {
-		s.auditExchangeFailure(ctx, "brokered", clientID, audience, sessionID, "token_exchange_downstream_empty_token", map[string]any{
+		s.auditExchangeFailure(ctx, exchange, clientID, audience, sessionID, "token_exchange_downstream_empty_token", map[string]any{
 			"sub": identity.Subject,
 		})
 		return nil, fmt.Errorf("downstream exchange returned no token")
@@ -178,14 +269,14 @@ func (s *Server) BrokerExchangeSubjectToken(
 		issuedTokenType = SubjectTokenTypeAccessToken
 	}
 
-	s.Logger.Debug("brokered token exchange: issued downstream token",
+	s.Logger.Debug(exchange+" token exchange: issued downstream token",
 		"client_id", clientID, "sub", identity.Subject, "iss_act", identity.Issuer,
 		"audience", audience, "scope", result.Scope, "exp", result.ExpiresAt,
 		"session_id", sessionID)
 
 	successDetails := map[string]any{
 		"grant_type":         GrantTypeTokenExchange,
-		"exchange":           "brokered",
+		"exchange":           exchange,
 		"subject_token_type": subjectTokenType,
 		"audience":           audience,
 		"scope":              result.Scope,
