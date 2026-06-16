@@ -176,7 +176,7 @@ func (s *Server) validateExchangeToken(ctx context.Context, token, tokenType, ro
 				typeKey:      tokenType,
 			},
 		})
-		return nil, &TokenExchangeUnsupportedTypeError{tokenType: tokenType}
+		return nil, &TokenExchangeUnsupportedTypeError{tokenType: tokenType, role: role}
 	}
 
 	v := s.SubjectValidatorFor(tokenType)
@@ -189,7 +189,7 @@ func (s *Server) validateExchangeToken(ctx context.Context, token, tokenType, ro
 				typeKey:      tokenType,
 			},
 		})
-		return nil, &TokenExchangeUnsupportedTypeError{tokenType: tokenType}
+		return nil, &TokenExchangeUnsupportedTypeError{tokenType: tokenType, role: role}
 	}
 
 	identity, err := v.Validate(ctx, token, nil)
@@ -212,18 +212,25 @@ func (s *Server) validateExchangeToken(ctx context.Context, token, tokenType, ro
 }
 
 // TokenExchangeUnsupportedTypeError is returned when no validator is registered
-// for the requested subject_token_type.
+// for the requested token type. Role is "subject" or "actor".
 type TokenExchangeUnsupportedTypeError struct {
 	tokenType string
+	role      string
 }
 
 func (e *TokenExchangeUnsupportedTypeError) Error() string {
-	return fmt.Sprintf("no validator registered for subject_token_type %q", e.tokenType)
+	return fmt.Sprintf("no validator registered for %s_token_type %q", e.role, e.tokenType)
 }
 
-// TokenType returns the unrecognised subject_token_type value.
+// TokenType returns the unrecognised token-type URN value.
 func (e *TokenExchangeUnsupportedTypeError) TokenType() string {
 	return e.tokenType
+}
+
+// Role returns "subject" or "actor" identifying which token in the request
+// was of an unsupported type.
+func (e *TokenExchangeUnsupportedTypeError) Role() string {
+	return e.role
 }
 
 // grantedExchangeScope computes the scope for a token-exchange response.

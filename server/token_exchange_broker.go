@@ -138,6 +138,8 @@ func (s *Server) BrokerExchangeSubjectToken(
 		if err != nil {
 			return nil, err
 		}
+	} else {
+		actorTokenType = ""
 	}
 
 	result, err := s.exchanger.Exchange(ctx, &ExchangerRequest{

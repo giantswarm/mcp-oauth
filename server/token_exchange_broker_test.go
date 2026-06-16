@@ -352,3 +352,24 @@ func TestBrokerExchangeSubjectToken_ActorUntrustedIssuer(t *testing.T) {
 	details := auditDetails(t, buf, security.EventAuthFailure)
 	require.Equal(t, "actor_token_validation_failed", details["reason"])
 }
+
+func TestBrokerExchangeSubjectToken_ActorTokenTypeNormalizedWhenActorAbsent(t *testing.T) {
+	ex := &stubExchanger{result: &ExchangerResult{
+		AccessToken: "downstream-token",
+		ExpiresAt:   time.Now().Add(15 * time.Minute),
+	}}
+	srv, _ := newBrokerTestServer(t, ex,
+		map[string][]string{"backstage": {"gaggle"}}, happyBrokerValidator())
+
+	// actorToken is empty but actorTokenType is non-empty — caller mistake per RFC 8693 §2.1.
+	// BrokerExchangeSubjectToken must normalize ActorTokenType to "" so Exchangers
+	// cannot observe a non-empty type with a nil Actor.
+	_, err := srv.BrokerExchangeSubjectToken(t.Context(),
+		"backstage", "subject-jwt", SubjectTokenTypeIDToken, "", SubjectTokenTypeIDToken, "gaggle", "", "")
+	require.NoError(t, err)
+
+	require.NotNil(t, ex.gotReq)
+	require.Nil(t, ex.gotReq.Actor)
+	require.Empty(t, ex.gotReq.ActorToken)
+	require.Empty(t, ex.gotReq.ActorTokenType, "ActorTokenType must be empty when ActorToken is empty")
+}

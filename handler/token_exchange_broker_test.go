@@ -282,6 +282,22 @@ func TestHandleBrokeredTokenExchange_NoAudienceFallsBackToLocalPath(t *testing.T
 	require.Nil(t, ex.gotReq)
 }
 
+func TestHandleBrokeredTokenExchange_ActorTokenMissingType(t *testing.T) {
+	ex := &stubExchanger{result: happyDownstreamResult()}
+	h := setupBrokeredExchangeHandler(t, ex, []string{"gaggle"}, "confidential")
+
+	form := brokeredExchangeForm()
+	form.Set("actor_token", "actor-jwt")
+	// actor_token_type intentionally omitted — RFC 8693 §2.1 requires it.
+	req := newTokenExchangeRequest(form)
+	req.SetBasicAuth(h.clientID, h.clientSecret)
+	w := httptest.NewRecorder()
+	h.handler.ServeToken(w, req)
+
+	requireOAuthError(t, w, http.StatusBadRequest, constants.ErrorCodeInvalidRequest)
+	require.Nil(t, ex.gotReq, "exchanger must not be invoked when actor_token_type is missing")
+}
+
 func TestHandleBrokeredTokenExchange_ActorTokenForwarded(t *testing.T) {
 	ex := &stubExchanger{result: happyDownstreamResult()}
 	h := setupBrokeredExchangeHandler(t, ex, []string{"gaggle"}, "confidential")

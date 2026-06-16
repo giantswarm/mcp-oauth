@@ -44,6 +44,14 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 		h.writeError(w, constants.ErrorCodeInvalidRequest, "subject_token_type is required", http.StatusBadRequest)
 		return
 	}
+	if actorToken != "" && actorTokenType == "" {
+		h.logAuthFailure(r.Context(), "", clientIP, "token_exchange_actor_token_type_missing",
+			"token exchange: actor_token_type missing")
+		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "actor_token_type missing")
+		h.writeError(w, constants.ErrorCodeInvalidRequest, "actor_token_type is required when actor_token is present", http.StatusBadRequest)
+		return
+	}
 	// An audience parameter selects the brokered flow (RFC 8693 audience →
 	// downstream token via the host Exchanger). Without it, the local flow
 	// issues a JWT bound to the mandatory RFC 8707 resource.
@@ -180,13 +188,13 @@ func (h *Handler) handleBrokeredTokenExchangeError(
 		h.writeError(w, constants.ErrorCodeInvalidTarget,
 			"the requested audience cannot be served", http.StatusBadRequest)
 	case errors.As(err, &unsupported):
-		h.logger.Debug("brokered token exchange: unsupported subject_token_type",
+		h.logger.Debug("brokered token exchange: unsupported "+unsupported.Role()+"_token_type",
 			"type", unsupported.TokenType(), "client_id", clientID, "ip", clientIP)
 		h.recordTokenFailure(r.Context(), server.GrantTypeTokenExchange, constants.ErrorCodeUnsupportedGrantType)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
-		instrumentation.SetSpanError(span, "unsupported subject_token_type")
+		instrumentation.SetSpanError(span, "unsupported "+unsupported.Role()+"_token_type")
 		h.writeError(w, constants.ErrorCodeUnsupportedGrantType,
-			"no validator registered for subject_token_type "+unsupported.TokenType(), http.StatusBadRequest)
+			"no validator registered for "+unsupported.Role()+"_token_type "+unsupported.TokenType(), http.StatusBadRequest)
 	default:
 		h.logger.Debug("brokered token exchange failed",
 			"client_id", clientID, "audience", audience, "ip", clientIP, "error", err)
