@@ -19,6 +19,14 @@ const (
 	// an expired token might be accepted, but too small a leeway may cause
 	// legitimate tokens to be rejected due to clock drift.
 	DefaultClockSkewLeeway = 30 * time.Second
+
+	// DefaultJWKSRefetchBackoff bounds how often a JWKS refetch can be triggered
+	// by a token whose kid is absent from the cached key set. A legitimate
+	// issuer key rotation self-heals on the first such token (the refetch
+	// repopulates the cache); the backoff exists only to stop a flood of tokens
+	// carrying bogus kids from hammering the issuer's JWKS endpoint — at most
+	// one refetch per backoff window per URI (negative caching).
+	DefaultJWKSRefetchBackoff = 1 * time.Minute
 )
 
 // HTTP transport configuration constants shared across HTTP clients.
