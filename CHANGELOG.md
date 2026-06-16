@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Token exchange `invalid_client` for client secrets containing `+` (or other form-significant characters).** `providers/oidc.TokenExchangeClient.Exchange` authenticated to the downstream token endpoint with `http.Request.SetBasicAuth(clientID, clientSecret)`, which base64-encodes the raw values. RFC 6749 §2.3.1 requires both components to be `application/x-www-form-urlencoded` first; spec-compliant servers (e.g. Dex) url-unescape the Basic credential, so a `+` in the secret was decoded to a space and rejected with `invalid_client`. Both components are now url-encoded before the Basic credential is formed. Secrets containing only `/` and `=` were unaffected, which is why some clusters worked and others did not.
+
 ### Added
 
 - `server.TrustedIssuer.AcceptedTypHeaders`: per-issuer list of accepted JWT `typ` header values for Bearer validation. Empty keeps the RFC 9068 §4 default (`at+jwt`). Kubernetes ServiceAccount tokens carry no `typ` header, so the previously unconditional `at+jwt` requirement made the documented K8s SA trust use case impossible; configure `[""]` (optionally with `"JWT"`) on the cluster issuer entry to accept them. Signature, issuer, audience, and claim checks are unchanged.

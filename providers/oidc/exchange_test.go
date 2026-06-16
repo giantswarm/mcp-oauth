@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -154,6 +155,58 @@ func TestTokenExchangeClient_Exchange(t *testing.T) {
 			ConnectorID:   "source-cluster",
 			ClientID:      "client-id",
 			ClientSecret:  "client-secret",
+		})
+		if err != nil {
+			t.Fatalf("Exchange() error = %v", err)
+		}
+		if resp.AccessToken != validResponse.AccessToken {
+			t.Errorf("AccessToken = %v, want %v", resp.AccessToken, validResponse.AccessToken)
+		}
+	})
+
+	t.Run("client secret with special characters is RFC 6749 encoded", func(t *testing.T) {
+		// Synthetic value containing the characters that x-www-form-urlencoded
+		// mangles: "+" decodes to a space, "/" and "=" are otherwise
+		// significant. This mirrors the shape of real base64-std client secrets
+		// (e.g. Dex static clients) without embedding one.
+		const wantClientValue = "aA0+bB1/cC2+dD3=="
+		const wantClientID = "downstream-token-exchange-client"
+
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Simulate an RFC 6749 §2.3.1 compliant server (like Dex): the Basic
+			// credential components are form-urlencoded, so the server must
+			// url-unescape them before comparison.
+			rawUser, rawPass, ok := r.BasicAuth()
+			if !ok {
+				t.Fatal("expected Basic authentication")
+			}
+			gotUser, err := url.QueryUnescape(rawUser)
+			if err != nil {
+				t.Fatalf("client id not url-decodable: %v", err)
+			}
+			gotPass, err := url.QueryUnescape(rawPass)
+			if err != nil {
+				t.Fatalf("client secret not url-decodable: %v", err)
+			}
+			if gotUser != wantClientID {
+				t.Errorf("client id = %q, want %q", gotUser, wantClientID)
+			}
+			if gotPass != wantClientValue {
+				t.Errorf("client secret = %q, want %q (mangled credential would fail client auth)", gotPass, wantClientValue)
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(validResponse)
+		}))
+		defer server.Close()
+
+		client := newTestTokenExchangeClient(server.Client())
+		resp, err := client.Exchange(context.Background(), TokenExchangeRequest{
+			TokenEndpoint: server.URL,
+			SubjectToken:  "test-subject-token",
+			ConnectorID:   "source-cluster",
+			ClientID:      wantClientID,
+			ClientSecret:  wantClientValue,
 		})
 		if err != nil {
 			t.Fatalf("Exchange() error = %v", err)
