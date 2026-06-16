@@ -1,10 +1,7 @@
 package oidc
 
 import (
-	"container/list"
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,8 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
-	"time"
 )
 
 // RFC 8693 OAuth 2.0 Token Exchange constants.
@@ -43,14 +38,6 @@ const (
 	// Token responses are typically small (<10KB). 1MB provides a generous safety margin
 	// while preventing memory exhaustion attacks from malicious servers.
 	maxTokenExchangeResponseSize = 1024 * 1024 // 1MB
-
-	// defaultCacheBufferSeconds is the buffer time subtracted from token expiry when caching.
-	// This ensures tokens don't expire during use due to clock skew or network latency.
-	defaultCacheBufferSeconds = 30
-
-	// DefaultCacheMaxEntries is the default maximum number of entries in the token exchange cache.
-	// This prevents unbounded memory growth in long-running services.
-	DefaultCacheMaxEntries = 10000
 
 	// maxResourceLength is the maximum length for the resource parameter (RFC 3986 recommended).
 	// This prevents DoS attacks via extremely long URIs.
@@ -84,7 +71,7 @@ const (
 //
 //   - Per-user rate limits to prevent individual users from overwhelming the IdP
 //   - Global rate limits to protect against coordinated attacks
-//   - The [TokenExchangeCache] to reduce redundant exchange requests
+//   - The [tokencache.Cache] to reduce redundant exchange requests
 //
 // # Example Usage
 //
@@ -468,275 +455,4 @@ func (c *TokenExchangeClient) parseErrorResponse(statusCode int, body []byte) er
 		return fmt.Errorf("token exchange failed: %s", oauthErr.Error)
 	}
 	return fmt.Errorf("token exchange failed with status %d: %s", statusCode, string(body))
-}
-
-// TokenExchangeCache caches exchanged tokens to reduce exchange requests.
-// This is useful for avoiding repeated token exchanges for the same subject token
-// when making multiple requests to the same remote cluster.
-//
-// The cache is thread-safe and can be used concurrently from multiple goroutines.
-//
-// # Cache Key Format
-//
-// The cache uses a SHA-256 hash of the token endpoint, connector ID, and user ID
-// to create collision-resistant cache keys.
-//
-// # Memory Management
-//
-// The cache uses LRU (Least Recently Used) eviction to prevent unbounded memory growth.
-// When the cache reaches its maximum size (default: 10,000 entries), the least recently
-// accessed entries are evicted to make room for new ones.
-//
-// # Security Considerations
-//
-//   - Token Caching: Reduces the number of token exchange calls, limiting token exposure
-//   - Expiry Buffer: Tokens are considered expired 30 seconds before their actual expiry
-//     to account for clock skew and network latency
-//   - Memory Limits: LRU eviction prevents memory exhaustion attacks
-//   - Hash-based Keys: Cache keys use SHA-256 to prevent collision attacks
-type TokenExchangeCache struct {
-	mu         sync.RWMutex
-	tokens     map[string]*list.Element // key -> list element
-	lruList    *list.List               // LRU list of *cacheEntry
-	maxEntries int                      // maximum number of entries (0 = unlimited)
-
-	// Statistics for monitoring
-	totalEvictions int64
-}
-
-// cacheEntry holds a cached token with its key for LRU tracking.
-type cacheEntry struct {
-	key   string
-	token *CachedExchangeToken
-}
-
-// CachedExchangeToken holds a cached token with its expiration time.
-type CachedExchangeToken struct {
-	// AccessToken is the cached access token.
-	AccessToken string
-
-	// ExpiresAt is when the token expires.
-	ExpiresAt time.Time
-
-	// IssuedTokenType is the type of the cached token.
-	IssuedTokenType string
-}
-
-// TokenExchangeCacheStats provides statistics about the cache for monitoring.
-type TokenExchangeCacheStats struct {
-	// CurrentEntries is the number of entries currently in the cache.
-	CurrentEntries int
-	// MaxEntries is the maximum allowed entries (0 = unlimited).
-	MaxEntries int
-	// TotalEvictions is the number of LRU evictions performed.
-	TotalEvictions int64
-	// MemoryPressure is the percentage of max capacity used (0-100).
-	MemoryPressure float64
-}
-
-// NewTokenExchangeCache creates a new token exchange cache with default max entries.
-func NewTokenExchangeCache() *TokenExchangeCache {
-	return NewTokenExchangeCacheWithMaxEntries(DefaultCacheMaxEntries)
-}
-
-// NewTokenExchangeCacheWithMaxEntries creates a new token exchange cache with custom max entries.
-// Set maxEntries to 0 for unlimited (not recommended for production).
-func NewTokenExchangeCacheWithMaxEntries(maxEntries int) *TokenExchangeCache {
-	return &TokenExchangeCache{
-		tokens:     make(map[string]*list.Element),
-		lruList:    list.New(),
-		maxEntries: maxEntries,
-	}
-}
-
-// Get retrieves a cached token by key.
-// Returns nil if the token is not found or has expired.
-// Accessing a token moves it to the front of the LRU list.
-//
-// The key should be generated using GenerateCacheKey.
-func (c *TokenExchangeCache) Get(key string) *CachedExchangeToken {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	elem, ok := c.tokens[key]
-	if !ok {
-		return nil
-	}
-
-	entry := elem.Value.(*cacheEntry)
-
-	// Check if token has expired
-	if time.Now().After(entry.token.ExpiresAt) {
-		// Remove expired token
-		c.lruList.Remove(elem)
-		delete(c.tokens, key)
-		return nil
-	}
-
-	// Move to front (most recently used)
-	c.lruList.MoveToFront(elem)
-
-	return entry.token
-}
-
-// Set stores a token in the cache with the given expiration.
-// If the cache is at capacity, the least recently used entry is evicted.
-//
-// Parameters:
-//   - key: Cache key (use GenerateCacheKey to create)
-//   - token: The access token to cache
-//   - issuedTokenType: The type of the issued token
-//   - expiresIn: Token lifetime in seconds (30-second buffer is applied)
-func (c *TokenExchangeCache) Set(key, token, issuedTokenType string, expiresIn int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Apply buffer to avoid edge cases where token expires during use
-	expiry := time.Now().Add(time.Duration(expiresIn)*time.Second - defaultCacheBufferSeconds*time.Second)
-
-	cachedToken := &CachedExchangeToken{
-		AccessToken:     token,
-		ExpiresAt:       expiry,
-		IssuedTokenType: issuedTokenType,
-	}
-
-	// Check if key already exists
-	if elem, ok := c.tokens[key]; ok {
-		// Update existing entry and move to front
-		entry := elem.Value.(*cacheEntry)
-		entry.token = cachedToken
-		c.lruList.MoveToFront(elem)
-		return
-	}
-
-	// Check if we need to evict
-	if c.maxEntries > 0 && len(c.tokens) >= c.maxEntries {
-		c.evictLRU()
-	}
-
-	// Add new entry at front of LRU list
-	entry := &cacheEntry{
-		key:   key,
-		token: cachedToken,
-	}
-	elem := c.lruList.PushFront(entry)
-	c.tokens[key] = elem
-}
-
-// evictLRU removes the least recently used entry from the cache.
-// Must be called with mutex locked.
-func (c *TokenExchangeCache) evictLRU() {
-	if c.lruList.Len() == 0 {
-		return
-	}
-
-	// Get the least recently used (back of list)
-	elem := c.lruList.Back()
-	if elem == nil {
-		return
-	}
-
-	entry := elem.Value.(*cacheEntry)
-	delete(c.tokens, entry.key)
-	c.lruList.Remove(elem)
-	c.totalEvictions++
-}
-
-// Delete removes a token from the cache.
-func (c *TokenExchangeCache) Delete(key string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if elem, ok := c.tokens[key]; ok {
-		c.lruList.Remove(elem)
-		delete(c.tokens, key)
-	}
-}
-
-// Clear removes all tokens from the cache.
-func (c *TokenExchangeCache) Clear() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.tokens = make(map[string]*list.Element)
-	c.lruList = list.New()
-}
-
-// Size returns the number of tokens in the cache (including expired ones).
-func (c *TokenExchangeCache) Size() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return len(c.tokens)
-}
-
-// Cleanup removes expired tokens from the cache.
-// This should be called periodically for long-running services to prevent
-// memory growth from accumulated expired tokens.
-func (c *TokenExchangeCache) Cleanup() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	now := time.Now()
-	removed := 0
-
-	// Iterate through LRU list to find and remove expired entries
-	var next *list.Element
-	for elem := c.lruList.Front(); elem != nil; elem = next {
-		next = elem.Next()
-		entry := elem.Value.(*cacheEntry)
-		if now.After(entry.token.ExpiresAt) {
-			c.lruList.Remove(elem)
-			delete(c.tokens, entry.key)
-			removed++
-		}
-	}
-	return removed
-}
-
-// GetStats returns statistics about the cache for monitoring.
-func (c *TokenExchangeCache) GetStats() TokenExchangeCacheStats {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	stats := TokenExchangeCacheStats{
-		CurrentEntries: len(c.tokens),
-		MaxEntries:     c.maxEntries,
-		TotalEvictions: c.totalEvictions,
-	}
-
-	if c.maxEntries > 0 {
-		stats.MemoryPressure = float64(stats.CurrentEntries) / float64(c.maxEntries) * 100.0
-	}
-
-	return stats
-}
-
-// GenerateCacheKey creates a cache key from the token endpoint, connector ID, and user ID.
-// This creates a key that uniquely identifies the exchange target without
-// including the subject token itself (for security).
-//
-// The key is a SHA-256 hash of the input parameters, which:
-//   - Prevents collision attacks (e.g., if parameters contain delimiter characters)
-//   - Creates fixed-length keys for consistent memory usage
-//   - Does not expose sensitive information if the cache is inspected
-//
-// # Security Requirements
-//
-// IMPORTANT: The userID parameter MUST be extracted from trusted, validated claims
-// in the subject token (e.g., the "sub" claim after JWT signature verification),
-// NOT from user input or unvalidated sources. Using untrusted userID values could
-// lead to cache poisoning attacks where an attacker retrieves tokens cached for
-// other users.
-//
-// Example:
-//
-//	// Extract userID from validated JWT claims (after signature verification)
-//	userID := validatedClaims.Subject
-//	key := GenerateCacheKey("https://dex.cluster-b.example.com/token", "cluster-a", userID)
-//	cachedToken := cache.Get(key)
-func GenerateCacheKey(tokenEndpoint, connectorID, userID string) string {
-	// Use null byte as separator since it cannot appear in URLs, connector IDs, or user IDs.
-	// This prevents collisions like ("a:b", "c") vs ("a", "b:c").
-	data := tokenEndpoint + "\x00" + connectorID + "\x00" + userID
-	hash := sha256.Sum256([]byte(data))
-	return base64.RawURLEncoding.EncodeToString(hash[:])
 }
