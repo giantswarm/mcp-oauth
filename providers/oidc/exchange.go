@@ -289,9 +289,17 @@ func (c *TokenExchangeClient) Exchange(ctx context.Context, req TokenExchangeReq
 	}
 	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	// Add client authentication if provided
+	// Add client authentication if provided.
+	//
+	// RFC 6749 §2.3.1 requires the client identifier and secret to be encoded
+	// using application/x-www-form-urlencoded *before* they are combined into
+	// the HTTP Basic credential. Go's http.Request.SetBasicAuth does not do
+	// this encoding, so a secret containing characters that the form encoding
+	// alters (notably "+", which decodes back to a space) would be corrupted on
+	// the wire and rejected by spec-compliant servers (e.g. Dex) with
+	// "invalid_client". Pre-encode both components to comply with the RFC.
 	if req.ClientID != "" && req.ClientSecret != "" {
-		httpReq.SetBasicAuth(req.ClientID, req.ClientSecret)
+		httpReq.SetBasicAuth(url.QueryEscape(req.ClientID), url.QueryEscape(req.ClientSecret))
 	}
 
 	// Execute request
