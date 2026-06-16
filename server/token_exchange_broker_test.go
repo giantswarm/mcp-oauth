@@ -35,8 +35,8 @@ func (f *stubSubjectValidator) Validate(_ context.Context, _ string, _ []string)
 
 // recordingValidator captures the defaultAudiences passed to its last Validate call.
 type recordingValidator struct {
-	identity         SubjectIdentity
-	lastDefaultAuds  []string
+	identity        SubjectIdentity
+	lastDefaultAuds []string
 }
 
 func (f *recordingValidator) Validate(_ context.Context, _ string, defaultAuds []string) (*SubjectIdentity, error) {
