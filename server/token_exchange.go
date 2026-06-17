@@ -48,13 +48,21 @@ type ExchangeOptions struct {
 // validated DPoP proof; when non-empty it is written into the cnf.jkt claim of the
 // issued JWT per RFC 9449 §6.1. Pass empty string when no DPoP proof was presented.
 //
+// actorToken and actorTokenType are RFC 8693 §4.4 delegation parameters. When
+// actorToken is non-empty it is validated against the server's trusted issuers
+// and the resulting actor identity is written as the act claim of the issued
+// JWT (act.sub = agent SA, act.iss = agent issuer). The ActorDelegationPolicy
+// must explicitly allow the (actor, subject) pair; nil/empty policy denies all
+// delegated exchanges. Pass empty strings for both when no delegation is
+// required — the issued token will carry no act claim.
+//
 // opts is an optional ExchangeOptions whose identity fields are emitted as
 // standard JWT claims (email, email_verified, name, groups) and whose Extra
 // map is merged verbatim into the JWT body. Omitting opts adds no identity
 // claims. Only the first element is used when multiple are provided.
 func (s *Server) ExchangeSubjectToken(
 	ctx context.Context,
-	subjectToken, subjectTokenType, resource, scope, dpopJKT string,
+	subjectToken, subjectTokenType, actorToken, actorTokenType, resource, scope, dpopJKT string,
 	opts ...ExchangeOptions,
 ) (*TokenExchangeResult, error) {
 	if !s.Config.IsJWTAccessTokenFormat() {
@@ -73,6 +81,29 @@ func (s *Server) ExchangeSubjectToken(
 		return nil, err
 	}
 
+	var act *Actor
+	if actorToken != "" {
+		actor, err := s.validateExchangeActorToken(ctx, actorToken, actorTokenType, nil)
+		if err != nil {
+			return nil, err
+		}
+		if !s.actorDelegationAllowed(actor.Issuer, actor.Subject, identity.Issuer, identity.Subject) {
+			s.Auditor.LogEvent(ctx, security.Event{
+				Type:   security.EventAuthFailure,
+				UserID: identity.Subject,
+				Details: map[string]any{
+					"reason":     "actor_delegation_not_authorized",
+					"grant_type": GrantTypeTokenExchange,
+					"actor_sub":  actor.Subject,
+					"actor_iss":  actor.Issuer,
+					"sub":        identity.Subject,
+				},
+			})
+			return nil, fmt.Errorf("actor %q is not authorized to act for subject %q", actor.Subject, identity.Subject)
+		}
+		act = &Actor{Iss: actor.Issuer, Sub: actor.Subject}
+	}
+
 	grantedScope := grantedExchangeScope(scope, identity.AllowedScopes)
 
 	now := time.Now().UTC()
@@ -87,6 +118,17 @@ func (s *Server) ExchangeSubjectToken(
 		o = opts[0]
 	}
 
+	auditDetails := map[string]any{
+		"grant_type":         GrantTypeTokenExchange,
+		"subject_token_type": subjectTokenType,
+		"audience":           resource,
+		"scope":              grantedScope,
+	}
+	if act != nil {
+		auditDetails["actor_iss"] = act.Iss
+		auditDetails["actor_sub"] = act.Sub
+	}
+
 	tokenStr, err := s.accessTokenIssuer.Issue(ctx, AccessTokenClaims{
 		Subject:       identity.Subject,
 		Audience:      resource,
@@ -94,7 +136,7 @@ func (s *Server) ExchangeSubjectToken(
 		IssuedAt:      now,
 		ExpiresAt:     expiresAt,
 		JTI:           generateRandomToken(),
-		Act:           &Actor{Iss: identity.Issuer, Sub: identity.Subject},
+		Act:           act,
 		JKT:           dpopJKT,
 		Email:         o.Email,
 		EmailVerified: o.EmailVerified,
@@ -111,7 +153,6 @@ func (s *Server) ExchangeSubjectToken(
 				"grant_type":         GrantTypeTokenExchange,
 				"subject_token_type": subjectTokenType,
 				"audience":           resource,
-				"act_iss":            identity.Issuer,
 				"error":              err.Error(),
 			},
 		})
@@ -119,19 +160,13 @@ func (s *Server) ExchangeSubjectToken(
 	}
 
 	s.Logger.Debug("token exchange: issued token",
-		"sub", identity.Subject, "iss_act", identity.Issuer,
-		"aud", resource, "scope", grantedScope, "exp", expiresAt)
+		"sub", identity.Subject, "aud", resource, "scope", grantedScope, "exp", expiresAt,
+		"delegated", act != nil)
 
 	s.Auditor.LogEvent(ctx, security.Event{
-		Type:   security.EventTokenIssued,
-		UserID: identity.Subject,
-		Details: map[string]any{
-			"grant_type":         GrantTypeTokenExchange,
-			"subject_token_type": subjectTokenType,
-			"audience":           resource,
-			"scope":              grantedScope,
-			"act_iss":            identity.Issuer,
-		},
+		Type:    security.EventTokenIssued,
+		UserID:  identity.Subject,
+		Details: auditDetails,
 	})
 
 	return &TokenExchangeResult{

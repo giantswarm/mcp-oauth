@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `server.LocalMintExchanger` and `NewLocalMintExchanger(cfg *Config) (*LocalMintExchanger, error)`: an `Exchanger` implementation that mints a signed JWT access token locally using the server's own RSA/EC key. Intended for broker-routed targets where the broker is the authoritative issuer. Requires JWT access token mode; returns an error otherwise.
+
+- `actor_token` / `actor_token_type` support on the direct token-exchange path (`ExchangeSubjectToken`): when an actor token is presented, it is validated against the server's trusted issuers and the resulting actor identity is written as the `act` claim of the issued JWT (`act.iss` = actor issuer, `act.sub` = actor subject). The `ActorDelegationPolicy` must explicitly permit the (actor, subject) pair; a nil or empty policy denies all delegated exchanges.
+
+- `providers.UserInfo.ActorIssuer string` and `providers.UserInfo.ActorSubject string`: actor identity fields populated when a validated token carries an RFC 8693 §4.4 `act` claim. Empty for tokens without delegation.
+
+- `providers.UserInfo.IsDelegated() bool`: reports whether the token represents a delegated exchange; true when `ActorSubject` is non-empty.
+
+- `oidc.IDTokenClaims.Act *oidc.ActorClaim` and `oidc.ActorClaim` (`Issuer string`, `Subject string`): decoded automatically from the `act` claim of a JWT when present.
+
 - `providers.TokenSourceTrustedIssuer` (`"trusted-issuer"`) constant and `UserInfo.IsExternalIssuer() bool` method. A Bearer validated against a `WithTrustedIssuers` entry is now tagged with this source instead of `TokenSourceSSO`, so downstream servers can distinguish an external-IdP token (requires impersonation or token-exchange) from a Dex-forwarded SSO token (can be passed through as a bearer).
 
 - `providers.UserInfo.Issuer string` field, populated on the `TokenSourceTrustedIssuer` path with the originating issuer URL (e.g. the cluster's SA OIDC issuer). Empty for `TokenSourceSSO` and `TokenSourceOAuth`.
@@ -16,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `server.WithTrustedAudiences([]string) Option`: functional option equivalent to setting `Config.TrustedAudiences`, for symmetry with `WithTrustedIssuers`.
 
 ### Changed
+
+- `server.ExchangeSubjectToken` signature gains two new parameters: `actorToken string` and `actorTokenType string` (inserted after `subjectTokenType`, before `resource`). Callers passing no actor token must supply empty strings. The issued JWT no longer carries a self-referential `act` claim; `act` is omitted when no actor token is presented and set to the validated actor identity when one is.
 
 - `server.validateTrustedIssuerJWT` now sets `UserInfo.TokenSource = TokenSourceTrustedIssuer` and `UserInfo.Issuer` instead of the previous `TokenSourceSSO`. Callers that relied on `userInfo.IsSSO()` being true for trusted-issuer tokens must switch to `userInfo.IsExternalIssuer()`.
 

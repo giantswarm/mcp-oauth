@@ -68,6 +68,7 @@ func TestExchangeSubjectToken_IssuedToken(t *testing.T) {
 		t.Context(),
 		subjectToken,
 		SubjectTokenTypeIDToken,
+		"", "",
 		"https://api.example.com",
 		"read",
 		"",
@@ -87,9 +88,7 @@ func TestExchangeSubjectToken_IssuedToken(t *testing.T) {
 
 	require.Equal(t, testSubject, standard.Subject)
 	require.Equal(t, josejwt.Audience{"https://api.example.com"}, standard.Audience)
-	require.NotNil(t, private.Act)
-	require.Equal(t, testIssuer, private.Act.Iss)
-	require.Equal(t, testSubject, private.Act.Sub)
+	require.Nil(t, private.Act, "act claim must be absent when no actor_token is provided")
 	require.Equal(t, "read", private.Scope)
 }
 
@@ -140,13 +139,13 @@ func TestExchangeSubjectToken_ScopeIntersection(t *testing.T) {
 	}
 
 	t.Run("requested scope within allowed", func(t *testing.T) {
-		result, err := srv.ExchangeSubjectToken(t.Context(), makeToken(), SubjectTokenTypeIDToken, "https://api.example.com", "read", "")
+		result, err := srv.ExchangeSubjectToken(t.Context(), makeToken(), SubjectTokenTypeIDToken, "", "", "https://api.example.com", "read", "")
 		require.NoError(t, err)
 		require.Equal(t, "read", result.Scope)
 	})
 
 	t.Run("requested scope outside allowed", func(t *testing.T) {
-		result, err := srv.ExchangeSubjectToken(t.Context(), makeToken(), SubjectTokenTypeIDToken, "https://api.example.com", "admin", "")
+		result, err := srv.ExchangeSubjectToken(t.Context(), makeToken(), SubjectTokenTypeIDToken, "", "", "https://api.example.com", "admin", "")
 		require.NoError(t, err)
 		// intersection of [admin] ∩ [read write] = empty
 		require.Equal(t, "", result.Scope)
@@ -197,7 +196,7 @@ func TestExchangeSubjectToken_NoAllowedScopes(t *testing.T) {
 		IssuedAt: josejwt.NewNumericDate(time.Now()),
 	})
 
-	result, err := srv.ExchangeSubjectToken(t.Context(), subjectToken, SubjectTokenTypeIDToken, "https://api.example.com", "read write admin", "")
+	result, err := srv.ExchangeSubjectToken(t.Context(), subjectToken, SubjectTokenTypeIDToken, "", "", "https://api.example.com", "read write admin", "")
 	require.NoError(t, err)
 	// Full requested scope granted when no per-issuer restriction.
 	scopes := strings.Fields(result.Scope)
@@ -225,7 +224,7 @@ func TestExchangeSubjectToken_UnknownTokenType(t *testing.T) {
 	require.NoError(t, err)
 	// No validators registered.
 
-	_, err = srv.ExchangeSubjectToken(t.Context(), "sometoken", "urn:ietf:params:oauth:token-type:saml2", "https://api.example.com", "", "")
+	_, err = srv.ExchangeSubjectToken(t.Context(), "sometoken", "urn:ietf:params:oauth:token-type:saml2", "", "", "https://api.example.com", "", "")
 	require.Error(t, err)
 
 	var unsupported *TokenExchangeUnsupportedTypeError
@@ -236,7 +235,7 @@ func TestExchangeSubjectToken_UnknownTokenType(t *testing.T) {
 func TestExchangeSubjectToken_RequiresJWTMode(t *testing.T) {
 	srv, _, _ := setupFlowTestServer(t) // opaque mode
 
-	_, err := srv.ExchangeSubjectToken(t.Context(), "tok", SubjectTokenTypeIDToken, "https://api.example.com", "", "")
+	_, err := srv.ExchangeSubjectToken(t.Context(), "tok", SubjectTokenTypeIDToken, "", "", "https://api.example.com", "", "")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "JWT access token mode")
 }
@@ -311,6 +310,7 @@ func TestExchangeSubjectToken_Audit_Success(t *testing.T) {
 		t.Context(),
 		makeAuditSubjectToken(t, key),
 		SubjectTokenTypeIDToken,
+		"", "",
 		"https://api.example.com",
 		"read",
 		"",
@@ -325,7 +325,6 @@ func TestExchangeSubjectToken_Audit_Success(t *testing.T) {
 		"audit event must carry grant_type so dashboards can split exchange issuances")
 	require.Contains(t, out, "https://api.example.com",
 		"audit event must record the audience")
-	require.Contains(t, out, "act_iss")
 }
 
 func TestExchangeSubjectToken_Audit_JWTModeRequired(t *testing.T) {
@@ -344,7 +343,7 @@ func TestExchangeSubjectToken_Audit_JWTModeRequired(t *testing.T) {
 	srv.Auditor = security.NewAuditor(logger, true)
 
 	_, err = srv.ExchangeSubjectToken(t.Context(), "tok", SubjectTokenTypeIDToken,
-		"https://api.example.com", "", "")
+		"", "", "https://api.example.com", "", "")
 	require.Error(t, err)
 
 	out := buf.String()
@@ -376,7 +375,7 @@ func TestExchangeSubjectToken_Audit_UnsupportedSubjectTokenType(t *testing.T) {
 
 	const badType = "urn:ietf:params:oauth:token-type:saml2"
 	_, err = srv.ExchangeSubjectToken(t.Context(), "tok", badType,
-		"https://api.example.com", "", "")
+		"", "", "https://api.example.com", "", "")
 	require.Error(t, err)
 	var unsupported *TokenExchangeUnsupportedTypeError
 	require.ErrorAs(t, err, &unsupported)
@@ -394,7 +393,7 @@ func TestExchangeSubjectToken_Audit_SubjectTokenValidationFailure(t *testing.T) 
 	srv, buf, _ := newAuditExchangeTestServer(t)
 
 	_, err := srv.ExchangeSubjectToken(t.Context(), "not-a-real-token",
-		SubjectTokenTypeIDToken, "https://api.example.com", "", "")
+		SubjectTokenTypeIDToken, "", "", "https://api.example.com", "", "")
 	require.Error(t, err)
 
 	out := buf.String()
@@ -410,7 +409,7 @@ func TestExchangeSubjectToken_Audit_AccessTokenIssueFailure(t *testing.T) {
 	srv.accessTokenIssuer = failingAccessTokenIssuer{err: fmt.Errorf("signer down")}
 
 	_, err := srv.ExchangeSubjectToken(t.Context(), makeAuditSubjectToken(t, key),
-		SubjectTokenTypeIDToken, "https://api.example.com", "read", "")
+		SubjectTokenTypeIDToken, "", "", "https://api.example.com", "read", "")
 	require.Error(t, err)
 
 	out := buf.String()
@@ -418,8 +417,6 @@ func TestExchangeSubjectToken_Audit_AccessTokenIssueFailure(t *testing.T) {
 		"missing access_token_issue_failed audit failure in: %s", out)
 	require.Contains(t, out, "https://api.example.com",
 		"audit event must record the audience on issuance failure")
-	require.Contains(t, out, "act_iss",
-		"audit event must record the upstream actor issuer on issuance failure")
 }
 
 func TestExchangeSubjectToken_DPoP(t *testing.T) {
@@ -474,6 +471,7 @@ func TestExchangeSubjectToken_DPoP(t *testing.T) {
 		t.Context(),
 		subjectToken,
 		SubjectTokenTypeIDToken,
+		"", "",
 		"https://api.example.com",
 		"read",
 		jkt,
@@ -546,6 +544,7 @@ func TestExchangeSubjectToken_WithIdentityClaims(t *testing.T) {
 		t.Context(),
 		subjectToken,
 		SubjectTokenTypeIDToken,
+		"", "",
 		"https://api.example.com",
 		"read",
 		"",
@@ -569,7 +568,7 @@ func TestExchangeSubjectToken_WithIdentityClaims(t *testing.T) {
 	require.True(t, *private.EmailVerified)
 	require.Equal(t, "Klaus SRE Agent", private.Name)
 	require.Equal(t, []string{"klaus-sre", "machine"}, private.Groups)
-	require.NotNil(t, private.Act, "act claim must still be set after identity injection")
+	require.Nil(t, private.Act, "act claim must be absent when no actor_token is provided")
 }
 
 func TestExchangeSubjectToken_WithExtraClaims(t *testing.T) {
@@ -579,6 +578,7 @@ func TestExchangeSubjectToken_WithExtraClaims(t *testing.T) {
 		t.Context(),
 		subjectToken,
 		SubjectTokenTypeIDToken,
+		"", "",
 		"https://api.example.com",
 		"read",
 		"",
@@ -608,6 +608,7 @@ func TestExchangeSubjectToken_NoOptions_BackwardCompat(t *testing.T) {
 		t.Context(),
 		subjectToken,
 		SubjectTokenTypeIDToken,
+		"", "",
 		"https://api.example.com",
 		"read",
 		"",
@@ -633,6 +634,7 @@ func TestExchangeSubjectToken_EmailVerifiedFalseWithEmail(t *testing.T) {
 		t.Context(),
 		subjectToken,
 		SubjectTokenTypeIDToken,
+		"", "",
 		"https://api.example.com",
 		"read",
 		"",
@@ -661,6 +663,7 @@ func TestExchangeSubjectToken_ExtraOverridesEmailVerified(t *testing.T) {
 		t.Context(),
 		subjectToken,
 		SubjectTokenTypeIDToken,
+		"", "",
 		"https://api.example.com",
 		"read",
 		"",
@@ -679,4 +682,92 @@ func TestExchangeSubjectToken_ExtraOverridesEmailVerified(t *testing.T) {
 	require.NoError(t, parsed.Claims(signingKey.Public(), &rawClaims))
 
 	require.Equal(t, true, rawClaims["email_verified"])
+}
+
+const actorIssuerURL = "https://actor.example.com"
+const actorTestSub = "agent-sa@cluster.example.com"
+
+// newActorExchangeServer builds a Server wired with a stubTokenValidator for
+// actor-delegation tests. The stub maps "sub-tok" → (testIssuer, testSubject)
+// and "act-tok" → (actorIssuerURL, actorTestSub) so no JWKS round-trip is
+// needed. policy is installed as ActorDelegationPolicy.
+func newActorExchangeServer(t *testing.T, policy []DelegationGrant) (srv *Server, signingKey *rsa.PrivateKey) {
+	t.Helper()
+	store := memory.New()
+	t.Cleanup(func() { store.Stop() })
+
+	signingKey = generateRSAKey(t)
+	cfg := &Config{
+		Issuer:                      "https://auth.example.com",
+		ResourceIdentifier:          "https://api.example.com",
+		SupportedScopes:             []string{"read"},
+		AccessTokenTTL:              600,
+		AccessTokenFormat:           AccessTokenFormatJWT,
+		AccessTokenSigningKey:       signingKey,
+		AccessTokenSigningKeyID:     "actor-test-kid",
+		AccessTokenSigningAlgorithm: SigningAlgorithmRS256,
+		DisableNonceEchoRequirement: true,
+		ActorDelegationPolicy:       policy,
+	}
+	srv, err := New(mock.NewProvider(), store, store, store, cfg, nil)
+	require.NoError(t, err)
+
+	// validateExchangeActorToken uses the same SubjectValidatorFor dispatch as
+	// the subject path, so both tokens must live under the same type key.
+	srv.subjectValidators = map[string]SubjectTokenValidator{
+		SubjectTokenTypeIDToken: &stubTokenValidator{
+			byToken: map[string]*SubjectIdentity{
+				"sub-tok": {Subject: testSubject, Issuer: testIssuer},
+				"act-tok": {Subject: actorTestSub, Issuer: actorIssuerURL},
+			},
+		},
+	}
+	return srv, signingKey
+}
+
+// TestExchangeSubjectToken_WithActor verifies that when a valid actor_token is
+// presented and an ActorDelegationPolicy permits the (actor, subject) pair, the
+// issued JWT carries act.sub = actor subject and act.iss = actor issuer.
+func TestExchangeSubjectToken_WithActor(t *testing.T) {
+	srv, signingKey := newActorExchangeServer(t, []DelegationGrant{
+		{ActorIssuer: actorIssuerURL, ActorSubject: "*", SubjectIssuer: testIssuer, SubjectSubject: "*"},
+	})
+
+	result, err := srv.ExchangeSubjectToken(
+		t.Context(),
+		"sub-tok", SubjectTokenTypeIDToken,
+		"act-tok", SubjectTokenTypeIDToken,
+		"https://api.example.com",
+		"read",
+		"",
+	)
+	require.NoError(t, err)
+
+	parsed, err := josejwt.ParseSigned(result.AccessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+
+	var private rfc9068Claims
+	require.NoError(t, parsed.Claims(signingKey.Public(), &private))
+
+	require.Equal(t, testSubject, private.Subject)
+	require.NotNil(t, private.Act, "act claim must be set for delegated exchange")
+	require.Equal(t, actorIssuerURL, private.Act.Iss, "act.iss must be the actor token issuer")
+	require.Equal(t, actorTestSub, private.Act.Sub, "act.sub must be the agent SA subject")
+}
+
+// TestExchangeSubjectToken_ActorDeniedWhenNoPolicy verifies that presenting
+// an actor_token without an ActorDelegationPolicy entry is denied.
+func TestExchangeSubjectToken_ActorDeniedWhenNoPolicy(t *testing.T) {
+	srv, _ := newActorExchangeServer(t, nil)
+
+	_, err := srv.ExchangeSubjectToken(
+		t.Context(),
+		"sub-tok", SubjectTokenTypeIDToken,
+		"act-tok", SubjectTokenTypeIDToken,
+		"https://api.example.com",
+		"read",
+		"",
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not authorized to act for subject")
 }
