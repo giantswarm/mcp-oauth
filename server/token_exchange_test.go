@@ -795,3 +795,35 @@ func TestExchangeSubjectToken_ActorDeniedWhenNoPolicy(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not authorized to act for subject")
 }
+
+// TestExchangeSubjectToken_ActorTokenValidationFailure verifies that a
+// rejected actor token (bad signature, unknown issuer, etc.) causes
+// ExchangeSubjectToken to return an error without issuing a token.
+func TestExchangeSubjectToken_ActorTokenValidationFailure(t *testing.T) {
+	srv, _ := newActorExchangeServer(t, []DelegationGrant{
+		{ActorIssuer: actorIssuerURL, ActorSubject: "*", SubjectIssuer: testIssuer, SubjectSubject: "*"},
+	})
+
+	// Replace the validator so "bad-act-tok" returns a validation error.
+	srv.subjectValidators = map[string]SubjectTokenValidator{
+		SubjectTokenTypeIDToken: &stubTokenValidator{
+			byToken: map[string]*SubjectIdentity{
+				"sub-tok": {Subject: testSubject, Issuer: testIssuer},
+			},
+			byErr: map[string]error{
+				"bad-act-tok": fmt.Errorf("signature verification failed"),
+			},
+		},
+	}
+
+	_, err := srv.ExchangeSubjectToken(
+		t.Context(),
+		"sub-tok", SubjectTokenTypeIDToken,
+		"bad-act-tok", SubjectTokenTypeIDToken,
+		"https://api.example.com",
+		"read",
+		"",
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "actor token validation")
+}
