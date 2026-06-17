@@ -41,8 +41,8 @@ func TestCache(t *testing.T) {
 		cache := New()
 
 		key := "expired-key"
-		// Set with 0 seconds (will be immediately expired due to buffer)
-		cache.Set(key, "expired-token", tokenTypeAccessToken, 0)
+		// Negative expiresIn puts the expiry well in the past regardless of the buffer.
+		cache.Set(key, "expired-token", tokenTypeAccessToken, -60)
 
 		cached := cache.Get(key)
 		if cached != nil {
@@ -107,9 +107,9 @@ func TestCache(t *testing.T) {
 		cache.Set("valid1", "token1", tokenTypeAccessToken, 3600)
 		cache.Set("valid2", "token2", tokenTypeAccessToken, 3600)
 
-		// Add expired tokens (0 seconds means immediately expired due to buffer)
-		cache.Set("expired1", "token3", tokenTypeAccessToken, 0)
-		cache.Set("expired2", "token4", tokenTypeAccessToken, 0)
+		// Negative expiresIn puts the expiry well in the past regardless of the buffer.
+		cache.Set("expired1", "token3", tokenTypeAccessToken, -60)
+		cache.Set("expired2", "token4", tokenTypeAccessToken, -60)
 
 		if cache.Size() != 4 {
 			t.Errorf("Size() = %d, want 4 before cleanup", cache.Size())
@@ -132,7 +132,7 @@ func TestCache(t *testing.T) {
 		}
 	})
 
-	t.Run("concurrent access", func(_ *testing.T) {
+	t.Run("concurrent access", func(t *testing.T) {
 		cache := New()
 		done := make(chan bool)
 

@@ -71,7 +71,7 @@ const (
 //
 //   - Per-user rate limits to prevent individual users from overwhelming the IdP
 //   - Global rate limits to protect against coordinated attacks
-//   - The [tokencache.Cache] to reduce redundant exchange requests
+//   - The [github.com/giantswarm/mcp-oauth/providers/tokencache.Cache] to reduce redundant exchange requests
 //
 // # Example Usage
 //

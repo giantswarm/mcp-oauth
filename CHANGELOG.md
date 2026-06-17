@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `server.ExchangerRequest` now carries `ActorToken string`, `ActorTokenType string`, and `Actor *server.SubjectIdentity`. The brokered token-exchange endpoint accepts RFC 8693 `actor_token` and `actor_token_type` form parameters; when present the actor token is validated against the server's trusted issuers (same validator path as the subject token) and the verified actor identity is forwarded to the `Exchanger`. Absent actor params leave `Actor` nil and `BrokerExchangeSubjectToken` behaves identically to before.
+
+- `server.TokenExchangeUnsupportedTypeError` now exposes a `Role() string` method returning `"subject"` or `"actor"` to identify which token in the exchange request had an unsupported type. Handlers and callers that previously matched this error via `errors.As` now receive accurate role information for error messages and logs.
+
+- `providers/tokencache`: new package with a generic LRU-bounded token cache (`Cache`) for short-lived access tokens, usable by any credential provider (OIDC exchange, GitHub App installation tokens, etc.).
+
+- `server.TrustedIssuer.AcceptedTypHeaders`: per-issuer list of accepted JWT `typ` header values for Bearer validation. Empty keeps the RFC 9068 §4 default (`at+jwt`). Kubernetes ServiceAccount tokens carry no `typ` header, so the previously unconditional `at+jwt` requirement made the documented K8s SA trust use case impossible; configure `[""]` (optionally with `"JWT"`) on the cluster issuer entry to accept them. Signature, issuer, audience, and claim checks are unchanged.
+
+- `server.Config.WorkloadAudiences []server.WorkloadGrant`: per-workload audience allowlist for the workload-authenticated token-exchange path. Each `WorkloadGrant` binds an issuer (matched exactly; use `"*"` to match any trusted issuer) and a subject glob to a list of permitted audience values. An empty `Issuer` is rejected at startup by `Config.Validate`. Only consulted when `EnableWorkloadTokenExchange` is true and an `Exchanger` is configured.
+
+- `server.Config.EnableWorkloadTokenExchange bool`: enables the workload-authenticated RFC 8693 token-exchange path. When true and a brokered request carries no OAuth client credentials, the request is authenticated solely by the subject/actor token itself (validated against `TrustedIssuers`) and authorized against `WorkloadAudiences`. When an `actor_token` is present, authorization uses the actor subject (delegation); otherwise the subject token's `sub` is used (impersonation). Default false: requests with no client credentials continue to be rejected with `invalid_client`.
+
+- `server.Config.ActorDelegationPolicy []server.DelegationGrant`: authorization gate for RFC 8693 delegation. Each `DelegationGrant` identifies an actor by issuer+subject glob and the subject issuer+subject globs that actor may represent. Issuers are matched exactly; use `"*"` to match any trusted issuer. Empty issuer fields are rejected at startup by `Config.Validate`. Consulted on both the client-authenticated and workload-authenticated paths when an `actor_token` is present. When nil (the default), all delegation requests are rejected.
+
+### Changed
+
+- `providers/oidc.TokenExchangeCache`, `CachedExchangeToken`, `TokenExchangeCacheStats`, `NewTokenExchangeCache`, `NewTokenExchangeCacheWithMaxEntries`, and `GenerateCacheKey` have moved to the new `providers/tokencache` package as `Cache`, `Token`, `Stats`, `New`, `NewWithMaxEntries`, and `GenerateCacheKey`. The old names are removed; update import paths.
+
 ### Fixed
 
 - **Token exchange `invalid_client` for client secrets containing `+` (or other form-significant characters).** `providers/oidc.TokenExchangeClient.Exchange` authenticated to the downstream token endpoint with `http.Request.SetBasicAuth(clientID, clientSecret)`, which base64-encodes the raw values. RFC 6749 §2.3.1 requires both components to be `application/x-www-form-urlencoded` first; spec-compliant servers (e.g. Dex) url-unescape the Basic credential, so a `+` in the secret was decoded to a space and rejected with `invalid_client`. Both components are now url-encoded before the Basic credential is formed. Secrets containing only `/` and `=` were unaffected, which is why some clusters worked and others did not.
@@ -20,26 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ExchangerRequest.ActorTokenType` could be non-empty while `ActorToken` and `Actor` were both empty** when a caller passed `actor_token_type` without `actor_token`. `BrokerExchangeSubjectToken` now normalises `ActorTokenType` to `""` when no actor token is present, keeping the three actor fields consistent. The HTTP handler also rejects `actor_token` present without `actor_token_type` with 400 `invalid_request` per RFC 8693 §2.1.
 
 - **Stale issuer JWKS broke every token after an issuer signing-key rotation.** `oidc.JWKSClient` cached a trusted issuer's JWKS for the full TTL (1h) and never refetched when a token presented a `kid` absent from the cached set, so a single Dex key rotation made `ValidateIDToken` (and therefore the token-exchange broker's subject-token validation) reject **every** current user token until the process was restarted ([muster#847](https://github.com/giantswarm/muster/issues/847)). The client now forces a single bounded refetch on an unknown `kid` and retries verification once. The refetch is rate-limited to at most one network fetch per `DefaultJWKSRefetchBackoff` (1m) per JWKS URI (negative caching), so a flood of tokens carrying genuinely bogus kids cannot hammer the issuer's JWKS endpoint. A legitimate rotation now self-heals on the first affected token without a restart. New exported sentinel `oidc.ErrKeyNotFound`.
-
-### Changed
-
-- `providers/oidc.TokenExchangeCache`, `CachedExchangeToken`, `TokenExchangeCacheStats`, `NewTokenExchangeCache`, `NewTokenExchangeCacheWithMaxEntries`, and `GenerateCacheKey` have moved to the new `providers/tokencache` package as `Cache`, `Token`, `Stats`, `New`, `NewWithMaxEntries`, and `GenerateCacheKey`. The old names are removed; update import paths.
-
-### Added
-
-- `server.ExchangerRequest` now carries `ActorToken string`, `ActorTokenType string`, and `Actor *server.SubjectIdentity`. The brokered token-exchange endpoint accepts RFC 8693 `actor_token` and `actor_token_type` form parameters; when present the actor token is validated against the server's trusted issuers (same validator path as the subject token) and the verified actor identity is forwarded to the `Exchanger`. Absent actor params leave `Actor` nil and `BrokerExchangeSubjectToken` behaves identically to before.
-
-- `server.TokenExchangeUnsupportedTypeError` now exposes a `Role() string` method returning `"subject"` or `"actor"` to identify which token in the exchange request had an unsupported type. Handlers and callers that previously matched this error via `errors.As` now receive accurate role information for error messages and logs.
-
-- `providers.tokencache`: new package with a generic LRU-bounded token cache (`Cache`) for short-lived access tokens, usable by any credential provider (OIDC exchange, GitHub App installation tokens, etc.).
-
-- `server.TrustedIssuer.AcceptedTypHeaders`: per-issuer list of accepted JWT `typ` header values for Bearer validation. Empty keeps the RFC 9068 §4 default (`at+jwt`). Kubernetes ServiceAccount tokens carry no `typ` header, so the previously unconditional `at+jwt` requirement made the documented K8s SA trust use case impossible; configure `[""]` (optionally with `"JWT"`) on the cluster issuer entry to accept them. Signature, issuer, audience, and claim checks are unchanged.
-
-- `server.Config.WorkloadAudiences []server.WorkloadGrant`: per-workload audience allowlist for the workload-authenticated token-exchange path. Each `WorkloadGrant` binds an issuer (matched exactly; use `"*"` to match any trusted issuer) and a subject glob to a list of permitted audience values. An empty `Issuer` is rejected at startup by `Config.Validate`. Only consulted when `EnableWorkloadTokenExchange` is true and an `Exchanger` is configured.
-
-- `server.Config.EnableWorkloadTokenExchange bool`: enables the workload-authenticated RFC 8693 token-exchange path. When true and a brokered request carries no OAuth client credentials, the request is authenticated solely by the subject/actor token itself (validated against `TrustedIssuers`) and authorized against `WorkloadAudiences`. When an `actor_token` is present, authorization uses the actor subject (delegation); otherwise the subject token's `sub` is used (impersonation). Default false: requests with no client credentials continue to be rejected with `invalid_client`.
-
-- `server.Config.ActorDelegationPolicy []server.DelegationGrant`: authorization gate for RFC 8693 delegation. Each `DelegationGrant` identifies an actor by issuer+subject glob and the subject issuer+subject globs that actor may represent. Issuers are matched exactly; use `"*"` to match any trusted issuer. Empty issuer fields are rejected at startup by `Config.Validate`. Consulted on both the client-authenticated and workload-authenticated paths when an `actor_token` is present. When nil (the default), all delegation requests are rejected.
 
 ## [0.2.199] - 2026-06-10
 
