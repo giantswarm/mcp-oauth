@@ -65,7 +65,10 @@ func TestValidateToken_TrustedIssuer_Accepts(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, userInfo)
 	require.Equal(t, testSubject, userInfo.ID)
-	require.Equal(t, providers.TokenSourceSSO, userInfo.TokenSource)
+	require.Equal(t, providers.TokenSourceTrustedIssuer, userInfo.TokenSource)
+	require.True(t, userInfo.IsExternalIssuer(), "IsExternalIssuer() must be true for trusted-issuer token")
+	require.False(t, userInfo.IsSSO(), "IsSSO() must be false for trusted-issuer token")
+	require.Equal(t, testIssuer, userInfo.Issuer, "Issuer must be propagated from the trusted-issuer entry")
 }
 
 func TestValidateToken_TrustedIssuer_DefaultsAudienceToResourceIdentifier(t *testing.T) {

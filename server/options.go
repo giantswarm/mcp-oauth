@@ -105,6 +105,26 @@ func WithTokenRefreshHandler(handler TokenRefreshHandler) Option {
 //     ResourceIdentifier when empty); the typ header is checked against
 //     AcceptedTypHeaders (default RFC 9068 typ=at+jwt).
 //
+// WithTrustedAudiences sets additional OAuth client IDs whose tokens are
+// accepted by ValidateToken, alongside the server's own ResourceIdentifier.
+// This covers SSO token forwarding: an aggregator (e.g. muster) issues tokens
+// with its own client_id as audience; adding that client_id here lets downstream
+// servers accept forwarded tokens without a separate auth flow.
+//
+// Equivalent to setting Config.TrustedAudiences; provided as a functional
+// option for symmetry with WithTrustedIssuers. If both are used, the option
+// takes precedence over the Config field.
+//
+// Empty slice is a no-op.
+func WithTrustedAudiences(audiences []string) Option {
+	return func(s *Server) {
+		if len(audiences) == 0 {
+			return
+		}
+		s.Config.TrustedAudiences = audiences
+	}
+}
+
 // Use TrustedIssuer.AllowedClaims to constrain accepted subjects per issuer.
 // Empty list is a no-op.
 func WithTrustedIssuers(issuers []TrustedIssuer) Option {
