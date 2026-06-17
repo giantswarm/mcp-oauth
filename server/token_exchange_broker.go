@@ -128,14 +128,21 @@ func (s *Server) BrokerExchangeSubjectToken(
 		return nil, fmt.Errorf("%w: audience %q", ErrInvalidTarget, audience)
 	}
 
-	identity, err := s.validateExchangeSubjectToken(ctx, subjectToken, subjectTokenType, nil)
+	brokerAuditCtx := map[string]any{
+		"exchange":   "brokered",
+		"client_id":  clientID,
+		"audience":   audience,
+		"session_id": sessionID,
+	}
+
+	identity, err := s.validateExchangeSubjectToken(ctx, subjectToken, subjectTokenType, nil, brokerAuditCtx)
 	if err != nil {
 		return nil, err
 	}
 
 	var actor *SubjectIdentity
 	if actorToken != "" {
-		actor, err = s.validateExchangeActorToken(ctx, actorToken, actorTokenType)
+		actor, err = s.validateExchangeActorToken(ctx, actorToken, actorTokenType, brokerAuditCtx)
 		if err != nil {
 			return nil, err
 		}
@@ -193,14 +200,14 @@ func (s *Server) WorkloadExchangeSubjectToken(
 	if actorToken == "" {
 		subjDefaultAud = []string{s.Config.Issuer}
 	}
-	identity, err := s.validateExchangeSubjectToken(ctx, subjectToken, subjectTokenType, subjDefaultAud)
+	identity, err := s.validateExchangeSubjectToken(ctx, subjectToken, subjectTokenType, subjDefaultAud, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	var actor *SubjectIdentity
 	if actorToken != "" {
-		actor, err = s.validateExchangeActorToken(ctx, actorToken, actorTokenType)
+		actor, err = s.validateExchangeActorToken(ctx, actorToken, actorTokenType, nil)
 		if err != nil {
 			return nil, err
 		}
