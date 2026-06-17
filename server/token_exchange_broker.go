@@ -273,9 +273,9 @@ func (s *Server) actorDelegationAllowed(actorIssuer, actorSub, subjectIssuer, su
 }
 
 // issuerMatches reports whether the grant's issuer pattern matches the token issuer.
-// An empty pattern matches any issuer.
+// Use "*" to match any issuer; an empty pattern matches nothing.
 func (s *Server) issuerMatches(pattern, issuer string) bool {
-	return pattern == "" || pattern == issuer
+	return pattern == "*" || pattern == issuer
 }
 
 // subjectMatches reports whether value matches pattern using matchClaimPattern

@@ -107,10 +107,11 @@ const (
 
 // WorkloadGrant authorizes a workload identity to request specific RFC 8693 audiences on the
 // workload-authenticated exchange path. Issuer is matched exactly against the validated token's
-// iss claim; Subject is matched by glob (path.Match semantics, * spans slashes). An empty Issuer
-// field matches any trusted issuer.
+// iss claim; Subject is matched by glob (path.Match semantics, * spans slashes). Use "*" as
+// Issuer to match any trusted issuer; an empty Issuer matches nothing and Config.Validate rejects it.
 type WorkloadGrant struct {
-	// Issuer is the exact token issuer URL. Empty matches any trusted issuer.
+	// Issuer is the exact token issuer URL, or "*" to match any trusted issuer.
+	// Empty is rejected by Config.Validate.
 	Issuer string
 	// Subject is a glob pattern matched against the token's sub claim.
 	Subject string
@@ -120,13 +121,16 @@ type WorkloadGrant struct {
 
 // DelegationGrant authorizes an actor (identified by ActorIssuer + ActorSubject) to act on behalf
 // of subjects matching SubjectIssuer + SubjectSubject. Issuers are matched exactly; subjects by glob
-// (path.Match semantics, * spans slashes). An empty issuer field matches any trusted issuer.
+// (path.Match semantics, * spans slashes). Use "*" as an issuer field to match any trusted issuer;
+// empty issuer fields match nothing and Config.Validate rejects them.
 type DelegationGrant struct {
-	// ActorIssuer is the exact issuer URL of the actor's token. Empty matches any trusted issuer.
+	// ActorIssuer is the exact issuer URL of the actor's token, or "*" to match any trusted issuer.
+	// Empty is rejected by Config.Validate.
 	ActorIssuer string
 	// ActorSubject is a glob pattern matched against the actor token's sub claim.
 	ActorSubject string
-	// SubjectIssuer is the exact issuer URL of the subject's token. Empty matches any trusted issuer.
+	// SubjectIssuer is the exact issuer URL of the subject's token, or "*" to match any trusted issuer.
+	// Empty is rejected by Config.Validate.
 	SubjectIssuer string
 	// SubjectSubject is a glob pattern matched against the subject token's sub claim.
 	SubjectSubject string
@@ -779,7 +783,8 @@ type Config struct {
 	// Each WorkloadGrant binds an issuer+subject pattern to a set of permitted
 	// audience values. Issuer is matched exactly; Subject is matched by glob
 	// (* spans slashes, so "system:serviceaccount:ns:*" matches every SA in ns).
-	// An empty Issuer in a grant matches any trusted issuer.
+	// Use "*" as Issuer to match any trusted issuer; empty Issuer is rejected
+	// by Config.Validate.
 	//
 	// When an actor_token is present (delegation), authorization uses the
 	// actor's issuer and subject; otherwise the subject token's iss/sub are used
@@ -795,7 +800,8 @@ type Config struct {
 	// of which subjects. Each DelegationGrant identifies an actor by
 	// issuer+subject pattern and a set of subject issuer+subject patterns that
 	// actor may represent. Issuers are matched exactly; subjects by glob.
-	// An empty issuer field in a grant matches any trusted issuer.
+	// Use "*" as an issuer field to match any trusted issuer; empty issuer
+	// fields are rejected by Config.Validate.
 	//
 	// Consulted on both the client-authenticated and workload-authenticated
 	// exchange paths whenever an actor_token is present. When nil (the
@@ -1172,6 +1178,10 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	if err := c.validateGrants(); err != nil {
+		return err
+	}
+
 	if !c.IsJWTAccessTokenFormat() {
 		// AccessTokenFormatOpaque (or empty/unknown — treated as opaque).
 		// Reject anything that is not the explicit opaque value or empty so
@@ -1210,6 +1220,26 @@ func (c *Config) validateIntrospectionResourceServers() error {
 	for i, entry := range c.IntrospectionResourceServers {
 		if entry == "" {
 			return fmt.Errorf("IntrospectionResourceServers[%d] is empty", i)
+		}
+	}
+	return nil
+}
+
+// validateGrants rejects WorkloadGrant and DelegationGrant entries with empty
+// issuer fields. An empty issuer matches nothing (use "*" for any-issuer), so
+// an empty entry can only mask operator intent — fail closed at startup.
+func (c *Config) validateGrants() error {
+	for i, g := range c.WorkloadAudiences {
+		if g.Issuer == "" {
+			return fmt.Errorf("WorkloadAudiences[%d].Issuer is empty; use \"*\" to match any trusted issuer", i)
+		}
+	}
+	for i, g := range c.ActorDelegationPolicy {
+		if g.ActorIssuer == "" {
+			return fmt.Errorf("ActorDelegationPolicy[%d].ActorIssuer is empty; use \"*\" to match any trusted issuer", i)
+		}
+		if g.SubjectIssuer == "" {
+			return fmt.Errorf("ActorDelegationPolicy[%d].SubjectIssuer is empty; use \"*\" to match any trusted issuer", i)
 		}
 	}
 	return nil

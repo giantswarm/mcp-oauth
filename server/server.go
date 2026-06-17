@@ -196,7 +196,6 @@ func New(
 	srv.initializeMetadataSupport()
 	srv.validateProviderDefaultScopes(logger)
 	srv.logForwardedSessionIDKeyFingerprint()
-	srv.warnBroadGrants(logger)
 
 	for _, opt := range opts {
 		opt(srv)
@@ -622,28 +621,6 @@ func (s *Server) stopStorage() {
 	if store, ok := s.tokenStore.(stoppableStore); ok {
 		s.Logger.Debug("Stopping storage cleanup...")
 		store.Stop()
-	}
-}
-
-// warnBroadGrants logs a warning for each WorkloadGrant or DelegationGrant
-// whose issuer field is empty, since an empty issuer matches any trusted
-// issuer and is easy to leave unset accidentally.
-func (s *Server) warnBroadGrants(logger *slog.Logger) {
-	for i, g := range s.Config.WorkloadAudiences {
-		if g.Issuer == "" {
-			logger.Warn("WorkloadAudiences grant has no issuer set — matches any trusted issuer",
-				"grant_index", i, "subject", g.Subject)
-		}
-	}
-	for i, g := range s.Config.ActorDelegationPolicy {
-		if g.ActorIssuer == "" {
-			logger.Warn("ActorDelegationPolicy grant has no actor issuer set — matches any trusted issuer",
-				"grant_index", i, "actor_subject", g.ActorSubject)
-		}
-		if g.SubjectIssuer == "" {
-			logger.Warn("ActorDelegationPolicy grant has no subject issuer set — matches any trusted issuer",
-				"grant_index", i, "subject_subject", g.SubjectSubject)
-		}
 	}
 }
 

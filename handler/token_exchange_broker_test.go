@@ -303,7 +303,7 @@ func TestHandleBrokeredTokenExchange_ActorTokenForwarded(t *testing.T) {
 	h := setupBrokeredExchangeHandler(t, ex, []string{"gaggle"}, "confidential")
 	// fakeSubjectValidator returns "user@example.com" for both tokens; allow that actor for that subject.
 	h.srv.Config.ActorDelegationPolicy = []server.DelegationGrant{
-		{ActorSubject: "user@example.com", SubjectSubject: "user@example.com"},
+		{ActorIssuer: "*", ActorSubject: "user@example.com", SubjectIssuer: "*", SubjectSubject: "user@example.com"},
 	}
 
 	form := brokeredExchangeForm()
@@ -383,7 +383,7 @@ func TestHandleWorkloadTokenExchange_HappyPath(t *testing.T) {
 	const sub = "system:serviceaccount:ns:robot"
 	ex := &stubExchanger{result: happyDownstreamResult()}
 	h := setupWorkloadExchangeHandler(t, ex,
-		[]server.WorkloadGrant{{Subject: sub, Audiences: []string{"target-service"}}})
+		[]server.WorkloadGrant{{Issuer: "*", Subject: sub, Audiences: []string{"target-service"}}})
 
 	req := newTokenExchangeRequest(workloadExchangeForm())
 	w := httptest.NewRecorder()
@@ -407,7 +407,7 @@ func TestHandleWorkloadTokenExchange_AudienceNotAllowed(t *testing.T) {
 	const sub = "system:serviceaccount:ns:robot"
 	ex := &stubExchanger{result: happyDownstreamResult()}
 	h := setupWorkloadExchangeHandler(t, ex,
-		[]server.WorkloadGrant{{Subject: sub, Audiences: []string{"allowed-service"}}})
+		[]server.WorkloadGrant{{Issuer: "*", Subject: sub, Audiences: []string{"allowed-service"}}})
 
 	form := workloadExchangeForm()
 	form.Set("audience", "other-service")
@@ -426,7 +426,7 @@ func TestHandleWorkloadTokenExchange_GateOff_FallsBackToClientAuth(t *testing.T)
 	// reach authenticateClient and fail with invalid_request (client_id missing).
 	const sub = "system:serviceaccount:ns:robot"
 	ex := &stubExchanger{result: happyDownstreamResult()}
-	h := setupWorkloadExchangeHandler(t, ex, []server.WorkloadGrant{{Subject: sub, Audiences: []string{"target-service"}}})
+	h := setupWorkloadExchangeHandler(t, ex, []server.WorkloadGrant{{Issuer: "*", Subject: sub, Audiences: []string{"target-service"}}})
 	h.srv.Config.EnableWorkloadTokenExchange = false
 
 	req := newTokenExchangeRequest(workloadExchangeForm())
@@ -440,7 +440,7 @@ func TestHandleWorkloadTokenExchange_GateOff_FallsBackToClientAuth(t *testing.T)
 func TestHandleWorkloadTokenExchange_DPoPRejected(t *testing.T) {
 	const sub = "system:serviceaccount:ns:robot"
 	ex := &stubExchanger{result: happyDownstreamResult()}
-	h := setupWorkloadExchangeHandler(t, ex, []server.WorkloadGrant{{Subject: sub, Audiences: []string{"target-service"}}})
+	h := setupWorkloadExchangeHandler(t, ex, []server.WorkloadGrant{{Issuer: "*", Subject: sub, Audiences: []string{"target-service"}}})
 
 	req := newTokenExchangeRequest(workloadExchangeForm())
 	req.Header.Set("DPoP", "some-proof")
