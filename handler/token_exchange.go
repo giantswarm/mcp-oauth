@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -22,6 +23,8 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 
 	subjectToken := r.Form.Get("subject_token")
 	subjectTokenType := r.Form.Get("subject_token_type")
+	actorToken := r.Form.Get("actor_token")
+	actorTokenType := r.Form.Get("actor_token_type")
 	resource := r.Form.Get("resource")
 	audience := r.Form.Get("audience")
 	scope := r.Form.Get("scope")
@@ -42,11 +45,19 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 		h.writeError(w, constants.ErrorCodeInvalidRequest, "subject_token_type is required", http.StatusBadRequest)
 		return
 	}
+	if actorToken != "" && actorTokenType == "" {
+		h.logAuthFailure(r.Context(), "", clientIP, "token_exchange_actor_token_type_missing",
+			"token exchange: actor_token_type missing")
+		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "actor_token_type missing")
+		h.writeError(w, constants.ErrorCodeInvalidRequest, "actor_token_type is required when actor_token is present", http.StatusBadRequest)
+		return
+	}
 	// An audience parameter selects the brokered flow (RFC 8693 audience →
 	// downstream token via the host Exchanger). Without it, the local flow
 	// issues a JWT bound to the mandatory RFC 8707 resource.
 	if audience != "" {
-		h.handleBrokeredTokenExchange(w, r, clientIP, subjectToken, subjectTokenType, audience, resource, scope, startTime, span)
+		h.handleBrokeredTokenExchange(w, r, clientIP, subjectToken, subjectTokenType, actorToken, actorTokenType, audience, resource, scope, startTime, span)
 		return
 	}
 
@@ -90,17 +101,38 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 	h.writeTokenExchangeResponse(w, result)
 }
 
+// hasClientCredentials reports whether r carries any OAuth client
+// authentication material: HTTP Basic-Auth credentials, a form client_id,
+// form client_secret, or a client_assertion.
+func hasClientCredentials(r *http.Request) bool {
+	if strings.HasPrefix(r.Header.Get("Authorization"), "Basic ") {
+		return true
+	}
+	return r.Form.Get("client_id") != "" ||
+		r.Form.Get("client_secret") != "" ||
+		r.Form.Get("client_assertion") != ""
+}
+
 // handleBrokeredTokenExchange serves RFC 8693 requests that carry an
-// audience parameter: the authenticated client asks the broker for a
-// downstream token. Client authentication is mandatory (the per-client
-// audience allowlist is meaningless for a spoofable client_id, so public
-// clients are rejected). DPoP binding is not supported on this path — the
-// issued token is minted by a downstream issuer that never saw the proof.
+// audience parameter. When EnableWorkloadTokenExchange is true and no client
+// credentials are present, the request is routed to the workload-authenticated
+// path. Otherwise client authentication is mandatory (the per-client audience
+// allowlist is meaningless for a spoofable client_id, so public clients are
+// rejected). DPoP binding is not supported on this path — the issued token is
+// minted by a downstream issuer that never saw the proof.
+// actorToken and actorTokenType are RFC 8693 delegation params; both may be
+// empty when no actor_token was presented.
 func (h *Handler) handleBrokeredTokenExchange(
 	w http.ResponseWriter, r *http.Request,
-	clientIP, subjectToken, subjectTokenType, audience, resource, scope string,
+	clientIP, subjectToken, subjectTokenType, actorToken, actorTokenType, audience, resource, scope string,
 	startTime time.Time, span trace.Span,
 ) {
+	if h.server.Config.EnableWorkloadTokenExchange && !hasClientCredentials(r) {
+		h.handleWorkloadTokenExchange(w, r, clientIP, subjectToken, subjectTokenType,
+			actorToken, actorTokenType, audience, resource, scope, startTime, span)
+		return
+	}
+
 	client, err := h.authenticateClient(r, r.Form.Get("client_id"), clientIP)
 	if err != nil {
 		instrumentation.RecordError(span, err)
@@ -145,7 +177,7 @@ func (h *Handler) handleBrokeredTokenExchange(
 	}
 
 	result, err := h.server.BrokerExchangeSubjectToken(r.Context(),
-		client.ClientID, subjectToken, subjectTokenType, audience, resource, scope)
+		client.ClientID, subjectToken, subjectTokenType, actorToken, actorTokenType, audience, resource, scope)
 	if err != nil {
 		h.handleBrokeredTokenExchangeError(w, r, err, client.ClientID, clientIP, audience, startTime, span)
 		return
@@ -153,6 +185,44 @@ func (h *Handler) handleBrokeredTokenExchange(
 
 	h.logger.Debug("brokered token exchange successful",
 		"client_id", client.ClientID, "audience", audience, "ip", clientIP, "scope", result.Scope)
+	h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusOK, startTime)
+	instrumentation.SetSpanSuccess(span)
+	h.writeTokenExchangeResponse(w, result)
+}
+
+// handleWorkloadTokenExchange serves RFC 8693 requests with an audience but no
+// OAuth client credentials. The request is authenticated by the subject/actor
+// token itself against TrustedIssuers; authorization is checked against
+// Config.WorkloadAudiences. DPoP binding is not supported (the token is
+// forwarded verbatim downstream).
+func (h *Handler) handleWorkloadTokenExchange(
+	w http.ResponseWriter, r *http.Request,
+	clientIP, subjectToken, subjectTokenType, actorToken, actorTokenType, audience, resource, scope string,
+	startTime time.Time, span trace.Span,
+) {
+	if r.Header.Get("DPoP") != "" {
+		h.recordTokenFailure(r.Context(), server.GrantTypeTokenExchange, constants.ErrorCodeInvalidRequest)
+		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "dpop not supported for workload exchange")
+		h.writeError(w, constants.ErrorCodeInvalidRequest,
+			"DPoP binding is not supported for workload token exchange", http.StatusBadRequest)
+		return
+	}
+
+	instrumentation.SetSpanAttributes(span,
+		attribute.String(instrumentation.AttrGrantType, server.GrantTypeTokenExchange),
+		attribute.String("oauth.token_exchange.audience", audience),
+	)
+
+	result, err := h.server.WorkloadExchangeSubjectToken(r.Context(),
+		subjectToken, subjectTokenType, actorToken, actorTokenType, audience, resource, scope)
+	if err != nil {
+		h.handleBrokeredTokenExchangeError(w, r, err, "", clientIP, audience, startTime, span)
+		return
+	}
+
+	h.logger.Debug("workload token exchange successful",
+		"audience", audience, "ip", clientIP, "scope", result.Scope)
 	h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusOK, startTime)
 	instrumentation.SetSpanSuccess(span)
 	h.writeTokenExchangeResponse(w, result)
@@ -176,13 +246,13 @@ func (h *Handler) handleBrokeredTokenExchangeError(
 		h.writeError(w, constants.ErrorCodeInvalidTarget,
 			"the requested audience cannot be served", http.StatusBadRequest)
 	case errors.As(err, &unsupported):
-		h.logger.Debug("brokered token exchange: unsupported subject_token_type",
+		h.logger.Debug("brokered token exchange: unsupported "+unsupported.Role()+"_token_type",
 			"type", unsupported.TokenType(), "client_id", clientID, "ip", clientIP)
 		h.recordTokenFailure(r.Context(), server.GrantTypeTokenExchange, constants.ErrorCodeUnsupportedGrantType)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
-		instrumentation.SetSpanError(span, "unsupported subject_token_type")
+		instrumentation.SetSpanError(span, "unsupported "+unsupported.Role()+"_token_type")
 		h.writeError(w, constants.ErrorCodeUnsupportedGrantType,
-			"no validator registered for subject_token_type "+unsupported.TokenType(), http.StatusBadRequest)
+			"no validator registered for "+unsupported.Role()+"_token_type "+unsupported.TokenType(), http.StatusBadRequest)
 	default:
 		h.logger.Debug("brokered token exchange failed",
 			"client_id", clientID, "audience", audience, "ip", clientIP, "error", err)

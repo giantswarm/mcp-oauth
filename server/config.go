@@ -105,6 +105,37 @@ const (
 	EndpointPathJWKS = "/.well-known/jwks.json"
 )
 
+// WorkloadGrant authorizes a workload identity to request specific RFC 8693 audiences on the
+// workload-authenticated exchange path. Issuer is matched exactly against the validated token's
+// iss claim; Subject is matched by glob (path.Match semantics, * spans slashes). Use "*" as
+// Issuer to match any trusted issuer; an empty Issuer matches nothing and Config.Validate rejects it.
+type WorkloadGrant struct {
+	// Issuer is the exact token issuer URL, or "*" to match any trusted issuer.
+	// Empty is rejected by Config.Validate.
+	Issuer string
+	// Subject is a glob pattern matched against the token's sub claim.
+	Subject string
+	// Audiences lists the RFC 8693 audience values the matching workload may request.
+	Audiences []string
+}
+
+// DelegationGrant authorizes an actor (identified by ActorIssuer + ActorSubject) to act on behalf
+// of subjects matching SubjectIssuer + SubjectSubject. Issuers are matched exactly; subjects by glob
+// (path.Match semantics, * spans slashes). Use "*" as an issuer field to match any trusted issuer;
+// empty issuer fields match nothing and Config.Validate rejects them.
+type DelegationGrant struct {
+	// ActorIssuer is the exact issuer URL of the actor's token, or "*" to match any trusted issuer.
+	// Empty is rejected by Config.Validate.
+	ActorIssuer string
+	// ActorSubject is a glob pattern matched against the actor token's sub claim.
+	ActorSubject string
+	// SubjectIssuer is the exact issuer URL of the subject's token, or "*" to match any trusted issuer.
+	// Empty is rejected by Config.Validate.
+	SubjectIssuer string
+	// SubjectSubject is a glob pattern matched against the subject token's sub claim.
+	SubjectSubject string
+}
+
 // Config holds OAuth server configuration
 type Config struct {
 	// Issuer is the server's issuer identifier (base URL)
@@ -747,6 +778,47 @@ type Config struct {
 	// Default: nil (no client may request any audience).
 	TokenExchangeClientAudiences map[string][]string
 
+	// WorkloadAudiences is the per-workload allowlist for the
+	// workload-authenticated token-exchange flow (EnableWorkloadTokenExchange).
+	// Each WorkloadGrant binds an issuer+subject pattern to a set of permitted
+	// audience values. Issuer is matched exactly; Subject is matched by glob
+	// (* spans slashes, so "system:serviceaccount:ns:*" matches every SA in ns).
+	// Use "*" as Issuer to match any trusted issuer; empty Issuer is rejected
+	// by Config.Validate.
+	//
+	// When an actor_token is present (delegation), authorization uses the
+	// actor's issuer and subject; otherwise the subject token's iss/sub are used
+	// (impersonation).
+	//
+	// Only consulted when EnableWorkloadTokenExchange is true and an Exchanger
+	// is configured (server.WithExchanger). Default: nil (no workload may
+	// request any audience).
+	WorkloadAudiences []WorkloadGrant
+
+	// ActorDelegationPolicy is the authorization gate for RFC 8693 delegated
+	// token exchange: it controls which actors are permitted to act on behalf
+	// of which subjects. Each DelegationGrant identifies an actor by
+	// issuer+subject pattern and a set of subject issuer+subject patterns that
+	// actor may represent. Issuers are matched exactly; subjects by glob.
+	// Use "*" as an issuer field to match any trusted issuer; empty issuer
+	// fields are rejected by Config.Validate.
+	//
+	// Consulted on both the client-authenticated and workload-authenticated
+	// exchange paths whenever an actor_token is present. When nil (the
+	// default) all delegation requests are rejected — an actor_token will
+	// never be forwarded to the Exchanger unless this policy is explicitly
+	// configured.
+	ActorDelegationPolicy []DelegationGrant
+
+	// EnableWorkloadTokenExchange enables the workload-authenticated
+	// token-exchange path: a brokered RFC 8693 request with no OAuth client
+	// credentials is authenticated solely by the subject/actor token itself
+	// and authorized against WorkloadAudiences.
+	//
+	// Default false: requests with no client credentials continue to be
+	// rejected with invalid_client (existing behaviour).
+	EnableWorkloadTokenExchange bool
+
 	// SessionIDHMACKey optionally replaces the default SHA-256 session-ID derivation
 	// in Server.AcceptForwardedIDToken with HMAC-SHA-256 keyed by this value.
 	//
@@ -1106,6 +1178,10 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	if err := c.validateGrants(); err != nil {
+		return err
+	}
+
 	if !c.IsJWTAccessTokenFormat() {
 		// AccessTokenFormatOpaque (or empty/unknown — treated as opaque).
 		// Reject anything that is not the explicit opaque value or empty so
@@ -1144,6 +1220,26 @@ func (c *Config) validateIntrospectionResourceServers() error {
 	for i, entry := range c.IntrospectionResourceServers {
 		if entry == "" {
 			return fmt.Errorf("IntrospectionResourceServers[%d] is empty", i)
+		}
+	}
+	return nil
+}
+
+// validateGrants rejects WorkloadGrant and DelegationGrant entries with empty
+// issuer fields. An empty issuer matches nothing (use "*" for any-issuer), so
+// an empty entry can only mask operator intent — fail closed at startup.
+func (c *Config) validateGrants() error {
+	for i, g := range c.WorkloadAudiences {
+		if g.Issuer == "" {
+			return fmt.Errorf("WorkloadAudiences[%d].Issuer is empty; use \"*\" to match any trusted issuer", i)
+		}
+	}
+	for i, g := range c.ActorDelegationPolicy {
+		if g.ActorIssuer == "" {
+			return fmt.Errorf("ActorDelegationPolicy[%d].ActorIssuer is empty; use \"*\" to match any trusted issuer", i)
+		}
+		if g.SubjectIssuer == "" {
+			return fmt.Errorf("ActorDelegationPolicy[%d].SubjectIssuer is empty; use \"*\" to match any trusted issuer", i)
 		}
 	}
 	return nil

@@ -68,7 +68,7 @@ func (s *Server) ExchangeSubjectToken(
 		return nil, fmt.Errorf("token exchange requires JWT access token mode (set AccessTokenFormat=jwt)")
 	}
 
-	identity, err := s.validateExchangeSubjectToken(ctx, subjectToken, subjectTokenType)
+	identity, err := s.validateExchangeSubjectToken(ctx, subjectToken, subjectTokenType, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -142,71 +142,105 @@ func (s *Server) ExchangeSubjectToken(
 	}, nil
 }
 
-// validateExchangeSubjectToken routes subjectToken to the SubjectTokenValidator
-// registered for subjectTokenType and returns the verified identity. Audit
-// events for the failure paths are emitted here so the local-issuance flow
-// (ExchangeSubjectToken) and the brokered flow (BrokerExchangeSubjectToken)
-// share identical validation semantics.
-func (s *Server) validateExchangeSubjectToken(ctx context.Context, subjectToken, subjectTokenType string) (*SubjectIdentity, error) {
-	switch subjectTokenType {
+// validateExchangeSubjectToken validates the RFC 8693 subject token and returns
+// the verified identity. Audit failure events use the "subject" role — reasons
+// are subject_token_validation_failed and unsupported_subject_token_type.
+// defaultAudiences is forwarded to Validate and applies only when the matched
+// issuer entry has no AllowedAudiences. Pass nil on the brokered and local
+// exchange paths (subject token is not broker-bound); pass []string{s.Config.Issuer}
+// on the workload-authenticated path when no actor_token is present, so the
+// caller-authenticating token is bound to this broker's issuer and cannot be
+// replayed from a different audience context.
+func (s *Server) validateExchangeSubjectToken(ctx context.Context, subjectToken, subjectTokenType string, defaultAudiences []string) (*SubjectIdentity, error) {
+	return s.validateExchangeToken(ctx, subjectToken, subjectTokenType, "subject", defaultAudiences)
+}
+
+// validateExchangeActorToken validates the RFC 8693 actor token and returns
+// the verified actor identity. Audit failure events use the "actor" role —
+// reasons are actor_token_validation_failed and unsupported_actor_token_type.
+// The broker's own issuer is passed as the default audience so actor tokens
+// from issuers with no AllowedAudiences configured are still bound to this
+// broker and cannot be replayed from a different audience context.
+func (s *Server) validateExchangeActorToken(ctx context.Context, actorToken, actorTokenType string) (*SubjectIdentity, error) {
+	return s.validateExchangeToken(ctx, actorToken, actorTokenType, "actor", []string{s.Config.Issuer})
+}
+
+// validateExchangeToken routes token to the SubjectTokenValidator registered
+// for tokenType and returns the verified identity. role is "subject" or "actor";
+// it drives audit reason strings and detail keys so subject and actor failures
+// produce distinct, unambiguous audit events. defaultAudiences is forwarded to
+// Validate and applies only when the matched issuer entry has no AllowedAudiences.
+func (s *Server) validateExchangeToken(ctx context.Context, token, tokenType, role string, defaultAudiences []string) (*SubjectIdentity, error) {
+	typeKey := role + "_token_type"
+	unsupportedReason := "unsupported_" + role + "_token_type"
+	validationFailedReason := role + "_token_validation_failed"
+
+	switch tokenType {
 	case SubjectTokenTypeIDToken, SubjectTokenTypeAccessToken, SubjectTokenTypeJWT:
 	default:
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type: security.EventAuthFailure,
 			Details: map[string]any{
-				"reason":             "unsupported_subject_token_type",
-				"grant_type":         GrantTypeTokenExchange,
-				"subject_token_type": subjectTokenType,
+				"reason":     unsupportedReason,
+				"grant_type": GrantTypeTokenExchange,
+				typeKey:      tokenType,
 			},
 		})
-		return nil, &TokenExchangeUnsupportedTypeError{tokenType: subjectTokenType}
+		return nil, &TokenExchangeUnsupportedTypeError{tokenType: tokenType, role: role}
 	}
 
-	v := s.SubjectValidatorFor(subjectTokenType)
+	v := s.SubjectValidatorFor(tokenType)
 	if v == nil {
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type: security.EventAuthFailure,
 			Details: map[string]any{
-				"reason":             "unsupported_subject_token_type",
-				"grant_type":         GrantTypeTokenExchange,
-				"subject_token_type": subjectTokenType,
+				"reason":     unsupportedReason,
+				"grant_type": GrantTypeTokenExchange,
+				typeKey:      tokenType,
 			},
 		})
-		return nil, &TokenExchangeUnsupportedTypeError{tokenType: subjectTokenType}
+		return nil, &TokenExchangeUnsupportedTypeError{tokenType: tokenType, role: role}
 	}
 
-	identity, err := v.Validate(ctx, subjectToken, nil)
+	identity, err := v.Validate(ctx, token, defaultAudiences)
 	if err != nil {
-		s.Logger.Debug("token exchange: subject token validation failed",
-			"subject_token_type", subjectTokenType, "error", err)
+		s.Logger.Debug("token exchange: "+role+" token validation failed",
+			typeKey, tokenType, "error", err)
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type: security.EventAuthFailure,
 			Details: map[string]any{
-				"reason":             "subject_token_validation_failed",
-				"grant_type":         GrantTypeTokenExchange,
-				"subject_token_type": subjectTokenType,
-				"error":              err.Error(),
+				"reason":     validationFailedReason,
+				"grant_type": GrantTypeTokenExchange,
+				typeKey:      tokenType,
+				"error":      err.Error(),
 			},
 		})
-		return nil, fmt.Errorf("subject token validation: %w", err)
+		return nil, fmt.Errorf("%s token validation: %w", role, err)
 	}
 
 	return identity, nil
 }
 
 // TokenExchangeUnsupportedTypeError is returned when no validator is registered
-// for the requested subject_token_type.
+// for the requested token type. Role is "subject" or "actor".
 type TokenExchangeUnsupportedTypeError struct {
 	tokenType string
+	role      string
 }
 
 func (e *TokenExchangeUnsupportedTypeError) Error() string {
-	return fmt.Sprintf("no validator registered for subject_token_type %q", e.tokenType)
+	return fmt.Sprintf("no validator registered for %s_token_type %q", e.role, e.tokenType)
 }
 
-// TokenType returns the unrecognised subject_token_type value.
+// TokenType returns the unrecognised token-type URN value.
 func (e *TokenExchangeUnsupportedTypeError) TokenType() string {
 	return e.tokenType
+}
+
+// Role returns "subject" or "actor" identifying which token in the request
+// was of an unsupported type.
+func (e *TokenExchangeUnsupportedTypeError) Role() string {
+	return e.role
 }
 
 // grantedExchangeScope computes the scope for a token-exchange response.

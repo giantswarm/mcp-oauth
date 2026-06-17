@@ -281,3 +281,189 @@ func TestHandleBrokeredTokenExchange_NoAudienceFallsBackToLocalPath(t *testing.T
 	requireOAuthError(t, w, http.StatusBadRequest, constants.ErrorCodeInvalidRequest)
 	require.Nil(t, ex.gotReq)
 }
+
+func TestHandleBrokeredTokenExchange_ActorTokenMissingType(t *testing.T) {
+	ex := &stubExchanger{result: happyDownstreamResult()}
+	h := setupBrokeredExchangeHandler(t, ex, []string{"gaggle"}, "confidential")
+
+	form := brokeredExchangeForm()
+	form.Set("actor_token", "actor-jwt")
+	// actor_token_type intentionally omitted — RFC 8693 §2.1 requires it.
+	req := newTokenExchangeRequest(form)
+	req.SetBasicAuth(h.clientID, h.clientSecret)
+	w := httptest.NewRecorder()
+	h.handler.ServeToken(w, req)
+
+	requireOAuthError(t, w, http.StatusBadRequest, constants.ErrorCodeInvalidRequest)
+	require.Nil(t, ex.gotReq, "exchanger must not be invoked when actor_token_type is missing")
+}
+
+func TestHandleBrokeredTokenExchange_ActorTokenForwarded(t *testing.T) {
+	ex := &stubExchanger{result: happyDownstreamResult()}
+	h := setupBrokeredExchangeHandler(t, ex, []string{"gaggle"}, "confidential")
+	// fakeSubjectValidator returns "user@example.com" for both tokens; allow that actor for that subject.
+	h.srv.Config.ActorDelegationPolicy = []server.DelegationGrant{
+		{ActorIssuer: "*", ActorSubject: "user@example.com", SubjectIssuer: "*", SubjectSubject: "user@example.com"},
+	}
+
+	form := brokeredExchangeForm()
+	form.Set("actor_token", "actor-jwt")
+	form.Set("actor_token_type", server.SubjectTokenTypeIDToken)
+	req := newTokenExchangeRequest(form)
+	req.SetBasicAuth(h.clientID, h.clientSecret)
+	w := httptest.NewRecorder()
+	h.handler.ServeToken(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	require.NotNil(t, ex.gotReq)
+	require.Equal(t, "actor-jwt", ex.gotReq.ActorToken)
+	require.Equal(t, server.SubjectTokenTypeIDToken, ex.gotReq.ActorTokenType)
+	// Actor identity comes from the same fakeSubjectValidator used for the subject.
+	require.NotNil(t, ex.gotReq.Actor)
+}
+
+// Workload-authenticated handler tests.
+
+type workloadExchangeHarness struct {
+	handler *Handler
+	srv     *server.Server
+	logs    *bytes.Buffer
+}
+
+func setupWorkloadExchangeHandler(t *testing.T, exchanger server.Exchanger, workloadAudiences []server.WorkloadGrant) *workloadExchangeHarness {
+	t.Helper()
+
+	store := memory.New()
+	t.Cleanup(func() { store.Stop() })
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	serverCfg := &server.Config{
+		Issuer:                      "https://broker.example.com",
+		DisableNonceEchoRequirement: true,
+		DisableDNSValidation:        true,
+		EnableWorkloadTokenExchange: true,
+		WorkloadAudiences:           workloadAudiences,
+	}
+
+	validator := &fakeSubjectValidator{identity: server.SubjectIdentity{
+		Subject: "system:serviceaccount:ns:robot",
+		Issuer:  "https://kube.example.com",
+	}}
+
+	srvOpts := []server.Option{
+		server.WithAuditor(security.NewAuditor(logger, true)),
+		server.WithSubjectTokenValidator(server.SubjectTokenTypeIDToken, validator),
+	}
+	if exchanger != nil {
+		srvOpts = append(srvOpts, server.WithExchanger(exchanger))
+	}
+
+	srv, err := server.New(mock.NewProvider(), store, store, store, serverCfg, logger, srvOpts...)
+	require.NoError(t, err)
+
+	return &workloadExchangeHarness{
+		handler: New(srv, logger),
+		srv:     srv,
+		logs:    &buf,
+	}
+}
+
+func workloadExchangeForm() url.Values {
+	return url.Values{
+		"grant_type":         {server.GrantTypeTokenExchange},
+		"subject_token":      {"sa-jwt"},
+		"subject_token_type": {server.SubjectTokenTypeIDToken},
+		"audience":           {"target-service"},
+	}
+}
+
+func TestHandleWorkloadTokenExchange_HappyPath(t *testing.T) {
+	const sub = "system:serviceaccount:ns:robot"
+	ex := &stubExchanger{result: happyDownstreamResult()}
+	h := setupWorkloadExchangeHandler(t, ex,
+		[]server.WorkloadGrant{{Issuer: "*", Subject: sub, Audiences: []string{"target-service"}}})
+
+	req := newTokenExchangeRequest(workloadExchangeForm())
+	w := httptest.NewRecorder()
+	h.handler.ServeToken(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.Equal(t, "downstream-mc-token", body["access_token"])
+
+	require.NotNil(t, ex.gotReq)
+	require.Empty(t, ex.gotReq.ClientID)
+	require.Equal(t, "target-service", ex.gotReq.Audience)
+
+	require.True(t, auditEventLogged(t, h.logs, security.EventTokenIssued),
+		"missing token_issued audit in: %s", h.logs.String())
+}
+
+func TestHandleWorkloadTokenExchange_AudienceNotAllowed(t *testing.T) {
+	const sub = "system:serviceaccount:ns:robot"
+	ex := &stubExchanger{result: happyDownstreamResult()}
+	h := setupWorkloadExchangeHandler(t, ex,
+		[]server.WorkloadGrant{{Issuer: "*", Subject: sub, Audiences: []string{"allowed-service"}}})
+
+	form := workloadExchangeForm()
+	form.Set("audience", "other-service")
+	req := newTokenExchangeRequest(form)
+	w := httptest.NewRecorder()
+	h.handler.ServeToken(w, req)
+
+	requireOAuthError(t, w, http.StatusBadRequest, constants.ErrorCodeInvalidTarget)
+	require.Nil(t, ex.gotReq)
+	require.True(t, auditAuthFailureWithReason(t, h.logs, "token_exchange_audience_not_allowed"),
+		"missing audit in: %s", h.logs.String())
+}
+
+func TestHandleWorkloadTokenExchange_GateOff_FallsBackToClientAuth(t *testing.T) {
+	// When EnableWorkloadTokenExchange is false, a no-credentials request must
+	// reach authenticateClient and fail with invalid_request (client_id missing).
+	const sub = "system:serviceaccount:ns:robot"
+	ex := &stubExchanger{result: happyDownstreamResult()}
+	h := setupWorkloadExchangeHandler(t, ex, []server.WorkloadGrant{{Issuer: "*", Subject: sub, Audiences: []string{"target-service"}}})
+	h.srv.Config.EnableWorkloadTokenExchange = false
+
+	req := newTokenExchangeRequest(workloadExchangeForm())
+	w := httptest.NewRecorder()
+	h.handler.ServeToken(w, req)
+
+	requireOAuthError(t, w, http.StatusBadRequest, constants.ErrorCodeInvalidRequest)
+	require.Nil(t, ex.gotReq)
+}
+
+func TestHandleWorkloadTokenExchange_DPoPRejected(t *testing.T) {
+	const sub = "system:serviceaccount:ns:robot"
+	ex := &stubExchanger{result: happyDownstreamResult()}
+	h := setupWorkloadExchangeHandler(t, ex, []server.WorkloadGrant{{Issuer: "*", Subject: sub, Audiences: []string{"target-service"}}})
+
+	req := newTokenExchangeRequest(workloadExchangeForm())
+	req.Header.Set("DPoP", "some-proof")
+	w := httptest.NewRecorder()
+	h.handler.ServeToken(w, req)
+
+	requireOAuthError(t, w, http.StatusBadRequest, constants.ErrorCodeInvalidRequest)
+	require.Nil(t, ex.gotReq)
+}
+
+func TestHandleWorkloadTokenExchange_ClientCredsPresentTakesBrokeredPath(t *testing.T) {
+	// When EnableWorkloadTokenExchange is true but the caller sends client
+	// credentials, the brokered path (not the workload path) must be taken.
+	ex := &stubExchanger{result: happyDownstreamResult()}
+	h := setupBrokeredExchangeHandler(t, ex, []string{"gaggle"}, "confidential")
+	h.srv.Config.EnableWorkloadTokenExchange = true
+
+	req := newTokenExchangeRequest(brokeredExchangeForm())
+	req.SetBasicAuth(h.clientID, h.clientSecret)
+	w := httptest.NewRecorder()
+	h.handler.ServeToken(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	require.NotNil(t, ex.gotReq)
+	require.Equal(t, h.clientID, ex.gotReq.ClientID, "brokered path must set ClientID")
+}
