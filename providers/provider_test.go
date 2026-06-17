@@ -2,6 +2,8 @@ package providers
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestUserInfo_IsSSO tests the IsSSO helper method.
@@ -674,4 +676,44 @@ func TestAuthorizationURLOptions_Struct(t *testing.T) {
 			t.Errorf("Extra[hd] = %q, want %q", opts.Extra["hd"], "example.com")
 		}
 	})
+}
+
+func TestUserInfo_IsDelegated(t *testing.T) {
+	tests := []struct {
+		name     string
+		info     *UserInfo
+		expected bool
+	}{
+		{
+			name:     "nil receiver",
+			info:     nil,
+			expected: false,
+		},
+		{
+			name:     "trusted-issuer with act claim",
+			info:     &UserInfo{TokenSource: TokenSourceTrustedIssuer, ActorSubject: "agent@k8s"},
+			expected: true,
+		},
+		{
+			name:     "SSO token with act claim — must not report delegated",
+			info:     &UserInfo{TokenSource: TokenSourceSSO, ActorSubject: "agent@k8s"},
+			expected: false,
+		},
+		{
+			name:     "trusted-issuer without act claim",
+			info:     &UserInfo{TokenSource: TokenSourceTrustedIssuer},
+			expected: false,
+		},
+		{
+			name:     "OAuth without act claim",
+			info:     &UserInfo{TokenSource: TokenSourceOAuth},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.expected, tt.info.IsDelegated())
+		})
+	}
 }
