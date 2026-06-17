@@ -447,6 +447,8 @@ func (s *Server) validateTrustedIssuerJWT(ctx context.Context, accessToken strin
 		return nil, fmt.Errorf("trusted issuer JWT: %w", err)
 	}
 	userInfo := s.idTokenClaimsToUserInfo(identity.Claims)
+	userInfo.Issuer = identity.Issuer
+	userInfo.TokenSource = providers.TokenSourceTrustedIssuer
 	s.logTrustedIssuerJWTAccepted(ctx, accessToken, identity.Issuer, userInfo)
 	return userInfo, nil
 }

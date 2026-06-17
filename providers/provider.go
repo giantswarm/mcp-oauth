@@ -150,6 +150,18 @@ const (
 	// For those flows, fetch the upstream id_token by another path (e.g.
 	// the configured TokenRefreshHandler cache).
 	TokenSourceJWT TokenSource = "jwt"
+
+	// TokenSourceTrustedIssuer indicates the user was authenticated via a
+	// Bearer JWT validated against a WithTrustedIssuers entry. The token
+	// was issued by an external IdP (e.g. a Kubernetes cluster's SA issuer)
+	// whose JWKS is configured explicitly — it was not issued by this server
+	// and is not a Dex-forwarded ID token.
+	//
+	// Downstream servers should use this to select impersonation rather than
+	// bearer passthrough: the token's audience is the muster/broker STS, not
+	// the downstream resource server, so direct passthrough would be rejected.
+	// Use UserInfo.Issuer to identify the originating issuer.
+	TokenSourceTrustedIssuer TokenSource = "trusted-issuer"
 )
 
 // UserInfo represents user information from a provider
@@ -197,6 +209,16 @@ type UserInfo struct {
 	// UserInfo is deserialized from untrusted input). Always use the server's
 	// ValidateToken() method to obtain a trusted UserInfo with correct TokenSource.
 	TokenSource TokenSource
+
+	// Issuer is the token issuer URL, populated only when TokenSource is
+	// TokenSourceTrustedIssuer. It identifies the external IdP that signed
+	// the Bearer token (e.g. the cluster's SA OIDC issuer URL). Empty for
+	// Dex-forwarded (TokenSourceSSO) and OAuth-issued (TokenSourceOAuth)
+	// tokens; those are issued by this server's own IdP.
+	//
+	// Downstream servers can use this alongside IsExternalIssuer() to route
+	// to an impersonation path rather than bearer passthrough.
+	Issuer string
 }
 
 // IsSSO returns true if this user was authenticated via SSO token forwarding.
@@ -240,4 +262,20 @@ func (u *UserInfo) IsOAuth() bool {
 // this OAuth server, not the upstream.
 func (u *UserInfo) IsJWT() bool {
 	return u != nil && u.TokenSource == TokenSourceJWT
+}
+
+// IsExternalIssuer returns true if this user was authenticated via a Bearer
+// JWT validated against a WithTrustedIssuers entry — i.e. the token was
+// issued by an external IdP, not by this server's own Dex/OAuth flow.
+//
+// Returns false for nil receivers, OAuth tokens, SSO tokens, JWT tokens,
+// empty TokenSource, and unknown/invalid TokenSource values.
+//
+// Downstream servers that receive an external-issuer token MUST NOT pass
+// it directly as a Bearer to a resource server (e.g. kube-apiserver) whose
+// audience differs from the token's aud claim. Use an impersonation or
+// token-exchange path instead. Check UserInfo.Issuer to identify the
+// originating cluster/IdP.
+func (u *UserInfo) IsExternalIssuer() bool {
+	return u != nil && u.TokenSource == TokenSourceTrustedIssuer
 }

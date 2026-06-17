@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `providers.TokenSourceTrustedIssuer` (`"trusted-issuer"`) constant and `UserInfo.IsExternalIssuer() bool` method. A Bearer validated against a `WithTrustedIssuers` entry is now tagged with this source instead of `TokenSourceSSO`, so downstream servers can distinguish an external-IdP token (requires impersonation or token-exchange) from a Dex-forwarded SSO token (can be passed through as a bearer).
+
+- `providers.UserInfo.Issuer string` field, populated on the `TokenSourceTrustedIssuer` path with the originating issuer URL (e.g. the cluster's SA OIDC issuer). Empty for `TokenSourceSSO` and `TokenSourceOAuth`.
+
+- `server.WithTrustedAudiences([]string) Option`: functional option equivalent to setting `Config.TrustedAudiences`, for symmetry with `WithTrustedIssuers`.
+
+### Changed
+
+- `server.validateTrustedIssuerJWT` now sets `UserInfo.TokenSource = TokenSourceTrustedIssuer` and `UserInfo.Issuer` instead of the previous `TokenSourceSSO`. Callers that relied on `userInfo.IsSSO()` being true for trusted-issuer tokens must switch to `userInfo.IsExternalIssuer()`.
+
 - `server.ExchangerRequest` now carries `ActorToken string`, `ActorTokenType string`, and `Actor *server.SubjectIdentity`. The brokered token-exchange endpoint accepts RFC 8693 `actor_token` and `actor_token_type` form parameters; when present the actor token is validated against the server's trusted issuers (same validator path as the subject token) and the verified actor identity is forwarded to the `Exchanger`. Absent actor params leave `Actor` nil and `BrokerExchangeSubjectToken` behaves identically to before.
 
 - `server.TokenExchangeUnsupportedTypeError` now exposes a `Role() string` method returning `"subject"` or `"actor"` to identify which token in the exchange request had an unsupported type. Handlers and callers that previously matched this error via `errors.As` now receive accurate role information for error messages and logs.
