@@ -274,6 +274,11 @@ func TestBrokerExchangeSubjectToken_SubjectValidationFailure(t *testing.T) {
 
 	details := auditDetails(t, buf, security.EventAuthFailure)
 	require.Equal(t, "subject_token_validation_failed", details["reason"])
+	// Brokered-flow context must appear in the same event so it can be correlated.
+	require.Equal(t, "brokered", details["exchange"])
+	require.Equal(t, "backstage", details["client_id"])
+	require.Equal(t, "gaggle", details["audience"])
+	require.NotEmpty(t, details["session_id"])
 }
 
 func TestBrokerExchangeSubjectToken_UnsupportedSubjectTokenType(t *testing.T) {
@@ -401,6 +406,11 @@ func TestBrokerExchangeSubjectToken_ActorUntrustedIssuer(t *testing.T) {
 
 	details := auditDetails(t, buf, security.EventAuthFailure)
 	require.Equal(t, "actor_token_validation_failed", details["reason"])
+	// Brokered-flow context must appear in the same event.
+	require.Equal(t, "brokered", details["exchange"])
+	require.Equal(t, "backstage", details["client_id"])
+	require.Equal(t, "gaggle", details["audience"])
+	require.NotEmpty(t, details["session_id"])
 }
 
 func TestBrokerExchangeSubjectToken_ActorTokenTypeNormalizedWhenActorAbsent(t *testing.T) {
