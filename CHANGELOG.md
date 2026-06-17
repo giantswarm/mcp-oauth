@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `server.Server.AcceptTrustedIssuerToken(ctx, bearerToken)`: validates a Bearer JWT against the `WithTrustedIssuers` configuration and returns a `ForwardedIDTokenAcceptance` (same shape as `AcceptForwardedIDToken`, including the `ext-<hex>` session ID). Intended as a fallback for aggregators that receive `ErrTrustedAudienceMismatch` from `AcceptForwardedIDToken` — e.g. a raw Kubernetes ServiceAccount projected token whose `aud` is the server's own resource identifier rather than a `TrustedAudiences` entry.
+
 - `server.LocalMintExchanger` and `NewLocalMintExchanger(cfg *Config) (*LocalMintExchanger, error)`: an `Exchanger` implementation that mints a signed JWT access token locally using the server's own RSA/EC key. Intended for broker-routed targets where the broker is the authoritative issuer. Requires JWT access token mode; returns an error otherwise.
 
 - `actor_token` / `actor_token_type` support on the direct token-exchange path (`ExchangeSubjectToken`): when an actor token is presented, it is validated against the server's trusted issuers and the resulting actor identity is written as the `act` claim of the issued JWT (`act.iss` = actor issuer, `act.sub` = actor subject). The `ActorDelegationPolicy` must explicitly permit the (actor, subject) pair; a nil or empty policy denies all delegated exchanges.

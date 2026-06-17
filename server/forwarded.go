@@ -191,6 +191,76 @@ func (s *Server) AcceptForwardedIDToken(ctx context.Context, bearerToken string)
 	return acceptance, nil
 }
 
+// AcceptTrustedIssuerToken validates a Bearer JWT against the server's
+// WithTrustedIssuers configuration and returns a [ForwardedIDTokenAcceptance]
+// identical in shape to [AcceptForwardedIDToken]. This lets aggregators treat a
+// raw TrustedIssuers-validated token (e.g. a Kubernetes ServiceAccount projected
+// token) as a forwarded credential — the same ext-<hex> session-ID derivation
+// applies, so cross-hop audit-log correlation is preserved.
+//
+// Intended call pattern: an aggregator first calls [AcceptForwardedIDToken]; when
+// that returns [ErrTrustedAudienceMismatch] (the token's aud is the server's own
+// resource identifier, not a TrustedAudiences entry), it falls back here.
+//
+// Preconditions:
+//
+//  1. WithTrustedIssuers must be configured; otherwise [ErrIssuerNotTrusted] is
+//     returned and the caller should fall through.
+//  2. The token's iss must match a configured [TrustedIssuer] entry.
+//  3. Audience and AllowedClaims checks for that entry pass.
+//  4. The typ header matches [TrustedIssuer.AcceptedTypHeaders] (empty string ""
+//     is needed for Kubernetes ServiceAccount tokens, which carry no typ header).
+//
+// Returns [ErrIssuerNotTrusted] when no TrustedIssuers validator is configured or
+// the token's iss is not recognised. Other errors (signature invalid, audience
+// rejected, AllowedClaims mismatch, typ mismatch, JWT expired) are returned wrapped.
+func (s *Server) AcceptTrustedIssuerToken(ctx context.Context, bearerToken string) (*ForwardedIDTokenAcceptance, error) {
+	if s.trustedIssuerValidator == nil {
+		return nil, ErrIssuerNotTrusted
+	}
+	if bearerToken == "" {
+		return nil, errors.New("trusted issuer token must not be empty")
+	}
+
+	identity, err := s.trustedIssuerValidator.Validate(ctx, bearerToken, []string{s.Config.GetResourceIdentifier()})
+	if errors.Is(err, ErrIssuerNotTrusted) {
+		return nil, ErrIssuerNotTrusted
+	}
+	if err != nil {
+		s.Auditor.LogAuthFailure(ctx, "", "", "", "trusted_issuer_token_invalid")
+		return nil, fmt.Errorf("trusted issuer token validation failed: %w", err)
+	}
+
+	if err := checkTypeHeader(bearerToken, s.trustedIssuerValidator.BearerTypHeaders(identity.Issuer)); err != nil {
+		s.Auditor.LogAuthFailure(ctx, identity.Subject, "", "", "trusted_issuer_typ_invalid")
+		return nil, fmt.Errorf("trusted issuer token: %w", err)
+	}
+
+	userInfo := s.idTokenClaimsToUserInfo(identity.Claims)
+	userInfo.Issuer = identity.Issuer
+	userInfo.TokenSource = providers.TokenSourceTrustedIssuer
+
+	var expiresAt time.Time
+	if identity.Claims != nil && identity.Claims.Expiry != nil {
+		expiresAt = identity.Claims.Expiry.Time()
+	}
+
+	resourceID := s.Config.GetResourceIdentifier()
+	acceptance := &ForwardedIDTokenAcceptance{
+		SessionID: s.deriveForwardedSessionID(bearerToken),
+		Subject:   identity.Subject,
+		UserInfo:  userInfo,
+		Issuer:    identity.Issuer,
+		Audience:  resourceID,
+		ExpiresAt: expiresAt,
+	}
+
+	s.logTrustedIssuerJWTAccepted(ctx, bearerToken, identity.Issuer, userInfo)
+	s.recordForwardedIDTokenAccepted(ctx, identity.Issuer, identity.Issuer, resourceID, instrumentation.ForwardedIDTokenResultOK)
+
+	return acceptance, nil
+}
+
 // deriveForwardedSessionID produces the deterministic "ext-<hex>" session
 // identifier. See the SessionID field godoc and docs/security.md for the
 // correlation property and the SessionIDHMACKey operator caveat.
