@@ -219,6 +219,16 @@ type UserInfo struct {
 	// Downstream servers can use this alongside IsExternalIssuer() to route
 	// to an impersonation path rather than bearer passthrough.
 	Issuer string
+
+	// ActorIssuer is the iss field from the RFC 8693 §4.4 act claim. Non-empty
+	// only when the token was minted via a delegated token exchange with a
+	// validated actor_token. Use IsDelegated() as a presence check.
+	ActorIssuer string
+
+	// ActorSubject is the sub field from the RFC 8693 §4.4 act claim. Non-empty
+	// only when the token was minted via a delegated token exchange with a
+	// validated actor_token. Use IsDelegated() as a presence check.
+	ActorSubject string
 }
 
 // IsSSO returns true if this user was authenticated via SSO token forwarding.
@@ -278,4 +288,16 @@ func (u *UserInfo) IsJWT() bool {
 // originating cluster/IdP.
 func (u *UserInfo) IsExternalIssuer() bool {
 	return u != nil && u.TokenSource == TokenSourceTrustedIssuer
+}
+
+// IsDelegated returns true when the token was produced by a delegated token
+// exchange (RFC 8693 §4.4): it carries an act claim and was validated on the
+// trusted-issuer path (TokenSourceTrustedIssuer). When true, ActorSubject and
+// ActorIssuer identify the acting party; ID identifies the human subject on
+// whose behalf the token was obtained.
+//
+// Returns false for nil receivers, tokens without an act claim, and tokens
+// that were not validated as trusted-issuer tokens (e.g. plain SSO tokens).
+func (u *UserInfo) IsDelegated() bool {
+	return u != nil && u.ActorSubject != "" && u.TokenSource == TokenSourceTrustedIssuer
 }

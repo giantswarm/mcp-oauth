@@ -89,7 +89,7 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	result, err := h.server.ExchangeSubjectToken(r.Context(), subjectToken, subjectTokenType, resource, scope, dpopJKT)
+	result, err := h.server.ExchangeSubjectToken(r.Context(), subjectToken, subjectTokenType, actorToken, actorTokenType, resource, scope, dpopJKT)
 	if err != nil {
 		h.handleTokenExchangeError(w, r, err, clientIP, startTime, span)
 		return

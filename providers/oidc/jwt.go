@@ -357,6 +357,15 @@ func GetAudienceFromClaims(claims map[string]any) []string {
 	return nil
 }
 
+// ActorClaim is the RFC 8693 §4.4 act claim decoded from an OIDC token or
+// mcp-oauth-minted access token. It identifies the acting party in a
+// delegation chain: Issuer and Subject correspond to the agent service account
+// that obtained the token on behalf of the human subject.
+type ActorClaim struct {
+	Issuer  string `json:"iss,omitempty"`
+	Subject string `json:"sub,omitempty"`
+}
+
 // IDTokenClaims represents the standard claims in an OIDC ID token. The
 // embedded josejwt.Claims carries the registered claims (iss, sub, aud, exp,
 // nbf, iat, jti); the additional fields are OIDC-specific extensions defined
@@ -376,6 +385,10 @@ type IDTokenClaims struct {
 	// Nonce is the OIDC `nonce` claim. Callers compare it to the expected value
 	// via ValidateNonceClaim; this struct does not enforce equality.
 	Nonce string `json:"nonce,omitempty"`
+
+	// Act is the RFC 8693 §4.4 delegation claim. Non-nil only in tokens that
+	// were minted via a token-exchange with a validated actor_token.
+	Act *ActorClaim `json:"act,omitempty"`
 }
 
 // ErrKeyNotFound is returned (wrapped) when a JWT's kid header does not match

@@ -144,8 +144,11 @@ func (s *Server) getJWKSClient() *oidc.JWKSClient {
 
 // idTokenClaimsToUserInfo converts validated ID token claims to UserInfo.
 // Sets TokenSource to TokenSourceSSO since this is called for SSO-forwarded tokens.
+// ActorIssuer/ActorSubject are populated from claims.Act when the token carries
+// an RFC 8693 §4.4 delegation claim (mcp-oauth-minted OBO tokens only; ordinary
+// SSO ID tokens never carry act).
 func (s *Server) idTokenClaimsToUserInfo(claims *oidc.IDTokenClaims) *providers.UserInfo {
-	return &providers.UserInfo{
+	info := &providers.UserInfo{
 		ID:            claims.Subject,
 		Email:         claims.Email,
 		EmailVerified: claims.EmailVerified,
@@ -157,6 +160,11 @@ func (s *Server) idTokenClaimsToUserInfo(claims *oidc.IDTokenClaims) *providers.
 		Groups:        claims.Groups,
 		TokenSource:   providers.TokenSourceSSO,
 	}
+	if claims.Act != nil {
+		info.ActorIssuer = claims.Act.Issuer
+		info.ActorSubject = claims.Act.Subject
+	}
+	return info
 }
 
 // logForwardedIDTokenAccepted logs a security event when a forwarded ID token is accepted.
