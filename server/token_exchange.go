@@ -145,16 +145,12 @@ func (s *Server) ExchangeSubjectToken(
 		Extra:         o.Extra,
 	})
 	if err != nil {
+		auditDetails["reason"] = "access_token_issue_failed"
+		auditDetails["error"] = err.Error()
 		s.Auditor.LogEvent(ctx, security.Event{
-			Type:   security.EventAuthFailure,
-			UserID: identity.Subject,
-			Details: map[string]any{
-				"reason":             "access_token_issue_failed",
-				"grant_type":         GrantTypeTokenExchange,
-				"subject_token_type": subjectTokenType,
-				"audience":           resource,
-				"error":              err.Error(),
-			},
+			Type:    security.EventAuthFailure,
+			UserID:  identity.Subject,
+			Details: auditDetails,
 		})
 		return nil, fmt.Errorf("failed to issue exchange token: %w", err)
 	}

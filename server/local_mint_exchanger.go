@@ -10,20 +10,17 @@ import (
 // LocalMintExchanger implements Exchanger by minting an mcp-oauth-signed JWT
 // access token locally, without delegating to a downstream issuer. It is the
 // recommended implementation for token-exchange targets where the broker itself
-// is the authoritative issuer — muster uses it to mint OBO tokens for each
-// audience-routed target.
+// is the authoritative issuer.
 //
-// The broker (BrokerExchangeSubjectToken / WorkloadExchangeSubjectToken) has
-// already validated the subject and actor tokens and enforced
-// ActorDelegationPolicy before Exchange is called; LocalMintExchanger does not
+// Callers are responsible for validating subject and actor tokens and enforcing
+// ActorDelegationPolicy before calling Exchange; LocalMintExchanger does not
 // re-run policy.
 //
 // Requires JWT access token mode (Config.IsJWTAccessTokenFormat() must be
 // true); NewLocalMintExchanger returns an error otherwise.
 type LocalMintExchanger struct {
-	issuer    AccessTokenIssuer
-	issuerURL string
-	ttl       time.Duration
+	issuer AccessTokenIssuer
+	ttl    time.Duration
 }
 
 // NewLocalMintExchanger constructs a LocalMintExchanger from a validated
@@ -43,9 +40,8 @@ func NewLocalMintExchanger(cfg *Config) (*LocalMintExchanger, error) {
 		ttl = 10 * time.Minute
 	}
 	return &LocalMintExchanger{
-		issuer:    issuer,
-		issuerURL: cfg.Issuer,
-		ttl:       ttl,
+		issuer: issuer,
+		ttl:    ttl,
 	}, nil
 }
 
@@ -57,6 +53,9 @@ func NewLocalMintExchanger(cfg *Config) (*LocalMintExchanger, error) {
 //   - scope = intersection of req.Scope and req.Subject.AllowedScopes
 //   - iss = the Issuer URL from the Config used to build LocalMintExchanger
 func (l *LocalMintExchanger) Exchange(ctx context.Context, req *ExchangerRequest) (*ExchangerResult, error) {
+	if req.Subject == nil {
+		return nil, fmt.Errorf("local mint: ExchangerRequest.Subject must not be nil")
+	}
 	var act *Actor
 	if req.Actor != nil {
 		act = &Actor{Iss: req.Actor.Issuer, Sub: req.Actor.Subject}

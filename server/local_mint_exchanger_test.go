@@ -65,6 +65,20 @@ func TestNewLocalMintExchanger_RejectsOpaqueMode(t *testing.T) {
 	require.Contains(t, err.Error(), "JWT access token mode")
 }
 
+func TestLocalMintExchanger_Exchange_NilSubject(t *testing.T) {
+	cfg, _ := localMintCfg(t)
+	lme, err := NewLocalMintExchanger(cfg)
+	require.NoError(t, err)
+
+	_, err = lme.Exchange(t.Context(), &ExchangerRequest{
+		Resource: "https://api.example.com",
+		Scope:    "read",
+		Subject:  nil,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "Subject must not be nil")
+}
+
 func TestLocalMintExchanger_Exchange_NoActor(t *testing.T) {
 	cfg, signingKey := localMintCfg(t)
 	lme, err := NewLocalMintExchanger(cfg)

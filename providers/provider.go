@@ -227,8 +227,7 @@ type UserInfo struct {
 
 	// ActorSubject is the sub field from the RFC 8693 §4.4 act claim. Non-empty
 	// only when the token was minted via a delegated token exchange with a
-	// validated actor_token. Identifies the agent service account that obtained
-	// the token on behalf of the human subject (UserInfo.ID).
+	// validated actor_token. Use IsDelegated() as a presence check.
 	ActorSubject string
 }
 
@@ -291,13 +290,14 @@ func (u *UserInfo) IsExternalIssuer() bool {
 	return u != nil && u.TokenSource == TokenSourceTrustedIssuer
 }
 
-// IsDelegated returns true when the token carries an RFC 8693 §4.4 act claim
-// — i.e. it was minted via a delegated token exchange with a validated
-// actor_token. When true, ActorSubject and ActorIssuer identify the acting
-// agent service account; ID identifies the human subject on whose behalf the
-// token was obtained.
+// IsDelegated returns true when the token was produced by a delegated token
+// exchange (RFC 8693 §4.4): it carries an act claim and was validated on the
+// trusted-issuer path (TokenSourceTrustedIssuer). When true, ActorSubject and
+// ActorIssuer identify the acting party; ID identifies the human subject on
+// whose behalf the token was obtained.
 //
-// Returns false for nil receivers or tokens without delegation.
+// Returns false for nil receivers, tokens without an act claim, and tokens
+// that were not validated as trusted-issuer tokens (e.g. plain SSO tokens).
 func (u *UserInfo) IsDelegated() bool {
-	return u != nil && u.ActorSubject != ""
+	return u != nil && u.ActorSubject != "" && u.TokenSource == TokenSourceTrustedIssuer
 }

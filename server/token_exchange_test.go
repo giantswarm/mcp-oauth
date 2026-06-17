@@ -419,6 +419,30 @@ func TestExchangeSubjectToken_Audit_AccessTokenIssueFailure(t *testing.T) {
 		"audit event must record the audience on issuance failure")
 }
 
+func TestExchangeSubjectToken_Audit_AccessTokenIssueFailure_WithActor(t *testing.T) {
+	srv, _ := newActorExchangeServer(t, []DelegationGrant{
+		{ActorIssuer: actorIssuerURL, ActorSubject: "*", SubjectIssuer: testIssuer, SubjectSubject: "*"},
+	})
+
+	logger, buf := captureLogger()
+	srv.Auditor = security.NewAuditor(logger, true)
+	srv.accessTokenIssuer = failingAccessTokenIssuer{err: fmt.Errorf("signer down")}
+
+	_, err := srv.ExchangeSubjectToken(t.Context(),
+		"sub-tok", SubjectTokenTypeIDToken,
+		"act-tok", SubjectTokenTypeIDToken,
+		"https://api.example.com", "read", "")
+	require.Error(t, err)
+
+	out := buf.String()
+	require.True(t, containsAuthFailure(out, "access_token_issue_failed"),
+		"missing access_token_issue_failed audit failure in: %s", out)
+	require.Contains(t, out, actorIssuerURL,
+		"failure audit must record actor_iss for delegated exchange")
+	require.Contains(t, out, actorTestSub,
+		"failure audit must record actor_sub for delegated exchange")
+}
+
 func TestExchangeSubjectToken_DPoP(t *testing.T) {
 	key := newTestECKey(t)
 	const kid = "dpop-exchange-key"
