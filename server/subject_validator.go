@@ -58,6 +58,14 @@ type TrustedIssuer struct {
 	// (numbers, arrays, objects) are rejected. Nil or empty means no claim
 	// restrictions.
 	AllowedClaims map[string]string
+	// SubjectClaim names the verified claim whose value becomes
+	// SubjectIdentity.Subject (and thus the sub of any token minted from this
+	// identity, and the value matched by ActorDelegationPolicy). Empty keeps the
+	// standard sub claim. Use this when the issuer's sub is an opaque identifier
+	// but a different claim (e.g. "email") carries the canonical subject the
+	// downstream relies on. Fail-closed: if set and the claim is absent or not a
+	// non-empty string, the token is rejected.
+	SubjectClaim string
 	// AllowPrivateIPJWKS allows JwksURL to resolve to a private or loopback IP
 	// address. Set this when the JWKS endpoint is an in-cluster service (e.g.
 	// the Kubernetes API server's /openid/v1/jwks) that is not reachable via a
@@ -175,8 +183,19 @@ func (v *OIDCValidator) Validate(ctx context.Context, tokenString string, defaul
 		return nil, err
 	}
 
+	// rawClaims is authentic here: ValidateIDToken verified the signature over
+	// the same token, so reading an additional claim from it is sound.
+	subject := claims.Subject
+	if ti.SubjectClaim != "" {
+		mapped, ok := rawClaims[ti.SubjectClaim].(string)
+		if !ok || mapped == "" {
+			return nil, fmt.Errorf("subjectClaim %q: not present as a non-empty string", ti.SubjectClaim)
+		}
+		subject = mapped
+	}
+
 	return &SubjectIdentity{
-		Subject:       claims.Subject,
+		Subject:       subject,
 		Issuer:        claims.Issuer,
 		AllowedScopes: ti.AllowedScopes,
 		Claims:        claims,
