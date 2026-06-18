@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `server.TrustedIssuer.SubjectClaim string`: names the verified claim whose value becomes `SubjectIdentity.Subject` (and thus the `sub` of any token minted from the identity, and the value matched by `ActorDelegationPolicy`). Empty keeps the standard `sub` claim. Use it when an issuer's `sub` is opaque but another claim (e.g. `email`) carries the canonical subject the downstream relies on. Fail-closed: a token whose configured claim is absent or not a non-empty string is rejected.
+
 - `server.Server.AcceptTrustedIssuerToken(ctx, bearerToken)`: validates a Bearer JWT against the `WithTrustedIssuers` configuration and returns a `ForwardedIDTokenAcceptance` (same shape as `AcceptForwardedIDToken`, including the `ext-<hex>` session ID). Intended as a fallback for aggregators that receive `ErrTrustedAudienceMismatch` from `AcceptForwardedIDToken` — e.g. a raw Kubernetes ServiceAccount projected token whose `aud` is the server's own resource identifier rather than a `TrustedAudiences` entry.
 
 - `server.LocalMintExchanger` and `NewLocalMintExchanger(cfg *Config) (*LocalMintExchanger, error)`: an `Exchanger` implementation that mints a signed JWT access token locally using the server's own RSA/EC key. Intended for broker-routed targets where the broker is the authoritative issuer. Requires JWT access token mode; returns an error otherwise.

@@ -380,6 +380,105 @@ func TestOIDCValidator_AllowedClaims_NonStringValue(t *testing.T) {
 	require.Contains(t, err.Error(), "non-string type")
 }
 
+func TestOIDCValidator_SubjectClaim(t *testing.T) {
+	key := newTestECKey(t)
+	const kid = "test-key-1"
+	jwksURL, jwksClient := serveStaticJWKS(t, key, kid)
+
+	const opaqueSub = "CgcweDEyMzQ1Eg"
+	const email = "alice@giantswarm.io"
+
+	signingKey := jose.SigningKey{
+		Algorithm: jose.ES256,
+		Key: jose.JSONWebKey{
+			Key:       key,
+			KeyID:     kid,
+			Algorithm: string(jose.ES256),
+			Use:       "sig",
+		},
+	}
+
+	makeToken := func(t *testing.T, extra map[string]any) string {
+		t.Helper()
+		opts := &jose.SignerOptions{}
+		opts.WithType("JWT")
+		opts.WithHeader(jose.HeaderKey("kid"), kid)
+		signer, err := jose.NewSigner(signingKey, opts)
+		require.NoError(t, err)
+		b := josejwt.Signed(signer).Claims(josejwt.Claims{
+			Issuer:   testIssuer,
+			Subject:  opaqueSub,
+			Audience: josejwt.Audience{testAudience},
+			Expiry:   josejwt.NewNumericDate(time.Now().Add(time.Hour)),
+			IssuedAt: josejwt.NewNumericDate(time.Now()),
+		})
+		if extra != nil {
+			b = b.Claims(extra)
+		}
+		token, err := b.Serialize()
+		require.NoError(t, err)
+		return token
+	}
+
+	t.Run("maps subject from configured claim", func(t *testing.T) {
+		v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
+			Issuer:           testIssuer,
+			JwksURL:          jwksURL,
+			AllowedAudiences: []string{testAudience},
+			SubjectClaim:     "email",
+		}}, jwksClient)
+		require.NoError(t, err)
+
+		identity, err := v.Validate(t.Context(), makeToken(t, map[string]any{"email": email}), nil)
+		require.NoError(t, err)
+		require.Equal(t, email, identity.Subject)
+	})
+
+	t.Run("unset keeps the sub claim", func(t *testing.T) {
+		v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
+			Issuer:           testIssuer,
+			JwksURL:          jwksURL,
+			AllowedAudiences: []string{testAudience},
+		}}, jwksClient)
+		require.NoError(t, err)
+
+		identity, err := v.Validate(t.Context(), makeToken(t, map[string]any{"email": email}), nil)
+		require.NoError(t, err)
+		require.Equal(t, opaqueSub, identity.Subject)
+	})
+
+	t.Run("absent mapped claim is rejected", func(t *testing.T) {
+		v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
+			Issuer:           testIssuer,
+			JwksURL:          jwksURL,
+			AllowedAudiences: []string{testAudience},
+			SubjectClaim:     "email",
+		}}, jwksClient)
+		require.NoError(t, err)
+
+		_, err = v.Validate(t.Context(), makeToken(t, nil), nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "subjectClaim")
+	})
+
+	t.Run("non-string mapped claim is rejected", func(t *testing.T) {
+		// A custom (non-typed) claim name reaches the SubjectClaim check; a
+		// non-string value of a typed claim like email is already rejected by
+		// ValidateIDToken's typed unmarshalling.
+		v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
+			Issuer:           testIssuer,
+			JwksURL:          jwksURL,
+			AllowedAudiences: []string{testAudience},
+			SubjectClaim:     "custom_sub",
+		}}, jwksClient)
+		require.NoError(t, err)
+
+		_, err = v.Validate(t.Context(), makeToken(t, map[string]any{"custom_sub": 42}), nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "subjectClaim")
+	})
+}
+
 func TestWithTrustedIssuers_RegistersValidators(t *testing.T) {
 	key := newTestECKey(t)
 	const kid = "test-key-1"
