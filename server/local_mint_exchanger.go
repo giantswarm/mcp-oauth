@@ -100,6 +100,9 @@ func (l *LocalMintExchanger) Exchange(ctx context.Context, req *ExchangerRequest
 		claims.EmailVerified = identity.EmailVerified
 		claims.Groups = identity.Groups
 	}
+	// Broker-granted groups (workload path) are merged in, kept distinct from the
+	// validated token's own groups so the subject identity is never mutated.
+	claims.Groups = mergeGroups(claims.Groups, req.GrantedGroups)
 
 	tokenStr, err := l.issuer.Issue(ctx, claims)
 	if err != nil {
@@ -157,4 +160,26 @@ func actorChainDepth(a *Actor) int {
 		n++
 	}
 	return n
+}
+
+// mergeGroups returns base with any element of extra not already present
+// appended, preserving order (base first). Used to combine a token's own groups
+// with broker-granted groups without introducing duplicates.
+func mergeGroups(base, extra []string) []string {
+	if len(extra) == 0 {
+		return base
+	}
+	seen := make(map[string]struct{}, len(base)+len(extra))
+	for _, g := range base {
+		seen[g] = struct{}{}
+	}
+	out := base
+	for _, g := range extra {
+		if _, ok := seen[g]; ok {
+			continue
+		}
+		seen[g] = struct{}{}
+		out = append(out, g)
+	}
+	return out
 }

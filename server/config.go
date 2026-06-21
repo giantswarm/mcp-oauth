@@ -117,6 +117,14 @@ type WorkloadGrant struct {
 	Subject string
 	// Audiences lists the RFC 8693 audience values the matching workload may request.
 	Audiences []string
+	// Groups are injected into a minted token on the workload (no-actor) exchange
+	// path so a groupless workload, such as a Kubernetes ServiceAccount token, can
+	// be authorized by downstreams that gate on groups. Group strings must be in
+	// the form downstreams expect (connector-prefixed where the IdP prefixes).
+	// Ignored on the delegation path, where the human subject carries its own
+	// groups. When set, Issuer and Subject must be explicit (no "*", no glob):
+	// Config.Validate rejects a wildcard grant that injects groups.
+	Groups []string
 }
 
 // DelegationGrant authorizes an actor (identified by ActorIssuer + ActorSubject) to act on behalf
@@ -1230,8 +1238,8 @@ func (c *Config) validateIntrospectionResourceServers() error {
 // an empty entry can only mask operator intent — fail closed at startup.
 func (c *Config) validateGrants() error {
 	for i, g := range c.WorkloadAudiences {
-		if g.Issuer == "" {
-			return fmt.Errorf("WorkloadAudiences[%d].Issuer is empty; use \"*\" to match any trusted issuer", i)
+		if err := validateWorkloadGrant(i, g); err != nil {
+			return err
 		}
 	}
 	for i, g := range c.ActorDelegationPolicy {
@@ -1241,6 +1249,25 @@ func (c *Config) validateGrants() error {
 		if g.SubjectIssuer == "" {
 			return fmt.Errorf("ActorDelegationPolicy[%d].SubjectIssuer is empty; use \"*\" to match any trusted issuer", i)
 		}
+	}
+	return nil
+}
+
+// validateWorkloadGrant rejects an empty issuer (matches nothing) and, for a
+// group-bearing grant, a wildcard issuer or glob subject: a grant that injects
+// groups must name an explicit issuer and subject.
+func validateWorkloadGrant(i int, g WorkloadGrant) error {
+	if g.Issuer == "" {
+		return fmt.Errorf("WorkloadAudiences[%d].Issuer is empty; use \"*\" to match any trusted issuer", i)
+	}
+	if len(g.Groups) == 0 {
+		return nil
+	}
+	if g.Issuer == "*" {
+		return fmt.Errorf("WorkloadAudiences[%d] injects groups but Issuer is \"*\"; a group grant must name an explicit issuer", i)
+	}
+	if strings.ContainsAny(g.Subject, "*?[") {
+		return fmt.Errorf("WorkloadAudiences[%d] injects groups but Subject %q is a glob; a group grant must name an explicit subject", i, g.Subject)
 	}
 	return nil
 }

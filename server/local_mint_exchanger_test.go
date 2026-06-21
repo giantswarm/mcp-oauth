@@ -280,6 +280,50 @@ func TestLocalMintExchanger_Exchange_NoIdentityClaimsWithoutSubjectClaims(t *tes
 	require.Empty(t, claims.Groups)
 }
 
+// TestLocalMintExchanger_Exchange_GrantedGroupsForGrouplessSubject asserts that
+// broker-granted groups (the M2M workload path) land in the minted token even
+// when the subject token carried none.
+func TestLocalMintExchanger_Exchange_GrantedGroupsForGrouplessSubject(t *testing.T) {
+	cfg, signingKey := localMintCfg(t)
+	lme, err := NewLocalMintExchanger(cfg)
+	require.NoError(t, err)
+
+	result, err := lme.Exchange(t.Context(), &ExchangerRequest{
+		Resource:      "https://api.example.com",
+		Subject:       &SubjectIdentity{Subject: "system:serviceaccount:kagent:sre-agent", Issuer: testIssuer},
+		GrantedGroups: []string{"giantswarm-ad:sre"},
+	})
+	require.NoError(t, err)
+
+	var claims rfc9068Claims
+	parseMintedClaims(t, result.AccessToken, signingKey, &claims)
+	require.Equal(t, []string{"giantswarm-ad:sre"}, claims.Groups)
+}
+
+// TestLocalMintExchanger_Exchange_MergesGrantedGroupsDeduped asserts granted
+// groups merge with the subject's own token groups without duplicates, with the
+// token's groups kept first.
+func TestLocalMintExchanger_Exchange_MergesGrantedGroupsDeduped(t *testing.T) {
+	cfg, signingKey := localMintCfg(t)
+	lme, err := NewLocalMintExchanger(cfg)
+	require.NoError(t, err)
+
+	result, err := lme.Exchange(t.Context(), &ExchangerRequest{
+		Resource: "https://api.example.com",
+		Subject: &SubjectIdentity{
+			Subject: "user@example.com",
+			Issuer:  testIssuer,
+			Claims:  &oidc.IDTokenClaims{Groups: []string{"customer:sre", "customer:dev"}},
+		},
+		GrantedGroups: []string{"customer:sre", "customer:ops"},
+	})
+	require.NoError(t, err)
+
+	var claims rfc9068Claims
+	parseMintedClaims(t, result.AccessToken, signingKey, &claims)
+	require.Equal(t, []string{"customer:sre", "customer:dev", "customer:ops"}, claims.Groups)
+}
+
 // TestLocalMintExchanger_Exchange_NestsPriorActorChain asserts a second-hop mint
 // nests the actor already on the subject token (RFC 8693 §4.4) instead of
 // overwriting it, so a multi-hop A2A chain is preserved.
