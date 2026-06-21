@@ -6,6 +6,8 @@ import (
 	"context"
 
 	"golang.org/x/oauth2"
+
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 )
 
 // AuthorizationURLOptions contains optional OIDC parameters for the authorization request.
@@ -229,6 +231,14 @@ type UserInfo struct {
 	// only when the token was minted via a delegated token exchange with a
 	// validated actor_token. Use IsDelegated() as a presence check.
 	ActorSubject string
+
+	// ActorChain is the full RFC 8693 §4.4 delegation chain decoded from the
+	// act claim, ordered outermost (most recent actor) first; ActorIssuer and
+	// ActorSubject mirror its first element. Empty for tokens without
+	// delegation. Resource servers authorizing a multi-hop A2A call (human →
+	// agentA → agentB → backend) walk this slice to match any actor in the
+	// chain rather than only the leaf.
+	ActorChain []oidc.ActorClaim
 }
 
 // IsSSO returns true if this user was authenticated via SSO token forwarding.

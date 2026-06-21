@@ -5,7 +5,15 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 )
+
+// maxActorChainDepth bounds RFC 8693 §4.4 act nesting in a minted token. A
+// chain deeper than this is rejected fail-closed: real A2A topologies are
+// shallow, and unbounded nesting is an abuse vector (token-size blowup and
+// parser pressure on every downstream that validates the token).
+const maxActorChainDepth = 10
 
 // LocalMintExchanger implements Exchanger by minting an mcp-oauth-signed JWT
 // access token locally, without delegating to a downstream issuer. It is the
@@ -48,7 +56,12 @@ func NewLocalMintExchanger(cfg *Config) (*LocalMintExchanger, error) {
 // Exchange mints a signed JWT access token for the request. The issued token
 // carries:
 //   - sub = req.Subject.Subject (human subject)
-//   - act = {iss: req.Actor.Issuer, sub: req.Actor.Subject} when req.Actor != nil
+//   - act = {iss: req.Actor.Issuer, sub: req.Actor.Subject} when req.Actor != nil,
+//     with any act chain already on the subject token nested beneath it so a
+//     multi-hop A2A delegation chain is preserved (RFC 8693 §4.4)
+//   - email / email_verified / groups copied from the validated subject token
+//     (req.Subject.Claims) so downstreams can authorize and attribute without
+//     an extra IdP round-trip; email_verified is only emitted alongside email
 //   - aud = req.Resource when non-empty, else req.Audience
 //   - scope = intersection of req.Scope and req.Subject.AllowedScopes
 //   - iss = the Issuer URL from the Config used to build LocalMintExchanger
@@ -56,9 +69,10 @@ func (l *LocalMintExchanger) Exchange(ctx context.Context, req *ExchangerRequest
 	if req.Subject == nil {
 		return nil, fmt.Errorf("local mint: ExchangerRequest.Subject must not be nil")
 	}
-	var act *Actor
-	if req.Actor != nil {
-		act = &Actor{Iss: req.Actor.Issuer, Sub: req.Actor.Subject}
+
+	act, err := buildActorChain(req.Actor, priorActorChain(req.Subject))
+	if err != nil {
+		return nil, fmt.Errorf("local mint: %w", err)
 	}
 
 	audience := req.Resource
@@ -70,16 +84,24 @@ func (l *LocalMintExchanger) Exchange(ctx context.Context, req *ExchangerRequest
 
 	now := time.Now().UTC()
 	expiresAt := now.Add(l.ttl)
+	jti := generateRandomToken()
 
-	tokenStr, err := l.issuer.Issue(ctx, AccessTokenClaims{
+	claims := AccessTokenClaims{
 		Subject:   req.Subject.Subject,
 		Audience:  audience,
 		Scopes:    strings.Fields(grantedScope),
 		IssuedAt:  now,
 		ExpiresAt: expiresAt,
-		JTI:       generateRandomToken(),
+		JTI:       jti,
 		Act:       act,
-	})
+	}
+	if identity := req.Subject.Claims; identity != nil {
+		claims.Email = identity.Email
+		claims.EmailVerified = identity.EmailVerified
+		claims.Groups = identity.Groups
+	}
+
+	tokenStr, err := l.issuer.Issue(ctx, claims)
 	if err != nil {
 		return nil, fmt.Errorf("local mint: issue token: %w", err)
 	}
@@ -89,5 +111,50 @@ func (l *LocalMintExchanger) Exchange(ctx context.Context, req *ExchangerRequest
 		ExpiresAt:       expiresAt,
 		Scope:           grantedScope,
 		IssuedTokenType: SubjectTokenTypeAccessToken,
+		JTI:             jti,
 	}, nil
+}
+
+// priorActorChain returns the act chain already present on the validated subject
+// token, converted to the mint-side Actor shape. Nil when the subject carries no
+// act (the common single-hop OBO case).
+func priorActorChain(subject *SubjectIdentity) *Actor {
+	if subject == nil || subject.Claims == nil {
+		return nil
+	}
+	return actorFromClaim(subject.Claims.Act)
+}
+
+// actorFromClaim recursively converts a decoded oidc.ActorClaim chain into the
+// mint-side Actor shape, preserving nesting order.
+func actorFromClaim(c *oidc.ActorClaim) *Actor {
+	if c == nil {
+		return nil
+	}
+	return &Actor{Iss: c.Issuer, Sub: c.Subject, Act: actorFromClaim(c.Act)}
+}
+
+// buildActorChain assembles the act claim for a minted token. When actor is
+// non-nil it becomes the outermost (most recent) actor and prior is nested
+// beneath it, extending a multi-hop delegation chain. When actor is nil the
+// prior chain is carried forward unchanged. The combined depth is bounded by
+// maxActorChainDepth and rejected fail-closed when exceeded.
+func buildActorChain(actor *SubjectIdentity, prior *Actor) (*Actor, error) {
+	act := prior
+	if actor != nil {
+		act = &Actor{Iss: actor.Issuer, Sub: actor.Subject, Act: prior}
+	}
+	if depth := actorChainDepth(act); depth > maxActorChainDepth {
+		return nil, fmt.Errorf("actor chain depth %d exceeds maximum %d", depth, maxActorChainDepth)
+	}
+	return act, nil
+}
+
+// actorChainDepth counts the hops in an act chain.
+func actorChainDepth(a *Actor) int {
+	n := 0
+	for ; a != nil; a = a.Act {
+		n++
+	}
+	return n
 }
