@@ -367,9 +367,10 @@ func TestLocalMintExchanger_Exchange_RejectsTooDeepChain(t *testing.T) {
 }
 
 // TestLocalMintExchanger_RoundTrip_ActorChain mints a two-hop OBO token and
-// validates it back through an OIDCValidator, asserting the full delegation
-// chain surfaces on UserInfo.ActorChain (outermost actor first) so backends can
-// authorize on any actor in the chain, not only the leaf.
+// validates it back through an OIDCValidator, asserting the full nested act
+// chain survives signature validation and decodes intact (outermost actor
+// first) so a downstream can authorize on any actor in the chain, not only the
+// leaf.
 func TestLocalMintExchanger_RoundTrip_ActorChain(t *testing.T) {
 	cfg, signingKey := localMintCfg(t)
 	lme, err := NewLocalMintExchanger(cfg)
@@ -389,7 +390,6 @@ func TestLocalMintExchanger_RoundTrip_ActorChain(t *testing.T) {
 	require.NoError(t, err)
 
 	jwksURL, jwksClient := serveStaticRSAJWKS(t, signingKey, "lme-test-kid")
-	srv, _, _ := setupFlowTestServer(t)
 	v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
 		Issuer:             cfg.Issuer,
 		JwksURL:            jwksURL,
@@ -398,15 +398,15 @@ func TestLocalMintExchanger_RoundTrip_ActorChain(t *testing.T) {
 		AcceptedTypHeaders: []string{"at+jwt"},
 	}}, jwksClient)
 	require.NoError(t, err)
-	srv.trustedIssuerValidator = v
 
-	userInfo, err := srv.ValidateToken(t.Context(), result.AccessToken)
+	identity, err := v.Validate(t.Context(), result.AccessToken, []string{cfg.Issuer})
 	require.NoError(t, err)
-	require.NotNil(t, userInfo)
-	require.Equal(t, "agentB", userInfo.ActorSubject, "leaf mirrors the most recent actor")
-	require.Len(t, userInfo.ActorChain, 2)
-	require.Equal(t, "agentB", userInfo.ActorChain[0].Subject)
-	require.Equal(t, "agentA", userInfo.ActorChain[1].Subject)
+	require.Equal(t, "user@example.com", identity.Subject)
+	require.NotNil(t, identity.Claims.Act, "leaf actor decoded")
+	require.Equal(t, "agentB", identity.Claims.Act.Subject, "outermost act is the most recent actor")
+	require.NotNil(t, identity.Claims.Act.Act, "nested actor decoded")
+	require.Equal(t, "agentA", identity.Claims.Act.Act.Subject)
+	require.Nil(t, identity.Claims.Act.Act.Act, "chain ends at the first hop")
 }
 
 // TestLocalMintExchanger_RoundTrip_ForgedChainUntrustedIssuerRejected asserts a

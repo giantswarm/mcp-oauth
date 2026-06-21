@@ -371,18 +371,6 @@ type ActorClaim struct {
 	Act     *ActorClaim `json:"act,omitempty"`
 }
 
-// Chain flattens a nested act claim into a slice ordered from the outermost
-// (most recent) actor to the innermost, each element stripped of its own nested
-// Act. Returns nil for a nil receiver. Resource servers authorizing a multi-hop
-// delegation match any element rather than only the leaf.
-func (c *ActorClaim) Chain() []ActorClaim {
-	var chain []ActorClaim
-	for a := c; a != nil; a = a.Act {
-		chain = append(chain, ActorClaim{Issuer: a.Issuer, Subject: a.Subject})
-	}
-	return chain
-}
-
 // IDTokenClaims represents the standard claims in an OIDC ID token. The
 // embedded josejwt.Claims carries the registered claims (iss, sub, aud, exp,
 // nbf, iat, jti); the additional fields are OIDC-specific extensions defined

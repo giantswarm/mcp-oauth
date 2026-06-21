@@ -461,6 +461,39 @@ func TestBrokerExchangeSubjectToken_ActorDelegationDeniedWhenNoPolicyConfigured(
 
 // Workload-authenticated exchange tests.
 
+// TestWorkloadExchangeSubjectToken_RateLimited asserts the mint path honours the
+// configured UserRateLimiter when the method is called directly (not via the
+// HTTP middleware): a second request from the same session is rejected before
+// any mint, keyed on the per-session ID.
+func TestWorkloadExchangeSubjectToken_RateLimited(t *testing.T) {
+	ex := &stubExchanger{result: &ExchangerResult{
+		AccessToken: "workload-token",
+		ExpiresAt:   time.Now().Add(time.Minute),
+	}}
+	const sub = "system:serviceaccount:ns:robot"
+	validator := &stubSubjectValidator{identity: SubjectIdentity{Subject: sub, Issuer: "https://kube.example.com"}}
+	srv, buf := newWorkloadTestServer(t, ex,
+		[]WorkloadGrant{{Issuer: "*", Subject: sub, Audiences: []string{"target-service"}}}, validator)
+	srv.UserRateLimiter = security.NewRateLimiter(0, 1, nil) // burst of 1, no refill
+	t.Cleanup(srv.UserRateLimiter.Stop)
+
+	// First call consumes the single token and mints.
+	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		"sa-jwt", SubjectTokenTypeIDToken, "", "", "target-service", "", "")
+	require.NoError(t, err)
+	require.NotNil(t, ex.gotReq)
+
+	ex.gotReq = nil
+	// Second call from the same session (same subject token) is rate-limited.
+	_, err = srv.WorkloadExchangeSubjectToken(t.Context(),
+		"sa-jwt", SubjectTokenTypeIDToken, "", "", "target-service", "", "")
+	require.ErrorIs(t, err, ErrExchangeRateLimited)
+	require.Nil(t, ex.gotReq, "exchanger must not be invoked when rate-limited")
+
+	details := auditDetails(t, buf, security.EventAuthFailure)
+	require.Equal(t, "token_exchange_rate_limited", details["reason"])
+}
+
 func TestWorkloadExchangeSubjectToken_HappyPath(t *testing.T) {
 	expiry := time.Now().Add(15 * time.Minute).UTC().Truncate(time.Second)
 	ex := &stubExchanger{result: &ExchangerResult{

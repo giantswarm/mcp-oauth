@@ -21,9 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `providers.UserInfo.IsDelegated() bool`: reports whether the token represents a delegated exchange; true when `ActorSubject` is non-empty.
 
-- `oidc.IDTokenClaims.Act *oidc.ActorClaim` and `oidc.ActorClaim` (`Issuer string`, `Subject string`, `Act *oidc.ActorClaim`): decoded automatically from the `act` claim of a JWT when present. The nested `Act` field carries a multi-hop RFC 8693 §4.4 delegation chain (`act.act…`); `oidc.ActorClaim.Chain()` flattens it to a slice ordered from the outermost (most recent) actor to the innermost.
-
-- `providers.UserInfo.ActorChain []oidc.ActorClaim`: the full delegation chain decoded from the `act` claim, outermost first; `ActorIssuer`/`ActorSubject` mirror its first element. Resource servers authorizing a multi-hop A2A call walk this slice to match any actor in the chain, not only the leaf.
+- `oidc.IDTokenClaims.Act *oidc.ActorClaim` and `oidc.ActorClaim` (`Issuer string`, `Subject string`, `Act *oidc.ActorClaim`): decoded automatically from the `act` claim of a JWT when present. The nested `Act` field carries a multi-hop RFC 8693 §4.4 delegation chain (`act.act…`), so a token minted for a second A2A hop decodes with `Act` = the most recent actor and `Act.Act` = the prior one.
 
 - `LocalMintExchanger` now copies `email`, `email_verified`, and `groups` from the validated subject token into the minted access token (`email_verified` only alongside a non-empty `email`), and nests any `act` chain already on the subject token beneath the new actor so a multi-hop A2A delegation chain is preserved. A chain exceeding the maximum nesting depth is rejected.
 
@@ -82,6 +80,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Federation-escalation guard on the workload token-exchange path.** A token this broker minted that already carries an `act` claim can no longer be re-exchanged on the impersonation path (no `actor_token`). Doing so would re-authorize the token on its minted human `sub` and drop the acting principal recorded in `act`. Such a token may only be re-exchanged with a fresh `actor_token` (the delegation path), which re-evaluates `ActorDelegationPolicy` and `WorkloadAudiences` against that actor. The rejection emits an `auth_failure` audit event with reason `self_minted_delegated_token_impersonation`.
 
 - **Minted actor chains are bounded.** `LocalMintExchanger` rejects an `act` chain deeper than 10 hops, capping token size and parser load on every downstream that validates the token.
+
+- **Mint path honours the rate limiter when called in-process.** `BrokerExchangeSubjectToken` and `WorkloadExchangeSubjectToken` now consult the configured `UserRateLimiter` (keyed on the per-session ID) before minting, so a caller invoking these methods directly (e.g. an aggregator, bypassing the HTTP middleware) cannot flood mints from a single compromised session. New exported sentinel `server.ErrExchangeRateLimited`; the rejection emits an `auth_failure` audit event with reason `token_exchange_rate_limited`. A nil `UserRateLimiter` leaves the path unrestricted as before.
 
 ## [0.2.199] - 2026-06-10
 

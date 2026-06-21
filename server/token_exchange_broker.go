@@ -18,6 +18,15 @@ import (
 // §2.2.2 invalid_target error response.
 var ErrInvalidTarget = errors.New("requested audience is not allowed for this client")
 
+// ErrExchangeRateLimited is returned by BrokerExchangeSubjectToken and
+// WorkloadExchangeSubjectToken when the configured UserRateLimiter rejects the
+// request. The HTTP handler rate-limits authenticated requests in middleware,
+// but these methods are also called in-process (e.g. by an aggregator minting
+// per-backend tokens), so the same limiter is enforced here keyed on the
+// per-session ID. Callers invoking the methods directly should surface this as
+// a 429-equivalent.
+var ErrExchangeRateLimited = errors.New("token exchange rate limit exceeded")
+
 // ExchangerRequest carries the validated inputs of a brokered RFC 8693
 // token exchange to the host's Exchanger implementation. The subject and
 // actor tokens have already been validated (signature, issuer, audience,
@@ -123,6 +132,10 @@ func (s *Server) BrokerExchangeSubjectToken(
 ) (*TokenExchangeResult, error) {
 	sessionID := s.deriveForwardedSessionID(subjectToken)
 
+	if s.exchangeRateLimited(ctx, "brokered", clientID, audience, sessionID) {
+		return nil, ErrExchangeRateLimited
+	}
+
 	if s.exchanger == nil {
 		s.auditExchangeFailure(ctx, "brokered", clientID, audience, sessionID, "token_exchange_no_exchanger", nil)
 		return nil, fmt.Errorf("%w: no exchanger configured", ErrInvalidTarget)
@@ -190,6 +203,10 @@ func (s *Server) WorkloadExchangeSubjectToken(
 	subjectToken, subjectTokenType, actorToken, actorTokenType, audience, resource, scope string,
 ) (*TokenExchangeResult, error) {
 	sessionID := s.deriveForwardedSessionID(subjectToken)
+
+	if s.exchangeRateLimited(ctx, "workload", "", audience, sessionID) {
+		return nil, ErrExchangeRateLimited
+	}
 
 	if s.exchanger == nil {
 		s.auditExchangeFailure(ctx, "workload", "", audience, sessionID, "token_exchange_no_exchanger", nil)
@@ -401,6 +418,21 @@ func (s *Server) dispatchDownstreamExchange(
 		Scope:           result.Scope,
 		IssuedTokenType: issuedTokenType,
 	}, nil
+}
+
+// exchangeRateLimited reports whether the mint path is currently rate-limited
+// for sessionID and audits the rejection when it is. The HTTP handler
+// rate-limits authenticated requests in middleware keyed on the user, but the
+// brokered and workload methods are also called in-process, so the same
+// UserRateLimiter is enforced here keyed on the per-session ID, so a compromised
+// session cannot flood mints regardless of entry point. A nil UserRateLimiter
+// disables the check.
+func (s *Server) exchangeRateLimited(ctx context.Context, exchange, clientID, audience, sessionID string) bool {
+	if s.UserRateLimiter == nil || s.UserRateLimiter.Allow(sessionID) {
+		return false
+	}
+	s.auditExchangeFailure(ctx, exchange, clientID, audience, sessionID, "token_exchange_rate_limited", nil)
+	return true
 }
 
 // auditExchangeFailure emits the auth-failure audit event for brokered and
