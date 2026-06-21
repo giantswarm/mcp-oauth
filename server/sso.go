@@ -163,7 +163,6 @@ func (s *Server) idTokenClaimsToUserInfo(claims *oidc.IDTokenClaims) *providers.
 	if claims.Act != nil {
 		info.ActorIssuer = claims.Act.Issuer
 		info.ActorSubject = claims.Act.Subject
-		info.ActorChain = claims.Act.Chain()
 	}
 	return info
 }
