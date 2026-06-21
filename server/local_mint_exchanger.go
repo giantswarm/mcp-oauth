@@ -96,9 +96,6 @@ func (l *LocalMintExchanger) Exchange(ctx context.Context, req *ExchangerRequest
 		Act:       act,
 	}
 	if identity := req.Subject.Claims; identity != nil {
-		if identity.Email != "" && !identity.EmailVerified {
-			return nil, fmt.Errorf("local mint: subject asserts an email but email_verified is false; refusing to mint an identity-bearing token")
-		}
 		claims.Email = identity.Email
 		claims.EmailVerified = identity.EmailVerified
 		claims.Groups = identity.Groups
