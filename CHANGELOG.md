@@ -89,6 +89,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Mint path honours the rate limiter when called in-process.** `BrokerExchangeSubjectToken` and `WorkloadExchangeSubjectToken` now consult the configured `UserRateLimiter` (keyed on the per-session ID) before minting, so a caller invoking these methods directly (e.g. an aggregator, bypassing the HTTP middleware) cannot flood mints from a single compromised session. New exported sentinel `server.ErrExchangeRateLimited`; the rejection emits an `auth_failure` audit event with reason `token_exchange_rate_limited`. A nil `UserRateLimiter` leaves the path unrestricted as before.
 
+- **Private-IP-allowed HTTP client pins redirects to the original host.** The client returned by `NewPrivateIPAllowedHTTPClient` (used for JWKS, discovery, and token exchange when `AllowPrivateIP` is set) now refuses a redirect that changes host or port and re-applies the 10-hop redirect cap. Because that client cannot filter private IPs, a discovery or JWKS endpoint can no longer 302 the fetch to an arbitrary internal address or a different port on the same host. Same-host redirects are still followed.
+
 ## [0.2.199] - 2026-06-10
 
 ### Added

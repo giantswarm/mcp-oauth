@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -697,6 +699,54 @@ func TestNewPrivateIPAllowedHTTPClient(t *testing.T) {
 		client := NewPrivateIPAllowedHTTPClient(0)
 		if client.Transport == nil {
 			t.Error("Expected client to have transport configured")
+		}
+	})
+}
+
+// TestPrivateIPAllowedHTTPClient_RedirectPinning verifies the private-IP-allowed
+// client follows a same-host redirect but refuses one that changes the host or
+// port (the SSRF pivot the host pin closes).
+func TestPrivateIPAllowedHTTPClient_RedirectPinning(t *testing.T) {
+	client := NewPrivateIPAllowedHTTPClient(5 * time.Second)
+
+	t.Run("follows same-host redirect", func(t *testing.T) {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/keys", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/keys/final", http.StatusFound)
+		})
+		mux.HandleFunc("/keys/final", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+
+		resp, err := client.Get(srv.URL + "/keys")
+		if err != nil {
+			t.Fatalf("same-host redirect must be followed, got error: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200 after same-host redirect, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("refuses cross-host redirect", func(t *testing.T) {
+		internal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(internal.Close)
+
+		entry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, internal.URL+"/latest/meta-data", http.StatusFound)
+		}))
+		t.Cleanup(entry.Close)
+
+		_, err := client.Get(entry.URL + "/keys")
+		if err == nil {
+			t.Fatal("cross-host redirect must be refused")
+		}
+		if !strings.Contains(err.Error(), "cross-host redirect") {
+			t.Errorf("expected a cross-host redirect error, got: %v", err)
 		}
 	})
 }
