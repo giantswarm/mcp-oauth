@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"path"
 	"strings"
 
@@ -101,7 +102,19 @@ func NewOIDCValidator(issuers []TrustedIssuer) (*OIDCValidator, error) {
 	var permissive *oidc.JWKSClient
 	for _, ti := range issuers {
 		if ti.AllowPrivateIPJWKS {
-			permissive = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{AllowPrivateIP: true})
+			// AllowPrivateIPJWKS targets a controlled in-cluster endpoint, which
+			// commonly presents a certificate from an internal CA. Back the client
+			// with http.DefaultTransport so a CA bundle the host process installs
+			// there (e.g. via an extra-CA file) is honored; a freshly built
+			// transport would verify against the system pool alone and reject it.
+			// AllowPrivateIP stays set so FetchJWKS still permits the private-IP host.
+			permissive = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
+				AllowPrivateIP: true,
+				HTTPClient: &http.Client{
+					Transport: http.DefaultTransport,
+					Timeout:   oidc.DefaultHTTPTimeout,
+				},
+			})
 			break
 		}
 	}
