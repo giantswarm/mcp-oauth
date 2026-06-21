@@ -1018,3 +1018,98 @@ func TestConfig_ValidateRejectsEmptyGrantIssuers(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkloadExchange_M2MGroupsInjected(t *testing.T) {
+	const saIssuer = "https://kubernetes.default.svc"
+	const saSub = "system:serviceaccount:kagent:sre-agent"
+
+	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "minted", ExpiresAt: time.Now().Add(time.Minute)}}
+	srv, _ := newWorkloadTestServer(t, ex, []WorkloadGrant{{
+		Issuer:    saIssuer,
+		Subject:   saSub,
+		Audiences: []string{"mcp-prometheus"},
+		Groups:    []string{"giantswarm-ad:sre"},
+	}}, &stubSubjectValidator{identity: SubjectIdentity{Subject: saSub, Issuer: saIssuer}})
+
+	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		"sa-jwt", SubjectTokenTypeIDToken, "", "", "mcp-prometheus", "", "")
+	require.NoError(t, err)
+
+	require.NotNil(t, ex.gotReq)
+	require.Nil(t, ex.gotReq.Actor, "M2M path must carry no actor")
+	require.Equal(t, []string{"giantswarm-ad:sre"}, ex.gotReq.GrantedGroups, "grant groups travel on GrantedGroups")
+	require.Nil(t, ex.gotReq.Subject.Claims, "the validated subject identity must never be mutated to carry granted groups")
+}
+
+func TestWorkloadExchange_M2MNoGroupsWhenUngranted(t *testing.T) {
+	const saIssuer = "https://kubernetes.default.svc"
+	const saSub = "system:serviceaccount:kagent:sre-agent"
+
+	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "minted", ExpiresAt: time.Now().Add(time.Minute)}}
+	// Grant authorizes the audience but carries no groups.
+	srv, _ := newWorkloadTestServer(t, ex, []WorkloadGrant{{
+		Issuer:    saIssuer,
+		Subject:   saSub,
+		Audiences: []string{"mcp-prometheus"},
+	}}, &stubSubjectValidator{identity: SubjectIdentity{Subject: saSub, Issuer: saIssuer}})
+
+	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		"sa-jwt", SubjectTokenTypeIDToken, "", "", "mcp-prometheus", "", "")
+	require.NoError(t, err)
+
+	require.NotNil(t, ex.gotReq)
+	require.Empty(t, ex.gotReq.GrantedGroups, "a grant without groups grants none")
+	require.Nil(t, ex.gotReq.Subject.Claims, "no groups grant must not synthesize claims")
+}
+
+func TestWorkloadExchange_DelegationDoesNotInjectWorkloadGroups(t *testing.T) {
+	const saIssuer = "https://kubernetes.default.svc"
+	const saSub = "system:serviceaccount:kagent:sre-agent"
+	const userIssuer = "https://dex.example.com"
+	const userSub = "alice@example.com"
+
+	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "minted", ExpiresAt: time.Now().Add(time.Minute)}}
+	validator := &stubTokenValidator{byToken: map[string]*SubjectIdentity{
+		"user-jwt": {Subject: userSub, Issuer: userIssuer, Claims: &oidc.IDTokenClaims{Groups: []string{"giantswarm-ad:devs"}}},
+		"sa-jwt":   {Subject: saSub, Issuer: saIssuer},
+	}}
+	srv, _ := newWorkloadTestServer(t, ex, []WorkloadGrant{{
+		Issuer:    saIssuer,
+		Subject:   saSub,
+		Audiences: []string{"mcp-prometheus"},
+		Groups:    []string{"giantswarm-ad:sre"},
+	}}, validator)
+	srv.Config.ActorDelegationPolicy = []DelegationGrant{{
+		ActorIssuer: saIssuer, ActorSubject: saSub, SubjectIssuer: userIssuer, SubjectSubject: userSub,
+	}}
+
+	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		"user-jwt", SubjectTokenTypeIDToken, "sa-jwt", SubjectTokenTypeIDToken, "mcp-prometheus", "", "")
+	require.NoError(t, err)
+
+	require.NotNil(t, ex.gotReq)
+	require.NotNil(t, ex.gotReq.Actor)
+	require.Equal(t, saSub, ex.gotReq.Actor.Subject)
+	require.Equal(t, userSub, ex.gotReq.Subject.Subject)
+	require.Empty(t, ex.gotReq.GrantedGroups, "delegation path grants no workload groups")
+	require.Equal(t, []string{"giantswarm-ad:devs"}, ex.gotReq.Subject.Claims.Groups,
+		"delegation preserves the human subject's own token groups untouched")
+}
+
+func TestConfigValidate_WorkloadGroupsRequireExplicitGrant(t *testing.T) {
+	tests := []struct {
+		name  string
+		grant WorkloadGrant
+	}{
+		{"wildcard issuer", WorkloadGrant{Issuer: "*", Subject: "system:serviceaccount:kagent:sre-agent", Audiences: []string{"a"}, Groups: []string{"g"}}},
+		{"glob subject", WorkloadGrant{Issuer: "https://k8s", Subject: "system:serviceaccount:kagent:*", Audiences: []string{"a"}, Groups: []string{"g"}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{WorkloadAudiences: []WorkloadGrant{tc.grant}}
+			err := cfg.validateGrants()
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "group grant")
+		})
+	}
+}
