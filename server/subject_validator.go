@@ -183,6 +183,13 @@ func (v *OIDCValidator) Validate(ctx context.Context, tokenString string, defaul
 		return nil, err
 	}
 
+	// Bound act nesting on the way in, symmetric with the mint-side limit:
+	// reject an absurdly deep delegation chain before it reaches any consumer
+	// that walks it.
+	if depth := len(claims.Act.Chain()); depth > maxActorChainDepth {
+		return nil, fmt.Errorf("actor chain depth %d exceeds maximum %d", depth, maxActorChainDepth)
+	}
+
 	// rawClaims is authentic here: ValidateIDToken verified the signature over
 	// the same token, so reading an additional claim from it is sound.
 	subject := claims.Subject

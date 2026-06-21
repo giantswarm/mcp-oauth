@@ -407,6 +407,17 @@ func TestLocalMintExchanger_RoundTrip_ActorChain(t *testing.T) {
 	require.NotNil(t, identity.Claims.Act.Act, "nested actor decoded")
 	require.Equal(t, "agentA", identity.Claims.Act.Act.Subject)
 	require.Nil(t, identity.Claims.Act.Act.Act, "chain ends at the first hop")
+
+	// The consumer-facing path surfaces the flattened chain on UserInfo so a
+	// backend can authorize on any actor in it, not only the leaf.
+	srv, _, _ := setupFlowTestServer(t)
+	srv.trustedIssuerValidator = v
+	userInfo, err := srv.ValidateToken(t.Context(), result.AccessToken)
+	require.NoError(t, err)
+	require.Equal(t, "agentB", userInfo.ActorSubject, "leaf mirrors the most recent actor")
+	require.Len(t, userInfo.ActorChain, 2)
+	require.Equal(t, "agentB", userInfo.ActorChain[0].Subject)
+	require.Equal(t, "agentA", userInfo.ActorChain[1].Subject)
 }
 
 // TestLocalMintExchanger_RoundTrip_ForgedChainUntrustedIssuerRejected asserts a
@@ -445,4 +456,65 @@ func TestLocalMintExchanger_RoundTrip_ForgedChainUntrustedIssuerRejected(t *test
 
 	_, err = v.Validate(t.Context(), result.AccessToken, []string{cfg.Issuer})
 	require.ErrorIs(t, err, ErrIssuerNotTrusted)
+}
+
+// TestLocalMintExchanger_Exchange_RejectsUnverifiedEmail asserts the mint
+// refuses to vouch for a subject that asserts an email the upstream did not
+// verify. A subject with no email (e.g. an M2M ServiceAccount) is unaffected,
+// which the other no-email tests cover.
+func TestLocalMintExchanger_Exchange_RejectsUnverifiedEmail(t *testing.T) {
+	cfg, _ := localMintCfg(t)
+	lme, err := NewLocalMintExchanger(cfg)
+	require.NoError(t, err)
+
+	_, err = lme.Exchange(t.Context(), &ExchangerRequest{
+		Resource: "https://api.example.com",
+		Subject: &SubjectIdentity{
+			Subject: "user@example.com",
+			Issuer:  testIssuer,
+			Claims:  &oidc.IDTokenClaims{Email: "user@example.com", EmailVerified: false},
+		},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "email_verified")
+}
+
+// TestOIDCValidator_Validate_RejectsTooDeepActorChain asserts the validator
+// bounds inbound act nesting symmetrically with the mint-side limit: a signed
+// token whose chain exceeds maxActorChainDepth is rejected before any consumer
+// walks it.
+func TestOIDCValidator_Validate_RejectsTooDeepActorChain(t *testing.T) {
+	cfg, signingKey := localMintCfg(t)
+	issuer, err := newJWTIssuer(cfg)
+	require.NoError(t, err)
+
+	// Build an act chain one hop deeper than the limit and sign it directly,
+	// bypassing the mint-side depth guard.
+	act := &Actor{Iss: testIssuer, Sub: "a0"}
+	for i := 1; i <= maxActorChainDepth; i++ {
+		act = &Actor{Iss: testIssuer, Sub: fmt.Sprintf("a%d", i), Act: act}
+	}
+	now := time.Now().UTC()
+	token, err := issuer.Issue(t.Context(), AccessTokenClaims{
+		Subject:   "user@example.com",
+		Audience:  cfg.Issuer,
+		IssuedAt:  now,
+		ExpiresAt: now.Add(time.Minute),
+		Act:       act,
+	})
+	require.NoError(t, err)
+
+	jwksURL, jwksClient := serveStaticRSAJWKS(t, signingKey, "lme-test-kid")
+	v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
+		Issuer:             cfg.Issuer,
+		JwksURL:            jwksURL,
+		AllowedAudiences:   []string{cfg.Issuer},
+		AllowPrivateIPJWKS: true,
+		AcceptedTypHeaders: []string{"at+jwt"},
+	}}, jwksClient)
+	require.NoError(t, err)
+
+	_, err = v.Validate(t.Context(), token, []string{cfg.Issuer})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "actor chain depth")
 }
