@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -112,6 +113,65 @@ func (s *Server) RegisterClientV2(ctx context.Context, clientName, clientType, t
 		ClientSecret:      clientSecret,
 		RegistrationToken: registrationToken,
 	}, nil
+}
+
+// EnsureConfidentialClient idempotently seeds a confidential OAuth client with
+// a caller-supplied id and secret. Unlike RegisterClientV2 (which generates a
+// random id and secret), this is used to declaratively provision a known
+// confidential client -- e.g. a token-exchange broker -- from a secret mounted
+// at startup, so that a wiped client store self-heals.
+//
+// It is idempotent: if a client with the given id already exists and its stored
+// secret hash matches the supplied secret, it is left untouched. Otherwise the
+// client record is (re)written with a fresh bcrypt hash of the supplied secret.
+// Returns whether the store was written (true) or already up to date (false).
+func (s *Server) EnsureConfidentialClient(ctx context.Context, clientID, clientSecret string, scopes []string) (seeded bool, err error) {
+	if clientID == "" || clientSecret == "" {
+		return false, fmt.Errorf("client id and secret are required")
+	}
+
+	existing, err := s.clientStore.GetClient(ctx, clientID)
+	if err != nil && !errors.Is(err, storage.ErrClientNotFound) {
+		return false, fmt.Errorf("failed to look up client %q: %w", clientID, err)
+	}
+
+	// Already present with a matching secret: nothing to do.
+	if existing != nil && existing.IsConfidential() && existing.ClientSecretHash != "" {
+		if bcrypt.CompareHashAndPassword([]byte(existing.ClientSecretHash), []byte(clientSecret)) == nil {
+			return false, nil
+		}
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(clientSecret), bcrypt.DefaultCost)
+	if err != nil {
+		return false, fmt.Errorf("failed to hash client secret: %w", err)
+	}
+
+	now := time.Now()
+	client := &storage.Client{
+		ClientID:                clientID,
+		ClientSecretHash:        string(hash),
+		ClientType:              ClientTypeConfidential,
+		TokenEndpointAuthMethod: TokenEndpointAuthMethodBasic,
+		GrantTypes:              []string{"client_credentials", "urn:ietf:params:oauth:grant-type:token-exchange"},
+		ClientName:              clientID,
+		Scopes:                  scopes,
+		UpdatedAt:               now,
+	}
+	if existing != nil {
+		client.CreatedAt = existing.CreatedAt
+		client.RedirectURIs = existing.RedirectURIs
+		client.RegistrationAccessTokenHash = existing.RegistrationAccessTokenHash
+	} else {
+		client.CreatedAt = now
+	}
+
+	if err := s.clientStore.SaveClient(ctx, client); err != nil {
+		return false, fmt.Errorf("failed to save client %q: %w", clientID, err)
+	}
+
+	s.Logger.Info("Seeded confidential OAuth client", "client_id", clientID)
+	return true, nil
 }
 
 // validateRedirectURIsWithAudit validates redirect URIs and logs failures for auditing.
