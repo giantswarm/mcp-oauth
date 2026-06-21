@@ -361,9 +361,26 @@ func GetAudienceFromClaims(claims map[string]any) []string {
 // mcp-oauth-minted access token. It identifies the acting party in a
 // delegation chain: Issuer and Subject correspond to the agent service account
 // that obtained the token on behalf of the human subject.
+//
+// Act carries the next hop further from the subject (RFC 8693 §4.4 nested act):
+// in a multi-hop A2A chain human → agentA → agentB, a token minted for the
+// second hop has Act = agentB and Act.Act = agentA. Nil at the end of the chain.
 type ActorClaim struct {
-	Issuer  string `json:"iss,omitempty"`
-	Subject string `json:"sub,omitempty"`
+	Issuer  string      `json:"iss,omitempty"`
+	Subject string      `json:"sub,omitempty"`
+	Act     *ActorClaim `json:"act,omitempty"`
+}
+
+// Chain flattens a nested act claim into a slice ordered from the outermost
+// (most recent) actor to the innermost, each element stripped of its own nested
+// Act. Returns nil for a nil receiver. Resource servers authorizing a multi-hop
+// delegation match any element rather than only the leaf.
+func (c *ActorClaim) Chain() []ActorClaim {
+	var chain []ActorClaim
+	for a := c; a != nil; a = a.Act {
+		chain = append(chain, ActorClaim{Issuer: a.Issuer, Subject: a.Subject})
+	}
+	return chain
 }
 
 // IDTokenClaims represents the standard claims in an OIDC ID token. The

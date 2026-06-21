@@ -21,7 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `providers.UserInfo.IsDelegated() bool`: reports whether the token represents a delegated exchange; true when `ActorSubject` is non-empty.
 
-- `oidc.IDTokenClaims.Act *oidc.ActorClaim` and `oidc.ActorClaim` (`Issuer string`, `Subject string`): decoded automatically from the `act` claim of a JWT when present.
+- `oidc.IDTokenClaims.Act *oidc.ActorClaim` and `oidc.ActorClaim` (`Issuer string`, `Subject string`, `Act *oidc.ActorClaim`): decoded automatically from the `act` claim of a JWT when present. The nested `Act` field carries a multi-hop RFC 8693 §4.4 delegation chain (`act.act…`); `oidc.ActorClaim.Chain()` flattens it to a slice ordered from the outermost (most recent) actor to the innermost.
+
+- `providers.UserInfo.ActorChain []oidc.ActorClaim`: the full delegation chain decoded from the `act` claim, outermost first; `ActorIssuer`/`ActorSubject` mirror its first element. Resource servers authorizing a multi-hop A2A call walk this slice to match any actor in the chain, not only the leaf.
+
+- `LocalMintExchanger` now copies `email`, `email_verified`, and `groups` from the validated subject token into the minted access token (`email_verified` only alongside a non-empty `email`), and nests any `act` chain already on the subject token beneath the new actor so a multi-hop A2A delegation chain is preserved. A chain exceeding the maximum nesting depth is rejected.
+
+- `server.Actor.Act *server.Actor`: nests the prior actor when minting a token for a further delegation hop.
+
+- `server.ExchangerResult.JTI string`: lets an `Exchanger` surface the issued token's `jti` so the broker records it in the mint audit event; the broker's `token_issued` event now carries a `jti` detail when set.
 
 - `providers.TokenSourceTrustedIssuer` (`"trusted-issuer"`) constant and `UserInfo.IsExternalIssuer() bool` method. A Bearer validated against a `WithTrustedIssuers` entry is now tagged with this source instead of `TokenSourceSSO`, so downstream servers can distinguish an external-IdP token (requires impersonation or token-exchange) from a Dex-forwarded SSO token (can be passed through as a bearer).
 
@@ -68,6 +76,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Subject and actor token validation failures in the brokered flow produced audit events without `client_id`, `audience`, or `session_id`.** The early-rejection paths (no exchanger, audience not in allowlist) already carried those fields; validation failures did not. `validateExchangeToken` now accepts an extra-details map; `BrokerExchangeSubjectToken` passes the brokered flow context so every brokered failure event is fully correlated.
 
 - **Stale issuer JWKS broke every token after an issuer signing-key rotation.** `oidc.JWKSClient` cached a trusted issuer's JWKS for the full TTL (1h) and never refetched when a token presented a `kid` absent from the cached set, so a single Dex key rotation made `ValidateIDToken` (and therefore the token-exchange broker's subject-token validation) reject **every** current user token until the process was restarted ([muster#847](https://github.com/giantswarm/muster/issues/847)). The client now forces a single bounded refetch on an unknown `kid` and retries verification once. The refetch is rate-limited to at most one network fetch per `DefaultJWKSRefetchBackoff` (1m) per JWKS URI (negative caching), so a flood of tokens carrying genuinely bogus kids cannot hammer the issuer's JWKS endpoint. A legitimate rotation now self-heals on the first affected token without a restart. New exported sentinel `oidc.ErrKeyNotFound`.
+
+### Security
+
+- **Federation-escalation guard on the workload token-exchange path.** A token this broker minted that already carries an `act` claim can no longer be re-exchanged on the impersonation path (no `actor_token`). Doing so would re-authorize the token on its minted human `sub` and drop the acting principal recorded in `act`. Such a token may only be re-exchanged with a fresh `actor_token` (the delegation path), which re-evaluates `ActorDelegationPolicy` and `WorkloadAudiences` against that actor. The rejection emits an `auth_failure` audit event with reason `self_minted_delegated_token_impersonation`.
+
+- **Minted actor chains are bounded.** `LocalMintExchanger` rejects an `act` chain deeper than 10 hops, capping token size and parser load on every downstream that validates the token.
 
 ## [0.2.199] - 2026-06-10
 

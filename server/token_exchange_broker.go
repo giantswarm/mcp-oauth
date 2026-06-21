@@ -69,6 +69,11 @@ type ExchangerResult struct {
 	ExpiresAt time.Time
 	// Scope is the scope granted by the downstream issuer. May be empty.
 	Scope string
+	// JTI is the unique identifier of the issued token, when the Exchanger
+	// mints a JWT it controls (e.g. LocalMintExchanger). Surfaced so the broker
+	// can record it in the mint audit event; empty when the downstream token is
+	// opaque or minted by a remote issuer.
+	JTI string
 }
 
 // Exchanger maps a requested audience to a downstream token. Hosts (e.g. an
@@ -203,6 +208,20 @@ func (s *Server) WorkloadExchangeSubjectToken(
 	identity, err := s.validateExchangeSubjectToken(ctx, subjectToken, subjectTokenType, subjDefaultAud, nil)
 	if err != nil {
 		return nil, err
+	}
+
+	// Federation-escalation guard: a token this broker minted that already
+	// carries a delegation chain (act) must not be re-exchanged on the
+	// impersonation path. Doing so would re-authorize it on the minted human
+	// sub and drop the original acting principal recorded in act. Such a token
+	// may only be re-exchanged with a fresh actor_token (the delegation path),
+	// which re-evaluates ActorDelegationPolicy and WorkloadAudiences against
+	// that actor.
+	if actorToken == "" && identity.Issuer == s.Config.Issuer && identity.Claims != nil && identity.Claims.Act != nil {
+		s.auditExchangeFailure(ctx, "workload", "", audience, sessionID, "self_minted_delegated_token_impersonation", map[string]any{
+			"sub": identity.Subject,
+		})
+		return nil, fmt.Errorf("%w: self-minted delegated token cannot be re-exchanged without an actor_token", ErrInvalidTarget)
 	}
 
 	var actor *SubjectIdentity
@@ -365,6 +384,9 @@ func (s *Server) dispatchDownstreamExchange(
 	if actor != nil {
 		successDetails["actor_iss"] = actor.Issuer
 		successDetails["actor_sub"] = actor.Subject
+	}
+	if result.JTI != "" {
+		successDetails["jti"] = result.JTI
 	}
 	s.Auditor.LogEvent(ctx, security.Event{
 		Type:     security.EventTokenIssued,

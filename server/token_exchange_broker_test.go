@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/mcp-oauth/providers/mock"
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
@@ -493,6 +494,84 @@ func TestWorkloadExchangeSubjectToken_HappyPath(t *testing.T) {
 	require.Equal(t, "workload", details["exchange"])
 	require.Empty(t, details["__client_id"])
 	require.Equal(t, "target-service", details["audience"])
+}
+
+// TestWorkloadExchangeSubjectToken_AuditsMintJTI asserts the jti the Exchanger
+// surfaces on its result is recorded in the success audit event, so every mint
+// is attributable to a specific issued token.
+func TestWorkloadExchangeSubjectToken_AuditsMintJTI(t *testing.T) {
+	ex := &stubExchanger{result: &ExchangerResult{
+		AccessToken: "workload-token",
+		ExpiresAt:   time.Now().Add(time.Minute),
+		JTI:         "jti-12345",
+	}}
+	const sub = "system:serviceaccount:ns:robot"
+	validator := &stubSubjectValidator{identity: SubjectIdentity{Subject: sub, Issuer: "https://kube.example.com"}}
+	srv, buf := newWorkloadTestServer(t, ex,
+		[]WorkloadGrant{{Issuer: "*", Subject: sub, Audiences: []string{"target-service"}}}, validator)
+
+	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		"sa-jwt", SubjectTokenTypeIDToken, "", "", "target-service", "", "")
+	require.NoError(t, err)
+
+	details := auditDetails(t, buf, security.EventTokenIssued)
+	require.Equal(t, "jti-12345", details["jti"])
+}
+
+// TestWorkloadExchangeSubjectToken_FederationEscalationGuardDeniesImpersonation
+// asserts a token this broker minted that already carries a delegation chain
+// cannot be re-exchanged on the impersonation path (no actor_token), which would
+// re-authorize it on the minted human sub and drop the acting principal.
+func TestWorkloadExchangeSubjectToken_FederationEscalationGuardDeniesImpersonation(t *testing.T) {
+	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "must-not-mint"}}
+	validator := &stubSubjectValidator{identity: SubjectIdentity{
+		Subject: brokerTestUserSub,
+		Issuer:  "https://broker.example.com", // self-minted: equals cfg.Issuer
+		Claims:  &oidc.IDTokenClaims{Act: &oidc.ActorClaim{Issuer: "https://kube.example.com", Subject: "agentA"}},
+	}}
+	srv, buf := newWorkloadTestServer(t, ex,
+		[]WorkloadGrant{{Issuer: "*", Subject: "*", Audiences: []string{"target-service"}}}, validator)
+
+	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		"self-minted-obo", SubjectTokenTypeIDToken, "", "", "target-service", "", "")
+	require.ErrorIs(t, err, ErrInvalidTarget)
+	require.Contains(t, err.Error(), "self-minted delegated token")
+	require.Nil(t, ex.gotReq, "exchanger must not be invoked when the guard fires")
+
+	details := auditDetails(t, buf, security.EventAuthFailure)
+	require.Equal(t, "self_minted_delegated_token_impersonation", details["reason"])
+}
+
+// TestWorkloadExchangeSubjectToken_FederationEscalationGuardAllowsDelegation
+// asserts the guard is narrow: the same self-minted delegated token re-exchanged
+// with a fresh actor_token (the delegation path) proceeds, re-evaluating policy
+// against that actor — this is the legitimate multi-hop A2A re-exchange.
+func TestWorkloadExchangeSubjectToken_FederationEscalationGuardAllowsDelegation(t *testing.T) {
+	ex := &stubExchanger{result: &ExchangerResult{
+		AccessToken: "workload-token",
+		ExpiresAt:   time.Now().Add(time.Minute),
+	}}
+	const agentB = "system:serviceaccount:ns:agent-b"
+	validator := &stubTokenValidator{
+		byToken: map[string]*SubjectIdentity{
+			"agent-b-jwt": {Subject: agentB, Issuer: "https://kube.example.com"},
+		},
+		defaultIdentity: &SubjectIdentity{
+			Subject: brokerTestUserSub,
+			Issuer:  "https://broker.example.com", // self-minted subject
+			Claims:  &oidc.IDTokenClaims{Act: &oidc.ActorClaim{Issuer: "https://kube.example.com", Subject: "agentA"}},
+		},
+	}
+	srv, _ := newWorkloadTestServer(t, ex,
+		[]WorkloadGrant{{Issuer: "*", Subject: agentB, Audiences: []string{"target-service"}}}, validator)
+	srv.Config.ActorDelegationPolicy = []DelegationGrant{
+		{ActorIssuer: "*", ActorSubject: agentB, SubjectIssuer: "*", SubjectSubject: brokerTestUserSub},
+	}
+
+	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		"self-minted-obo", SubjectTokenTypeIDToken, "agent-b-jwt", SubjectTokenTypeIDToken, "target-service", "", "")
+	require.NoError(t, err)
+	require.NotNil(t, ex.gotReq, "delegation re-exchange must proceed to the exchanger")
 }
 
 func TestWorkloadExchangeSubjectToken_ImpersonationSubjectBoundToBrokerIssuer(t *testing.T) {

@@ -93,9 +93,13 @@ type AccessTokenClaims struct {
 }
 
 // Actor is the RFC 8693 §4.4 act claim: the acting party in a delegation chain.
+// Act nests the prior actor so a multi-hop A2A chain (human → agentA → agentB)
+// is preserved: the outermost Act is the most recent actor, Act.Act the one
+// before it. Nil at the end of the chain.
 type Actor struct {
 	Iss string `json:"iss,omitempty"`
 	Sub string `json:"sub,omitempty"`
+	Act *Actor `json:"act,omitempty"`
 }
 
 // Confirmation is the RFC 9449 §6.1 cnf claim: proof-of-possession key binding.
