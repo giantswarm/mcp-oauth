@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -346,6 +347,10 @@ func NewSSRFSafeHTTPClient(timeout time.Duration) *http.Client {
 // Security Features:
 //   - TLS Verification: Uses default TLS settings (no InsecureSkipVerify)
 //   - No SSRF Protection: Private, loopback, and link-local addresses are ALLOWED
+//   - Host-pinned redirects: a redirect to a different host is refused. Because
+//     this client cannot filter private IPs, it pins requests to the host that was
+//     originally dialed so a discovery/JWKS endpoint cannot 302 the fetch to an
+//     arbitrary internal target.
 //
 // Use Cases:
 //   - Home lab deployments with internal Dex
@@ -376,7 +381,40 @@ func NewPrivateIPAllowedHTTPClient(timeout time.Duration) *http.Client {
 	}
 
 	return &http.Client{
-		Transport: transport,
-		Timeout:   timeout,
+		Transport:     transport,
+		Timeout:       timeout,
+		CheckRedirect: blockCrossHostRedirect,
 	}
+}
+
+// blockCrossHostRedirect refuses a redirect whose target host or port differs
+// from the endpoint originally requested, and bounds the chain at the net/http
+// default of 10 hops. Setting CheckRedirect replaces that default cap, so it is
+// reapplied here. Pinning the port as well as the host blocks a same-host pivot
+// to a different internal service (e.g. a metadata or admin port) and a scheme
+// downgrade to plaintext.
+func blockCrossHostRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) == 0 {
+		return nil
+	}
+	origin := via[0].URL
+	if !strings.EqualFold(req.URL.Hostname(), origin.Hostname()) || effectivePort(req.URL) != effectivePort(origin) {
+		return fmt.Errorf("refusing cross-host redirect to %q (request endpoint %q)", req.URL.Host, origin.Host)
+	}
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after %d redirects", len(via))
+	}
+	return nil
+}
+
+// effectivePort returns the URL's port, resolving the scheme default when the
+// port is implicit, so https://h and https://h:443 compare equal.
+func effectivePort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	if u.Scheme == "http" {
+		return "80"
+	}
+	return "443"
 }
