@@ -105,6 +105,26 @@ const (
 	EndpointPathJWKS = "/.well-known/jwks.json"
 )
 
+// WorkloadGrantedIdentity holds the broker-asserted identity injected into a
+// minted token on the workload (no-actor) exchange path. Both fields are
+// optional; an empty struct means no identity injection. When either field is
+// set, Config.Validate requires Issuer and Subject on the enclosing
+// WorkloadGrant to be explicit (no "*", no glob).
+type WorkloadGrantedIdentity struct {
+	// Groups are merged into the minted token's groups claim so a groupless
+	// workload, such as a Kubernetes ServiceAccount token, can be authorized by
+	// downstreams that gate on groups. Use the exact connector-prefixed strings
+	// the downstream expects. Ignored on the delegation path, where the human
+	// subject carries its own groups.
+	Groups []string
+	// Subject, when non-empty, replaces the validated credential's sub in the
+	// minted token so the downstream sees a stable agent principal rather than
+	// the raw workload credential subject. The validated subject is matched by
+	// WorkloadGrant.Subject and stays in the audit trail; provenance is
+	// preserved. Ignored on the delegation path.
+	Subject string
+}
+
 // WorkloadGrant authorizes a workload identity to request specific RFC 8693 audiences on the
 // workload-authenticated exchange path. Issuer is matched exactly against the validated token's
 // iss claim; Subject is matched by glob (path.Match semantics, * spans slashes). Use "*" as
@@ -117,14 +137,10 @@ type WorkloadGrant struct {
 	Subject string
 	// Audiences lists the RFC 8693 audience values the matching workload may request.
 	Audiences []string
-	// Groups are injected into a minted token on the workload (no-actor) exchange
-	// path so a groupless workload, such as a Kubernetes ServiceAccount token, can
-	// be authorized by downstreams that gate on groups. Group strings must be in
-	// the form downstreams expect (connector-prefixed where the IdP prefixes).
-	// Ignored on the delegation path, where the human subject carries its own
-	// groups. When set, Issuer and Subject must be explicit (no "*", no glob):
-	// Config.Validate rejects a wildcard grant that injects groups.
-	Groups []string
+	// Granted holds the broker-asserted identity injected into the minted token
+	// on the workload (no-actor) exchange path. See WorkloadGrantedIdentity.
+	// When non-empty, Issuer and Subject must be explicit (no "*", no glob).
+	Granted WorkloadGrantedIdentity
 }
 
 // DelegationGrant authorizes an actor (identified by ActorIssuer + ActorSubject) to act on behalf
@@ -1254,20 +1270,20 @@ func (c *Config) validateGrants() error {
 }
 
 // validateWorkloadGrant rejects an empty issuer (matches nothing) and, for a
-// group-bearing grant, a wildcard issuer or glob subject: a grant that injects
-// groups must name an explicit issuer and subject.
+// grant that injects identity (groups or subject), a wildcard issuer or glob
+// subject: such grants must name an explicit issuer and subject.
 func validateWorkloadGrant(i int, g WorkloadGrant) error {
 	if g.Issuer == "" {
 		return fmt.Errorf("WorkloadAudiences[%d].Issuer is empty; use \"*\" to match any trusted issuer", i)
 	}
-	if len(g.Groups) == 0 {
+	if len(g.Granted.Groups) == 0 && g.Granted.Subject == "" {
 		return nil
 	}
 	if g.Issuer == "*" {
-		return fmt.Errorf("WorkloadAudiences[%d] injects groups but Issuer is \"*\"; a group grant must name an explicit issuer", i)
+		return fmt.Errorf("WorkloadAudiences[%d] injects identity but Issuer is \"*\"; a grant that injects groups or subject must name an explicit issuer", i)
 	}
 	if strings.ContainsAny(g.Subject, "*?[") {
-		return fmt.Errorf("WorkloadAudiences[%d] injects groups but Subject %q is a glob; a group grant must name an explicit subject", i, g.Subject)
+		return fmt.Errorf("WorkloadAudiences[%d] injects identity but Subject %q is a glob; a grant that injects groups or subject must name an explicit subject", i, g.Subject)
 	}
 	return nil
 }

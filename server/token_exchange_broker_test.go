@@ -1028,7 +1028,7 @@ func TestWorkloadExchange_M2MGroupsInjected(t *testing.T) {
 		Issuer:    saIssuer,
 		Subject:   saSub,
 		Audiences: []string{"mcp-prometheus"},
-		Groups:    []string{"giantswarm-ad:sre"},
+		Granted:   WorkloadGrantedIdentity{Groups: []string{"giantswarm-ad:sre"}},
 	}}, &stubSubjectValidator{identity: SubjectIdentity{Subject: saSub, Issuer: saIssuer}})
 
 	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
@@ -1077,7 +1077,7 @@ func TestWorkloadExchange_DelegationDoesNotInjectWorkloadGroups(t *testing.T) {
 		Issuer:    saIssuer,
 		Subject:   saSub,
 		Audiences: []string{"mcp-prometheus"},
-		Groups:    []string{"giantswarm-ad:sre"},
+		Granted:   WorkloadGrantedIdentity{Groups: []string{"giantswarm-ad:sre"}},
 	}}, validator)
 	srv.Config.ActorDelegationPolicy = []DelegationGrant{{
 		ActorIssuer: saIssuer, ActorSubject: saSub, SubjectIssuer: userIssuer, SubjectSubject: userSub,
@@ -1096,20 +1096,83 @@ func TestWorkloadExchange_DelegationDoesNotInjectWorkloadGroups(t *testing.T) {
 		"delegation preserves the human subject's own token groups untouched")
 }
 
-func TestConfigValidate_WorkloadGroupsRequireExplicitGrant(t *testing.T) {
+func TestConfigValidate_WorkloadIdentityGrantRequiresExplicit(t *testing.T) {
 	tests := []struct {
 		name  string
 		grant WorkloadGrant
 	}{
-		{"wildcard issuer", WorkloadGrant{Issuer: "*", Subject: "system:serviceaccount:kagent:sre-agent", Audiences: []string{"a"}, Groups: []string{"g"}}},
-		{"glob subject", WorkloadGrant{Issuer: "https://k8s", Subject: "system:serviceaccount:kagent:*", Audiences: []string{"a"}, Groups: []string{"g"}}},
+		{"wildcard issuer + groups", WorkloadGrant{Issuer: "*", Subject: "system:serviceaccount:kagent:sre-agent", Audiences: []string{"a"}, Granted: WorkloadGrantedIdentity{Groups: []string{"g"}}}},
+		{"glob subject + groups", WorkloadGrant{Issuer: "https://k8s", Subject: "system:serviceaccount:kagent:*", Audiences: []string{"a"}, Granted: WorkloadGrantedIdentity{Groups: []string{"g"}}}},
+		{"wildcard issuer + granted subject", WorkloadGrant{Issuer: "*", Subject: "system:serviceaccount:kagent:sre-agent", Audiences: []string{"a"}, Granted: WorkloadGrantedIdentity{Subject: "agent:sre"}}},
+		{"glob subject + granted subject", WorkloadGrant{Issuer: "https://k8s", Subject: "system:serviceaccount:kagent:*", Audiences: []string{"a"}, Granted: WorkloadGrantedIdentity{Subject: "agent:sre"}}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &Config{WorkloadAudiences: []WorkloadGrant{tc.grant}}
 			err := cfg.validateGrants()
 			require.Error(t, err)
-			require.Contains(t, err.Error(), "group grant")
+			require.Contains(t, err.Error(), "injects identity")
 		})
 	}
+}
+
+func TestConfigValidate_WorkloadGrantedSubjectExplicitOK(t *testing.T) {
+	grant := WorkloadGrant{
+		Issuer:    "https://kubernetes.default.svc",
+		Subject:   "system:serviceaccount:kagent:sre-agent",
+		Audiences: []string{"mcp-kubernetes"},
+		Granted:   WorkloadGrantedIdentity{Subject: "agent:sre"},
+	}
+	cfg := &Config{WorkloadAudiences: []WorkloadGrant{grant}}
+	require.NoError(t, cfg.validateGrants())
+}
+
+func TestWorkloadExchange_M2MGrantedSubjectInjected(t *testing.T) {
+	const saIssuer = "https://kubernetes.default.svc"
+	const saSub = "system:serviceaccount:kagent:sre-agent"
+
+	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "minted", ExpiresAt: time.Now().Add(time.Minute)}}
+	srv, _ := newWorkloadTestServer(t, ex, []WorkloadGrant{{
+		Issuer:    saIssuer,
+		Subject:   saSub,
+		Audiences: []string{"mcp-kubernetes"},
+		Granted:   WorkloadGrantedIdentity{Subject: "agent:sre"},
+	}}, &stubSubjectValidator{identity: SubjectIdentity{Subject: saSub, Issuer: saIssuer}})
+
+	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		"sa-jwt", SubjectTokenTypeIDToken, "", "", "mcp-kubernetes", "", "")
+	require.NoError(t, err)
+
+	require.NotNil(t, ex.gotReq)
+	require.Equal(t, "agent:sre", ex.gotReq.GrantedSubject, "granted subject travels on GrantedSubject")
+	require.Equal(t, saSub, ex.gotReq.Subject.Subject, "validated subject must not be mutated")
+}
+
+func TestWorkloadExchange_DelegationDoesNotInjectGrantedSubject(t *testing.T) {
+	const saIssuer = "https://kubernetes.default.svc"
+	const saSub = "system:serviceaccount:kagent:sre-agent"
+	const userIssuer = "https://dex.example.com"
+	const userSub = "alice@example.com"
+
+	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "minted", ExpiresAt: time.Now().Add(time.Minute)}}
+	validator := &stubTokenValidator{byToken: map[string]*SubjectIdentity{
+		"user-jwt": {Subject: userSub, Issuer: userIssuer},
+		"sa-jwt":   {Subject: saSub, Issuer: saIssuer},
+	}}
+	srv, _ := newWorkloadTestServer(t, ex, []WorkloadGrant{{
+		Issuer:    saIssuer,
+		Subject:   saSub,
+		Audiences: []string{"mcp-kubernetes"},
+		Granted:   WorkloadGrantedIdentity{Subject: "agent:sre"},
+	}}, validator)
+	srv.Config.ActorDelegationPolicy = []DelegationGrant{{
+		ActorIssuer: saIssuer, ActorSubject: saSub, SubjectIssuer: userIssuer, SubjectSubject: userSub,
+	}}
+
+	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		"user-jwt", SubjectTokenTypeIDToken, "sa-jwt", SubjectTokenTypeIDToken, "mcp-kubernetes", "", "")
+	require.NoError(t, err)
+
+	require.NotNil(t, ex.gotReq)
+	require.Empty(t, ex.gotReq.GrantedSubject, "delegation path grants no workload subject")
 }
