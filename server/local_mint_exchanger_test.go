@@ -177,10 +177,10 @@ func TestLocalMintExchanger_Exchange_ScopeIntersection(t *testing.T) {
 	require.NotContains(t, claims.Scope, "admin", "scope must be intersected with AllowedScopes")
 }
 
-// TestLocalMintExchanger_RoundTrip_IsDelegated mints a token with an actor and
-// validates it back through an OIDCValidator (trusted-issuer path) to verify that
-// UserInfo.IsDelegated() and ActorSubject/ActorIssuer are populated on the resource-server side.
-func TestLocalMintExchanger_RoundTrip_IsDelegated(t *testing.T) {
+// TestLocalMintExchanger_RoundTrip_OBO mints a token with an actor and validates
+// it back through an OIDCValidator (external-issuer path) to verify the resource
+// server classifies it as OBO with ActorSubject/ActorIssuer populated.
+func TestLocalMintExchanger_RoundTrip_OBO(t *testing.T) {
 	cfg, signingKey := localMintCfg(t)
 	lme, err := NewLocalMintExchanger(cfg)
 	require.NoError(t, err)
@@ -216,10 +216,54 @@ func TestLocalMintExchanger_RoundTrip_IsDelegated(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, userInfo)
 	require.Equal(t, "user@example.com", userInfo.ID)
-	require.Equal(t, providers.TokenSourceTrustedIssuer, userInfo.TokenSource)
-	require.True(t, userInfo.IsDelegated(), "IsDelegated must be true for OBO token")
+	require.Equal(t, providers.TokenSourceOBO, userInfo.TokenSource)
+	require.True(t, userInfo.IsOBO(), "IsOBO must be true for a minted token carrying an actor")
+	require.False(t, userInfo.IsM2M())
+	require.True(t, userInfo.IsExternalIssuer())
 	require.Equal(t, actorSub, userInfo.ActorSubject)
 	require.Equal(t, actorIss, userInfo.ActorIssuer)
+}
+
+// TestLocalMintExchanger_RoundTrip_M2M mints a token with no actor and validates
+// it back through an OIDCValidator to verify the resource server classifies it as
+// M2M with no actor populated.
+func TestLocalMintExchanger_RoundTrip_M2M(t *testing.T) {
+	cfg, signingKey := localMintCfg(t)
+	lme, err := NewLocalMintExchanger(cfg)
+	require.NoError(t, err)
+
+	result, err := lme.Exchange(t.Context(), &ExchangerRequest{
+		Resource: cfg.Issuer,
+		Scope:    "read",
+		Subject:  &SubjectIdentity{Subject: "robot@cluster.example.com", Issuer: testIssuer},
+	})
+	require.NoError(t, err)
+
+	jwksURL, jwksClient := serveStaticRSAJWKS(t, signingKey, "lme-test-kid")
+
+	store := memory.New()
+	t.Cleanup(func() { store.Stop() })
+
+	srv, _, _ := setupFlowTestServer(t)
+	v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
+		Issuer:             cfg.Issuer,
+		JwksURL:            jwksURL,
+		AllowedAudiences:   []string{cfg.Issuer},
+		AllowPrivateIPJWKS: true,
+		AcceptedTypHeaders: []string{"at+jwt"},
+	}}, jwksClient)
+	require.NoError(t, err)
+	srv.trustedIssuerValidator = v
+
+	userInfo, err := srv.ValidateToken(t.Context(), result.AccessToken)
+	require.NoError(t, err)
+	require.NotNil(t, userInfo)
+	require.Equal(t, "robot@cluster.example.com", userInfo.ID)
+	require.Equal(t, providers.TokenSourceM2M, userInfo.TokenSource)
+	require.True(t, userInfo.IsM2M(), "IsM2M must be true for a minted token with no actor")
+	require.False(t, userInfo.IsOBO())
+	require.True(t, userInfo.IsExternalIssuer())
+	require.Empty(t, userInfo.ActorSubject)
 }
 
 // TestLocalMintExchanger_Exchange_EmitsIdentityClaims asserts the validated
