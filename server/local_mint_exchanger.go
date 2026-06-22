@@ -55,7 +55,7 @@ func NewLocalMintExchanger(cfg *Config) (*LocalMintExchanger, error) {
 
 // Exchange mints a signed JWT access token for the request. The issued token
 // carries:
-//   - sub = req.Subject.Subject (human subject)
+//   - sub = req.Subject.Subject, or req.GrantedSubject when non-empty (workload path)
 //   - act = {iss: req.Actor.Issuer, sub: req.Actor.Subject} when req.Actor != nil,
 //     with any act chain already on the subject token nested beneath it so a
 //     multi-hop A2A delegation chain is preserved (RFC 8693 §4.4)
@@ -86,8 +86,13 @@ func (l *LocalMintExchanger) Exchange(ctx context.Context, req *ExchangerRequest
 	expiresAt := now.Add(l.ttl)
 	jti := generateRandomToken()
 
+	subject := req.Subject.Subject
+	if req.GrantedSubject != "" {
+		subject = req.GrantedSubject
+	}
+
 	claims := AccessTokenClaims{
-		Subject:   req.Subject.Subject,
+		Subject:   subject,
 		Audience:  audience,
 		Scopes:    strings.Fields(grantedScope),
 		IssuedAt:  now,

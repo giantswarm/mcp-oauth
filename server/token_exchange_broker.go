@@ -70,6 +70,11 @@ type ExchangerRequest struct {
 	// preserves the provenance of the validated subject identity, which is never
 	// mutated to carry broker-granted authorization.
 	GrantedGroups []string
+	// GrantedSubject is the broker-asserted subject for this exchange from a
+	// matching WorkloadGrant; when non-empty it replaces the validated subject as
+	// the minted token's sub. Populated only on the workload (no-actor) path. The
+	// validated subject identity (Subject) is never mutated.
+	GrantedSubject string
 }
 
 // ExchangerResult is the downstream token returned by an Exchanger.
@@ -182,10 +187,10 @@ func (s *Server) BrokerExchangeSubjectToken(
 		actorTokenType = ""
 	}
 
-	// The client-authenticated path carries no workload group grant.
+	// The client-authenticated path carries no workload identity grant.
 	return s.dispatchDownstreamExchange(ctx, "brokered", clientID,
 		subjectToken, subjectTokenType, actorToken, actorTokenType,
-		audience, resource, scope, sessionID, identity, actor, nil)
+		audience, resource, scope, sessionID, identity, actor, nil, "")
 }
 
 // WorkloadExchangeSubjectToken implements the workload-authenticated brokered
@@ -246,16 +251,20 @@ func (s *Server) WorkloadExchangeSubjectToken(
 	}
 
 	// On the workload (no-actor) path the subject is the workload itself, e.g. a
-	// groupless K8s SA token; a matching group grant authorizes groups for it.
-	// Delegation is excluded: there the human subject carries its own groups.
+	// groupless K8s SA token; a matching grant injects groups and/or subject.
+	// Delegation is excluded: there the human subject carries its own identity.
 	var grantedGroups []string
+	var grantedSubject string
 	if actor == nil {
-		grantedGroups = s.workloadGrantGroups(identity.Issuer, identity.Subject, audience)
+		if g := s.workloadGrant(identity.Issuer, identity.Subject, audience); g != nil {
+			grantedGroups = g.Granted.Groups
+			grantedSubject = g.Granted.Subject
+		}
 	}
 
 	return s.dispatchDownstreamExchange(ctx, "workload", "",
 		subjectToken, subjectTokenType, actorToken, actorTokenType,
-		audience, resource, scope, sessionID, identity, actor, grantedGroups)
+		audience, resource, scope, sessionID, identity, actor, grantedGroups, grantedSubject)
 }
 
 // validateWorkloadSubject validates the subject token on the workload exchange
@@ -327,12 +336,14 @@ func (s *Server) workloadAudienceAllowed(issuer, subject, audience string) bool 
 	return false
 }
 
-// workloadGrantGroups returns the Groups of the first WorkloadGrant that matches
-// issuer+subject and lists audience. Group-bearing grants are constrained to
-// explicit issuer+subject by Config.Validate, so at most one logically applies.
-func (s *Server) workloadGrantGroups(issuer, subject, audience string) []string {
-	for _, g := range s.Config.WorkloadAudiences {
-		if len(g.Groups) == 0 {
+// workloadGrant returns the first WorkloadGrant matching issuer+subject+audience
+// that carries broker-granted authorization (Granted.Groups and/or Granted.Subject).
+// Such grants are constrained to explicit issuer+subject by Config.Validate, so
+// at most one logically applies.
+func (s *Server) workloadGrant(issuer, subject, audience string) *WorkloadGrant {
+	for i := range s.Config.WorkloadAudiences {
+		g := &s.Config.WorkloadAudiences[i]
+		if len(g.Granted.Groups) == 0 && g.Granted.Subject == "" {
 			continue
 		}
 		if !s.issuerMatches(g.Issuer, issuer) {
@@ -342,7 +353,7 @@ func (s *Server) workloadGrantGroups(issuer, subject, audience string) []string 
 			continue
 		}
 		if slices.Contains(g.Audiences, audience) {
-			return g.Groups
+			return g
 		}
 	}
 	return nil
@@ -403,6 +414,7 @@ func (s *Server) dispatchDownstreamExchange(
 	audience, resource, scope, sessionID string,
 	identity *SubjectIdentity, actor *SubjectIdentity,
 	grantedGroups []string,
+	grantedSubject string,
 ) (*TokenExchangeResult, error) {
 	result, err := s.exchanger.Exchange(ctx, &ExchangerRequest{
 		Audience:         audience,
@@ -416,6 +428,7 @@ func (s *Server) dispatchDownstreamExchange(
 		ActorTokenType:   actorTokenType,
 		Actor:            actor,
 		GrantedGroups:    grantedGroups,
+		GrantedSubject:   grantedSubject,
 	})
 	if err != nil {
 		s.Logger.Debug(exchange+" token exchange: downstream exchange failed",
