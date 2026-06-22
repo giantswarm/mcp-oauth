@@ -65,9 +65,10 @@ func TestValidateToken_TrustedIssuer_Accepts(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, userInfo)
 	require.Equal(t, testSubject, userInfo.ID)
-	require.Equal(t, providers.TokenSourceTrustedIssuer, userInfo.TokenSource)
-	require.True(t, userInfo.IsExternalIssuer(), "IsExternalIssuer() must be true for trusted-issuer token")
-	require.False(t, userInfo.IsSSO(), "IsSSO() must be false for trusted-issuer token")
+	require.Equal(t, providers.TokenSourceM2M, userInfo.TokenSource)
+	require.True(t, userInfo.IsM2M(), "IsM2M() must be true for an external-issuer token with no act claim")
+	require.True(t, userInfo.IsExternalIssuer(), "IsExternalIssuer() must be true for an external-issuer token")
+	require.False(t, userInfo.IsSSO(), "IsSSO() must be false for an external-issuer token")
 	require.Equal(t, testIssuer, userInfo.Issuer, "Issuer must be propagated from the trusted-issuer entry")
 }
 

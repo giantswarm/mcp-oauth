@@ -238,7 +238,7 @@ func (s *Server) AcceptTrustedIssuerToken(ctx context.Context, bearerToken strin
 
 	userInfo := s.idTokenClaimsToUserInfo(identity.Claims)
 	userInfo.Issuer = identity.Issuer
-	userInfo.TokenSource = providers.TokenSourceTrustedIssuer
+	userInfo.TokenSource = externalIssuerTokenSource(userInfo)
 
 	var expiresAt time.Time
 	if identity.Claims != nil && identity.Claims.Expiry != nil {

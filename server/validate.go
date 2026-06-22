@@ -424,6 +424,15 @@ func (s *Server) hasTrustedAudience(audiences []string) bool {
 // (e.g. for RFC 8693 subject-token validation). Such tokens fall through
 // instead; the forwarded-ID-token branch re-validates them independently
 // against the server's own provider JWKS.
+// externalIssuerTokenSource classifies a validated external-issuer token: OBO
+// when it carries an act claim, M2M otherwise.
+func externalIssuerTokenSource(u *providers.UserInfo) providers.TokenSource {
+	if u.ActorSubject != "" {
+		return providers.TokenSourceOBO
+	}
+	return providers.TokenSourceM2M
+}
+
 func (s *Server) validateTrustedIssuerJWT(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
 	if s.trustedIssuerValidator == nil {
 		return nil, nil
@@ -448,7 +457,7 @@ func (s *Server) validateTrustedIssuerJWT(ctx context.Context, accessToken strin
 	}
 	userInfo := s.idTokenClaimsToUserInfo(identity.Claims)
 	userInfo.Issuer = identity.Issuer
-	userInfo.TokenSource = providers.TokenSourceTrustedIssuer
+	userInfo.TokenSource = externalIssuerTokenSource(userInfo)
 	s.logTrustedIssuerJWTAccepted(ctx, accessToken, identity.Issuer, userInfo)
 	return userInfo, nil
 }

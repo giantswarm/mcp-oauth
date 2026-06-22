@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `providers.UserInfo.ActorIssuer string` and `providers.UserInfo.ActorSubject string`: actor identity fields populated when a validated token carries an RFC 8693 §4.4 `act` claim. Empty for tokens without delegation.
 
-- `providers.UserInfo.IsDelegated() bool`: reports whether the token represents a delegated exchange; true when `ActorSubject` is non-empty.
+- `providers.UserInfo.IsM2M() bool` and `providers.UserInfo.IsOBO() bool`: report whether an external-issuer token is a machine identity (no `act` claim) or a delegated human identity (`act` claim present). `IsOBO()` is true exactly when `ActorSubject` is populated.
 
 - `oidc.IDTokenClaims.Act *oidc.ActorClaim` and `oidc.ActorClaim` (`Issuer string`, `Subject string`, `Act *oidc.ActorClaim`): decoded automatically from the `act` claim of a JWT when present. The nested `Act` field carries a multi-hop RFC 8693 §4.4 delegation chain (`act.act…`), so a token minted for a second A2A hop decodes with `Act` = the most recent actor and `Act.Act` = the prior one.
 
@@ -35,9 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `server.ExchangerResult.JTI string`: lets an `Exchanger` surface the issued token's `jti` so the broker records it in the mint audit event; the broker's `token_issued` event now carries a `jti` detail when set.
 
-- `providers.TokenSourceTrustedIssuer` (`"trusted-issuer"`) constant and `UserInfo.IsExternalIssuer() bool` method. A Bearer validated against a `WithTrustedIssuers` entry is now tagged with this source instead of `TokenSourceSSO`, so downstream servers can distinguish an external-IdP token (requires impersonation or token-exchange) from a Dex-forwarded SSO token (can be passed through as a bearer).
+- `providers.TokenSourceM2M` (`"m2m"`) and `providers.TokenSourceOBO` (`"obo"`) constants, and the `UserInfo.IsExternalIssuer()` method (`IsM2M() || IsOBO()`). A Bearer validated against a `WithTrustedIssuers` entry is tagged `m2m` when it carries no `act` claim and `obo` when it does, instead of `TokenSourceSSO`, so downstream servers can distinguish an external-IdP token (requires impersonation or token-exchange) from a Dex-forwarded SSO token (can be passed through as a bearer), and a machine identity from a delegated human one.
 
-- `providers.UserInfo.Issuer string` field, populated on the `TokenSourceTrustedIssuer` path with the originating issuer URL (e.g. the cluster's SA OIDC issuer). Empty for `TokenSourceSSO` and `TokenSourceOAuth`.
+- `providers.UserInfo.Issuer string` field, populated on the external-issuer (`m2m`/`obo`) path with the originating issuer URL (e.g. the cluster's SA OIDC issuer). Empty for `TokenSourceSSO` and `TokenSourceOAuth`.
 
 - `server.WithTrustedAudiences([]string) Option`: functional option equivalent to setting `Config.TrustedAudiences`, for symmetry with `WithTrustedIssuers`.
 
@@ -45,7 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `server.ExchangeSubjectToken` signature gains two new parameters: `actorToken string` and `actorTokenType string` (inserted after `subjectTokenType`, before `resource`). Callers passing no actor token must supply empty strings. The issued JWT no longer carries a self-referential `act` claim; `act` is omitted when no actor token is presented and set to the validated actor identity when one is.
 
-- `server.validateTrustedIssuerJWT` now sets `UserInfo.TokenSource = TokenSourceTrustedIssuer` and `UserInfo.Issuer` instead of the previous `TokenSourceSSO`. Callers that relied on `userInfo.IsSSO()` being true for trusted-issuer tokens must switch to `userInfo.IsExternalIssuer()`.
+- `server.validateTrustedIssuerJWT` and `server.AcceptTrustedIssuerToken` now set `UserInfo.TokenSource` to `TokenSourceOBO` when the validated token carries an `act` claim and `TokenSourceM2M` otherwise, plus `UserInfo.Issuer`, instead of the previous `TokenSourceSSO`. Callers that relied on `userInfo.IsSSO()` being true for these tokens must switch to `userInfo.IsExternalIssuer()` (or `IsM2M()`/`IsOBO()`).
 
 - `server.ExchangerRequest` now carries `ActorToken string`, `ActorTokenType string`, and `Actor *server.SubjectIdentity`. The brokered token-exchange endpoint accepts RFC 8693 `actor_token` and `actor_token_type` form parameters; when present the actor token is validated against the server's trusted issuers (same validator path as the subject token) and the verified actor identity is forwarded to the `Exchanger`. Absent actor params leave `Actor` nil and `BrokerExchangeSubjectToken` behaves identically to before.
 
