@@ -834,7 +834,7 @@ func TestNewHostScopedPrivateIPHTTPClient(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected successful request to listed loopback host, got: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("expected 200, got %d", resp.StatusCode)
 		}
