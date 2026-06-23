@@ -843,6 +843,18 @@ type Config struct {
 	// rejected with invalid_client (existing behaviour).
 	EnableWorkloadTokenExchange bool
 
+	// DelegationDefaultResource sets the RFC 8707 resource for a local
+	// token-exchange request that carries an actor_token but omits both audience
+	// and resource. It exists for delegation (on-behalf-of) callers that cannot
+	// set a resource themselves: the minted token is bound to this value
+	// (typically this server's own resource identifier) so it is accepted back
+	// at this server and re-minted per-backend downstream.
+	//
+	// Gated to the delegation path: a request with no actor_token still requires
+	// an explicit resource. Empty (the default) disables the behaviour — a
+	// resource-less local exchange is rejected with invalid_request.
+	DelegationDefaultResource string
+
 	// SessionIDHMACKey optionally replaces the default SHA-256 session-ID derivation
 	// in Server.AcceptForwardedIDToken with HMAC-SHA-256 keyed by this value.
 	//

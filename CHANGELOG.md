@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `server.Config.DelegationDefaultResource string`: RFC 8707 resource applied to a local token-exchange request that carries an `actor_token` but omits both `audience` and `resource`. The minted token is bound to this value (typically the server's own resource identifier), so an on-behalf-of caller that cannot set a resource itself still gets a token accepted back at this server. Gated to the delegation path: a resource-less exchange with no `actor_token` is still rejected with `invalid_request`. Empty (the default) disables it.
+
 - `oidc.JWKSClientOptions.AllowPrivateIPHosts []string`: host-scoped alternative to `AllowPrivateIP`. When set, the JWKS client allows private-IP resolution only for the explicitly listed hostnames; all other hosts retain the SSRF/DNS-rebinding guard. `NewJWKSClientWithOptions` wires a `NewHostScopedPrivateIPHTTPClient` when this field is non-empty and `AllowPrivateIP` is false.
 
 - `oidc.NewHostScopedPrivateIPHTTPClient(allowedHosts []string, timeout time.Duration) *http.Client` and `oidc.HostScopedPrivateIPDialContext(dialer, allowedHosts)`: HTTP client and dial context that enforce the normal SSRF guard for all hosts except the listed ones, which are permitted to resolve to private IPs.

@@ -61,6 +61,15 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// A delegation (on-behalf-of) caller may omit resource when it cannot set one
+	// itself; bind the mint to the configured default (this server's own resource
+	// identifier) so the token is accepted back here and re-minted per-backend.
+	// Gated to the actor path and opt-in: a resource-less exchange with no
+	// actor_token still errors below.
+	if resource == "" && actorToken != "" && h.server.Config.DelegationDefaultResource != "" {
+		resource = h.server.Config.DelegationDefaultResource
+	}
+
 	if resource == "" {
 		h.logAuthFailure(r.Context(), "", clientIP, "token_exchange_resource_missing",
 			"token exchange: resource missing")
