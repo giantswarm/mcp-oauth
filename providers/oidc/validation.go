@@ -387,6 +387,15 @@ func NewPrivateIPAllowedHTTPClient(timeout time.Duration) *http.Client {
 	}
 }
 
+func guardSSRF(host string, ips []net.IP) error {
+	for _, ip := range ips {
+		if isPrivateOrRestrictedIP(ip) {
+			return fmt.Errorf("DNS rebinding attack detected: %q resolved to restricted IP %s", host, ip)
+		}
+	}
+	return nil
+}
+
 // HostScopedPrivateIPDialContext creates a DialContext that allows private IP
 // resolution only for the explicitly listed hostnames; all other hosts are
 // subject to the normal SSRF/DNS-rebinding guard.
@@ -411,10 +420,8 @@ func HostScopedPrivateIPDialContext(dialer *net.Dialer, allowedHosts []string) f
 
 		_, isAllowed := allowed[host]
 		if !isAllowed {
-			for _, ip := range ips {
-				if isPrivateOrRestrictedIP(ip) {
-					return nil, fmt.Errorf("DNS rebinding attack detected: %q resolved to restricted IP %s", host, ip)
-				}
+			if err := guardSSRF(host, ips); err != nil {
+				return nil, err
 			}
 		}
 

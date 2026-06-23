@@ -204,6 +204,15 @@ func (c *JWKSClient) cachedFresh(jwksURI string) (*jose.JSONWebKeySet, bool) {
 	return doc.keys, true
 }
 
+func (c *JWKSClient) isAllowedPrivateIPHost(host string) bool {
+	for _, allowed := range c.allowPrivateIPHosts {
+		if host == allowed {
+			return true
+		}
+	}
+	return false
+}
+
 // validateJWKSURL enforces the SSRF/HTTPS policy for a JWKS fetch: private and
 // loopback addresses are rejected unless allowPrivateIP is set, and HTTPS is
 // always required.
@@ -221,14 +230,12 @@ func (c *JWKSClient) validateJWKSURL(jwksURI string, logger *slog.Logger) error 
 			return fmt.Errorf("invalid JWKS URI: %w", err)
 		}
 		host := parsed.Hostname()
-		for _, allowed := range c.allowPrivateIPHosts {
-			if host == allowed {
-				if err := ValidateHTTPSURL(jwksURI, "JWKS URI"); err != nil {
-					return fmt.Errorf("invalid JWKS URI: %w", err)
-				}
-				logger.Debug("Fetching JWKS with host-scoped private IP allowance", "uri", jwksURI, "allowed_host", host)
-				return nil
+		if c.isAllowedPrivateIPHost(host) {
+			if err := ValidateHTTPSURL(jwksURI, "JWKS URI"); err != nil {
+				return fmt.Errorf("invalid JWKS URI: %w", err)
 			}
+			logger.Debug("Fetching JWKS with host-scoped private IP allowance", "uri", jwksURI, "allowed_host", host)
+			return nil
 		}
 	}
 	if err := ValidateExternalURL(jwksURI, "JWKS URI"); err != nil {
