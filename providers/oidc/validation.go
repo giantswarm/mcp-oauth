@@ -387,6 +387,79 @@ func NewPrivateIPAllowedHTTPClient(timeout time.Duration) *http.Client {
 	}
 }
 
+func guardSSRF(host string, ips []net.IP) error {
+	for _, ip := range ips {
+		if isPrivateOrRestrictedIP(ip) {
+			return fmt.Errorf("DNS rebinding attack detected: %q resolved to restricted IP %s", host, ip)
+		}
+	}
+	return nil
+}
+
+// HostScopedPrivateIPDialContext creates a DialContext that allows private IP
+// resolution only for the explicitly listed hostnames; all other hosts are
+// subject to the normal SSRF/DNS-rebinding guard.
+func HostScopedPrivateIPDialContext(dialer *net.Dialer, allowedHosts []string) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	allowed := make(map[string]struct{}, len(allowedHosts))
+	for _, h := range allowedHosts {
+		allowed[h] = struct{}{}
+	}
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid address %q: %w", addr, err)
+		}
+
+		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+		if err != nil {
+			return nil, fmt.Errorf("DNS resolution failed for %q: %w", host, err)
+		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("no IP addresses found for %q", host)
+		}
+
+		_, isAllowed := allowed[host]
+		if !isAllowed {
+			if err := guardSSRF(host, ips); err != nil {
+				return nil, err
+			}
+		}
+
+		safeAddr := net.JoinHostPort(ips[0].String(), port)
+		return dialer.DialContext(ctx, network, safeAddr)
+	}
+}
+
+// NewHostScopedPrivateIPHTTPClient creates an HTTP client that allows private
+// IP resolution only for the explicitly listed hostnames. All other hosts go
+// through the normal SSRF/DNS-rebinding guard. Use this instead of
+// NewPrivateIPAllowedHTTPClient when the private endpoint is a known in-cluster
+// service — it narrows the SSRF escape hatch to only the expected host.
+func NewHostScopedPrivateIPHTTPClient(allowedHosts []string, timeout time.Duration) *http.Client {
+	if timeout == 0 {
+		timeout = DefaultHTTPTimeout
+	}
+
+	dialer := &net.Dialer{
+		Timeout:   timeout,
+		KeepAlive: DefaultDialerKeepAlive,
+	}
+
+	transport := &http.Transport{
+		DialContext:           HostScopedPrivateIPDialContext(dialer, allowedHosts),
+		TLSHandshakeTimeout:   DefaultTLSHandshakeTimeout,
+		ResponseHeaderTimeout: timeout,
+		MaxIdleConns:          DefaultMaxIdleConns,
+		IdleConnTimeout:       DefaultIdleConnTimeout,
+	}
+
+	return &http.Client{
+		Transport:     transport,
+		Timeout:       timeout,
+		CheckRedirect: blockCrossHostRedirect,
+	}
+}
+
 // blockCrossHostRedirect refuses a redirect whose target host or port differs
 // from the endpoint originally requested, and bounds the chain at the net/http
 // default of 10 hops. Setting CheckRedirect replaces that default cap, so it is

@@ -194,6 +194,65 @@ func TestFetchJWKS_AllowPrivateIP(t *testing.T) {
 	})
 }
 
+func TestFetchJWKS_AllowPrivateIPHosts(t *testing.T) {
+	t.Run("listed host passes validateJWKSURL", func(t *testing.T) {
+		// The client allows 192.168.1.1 specifically. validateJWKSURL should
+		// pass without error; the actual dial will fail (host unreachable) but
+		// NOT with a "private IP" rejection.
+		client := NewJWKSClientWithOptions(JWKSClientOptions{
+			AllowPrivateIPHosts: []string{"192.168.1.1"},
+			Logger:              slog.Default(),
+		})
+		_, err := client.FetchJWKS(context.Background(), "https://192.168.1.1/jwks")
+		// Connection will fail but must NOT be a private-IP policy error.
+		if err != nil && (strings.Contains(err.Error(), "private IP") || strings.Contains(err.Error(), "restricted IP")) {
+			t.Errorf("listed host should not be blocked by private-IP guard, got: %v", err)
+		}
+	})
+
+	t.Run("unlisted host blocked even with non-empty allowlist", func(t *testing.T) {
+		client := NewJWKSClientWithOptions(JWKSClientOptions{
+			AllowPrivateIPHosts: []string{"other.internal"},
+			Logger:              slog.Default(),
+		})
+		_, err := client.FetchJWKS(context.Background(), "https://192.168.1.1/jwks")
+		if err == nil {
+			t.Fatal("expected private-IP error for unlisted host")
+		}
+		if !strings.Contains(err.Error(), "private IP") && !strings.Contains(err.Error(), "JWKS URI") {
+			t.Errorf("expected private-IP rejection, got: %v", err)
+		}
+	})
+
+	t.Run("HTTPS still required for listed host", func(t *testing.T) {
+		client := NewJWKSClientWithOptions(JWKSClientOptions{
+			AllowPrivateIPHosts: []string{"192.168.1.1"},
+			Logger:              slog.Default(),
+		})
+		_, err := client.FetchJWKS(context.Background(), "http://192.168.1.1/jwks")
+		if err == nil {
+			t.Fatal("expected HTTPS requirement error")
+		}
+		if !strings.Contains(err.Error(), "HTTPS") {
+			t.Errorf("expected HTTPS error, got: %v", err)
+		}
+	})
+
+	t.Run("allowPrivateIP overrides allowPrivateIPHosts", func(t *testing.T) {
+		// When AllowPrivateIP is true, AllowPrivateIPHosts is ignored and the
+		// broad permissive path applies.
+		client := NewJWKSClientWithOptions(JWKSClientOptions{
+			AllowPrivateIP:      true,
+			AllowPrivateIPHosts: []string{"other.internal"},
+			Logger:              slog.Default(),
+		})
+		_, err := client.FetchJWKS(context.Background(), "https://192.168.1.1/jwks")
+		if err != nil && strings.Contains(err.Error(), "private IP") {
+			t.Errorf("AllowPrivateIP=true should bypass all private-IP checks, got: %v", err)
+		}
+	})
+}
+
 func TestValidateIDToken_Integration(t *testing.T) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

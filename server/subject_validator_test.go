@@ -542,3 +542,62 @@ func TestNewOIDCValidator_AllowPrivateIPJWKS_CreatesPermissiveClient(t *testing.
 	require.NoError(t, err)
 	require.Nil(t, withoutPrivate.permissiveClient)
 }
+
+func TestOIDCValidator_AllowPrivateIPJWKSHosts(t *testing.T) {
+	key := newTestECKey(t)
+	const kid = "test-key"
+	jwksURL, jwksClient := serveStaticJWKS(t, key, kid)
+
+	// Inject the configured client (TLS cert mismatch prevents using
+	// NewOIDCValidator directly); AllowPrivateIPJWKSHosts routing is still
+	// exercised through the issuerClients map in Validate.
+	v, err := newOIDCValidatorWithClients([]TrustedIssuer{{
+		Issuer:                  testIssuer,
+		JwksURL:                 jwksURL,
+		AllowedAudiences:        []string{testAudience},
+		AllowPrivateIPJWKSHosts: []string{"127.0.0.1"},
+	}}, jwksClient, nil, map[string]*oidc.JWKSClient{
+		testIssuer: jwksClient,
+	})
+	require.NoError(t, err)
+
+	token := signSubjectToken(t, key, kid, josejwt.Claims{
+		Issuer:   testIssuer,
+		Subject:  testSubject,
+		Audience: josejwt.Audience{testAudience},
+		Expiry:   josejwt.NewNumericDate(time.Now().Add(time.Hour)),
+		IssuedAt: josejwt.NewNumericDate(time.Now()),
+	})
+
+	identity, err := v.Validate(t.Context(), token, nil)
+	require.NoError(t, err)
+	require.Equal(t, testSubject, identity.Subject)
+}
+
+func TestNewOIDCValidator_AllowPrivateIPJWKSHosts_CreatesIssuerClient(t *testing.T) {
+	withHosts, err := NewOIDCValidator([]TrustedIssuer{{
+		Issuer:                  testIssuer,
+		JwksURL:                 "https://example.com/jwks",
+		AllowPrivateIPJWKSHosts: []string{"muster.agentic-platform.svc.cluster.local"},
+	}})
+	require.NoError(t, err)
+	require.NotNil(t, withHosts.issuerClients[testIssuer])
+	require.Nil(t, withHosts.permissiveClient)
+
+	// AllowPrivateIPJWKSHosts must NOT create a permissive client.
+	withBoth, err := NewOIDCValidator([]TrustedIssuer{
+		{
+			Issuer:             "https://other.example.com",
+			JwksURL:            "https://example.com/jwks",
+			AllowPrivateIPJWKS: true,
+		},
+		{
+			Issuer:                  testIssuer,
+			JwksURL:                 "https://example.com/jwks",
+			AllowPrivateIPJWKSHosts: []string{"muster.agentic-platform.svc.cluster.local"},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, withBoth.permissiveClient)
+	require.NotNil(t, withBoth.issuerClients[testIssuer])
+}

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `oidc.JWKSClientOptions.AllowPrivateIPHosts []string`: host-scoped alternative to `AllowPrivateIP`. When set, the JWKS client allows private-IP resolution only for the explicitly listed hostnames; all other hosts retain the SSRF/DNS-rebinding guard. `NewJWKSClientWithOptions` wires a `NewHostScopedPrivateIPHTTPClient` when this field is non-empty and `AllowPrivateIP` is false.
+
+- `oidc.NewHostScopedPrivateIPHTTPClient(allowedHosts []string, timeout time.Duration) *http.Client` and `oidc.HostScopedPrivateIPDialContext(dialer, allowedHosts)`: HTTP client and dial context that enforce the normal SSRF guard for all hosts except the listed ones, which are permitted to resolve to private IPs.
+
+- `server.TrustedIssuer.AllowPrivateIPJWKSHosts []string`: per-issuer host-scoped alternative to `AllowPrivateIPJWKS`. Allows the JWKS fetch to resolve to a private IP only when the URL's hostname matches one of the listed values. All other hosts retain SSRF protection. Prefer this over `AllowPrivateIPJWKS` when the private endpoint is a known in-cluster service (e.g. `muster.agentic-platform.svc.cluster.local`). `NewOIDCValidator` builds a per-issuer `JWKSClient` for each entry that sets this field; the shared permissive client is only allocated when at least one issuer sets the legacy `AllowPrivateIPJWKS`.
+
+
+
 - `server.Server.EnsureConfidentialClient(ctx, clientID, clientSecret string, scopes []string) (seeded bool, err error)`: idempotently provisions a confidential OAuth client with a caller-supplied id and secret (unlike `RegisterClientV2`, which generates random ones). If the client already exists with a matching secret it is a no-op; otherwise the record is (re)written with a fresh bcrypt hash. Intended to declaratively seed a known confidential client — e.g. a token-exchange broker — from a mounted secret at startup, so a wiped client store self-heals.
 
 - `server.WorkloadGrantedIdentity` and `server.WorkloadGrant.Granted WorkloadGrantedIdentity`: broker-asserted identity injected into a token minted on the workload (no-actor) exchange path. `Granted.Groups []string` are merged into the minted token's `groups` claim (carried as `ExchangerRequest.GrantedGroups`; the validated `Subject.Claims` are never mutated). `Granted.Subject string`, when non-empty, replaces the validated credential's `sub` in the minted token (carried as `ExchangerRequest.GrantedSubject`), so the downstream sees a stable agent principal rather than the raw workload credential subject. Both fields are ignored on the delegation path. A grant with either field set must name an explicit `Issuer` and `Subject` (no `"*"`, no glob); `Config.Validate` rejects wildcard identity grants.

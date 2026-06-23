@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -25,12 +26,13 @@ import (
 //
 // The client is thread-safe and can be used concurrently from multiple goroutines.
 type JWKSClient struct {
-	httpClient     *http.Client
-	cache          sync.Map // jwksURI -> *cachedJWKS
-	cacheTTL       time.Duration
-	logger         *slog.Logger
-	timeProvider   timeProvider
-	allowPrivateIP bool // When true, SSRF protection is disabled for private IdP deployments
+	httpClient          *http.Client
+	cache               sync.Map // jwksURI -> *cachedJWKS
+	cacheTTL            time.Duration
+	logger              *slog.Logger
+	timeProvider        timeProvider
+	allowPrivateIP      bool     // When true, SSRF protection is disabled for private IdP deployments
+	allowPrivateIPHosts []string // When set, private IPs allowed only for these hostnames
 
 	// refetchBackoff bounds unknown-kid-triggered refetches (0 uses
 	// DefaultJWKSRefetchBackoff). refetchMu makes the per-URI "has the backoff
@@ -88,6 +90,14 @@ type JWKSClientOptions struct {
 	// WARNING: Reduces SSRF protection. Only enable for internal/VPN deployments
 	// where the IdP legitimately runs on private networks.
 	AllowPrivateIP bool
+
+	// AllowPrivateIPHosts lists hostnames whose JWKS URLs are permitted to
+	// resolve to private IP addresses. All other hosts remain subject to the
+	// normal SSRF/DNS-rebinding guard. Prefer this over AllowPrivateIP when
+	// the private endpoint is a known in-cluster service (e.g.
+	// muster.agentic-platform.svc.cluster.local). Ignored when AllowPrivateIP
+	// is true.
+	AllowPrivateIPHosts []string
 }
 
 // NewJWKSClient creates a new JWKS client with default configuration.
@@ -132,9 +142,12 @@ func NewJWKSClient(httpClient *http.Client, cacheTTL time.Duration, logger *slog
 func NewJWKSClientWithOptions(opts JWKSClientOptions) *JWKSClient {
 	httpClient := opts.HTTPClient
 	if httpClient == nil {
-		if opts.AllowPrivateIP {
+		switch {
+		case opts.AllowPrivateIP:
 			httpClient = NewPrivateIPAllowedHTTPClient(DefaultHTTPTimeout)
-		} else {
+		case len(opts.AllowPrivateIPHosts) > 0:
+			httpClient = NewHostScopedPrivateIPHTTPClient(opts.AllowPrivateIPHosts, DefaultHTTPTimeout)
+		default:
 			// SECURITY: SSRF-safe client validates resolved IPs at connection
 			// time (DNS rebinding protection) and blocks private, loopback, and
 			// link-local addresses.
@@ -153,12 +166,13 @@ func NewJWKSClientWithOptions(opts JWKSClientOptions) *JWKSClient {
 	}
 
 	return &JWKSClient{
-		httpClient:     httpClient,
-		cacheTTL:       cacheTTL,
-		logger:         logger,
-		timeProvider:   realTime{},
-		allowPrivateIP: opts.AllowPrivateIP,
-		refetchBackoff: DefaultJWKSRefetchBackoff,
+		httpClient:          httpClient,
+		cacheTTL:            cacheTTL,
+		logger:              logger,
+		timeProvider:        realTime{},
+		allowPrivateIP:      opts.AllowPrivateIP,
+		allowPrivateIPHosts: opts.AllowPrivateIPHosts,
+		refetchBackoff:      DefaultJWKSRefetchBackoff,
 	}
 }
 
@@ -190,6 +204,15 @@ func (c *JWKSClient) cachedFresh(jwksURI string) (*jose.JSONWebKeySet, bool) {
 	return doc.keys, true
 }
 
+func (c *JWKSClient) isAllowedPrivateIPHost(host string) bool {
+	for _, allowed := range c.allowPrivateIPHosts {
+		if host == allowed {
+			return true
+		}
+	}
+	return false
+}
+
 // validateJWKSURL enforces the SSRF/HTTPS policy for a JWKS fetch: private and
 // loopback addresses are rejected unless allowPrivateIP is set, and HTTPS is
 // always required.
@@ -200,6 +223,20 @@ func (c *JWKSClient) validateJWKSURL(jwksURI string, logger *slog.Logger) error 
 		}
 		logger.Debug("Fetching JWKS with private IP allowance", "uri", jwksURI, "allow_private_ip", true)
 		return nil
+	}
+	if len(c.allowPrivateIPHosts) > 0 {
+		parsed, err := url.Parse(jwksURI)
+		if err != nil {
+			return fmt.Errorf("invalid JWKS URI: %w", err)
+		}
+		host := parsed.Hostname()
+		if c.isAllowedPrivateIPHost(host) {
+			if err := ValidateHTTPSURL(jwksURI, "JWKS URI"); err != nil {
+				return fmt.Errorf("invalid JWKS URI: %w", err)
+			}
+			logger.Debug("Fetching JWKS with host-scoped private IP allowance", "uri", jwksURI, "allowed_host", host)
+			return nil
+		}
 	}
 	if err := ValidateExternalURL(jwksURI, "JWKS URI"); err != nil {
 		return fmt.Errorf("invalid JWKS URI: %w", err)

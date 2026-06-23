@@ -750,3 +750,110 @@ func TestPrivateIPAllowedHTTPClient_RedirectPinning(t *testing.T) {
 		}
 	})
 }
+
+func TestHostScopedPrivateIPDialContext(t *testing.T) {
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+
+	t.Run("allows loopback for listed host", func(t *testing.T) {
+		// localhost is in the allowlist — private-IP resolution is permitted.
+		// The dial will fail (nothing listening) but NOT with a restricted-IP error.
+		dialFunc := HostScopedPrivateIPDialContext(dialer, []string{"localhost"})
+		ctx := context.Background()
+		_, err := dialFunc(ctx, "tcp", "localhost:19999")
+		if err == nil {
+			t.Skip("unexpected successful connection on port 19999")
+		}
+		if strings.Contains(err.Error(), "restricted IP") {
+			t.Errorf("allowed host should not be blocked by restricted-IP guard, got: %v", err)
+		}
+	})
+
+	t.Run("blocks loopback for unlisted host", func(t *testing.T) {
+		// localhost is NOT in the allowlist — SSRF guard fires.
+		dialFunc := HostScopedPrivateIPDialContext(dialer, []string{"other.internal"})
+		ctx := context.Background()
+		_, err := dialFunc(ctx, "tcp", "localhost:443")
+		if err == nil {
+			t.Fatal("expected restricted-IP error for unlisted loopback host")
+		}
+		if !strings.Contains(err.Error(), "restricted IP") {
+			t.Errorf("expected 'restricted IP' error, got: %v", err)
+		}
+	})
+
+	t.Run("blocks loopback with empty allowlist", func(t *testing.T) {
+		dialFunc := HostScopedPrivateIPDialContext(dialer, nil)
+		ctx := context.Background()
+		_, err := dialFunc(ctx, "tcp", "localhost:443")
+		if err == nil {
+			t.Fatal("expected restricted-IP error with empty allowlist")
+		}
+		if !strings.Contains(err.Error(), "restricted IP") {
+			t.Errorf("expected 'restricted IP' error, got: %v", err)
+		}
+	})
+
+	t.Run("handles invalid address format", func(t *testing.T) {
+		dialFunc := HostScopedPrivateIPDialContext(dialer, []string{"localhost"})
+		ctx := context.Background()
+		_, err := dialFunc(ctx, "tcp", "no-port")
+		if err == nil {
+			t.Fatal("expected error for missing port")
+		}
+	})
+}
+
+func TestNewHostScopedPrivateIPHTTPClient(t *testing.T) {
+	t.Run("creates client with default timeout", func(t *testing.T) {
+		client := NewHostScopedPrivateIPHTTPClient([]string{"internal.svc"}, 0)
+		if client == nil {
+			t.Fatal("expected non-nil client")
+		}
+		if client.Timeout != DefaultHTTPTimeout {
+			t.Errorf("expected timeout %v, got %v", DefaultHTTPTimeout, client.Timeout)
+		}
+	})
+
+	t.Run("creates client with custom timeout", func(t *testing.T) {
+		client := NewHostScopedPrivateIPHTTPClient([]string{"internal.svc"}, 15*time.Second)
+		if client.Timeout != 15*time.Second {
+			t.Errorf("expected 15s timeout, got %v", client.Timeout)
+		}
+	})
+
+	t.Run("allows connection to listed loopback host", func(t *testing.T) {
+		// httptest.NewServer listens on 127.0.0.1; extract its hostname.
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(srv.Close)
+
+		host := srv.Listener.Addr().(*net.TCPAddr).IP.String()
+		client := NewHostScopedPrivateIPHTTPClient([]string{host}, 5*time.Second)
+		resp, err := client.Get(srv.URL + "/ok")
+		if err != nil {
+			t.Fatalf("expected successful request to listed loopback host, got: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("blocks unlisted loopback host via SSRF guard", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(srv.Close)
+
+		// Client allows a different host — the test server's IP is blocked.
+		client := NewHostScopedPrivateIPHTTPClient([]string{"other.internal"}, 5*time.Second)
+		_, err := client.Get(srv.URL + "/ok")
+		if err == nil {
+			t.Fatal("expected SSRF-guard error for unlisted loopback host")
+		}
+		if !strings.Contains(err.Error(), "restricted IP") {
+			t.Errorf("expected 'restricted IP' error, got: %v", err)
+		}
+	})
+}
