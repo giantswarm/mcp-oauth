@@ -66,23 +66,34 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 		}
 
 		ctx := contextWithValidatedToken(r.Context(), userInfo, metadata)
+		ctx = ContextWithSessionID(ctx, h.sessionIDForToken(accessToken, metadata))
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
-// contextWithValidatedToken stamps the authenticated UserInfo on ctx and,
-// when metadata is available, also propagates the session ID (refresh-token
-// family) and the access token's granted scopes. Zero-valued metadata fields
-// are skipped so downstream consumers can distinguish "absent" from "empty".
+// sessionIDForToken is the single source of session identity for a validated
+// access token. A token backed by a refresh-token family (interactive login or
+// refresh, opaque or JWT) uses that family ID. Every other validated token —
+// forwarded ID token, trusted-issuer M2M/OBO, self-issued exchange-minted JWT —
+// has no family and falls back to the deterministic bearer-derived ID. Both the
+// forwarded-token and workload-exchange paths compute the same fallback, so the
+// value agrees across hops. Returning it for every token (not only those with
+// stored metadata) is what lets resource servers session-scope a self-issued
+// on-behalf-of bearer re-presented at the front door.
+func (h *Handler) sessionIDForToken(accessToken string, metadata *storage.TokenMetadata) string {
+	if metadata != nil && metadata.FamilyID != "" {
+		return metadata.FamilyID
+	}
+	return h.server.SessionIDForBearer(accessToken)
+}
+
+// contextWithValidatedToken stamps the authenticated UserInfo on ctx and, when
+// metadata is available, the access token's granted scopes. The session ID is
+// assigned separately by the caller via sessionIDForToken so that every
+// validated token gets one, not only those with stored metadata.
 func contextWithValidatedToken(ctx context.Context, userInfo *providers.UserInfo, metadata *storage.TokenMetadata) context.Context {
 	ctx = ContextWithUserInfo(ctx, userInfo)
-	if metadata == nil {
-		return ctx
-	}
-	if metadata.FamilyID != "" {
-		ctx = ContextWithSessionID(ctx, metadata.FamilyID)
-	}
-	if len(metadata.Scopes) > 0 {
+	if metadata != nil && len(metadata.Scopes) > 0 {
 		ctx = ContextWithScopes(ctx, metadata.Scopes)
 	}
 	return ctx

@@ -1504,11 +1504,15 @@ func TestHandler_ValidateToken_SessionIDFromContext_WithoutFamilyID(t *testing.T
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
 	}
-	if sessionOK {
-		t.Error("SessionIDFromContext() should return false when no FamilyID is set")
+	// A validated token with no refresh-token family falls back to the
+	// deterministic bearer-derived session ID, so every validated token can be
+	// session-scoped downstream.
+	if !sessionOK {
+		t.Error("SessionIDFromContext() should return a bearer-derived session when no FamilyID is set")
 	}
-	if capturedSessionID != "" {
-		t.Errorf("SessionIDFromContext() = %q, want empty", capturedSessionID)
+	want := srv.SessionIDForBearer(accessToken)
+	if capturedSessionID != want {
+		t.Errorf("SessionIDFromContext() = %q, want %q", capturedSessionID, want)
 	}
 }
 

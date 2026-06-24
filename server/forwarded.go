@@ -269,6 +269,16 @@ func (s *Server) AcceptTrustedIssuerToken(ctx context.Context, bearerToken strin
 // for other keyed derivations without risking cross-purpose collisions.
 // hash.Hash.Write never returns an error — the doc on hash.Hash guarantees it —
 // so the results are ignored.
+// SessionIDForBearer returns the stable session identifier for a validated
+// bearer that has no refresh-token family: forwarded ID tokens, trusted-issuer
+// M2M/OBO tokens, and self-issued exchange-minted JWTs. It is the same
+// derivation the forwarded-token and workload-exchange paths use, exported so
+// the resource-server middleware can assign a session to every validated
+// token, not only those backed by stored family metadata.
+func (s *Server) SessionIDForBearer(bearerToken string) string {
+	return s.deriveForwardedSessionID(bearerToken)
+}
+
 func (s *Server) deriveForwardedSessionID(bearerToken string) string {
 	var digest []byte
 	if len(s.Config.SessionIDHMACKey) > 0 {
