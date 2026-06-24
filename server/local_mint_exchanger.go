@@ -174,7 +174,7 @@ func mergeGroups(base, extra []string) []string {
 	if len(extra) == 0 {
 		return base
 	}
-	seen := make(map[string]struct{}, len(base)+len(extra))
+	seen := make(map[string]struct{}, len(base))
 	for _, g := range base {
 		seen[g] = struct{}{}
 	}
