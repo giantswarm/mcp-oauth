@@ -551,28 +551,60 @@ func TestWorkloadExchangeSubjectToken_AuditsMintJTI(t *testing.T) {
 	require.Equal(t, "jti-12345", details["jti"])
 }
 
-// TestWorkloadExchangeSubjectToken_FederationEscalationGuardDeniesImpersonation
-// asserts a token this broker minted that already carries a delegation chain
-// cannot be re-exchanged on the impersonation path (no actor_token), which would
-// re-authorize it on the minted human sub and drop the acting principal.
-func TestWorkloadExchangeSubjectToken_FederationEscalationGuardDeniesImpersonation(t *testing.T) {
+// TestWorkloadExchangeSubjectToken_RebindDeniedWhenActorNotGranted asserts a
+// self-minted token carrying a delegation chain, re-presented without a fresh
+// actor, is gated on the recorded acting principal: when that actor holds no
+// grant for the requested audience the re-bind is denied. This is the boundary
+// that stops the minted human subject from reaching arbitrary audiences.
+func TestWorkloadExchangeSubjectToken_RebindDeniedWhenActorNotGranted(t *testing.T) {
 	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "must-not-mint"}}
 	validator := &stubSubjectValidator{identity: SubjectIdentity{
 		Subject: brokerTestUserSub,
 		Issuer:  "https://broker.example.com", // self-minted: equals cfg.Issuer
 		Claims:  &oidc.IDTokenClaims{Act: &oidc.ActorClaim{Issuer: "https://kube.example.com", Subject: "agentA"}},
 	}}
+	// The grant is for a different subject than the recorded acting principal.
 	srv, buf := newWorkloadTestServer(t, ex,
-		[]WorkloadGrant{{Issuer: "*", Subject: "*", Audiences: []string{"target-service"}}}, validator)
+		[]WorkloadGrant{{Issuer: "*", Subject: "someone-else", Audiences: []string{"target-service"}}}, validator)
 
 	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
 		"self-minted-obo", SubjectTokenTypeIDToken, "", "", "target-service", "", "")
 	require.ErrorIs(t, err, ErrInvalidTarget)
-	require.Contains(t, err.Error(), "self-minted delegated token")
-	require.Nil(t, ex.gotReq, "exchanger must not be invoked when the guard fires")
+	require.Contains(t, err.Error(), "audience")
+	require.Nil(t, ex.gotReq, "exchanger must not be invoked when the audience is denied")
 
 	details := auditDetails(t, buf, security.EventAuthFailure)
-	require.Equal(t, "self_minted_delegated_token_impersonation", details["reason"])
+	require.Equal(t, "token_exchange_audience_not_allowed", details["reason"])
+	require.Equal(t, "agentA", details["sub"], "denial is attributed to the recorded acting principal")
+}
+
+// TestWorkloadExchangeSubjectToken_RebindAllowedPreservesActChain asserts a
+// self-minted delegated token re-presented without a fresh actor is re-bound to
+// the new audience when the recorded acting principal holds the grant, and the
+// existing act chain is carried to the exchanger for preservation (no fresh
+// actor and no group injection).
+func TestWorkloadExchangeSubjectToken_RebindAllowedPreservesActChain(t *testing.T) {
+	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "rebound-token", ExpiresAt: time.Now().Add(time.Minute)}}
+	validator := &stubSubjectValidator{identity: SubjectIdentity{
+		Subject: brokerTestUserSub,
+		Issuer:  "https://broker.example.com", // self-minted: equals cfg.Issuer
+		Claims:  &oidc.IDTokenClaims{Act: &oidc.ActorClaim{Issuer: "https://kube.example.com", Subject: "agentA"}},
+	}}
+	// Grant keyed on the recorded acting principal (agentA) for the audience.
+	srv, _ := newWorkloadTestServer(t, ex,
+		[]WorkloadGrant{{Issuer: "*", Subject: "agentA", Audiences: []string{"target-service"}}}, validator)
+
+	result, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		"self-minted-obo", SubjectTokenTypeIDToken, "", "", "target-service", "", "")
+	require.NoError(t, err)
+	require.Equal(t, "rebound-token", result.AccessToken)
+	require.NotNil(t, ex.gotReq)
+	require.Nil(t, ex.gotReq.Actor, "a re-bind injects no fresh actor")
+	require.Equal(t, brokerTestUserSub, ex.gotReq.Subject.Subject, "minted subject stays the human")
+	require.NotNil(t, ex.gotReq.Subject.Claims.Act, "existing act chain reaches the exchanger for preservation")
+	require.Equal(t, "agentA", ex.gotReq.Subject.Claims.Act.Subject)
+	require.Empty(t, ex.gotReq.GrantedGroups, "no group injection on the re-bind path")
+	require.Empty(t, ex.gotReq.GrantedSubject)
 }
 
 // TestWorkloadExchangeSubjectToken_FederationEscalationGuardAllowsDelegation
@@ -1175,4 +1207,123 @@ func TestWorkloadExchange_DelegationDoesNotInjectGrantedSubject(t *testing.T) {
 
 	require.NotNil(t, ex.gotReq)
 	require.Empty(t, ex.gotReq.GrantedSubject, "delegation path grants no workload subject")
+}
+
+// newJWTWorkloadTestServer builds a JWT-mode broker (so it can mint and verify
+// its own tokens) wired for the workload exchange. No trustedIssuers entry for
+// the broker's own issuer is configured, so these tests exercise self-trust.
+func newJWTWorkloadTestServer(t *testing.T, exchanger Exchanger, grants []WorkloadGrant) *Server {
+	t.Helper()
+	store := memory.New()
+	t.Cleanup(func() { store.Stop() })
+	key := generateRSAKey(t)
+	cfg := &Config{
+		Issuer:                      "https://broker.example.com",
+		ResourceIdentifier:          "https://broker.example.com/mcp",
+		SupportedScopes:             []string{"openid"},
+		AuthorizationCodeTTL:        600,
+		AccessTokenTTL:              3600,
+		RequirePKCE:                 true,
+		ClockSkewGracePeriod:        5,
+		AccessTokenFormat:           AccessTokenFormatJWT,
+		AccessTokenSigningKey:       key,
+		AccessTokenSigningKeyID:     "test-kid-1",
+		AccessTokenSigningAlgorithm: SigningAlgorithmRS256,
+		EnableWorkloadTokenExchange: true,
+		WorkloadAudiences:           grants,
+		DisableNonceEchoRequirement: true,
+	}
+	srv, err := New(mock.NewProvider(), store, store, store, cfg, nil, WithExchanger(exchanger))
+	require.NoError(t, err)
+	return srv
+}
+
+// mintSelfOBO mints a self-issued delegated access token (sub=human, act=actor,
+// aud=resourceIdentifier) the way the front-door delegation exchange would.
+func mintSelfOBO(t *testing.T, srv *Server, human, actorIssuer, actorSub string) string {
+	t.Helper()
+	now := time.Now().UTC()
+	tok, err := srv.accessTokenIssuer.Issue(t.Context(), AccessTokenClaims{
+		Subject:   human,
+		Audience:  srv.Config.GetResourceIdentifier(),
+		Email:     human,
+		IssuedAt:  now,
+		ExpiresAt: now.Add(15 * time.Minute),
+		Act:       &Actor{Iss: actorIssuer, Sub: actorSub},
+	})
+	require.NoError(t, err)
+	return tok
+}
+
+// TestWorkloadExchangeSubjectToken_SelfTrustEnablesRebind asserts the broker
+// accepts its own self-minted delegated token as an exchange subject with no
+// trustedIssuers self-entry, and re-binds it to the requested audience when the
+// recorded acting principal holds the grant.
+func TestWorkloadExchangeSubjectToken_SelfTrustEnablesRebind(t *testing.T) {
+	const human = "user@example.com"
+	const saIssuer = "https://kube.example.com"
+	const saSub = "system:serviceaccount:ns:agent"
+
+	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "rebound", ExpiresAt: time.Now().Add(time.Minute)}}
+	srv := newJWTWorkloadTestServer(t, ex,
+		[]WorkloadGrant{{Issuer: "*", Subject: saSub, Audiences: []string{"target-service"}}})
+
+	selfOBO := mintSelfOBO(t, srv, human, saIssuer, saSub)
+
+	result, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		selfOBO, SubjectTokenTypeJWT, "", "", "target-service", "", "")
+	require.NoError(t, err)
+	require.Equal(t, "rebound", result.AccessToken)
+	require.NotNil(t, ex.gotReq)
+	require.Nil(t, ex.gotReq.Actor, "re-bind injects no fresh actor")
+	require.Equal(t, human, ex.gotReq.Subject.Subject, "minted subject stays the human")
+	require.NotNil(t, ex.gotReq.Subject.Claims.Act, "act chain reaches the exchanger for preservation")
+	require.Equal(t, saSub, ex.gotReq.Subject.Claims.Act.Subject)
+}
+
+// TestWorkloadExchangeSubjectToken_SelfTrustDeniesUngrantedActor asserts the
+// re-bind of a self-minted delegated token is denied when the recorded acting
+// principal holds no grant for the requested audience.
+func TestWorkloadExchangeSubjectToken_SelfTrustDeniesUngrantedActor(t *testing.T) {
+	const human = "user@example.com"
+	const saIssuer = "https://kube.example.com"
+	const saSub = "system:serviceaccount:ns:agent"
+
+	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "must-not-mint"}}
+	srv := newJWTWorkloadTestServer(t, ex,
+		[]WorkloadGrant{{Issuer: "*", Subject: "someone-else", Audiences: []string{"target-service"}}})
+
+	selfOBO := mintSelfOBO(t, srv, human, saIssuer, saSub)
+
+	_, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		selfOBO, SubjectTokenTypeJWT, "", "", "target-service", "", "")
+	require.ErrorIs(t, err, ErrInvalidTarget)
+	require.Contains(t, err.Error(), "audience")
+	require.Nil(t, ex.gotReq, "exchanger must not run when the acting principal lacks the grant")
+}
+
+// TestWorkloadExchangeSubjectToken_SelfTrustRejectsPlainUserToken asserts the
+// self-trust path does not let an ordinary self-minted user token (no act) reach
+// a backend audience: with no actor it falls to the M2M branch, where the human
+// subject holds no workload grant.
+func TestWorkloadExchangeSubjectToken_SelfTrustRejectsPlainUserToken(t *testing.T) {
+	const human = "user@example.com"
+	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "must-not-mint"}}
+	srv := newJWTWorkloadTestServer(t, ex,
+		[]WorkloadGrant{{Issuer: "*", Subject: "system:serviceaccount:ns:agent", Audiences: []string{"target-service"}}})
+
+	now := time.Now().UTC()
+	plain, err := srv.accessTokenIssuer.Issue(t.Context(), AccessTokenClaims{
+		Subject:   human,
+		Audience:  srv.Config.GetResourceIdentifier(),
+		Email:     human,
+		IssuedAt:  now,
+		ExpiresAt: now.Add(15 * time.Minute),
+	})
+	require.NoError(t, err)
+
+	_, err = srv.WorkloadExchangeSubjectToken(t.Context(),
+		plain, SubjectTokenTypeJWT, "", "", "target-service", "", "")
+	require.ErrorIs(t, err, ErrInvalidTarget)
+	require.Nil(t, ex.gotReq, "a plain self-minted user token must not reach a backend audience")
 }

@@ -226,7 +226,7 @@ func (s *Server) WorkloadExchangeSubjectToken(
 		return nil, fmt.Errorf("%w: no exchanger configured", ErrInvalidTarget)
 	}
 
-	identity, err := s.validateWorkloadSubject(ctx, subjectToken, subjectTokenType, actorToken, audience, sessionID)
+	identity, err := s.validateWorkloadSubject(ctx, subjectToken, subjectTokenType, actorToken)
 	if err != nil {
 		return nil, err
 	}
@@ -236,11 +236,27 @@ func (s *Server) WorkloadExchangeSubjectToken(
 		return nil, err
 	}
 
+	// A token this broker already minted with a delegation chain (act),
+	// re-presented without a fresh actor, is an audience re-bind of an
+	// already-authorized delegation. The original actor was validated against
+	// ActorDelegationPolicy when the chain was minted, so re-binding authorizes
+	// the new audience against the recorded acting principal (the act claim) and
+	// the exchanger preserves the chain. Without this it would fall to the M2M
+	// branch and be gated on the minted human subject, which holds no workload
+	// grant.
+	rebindDelegated := actor == nil &&
+		identity.Issuer == s.Config.Issuer &&
+		identity.Claims != nil && identity.Claims.Act != nil
+
 	workloadIssuer := identity.Issuer
 	workloadSubject := identity.Subject
-	if actor != nil {
+	switch {
+	case actor != nil:
 		workloadIssuer = actor.Issuer
 		workloadSubject = actor.Subject
+	case rebindDelegated:
+		workloadIssuer = identity.Claims.Act.Issuer
+		workloadSubject = identity.Claims.Act.Subject
 	}
 
 	if !s.workloadAudienceAllowed(workloadIssuer, workloadSubject, audience) {
@@ -251,11 +267,12 @@ func (s *Server) WorkloadExchangeSubjectToken(
 	}
 
 	// On the workload (no-actor) path the subject is the workload itself, e.g. a
-	// groupless K8s SA token; a matching grant injects groups and/or subject.
-	// Delegation is excluded: there the human subject carries its own identity.
+	// groupless K8s SA token; a matching grant injects groups and/or subject. A
+	// delegation (fresh actor) and an act-preserving re-bind both carry the human
+	// subject's own identity, so nothing is injected.
 	var grantedGroups []string
 	var grantedSubject string
-	if actor == nil {
+	if actor == nil && !rebindDelegated {
 		if g := s.workloadGrant(identity.Issuer, identity.Subject, audience); g != nil {
 			grantedGroups = g.Granted.Groups
 			grantedSubject = g.Granted.Subject
@@ -268,33 +285,19 @@ func (s *Server) WorkloadExchangeSubjectToken(
 }
 
 // validateWorkloadSubject validates the subject token on the workload exchange
-// path and applies the federation-escalation guard. On the no-actor
-// (impersonation) path the subject token is itself the caller-authenticating
-// credential, so it is bound to the broker issuer as default audience — the same
-// anti-replay treatment applied to actor tokens. On the delegation path the
-// subject is the user's token and must not be broker-bound.
-func (s *Server) validateWorkloadSubject(ctx context.Context, subjectToken, subjectTokenType, actorToken, audience, sessionID string) (*SubjectIdentity, error) {
+// path. On the no-actor (impersonation) path the subject token is itself the
+// caller-authenticating credential, so it is bound to the broker issuer as
+// default audience — the same anti-replay treatment applied to actor tokens. On
+// the delegation path the subject is the user's token and must not be
+// broker-bound. Authorization of a self-minted token that carries a delegation
+// chain is handled by WorkloadExchangeSubjectToken, which gates the audience on
+// the recorded acting principal.
+func (s *Server) validateWorkloadSubject(ctx context.Context, subjectToken, subjectTokenType, actorToken string) (*SubjectIdentity, error) {
 	var subjDefaultAud []string
 	if actorToken == "" {
 		subjDefaultAud = []string{s.Config.Issuer}
 	}
-	identity, err := s.validateExchangeSubjectToken(ctx, subjectToken, subjectTokenType, subjDefaultAud, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	// A token this broker minted that already carries a delegation chain (act)
-	// must not be re-exchanged on the impersonation path: doing so would
-	// re-authorize it on the minted human sub and drop the acting principal
-	// recorded in act. It may only be re-exchanged with a fresh actor_token,
-	// which re-evaluates ActorDelegationPolicy and WorkloadAudiences.
-	if actorToken == "" && identity.Issuer == s.Config.Issuer && identity.Claims != nil && identity.Claims.Act != nil {
-		s.auditExchangeFailure(ctx, "workload", "", audience, sessionID, "self_minted_delegated_token_impersonation", map[string]any{
-			"sub": identity.Subject,
-		})
-		return nil, fmt.Errorf("%w: self-minted delegated token cannot be re-exchanged without an actor_token", ErrInvalidTarget)
-	}
-	return identity, nil
+	return s.validateExchangeSubjectToken(ctx, subjectToken, subjectTokenType, subjDefaultAud, nil)
 }
 
 // validateWorkloadActor validates the actor token (when present) on the workload
