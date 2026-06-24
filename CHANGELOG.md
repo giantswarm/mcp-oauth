@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The resource-server `ValidateToken` middleware now assigns a session ID to every validated token, not only those backed by stored refresh-token-family metadata. A token with a family still uses its `FamilyID`; any other validated token (forwarded ID token, trusted-issuer M2M/OBO, self-issued exchange-minted JWT) falls back to `SessionIDForBearer`. Self-issued exchange-minted JWTs previously reached downstream handlers with no session, so resource servers could not session-scope an on-behalf-of bearer re-presented at the front door; they now carry one.
+
 ### Added
+
+- `server.Server.SessionIDForBearer(bearerToken string) string`: returns the deterministic `ext-<hex>` session identifier for a validated bearer with no refresh-token family. Same derivation the forwarded-token and workload-exchange paths use, so the value agrees across hops.
 
 - `server.Config.DelegationDefaultResource string`: RFC 8707 resource applied to a local token-exchange request that carries an `actor_token` but omits both `audience` and `resource`. The minted token is bound to this value (typically the server's own resource identifier), so an on-behalf-of caller that cannot set a resource itself still gets a token accepted back at this server. Gated to the delegation path: a resource-less exchange with no `actor_token` is still rejected with `invalid_request`. Empty (the default) disables it.
 

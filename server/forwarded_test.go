@@ -360,6 +360,30 @@ func TestAcceptForwardedIDToken_HMACKeyChangesSessionID(t *testing.T) {
 	}
 }
 
+// TestSessionIDForBearer_MatchesForwardedDerivation locks the exported
+// SessionIDForBearer to the same derivation the forwarded-token and
+// workload-exchange paths use, so a session assigned to a self-issued token in
+// the resource-server middleware agrees with the audit/rate-limit session the
+// exchange computes for the same bearer.
+func TestSessionIDForBearer_MatchesForwardedDerivation(t *testing.T) {
+	h := newForwardedTokenHarness(t)
+	tok := h.signToken(t, h.validClaims())
+
+	got := h.srv.SessionIDForBearer(tok)
+	if got != h.srv.deriveForwardedSessionID(tok) {
+		t.Errorf("SessionIDForBearer diverged from deriveForwardedSessionID: %q", got)
+	}
+	if !strings.HasPrefix(got, "ext-") || len(got) != len("ext-")+16 {
+		t.Errorf("SessionIDForBearer shape unexpected: %q", got)
+	}
+	if again := h.srv.SessionIDForBearer(tok); got != again {
+		t.Errorf("SessionIDForBearer not deterministic: %q vs %q", got, again)
+	}
+	if other := h.srv.SessionIDForBearer(tok + "x"); other == got {
+		t.Error("SessionIDForBearer must differ for a different bearer")
+	}
+}
+
 // TestAcceptForwardedIDToken_EmptyBearer guards the explicit empty-token check
 // so callers get a clear error instead of a noisy parse_error metric on every
 // unauthenticated request.
