@@ -708,8 +708,10 @@ func TestExchangeSubjectToken_ExtraOverridesEmailVerified(t *testing.T) {
 	require.Equal(t, true, rawClaims["email_verified"])
 }
 
-const actorIssuerURL = "https://actor.example.com"
-const actorTestSub = "agent-sa@cluster.example.com"
+const (
+	actorIssuerURL = "https://actor.example.com"
+	actorTestSub   = "agent-sa@cluster.example.com"
+)
 
 // newActorExchangeServer builds a Server wired with a stubTokenValidator for
 // actor-delegation tests. The stub maps "sub-tok" → (testIssuer, testSubject)
