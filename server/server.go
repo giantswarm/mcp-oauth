@@ -201,19 +201,7 @@ func New(
 		opt(srv)
 	}
 
-	// The broker trusts its own minted at+jwt tokens as exchange subjects without
-	// a self-referential WithTrustedIssuers entry: it signs them, so it can verify
-	// them. This is what lets a localMint consumer re-bind a self-minted delegated
-	// token (sub=human, act=actor) to a backend audience. Self-issued tokens are
-	// tried first; anything else falls through to the trusted-issuer validator.
-	if srv.Config.IsJWTAccessTokenFormat() {
-		if srv.subjectValidators == nil {
-			srv.subjectValidators = make(map[string]SubjectTokenValidator)
-		}
-		for _, tokenType := range []string{SubjectTokenTypeIDToken, SubjectTokenTypeAccessToken, SubjectTokenTypeJWT} {
-			srv.subjectValidators[tokenType] = &selfIssuedSubjectValidator{srv: srv, next: srv.subjectValidators[tokenType]}
-		}
-	}
+	srv.registerSelfIssuedSubjectValidator()
 
 	if srv.dpopReplayCache == nil {
 		srv.dpopReplayCache = NewMemoryDPoPReplayCache()

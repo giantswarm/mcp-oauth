@@ -45,6 +45,24 @@ func (v *selfIssuedSubjectValidator) Validate(ctx context.Context, tokenString s
 	return subjectIdentityFromSelfIssuedClaims(claims)
 }
 
+// registerSelfIssuedSubjectValidator chains a self-issued validator ahead of any
+// trusted-issuer validator for the JWT subject token types, so the broker trusts
+// its own minted at+jwt tokens as exchange subjects without a self-referential
+// WithTrustedIssuers entry. This lets a localMint consumer re-bind a self-minted
+// delegated token (sub=human, act=actor) to a backend audience. Only meaningful
+// in JWT access-token mode, where the broker can verify its own signature.
+func (s *Server) registerSelfIssuedSubjectValidator() {
+	if !s.Config.IsJWTAccessTokenFormat() {
+		return
+	}
+	if s.subjectValidators == nil {
+		s.subjectValidators = make(map[string]SubjectTokenValidator)
+	}
+	for _, tokenType := range []string{SubjectTokenTypeIDToken, SubjectTokenTypeAccessToken, SubjectTokenTypeJWT} {
+		s.subjectValidators[tokenType] = &selfIssuedSubjectValidator{srv: s, next: s.subjectValidators[tokenType]}
+	}
+}
+
 // subjectIdentityFromSelfIssuedClaims projects the verified claim map of a
 // self-issued token into a SubjectIdentity, preserving the act delegation chain
 // so a re-bind carries it forward.
