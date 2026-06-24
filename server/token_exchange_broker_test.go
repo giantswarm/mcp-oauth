@@ -887,13 +887,17 @@ func TestWorkloadAudienceAllowed(t *testing.T) {
 		{"nil grants", "https://kube.example.com", "system:serviceaccount:ns:robot", "svc-a", nil, false},
 		{"audience not in list, no glob", "https://kube.example.com", "system:serviceaccount:ns:robot", "svc-x", grants, false},
 		// Issuer-qualified grant: same subject from a different issuer is denied.
-		{"issuer mismatch denied", "https://other-cluster.example.com", "system:serviceaccount:ns:robot", "svc-a",
+		{
+			"issuer mismatch denied", "https://other-cluster.example.com", "system:serviceaccount:ns:robot", "svc-a",
 			[]WorkloadGrant{{Issuer: "https://kube.example.com", Subject: "system:serviceaccount:ns:robot", Audiences: []string{"svc-a"}}},
-			false},
+			false,
+		},
 		// Wildcard Issuer matches any issuer.
-		{"wildcard issuer matches any", "https://other-cluster.example.com", "system:serviceaccount:ns:robot", "svc-a",
+		{
+			"wildcard issuer matches any", "https://other-cluster.example.com", "system:serviceaccount:ns:robot", "svc-a",
 			[]WorkloadGrant{{Issuer: "*", Subject: "system:serviceaccount:ns:robot", Audiences: []string{"svc-a"}}},
-			true},
+			true,
+		},
 	}
 
 	srv := newMatchTestServer(t)
@@ -936,17 +940,23 @@ func TestActorDelegationAllowed(t *testing.T) {
 		{"unknown actor", kubeIss, "unknown-service", idpIss, brokerTestUserSub, grants, false},
 		{"nil grants", kubeIss, "system:serviceaccount:ns:robot", idpIss, brokerTestUserSub, nil, false},
 		// Issuer-qualified: actor from a different issuer must not match an issuer-scoped grant.
-		{"actor issuer mismatch denied", otherIss, "system:serviceaccount:ns:robot", idpIss, brokerTestUserSub,
+		{
+			"actor issuer mismatch denied", otherIss, "system:serviceaccount:ns:robot", idpIss, brokerTestUserSub,
 			[]DelegationGrant{{ActorIssuer: kubeIss, ActorSubject: "system:serviceaccount:ns:robot", SubjectIssuer: idpIss, SubjectSubject: brokerTestUserSub}},
-			false},
+			false,
+		},
 		// Subject issuer mismatch.
-		{"subject issuer mismatch denied", kubeIss, "system:serviceaccount:ns:robot", otherIss, brokerTestUserSub,
+		{
+			"subject issuer mismatch denied", kubeIss, "system:serviceaccount:ns:robot", otherIss, brokerTestUserSub,
 			[]DelegationGrant{{ActorIssuer: kubeIss, ActorSubject: "system:serviceaccount:ns:robot", SubjectIssuer: idpIss, SubjectSubject: brokerTestUserSub}},
-			false},
+			false,
+		},
 		// Wildcard issuers match any.
-		{"wildcard issuers match any", otherIss, "system:serviceaccount:ns:robot", otherIss, brokerTestUserSub,
+		{
+			"wildcard issuers match any", otherIss, "system:serviceaccount:ns:robot", otherIss, brokerTestUserSub,
 			[]DelegationGrant{{ActorIssuer: "*", ActorSubject: "system:serviceaccount:ns:robot", SubjectIssuer: "*", SubjectSubject: brokerTestUserSub}},
-			true},
+			true,
+		},
 	}
 
 	srv := newMatchTestServer(t)

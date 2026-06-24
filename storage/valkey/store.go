@@ -514,21 +514,27 @@ func (s *Store) codeKey(code string) string           { return s.keyOf("code", c
 // without any caller-side length constraint. Raw values are stored as Valkey values,
 // not keys, so retrieval is unaffected.
 func (s *Store) tokenKey(userID string) string { return s.keyOf("token", hashKeyComponent(userID)) }
+
 func (s *Store) userInfoKey(userID string) string {
 	return s.keyOf("userinfo", hashKeyComponent(userID))
 }
+
 func (s *Store) refreshTokenKey(token string) string {
 	return s.keyOf(nsRefresh, hashKeyComponent(token))
 }
+
 func (s *Store) refreshTokenMetaKey(token string) string {
 	return s.keyOf(nsRefresh, "meta", hashKeyComponent(token))
 }
+
 func (s *Store) tokenMetaKey(tokenID string) string {
 	return s.keyOf("meta", hashKeyComponent(tokenID))
 }
+
 func (s *Store) userClientKey(userID, clientID string) string {
 	return s.keyOf("userclient", hashKeyComponent(userID), hashKeyComponent(clientID))
 }
+
 func (s *Store) familyKey(familyID string) string {
 	return s.keyOf("family", hashKeyComponent(familyID))
 }
@@ -539,12 +545,15 @@ func (s *Store) familyKey(familyID string) string {
 // pre-migration keys have expired (at most DefaultRefreshTokenTTL = 90 days after
 // the migration) these helpers can be removed.
 func (s *Store) legacyTokenKey(userID string) string { return s.keyOf("token", userID) }
+
 func (s *Store) legacyUserInfoKey(userID string) string {
 	return s.keyOf("userinfo", userID)
 }
+
 func (s *Store) legacyRefreshTokenKey(token string) string {
 	return s.keyOf(nsRefresh, token)
 }
+
 func (s *Store) legacyRefreshTokenMetaKey(token string) string {
 	return s.keyOf(nsRefresh, "meta", token)
 }

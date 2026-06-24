@@ -1,0 +1,44 @@
+# golangci-lint configuration for mcp-oauth.
+#
+# The platform-standard pre-commit golangci-lint hook (.pre-commit-config.yaml,
+# maintained centrally) auto-discovers this file. It carries the extra quality
+# linters that used to run as bespoke `make` targets in the now-removed
+# hand-written ci.yml, so the same checks keep running -- in the standard place
+# -- on every PR.
+#
+# Thresholds and exclusions mirror the previous make targets: complexity "-over
+# 15" (fail above 15, i.e. min-complexity 16), dupl threshold 100, and tests +
+# examples excluded.
+version: "2"
+
+linters:
+  enable:
+    - gocyclo
+    - gocognit
+    - dupl
+  settings:
+    gocyclo:
+      min-complexity: 16
+    gocognit:
+      min-complexity: 16
+    dupl:
+      threshold: 100
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gocyclo
+          - gocognit
+          - dupl
+      - path: ^examples/
+        linters:
+          - gocyclo
+          - gocognit
+          - dupl
+
+formatters:
+  enable:
+    - gofumpt
+  exclusions:
+    paths:
+      - ^examples/
