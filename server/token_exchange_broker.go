@@ -176,7 +176,12 @@ func (s *Server) BrokerExchangeSubjectToken(
 		if err != nil {
 			return nil, err
 		}
-		if !s.actorDelegationAllowed(actor.Issuer, actor.Subject, identity.Issuer, identity.Subject) {
+		// Self-delegation is a no-op: strip the actor and proceed as pure M2M.
+		if actor.Issuer == identity.Issuer && actor.Subject == identity.Subject {
+			actor = nil
+			actorToken = ""
+			actorTokenType = ""
+		} else if !s.actorDelegationAllowed(actor.Issuer, actor.Subject, identity.Issuer, identity.Subject) {
 			s.auditExchangeFailure(ctx, "brokered", clientID, audience, sessionID, "actor_delegation_not_authorized", map[string]any{
 				"actor_sub": actor.Subject,
 				"sub":       identity.Subject,
@@ -310,6 +315,13 @@ func (s *Server) validateWorkloadActor(ctx context.Context, actorToken, actorTok
 	actor, err := s.validateExchangeActorToken(ctx, actorToken, actorTokenType, nil)
 	if err != nil {
 		return nil, err
+	}
+	// When actor resolves to the same identity as subject, treat as pure M2M.
+	// Strip the actor so downstream minting skips the act claim and delegation
+	// checks. This lets a static headersFrom SA token be sent as X-Actor-Token
+	// without needing an explicit SA→SA delegation rule.
+	if actor.Issuer == subject.Issuer && actor.Subject == subject.Subject {
+		return nil, nil
 	}
 	if !s.actorDelegationAllowed(actor.Issuer, actor.Subject, subject.Issuer, subject.Subject) {
 		s.auditExchangeFailure(ctx, "workload", "", audience, sessionID, "actor_delegation_not_authorized", map[string]any{

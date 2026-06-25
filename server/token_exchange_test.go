@@ -829,3 +829,41 @@ func TestExchangeSubjectToken_ActorTokenValidationFailure(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "actor token validation")
 }
+
+// TestExchangeSubjectToken_SelfDelegationIsNoOp verifies that when the actor
+// token resolves to the same identity as the subject token, the actor is
+// silently stripped and the exchange succeeds with no act claim — even when
+// no ActorDelegationPolicy is configured.
+func TestExchangeSubjectToken_SelfDelegationIsNoOp(t *testing.T) {
+	// Wire the server with no delegation policy.
+	srv, signingKey := newActorExchangeServer(t, nil)
+
+	// Both "sub-tok" and "act-tok" now resolve to the same identity.
+	srv.subjectValidators = map[string]SubjectTokenValidator{
+		SubjectTokenTypeIDToken: &stubTokenValidator{
+			byToken: map[string]*SubjectIdentity{
+				"sub-tok": {Subject: testSubject, Issuer: testIssuer},
+				"act-tok": {Subject: testSubject, Issuer: testIssuer},
+			},
+		},
+	}
+
+	result, err := srv.ExchangeSubjectToken(
+		t.Context(),
+		"sub-tok", SubjectTokenTypeIDToken,
+		"act-tok", SubjectTokenTypeIDToken,
+		"https://api.example.com",
+		"read",
+		"",
+	)
+	require.NoError(t, err)
+
+	parsed, err := josejwt.ParseSigned(result.AccessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+
+	var private rfc9068Claims
+	require.NoError(t, parsed.Claims(signingKey.Public(), &private))
+
+	require.Equal(t, testSubject, private.Subject)
+	require.Nil(t, private.Act, "act claim must be absent when actor==subject")
+}
