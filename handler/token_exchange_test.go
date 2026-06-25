@@ -28,12 +28,16 @@ import (
 
 type fakeSubjectValidator struct {
 	identity server.SubjectIdentity
+	byToken  map[string]*server.SubjectIdentity
 	err      error
 }
 
-func (f *fakeSubjectValidator) Validate(_ context.Context, _ string, _ []string) (*server.SubjectIdentity, error) {
+func (f *fakeSubjectValidator) Validate(_ context.Context, token string, _ []string) (*server.SubjectIdentity, error) {
 	if f.err != nil {
 		return nil, f.err
+	}
+	if id, ok := f.byToken[token]; ok {
+		return id, nil
 	}
 	return &f.identity, nil
 }
