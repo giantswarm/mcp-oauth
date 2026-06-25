@@ -123,6 +123,23 @@ func (s *Server) ExchangeSubjectToken(
 	if len(opts) > 0 {
 		o = opts[0]
 	}
+	// Default the identity claims from the validated subject when the caller did
+	// not supply them, so a delegated or self-mint preserves the subject's email,
+	// name and groups. Downstream resource servers rely on these (email->org
+	// mapping, group-based RBAC); without this they receive an identity-stripped
+	// token. An explicit ExchangeOptions value still takes precedence.
+	if identity.Claims != nil {
+		if o.Email == "" {
+			o.Email = identity.Claims.Email
+			o.EmailVerified = identity.Claims.EmailVerified
+		}
+		if o.Name == "" {
+			o.Name = identity.Claims.Name
+		}
+		if len(o.Groups) == 0 {
+			o.Groups = identity.Claims.Groups
+		}
+	}
 
 	auditDetails := map[string]any{
 		"grant_type":         GrantTypeTokenExchange,
