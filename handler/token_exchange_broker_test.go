@@ -40,6 +40,7 @@ type brokeredExchangeHarness struct {
 	logs         *bytes.Buffer
 	clientID     string
 	clientSecret string
+	validator    *fakeSubjectValidator
 }
 
 // setupBrokeredExchangeHandler builds a handler with a registered confidential
@@ -93,6 +94,7 @@ func setupBrokeredExchangeHandler(t *testing.T, exchanger server.Exchanger, allo
 		logs:         &buf,
 		clientID:     client.ClientID,
 		clientSecret: clientSecret,
+		validator:    validator,
 	}
 }
 
@@ -301,9 +303,14 @@ func TestHandleBrokeredTokenExchange_ActorTokenMissingType(t *testing.T) {
 func TestHandleBrokeredTokenExchange_ActorTokenForwarded(t *testing.T) {
 	ex := &stubExchanger{result: happyDownstreamResult()}
 	h := setupBrokeredExchangeHandler(t, ex, []string{"gaggle"}, "confidential")
-	// fakeSubjectValidator returns "user@example.com" for both tokens; allow that actor for that subject.
+	// Use distinct identities for subject and actor so the self-delegation short-circuit
+	// does not trigger and the actor is forwarded with an act claim.
+	h.validator.byToken = map[string]*server.SubjectIdentity{
+		"subject-id-token": {Subject: "user@example.com", Issuer: "https://dex.example.com"},
+		"actor-jwt":        {Subject: "agent@example.com", Issuer: "https://dex.example.com"},
+	}
 	h.srv.Config.ActorDelegationPolicy = []server.DelegationGrant{
-		{ActorIssuer: "*", ActorSubject: "user@example.com", SubjectIssuer: "*", SubjectSubject: "user@example.com"},
+		{ActorIssuer: "*", ActorSubject: "agent@example.com", SubjectIssuer: "*", SubjectSubject: "user@example.com"},
 	}
 
 	form := brokeredExchangeForm()
@@ -318,8 +325,8 @@ func TestHandleBrokeredTokenExchange_ActorTokenForwarded(t *testing.T) {
 	require.NotNil(t, ex.gotReq)
 	require.Equal(t, "actor-jwt", ex.gotReq.ActorToken)
 	require.Equal(t, server.SubjectTokenTypeIDToken, ex.gotReq.ActorTokenType)
-	// Actor identity comes from the same fakeSubjectValidator used for the subject.
 	require.NotNil(t, ex.gotReq.Actor)
+	require.Equal(t, "agent@example.com", ex.gotReq.Actor.Subject)
 }
 
 // Workload-authenticated handler tests.

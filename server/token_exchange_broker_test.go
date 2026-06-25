@@ -459,6 +459,32 @@ func TestBrokerExchangeSubjectToken_ActorDelegationDeniedWhenNoPolicyConfigured(
 	require.Equal(t, brokerTestUserSub, details["sub"])
 }
 
+func TestBrokerExchangeSubjectToken_SelfDelegationIsNoOp(t *testing.T) {
+	// When actor token resolves to the same identity as the subject token, the
+	// actor must be silently dropped: the exchange proceeds as pure M2M with no
+	// act claim and no delegation-policy check.
+	const sub = "service-a"
+	const iss = "https://idp.example.com"
+	identity := SubjectIdentity{Subject: sub, Issuer: iss}
+	validator := &stubTokenValidator{
+		byToken: map[string]*SubjectIdentity{
+			"actor-jwt":   &identity,
+			"subject-jwt": &identity,
+		},
+	}
+	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "downstream-token", ExpiresAt: time.Now().Add(time.Minute)}}
+	srv, _ := newBrokerTestServer(t, ex,
+		map[string][]string{"backstage": {"gaggle"}}, validator)
+	// No ActorDelegationPolicy — would fail if the actor reached the delegation check.
+
+	tok, err := srv.BrokerExchangeSubjectToken(t.Context(),
+		"backstage", "subject-jwt", SubjectTokenTypeIDToken, "actor-jwt", SubjectTokenTypeIDToken, "gaggle", "", "")
+	require.NoError(t, err)
+	require.NotNil(t, tok)
+	require.NotNil(t, ex.gotReq)
+	require.Nil(t, ex.gotReq.Actor, "actor must be stripped when actor==subject")
+}
+
 // Workload-authenticated exchange tests.
 
 // TestWorkloadExchangeSubjectToken_RateLimited asserts the mint path honours the
@@ -831,6 +857,35 @@ func TestWorkloadExchangeSubjectToken_DelegationDeniedByPolicy(t *testing.T) {
 		"user-jwt", SubjectTokenTypeIDToken, "actor-jwt", SubjectTokenTypeIDToken, "target-service", "", "")
 	require.ErrorIs(t, err, ErrInvalidTarget)
 	require.Nil(t, ex.gotReq)
+}
+
+func TestWorkloadExchangeSubjectToken_SelfDelegationIsNoOp(t *testing.T) {
+	// When subject and actor tokens resolve to the same identity, the actor must
+	// be stripped and the exchange proceeds as pure M2M with no act claim and no
+	// delegation-policy check.
+	const sub = "system:serviceaccount:ns:robot"
+	const iss = "https://kube.example.com"
+	identity := SubjectIdentity{Subject: sub, Issuer: iss}
+	validator := &stubTokenValidator{
+		byToken: map[string]*SubjectIdentity{
+			"subject-jwt": &identity,
+			"actor-jwt":   &identity,
+		},
+	}
+	ex := &stubExchanger{result: &ExchangerResult{
+		AccessToken: "workload-token",
+		ExpiresAt:   time.Now().Add(time.Minute),
+	}}
+	// No ActorDelegationPolicy — would fail if the actor reached the delegation check.
+	srv, _ := newWorkloadTestServer(t, ex,
+		[]WorkloadGrant{{Issuer: "*", Subject: sub, Audiences: []string{"target-service"}}}, validator)
+
+	tok, err := srv.WorkloadExchangeSubjectToken(t.Context(),
+		"subject-jwt", SubjectTokenTypeIDToken, "actor-jwt", SubjectTokenTypeIDToken, "target-service", "", "")
+	require.NoError(t, err)
+	require.NotNil(t, tok)
+	require.NotNil(t, ex.gotReq)
+	require.Nil(t, ex.gotReq.Actor, "actor must be stripped when actor==subject")
 }
 
 func TestWorkloadExchangeSubjectToken_NoExchanger(t *testing.T) {

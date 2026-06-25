@@ -87,21 +87,27 @@ func (s *Server) ExchangeSubjectToken(
 		if err != nil {
 			return nil, err
 		}
-		if !s.actorDelegationAllowed(actor.Issuer, actor.Subject, identity.Issuer, identity.Subject) {
-			s.Auditor.LogEvent(ctx, security.Event{
-				Type:   security.EventAuthFailure,
-				UserID: identity.Subject,
-				Details: map[string]any{
-					"reason":     "actor_delegation_not_authorized",
-					"grant_type": GrantTypeTokenExchange,
-					"actor_sub":  actor.Subject,
-					"actor_iss":  actor.Issuer,
-					"sub":        identity.Subject,
-				},
-			})
-			return nil, fmt.Errorf("actor %q is not authorized to act for subject %q", actor.Subject, identity.Subject)
+		// When actor resolves to the same identity as subject, treat as pure M2M —
+		// strip the actor so the minted token carries no act claim and delegation
+		// checks are skipped. This lets a static SA token be sent as X-Actor-Token
+		// without requiring an explicit SA→SA delegation rule.
+		if actor.Issuer != identity.Issuer || actor.Subject != identity.Subject {
+			if !s.actorDelegationAllowed(actor.Issuer, actor.Subject, identity.Issuer, identity.Subject) {
+				s.Auditor.LogEvent(ctx, security.Event{
+					Type:   security.EventAuthFailure,
+					UserID: identity.Subject,
+					Details: map[string]any{
+						"reason":     "actor_delegation_not_authorized",
+						"grant_type": GrantTypeTokenExchange,
+						"actor_sub":  actor.Subject,
+						"actor_iss":  actor.Issuer,
+						"sub":        identity.Subject,
+					},
+				})
+				return nil, fmt.Errorf("actor %q is not authorized to act for subject %q", actor.Subject, identity.Subject)
+			}
+			act = &Actor{Iss: actor.Issuer, Sub: actor.Subject}
 		}
-		act = &Actor{Iss: actor.Issuer, Sub: actor.Subject}
 	}
 
 	grantedScope := grantedExchangeScope(scope, identity.AllowedScopes)
