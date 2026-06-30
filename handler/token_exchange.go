@@ -18,7 +18,7 @@ import (
 
 func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Request, clientIP string) {
 	startTime := time.Now()
-	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.token_exchange_m2m")
+	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.token_exchange")
 	defer endSpan()
 
 	subjectToken := r.Form.Get("subject_token")
@@ -199,11 +199,10 @@ func (h *Handler) handleBrokeredTokenExchange(
 	h.writeTokenExchangeResponse(w, result)
 }
 
-// handleWorkloadTokenExchange serves RFC 8693 requests with an audience but no
-// OAuth client credentials. The request is authenticated by the subject/actor
-// token itself against TrustedIssuers; authorization is checked against
-// Config.WorkloadAudiences. DPoP binding is not supported (the token is
-// forwarded verbatim downstream).
+// handleWorkloadTokenExchange serves RFC 8693 delegation requests with an
+// audience but no OAuth client credentials. The subject (human) and actor
+// (acting workload) tokens authenticate the request against TrustedIssuers.
+// DPoP binding is not supported (the token is forwarded unchanged downstream).
 func (h *Handler) handleWorkloadTokenExchange(
 	w http.ResponseWriter, r *http.Request,
 	clientIP, subjectToken, subjectTokenType, actorToken, actorTokenType, audience, resource, scope string,

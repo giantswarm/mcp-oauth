@@ -125,8 +125,7 @@ type TrustedIssuer struct {
 	AllowedClaims map[string]string
 	// SubjectClaim names the verified claim whose value becomes
 	// SubjectIdentity.Subject (and thus the sub of any token minted from this
-	// identity, and the value matched by ActorDelegationPolicy). Empty keeps the
-	// standard sub claim. Use this when the issuer's sub is an opaque identifier
+	// identity). Empty keeps the standard sub claim. Use this when the issuer's sub is an opaque identifier
 	// but a different claim (e.g. "email") carries the canonical subject the
 	// downstream relies on. Fail-closed: if set and the claim is absent or not a
 	// non-empty string, the token is rejected.

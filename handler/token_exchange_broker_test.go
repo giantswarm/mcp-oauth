@@ -309,9 +309,6 @@ func TestHandleBrokeredTokenExchange_ActorTokenForwarded(t *testing.T) {
 		"subject-id-token": {Subject: "user@example.com", Issuer: "https://dex.example.com"},
 		"actor-jwt":        {Subject: "agent@example.com", Issuer: "https://dex.example.com"},
 	}
-	h.srv.Config.ActorDelegationPolicy = []server.DelegationGrant{
-		{ActorIssuer: "*", ActorSubject: "agent@example.com", SubjectIssuer: "*", SubjectSubject: "user@example.com"},
-	}
 
 	form := brokeredExchangeForm()
 	form.Set("actor_token", "actor-jwt")
@@ -337,7 +334,7 @@ type workloadExchangeHarness struct {
 	logs    *bytes.Buffer
 }
 
-func setupWorkloadExchangeHandler(t *testing.T, exchanger server.Exchanger, workloadAudiences []server.WorkloadGrant) *workloadExchangeHarness {
+func setupWorkloadExchangeHandler(t *testing.T, exchanger server.Exchanger) *workloadExchangeHarness {
 	t.Helper()
 
 	store := memory.New()
@@ -351,13 +348,18 @@ func setupWorkloadExchangeHandler(t *testing.T, exchanger server.Exchanger, work
 		DisableNonceEchoRequirement: true,
 		DisableDNSValidation:        true,
 		EnableWorkloadTokenExchange: true,
-		WorkloadAudiences:           workloadAudiences,
 	}
 
-	validator := &fakeSubjectValidator{identity: server.SubjectIdentity{
-		Subject: "system:serviceaccount:ns:robot",
-		Issuer:  "https://kube.example.com",
-	}}
+	// sa-jwt is the human subject; actor-jwt is a distinct acting workload.
+	validator := &fakeSubjectValidator{
+		identity: server.SubjectIdentity{
+			Subject: "system:serviceaccount:ns:robot",
+			Issuer:  "https://kube.example.com",
+		},
+		byToken: map[string]*server.SubjectIdentity{
+			"actor-jwt": {Subject: "system:serviceaccount:ns:agent", Issuer: "https://kube.example.com"},
+		},
+	}
 
 	srvOpts := []server.Option{
 		server.WithAuditor(security.NewAuditor(logger, true)),
@@ -382,15 +384,15 @@ func workloadExchangeForm() url.Values {
 		"grant_type":         {server.GrantTypeTokenExchange},
 		"subject_token":      {"sa-jwt"},
 		"subject_token_type": {server.SubjectTokenTypeIDToken},
+		"actor_token":        {"actor-jwt"},
+		"actor_token_type":   {server.SubjectTokenTypeIDToken},
 		"audience":           {"target-service"},
 	}
 }
 
 func TestHandleWorkloadTokenExchange_HappyPath(t *testing.T) {
-	const sub = "system:serviceaccount:ns:robot"
 	ex := &stubExchanger{result: happyDownstreamResult()}
-	h := setupWorkloadExchangeHandler(t, ex,
-		[]server.WorkloadGrant{{Issuer: "*", Subject: sub, Audiences: []string{"target-service"}}})
+	h := setupWorkloadExchangeHandler(t, ex)
 
 	req := newTokenExchangeRequest(workloadExchangeForm())
 	w := httptest.NewRecorder()
@@ -405,35 +407,35 @@ func TestHandleWorkloadTokenExchange_HappyPath(t *testing.T) {
 	require.NotNil(t, ex.gotReq)
 	require.Empty(t, ex.gotReq.ClientID)
 	require.Equal(t, "target-service", ex.gotReq.Audience)
+	require.NotNil(t, ex.gotReq.Actor)
 
 	require.True(t, auditEventLogged(t, h.logs, security.EventTokenIssued),
 		"missing token_issued audit in: %s", h.logs.String())
 }
 
-func TestHandleWorkloadTokenExchange_AudienceNotAllowed(t *testing.T) {
-	const sub = "system:serviceaccount:ns:robot"
+func TestHandleWorkloadTokenExchange_NoActorImpersonation(t *testing.T) {
 	ex := &stubExchanger{result: happyDownstreamResult()}
-	h := setupWorkloadExchangeHandler(t, ex,
-		[]server.WorkloadGrant{{Issuer: "*", Subject: sub, Audiences: []string{"allowed-service"}}})
+	h := setupWorkloadExchangeHandler(t, ex)
 
 	form := workloadExchangeForm()
-	form.Set("audience", "other-service")
+	form.Del("actor_token")
+	form.Del("actor_token_type")
 	req := newTokenExchangeRequest(form)
 	w := httptest.NewRecorder()
 	h.handler.ServeToken(w, req)
 
-	requireOAuthError(t, w, http.StatusBadRequest, constants.ErrorCodeInvalidTarget)
-	require.Nil(t, ex.gotReq)
-	require.True(t, auditAuthFailureWithReason(t, h.logs, "token_exchange_audience_not_allowed"),
-		"missing audit in: %s", h.logs.String())
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	require.NotNil(t, ex.gotReq)
+	require.Nil(t, ex.gotReq.Actor, "no actor token means no act claim")
+	require.True(t, auditEventLogged(t, h.logs, security.EventTokenIssued),
+		"missing token_issued audit in: %s", h.logs.String())
 }
 
 func TestHandleWorkloadTokenExchange_GateOff_FallsBackToClientAuth(t *testing.T) {
 	// When EnableWorkloadTokenExchange is false, a no-credentials request must
 	// reach authenticateClient and fail with invalid_request (client_id missing).
-	const sub = "system:serviceaccount:ns:robot"
 	ex := &stubExchanger{result: happyDownstreamResult()}
-	h := setupWorkloadExchangeHandler(t, ex, []server.WorkloadGrant{{Issuer: "*", Subject: sub, Audiences: []string{"target-service"}}})
+	h := setupWorkloadExchangeHandler(t, ex)
 	h.srv.Config.EnableWorkloadTokenExchange = false
 
 	req := newTokenExchangeRequest(workloadExchangeForm())
@@ -445,9 +447,8 @@ func TestHandleWorkloadTokenExchange_GateOff_FallsBackToClientAuth(t *testing.T)
 }
 
 func TestHandleWorkloadTokenExchange_DPoPRejected(t *testing.T) {
-	const sub = "system:serviceaccount:ns:robot"
 	ex := &stubExchanger{result: happyDownstreamResult()}
-	h := setupWorkloadExchangeHandler(t, ex, []server.WorkloadGrant{{Issuer: "*", Subject: sub, Audiences: []string{"target-service"}}})
+	h := setupWorkloadExchangeHandler(t, ex)
 
 	req := newTokenExchangeRequest(workloadExchangeForm())
 	req.Header.Set("DPoP", "some-proof")

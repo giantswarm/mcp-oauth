@@ -49,7 +49,6 @@ type tokenExchangeHarnessConfig struct {
 	maxRequestBodySize        int64
 	nonceProvider             server.DPoPNonceProvider
 	delegationDefaultResource string
-	actorDelegationPolicy     []server.DelegationGrant
 }
 
 func withSubjectValidator(v server.SubjectTokenValidator) tokenExchangeHarnessOption {
@@ -62,10 +61,6 @@ func withMaxRequestBodySize(n int64) tokenExchangeHarnessOption {
 
 func withDelegationDefaultResource(resource string) tokenExchangeHarnessOption {
 	return func(c *tokenExchangeHarnessConfig) { c.delegationDefaultResource = resource }
-}
-
-func withActorDelegationPolicy(grants ...server.DelegationGrant) tokenExchangeHarnessOption {
-	return func(c *tokenExchangeHarnessConfig) { c.actorDelegationPolicy = grants }
 }
 
 func withDPoPNonceProvider(p server.DPoPNonceProvider) tokenExchangeHarnessOption {
@@ -101,7 +96,6 @@ func setupTokenExchangeHandler(t *testing.T, opts ...tokenExchangeHarnessOption)
 		DisableNonceEchoRequirement: true,
 		MaxRequestBodySize:          cfg.maxRequestBodySize,
 		DelegationDefaultResource:   cfg.delegationDefaultResource,
-		ActorDelegationPolicy:       cfg.actorDelegationPolicy,
 	}
 
 	srvOpts := []server.Option{
@@ -320,12 +314,6 @@ func TestHandleTokenExchangeGrant_DelegationDefaultResource(t *testing.T) {
 		Subject: "system:serviceaccount:kagent:sre-agent",
 		Issuer:  "https://oidc.example.com",
 	}
-	allowSelf := server.DelegationGrant{
-		ActorIssuer:    identity.Issuer,
-		ActorSubject:   identity.Subject,
-		SubjectIssuer:  identity.Issuer,
-		SubjectSubject: identity.Subject,
-	}
 	delegationForm := func() url.Values {
 		v := happyExchangeForm()
 		v.Del("resource")
@@ -338,7 +326,6 @@ func TestHandleTokenExchangeGrant_DelegationDefaultResource(t *testing.T) {
 		h, buf := setupTokenExchangeHandler(t,
 			withSubjectValidator(&fakeSubjectValidator{identity: identity}),
 			withDelegationDefaultResource(selfResource),
-			withActorDelegationPolicy(allowSelf),
 		)
 		w := httptest.NewRecorder()
 		h.ServeToken(w, newTokenExchangeRequest(delegationForm()))
@@ -366,7 +353,6 @@ func TestHandleTokenExchangeGrant_DelegationDefaultResource(t *testing.T) {
 	t.Run("disabled default still requires resource", func(t *testing.T) {
 		h, buf := setupTokenExchangeHandler(t,
 			withSubjectValidator(&fakeSubjectValidator{identity: identity}),
-			withActorDelegationPolicy(allowSelf),
 			// opt-in off: no withDelegationDefaultResource
 		)
 		w := httptest.NewRecorder()

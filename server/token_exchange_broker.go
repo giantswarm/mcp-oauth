@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path"
 	"slices"
 	"time"
 
@@ -50,11 +49,11 @@ type ExchangerRequest struct {
 	// Subject is the verified identity extracted from the subject token.
 	Subject *SubjectIdentity
 	// SubjectToken is the raw subject token. Hosts typically forward it
-	// verbatim as the subject_token of their own downstream exchange.
+	// unchanged as the subject_token of their own downstream exchange.
 	SubjectToken string
 	// SubjectTokenType is the RFC 8693 token-type URN of SubjectToken.
 	SubjectTokenType string
-	// ActorToken is the raw RFC 8693 actor_token, forwarded verbatim.
+	// ActorToken is the raw RFC 8693 actor_token, forwarded unchanged.
 	// Empty when no actor_token was presented.
 	ActorToken string
 	// ActorTokenType is the RFC 8693 token-type URN of ActorToken.
@@ -63,23 +62,11 @@ type ExchangerRequest struct {
 	// Actor is the verified identity of the acting party (RFC 8693 §4.4
 	// delegation chain). Nil when no actor_token was presented.
 	Actor *SubjectIdentity
-	// GrantedGroups are groups the broker authorizes for this exchange from a
-	// matching WorkloadGrant, distinct from any groups the subject token itself
-	// carried in Subject.Claims. Populated only on the workload (no-actor) path;
-	// the Exchanger merges them into the minted token. Keeping them separate
-	// preserves the provenance of the validated subject identity, which is never
-	// mutated to carry broker-granted authorization.
-	GrantedGroups []string
-	// GrantedSubject is the broker-asserted subject for this exchange from a
-	// matching WorkloadGrant; when non-empty it replaces the validated subject as
-	// the minted token's sub. Populated only on the workload (no-actor) path. The
-	// validated subject identity (Subject) is never mutated.
-	GrantedSubject string
 }
 
 // ExchangerResult is the downstream token returned by an Exchanger.
 type ExchangerResult struct {
-	// AccessToken is the downstream token returned to the client verbatim.
+	// AccessToken is the downstream token returned to the client unchanged.
 	AccessToken string
 	// IssuedTokenType is the RFC 8693 issued_token_type URN. Empty defaults
 	// to urn:ietf:params:oauth:token-type:access_token.
@@ -170,50 +157,38 @@ func (s *Server) BrokerExchangeSubjectToken(
 		return nil, err
 	}
 
-	var actor *SubjectIdentity
-	if actorToken != "" {
-		actor, err = s.validateExchangeActorToken(ctx, actorToken, actorTokenType, brokerAuditCtx)
-		if err != nil {
-			return nil, err
-		}
-		// Self-delegation is a no-op: strip the actor and proceed as pure M2M.
-		if actor.Issuer == identity.Issuer && actor.Subject == identity.Subject {
-			actor = nil
-			actorToken = ""
-			actorTokenType = ""
-		} else if !s.actorDelegationAllowed(actor.Issuer, actor.Subject, identity.Issuer, identity.Subject) {
-			s.auditExchangeFailure(ctx, "brokered", clientID, audience, sessionID, "actor_delegation_not_authorized", map[string]any{
-				"actor_sub": actor.Subject,
-				"sub":       identity.Subject,
-			})
-			return nil, fmt.Errorf("%w: actor %q is not authorized to act for subject %q", ErrInvalidTarget, actor.Subject, identity.Subject)
-		}
-	} else {
-		actorTokenType = ""
+	actor, err := s.resolveExchangeActor(ctx, actorToken, actorTokenType, identity, brokerAuditCtx)
+	if err != nil {
+		return nil, err
 	}
 
-	// The client-authenticated path carries no workload identity grant.
 	return s.dispatchDownstreamExchange(ctx, "brokered", clientID,
 		subjectToken, subjectTokenType, actorToken, actorTokenType,
-		audience, resource, scope, sessionID, identity, actor, nil, "")
+		audience, resource, scope, sessionID, identity, actor)
 }
 
 // WorkloadExchangeSubjectToken implements the workload-authenticated brokered
-// RFC 8693 flow: no OAuth client credentials are required. The requesting
-// workload authenticates by presenting its own SA token as the subject_token;
-// for delegation (RFC 8693 §4.4) an actor_token may also be provided. Both
-// tokens are validated against the server's TrustedIssuers before the
-// allowlist is checked.
+// RFC 8693 flow: no OAuth client credentials are required. A delegation request
+// presents the human subject's token as subject_token and the acting workload's
+// token as actor_token; an impersonation request presents only a subject_token.
+// Both tokens are validated against the server's TrustedIssuers before the
+// Exchanger is invoked.
 //
 // Policy enforced here:
 //   - an Exchanger must be configured; ErrInvalidTarget otherwise
 //   - subject and actor tokens are validated by the registered
 //     SubjectTokenValidator (signature, issuer, audience, expiry)
-//   - when actor_token is present, authorization uses actor.Subject
-//     (delegation); otherwise subject.Subject is used (impersonation)
-//   - the acting subject must match a Config.WorkloadAudiences key (exact or
-//     glob) whose value list contains the requested audience; ErrInvalidTarget
-//     on miss
+//   - on the no-actor path the subject token is the caller-authenticating
+//     credential and is bound to this broker's issuer as default audience
+//     (anti-replay); on the delegation path the subject is the user's token and
+//     is not broker-bound
+//   - self-delegation (actor equal to subject) is a no-op: the actor is dropped
+//     and the minted token carries no act claim
+//
+// Any validated trusted-issuer actor is accepted; the minted token impersonates
+// the subject downstream, where the subject's own authorization governs access.
+// Resource servers that do not honor a machine identity reject a token with no
+// act claim at the point of use.
 //
 // Every outcome is audited with exchange kind "workload" and empty ClientID.
 func (s *Server) WorkloadExchangeSubjectToken(
@@ -231,206 +206,41 @@ func (s *Server) WorkloadExchangeSubjectToken(
 		return nil, fmt.Errorf("%w: no exchanger configured", ErrInvalidTarget)
 	}
 
-	identity, err := s.validateWorkloadSubject(ctx, subjectToken, subjectTokenType, actorToken)
+	var subjectDefaultAudiences []string
+	if actorToken == "" {
+		subjectDefaultAudiences = []string{s.Config.Issuer}
+	}
+	identity, err := s.validateExchangeSubjectToken(ctx, subjectToken, subjectTokenType, subjectDefaultAudiences, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	actor, err := s.validateWorkloadActor(ctx, actorToken, actorTokenType, identity, audience, sessionID)
+	actor, err := s.resolveExchangeActor(ctx, actorToken, actorTokenType, identity, nil)
 	if err != nil {
 		return nil, err
-	}
-
-	// A token this broker already minted with a delegation chain (act),
-	// re-presented without a fresh actor, is an audience re-bind of an
-	// already-authorized delegation. The original actor was validated against
-	// ActorDelegationPolicy when the chain was minted, so re-binding authorizes
-	// the new audience against the recorded acting principal (the act claim) and
-	// the exchanger preserves the chain. Without this it would fall to the M2M
-	// branch and be gated on the minted human subject, which holds no workload
-	// grant.
-	rebindDelegated := actor == nil &&
-		identity.Issuer == s.Config.Issuer &&
-		identity.Claims != nil && identity.Claims.Act != nil
-
-	workloadIssuer := identity.Issuer
-	workloadSubject := identity.Subject
-	switch {
-	case actor != nil:
-		workloadIssuer = actor.Issuer
-		workloadSubject = actor.Subject
-	case rebindDelegated:
-		workloadIssuer = identity.Claims.Act.Issuer
-		workloadSubject = identity.Claims.Act.Subject
-	}
-
-	if !s.workloadAudienceAllowed(workloadIssuer, workloadSubject, audience) {
-		s.auditExchangeFailure(ctx, "workload", "", audience, sessionID, "token_exchange_audience_not_allowed", map[string]any{
-			"sub": workloadSubject,
-		})
-		return nil, fmt.Errorf("%w: audience %q", ErrInvalidTarget, audience)
-	}
-
-	// On the workload (no-actor) path the subject is the workload itself, e.g. a
-	// groupless K8s SA token; a matching grant injects groups and/or subject. A
-	// delegation (fresh actor) and an act-preserving re-bind both carry the human
-	// subject's own identity, so nothing is injected.
-	var grantedGroups []string
-	var grantedSubject string
-	if actor == nil && !rebindDelegated {
-		if g := s.workloadGrant(identity.Issuer, identity.Subject, audience); g != nil {
-			grantedGroups = g.Granted.Groups
-			grantedSubject = g.Granted.Subject
-		}
 	}
 
 	return s.dispatchDownstreamExchange(ctx, "workload", "",
 		subjectToken, subjectTokenType, actorToken, actorTokenType,
-		audience, resource, scope, sessionID, identity, actor, grantedGroups, grantedSubject)
-}
-
-// validateWorkloadSubject validates the subject token on the workload exchange
-// path. On the no-actor (impersonation) path the subject token is itself the
-// caller-authenticating credential, so it is bound to the broker issuer as
-// default audience — the same anti-replay treatment applied to actor tokens. On
-// the delegation path the subject is the user's token and must not be
-// broker-bound. Authorization of a self-minted token that carries a delegation
-// chain is handled by WorkloadExchangeSubjectToken, which gates the audience on
-// the recorded acting principal.
-func (s *Server) validateWorkloadSubject(ctx context.Context, subjectToken, subjectTokenType, actorToken string) (*SubjectIdentity, error) {
-	var subjDefaultAud []string
-	if actorToken == "" {
-		subjDefaultAud = []string{s.Config.Issuer}
-	}
-	return s.validateExchangeSubjectToken(ctx, subjectToken, subjectTokenType, subjDefaultAud, nil)
-}
-
-// validateWorkloadActor validates the actor token (when present) on the workload
-// exchange path and enforces the actor→subject delegation policy. Returns
-// (nil, nil) when no actor token was presented (the M2M path).
-func (s *Server) validateWorkloadActor(ctx context.Context, actorToken, actorTokenType string, subject *SubjectIdentity, audience, sessionID string) (*SubjectIdentity, error) {
-	if actorToken == "" {
-		return nil, nil
-	}
-	actor, err := s.validateExchangeActorToken(ctx, actorToken, actorTokenType, nil)
-	if err != nil {
-		return nil, err
-	}
-	// When actor resolves to the same identity as subject, treat as pure M2M.
-	// Strip the actor so downstream minting skips the act claim and delegation
-	// checks. This lets a static headersFrom SA token be sent as X-Actor-Token
-	// without needing an explicit SA→SA delegation rule.
-	if actor.Issuer == subject.Issuer && actor.Subject == subject.Subject {
-		return nil, nil
-	}
-	if !s.actorDelegationAllowed(actor.Issuer, actor.Subject, subject.Issuer, subject.Subject) {
-		s.auditExchangeFailure(ctx, "workload", "", audience, sessionID, "actor_delegation_not_authorized", map[string]any{
-			"actor_sub": actor.Subject,
-			"sub":       subject.Subject,
-		})
-		return nil, fmt.Errorf("%w: actor %q is not authorized to act for subject %q", ErrInvalidTarget, actor.Subject, subject.Subject)
-	}
-	return actor, nil
-}
-
-// workloadAudienceAllowed reports whether the workload identified by issuer+subject
-// is allowed to request audience. Each WorkloadGrant in Config.WorkloadAudiences is
-// checked: Issuer is matched exactly (empty = any); Subject by glob (* spans slashes).
-func (s *Server) workloadAudienceAllowed(issuer, subject, audience string) bool {
-	for _, g := range s.Config.WorkloadAudiences {
-		if !s.issuerMatches(g.Issuer, issuer) {
-			continue
-		}
-		if !s.subjectMatches(g.Subject, subject) {
-			continue
-		}
-		if slices.Contains(g.Audiences, audience) {
-			return true
-		}
-	}
-	return false
-}
-
-// workloadGrant returns the first WorkloadGrant matching issuer+subject+audience
-// that carries broker-granted authorization (Granted.Groups and/or Granted.Subject).
-// Such grants are constrained to explicit issuer+subject by Config.Validate, so
-// at most one logically applies.
-func (s *Server) workloadGrant(issuer, subject, audience string) *WorkloadGrant {
-	for i := range s.Config.WorkloadAudiences {
-		g := &s.Config.WorkloadAudiences[i]
-		if len(g.Granted.Groups) == 0 && g.Granted.Subject == "" {
-			continue
-		}
-		if !s.issuerMatches(g.Issuer, issuer) {
-			continue
-		}
-		if !s.subjectMatches(g.Subject, subject) {
-			continue
-		}
-		if slices.Contains(g.Audiences, audience) {
-			return g
-		}
-	}
-	return nil
-}
-
-// actorDelegationAllowed reports whether the actor identified by actorIssuer+actorSub is
-// authorized to act on behalf of the subject identified by subjectIssuer+subjectSub.
-// Config.ActorDelegationPolicy is the list of DelegationGrants. A nil/empty policy
-// denies all delegation.
-func (s *Server) actorDelegationAllowed(actorIssuer, actorSub, subjectIssuer, subjectSub string) bool {
-	for _, g := range s.Config.ActorDelegationPolicy {
-		if !s.issuerMatches(g.ActorIssuer, actorIssuer) {
-			continue
-		}
-		if !s.subjectMatches(g.ActorSubject, actorSub) {
-			continue
-		}
-		if !s.issuerMatches(g.SubjectIssuer, subjectIssuer) {
-			continue
-		}
-		if s.subjectMatches(g.SubjectSubject, subjectSub) {
-			return true
-		}
-	}
-	return false
-}
-
-// issuerMatches reports whether the grant's issuer pattern matches the token issuer.
-// Use "*" to match any issuer; an empty pattern matches nothing.
-func (s *Server) issuerMatches(pattern, issuer string) bool {
-	return pattern == "*" || pattern == issuer
-}
-
-// subjectMatches reports whether value matches pattern using matchClaimPattern
-// semantics (exact equality or glob with * spanning slashes). A malformed pattern
-// is logged as a warning and treated as no-match (fail-closed).
-func (s *Server) subjectMatches(pattern, value string) bool {
-	if pattern == value {
-		return true
-	}
-	err := matchClaimPattern(pattern, value)
-	if err != nil {
-		if errors.Is(err, path.ErrBadPattern) {
-			s.Logger.Warn("grant subject pattern is malformed — check configuration", "pattern", pattern)
-		}
-		return false
-	}
-	return true
+		audience, resource, scope, sessionID, identity, actor)
 }
 
 // dispatchDownstreamExchange calls the Exchanger and emits the outcome audit
 // event. exchange is "brokered" or "workload"; clientID is empty on the
 // workload path. identity and actor must already be validated before calling.
+// A nil actor (no delegation, or self-delegation stripped to a no-op) clears the
+// forwarded actor token so the three actor fields on ExchangerRequest stay
+// consistent.
 func (s *Server) dispatchDownstreamExchange(
 	ctx context.Context,
 	exchange, clientID,
 	subjectToken, subjectTokenType, actorToken, actorTokenType,
 	audience, resource, scope, sessionID string,
 	identity *SubjectIdentity, actor *SubjectIdentity,
-	grantedGroups []string,
-	grantedSubject string,
 ) (*TokenExchangeResult, error) {
+	if actor == nil {
+		actorToken, actorTokenType = "", ""
+	}
 	result, err := s.exchanger.Exchange(ctx, &ExchangerRequest{
 		Audience:         audience,
 		Resource:         resource,
@@ -442,8 +252,6 @@ func (s *Server) dispatchDownstreamExchange(
 		ActorToken:       actorToken,
 		ActorTokenType:   actorTokenType,
 		Actor:            actor,
-		GrantedGroups:    grantedGroups,
-		GrantedSubject:   grantedSubject,
 	})
 	if err != nil {
 		s.Logger.Debug(exchange+" token exchange: downstream exchange failed",

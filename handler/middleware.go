@@ -74,7 +74,7 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 // sessionIDForToken is the single source of session identity for a validated
 // access token. A token backed by a refresh-token family (interactive login or
 // refresh, opaque or JWT) uses that family ID. Every other validated token —
-// forwarded ID token, trusted-issuer M2M/OBO, self-issued exchange-minted JWT —
+// forwarded ID token, trusted-issuer, self-issued exchange-minted JWT —
 // has no family and falls back to the deterministic bearer-derived ID. Both the
 // forwarded-token and workload-exchange paths compute the same fallback, so the
 // value agrees across hops. Returning it for every token (not only those with

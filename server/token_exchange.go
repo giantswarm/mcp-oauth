@@ -51,10 +51,8 @@ type ExchangeOptions struct {
 // actorToken and actorTokenType are RFC 8693 §4.4 delegation parameters. When
 // actorToken is non-empty it is validated against the server's trusted issuers
 // and the resulting actor identity is written as the act claim of the issued
-// JWT (act.sub = agent SA, act.iss = agent issuer). The ActorDelegationPolicy
-// must explicitly allow the (actor, subject) pair; nil/empty policy denies all
-// delegated exchanges. Pass empty strings for both when no delegation is
-// required — the issued token will carry no act claim.
+// JWT (act.sub = agent SA, act.iss = agent issuer). Pass empty strings for both
+// when no delegation is required — the issued token will carry no act claim.
 //
 // opts is an optional ExchangeOptions whose identity fields are emitted as
 // standard JWT claims (email, email_verified, name, groups) and whose Extra
@@ -81,33 +79,13 @@ func (s *Server) ExchangeSubjectToken(
 		return nil, err
 	}
 
+	actor, err := s.resolveExchangeActor(ctx, actorToken, actorTokenType, identity, nil)
+	if err != nil {
+		return nil, err
+	}
 	var act *Actor
-	if actorToken != "" {
-		actor, err := s.validateExchangeActorToken(ctx, actorToken, actorTokenType, nil)
-		if err != nil {
-			return nil, err
-		}
-		// When actor resolves to the same identity as subject, treat as pure M2M —
-		// strip the actor so the minted token carries no act claim and delegation
-		// checks are skipped. This lets a static SA token be sent as X-Actor-Token
-		// without requiring an explicit SA→SA delegation rule.
-		if actor.Issuer != identity.Issuer || actor.Subject != identity.Subject {
-			if !s.actorDelegationAllowed(actor.Issuer, actor.Subject, identity.Issuer, identity.Subject) {
-				s.Auditor.LogEvent(ctx, security.Event{
-					Type:   security.EventAuthFailure,
-					UserID: identity.Subject,
-					Details: map[string]any{
-						"reason":     "actor_delegation_not_authorized",
-						"grant_type": GrantTypeTokenExchange,
-						"actor_sub":  actor.Subject,
-						"actor_iss":  actor.Issuer,
-						"sub":        identity.Subject,
-					},
-				})
-				return nil, fmt.Errorf("actor %q is not authorized to act for subject %q", actor.Subject, identity.Subject)
-			}
-			act = &Actor{Iss: actor.Issuer, Sub: actor.Subject}
-		}
+	if actor != nil {
+		act = &Actor{Iss: actor.Issuer, Sub: actor.Subject}
 	}
 
 	grantedScope := grantedExchangeScope(scope, identity.AllowedScopes)
@@ -204,6 +182,25 @@ func (s *Server) validateExchangeSubjectToken(ctx context.Context, subjectToken,
 // (exchange, client_id, audience, session_id) from BrokerExchangeSubjectToken.
 func (s *Server) validateExchangeActorToken(ctx context.Context, actorToken, actorTokenType string, extra map[string]any) (*SubjectIdentity, error) {
 	return s.validateExchangeToken(ctx, actorToken, actorTokenType, "actor", []string{s.Config.Issuer}, extra)
+}
+
+// resolveExchangeActor validates the RFC 8693 actor token when one is present
+// and returns the verified actor identity. It returns nil when no actor token is
+// presented, or when the actor resolves to the same identity as the subject:
+// self-delegation is a no-op, so the minted token carries no act claim. extra is
+// merged into actor-validation failure events; pass nil when there is none.
+func (s *Server) resolveExchangeActor(ctx context.Context, actorToken, actorTokenType string, subject *SubjectIdentity, extra map[string]any) (*SubjectIdentity, error) {
+	if actorToken == "" {
+		return nil, nil
+	}
+	actor, err := s.validateExchangeActorToken(ctx, actorToken, actorTokenType, extra)
+	if err != nil {
+		return nil, err
+	}
+	if actor.Issuer == subject.Issuer && actor.Subject == subject.Subject {
+		return nil, nil
+	}
+	return actor, nil
 }
 
 // validateExchangeToken routes token to the SubjectTokenValidator registered

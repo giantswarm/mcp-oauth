@@ -420,9 +420,7 @@ func TestExchangeSubjectToken_Audit_AccessTokenIssueFailure(t *testing.T) {
 }
 
 func TestExchangeSubjectToken_Audit_AccessTokenIssueFailure_WithActor(t *testing.T) {
-	srv, _ := newActorExchangeServer(t, []DelegationGrant{
-		{ActorIssuer: actorIssuerURL, ActorSubject: "*", SubjectIssuer: testIssuer, SubjectSubject: "*"},
-	})
+	srv, _ := newActorExchangeServer(t)
 
 	logger, buf := captureLogger()
 	srv.Auditor = security.NewAuditor(logger, true)
@@ -716,8 +714,8 @@ const (
 // newActorExchangeServer builds a Server wired with a stubTokenValidator for
 // actor-delegation tests. The stub maps "sub-tok" → (testIssuer, testSubject)
 // and "act-tok" → (actorIssuerURL, actorTestSub) so no JWKS round-trip is
-// needed. policy is installed as ActorDelegationPolicy.
-func newActorExchangeServer(t *testing.T, policy []DelegationGrant) (srv *Server, signingKey *rsa.PrivateKey) {
+// needed. Any validated actor is accepted.
+func newActorExchangeServer(t *testing.T) (srv *Server, signingKey *rsa.PrivateKey) {
 	t.Helper()
 	store := memory.New()
 	t.Cleanup(func() { store.Stop() })
@@ -733,7 +731,6 @@ func newActorExchangeServer(t *testing.T, policy []DelegationGrant) (srv *Server
 		AccessTokenSigningKeyID:     "actor-test-kid",
 		AccessTokenSigningAlgorithm: SigningAlgorithmRS256,
 		DisableNonceEchoRequirement: true,
-		ActorDelegationPolicy:       policy,
 	}
 	srv, err := New(mock.NewProvider(), store, store, store, cfg, nil)
 	require.NoError(t, err)
@@ -752,12 +749,10 @@ func newActorExchangeServer(t *testing.T, policy []DelegationGrant) (srv *Server
 }
 
 // TestExchangeSubjectToken_WithActor verifies that when a valid actor_token is
-// presented and an ActorDelegationPolicy permits the (actor, subject) pair, the
-// issued JWT carries act.sub = actor subject and act.iss = actor issuer.
+// presented, the issued JWT carries act.sub = actor subject and act.iss = actor
+// issuer.
 func TestExchangeSubjectToken_WithActor(t *testing.T) {
-	srv, signingKey := newActorExchangeServer(t, []DelegationGrant{
-		{ActorIssuer: actorIssuerURL, ActorSubject: "*", SubjectIssuer: testIssuer, SubjectSubject: "*"},
-	})
+	srv, signingKey := newActorExchangeServer(t)
 
 	result, err := srv.ExchangeSubjectToken(
 		t.Context(),
@@ -781,30 +776,11 @@ func TestExchangeSubjectToken_WithActor(t *testing.T) {
 	require.Equal(t, actorTestSub, private.Act.Sub, "act.sub must be the agent SA subject")
 }
 
-// TestExchangeSubjectToken_ActorDeniedWhenNoPolicy verifies that presenting
-// an actor_token without an ActorDelegationPolicy entry is denied.
-func TestExchangeSubjectToken_ActorDeniedWhenNoPolicy(t *testing.T) {
-	srv, _ := newActorExchangeServer(t, nil)
-
-	_, err := srv.ExchangeSubjectToken(
-		t.Context(),
-		"sub-tok", SubjectTokenTypeIDToken,
-		"act-tok", SubjectTokenTypeIDToken,
-		"https://api.example.com",
-		"read",
-		"",
-	)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "not authorized to act for subject")
-}
-
 // TestExchangeSubjectToken_ActorTokenValidationFailure verifies that a
 // rejected actor token (bad signature, unknown issuer, etc.) causes
 // ExchangeSubjectToken to return an error without issuing a token.
 func TestExchangeSubjectToken_ActorTokenValidationFailure(t *testing.T) {
-	srv, _ := newActorExchangeServer(t, []DelegationGrant{
-		{ActorIssuer: actorIssuerURL, ActorSubject: "*", SubjectIssuer: testIssuer, SubjectSubject: "*"},
-	})
+	srv, _ := newActorExchangeServer(t)
 
 	// Replace the validator so "bad-act-tok" returns a validation error.
 	srv.subjectValidators = map[string]SubjectTokenValidator{
@@ -833,10 +809,9 @@ func TestExchangeSubjectToken_ActorTokenValidationFailure(t *testing.T) {
 // TestExchangeSubjectToken_SelfDelegationIsNoOp verifies that when the actor
 // token resolves to the same identity as the subject token, the actor is
 // silently stripped and the exchange succeeds with no act claim — even when
-// no ActorDelegationPolicy is configured.
+// no actor reaches the act claim.
 func TestExchangeSubjectToken_SelfDelegationIsNoOp(t *testing.T) {
-	// Wire the server with no delegation policy.
-	srv, signingKey := newActorExchangeServer(t, nil)
+	srv, signingKey := newActorExchangeServer(t)
 
 	// Both "sub-tok" and "act-tok" now resolve to the same identity.
 	srv.subjectValidators = map[string]SubjectTokenValidator{
