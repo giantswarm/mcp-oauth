@@ -678,26 +678,6 @@ func TestAuthorizationURLOptions_Struct(t *testing.T) {
 	})
 }
 
-func TestUserInfo_IsM2M(t *testing.T) {
-	tests := []struct {
-		name     string
-		info     *UserInfo
-		expected bool
-	}{
-		{name: "nil receiver", info: nil, expected: false},
-		{name: "m2m", info: &UserInfo{TokenSource: TokenSourceM2M}, expected: true},
-		{name: "obo", info: &UserInfo{TokenSource: TokenSourceOBO, ActorSubject: "agent@k8s"}, expected: false},
-		{name: "sso", info: &UserInfo{TokenSource: TokenSourceSSO}, expected: false},
-		{name: "oauth", info: &UserInfo{TokenSource: TokenSourceOAuth}, expected: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.expected, tt.info.IsM2M())
-		})
-	}
-}
-
 func TestUserInfo_IsOBO(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -705,8 +685,8 @@ func TestUserInfo_IsOBO(t *testing.T) {
 		expected bool
 	}{
 		{name: "nil receiver", info: nil, expected: false},
-		{name: "obo", info: &UserInfo{TokenSource: TokenSourceOBO, ActorSubject: "agent@k8s"}, expected: true},
-		{name: "m2m", info: &UserInfo{TokenSource: TokenSourceM2M}, expected: false},
+		{name: "trusted-issuer with actor", info: &UserInfo{TokenSource: TokenSourceTrustedIssuer, ActorSubject: "agent@k8s"}, expected: true},
+		{name: "trusted-issuer without actor", info: &UserInfo{TokenSource: TokenSourceTrustedIssuer}, expected: false},
 		{name: "sso with act claim", info: &UserInfo{TokenSource: TokenSourceSSO, ActorSubject: "agent@k8s"}, expected: false},
 		{name: "oauth", info: &UserInfo{TokenSource: TokenSourceOAuth}, expected: false},
 	}
@@ -725,8 +705,8 @@ func TestUserInfo_IsExternalIssuer(t *testing.T) {
 		expected bool
 	}{
 		{name: "nil receiver", info: nil, expected: false},
-		{name: "m2m", info: &UserInfo{TokenSource: TokenSourceM2M}, expected: true},
-		{name: "obo", info: &UserInfo{TokenSource: TokenSourceOBO, ActorSubject: "agent@k8s"}, expected: true},
+		{name: "trusted-issuer without actor", info: &UserInfo{TokenSource: TokenSourceTrustedIssuer}, expected: true},
+		{name: "trusted-issuer with actor", info: &UserInfo{TokenSource: TokenSourceTrustedIssuer, ActorSubject: "agent@k8s"}, expected: true},
 		{name: "sso", info: &UserInfo{TokenSource: TokenSourceSSO}, expected: false},
 		{name: "oauth", info: &UserInfo{TokenSource: TokenSourceOAuth}, expected: false},
 	}

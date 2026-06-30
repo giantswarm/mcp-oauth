@@ -20,9 +20,8 @@ const maxActorChainDepth = 10
 // recommended implementation for token-exchange targets where the broker itself
 // is the authoritative issuer.
 //
-// Callers are responsible for validating subject and actor tokens and enforcing
-// ActorDelegationPolicy before calling Exchange; LocalMintExchanger does not
-// re-run policy.
+// Callers are responsible for validating subject and actor tokens before
+// calling Exchange; LocalMintExchanger does not re-run validation.
 //
 // Requires JWT access token mode (Config.IsJWTAccessTokenFormat() must be
 // true); NewLocalMintExchanger returns an error otherwise.
@@ -55,7 +54,7 @@ func NewLocalMintExchanger(cfg *Config) (*LocalMintExchanger, error) {
 
 // Exchange mints a signed JWT access token for the request. The issued token
 // carries:
-//   - sub = req.Subject.Subject, or req.GrantedSubject when non-empty (workload path)
+//   - sub = req.Subject.Subject
 //   - act = {iss: req.Actor.Issuer, sub: req.Actor.Subject} when req.Actor != nil,
 //     with any act chain already on the subject token nested beneath it so a
 //     multi-hop A2A delegation chain is preserved (RFC 8693 §4.4)
@@ -86,13 +85,8 @@ func (l *LocalMintExchanger) Exchange(ctx context.Context, req *ExchangerRequest
 	expiresAt := now.Add(l.ttl)
 	jti := generateRandomToken()
 
-	subject := req.Subject.Subject
-	if req.GrantedSubject != "" {
-		subject = req.GrantedSubject
-	}
-
 	claims := AccessTokenClaims{
-		Subject:   subject,
+		Subject:   req.Subject.Subject,
 		Audience:  audience,
 		Scopes:    strings.Fields(grantedScope),
 		IssuedAt:  now,
@@ -105,9 +99,6 @@ func (l *LocalMintExchanger) Exchange(ctx context.Context, req *ExchangerRequest
 		claims.EmailVerified = identity.EmailVerified
 		claims.Groups = identity.Groups
 	}
-	// Broker-granted groups (workload path) are merged in, kept distinct from the
-	// validated token's own groups so the subject identity is never mutated.
-	claims.Groups = mergeGroups(claims.Groups, req.GrantedGroups)
 
 	tokenStr, err := l.issuer.Issue(ctx, claims)
 	if err != nil {
@@ -165,26 +156,4 @@ func actorChainDepth(a *Actor) int {
 		n++
 	}
 	return n
-}
-
-// mergeGroups returns base with any element of extra not already present
-// appended, preserving order (base first). Used to combine a token's own groups
-// with broker-granted groups without introducing duplicates.
-func mergeGroups(base, extra []string) []string {
-	if len(extra) == 0 {
-		return base
-	}
-	seen := make(map[string]struct{}, len(base))
-	for _, g := range base {
-		seen[g] = struct{}{}
-	}
-	out := base
-	for _, g := range extra {
-		if _, ok := seen[g]; ok {
-			continue
-		}
-		seen[g] = struct{}{}
-		out = append(out, g)
-	}
-	return out
 }

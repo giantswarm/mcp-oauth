@@ -6,7 +6,7 @@ Token exchange lets a client present an external token (an OIDC ID token, an acc
 
 - Service-to-service calls where the caller already holds a token from a trusted issuer (Dex, Google Workspace, another cluster's OIDC provider).
 - Kubernetes workloads that have a projected ServiceAccount token and need an mcp-oauth-issued access token.
-- M2M flows where a headless process cannot perform the interactive authorization code flow.
+- Headless processes that cannot perform the interactive authorization code flow.
 
 ## Server setup
 

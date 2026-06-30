@@ -216,18 +216,17 @@ func TestLocalMintExchanger_RoundTrip_OBO(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, userInfo)
 	require.Equal(t, "user@example.com", userInfo.ID)
-	require.Equal(t, providers.TokenSourceOBO, userInfo.TokenSource)
+	require.Equal(t, providers.TokenSourceTrustedIssuer, userInfo.TokenSource)
 	require.True(t, userInfo.IsOBO(), "IsOBO must be true for a minted token carrying an actor")
-	require.False(t, userInfo.IsM2M())
 	require.True(t, userInfo.IsExternalIssuer())
 	require.Equal(t, actorSub, userInfo.ActorSubject)
 	require.Equal(t, actorIss, userInfo.ActorIssuer)
 }
 
-// TestLocalMintExchanger_RoundTrip_M2M mints a token with no actor and validates
-// it back through an OIDCValidator to verify the resource server classifies it as
-// M2M with no actor populated.
-func TestLocalMintExchanger_RoundTrip_M2M(t *testing.T) {
+// TestLocalMintExchanger_RoundTrip_NoActor mints a token with no actor and
+// validates it back through an OIDCValidator to verify the resource server
+// classifies it as a trusted-issuer token that is not OBO, with no actor populated.
+func TestLocalMintExchanger_RoundTrip_NoActor(t *testing.T) {
 	cfg, signingKey := localMintCfg(t)
 	lme, err := NewLocalMintExchanger(cfg)
 	require.NoError(t, err)
@@ -259,9 +258,8 @@ func TestLocalMintExchanger_RoundTrip_M2M(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, userInfo)
 	require.Equal(t, "robot@cluster.example.com", userInfo.ID)
-	require.Equal(t, providers.TokenSourceM2M, userInfo.TokenSource)
-	require.True(t, userInfo.IsM2M(), "IsM2M must be true for a minted token with no actor")
-	require.False(t, userInfo.IsOBO())
+	require.Equal(t, providers.TokenSourceTrustedIssuer, userInfo.TokenSource)
+	require.False(t, userInfo.IsOBO(), "a minted token with no actor is not OBO")
 	require.True(t, userInfo.IsExternalIssuer())
 	require.Empty(t, userInfo.ActorSubject)
 }
@@ -322,91 +320,6 @@ func TestLocalMintExchanger_Exchange_NoIdentityClaimsWithoutSubjectClaims(t *tes
 	require.Empty(t, claims.Email)
 	require.Nil(t, claims.EmailVerified)
 	require.Empty(t, claims.Groups)
-}
-
-// TestLocalMintExchanger_Exchange_GrantedGroupsForGrouplessSubject asserts that
-// broker-granted groups (the M2M workload path) land in the minted token even
-// when the subject token carried none.
-func TestLocalMintExchanger_Exchange_GrantedGroupsForGrouplessSubject(t *testing.T) {
-	cfg, signingKey := localMintCfg(t)
-	lme, err := NewLocalMintExchanger(cfg)
-	require.NoError(t, err)
-
-	result, err := lme.Exchange(t.Context(), &ExchangerRequest{
-		Resource:      "https://api.example.com",
-		Subject:       &SubjectIdentity{Subject: "system:serviceaccount:kagent:sre-agent", Issuer: testIssuer},
-		GrantedGroups: []string{"giantswarm-ad:sre"},
-	})
-	require.NoError(t, err)
-
-	var claims rfc9068Claims
-	parseMintedClaims(t, result.AccessToken, signingKey, &claims)
-	require.Equal(t, []string{"giantswarm-ad:sre"}, claims.Groups)
-}
-
-// TestLocalMintExchanger_Exchange_MergesGrantedGroupsDeduped asserts granted
-// groups merge with the subject's own token groups without duplicates, with the
-// token's groups kept first.
-func TestLocalMintExchanger_Exchange_MergesGrantedGroupsDeduped(t *testing.T) {
-	cfg, signingKey := localMintCfg(t)
-	lme, err := NewLocalMintExchanger(cfg)
-	require.NoError(t, err)
-
-	result, err := lme.Exchange(t.Context(), &ExchangerRequest{
-		Resource: "https://api.example.com",
-		Subject: &SubjectIdentity{
-			Subject: "user@example.com",
-			Issuer:  testIssuer,
-			Claims:  &oidc.IDTokenClaims{Groups: []string{"customer:sre", "customer:dev"}},
-		},
-		GrantedGroups: []string{"customer:sre", "customer:ops"},
-	})
-	require.NoError(t, err)
-
-	var claims rfc9068Claims
-	parseMintedClaims(t, result.AccessToken, signingKey, &claims)
-	require.Equal(t, []string{"customer:sre", "customer:dev", "customer:ops"}, claims.Groups)
-}
-
-// TestLocalMintExchanger_Exchange_GrantedSubjectOverridesValidated asserts that a
-// non-empty GrantedSubject becomes the minted token's sub while the validated
-// req.Subject.Subject remains unchanged.
-func TestLocalMintExchanger_Exchange_GrantedSubjectOverridesValidated(t *testing.T) {
-	cfg, signingKey := localMintCfg(t)
-	lme, err := NewLocalMintExchanger(cfg)
-	require.NoError(t, err)
-
-	req := &ExchangerRequest{
-		Resource:       "https://api.example.com",
-		Subject:        &SubjectIdentity{Subject: "system:serviceaccount:kagent:sre-agent", Issuer: testIssuer},
-		GrantedSubject: "agent:sre",
-	}
-	result, err := lme.Exchange(t.Context(), req)
-	require.NoError(t, err)
-
-	var claims rfc9068Claims
-	parseMintedClaims(t, result.AccessToken, signingKey, &claims)
-	require.Equal(t, "agent:sre", claims.Subject)
-	require.Equal(t, "system:serviceaccount:kagent:sre-agent", req.Subject.Subject, "validated subject must not be mutated")
-}
-
-// TestLocalMintExchanger_Exchange_EmptyGrantedSubjectKeepsValidated asserts that
-// an empty GrantedSubject leaves the minted token's sub as the validated subject.
-func TestLocalMintExchanger_Exchange_EmptyGrantedSubjectKeepsValidated(t *testing.T) {
-	cfg, signingKey := localMintCfg(t)
-	lme, err := NewLocalMintExchanger(cfg)
-	require.NoError(t, err)
-
-	result, err := lme.Exchange(t.Context(), &ExchangerRequest{
-		Resource:       "https://api.example.com",
-		Subject:        &SubjectIdentity{Subject: "user@example.com", Issuer: testIssuer},
-		GrantedSubject: "",
-	})
-	require.NoError(t, err)
-
-	var claims rfc9068Claims
-	parseMintedClaims(t, result.AccessToken, signingKey, &claims)
-	require.Equal(t, "user@example.com", claims.Subject)
 }
 
 // TestLocalMintExchanger_Exchange_NestsPriorActorChain asserts a second-hop mint

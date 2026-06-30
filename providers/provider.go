@@ -153,21 +153,15 @@ const (
 	// the configured TokenRefreshHandler cache).
 	TokenSourceJWT TokenSource = "jwt"
 
-	// TokenSourceM2M indicates a machine identity: a Bearer JWT validated
-	// against a WithTrustedIssuers entry that carries no RFC 8693 act claim.
-	// The token was issued by an external IdP (e.g. a Kubernetes cluster's SA
-	// issuer) whose JWKS is configured explicitly. Its audience is the
-	// muster/broker STS, not the downstream resource server, so it must be
-	// impersonated or exchanged rather than passed through. Use UserInfo.Issuer
-	// to identify the originating issuer.
-	TokenSourceM2M TokenSource = "m2m"
-
-	// TokenSourceOBO indicates a delegated human identity: a Bearer JWT
-	// validated against a WithTrustedIssuers entry that carries an RFC 8693
-	// §4.4 act claim. UserInfo.ID is the human subject; ActorSubject/ActorChain
-	// identify the acting party. Like TokenSourceM2M it must be impersonated or
-	// exchanged, not passed through.
-	TokenSourceOBO TokenSource = "obo"
+	// TokenSourceTrustedIssuer indicates a Bearer JWT validated against a
+	// WithTrustedIssuers entry: a token issued by an external IdP (e.g. a
+	// Kubernetes cluster's SA issuer, or a broker STS) whose JWKS is configured
+	// explicitly. Its audience is the broker/STS, not the downstream resource
+	// server, so it must be impersonated or exchanged rather than passed
+	// through. Use UserInfo.Issuer to identify the originating issuer. When the
+	// token carries an RFC 8693 §4.4 act claim it is a delegated human identity
+	// (on-behalf-of); IsOBO() reports that case.
+	TokenSourceTrustedIssuer TokenSource = "trusted-issuer"
 )
 
 // UserInfo represents user information from a provider
@@ -217,7 +211,7 @@ type UserInfo struct {
 	TokenSource TokenSource
 
 	// Issuer is the token issuer URL, populated only for external-issuer tokens
-	// (TokenSourceM2M and TokenSourceOBO). It identifies the external IdP that
+	// (TokenSourceTrustedIssuer). It identifies the external IdP that
 	// signed the Bearer token (e.g. the cluster's SA OIDC issuer URL). Empty for
 	// Dex-forwarded (TokenSourceSSO) and OAuth-issued (TokenSourceOAuth)
 	// tokens; those are issued by this server's own IdP.
@@ -301,15 +295,7 @@ func (u *UserInfo) IsJWT() bool {
 // token-exchange path instead. Check UserInfo.Issuer to identify the
 // originating cluster/IdP.
 func (u *UserInfo) IsExternalIssuer() bool {
-	return u.IsM2M() || u.IsOBO()
-}
-
-// IsM2M returns true if this user is a machine identity: an external-issuer
-// Bearer JWT with no RFC 8693 act claim. UserInfo.ID is the machine subject.
-//
-// Returns false for nil receivers and every other token source.
-func (u *UserInfo) IsM2M() bool {
-	return u != nil && u.TokenSource == TokenSourceM2M
+	return u != nil && u.TokenSource == TokenSourceTrustedIssuer
 }
 
 // IsOBO returns true if this user is a delegated human identity: an
@@ -319,5 +305,5 @@ func (u *UserInfo) IsM2M() bool {
 //
 // Returns false for nil receivers and every other token source.
 func (u *UserInfo) IsOBO() bool {
-	return u != nil && u.TokenSource == TokenSourceOBO
+	return u.IsExternalIssuer() && u.ActorSubject != ""
 }

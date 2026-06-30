@@ -238,7 +238,7 @@ func (s *Server) AcceptTrustedIssuerToken(ctx context.Context, bearerToken strin
 
 	userInfo := s.idTokenClaimsToUserInfo(identity.Claims)
 	userInfo.Issuer = identity.Issuer
-	userInfo.TokenSource = externalIssuerTokenSource(userInfo)
+	userInfo.TokenSource = providers.TokenSourceTrustedIssuer
 
 	var expiresAt time.Time
 	if identity.Claims != nil && identity.Claims.Expiry != nil {
@@ -271,7 +271,7 @@ func (s *Server) AcceptTrustedIssuerToken(ctx context.Context, bearerToken strin
 // so the results are ignored.
 // SessionIDForBearer returns the stable session identifier for a validated
 // bearer that has no refresh-token family: forwarded ID tokens, trusted-issuer
-// M2M/OBO tokens, and self-issued exchange-minted JWTs. It is the same
+// tokens, and self-issued exchange-minted JWTs. It is the same
 // derivation the forwarded-token and workload-exchange paths use, exported so
 // the resource-server middleware can assign a session to every validated
 // token, not only those backed by stored family metadata.
