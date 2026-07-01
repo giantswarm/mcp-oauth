@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"net/http"
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/providers"
@@ -134,10 +135,25 @@ func (s *Server) findMatchingTrustedAudience(tokenAudiences []string) string {
 //   - When true: Private IPs are allowed for internal IdP deployments
 func (s *Server) getJWKSClient() *oidc.JWKSClient {
 	s.jwksClientOnce.Do(func() {
-		s.jwksClient = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
+		opts := oidc.JWKSClientOptions{
 			Logger:         s.Logger,
 			AllowPrivateIP: s.Config.AllowPrivateIPJWKS,
-		})
+		}
+		if s.Config.AllowPrivateIPJWKS {
+			// AllowPrivateIPJWKS targets a controlled in-cluster endpoint
+			// (e.g. an internal Dex forwarding SSO ID tokens), which commonly
+			// presents a certificate from an internal CA. Back the client with
+			// http.DefaultTransport so a CA bundle the host process installs
+			// there (e.g. via an extra-CA file) is honored; a freshly built
+			// transport would verify against the system pool alone and reject
+			// it with "x509: certificate signed by unknown authority". This
+			// mirrors NewOIDCValidator's permissive trusted-issuer client.
+			opts.HTTPClient = &http.Client{
+				Transport: http.DefaultTransport,
+				Timeout:   oidc.DefaultHTTPTimeout,
+			}
+		}
+		s.jwksClient = oidc.NewJWKSClientWithOptions(opts)
 	})
 	return s.jwksClient
 }

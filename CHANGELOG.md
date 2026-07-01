@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- SSO forwarded-ID-token JWKS validation now honors a CA bundle the host process installs on `http.DefaultTransport` when `AllowPrivateIPJWKS` is set. Previously `Server.getJWKSClient()` built a JWKS client that verified against the system certificate pool alone, so an internal-CA Dex forwarding SSO ID tokens was rejected with `x509: certificate signed by unknown authority` even when the host process had installed that CA — the trusted-issuer permissive client (`NewOIDCValidator`) already worked this way, the forwarded-token path did not. The SSRF-safe client used when `AllowPrivateIPJWKS` is unset is unchanged and still verifies against the system pool. See https://github.com/giantswarm/giantswarm/issues/37059.
+
 ### Changed
+
+- `ValidateToken` now logs a forwarded-ID-token validation failure at `WARN` (was `DEBUG`) when the token carried a trusted audience — i.e. it was meant to be an SSO-forwarded ID token — but signature/JWKS validation then failed (e.g. a JWKS TLS/CA error). This surfaces real SSO misconfigurations without enabling debug logging. Tokens that simply don't carry a trusted audience are not SSO tokens and remain silent. No token material is logged (only an 8-character suffix for correlation).
 
 - The resource-server `ValidateToken` middleware now assigns a session ID to every validated token, not only those backed by stored refresh-token-family metadata. A token with a family still uses its `FamilyID`; any other validated token (forwarded ID token, trusted-issuer, self-issued exchange-minted JWT) falls back to `SessionIDForBearer`. Self-issued exchange-minted JWTs previously reached downstream handlers with no session, so resource servers could not session-scope an on-behalf-of bearer re-presented at the front door; they now carry one.
 
