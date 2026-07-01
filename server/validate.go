@@ -241,7 +241,14 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 	if len(s.Config.TrustedAudiences) > 0 && oidc.IsJWT(accessToken) {
 		userInfo, err := s.validateForwardedIDToken(ctx, accessToken)
 		if err != nil {
-			s.Logger.Debug("Forwarded ID token validation failed, falling back to userinfo",
+			// A non-nil error here means the token carried a trusted audience
+			// (it was meant to be an SSO-forwarded ID token) but validation
+			// then failed — e.g. a JWKS fetch/TLS error or a bad signature.
+			// That is a real misconfiguration, not the benign "not an SSO
+			// token" case (which returns nil, nil and is silent), so surface
+			// it at WARN. No token material is logged (only an 8-char suffix
+			// for correlation).
+			s.Logger.Warn("Forwarded ID token validation failed, falling back to userinfo",
 				"error", err.Error(),
 				"token_suffix", helpers.TokenSuffix(accessToken, 8))
 		} else if userInfo != nil {
