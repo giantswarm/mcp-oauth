@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -378,6 +379,12 @@ func NewPrivateIPAllowedHTTPClient(timeout time.Duration) *http.Client {
 		ResponseHeaderTimeout: timeout,
 		MaxIdleConns:          DefaultMaxIdleConns,
 		IdleConnTimeout:       DefaultIdleConnTimeout,
+		// Honor a CA bundle the host process installs on http.DefaultTransport
+		// (e.g. an internal Dex CA). Private-IP IdPs commonly present a
+		// certificate from an internal CA; without this the transport would
+		// verify against the system pool alone. nil keeps the default (system
+		// pool) verification.
+		TLSClientConfig: defaultTransportTLSClientConfig(),
 	}
 
 	return &http.Client{
@@ -385,6 +392,20 @@ func NewPrivateIPAllowedHTTPClient(timeout time.Duration) *http.Client {
 		Timeout:       timeout,
 		CheckRedirect: blockCrossHostRedirect,
 	}
+}
+
+// defaultTransportTLSClientConfig returns a clone of http.DefaultTransport's
+// TLSClientConfig when DefaultTransport is the standard *http.Transport and has
+// one set, or nil otherwise. Copying it onto a permissive JWKS client's own
+// transport lets that client honor a CA bundle the host process installs on
+// http.DefaultTransport while keeping the client's own dialer, cross-host
+// redirect guard, and tuned timeouts. Returns nil when there is nothing to copy,
+// in which case the transport keeps its default (system pool) verification.
+func defaultTransportTLSClientConfig() *tls.Config {
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok && dt.TLSClientConfig != nil {
+		return dt.TLSClientConfig.Clone()
+	}
+	return nil
 }
 
 func guardSSRF(host string, ips []net.IP) error {
@@ -451,6 +472,10 @@ func NewHostScopedPrivateIPHTTPClient(allowedHosts []string, timeout time.Durati
 		ResponseHeaderTimeout: timeout,
 		MaxIdleConns:          DefaultMaxIdleConns,
 		IdleConnTimeout:       DefaultIdleConnTimeout,
+		// Honor a CA bundle the host process installs on http.DefaultTransport
+		// (e.g. an internal Dex CA). See defaultTransportTLSClientConfig. nil
+		// keeps the default (system pool) verification.
+		TLSClientConfig: defaultTransportTLSClientConfig(),
 	}
 
 	return &http.Client{

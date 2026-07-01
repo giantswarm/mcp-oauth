@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- The permissive JWKS clients (`AllowPrivateIPJWKS` / per-issuer `AllowPrivateIPJWKSHosts`) now keep the cross-host redirect guard and tuned timeouts. `Server.getJWKSClient()` (SSO forwarded-ID-token path) and `NewOIDCValidator()` (trusted-issuer path) previously hand-rolled a raw `&http.Client{Transport: http.DefaultTransport}` to honor a process-installed CA, which dropped `NewPrivateIPAllowedHTTPClient`/`NewHostScopedPrivateIPHTTPClient`'s `CheckRedirect: blockCrossHostRedirect` and `ResponseHeaderTimeout`/`TLSHandshakeTimeout`. Because these paths already disable the SSRF dial guard, a compromised internal Dex could `302` the JWKS fetch to an arbitrary internal HTTPS target. Both constructors now copy `http.DefaultTransport`'s `TLSClientConfig` onto their own transport — preserving CA trust while keeping the redirect guard, dialer semantics, and timeouts — and both call sites now use the constructors. This also closes the pre-existing gap in the trusted-issuer path. See https://github.com/giantswarm/giantswarm/issues/37059 and https://github.com/giantswarm/mcp-oauth/issues/493.
+
 ### Fixed
 
 - SSO forwarded-ID-token JWKS validation now honors a CA bundle the host process installs on `http.DefaultTransport` when `AllowPrivateIPJWKS` is set. Previously `Server.getJWKSClient()` built a JWKS client that verified against the system certificate pool alone, so an internal-CA Dex forwarding SSO ID tokens was rejected with `x509: certificate signed by unknown authority` even when the host process had installed that CA — the trusted-issuer permissive client (`NewOIDCValidator`) already worked this way, the forwarded-token path did not. The SSRF-safe client used when `AllowPrivateIPJWKS` is unset is unchanged and still verifies against the system pool. See https://github.com/giantswarm/giantswarm/issues/37059.
