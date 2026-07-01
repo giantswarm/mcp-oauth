@@ -346,7 +346,9 @@ func NewSSRFSafeHTTPClient(timeout time.Duration) *http.Client {
 //   - timeout: HTTP client timeout (0 uses default 10 seconds)
 //
 // Security Features:
-//   - TLS Verification: Uses default TLS settings (no InsecureSkipVerify)
+//   - TLS Verification: enforced (never InsecureSkipVerify). Verifies against
+//     the system pool plus any CA bundle the host process installs on
+//     http.DefaultTransport (see defaultTransportTLSClientConfig).
 //   - No SSRF Protection: Private, loopback, and link-local addresses are ALLOWED
 //   - Host-pinned redirects: a redirect to a different host is refused. Because
 //     this client cannot filter private IPs, it pins requests to the host that was
