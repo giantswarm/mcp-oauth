@@ -34,6 +34,9 @@ import (
 //
 // Note: this exercises the real srv.getJWKSClient() construction, unlike
 // newForwardedTokenHarness which injects a client that trusts the test server.
+//
+// NOT parallel-safe: it mutates the global http.DefaultTransport (restored via
+// t.Cleanup). Do not add t.Parallel() to this test.
 func TestGetJWKSClient_PermissiveClientTrustsProcessCABundle(t *testing.T) {
 	const (
 		issuer   = "https://auth.internal.example"
