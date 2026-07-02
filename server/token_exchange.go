@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
 )
 
@@ -21,7 +23,7 @@ type TokenExchangeResult struct {
 }
 
 // ExchangeOptions carries optional identity claims to inject into the access
-// token issued by ExchangeSubjectToken.
+// token issued by SelfIssuedExchange.
 //
 // String and slice fields are omitted from the JWT when empty. EmailVerified is
 // emitted only when Email is also non-empty (consistent with AccessTokenClaims
@@ -41,28 +43,58 @@ type ExchangeOptions struct {
 	Extra         map[string]any
 }
 
-// ExchangeSubjectToken validates subjectToken using the registered SubjectTokenValidator
-// for subjectTokenType, then issues a signed JWT access token. resource becomes the aud
-// claim (required per RFC 8707). scope is intersected against the per-issuer AllowedScopes
-// envelope from TrustedIssuer configuration. dpopJKT is the JWK thumbprint from a
-// validated DPoP proof; when non-empty it is written into the cnf.jkt claim of the
-// issued JWT per RFC 9449 §6.1. Pass empty string when no DPoP proof was presented.
+// TypedToken is an RFC 8693 token paired with its token-type URN.
+type TypedToken struct {
+	Token string
+	Type  string
+}
+
+// SubjectExchange carries the RFC 8693 inputs common to both exchange methods:
+// the subject token (and optional actor token) and the requested target.
+type SubjectExchange struct {
+	// Subject is the RFC 8693 subject_token being exchanged.
+	Subject TypedToken
+	// Actor is the RFC 8693 §4.4 actor_token. Its zero value means no delegation.
+	Actor TypedToken
+	// Resource is the RFC 8707 target URI. On SelfIssuedExchange it becomes the
+	// issued token's aud, defaulting to the server's resource identifier when
+	// empty. On BrokeredExchange it is forwarded to the host Exchanger.
+	Resource string
+	Scope    string
+}
+
+// SelfIssuedExchangeRequest is the input to SelfIssuedExchange, where this server
+// signs the resulting token. DPoPJKT and Options apply only here because they
+// shape a token this server mints; there is no Audience field, as self-issue sets
+// aud via Resource (the RFC 8693 audience selects a broker target and is
+// BrokeredExchange-only).
+type SelfIssuedExchangeRequest struct {
+	SubjectExchange
+	// DPoPJKT is the JWK thumbprint from a validated DPoP proof (RFC 9449 §6.1),
+	// written into the issued token's cnf.jkt claim. Empty when no proof was
+	// presented.
+	DPoPJKT string
+	// Options carries identity claims to emit; an explicit value takes precedence
+	// over the claims defaulted from the validated subject.
+	Options ExchangeOptions
+}
+
+// SelfIssuedExchange validates the subject token (and optional actor token)
+// against the registered SubjectTokenValidator, then issues a JWT access token
+// this server signs. req.Resource becomes the aud claim, defaulting to the
+// server's own resource identifier when empty. req.Scope is intersected against
+// the per-issuer AllowedScopes envelope from TrustedIssuer configuration.
+// req.DPoPJKT, when non-empty, is written into the cnf.jkt claim (RFC 9449 §6.1).
 //
-// actorToken and actorTokenType are RFC 8693 §4.4 delegation parameters. When
-// actorToken is non-empty it is validated against the server's trusted issuers
-// and the resulting actor identity is written as the act claim of the issued
-// JWT (act.sub = agent SA, act.iss = agent issuer). Pass empty strings for both
-// when no delegation is required — the issued token will carry no act claim.
+// When an actor token is present it is validated against the server's trusted
+// issuers and written as the act claim; any act chain already on the subject
+// token is nested beneath it so a multi-hop delegation chain is preserved (RFC
+// 8693 §4.4). A chain deeper than the bound is rejected.
 //
-// opts is an optional ExchangeOptions whose identity fields are emitted as
-// standard JWT claims (email, email_verified, name, groups) and whose Extra
-// map is merged verbatim into the JWT body. Omitting opts adds no identity
-// claims. Only the first element is used when multiple are provided.
-func (s *Server) ExchangeSubjectToken(
-	ctx context.Context,
-	subjectToken, subjectTokenType, actorToken, actorTokenType, resource, scope, dpopJKT string,
-	opts ...ExchangeOptions,
-) (*TokenExchangeResult, error) {
+// req.Options identity fields are emitted as standard JWT claims; email,
+// email_verified, name and groups default from the validated subject when Options
+// leaves them unset, and an explicit Options value takes precedence.
+func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeRequest) (*TokenExchangeResult, error) {
 	if !s.Config.IsJWTAccessTokenFormat() {
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type: security.EventAuthFailure,
@@ -74,21 +106,26 @@ func (s *Server) ExchangeSubjectToken(
 		return nil, fmt.Errorf("token exchange requires JWT access token mode (set AccessTokenFormat=jwt)")
 	}
 
-	identity, err := s.validateExchangeSubjectToken(ctx, subjectToken, subjectTokenType, nil, nil)
+	identity, err := s.validateExchangeSubjectToken(ctx, req.Subject, nil, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	actor, err := s.resolveExchangeActor(ctx, actorToken, actorTokenType, identity, nil)
+	actor, err := s.resolveExchangeActor(ctx, req.Actor, identity, nil)
 	if err != nil {
 		return nil, err
 	}
-	var act *Actor
-	if actor != nil {
-		act = &Actor{Iss: actor.Issuer, Sub: actor.Subject}
+	act, err := buildActorChain(actor, priorActorChain(identity))
+	if err != nil {
+		return nil, fmt.Errorf("token exchange: %w", err)
 	}
 
-	grantedScope := grantedExchangeScope(scope, identity.AllowedScopes)
+	audience := req.Resource
+	if audience == "" {
+		audience = s.Config.GetResourceIdentifier()
+	}
+
+	grantedScope := grantedExchangeScope(req.Scope, identity.AllowedScopes)
 
 	now := time.Now().UTC()
 	ttl := time.Duration(s.Config.AccessTokenTTL) * time.Second
@@ -97,16 +134,27 @@ func (s *Server) ExchangeSubjectToken(
 	}
 	expiresAt := now.Add(ttl)
 
-	var o ExchangeOptions
-	if len(opts) > 0 {
-		o = opts[0]
+	options := req.Options
+	if identity.Claims != nil {
+		if options.Email == "" {
+			options.Email = identity.Claims.Email
+			options.EmailVerified = identity.Claims.EmailVerified
+		}
+		if options.Name == "" {
+			options.Name = identity.Claims.Name
+		}
+		if len(options.Groups) == 0 {
+			options.Groups = identity.Claims.Groups
+		}
 	}
 
+	jti := generateRandomToken()
 	auditDetails := map[string]any{
 		"grant_type":         GrantTypeTokenExchange,
-		"subject_token_type": subjectTokenType,
-		"audience":           resource,
+		"subject_token_type": req.Subject.Type,
+		"audience":           audience,
 		"scope":              grantedScope,
+		"jti":                jti,
 	}
 	if act != nil {
 		auditDetails["actor_iss"] = act.Iss
@@ -115,18 +163,18 @@ func (s *Server) ExchangeSubjectToken(
 
 	tokenStr, err := s.accessTokenIssuer.Issue(ctx, AccessTokenClaims{
 		Subject:       identity.Subject,
-		Audience:      resource,
+		Audience:      audience,
 		Scopes:        strings.Fields(grantedScope),
 		IssuedAt:      now,
 		ExpiresAt:     expiresAt,
-		JTI:           generateRandomToken(),
+		JTI:           jti,
 		Act:           act,
-		JKT:           dpopJKT,
-		Email:         o.Email,
-		EmailVerified: o.EmailVerified,
-		Name:          o.Name,
-		Groups:        o.Groups,
-		Extra:         o.Extra,
+		JKT:           req.DPoPJKT,
+		Email:         options.Email,
+		EmailVerified: options.EmailVerified,
+		Name:          options.Name,
+		Groups:        options.Groups,
+		Extra:         options.Extra,
 	})
 	if err != nil {
 		auditDetails["reason"] = "access_token_issue_failed"
@@ -140,7 +188,7 @@ func (s *Server) ExchangeSubjectToken(
 	}
 
 	s.Logger.Debug("token exchange: issued token",
-		"sub", identity.Subject, "aud", resource, "scope", grantedScope, "exp", expiresAt,
+		"sub", identity.Subject, "aud", audience, "scope", grantedScope, "exp", expiresAt,
 		"delegated", act != nil)
 
 	s.Auditor.LogEvent(ctx, security.Event{
@@ -157,19 +205,65 @@ func (s *Server) ExchangeSubjectToken(
 	}, nil
 }
 
+// maxActorChainDepth bounds RFC 8693 §4.4 act nesting in an issued token. A chain
+// deeper than this is rejected fail-closed: real A2A topologies are shallow, and
+// unbounded nesting is an abuse vector (token-size blowup and parser pressure on
+// every downstream that validates the token).
+const maxActorChainDepth = 10
+
+// priorActorChain returns the act chain already present on the validated subject
+// token, converted to the issued-token Actor shape. Nil when the subject carries
+// no act (the common single-hop OBO case).
+func priorActorChain(subject *SubjectIdentity) *Actor {
+	if subject == nil || subject.Claims == nil {
+		return nil
+	}
+	return actorFromClaim(subject.Claims.Act)
+}
+
+// actorFromClaim recursively converts a decoded oidc.ActorClaim chain into the
+// issued-token Actor shape, preserving nesting order.
+func actorFromClaim(c *oidc.ActorClaim) *Actor {
+	if c == nil {
+		return nil
+	}
+	return &Actor{Iss: c.Issuer, Sub: c.Subject, Act: actorFromClaim(c.Act)}
+}
+
+// buildActorChain assembles the act claim for an issued token. When actor is
+// non-nil it becomes the outermost (most recent) actor and prior is nested beneath
+// it, extending a multi-hop delegation chain. When actor is nil the prior chain is
+// carried forward unchanged. The combined depth is bounded by maxActorChainDepth
+// and rejected fail-closed when exceeded.
+func buildActorChain(actor *SubjectIdentity, prior *Actor) (*Actor, error) {
+	act := prior
+	if actor != nil {
+		act = &Actor{Iss: actor.Issuer, Sub: actor.Subject, Act: prior}
+	}
+	if depth := actorChainDepth(act); depth > maxActorChainDepth {
+		return nil, fmt.Errorf("actor chain depth %d exceeds maximum %d", depth, maxActorChainDepth)
+	}
+	return act, nil
+}
+
+// actorChainDepth counts the hops in an act chain.
+func actorChainDepth(a *Actor) int {
+	n := 0
+	for ; a != nil; a = a.Act {
+		n++
+	}
+	return n
+}
+
 // validateExchangeSubjectToken validates the RFC 8693 subject token and returns
 // the verified identity. Audit failure events use the "subject" role — reasons
 // are subject_token_validation_failed and unsupported_subject_token_type.
 // defaultAudiences is forwarded to Validate and applies only when the matched
-// issuer entry has no AllowedAudiences. Pass nil on the brokered and local
-// exchange paths (subject token is not broker-bound); pass []string{s.Config.Issuer}
-// on the workload-authenticated path when no actor_token is present, so the
-// caller-authenticating token is bound to this broker's issuer and cannot be
-// replayed from a different audience context.
-// extra is merged into every failure audit event; pass brokered flow context
-// (exchange, client_id, audience, session_id) from BrokerExchangeSubjectToken.
-func (s *Server) validateExchangeSubjectToken(ctx context.Context, subjectToken, subjectTokenType string, defaultAudiences []string, extra map[string]any) (*SubjectIdentity, error) {
-	return s.validateExchangeToken(ctx, subjectToken, subjectTokenType, "subject", defaultAudiences, extra)
+// issuer entry has no AllowedAudiences; the subject token is not broker-bound, so
+// callers pass nil. extra is merged into every failure audit event; pass brokered
+// flow context (exchange, client_id, audience, session_id) from BrokeredExchange.
+func (s *Server) validateExchangeSubjectToken(ctx context.Context, subject TypedToken, defaultAudiences []string, extra map[string]any) (*SubjectIdentity, error) {
+	return s.validateExchangeToken(ctx, subject, "subject", defaultAudiences, extra)
 }
 
 // validateExchangeActorToken validates the RFC 8693 actor token and returns
@@ -179,9 +273,9 @@ func (s *Server) validateExchangeSubjectToken(ctx context.Context, subjectToken,
 // from issuers with no AllowedAudiences configured are still bound to this
 // broker and cannot be replayed from a different audience context.
 // extra is merged into every failure audit event; pass brokered flow context
-// (exchange, client_id, audience, session_id) from BrokerExchangeSubjectToken.
-func (s *Server) validateExchangeActorToken(ctx context.Context, actorToken, actorTokenType string, extra map[string]any) (*SubjectIdentity, error) {
-	return s.validateExchangeToken(ctx, actorToken, actorTokenType, "actor", []string{s.Config.Issuer}, extra)
+// (exchange, client_id, audience, session_id) from BrokeredExchange.
+func (s *Server) validateExchangeActorToken(ctx context.Context, actor TypedToken, extra map[string]any) (*SubjectIdentity, error) {
+	return s.validateExchangeToken(ctx, actor, "actor", []string{s.Config.Issuer}, extra)
 }
 
 // resolveExchangeActor validates the RFC 8693 actor token when one is present
@@ -189,41 +283,39 @@ func (s *Server) validateExchangeActorToken(ctx context.Context, actorToken, act
 // presented, or when the actor resolves to the same identity as the subject:
 // self-delegation is a no-op, so the minted token carries no act claim. extra is
 // merged into actor-validation failure events; pass nil when there is none.
-func (s *Server) resolveExchangeActor(ctx context.Context, actorToken, actorTokenType string, subject *SubjectIdentity, extra map[string]any) (*SubjectIdentity, error) {
-	if actorToken == "" {
+func (s *Server) resolveExchangeActor(ctx context.Context, actor TypedToken, subject *SubjectIdentity, extra map[string]any) (*SubjectIdentity, error) {
+	if actor.Token == "" {
 		return nil, nil
 	}
-	actor, err := s.validateExchangeActorToken(ctx, actorToken, actorTokenType, extra)
+	actorIdentity, err := s.validateExchangeActorToken(ctx, actor, extra)
 	if err != nil {
 		return nil, err
 	}
-	if actor.Issuer == subject.Issuer && actor.Subject == subject.Subject {
+	if actorIdentity.Issuer == subject.Issuer && actorIdentity.Subject == subject.Subject {
 		return nil, nil
 	}
-	return actor, nil
+	return actorIdentity, nil
 }
 
-// validateExchangeToken routes token to the SubjectTokenValidator registered
-// for tokenType and returns the verified identity. role is "subject" or "actor";
+// validateExchangeToken routes token to the SubjectTokenValidator registered for
+// its token type and returns the verified identity. role is "subject" or "actor";
 // it drives audit reason strings and detail keys so subject and actor failures
 // produce distinct, unambiguous audit events. defaultAudiences is forwarded to
 // Validate and applies only when the matched issuer entry has no AllowedAudiences.
 // extra is merged into every failure audit event; use it to inject flow-level context
 // (exchange, client_id, audience, session_id) so a single event carries both the
 // validation detail and the brokered-flow correlation fields.
-func (s *Server) validateExchangeToken(ctx context.Context, token, tokenType, role string, defaultAudiences []string, extra map[string]any) (*SubjectIdentity, error) {
+func (s *Server) validateExchangeToken(ctx context.Context, token TypedToken, role string, defaultAudiences []string, extra map[string]any) (*SubjectIdentity, error) {
 	typeKey := role + "_token_type"
 	unsupportedReason := "unsupported_" + role + "_token_type"
 	validationFailedReason := role + "_token_validation_failed"
 
 	auditDetails := func(base map[string]any) map[string]any {
-		for k, v := range extra {
-			base[k] = v
-		}
+		maps.Copy(base, extra)
 		return base
 	}
 
-	switch tokenType {
+	switch token.Type {
 	case SubjectTokenTypeIDToken, SubjectTokenTypeAccessToken, SubjectTokenTypeJWT:
 	default:
 		s.Auditor.LogEvent(ctx, security.Event{
@@ -231,35 +323,35 @@ func (s *Server) validateExchangeToken(ctx context.Context, token, tokenType, ro
 			Details: auditDetails(map[string]any{
 				"reason":     unsupportedReason,
 				"grant_type": GrantTypeTokenExchange,
-				typeKey:      tokenType,
+				typeKey:      token.Type,
 			}),
 		})
-		return nil, &TokenExchangeUnsupportedTypeError{tokenType: tokenType, role: role}
+		return nil, &TokenExchangeUnsupportedTypeError{tokenType: token.Type, role: role}
 	}
 
-	v := s.SubjectValidatorFor(tokenType)
+	v := s.SubjectValidatorFor(token.Type)
 	if v == nil {
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type: security.EventAuthFailure,
 			Details: auditDetails(map[string]any{
 				"reason":     unsupportedReason,
 				"grant_type": GrantTypeTokenExchange,
-				typeKey:      tokenType,
+				typeKey:      token.Type,
 			}),
 		})
-		return nil, &TokenExchangeUnsupportedTypeError{tokenType: tokenType, role: role}
+		return nil, &TokenExchangeUnsupportedTypeError{tokenType: token.Type, role: role}
 	}
 
-	identity, err := v.Validate(ctx, token, defaultAudiences)
+	identity, err := v.Validate(ctx, token.Token, defaultAudiences)
 	if err != nil {
 		s.Logger.Debug("token exchange: "+role+" token validation failed",
-			typeKey, tokenType, "error", err)
+			typeKey, token.Type, "error", err)
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type: security.EventAuthFailure,
 			Details: auditDetails(map[string]any{
 				"reason":     validationFailedReason,
 				"grant_type": GrantTypeTokenExchange,
-				typeKey:      tokenType,
+				typeKey:      token.Type,
 				"error":      err.Error(),
 			}),
 		})

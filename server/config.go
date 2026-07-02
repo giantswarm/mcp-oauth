@@ -747,28 +747,6 @@ type Config struct {
 	// Default: nil (no client may request any audience).
 	TokenExchangeClientAudiences map[string][]string
 
-	// EnableWorkloadTokenExchange enables the workload-authenticated RFC 8693
-	// delegation path: a brokered request with no OAuth client credentials,
-	// authenticated by the subject and actor tokens themselves. The acting
-	// workload presents the human subject's token as subject_token and its own
-	// token as actor_token; any validated trusted-issuer actor is accepted.
-	//
-	// Default false: requests with no client credentials continue to be
-	// rejected with invalid_client (existing behaviour).
-	EnableWorkloadTokenExchange bool
-
-	// DelegationDefaultResource sets the RFC 8707 resource for a local
-	// token-exchange request that carries an actor_token but omits both audience
-	// and resource. It exists for delegation (on-behalf-of) callers that cannot
-	// set a resource themselves: the minted token is bound to this value
-	// (typically this server's own resource identifier) so it is accepted back
-	// at this server and re-minted per-backend downstream.
-	//
-	// Gated to the delegation path: a request with no actor_token still requires
-	// an explicit resource. Empty (the default) disables the behaviour — a
-	// resource-less local exchange is rejected with invalid_request.
-	DelegationDefaultResource string
-
 	// SessionIDHMACKey optionally replaces the default SHA-256 session-ID derivation
 	// in Server.AcceptForwardedIDToken with HMAC-SHA-256 keyed by this value.
 	//

@@ -45,10 +45,9 @@ func (f *fakeSubjectValidator) Validate(_ context.Context, token string, _ []str
 type tokenExchangeHarnessOption func(*tokenExchangeHarnessConfig)
 
 type tokenExchangeHarnessConfig struct {
-	validator                 server.SubjectTokenValidator
-	maxRequestBodySize        int64
-	nonceProvider             server.DPoPNonceProvider
-	delegationDefaultResource string
+	validator          server.SubjectTokenValidator
+	maxRequestBodySize int64
+	nonceProvider      server.DPoPNonceProvider
 }
 
 func withSubjectValidator(v server.SubjectTokenValidator) tokenExchangeHarnessOption {
@@ -57,10 +56,6 @@ func withSubjectValidator(v server.SubjectTokenValidator) tokenExchangeHarnessOp
 
 func withMaxRequestBodySize(n int64) tokenExchangeHarnessOption {
 	return func(c *tokenExchangeHarnessConfig) { c.maxRequestBodySize = n }
-}
-
-func withDelegationDefaultResource(resource string) tokenExchangeHarnessOption {
-	return func(c *tokenExchangeHarnessConfig) { c.delegationDefaultResource = resource }
 }
 
 func withDPoPNonceProvider(p server.DPoPNonceProvider) tokenExchangeHarnessOption {
@@ -95,7 +90,6 @@ func setupTokenExchangeHandler(t *testing.T, opts ...tokenExchangeHarnessOption)
 		AccessTokenSigningAlgorithm: server.SigningAlgorithmRS256,
 		DisableNonceEchoRequirement: true,
 		MaxRequestBodySize:          cfg.maxRequestBodySize,
-		DelegationDefaultResource:   cfg.delegationDefaultResource,
 	}
 
 	srvOpts := []server.Option{
@@ -206,13 +200,12 @@ func TestHandleTokenExchangeGrant(t *testing.T) {
 			wantAuditReason: "token_exchange_subject_token_type_missing",
 		},
 		{
-			name:            "missing resource",
+			name:            "missing resource defaults to server resource",
 			newValidator:    happy,
 			form:            func() url.Values { v := happyExchangeForm(); v.Del("resource"); return v }(),
-			wantStatus:      http.StatusBadRequest,
-			wantErrorCode:   constants.ErrorCodeInvalidRequest,
+			wantStatus:      http.StatusOK,
 			wantHeaders:     wantHeaders{contentTypeJSON: true, cacheNoStore: true},
-			wantAuditReason: "token_exchange_resource_missing",
+			wantTokenIssued: true,
 		},
 		{
 			name:            "subject-token validation failure",
@@ -302,66 +295,6 @@ func TestHandleTokenExchangeGrant(t *testing.T) {
 			}
 		})
 	}
-}
-
-// DelegationDefaultResource lets an on-behalf-of caller omit resource: the
-// local exchange binds the mint to the configured default. Gated to the actor
-// path and opt-in.
-func TestHandleTokenExchangeGrant_DelegationDefaultResource(t *testing.T) {
-	const selfResource = "https://api.example.com" // matches harness ResourceIdentifier
-
-	identity := server.SubjectIdentity{
-		Subject: "system:serviceaccount:kagent:sre-agent",
-		Issuer:  "https://oidc.example.com",
-	}
-	delegationForm := func() url.Values {
-		v := happyExchangeForm()
-		v.Del("resource")
-		v.Set("actor_token", "opaque-actor-token")
-		v.Set("actor_token_type", server.SubjectTokenTypeIDToken)
-		return v
-	}
-
-	t.Run("delegation defaults missing resource and mints", func(t *testing.T) {
-		h, buf := setupTokenExchangeHandler(t,
-			withSubjectValidator(&fakeSubjectValidator{identity: identity}),
-			withDelegationDefaultResource(selfResource),
-		)
-		w := httptest.NewRecorder()
-		h.ServeToken(w, newTokenExchangeRequest(delegationForm()))
-
-		require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
-		require.True(t, auditEventLogged(t, buf, security.EventTokenIssued),
-			"missing token_issued audit in: %s", buf.String())
-	})
-
-	t.Run("no actor token still requires resource", func(t *testing.T) {
-		h, buf := setupTokenExchangeHandler(t,
-			withSubjectValidator(&fakeSubjectValidator{identity: identity}),
-			withDelegationDefaultResource(selfResource),
-		)
-		form := happyExchangeForm()
-		form.Del("resource") // no actor_token: not a delegation request
-		w := httptest.NewRecorder()
-		h.ServeToken(w, newTokenExchangeRequest(form))
-
-		require.Equal(t, http.StatusBadRequest, w.Code)
-		require.True(t, auditAuthFailureWithReason(t, buf, "token_exchange_resource_missing"),
-			"want resource_missing in: %s", buf.String())
-	})
-
-	t.Run("disabled default still requires resource", func(t *testing.T) {
-		h, buf := setupTokenExchangeHandler(t,
-			withSubjectValidator(&fakeSubjectValidator{identity: identity}),
-			// opt-in off: no withDelegationDefaultResource
-		)
-		w := httptest.NewRecorder()
-		h.ServeToken(w, newTokenExchangeRequest(delegationForm()))
-
-		require.Equal(t, http.StatusBadRequest, w.Code)
-		require.True(t, auditAuthFailureWithReason(t, buf, "token_exchange_resource_missing"),
-			"want resource_missing in: %s", buf.String())
-	})
 }
 
 // The 405 comes from ServeToken before handleTokenExchangeGrant runs.

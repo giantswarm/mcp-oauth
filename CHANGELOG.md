@@ -13,9 +13,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `Server.ExchangeSubjectToken` is renamed to `Server.SelfIssuedExchange` and takes a `SelfIssuedExchangeRequest` (embedding `SubjectExchange` with `Subject` and `Actor` as `TypedToken{Token, Type}`, plus `DPoPJKT` and `Options`) in place of positional parameters. It now preserves any `act` chain already on the subject token (nesting the new actor above it, bounded depth) and defaults `email`, `email_verified`, `name` and `groups` from the validated subject when `Options` leaves them unset; an explicit `Options` value still takes precedence. When no resource is supplied the issued token's audience defaults to the server's resource identifier.
+- `Server.BrokerExchangeSubjectToken` is renamed to `Server.BrokeredExchange` and takes a `BrokeredExchangeRequest`.
+- The `/oauth/token` local exchange no longer requires a `resource` parameter; when omitted, the issued token's audience is the server's resource identifier.
+
 - `ValidateToken` now logs a forwarded-ID-token validation failure at `WARN` (was `DEBUG`) when the token carried a trusted audience — i.e. it was meant to be an SSO-forwarded ID token — but signature/JWKS validation then failed (e.g. a JWKS TLS/CA error). This surfaces real SSO misconfigurations without enabling debug logging. Tokens that simply don't carry a trusted audience are not SSO tokens and remain silent. No token material is logged (only an 8-character suffix for correlation).
 
 - The resource-server `ValidateToken` middleware now assigns a session ID to every validated token, not only those backed by stored refresh-token-family metadata. A token with a family still uses its `FamilyID`; any other validated token (forwarded ID token, trusted-issuer, self-issued exchange-minted JWT) falls back to `SessionIDForBearer`. Self-issued exchange-minted JWTs previously reached downstream handlers with no session, so resource servers could not session-scope an on-behalf-of bearer re-presented at the front door; they now carry one.
+
+### Removed
+
+- `Server.WorkloadExchangeSubjectToken` and `Config.EnableWorkloadTokenExchange`: the workload-authenticated brokered path (a brokered exchange with no OAuth client credentials) is removed. Brokered token exchange now always requires an authenticated confidential client; the on-behalf-of agent path uses `SelfIssuedExchange` instead.
+- `Server.LocalMintExchanger` and `NewLocalMintExchanger`: local token issuance is now `SelfIssuedExchange`. The `Exchanger` interface is retained for downstream/remote exchange implementations.
+- `Config.DelegationDefaultResource`: the issued token's audience defaults to the server's resource identifier whenever no resource is supplied, so the configurable default is no longer needed.
+- `server.ExchangerResult.JTI`.
 
 ### Added
 
