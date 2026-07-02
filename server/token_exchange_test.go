@@ -249,7 +249,7 @@ const auditExchangeKID = "audit-exchange-key"
 
 // newAuditExchangeTestServer builds an exchange-ready Server wired to a
 // buffer-backed slog logger. The returned EC key matches the registered
-// SubjectTokenValidator so callers can mint subject tokens that pass
+// SubjectTokenValidator so callers can create subject tokens that pass
 // validation.
 func newAuditExchangeTestServer(t *testing.T) (*Server, *bytes.Buffer, *ecdsa.PrivateKey) {
 	t.Helper()
@@ -503,7 +503,7 @@ func TestSelfIssuedExchange_DPoP(t *testing.T) {
 
 // setupExchangeOptionsTest builds a JWT-mode Server with a single OIDCValidator
 // registered for SubjectTokenTypeIDToken and returns the server, its signing
-// key (for verifying issued tokens), and a freshly minted subject token ready
+// key (for verifying issued tokens), and a freshly created subject token ready
 // to be exchanged.
 func setupExchangeOptionsTest(t *testing.T) (*Server, *rsa.PrivateKey, string) {
 	t.Helper()
@@ -609,7 +609,7 @@ func TestSelfIssuedExchange_WithExtraClaims(t *testing.T) {
 	require.Equal(t, "glean", rawClaims["installation"])
 }
 
-// The subject token minted by setupExchangeOptionsTest carries only
+// The subject token created by setupExchangeOptionsTest carries only
 // iss/sub/aud/exp/iat, so the validated subject's Claims have no
 // email/name/groups to default from and the issued token carries no identity.
 func TestSelfIssuedExchange_NoSubjectClaims_NoIdentity(t *testing.T) {
@@ -820,9 +820,9 @@ func TestSelfIssuedExchange_SelfDelegationIsNoOp(t *testing.T) {
 	require.Nil(t, private.Act, "act claim must be absent when actor==subject")
 }
 
-// TestSelfIssuedExchange_RateLimited asserts the per-session mint limiter is
+// TestSelfIssuedExchange_RateLimited asserts the per-session issuance limiter is
 // enforced in-process, not only in HTTP middleware, so an in-process caller
-// (e.g. an aggregator) cannot flood mints from one compromised session.
+// (e.g. an aggregator) cannot flood issuance from one compromised session.
 func TestSelfIssuedExchange_RateLimited(t *testing.T) {
 	srv, _ := newActorExchangeServer(t)
 	srv.UserRateLimiter = security.NewRateLimiter(0, 1, nil) // burst of 1, no refill
@@ -838,5 +838,5 @@ func TestSelfIssuedExchange_RateLimited(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = srv.SelfIssuedExchange(t.Context(), req)
-	require.ErrorIs(t, err, ErrExchangeRateLimited, "second mint in the same session must be rate-limited")
+	require.ErrorIs(t, err, ErrExchangeRateLimited, "second issuance in the same session must be rate-limited")
 }

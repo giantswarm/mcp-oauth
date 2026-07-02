@@ -211,6 +211,32 @@ func TestSelfIssuedExchange_DeniesBareSelfRenewal(t *testing.T) {
 	require.ErrorIs(t, err, ErrSelfRenewalDenied)
 }
 
+// TestSelfIssuedExchange_DeniesSelfRenewalViaSelfActor asserts the renewal gate
+// cannot be dodged by naming yourself as your own actor: an actor token that
+// resolves to the same identity as the subject collapses to a no-op in
+// resolveExchangeActor, leaving no new actor, so a self-issued subject is still
+// denied. Locks the interaction between self-delegation collapse and the gate.
+func TestSelfIssuedExchange_DeniesSelfRenewalViaSelfActor(t *testing.T) {
+	srv, _ := newActorExchangeServer(t)
+	// Both tokens resolve to the same self-issued identity, so the actor equals
+	// the subject and is dropped before the renewal check runs.
+	self := &SubjectIdentity{Subject: testSubject, Issuer: srv.Config.Issuer}
+	srv.subjectValidators = map[string]SubjectTokenValidator{
+		SubjectTokenTypeIDToken: &stubTokenValidator{byToken: map[string]*SubjectIdentity{
+			"self-tok":  self,
+			"self-tok2": self,
+		}},
+	}
+
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+		Subject:  TypedToken{Token: "self-tok", Type: SubjectTokenTypeIDToken},
+		Actor:    TypedToken{Token: "self-tok2", Type: SubjectTokenTypeIDToken},
+		Resource: "https://api.example.com",
+		Scope:    "read",
+	}})
+	require.ErrorIs(t, err, ErrSelfRenewalDenied)
+}
+
 // TestSelfIssuedExchange_AllowsSelfSubjectChainExtension asserts re-exchanging a
 // self-issued token IS allowed when a new actor is added, extending the A2A
 // delegation chain (the prior actor is preserved beneath the new one).

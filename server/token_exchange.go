@@ -120,7 +120,9 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 	// Enforce the per-session issuance limiter here too, not only in HTTP
 	// middleware: an in-process caller (e.g. an aggregator) reaches this method
 	// directly, so a compromised session must not flood issuance regardless of
-	// entry point.
+	// entry point. Deliberately ahead of subject validation and the self-renewal
+	// check: a session flooding rejected requests (bad subjects, bare renewals)
+	// must still be throttled, so those attempts count against the bucket.
 	sessionID := s.deriveForwardedSessionID(req.Subject.Token)
 	if s.exchangeSessionRateLimited(ctx, sessionID) {
 		return nil, ErrExchangeRateLimited

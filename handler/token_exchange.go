@@ -186,6 +186,8 @@ func (h *Handler) handleBrokeredTokenExchangeError(
 
 	var unsupported *server.TokenExchangeUnsupportedTypeError
 	switch {
+	case errors.Is(err, server.ErrExchangeRateLimited):
+		h.writeExchangeRateLimited(w, r, startTime, span)
 	case errors.Is(err, server.ErrInvalidTarget):
 		h.logger.Debug("brokered token exchange: invalid target",
 			"client_id", clientID, "audience", audience, "ip", clientIP)
@@ -213,10 +215,30 @@ func (h *Handler) handleBrokeredTokenExchangeError(
 	}
 }
 
+// writeExchangeRateLimited renders the 429 response for a token-exchange request
+// rejected by the per-session issuance limiter (server.ErrExchangeRateLimited).
+// Both the self-issued and brokered methods enforce that limiter in-process, so
+// the sentinel is reachable on either path; without this mapping it falls through
+// to a misleading 400 invalid_grant ("subject token invalid or rejected").
+func (h *Handler) writeExchangeRateLimited(w http.ResponseWriter, r *http.Request, startTime time.Time, span trace.Span) {
+	retryAfter := defaultRetryAfterSeconds
+	if h.server.UserRateLimiter != nil {
+		retryAfter = retryAfterSecondsForRate(h.server.UserRateLimiter.Rate())
+	}
+	h.recordTokenFailure(r.Context(), server.GrantTypeTokenExchange, constants.ErrorCodeRateLimitExceeded)
+	h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusTooManyRequests, startTime)
+	instrumentation.SetSpanError(span, "token exchange rate limited")
+	h.writeUserRateLimitError(w, retryAfter)
+}
+
 func (h *Handler) handleTokenExchangeError(
 	w http.ResponseWriter, r *http.Request, err error,
 	clientIP string, startTime time.Time, span trace.Span,
 ) {
+	if errors.Is(err, server.ErrExchangeRateLimited) {
+		h.writeExchangeRateLimited(w, r, startTime, span)
+		return
+	}
 	var unsupported *server.TokenExchangeUnsupportedTypeError
 	if errors.As(err, &unsupported) {
 		h.logger.Debug("token exchange: unsupported subject_token_type",

@@ -297,6 +297,26 @@ func TestHandleTokenExchangeGrant(t *testing.T) {
 	}
 }
 
+// A self-issued exchange rejected by the in-process per-session issuance limiter
+// (server.ErrExchangeRateLimited) must surface as 429 rate_limit_exceeded with a
+// Retry-After header, not the generic 400 invalid_grant fallback.
+func TestHandleTokenExchangeGrant_RateLimited(t *testing.T) {
+	h, _ := setupTokenExchangeHandler(t, withSubjectValidator(&fakeSubjectValidator{
+		identity: server.SubjectIdentity{Subject: "sub", Issuer: "https://oidc.example.com"},
+	}))
+	h.server.UserRateLimiter = security.NewRateLimiter(0, 1, nil) // burst of 1, no refill
+	t.Cleanup(h.server.UserRateLimiter.Stop)
+
+	// First request consumes the single token; second is rejected.
+	h.ServeToken(httptest.NewRecorder(), newTokenExchangeRequest(happyExchangeForm()))
+
+	w := httptest.NewRecorder()
+	h.ServeToken(w, newTokenExchangeRequest(happyExchangeForm()))
+
+	requireOAuthError(t, w, http.StatusTooManyRequests, constants.ErrorCodeRateLimitExceeded)
+	require.NotEmpty(t, w.Header().Get("Retry-After"))
+}
+
 // The 405 comes from ServeToken before handleTokenExchangeGrant runs.
 func TestHandleTokenExchangeGrant_MethodGet(t *testing.T) {
 	h, _ := setupTokenExchangeHandler(t, withSubjectValidator(&fakeSubjectValidator{}))

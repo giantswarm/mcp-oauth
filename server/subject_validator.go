@@ -128,7 +128,7 @@ type TrustedIssuer struct {
 	// restrictions.
 	AllowedClaims map[string]string
 	// SubjectClaim names the verified claim whose value becomes
-	// SubjectIdentity.Subject (and thus the sub of any token minted from this
+	// SubjectIdentity.Subject (and thus the sub of any token issued from this
 	// identity). Empty keeps the standard sub claim. Use this when the issuer's sub is an opaque identifier
 	// but a different claim (e.g. "email") carries the canonical subject the
 	// downstream relies on. Fail-closed: if set and the claim is absent or not a
@@ -153,7 +153,7 @@ type TrustedIssuer struct {
 	AllowPrivateIPJWKSHosts []string
 	// AcceptedTypHeaders lists the JWT typ header values accepted when a
 	// Bearer token from this issuer is presented to the resource server.
-	// Empty defaults to ["at+jwt"] (RFC 9068 §4). Issuers that mint plain
+	// Empty defaults to ["at+jwt"] (RFC 9068 §4). Issuers that issue plain
 	// JWTs need an explicit list: Kubernetes ServiceAccount tokens carry no
 	// typ header at all, so use [""] to accept them. Signature, audience,
 	// and claim checks still apply unchanged.

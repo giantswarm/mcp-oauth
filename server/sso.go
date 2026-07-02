@@ -161,7 +161,7 @@ func (s *Server) getJWKSClient() *oidc.JWKSClient {
 // idTokenClaimsToUserInfo converts validated ID token claims to UserInfo.
 // Sets TokenSource to TokenSourceSSO since this is called for SSO-forwarded tokens.
 // ActorIssuer/ActorSubject are populated from claims.Act when the token carries
-// an RFC 8693 §4.4 delegation claim (mcp-oauth-minted OBO tokens only; ordinary
+// an RFC 8693 §4.4 delegation claim (mcp-oauth-issued OBO tokens only; ordinary
 // SSO ID tokens never carry act).
 func (s *Server) idTokenClaimsToUserInfo(claims *oidc.IDTokenClaims) *providers.UserInfo {
 	info := &providers.UserInfo{
