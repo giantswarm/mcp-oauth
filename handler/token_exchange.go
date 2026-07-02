@@ -104,7 +104,7 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 // parameter. Client authentication is mandatory (the per-client audience
 // allowlist is meaningless for a spoofable client_id, so public clients are
 // rejected). DPoP binding is not supported on this path: the issued token is
-// minted by a downstream issuer that never saw the proof.
+// issued by a downstream issuer that never saw the proof.
 // actorToken and actorTokenType are RFC 8693 delegation params; both may be
 // empty when no actor_token was presented.
 func (h *Handler) handleBrokeredTokenExchange(

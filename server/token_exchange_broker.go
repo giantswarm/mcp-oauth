@@ -106,7 +106,7 @@ type BrokeredExchangeRequest struct {
 }
 
 // BrokeredExchange implements the RFC 8693 flow where the resulting token is
-// minted by a downstream issuer reached through the configured Exchanger. The
+// issued by a downstream issuer reached through the configured Exchanger. The
 // subject token (and, when present, the actor token for the §4.4 delegation
 // chain) are validated against the server's trusted issuers before the Exchanger
 // is invoked; the verified actor identity is forwarded to it.
@@ -246,7 +246,7 @@ func (s *Server) dispatchDownstreamExchange(
 // handler rate-limits authenticated requests in middleware keyed on the user,
 // but BrokeredExchange may also be called in-process, so the same UserRateLimiter
 // is enforced here keyed on the per-session ID, so a compromised session cannot
-// flood mints regardless of entry point. A nil UserRateLimiter disables the check.
+// flood issuance regardless of entry point. A nil UserRateLimiter disables the check.
 func (s *Server) exchangeRateLimited(ctx context.Context, clientID, audience, sessionID string) bool {
 	if s.UserRateLimiter == nil || s.UserRateLimiter.Allow(sessionID) {
 		return false

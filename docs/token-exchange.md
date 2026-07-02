@@ -162,7 +162,7 @@ This is library API only: the HTTP `/oauth/token` endpoint does not extract thes
 
 ## Brokered exchange (audience parameter)
 
-When the client sends an RFC 8693 `audience` parameter, the server acts as a **token broker** instead of issuing a local JWT: it validates the subject token, enforces policy, and delegates the downstream exchange to a host-provided `Exchanger`. The returned token comes from the downstream issuer verbatim — useful when the target (e.g. a Kubernetes API server behind its own Dex) will not accept tokens minted by this server.
+When the client sends an RFC 8693 `audience` parameter, the server acts as a **token broker** instead of issuing a local JWT: it validates the subject token, enforces policy, and delegates the downstream exchange to a host-provided `Exchanger`. The returned token comes from the downstream issuer verbatim — useful when the target (e.g. a Kubernetes API server behind its own Dex) will not accept tokens issued by this server.
 
 ### Host setup
 

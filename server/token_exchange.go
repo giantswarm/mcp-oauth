@@ -68,7 +68,7 @@ type SubjectExchange struct {
 
 // SelfIssuedExchangeRequest is the input to SelfIssuedExchange, where this server
 // signs the resulting token. DPoPJKT and Options apply only here because they
-// shape a token this server mints; there is no Audience field, as self-issue sets
+// shape a token this server issues; there is no Audience field, as self-issue sets
 // aud via Resource (the RFC 8693 audience selects a broker target and is
 // BrokeredExchange-only).
 type SelfIssuedExchangeRequest struct {
@@ -109,9 +109,10 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 		return nil, fmt.Errorf("token exchange requires JWT access token mode (set AccessTokenFormat=jwt)")
 	}
 
-	// Enforce the per-session mint limiter here too, not only in HTTP middleware:
-	// an in-process caller (e.g. an aggregator) reaches this method directly, so a
-	// compromised session must not be able to flood mints regardless of entry point.
+	// Enforce the per-session issuance limiter here too, not only in HTTP
+	// middleware: an in-process caller (e.g. an aggregator) reaches this method
+	// directly, so a compromised session must not flood issuance regardless of
+	// entry point.
 	sessionID := s.deriveForwardedSessionID(req.Subject.Token)
 	if s.exchangeSessionRateLimited(ctx, sessionID) {
 		return nil, ErrExchangeRateLimited
@@ -217,7 +218,7 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 	}, nil
 }
 
-// exchangeSessionRateLimited reports whether the per-session mint limiter rejects
+// exchangeSessionRateLimited reports whether the per-session issuance limiter rejects
 // sessionID on the self-issued exchange and audits the rejection when it does. A
 // nil UserRateLimiter disables the check. The brokered path has its own
 // audience-aware equivalent (exchangeRateLimited).
@@ -312,7 +313,7 @@ func (s *Server) validateExchangeActorToken(ctx context.Context, actor TypedToke
 // resolveExchangeActor validates the RFC 8693 actor token when one is present
 // and returns the verified actor identity. It returns nil when no actor token is
 // presented, or when the actor resolves to the same identity as the subject:
-// self-delegation is a no-op, so the minted token carries no act claim. extra is
+// self-delegation is a no-op, so the issued token carries no act claim. extra is
 // merged into actor-validation failure events; pass nil when there is none.
 func (s *Server) resolveExchangeActor(ctx context.Context, actor TypedToken, subject *SubjectIdentity, extra map[string]any) (*SubjectIdentity, error) {
 	if actor.Token == "" {
