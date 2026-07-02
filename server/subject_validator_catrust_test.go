@@ -102,10 +102,13 @@ func newTLSServerWithFreshCert(t *testing.T, handler http.Handler) *httptest.Ser
 	der, err := x509.CreateCertificate(rand.Reader, template, template, key.Public(), key)
 	require.NoError(t, err)
 	srv := httptest.NewUnstartedServer(handler)
-	srv.TLS = &tls.Config{Certificates: []tls.Certificate{{
-		Certificate: [][]byte{der},
-		PrivateKey:  key,
-	}}}
+	srv.TLS = &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		Certificates: []tls.Certificate{{
+			Certificate: [][]byte{der},
+			PrivateKey:  key,
+		}},
+	}
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
 	return srv
