@@ -192,6 +192,53 @@ func TestSelfIssuedExchange_DefaultsAudienceToResourceIdentifier(t *testing.T) {
 		"aud defaults to the server resource identifier when no resource is supplied")
 }
 
+// TestSelfIssuedExchange_DeniesBareSelfRenewal asserts a token this server issued
+// (subject iss == the server's Issuer) cannot be re-exchanged with no new actor:
+// a bare renewal that would refresh the TTL open-endedly is rejected.
+func TestSelfIssuedExchange_DeniesBareSelfRenewal(t *testing.T) {
+	srv, _ := newActorExchangeServer(t)
+	srv.subjectValidators = map[string]SubjectTokenValidator{
+		SubjectTokenTypeIDToken: &stubTokenValidator{byToken: map[string]*SubjectIdentity{
+			"self-tok": {Subject: testSubject, Issuer: srv.Config.Issuer},
+		}},
+	}
+
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+		Subject:  TypedToken{Token: "self-tok", Type: SubjectTokenTypeIDToken},
+		Resource: "https://api.example.com",
+		Scope:    "read",
+	}})
+	require.ErrorIs(t, err, ErrSelfRenewalDenied)
+}
+
+// TestSelfIssuedExchange_AllowsSelfSubjectChainExtension asserts re-exchanging a
+// self-issued token IS allowed when a new actor is added, extending the A2A
+// delegation chain (the prior actor is preserved beneath the new one).
+func TestSelfIssuedExchange_AllowsSelfSubjectChainExtension(t *testing.T) {
+	srv, signingKey := newActorExchangeServer(t)
+	srv.subjectValidators = map[string]SubjectTokenValidator{
+		SubjectTokenTypeIDToken: &stubTokenValidator{byToken: map[string]*SubjectIdentity{
+			"self-tok": {Subject: testSubject, Issuer: srv.Config.Issuer, Claims: &oidc.IDTokenClaims{
+				Act: &oidc.ActorClaim{Issuer: "https://k8s.example.com", Subject: "agentA"},
+			}},
+			"act-tok": {Subject: "agentB", Issuer: "https://k8s.example.com"},
+		}},
+	}
+
+	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+		Subject:  TypedToken{Token: "self-tok", Type: SubjectTokenTypeIDToken},
+		Actor:    TypedToken{Token: "act-tok", Type: SubjectTokenTypeIDToken},
+		Resource: "https://api.example.com",
+		Scope:    "read",
+	}})
+	require.NoError(t, err)
+
+	private := parseIssuedClaims(t, result.AccessToken, signingKey.Public())
+	require.Equal(t, "agentB", private.Act.Sub, "new actor added to the chain")
+	require.NotNil(t, private.Act.Act)
+	require.Equal(t, "agentA", private.Act.Act.Sub, "prior actor preserved beneath it")
+}
+
 // TestSelfIssuedExchange_TokenExpiry asserts the issued token's expiry is exactly
 // issue time plus the configured TTL. Run inside a synctest bubble so time is
 // deterministic and the assertion cannot flake on wall-clock drift between

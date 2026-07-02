@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"strings"
@@ -13,6 +14,13 @@ import (
 
 // GrantTypeTokenExchange is the grant_type value for RFC 8693 token exchange.
 const GrantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange" // #nosec G101 -- RFC 8693 grant-type URN identifier, not a credential
+
+// ErrSelfRenewalDenied is returned by SelfIssuedExchange when a token this server
+// issued is re-presented as the subject with no new actor. That is a bare
+// renewal: it refreshes the TTL without extending the delegation chain, which
+// would let a held token renew itself indefinitely. Re-exchange a self-issued
+// token only to add an actor (a delegation hop, bounded by maxActorChainDepth).
+var ErrSelfRenewalDenied = errors.New("self-issued token cannot be re-exchanged without an actor")
 
 // TokenExchangeResult holds the output of a successful token exchange.
 type TokenExchangeResult struct {
@@ -127,6 +135,9 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 	if err != nil {
 		return nil, err
 	}
+	if err := s.checkSelfRenewal(ctx, identity, actor, sessionID); err != nil {
+		return nil, err
+	}
 	act, err := buildActorChain(actor, priorActorChain(identity))
 	if err != nil {
 		return nil, fmt.Errorf("token exchange: %w", err)
@@ -146,19 +157,7 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 	}
 	expiresAt := now.Add(ttl)
 
-	options := req.Options
-	if identity.Claims != nil {
-		if options.Email == "" {
-			options.Email = identity.Claims.Email
-			options.EmailVerified = identity.Claims.EmailVerified
-		}
-		if options.Name == "" {
-			options.Name = identity.Claims.Name
-		}
-		if len(options.Groups) == 0 {
-			options.Groups = identity.Claims.Groups
-		}
-	}
+	options := defaultExchangeOptions(req.Options, identity)
 
 	jti := generateRandomToken()
 	auditDetails := map[string]any{
@@ -216,6 +215,48 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 		Scope:           grantedScope,
 		IssuedTokenType: SubjectTokenTypeAccessToken,
 	}, nil
+}
+
+// defaultExchangeOptions fills the identity claims from the validated subject
+// when the caller left them unset; an explicit Options value takes precedence.
+// email_verified is defaulted only together with email (see ExchangeOptions).
+func defaultExchangeOptions(options ExchangeOptions, identity *SubjectIdentity) ExchangeOptions {
+	if identity.Claims == nil {
+		return options
+	}
+	if options.Email == "" {
+		options.Email = identity.Claims.Email
+		options.EmailVerified = identity.Claims.EmailVerified
+	}
+	if options.Name == "" {
+		options.Name = identity.Claims.Name
+	}
+	if len(options.Groups) == 0 {
+		options.Groups = identity.Claims.Groups
+	}
+	return options
+}
+
+// checkSelfRenewal denies re-exchanging a token this server issued (subject
+// iss == our Issuer) when no new actor is added: a bare renewal that refreshes
+// the TTL without extending the delegation chain, which would let a held token
+// renew itself open-endedly. Re-exchange of a self-issued token is allowed only
+// to add an actor (chain extension, bounded by maxActorChainDepth). Subjects from
+// external issuers are unaffected. Returns nil when the exchange is allowed.
+func (s *Server) checkSelfRenewal(ctx context.Context, identity, actor *SubjectIdentity, sessionID string) error {
+	if actor != nil || identity.Issuer != s.Config.Issuer {
+		return nil
+	}
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type:   security.EventAuthFailure,
+		UserID: identity.Subject,
+		Details: map[string]any{
+			"reason":     "token_exchange_self_renewal_denied",
+			"grant_type": GrantTypeTokenExchange,
+			"session_id": sessionID,
+		},
+	})
+	return ErrSelfRenewalDenied
 }
 
 // exchangeSessionRateLimited reports whether the per-session issuance limiter rejects
