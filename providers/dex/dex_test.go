@@ -1005,7 +1005,7 @@ func TestResolveHTTPClient(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := resolveHTTPClient(tt.client, tt.allowPrivateIP, timeout)
+			got := resolveHTTPClient(tt.client, tt.allowPrivateIP, nil, timeout)
 			if got == nil {
 				t.Fatal("resolveHTTPClient() returned nil")
 			}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/tls"
 	"crypto/x509"
 	"log/slog"
 	"net/http"
@@ -30,9 +29,9 @@ import (
 // target. A raw &http.Client{Transport: http.DefaultTransport} (the earlier
 // workaround) would silently follow the redirect.
 //
-// NOT parallel-safe: it mutates the global http.DefaultTransport (restored via
-// t.Cleanup). Do not add t.Parallel() to this test.
+// Parallel-safe: CA trust is passed via Config.JWKSRootCAs, no global swap.
 func TestGetJWKSClient_PermissiveRefusesCrossHostRedirect(t *testing.T) {
+	t.Parallel()
 	const (
 		issuer   = "https://auth.internal.example"
 		audience = "forwarded-audience"
@@ -57,17 +56,13 @@ func TestGetJWKSClient_PermissiveRefusesCrossHostRedirect(t *testing.T) {
 	}))
 	t.Cleanup(entry.Close)
 
-	// Trust both servers' CAs on http.DefaultTransport so the TLS handshake to
-	// the entry server succeeds (and would succeed to the final one too) — this
-	// isolates the assertion to the redirect guard, not a TLS trust failure.
+	// Trust both servers' CAs via the explicit JWKSRootCAs pool so the TLS
+	// handshake to the entry server succeeds (and would succeed to the final one
+	// too) — this isolates the assertion to the redirect guard, not a TLS trust
+	// failure.
 	pool := x509.NewCertPool()
 	pool.AddCert(entry.Certificate())
 	pool.AddCert(final.Certificate())
-	original := http.DefaultTransport
-	cloned := original.(*http.Transport).Clone()
-	cloned.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
-	http.DefaultTransport = cloned
-	t.Cleanup(func() { http.DefaultTransport = original })
 
 	mockProvider := mock.NewProvider()
 	mockProvider.JWKSURIFunc = func(context.Context) (string, error) { return entry.URL + "/keys", nil }
@@ -80,6 +75,7 @@ func TestGetJWKSClient_PermissiveRefusesCrossHostRedirect(t *testing.T) {
 			Issuer:             issuer,
 			TrustedAudiences:   []string{audience},
 			AllowPrivateIPJWKS: true,
+			JWKSRootCAs:        pool,
 		},
 		Logger:          slog.Default(),
 		provider:        mockProvider,

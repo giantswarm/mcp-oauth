@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"log/slog"
@@ -22,22 +21,15 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
-// TestGetJWKSClient_PermissiveClientTrustsProcessCABundle verifies that the SSO
-// forwarded-ID-token JWKS client honors a CA the host process installs on
-// http.DefaultTransport when AllowPrivateIPJWKS is set — the same mechanism
-// NewOIDCValidator's permissive trusted-issuer client uses.
-//
-// Before this fix the SSO path built an SSRF-safe client that verified against the
-// system pool alone, so an internal-CA Dex (the case AllowPrivateIPJWKS exists for)
-// was rejected with "x509: certificate signed by unknown authority" even when the
-// host process had installed that CA on http.DefaultTransport.
-//
-// Note: this exercises the real srv.getJWKSClient() construction, unlike
+// TestGetJWKSClient_PermissiveClientTrustsExplicitCA verifies that the SSO
+// forwarded-ID-token JWKS client trusts an internal-CA Dex when the CA pool is
+// supplied via Config.JWKSRootCAs, and rejects it when no pool is configured
+// (system pool). Exercises the real srv.getJWKSClient() construction, unlike
 // newForwardedTokenHarness which injects a client that trusts the test server.
 //
-// NOT parallel-safe: it mutates the global http.DefaultTransport (restored via
-// t.Cleanup). Do not add t.Parallel() to this test.
-func TestGetJWKSClient_PermissiveClientTrustsProcessCABundle(t *testing.T) {
+// Parallel-safe: CA trust is explicit config, no http.DefaultTransport swap.
+func TestGetJWKSClient_PermissiveClientTrustsExplicitCA(t *testing.T) {
+	t.Parallel()
 	const (
 		issuer   = "https://auth.internal.example"
 		audience = "forwarded-audience"
@@ -59,10 +51,9 @@ func TestGetJWKSClient_PermissiveClientTrustsProcessCABundle(t *testing.T) {
 	}))
 	t.Cleanup(jwksServer.Close)
 
-	// newServer builds a Server that uses the REAL getJWKSClient() (no injected
-	// client). getJWKSClient captures the current http.DefaultTransport, so the CA
-	// trust is decided at construction time.
-	newServer := func() *Server {
+	// newServer builds a Server that uses the REAL getJWKSClient(), verifying the
+	// JWKS endpoint against the provided rootCAs pool (nil = system pool).
+	newServer := func(rootCAs *x509.CertPool) *Server {
 		mockProvider := mock.NewProvider()
 		mockProvider.JWKSURIFunc = func(context.Context) (string, error) { return jwksServer.URL, nil }
 		mockProvider.IssuerURLFunc = func() string { return issuer }
@@ -73,6 +64,7 @@ func TestGetJWKSClient_PermissiveClientTrustsProcessCABundle(t *testing.T) {
 				Issuer:             issuer,
 				TrustedAudiences:   []string{audience},
 				AllowPrivateIPJWKS: true,
+				JWKSRootCAs:        rootCAs,
 			},
 			Logger:          slog.Default(),
 			provider:        mockProvider,
@@ -94,26 +86,18 @@ func TestGetJWKSClient_PermissiveClientTrustsProcessCABundle(t *testing.T) {
 	})
 	ctx := context.Background()
 
-	// Control: the JWKS server's self-signed CA is not in the process trust store,
-	// so the permissive SSO JWKS client cannot verify it. The audience matches, so
-	// this returns a validation error (not the benign "not an SSO token" nil, nil).
-	userInfo, err := newServer().validateForwardedIDToken(ctx, token)
+	// Control: no JWKSRootCAs → system pool → the self-signed JWKS endpoint is
+	// rejected. The audience matches, so this returns a validation error (not the
+	// benign "not an SSO token" nil, nil).
+	userInfo, err := newServer(nil).validateForwardedIDToken(ctx, token)
 	require.Error(t, err)
 	require.Nil(t, userInfo)
 
-	// Install the server's CA on http.DefaultTransport, mirroring a host process
-	// (e.g. mcp-kubernetes) that injects an extra CA file at startup.
+	// With the server's CA supplied via Config.JWKSRootCAs, the forwarded ID
+	// token validates.
 	pool := x509.NewCertPool()
 	pool.AddCert(jwksServer.Certificate())
-	original := http.DefaultTransport
-	cloned := original.(*http.Transport).Clone()
-	cloned.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
-	http.DefaultTransport = cloned
-	t.Cleanup(func() { http.DefaultTransport = original })
-
-	// A server constructed after the CA is installed builds its JWKS client on the
-	// updated DefaultTransport → the forwarded ID token now validates.
-	userInfo, err = newServer().validateForwardedIDToken(ctx, token)
+	userInfo, err = newServer(pool).validateForwardedIDToken(ctx, token)
 	require.NoError(t, err)
 	require.NotNil(t, userInfo)
 	require.Equal(t, "user-subject-123", userInfo.ID)

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -146,6 +147,12 @@ type TrustedIssuer struct {
 	// muster.agentic-platform.svc.cluster.local). Ignored when
 	// AllowPrivateIPJWKS is true.
 	AllowPrivateIPJWKSHosts []string
+
+	// RootCAs is the CA pool used to verify this issuer's JWKS endpoint TLS
+	// certificate when AllowPrivateIPJWKS or AllowPrivateIPJWKSHosts is set and
+	// the endpoint presents a certificate from an internal CA. nil uses the
+	// system pool.
+	RootCAs *x509.CertPool
 	// AcceptedTypHeaders lists the JWT typ header values accepted when a
 	// Bearer token from this issuer is presented to the resource server.
 	// Empty defaults to ["at+jwt"] (RFC 9068 §4). Issuers that mint plain
@@ -181,16 +188,21 @@ func NewOIDCValidator(issuers []TrustedIssuer) (*OIDCValidator, error) {
 				// which commonly presents a certificate from an internal CA.
 				// NewJWKSClientWithOptions builds the permissive client via
 				// NewPrivateIPAllowedHTTPClient, which keeps the cross-host
-				// redirect guard and tuned timeouts AND honors a CA bundle the
-				// host process installs on http.DefaultTransport. Building a raw
-				// client here would drop the redirect guard.
+				// redirect guard and tuned timeouts and verifies against the
+				// issuer's RootCAs pool (nil = system pool). A single permissive
+				// client is shared across all AllowPrivateIPJWKS issuers, so it
+				// uses the first such issuer's RootCAs; issuers needing a
+				// distinct pool should use AllowPrivateIPJWKSHosts (per-issuer
+				// clients below).
 				permissive = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
 					AllowPrivateIP: true,
+					RootCAs:        ti.RootCAs,
 				})
 			}
 		} else if len(ti.AllowPrivateIPJWKSHosts) > 0 {
 			issuerClients[ti.Issuer] = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
 				AllowPrivateIPHosts: ti.AllowPrivateIPJWKSHosts,
+				RootCAs:             ti.RootCAs,
 			})
 		}
 	}

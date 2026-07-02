@@ -1,7 +1,6 @@
 package server
 
 import (
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"net/http"
@@ -14,12 +13,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestNewOIDCValidator_PermissiveClientTrustsProcessCABundle exercises the real
+// TestNewOIDCValidator_PermissiveClientTrustsExplicitCA exercises the real
 // NewOIDCValidator (not the test-only client-injecting constructor) against a
-// TLS JWKS endpoint whose certificate is trusted only through http.DefaultTransport.
-// An issuer with AllowPrivateIPJWKS must reach an internal endpoint that presents
-// a CA the host process installs on http.DefaultTransport at startup.
-func TestNewOIDCValidator_PermissiveClientTrustsProcessCABundle(t *testing.T) {
+// TLS JWKS endpoint whose certificate chains only to an explicitly-configured
+// CA pool. An issuer with AllowPrivateIPJWKS reaches an internal endpoint that
+// presents a certificate from a CA supplied via TrustedIssuer.RootCAs.
+//
+// Parallel-safe: CA trust is explicit config, no http.DefaultTransport swap.
+func TestNewOIDCValidator_PermissiveClientTrustsExplicitCA(t *testing.T) {
+	t.Parallel()
 	key := newTestECKey(t)
 	const kid = "ca-trust-key"
 
@@ -35,12 +37,6 @@ func TestNewOIDCValidator_PermissiveClientTrustsProcessCABundle(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	issuers := []TrustedIssuer{{
-		Issuer:             testIssuer,
-		JwksURL:            srv.URL,
-		AllowedAudiences:   []string{testAudience},
-		AllowPrivateIPJWKS: true,
-	}}
 	token := signSubjectToken(t, key, kid, josejwt.Claims{
 		Issuer:   testIssuer,
 		Subject:  testSubject,
@@ -49,24 +45,29 @@ func TestNewOIDCValidator_PermissiveClientTrustsProcessCABundle(t *testing.T) {
 		IssuedAt: josejwt.NewNumericDate(time.Now()),
 	})
 
-	// Control: the server's CA is not in the process trust store, so the
-	// permissive client cannot verify the self-signed JWKS endpoint.
-	vUntrusted, err := NewOIDCValidator(issuers)
+	// Control: no RootCAs configured, so the permissive client verifies against
+	// the system pool and cannot validate the self-signed JWKS endpoint.
+	vUntrusted, err := NewOIDCValidator([]TrustedIssuer{{
+		Issuer:             testIssuer,
+		JwksURL:            srv.URL,
+		AllowedAudiences:   []string{testAudience},
+		AllowPrivateIPJWKS: true,
+	}})
 	require.NoError(t, err)
 	_, err = vUntrusted.Validate(t.Context(), token, nil)
 	require.Error(t, err)
 
-	// Install the server's CA on http.DefaultTransport, mirroring a host process
-	// that injects an extra CA file at startup.
+	// With the server's CA supplied explicitly via TrustedIssuer.RootCAs, the
+	// permissive client trusts the endpoint.
 	pool := x509.NewCertPool()
 	pool.AddCert(srv.Certificate())
-	original := http.DefaultTransport
-	cloned := original.(*http.Transport).Clone()
-	cloned.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
-	http.DefaultTransport = cloned
-	t.Cleanup(func() { http.DefaultTransport = original })
-
-	vTrusted, err := NewOIDCValidator(issuers)
+	vTrusted, err := NewOIDCValidator([]TrustedIssuer{{
+		Issuer:             testIssuer,
+		JwksURL:            srv.URL,
+		AllowedAudiences:   []string{testAudience},
+		AllowPrivateIPJWKS: true,
+		RootCAs:            pool,
+	}})
 	require.NoError(t, err)
 	identity, err := vTrusted.Validate(t.Context(), token, nil)
 	require.NoError(t, err)

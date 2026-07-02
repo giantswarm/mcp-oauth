@@ -2,7 +2,6 @@ package oidc
 
 import (
 	"context"
-	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"net"
@@ -678,7 +677,7 @@ func TestNewSSRFSafeHTTPClient(t *testing.T) {
 // TestNewPrivateIPAllowedHTTPClient tests the HTTP client creation that allows private IPs.
 func TestNewPrivateIPAllowedHTTPClient(t *testing.T) {
 	t.Run("creates client with default timeout", func(t *testing.T) {
-		client := NewPrivateIPAllowedHTTPClient(0)
+		client := NewPrivateIPAllowedHTTPClient(0, nil)
 		if client == nil {
 			t.Fatal("Expected non-nil client")
 		}
@@ -688,7 +687,7 @@ func TestNewPrivateIPAllowedHTTPClient(t *testing.T) {
 	})
 
 	t.Run("creates client with custom timeout", func(t *testing.T) {
-		client := NewPrivateIPAllowedHTTPClient(30 * time.Second)
+		client := NewPrivateIPAllowedHTTPClient(30*time.Second, nil)
 		if client == nil {
 			t.Fatal("Expected non-nil client")
 		}
@@ -698,7 +697,7 @@ func TestNewPrivateIPAllowedHTTPClient(t *testing.T) {
 	})
 
 	t.Run("client has standard transport without SSRF protection", func(t *testing.T) {
-		client := NewPrivateIPAllowedHTTPClient(0)
+		client := NewPrivateIPAllowedHTTPClient(0, nil)
 		if client.Transport == nil {
 			t.Error("Expected client to have transport configured")
 		}
@@ -709,7 +708,7 @@ func TestNewPrivateIPAllowedHTTPClient(t *testing.T) {
 // client follows a same-host redirect but refuses one that changes the host or
 // port (the SSRF pivot the host pin closes).
 func TestPrivateIPAllowedHTTPClient_RedirectPinning(t *testing.T) {
-	client := NewPrivateIPAllowedHTTPClient(5 * time.Second)
+	client := NewPrivateIPAllowedHTTPClient(5*time.Second, nil)
 
 	t.Run("follows same-host redirect", func(t *testing.T) {
 		mux := http.NewServeMux()
@@ -807,7 +806,7 @@ func TestHostScopedPrivateIPDialContext(t *testing.T) {
 
 func TestNewHostScopedPrivateIPHTTPClient(t *testing.T) {
 	t.Run("creates client with default timeout", func(t *testing.T) {
-		client := NewHostScopedPrivateIPHTTPClient([]string{"internal.svc"}, 0)
+		client := NewHostScopedPrivateIPHTTPClient([]string{"internal.svc"}, 0, nil)
 		if client == nil {
 			t.Fatal("expected non-nil client")
 		}
@@ -817,7 +816,7 @@ func TestNewHostScopedPrivateIPHTTPClient(t *testing.T) {
 	})
 
 	t.Run("creates client with custom timeout", func(t *testing.T) {
-		client := NewHostScopedPrivateIPHTTPClient([]string{"internal.svc"}, 15*time.Second)
+		client := NewHostScopedPrivateIPHTTPClient([]string{"internal.svc"}, 15*time.Second, nil)
 		if client.Timeout != 15*time.Second {
 			t.Errorf("expected 15s timeout, got %v", client.Timeout)
 		}
@@ -831,7 +830,7 @@ func TestNewHostScopedPrivateIPHTTPClient(t *testing.T) {
 		t.Cleanup(srv.Close)
 
 		host := srv.Listener.Addr().(*net.TCPAddr).IP.String()
-		client := NewHostScopedPrivateIPHTTPClient([]string{host}, 5*time.Second)
+		client := NewHostScopedPrivateIPHTTPClient([]string{host}, 5*time.Second, nil)
 		resp, err := client.Get(srv.URL + "/ok")
 		if err != nil {
 			t.Fatalf("expected successful request to listed loopback host, got: %v", err)
@@ -849,7 +848,7 @@ func TestNewHostScopedPrivateIPHTTPClient(t *testing.T) {
 		t.Cleanup(srv.Close)
 
 		// Client allows a different host — the test server's IP is blocked.
-		client := NewHostScopedPrivateIPHTTPClient([]string{"other.internal"}, 5*time.Second)
+		client := NewHostScopedPrivateIPHTTPClient([]string{"other.internal"}, 5*time.Second, nil)
 		_, err := client.Get(srv.URL + "/ok")
 		if err == nil {
 			t.Fatal("expected SSRF-guard error for unlisted loopback host")
@@ -880,7 +879,7 @@ func TestHostScopedPrivateIPHTTPClient_RedirectPinning(t *testing.T) {
 		t.Cleanup(srv.Close)
 
 		host := srv.Listener.Addr().(*net.TCPAddr).IP.String()
-		client := NewHostScopedPrivateIPHTTPClient([]string{host}, 5*time.Second)
+		client := NewHostScopedPrivateIPHTTPClient([]string{host}, 5*time.Second, nil)
 		resp, err := client.Get(srv.URL + "/keys")
 		if err != nil {
 			t.Fatalf("same-host redirect must be followed, got error: %v", err)
@@ -906,7 +905,7 @@ func TestHostScopedPrivateIPHTTPClient_RedirectPinning(t *testing.T) {
 		t.Cleanup(entry.Close)
 
 		host := entry.Listener.Addr().(*net.TCPAddr).IP.String()
-		client := NewHostScopedPrivateIPHTTPClient([]string{host}, 5*time.Second)
+		client := NewHostScopedPrivateIPHTTPClient([]string{host}, 5*time.Second, nil)
 		_, err := client.Get(entry.URL + "/keys")
 		if err == nil {
 			t.Fatal("cross-host redirect must be refused")
@@ -917,15 +916,14 @@ func TestHostScopedPrivateIPHTTPClient_RedirectPinning(t *testing.T) {
 	})
 }
 
-// TestHostScopedPrivateIPHTTPClient_TrustsProcessCABundle verifies the
-// host-scoped private-IP client honors a CA bundle the host process installs on
-// http.DefaultTransport (the AllowPrivateIPJWKSHosts analogue of the permissive
-// CA-trust tests). Without the copied TLS config the handshake to an internal-CA
-// endpoint would verify against the system pool alone and fail.
+// TestHostScopedPrivateIPHTTPClient_TrustsExplicitCA verifies the host-scoped
+// private-IP client verifies against an explicitly provided RootCAs pool (the
+// AllowPrivateIPJWKSHosts analogue of the permissive CA-trust path). With a nil
+// pool the internal-CA server would be rejected by the system pool.
 //
-// NOT parallel-safe: it mutates the global http.DefaultTransport (restored via
-// t.Cleanup). Do not add t.Parallel() to this test.
-func TestHostScopedPrivateIPHTTPClient_TrustsProcessCABundle(t *testing.T) {
+// Parallel-safe: CA trust is an argument, no global http.DefaultTransport swap.
+func TestHostScopedPrivateIPHTTPClient_TrustsExplicitCA(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -933,19 +931,12 @@ func TestHostScopedPrivateIPHTTPClient_TrustsProcessCABundle(t *testing.T) {
 
 	pool := x509.NewCertPool()
 	pool.AddCert(srv.Certificate())
-	original := http.DefaultTransport
-	cloned := original.(*http.Transport).Clone()
-	cloned.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
-	http.DefaultTransport = cloned
-	t.Cleanup(func() { http.DefaultTransport = original })
 
-	// Build the client AFTER installing the CA so defaultTransportRootCAs
-	// snapshots the trusted pool onto the client's own transport.
 	host := srv.Listener.Addr().(*net.TCPAddr).IP.String()
-	client := NewHostScopedPrivateIPHTTPClient([]string{host}, 5*time.Second)
+	client := NewHostScopedPrivateIPHTTPClient([]string{host}, 5*time.Second, pool)
 	resp, err := client.Get(srv.URL)
 	if err != nil {
-		t.Fatalf("expected TLS handshake to succeed with process CA bundle, got: %v", err)
+		t.Fatalf("expected TLS handshake to succeed with explicit CA pool, got: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
@@ -953,41 +944,46 @@ func TestHostScopedPrivateIPHTTPClient_TrustsProcessCABundle(t *testing.T) {
 	}
 }
 
-// TestPrivateIPAllowedHTTPClient_DoesNotLeakInsecureSkipVerify verifies that a
-// global InsecureSkipVerify set on http.DefaultTransport does NOT carry over to
-// the permissive JWKS client. Only RootCAs is copied from DefaultTransport, so
-// the "never InsecureSkipVerify" invariant holds by construction even where the
-// SSRF dial guard is relaxed. Regression guard for the review of #494.
+// TestPrivateIPAllowedHTTPClient_CATrust verifies that TLS verification on the
+// permissive client is driven solely by the explicit rootCAs argument: nil uses
+// the system pool (an untrusted self-signed server is rejected — the client
+// never sets InsecureSkipVerify), and an explicit pool trusts a server whose
+// certificate chains to it. Replaces the former DefaultTransport-leak test now
+// that CA trust is explicit config rather than a global read (#495).
 //
-// NOT parallel-safe: it mutates the global http.DefaultTransport (restored via
-// t.Cleanup). Do not add t.Parallel() to this test.
-func TestPrivateIPAllowedHTTPClient_DoesNotLeakInsecureSkipVerify(t *testing.T) {
-	// A TLS server whose self-signed cert is trusted by nobody.
+// Parallel-safe: no global http.DefaultTransport swap.
+func TestPrivateIPAllowedHTTPClient_CATrust(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(srv.Close)
 
-	// Install a hostile global config: InsecureSkipVerify=true plus an empty
-	// RootCAs pool (which does NOT trust srv). If the whole TLSClientConfig were
-	// copied, InsecureSkipVerify would leak and the handshake would wrongly succeed.
-	original := http.DefaultTransport
-	cloned := original.(*http.Transport).Clone()
-	cloned.TLSClientConfig = &tls.Config{
-		RootCAs:            x509.NewCertPool(),
-		InsecureSkipVerify: true, //nolint:gosec // test asserts this does NOT propagate
-		MinVersion:         tls.VersionTLS12,
-	}
-	http.DefaultTransport = cloned
-	t.Cleanup(func() { http.DefaultTransport = original })
+	t.Run("nil pool uses system pool and rejects untrusted cert", func(t *testing.T) {
+		t.Parallel()
+		client := NewPrivateIPAllowedHTTPClient(5*time.Second, nil)
+		resp, err := client.Get(srv.URL)
+		if err == nil {
+			_ = resp.Body.Close()
+			t.Fatal("handshake to an untrusted self-signed server must fail with a nil (system) pool")
+		}
+		if !strings.Contains(err.Error(), "certificate") && !strings.Contains(err.Error(), "x509") {
+			t.Errorf("expected a certificate verification error, got: %v", err)
+		}
+	})
 
-	client := NewPrivateIPAllowedHTTPClient(5 * time.Second)
-	resp, err := client.Get(srv.URL)
-	if err == nil {
-		_ = resp.Body.Close()
-		t.Fatal("handshake to an untrusted self-signed server must fail; InsecureSkipVerify leaked from http.DefaultTransport")
-	}
-	if !strings.Contains(err.Error(), "certificate") && !strings.Contains(err.Error(), "x509") {
-		t.Errorf("expected a certificate verification error, got: %v", err)
-	}
+	t.Run("explicit pool trusts a cert chaining to it", func(t *testing.T) {
+		t.Parallel()
+		pool := x509.NewCertPool()
+		pool.AddCert(srv.Certificate())
+		client := NewPrivateIPAllowedHTTPClient(5*time.Second, pool)
+		resp, err := client.Get(srv.URL)
+		if err != nil {
+			t.Fatalf("expected handshake to succeed with explicit CA pool, got: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200, got %d", resp.StatusCode)
+		}
+	})
 }
