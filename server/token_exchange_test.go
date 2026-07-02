@@ -819,3 +819,24 @@ func TestSelfIssuedExchange_SelfDelegationIsNoOp(t *testing.T) {
 	require.Equal(t, testSubject, private.Subject)
 	require.Nil(t, private.Act, "act claim must be absent when actor==subject")
 }
+
+// TestSelfIssuedExchange_RateLimited asserts the per-session mint limiter is
+// enforced in-process, not only in HTTP middleware, so an in-process caller
+// (e.g. an aggregator) cannot flood mints from one compromised session.
+func TestSelfIssuedExchange_RateLimited(t *testing.T) {
+	srv, _ := newActorExchangeServer(t)
+	srv.UserRateLimiter = security.NewRateLimiter(0, 1, nil) // burst of 1, no refill
+	t.Cleanup(srv.UserRateLimiter.Stop)
+
+	req := SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+		Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
+		Resource: "https://api.example.com",
+		Scope:    "read",
+	}}
+
+	_, err := srv.SelfIssuedExchange(t.Context(), req)
+	require.NoError(t, err)
+
+	_, err = srv.SelfIssuedExchange(t.Context(), req)
+	require.ErrorIs(t, err, ErrExchangeRateLimited, "second mint in the same session must be rate-limited")
+}

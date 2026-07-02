@@ -29,14 +29,17 @@ type TokenExchangeResult struct {
 // emitted only when Email is also non-empty (consistent with AccessTokenClaims
 // semantics). Extra is merged into the JWT body after the standard claims; RFC
 // 7519 §4.1 registered claim names (iss, sub, aud, exp, nbf, iat, jti) are
-// rejected — Issue returns an error if Extra contains any of them. OIDC profile
+// rejected: Issue returns an error if Extra contains any of them. OIDC profile
 // claims set via struct fields (email, name, groups, email_verified) are not
 // guarded and can be overridden by Extra.
 type ExchangeOptions struct {
 	Email string
 	// EmailVerified indicates whether Email has been verified by the identity
-	// source. Zero value is false and is emitted as email_verified: false
-	// whenever Email is non-empty — set explicitly when verification is guaranteed.
+	// source. It is emitted as email_verified whenever Email is non-empty, so a
+	// zero value emits false. SelfIssuedExchange defaults it from the subject only
+	// together with Email (when Options.Email is empty): a caller that sets Email
+	// explicitly but leaves EmailVerified false gets false even if the subject was
+	// verified, so set it explicitly alongside an explicit Email.
 	EmailVerified bool
 	Name          string
 	Groups        []string
@@ -106,6 +109,14 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 		return nil, fmt.Errorf("token exchange requires JWT access token mode (set AccessTokenFormat=jwt)")
 	}
 
+	// Enforce the per-session mint limiter here too, not only in HTTP middleware:
+	// an in-process caller (e.g. an aggregator) reaches this method directly, so a
+	// compromised session must not be able to flood mints regardless of entry point.
+	sessionID := s.deriveForwardedSessionID(req.Subject.Token)
+	if s.exchangeSessionRateLimited(ctx, sessionID) {
+		return nil, ErrExchangeRateLimited
+	}
+
 	identity, err := s.validateExchangeSubjectToken(ctx, req.Subject, nil, nil)
 	if err != nil {
 		return nil, err
@@ -155,6 +166,7 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 		"audience":           audience,
 		"scope":              grantedScope,
 		"jti":                jti,
+		"session_id":         sessionID,
 	}
 	if act != nil {
 		auditDetails["actor_iss"] = act.Iss
@@ -203,6 +215,25 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 		Scope:           grantedScope,
 		IssuedTokenType: SubjectTokenTypeAccessToken,
 	}, nil
+}
+
+// exchangeSessionRateLimited reports whether the per-session mint limiter rejects
+// sessionID on the self-issued exchange and audits the rejection when it does. A
+// nil UserRateLimiter disables the check. The brokered path has its own
+// audience-aware equivalent (exchangeRateLimited).
+func (s *Server) exchangeSessionRateLimited(ctx context.Context, sessionID string) bool {
+	if s.UserRateLimiter == nil || s.UserRateLimiter.Allow(sessionID) {
+		return false
+	}
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type: security.EventAuthFailure,
+		Details: map[string]any{
+			"reason":     "token_exchange_rate_limited",
+			"grant_type": GrantTypeTokenExchange,
+			"session_id": sessionID,
+		},
+	})
+	return true
 }
 
 // maxActorChainDepth bounds RFC 8693 §4.4 act nesting in an issued token. A chain
@@ -256,7 +287,7 @@ func actorChainDepth(a *Actor) int {
 }
 
 // validateExchangeSubjectToken validates the RFC 8693 subject token and returns
-// the verified identity. Audit failure events use the "subject" role — reasons
+// the verified identity. Audit failure events use the "subject" role; reasons
 // are subject_token_validation_failed and unsupported_subject_token_type.
 // defaultAudiences is forwarded to Validate and applies only when the matched
 // issuer entry has no AllowedAudiences; the subject token is not broker-bound, so
@@ -267,7 +298,7 @@ func (s *Server) validateExchangeSubjectToken(ctx context.Context, subject Typed
 }
 
 // validateExchangeActorToken validates the RFC 8693 actor token and returns
-// the verified actor identity. Audit failure events use the "actor" role —
+// the verified actor identity. Audit failure events use the "actor" role;
 // reasons are actor_token_validation_failed and unsupported_actor_token_type.
 // The broker's own issuer is passed as the default audience so actor tokens
 // from issuers with no AllowedAudiences configured are still bound to this

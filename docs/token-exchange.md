@@ -156,7 +156,7 @@ result, err := srv.SelfIssuedExchange(ctx, server.SelfIssuedExchangeRequest{
 
 The resulting JWT carries `email`, `email_verified: true`, `groups: ["klaus-sre"]`, and `principal_kind: "machine"` alongside the standard exchanged-token claims (`sub`, `iss`, `aud`, `act`, etc).
 
-`Extra` is merged into the JWT body after the standard claims. RFC 7519 §4.1 registered claim names (`iss`, `sub`, `aud`, `exp`, `nbf`, `iat`, `jti`) are rejected — `SelfIssuedExchange` returns an error if `Extra` contains any of them. OIDC-profile claims already set via struct fields (`email`, `name`, `groups`, `email_verified`) are not guarded and `Extra` can override them.
+`Extra` is merged into the JWT body after the standard claims. RFC 7519 §4.1 registered claim names (`iss`, `sub`, `aud`, `exp`, `nbf`, `iat`, `jti`) are rejected: `SelfIssuedExchange` returns an error if `Extra` contains any of them. OIDC-profile claims already set via struct fields (`email`, `name`, `groups`, `email_verified`) are not guarded and `Extra` can override them.
 
 This is library API only: the HTTP `/oauth/token` endpoint does not extract these from the request form (it relies on the subject-claim defaulting). Use `Options` from in-process wrappers that have already resolved the identity out-of-band.
 

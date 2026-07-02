@@ -114,7 +114,7 @@ type BrokeredExchangeRequest struct {
 // Policy: an Exchanger must be configured (ErrInvalidTarget otherwise) and the
 // audience must be in the client's Config.TokenExchangeClientAudiences allowlist.
 // Self-delegation (actor equal to subject) is dropped to a no-op, and no refresh
-// token is issued — the result's expiry is the downstream token's and clients
+// token is issued; the result's expiry is the downstream token's and clients
 // re-exchange. Every outcome is audited with the client ID, subject, requested
 // audience, granted scope, and the deterministic cross-hop session ID derived
 // from the subject token, so broker audit lines correlate with downstream MCP

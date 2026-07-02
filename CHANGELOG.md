@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Server.LocalMintExchanger` and `NewLocalMintExchanger`: local token issuance is now `SelfIssuedExchange`. The `Exchanger` interface is retained for downstream/remote exchange implementations.
 - `Config.DelegationDefaultResource`: the issued token's audience defaults to the server's resource identifier whenever no resource is supplied, so the configurable default is no longer needed.
 - `server.ExchangerResult.JTI`.
+- Audit surface: the `exchange: "workload"` audit value and the `token_exchange_resource_missing` failure reason are no longer emitted (the workload path and the resource-required rejection are gone). Update any dashboard or alert keyed on those values. The self-issued mint's `token_issued` event now carries `jti` and `session_id`.
 
 ### Added
 
