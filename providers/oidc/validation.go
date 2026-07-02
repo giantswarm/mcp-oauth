@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -311,6 +312,23 @@ func SSRFSafeDialContext(dialer *net.Dialer) func(ctx context.Context, network, 
 //	client := NewSSRFSafeHTTPClient(30 * time.Second)
 //	resp, err := client.Get("https://example.com/jwks")
 func NewSSRFSafeHTTPClient(timeout time.Duration) *http.Client {
+	return newJWKSHTTPClient(timeout,
+		func(d *net.Dialer) dialContextFunc { return SSRFSafeDialContext(d) },
+		false, // pinHost: SSRF dial guard already blocks cross-host redirects to private IPs
+		false, // trustProcessCA: system pool only
+	)
+}
+
+// dialContextFunc is the DialContext signature shared by the JWKS HTTP clients.
+type dialContextFunc = func(ctx context.Context, network, addr string) (net.Conn, error)
+
+// newJWKSHTTPClient builds the JWKS HTTP clients from their three differing
+// dimensions, keeping the transport/timeout block and the TLS decision in one
+// place. dialFor selects the dial posture (SSRF-safe, private-IP, host-scoped);
+// pinHost adds the cross-host redirect guard (needed when the dialer cannot
+// itself filter private IPs); trustProcessCA copies http.DefaultTransport's
+// RootCAs so an internal-CA IdP is trusted (see defaultTransportRootCAs).
+func newJWKSHTTPClient(timeout time.Duration, dialFor func(*net.Dialer) dialContextFunc, pinHost, trustProcessCA bool) *http.Client {
 	if timeout == 0 {
 		timeout = DefaultHTTPTimeout
 	}
@@ -321,17 +339,25 @@ func NewSSRFSafeHTTPClient(timeout time.Duration) *http.Client {
 	}
 
 	transport := &http.Transport{
-		DialContext:           SSRFSafeDialContext(dialer),
+		DialContext:           dialFor(dialer),
 		TLSHandshakeTimeout:   DefaultTLSHandshakeTimeout,
 		ResponseHeaderTimeout: timeout,
 		MaxIdleConns:          DefaultMaxIdleConns,
 		IdleConnTimeout:       DefaultIdleConnTimeout,
 	}
+	if trustProcessCA {
+		// nil keeps default (system pool) verification; only RootCAs is copied.
+		transport.TLSClientConfig = defaultTransportRootCAs()
+	}
 
-	return &http.Client{
+	client := &http.Client{
 		Transport: transport,
 		Timeout:   timeout,
 	}
+	if pinHost {
+		client.CheckRedirect = blockCrossHostRedirect
+	}
+	return client
 }
 
 // NewPrivateIPAllowedHTTPClient creates an HTTP client without SSRF protection.
@@ -345,7 +371,9 @@ func NewSSRFSafeHTTPClient(timeout time.Duration) *http.Client {
 //   - timeout: HTTP client timeout (0 uses default 10 seconds)
 //
 // Security Features:
-//   - TLS Verification: Uses default TLS settings (no InsecureSkipVerify)
+//   - TLS Verification: enforced (never InsecureSkipVerify). Verifies against
+//     the system pool plus any CA bundle the host process installs on
+//     http.DefaultTransport (see defaultTransportRootCAs).
 //   - No SSRF Protection: Private, loopback, and link-local addresses are ALLOWED
 //   - Host-pinned redirects: a redirect to a different host is refused. Because
 //     this client cannot filter private IPs, it pins requests to the host that was
@@ -362,28 +390,35 @@ func NewSSRFSafeHTTPClient(timeout time.Duration) *http.Client {
 //	client := NewPrivateIPAllowedHTTPClient(30 * time.Second)
 //	resp, err := client.Get("https://dex.internal/keys")
 func NewPrivateIPAllowedHTTPClient(timeout time.Duration) *http.Client {
-	if timeout == 0 {
-		timeout = DefaultHTTPTimeout
-	}
+	return newJWKSHTTPClient(timeout,
+		// Standard dialer without SSRF protection (allows private IPs).
+		func(d *net.Dialer) dialContextFunc { return d.DialContext },
+		true, // pinHost: dialer cannot filter private IPs, so guard cross-host redirects
+		true, // trustProcessCA: internal-CA IdPs are the reason this client exists
+	)
+}
 
-	// Use standard dialer without SSRF protection (allows private IPs)
-	dialer := &net.Dialer{
-		Timeout:   timeout,
-		KeepAlive: DefaultDialerKeepAlive,
+// defaultTransportRootCAs returns a *tls.Config trusting the CA pool the host
+// process installs on http.DefaultTransport's RootCAs, or nil when there is none.
+//
+// Only RootCAs is copied — deliberately NOT the rest of DefaultTransport's
+// TLSClientConfig. The feature is CA trust, which lives in RootCAs; copying the
+// whole config would snapshot a global InsecureSkipVerify / ServerName / client
+// certificates (set by anything else in the process) onto exactly these
+// permissive JWKS clients, where the SSRF dial guard is already relaxed. Scoping
+// to RootCAs keeps the "never InsecureSkipVerify" invariant true by construction.
+//
+// Returns nil when DefaultTransport is not the standard *http.Transport or has no
+// RootCAs set, in which case the transport keeps its default (system pool)
+// verification.
+func defaultTransportRootCAs() *tls.Config {
+	dt, ok := http.DefaultTransport.(*http.Transport)
+	if !ok || dt.TLSClientConfig == nil || dt.TLSClientConfig.RootCAs == nil {
+		return nil
 	}
-
-	transport := &http.Transport{
-		DialContext:           dialer.DialContext,
-		TLSHandshakeTimeout:   DefaultTLSHandshakeTimeout,
-		ResponseHeaderTimeout: timeout,
-		MaxIdleConns:          DefaultMaxIdleConns,
-		IdleConnTimeout:       DefaultIdleConnTimeout,
-	}
-
-	return &http.Client{
-		Transport:     transport,
-		Timeout:       timeout,
-		CheckRedirect: blockCrossHostRedirect,
+	return &tls.Config{
+		RootCAs:    dt.TLSClientConfig.RootCAs,
+		MinVersion: tls.VersionTLS12,
 	}
 }
 
@@ -436,28 +471,11 @@ func HostScopedPrivateIPDialContext(dialer *net.Dialer, allowedHosts []string) f
 // NewPrivateIPAllowedHTTPClient when the private endpoint is a known in-cluster
 // service — it narrows the SSRF escape hatch to only the expected host.
 func NewHostScopedPrivateIPHTTPClient(allowedHosts []string, timeout time.Duration) *http.Client {
-	if timeout == 0 {
-		timeout = DefaultHTTPTimeout
-	}
-
-	dialer := &net.Dialer{
-		Timeout:   timeout,
-		KeepAlive: DefaultDialerKeepAlive,
-	}
-
-	transport := &http.Transport{
-		DialContext:           HostScopedPrivateIPDialContext(dialer, allowedHosts),
-		TLSHandshakeTimeout:   DefaultTLSHandshakeTimeout,
-		ResponseHeaderTimeout: timeout,
-		MaxIdleConns:          DefaultMaxIdleConns,
-		IdleConnTimeout:       DefaultIdleConnTimeout,
-	}
-
-	return &http.Client{
-		Transport:     transport,
-		Timeout:       timeout,
-		CheckRedirect: blockCrossHostRedirect,
-	}
+	return newJWKSHTTPClient(timeout,
+		func(d *net.Dialer) dialContextFunc { return HostScopedPrivateIPDialContext(d, allowedHosts) },
+		true, // pinHost: private IPs allowed for the listed hosts, so guard cross-host redirects
+		true, // trustProcessCA: the pinned host is commonly an internal-CA IdP
+	)
 }
 
 // blockCrossHostRedirect refuses a redirect whose target host or port differs

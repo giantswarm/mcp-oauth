@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"path"
 	"strings"
 
@@ -183,26 +182,19 @@ func NewOIDCValidator(issuers []TrustedIssuer) (*OIDCValidator, error) {
 		if ti.AllowPrivateIPJWKS {
 			if permissive == nil {
 				// AllowPrivateIPJWKS targets a controlled in-cluster endpoint,
-				// which commonly presents a certificate from an internal CA. Back
-				// the client with http.DefaultTransport so a CA bundle the host
-				// process installs there (e.g. via an extra-CA file) is honored;
-				// a freshly built transport would verify against the system pool
-				// alone and reject it.
+				// which commonly presents a certificate from an internal CA.
+				// NewJWKSClientWithOptions builds the permissive client via
+				// NewPrivateIPAllowedHTTPClient, which keeps the cross-host
+				// redirect guard and tuned timeouts AND honors a CA bundle the
+				// host process installs on http.DefaultTransport. Building a raw
+				// client here would drop the redirect guard.
 				permissive = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
 					AllowPrivateIP: true,
-					HTTPClient: &http.Client{
-						Transport: http.DefaultTransport,
-						Timeout:   oidc.DefaultHTTPTimeout,
-					},
 				})
 			}
 		} else if len(ti.AllowPrivateIPJWKSHosts) > 0 {
 			issuerClients[ti.Issuer] = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
 				AllowPrivateIPHosts: ti.AllowPrivateIPJWKSHosts,
-				HTTPClient: &http.Client{
-					Transport: http.DefaultTransport,
-					Timeout:   oidc.DefaultHTTPTimeout,
-				},
 			})
 		}
 	}

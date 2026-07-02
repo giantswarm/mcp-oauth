@@ -129,7 +129,9 @@ func NewJWKSClient(httpClient *http.Client, cacheTTL time.Duration, logger *slog
 //   - A warning is logged about reduced security
 //
 // Security Features:
-//   - TLS Verification: Uses default TLS settings (no InsecureSkipVerify)
+//   - TLS Verification: enforced (never InsecureSkipVerify); permissive and
+//     host-scoped clients additionally honor a CA bundle installed on
+//     http.DefaultTransport
 //   - Response Size Limit: Limits response body to 1MB
 //   - Key Count Limit: Limits JWKS to 100 keys
 //
