@@ -4,6 +4,7 @@ package oidc
 import (
 	"context"
 	"crypto/subtle"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -98,6 +99,11 @@ type JWKSClientOptions struct {
 	// muster.agentic-platform.svc.cluster.local). Ignored when AllowPrivateIP
 	// is true.
 	AllowPrivateIPHosts []string
+
+	// RootCAs is the CA pool used to verify the JWKS endpoint's TLS certificate
+	// when AllowPrivateIP or AllowPrivateIPHosts is set (e.g. an internal-CA
+	// Dex). nil uses the system pool. Ignored when HTTPClient is provided.
+	RootCAs *x509.CertPool
 }
 
 // NewJWKSClient creates a new JWKS client with default configuration.
@@ -130,8 +136,8 @@ func NewJWKSClient(httpClient *http.Client, cacheTTL time.Duration, logger *slog
 //
 // Security Features:
 //   - TLS Verification: enforced (never InsecureSkipVerify); permissive and
-//     host-scoped clients additionally honor a CA bundle installed on
-//     http.DefaultTransport
+//     host-scoped clients verify against opts.RootCAs when provided, otherwise
+//     the system pool
 //   - Response Size Limit: Limits response body to 1MB
 //   - Key Count Limit: Limits JWKS to 100 keys
 //
@@ -139,6 +145,7 @@ func NewJWKSClient(httpClient *http.Client, cacheTTL time.Duration, logger *slog
 //
 //	client := NewJWKSClientWithOptions(JWKSClientOptions{
 //	    AllowPrivateIP: true,  // For internal Dex
+//	    RootCAs:        internalCAPool,
 //	    Logger:         logger,
 //	})
 func NewJWKSClientWithOptions(opts JWKSClientOptions) *JWKSClient {
@@ -146,9 +153,9 @@ func NewJWKSClientWithOptions(opts JWKSClientOptions) *JWKSClient {
 	if httpClient == nil {
 		switch {
 		case opts.AllowPrivateIP:
-			httpClient = NewPrivateIPAllowedHTTPClient(DefaultHTTPTimeout)
+			httpClient = NewPrivateIPAllowedHTTPClient(DefaultHTTPTimeout, opts.RootCAs)
 		case len(opts.AllowPrivateIPHosts) > 0:
-			httpClient = NewHostScopedPrivateIPHTTPClient(opts.AllowPrivateIPHosts, DefaultHTTPTimeout)
+			httpClient = NewHostScopedPrivateIPHTTPClient(opts.AllowPrivateIPHosts, DefaultHTTPTimeout, opts.RootCAs)
 		default:
 			// SECURITY: SSRF-safe client validates resolved IPs at connection
 			// time (DNS rebinding protection) and blocks private, loopback, and

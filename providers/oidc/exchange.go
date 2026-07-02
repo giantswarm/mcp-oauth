@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -106,6 +107,11 @@ type TokenExchangeClientOptions struct {
 	// WARNING: Reduces SSRF protection. Only enable for internal/VPN deployments
 	// where the IdP legitimately runs on private networks.
 	AllowPrivateIP bool
+
+	// RootCAs is the CA pool used to verify the token endpoint's TLS certificate
+	// when AllowPrivateIP is set (e.g. an internal-CA Dex). nil uses the system
+	// pool. Ignored when HTTPClient is provided.
+	RootCAs *x509.CertPool
 }
 
 // TokenExchangeRequest represents the token exchange request parameters.
@@ -213,7 +219,7 @@ func NewTokenExchangeClientWithOptions(opts TokenExchangeClientOptions) *TokenEx
 	if httpClient == nil {
 		if opts.AllowPrivateIP {
 			// Use client without SSRF protection for private IdP deployments
-			httpClient = NewPrivateIPAllowedHTTPClient(DefaultHTTPTimeout)
+			httpClient = NewPrivateIPAllowedHTTPClient(DefaultHTTPTimeout, opts.RootCAs)
 		} else {
 			// SECURITY: Use SSRF-safe client with DNS rebinding protection
 			httpClient = NewSSRFSafeHTTPClient(DefaultHTTPTimeout)

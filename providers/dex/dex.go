@@ -5,6 +5,7 @@ package dex
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -84,6 +85,12 @@ type Config struct {
 	// WARNING: Reduces SSRF protection. Only enable for private IdP deployments.
 	AllowPrivateIP bool
 
+	// RootCAs is the CA pool used to verify Dex's TLS certificate during OIDC
+	// discovery and token endpoint calls when AllowPrivateIP is set and no
+	// explicit HTTPClient is provided (e.g. an internal-CA Dex). nil uses the
+	// system pool.
+	RootCAs *x509.CertPool
+
 	// discoveryClient overrides the OIDC discovery client. Nil means
 	// NewProvider constructs one from the other config fields. Same-package
 	// tests use this to inject a client pointed at a loopback httptest server.
@@ -108,7 +115,7 @@ func NewProvider(cfg *Config) (*Provider, error) {
 	}
 
 	requestTimeout := resolveTimeout(cfg.RequestTimeout)
-	httpClient := resolveHTTPClient(cfg.HTTPClient, cfg.AllowPrivateIP, requestTimeout)
+	httpClient := resolveHTTPClient(cfg.HTTPClient, cfg.AllowPrivateIP, cfg.RootCAs, requestTimeout)
 	if cfg.AllowPrivateIP {
 		logger.Warn("SECURITY WARNING: AllowPrivateIP is enabled for Dex OIDC discovery and token endpoints",
 			"risk", "OIDC discovery and token endpoints can resolve to private/internal IP addresses — SSRF possible",
@@ -229,12 +236,12 @@ func resolveTimeout(timeout time.Duration) time.Duration {
 // discovery. When allowPrivateIP is true and no explicit client is provided, a
 // client without SSRF protection is returned so that Dex issuer URLs resolving
 // to RFC 1918 addresses (e.g. internal load balancers) are reachable.
-func resolveHTTPClient(client *http.Client, allowPrivateIP bool, timeout time.Duration) *http.Client {
+func resolveHTTPClient(client *http.Client, allowPrivateIP bool, rootCAs *x509.CertPool, timeout time.Duration) *http.Client {
 	if client != nil {
 		return client
 	}
 	if allowPrivateIP {
-		return oidc.NewPrivateIPAllowedHTTPClient(timeout)
+		return oidc.NewPrivateIPAllowedHTTPClient(timeout, rootCAs)
 	}
 	return &http.Client{Timeout: timeout}
 }
