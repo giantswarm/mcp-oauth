@@ -201,6 +201,8 @@ func New(
 		opt(srv)
 	}
 
+	srv.registerSelfIssuedSubjectValidator()
+
 	if srv.dpopReplayCache == nil {
 		srv.dpopReplayCache = NewMemoryDPoPReplayCache()
 	}

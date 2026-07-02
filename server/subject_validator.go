@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -16,6 +17,73 @@ import (
 // issuer's AllowedAudiences is empty; pass nil to accept any audience.
 type SubjectTokenValidator interface {
 	Validate(ctx context.Context, tokenString string, defaultAudiences []string) (*SubjectIdentity, error)
+}
+
+// selfIssuedSubjectValidator accepts subject tokens this server issued itself
+// (iss == Config.Issuer, at+jwt, signed by the server key), verified through the
+// same self-issued JWT pipeline used for bearer authentication (signature, typ,
+// iss, exp, audience, revocation, family). The server signs its own tokens, so it
+// trusts them as exchange subjects without a self-referential trustedIssuers
+// entry. This is what lets a multi-hop A2A delegation re-exchange an OBO token
+// that already carries an act chain to nest the next actor beneath it (RFC 8693
+// §4.4): only a self-issued token carries act, since external issuers (Dex,
+// Kubernetes) do not emit it. Any other token is delegated to next (the
+// trusted-issuer validator), preserving external-issuer behaviour.
+type selfIssuedSubjectValidator struct {
+	srv  *Server
+	next SubjectTokenValidator
+}
+
+func (v *selfIssuedSubjectValidator) Validate(ctx context.Context, tokenString string, defaultAudiences []string) (*SubjectIdentity, error) {
+	if !v.srv.looksLikeSelfIssuedJWT(tokenString) {
+		if v.next != nil {
+			return v.next.Validate(ctx, tokenString, defaultAudiences)
+		}
+		return nil, fmt.Errorf("%w: not self-issued and no trusted-issuer validator configured", ErrIssuerNotTrusted)
+	}
+	_, claims, err := v.srv.validateSelfIssuedJWT(ctx, tokenString)
+	if err != nil {
+		return nil, err
+	}
+	return subjectIdentityFromSelfIssuedClaims(claims)
+}
+
+// registerSelfIssuedSubjectValidator chains a self-issued validator ahead of any
+// trusted-issuer validator for the JWT subject token types, so the server trusts
+// its own issued at+jwt tokens as exchange subjects without a self-referential
+// WithTrustedIssuers entry. This lets a multi-hop A2A delegation re-exchange an
+// OBO token (sub=human, act=prior actor) to add the next actor and extend the
+// chain. Only meaningful in JWT access-token mode, where the server can verify
+// its own signature.
+func (s *Server) registerSelfIssuedSubjectValidator() {
+	if !s.Config.IsJWTAccessTokenFormat() {
+		return
+	}
+	if s.subjectValidators == nil {
+		s.subjectValidators = make(map[string]SubjectTokenValidator)
+	}
+	for _, tokenType := range []string{SubjectTokenTypeIDToken, SubjectTokenTypeAccessToken, SubjectTokenTypeJWT} {
+		s.subjectValidators[tokenType] = &selfIssuedSubjectValidator{srv: s, next: s.subjectValidators[tokenType]}
+	}
+}
+
+// subjectIdentityFromSelfIssuedClaims projects the verified claim map of a
+// self-issued token into a SubjectIdentity, preserving the act delegation chain
+// so a re-exchange carries it forward.
+func subjectIdentityFromSelfIssuedClaims(claims map[string]any) (*SubjectIdentity, error) {
+	raw, err := json.Marshal(claims)
+	if err != nil {
+		return nil, fmt.Errorf("marshal self-issued claims: %w", err)
+	}
+	var idtc oidc.IDTokenClaims
+	if err := json.Unmarshal(raw, &idtc); err != nil {
+		return nil, fmt.Errorf("decode self-issued claims: %w", err)
+	}
+	return &SubjectIdentity{
+		Subject: idtc.Subject,
+		Issuer:  idtc.Issuer,
+		Claims:  &idtc,
+	}, nil
 }
 
 // SubjectIdentity carries the verified identity extracted from a JWT.
