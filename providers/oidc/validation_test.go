@@ -939,7 +939,7 @@ func TestHostScopedPrivateIPHTTPClient_TrustsProcessCABundle(t *testing.T) {
 	http.DefaultTransport = cloned
 	t.Cleanup(func() { http.DefaultTransport = original })
 
-	// Build the client AFTER installing the CA so defaultTransportTLSClientConfig
+	// Build the client AFTER installing the CA so defaultTransportRootCAs
 	// snapshots the trusted pool onto the client's own transport.
 	host := srv.Listener.Addr().(*net.TCPAddr).IP.String()
 	client := NewHostScopedPrivateIPHTTPClient([]string{host}, 5*time.Second)
@@ -950,5 +950,44 @@ func TestHostScopedPrivateIPHTTPClient_TrustsProcessCABundle(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+// TestPrivateIPAllowedHTTPClient_DoesNotLeakInsecureSkipVerify verifies that a
+// global InsecureSkipVerify set on http.DefaultTransport does NOT carry over to
+// the permissive JWKS client. Only RootCAs is copied from DefaultTransport, so
+// the "never InsecureSkipVerify" invariant holds by construction even where the
+// SSRF dial guard is relaxed. Regression guard for the review of #494.
+//
+// NOT parallel-safe: it mutates the global http.DefaultTransport (restored via
+// t.Cleanup). Do not add t.Parallel() to this test.
+func TestPrivateIPAllowedHTTPClient_DoesNotLeakInsecureSkipVerify(t *testing.T) {
+	// A TLS server whose self-signed cert is trusted by nobody.
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	// Install a hostile global config: InsecureSkipVerify=true plus an empty
+	// RootCAs pool (which does NOT trust srv). If the whole TLSClientConfig were
+	// copied, InsecureSkipVerify would leak and the handshake would wrongly succeed.
+	original := http.DefaultTransport
+	cloned := original.(*http.Transport).Clone()
+	cloned.TLSClientConfig = &tls.Config{
+		RootCAs:            x509.NewCertPool(),
+		InsecureSkipVerify: true, //nolint:gosec // test asserts this does NOT propagate
+		MinVersion:         tls.VersionTLS12,
+	}
+	http.DefaultTransport = cloned
+	t.Cleanup(func() { http.DefaultTransport = original })
+
+	client := NewPrivateIPAllowedHTTPClient(5 * time.Second)
+	resp, err := client.Get(srv.URL)
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("handshake to an untrusted self-signed server must fail; InsecureSkipVerify leaked from http.DefaultTransport")
+	}
+	if !strings.Contains(err.Error(), "certificate") && !strings.Contains(err.Error(), "x509") {
+		t.Errorf("expected a certificate verification error, got: %v", err)
 	}
 }
