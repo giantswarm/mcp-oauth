@@ -2,6 +2,8 @@ package oidc
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net"
 	"net/http"
@@ -856,4 +858,136 @@ func TestNewHostScopedPrivateIPHTTPClient(t *testing.T) {
 			t.Errorf("expected 'restricted IP' error, got: %v", err)
 		}
 	})
+}
+
+// TestHostScopedPrivateIPHTTPClient_RedirectPinning verifies the host-scoped
+// private-IP client keeps the cross-host redirect guard: it follows a same-host
+// redirect but refuses one that changes the port, even when the listed host is
+// allowed to dial private IPs. This is the AllowPrivateIPJWKSHosts analogue of
+// TestPrivateIPAllowedHTTPClient_RedirectPinning — with the dial guard opened
+// for the listed host, the redirect guard is the remaining defense against a
+// discovery/JWKS endpoint 302-ing the fetch to a different internal target.
+func TestHostScopedPrivateIPHTTPClient_RedirectPinning(t *testing.T) {
+	t.Run("follows same-host redirect", func(t *testing.T) {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/keys", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/keys/final", http.StatusFound)
+		})
+		mux.HandleFunc("/keys/final", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+
+		host := srv.Listener.Addr().(*net.TCPAddr).IP.String()
+		client := NewHostScopedPrivateIPHTTPClient([]string{host}, 5*time.Second)
+		resp, err := client.Get(srv.URL + "/keys")
+		if err != nil {
+			t.Fatalf("same-host redirect must be followed, got error: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200 after same-host redirect, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("refuses cross-host redirect", func(t *testing.T) {
+		// Both servers listen on 127.0.0.1 (only the port differs) and that host
+		// is in the allowlist, so the dial guard permits both — isolating the
+		// assertion to the redirect guard, which pins the port as well as the host.
+		internal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(internal.Close)
+
+		entry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, internal.URL+"/latest/meta-data", http.StatusFound)
+		}))
+		t.Cleanup(entry.Close)
+
+		host := entry.Listener.Addr().(*net.TCPAddr).IP.String()
+		client := NewHostScopedPrivateIPHTTPClient([]string{host}, 5*time.Second)
+		_, err := client.Get(entry.URL + "/keys")
+		if err == nil {
+			t.Fatal("cross-host redirect must be refused")
+		}
+		if !strings.Contains(err.Error(), "cross-host redirect") {
+			t.Errorf("expected a cross-host redirect error, got: %v", err)
+		}
+	})
+}
+
+// TestHostScopedPrivateIPHTTPClient_TrustsProcessCABundle verifies the
+// host-scoped private-IP client honors a CA bundle the host process installs on
+// http.DefaultTransport (the AllowPrivateIPJWKSHosts analogue of the permissive
+// CA-trust tests). Without the copied TLS config the handshake to an internal-CA
+// endpoint would verify against the system pool alone and fail.
+//
+// NOT parallel-safe: it mutates the global http.DefaultTransport (restored via
+// t.Cleanup). Do not add t.Parallel() to this test.
+func TestHostScopedPrivateIPHTTPClient_TrustsProcessCABundle(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+	original := http.DefaultTransport
+	cloned := original.(*http.Transport).Clone()
+	cloned.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	http.DefaultTransport = cloned
+	t.Cleanup(func() { http.DefaultTransport = original })
+
+	// Build the client AFTER installing the CA so defaultTransportRootCAs
+	// snapshots the trusted pool onto the client's own transport.
+	host := srv.Listener.Addr().(*net.TCPAddr).IP.String()
+	client := NewHostScopedPrivateIPHTTPClient([]string{host}, 5*time.Second)
+	resp, err := client.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("expected TLS handshake to succeed with process CA bundle, got: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+// TestPrivateIPAllowedHTTPClient_DoesNotLeakInsecureSkipVerify verifies that a
+// global InsecureSkipVerify set on http.DefaultTransport does NOT carry over to
+// the permissive JWKS client. Only RootCAs is copied from DefaultTransport, so
+// the "never InsecureSkipVerify" invariant holds by construction even where the
+// SSRF dial guard is relaxed. Regression guard for the review of #494.
+//
+// NOT parallel-safe: it mutates the global http.DefaultTransport (restored via
+// t.Cleanup). Do not add t.Parallel() to this test.
+func TestPrivateIPAllowedHTTPClient_DoesNotLeakInsecureSkipVerify(t *testing.T) {
+	// A TLS server whose self-signed cert is trusted by nobody.
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	// Install a hostile global config: InsecureSkipVerify=true plus an empty
+	// RootCAs pool (which does NOT trust srv). If the whole TLSClientConfig were
+	// copied, InsecureSkipVerify would leak and the handshake would wrongly succeed.
+	original := http.DefaultTransport
+	cloned := original.(*http.Transport).Clone()
+	cloned.TLSClientConfig = &tls.Config{
+		RootCAs:            x509.NewCertPool(),
+		InsecureSkipVerify: true, //nolint:gosec // test asserts this does NOT propagate
+		MinVersion:         tls.VersionTLS12,
+	}
+	http.DefaultTransport = cloned
+	t.Cleanup(func() { http.DefaultTransport = original })
+
+	client := NewPrivateIPAllowedHTTPClient(5 * time.Second)
+	resp, err := client.Get(srv.URL)
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("handshake to an untrusted self-signed server must fail; InsecureSkipVerify leaked from http.DefaultTransport")
+	}
+	if !strings.Contains(err.Error(), "certificate") && !strings.Contains(err.Error(), "x509") {
+		t.Errorf("expected a certificate verification error, got: %v", err)
+	}
 }
