@@ -305,3 +305,44 @@ func TestSelfIssuedExchange_TokenExpiry(t *testing.T) {
 			"expiry must be exactly issue time plus the configured TTL")
 	})
 }
+
+// TestSelfIssuedExchange_RefusesUnverifiedSubjectEmail asserts the exchange
+// fails closed when the validated subject asserts an email claim without
+// email_verified=true: the issued token would carry that email for downstream
+// authorization, so no token is issued.
+func TestSelfIssuedExchange_RefusesUnverifiedSubjectEmail(t *testing.T) {
+	srv, _ := newActorExchangeServer(t)
+	srv.subjectValidators = map[string]SubjectTokenValidator{
+		SubjectTokenTypeIDToken: &stubTokenValidator{byToken: map[string]*SubjectIdentity{
+			"sub-tok": {Subject: testSubject, Issuer: testIssuer, Claims: &oidc.IDTokenClaims{
+				Email:         "admin@giantswarm.io",
+				EmailVerified: false,
+			}},
+		}},
+	}
+
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+		Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
+		Resource: "https://api.example.com",
+	}})
+	require.ErrorIs(t, err, ErrUnverifiedSubjectEmail)
+}
+
+// TestSelfIssuedExchange_EmaillessSubjectExemptFromEmailGate asserts a subject
+// with no email claim (a workload identity such as a Kubernetes ServiceAccount
+// token) is exempt from the email_verified gate: its token asserts no email to
+// prove.
+func TestSelfIssuedExchange_EmaillessSubjectExemptFromEmailGate(t *testing.T) {
+	srv, _ := newActorExchangeServer(t)
+	srv.subjectValidators = map[string]SubjectTokenValidator{
+		SubjectTokenTypeIDToken: &stubTokenValidator{byToken: map[string]*SubjectIdentity{
+			"sub-tok": {Subject: "system:serviceaccount:kagent:sre-agent", Issuer: testIssuer, Claims: &oidc.IDTokenClaims{}},
+		}},
+	}
+
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+		Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
+		Resource: "https://api.example.com",
+	}})
+	require.NoError(t, err)
+}

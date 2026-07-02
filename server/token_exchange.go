@@ -22,6 +22,13 @@ const GrantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
 // token only to add an actor (a delegation hop, bounded by maxActorChainDepth).
 var ErrSelfRenewalDenied = errors.New("self-issued token cannot be re-exchanged without an actor")
 
+// ErrUnverifiedSubjectEmail is returned by SelfIssuedExchange when the validated
+// subject asserts an email claim without email_verified being true. The issued
+// token would carry that email as an identity claim which downstream resource
+// servers authorize on, so issuance fails closed. A subject with no email claim
+// (e.g. a Kubernetes ServiceAccount token) is exempt.
+var ErrUnverifiedSubjectEmail = errors.New("subject email_verified is not true; refusing to issue a token asserting an unproven email")
+
 // TokenExchangeResult holds the output of a successful token exchange.
 type TokenExchangeResult struct {
 	AccessToken     string
@@ -139,6 +146,17 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 	}
 	if err := s.checkSelfRenewal(ctx, identity, actor, sessionID); err != nil {
 		return nil, err
+	}
+	// The email gate applies only when the subject's own email would be
+	// defaulted into the issued token; an explicit req.Options.Email is the
+	// in-process caller's assertion and takes precedence over subject claims
+	// (see defaultExchangeOptions), so there is no subject email to prove.
+	// The HTTP handler always passes zero Options, so the external exchange
+	// surface is fully gated.
+	if req.Options.Email == "" {
+		if err := s.checkSubjectEmailVerified(ctx, identity, sessionID); err != nil {
+			return nil, err
+		}
 	}
 	act, err := buildActorChain(actor, priorActorChain(identity))
 	if err != nil {
@@ -259,6 +277,27 @@ func (s *Server) checkSelfRenewal(ctx context.Context, identity, actor *SubjectI
 		},
 	})
 	return ErrSelfRenewalDenied
+}
+
+// checkSubjectEmailVerified enforces the fail-closed email gate on the
+// self-issued exchange: a subject whose validated claims carry an email without
+// email_verified=true is refused, because the issued token emits that email
+// (see defaultExchangeOptions) and resource servers authorize on it. Subjects
+// without an email claim pass; their tokens carry no email to trust.
+func (s *Server) checkSubjectEmailVerified(ctx context.Context, identity *SubjectIdentity, sessionID string) error {
+	if identity.Claims == nil || identity.Claims.Email == "" || identity.Claims.EmailVerified {
+		return nil
+	}
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type:   security.EventAuthFailure,
+		UserID: identity.Subject,
+		Details: map[string]any{
+			"reason":     "token_exchange_unverified_subject_email",
+			"grant_type": GrantTypeTokenExchange,
+			"session_id": sessionID,
+		},
+	})
+	return ErrUnverifiedSubjectEmail
 }
 
 // exchangeSessionRateLimited reports whether the per-session issuance limiter rejects
