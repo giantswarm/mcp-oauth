@@ -80,9 +80,10 @@ func subjectIdentityFromSelfIssuedClaims(claims map[string]any) (*SubjectIdentit
 		return nil, fmt.Errorf("decode self-issued claims: %w", err)
 	}
 	return &SubjectIdentity{
-		Subject: idtc.Subject,
-		Issuer:  idtc.Issuer,
-		Claims:  &idtc,
+		Subject:         idtc.Subject,
+		Issuer:          idtc.Issuer,
+		Claims:          &idtc,
+		ConfirmationJKT: confirmationJKTFromClaims(claims),
 	}, nil
 }
 
@@ -94,6 +95,20 @@ type SubjectIdentity struct {
 	Issuer        string
 	AllowedScopes []string
 	Claims        *oidc.IDTokenClaims
+	// ConfirmationJKT is the RFC 9449 §6.1 cnf.jkt thumbprint the token is bound
+	// to, empty when the token carries no proof-of-possession confirmation.
+	ConfirmationJKT string
+}
+
+// confirmationJKTFromClaims extracts the RFC 9449 §6.1 cnf.jkt thumbprint from a
+// verified claim map, returning "" when no confirmation key is present.
+func confirmationJKTFromClaims(claims map[string]any) string {
+	cnf, ok := claims["cnf"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	jkt, _ := cnf["jkt"].(string)
+	return jkt
 }
 
 // ErrIssuerNotTrusted is returned by Validate when the token is not a JWT,
@@ -293,10 +308,11 @@ func (v *OIDCValidator) Validate(ctx context.Context, tokenString string, defaul
 	}
 
 	return &SubjectIdentity{
-		Subject:       subject,
-		Issuer:        claims.Issuer,
-		AllowedScopes: ti.AllowedScopes,
-		Claims:        claims,
+		Subject:         subject,
+		Issuer:          claims.Issuer,
+		AllowedScopes:   ti.AllowedScopes,
+		Claims:          claims,
+		ConfirmationJKT: confirmationJKTFromClaims(rawClaims),
 	}, nil
 }
 

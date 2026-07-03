@@ -239,6 +239,15 @@ func (h *Handler) handleTokenExchangeError(
 		h.writeExchangeRateLimited(w, r, startTime, span)
 		return
 	}
+	if errors.Is(err, server.ErrInvalidTarget) {
+		h.logger.Debug("token exchange: invalid target", "ip", clientIP)
+		h.recordTokenFailure(r.Context(), server.GrantTypeTokenExchange, constants.ErrorCodeInvalidTarget)
+		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "invalid target")
+		h.writeError(w, constants.ErrorCodeInvalidTarget,
+			"the requested resource cannot be served", http.StatusBadRequest)
+		return
+	}
 	var unsupported *server.TokenExchangeUnsupportedTypeError
 	if errors.As(err, &unsupported) {
 		h.logger.Debug("token exchange: unsupported subject_token_type",

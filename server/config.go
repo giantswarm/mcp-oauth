@@ -758,6 +758,17 @@ type Config struct {
 	// Default: nil (no client may request any audience).
 	TokenExchangeClientAudiences map[string][]string
 
+	// TokenExchangeAllowedResources caps the RFC 8707 resource values that the
+	// self-issued RFC 8693 flow (Server.SelfIssuedExchange) will mint a token
+	// for. When non-empty, a request whose resource is not in this list is
+	// rejected with invalid_target (RFC 8693 §2.2.2). The server's own
+	// ResourceIdentifier is always permitted, so a request that omits resource
+	// (audience defaults to GetResourceIdentifier) is always served.
+	//
+	// Default: nil (any resource is accepted; the issued token's aud is the
+	// requested resource, or the server's ResourceIdentifier when omitted).
+	TokenExchangeAllowedResources []string
+
 	// SessionIDHMACKey optionally replaces the default SHA-256 session-ID derivation
 	// in Server.AcceptForwardedIDToken with HMAC-SHA-256 keyed by this value.
 	//

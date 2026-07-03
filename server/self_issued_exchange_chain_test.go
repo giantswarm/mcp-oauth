@@ -265,6 +265,185 @@ func TestSelfIssuedExchange_AllowsSelfSubjectChainExtension(t *testing.T) {
 	require.Equal(t, "agentA", private.Act.Act.Sub, "prior actor preserved beneath it")
 }
 
+// TestSelfIssuedExchange_DeniesRepeatedActorReattachment asserts re-exchanging a
+// self-issued token whose outermost actor is A, naming A again as the new actor,
+// adds no hop and is treated as a bare renewal: it is denied rather than granting
+// a fresh TTL.
+func TestSelfIssuedExchange_DeniesRepeatedActorReattachment(t *testing.T) {
+	srv, _ := newActorExchangeServer(t)
+	srv.subjectValidators = map[string]SubjectTokenValidator{
+		SubjectTokenTypeIDToken: &stubTokenValidator{byToken: map[string]*SubjectIdentity{
+			"self-tok": {Subject: testSubject, Issuer: srv.Config.Issuer, Claims: &oidc.IDTokenClaims{
+				Act: &oidc.ActorClaim{Issuer: "https://k8s.example.com", Subject: "agentA"},
+			}},
+			"act-a": {Subject: "agentA", Issuer: "https://k8s.example.com"},
+		}},
+	}
+
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+		Subject:  TypedToken{Token: "self-tok", Type: SubjectTokenTypeIDToken},
+		Actor:    TypedToken{Token: "act-a", Type: SubjectTokenTypeIDToken},
+		Resource: "https://api.example.com",
+		Scope:    "read",
+	}})
+	require.ErrorIs(t, err, ErrSelfRenewalDenied)
+}
+
+// TestSelfIssuedExchange_AllowsDifferentActorReattachment asserts a new actor
+// that differs from the outermost actor on the subject's chain extends the chain
+// normally, so legitimate multi-hop delegation is unaffected by the
+// same-actor collapse.
+func TestSelfIssuedExchange_AllowsDifferentActorReattachment(t *testing.T) {
+	srv, signingKey := newActorExchangeServer(t)
+	srv.subjectValidators = map[string]SubjectTokenValidator{
+		SubjectTokenTypeIDToken: &stubTokenValidator{byToken: map[string]*SubjectIdentity{
+			"self-tok": {Subject: testSubject, Issuer: srv.Config.Issuer, Claims: &oidc.IDTokenClaims{
+				Act: &oidc.ActorClaim{Issuer: "https://k8s.example.com", Subject: "agentA"},
+			}},
+			"act-b": {Subject: "agentB", Issuer: "https://k8s.example.com"},
+		}},
+	}
+
+	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+		Subject:  TypedToken{Token: "self-tok", Type: SubjectTokenTypeIDToken},
+		Actor:    TypedToken{Token: "act-b", Type: SubjectTokenTypeIDToken},
+		Resource: "https://api.example.com",
+		Scope:    "read",
+	}})
+	require.NoError(t, err)
+
+	private := parseIssuedClaims(t, result.AccessToken, signingKey.Public())
+	require.Equal(t, "agentB", private.Act.Sub, "new distinct actor added to the chain")
+	require.NotNil(t, private.Act.Act)
+	require.Equal(t, "agentA", private.Act.Act.Sub, "prior actor preserved beneath it")
+}
+
+// TestSelfIssuedExchange_DeniesKeyBoundSubjectWithoutProof asserts a subject
+// token carrying an RFC 9449 cnf.jkt binding cannot be re-exchanged when the
+// request presents no DPoP proof for that key.
+func TestSelfIssuedExchange_DeniesKeyBoundSubjectWithoutProof(t *testing.T) {
+	srv, _ := newActorExchangeServer(t)
+	srv.subjectValidators = map[string]SubjectTokenValidator{
+		SubjectTokenTypeIDToken: &stubTokenValidator{byToken: map[string]*SubjectIdentity{
+			"sub-tok": {Subject: testSubject, Issuer: testIssuer, ConfirmationJKT: "jkt-subject"},
+		}},
+	}
+
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+		Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
+		Resource: "https://api.example.com",
+	}})
+	require.ErrorIs(t, err, ErrSubjectKeyMismatch)
+}
+
+// TestSelfIssuedExchange_DeniesKeyBoundSubjectWithDifferentKey asserts a
+// key-bound subject token cannot be laundered into a token bound to a different
+// key: a request proving possession of a key other than the subject's cnf.jkt is
+// rejected.
+func TestSelfIssuedExchange_DeniesKeyBoundSubjectWithDifferentKey(t *testing.T) {
+	srv, _ := newActorExchangeServer(t)
+	srv.subjectValidators = map[string]SubjectTokenValidator{
+		SubjectTokenTypeIDToken: &stubTokenValidator{byToken: map[string]*SubjectIdentity{
+			"sub-tok": {Subject: testSubject, Issuer: testIssuer, ConfirmationJKT: "jkt-subject"},
+		}},
+	}
+
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{
+		SubjectExchange: SubjectExchange{
+			Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
+			Resource: "https://api.example.com",
+		},
+		DPoPJKT: "jkt-attacker",
+	})
+	require.ErrorIs(t, err, ErrSubjectKeyMismatch)
+}
+
+// TestSelfIssuedExchange_AllowsKeyBoundSubjectWithMatchingKey asserts a key-bound
+// subject re-exchanged by the holder of its confirmation key succeeds and the
+// issued token is bound to that same key.
+func TestSelfIssuedExchange_AllowsKeyBoundSubjectWithMatchingKey(t *testing.T) {
+	srv, signingKey := newActorExchangeServer(t)
+	srv.subjectValidators = map[string]SubjectTokenValidator{
+		SubjectTokenTypeIDToken: &stubTokenValidator{byToken: map[string]*SubjectIdentity{
+			"sub-tok": {Subject: testSubject, Issuer: testIssuer, ConfirmationJKT: "jkt-subject"},
+		}},
+	}
+
+	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{
+		SubjectExchange: SubjectExchange{
+			Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
+			Resource: "https://api.example.com",
+		},
+		DPoPJKT: "jkt-subject",
+	})
+	require.NoError(t, err)
+
+	private := parseIssuedClaims(t, result.AccessToken, signingKey.Public())
+	require.NotNil(t, private.Cnf)
+	require.Equal(t, "jkt-subject", private.Cnf.JKT, "issued token stays bound to the confirmation key")
+}
+
+// TestSelfIssuedExchange_AllowsListedResource asserts a requested resource in
+// Config.TokenExchangeAllowedResources is served.
+func TestSelfIssuedExchange_AllowsListedResource(t *testing.T) {
+	srv, _ := newActorExchangeServer(t)
+	srv.Config.TokenExchangeAllowedResources = []string{"https://backend.example.com"}
+	srv.subjectValidators = map[string]SubjectTokenValidator{
+		SubjectTokenTypeIDToken: &stubTokenValidator{byToken: map[string]*SubjectIdentity{
+			"sub-tok": {Subject: testSubject, Issuer: testIssuer},
+		}},
+	}
+
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+		Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
+		Resource: "https://backend.example.com",
+	}})
+	require.NoError(t, err)
+}
+
+// TestSelfIssuedExchange_DeniesUnlistedResource asserts a requested resource
+// absent from a non-empty Config.TokenExchangeAllowedResources is rejected with
+// invalid_target.
+func TestSelfIssuedExchange_DeniesUnlistedResource(t *testing.T) {
+	srv, _ := newActorExchangeServer(t)
+	srv.Config.TokenExchangeAllowedResources = []string{"https://backend.example.com"}
+	srv.subjectValidators = map[string]SubjectTokenValidator{
+		SubjectTokenTypeIDToken: &stubTokenValidator{byToken: map[string]*SubjectIdentity{
+			"sub-tok": {Subject: testSubject, Issuer: testIssuer},
+		}},
+	}
+
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+		Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
+		Resource: "https://evil.example.com",
+	}})
+	require.ErrorIs(t, err, ErrInvalidTarget)
+}
+
+// TestSelfIssuedExchange_ResourceAllowlistPassthrough asserts an empty
+// Config.TokenExchangeAllowedResources imposes no restriction, and the
+// server's own resource identifier is always served even under a non-empty list.
+func TestSelfIssuedExchange_ResourceAllowlistPassthrough(t *testing.T) {
+	srv, _ := newActorExchangeServer(t)
+	srv.subjectValidators = map[string]SubjectTokenValidator{
+		SubjectTokenTypeIDToken: &stubTokenValidator{byToken: map[string]*SubjectIdentity{
+			"sub-tok": {Subject: testSubject, Issuer: testIssuer},
+		}},
+	}
+
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+		Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
+		Resource: "https://anything.example.com",
+	}})
+	require.NoError(t, err, "empty allowlist imposes no restriction")
+
+	srv.Config.TokenExchangeAllowedResources = []string{"https://backend.example.com"}
+	_, err = srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+		Subject: TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
+	}})
+	require.NoError(t, err, "server resource identifier is always allowed")
+}
+
 // TestSelfIssuedExchange_TokenExpiry asserts the issued token's expiry is exactly
 // issue time plus the configured TTL. Run inside a synctest bubble so time is
 // deterministic and the assertion cannot flake on wall-clock drift between

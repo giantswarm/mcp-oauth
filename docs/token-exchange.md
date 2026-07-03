@@ -110,9 +110,14 @@ grant_type=urn:ietf:params:oauth:grant-type:token-exchange
 ```
 
 Optional parameters:
-- `resource` (RFC 8707): target resource server URI to bind the issued token's `aud`.
+- `resource` (RFC 8707): target resource server URI to bind the issued token's `aud`. When omitted, `aud` defaults to the server's own `ResourceIdentifier`.
 - `scope`: requested scope subset; intersected with the issuer's `AllowedScopes`.
 - `DPoP` header: if present, the issued token is DPoP-bound (see [DPoP guide](./dpop.md)).
+
+Self-issued exchange policy:
+- **Resource allowlist**: `Config.TokenExchangeAllowedResources` caps the `resource` values that may be minted. Empty (the default) accepts any resource. When non-empty, a request whose `resource` is neither the server's own `ResourceIdentifier` nor a listed value is rejected with `invalid_target`.
+- **Self-renewal**: a token this server issued cannot be re-exchanged without adding a new actor — a bare renewal (or re-attaching the actor already outermost on the subject's chain) is rejected with `invalid_grant` to prevent open-ended TTL extension. Re-exchange to add a *different* actor extends the delegation chain and is allowed.
+- **Key-bound subjects**: if the subject token carries an RFC 9449 `cnf.jkt` confirmation, the request must present a DPoP proof for that same key; otherwise the exchange is rejected. This prevents a bearer who lacks the confirmation key from laundering the binding into a token bound to a different key.
 
 ## Issued token
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -28,6 +29,13 @@ var ErrSelfRenewalDenied = errors.New("self-issued token cannot be re-exchanged 
 // servers authorize on, so issuance fails closed. A subject with no email claim
 // (e.g. a Kubernetes ServiceAccount token) is exempt.
 var ErrUnverifiedSubjectEmail = errors.New("subject email_verified is not true; refusing to issue a token asserting an unproven email")
+
+// ErrSubjectKeyMismatch is returned by SelfIssuedExchange when the subject token
+// carries an RFC 9449 §6.1 cnf.jkt proof-of-possession binding but the request
+// does not present a DPoP proof for that same key. A key-bound token may only be
+// re-exchanged by the holder of its confirmation key, so a bearer who lacks the
+// key cannot launder the binding into a token bound to a different key.
+var ErrSubjectKeyMismatch = errors.New("subject token is key-bound; request must prove possession of its confirmation key")
 
 // TokenExchangeResult holds the output of a successful token exchange.
 type TokenExchangeResult struct {
@@ -140,9 +148,20 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 		return nil, err
 	}
 
+	if err := s.checkSubjectKeyBinding(ctx, identity, req.DPoPJKT, sessionID); err != nil {
+		return nil, err
+	}
+
 	actor, err := s.resolveExchangeActor(ctx, req.Actor, identity, nil)
 	if err != nil {
 		return nil, err
+	}
+	prior := priorActorChain(identity)
+	// An actor identical to the outermost actor already on the subject's chain
+	// adds no delegation hop; drop it so a repeated re-attachment of the same
+	// actor is treated as a bare renewal (denied below) rather than a fresh TTL.
+	if actor != nil && prior != nil && actor.Issuer == prior.Iss && actor.Subject == prior.Sub {
+		actor = nil
 	}
 	if err := s.checkSelfRenewal(ctx, identity, actor, sessionID); err != nil {
 		return nil, err
@@ -158,7 +177,7 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 			return nil, err
 		}
 	}
-	act, err := buildActorChain(actor, priorActorChain(identity))
+	act, err := buildActorChain(actor, prior)
 	if err != nil {
 		return nil, fmt.Errorf("token exchange: %w", err)
 	}
@@ -166,6 +185,9 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 	audience := req.Resource
 	if audience == "" {
 		audience = s.Config.GetResourceIdentifier()
+	}
+	if err := s.checkAllowedResource(ctx, audience, sessionID); err != nil {
+		return nil, err
 	}
 
 	grantedScope := grantedExchangeScope(req.Scope, identity.AllowedScopes)
@@ -277,6 +299,48 @@ func (s *Server) checkSelfRenewal(ctx context.Context, identity, actor *SubjectI
 		},
 	})
 	return ErrSelfRenewalDenied
+}
+
+// checkSubjectKeyBinding enforces that a key-bound subject token (RFC 9449 §6.1
+// cnf.jkt) is only re-exchanged by the holder of its confirmation key: the
+// request's DPoP proof thumbprint must equal the subject's cnf.jkt. A subject
+// with no confirmation is unaffected. Returns nil when the exchange is allowed.
+func (s *Server) checkSubjectKeyBinding(ctx context.Context, identity *SubjectIdentity, requestJKT, sessionID string) error {
+	if identity.ConfirmationJKT == "" || identity.ConfirmationJKT == requestJKT {
+		return nil
+	}
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type:   security.EventAuthFailure,
+		UserID: identity.Subject,
+		Details: map[string]any{
+			"reason":     "token_exchange_subject_key_mismatch",
+			"grant_type": GrantTypeTokenExchange,
+			"session_id": sessionID,
+		},
+	})
+	return ErrSubjectKeyMismatch
+}
+
+// checkAllowedResource enforces Config.TokenExchangeAllowedResources on the
+// self-issued exchange: when the list is non-empty, the audience the token would
+// be minted for must be the server's own resource identifier or a listed value,
+// otherwise issuance is rejected with ErrInvalidTarget. An empty list disables
+// the check. Returns nil when the exchange is allowed.
+func (s *Server) checkAllowedResource(ctx context.Context, audience, sessionID string) error {
+	allowed := s.Config.TokenExchangeAllowedResources
+	if len(allowed) == 0 || audience == s.Config.GetResourceIdentifier() || slices.Contains(allowed, audience) {
+		return nil
+	}
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type: security.EventAuthFailure,
+		Details: map[string]any{
+			"reason":     "token_exchange_resource_not_allowed",
+			"grant_type": GrantTypeTokenExchange,
+			"audience":   audience,
+			"session_id": sessionID,
+		},
+	})
+	return fmt.Errorf("%w: resource %q", ErrInvalidTarget, audience)
 }
 
 // checkSubjectEmailVerified enforces the fail-closed email gate on the
