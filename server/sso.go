@@ -136,13 +136,13 @@ func (s *Server) getJWKSClient() *oidc.JWKSClient {
 	s.jwksClientOnce.Do(func() {
 		// When AllowPrivateIPJWKS is set, NewJWKSClientWithOptions builds the
 		// permissive client via NewPrivateIPAllowedHTTPClient, which keeps the
-		// cross-host redirect guard and tuned timeouts AND honors a CA bundle
-		// the host process installs on http.DefaultTransport (e.g. an internal
-		// Dex CA forwarding SSO ID tokens). Building a raw client here instead
-		// would drop the redirect guard.
+		// cross-host redirect guard and tuned timeouts. An internal-CA Dex
+		// forwarding SSO ID tokens is trusted by passing the configured
+		// JWKSRootCAs pool explicitly (nil = system pool).
 		s.jwksClient = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
 			Logger:         s.Logger,
 			AllowPrivateIP: s.Config.AllowPrivateIPJWKS,
+			RootCAs:        s.Config.JWKSRootCAs,
 		})
 	})
 	return s.jwksClient

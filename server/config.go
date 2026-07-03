@@ -4,6 +4,7 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/rsa"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
@@ -615,6 +616,16 @@ type Config struct {
 	//
 	// Default: false (blocked for security)
 	AllowPrivateIPJWKS bool
+
+	// JWKSRootCAs is the CA pool used to verify the JWKS endpoint's TLS
+	// certificate when validating forwarded SSO ID tokens (TrustedAudiences)
+	// against an internal-CA IdP (e.g. an internal Dex whose certificate is
+	// signed by a private CA). nil uses the system pool.
+	//
+	// The consuming process must build and pass this pool explicitly; mcp-oauth
+	// no longer reads a CA installed on http.DefaultTransport. Typically set
+	// alongside AllowPrivateIPJWKS for a private-IP, internal-CA IdP.
+	JWKSRootCAs *x509.CertPool
 
 	// BlockedRedirectSchemes lists URI schemes that are always rejected for security.
 	// These schemes can be used for XSS attacks (javascript:, data:, blob:) or local file/app access (file:, ms-appx:).

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -150,6 +151,12 @@ type TrustedIssuer struct {
 	// muster.agentic-platform.svc.cluster.local). Ignored when
 	// AllowPrivateIPJWKS is true.
 	AllowPrivateIPJWKSHosts []string
+
+	// RootCAs is the CA pool used to verify this issuer's JWKS endpoint TLS
+	// certificate when AllowPrivateIPJWKS or AllowPrivateIPJWKSHosts is set and
+	// the endpoint presents a certificate from an internal CA. nil uses the
+	// system pool.
+	RootCAs *x509.CertPool
 	// AcceptedTypHeaders lists the JWT typ header values accepted when a
 	// Bearer token from this issuer is presented to the resource server.
 	// Empty defaults to ["at+jwt"] (RFC 9068 §4). Issuers that issue plain
@@ -164,10 +171,9 @@ type TrustedIssuer struct {
 // signature, audience, and AllowedClaims checks against that entry are
 // the security boundary.
 type OIDCValidator struct {
-	issuers          map[string]TrustedIssuer
-	safeClient       *oidc.JWKSClient
-	permissiveClient *oidc.JWKSClient            // non-nil only when at least one issuer sets AllowPrivateIPJWKS
-	issuerClients    map[string]*oidc.JWKSClient // per-issuer host-scoped clients (AllowPrivateIPJWKSHosts)
+	issuers       map[string]TrustedIssuer
+	safeClient    *oidc.JWKSClient
+	issuerClients map[string]*oidc.JWKSClient // per-issuer permissive clients (AllowPrivateIPJWKS / AllowPrivateIPJWKSHosts)
 }
 
 // NewOIDCValidator constructs an OIDCValidator for the given trusted issuers.
@@ -176,38 +182,37 @@ type OIDCValidator struct {
 // AllowPrivateIPJWKS to disable SSRF protection entirely for that issuer.
 func NewOIDCValidator(issuers []TrustedIssuer) (*OIDCValidator, error) {
 	safe := oidc.NewJWKSClient(nil, 0, nil)
-	var permissive *oidc.JWKSClient
 	issuerClients := map[string]*oidc.JWKSClient{}
 	for _, ti := range issuers {
 		if ti.AllowPrivateIPJWKS {
-			if permissive == nil {
-				// AllowPrivateIPJWKS targets a controlled in-cluster endpoint,
-				// which commonly presents a certificate from an internal CA.
-				// NewJWKSClientWithOptions builds the permissive client via
-				// NewPrivateIPAllowedHTTPClient, which keeps the cross-host
-				// redirect guard and tuned timeouts AND honors a CA bundle the
-				// host process installs on http.DefaultTransport. Building a raw
-				// client here would drop the redirect guard.
-				permissive = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
-					AllowPrivateIP: true,
-				})
-			}
+			// AllowPrivateIPJWKS targets a controlled in-cluster endpoint,
+			// which commonly presents a certificate from an internal CA.
+			// NewJWKSClientWithOptions builds the permissive client via
+			// NewPrivateIPAllowedHTTPClient, which keeps the cross-host
+			// redirect guard and tuned timeouts and verifies against the
+			// issuer's RootCAs pool (nil = system pool). Each issuer gets its
+			// own client so per-issuer RootCAs are honored.
+			issuerClients[ti.Issuer] = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
+				AllowPrivateIP: true,
+				RootCAs:        ti.RootCAs,
+			})
 		} else if len(ti.AllowPrivateIPJWKSHosts) > 0 {
 			issuerClients[ti.Issuer] = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
 				AllowPrivateIPHosts: ti.AllowPrivateIPJWKSHosts,
+				RootCAs:             ti.RootCAs,
 			})
 		}
 	}
-	return newOIDCValidatorWithClients(issuers, safe, permissive, issuerClients)
+	return newOIDCValidatorWithClients(issuers, safe, issuerClients)
 }
 
 // newOIDCValidatorWithClient is the internal constructor used by tests to inject
-// a custom JWKS client; both client slots are set to client.
+// a custom JWKS client used for every issuer.
 func newOIDCValidatorWithClient(issuers []TrustedIssuer, client *oidc.JWKSClient) (*OIDCValidator, error) {
-	return newOIDCValidatorWithClients(issuers, client, client, nil)
+	return newOIDCValidatorWithClients(issuers, client, nil)
 }
 
-func newOIDCValidatorWithClients(issuers []TrustedIssuer, safeClient, permissiveClient *oidc.JWKSClient, issuerClients map[string]*oidc.JWKSClient) (*OIDCValidator, error) {
+func newOIDCValidatorWithClients(issuers []TrustedIssuer, safeClient *oidc.JWKSClient, issuerClients map[string]*oidc.JWKSClient) (*OIDCValidator, error) {
 	if len(issuers) == 0 {
 		return nil, fmt.Errorf("at least one trusted issuer is required")
 	}
@@ -221,7 +226,7 @@ func newOIDCValidatorWithClients(issuers []TrustedIssuer, safeClient, permissive
 		}
 		m[ti.Issuer] = ti
 	}
-	return &OIDCValidator{issuers: m, safeClient: safeClient, permissiveClient: permissiveClient, issuerClients: issuerClients}, nil
+	return &OIDCValidator{issuers: m, safeClient: safeClient, issuerClients: issuerClients}, nil
 }
 
 // BearerTypHeaders returns the JWT typ header values accepted for Bearer
@@ -262,8 +267,6 @@ func (v *OIDCValidator) Validate(ctx context.Context, tokenString string, defaul
 	jwksClient := v.safeClient
 	if client, ok := v.issuerClients[iss]; ok {
 		jwksClient = client
-	} else if ti.AllowPrivateIPJWKS && v.permissiveClient != nil {
-		jwksClient = v.permissiveClient
 	}
 	audiences := ti.AllowedAudiences
 	if len(audiences) == 0 {

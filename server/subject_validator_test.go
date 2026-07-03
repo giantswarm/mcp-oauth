@@ -533,14 +533,14 @@ func TestNewOIDCValidator_AllowPrivateIPJWKS_CreatesPermissiveClient(t *testing.
 		AllowPrivateIPJWKS: true,
 	}})
 	require.NoError(t, err)
-	require.NotNil(t, withPrivate.permissiveClient)
+	require.NotNil(t, withPrivate.issuerClients[testIssuer])
 
 	withoutPrivate, err := NewOIDCValidator([]TrustedIssuer{{
 		Issuer:  testIssuer,
 		JwksURL: "https://example.com/jwks",
 	}})
 	require.NoError(t, err)
-	require.Nil(t, withoutPrivate.permissiveClient)
+	require.Nil(t, withoutPrivate.issuerClients[testIssuer])
 }
 
 func TestOIDCValidator_AllowPrivateIPJWKSHosts(t *testing.T) {
@@ -556,7 +556,7 @@ func TestOIDCValidator_AllowPrivateIPJWKSHosts(t *testing.T) {
 		JwksURL:                 jwksURL,
 		AllowedAudiences:        []string{testAudience},
 		AllowPrivateIPJWKSHosts: []string{"127.0.0.1"},
-	}}, jwksClient, nil, map[string]*oidc.JWKSClient{
+	}}, jwksClient, map[string]*oidc.JWKSClient{
 		testIssuer: jwksClient,
 	})
 	require.NoError(t, err)
@@ -582,9 +582,8 @@ func TestNewOIDCValidator_AllowPrivateIPJWKSHosts_CreatesIssuerClient(t *testing
 	}})
 	require.NoError(t, err)
 	require.NotNil(t, withHosts.issuerClients[testIssuer])
-	require.Nil(t, withHosts.permissiveClient)
 
-	// AllowPrivateIPJWKSHosts must NOT create a permissive client.
+	// Permissive and host-scoped issuers each get their own per-issuer client.
 	withBoth, err := NewOIDCValidator([]TrustedIssuer{
 		{
 			Issuer:             "https://other.example.com",
@@ -598,6 +597,7 @@ func TestNewOIDCValidator_AllowPrivateIPJWKSHosts_CreatesIssuerClient(t *testing
 		},
 	})
 	require.NoError(t, err)
-	require.NotNil(t, withBoth.permissiveClient)
+	require.NotNil(t, withBoth.issuerClients["https://other.example.com"])
 	require.NotNil(t, withBoth.issuerClients[testIssuer])
+	require.NotSame(t, withBoth.issuerClients["https://other.example.com"], withBoth.issuerClients[testIssuer])
 }
