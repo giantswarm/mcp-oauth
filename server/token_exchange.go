@@ -152,34 +152,9 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 		return nil, err
 	}
 
-	actor, err := s.resolveExchangeActor(ctx, req.Actor, identity, nil)
+	act, err := s.resolveSelfIssuedActorChain(ctx, req, identity, sessionID)
 	if err != nil {
 		return nil, err
-	}
-	prior := priorActorChain(identity)
-	// An actor identical to the outermost actor already on the subject's chain
-	// adds no delegation hop; drop it so a repeated re-attachment of the same
-	// actor is treated as a bare renewal (denied below) rather than a fresh TTL.
-	if actor != nil && prior != nil && actor.Issuer == prior.Iss && actor.Subject == prior.Sub {
-		actor = nil
-	}
-	if err := s.checkSelfRenewal(ctx, identity, actor, sessionID); err != nil {
-		return nil, err
-	}
-	// The email gate applies only when the subject's own email would be
-	// defaulted into the issued token; an explicit req.Options.Email is the
-	// in-process caller's assertion and takes precedence over subject claims
-	// (see defaultExchangeOptions), so there is no subject email to prove.
-	// The HTTP handler always passes zero Options, so the external exchange
-	// surface is fully gated.
-	if req.Options.Email == "" {
-		if err := s.checkSubjectEmailVerified(ctx, identity, sessionID); err != nil {
-			return nil, err
-		}
-	}
-	act, err := buildActorChain(actor, prior)
-	if err != nil {
-		return nil, fmt.Errorf("token exchange: %w", err)
 	}
 
 	audience := req.Resource
@@ -257,6 +232,44 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 		Scope:           grantedScope,
 		IssuedTokenType: SubjectTokenTypeAccessToken,
 	}, nil
+}
+
+// resolveSelfIssuedActorChain validates the optional actor token, enforces the
+// self-renewal and subject-email gates, and returns the act chain to embed in
+// the issued token. The returned chain is nil when the exchange adds no
+// delegation hop. Any act chain already on the subject token is nested beneath
+// the new actor so a multi-hop delegation chain is preserved (RFC 8693 §4.4).
+func (s *Server) resolveSelfIssuedActorChain(ctx context.Context, req SelfIssuedExchangeRequest, identity *SubjectIdentity, sessionID string) (*Actor, error) {
+	actor, err := s.resolveExchangeActor(ctx, req.Actor, identity, nil)
+	if err != nil {
+		return nil, err
+	}
+	prior := priorActorChain(identity)
+	// An actor identical to the outermost actor already on the subject's chain
+	// adds no delegation hop; drop it so a repeated re-attachment of the same
+	// actor is treated as a bare renewal (denied below) rather than a fresh TTL.
+	if actor != nil && prior != nil && actor.Issuer == prior.Iss && actor.Subject == prior.Sub {
+		actor = nil
+	}
+	if err := s.checkSelfRenewal(ctx, identity, actor, sessionID); err != nil {
+		return nil, err
+	}
+	// The email gate applies only when the subject's own email would be
+	// defaulted into the issued token; an explicit req.Options.Email is the
+	// in-process caller's assertion and takes precedence over subject claims
+	// (see defaultExchangeOptions), so there is no subject email to prove.
+	// The HTTP handler always passes zero Options, so the external exchange
+	// surface is fully gated.
+	if req.Options.Email == "" {
+		if err := s.checkSubjectEmailVerified(ctx, identity, sessionID); err != nil {
+			return nil, err
+		}
+	}
+	act, err := buildActorChain(actor, prior)
+	if err != nil {
+		return nil, fmt.Errorf("token exchange: %w", err)
+	}
+	return act, nil
 }
 
 // defaultExchangeOptions fills the identity claims from the validated subject
