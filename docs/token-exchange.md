@@ -110,9 +110,14 @@ grant_type=urn:ietf:params:oauth:grant-type:token-exchange
 ```
 
 Optional parameters:
-- `resource` (RFC 8707): target resource server URI to bind the issued token's `aud`.
+- `resource` (RFC 8707): target resource server URI to bind the issued token's `aud`. When omitted, `aud` defaults to the server's own `ResourceIdentifier`.
 - `scope`: requested scope subset; intersected with the issuer's `AllowedScopes`.
 - `DPoP` header: if present, the issued token is DPoP-bound (see [DPoP guide](./dpop.md)).
+
+Self-issued exchange policy:
+- **Resource allowlist**: `Config.TokenExchangeAllowedResources` caps the `resource` values that may be minted. Empty (the default) accepts any resource. When non-empty, a request whose `resource` is neither the server's own `ResourceIdentifier` nor a listed value is rejected with `invalid_target`.
+- **Self-renewal**: a token this server issued cannot be re-exchanged without adding a new actor — a bare renewal (or re-attaching the actor already outermost on the subject's chain) is rejected with `invalid_grant` to prevent open-ended TTL extension. Re-exchange to add a *different* actor extends the delegation chain and is allowed.
+- **Key-bound subjects**: if the subject token carries an RFC 9449 `cnf.jkt` confirmation, the request must present a DPoP proof for that same key; otherwise the exchange is rejected. This prevents a bearer who lacks the confirmation key from laundering the binding into a token bound to a different key.
 
 ## Issued token
 
@@ -135,34 +140,34 @@ The issued access token contains an `act` claim per RFC 8693 §4.4:
 
 ## Injecting identity claims
 
-Programmatic callers wrapping `Server.ExchangeSubjectToken` (for example a broker that resolves a Kubernetes ServiceAccount `sub` to a machine principal, or an on-behalf-of flow that needs to carry the original user's identity) can populate the issued JWT's `email`, `email_verified`, `name`, `groups`, and arbitrary extra top-level claims by passing an `ExchangeOptions`:
+Programmatic callers wrapping `Server.SelfIssuedExchange` (for example a broker that resolves a Kubernetes ServiceAccount `sub` to a machine principal, or an on-behalf-of flow that needs to carry the original user's identity) can populate the issued JWT's `email`, `email_verified`, `name`, `groups`, and arbitrary extra top-level claims by passing `Options`. When `Options` leaves a field unset, it defaults from the validated subject's claims; an explicit `Options` value takes precedence:
 
 ```go
-result, err := srv.ExchangeSubjectToken(
-    ctx,
-    subjectToken,
-    subjectTokenType,
-    resource,
-    scope,
-    dpopJKT,
-    server.ExchangeOptions{
+result, err := srv.SelfIssuedExchange(ctx, server.SelfIssuedExchangeRequest{
+    SubjectExchange: server.SubjectExchange{
+        Subject:  server.TypedToken{Token: subjectToken, Type: subjectTokenType},
+        Resource: resource,
+        Scope:    scope,
+    },
+    DPoPJKT: dpopJKT,
+    Options: server.ExchangeOptions{
         Email:         "klaus-sre@machine.giantswarm.io",
         EmailVerified: true,
         Groups:        []string{"klaus-sre"},
         Extra:         map[string]any{"principal_kind": "machine"},
     },
-)
+})
 ```
 
 The resulting JWT carries `email`, `email_verified: true`, `groups: ["klaus-sre"]`, and `principal_kind: "machine"` alongside the standard exchanged-token claims (`sub`, `iss`, `aud`, `act`, etc).
 
-`Extra` is merged into the JWT body after the standard claims. RFC 7519 §4.1 registered claim names (`iss`, `sub`, `aud`, `exp`, `nbf`, `iat`, `jti`) are rejected — `ExchangeSubjectToken` returns an error if `Extra` contains any of them. OIDC-profile claims already set via struct fields (`email`, `name`, `groups`, `email_verified`) are not guarded and `Extra` can override them.
+`Extra` is merged into the JWT body after the standard claims. RFC 7519 §4.1 registered claim names (`iss`, `sub`, `aud`, `exp`, `nbf`, `iat`, `jti`) are rejected: `SelfIssuedExchange` returns an error if `Extra` contains any of them. OIDC-profile claims already set via struct fields (`email`, `name`, `groups`, `email_verified`) are not guarded and `Extra` can override them.
 
-This is library API only: the HTTP `/oauth/token` endpoint does not extract these from the request form. Use it from in-process wrappers that have already resolved the identity out-of-band.
+This is library API only: the HTTP `/oauth/token` endpoint does not extract these from the request form (it relies on the subject-claim defaulting). Use `Options` from in-process wrappers that have already resolved the identity out-of-band.
 
 ## Brokered exchange (audience parameter)
 
-When the client sends an RFC 8693 `audience` parameter, the server acts as a **token broker** instead of issuing a local JWT: it validates the subject token, enforces policy, and delegates the downstream exchange to a host-provided `Exchanger`. The returned token comes from the downstream issuer verbatim — useful when the target (e.g. a Kubernetes API server behind its own Dex) will not accept tokens minted by this server.
+When the client sends an RFC 8693 `audience` parameter, the server acts as a **token broker** instead of issuing a local JWT: it validates the subject token, enforces policy, and delegates the downstream exchange to a host-provided `Exchanger`. The returned token comes from the downstream issuer verbatim — useful when the target (e.g. a Kubernetes API server behind its own Dex) will not accept tokens issued by this server.
 
 ### Host setup
 

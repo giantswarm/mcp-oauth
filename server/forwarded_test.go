@@ -362,7 +362,7 @@ func TestAcceptForwardedIDToken_HMACKeyChangesSessionID(t *testing.T) {
 
 // TestSessionIDForBearer_MatchesForwardedDerivation locks the exported
 // SessionIDForBearer to the same derivation the forwarded-token and
-// workload-exchange paths use, so a session assigned to a self-issued token in
+// token-exchange paths use, so a session assigned to a self-issued token in
 // the resource-server middleware agrees with the audit/rate-limit session the
 // exchange computes for the same bearer.
 func TestSessionIDForBearer_MatchesForwardedDerivation(t *testing.T) {

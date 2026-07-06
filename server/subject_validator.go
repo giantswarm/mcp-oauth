@@ -19,13 +19,16 @@ type SubjectTokenValidator interface {
 	Validate(ctx context.Context, tokenString string, defaultAudiences []string) (*SubjectIdentity, error)
 }
 
-// selfIssuedSubjectValidator accepts subject tokens this broker minted itself
-// (iss == Config.Issuer, at+jwt, signed by the broker key), verified through the
+// selfIssuedSubjectValidator accepts subject tokens this server issued itself
+// (iss == Config.Issuer, at+jwt, signed by the server key), verified through the
 // same self-issued JWT pipeline used for bearer authentication (signature, typ,
-// iss, exp, audience, revocation, family). A broker signs its own tokens, so it
+// iss, exp, audience, revocation, family). The server signs its own tokens, so it
 // trusts them as exchange subjects without a self-referential trustedIssuers
-// entry. Any other token is delegated to next (the trusted-issuer validator),
-// preserving external-issuer behaviour.
+// entry. This is what lets a multi-hop A2A delegation re-exchange an OBO token
+// that already carries an act chain to nest the next actor beneath it (RFC 8693
+// §4.4): only a self-issued token carries act, since external issuers (Dex,
+// Kubernetes) do not emit it. Any other token is delegated to next (the
+// trusted-issuer validator), preserving external-issuer behaviour.
 type selfIssuedSubjectValidator struct {
 	srv  *Server
 	next SubjectTokenValidator
@@ -46,11 +49,12 @@ func (v *selfIssuedSubjectValidator) Validate(ctx context.Context, tokenString s
 }
 
 // registerSelfIssuedSubjectValidator chains a self-issued validator ahead of any
-// trusted-issuer validator for the JWT subject token types, so the broker trusts
-// its own minted at+jwt tokens as exchange subjects without a self-referential
-// WithTrustedIssuers entry. This lets a localMint consumer re-bind a self-minted
-// delegated token (sub=human, act=actor) to a backend audience. Only meaningful
-// in JWT access-token mode, where the broker can verify its own signature.
+// trusted-issuer validator for the JWT subject token types, so the server trusts
+// its own issued at+jwt tokens as exchange subjects without a self-referential
+// WithTrustedIssuers entry. This lets a multi-hop A2A delegation re-exchange an
+// OBO token (sub=human, act=prior actor) to add the next actor and extend the
+// chain. Only meaningful in JWT access-token mode, where the server can verify
+// its own signature.
 func (s *Server) registerSelfIssuedSubjectValidator() {
 	if !s.Config.IsJWTAccessTokenFormat() {
 		return
@@ -65,7 +69,7 @@ func (s *Server) registerSelfIssuedSubjectValidator() {
 
 // subjectIdentityFromSelfIssuedClaims projects the verified claim map of a
 // self-issued token into a SubjectIdentity, preserving the act delegation chain
-// so a re-bind carries it forward.
+// so a re-exchange carries it forward.
 func subjectIdentityFromSelfIssuedClaims(claims map[string]any) (*SubjectIdentity, error) {
 	raw, err := json.Marshal(claims)
 	if err != nil {
@@ -76,9 +80,10 @@ func subjectIdentityFromSelfIssuedClaims(claims map[string]any) (*SubjectIdentit
 		return nil, fmt.Errorf("decode self-issued claims: %w", err)
 	}
 	return &SubjectIdentity{
-		Subject: idtc.Subject,
-		Issuer:  idtc.Issuer,
-		Claims:  &idtc,
+		Subject:         idtc.Subject,
+		Issuer:          idtc.Issuer,
+		Claims:          &idtc,
+		ConfirmationJKT: confirmationJKTFromClaims(claims),
 	}, nil
 }
 
@@ -90,6 +95,20 @@ type SubjectIdentity struct {
 	Issuer        string
 	AllowedScopes []string
 	Claims        *oidc.IDTokenClaims
+	// ConfirmationJKT is the RFC 9449 §6.1 cnf.jkt thumbprint the token is bound
+	// to, empty when the token carries no proof-of-possession confirmation.
+	ConfirmationJKT string
+}
+
+// confirmationJKTFromClaims extracts the RFC 9449 §6.1 cnf.jkt thumbprint from a
+// verified claim map, returning "" when no confirmation key is present.
+func confirmationJKTFromClaims(claims map[string]any) string {
+	cnf, ok := claims["cnf"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	jkt, _ := cnf["jkt"].(string)
+	return jkt
 }
 
 // ErrIssuerNotTrusted is returned by Validate when the token is not a JWT,
@@ -124,7 +143,7 @@ type TrustedIssuer struct {
 	// restrictions.
 	AllowedClaims map[string]string
 	// SubjectClaim names the verified claim whose value becomes
-	// SubjectIdentity.Subject (and thus the sub of any token minted from this
+	// SubjectIdentity.Subject (and thus the sub of any token issued from this
 	// identity). Empty keeps the standard sub claim. Use this when the issuer's sub is an opaque identifier
 	// but a different claim (e.g. "email") carries the canonical subject the
 	// downstream relies on. Fail-closed: if set and the claim is absent or not a
@@ -155,7 +174,7 @@ type TrustedIssuer struct {
 	RootCAs *x509.CertPool
 	// AcceptedTypHeaders lists the JWT typ header values accepted when a
 	// Bearer token from this issuer is presented to the resource server.
-	// Empty defaults to ["at+jwt"] (RFC 9068 §4). Issuers that mint plain
+	// Empty defaults to ["at+jwt"] (RFC 9068 §4). Issuers that issue plain
 	// JWTs need an explicit list: Kubernetes ServiceAccount tokens carry no
 	// typ header at all, so use [""] to accept them. Signature, audience,
 	// and claim checks still apply unchanged.
@@ -289,10 +308,11 @@ func (v *OIDCValidator) Validate(ctx context.Context, tokenString string, defaul
 	}
 
 	return &SubjectIdentity{
-		Subject:       subject,
-		Issuer:        claims.Issuer,
-		AllowedScopes: ti.AllowedScopes,
-		Claims:        claims,
+		Subject:         subject,
+		Issuer:          claims.Issuer,
+		AllowedScopes:   ti.AllowedScopes,
+		Claims:          claims,
+		ConfirmationJKT: confirmationJKTFromClaims(rawClaims),
 	}, nil
 }
 

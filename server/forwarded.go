@@ -109,7 +109,7 @@ type ForwardedIDTokenAcceptance struct {
 //  1. The configured provider implements [providers.JWKSProvider]. GitHub's provider
 //     does not qualify (it is OAuth 2.0 only). Validation returns a "no JWKS" error
 //     when invoked against an OAuth-only provider.
-//  2. Config.TrustedAudiences contains the audience the upstream IdP minted the
+//  2. Config.TrustedAudiences contains the audience the upstream IdP issued the
 //     token for.
 //  3. The provider's IssuerURL() matches the JWT's `iss` claim. The signature check
 //     requires this anyway.
@@ -271,8 +271,8 @@ func (s *Server) AcceptTrustedIssuerToken(ctx context.Context, bearerToken strin
 // so the results are ignored.
 // SessionIDForBearer returns the stable session identifier for a validated
 // bearer that has no refresh-token family: forwarded ID tokens, trusted-issuer
-// tokens, and self-issued exchange-minted JWTs. It is the same
-// derivation the forwarded-token and workload-exchange paths use, exported so
+// tokens, and self-issued exchange JWTs. It is the same
+// derivation the forwarded-token and token-exchange paths use, exported so
 // the resource-server middleware can assign a session to every validated
 // token, not only those backed by stored family metadata.
 func (s *Server) SessionIDForBearer(bearerToken string) string {
