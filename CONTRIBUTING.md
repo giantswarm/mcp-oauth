@@ -138,27 +138,6 @@ Please follow our [Security Policy](SECURITY.md) to report vulnerabilities respo
    - No merge conflicts
    - Follows coding standards
 
-## Versioning Policy
-
-Releases are tagged automatically from conventional commits on merge to main
-(`fix:` -> patch, `feat:` -> minor, `!`/`BREAKING CHANGE` -> major). On the 1.x
-line this library follows [semantic versioning](https://semver.org/) strictly:
-
-- **Patch** releases may only contain bug fixes and internal changes. No
-  exported API may be removed or changed incompatibly.
-- **Minor** releases may add exported API. Existing API may be deprecated
-  (with a `// Deprecated:` comment) but not removed.
-- **Major** releases are required for any removal or incompatible change of
-  exported API, including struct fields, method signatures, and observable
-  wire-protocol contracts (e.g. `/oauth/token` request handling).
-
-Because consumers auto-merge patch and minor bumps via Renovate, an API
-removal in a patch release breaks their builds without review (this happened
-in v1.0.1, see #499). The `API compatibility` workflow enforces this: it runs
-[`gorelease`](https://pkg.go.dev/golang.org/x/exp/cmd/gorelease) against the
-latest tag on every PR and fails if exported API is removed without the PR
-title carrying the conventional-commit breaking marker (`type!:`).
-
 ## Coding Standards
 
 ### Go Style Guide
