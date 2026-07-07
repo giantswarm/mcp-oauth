@@ -2,7 +2,7 @@ module github.com/giantswarm/mcp-oauth
 
 go 1.25.0
 
-toolchain go1.26.4
+toolchain go1.26.5
 
 require (
 	github.com/go-jose/go-jose/v4 v4.1.4
