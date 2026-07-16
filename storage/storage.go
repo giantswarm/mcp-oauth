@@ -320,6 +320,40 @@ type UserProviderTokenStore interface {
 	AtomicConsumeRefreshToken(ctx context.Context, refreshToken string) (userID string, clientID string, err error)
 }
 
+// ProviderRefreshLockStore is an optional extension implemented by stores
+// that can coordinate refreshes of the shared per-user provider token (see
+// UserProviderTokenStore) with a per-user single-flight lock. When the store
+// is shared between processes (Valkey), the lock is cross-pod: at most one
+// pod refreshes a user's provider credential per rotation window, so
+// concurrent sessions never race a single-use rotating refresh token
+// (giantswarm/giantswarm#37164).
+//
+// The lock is advisory and self-healing: it auto-expires after the ttl given
+// at acquisition, so a holder that crashes mid-refresh cannot wedge the
+// user's refreshes. Release is owner-only — it takes effect only when the
+// caller presents the lockValue returned by its own successful acquire, so a
+// slow holder whose lock already expired cannot release a successor's lock.
+//
+// This interface is optional and consumed via type assertion (mirroring
+// RefreshTokenFamilyStore). Memory and Valkey both implement it: Valkey with
+// SET NX + a Lua compare-and-delete (the DPoP replay-cache precedent), memory
+// with an in-process per-user try-lock (single-process, sufficient there).
+//
+// All methods accept context.Context for tracing and cancellation.
+type ProviderRefreshLockStore interface {
+	// AcquireProviderRefreshLock attempts to acquire the per-user provider-
+	// refresh lock. On success it returns a random, single-use lockValue and
+	// acquired=true; when the lock is currently held by another owner it
+	// returns acquired=false with no error. The lock auto-expires after ttl.
+	AcquireProviderRefreshLock(ctx context.Context, userID string, ttl time.Duration) (lockValue string, acquired bool, err error)
+
+	// ReleaseProviderRefreshLock releases the lock iff lockValue matches the
+	// current holder's value (owner-only release, compare-and-delete).
+	// Releasing a missing, expired, or mismatched lock is a silent no-op —
+	// the successor's lock must not be disturbed.
+	ReleaseProviderRefreshLock(ctx context.Context, userID, lockValue string) error
+}
+
 // RefreshTokenFamilyMetadata contains metadata about a token family
 type RefreshTokenFamilyMetadata struct {
 	FamilyID   string

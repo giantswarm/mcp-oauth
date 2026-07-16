@@ -66,6 +66,10 @@ type Store struct {
 	providerTokenRefs        map[string]string        // access/refresh token -> user ID
 	providerTokenRefExpiries map[string]time.Time     // access/refresh token -> ref expiry
 
+	// Per-user provider-refresh single-flight lock
+	// (storage.ProviderRefreshLockStore). See refresh_lock.go.
+	providerRefreshLocks map[string]providerRefreshLock // user ID -> held lock
+
 	// Refresh token tracking (for rotation and security)
 	refreshTokens        map[string]string              // refresh token -> user ID
 	refreshTokenExpiries map[string]time.Time           // refresh token -> expiry time
@@ -125,6 +129,7 @@ var (
 	_ storage.ActiveRefreshTokenByFamilyStore = (*Store)(nil)
 	_ storage.ClientIPTracker                 = (*Store)(nil)
 	_ storage.UserProviderTokenStore          = (*Store)(nil)
+	_ storage.ProviderRefreshLockStore        = (*Store)(nil)
 )
 
 // Option configures a Store at construction time.
@@ -173,6 +178,7 @@ func New(opts ...Option) *Store {
 		userProviderTokens:         make(map[string]*oauth2.Token),
 		providerTokenRefs:          make(map[string]string),
 		providerTokenRefExpiries:   make(map[string]time.Time),
+		providerRefreshLocks:       make(map[string]providerRefreshLock),
 		refreshTokens:              make(map[string]string),
 		refreshTokenExpiries:       make(map[string]time.Time),
 		refreshTokenFamilies:       make(map[string]*RefreshTokenFamily),
@@ -1243,6 +1249,7 @@ func (s *Store) cleanup() {
 	cleaned += s.cleanupRevokedFamilies()
 	cleaned += s.cleanupExpiredProviderTokenRefs()
 	cleaned += s.cleanupExpiredUserProviderTokens()
+	cleaned += s.cleanupExpiredProviderRefreshLocks()
 	cleaned += s.cleanupOrphanedMetadata()
 	if r := s.revokedJTIs.Load(); r != nil {
 		// revokedJTIs has its own lock; safe to call while holding s.mu

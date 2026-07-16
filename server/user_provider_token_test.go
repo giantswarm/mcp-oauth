@@ -137,7 +137,7 @@ func TestUnifiedStore_ValidationReadsSharedEntry(t *testing.T) {
 	}
 
 	const userID = "shared-entry-user"
-	accessToken := "opaque-at-shared-entry"
+	accessToken := "opaque-at-shared-entry" // #nosec G101 -- test data, not credentials
 	seedProviderToken(t, store, accessToken, userID, &oauth2.Token{
 		AccessToken:  "provider-at-stale",
 		RefreshToken: "provider-rt-stale",

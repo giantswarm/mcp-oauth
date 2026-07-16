@@ -3789,6 +3789,10 @@ func TestHandleProviderCallback_EmptyState(t *testing.T) {
 	_ = provider // Use provider to satisfy compiler
 }
 
+// genTokensTestUserID is the user the generateAndStoreTokens expiry tests
+// issue tokens for.
+const genTokensTestUserID = "test-user"
+
 // TestServer_GenerateAndStoreTokens_ExpiryCap tests that the generated token's expiry
 // is capped to the provider token's expiry when the provider token expires sooner.
 func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
@@ -3802,7 +3806,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 		authCode := &storage.AuthorizationCode{
 			Code:     "test-code",
 			ClientID: "test-client",
-			UserID:   "test-user",
+			UserID:   genTokensTestUserID,
 			Scope:    "openid",
 			ProviderToken: &oauth2.Token{
 				AccessToken:  "provider-access",
@@ -3828,8 +3832,8 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetProviderTokenRef() error = %v", err)
 		}
-		if refUser != "test-user" {
-			t.Fatalf("provider token ref user = %q, want %q", refUser, "test-user")
+		if refUser != genTokensTestUserID {
+			t.Fatalf("provider token ref user = %q, want %q", refUser, genTokensTestUserID)
 		}
 	})
 
@@ -3840,7 +3844,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 		authCode := &storage.AuthorizationCode{
 			Code:     "test-code-2",
 			ClientID: "test-client",
-			UserID:   "test-user",
+			UserID:   genTokensTestUserID,
 			Scope:    "openid",
 			ProviderToken: &oauth2.Token{
 				AccessToken:  "provider-access",
@@ -3867,8 +3871,8 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetProviderTokenRef() error = %v", err)
 		}
-		if refUser != "test-user" {
-			t.Fatalf("provider token ref user = %q, want %q", refUser, "test-user")
+		if refUser != genTokensTestUserID {
+			t.Fatalf("provider token ref user = %q, want %q", refUser, genTokensTestUserID)
 		}
 	})
 
@@ -3879,7 +3883,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 		authCode := &storage.AuthorizationCode{
 			Code:     "test-code-3",
 			ClientID: "test-client",
-			UserID:   "test-user",
+			UserID:   genTokensTestUserID,
 			Scope:    "openid",
 			ProviderToken: &oauth2.Token{
 				AccessToken:  "provider-access",
@@ -3908,7 +3912,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 		authCode := &storage.AuthorizationCode{
 			Code:          "test-code-4",
 			ClientID:      "test-client",
-			UserID:        "test-user",
+			UserID:        genTokensTestUserID,
 			Scope:         "openid",
 			ProviderToken: nil,
 		}
@@ -3937,7 +3941,7 @@ func TestServer_GenerateAndStoreTokens_PastExpiryIgnored(t *testing.T) {
 	authCode := &storage.AuthorizationCode{
 		Code:     "test-code-past",
 		ClientID: "test-client",
-		UserID:   "test-user",
+		UserID:   genTokensTestUserID,
 		Scope:    "openid",
 		ProviderToken: &oauth2.Token{
 			AccessToken:  "provider-access",
