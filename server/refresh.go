@@ -146,6 +146,55 @@ func (s *Server) rotateRefreshToken(ctx context.Context, oldRefreshToken, userID
 	return newRefreshToken, familyID, true
 }
 
+// consumeRefreshToken atomically consumes the refresh token and returns its
+// (userID, clientID) binding. Legacy layout: the provider-token copy stored
+// under the refresh-token key is returned alongside. Unified layout: no copy
+// exists — the returned token is nil and providerTokenForRefresh resolves the
+// shared entry AFTER client binding validation.
+func (s *Server) consumeRefreshToken(ctx context.Context, refreshToken string) (userID, clientID string, providerToken *oauth2.Token, err error) {
+	if upts, unified := s.userProviderTokenStore(); unified {
+		userID, clientID, err = upts.AtomicConsumeRefreshToken(ctx, refreshToken)
+		return userID, clientID, nil, err
+	}
+	return s.tokenStore.AtomicGetAndDeleteRefreshToken(ctx, refreshToken)
+}
+
+// providerTokenForRefresh returns the provider token to refresh against the
+// upstream IdP: the user's shared entry in the unified layout, or the copy
+// consumed together with the refresh token in the legacy layout.
+func (s *Server) providerTokenForRefresh(ctx context.Context, userID string, consumedToken *oauth2.Token) (*oauth2.Token, error) {
+	if upts, unified := s.userProviderTokenStore(); unified {
+		return upts.GetUserProviderToken(ctx, userID)
+	}
+	return consumedToken, nil
+}
+
+// storeRefreshedProviderToken persists the rotated provider token after a
+// refresh grant. Unified layout: write it back to the ONE shared per-user
+// entry (so every sibling session sees the fresh credential) and point the
+// new tokens at it. Legacy layout: private copies under the new
+// access/refresh token keys.
+func (s *Server) storeRefreshedProviderToken(ctx context.Context, userID, newAccessToken, newRefreshToken string, newProviderToken *oauth2.Token, refreshExpiry time.Time) {
+	if upts, unified := s.userProviderTokenStore(); unified {
+		if err := upts.SaveUserProviderToken(ctx, userID, newProviderToken); err != nil {
+			s.Logger.Warn("Failed to save shared provider token", "error", err)
+		}
+		if err := upts.SaveProviderTokenRef(ctx, newAccessToken, userID, refreshExpiry); err != nil {
+			s.Logger.Warn("Failed to save access token provider reference", "error", err)
+		}
+		if err := upts.SaveProviderTokenRef(ctx, newRefreshToken, userID, refreshExpiry); err != nil {
+			s.Logger.Warn("Failed to save refresh token provider reference", "error", err)
+		}
+		return
+	}
+	if err := s.tokenStore.SaveToken(ctx, newAccessToken, newProviderToken); err != nil {
+		s.Logger.Warn("Failed to save new access token", "error", err)
+	}
+	if err := s.tokenStore.SaveToken(ctx, newRefreshToken, newProviderToken); err != nil {
+		s.Logger.Warn("Failed to save new refresh token", "error", err)
+	}
+}
+
 // RefreshAccessToken refreshes an access token using a refresh token with OAuth 2.1 rotation
 // Returns oauth2.Token directly
 // Implements OAuth 2.1 refresh token reuse detection for enhanced security
@@ -170,7 +219,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 
 	// OAUTH 2.1 SECURITY: Atomically get and delete refresh token FIRST
 	// Returns clientID for client binding validation
-	userID, storedClientID, providerToken, err := s.tokenStore.AtomicGetAndDeleteRefreshToken(ctx, refreshToken)
+	userID, storedClientID, consumedToken, err := s.consumeRefreshToken(ctx, refreshToken)
 	if err != nil {
 		return nil, s.handleRefreshTokenError(ctx, err, refreshToken, clientID, familyStore, supportsFamilies)
 	}
@@ -181,12 +230,25 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		return nil, err
 	}
 
+	// Resolved only after client binding passed, so a stolen token from the
+	// wrong client never reads the user's shared provider entry.
+	providerToken, err := s.providerTokenForRefresh(ctx, userID, consumedToken)
+	if err != nil {
+		return nil, s.handleRefreshTokenError(ctx, err, refreshToken, clientID, familyStore, supportsFamilies)
+	}
+
 	// Refresh token with provider
 	newProviderToken, err := s.provider.RefreshToken(ctx, providerToken.RefreshToken)
 	if err != nil {
 		s.logAuthFailure(ctx, userID, clientID, fmt.Sprintf("provider_refresh_failed: %v", err))
 		return nil, fmt.Errorf("failed to refresh token with provider: %w", err)
 	}
+
+	// RFC 6749 §5.1: the provider may omit the refresh token in the refresh
+	// response, in which case the previous one remains valid and must be
+	// carried forward — especially for the shared entry, where an empty
+	// refresh token would break every one of the user's sessions.
+	newProviderToken = preserveRefreshToken(newProviderToken, providerToken.RefreshToken)
 
 	now := time.Now()
 
@@ -232,15 +294,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		})
 	}
 
-	// Store new access token -> provider token mapping
-	if err := s.tokenStore.SaveToken(ctx, newAccessToken, newProviderToken); err != nil {
-		s.Logger.Warn("Failed to save new access token", "error", err)
-	}
-
-	// Store new refresh token -> provider token mapping
-	if err := s.tokenStore.SaveToken(ctx, newRefreshToken, newProviderToken); err != nil {
-		s.Logger.Warn("Failed to save new refresh token", "error", err)
-	}
+	s.storeRefreshedProviderToken(ctx, userID, newAccessToken, newRefreshToken, newProviderToken, refreshExpiry)
 
 	// Track AT -> RT pairing for refresh-time updates
 	s.registerTokenPair(newAccessToken, newRefreshToken)

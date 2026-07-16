@@ -86,7 +86,9 @@ func (e *refreshTestEnv) seedRefreshToken(t *testing.T, clientID, userID, family
 		expiresAt,
 	)
 	require.NoError(t, err)
-	err = e.store.SaveToken(context.Background(), refreshToken, &oauth2.Token{
+	// Unified layout: the provider token lives in the user's shared entry,
+	// keyed by the same userID the refresh token is bound to.
+	err = e.store.SaveUserProviderToken(context.Background(), userID, &oauth2.Token{
 		AccessToken:  "provider-access-" + refreshToken,
 		RefreshToken: "provider-refresh-" + refreshToken,
 		Expiry:       time.Now().Add(time.Hour),
@@ -103,7 +105,7 @@ func (e *refreshTestEnv) seedLegacyRefreshToken(t *testing.T, userID string, exp
 	refreshToken := "legacy-rt-" + userID
 	err := e.store.SaveRefreshToken(context.Background(), refreshToken, userID, expiresAt)
 	require.NoError(t, err)
-	err = e.store.SaveToken(context.Background(), refreshToken, &oauth2.Token{
+	err = e.store.SaveUserProviderToken(context.Background(), userID, &oauth2.Token{
 		AccessToken:  "provider-access-" + refreshToken,
 		RefreshToken: "provider-refresh-" + refreshToken,
 		Expiry:       time.Now().Add(time.Hour),

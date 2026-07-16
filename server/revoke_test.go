@@ -31,13 +31,10 @@ func TestServer_RevokeToken(t *testing.T) {
 		RefreshToken: "provider-refresh-token",
 		Expiry:       time.Now().Add(1 * time.Hour),
 	}
-	err := store.SaveToken(ctx, refreshToken, providerToken)
-	if err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
-	}
+	seedProviderToken(t, store, refreshToken, "upt-"+refreshToken, providerToken)
 
 	// Save refresh token with family tracking
-	err = store.SaveRefreshTokenWithFamily(ctx, refreshToken, userID, clientID, familyID, 1, time.Now().Add(90*24*time.Hour))
+	err := store.SaveRefreshTokenWithFamily(ctx, refreshToken, userID, clientID, familyID, 1, time.Now().Add(90*24*time.Hour))
 	if err != nil {
 		t.Fatalf("SaveRefreshTokenWithFamily() error = %v", err)
 	}
@@ -71,24 +68,21 @@ func TestServer_RevokeToken_AccessTokenNoFamilyRevocation(t *testing.T) {
 	accessToken := "access-token-no-family"
 
 	// Save only a provider token mapping (no family)
-	err := store.SaveToken(ctx, accessToken, &oauth2.Token{
+	seedProviderToken(t, store, accessToken, "upt-"+accessToken, &oauth2.Token{
 		AccessToken: "provider-access",
 		Expiry:      time.Now().Add(time.Hour),
 	})
-	if err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
-	}
 
 	// Revoking an access token should succeed without touching any family
-	err = srv.RevokeToken(ctx, accessToken, "test-client", "127.0.0.1")
+	err := srv.RevokeToken(ctx, accessToken, "test-client", "127.0.0.1")
 	if err != nil {
 		t.Errorf("RevokeToken() for access token error = %v", err)
 	}
 
-	// Verify the token was deleted
-	_, err = store.GetToken(ctx, accessToken)
+	// Verify the token's reference was deleted (ref deleted; shared entry remains)
+	_, err = store.GetProviderTokenRef(ctx, accessToken)
 	if err == nil {
-		t.Error("Access token should have been deleted after revocation")
+		t.Error("Access token reference should have been deleted after revocation")
 	}
 }
 
@@ -105,25 +99,22 @@ func TestServer_RevokeToken_RefreshTokenWithoutFamily(t *testing.T) {
 	refreshToken := "refresh-token-no-family"
 
 	// Save a provider token mapping but no family entry
-	err := store.SaveToken(ctx, refreshToken, &oauth2.Token{
+	seedProviderToken(t, store, refreshToken, "upt-"+refreshToken, &oauth2.Token{
 		AccessToken:  "provider-access",
 		RefreshToken: "provider-refresh",
 		Expiry:       time.Now().Add(time.Hour),
 	})
-	if err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
-	}
 
 	// Revoking should succeed without errors even with no family
-	err = srv.RevokeToken(ctx, refreshToken, "test-client", "127.0.0.1")
+	err := srv.RevokeToken(ctx, refreshToken, "test-client", "127.0.0.1")
 	if err != nil {
 		t.Errorf("RevokeToken() for token without family error = %v", err)
 	}
 
-	// Verify the token was deleted
-	_, err = store.GetToken(ctx, refreshToken)
+	// Verify the token's reference was deleted (ref deleted; shared entry remains)
+	_, err = store.GetProviderTokenRef(ctx, refreshToken)
 	if err == nil {
-		t.Error("Token should have been deleted after revocation")
+		t.Error("Token reference should have been deleted after revocation")
 	}
 }
 
@@ -145,12 +136,10 @@ func TestServer_RevokeToken_FamilyRevocationRevokesAllSiblings(t *testing.T) {
 
 	// Save two tokens in the same family (simulating rotation)
 	for i, tok := range []string{refreshToken1, refreshToken2} {
-		if err := store.SaveToken(ctx, tok, &oauth2.Token{
+		seedProviderToken(t, store, tok, "upt-"+tok, &oauth2.Token{
 			AccessToken: fmt.Sprintf("provider-access-%d", i),
 			Expiry:      time.Now().Add(time.Hour),
-		}); err != nil {
-			t.Fatalf("SaveToken() error = %v", err)
-		}
+		})
 		if err := store.SaveRefreshTokenWithFamily(ctx, tok, userID, clientID, familyID, i+1, time.Now().Add(90*24*time.Hour)); err != nil {
 			t.Fatalf("SaveRefreshTokenWithFamily() error = %v", err)
 		}
@@ -194,18 +183,14 @@ func TestServer_RevokeAllTokensForUserClient(t *testing.T) {
 		TokenType:    "Bearer",
 	}
 
-	if err := store.SaveToken(ctx, "access_token_1", token1); err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
-	}
-	if err := store.SaveToken(ctx, "access_token_2", token2); err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
-	}
+	seedProviderToken(t, store, "access_token_1", "upt-access_token_1", token1)
+	seedProviderToken(t, store, "access_token_2", "upt-access_token_2", token2)
 
 	// Save metadata
-	if err := store.SaveTokenMetadata(context.Background(), "access_token_1", storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
+	if err := store.SaveTokenMetadata(ctx, "access_token_1", storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
 		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
-	if err := store.SaveTokenMetadata(context.Background(), "access_token_2", storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
+	if err := store.SaveTokenMetadata(ctx, "access_token_2", storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
 		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
 
@@ -215,10 +200,8 @@ func TestServer_RevokeAllTokensForUserClient(t *testing.T) {
 		Expiry:      time.Now().Add(time.Hour),
 		TokenType:   "Bearer",
 	}
-	if err := store.SaveToken(ctx, "access_token_3", token3); err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
-	}
-	if err := store.SaveTokenMetadata(context.Background(), "access_token_3", storage.TokenMetadata{UserID: userID, ClientID: "different_client", TokenType: "access"}); err != nil {
+	seedProviderToken(t, store, "access_token_3", "upt-access_token_3", token3)
+	if err := store.SaveTokenMetadata(ctx, "access_token_3", storage.TokenMetadata{UserID: userID, ClientID: "different_client", TokenType: "access"}); err != nil {
 		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
 
@@ -246,17 +229,18 @@ func TestServer_RevokeAllTokensForUserClient(t *testing.T) {
 		t.Errorf("Expected 0 tokens after revocation, got %d", len(tokens))
 	}
 
-	// Verify tokens are actually deleted from storage
-	if _, err := store.GetToken(ctx, "access_token_1"); err == nil {
-		t.Error("Token 1 should have been deleted")
+	// Verify token references are actually deleted from storage
+	// (refs deleted; the shared per-user provider entries remain)
+	if _, err := store.GetProviderTokenRef(ctx, "access_token_1"); err == nil {
+		t.Error("Token 1 reference should have been deleted")
 	}
-	if _, err := store.GetToken(ctx, "access_token_2"); err == nil {
-		t.Error("Token 2 should have been deleted")
+	if _, err := store.GetProviderTokenRef(ctx, "access_token_2"); err == nil {
+		t.Error("Token 2 reference should have been deleted")
 	}
 
-	// Verify the different client's token still exists
-	if _, err := store.GetToken(ctx, "access_token_3"); err != nil {
-		t.Error("Token for different client should not have been deleted")
+	// Verify the different client's token reference still exists
+	if _, err := store.GetProviderTokenRef(ctx, "access_token_3"); err != nil {
+		t.Error("Token reference for different client should not have been deleted")
 	}
 	differentClientTokens, err := store.GetTokensByUserClient(ctx, userID, "different_client")
 	if err != nil {
@@ -300,18 +284,16 @@ func TestServer_RevokeAllTokensProviderFailure(t *testing.T) {
 		TokenType:    "Bearer",
 	}
 
-	if err := store.SaveToken(ctx, "access_token_1", token1); err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
-	}
-	if err := store.SaveToken(ctx, "access_token_2", token2); err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
-	}
+	// Distinct users keep distinct shared provider entries so both tokens'
+	// provider credentials are revoked (and counted) independently.
+	seedProviderToken(t, store, "access_token_1", "upt-access_token_1", token1)
+	seedProviderToken(t, store, "access_token_2", "upt-access_token_2", token2)
 
 	// Save metadata
-	if err := store.SaveTokenMetadata(context.Background(), "access_token_1", storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
+	if err := store.SaveTokenMetadata(ctx, "access_token_1", storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
 		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
-	if err := store.SaveTokenMetadata(context.Background(), "access_token_2", storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
+	if err := store.SaveTokenMetadata(ctx, "access_token_2", storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
 		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
 
@@ -373,11 +355,9 @@ func TestServer_RevokeAllTokensProviderTimeout(t *testing.T) {
 		TokenType:   "Bearer",
 	}
 
-	if err := store.SaveToken(ctx, "access_token_timeout", token1); err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
-	}
+	seedProviderToken(t, store, "access_token_timeout", "upt-access_token_timeout", token1)
 
-	if err := store.SaveTokenMetadata(context.Background(), "access_token_timeout", storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
+	if err := store.SaveTokenMetadata(ctx, "access_token_timeout", storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
 		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
 
@@ -618,10 +598,8 @@ func TestServer_ProviderRevocationRetrySuccess(t *testing.T) {
 		TokenType:    "Bearer",
 	}
 
-	if err := store.SaveToken(ctx, "access_token_retry", token1); err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
-	}
-	if err := store.SaveTokenMetadata(context.Background(), "access_token_retry", storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
+	seedProviderToken(t, store, "access_token_retry", "upt-access_token_retry", token1)
+	if err := store.SaveTokenMetadata(ctx, "access_token_retry", storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
 		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
 
@@ -689,10 +667,10 @@ func TestServer_ProviderRevocationFailureThreshold(t *testing.T) {
 			Expiry:      time.Now().Add(time.Hour),
 			TokenType:   "Bearer",
 		}
-		if err := store.SaveToken(ctx, tokenID, token); err != nil {
-			t.Fatalf("SaveToken() error = %v", err)
-		}
-		if err := store.SaveTokenMetadata(context.Background(), tokenID, storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
+		// Distinct user per token keeps a distinct shared provider entry,
+		// preserving the per-token provider revocation counting semantics.
+		seedProviderToken(t, store, tokenID, "upt-"+tokenID, token)
+		if err := store.SaveTokenMetadata(ctx, tokenID, storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
 			t.Fatalf("SaveTokenMetadata() error = %v", err)
 		}
 	}
@@ -748,10 +726,10 @@ func TestServer_ProviderRevocationWithinThreshold(t *testing.T) {
 			Expiry:      time.Now().Add(time.Hour),
 			TokenType:   "Bearer",
 		}
-		if err := store.SaveToken(ctx, tokenID, token); err != nil {
-			t.Fatalf("SaveToken() error = %v", err)
-		}
-		if err := store.SaveTokenMetadata(context.Background(), tokenID, storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
+		// Distinct user per token keeps a distinct shared provider entry,
+		// preserving the per-token provider revocation counting semantics.
+		seedProviderToken(t, store, tokenID, "upt-"+tokenID, token)
+		if err := store.SaveTokenMetadata(ctx, tokenID, storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
 			t.Fatalf("SaveTokenMetadata() error = %v", err)
 		}
 	}
@@ -805,10 +783,8 @@ func TestServer_ProviderRevocationExponentialBackoff(t *testing.T) {
 		Expiry:      time.Now().Add(time.Hour),
 		TokenType:   "Bearer",
 	}
-	if err := store.SaveToken(ctx, "access_token_backoff", token1); err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
-	}
-	if err := store.SaveTokenMetadata(context.Background(), "access_token_backoff", storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
+	seedProviderToken(t, store, "access_token_backoff", "upt-access_token_backoff", token1)
+	if err := store.SaveTokenMetadata(ctx, "access_token_backoff", storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
 		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
 
@@ -877,10 +853,8 @@ func TestServer_ProviderRevocationContextCancellation(t *testing.T) {
 		Expiry:      time.Now().Add(time.Hour),
 		TokenType:   "Bearer",
 	}
-	if err := store.SaveToken(ctx, "access_token_cancel", token1); err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
-	}
-	if err := store.SaveTokenMetadata(context.Background(), "access_token_cancel", storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
+	seedProviderToken(t, store, "access_token_cancel", "upt-access_token_cancel", token1)
+	if err := store.SaveTokenMetadata(ctx, "access_token_cancel", storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
 		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
 
@@ -959,10 +933,10 @@ func TestServer_ProviderRevocationExactlyAtThreshold(t *testing.T) {
 			Expiry:      time.Now().Add(time.Hour),
 			TokenType:   "Bearer",
 		}
-		if err := store.SaveToken(ctx, tokenID, token); err != nil {
-			t.Fatalf("SaveToken() error = %v", err)
-		}
-		if err := store.SaveTokenMetadata(context.Background(), tokenID, storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
+		// Distinct user per token keeps a distinct shared provider entry,
+		// preserving the per-token provider revocation counting semantics.
+		seedProviderToken(t, store, tokenID, "upt-"+tokenID, token)
+		if err := store.SaveTokenMetadata(ctx, tokenID, storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
 			t.Fatalf("SaveTokenMetadata() error = %v", err)
 		}
 	}
@@ -1054,10 +1028,8 @@ func TestServer_ProviderRevocationSingleTokenFailure(t *testing.T) {
 		Expiry:      time.Now().Add(time.Hour),
 		TokenType:   "Bearer",
 	}
-	if err := store.SaveToken(ctx, "access_token_single", token1); err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
-	}
-	if err := store.SaveTokenMetadata(context.Background(), "access_token_single", storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
+	seedProviderToken(t, store, "access_token_single", "upt-access_token_single", token1)
+	if err := store.SaveTokenMetadata(ctx, "access_token_single", storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
 		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
 
@@ -1149,10 +1121,8 @@ func TestServer_ProviderRevocationDifferentErrorTypes(t *testing.T) {
 				Expiry:      time.Now().Add(time.Hour),
 				TokenType:   "Bearer",
 			}
-			if err := store.SaveToken(ctx, "access_token_errors", token1); err != nil {
-				t.Fatalf("SaveToken() error = %v", err)
-			}
-			if err := store.SaveTokenMetadata(context.Background(), "access_token_errors", storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
+			seedProviderToken(t, store, "access_token_errors", "upt-access_token_errors", token1)
+			if err := store.SaveTokenMetadata(ctx, "access_token_errors", storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
 				t.Fatalf("SaveTokenMetadata() error = %v", err)
 			}
 
@@ -1209,10 +1179,10 @@ func TestServer_ConcurrentProviderRevocationCalls(t *testing.T) {
 				Expiry:      time.Now().Add(time.Hour),
 				TokenType:   "Bearer",
 			}
-			if err := store.SaveToken(ctx, tokenID, token); err != nil {
-				t.Fatalf("SaveToken() error = %v", err)
-			}
-			if err := store.SaveTokenMetadata(context.Background(), tokenID, storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
+			// Distinct user per token keeps distinct shared provider entries,
+			// so all 10 provider revocation calls are preserved after dedupe.
+			seedProviderToken(t, store, tokenID, "upt-"+tokenID, token)
+			if err := store.SaveTokenMetadata(ctx, tokenID, storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
 				t.Fatalf("SaveTokenMetadata() error = %v", err)
 			}
 		}
@@ -1277,13 +1247,11 @@ func TestServer_RevokeToken_CleansUpTokenPair(t *testing.T) {
 	accessToken := "revoke-access-token"
 	refreshToken := "revoke-refresh-token"
 
-	if err := store.SaveToken(ctx, accessToken, &oauth2.Token{
+	seedProviderToken(t, store, accessToken, "upt-"+accessToken, &oauth2.Token{
 		AccessToken:  "provider-access",
 		RefreshToken: "provider-refresh",
 		Expiry:       time.Now().Add(time.Hour),
-	}); err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
-	}
+	})
 
 	srv.registerTokenPair(accessToken, refreshToken)
 
@@ -1316,13 +1284,11 @@ func TestServer_RevokeToken_CallsSessionRevocationHandler(t *testing.T) {
 		capturedFamilyID = fid
 	}
 
-	if err := store.SaveToken(ctx, refreshToken, &oauth2.Token{
+	seedProviderToken(t, store, refreshToken, "upt-"+refreshToken, &oauth2.Token{
 		AccessToken:  "provider-at",
 		RefreshToken: "provider-rt",
 		Expiry:       time.Now().Add(time.Hour),
-	}); err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
-	}
+	})
 
 	if err := store.SaveRefreshTokenWithFamily(ctx, refreshToken, userID, clientID, familyID, 1, time.Now().Add(90*24*time.Hour)); err != nil {
 		t.Fatalf("SaveRefreshTokenWithFamily() error = %v", err)
@@ -1352,13 +1318,11 @@ func TestServer_RevokeToken_NoHandlerDoesNotPanic(t *testing.T) {
 	familyID := testutil.GenerateRandomString(32)
 	refreshToken := testutil.GenerateRandomString(32)
 
-	if err := store.SaveToken(ctx, refreshToken, &oauth2.Token{
+	seedProviderToken(t, store, refreshToken, "upt-"+refreshToken, &oauth2.Token{
 		AccessToken:  "provider-at",
 		RefreshToken: "provider-rt",
 		Expiry:       time.Now().Add(time.Hour),
-	}); err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
-	}
+	})
 
 	if err := store.SaveRefreshTokenWithFamily(ctx, refreshToken, userID, clientID, familyID, 1, time.Now().Add(90*24*time.Hour)); err != nil {
 		t.Fatalf("SaveRefreshTokenWithFamily() error = %v", err)
@@ -1381,12 +1345,10 @@ func TestServer_RevokeToken_HandlerNotCalledWithoutFamily(t *testing.T) {
 	}
 
 	accessToken := "at-no-family"
-	if err := store.SaveToken(ctx, accessToken, &oauth2.Token{
+	seedProviderToken(t, store, accessToken, "upt-"+accessToken, &oauth2.Token{
 		AccessToken: "provider-at",
 		Expiry:      time.Now().Add(time.Hour),
-	}); err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
-	}
+	})
 
 	if err := srv.RevokeToken(ctx, accessToken, "client-1", "127.0.0.1"); err != nil {
 		t.Fatalf("RevokeToken() error = %v", err)

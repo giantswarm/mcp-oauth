@@ -581,23 +581,23 @@ func TestServer_HandleProviderCallback_EmailLookup(t *testing.T) {
 		t.Fatalf("HandleProviderCallback() error = %v", err)
 	}
 
-	// TEST: Verify token can be retrieved by subject claim (ID)
-	tokenByID, err := store.GetToken(ctx, dexStyleSubjectClaim)
+	// TEST: Verify the shared provider entry is stored under the subject claim (ID)
+	tokenByID, err := store.GetUserProviderToken(ctx, dexStyleSubjectClaim)
 	if err != nil {
-		t.Errorf("GetToken by ID failed: %v", err)
+		t.Errorf("GetUserProviderToken by ID failed: %v", err)
 	}
 	if tokenByID == nil {
 		t.Error("Token not found by ID (subject claim)")
 	}
 
-	// TEST: Verify token can ALSO be retrieved by email
-	// This is the bug fix - previously tokens were only saved by email if email != ID
-	tokenByEmail, err := store.GetToken(ctx, testEmail)
-	if err != nil {
-		t.Errorf("GetToken by email failed: %v", err)
-	}
-	if tokenByEmail == nil {
-		t.Error("Token not found by email - this is the bug we're fixing (issue #154)")
+	// TEST: Verify the token is still reachable via email (issue #154): in the
+	// unified layout email resolves to the user's ID through UserInfo, which
+	// resolves to the ONE shared entry — no email-keyed copy is kept that
+	// refresh write-backs would miss.
+	if infoForEmail, err := store.GetUserInfo(ctx, testEmail); err != nil {
+		t.Errorf("GetUserInfo by email failed: %v", err)
+	} else if tokenViaEmail, err := store.GetUserProviderToken(ctx, infoForEmail.ID); err != nil || tokenViaEmail == nil {
+		t.Errorf("Token not reachable via email → UserInfo → ID (issue #154): %v", err)
 	}
 
 	// TEST: Verify user info can also be retrieved by email
@@ -726,42 +726,40 @@ func TestServer_HandleProviderCallback_ShortLivedToken(t *testing.T) {
 		t.Fatalf("HandleProviderCallback() error = %v", err)
 	}
 
-	// TEST: Verify token can be retrieved by email (despite original being expired)
-	tokenByEmail, err := store.GetToken(ctx, testEmail)
+	// TEST: The shared provider entry stays retrievable despite the provider
+	// access token being already expired — its refresh token keeps it alive
+	// (issue #193's concern, solved structurally in the unified layout).
+	tokenByID, err := store.GetUserProviderToken(ctx, testUserID)
 	if err != nil {
-		t.Errorf("GetToken by email failed: %v - token should be saved with extended expiry", err)
-	}
-	if tokenByEmail == nil {
-		t.Fatal("Token not found by email - fix for issue #193 not working")
+		t.Fatalf("GetUserProviderToken failed: %v - entry must be retrievable while its refresh token can renew it", err)
 	}
 
-	// Verify the token has extended expiry (should be in the future)
-	if tokenByEmail.Expiry.Before(time.Now()) {
-		t.Errorf("Token expiry should be in the future after extension, got %v", tokenByEmail.Expiry)
+	// The entry carries the provider's REAL expiry (no inflation): refresh
+	// coordination judges freshness on it.
+	if !tokenByID.Expiry.Equal(expiredExpiry) {
+		t.Errorf("Token expiry = %v, want the provider's real expiry %v (no storage-TTL inflation)", tokenByID.Expiry, expiredExpiry)
 	}
 
 	// Verify the refresh token is preserved
-	if tokenByEmail.RefreshToken != "valid-refresh-token" {
-		t.Errorf("RefreshToken not preserved, got %q", tokenByEmail.RefreshToken)
+	if tokenByID.RefreshToken != "valid-refresh-token" {
+		t.Errorf("RefreshToken not preserved, got %q", tokenByID.RefreshToken)
 	}
 
 	// Verify id_token is preserved in extras
-	idToken := tokenByEmail.Extra("id_token")
+	idToken := tokenByID.Extra("id_token")
 	if idToken == nil {
 		t.Error("id_token should be preserved in token extras for SSO forwarding")
 	}
 
-	// TEST: Verify token can also be retrieved by ID
-	tokenByID, err := store.GetToken(ctx, testUserID)
-	if err != nil {
-		t.Errorf("GetToken by ID failed: %v", err)
-	}
-	if tokenByID == nil {
-		t.Error("Token not found by ID")
+	// TEST: Verify the token is reachable via email → UserInfo → ID
+	if infoForEmail, err := store.GetUserInfo(ctx, testEmail); err != nil {
+		t.Errorf("GetUserInfo by email failed: %v", err)
+	} else if tokenViaEmail, err := store.GetUserProviderToken(ctx, infoForEmail.ID); err != nil || tokenViaEmail == nil {
+		t.Errorf("Token not reachable via email → UserInfo → ID: %v", err)
 	}
 
-	t.Logf("SUCCESS: Short-lived token saved with extended expiry. Original: %v, Extended: %v",
-		expiredExpiry, tokenByEmail.Expiry)
+	t.Logf("SUCCESS: Short-lived token retrievable via its refresh token. Real expiry preserved: %v",
+		tokenByID.Expiry)
 }
 
 // TestServer_ExtendTokenExpiryForStorage tests the extendTokenExpiryForStorage helper function.
@@ -1954,8 +1952,9 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 	accessToken1 := token1.AccessToken
 	refreshToken1 := token1.RefreshToken
 
-	// Verify tokens are stored
-	if _, err := store.GetToken(ctx, accessToken1); err != nil {
+	// Verify tokens are stored (the access token references the user's
+	// shared provider entry in the unified layout)
+	if _, err := store.GetProviderTokenRef(ctx, accessToken1); err != nil {
 		t.Errorf("Access token not found in storage after first exchange")
 	}
 	if _, err := store.GetRefreshTokenInfo(ctx, refreshToken1); err != nil {
@@ -2003,7 +2002,7 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 	}
 
 	// Verify access token was deleted
-	if _, err := store.GetToken(ctx, accessToken1); err == nil {
+	if _, err := store.GetProviderTokenRef(ctx, accessToken1); err == nil {
 		t.Error("Access token should have been revoked")
 	}
 
@@ -3824,13 +3823,13 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 				tokenResponse.Expiry, providerExpiry, timeDiff)
 		}
 
-		// Verify token was stored
-		storedToken, err := store.GetToken(ctx, tokenResponse.AccessToken)
+		// Verify the token references the user's shared provider entry
+		refUser, err := store.GetProviderTokenRef(ctx, tokenResponse.AccessToken)
 		if err != nil {
-			t.Fatalf("GetToken() error = %v", err)
+			t.Fatalf("GetProviderTokenRef() error = %v", err)
 		}
-		if storedToken == nil {
-			t.Fatal("Expected stored token, got nil")
+		if refUser != "test-user" {
+			t.Fatalf("provider token ref user = %q, want %q", refUser, "test-user")
 		}
 	})
 
@@ -3863,13 +3862,13 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 				tokenResponse.Expiry, expectedExpiry, timeDiff)
 		}
 
-		// Verify token was stored
-		storedToken, err := store.GetToken(ctx, tokenResponse.AccessToken)
+		// Verify the token references the user's shared provider entry
+		refUser, err := store.GetProviderTokenRef(ctx, tokenResponse.AccessToken)
 		if err != nil {
-			t.Fatalf("GetToken() error = %v", err)
+			t.Fatalf("GetProviderTokenRef() error = %v", err)
 		}
-		if storedToken == nil {
-			t.Fatal("Expected stored token, got nil")
+		if refUser != "test-user" {
+			t.Fatalf("provider token ref user = %q, want %q", refUser, "test-user")
 		}
 	})
 

@@ -596,9 +596,12 @@ func (s *Server) exchangeCodeWithProvider(ctx context.Context, code, providerVer
 // Email-keyed failures are audited and logged but do not fail the flow, since
 // ID-keyed lookups remain functional.
 //
-// Provider tokens are stored with an extended expiry (ProviderTokenTTL) so
-// SSO token forwarding outlives short upstream access-token lifetimes; the
-// original RefreshToken is preserved on the persisted copy.
+// With a storage.UserProviderTokenStore backend the provider token is stored
+// once as the user's shared entry, carrying the provider's real expiry (the
+// backend keeps the entry alive while the refresh token can renew it). With a
+// legacy backend, per-key copies are stored with an extended expiry
+// (ProviderTokenTTL) so SSO token forwarding outlives short upstream
+// access-token lifetimes; the original RefreshToken is preserved on the copy.
 func providerUserInfoToStorage(u *providers.UserInfo) *storage.UserInfo {
 	return &storage.UserInfo{
 		ID:            u.ID,
@@ -614,8 +617,6 @@ func providerUserInfoToStorage(u *providers.UserInfo) *storage.UserInfo {
 }
 
 func (s *Server) saveUserInfoAndToken(ctx context.Context, userInfo *providers.UserInfo, providerToken *oauth2.Token) error {
-	tokenForStorage := s.extendTokenExpiryForStorage(providerToken)
-
 	if userInfo.ID == "" {
 		s.auditProviderTokenStorageFailed(ctx, userInfo, "missing_subject", "ID-keyed storage skipped")
 		return fmt.Errorf("UserInfo.ID is empty; provider did not supply a subject claim")
@@ -627,7 +628,19 @@ func (s *Server) saveUserInfoAndToken(ctx context.Context, userInfo *providers.U
 		s.auditProviderTokenStorageFailed(ctx, userInfo, "save_user_info_by_id", err.Error())
 		return fmt.Errorf("save user info by id: %w", err)
 	}
-	if err := s.tokenStore.SaveToken(ctx, userInfo.ID, tokenForStorage); err != nil {
+
+	if upts, unified := s.userProviderTokenStore(); unified {
+		// Unified layout: one shared provider-token entry per user, stored
+		// with the provider's REAL expiry — refresh coordination judges
+		// freshness on it, so it must not be inflated for storage-TTL
+		// purposes (the backend keeps the entry alive via its own TTL).
+		// A fresh interactive login overwriting the entry is what lets a
+		// single re-login repair all of the user's sessions at once.
+		if err := upts.SaveUserProviderToken(ctx, userInfo.ID, providerToken); err != nil {
+			s.auditProviderTokenStorageFailed(ctx, userInfo, "save_token_by_id", err.Error())
+			return fmt.Errorf("save shared provider token: %w", err)
+		}
+	} else if err := s.tokenStore.SaveToken(ctx, userInfo.ID, s.extendTokenExpiryForStorage(providerToken)); err != nil {
 		s.auditProviderTokenStorageFailed(ctx, userInfo, "save_token_by_id", err.Error())
 		return fmt.Errorf("save provider token by id: %w", err)
 	}
@@ -639,9 +652,14 @@ func (s *Server) saveUserInfoAndToken(ctx context.Context, userInfo *providers.U
 		s.Logger.Warn("Failed to save user info by email", "error", err)
 		s.auditProviderTokenStorageFailed(ctx, userInfo, "save_user_info_by_email", err.Error())
 	}
-	if err := s.tokenStore.SaveToken(ctx, userInfo.Email, tokenForStorage); err != nil {
-		s.Logger.Warn("Failed to save provider token by email", "error", err)
-		s.auditProviderTokenStorageFailed(ctx, userInfo, "save_token_by_email", err.Error())
+	// Email-keyed provider-token copies exist only in the legacy layout; the
+	// unified layout resolves email → UserInfo → ID → shared entry instead of
+	// keeping a second copy that write-backs would miss.
+	if _, unified := s.userProviderTokenStore(); !unified {
+		if err := s.tokenStore.SaveToken(ctx, userInfo.Email, s.extendTokenExpiryForStorage(providerToken)); err != nil {
+			s.Logger.Warn("Failed to save provider token by email", "error", err)
+			s.auditProviderTokenStorageFailed(ctx, userInfo, "save_token_by_email", err.Error())
+		}
 	}
 	return nil
 }
@@ -920,12 +938,26 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 		})
 	}
 
-	// Store token mappings
-	if err := s.tokenStore.SaveToken(ctx, accessToken, authCode.ProviderToken); err != nil {
-		s.Logger.Warn("Failed to save access token mapping", "error", err)
-	}
-	if err := s.tokenStore.SaveToken(ctx, refreshToken, authCode.ProviderToken); err != nil {
-		s.Logger.Warn("Failed to save refresh token", "error", err)
+	// Store token mappings. Unified layout: the issued tokens hold
+	// references to the user's shared provider-token entry (written at
+	// provider-callback time) rather than private copies of it — the code's
+	// captured ProviderToken is NOT written back, since a concurrent session
+	// may have rotated the shared entry after this code was minted and a
+	// write-back would clobber the fresh credential with a stale one.
+	if upts, unified := s.userProviderTokenStore(); unified {
+		if err := upts.SaveProviderTokenRef(ctx, accessToken, authCode.UserID, refreshExpiry); err != nil {
+			s.Logger.Warn("Failed to save access token provider reference", "error", err)
+		}
+		if err := upts.SaveProviderTokenRef(ctx, refreshToken, authCode.UserID, refreshExpiry); err != nil {
+			s.Logger.Warn("Failed to save refresh token provider reference", "error", err)
+		}
+	} else {
+		if err := s.tokenStore.SaveToken(ctx, accessToken, authCode.ProviderToken); err != nil {
+			s.Logger.Warn("Failed to save access token mapping", "error", err)
+		}
+		if err := s.tokenStore.SaveToken(ctx, refreshToken, authCode.ProviderToken); err != nil {
+			s.Logger.Warn("Failed to save refresh token", "error", err)
+		}
 	}
 
 	// Track AT -> RT pairing for refresh-time updates

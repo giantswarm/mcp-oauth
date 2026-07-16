@@ -60,6 +60,12 @@ type Store struct {
 	tokens   map[string]*oauth2.Token
 	userInfo map[string]*storage.UserInfo
 
+	// Shared per-user provider token + token → user references
+	// (storage.UserProviderTokenStore). See provider_token.go.
+	userProviderTokens       map[string]*oauth2.Token // user ID -> shared provider token
+	providerTokenRefs        map[string]string        // access/refresh token -> user ID
+	providerTokenRefExpiries map[string]time.Time     // access/refresh token -> ref expiry
+
 	// Refresh token tracking (for rotation and security)
 	refreshTokens        map[string]string              // refresh token -> user ID
 	refreshTokenExpiries map[string]time.Time           // refresh token -> expiry time
@@ -118,6 +124,7 @@ var (
 	_ storage.RefreshTokenFamilyByIDStore     = (*Store)(nil)
 	_ storage.ActiveRefreshTokenByFamilyStore = (*Store)(nil)
 	_ storage.ClientIPTracker                 = (*Store)(nil)
+	_ storage.UserProviderTokenStore          = (*Store)(nil)
 )
 
 // Option configures a Store at construction time.
@@ -163,6 +170,9 @@ func New(opts ...Option) *Store {
 	s := &Store{
 		tokens:                     make(map[string]*oauth2.Token),
 		userInfo:                   make(map[string]*storage.UserInfo),
+		userProviderTokens:         make(map[string]*oauth2.Token),
+		providerTokenRefs:          make(map[string]string),
+		providerTokenRefExpiries:   make(map[string]time.Time),
 		refreshTokens:              make(map[string]string),
 		refreshTokenExpiries:       make(map[string]time.Time),
 		refreshTokenFamilies:       make(map[string]*RefreshTokenFamily),
@@ -750,6 +760,7 @@ func (s *Store) RevokeRefreshTokenFamily(_ context.Context, familyID string) err
 			delete(s.refreshTokens, token)
 			delete(s.refreshTokenExpiries, token)
 			delete(s.tokens, token) // Also delete provider token mapping
+			s.deleteProviderTokenRefLocked(token)
 			revokedCount++
 		}
 	}
@@ -1210,11 +1221,12 @@ func (s *Store) cleanupRevokedFamilies() int {
 func (s *Store) cleanupOrphanedMetadata() int {
 	cleaned := 0
 	for tokenID := range s.tokenMetadata {
-		if _, existsAsToken := s.tokens[tokenID]; !existsAsToken {
-			if _, existsAsRefresh := s.refreshTokens[tokenID]; !existsAsRefresh {
-				delete(s.tokenMetadata, tokenID)
-				cleaned++
-			}
+		_, existsAsToken := s.tokens[tokenID]
+		_, existsAsRefresh := s.refreshTokens[tokenID]
+		_, existsAsRef := s.providerTokenRefs[tokenID]
+		if !existsAsToken && !existsAsRefresh && !existsAsRef {
+			delete(s.tokenMetadata, tokenID)
+			cleaned++
 		}
 	}
 	return cleaned
@@ -1229,6 +1241,8 @@ func (s *Store) cleanup() {
 	cleaned += s.cleanupExpiredAuthCodes()
 	cleaned += s.cleanupExpiredRefreshTokens()
 	cleaned += s.cleanupRevokedFamilies()
+	cleaned += s.cleanupExpiredProviderTokenRefs()
+	cleaned += s.cleanupExpiredUserProviderTokens()
 	cleaned += s.cleanupOrphanedMetadata()
 	if r := s.revokedJTIs.Load(); r != nil {
 		// revokedJTIs has its own lock; safe to call while holding s.mu
@@ -1377,6 +1391,7 @@ func (s *Store) revokeFamily(familyID string, now time.Time, userID, clientID st
 		delete(s.refreshTokenExpiries, tokenID)
 		delete(s.tokens, tokenID)
 		delete(s.tokenMetadata, tokenID)
+		s.deleteProviderTokenRefLocked(tokenID)
 
 		familyRevokedCount++
 
@@ -1397,12 +1412,15 @@ func (s *Store) revokeRemainingTokens(tokensToRevoke []string, userID, clientID 
 
 	for _, tokenID := range tokensToRevoke {
 		// Skip if already deleted as part of family revocation
-		if _, exists := s.tokens[tokenID]; !exists {
+		_, existsAsCopy := s.tokens[tokenID]
+		_, existsAsRef := s.providerTokenRefs[tokenID]
+		if !existsAsCopy && !existsAsRef {
 			continue
 		}
 
 		delete(s.tokens, tokenID)
 		delete(s.tokenMetadata, tokenID)
+		s.deleteProviderTokenRefLocked(tokenID)
 		revokedCount++
 
 		s.logger.Debug("Revoked access token",

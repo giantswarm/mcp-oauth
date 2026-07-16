@@ -67,10 +67,25 @@ func preserveRefreshToken(newToken *oauth2.Token, oldRefreshToken string) *oauth
 	return &clonedToken
 }
 
-// updateProviderTokenMappings saves the refreshed provider token under both the
-// access-token and refresh-token storage keys. This prevents the refresh-token
-// mapping from becoming stale when the provider rotates refresh tokens.
+// updateProviderTokenMappings persists a provider token refreshed during
+// validation. Unified layout: the rotated token is written back to the ONE
+// shared per-user entry (resolved via the access token's reference), so every
+// sibling session sees the fresh credential. Legacy layout: copies are saved
+// under both the access-token and refresh-token storage keys to prevent the
+// refresh-token mapping from becoming stale when the provider rotates
+// refresh tokens.
 func (s *Server) updateProviderTokenMappings(ctx context.Context, accessToken string, newProviderToken *oauth2.Token) {
+	if upts, unified := s.userProviderTokenStore(); unified {
+		userID, err := upts.GetProviderTokenRef(ctx, accessToken)
+		if err != nil {
+			s.Logger.Warn("Failed to resolve access token to user for provider token write-back", "error", err)
+			return
+		}
+		if saveErr := upts.SaveUserProviderToken(ctx, userID, newProviderToken); saveErr != nil {
+			s.Logger.Warn("Failed to save refreshed shared provider token", "error", saveErr)
+		}
+		return
+	}
 	if saveErr := s.tokenStore.SaveToken(ctx, accessToken, newProviderToken); saveErr != nil {
 		s.Logger.Warn("Failed to save refreshed provider token for access key", "error", saveErr)
 	}
@@ -102,6 +117,20 @@ func (s *Server) fireTokenRefreshHandler(ctx context.Context, accessToken string
 	}
 
 	s.tokenRefreshHandler(ctx, userID, familyID, newProviderToken)
+}
+
+// resolveProviderToken returns the provider token backing the given issued
+// token. Unified layout: the token key is a reference — resolve token → user →
+// shared provider entry. Legacy layout: the token key holds its own copy.
+func (s *Server) resolveProviderToken(ctx context.Context, token string) (*oauth2.Token, error) {
+	if upts, unified := s.userProviderTokenStore(); unified {
+		userID, err := upts.GetProviderTokenRef(ctx, token)
+		if err != nil {
+			return nil, err
+		}
+		return upts.GetUserProviderToken(ctx, userID)
+	}
+	return s.tokenStore.GetToken(ctx, token)
 }
 
 // shouldProactivelyRefresh determines if a token should be proactively refreshed based on
@@ -290,7 +319,7 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 // validateStoredToken checks if a stored token exists and validates it locally.
 // Returns the stored token (may be nil if not found) or an error if validation fails.
 func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*oauth2.Token, error) {
-	storedToken, err := s.tokenStore.GetToken(ctx, accessToken)
+	storedToken, err := s.resolveProviderToken(ctx, accessToken)
 	if err != nil {
 		// Token not found in store - will fall back to provider validation
 		return nil, nil

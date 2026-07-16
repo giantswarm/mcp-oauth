@@ -91,33 +91,7 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 		return ErrInputTooLarge
 	}
 
-	key := s.tokenKey(userID)
-
-	// Determine which TTL to set on the Valkey key.
-	//
-	// Tokens with a RefreshToken use the configured refresh token TTL
-	// because token.Expiry reflects the short-lived upstream access token
-	// (e.g., 30 minutes from Dex), not the lifetime of the MCP refresh
-	// token (e.g., 90 days). Using the access token expiry as the key TTL
-	// would cause Valkey to evict the provider token before the refresh
-	// token expires, triggering false positive reuse detection in
-	// AtomicGetAndDeleteRefreshToken.
-	switch {
-	case token.RefreshToken != "" && s.refreshTokenTTL > 0:
-		err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Ex(s.refreshTokenTTL).Build()).Error()
-	case token.RefreshToken != "":
-		err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error()
-	case !token.Expiry.IsZero():
-		ttl := calculateTTL(token.Expiry)
-		if ttl <= 0 {
-			return fmt.Errorf("token already expired")
-		}
-		err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Ex(ttl).Build()).Error()
-	default:
-		err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error()
-	}
-
-	if err != nil {
+	if err = s.setTokenKeyWithDerivedTTL(op.ctx, s.tokenKey(userID), string(data), token); err != nil {
 		return fmt.Errorf("failed to save token: %w", err)
 	}
 
@@ -127,6 +101,32 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 		s.logger.Debug("Saved token", "user_id", userID)
 	}
 	return nil
+}
+
+// setTokenKeyWithDerivedTTL writes a serialized provider token, deriving the
+// key TTL from the token's shape.
+//
+// Tokens with a RefreshToken use the configured refresh token TTL because
+// token.Expiry reflects the short-lived upstream access token (e.g., 30
+// minutes from Dex), not the lifetime of the MCP refresh token (e.g., 90
+// days). Using the access token expiry as the key TTL would cause Valkey to
+// evict the provider token while it can still be renewed, triggering false
+// positive reuse detection.
+func (s *Store) setTokenKeyWithDerivedTTL(ctx context.Context, key, data string, token *oauth2.Token) error {
+	switch {
+	case token.RefreshToken != "" && s.refreshTokenTTL > 0:
+		return s.client.Do(ctx, s.client.B().Set().Key(key).Value(data).Ex(s.refreshTokenTTL).Build()).Error()
+	case token.RefreshToken != "":
+		return s.client.Do(ctx, s.client.B().Set().Key(key).Value(data).Build()).Error()
+	case !token.Expiry.IsZero():
+		ttl := calculateTTL(token.Expiry)
+		if ttl <= 0 {
+			return fmt.Errorf("token already expired")
+		}
+		return s.client.Do(ctx, s.client.B().Set().Key(key).Value(data).Ex(ttl).Build()).Error()
+	default:
+		return s.client.Do(ctx, s.client.B().Set().Key(key).Value(data).Build()).Error()
+	}
 }
 
 // GetToken retrieves an oauth2.Token for a user and decrypts if necessary

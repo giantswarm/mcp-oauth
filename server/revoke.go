@@ -55,8 +55,8 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP stri
 		return nil
 	}
 
-	// Get provider token
-	providerToken, err := s.tokenStore.GetToken(ctx, token)
+	// Get provider token (via the shared per-user entry in the unified layout)
+	providerToken, err := s.resolveProviderToken(ctx, token)
 	if err != nil {
 		// Token not found, but revocation should succeed per RFC 7009
 		return nil
@@ -74,8 +74,15 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP stri
 	// remove data that GetRefreshTokenFamily depends on in some store implementations.
 	family := s.lookupRefreshTokenFamily(ctx, token)
 
-	// Delete locally
-	if err := s.tokenStore.DeleteToken(ctx, token); err != nil {
+	// Delete locally. Unified layout: only this token's reference is removed —
+	// the shared per-user provider entry stays, since the user's other
+	// sessions still resolve to it (matching the legacy behavior where each
+	// session held its own copy and only this one was deleted).
+	if upts, unified := s.userProviderTokenStore(); unified {
+		if err := upts.DeleteProviderTokenRef(ctx, token); err != nil {
+			s.Logger.Warn("Failed to delete provider token reference", "error", err)
+		}
+	} else if err := s.tokenStore.DeleteToken(ctx, token); err != nil {
 		s.Logger.Warn("Failed to delete token locally", "error", err)
 	}
 	s.unregisterTokenPairIfPresent(token)
@@ -164,36 +171,39 @@ func (s *Server) handleRevocationNotSupported(ctx context.Context, userID, clien
 
 // revokeTokensAtProvider revokes all tokens at the provider
 // Returns (revokedCount, failedCount, totalCount)
+//
+// In the unified layout every token ID resolves to the user's ONE shared
+// provider entry, so the same upstream credential is deduplicated and revoked
+// once rather than once per issued token.
 func (s *Server) revokeTokensAtProvider(ctx context.Context, tokens []string, userID, clientID string) (int, int, int) {
 	revokedAtProvider := 0
 	failedAtProvider := 0
 	totalTokensToRevoke := 0
+	seen := make(map[string]bool)
+
+	revokeOnce := func(credential, tokenType string) {
+		if credential == "" || seen[credential] {
+			return
+		}
+		seen[credential] = true
+		totalTokensToRevoke++
+		if err := s.revokeTokenWithRetry(ctx, credential, tokenType, userID, clientID); err != nil {
+			failedAtProvider++
+		} else {
+			revokedAtProvider++
+		}
+	}
 
 	for _, tokenID := range tokens {
-		providerToken, err := s.tokenStore.GetToken(ctx, tokenID)
+		providerToken, err := s.resolveProviderToken(ctx, tokenID)
 		if err != nil {
 			s.Logger.Warn("Could not get provider token for revocation",
 				"token_id", helpers.SafeTruncate(tokenID, 8), "error", err)
 			continue
 		}
 
-		if providerToken.AccessToken != "" {
-			totalTokensToRevoke++
-			if err := s.revokeTokenWithRetry(ctx, providerToken.AccessToken, "access", userID, clientID); err != nil {
-				failedAtProvider++
-			} else {
-				revokedAtProvider++
-			}
-		}
-
-		if providerToken.RefreshToken != "" {
-			totalTokensToRevoke++
-			if err := s.revokeTokenWithRetry(ctx, providerToken.RefreshToken, "refresh", userID, clientID); err != nil {
-				failedAtProvider++
-			} else {
-				revokedAtProvider++
-			}
-		}
+		revokeOnce(providerToken.AccessToken, "access")
+		revokeOnce(providerToken.RefreshToken, "refresh")
 	}
 
 	return revokedAtProvider, failedAtProvider, totalTokensToRevoke

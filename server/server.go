@@ -376,6 +376,16 @@ func (s *Server) TokenStore() storage.TokenStore {
 	return s.tokenStore
 }
 
+// userProviderTokenStore returns the unified shared provider-token store when
+// the configured backend implements storage.UserProviderTokenStore. When it
+// does, the server stores the upstream provider token as one shared entry per
+// user (token keys hold references, not copies); otherwise it falls back to
+// the legacy copy-per-token layout.
+func (s *Server) userProviderTokenStore() (storage.UserProviderTokenStore, bool) {
+	upts, ok := s.tokenStore.(storage.UserProviderTokenStore)
+	return upts, ok
+}
+
 // SubjectValidatorFor returns the SubjectTokenValidator registered for the
 // given subject_token_type URN, or nil if none is registered.
 func (s *Server) SubjectValidatorFor(tokenType string) SubjectTokenValidator {

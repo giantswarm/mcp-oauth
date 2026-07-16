@@ -165,6 +165,7 @@ var (
 	_ storage.RevokedTokenStore               = (*Store)(nil)
 	_ storage.ActiveRefreshTokenByFamilyStore = (*Store)(nil)
 	_ storage.ClientIPTracker                 = (*Store)(nil)
+	_ storage.UserProviderTokenStore          = (*Store)(nil)
 )
 
 // New creates a new Valkey-backed storage instance. All dependencies

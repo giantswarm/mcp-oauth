@@ -432,6 +432,7 @@ func (s *Store) deleteTokenKeys(ctx context.Context, token, tokenPrefix string) 
 		s.refreshTokenKey(token), s.legacyRefreshTokenKey(token),
 		s.tokenKey(token), s.legacyTokenKey(token),
 		s.tokenMetaKey(token), s.legacyTokenMetaKey(token),
+		s.tokenRefKey(token),
 	).Build()).Error(); err != nil {
 		s.logger.Debug("Failed to delete token keys during family revocation",
 			"token_prefix", tokenPrefix, "error", err)
@@ -662,6 +663,7 @@ func (s *Store) deleteTokenAndMetadata(ctx context.Context, tokenID string) {
 		s.tokenKey(tokenID), s.legacyTokenKey(tokenID),
 		s.refreshTokenKey(tokenID), s.legacyRefreshTokenKey(tokenID),
 		s.tokenMetaKey(tokenID), s.legacyTokenMetaKey(tokenID),
+		s.tokenRefKey(tokenID),
 	).Build()).Error(); err != nil {
 		s.logger.Debug("Failed to delete token keys during user+client revocation",
 			"token_prefix", safeTruncate(tokenID, tokenIDLogLength),
