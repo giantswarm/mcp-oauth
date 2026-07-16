@@ -96,6 +96,37 @@ func (s *Server) updateProviderTokenMappings(ctx context.Context, accessToken st
 	}
 }
 
+// refreshProviderDuringValidation refreshes the provider token backing an
+// issued access token during validation (both the proactive near-expiry path
+// and the reactive expired-token path).
+//
+// Unified layout: route through the per-user single-flight coordinator, which
+// deduplicates concurrent refreshes across the user's sessions (cross-pod on
+// Valkey) and persists the rotated token to the shared entry under the lock —
+// so this MUST NOT write it back. The caller's ctx is detached so one
+// cancelled request cannot abort the coordinated refresh the user's other
+// sessions are waiting on.
+//
+// Legacy layout: a direct provider refresh, coalesced per access token so
+// concurrent validations of the same token hit the provider once, followed by
+// a write-back to the token copies.
+func (s *Server) refreshProviderDuringValidation(ctx context.Context, accessToken string, storedToken *oauth2.Token) (*oauth2.Token, error) {
+	if upts, unified := s.userProviderTokenStore(); unified {
+		return s.coordinatedRefreshByIssuedToken(context.WithoutCancel(ctx), upts, accessToken, storedToken)
+	}
+
+	result, err, _ := s.refreshGroup.Do(accessToken, func() (interface{}, error) {
+		return s.provider.RefreshToken(context.WithoutCancel(ctx), storedToken.RefreshToken)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	newProviderToken := preserveRefreshToken(result.(*oauth2.Token), storedToken.RefreshToken)
+	s.updateProviderTokenMappings(ctx, accessToken, newProviderToken)
+	return newProviderToken, nil
+}
+
 // fireTokenRefreshHandler invokes the registered TokenRefreshHandler (if any)
 // after a provider token has been refreshed. It retrieves the userID and familyID
 // from stored token metadata so callers don't need to plumb them through.
@@ -158,8 +189,9 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 		"refresh_threshold", refreshThreshold,
 		"token_suffix", helpers.TokenSuffix(accessToken, 8))
 
-	// Attempt to refresh the provider token
-	newProviderToken, err := s.provider.RefreshToken(ctx, storedToken.RefreshToken)
+	// Refresh the provider token — coordinated through the per-user
+	// single-flight lock in the unified layout, direct in the legacy layout.
+	newProviderToken, err := s.refreshProviderDuringValidation(ctx, accessToken, storedToken)
 	if err != nil {
 		// Refresh failed - log warning but continue with validation (graceful degradation)
 		s.Logger.Warn("Proactive token refresh failed, falling back to validation",
@@ -177,12 +209,6 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 		})
 		return
 	}
-
-	// Preserve old refresh token if provider omitted it
-	newProviderToken = preserveRefreshToken(newProviderToken, storedToken.RefreshToken)
-
-	// Update both AT and RT storage mappings to keep provider credentials in sync
-	s.updateProviderTokenMappings(ctx, accessToken, newProviderToken)
 
 	s.fireTokenRefreshHandler(ctx, accessToken, newProviderToken)
 
@@ -338,13 +364,11 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 			return nil, fmt.Errorf("access token expired (local validation)")
 		}
 
-		// Singleflight: deduplicate concurrent refresh attempts for the same token.
-		// Detach the leader's ctx from caller cancellation so one cancelled
-		// caller does not fail all coalesced waiters.
-		result, err, _ := s.refreshGroup.Do(accessToken, func() (interface{}, error) {
-			return s.provider.RefreshToken(context.WithoutCancel(ctx), storedToken.RefreshToken)
-		})
-
+		// Refresh the expired provider token — coordinated through the
+		// per-user single-flight lock (unified layout, cross-pod) or the
+		// per-access-token singleflight (legacy layout). Either way at most
+		// one refresh reaches the provider; the rest adopt its result.
+		newProviderToken, err := s.refreshProviderDuringValidation(ctx, accessToken, storedToken)
 		if err != nil {
 			s.Logger.Debug("Token expired locally and refresh failed",
 				"expiry", storedToken.Expiry,
@@ -356,10 +380,6 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 
 			return nil, fmt.Errorf("access token expired (local validation, refresh failed: %w)", err)
 		}
-
-		newProviderToken := result.(*oauth2.Token)
-		newProviderToken = preserveRefreshToken(newProviderToken, storedToken.RefreshToken)
-		s.updateProviderTokenMappings(ctx, accessToken, newProviderToken)
 
 		s.fireTokenRefreshHandler(ctx, accessToken, newProviderToken)
 

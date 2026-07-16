@@ -28,10 +28,17 @@ func seedFamilyForRefresh(t *testing.T, store *memory.Store, userID, clientID, f
 	// Also seed the user's shared provider-token entry (unified layout) so the
 	// atomic consume + provider refresh path can run. Keyed by the same userID
 	// that was recorded with the refresh token above.
+	//
+	// Seeded already-expired on purpose: the coordinated refresh grant only
+	// calls the upstream provider when the shared entry is due for refresh. A
+	// fresh entry would be adopted without a dex round-trip (the rotation-race
+	// single-flight behavior), so these RefreshSession tests — which assert the
+	// provider IS called (id_token forwarding, error propagation, coalescing) —
+	// must start from a due entry.
 	require.NoError(t, store.SaveUserProviderToken(ctx, userID, &oauth2.Token{
 		AccessToken:  "provider-access",
 		RefreshToken: "provider-refresh",
-		Expiry:       time.Now().Add(time.Hour),
+		Expiry:       time.Now().Add(-time.Minute),
 		TokenType:    "Bearer",
 	}))
 }

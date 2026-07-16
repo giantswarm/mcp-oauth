@@ -48,14 +48,15 @@ func TestUnifiedStore_RotationWritesBackToSharedEntry(t *testing.T) {
 
 	// Session B refreshes AFTER A: with per-session copies this died with
 	// "already been claimed" and escalated to a full token nuke. With the
-	// shared entry, B reads the fresh dex RT and survives. (Without slice
-	// 2-4 coordination B still calls dex itself — hence 2 calls, not 1.)
+	// shared entry plus the single-flight coordination (slices 2-3), B adopts
+	// A's freshly-written dex token — still valid well beyond the refresh
+	// threshold — without a dex round-trip of its own, so dex is hit once.
 	tokB2, err := srv.RefreshAccessToken(ctx, rtB, clientID)
 	if err != nil {
 		t.Fatalf("session B refresh failed — stale provider-token copy still in play: %v", err)
 	}
-	if got := dex.callCount(); got != 2 {
-		t.Fatalf("dex RefreshToken calls = %d, want 2 (uncoordinated but each against the current RT)", got)
+	if got := dex.callCount(); got != 1 {
+		t.Fatalf("dex RefreshToken calls = %d, want 1 (B adopts A's fresh shared entry, single-flight)", got)
 	}
 
 	// Both sessions keep working.

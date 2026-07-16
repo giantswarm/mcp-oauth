@@ -169,16 +169,37 @@ func (s *Server) providerTokenForRefresh(ctx context.Context, userID string, con
 	return consumedToken, nil
 }
 
-// storeRefreshedProviderToken persists the rotated provider token after a
-// refresh grant. Unified layout: write it back to the ONE shared per-user
-// entry (so every sibling session sees the fresh credential) and point the
-// new tokens at it. Legacy layout: private copies under the new
+// refreshProviderTokenForGrant refreshes the upstream provider token for a
+// refresh-token grant. Unified layout: route through the per-user single-flight
+// coordinator, which persists the rotated token to the shared entry under the
+// lock. Legacy layout: a direct, uncoordinated provider refresh against the
+// copy consumed alongside the refresh token.
+func (s *Server) refreshProviderTokenForGrant(ctx context.Context, userID string, observed *oauth2.Token) (*oauth2.Token, error) {
+	if _, unified := s.userProviderTokenStore(); unified {
+		return s.refreshUserProviderToken(ctx, userID, observed)
+	}
+	if observed == nil {
+		return nil, fmt.Errorf("no provider token available to refresh")
+	}
+	newToken, err := s.provider.RefreshToken(ctx, observed.RefreshToken)
+	if err != nil {
+		return nil, err
+	}
+	// RFC 6749 §5.1: the provider may omit the refresh token in the refresh
+	// response, in which case the previous one remains valid and must be
+	// carried forward.
+	return preserveRefreshToken(newToken, observed.RefreshToken), nil
+}
+
+// storeRefreshedProviderToken points the freshly issued tokens at the user's
+// provider token after a refresh grant. Unified layout: the shared per-user
+// entry was already persisted under the refresh lock by the coordinator, so
+// this only records the new access/refresh token references — re-saving the
+// shared entry here (outside the lock) could clobber a newer token a sibling
+// session just rotated in. Legacy layout: private copies under the new
 // access/refresh token keys.
 func (s *Server) storeRefreshedProviderToken(ctx context.Context, userID, newAccessToken, newRefreshToken string, newProviderToken *oauth2.Token, refreshExpiry time.Time) {
 	if upts, unified := s.userProviderTokenStore(); unified {
-		if err := upts.SaveUserProviderToken(ctx, userID, newProviderToken); err != nil {
-			s.Logger.Warn("Failed to save shared provider token", "error", err)
-		}
 		if err := upts.SaveProviderTokenRef(ctx, newAccessToken, userID, refreshExpiry); err != nil {
 			s.Logger.Warn("Failed to save access token provider reference", "error", err)
 		}
@@ -237,18 +258,17 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		return nil, s.handleRefreshTokenError(ctx, err, refreshToken, clientID, familyStore, supportsFamilies)
 	}
 
-	// Refresh token with provider
-	newProviderToken, err := s.provider.RefreshToken(ctx, providerToken.RefreshToken)
+	// Refresh the upstream provider token through the per-user single-flight
+	// coordinator (unified layout): at most one of the user's concurrent
+	// sessions talks to the provider per rotation window, and the rest adopt
+	// the freshly-written shared entry without ever calling it. Client binding
+	// was validated above, so a token presented by the wrong client never
+	// triggers an upstream refresh or a lock acquisition.
+	newProviderToken, err := s.refreshProviderTokenForGrant(ctx, userID, providerToken)
 	if err != nil {
 		s.logAuthFailure(ctx, userID, clientID, fmt.Sprintf("provider_refresh_failed: %v", err))
 		return nil, fmt.Errorf("failed to refresh token with provider: %w", err)
 	}
-
-	// RFC 6749 §5.1: the provider may omit the refresh token in the refresh
-	// response, in which case the previous one remains valid and must be
-	// carried forward — especially for the shared entry, where an empty
-	// refresh token would break every one of the user's sessions.
-	newProviderToken = preserveRefreshToken(newProviderToken, providerToken.RefreshToken)
 
 	now := time.Now()
 

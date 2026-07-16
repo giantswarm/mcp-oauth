@@ -71,6 +71,25 @@ func (s *Server) isProviderTokenFresh(shared, observed *oauth2.Token) bool {
 	return time.Until(shared.Expiry) > threshold
 }
 
+// coordinatedRefreshByIssuedToken resolves the user behind an issued token
+// (access or refresh) and refreshes that user's shared provider entry through
+// the per-user single-flight coordinator. It is the entry point for the
+// validation-time refresh paths, which hold an issued token rather than a
+// user ID.
+//
+// The caller MUST have already established that the backend is unified (upts
+// non-nil). refreshUserProviderToken persists the rotated token to the shared
+// entry under the lock, so callers MUST NOT write it back themselves — a
+// second unlocked write could clobber a token a sibling session just rotated
+// in, reintroducing the very race this fixes.
+func (s *Server) coordinatedRefreshByIssuedToken(ctx context.Context, upts storage.UserProviderTokenStore, issuedToken string, observed *oauth2.Token) (*oauth2.Token, error) {
+	userID, err := upts.GetProviderTokenRef(ctx, issuedToken)
+	if err != nil {
+		return nil, fmt.Errorf("resolve issued token to user for coordinated refresh: %w", err)
+	}
+	return s.refreshUserProviderToken(ctx, userID, observed)
+}
+
 // refreshUserProviderToken refreshes the user's shared provider token with
 // per-user single-flight coordination and double-checked locking:
 //
