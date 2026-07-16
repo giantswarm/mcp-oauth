@@ -9,30 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.1.0] - 2026-07-16
 
-> ### ⚠️ DEPLOY NOTE — one-time token-key flush + one-time re-login required
+> ### ⚠️ DEPLOY NOTE — one-time re-login required; token-key flush recommended
 >
 > This release changes the Valkey storage layout for the upstream (dex) provider
 > token: it is now a **single shared entry per user** instead of private copies
 > under every subject/email/access-token/refresh-token key
 > ([rotation-race fix](https://github.com/giantswarm/giantswarm/issues/37164),
-> root cause 2). **New code writes only the unified layout — there is no
-> legacy read-fallback path.**
+> root cause 2). **New code reads and writes only the unified layout — there is
+> no legacy read-fallback path**, so leftover old-layout keys are never
+> consulted (see the "hard-cutover consistency" fix below).
 >
-> **Operators MUST, as part of deploying v1.1.0:**
+> **Deploying v1.1.0:**
 >
-> 1. **Flush the affected Valkey token keys** — the provider-token copies and
->    refresh-token families (`token:*`, `refresh:*`, and the related
->    `meta:*` / `family:*` / user-client set keys under the configured
->    key prefix). Leftover old-layout keys are never read by the new code and
->    would only linger as dead state.
+> 1. **Flush the affected Valkey token keys (recommended clean cutover).** The
+>    provider-token copies and refresh-token families (`token:*`, `refresh:*`,
+>    and the related `meta:*` / `family:*` / user-client set keys under the
+>    configured key prefix). Because the new code never reads old-layout keys,
+>    leftover keys only linger as dead state until their TTL expires — flushing
+>    just reclaims that space immediately. **Skipping the flush is safe:** it
+>    does not corrupt anything and does not trigger false reuse/theft detection.
+>    A user whose shared provider entry does not yet exist behind an otherwise
+>    valid refresh token simply gets a single `invalid_grant` and re-logs in —
+>    no family revocation, no all-token nuking, no critical theft audit event.
 > 2. **Every user re-authenticates exactly once.** Existing sessions do not
 >    carry over; after the single re-login, all of a user's concurrent MCP
 >    sessions share one coordinated provider token and stop dying on the
 >    rotation race. This is cheap because affected sessions are already dying
 >    constantly today.
 >
-> Skipping the flush does not corrupt anything (old keys are simply ignored),
-> but the one-time re-login is unavoidable — plan a short user-facing notice.
+> The one-time re-login is unavoidable whether or not you flush — plan a short
+> user-facing notice.
 
 ### Added
 
@@ -40,6 +46,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Per-user single-flight refresh lock + double-checked coordination** (`storage.ProviderRefreshLockStore`, [#513](https://github.com/giantswarm/mcp-oauth/issues/513), rotation-race slice 2 of [giantswarm/giantswarm#37164](https://github.com/giantswarm/giantswarm/issues/37164) root cause 2). Every refresh of the shared per-user provider token is now coordinated with a per-user single-flight lock — **cross-pod** on the Valkey backend (`SET NX` + a Lua compare-and-delete against a random lock value for owner-only release, following the DPoP replay-cache precedent; `refreshlock:` namespace), in-process on the memory backend. The coordination is double-checked locking: acquire → re-read the shared entry → if it is already fresh (a sibling refreshed just before) adopt it without calling the provider, otherwise refresh **once** and write the rotated token back to the shared entry before releasing. Freshness is judged on the provider's **real** expiry against the proactive-refresh threshold *or* on refresh-token identity (the shared token rotated past the caller's copy). A session that loses the race waits briefly (bounded by the provider-refresh timeout) and adopts the winner's freshly-written token — no provider call, no collision, no client-visible error. The lock self-expires (provider-refresh timeout + margin), so a holder that crashes mid-refresh only delays the next refresh instead of wedging the user. The interface is optional and consumed via type assertion; the Go API stays additive. Slice 3 routes the server's three provider-refresh entry points through this coordinator; the deterministic rotation-race reproductions stay red until then by design.
 - **All provider-refresh entry points routed through the single-flight coordinator** ([#514](https://github.com/giantswarm/mcp-oauth/issues/514), rotation-race slice 3 of [giantswarm/giantswarm#37164](https://github.com/giantswarm/giantswarm/issues/37164) root cause 2). The three paths that refresh the upstream provider token — the `/oauth/token` refresh-token grant and both the proactive (near-expiry) and reactive (expired) refreshes during validation — now obtain the provider token via the per-user lock + shared entry instead of calling the provider directly. No path refreshes the provider uncoordinated, so a user's concurrent sessions produce at most one dex refresh per rotation window; the rotated token is written back to the shared entry only under the lock (the grant no longer re-saves it afterwards, which could have clobbered a sibling's newer token). Client binding is validated **before** any lock acquisition or provider call on every path, so a token presented by the wrong client never triggers an upstream refresh (`TestServer_RefreshAccessToken_ClientBinding_Integration` stays green). This makes the deterministic rotation-race reproductions (`server/rotation_race_repro_test.go`) pass: benign collisions between a user's own sessions are invisible, all sessions survive, and dex is called exactly once. **Behavior change:** a refresh-token grant whose shared provider token is still fresh (real expiry beyond the proactive-refresh threshold) now **adopts** that token instead of always calling the provider — the client still receives freshly rotated mcp tokens, but the upstream credential is reused for its lifetime rather than re-fetched on every grant. Silent authentication / SSO bridging is preserved (a second client comes up from the shared entry without an interactive dex login).
 - **No-orphan reordering of the mcp refresh token** ([#515](https://github.com/giantswarm/mcp-oauth/issues/515), rotation-race slice 4 of [giantswarm/giantswarm#37164](https://github.com/giantswarm/giantswarm/issues/37164) root cause 2). Previously `RefreshAccessToken` atomically **deleted** the mcp refresh token *before* calling the provider, with no rollback, so a transient dex hiccup orphaned an otherwise-valid session — the client's retry re-presented the now-deleted token, tripped reuse detection, and `RevokeAllTokensForUserClient` nuked every one of the user's sessions for that client. The refresh grant is now reordered so the mcp refresh token is rotated/deleted **only after** the shared provider token is confirmed fresh. In the unified layout the front half of the grant resolves the token's user binding with a **non-destructive** existence + expiry check (`GetRefreshTokenInfo`, same not-found/expired semantics the atomic consume had), validates client binding, reads the shared provider entry, and defers the atomic consume (the concurrency gate) until after the coordinated provider refresh succeeds. A transient provider-refresh failure therefore returns with the session's refresh token **intact and usable** — no orphan, no reuse nuke on retry — while genuine reuse (a rotated-away, re-presented mcp refresh token) still trips reuse detection and revokes the family + all user/client tokens (the OAuth 2.1 reuse-detection machinery is untouched). The legacy copy-per-token layout is unchanged: there the provider-token copy can only be read by consuming the token, so the delete stays up front.
+
+### Fixed
+
+Hardening of the v1.1.0 rotation-race fix, surfaced by adversarial review of the unified per-user shared-provider-token layout ([giantswarm/giantswarm#37164](https://github.com/giantswarm/giantswarm/issues/37164) root cause 2). All ship in this release.
+
+- **A missing or expired shared provider entry behind a still-valid mcp refresh token no longer trips refresh-token reuse detection.** Previously an absent shared entry for an otherwise-valid refresh token was treated as reuse — revoking the family, revoking all of the user's/client's tokens, and emitting a critical theft audit event. It now returns a plain `invalid_grant` with a warning-level `shared_provider_token_missing` audit event, and the presented refresh token is left intact so retries stay idempotent — the client simply re-logs in.
+- **Transient storage read failures during the refresh grant now surface as retryable server errors** instead of `invalid_grant` or a false `cross_client_token_theft_prevented` security event. Reads of the refresh-token info, token metadata, and shared provider entry now distinguish a genuine not-found from a transient backend error; token-metadata absence is signaled by both the memory and Valkey backends with the `storage.ErrTokenNotFound` sentinel.
+- **RFC 7009 revocation of a refresh token now hard-deletes the presented refresh-token record itself** (`TokenStore.DeleteRefreshToken`), independent of family state — previously a family-less refresh token survived revocation fully usable. Local invalidation now always runs even when the provider-token reference is missing, and a transient family-lookup error during revocation surfaces instead of silently skipping family revocation.
+- **The reuse-detection response now deletes the user's shared provider entry after successfully revoking the shared upstream refresh token**, so the user's other clients fail fast into re-login instead of repeatedly presenting a now-dead credential to the provider.
+- **Interactive login now merges the shared provider entry under the per-user refresh lock (bounded 2s wait).** A login that carries no refresh token preserves the existing entry's refresh token instead of clobbering it — the old behavior collapsed the entry's TTL down to the access-token expiry and broke all of the user's sessions. If the lock is unavailable, a refresh-token-less login skips the shared-entry write entirely rather than resurrecting a rotated-away provider refresh token.
+- **The provider-refresh single-flight gained a third adoption signal** (the shared entry's expiry changed since the caller observed it), so providers that do not rotate refresh tokens and issue short-lived access tokens no longer degrade to N serialized upstream calls or 10s waiter timeouts.
+- **Coordinated provider refresh is now coalesced per-user within a pod** (`singleflight`) and the waiter loop is bound to the caller's context, so a cancelled request stops polling immediately. Only the winner's provider call and write-back are detached, so a started rotation always completes and persists.
+- **Hard-cutover consistency: the Valkey legacy-key read fallbacks were removed** from `GetRefreshTokenInfo`, `GetRefreshTokenFamily`, and `GetTokenMetadata`, so the destructive and non-destructive refresh checks and the reuse-detection reads all agree. A leftover pre-migration key can no longer pass validation, burn a provider rotation, then be misclassified as theft.
 
 ### Changed
 
