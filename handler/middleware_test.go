@@ -1516,6 +1516,86 @@ func TestHandler_ValidateToken_SessionIDFromContext_WithoutFamilyID(t *testing.T
 	}
 }
 
+func TestHandler_ValidateToken_IDTokenBearer_ResolvesFamilySession(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+	provider := mock.NewProvider()
+
+	srv, err := server.New(provider, store, store, store, &server.Config{Issuer: testIssuer}, nil)
+	require.NoError(t, err)
+
+	handler := New(srv, nil)
+
+	accessToken := "session-test-sibling-at"
+	idToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJtb2NrLXVzZXItMTIzIn0.sig" //nolint:gosec // test value
+	familyID := "family-id-token-abc"
+
+	ctx := t.Context()
+	providerToken := &oauth2.Token{
+		AccessToken: "provider-access",
+		Expiry:      time.Now().Add(time.Hour),
+	}
+	for bearer, tokenType := range map[string]string{accessToken: "access", idToken: "id"} {
+		require.NoError(t, store.SaveToken(ctx, bearer, providerToken))
+		require.NoError(t, store.SaveTokenMetadata(ctx, bearer, storage.TokenMetadata{
+			UserID:    "mock-user-123",
+			ClientID:  "client-1",
+			TokenType: tokenType,
+			FamilyID:  familyID,
+		}))
+	}
+
+	sessionFor := func(bearer string) string {
+		var capturedSessionID string
+		nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			capturedSessionID, _ = SessionIDFromContext(r.Context())
+		})
+		req := httptest.NewRequest(http.MethodGet, "/test", nil)
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		w := httptest.NewRecorder()
+		handler.ValidateToken(nextHandler).ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code)
+		return capturedSessionID
+	}
+
+	require.Equal(t, familyID, sessionFor(accessToken))
+	require.Equal(t, familyID, sessionFor(idToken))
+}
+
+func TestHandler_ValidateToken_UnissuedIDToken_FallsBackToBearerSession(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+	provider := mock.NewProvider()
+
+	srv, err := server.New(provider, store, store, store, &server.Config{Issuer: testIssuer}, nil)
+	require.NoError(t, err)
+
+	handler := New(srv, nil)
+
+	// A JWT-shaped bearer this server never issued: no token metadata exists,
+	// only the trusted-issuer/forwarded validation path.
+	foreignIDToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJmb3JlaWduLXVzZXIifQ.sig" //nolint:gosec // test value
+
+	ctx := t.Context()
+	require.NoError(t, store.SaveToken(ctx, foreignIDToken, &oauth2.Token{
+		AccessToken: "provider-access",
+		Expiry:      time.Now().Add(time.Hour),
+	}))
+
+	var capturedSessionID string
+	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		capturedSessionID, _ = SessionIDFromContext(r.Context())
+	})
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+foreignIDToken)
+	w := httptest.NewRecorder()
+	handler.ValidateToken(nextHandler).ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, srv.SessionIDForBearer(foreignIDToken), capturedSessionID)
+	require.True(t, strings.HasPrefix(capturedSessionID, "ext-"))
+}
+
 func TestHandler_ValidateToken_UserInfoAndSessionIDCoexist(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()

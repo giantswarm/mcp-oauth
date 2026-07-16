@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Token metadata is now also saved for the upstream `id_token` returned alongside a minted access/refresh pair, keyed by the `id_token` string with `TokenType` `"id"` and the `id_token`'s own `exp` as expiry (falling back to the access-token expiry when `exp` is unreadable). A bearer equal to the issued `id_token` presented at the resource-server front door now resolves to the same `FamilyID`-derived session as its sibling access token, and the session stays stable across refresh rotations. Previously the `id_token` fell back to the bearer-derived `ext-` session, which changed on every rotation. An `id_token` this server never issued still gets the bearer-derived `ext-` session.
 - SSO forwarded-ID-token JWKS validation now honors a CA bundle the host process installs on `http.DefaultTransport` when `AllowPrivateIPJWKS` is set. Previously `Server.getJWKSClient()` built a JWKS client that verified against the system certificate pool alone, so an internal-CA Dex forwarding SSO ID tokens was rejected with `x509: certificate signed by unknown authority` even when the host process had installed that CA — the trusted-issuer permissive client (`NewOIDCValidator`) already worked this way, the forwarded-token path did not. The SSRF-safe client used when `AllowPrivateIPJWKS` is unset is unchanged and still verifies against the system pool. See https://github.com/giantswarm/giantswarm/issues/37059.
 
 ### Changed

@@ -512,7 +512,7 @@ type TokenMetadata struct {
 	ClientID    string         // Client who owns this token
 	IssuedAt    time.Time      // Issuer-set: the instant the token was issued
 	ExpiresAt   time.Time      // Issuer-set: the instant the token expires; zero means unknown
-	TokenType   string         // "access" or "refresh"
+	TokenType   string         // "access", "refresh", or "id"
 	Audience    string         // RFC 8707: Intended resource server identifier (for audience validation)
 	Scopes      []string       // MCP 2025-11-25: Scopes granted to this token (for scope validation)
 	FamilyID    string         // Refresh token family ID for session tracking

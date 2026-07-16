@@ -427,6 +427,37 @@ func (s *Server) saveTokenPairMetadata(ctx context.Context, accessToken, refresh
 	s.saveTokenMetadata(ctx, refreshToken, rt)
 }
 
+// saveIDTokenMetadata saves metadata keyed by the upstream id_token returned
+// alongside a minted access/refresh pair, so a bearer equal to the id_token
+// resolves the same FamilyID-derived session as its sibling access token.
+// Expiry follows the id_token's own exp claim; base.ExpiresAt (the
+// access-token expiry) is kept when exp is unreadable. JKT is cleared: DPoP
+// binding covers the minted access token, not the upstream id_token.
+func (s *Server) saveIDTokenMetadata(ctx context.Context, idToken string, base storage.TokenMetadata) {
+	metadata := base
+	metadata.TokenType = "id"
+	metadata.JKT = ""
+	if exp := unverifiedJWTExpiry(idToken); !exp.IsZero() {
+		metadata.ExpiresAt = exp
+	}
+	s.saveTokenMetadata(ctx, idToken, metadata)
+}
+
+// unverifiedJWTExpiry reads a JWT's exp claim without verifying the signature.
+// Returns the zero time when the token is not a parseable JWT or carries no
+// numeric exp.
+func unverifiedJWTExpiry(tokenString string) time.Time {
+	claims, err := oidc.ParseUnverifiedClaims(tokenString)
+	if err != nil {
+		return time.Time{}
+	}
+	exp, ok := claims["exp"].(float64)
+	if !ok {
+		return time.Time{}
+	}
+	return time.Unix(int64(exp), 0)
+}
+
 const (
 	// MinTokenBytes is the minimum number of random bytes required for secure tokens.
 	// 32 bytes = 256 bits of entropy, which exceeds NIST recommendations for
