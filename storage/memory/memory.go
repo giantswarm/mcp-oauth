@@ -1296,14 +1296,16 @@ func (s *Store) SaveTokenMetadata(_ context.Context, tokenID string, metadata st
 	return nil
 }
 
-// GetTokenMetadata retrieves metadata for a token (including RFC 8707 audience)
+// GetTokenMetadata retrieves metadata for a token (including RFC 8707 audience).
+// Absence is signaled with storage.ErrTokenNotFound so callers can distinguish
+// "no such token" from transient storage failures without string-matching.
 func (s *Store) GetTokenMetadata(tokenID string) (*storage.TokenMetadata, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	metadata, exists := s.tokenMetadata[tokenID]
 	if !exists {
-		return nil, fmt.Errorf("token metadata not found")
+		return nil, fmt.Errorf("token metadata: %w", storage.ErrTokenNotFound)
 	}
 
 	return metadata, nil

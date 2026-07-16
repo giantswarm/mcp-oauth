@@ -237,10 +237,9 @@ func PathMatchesPrefix(resourcePath, prefix string) bool {
 	}
 
 	// Prefix match with path boundary
-	if strings.HasPrefix(resourcePath, prefix) {
+	if remaining, ok := strings.CutPrefix(resourcePath, prefix); ok {
 		// Ensure we're matching at a path boundary
 		// /mcp/files should match /mcp but not /mc
-		remaining := strings.TrimPrefix(resourcePath, prefix)
 		return len(remaining) > 0 && remaining[0] == '/'
 	}
 

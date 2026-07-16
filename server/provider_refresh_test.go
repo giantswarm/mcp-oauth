@@ -45,12 +45,12 @@ func staleProviderToken(dex *singleUseDex) *oauth2.Token {
 }
 
 // newRefreshTestServer builds a Server on the given combined store with a
-// mock provider whose RefreshToken is the single-use dex emulation.
-func newRefreshTestServer(t *testing.T, store storage.Combined, dex *singleUseDex) *Server {
+// mock provider using the given RefreshToken implementation.
+func newRefreshTestServer(t *testing.T, store storage.Combined, refresh func(context.Context, string) (*oauth2.Token, error)) *Server {
 	t.Helper()
 
 	provider := mock.NewProvider()
-	provider.RefreshTokenFunc = dex.refresh
+	provider.RefreshTokenFunc = refresh
 
 	config := &Config{
 		Issuer:                      "https://auth.example.com",
@@ -73,7 +73,7 @@ func newRefreshTestMemoryServer(t *testing.T) (*Server, *memory.Store, *singleUs
 	store := memory.New(memory.WithCleanupInterval(time.Hour))
 	t.Cleanup(store.Stop)
 	dex := newSingleUseDex()
-	return newRefreshTestServer(t, store, dex), store, dex
+	return newRefreshTestServer(t, store, dex.refresh), store, dex
 }
 
 // runConcurrentRefreshes fires one refreshUserProviderToken per (server,
@@ -240,4 +240,331 @@ func TestProviderRefresh_NoSharedEntry_Errors(t *testing.T) {
 	_, err := srv.refreshUserProviderToken(context.Background(), "user-without-entry", nil)
 	require.ErrorIs(t, err, storage.ErrTokenNotFound)
 	require.Zero(t, dex.callCount())
+}
+
+// TestProviderRefresh_IsProviderTokenFresh pins the freshness signals down as
+// a table, including the guards on the write-back-identity (expiry-change)
+// signal: an unchanged snapshot, a self-comparison, a nil or zero-expiry
+// observation, and a zero-expiry entry must never read as fresh through it.
+func TestProviderRefresh_IsProviderTokenFresh(t *testing.T) {
+	srv := &Server{Config: &Config{TokenRefreshThreshold: 300}}
+
+	near := time.Now().Add(2 * time.Minute)    // inside the 5m threshold
+	changed := time.Now().Add(3 * time.Minute) // inside the threshold, but rewritten
+	far := time.Now().Add(30 * time.Minute)    // beyond the threshold
+
+	sameSnapshot := &oauth2.Token{RefreshToken: "rt-0", Expiry: near}
+
+	tests := []struct {
+		name     string
+		shared   *oauth2.Token
+		observed *oauth2.Token
+		want     bool
+	}{
+		{"nil shared entry", nil, &oauth2.Token{RefreshToken: "rt-0", Expiry: near}, false},
+		{"rotation identity: refresh token rotated", &oauth2.Token{RefreshToken: "rt-1", Expiry: near}, &oauth2.Token{RefreshToken: "rt-0", Expiry: near}, true},
+		{"real expiry: beyond threshold, nothing observed", &oauth2.Token{RefreshToken: "rt-0", Expiry: far}, nil, true},
+		{"write-back identity: same RT, expiry changed inside threshold", &oauth2.Token{RefreshToken: "rt-0", Expiry: changed}, &oauth2.Token{RefreshToken: "rt-0", Expiry: near}, true},
+		{"self comparison: same snapshot twice", sameSnapshot, sameSnapshot, false},
+		{"unchanged entry inside threshold", &oauth2.Token{RefreshToken: "rt-0", Expiry: near}, &oauth2.Token{RefreshToken: "rt-0", Expiry: near}, false},
+		{"nil observed, entry inside threshold", &oauth2.Token{RefreshToken: "rt-0", Expiry: near}, nil, false},
+		{"zero observed expiry, entry inside threshold", &oauth2.Token{RefreshToken: "rt-0", Expiry: near}, &oauth2.Token{RefreshToken: "rt-0"}, false},
+		{"zero shared expiry", &oauth2.Token{RefreshToken: "rt-0"}, &oauth2.Token{RefreshToken: "rt-0", Expiry: near}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, srv.isProviderTokenFresh(tt.shared, tt.observed))
+		})
+	}
+}
+
+// TestProviderRefresh_DoubleCheck_FreshByExpiryChange: the shared entry was
+// rewritten since the caller observed it — SAME refresh token (the provider
+// does not rotate) and an expiry still inside the proactive threshold, just
+// different. Neither the rotation-identity nor the real-expiry signal can
+// fire; only the write-back-identity signal marks the entry fresh, and the
+// provider must not be called.
+func TestProviderRefresh_DoubleCheck_FreshByExpiryChange(t *testing.T) {
+	srv, store, dex := newRefreshTestMemoryServer(t)
+	ctx := context.Background()
+
+	observed := &oauth2.Token{
+		AccessToken:  "dex-at-old",
+		RefreshToken: "dex-rt-0",
+		Expiry:       time.Now().Add(time.Minute),
+	}
+
+	// A sibling's write-back landed after the observation: same RT, a new
+	// access token, and a new expiry that is still inside the 5m threshold.
+	rewritten := &oauth2.Token{
+		AccessToken:  "dex-at-new",
+		RefreshToken: "dex-rt-0",
+		Expiry:       time.Now().Add(2 * time.Minute),
+	}
+	require.NoError(t, store.SaveUserProviderToken(ctx, refreshTestUserID, rewritten))
+
+	got, err := srv.refreshUserProviderToken(ctx, refreshTestUserID, observed)
+	require.NoError(t, err)
+	require.Equal(t, "dex-at-new", got.AccessToken, "the rewritten sibling entry must be adopted")
+	require.Zero(t, dex.callCount(), "adopting a rewritten entry must not call the provider")
+}
+
+// nonRotatingIdP emulates a provider that never rotates refresh tokens and
+// issues access tokens whose lifetime (2m) is INSIDE the proactive-refresh
+// threshold (5m): for waiters, neither the rotation-identity nor the
+// real-expiry freshness signal can ever fire — only the write-back-identity
+// (expiry-change) signal lets them adopt the winner's result instead of
+// timing out or serializing N upstream calls.
+type nonRotatingIdP struct {
+	mu    sync.Mutex
+	gen   int
+	calls int
+}
+
+func (p *nonRotatingIdP) refresh(_ context.Context, rt string) (*oauth2.Token, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls++
+	if rt != "static-rt" {
+		return nil, fmt.Errorf("unknown refresh token %q", rt)
+	}
+	p.gen++
+	return &oauth2.Token{
+		AccessToken:  fmt.Sprintf("short-at-%d", p.gen),
+		TokenType:    "Bearer",
+		RefreshToken: "static-rt", // never rotates
+		Expiry:       time.Now().Add(2 * time.Minute),
+	}, nil
+}
+
+func (p *nonRotatingIdP) callCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
+}
+
+// TestProviderRefresh_NonRotatingRT_ShortAT_CrossServerSingleFlight: two
+// Server instances over ONE store — two pods sharing a backend, each with its
+// own in-process singleflight, so the second pod's callers are true cross-pod
+// waiters. With a non-rotating refresh token and short-lived access tokens,
+// waiters can only adopt through the expiry-change signal; the provider must
+// still be called exactly once for N concurrent refreshes.
+func TestProviderRefresh_NonRotatingRT_ShortAT_CrossServerSingleFlight(t *testing.T) {
+	store := memory.New(memory.WithCleanupInterval(time.Hour))
+	t.Cleanup(store.Stop)
+	idp := &nonRotatingIdP{}
+	podA := newRefreshTestServer(t, store, idp.refresh)
+	podB := newRefreshTestServer(t, store, idp.refresh)
+	ctx := context.Background()
+
+	observed := &oauth2.Token{
+		AccessToken:  "short-at-0",
+		TokenType:    "Bearer",
+		RefreshToken: "static-rt",
+		Expiry:       time.Now().Add(90 * time.Second), // inside the 5m threshold
+	}
+	require.NoError(t, store.SaveUserProviderToken(ctx, refreshTestUserID, observed))
+
+	servers := []*Server{podA, podB, podA, podB, podA, podB, podA, podB}
+	tokens := runConcurrentRefreshes(t, servers, observed)
+
+	require.Equal(t, 1, idp.callCount(),
+		"a non-rotating provider with short-lived access tokens must still see exactly ONE refresh per rotation window")
+	for i, tok := range tokens {
+		require.Equalf(t, "short-at-1", tok.AccessToken, "caller %d must adopt the winner's freshly-written entry", i)
+		require.Equalf(t, "static-rt", tok.RefreshToken, "caller %d must keep the non-rotating refresh token", i)
+	}
+}
+
+// TestProviderRefresh_CancelledWaiter_ReturnsPromptly: a caller that loses
+// the race (the lock is held elsewhere) and whose request is cancelled must
+// return the context error promptly instead of polling out the full
+// provider-refresh window on behalf of a request that already went away.
+func TestProviderRefresh_CancelledWaiter_ReturnsPromptly(t *testing.T) {
+	srv, store, dex := newRefreshTestMemoryServer(t)
+	ctx := context.Background()
+
+	observed := staleProviderToken(dex)
+	require.NoError(t, store.SaveUserProviderToken(ctx, refreshTestUserID, observed))
+
+	// Another holder (e.g. another pod) owns the refresh lock for far longer
+	// than any waiter would tolerate — the caller can only wait.
+	_, acquired, err := store.AcquireProviderRefreshLock(ctx, refreshTestUserID, time.Minute)
+	require.NoError(t, err)
+	require.True(t, acquired)
+
+	waitCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() {
+		_, refreshErr := srv.refreshUserProviderToken(waitCtx, refreshTestUserID, observed)
+		done <- refreshErr
+	}()
+	cancel()
+
+	select {
+	case refreshErr := <-done:
+		require.ErrorIs(t, refreshErr, context.Canceled)
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancelled waiter kept waiting; it must return the caller's context error promptly")
+	}
+	require.Zero(t, dex.callCount(), "a cancelled waiter must never call the provider")
+}
+
+// TestProviderRefresh_CancelledLeader_DoesNotPoisonSiblings: the singleflight
+// leader's request is cancelled while the provider round-trip is in flight.
+// The leader returns its context error promptly, but the detached rotation
+// completes, is written back, and the sibling caller adopts it — one caller's
+// cancellation neither aborts nor poisons the refresh for the others.
+func TestProviderRefresh_CancelledLeader_DoesNotPoisonSiblings(t *testing.T) {
+	store := memory.New(memory.WithCleanupInterval(time.Hour))
+	t.Cleanup(store.Stop)
+	ctx := context.Background()
+
+	var mu sync.Mutex
+	calls := 0
+	var startedOnce sync.Once
+	refreshStarted := make(chan struct{})
+	allowRefresh := make(chan struct{})
+	refresh := func(_ context.Context, _ string) (*oauth2.Token, error) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		startedOnce.Do(func() { close(refreshStarted) })
+		<-allowRefresh
+		return &oauth2.Token{
+			AccessToken:  "fresh-at",
+			TokenType:    "Bearer",
+			RefreshToken: "fresh-rt",
+			Expiry:       time.Now().Add(30 * time.Minute),
+		}, nil
+	}
+	srv := newRefreshTestServer(t, store, refresh)
+
+	observed := &oauth2.Token{
+		AccessToken:  "old-at",
+		TokenType:    "Bearer",
+		RefreshToken: "old-rt",
+		Expiry:       time.Now().Add(2 * time.Minute),
+	}
+	require.NoError(t, store.SaveUserProviderToken(ctx, refreshTestUserID, observed))
+
+	leaderCtx, cancelLeader := context.WithCancel(ctx)
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, leaderErr := srv.refreshUserProviderToken(leaderCtx, refreshTestUserID, observed)
+		leaderDone <- leaderErr
+	}()
+	<-refreshStarted // the leader has committed to the (detached) provider round-trip
+
+	type joinResult struct {
+		token *oauth2.Token
+		err   error
+	}
+	joinerDone := make(chan joinResult, 1)
+	go func() {
+		tok, joinErr := srv.refreshUserProviderToken(ctx, refreshTestUserID, observed)
+		joinerDone <- joinResult{tok, joinErr}
+	}()
+
+	cancelLeader()
+	select {
+	case leaderErr := <-leaderDone:
+		require.ErrorIs(t, leaderErr, context.Canceled,
+			"the cancelled leader must return promptly with its own context error")
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancelled leader did not return while the rotation was still in flight")
+	}
+
+	close(allowRefresh)
+	select {
+	case res := <-joinerDone:
+		require.NoError(t, res.err, "a sibling caller must not inherit the cancelled leader's fate")
+		require.Equal(t, "fresh-at", res.token.AccessToken)
+		require.Equal(t, "fresh-rt", res.token.RefreshToken)
+	case <-time.After(3 * time.Second):
+		t.Fatal("sibling caller did not complete after the rotation was released")
+	}
+
+	require.Equal(t, 1, calls, "the rotation must reach the provider exactly once")
+
+	// The detached rotation's write-back landed despite the leader's exit.
+	shared, err := store.GetUserProviderToken(ctx, refreshTestUserID)
+	require.NoError(t, err)
+	require.Equal(t, "fresh-rt", shared.RefreshToken)
+}
+
+// unlockedStore hides the memory store's ProviderRefreshLockStore methods so
+// the coordinator must take the uncoordinated fallback path — any dedup then
+// comes purely from the same-pod singleflight, not from the per-user lock.
+type unlockedStore struct {
+	storage.Combined
+	storage.UserProviderTokenStore
+}
+
+// TestProviderRefresh_SamePodCoalescing_WithoutRefreshLock: N concurrent
+// same-pod callers on a backend WITHOUT a refresh lock still produce exactly
+// one provider call — the per-user singleflight coalesces them within the
+// process, independent of the cross-pod lock.
+func TestProviderRefresh_SamePodCoalescing_WithoutRefreshLock(t *testing.T) {
+	mem := memory.New(memory.WithCleanupInterval(time.Hour))
+	t.Cleanup(mem.Stop)
+	store := &unlockedStore{Combined: mem, UserProviderTokenStore: mem}
+	ctx := context.Background()
+
+	var mu sync.Mutex
+	calls := 0
+	var startedOnce sync.Once
+	refreshStarted := make(chan struct{})
+	allowRefresh := make(chan struct{})
+	refresh := func(_ context.Context, _ string) (*oauth2.Token, error) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		startedOnce.Do(func() { close(refreshStarted) })
+		<-allowRefresh
+		return &oauth2.Token{
+			AccessToken:  "fresh-at",
+			TokenType:    "Bearer",
+			RefreshToken: "fresh-rt",
+			Expiry:       time.Now().Add(30 * time.Minute),
+		}, nil
+	}
+	srv := newRefreshTestServer(t, store, refresh)
+
+	// Sanity: the wrapper must NOT satisfy the lock interface, or this test
+	// would silently exercise the lock instead of the singleflight.
+	_, coordinated := srv.providerRefreshLocker()
+	require.False(t, coordinated, "unlockedStore must hide ProviderRefreshLockStore")
+
+	observed := &oauth2.Token{
+		AccessToken:  "old-at",
+		TokenType:    "Bearer",
+		RefreshToken: "old-rt",
+		Expiry:       time.Now().Add(2 * time.Minute),
+	}
+	require.NoError(t, store.SaveUserProviderToken(ctx, refreshTestUserID, observed))
+
+	const n = 8
+	start := make(chan struct{})
+	tokens := make([]*oauth2.Token, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			tokens[i], errs[i] = srv.refreshUserProviderToken(ctx, refreshTestUserID, observed)
+		}(i)
+	}
+	close(start)
+	<-refreshStarted // one caller reached the provider; hold it briefly so siblings coalesce
+	close(allowRefresh)
+	wg.Wait()
+
+	for i, err := range errs {
+		require.NoErrorf(t, err, "caller %d must succeed", i)
+		require.Equalf(t, "fresh-at", tokens[i].AccessToken, "caller %d must end with the shared fresh token", i)
+	}
+	require.Equal(t, 1, calls, "same-pod callers must coalesce into ONE provider call without any lock")
 }

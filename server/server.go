@@ -93,7 +93,8 @@ type Server struct {
 	revokedTokenStore             storage.RevokedTokenStore               // Tracks revoked self-issued JWT access tokens by jti (nil in opaque mode or when storage backend does not support it)
 	tokenPairs                    sync.Map                                // Maps client access token -> client refresh token for paired updates
 	tokenPairsByRefresh           sync.Map                                // Maps client refresh token -> client access token for pair cleanup
-	refreshGroup                  singleflight.Group                      // Deduplicates concurrent provider token refreshes per access token
+	refreshGroup                  singleflight.Group                      // Deduplicates concurrent provider token refreshes per access token (legacy copy-per-token layout)
+	providerRefreshGroup          singleflight.Group                      // Coalesces same-pod coordinated provider refreshes per user ID (unified layout; the per-user lock arbitrates cross-pod)
 	refreshSessionGroup           singleflight.Group                      // Deduplicates concurrent RefreshSession calls per family ID
 	// subjectValidators is the registry for RFC 8693 token-exchange validators,
 	// keyed by subject_token_type URN.

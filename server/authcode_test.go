@@ -4211,3 +4211,210 @@ func TestServer_SessionCreationHandler_NotCalledWithoutHandler(t *testing.T) {
 		t.Fatalf("ExchangeAuthorizationCode() should succeed without handler, got error = %v", err)
 	}
 }
+
+// TestSaveUserInfoAndToken_RTLessLoginPreservesSharedRefreshToken covers the
+// merge half of the shared-entry write discipline: an interactive login whose
+// provider token carries no refresh token (client without offline_access,
+// silent re-auth where the provider omits it) must NOT clobber the refresh
+// token every one of the user's existing sessions depends on. The retained
+// refresh token is also what keeps the Valkey TTL derivation on the
+// long-lived refresh-token branch instead of collapsing the entry to the
+// short access-token expiry.
+func TestSaveUserInfoAndToken_RTLessLoginPreservesSharedRefreshToken(t *testing.T) {
+	ctx := context.Background()
+	srv, store, _ := setupFlowTestServer(t)
+
+	existing := &oauth2.Token{
+		AccessToken:  "old-provider-access",
+		RefreshToken: "long-lived-rt",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(-time.Minute), // stale AT, renewable via RT
+	}
+	require.NoError(t, store.SaveUserProviderToken(ctx, testUserID, existing))
+
+	login := &oauth2.Token{
+		AccessToken: "fresh-provider-access",
+		TokenType:   "Bearer",
+		Expiry:      time.Now().Add(10 * time.Minute),
+		// RefreshToken deliberately empty
+	}
+	require.NoError(t, srv.saveUserInfoAndToken(ctx, testUserInfo(), login))
+
+	saved, err := store.GetUserProviderToken(ctx, testUserID)
+	require.NoError(t, err)
+	require.Equal(t, "long-lived-rt", saved.RefreshToken,
+		"RT-less login must carry the existing shared refresh token forward")
+	require.Equal(t, "fresh-provider-access", saved.AccessToken,
+		"the login's fresh access token must still replace the stale one")
+	require.WithinDuration(t, login.Expiry, saved.Expiry, time.Second,
+		"the entry must carry the login token's real expiry")
+
+	// The per-user provider-refresh lock must have been released on the way
+	// out: a follow-up acquire succeeds immediately.
+	lockValue, acquired, err := store.AcquireProviderRefreshLock(ctx, testUserID, time.Minute)
+	require.NoError(t, err)
+	require.True(t, acquired, "login save must release the provider refresh lock on all paths")
+	require.NoError(t, store.ReleaseProviderRefreshLock(ctx, testUserID, lockValue))
+}
+
+// TestSaveUserInfoAndToken_LoginWithNewRefreshTokenReplacesEntry covers the
+// overwrite half: a login that carries its own refresh token fully replaces
+// the shared entry — the documented "one re-login repairs all sessions"
+// behavior.
+func TestSaveUserInfoAndToken_LoginWithNewRefreshTokenReplacesEntry(t *testing.T) {
+	ctx := context.Background()
+	srv, store, _ := setupFlowTestServer(t)
+
+	existing := &oauth2.Token{
+		AccessToken:  "old-provider-access",
+		RefreshToken: "old-rt",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(-time.Minute),
+	}
+	require.NoError(t, store.SaveUserProviderToken(ctx, testUserID, existing))
+
+	login := &oauth2.Token{
+		AccessToken:  "fresh-provider-access",
+		RefreshToken: "fresh-rt",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(10 * time.Minute),
+	}
+	require.NoError(t, srv.saveUserInfoAndToken(ctx, testUserInfo(), login))
+
+	saved, err := store.GetUserProviderToken(ctx, testUserID)
+	require.NoError(t, err)
+	require.Equal(t, "fresh-rt", saved.RefreshToken,
+		"a login carrying a refresh token must fully overwrite the entry")
+	require.Equal(t, "fresh-provider-access", saved.AccessToken)
+	require.WithinDuration(t, login.Expiry, saved.Expiry, time.Second)
+}
+
+// TestSaveUserInfoAndToken_RTLessLoginWithoutExistingEntrySavesAsIs covers
+// the first-login case: no shared entry exists, so an RT-less login token is
+// saved exactly as the provider issued it.
+func TestSaveUserInfoAndToken_RTLessLoginWithoutExistingEntrySavesAsIs(t *testing.T) {
+	ctx := context.Background()
+	srv, store, _ := setupFlowTestServer(t)
+
+	login := &oauth2.Token{
+		AccessToken: "first-provider-access",
+		TokenType:   "Bearer",
+		Expiry:      time.Now().Add(10 * time.Minute),
+		// RefreshToken deliberately empty
+	}
+	require.NoError(t, srv.saveUserInfoAndToken(ctx, testUserInfo(), login))
+
+	saved, err := store.GetUserProviderToken(ctx, testUserID)
+	require.NoError(t, err)
+	require.Equal(t, "first-provider-access", saved.AccessToken)
+	require.Empty(t, saved.RefreshToken,
+		"no existing entry means there is no refresh token to carry forward")
+	require.WithinDuration(t, login.Expiry, saved.Expiry, time.Second)
+}
+
+// TestSaveUserInfoAndToken_ProceedsWhenRefreshLockHeld pins the lock-fallback
+// policy: an interactive login must never fail or hang because the per-user
+// provider-refresh lock is held elsewhere. The unlocked fallback after the
+// short bounded wait is asymmetric:
+//
+//   - An RT-less login SKIPS the shared-entry write — an unlocked merge could
+//     read the pre-rotation refresh token while the lock holder is mid-flight
+//     at the provider, land after its write-back, and resurrect a refresh
+//     token the provider's single-use rotation already burned.
+//   - An RT-carrying login still writes (harmless last-writer-wins: both
+//     refresh tokens stay live at the provider).
+//
+// In both cases the foreign lock must be left untouched (owner-only release).
+func TestSaveUserInfoAndToken_ProceedsWhenRefreshLockHeld(t *testing.T) {
+	t.Run("RT-less login skips the write, entry unchanged", func(t *testing.T) {
+		ctx := context.Background()
+		srv, store, _ := setupFlowTestServer(t)
+
+		existing := &oauth2.Token{
+			AccessToken:  "old-provider-access",
+			RefreshToken: "long-lived-rt",
+			TokenType:    "Bearer",
+			Expiry:       time.Now().Add(-time.Minute),
+		}
+		require.NoError(t, store.SaveUserProviderToken(ctx, testUserID, existing))
+
+		// Simulate an in-flight coordinated refresh holding the user's lock.
+		foreignLockValue, acquired, err := store.AcquireProviderRefreshLock(ctx, testUserID, time.Minute)
+		require.NoError(t, err)
+		require.True(t, acquired)
+		t.Cleanup(func() {
+			require.NoError(t, store.ReleaseProviderRefreshLock(ctx, testUserID, foreignLockValue))
+		})
+
+		login := &oauth2.Token{
+			AccessToken: "fresh-provider-access",
+			TokenType:   "Bearer",
+			Expiry:      time.Now().Add(10 * time.Minute),
+			// RefreshToken deliberately empty
+		}
+
+		start := time.Now()
+		require.NoError(t, srv.saveUserInfoAndToken(ctx, testUserInfo(), login),
+			"login must succeed even when the refresh lock cannot be acquired")
+		require.Less(t, time.Since(start), providerRefreshWaitTimeout,
+			"login must give up on the lock well before the refresh-wait timeout")
+
+		saved, err := store.GetUserProviderToken(ctx, testUserID)
+		require.NoError(t, err)
+		require.Equal(t, "long-lived-rt", saved.RefreshToken,
+			"an unlocked RT-less login must not touch the shared entry")
+		require.Equal(t, "old-provider-access", saved.AccessToken,
+			"an unlocked RT-less login must skip the write entirely")
+		require.WithinDuration(t, existing.Expiry, saved.Expiry, time.Second,
+			"the entry's expiry must be untouched by the skipped write")
+
+		// The login's fallback path must not have released the foreign
+		// holder's lock: a fresh acquire still fails.
+		_, acquiredAgain, err := store.AcquireProviderRefreshLock(ctx, testUserID, time.Minute)
+		require.NoError(t, err)
+		require.False(t, acquiredAgain, "login fallback must leave a foreign lock in place")
+	})
+
+	t.Run("RT-carrying login writes unlocked after the bounded wait", func(t *testing.T) {
+		ctx := context.Background()
+		srv, store, _ := setupFlowTestServer(t)
+
+		existing := &oauth2.Token{
+			AccessToken:  "old-provider-access",
+			RefreshToken: "old-rt",
+			TokenType:    "Bearer",
+			Expiry:       time.Now().Add(-time.Minute),
+		}
+		require.NoError(t, store.SaveUserProviderToken(ctx, testUserID, existing))
+
+		foreignLockValue, acquired, err := store.AcquireProviderRefreshLock(ctx, testUserID, time.Minute)
+		require.NoError(t, err)
+		require.True(t, acquired)
+		t.Cleanup(func() {
+			require.NoError(t, store.ReleaseProviderRefreshLock(ctx, testUserID, foreignLockValue))
+		})
+
+		login := &oauth2.Token{
+			AccessToken:  "fresh-provider-access",
+			RefreshToken: "fresh-rt",
+			TokenType:    "Bearer",
+			Expiry:       time.Now().Add(10 * time.Minute),
+		}
+
+		start := time.Now()
+		require.NoError(t, srv.saveUserInfoAndToken(ctx, testUserInfo(), login),
+			"login must succeed even when the refresh lock cannot be acquired")
+		require.Less(t, time.Since(start), providerRefreshWaitTimeout,
+			"login must give up on the lock well before the refresh-wait timeout")
+
+		saved, err := store.GetUserProviderToken(ctx, testUserID)
+		require.NoError(t, err)
+		require.Equal(t, "fresh-rt", saved.RefreshToken,
+			"an RT-carrying login must overwrite the entry even without the lock")
+		require.Equal(t, "fresh-provider-access", saved.AccessToken)
+
+		_, acquiredAgain, err := store.AcquireProviderRefreshLock(ctx, testUserID, time.Minute)
+		require.NoError(t, err)
+		require.False(t, acquiredAgain, "login fallback must leave a foreign lock in place")
+	})
+}

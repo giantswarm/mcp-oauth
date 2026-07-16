@@ -101,18 +101,21 @@ func (s *Server) updateProviderTokenMappings(ctx context.Context, accessToken st
 // and the reactive expired-token path).
 //
 // Unified layout: route through the per-user single-flight coordinator, which
-// deduplicates concurrent refreshes across the user's sessions (cross-pod on
-// Valkey) and persists the rotated token to the shared entry under the lock —
-// so this MUST NOT write it back. The caller's ctx is detached so one
-// cancelled request cannot abort the coordinated refresh the user's other
-// sessions are waiting on.
+// deduplicates concurrent refreshes across the user's sessions (same-pod via
+// singleflight, cross-pod via the per-user lock) and persists the rotated
+// token to the shared entry under the lock — so this MUST NOT write it back.
+// The coordinator waits under the CALLER's ctx: a cancelled request stops
+// waiting promptly instead of polling out the refresh window, while the
+// winner's provider round-trip and write-back are detached inside the
+// coordinator (refreshAndStoreSharedProviderToken), so one cancelled request
+// can neither abort nor poison the refresh the user's other sessions adopt.
 //
 // Legacy layout: a direct provider refresh, coalesced per access token so
 // concurrent validations of the same token hit the provider once, followed by
 // a write-back to the token copies.
 func (s *Server) refreshProviderDuringValidation(ctx context.Context, accessToken string, storedToken *oauth2.Token) (*oauth2.Token, error) {
 	if upts, unified := s.userProviderTokenStore(); unified {
-		return s.coordinatedRefreshByIssuedToken(context.WithoutCancel(ctx), upts, accessToken, storedToken)
+		return s.coordinatedRefreshByIssuedToken(ctx, upts, accessToken, storedToken)
 	}
 
 	result, err, _ := s.refreshGroup.Do(accessToken, func() (interface{}, error) {

@@ -272,15 +272,23 @@ func (s *Store) SaveRefreshToken(ctx context.Context, refreshToken, userID strin
 	return nil
 }
 
-// GetRefreshTokenInfo retrieves the user ID for a refresh token
+// GetRefreshTokenInfo retrieves the user ID for a refresh token.
+//
+// It reads exactly the key the destructive counterpart
+// (AtomicConsumeRefreshToken) checks — refreshTokenKey — and deliberately has
+// NO legacyRefreshTokenKey fallback. This method serves as the
+// non-destructive front check of the unified refresh grant
+// (server.resolveRefreshGrant), and the unified layout is a hard cutover with
+// no legacy read-fallback (v1.1.0 deploy note: leftover old-layout keys are
+// never read). If this check accepted a legacy key that the consume script
+// cannot see, a refresh grant would pass validation, burn the provider's
+// single-use refresh rotation upstream, and then fail the atomic consume as
+// NOT_FOUND — tripping reuse detection for a token that was never reused.
 func (s *Store) GetRefreshTokenInfo(ctx context.Context, refreshToken string) (userID string, err error) {
 	op := s.startTracedOp(ctx, "get_refresh_token_info")
 	defer op.end(&err)
 
 	userID, err = s.client.Do(op.ctx, s.client.B().Get().Key(s.refreshTokenKey(refreshToken)).Build()).ToString()
-	if err != nil && isNilError(err) {
-		userID, err = s.client.Do(op.ctx, s.client.B().Get().Key(s.legacyRefreshTokenKey(refreshToken)).Build()).ToString()
-	}
 	if err != nil {
 		if isNilError(err) {
 			return "", storage.ErrTokenNotFound

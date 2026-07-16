@@ -541,11 +541,22 @@ func (s *Store) familyKey(familyID string) string {
 	return s.keyOf("family", hashKeyComponent(familyID))
 }
 
-// Legacy (pre-hash) key helpers. Used only as fallback in read and delete paths
-// during rolling deploys after the key-format migration. Keys written by old pods
-// used the raw input as the key component; new pods write hashed keys. Once all
-// pre-migration keys have expired (at most DefaultRefreshTokenTTL = 90 days after
-// the migration) these helpers can be removed.
+// Legacy (pre-hash) key helpers. Keys written by old pods used the raw input
+// as the key component; new pods write hashed keys.
+//
+// Since the v1.1.0 unified-layout hard cutover these helpers are NOT read
+// fallbacks for anything that gates an authorization decision:
+// GetRefreshTokenInfo, the atomic refresh-token consume, GetRefreshTokenFamily,
+// and GetTokenMetadata read hashed keys ONLY, so a leftover pre-migration
+// refresh token uniformly classifies as not-found/family-less (plain
+// invalid_grant → re-login) instead of tripping reuse detection as a false
+// theft. Remaining uses are confined to delete/revocation sweeps (so
+// revocation still covers keys written by old pods), the legacy-layout
+// AtomicGetAndDeleteRefreshToken, and non-accusing reads
+// (GetToken/GetUserInfo and the family-ID-indexed lookups, where seeing a
+// legacy revoked family is fail-closed). Once all pre-migration keys have
+// expired (at most DefaultRefreshTokenTTL = 90 days after the migration)
+// these helpers can be removed.
 func (s *Store) legacyTokenKey(userID string) string { return s.keyOf("token", userID) }
 
 func (s *Store) legacyUserInfoKey(userID string) string {

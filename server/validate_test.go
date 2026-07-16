@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -924,13 +925,21 @@ func TestServer_ValidateToken_ConcurrentRefreshDedup(t *testing.T) {
 	}
 }
 
-func TestServer_ValidateToken_SingleflightRefreshIgnoresCanceledLeaderContext(t *testing.T) {
+// TestServer_ValidateToken_CancelledWaiterReturnsPromptly: a validation whose
+// request context is cancelled while a provider refresh is in-flight
+// elsewhere (the per-user refresh lock is held by another pod) must stop
+// waiting immediately with the caller's context error — instead of polling
+// the backend for the full provider-refresh window on behalf of a request
+// that already went away. The waiter never calls the provider.
+func TestServer_ValidateToken_CancelledWaiterReturnsPromptly(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 
-	provider.RefreshTokenFunc = func(ctx context.Context, _ string) (*oauth2.Token, error) {
-		if ctx.Err() != nil {
-			return nil, fmt.Errorf("refresh context unexpectedly canceled: %w", ctx.Err())
-		}
+	var refreshCalls int
+	var mu sync.Mutex
+	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
+		mu.Lock()
+		refreshCalls++
+		mu.Unlock()
 		return &oauth2.Token{
 			AccessToken:  "provider-access-new",
 			RefreshToken: "provider-refresh-new",
@@ -940,17 +949,40 @@ func TestServer_ValidateToken_SingleflightRefreshIgnoresCanceledLeaderContext(t 
 	}
 	provider.ValidateTokenFunc = setupValidTokenProvider()
 
-	accessToken := "canceled-context-refresh-token"
-	seedProviderToken(t, store, accessToken, "upt-"+accessToken, &oauth2.Token{
+	accessToken := "cancelled-waiter-token"
+	const userID = "upt-cancelled-waiter"
+	seedProviderToken(t, store, accessToken, userID, &oauth2.Token{
 		AccessToken:  "provider-access-old",
 		RefreshToken: "provider-refresh-old",
 		Expiry:       time.Now().Add(-10 * time.Minute),
 	})
 
-	canceledCtx, cancel := context.WithCancel(context.Background())
+	// Another pod holds the user's refresh lock: this request can only wait.
+	_, acquired, err := store.AcquireProviderRefreshLock(context.Background(), userID, time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("failed to hold the refresh lock: acquired=%v err=%v", acquired, err)
+	}
+
+	cancelledCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if _, err := srv.ValidateToken(canceledCtx, accessToken); err != nil {
-		t.Fatalf("ValidateToken() unexpected error with canceled leader context: %v", err)
+	start := time.Now()
+	_, err = srv.ValidateToken(cancelledCtx, accessToken)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("ValidateToken() expected error for a cancelled waiter, got none")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("ValidateToken() error = %v, want the caller's context.Canceled in the chain", err)
+	}
+	if elapsed >= 5*time.Second {
+		t.Errorf("cancelled waiter took %v; it must return promptly, not poll out the refresh window", elapsed)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if refreshCalls != 0 {
+		t.Errorf("provider.RefreshToken called %d times by a cancelled waiter, want 0", refreshCalls)
 	}
 }

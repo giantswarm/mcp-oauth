@@ -10,10 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
+	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/storage"
+	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
 func TestServer_RevokeToken(t *testing.T) {
@@ -1375,6 +1378,252 @@ func TestServer_SetSessionRevocationHandler(t *testing.T) {
 	if !called {
 		t.Error("Handler should be callable")
 	}
+}
+
+// TestServer_RevokeToken_FamilylessRefreshTokenCannotMintAfterRevocation
+// verifies the RFC 7009 hard-delete of the presented refresh-token record in
+// the unified layout: a refresh token WITHOUT family metadata (family writes
+// are best-effort at issuance) must be unusable for the refresh grant after
+// revocation. Before the fix, RevokeToken only removed the provider-token
+// reference — which the refresh grant never consults — so a "revoked"
+// family-less refresh token kept minting access tokens indefinitely.
+func TestServer_RevokeToken_FamilylessRefreshTokenCannotMintAfterRevocation(t *testing.T) {
+	ctx := context.Background()
+	srv, store, provider := setupFlowTestServer(t)
+
+	provider.RevokeTokenFunc = func(_ context.Context, _ string) error { return nil }
+
+	userID := "familyless-user"
+	clientID := "familyless-client"
+	expiry := time.Now().Add(time.Hour)
+
+	// Seed two identical family-less refresh tokens: a control token proving
+	// the refresh grant works with this exact setup, and the token under test.
+	seedFamilyless := func(rt string) {
+		seedProviderToken(t, store, rt, userID, &oauth2.Token{
+			AccessToken:  "dex-at",
+			RefreshToken: "dex-rt",
+			Expiry:       expiry,
+		})
+		require.NoError(t, store.SaveRefreshToken(ctx, rt, userID, expiry))
+		require.NoError(t, store.SaveTokenMetadata(ctx, rt, storage.TokenMetadata{
+			UserID: userID, ClientID: clientID, TokenType: "refresh",
+			IssuedAt: time.Now(), ExpiresAt: expiry,
+		}))
+	}
+	controlRT := "familyless-rt-control"
+	revokedRT := "familyless-rt-revoked"
+	seedFamilyless(controlRT)
+	seedFamilyless(revokedRT)
+
+	// Positive control: an un-revoked family-less refresh token mints.
+	_, err := srv.RefreshAccessToken(ctx, controlRT, clientID)
+	require.NoError(t, err, "control refresh grant must succeed — otherwise the negative assertion below proves nothing")
+
+	// Revoke the token under test.
+	require.NoError(t, srv.RevokeToken(ctx, revokedRT, clientID, "127.0.0.1"))
+
+	// The refresh-token record itself must be gone (this is what the refresh
+	// grant gates on), independent of family state.
+	_, err = store.GetRefreshTokenInfo(ctx, revokedRT)
+	require.ErrorIs(t, err, storage.ErrTokenNotFound, "revoked refresh token record must be hard-deleted")
+
+	// And the refresh grant must reject it.
+	_, err = srv.RefreshAccessToken(ctx, revokedRT, clientID)
+	require.Error(t, err, "revoked family-less refresh token must not mint access tokens")
+	require.ErrorIs(t, err, errInvalidGrant)
+}
+
+// TestServer_RevokeToken_DeletesRecordEvenWithoutProviderTokenRef verifies
+// that local invalidation does not depend on resolving the provider token: a
+// refresh token whose token→user reference was lost (best-effort write at
+// issuance) must still be hard-deleted on revocation.
+func TestServer_RevokeToken_DeletesRecordEvenWithoutProviderTokenRef(t *testing.T) {
+	ctx := context.Background()
+	srv, store, _ := setupFlowTestServer(t)
+
+	userID := "refless-user"
+	rt := "refless-refresh-token"
+	require.NoError(t, store.SaveRefreshToken(ctx, rt, userID, time.Now().Add(time.Hour)))
+
+	require.NoError(t, srv.RevokeToken(ctx, rt, "refless-client", "127.0.0.1"))
+
+	_, err := store.GetRefreshTokenInfo(ctx, rt)
+	require.ErrorIs(t, err, storage.ErrTokenNotFound,
+		"refresh token record must be deleted even when no provider token reference exists")
+}
+
+// TestServer_RevokeToken_UnknownTokenStillSucceeds pins the RFC 7009 §2.2
+// contract: revoking a token the server has never seen reports success.
+func TestServer_RevokeToken_UnknownTokenStillSucceeds(t *testing.T) {
+	srv, _, _ := setupFlowTestServer(t)
+
+	require.NoError(t, srv.RevokeToken(context.Background(), "token-never-issued", "some-client", "127.0.0.1"))
+}
+
+// TestServer_RevokeToken_PreservesSharedProviderEntry verifies that plain
+// RFC 7009 revocation of one session's refresh token does NOT delete the
+// user's shared provider entry — the user's other sessions still resolve to
+// it. (The entry is only deleted on the theft/user+client revocation path
+// after the upstream credential has been revoked; see
+// TestServer_RevokeAllTokensForUserClient_DeletesDeadSharedProviderEntry.)
+func TestServer_RevokeToken_PreservesSharedProviderEntry(t *testing.T) {
+	ctx := context.Background()
+	srv, store, provider := setupFlowTestServer(t)
+
+	provider.RevokeTokenFunc = func(_ context.Context, _ string) error { return nil }
+
+	userID := "shared-entry-user"
+	clientID := "shared-entry-client"
+	rt := testutil.GenerateRandomString(32)
+	familyID := testutil.GenerateRandomString(32)
+
+	seedProviderToken(t, store, rt, userID, &oauth2.Token{
+		AccessToken:  "dex-at",
+		RefreshToken: "dex-rt",
+		Expiry:       time.Now().Add(time.Hour),
+	})
+	require.NoError(t, store.SaveRefreshTokenWithFamily(ctx, rt, userID, clientID, familyID, 1, time.Now().Add(90*24*time.Hour)))
+
+	require.NoError(t, srv.RevokeToken(ctx, rt, clientID, "127.0.0.1"))
+
+	// The presented token is fully invalidated…
+	_, err := store.GetProviderTokenRef(ctx, rt)
+	require.Error(t, err, "token reference must be deleted")
+	_, err = store.GetRefreshTokenInfo(ctx, rt)
+	require.Error(t, err, "refresh token record must be deleted")
+
+	// …but the shared per-user provider entry survives for sibling sessions.
+	entry, err := store.GetUserProviderToken(ctx, userID)
+	require.NoError(t, err, "plain RFC 7009 revocation must preserve the shared provider entry")
+	require.Equal(t, "dex-rt", entry.RefreshToken)
+}
+
+// transientFamilyErrorStore wraps the memory store and fails every family
+// lookup with a transient (non-not-found) error, simulating a storage outage
+// during revocation.
+type transientFamilyErrorStore struct {
+	*memory.Store
+	familyErr error
+}
+
+func (f *transientFamilyErrorStore) GetRefreshTokenFamily(_ context.Context, _ string) (*storage.RefreshTokenFamilyMetadata, error) {
+	return nil, f.familyErr
+}
+
+// TestServer_RevokeToken_TransientFamilyLookupErrorSurfaces verifies that a
+// transient family-lookup failure during revocation is NOT silently treated
+// as "no family": the presented token is still hard-deleted, but the error is
+// surfaced so the possibly-incomplete sibling revocation is observable.
+func TestServer_RevokeToken_TransientFamilyLookupErrorSurfaces(t *testing.T) {
+	ctx := context.Background()
+
+	inner := memory.New()
+	t.Cleanup(inner.Stop)
+	wrapped := &transientFamilyErrorStore{
+		Store:     inner,
+		familyErr: fmt.Errorf("valkey: connection refused"),
+	}
+
+	provider := mock.NewProvider()
+	srv, err := New(provider, wrapped, inner, inner, &Config{
+		Issuer:                      "https://auth.example.com",
+		SupportedScopes:             []string{"openid", "email", "profile"},
+		AuthorizationCodeTTL:        600,
+		AccessTokenTTL:              3600,
+		RequirePKCE:                 true,
+		ClockSkewGracePeriod:        5,
+		DisableNonceEchoRequirement: true,
+	}, nil)
+	require.NoError(t, err)
+
+	userID := "transient-user"
+	rt := "transient-refresh-token"
+	seedProviderToken(t, inner, rt, userID, &oauth2.Token{
+		AccessToken:  "dex-at",
+		RefreshToken: "dex-rt",
+		Expiry:       time.Now().Add(time.Hour),
+	})
+	require.NoError(t, inner.SaveRefreshToken(ctx, rt, userID, time.Now().Add(time.Hour)))
+
+	err = srv.RevokeToken(ctx, rt, "transient-client", "127.0.0.1")
+	require.Error(t, err, "a transient family-lookup failure must surface, not be swallowed as 'no family'")
+	require.ErrorContains(t, err, "family lookup failed")
+
+	// Local invalidation of the presented token must have happened regardless.
+	_, err = inner.GetRefreshTokenInfo(ctx, rt)
+	require.ErrorIs(t, err, storage.ErrTokenNotFound, "presented token must be deleted even when the family lookup fails")
+	_, err = inner.GetProviderTokenRef(ctx, rt)
+	require.ErrorIs(t, err, storage.ErrTokenNotFound)
+}
+
+// TestServer_RevokeAllTokensForUserClient_DeletesDeadSharedProviderEntry
+// verifies the reuse-detection nuke path: after the user's shared provider
+// refresh token has been successfully revoked upstream, the now-dead shared
+// entry is deleted so the user's OTHER clients fail fast into re-login
+// instead of presenting a dead credential to the provider on every
+// coordinated refresh.
+func TestServer_RevokeAllTokensForUserClient_DeletesDeadSharedProviderEntry(t *testing.T) {
+	ctx := context.Background()
+	srv, store, provider := setupFlowTestServer(t)
+
+	provider.RevokeTokenFunc = func(_ context.Context, _ string) error { return nil }
+
+	userID := "nuke-entry-user"
+	clientID := "nuke-entry-client"
+	rt := "rt-nuke-entry"
+
+	seedProviderToken(t, store, rt, userID, &oauth2.Token{
+		AccessToken:  "dex-at",
+		RefreshToken: "dex-rt",
+		Expiry:       time.Now().Add(time.Hour),
+	})
+	require.NoError(t, store.SaveTokenMetadata(ctx, rt, storage.TokenMetadata{
+		UserID: userID, ClientID: clientID, TokenType: "refresh",
+		IssuedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	}))
+
+	require.NoError(t, srv.RevokeAllTokensForUserClient(ctx, userID, clientID))
+
+	_, err := store.GetUserProviderToken(ctx, userID)
+	require.ErrorIs(t, err, storage.ErrTokenNotFound,
+		"the shared provider entry must be deleted after its refresh token was revoked upstream")
+}
+
+// TestServer_RevokeAllTokensForUserClient_KeepsSharedEntryWhenUpstreamRevocationFails
+// verifies the deletion is gated on upstream success: when the provider
+// refuses the revocation, the credential may still be alive, so the shared
+// entry must be preserved for the user's other clients.
+func TestServer_RevokeAllTokensForUserClient_KeepsSharedEntryWhenUpstreamRevocationFails(t *testing.T) {
+	ctx := context.Background()
+	srv, store, provider := setupFlowTestServer(t)
+
+	srv.Config.ProviderRevocationMaxRetries = 0 // no retries for a faster test
+	provider.RevokeTokenFunc = func(_ context.Context, _ string) error {
+		return fmt.Errorf("provider revocation failed")
+	}
+
+	userID := "nuke-keep-user"
+	clientID := "nuke-keep-client"
+	rt := "rt-nuke-keep"
+
+	seedProviderToken(t, store, rt, userID, &oauth2.Token{
+		AccessToken:  "dex-at",
+		RefreshToken: "dex-rt",
+		Expiry:       time.Now().Add(time.Hour),
+	})
+	require.NoError(t, store.SaveTokenMetadata(ctx, rt, storage.TokenMetadata{
+		UserID: userID, ClientID: clientID, TokenType: "refresh",
+		IssuedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	}))
+
+	err := srv.RevokeAllTokensForUserClient(ctx, userID, clientID)
+	require.Error(t, err, "100%% upstream failure exceeds the revocation failure threshold")
+
+	entry, getErr := store.GetUserProviderToken(ctx, userID)
+	require.NoError(t, getErr,
+		"the shared provider entry must be preserved when upstream revocation failed — the credential may still be alive")
+	require.Equal(t, "dex-rt", entry.RefreshToken)
 }
 
 func TestServer_SetTokenFamilyRevocationHandler_DeprecatedAlias(t *testing.T) {

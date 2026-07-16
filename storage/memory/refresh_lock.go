@@ -2,10 +2,10 @@ package memory
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"time"
+
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 )
 
 // ============================================================
@@ -34,9 +34,11 @@ func (s *Store) AcquireProviderRefreshLock(_ context.Context, userID string, ttl
 		return "", false, fmt.Errorf("userID cannot be empty")
 	}
 
-	lockValue, err := randomLockValue()
+	// 128-bit random hex token identifying this one lock acquisition,
+	// enabling the owner-only compare-and-delete release.
+	lockValue, err := helpers.RandomHexToken(16)
 	if err != nil {
-		return "", false, err
+		return "", false, fmt.Errorf("failed to generate lock value: %w", err)
 	}
 
 	s.mu.Lock()
@@ -75,14 +77,4 @@ func (s *Store) cleanupExpiredProviderRefreshLocks() int {
 		}
 	}
 	return cleaned
-}
-
-// randomLockValue returns a 128-bit random hex token identifying one lock
-// acquisition, enabling the owner-only compare-and-delete release.
-func randomLockValue() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("failed to generate lock value: %w", err)
-	}
-	return hex.EncodeToString(b), nil
 }

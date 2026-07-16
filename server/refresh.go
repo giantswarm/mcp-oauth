@@ -16,6 +16,17 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
+// isTokenMetadataAbsent reports whether err from
+// storage.TokenMetadataGetter.GetTokenMetadata means the metadata record is
+// genuinely absent (storage.ErrTokenNotFound sentinel), as opposed to a
+// transient storage failure. The two must not be conflated on the refresh
+// path: absence classifies the token as a legacy unbound token
+// (invalid_grant), while a transient failure must be retryable (server
+// error). Absence signaled as (nil, nil) is handled at the call site.
+func isTokenMetadataAbsent(err error) bool {
+	return storage.IsNotFoundError(err)
+}
+
 // handleRefreshTokenReuseDetection handles refresh token reuse detection
 // Called when a refresh token lookup fails to check if it was already rotated
 func (s *Server) handleRefreshTokenReuseDetection(ctx context.Context, refreshToken, clientID string, familyStore storage.RefreshTokenFamilyStore) error {
@@ -66,8 +77,67 @@ func (s *Server) handleRefreshTokenReuseDetection(ctx context.Context, refreshTo
 	return errInvalidGrant
 }
 
+// handleSharedProviderTokenError classifies a failure to read the user's
+// shared provider entry (unified layout) for a refresh token that was just
+// proven valid by GetRefreshTokenInfo.
+//
+// A missing or expired shared entry is NOT refresh-token reuse: the refresh
+// token record itself is present and unconsumed, so routing this through
+// handleRefreshTokenError would trip reuse detection against a live family
+// and revoke every session of the user (RevokeRefreshTokenFamily +
+// RevokeAllTokensForUserClient + critical theft audit) over a benign storage
+// miss — an evicted providertoken:<user> key, TTL collapse, or a deploy
+// without a token flush; the exact false positive giantswarm/giantswarm#37164
+// is about. The reuse-nuke path also deletes the shared entry deliberately,
+// so a nuked user's surviving sessions land here by design. The user simply
+// has to log in again: return invalid_grant with a non-theft audit trail.
+//
+// The presented refresh token is deliberately NOT consumed here: "record
+// deleted + family alive and non-revoked" is exactly the fresh-reuse
+// signature, so consuming it would send a client that retries the same token
+// after the invalid_grant straight into handleRefreshTokenReuseDetection —
+// family revoke + RevokeAllTokensForUserClient + critical theft audit —
+// recreating the false-alarm class this path exists to remove. Left
+// un-consumed, a retry idempotently re-enters this same benign invalid_grant
+// path (one cheap extra read), and a single re-login repairs all of the
+// user's sessions.
+//
+// Any other error is a transient storage failure and surfaces as a server
+// error, NOT invalid_grant: the grant is still valid and the client should
+// retry, not re-login. The refresh token is left untouched in that case too.
+func (s *Server) handleSharedProviderTokenError(ctx context.Context, err error, refreshToken, userID, clientID string) error {
+	if !storage.IsNotFoundError(err) && !storage.IsExpiredError(err) {
+		s.Logger.Warn("Transient error reading shared provider token during refresh",
+			"error", err.Error(), "user_id", userID, "client_id", clientID,
+			"token_suffix", helpers.TokenSuffix(refreshToken, 8))
+		return fmt.Errorf("read shared provider token: %w", err)
+	}
+
+	s.Logger.Warn("Shared provider token missing for valid refresh token - re-login required",
+		"user_id", userID, "client_id", clientID, "reason", err.Error(),
+		"token_suffix", helpers.TokenSuffix(refreshToken, 8))
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type: security.EventAuthFailure, UserID: userID, ClientID: clientID,
+		Details: map[string]any{
+			"severity": "warning",
+			"reason":   "shared_provider_token_missing",
+			"action":   "re_login_required",
+		},
+	})
+	s.Auditor.LogAuthFailure(ctx, userID, clientID, "", "shared_provider_token_missing")
+
+	return errInvalidGrant
+}
+
 // handleRefreshTokenError handles errors from refresh token validation
-// Returns error suitable for returning to client
+// Returns error suitable for returning to client: invalid_grant for
+// not-found/expired tokens (after reuse detection where supported), or a
+// retryable server error for transient storage failures — the token's state
+// is unknown, so the client must be able to retry rather than re-login.
+// Both call sites tolerate the transient mapping: the resolve-front check
+// runs before the token is consumed (retry re-validates the intact token),
+// and the post-refresh consume leaves the token unconsumed on a transient
+// failure (retry re-presents it and adopts the already-rotated shared entry).
 func (s *Server) handleRefreshTokenError(ctx context.Context, err error, refreshToken, clientID string, familyStore storage.RefreshTokenFamilyStore, supportsFamilies bool) error {
 	isNotFoundOrExpired := storage.IsNotFoundError(err) || storage.IsExpiredError(err)
 
@@ -78,7 +148,10 @@ func (s *Server) handleRefreshTokenError(ctx context.Context, err error, refresh
 		}
 	}
 
-	// Handle transient errors differently
+	// Transient storage failure: surface as a retryable server error, not
+	// invalid_grant — the token was not proven invalid, so the client must
+	// not be pushed into re-login (consistent with the transient taxonomy of
+	// the shared-entry and metadata reads on this path).
 	if !isNotFoundOrExpired {
 		s.Logger.Warn("Transient error during refresh token validation",
 			"error", err.Error(), "client_id", clientID, "token_suffix", helpers.TokenSuffix(refreshToken, 8))
@@ -86,7 +159,7 @@ func (s *Server) handleRefreshTokenError(ctx context.Context, err error, refresh
 			Type: security.EventAuthFailure, ClientID: clientID,
 			Details: map[string]any{"reason": "transient_storage_error"},
 		})
-		return errInvalidGrant
+		return fmt.Errorf("validate refresh token: %w", err)
 	}
 
 	// Regular invalid token error
@@ -262,9 +335,13 @@ func (s *Server) resolveRefreshGrant(ctx context.Context, refreshToken, clientID
 	if unified {
 		// Resolved only after client binding passed, so a stolen token from the
 		// wrong client never reads the user's shared provider entry.
+		//
+		// NOT routed through handleRefreshTokenError: the refresh token was
+		// just proven valid, so a missing shared entry is a benign storage
+		// miss (re-login), never reuse — see handleSharedProviderTokenError.
 		providerToken, err = s.providerTokenForRefresh(ctx, userID, nil)
 		if err != nil {
-			return "", nil, unified, s.handleRefreshTokenError(ctx, err, refreshToken, clientID, familyStore, supportsFamilies)
+			return "", nil, unified, s.handleSharedProviderTokenError(ctx, err, refreshToken, userID, clientID)
 		}
 	}
 
@@ -290,12 +367,31 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	var oldJKT string
 	var metaClientID string
 	if metaGetter, ok := s.tokenStore.(storage.TokenMetadataGetter); ok {
-		if oldMeta, err := metaGetter.GetTokenMetadata(refreshToken); err == nil && oldMeta != nil {
+		oldMeta, metaErr := metaGetter.GetTokenMetadata(refreshToken)
+		switch {
+		case metaErr == nil && oldMeta != nil:
 			oldScopes = oldMeta.Scopes
 			oldAudience = oldMeta.Audience
 			oldJKT = oldMeta.JKT
 			metaClientID = oldMeta.ClientID
+		case metaErr != nil && !isTokenMetadataAbsent(metaErr):
+			// Transient storage failure. The stored client binding is a
+			// prerequisite for the grant, not optional enrichment: leaving
+			// metaClientID empty would misclassify a validly-bound token as a
+			// legacy unbound token downstream (invalid_grant + a high-severity
+			// cross_client_token_theft_prevented audit event). Surface a
+			// server error instead — the refresh token has not been consumed,
+			// so the client's retry succeeds once storage recovers. The old
+			// legacy layout had the same retryability: it read ClientID
+			// atomically inside the consume, which failed transiently as a
+			// whole.
+			s.Logger.Warn("Transient error reading refresh token metadata",
+				"error", metaErr.Error(), "client_id", clientID,
+				"token_suffix", helpers.TokenSuffix(refreshToken, 8))
+			return nil, fmt.Errorf("read refresh token metadata: %w", metaErr)
 		}
+		// Metadata genuinely absent: metaClientID stays "" and the grant is
+		// classified as a legacy unbound token by client binding validation.
 	}
 
 	// Resolve the grant's user binding and the provider token to refresh

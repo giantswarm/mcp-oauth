@@ -2,12 +2,12 @@ package valkey
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"time"
 
 	vk "github.com/valkey-io/valkey-go"
+
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 )
 
 // ============================================================
@@ -42,9 +42,11 @@ func (s *Store) AcquireProviderRefreshLock(ctx context.Context, userID string, t
 		return "", false, err
 	}
 
-	lockValue, err = randomLockValue()
+	// 128-bit random hex token identifying this one lock acquisition,
+	// enabling the owner-only compare-and-delete release.
+	lockValue, err = helpers.RandomHexToken(16)
 	if err != nil {
-		return "", false, err
+		return "", false, fmt.Errorf("failed to generate lock value: %w", err)
 	}
 
 	millis := max(ttl.Milliseconds(), 1)
@@ -95,14 +97,4 @@ func (s *Store) ReleaseProviderRefreshLock(ctx context.Context, userID, lockValu
 		return fmt.Errorf("failed to release provider refresh lock: %w", err)
 	}
 	return nil
-}
-
-// randomLockValue returns a 128-bit random hex token identifying one lock
-// acquisition, enabling the owner-only compare-and-delete release.
-func randomLockValue() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("failed to generate lock value: %w", err)
-	}
-	return hex.EncodeToString(b), nil
 }
