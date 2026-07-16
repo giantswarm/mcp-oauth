@@ -216,6 +216,61 @@ func (s *Server) storeRefreshedProviderToken(ctx context.Context, userID, newAcc
 	}
 }
 
+// resolveRefreshGrant validates a refresh-token grant and returns the user it is
+// bound to and the provider token to refresh against, reporting whether the
+// backend uses the unified per-user provider-token layout.
+//
+// L2 no-orphan (giantswarm/mcp-oauth#515): in the unified layout the mcp refresh
+// token is NOT deleted here. Its binding is resolved with a non-destructive
+// existence + expiry check (GetRefreshTokenInfo) that keeps the same
+// not-found/expired semantics the atomic consume had — a rotated-away token
+// (record gone, family metadata retained) still feeds reuse detection — and the
+// caller atomically consumes it only after the provider refresh succeeds. In the
+// legacy layout the provider-token copy can only be read by consuming the token,
+// so the atomic delete stays up front (pre-unification behavior; no shared entry
+// to protect).
+//
+// Client binding (OAuth 2.1 §6) is validated before the shared provider entry is
+// read, so a token presented by the wrong client never reads it, acquires the
+// refresh lock, or triggers an upstream call. metaClientID is the stored client
+// binding read non-destructively from the token metadata — the same value the
+// atomic consume returns.
+func (s *Server) resolveRefreshGrant(ctx context.Context, refreshToken, clientID, metaClientID string, familyStore storage.RefreshTokenFamilyStore, supportsFamilies bool) (userID string, providerToken *oauth2.Token, unified bool, err error) {
+	_, unified = s.userProviderTokenStore()
+
+	var storedClientID string
+	if unified {
+		userID, err = s.tokenStore.GetRefreshTokenInfo(ctx, refreshToken)
+		if err != nil {
+			return "", nil, unified, s.handleRefreshTokenError(ctx, err, refreshToken, clientID, familyStore, supportsFamilies)
+		}
+		storedClientID = metaClientID
+	} else {
+		userID, storedClientID, providerToken, err = s.consumeRefreshToken(ctx, refreshToken)
+		if err != nil {
+			return "", nil, unified, s.handleRefreshTokenError(ctx, err, refreshToken, clientID, familyStore, supportsFamilies)
+		}
+	}
+
+	// OAUTH 2.1 SECURITY: Validate client binding (Section 6) BEFORE any provider
+	// refresh or lock acquisition. The refresh token MUST only be accepted by the
+	// client it was issued to.
+	if err = s.validateRefreshTokenClientBinding(ctx, storedClientID, clientID, userID); err != nil {
+		return "", nil, unified, err
+	}
+
+	if unified {
+		// Resolved only after client binding passed, so a stolen token from the
+		// wrong client never reads the user's shared provider entry.
+		providerToken, err = s.providerTokenForRefresh(ctx, userID, nil)
+		if err != nil {
+			return "", nil, unified, s.handleRefreshTokenError(ctx, err, refreshToken, clientID, familyStore, supportsFamilies)
+		}
+	}
+
+	return userID, providerToken, unified, nil
+}
+
 // RefreshAccessToken refreshes an access token using a refresh token with OAuth 2.1 rotation
 // Returns oauth2.Token directly
 // Implements OAuth 2.1 refresh token reuse detection for enhanced security
@@ -224,50 +279,56 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	// Check if storage supports token family tracking (OAuth 2.1 reuse detection)
 	familyStore, supportsFamilies := s.tokenStore.(storage.RefreshTokenFamilyStore)
 
-	// Capture scopes and audience from old token metadata before the atomic
-	// delete removes it. Best-effort: if there's a race, the atomic operation
-	// below will fail and these values won't be used.
+	// Capture scopes, audience, JKT, and the stored client binding from the old
+	// token metadata. In the unified layout metaClientID supplies the client ID
+	// for the pre-refresh binding check WITHOUT consuming the refresh token, so
+	// the token can be rotated only after the provider refresh succeeds (L2
+	// no-orphan). It is the same value the atomic consume would return — both
+	// read the token's ClientID from its metadata.
 	var oldScopes []string
 	var oldAudience string
 	var oldJKT string
+	var metaClientID string
 	if metaGetter, ok := s.tokenStore.(storage.TokenMetadataGetter); ok {
 		if oldMeta, err := metaGetter.GetTokenMetadata(refreshToken); err == nil && oldMeta != nil {
 			oldScopes = oldMeta.Scopes
 			oldAudience = oldMeta.Audience
 			oldJKT = oldMeta.JKT
+			metaClientID = oldMeta.ClientID
 		}
 	}
 
-	// OAUTH 2.1 SECURITY: Atomically get and delete refresh token FIRST
-	// Returns clientID for client binding validation
-	userID, storedClientID, consumedToken, err := s.consumeRefreshToken(ctx, refreshToken)
+	// Resolve the grant's user binding and the provider token to refresh
+	// against. In the unified layout this does NOT delete the mcp refresh token
+	// (L2 no-orphan): the token is atomically consumed only after the provider
+	// token is confirmed fresh, so a transient provider failure leaves an
+	// otherwise-valid session intact. Client binding is validated inside, before
+	// any provider read or refresh.
+	userID, providerToken, unified, err := s.resolveRefreshGrant(ctx, refreshToken, clientID, metaClientID, familyStore, supportsFamilies)
 	if err != nil {
-		return nil, s.handleRefreshTokenError(ctx, err, refreshToken, clientID, familyStore, supportsFamilies)
-	}
-
-	// OAUTH 2.1 SECURITY: Validate client binding (Section 6)
-	// The refresh token MUST only be accepted by the client it was issued to
-	if err := s.validateRefreshTokenClientBinding(ctx, storedClientID, clientID, userID); err != nil {
 		return nil, err
-	}
-
-	// Resolved only after client binding passed, so a stolen token from the
-	// wrong client never reads the user's shared provider entry.
-	providerToken, err := s.providerTokenForRefresh(ctx, userID, consumedToken)
-	if err != nil {
-		return nil, s.handleRefreshTokenError(ctx, err, refreshToken, clientID, familyStore, supportsFamilies)
 	}
 
 	// Refresh the upstream provider token through the per-user single-flight
 	// coordinator (unified layout): at most one of the user's concurrent
 	// sessions talks to the provider per rotation window, and the rest adopt
-	// the freshly-written shared entry without ever calling it. Client binding
-	// was validated above, so a token presented by the wrong client never
-	// triggers an upstream refresh or a lock acquisition.
+	// the freshly-written shared entry without ever calling it.
 	newProviderToken, err := s.refreshProviderTokenForGrant(ctx, userID, providerToken)
 	if err != nil {
 		s.logAuthFailure(ctx, userID, clientID, fmt.Sprintf("provider_refresh_failed: %v", err))
 		return nil, fmt.Errorf("failed to refresh token with provider: %w", err)
+	}
+
+	// L2 NO-ORPHAN: rotate the mcp refresh token only AFTER the provider token is
+	// confirmed fresh. Every early return above left the session's refresh token
+	// intact, so a transient provider hiccup no longer orphans a valid session —
+	// the client's retry succeeds instead of tripping reuse detection. The atomic
+	// consume remains the concurrency gate: a genuinely reused or concurrently
+	// double-submitted token loses it and feeds reuse detection exactly as before.
+	if unified {
+		if _, _, _, consumeErr := s.consumeRefreshToken(ctx, refreshToken); consumeErr != nil {
+			return nil, s.handleRefreshTokenError(ctx, consumeErr, refreshToken, clientID, familyStore, supportsFamilies)
+		}
 	}
 
 	now := time.Now()
