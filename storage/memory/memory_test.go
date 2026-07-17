@@ -776,6 +776,37 @@ func TestStore_CheckIPLimit(t *testing.T) {
 	}
 }
 
+// TestStore_CheckIPLimit_GenericError mirrors the valkey backend's
+// TestValidation_GenericErrorMessages: once the limit is exceeded, CheckIPLimit
+// must return the bare generic sentinel so the error value never leaks the
+// client IP or per-IP counts (issue #519). Callers still match by identity via
+// errors.Is.
+func TestStore_CheckIPLimit_GenericError(t *testing.T) {
+	ctx := context.Background()
+	store := New()
+	defer store.Stop()
+
+	ip := "192.168.99.99"
+	maxClients := 3
+
+	// Exceed the limit.
+	for i := 0; i < 5; i++ {
+		_ = store.TrackClientIP(ctx, "", ip)
+	}
+
+	err := store.CheckIPLimit(ctx, ip, maxClients)
+	if err == nil {
+		t.Fatal("CheckIPLimit() should return error after exceeding limit")
+	}
+	if !errors.Is(err, storage.ErrClientIPLimitExceeded) {
+		t.Errorf("error should wrap ErrClientIPLimitExceeded, got: %v", err)
+	}
+	// Error text must be generic (no IP, no counts).
+	if err.Error() != "rate limit exceeded" {
+		t.Errorf("Error message should be generic, got: %v", err)
+	}
+}
+
 func TestStore_CheckIPLimit_NoLimit(t *testing.T) {
 	ctx := context.Background()
 	store := New()

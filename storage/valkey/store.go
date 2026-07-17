@@ -1069,12 +1069,21 @@ func safeTruncate(s string, n int) string {
 	return s[:n]
 }
 
-// calculateTTL calculates the TTL for a key based on expiry time
-// Returns 0 if the key has already expired
+// calculateTTL returns the TTL to apply for a key expiring at expiresAt.
+//
+// Returns 0 when the key has already expired; callers treat 0 as "expired".
+// For a still-valid expiry it never returns a positive duration below one
+// second: valkey-go's Ex() builds SET with a whole-second EX argument, so any
+// sub-second duration would truncate to "EX 0", which Valkey rejects with
+// "invalid expire time in 'set' command". Clamping to a one-second floor keeps
+// near-expiry saves valid while preserving the "expired -> 0" semantics.
 func calculateTTL(expiresAt time.Time) time.Duration {
 	ttl := time.Until(expiresAt)
 	if ttl <= 0 {
 		return 0
+	}
+	if ttl < time.Second {
+		return time.Second
 	}
 	return ttl
 }
