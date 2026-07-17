@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Valkey `calculateTTL` now clamps a positive sub-second TTL up to a one-second floor. valkey-go's `Ex()` builds `SET` with a whole-second `EX` argument, so a near-expiry save (e.g. 50ms remaining) truncated to `EX 0` and Valkey rejected it with `invalid expire time in 'set' command`; the "already expired -> 0" semantics are preserved. `RevokeJTI` bypassed `calculateTTL` with its own `time.Until(expiresAt)` and hit the identical `EX 0` truncation, silently failing to denylist a self-issued JWT revoked in the final second before its (whole-second) `exp`; it now routes through `calculateTTL` too. See https://github.com/giantswarm/mcp-oauth/issues/518.
 - SSO forwarded-ID-token JWKS validation now honors a CA bundle the host process installs on `http.DefaultTransport` when `AllowPrivateIPJWKS` is set. Previously `Server.getJWKSClient()` built a JWKS client that verified against the system certificate pool alone, so an internal-CA Dex forwarding SSO ID tokens was rejected with `x509: certificate signed by unknown authority` even when the host process had installed that CA — the trusted-issuer permissive client (`NewOIDCValidator`) already worked this way, the forwarded-token path did not. The SSRF-safe client used when `AllowPrivateIPJWKS` is unset is unchanged and still verifies against the system pool. See https://github.com/giantswarm/giantswarm/issues/37059.
 
 ### Changed

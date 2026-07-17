@@ -368,6 +368,31 @@ func TestTokenStore_SaveToken_WithoutRefreshToken_HasTTL(t *testing.T) {
 		"token without RefreshToken should be evicted after TTL")
 }
 
+// TestTokenStore_RevokeJTI_SubSecondExpiry pins the sibling EX-0 fix: a JWT
+// revoked in its final sub-second before exp derives a sub-second TTL, which
+// valkey-go's Ex() would truncate to "EX 0" and Valkey would reject, silently
+// failing to denylist the JTI. calculateTTL's 1s floor keeps the write valid.
+func TestTokenStore_RevokeJTI_SubSecondExpiry(t *testing.T) {
+	s := testStore(t)
+	ctx := t.Context()
+
+	// Sub-second expiry: before the clamp this failed with
+	// "invalid expire time in 'set' command".
+	err := s.RevokeJTI(ctx, "jti-sub-second", time.Now().Add(200*time.Millisecond))
+	if err != nil {
+		t.Fatalf("RevokeJTI with sub-second expiry failed: %v", err)
+	}
+
+	// The JTI is denylisted while the entry lives.
+	revoked, err := s.IsJTIRevoked(ctx, "jti-sub-second")
+	if err != nil {
+		t.Fatalf("IsJTIRevoked failed: %v", err)
+	}
+	if !revoked {
+		t.Error("JTI should be revoked immediately after RevokeJTI")
+	}
+}
+
 // ============================================================
 // UserInfo Tests
 // ============================================================
@@ -1631,6 +1656,28 @@ func TestCalculateTTL(t *testing.T) {
 	ttl = calculateTTL(past)
 	if ttl != 0 {
 		t.Error("TTL should be 0 for past expiry")
+	}
+
+	// Sub-second positive expiry must clamp up to the 1s floor: valkey-go's
+	// Ex() builds a whole-second EX argument, so anything below 1s would
+	// truncate to "EX 0" and Valkey would reject the write.
+	subSecond := time.Now().Add(50 * time.Millisecond)
+	ttl = calculateTTL(subSecond)
+	if ttl != time.Second {
+		t.Errorf("TTL should clamp to 1s for sub-second expiry, got: %v", ttl)
+	}
+
+	// Just-under-1s expiry must also clamp up to the 1s floor.
+	justUnder := time.Now().Add(900 * time.Millisecond)
+	ttl = calculateTTL(justUnder)
+	if ttl != time.Second {
+		t.Errorf("TTL should clamp to 1s for just-under-1s expiry, got: %v", ttl)
+	}
+
+	// Comfortably-future expiry must return a duration above the floor.
+	ttl = calculateTTL(time.Now().Add(2 * time.Second))
+	if ttl <= time.Second {
+		t.Errorf("TTL should exceed 1s for a comfortably-future expiry, got: %v", ttl)
 	}
 }
 
