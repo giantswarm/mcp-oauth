@@ -16,17 +16,6 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
-// isTokenMetadataAbsent reports whether err from
-// storage.TokenMetadataGetter.GetTokenMetadata means the metadata record is
-// genuinely absent (storage.ErrTokenNotFound sentinel), as opposed to a
-// transient storage failure. The two must not be conflated on the refresh
-// path: absence classifies the token as a legacy unbound token
-// (invalid_grant), while a transient failure must be retryable (server
-// error). Absence signaled as (nil, nil) is handled at the call site.
-func isTokenMetadataAbsent(err error) bool {
-	return storage.IsNotFoundError(err)
-}
-
 // handleRefreshTokenReuseDetection handles refresh token reuse detection
 // Called when a refresh token lookup fails to check if it was already rotated
 func (s *Server) handleRefreshTokenReuseDetection(ctx context.Context, refreshToken, clientID string, familyStore storage.RefreshTokenFamilyStore) error {
@@ -374,7 +363,11 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 			oldAudience = oldMeta.Audience
 			oldJKT = oldMeta.JKT
 			metaClientID = oldMeta.ClientID
-		case metaErr != nil && !isTokenMetadataAbsent(metaErr):
+		// storage.ErrTokenNotFound means the metadata record is genuinely
+		// absent (legacy unbound token → invalid_grant below); anything else
+		// is a transient storage failure and must stay retryable. Absence
+		// signaled as (nil, nil) falls through to the same legacy handling.
+		case metaErr != nil && !storage.IsNotFoundError(metaErr):
 			// Transient storage failure. The stored client binding is a
 			// prerequisite for the grant, not optional enrichment: leaving
 			// metaClientID empty would misclassify a validly-bound token as a

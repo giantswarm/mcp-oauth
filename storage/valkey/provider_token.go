@@ -149,19 +149,8 @@ func (s *Store) SaveProviderTokenRef(ctx context.Context, tokenID, userID string
 
 // GetProviderTokenRef resolves tokenID to the owning userID
 // (storage.UserProviderTokenStore).
-func (s *Store) GetProviderTokenRef(ctx context.Context, tokenID string) (userID string, err error) {
-	op := s.startTracedOp(ctx, "get_provider_token_ref")
-	defer op.end(&err)
-
-	userID, err = s.client.Do(op.ctx, s.client.B().Get().Key(s.tokenRefKey(tokenID)).Build()).ToString()
-	if err != nil {
-		if isNilError(err) {
-			return "", storage.ErrTokenNotFound
-		}
-		return "", fmt.Errorf("failed to get provider token reference: %w", err)
-	}
-	// TTL is managed by Valkey, so if the key exists it's not expired.
-	return userID, nil
+func (s *Store) GetProviderTokenRef(ctx context.Context, tokenID string) (string, error) {
+	return s.getUserIDByKey(ctx, "get_provider_token_ref", s.tokenRefKey(tokenID), "get provider token reference")
 }
 
 // DeleteProviderTokenRef removes the reference for tokenID

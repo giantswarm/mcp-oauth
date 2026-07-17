@@ -284,20 +284,8 @@ func (s *Store) SaveRefreshToken(ctx context.Context, refreshToken, userID strin
 // cannot see, a refresh grant would pass validation, burn the provider's
 // single-use refresh rotation upstream, and then fail the atomic consume as
 // NOT_FOUND — tripping reuse detection for a token that was never reused.
-func (s *Store) GetRefreshTokenInfo(ctx context.Context, refreshToken string) (userID string, err error) {
-	op := s.startTracedOp(ctx, "get_refresh_token_info")
-	defer op.end(&err)
-
-	userID, err = s.client.Do(op.ctx, s.client.B().Get().Key(s.refreshTokenKey(refreshToken)).Build()).ToString()
-	if err != nil {
-		if isNilError(err) {
-			return "", storage.ErrTokenNotFound
-		}
-		return "", fmt.Errorf("failed to get refresh token info: %w", err)
-	}
-
-	// TTL is managed by Valkey, so if key exists, it's not expired
-	return userID, nil
+func (s *Store) GetRefreshTokenInfo(ctx context.Context, refreshToken string) (string, error) {
+	return s.getUserIDByKey(ctx, "get_refresh_token_info", s.refreshTokenKey(refreshToken), "get refresh token info")
 }
 
 // DeleteRefreshToken removes a refresh token

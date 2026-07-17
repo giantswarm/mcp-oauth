@@ -400,6 +400,26 @@ func (s *Store) startTracedOp(ctx context.Context, operation string) *tracedOp {
 	return op
 }
 
+// getUserIDByKey resolves a storage key holding a userID value, mapping a
+// missing key to storage.ErrTokenNotFound. Shared by the refresh-token and
+// provider-token-reference lookups, which are the same GET-key-to-userID
+// operation on different key namespaces. errContext names the operation in
+// the wrapped error ("failed to <errContext>: ...").
+func (s *Store) getUserIDByKey(ctx context.Context, opName, key, errContext string) (userID string, err error) {
+	op := s.startTracedOp(ctx, opName)
+	defer op.end(&err)
+
+	userID, err = s.client.Do(op.ctx, s.client.B().Get().Key(key).Build()).ToString()
+	if err != nil {
+		if isNilError(err) {
+			return "", storage.ErrTokenNotFound
+		}
+		return "", fmt.Errorf("failed to %s: %w", errContext, err)
+	}
+	// TTL is managed by Valkey, so if the key exists it's not expired.
+	return userID, nil
+}
+
 // tokenTransformFuncs contains the functions used to transform token fields.
 type tokenTransformFuncs struct {
 	transformString func(string) (string, error)
