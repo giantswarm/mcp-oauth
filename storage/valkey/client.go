@@ -248,7 +248,7 @@ func (s *Store) CheckIPLimit(ctx context.Context, ip string, maxClientsPerIP int
 			"ip", ip,
 			"current_count", count,
 			"max_allowed", maxClientsPerIP)
-		return fmt.Errorf("%w: %s (%d/%d)", storage.ErrClientIPLimitExceeded, ip, count, maxClientsPerIP)
+		return storage.ErrClientIPLimitExceeded
 	}
 
 	return nil

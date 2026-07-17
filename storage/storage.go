@@ -91,7 +91,16 @@ var (
 
 	// ErrClientIPLimitExceeded is returned by CheckIPLimit when the IP has reached
 	// the maximum number of registered clients.
-	ErrClientIPLimitExceeded = errors.New("client registration limit exceeded")
+	//
+	// The wording is deliberately generic ("rate limit exceeded") so the error
+	// value never reveals that the client IP is tracked or exposes the per-IP
+	// registration counts wherever it is rendered — structured log sinks today,
+	// and any future consumer that surfaces it directly. (The registration
+	// handler already returns its own fixed client-facing message, not this value.)
+	// Callers must match it by identity via errors.Is, never by comparing the
+	// message text; diagnostic detail (IP, current/max counts) is preserved only
+	// in structured logs at the check site.
+	ErrClientIPLimitExceeded = errors.New("rate limit exceeded")
 )
 
 // IsNotFoundError checks if an error indicates a "not found" condition.
