@@ -14,10 +14,12 @@ func (s *Store) revokedJTIKey(jti string) string {
 }
 
 // RevokeJTI implements storage.RevokedTokenStore by writing a sentinel
-// value at revokedJTIKey(jti) with EXAT set to the JWT's expiresAt. The
-// value is intentionally minimal — presence is the signal; the JWT itself
-// already carries every other claim. RFC 7009 treats revocation of an
-// already-expired token as a no-op, so we drop those without a round-trip.
+// value at revokedJTIKey(jti) with a relative TTL derived from the JWT's
+// expiresAt via calculateTTL (clamped to a >=1s floor), so the entry
+// auto-expires at/just after the JWT's own exp. The value is intentionally
+// minimal — presence is the signal; the JWT itself already carries every
+// other claim. RFC 7009 treats revocation of an already-expired token as a
+// no-op, so we drop those without a round-trip.
 func (s *Store) RevokeJTI(ctx context.Context, jti string, expiresAt time.Time) (err error) {
 	if jti == "" {
 		return fmt.Errorf("jti cannot be empty")
@@ -29,7 +31,11 @@ func (s *Store) RevokeJTI(ctx context.Context, jti string, expiresAt time.Time) 
 	op := s.startTracedOp(ctx, "revoke_jti")
 	defer op.end(&err)
 
-	ttl := time.Until(expiresAt)
+	// calculateTTL clamps a positive sub-second TTL up to a 1s floor;
+	// without it a JWT revoked in its final second before exp would build
+	// "EX 0" (valkey-go's Ex() truncates to whole seconds) and Valkey would
+	// reject the write, silently failing to denylist the JTI.
+	ttl := calculateTTL(expiresAt)
 	if ttl <= 0 {
 		return nil
 	}
