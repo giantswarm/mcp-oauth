@@ -524,7 +524,14 @@ func (s *Store) CheckIPLimit(_ context.Context, ip string, maxClientsPerIP int) 
 
 	count := s.clientsPerIP[ip]
 	if count >= maxClientsPerIP {
-		return fmt.Errorf("%w: %s (%d/%d clients)", storage.ErrClientIPLimitExceeded, ip, count, maxClientsPerIP)
+		// SECURITY: return the bare generic sentinel so the error value never
+		// leaks the client IP or per-IP counts to clients/log sinks. Diagnostic
+		// detail is preserved here in the structured log (parity with valkey).
+		s.logger.Warn("Client registration limit reached",
+			"ip", ip,
+			"current_count", count,
+			"max_allowed", maxClientsPerIP)
+		return storage.ErrClientIPLimitExceeded
 	}
 
 	return nil
