@@ -35,10 +35,17 @@ import (
 //     [storage.ErrRefreshTokenFamilyRevoked])
 //   - the upstream provider's refresh call fails
 //
-// The same lifecycle hooks fire as for the public refresh-token-grant
-// path: TokenRefreshHandler is called with the userID + familyID + new
-// token, refresh-token rotation produces a new family generation, and
-// the new tokens are saved to the TokenStore.
+// This delegates to the full OAuth 2.1 refresh-token-grant path
+// (RefreshAccessToken): the client-facing mcp refresh token is ROTATED
+// (a new family generation is produced) and the new tokens are saved to
+// the TokenStore. It does NOT fire TokenRefreshHandler — that hook fires
+// only on the validation-time proactive/reactive refresh (see
+// attemptProactiveRefresh / validateStoredToken). A background caller
+// that needs a fresh id_token WITHOUT rotating the client's refresh token
+// (and that does want TokenRefreshHandler to fire) must use
+// [Server.RefreshSessionProvider] instead: calling RefreshSession on a
+// tight background loop rotates the client's refresh token out from under
+// the client and eventually trips OAuth 2.1 reuse detection.
 //
 // Failure semantics: if the call fails after the active refresh token
 // has been atomically deleted (e.g. the upstream provider's refresh
