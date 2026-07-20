@@ -1241,8 +1241,21 @@ func (s *Store) cleanupRevokedFamilies() int {
 
 // cleanupOrphanedMetadata removes token metadata for tokens that no longer exist
 func (s *Store) cleanupOrphanedMetadata() int {
+	now := time.Now()
 	cleaned := 0
-	for tokenID := range s.tokenMetadata {
+	for tokenID, metadata := range s.tokenMetadata {
+		// The id_token metadata key is deliberately never registered via
+		// SaveToken (it carries no provider-token mapping), so it is absent
+		// from every token map and must not be treated as orphaned. Expire it
+		// by its own ExpiresAt instead — the only mechanism that reclaims it in
+		// this backend, since metadata otherwise dies with its token.
+		if metadata.TokenType == "id" {
+			if !metadata.ExpiresAt.IsZero() && now.After(metadata.ExpiresAt) {
+				delete(s.tokenMetadata, tokenID)
+				cleaned++
+			}
+			continue
+		}
 		_, existsAsToken := s.tokens[tokenID]
 		_, existsAsRefresh := s.refreshTokens[tokenID]
 		_, existsAsRef := s.providerTokenRefs[tokenID]
@@ -1440,6 +1453,15 @@ func (s *Store) revokeRemainingTokens(tokensToRevoke []string, userID, clientID 
 		_, existsAsCopy := s.tokens[tokenID]
 		_, existsAsRef := s.providerTokenRefs[tokenID]
 		if !existsAsCopy && !existsAsRef {
+			// The id_token metadata key has no backing token entry (it never
+			// goes through SaveToken), so it is never reached by the token/ref
+			// deletes above and would otherwise survive bulk revocation. It
+			// still belongs to this user+client — delete it so reuse detection
+			// tears the id_token session down with its siblings.
+			if meta, hasMeta := s.tokenMetadata[tokenID]; hasMeta && meta.TokenType == "id" {
+				delete(s.tokenMetadata, tokenID)
+				revokedCount++
+			}
 			continue
 		}
 

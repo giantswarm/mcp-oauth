@@ -441,14 +441,21 @@ func (s *Server) saveTokenPairMetadata(ctx context.Context, accessToken, refresh
 // saveIDTokenMetadata saves metadata keyed by the upstream id_token returned
 // alongside a minted access/refresh pair, so a bearer equal to the id_token
 // resolves the same FamilyID-derived session as its sibling access token.
-// Expiry follows the id_token's own exp claim; base.ExpiresAt (the
-// access-token expiry) is kept when exp is unreadable. JKT is cleared: DPoP
-// binding covers the minted access token, not the upstream id_token.
+// Expiry follows the id_token's own exp claim when that is in the future;
+// otherwise base.ExpiresAt (the access-token expiry) is kept. JKT is cleared:
+// DPoP binding covers the minted access token, not the upstream id_token.
 func (s *Server) saveIDTokenMetadata(ctx context.Context, idToken string, base storage.TokenMetadata) {
 	metadata := base
 	metadata.TokenType = "id"
 	metadata.JKT = ""
-	if exp := unverifiedJWTExpiry(idToken); !exp.IsZero() {
+	// Adopt the id_token's own exp only when it is in the future. A missing,
+	// unreadable, or already-past exp (upstream clock skew, or a short-lived
+	// id_token plus latency) keeps base.ExpiresAt — the sibling access-token
+	// expiry, always a server-computed future instant. This is the first
+	// metadata write whose expiry comes from an externally-supplied value, and
+	// a non-future ExpiresAt would otherwise persist as an unbounded key in the
+	// Valkey backend (calculateTTL <= 0 falls through to a plain SET).
+	if exp := unverifiedJWTExpiry(idToken); exp.After(time.Now()) {
 		metadata.ExpiresAt = exp
 	}
 	s.saveTokenMetadata(ctx, idToken, metadata)

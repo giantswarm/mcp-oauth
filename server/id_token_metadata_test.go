@@ -128,10 +128,37 @@ func TestExchangeAuthorizationCode_IDTokenMetadataExpiryFallsBackToAccessToken(t
 	require.Equal(t, accessMeta.ExpiresAt, idMeta.ExpiresAt)
 }
 
+func TestExchangeAuthorizationCode_IDTokenMetadataExpiryFallsBackWhenAlreadyExpired(t *testing.T) {
+	srv, store, provider := setupFlowTestServer(t)
+
+	// An id_token whose exp is already in the past (upstream clock skew, or a
+	// short-lived id_token plus latency) must not be stored with a past
+	// ExpiresAt: in the Valkey backend a non-future expiry falls through to an
+	// unbounded SET, leaking a permanent key. The expiry falls back to the
+	// access-token expiry, which is always a server-computed future instant.
+	expiredIDToken := makeIDTokenWithExpiry(t, "user-expired-exp", time.Now().Add(-time.Hour))
+	token, _ := mintTokensWithIDToken(t, srv, store, provider, expiredIDToken)
+
+	accessMeta, err := store.GetTokenMetadata(token.AccessToken)
+	require.NoError(t, err)
+
+	idMeta, err := store.GetTokenMetadata(expiredIDToken)
+	require.NoError(t, err)
+	require.Equal(t, accessMeta.ExpiresAt, idMeta.ExpiresAt)
+	require.True(t, idMeta.ExpiresAt.After(time.Now()), "id_token metadata must carry a bounded, future expiry")
+}
+
 func TestRefreshAccessToken_IDTokenMetadataStableAcrossRotation(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 	srv.Config.AllowRefreshTokenRotation = true
 	srv.Config.RefreshTokenTTL = 86400
+	// The per-user single-flight coordinator only talks to the upstream
+	// provider when the shared provider token is due for refresh
+	// (isProviderTokenFresh). The mock mints a provider token ~1h out, so raise
+	// the refresh threshold above that to force a genuine upstream rotation and
+	// exercise the rotated id_token path; otherwise the shared entry is reused
+	// and no new id_token is minted.
+	srv.Config.TokenRefreshThreshold = 7200
 
 	firstIDToken := makeIDTokenWithExpiry(t, "user-rotation", time.Now().Add(30*time.Minute))
 	token, clientID := mintTokensWithIDToken(t, srv, store, provider, firstIDToken)

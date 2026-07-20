@@ -195,6 +195,26 @@ func (s *Server) handleRevocationNotSupported(ctx context.Context, userID, clien
 	return fmt.Errorf("storage backend must implement TokenRevocationStore for OAuth 2.1 compliance")
 }
 
+// providerRevocableTokens returns tokens minus the id_token metadata keys,
+// preserving order. An id_token key carries no provider-token mapping (it is
+// never registered via SaveToken), so it is not revocable at the provider; its
+// sibling access/refresh tokens cover that. Falls back to the full list when
+// the backend exposes no metadata getter, so a genuine token is never dropped.
+func (s *Server) providerRevocableTokens(tokens []string) []string {
+	metaGetter, ok := s.tokenStore.(storage.TokenMetadataGetter)
+	if !ok {
+		return tokens
+	}
+	revocable := make([]string, 0, len(tokens))
+	for _, tokenID := range tokens {
+		if meta, err := metaGetter.GetTokenMetadata(tokenID); err == nil && meta != nil && meta.TokenType == "id" {
+			continue
+		}
+		revocable = append(revocable, tokenID)
+	}
+	return revocable
+}
+
 // revokeTokensAtProvider revokes all tokens at the provider
 // Returns (revokedCount, failedCount, totalCount)
 //
@@ -236,7 +256,12 @@ func (s *Server) revokeTokensAtProvider(ctx context.Context, tokens []string, us
 	upts, unified := s.userProviderTokenStore()
 	sharedEntryDead := false
 
-	for _, tokenID := range tokens {
+	// id_token metadata keys are dropped up front: they carry no provider-token
+	// mapping (never registered via SaveToken) and their sibling access/refresh
+	// tokens already drive provider revocation. Attempting them here would emit
+	// a guaranteed, non-actionable warning on this security-critical path and
+	// inflate the failure-rate denominator that gates whether revocation aborts.
+	for _, tokenID := range s.providerRevocableTokens(tokens) {
 		providerToken, err := s.resolveProviderToken(ctx, tokenID)
 		if err != nil {
 			s.Logger.Warn("Could not get provider token for revocation",
