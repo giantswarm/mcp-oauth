@@ -3,6 +3,7 @@ package valkey
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -141,6 +142,15 @@ func (s *Store) GetToken(ctx context.Context, userID string) (result *oauth2.Tok
 	}
 	if err != nil {
 		if isNilError(err) {
+			// Unified provider-token layout: the provider token is not stored
+			// under this key directly. Resolve key → userID → shared provider
+			// entry (storage.UserProviderTokenStore). A key that is not a
+			// provider-token reference falls through to ErrTokenNotFound.
+			if uid, refErr := s.GetProviderTokenRef(op.ctx, userID); refErr == nil {
+				return s.GetUserProviderToken(op.ctx, uid)
+			} else if !errors.Is(refErr, storage.ErrTokenNotFound) {
+				return nil, refErr
+			}
 			return nil, storage.ErrTokenNotFound
 		}
 		return nil, fmt.Errorf("failed to get token: %w", err)

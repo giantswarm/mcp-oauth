@@ -390,6 +390,15 @@ func (s *Store) GetToken(ctx context.Context, userID string) (*oauth2.Token, err
 	s.mu.RUnlock()
 
 	if !ok {
+		// Unified provider-token layout: the provider token is not stored
+		// under this key directly. Resolve key → userID → shared provider
+		// entry (storage.UserProviderTokenStore). A key that is not a
+		// provider-token reference falls through to ErrTokenNotFound.
+		if uid, refErr := s.GetProviderTokenRef(ctx, userID); refErr == nil {
+			var provTok *oauth2.Token
+			provTok, err = s.GetUserProviderToken(ctx, uid)
+			return provTok, err
+		}
 		err = fmt.Errorf("%w: %s", storage.ErrTokenNotFound, userID)
 		return nil, err
 	}
