@@ -93,7 +93,8 @@ type Server struct {
 	revokedTokenStore             storage.RevokedTokenStore               // Tracks revoked self-issued JWT access tokens by jti (nil in opaque mode or when storage backend does not support it)
 	tokenPairs                    sync.Map                                // Maps client access token -> client refresh token for paired updates
 	tokenPairsByRefresh           sync.Map                                // Maps client refresh token -> client access token for pair cleanup
-	refreshGroup                  singleflight.Group                      // Deduplicates concurrent provider token refreshes per access token
+	refreshGroup                  singleflight.Group                      // Deduplicates concurrent provider token refreshes per access token (legacy copy-per-token layout)
+	providerRefreshGroup          singleflight.Group                      // Coalesces same-pod coordinated provider refreshes per user ID (unified layout; the per-user lock arbitrates cross-pod)
 	refreshSessionGroup           singleflight.Group                      // Deduplicates concurrent RefreshSession calls per family ID
 	// subjectValidators is the registry for RFC 8693 token-exchange validators,
 	// keyed by subject_token_type URN.
@@ -374,6 +375,16 @@ func isAudienceScope(scope string) bool {
 // This allows the handler to access token metadata for scope validation.
 func (s *Server) TokenStore() storage.TokenStore {
 	return s.tokenStore
+}
+
+// userProviderTokenStore returns the unified shared provider-token store when
+// the configured backend implements storage.UserProviderTokenStore. When it
+// does, the server stores the upstream provider token as one shared entry per
+// user (token keys hold references, not copies); otherwise it falls back to
+// the legacy copy-per-token layout.
+func (s *Server) userProviderTokenStore() (storage.UserProviderTokenStore, bool) {
+	upts, ok := s.tokenStore.(storage.UserProviderTokenStore)
+	return upts, ok
 }
 
 // SubjectValidatorFor returns the SubjectTokenValidator registered for the

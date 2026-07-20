@@ -288,10 +288,10 @@ func TestServer_AuditEventProviderRevocationThresholdExceeded(t *testing.T) {
 			Expiry:      time.Now().Add(time.Hour),
 			TokenType:   "Bearer",
 		}
-		if err := store.SaveToken(ctx, tokenID, token); err != nil {
-			t.Fatalf("SaveToken() error = %v", err)
-		}
-		if err := store.SaveTokenMetadata(context.Background(), tokenID, storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
+		// Distinct user per token keeps a distinct shared provider entry,
+		// preserving the per-token provider revocation failure counting.
+		seedProviderToken(t, store, tokenID, "upt-"+tokenID, token)
+		if err := store.SaveTokenMetadata(ctx, tokenID, storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
 			t.Fatalf("SaveTokenMetadata() error = %v", err)
 		}
 	}
@@ -364,10 +364,10 @@ func TestServer_AuditEventProviderRevocationCompleteFailure(t *testing.T) {
 			Expiry:      time.Now().Add(time.Hour),
 			TokenType:   "Bearer",
 		}
-		if err := store.SaveToken(ctx, tokenID, token); err != nil {
-			t.Fatalf("SaveToken() error = %v", err)
-		}
-		if err := store.SaveTokenMetadata(context.Background(), tokenID, storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
+		// Distinct user per token keeps a distinct shared provider entry,
+		// preserving the per-token provider revocation failure counting.
+		seedProviderToken(t, store, tokenID, "upt-"+tokenID, token)
+		if err := store.SaveTokenMetadata(ctx, tokenID, storage.TokenMetadata{UserID: userID, ClientID: clientID, TokenType: "access"}); err != nil {
 			t.Fatalf("SaveTokenMetadata() error = %v", err)
 		}
 	}

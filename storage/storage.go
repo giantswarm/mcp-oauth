@@ -260,6 +260,109 @@ type ActiveRefreshTokenByFamilyStore interface {
 	GetActiveRefreshTokenByFamily(ctx context.Context, familyID string) (refreshToken, clientID string, err error)
 }
 
+// UserProviderTokenStore is an optional extension implemented by stores that
+// keep the upstream provider (IdP) token as a single shared entry per user —
+// the one source of truth for that user's provider credential — instead of
+// private copies under every access/refresh-token key.
+//
+// Motivation: providers such as dex rotate refresh tokens on first use.
+// Storing a copy of the provider token per issued access/refresh token means
+// a user's concurrent sessions each hold a divergent copy of a single-use
+// credential — a refresh race by construction, escalated to a full token
+// revocation by OAuth 2.1 reuse detection (giantswarm/giantswarm#37164).
+// With this extension there is exactly one rotating provider credential per
+// user: sessions resolve their token key to the user (SaveProviderTokenRef /
+// GetProviderTokenRef) and read the shared entry; a refresh writes the
+// rotated token back to that one entry so every sibling session immediately
+// sees it.
+//
+// The shared entry MUST carry the provider's real expiry (callers must not
+// inflate it for storage-TTL purposes): later refresh coordination judges
+// freshness on it. Backends are responsible for keeping the entry alive
+// beyond that expiry while the provider refresh token can still renew it.
+//
+// This interface is optional and consumed via type assertion (mirroring
+// RefreshTokenFamilyStore); stores that do not implement it keep the
+// copy-per-token behavior. Memory and Valkey both implement it.
+//
+// All methods accept context.Context for tracing and cancellation.
+type UserProviderTokenStore interface {
+	// SaveUserProviderToken writes the user's shared provider-token entry,
+	// replacing any previous value. The token's Expiry is the provider's
+	// real expiry and is persisted as-is.
+	SaveUserProviderToken(ctx context.Context, userID string, token *oauth2.Token) error
+
+	// GetUserProviderToken returns the user's shared provider-token entry.
+	// Returns ErrTokenNotFound when no entry exists and ErrTokenExpired when
+	// the entry is expired with no refresh token to renew it (an expired
+	// entry that still carries a refresh token is returned normally).
+	GetUserProviderToken(ctx context.Context, userID string) (*oauth2.Token, error)
+
+	// DeleteUserProviderToken removes the user's shared provider-token entry.
+	DeleteUserProviderToken(ctx context.Context, userID string) error
+
+	// SaveProviderTokenRef records that tokenID (an issued access or refresh
+	// token) belongs to userID, so readers can resolve token → user → shared
+	// provider entry. The reference expires at expiresAt.
+	SaveProviderTokenRef(ctx context.Context, tokenID, userID string, expiresAt time.Time) error
+
+	// GetProviderTokenRef resolves tokenID to the owning userID.
+	// Returns ErrTokenNotFound when no reference exists (or it expired).
+	GetProviderTokenRef(ctx context.Context, tokenID string) (string, error)
+
+	// DeleteProviderTokenRef removes the reference for tokenID. Deleting a
+	// missing reference is not an error.
+	DeleteProviderTokenRef(ctx context.Context, tokenID string) error
+
+	// AtomicConsumeRefreshToken atomically retrieves and deletes a refresh
+	// token, returning its (userID, clientID) binding. It is the unified-
+	// layout counterpart of TokenStore.AtomicGetAndDeleteRefreshToken: it
+	// does not require (nor return) a provider-token copy stored under the
+	// refresh-token key — callers obtain the provider token from the shared
+	// entry via GetUserProviderToken. Any reference for the refresh token is
+	// deleted as part of the same operation.
+	//
+	// SECURITY: MUST be atomic — only ONE concurrent request can succeed;
+	// the rest receive ErrTokenNotFound. ErrTokenExpired is returned for an
+	// expired token. clientID is returned for OAuth 2.1 Section 6 client
+	// binding validation.
+	AtomicConsumeRefreshToken(ctx context.Context, refreshToken string) (userID string, clientID string, err error)
+}
+
+// ProviderRefreshLockStore is an optional extension implemented by stores
+// that can coordinate refreshes of the shared per-user provider token (see
+// UserProviderTokenStore) with a per-user single-flight lock. When the store
+// is shared between processes (Valkey), the lock is cross-pod: at most one
+// pod refreshes a user's provider credential per rotation window, so
+// concurrent sessions never race a single-use rotating refresh token
+// (giantswarm/giantswarm#37164).
+//
+// The lock is advisory and self-healing: it auto-expires after the ttl given
+// at acquisition, so a holder that crashes mid-refresh cannot wedge the
+// user's refreshes. Release is owner-only — it takes effect only when the
+// caller presents the lockValue returned by its own successful acquire, so a
+// slow holder whose lock already expired cannot release a successor's lock.
+//
+// This interface is optional and consumed via type assertion (mirroring
+// RefreshTokenFamilyStore). Memory and Valkey both implement it: Valkey with
+// SET NX + a Lua compare-and-delete (the DPoP replay-cache precedent), memory
+// with an in-process per-user try-lock (single-process, sufficient there).
+//
+// All methods accept context.Context for tracing and cancellation.
+type ProviderRefreshLockStore interface {
+	// AcquireProviderRefreshLock attempts to acquire the per-user provider-
+	// refresh lock. On success it returns a random, single-use lockValue and
+	// acquired=true; when the lock is currently held by another owner it
+	// returns acquired=false with no error. The lock auto-expires after ttl.
+	AcquireProviderRefreshLock(ctx context.Context, userID string, ttl time.Duration) (lockValue string, acquired bool, err error)
+
+	// ReleaseProviderRefreshLock releases the lock iff lockValue matches the
+	// current holder's value (owner-only release, compare-and-delete).
+	// Releasing a missing, expired, or mismatched lock is a silent no-op —
+	// the successor's lock must not be disturbed.
+	ReleaseProviderRefreshLock(ctx context.Context, userID, lockValue string) error
+}
+
 // RefreshTokenFamilyMetadata contains metadata about a token family
 type RefreshTokenFamilyMetadata struct {
 	FamilyID   string

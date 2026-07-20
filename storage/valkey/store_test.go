@@ -469,6 +469,39 @@ func TestTokenStore_GetRefreshTokenInfo_NotFound(t *testing.T) {
 	}
 }
 
+// TestTokenStore_GetRefreshTokenInfo_IgnoresLegacyKey pins the hard-cutover
+// contract of the unified provider-token layout (v1.1.0 deploy note): leftover
+// legacy-format (pre-key-hashing) refresh-token keys are never read. The
+// non-destructive front check (GetRefreshTokenInfo) and the destructive
+// consume (AtomicConsumeRefreshToken) MUST agree on the exact key they read —
+// if the front check accepted a legacy key the consume cannot see, a refresh
+// grant would burn the provider's single-use rotation and then trip reuse
+// detection when the consume returns NOT_FOUND.
+func TestTokenStore_GetRefreshTokenInfo_IgnoresLegacyKey(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	const refreshToken = "legacy-format-refresh-token"
+
+	// Plant a refresh-token entry under the legacy (unhashed) key format, as a
+	// pre-migration pod would have written it.
+	err := s.client.Do(ctx, s.client.B().Set().
+		Key(s.legacyRefreshTokenKey(refreshToken)).Value("user1").Ex(time.Hour).Build()).Error()
+	if err != nil {
+		t.Fatalf("failed to plant legacy-format key: %v", err)
+	}
+
+	// The non-destructive front check must not see it...
+	if _, err := s.GetRefreshTokenInfo(ctx, refreshToken); !storage.IsNotFoundError(err) {
+		t.Errorf("GetRefreshTokenInfo must ignore legacy-format keys, got: %v", err)
+	}
+
+	// ...matching the destructive consume, which never had a legacy fallback.
+	if _, _, err := s.AtomicConsumeRefreshToken(ctx, refreshToken); !storage.IsNotFoundError(err) {
+		t.Errorf("AtomicConsumeRefreshToken must ignore legacy-format keys, got: %v", err)
+	}
+}
+
 func TestTokenStore_DeleteRefreshToken(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -1660,15 +1693,18 @@ func TestCalculateTTL(t *testing.T) {
 
 	// Sub-second positive expiry must clamp up to the 1s floor: valkey-go's
 	// Ex() builds a whole-second EX argument, so anything below 1s would
-	// truncate to "EX 0" and Valkey would reject the write.
-	subSecond := time.Now().Add(50 * time.Millisecond)
+	// truncate to "EX 0" and Valkey would reject the write. The margin below the
+	// 1s boundary is kept generous so a scheduling/GC stall between constructing
+	// the deadline and calculateTTL's internal time.Until() cannot push the
+	// remaining duration to <= 0 (which would return 0, not the 1s floor).
+	subSecond := time.Now().Add(500 * time.Millisecond)
 	ttl = calculateTTL(subSecond)
 	if ttl != time.Second {
 		t.Errorf("TTL should clamp to 1s for sub-second expiry, got: %v", ttl)
 	}
 
 	// Just-under-1s expiry must also clamp up to the 1s floor.
-	justUnder := time.Now().Add(900 * time.Millisecond)
+	justUnder := time.Now().Add(800 * time.Millisecond)
 	ttl = calculateTTL(justUnder)
 	if ttl != time.Second {
 		t.Errorf("TTL should clamp to 1s for just-under-1s expiry, got: %v", ttl)

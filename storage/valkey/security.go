@@ -43,7 +43,7 @@ func (s *Store) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, us
 		return err
 	}
 
-	s.addTokenToUserClientSet(op.ctx, refreshToken, userID, clientID)
+	s.addTokenToUserClientSet(op.ctx, refreshToken, userID, clientID, ttl)
 
 	s.logger.Debug("Saved refresh token with family tracking",
 		"user_id", userID,
@@ -172,12 +172,45 @@ func (s *Store) saveRefreshTokenMetadata(ctx context.Context, refreshToken, user
 	return nil
 }
 
-// addTokenToUserClientSet adds the token to the user+client set for bulk revocation.
-func (s *Store) addTokenToUserClientSet(ctx context.Context, refreshToken, userID, clientID string) {
-	userClientKey := s.userClientKey(userID, clientID)
+// addTokenToUserClientSet adds the token to the user+client set for bulk
+// revocation, keeping the set bounded with an extend-only TTL.
+func (s *Store) addTokenToUserClientSet(ctx context.Context, refreshToken, userID, clientID string, ttl time.Duration) {
+	s.addToUserClientSet(ctx, s.userClientKey(userID, clientID), refreshToken, userID, clientID, ttl)
+}
+
+// addToUserClientSet atomically adds member to the user+client set and keeps the
+// set bounded with an extend-only TTL (see luaAtomicSaddExtendOnlyTTL for the
+// full rationale). ttl is the member's own horizon; the set TTL becomes
+// max(existing, ttl) and is never shortened below a still-live member. When ttl
+// is non-positive (a token with no/expired horizon) the set is still bounded by
+// the store's refresh-token TTL rather than being left to grow without bound.
+//
+// SADD and the TTL update run in one script so the whole add is atomic:
+// concurrent first-writers for the same (user, client) cannot race the TTL down
+// to a short-lived member's horizon, and it is a single round-trip on the
+// token-issuance hot path.
+func (s *Store) addToUserClientSet(ctx context.Context, key, member, userID, clientID string, ttl time.Duration) {
+	horizon := int64(0)
+	if ttl > 0 {
+		// valkey EXPIRE with 0 seconds deletes the key, so never let a positive
+		// sub-second horizon truncate to 0 and wipe the set.
+		if horizon = int64(ttl.Seconds()); horizon < 1 {
+			horizon = 1
+		}
+	}
+	fallback := int64(s.refreshTokenTTL.Seconds())
+	if fallback < 1 {
+		fallback = 1
+	}
 	if err := s.client.Do(
 		ctx,
-		s.client.B().Sadd().Key(userClientKey).Member(refreshToken).Build(),
+		s.client.B().Eval().Script(luaAtomicSaddExtendOnlyTTL).
+			Numkeys(1).
+			Key(key).
+			Arg(member).
+			Arg(fmt.Sprintf("%d", horizon)).
+			Arg(fmt.Sprintf("%d", fallback)).
+			Build(),
 	).Error(); err != nil {
 		s.logger.Warn("Failed to add token to user+client set",
 			"user_id", userID,
@@ -186,16 +219,23 @@ func (s *Store) addTokenToUserClientSet(ctx context.Context, refreshToken, userI
 	}
 }
 
-// GetRefreshTokenFamily retrieves family metadata for a refresh token
+// GetRefreshTokenFamily retrieves family metadata for a refresh token.
+//
+// Deliberately NO legacyRefreshTokenMetaKey fallback: this lookup is the
+// ACCUSING half of reuse detection (server.handleRefreshTokenReuseDetection
+// escalates "refresh-token record gone but family alive" to a full
+// user+client revocation). The unified layout is a hard cutover in which
+// GetRefreshTokenInfo and the atomic consume never read legacy-format keys,
+// so a leftover pre-key-hashing refresh token always resolves as not-found
+// there; if THIS lookup still saw the live legacy family metadata, that
+// benign leftover would be misclassified as token theft. Without the
+// fallback the leftover classifies as family-less → plain invalid_grant →
+// re-login.
 func (s *Store) GetRefreshTokenFamily(ctx context.Context, refreshToken string) (result *storage.RefreshTokenFamilyMetadata, err error) {
 	op := s.startTracedOp(ctx, "get_refresh_token_family")
 	defer op.end(&err)
 
-	result, err = getAndUnmarshal(op.ctx, s, s.refreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
-	if errors.Is(err, storage.ErrRefreshTokenFamilyNotFound) {
-		return getAndUnmarshal(op.ctx, s, s.legacyRefreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
-	}
-	return result, err
+	return getAndUnmarshal(op.ctx, s, s.refreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
 }
 
 // GetRefreshTokenFamilyByID returns family metadata indexed by family ID
@@ -432,6 +472,7 @@ func (s *Store) deleteTokenKeys(ctx context.Context, token, tokenPrefix string) 
 		s.refreshTokenKey(token), s.legacyRefreshTokenKey(token),
 		s.tokenKey(token), s.legacyTokenKey(token),
 		s.tokenMetaKey(token), s.legacyTokenMetaKey(token),
+		s.tokenRefKey(token),
 	).Build()).Error(); err != nil {
 		s.logger.Debug("Failed to delete token keys during family revocation",
 			"token_prefix", tokenPrefix, "error", err)
@@ -483,16 +524,8 @@ func (s *Store) SaveTokenMetadata(ctx context.Context, tokenID string, metadata 
 		return fmt.Errorf("failed to save token metadata: %w", err)
 	}
 
-	userClientKey := s.userClientKey(metadata.UserID, metadata.ClientID)
-	if err := s.client.Do(
-		ctx,
-		s.client.B().Sadd().Key(userClientKey).Member(tokenID).Build(),
-	).Error(); err != nil {
-		s.logger.Warn("Failed to add token to user+client set",
-			"user_id", metadata.UserID,
-			"client_id", metadata.ClientID,
-			"error", err)
-	}
+	s.addToUserClientSet(ctx, s.userClientKey(metadata.UserID, metadata.ClientID), tokenID,
+		metadata.UserID, metadata.ClientID, calculateTTL(metadata.ExpiresAt))
 
 	s.logger.Debug("Saved token metadata",
 		"token_type", metadata.TokenType,
@@ -514,17 +547,24 @@ func (s *Store) setTokenMetaKey(ctx context.Context, key, value string, expiresA
 	return s.client.Do(ctx, s.client.B().Set().Key(key).Value(value).Build()).Error()
 }
 
-// GetTokenMetadata retrieves metadata for a token (including RFC 8707 audience)
+// GetTokenMetadata retrieves metadata for a token (including RFC 8707 audience).
+//
+// Absence is signaled with storage.ErrTokenNotFound so callers can
+// distinguish "no such token" from transient storage failures without
+// string-matching.
+//
+// Deliberately NO legacyTokenMetaKey fallback (same hard-cutover reasoning as
+// GetRefreshTokenFamily): tokens whose records only exist under legacy-format
+// keys are never accepted by the unified refresh grant or validation paths,
+// so their metadata must classify as absent — invalid_grant / inactive —
+// rather than lend a leftover credential the appearance of a live one.
 func (s *Store) GetTokenMetadata(tokenID string) (*storage.TokenMetadata, error) {
 	ctx := context.Background()
 
 	data, err := s.client.Do(ctx, s.client.B().Get().Key(s.tokenMetaKey(tokenID)).Build()).ToString()
-	if err != nil && isNilError(err) {
-		data, err = s.client.Do(ctx, s.client.B().Get().Key(s.legacyTokenMetaKey(tokenID)).Build()).ToString()
-	}
 	if err != nil {
 		if isNilError(err) {
-			return nil, fmt.Errorf("token metadata not found")
+			return nil, fmt.Errorf("token metadata: %w", storage.ErrTokenNotFound)
 		}
 		return nil, fmt.Errorf("failed to get token metadata: %w", err)
 	}
@@ -662,6 +702,7 @@ func (s *Store) deleteTokenAndMetadata(ctx context.Context, tokenID string) {
 		s.tokenKey(tokenID), s.legacyTokenKey(tokenID),
 		s.refreshTokenKey(tokenID), s.legacyRefreshTokenKey(tokenID),
 		s.tokenMetaKey(tokenID), s.legacyTokenMetaKey(tokenID),
+		s.tokenRefKey(tokenID),
 	).Build()).Error(); err != nil {
 		s.logger.Debug("Failed to delete token keys during user+client revocation",
 			"token_prefix", safeTruncate(tokenID, tokenIDLogLength),
