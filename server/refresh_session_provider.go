@@ -10,7 +10,8 @@ import (
 )
 
 // RefreshSessionProvider refreshes ONLY the upstream provider (IdP) token for
-// the session identified by familyID and fires TokenRefreshHandler with the
+// the session identified by familyID (the provider token is shared per-user,
+// so familyID resolves the owning user and scopes the callback) and fires TokenRefreshHandler with the
 // result — WITHOUT rotating the client-facing mcp refresh token, minting a new
 // family generation, or issuing a new mcp access token. It is the
 // background-safe sibling of [Server.RefreshSession].
