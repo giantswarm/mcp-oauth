@@ -1069,8 +1069,9 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 	// OIDC Compliance: Forward id_token from upstream provider to client
 	// Per OpenID Connect Core 1.0 Section 3.1.3.3, the id_token is REQUIRED in token responses
 	// for OIDC flows. This enables silent re-authentication with id_token_hint and login_hint.
-	if idToken := ExtractIDToken(authCode.ProviderToken); idToken != "" {
-		tokenResponse = tokenResponse.WithExtra(map[string]interface{}{
+	idToken := ExtractIDToken(authCode.ProviderToken)
+	if idToken != "" {
+		tokenResponse = tokenResponse.WithExtra(map[string]any{
 			"id_token": idToken,
 		})
 	}
@@ -1100,7 +1101,7 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 	// Track AT -> RT pairing for refresh-time updates
 	s.registerTokenPair(accessToken, refreshToken)
 
-	s.saveTokenPairMetadata(ctx, accessToken, refreshToken, storage.TokenMetadata{
+	baseMetadata := storage.TokenMetadata{
 		UserID:    authCode.UserID,
 		ClientID:  clientID,
 		IssuedAt:  now,
@@ -1109,7 +1110,11 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 		FamilyID:  familyID,
 		Scopes:    tokenScopes,
 		JKT:       dpopJKT,
-	}, refreshExpiry)
+	}
+	s.saveTokenPairMetadata(ctx, accessToken, refreshToken, baseMetadata, refreshExpiry)
+	if idToken != "" {
+		s.saveIDTokenMetadata(ctx, idToken, baseMetadata)
+	}
 
 	return tokenResponse, nil
 }

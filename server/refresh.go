@@ -458,8 +458,9 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	// nonce is bound to the auth request, not the refresh. No echo validation
 	// here — the upstream Verifier (when configured) is the authority on
 	// signature, iss, aud, and exp. Parity with [flows_forwarded.go].
-	if idToken := ExtractIDToken(newProviderToken); idToken != "" {
-		tokenResponse = tokenResponse.WithExtra(map[string]interface{}{
+	idToken := ExtractIDToken(newProviderToken)
+	if idToken != "" {
+		tokenResponse = tokenResponse.WithExtra(map[string]any{
 			"id_token": idToken,
 		})
 	}
@@ -469,7 +470,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	// Track AT -> RT pairing for refresh-time updates
 	s.registerTokenPair(newAccessToken, newRefreshToken)
 
-	s.saveTokenPairMetadata(ctx, newAccessToken, newRefreshToken, storage.TokenMetadata{
+	baseMetadata := storage.TokenMetadata{
 		UserID:    userID,
 		ClientID:  clientID,
 		IssuedAt:  now,
@@ -478,7 +479,11 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		FamilyID:  familyID,
 		Scopes:    oldScopes,
 		JKT:       oldJKT,
-	}, refreshExpiry)
+	}
+	s.saveTokenPairMetadata(ctx, newAccessToken, newRefreshToken, baseMetadata, refreshExpiry)
+	if idToken != "" {
+		s.saveIDTokenMetadata(ctx, idToken, baseMetadata)
+	}
 
 	s.Auditor.LogTokenRefreshed(ctx, userID, clientID, "", rotated)
 
