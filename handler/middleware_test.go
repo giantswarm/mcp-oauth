@@ -1596,6 +1596,52 @@ func TestHandler_ValidateToken_UnissuedIDToken_FallsBackToBearerSession(t *testi
 	require.True(t, strings.HasPrefix(capturedSessionID, "ext-"))
 }
 
+// TestHandler_ValidateToken_IDTokenMetadata_DoesNotGrantAuth pins the
+// load-bearing invariant behind accepting an id_token as a session bearer:
+// token metadata is NEVER an authentication grant. A bearer must still be
+// authenticated by the provider (or JWKS on the forwarded/trusted-issuer
+// paths); the id_token metadata only pins which FamilyID-derived session the
+// already-authenticated bearer belongs to.
+//
+// The provider is set to reject any unknown bearer — exactly as dex's userinfo
+// endpoint rejects an id_token presented as an access token. Without that
+// override the assertion would be vacuous: mock.NewProvider's default
+// ValidateTokenFunc authenticates every string, so a green test would prove
+// nothing about metadata.
+func TestHandler_ValidateToken_IDTokenMetadata_DoesNotGrantAuth(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+	provider := mock.NewProvider()
+	provider.ValidateTokenFunc = func(_ context.Context, _ string) (*providers.UserInfo, error) {
+		return nil, fmt.Errorf("provider rejects unknown bearer")
+	}
+
+	srv, err := server.New(provider, store, store, store, &server.Config{Issuer: testIssuer}, nil)
+	require.NoError(t, err)
+	handler := New(srv, nil)
+
+	// id_token metadata exists (as saveIDTokenMetadata would write it) but the
+	// token is NOT registered via SaveToken and cannot pass forwarded-token
+	// JWKS validation. Metadata must not, by itself, authenticate the bearer.
+	idToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJtb2NrLXVzZXItMTIzIn0.sig" //nolint:gosec // test value
+	require.NoError(t, store.SaveTokenMetadata(t.Context(), idToken, storage.TokenMetadata{
+		UserID:    "mock-user-123",
+		ClientID:  "client-1",
+		TokenType: "id",
+		FamilyID:  "family-abc",
+	}))
+
+	nextCalled := false
+	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { nextCalled = true })
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+idToken)
+	w := httptest.NewRecorder()
+	handler.ValidateToken(next).ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+	require.False(t, nextCalled, "id_token metadata must never authenticate a bearer on its own")
+}
+
 func TestHandler_ValidateToken_UserInfoAndSessionIDCoexist(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
