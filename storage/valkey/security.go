@@ -43,7 +43,7 @@ func (s *Store) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, us
 		return err
 	}
 
-	s.addTokenToUserClientSet(op.ctx, refreshToken, userID, clientID)
+	s.addTokenToUserClientSet(op.ctx, refreshToken, userID, clientID, ttl)
 
 	s.logger.Debug("Saved refresh token with family tracking",
 		"user_id", userID,
@@ -173,13 +173,56 @@ func (s *Store) saveRefreshTokenMetadata(ctx context.Context, refreshToken, user
 }
 
 // addTokenToUserClientSet adds the token to the user+client set for bulk revocation.
-func (s *Store) addTokenToUserClientSet(ctx context.Context, refreshToken, userID, clientID string) {
+func (s *Store) addTokenToUserClientSet(ctx context.Context, refreshToken, userID, clientID string, ttl time.Duration) {
 	userClientKey := s.userClientKey(userID, clientID)
 	if err := s.client.Do(
 		ctx,
 		s.client.B().Sadd().Key(userClientKey).Member(refreshToken).Build(),
 	).Error(); err != nil {
 		s.logger.Warn("Failed to add token to user+client set",
+			"user_id", userID,
+			"client_id", clientID,
+			"error", err)
+	}
+	s.extendUserClientSetTTL(ctx, userClientKey, userID, clientID, ttl)
+}
+
+// extendUserClientSetTTL bumps the user+client set's TTL to at least ttl, and
+// sets one when the key has none, without ever shortening an existing longer
+// TTL. The set has no intrinsic TTL and only per-member removal that never
+// happens (there is no SREM anywhere; access tokens expire purely by their own
+// key TTL, which fires no set-membership cleanup), so before this it grew
+// without bound and was only ever reclaimed by the wholesale DEL in
+// RevokeAllTokensForUserClient — a security-exceptional event. Giving the set
+// a TTL lets it self-evict once its longest-lived member would have expired.
+//
+// Members are heterogeneous (short-lived access tokens alongside long-lived
+// refresh tokens), so a plain EXPIRE from a short-lived member could drop the
+// whole set — and its still-live refresh-token members — early, silently
+// breaking bulk revocation. GT extends only when the new expiry is longer
+// (treating a no-TTL key as infinite, so it will not set one); NX sets the TTL
+// only when the key currently has none. Together they yield
+// TTL = max(existing, new), which is order-independent across the AT/RT writes
+// of a single grant.
+func (s *Store) extendUserClientSetTTL(ctx context.Context, key, userID, clientID string, ttl time.Duration) {
+	if ttl <= 0 {
+		return
+	}
+	seconds := int64(ttl.Seconds())
+	if err := s.client.Do(
+		ctx,
+		s.client.B().Expire().Key(key).Seconds(seconds).Gt().Build(),
+	).Error(); err != nil {
+		s.logger.Warn("Failed to extend user+client set TTL",
+			"user_id", userID,
+			"client_id", clientID,
+			"error", err)
+	}
+	if err := s.client.Do(
+		ctx,
+		s.client.B().Expire().Key(key).Seconds(seconds).Nx().Build(),
+	).Error(); err != nil {
+		s.logger.Warn("Failed to initialize user+client set TTL",
 			"user_id", userID,
 			"client_id", clientID,
 			"error", err)
@@ -493,6 +536,7 @@ func (s *Store) SaveTokenMetadata(ctx context.Context, tokenID string, metadata 
 			"client_id", metadata.ClientID,
 			"error", err)
 	}
+	s.extendUserClientSetTTL(ctx, userClientKey, metadata.UserID, metadata.ClientID, calculateTTL(metadata.ExpiresAt))
 
 	s.logger.Debug("Saved token metadata",
 		"token_type", metadata.TokenType,
