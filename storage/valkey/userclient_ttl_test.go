@@ -2,6 +2,8 @@ package valkey
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -79,4 +81,75 @@ func TestUserClientSet_TTLBoundedAndExtendOnly(t *testing.T) {
 	members, err := store.client.Do(ctx, store.client.B().Smembers().Key(ucKey).Build()).AsStrSlice()
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{at1, at2, rt}, members, "all tokens must remain members for bulk revocation")
+}
+
+// TestUserClientSet_ZeroExpiryStillBounded guards the boundary case where a
+// token metadata save carries a zero/unset ExpiresAt (calculateTTL then yields
+// 0). The member is still added for bulk revocation, but the set must not be
+// left unbounded — it falls back to the store's refresh-token TTL so the
+// unbounded-growth bug cannot slip back in through a horizon-less add.
+func TestUserClientSet_ZeroExpiryStillBounded(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	const (
+		userID   = "user-zero"
+		clientID = "client-zero"
+		tokenID  = "tok-zero"
+	)
+	ucKey := store.userClientKey(userID, clientID)
+
+	// ExpiresAt deliberately left as the zero value.
+	require.NoError(t, store.SaveTokenMetadata(ctx, tokenID, storage.TokenMetadata{
+		UserID: userID, ClientID: clientID, TokenType: "access",
+	}))
+
+	require.Greater(t, ttlSeconds(t, store, ucKey), int64(0),
+		"set must carry a fallback TTL even when the member has no expiry (was unbounded)")
+
+	members, err := store.client.Do(ctx, store.client.B().Smembers().Key(ucKey).Build()).AsStrSlice()
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{tokenID}, members, "the horizon-less token must still be a member for bulk revocation")
+}
+
+// TestUserClientSet_ConcurrentAddsConvergeToMax guards the creation-time race
+// the atomic add closes: many concurrent adds against a fresh set, mixing
+// short-lived access-token and long-lived refresh-token horizons, must always
+// leave the set bounded by the LONGEST horizon — never a shorter one. With the
+// pre-fix non-atomic SADD + EXPIRE GT + EXPIRE NX sequence, interleaved
+// first-writers could pin the set to a short access-token horizon and drop
+// still-live refresh members, silently breaking bulk revocation.
+func TestUserClientSet_ConcurrentAddsConvergeToMax(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	const (
+		userID   = "user-conc"
+		clientID = "client-conc"
+		shortTTL = time.Hour
+		longTTL  = 90 * 24 * time.Hour
+		workers  = 50
+	)
+	ucKey := store.userClientKey(userID, clientID)
+	longCeil := int64(shortTTL.Seconds()) + 5 // any short-only outcome sits at/under this
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			ttl := shortTTL
+			if i%2 == 0 {
+				ttl = longTTL
+			}
+			store.addToUserClientSet(ctx, ucKey, fmt.Sprintf("tok-%d", i), userID, clientID, ttl)
+		}(i)
+	}
+	wg.Wait()
+
+	require.Greater(t, ttlSeconds(t, store, ucKey), longCeil,
+		"concurrent adds must leave the set bounded by the longest horizon, never a short one")
+	members, err := store.client.Do(ctx, store.client.B().Smembers().Key(ucKey).Build()).AsStrSlice()
+	require.NoError(t, err)
+	require.Len(t, members, workers, "every concurrent add must be a member for bulk revocation")
 }
