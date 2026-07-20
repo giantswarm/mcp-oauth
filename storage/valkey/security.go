@@ -219,16 +219,23 @@ func (s *Store) addToUserClientSet(ctx context.Context, key, member, userID, cli
 	}
 }
 
-// GetRefreshTokenFamily retrieves family metadata for a refresh token
+// GetRefreshTokenFamily retrieves family metadata for a refresh token.
+//
+// Deliberately NO legacyRefreshTokenMetaKey fallback: this lookup is the
+// ACCUSING half of reuse detection (server.handleRefreshTokenReuseDetection
+// escalates "refresh-token record gone but family alive" to a full
+// user+client revocation). The unified layout is a hard cutover in which
+// GetRefreshTokenInfo and the atomic consume never read legacy-format keys,
+// so a leftover pre-key-hashing refresh token always resolves as not-found
+// there; if THIS lookup still saw the live legacy family metadata, that
+// benign leftover would be misclassified as token theft. Without the
+// fallback the leftover classifies as family-less → plain invalid_grant →
+// re-login.
 func (s *Store) GetRefreshTokenFamily(ctx context.Context, refreshToken string) (result *storage.RefreshTokenFamilyMetadata, err error) {
 	op := s.startTracedOp(ctx, "get_refresh_token_family")
 	defer op.end(&err)
 
-	result, err = getAndUnmarshal(op.ctx, s, s.refreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
-	if errors.Is(err, storage.ErrRefreshTokenFamilyNotFound) {
-		return getAndUnmarshal(op.ctx, s, s.legacyRefreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
-	}
-	return result, err
+	return getAndUnmarshal(op.ctx, s, s.refreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
 }
 
 // GetRefreshTokenFamilyByID returns family metadata indexed by family ID
@@ -465,6 +472,7 @@ func (s *Store) deleteTokenKeys(ctx context.Context, token, tokenPrefix string) 
 		s.refreshTokenKey(token), s.legacyRefreshTokenKey(token),
 		s.tokenKey(token), s.legacyTokenKey(token),
 		s.tokenMetaKey(token), s.legacyTokenMetaKey(token),
+		s.tokenRefKey(token),
 	).Build()).Error(); err != nil {
 		s.logger.Debug("Failed to delete token keys during family revocation",
 			"token_prefix", tokenPrefix, "error", err)
@@ -539,17 +547,24 @@ func (s *Store) setTokenMetaKey(ctx context.Context, key, value string, expiresA
 	return s.client.Do(ctx, s.client.B().Set().Key(key).Value(value).Build()).Error()
 }
 
-// GetTokenMetadata retrieves metadata for a token (including RFC 8707 audience)
+// GetTokenMetadata retrieves metadata for a token (including RFC 8707 audience).
+//
+// Absence is signaled with storage.ErrTokenNotFound so callers can
+// distinguish "no such token" from transient storage failures without
+// string-matching.
+//
+// Deliberately NO legacyTokenMetaKey fallback (same hard-cutover reasoning as
+// GetRefreshTokenFamily): tokens whose records only exist under legacy-format
+// keys are never accepted by the unified refresh grant or validation paths,
+// so their metadata must classify as absent — invalid_grant / inactive —
+// rather than lend a leftover credential the appearance of a live one.
 func (s *Store) GetTokenMetadata(tokenID string) (*storage.TokenMetadata, error) {
 	ctx := context.Background()
 
 	data, err := s.client.Do(ctx, s.client.B().Get().Key(s.tokenMetaKey(tokenID)).Build()).ToString()
-	if err != nil && isNilError(err) {
-		data, err = s.client.Do(ctx, s.client.B().Get().Key(s.legacyTokenMetaKey(tokenID)).Build()).ToString()
-	}
 	if err != nil {
 		if isNilError(err) {
-			return nil, fmt.Errorf("token metadata not found")
+			return nil, fmt.Errorf("token metadata: %w", storage.ErrTokenNotFound)
 		}
 		return nil, fmt.Errorf("failed to get token metadata: %w", err)
 	}
@@ -687,6 +702,7 @@ func (s *Store) deleteTokenAndMetadata(ctx context.Context, tokenID string) {
 		s.tokenKey(tokenID), s.legacyTokenKey(tokenID),
 		s.refreshTokenKey(tokenID), s.legacyRefreshTokenKey(tokenID),
 		s.tokenMetaKey(tokenID), s.legacyTokenMetaKey(tokenID),
+		s.tokenRefKey(tokenID),
 	).Build()).Error(); err != nil {
 		s.logger.Debug("Failed to delete token keys during user+client revocation",
 			"token_prefix", safeTruncate(tokenID, tokenIDLogLength),

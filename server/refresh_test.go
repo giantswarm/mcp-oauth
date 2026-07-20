@@ -956,7 +956,7 @@ func TestServer_RefreshAccessToken_ClientBinding_Integration(t *testing.T) {
 			RefreshToken: "provider-refresh-token",
 			Expiry:       time.Now().Add(time.Hour),
 		}
-		err = store.SaveToken(context.Background(), refreshToken, providerToken)
+		err = store.SaveUserProviderToken(context.Background(), userID, providerToken)
 		if err != nil {
 			t.Fatalf("Failed to save provider token: %v", err)
 		}
@@ -1014,7 +1014,7 @@ func TestServer_RefreshAccessToken_ClientBinding_Integration(t *testing.T) {
 			RefreshToken: "provider-refresh-token",
 			Expiry:       time.Now().Add(time.Hour),
 		}
-		err = store.SaveToken(context.Background(), refreshToken, providerToken)
+		err = store.SaveUserProviderToken(context.Background(), userID, providerToken)
 		if err != nil {
 			t.Fatalf("Failed to save provider token: %v", err)
 		}
@@ -1067,7 +1067,7 @@ func TestServer_RefreshAccessToken_ClientBinding_Integration(t *testing.T) {
 			RefreshToken: "provider-refresh-token",
 			Expiry:       time.Now().Add(time.Hour),
 		}
-		err = store.SaveToken(context.Background(), refreshToken, providerToken)
+		err = store.SaveUserProviderToken(context.Background(), userID, providerToken)
 		if err != nil {
 			t.Fatalf("Failed to save provider token: %v", err)
 		}
@@ -1127,13 +1127,15 @@ func TestServer_RefreshAccessToken_IDTokenForwarding(t *testing.T) {
 			t.Fatalf("Failed to save refresh token: %v", err)
 		}
 
-		// Save initial provider token
+		// Save initial provider token, already expired so the coordinated grant
+		// actually refreshes upstream (a fresh entry would be adopted without a
+		// dex call under the rotation-race single-flight behavior).
 		providerToken := &oauth2.Token{
 			AccessToken:  "provider-access-token",
 			RefreshToken: "provider-refresh-token",
-			Expiry:       time.Now().Add(time.Hour),
+			Expiry:       time.Now().Add(-time.Minute),
 		}
-		err = store.SaveToken(context.Background(), refreshToken, providerToken)
+		err = store.SaveUserProviderToken(context.Background(), userID, providerToken)
 		if err != nil {
 			t.Fatalf("Failed to save provider token: %v", err)
 		}
@@ -1192,13 +1194,15 @@ func TestServer_RefreshAccessToken_IDTokenForwarding(t *testing.T) {
 			t.Fatalf("Failed to save refresh token: %v", err)
 		}
 
-		// Save initial provider token
+		// Save initial provider token, already expired so the coordinated grant
+		// actually refreshes upstream (a fresh entry would be adopted without a
+		// dex call under the rotation-race single-flight behavior).
 		providerToken := &oauth2.Token{
 			AccessToken:  "provider-access-token",
 			RefreshToken: "provider-refresh-token",
-			Expiry:       time.Now().Add(time.Hour),
+			Expiry:       time.Now().Add(-time.Minute),
 		}
-		err = store.SaveToken(context.Background(), refreshToken, providerToken)
+		err = store.SaveUserProviderToken(context.Background(), userID, providerToken)
 		if err != nil {
 			t.Fatalf("Failed to save provider token: %v", err)
 		}
@@ -1253,11 +1257,13 @@ func TestServer_RefreshAccessToken_ExpiryCap(t *testing.T) {
 			t.Fatalf("Failed to save refresh token: %v", err)
 		}
 
-		// Save provider token
-		if err := store.SaveToken(context.Background(), refreshToken, &oauth2.Token{
+		// Save provider token, already expired so the coordinated grant actually
+		// refreshes upstream (a fresh entry would be adopted without a dex call,
+		// and this test needs the provider's short expiry to drive the cap).
+		if err := store.SaveUserProviderToken(context.Background(), userID, &oauth2.Token{
 			AccessToken:  "old-provider-access",
 			RefreshToken: "old-provider-refresh",
-			Expiry:       time.Now().Add(time.Hour),
+			Expiry:       time.Now().Add(-time.Minute),
 		}); err != nil {
 			t.Fatalf("Failed to save provider token: %v", err)
 		}
@@ -1299,10 +1305,13 @@ func TestServer_RefreshAccessToken_ExpiryCap(t *testing.T) {
 			t.Fatalf("Failed to save refresh token: %v", err)
 		}
 
-		if err := store.SaveToken(context.Background(), refreshToken, &oauth2.Token{
+		// Already expired so the coordinated grant refreshes upstream; the
+		// provider's 2h expiry then exceeds AccessTokenTTL and must be capped
+		// down to it.
+		if err := store.SaveUserProviderToken(context.Background(), userID, &oauth2.Token{
 			AccessToken:  "old-provider-access",
 			RefreshToken: "old-provider-refresh",
-			Expiry:       time.Now().Add(time.Hour),
+			Expiry:       time.Now().Add(-time.Minute),
 		}); err != nil {
 			t.Fatalf("Failed to save provider token: %v", err)
 		}
@@ -1346,12 +1355,12 @@ func TestServer_RefreshAccessToken_CleansUpOldTokenPair(t *testing.T) {
 		t.Fatalf("SaveRefreshTokenWithFamily() error = %v", err)
 	}
 
-	if err := store.SaveToken(ctx, oldRefreshToken, &oauth2.Token{
+	if err := store.SaveUserProviderToken(ctx, userID, &oauth2.Token{
 		AccessToken:  "old-provider-access",
 		RefreshToken: "old-provider-refresh",
 		Expiry:       time.Now().Add(time.Hour),
 	}); err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
+		t.Fatalf("SaveUserProviderToken() error = %v", err)
 	}
 
 	srv.registerTokenPair(oldAccessToken, oldRefreshToken)
@@ -1613,7 +1622,8 @@ func TestServer_TokenRefreshHandler_CalledOnProactiveRefresh(t *testing.T) {
 		}, nil
 	}
 
-	// Store a token that is near expiry (within the 5m threshold)
+	// Store a token that is near expiry (within the 5m threshold) as the
+	// user's shared provider entry, referenced by the access token.
 	accessToken := "proactive-refresh-test-token"
 	nearExpiryToken := &oauth2.Token{
 		AccessToken:  "provider-at",
@@ -1621,9 +1631,7 @@ func TestServer_TokenRefreshHandler_CalledOnProactiveRefresh(t *testing.T) {
 		Expiry:       time.Now().Add(2 * time.Minute),
 		TokenType:    "Bearer",
 	}
-	if err := store.SaveToken(ctx, accessToken, nearExpiryToken); err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
-	}
+	seedProviderToken(t, store, accessToken, testMockUserID, nearExpiryToken)
 
 	// Save token metadata so the handler can retrieve userID/familyID
 	if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: testMockUserID, ClientID: "test-client", TokenType: "access", Audience: "", FamilyID: "test-family-id", Scopes: nil}); err != nil {
@@ -1677,7 +1685,8 @@ func TestServer_TokenRefreshHandler_CalledOnExpiredTokenRefresh(t *testing.T) {
 		}, nil
 	}
 
-	// Store an already-expired token with a refresh token
+	// Store an already-expired token with a refresh token as the user's
+	// shared provider entry, referenced by the access token.
 	accessToken := "expired-refresh-test-token"
 	expiredToken := &oauth2.Token{
 		AccessToken:  "old-provider-at",
@@ -1685,9 +1694,7 @@ func TestServer_TokenRefreshHandler_CalledOnExpiredTokenRefresh(t *testing.T) {
 		Expiry:       time.Now().Add(-10 * time.Minute),
 		TokenType:    "Bearer",
 	}
-	if err := store.SaveToken(ctx, accessToken, expiredToken); err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
-	}
+	seedProviderToken(t, store, accessToken, testMockUserID, expiredToken)
 
 	if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: testMockUserID, ClientID: "test-client", TokenType: "access", Audience: "", FamilyID: "expired-family-id", Scopes: nil}); err != nil {
 		t.Fatalf("SaveTokenMetadata() error = %v", err)
@@ -1741,9 +1748,7 @@ func TestServer_TokenRefreshHandler_NotCalledWithoutHandler(t *testing.T) {
 		Expiry:       time.Now().Add(2 * time.Minute),
 		TokenType:    "Bearer",
 	}
-	if err := store.SaveToken(ctx, accessToken, nearExpiryToken); err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
-	}
+	seedProviderToken(t, store, accessToken, testMockUserID, nearExpiryToken)
 
 	// No handler set -- ValidateToken should still succeed
 	_, err := srv.ValidateToken(ctx, accessToken)

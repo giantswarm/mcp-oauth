@@ -15,15 +15,18 @@ import (
 
 // TestHandleRefreshTokenError covers the three classification branches of
 // handleRefreshTokenError: not-found / expired errors map to invalid_grant
-// directly, transient errors map to invalid_grant after a "transient" audit
-// reason, and not-found errors with a family-store-supporting backend
-// additionally trigger reuse-detection.
+// directly, transient errors map to a retryable server error (never
+// invalid_grant — the token was not proven invalid, so the client must be
+// able to retry rather than re-login) after a "transient" audit reason, and
+// not-found errors with a family-store-supporting backend additionally
+// trigger reuse-detection.
 func TestHandleRefreshTokenError(t *testing.T) {
 	tests := []struct {
 		name             string
 		err              error
 		supportsFamilies bool
 		wantSubstr       string
+		forbidSubstr     string
 	}{
 		{
 			name:             "not-found classifies as invalid_grant",
@@ -38,10 +41,11 @@ func TestHandleRefreshTokenError(t *testing.T) {
 			wantSubstr:       ErrorCodeInvalidGrant,
 		},
 		{
-			name:             "transient storage error classifies as invalid_grant",
+			name:             "transient storage error classifies as retryable server error",
 			err:              errors.New("valkey: connection refused"),
 			supportsFamilies: false,
-			wantSubstr:       ErrorCodeInvalidGrant,
+			wantSubstr:       "validate refresh token",
+			forbidSubstr:     ErrorCodeInvalidGrant,
 		},
 		{
 			name:             "not-found with family support invokes reuse path",
@@ -63,6 +67,10 @@ func TestHandleRefreshTokenError(t *testing.T) {
 			require.Error(t, gotErr)
 			require.True(t, strings.Contains(gotErr.Error(), tt.wantSubstr),
 				"err %q must mention %q", gotErr.Error(), tt.wantSubstr)
+			if tt.forbidSubstr != "" {
+				require.False(t, strings.Contains(gotErr.Error(), tt.forbidSubstr),
+					"err %q must NOT mention %q", gotErr.Error(), tt.forbidSubstr)
+			}
 		})
 	}
 }

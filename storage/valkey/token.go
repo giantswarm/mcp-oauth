@@ -3,12 +3,14 @@ package valkey
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	valkeygo "github.com/valkey-io/valkey-go"
 	"golang.org/x/oauth2"
 
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
@@ -91,42 +93,42 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 		return ErrInputTooLarge
 	}
 
-	key := s.tokenKey(userID)
+	if err = s.setTokenKeyWithDerivedTTL(op.ctx, s.tokenKey(userID), string(data), token); err != nil {
+		return fmt.Errorf("failed to save token: %w", err)
+	}
 
-	// Determine which TTL to set on the Valkey key.
-	//
-	// Tokens with a RefreshToken use the configured refresh token TTL
-	// because token.Expiry reflects the short-lived upstream access token
-	// (e.g., 30 minutes from Dex), not the lifetime of the MCP refresh
-	// token (e.g., 90 days). Using the access token expiry as the key TTL
-	// would cause Valkey to evict the provider token before the refresh
-	// token expires, triggering false positive reuse detection in
-	// AtomicGetAndDeleteRefreshToken.
+	if s.encryptor != nil && s.encryptor.IsEnabled() {
+		s.logger.Debug("Saved encrypted token", "user_id_hash", helpers.HashForLogging(userID))
+	} else {
+		s.logger.Debug("Saved token", "user_id_hash", helpers.HashForLogging(userID))
+	}
+	return nil
+}
+
+// setTokenKeyWithDerivedTTL writes a serialized provider token, deriving the
+// key TTL from the token's shape.
+//
+// Tokens with a RefreshToken use the configured refresh token TTL because
+// token.Expiry reflects the short-lived upstream access token (e.g., 30
+// minutes from Dex), not the lifetime of the MCP refresh token (e.g., 90
+// days). Using the access token expiry as the key TTL would cause Valkey to
+// evict the provider token while it can still be renewed, triggering false
+// positive reuse detection.
+func (s *Store) setTokenKeyWithDerivedTTL(ctx context.Context, key, data string, token *oauth2.Token) error {
 	switch {
 	case token.RefreshToken != "" && s.refreshTokenTTL > 0:
-		err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Ex(s.refreshTokenTTL).Build()).Error()
+		return s.client.Do(ctx, s.client.B().Set().Key(key).Value(data).Ex(s.refreshTokenTTL).Build()).Error()
 	case token.RefreshToken != "":
-		err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error()
+		return s.client.Do(ctx, s.client.B().Set().Key(key).Value(data).Build()).Error()
 	case !token.Expiry.IsZero():
 		ttl := calculateTTL(token.Expiry)
 		if ttl <= 0 {
 			return fmt.Errorf("token already expired")
 		}
-		err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Ex(ttl).Build()).Error()
+		return s.client.Do(ctx, s.client.B().Set().Key(key).Value(data).Ex(ttl).Build()).Error()
 	default:
-		err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error()
+		return s.client.Do(ctx, s.client.B().Set().Key(key).Value(data).Build()).Error()
 	}
-
-	if err != nil {
-		return fmt.Errorf("failed to save token: %w", err)
-	}
-
-	if s.encryptor != nil && s.encryptor.IsEnabled() {
-		s.logger.Debug("Saved encrypted token", "user_id", userID)
-	} else {
-		s.logger.Debug("Saved token", "user_id", userID)
-	}
-	return nil
 }
 
 // GetToken retrieves an oauth2.Token for a user and decrypts if necessary
@@ -140,6 +142,15 @@ func (s *Store) GetToken(ctx context.Context, userID string) (result *oauth2.Tok
 	}
 	if err != nil {
 		if isNilError(err) {
+			// Unified provider-token layout: the provider token is not stored
+			// under this key directly. Resolve key → userID → shared provider
+			// entry (storage.UserProviderTokenStore). A key that is not a
+			// provider-token reference falls through to ErrTokenNotFound.
+			if uid, refErr := s.GetProviderTokenRef(op.ctx, userID); refErr == nil {
+				return s.GetUserProviderToken(op.ctx, uid)
+			} else if !errors.Is(refErr, storage.ErrTokenNotFound) {
+				return nil, refErr
+			}
 			return nil, storage.ErrTokenNotFound
 		}
 		return nil, fmt.Errorf("failed to get token: %w", err)
@@ -271,24 +282,20 @@ func (s *Store) SaveRefreshToken(ctx context.Context, refreshToken, userID strin
 	return nil
 }
 
-// GetRefreshTokenInfo retrieves the user ID for a refresh token
-func (s *Store) GetRefreshTokenInfo(ctx context.Context, refreshToken string) (userID string, err error) {
-	op := s.startTracedOp(ctx, "get_refresh_token_info")
-	defer op.end(&err)
-
-	userID, err = s.client.Do(op.ctx, s.client.B().Get().Key(s.refreshTokenKey(refreshToken)).Build()).ToString()
-	if err != nil && isNilError(err) {
-		userID, err = s.client.Do(op.ctx, s.client.B().Get().Key(s.legacyRefreshTokenKey(refreshToken)).Build()).ToString()
-	}
-	if err != nil {
-		if isNilError(err) {
-			return "", storage.ErrTokenNotFound
-		}
-		return "", fmt.Errorf("failed to get refresh token info: %w", err)
-	}
-
-	// TTL is managed by Valkey, so if key exists, it's not expired
-	return userID, nil
+// GetRefreshTokenInfo retrieves the user ID for a refresh token.
+//
+// It reads exactly the key the destructive counterpart
+// (AtomicConsumeRefreshToken) checks — refreshTokenKey — and deliberately has
+// NO legacyRefreshTokenKey fallback. This method serves as the
+// non-destructive front check of the unified refresh grant
+// (server.resolveRefreshGrant), and the unified layout is a hard cutover with
+// no legacy read-fallback (v1.1.0 deploy note: leftover old-layout keys are
+// never read). If this check accepted a legacy key that the consume script
+// cannot see, a refresh grant would pass validation, burn the provider's
+// single-use refresh rotation upstream, and then fail the atomic consume as
+// NOT_FOUND — tripping reuse detection for a token that was never reused.
+func (s *Store) GetRefreshTokenInfo(ctx context.Context, refreshToken string) (string, error) {
+	return s.getUserIDByKey(ctx, "get_refresh_token_info", s.refreshTokenKey(refreshToken), "get refresh token info")
 }
 
 // DeleteRefreshToken removes a refresh token

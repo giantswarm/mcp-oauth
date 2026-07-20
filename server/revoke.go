@@ -55,15 +55,13 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP stri
 		return nil
 	}
 
-	// Get provider token
-	providerToken, err := s.tokenStore.GetToken(ctx, token)
-	if err != nil {
-		// Token not found, but revocation should succeed per RFC 7009
-		return nil
-	}
-
-	// Revoke at provider
-	if providerToken.AccessToken != "" {
+	// Revoke at the provider (best-effort). The provider token is resolved via
+	// the shared per-user entry in the unified layout. A failed resolution
+	// (unknown token, lost reference, transient read error) must NOT
+	// short-circuit the local invalidation below: per RFC 7009 §2.2 the
+	// response is success either way, and the local records — when they exist
+	// — are what the refresh grant gates on.
+	if providerToken, err := s.resolveProviderToken(ctx, token); err == nil && providerToken.AccessToken != "" {
 		if err := s.provider.RevokeToken(ctx, providerToken.AccessToken); err != nil {
 			s.Logger.Warn("Failed to revoke token at provider", "error", err)
 			// Continue with local deletion even if provider revocation fails
@@ -72,13 +70,40 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP stri
 
 	// Look up family metadata BEFORE deleting the token, since DeleteToken may
 	// remove data that GetRefreshTokenFamily depends on in some store implementations.
-	family := s.lookupRefreshTokenFamily(ctx, token)
+	family, famErr := s.lookupRefreshTokenFamily(ctx, token)
 
-	// Delete locally
-	if err := s.tokenStore.DeleteToken(ctx, token); err != nil {
+	// Delete locally. Unified layout: the token's reference AND its
+	// refresh-token record are removed. The record is what the refresh grant
+	// gates on (GetRefreshTokenInfo / AtomicConsumeRefreshToken), and family
+	// revocation alone cannot invalidate it: family metadata writes are
+	// best-effort at issuance, so family-less refresh tokens are reachable and
+	// must be hard-deleted independent of family state. The shared per-user
+	// provider entry stays, since the user's other sessions still resolve to
+	// it (matching the legacy behavior where each session held its own copy
+	// and only this one was deleted).
+	if upts, unified := s.userProviderTokenStore(); unified {
+		if err := upts.DeleteProviderTokenRef(ctx, token); err != nil {
+			s.Logger.Warn("Failed to delete provider token reference", "error", err)
+		}
+		if err := s.tokenStore.DeleteRefreshToken(ctx, token); err != nil {
+			s.Logger.Warn("Failed to delete refresh token record", "error", err)
+		}
+	} else if err := s.tokenStore.DeleteToken(ctx, token); err != nil {
 		s.Logger.Warn("Failed to delete token locally", "error", err)
 	}
 	s.unregisterTokenPairIfPresent(token)
+
+	if famErr != nil {
+		// Transient storage failure: we cannot know whether the token belongs
+		// to a family whose sibling tokens must also be revoked. The presented
+		// token itself was invalidated above; surface the failure instead of
+		// silently treating it as "no family" — RFC 7009 §2.2 mandates success
+		// for invalid TOKENS, not for storage outages (the HTTP handler owns
+		// the transport response and logs this error).
+		s.Logger.Error("Failed to look up refresh token family during revocation",
+			"client_id", clientID, "ip", clientIP, "error", famErr)
+		return fmt.Errorf("token revocation incomplete: refresh token family lookup failed: %w", famErr)
+	}
 
 	s.revokeTokenFamilyIfNeeded(ctx, family, clientID, clientIP)
 
@@ -88,16 +113,24 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP stri
 	return nil
 }
 
-func (s *Server) lookupRefreshTokenFamily(ctx context.Context, token string) *storage.RefreshTokenFamilyMetadata {
+// lookupRefreshTokenFamily returns the family metadata for token, or
+// (nil, nil) when the backend has no family store or the token has no
+// (known) family. A non-not-found error is returned as-is: during
+// revocation, silently mapping a transient storage failure to "no family"
+// would skip sibling revocation while reporting success.
+func (s *Server) lookupRefreshTokenFamily(ctx context.Context, token string) (*storage.RefreshTokenFamilyMetadata, error) {
 	familyStore, ok := s.tokenStore.(storage.RefreshTokenFamilyStore)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	f, err := familyStore.GetRefreshTokenFamily(ctx, token)
-	if err != nil || f == nil {
-		return nil
+	if err != nil {
+		if storage.IsNotFoundError(err) || storage.IsExpiredError(err) {
+			return nil, nil
+		}
+		return nil, err
 	}
-	return f
+	return f, nil
 }
 
 func (s *Server) revokeTokenFamilyIfNeeded(ctx context.Context, family *storage.RefreshTokenFamilyMetadata, clientID, clientIP string) {
@@ -164,35 +197,75 @@ func (s *Server) handleRevocationNotSupported(ctx context.Context, userID, clien
 
 // revokeTokensAtProvider revokes all tokens at the provider
 // Returns (revokedCount, failedCount, totalCount)
+//
+// In the unified layout every token ID resolves to the user's ONE shared
+// provider entry, so the same upstream credential is deduplicated and revoked
+// once rather than once per issued token. When the shared entry's refresh
+// token has been revoked upstream, the now-dead entry itself is deleted
+// (best-effort): the user's OTHER clients still resolve to it, and leaving a
+// dead credential in place would make their every coordinated refresh fail
+// opaquely at the provider — deleting it gives them fail-fast re-login
+// semantics instead. This deletion is intentionally confined to this
+// theft/user+client-revocation flow; plain RFC 7009 RevokeToken deliberately
+// preserves the shared entry for the user's other sessions.
 func (s *Server) revokeTokensAtProvider(ctx context.Context, tokens []string, userID, clientID string) (int, int, int) {
 	revokedAtProvider := 0
 	failedAtProvider := 0
 	totalTokensToRevoke := 0
+	seen := make(map[string]bool)      // credential -> revocation attempted
+	succeeded := make(map[string]bool) // credential -> revoked at provider
+
+	revokeOnce := func(credential, tokenType string) bool {
+		if credential == "" {
+			return false
+		}
+		if seen[credential] {
+			return succeeded[credential]
+		}
+		seen[credential] = true
+		totalTokensToRevoke++
+		if err := s.revokeTokenWithRetry(ctx, credential, tokenType, userID, clientID); err != nil {
+			failedAtProvider++
+			return false
+		}
+		revokedAtProvider++
+		succeeded[credential] = true
+		return true
+	}
+
+	upts, unified := s.userProviderTokenStore()
+	sharedEntryDead := false
 
 	for _, tokenID := range tokens {
-		providerToken, err := s.tokenStore.GetToken(ctx, tokenID)
+		providerToken, err := s.resolveProviderToken(ctx, tokenID)
 		if err != nil {
 			s.Logger.Warn("Could not get provider token for revocation",
 				"token_id", helpers.SafeTruncate(tokenID, 8), "error", err)
 			continue
 		}
 
-		if providerToken.AccessToken != "" {
-			totalTokensToRevoke++
-			if err := s.revokeTokenWithRetry(ctx, providerToken.AccessToken, "access", userID, clientID); err != nil {
-				failedAtProvider++
-			} else {
-				revokedAtProvider++
-			}
+		revokeOnce(providerToken.AccessToken, "access")
+		if revokeOnce(providerToken.RefreshToken, "refresh") {
+			// The refresh credential just revoked upstream IS the shared
+			// entry's single-use provider credential — the entry is now dead.
+			sharedEntryDead = true
 		}
+	}
 
-		if providerToken.RefreshToken != "" {
-			totalTokensToRevoke++
-			if err := s.revokeTokenWithRetry(ctx, providerToken.RefreshToken, "refresh", userID, clientID); err != nil {
-				failedAtProvider++
-			} else {
-				revokedAtProvider++
-			}
+	// Delete the dead shared entry directly by the userID these tokens were
+	// fetched for (GetTokensByUserClient): in the unified layout every one of
+	// them resolves to that user's ONE shared entry, so no per-token ref
+	// lookup — whose failure could silently leave the dead entry alive — is
+	// needed. Gated on upstream success: if the provider revocation failed,
+	// the credential may still be alive and the user's other clients can keep
+	// using it.
+	if unified && sharedEntryDead {
+		if err := upts.DeleteUserProviderToken(ctx, userID); err != nil {
+			s.Logger.Warn("Failed to delete dead shared provider entry after upstream revocation",
+				"user_id", userID, "client_id", clientID, "error", err)
+		} else {
+			s.Logger.Debug("Deleted dead shared provider entry after upstream refresh token revocation",
+				"user_id", userID, "client_id", clientID)
 		}
 	}
 

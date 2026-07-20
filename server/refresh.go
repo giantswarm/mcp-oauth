@@ -66,8 +66,67 @@ func (s *Server) handleRefreshTokenReuseDetection(ctx context.Context, refreshTo
 	return errInvalidGrant
 }
 
+// handleSharedProviderTokenError classifies a failure to read the user's
+// shared provider entry (unified layout) for a refresh token that was just
+// proven valid by GetRefreshTokenInfo.
+//
+// A missing or expired shared entry is NOT refresh-token reuse: the refresh
+// token record itself is present and unconsumed, so routing this through
+// handleRefreshTokenError would trip reuse detection against a live family
+// and revoke every session of the user (RevokeRefreshTokenFamily +
+// RevokeAllTokensForUserClient + critical theft audit) over a benign storage
+// miss — an evicted providertoken:<user> key, TTL collapse, or a deploy
+// without a token flush; the exact false positive giantswarm/giantswarm#37164
+// is about. The reuse-nuke path also deletes the shared entry deliberately,
+// so a nuked user's surviving sessions land here by design. The user simply
+// has to log in again: return invalid_grant with a non-theft audit trail.
+//
+// The presented refresh token is deliberately NOT consumed here: "record
+// deleted + family alive and non-revoked" is exactly the fresh-reuse
+// signature, so consuming it would send a client that retries the same token
+// after the invalid_grant straight into handleRefreshTokenReuseDetection —
+// family revoke + RevokeAllTokensForUserClient + critical theft audit —
+// recreating the false-alarm class this path exists to remove. Left
+// un-consumed, a retry idempotently re-enters this same benign invalid_grant
+// path (one cheap extra read), and a single re-login repairs all of the
+// user's sessions.
+//
+// Any other error is a transient storage failure and surfaces as a server
+// error, NOT invalid_grant: the grant is still valid and the client should
+// retry, not re-login. The refresh token is left untouched in that case too.
+func (s *Server) handleSharedProviderTokenError(ctx context.Context, err error, refreshToken, userID, clientID string) error {
+	if !storage.IsNotFoundError(err) && !storage.IsExpiredError(err) {
+		s.Logger.Warn("Transient error reading shared provider token during refresh",
+			"error", err.Error(), "user_id", userID, "client_id", clientID,
+			"token_suffix", helpers.TokenSuffix(refreshToken, 8))
+		return fmt.Errorf("read shared provider token: %w", err)
+	}
+
+	s.Logger.Warn("Shared provider token missing for valid refresh token - re-login required",
+		"user_id", userID, "client_id", clientID, "reason", err.Error(),
+		"token_suffix", helpers.TokenSuffix(refreshToken, 8))
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type: security.EventAuthFailure, UserID: userID, ClientID: clientID,
+		Details: map[string]any{
+			"severity": "warning",
+			"reason":   "shared_provider_token_missing",
+			"action":   "re_login_required",
+		},
+	})
+	s.Auditor.LogAuthFailure(ctx, userID, clientID, "", "shared_provider_token_missing")
+
+	return errInvalidGrant
+}
+
 // handleRefreshTokenError handles errors from refresh token validation
-// Returns error suitable for returning to client
+// Returns error suitable for returning to client: invalid_grant for
+// not-found/expired tokens (after reuse detection where supported), or a
+// retryable server error for transient storage failures — the token's state
+// is unknown, so the client must be able to retry rather than re-login.
+// Both call sites tolerate the transient mapping: the resolve-front check
+// runs before the token is consumed (retry re-validates the intact token),
+// and the post-refresh consume leaves the token unconsumed on a transient
+// failure (retry re-presents it and adopts the already-rotated shared entry).
 func (s *Server) handleRefreshTokenError(ctx context.Context, err error, refreshToken, clientID string, familyStore storage.RefreshTokenFamilyStore, supportsFamilies bool) error {
 	isNotFoundOrExpired := storage.IsNotFoundError(err) || storage.IsExpiredError(err)
 
@@ -78,7 +137,10 @@ func (s *Server) handleRefreshTokenError(ctx context.Context, err error, refresh
 		}
 	}
 
-	// Handle transient errors differently
+	// Transient storage failure: surface as a retryable server error, not
+	// invalid_grant — the token was not proven invalid, so the client must
+	// not be pushed into re-login (consistent with the transient taxonomy of
+	// the shared-entry and metadata reads on this path).
 	if !isNotFoundOrExpired {
 		s.Logger.Warn("Transient error during refresh token validation",
 			"error", err.Error(), "client_id", clientID, "token_suffix", helpers.TokenSuffix(refreshToken, 8))
@@ -86,7 +148,7 @@ func (s *Server) handleRefreshTokenError(ctx context.Context, err error, refresh
 			Type: security.EventAuthFailure, ClientID: clientID,
 			Details: map[string]any{"reason": "transient_storage_error"},
 		})
-		return errInvalidGrant
+		return fmt.Errorf("validate refresh token: %w", err)
 	}
 
 	// Regular invalid token error
@@ -146,6 +208,135 @@ func (s *Server) rotateRefreshToken(ctx context.Context, oldRefreshToken, userID
 	return newRefreshToken, familyID, true
 }
 
+// consumeRefreshToken atomically consumes the refresh token and returns its
+// (userID, clientID) binding. Legacy layout: the provider-token copy stored
+// under the refresh-token key is returned alongside. Unified layout: no copy
+// exists — the returned token is nil and providerTokenForRefresh resolves the
+// shared entry AFTER client binding validation.
+func (s *Server) consumeRefreshToken(ctx context.Context, refreshToken string) (userID, clientID string, providerToken *oauth2.Token, err error) {
+	if upts, unified := s.userProviderTokenStore(); unified {
+		userID, clientID, err = upts.AtomicConsumeRefreshToken(ctx, refreshToken)
+		return userID, clientID, nil, err
+	}
+	return s.tokenStore.AtomicGetAndDeleteRefreshToken(ctx, refreshToken)
+}
+
+// providerTokenForRefresh returns the provider token to refresh against the
+// upstream IdP: the user's shared entry in the unified layout, or the copy
+// consumed together with the refresh token in the legacy layout.
+func (s *Server) providerTokenForRefresh(ctx context.Context, userID string, consumedToken *oauth2.Token) (*oauth2.Token, error) {
+	if upts, unified := s.userProviderTokenStore(); unified {
+		return upts.GetUserProviderToken(ctx, userID)
+	}
+	return consumedToken, nil
+}
+
+// refreshProviderTokenForGrant refreshes the upstream provider token for a
+// refresh-token grant. Unified layout: route through the per-user single-flight
+// coordinator, which persists the rotated token to the shared entry under the
+// lock. Legacy layout: a direct, uncoordinated provider refresh against the
+// copy consumed alongside the refresh token.
+func (s *Server) refreshProviderTokenForGrant(ctx context.Context, userID string, observed *oauth2.Token) (*oauth2.Token, error) {
+	if _, unified := s.userProviderTokenStore(); unified {
+		return s.refreshUserProviderToken(ctx, userID, observed)
+	}
+	if observed == nil {
+		return nil, fmt.Errorf("no provider token available to refresh")
+	}
+	newToken, err := s.provider.RefreshToken(ctx, observed.RefreshToken)
+	if err != nil {
+		return nil, err
+	}
+	// RFC 6749 §5.1: the provider may omit the refresh token in the refresh
+	// response, in which case the previous one remains valid and must be
+	// carried forward.
+	return preserveRefreshToken(newToken, observed.RefreshToken), nil
+}
+
+// storeRefreshedProviderToken points the freshly issued tokens at the user's
+// provider token after a refresh grant. Unified layout: the shared per-user
+// entry was already persisted under the refresh lock by the coordinator, so
+// this only records the new access/refresh token references — re-saving the
+// shared entry here (outside the lock) could clobber a newer token a sibling
+// session just rotated in. Legacy layout: private copies under the new
+// access/refresh token keys.
+func (s *Server) storeRefreshedProviderToken(ctx context.Context, userID, newAccessToken, newRefreshToken string, newProviderToken *oauth2.Token, refreshExpiry time.Time) {
+	if upts, unified := s.userProviderTokenStore(); unified {
+		if err := upts.SaveProviderTokenRef(ctx, newAccessToken, userID, refreshExpiry); err != nil {
+			s.Logger.Warn("Failed to save access token provider reference", "error", err)
+		}
+		if err := upts.SaveProviderTokenRef(ctx, newRefreshToken, userID, refreshExpiry); err != nil {
+			s.Logger.Warn("Failed to save refresh token provider reference", "error", err)
+		}
+		return
+	}
+	if err := s.tokenStore.SaveToken(ctx, newAccessToken, newProviderToken); err != nil {
+		s.Logger.Warn("Failed to save new access token", "error", err)
+	}
+	if err := s.tokenStore.SaveToken(ctx, newRefreshToken, newProviderToken); err != nil {
+		s.Logger.Warn("Failed to save new refresh token", "error", err)
+	}
+}
+
+// resolveRefreshGrant validates a refresh-token grant and returns the user it is
+// bound to and the provider token to refresh against, reporting whether the
+// backend uses the unified per-user provider-token layout.
+//
+// L2 no-orphan (giantswarm/mcp-oauth#515): in the unified layout the mcp refresh
+// token is NOT deleted here. Its binding is resolved with a non-destructive
+// existence + expiry check (GetRefreshTokenInfo) that keeps the same
+// not-found/expired semantics the atomic consume had — a rotated-away token
+// (record gone, family metadata retained) still feeds reuse detection — and the
+// caller atomically consumes it only after the provider refresh succeeds. In the
+// legacy layout the provider-token copy can only be read by consuming the token,
+// so the atomic delete stays up front (pre-unification behavior; no shared entry
+// to protect).
+//
+// Client binding (OAuth 2.1 §6) is validated before the shared provider entry is
+// read, so a token presented by the wrong client never reads it, acquires the
+// refresh lock, or triggers an upstream call. metaClientID is the stored client
+// binding read non-destructively from the token metadata — the same value the
+// atomic consume returns.
+func (s *Server) resolveRefreshGrant(ctx context.Context, refreshToken, clientID, metaClientID string, familyStore storage.RefreshTokenFamilyStore, supportsFamilies bool) (userID string, providerToken *oauth2.Token, unified bool, err error) {
+	_, unified = s.userProviderTokenStore()
+
+	var storedClientID string
+	if unified {
+		userID, err = s.tokenStore.GetRefreshTokenInfo(ctx, refreshToken)
+		if err != nil {
+			return "", nil, unified, s.handleRefreshTokenError(ctx, err, refreshToken, clientID, familyStore, supportsFamilies)
+		}
+		storedClientID = metaClientID
+	} else {
+		userID, storedClientID, providerToken, err = s.consumeRefreshToken(ctx, refreshToken)
+		if err != nil {
+			return "", nil, unified, s.handleRefreshTokenError(ctx, err, refreshToken, clientID, familyStore, supportsFamilies)
+		}
+	}
+
+	// OAUTH 2.1 SECURITY: Validate client binding (Section 6) BEFORE any provider
+	// refresh or lock acquisition. The refresh token MUST only be accepted by the
+	// client it was issued to.
+	if err = s.validateRefreshTokenClientBinding(ctx, storedClientID, clientID, userID); err != nil {
+		return "", nil, unified, err
+	}
+
+	if unified {
+		// Resolved only after client binding passed, so a stolen token from the
+		// wrong client never reads the user's shared provider entry.
+		//
+		// NOT routed through handleRefreshTokenError: the refresh token was
+		// just proven valid, so a missing shared entry is a benign storage
+		// miss (re-login), never reuse — see handleSharedProviderTokenError.
+		providerToken, err = s.providerTokenForRefresh(ctx, userID, nil)
+		if err != nil {
+			return "", nil, unified, s.handleSharedProviderTokenError(ctx, err, refreshToken, userID, clientID)
+		}
+	}
+
+	return userID, providerToken, unified, nil
+}
+
 // RefreshAccessToken refreshes an access token using a refresh token with OAuth 2.1 rotation
 // Returns oauth2.Token directly
 // Implements OAuth 2.1 refresh token reuse detection for enhanced security
@@ -154,38 +345,79 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	// Check if storage supports token family tracking (OAuth 2.1 reuse detection)
 	familyStore, supportsFamilies := s.tokenStore.(storage.RefreshTokenFamilyStore)
 
-	// Capture scopes and audience from old token metadata before the atomic
-	// delete removes it. Best-effort: if there's a race, the atomic operation
-	// below will fail and these values won't be used.
+	// Capture scopes, audience, JKT, and the stored client binding from the old
+	// token metadata. In the unified layout metaClientID supplies the client ID
+	// for the pre-refresh binding check WITHOUT consuming the refresh token, so
+	// the token can be rotated only after the provider refresh succeeds (L2
+	// no-orphan). It is the same value the atomic consume would return — both
+	// read the token's ClientID from its metadata.
 	var oldScopes []string
 	var oldAudience string
 	var oldJKT string
+	var metaClientID string
 	if metaGetter, ok := s.tokenStore.(storage.TokenMetadataGetter); ok {
-		if oldMeta, err := metaGetter.GetTokenMetadata(refreshToken); err == nil && oldMeta != nil {
+		oldMeta, metaErr := metaGetter.GetTokenMetadata(refreshToken)
+		switch {
+		case metaErr == nil && oldMeta != nil:
 			oldScopes = oldMeta.Scopes
 			oldAudience = oldMeta.Audience
 			oldJKT = oldMeta.JKT
+			metaClientID = oldMeta.ClientID
+		// storage.ErrTokenNotFound means the metadata record is genuinely
+		// absent (legacy unbound token → invalid_grant below); anything else
+		// is a transient storage failure and must stay retryable. Absence
+		// signaled as (nil, nil) falls through to the same legacy handling.
+		case metaErr != nil && !storage.IsNotFoundError(metaErr):
+			// Transient storage failure. The stored client binding is a
+			// prerequisite for the grant, not optional enrichment: leaving
+			// metaClientID empty would misclassify a validly-bound token as a
+			// legacy unbound token downstream (invalid_grant + a high-severity
+			// cross_client_token_theft_prevented audit event). Surface a
+			// server error instead — the refresh token has not been consumed,
+			// so the client's retry succeeds once storage recovers. The old
+			// legacy layout had the same retryability: it read ClientID
+			// atomically inside the consume, which failed transiently as a
+			// whole.
+			s.Logger.Warn("Transient error reading refresh token metadata",
+				"error", metaErr.Error(), "client_id", clientID,
+				"token_suffix", helpers.TokenSuffix(refreshToken, 8))
+			return nil, fmt.Errorf("read refresh token metadata: %w", metaErr)
 		}
+		// Metadata genuinely absent: metaClientID stays "" and the grant is
+		// classified as a legacy unbound token by client binding validation.
 	}
 
-	// OAUTH 2.1 SECURITY: Atomically get and delete refresh token FIRST
-	// Returns clientID for client binding validation
-	userID, storedClientID, providerToken, err := s.tokenStore.AtomicGetAndDeleteRefreshToken(ctx, refreshToken)
+	// Resolve the grant's user binding and the provider token to refresh
+	// against. In the unified layout this does NOT delete the mcp refresh token
+	// (L2 no-orphan): the token is atomically consumed only after the provider
+	// token is confirmed fresh, so a transient provider failure leaves an
+	// otherwise-valid session intact. Client binding is validated inside, before
+	// any provider read or refresh.
+	userID, providerToken, unified, err := s.resolveRefreshGrant(ctx, refreshToken, clientID, metaClientID, familyStore, supportsFamilies)
 	if err != nil {
-		return nil, s.handleRefreshTokenError(ctx, err, refreshToken, clientID, familyStore, supportsFamilies)
-	}
-
-	// OAUTH 2.1 SECURITY: Validate client binding (Section 6)
-	// The refresh token MUST only be accepted by the client it was issued to
-	if err := s.validateRefreshTokenClientBinding(ctx, storedClientID, clientID, userID); err != nil {
 		return nil, err
 	}
 
-	// Refresh token with provider
-	newProviderToken, err := s.provider.RefreshToken(ctx, providerToken.RefreshToken)
+	// Refresh the upstream provider token through the per-user single-flight
+	// coordinator (unified layout): at most one of the user's concurrent
+	// sessions talks to the provider per rotation window, and the rest adopt
+	// the freshly-written shared entry without ever calling it.
+	newProviderToken, err := s.refreshProviderTokenForGrant(ctx, userID, providerToken)
 	if err != nil {
 		s.logAuthFailure(ctx, userID, clientID, fmt.Sprintf("provider_refresh_failed: %v", err))
 		return nil, fmt.Errorf("failed to refresh token with provider: %w", err)
+	}
+
+	// L2 NO-ORPHAN: rotate the mcp refresh token only AFTER the provider token is
+	// confirmed fresh. Every early return above left the session's refresh token
+	// intact, so a transient provider hiccup no longer orphans a valid session —
+	// the client's retry succeeds instead of tripping reuse detection. The atomic
+	// consume remains the concurrency gate: a genuinely reused or concurrently
+	// double-submitted token loses it and feeds reuse detection exactly as before.
+	if unified {
+		if _, _, _, consumeErr := s.consumeRefreshToken(ctx, refreshToken); consumeErr != nil {
+			return nil, s.handleRefreshTokenError(ctx, consumeErr, refreshToken, clientID, familyStore, supportsFamilies)
+		}
 	}
 
 	now := time.Now()
@@ -232,15 +464,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		})
 	}
 
-	// Store new access token -> provider token mapping
-	if err := s.tokenStore.SaveToken(ctx, newAccessToken, newProviderToken); err != nil {
-		s.Logger.Warn("Failed to save new access token", "error", err)
-	}
-
-	// Store new refresh token -> provider token mapping
-	if err := s.tokenStore.SaveToken(ctx, newRefreshToken, newProviderToken); err != nil {
-		s.Logger.Warn("Failed to save new refresh token", "error", err)
-	}
+	s.storeRefreshedProviderToken(ctx, userID, newAccessToken, newRefreshToken, newProviderToken, refreshExpiry)
 
 	// Track AT -> RT pairing for refresh-time updates
 	s.registerTokenPair(newAccessToken, newRefreshToken)

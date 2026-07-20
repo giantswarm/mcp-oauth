@@ -89,6 +89,44 @@ func TestStore_GetToken_NotFound(t *testing.T) {
 	}
 }
 
+// TestStore_GetToken_ResolvesProviderTokenRef verifies the unified-layout read
+// path: when the provider token is stored as a shared per-user entry plus a
+// tokenID→userID reference (UserProviderTokenStore) rather than copied under
+// the issued-token key, GetToken(tokenID) resolves the reference and returns
+// the shared entry. This is the read side of the rotation-race storage-layout
+// change (giantswarm/giantswarm#37164) that muster relies on to forward the
+// upstream provider token for SSO; without it GetToken(accessToken) missed.
+func TestStore_GetToken_ResolvesProviderTokenRef(t *testing.T) {
+	ctx := context.Background()
+	store := New()
+	defer store.Stop()
+
+	const userID = "user-abc"
+	const accessToken = "issued-access-token-xyz"
+	provTok := &oauth2.Token{
+		AccessToken:  "provider-access-token",
+		RefreshToken: "provider-refresh-token",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(time.Hour),
+	}
+
+	// Unified layout: one shared per-user entry + a reference from the issued
+	// access token to the user (no copy under the access-token key).
+	require.NoError(t, store.SaveUserProviderToken(ctx, userID, provTok))
+	require.NoError(t, store.SaveProviderTokenRef(ctx, accessToken, userID, provTok.Expiry))
+
+	// GetToken keyed by the issued access token must resolve via the reference.
+	got, err := store.GetToken(ctx, accessToken)
+	require.NoError(t, err)
+	require.Equal(t, provTok.AccessToken, got.AccessToken)
+	require.Equal(t, provTok.RefreshToken, got.RefreshToken)
+
+	// A key that is neither a direct token nor a provider-token reference
+	// still returns ErrTokenNotFound.
+	_, err = store.GetToken(ctx, "no-such-key")
+	require.ErrorIs(t, err, storage.ErrTokenNotFound)
+}
+
 func TestStore_GetToken_Expired(t *testing.T) {
 	ctx := context.Background()
 	store := New()
