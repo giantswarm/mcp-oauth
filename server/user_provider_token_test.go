@@ -86,9 +86,30 @@ func TestUnifiedStore_NoPerTokenCopies(t *testing.T) {
 		t.Fatalf("provider token ref user = %q, want %q", userID, "mock-user-123")
 	}
 
-	// … and holds NO private provider-token copy under its own key.
-	if _, err := store.GetToken(ctx, rt); err == nil {
-		t.Fatal("refresh-token key holds a provider-token copy; want reference-only (unified layout)")
+	// … and holds NO private provider-token copy under its own key: reading
+	// through the refresh-token key must resolve the shared entry, not a frozen
+	// copy. Overwrite the shared entry and confirm GetToken(rt) reflects the
+	// change — a direct per-token copy would shadow the reference and mask the
+	// write, since GetToken short-circuits on a direct-key hit before it ever
+	// resolves the reference. (Before the unified layout GetToken(rt) simply
+	// missed; now it intentionally resolves the ref for provider-token
+	// forwarding, so a plain miss is no longer the right invariant.)
+	const sentinelAT = "shared-entry-sentinel-at" // #nosec G101 -- test sentinel, not a credential
+	if err := store.SaveUserProviderToken(ctx, userID, &oauth2.Token{
+		AccessToken:  sentinelAT,
+		RefreshToken: "shared-entry-sentinel-rt",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveUserProviderToken() error = %v", err)
+	}
+	got, err := store.GetToken(ctx, rt)
+	if err != nil {
+		t.Fatalf("GetToken(refresh token) error = %v; the unified layout must resolve the reference", err)
+	}
+	if got.AccessToken != sentinelAT {
+		t.Fatalf("GetToken(refresh token) AccessToken = %q, want %q; a private per-token copy is shadowing the shared entry (not reference-only)",
+			got.AccessToken, sentinelAT)
 	}
 }
 
