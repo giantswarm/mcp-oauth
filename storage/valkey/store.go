@@ -730,7 +730,8 @@ return cjson.encode({user_id = userID, client_id = clientID, token = cjson.decod
 // ARGV[1] = member (token ID)
 // ARGV[2] = member horizon in whole seconds, or 0 when unknown/expired
 // ARGV[3] = fallback bound in whole seconds (always >= 1), used only to
-//           initialize the TTL when the horizon is unknown and the set has none
+//
+//	initialize the TTL when the horizon is unknown and the set has none
 //
 // TTL(KEYS[1]) returns -2 (missing — impossible right after SADD), -1 (present,
 // no expiry) or >= 0 (seconds remaining). The rules yield TTL = max(existing,
