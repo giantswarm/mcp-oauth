@@ -4,10 +4,26 @@
 package helpers
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"net/url"
 	"strings"
 )
+
+// HashForLogging returns a short, stable SHA256-derived token (first 16 hex
+// chars) of a sensitive value so it can be correlated across log lines without
+// being logged in clear text. Returns "<empty>" for an empty input.
+//
+// Use this for identity values that are safe to correlate but not to expose
+// verbatim (e.g. user subjects), rather than logging the raw value.
+func HashForLogging(sensitive string) string {
+	if sensitive == "" {
+		return "<empty>"
+	}
+	hash := sha256.Sum256([]byte(sensitive))
+	return hex.EncodeToString(hash[:])[:16]
+}
 
 // TokenSuffix returns the last maxLen characters of a string for use in log messages.
 // Unlike SafeTruncate (which returns a prefix), this is useful for JWT tokens where the
@@ -221,10 +237,9 @@ func PathMatchesPrefix(resourcePath, prefix string) bool {
 	}
 
 	// Prefix match with path boundary
-	if strings.HasPrefix(resourcePath, prefix) {
+	if remaining, ok := strings.CutPrefix(resourcePath, prefix); ok {
 		// Ensure we're matching at a path boundary
 		// /mcp/files should match /mcp but not /mc
-		remaining := strings.TrimPrefix(resourcePath, prefix)
 		return len(remaining) > 0 && remaining[0] == '/'
 	}
 

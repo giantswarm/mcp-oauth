@@ -581,23 +581,23 @@ func TestServer_HandleProviderCallback_EmailLookup(t *testing.T) {
 		t.Fatalf("HandleProviderCallback() error = %v", err)
 	}
 
-	// TEST: Verify token can be retrieved by subject claim (ID)
-	tokenByID, err := store.GetToken(ctx, dexStyleSubjectClaim)
+	// TEST: Verify the shared provider entry is stored under the subject claim (ID)
+	tokenByID, err := store.GetUserProviderToken(ctx, dexStyleSubjectClaim)
 	if err != nil {
-		t.Errorf("GetToken by ID failed: %v", err)
+		t.Errorf("GetUserProviderToken by ID failed: %v", err)
 	}
 	if tokenByID == nil {
 		t.Error("Token not found by ID (subject claim)")
 	}
 
-	// TEST: Verify token can ALSO be retrieved by email
-	// This is the bug fix - previously tokens were only saved by email if email != ID
-	tokenByEmail, err := store.GetToken(ctx, testEmail)
-	if err != nil {
-		t.Errorf("GetToken by email failed: %v", err)
-	}
-	if tokenByEmail == nil {
-		t.Error("Token not found by email - this is the bug we're fixing (issue #154)")
+	// TEST: Verify the token is still reachable via email (issue #154): in the
+	// unified layout email resolves to the user's ID through UserInfo, which
+	// resolves to the ONE shared entry — no email-keyed copy is kept that
+	// refresh write-backs would miss.
+	if infoForEmail, err := store.GetUserInfo(ctx, testEmail); err != nil {
+		t.Errorf("GetUserInfo by email failed: %v", err)
+	} else if tokenViaEmail, err := store.GetUserProviderToken(ctx, infoForEmail.ID); err != nil || tokenViaEmail == nil {
+		t.Errorf("Token not reachable via email → UserInfo → ID (issue #154): %v", err)
 	}
 
 	// TEST: Verify user info can also be retrieved by email
@@ -726,42 +726,40 @@ func TestServer_HandleProviderCallback_ShortLivedToken(t *testing.T) {
 		t.Fatalf("HandleProviderCallback() error = %v", err)
 	}
 
-	// TEST: Verify token can be retrieved by email (despite original being expired)
-	tokenByEmail, err := store.GetToken(ctx, testEmail)
+	// TEST: The shared provider entry stays retrievable despite the provider
+	// access token being already expired — its refresh token keeps it alive
+	// (issue #193's concern, solved structurally in the unified layout).
+	tokenByID, err := store.GetUserProviderToken(ctx, testUserID)
 	if err != nil {
-		t.Errorf("GetToken by email failed: %v - token should be saved with extended expiry", err)
-	}
-	if tokenByEmail == nil {
-		t.Fatal("Token not found by email - fix for issue #193 not working")
+		t.Fatalf("GetUserProviderToken failed: %v - entry must be retrievable while its refresh token can renew it", err)
 	}
 
-	// Verify the token has extended expiry (should be in the future)
-	if tokenByEmail.Expiry.Before(time.Now()) {
-		t.Errorf("Token expiry should be in the future after extension, got %v", tokenByEmail.Expiry)
+	// The entry carries the provider's REAL expiry (no inflation): refresh
+	// coordination judges freshness on it.
+	if !tokenByID.Expiry.Equal(expiredExpiry) {
+		t.Errorf("Token expiry = %v, want the provider's real expiry %v (no storage-TTL inflation)", tokenByID.Expiry, expiredExpiry)
 	}
 
 	// Verify the refresh token is preserved
-	if tokenByEmail.RefreshToken != "valid-refresh-token" {
-		t.Errorf("RefreshToken not preserved, got %q", tokenByEmail.RefreshToken)
+	if tokenByID.RefreshToken != "valid-refresh-token" {
+		t.Errorf("RefreshToken not preserved, got %q", tokenByID.RefreshToken)
 	}
 
 	// Verify id_token is preserved in extras
-	idToken := tokenByEmail.Extra("id_token")
+	idToken := tokenByID.Extra("id_token")
 	if idToken == nil {
 		t.Error("id_token should be preserved in token extras for SSO forwarding")
 	}
 
-	// TEST: Verify token can also be retrieved by ID
-	tokenByID, err := store.GetToken(ctx, testUserID)
-	if err != nil {
-		t.Errorf("GetToken by ID failed: %v", err)
-	}
-	if tokenByID == nil {
-		t.Error("Token not found by ID")
+	// TEST: Verify the token is reachable via email → UserInfo → ID
+	if infoForEmail, err := store.GetUserInfo(ctx, testEmail); err != nil {
+		t.Errorf("GetUserInfo by email failed: %v", err)
+	} else if tokenViaEmail, err := store.GetUserProviderToken(ctx, infoForEmail.ID); err != nil || tokenViaEmail == nil {
+		t.Errorf("Token not reachable via email → UserInfo → ID: %v", err)
 	}
 
-	t.Logf("SUCCESS: Short-lived token saved with extended expiry. Original: %v, Extended: %v",
-		expiredExpiry, tokenByEmail.Expiry)
+	t.Logf("SUCCESS: Short-lived token retrievable via its refresh token. Real expiry preserved: %v",
+		tokenByID.Expiry)
 }
 
 // TestServer_ExtendTokenExpiryForStorage tests the extendTokenExpiryForStorage helper function.
@@ -1954,8 +1952,9 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 	accessToken1 := token1.AccessToken
 	refreshToken1 := token1.RefreshToken
 
-	// Verify tokens are stored
-	if _, err := store.GetToken(ctx, accessToken1); err != nil {
+	// Verify tokens are stored (the access token references the user's
+	// shared provider entry in the unified layout)
+	if _, err := store.GetProviderTokenRef(ctx, accessToken1); err != nil {
 		t.Errorf("Access token not found in storage after first exchange")
 	}
 	if _, err := store.GetRefreshTokenInfo(ctx, refreshToken1); err != nil {
@@ -2003,7 +2002,7 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 	}
 
 	// Verify access token was deleted
-	if _, err := store.GetToken(ctx, accessToken1); err == nil {
+	if _, err := store.GetProviderTokenRef(ctx, accessToken1); err == nil {
 		t.Error("Access token should have been revoked")
 	}
 
@@ -3790,6 +3789,10 @@ func TestHandleProviderCallback_EmptyState(t *testing.T) {
 	_ = provider // Use provider to satisfy compiler
 }
 
+// genTokensTestUserID is the user the generateAndStoreTokens expiry tests
+// issue tokens for.
+const genTokensTestUserID = "test-user"
+
 // TestServer_GenerateAndStoreTokens_ExpiryCap tests that the generated token's expiry
 // is capped to the provider token's expiry when the provider token expires sooner.
 func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
@@ -3803,7 +3806,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 		authCode := &storage.AuthorizationCode{
 			Code:     "test-code",
 			ClientID: "test-client",
-			UserID:   "test-user",
+			UserID:   genTokensTestUserID,
 			Scope:    "openid",
 			ProviderToken: &oauth2.Token{
 				AccessToken:  "provider-access",
@@ -3824,13 +3827,13 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 				tokenResponse.Expiry, providerExpiry, timeDiff)
 		}
 
-		// Verify token was stored
-		storedToken, err := store.GetToken(ctx, tokenResponse.AccessToken)
+		// Verify the token references the user's shared provider entry
+		refUser, err := store.GetProviderTokenRef(ctx, tokenResponse.AccessToken)
 		if err != nil {
-			t.Fatalf("GetToken() error = %v", err)
+			t.Fatalf("GetProviderTokenRef() error = %v", err)
 		}
-		if storedToken == nil {
-			t.Fatal("Expected stored token, got nil")
+		if refUser != genTokensTestUserID {
+			t.Fatalf("provider token ref user = %q, want %q", refUser, genTokensTestUserID)
 		}
 	})
 
@@ -3841,7 +3844,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 		authCode := &storage.AuthorizationCode{
 			Code:     "test-code-2",
 			ClientID: "test-client",
-			UserID:   "test-user",
+			UserID:   genTokensTestUserID,
 			Scope:    "openid",
 			ProviderToken: &oauth2.Token{
 				AccessToken:  "provider-access",
@@ -3863,13 +3866,13 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 				tokenResponse.Expiry, expectedExpiry, timeDiff)
 		}
 
-		// Verify token was stored
-		storedToken, err := store.GetToken(ctx, tokenResponse.AccessToken)
+		// Verify the token references the user's shared provider entry
+		refUser, err := store.GetProviderTokenRef(ctx, tokenResponse.AccessToken)
 		if err != nil {
-			t.Fatalf("GetToken() error = %v", err)
+			t.Fatalf("GetProviderTokenRef() error = %v", err)
 		}
-		if storedToken == nil {
-			t.Fatal("Expected stored token, got nil")
+		if refUser != genTokensTestUserID {
+			t.Fatalf("provider token ref user = %q, want %q", refUser, genTokensTestUserID)
 		}
 	})
 
@@ -3880,7 +3883,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 		authCode := &storage.AuthorizationCode{
 			Code:     "test-code-3",
 			ClientID: "test-client",
-			UserID:   "test-user",
+			UserID:   genTokensTestUserID,
 			Scope:    "openid",
 			ProviderToken: &oauth2.Token{
 				AccessToken:  "provider-access",
@@ -3909,7 +3912,7 @@ func TestServer_GenerateAndStoreTokens_ExpiryCap(t *testing.T) {
 		authCode := &storage.AuthorizationCode{
 			Code:          "test-code-4",
 			ClientID:      "test-client",
-			UserID:        "test-user",
+			UserID:        genTokensTestUserID,
 			Scope:         "openid",
 			ProviderToken: nil,
 		}
@@ -3938,7 +3941,7 @@ func TestServer_GenerateAndStoreTokens_PastExpiryIgnored(t *testing.T) {
 	authCode := &storage.AuthorizationCode{
 		Code:     "test-code-past",
 		ClientID: "test-client",
-		UserID:   "test-user",
+		UserID:   genTokensTestUserID,
 		Scope:    "openid",
 		ProviderToken: &oauth2.Token{
 			AccessToken:  "provider-access",
@@ -4207,4 +4210,211 @@ func TestServer_SessionCreationHandler_NotCalledWithoutHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExchangeAuthorizationCode() should succeed without handler, got error = %v", err)
 	}
+}
+
+// TestSaveUserInfoAndToken_RTLessLoginPreservesSharedRefreshToken covers the
+// merge half of the shared-entry write discipline: an interactive login whose
+// provider token carries no refresh token (client without offline_access,
+// silent re-auth where the provider omits it) must NOT clobber the refresh
+// token every one of the user's existing sessions depends on. The retained
+// refresh token is also what keeps the Valkey TTL derivation on the
+// long-lived refresh-token branch instead of collapsing the entry to the
+// short access-token expiry.
+func TestSaveUserInfoAndToken_RTLessLoginPreservesSharedRefreshToken(t *testing.T) {
+	ctx := context.Background()
+	srv, store, _ := setupFlowTestServer(t)
+
+	existing := &oauth2.Token{
+		AccessToken:  "old-provider-access",
+		RefreshToken: "long-lived-rt",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(-time.Minute), // stale AT, renewable via RT
+	}
+	require.NoError(t, store.SaveUserProviderToken(ctx, testUserID, existing))
+
+	login := &oauth2.Token{
+		AccessToken: "fresh-provider-access",
+		TokenType:   "Bearer",
+		Expiry:      time.Now().Add(10 * time.Minute),
+		// RefreshToken deliberately empty
+	}
+	require.NoError(t, srv.saveUserInfoAndToken(ctx, testUserInfo(), login))
+
+	saved, err := store.GetUserProviderToken(ctx, testUserID)
+	require.NoError(t, err)
+	require.Equal(t, "long-lived-rt", saved.RefreshToken,
+		"RT-less login must carry the existing shared refresh token forward")
+	require.Equal(t, "fresh-provider-access", saved.AccessToken,
+		"the login's fresh access token must still replace the stale one")
+	require.WithinDuration(t, login.Expiry, saved.Expiry, time.Second,
+		"the entry must carry the login token's real expiry")
+
+	// The per-user provider-refresh lock must have been released on the way
+	// out: a follow-up acquire succeeds immediately.
+	lockValue, acquired, err := store.AcquireProviderRefreshLock(ctx, testUserID, time.Minute)
+	require.NoError(t, err)
+	require.True(t, acquired, "login save must release the provider refresh lock on all paths")
+	require.NoError(t, store.ReleaseProviderRefreshLock(ctx, testUserID, lockValue))
+}
+
+// TestSaveUserInfoAndToken_LoginWithNewRefreshTokenReplacesEntry covers the
+// overwrite half: a login that carries its own refresh token fully replaces
+// the shared entry — the documented "one re-login repairs all sessions"
+// behavior.
+func TestSaveUserInfoAndToken_LoginWithNewRefreshTokenReplacesEntry(t *testing.T) {
+	ctx := context.Background()
+	srv, store, _ := setupFlowTestServer(t)
+
+	existing := &oauth2.Token{
+		AccessToken:  "old-provider-access",
+		RefreshToken: "old-rt",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(-time.Minute),
+	}
+	require.NoError(t, store.SaveUserProviderToken(ctx, testUserID, existing))
+
+	login := &oauth2.Token{
+		AccessToken:  "fresh-provider-access",
+		RefreshToken: "fresh-rt",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(10 * time.Minute),
+	}
+	require.NoError(t, srv.saveUserInfoAndToken(ctx, testUserInfo(), login))
+
+	saved, err := store.GetUserProviderToken(ctx, testUserID)
+	require.NoError(t, err)
+	require.Equal(t, "fresh-rt", saved.RefreshToken,
+		"a login carrying a refresh token must fully overwrite the entry")
+	require.Equal(t, "fresh-provider-access", saved.AccessToken)
+	require.WithinDuration(t, login.Expiry, saved.Expiry, time.Second)
+}
+
+// TestSaveUserInfoAndToken_RTLessLoginWithoutExistingEntrySavesAsIs covers
+// the first-login case: no shared entry exists, so an RT-less login token is
+// saved exactly as the provider issued it.
+func TestSaveUserInfoAndToken_RTLessLoginWithoutExistingEntrySavesAsIs(t *testing.T) {
+	ctx := context.Background()
+	srv, store, _ := setupFlowTestServer(t)
+
+	login := &oauth2.Token{
+		AccessToken: "first-provider-access",
+		TokenType:   "Bearer",
+		Expiry:      time.Now().Add(10 * time.Minute),
+		// RefreshToken deliberately empty
+	}
+	require.NoError(t, srv.saveUserInfoAndToken(ctx, testUserInfo(), login))
+
+	saved, err := store.GetUserProviderToken(ctx, testUserID)
+	require.NoError(t, err)
+	require.Equal(t, "first-provider-access", saved.AccessToken)
+	require.Empty(t, saved.RefreshToken,
+		"no existing entry means there is no refresh token to carry forward")
+	require.WithinDuration(t, login.Expiry, saved.Expiry, time.Second)
+}
+
+// TestSaveUserInfoAndToken_ProceedsWhenRefreshLockHeld pins the lock-fallback
+// policy: an interactive login must never fail or hang because the per-user
+// provider-refresh lock is held elsewhere. The unlocked fallback after the
+// short bounded wait is asymmetric:
+//
+//   - An RT-less login SKIPS the shared-entry write — an unlocked merge could
+//     read the pre-rotation refresh token while the lock holder is mid-flight
+//     at the provider, land after its write-back, and resurrect a refresh
+//     token the provider's single-use rotation already burned.
+//   - An RT-carrying login still writes (harmless last-writer-wins: both
+//     refresh tokens stay live at the provider).
+//
+// In both cases the foreign lock must be left untouched (owner-only release).
+func TestSaveUserInfoAndToken_ProceedsWhenRefreshLockHeld(t *testing.T) {
+	t.Run("RT-less login skips the write, entry unchanged", func(t *testing.T) {
+		ctx := context.Background()
+		srv, store, _ := setupFlowTestServer(t)
+
+		existing := &oauth2.Token{
+			AccessToken:  "old-provider-access",
+			RefreshToken: "long-lived-rt",
+			TokenType:    "Bearer",
+			Expiry:       time.Now().Add(-time.Minute),
+		}
+		require.NoError(t, store.SaveUserProviderToken(ctx, testUserID, existing))
+
+		// Simulate an in-flight coordinated refresh holding the user's lock.
+		foreignLockValue, acquired, err := store.AcquireProviderRefreshLock(ctx, testUserID, time.Minute)
+		require.NoError(t, err)
+		require.True(t, acquired)
+		t.Cleanup(func() {
+			require.NoError(t, store.ReleaseProviderRefreshLock(ctx, testUserID, foreignLockValue))
+		})
+
+		login := &oauth2.Token{
+			AccessToken: "fresh-provider-access",
+			TokenType:   "Bearer",
+			Expiry:      time.Now().Add(10 * time.Minute),
+			// RefreshToken deliberately empty
+		}
+
+		start := time.Now()
+		require.NoError(t, srv.saveUserInfoAndToken(ctx, testUserInfo(), login),
+			"login must succeed even when the refresh lock cannot be acquired")
+		require.Less(t, time.Since(start), providerRefreshWaitTimeout,
+			"login must give up on the lock well before the refresh-wait timeout")
+
+		saved, err := store.GetUserProviderToken(ctx, testUserID)
+		require.NoError(t, err)
+		require.Equal(t, "long-lived-rt", saved.RefreshToken,
+			"an unlocked RT-less login must not touch the shared entry")
+		require.Equal(t, "old-provider-access", saved.AccessToken,
+			"an unlocked RT-less login must skip the write entirely")
+		require.WithinDuration(t, existing.Expiry, saved.Expiry, time.Second,
+			"the entry's expiry must be untouched by the skipped write")
+
+		// The login's fallback path must not have released the foreign
+		// holder's lock: a fresh acquire still fails.
+		_, acquiredAgain, err := store.AcquireProviderRefreshLock(ctx, testUserID, time.Minute)
+		require.NoError(t, err)
+		require.False(t, acquiredAgain, "login fallback must leave a foreign lock in place")
+	})
+
+	t.Run("RT-carrying login writes unlocked after the bounded wait", func(t *testing.T) {
+		ctx := context.Background()
+		srv, store, _ := setupFlowTestServer(t)
+
+		existing := &oauth2.Token{
+			AccessToken:  "old-provider-access",
+			RefreshToken: "old-rt",
+			TokenType:    "Bearer",
+			Expiry:       time.Now().Add(-time.Minute),
+		}
+		require.NoError(t, store.SaveUserProviderToken(ctx, testUserID, existing))
+
+		foreignLockValue, acquired, err := store.AcquireProviderRefreshLock(ctx, testUserID, time.Minute)
+		require.NoError(t, err)
+		require.True(t, acquired)
+		t.Cleanup(func() {
+			require.NoError(t, store.ReleaseProviderRefreshLock(ctx, testUserID, foreignLockValue))
+		})
+
+		login := &oauth2.Token{
+			AccessToken:  "fresh-provider-access",
+			RefreshToken: "fresh-rt",
+			TokenType:    "Bearer",
+			Expiry:       time.Now().Add(10 * time.Minute),
+		}
+
+		start := time.Now()
+		require.NoError(t, srv.saveUserInfoAndToken(ctx, testUserInfo(), login),
+			"login must succeed even when the refresh lock cannot be acquired")
+		require.Less(t, time.Since(start), providerRefreshWaitTimeout,
+			"login must give up on the lock well before the refresh-wait timeout")
+
+		saved, err := store.GetUserProviderToken(ctx, testUserID)
+		require.NoError(t, err)
+		require.Equal(t, "fresh-rt", saved.RefreshToken,
+			"an RT-carrying login must overwrite the entry even without the lock")
+		require.Equal(t, "fresh-provider-access", saved.AccessToken)
+
+		_, acquiredAgain, err := store.AcquireProviderRefreshLock(ctx, testUserID, time.Minute)
+		require.NoError(t, err)
+		require.False(t, acquiredAgain, "login fallback must leave a foreign lock in place")
+	})
 }

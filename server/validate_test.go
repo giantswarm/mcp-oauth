@@ -2,12 +2,14 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/providers"
@@ -78,7 +80,6 @@ func TestServer_ValidateToken(t *testing.T) {
 
 // TestServer_ValidateToken_LocalExpiry tests local token expiry validation before provider check
 func TestServer_ValidateToken_LocalExpiry(t *testing.T) {
-	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Set up provider to always return valid user info
@@ -199,10 +200,7 @@ func TestServer_ValidateToken_LocalExpiry(t *testing.T) {
 					RefreshToken: "provider-refresh-" + tt.accessToken,
 					Expiry:       tt.tokenExpiry,
 				}
-				err := store.SaveToken(ctx, tt.accessToken, token)
-				if err != nil {
-					t.Fatalf("SaveToken() error = %v", err)
-				}
+				seedProviderToken(t, store, tt.accessToken, "upt-"+tt.accessToken, token)
 			}
 
 			// Validate token
@@ -235,7 +233,6 @@ func TestServer_ValidateToken_LocalExpiry(t *testing.T) {
 
 // TestServer_ValidateToken_ClockSkewScenarios tests clock skew handling
 func TestServer_ValidateToken_ClockSkewScenarios(t *testing.T) {
-	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	// Provider always returns valid user info (simulating provider with skewed clock)
@@ -270,13 +267,10 @@ func TestServer_ValidateToken_ClockSkewScenarios(t *testing.T) {
 			RefreshToken: "provider-refresh",
 			Expiry:       time.Now().Add(-10 * time.Minute),
 		}
-		err := store.SaveToken(ctx, accessToken, token)
-		if err != nil {
-			t.Fatalf("SaveToken() error = %v", err)
-		}
+		seedProviderToken(t, store, accessToken, "upt-"+accessToken, token)
 
 		// Try to validate - should fail locally (refresh fails)
-		_, err = srv.ValidateToken(context.Background(), accessToken)
+		_, err := srv.ValidateToken(context.Background(), accessToken)
 		if err == nil {
 			t.Error("ValidateToken() expected error for locally expired token")
 		}
@@ -294,10 +288,7 @@ func TestServer_ValidateToken_ClockSkewScenarios(t *testing.T) {
 			RefreshToken: "provider-refresh-near",
 			Expiry:       time.Now().Add(-3 * time.Second),
 		}
-		err := store.SaveToken(ctx, accessToken, token)
-		if err != nil {
-			t.Fatalf("SaveToken() error = %v", err)
-		}
+		seedProviderToken(t, store, accessToken, "upt-"+accessToken, token)
 
 		// Should succeed (within grace period)
 		userInfo, err := srv.ValidateToken(context.Background(), accessToken)
@@ -442,10 +433,7 @@ func TestServer_ValidateToken_ProactiveRefresh(t *testing.T) {
 				token.RefreshToken = tt.refreshTokenValue
 			}
 
-			err := store.SaveToken(ctx, tt.accessToken, token)
-			if err != nil {
-				t.Fatalf("SaveToken() error = %v", err)
-			}
+			seedProviderToken(t, store, tt.accessToken, "upt-"+tt.accessToken, token)
 
 			// Validate token (should trigger proactive refresh if conditions met)
 			userInfo, err := srv.ValidateToken(context.Background(), tt.accessToken)
@@ -476,9 +464,10 @@ func TestServer_ValidateToken_ProactiveRefresh(t *testing.T) {
 				}
 			}
 
-			// If refresh was called, verify the new token was saved
+			// If refresh was called, verify the new token was written back
+			// to the user's shared provider entry
 			if tt.expectNewToken {
-				savedToken, err := store.GetToken(ctx, tt.accessToken)
+				savedToken, err := store.GetUserProviderToken(ctx, "upt-"+tt.accessToken)
 				if err != nil {
 					t.Errorf("Failed to get saved token: %v", err)
 				} else {
@@ -532,10 +521,7 @@ func TestServer_ValidateToken_ProactiveRefresh_Failure(t *testing.T) {
 		TokenType:    "Bearer",
 	}
 
-	err := store.SaveToken(ctx, accessToken, token)
-	if err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
-	}
+	seedProviderToken(t, store, accessToken, "upt-"+accessToken, token)
 
 	// Validate token - refresh should fail but validation should succeed (graceful fallback)
 	userInfo, err := srv.ValidateToken(context.Background(), accessToken)
@@ -558,7 +544,7 @@ func TestServer_ValidateToken_ProactiveRefresh_Failure(t *testing.T) {
 	}
 
 	// Original token should still be in storage (refresh failed)
-	savedToken, err := store.GetToken(ctx, accessToken)
+	savedToken, err := store.GetUserProviderToken(ctx, "upt-"+accessToken)
 	if err != nil {
 		t.Errorf("Failed to get saved token: %v", err)
 	} else if !savedToken.Expiry.Equal(oldExpiry) {
@@ -569,7 +555,6 @@ func TestServer_ValidateToken_ProactiveRefresh_Failure(t *testing.T) {
 
 // TestServer_ValidateToken_ProactiveRefresh_CustomThreshold tests configurable refresh threshold
 func TestServer_ValidateToken_ProactiveRefresh_CustomThreshold(t *testing.T) {
-	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
 
 	tests := []struct {
@@ -645,13 +630,10 @@ func TestServer_ValidateToken_ProactiveRefresh_CustomThreshold(t *testing.T) {
 				TokenType:    "Bearer",
 			}
 
-			err := store.SaveToken(ctx, accessToken, token)
-			if err != nil {
-				t.Fatalf("SaveToken() error = %v", err)
-			}
+			seedProviderToken(t, store, accessToken, "upt-"+accessToken, token)
 
 			// Validate token
-			_, err = srv.ValidateToken(context.Background(), accessToken)
+			_, err := srv.ValidateToken(context.Background(), accessToken)
 			if err != nil {
 				t.Errorf("ValidateToken() error = %v", err)
 			}
@@ -695,9 +677,7 @@ func TestServer_ValidateToken_RefreshOnExpiry(t *testing.T) {
 			RefreshToken: "provider-refresh-token",
 			Expiry:       time.Now().Add(-10 * time.Minute), // expired
 		}
-		if err := store.SaveToken(ctx, accessToken, token); err != nil {
-			t.Fatalf("SaveToken() error = %v", err)
-		}
+		seedProviderToken(t, store, accessToken, "upt-"+accessToken, token)
 
 		userInfo, err := srv.ValidateToken(ctx, accessToken)
 		if err != nil {
@@ -710,10 +690,10 @@ func TestServer_ValidateToken_RefreshOnExpiry(t *testing.T) {
 			t.Error("Expected provider.RefreshToken to be called")
 		}
 
-		// Verify the refreshed token was stored
-		storedToken, err := store.GetToken(ctx, accessToken)
+		// Verify the refreshed token was written back to the shared entry
+		storedToken, err := store.GetUserProviderToken(ctx, "upt-"+accessToken)
 		if err != nil {
-			t.Fatalf("GetToken() error = %v", err)
+			t.Fatalf("GetUserProviderToken() error = %v", err)
 		}
 		if storedToken.AccessToken != "new-provider-access-token" {
 			t.Errorf("Stored token AccessToken = %q, want %q", storedToken.AccessToken, "new-provider-access-token")
@@ -734,9 +714,7 @@ func TestServer_ValidateToken_RefreshOnExpiry(t *testing.T) {
 			RefreshToken: "provider-refresh-token",
 			Expiry:       time.Now().Add(-10 * time.Minute), // expired
 		}
-		if err := store.SaveToken(ctx, accessToken, token); err != nil {
-			t.Fatalf("SaveToken() error = %v", err)
-		}
+		seedProviderToken(t, store, accessToken, "upt-"+accessToken, token)
 
 		_, err := srv.ValidateToken(ctx, accessToken)
 		if err == nil {
@@ -763,9 +741,7 @@ func TestServer_ValidateToken_RefreshOnExpiry(t *testing.T) {
 			RefreshToken: "provider-refresh-token",
 			Expiry:       time.Now().Add(30 * time.Minute), // not expired
 		}
-		if err := store.SaveToken(ctx, accessToken, token); err != nil {
-			t.Fatalf("SaveToken() error = %v", err)
-		}
+		seedProviderToken(t, store, accessToken, "upt-"+accessToken, token)
 
 		userInfo, err := srv.ValidateToken(ctx, accessToken)
 		if err != nil {
@@ -781,9 +757,11 @@ func TestServer_ValidateToken_RefreshOnExpiry(t *testing.T) {
 }
 
 // TestServer_ValidateToken_RefreshUpdatesRTMapping verifies that when a provider
-// token is refreshed during validation, the refresh-token storage key is also
-// updated with the new provider token. This prevents stale credentials when the
-// client later uses their refresh token.
+// token is refreshed during validation, the rotated credential is visible to a
+// later refresh-token use. In the unified layout both the access and refresh
+// tokens resolve to the user's ONE shared provider entry, so the write-back to
+// that entry is what prevents stale credentials when the client later uses
+// their refresh token.
 func TestServer_ValidateToken_RefreshUpdatesRTMapping(t *testing.T) {
 	ctx := context.Background()
 	srv, store, provider := setupFlowTestServer(t)
@@ -809,12 +787,9 @@ func TestServer_ValidateToken_RefreshUpdatesRTMapping(t *testing.T) {
 		Expiry:       time.Now().Add(-10 * time.Minute),
 	}
 
-	if err := store.SaveToken(ctx, clientAT, oldProviderToken); err != nil {
-		t.Fatalf("SaveToken(AT) error = %v", err)
-	}
-	if err := store.SaveToken(ctx, clientRT, oldProviderToken); err != nil {
-		t.Fatalf("SaveToken(RT) error = %v", err)
-	}
+	const userID = "upt-rt-mapping-user"
+	seedProviderToken(t, store, clientAT, userID, oldProviderToken)
+	require.NoError(t, store.SaveProviderTokenRef(ctx, clientRT, userID, time.Now().Add(time.Hour)))
 
 	srv.registerTokenPair(clientAT, clientRT)
 
@@ -823,13 +798,18 @@ func TestServer_ValidateToken_RefreshUpdatesRTMapping(t *testing.T) {
 		t.Fatalf("ValidateToken() unexpected error = %v", err)
 	}
 
-	// The RT-key mapping must now contain the rotated provider refresh token.
-	refreshKeyToken, err := store.GetToken(ctx, clientRT)
+	// The shared entry the RT resolves to must now contain the rotated
+	// provider refresh token.
+	rtUser, err := store.GetProviderTokenRef(ctx, clientRT)
 	if err != nil {
-		t.Fatalf("GetToken(RT) error = %v", err)
+		t.Fatalf("GetProviderTokenRef(RT) error = %v", err)
+	}
+	refreshKeyToken, err := store.GetUserProviderToken(ctx, rtUser)
+	if err != nil {
+		t.Fatalf("GetUserProviderToken() error = %v", err)
 	}
 	if refreshKeyToken.RefreshToken != rotatedProviderRT {
-		t.Errorf("RT-key provider token RefreshToken = %q, want %q",
+		t.Errorf("shared provider token RefreshToken = %q, want %q",
 			refreshKeyToken.RefreshToken, rotatedProviderRT)
 	}
 }
@@ -854,22 +834,20 @@ func TestServer_ValidateToken_PreservesOldRefreshToken(t *testing.T) {
 	clientAT := "client-at-preserve"
 	oldRT := "old-provider-refresh-token"
 
-	if err := store.SaveToken(ctx, clientAT, &oauth2.Token{
+	seedProviderToken(t, store, clientAT, "upt-"+clientAT, &oauth2.Token{
 		AccessToken:  "old-provider-at",
 		RefreshToken: oldRT,
 		Expiry:       time.Now().Add(-10 * time.Minute),
-	}); err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
-	}
+	})
 
 	_, err := srv.ValidateToken(ctx, clientAT)
 	if err != nil {
 		t.Fatalf("ValidateToken() unexpected error = %v", err)
 	}
 
-	refreshedToken, err := store.GetToken(ctx, clientAT)
+	refreshedToken, err := store.GetUserProviderToken(ctx, "upt-"+clientAT)
 	if err != nil {
-		t.Fatalf("GetToken() error = %v", err)
+		t.Fatalf("GetUserProviderToken() error = %v", err)
 	}
 	if refreshedToken.RefreshToken != oldRT {
 		t.Errorf("RefreshToken = %q, want preserved old value %q",
@@ -913,13 +891,11 @@ func TestServer_ValidateToken_ConcurrentRefreshDedup(t *testing.T) {
 	provider.ValidateTokenFunc = setupValidTokenProvider()
 
 	clientAT := "concurrent-at"
-	if err := store.SaveToken(context.Background(), clientAT, &oauth2.Token{
+	seedProviderToken(t, store, clientAT, "upt-"+clientAT, &oauth2.Token{
 		AccessToken:  "old-provider-at",
 		RefreshToken: "old-provider-rt",
 		Expiry:       time.Now().Add(-10 * time.Minute),
-	}); err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
-	}
+	})
 
 	const goroutines = 5
 	var wg sync.WaitGroup
@@ -949,13 +925,21 @@ func TestServer_ValidateToken_ConcurrentRefreshDedup(t *testing.T) {
 	}
 }
 
-func TestServer_ValidateToken_SingleflightRefreshIgnoresCanceledLeaderContext(t *testing.T) {
+// TestServer_ValidateToken_CancelledWaiterReturnsPromptly: a validation whose
+// request context is cancelled while a provider refresh is in-flight
+// elsewhere (the per-user refresh lock is held by another pod) must stop
+// waiting immediately with the caller's context error — instead of polling
+// the backend for the full provider-refresh window on behalf of a request
+// that already went away. The waiter never calls the provider.
+func TestServer_ValidateToken_CancelledWaiterReturnsPromptly(t *testing.T) {
 	srv, store, provider := setupFlowTestServer(t)
 
-	provider.RefreshTokenFunc = func(ctx context.Context, _ string) (*oauth2.Token, error) {
-		if ctx.Err() != nil {
-			return nil, fmt.Errorf("refresh context unexpectedly canceled: %w", ctx.Err())
-		}
+	var refreshCalls int
+	var mu sync.Mutex
+	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
+		mu.Lock()
+		refreshCalls++
+		mu.Unlock()
 		return &oauth2.Token{
 			AccessToken:  "provider-access-new",
 			RefreshToken: "provider-refresh-new",
@@ -965,19 +949,40 @@ func TestServer_ValidateToken_SingleflightRefreshIgnoresCanceledLeaderContext(t 
 	}
 	provider.ValidateTokenFunc = setupValidTokenProvider()
 
-	accessToken := "canceled-context-refresh-token"
-	if err := store.SaveToken(context.Background(), accessToken, &oauth2.Token{
+	accessToken := "cancelled-waiter-token"
+	const userID = "upt-cancelled-waiter"
+	seedProviderToken(t, store, accessToken, userID, &oauth2.Token{
 		AccessToken:  "provider-access-old",
 		RefreshToken: "provider-refresh-old",
 		Expiry:       time.Now().Add(-10 * time.Minute),
-	}); err != nil {
-		t.Fatalf("SaveToken() error = %v", err)
+	})
+
+	// Another pod holds the user's refresh lock: this request can only wait.
+	_, acquired, err := store.AcquireProviderRefreshLock(context.Background(), userID, time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("failed to hold the refresh lock: acquired=%v err=%v", acquired, err)
 	}
 
-	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancelledCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if _, err := srv.ValidateToken(canceledCtx, accessToken); err != nil {
-		t.Fatalf("ValidateToken() unexpected error with canceled leader context: %v", err)
+	start := time.Now()
+	_, err = srv.ValidateToken(cancelledCtx, accessToken)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("ValidateToken() expected error for a cancelled waiter, got none")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("ValidateToken() error = %v, want the caller's context.Canceled in the chain", err)
+	}
+	if elapsed >= 5*time.Second {
+		t.Errorf("cancelled waiter took %v; it must return promptly, not poll out the refresh window", elapsed)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if refreshCalls != 0 {
+		t.Errorf("provider.RefreshToken called %d times by a cancelled waiter, want 0", refreshCalls)
 	}
 }

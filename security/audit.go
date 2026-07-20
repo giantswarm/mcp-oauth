@@ -4,10 +4,10 @@ package security
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"log/slog"
 	"time"
+
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 )
 
 // Auditor handles security event logging with PII protection.
@@ -237,11 +237,7 @@ func (a *Auditor) LogInvalidRedirect(ctx context.Context, clientID, ipAddress, u
 	})
 }
 
-// hashForLogging creates a SHA256 hash of sensitive data for logging
+// hashForLogging creates a SHA256 hash of sensitive data for logging.
 func hashForLogging(sensitive string) string {
-	if sensitive == "" {
-		return "<empty>"
-	}
-	hash := sha256.Sum256([]byte(sensitive))
-	return hex.EncodeToString(hash[:])[:16]
+	return helpers.HashForLogging(sensitive)
 }
