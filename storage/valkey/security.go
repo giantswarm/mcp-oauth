@@ -43,7 +43,7 @@ func (s *Store) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, us
 		return err
 	}
 
-	s.addTokenToUserClientSet(op.ctx, refreshToken, userID, clientID)
+	s.addTokenToUserClientSet(op.ctx, refreshToken, userID, clientID, ttl)
 
 	s.logger.Debug("Saved refresh token with family tracking",
 		"user_id", userID,
@@ -172,12 +172,45 @@ func (s *Store) saveRefreshTokenMetadata(ctx context.Context, refreshToken, user
 	return nil
 }
 
-// addTokenToUserClientSet adds the token to the user+client set for bulk revocation.
-func (s *Store) addTokenToUserClientSet(ctx context.Context, refreshToken, userID, clientID string) {
-	userClientKey := s.userClientKey(userID, clientID)
+// addTokenToUserClientSet adds the token to the user+client set for bulk
+// revocation, keeping the set bounded with an extend-only TTL.
+func (s *Store) addTokenToUserClientSet(ctx context.Context, refreshToken, userID, clientID string, ttl time.Duration) {
+	s.addToUserClientSet(ctx, s.userClientKey(userID, clientID), refreshToken, userID, clientID, ttl)
+}
+
+// addToUserClientSet atomically adds member to the user+client set and keeps the
+// set bounded with an extend-only TTL (see luaAtomicSaddExtendOnlyTTL for the
+// full rationale). ttl is the member's own horizon; the set TTL becomes
+// max(existing, ttl) and is never shortened below a still-live member. When ttl
+// is non-positive (a token with no/expired horizon) the set is still bounded by
+// the store's refresh-token TTL rather than being left to grow without bound.
+//
+// SADD and the TTL update run in one script so the whole add is atomic:
+// concurrent first-writers for the same (user, client) cannot race the TTL down
+// to a short-lived member's horizon, and it is a single round-trip on the
+// token-issuance hot path.
+func (s *Store) addToUserClientSet(ctx context.Context, key, member, userID, clientID string, ttl time.Duration) {
+	horizon := int64(0)
+	if ttl > 0 {
+		// valkey EXPIRE with 0 seconds deletes the key, so never let a positive
+		// sub-second horizon truncate to 0 and wipe the set.
+		if horizon = int64(ttl.Seconds()); horizon < 1 {
+			horizon = 1
+		}
+	}
+	fallback := int64(s.refreshTokenTTL.Seconds())
+	if fallback < 1 {
+		fallback = 1
+	}
 	if err := s.client.Do(
 		ctx,
-		s.client.B().Sadd().Key(userClientKey).Member(refreshToken).Build(),
+		s.client.B().Eval().Script(luaAtomicSaddExtendOnlyTTL).
+			Numkeys(1).
+			Key(key).
+			Arg(member).
+			Arg(fmt.Sprintf("%d", horizon)).
+			Arg(fmt.Sprintf("%d", fallback)).
+			Build(),
 	).Error(); err != nil {
 		s.logger.Warn("Failed to add token to user+client set",
 			"user_id", userID,
@@ -491,16 +524,8 @@ func (s *Store) SaveTokenMetadata(ctx context.Context, tokenID string, metadata 
 		return fmt.Errorf("failed to save token metadata: %w", err)
 	}
 
-	userClientKey := s.userClientKey(metadata.UserID, metadata.ClientID)
-	if err := s.client.Do(
-		ctx,
-		s.client.B().Sadd().Key(userClientKey).Member(tokenID).Build(),
-	).Error(); err != nil {
-		s.logger.Warn("Failed to add token to user+client set",
-			"user_id", metadata.UserID,
-			"client_id", metadata.ClientID,
-			"error", err)
-	}
+	s.addToUserClientSet(ctx, s.userClientKey(metadata.UserID, metadata.ClientID), tokenID,
+		metadata.UserID, metadata.ClientID, calculateTTL(metadata.ExpiresAt))
 
 	s.logger.Debug("Saved token metadata",
 		"token_type", metadata.TokenType,

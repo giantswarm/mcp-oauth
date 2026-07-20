@@ -24,21 +24,21 @@ func (s *Store) RevokeJTI(ctx context.Context, jti string, expiresAt time.Time) 
 	if jti == "" {
 		return fmt.Errorf("jti cannot be empty")
 	}
-	if !expiresAt.After(time.Now()) {
+
+	// calculateTTL is the single source of truth for the already-expired check:
+	// RFC 7009 treats revoking an already-expired token as a no-op, so we drop
+	// those here without starting a traced op or a round-trip. It also clamps a
+	// positive sub-second TTL up to a 1s floor; without that a JWT revoked in its
+	// final second before exp would build "EX 0" (valkey-go's Ex() truncates to
+	// whole seconds) and Valkey would reject the write, silently failing to
+	// denylist the JTI.
+	ttl := calculateTTL(expiresAt)
+	if ttl <= 0 {
 		return nil
 	}
 
 	op := s.startTracedOp(ctx, "revoke_jti")
 	defer op.end(&err)
-
-	// calculateTTL clamps a positive sub-second TTL up to a 1s floor;
-	// without it a JWT revoked in its final second before exp would build
-	// "EX 0" (valkey-go's Ex() truncates to whole seconds) and Valkey would
-	// reject the write, silently failing to denylist the JTI.
-	ttl := calculateTTL(expiresAt)
-	if ttl <= 0 {
-		return nil
-	}
 
 	key := s.revokedJTIKey(jti)
 	cmd := s.client.B().Set().Key(key).Value("1").Ex(ttl).Build()

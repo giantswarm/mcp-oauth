@@ -1693,15 +1693,18 @@ func TestCalculateTTL(t *testing.T) {
 
 	// Sub-second positive expiry must clamp up to the 1s floor: valkey-go's
 	// Ex() builds a whole-second EX argument, so anything below 1s would
-	// truncate to "EX 0" and Valkey would reject the write.
-	subSecond := time.Now().Add(50 * time.Millisecond)
+	// truncate to "EX 0" and Valkey would reject the write. The margin below the
+	// 1s boundary is kept generous so a scheduling/GC stall between constructing
+	// the deadline and calculateTTL's internal time.Until() cannot push the
+	// remaining duration to <= 0 (which would return 0, not the 1s floor).
+	subSecond := time.Now().Add(500 * time.Millisecond)
 	ttl = calculateTTL(subSecond)
 	if ttl != time.Second {
 		t.Errorf("TTL should clamp to 1s for sub-second expiry, got: %v", ttl)
 	}
 
 	// Just-under-1s expiry must also clamp up to the 1s floor.
-	justUnder := time.Now().Add(900 * time.Millisecond)
+	justUnder := time.Now().Add(800 * time.Millisecond)
 	ttl = calculateTTL(justUnder)
 	if ttl != time.Second {
 		t.Errorf("TTL should clamp to 1s for just-under-1s expiry, got: %v", ttl)
