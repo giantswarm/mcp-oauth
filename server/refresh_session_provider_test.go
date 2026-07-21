@@ -11,42 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 
-	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/storage"
-	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
-
-// setupProviderRefreshServer builds a server like setupFlowTestServer but with
-// an optional TokenRefreshHandler registered, so the RefreshSessionProvider
-// tests can assert whether (and with what) the handler fires.
-func setupProviderRefreshServer(t *testing.T, handler TokenRefreshHandler) (*Server, *memory.Store, *mock.Provider) {
-	t.Helper()
-
-	store := memory.New()
-	t.Cleanup(func() { store.Stop() })
-
-	provider := mock.NewProvider()
-
-	config := &Config{
-		Issuer:                      "https://auth.example.com",
-		SupportedScopes:             []string{"openid", "email", "profile"},
-		AuthorizationCodeTTL:        600,
-		AccessTokenTTL:              3600,
-		RequirePKCE:                 true,
-		AllowPKCEPlain:              false,
-		ClockSkewGracePeriod:        5,
-		DisableNonceEchoRequirement: true,
-	}
-
-	var opts []Option
-	if handler != nil {
-		opts = append(opts, WithTokenRefreshHandler(handler))
-	}
-
-	srv, err := New(provider, store, store, store, config, nil, opts...)
-	require.NoError(t, err)
-	return srv, store, provider
-}
 
 // TestRefreshSessionProvider_DoesNotRotateClientRefreshToken is the defect-#2
 // guard: the background provider-only refresh must repopulate the id_token
@@ -106,7 +72,7 @@ func TestRefreshSessionProvider_FiresHandlerWhenIDTokenPresent(t *testing.T) {
 		calls = append(calls, call{userID, familyID, ExtractIDToken(tok)})
 	}
 
-	srv, store, provider := setupProviderRefreshServer(t, handler)
+	srv, store, provider := setupFlowTestServer(t, WithTokenRefreshHandler(handler))
 	ctx := context.Background()
 
 	const (
@@ -148,7 +114,7 @@ func TestRefreshSessionProvider_DoesNotFireHandlerWhenNoIDToken(t *testing.T) {
 	var count atomic.Int32
 	handler := func(_ context.Context, _, _ string, _ *oauth2.Token) { count.Add(1) }
 
-	srv, store, provider := setupProviderRefreshServer(t, handler)
+	srv, store, provider := setupFlowTestServer(t, WithTokenRefreshHandler(handler))
 	ctx := context.Background()
 
 	const (

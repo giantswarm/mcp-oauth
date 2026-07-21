@@ -53,18 +53,13 @@ import (
 // Returns the fresh provider token; extract the id_token via [ExtractIDToken].
 // Returns an error if:
 //   - familyID is empty
-//   - the storage backend is not the unified UserProviderTokenStore layout, or
-//     does not implement storage.RefreshTokenFamilyByIDStore
+//   - the storage backend does not implement storage.RefreshTokenFamilyByIDStore
 //   - no family record exists (wrapped storage.ErrRefreshTokenFamilyNotFound)
 //   - the family is revoked (wrapped storage.ErrRefreshTokenFamilyRevoked)
 //   - the upstream provider refresh fails
 func (s *Server) RefreshSessionProvider(ctx context.Context, familyID string) (*oauth2.Token, error) {
 	if familyID == "" {
 		return nil, fmt.Errorf("familyID is required")
-	}
-
-	if _, unified := s.userProviderTokenStore(); !unified {
-		return nil, fmt.Errorf("RefreshSessionProvider requires a unified storage.UserProviderTokenStore backend")
 	}
 
 	familyStore, ok := s.tokenStore.(storage.RefreshTokenFamilyByIDStore)

@@ -17,8 +17,9 @@ import (
 // (e.g. when a cached ID token has expired and the caller is about to
 // forward it).
 //
-// Returns the new provider token. The caller can extract the id_token
-// from the Extra field via [ExtractIDToken] for SSO-forwarding flows.
+// Returns the newly minted mcp access/refresh token pair; the fresh
+// upstream provider id_token rides along as an Extra — the caller can
+// extract it via [ExtractIDToken] for SSO-forwarding flows.
 //
 // Overlapping in-process calls for the same familyID are coalesced —
 // only one refresh hits the upstream provider; the rest wait for and
@@ -65,6 +66,14 @@ import (
 // state. Callers in distributed deployments that observe this should
 // re-read the cached entry — another instance has produced a fresh
 // token.
+//
+// Deprecated: RefreshSession rotates the client-facing refresh token as
+// a side effect, which trips OAuth 2.1 reuse detection when driven from
+// any caller that cannot deliver the rotated token to the actual client
+// (giantswarm/giantswarm#37164). Use [Server.RefreshSessionProvider] for
+// background/provider-only refresh. RefreshSession remains only for
+// in-process callers that both need a newly minted access token and can
+// hand the rotated refresh token back to the client.
 func (s *Server) RefreshSession(ctx context.Context, familyID string) (*oauth2.Token, error) {
 	if familyID == "" {
 		return nil, fmt.Errorf("familyID is required")
