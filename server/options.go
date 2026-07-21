@@ -78,9 +78,12 @@ func WithSessionRevocationHandler(handler SessionRevocationHandler) Option {
 }
 
 // WithTokenRefreshHandler registers a callback that fires after a
-// provider token is refreshed (proactively near expiry, or reactively
-// when an expired token is encountered during validation). userID and
-// familyID are populated only when the token store implements
+// provider token is refreshed: proactively near expiry or reactively on
+// an expired token during validation, or on an explicit
+// [Server.RefreshSessionProvider] call whose refreshed token carries an
+// id_token. It does NOT fire on the client refresh-token grant
+// (RefreshAccessToken / [Server.RefreshSession]). userID and familyID are
+// populated only when the token store implements
 // storage.TokenMetadataGetter; a startup warning is logged otherwise.
 func WithTokenRefreshHandler(handler TokenRefreshHandler) Option {
 	return func(s *Server) {

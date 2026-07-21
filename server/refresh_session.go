@@ -17,8 +17,9 @@ import (
 // (e.g. when a cached ID token has expired and the caller is about to
 // forward it).
 //
-// Returns the new provider token. The caller can extract the id_token
-// from the Extra field via [ExtractIDToken] for SSO-forwarding flows.
+// Returns the newly minted mcp access/refresh token pair; the fresh
+// upstream provider id_token rides along as an Extra — the caller can
+// extract it via [ExtractIDToken] for SSO-forwarding flows.
 //
 // Overlapping in-process calls for the same familyID are coalesced —
 // only one refresh hits the upstream provider; the rest wait for and
@@ -35,10 +36,17 @@ import (
 //     [storage.ErrRefreshTokenFamilyRevoked])
 //   - the upstream provider's refresh call fails
 //
-// The same lifecycle hooks fire as for the public refresh-token-grant
-// path: TokenRefreshHandler is called with the userID + familyID + new
-// token, refresh-token rotation produces a new family generation, and
-// the new tokens are saved to the TokenStore.
+// This delegates to the full OAuth 2.1 refresh-token-grant path
+// (RefreshAccessToken): the client-facing mcp refresh token is ROTATED
+// (a new family generation is produced) and the new tokens are saved to
+// the TokenStore. It does NOT fire TokenRefreshHandler — that hook fires
+// only on the validation-time proactive/reactive refresh (see
+// attemptProactiveRefresh / validateStoredToken). A background caller
+// that needs a fresh id_token WITHOUT rotating the client's refresh token
+// (and that does want TokenRefreshHandler to fire) must use
+// [Server.RefreshSessionProvider] instead: calling RefreshSession on a
+// tight background loop rotates the client's refresh token out from under
+// the client and eventually trips OAuth 2.1 reuse detection.
 //
 // Failure semantics: if the call fails after the active refresh token
 // has been atomically deleted (e.g. the upstream provider's refresh
@@ -58,6 +66,14 @@ import (
 // state. Callers in distributed deployments that observe this should
 // re-read the cached entry — another instance has produced a fresh
 // token.
+//
+// Deprecated: RefreshSession rotates the client-facing refresh token as
+// a side effect, which trips OAuth 2.1 reuse detection when driven from
+// any caller that cannot deliver the rotated token to the actual client
+// (giantswarm/giantswarm#37164). Use [Server.RefreshSessionProvider] for
+// background/provider-only refresh. RefreshSession remains only for
+// in-process callers that both need a newly minted access token and can
+// hand the rotated refresh token back to the client.
 func (s *Server) RefreshSession(ctx context.Context, familyID string) (*oauth2.Token, error) {
 	if familyID == "" {
 		return nil, fmt.Errorf("familyID is required")

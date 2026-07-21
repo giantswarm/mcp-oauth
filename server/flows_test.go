@@ -24,7 +24,10 @@ const (
 	testMockUserID = "mock-user-123"
 )
 
-func setupFlowTestServer(t *testing.T) (*Server, *memory.Store, *mock.Provider) {
+// setupFlowTestServer builds the standard flow-test fixture: a Server backed
+// by a fresh in-memory store and mock provider. Extra Options (e.g.
+// WithTokenRefreshHandler) are passed through to New.
+func setupFlowTestServer(t *testing.T, opts ...Option) (*Server, *memory.Store, *mock.Provider) {
 	t.Helper()
 
 	store := memory.New()
@@ -45,7 +48,7 @@ func setupFlowTestServer(t *testing.T) (*Server, *memory.Store, *mock.Provider) 
 		DisableNonceEchoRequirement: true,
 	}
 
-	srv, err := New(provider, store, store, store, config, nil)
+	srv, err := New(provider, store, store, store, config, nil, opts...)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
