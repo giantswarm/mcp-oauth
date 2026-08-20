@@ -163,7 +163,7 @@ type TrustedIssuer struct {
 	// permitted to resolve to a private IP. All other hosts retain SSRF
 	// protection. Use this instead of AllowPrivateIPJWKS when the private
 	// endpoint is a known in-cluster service (e.g.
-	// muster.agentic-platform.svc.cluster.local). Ignored when
+	// muster.agent-platform.svc.cluster.local). Ignored when
 	// AllowPrivateIPJWKS is true.
 	AllowPrivateIPJWKSHosts []string
 

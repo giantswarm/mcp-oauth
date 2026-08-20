@@ -578,7 +578,7 @@ func TestNewOIDCValidator_AllowPrivateIPJWKSHosts_CreatesIssuerClient(t *testing
 	withHosts, err := NewOIDCValidator([]TrustedIssuer{{
 		Issuer:                  testIssuer,
 		JwksURL:                 "https://example.com/jwks",
-		AllowPrivateIPJWKSHosts: []string{"muster.agentic-platform.svc.cluster.local"},
+		AllowPrivateIPJWKSHosts: []string{"muster.agent-platform.svc.cluster.local"},
 	}})
 	require.NoError(t, err)
 	require.NotNil(t, withHosts.issuerClients[testIssuer])
@@ -593,7 +593,7 @@ func TestNewOIDCValidator_AllowPrivateIPJWKSHosts_CreatesIssuerClient(t *testing
 		{
 			Issuer:                  testIssuer,
 			JwksURL:                 "https://example.com/jwks",
-			AllowPrivateIPJWKSHosts: []string{"muster.agentic-platform.svc.cluster.local"},
+			AllowPrivateIPJWKSHosts: []string{"muster.agent-platform.svc.cluster.local"},
 		},
 	})
 	require.NoError(t, err)
