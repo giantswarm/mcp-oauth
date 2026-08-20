@@ -96,7 +96,7 @@ type JWKSClientOptions struct {
 	// resolve to private IP addresses. All other hosts remain subject to the
 	// normal SSRF/DNS-rebinding guard. Prefer this over AllowPrivateIP when
 	// the private endpoint is a known in-cluster service (e.g.
-	// muster.agentic-platform.svc.cluster.local). Ignored when AllowPrivateIP
+	// muster.agent-platform.svc.cluster.local). Ignored when AllowPrivateIP
 	// is true.
 	AllowPrivateIPHosts []string
 
