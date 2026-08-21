@@ -33,7 +33,7 @@ func (s *Server) resolveScopes(ctx context.Context, requestedScope string, clien
 			Type:     security.EventScopeDefaultsApplied,
 			ClientID: client.ClientID,
 			Details: map[string]any{
-				"provider":          s.provider.Name(),
+				logKeyProvider:      s.provider.Name(),
 				"provider_defaults": defaultScopes,
 				"resolved_scopes":   resolvedScopes,
 				"client_restricted": false,
@@ -47,7 +47,7 @@ func (s *Server) resolveScopes(ctx context.Context, requestedScope string, clien
 			Type:     security.EventScopeDefaultsApplied,
 			ClientID: client.ClientID,
 			Details: map[string]any{
-				"provider":           s.provider.Name(),
+				logKeyProvider:       s.provider.Name(),
 				"provider_defaults":  defaultScopes,
 				"client_allowed":     client.Scopes,
 				"resolved_scopes":    resolvedScopes,

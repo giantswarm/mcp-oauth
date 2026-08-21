@@ -235,7 +235,7 @@ func (s *Server) coordinateProviderRefresh(ctx context.Context, upts storage.Use
 func (s *Server) refreshSharedProviderTokenLocked(ctx context.Context, upts storage.UserProviderTokenStore, locker storage.ProviderRefreshLockStore, userID, lockValue string, observed *oauth2.Token) (*oauth2.Token, error) {
 	defer func() {
 		if err := locker.ReleaseProviderRefreshLock(context.WithoutCancel(ctx), userID, lockValue); err != nil {
-			s.Logger.Warn("Failed to release provider refresh lock", "user_id", userID, "error", err)
+			s.Logger.Warn("Failed to release provider refresh lock", "user_id", userID, logKeyError, err)
 		}
 	}()
 	return s.refreshSharedProviderToken(ctx, upts, userID, observed)

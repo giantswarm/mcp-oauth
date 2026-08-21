@@ -85,13 +85,24 @@ func GenerateTestUserInfo() *storage.UserInfo {
 	}
 }
 
+// Shared test fixture values.
+const (
+	testClientID    = "test-client-id"
+	testRedirectURI = "https://example.com/callback"
+
+	// testClientBcryptHash is the bcrypt hash of the well-known fixture
+	// plaintext "secret". It is not a credential — the plaintext is public
+	// and only accepted by test stores seeded with this fixture.
+	testClientBcryptHash = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
+)
+
 // GenerateTestClient creates a test OAuth client
 func GenerateTestClient() *storage.Client {
 	return &storage.Client{
-		ClientID:                "test-client-id",
-		ClientSecretHash:        "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy", // hash of "secret"
+		ClientID:                testClientID,
+		ClientSecretHash:        testClientBcryptHash,
 		ClientType:              "confidential",
-		RedirectURIs:            []string{"https://example.com/callback"},
+		RedirectURIs:            []string{testRedirectURI},
 		TokenEndpointAuthMethod: "client_secret_basic",
 		GrantTypes:              []string{"authorization_code", "refresh_token"},
 		ResponseTypes:           []string{"code"},
@@ -105,8 +116,8 @@ func GenerateTestClient() *storage.Client {
 func GenerateTestAuthorizationState() *storage.AuthorizationState {
 	return &storage.AuthorizationState{
 		StateID:             GenerateRandomString(32),
-		ClientID:            "test-client-id",
-		RedirectURI:         "https://example.com/callback",
+		ClientID:            testClientID,
+		RedirectURI:         testRedirectURI,
 		Scope:               "openid email profile",
 		CodeChallenge:       "test-code-challenge",
 		CodeChallengeMethod: "S256",
@@ -120,8 +131,8 @@ func GenerateTestAuthorizationState() *storage.AuthorizationState {
 func GenerateTestAuthorizationCode() *storage.AuthorizationCode {
 	return &storage.AuthorizationCode{
 		Code:                GenerateRandomString(32),
-		ClientID:            "test-client-id",
-		RedirectURI:         "https://example.com/callback",
+		ClientID:            testClientID,
+		RedirectURI:         testRedirectURI,
 		Scope:               "openid email profile",
 		CodeChallenge:       "test-code-challenge",
 		CodeChallengeMethod: "S256",

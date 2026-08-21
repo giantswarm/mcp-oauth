@@ -3,6 +3,7 @@ package security
 import (
 	"fmt"
 	"log/slog"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -542,7 +543,7 @@ func TestRateLimiter_ConcurrentWithEviction(t *testing.T) {
 	for i := 0; i < numGoroutines; i++ {
 		go func(base int) {
 			for j := 0; j < requestsPerGoroutine; j++ {
-				identifier := "id-" + string(rune('0'+base*requestsPerGoroutine+j))
+				identifier := "id-" + strconv.Itoa(base*requestsPerGoroutine+j)
 				rl.Allow(identifier)
 			}
 			done <- true

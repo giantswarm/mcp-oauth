@@ -114,7 +114,7 @@ func (h *Handler) authorizeClientRegistration(w http.ResponseWriter, r *http.Req
 
 	allowed, scheme, err := h.server.CanRegisterWithTrustedScheme(req.RedirectURIs)
 	if err != nil {
-		h.logger.Warn("Client registration rejected: invalid redirect URI", "client_ip", clientIP, "error", err)
+		h.logger.Warn("Client registration rejected: invalid redirect URI", "client_ip", clientIP, paramError, err)
 		h.writeError(w, constants.ErrorCodeInvalidRequest, fmt.Sprintf("Invalid redirect URI: %v", err), http.StatusBadRequest)
 		return result, false
 	}
@@ -152,7 +152,7 @@ func (h *Handler) validatePublicClientRegistration(ctx context.Context, w http.R
 	if !h.server.Config.AllowPublicClientRegistration && !auth.viaTrustedAllowlist {
 		h.logger.Warn("Public client registration rejected (not allowed by configuration)",
 			"token_endpoint_auth_method", req.TokenEndpointAuthMethod,
-			"client_type", req.ClientType, "ip", clientIP)
+			fieldClientType, req.ClientType, "ip", clientIP)
 		h.recordHTTPMetrics(ctx, endpointRegister, http.MethodPost, http.StatusBadRequest, startTime)
 		if span != nil {
 			instrumentation.SetSpanAttributes(
@@ -169,7 +169,7 @@ func (h *Handler) validatePublicClientRegistration(ctx context.Context, w http.R
 	}
 
 	h.logger.Debug("Public client registration authorized",
-		"token_endpoint_auth_method", req.TokenEndpointAuthMethod, "client_type", req.ClientType,
+		"token_endpoint_auth_method", req.TokenEndpointAuthMethod, fieldClientType, req.ClientType,
 		"ip", clientIP, "via_trusted_allowlist", auth.viaTrustedAllowlist, "auth_gate", auth.gate)
 	return true
 }
@@ -250,7 +250,7 @@ func (h *Handler) parseAndValidateRegistrationRequest(w http.ResponseWriter, r *
 	// Validate client_name to prevent potential stored XSS and log injection (defense-in-depth)
 	if err := helpers.ValidateClientName(req.ClientName); err != nil {
 		h.logger.Warn("Invalid client_name in registration request",
-			"client_name_length", len(req.ClientName), "error", err, "ip", clientIP)
+			"client_name_length", len(req.ClientName), paramError, err, "ip", clientIP)
 		h.writeError(w, constants.ErrorCodeInvalidRequest, err.Error(), http.StatusBadRequest)
 		return nil, err
 	}
@@ -301,7 +301,7 @@ func (h *Handler) recordTrustedAllowlistSpan(span trace.Span, auth registrationA
 // handleRegistrationError handles client registration errors.
 func (h *Handler) handleRegistrationError(ctx context.Context, w http.ResponseWriter, err error, clientIP string, startTime time.Time, span trace.Span) {
 	if errors.Is(err, storage.ErrClientIPLimitExceeded) {
-		h.logger.Warn("Client registration limit exceeded", "ip", clientIP, "error", err)
+		h.logger.Warn("Client registration limit exceeded", "ip", clientIP, paramError, err)
 		h.recordHTTPMetrics(ctx, endpointRegister, http.MethodPost, http.StatusTooManyRequests, startTime)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "registration limit exceeded")
@@ -309,7 +309,7 @@ func (h *Handler) handleRegistrationError(ctx context.Context, w http.ResponseWr
 		return
 	}
 
-	h.logger.Error("Failed to register client", "ip", clientIP, "error", err)
+	h.logger.Error("Failed to register client", "ip", clientIP, paramError, err)
 	h.recordHTTPMetrics(ctx, endpointRegister, http.MethodPost, http.StatusInternalServerError, startTime)
 	instrumentation.RecordError(span, err)
 	instrumentation.SetSpanError(span, "registration failed")
@@ -324,9 +324,9 @@ func (h *Handler) auditTrustedAllowlistRegistration(ctx context.Context, auth re
 	}
 
 	details := map[string]any{
-		"client_type":   client.ClientType,
-		"client_ip":     clientIP,
-		"redirect_uris": client.RedirectURIs,
+		fieldClientType:   client.ClientType,
+		"client_ip":       clientIP,
+		fieldRedirectURIs: client.RedirectURIs,
 	}
 
 	var eventType string
@@ -375,8 +375,8 @@ func (h *Handler) writeRegistrationResponse(w http.ResponseWriter, client *stora
 		"client_id":                  client.ClientID,
 		"client_id_issued_at":        client.CreatedAt.Unix(),
 		"client_name":                client.ClientName,
-		"client_type":                client.ClientType,
-		"redirect_uris":              client.RedirectURIs,
+		fieldClientType:              client.ClientType,
+		fieldRedirectURIs:            client.RedirectURIs,
 		"token_endpoint_auth_method": client.TokenEndpointAuthMethod,
 		"grant_types":                client.GrantTypes,
 		"response_types":             client.ResponseTypes,

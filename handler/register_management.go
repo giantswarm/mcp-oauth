@@ -77,7 +77,7 @@ func (h *Handler) authenticateManagementRequest(w http.ResponseWriter, r *http.R
 			h.writeError(w, constants.ErrorCodeInvalidToken, "client not found", http.StatusNotFound)
 			return nil, false
 		}
-		h.logger.Error("Client management: failed to retrieve client", "ip", clientIP, "client_id", clientID, "error", err)
+		h.logger.Error("Client management: failed to retrieve client", "ip", clientIP, "client_id", clientID, paramError, err)
 		h.writeError(w, constants.ErrorCodeServerError, "failed to retrieve client", http.StatusInternalServerError)
 		return nil, false
 	}
@@ -108,8 +108,8 @@ func (h *Handler) buildClientResponseBody(client *storage.Client) map[string]any
 		"client_id":                  client.ClientID,
 		"client_id_issued_at":        client.CreatedAt.Unix(),
 		"client_name":                client.ClientName,
-		"client_type":                client.ClientType,
-		"redirect_uris":              client.RedirectURIs,
+		fieldClientType:              client.ClientType,
+		fieldRedirectURIs:            client.RedirectURIs,
 		"token_endpoint_auth_method": client.TokenEndpointAuthMethod,
 		"grant_types":                client.GrantTypes,
 		"response_types":             client.ResponseTypes,
@@ -157,7 +157,7 @@ func (h *Handler) handleClientManagementPut(w http.ResponseWriter, r *http.Reque
 
 	newToken, newHash, err := server.GenerateRegistrationAccessToken()
 	if err != nil {
-		h.logger.Error("Client management: failed to rotate registration token", "ip", clientIP, "client_id", existing.ClientID, "error", err)
+		h.logger.Error("Client management: failed to rotate registration token", "ip", clientIP, "client_id", existing.ClientID, paramError, err)
 		h.writeError(w, constants.ErrorCodeServerError, "failed to rotate registration token", http.StatusInternalServerError)
 		return
 	}
@@ -180,7 +180,7 @@ func (h *Handler) handleClientManagementPut(w http.ResponseWriter, r *http.Reque
 	updated.RegistrationAccessTokenHash = newHash
 
 	if err := h.server.SaveClient(r.Context(), &updated); err != nil {
-		h.logger.Error("Client management: failed to update client", "ip", clientIP, "client_id", existing.ClientID, "error", err)
+		h.logger.Error("Client management: failed to update client", "ip", clientIP, "client_id", existing.ClientID, paramError, err)
 		h.recordHTTPMetrics(r.Context(), endpointClientManagement, http.MethodPut, http.StatusInternalServerError, startTime)
 		h.writeError(w, constants.ErrorCodeServerError, "failed to update client", http.StatusInternalServerError)
 		return
@@ -202,7 +202,7 @@ func (h *Handler) handleClientManagementDelete(w http.ResponseWriter, r *http.Re
 			h.writeError(w, constants.ErrorCodeInvalidRequest, "client not found", http.StatusNotFound)
 			return
 		}
-		h.logger.Error("Client management: failed to delete client", "ip", clientIP, "client_id", client.ClientID, "error", err)
+		h.logger.Error("Client management: failed to delete client", "ip", clientIP, "client_id", client.ClientID, paramError, err)
 		h.recordHTTPMetrics(r.Context(), endpointClientManagement, http.MethodDelete, http.StatusInternalServerError, startTime)
 		h.writeError(w, constants.ErrorCodeServerError, "failed to delete client", http.StatusInternalServerError)
 		return

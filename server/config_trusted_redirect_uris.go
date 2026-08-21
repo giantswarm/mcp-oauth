@@ -25,7 +25,7 @@ func validateTrustedPublicRegistrationRedirectURIs(config *Config, logger *slog.
 		canonical, err := normalizeTrustedRedirectURI(raw)
 		if err != nil {
 			logger.Error("Removing invalid TrustedPublicRegistrationRedirectURIs entry",
-				"index", i, "uri", raw, "reason", err.Error())
+				"index", i, "uri", raw, logKeyReason, err.Error())
 			continue
 		}
 		if set[canonical] {

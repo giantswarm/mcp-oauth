@@ -180,8 +180,8 @@ const rfc9068TokenType = "at+jwt"
 // Issue sets explicitly. Allowing Extra to override them would let callers
 // extend token lifetime (exp), forge issuers (iss), or substitute subjects (sub).
 var jwtReservedClaims = map[string]struct{}{
-	"iss": {}, "sub": {}, "aud": {},
-	"exp": {}, "nbf": {}, "iat": {}, "jti": {},
+	claimIss: {}, claimSub: {}, "aud": {},
+	"exp": {}, "nbf": {}, "iat": {}, claimJTI: {},
 }
 
 // rfc9068Claims is the on-the-wire claim shape for an RFC 9068 access token.

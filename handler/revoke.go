@@ -108,7 +108,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 
 	// Revoke token
 	if err := h.server.RevokeToken(r.Context(), token, clientID, clientIP); err != nil {
-		h.logger.Error("Failed to revoke token", "client_id", clientID, "ip", clientIP, "error", err)
+		h.logger.Error("Failed to revoke token", "client_id", clientID, "ip", clientIP, paramError, err)
 		instrumentation.RecordError(span, err)
 		// Per RFC 7009, don't fail the request even if revocation failed
 	}

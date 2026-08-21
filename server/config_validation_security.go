@@ -155,7 +155,7 @@ func validateChallengeScopeCharacters(scopes []string, logger *slog.Logger) {
 		if strings.Contains(scope, `"`) {
 			logger.Warn("CONFIGURATION WARNING: Invalid character in DefaultChallengeScopes",
 				"index", i,
-				"scope", scope,
+				paramScope, scope,
 				"invalid_char", `"`,
 				"risk", "Scope contains double-quote character",
 				"recommendation", "Use alphanumeric characters, hyphens, underscores, colons, and slashes only")
@@ -163,7 +163,7 @@ func validateChallengeScopeCharacters(scopes []string, logger *slog.Logger) {
 		if strings.Contains(scope, ",") {
 			logger.Warn("CONFIGURATION WARNING: Invalid character in DefaultChallengeScopes",
 				"index", i,
-				"scope", scope,
+				paramScope, scope,
 				"invalid_char", ",",
 				"risk", "Scope contains comma character",
 				"recommendation", "Use alphanumeric characters, hyphens, underscores, colons, and slashes only")
@@ -171,7 +171,7 @@ func validateChallengeScopeCharacters(scopes []string, logger *slog.Logger) {
 		if strings.Contains(scope, `\`) {
 			logger.Warn("CONFIGURATION WARNING: Invalid character in DefaultChallengeScopes",
 				"index", i,
-				"scope", scope,
+				paramScope, scope,
 				"invalid_char", `\`,
 				"risk", "Scope contains backslash character",
 				"recommendation", "Use alphanumeric characters, hyphens, underscores, colons, and slashes only")

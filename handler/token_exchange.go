@@ -206,7 +206,7 @@ func (h *Handler) handleBrokeredTokenExchangeError(
 			"no validator registered for "+unsupported.Role()+"_token_type "+unsupported.TokenType(), http.StatusBadRequest)
 	default:
 		h.logger.Debug("brokered token exchange failed",
-			"client_id", clientID, "audience", audience, "ip", clientIP, "error", err)
+			"client_id", clientID, "audience", audience, "ip", clientIP, paramError, err)
 		h.recordTokenFailure(r.Context(), server.GrantTypeTokenExchange, constants.ErrorCodeInvalidGrant)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "brokered exchange failed")
@@ -259,7 +259,7 @@ func (h *Handler) handleTokenExchangeError(
 			http.StatusBadRequest)
 		return
 	}
-	h.logger.Debug("token exchange failed", "ip", clientIP, "error", err)
+	h.logger.Debug("token exchange failed", "ip", clientIP, paramError, err)
 	h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 	instrumentation.SetSpanError(span, "token exchange failed")
 	h.writeError(w, constants.ErrorCodeInvalidGrant, "subject token invalid or rejected", http.StatusBadRequest)

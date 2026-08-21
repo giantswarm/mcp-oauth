@@ -223,7 +223,7 @@ func (h *Handler) serveCustomInterstitialTemplate(w http.ResponseWriter, templat
 	// Parse the custom template
 	tmpl, err := template.New("custom-interstitial").Parse(templateStr)
 	if err != nil {
-		h.logger.Error("Failed to parse custom interstitial template", "error", err)
+		h.logger.Error("Failed to parse custom interstitial template", paramError, err)
 		// Fall back to default template on parse error
 		h.serveDefaultInterstitial(w, redirectURL, appName, nil)
 		return
@@ -236,7 +236,7 @@ func (h *Handler) serveCustomInterstitialTemplate(w http.ResponseWriter, templat
 	// This prevents partial writes to the response if template execution fails
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
-		h.logger.Error("Failed to execute custom interstitial template", "error", err)
+		h.logger.Error("Failed to execute custom interstitial template", paramError, err)
 		// Fall back to default template on execution error
 		h.serveDefaultInterstitial(w, redirectURL, appName, nil)
 		return
@@ -264,7 +264,7 @@ func (h *Handler) serveDefaultInterstitial(w http.ResponseWriter, redirectURL, a
 	// This prevents partial writes to the response if template execution fails
 	var buf bytes.Buffer
 	if err := successInterstitialTmpl.Execute(&buf, data); err != nil {
-		h.logger.Error("Failed to execute success interstitial template", "error", err)
+		h.logger.Error("Failed to execute success interstitial template", paramError, err)
 		// Fallback to plain text on error (should be rare with pre-parsed template)
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -364,7 +364,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	// returned is the redirect target.
 	canonicalRedirectURI, err := h.server.ValidateRedirectURIForAuthorization(r.Context(), clientID, redirectURI)
 	if err != nil {
-		h.logger.Info("Authorization request rejected: invalid client or redirect_uri", "client_id", clientID, "error", err)
+		h.logger.Info("Authorization request rejected: invalid client or redirect_uri", "client_id", clientID, paramError, err)
 		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "invalid client or redirect_uri")
 		h.writeError(w, constants.ErrorCodeInvalidRequest, err.Error(), http.StatusBadRequest)
@@ -417,7 +417,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 
 	authURL, err := h.server.StartAuthorizationFlow(r.Context(), clientID, canonicalRedirectURI, scope, resource, codeChallenge, codeChallengeMethod, state, authOpts)
 	if err != nil {
-		h.logger.Error("Failed to start authorization flow", "error", err)
+		h.logger.Error("Failed to start authorization flow", paramError, err)
 		instrumentation.RecordError(span, err)
 		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
 			redirectURI: canonicalRedirectURI,
@@ -437,7 +437,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	// defense in depth against a misconfigured provider returning a non-HTTP URL.
 	parsedAuthURL, err := url.Parse(authURL)
 	if err != nil || (parsedAuthURL.Scheme != oauth.SchemeHTTPS && parsedAuthURL.Scheme != oauth.SchemeHTTP) {
-		h.logger.Error("Provider returned invalid authorization URL", "error", err)
+		h.logger.Error("Provider returned invalid authorization URL", paramError, err)
 		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
 			redirectURI: canonicalRedirectURI,
 			state:       state,
@@ -481,12 +481,12 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	// Parse callback parameters
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
-	errorParam := r.URL.Query().Get("error")
+	errorParam := r.URL.Query().Get(paramError)
 
 	// Check for provider errors
 	if errorParam != "" {
-		errorDesc := r.URL.Query().Get("error_description")
-		h.logger.Warn("Provider returned error", "ip", clientIP, "error", errorParam, "description", errorDesc)
+		errorDesc := r.URL.Query().Get(paramErrorDescription)
+		h.logger.Warn("Provider returned error", "ip", clientIP, paramError, errorParam, "description", errorDesc)
 		h.recordHTTPMetrics(r.Context(), endpointCallback, http.MethodGet, http.StatusBadRequest, startTime)
 		h.recordCallbackProcessed(r.Context(), "", false)
 		instrumentation.SetSpanError(span, errorParam)
@@ -530,7 +530,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	// Server also validates state length for defense in depth
 	authCode, clientState, err := h.server.HandleProviderCallback(r.Context(), state, code)
 	if err != nil {
-		h.logger.Error("Failed to handle callback", "ip", clientIP, "error", err)
+		h.logger.Error("Failed to handle callback", "ip", clientIP, paramError, err)
 		h.recordHTTPMetrics(r.Context(), endpointCallback, http.MethodGet, http.StatusInternalServerError, startTime)
 		h.recordCallbackProcessed(r.Context(), "", false)
 		instrumentation.RecordError(span, err)
@@ -552,7 +552,7 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	// build the response URL through url.Values rather than string concatenation.
 	parsedRedirect, err := url.Parse(authCode.RedirectURI)
 	if err != nil {
-		h.logger.Error("Stored redirect URI failed to parse", "ip", clientIP, "error", err, "client_id", authCode.ClientID)
+		h.logger.Error("Stored redirect URI failed to parse", "ip", clientIP, paramError, err, "client_id", authCode.ClientID)
 		h.failRequest(w, r, span, endpointCallback, http.MethodGet, http.StatusInternalServerError, constants.ErrorCodeServerError, "Authorization failed", startTime)
 		return
 	}
@@ -617,8 +617,8 @@ func (h *Handler) respondAuthorizationError(w http.ResponseWriter, r *http.Reque
 
 	redirect := *e.redirectURI
 	q := redirect.Query()
-	q.Set("error", e.code)
-	q.Set("error_description", e.description)
+	q.Set(paramError, e.code)
+	q.Set(paramErrorDescription, e.description)
 	if e.state != "" {
 		q.Set("state", e.state)
 	}

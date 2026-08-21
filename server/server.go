@@ -339,8 +339,8 @@ func (s *Server) validateProviderDefaultScopes(logger *slog.Logger) {
 	for _, scope := range providerDefaults {
 		if !supportedSet[scope] {
 			logger.Warn("Provider default scope not in server supported scopes - clients relying on defaults may encounter errors",
-				"scope", scope,
-				"provider", s.provider.Name(),
+				paramScope, scope,
+				logKeyProvider, s.provider.Name(),
 				"supported_scopes", s.Config.SupportedScopes)
 		}
 	}
@@ -360,7 +360,7 @@ func (s *Server) logMandatoryAudienceScopes(logger *slog.Logger, providerDefault
 	if len(audienceScopes) > 0 {
 		logger.Debug("Mandatory cross-client audience scopes configured - these will be merged into ALL authorization requests",
 			"audience_scopes", audienceScopes,
-			"provider", s.provider.Name(),
+			logKeyProvider, s.provider.Name(),
 			"count", len(audienceScopes))
 	}
 }
@@ -421,7 +421,7 @@ func (s *Server) saveTokenMetadata(ctx context.Context, tokenID string, metadata
 		return
 	}
 	if err := store.SaveTokenMetadata(ctx, tokenID, metadata); err != nil {
-		s.Logger.Warn("Failed to save token metadata", "error", err)
+		s.Logger.Warn("Failed to save token metadata", logKeyError, err)
 	}
 }
 
@@ -606,7 +606,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			// Shutdown completed successfully
 		case <-ctx.Done():
 			shutdownErr = fmt.Errorf("shutdown cancelled: %w", ctx.Err())
-			s.Logger.Warn("Shutdown timed out or was cancelled", "error", shutdownErr)
+			s.Logger.Warn("Shutdown timed out or was cancelled", logKeyError, shutdownErr)
 		}
 	})
 
@@ -660,7 +660,7 @@ func (s *Server) stopMetadataCacheCleanup() {
 func (s *Server) shutdownInstrumentation(ctx context.Context) {
 	s.Logger.Debug("Shutting down instrumentation...")
 	if err := s.Instrumentation.Shutdown(ctx); err != nil {
-		s.Logger.Warn("Failed to shutdown instrumentation", "error", err)
+		s.Logger.Warn("Failed to shutdown instrumentation", logKeyError, err)
 	}
 }
 

@@ -52,7 +52,7 @@ func (s *Server) IntrospectToken(ctx context.Context, accessToken, requestingCli
 // the requester is not authorized to introspect or that fails validation.
 // Constructed fresh per call so a caller mutating it cannot affect another.
 func inactiveIntrospectionResponse() map[string]any {
-	return map[string]any{"active": false}
+	return map[string]any{fieldActive: false}
 }
 
 // introspectSelfIssuedJWT projects the verified claim set into the RFC 7662
@@ -77,7 +77,7 @@ func (s *Server) introspectSelfIssuedJWT(ctx context.Context, accessToken, reque
 		return inactiveIntrospectionResponse()
 	}
 
-	verifiedBoundClient, _ := claims["client_id"].(string)
+	verifiedBoundClient, _ := claims[paramClientID].(string)
 	if verifiedBoundClient != unverifiedBoundClient &&
 		!s.introspectionRequesterAllowed(ctx, requestingClient, verifiedBoundClient) {
 		return inactiveIntrospectionResponse()
@@ -97,7 +97,7 @@ func unverifiedClientIDClaim(accessToken string) string {
 	if err != nil {
 		return ""
 	}
-	v, _ := claims["client_id"].(string)
+	v, _ := claims[paramClientID].(string)
 	return v
 }
 
@@ -106,25 +106,25 @@ func unverifiedClientIDClaim(accessToken string) string {
 // verbatim so that application-defined claims (e.g. allowed_backends, muster_sid)
 // added to the JWT body reach the introspection caller without server changes.
 var jwtStandardClaims = map[string]struct{}{
-	"active": {}, "token_type": {}, "client_id": {},
-	"sub": {}, "iss": {}, "aud": {}, "scope": {},
-	"email": {}, "email_verified": {}, "name": {},
-	"exp": {}, "iat": {}, "nbf": {}, "jti": {},
+	fieldActive: {}, fieldTokenType: {}, paramClientID: {},
+	claimSub: {}, claimIss: {}, "aud": {}, paramScope: {},
+	claimEmail: {}, "email_verified": {}, "name": {},
+	"exp": {}, "iat": {}, "nbf": {}, claimJTI: {},
 	"cnf": {}, "at_hash": {}, "nonce": {},
 }
 
 func introspectionResponseFromJWTClaims(claims map[string]any, tokenBoundClient string) map[string]any {
 	response := map[string]any{
-		"active":     true,
-		"token_type": "Bearer",
+		fieldActive:    true,
+		fieldTokenType: tokenTypeBearer,
 	}
 	if tokenBoundClient != "" {
-		response["client_id"] = tokenBoundClient
+		response[paramClientID] = tokenBoundClient
 	}
-	copyClaimString(response, claims, "sub")
-	copyClaimString(response, claims, "iss")
-	copyClaimString(response, claims, "scope")
-	copyClaimString(response, claims, "email")
+	copyClaimString(response, claims, claimSub)
+	copyClaimString(response, claims, claimIss)
+	copyClaimString(response, claims, paramScope)
+	copyClaimString(response, claims, claimEmail)
 	copyClaimString(response, claims, "name")
 	copyClaimBool(response, claims, "email_verified")
 	copyClaimUnixTime(response, claims, "exp")
@@ -191,21 +191,21 @@ func (s *Server) introspectOpaqueToken(ctx context.Context, accessToken, request
 
 func (s *Server) introspectionResponseFromOpaqueToken(_ context.Context, _ string, tokenMetadata *storage.TokenMetadata, userInfo *providers.UserInfo) map[string]any {
 	response := map[string]any{
-		"active":     true,
-		"token_type": "Bearer",
-		"client_id":  tokenMetadata.ClientID,
-		"sub":        userInfo.ID,
-		"iss":        s.Config.Issuer,
+		fieldActive:    true,
+		fieldTokenType: tokenTypeBearer,
+		paramClientID:  tokenMetadata.ClientID,
+		claimSub:       userInfo.ID,
+		claimIss:       s.Config.Issuer,
 	}
 	if userInfo.Email != "" {
-		response["email"] = userInfo.Email
+		response[claimEmail] = userInfo.Email
 		response["email_verified"] = userInfo.EmailVerified
 	}
 	if userInfo.Name != "" {
 		response["name"] = userInfo.Name
 	}
 	if scope := helpers.JoinScopes(tokenMetadata.Scopes); scope != "" {
-		response["scope"] = scope
+		response[paramScope] = scope
 	}
 	if tokenMetadata.Audience != "" {
 		response["aud"] = tokenMetadata.Audience
@@ -250,8 +250,8 @@ func (s *Server) logIntrospectionRequesterDenied(ctx context.Context, requesting
 		Type:     security.EventIntrospectionRequesterDenied,
 		ClientID: requestingClient,
 		Details: map[string]any{
-			"severity":           "medium",
-			"reason":             reason,
+			logKeySeverity:       "medium",
+			logKeyReason:         reason,
 			"token_bound_client": tokenBoundClient,
 		},
 	})

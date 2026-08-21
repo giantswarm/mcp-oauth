@@ -170,7 +170,7 @@ func (s *Server) EnsureConfidentialClient(ctx context.Context, clientID, clientS
 		return false, fmt.Errorf("failed to save client %q: %w", clientID, err)
 	}
 
-	s.Logger.Info("Seeded confidential OAuth client", "client_id", clientID)
+	s.Logger.Info("Seeded confidential OAuth client", paramClientID, clientID)
 	return true, nil
 }
 
@@ -181,13 +181,13 @@ func (s *Server) validateRedirectURIsWithAudit(ctx context.Context, redirectURIs
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type: security.EventClientRegistrationRejected,
 			Details: map[string]any{
-				"reason":    "redirect_uri_validation_failed",
-				"category":  category,
-				"client_ip": clientIP,
+				logKeyReason: "redirect_uri_validation_failed",
+				"category":   category,
+				"client_ip":  clientIP,
 			},
 		})
 		s.Logger.Warn("Client registration rejected: redirect URI validation failed",
-			"error", err.Error(),
+			logKeyError, err.Error(),
 			"client_ip", clientIP)
 		return fmt.Errorf("invalid_redirect_uri: %w", err)
 	}
@@ -243,14 +243,14 @@ func GenerateRegistrationAccessToken() (plaintext, hash string, err error) {
 func (s *Server) trackClientIPAndLog(ctx context.Context, client *storage.Client, _ /* clientSecret - not logged for security */, clientIP string) {
 	if tracker, ok := s.clientStore.(storage.ClientIPTracker); ok {
 		if err := tracker.TrackClientIP(context.WithoutCancel(ctx), client.ClientID, clientIP); err != nil {
-			s.Logger.Warn("failed to track client IP", "client_id", client.ClientID, "ip", clientIP, "error", err)
+			s.Logger.Warn("failed to track client IP", paramClientID, client.ClientID, "ip", clientIP, logKeyError, err)
 		}
 	}
 
 	s.Auditor.LogClientRegistered(ctx, client.ClientID, client.ClientType, clientIP)
 
 	s.Logger.Debug("Registered new OAuth client",
-		"client_id", client.ClientID,
+		paramClientID, client.ClientID,
 		"client_name", client.ClientName,
 		"client_type", client.ClientType,
 		"token_endpoint_auth_method", client.TokenEndpointAuthMethod,

@@ -137,10 +137,10 @@ func (s *Server) BrokeredExchange(ctx context.Context, req BrokeredExchangeReque
 	}
 
 	auditCtx := map[string]any{
-		"exchange":   "brokered",
-		"client_id":  req.ClientID,
-		"audience":   req.Audience,
-		"session_id": sessionID,
+		logKeyExchange:  exchangeBrokered,
+		paramClientID:   req.ClientID,
+		paramAudience:   req.Audience,
+		logKeySessionID: sessionID,
 	}
 
 	identity, err := s.validateExchangeSubjectToken(ctx, req.Subject, nil, auditCtx)
@@ -186,10 +186,10 @@ func (s *Server) dispatchDownstreamExchange(
 	})
 	if err != nil {
 		s.Logger.Debug("brokered token exchange: downstream exchange failed",
-			"client_id", clientID, "audience", audience, "error", err)
+			paramClientID, clientID, paramAudience, audience, logKeyError, err)
 		s.auditExchangeFailure(ctx, clientID, audience, sessionID, "token_exchange_downstream_failed", map[string]any{
-			"sub":   identity.Subject,
-			"error": err.Error(),
+			claimSub:    identity.Subject,
+			logKeyError: err.Error(),
 		})
 		if errors.Is(err, ErrInvalidTarget) {
 			return nil, err
@@ -198,7 +198,7 @@ func (s *Server) dispatchDownstreamExchange(
 	}
 	if result == nil || result.AccessToken == "" {
 		s.auditExchangeFailure(ctx, clientID, audience, sessionID, "token_exchange_downstream_empty_token", map[string]any{
-			"sub": identity.Subject,
+			claimSub: identity.Subject,
 		})
 		return nil, fmt.Errorf("downstream exchange returned no token")
 	}
@@ -209,18 +209,18 @@ func (s *Server) dispatchDownstreamExchange(
 	}
 
 	s.Logger.Debug("brokered token exchange: issued downstream token",
-		"client_id", clientID, "sub", identity.Subject, "subject_iss", identity.Issuer,
-		"audience", audience, "scope", result.Scope, "exp", result.ExpiresAt,
-		"session_id", sessionID)
+		paramClientID, clientID, claimSub, identity.Subject, "subject_iss", identity.Issuer,
+		paramAudience, audience, paramScope, result.Scope, "exp", result.ExpiresAt,
+		logKeySessionID, sessionID)
 
 	successDetails := map[string]any{
-		"grant_type":         GrantTypeTokenExchange,
-		"exchange":           "brokered",
+		paramGrantType:       GrantTypeTokenExchange,
+		logKeyExchange:       exchangeBrokered,
 		"subject_token_type": subject.Type,
-		"audience":           audience,
-		"scope":              result.Scope,
+		paramAudience:        audience,
+		paramScope:           result.Scope,
 		"subject_iss":        identity.Issuer,
-		"session_id":         sessionID,
+		logKeySessionID:      sessionID,
 	}
 	if actorIdentity != nil {
 		successDetails["actor_iss"] = actorIdentity.Issuer
@@ -259,11 +259,11 @@ func (s *Server) exchangeRateLimited(ctx context.Context, clientID, audience, se
 // rejection paths. extra is merged over the base details.
 func (s *Server) auditExchangeFailure(ctx context.Context, clientID, audience, sessionID, reason string, extra map[string]any) {
 	details := map[string]any{
-		"reason":     reason,
-		"grant_type": GrantTypeTokenExchange,
-		"exchange":   "brokered",
-		"audience":   audience,
-		"session_id": sessionID,
+		logKeyReason:    reason,
+		paramGrantType:  GrantTypeTokenExchange,
+		logKeyExchange:  exchangeBrokered,
+		paramAudience:   audience,
+		logKeySessionID: sessionID,
 	}
 	maps.Copy(details, extra)
 	s.Auditor.LogEvent(ctx, security.Event{

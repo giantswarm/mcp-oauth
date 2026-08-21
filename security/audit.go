@@ -10,6 +10,10 @@ import (
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 )
 
+// logKeyReason is the structured-logging key carrying the human-readable
+// cause of an audited security event.
+const logKeyReason = "reason"
+
 // Auditor handles security event logging with PII protection.
 type Auditor struct {
 	logger    *slog.Logger
@@ -148,7 +152,7 @@ func (a *Auditor) LogAuthFailure(ctx context.Context, userID, clientID, ipAddres
 		ClientID:  clientID,
 		IPAddress: ipAddress,
 		Details: map[string]any{
-			"reason": reason,
+			logKeyReason: reason,
 		},
 	})
 }
@@ -193,7 +197,7 @@ func (a *Auditor) LogInvalidPKCE(ctx context.Context, clientID, ipAddress, reaso
 		ClientID:  clientID,
 		IPAddress: ipAddress,
 		Details: map[string]any{
-			"reason": reason,
+			logKeyReason: reason,
 		},
 	})
 }
@@ -231,8 +235,8 @@ func (a *Auditor) LogInvalidRedirect(ctx context.Context, clientID, ipAddress, u
 		ClientID:  clientID,
 		IPAddress: ipAddress,
 		Details: map[string]any{
-			"uri":    uri,
-			"reason": reason,
+			"uri":        uri,
+			logKeyReason: reason,
 		},
 	})
 }

@@ -57,9 +57,9 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 	grantType := r.Form.Get("grant_type")
 
 	switch grantType {
-	case "authorization_code":
+	case grantTypeAuthorizationCode:
 		h.handleAuthorizationCodeGrant(w, r, clientIP)
-	case "refresh_token":
+	case grantTypeRefreshToken:
 		h.handleRefreshTokenGrant(w, r, clientIP)
 	case server.GrantTypeTokenExchange:
 		h.handleTokenExchangeGrant(w, r, clientIP)
@@ -77,7 +77,7 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 // grant_type=<random> would otherwise mint a fresh series per probe).
 func (h *Handler) recordTokenFailure(ctx context.Context, grantType, errorCode string) {
 	switch grantType {
-	case "authorization_code", "refresh_token", "client_credentials", "password", server.GrantTypeTokenExchange:
+	case grantTypeAuthorizationCode, grantTypeRefreshToken, "client_credentials", "password", server.GrantTypeTokenExchange:
 	default:
 		grantType = "unknown"
 	}
@@ -98,7 +98,7 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	codeVerifier := r.Form.Get("code_verifier")
 
 	if code == "" {
-		h.recordTokenFailure(r.Context(), "authorization_code", constants.ErrorCodeInvalidRequest)
+		h.recordTokenFailure(r.Context(), grantTypeAuthorizationCode, constants.ErrorCodeInvalidRequest)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "code missing")
 		h.writeError(w, constants.ErrorCodeInvalidRequest, "Required parameter 'code' missing", http.StatusBadRequest)
@@ -115,11 +115,11 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 		// 401 (unauthorized) in dashboards.
 		var oauthErr *oauth.Error
 		if errors.As(err, &oauthErr) {
-			h.recordTokenFailure(r.Context(), "authorization_code", oauthErr.Code)
+			h.recordTokenFailure(r.Context(), grantTypeAuthorizationCode, oauthErr.Code)
 			h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, oauthErr.Status, startTime)
 			h.writeError(w, oauthErr.Code, oauthErr.Description, oauthErr.Status)
 		} else {
-			h.recordTokenFailure(r.Context(), "authorization_code", constants.ErrorCodeInvalidClient)
+			h.recordTokenFailure(r.Context(), grantTypeAuthorizationCode, constants.ErrorCodeInvalidClient)
 			h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusUnauthorized, startTime)
 			h.writeError(w, constants.ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
 		}
@@ -143,13 +143,13 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 		span,
 		attribute.String(instrumentation.AttrClientID, client.ClientID),
 		attribute.String(instrumentation.AttrClientType, client.ClientType),
-		attribute.String(instrumentation.AttrGrantType, "authorization_code"),
+		attribute.String(instrumentation.AttrGrantType, grantTypeAuthorizationCode),
 	)
 
 	dpopJKT, err := h.extractDPoPJKT(r)
 	if err != nil {
-		h.logger.Warn("Invalid DPoP proof on code exchange", "client_id", client.ClientID, "ip", clientIP, "error", err)
-		h.recordTokenFailure(r.Context(), "authorization_code", constants.ErrorCodeInvalidDPoPProof)
+		h.logger.Warn("Invalid DPoP proof on code exchange", "client_id", client.ClientID, "ip", clientIP, paramError, err)
+		h.recordTokenFailure(r.Context(), grantTypeAuthorizationCode, constants.ErrorCodeInvalidDPoPProof)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "invalid dpop proof")
@@ -160,8 +160,8 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	// Exchange authorization code for tokens
 	tokenResponse, scope, err := h.server.ExchangeAuthorizationCode(r.Context(), code, client.ClientID, redirectURI, resource, codeVerifier, dpopJKT)
 	if err != nil {
-		h.logger.Error("Failed to exchange authorization code", "client_id", client.ClientID, "ip", clientIP, "error", err)
-		h.recordTokenFailure(r.Context(), "authorization_code", constants.ErrorCodeInvalidGrant)
+		h.logger.Error("Failed to exchange authorization code", "client_id", client.ClientID, "ip", clientIP, paramError, err)
+		h.recordTokenFailure(r.Context(), grantTypeAuthorizationCode, constants.ErrorCodeInvalidGrant)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "code exchange failed")
@@ -194,11 +194,11 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	defer endSpan()
 
 	// Read from already-parsed form (ParseForm called by ServeToken)
-	refreshToken := r.Form.Get("refresh_token")
+	refreshToken := r.Form.Get(grantTypeRefreshToken)
 	clientID := r.Form.Get("client_id")
 
 	if refreshToken == "" {
-		h.recordTokenFailure(r.Context(), "refresh_token", constants.ErrorCodeInvalidRequest)
+		h.recordTokenFailure(r.Context(), grantTypeRefreshToken, constants.ErrorCodeInvalidRequest)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "refresh_token missing")
 		h.writeError(w, constants.ErrorCodeInvalidRequest, "refresh_token is required", http.StatusBadRequest)
@@ -216,7 +216,7 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	instrumentation.SetSpanAttributes(
 		span,
 		attribute.String(instrumentation.AttrClientID, clientID),
-		attribute.String(instrumentation.AttrGrantType, "refresh_token"),
+		attribute.String(instrumentation.AttrGrantType, grantTypeRefreshToken),
 	)
 	if clientAuthenticated {
 		instrumentation.SetSpanAttributes(span, attribute.Bool("oauth.client_authenticated", true))
@@ -233,8 +233,8 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	// Refresh token
 	tokenResponse, err := h.server.RefreshAccessToken(r.Context(), refreshToken, clientID)
 	if err != nil {
-		h.logger.Error("Failed to refresh token", "client_id", clientID, "ip", clientIP, "error", err)
-		h.recordTokenFailure(r.Context(), "refresh_token", constants.ErrorCodeInvalidGrant)
+		h.logger.Error("Failed to refresh token", "client_id", clientID, "ip", clientIP, paramError, err)
+		h.recordTokenFailure(r.Context(), grantTypeRefreshToken, constants.ErrorCodeInvalidGrant)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "token refresh failed")
@@ -262,7 +262,7 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.ResponseWriter, r *http.Request, clientID, clientIP string, startTime time.Time, span trace.Span) (string, bool, error) {
 	basicClientID, basicClientSecret := h.parseBasicAuth(r)
 
-	if h.rejectBasicFormClientIDMismatch(w, r, basicClientID, clientID, clientIP, endpointToken, "refresh_token", span, startTime) {
+	if h.rejectBasicFormClientIDMismatch(w, r, basicClientID, clientID, clientIP, endpointToken, grantTypeRefreshToken, span, startTime) {
 		return "", false, fmt.Errorf("client_id mismatch between Basic Authorization header and form parameter")
 	}
 
@@ -270,7 +270,7 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 	if basicClientID != "" {
 		clientID = basicClientID
 		if err := h.server.ValidateClientCredentials(ctx, clientID, basicClientSecret); err != nil {
-			h.logger.Warn("Client authentication failed", "client_id", clientID, "ip", clientIP, "error", err)
+			h.logger.Warn("Client authentication failed", "client_id", clientID, "ip", clientIP, paramError, err)
 			if h.server.Auditor != nil {
 				h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "refresh_client_authentication_failed")
 			}
@@ -316,12 +316,12 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 				Type:     security.EventAuthFailure,
 				ClientID: clientID,
 				Details: map[string]any{
-					"severity":     "high",
-					"client_type":  "confidential",
-					"auth_missing": true,
-					"endpoint":     "refresh_token",
-					"ip":           clientIP,
-					"oauth_spec":   "OAuth 2.1 Section 6",
+					"severity":      "high",
+					fieldClientType: "confidential",
+					"auth_missing":  true,
+					"endpoint":      grantTypeRefreshToken,
+					"ip":            clientIP,
+					"oauth_spec":    "OAuth 2.1 Section 6",
 				},
 			})
 		}
@@ -456,7 +456,7 @@ func (h *Handler) writeTokenResponse(w http.ResponseWriter, token *oauth2.Token,
 	}
 
 	if token.RefreshToken != "" {
-		response["refresh_token"] = token.RefreshToken
+		response[grantTypeRefreshToken] = token.RefreshToken
 	}
 
 	if scope != "" {

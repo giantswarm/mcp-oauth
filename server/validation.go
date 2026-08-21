@@ -627,7 +627,7 @@ func (s *Server) validateResourceConsistency(ctx context.Context, resource strin
 			s.Logger.Debug("Resource parameter mismatch",
 				"expected", authCode.Resource,
 				"provided", resource,
-				"client_id", clientID,
+				paramClientID, clientID,
 				"user_id", authCode.UserID)
 		}
 		s.Auditor.LogEvent(ctx, security.Event{
@@ -637,7 +637,7 @@ func (s *Server) validateResourceConsistency(ctx context.Context, resource strin
 			Details: map[string]any{
 				"expected_resource": authCode.Resource,
 				"provided_resource": resource,
-				"severity":          "high",
+				logKeySeverity:      severityHigh,
 			},
 		})
 		return s.logAuthCodeValidationFailure(ctx, "resource_mismatch", clientID, authCode.UserID, helpers.SafeTruncate(code, 8))

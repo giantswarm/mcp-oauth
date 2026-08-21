@@ -208,7 +208,7 @@ func (h *Handler) registerMetadataSubPath(mux *http.ServeMux, resourcePath strin
 	if err := h.validateMetadataPath(resourcePath); err != nil {
 		h.logger.Warn("Rejecting invalid metadata path registration",
 			"path", resourcePath,
-			"error", err,
+			paramError, err,
 			"security_event", "invalid_metadata_path")
 		return
 	}
@@ -329,7 +329,7 @@ func (h *Handler) extractIssuerPath() string {
 	if err != nil {
 		h.logger.Warn("Failed to parse issuer URL for path extraction",
 			"issuer", h.server.Config.Issuer,
-			"error", err)
+			paramError, err)
 		return ""
 	}
 
@@ -387,13 +387,13 @@ func (h *Handler) buildAuthServerMetadata() map[string]any {
 		"authorization_endpoint":                h.server.Config.AuthorizationEndpoint(),
 		"token_endpoint":                        h.server.Config.TokenEndpoint(),
 		"response_types_supported":              oauth.DefaultResponseTypes,
-		"grant_types_supported":                 []string{"authorization_code", "refresh_token", server.GrantTypeTokenExchange},
+		"grant_types_supported":                 []string{grantTypeAuthorizationCode, grantTypeRefreshToken, server.GrantTypeTokenExchange},
 		"code_challenge_methods_supported":      []string{constants.PKCEMethodS256},
 		"token_endpoint_auth_methods_supported": oauth.SupportedTokenAuthMethods,
 		// RFC 9207: advertise that authorization responses include the `iss` parameter
 		// so clients can verify the response came from the expected authorization server.
 		"authorization_response_iss_parameter_supported": true,
-		"claims_supported":                      []string{"sub", "aud", "iss", "exp", "iat", "nonce"},
+		"claims_supported":                      []string{claimSub, "aud", "iss", "exp", "iat", "nonce"},
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": h.idTokenSigningAlgs(),
 	}
@@ -511,7 +511,7 @@ func (h *Handler) ServeJWKS(w http.ResponseWriter, r *http.Request) {
 	jwks, err := h.server.PublicJWKS()
 	if err != nil {
 		h.logger.Error("Failed to build JWKS for discovery endpoint",
-			"error", err,
+			paramError, err,
 			"ip", clientIP)
 		h.recordHTTPMetrics(r.Context(), endpointJWKS, http.MethodGet, http.StatusInternalServerError, startTime)
 		http.Error(w, "JWKS unavailable", http.StatusInternalServerError)

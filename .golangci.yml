@@ -30,6 +30,17 @@ linters:
           - gocyclo
           - gocognit
           - dupl
+      # Test fixtures repeat protocol strings by design; constants would only
+      # obscure what each case asserts (mirrors giantswarm/klaus-operator).
+      - path: _test\.go
+        linters:
+          - goconst
+      # Test fixtures legitimately hardcode credential-shaped values (G101)
+      # and marshal token-shaped structs for mock provider responses (G117).
+      - path: _test\.go
+        linters:
+          - gosec
+        text: "G101|G117"
       - path: ^examples/
         linters:
           - gocyclo

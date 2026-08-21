@@ -154,7 +154,7 @@ func validateProviderRevocationConfig(config *Config, logger *slog.Logger) {
 		logger.Warn("CONFIGURATION WARNING: Invalid ProviderRevocationTimeout corrected",
 			"provided_value", origTimeout,
 			"corrected_to", config.ProviderRevocationTimeout,
-			"reason", "timeout must be at least 1 second")
+			logKeyReason, "timeout must be at least 1 second")
 		hasInvalidValues = true
 	}
 
@@ -163,7 +163,7 @@ func validateProviderRevocationConfig(config *Config, logger *slog.Logger) {
 		logger.Warn("CONFIGURATION WARNING: Invalid ProviderRevocationMaxRetries corrected",
 			"provided_value", origRetries,
 			"corrected_to", config.ProviderRevocationMaxRetries,
-			"reason", "retries cannot be negative")
+			logKeyReason, "retries cannot be negative")
 		hasInvalidValues = true
 	}
 
@@ -172,7 +172,7 @@ func validateProviderRevocationConfig(config *Config, logger *slog.Logger) {
 		logger.Warn("CONFIGURATION WARNING: Invalid ProviderRevocationFailureThreshold corrected",
 			"provided_value", origThreshold,
 			"corrected_to", config.ProviderRevocationFailureThreshold,
-			"reason", "threshold must be between 0.0 and 1.0")
+			logKeyReason, "threshold must be between 0.0 and 1.0")
 		hasInvalidValues = true
 	}
 
@@ -285,8 +285,8 @@ func validateScopesForPath(path string, scopes []string, logger *slog.Logger) {
 		if err := validateScopeFormat(scope); err != nil {
 			logger.Warn("Invalid scope format in EndpointScopeRequirements",
 				"path", path,
-				"scope", scope,
-				"error", err,
+				paramScope, scope,
+				logKeyError, err,
 				"rfc", "RFC 6749 Section 3.3")
 		}
 	}
@@ -324,8 +324,8 @@ func validateScopesForPathMethod(path, method string, scopes []string, logger *s
 			logger.Warn("Invalid scope format in EndpointMethodScopeRequirements",
 				"path", path,
 				"method", method,
-				"scope", scope,
-				"error", err,
+				paramScope, scope,
+				logKeyError, err,
 				"rfc", "RFC 6749 Section 3.3")
 		}
 	}
@@ -386,7 +386,7 @@ func validateResourceMetadataByPath(config *Config, logger *slog.Logger) {
 // validateResourceMetadataPathConfig validates a single resource metadata path configuration.
 func validateResourceMetadataPathConfig(pathKey string, pathConfig ProtectedResourceConfig, logger *slog.Logger) {
 	if err := helpers.ValidateMetadataPath(pathKey); err != nil {
-		logger.Warn("Invalid path in ResourceMetadataByPath", "path", pathKey, "error", err)
+		logger.Warn("Invalid path in ResourceMetadataByPath", "path", pathKey, logKeyError, err)
 	}
 
 	validatePathScopes(pathKey, pathConfig.ScopesSupported, logger)
@@ -398,7 +398,7 @@ func validateResourceMetadataPathConfig(pathKey string, pathConfig ProtectedReso
 func validatePathScopes(pathKey string, scopes []string, logger *slog.Logger) {
 	for _, scope := range scopes {
 		if err := validateScopeFormat(scope); err != nil {
-			logger.Warn("Invalid scope format", "path", pathKey, "scope", scope, "error", err)
+			logger.Warn("Invalid scope format", "path", pathKey, paramScope, scope, logKeyError, err)
 		}
 	}
 }
@@ -486,7 +486,7 @@ func validateAudience(audience string, index int, seen map[string]bool, logger *
 
 	if seen[audience] {
 		logger.Warn("Duplicate audience in TrustedAudiences - removing",
-			"audience", audience, "index", index)
+			paramAudience, audience, "index", index)
 		return "", false
 	}
 
@@ -507,7 +507,7 @@ func isValidAudienceFormat(audience string, index int, logger *slog.Logger) bool
 	u, err := url.Parse(audience)
 	if err != nil || u.Host == "" {
 		logger.Warn("Invalid URL format in TrustedAudiences",
-			"audience", audience, "index", index, "error", err)
+			paramAudience, audience, "index", index, logKeyError, err)
 		return false
 	}
 	return true
@@ -582,7 +582,7 @@ func validateMaxRequestBodySizeConfig(config *Config, logger *slog.Logger) {
 		logger.Warn("CONFIGURATION WARNING: Invalid MaxRequestBodySize corrected",
 			"provided_value", config.MaxRequestBodySize,
 			"corrected_to", 1<<20,
-			"reason", "negative value would reject all requests")
+			logKeyReason, "negative value would reject all requests")
 		config.MaxRequestBodySize = 1 << 20
 	}
 }

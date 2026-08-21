@@ -125,8 +125,8 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type: security.EventAuthFailure,
 			Details: map[string]any{
-				"reason":     "token_exchange_jwt_mode_required",
-				"grant_type": GrantTypeTokenExchange,
+				logKeyReason:   "token_exchange_jwt_mode_required",
+				paramGrantType: GrantTypeTokenExchange,
 			},
 		})
 		return nil, fmt.Errorf("token exchange requires JWT access token mode (set AccessTokenFormat=jwt)")
@@ -178,12 +178,12 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 
 	jti := generateRandomToken()
 	auditDetails := map[string]any{
-		"grant_type":         GrantTypeTokenExchange,
+		paramGrantType:       GrantTypeTokenExchange,
 		"subject_token_type": req.Subject.Type,
-		"audience":           audience,
-		"scope":              grantedScope,
-		"jti":                jti,
-		"session_id":         sessionID,
+		paramAudience:        audience,
+		paramScope:           grantedScope,
+		claimJTI:             jti,
+		logKeySessionID:      sessionID,
 	}
 	if act != nil {
 		auditDetails["actor_iss"] = act.Iss
@@ -206,8 +206,8 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 		Extra:         options.Extra,
 	})
 	if err != nil {
-		auditDetails["reason"] = "access_token_issue_failed"
-		auditDetails["error"] = err.Error()
+		auditDetails[logKeyReason] = "access_token_issue_failed"
+		auditDetails[logKeyError] = err.Error()
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type:    security.EventAuthFailure,
 			UserID:  identity.Subject,
@@ -217,7 +217,7 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 	}
 
 	s.Logger.Debug("token exchange: issued token",
-		"sub", identity.Subject, "aud", audience, "scope", grantedScope, "exp", expiresAt,
+		claimSub, identity.Subject, "aud", audience, paramScope, grantedScope, "exp", expiresAt,
 		"delegated", act != nil)
 
 	s.Auditor.LogEvent(ctx, security.Event{
@@ -306,9 +306,9 @@ func (s *Server) checkSelfRenewal(ctx context.Context, identity, actor *SubjectI
 		Type:   security.EventAuthFailure,
 		UserID: identity.Subject,
 		Details: map[string]any{
-			"reason":     "token_exchange_self_renewal_denied",
-			"grant_type": GrantTypeTokenExchange,
-			"session_id": sessionID,
+			logKeyReason:    "token_exchange_self_renewal_denied",
+			paramGrantType:  GrantTypeTokenExchange,
+			logKeySessionID: sessionID,
 		},
 	})
 	return ErrSelfRenewalDenied
@@ -326,9 +326,9 @@ func (s *Server) checkSubjectKeyBinding(ctx context.Context, identity *SubjectId
 		Type:   security.EventAuthFailure,
 		UserID: identity.Subject,
 		Details: map[string]any{
-			"reason":     "token_exchange_subject_key_mismatch",
-			"grant_type": GrantTypeTokenExchange,
-			"session_id": sessionID,
+			logKeyReason:    "token_exchange_subject_key_mismatch",
+			paramGrantType:  GrantTypeTokenExchange,
+			logKeySessionID: sessionID,
 		},
 	})
 	return ErrSubjectKeyMismatch
@@ -347,10 +347,10 @@ func (s *Server) checkAllowedResource(ctx context.Context, audience, sessionID s
 	s.Auditor.LogEvent(ctx, security.Event{
 		Type: security.EventAuthFailure,
 		Details: map[string]any{
-			"reason":     "token_exchange_resource_not_allowed",
-			"grant_type": GrantTypeTokenExchange,
-			"audience":   audience,
-			"session_id": sessionID,
+			logKeyReason:    "token_exchange_resource_not_allowed",
+			paramGrantType:  GrantTypeTokenExchange,
+			paramAudience:   audience,
+			logKeySessionID: sessionID,
 		},
 	})
 	return fmt.Errorf("%w: resource %q", ErrInvalidTarget, audience)
@@ -369,9 +369,9 @@ func (s *Server) checkSubjectEmailVerified(ctx context.Context, identity *Subjec
 		Type:   security.EventAuthFailure,
 		UserID: identity.Subject,
 		Details: map[string]any{
-			"reason":     "token_exchange_unverified_subject_email",
-			"grant_type": GrantTypeTokenExchange,
-			"session_id": sessionID,
+			logKeyReason:    "token_exchange_unverified_subject_email",
+			paramGrantType:  GrantTypeTokenExchange,
+			logKeySessionID: sessionID,
 		},
 	})
 	return ErrUnverifiedSubjectEmail
@@ -388,9 +388,9 @@ func (s *Server) exchangeSessionRateLimited(ctx context.Context, sessionID strin
 	s.Auditor.LogEvent(ctx, security.Event{
 		Type: security.EventAuthFailure,
 		Details: map[string]any{
-			"reason":     "token_exchange_rate_limited",
-			"grant_type": GrantTypeTokenExchange,
-			"session_id": sessionID,
+			logKeyReason:    "token_exchange_rate_limited",
+			paramGrantType:  GrantTypeTokenExchange,
+			logKeySessionID: sessionID,
 		},
 	})
 	return true
@@ -512,9 +512,9 @@ func (s *Server) validateExchangeToken(ctx context.Context, token TypedToken, ro
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type: security.EventAuthFailure,
 			Details: auditDetails(map[string]any{
-				"reason":     unsupportedReason,
-				"grant_type": GrantTypeTokenExchange,
-				typeKey:      token.Type,
+				logKeyReason:   unsupportedReason,
+				paramGrantType: GrantTypeTokenExchange,
+				typeKey:        token.Type,
 			}),
 		})
 		return nil, &TokenExchangeUnsupportedTypeError{tokenType: token.Type, role: role}
@@ -525,9 +525,9 @@ func (s *Server) validateExchangeToken(ctx context.Context, token TypedToken, ro
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type: security.EventAuthFailure,
 			Details: auditDetails(map[string]any{
-				"reason":     unsupportedReason,
-				"grant_type": GrantTypeTokenExchange,
-				typeKey:      token.Type,
+				logKeyReason:   unsupportedReason,
+				paramGrantType: GrantTypeTokenExchange,
+				typeKey:        token.Type,
 			}),
 		})
 		return nil, &TokenExchangeUnsupportedTypeError{tokenType: token.Type, role: role}
@@ -536,14 +536,14 @@ func (s *Server) validateExchangeToken(ctx context.Context, token TypedToken, ro
 	identity, err := v.Validate(ctx, token.Token, defaultAudiences)
 	if err != nil {
 		s.Logger.Debug("token exchange: "+role+" token validation failed",
-			typeKey, token.Type, "error", err)
+			typeKey, token.Type, logKeyError, err)
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type: security.EventAuthFailure,
 			Details: auditDetails(map[string]any{
-				"reason":     validationFailedReason,
-				"grant_type": GrantTypeTokenExchange,
-				typeKey:      token.Type,
-				"error":      err.Error(),
+				logKeyReason:   validationFailedReason,
+				paramGrantType: GrantTypeTokenExchange,
+				typeKey:        token.Type,
+				logKeyError:    err.Error(),
 			}),
 		})
 		return nil, fmt.Errorf("%s token validation: %w", role, err)

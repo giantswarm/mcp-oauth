@@ -29,10 +29,10 @@ func (s *Server) handleRefreshTokenReuseDetection(ctx context.Context, refreshTo
 		// Attempted use of token from previously revoked family
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type: security.EventRevokedTokenFamilyReuseAttempt, UserID: family.UserID, ClientID: clientID,
-			Details: map[string]any{"severity": "critical", "family_id": family.FamilyID},
+			Details: map[string]any{logKeySeverity: severityCritical, logKeyFamilyID: family.FamilyID},
 		})
 		s.Logger.Error("Attempted use of revoked token family",
-			"user_id", family.UserID, "family_id", helpers.SafeTruncate(family.FamilyID, 8))
+			"user_id", family.UserID, logKeyFamilyID, helpers.SafeTruncate(family.FamilyID, 8))
 		return errInvalidGrant
 	}
 
@@ -41,24 +41,24 @@ func (s *Server) handleRefreshTokenReuseDetection(ctx context.Context, refreshTo
 
 	if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(family.UserID+":"+clientID) {
 		s.Logger.Error("Refresh token reuse detected - token was rotated but still being used",
-			"user_id", family.UserID, "client_id", clientID, "family_id", helpers.SafeTruncate(family.FamilyID, 8))
+			"user_id", family.UserID, paramClientID, clientID, logKeyFamilyID, helpers.SafeTruncate(family.FamilyID, 8))
 	}
 
 	// Revoke entire token family
 	if err := familyStore.RevokeRefreshTokenFamily(ctx, family.FamilyID); err != nil {
-		s.Logger.Error("Failed to revoke token family", "error", err)
+		s.Logger.Error("Failed to revoke token family", logKeyError, err)
 	}
 
 	// Revoke all tokens for this user+client
 	if err := s.RevokeAllTokensForUserClient(ctx, family.UserID, family.ClientID); err != nil {
-		s.Logger.Error("Failed to revoke user tokens", "error", err)
+		s.Logger.Error("Failed to revoke user tokens", logKeyError, err)
 	}
 
 	s.Auditor.LogEvent(ctx, security.Event{
 		Type: security.EventRefreshTokenReuseDetected, UserID: family.UserID, ClientID: clientID,
 		Details: map[string]any{
-			"severity": "critical", "family_id": family.FamilyID, "generation": family.Generation,
-			"action": "family_and_tokens_revoked",
+			logKeySeverity: severityCritical, logKeyFamilyID: family.FamilyID, "generation": family.Generation,
+			logKeyAction: "family_and_tokens_revoked",
 		},
 	})
 	s.Auditor.LogTokenReuse(ctx, family.UserID, clientID)
@@ -97,20 +97,20 @@ func (s *Server) handleRefreshTokenReuseDetection(ctx context.Context, refreshTo
 func (s *Server) handleSharedProviderTokenError(ctx context.Context, err error, refreshToken, userID, clientID string) error {
 	if !storage.IsNotFoundError(err) && !storage.IsExpiredError(err) {
 		s.Logger.Warn("Transient error reading shared provider token during refresh",
-			"error", err.Error(), "user_id", userID, "client_id", clientID,
+			logKeyError, err.Error(), "user_id", userID, paramClientID, clientID,
 			"token_suffix", helpers.TokenSuffix(refreshToken, 8))
 		return fmt.Errorf("read shared provider token: %w", err)
 	}
 
 	s.Logger.Warn("Shared provider token missing for valid refresh token - re-login required",
-		"user_id", userID, "client_id", clientID, "reason", err.Error(),
+		"user_id", userID, paramClientID, clientID, logKeyReason, err.Error(),
 		"token_suffix", helpers.TokenSuffix(refreshToken, 8))
 	s.Auditor.LogEvent(ctx, security.Event{
 		Type: security.EventAuthFailure, UserID: userID, ClientID: clientID,
 		Details: map[string]any{
-			"severity": "warning",
-			"reason":   "shared_provider_token_missing",
-			"action":   "re_login_required",
+			logKeySeverity: "warning",
+			logKeyReason:   "shared_provider_token_missing",
+			logKeyAction:   "re_login_required",
 		},
 	})
 	s.Auditor.LogAuthFailure(ctx, userID, clientID, "", "shared_provider_token_missing")
@@ -143,17 +143,17 @@ func (s *Server) handleRefreshTokenError(ctx context.Context, err error, refresh
 	// the shared-entry and metadata reads on this path).
 	if !isNotFoundOrExpired {
 		s.Logger.Warn("Transient error during refresh token validation",
-			"error", err.Error(), "client_id", clientID, "token_suffix", helpers.TokenSuffix(refreshToken, 8))
+			logKeyError, err.Error(), paramClientID, clientID, "token_suffix", helpers.TokenSuffix(refreshToken, 8))
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type: security.EventAuthFailure, ClientID: clientID,
-			Details: map[string]any{"reason": "transient_storage_error"},
+			Details: map[string]any{logKeyReason: "transient_storage_error"},
 		})
 		return fmt.Errorf("validate refresh token: %w", err)
 	}
 
 	// Regular invalid token error
 	s.Logger.Debug("Refresh token validation failed",
-		"reason", err.Error(), "client_id", clientID, "token_suffix", helpers.TokenSuffix(refreshToken, 8))
+		logKeyReason, err.Error(), paramClientID, clientID, "token_suffix", helpers.TokenSuffix(refreshToken, 8))
 	s.Auditor.LogAuthFailure(ctx, "", clientID, "", "invalid_refresh_token")
 	return errInvalidGrant
 }
@@ -197,11 +197,11 @@ func (s *Server) rotateRefreshToken(ctx context.Context, oldRefreshToken, userID
 	refreshTokenExpiry := s.refreshTokenExpiry(time.Now())
 	if supportsFamilies && familyID != "" {
 		if err := familyStore.SaveRefreshTokenWithFamily(ctx, newRefreshToken, userID, clientID, familyID, generation, refreshTokenExpiry); err != nil {
-			s.Logger.Warn("Failed to save refresh token with family", "error", err)
+			s.Logger.Warn("Failed to save refresh token with family", logKeyError, err)
 		}
 	} else {
 		if err := s.tokenStore.SaveRefreshToken(ctx, newRefreshToken, userID, refreshTokenExpiry); err != nil {
-			s.Logger.Warn("Failed to track new refresh token", "error", err)
+			s.Logger.Warn("Failed to track new refresh token", logKeyError, err)
 		}
 	}
 
@@ -263,18 +263,18 @@ func (s *Server) refreshProviderTokenForGrant(ctx context.Context, userID string
 func (s *Server) storeRefreshedProviderToken(ctx context.Context, userID, newAccessToken, newRefreshToken string, newProviderToken *oauth2.Token, refreshExpiry time.Time) {
 	if upts, unified := s.userProviderTokenStore(); unified {
 		if err := upts.SaveProviderTokenRef(ctx, newAccessToken, userID, refreshExpiry); err != nil {
-			s.Logger.Warn("Failed to save access token provider reference", "error", err)
+			s.Logger.Warn("Failed to save access token provider reference", logKeyError, err)
 		}
 		if err := upts.SaveProviderTokenRef(ctx, newRefreshToken, userID, refreshExpiry); err != nil {
-			s.Logger.Warn("Failed to save refresh token provider reference", "error", err)
+			s.Logger.Warn("Failed to save refresh token provider reference", logKeyError, err)
 		}
 		return
 	}
 	if err := s.tokenStore.SaveToken(ctx, newAccessToken, newProviderToken); err != nil {
-		s.Logger.Warn("Failed to save new access token", "error", err)
+		s.Logger.Warn("Failed to save new access token", logKeyError, err)
 	}
 	if err := s.tokenStore.SaveToken(ctx, newRefreshToken, newProviderToken); err != nil {
-		s.Logger.Warn("Failed to save new refresh token", "error", err)
+		s.Logger.Warn("Failed to save new refresh token", logKeyError, err)
 	}
 }
 
@@ -379,7 +379,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 			// atomically inside the consume, which failed transiently as a
 			// whole.
 			s.Logger.Warn("Transient error reading refresh token metadata",
-				"error", metaErr.Error(), "client_id", clientID,
+				logKeyError, metaErr.Error(), paramClientID, clientID,
 				"token_suffix", helpers.TokenSuffix(refreshToken, 8))
 			return nil, fmt.Errorf("read refresh token metadata: %w", metaErr)
 		}
@@ -450,7 +450,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		AccessToken:  newAccessToken,
 		RefreshToken: newRefreshToken,
 		Expiry:       expiry,
-		TokenType:    "Bearer",
+		TokenType:    tokenTypeBearer,
 	}
 
 	// Per OpenID Connect Core 1.0 §12.2, the refreshed id_token (when present) is
@@ -498,17 +498,17 @@ func (s *Server) handleLegacyRefreshToken(ctx context.Context, requestingClientI
 	s.Logger.Warn("Refresh token rejected - missing client binding",
 		"user_id", userID,
 		"requesting_client_id", requestingClientID,
-		"reason", "OAuth 2.1 Section 6 requires client binding")
+		logKeyReason, "OAuth 2.1 Section 6 requires client binding")
 
 	s.Auditor.LogEvent(ctx, security.Event{
 		Type:     security.EventRefreshTokenMissingClientBinding,
 		UserID:   userID,
 		ClientID: requestingClientID,
 		Details: map[string]any{
-			"severity":      "high",
-			"action":        "rejected",
+			logKeySeverity:  severityHigh,
+			logKeyAction:    "rejected",
 			"security_risk": "cross_client_token_theft_prevented",
-			"oauth_spec":    "OAuth 2.1 Section 6",
+			logKeyOAuthSpec: "OAuth 2.1 Section 6",
 		},
 	})
 	s.Auditor.LogAuthFailure(ctx, userID, requestingClientID, "", "refresh_token_missing_client_binding")
@@ -543,7 +543,7 @@ func (s *Server) validateRefreshTokenClientBinding(ctx context.Context, storedCl
 				"stored_client_id", storedClientID,
 				"requesting_client_id", requestingClientID,
 				"security_event", "cross_client_token_theft_attempt",
-				"oauth_spec", "OAuth 2.1 Section 6")
+				logKeyOAuthSpec, "OAuth 2.1 Section 6")
 		}
 
 		s.Auditor.LogEvent(ctx, security.Event{
@@ -551,11 +551,11 @@ func (s *Server) validateRefreshTokenClientBinding(ctx context.Context, storedCl
 			UserID:   userID,
 			ClientID: requestingClientID,
 			Details: map[string]any{
-				"severity":             "critical",
+				logKeySeverity:         severityCritical,
 				"stored_client_id":     storedClientID,
 				"requesting_client_id": requestingClientID,
 				"attack_indicator":     "cross_client_token_theft_attempt",
-				"oauth_spec":           "OAuth 2.1 Section 6",
+				logKeyOAuthSpec:        "OAuth 2.1 Section 6",
 			},
 		})
 		s.Auditor.LogAuthFailure(ctx, userID, requestingClientID, "", "refresh_token_client_binding_mismatch")
@@ -566,7 +566,7 @@ func (s *Server) validateRefreshTokenClientBinding(ctx context.Context, storedCl
 
 	s.Logger.Debug("Refresh token client binding validated",
 		"user_id", userID,
-		"client_id", storedClientID)
+		paramClientID, storedClientID)
 
 	return nil
 }

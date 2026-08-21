@@ -18,8 +18,8 @@ import (
 // underlying field is non-empty. The returned `emitted` slice names the scope
 // groups that contributed at least one claim — used for the audit record.
 func buildUserInfoClaims(userInfo *providers.UserInfo, scopeSet map[string]struct{}) (map[string]any, []string) {
-	emitted := []string{"sub"}
-	claims := map[string]any{"sub": userInfo.ID}
+	emitted := []string{claimSub}
+	claims := map[string]any{claimSub: userInfo.ID}
 	if _, ok := scopeSet["profile"]; ok {
 		addProfileClaims(claims, userInfo)
 		emitted = append(emitted, "profile")
@@ -116,7 +116,7 @@ func (h *Handler) ServeUserInfo(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(claims); err != nil {
-		h.logger.Warn("failed to write JSON response", "error", err)
+		h.logger.Warn("failed to write JSON response", paramError, err)
 		h.recordHTTPMetrics(r.Context(), endpointUserInfo, r.Method, http.StatusInternalServerError, startTime)
 		return
 	}
