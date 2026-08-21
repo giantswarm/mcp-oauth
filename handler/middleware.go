@@ -37,7 +37,7 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 
 		userInfo, err := h.server.ValidateToken(r.Context(), accessToken)
 		if err != nil {
-			h.logger.Warn("Token validation failed", "ip", clientIP, paramError, err)
+			h.logger.Warn("Token validation failed", "ip", clientIP, "error", err)
 			h.writeUnauthorizedError(w, r, constants.ErrorCodeInvalidToken, "Token validation failed")
 			return
 		}
