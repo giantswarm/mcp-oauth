@@ -433,7 +433,7 @@ func formWith(kv ...string) url.Values {
 		panic("formWith: odd number of arguments")
 	}
 	form := url.Values{}
-	for i := 0; i < len(kv); i += 2 {
+	for i := 0; i+1 < len(kv); i += 2 {
 		form.Set(kv[i], kv[i+1])
 	}
 	return form

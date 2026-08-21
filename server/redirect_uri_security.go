@@ -286,8 +286,8 @@ func (s *Server) validateHostnameWithDNS(ctx context.Context, hostname, rawURI s
 			// Strict mode: fail-closed - block registration on DNS failure
 			s.Logger.Warn("DNS resolution failed during redirect URI validation (strict mode - blocking)",
 				"hostname", hostname,
-				"error", err,
-				"action", "blocking_registration",
+				logKeyError, err,
+				logKeyAction, "blocking_registration",
 				"mode", "strict")
 			return newRedirectURISecurityError(
 				RedirectURIErrorCategoryDNSFailure,
@@ -300,8 +300,8 @@ func (s *Server) validateHostnameWithDNS(ctx context.Context, hostname, rawURI s
 		// This prevents false positives for legitimate hostnames with temporary DNS issues
 		s.Logger.Warn("DNS resolution failed during redirect URI validation (allowing registration)",
 			"hostname", hostname,
-			"error", err,
-			"action", "allowing_registration",
+			logKeyError, err,
+			logKeyAction, "allowing_registration",
 			"mode", "permissive",
 			"recommendation", "Enable DNSValidationStrict=true for fail-closed behavior")
 		return nil

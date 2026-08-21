@@ -60,7 +60,7 @@ func (s *Server) validateAndParseForwardedIDToken(ctx context.Context, tokenStri
 	jwksProvider, ok := s.provider.(providers.JWKSProvider)
 	if !ok {
 		s.Logger.Warn("Provider does not support JWKS validation, cannot validate forwarded ID token",
-			"provider", s.provider.Name())
+			logKeyProvider, s.provider.Name())
 		return nil, "", fmt.Errorf("provider %s does not support JWKS validation", s.provider.Name())
 	}
 
@@ -178,17 +178,17 @@ func (s *Server) idTokenClaimsToUserInfo(claims *oidc.IDTokenClaims) *providers.
 func (s *Server) logForwardedIDTokenAccepted(ctx context.Context, tokenString, matchedAudience, validatedIssuer string, userInfo *providers.UserInfo) {
 	s.Logger.Debug("Forwarded ID token accepted via TrustedAudiences (SSO)",
 		"user_id", userInfo.ID,
-		"email", userInfo.Email,
+		claimEmail, userInfo.Email,
 		"matched_audience", matchedAudience,
 		"issuer_validated", validatedIssuer != "",
 		"token_suffix", helpers.TokenSuffix(tokenString, 8))
 
 	details := map[string]any{
-		"matched_audience":    matchedAudience,
-		"email":               userInfo.Email,
-		"validation_method":   "jwks",
-		"sso_token_forwarded": true,
-		"issuer_validated":    validatedIssuer != "",
+		"matched_audience":     matchedAudience,
+		claimEmail:             userInfo.Email,
+		logKeyValidationMethod: "jwks",
+		"sso_token_forwarded":  true,
+		"issuer_validated":     validatedIssuer != "",
 	}
 	if validatedIssuer != "" {
 		details["validated_issuer"] = validatedIssuer

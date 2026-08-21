@@ -25,8 +25,8 @@ import (
 // This helper reduces code duplication and ensures consistent error handling.
 func (s *Server) logAuthCodeValidationFailure(ctx context.Context, reason, clientID, userID, codePrefix string) error {
 	s.Logger.Debug("Authorization code validation failed",
-		"reason", reason,
-		"client_id", clientID,
+		logKeyReason, reason,
+		paramClientID, clientID,
 		"user_id", userID,
 		"code_prefix", codePrefix)
 
@@ -117,12 +117,12 @@ func (s *Server) handleCodeReuseDetection(ctx context.Context, authCode *storage
 	// Rate limit logging to prevent DoS via log flooding
 	if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(authCode.UserID+":"+clientID) {
 		s.Logger.Error("Authorization code reuse detected - revoking all tokens",
-			"user_id", authCode.UserID, "client_id", clientID, "oauth_spec", "OAuth 2.1 Section 4.1.2")
+			"user_id", authCode.UserID, paramClientID, clientID, logKeyOAuthSpec, oauthSpecSection412)
 	}
 
 	// Revoke all tokens for this user+client (OAuth 2.1 requirement)
 	if err := s.RevokeAllTokensForUserClient(ctx, authCode.UserID, clientID); err != nil {
-		s.Logger.Error("Failed to revoke tokens after code reuse detection", "error", err)
+		s.Logger.Error("Failed to revoke tokens after code reuse detection", logKeyError, err)
 	}
 
 	if s.Auditor != nil {
@@ -131,7 +131,7 @@ func (s *Server) handleCodeReuseDetection(ctx context.Context, authCode *storage
 			UserID:   authCode.UserID,
 			ClientID: clientID,
 			Details: map[string]any{
-				"severity": "critical", "action": "all_tokens_revoked", "oauth_spec": "OAuth 2.1 Section 4.1.2",
+				logKeySeverity: severityCritical, logKeyAction: "all_tokens_revoked", logKeyOAuthSpec: oauthSpecSection412,
 			},
 		})
 		s.Auditor.LogAuthFailure(ctx, authCode.UserID, clientID, "", "authorization_code_reuse")
@@ -150,8 +150,8 @@ func (s *Server) validatePublicClientPKCE(ctx context.Context, client *storage.C
 
 	if !s.Config.AllowPublicClientsWithoutPKCE {
 		s.Logger.Error("Public client attempted token exchange without PKCE",
-			"client_id", client.ClientID, "user_id", authCode.UserID,
-			"client_type", client.ClientType, "oauth_spec", OAuthSpecVersion)
+			paramClientID, client.ClientID, "user_id", authCode.UserID,
+			"client_type", client.ClientType, logKeyOAuthSpec, OAuthSpecVersion)
 
 		if s.Auditor != nil {
 			s.Auditor.LogEvent(ctx, security.Event{
@@ -159,7 +159,7 @@ func (s *Server) validatePublicClientPKCE(ctx context.Context, client *storage.C
 				UserID:   authCode.UserID,
 				ClientID: client.ClientID,
 				Details: map[string]any{
-					"severity": "high", "client_type": client.ClientType, "oauth_spec": OAuthSpecVersion,
+					logKeySeverity: severityHigh, "client_type": client.ClientType, logKeyOAuthSpec: OAuthSpecVersion,
 				},
 			})
 			s.Auditor.LogAuthFailure(ctx, authCode.UserID, client.ClientID, "", "pkce_required_for_public_client")
@@ -169,7 +169,7 @@ func (s *Server) validatePublicClientPKCE(ctx context.Context, client *storage.C
 
 	// Warn about insecure configuration
 	s.Logger.Warn("INSECURE: Public client token exchange without PKCE allowed by configuration",
-		"client_id", client.ClientID, "user_id", authCode.UserID, "security_risk", "authorization_code_theft")
+		paramClientID, client.ClientID, "user_id", authCode.UserID, "security_risk", "authorization_code_theft")
 
 	if s.Auditor != nil {
 		s.Auditor.LogEvent(ctx, security.Event{
@@ -177,7 +177,7 @@ func (s *Server) validatePublicClientPKCE(ctx context.Context, client *storage.C
 			UserID:   authCode.UserID,
 			ClientID: client.ClientID,
 			Details: map[string]any{
-				"severity": "warning", "client_type": client.ClientType, "config": "AllowPublicClientsWithoutPKCE=true",
+				logKeySeverity: "warning", "client_type": client.ClientType, "config": "AllowPublicClientsWithoutPKCE=true",
 			},
 		})
 	}
@@ -209,7 +209,7 @@ func (s *Server) validatePKCEWithAudit(ctx context.Context, authCode *storage.Au
 				Type:     security.EventPKCEValidationFailed,
 				UserID:   authCode.UserID,
 				ClientID: clientID,
-				Details:  map[string]any{"reason": err.Error()},
+				Details:  map[string]any{logKeyReason: err.Error()},
 			})
 			s.Auditor.LogAuthFailure(ctx, authCode.UserID, clientID, "", fmt.Sprintf("pkce_validation_failed: %v", err))
 		}
@@ -259,7 +259,7 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID string, re
 	trackingState := clientState
 	if trackingState == "" {
 		trackingState = generateRandomToken()
-		s.Logger.Debug("Generated server-side state for client without state parameter", "client_id", clientID)
+		s.Logger.Debug("Generated server-side state for client without state parameter", paramClientID, clientID)
 	}
 
 	// Validate PKCE parameters
@@ -286,7 +286,7 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID string, re
 	if err := s.ValidateRedirectURIAtAuthorizationTime(ctx, redirectURIStr); err != nil {
 		s.logAuthFailure(ctx, "", clientID, "redirect_uri_security_violation")
 		s.Logger.Warn("Redirect URI failed authorization-time security validation",
-			"client_id", clientID, "redirect_uri", sanitizeURIForLogging(redirectURIStr), "error", err.Error())
+			paramClientID, clientID, "redirect_uri", sanitizeURIForLogging(redirectURIStr), logKeyError, err.Error())
 		return "", fmt.Errorf("%s: redirect URI failed security validation", ErrorCodeInvalidRequest)
 	}
 
@@ -367,8 +367,8 @@ func (s *Server) resolveAuthorizationNonce(clientID, scope string, authOpts *pro
 	if !helpers.HasScope(scope, "openid") {
 		if authOpts != nil && authOpts.Nonce != "" {
 			s.Logger.Debug("Dropping client-supplied nonce on non-OIDC flow",
-				"client_id", clientID,
-				"scope", scope)
+				paramClientID, clientID,
+				paramScope, scope)
 			amended := *authOpts
 			amended.Nonce = ""
 			return "", &amended
@@ -379,7 +379,7 @@ func (s *Server) resolveAuthorizationNonce(clientID, scope string, authOpts *pro
 	if authOpts != nil && authOpts.Nonce != "" {
 		if len(authOpts.Nonce) < minClientNonceLength {
 			s.Logger.Warn("Client-supplied nonce below minimum length; replacing with server-generated value",
-				"client_id", clientID,
+				paramClientID, clientID,
 				"client_nonce_length", len(authOpts.Nonce),
 				"min_required", minClientNonceLength)
 			minted := generateRandomToken()
@@ -468,7 +468,7 @@ func (s *Server) logInvalidProviderCallback(ctx context.Context, reason string) 
 	if s.Auditor != nil {
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type:    security.EventInvalidProviderCallback,
-			Details: map[string]any{"reason": reason},
+			Details: map[string]any{logKeyReason: reason},
 		})
 	}
 }
@@ -479,7 +479,7 @@ func (s *Server) logProviderStateMismatch(ctx context.Context, clientID string) 
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type:     security.EventProviderStateMismatch,
 			ClientID: clientID,
-			Details:  map[string]any{"severity": "critical"},
+			Details:  map[string]any{logKeySeverity: severityCritical},
 		})
 	}
 }
@@ -562,8 +562,8 @@ func (s *Server) logProviderNonceMismatch(ctx context.Context, clientID, reason 
 		Type:     security.EventProviderNonceMismatch,
 		ClientID: clientID,
 		Details: map[string]any{
-			"severity": "high",
-			"reason":   reason,
+			logKeySeverity: severityHigh,
+			logKeyReason:   reason,
 		},
 	})
 }
@@ -576,10 +576,10 @@ func (s *Server) exchangeCodeWithProvider(ctx context.Context, code, providerVer
 			s.Auditor.LogEvent(ctx, security.Event{
 				Type: security.EventProviderCodeExchangeFailed,
 				Details: map[string]any{
-					"provider":     s.provider.Name(),
-					"error":        err.Error(),
+					logKeyProvider: s.provider.Name(),
+					logKeyError:    err.Error(),
 					"pkce_enabled": providerVerifier != "",
-					"client_id":    authState.ClientID,
+					paramClientID:  authState.ClientID,
 					"state_id":     helpers.SafeTruncate(providerState, 16),
 				},
 			})
@@ -661,7 +661,7 @@ func (s *Server) saveUserInfoAndToken(ctx context.Context, userInfo *providers.U
 		return nil
 	}
 	if err := s.tokenStore.SaveUserInfo(ctx, userInfo.Email, storedInfo); err != nil {
-		s.Logger.Warn("Failed to save user info by email", "error", err)
+		s.Logger.Warn("Failed to save user info by email", logKeyError, err)
 		s.auditProviderTokenStorageFailed(ctx, userInfo, "save_user_info_by_email", err.Error())
 	}
 	// Email-keyed provider-token copies exist only in the legacy layout; the
@@ -669,7 +669,7 @@ func (s *Server) saveUserInfoAndToken(ctx context.Context, userInfo *providers.U
 	// keeping a second copy that write-backs would miss.
 	if _, unified := s.userProviderTokenStore(); !unified {
 		if err := s.tokenStore.SaveToken(ctx, userInfo.Email, s.extendTokenExpiryForStorage(providerToken)); err != nil {
-			s.Logger.Warn("Failed to save provider token by email", "error", err)
+			s.Logger.Warn("Failed to save provider token by email", logKeyError, err)
 			s.auditProviderTokenStorageFailed(ctx, userInfo, "save_token_by_email", err.Error())
 		}
 	}
@@ -739,7 +739,7 @@ func (s *Server) mergedLoginProviderToken(ctx context.Context, upts storage.User
 	if err != nil {
 		if !storage.IsNotFoundError(err) && !storage.IsExpiredError(err) {
 			s.Logger.Warn("Failed to read shared provider token for login merge, saving login token as-is",
-				"user_id", userID, "error", err)
+				"user_id", userID, logKeyError, err)
 		}
 		return providerToken
 	}
@@ -779,14 +779,14 @@ func (s *Server) acquireProviderRefreshLockForLogin(ctx context.Context, userID 
 		lockValue, acquired, err := locker.AcquireProviderRefreshLock(waitCtx, userID, providerRefreshLockTTL)
 		if err != nil {
 			s.Logger.Warn("Provider refresh lock acquire failed during login token save, proceeding without lock",
-				"user_id", userID, "error", err)
+				"user_id", userID, logKeyError, err)
 			return noop, false
 		}
 		if acquired {
 			return func() {
 				if releaseErr := locker.ReleaseProviderRefreshLock(context.WithoutCancel(ctx), userID, lockValue); releaseErr != nil {
 					s.Logger.Warn("Failed to release provider refresh lock after login token save",
-						"user_id", userID, "error", releaseErr)
+						"user_id", userID, logKeyError, releaseErr)
 				}
 			}, true
 		}
@@ -819,9 +819,9 @@ func (s *Server) auditProviderTokenStorageFailed(ctx context.Context, userInfo *
 		Type:   security.EventProviderTokenStorageFailed,
 		UserID: userID,
 		Details: map[string]any{
-			"reason":   reason,
-			"severity": "high",
-			"detail":   detail,
+			logKeyReason:   reason,
+			logKeySeverity: severityHigh,
+			"detail":       detail,
 		},
 	})
 }
@@ -908,7 +908,7 @@ func (s *Server) logAuthorizationCodeIssued(ctx context.Context, userID, clientI
 			UserID:   userID,
 			ClientID: clientID,
 			Details: map[string]any{
-				"scope":                 scope,
+				paramScope:              scope,
 				"client_state_returned": true,
 			},
 		})
@@ -1022,13 +1022,13 @@ func (s *Server) validateScopesAndPKCE(ctx context.Context, authCode *storage.Au
 // logScopeValidationFailure logs a scope validation failure event.
 func (s *Server) logScopeValidationFailure(ctx context.Context, authCode *storage.AuthorizationCode, clientID, code string, err error) {
 	s.Logger.Debug("Client scope validation failed during token exchange",
-		"reason", err.Error(), "client_id", clientID, "user_id", authCode.UserID,
+		logKeyReason, err.Error(), paramClientID, clientID, "user_id", authCode.UserID,
 		"requested_scope", authCode.Scope, "code_prefix", helpers.SafeTruncate(code, 8))
 
 	if s.Auditor != nil {
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type: security.EventScopeEscalationAttempt, UserID: authCode.UserID, ClientID: clientID,
-			Details: map[string]any{"severity": "high", "requested_scope": authCode.Scope},
+			Details: map[string]any{logKeySeverity: severityHigh, "requested_scope": authCode.Scope},
 		})
 		s.Auditor.LogAuthFailure(ctx, authCode.UserID, clientID, "", fmt.Sprintf("scope_validation_failed: %v", err))
 	}
@@ -1063,7 +1063,7 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 		Expiry:       expiry,
-		TokenType:    "Bearer",
+		TokenType:    tokenTypeBearer,
 	}
 
 	// OIDC Compliance: Forward id_token from upstream provider to client
@@ -1084,17 +1084,17 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 	// write-back would clobber the fresh credential with a stale one.
 	if upts, unified := s.userProviderTokenStore(); unified {
 		if err := upts.SaveProviderTokenRef(ctx, accessToken, authCode.UserID, refreshExpiry); err != nil {
-			s.Logger.Warn("Failed to save access token provider reference", "error", err)
+			s.Logger.Warn("Failed to save access token provider reference", logKeyError, err)
 		}
 		if err := upts.SaveProviderTokenRef(ctx, refreshToken, authCode.UserID, refreshExpiry); err != nil {
-			s.Logger.Warn("Failed to save refresh token provider reference", "error", err)
+			s.Logger.Warn("Failed to save refresh token provider reference", logKeyError, err)
 		}
 	} else {
 		if err := s.tokenStore.SaveToken(ctx, accessToken, authCode.ProviderToken); err != nil {
-			s.Logger.Warn("Failed to save access token mapping", "error", err)
+			s.Logger.Warn("Failed to save access token mapping", logKeyError, err)
 		}
 		if err := s.tokenStore.SaveToken(ctx, refreshToken, authCode.ProviderToken); err != nil {
-			s.Logger.Warn("Failed to save refresh token", "error", err)
+			s.Logger.Warn("Failed to save refresh token", logKeyError, err)
 		}
 	}
 
@@ -1174,7 +1174,7 @@ func (s *Server) fillUserInfoClaims(ctx context.Context, userID string, c *Acces
 	info, err := s.tokenStore.GetUserInfo(ctx, userID)
 	if err != nil {
 		s.Logger.Debug("UserInfo lookup failed during JWT access token issuance — email/groups claims omitted",
-			"error", err,
+			logKeyError, err,
 			"user_id", userID)
 		return
 	}
@@ -1197,15 +1197,15 @@ func (s *Server) trackRefreshTokenFamily(ctx context.Context, refreshToken, user
 			familyID = generateRandomToken()
 		}
 		if err := familyStore.SaveRefreshTokenWithFamily(ctx, refreshToken, userID, clientID, familyID, 0, refreshTokenExpiry); err != nil {
-			s.Logger.Warn("Failed to track refresh token with family", "error", err)
+			s.Logger.Warn("Failed to track refresh token with family", logKeyError, err)
 		} else {
-			s.Logger.Debug("Created new refresh token family", "user_id", userID, "family_id", helpers.SafeTruncate(familyID, 8))
+			s.Logger.Debug("Created new refresh token family", "user_id", userID, logKeyFamilyID, helpers.SafeTruncate(familyID, 8))
 		}
 		return
 	}
 
 	if err := s.tokenStore.SaveRefreshToken(ctx, refreshToken, userID, refreshTokenExpiry); err != nil {
-		s.Logger.Warn("Failed to track refresh token", "error", err)
+		s.Logger.Warn("Failed to track refresh token", logKeyError, err)
 	}
 }
 
@@ -1229,7 +1229,7 @@ func (s *Server) logAuthorizationFlowStarted(ctx context.Context, clientID, redi
 
 	details := map[string]any{
 		"redirect_uri":          redirectURI,
-		"scope":                 scope,
+		paramScope:              scope,
 		"code_challenge_method": codeChallengeMethod,
 	}
 

@@ -212,8 +212,8 @@ func (h *Handler) writeUnauthorizedError(w http.ResponseWriter, r *http.Request,
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
 	h.writeJSON(w, map[string]string{
-		"error":             code,
-		"error_description": description,
+		paramError:            code,
+		paramErrorDescription: description,
 	})
 }
 
@@ -247,8 +247,8 @@ func (h *Handler) writeInsufficientScopeError(w http.ResponseWriter, requiredSco
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
 	h.writeJSON(w, map[string]string{
-		"error":             constants.ErrorCodeInsufficientScope,
-		"error_description": description,
+		paramError:            constants.ErrorCodeInsufficientScope,
+		paramErrorDescription: description,
 	})
 }
 
@@ -374,7 +374,7 @@ func (h *Handler) getTokenMetadata(accessToken string) *storage.TokenMetadata {
 
 	metadata, err := metadataStore.GetTokenMetadata(accessToken)
 	if err != nil {
-		h.logger.Warn("Failed to retrieve token metadata", "error", err)
+		h.logger.Warn("Failed to retrieve token metadata", paramError, err)
 		return nil
 	}
 

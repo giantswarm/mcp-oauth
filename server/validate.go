@@ -78,20 +78,20 @@ func (s *Server) updateProviderTokenMappings(ctx context.Context, accessToken st
 	if upts, unified := s.userProviderTokenStore(); unified {
 		userID, err := upts.GetProviderTokenRef(ctx, accessToken)
 		if err != nil {
-			s.Logger.Warn("Failed to resolve access token to user for provider token write-back", "error", err)
+			s.Logger.Warn("Failed to resolve access token to user for provider token write-back", logKeyError, err)
 			return
 		}
 		if saveErr := upts.SaveUserProviderToken(ctx, userID, newProviderToken); saveErr != nil {
-			s.Logger.Warn("Failed to save refreshed shared provider token", "error", saveErr)
+			s.Logger.Warn("Failed to save refreshed shared provider token", logKeyError, saveErr)
 		}
 		return
 	}
 	if saveErr := s.tokenStore.SaveToken(ctx, accessToken, newProviderToken); saveErr != nil {
-		s.Logger.Warn("Failed to save refreshed provider token for access key", "error", saveErr)
+		s.Logger.Warn("Failed to save refreshed provider token for access key", logKeyError, saveErr)
 	}
 	if pairedRT, ok := s.tokenPairs.Load(accessToken); ok {
 		if saveErr := s.tokenStore.SaveToken(ctx, pairedRT.(string), newProviderToken); saveErr != nil {
-			s.Logger.Warn("Failed to save refreshed provider token for refresh key", "error", saveErr)
+			s.Logger.Warn("Failed to save refreshed provider token for refresh key", logKeyError, saveErr)
 		}
 	}
 }
@@ -145,7 +145,7 @@ func (s *Server) fireTokenRefreshHandler(ctx context.Context, accessToken string
 			familyID = meta.FamilyID
 		} else if err != nil {
 			s.Logger.Debug("Failed to retrieve token metadata for refresh handler",
-				"error", err,
+				logKeyError, err,
 				"token_suffix", helpers.TokenSuffix(accessToken, 8))
 		}
 	}
@@ -198,14 +198,14 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 	if err != nil {
 		// Refresh failed - log warning but continue with validation (graceful degradation)
 		s.Logger.Warn("Proactive token refresh failed, falling back to validation",
-			"error", err,
+			logKeyError, err,
 			"token_suffix", helpers.TokenSuffix(accessToken, 8),
 			"time_until_expiry", timeUntilExpiry)
 
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type: security.EventProactiveRefreshFailed,
 			Details: map[string]any{
-				"error":             err.Error(),
+				logKeyError:         err.Error(),
 				"time_until_expiry": timeUntilExpiry.String(),
 				"fallback":          "validation",
 			},
@@ -307,7 +307,7 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 			// it at WARN. No token material is logged (only an 8-char suffix
 			// for correlation).
 			s.Logger.Warn("Forwarded ID token validation failed, falling back to userinfo",
-				"error", err.Error(),
+				logKeyError, err.Error(),
 				"token_suffix", helpers.TokenSuffix(accessToken, 8))
 		} else if userInfo != nil {
 			s.Logger.Debug("Forwarded ID token validated via JWKS",
@@ -339,7 +339,7 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 
 	// Store user info
 	if err := s.tokenStore.SaveUserInfo(ctx, userInfo.ID, providerUserInfoToStorage(userInfo)); err != nil {
-		s.Logger.Warn("Failed to save user info", "error", err)
+		s.Logger.Warn("Failed to save user info", logKeyError, err)
 	}
 
 	return userInfo, nil
@@ -433,7 +433,7 @@ func (s *Server) validateTokenAudience(ctx context.Context, accessToken string) 
 	// Check if audience matches this server's own resource identifier
 	if subtle.ConstantTimeCompare([]byte(normalizedAudience), []byte(normalizedExpected)) == 1 {
 		s.Logger.Debug("Token audience validation passed",
-			"audience", metadata.Audience,
+			paramAudience, metadata.Audience,
 			"token_suffix", helpers.TokenSuffix(accessToken, 8))
 		return nil
 	}
@@ -518,15 +518,15 @@ func (s *Server) logTrustedIssuerJWTAccepted(ctx context.Context, accessToken, i
 	s.Logger.Debug("Trusted-issuer JWT accepted",
 		"issuer", issuer,
 		"user_id", userInfo.ID,
-		"email", userInfo.Email,
+		claimEmail, userInfo.Email,
 		"token_suffix", helpers.TokenSuffix(accessToken, 8))
 	s.Auditor.LogEvent(ctx, security.Event{
 		Type:   security.EventForwardedIDTokenAccepted,
 		UserID: userInfo.ID,
 		Details: map[string]any{
-			"validation_method": "trusted_issuer_jwks",
-			"trusted_issuer":    issuer,
-			"email":             userInfo.Email,
+			logKeyValidationMethod: "trusted_issuer_jwks",
+			"trusted_issuer":       issuer,
+			claimEmail:             userInfo.Email,
 		},
 	})
 }
@@ -537,7 +537,7 @@ func (s *Server) logCrossClientTokenAccepted(ctx context.Context, accessToken st
 	s.Logger.Debug("Token accepted via TrustedAudiences (SSO token forwarding)",
 		"token_audience", metadata.Audience,
 		"user_id", metadata.UserID,
-		"client_id", metadata.ClientID,
+		paramClientID, metadata.ClientID,
 		"token_suffix", helpers.TokenSuffix(accessToken, 8))
 
 	s.Auditor.LogEvent(ctx, security.Event{
@@ -561,7 +561,7 @@ func (s *Server) logAudienceMismatch(ctx context.Context, accessToken string, me
 			"server_identifier", expectedAudience,
 			"token_suffix", helpers.TokenSuffix(accessToken, 8),
 			"user_id", metadata.UserID,
-			"client_id", metadata.ClientID)
+			paramClientID, metadata.ClientID)
 	}
 
 	s.Auditor.LogEvent(ctx, security.Event{
@@ -569,7 +569,7 @@ func (s *Server) logAudienceMismatch(ctx context.Context, accessToken string, me
 		UserID:   metadata.UserID,
 		ClientID: metadata.ClientID,
 		Details: map[string]any{
-			"severity":          "critical",
+			logKeySeverity:      severityCritical,
 			"token_audience":    metadata.Audience,
 			"server_identifier": expectedAudience,
 			"attack_indicator":  "token_replay_to_wrong_resource_server",

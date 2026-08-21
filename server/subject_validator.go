@@ -270,7 +270,7 @@ func (v *OIDCValidator) Validate(ctx context.Context, tokenString string, defaul
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrIssuerNotTrusted, err)
 	}
-	iss, _ := rawClaims["iss"].(string)
+	iss, _ := rawClaims[claimIss].(string)
 	if iss == "" {
 		return nil, fmt.Errorf("%w: missing iss claim", ErrIssuerNotTrusted)
 	}

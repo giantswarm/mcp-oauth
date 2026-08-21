@@ -41,7 +41,7 @@ func (s *Server) looksLikeSelfIssuedJWT(tokenString string) bool {
 	if err != nil {
 		return false
 	}
-	iss, _ := claims["iss"].(string)
+	iss, _ := claims[claimIss].(string)
 	return iss != "" && iss == s.Config.Issuer
 }
 
@@ -88,7 +88,7 @@ func (s *Server) validateSelfIssuedJWT(ctx context.Context, tokenString string) 
 	if err := s.checkJWTAudience(ctx, claims, tokenString); err != nil {
 		return nil, nil, err
 	}
-	jti, _ := claims["jti"].(string)
+	jti, _ := claims[claimJTI].(string)
 	if err := s.checkJWTRevocation(ctx, jti, tokenString); err != nil {
 		return nil, nil, err
 	}
@@ -144,7 +144,7 @@ func (s *Server) checkJWTHeaderAndIssuer(header jose.Header, claims map[string]a
 	if typ != rfc9068TokenType {
 		return fmt.Errorf("%w: typ header is %q (expected %q)", errBearerNotSelfIssuedJWT, typ, rfc9068TokenType)
 	}
-	iss, _ := claims["iss"].(string)
+	iss, _ := claims[claimIss].(string)
 	if iss != s.Config.Issuer {
 		return fmt.Errorf("%w: iss claim is %q (expected %q)", errBearerNotSelfIssuedJWT, iss, s.Config.Issuer)
 	}
@@ -195,7 +195,7 @@ func (s *Server) checkJWTRevocation(ctx context.Context, jti, tokenString string
 	revoked, err := s.revokedTokenStore.IsJTIRevoked(ctx, jti)
 	if err != nil {
 		s.Logger.Warn("Failed to check JWT revocation list",
-			"error", err,
+			logKeyError, err,
 			"token_suffix", helpers.TokenSuffix(tokenString, 8))
 		return fmt.Errorf("revocation check failed: %w", err)
 	}
@@ -223,7 +223,7 @@ func (s *Server) checkJWTRevocation(ctx context.Context, jti, tokenString string
 // re-enable a revoked family. ErrRefreshTokenFamilyNotFound is the only
 // "not present" signal and is treated as legit absence.
 func (s *Server) checkJWTFamily(ctx context.Context, claims map[string]any, tokenString string) error {
-	familyID, _ := claims["family_id"].(string)
+	familyID, _ := claims[logKeyFamilyID].(string)
 	if familyID == "" {
 		return nil
 	}
@@ -237,8 +237,8 @@ func (s *Server) checkJWTFamily(ctx context.Context, claims map[string]any, toke
 	}
 	if err != nil {
 		s.Logger.Warn("Failed to check JWT family revocation",
-			"error", err,
-			"family_id", familyID,
+			logKeyError, err,
+			logKeyFamilyID, familyID,
 			"token_suffix", helpers.TokenSuffix(tokenString, 8))
 		return fmt.Errorf("family revocation check failed: %w", err)
 	}
@@ -282,10 +282,10 @@ func userInfoFromJWTClaims(claims map[string]any) *providers.UserInfo {
 	info := &providers.UserInfo{
 		TokenSource: providers.TokenSourceJWT,
 	}
-	if v, ok := claims["sub"].(string); ok {
+	if v, ok := claims[claimSub].(string); ok {
 		info.ID = v
 	}
-	if v, ok := claims["email"].(string); ok {
+	if v, ok := claims[claimEmail].(string); ok {
 		info.Email = v
 	}
 	if v, ok := claims["email_verified"].(bool); ok {
@@ -314,15 +314,15 @@ func userInfoFromJWTClaims(claims map[string]any) *providers.UserInfo {
 func (s *Server) logSelfIssuedJWTAccepted(ctx context.Context, tokenString string, userInfo *providers.UserInfo, jti string) {
 	s.Logger.Debug("Self-issued JWT access token validated",
 		"user_id", userInfo.ID,
-		"jti", jti,
+		claimJTI, jti,
 		"token_suffix", helpers.TokenSuffix(tokenString, 8))
 
 	s.Auditor.LogEvent(ctx, security.Event{
 		Type:   security.EventSelfIssuedJWTAccepted,
 		UserID: userInfo.ID,
 		Details: map[string]any{
-			"validation_method": "self_issued_jwt",
-			"jti":               jti,
+			logKeyValidationMethod: "self_issued_jwt",
+			claimJTI:               jti,
 		},
 	})
 }
@@ -351,11 +351,11 @@ func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID,
 		// Bearer was peeked as self-issued but failed verification —
 		// suspicious (forged or expired). Treat as success per RFC 7009.
 		s.Logger.Debug("Self-issued JWT revocation: signature/parse failed",
-			"error", err,
+			logKeyError, err,
 			"token_suffix", helpers.TokenSuffix(tokenString, 8))
 		return true
 	}
-	jti, _ := claims["jti"].(string)
+	jti, _ := claims[claimJTI].(string)
 	expVal, _ := claims["exp"].(float64)
 	if jti == "" || expVal == 0 {
 		s.Logger.Debug("Self-issued JWT missing jti or exp during revocation",
@@ -366,26 +366,26 @@ func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID,
 
 	if err := s.revokedTokenStore.RevokeJTI(ctx, jti, expiresAt); err != nil {
 		s.Logger.Warn("Failed to write revoked JWT jti to denylist",
-			"error", err,
-			"jti", jti,
+			logKeyError, err,
+			claimJTI, jti,
 			"token_suffix", helpers.TokenSuffix(tokenString, 8))
 		return true
 	}
 
-	userID, _ := claims["sub"].(string)
+	userID, _ := claims[claimSub].(string)
 	s.Auditor.LogEvent(ctx, security.Event{
 		Type:     security.EventSelfIssuedJWTRevoked,
 		UserID:   userID,
 		ClientID: clientID,
 		Details: map[string]any{
-			"jti":        jti,
+			claimJTI:     jti,
 			"expires_at": expiresAt.Unix(),
 			"ip":         clientIP,
 		},
 	})
 	s.Logger.Debug("Self-issued JWT access token revoked",
-		"jti", jti,
-		"client_id", clientID,
+		claimJTI, jti,
+		paramClientID, clientID,
 		"ip", clientIP,
 		"expires_at", expiresAt)
 	return true
@@ -396,7 +396,7 @@ func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID,
 // token_revoked, family_revoked, missing_aud) so dashboards can pivot on it.
 func (s *Server) logSelfIssuedJWTAuthFailure(ctx context.Context, reason, tokenString string) {
 	s.Logger.Debug("Self-issued JWT access token rejected",
-		"reason", reason,
+		logKeyReason, reason,
 		"token_suffix", helpers.TokenSuffix(tokenString, 8))
 	s.Auditor.LogAuthFailure(ctx, "", "", "", reason)
 }

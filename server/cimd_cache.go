@@ -319,7 +319,7 @@ func (s *Server) tryGetCachedClient(ctx context.Context, clientID string) (*stor
 
 	s.recordCIMDCacheMetric(ctx, "hit")
 	s.logMetadataFetchEvent(ctx, "client_metadata_cache_hit", clientID, map[string]any{"source": "cache"})
-	s.Logger.Debug("Using cached client metadata", "client_id", clientID)
+	s.Logger.Debug("Using cached client metadata", paramClientID, clientID)
 	return cachedClient, true
 }
 
@@ -335,7 +335,7 @@ func (s *Server) checkNegativeCache(ctx context.Context, clientID string) error 
 	s.logMetadataFetchEvent(ctx, "client_metadata_negative_cache_hit", clientID, map[string]any{
 		"source": "negative_cache", "cached_error": errorMsg,
 	})
-	s.Logger.Debug("Client ID in negative cache", "client_id", clientID, "cached_error", errorMsg)
+	s.Logger.Debug("Client ID in negative cache", paramClientID, clientID, "cached_error", errorMsg)
 	return fmt.Errorf("client metadata previously failed validation: %s (cached)", errorMsg)
 }
 
@@ -353,7 +353,7 @@ func (s *Server) checkMetadataFetchRateLimit(ctx context.Context, clientID strin
 
 	if !s.metadataFetchRateLimiter.Allow(domain) {
 		s.logMetadataFetchEvent(ctx, "client_metadata_rate_limited", clientID, map[string]any{
-			"domain": domain, "reason": "rate_limit_exceeded",
+			"domain": domain, logKeyReason: "rate_limit_exceeded",
 		})
 		return fmt.Errorf("rate limit exceeded for metadata fetches from domain: %s", domain)
 	}
@@ -416,7 +416,7 @@ func (s *Server) fetchClientWithSingleflight(ctx context.Context, clientID strin
 	// Double-check cache (another goroutine might have filled it while we waited)
 	if cachedClient, ok := s.metadataCache.Get(clientID); ok {
 		s.recordCIMDCacheMetric(ctx, "hit")
-		s.Logger.Debug("Using cached client metadata (singleflight)", "client_id", clientID)
+		s.Logger.Debug("Using cached client metadata (singleflight)", paramClientID, clientID)
 		return cachedClient, nil
 	}
 
@@ -427,7 +427,7 @@ func (s *Server) fetchClientWithSingleflight(ctx context.Context, clientID strin
 	}
 
 	s.recordCIMDCacheMetric(ctx, "miss")
-	s.Logger.Debug("Fetching client metadata from URL", "client_id", clientID)
+	s.Logger.Debug("Fetching client metadata from URL", paramClientID, clientID)
 
 	metadata, suggestedTTL, fetchErr := s.fetchClientMetadata(ctx, clientID)
 	if fetchErr != nil {
@@ -450,7 +450,7 @@ func (s *Server) handleMetadataFetchFailure(ctx context.Context, clientID string
 		Type:     "client_metadata_fetch_failed_cached",
 		ClientID: clientID,
 		Details: map[string]any{
-			"error":          fetchErr.Error(),
+			logKeyError:      fetchErr.Error(),
 			"negative_cache": "stored",
 			"cache_purpose":  "prevent_rapid_retry",
 		},
@@ -473,7 +473,7 @@ func (s *Server) cacheAndReturnClient(clientID string, metadata *ClientMetadata,
 // determineCacheTTL determines the TTL to use for caching.
 func (s *Server) determineCacheTTL(clientID string, suggestedTTL time.Duration) time.Duration {
 	if suggestedTTL > 0 {
-		s.Logger.Debug("Using Cache-Control TTL", "client_id", clientID, "ttl", suggestedTTL)
+		s.Logger.Debug("Using Cache-Control TTL", paramClientID, clientID, "ttl", suggestedTTL)
 		return suggestedTTL
 	}
 

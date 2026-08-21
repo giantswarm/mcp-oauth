@@ -83,7 +83,7 @@ func (s *Store) SaveToken(ctx context.Context, userID string, token *oauth2.Toke
 	// Convert to serializable struct that explicitly includes Extra fields
 	st := toSerializable(tokenToStore)
 
-	data, err := json.Marshal(st)
+	data, err := json.Marshal(st) // #nosec G117 -- serializing the OAuth token (RFC 6749 access/refresh token) for persistence is this token store's purpose; the value is encrypted at rest by encryptToken above when an encryptor is configured, and written only to Valkey, never logged
 	if err != nil {
 		return fmt.Errorf("failed to marshal token: %w", err)
 	}

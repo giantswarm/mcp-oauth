@@ -157,9 +157,9 @@ func writeDPoPError(w http.ResponseWriter, logger *slog.Logger, wwwAuth, dpopNon
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(map[string]string{
-		"error":             code,
-		"error_description": description,
+		paramError:            code,
+		paramErrorDescription: description,
 	}); err != nil {
-		logger.Warn("failed to write JSON response", "error", err, "code", code)
+		logger.Warn("failed to write JSON response", paramError, err, "code", code)
 	}
 }

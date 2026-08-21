@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"encoding/binary"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -820,12 +822,12 @@ func (d *testDNSDialer) serveConn(conn net.Conn) {
 		return
 	}
 	resp := d.buildResponse(buf)
-	if len(resp) == 0 {
+	respLen := len(resp)
+	if respLen == 0 || respLen > math.MaxUint16 {
 		return
 	}
-	out := make([]byte, 2+len(resp))
-	out[0] = byte(len(resp) >> 8)
-	out[1] = byte(len(resp))
+	out := make([]byte, 2+respLen)
+	binary.BigEndian.PutUint16(out[:2], uint16(respLen))
 	copy(out[2:], resp)
 	_, _ = conn.Write(out)
 }

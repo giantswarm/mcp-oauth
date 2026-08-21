@@ -137,7 +137,7 @@ func WithTrustedIssuers(issuers []TrustedIssuer) Option {
 		}
 		v, err := NewOIDCValidator(issuers)
 		if err != nil {
-			s.Logger.Error("failed to initialise trusted issuer validator", "error", err)
+			s.Logger.Error("failed to initialise trusted issuer validator", logKeyError, err)
 			return
 		}
 		if s.subjectValidators == nil {

@@ -207,7 +207,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 
 	if allowPrivateIP {
 		s.Logger.Debug("CIMD fetch with private IP allowance enabled",
-			"client_id", clientID,
+			paramClientID, clientID,
 			"config", "AllowPrivateIPClientMetadata=true")
 	}
 
@@ -215,8 +215,8 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	if err != nil {
 		s.recordCIMDFetchMetric(ctx, "blocked", fetchStart)
 		s.logMetadataFetchEvent(ctx, "client_metadata_fetch_blocked", clientID, map[string]any{
-			"reason": err.Error(),
-			"ssrf":   "protected",
+			logKeyReason: err.Error(),
+			"ssrf":       "protected",
 		})
 		return nil, 0, fmt.Errorf("metadata URL validation failed: %w", err)
 	}
@@ -236,7 +236,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sanitizedURL, nil)
 	if err != nil {
-		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
+		s.recordCIMDFetchMetric(ctx, logKeyError, fetchStart)
 		return nil, 0, fmt.Errorf("failed to create metadata request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
@@ -244,15 +244,15 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 
 	resp, err := client.Do(req)
 	if err != nil {
-		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
+		s.recordCIMDFetchMetric(ctx, logKeyError, fetchStart)
 		s.logMetadataFetchEvent(ctx, "client_metadata_fetch_failed", clientID, map[string]any{
-			"error": err.Error(),
+			logKeyError: err.Error(),
 		})
 		return nil, 0, fmt.Errorf("failed to fetch metadata from %s: %w", clientID, err)
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
-			s.Logger.Warn("Failed to close response body", "error", closeErr)
+			s.Logger.Warn("Failed to close response body", logKeyError, closeErr)
 		}
 	}()
 
@@ -267,7 +267,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 // processMetadataResponse validates, parses, and processes a CIMD HTTP response.
 func (s *Server) processMetadataResponse(ctx context.Context, resp *http.Response, clientID string, fetchStart time.Time) (*ClientMetadata, time.Duration, error) {
 	if resp.StatusCode != http.StatusOK {
-		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
+		s.recordCIMDFetchMetric(ctx, logKeyError, fetchStart)
 		s.logMetadataFetchEvent(ctx, "client_metadata_fetch_failed", clientID, map[string]any{
 			"status_code": resp.StatusCode,
 			"status":      resp.Status,
@@ -276,25 +276,25 @@ func (s *Server) processMetadataResponse(ctx context.Context, resp *http.Respons
 	}
 
 	if err := validateResponseContentType(resp); err != nil {
-		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
+		s.recordCIMDFetchMetric(ctx, logKeyError, fetchStart)
 		return nil, 0, err
 	}
 
 	const maxMetadataSize int64 = 1 * 1024 * 1024 // 1MB
 	bodyBytes, err := readAndValidateResponseBody(resp, maxMetadataSize)
 	if err != nil {
-		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
+		s.recordCIMDFetchMetric(ctx, logKeyError, fetchStart)
 		return nil, 0, err
 	}
 
 	var metadata ClientMetadata
 	if err := json.Unmarshal(bodyBytes, &metadata); err != nil {
-		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
+		s.recordCIMDFetchMetric(ctx, logKeyError, fetchStart)
 		return nil, 0, fmt.Errorf("failed to parse metadata JSON: %w", err)
 	}
 
 	if err := s.validateFetchedClientMetadata(ctx, &metadata, clientID); err != nil {
-		s.recordCIMDFetchMetric(ctx, "error", fetchStart)
+		s.recordCIMDFetchMetric(ctx, logKeyError, fetchStart)
 		return nil, 0, err
 	}
 
@@ -311,7 +311,7 @@ func (s *Server) processMetadataResponse(ctx context.Context, resp *http.Respons
 	s.recordCIMDFetchMetric(ctx, "success", fetchStart)
 
 	s.Logger.Debug("Fetched client metadata from URL",
-		"client_id", clientID,
+		paramClientID, clientID,
 		"client_name", metadata.ClientName,
 		"redirect_uris", len(metadata.RedirectURIs),
 		"size_bytes", len(bodyBytes),
@@ -332,7 +332,7 @@ func parseSuggestedTTL(resp *http.Response, clientID string, logger *slog.Logger
 	}
 	ttl := time.Duration(maxAge) * time.Second
 	logger.Debug("Parsed Cache-Control max-age",
-		"client_id", clientID,
+		paramClientID, clientID,
 		"max_age_seconds", maxAge,
 		"suggested_ttl", ttl)
 	return ttl
@@ -402,7 +402,7 @@ func (s *Server) validateFetchedClientMetadata(ctx context.Context, metadata *Cl
 		s.logMetadataFetchEvent(ctx, "client_metadata_id_mismatch", expectedClientID, map[string]any{
 			"document_client_id": metadata.ClientID,
 			"url_client_id":      expectedClientID,
-			"severity":           "high",
+			logKeySeverity:       severityHigh,
 		})
 		return fmt.Errorf("client_id mismatch: document contains %q but was fetched from %q (security violation)",
 			metadata.ClientID, expectedClientID)
@@ -416,7 +416,7 @@ func (s *Server) validateFetchedClientMetadata(ctx context.Context, metadata *Cl
 	// Validate client_name to prevent stored XSS and log injection (defense-in-depth)
 	if err := helpers.ValidateClientName(metadata.ClientName); err != nil {
 		s.Logger.Warn("Invalid client_name in fetched metadata",
-			"client_id", expectedClientID, "error", err)
+			paramClientID, expectedClientID, logKeyError, err)
 		return fmt.Errorf("invalid client metadata: %w", err)
 	}
 
@@ -480,7 +480,7 @@ func (s *Server) calculateFetchTimeout(ctx context.Context) time.Duration {
 			s.Logger.Debug("Using context deadline for metadata fetch",
 				"original_timeout", s.Config.ClientMetadataFetchTimeout,
 				"adjusted_timeout", timeUntilDeadline,
-				"reason", "context deadline")
+				logKeyReason, "context deadline")
 			return timeUntilDeadline
 		}
 	}
