@@ -121,8 +121,8 @@
 // client and every downstream service that expects the missing audience rejects
 // it.
 //
-// Set Config.AudienceResolver for such an audience set. The provider calls it on
-// every authorization request and merges the audiences it reports into both
+// Set Config.AudienceResolver for such an audience set. The provider calls it
+// per authorization request and merges the audiences it reports into both
 // DefaultScopes() and AuthorizationURL():
 //
 //	provider, err := dex.NewProvider(&dex.Config{
@@ -134,11 +134,20 @@
 //	    AudienceResolver: registry.RequiredAudiences,
 //	})
 //
-// The resolver runs on request goroutines: it must be safe for concurrent use,
-// and it must not block. Invalid audiences are skipped and logged once each, so
-// one bad value costs only its own scope. A server that sets a supported-scopes
-// allowlist must list the resulting audience scopes, because DefaultScopes()
-// feeds that allowlist.
+// The resolver runs on request goroutines, so it must be safe for concurrent
+// use. It can also run more than once for a single authorization request,
+// because both DefaultScopes() and AuthorizationURL() consult it, and it takes
+// no context: read cached state and return, do not block on a network call.
+//
+// Duplicates cost nothing. Invalid audiences are skipped and logged once each,
+// so one bad value costs only its own scope. The merged scope set stays within
+// oidc.MaxScopeCount, the bound NewProvider enforces on Scopes, and an audience
+// that does not fit is skipped and logged.
+//
+// A server that sets a supported-scopes allowlist must list the resulting
+// audience scopes, because DefaultScopes() feeds that allowlist. The server
+// validates that allowlist against provider defaults at startup, so an audience
+// the resolver reports later is not covered by that check.
 //
 // Use the audience helper functions to format these scopes:
 //

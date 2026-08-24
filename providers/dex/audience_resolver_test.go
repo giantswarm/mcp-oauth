@@ -2,11 +2,14 @@ package dex
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/url"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -143,23 +146,33 @@ func TestAudienceResolverSkipsInvalidAudiences(t *testing.T) {
 	assert.Equal(t, []string{"openid", k8sAudienceScope}, provider.DefaultScopes())
 }
 
+// numberedAudiences returns count distinct valid audience client IDs.
+func numberedAudiences(count int) []string {
+	audiences := make([]string, 0, count)
+	for i := range count {
+		audiences = append(audiences, fmt.Sprintf("client-%d", i))
+	}
+
+	return audiences
+}
+
 func TestPartitionAudienceScopes(t *testing.T) {
 	t.Run("no audiences", func(t *testing.T) {
-		scopes, rejected := partitionAudienceScopes(nil)
+		scopes, rejected := partitionAudienceScopes(nil, MaxAudienceCount, nil)
 
 		assert.Empty(t, scopes)
 		assert.Empty(t, rejected)
 	})
 
 	t.Run("an empty entry is skipped without a rejection", func(t *testing.T) {
-		scopes, rejected := partitionAudienceScopes([]string{"", "valid-client"})
+		scopes, rejected := partitionAudienceScopes([]string{"", "valid-client"}, MaxAudienceCount, nil)
 
 		assert.Equal(t, []string{AudienceScopePrefix + "valid-client"}, scopes)
 		assert.Empty(t, rejected)
 	})
 
 	t.Run("an invalid entry is reported with its reason", func(t *testing.T) {
-		scopes, rejected := partitionAudienceScopes([]string{"valid-client", "has space"})
+		scopes, rejected := partitionAudienceScopes([]string{"valid-client", "has space"}, MaxAudienceCount, nil)
 
 		assert.Equal(t, []string{AudienceScopePrefix + "valid-client"}, scopes)
 		require.Len(t, rejected, 1)
@@ -170,25 +183,83 @@ func TestPartitionAudienceScopes(t *testing.T) {
 	t.Run("an over-long entry is reported, not truncated into a scope", func(t *testing.T) {
 		long := strings.Repeat("a", MaxAudienceLength+1)
 
-		scopes, rejected := partitionAudienceScopes([]string{long})
+		scopes, rejected := partitionAudienceScopes([]string{long}, MaxAudienceCount, nil)
 
 		assert.Empty(t, scopes)
 		require.Len(t, rejected, 1)
 		assert.Contains(t, rejected[0].Reason, "maximum length")
 	})
 
-	t.Run("audiences past the count cap are reported", func(t *testing.T) {
-		audiences := make([]string, 0, MaxAudienceCount+2)
-		for i := range MaxAudienceCount + 2 {
-			audiences = append(audiences, "client-"+strings.Repeat("x", i%3)+string(rune('a'+i%26))+string(rune('a'+i/26)))
-		}
-
-		scopes, rejected := partitionAudienceScopes(audiences)
+	t.Run("audiences past the limit are reported", func(t *testing.T) {
+		scopes, rejected := partitionAudienceScopes(numberedAudiences(MaxAudienceCount+2), MaxAudienceCount, nil)
 
 		assert.Len(t, scopes, MaxAudienceCount)
-		assert.Len(t, rejected, 2)
-		assert.Contains(t, rejected[0].Reason, "maximum count")
+		require.Len(t, rejected, 2)
+		assert.Contains(t, rejected[0].Reason, "no room left")
 	})
+
+	t.Run("a limit of zero rejects every audience", func(t *testing.T) {
+		scopes, rejected := partitionAudienceScopes([]string{"first-client", "second-client"}, 0, nil)
+
+		assert.Empty(t, scopes)
+		assert.Len(t, rejected, 2)
+	})
+
+	// A duplicate must not consume a slot the limit would otherwise give to a
+	// distinct audience.
+	t.Run("a duplicate does not consume the limit", func(t *testing.T) {
+		audiences := make([]string, 0, MaxAudienceCount+1)
+		for range MaxAudienceCount {
+			audiences = append(audiences, "same-client")
+		}
+		audiences = append(audiences, "real-client")
+
+		scopes, rejected := partitionAudienceScopes(audiences, MaxAudienceCount, nil)
+
+		assert.Equal(t, []string{
+			AudienceScopePrefix + "same-client",
+			AudienceScopePrefix + "real-client",
+		}, scopes)
+		assert.Empty(t, rejected)
+	})
+
+	t.Run("an audience already present does not consume the limit", func(t *testing.T) {
+		present := map[string]struct{}{AudienceScopePrefix + "first-client": {}}
+
+		scopes, rejected := partitionAudienceScopes([]string{"first-client", "second-client"}, 1, present)
+
+		assert.Equal(t, []string{AudienceScopePrefix + "second-client"}, scopes)
+		assert.Empty(t, rejected)
+	})
+
+	t.Run("a repeated invalid audience is reported once", func(t *testing.T) {
+		scopes, rejected := partitionAudienceScopes([]string{"has space", "has space"}, MaxAudienceCount, nil)
+
+		assert.Empty(t, scopes)
+		assert.Len(t, rejected, 1)
+	})
+}
+
+// TestEffectiveScopesStaysWithinTheScopeBound pins the merged bound. NewProvider
+// rejects a configured set larger than oidc.MaxScopeCount, so the resolver path
+// must not push an authorization request past it either.
+func TestEffectiveScopesStaysWithinTheScopeBound(t *testing.T) {
+	server := setupMockDexServer(t)
+	defer server.Close()
+
+	configured := []string{"openid", "email"}
+	provider, err := NewProvider(testConfig(server, func(cfg *Config) {
+		cfg.Scopes = configured
+		cfg.AudienceResolver = func() []string { return numberedAudiences(oidc.MaxScopeCount) }
+	}))
+	require.NoError(t, err)
+
+	scopes := provider.DefaultScopes()
+
+	assert.Len(t, scopes, oidc.MaxScopeCount)
+	assert.Equal(t, configured, scopes[:len(configured)])
+	assert.NoError(t, oidc.ValidateScopes(scopes))
+	assert.NoError(t, oidc.ValidateScopes(authURLScopes(t, provider.AuthorizationURL("state", "", "", nil, nil))))
 }
 
 func TestTruncateAudienceForLog(t *testing.T) {

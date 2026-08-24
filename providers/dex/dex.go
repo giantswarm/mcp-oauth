@@ -68,19 +68,24 @@ type Config struct {
 	Scopes []string
 
 	// AudienceResolver reports the Dex cross-client audiences to request, as
-	// plain client IDs. The provider calls it on every authorization request and
-	// merges one AudienceScopePrefix scope per audience into both
-	// DefaultScopes() and AuthorizationURL(), so an audience that the caller
-	// learns about after startup still reaches the next login. Nil keeps the
-	// static Scopes set.
+	// plain client IDs. The provider merges one AudienceScopePrefix scope per
+	// audience into both DefaultScopes() and AuthorizationURL(), so an audience
+	// that the caller learns about after startup still reaches the next login.
+	// Nil keeps the static Scopes set.
 	//
 	// Prefer this over audience scopes in Scopes whenever the audience set is
 	// not known at construction time, for example when it comes from Kubernetes
 	// resources that reconcile after the process starts.
 	//
-	// The provider calls it from request goroutines: it must be safe for
-	// concurrent use, and it must not block. Invalid audiences are skipped and
-	// logged once each, so one bad value costs only its own scope.
+	// The provider calls it from request goroutines, so it must be safe for
+	// concurrent use. It can also run more than once for a single authorization
+	// request, because both DefaultScopes() and AuthorizationURL() consult it,
+	// and it takes no context: read cached state and return, do not block on a
+	// network call. Duplicates cost nothing, and invalid audiences are skipped
+	// and logged once each, so one bad value costs only its own scope.
+	//
+	// The merged set stays within oidc.MaxScopeCount. An audience that does not
+	// fit is skipped and logged.
 	//
 	// A server that restricts scopes must list the resulting audience scopes in
 	// its supported-scopes configuration, because DefaultScopes() feeds that
@@ -310,6 +315,8 @@ func (p *Provider) Name() string {
 // scopes so callers cannot mutate the provider's slice. When
 // Config.AudienceResolver is set, the cross-client audience scopes it reports
 // are merged in, so the result can differ between calls.
+//
+// This calls the resolver, which logs any audience it skips.
 func (p *Provider) DefaultScopes() []string {
 	return p.effectiveScopes()
 }
@@ -317,32 +324,35 @@ func (p *Provider) DefaultScopes() []string {
 // effectiveScopes returns the configured scopes plus one cross-client audience
 // scope per audience that Config.AudienceResolver reports. The result is always
 // a fresh slice, so callers cannot mutate the provider's own.
+//
+// The merged set stays within oidc.MaxScopeCount, the bound NewProvider
+// enforces on the configured set, so the resolver cannot grow an authorization
+// request past what the constructor would accept. Audiences that do not fit are
+// reported as rejected.
 func (p *Provider) effectiveScopes() []string {
 	scopes := providers.CloneScopes(p.Scopes)
 	if p.audienceResolver == nil {
 		return scopes
 	}
 
-	audienceScopes, rejected := partitionAudienceScopes(p.audienceResolver())
-	p.warnRejectedAudiences(rejected)
-	if len(audienceScopes) == 0 {
+	audiences := p.audienceResolver()
+	if len(audiences) == 0 {
 		return scopes
 	}
 
-	present := make(map[string]struct{}, len(scopes)+len(audienceScopes))
+	present := make(map[string]struct{}, len(scopes)+len(audiences))
 	for _, scope := range scopes {
 		present[scope] = struct{}{}
 	}
 
-	for _, scope := range audienceScopes {
-		if _, exists := present[scope]; exists {
-			continue
-		}
-		present[scope] = struct{}{}
-		scopes = append(scopes, scope)
-	}
+	audienceScopes, rejected := partitionAudienceScopes(
+		audiences,
+		min(MaxAudienceCount, oidc.MaxScopeCount-len(scopes)),
+		present,
+	)
+	p.warnRejectedAudiences(rejected)
 
-	return scopes
+	return append(scopes, audienceScopes...)
 }
 
 // maxWarnedAudiences bounds the warnedAudiences memo. A resolver that returns
@@ -351,8 +361,9 @@ func (p *Provider) effectiveScopes() []string {
 const maxWarnedAudiences = 64
 
 // maxLoggedAudienceLength caps the audience value in a log line. A rejected
-// audience can be arbitrarily long, since length is one of the reasons to
-// reject it.
+// audience can be arbitrarily long: length is one of the reasons to reject an
+// audience, and partitionAudienceScopes rejects an over-budget audience without
+// validating it at all.
 const maxLoggedAudienceLength = 64
 
 // warnRejectedAudiences logs each rejected audience once. The resolver runs on

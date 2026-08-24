@@ -151,6 +151,13 @@ func validateStringSlice(items []string, context string, maxCount, maxLength int
 	return nil
 }
 
+// MaxScopeCount is the maximum number of scopes ValidateScopes accepts. It
+// bounds the scope set a single authorization request can carry.
+const MaxScopeCount = 50
+
+// MaxScopeLength is the maximum length ValidateScopes accepts for one scope.
+const MaxScopeLength = 256
+
 // ValidateScopes validates OAuth scopes.
 //
 // Security Considerations:
@@ -173,7 +180,7 @@ func ValidateScopes(scopes []string) error {
 	}
 
 	// Validate size and length constraints
-	return validateStringSlice(scopes, "scopes", 50, 256)
+	return validateStringSlice(scopes, "scopes", MaxScopeCount, MaxScopeLength)
 }
 
 // Default limits for groups validation.
