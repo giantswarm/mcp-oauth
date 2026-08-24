@@ -113,6 +113,33 @@
 // With this configuration, even if a client requests only ["openid", "email"], the
 // resulting authorization request will include "audience:server:client_id:dex-k8s-authenticator".
 //
+// # Audiences That Are Not Known At Startup
+//
+// Scopes is a snapshot: the provider reads it when NewProvider runs, and never
+// again. An audience that the caller learns about later never reaches an
+// authorization request, so the minted ID token carries only the provider's own
+// client and every downstream service that expects the missing audience rejects
+// it.
+//
+// Set Config.AudienceResolver for such an audience set. The provider calls it on
+// every authorization request and merges the audiences it reports into both
+// DefaultScopes() and AuthorizationURL():
+//
+//	provider, err := dex.NewProvider(&dex.Config{
+//	    IssuerURL:    "https://dex.example.com",
+//	    ClientID:     "mcp-oauth",
+//	    ClientSecret: "secret",
+//	    RedirectURL:  "http://localhost:8080/oauth/callback",
+//	    // Reads the current backend registry on every login.
+//	    AudienceResolver: registry.RequiredAudiences,
+//	})
+//
+// The resolver runs on request goroutines: it must be safe for concurrent use,
+// and it must not block. Invalid audiences are skipped and logged once each, so
+// one bad value costs only its own scope. A server that sets a supported-scopes
+// allowlist must list the resulting audience scopes, because DefaultScopes()
+// feeds that allowlist.
+//
 // Use the audience helper functions to format these scopes:
 //
 //	// Format a single audience scope (returns error for invalid input)

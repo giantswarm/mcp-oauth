@@ -188,3 +188,50 @@ func AppendAudienceScopes(scopes string, audiences []string) (string, error) {
 	}
 	return scopes + " " + strings.Join(audienceScopes, " "), nil
 }
+
+// audienceRejection records one audience that partitionAudienceScopes skipped.
+type audienceRejection struct {
+	Audience string
+	Reason   string
+}
+
+// partitionAudienceScopes formats every valid audience as a cross-client
+// audience scope and reports the ones it skipped. Empty entries are skipped
+// without a rejection, as in FormatAudienceScopes.
+//
+// It differs from FormatAudienceScopes in its failure mode: one malformed
+// audience costs only its own scope, not the whole set. A caller that resolves
+// audiences from external state (Kubernetes resources, a service registry)
+// needs that, because a single bad value must not drop the audiences every
+// other consumer depends on.
+//
+// At most MaxAudienceCount scopes are returned. Audiences past that cap are
+// reported as rejected.
+func partitionAudienceScopes(audiences []string) ([]string, []audienceRejection) {
+	if len(audiences) == 0 {
+		return nil, nil
+	}
+
+	scopes := make([]string, 0, min(len(audiences), MaxAudienceCount))
+	var rejected []audienceRejection
+
+	for _, audience := range audiences {
+		if audience == "" {
+			continue
+		}
+		if len(scopes) >= MaxAudienceCount {
+			rejected = append(rejected, audienceRejection{
+				Audience: audience,
+				Reason:   fmt.Sprintf("audiences exceed maximum count of %d", MaxAudienceCount),
+			})
+			continue
+		}
+		if err := ValidateAudience(audience); err != nil {
+			rejected = append(rejected, audienceRejection{Audience: audience, Reason: err.Error()})
+			continue
+		}
+		scopes = append(scopes, AudienceScopePrefix+audience)
+	}
+
+	return scopes, rejected
+}
