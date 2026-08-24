@@ -188,3 +188,70 @@ func AppendAudienceScopes(scopes string, audiences []string) (string, error) {
 	}
 	return scopes + " " + strings.Join(audienceScopes, " "), nil
 }
+
+// audienceRejection records one audience that partitionAudienceScopes skipped.
+type audienceRejection struct {
+	Audience string
+	Reason   string
+}
+
+// partitionAudienceScopes formats every valid audience as a cross-client
+// audience scope and reports the ones it skipped. Empty entries, duplicates,
+// and audiences whose scope is already in present are skipped without a
+// rejection, as FormatAudienceScopes skips empty entries.
+//
+// It differs from FormatAudienceScopes in its failure mode: one malformed
+// audience costs only its own scope, not the whole set. A caller that resolves
+// audiences from external state (Kubernetes resources, a service registry)
+// needs that, because a single bad value must not drop the audiences every
+// other consumer depends on.
+//
+// limit caps the returned scopes. Audiences past the limit are reported as
+// rejected, and a limit of zero or less rejects every audience. Only a scope
+// that the result actually carries counts against the limit, so a duplicate
+// cannot displace a distinct audience. Each distinct audience is reported at
+// most once.
+func partitionAudienceScopes(audiences []string, limit int, present map[string]struct{}) ([]string, []audienceRejection) {
+	if len(audiences) == 0 {
+		return nil, nil
+	}
+
+	scopes := make([]string, 0, min(len(audiences), max(limit, 0)))
+	var rejected []audienceRejection
+	seen := make(map[string]struct{}, len(audiences))
+
+	for _, audience := range audiences {
+		if audience == "" {
+			continue
+		}
+
+		scope := AudienceScopePrefix + audience
+		if _, exists := seen[scope]; exists {
+			continue
+		}
+		if _, exists := present[scope]; exists {
+			continue
+		}
+		seen[scope] = struct{}{}
+
+		// The limit is checked before validation, so a caller that reports far
+		// more audiences than fit does not pay for a regex on every extra entry.
+		// An unvalidated audience therefore reaches a rejection, which is why
+		// warnRejectedAudiences truncates the value before it logs it.
+		if len(scopes) >= limit {
+			rejected = append(rejected, audienceRejection{
+				Audience: audience,
+				Reason:   fmt.Sprintf("no room left for more audience scopes (limit %d)", limit),
+			})
+			continue
+		}
+		if err := ValidateAudience(audience); err != nil {
+			rejected = append(rejected, audienceRejection{Audience: audience, Reason: err.Error()})
+			continue
+		}
+
+		scopes = append(scopes, scope)
+	}
+
+	return scopes, rejected
+}

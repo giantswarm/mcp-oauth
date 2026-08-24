@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -31,6 +33,16 @@ type Provider struct {
 	requestTimeout  time.Duration
 	maxGroups       int
 	logger          *slog.Logger
+
+	// audienceResolver is Config.AudienceResolver. Nil means only the static
+	// Scopes set applies.
+	audienceResolver func() []string
+
+	// warnedAudiences memoises the audiences warnRejectedAudiences has already
+	// logged, so a malformed value cannot flood the log from the per-request
+	// path. warnedAudienceCount bounds that memo.
+	warnedAudiences     sync.Map
+	warnedAudienceCount atomic.Int64
 }
 
 // Config holds Dex OAuth configuration
@@ -54,6 +66,31 @@ type Config struct {
 	// Scopes are optional custom scopes (defaults to Dex-optimized scopes if empty)
 	// Default: ["openid", "profile", "email", "groups", "offline_access"]
 	Scopes []string
+
+	// AudienceResolver reports the Dex cross-client audiences to request, as
+	// plain client IDs. The provider merges one AudienceScopePrefix scope per
+	// audience into both DefaultScopes() and AuthorizationURL(), so an audience
+	// that the caller learns about after startup still reaches the next login.
+	// Nil keeps the static Scopes set.
+	//
+	// Prefer this over audience scopes in Scopes whenever the audience set is
+	// not known at construction time, for example when it comes from Kubernetes
+	// resources that reconcile after the process starts.
+	//
+	// The provider calls it from request goroutines, so it must be safe for
+	// concurrent use. It can also run more than once for a single authorization
+	// request, because both DefaultScopes() and AuthorizationURL() consult it,
+	// and it takes no context: read cached state and return, do not block on a
+	// network call. Duplicates cost nothing, and invalid audiences are skipped
+	// and logged once each, so one bad value costs only its own scope.
+	//
+	// The merged set stays within oidc.MaxScopeCount. An audience that does not
+	// fit is skipped and logged.
+	//
+	// A server that restricts scopes must list the resulting audience scopes in
+	// its supported-scopes configuration, because DefaultScopes() feeds that
+	// allowlist.
+	AudienceResolver func() []string
 
 	// HTTPClient is an optional custom HTTP client
 	HTTPClient *http.Client
@@ -153,6 +190,8 @@ func NewProvider(cfg *Config) (*Provider, error) {
 		requestTimeout:  requestTimeout,
 		maxGroups:       maxGroups,
 		logger:          logger,
+
+		audienceResolver: cfg.AudienceResolver,
 	}, nil
 }
 
@@ -273,9 +312,86 @@ func (p *Provider) Name() string {
 }
 
 // DefaultScopes returns a deep copy of the provider's configured default
-// scopes so callers cannot mutate the provider's slice.
+// scopes so callers cannot mutate the provider's slice. When
+// Config.AudienceResolver is set, the cross-client audience scopes it reports
+// are merged in, so the result can differ between calls.
+//
+// This calls the resolver, which logs any audience it skips.
 func (p *Provider) DefaultScopes() []string {
-	return providers.CloneScopes(p.Scopes)
+	return p.effectiveScopes()
+}
+
+// effectiveScopes returns the configured scopes plus one cross-client audience
+// scope per audience that Config.AudienceResolver reports. The result is always
+// a fresh slice, so callers cannot mutate the provider's own.
+//
+// The merged set stays within oidc.MaxScopeCount, the bound NewProvider
+// enforces on the configured set, so the resolver cannot grow an authorization
+// request past what the constructor would accept. Audiences that do not fit are
+// reported as rejected.
+func (p *Provider) effectiveScopes() []string {
+	scopes := providers.CloneScopes(p.Scopes)
+	if p.audienceResolver == nil {
+		return scopes
+	}
+
+	audiences := p.audienceResolver()
+	if len(audiences) == 0 {
+		return scopes
+	}
+
+	present := make(map[string]struct{}, len(scopes)+len(audiences))
+	for _, scope := range scopes {
+		present[scope] = struct{}{}
+	}
+
+	audienceScopes, rejected := partitionAudienceScopes(
+		audiences,
+		min(MaxAudienceCount, oidc.MaxScopeCount-len(scopes)),
+		present,
+	)
+	p.warnRejectedAudiences(rejected)
+
+	return append(scopes, audienceScopes...)
+}
+
+// maxWarnedAudiences bounds the warnedAudiences memo. A resolver that returns
+// changing invalid values stops producing warnings at this point instead of
+// growing the memo without bound.
+const maxWarnedAudiences = 64
+
+// maxLoggedAudienceLength caps the audience value in a log line. A rejected
+// audience can be arbitrarily long: length is one of the reasons to reject an
+// audience, and partitionAudienceScopes rejects an over-budget audience without
+// validating it at all.
+const maxLoggedAudienceLength = 64
+
+// warnRejectedAudiences logs each rejected audience once. The resolver runs on
+// every authorization request, so an unconditional log would let one malformed
+// value flood the log.
+func (p *Provider) warnRejectedAudiences(rejected []audienceRejection) {
+	for _, rejection := range rejected {
+		if p.warnedAudienceCount.Load() >= maxWarnedAudiences {
+			return
+		}
+		if _, loaded := p.warnedAudiences.LoadOrStore(rejection.Audience, struct{}{}); loaded {
+			continue
+		}
+		p.warnedAudienceCount.Add(1)
+
+		p.logger.Warn("Skipping invalid cross-client audience reported by AudienceResolver",
+			"audience", truncateAudienceForLog(rejection.Audience),
+			"reason", rejection.Reason)
+	}
+}
+
+// truncateAudienceForLog shortens an audience to maxLoggedAudienceLength and
+// marks the result when it cut something off.
+func truncateAudienceForLog(audience string) string {
+	if len(audience) <= maxLoggedAudienceLength {
+		return audience
+	}
+	return audience[:maxLoggedAudienceLength] + "...(truncated)"
 }
 
 // AuthorizationURL generates the Dex OAuth authorization URL with PKCE support.
@@ -306,7 +422,9 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	// FilterScopes drops scopes Dex would reject ("Unrecognized scope(s)"),
 	// deep-copies the input, and force-merges mandatory scopes (openid,
 	// audience:server:client_id:*) from defaults via CopyScopes internally.
-	scopesToUse := providers.FilterScopes(scopes, p.Scopes, isDexSupportedScope)
+	// The defaults come from effectiveScopes, not from the Scopes field, so an
+	// audience that Config.AudienceResolver reports after startup is merged too.
+	scopesToUse := providers.FilterScopes(scopes, p.effectiveScopes(), isDexSupportedScope)
 
 	// Create a config with the determined scopes
 	config := *p.Config

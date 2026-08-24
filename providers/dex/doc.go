@@ -113,6 +113,42 @@
 // With this configuration, even if a client requests only ["openid", "email"], the
 // resulting authorization request will include "audience:server:client_id:dex-k8s-authenticator".
 //
+// # Audiences That Are Not Known At Startup
+//
+// Scopes is a snapshot: the provider reads it when NewProvider runs, and never
+// again. An audience that the caller learns about later never reaches an
+// authorization request, so the minted ID token carries only the provider's own
+// client and every downstream service that expects the missing audience rejects
+// it.
+//
+// Set Config.AudienceResolver for such an audience set. The provider calls it
+// per authorization request and merges the audiences it reports into both
+// DefaultScopes() and AuthorizationURL():
+//
+//	provider, err := dex.NewProvider(&dex.Config{
+//	    IssuerURL:    "https://dex.example.com",
+//	    ClientID:     "mcp-oauth",
+//	    ClientSecret: "secret",
+//	    RedirectURL:  "http://localhost:8080/oauth/callback",
+//	    // Reads the current backend registry on every login.
+//	    AudienceResolver: registry.RequiredAudiences,
+//	})
+//
+// The resolver runs on request goroutines, so it must be safe for concurrent
+// use. It can also run more than once for a single authorization request,
+// because both DefaultScopes() and AuthorizationURL() consult it, and it takes
+// no context: read cached state and return, do not block on a network call.
+//
+// Duplicates cost nothing. Invalid audiences are skipped and logged once each,
+// so one bad value costs only its own scope. The merged scope set stays within
+// oidc.MaxScopeCount, the bound NewProvider enforces on Scopes, and an audience
+// that does not fit is skipped and logged.
+//
+// A server that sets a supported-scopes allowlist must list the resulting
+// audience scopes, because DefaultScopes() feeds that allowlist. The server
+// validates that allowlist against provider defaults at startup, so an audience
+// the resolver reports later is not covered by that check.
+//
 // Use the audience helper functions to format these scopes:
 //
 //	// Format a single audience scope (returns error for invalid input)
