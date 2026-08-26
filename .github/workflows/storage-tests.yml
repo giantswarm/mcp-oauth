@@ -1,8 +1,13 @@
 name: "Storage tests"
 
-# The suites under storage/, server/ and oauthconfig/ skip themselves when
-# VALKEY_TEST_ADDR points at nothing, and the CircleCI go-build job provides no
-# server. This job gives them one, so their guards actually run.
+# The suites under storage/, server/ and oauthconfig/ skip themselves when they
+# cannot reach a server, and the CircleCI go-build job runs `make test` with no
+# server, so every one of those guards was inert in CI. This job gives them one.
+#
+# It lives here rather than in .circleci/custom.yml because the server-version
+# matrix needs a job of its own either way, and Actions supplies the two pieces
+# that job would otherwise hand-roll: the Go version comes straight from go.mod,
+# and the server is a health-checked service container.
 #
 # The matrix pins the oldest supported server as well as the current one: the
 # store must work on RESP2-only servers, so it may not use commands or options
@@ -34,8 +39,21 @@ jobs:
         server:
         - name: valkey 8
           image: valkey/valkey:8@sha256:f0ba225266310efba5fb33383e21c64fbd07907304224786c780606e7ebd7327
+          cli: valkey-cli
         - name: redis 6.2
           image: redis:6.2-alpine@sha256:d0c875bdacfb5c4d2c2d9124de3f53cee1dc9ceff8936bd459fabc135cb33015
+          cli: redis-cli
+
+    services:
+      server:
+        image: ${{ matrix.server.image }}
+        ports:
+        - 6379:6379
+        options: >-
+          --health-cmd "${{ matrix.server.cli }} ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
 
     steps:
     - name: Checkout repository
@@ -46,38 +64,29 @@ jobs:
       with:
         go-version-file: go.mod
 
-    - name: Start ${{ matrix.server.name }}
-      run: |
-        docker run -d --name test-server -p 6379:6379 '${{ matrix.server.image }}'
-        for _ in $(seq 30); do
-          if timeout 1 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/6379'; then
-            exit 0
-          fi
-          sleep 1
-        done
-        echo "server did not accept connections within 30s" >&2
-        docker logs test-server >&2
-        exit 1
-
     # Only the packages that reach for a server. The rest of the suite runs on
-    # CircleCI, which needs none.
-    - name: Run tests
-      env:
-        VALKEY_TEST_ADDR: localhost:6379
-      run: go test -race -count=1 ./storage/... ./server/... ./oauthconfig/...
-
-    # A suite that cannot reach the server skips itself, and a skip reads as a
-    # pass. Every such skip names the server, so failing on that phrase covers
-    # each guard in the package, including ones added later.
-    - name: Fail if a storage/valkey test skipped for want of a server
+    # CircleCI, which needs none. -v so the next step can see the skips.
+    #
+    # 127.0.0.1, not localhost: the service container publishes on IPv4 only,
+    # and a client that resolves localhost to ::1 gets connection refused, which
+    # every suite reads as "no server" and skips.
+    - name: Run the suites that need a server
       # pipefail so a failing test fails the step: the exit status of a tee
       # pipeline is tee's, which is always 0.
       shell: bash
       env:
-        VALKEY_TEST_ADDR: localhost:6379
+        VALKEY_TEST_ADDR: 127.0.0.1:6379
       run: |
-        go test -v -count=1 ./storage/valkey/ 2>&1 | tee guard.log
-        if grep -q 'Valkey at' guard.log; then
-          echo "a storage/valkey test skipped: no server reached" >&2
+        go test -race -count=1 -v ./storage/... ./server/... ./oauthconfig/... 2>&1 | tee test.log
+
+    # A suite that cannot reach the server skips itself, and a skip reads as a
+    # pass. Every such skip names VALKEY_TEST_ADDR, and nothing else in the test
+    # output does, so matching that one token covers every guard in these
+    # packages, including ones added later.
+    - name: Fail if a suite skipped for want of a server
+      shell: bash
+      run: |
+        if grep -n VALKEY_TEST_ADDR test.log; then
+          echo "a suite skipped: no server reached" >&2
           exit 1
         fi
