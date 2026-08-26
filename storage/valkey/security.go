@@ -503,6 +503,8 @@ func (s *Store) markFamilyMetadataRevoked(ctx context.Context, token string, now
 
 	var j refreshTokenFamilyJSON
 	if err := json.Unmarshal([]byte(data), &j); err != nil {
+		s.logger.Warn("Failed to parse family metadata for revocation, key may be unrevoked",
+			"token_prefix", tokenPrefix, "error", err)
 		return false
 	}
 
