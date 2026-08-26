@@ -752,8 +752,12 @@ return cjson.encode({user_id = userID, client_id = clientID, token = cjson.decod
 //
 // Doing all of this in one script is what makes it correct under concurrency:
 // two grants racing to create the same set cannot interleave a short-lived
-// member's horizon ahead of a long-lived one, which separate SADD + EXPIRE GT +
-// EXPIRE NX round-trips could.
+// member's horizon ahead of a long-lived one, which a separate SADD followed by
+// a conditional EXPIRE round-trip could.
+//
+// The comparison lives in the script rather than in EXPIRE's GT/NX options
+// because those options need a 7.0+ server, and the store supports older,
+// RESP2-only servers. EVAL, TTL and plain EXPIRE are available everywhere.
 const luaAtomicSaddExtendOnlyTTL = `
 redis.call('SADD', KEYS[1], ARGV[1])
 local horizon = tonumber(ARGV[2])
@@ -768,6 +772,28 @@ if cur == -1 then
     end
 elseif cur >= 0 and horizon > cur then
     redis.call('EXPIRE', KEYS[1], horizon)
+end
+return redis.status_reply('OK')
+`
+
+// luaExtendOnlyTTL extends the TTL of an existing key, and never shortens it.
+//
+// KEYS[1] = key to extend
+// ARGV[1] = new bound in whole seconds (always >= 1)
+//
+// TTL(KEYS[1]) returns -2 (missing), -1 (present, no expiry) or >= 0 (seconds
+// remaining), so the rules are:
+//   - missing key      -> no-op, the key is not created;
+//   - no current expiry -> no-op, an unbounded key is already longer-lived than
+//     any finite bound;
+//   - existing expiry   -> extend only when the new bound is strictly longer.
+//
+// This is EXPIRE ... GT semantics, written as a script because the GT option
+// needs a 7.0+ server and the store supports older, RESP2-only servers.
+const luaExtendOnlyTTL = `
+local cur = redis.call('TTL', KEYS[1])
+if cur >= 0 and tonumber(ARGV[1]) > cur then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
 end
 return redis.status_reply('OK')
 `
