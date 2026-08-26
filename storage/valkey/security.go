@@ -118,23 +118,18 @@ func (s *Store) saveFamilyMetadata(ctx context.Context, refreshToken, userID, cl
 	return nil
 }
 
-// addTokenToFamilySet adds the token to the family set for family-wide revocation.
+// addTokenToFamilySet adds the token to the family set for family-wide
+// revocation, keeping the set bounded with an extend-only TTL.
+//
+// The set indexes every member's family metadata, and each member's metadata
+// carries its own issuance TTL, so the set must outlive its longest-lived
+// member: a rotation that shortens the set below a still-live member's metadata
+// horizon leaves that metadata reachable by reuse detection while
+// RevokeRefreshTokenFamily walks an empty set and cannot mark the family
+// revoked.
 func (s *Store) addTokenToFamilySet(ctx context.Context, refreshToken, familyID string, ttl time.Duration) {
-	familySetKey := s.familyKey(familyID)
-	if err := s.client.Do(
-		ctx,
-		s.client.B().Sadd().Key(familySetKey).Member(refreshToken).Build(),
-	).Error(); err != nil {
+	if err := s.saddExtendOnlyTTL(ctx, s.familyKey(familyID), refreshToken, ttl); err != nil {
 		s.logger.Warn("Failed to add token to family set",
-			"family_id", safeTruncate(familyID, tokenIDLogLength),
-			"error", err)
-	}
-
-	if err := s.client.Do(
-		ctx,
-		s.client.B().Expire().Key(familySetKey).Seconds(int64(ttl.Seconds())).Build(),
-	).Error(); err != nil {
-		s.logger.Warn("Failed to set TTL on family set",
 			"family_id", safeTruncate(familyID, tokenIDLogLength),
 			"error", err)
 	}
@@ -190,6 +185,21 @@ func (s *Store) addTokenToUserClientSet(ctx context.Context, refreshToken, userI
 // to a short-lived member's horizon, and it is a single round-trip on the
 // token-issuance hot path.
 func (s *Store) addToUserClientSet(ctx context.Context, key, member, userID, clientID string, ttl time.Duration) {
+	if err := s.saddExtendOnlyTTL(ctx, key, member, ttl); err != nil {
+		s.logger.Warn("Failed to add token to user+client set",
+			"user_id", userID,
+			"client_id", clientID,
+			"error", err)
+	}
+}
+
+// saddExtendOnlyTTL atomically adds member to a revocation set and keeps the set
+// bounded with an extend-only TTL (see luaAtomicSaddExtendOnlyTTL for the full
+// rationale). ttl is the member's own horizon; the set TTL becomes
+// max(existing, ttl) and is never shortened below a still-live member. When ttl
+// is non-positive (a token with no or expired horizon) the set is still bounded
+// by the store's refresh-token TTL rather than being left to grow without bound.
+func (s *Store) saddExtendOnlyTTL(ctx context.Context, key, member string, ttl time.Duration) error {
 	horizon := int64(0)
 	if ttl > 0 {
 		// valkey EXPIRE with 0 seconds deletes the key, so never let a positive
@@ -202,7 +212,7 @@ func (s *Store) addToUserClientSet(ctx context.Context, key, member, userID, cli
 	if fallback < 1 {
 		fallback = 1
 	}
-	if err := s.client.Do(
+	return s.client.Do(
 		ctx,
 		s.client.B().Eval().Script(luaAtomicSaddExtendOnlyTTL).
 			Numkeys(1).
@@ -211,12 +221,7 @@ func (s *Store) addToUserClientSet(ctx context.Context, key, member, userID, cli
 			Arg(fmt.Sprintf("%d", horizon)).
 			Arg(fmt.Sprintf("%d", fallback)).
 			Build(),
-	).Error(); err != nil {
-		s.logger.Warn("Failed to add token to user+client set",
-			"user_id", userID,
-			"client_id", clientID,
-			"error", err)
-	}
+	).Error()
 }
 
 // GetRefreshTokenFamily retrieves family metadata for a refresh token.

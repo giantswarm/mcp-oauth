@@ -721,17 +721,20 @@ redis.call('DEL', KEYS[3])
 return cjson.encode({user_id = userID, client_id = clientID, token = cjson.decode(tokenData)})
 `
 
-// luaAtomicSaddExtendOnlyTTL atomically adds a member to a user+client
-// revocation set and keeps the set bounded with an extend-only TTL, in a single
-// round-trip.
+// luaAtomicSaddExtendOnlyTTL atomically adds a member to a revocation set and
+// keeps the set bounded with an extend-only TTL, in a single round-trip. It
+// backs both revocation sets: the user+client set (bulk revocation) and the
+// family set (family-wide revocation).
 //
-// The set has no per-member removal (there is no SREM anywhere; access tokens
+// The sets have no per-member removal (there is no SREM anywhere; access tokens
 // expire purely by their own key TTL, which fires no set-membership cleanup), so
-// without a TTL it grows without bound. Members are heterogeneous — short-lived
-// access tokens alongside long-lived refresh tokens — so the set TTL must extend
-// to the longest member horizon and must never shrink below a still-live member.
+// without a TTL they grow without bound. Members are heterogeneous: short-lived
+// access tokens alongside long-lived refresh tokens, and, in a family set,
+// rotated-away members whose family metadata keeps its original issuance
+// horizon. The set TTL must therefore extend to the longest member horizon and
+// must never shrink below a still-live member.
 //
-// KEYS[1] = user+client set key
+// KEYS[1] = revocation set key
 // ARGV[1] = member (token ID)
 // ARGV[2] = member horizon in whole seconds, or 0 when unknown/expired
 // ARGV[3] = fallback bound in whole seconds (always >= 1), used only to
