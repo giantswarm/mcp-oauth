@@ -377,18 +377,24 @@ func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) (
 
 	now := time.Now()
 	revokedCount := 0
+	unknownCount := 0
 
 	for _, token := range tokens {
-		if s.revokeTokenInFamily(op.ctx, token, now) {
+		switch s.revokeTokenInFamily(op.ctx, token, now) {
+		case familyMemberRevoked:
 			revokedCount++
+		case familyMemberUnknown:
+			unknownCount++
 		}
 	}
 
-	// The set indexes the members' revoked metadata, so retain it only when at
-	// least one such record was written. With none, both by-family-ID reads
-	// fall through to not-found off a walk that finds no metadata.
-	if revokedCount == 0 {
-		s.logger.Warn("Refresh token family walked but no revoked metadata was written",
+	// The set indexes the members' revoked metadata, so drop the retention only
+	// when every member is provably absent: both by-family-ID reads then fall
+	// through to not-found off a walk that finds no metadata. A member whose
+	// state we could not read or write is not absent, and retention is
+	// fail-closed, so it holds the set too.
+	if revokedCount == 0 && unknownCount == 0 {
+		s.logger.Warn("Refresh token family walked but no member metadata was found",
 			"family_id", safeTruncate(familyID, tokenIDLogLength),
 			"members", len(tokens))
 		return nil
@@ -398,7 +404,8 @@ func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) (
 
 	s.logger.Warn("Revoked refresh token family due to reuse detection",
 		"family_id", safeTruncate(familyID, tokenIDLogLength),
-		"tokens_revoked", revokedCount)
+		"tokens_revoked", revokedCount,
+		"tokens_unknown", unknownCount)
 
 	return nil
 }
@@ -464,28 +471,43 @@ func (s *Store) getFamilyTokens(ctx context.Context, familyID string) ([]string,
 	return result, nil
 }
 
-// revokeTokenInFamily revokes a single token within a family. It reports
-// whether the member's revoked metadata was retained, which is the state the
-// family set indexes.
-func (s *Store) revokeTokenInFamily(ctx context.Context, token string, now time.Time) bool {
+// familyMemberOutcome reports what a revocation walk established about one
+// family member, which is what decides whether the family set still indexes
+// anything.
+type familyMemberOutcome int
+
+const (
+	// familyMemberAbsent: no metadata under either key layout.
+	familyMemberAbsent familyMemberOutcome = iota
+	// familyMemberRevoked: the revoked record was written and is retained.
+	familyMemberRevoked
+	// familyMemberUnknown: the metadata could not be read, parsed or written,
+	// so the member is neither revoked nor known to be absent.
+	familyMemberUnknown
+)
+
+// revokeTokenInFamily revokes a single token within a family. It reports what
+// the member's metadata now holds, which is the state the family set indexes.
+func (s *Store) revokeTokenInFamily(ctx context.Context, token string, now time.Time) familyMemberOutcome {
 	tokenPrefix := safeTruncate(token, tokenIDLogLength)
 
-	retained := s.markFamilyMetadataRevoked(ctx, token, now, tokenPrefix)
+	outcome := s.markFamilyMetadataRevoked(ctx, token, now, tokenPrefix)
 	s.deleteTokenKeys(ctx, token, tokenPrefix)
-	return retained
+	return outcome
 }
 
 // markFamilyMetadataRevoked updates family metadata to mark as revoked. It
 // reports whether the revoked record was written and is therefore retained for
-// the revoked-family window.
-func (s *Store) markFamilyMetadataRevoked(ctx context.Context, token string, now time.Time, tokenPrefix string) bool {
+// the revoked-family window, the member has no metadata at all, or the member's
+// state could not be established.
+func (s *Store) markFamilyMetadataRevoked(ctx context.Context, token string, now time.Time, tokenPrefix string) familyMemberOutcome {
 	metaKey := s.refreshTokenMetaKey(token)
 	data, err := s.client.Do(ctx, s.client.B().Get().Key(metaKey).Build()).ToString()
 	if err != nil {
 		if !isNilError(err) {
 			s.logger.Warn("Failed to read family metadata for revocation, key may be unrevoked",
 				"token_prefix", tokenPrefix, "error", err)
-			return false
+			return familyMemberUnknown
 		}
 		// Key not found under hashed format: try legacy key written by pre-migration pods.
 		metaKey = s.legacyRefreshTokenMetaKey(token)
@@ -494,8 +516,9 @@ func (s *Store) markFamilyMetadataRevoked(ctx context.Context, token string, now
 			if !isNilError(err) {
 				s.logger.Warn("Failed to read legacy family metadata for revocation, key may be unrevoked",
 					"token_prefix", tokenPrefix, "error", err)
+				return familyMemberUnknown
 			}
-			return false
+			return familyMemberAbsent
 		}
 	}
 
@@ -503,7 +526,7 @@ func (s *Store) markFamilyMetadataRevoked(ctx context.Context, token string, now
 	if err := json.Unmarshal([]byte(data), &j); err != nil {
 		s.logger.Warn("Failed to parse family metadata for revocation, key may be unrevoked",
 			"token_prefix", tokenPrefix, "error", err)
-		return false
+		return familyMemberUnknown
 	}
 
 	j.Revoked = true
@@ -518,9 +541,9 @@ func (s *Store) markFamilyMetadataRevoked(ctx context.Context, token string, now
 		s.logger.Warn("Failed to write revoked family metadata, key may be unrevoked",
 			"token_prefix", tokenPrefix,
 			"error", err)
-		return false
+		return familyMemberUnknown
 	}
-	return true
+	return familyMemberRevoked
 }
 
 // deleteTokenKeys deletes all keys associated with a token.

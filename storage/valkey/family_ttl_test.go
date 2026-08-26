@@ -15,12 +15,10 @@ import (
 const shortMemberTTLCeil = int64(3600) + 5
 
 // TestFamilySet_TTLExtendOnly guards the add path: the {prefix}family:{fid} SET
-// was bounded with a plain EXPIRE, which RESET the TTL to the newly added
-// token's horizon on every rotation. A rotation under a shortened
-// RefreshTokenTTL therefore shrank the set below the metadata horizon of
-// earlier members, so reuse detection still fired on a rotated-away token while
-// RevokeRefreshTokenFamily walked an empty set and could never mark the family
-// revoked.
+// must outlive its longest-lived member, so a rotation issued under a shorter
+// horizon may not shrink it. A shrunk set drops members whose family metadata
+// is still live, and reuse detection then fires on a token that
+// RevokeRefreshTokenFamily can no longer reach.
 func TestFamilySet_TTLExtendOnly(t *testing.T) {
 	store := testStore(t)
 	ctx := t.Context()
@@ -54,10 +52,10 @@ func TestFamilySet_TTLExtendOnly(t *testing.T) {
 }
 
 // TestRevokedFamilySet_RetainedForRetentionWindow guards the revocation path:
-// markFamilyMetadataRevoked retains each member's metadata for
-// RevokedFamilyRetentionDays, but nothing extended the family SET, so the
-// by-family-ID index expired at the last add's horizon and the revoked signal
-// decayed to not-found long before the retained metadata did.
+// the family SET is the by-family-ID index over the member metadata that
+// markFamilyMetadataRevoked retains for RevokedFamilyRetentionDays, so it must
+// live at least as long. An index that expires first turns the revoked signal
+// into not-found.
 func TestRevokedFamilySet_RetainedForRetentionWindow(t *testing.T) {
 	store := testStore(t)
 	ctx := t.Context()
@@ -147,4 +145,31 @@ func TestRevokedFamilySet_NotRetainedWithoutMetadata(t *testing.T) {
 
 	require.LessOrEqual(t, ttlSeconds(t, store, familySetKey), shortMemberTTLCeil,
 		"an index that points at nothing must not be held for the retention window")
+}
+
+// TestRevokedFamilySet_RetainedWhenMemberStateUnknown covers the fail-closed
+// half of the retention condition: a member whose metadata cannot be parsed is
+// neither revoked nor provably absent, so the set must still be held. Dropping
+// the retention on anything short of a provably empty family would let a
+// storage error shorten the index of a family that was just revoked.
+func TestRevokedFamilySet_RetainedWhenMemberStateUnknown(t *testing.T) {
+	store := testStore(t)
+	ctx := t.Context()
+
+	const (
+		familyID = "fam-unknown-state"
+		token    = "rt-fam-unknown-state"
+	)
+	familySetKey := store.familyKey(familyID)
+
+	require.NoError(t, store.saddExtendOnlyTTL(ctx, familySetKey, token, time.Hour))
+	require.NoError(t, store.client.Do(ctx, store.client.B().Set().
+		Key(store.refreshTokenMetaKey(token)).Value("not-json").
+		ExSeconds(3600).Build()).Error())
+
+	require.NoError(t, store.RevokeRefreshTokenFamily(ctx, familyID))
+
+	retentionSeconds := int64((time.Duration(store.revokedFamilyRetentionDays) * 24 * time.Hour).Seconds())
+	require.Greater(t, ttlSeconds(t, store, familySetKey), retentionSeconds-60,
+		"a member whose state could not be established must still hold the set")
 }
