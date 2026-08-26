@@ -307,16 +307,11 @@ func SSRFSafeDialContext(dialer *net.Dialer) func(ctx context.Context, network, 
 // This client validates that resolved IP addresses are not private/restricted
 // at connection time, preventing DNS rebinding attacks.
 //
-// Which IP addresses the client may reach and which CA signs the certificate it
-// trusts are independent: an IdP on a public address can still present a
-// certificate from an internal CA, so rootCAs applies here exactly as it does on
-// the permissive clients.
-//
 // Parameters:
 //   - timeout: HTTP client timeout (0 uses default 10 seconds)
-//   - rootCAs: CA pool the certificate is verified against; nil uses the system
-//     pool. The pool replaces the system roots, so a caller that needs both must
-//     pass a pool that already contains them.
+//   - rootCAs: CA pool the certificate is verified against (e.g. an internal-CA
+//     IdP on a public address). It replaces the system roots rather than
+//     extending them. nil uses the system pool.
 //
 // Security Features:
 //   - DNS Rebinding Protection: Validates resolved IPs at connection time

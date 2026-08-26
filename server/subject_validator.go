@@ -168,11 +168,9 @@ type TrustedIssuer struct {
 	AllowPrivateIPJWKSHosts []string
 
 	// RootCAs is the CA pool used to verify this issuer's JWKS endpoint TLS
-	// certificate when the endpoint presents a certificate from an internal CA.
-	// It applies with or without AllowPrivateIPJWKS / AllowPrivateIPJWKSHosts:
-	// a JWKS host on a public address can still carry an internal-CA
-	// certificate. The pool replaces the system roots rather than extending
-	// them. nil uses the system pool.
+	// certificate (e.g. an internal-CA Dex). It applies with or without
+	// AllowPrivateIPJWKS / AllowPrivateIPJWKSHosts. The pool replaces the system
+	// roots rather than extending them. nil uses the system pool.
 	RootCAs *x509.CertPool
 	// AcceptedTypHeaders lists the JWT typ header values accepted when a
 	// Bearer token from this issuer is presented to the resource server.
@@ -222,10 +220,8 @@ func NewOIDCValidator(issuers []TrustedIssuer) (*OIDCValidator, error) {
 				RootCAs:             ti.RootCAs,
 			})
 		} else if ti.RootCAs != nil {
-			// An issuer whose JWKS host resolves to a public address can still
-			// present an internal-CA certificate. Give it its own SSRF-safe
-			// client pinned to its pool instead of the shared system-pool one,
-			// so trust never depends on relaxing the SSRF guard.
+			// Own SSRF-safe client pinned to this issuer's pool, rather than the
+			// shared system-pool one.
 			issuerClients[ti.Issuer] = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
 				RootCAs: ti.RootCAs,
 			})

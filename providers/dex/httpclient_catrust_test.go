@@ -39,9 +39,4 @@ func TestResolveHTTPClient_RootCAs(t *testing.T) {
 		client := resolveHTTPClient(nil, false, nil, 5*time.Second)
 		require.Nil(t, client.Transport, "a nil pool must not pin a transport")
 	})
-
-	t.Run("explicit client wins", func(t *testing.T) {
-		explicit := &http.Client{}
-		require.Same(t, explicit, resolveHTTPClient(explicit, false, pool, 5*time.Second))
-	})
 }

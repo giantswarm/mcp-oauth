@@ -102,10 +102,9 @@ type JWKSClientOptions struct {
 
 	// RootCAs is the CA pool used to verify the JWKS endpoint's TLS certificate
 	// (e.g. an internal-CA Dex). It applies on every dial posture, including the
-	// default SSRF-safe one: reachability and trust anchor are independent, so a
-	// JWKS host on a public address can still carry an internal-CA certificate.
-	// The pool replaces the system roots rather than extending them. nil uses the
-	// system pool. Ignored when HTTPClient is provided.
+	// default SSRF-safe one. The pool replaces the system roots rather than
+	// extending them. nil uses the system pool. Ignored when HTTPClient is
+	// provided.
 	RootCAs *x509.CertPool
 }
 
@@ -161,8 +160,7 @@ func NewJWKSClientWithOptions(opts JWKSClientOptions) *JWKSClient {
 		default:
 			// SECURITY: SSRF-safe client validates resolved IPs at connection
 			// time (DNS rebinding protection) and blocks private, loopback, and
-			// link-local addresses. RootCAs is honored here too: a JWKS host on a
-			// public address can still carry an internal-CA certificate.
+			// link-local addresses.
 			httpClient = NewSSRFSafeHTTPClient(DefaultHTTPTimeout, opts.RootCAs)
 		}
 	}

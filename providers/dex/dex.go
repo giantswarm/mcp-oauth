@@ -124,11 +124,10 @@ type Config struct {
 	AllowPrivateIP bool
 
 	// RootCAs is the CA pool used to verify Dex's TLS certificate during OIDC
-	// discovery and token endpoint calls when no explicit HTTPClient is provided
-	// (e.g. an internal-CA Dex). It applies with or without AllowPrivateIP: a Dex
-	// on a public address can still carry an internal-CA certificate. The pool
-	// replaces the system roots rather than extending them. nil uses the system
-	// pool.
+	// discovery and token endpoint calls (e.g. an internal-CA Dex). It applies
+	// with or without AllowPrivateIP. The pool replaces the system roots rather
+	// than extending them. nil uses the system pool. Ignored when HTTPClient is
+	// provided.
 	RootCAs *x509.CertPool
 
 	// discoveryClient overrides the OIDC discovery client. Nil means
@@ -279,29 +278,15 @@ func resolveTimeout(timeout time.Duration) time.Duration {
 // client without SSRF protection is returned so that Dex issuer URLs resolving
 // to RFC 1918 addresses (e.g. internal load balancers) are reachable.
 //
-// rootCAs is applied on both paths. A public-address Dex can present an
-// internal-CA certificate, so trust must not depend on the dial posture.
+// rootCAs applies on both paths: a Dex on a public address can still present an
+// internal-CA certificate, so trust does not depend on the dial posture.
 func resolveHTTPClient(client *http.Client, allowPrivateIP bool, rootCAs *x509.CertPool, timeout time.Duration) *http.Client {
-	if client != nil {
+	switch {
+	case client != nil:
 		return client
-	}
-	if allowPrivateIP {
+	case allowPrivateIP:
 		return oidc.NewPrivateIPAllowedHTTPClient(timeout, rootCAs)
-	}
-	if rootCAs != nil {
-		return newRootCATrustingClient(rootCAs, timeout)
-	}
-	return &http.Client{Timeout: timeout}
-}
-
-// newRootCATrustingClient clones http.DefaultTransport and pins its trust
-// anchor to rootCAs. Cloning keeps the default transport's proxy, timeout and
-// connection-pool settings.
-func newRootCATrustingClient(rootCAs *x509.CertPool, timeout time.Duration) *http.Client {
-	transport, ok := http.DefaultTransport.(*http.Transport)
-	if !ok {
-		// DefaultTransport is always *http.Transport in the stdlib. Something
-		// replaced it; build a plain transport rather than dropping the pool.
+	case rootCAs != nil:
 		return &http.Client{
 			Transport: &http.Transport{
 				Proxy:           http.ProxyFromEnvironment,
@@ -309,16 +294,9 @@ func newRootCATrustingClient(rootCAs *x509.CertPool, timeout time.Duration) *htt
 			},
 			Timeout: timeout,
 		}
+	default:
+		return &http.Client{Timeout: timeout}
 	}
-	cloned := transport.Clone()
-	if cloned.TLSClientConfig == nil {
-		cloned.TLSClientConfig = &tls.Config{}
-	}
-	if cloned.TLSClientConfig.MinVersion == 0 {
-		cloned.TLSClientConfig.MinVersion = tls.VersionTLS12
-	}
-	cloned.TLSClientConfig.RootCAs = rootCAs
-	return &http.Client{Transport: cloned, Timeout: timeout}
 }
 
 // resolveDiscoveryClient returns override when non-nil, otherwise constructs a

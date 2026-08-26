@@ -990,9 +990,8 @@ func TestPrivateIPAllowedHTTPClient_CATrust(t *testing.T) {
 }
 
 // TestSSRFSafeHTTPClient_TrustsExplicitCA verifies that the SSRF-safe client
-// verifies against the rootCAs argument. Reachability and trust anchor are
-// independent: an IdP on a public address can present an internal-CA
-// certificate, so the pool must apply on the default dial posture too.
+// verifies against the rootCAs argument, so an IdP on a public address can
+// present an internal-CA certificate.
 //
 // The SSRF dialer blocks loopback, so the handshake is driven from the
 // transport's TLS config rather than through client.Get.
@@ -1007,9 +1006,17 @@ func TestSSRFSafeHTTPClient_TrustsExplicitCA(t *testing.T) {
 	pool.AddCert(srv.Certificate())
 	addr := srv.Listener.Addr().String()
 
+	tlsConfigOf := func(client *http.Client) *tls.Config {
+		transport, ok := client.Transport.(*http.Transport)
+		if !ok {
+			t.Fatalf("expected *http.Transport, got %T", client.Transport)
+		}
+		return transport.TLSClientConfig
+	}
+
 	t.Run("explicit pool trusts the internal CA", func(t *testing.T) {
-		tlsConfig := transportTLSConfig(t, NewSSRFSafeHTTPClient(0, pool))
-		if tlsConfig.RootCAs != pool {
+		tlsConfig := tlsConfigOf(NewSSRFSafeHTTPClient(0, pool))
+		if tlsConfig == nil || tlsConfig.RootCAs != pool {
 			t.Fatal("expected the transport to verify against the supplied pool")
 		}
 		conn, err := tls.Dial("tcp", addr, tlsConfig.Clone())
@@ -1020,12 +1027,7 @@ func TestSSRFSafeHTTPClient_TrustsExplicitCA(t *testing.T) {
 	})
 
 	t.Run("nil pool keeps system-pool verification", func(t *testing.T) {
-		client := NewSSRFSafeHTTPClient(0, nil)
-		transport, ok := client.Transport.(*http.Transport)
-		if !ok {
-			t.Fatalf("expected *http.Transport, got %T", client.Transport)
-		}
-		if transport.TLSClientConfig != nil && transport.TLSClientConfig.RootCAs != nil {
+		if tlsConfig := tlsConfigOf(NewSSRFSafeHTTPClient(0, nil)); tlsConfig != nil && tlsConfig.RootCAs != nil {
 			t.Error("expected no explicit CA pool when rootCAs is nil")
 		}
 		conn, err := tls.Dial("tcp", addr, &tls.Config{MinVersion: tls.VersionTLS12})
@@ -1034,17 +1036,4 @@ func TestSSRFSafeHTTPClient_TrustsExplicitCA(t *testing.T) {
 			t.Fatal("expected the self-signed server to be rejected by the system pool")
 		}
 	})
-}
-
-// transportTLSConfig returns the TLS config the client's transport uses.
-func transportTLSConfig(t *testing.T, client *http.Client) *tls.Config {
-	t.Helper()
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("expected *http.Transport, got %T", client.Transport)
-	}
-	if transport.TLSClientConfig == nil {
-		t.Fatal("expected a TLS config on the transport")
-	}
-	return transport.TLSClientConfig
 }
