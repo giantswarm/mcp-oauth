@@ -307,33 +307,26 @@ func SSRFSafeDialContext(dialer *net.Dialer) func(ctx context.Context, network, 
 // clients.
 type dialContextFunc = func(ctx context.Context, network, addr string) (net.Conn, error)
 
-// httpClientPosture holds the only dimensions on which the package's HTTP
-// clients differ. Every exported constructor states one posture and hands it to
-// newHTTPClient, so the transport tuning and the TLS decision have a single
-// definition.
-type httpClientPosture struct {
-	// dialFor selects the dial guard: SSRF-safe, private-IP, or host-scoped.
-	dialFor func(*net.Dialer) dialContextFunc
-
-	// pinHost refuses a redirect to another host. Set it whenever dialFor
-	// cannot filter private IPs for every host, so a redirect cannot pivot the
-	// fetch to an internal target the dialer would have to allow.
-	pinHost bool
-
-	// proxy honors the HTTP_PROXY, HTTPS_PROXY and NO_PROXY variables. Set it
-	// only where dialFor guards nothing: a proxied request dials the proxy, so
-	// a guard would inspect the proxy address instead of the target and the
-	// protection would be silently lost.
-	proxy bool
-}
-
-// newHTTPClient builds every HTTP client in this package. rootCAs, when
-// non-nil, is the explicit CA pool the client verifies against (for an
-// internal-CA IdP); nil keeps the default (system pool) verification. Only
-// RootCAs is set on the TLS config, never InsecureSkipVerify, so the "never
-// InsecureSkipVerify" invariant holds on every posture, including the
+// newHTTPClient builds every HTTP client in this package, so the transport
+// tuning and the TLS decision have a single definition. The clients differ on
+// four arguments only:
+//
+//   - dialFor selects the dial guard: SSRF-safe, private-IP, or host-scoped.
+//   - pinHost refuses a redirect to another host. Set it whenever dialFor
+//     cannot filter private IPs for every host, so a redirect cannot pivot the
+//     fetch to an internal target the dialer would have to allow.
+//   - proxy honors the HTTP_PROXY, HTTPS_PROXY and NO_PROXY variables. Set it
+//     only where dialFor guards nothing: a proxied request dials the proxy, so
+//     a guard would inspect the proxy address instead of the target and the
+//     protection would be silently lost.
+//   - rootCAs, when non-nil, is the explicit CA pool the client verifies
+//     against (for an internal-CA IdP); nil keeps the default (system pool)
+//     verification.
+//
+// Only RootCAs is set on the TLS config, never InsecureSkipVerify, so the
+// "never InsecureSkipVerify" invariant holds on every client, including the
 // permissive ones where the SSRF dial guard is relaxed.
-func newHTTPClient(timeout time.Duration, posture httpClientPosture, rootCAs *x509.CertPool) *http.Client {
+func newHTTPClient(timeout time.Duration, dialFor func(*net.Dialer) dialContextFunc, pinHost, proxy bool, rootCAs *x509.CertPool) *http.Client {
 	if timeout == 0 {
 		timeout = DefaultHTTPTimeout
 	}
@@ -344,7 +337,7 @@ func newHTTPClient(timeout time.Duration, posture httpClientPosture, rootCAs *x5
 	}
 
 	transport := &http.Transport{
-		DialContext:           posture.dialFor(dialer),
+		DialContext:           dialFor(dialer),
 		ForceAttemptHTTP2:     true,
 		TLSHandshakeTimeout:   DefaultTLSHandshakeTimeout,
 		ResponseHeaderTimeout: timeout,
@@ -352,7 +345,7 @@ func newHTTPClient(timeout time.Duration, posture httpClientPosture, rootCAs *x5
 		MaxIdleConns:          DefaultMaxIdleConns,
 		IdleConnTimeout:       DefaultIdleConnTimeout,
 	}
-	if posture.proxy {
+	if proxy {
 		transport.Proxy = http.ProxyFromEnvironment
 	}
 	if rootCAs != nil {
@@ -366,7 +359,7 @@ func newHTTPClient(timeout time.Duration, posture httpClientPosture, rootCAs *x5
 		Transport: transport,
 		Timeout:   timeout,
 	}
-	if posture.pinHost {
+	if pinHost {
 		client.CheckRedirect = blockCrossHostRedirect
 	}
 	return client
@@ -396,7 +389,10 @@ func defaultDialContext(dialer *net.Dialer) dialContextFunc { return dialer.Dial
 //	client := NewSSRFSafeHTTPClient(30*time.Second, nil)
 //	resp, err := client.Get("https://example.com/jwks")
 func NewSSRFSafeHTTPClient(timeout time.Duration, rootCAs *x509.CertPool) *http.Client {
-	return newHTTPClient(timeout, httpClientPosture{dialFor: SSRFSafeDialContext}, rootCAs)
+	return newHTTPClient(timeout, SSRFSafeDialContext,
+		false, // pinHost: the dial guard already blocks redirects to private IPs
+		false, // proxy: a proxied request would bypass the dial guard
+		rootCAs)
 }
 
 // NewPrivateIPAllowedHTTPClient creates an HTTP client without SSRF protection.
@@ -432,7 +428,10 @@ func NewSSRFSafeHTTPClient(timeout time.Duration, rootCAs *x509.CertPool) *http.
 //	client := NewPrivateIPAllowedHTTPClient(30 * time.Second, dexCAPool)
 //	resp, err := client.Get("https://dex.internal/keys")
 func NewPrivateIPAllowedHTTPClient(timeout time.Duration, rootCAs *x509.CertPool) *http.Client {
-	return newHTTPClient(timeout, httpClientPosture{dialFor: defaultDialContext, pinHost: true}, rootCAs)
+	return newHTTPClient(timeout, defaultDialContext,
+		true,  // pinHost: the dialer cannot filter private IPs
+		false, // proxy: a private IdP is reached directly
+		rootCAs)
 }
 
 // NewDefaultDialHTTPClient creates an HTTP client for calls to an
@@ -455,7 +454,10 @@ func NewPrivateIPAllowedHTTPClient(timeout time.Duration, rootCAs *x509.CertPool
 //   - No SSRF Protection: private, loopback, and link-local addresses are
 //     ALLOWED
 func NewDefaultDialHTTPClient(timeout time.Duration, rootCAs *x509.CertPool) *http.Client {
-	return newHTTPClient(timeout, httpClientPosture{dialFor: defaultDialContext, pinHost: true, proxy: true}, rootCAs)
+	return newHTTPClient(timeout, defaultDialContext,
+		true, // pinHost: the dialer cannot filter private IPs
+		true, // proxy: the endpoint is operator-configured
+		rootCAs)
 }
 
 func guardSSRF(host string, ips []net.IP) error {
@@ -510,12 +512,13 @@ func HostScopedPrivateIPDialContext(dialer *net.Dialer, allowedHosts []string) f
 // rootCAs, when non-nil, is the CA pool the client verifies the IdP's
 // certificate against; nil uses the system pool.
 func NewHostScopedPrivateIPHTTPClient(allowedHosts []string, timeout time.Duration, rootCAs *x509.CertPool) *http.Client {
-	return newHTTPClient(timeout, httpClientPosture{
-		dialFor: func(d *net.Dialer) dialContextFunc {
-			return HostScopedPrivateIPDialContext(d, allowedHosts)
-		},
-		pinHost: true,
-	}, rootCAs)
+	dialFor := func(dialer *net.Dialer) dialContextFunc {
+		return HostScopedPrivateIPDialContext(dialer, allowedHosts)
+	}
+	return newHTTPClient(timeout, dialFor,
+		true,  // pinHost: private IPs are allowed for the listed hosts
+		false, // proxy: a proxied request would bypass the dial guard
+		rootCAs)
 }
 
 // blockCrossHostRedirect refuses a redirect whose target host or port differs
