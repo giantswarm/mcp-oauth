@@ -19,10 +19,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: storage-tests-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   storage-tests:
     name: Storage tests (${{ matrix.server.name }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     strategy:
       fail-fast: false
@@ -63,15 +68,18 @@ jobs:
       run: go test -race -count=1 ./storage/... ./server/... ./oauthconfig/...
 
     # The suites skip on an unreachable server, and a skip reads as a pass, so
-    # assert that the TTL guards actually ran.
+    # assert that the TTL guards actually ran. The pattern must cover every
+    # TTL guard in storage/valkey; a guard outside it can skip unnoticed.
     - name: Fail if the TTL guards skipped
+      # pipefail so a failing guard fails the step: without it the exit status
+      # of the tee pipeline is tee's, which is always 0.
+      shell: bash
       env:
         VALKEY_TEST_ADDR: localhost:6379
       run: |
         go test -v -count=1 \
-          -run 'TestFamilySet_TTLExtendOnly|TestUserClientSet_TTLBoundedAndExtendOnly' \
-          ./storage/valkey/ > guard.log
-        cat guard.log
+          -run 'TestFamilySet_|TestRevokedFamilySet_|TestUserClientSet_' \
+          ./storage/valkey/ 2>&1 | tee guard.log
         if grep -q -- '--- SKIP' guard.log; then
           echo "the TTL guards skipped: no server reached" >&2
           exit 1
