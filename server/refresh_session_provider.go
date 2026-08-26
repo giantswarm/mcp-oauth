@@ -2,12 +2,20 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/storage"
 )
+
+// ErrRefreshTokenFamilyNoUserID indicates the family record exists but carries
+// no user ID. Storage never returns it: the shape is detected here, and it is a
+// permanent condition like storage.ErrRefreshTokenFamilyRevoked, so a
+// background retry loop must classify it by identity via errors.Is and stop
+// retrying that family.
+var ErrRefreshTokenFamilyNoUserID = errors.New("refresh token family carries no user ID")
 
 // RefreshSessionProvider refreshes ONLY the upstream provider (IdP) token for
 // the session identified by familyID (the provider token is shared per-user,
@@ -56,7 +64,7 @@ import (
 //   - the storage backend does not implement storage.RefreshTokenFamilyByIDStore
 //   - no family record exists (wrapped storage.ErrRefreshTokenFamilyNotFound)
 //   - the family is revoked (wrapped storage.ErrRefreshTokenFamilyRevoked)
-//   - the family record carries no user ID
+//   - the family record carries no user ID (wrapped ErrRefreshTokenFamilyNoUserID)
 //   - the upstream provider refresh fails
 func (s *Server) RefreshSessionProvider(ctx context.Context, familyID string) (*oauth2.Token, error) {
 	if familyID == "" {
@@ -83,8 +91,9 @@ func (s *Server) RefreshSessionProvider(ctx context.Context, familyID string) (*
 	}
 	if family.UserID == "" {
 		// The user ID keys the shared provider-token entry this call refreshes,
-		// and it is half of the TokenRefreshHandler's attribution pair.
-		return nil, fmt.Errorf("family %q: record carries no user ID", familyID)
+		// so an empty one refreshes and overwrites the empty-key entry. It is
+		// also half of the TokenRefreshHandler's attribution pair.
+		return nil, fmt.Errorf("family %q: %w", familyID, ErrRefreshTokenFamilyNoUserID)
 	}
 
 	// Provider-only refresh through the per-user single-flight coordinator.

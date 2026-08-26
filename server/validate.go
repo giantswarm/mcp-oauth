@@ -142,22 +142,41 @@ func (s *Server) fireTokenRefreshHandler(ctx context.Context, accessToken string
 		return
 	}
 
-	var userID, familyID string
+	var (
+		userID, familyID   string
+		metadataReadFailed bool
+	)
 	if metaGetter, ok := s.tokenStore.(storage.TokenMetadataGetter); ok {
 		if meta, err := metaGetter.GetTokenMetadata(accessToken); err == nil && meta != nil {
 			userID = meta.UserID
 			familyID = meta.FamilyID
 		} else if err != nil {
-			s.Logger.Debug("Failed to retrieve token metadata for refresh handler",
+			// Warn, not Debug: the refresh itself succeeded and pushed the
+			// expiry out, so the consumer loses this event and gets no
+			// replacement for the rest of the token lifetime.
+			metadataReadFailed = true
+			s.Logger.Warn("Dropping token refresh handler event: token metadata read failed",
 				logKeyError, err,
 				"token_suffix", helpers.TokenSuffix(accessToken, 8))
 		}
 	}
 
 	if userID == "" || familyID == "" {
+		// Debug: a store with no metadata to report is an expected shape. The
+		// read-error case already logged at Warn above.
 		s.Logger.Debug("Skipping token refresh handler: unattributable refresh event",
 			"has_user_id", userID != "",
-			"has_family_id", familyID != "")
+			"has_family_id", familyID != "",
+			"metadata_read_failed", metadataReadFailed)
+
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type: security.EventTokenRefreshHandlerSkipped,
+			Details: map[string]any{
+				"has_user_id":          userID != "",
+				"has_family_id":        familyID != "",
+				"metadata_read_failed": metadataReadFailed,
+			},
+		})
 		return
 	}
 

@@ -98,7 +98,7 @@ func WithTokenRefreshHandler(handler TokenRefreshHandler) Option {
 			return
 		}
 		if _, ok := s.tokenStore.(storage.TokenMetadataGetter); !ok {
-			s.Logger.Warn("TokenRefreshHandler registered but token store does not support TokenMetadataGetter -- handler will not receive userID/familyID")
+			s.Logger.Warn("TokenRefreshHandler registered but token store does not support TokenMetadataGetter -- the handler will not fire from the token-validation path, which cannot attribute a refresh without token metadata")
 		}
 	}
 }

@@ -225,9 +225,8 @@ func TestRefreshSessionProvider_RequiresFamilyUserID(t *testing.T) {
 	seedFamilyForRefresh(t, store, "user-1", "client-x", familyID, "rt-no-user-id")
 	srv.tokenStore = userlessFamilyStore{Store: store}
 
-	_, err := srv.RefreshSessionProvider(context.Background(), familyID)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "carries no user ID")
+	_, err := srv.RefreshSessionProvider(t.Context(), familyID)
+	require.ErrorIs(t, err, ErrRefreshTokenFamilyNoUserID)
 	require.False(t, fired, "handler must not fire without a user ID")
 }
 
