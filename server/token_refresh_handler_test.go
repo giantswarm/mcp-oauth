@@ -3,16 +3,23 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 
+	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
 // errMetadataRead is the transient read failure the error case injects.
 var errMetadataRead = errors.New("metadata backend unavailable")
+
+// errMetadataAbsent is the miss every in-tree store returns: a wrapped
+// storage.ErrTokenNotFound, not a nil record.
+var errMetadataAbsent = fmt.Errorf("token metadata: %w", storage.ErrTokenNotFound)
 
 // metadataGetterStore reports metadata from its own func, so a test can inject a
 // read error. The embedded TokenStore serves every other call.
@@ -41,12 +48,14 @@ func TestFireTokenRefreshHandler_RequiresAttribution(t *testing.T) {
 	newToken := &oauth2.Token{AccessToken: "provider-access"}
 
 	tests := []struct {
-		name         string
-		metadata     *storage.TokenMetadata
-		readErr      error
-		wantFired    bool
-		wantUserID   string
-		wantFamilyID string
+		name           string
+		metadata       *storage.TokenMetadata
+		readErr        error
+		wantFired      bool
+		wantUserID     string
+		wantFamilyID   string
+		wantReadFailed bool
+		wantAuditedID  string
 	}{
 		{
 			name:         "both ids resolved",
@@ -59,16 +68,23 @@ func TestFireTokenRefreshHandler_RequiresAttribution(t *testing.T) {
 			name: "no metadata at all",
 		},
 		{
-			name:    "metadata read error",
-			readErr: errMetadataRead,
+			name:    "metadata absent",
+			readErr: errMetadataAbsent,
 		},
 		{
-			name:     "metadata without family id",
-			metadata: &storage.TokenMetadata{UserID: "user-1", ClientID: "client-1"},
+			name:           "metadata read error",
+			readErr:        errMetadataRead,
+			wantReadFailed: true,
 		},
 		{
-			name:     "metadata without user id",
-			metadata: &storage.TokenMetadata{ClientID: "client-1", FamilyID: "family-1"},
+			name:          "metadata without family id",
+			metadata:      &storage.TokenMetadata{UserID: "user-1", ClientID: "client-1"},
+			wantAuditedID: "client-1",
+		},
+		{
+			name:          "metadata without user id",
+			metadata:      &storage.TokenMetadata{ClientID: "client-1", FamilyID: "family-1"},
+			wantAuditedID: "client-1",
 		},
 	}
 
@@ -93,6 +109,9 @@ func TestFireTokenRefreshHandler_RequiresAttribution(t *testing.T) {
 					return tt.metadata, tt.readErr
 				},
 			}
+			logger, logBuf := captureLogger()
+			srv.Logger = logger
+			srv.Auditor = security.NewAuditor(logger, true)
 
 			srv.fireTokenRefreshHandler(t.Context(), "at-refresh-handler", newToken)
 
@@ -101,7 +120,23 @@ func TestFireTokenRefreshHandler_RequiresAttribution(t *testing.T) {
 			require.Equal(t, tt.wantFamilyID, gotFamilyID)
 			if tt.wantFired {
 				require.Same(t, newToken, gotProviderToken)
+				return
 			}
+
+			// metadata_read_failed separates a backend outage from an absent
+			// record, so the drop event must not claim a failure for a miss.
+			logOutput := logBuf.String()
+			require.True(t, containsAuditEvent(logOutput, security.EventTokenRefreshHandlerSkipped))
+			require.Contains(t, logOutput, fmt.Sprintf("metadata_read_failed:%t", tt.wantReadFailed))
+			require.Equal(t, tt.wantReadFailed, strings.Contains(logOutput, "token metadata read failed"))
+
+			// Partial metadata still attributes the drop, so an operator can
+			// find the session the consumer never heard about.
+			auditedClientID := `audit.client_id=""`
+			if tt.wantAuditedID != "" {
+				auditedClientID = "audit.client_id=" + tt.wantAuditedID
+			}
+			require.Contains(t, logOutput, auditedClientID)
 		})
 	}
 }
