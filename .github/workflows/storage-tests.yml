@@ -17,8 +17,9 @@ name: "Storage tests"
 on:
   push:
     branches: [ main ]
+  # No branch filter: a PR stacked on another PR needs these guards as much as
+  # one that targets main.
   pull_request:
-    branches: [ main ]
 
 permissions:
   contents: read
@@ -77,7 +78,19 @@ jobs:
       env:
         VALKEY_TEST_ADDR: 127.0.0.1:6379
       run: |
-        go test -race -count=1 -v ./storage/... ./server/... ./oauthconfig/... 2>&1 | tee test.log
+        go test -race -count=1 -v ./storage/... ./oauthconfig/... 2>&1 | tee test.log
+
+    # server/ is filtered to the cross-pod suite, the only one there that needs a
+    # server. The whole package is ~5 minutes under -race on a fast machine and
+    # several times that on a two-core runner, and CircleCI already runs all of
+    # it. The next step checks that the filter still matches, so a rename cannot
+    # turn this into a run of nothing.
+    - name: Run the cross-pod suite
+      shell: bash
+      env:
+        VALKEY_TEST_ADDR: 127.0.0.1:6379
+      run: |
+        go test -race -count=1 -v -run CrossPod ./server/... 2>&1 | tee -a test.log
 
     # A suite that cannot reach the server skips itself, and a skip reads as a
     # pass. Every such skip names VALKEY_TEST_ADDR, and nothing else in the test
@@ -88,5 +101,9 @@ jobs:
       run: |
         if grep -n VALKEY_TEST_ADDR test.log; then
           echo "a suite skipped: no server reached" >&2
+          exit 1
+        fi
+        if ! grep -q '^--- PASS: TestProviderRefresh_SingleFlight_CrossPod_Valkey' test.log; then
+          echo "the -run CrossPod filter matched no test: fix the filter" >&2
           exit 1
         fi
