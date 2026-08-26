@@ -483,7 +483,7 @@ func (s *Store) markFamilyMetadataRevoked(ctx context.Context, token string, now
 	data, err := s.client.Do(ctx, s.client.B().Get().Key(metaKey).Build()).ToString()
 	if err != nil {
 		if !isNilError(err) {
-			s.logger.Warn("Failed to read family metadata for revocation — key may be unrevoked",
+			s.logger.Warn("Failed to read family metadata for revocation, key may be unrevoked",
 				"token_prefix", tokenPrefix, "error", err)
 			return false
 		}
@@ -492,7 +492,7 @@ func (s *Store) markFamilyMetadataRevoked(ctx context.Context, token string, now
 		data, err = s.client.Do(ctx, s.client.B().Get().Key(metaKey).Build()).ToString()
 		if err != nil {
 			if !isNilError(err) {
-				s.logger.Warn("Failed to read legacy family metadata for revocation — key may be unrevoked",
+				s.logger.Warn("Failed to read legacy family metadata for revocation, key may be unrevoked",
 					"token_prefix", tokenPrefix, "error", err)
 			}
 			return false

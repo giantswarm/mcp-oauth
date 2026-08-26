@@ -2,8 +2,7 @@ name: "Storage tests"
 
 # The suites under storage/, server/ and oauthconfig/ skip themselves when
 # VALKEY_TEST_ADDR points at nothing, and the CircleCI go-build job provides no
-# server, so every storage regression guard was inert in CI. This job runs them
-# against a live server.
+# server. This job gives them one, so their guards actually run.
 #
 # The matrix pins the oldest supported server as well as the current one: the
 # store must work on RESP2-only servers, so it may not use commands or options
@@ -67,20 +66,18 @@ jobs:
         VALKEY_TEST_ADDR: localhost:6379
       run: go test -race -count=1 ./storage/... ./server/... ./oauthconfig/...
 
-    # The suites skip on an unreachable server, and a skip reads as a pass, so
-    # assert that the TTL guards actually ran. The pattern must cover every
-    # TTL guard in storage/valkey; a guard outside it can skip unnoticed.
-    - name: Fail if the TTL guards skipped
-      # pipefail so a failing guard fails the step: without it the exit status
-      # of the tee pipeline is tee's, which is always 0.
+    # A suite that cannot reach the server skips itself, and a skip reads as a
+    # pass. Every such skip names the server, so failing on that phrase covers
+    # each guard in the package, including ones added later.
+    - name: Fail if a storage/valkey test skipped for want of a server
+      # pipefail so a failing test fails the step: the exit status of a tee
+      # pipeline is tee's, which is always 0.
       shell: bash
       env:
         VALKEY_TEST_ADDR: localhost:6379
       run: |
-        go test -v -count=1 \
-          -run 'TestFamilySet_|TestRevokedFamilySet_|TestUserClientSet_' \
-          ./storage/valkey/ 2>&1 | tee guard.log
-        if grep -q -- '--- SKIP' guard.log; then
-          echo "the TTL guards skipped: no server reached" >&2
+        go test -v -count=1 ./storage/valkey/ 2>&1 | tee guard.log
+        if grep -q 'Valkey at' guard.log; then
+          echo "a storage/valkey test skipped: no server reached" >&2
           exit 1
         fi
