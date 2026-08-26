@@ -5,7 +5,6 @@ package dex
 
 import (
 	"context"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
@@ -279,23 +278,16 @@ func resolveTimeout(timeout time.Duration) time.Duration {
 // to RFC 1918 addresses (e.g. internal load balancers) are reachable.
 //
 // rootCAs applies on both paths: a Dex on a public address can still present an
-// internal-CA certificate, so trust does not depend on the dial posture.
+// internal-CA certificate, so trust does not depend on the dial posture. Both
+// clients come from providers/oidc, which owns the transport tuning.
 func resolveHTTPClient(client *http.Client, allowPrivateIP bool, rootCAs *x509.CertPool, timeout time.Duration) *http.Client {
 	switch {
 	case client != nil:
 		return client
 	case allowPrivateIP:
 		return oidc.NewPrivateIPAllowedHTTPClient(timeout, rootCAs)
-	case rootCAs != nil:
-		return &http.Client{
-			Transport: &http.Transport{
-				Proxy:           http.ProxyFromEnvironment,
-				TLSClientConfig: &tls.Config{RootCAs: rootCAs, MinVersion: tls.VersionTLS12},
-			},
-			Timeout: timeout,
-		}
 	default:
-		return &http.Client{Timeout: timeout}
+		return oidc.NewDefaultDialHTTPClient(timeout, rootCAs)
 	}
 }
 

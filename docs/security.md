@@ -750,7 +750,9 @@ pool, err := x509.SystemCertPool()
 if err != nil {
     return err
 }
-pool.AppendCertsFromPEM(caPEM)
+if !pool.AppendCertsFromPEM(caPEM) {
+    return errors.New("no certificate found in the CA bundle")
+}
 
 config := &server.Config{
     Issuer:           "https://dex.example.com",
