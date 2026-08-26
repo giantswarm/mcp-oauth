@@ -385,6 +385,8 @@ func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) (
 		revokedCount++
 	}
 
+	s.retainRevokedFamilySet(op.ctx, familyID)
+
 	if revokedCount > 0 {
 		s.logger.Warn("Revoked refresh token family due to reuse detection",
 			"family_id", safeTruncate(familyID, tokenIDLogLength),
@@ -392,6 +394,39 @@ func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) (
 	}
 
 	return nil
+}
+
+// retainRevokedFamilySet holds the family set alive for the same retention
+// window that markFamilyMetadataRevoked applies to each member's metadata, so
+// the by-family-ID index lives exactly as long as the state it points to.
+//
+// Without this the set keeps only the residual horizon of the last add, at most
+// RefreshTokenTTL, and the revoked-family signal decays to not-found while the
+// members' metadata is still retained: GetRefreshTokenFamilyByID stops
+// returning the Revoked=true record, GetActiveRefreshTokenByFamily degrades
+// from ErrRefreshTokenFamilyRevoked to ErrRefreshTokenFamilyNotFound, and
+// server.checkJWTFamily reads not-found as legitimate absence and admits access
+// tokens of a revoked family.
+//
+// Both the hashed and the legacy key are extended, because getFamilyTokens
+// unions the two.
+func (s *Store) retainRevokedFamilySet(ctx context.Context, familyID string) {
+	retention := int64((time.Duration(s.revokedFamilyRetentionDays) * 24 * time.Hour).Seconds())
+	if retention < 1 {
+		return
+	}
+	for _, key := range []string{s.familyKey(familyID), s.legacyFamilyKey(familyID)} {
+		// EXPIRE GT only extends, and it is a no-op on a missing key, so a
+		// family that has no legacy twin is untouched.
+		if err := s.client.Do(
+			ctx,
+			s.client.B().Expire().Key(key).Seconds(retention).Gt().Build(),
+		).Error(); err != nil {
+			s.logger.Warn("Failed to extend family set TTL for revocation retention",
+				"family_id", safeTruncate(familyID, tokenIDLogLength),
+				"error", err)
+		}
+	}
 }
 
 // getFamilyTokens retrieves all tokens in a family.

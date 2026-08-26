@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/giantswarm/mcp-oauth/storage"
 )
 
 // TestFamilySet_TTLExtendOnly guards the add path: the {prefix}family:{fid} SET
@@ -45,4 +47,72 @@ func TestFamilySet_TTLExtendOnly(t *testing.T) {
 	tokens, err := store.getFamilyTokens(ctx, familyID)
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{longRT, shortRT}, tokens)
+}
+
+// TestRevokedFamilySet_RetainedForRetentionWindow guards the revocation path:
+// markFamilyMetadataRevoked retains each member's metadata for
+// RevokedFamilyRetentionDays, but nothing extended the family SET, so the
+// by-family-ID index expired at the last add's horizon and the revoked signal
+// decayed to not-found long before the retained metadata did.
+func TestRevokedFamilySet_RetainedForRetentionWindow(t *testing.T) {
+	store := testStore(t)
+	ctx := t.Context()
+
+	const (
+		userID   = "user-fam-revoked"
+		clientID = "client-fam-revoked"
+		familyID = "fam-revoked-retention"
+		token    = "rt-fam-revoked"
+	)
+	familySetKey := store.familyKey(familyID)
+	const shortTTLCeil = int64(3600) + 5
+
+	require.NoError(t, store.SaveRefreshTokenWithFamily(
+		ctx, token, userID, clientID, familyID, 0, time.Now().Add(time.Hour)))
+	require.LessOrEqual(t, ttlSeconds(t, store, familySetKey), shortTTLCeil,
+		"precondition: the set starts at the member horizon, well below the retention window")
+
+	require.NoError(t, store.RevokeRefreshTokenFamily(ctx, familyID))
+
+	retentionSeconds := int64((time.Duration(store.revokedFamilyRetentionDays) * 24 * time.Hour).Seconds())
+	require.Greater(t, ttlSeconds(t, store, familySetKey), retentionSeconds-60,
+		"revocation must hold the set for the same window as the retained member metadata")
+
+	// The revoked signal, not merely not-found, must survive on both by-ID reads.
+	meta, err := store.GetRefreshTokenFamilyByID(ctx, familyID)
+	require.NoError(t, err)
+	require.NotNil(t, meta)
+	require.True(t, meta.Revoked)
+
+	_, _, err = store.GetActiveRefreshTokenByFamily(ctx, familyID)
+	require.ErrorIs(t, err, storage.ErrRefreshTokenFamilyRevoked)
+}
+
+// TestRevokedFamilySet_RetainsLegacyTwin covers the legacy half of the same
+// index: getFamilyTokens unions the hashed and the pre-key-hashing set, so a
+// family whose members were written by pre-migration pods needs the legacy key
+// retained too, or its revoked signal still decays to not-found.
+func TestRevokedFamilySet_RetainsLegacyTwin(t *testing.T) {
+	store := testStore(t)
+	ctx := t.Context()
+
+	const (
+		userID   = "user-fam-legacy"
+		clientID = "client-fam-legacy"
+		familyID = "fam-revoked-legacy"
+		token    = "rt-fam-legacy"
+	)
+	legacySetKey := store.legacyFamilyKey(familyID)
+
+	// A pre-migration pod wrote the member into the legacy set and its metadata
+	// under the hashed metadata key layout this store reads.
+	require.NoError(t, store.SaveRefreshTokenWithFamily(
+		ctx, token, userID, clientID, familyID, 0, time.Now().Add(time.Hour)))
+	require.NoError(t, store.saddExtendOnlyTTL(ctx, legacySetKey, token, time.Hour))
+
+	require.NoError(t, store.RevokeRefreshTokenFamily(ctx, familyID))
+
+	retentionSeconds := int64((time.Duration(store.revokedFamilyRetentionDays) * 24 * time.Hour).Seconds())
+	require.Greater(t, ttlSeconds(t, store, legacySetKey), retentionSeconds-60,
+		"the legacy twin backs the same by-ID index and must be retained as well")
 }
