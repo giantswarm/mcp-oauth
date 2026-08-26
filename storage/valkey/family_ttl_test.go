@@ -209,3 +209,29 @@ func TestRevokedFamily_StragglerMemberDoesNotUnrevoke(t *testing.T) {
 	require.ErrorIs(t, err, storage.ErrRefreshTokenFamilyRevoked,
 		"the straggler must not be handed back as the family's active token")
 }
+
+// TestUnrevokedFamily_HighestGenerationIsActive guards the other direction of
+// that rule: with no revoked member, GetActiveRefreshTokenByFamily still hands
+// back the latest rotation.
+func TestUnrevokedFamily_HighestGenerationIsActive(t *testing.T) {
+	store := testStore(t)
+	ctx := t.Context()
+
+	const (
+		userID   = "user-fam-active"
+		clientID = "client-fam-active"
+		familyID = "fam-active-unrevoked"
+		firstRT  = "rt-fam-active-gen0"
+		latestRT = "rt-fam-active-gen1"
+	)
+
+	require.NoError(t, store.SaveRefreshTokenWithFamily(
+		ctx, firstRT, userID, clientID, familyID, 0, time.Now().Add(time.Hour)))
+	require.NoError(t, store.SaveRefreshTokenWithFamily(
+		ctx, latestRT, userID, clientID, familyID, 1, time.Now().Add(time.Hour)))
+
+	token, gotClientID, err := store.GetActiveRefreshTokenByFamily(ctx, familyID)
+	require.NoError(t, err)
+	require.Equal(t, latestRT, token)
+	require.Equal(t, clientID, gotClientID)
+}
