@@ -464,7 +464,7 @@ func TestEnsureOpenIDScope(t *testing.T) {
 
 // TestDefaultScopeFilter tests the default scope classification.
 func TestDefaultScopeFilter(t *testing.T) {
-	supported, err := newScopeFilter(nil, false, true)
+	supported, err := newScopeFilter(nil, true)
 	if err != nil {
 		t.Fatalf("newScopeFilter() error = %v", err)
 	}

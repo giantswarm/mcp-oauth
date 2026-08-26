@@ -75,13 +75,18 @@ func ApplyAuthorizationURLOptions(opts *AuthorizationURLOptions) []oauth2.AuthCo
 const CrossClientAudienceScopePrefix = "audience:server:client_id:"
 
 // isMandatoryScope returns true if the scope must always be force-merged into the
-// resolved scope set when present in the provider's defaults. Currently mandatory:
+// resolved scope set when present in the provider's defaults. It is the set
+// CopyScopes and FilterScopes apply, and the one FilterScopesFunc takes for a
+// nil predicate. Currently mandatory:
 //   - "openid": Required by OIDC-compliant providers per the OpenID Connect spec.
 //   - "email": Required for user identification in downstream services.
 //   - "profile": Required for user display name and metadata.
 //   - "groups": Required for RBAC-based authorization.
 //   - "offline_access": Required for refresh token issuance.
 //   - CrossClientAudienceScopePrefix: Required for SSO token forwarding scenarios.
+//
+// The set is the Dex and OIDC vocabulary. An IdP with a vocabulary of its own
+// needs a predicate of its own, through FilterScopesFunc.
 func isMandatoryScope(scope string) bool {
 	switch scope {
 	case "openid", "email", "profile", "groups", "offline_access":
@@ -113,6 +118,16 @@ func isMandatoryScope(scope string) bool {
 // downstream services always receive the claims they need (email, groups, etc.)
 // regardless of what the MCP client explicitly requests.
 func CopyScopes(requestedScopes, defaultScopes []string) []string {
+	return copyScopes(requestedScopes, defaultScopes, nil)
+}
+
+// copyScopes is CopyScopes with a caller-supplied mandatory-scope predicate. A
+// nil predicate uses isMandatoryScope.
+func copyScopes(requestedScopes, defaultScopes []string, mandatory func(string) bool) []string {
+	if mandatory == nil {
+		mandatory = isMandatoryScope
+	}
+
 	// If no requested scopes, use defaults entirely
 	if len(requestedScopes) == 0 {
 		scopesCopy := make([]string, len(defaultScopes))
@@ -133,7 +148,7 @@ func CopyScopes(requestedScopes, defaultScopes []string) []string {
 
 	// Merge mandatory scopes from defaults
 	for _, s := range defaultScopes {
-		if isMandatoryScope(s) {
+		if mandatory(s) {
 			if _, exists := requestedSet[s]; !exists {
 				result = append(result, s)
 			}
@@ -173,7 +188,19 @@ func CloneScopes(scopes []string) []string {
 //
 // A nil predicate is treated as "accept everything".
 func FilterScopes(requestedScopes, defaultScopes []string, supported func(string) bool) []string {
-	merged := CopyScopes(requestedScopes, defaultScopes)
+	return FilterScopesFunc(requestedScopes, defaultScopes, supported, nil)
+}
+
+// FilterScopesFunc is FilterScopes with a caller-supplied mandatory-scope
+// predicate. A nil mandatory predicate uses the built-in set, and a nil
+// supported predicate accepts everything.
+//
+// A provider whose IdP has a scope vocabulary of its own needs this: under the
+// built-in set, a configured default such as a Keycloak "roles" reaches the IdP
+// only when the client requests no scopes at all, so a client that names one
+// scope silently drops the rest of the operator's set.
+func FilterScopesFunc(requestedScopes, defaultScopes []string, supported, mandatory func(string) bool) []string {
+	merged := copyScopes(requestedScopes, defaultScopes, mandatory)
 	if supported == nil {
 		return merged
 	}

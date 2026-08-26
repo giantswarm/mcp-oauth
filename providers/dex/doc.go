@@ -77,19 +77,25 @@
 //   - offline_access: Refresh token support
 //
 // You can override these by providing custom Scopes in the Config.
-// DefaultScopes returns the list above, so a custom set can extend it.
 //
 // # Scope Filtering
 //
 // The provider drops every scope outside an allowlist before it builds the
 // authorization request, because an IdP that receives one scope it does not
-// know rejects the whole request. DefaultAllowedScopes returns the built-in
-// allowlist: the standard OIDC scopes plus the Dex-only groups and
-// federated:id. Cross-client audience scopes pass as well.
+// know rejects the whole request. The built-in allowlist is openid, profile,
+// email, offline_access, groups and federated:id. Cross-client audience scopes
+// pass as well.
 //
 // The drop is silent, so a scope an IdP needs but the allowlist does not hold
-// never reaches it. Config.AllowedScopes replaces the list, and
-// Config.DisableScopeFilter turns the allowlist off. "openid" always passes.
+// never reaches it. Config.AllowedScopes replaces the list. "openid" always
+// passes.
+//
+// A second set decides which entries of Scopes are merged into a request that
+// names scopes of its own. It is openid, profile, email, groups,
+// offline_access and the audience scopes, and Config.MandatoryScopes replaces
+// it. Configure the two together: an IdP scope outside the built-in mandatory
+// set, a Keycloak "roles" for example, otherwise reaches the IdP only for a
+// client that names no scopes at all.
 //
 // # Other OIDC Issuers
 //
@@ -100,8 +106,9 @@
 //
 //   - The groups scope. Dex defines it. A Keycloak realm needs a client scope
 //     named groups with a group-membership mapper before it accepts the scope
-//     at all, and Entra ID has no equivalent. Set Config.Scopes and
-//     Config.AllowedScopes to the vocabulary of the issuer.
+//     at all, and Entra ID has no equivalent. Set Config.Scopes,
+//     Config.AllowedScopes and Config.MandatoryScopes to the vocabulary of the
+//     issuer.
 //   - Cross-client audience scopes. The audience:server:client_id: shape is a
 //     Dex extension. Keycloak and Entra ID reject an authorization request that
 //     carries one. Set Config.DisableCrossClientAudienceScopes.

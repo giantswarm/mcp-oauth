@@ -70,3 +70,32 @@ func TestFilterScopes(t *testing.T) {
 		})
 	}
 }
+
+func TestFilterScopesFunc(t *testing.T) {
+	defaults := []string{"openid", "email", "roles", "organization"}
+
+	t.Run("a nil mandatory predicate applies the built-in set", func(t *testing.T) {
+		result := FilterScopesFunc([]string{"profile"}, defaults, nil, nil)
+
+		require.Equal(t, FilterScopes([]string{"profile"}, defaults, nil), result)
+		require.Contains(t, result, "email")
+		require.NotContains(t, result, "roles")
+	})
+
+	t.Run("a mandatory predicate replaces the built-in set", func(t *testing.T) {
+		mandatory := func(scope string) bool { return scope == "roles" }
+
+		result := FilterScopesFunc([]string{"profile"}, defaults, nil, mandatory)
+
+		require.Equal(t, []string{"profile", "roles"}, result)
+	})
+
+	t.Run("the supported predicate still applies", func(t *testing.T) {
+		mandatory := func(scope string) bool { return scope == "roles" }
+		supported := func(scope string) bool { return scope != "roles" }
+
+		result := FilterScopesFunc([]string{"profile"}, defaults, supported, mandatory)
+
+		require.Equal(t, []string{"profile"}, result)
+	})
+}
