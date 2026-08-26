@@ -173,3 +173,39 @@ func TestRevokedFamilySet_RetainedWhenMemberStateUnknown(t *testing.T) {
 	require.Greater(t, ttlSeconds(t, store, familySetKey), retentionSeconds-60,
 		"a member whose state could not be established must still hold the set")
 }
+
+// TestRevokedFamily_StragglerMemberDoesNotUnrevoke guards the read side of the
+// same index: the Revoked flag is per member, so a family whose members
+// disagree must still read as revoked. A rotation that races
+// RevokeRefreshTokenFamily, or a member whose revoked write failed, leaves a
+// non-revoked member beside the revoked ones, and returning that member would
+// re-admit the tokens the revocation was called to kill.
+func TestRevokedFamily_StragglerMemberDoesNotUnrevoke(t *testing.T) {
+	store := testStore(t)
+	ctx := t.Context()
+
+	const (
+		userID    = "user-fam-straggler"
+		clientID  = "client-fam-straggler"
+		familyID  = "fam-straggler"
+		revokedRT = "rt-fam-straggler-revoked"
+		liveRT    = "rt-fam-straggler-live"
+	)
+
+	require.NoError(t, store.SaveRefreshTokenWithFamily(
+		ctx, revokedRT, userID, clientID, familyID, 0, time.Now().Add(time.Hour)))
+	require.NoError(t, store.RevokeRefreshTokenFamily(ctx, familyID))
+
+	// The racing rotation: a member written after the revocation walk passed.
+	require.NoError(t, store.SaveRefreshTokenWithFamily(
+		ctx, liveRT, userID, clientID, familyID, 1, time.Now().Add(time.Hour)))
+
+	meta, err := store.GetRefreshTokenFamilyByID(ctx, familyID)
+	require.NoError(t, err)
+	require.NotNil(t, meta)
+	require.True(t, meta.Revoked, "one revoked member revokes the family")
+
+	_, _, err = store.GetActiveRefreshTokenByFamily(ctx, familyID)
+	require.ErrorIs(t, err, storage.ErrRefreshTokenFamilyRevoked,
+		"the straggler must not be handed back as the family's active token")
+}
