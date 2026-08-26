@@ -56,6 +56,7 @@ import (
 //   - the storage backend does not implement storage.RefreshTokenFamilyByIDStore
 //   - no family record exists (wrapped storage.ErrRefreshTokenFamilyNotFound)
 //   - the family is revoked (wrapped storage.ErrRefreshTokenFamilyRevoked)
+//   - the family record carries no user ID
 //   - the upstream provider refresh fails
 func (s *Server) RefreshSessionProvider(ctx context.Context, familyID string) (*oauth2.Token, error) {
 	if familyID == "" {
@@ -79,6 +80,11 @@ func (s *Server) RefreshSessionProvider(ctx context.Context, familyID string) (*
 		// revoked sentinel so callers can distinguish "session was revoked"
 		// from "no such session" and stop retrying.
 		return nil, fmt.Errorf("family %q: %w", familyID, storage.ErrRefreshTokenFamilyRevoked)
+	}
+	if family.UserID == "" {
+		// The user ID keys the shared provider-token entry this call refreshes,
+		// and it is half of the TokenRefreshHandler's attribution pair.
+		return nil, fmt.Errorf("family %q: record carries no user ID", familyID)
 	}
 
 	// Provider-only refresh through the per-user single-flight coordinator.

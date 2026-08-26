@@ -133,6 +133,10 @@ func (s *Server) refreshProviderDuringValidation(ctx context.Context, accessToke
 // fireTokenRefreshHandler invokes the registered TokenRefreshHandler (if any)
 // after a provider token has been refreshed. It retrieves the userID and familyID
 // from stored token metadata so callers don't need to plumb them through.
+//
+// The handler fires only with both IDs resolved. Consumers key per-session state
+// on them, so an event they cannot attribute is worse than no event: a metadata
+// miss drops it.
 func (s *Server) fireTokenRefreshHandler(ctx context.Context, accessToken string, newProviderToken *oauth2.Token) {
 	if s.tokenRefreshHandler == nil {
 		return
@@ -148,6 +152,13 @@ func (s *Server) fireTokenRefreshHandler(ctx context.Context, accessToken string
 				logKeyError, err,
 				"token_suffix", helpers.TokenSuffix(accessToken, 8))
 		}
+	}
+
+	if userID == "" || familyID == "" {
+		s.Logger.Debug("Skipping token refresh handler: unattributable refresh event",
+			"has_user_id", userID != "",
+			"has_family_id", familyID != "")
+		return
 	}
 
 	s.tokenRefreshHandler(ctx, userID, familyID, newProviderToken)
