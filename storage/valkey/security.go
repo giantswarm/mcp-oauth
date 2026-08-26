@@ -431,6 +431,15 @@ func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) (
 	return nil
 }
 
+// revokedFamilyRetention is how long a revoked family's state is kept: both a
+// member's revoked metadata and the family set that indexes it. One accessor for
+// the two, because a set shorter than the metadata it indexes turns the
+// revoked-family signal into not-found. New clamps the day count to the default
+// when it is not positive, so the window is always at least a day.
+func (s *Store) revokedFamilyRetention() time.Duration {
+	return time.Duration(s.revokedFamilyRetentionDays) * 24 * time.Hour
+}
+
 // retainRevokedFamilySet holds the family set for the retention window that
 // markFamilyMetadataRevoked applies to each member's metadata. The set is the
 // by-family-ID index over that metadata, so it must live at least as long: an
@@ -445,7 +454,7 @@ func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) (
 // Both the hashed and the legacy key are extended, because getFamilyTokens
 // unions the two.
 func (s *Store) retainRevokedFamilySet(ctx context.Context, familyID string) {
-	retention := int64((time.Duration(s.revokedFamilyRetentionDays) * 24 * time.Hour).Seconds())
+	retention := int64(s.revokedFamilyRetention().Seconds())
 	// One call per key: the hashed and the legacy key differ in their last
 	// component, so they can land in different cluster slots and a single
 	// multi-key EVAL would be cross-slot.
@@ -554,10 +563,9 @@ func (s *Store) markFamilyMetadataRevoked(ctx context.Context, token string, now
 	j.RevokedAt = now.Unix()
 
 	updatedData, _ := json.Marshal(&j)
-	retentionTTL := time.Duration(s.revokedFamilyRetentionDays) * 24 * time.Hour
 	if err := s.client.Do(
 		ctx,
-		s.client.B().Set().Key(metaKey).Value(string(updatedData)).Ex(retentionTTL).Build(),
+		s.client.B().Set().Key(metaKey).Value(string(updatedData)).Ex(s.revokedFamilyRetention()).Build(),
 	).Error(); err != nil {
 		s.logger.Warn("Failed to write revoked family metadata, key may be unrevoked",
 			"token_prefix", tokenPrefix,
