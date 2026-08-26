@@ -623,8 +623,10 @@ type Config struct {
 	// signed by a private CA). nil uses the system pool.
 	//
 	// The consuming process must build and pass this pool explicitly; mcp-oauth
-	// no longer reads a CA installed on http.DefaultTransport. Typically set
-	// alongside AllowPrivateIPJWKS for a private-IP, internal-CA IdP.
+	// no longer reads a CA installed on http.DefaultTransport. It applies with or
+	// without AllowPrivateIPJWKS, so an internal-CA IdP on a public address is
+	// trusted without relaxing the SSRF guard. The pool replaces the system roots
+	// rather than extending them.
 	JWKSRootCAs *x509.CertPool
 
 	// BlockedRedirectSchemes lists URI schemes that are always rejected for security.

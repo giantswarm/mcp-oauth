@@ -168,9 +168,11 @@ type TrustedIssuer struct {
 	AllowPrivateIPJWKSHosts []string
 
 	// RootCAs is the CA pool used to verify this issuer's JWKS endpoint TLS
-	// certificate when AllowPrivateIPJWKS or AllowPrivateIPJWKSHosts is set and
-	// the endpoint presents a certificate from an internal CA. nil uses the
-	// system pool.
+	// certificate when the endpoint presents a certificate from an internal CA.
+	// It applies with or without AllowPrivateIPJWKS / AllowPrivateIPJWKSHosts:
+	// a JWKS host on a public address can still carry an internal-CA
+	// certificate. The pool replaces the system roots rather than extending
+	// them. nil uses the system pool.
 	RootCAs *x509.CertPool
 	// AcceptedTypHeaders lists the JWT typ header values accepted when a
 	// Bearer token from this issuer is presented to the resource server.
@@ -195,6 +197,9 @@ type OIDCValidator struct {
 // SSRF-safe JWKS fetches are the default; set AllowPrivateIPJWKSHosts on an
 // issuer to allow private-IP JWKS only for the listed hostnames, or
 // AllowPrivateIPJWKS to disable SSRF protection entirely for that issuer.
+//
+// An issuer gets its own JWKS client whenever it sets either of those flags or
+// a RootCAs pool. Reachability and trust anchor are independent settings.
 func NewOIDCValidator(issuers []TrustedIssuer) (*OIDCValidator, error) {
 	safe := oidc.NewJWKSClient(nil, 0, nil)
 	issuerClients := map[string]*oidc.JWKSClient{}
@@ -215,6 +220,14 @@ func NewOIDCValidator(issuers []TrustedIssuer) (*OIDCValidator, error) {
 			issuerClients[ti.Issuer] = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
 				AllowPrivateIPHosts: ti.AllowPrivateIPJWKSHosts,
 				RootCAs:             ti.RootCAs,
+			})
+		} else if ti.RootCAs != nil {
+			// An issuer whose JWKS host resolves to a public address can still
+			// present an internal-CA certificate. Give it its own SSRF-safe
+			// client pinned to its pool instead of the shared system-pool one,
+			// so trust never depends on relaxing the SSRF guard.
+			issuerClients[ti.Issuer] = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
+				RootCAs: ti.RootCAs,
 			})
 		}
 	}

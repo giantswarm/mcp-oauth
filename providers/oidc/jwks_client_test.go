@@ -7,6 +7,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	josejwt "github.com/go-jose/go-jose/v4/jwt"
+	"github.com/stretchr/testify/require"
 )
 
 // testKeyID is a constant for the test key ID used across tests.
@@ -888,4 +890,36 @@ func TestFetchJWKS_SecurityLimits(t *testing.T) {
 			t.Errorf("Expected %d keys, got %d", maxJWKSKeyCount, len(jwks.Keys))
 		}
 	})
+}
+
+// TestNewJWKSClientWithOptions_RootCAsOnEveryDialPosture verifies that
+// JWKSClientOptions.RootCAs reaches the transport whether or not the SSRF guard
+// is relaxed. A JWKS host on a public address can still present an internal-CA
+// certificate.
+func TestNewJWKSClientWithOptions_RootCAsOnEveryDialPosture(t *testing.T) {
+	t.Parallel()
+	pool := x509.NewCertPool()
+
+	cases := []struct {
+		name string
+		opts JWKSClientOptions
+	}{
+		{name: "ssrf-safe default", opts: JWKSClientOptions{RootCAs: pool}},
+		{name: "private IP allowed", opts: JWKSClientOptions{AllowPrivateIP: true, RootCAs: pool}},
+		{
+			name: "host scoped",
+			opts: JWKSClientOptions{AllowPrivateIPHosts: []string{"dex.example.com"}, RootCAs: pool},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := NewJWKSClientWithOptions(tc.opts)
+			transport, ok := client.httpClient.Transport.(*http.Transport)
+			require.True(t, ok, "expected *http.Transport, got %T", client.httpClient.Transport)
+			require.NotNil(t, transport.TLSClientConfig)
+			require.Same(t, pool, transport.TLSClientConfig.RootCAs)
+			require.False(t, transport.TLSClientConfig.InsecureSkipVerify)
+		})
+	}
 }

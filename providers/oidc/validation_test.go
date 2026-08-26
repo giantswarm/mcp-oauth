@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"net"
@@ -647,7 +648,7 @@ func TestSSRFSafeDialContext(t *testing.T) {
 // TestNewSSRFSafeHTTPClient tests the SSRF-safe HTTP client creation.
 func TestNewSSRFSafeHTTPClient(t *testing.T) {
 	t.Run("creates client with default timeout", func(t *testing.T) {
-		client := NewSSRFSafeHTTPClient(0)
+		client := NewSSRFSafeHTTPClient(0, nil)
 		if client == nil {
 			t.Fatal("Expected non-nil client")
 		}
@@ -657,7 +658,7 @@ func TestNewSSRFSafeHTTPClient(t *testing.T) {
 	})
 
 	t.Run("creates client with custom timeout", func(t *testing.T) {
-		client := NewSSRFSafeHTTPClient(30 * time.Second)
+		client := NewSSRFSafeHTTPClient(30*time.Second, nil)
 		if client == nil {
 			t.Fatal("Expected non-nil client")
 		}
@@ -667,7 +668,7 @@ func TestNewSSRFSafeHTTPClient(t *testing.T) {
 	})
 
 	t.Run("client has custom transport", func(t *testing.T) {
-		client := NewSSRFSafeHTTPClient(0)
+		client := NewSSRFSafeHTTPClient(0, nil)
 		if client.Transport == nil {
 			t.Error("Expected client to have custom transport for DNS rebinding protection")
 		}
@@ -986,4 +987,64 @@ func TestPrivateIPAllowedHTTPClient_CATrust(t *testing.T) {
 			t.Errorf("expected 200, got %d", resp.StatusCode)
 		}
 	})
+}
+
+// TestSSRFSafeHTTPClient_TrustsExplicitCA verifies that the SSRF-safe client
+// verifies against the rootCAs argument. Reachability and trust anchor are
+// independent: an IdP on a public address can present an internal-CA
+// certificate, so the pool must apply on the default dial posture too.
+//
+// The SSRF dialer blocks loopback, so the handshake is driven from the
+// transport's TLS config rather than through client.Get.
+func TestSSRFSafeHTTPClient_TrustsExplicitCA(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+	addr := srv.Listener.Addr().String()
+
+	t.Run("explicit pool trusts the internal CA", func(t *testing.T) {
+		tlsConfig := transportTLSConfig(t, NewSSRFSafeHTTPClient(0, pool))
+		if tlsConfig.RootCAs != pool {
+			t.Fatal("expected the transport to verify against the supplied pool")
+		}
+		conn, err := tls.Dial("tcp", addr, tlsConfig.Clone())
+		if err != nil {
+			t.Fatalf("expected the handshake to succeed with the explicit CA pool, got: %v", err)
+		}
+		_ = conn.Close()
+	})
+
+	t.Run("nil pool keeps system-pool verification", func(t *testing.T) {
+		client := NewSSRFSafeHTTPClient(0, nil)
+		transport, ok := client.Transport.(*http.Transport)
+		if !ok {
+			t.Fatalf("expected *http.Transport, got %T", client.Transport)
+		}
+		if transport.TLSClientConfig != nil && transport.TLSClientConfig.RootCAs != nil {
+			t.Error("expected no explicit CA pool when rootCAs is nil")
+		}
+		conn, err := tls.Dial("tcp", addr, &tls.Config{MinVersion: tls.VersionTLS12})
+		if err == nil {
+			_ = conn.Close()
+			t.Fatal("expected the self-signed server to be rejected by the system pool")
+		}
+	})
+}
+
+// transportTLSConfig returns the TLS config the client's transport uses.
+func transportTLSConfig(t *testing.T, client *http.Client) *tls.Config {
+	t.Helper()
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport, got %T", client.Transport)
+	}
+	if transport.TLSClientConfig == nil {
+		t.Fatal("expected a TLS config on the transport")
+	}
+	return transport.TLSClientConfig
 }
