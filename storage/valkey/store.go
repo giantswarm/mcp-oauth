@@ -263,6 +263,11 @@ func buildClientOpts(cfg Config) valkeygo.ClientOption {
 	opts := valkeygo.ClientOption{
 		InitAddress: []string{cfg.Address},
 		SelectDB:    cfg.DB,
+		// No read path uses Client.DoCache, so client-side caching buys nothing
+		// here. Leaving it on makes valkey-go send CLIENT TRACKING at connect
+		// and abort with ErrNoCache on servers that reject it (RESP2-only
+		// servers, and proxies that accept HELLO 3 without CLIENT TRACKING).
+		DisableCache: true,
 	}
 	if cfg.Password != "" {
 		opts.Password = cfg.Password

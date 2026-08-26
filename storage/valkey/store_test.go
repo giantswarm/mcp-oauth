@@ -2,6 +2,7 @@ package valkey
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2345,4 +2346,30 @@ func TestStore_SaveTokenMetadata_WithScopesAndAudience(t *testing.T) {
 	if meta.Audience != testAudienceURL {
 		t.Errorf("Audience = %q, want %q", meta.Audience, testAudienceURL)
 	}
+}
+
+func TestBuildClientOpts(t *testing.T) {
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+
+	opts := buildClientOpts(Config{
+		Address:  "valkey.example.com:6379",
+		Password: "s3cret",
+		DB:       3,
+		TLS:      tlsConfig,
+	})
+
+	require.Equal(t, []string{"valkey.example.com:6379"}, opts.InitAddress)
+	require.Equal(t, 3, opts.SelectDB)
+	require.Equal(t, "s3cret", opts.Password)
+	require.Same(t, tlsConfig, opts.TLSConfig)
+	require.True(t, opts.DisableCache, "client-side caching must stay off so RESP2-only servers can connect")
+}
+
+func TestBuildClientOptsMinimal(t *testing.T) {
+	opts := buildClientOpts(Config{Address: "localhost:6379"})
+
+	require.Equal(t, []string{"localhost:6379"}, opts.InitAddress)
+	require.Empty(t, opts.Password)
+	require.Nil(t, opts.TLSConfig)
+	require.True(t, opts.DisableCache)
 }
