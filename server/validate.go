@@ -168,16 +168,14 @@ func (s *Server) fireTokenRefreshHandler(ctx context.Context, accessToken string
 
 	if userID == "" || familyID == "" {
 		// Debug: an absent metadata record is an expected shape. The read-error
-		// case already logged at Warn above.
+		// case already logged at Warn above, with the token suffix.
 		s.Logger.Debug("Skipping token refresh handler: unattributable refresh event",
 			"has_user_id", userID != "",
 			"has_family_id", familyID != "",
-			"metadata_read_failed", metadataReadFailed,
-			"token_suffix", helpers.TokenSuffix(accessToken, 8))
+			"metadata_read_failed", metadataReadFailed)
 
 		// Whatever the metadata did yield is the only handle on the dropped
-		// event: no other record ties it to a session. Token material stays on
-		// the log line above, out of the audit stream.
+		// event: no other record ties it to a session.
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type:     security.EventTokenRefreshHandlerSkipped,
 			UserID:   userID,
