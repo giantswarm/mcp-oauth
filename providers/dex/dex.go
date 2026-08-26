@@ -38,6 +38,14 @@ type Provider struct {
 	// Scopes set applies.
 	audienceResolver func() []string
 
+	// scopeFilter reports whether a scope reaches the IdP. Nil forwards every
+	// scope.
+	scopeFilter func(string) bool
+
+	// audienceScopesEnabled reports whether cross-client audience scopes reach
+	// the IdP. False also turns off audienceResolver.
+	audienceScopesEnabled bool
+
 	// warnedAudiences memoises the audiences warnRejectedAudiences has already
 	// logged, so a malformed value cannot flood the log from the per-request
 	// path. warnedAudienceCount bounds that memo.
@@ -65,7 +73,45 @@ type Config struct {
 
 	// Scopes are optional custom scopes (defaults to Dex-optimized scopes if empty)
 	// Default: ["openid", "profile", "email", "groups", "offline_access"]
+	//
+	// This is the set the provider requests when the client asks for none, and
+	// the set mandatory-scope merging draws from. DefaultScopes returns the
+	// default value. An IdP that rejects one of the defaults (Keycloak has no
+	// groups scope unless an operator adds one) needs a set configured here.
 	Scopes []string
+
+	// AllowedScopes replaces the scopes the provider forwards to the IdP. Every
+	// other scope is dropped from the authorization request, silently, because
+	// an IdP that rejects one unknown scope rejects the whole request.
+	//
+	// Empty uses DefaultAllowedScopes: the standard OIDC scopes plus the
+	// Dex-only groups and federated:id. "openid" is always allowed, whatever
+	// this list holds. Cross-client audience scopes are governed by
+	// DisableCrossClientAudienceScopes, not by this list.
+	//
+	// Set this for an IdP whose scope vocabulary differs from Dex's, for
+	// example Keycloak realm scopes (roles, organization) or Entra ID
+	// application scopes.
+	AllowedScopes []string
+
+	// DisableScopeFilter forwards every requested scope to the IdP unchanged,
+	// so no allowlist applies. Use it when the caller already restricts the
+	// scopes it accepts and the IdP vocabulary is not known in advance.
+	// NewProvider rejects it together with AllowedScopes, because one of the
+	// two would have no effect.
+	//
+	// Cross-client audience scopes are still dropped when
+	// DisableCrossClientAudienceScopes is set.
+	DisableScopeFilter bool
+
+	// DisableCrossClientAudienceScopes stops the provider from sending Dex
+	// cross-client audience scopes (AudienceScopePrefix). It drops them from
+	// Scopes, from every requested set, and it turns off AudienceResolver.
+	//
+	// Set it for any issuer that is not Dex. The scope shape is a Dex
+	// extension: Keycloak and Entra ID reject the whole authorization request
+	// when they receive one.
+	DisableCrossClientAudienceScopes bool
 
 	// AudienceResolver reports the Dex cross-client audiences to request, as
 	// plain client IDs. The provider merges one AudienceScopePrefix scope per
@@ -83,6 +129,9 @@ type Config struct {
 	// and it takes no context: read cached state and return, do not block on a
 	// network call. Duplicates cost nothing, and invalid audiences are skipped
 	// and logged once each, so one bad value costs only its own scope.
+	//
+	// DisableCrossClientAudienceScopes turns the resolver off: the provider
+	// never calls it and no audience scope reaches the IdP.
 	//
 	// The merged set stays within oidc.MaxScopeCount. An audience that does not
 	// fit is skipped and logged.
@@ -146,6 +195,13 @@ func NewProvider(cfg *Config) (*Provider, error) {
 		return nil, err
 	}
 
+	audienceScopesEnabled := !cfg.DisableCrossClientAudienceScopes
+
+	scopeFilter, err := newScopeFilter(cfg.AllowedScopes, cfg.DisableScopeFilter, audienceScopesEnabled)
+	if err != nil {
+		return nil, err
+	}
+
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
@@ -191,7 +247,9 @@ func NewProvider(cfg *Config) (*Provider, error) {
 		maxGroups:       maxGroups,
 		logger:          logger,
 
-		audienceResolver: cfg.AudienceResolver,
+		audienceResolver:      cfg.AudienceResolver,
+		scopeFilter:           scopeFilter,
+		audienceScopesEnabled: audienceScopesEnabled,
 	}, nil
 }
 
@@ -238,15 +296,74 @@ var defaultDexScopes = []string{
 	"offline_access", // Required for refresh tokens
 }
 
-// isDexSupportedScope returns true if the scope is recognized by Dex.
-// Supported: standard OIDC scopes, Dex-specific scopes, and cross-client audience scopes.
-func isDexSupportedScope(scope string) bool {
-	switch scope {
-	case scopeOpenID, "profile", "email", "offline_access", "groups", "federated:id":
-		return true
-	default:
-		return strings.HasPrefix(scope, AudienceScopePrefix)
+// defaultAllowedScopes are the scopes the provider forwards when
+// Config.AllowedScopes is empty: the standard OIDC scopes plus the Dex-only
+// groups and federated:id.
+var defaultAllowedScopes = []string{
+	scopeOpenID,
+	"profile",
+	"email",
+	"offline_access",
+	"groups",
+	"federated:id",
+}
+
+// DefaultScopes returns the scopes NewProvider requests when Config.Scopes is
+// empty. Use it to build a custom set on top of the defaults.
+//
+// Provider.DefaultScopes returns what one provider actually requests, which
+// includes any cross-client audience scope.
+func DefaultScopes() []string {
+	return providers.CloneScopes(defaultDexScopes)
+}
+
+// DefaultAllowedScopes returns the scope allowlist the provider applies when
+// Config.AllowedScopes is empty. Use it to extend the defaults instead of
+// replacing them.
+func DefaultAllowedScopes() []string {
+	return providers.CloneScopes(defaultAllowedScopes)
+}
+
+// newScopeFilter builds the predicate AuthorizationURL applies to the merged
+// scope set. A nil predicate forwards every scope.
+//
+// "openid" always passes, whatever allowedScopes holds: OIDC requires it on
+// every authorization request.
+func newScopeFilter(allowedScopes []string, disableFilter bool, audienceScopesEnabled bool) (func(string) bool, error) {
+	if err := oidc.ValidateScopes(allowedScopes); err != nil {
+		return nil, fmt.Errorf("invalid allowed scopes: %w", err)
 	}
+	if disableFilter && len(allowedScopes) > 0 {
+		return nil, fmt.Errorf("AllowedScopes and DisableScopeFilter are mutually exclusive")
+	}
+
+	if disableFilter {
+		if audienceScopesEnabled {
+			return nil, nil
+		}
+		return func(scope string) bool {
+			return !strings.HasPrefix(scope, AudienceScopePrefix)
+		}, nil
+	}
+
+	if len(allowedScopes) == 0 {
+		allowedScopes = defaultAllowedScopes
+	}
+	allowed := make(map[string]struct{}, len(allowedScopes))
+	for _, scope := range allowedScopes {
+		allowed[scope] = struct{}{}
+	}
+
+	return func(scope string) bool {
+		if scope == scopeOpenID {
+			return true
+		}
+		if strings.HasPrefix(scope, AudienceScopePrefix) {
+			return audienceScopesEnabled
+		}
+		_, ok := allowed[scope]
+		return ok
+	}, nil
 }
 
 // resolveScopes returns validated scopes, using defaults if none provided.
@@ -329,8 +446,14 @@ func (p *Provider) DefaultScopes() []string {
 // enforces on the configured set, so the resolver cannot grow an authorization
 // request past what the constructor would accept. Audiences that do not fit are
 // reported as rejected.
+//
+// Config.DisableCrossClientAudienceScopes drops every audience scope instead,
+// the configured ones included, and the resolver never runs.
 func (p *Provider) effectiveScopes() []string {
 	scopes := providers.CloneScopes(p.Scopes)
+	if !p.audienceScopesEnabled {
+		return withoutAudienceScopes(scopes)
+	}
 	if p.audienceResolver == nil {
 		return scopes
 	}
@@ -353,6 +476,18 @@ func (p *Provider) effectiveScopes() []string {
 	p.warnRejectedAudiences(rejected)
 
 	return append(scopes, audienceScopes...)
+}
+
+// withoutAudienceScopes returns scopes with every cross-client audience scope
+// removed. It filters in place, so the caller must pass a slice it owns.
+func withoutAudienceScopes(scopes []string) []string {
+	kept := scopes[:0]
+	for _, scope := range scopes {
+		if !strings.HasPrefix(scope, AudienceScopePrefix) {
+			kept = append(kept, scope)
+		}
+	}
+	return kept
 }
 
 // maxWarnedAudiences bounds the warnedAudiences memo. A resolver that returns
@@ -419,12 +554,13 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	// Apply optional OIDC parameters (Dex supports standard OIDC params)
 	authCodeOpts = append(authCodeOpts, providers.ApplyAuthorizationURLOptions(authOpts)...)
 
-	// FilterScopes drops scopes Dex would reject ("Unrecognized scope(s)"),
+	// FilterScopes drops scopes the IdP would reject ("Unrecognized scope(s)"),
 	// deep-copies the input, and force-merges mandatory scopes (openid,
 	// audience:server:client_id:*) from defaults via CopyScopes internally.
 	// The defaults come from effectiveScopes, not from the Scopes field, so an
 	// audience that Config.AudienceResolver reports after startup is merged too.
-	scopesToUse := providers.FilterScopes(scopes, p.effectiveScopes(), isDexSupportedScope)
+	// A nil p.scopeFilter forwards every merged scope.
+	scopesToUse := providers.FilterScopes(scopes, p.effectiveScopes(), p.scopeFilter)
 
 	// Create a config with the determined scopes
 	config := *p.Config

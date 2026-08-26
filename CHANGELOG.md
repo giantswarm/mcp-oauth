@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `dex.Config.AudienceResolver`, an optional `func() []string` that reports the Dex cross-client audiences to request. The provider calls it per authorization request and merges one `audience:server:client_id:` scope per audience into both `DefaultScopes()` and `AuthorizationURL()`, so an audience the caller learns about after `NewProvider` reaches the next login. Nil keeps the previous behaviour. Duplicates are dropped, invalid audiences are skipped and logged once each, and the merged set stays within `oidc.MaxScopeCount`.
 - `oidc.MaxScopeCount` and `oidc.MaxScopeLength`, the bounds `oidc.ValidateScopes` already applied.
+- `dex.Config.AllowedScopes`, which replaces the scopes the provider forwards to the IdP. Empty keeps the built-in allowlist (`openid`, `profile`, `email`, `offline_access`, `groups`, `federated:id`). `openid` always passes.
+- `dex.Config.DisableScopeFilter`, which forwards every requested scope unchanged.
+- `dex.Config.DisableCrossClientAudienceScopes`, which drops every `audience:server:client_id:` scope from `Scopes`, from every requested set, and turns off `AudienceResolver`. Unset keeps the previous behaviour.
+- `dex.DefaultScopes` and `dex.DefaultAllowedScopes`, which return the built-in requested set and the built-in allowlist, so a caller can extend either instead of restating it.
 
 ## [1.1.0] - 2026-07-16
 

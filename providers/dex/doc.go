@@ -77,6 +77,40 @@
 //   - offline_access: Refresh token support
 //
 // You can override these by providing custom Scopes in the Config.
+// DefaultScopes returns the list above, so a custom set can extend it.
+//
+// # Scope Filtering
+//
+// The provider drops every scope outside an allowlist before it builds the
+// authorization request, because an IdP that receives one scope it does not
+// know rejects the whole request. DefaultAllowedScopes returns the built-in
+// allowlist: the standard OIDC scopes plus the Dex-only groups and
+// federated:id. Cross-client audience scopes pass as well.
+//
+// The drop is silent, so a scope an IdP needs but the allowlist does not hold
+// never reaches it. Config.AllowedScopes replaces the list, and
+// Config.DisableScopeFilter turns the allowlist off. "openid" always passes.
+//
+// # Other OIDC Issuers
+//
+// This provider is generic OIDC discovery plus a set of Dex conventions, so it
+// also drives an issuer that is not Dex: Keycloak and Entra ID complete the
+// authorization-code flow through it. The Dex conventions are the part to
+// configure away:
+//
+//   - The groups scope. Dex defines it. A Keycloak realm needs a client scope
+//     named groups with a group-membership mapper before it accepts the scope
+//     at all, and Entra ID has no equivalent. Set Config.Scopes and
+//     Config.AllowedScopes to the vocabulary of the issuer.
+//   - Cross-client audience scopes. The audience:server:client_id: shape is a
+//     Dex extension. Keycloak and Entra ID reject an authorization request that
+//     carries one. Set Config.DisableCrossClientAudienceScopes.
+//   - The connector_id parameter. Dex reads it, other issuers ignore it. Leave
+//     Config.ConnectorID empty.
+//
+// Everything else is standard OIDC: discovery, PKCE, the userinfo endpoint, and
+// refresh. The user identity is the sub claim from userinfo, whatever the
+// issuer.
 //
 // # Cross-Client Audience Scopes
 //

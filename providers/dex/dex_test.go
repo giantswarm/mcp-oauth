@@ -462,8 +462,13 @@ func TestEnsureOpenIDScope(t *testing.T) {
 	}
 }
 
-// TestIsDexSupportedScope tests the scope classification function.
-func TestIsDexSupportedScope(t *testing.T) {
+// TestDefaultScopeFilter tests the default scope classification.
+func TestDefaultScopeFilter(t *testing.T) {
+	supported, err := newScopeFilter(nil, false, true)
+	if err != nil {
+		t.Fatalf("newScopeFilter() error = %v", err)
+	}
+
 	tests := []struct {
 		scope    string
 		expected bool
@@ -483,8 +488,8 @@ func TestIsDexSupportedScope(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.scope, func(t *testing.T) {
-			if got := isDexSupportedScope(tt.scope); got != tt.expected {
-				t.Errorf("isDexSupportedScope(%q) = %v, want %v", tt.scope, got, tt.expected)
+			if got := supported(tt.scope); got != tt.expected {
+				t.Errorf("scope filter(%q) = %v, want %v", tt.scope, got, tt.expected)
 			}
 		})
 	}
