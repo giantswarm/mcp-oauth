@@ -1,0 +1,78 @@
+name: "Storage tests"
+
+# The suites under storage/, server/ and oauthconfig/ skip themselves when
+# VALKEY_TEST_ADDR points at nothing, and the CircleCI go-build job provides no
+# server, so every storage regression guard was inert in CI. This job runs them
+# against a live server.
+#
+# The matrix pins the oldest supported server as well as the current one: the
+# store must work on RESP2-only servers, so it may not use commands or options
+# that need 7.0 (EXPIRE NX/XX/GT/LT among them). The old-server leg is what
+# catches that.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  storage-tests:
+    name: Storage tests (${{ matrix.server.name }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        server:
+        - name: valkey 8
+          image: valkey/valkey:8@sha256:f0ba225266310efba5fb33383e21c64fbd07907304224786c780606e7ebd7327
+        - name: redis 6.2
+          image: redis:6.2-alpine@sha256:d0c875bdacfb5c4d2c2d9124de3f53cee1dc9ceff8936bd459fabc135cb33015
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: go.mod
+
+    - name: Start ${{ matrix.server.name }}
+      run: |
+        docker run -d --name test-server -p 6379:6379 '${{ matrix.server.image }}'
+        for _ in $(seq 30); do
+          if timeout 1 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/6379'; then
+            exit 0
+          fi
+          sleep 1
+        done
+        echo "server did not accept connections within 30s" >&2
+        docker logs test-server >&2
+        exit 1
+
+    # Only the packages that reach for a server. The rest of the suite runs on
+    # CircleCI, which needs none.
+    - name: Run tests
+      env:
+        VALKEY_TEST_ADDR: localhost:6379
+      run: go test -race -count=1 ./storage/... ./server/... ./oauthconfig/...
+
+    # The suites skip on an unreachable server, and a skip reads as a pass, so
+    # assert that the TTL guards actually ran.
+    - name: Fail if the TTL guards skipped
+      env:
+        VALKEY_TEST_ADDR: localhost:6379
+      run: |
+        go test -v -count=1 \
+          -run 'TestFamilySet_TTLExtendOnly|TestUserClientSet_TTLBoundedAndExtendOnly' \
+          ./storage/valkey/ > guard.log
+        cat guard.log
+        if grep -q -- '--- SKIP' guard.log; then
+          echo "the TTL guards skipped: no server reached" >&2
+          exit 1
+        fi
