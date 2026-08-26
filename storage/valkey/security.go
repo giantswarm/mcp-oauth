@@ -415,7 +415,10 @@ func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) (
 	// state we could not read or write is not absent, and retention is
 	// fail-closed, so it holds the set too.
 	if revokedCount == 0 && unknownCount == 0 {
-		s.logger.Warn("Refresh token family walked but no member metadata was found",
+		// Not a warning: the set TTL is the longest member horizon, so it
+		// routinely outlives a shorter-lived member's metadata, and a walk that
+		// finds none of it needs no operator action.
+		s.logger.Info("Refresh token family walked but no member metadata was found",
 			"family_id", safeTruncate(familyID, tokenIDLogLength),
 			"members", len(tokens))
 		return nil
@@ -554,8 +557,11 @@ func (s *Store) markFamilyMetadataRevoked(ctx context.Context, token string, now
 
 	var j refreshTokenFamilyJSON
 	if err := json.Unmarshal([]byte(data), &j); err != nil {
+		// No error field: a json.SyntaxError quotes the byte it stopped on, and
+		// this value is token metadata. token_prefix names the key, which is
+		// what an operator needs to find it.
 		s.logger.Warn("Failed to parse family metadata for revocation, key may be unrevoked",
-			"token_prefix", tokenPrefix, "error", err)
+			"token_prefix", tokenPrefix)
 		return familyMemberUnknown
 	}
 
