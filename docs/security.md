@@ -728,6 +728,43 @@ config := &server.Config{
 - A warning is logged at startup when this option is enabled
 - For Google OAuth, this setting has no effect as Google's JWKS endpoint is always publicly accessible
 
+#### Internal CA trust
+
+`AllowPrivateIPJWKS` controls which IP addresses a fetch may reach. It does not
+control which CA signs the certificate. Those are independent settings: an IdP on
+a public address can still present a certificate from an internal CA.
+
+Pass the CA pool through the `RootCAs` field that fits the fetch. Each one
+applies whether or not the private-IP flags are set:
+
+| Field | Verifies |
+|---|---|
+| `server.Config.JWKSRootCAs` | forwarded SSO ID tokens (`TrustedAudiences`) |
+| `server.TrustedIssuer.RootCAs` | that issuer's JWKS endpoint |
+| `dex.Config.RootCAs` | Dex OIDC discovery and token endpoint |
+| `oidc.JWKSClientOptions.RootCAs` | a JWKS client you build yourself |
+| `oidc.TokenExchangeClientOptions.RootCAs` | an RFC 8693 token endpoint |
+
+```go
+pool, err := x509.SystemCertPool()
+if err != nil {
+    return err
+}
+if !pool.AppendCertsFromPEM(caPEM) {
+    return errors.New("no certificate found in the CA bundle")
+}
+
+config := &server.Config{
+    Issuer:           "https://dex.example.com",
+    TrustedAudiences: []string{"muster-client"},
+    JWKSRootCAs:      pool, // no AllowPrivateIPJWKS needed
+}
+```
+
+A pool replaces the system roots rather than extending them. Start from
+`x509.SystemCertPool()` and append, as above, unless you intend to trust the
+internal CA alone.
+
 ### Example YAML Configuration
 
 ```yaml

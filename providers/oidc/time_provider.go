@@ -43,6 +43,10 @@ const (
 
 	// DefaultDialerKeepAlive is the keep-alive period for TCP connections.
 	DefaultDialerKeepAlive = 30 * time.Second
+
+	// DefaultExpectContinueTimeout bounds the wait for a 100-continue response
+	// after the request headers are sent.
+	DefaultExpectContinueTimeout = 1 * time.Second
 )
 
 // timeProvider is an interface for time operations to enable deterministic testing.

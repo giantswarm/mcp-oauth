@@ -109,8 +109,9 @@ type TokenExchangeClientOptions struct {
 	AllowPrivateIP bool
 
 	// RootCAs is the CA pool used to verify the token endpoint's TLS certificate
-	// when AllowPrivateIP is set (e.g. an internal-CA Dex). nil uses the system
-	// pool. Ignored when HTTPClient is provided.
+	// (e.g. an internal-CA Dex). It applies with or without AllowPrivateIP. The
+	// pool replaces the system roots rather than extending them. nil uses the
+	// system pool. Ignored when HTTPClient is provided.
 	RootCAs *x509.CertPool
 }
 
@@ -222,7 +223,7 @@ func NewTokenExchangeClientWithOptions(opts TokenExchangeClientOptions) *TokenEx
 			httpClient = NewPrivateIPAllowedHTTPClient(DefaultHTTPTimeout, opts.RootCAs)
 		} else {
 			// SECURITY: Use SSRF-safe client with DNS rebinding protection
-			httpClient = NewSSRFSafeHTTPClient(DefaultHTTPTimeout)
+			httpClient = NewSSRFSafeHTTPClient(DefaultHTTPTimeout, opts.RootCAs)
 		}
 	}
 

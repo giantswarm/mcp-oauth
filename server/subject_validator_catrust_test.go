@@ -179,3 +179,37 @@ func TestNewOIDCValidator_PerIssuerRootCAs(t *testing.T) {
 		require.Equal(t, testSubject, identity.Subject)
 	}
 }
+
+// TestNewOIDCValidator_RootCAsWithoutPrivateIPFlags verifies that an issuer
+// carrying only a RootCAs pool gets its own JWKS client instead of the shared
+// system-pool one. An issuer whose JWKS host resolves to a public address can
+// still present an internal-CA certificate, so trust must not depend on
+// relaxing the SSRF guard.
+//
+// The SSRF-safe dialer blocks the loopback test server, so the assertion is on
+// the client the validator built, not on a fetch.
+func TestNewOIDCValidator_RootCAsWithoutPrivateIPFlags(t *testing.T) {
+	t.Parallel()
+	pool := x509.NewCertPool()
+
+	const plainIssuer = "https://plain.issuer.example.com"
+	v, err := NewOIDCValidator([]TrustedIssuer{
+		{
+			Issuer:           testIssuer,
+			JwksURL:          "https://internal-ca.example.com/keys",
+			AllowedAudiences: []string{testAudience},
+			RootCAs:          pool,
+		},
+		{
+			Issuer:           plainIssuer,
+			JwksURL:          "https://public.example.com/keys",
+			AllowedAudiences: []string{testAudience},
+		},
+	})
+	require.NoError(t, err)
+
+	require.Contains(t, v.issuerClients, testIssuer,
+		"an issuer with RootCAs must get its own client")
+	require.NotContains(t, v.issuerClients, plainIssuer,
+		"an issuer without RootCAs must keep the shared safe client")
+}

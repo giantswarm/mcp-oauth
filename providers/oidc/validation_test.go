@@ -647,7 +647,7 @@ func TestSSRFSafeDialContext(t *testing.T) {
 // TestNewSSRFSafeHTTPClient tests the SSRF-safe HTTP client creation.
 func TestNewSSRFSafeHTTPClient(t *testing.T) {
 	t.Run("creates client with default timeout", func(t *testing.T) {
-		client := NewSSRFSafeHTTPClient(0)
+		client := NewSSRFSafeHTTPClient(0, nil)
 		if client == nil {
 			t.Fatal("Expected non-nil client")
 		}
@@ -657,7 +657,7 @@ func TestNewSSRFSafeHTTPClient(t *testing.T) {
 	})
 
 	t.Run("creates client with custom timeout", func(t *testing.T) {
-		client := NewSSRFSafeHTTPClient(30 * time.Second)
+		client := NewSSRFSafeHTTPClient(30*time.Second, nil)
 		if client == nil {
 			t.Fatal("Expected non-nil client")
 		}
@@ -667,7 +667,7 @@ func TestNewSSRFSafeHTTPClient(t *testing.T) {
 	})
 
 	t.Run("client has custom transport", func(t *testing.T) {
-		client := NewSSRFSafeHTTPClient(0)
+		client := NewSSRFSafeHTTPClient(0, nil)
 		if client.Transport == nil {
 			t.Error("Expected client to have custom transport for DNS rebinding protection")
 		}
@@ -984,6 +984,112 @@ func TestPrivateIPAllowedHTTPClient_CATrust(t *testing.T) {
 		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("expected 200, got %d", resp.StatusCode)
+		}
+	})
+}
+
+// TestHTTPClients_ShareOneTransportShape verifies that every exported client
+// constructor goes through the shared builder, so a transport setting cannot
+// drift on one posture only.
+func TestHTTPClients_ShareOneTransportShape(t *testing.T) {
+	t.Parallel()
+	pool := x509.NewCertPool()
+	const timeout = 7 * time.Second
+
+	clients := map[string]*http.Client{
+		"ssrf-safe":          NewSSRFSafeHTTPClient(timeout, pool),
+		"private-IP allowed": NewPrivateIPAllowedHTTPClient(timeout, pool),
+		"host scoped":        NewHostScopedPrivateIPHTTPClient([]string{"dex.example.com"}, timeout, pool),
+		"default dial":       NewDefaultDialHTTPClient(timeout, pool),
+	}
+
+	for name, client := range clients {
+		t.Run(name, func(t *testing.T) {
+			if client.Timeout != timeout {
+				t.Errorf("Timeout = %v, want %v", client.Timeout, timeout)
+			}
+			transport, ok := client.Transport.(*http.Transport)
+			if !ok {
+				t.Fatalf("expected *http.Transport, got %T", client.Transport)
+			}
+			if transport.DialContext == nil {
+				t.Error("expected a DialContext")
+			}
+			if !transport.ForceAttemptHTTP2 {
+				t.Error("expected HTTP/2 to be attempted")
+			}
+			if transport.TLSHandshakeTimeout != DefaultTLSHandshakeTimeout {
+				t.Errorf("TLSHandshakeTimeout = %v, want %v", transport.TLSHandshakeTimeout, DefaultTLSHandshakeTimeout)
+			}
+			if transport.ResponseHeaderTimeout != timeout {
+				t.Errorf("ResponseHeaderTimeout = %v, want %v", transport.ResponseHeaderTimeout, timeout)
+			}
+			if transport.ExpectContinueTimeout != DefaultExpectContinueTimeout {
+				t.Errorf("ExpectContinueTimeout = %v, want %v", transport.ExpectContinueTimeout, DefaultExpectContinueTimeout)
+			}
+			if transport.MaxIdleConns != DefaultMaxIdleConns {
+				t.Errorf("MaxIdleConns = %d, want %d", transport.MaxIdleConns, DefaultMaxIdleConns)
+			}
+			if transport.IdleConnTimeout != DefaultIdleConnTimeout {
+				t.Errorf("IdleConnTimeout = %v, want %v", transport.IdleConnTimeout, DefaultIdleConnTimeout)
+			}
+			if transport.TLSClientConfig == nil || transport.TLSClientConfig.RootCAs != pool {
+				t.Fatal("expected the transport to verify against the supplied pool")
+			}
+			if transport.TLSClientConfig.InsecureSkipVerify {
+				t.Error("InsecureSkipVerify must never be set")
+			}
+		})
+	}
+}
+
+// TestHTTPClients_ProxyOnlyWhereTheDialGuardIsAbsent verifies that a proxy can
+// never bypass a dial guard: a posture that filters resolved IPs must not read
+// the proxy environment, because a proxied request dials the proxy instead of
+// the target.
+func TestHTTPClients_ProxyOnlyWhereTheDialGuardIsAbsent(t *testing.T) {
+	t.Parallel()
+
+	guarded := map[string]*http.Client{
+		"ssrf-safe":   NewSSRFSafeHTTPClient(0, nil),
+		"host scoped": NewHostScopedPrivateIPHTTPClient([]string{"dex.example.com"}, 0, nil),
+	}
+	for name, client := range guarded {
+		t.Run(name, func(t *testing.T) {
+			if client.Transport.(*http.Transport).Proxy != nil {
+				t.Error("a guarded client must not honor the proxy environment")
+			}
+		})
+	}
+
+	t.Run("default dial", func(t *testing.T) {
+		if NewDefaultDialHTTPClient(0, nil).Transport.(*http.Transport).Proxy == nil {
+			t.Error("expected the provider-endpoint client to honor the proxy environment")
+		}
+	})
+}
+
+// TestHTTPClients_RedirectGuard verifies that every client whose dialer cannot
+// filter private IPs pins redirects to the original host.
+func TestHTTPClients_RedirectGuard(t *testing.T) {
+	t.Parallel()
+
+	pinned := map[string]*http.Client{
+		"private-IP allowed": NewPrivateIPAllowedHTTPClient(0, nil),
+		"host scoped":        NewHostScopedPrivateIPHTTPClient([]string{"dex.example.com"}, 0, nil),
+		"default dial":       NewDefaultDialHTTPClient(0, nil),
+	}
+	for name, client := range pinned {
+		t.Run(name, func(t *testing.T) {
+			if client.CheckRedirect == nil {
+				t.Error("expected the cross-host redirect guard")
+			}
+		})
+	}
+
+	t.Run("ssrf-safe relies on the dial guard", func(t *testing.T) {
+		if NewSSRFSafeHTTPClient(0, nil).CheckRedirect != nil {
+			t.Error("expected no redirect guard on the SSRF-safe client")
 		}
 	})
 }

@@ -990,7 +990,7 @@ func TestResolveHTTPClient(t *testing.T) {
 			wantSame:       custom,
 		},
 		{
-			name:           "nil client without allowPrivateIP returns plain client",
+			name:           "nil client without allowPrivateIP returns default-dial client",
 			client:         nil,
 			allowPrivateIP: false,
 			wantTimeout:    timeout,

@@ -168,9 +168,9 @@ type TrustedIssuer struct {
 	AllowPrivateIPJWKSHosts []string
 
 	// RootCAs is the CA pool used to verify this issuer's JWKS endpoint TLS
-	// certificate when AllowPrivateIPJWKS or AllowPrivateIPJWKSHosts is set and
-	// the endpoint presents a certificate from an internal CA. nil uses the
-	// system pool.
+	// certificate (e.g. an internal-CA Dex). It applies with or without
+	// AllowPrivateIPJWKS / AllowPrivateIPJWKSHosts. The pool replaces the system
+	// roots rather than extending them. nil uses the system pool.
 	RootCAs *x509.CertPool
 	// AcceptedTypHeaders lists the JWT typ header values accepted when a
 	// Bearer token from this issuer is presented to the resource server.
@@ -195,28 +195,24 @@ type OIDCValidator struct {
 // SSRF-safe JWKS fetches are the default; set AllowPrivateIPJWKSHosts on an
 // issuer to allow private-IP JWKS only for the listed hostnames, or
 // AllowPrivateIPJWKS to disable SSRF protection entirely for that issuer.
+//
+// An issuer gets its own JWKS client whenever it sets either of those flags or
+// a RootCAs pool. Reachability and trust anchor are independent settings.
 func NewOIDCValidator(issuers []TrustedIssuer) (*OIDCValidator, error) {
 	safe := oidc.NewJWKSClient(nil, 0, nil)
 	issuerClients := map[string]*oidc.JWKSClient{}
 	for _, ti := range issuers {
-		if ti.AllowPrivateIPJWKS {
-			// AllowPrivateIPJWKS targets a controlled in-cluster endpoint,
-			// which commonly presents a certificate from an internal CA.
-			// NewJWKSClientWithOptions builds the permissive client via
-			// NewPrivateIPAllowedHTTPClient, which keeps the cross-host
-			// redirect guard and tuned timeouts and verifies against the
-			// issuer's RootCAs pool (nil = system pool). Each issuer gets its
-			// own client so per-issuer RootCAs are honored.
-			issuerClients[ti.Issuer] = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
-				AllowPrivateIP: true,
-				RootCAs:        ti.RootCAs,
-			})
-		} else if len(ti.AllowPrivateIPJWKSHosts) > 0 {
-			issuerClients[ti.Issuer] = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
-				AllowPrivateIPHosts: ti.AllowPrivateIPJWKSHosts,
-				RootCAs:             ti.RootCAs,
-			})
+		if !ti.AllowPrivateIPJWKS && len(ti.AllowPrivateIPJWKSHosts) == 0 && ti.RootCAs == nil {
+			continue
 		}
+		// NewJWKSClientWithOptions applies the same precedence: AllowPrivateIP,
+		// then AllowPrivateIPHosts, then the SSRF-safe default. A pool alone
+		// therefore yields an SSRF-safe client pinned to that pool.
+		issuerClients[ti.Issuer] = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
+			AllowPrivateIP:      ti.AllowPrivateIPJWKS,
+			AllowPrivateIPHosts: ti.AllowPrivateIPJWKSHosts,
+			RootCAs:             ti.RootCAs,
+		})
 	}
 	return newOIDCValidatorWithClients(issuers, safe, issuerClients)
 }

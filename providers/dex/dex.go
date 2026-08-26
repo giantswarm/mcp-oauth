@@ -123,9 +123,10 @@ type Config struct {
 	AllowPrivateIP bool
 
 	// RootCAs is the CA pool used to verify Dex's TLS certificate during OIDC
-	// discovery and token endpoint calls when AllowPrivateIP is set and no
-	// explicit HTTPClient is provided (e.g. an internal-CA Dex). nil uses the
-	// system pool.
+	// discovery and token endpoint calls (e.g. an internal-CA Dex). It applies
+	// with or without AllowPrivateIP. The pool replaces the system roots rather
+	// than extending them. nil uses the system pool. Ignored when HTTPClient is
+	// provided.
 	RootCAs *x509.CertPool
 
 	// discoveryClient overrides the OIDC discovery client. Nil means
@@ -275,14 +276,19 @@ func resolveTimeout(timeout time.Duration) time.Duration {
 // discovery. When allowPrivateIP is true and no explicit client is provided, a
 // client without SSRF protection is returned so that Dex issuer URLs resolving
 // to RFC 1918 addresses (e.g. internal load balancers) are reachable.
+//
+// rootCAs applies on both paths: a Dex on a public address can still present an
+// internal-CA certificate, so trust does not depend on the dial posture. Both
+// clients come from providers/oidc, which owns the transport tuning.
 func resolveHTTPClient(client *http.Client, allowPrivateIP bool, rootCAs *x509.CertPool, timeout time.Duration) *http.Client {
-	if client != nil {
+	switch {
+	case client != nil:
 		return client
-	}
-	if allowPrivateIP {
+	case allowPrivateIP:
 		return oidc.NewPrivateIPAllowedHTTPClient(timeout, rootCAs)
+	default:
+		return oidc.NewDefaultDialHTTPClient(timeout, rootCAs)
 	}
-	return &http.Client{Timeout: timeout}
 }
 
 // resolveDiscoveryClient returns override when non-nil, otherwise constructs a

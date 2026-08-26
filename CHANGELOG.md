@@ -9,8 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `oidc.NewDefaultDialHTTPClient(timeout, rootCAs)`, the client for calls to an operator-configured provider endpoint (OIDC discovery, token endpoint). Standard dialer, cross-host redirects refused, proxy environment honoured, and the endpoint's certificate verified against `rootCAs` (nil uses the system pool). It applies no SSRF dial guard, so use `NewSSRFSafeHTTPClient` whenever the target URL can come from a token or a request.
+- `oidc.DefaultExpectContinueTimeout`, the bound the shared transport applies to a 100-continue response.
 - `dex.Config.AudienceResolver`, an optional `func() []string` that reports the Dex cross-client audiences to request. The provider calls it per authorization request and merges one `audience:server:client_id:` scope per audience into both `DefaultScopes()` and `AuthorizationURL()`, so an audience the caller learns about after `NewProvider` reaches the next login. Nil keeps the previous behaviour. Duplicates are dropped, invalid audiences are skipped and logged once each, and the merged set stays within `oidc.MaxScopeCount`.
 - `oidc.MaxScopeCount` and `oidc.MaxScopeLength`, the bounds `oidc.ValidateScopes` already applied.
+
+### Changed
+
+- **BREAKING.** `oidc.NewSSRFSafeHTTPClient` takes a `rootCAs *x509.CertPool` second parameter, matching `NewPrivateIPAllowedHTTPClient` and `NewHostScopedPrivateIPHTTPClient`. Pass `nil` for the previous behaviour.
+- Every HTTP client in `providers/oidc` and `providers/dex` is built by one internal constructor, which states the dial guard, the redirect guard and the proxy setting per posture. The transport tuning has a single definition, so a setting can no longer drift on one client only. Two effects on existing clients: HTTP/2 is attempted where the server offers it (`ForceAttemptHTTP2`), and `ExpectContinueTimeout` is bounded.
+- The Dex client on the default (non-permissive) dial posture is now built by `oidc.NewDefaultDialHTTPClient` instead of `&http.Client{Timeout: ...}`. It keeps the standard dialer and the proxy environment variables, and it gains the tuned dial, TLS-handshake, response-header and idle-connection timeouts the other clients already had, plus the cross-host redirect guard. A Dex discovery or token-endpoint redirect to a different host or port is now refused.
+
+### Fixed
+
+- Every `RootCAs` field now applies whether or not the private-IP flags are set. `oidc.JWKSClientOptions.RootCAs`, `oidc.TokenExchangeClientOptions.RootCAs`, `server.TrustedIssuer.RootCAs` and `dex.Config.RootCAs` were dropped on the SSRF-safe dial posture, so an IdP whose host resolves to a public address but presents an internal-CA certificate failed TLS with no way to fix it short of relaxing the SSRF guard. A `server.TrustedIssuer` that sets only `RootCAs` now gets its own JWKS client instead of the shared system-pool one.
 
 ## [1.1.0] - 2026-07-16
 

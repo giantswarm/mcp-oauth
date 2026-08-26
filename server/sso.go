@@ -134,11 +134,9 @@ func (s *Server) findMatchingTrustedAudience(tokenAudiences []string) string {
 //   - When true: Private IPs are allowed for internal IdP deployments
 func (s *Server) getJWKSClient() *oidc.JWKSClient {
 	s.jwksClientOnce.Do(func() {
-		// When AllowPrivateIPJWKS is set, NewJWKSClientWithOptions builds the
-		// permissive client via NewPrivateIPAllowedHTTPClient, which keeps the
-		// cross-host redirect guard and tuned timeouts. An internal-CA Dex
-		// forwarding SSO ID tokens is trusted by passing the configured
-		// JWKSRootCAs pool explicitly (nil = system pool).
+		// AllowPrivateIPJWKS selects the dial posture; JWKSRootCAs pins the
+		// trust anchor and applies on either one (nil = system pool). An
+		// internal-CA Dex is trusted without relaxing the SSRF guard.
 		s.jwksClient = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
 			Logger:         s.Logger,
 			AllowPrivateIP: s.Config.AllowPrivateIPJWKS,

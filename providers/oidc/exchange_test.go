@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -56,6 +57,29 @@ func TestNewTokenExchangeClientWithOptions(t *testing.T) {
 		})
 		if client.httpClient != customHTTPClient {
 			t.Error("httpClient should use custom value")
+		}
+	})
+
+	// A token endpoint on a public address can present an internal-CA
+	// certificate, so RootCAs must reach the transport on both dial postures.
+	t.Run("RootCAs on every dial posture", func(t *testing.T) {
+		pool := x509.NewCertPool()
+
+		for _, allowPrivateIP := range []bool{false, true} {
+			client := NewTokenExchangeClientWithOptions(TokenExchangeClientOptions{
+				AllowPrivateIP: allowPrivateIP,
+				RootCAs:        pool,
+			})
+			transport, ok := client.httpClient.Transport.(*http.Transport)
+			if !ok {
+				t.Fatalf("expected *http.Transport, got %T", client.httpClient.Transport)
+			}
+			if transport.TLSClientConfig == nil || transport.TLSClientConfig.RootCAs != pool {
+				t.Errorf("AllowPrivateIP=%v: expected the transport to verify against the supplied pool", allowPrivateIP)
+			}
+			if transport.TLSClientConfig != nil && transport.TLSClientConfig.InsecureSkipVerify {
+				t.Errorf("AllowPrivateIP=%v: InsecureSkipVerify must never be set", allowPrivateIP)
+			}
 		}
 	})
 }
