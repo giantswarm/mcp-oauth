@@ -10,9 +10,13 @@ name: "Storage tests"
 # and the server is a health-checked service container.
 #
 # The matrix pins the oldest supported server as well as the current one: the
-# store must work on RESP2-only servers, so it may not use commands or options
-# that need 7.0 (EXPIRE NX/XX/GT/LT among them). The old-server leg is what
-# catches that.
+# store must work on the servers in the fleet, so it may not use a command or an
+# option that only a newer server has (EXPIRE NX/XX/GT/LT, added in 7.0, among
+# them). The old-server leg is what catches that.
+#
+# Redis 6.0 is today's floor: luaAtomicCheckAndMarkAuthCodeUsed uses
+# SET ... KEEPTTL, which 5.x rejects with a syntax error, so the store does not
+# in fact run on the Redis 5 that #557 named.
 
 on:
   push:
@@ -41,8 +45,8 @@ jobs:
         - name: valkey 8
           image: valkey/valkey:8@sha256:f0ba225266310efba5fb33383e21c64fbd07907304224786c780606e7ebd7327
           cli: valkey-cli
-        - name: redis 6.2
-          image: redis:6.2-alpine@sha256:d0c875bdacfb5c4d2c2d9124de3f53cee1dc9ceff8936bd459fabc135cb33015
+        - name: redis 6.0
+          image: redis:6.0-alpine@sha256:2b35fc7d2908e25aa6aa197f97882c8a67829d3b106ad5ea5c8028f816f26aa8
           cli: redis-cli
 
     services:
