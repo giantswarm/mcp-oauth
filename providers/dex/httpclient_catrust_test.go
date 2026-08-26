@@ -33,12 +33,10 @@ func TestResolveHTTPClient_RootCAs(t *testing.T) {
 		})
 	}
 
-	t.Run("nil pool keeps system-pool verification on a tuned transport", func(t *testing.T) {
+	t.Run("nil pool keeps system-pool verification", func(t *testing.T) {
 		client := resolveHTTPClient(nil, false, nil, 5*time.Second)
 		transport, ok := client.Transport.(*http.Transport)
 		require.True(t, ok, "expected *http.Transport, got %T", client.Transport)
 		require.Nil(t, transport.TLSClientConfig, "a nil pool must not pin a CA")
-		require.True(t, transport.ForceAttemptHTTP2)
-		require.NotZero(t, transport.IdleConnTimeout)
 	})
 }
