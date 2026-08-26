@@ -464,10 +464,7 @@ func TestEnsureOpenIDScope(t *testing.T) {
 
 // TestDefaultScopeFilter tests the default scope classification.
 func TestDefaultScopeFilter(t *testing.T) {
-	supported, err := newScopeFilter(nil, true)
-	if err != nil {
-		t.Fatalf("newScopeFilter() error = %v", err)
-	}
+	supported := newScopeFilter(defaultDexScopes, true)
 
 	tests := []struct {
 		scope    string
@@ -478,7 +475,8 @@ func TestDefaultScopeFilter(t *testing.T) {
 		{"email", true},
 		{"offline_access", true},
 		{"groups", true},
-		{"federated:id", true},
+		// Dex accepts federated:id, but Config.Scopes has to name it.
+		{"federated:id", false},
 		{"audience:server:client_id:test", true},
 		{"audience:server:client_id:k8s-auth", true},
 		{"claudeai", false},

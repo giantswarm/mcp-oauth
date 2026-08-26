@@ -11,10 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `dex.Config.AudienceResolver`, an optional `func() []string` that reports the Dex cross-client audiences to request. The provider calls it per authorization request and merges one `audience:server:client_id:` scope per audience into both `DefaultScopes()` and `AuthorizationURL()`, so an audience the caller learns about after `NewProvider` reaches the next login. Nil keeps the previous behaviour. Duplicates are dropped, invalid audiences are skipped and logged once each, and the merged set stays within `oidc.MaxScopeCount`.
 - `oidc.MaxScopeCount` and `oidc.MaxScopeLength`, the bounds `oidc.ValidateScopes` already applied.
-- `dex.Config.AllowedScopes`, which replaces the scopes the provider forwards to the IdP. Empty keeps the built-in allowlist (`openid`, `profile`, `email`, `offline_access`, `groups`, `federated:id`). `openid` always passes.
-- `dex.Config.MandatoryScopes`, which replaces the entries of `Scopes` merged into a request that names scopes of its own. Empty keeps the built-in set (`openid`, `profile`, `email`, `groups`, `offline_access`). `openid` and cross-client audience scopes are always mandatory.
 - `dex.Config.DisableCrossClientAudienceScopes`, which drops every `audience:server:client_id:` scope from `Scopes`, from every requested set, and turns off `AudienceResolver`. Unset keeps the previous behaviour.
 - `providers.FilterScopesFunc`, which is `FilterScopes` with a caller-supplied mandatory-scope predicate. A nil predicate keeps the built-in set, so `FilterScopes` and `CopyScopes` are unchanged.
+
+### Changed
+
+- `dex.Config.Scopes` is now the complete set the Dex provider sends. Every entry reaches the IdP on every authorization request, and a scope a client asks for that the set does not hold is dropped. Previously two hardcoded lists decided this: a configured scope outside `openid`, `profile`, `email`, `groups` and `offline_access` reached the IdP only for a client that named no scopes at all, and `federated:id` was accepted from any client whether or not `Scopes` held it. Configure `federated:id` in `Scopes` to keep sending it. A caller that leaves `Scopes` at the default is otherwise unaffected.
+- `dex.DefaultScopes()` now reports exactly the set the provider forwards, so a scope it names can no longer be recorded as granted while the IdP never receives it.
+
+### Fixed
+
+- The Dex provider now adds `openid` to an authorization request whose scope set omits it. `ensureOpenIDScope` was never called on that path, so a `Config.Scopes` without `openid` produced a request that was not an OIDC request.
 
 ## [1.1.0] - 2026-07-16
 

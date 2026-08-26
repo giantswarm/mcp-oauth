@@ -80,22 +80,19 @@
 //
 // # Scope Filtering
 //
-// The provider drops every scope outside an allowlist before it builds the
-// authorization request, because an IdP that receives one scope it does not
-// know rejects the whole request. The built-in allowlist is openid, profile,
-// email, offline_access, groups and federated:id. Cross-client audience scopes
-// pass as well.
+// Config.Scopes is the complete set that reaches the IdP. Every entry is sent
+// on every authorization request, whatever the client asks for, and a scope a
+// client names that the set does not hold is dropped, silently, because an IdP
+// that receives one scope it does not know rejects the whole request.
 //
-// The drop is silent, so a scope an IdP needs but the allowlist does not hold
-// never reaches it. Config.AllowedScopes replaces the list. "openid" always
-// passes.
+// The provider forwards the whole set because it consumes the claims itself:
+// email identifies the user and groups drives RBAC. A client that narrowed the
+// set would leave authorization deciding on missing claims.
 //
-// A second set decides which entries of Scopes are merged into a request that
-// names scopes of its own. It is openid, profile, email, groups,
-// offline_access and the audience scopes, and Config.MandatoryScopes replaces
-// it. Configure the two together: an IdP scope outside the built-in mandatory
-// set, a Keycloak "roles" for example, otherwise reaches the IdP only for a
-// client that names no scopes at all.
+// So the forwarded set is Config.Scopes, plus openid, plus the cross-client
+// audience scopes when they are enabled. DefaultScopes() reports the same set,
+// so it never advertises a scope the IdP does not receive. To add a scope,
+// configure it. There is no list a client can draw on beyond Config.Scopes.
 //
 // # Other OIDC Issuers
 //
@@ -106,9 +103,10 @@
 //
 //   - The groups scope. Dex defines it. A Keycloak realm needs a client scope
 //     named groups with a group-membership mapper before it accepts the scope
-//     at all, and Entra ID has no equivalent. Set Config.Scopes,
-//     Config.AllowedScopes and Config.MandatoryScopes to the vocabulary of the
-//     issuer.
+//     at all, and Entra ID has no equivalent. Set Config.Scopes to the
+//     vocabulary of the issuer.
+//   - The federated:id scope. Dex defines it, and Config.Scopes has to name it
+//     for it to reach any IdP.
 //   - Cross-client audience scopes. The audience:server:client_id: shape is a
 //     Dex extension. Keycloak and Entra ID reject an authorization request that
 //     carries one. Set Config.DisableCrossClientAudienceScopes.
@@ -188,7 +186,9 @@
 // A server that sets a supported-scopes allowlist must list the resulting
 // audience scopes, because DefaultScopes() feeds that allowlist. The server
 // validates that allowlist against provider defaults at startup, so an audience
-// the resolver reports later is not covered by that check.
+// the resolver reports later is not covered by that check. None of this applies
+// under Config.DisableCrossClientAudienceScopes, which leaves no audience scope
+// to list.
 //
 // Use the audience helper functions to format these scopes:
 //

@@ -85,8 +85,9 @@ const CrossClientAudienceScopePrefix = "audience:server:client_id:"
 //   - "offline_access": Required for refresh token issuance.
 //   - CrossClientAudienceScopePrefix: Required for SSO token forwarding scenarios.
 //
-// The set is the Dex and OIDC vocabulary. An IdP with a vocabulary of its own
-// needs a predicate of its own, through FilterScopesFunc.
+// The set is the Dex and OIDC vocabulary, and it is the same five scopes as
+// the Dex provider's own defaults. An IdP with a vocabulary of its own needs a
+// predicate of its own, through FilterScopesFunc.
 func isMandatoryScope(scope string) bool {
 	switch scope {
 	case "openid", "email", "profile", "groups", "offline_access":
@@ -195,10 +196,11 @@ func FilterScopes(requestedScopes, defaultScopes []string, supported func(string
 // predicate. A nil mandatory predicate uses the built-in set, and a nil
 // supported predicate accepts everything.
 //
-// A provider whose IdP has a scope vocabulary of its own needs this: under the
-// built-in set, a configured default such as a Keycloak "roles" reaches the IdP
-// only when the client requests no scopes at all, so a client that names one
-// scope silently drops the rest of the operator's set.
+// A provider whose IdP has a scope vocabulary of its own needs this. The
+// built-in set names the Dex and OIDC scopes only, so a configured default
+// outside it, a Keycloak "roles" for example, reaches the IdP only when the
+// client requests no scopes at all. A client that names one scope would
+// silently drop the rest of the operator's set.
 func FilterScopesFunc(requestedScopes, defaultScopes []string, supported, mandatory func(string) bool) []string {
 	merged := copyScopes(requestedScopes, defaultScopes, mandatory)
 	if supported == nil {

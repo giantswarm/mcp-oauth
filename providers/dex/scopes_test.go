@@ -19,11 +19,11 @@ func TestScopeDefaultsAreUnchanged(t *testing.T) {
 
 	assert.Equal(t, []string{"openid", "profile", "email", "groups", "offline_access"}, provider.DefaultScopes())
 
-	t.Run("an unsupported scope is dropped and a Dex-only scope survives", func(t *testing.T) {
+	t.Run("a scope the configuration does not name is dropped", func(t *testing.T) {
 		scopes := authURLScopes(t, provider.AuthorizationURL("state", "", "", []string{"openid", "claudeai", "federated:id"}, nil))
 
 		assert.NotContains(t, scopes, "claudeai")
-		assert.Contains(t, scopes, "federated:id")
+		assert.NotContains(t, scopes, "federated:id")
 		assert.Contains(t, scopes, "groups")
 	})
 
@@ -34,54 +34,110 @@ func TestScopeDefaultsAreUnchanged(t *testing.T) {
 	})
 }
 
-func TestAllowedScopes(t *testing.T) {
+// TestConfiguredScopesAreAlwaysSent covers the reason a separate mandatory set
+// is not needed: the provider consumes email and groups itself, so a client
+// cannot narrow the configured set by naming scopes of its own.
+func TestConfiguredScopesAreAlwaysSent(t *testing.T) {
 	server := setupMockDexServer(t)
 	defer server.Close()
 
-	// A Keycloak realm: no groups scope, but roles and organization exist.
+	// A Keycloak realm: no groups scope, but roles exists.
 	provider, err := NewProvider(testConfig(server, func(cfg *Config) {
 		cfg.Scopes = []string{"openid", "profile", "email", "offline_access", "roles"}
-		cfg.AllowedScopes = []string{"profile", "email", "offline_access", "roles", "organization"}
 	}))
 	require.NoError(t, err)
 
-	t.Run("a scope the IdP knows reaches it", func(t *testing.T) {
-		scopes := authURLScopes(t, provider.AuthorizationURL("state", "", "", []string{"organization"}, nil))
+	scopes := authURLScopes(t, provider.AuthorizationURL("state", "", "", []string{"profile"}, nil))
 
-		assert.Contains(t, scopes, "organization")
+	t.Run("a configured scope outside the Dex vocabulary is sent", func(t *testing.T) {
+		assert.Contains(t, scopes, "roles")
 	})
 
-	// Without MandatoryScopes, a configured scope outside the built-in
-	// mandatory set reaches the IdP only for a client that names no scopes.
-	t.Run("a configured scope outside the built-in mandatory set is not merged", func(t *testing.T) {
-		explicit := authURLScopes(t, provider.AuthorizationURL("state", "", "", []string{"organization"}, nil))
-		implicit := authURLScopes(t, provider.AuthorizationURL("state", "", "", nil, nil))
-
-		assert.NotContains(t, explicit, "roles")
-		assert.Contains(t, implicit, "roles")
-	})
-
-	t.Run("a scope outside the list is dropped", func(t *testing.T) {
-		scopes := authURLScopes(t, provider.AuthorizationURL("state", "", "", []string{"groups", "federated:id"}, nil))
-
-		assert.NotContains(t, scopes, "groups")
-		assert.NotContains(t, scopes, "federated:id")
-	})
-
-	t.Run("openid survives a list that omits it", func(t *testing.T) {
-		scopes := authURLScopes(t, provider.AuthorizationURL("state", "", "", nil, nil))
-
+	t.Run("the rest of the configured set is sent", func(t *testing.T) {
+		assert.Contains(t, scopes, "email")
+		assert.Contains(t, scopes, "offline_access")
 		assert.Contains(t, scopes, "openid")
 	})
 
-	t.Run("an invalid list is rejected at construction", func(t *testing.T) {
-		_, err := NewProvider(testConfig(server, func(cfg *Config) {
-			cfg.AllowedScopes = []string{"openid", ""}
-		}))
+	t.Run("a scope the configuration does not name is dropped", func(t *testing.T) {
+		narrowed := authURLScopes(t, provider.AuthorizationURL("state", "", "", []string{"groups", "federated:id"}, nil))
 
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "invalid allowed scopes")
+		assert.NotContains(t, narrowed, "groups")
+		assert.NotContains(t, narrowed, "federated:id")
 	})
+}
+
+// TestConfiguredScopesAreTheOnlyWayIn pins the rule that replaced the old
+// allowlist: a scope reaches the IdP because Config.Scopes names it, never
+// because a client asked for it.
+func TestConfiguredScopesAreTheOnlyWayIn(t *testing.T) {
+	server := setupMockDexServer(t)
+	defer server.Close()
+
+	provider, err := NewProvider(testConfig(server, func(cfg *Config) {
+		cfg.Scopes = []string{"openid", "email", "federated:id"}
+	}))
+	require.NoError(t, err)
+
+	t.Run("a configured Dex-only scope is sent to every client", func(t *testing.T) {
+		scopes := authURLScopes(t, provider.AuthorizationURL("state", "", "", []string{"email"}, nil))
+
+		assert.Contains(t, scopes, "federated:id")
+	})
+
+	t.Run("a scope the configuration drops cannot be requested back", func(t *testing.T) {
+		scopes := authURLScopes(t, provider.AuthorizationURL("state", "", "", []string{"profile", "groups"}, nil))
+
+		assert.NotContains(t, scopes, "profile")
+		assert.NotContains(t, scopes, "groups")
+	})
+
+	t.Run("openid is sent whatever the configuration holds", func(t *testing.T) {
+		other, err := NewProvider(testConfig(server, func(cfg *Config) {
+			cfg.Scopes = []string{"email"}
+		}))
+		require.NoError(t, err)
+
+		assert.Contains(t, authURLScopes(t, other.AuthorizationURL("state", "", "", []string{"email"}, nil)), "openid")
+	})
+}
+
+// TestDefaultScopesMatchWhatIsForwarded pins the invariant the server depends
+// on. server.resolveScopes turns DefaultScopes() into the granted scope string
+// for a client that names none, so a scope reported here but dropped by the
+// filter would be recorded as granted while the IdP never received it.
+func TestDefaultScopesMatchWhatIsForwarded(t *testing.T) {
+	server := setupMockDexServer(t)
+	defer server.Close()
+
+	configs := map[string]func(*Config){
+		"defaults": func(*Config) {},
+		"a Keycloak vocabulary": func(cfg *Config) {
+			cfg.Scopes = []string{"openid", "profile", "email", "offline_access", "roles"}
+			cfg.DisableCrossClientAudienceScopes = true
+		},
+		"a configured audience scope": func(cfg *Config) {
+			cfg.Scopes = []string{"openid", "email", k8sAudienceScope}
+		},
+		"a configured audience scope with audience scopes disabled": func(cfg *Config) {
+			cfg.Scopes = []string{"openid", "email", k8sAudienceScope}
+			cfg.DisableCrossClientAudienceScopes = true
+		},
+	}
+
+	for name, option := range configs {
+		t.Run(name, func(t *testing.T) {
+			provider, err := NewProvider(testConfig(server, option))
+			require.NoError(t, err)
+
+			defaults := provider.DefaultScopes()
+			forwarded := authURLScopes(t, provider.AuthorizationURL("state", "", "", defaults, nil))
+
+			for _, scope := range defaults {
+				assert.Contains(t, forwarded, scope, "DefaultScopes() reports %q but the IdP never receives it", scope)
+			}
+		})
+	}
 }
 
 // TestDisableCrossClientAudienceScopes covers the invariant an issuer that is
@@ -119,60 +175,5 @@ func TestDisableCrossClientAudienceScopes(t *testing.T) {
 			assert.False(t, strings.HasPrefix(scope, AudienceScopePrefix), "unexpected audience scope %q", scope)
 		}
 		assert.Contains(t, scopes, "openid")
-	})
-}
-
-// TestMandatoryScopes covers the set the provider merges into a request that
-// names scopes of its own, which is where an IdP vocabulary outside the
-// built-in mandatory set would otherwise be dropped.
-func TestMandatoryScopes(t *testing.T) {
-	server := setupMockDexServer(t)
-	defer server.Close()
-
-	// A Keycloak realm again: roles must survive a client that names one scope.
-	provider, err := NewProvider(testConfig(server, func(cfg *Config) {
-		cfg.Scopes = []string{"openid", "profile", "email", "offline_access", "roles", "organization"}
-		cfg.AllowedScopes = []string{"profile", "email", "offline_access", "roles", "organization"}
-		cfg.MandatoryScopes = []string{"email", "offline_access", "roles"}
-	}))
-	require.NoError(t, err)
-
-	scopes := authURLScopes(t, provider.AuthorizationURL("state", "", "", []string{"profile"}, nil))
-
-	t.Run("a mandatory scope is merged", func(t *testing.T) {
-		assert.Contains(t, scopes, "roles")
-		assert.Contains(t, scopes, "email")
-		assert.Contains(t, scopes, "offline_access")
-	})
-
-	t.Run("a configured scope outside the set is not merged", func(t *testing.T) {
-		assert.NotContains(t, scopes, "organization")
-	})
-
-	t.Run("openid is merged whatever the set holds", func(t *testing.T) {
-		assert.Contains(t, scopes, "openid")
-	})
-
-	t.Run("the requested scope survives", func(t *testing.T) {
-		assert.Contains(t, scopes, "profile")
-	})
-
-	t.Run("an audience scope is merged whatever the set holds", func(t *testing.T) {
-		provider, err := NewProvider(testConfig(server, func(cfg *Config) {
-			cfg.Scopes = []string{"openid", "email", k8sAudienceScope}
-			cfg.MandatoryScopes = []string{"email"}
-		}))
-		require.NoError(t, err)
-
-		assert.Contains(t, authURLScopes(t, provider.AuthorizationURL("state", "", "", []string{"profile"}, nil)), k8sAudienceScope)
-	})
-
-	t.Run("an invalid set is rejected at construction", func(t *testing.T) {
-		_, err := NewProvider(testConfig(server, func(cfg *Config) {
-			cfg.MandatoryScopes = []string{"email", ""}
-		}))
-
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "invalid mandatory scopes")
 	})
 }
