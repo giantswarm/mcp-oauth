@@ -195,10 +195,10 @@ func (s *Store) addToUserClientSet(ctx context.Context, key, member, userID, cli
 
 // saddExtendOnlyTTL atomically adds member to a revocation set and keeps the set
 // bounded with an extend-only TTL (see luaAtomicSaddExtendOnlyTTL for the full
-// rationale). ttl is the member's own horizon; the set TTL becomes
-// max(existing, ttl) and is never shortened below a still-live member. When ttl
-// is non-positive (a token with no or expired horizon) the set is still bounded
-// by the store's refresh-token TTL rather than being left to grow without bound.
+// rationale). ttl is the member's own horizon. A set that already expires keeps
+// max(existing, ttl), so it is never shortened below a still-live member; a set
+// with no expiry is bounded at ttl, or at the store's refresh-token TTL when
+// ttl is non-positive because the member has no or an expired horizon.
 func (s *Store) saddExtendOnlyTTL(ctx context.Context, key, member string, ttl time.Duration) error {
 	horizon := int64(0)
 	if ttl > 0 {
@@ -379,53 +379,47 @@ func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID string) (
 
 	now := time.Now()
 	revokedCount := 0
-	metadataRetained := false
 
 	for _, token := range tokens {
 		if s.revokeTokenInFamily(op.ctx, token, now) {
-			metadataRetained = true
+			revokedCount++
 		}
-		revokedCount++
 	}
 
-	// Retain the index only when it now points at something: with no member
-	// metadata written, holding the set for the retention window indexes
-	// nothing, and both by-family-ID reads fall through to not-found anyway.
-	if metadataRetained {
-		s.retainRevokedFamilySet(op.ctx, familyID)
-	}
-
-	if revokedCount > 0 {
-		s.logger.Warn("Revoked refresh token family due to reuse detection",
+	// The set indexes the members' revoked metadata, so retain it only when at
+	// least one such record was written. With none, both by-family-ID reads
+	// fall through to not-found off a walk that finds no metadata.
+	if revokedCount == 0 {
+		s.logger.Warn("Refresh token family walked but no revoked metadata was written",
 			"family_id", safeTruncate(familyID, tokenIDLogLength),
-			"tokens_revoked", revokedCount)
+			"members", len(tokens))
+		return nil
 	}
+
+	s.retainRevokedFamilySet(op.ctx, familyID)
+
+	s.logger.Warn("Revoked refresh token family due to reuse detection",
+		"family_id", safeTruncate(familyID, tokenIDLogLength),
+		"tokens_revoked", revokedCount)
 
 	return nil
 }
 
-// retainRevokedFamilySet holds the family set alive for the retention window
-// that markFamilyMetadataRevoked applies to each member's metadata, so the
-// by-family-ID index lives at least as long as the state it points to. The set
-// can outlive that state, when a member horizon longer than the window already
-// bounds it; both by-family-ID reads then return not-found off a walk that
-// finds no metadata.
+// retainRevokedFamilySet holds the family set for the retention window that
+// markFamilyMetadataRevoked applies to each member's metadata. The set is the
+// by-family-ID index over that metadata, so it must live at least as long: an
+// index that expires first turns the revoked-family signal into not-found,
+// which GetActiveRefreshTokenByFamily and the self-issued JWT family check both
+// read as legitimate absence.
 //
-// Without this the set keeps only the residual horizon of the last add, at most
-// RefreshTokenTTL, and the revoked-family signal decays to not-found while the
-// members' metadata is still retained: GetRefreshTokenFamilyByID stops
-// returning the Revoked=true record, GetActiveRefreshTokenByFamily degrades
-// from ErrRefreshTokenFamilyRevoked to ErrRefreshTokenFamilyNotFound, and
-// server.checkJWTFamily reads not-found as legitimate absence and admits access
-// tokens of a revoked family.
+// The set may outlive the metadata, when a member horizon longer than the
+// window already bounds it. Both by-family-ID reads then walk it, find no
+// metadata and return not-found, which is the correct answer.
 //
 // Both the hashed and the legacy key are extended, because getFamilyTokens
 // unions the two.
 func (s *Store) retainRevokedFamilySet(ctx context.Context, familyID string) {
 	retention := int64((time.Duration(s.revokedFamilyRetentionDays) * 24 * time.Hour).Seconds())
-	if retention < 1 {
-		return
-	}
 	// One call per key: the hashed and the legacy key differ in their last
 	// component, so they can land in different cluster slots and a single
 	// multi-key EVAL would be cross-slot.
