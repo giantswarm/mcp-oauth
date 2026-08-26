@@ -116,7 +116,7 @@ func newValkeyBackend(t *testing.T) storage.Combined {
 
 	s, err := valkey.New(valkey.Config{Address: addr, KeyPrefix: prefix})
 	if err != nil {
-		t.Skipf("skipping valkey parity: could not connect to %s: %v", addr, err)
+		t.Skipf("skipping valkey parity: no server at VALKEY_TEST_ADDR=%s: %v", addr, err)
 	}
 	t.Cleanup(func() {
 		flushValkeyPrefix(t, addr, prefix)

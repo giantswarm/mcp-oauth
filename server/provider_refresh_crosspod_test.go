@@ -74,7 +74,7 @@ func newCrossPodValkeyStore(t *testing.T, prefix string) *valkey.Store {
 
 	s, err := valkey.New(valkey.Config{Address: addr, KeyPrefix: prefix})
 	if err != nil {
-		t.Skipf("skipping valkey cross-pod test: could not connect to %s: %v", addr, err)
+		t.Skipf("skipping valkey cross-pod test: no server at VALKEY_TEST_ADDR=%s: %v", addr, err)
 	}
 	t.Cleanup(func() {
 		flushValkeyPrefix(t, addr, prefix)

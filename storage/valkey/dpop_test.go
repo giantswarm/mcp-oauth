@@ -24,11 +24,11 @@ func testDPoPClient(t *testing.T) vk.Client {
 	}
 	client, err := vk.NewClient(vk.ClientOption{InitAddress: []string{addr}})
 	if err != nil {
-		t.Skipf("skipping: could not connect to Valkey at %s: %v", addr, err)
+		t.Skipf("skipping: no server at VALKEY_TEST_ADDR=%s: %v", addr, err)
 	}
 	if err := client.Do(t.Context(), client.B().Ping().Build()).Error(); err != nil {
 		client.Close()
-		t.Skipf("skipping: Valkey at %s not reachable: %v", addr, err)
+		t.Skipf("skipping: no server at VALKEY_TEST_ADDR=%s: %v", addr, err)
 	}
 	t.Cleanup(client.Close)
 	return client
