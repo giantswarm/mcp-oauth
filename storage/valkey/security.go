@@ -121,12 +121,10 @@ func (s *Store) saveFamilyMetadata(ctx context.Context, refreshToken, userID, cl
 // addTokenToFamilySet adds the token to the family set for family-wide
 // revocation, keeping the set bounded with an extend-only TTL.
 //
-// The set indexes every member's family metadata, and each member's metadata
-// carries its own issuance TTL, so the set must outlive its longest-lived
-// member: a rotation that shortens the set below a still-live member's metadata
-// horizon leaves that metadata reachable by reuse detection while
-// RevokeRefreshTokenFamily walks an empty set and cannot mark the family
-// revoked.
+// The set is the index RevokeRefreshTokenFamily walks, and each member's family
+// metadata carries its own issuance horizon, so the set must outlive its
+// longest-lived member. A member missing from the set is a member reuse
+// detection still sees but revocation cannot reach.
 func (s *Store) addTokenToFamilySet(ctx context.Context, refreshToken, familyID string, ttl time.Duration) {
 	if err := s.saddExtendOnlyTTL(ctx, s.familyKey(familyID), refreshToken, ttl); err != nil {
 		s.logger.Warn("Failed to add token to family set",
@@ -517,7 +515,7 @@ func (s *Store) markFamilyMetadataRevoked(ctx context.Context, token string, now
 		ctx,
 		s.client.B().Set().Key(metaKey).Value(string(updatedData)).Ex(retentionTTL).Build(),
 	).Error(); err != nil {
-		s.logger.Debug("Failed to update family metadata during revocation",
+		s.logger.Warn("Failed to write revoked family metadata, key may be unrevoked",
 			"token_prefix", tokenPrefix,
 			"error", err)
 		return false
