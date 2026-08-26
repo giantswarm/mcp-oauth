@@ -171,17 +171,8 @@ func (s *Store) addTokenToUserClientSet(ctx context.Context, refreshToken, userI
 	s.addToUserClientSet(ctx, s.userClientKey(userID, clientID), refreshToken, userID, clientID, ttl)
 }
 
-// addToUserClientSet atomically adds member to the user+client set and keeps the
-// set bounded with an extend-only TTL (see luaAtomicSaddExtendOnlyTTL for the
-// full rationale). ttl is the member's own horizon; the set TTL becomes
-// max(existing, ttl) and is never shortened below a still-live member. When ttl
-// is non-positive (a token with no/expired horizon) the set is still bounded by
-// the store's refresh-token TTL rather than being left to grow without bound.
-//
-// SADD and the TTL update run in one script so the whole add is atomic:
-// concurrent first-writers for the same (user, client) cannot race the TTL down
-// to a short-lived member's horizon, and it is a single round-trip on the
-// token-issuance hot path.
+// addToUserClientSet adds member to the user+client set that backs bulk
+// revocation. See saddExtendOnlyTTL for the TTL rule.
 func (s *Store) addToUserClientSet(ctx context.Context, key, member, userID, clientID string, ttl time.Duration) {
 	if err := s.saddExtendOnlyTTL(ctx, key, member, ttl); err != nil {
 		s.logger.Warn("Failed to add token to user+client set",
