@@ -695,9 +695,11 @@ func (s *Store) GetRefreshTokenFamily(_ context.Context, refreshToken string) (*
 // owning client ID (storage.ActiveRefreshTokenByFamilyStore). Linear
 // scan, same shape as GetRefreshTokenFamilyByID.
 //
-// Returns ErrRefreshTokenFamilyNotFound when no entry matches at all,
-// or ErrRefreshTokenFamilyRevoked when entries exist but every member
-// is revoked.
+// Returns ErrRefreshTokenFamilyRevoked when any member is revoked, which is
+// the whole family, and ErrRefreshTokenFamilyNotFound when no entry matches at
+// all. A revoked member wins over an active one, matching the Valkey store: a
+// member added by a rotation that raced RevokeRefreshTokenFamily would
+// otherwise be handed back as the family's active token.
 func (s *Store) GetActiveRefreshTokenByFamily(_ context.Context, familyID string) (refreshToken, clientID string, err error) {
 	if familyID == "" {
 		return "", "", storage.ErrRefreshTokenFamilyNotFound
@@ -710,14 +712,14 @@ func (s *Store) GetActiveRefreshTokenByFamily(_ context.Context, familyID string
 		bestClientID string
 		bestGen      int
 		bestFound    bool
-		anyEntry     bool
+		anyRevoked   bool
 	)
 	for token, family := range s.refreshTokenFamilies {
 		if family.FamilyID != familyID {
 			continue
 		}
-		anyEntry = true
 		if family.Revoked {
+			anyRevoked = true
 			continue
 		}
 		if !bestFound || family.Generation > bestGen {
@@ -727,13 +729,14 @@ func (s *Store) GetActiveRefreshTokenByFamily(_ context.Context, familyID string
 			bestFound = true
 		}
 	}
-	if !bestFound {
-		if anyEntry {
-			return "", "", storage.ErrRefreshTokenFamilyRevoked
-		}
+	switch {
+	case anyRevoked:
+		return "", "", storage.ErrRefreshTokenFamilyRevoked
+	case bestFound:
+		return bestToken, bestClientID, nil
+	default:
 		return "", "", storage.ErrRefreshTokenFamilyNotFound
 	}
-	return bestToken, bestClientID, nil
 }
 
 // GetRefreshTokenFamilyByID returns family metadata indexed by family ID
@@ -741,17 +744,22 @@ func (s *Store) GetActiveRefreshTokenByFamily(_ context.Context, familyID string
 // refresh token, so this is a linear scan over an entry count bounded by
 // hardMaxFamilyMetadataEntries (50000). Cheap in practice; if it ever
 // shows up in a profile, add a parallel familyID -> refreshToken index.
+//
+// A revoked member wins, matching the Valkey store: the Revoked flag is per
+// member, and a member added by a rotation that raced RevokeRefreshTokenFamily
+// would otherwise report the family as live and re-admit its tokens.
 func (s *Store) GetRefreshTokenFamilyByID(_ context.Context, familyID string) (*storage.RefreshTokenFamilyMetadata, error) {
 	if familyID == "" {
 		return nil, storage.ErrRefreshTokenFamilyNotFound
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	var live *storage.RefreshTokenFamilyMetadata
 	for _, family := range s.refreshTokenFamilies {
 		if family.FamilyID != familyID {
 			continue
 		}
-		return &storage.RefreshTokenFamilyMetadata{
+		meta := &storage.RefreshTokenFamilyMetadata{
 			FamilyID:   family.FamilyID,
 			UserID:     family.UserID,
 			ClientID:   family.ClientID,
@@ -759,7 +767,16 @@ func (s *Store) GetRefreshTokenFamilyByID(_ context.Context, familyID string) (*
 			IssuedAt:   family.IssuedAt,
 			Revoked:    family.Revoked,
 			RevokedAt:  family.RevokedAt,
-		}, nil
+		}
+		if meta.Revoked {
+			return meta, nil
+		}
+		if live == nil {
+			live = meta
+		}
+	}
+	if live != nil {
+		return live, nil
 	}
 	return nil, storage.ErrRefreshTokenFamilyNotFound
 }
