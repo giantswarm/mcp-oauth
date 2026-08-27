@@ -12,6 +12,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/storage"
+	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
 // TestRefreshSessionProvider_DoesNotRotateClientRefreshToken is the defect-#2
@@ -209,4 +210,37 @@ func TestRefreshSessionProvider_RequiresFamilyID(t *testing.T) {
 	_, err := srv.RefreshSessionProvider(context.Background(), "")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "familyID is required")
+}
+
+// TestRefreshSessionProvider_RequiresFamilyUserID guards the attribution
+// invariant the validation path also holds: the user ID keys the shared
+// provider-token entry and is half of the TokenRefreshHandler's pair, so a
+// family record without one fails the call instead of refreshing.
+func TestRefreshSessionProvider_RequiresFamilyUserID(t *testing.T) {
+	fired := false
+	srv, store, _ := setupFlowTestServer(t, WithTokenRefreshHandler(
+		func(_ context.Context, _, _ string, _ *oauth2.Token) { fired = true }))
+
+	const familyID = "fam-no-user-id"
+	seedFamilyForRefresh(t, store, "user-1", "client-x", familyID, "rt-no-user-id")
+	srv.tokenStore = userlessFamilyStore{Store: store}
+
+	_, err := srv.RefreshSessionProvider(t.Context(), familyID)
+	require.ErrorIs(t, err, ErrRefreshTokenFamilyNoUserID)
+	require.False(t, fired, "handler must not fire without a user ID")
+}
+
+// userlessFamilyStore returns family metadata with an empty UserID, the shape a
+// backend can hold but the in-memory store refuses to write.
+type userlessFamilyStore struct {
+	*memory.Store
+}
+
+func (s userlessFamilyStore) GetRefreshTokenFamilyByID(ctx context.Context, familyID string) (*storage.RefreshTokenFamilyMetadata, error) {
+	family, err := s.Store.GetRefreshTokenFamilyByID(ctx, familyID)
+	if err != nil {
+		return nil, err
+	}
+	family.UserID = ""
+	return family, nil
 }

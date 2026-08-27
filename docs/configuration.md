@@ -355,7 +355,7 @@ oauth.WithTokenRefreshHandler(func(ctx context.Context, userID, familyID string,
 })
 ```
 
-The `userID` and `familyID` fields are populated only when the token store implements `storage.TokenMetadataGetter`. A warning is logged at registration if it does not.
+The handler always receives a non-empty `userID` and `familyID`. The validation path resolves both from the access token's metadata and drops the event when either is missing, so a token store that does not implement `storage.TokenMetadataGetter` never reaches the handler from that path. A warning is logged at registration for such a store.
 
 ### Synchronous Execution
 

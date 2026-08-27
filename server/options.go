@@ -78,13 +78,19 @@ func WithSessionRevocationHandler(handler SessionRevocationHandler) Option {
 }
 
 // WithTokenRefreshHandler registers a callback that fires after a
-// provider token is refreshed: proactively near expiry or reactively on
-// an expired token during validation, or on an explicit
-// [Server.RefreshSessionProvider] call whose refreshed token carries an
-// id_token. It does NOT fire on the client refresh-token grant
-// (RefreshAccessToken / [Server.RefreshSession]). userID and familyID are
-// populated only when the token store implements
-// storage.TokenMetadataGetter; a startup warning is logged otherwise.
+// provider token is refreshed. Two entry points reach it, and they differ
+// on the id_token: the validation path (proactively near expiry or
+// reactively on an expired token) fires for any refreshed provider token,
+// while [Server.RefreshSessionProvider] fires only when the refreshed
+// token carries an id_token. Neither fires on the client refresh-token
+// grant (RefreshAccessToken / [Server.RefreshSession]).
+//
+// Both entry points give the handler a non-empty userID and familyID. The
+// validation path resolves them from the access token's metadata and drops
+// the event when either is missing, so a store that does not implement
+// storage.TokenMetadataGetter (a startup warning is logged for it) never
+// reaches the handler from there. RefreshSessionProvider takes them from
+// the family record and fails the call when the record carries no user ID.
 func WithTokenRefreshHandler(handler TokenRefreshHandler) Option {
 	return func(s *Server) {
 		s.tokenRefreshHandler = handler
@@ -92,7 +98,7 @@ func WithTokenRefreshHandler(handler TokenRefreshHandler) Option {
 			return
 		}
 		if _, ok := s.tokenStore.(storage.TokenMetadataGetter); !ok {
-			s.Logger.Warn("TokenRefreshHandler registered but token store does not support TokenMetadataGetter -- handler will not receive userID/familyID")
+			s.Logger.Warn("TokenRefreshHandler registered but token store does not support TokenMetadataGetter -- the handler will not fire from the token-validation path, which cannot attribute a refresh without token metadata")
 		}
 	}
 }
