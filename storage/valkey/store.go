@@ -721,17 +721,20 @@ redis.call('DEL', KEYS[3])
 return cjson.encode({user_id = userID, client_id = clientID, token = cjson.decode(tokenData)})
 `
 
-// luaAtomicSaddExtendOnlyTTL atomically adds a member to a user+client
-// revocation set and keeps the set bounded with an extend-only TTL, in a single
-// round-trip.
+// luaAtomicSaddExtendOnlyTTL atomically adds a member to a revocation set and
+// keeps the set bounded with an extend-only TTL, in a single round-trip. It
+// backs both revocation sets: the user+client set (bulk revocation) and the
+// family set (family-wide revocation).
 //
-// The set has no per-member removal (there is no SREM anywhere; access tokens
+// The sets have no per-member removal (there is no SREM anywhere; access tokens
 // expire purely by their own key TTL, which fires no set-membership cleanup), so
-// without a TTL it grows without bound. Members are heterogeneous — short-lived
-// access tokens alongside long-lived refresh tokens — so the set TTL must extend
-// to the longest member horizon and must never shrink below a still-live member.
+// without a TTL they grow without bound. Members are heterogeneous: short-lived
+// access tokens alongside long-lived refresh tokens, and, in a family set,
+// rotated-away members whose family metadata keeps its original issuance
+// horizon. The set TTL must therefore extend to the longest member horizon and
+// must never shrink below a still-live member.
 //
-// KEYS[1] = user+client set key
+// KEYS[1] = revocation set key
 // ARGV[1] = member (token ID)
 // ARGV[2] = member horizon in whole seconds, or 0 when unknown/expired
 // ARGV[3] = fallback bound in whole seconds (always >= 1), used only to
@@ -749,8 +752,12 @@ return cjson.encode({user_id = userID, client_id = clientID, token = cjson.decod
 //
 // Doing all of this in one script is what makes it correct under concurrency:
 // two grants racing to create the same set cannot interleave a short-lived
-// member's horizon ahead of a long-lived one, which separate SADD + EXPIRE GT +
-// EXPIRE NX round-trips could.
+// member's horizon ahead of a long-lived one, which a separate SADD followed by
+// a conditional EXPIRE round-trip could.
+//
+// The comparison lives in the script rather than in EXPIRE's GT/NX options
+// because those options need a 7.0+ server, and the store supports older,
+// RESP2-only servers. EVAL, TTL and plain EXPIRE are available everywhere.
 const luaAtomicSaddExtendOnlyTTL = `
 redis.call('SADD', KEYS[1], ARGV[1])
 local horizon = tonumber(ARGV[2])
@@ -765,6 +772,28 @@ if cur == -1 then
     end
 elseif cur >= 0 and horizon > cur then
     redis.call('EXPIRE', KEYS[1], horizon)
+end
+return redis.status_reply('OK')
+`
+
+// luaExtendOnlyTTL extends the TTL of an existing key, and never shortens it.
+//
+// KEYS[1] = key to extend
+// ARGV[1] = new bound in whole seconds (always >= 1)
+//
+// TTL(KEYS[1]) returns -2 (missing), -1 (present, no expiry) or >= 0 (seconds
+// remaining), so the rules are:
+//   - missing key      -> no-op, the key is not created;
+//   - no current expiry -> no-op, an unbounded key is already longer-lived than
+//     any finite bound;
+//   - existing expiry   -> extend only when the new bound is strictly longer.
+//
+// This is EXPIRE ... GT semantics, written as a script because the GT option
+// needs a 7.0+ server and the store supports older, RESP2-only servers.
+const luaExtendOnlyTTL = `
+local cur = redis.call('TTL', KEYS[1])
+if cur >= 0 and tonumber(ARGV[1]) > cur then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
 end
 return redis.status_reply('OK')
 `

@@ -91,6 +91,49 @@ func TestAtomicGates_BackendParity(t *testing.T) {
 				_, _, _, err := s.AtomicGetAndDeleteRefreshToken(t.Context(), "parity-rt-unknown")
 				require.ErrorIs(t, err, storage.ErrTokenNotFound, "backends MUST agree on the sentinel error type")
 			})
+
+			// Revocation is the third single-use gate: once reuse detection
+			// revokes a family, both by-family-ID reads must keep saying so
+			// on both backends, including when one member disagrees.
+			t.Run("revoked_family_stays_revoked", func(t *testing.T) {
+				s := b.factory(t)
+
+				families, ok := s.(storage.RefreshTokenFamilyStore)
+				require.True(t, ok, "backend must track refresh-token families")
+				byID, ok := s.(storage.RefreshTokenFamilyByIDStore)
+				require.True(t, ok, "backend must support lookup by family ID")
+				active, ok := s.(storage.ActiveRefreshTokenByFamilyStore)
+				require.True(t, ok, "backend must support the active-member lookup")
+
+				familyID := fmt.Sprintf("parity-fam-%s", b.name)
+				expiry := time.Now().Add(time.Hour)
+				require.NoError(t, families.SaveRefreshTokenWithFamily(
+					t.Context(), familyID+"-rt0", "user-parity", "client-parity", familyID, 0, expiry))
+
+				require.NoError(t, families.RevokeRefreshTokenFamily(t.Context(), familyID))
+
+				meta, err := byID.GetRefreshTokenFamilyByID(t.Context(), familyID)
+				require.NoError(t, err)
+				require.NotNil(t, meta)
+				require.True(t, meta.Revoked)
+
+				_, _, err = active.GetActiveRefreshTokenByFamily(t.Context(), familyID)
+				require.ErrorIs(t, err, storage.ErrRefreshTokenFamilyRevoked)
+
+				// A rotation that raced the revocation walk adds a member the
+				// walk never marked. The family must still read as revoked.
+				require.NoError(t, families.SaveRefreshTokenWithFamily(
+					t.Context(), familyID+"-rt1", "user-parity", "client-parity", familyID, 1, expiry))
+
+				meta, err = byID.GetRefreshTokenFamilyByID(t.Context(), familyID)
+				require.NoError(t, err)
+				require.NotNil(t, meta)
+				require.True(t, meta.Revoked, "one revoked member revokes the family")
+
+				_, _, err = active.GetActiveRefreshTokenByFamily(t.Context(), familyID)
+				require.ErrorIs(t, err, storage.ErrRefreshTokenFamilyRevoked,
+					"the straggler must not be handed back as the family's active token")
+			})
 		})
 	}
 }
@@ -116,7 +159,7 @@ func newValkeyBackend(t *testing.T) storage.Combined {
 
 	s, err := valkey.New(valkey.Config{Address: addr, KeyPrefix: prefix})
 	if err != nil {
-		t.Skipf("skipping valkey parity: could not connect to %s: %v", addr, err)
+		t.Skipf("skipping valkey parity: no server at VALKEY_TEST_ADDR=%s: %v", addr, err)
 	}
 	t.Cleanup(func() {
 		flushValkeyPrefix(t, addr, prefix)

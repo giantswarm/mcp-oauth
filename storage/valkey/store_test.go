@@ -31,6 +31,10 @@ const (
 // testStore creates a test store connected to a local Valkey instance.
 // Tests will be skipped if VALKEY_TEST_ADDR is not set or connection fails.
 // Each test gets a unique prefix to ensure test isolation.
+//
+// Every skip for an unreachable server names VALKEY_TEST_ADDR:
+// .github/workflows/storage-tests.yml fails the job on that token, since a
+// skipped guard otherwise reads as a pass.
 func testStore(t *testing.T) *Store {
 	t.Helper()
 
@@ -49,7 +53,7 @@ func testStore(t *testing.T) *Store {
 		KeyPrefix: prefix,
 	})
 	if err != nil {
-		t.Skipf("Skipping test: could not connect to Valkey at %s: %v", addr, err)
+		t.Skipf("skipping: no server at VALKEY_TEST_ADDR=%s: %v", addr, err)
 	}
 
 	// Clean up test keys before and after test
@@ -75,7 +79,7 @@ func testStoreWithOpts(t *testing.T, opts ...Option) *Store {
 
 	store, err := New(Config{Address: addr, KeyPrefix: prefix}, opts...)
 	if err != nil {
-		t.Skipf("Skipping test: could not connect to Valkey at %s: %v", addr, err)
+		t.Skipf("skipping: no server at VALKEY_TEST_ADDR=%s: %v", addr, err)
 	}
 
 	t.Cleanup(func() {

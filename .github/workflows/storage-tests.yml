@@ -1,0 +1,113 @@
+name: "Storage tests"
+
+# The suites under storage/, server/ and oauthconfig/ skip themselves when they
+# cannot reach a server, and the CircleCI go-build job runs `make test` with no
+# server, so every one of those guards was inert in CI. This job gives them one.
+#
+# It lives here rather than in .circleci/custom.yml because the server-version
+# matrix needs a job of its own either way, and Actions supplies the two pieces
+# that job would otherwise hand-roll: the Go version comes straight from go.mod,
+# and the server is a health-checked service container.
+#
+# The matrix pins the oldest supported server as well as the current one: the
+# store must work on the servers in the fleet, so it may not use a command or an
+# option that only a newer server has (EXPIRE NX/XX/GT/LT, added in 7.0, among
+# them). The old-server leg is what catches that.
+#
+# Redis 6.0 is today's floor: luaAtomicCheckAndMarkAuthCodeUsed uses
+# SET ... KEEPTTL, which 5.x rejects with a syntax error, so the store does not
+# in fact run on the Redis 5 that #557 named.
+
+on:
+  push:
+    branches: [ main ]
+  # No branch filter: a PR stacked on another PR needs these guards as much as
+  # one that targets main.
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: storage-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  storage-tests:
+    name: Storage tests (${{ matrix.server.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        server:
+        - name: valkey 8
+          image: valkey/valkey:8@sha256:f0ba225266310efba5fb33383e21c64fbd07907304224786c780606e7ebd7327
+          cli: valkey-cli
+        - name: redis 6.0
+          image: redis:6.0-alpine@sha256:2b35fc7d2908e25aa6aa197f97882c8a67829d3b106ad5ea5c8028f816f26aa8
+          cli: redis-cli
+
+    services:
+      server:
+        image: ${{ matrix.server.image }}
+        ports:
+        - 6379:6379
+        options: >-
+          --health-cmd "${{ matrix.server.cli }} ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: go.mod
+
+    # Only the packages that reach for a server. The rest of the suite runs on
+    # CircleCI, which needs none. -v so the next step can see the skips.
+    #
+    # 127.0.0.1, not localhost: the service container publishes on IPv4 only,
+    # and a client that resolves localhost to ::1 gets connection refused, which
+    # every suite reads as "no server" and skips.
+    - name: Run the suites that need a server
+      # pipefail so a failing test fails the step: the exit status of a tee
+      # pipeline is tee's, which is always 0.
+      shell: bash
+      env:
+        VALKEY_TEST_ADDR: 127.0.0.1:6379
+      run: |
+        go test -race -count=1 -v ./storage/... ./oauthconfig/... 2>&1 | tee test.log
+
+    # server/ is filtered to the cross-pod suite, the only one there that needs a
+    # server. The whole package is ~5 minutes under -race on a fast machine and
+    # several times that on a two-core runner, and CircleCI already runs all of
+    # it. The next step checks that the filter still matches, so a rename cannot
+    # turn this into a run of nothing.
+    - name: Run the cross-pod suite
+      shell: bash
+      env:
+        VALKEY_TEST_ADDR: 127.0.0.1:6379
+      run: |
+        go test -race -count=1 -v -run CrossPod ./server/... 2>&1 | tee -a test.log
+
+    # A suite that cannot reach the server skips itself, and a skip reads as a
+    # pass. Every such skip names VALKEY_TEST_ADDR, and nothing else in the test
+    # output does, so matching that one token covers every guard in these
+    # packages, including ones added later.
+    - name: Fail if a suite skipped for want of a server
+      shell: bash
+      run: |
+        if grep -n VALKEY_TEST_ADDR test.log; then
+          echo "a suite skipped: no server reached" >&2
+          exit 1
+        fi
+        if ! grep -q '^--- PASS: TestProviderRefresh_SingleFlight_CrossPod_Valkey' test.log; then
+          echo "the -run CrossPod filter matched no test: fix the filter" >&2
+          exit 1
+        fi
