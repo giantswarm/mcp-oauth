@@ -173,6 +173,12 @@ const (
 	// EventProactiveRefreshFailed is logged when proactive token refresh fails
 	EventProactiveRefreshFailed = "proactive_refresh_failed"
 
+	// EventTokenRefreshHandlerSkipped is logged when a provider token was
+	// refreshed but the TokenRefreshHandler was not called, because the token
+	// metadata yielded no user ID or no family ID. The refresh itself
+	// succeeded, so no other event marks the consumer's missing notification.
+	EventTokenRefreshHandlerSkipped = "token_refresh_handler_skipped"
+
 	// EventProviderTokenStorageFailed is logged when persisting the upstream
 	// provider token (or its associated UserInfo) to the token store fails.
 	// Dashboards key off this event to surface SSO-token-forwarding outages

@@ -133,21 +133,60 @@ func (s *Server) refreshProviderDuringValidation(ctx context.Context, accessToke
 // fireTokenRefreshHandler invokes the registered TokenRefreshHandler (if any)
 // after a provider token has been refreshed. It retrieves the userID and familyID
 // from stored token metadata so callers don't need to plumb them through.
+//
+// The handler fires only with both IDs resolved. Consumers key per-session state
+// on them, so an event they cannot attribute is worse than no event: a metadata
+// miss drops it.
 func (s *Server) fireTokenRefreshHandler(ctx context.Context, accessToken string, newProviderToken *oauth2.Token) {
 	if s.tokenRefreshHandler == nil {
 		return
 	}
 
-	var userID, familyID string
+	var (
+		userID, familyID, clientID string
+		metadataReadFailed         bool
+	)
 	if metaGetter, ok := s.tokenStore.(storage.TokenMetadataGetter); ok {
-		if meta, err := metaGetter.GetTokenMetadata(accessToken); err == nil && meta != nil {
+		meta, err := metaGetter.GetTokenMetadata(accessToken)
+		switch {
+		case err == nil && meta != nil:
 			userID = meta.UserID
 			familyID = meta.FamilyID
-		} else if err != nil {
-			s.Logger.Debug("Failed to retrieve token metadata for refresh handler",
+			clientID = meta.ClientID
+		case err != nil && !storage.IsNotFoundError(err):
+			// Warn, not Debug: the refresh itself succeeded and pushed the
+			// expiry out, so the consumer loses this event and gets no
+			// replacement for the rest of the token lifetime. Absence
+			// (storage.ErrTokenNotFound, which every in-tree store returns on a
+			// miss) is not a failure: it falls through to the drop below.
+			metadataReadFailed = true
+			s.Logger.Warn("Dropping token refresh handler event: token metadata read failed",
 				logKeyError, err,
 				"token_suffix", helpers.TokenSuffix(accessToken, 8))
 		}
+	}
+
+	if userID == "" || familyID == "" {
+		// Debug: an absent metadata record is an expected shape. The read-error
+		// case already logged at Warn above, with the token suffix.
+		s.Logger.Debug("Skipping token refresh handler: unattributable refresh event",
+			"has_user_id", userID != "",
+			"has_family_id", familyID != "",
+			"metadata_read_failed", metadataReadFailed)
+
+		// Whatever the metadata did yield is the only handle on the dropped
+		// event: no other record ties it to a session.
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type:     security.EventTokenRefreshHandlerSkipped,
+			UserID:   userID,
+			ClientID: clientID,
+			Details: map[string]any{
+				"has_user_id":          userID != "",
+				"has_family_id":        familyID != "",
+				"metadata_read_failed": metadataReadFailed,
+			},
+		})
+		return
 	}
 
 	s.tokenRefreshHandler(ctx, userID, familyID, newProviderToken)
