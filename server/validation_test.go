@@ -95,10 +95,11 @@ func TestValidateHTTPSEnforcement_HTTPS(t *testing.T) {
 }
 
 func TestValidateHTTPSEnforcement_HTTPLocalhost(t *testing.T) {
+	// An IPv6 literal in a URL authority must be bracketed ("[::1]"); Go 1.26's
+	// url.Parse rejects the bare "http://::1:8080" form ("invalid port").
 	localhosts := []string{
 		"localhost",
 		"127.0.0.1",
-		"::1",
 		"0.0.0.0",
 		"[::1]",
 	}
