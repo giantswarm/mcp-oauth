@@ -43,7 +43,7 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 		}
 
 		// Single metadata lookup: used for DPoP binding, scope validation, and session ID
-		metadata := h.getTokenMetadata(accessToken)
+		metadata := h.getTokenMetadata(accessToken, userInfo)
 
 		if err := validateDPoPBinding(r, accessToken, metadata); err != nil {
 			var v dpopViolation
@@ -366,7 +366,18 @@ func ScopesFromContext(ctx context.Context) ([]string, bool) {
 
 // getTokenMetadata retrieves token metadata from storage.
 // Returns nil if the store doesn't support metadata or if metadata cannot be retrieved.
-func (h *Handler) getTokenMetadata(accessToken string) *storage.TokenMetadata {
+//
+// Only opaque tokens issued by this server have stored metadata. Every other
+// bearer that ValidateToken accepts — an SSO-forwarded ID token
+// (TrustedAudiences), a trusted-issuer JWT, or a self-issued JWT — is
+// validated by signature and never written to the token store, so a miss is
+// the expected steady state for those callers, not a fault. The store
+// signals absence with storage.ErrTokenNotFound precisely so it can be told
+// apart from a transient backend failure: a miss logs at DEBUG (one entry
+// per request would otherwise drown the resource server's own audit line)
+// naming only the validation path, never token material, while any other
+// error keeps its WARN.
+func (h *Handler) getTokenMetadata(accessToken string, userInfo *providers.UserInfo) *storage.TokenMetadata {
 	metadataStore, ok := h.server.TokenStore().(storage.TokenMetadataGetter)
 	if !ok {
 		return nil
@@ -374,11 +385,25 @@ func (h *Handler) getTokenMetadata(accessToken string) *storage.TokenMetadata {
 
 	metadata, err := metadataStore.GetTokenMetadata(accessToken)
 	if err != nil {
+		if storage.IsNotFoundError(err) {
+			h.logger.Debug("No stored token metadata for bearer", "token_source", tokenSourceForLog(userInfo))
+			return nil
+		}
 		h.logger.Warn("Failed to retrieve token metadata", paramError, err)
 		return nil
 	}
 
 	return metadata
+}
+
+// tokenSourceForLog names the validation path that accepted the bearer, for
+// log attributes. nil or an unset source is reported as the opaque OAuth path,
+// matching providers.UserInfo.IsOAuthToken.
+func tokenSourceForLog(userInfo *providers.UserInfo) string {
+	if userInfo == nil || userInfo.TokenSource == "" {
+		return string(providers.TokenSourceOAuth)
+	}
+	return string(userInfo.TokenSource)
 }
 
 // jktFromToken returns the JWK thumbprint bound to the token. For opaque tokens
