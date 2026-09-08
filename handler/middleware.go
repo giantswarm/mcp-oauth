@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/giantswarm/mcp-oauth/internal/constants"
-	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -375,8 +374,9 @@ func ScopesFromContext(ctx context.Context) ([]string, bool) {
 // the expected steady state for those callers, not a fault. The store
 // signals absence with storage.ErrTokenNotFound precisely so it can be told
 // apart from a transient backend failure: a miss logs at DEBUG (one entry
-// per request would otherwise drown the resource server's own audit line),
-// while any other error keeps its WARN.
+// per request would otherwise drown the resource server's own audit line)
+// naming only the validation path, never token material, while any other
+// error keeps its WARN.
 func (h *Handler) getTokenMetadata(accessToken string, userInfo *providers.UserInfo) *storage.TokenMetadata {
 	metadataStore, ok := h.server.TokenStore().(storage.TokenMetadataGetter)
 	if !ok {
@@ -386,9 +386,7 @@ func (h *Handler) getTokenMetadata(accessToken string, userInfo *providers.UserI
 	metadata, err := metadataStore.GetTokenMetadata(accessToken)
 	if err != nil {
 		if storage.IsNotFoundError(err) {
-			h.logger.Debug("No stored token metadata for bearer",
-				"token_source", tokenSourceForLog(userInfo),
-				"token_suffix", helpers.TokenSuffix(accessToken, 8))
+			h.logger.Debug("No stored token metadata for bearer", "token_source", tokenSourceForLog(userInfo))
 			return nil
 		}
 		h.logger.Warn("Failed to retrieve token metadata", paramError, err)

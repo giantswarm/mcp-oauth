@@ -181,7 +181,7 @@ func TestValidateToken_ForwardedToken_MetadataMissIsSilentAtInfo(t *testing.T) {
 
 // TestValidateToken_ForwardedToken_MetadataMissLoggedAtDebug keeps the miss
 // diagnosable: at DEBUG the middleware names the validation path that accepted
-// the bearer and a short token suffix, never the token itself.
+// the bearer, and never logs token material.
 func TestValidateToken_ForwardedToken_MetadataMissLoggedAtDebug(t *testing.T) {
 	h, token, buf := newForwardedTokenHandler(t, slog.LevelDebug)
 
@@ -198,9 +198,8 @@ func TestValidateToken_ForwardedToken_MetadataMissLoggedAtDebug(t *testing.T) {
 	if e["token_source"] != string(providers.TokenSourceSSO) {
 		t.Errorf("token_source = %v, want %q", e["token_source"], providers.TokenSourceSSO)
 	}
-	suffix, _ := e["token_suffix"].(string)
-	if suffix == "" || !strings.HasSuffix(token, suffix) || len(suffix) >= len(token) {
-		t.Errorf("token_suffix = %q, want a short suffix of the bearer", suffix)
+	if _, has := e["token_suffix"]; has {
+		t.Error("the metadata-miss line must not carry token material (CodeQL go/clear-text-logging)")
 	}
 	if strings.Contains(buf.String(), token) {
 		t.Error("the full bearer token leaked into the log")
