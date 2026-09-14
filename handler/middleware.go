@@ -389,25 +389,41 @@ func ScopesFromContext(ctx context.Context) ([]string, bool) {
 // getTokenMetadata retrieves the bearer's stored metadata for DPoP binding,
 // scope validation and the session ID.
 //
-// nil without an error is the expected steady state, not a fault, for a
-// store that keeps no metadata and for every bearer that ValidateToken
-// accepts by signature alone — an SSO-forwarded ID token (TrustedAudiences),
-// a trusted-issuer JWT, a self-issued exchange JWT — since those are never
-// written to the token store. Such a miss logs at DEBUG (one entry per
-// request would otherwise drown the resource server's own audit line) naming
-// only the validation path, never token material. The error is
-// server.ErrStorageUnavailable when the store did not answer: the request
-// must not proceed on nil metadata then, or its scopes and session identity
-// would silently change for the outage's duration.
+// Only a token this server issued — opaque, or a self-issued JWT — can have
+// metadata in the store, so only those are read. A bearer that ValidateToken
+// accepted by signature alone (an SSO-forwarded ID token, a trusted-issuer
+// JWT) was minted elsewhere and is never written to the token store: its
+// metadata is not looked up at all, and the resource keeps serving it while
+// the store is down. nil without an error is that steady state, and the
+// miss of an issued token whose store keeps no metadata; both log at DEBUG
+// (one entry per request would otherwise drown the resource server's own
+// audit line) naming only the validation path, never token material. The
+// error is server.ErrStorageUnavailable when the store did not answer: the
+// request must not proceed on nil metadata then, or its scopes and session
+// identity would silently change for the outage's duration.
 func (h *Handler) getTokenMetadata(ctx context.Context, accessToken string, userInfo *providers.UserInfo) (*storage.TokenMetadata, error) {
-	metadata, err := h.server.TokenMetadata(ctx, accessToken)
-	if err != nil {
-		return nil, err
+	var metadata *storage.TokenMetadata
+	if issuedByThisServer(userInfo) {
+		var err error
+		if metadata, err = h.server.TokenMetadata(ctx, accessToken); err != nil {
+			return nil, err
+		}
 	}
 	if metadata == nil {
 		h.logger.Debug("No stored token metadata for bearer", "token_source", tokenSourceForLog(userInfo))
 	}
 	return metadata, nil
+}
+
+// issuedByThisServer reports whether the validated bearer was minted by this
+// server (the opaque OAuth path or a self-issued JWT) rather than forwarded
+// from another issuer (an SSO ID token, a trusted-issuer JWT).
+func issuedByThisServer(userInfo *providers.UserInfo) bool {
+	switch userInfo.TokenSource {
+	case providers.TokenSourceSSO, providers.TokenSourceTrustedIssuer:
+		return false
+	}
+	return true
 }
 
 // tokenSourceForLog names the validation path that accepted the bearer, for
