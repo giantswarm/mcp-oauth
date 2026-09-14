@@ -108,6 +108,10 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	// Authenticate client
 	client, err := h.authenticateClient(r, clientID, clientIP)
 	if err != nil {
+		if errors.Is(err, server.ErrStorageUnavailable) {
+			h.writeStorageUnavailable(w, r, grantTypeAuthorizationCode, span, startTime, err)
+			return
+		}
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "client authentication failed")
 		// authenticateClient returns *Error; read its Status before recording
@@ -160,6 +164,10 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	// Exchange authorization code for tokens
 	tokenResponse, scope, err := h.server.ExchangeAuthorizationCode(r.Context(), code, client.ClientID, redirectURI, resource, codeVerifier, dpopJKT)
 	if err != nil {
+		if errors.Is(err, server.ErrStorageUnavailable) {
+			h.writeStorageUnavailable(w, r, grantTypeAuthorizationCode, span, startTime, err)
+			return
+		}
 		h.logger.Error("Failed to exchange authorization code", "client_id", client.ClientID, "ip", clientIP, paramError, err)
 		h.recordTokenFailure(r.Context(), grantTypeAuthorizationCode, constants.ErrorCodeInvalidGrant)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
@@ -233,6 +241,10 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	// Refresh token
 	tokenResponse, err := h.server.RefreshAccessToken(r.Context(), refreshToken, clientID)
 	if err != nil {
+		if errors.Is(err, server.ErrStorageUnavailable) {
+			h.writeStorageUnavailable(w, r, grantTypeRefreshToken, span, startTime, err)
+			return
+		}
 		h.logger.Error("Failed to refresh token", "client_id", clientID, "ip", clientIP, paramError, err)
 		h.recordTokenFailure(r.Context(), grantTypeRefreshToken, constants.ErrorCodeInvalidGrant)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
@@ -258,7 +270,8 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 // authenticateRefreshTokenClient authenticates the client for refresh token grant.
 // Per OAuth 2.1 Section 6, confidential clients MUST authenticate on refresh.
 // Returns (clientID, clientAuthenticated, error).
-// If error is returned, the HTTP response has already been written.
+// If error is returned, the HTTP response has already been written; a client
+// store that did not answer is written as 503 temporarily_unavailable.
 func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.ResponseWriter, r *http.Request, clientID, clientIP string, startTime time.Time, span trace.Span) (string, bool, error) {
 	basicClientID, basicClientSecret := h.parseBasicAuth(r)
 
@@ -268,19 +281,7 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 
 	// Case 1: Basic Auth credentials provided - validate them
 	if basicClientID != "" {
-		clientID = basicClientID
-		if err := h.server.ValidateClientCredentials(ctx, clientID, basicClientSecret); err != nil {
-			h.logger.Warn("Client authentication failed", "client_id", clientID, "ip", clientIP, paramError, err)
-			if h.server.Auditor != nil {
-				h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "refresh_client_authentication_failed")
-			}
-			h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusUnauthorized, startTime)
-			instrumentation.RecordError(span, err)
-			instrumentation.SetSpanError(span, "client authentication failed")
-			h.writeError(w, constants.ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
-			return "", false, err
-		}
-		return clientID, true, nil
+		return h.authenticateRefreshBasicClient(ctx, w, r, basicClientID, basicClientSecret, clientIP, startTime, span)
 	}
 
 	// Case 2: No Basic Auth - check if client_id was provided
@@ -292,8 +293,43 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 	}
 
 	// Case 3: client_id provided but no credentials - check if client is confidential
+	return h.authenticateRefreshPublicClient(ctx, w, r, clientID, clientIP, startTime, span)
+}
+
+// authenticateRefreshBasicClient validates Basic Authorization credentials on
+// the refresh grant. Returns (clientID, true, nil) on success; on failure the
+// response has been written.
+func (h *Handler) authenticateRefreshBasicClient(ctx context.Context, w http.ResponseWriter, r *http.Request, clientID, clientSecret, clientIP string, startTime time.Time, span trace.Span) (string, bool, error) {
+	err := h.server.ValidateClientCredentials(ctx, clientID, clientSecret)
+	if err == nil {
+		return clientID, true, nil
+	}
+	if errors.Is(err, server.ErrStorageUnavailable) {
+		h.writeStorageUnavailable(w, r, grantTypeRefreshToken, span, startTime, err)
+		return "", false, err
+	}
+	h.logger.Warn("Client authentication failed", "client_id", clientID, "ip", clientIP, paramError, err)
+	if h.server.Auditor != nil {
+		h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "refresh_client_authentication_failed")
+	}
+	h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusUnauthorized, startTime)
+	instrumentation.RecordError(span, err)
+	instrumentation.SetSpanError(span, "client authentication failed")
+	h.writeError(w, constants.ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
+	return "", false, err
+}
+
+// authenticateRefreshPublicClient handles a refresh grant that presents a
+// client_id without credentials: the client must exist and be public.
+// Returns (clientID, false, nil) on success; on failure the response has been
+// written.
+func (h *Handler) authenticateRefreshPublicClient(ctx context.Context, w http.ResponseWriter, r *http.Request, clientID, clientIP string, startTime time.Time, span trace.Span) (string, bool, error) {
 	client, err := h.server.GetClient(ctx, clientID)
 	if err != nil {
+		if errors.Is(err, server.ErrStorageUnavailable) {
+			h.writeStorageUnavailable(w, r, grantTypeRefreshToken, span, startTime, err)
+			return "", false, err
+		}
 		h.logger.Warn("Unknown client for refresh", "client_id", clientID, "ip", clientIP)
 		if h.server.Auditor != nil {
 			h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "refresh_unknown_client")
@@ -383,7 +419,9 @@ func (h *Handler) rejectBasicFormClientIDMismatch(
 }
 
 // authenticateClient validates client credentials from either Basic Auth or form parameters
-// Returns the validated client or an error with the OAuth error code
+// Returns the validated client or an error with the OAuth error code. A client
+// store that did not answer yields server.ErrStorageUnavailable, which callers
+// answer with 503 rather than a client-authentication failure.
 func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string) (*storage.Client, error) {
 	basicClientID, basicClientSecret := h.parseBasicAuth(r)
 	formClientID := clientID
@@ -406,6 +444,9 @@ func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string)
 
 	client, err := h.server.GetClient(r.Context(), clientID)
 	if err != nil {
+		if errors.Is(err, server.ErrStorageUnavailable) {
+			return nil, err
+		}
 		h.logAuthFailure(r.Context(), clientID, clientIP, constants.ErrorCodeInvalidClient, "Unknown client")
 		return nil, oauth.ErrInvalidClient("Client authentication failed")
 	}
@@ -429,6 +470,9 @@ func (h *Handler) validateConfidentialClient(ctx context.Context, client *storag
 	}
 
 	if err := h.server.ValidateClientCredentials(ctx, client.ClientID, secret); err != nil {
+		if errors.Is(err, server.ErrStorageUnavailable) {
+			return err
+		}
 		h.logAuthFailure(ctx, client.ClientID, clientIP, "client_authentication_failed", "Client authentication failed")
 		return oauth.ErrInvalidClient("Client authentication failed")
 	}

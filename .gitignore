@@ -62,6 +62,10 @@ examples/production/production
 examples/custom-scopes/custom-scopes
 examples/prometheus/prometheus
 examples/jwt/jwt
+examples/cimd/cimd
+examples/dex/dex
+examples/github/github
+examples/mcp-2025-11-25/mcp-2025-11-25
 
 # graphify knowledge graph (regenerable, rebuilt by the post-commit hook)
 graphify-out/

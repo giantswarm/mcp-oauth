@@ -257,15 +257,28 @@ func (s *Server) trackClientIPAndLog(ctx context.Context, client *storage.Client
 		"client_ip", clientIP)
 }
 
-// ValidateClientCredentials validates client credentials for token endpoint
+// ValidateClientCredentials checks a confidential client's secret. Rejected
+// credentials are storage.ErrInvalidClientCredentials; a store that did not
+// answer is ErrStorageUnavailable, never a rejection.
 func (s *Server) ValidateClientCredentials(ctx context.Context, clientID, clientSecret string) error {
-	return s.clientStore.ValidateClientSecret(ctx, clientID, clientSecret)
+	err := s.clientStore.ValidateClientSecret(ctx, clientID, clientSecret)
+	if storage.IsTransientError(err) {
+		return s.storageUnavailable(ctx, "validate client credentials", clientID, "", "", err)
+	}
+	return err
 }
 
 // GetClient retrieves a client by ID (for use by handler)
 // Supports both pre-registered clients and URL-based Client ID Metadata Documents (MCP 2025-11-25)
+// A registered client whose record could not be read because the store did
+// not answer is ErrStorageUnavailable; the errors of a URL-based client ID
+// come from the metadata fetch and are returned unchanged.
 func (s *Server) GetClient(ctx context.Context, clientID string) (*storage.Client, error) {
-	return s.getOrFetchClient(ctx, clientID)
+	client, err := s.getOrFetchClient(ctx, clientID)
+	if err != nil && !isURLClientID(clientID) && storage.IsTransientError(err) {
+		return nil, s.storageUnavailable(ctx, "load client", clientID, "", "", err)
+	}
+	return client, err
 }
 
 // SaveClient persists an updated client record.

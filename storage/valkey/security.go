@@ -675,10 +675,14 @@ func (s *Store) setTokenMetaKey(ctx context.Context, key, value string, expiresA
 // keys are never accepted by the unified refresh grant or validation paths,
 // so their metadata must classify as absent — invalid_grant / inactive —
 // rather than lend a leftover credential the appearance of a live one.
-func (s *Store) GetTokenMetadata(tokenID string) (*storage.TokenMetadata, error) {
-	ctx := context.Background()
+func (s *Store) GetTokenMetadata(tokenID string) (result *storage.TokenMetadata, err error) {
+	// The interface carries no context, so the operation's deadline is the only
+	// bound on this read; without it an unresponsive Valkey would hold the
+	// caller for as long as the outage lasts.
+	op := s.startTracedOp(context.Background(), "get_token_metadata")
+	defer op.end(&err)
 
-	data, err := s.client.Do(ctx, s.client.B().Get().Key(s.tokenMetaKey(tokenID)).Build()).ToString()
+	data, err := s.client.Do(op.ctx, s.client.B().Get().Key(s.tokenMetaKey(tokenID)).Build()).ToString()
 	if err != nil {
 		if isNilError(err) {
 			return nil, fmt.Errorf("token metadata: %w", storage.ErrTokenNotFound)

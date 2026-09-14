@@ -9,9 +9,10 @@ This guide covers all configuration options for the mcp-oauth library.
 3. [Proxy Configuration](#proxy-configuration)
 4. [Interstitial Page Customization](#interstitial-page-customization)
 5. [Token Behavior](#token-behavior)
-6. [Session & Token Lifecycle Callbacks](#session--token-lifecycle-callbacks)
-7. [Client Registration](#client-registration)
-8. [Scope Configuration](#scope-configuration)
+6. [Storage Backend](#storage-backend)
+7. [Session & Token Lifecycle Callbacks](#session--token-lifecycle-callbacks)
+8. [Client Registration](#client-registration)
+9. [Scope Configuration](#scope-configuration)
 
 ## Server Configuration
 
@@ -310,6 +311,39 @@ cfg := &server.Config{
 ```
 
 For the opaque-vs-JWT trade-off and threat model, see [SECURITY_ARCHITECTURE.md → Access Token Format Modes](../SECURITY_ARCHITECTURE.md#access-token-format-modes).
+
+## Storage Backend
+
+### Operation Deadline
+
+Every operation of the Valkey store runs under a per-operation deadline layered on the request's context, so an unreachable or unresponsive Valkey fails a store call within that budget instead of holding the request for as long as the outage lasts. The same value bounds the client's TCP dial and per-connection write/response wait.
+
+```go
+import "github.com/giantswarm/mcp-oauth/storage/valkey"
+
+store, err := valkey.New(valkey.Config{
+    Address: "valkey.example.com:6379",
+    // Deadline for each store operation, dial and connection wait.
+    // Default: storage.DefaultOperationTimeout (3s). Negative values are rejected.
+    OperationTimeout: 2 * time.Second,
+})
+```
+
+The in-memory store performs no I/O and never blocks, so it needs no deadline.
+
+### Token Endpoint Behaviour During a Storage Outage
+
+A store call that fails for a reason other than one of the storage sentinels (record not found, expired, authorization code already used, revoked family, rejected client credentials) means the record's state is unknown. The token endpoint answers such a failure on every grant, and on the client authentication that precedes it, with:
+
+| | |
+|---|---|
+| Status | `503 Service Unavailable` |
+| Body | `{"error": "temporarily_unavailable", "error_description": "..."}` |
+| Header | `Retry-After: 5` |
+
+Nothing is consumed, rotated or revoked on that path: the refresh token and its family, the authorization code and the subject token are exactly as the client presented them, and the client retries the same request once the store is back. A storage failure is never answered as `invalid_grant`, which clients read as a dead token and answer by discarding it and forcing a new sign-in.
+
+In-process callers see the same classification as `server.ErrStorageUnavailable` (match with `errors.Is`) from `RefreshAccessToken`, `ExchangeAuthorizationCode`, `SelfIssuedExchange`, `BrokeredExchange`, `GetClient` and `ValidateClientCredentials`. The audit log records the failure as an authentication failure with reason `transient_storage_error` and the failed operation.
 
 ## Session & Token Lifecycle Callbacks
 

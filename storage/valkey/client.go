@@ -91,6 +91,13 @@ func (s *Store) ValidateClientSecret(ctx context.Context, clientID, clientSecret
 		return nil
 	}
 
+	// A lookup that failed because Valkey did not answer says nothing about the
+	// credentials: report it as the storage failure it is (after the bcrypt
+	// comparison, so timing stays uniform) instead of rejecting the client.
+	if storage.IsTransientError(clientErr) {
+		return clientErr
+	}
+
 	// If client lookup failed, return generic error (but only after bcrypt comparison)
 	// SECURITY: Generic error message prevents client enumeration attacks
 	if clientErr != nil {

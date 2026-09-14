@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"net/url"
 	"time"
@@ -965,11 +966,27 @@ func (s *Server) startExchangeSpan(ctx context.Context, clientID string) (contex
 }
 
 // validateAuthorizationCode performs all authorization code validations.
+//
+// The client record is read before the code is marked used, so a client store
+// that stops answering fails the exchange with the code still unused and the
+// client's retry exchanges it normally. Only the storage outage is acted on at
+// that point: an unknown client is reported after the code has been marked
+// used and its binding checked, so a code presented by the wrong client keeps
+// burning the code and keeps its client_id_mismatch audit trail. A flow store
+// that does not answer on the mark likewise yields ErrStorageUnavailable.
 func (s *Server) validateAuthorizationCode(ctx context.Context, code, clientID, redirectURI, resource, codeVerifier string, span trace.Span) (*storage.AuthorizationCode, error) {
+	client, clientErr := s.GetClient(ctx, clientID)
+	if errors.Is(clientErr, ErrStorageUnavailable) {
+		return nil, clientErr
+	}
+
 	authCode, err := s.flowStore.AtomicCheckAndMarkAuthCodeUsed(ctx, code)
 	if err != nil {
 		if storage.IsCodeReuseError(err) {
 			return nil, s.handleCodeReuseDetection(ctx, authCode, clientID, code, span)
+		}
+		if storage.IsTransientError(err) {
+			return nil, s.storageUnavailable(ctx, "check authorization code", clientID, "", code, err)
 		}
 		return nil, s.logAuthCodeValidationFailure(ctx, "invalid_authorization_code: "+err.Error(), clientID, "", helpers.SafeTruncate(code, 8))
 	}
@@ -982,8 +999,7 @@ func (s *Server) validateAuthorizationCode(ctx context.Context, code, clientID, 
 		return nil, err
 	}
 
-	client, err := s.getOrFetchClient(ctx, clientID)
-	if err != nil {
+	if clientErr != nil {
 		return nil, s.logAuthCodeValidationFailure(ctx, "client_not_found", clientID, "", helpers.SafeTruncate(code, 8))
 	}
 

@@ -161,10 +161,13 @@ func (s *Server) refreshUserProviderToken(ctx context.Context, userID string, ob
 		select {
 		case res := <-ch:
 			if res.Err != nil {
-				if isContextError(res.Err) && ctx.Err() == nil {
+				if isContextError(res.Err) && !errors.Is(res.Err, ErrStorageUnavailable) && ctx.Err() == nil {
 					// The run died with its leader's cancellation/deadline,
 					// not ours — retry: the next iteration starts a fresh
-					// run (or joins one a sibling already started).
+					// run (or joins one a sibling already started). A store
+					// operation that hit its own deadline also reads as a
+					// context error but is a storage failure every caller
+					// shares; it is returned, not retried.
 					continue
 				}
 				return nil, res.Err
@@ -204,7 +207,7 @@ func (s *Server) coordinateProviderRefresh(ctx context.Context, upts storage.Use
 	for {
 		lockValue, acquired, err := locker.AcquireProviderRefreshLock(ctx, userID, providerRefreshLockTTL)
 		if err != nil {
-			return nil, fmt.Errorf("failed to acquire provider refresh lock: %w", err)
+			return nil, s.storageUnavailable(ctx, "acquire provider refresh lock", "", userID, "", err)
 		}
 		if acquired {
 			return s.refreshSharedProviderTokenLocked(ctx, upts, locker, userID, lockValue, observed)
@@ -249,6 +252,9 @@ func (s *Server) refreshSharedProviderTokenLocked(ctx context.Context, upts stor
 // backends without a refresh lock.
 func (s *Server) refreshSharedProviderToken(ctx context.Context, upts storage.UserProviderTokenStore, userID string, observed *oauth2.Token) (*oauth2.Token, error) {
 	shared, err := upts.GetUserProviderToken(ctx, userID)
+	if storage.IsTransientError(err) {
+		return nil, s.storageUnavailable(ctx, "read shared provider token", "", userID, "", err)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to read shared provider token: %w", err)
 	}

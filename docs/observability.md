@@ -119,7 +119,7 @@ instrumentation.Config{
 | `oauth.token.refreshed` | `client_id`, `rotated` | Tokens refreshed |
 | `oauth.token.revoked` | `client_id` | Tokens revoked |
 | `oauth.client.registered` | `client_type` | Clients registered |
-| `oauth.token_endpoint.failures.total` | `grant_type`, `error_code` | Token-endpoint failures broken down by RFC 6749 `error_code` (`invalid_request`, `invalid_client`, `invalid_grant`, `unauthorized_client`, `unsupported_grant_type`, `invalid_scope`, `server_error`). Cardinality budget: ~8 × ~7 series. |
+| `oauth.token_endpoint.failures.total` | `grant_type`, `error_code` | Token-endpoint failures broken down by `error_code` (`invalid_request`, `invalid_client`, `invalid_grant`, `unauthorized_client`, `unsupported_grant_type`, `invalid_scope`, `server_error`, `temporarily_unavailable` for a token store that did not answer). Cardinality budget: ~8 × ~8 series. |
 
 ### Security
 
@@ -176,8 +176,10 @@ The `stage` label indicates when the rejection occurred:
 
 | Metric | Labels | Description |
 |--------|--------|-------------|
-| `storage.operation.total` | `operation`, `result` | Storage operations |
+| `storage.operation.total` | `operation`, `result` | Storage operations; `result` is `success`, `error`, or `timeout` when the operation's deadline passed before the backend answered (Valkey store, see `valkey.Config.OperationTimeout`) |
 | `storage.operation.duration` | `operation` | Operation duration (ms) |
+
+The Valkey store records these only when constructed with `valkey.WithInstrumentation(inst)`. A token store that stops answering is visible without the edge's access log: `storage.operation.total{result="timeout"}` rises for the outage's duration, `storage.operation.duration` shows every failing operation at the deadline, and the token endpoint counts each request it had to turn away as `oauth.token_endpoint.failures.total{error_code="temporarily_unavailable"}`.
 
 ### Provider
 

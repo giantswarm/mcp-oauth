@@ -15,5 +15,6 @@ func (s *Store) LogValue() slog.Value {
 		slog.String("backend", storage.BackendValkey),
 		slog.Bool("encryption_at_rest", s.encryptor != nil && s.encryptor.IsEnabled()),
 		slog.Bool("instrumentation_on", s.inst != nil),
+		slog.Duration("operation_timeout", s.operationTimeout),
 	)
 }

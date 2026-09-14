@@ -7,12 +7,14 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/server"
 )
@@ -21,6 +23,12 @@ const (
 	defaultCORSMaxAge        = 3600 // 1 hour default for preflight cache
 	tokenTypeBearer          = "Bearer"
 	defaultRetryAfterSeconds = 60 // Retry-After fallback for limiters with no defined rate/window
+
+	// storageUnavailableRetryAfterSeconds is the Retry-After hint on a 503
+	// temporarily_unavailable answer: the store just missed a deadline of a
+	// few seconds, so a retry a few seconds later has a fair chance of
+	// meeting a recovered backend without hammering one that is still down.
+	storageUnavailableRetryAfterSeconds = 5
 )
 
 // Endpoint labels for `oauth_http_requests_total{endpoint="..."}` etc.
@@ -265,6 +273,25 @@ func (h *Handler) writeError(w http.ResponseWriter, code, description string, st
 		paramError:            code,
 		paramErrorDescription: description,
 	})
+}
+
+// writeStorageUnavailable answers a token-endpoint request whose grant could
+// not be processed because the token store did not answer
+// (server.ErrStorageUnavailable): 503 temporarily_unavailable with a
+// Retry-After header. The grant was neither validated nor consumed, so the
+// client retries the same request; it must not read the answer as a dead
+// token. grantType labels the failure metric; the HTTP metric and span are
+// recorded here as well, so the caller returns right after.
+func (h *Handler) writeStorageUnavailable(w http.ResponseWriter, r *http.Request, grantType string, span trace.Span, startTime time.Time, err error) {
+	h.logger.Warn("Token request failed: storage temporarily unavailable",
+		"grant_type", grantType, "ip", h.clientIP(r), paramError, err)
+	h.recordTokenFailure(r.Context(), grantType, constants.ErrorCodeTemporarilyUnavailable)
+	h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusServiceUnavailable, startTime)
+	instrumentation.RecordError(span, err)
+	instrumentation.SetSpanError(span, "storage unavailable")
+	w.Header().Set("Retry-After", strconv.Itoa(storageUnavailableRetryAfterSeconds))
+	h.writeError(w, constants.ErrorCodeTemporarilyUnavailable,
+		"The authorization server could not reach its token store; retry the same request", http.StatusServiceUnavailable)
 }
 
 func (h *Handler) writeJSON(w http.ResponseWriter, v any) {
