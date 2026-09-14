@@ -103,7 +103,8 @@ func newJWTIntrospectionServer(t *testing.T) (srv *Server, accessToken, ownerCli
 func TestServer_IntrospectToken_JWTPath_OwnerSeesProjection(t *testing.T) {
 	srv, token, owner, _, _ := newJWTIntrospectionServer(t)
 
-	response := srv.IntrospectToken(context.Background(), token, owner)
+	response, err := srv.IntrospectToken(context.Background(), token, owner)
+	require.NoError(t, err)
 
 	require.Equal(t, true, response["active"])
 	require.Equal(t, "Bearer", response["token_type"])
@@ -124,7 +125,8 @@ func TestServer_IntrospectToken_JWTPath_OwnerSeesProjection(t *testing.T) {
 func TestServer_IntrospectToken_JWTPath_CrossClientDenied(t *testing.T) {
 	srv, token, _, probe, _ := newJWTIntrospectionServer(t)
 
-	response := srv.IntrospectToken(context.Background(), token, probe)
+	response, err := srv.IntrospectToken(context.Background(), token, probe)
+	require.NoError(t, err)
 
 	require.Equal(t, false, response["active"])
 	for _, leaked := range []string{"sub", "email", "client_id", "scope", "aud", "iss", "exp", "iat", "token_type"} {
@@ -136,7 +138,8 @@ func TestServer_IntrospectToken_JWTPath_AllowlistedResourceServer(t *testing.T) 
 	srv, token, owner, _, rs := newJWTIntrospectionServer(t)
 	srv.Config.IntrospectionResourceServers = []string{rs}
 
-	response := srv.IntrospectToken(context.Background(), token, rs)
+	response, err := srv.IntrospectToken(context.Background(), token, rs)
+	require.NoError(t, err)
 
 	require.Equal(t, true, response["active"])
 	require.Equal(t, owner, response["client_id"], "client_id must reflect the token's owner, not the introspecting RS")
@@ -166,7 +169,8 @@ func TestServer_IntrospectToken_JWTPath_GarbageToken_RejectedBeforeValidation(t 
 		"eyJpc3MiOiJodHRwczovL2F1dGguZXhhbXBsZS5jb20iLCJjbGllbnRfaWQiOiIiLCJzdWIiOiJ4In0." +
 		"aW52YWxpZF9zaWduYXR1cmU"
 
-	response := srv.IntrospectToken(context.Background(), garbage, owner)
+	response, err := srv.IntrospectToken(context.Background(), garbage, owner)
+	require.NoError(t, err)
 	require.Equal(t, false, response["active"])
 	require.Len(t, response, 1, "garbage JWT must return only {active: false}")
 }
@@ -176,7 +180,8 @@ func TestServer_IntrospectToken_JWTPath_CrossClientDenied_EmitsAuditEvent(t *tes
 	auditor, buf := newRecordingAuditor()
 	srv.Auditor = auditor
 
-	response := srv.IntrospectToken(context.Background(), token, probe)
+	response, err := srv.IntrospectToken(context.Background(), token, probe)
+	require.NoError(t, err)
 	require.Equal(t, false, response["active"])
 
 	records := decodeAuditRecords(t, buf.Bytes())
@@ -218,7 +223,8 @@ func TestServer_IntrospectToken_OpaquePath_CrossClientDenied_EmitsAuditEvent(t *
 		Scopes:    []string{"openid"},
 	}))
 
-	response := srv.IntrospectToken(ctx, accessToken, probe.ClientID)
+	response, err := srv.IntrospectToken(ctx, accessToken, probe.ClientID)
+	require.NoError(t, err)
 	require.Equal(t, false, response["active"])
 
 	records := decodeAuditRecords(t, buf.Bytes())
@@ -262,7 +268,8 @@ func TestServer_IntrospectToken_OpaquePath_OwnerSeesExpAndIat(t *testing.T) {
 		Scopes:    []string{"openid", "email"},
 	}))
 
-	response := srv.IntrospectToken(ctx, accessToken, owner.ClientID)
+	response, err := srv.IntrospectToken(ctx, accessToken, owner.ClientID)
+	require.NoError(t, err)
 
 	require.Equal(t, true, response["active"])
 	require.Equal(t, "Bearer", response["token_type"])
@@ -304,7 +311,8 @@ func TestServer_IntrospectToken_OpaquePath_ZeroExpiresAt_OmitsExp(t *testing.T) 
 		Scopes:    []string{"openid"},
 	}))
 
-	response := srv.IntrospectToken(ctx, accessToken, owner.ClientID)
+	response, err := srv.IntrospectToken(ctx, accessToken, owner.ClientID)
+	require.NoError(t, err)
 
 	require.Equal(t, true, response["active"])
 	require.NotContains(t, response, "exp", "exp must be absent when ExpiresAt is zero")
@@ -355,7 +363,8 @@ func TestServer_IntrospectToken_OpaquePath_ExtraClaimsForwarded(t *testing.T) {
 		},
 	}))
 
-	response := srv.IntrospectToken(ctx, accessToken, owner.ClientID)
+	response, err := srv.IntrospectToken(ctx, accessToken, owner.ClientID)
+	require.NoError(t, err)
 
 	require.Equal(t, true, response["active"])
 	require.Equal(t, "sess-abc123", response["muster_sid"])
@@ -389,7 +398,8 @@ func TestServer_IntrospectToken_OpaquePath_NilExtraClaimsOK(t *testing.T) {
 		// ExtraClaims intentionally nil
 	}))
 
-	response := srv.IntrospectToken(ctx, accessToken, owner.ClientID)
+	response, err := srv.IntrospectToken(ctx, accessToken, owner.ClientID)
+	require.NoError(t, err)
 	require.Equal(t, true, response["active"])
 }
 
@@ -416,7 +426,8 @@ func TestServer_IntrospectToken_JWTPath_AppClaimsForwarded(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	response := srv.IntrospectToken(t.Context(), token, ownerClientID)
+	response, err := srv.IntrospectToken(t.Context(), token, ownerClientID)
+	require.NoError(t, err)
 	require.Equal(t, true, response["active"])
 	require.Equal(t, "sess-xyz", response["muster_sid"])
 	require.Equal(t, []any{"backend-x"}, response["allowed_backends"])

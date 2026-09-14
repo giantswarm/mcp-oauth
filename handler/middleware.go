@@ -15,6 +15,7 @@ import (
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
+	"github.com/giantswarm/mcp-oauth/server"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
@@ -35,15 +36,10 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 			return
 		}
 
-		userInfo, err := h.server.ValidateToken(r.Context(), accessToken)
-		if err != nil {
-			h.logger.Warn("Token validation failed", "ip", clientIP, "error", err)
-			h.writeUnauthorizedError(w, r, constants.ErrorCodeInvalidToken, "Token validation failed")
+		userInfo, metadata, ok := h.authenticateBearer(w, r, accessToken, clientIP, startTime)
+		if !ok {
 			return
 		}
-
-		// Single metadata lookup: used for DPoP binding, scope validation, and session ID
-		metadata := h.getTokenMetadata(accessToken, userInfo)
 
 		if err := validateDPoPBinding(r, accessToken, metadata); err != nil {
 			var v dpopViolation
@@ -69,6 +65,32 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 		ctx = ContextWithSessionID(ctx, h.sessionIDForToken(accessToken, metadata))
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// authenticateBearer validates the bearer and loads its stored metadata (one
+// lookup, shared by DPoP binding, scope validation and the session ID). ok is
+// false when the response has been written: 401 invalid_token for a rejected
+// bearer, or 503 temporarily_unavailable when the token store did not answer
+// on either step — a store outage is not a rejected bearer, and a 401 would
+// make the client discard its token and start a new authorization.
+func (h *Handler) authenticateBearer(w http.ResponseWriter, r *http.Request, accessToken, clientIP string, startTime time.Time) (*providers.UserInfo, *storage.TokenMetadata, bool) {
+	userInfo, err := h.server.ValidateToken(r.Context(), accessToken)
+	if err != nil {
+		if errors.Is(err, server.ErrStorageUnavailable) {
+			h.writeStorageUnavailable(w, r, endpointValidateToken, r.Method, nil, startTime, err)
+			return nil, nil, false
+		}
+		h.logger.Warn("Token validation failed", "ip", clientIP, "error", err)
+		h.writeUnauthorizedError(w, r, constants.ErrorCodeInvalidToken, "Token validation failed")
+		return nil, nil, false
+	}
+
+	metadata, err := h.getTokenMetadata(r.Context(), accessToken, userInfo)
+	if err != nil {
+		h.writeStorageUnavailable(w, r, endpointValidateToken, r.Method, nil, startTime, err)
+		return nil, nil, false
+	}
+	return userInfo, metadata, true
 }
 
 // sessionIDForToken is the single source of session identity for a validated
@@ -364,36 +386,28 @@ func ScopesFromContext(ctx context.Context) ([]string, bool) {
 	return scopes, ok
 }
 
-// getTokenMetadata retrieves token metadata from storage.
-// Returns nil if the store doesn't support metadata or if metadata cannot be retrieved.
+// getTokenMetadata retrieves the bearer's stored metadata for DPoP binding,
+// scope validation and the session ID.
 //
-// Only opaque tokens issued by this server have stored metadata. Every other
-// bearer that ValidateToken accepts — an SSO-forwarded ID token
-// (TrustedAudiences), a trusted-issuer JWT, or a self-issued JWT — is
-// validated by signature and never written to the token store, so a miss is
-// the expected steady state for those callers, not a fault. The store
-// signals absence with storage.ErrTokenNotFound precisely so it can be told
-// apart from a transient backend failure: a miss logs at DEBUG (one entry
-// per request would otherwise drown the resource server's own audit line)
-// naming only the validation path, never token material, while any other
-// error keeps its WARN.
-func (h *Handler) getTokenMetadata(accessToken string, userInfo *providers.UserInfo) *storage.TokenMetadata {
-	metadataStore, ok := h.server.TokenStore().(storage.TokenMetadataGetter)
-	if !ok {
-		return nil
-	}
-
-	metadata, err := metadataStore.GetTokenMetadata(accessToken)
+// nil without an error is the expected steady state, not a fault, for a
+// store that keeps no metadata and for every bearer that ValidateToken
+// accepts by signature alone — an SSO-forwarded ID token (TrustedAudiences),
+// a trusted-issuer JWT, a self-issued exchange JWT — since those are never
+// written to the token store. Such a miss logs at DEBUG (one entry per
+// request would otherwise drown the resource server's own audit line) naming
+// only the validation path, never token material. The error is
+// server.ErrStorageUnavailable when the store did not answer: the request
+// must not proceed on nil metadata then, or its scopes and session identity
+// would silently change for the outage's duration.
+func (h *Handler) getTokenMetadata(ctx context.Context, accessToken string, userInfo *providers.UserInfo) (*storage.TokenMetadata, error) {
+	metadata, err := h.server.TokenMetadata(ctx, accessToken)
 	if err != nil {
-		if storage.IsNotFoundError(err) {
-			h.logger.Debug("No stored token metadata for bearer", "token_source", tokenSourceForLog(userInfo))
-			return nil
-		}
-		h.logger.Warn("Failed to retrieve token metadata", paramError, err)
-		return nil
+		return nil, err
 	}
-
-	return metadata
+	if metadata == nil {
+		h.logger.Debug("No stored token metadata for bearer", "token_source", tokenSourceForLog(userInfo))
+	}
+	return metadata, nil
 }
 
 // tokenSourceForLog names the validation path that accepted the bearer, for

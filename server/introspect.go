@@ -41,7 +41,12 @@ func (s *Server) validateIntrospectionAllowlistRegistered(ctx context.Context) e
 // Callers MUST authenticate requestingClient before invoking this method.
 // The cross-client gate trusts that identifier as-is; passing an attacker-
 // supplied or unauthenticated value defeats the gate entirely.
-func (s *Server) IntrospectToken(ctx context.Context, accessToken, requestingClient string) map[string]any {
+//
+// The error is ErrStorageUnavailable when the token store did not answer:
+// the token is then neither active nor inactive, and the endpoint answers
+// 503 temporarily_unavailable rather than {"active": false}, which a
+// resource server reads as a dead token. No other error is returned.
+func (s *Server) IntrospectToken(ctx context.Context, accessToken, requestingClient string) (map[string]any, error) {
 	if s.Config.IsJWTAccessTokenFormat() && s.looksLikeSelfIssuedJWT(accessToken) {
 		return s.introspectSelfIssuedJWT(ctx, accessToken, requestingClient)
 	}
@@ -66,24 +71,27 @@ func inactiveIntrospectionResponse() map[string]any {
 // the response stays inactive). This collapses the timing distinction between
 // "valid JWT I don't own" and "garbage JWT" — both return inactive after a
 // single unverified parse.
-func (s *Server) introspectSelfIssuedJWT(ctx context.Context, accessToken, requestingClient string) map[string]any {
+func (s *Server) introspectSelfIssuedJWT(ctx context.Context, accessToken, requestingClient string) (map[string]any, error) {
 	unverifiedBoundClient := unverifiedClientIDClaim(accessToken)
 	if !s.introspectionRequesterAllowed(ctx, requestingClient, unverifiedBoundClient) {
-		return inactiveIntrospectionResponse()
+		return inactiveIntrospectionResponse(), nil
 	}
 
 	userInfo, claims, err := s.validateSelfIssuedJWT(ctx, accessToken)
+	if errors.Is(err, ErrStorageUnavailable) {
+		return nil, err
+	}
 	if err != nil || userInfo == nil {
-		return inactiveIntrospectionResponse()
+		return inactiveIntrospectionResponse(), nil
 	}
 
 	verifiedBoundClient, _ := claims[paramClientID].(string)
 	if verifiedBoundClient != unverifiedBoundClient &&
 		!s.introspectionRequesterAllowed(ctx, requestingClient, verifiedBoundClient) {
-		return inactiveIntrospectionResponse()
+		return inactiveIntrospectionResponse(), nil
 	}
 
-	return introspectionResponseFromJWTClaims(claims, verifiedBoundClient)
+	return introspectionResponseFromJWTClaims(claims, verifiedBoundClient), nil
 }
 
 // unverifiedClientIDClaim returns the client_id claim from accessToken without
@@ -167,26 +175,28 @@ func copyClaimUnixTime(dst, claims map[string]any, key string) {
 
 // introspectOpaqueToken gates on the requester before fetching userinfo, so a
 // denied probe never triggers a provider round-trip nor leaks user attributes.
-func (s *Server) introspectOpaqueToken(ctx context.Context, accessToken, requestingClient string) map[string]any {
-	metaGetter, ok := s.tokenStore.(storage.TokenMetadataGetter)
-	if !ok {
-		return inactiveIntrospectionResponse()
+func (s *Server) introspectOpaqueToken(ctx context.Context, accessToken, requestingClient string) (map[string]any, error) {
+	tokenMetadata, err := s.TokenMetadata(ctx, accessToken)
+	if err != nil {
+		return nil, err
 	}
-	tokenMetadata, err := metaGetter.GetTokenMetadata(accessToken)
-	if err != nil || tokenMetadata == nil {
-		return inactiveIntrospectionResponse()
+	if tokenMetadata == nil {
+		return inactiveIntrospectionResponse(), nil
 	}
 
 	if !s.introspectionRequesterAllowed(ctx, requestingClient, tokenMetadata.ClientID) {
-		return inactiveIntrospectionResponse()
+		return inactiveIntrospectionResponse(), nil
 	}
 
 	userInfo, err := s.ValidateToken(ctx, accessToken)
+	if errors.Is(err, ErrStorageUnavailable) {
+		return nil, err
+	}
 	if err != nil || userInfo == nil {
-		return inactiveIntrospectionResponse()
+		return inactiveIntrospectionResponse(), nil
 	}
 
-	return s.introspectionResponseFromOpaqueToken(ctx, accessToken, tokenMetadata, userInfo)
+	return s.introspectionResponseFromOpaqueToken(ctx, accessToken, tokenMetadata, userInfo), nil
 }
 
 func (s *Server) introspectionResponseFromOpaqueToken(_ context.Context, _ string, tokenMetadata *storage.TokenMetadata, userInfo *providers.UserInfo) map[string]any {

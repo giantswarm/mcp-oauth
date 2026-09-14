@@ -109,7 +109,7 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	client, err := h.authenticateClient(r, clientID, clientIP)
 	if err != nil {
 		if errors.Is(err, server.ErrStorageUnavailable) {
-			h.writeStorageUnavailable(w, r, grantTypeAuthorizationCode, span, startTime, err)
+			h.writeTokenStorageUnavailable(w, r, grantTypeAuthorizationCode, span, startTime, err)
 			return
 		}
 		instrumentation.RecordError(span, err)
@@ -165,7 +165,7 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	tokenResponse, scope, err := h.server.ExchangeAuthorizationCode(r.Context(), code, client.ClientID, redirectURI, resource, codeVerifier, dpopJKT)
 	if err != nil {
 		if errors.Is(err, server.ErrStorageUnavailable) {
-			h.writeStorageUnavailable(w, r, grantTypeAuthorizationCode, span, startTime, err)
+			h.writeTokenStorageUnavailable(w, r, grantTypeAuthorizationCode, span, startTime, err)
 			return
 		}
 		h.logger.Error("Failed to exchange authorization code", "client_id", client.ClientID, "ip", clientIP, paramError, err)
@@ -242,7 +242,7 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	tokenResponse, err := h.server.RefreshAccessToken(r.Context(), refreshToken, clientID)
 	if err != nil {
 		if errors.Is(err, server.ErrStorageUnavailable) {
-			h.writeStorageUnavailable(w, r, grantTypeRefreshToken, span, startTime, err)
+			h.writeTokenStorageUnavailable(w, r, grantTypeRefreshToken, span, startTime, err)
 			return
 		}
 		h.logger.Error("Failed to refresh token", "client_id", clientID, "ip", clientIP, paramError, err)
@@ -305,7 +305,7 @@ func (h *Handler) authenticateRefreshBasicClient(ctx context.Context, w http.Res
 		return clientID, true, nil
 	}
 	if errors.Is(err, server.ErrStorageUnavailable) {
-		h.writeStorageUnavailable(w, r, grantTypeRefreshToken, span, startTime, err)
+		h.writeTokenStorageUnavailable(w, r, grantTypeRefreshToken, span, startTime, err)
 		return "", false, err
 	}
 	h.logger.Warn("Client authentication failed", "client_id", clientID, "ip", clientIP, paramError, err)
@@ -327,7 +327,7 @@ func (h *Handler) authenticateRefreshPublicClient(ctx context.Context, w http.Re
 	client, err := h.server.GetClient(ctx, clientID)
 	if err != nil {
 		if errors.Is(err, server.ErrStorageUnavailable) {
-			h.writeStorageUnavailable(w, r, grantTypeRefreshToken, span, startTime, err)
+			h.writeTokenStorageUnavailable(w, r, grantTypeRefreshToken, span, startTime, err)
 			return "", false, err
 		}
 		h.logger.Warn("Unknown client for refresh", "client_id", clientID, "ip", clientIP)

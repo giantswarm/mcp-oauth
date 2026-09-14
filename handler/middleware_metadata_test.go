@@ -19,6 +19,7 @@ import (
 	josejwt "github.com/go-jose/go-jose/v4/jwt"
 	"golang.org/x/oauth2"
 
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
@@ -28,8 +29,8 @@ import (
 )
 
 const (
-	msgMetadataLookupFailed = "Failed to retrieve token metadata"
-	msgMetadataMiss         = "No stored token metadata for bearer"
+	msgStorageUnavailable = "Storage temporarily unavailable"
+	msgMetadataMiss       = "No stored token metadata for bearer"
 )
 
 // newForwardedTokenHandler builds a Handler whose Server accepts SSO-forwarded
@@ -169,8 +170,8 @@ func TestValidateToken_ForwardedToken_MetadataMissIsSilentAtInfo(t *testing.T) {
 	}
 
 	entries := logEntries(t, buf)
-	if _, found := findLogEntry(entries, msgMetadataLookupFailed); found {
-		t.Fatalf("metadata miss for a forwarded token was logged at WARN:\n%s", buf.String())
+	if _, found := findLogEntry(entries, msgStorageUnavailable); found {
+		t.Fatalf("metadata miss for a forwarded token was logged as a storage outage:\n%s", buf.String())
 	}
 	for _, e := range entries {
 		if lvl, _ := e["level"].(string); lvl == "WARN" || lvl == "ERROR" {
@@ -204,8 +205,8 @@ func TestValidateToken_ForwardedToken_MetadataMissLoggedAtDebug(t *testing.T) {
 	if strings.Contains(buf.String(), token) {
 		t.Error("the full bearer token leaked into the log")
 	}
-	if _, found := findLogEntry(entries, msgMetadataLookupFailed); found {
-		t.Errorf("a not-found miss must not also log %q", msgMetadataLookupFailed)
+	if _, found := findLogEntry(entries, msgStorageUnavailable); found {
+		t.Errorf("a not-found miss must not also log %q", msgStorageUnavailable)
 	}
 }
 
@@ -220,10 +221,12 @@ func (s *failingMetadataStore) GetTokenMetadata(string) (*storage.TokenMetadata,
 	return nil, s.err
 }
 
-// TestValidateToken_MetadataBackendFailureStaysWarn guards the other half of
-// the contract: a transient storage failure is still a WARN, so the DEBUG
+// TestValidateToken_MetadataBackendFailureIsUnavailable guards the other half
+// of the contract: a transient failure of the metadata read is a storage
+// outage — 503 temporarily_unavailable with Retry-After, logged at WARN with
+// the failed operation, and the protected handler does not run — so the DEBUG
 // downgrade applies only to the documented not-found signal.
-func TestValidateToken_MetadataBackendFailureStaysWarn(t *testing.T) {
+func TestValidateToken_MetadataBackendFailureIsUnavailable(t *testing.T) {
 	inner := memory.New()
 	t.Cleanup(inner.Stop)
 	store := &failingMetadataStore{Store: inner, err: errors.New("valkey: connection refused")}
@@ -244,17 +247,30 @@ func TestValidateToken_MetadataBackendFailureStaysWarn(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	w := httptest.NewRecorder()
-	h.ValidateToken(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d (body %s)", w.Code, http.StatusOK, w.Body.String())
+	served := false
+	h.ValidateToken(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { served = true })).ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d (body %s)", w.Code, http.StatusServiceUnavailable, w.Body.String())
+	}
+	if served {
+		t.Error("the protected handler ran although the token's metadata could not be read")
+	}
+	if got := w.Header().Get("Retry-After"); got != "5" {
+		t.Errorf("Retry-After = %q, want %q", got, "5")
+	}
+	if !strings.Contains(w.Body.String(), constants.ErrorCodeTemporarilyUnavailable) || strings.Contains(w.Body.String(), constants.ErrorCodeInvalidToken) {
+		t.Errorf("body = %s, want %s and no %s", w.Body.String(), constants.ErrorCodeTemporarilyUnavailable, constants.ErrorCodeInvalidToken)
 	}
 
-	e, found := findLogEntry(logEntries(t, &buf), msgMetadataLookupFailed)
+	e, found := findLogEntry(logEntries(t, &buf), msgStorageUnavailable)
 	if !found {
-		t.Fatalf("expected a WARN %q entry for a transient store error, got:\n%s", msgMetadataLookupFailed, buf.String())
+		t.Fatalf("expected a WARN %q entry for a transient store error, got:\n%s", msgStorageUnavailable, buf.String())
 	}
 	if e["level"] != "WARN" {
 		t.Errorf("level = %v, want WARN", e["level"])
+	}
+	if e["operation"] != "read token metadata" {
+		t.Errorf("operation = %v, want %q", e["operation"], "read token metadata")
 	}
 }
 

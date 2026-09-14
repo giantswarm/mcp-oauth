@@ -115,7 +115,7 @@ func (h *Handler) handleBrokeredTokenExchange(
 	client, err := h.authenticateClient(r, r.Form.Get("client_id"), clientIP)
 	if err != nil {
 		if errors.Is(err, server.ErrStorageUnavailable) {
-			h.writeStorageUnavailable(w, r, server.GrantTypeTokenExchange, span, startTime, err)
+			h.writeTokenStorageUnavailable(w, r, server.GrantTypeTokenExchange, span, startTime, err)
 			return
 		}
 		instrumentation.RecordError(span, err)
@@ -187,7 +187,7 @@ func (h *Handler) handleBrokeredTokenExchangeError(
 	startTime time.Time, span trace.Span,
 ) {
 	if errors.Is(err, server.ErrStorageUnavailable) {
-		h.writeStorageUnavailable(w, r, server.GrantTypeTokenExchange, span, startTime, err)
+		h.writeTokenStorageUnavailable(w, r, server.GrantTypeTokenExchange, span, startTime, err)
 		return
 	}
 	instrumentation.RecordError(span, err)
@@ -244,7 +244,7 @@ func (h *Handler) handleTokenExchangeError(
 	clientIP string, startTime time.Time, span trace.Span,
 ) {
 	if errors.Is(err, server.ErrStorageUnavailable) {
-		h.writeStorageUnavailable(w, r, server.GrantTypeTokenExchange, span, startTime, err)
+		h.writeTokenStorageUnavailable(w, r, server.GrantTypeTokenExchange, span, startTime, err)
 		return
 	}
 	if errors.Is(err, server.ErrExchangeRateLimited) {

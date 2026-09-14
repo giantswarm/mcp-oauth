@@ -303,7 +303,12 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 // limiting should be done at the HTTP layer with IP address, not here
 // with the token.
 //
-// Error responses: callers SHOULD respond with a single 401 form
+// Error responses: an error matching ErrStorageUnavailable (errors.Is)
+// means the token store did not answer, so the token was neither validated
+// nor rejected; callers answer it as 503 temporarily_unavailable with a
+// Retry-After header and never as 401, which clients read as a dead token
+// (the handler package's ValidateToken middleware does this). For every
+// other error callers SHOULD respond with a single 401 form
 // regardless of the returned error class. The error message distinguishes
 // expired / revoked / audience-mismatch / family-revoked / unknown for
 // audit logs and operator dashboards; surfacing those distinctions to
@@ -389,6 +394,14 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*oauth2.Token, error) {
 	storedToken, err := s.resolveProviderToken(ctx, accessToken)
 	if err != nil {
+		if storage.IsTransientError(err) {
+			// The store did not answer, so the token's state is unknown:
+			// neither validate nor reject it. Falling through would present
+			// the issued token to the provider's userinfo endpoint, which
+			// rejects it — a storage outage read by the client as a dead
+			// token.
+			return nil, s.storageUnavailable(ctx, "read provider token", "", "", err)
+		}
 		// Token not found in store - will fall back to provider validation
 		return nil, nil
 	}
@@ -412,6 +425,12 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 		// one refresh reaches the provider; the rest adopt its result.
 		newProviderToken, err := s.refreshProviderDuringValidation(ctx, accessToken, storedToken)
 		if err != nil {
+			if errors.Is(err, ErrStorageUnavailable) {
+				// Classified, logged and audited where the store call
+				// failed; the same refresh can succeed once the store
+				// answers, so this is not an expired token.
+				return nil, err
+			}
 			s.Logger.Debug("Token expired locally and refresh failed",
 				"expiry", storedToken.Expiry,
 				"grace_period_seconds", s.Config.ClockSkewGracePeriod,
@@ -449,19 +468,41 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 	return storedToken, nil
 }
 
+// TokenMetadata returns the metadata recorded when this server issued
+// accessToken: audience, scopes, client and refresh-token family. It is nil
+// when the token store keeps no metadata (it does not implement
+// storage.TokenMetadataGetter) or has no record for the token; every bearer
+// that ValidateToken accepts by signature alone — a forwarded ID token, a
+// trusted-issuer JWT, a self-issued exchange JWT — is in that second group,
+// so nil is an expected answer, not a fault. A store that does not answer is
+// ErrStorageUnavailable: a caller must not proceed as if the token had no
+// metadata, or its scopes and session identity would silently change for the
+// outage's duration.
+func (s *Server) TokenMetadata(ctx context.Context, accessToken string) (*storage.TokenMetadata, error) {
+	metadataStore, ok := s.tokenStore.(storage.TokenMetadataGetter)
+	if !ok {
+		return nil, nil
+	}
+	metadata, err := metadataStore.GetTokenMetadata(accessToken)
+	if err != nil {
+		if storage.IsTransientError(err) {
+			return nil, s.storageUnavailable(ctx, "read token metadata", "", "", err)
+		}
+		return nil, nil
+	}
+	return metadata, nil
+}
+
 // validateTokenAudience validates RFC 8707 audience binding for the token.
 // It checks if the token's audience matches this server's ResourceIdentifier or
-// any of the TrustedAudiences configured for SSO token forwarding.
+// any of the TrustedAudiences configured for SSO token forwarding. A store
+// that does not answer is ErrStorageUnavailable, never a pass.
 func (s *Server) validateTokenAudience(ctx context.Context, accessToken string) error {
-	metadataStore, ok := s.tokenStore.(interface {
-		GetTokenMetadata(tokenID string) (*storage.TokenMetadata, error)
-	})
-	if !ok {
-		return nil
+	metadata, err := s.TokenMetadata(ctx, accessToken)
+	if err != nil {
+		return err
 	}
-
-	metadata, err := metadataStore.GetTokenMetadata(accessToken)
-	if err != nil || metadata.Audience == "" {
+	if metadata == nil || metadata.Audience == "" {
 		return nil
 	}
 
