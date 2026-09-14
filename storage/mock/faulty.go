@@ -44,9 +44,9 @@ func OnOperation(operation string, fault Fault) Fault {
 }
 
 // FaultyStore wraps a *memory.Store and injects failures into the operations
-// that gate the token endpoint, so tests can drive a storage outage against a
-// server that otherwise runs the real unified layout, refresh-token families
-// and JWT revocation list. The wrapper embeds the memory store, so every
+// that gate the token endpoint and bearer validation, so tests can drive a
+// storage outage against a server that otherwise runs the real unified
+// layout, refresh-token families and JWT revocation list. The wrapper embeds the memory store, so every
 // optional storage interface the memory store implements is still detected
 // on the wrapper by type assertion.
 //
@@ -99,6 +99,24 @@ func (f *FaultyStore) gate(ctx context.Context, operation string) error {
 	ctx, cancel := context.WithTimeout(ctx, f.OperationTimeout)
 	defer cancel()
 	return fault(ctx, operation)
+}
+
+// GetToken gates storage.TokenStore.GetToken, the legacy layout's read of the
+// provider token backing an issued access token.
+func (f *FaultyStore) GetToken(ctx context.Context, accessToken string) (*oauth2.Token, error) {
+	if err := f.gate(ctx, "get_token"); err != nil {
+		return nil, err
+	}
+	return f.Store.GetToken(ctx, accessToken)
+}
+
+// GetProviderTokenRef gates storage.UserProviderTokenStore.GetProviderTokenRef,
+// the unified layout's resolution of an issued token to its user.
+func (f *FaultyStore) GetProviderTokenRef(ctx context.Context, tokenID string) (string, error) {
+	if err := f.gate(ctx, "get_provider_token_ref"); err != nil {
+		return "", err
+	}
+	return f.Store.GetProviderTokenRef(ctx, tokenID)
 }
 
 // GetRefreshTokenInfo gates storage.TokenStore.GetRefreshTokenInfo.

@@ -331,9 +331,9 @@ store, err := valkey.New(valkey.Config{
 
 The in-memory store performs no I/O and never blocks, so it needs no deadline.
 
-### Token Endpoint Behaviour During a Storage Outage
+### Behaviour During a Storage Outage
 
-A store call that fails for a reason other than one of the storage sentinels (record not found, expired, authorization code already used, revoked family, rejected client credentials) means the record's state is unknown. The token endpoint answers such a failure on every grant, and on the client authentication that precedes it, with:
+A store call that fails for a reason other than one of the storage sentinels (record not found, expired, authorization code already used, revoked family, rejected client credentials) means the record's state is unknown. Every request path that depends on such a call answers the failure with:
 
 | | |
 |---|---|
@@ -341,9 +341,15 @@ A store call that fails for a reason other than one of the storage sentinels (re
 | Body | `{"error": "temporarily_unavailable", "error_description": "..."}` |
 | Header | `Retry-After: 5` |
 
-Nothing is consumed, rotated or revoked on that path: the refresh token and its family, the authorization code and the subject token are exactly as the client presented them, and the client retries the same request once the store is back. A storage failure is never answered as `invalid_grant`, which clients read as a dead token and answer by discarding it and forcing a new sign-in.
+The response carries no `WWW-Authenticate` challenge: it is not a rejection. The paths, and what a storage failure is never answered as on each:
 
-In-process callers see the same classification as `server.ErrStorageUnavailable` (match with `errors.Is`) from `RefreshAccessToken`, `ExchangeAuthorizationCode`, `SelfIssuedExchange`, `BrokeredExchange`, `GetClient` and `ValidateClientCredentials`. The audit log records the failure as an authentication failure with reason `transient_storage_error` and the failed operation.
+| Path | Store reads that gate it | Never answered as |
+|---|---|---|
+| Token endpoint, every grant (refresh token, authorization code, token exchange) and the client authentication before it | client lookup and secret check, refresh-token lookup and consumption, shared provider token, refresh lock, authorization-code mark, JWT revocation list and family record | `400 invalid_grant` / `401 invalid_client` — nothing is consumed, rotated or revoked: the refresh token and its family, the authorization code and the subject token are exactly as presented, and the client retries the same request |
+| Bearer validation, `handler.ValidateToken` middleware in front of the protected resource (MCP endpoints, `/userinfo`) | for a self-issued JWT the revocation list and family record; for an opaque token the provider token behind it and its audience metadata; for both the token's stored metadata (scopes, session). A forwarded ID token or a trusted-issuer JWT is validated by signature alone, reads nothing from the store and is served through the outage | `401 invalid_token` — the client keeps its access token and retries; a 401 would make it discard the token and start a new authorization |
+| Token introspection, `/introspect` | the same reads as bearer validation, plus the token's metadata for the requester gate | `200 {"active": false}` — which a resource server reads as a dead token |
+
+In-process callers see the same classification as `server.ErrStorageUnavailable` (match with `errors.Is`) from `RefreshAccessToken`, `ExchangeAuthorizationCode`, `SelfIssuedExchange`, `BrokeredExchange`, `GetClient`, `ValidateClientCredentials`, `ValidateToken`, `TokenMetadata` and `IntrospectToken`. Every other `ValidateToken` error is a rejection to answer as 401. The audit log records the failure as an authentication failure with reason `transient_storage_error` and the failed operation; the HTTP metric counts the 503 under the endpoint it hit (`token`, `validate_token`, `introspect`).
 
 ## Session & Token Lifecycle Callbacks
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
+	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
@@ -21,10 +23,12 @@ import (
 // hanging fault blocks exactly this long.
 const faultyOpTimeout = 150 * time.Millisecond
 
-// faultyGrantFixture is a JWT-mode server on a fault-injecting store with one
-// confidential client, the shape of the Slack gateway against muster.
+// faultyGrantFixture is a server on a fault-injecting store with one
+// confidential client, the shape of the Slack gateway against muster. The
+// grant tests run it in JWT mode; the validation tests in both formats.
 type faultyGrantFixture struct {
 	srv          *Server
+	provider     *mock.Provider
 	store        *memory.Store
 	faulty       *storagemock.FaultyStore
 	clientID     string
@@ -32,6 +36,11 @@ type faultyGrantFixture struct {
 }
 
 func newFaultyGrantFixture(t *testing.T) *faultyGrantFixture {
+	t.Helper()
+	return newFaultyFixture(t, AccessTokenFormatJWT)
+}
+
+func newFaultyFixture(t *testing.T, format AccessTokenFormat) *faultyGrantFixture {
 	t.Helper()
 	store := memory.New()
 	t.Cleanup(func() { store.Stop() })
@@ -44,20 +53,23 @@ func newFaultyGrantFixture(t *testing.T) *faultyGrantFixture {
 		AccessTokenTTL:              600,
 		RefreshTokenTTL:             86400,
 		AllowRefreshTokenRotation:   true,
-		AccessTokenFormat:           AccessTokenFormatJWT,
-		AccessTokenSigningKey:       generateRSAKey(t),
-		AccessTokenSigningKeyID:     "faulty-kid",
-		AccessTokenSigningAlgorithm: SigningAlgorithmRS256,
+		AccessTokenFormat:           format,
 		DisableNonceEchoRequirement: true,
 	}
-	srv, err := New(mock.NewProvider(), faulty, faulty, faulty, cfg, nil)
+	if format == AccessTokenFormatJWT {
+		cfg.AccessTokenSigningKey = generateRSAKey(t)
+		cfg.AccessTokenSigningKeyID = "faulty-kid"
+		cfg.AccessTokenSigningAlgorithm = SigningAlgorithmRS256
+	}
+	provider := mock.NewProvider()
+	srv, err := New(provider, faulty, faulty, faulty, cfg, nil)
 	require.NoError(t, err)
 
 	client, secret, err := srv.RegisterClient(context.Background(), "gateway", ClientTypeConfidential, "",
 		[]string{"https://example.com/callback"}, []string{"openid", "email"}, "192.168.1.100", 10)
 	require.NoError(t, err)
 
-	return &faultyGrantFixture{srv: srv, store: store, faulty: faulty, clientID: client.ClientID, clientSecret: secret}
+	return &faultyGrantFixture{srv: srv, provider: provider, store: store, faulty: faulty, clientID: client.ClientID, clientSecret: secret}
 }
 
 // issueCode runs the authorization flow up to the code the client would
@@ -274,5 +286,113 @@ func TestClientAuthentication_StorageUnavailable(t *testing.T) {
 			require.ErrorIs(t, err, storage.ErrClientNotFound)
 			require.NotErrorIs(t, err, ErrStorageUnavailable)
 		})
+	}
+}
+
+// validationOperations lists, per access token format, the store reads bearer
+// validation depends on: the self-issued JWT's revocation-list and family
+// checks; the opaque token's resolution to its provider token (two reads in
+// the unified layout) and its RFC 8707 audience metadata.
+var validationOperations = []struct {
+	format     AccessTokenFormat
+	operations []string
+}{
+	{AccessTokenFormatJWT, []string{"is_jti_revoked", "get_refresh_token_family_by_id"}},
+	{AccessTokenFormatOpaque, []string{"get_provider_token_ref", "get_user_provider_token", "get_token_metadata"}},
+}
+
+// TestValidateToken_StorageUnavailable: a bearer whose validation depends on
+// a store that hangs or refuses connections is ErrStorageUnavailable within
+// the operation deadline — never an invalid token — the failing read is not
+// retried, and the same bearer validates to the same identity once the store
+// is back.
+func TestValidateToken_StorageUnavailable(t *testing.T) {
+	for _, tc := range validationOperations {
+		for _, fault := range storageFaults {
+			for _, op := range tc.operations {
+				t.Run(string(tc.format)+"/"+fault.name+"/"+op, func(t *testing.T) {
+					f := newFaultyFixture(t, tc.format)
+					ctx := context.Background()
+					at := f.login(t).AccessToken
+					before, err := f.srv.ValidateToken(ctx, at)
+					require.NoError(t, err)
+
+					callsBefore := f.faulty.Calls(op)
+					f.faulty.Fail(storagemock.OnOperation(op, fault.fault))
+					start := time.Now()
+					userInfo, err := f.srv.ValidateToken(ctx, at)
+					requireUnavailable(t, err)
+					requireWithinDeadline(t, time.Since(start))
+					require.Nil(t, userInfo)
+					require.Equal(t, callsBefore+1, f.faulty.Calls(op), "the failing read is not retried inside the validation")
+
+					f.faulty.Heal()
+					after, err := f.srv.ValidateToken(ctx, at)
+					require.NoError(t, err, "the same bearer must validate once the store is back")
+					require.Equal(t, before.ID, after.ID)
+				})
+			}
+		}
+	}
+}
+
+// TestValidateToken_StoreMissIsNotAnOutage: with the store answering, an
+// unknown bearer keeps its rejection in both formats, and an unknown opaque
+// token still falls through to the provider's userinfo check as before — a
+// miss is a sentinel, not a transient failure.
+func TestValidateToken_StoreMissIsNotAnOutage(t *testing.T) {
+	t.Run("jwt", func(t *testing.T) {
+		f := newFaultyFixture(t, AccessTokenFormatJWT)
+		at := f.login(t).AccessToken
+		forged := at[:len(at)-4] + "AAAA" // signature no longer verifies
+		_, err := f.srv.ValidateToken(context.Background(), forged)
+		require.Error(t, err)
+		require.NotErrorIs(t, err, ErrStorageUnavailable)
+	})
+	t.Run("opaque", func(t *testing.T) {
+		f := newFaultyFixture(t, AccessTokenFormatOpaque)
+		f.provider.ValidateTokenFunc = func(context.Context, string) (*providers.UserInfo, error) {
+			return nil, errors.New("unknown token")
+		}
+		providerCalls := f.provider.GetCallCount("ValidateToken")
+		_, err := f.srv.ValidateToken(context.Background(), "no-such-token")
+		require.Error(t, err)
+		require.NotErrorIs(t, err, ErrStorageUnavailable)
+		require.Equal(t, providerCalls+1, f.provider.GetCallCount("ValidateToken"), "a store miss still falls through to the provider")
+	})
+}
+
+// TestIntrospectToken_StorageUnavailable: introspecting a token whose store
+// does not answer is ErrStorageUnavailable, not {"active": false}; the same
+// token introspects active once the store is back.
+func TestIntrospectToken_StorageUnavailable(t *testing.T) {
+	cases := []struct {
+		format AccessTokenFormat
+		op     string
+	}{
+		{AccessTokenFormatJWT, "is_jti_revoked"},
+		{AccessTokenFormatOpaque, "get_token_metadata"},
+		{AccessTokenFormatOpaque, "get_provider_token_ref"},
+	}
+	for _, tc := range cases {
+		for _, fault := range storageFaults {
+			t.Run(string(tc.format)+"/"+fault.name+"/"+tc.op, func(t *testing.T) {
+				f := newFaultyFixture(t, tc.format)
+				ctx := context.Background()
+				at := f.login(t).AccessToken
+
+				f.faulty.Fail(storagemock.OnOperation(tc.op, fault.fault))
+				start := time.Now()
+				response, err := f.srv.IntrospectToken(ctx, at, f.clientID)
+				requireUnavailable(t, err)
+				requireWithinDeadline(t, time.Since(start))
+				require.Nil(t, response)
+
+				f.faulty.Heal()
+				response, err = f.srv.IntrospectToken(ctx, at, f.clientID)
+				require.NoError(t, err)
+				require.Equal(t, true, response[fieldActive], "the token must introspect active once the store is back")
+			})
+		}
 	}
 }

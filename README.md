@@ -13,7 +13,7 @@ A **provider-agnostic** OAuth 2.1 Authorization Server library for [Model Contex
 
 - **Provider Abstraction** - Google, GitHub, and Dex OAuth built-in, easy to add custom providers
 - **Storage Abstraction** - In-memory storage included, simple interface for custom backends
-- **Fails Fast On A Degraded Store** - Every Valkey operation runs under a deadline; a store outage is answered as `503 temporarily_unavailable` with `Retry-After`, never as a dead token
+- **Fails Fast On A Degraded Store** - Every Valkey operation runs under a deadline; a store outage is answered as `503 temporarily_unavailable` with `Retry-After` on the token endpoint, on bearer validation and on introspection, never as a dead token
 - **OAuth 2.1 Security** - PKCE enforcement, refresh token rotation, secure defaults
 - **Access Token Formats** - Opaque (default) or signed JWT (RFC 9068) with published JWKS for local validation by MCP-aware proxies
 - **MCP 2025-11-25** - Protected Resource Metadata (RFC 9728), scope discovery, resource binding

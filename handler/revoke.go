@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/security"
+	"github.com/giantswarm/mcp-oauth/server"
 )
 
 // authenticateRevocationClient resolves the client for /revoke. It enforces
@@ -192,7 +194,19 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 		instrumentation.SetSpanAttributes(span, attribute.String(instrumentation.AttrClientID, clientID))
 	}
 
-	response := h.server.IntrospectToken(r.Context(), token, clientID)
+	response, err := h.server.IntrospectToken(r.Context(), token, clientID)
+	if err != nil {
+		// The store did not answer, so the token is neither active nor
+		// inactive; {"active": false} would tell the resource server the
+		// token is dead.
+		if errors.Is(err, server.ErrStorageUnavailable) {
+			h.writeStorageUnavailable(w, r, endpointIntrospect, http.MethodPost, span, startTime, err)
+			return
+		}
+		h.failRequest(w, r, span, endpointIntrospect, http.MethodPost, http.StatusInternalServerError,
+			constants.ErrorCodeServerError, "Token introspection failed", startTime)
+		return
+	}
 	if active, _ := response["active"].(bool); !active {
 		h.logger.Debug("Token introspection inactive", "ip", clientIP, "client_id", clientID)
 	}
