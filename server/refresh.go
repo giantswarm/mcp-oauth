@@ -91,15 +91,13 @@ func (s *Server) handleRefreshTokenReuseDetection(ctx context.Context, refreshTo
 // path (one cheap extra read), and a single re-login repairs all of the
 // user's sessions.
 //
-// Any other error is a transient storage failure and surfaces as a server
-// error, NOT invalid_grant: the grant is still valid and the client should
-// retry, not re-login. The refresh token is left untouched in that case too.
+// Any other error is a transient storage failure and surfaces as
+// ErrStorageUnavailable, NOT invalid_grant: the grant is still valid and the
+// client should retry, not re-login. The refresh token is left untouched in
+// that case too.
 func (s *Server) handleSharedProviderTokenError(ctx context.Context, err error, refreshToken, userID, clientID string) error {
-	if !storage.IsNotFoundError(err) && !storage.IsExpiredError(err) {
-		s.Logger.Warn("Transient error reading shared provider token during refresh",
-			logKeyError, err.Error(), "user_id", userID, paramClientID, clientID,
-			"token_suffix", helpers.TokenSuffix(refreshToken, 8))
-		return fmt.Errorf("read shared provider token: %w", err)
+	if storage.IsTransientError(err) {
+		return s.storageUnavailable(ctx, "read shared provider token", clientID, userID, err)
 	}
 
 	s.Logger.Warn("Shared provider token missing for valid refresh token - re-login required",
@@ -120,35 +118,26 @@ func (s *Server) handleSharedProviderTokenError(ctx context.Context, err error, 
 
 // handleRefreshTokenError handles errors from refresh token validation
 // Returns error suitable for returning to client: invalid_grant for
-// not-found/expired tokens (after reuse detection where supported), or a
-// retryable server error for transient storage failures — the token's state
+// not-found/expired tokens (after reuse detection where supported), or
+// ErrStorageUnavailable for transient storage failures — the token's state
 // is unknown, so the client must be able to retry rather than re-login.
 // Both call sites tolerate the transient mapping: the resolve-front check
 // runs before the token is consumed (retry re-validates the intact token),
 // and the post-refresh consume leaves the token unconsumed on a transient
 // failure (retry re-presents it and adopts the already-rotated shared entry).
 func (s *Server) handleRefreshTokenError(ctx context.Context, err error, refreshToken, clientID string, familyStore storage.RefreshTokenFamilyStore, supportsFamilies bool) error {
-	isNotFoundOrExpired := storage.IsNotFoundError(err) || storage.IsExpiredError(err)
+	// Transient storage failure: the token was not proven invalid, so the
+	// client must not be pushed into re-login (consistent with the transient
+	// taxonomy of the shared-entry and metadata reads on this path).
+	if storage.IsTransientError(err) {
+		return s.storageUnavailable(ctx, "validate refresh token", clientID, "", err)
+	}
 
 	// Check for reuse if token not found and family tracking is supported
-	if isNotFoundOrExpired && supportsFamilies {
+	if supportsFamilies {
 		if reuseErr := s.handleRefreshTokenReuseDetection(ctx, refreshToken, clientID, familyStore); reuseErr != nil {
 			return reuseErr
 		}
-	}
-
-	// Transient storage failure: surface as a retryable server error, not
-	// invalid_grant — the token was not proven invalid, so the client must
-	// not be pushed into re-login (consistent with the transient taxonomy of
-	// the shared-entry and metadata reads on this path).
-	if !isNotFoundOrExpired {
-		s.Logger.Warn("Transient error during refresh token validation",
-			logKeyError, err.Error(), paramClientID, clientID, "token_suffix", helpers.TokenSuffix(refreshToken, 8))
-		s.Auditor.LogEvent(ctx, security.Event{
-			Type: security.EventAuthFailure, ClientID: clientID,
-			Details: map[string]any{logKeyReason: "transient_storage_error"},
-		})
-		return fmt.Errorf("validate refresh token: %w", err)
 	}
 
 	// Regular invalid token error
@@ -367,21 +356,18 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		// absent (legacy unbound token → invalid_grant below); anything else
 		// is a transient storage failure and must stay retryable. Absence
 		// signaled as (nil, nil) falls through to the same legacy handling.
-		case metaErr != nil && !storage.IsNotFoundError(metaErr):
+		case storage.IsTransientError(metaErr):
 			// Transient storage failure. The stored client binding is a
 			// prerequisite for the grant, not optional enrichment: leaving
 			// metaClientID empty would misclassify a validly-bound token as a
 			// legacy unbound token downstream (invalid_grant + a high-severity
-			// cross_client_token_theft_prevented audit event). Surface a
-			// server error instead — the refresh token has not been consumed,
-			// so the client's retry succeeds once storage recovers. The old
-			// legacy layout had the same retryability: it read ClientID
-			// atomically inside the consume, which failed transiently as a
-			// whole.
-			s.Logger.Warn("Transient error reading refresh token metadata",
-				logKeyError, metaErr.Error(), paramClientID, clientID,
-				"token_suffix", helpers.TokenSuffix(refreshToken, 8))
-			return nil, fmt.Errorf("read refresh token metadata: %w", metaErr)
+			// cross_client_token_theft_prevented audit event). Surface
+			// ErrStorageUnavailable instead — the refresh token has not been
+			// consumed, so the client's retry succeeds once storage recovers.
+			// The old legacy layout had the same retryability: it read
+			// ClientID atomically inside the consume, which failed
+			// transiently as a whole.
+			return nil, s.storageUnavailable(ctx, "read refresh token metadata", clientID, "", metaErr)
 		}
 		// Metadata genuinely absent: metaClientID stays "" and the grant is
 		// classified as a legacy unbound token by client binding validation.

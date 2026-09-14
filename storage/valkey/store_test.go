@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	valkeygo "github.com/valkey-io/valkey-go"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/oauth2"
 	"golang.org/x/sync/errgroup"
@@ -2360,20 +2361,25 @@ func TestBuildClientOpts(t *testing.T) {
 		Password: "s3cret",
 		DB:       3,
 		TLS:      tlsConfig,
-	})
+	}, 2*time.Second)
 
 	require.Equal(t, []string{"valkey.example.com:6379"}, opts.InitAddress)
 	require.Equal(t, 3, opts.SelectDB)
 	require.Equal(t, "s3cret", opts.Password)
 	require.Same(t, tlsConfig, opts.TLSConfig)
 	require.True(t, opts.DisableCache, "client-side caching must stay off so RESP2-only servers can connect")
+	require.Equal(t, 2*time.Second, opts.Dialer.Timeout, "the TCP dial must not outlive the operation budget")
+	require.Equal(t, 2*time.Second, opts.ConnWriteTimeout, "a connection's write/response wait must not outlive the operation budget")
+	require.Equal(t, valkeygo.DefaultTCPKeepAlive, opts.Dialer.KeepAlive)
 }
 
 func TestBuildClientOptsMinimal(t *testing.T) {
-	opts := buildClientOpts(Config{Address: "localhost:6379"})
+	opts := buildClientOpts(Config{Address: "localhost:6379"}, storage.DefaultOperationTimeout)
 
 	require.Equal(t, []string{"localhost:6379"}, opts.InitAddress)
 	require.Empty(t, opts.Password)
 	require.Nil(t, opts.TLSConfig)
 	require.True(t, opts.DisableCache)
+	require.Equal(t, storage.DefaultOperationTimeout, opts.Dialer.Timeout)
+	require.Equal(t, storage.DefaultOperationTimeout, opts.ConnWriteTimeout)
 }

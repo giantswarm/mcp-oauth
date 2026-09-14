@@ -6,8 +6,10 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"strings"
 	"time"
 
@@ -92,7 +94,7 @@ const (
 
 // Validation error messages (generic to prevent information leakage)
 var (
-	errInvalidCredentials = fmt.Errorf("invalid client credentials")
+	errInvalidCredentials = storage.ErrInvalidClientCredentials
 	// ErrInputTooLarge is returned when a caller-supplied value exceeds maxInputValueLength.
 	// Callers can use errors.Is to distinguish this from storage-layer errors.
 	ErrInputTooLarge = fmt.Errorf("input exceeds maximum allowed size")
@@ -132,6 +134,17 @@ type Config struct {
 	// [DefaultMaxTokenDataSize]. Values outside [[MinMaxTokenDataSize],
 	// [MaxMaxTokenDataSize]] cause [New] to return an error.
 	MaxTokenDataSize int
+
+	// OperationTimeout is the deadline applied to every store operation, layered
+	// on the caller's context (the shorter of the two wins). It also bounds the
+	// client's TCP dial and per-connection write/response wait, so a Valkey
+	// endpoint that is down, unreachable or not answering fails an operation
+	// within this budget — valkey-go otherwise retries read commands with
+	// backoff for as long as the caller's context lives, which on a request
+	// context is the whole request. Zero selects
+	// [storage.DefaultOperationTimeout]; a negative value causes [New] to
+	// return an error.
+	OperationTimeout time.Duration
 }
 
 // Store is a Valkey-backed implementation of all storage interfaces.
@@ -143,6 +156,7 @@ type Store struct {
 	revokedFamilyRetentionDays int
 	refreshTokenTTL            time.Duration
 	maxTokenDataSize           int
+	operationTimeout           time.Duration
 
 	// encryptor provides optional token encryption at rest; immutable after New.
 	encryptor *security.Encryptor
@@ -205,7 +219,15 @@ func New(cfg Config, opts ...Option) (*Store, error) {
 		return nil, fmt.Errorf("MaxTokenDataSize=%d out of range [%d,%d]", maxTokenDataSize, MinMaxTokenDataSize, MaxMaxTokenDataSize)
 	}
 
-	client, err := valkeygo.NewClient(buildClientOpts(cfg))
+	operationTimeout := cfg.OperationTimeout
+	if operationTimeout == 0 {
+		operationTimeout = storage.DefaultOperationTimeout
+	}
+	if operationTimeout < 0 {
+		return nil, fmt.Errorf("OperationTimeout=%v must not be negative", cfg.OperationTimeout)
+	}
+
+	client, err := valkeygo.NewClient(buildClientOpts(cfg, operationTimeout))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create valkey client: %w", err)
 	}
@@ -226,6 +248,7 @@ func New(cfg Config, opts ...Option) (*Store, error) {
 		revokedFamilyRetentionDays: retentionDays,
 		refreshTokenTTL:            refreshTokenTTL,
 		maxTokenDataSize:           maxTokenDataSize,
+		operationTimeout:           operationTimeout,
 	}
 
 	for _, opt := range opts {
@@ -259,7 +282,10 @@ func WithInstrumentation(inst *instrumentation.Instrumentation) Option {
 }
 
 // buildClientOpts converts a Config into the valkey-go client option struct.
-func buildClientOpts(cfg Config) valkeygo.ClientOption {
+// operationTimeout is the resolved per-operation deadline; it bounds the TCP
+// dial and each connection's write/response wait so that no single network
+// step can outlive the budget an operation runs under.
+func buildClientOpts(cfg Config, operationTimeout time.Duration) valkeygo.ClientOption {
 	opts := valkeygo.ClientOption{
 		InitAddress: []string{cfg.Address},
 		SelectDB:    cfg.DB,
@@ -268,6 +294,11 @@ func buildClientOpts(cfg Config) valkeygo.ClientOption {
 		// and abort with ErrNoCache on servers that reject it (RESP2-only
 		// servers, and proxies that accept HELLO 3 without CLIENT TRACKING).
 		DisableCache: true,
+		Dialer: net.Dialer{
+			Timeout:   operationTimeout,
+			KeepAlive: valkeygo.DefaultTCPKeepAlive,
+		},
+		ConnWriteTimeout: operationTimeout,
 	}
 	if cfg.Password != "" {
 		opts.Password = cfg.Password
@@ -336,15 +367,25 @@ func (s *Store) countKeysByPattern(pattern string) int64 {
 // It encapsulates the span and timing information to avoid repetitive boilerplate.
 type tracedOp struct {
 	ctx       context.Context
+	cancel    context.CancelFunc
 	span      trace.Span
 	operation string
 	startTime time.Time
 	store     *Store
 }
 
-// end completes the traced operation, recording metrics and setting span status.
-// Call this with defer: defer op.end(&err)
+// Values of the storage.operation.total `result` attribute.
+const (
+	resultSuccess = "success"
+	resultError   = "error"
+	resultTimeout = "timeout" // the operation's deadline passed before Valkey answered
+)
+
+// end completes the traced operation: it releases the operation's deadline,
+// records metrics and sets the span status. Call this with defer:
+// defer op.end(&err)
 func (t *tracedOp) end(errPtr *error) {
+	t.cancel()
 	if t.span != nil {
 		t.span.End()
 	}
@@ -354,35 +395,56 @@ func (t *tracedOp) end(errPtr *error) {
 	}
 
 	durationMs := float64(time.Since(t.startTime).Milliseconds())
-	result := "success"
+	result := resultSuccess
 	err := *errPtr
-	if err != nil {
-		result = "error"
+	switch {
+	case err == nil:
 		if t.span != nil {
-			t.span.RecordError(err)
-			t.span.SetStatus(codes.Error, err.Error())
+			t.span.SetStatus(codes.Ok, "")
 		}
-	} else if t.span != nil {
-		t.span.SetStatus(codes.Ok, "")
+	case isTimeout(err, t.ctx):
+		result = resultTimeout
+	default:
+		result = resultError
+	}
+	if err != nil && t.span != nil {
+		t.span.RecordError(err)
+		t.span.SetStatus(codes.Error, err.Error())
 	}
 
 	t.store.inst.Metrics().RecordStorageOperation(t.ctx, t.operation, result, durationMs)
 }
 
-// startTracedOp starts a traced storage operation with span and timing.
-// Returns a tracedOp that should be completed with defer op.end(&err).
+// isTimeout reports whether a failed operation ran out of time: its context's
+// deadline passed (the store's own or one inherited from the caller), or the
+// client surfaced a network timeout while waiting on the connection.
+func isTimeout(err error, ctx context.Context) bool {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+// startTracedOp starts a traced storage operation with span and timing, and
+// places the operation under the store's per-operation deadline layered on
+// ctx (see Config.OperationTimeout). Every Valkey command of the operation
+// must run on op.ctx so the deadline applies to it. Returns a tracedOp that
+// should be completed with defer op.end(&err).
 //
 // Usage:
 //
 //	func (s *Store) SomeOperation(ctx context.Context) (err error) {
 //	    op := s.startTracedOp(ctx, "some_operation")
 //	    defer op.end(&err)
-//	    // ... operation logic ...
+//	    // ... operation logic on op.ctx ...
 //	    return nil
 //	}
 func (s *Store) startTracedOp(ctx context.Context, operation string) *tracedOp {
+	ctx, cancel := context.WithTimeout(ctx, s.operationTimeout)
 	op := &tracedOp{
 		ctx:       ctx,
+		cancel:    cancel,
 		operation: operation,
 		startTime: time.Now(),
 		store:     s,

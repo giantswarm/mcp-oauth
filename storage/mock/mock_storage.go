@@ -340,11 +340,11 @@ func (m *ClientStore) evaluateValidation(clientFound, isPublicClient bool, bcryp
 	}
 	// If client lookup failed, return error (but only after bcrypt comparison)
 	if !clientFound {
-		return fmt.Errorf("invalid client credentials")
+		return storage.ErrInvalidClientCredentials
 	}
 	// If bcrypt comparison failed, return error
 	if bcryptErr != nil {
-		return fmt.Errorf("invalid client credentials")
+		return storage.ErrInvalidClientCredentials
 	}
 	return nil
 }

@@ -101,7 +101,22 @@ var (
 	// message text; diagnostic detail (IP, current/max counts) is preserved only
 	// in structured logs at the check site.
 	ErrClientIPLimitExceeded = errors.New("rate limit exceeded")
+
+	// ErrInvalidClientCredentials is returned by ClientStore.ValidateClientSecret
+	// when the client is unknown or the secret does not match. One message covers
+	// both cases so a caller cannot enumerate clients. A failure to reach the
+	// store is never reported as this error; see IsTransientError.
+	ErrInvalidClientCredentials = errors.New("invalid client credentials")
 )
+
+// DefaultOperationTimeout is the per-operation deadline a network-backed store
+// applies to every call when its configuration does not set one. It is layered
+// on the caller's context, so a request that arrives with a shorter deadline
+// keeps it, and a backend that is unreachable or unresponsive fails the
+// operation within this budget instead of blocking the request for as long as
+// the outage lasts. The in-memory store performs no I/O and never blocks, so
+// the contract holds there without a timer.
+const DefaultOperationTimeout = 3 * time.Second
 
 // IsNotFoundError checks if an error indicates a "not found" condition.
 // This is useful for distinguishing between missing resources (which may indicate
@@ -123,6 +138,27 @@ func IsExpiredError(err error) bool {
 // IsCodeReuseError checks if an error indicates authorization code reuse.
 func IsCodeReuseError(err error) bool {
 	return errors.Is(err, ErrAuthorizationCodeUsed)
+}
+
+// IsTransientError reports whether err is a storage failure rather than one of
+// the outcomes a store reports through its sentinels: a record that is absent
+// (IsNotFoundError), expired (IsExpiredError) or already used
+// (IsCodeReuseError), a revoked refresh-token family, a registration limit, or
+// rejected client credentials. Everything else — a connection refused, a
+// deadline exceeded, a reply that could not be read — means the record's state
+// is unknown. Request paths treat such an error as "the store is temporarily
+// unavailable": the caller retries, and a token or code is never answered as
+// an invalid grant on its account.
+func IsTransientError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return !IsNotFoundError(err) &&
+		!IsExpiredError(err) &&
+		!IsCodeReuseError(err) &&
+		!errors.Is(err, ErrRefreshTokenFamilyRevoked) &&
+		!errors.Is(err, ErrClientIPLimitExceeded) &&
+		!errors.Is(err, ErrInvalidClientCredentials)
 }
 
 // UserInfo holds identity claims for a user as stored by this server.

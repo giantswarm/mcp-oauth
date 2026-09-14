@@ -937,12 +937,12 @@ func (s *Store) ValidateClientSecret(ctx context.Context, clientID, clientSecret
 
 	// If client lookup failed, return error (but only after bcrypt comparison)
 	if err != nil {
-		return fmt.Errorf("invalid client credentials")
+		return storage.ErrInvalidClientCredentials
 	}
 
 	// If bcrypt comparison failed, return error
 	if bcryptErr != nil {
-		return fmt.Errorf("invalid client credentials")
+		return storage.ErrInvalidClientCredentials
 	}
 
 	return nil

@@ -187,17 +187,17 @@ func (s *Server) checkJWTAudience(ctx context.Context, claims map[string]any, to
 // checkJWTRevocation rejects tokens whose jti is on the denylist. A nil
 // revokedTokenStore (no backend support) is treated as an open denylist —
 // the warning was logged at startup; rejecting all JWTs in that case
-// would defeat the feature.
+// would defeat the feature. A denylist that cannot be read is
+// ErrStorageUnavailable: the token is neither accepted nor rejected, so a
+// transient backend failure never silently re-enables a revoked token and
+// never reads as an invalid token either.
 func (s *Server) checkJWTRevocation(ctx context.Context, jti, tokenString string) error {
 	if s.revokedTokenStore == nil || jti == "" {
 		return nil
 	}
 	revoked, err := s.revokedTokenStore.IsJTIRevoked(ctx, jti)
 	if err != nil {
-		s.Logger.Warn("Failed to check JWT revocation list",
-			logKeyError, err,
-			"token_suffix", helpers.TokenSuffix(tokenString, 8))
-		return fmt.Errorf("revocation check failed: %w", err)
+		return s.storageUnavailable(ctx, "check token revocation", "", "", err)
 	}
 	if revoked {
 		s.logSelfIssuedJWTAuthFailure(ctx, "token_revoked", tokenString)
@@ -218,10 +218,10 @@ func (s *Server) checkJWTRevocation(ctx context.Context, jti, tokenString string
 // missing family_id claim is also silently skipped — issuance only sets
 // the claim when the token store supports families.
 //
-// Storage errors are treated as hard rejections (parity with
-// checkJWTRevocation): a transient backend failure must not silently
-// re-enable a revoked family. ErrRefreshTokenFamilyNotFound is the only
-// "not present" signal and is treated as legit absence.
+// Storage errors are ErrStorageUnavailable (parity with checkJWTRevocation):
+// a transient backend failure must neither silently re-enable a revoked
+// family nor reject the token as invalid. ErrRefreshTokenFamilyNotFound is
+// the only "not present" signal and is treated as legit absence.
 func (s *Server) checkJWTFamily(ctx context.Context, claims map[string]any, tokenString string) error {
 	familyID, _ := claims[logKeyFamilyID].(string)
 	if familyID == "" {
@@ -236,11 +236,7 @@ func (s *Server) checkJWTFamily(ctx context.Context, claims map[string]any, toke
 		return nil
 	}
 	if err != nil {
-		s.Logger.Warn("Failed to check JWT family revocation",
-			logKeyError, err,
-			logKeyFamilyID, familyID,
-			"token_suffix", helpers.TokenSuffix(tokenString, 8))
-		return fmt.Errorf("family revocation check failed: %w", err)
+		return s.storageUnavailable(ctx, "check token family revocation", "", "", err)
 	}
 	if meta == nil {
 		return nil

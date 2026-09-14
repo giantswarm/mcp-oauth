@@ -101,6 +101,14 @@ var (
 	ErrInvalidRedirectURI = func(desc string) *Error {
 		return NewError(constants.ErrorCodeInvalidRedirectURI, desc, http.StatusBadRequest)
 	}
+
+	// ErrTemporarilyUnavailable indicates the server cannot handle the request
+	// right now — its token store did not answer — and the client should retry
+	// the same request later. Answered with HTTP 503 and a Retry-After header;
+	// it never means the presented grant is invalid.
+	ErrTemporarilyUnavailable = func(desc string) *Error {
+		return NewError(constants.ErrorCodeTemporarilyUnavailable, desc, http.StatusServiceUnavailable)
+	}
 )
 
 // ErrSilentAuthFailed is a sentinel error for when silent authentication is not possible.

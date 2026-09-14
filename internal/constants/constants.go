@@ -18,6 +18,7 @@ const (
 	ErrorCodeServerError             = "server_error"
 	ErrorCodeAccessDenied            = "access_denied"
 	ErrorCodeRateLimitExceeded       = "rate_limit_exceeded"
+	ErrorCodeTemporarilyUnavailable  = "temporarily_unavailable"
 	OAuthSpecVersion                 = "OAuth 2.1"
 )
 

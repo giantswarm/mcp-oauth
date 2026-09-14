@@ -66,6 +66,25 @@
 //	    KeyPrefix: "mcp:",
 //	})
 //
+// # Operation Deadline
+//
+// Every operation runs under Config.OperationTimeout (default
+// storage.DefaultOperationTimeout, 3 s), layered on the caller's context. The
+// same value bounds the client's TCP dial and per-connection write/response
+// wait. A Valkey endpoint that is down, unreachable or not answering therefore
+// fails an operation within that budget with an error wrapping
+// context.DeadlineExceeded (or the connection error), and the operation is
+// recorded as storage.operation.total{result="timeout"} or {result="error"}.
+// Without the deadline valkey-go retries read commands with backoff for as
+// long as the caller's context lives, which on a request context means the
+// request blocks for the whole outage. Reads that carry no context of their
+// own (GetTokenMetadata) run under the deadline alone.
+//
+//	store, err := valkey.New(valkey.Config{
+//	    Address:          "valkey.example.com:6379",
+//	    OperationTimeout: 2 * time.Second,
+//	})
+//
 // # Security Considerations
 //
 //   - All tokens are stored with TTLs to prevent unbounded growth

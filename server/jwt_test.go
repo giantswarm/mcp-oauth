@@ -343,7 +343,7 @@ func TestValidateToken_SelfIssuedJWT_FamilyCheckFailsClosedOnStorageError(t *tes
 
 	_, err = srv.ValidateToken(context.Background(), tok)
 	require.Error(t, err, "transient family-store error must reject the JWT (fail-closed)")
-	require.Contains(t, err.Error(), "family revocation check failed")
+	require.ErrorIs(t, err, ErrStorageUnavailable, "a family store that did not answer is a storage outage, not an invalid token")
 
 	// ErrRefreshTokenFamilyNotFound is the legit silent-skip signal —
 	// validation must accept the JWT in that case (no family ever existed).

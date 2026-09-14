@@ -14,6 +14,12 @@
 // For production deployments requiring persistence or multi-instance deployments,
 // use the storage/valkey package instead.
 //
+// Operations are in-process map lookups under a mutex: they perform no I/O and
+// never block on a remote endpoint, so the per-operation deadline contract of
+// the storage package (see storage.DefaultOperationTimeout) holds without a
+// timer. The only errors this store returns are the storage sentinels and
+// input validation errors.
+//
 // Example usage:
 //
 //	// Plain store (no encryption, default 1m cleanup interval):
