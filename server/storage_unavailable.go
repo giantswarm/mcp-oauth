@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/security"
 )
 
@@ -25,15 +24,12 @@ var ErrStorageUnavailable = errors.New("storage temporarily unavailable")
 // path: it logs the failure, audits it under the reason
 // transient_storage_error and returns err wrapped in ErrStorageUnavailable.
 // operation names the store call that failed; userID may be empty when the
-// grant's subject is not yet known; token is the presented credential, of
-// which only a suffix is logged.
-func (s *Server) storageUnavailable(ctx context.Context, operation, clientID, userID, token string, err error) error {
+// grant's subject is not yet known. No credential material is logged: the
+// operation and the store's error are what an operator needs.
+func (s *Server) storageUnavailable(ctx context.Context, operation, clientID, userID string, err error) error {
 	attrs := []any{"operation", operation, logKeyError, err.Error(), paramClientID, clientID}
 	if userID != "" {
 		attrs = append(attrs, "user_id", userID)
-	}
-	if token != "" {
-		attrs = append(attrs, "token_suffix", helpers.TokenSuffix(token, 8))
 	}
 	s.Logger.Warn("Storage temporarily unavailable", attrs...)
 

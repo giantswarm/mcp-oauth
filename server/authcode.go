@@ -986,7 +986,7 @@ func (s *Server) validateAuthorizationCode(ctx context.Context, code, clientID, 
 			return nil, s.handleCodeReuseDetection(ctx, authCode, clientID, code, span)
 		}
 		if storage.IsTransientError(err) {
-			return nil, s.storageUnavailable(ctx, "check authorization code", clientID, "", code, err)
+			return nil, s.storageUnavailable(ctx, "check authorization code", clientID, "", err)
 		}
 		return nil, s.logAuthCodeValidationFailure(ctx, "invalid_authorization_code: "+err.Error(), clientID, "", helpers.SafeTruncate(code, 8))
 	}

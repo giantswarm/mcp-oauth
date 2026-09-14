@@ -197,7 +197,7 @@ func (s *Server) checkJWTRevocation(ctx context.Context, jti, tokenString string
 	}
 	revoked, err := s.revokedTokenStore.IsJTIRevoked(ctx, jti)
 	if err != nil {
-		return s.storageUnavailable(ctx, "check token revocation", "", "", tokenString, err)
+		return s.storageUnavailable(ctx, "check token revocation", "", "", err)
 	}
 	if revoked {
 		s.logSelfIssuedJWTAuthFailure(ctx, "token_revoked", tokenString)
@@ -236,7 +236,7 @@ func (s *Server) checkJWTFamily(ctx context.Context, claims map[string]any, toke
 		return nil
 	}
 	if err != nil {
-		return s.storageUnavailable(ctx, "check token family revocation", "", "", tokenString, err)
+		return s.storageUnavailable(ctx, "check token family revocation", "", "", err)
 	}
 	if meta == nil {
 		return nil

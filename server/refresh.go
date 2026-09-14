@@ -97,7 +97,7 @@ func (s *Server) handleRefreshTokenReuseDetection(ctx context.Context, refreshTo
 // that case too.
 func (s *Server) handleSharedProviderTokenError(ctx context.Context, err error, refreshToken, userID, clientID string) error {
 	if storage.IsTransientError(err) {
-		return s.storageUnavailable(ctx, "read shared provider token", clientID, userID, refreshToken, err)
+		return s.storageUnavailable(ctx, "read shared provider token", clientID, userID, err)
 	}
 
 	s.Logger.Warn("Shared provider token missing for valid refresh token - re-login required",
@@ -130,7 +130,7 @@ func (s *Server) handleRefreshTokenError(ctx context.Context, err error, refresh
 	// client must not be pushed into re-login (consistent with the transient
 	// taxonomy of the shared-entry and metadata reads on this path).
 	if storage.IsTransientError(err) {
-		return s.storageUnavailable(ctx, "validate refresh token", clientID, "", refreshToken, err)
+		return s.storageUnavailable(ctx, "validate refresh token", clientID, "", err)
 	}
 
 	// Check for reuse if token not found and family tracking is supported
@@ -367,7 +367,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 			// The old legacy layout had the same retryability: it read
 			// ClientID atomically inside the consume, which failed
 			// transiently as a whole.
-			return nil, s.storageUnavailable(ctx, "read refresh token metadata", clientID, "", refreshToken, metaErr)
+			return nil, s.storageUnavailable(ctx, "read refresh token metadata", clientID, "", metaErr)
 		}
 		// Metadata genuinely absent: metaClientID stays "" and the grant is
 		// classified as a legacy unbound token by client binding validation.

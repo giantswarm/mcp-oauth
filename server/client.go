@@ -263,7 +263,7 @@ func (s *Server) trackClientIPAndLog(ctx context.Context, client *storage.Client
 func (s *Server) ValidateClientCredentials(ctx context.Context, clientID, clientSecret string) error {
 	err := s.clientStore.ValidateClientSecret(ctx, clientID, clientSecret)
 	if storage.IsTransientError(err) {
-		return s.storageUnavailable(ctx, "validate client credentials", clientID, "", "", err)
+		return s.storageUnavailable(ctx, "validate client credentials", clientID, "", err)
 	}
 	return err
 }
@@ -276,7 +276,7 @@ func (s *Server) ValidateClientCredentials(ctx context.Context, clientID, client
 func (s *Server) GetClient(ctx context.Context, clientID string) (*storage.Client, error) {
 	client, err := s.getOrFetchClient(ctx, clientID)
 	if err != nil && !isURLClientID(clientID) && storage.IsTransientError(err) {
-		return nil, s.storageUnavailable(ctx, "load client", clientID, "", "", err)
+		return nil, s.storageUnavailable(ctx, "load client", clientID, "", err)
 	}
 	return client, err
 }

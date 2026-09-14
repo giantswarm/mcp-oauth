@@ -207,7 +207,7 @@ func (s *Server) coordinateProviderRefresh(ctx context.Context, upts storage.Use
 	for {
 		lockValue, acquired, err := locker.AcquireProviderRefreshLock(ctx, userID, providerRefreshLockTTL)
 		if err != nil {
-			return nil, s.storageUnavailable(ctx, "acquire provider refresh lock", "", userID, "", err)
+			return nil, s.storageUnavailable(ctx, "acquire provider refresh lock", "", userID, err)
 		}
 		if acquired {
 			return s.refreshSharedProviderTokenLocked(ctx, upts, locker, userID, lockValue, observed)
@@ -253,7 +253,7 @@ func (s *Server) refreshSharedProviderTokenLocked(ctx context.Context, upts stor
 func (s *Server) refreshSharedProviderToken(ctx context.Context, upts storage.UserProviderTokenStore, userID string, observed *oauth2.Token) (*oauth2.Token, error) {
 	shared, err := upts.GetUserProviderToken(ctx, userID)
 	if storage.IsTransientError(err) {
-		return nil, s.storageUnavailable(ctx, "read shared provider token", "", userID, "", err)
+		return nil, s.storageUnavailable(ctx, "read shared provider token", "", userID, err)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to read shared provider token: %w", err)
