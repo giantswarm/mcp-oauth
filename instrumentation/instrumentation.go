@@ -75,7 +75,18 @@ type Config struct {
 	// - "prometheus": Export metrics in Prometheus format (use prometheus.Handler())
 	// - "stdout": Print metrics to stdout (useful for development/debugging)
 	// - "none": Use no-op provider (zero overhead)
+	// Mutually exclusive with MeterProvider.
 	MetricsExporter string
+
+	// MeterProvider records the library's metrics through a meter provider the
+	// application already runs -- typically its global one,
+	// otel.GetMeterProvider() -- so the oauth.*, storage.* and security.*
+	// series appear on the application's own metrics endpoint instead of on a
+	// second Prometheus collector the library would otherwise register on the
+	// default registerer. The application owns the provider's export and
+	// shutdown; PrometheusExporter returns nil. Mutually exclusive with
+	// MetricsExporter.
+	MeterProvider metric.MeterProvider
 
 	// TracesExporter controls which traces exporter to use
 	// Options: "otlp", "stdout", "none" (default: "none")
@@ -208,6 +219,14 @@ func (i *Instrumentation) initializeProviders() error {
 
 // initializeMetricsProvider initializes the metrics provider based on configuration
 func (i *Instrumentation) initializeMetricsProvider() error {
+	if i.config.MeterProvider != nil {
+		if i.config.MetricsExporter != "" {
+			return fmt.Errorf("MeterProvider and MetricsExporter %q are mutually exclusive: the provider decides how metrics are exported", i.config.MetricsExporter)
+		}
+		i.meterProvider = i.config.MeterProvider
+		return nil
+	}
+
 	switch i.config.MetricsExporter {
 	case "prometheus":
 		// Create Prometheus exporter
