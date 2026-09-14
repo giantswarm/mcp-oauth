@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 func TestNew(t *testing.T) {
@@ -858,5 +860,63 @@ func TestInstrumentation_IsEnabled(t *testing.T) {
 				t.Errorf("IsEnabled() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestNewWithMeterProvider checks that a supplied meter provider carries the
+// library's metrics: a storage operation recorded through the instrumentation
+// is collected by the provider's reader, and no exporter of the library's own
+// is created.
+func TestNewWithMeterProvider(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+
+	inst, err := New(Config{
+		Enabled:       true,
+		ServiceName:   "test-service",
+		MeterProvider: provider,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() { _ = inst.Shutdown(context.Background()) })
+
+	if inst.MeterProvider() != provider {
+		t.Fatalf("MeterProvider() = %v, want the supplied provider", inst.MeterProvider())
+	}
+	if inst.PrometheusExporter() != nil {
+		t.Fatal("PrometheusExporter() should be nil when the application supplies the provider")
+	}
+
+	inst.Metrics().RecordStorageOperation(context.Background(), "get_token", "timeout", 3000)
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name == "storage.operation.total" {
+				return
+			}
+		}
+	}
+	t.Fatal("storage.operation.total was not collected through the supplied meter provider")
+}
+
+// TestNewWithMeterProviderAndExporterIsRejected checks that the two ways of
+// deciding how metrics are exported cannot both be set.
+func TestNewWithMeterProviderAndExporterIsRejected(t *testing.T) {
+	provider := sdkmetric.NewMeterProvider()
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+
+	_, err := New(Config{
+		Enabled:         true,
+		MeterProvider:   provider,
+		MetricsExporter: "prometheus",
+	})
+	if err == nil {
+		t.Fatal("New() should reject MeterProvider together with MetricsExporter")
 	}
 }
