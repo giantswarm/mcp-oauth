@@ -80,7 +80,10 @@ func (h *Handler) authenticateBearer(w http.ResponseWriter, r *http.Request, acc
 			h.writeStorageUnavailable(w, r, endpointValidateToken, r.Method, nil, startTime, err)
 			return nil, nil, false
 		}
-		h.logger.Warn("Token validation failed", "ip", clientIP, "error", err)
+		// The server's audit event names the rejection reason; the error
+		// itself may carry material derived from the presented bearer and
+		// stays out of the log.
+		h.logger.Warn("Token validation failed", "ip", clientIP)
 		h.writeUnauthorizedError(w, r, constants.ErrorCodeInvalidToken, "Token validation failed")
 		return nil, nil, false
 	}

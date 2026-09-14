@@ -282,10 +282,12 @@ func (h *Handler) writeError(w http.ResponseWriter, code, description string, st
 // rejected and nothing was consumed, so the client retries the same request;
 // it must not read the answer as a dead token. endpoint and method label the
 // HTTP metric; span may be nil (the bearer middleware runs without one). The
-// metric and span are recorded here, so the caller returns right after.
+// metric and span are recorded here, so the caller returns right after. The
+// log line names the endpoint only: the server logged the failed operation
+// and the store's error where the call failed, and err may derive from the
+// presented bearer (clear-text logging of credential material).
 func (h *Handler) writeStorageUnavailable(w http.ResponseWriter, r *http.Request, endpoint, method string, span trace.Span, startTime time.Time, err error) {
-	h.logger.Warn("Request failed: storage temporarily unavailable",
-		"endpoint", endpoint, "ip", h.clientIP(r), paramError, err)
+	h.logger.Warn("Request failed: storage temporarily unavailable", "endpoint", endpoint, "ip", h.clientIP(r))
 	h.recordHTTPMetrics(r.Context(), endpoint, method, http.StatusServiceUnavailable, startTime)
 	instrumentation.RecordError(span, err)
 	instrumentation.SetSpanError(span, "storage unavailable")
