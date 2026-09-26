@@ -134,6 +134,7 @@ func proxiedStore(t *testing.T, operationTimeout time.Duration) (*Store, *tcpPro
 		Address:          proxy.addr,
 		KeyPrefix:        fmt.Sprintf("mcptest:%s:", t.Name()),
 		OperationTimeout: operationTimeout,
+		StartupTimeout:   testStartupTimeout,
 	})
 	if err != nil {
 		t.Skipf("skipping: no server at VALKEY_TEST_ADDR=%s: %v", upstream, err)

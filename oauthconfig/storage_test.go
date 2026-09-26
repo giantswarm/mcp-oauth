@@ -27,6 +27,7 @@ func clearStorageEnv(t *testing.T) {
 		"OAUTH_VALKEY_TLS_INSECURE_SKIP_VERIFY",
 		"OAUTH_VALKEY_REFRESH_TOKEN_TTL",
 		"OAUTH_VALKEY_MAX_TOKEN_DATA_SIZE",
+		"OAUTH_VALKEY_STARTUP_TIMEOUT",
 	} {
 		t.Setenv(v, "")
 	}
@@ -140,6 +141,18 @@ func TestStorageFromEnv_ValkeyBadRefreshTTL(t *testing.T) {
 	}
 }
 
+func TestStorageFromEnv_ValkeyBadStartupTimeout(t *testing.T) {
+	clearStorageEnv(t)
+	t.Setenv("OAUTH_STORAGE_BACKEND", "valkey")
+	t.Setenv("OAUTH_VALKEY_ADDR", "unreachable:0")
+	t.Setenv("OAUTH_VALKEY_STARTUP_TIMEOUT", "not-a-duration")
+
+	_, _, err := oauthconfig.StorageFromEnv(nil, nil, slog.Default())
+	if err == nil || !strings.Contains(err.Error(), "VALKEY_STARTUP_TIMEOUT") {
+		t.Fatalf("expected VALKEY_STARTUP_TIMEOUT parse error, got %v", err)
+	}
+}
+
 // TestStorageFromEnv_ValkeyPasswordFilePrecedence verifies the _FILE variant
 // overrides the plain env var. Does NOT require a running Valkey — the test
 // relies on the bad-address path to surface the password in an error, proving
@@ -148,6 +161,7 @@ func TestStorageFromEnv_ValkeyPasswordFilePrecedence(t *testing.T) {
 	clearStorageEnv(t)
 	t.Setenv("OAUTH_STORAGE_BACKEND", "valkey")
 	t.Setenv("OAUTH_VALKEY_ADDR", "127.0.0.1:1") // unreachable by design
+	t.Setenv("OAUTH_VALKEY_STARTUP_TIMEOUT", "100ms")
 	t.Setenv("OAUTH_VALKEY_PASSWORD", "from-env")
 
 	pwdFile := writeSecretFile(t, "from-file\n")

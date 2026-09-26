@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"strings"
+	"syscall"
 	"time"
 
 	valkeygo "github.com/valkey-io/valkey-go"
@@ -45,6 +47,17 @@ const (
 
 	// connectionVerifyTimeout is the timeout for initial connection verification
 	connectionVerifyTimeout = 5 * time.Second
+
+	// DefaultStartupTimeout is how long [New] waits by default for a Valkey
+	// that is not accepting connections yet, e.g. one that starts together
+	// with the server.
+	DefaultStartupTimeout = 60 * time.Second
+
+	// startupBackoffInitial and startupBackoffMax bound the wait between two
+	// connection attempts in [New]; the wait doubles from the first to the
+	// second.
+	startupBackoffInitial = 250 * time.Millisecond
+	startupBackoffMax     = 5 * time.Second
 
 	// maxInputValueLength is the upper bound on any single caller-supplied string
 	// (userID, clientID, tokenID, refreshToken, familyID). This allows realistic
@@ -145,6 +158,14 @@ type Config struct {
 	// [storage.DefaultOperationTimeout]; a negative value causes [New] to
 	// return an error.
 	OperationTimeout time.Duration
+
+	// StartupTimeout bounds how long [New] waits for Valkey to accept
+	// connections, retrying with backoff while it is still starting (connection
+	// refused or reset, DNS not resolvable yet, dial timeout, LOADING). Errors
+	// that waiting cannot resolve (authentication, TLS, an invalid address)
+	// fail at once. Zero selects [DefaultStartupTimeout]; a negative value
+	// causes [New] to return an error.
+	StartupTimeout time.Duration
 }
 
 // Store is a Valkey-backed implementation of all storage interfaces.
@@ -185,7 +206,9 @@ var (
 
 // New creates a new Valkey-backed storage instance. All dependencies
 // (encryptor, instrumentation) are supplied at construction via options and
-// are immutable afterward. Returns an error if the connection cannot be established.
+// are immutable afterward. A Valkey that is still starting is waited for up to
+// [Config.StartupTimeout]; New returns an error if the connection cannot be
+// established within it, or at once if waiting cannot help.
 func New(cfg Config, opts ...Option) (*Store, error) {
 	if cfg.Address == "" {
 		return nil, fmt.Errorf("valkey address is required")
@@ -227,18 +250,17 @@ func New(cfg Config, opts ...Option) (*Store, error) {
 		return nil, fmt.Errorf("OperationTimeout=%v must not be negative", cfg.OperationTimeout)
 	}
 
-	client, err := valkeygo.NewClient(buildClientOpts(cfg, operationTimeout))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create valkey client: %w", err)
+	startupTimeout := cfg.StartupTimeout
+	if startupTimeout == 0 {
+		startupTimeout = DefaultStartupTimeout
+	}
+	if startupTimeout < 0 {
+		return nil, fmt.Errorf("StartupTimeout=%v must not be negative", cfg.StartupTimeout)
 	}
 
-	// Verify connection
-	ctx, cancel := context.WithTimeout(context.Background(), connectionVerifyTimeout)
-	defer cancel()
-
-	if err := client.Do(ctx, client.B().Ping().Build()).Error(); err != nil {
-		client.Close()
-		return nil, fmt.Errorf("failed to connect to valkey: %w", err)
+	client, err := connect(buildClientOpts(cfg, operationTimeout), startupTimeout, logger)
+	if err != nil {
+		return nil, err
 	}
 
 	s := &Store{
@@ -279,6 +301,75 @@ func WithEncryptor(enc *security.Encryptor) Option {
 // WithInstrumentation wires OpenTelemetry tracing and metrics into the store.
 func WithInstrumentation(inst *instrumentation.Instrumentation) Option {
 	return func(s *Store) { s.inst = inst }
+}
+
+// connect creates the client and verifies it with a PING. While Valkey is not
+// accepting connections yet it retries with a doubling backoff until
+// startupTimeout has passed, so a server that starts together with its Valkey
+// waits for it instead of exiting.
+func connect(opts valkeygo.ClientOption, startupTimeout time.Duration, logger *slog.Logger) (valkeygo.Client, error) {
+	deadline := time.Now().Add(startupTimeout)
+	backoff := startupBackoffInitial
+	for attempt := 1; ; attempt++ {
+		client, err := dialAndPing(opts)
+		if err == nil {
+			if attempt > 1 {
+				logger.Info("valkey reachable", "address", opts.InitAddress, "attempts", attempt)
+			}
+			return client, nil
+		}
+		if !isStartupRetryable(err) {
+			return nil, err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, fmt.Errorf("valkey not reachable within the startup timeout of %v (%d attempts): %w", startupTimeout, attempt, err)
+		}
+		wait := min(backoff, remaining)
+		logger.Warn("valkey not reachable yet, retrying",
+			"address", opts.InitAddress, "attempt", attempt, "retry_in", wait, "error", err)
+		time.Sleep(wait)
+		backoff = min(2*backoff, startupBackoffMax)
+	}
+}
+
+// dialAndPing makes one connection attempt: create the client, then PING.
+func dialAndPing(opts valkeygo.ClientOption) (valkeygo.Client, error) {
+	client, err := valkeygo.NewClient(opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create valkey client: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), connectionVerifyTimeout)
+	defer cancel()
+	if err := client.Do(ctx, client.B().Ping().Build()).Error(); err != nil {
+		client.Close()
+		return nil, fmt.Errorf("failed to connect to valkey: %w", err)
+	}
+	return client, nil
+}
+
+// isStartupRetryable reports whether a failed connection attempt can succeed
+// by waiting: the network is not ready yet, or Valkey is still loading its
+// dataset. Server replies (WRONGPASS, NOAUTH, ...), TLS failures and invalid
+// addresses are final.
+func isStartupRetryable(err error) bool {
+	var valkeyErr *valkeygo.ValkeyError
+	if errors.As(err, &valkeyErr) {
+		return valkeyErr.IsLoading() || valkeyErr.IsTryAgain() || valkeyErr.IsClusterDown()
+	}
+	var addrErr *net.AddrError
+	var certErr *tls.CertificateVerificationError
+	var recordErr tls.RecordHeaderError
+	if errors.As(err, &addrErr) || errors.As(err, &certErr) || errors.As(err, &recordErr) {
+		return false
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) ||
+		errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, context.DeadlineExceeded)
 }
 
 // buildClientOpts converts a Config into the valkey-go client option struct.
