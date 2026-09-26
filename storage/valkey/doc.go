@@ -85,6 +85,15 @@
 //	    OperationTimeout: 2 * time.Second,
 //	})
 //
+// # Start-up Wait
+//
+// New waits for a Valkey that is not accepting connections yet, as when the
+// server and its Valkey start together: it retries with a backoff doubling
+// from 250 ms to 5 s, logging each attempt, for up to Config.StartupTimeout
+// (default DefaultStartupTimeout, 60 s), then fails with the last connection
+// error. Errors that waiting cannot resolve (a wrong password, a TLS failure,
+// an invalid address) fail at once.
+//
 // # Security Considerations
 //
 //   - All tokens are stored with TTLs to prevent unbounded growth

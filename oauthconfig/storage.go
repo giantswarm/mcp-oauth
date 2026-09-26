@@ -37,6 +37,8 @@ import (
 //   - OAUTH_VALKEY_REFRESH_TOKEN_TTL         (optional Go duration)
 //   - OAUTH_VALKEY_MAX_TOKEN_DATA_SIZE       (optional bytes; default 600 KiB,
 //     range [64 KiB, 8 MiB])
+//   - OAUTH_VALKEY_STARTUP_TIMEOUT           (optional Go duration; how long
+//     start-up waits for Valkey, default valkey.DefaultStartupTimeout)
 //
 // Pass the returned [storage.Combined] to [server.NewWithCombined].
 func StorageFromEnv(enc *security.Encryptor, inst *instrumentation.Instrumentation, logger *slog.Logger) (storage.Combined, func() error, error) {
@@ -105,6 +107,11 @@ func newValkeyFromEnv(prefix string, enc *security.Encryptor, inst *instrumentat
 		return nil, nil, err
 	}
 
+	startupTimeout, err := optionalDuration(prefix + "VALKEY_STARTUP_TIMEOUT")
+	if err != nil {
+		return nil, nil, err
+	}
+
 	cfg := valkey.Config{
 		Address:          addr,
 		Password:         password,
@@ -114,6 +121,7 @@ func newValkeyFromEnv(prefix string, enc *security.Encryptor, inst *instrumentat
 		Logger:           logger,
 		RefreshTokenTTL:  refreshTTL,
 		MaxTokenDataSize: maxTokenDataSize,
+		StartupTimeout:   startupTimeout,
 	}
 	store, err := valkey.New(cfg, valkey.WithEncryptor(enc), valkey.WithInstrumentation(inst))
 	if err != nil {

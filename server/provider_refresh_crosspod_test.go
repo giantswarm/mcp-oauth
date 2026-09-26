@@ -72,7 +72,7 @@ func newCrossPodValkeyStore(t *testing.T, prefix string) *valkey.Store {
 		addr = "localhost:6379"
 	}
 
-	s, err := valkey.New(valkey.Config{Address: addr, KeyPrefix: prefix})
+	s, err := valkey.New(valkey.Config{Address: addr, KeyPrefix: prefix, StartupTimeout: time.Second})
 	if err != nil {
 		t.Skipf("skipping valkey cross-pod test: no server at VALKEY_TEST_ADDR=%s: %v", addr, err)
 	}

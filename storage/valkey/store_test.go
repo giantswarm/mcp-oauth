@@ -27,6 +27,10 @@ import (
 const (
 	testUserID      = "test-user"
 	testAudienceURL = "https://api.example.com"
+
+	// testStartupTimeout keeps New from waiting the default minute when no
+	// test server is running, so those tests skip quickly.
+	testStartupTimeout = time.Second
 )
 
 // testStore creates a test store connected to a local Valkey instance.
@@ -50,8 +54,9 @@ func testStore(t *testing.T) *Store {
 
 	// Try to connect
 	store, err := New(Config{
-		Address:   addr,
-		KeyPrefix: prefix,
+		Address:        addr,
+		KeyPrefix:      prefix,
+		StartupTimeout: testStartupTimeout,
 	})
 	if err != nil {
 		t.Skipf("skipping: no server at VALKEY_TEST_ADDR=%s: %v", addr, err)
@@ -78,7 +83,7 @@ func testStoreWithOpts(t *testing.T, opts ...Option) *Store {
 
 	prefix := fmt.Sprintf("mcptest:%s:", t.Name())
 
-	store, err := New(Config{Address: addr, KeyPrefix: prefix}, opts...)
+	store, err := New(Config{Address: addr, KeyPrefix: prefix, StartupTimeout: testStartupTimeout}, opts...)
 	if err != nil {
 		t.Skipf("skipping: no server at VALKEY_TEST_ADDR=%s: %v", addr, err)
 	}
