@@ -507,6 +507,82 @@ func TestTokenExchangeClient_Exchange(t *testing.T) {
 		}
 	})
 
+	t.Run("HTML error page from a proxy", func(t *testing.T) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte("<!DOCTYPE html>\n<html><head>\n<title>\n  401 Authorization Required\n</title></head>" +
+				"<body>" + strings.Repeat("<p>padding</p>", 500) + "</body></html>"))
+		}))
+		defer server.Close()
+
+		client := newTestTokenExchangeClient(server.Client())
+		_, err := client.Exchange(context.Background(), TokenExchangeRequest{
+			TokenEndpoint: server.URL,
+			SubjectToken:  "test-token",
+			ConnectorID:   "source-cluster",
+		})
+
+		if err == nil {
+			t.Fatal("Exchange() should return error")
+		}
+		want := `token exchange failed with status 401 (content type "text/html; charset=utf-8", not an OAuth error response): HTML page "401 Authorization Required"`
+		if err.Error() != want {
+			t.Errorf("error = %q, want %q", err.Error(), want)
+		}
+	})
+
+	t.Run("long non-JSON error body is cut", func(t *testing.T) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("upstream\n\n  unavailable " + strings.Repeat("x", 1000)))
+		}))
+		defer server.Close()
+
+		client := newTestTokenExchangeClient(server.Client())
+		_, err := client.Exchange(context.Background(), TokenExchangeRequest{
+			TokenEndpoint: server.URL,
+			SubjectToken:  "test-token",
+			ConnectorID:   "source-cluster",
+		})
+
+		if err == nil {
+			t.Fatal("Exchange() should return error")
+		}
+		if !strings.Contains(err.Error(), `with status 502 (content type "text/plain"`) {
+			t.Errorf("error should name status and content type, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), `"upstream unavailable xxx`) {
+			t.Errorf("error should carry the collapsed body start, got: %v", err)
+		}
+		if len(err.Error()) > 400 {
+			t.Errorf("error should be cut, got %d bytes", len(err.Error()))
+		}
+	})
+
+	t.Run("HTML page with status 200", func(t *testing.T) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte("<html><head><title>Sign in</title></head><body>form</body></html>"))
+		}))
+		defer server.Close()
+
+		client := newTestTokenExchangeClient(server.Client())
+		_, err := client.Exchange(context.Background(), TokenExchangeRequest{
+			TokenEndpoint: server.URL,
+			SubjectToken:  "test-token",
+			ConnectorID:   "source-cluster",
+		})
+
+		if err == nil {
+			t.Fatal("Exchange() should return error")
+		}
+		if !strings.Contains(err.Error(), `(content type "text/html", HTML page "Sign in")`) {
+			t.Errorf("error should name content type and page, got: %v", err)
+		}
+	})
+
 	t.Run("response missing access token", func(t *testing.T) {
 		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")

@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A token exchange answered by something other than an OAuth JSON document, typically a proxy or ingress in front of the token endpoint, now fails with the status, the content type and the start of the body, an HTML page named by its `<title>` and anything else cut to 200 bytes (`token exchange failed with status 401 (content type "text/html", not an OAuth error response): HTML page "401 Authorization Required"`), instead of the whole page; a success status whose body is not JSON names its content type and page title and never quotes the body.
+
 - **BREAKING.** `oidc.NewSSRFSafeHTTPClient` takes a `rootCAs *x509.CertPool` second parameter, matching `NewPrivateIPAllowedHTTPClient` and `NewHostScopedPrivateIPHTTPClient`. Pass `nil` for the previous behaviour.
 - Every HTTP client in `providers/oidc` and `providers/dex` is built by one internal constructor, which states the dial guard, the redirect guard and the proxy setting per posture. The transport tuning has a single definition, so a setting can no longer drift on one client only. Two effects on existing clients: HTTP/2 is attempted where the server offers it (`ForceAttemptHTTP2`), and `ExpectContinueTimeout` is bounded.
 - The Dex client on the default (non-permissive) dial posture is now built by `oidc.NewDefaultDialHTTPClient` instead of `&http.Client{Timeout: ...}`. It keeps the standard dialer and the proxy environment variables, and it gains the tuned dial, TLS-handshake, response-header and idle-connection timeouts the other clients already had, plus the cross-host redirect guard. A Dex discovery or token-endpoint redirect to a different host or port is now refused.

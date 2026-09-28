@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -39,6 +41,10 @@ const (
 	// Token responses are typically small (<10KB). 1MB provides a generous safety margin
 	// while preventing memory exhaustion attacks from malicious servers.
 	maxTokenExchangeResponseSize = 1024 * 1024 // 1MB
+
+	// maxErrorBodySnippet bounds how much of a non-OAuth response body an error
+	// message carries: enough to recognise a proxy's answer, never a whole page.
+	maxErrorBodySnippet = 200
 
 	// maxResourceLength is the maximum length for the resource parameter (RFC 3986 recommended).
 	// This prevents DoS attacks via extremely long URIs.
@@ -314,13 +320,15 @@ func (c *TokenExchangeClient) Exchange(ctx context.Context, req TokenExchangeReq
 
 	// Handle error responses
 	if resp.StatusCode != http.StatusOK {
-		return nil, c.parseErrorResponse(resp.StatusCode, body)
+		return nil, c.parseErrorResponse(resp.StatusCode, resp.Header.Get("Content-Type"), body)
 	}
 
-	// Parse success response
+	// Parse success response. The body is not quoted in the error: a
+	// malformed success answer may still carry a token.
 	var exchangeResp TokenExchangeResponse
 	if err := json.Unmarshal(body, &exchangeResp); err != nil {
-		return nil, fmt.Errorf("failed to parse token exchange response: %w", err)
+		return nil, fmt.Errorf("failed to parse token exchange response (content type %q%s): %w",
+			resp.Header.Get("Content-Type"), htmlTitleSuffix(body), err)
 	}
 
 	// Validate response
@@ -452,8 +460,11 @@ func (c *TokenExchangeClient) buildFormData(req *TokenExchangeRequest) url.Value
 	return form
 }
 
-// parseErrorResponse parses an OAuth 2.0 error response.
-func (c *TokenExchangeClient) parseErrorResponse(statusCode int, body []byte) error {
+// parseErrorResponse parses an OAuth 2.0 error response. An answer that is
+// not an OAuth error document, typically a proxy or ingress in front of the
+// token endpoint, is described by its status, content type and the start of
+// its body (an HTML page by its title), so the failure names what answered.
+func (c *TokenExchangeClient) parseErrorResponse(statusCode int, contentType string, body []byte) error {
 	var oauthErr TokenExchangeErrorResponse
 	if err := json.Unmarshal(body, &oauthErr); err == nil && oauthErr.Error != "" {
 		if oauthErr.ErrorDescription != "" {
@@ -461,5 +472,49 @@ func (c *TokenExchangeClient) parseErrorResponse(statusCode int, body []byte) er
 		}
 		return fmt.Errorf("token exchange failed: %s", oauthErr.Error)
 	}
-	return fmt.Errorf("token exchange failed with status %d: %s", statusCode, string(body))
+	return fmt.Errorf("token exchange failed with status %d (content type %q, not an OAuth error response): %s",
+		statusCode, contentType, bodySnippet(body))
+}
+
+var (
+	htmlTitlePattern  = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
+	whitespacePattern = regexp.MustCompile(`\s+`)
+)
+
+// bodySnippet summarises a response body for an error message: an HTML page
+// by its title, anything else by its start.
+func bodySnippet(body []byte) string {
+	if title := htmlTitle(body); title != "" {
+		return "HTML page " + strconv.Quote(title)
+	}
+	if text := collapse(body); text != "" {
+		return strconv.Quote(text)
+	}
+	return "empty body"
+}
+
+// htmlTitleSuffix names the HTML page a body is, for an error message, or "".
+func htmlTitleSuffix(body []byte) string {
+	if title := htmlTitle(body); title != "" {
+		return ", HTML page " + strconv.Quote(title)
+	}
+	return ""
+}
+
+// htmlTitle returns the collapsed <title> of an HTML body, or "".
+func htmlTitle(body []byte) string {
+	if m := htmlTitlePattern.FindSubmatch(body); m != nil {
+		return collapse(m[1])
+	}
+	return ""
+}
+
+// collapse joins whitespace runs into single spaces and cuts the text to
+// maxErrorBodySnippet bytes.
+func collapse(b []byte) string {
+	text := strings.TrimSpace(whitespacePattern.ReplaceAllString(string(b), " "))
+	if len(text) > maxErrorBodySnippet {
+		text = strings.ToValidUTF8(text[:maxErrorBodySnippet], "") + "…"
+	}
+	return text
 }
