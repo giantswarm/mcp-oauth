@@ -404,9 +404,9 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 		}
 		if errors.Is(err, storage.ErrTokenUndecryptable) {
 			// Not an outage, but the sign of an encryption key that differs
-			// from the one the token was written with.
-			s.Logger.Warn("Stored provider token cannot be decrypted - falling back to provider validation",
-				logKeyError, err, "token_suffix", helpers.TokenSuffix(accessToken, 8))
+			// from the one the token was written with. Nothing derived from
+			// the bearer is logged.
+			s.Logger.Warn("Stored provider token cannot be decrypted - falling back to provider validation")
 		}
 		// Token not found in store - will fall back to provider validation
 		return nil, nil
