@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"time"
 
@@ -100,18 +101,22 @@ func (s *Server) handleSharedProviderTokenError(ctx context.Context, err error, 
 		return s.storageUnavailable(ctx, "read shared provider token", clientID, userID, err)
 	}
 
-	s.Logger.Warn("Shared provider token missing for valid refresh token - re-login required",
+	msg, reason := "Shared provider token missing for valid refresh token - re-login required", "shared_provider_token_missing"
+	if errors.Is(err, storage.ErrTokenUndecryptable) {
+		msg, reason = "Shared provider token cannot be decrypted - re-login required", "token_undecryptable"
+	}
+	s.Logger.Warn(msg,
 		"user_id", userID, paramClientID, clientID, logKeyReason, err.Error(),
 		"token_suffix", helpers.TokenSuffix(refreshToken, 8))
 	s.Auditor.LogEvent(ctx, security.Event{
 		Type: security.EventAuthFailure, UserID: userID, ClientID: clientID,
 		Details: map[string]any{
 			logKeySeverity: "warning",
-			logKeyReason:   "shared_provider_token_missing",
+			logKeyReason:   reason,
 			logKeyAction:   "re_login_required",
 		},
 	})
-	s.Auditor.LogAuthFailure(ctx, userID, clientID, "", "shared_provider_token_missing")
+	s.Auditor.LogAuthFailure(ctx, userID, clientID, "", reason)
 
 	return errInvalidGrant
 }
@@ -131,6 +136,19 @@ func (s *Server) handleRefreshTokenError(ctx context.Context, err error, refresh
 	// taxonomy of the shared-entry and metadata reads on this path).
 	if storage.IsTransientError(err) {
 		return s.storageUnavailable(ctx, "validate refresh token", clientID, "", err)
+	}
+
+	// Legacy layout only: AtomicGetAndDeleteRefreshToken returns the
+	// provider-token copy, and a copy the encryption key cannot decrypt was
+	// written under an earlier key, not rotated away. No reuse, so the family
+	// is left alone and the client signs in again. The consume already
+	// deleted the record, so a client that presents the same refresh token
+	// again still meets reuse detection.
+	if errors.Is(err, storage.ErrTokenUndecryptable) {
+		s.Logger.Warn("Refresh token record cannot be decrypted - re-login required",
+			paramClientID, clientID, logKeyReason, err.Error(), "token_suffix", helpers.TokenSuffix(refreshToken, 8))
+		s.Auditor.LogAuthFailure(ctx, "", clientID, "", "token_undecryptable")
+		return errInvalidGrant
 	}
 
 	// Check for reuse if token not found and family tracking is supported

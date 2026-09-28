@@ -173,7 +173,7 @@ func (s *Store) GetToken(ctx context.Context, userID string) (result *oauth2.Tok
 	// Decrypt token if encryptor is configured
 	decrypted, err := s.decryptToken(token)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt token: %w", err)
+		return nil, fmt.Errorf("failed to decrypt token: %w: %w", storage.ErrTokenUndecryptable, err)
 	}
 
 	return decrypted, nil
@@ -367,7 +367,7 @@ func (s *Store) AtomicGetAndDeleteRefreshToken(ctx context.Context, refreshToken
 	// Decrypt token if encryptor is configured
 	decryptedToken, err := s.decryptToken(token)
 	if err != nil {
-		return "", "", nil, fmt.Errorf("failed to decrypt token: %w", err)
+		return "", "", nil, fmt.Errorf("failed to decrypt token: %w: %w", storage.ErrTokenUndecryptable, err)
 	}
 
 	s.logger.Debug("Atomically retrieved and deleted refresh token",
