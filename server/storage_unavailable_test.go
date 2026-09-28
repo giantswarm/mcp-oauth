@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -15,6 +16,7 @@ import (
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
+	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 	storagemock "github.com/giantswarm/mcp-oauth/storage/mock"
@@ -187,42 +189,106 @@ func undecryptable(context.Context, string) error {
 	return fmt.Errorf("failed to decrypt token: %w: cipher: message authentication failed", storage.ErrTokenUndecryptable)
 }
 
-// TestRefreshAccessToken_UndecryptableRecord: a record the encryption key
-// cannot decrypt is answered as invalid_grant, never as a storage outage, so
-// the client signs in again instead of retrying for ever, and the refresh
-// token's family is not revoked as reuse.
-func TestRefreshAccessToken_UndecryptableRecord(t *testing.T) {
-	for _, op := range []string{"get_user_provider_token", "atomic_consume_refresh_token"} {
-		t.Run(op, func(t *testing.T) {
-			f := newFaultyGrantFixture(t)
-			ctx := context.Background()
-			rt := f.login(t).RefreshToken
+// captureServerLogs sends the server's logs and audit events to one buffer.
+func captureServerLogs(srv *Server) *bytes.Buffer {
+	logger, buf := captureLogger()
+	srv.Logger = logger
+	srv.Auditor = security.NewAuditor(logger, true)
+	return buf
+}
 
-			f.faulty.Fail(storagemock.OnOperation(op, undecryptable))
-			_, err := f.srv.RefreshAccessToken(ctx, rt, f.clientID)
-			require.ErrorIs(t, err, errInvalidGrant)
-			require.NotErrorIs(t, err, ErrStorageUnavailable)
+// TestRefreshAccessToken_UndecryptableSharedEntry: in the unified layout, a
+// shared provider-token entry the encryption key cannot decrypt is answered
+// as invalid_grant, never as a storage outage, so the client signs in again
+// instead of retrying for ever. The refresh token is not consumed, its family
+// is not revoked as reuse, and the audit reason names the cause.
+func TestRefreshAccessToken_UndecryptableSharedEntry(t *testing.T) {
+	f := newFaultyGrantFixture(t)
+	ctx := context.Background()
+	rt := f.login(t).RefreshToken
+	logs := captureServerLogs(f.srv)
 
-			family, err := f.store.GetRefreshTokenFamily(ctx, rt)
-			require.NoError(t, err)
-			require.False(t, family.Revoked, "an undecryptable record is not reuse")
-		})
-	}
+	f.faulty.Fail(storagemock.OnOperation("get_user_provider_token", undecryptable))
+	_, err := f.srv.RefreshAccessToken(ctx, rt, f.clientID)
+	require.ErrorIs(t, err, errInvalidGrant)
+	require.NotErrorIs(t, err, ErrStorageUnavailable)
+
+	family, err := f.store.GetRefreshTokenFamily(ctx, rt)
+	require.NoError(t, err)
+	require.False(t, family.Revoked, "an undecryptable record is not reuse")
+	_, err = f.store.GetRefreshTokenInfo(ctx, rt)
+	require.NoError(t, err, "the refresh token must not be consumed")
+	require.True(t, containsAuthFailure(logs.String(), "token_undecryptable"), "log:\n%s", logs.String())
+}
+
+// legacyUndecryptableStore is a legacy-layout store (no
+// storage.UserProviderTokenStore) with family tracking, whose refresh-token
+// consume returns a provider-token copy the encryption key cannot decrypt.
+type legacyUndecryptableStore struct {
+	storage.Combined
+	storage.RefreshTokenFamilyStore
+}
+
+func (legacyUndecryptableStore) AtomicGetAndDeleteRefreshToken(ctx context.Context, _ string) (string, string, *oauth2.Token, error) {
+	return "", "", nil, undecryptable(ctx, "atomic_get_and_delete_refresh_token")
+}
+
+// TestRefreshAccessToken_UndecryptableLegacyRecord: in the legacy layout, a
+// consumed provider-token copy the encryption key cannot decrypt is answered
+// as invalid_grant without reuse detection, so the family is not revoked.
+func TestRefreshAccessToken_UndecryptableLegacyRecord(t *testing.T) {
+	mem := memory.New()
+	t.Cleanup(mem.Stop)
+	store := legacyUndecryptableStore{Combined: mem, RefreshTokenFamilyStore: mem}
+	srv, err := New(mock.NewProvider(), store, store, store, &Config{
+		Issuer:                      "https://auth.example.com",
+		SupportedScopes:             []string{"openid", "email"},
+		AccessTokenTTL:              600,
+		RefreshTokenTTL:             86400,
+		AllowRefreshTokenRotation:   true,
+		DisableNonceEchoRequirement: true,
+	}, nil)
+	require.NoError(t, err)
+	_, unified := srv.userProviderTokenStore()
+	require.False(t, unified, "the fixture must use the legacy layout")
+	client, secret, err := srv.RegisterClient(context.Background(), "gateway", ClientTypeConfidential, "",
+		[]string{"https://example.com/callback"}, []string{"openid", "email"}, "192.168.1.100", 10)
+	require.NoError(t, err)
+	f := &faultyGrantFixture{srv: srv, store: mem, clientID: client.ClientID, clientSecret: secret}
+	ctx := context.Background()
+	rt := f.login(t).RefreshToken
+	logs := captureServerLogs(srv)
+
+	_, err = srv.RefreshAccessToken(ctx, rt, f.clientID)
+	require.ErrorIs(t, err, errInvalidGrant)
+	require.NotErrorIs(t, err, ErrStorageUnavailable)
+
+	family, err := mem.GetRefreshTokenFamily(ctx, rt)
+	require.NoError(t, err)
+	require.False(t, family.Revoked, "an undecryptable record is not reuse")
+	require.True(t, containsAuthFailure(logs.String(), "token_undecryptable"), "log:\n%s", logs.String())
 }
 
 // TestValidateToken_UndecryptableRecordIsNotAnOutage: an opaque bearer whose
-// provider token cannot be decrypted is not answered as a storage outage.
+// provider token cannot be decrypted is not answered as a storage outage: it
+// falls back to the provider's check, which rejects it, and the key mismatch
+// is logged.
 func TestValidateToken_UndecryptableRecordIsNotAnOutage(t *testing.T) {
 	f := newFaultyFixture(t, AccessTokenFormatOpaque)
 	at := f.login(t).AccessToken
+	logs := captureServerLogs(f.srv)
+	errUnknownToken := errors.New("unknown token")
 	f.provider.ValidateTokenFunc = func(context.Context, string) (*providers.UserInfo, error) {
-		return nil, errors.New("unknown token")
+		return nil, errUnknownToken
 	}
+	providerCalls := f.provider.GetCallCount("ValidateToken")
 
 	f.faulty.Fail(storagemock.OnOperation("get_user_provider_token", undecryptable))
 	_, err := f.srv.ValidateToken(context.Background(), at)
-	require.Error(t, err)
+	require.ErrorContains(t, err, errUnknownToken.Error())
 	require.NotErrorIs(t, err, ErrStorageUnavailable)
+	require.Equal(t, providerCalls+1, f.provider.GetCallCount("ValidateToken"), "falls back to the provider's check")
+	require.Contains(t, logs.String(), "Stored provider token cannot be decrypted")
 }
 
 // TestExchangeAuthorizationCode_StorageUnavailable: the code grant fails as
