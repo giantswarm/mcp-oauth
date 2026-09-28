@@ -1809,6 +1809,41 @@ func TestTokenStore_EncryptionDisabled(t *testing.T) {
 	}
 }
 
+// TestTokenStore_RotatedEncryptionKey verifies that a token written under an
+// earlier encryption key is reported as ErrTokenUndecryptable, which is not a
+// transient error, so the grant it backs asks for a new sign-in instead of a
+// retry that cannot succeed.
+func TestTokenStore_RotatedEncryptionKey(t *testing.T) {
+	ctx := context.Background()
+	newEncryptor := func() *security.Encryptor {
+		key, err := security.GenerateKey()
+		require.NoError(t, err)
+		enc, err := security.NewEncryptor(key)
+		require.NoError(t, err)
+		return enc
+	}
+
+	s := testStoreWithOpts(t, WithEncryptor(newEncryptor()))
+	token := &oauth2.Token{
+		AccessToken:  "secret-access-token",
+		RefreshToken: "secret-refresh-token",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(time.Hour),
+	}
+	require.NoError(t, s.SaveToken(ctx, "rotated-user", token))
+	require.NoError(t, s.SaveUserProviderToken(ctx, "rotated-user", token))
+
+	s.encryptor = newEncryptor()
+
+	_, err := s.GetToken(ctx, "rotated-user")
+	require.ErrorIs(t, err, storage.ErrTokenUndecryptable)
+	require.False(t, storage.IsTransientError(err), "got %v", err)
+
+	_, err = s.GetUserProviderToken(ctx, "rotated-user")
+	require.ErrorIs(t, err, storage.ErrTokenUndecryptable)
+	require.False(t, storage.IsTransientError(err), "got %v", err)
+}
+
 // TestTokenStore_Encryption_PreservesExtraField verifies that token encryption
 // preserves the Extra field (id_token, scope) which is critical for OIDC flows.
 // This is a regression test for issue #133.

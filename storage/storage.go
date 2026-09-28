@@ -107,6 +107,13 @@ var (
 	// both cases so a caller cannot enumerate clients. A failure to reach the
 	// store is never reported as this error; see IsTransientError.
 	ErrInvalidClientCredentials = errors.New("invalid client credentials")
+
+	// ErrTokenUndecryptable indicates the token record exists but the store's
+	// encryption key cannot decrypt it, typically because the key was rotated
+	// after the record was written. A retry cannot succeed, so the grant the
+	// record backs needs a new sign-in. It is not a transient error; see
+	// IsTransientError.
+	ErrTokenUndecryptable = errors.New("token cannot be decrypted")
 )
 
 // DefaultOperationTimeout is the per-operation deadline a network-backed store
@@ -143,8 +150,9 @@ func IsCodeReuseError(err error) bool {
 // IsTransientError reports whether err is a storage failure rather than one of
 // the outcomes a store reports through its sentinels: a record that is absent
 // (IsNotFoundError), expired (IsExpiredError) or already used
-// (IsCodeReuseError), a revoked refresh-token family, a registration limit, or
-// rejected client credentials. Everything else — a connection refused, a
+// (IsCodeReuseError), a revoked refresh-token family, a registration limit,
+// rejected client credentials, or a record the encryption key cannot decrypt
+// (ErrTokenUndecryptable). Everything else — a connection refused, a
 // deadline exceeded, a reply that could not be read — means the record's state
 // is unknown. Request paths treat such an error as "the store is temporarily
 // unavailable": the caller retries, and a token or code is never answered as
@@ -158,7 +166,8 @@ func IsTransientError(err error) bool {
 		!IsCodeReuseError(err) &&
 		!errors.Is(err, ErrRefreshTokenFamilyRevoked) &&
 		!errors.Is(err, ErrClientIPLimitExceeded) &&
-		!errors.Is(err, ErrInvalidClientCredentials)
+		!errors.Is(err, ErrInvalidClientCredentials) &&
+		!errors.Is(err, ErrTokenUndecryptable)
 }
 
 // UserInfo holds identity claims for a user as stored by this server.

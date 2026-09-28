@@ -102,7 +102,7 @@ func (s *Store) GetUserProviderToken(ctx context.Context, userID string) (result
 
 	decrypted, err := s.decryptToken(token)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt token: %w", err)
+		return nil, fmt.Errorf("failed to decrypt token: %w: %w", storage.ErrTokenUndecryptable, err)
 	}
 	return decrypted, nil
 }

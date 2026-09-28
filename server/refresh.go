@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"time"
 
@@ -131,6 +132,16 @@ func (s *Server) handleRefreshTokenError(ctx context.Context, err error, refresh
 	// taxonomy of the shared-entry and metadata reads on this path).
 	if storage.IsTransientError(err) {
 		return s.storageUnavailable(ctx, "validate refresh token", clientID, "", err)
+	}
+
+	// A record the encryption key cannot decrypt was written under an
+	// earlier key, not rotated away: no reuse, so the family is left alone
+	// and the client signs in again.
+	if errors.Is(err, storage.ErrTokenUndecryptable) {
+		s.Logger.Warn("Refresh token record cannot be decrypted - re-login required",
+			paramClientID, clientID, logKeyReason, err.Error(), "token_suffix", helpers.TokenSuffix(refreshToken, 8))
+		s.Auditor.LogAuthFailure(ctx, "", clientID, "", "token_undecryptable")
+		return errInvalidGrant
 	}
 
 	// Check for reuse if token not found and family tracking is supported

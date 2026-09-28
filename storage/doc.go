@@ -23,7 +23,8 @@
 //
 // A store reports the outcomes a caller can act on through sentinels
 // ([ErrTokenNotFound], [ErrTokenExpired], [ErrAuthorizationCodeUsed],
-// [ErrInvalidClientCredentials], ...). Any other error means the record's
+// [ErrInvalidClientCredentials], [ErrTokenUndecryptable], ...). Any other
+// error means the record's
 // state is unknown — the backend could not be reached or did not answer in
 // time — and [IsTransientError] reports it as such. Callers on request paths
 // answer a transient error as "temporarily unavailable" and leave tokens,

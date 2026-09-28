@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -178,6 +179,50 @@ func TestRefreshAccessToken_StorageUnavailable(t *testing.T) {
 			})
 		}
 	}
+}
+
+// undecryptable is a Fault that fails the way a record written under an
+// earlier encryption key does.
+func undecryptable(context.Context, string) error {
+	return fmt.Errorf("failed to decrypt token: %w: cipher: message authentication failed", storage.ErrTokenUndecryptable)
+}
+
+// TestRefreshAccessToken_UndecryptableRecord: a record the encryption key
+// cannot decrypt is answered as invalid_grant, never as a storage outage, so
+// the client signs in again instead of retrying for ever, and the refresh
+// token's family is not revoked as reuse.
+func TestRefreshAccessToken_UndecryptableRecord(t *testing.T) {
+	for _, op := range []string{"get_user_provider_token", "atomic_consume_refresh_token"} {
+		t.Run(op, func(t *testing.T) {
+			f := newFaultyGrantFixture(t)
+			ctx := context.Background()
+			rt := f.login(t).RefreshToken
+
+			f.faulty.Fail(storagemock.OnOperation(op, undecryptable))
+			_, err := f.srv.RefreshAccessToken(ctx, rt, f.clientID)
+			require.ErrorIs(t, err, errInvalidGrant)
+			require.NotErrorIs(t, err, ErrStorageUnavailable)
+
+			family, err := f.store.GetRefreshTokenFamily(ctx, rt)
+			require.NoError(t, err)
+			require.False(t, family.Revoked, "an undecryptable record is not reuse")
+		})
+	}
+}
+
+// TestValidateToken_UndecryptableRecordIsNotAnOutage: an opaque bearer whose
+// provider token cannot be decrypted is not answered as a storage outage.
+func TestValidateToken_UndecryptableRecordIsNotAnOutage(t *testing.T) {
+	f := newFaultyFixture(t, AccessTokenFormatOpaque)
+	at := f.login(t).AccessToken
+	f.provider.ValidateTokenFunc = func(context.Context, string) (*providers.UserInfo, error) {
+		return nil, errors.New("unknown token")
+	}
+
+	f.faulty.Fail(storagemock.OnOperation("get_user_provider_token", undecryptable))
+	_, err := f.srv.ValidateToken(context.Background(), at)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrStorageUnavailable)
 }
 
 // TestExchangeAuthorizationCode_StorageUnavailable: the code grant fails as
