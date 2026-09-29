@@ -22,6 +22,14 @@ func ttlSeconds(t *testing.T, s *Store, key string) int64 {
 	return ttl
 }
 
+// userClientMembers returns every member of a user+client sorted set.
+func userClientMembers(t *testing.T, s *Store, key string) []string {
+	t.Helper()
+	members, err := s.client.Do(context.Background(), s.client.B().Zrange().Key(key).Min("0").Max("-1").Build()).AsStrSlice()
+	require.NoError(t, err)
+	return members
+}
+
 // TestUserClientSet_TTLBoundedAndExtendOnly is the regression guard for the
 // unbounded-growth bug: the {prefix}userclient:{uid}:{cid} SET used for bulk
 // revocation had no TTL and no per-member removal, so it grew forever (every
@@ -78,7 +86,7 @@ func TestUserClientSet_TTLBoundedAndExtendOnly(t *testing.T) {
 	require.Greater(t, ttlAfterSecondAccess, accessTTLCeil, "short-lived add must not shrink the set below a live refresh member")
 
 	// Bulk revocation still sees every member.
-	members, err := store.client.Do(ctx, store.client.B().Smembers().Key(ucKey).Build()).AsStrSlice()
+	members, err := userClientMembers(t, store, ucKey), error(nil)
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{at1, at2, rt}, members, "all tokens must remain members for bulk revocation")
 }
@@ -107,7 +115,7 @@ func TestUserClientSet_ZeroExpiryStillBounded(t *testing.T) {
 	require.Greater(t, ttlSeconds(t, store, ucKey), int64(0),
 		"set must carry a fallback TTL even when the member has no expiry (was unbounded)")
 
-	members, err := store.client.Do(ctx, store.client.B().Smembers().Key(ucKey).Build()).AsStrSlice()
+	members, err := userClientMembers(t, store, ucKey), error(nil)
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{tokenID}, members, "the horizon-less token must still be a member for bulk revocation")
 }
@@ -142,14 +150,116 @@ func TestUserClientSet_ConcurrentAddsConvergeToMax(t *testing.T) {
 			if i%2 == 0 {
 				ttl = longTTL
 			}
-			store.addToUserClientSet(ctx, ucKey, fmt.Sprintf("tok-%d", i), userID, clientID, ttl)
+			store.addToUserClientSet(ctx, userID, clientID, fmt.Sprintf("tok-%d", i), ttl)
 		}(i)
 	}
 	wg.Wait()
 
 	require.Greater(t, ttlSeconds(t, store, ucKey), longCeil,
 		"concurrent adds must leave the set bounded by the longest horizon, never a short one")
-	members, err := store.client.Do(ctx, store.client.B().Smembers().Key(ucKey).Build()).AsStrSlice()
+	members, err := userClientMembers(t, store, ucKey), error(nil)
 	require.NoError(t, err)
 	require.Len(t, members, workers, "every concurrent add must be a member for bulk revocation")
+}
+
+// TestUserClientSet_ExpiredMembersPruned guards the accumulation the sorted set
+// closes: an active user's set used to keep every token issued within its
+// extend-only TTL. Tokens whose expiry has passed are dropped on the next add,
+// while live members stay for bulk revocation.
+func TestUserClientSet_ExpiredMembersPruned(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	const (
+		userID   = "user-prune"
+		clientID = "client-prune"
+		expired  = 50
+	)
+	ucKey := store.userClientKey(userID, clientID)
+
+	for i := 0; i < expired; i++ {
+		store.addToUserClientSet(ctx, userID, clientID, fmt.Sprintf("old-%d", i), time.Second)
+	}
+	require.NoError(t, store.SaveTokenMetadata(ctx, "rt-live", storage.TokenMetadata{
+		UserID: userID, ClientID: clientID, TokenType: "refresh", ExpiresAt: time.Now().Add(24 * time.Hour),
+	}))
+	require.NoError(t, store.SaveTokenMetadata(ctx, "tok-no-expiry", storage.TokenMetadata{
+		UserID: userID, ClientID: clientID, TokenType: "access",
+	}))
+	require.Len(t, userClientMembers(t, store, ucKey), expired+2)
+
+	time.Sleep(2100 * time.Millisecond)
+	require.NoError(t, store.SaveTokenMetadata(ctx, "at-live", storage.TokenMetadata{
+		UserID: userID, ClientID: clientID, TokenType: "access", ExpiresAt: time.Now().Add(time.Hour),
+	}))
+
+	require.ElementsMatch(t, []string{"rt-live", "tok-no-expiry", "at-live"}, userClientMembers(t, store, ucKey),
+		"expired members must be pruned; live and horizon-less members stay")
+}
+
+// TestUserClientSet_IDTokenStoredAsDigest guards that a forwarded id_token, a
+// raw upstream JWT, never becomes a set member, and that bulk revocation still
+// deletes its metadata while leaving it out of the provider-side token list.
+func TestUserClientSet_IDTokenStoredAsDigest(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	const (
+		userID   = "user-id"
+		clientID = "client-id"
+		idToken  = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyLWlkIn0.c2lnbmF0dXJl"
+		at       = "at-id"
+	)
+	exp := time.Now().Add(time.Hour)
+	require.NoError(t, store.SaveTokenMetadata(ctx, at, storage.TokenMetadata{
+		UserID: userID, ClientID: clientID, TokenType: "access", ExpiresAt: exp,
+	}))
+	require.NoError(t, store.SaveTokenMetadata(ctx, idToken, storage.TokenMetadata{
+		UserID: userID, ClientID: clientID, TokenType: "id", ExpiresAt: exp,
+	}))
+
+	members := userClientMembers(t, store, store.userClientKey(userID, clientID))
+	require.ElementsMatch(t, []string{at, digestMemberPrefix + hashKeyComponent(idToken)}, members)
+	for _, m := range members {
+		require.NotContains(t, m, ".", "no member may be a raw JWT")
+	}
+
+	tokens, err := store.GetTokensByUserClient(ctx, userID, clientID)
+	require.NoError(t, err)
+	require.Equal(t, []string{at}, tokens, "the id_token digest is not a provider-revocable token")
+
+	count, err := store.RevokeAllTokensForUserClient(ctx, userID, clientID)
+	require.NoError(t, err)
+	require.Equal(t, 2, count)
+	_, err = store.GetTokenMetadata(idToken)
+	require.ErrorIs(t, err, storage.ErrTokenNotFound, "bulk revocation must delete the id_token's metadata")
+	_, err = store.GetTokenMetadata(at)
+	require.ErrorIs(t, err, storage.ErrTokenNotFound)
+}
+
+// TestUserClientSet_PreviousSetLayoutStillRevoked guards the rolling upgrade:
+// members a previous release wrote to the plain SET are still listed and
+// revoked, and revocation deletes that SET.
+func TestUserClientSet_PreviousSetLayoutStillRevoked(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	const (
+		userID   = "user-prev"
+		clientID = "client-prev"
+	)
+	setKey := store.setUserClientKey(userID, clientID)
+	require.NoError(t, store.saddExtendOnlyTTL(ctx, setKey, "tok-prev", time.Hour))
+	require.NoError(t, store.SaveTokenMetadata(ctx, "tok-new", storage.TokenMetadata{
+		UserID: userID, ClientID: clientID, TokenType: "access", ExpiresAt: time.Now().Add(time.Hour),
+	}))
+
+	tokens, err := store.GetTokensByUserClient(ctx, userID, clientID)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"tok-prev", "tok-new"}, tokens)
+
+	count, err := store.RevokeAllTokensForUserClient(ctx, userID, clientID)
+	require.NoError(t, err)
+	require.Equal(t, 2, count)
+	require.Equal(t, int64(-2), ttlSeconds(t, store, setKey), "the previous SET must be deleted")
 }

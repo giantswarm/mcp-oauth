@@ -711,7 +711,17 @@ func (s *Store) tokenMetaKey(tokenID string) string {
 	return s.keyOf("meta", hashKeyComponent(tokenID))
 }
 
+// userClientKey is the bulk-revocation index of one user + client: a sorted
+// set of token IDs scored by each member's expiry, so expired members are
+// pruned on the next add (see luaAtomicZaddPruneExtendOnlyTTL).
 func (s *Store) userClientKey(userID, clientID string) string {
+	return s.keyOf("userclientz", hashKeyComponent(userID), hashKeyComponent(clientID))
+}
+
+// setUserClientKey is the plain SET that indexed a user + client before the
+// sorted set replaced it. It is no longer written: revocation still reads and
+// deletes it until its extend-only TTL (at most the refresh-token TTL) runs out.
+func (s *Store) setUserClientKey(userID, clientID string) string {
 	return s.keyOf("userclient", hashKeyComponent(userID), hashKeyComponent(clientID))
 }
 
@@ -876,8 +886,8 @@ return cjson.encode({user_id = userID, client_id = clientID, token = cjson.decod
 
 // luaAtomicSaddExtendOnlyTTL atomically adds a member to a revocation set and
 // keeps the set bounded with an extend-only TTL, in a single round-trip. It
-// backs both revocation sets: the user+client set (bulk revocation) and the
-// family set (family-wide revocation).
+// backs the family set (family-wide revocation); the user+client index uses
+// luaAtomicZaddPruneExtendOnlyTTL.
 //
 // The sets have no per-member removal (there is no SREM anywhere; access tokens
 // expire purely by their own key TTL, which fires no set-membership cleanup), so
@@ -913,6 +923,41 @@ return cjson.encode({user_id = userID, client_id = clientID, token = cjson.decod
 // RESP2-only servers. EVAL, TTL and plain EXPIRE are available everywhere.
 const luaAtomicSaddExtendOnlyTTL = `
 redis.call('SADD', KEYS[1], ARGV[1])
+local horizon = tonumber(ARGV[2])
+local cur = redis.call('TTL', KEYS[1])
+if cur == -1 then
+    local init = horizon
+    if init <= 0 then
+        init = tonumber(ARGV[3])
+    end
+    if init > 0 then
+        redis.call('EXPIRE', KEYS[1], init)
+    end
+elseif cur >= 0 and horizon > cur then
+    redis.call('EXPIRE', KEYS[1], horizon)
+end
+return redis.status_reply('OK')
+`
+
+// luaAtomicZaddPruneExtendOnlyTTL adds a member to the user+client sorted set,
+// drops the members that have expired, and keeps the set bounded with the same
+// extend-only TTL rule as luaAtomicSaddExtendOnlyTTL, in a single round-trip.
+//
+// Each member is scored by its expiry in unix seconds, or +inf when its horizon
+// is unknown (a token whose metadata key carries no expiry stays revocable for
+// as long as the set lives). Pruning on every add keeps the set at the live
+// tokens of the user + client instead of every token issued within the set's
+// TTL, which an active user keeps extending.
+//
+// KEYS[1] = user+client sorted set key
+// ARGV[1] = member (token ID or id_token digest)
+// ARGV[2] = member horizon in whole seconds, or 0 when unknown/expired
+// ARGV[3] = fallback bound in whole seconds (always >= 1)
+// ARGV[4] = now in unix seconds; members scored below it are removed
+// ARGV[5] = member score: its expiry in unix seconds, or "+inf"
+const luaAtomicZaddPruneExtendOnlyTTL = `
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', '(' .. ARGV[4])
+redis.call('ZADD', KEYS[1], ARGV[5], ARGV[1])
 local horizon = tonumber(ARGV[2])
 local cur = redis.call('TTL', KEYS[1])
 if cur == -1 then

@@ -34,7 +34,8 @@
 //	{prefix}:state:provider:{state}   -> stateID (for reverse lookup)
 //	{prefix}:code:{code}              -> JSON(AuthorizationCode)
 //	{prefix}:meta:{tokenID}           -> JSON(TokenMetadata)
-//	{prefix}:userclient:{uid}:{cid}   -> SET of tokenIDs
+//	{prefix}:userclientz:{uid}:{cid}  -> ZSET of tokenIDs scored by expiry
+//	                                     (an id_token as "sha256:" + its digest)
 //	{prefix}:family:{familyID}        -> SET of refresh tokens in family
 //
 // # Atomic Operations
