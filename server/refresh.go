@@ -408,6 +408,12 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	// the freshly-written shared entry without ever calling it.
 	newProviderToken, err := s.refreshProviderTokenForGrant(ctx, userID, providerToken)
 	if err != nil {
+		// A provider that did not answer rejected nothing. In the unified layout
+		// the refresh token is still unconsumed, so the client retries it;
+		// the legacy layout consumed it above, where a retry could only fail.
+		if unified && !errors.Is(err, ErrStorageUnavailable) && isTransientProviderError(err) {
+			return nil, s.providerUnavailable(ctx, userID, clientID, err)
+		}
 		s.logAuthFailure(ctx, userID, clientID, fmt.Sprintf("provider_refresh_failed: %v", err))
 		return nil, fmt.Errorf("failed to refresh token with provider: %w", err)
 	}

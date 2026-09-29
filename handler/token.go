@@ -245,6 +245,10 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 			h.writeTokenStorageUnavailable(w, r, grantTypeRefreshToken, span, startTime, err)
 			return
 		}
+		if errors.Is(err, server.ErrProviderUnavailable) {
+			h.writeTokenProviderUnavailable(w, r, grantTypeRefreshToken, span, startTime, err)
+			return
+		}
 		h.logger.Error("Failed to refresh token", "client_id", clientID, "ip", clientIP, paramError, err)
 		h.recordTokenFailure(r.Context(), grantTypeRefreshToken, constants.ErrorCodeInvalidGrant)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
