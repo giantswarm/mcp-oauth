@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/giantswarm/mcp-oauth/storage"
@@ -168,13 +169,47 @@ func (s *Store) saveRefreshTokenMetadata(ctx context.Context, refreshToken, user
 // addTokenToUserClientSet adds the token to the user+client set for bulk
 // revocation, keeping the set bounded with an extend-only TTL.
 func (s *Store) addTokenToUserClientSet(ctx context.Context, refreshToken, userID, clientID string, ttl time.Duration) {
-	s.addToUserClientSet(ctx, s.userClientKey(userID, clientID), refreshToken, userID, clientID, ttl)
+	s.addToUserClientSet(ctx, userID, clientID, refreshToken, ttl)
 }
 
-// addToUserClientSet adds member to the user+client set that backs bulk
-// revocation. See saddExtendOnlyTTL for the TTL rule.
-func (s *Store) addToUserClientSet(ctx context.Context, key, member, userID, clientID string, ttl time.Duration) {
-	if err := s.saddExtendOnlyTTL(ctx, key, member, ttl); err != nil {
+// digestMemberPrefix marks a user+client member that is the digest of a token
+// rather than the token itself (see userClientMember).
+const digestMemberPrefix = "sha256:"
+
+// userClientMember is the user+client member for a token. An id_token is an
+// upstream JWT forwarded as a bearer: bulk revocation only needs to delete its
+// metadata, which is keyed by the token's digest, so the set holds the digest
+// and never the credential. Every other token is its own member: revocation
+// resolves it at the provider and in the server's token-pair registry.
+func userClientMember(tokenID, tokenType string) string {
+	if tokenType == "id" {
+		return digestMemberPrefix + hashKeyComponent(tokenID)
+	}
+	return tokenID
+}
+
+// addToUserClientSet adds member to the user+client sorted set that backs bulk
+// revocation, scored by its expiry, and prunes the members that have expired.
+// See saddExtendOnlyTTL for the TTL rule, which the set keeps.
+func (s *Store) addToUserClientSet(ctx context.Context, userID, clientID, member string, ttl time.Duration) {
+	horizon, fallback := s.extendOnlyTTLArgs(ttl)
+	now := time.Now().Unix()
+	score := "+inf"
+	if horizon > 0 {
+		score = fmt.Sprintf("%d", now+horizon)
+	}
+	if err := s.client.Do(
+		ctx,
+		s.client.B().Eval().Script(luaAtomicZaddPruneExtendOnlyTTL).
+			Numkeys(1).
+			Key(s.userClientKey(userID, clientID)).
+			Arg(member).
+			Arg(fmt.Sprintf("%d", horizon)).
+			Arg(fmt.Sprintf("%d", fallback)).
+			Arg(fmt.Sprintf("%d", now)).
+			Arg(score).
+			Build(),
+	).Error(); err != nil {
 		s.logger.Warn("Failed to add token to user+client set",
 			"user_id", userID,
 			"client_id", clientID,
@@ -189,18 +224,7 @@ func (s *Store) addToUserClientSet(ctx context.Context, key, member, userID, cli
 // with no expiry is bounded at ttl, or at the store's refresh-token TTL when
 // ttl is non-positive because the member has no or an expired horizon.
 func (s *Store) saddExtendOnlyTTL(ctx context.Context, key, member string, ttl time.Duration) error {
-	horizon := int64(0)
-	if ttl > 0 {
-		// valkey EXPIRE with 0 seconds deletes the key, so never let a positive
-		// sub-second horizon truncate to 0 and wipe the set.
-		if horizon = int64(ttl.Seconds()); horizon < 1 {
-			horizon = 1
-		}
-	}
-	fallback := int64(s.refreshTokenTTL.Seconds())
-	if fallback < 1 {
-		fallback = 1
-	}
+	horizon, fallback := s.extendOnlyTTLArgs(ttl)
 	return s.client.Do(
 		ctx,
 		s.client.B().Eval().Script(luaAtomicSaddExtendOnlyTTL).
@@ -211,6 +235,23 @@ func (s *Store) saddExtendOnlyTTL(ctx context.Context, key, member string, ttl t
 			Arg(fmt.Sprintf("%d", fallback)).
 			Build(),
 	).Error()
+}
+
+// extendOnlyTTLArgs converts a member's ttl into the extend-only scripts'
+// horizon (whole seconds, 0 when unknown or expired) and fallback bound (the
+// store's refresh-token TTL, at least 1).
+func (s *Store) extendOnlyTTLArgs(ttl time.Duration) (horizon, fallback int64) {
+	if ttl > 0 {
+		// valkey EXPIRE with 0 seconds deletes the key, so never let a positive
+		// sub-second horizon truncate to 0 and wipe the set.
+		if horizon = int64(ttl.Seconds()); horizon < 1 {
+			horizon = 1
+		}
+	}
+	if fallback = int64(s.refreshTokenTTL.Seconds()); fallback < 1 {
+		fallback = 1
+	}
+	return horizon, fallback
 }
 
 // GetRefreshTokenFamily retrieves family metadata for a refresh token.
@@ -641,8 +682,8 @@ func (s *Store) SaveTokenMetadata(ctx context.Context, tokenID string, metadata 
 		return fmt.Errorf("failed to save token metadata: %w", err)
 	}
 
-	s.addToUserClientSet(ctx, s.userClientKey(metadata.UserID, metadata.ClientID), tokenID,
-		metadata.UserID, metadata.ClientID, calculateTTL(metadata.ExpiresAt))
+	s.addToUserClientSet(ctx, metadata.UserID, metadata.ClientID,
+		userClientMember(tokenID, metadata.TokenType), calculateTTL(metadata.ExpiresAt))
 
 	s.logger.Debug("Saved token metadata",
 		"token_type", metadata.TokenType,
@@ -743,29 +784,35 @@ func (s *Store) validateRevocationParams(userID, clientID string) error {
 	return validateInputLength(clientID)
 }
 
-// getTokensForUserClient retrieves all token IDs for a user+client combination.
-// Both hashed (current) and legacy (pre-migration) sets are always read and
-// unioned. Short-circuiting on the first non-empty result is intentionally
-// avoided: during a rolling deploy both sets may have members, and
-// RevokeAllTokensForUserClient must revoke every token regardless of which pod
-// issued it. The second SMEMBERS is a no-op (empty result) once all legacy keys
-// have expired after migration.
+// getTokensForUserClient retrieves every member of a user+client combination:
+// the sorted set, the plain SET it replaced and the legacy (pre-key-hashing)
+// SET, unioned and deduplicated. All three are always read: during a rolling
+// deploy more than one may have members, and RevokeAllTokensForUserClient must
+// revoke every token regardless of which pod issued it. The older reads are a
+// no-op (empty result) once those keys have expired. Members include id_token
+// digests (digestMemberPrefix).
 func (s *Store) getTokensForUserClient(ctx context.Context, userID, clientID string) ([]string, error) {
-	tokenIDs, err := s.client.Do(ctx, s.client.B().Smembers().Key(s.userClientKey(userID, clientID)).Build()).AsStrSlice()
+	members, err := s.client.Do(ctx, s.client.B().Zrange().Key(s.userClientKey(userID, clientID)).Min("0").Max("-1").Build()).AsStrSlice()
 	if err != nil && !isNilError(err) {
 		return nil, fmt.Errorf("failed to get tokens for user+client: %w", err)
 	}
-	legacyIDs, legacyErr := s.client.Do(ctx, s.client.B().Smembers().Key(s.legacyUserClientKey(userID, clientID)).Build()).AsStrSlice()
-	if legacyErr != nil && !isNilError(legacyErr) {
-		return nil, fmt.Errorf("failed to get tokens for user+client (legacy): %w", legacyErr)
-	}
-	seen := make(map[string]struct{}, len(tokenIDs)+len(legacyIDs))
-	result := make([]string, 0, len(tokenIDs)+len(legacyIDs))
-	for _, id := range append(tokenIDs, legacyIDs...) {
-		if _, dup := seen[id]; !dup {
-			seen[id] = struct{}{}
-			result = append(result, id)
+	seen := make(map[string]struct{}, len(members))
+	result := make([]string, 0, len(members))
+	add := func(ids []string) {
+		for _, id := range ids {
+			if _, dup := seen[id]; !dup {
+				seen[id] = struct{}{}
+				result = append(result, id)
+			}
 		}
+	}
+	add(members)
+	for _, key := range []string{s.setUserClientKey(userID, clientID), s.legacyUserClientKey(userID, clientID)} {
+		ids, err := s.client.Do(ctx, s.client.B().Smembers().Key(key).Build()).AsStrSlice()
+		if err != nil && !isNilError(err) {
+			return nil, fmt.Errorf("failed to get tokens for user+client (previous layout): %w", err)
+		}
+		add(ids)
 	}
 	return result, nil
 }
@@ -786,6 +833,9 @@ func (s *Store) revokeFamiliesForTokens(ctx context.Context, tokenIDs []string) 
 func (s *Store) identifyFamilies(ctx context.Context, tokenIDs []string) map[string]bool {
 	families := make(map[string]bool)
 	for _, tokenID := range tokenIDs {
+		if strings.HasPrefix(tokenID, digestMemberPrefix) {
+			continue // an id_token belongs to no refresh-token family
+		}
 		data, err := s.client.Do(ctx, s.client.B().Get().Key(s.refreshTokenMetaKey(tokenID)).Build()).ToString()
 		if err != nil && isNilError(err) {
 			// Key not found under hashed format: try legacy key written by pre-migration pods.
@@ -817,8 +867,15 @@ func (s *Store) revokeIndividualTokens(ctx context.Context, tokenIDs []string) i
 }
 
 // deleteTokenAndMetadata deletes a token and all its associated metadata.
-// Both hashed (current) and legacy (pre-migration) key formats are deleted.
+// Both hashed (current) and legacy (pre-migration) key formats are deleted. An
+// id_token digest member deletes the metadata keyed by that digest.
 func (s *Store) deleteTokenAndMetadata(ctx context.Context, tokenID string) {
+	if digest, ok := strings.CutPrefix(tokenID, digestMemberPrefix); ok {
+		if err := s.client.Do(ctx, s.client.B().Del().Key(s.keyOf("meta", digest)).Build()).Error(); err != nil {
+			s.logger.Debug("Failed to delete id_token metadata during user+client revocation", "error", err)
+		}
+		return
+	}
 	if err := s.client.Do(ctx, s.client.B().Del().Key(
 		s.tokenKey(tokenID), s.legacyTokenKey(tokenID),
 		s.refreshTokenKey(tokenID), s.legacyRefreshTokenKey(tokenID),
@@ -831,19 +888,23 @@ func (s *Store) deleteTokenAndMetadata(ctx context.Context, tokenID string) {
 	}
 }
 
-// deleteUserClientSet deletes the user+client token set (both key formats).
+// deleteUserClientSet deletes the user+client index in every layout.
 func (s *Store) deleteUserClientSet(ctx context.Context, userID, clientID string) {
 	if err := s.client.Do(ctx, s.client.B().Del().Key(
-		s.userClientKey(userID, clientID), s.legacyUserClientKey(userID, clientID),
+		s.userClientKey(userID, clientID), s.setUserClientKey(userID, clientID), s.legacyUserClientKey(userID, clientID),
 	).Build()).Error(); err != nil {
 		s.logger.Warn("Failed to delete user+client set", "user_id", userID, "client_id", clientID, "error", err)
 	}
 }
 
-// GetTokensByUserClient retrieves all token IDs for a user+client combination.
-// Both hashed (current) and legacy (pre-migration) sets are unioned and deduplicated.
-// This is used by Server.RevokeAllTokensForUserClient for provider-side revocation;
-// missing legacy tokens would leave pre-migration tokens unrevoked at the provider.
+// GetTokensByUserClient retrieves all token IDs for a user+client combination,
+// in every index layout, deduplicated (see getTokensForUserClient). This is
+// used by Server.RevokeAllTokensForUserClient for provider-side revocation and
+// in-process unregistration: a missing legacy token would stay unrevoked at the
+// provider, and a token listed twice would be revoked twice, which some
+// providers reject. id_token digests are left out: an id_token has no provider
+// mapping and no registry entry, and the store's own
+// RevokeAllTokensForUserClient deletes its metadata.
 func (s *Store) GetTokensByUserClient(ctx context.Context, userID, clientID string) (tokens []string, err error) {
 	op := s.startTracedOp(ctx, "get_tokens_by_user_client")
 	defer op.end(&err)
@@ -852,31 +913,15 @@ func (s *Store) GetTokensByUserClient(ctx context.Context, userID, clientID stri
 		return nil, fmt.Errorf("userID and clientID cannot be empty")
 	}
 
-	// Union hashed (current) and legacy (pre-migration) sets. During a rolling
-	// deploy both sets may have members; callers such as Server.RevokeAllTokensForUserClient
-	// use this result for provider-side revocation and in-process unregistration,
-	// so missing legacy tokens would leave pre-migration tokens unrevoked at the provider.
-	// Deduplicate: a token written across both sets (edge case during rolling deploy) would
-	// otherwise be double-revoked at the provider, which some providers reject, causing
-	// checkProviderRevocationFailure to abort the local revocation step.
-	tokens, err = s.client.Do(op.ctx, s.client.B().Smembers().Key(s.userClientKey(userID, clientID)).Build()).AsStrSlice()
-	if err != nil && !isNilError(err) {
-		return nil, fmt.Errorf("failed to get tokens for user+client: %w", err)
+	members, err := s.getTokensForUserClient(op.ctx, userID, clientID)
+	if err != nil {
+		return nil, err
 	}
-	legacyTokens, legacyErr := s.client.Do(op.ctx, s.client.B().Smembers().Key(s.legacyUserClientKey(userID, clientID)).Build()).AsStrSlice()
-	if legacyErr != nil && !isNilError(legacyErr) {
-		return nil, fmt.Errorf("failed to get tokens for user+client (legacy): %w", legacyErr)
-	}
-	seen := make(map[string]struct{}, len(tokens)+len(legacyTokens))
-	combined := make([]string, 0, len(tokens)+len(legacyTokens))
-	for _, t := range append(tokens, legacyTokens...) {
-		if _, dup := seen[t]; !dup {
-			seen[t] = struct{}{}
-			combined = append(combined, t)
+	tokens = make([]string, 0, len(members))
+	for _, m := range members {
+		if !strings.HasPrefix(m, digestMemberPrefix) {
+			tokens = append(tokens, m)
 		}
 	}
-	if len(combined) == 0 {
-		return []string{}, nil
-	}
-	return combined, nil
+	return tokens, nil
 }
