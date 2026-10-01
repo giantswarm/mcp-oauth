@@ -4,12 +4,12 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash"
 	"slices"
+	"strconv"
 	"time"
 
 	josejwt "github.com/go-jose/go-jose/v4/jwt"
@@ -338,7 +338,7 @@ type principalClaims struct {
 
 // principalSessionInput encodes the bearer's principal: iss, sub, the client
 // (azp, or the sorted aud set when azp is absent) and the act chain, every
-// field length-prefixed so no two principals encode alike. ok is false when
+// field length-prefixed (netstring style) so no two principals encode alike. ok is false when
 // the bearer is not a JWT or names no iss and sub.
 func principalSessionInput(bearerToken string) (input []byte, ok bool) {
 	var c principalClaims
@@ -347,12 +347,13 @@ func principalSessionInput(bearerToken string) (input []byte, ok bool) {
 	}
 
 	var b []byte
-	field := func(v string) {
-		b = binary.BigEndian.AppendUint32(b, uint32(len(v)))
-		b = append(b, v...)
-	}
 	count := func(n int) {
-		b = binary.BigEndian.AppendUint32(b, uint32(n))
+		b = strconv.AppendInt(b, int64(n), 10)
+		b = append(b, ':')
+	}
+	field := func(v string) {
+		count(len(v))
+		b = append(b, v...)
 	}
 	field(c.Issuer)
 	field(c.Subject)
