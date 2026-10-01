@@ -117,10 +117,11 @@ type BrokeredExchangeRequest struct {
 // token is issued; the result's expiry is the downstream token's and clients
 // re-exchange. Every outcome is audited with the client ID, subject, requested
 // audience, granted scope, and the deterministic cross-hop session ID derived
-// from the subject token, so broker audit lines correlate with downstream MCP
-// audit lines for the same token.
+// from the subject token's bytes (it is computed before validation), so broker
+// audit lines correlate with downstream MCP audit lines for the same token
+// under the default bearer session identity.
 func (s *Server) BrokeredExchange(ctx context.Context, req BrokeredExchangeRequest) (*TokenExchangeResult, error) {
-	sessionID := s.deriveForwardedSessionID(req.Subject.Token)
+	sessionID := s.bearerSessionID(req.Subject.Token)
 
 	if s.exchangeRateLimited(ctx, req.ClientID, req.Audience, sessionID) {
 		return nil, ErrExchangeRateLimited
