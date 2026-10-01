@@ -41,6 +41,26 @@ const (
 	AccessTokenFormatJWT AccessTokenFormat = "jwt"
 )
 
+// ForwardedSessionIdentity selects what the "ext-" session identifier of a
+// validated bearer without a refresh-token family (forwarded ID token,
+// trusted-issuer token, self-issued exchange JWT) is derived from. See
+// Config.ForwardedSessionIdentity and docs/security.md for the trade-off.
+type ForwardedSessionIdentity string
+
+const (
+	// ForwardedSessionIdentityBearer derives the session from the bearer's
+	// bytes: every distinct token is a distinct session, and servers that
+	// receive the same token agree on its session. This is the default.
+	ForwardedSessionIdentityBearer ForwardedSessionIdentity = "bearer"
+
+	// ForwardedSessionIdentityPrincipal derives the session from the
+	// principal the token names: iss, sub, azp (or aud when azp is absent)
+	// and the RFC 8693 act chain. A refreshed token for the same person,
+	// client and actors keeps its session; a token for another person,
+	// client or actor chain gets another one.
+	ForwardedSessionIdentityPrincipal ForwardedSessionIdentity = "principal"
+)
+
 // JWT signing algorithms accepted in AccessTokenFormatJWT mode. The set is
 // deliberately closed: HMAC variants are rejected because they require the
 // resource server to share a symmetric secret with the issuer, defeating the
@@ -798,6 +818,22 @@ type Config struct {
 	// manager or mounted file (not from an environment variable).
 	SessionIDHMACKey []byte
 
+	// ForwardedSessionIdentity selects the input of the "ext-" session ID that
+	// Server.SessionIDForBearer, Server.AcceptForwardedIDToken and
+	// Server.AcceptTrustedIssuerToken return for a validated bearer without a
+	// refresh-token family.
+	//
+	// Default "" (treated as ForwardedSessionIdentityBearer): derived from the
+	// token bytes, so a refreshed token is a new session.
+	//
+	// ForwardedSessionIdentityPrincipal: derived from iss, sub, azp (or aud)
+	// and the act chain, so a resource server keeps per-session state (backend
+	// connections, caches) across refreshes of an on-behalf-of token. A bearer
+	// without a principal (not a JWT, or no iss/sub) keeps the bearer
+	// derivation. Either way, SessionIDHMACKey keys the digest, and the
+	// session ID is never a credential: every request's bearer is validated.
+	ForwardedSessionIdentity ForwardedSessionIdentity
+
 	// RequireNonceEcho enforces upstream id_token `nonce` claim matching on the
 	// authorization-code callback. Derived from DisableNonceEchoRequirement
 	// during config validation — operators should toggle the Disable* knob and
@@ -1127,6 +1163,13 @@ func (c *Config) Validate() error {
 
 	if err := c.validateIntrospectionResourceServers(); err != nil {
 		return err
+	}
+
+	switch c.ForwardedSessionIdentity {
+	case "", ForwardedSessionIdentityBearer, ForwardedSessionIdentityPrincipal:
+	default:
+		return fmt.Errorf("ForwardedSessionIdentity %q is not recognized (allowed: %q, %q)",
+			c.ForwardedSessionIdentity, ForwardedSessionIdentityBearer, ForwardedSessionIdentityPrincipal)
 	}
 
 	if !c.IsJWTAccessTokenFormat() {

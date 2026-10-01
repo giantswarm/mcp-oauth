@@ -360,19 +360,31 @@ func IsJWT(token string) bool {
 // This is useful for routing decisions (e.g., checking audience) before full validation.
 // SECURITY: Never trust the claims returned from this function for authorization decisions.
 func ParseUnverifiedClaims(tokenString string) (map[string]any, error) {
+	var claims map[string]any
+	if err := UnmarshalUnverifiedClaims(tokenString, &claims); err != nil {
+		return nil, err
+	}
+	return claims, nil
+}
+
+// UnmarshalUnverifiedClaims decodes a JWT's payload into v without verifying
+// the signature, for callers that want typed claims (e.g. a struct with
+// josejwt.Audience) rather than the map ParseUnverifiedClaims returns.
+// SECURITY: same caveat as ParseUnverifiedClaims; only decode a token whose
+// signature has been verified when the claims feed a decision.
+func UnmarshalUnverifiedClaims(tokenString string, v any) error {
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-		return nil, fmt.Errorf("not a JWT: expected 3 non-empty segments")
+		return fmt.Errorf("not a JWT: expected 3 non-empty segments")
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode JWT payload: %w", err)
+		return fmt.Errorf("failed to decode JWT payload: %w", err)
 	}
-	var claims map[string]any
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal JWT claims: %w", err)
+	if err := json.Unmarshal(payload, v); err != nil {
+		return fmt.Errorf("failed to unmarshal JWT claims: %w", err)
 	}
-	return claims, nil
+	return nil
 }
 
 // GetAudienceFromClaims extracts the audience claim from JWT claims.

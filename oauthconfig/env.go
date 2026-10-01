@@ -87,6 +87,7 @@ func FromEnvWithPrefix(prefix string) (*server.Config, error) {
 	if err := loadSessionIDHMACKey(prefix, cfg); err != nil {
 		return nil, err
 	}
+	cfg.ForwardedSessionIdentity = server.ForwardedSessionIdentity(os.Getenv(prefix + "FORWARDED_SESSION_IDENTITY"))
 
 	if err := loadTrustedAllowlistsFromEnv(prefix, cfg); err != nil {
 		return nil, err

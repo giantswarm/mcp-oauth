@@ -161,7 +161,7 @@ func TestBrokeredExchange_HappyPath(t *testing.T) {
 	require.Equal(t, "brokered", details["exchange"])
 	require.Equal(t, "gaggle", details["audience"])
 	require.Equal(t, "openid groups", details["scope"])
-	require.Equal(t, srv.deriveForwardedSessionID("subject-jwt"), details["session_id"])
+	require.Equal(t, srv.bearerSessionID("subject-jwt"), details["session_id"])
 }
 
 func TestBrokeredExchange_DefaultIssuedTokenType(t *testing.T) {

@@ -138,7 +138,7 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 	// entry point. Deliberately ahead of subject validation and the self-renewal
 	// check: a session flooding rejected requests (bad subjects, bare renewals)
 	// must still be throttled, so those attempts count against the bucket.
-	sessionID := s.deriveForwardedSessionID(req.Subject.Token)
+	sessionID := s.bearerSessionID(req.Subject.Token)
 	if s.exchangeSessionRateLimited(ctx, sessionID) {
 		return nil, ErrExchangeRateLimited
 	}

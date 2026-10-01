@@ -694,6 +694,24 @@ config := &server.Config{
 
 Recommended key properties: 32 random bytes from `crypto/rand`, base64-encoded for transport, loaded from a secret manager or mounted file (not from an environment variable).
 
+#### `Config.ForwardedSessionIdentity`: bearer or principal
+
+The session identifier above applies to every validated bearer without a refresh-token family: forwarded ID tokens, trusted-issuer tokens and self-issued exchange JWTs, whether they arrive through `AcceptForwardedIDToken`, `AcceptTrustedIssuerToken` or the resource-server middleware (`Server.SessionIDForBearer`). `Config.ForwardedSessionIdentity` selects its input:
+
+| Value | Input | A refreshed token | Choose it when |
+|---|---|---|---|
+| `bearer` (default, also `""`) | the token bytes | is a new session | sessions should end with the token, or servers correlate one token across hops |
+| `principal` | `iss`, `sub`, `azp` (or the sorted `aud` set when `azp` is absent) and the `act` chain | keeps its session | a resource server keeps per-session state (backend connections, capability caches) for an agent acting on behalf of a person, whose token its gateway refreshes |
+
+Both derivations are domain-separated with their own label and keyed with `SessionIDHMACKey` when it is set, so a principal-derived identifier never equals a bearer-derived one. A bearer that names no principal (not a JWT, or no `iss`/`sub`) keeps the bearer derivation. Refresh-token-family sessions (interactive login and refresh) are unaffected.
+
+The trade-off of `principal`:
+
+- **The session id is not a credential.** It correlates state across bearers; every request's bearer is validated as before, and a bearer that fails validation (expired, revoked upstream, wrong audience) gets no session, whatever the derivation.
+- **State outlives a single bearer.** Connections a resource server made with a previous bearer's exchanged tokens keep working until those tokens expire and are re-exchanged from the current bearer. That is the same trust as within one bearer's lifetime under `bearer`.
+- **A person's sessions become linkable over time.** Under `bearer`, two tokens of the same principal are two identifiers; under `principal` they are one, for as long as the principal is unchanged. A different person, client or actor chain is always a different session.
+- **Token exchange keys stay bearer-derived.** `SelfIssuedExchange` and `BrokeredExchange` compute their rate-limit and audit session id from the subject token before validating it, so its claims are not yet trusted there.
+
 #### Expiry behavior
 
 `AcceptForwardedIDToken` does not refresh forwarded tokens — the library holds no refresh credential for them. When the JWT `exp` has passed, validation fails and the caller must propagate 401 so the MCP client re-authenticates against the upstream IdP. Callers should use `acceptance.ExpiresAt` to set any session-cache TTLs rather than re-parsing the JWT.

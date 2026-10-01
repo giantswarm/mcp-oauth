@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -1594,6 +1595,63 @@ func TestHandler_ValidateToken_UnissuedIDToken_FallsBackToBearerSession(t *testi
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Equal(t, srv.SessionIDForBearer(foreignIDToken), capturedSessionID)
 	require.True(t, strings.HasPrefix(capturedSessionID, "ext-"))
+}
+
+// TestHandler_ValidateToken_PrincipalSessionIdentity pins the middleware
+// under the principal identity: two bearers of one principal without a
+// family share a session, and a family-backed bearer keeps its family ID.
+func TestHandler_ValidateToken_PrincipalSessionIdentity(t *testing.T) {
+	store := memory.New()
+	defer store.Stop()
+	provider := mock.NewProvider()
+
+	srv, err := server.New(provider, store, store, store, &server.Config{
+		Issuer:                   testIssuer,
+		ForwardedSessionIdentity: server.ForwardedSessionIdentityPrincipal,
+	}, nil)
+	require.NoError(t, err)
+
+	handler := New(srv, nil)
+
+	jwtWith := func(payload string) string {
+		return "eyJhbGciOiJSUzI1NiJ9." + base64.RawURLEncoding.EncodeToString([]byte(payload)) + ".sig"
+	}
+	first := jwtWith(`{"iss":"https://idp.test","sub":"u1","azp":"gw","act":{"sub":"agent"},"jti":"1"}`)
+	refreshed := jwtWith(`{"iss":"https://idp.test","sub":"u1","azp":"gw","act":{"sub":"agent"},"jti":"2"}`)
+	otherActor := jwtWith(`{"iss":"https://idp.test","sub":"u1","azp":"gw","act":{"sub":"agent-b"},"jti":"3"}`)
+	family := jwtWith(`{"iss":"https://idp.test","sub":"u1","azp":"gw","act":{"sub":"agent"},"jti":"4"}`)
+	const familyID = "family-principal-abc"
+
+	ctx := t.Context()
+	providerToken := &oauth2.Token{AccessToken: "provider-access", Expiry: time.Now().Add(time.Hour)}
+	for _, bearer := range []string{first, refreshed, otherActor, family} {
+		require.NoError(t, store.SaveToken(ctx, bearer, providerToken))
+	}
+	require.NoError(t, store.SaveTokenMetadata(ctx, family, storage.TokenMetadata{
+		UserID:    "mock-user-123",
+		ClientID:  "client-1",
+		TokenType: "access",
+		FamilyID:  familyID,
+	}))
+
+	sessionFor := func(bearer string) string {
+		var capturedSessionID string
+		nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			capturedSessionID, _ = SessionIDFromContext(r.Context())
+		})
+		req := httptest.NewRequest(http.MethodGet, "/test", nil)
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		w := httptest.NewRecorder()
+		handler.ValidateToken(nextHandler).ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code)
+		return capturedSessionID
+	}
+
+	session := sessionFor(first)
+	require.True(t, strings.HasPrefix(session, "ext-"))
+	require.Equal(t, session, sessionFor(refreshed))
+	require.NotEqual(t, session, sessionFor(otherActor))
+	require.Equal(t, familyID, sessionFor(family))
 }
 
 // TestHandler_ValidateToken_IDTokenMetadata_DoesNotGrantAuth pins the

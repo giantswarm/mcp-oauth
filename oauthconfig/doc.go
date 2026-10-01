@@ -19,6 +19,8 @@
 //   - OAUTH_ENCRYPTION_KEY                    — 32-byte AES-GCM key, base64 (preferred) or hex
 //   - OAUTH_SESSION_ID_HMAC_KEY               — base64 32-byte HMAC key
 //     (see server.Config.SessionIDHMACKey for the operator caveat)
+//   - OAUTH_FORWARDED_SESSION_IDENTITY        — "bearer" (default) or "principal"
+//     (see server.Config.ForwardedSessionIdentity; validated by server.New)
 //   - OAUTH_ACCESS_TOKEN_TTL                  — Go duration (e.g. "1h")
 //   - OAUTH_REFRESH_TOKEN_TTL                 — Go duration
 //   - OAUTH_MAX_CLIENTS_PER_IP                — positive integer

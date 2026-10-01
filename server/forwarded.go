@@ -4,10 +4,15 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
+	"slices"
 	"time"
+
+	josejwt "github.com/go-jose/go-jose/v4/jwt"
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/providers"
@@ -35,6 +40,11 @@ const (
 	// derivations. Versioned so a future format change can be distinguished.
 	forwardedSessionIDLabel = "mcp-oauth/v1/forwarded-session-id"
 
+	// forwardedPrincipalSessionIDLabel separates the principal derivation
+	// (Config.ForwardedSessionIdentity = principal) from the bearer one, so
+	// the two never yield the same identifier.
+	forwardedPrincipalSessionIDLabel = "mcp-oauth/v1/forwarded-principal-session-id"
+
 	// sessionIDDigestBytes is the truncation length of the digest output
 	// (64 bits → 16 hex chars). Chosen for audit-log correlation, not as a
 	// security boundary: birthday collision is ~1-in-a-million at ~6.5k
@@ -54,6 +64,9 @@ type ForwardedIDTokenAcceptance struct {
 	// derived from a domain-separated hash of the bearer token:
 	//   default: first sessionIDDigestBytes of sha256(forwardedSessionIDLabel || 0x00 || token)
 	//   with Config.SessionIDHMACKey set: same input, HMAC-SHA-256 with the key
+	//   with Config.ForwardedSessionIdentity = principal: the input is the
+	//   token's iss, sub, azp (or aud) and act chain under
+	//   forwardedPrincipalSessionIDLabel, so a refreshed token keeps its session
 	//
 	// Two MCP servers receiving the same token compute the same SessionID, which
 	// gives cross-hop audit-log correlation when an aggregator fans a single
@@ -261,40 +274,109 @@ func (s *Server) AcceptTrustedIssuerToken(ctx context.Context, bearerToken strin
 	return acceptance, nil
 }
 
-// deriveForwardedSessionID produces the deterministic "ext-<hex>" session
-// identifier. See the SessionID field godoc and docs/security.md for the
-// correlation property and the SessionIDHMACKey operator caveat.
-//
-// The input is domain-separated so Config.SessionIDHMACKey can be safely reused
-// for other keyed derivations without risking cross-purpose collisions.
-// hash.Hash.Write never returns an error — the doc on hash.Hash guarantees it —
-// so the results are ignored.
 // SessionIDForBearer returns the stable session identifier for a validated
 // bearer that has no refresh-token family: forwarded ID tokens, trusted-issuer
 // tokens, and self-issued exchange JWTs. It is the same
-// derivation the forwarded-token and token-exchange paths use, exported so
+// derivation the forwarded-token paths use, exported so
 // the resource-server middleware can assign a session to every validated
 // token, not only those backed by stored family metadata.
+// Config.ForwardedSessionIdentity selects whether the bearer's bytes or its
+// principal are the input.
 func (s *Server) SessionIDForBearer(bearerToken string) string {
 	return s.deriveForwardedSessionID(bearerToken)
 }
 
+// deriveForwardedSessionID produces the deterministic "ext-<hex>" session
+// identifier of a validated bearer. See the SessionID field godoc and
+// docs/security.md for the correlation property and the SessionIDHMACKey
+// operator caveat.
+//
+// The bearer must have been validated: in principal mode its claims are read
+// without a signature check.
 func (s *Server) deriveForwardedSessionID(bearerToken string) string {
-	var digest []byte
-	if len(s.Config.SessionIDHMACKey) > 0 {
-		mac := hmac.New(sha256.New, s.Config.SessionIDHMACKey)
-		_, _ = mac.Write([]byte(forwardedSessionIDLabel))
-		_, _ = mac.Write([]byte{0x00})
-		_, _ = mac.Write([]byte(bearerToken))
-		digest = mac.Sum(nil)
-	} else {
-		h := sha256.New()
-		_, _ = h.Write([]byte(forwardedSessionIDLabel))
-		_, _ = h.Write([]byte{0x00})
-		_, _ = h.Write([]byte(bearerToken))
-		digest = h.Sum(nil)
+	if s.Config.ForwardedSessionIdentity == ForwardedSessionIdentityPrincipal {
+		if input, ok := principalSessionInput(bearerToken); ok {
+			return s.sessionIDDigest(forwardedPrincipalSessionIDLabel, input)
+		}
 	}
-	return "ext-" + hex.EncodeToString(digest[:sessionIDDigestBytes])
+	return s.bearerSessionID(bearerToken)
+}
+
+// bearerSessionID is the session identifier derived from the bearer's bytes.
+// The token-exchange paths use it directly: they key their rate limiter on
+// the subject token before validating it, so its claims are not yet trusted.
+func (s *Server) bearerSessionID(bearerToken string) string {
+	return s.sessionIDDigest(forwardedSessionIDLabel, []byte(bearerToken))
+}
+
+// sessionIDDigest hashes the domain-separated input, keyed with
+// Config.SessionIDHMACKey when one is configured. The label keeps the key
+// safely reusable for other keyed derivations and the two derivations apart.
+// hash.Hash.Write never returns an error — the doc on hash.Hash guarantees it —
+// so the results are ignored.
+func (s *Server) sessionIDDigest(label string, input []byte) string {
+	var h hash.Hash
+	if len(s.Config.SessionIDHMACKey) > 0 {
+		h = hmac.New(sha256.New, s.Config.SessionIDHMACKey)
+	} else {
+		h = sha256.New()
+	}
+	_, _ = h.Write([]byte(label))
+	_, _ = h.Write([]byte{0x00})
+	_, _ = h.Write(input)
+	return "ext-" + hex.EncodeToString(h.Sum(nil)[:sessionIDDigestBytes])
+}
+
+// principalClaims are the claims a principal-derived session is keyed on.
+type principalClaims struct {
+	Issuer          string           `json:"iss"`
+	Subject         string           `json:"sub"`
+	AuthorizedParty string           `json:"azp"`
+	Audience        josejwt.Audience `json:"aud"`
+	Act             *oidc.ActorClaim `json:"act"`
+}
+
+// principalSessionInput encodes the bearer's principal: iss, sub, the client
+// (azp, or the sorted aud set when azp is absent) and the act chain, every
+// field length-prefixed so no two principals encode alike. ok is false when
+// the bearer is not a JWT or names no iss and sub.
+func principalSessionInput(bearerToken string) (input []byte, ok bool) {
+	var c principalClaims
+	if err := oidc.UnmarshalUnverifiedClaims(bearerToken, &c); err != nil || c.Issuer == "" || c.Subject == "" {
+		return nil, false
+	}
+
+	var b []byte
+	field := func(v string) {
+		b = binary.BigEndian.AppendUint32(b, uint32(len(v)))
+		b = append(b, v...)
+	}
+	count := func(n int) {
+		b = binary.BigEndian.AppendUint32(b, uint32(n))
+	}
+	field(c.Issuer)
+	field(c.Subject)
+	if c.AuthorizedParty != "" {
+		field("azp")
+		field(c.AuthorizedParty)
+	} else {
+		aud := slices.Clone([]string(c.Audience))
+		slices.Sort(aud)
+		aud = slices.Compact(aud)
+		field("aud")
+		count(len(aud))
+		for _, a := range aud {
+			field(a)
+		}
+	}
+	chain := c.Act.Chain()
+	field("act")
+	count(len(chain))
+	for _, a := range chain {
+		field(a.Issuer)
+		field(a.Subject)
+	}
+	return b, true
 }
 
 // recordForwardedIDTokenAccepted emits the forwarded-ID-token metric.
