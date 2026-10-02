@@ -270,6 +270,21 @@ func TestLogSecurityWarnings(t *testing.T) {
 			},
 		},
 		{
+			name: "AllowPrivateIPClientMetadataHosts warning",
+			config: &Config{
+				RequirePKCE:                       true,
+				RegistrationAccessToken:           "token",
+				AllowPrivateIPClientMetadataHosts: []string{"client.internal.example"},
+			},
+			expectedWarnings: []string{
+				"SECURITY WARNING: AllowPrivateIPClientMetadataHosts is set",
+				"client.internal.example",
+			},
+			notExpectedWarnings: []string{
+				"SECURITY WARNING: AllowPrivateIPClientMetadata is enabled",
+			},
+		},
+		{
 			name: "AllowPrivateIPJWKS warning",
 			config: &Config{
 				RequirePKCE:             true,

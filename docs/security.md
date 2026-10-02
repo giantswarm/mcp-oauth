@@ -489,6 +489,7 @@ The following flags exist for non-production scenarios. Each emits a startup `WA
 |---|---|---|
 | `AllowInsecureHTTP` | Bearer tokens transmitted in clear — full credential exposure | Non-loopback HTTP test environments. RFC 8252 §7.3 loopback HTTP (`http://localhost`) is always permitted without this flag. |
 | `AllowPrivateIPClientMetadata` | SSRF into cluster — CIMD metadata URLs resolve to private / loopback IPs (CWE-918) | CIMD fetch against internal metadata endpoints during development |
+| `AllowPrivateIPClientMetadataHosts` | SSRF limited to the listed hostnames — their CIMD metadata URLs may resolve to private / loopback IPs; every other host keeps the guard | A known CIMD client on a private hostname (an internal load balancer, a VPN-only platform). Prefer it to `AllowPrivateIPClientMetadata`; a client served under an internal CA also needs `ClientMetadataRootCAs` |
 | `AllowPrivateIPJWKS` | SSRF into cluster — JWKS endpoints resolve to private / loopback IPs (CWE-918) | Private IdP deployments (e.g., internal Dex) where the JWKS URI is on an RFC 1918 address |
 
 ```go

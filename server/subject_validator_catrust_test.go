@@ -96,6 +96,7 @@ func newTLSServerWithFreshCert(t *testing.T, handler http.Handler) *httptest.Ser
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		IPAddresses:           []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
+		DNSNames:              []string{"localhost"},
 		IsCA:                  true,
 		BasicConstraintsValid: true,
 	}
