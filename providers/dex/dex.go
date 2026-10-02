@@ -117,9 +117,9 @@ type Config struct {
 
 	// DiscoveryTimeout bounds how long NewProvider waits for Dex to answer OIDC
 	// discovery, retrying with backoff while Dex is unavailable (5xx or 429,
-	// connection refused or reset, DNS not resolvable yet, a timeout). Errors
-	// that waiting cannot resolve (another status, a TLS failure, an invalid
-	// discovery document) fail at once. Zero selects DefaultDiscoveryTimeout;
+	// connection refused or reset, a DNS or request timeout). Errors that
+	// waiting cannot resolve (another status, a host that does not exist, a
+	// TLS failure, an invalid discovery document) fail at once. Zero selects DefaultDiscoveryTimeout;
 	// a negative value causes NewProvider to return an error.
 	//
 	// A consumer that builds the provider before serving its health endpoints
@@ -379,9 +379,11 @@ func discoverOnce(client *oidc.DiscoveryClient, issuerURL string, timeout time.D
 }
 
 // isDiscoveryRetryable reports whether a failed discovery attempt can succeed
-// by waiting: Dex answered 5xx or 429, the connection was refused or reset,
-// the host does not resolve yet, or the attempt timed out. Any other status, a
-// TLS failure, an SSRF refusal and an invalid document are final.
+// by waiting: Dex answered 5xx or 429, the connection was refused or reset, a
+// DNS lookup timed out or failed temporarily, or the attempt timed out. Any
+// other status, a host that does not exist (NXDOMAIN, a misconfigured issuer
+// rather than an outage), a TLS failure, an SSRF refusal and an invalid
+// document are final.
 //
 // net.Error alone is no signal here: http.Client wraps every transport error,
 // an SSRF refusal included, in *url.Error, which implements it.
@@ -391,9 +393,11 @@ func isDiscoveryRetryable(err error) bool {
 		return statusErr.StatusCode >= http.StatusInternalServerError || statusErr.StatusCode == http.StatusTooManyRequests
 	}
 	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return dnsErr.IsTimeout || dnsErr.IsTemporary
+	}
 	var netErr net.Error
-	return errors.As(err, &dnsErr) ||
-		(errors.As(err, &netErr) && netErr.Timeout()) ||
+	return (errors.As(err, &netErr) && netErr.Timeout()) ||
 		errors.Is(err, syscall.ECONNREFUSED) ||
 		errors.Is(err, syscall.ECONNRESET) ||
 		errors.Is(err, io.EOF) ||
