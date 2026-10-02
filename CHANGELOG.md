@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `dex.NewProvider` waits for a Dex that does not answer OIDC discovery yet instead of failing on the first attempt: on a 5xx or 429, a refused or reset connection, an unresolvable host or a timeout it retries with a backoff doubling from 250 ms to 10 s, logging each attempt, for up to `dex.Config.DiscoveryTimeout` (default `dex.DefaultDiscoveryTimeout`, 5 minutes). Another status, a TLS failure, an SSRF refusal or an invalid document still fails at once; after the timeout the error names the last failure and the number of attempts. A consumer that starts while Dex is being rescheduled no longer crash-loops. One that builds the provider before serving its health endpoints needs a startup probe longer than the timeout.
+- `oidc.DiscoveryStatusError`, the error `DiscoveryClient.Discover` returns for a non-200 answer, carrying the status code. Its message is unchanged.
 - `server.Config.AllowPrivateIPClientMetadataHosts`: the CIMD private-IP allowance for the listed hostnames only, like `TrustedIssuer.AllowPrivateIPJWKSHosts`. A CIMD client on a listed private hostname is fetched; every other host keeps the SSRF guard at validation and connection time. The startup `WARN` lists the hosts. `AllowPrivateIPClientMetadata` keeps lifting the guard for every host.
 - `server.Config.ClientMetadataRootCAs`: the CA pool the CIMD fetch verifies the metadata host's certificate against, for clients served under an internal CA. nil keeps the system pool. Until now the CIMD fetch always used the system pool, so such a client failed with an x509 error even with the private-IP guard lifted.
 

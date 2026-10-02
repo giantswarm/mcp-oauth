@@ -11,7 +11,9 @@
 //   - connector_id Support: Bypass Dex's connector selection UI by specifying a connector
 //   - Groups Claim: Automatically includes the 'groups' scope to retrieve user group memberships
 //   - Refresh Token Rotation: Properly handles Dex's strict refresh token rotation policy
-//   - OIDC Discovery: Dynamically fetches endpoints via OIDC discovery with SSRF protection
+//   - OIDC Discovery: Dynamically fetches endpoints via OIDC discovery with SSRF protection;
+//     NewProvider waits for an unavailable Dex (5xx, connection refused, timeout) with
+//     backoff for up to Config.DiscoveryTimeout (default DefaultDiscoveryTimeout, 5 minutes)
 //   - Cross-Client Audience Scopes: Helper functions for SSO token forwarding to multiple clients
 //
 // # Security Features

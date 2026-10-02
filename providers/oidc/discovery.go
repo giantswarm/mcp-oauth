@@ -39,6 +39,17 @@ type DiscoveryDocument struct {
 	TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported,omitempty"`
 }
 
+// DiscoveryStatusError is returned by Discover when the discovery endpoint
+// answers with a status other than 200 OK. Match it with errors.As to tell an
+// unavailable IdP (5xx, 429) from a rejected request.
+type DiscoveryStatusError struct {
+	StatusCode int
+}
+
+func (e *DiscoveryStatusError) Error() string {
+	return fmt.Sprintf("OIDC discovery failed with status %d", e.StatusCode)
+}
+
 // cachedDocument holds a discovery document with its fetch timestamp.
 type cachedDocument struct {
 	document  *DiscoveryDocument
@@ -222,7 +233,7 @@ func (c *DiscoveryClient) fetchAndCache(ctx context.Context, issuerURL string) (
 
 	if resp.StatusCode != http.StatusOK {
 		_ = resp.Body.Close()
-		return nil, fmt.Errorf("OIDC discovery failed with status %d", resp.StatusCode)
+		return nil, &DiscoveryStatusError{StatusCode: resp.StatusCode}
 	}
 
 	// SECURITY: Limit response body size to prevent memory exhaustion attacks

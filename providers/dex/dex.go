@@ -7,18 +7,35 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
+)
+
+const (
+	// DefaultDiscoveryTimeout is how long NewProvider waits by default for a
+	// Dex that does not answer OIDC discovery yet, e.g. one whose only replica
+	// is being rescheduled.
+	DefaultDiscoveryTimeout = 5 * time.Minute
+
+	// discoveryBackoffInitial and discoveryBackoffMax bound the wait between
+	// two discovery attempts in NewProvider; the wait doubles from the first
+	// to the second.
+	discoveryBackoffInitial = 250 * time.Millisecond
+	discoveryBackoffMax     = 10 * time.Second
 )
 
 // Provider implements the providers.Provider interface for Dex OAuth.
@@ -98,6 +115,18 @@ type Config struct {
 	// RequestTimeout is the timeout for provider API calls (default: 30s)
 	RequestTimeout time.Duration
 
+	// DiscoveryTimeout bounds how long NewProvider waits for Dex to answer OIDC
+	// discovery, retrying with backoff while Dex is unavailable (5xx or 429,
+	// connection refused or reset, DNS not resolvable yet, a timeout). Errors
+	// that waiting cannot resolve (another status, a TLS failure, an invalid
+	// discovery document) fail at once. Zero selects DefaultDiscoveryTimeout;
+	// a negative value causes NewProvider to return an error.
+	//
+	// A consumer that builds the provider before serving its health endpoints
+	// needs a startup probe longer than this timeout, or its liveness probe
+	// restarts the container while NewProvider waits.
+	DiscoveryTimeout time.Duration
+
 	// MaxGroups is the maximum number of groups to accept from the OIDC groups claim.
 	// Groups beyond this limit are truncated (not rejected) and a warning is logged.
 	// Default: oidc.DefaultMaxGroups (600). Set higher for enterprise environments
@@ -163,7 +192,7 @@ func NewProvider(cfg *Config) (*Provider, error) {
 	}
 	discoveryClient := resolveDiscoveryClient(cfg.discoveryClient, httpClient, logger)
 
-	doc, err := performOIDCDiscovery(discoveryClient, cfg.IssuerURL, requestTimeout)
+	doc, err := performOIDCDiscovery(discoveryClient, cfg.IssuerURL, requestTimeout, resolveDiscoveryTimeout(cfg.DiscoveryTimeout), logger)
 	if err != nil {
 		return nil, err
 	}
@@ -206,6 +235,9 @@ func validateRequiredConfig(cfg *Config) error {
 	}
 	if cfg.IssuerURL == "" {
 		return fmt.Errorf("issuer URL is required")
+	}
+	if cfg.DiscoveryTimeout < 0 {
+		return fmt.Errorf("discovery timeout must not be negative, got %v", cfg.DiscoveryTimeout)
 	}
 
 	// SECURITY: Validate issuer URL with SSRF protection.
@@ -300,16 +332,73 @@ func resolveDiscoveryClient(override *oidc.DiscoveryClient, httpClient *http.Cli
 	return oidc.NewDiscoveryClient(httpClient, 1*time.Hour, logger)
 }
 
-// performOIDCDiscovery performs OIDC discovery to fetch endpoints.
-func performOIDCDiscovery(client *oidc.DiscoveryClient, issuerURL string, timeout time.Duration) (*oidc.DiscoveryDocument, error) {
+// resolveDiscoveryTimeout returns the discovery timeout, using the default if
+// not set.
+func resolveDiscoveryTimeout(timeout time.Duration) time.Duration {
+	if timeout == 0 {
+		return DefaultDiscoveryTimeout
+	}
+	return timeout
+}
+
+// performOIDCDiscovery fetches the discovery document. While Dex is
+// unavailable it retries with a doubling backoff until discoveryTimeout has
+// passed, so a consumer that starts during a short IdP outage waits for Dex
+// instead of exiting. Each attempt is bounded by requestTimeout.
+func performOIDCDiscovery(client *oidc.DiscoveryClient, issuerURL string, requestTimeout, discoveryTimeout time.Duration, logger *slog.Logger) (*oidc.DiscoveryDocument, error) {
+	deadline := time.Now().Add(discoveryTimeout)
+	backoff := discoveryBackoffInitial
+	for attempt := 1; ; attempt++ {
+		doc, err := discoverOnce(client, issuerURL, requestTimeout)
+		if err == nil {
+			if attempt > 1 {
+				logger.Info("Dex OIDC discovery succeeded", "issuer", issuerURL, "attempts", attempt)
+			}
+			return doc, nil
+		}
+		if !isDiscoveryRetryable(err) {
+			return nil, fmt.Errorf("OIDC discovery failed: %w", err)
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, fmt.Errorf("OIDC discovery failed: Dex not available within the discovery timeout of %v (%d attempts): %w", discoveryTimeout, attempt, err)
+		}
+		wait := min(backoff, remaining)
+		logger.Warn("Dex OIDC discovery failed, retrying",
+			"issuer", issuerURL, "attempt", attempt, "retry_in", wait, "error", err)
+		time.Sleep(wait)
+		backoff = min(2*backoff, discoveryBackoffMax)
+	}
+}
+
+// discoverOnce makes one discovery attempt bounded by timeout.
+func discoverOnce(client *oidc.DiscoveryClient, issuerURL string, timeout time.Duration) (*oidc.DiscoveryDocument, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	return client.Discover(ctx, issuerURL)
+}
 
-	doc, err := client.Discover(ctx, issuerURL)
-	if err != nil {
-		return nil, fmt.Errorf("OIDC discovery failed: %w", err)
+// isDiscoveryRetryable reports whether a failed discovery attempt can succeed
+// by waiting: Dex answered 5xx or 429, the connection was refused or reset,
+// the host does not resolve yet, or the attempt timed out. Any other status, a
+// TLS failure, an SSRF refusal and an invalid document are final.
+//
+// net.Error alone is no signal here: http.Client wraps every transport error,
+// an SSRF refusal included, in *url.Error, which implements it.
+func isDiscoveryRetryable(err error) bool {
+	var statusErr *oidc.DiscoveryStatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.StatusCode >= http.StatusInternalServerError || statusErr.StatusCode == http.StatusTooManyRequests
 	}
-	return doc, nil
+	var dnsErr *net.DNSError
+	var netErr net.Error
+	return errors.As(err, &dnsErr) ||
+		(errors.As(err, &netErr) && netErr.Timeout()) ||
+		errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, context.DeadlineExceeded)
 }
 
 // Name returns the provider name
