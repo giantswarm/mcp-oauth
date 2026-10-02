@@ -613,7 +613,30 @@ type Config struct {
 	// internal network. PKCE and other OAuth security measures still apply.
 	//
 	// Default: false (blocked for security)
+	//
+	// Prefer AllowPrivateIPClientMetadataHosts when only known hosts are private.
 	AllowPrivateIPClientMetadata bool
+
+	// AllowPrivateIPClientMetadataHosts lists the hostnames whose CIMD metadata
+	// URLs may resolve to private, loopback or link-local addresses. Every other
+	// host keeps the SSRF guard, at validation and at connection time, so DNS
+	// rebinding stays covered. Entries match the client_id URL's hostname exactly
+	// (no port, no wildcard), like TrustedIssuer.AllowPrivateIPJWKSHosts.
+	//
+	// Use it instead of AllowPrivateIPClientMetadata when a known client lives on
+	// a private hostname (an internal load balancer, a VPN-only platform).
+	// AllowPrivateIPClientMetadata=true still lifts the guard for every host.
+	//
+	// Default: empty (blocked for every host)
+	AllowPrivateIPClientMetadataHosts []string
+
+	// ClientMetadataRootCAs is the CA pool used to verify the TLS certificate of
+	// a CIMD metadata URL, for clients served under an internal CA. nil uses the
+	// system pool. The pool replaces the system roots rather than extending them,
+	// so include them (x509.SystemCertPool) when public CIMD clients must keep
+	// working. It applies to every CIMD fetch, with or without a private-IP
+	// allowance.
+	ClientMetadataRootCAs *x509.CertPool
 
 	// AllowPrivateIPJWKS allows JWKS endpoints to resolve to private IP addresses
 	// (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 per RFC 1918) during SSO token
