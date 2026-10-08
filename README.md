@@ -160,7 +160,7 @@ Production deployments **MUST** use a secret manager:
 - Commit secrets to version control
 - Store secrets in container images or Dockerfiles
 
-See [Production Example - Secret Management](./examples/production/README.md#secret-management-required-for-production) for implementation guidance and examples.
+See [Production Example - Secret Management](./examples/production/README.md#1-secret-management-required-for-production) for implementation guidance and examples.
 
 ### Documentation
 
