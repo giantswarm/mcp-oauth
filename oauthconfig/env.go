@@ -308,7 +308,7 @@ func optionalSecret(name string) (string, error) {
 		if err := checkSecretFilePermissions(name, path); err != nil {
 			return "", err
 		}
-		b, err := os.ReadFile(path)
+		b, err := os.ReadFile(path) // #nosec G703 -- the operator's <NAME>_FILE mounted-secret path, read by design
 		if err != nil {
 			return "", fmt.Errorf("%s_FILE: %w", name, err)
 		}
@@ -320,7 +320,7 @@ func optionalSecret(name string) (string, error) {
 // checkSecretFilePermissions warns (or errors, under OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS)
 // when a secret file is readable by anyone other than the owner. CWE-732.
 func checkSecretFilePermissions(name, path string) error {
-	info, err := os.Stat(path)
+	info, err := os.Stat(path) // #nosec G703 -- the operator's <NAME>_FILE mounted-secret path, checked by design
 	if err != nil {
 		// Read will surface the same error with full context; bail silently here.
 		return nil

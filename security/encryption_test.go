@@ -550,7 +550,7 @@ func TestEncryptor_DecryptV0EnvelopeWithLeading0x01NonceByte(t *testing.T) {
 	}
 
 	const plaintext = "v0-row-with-colliding-first-nonce-byte"
-	ct := aead.Seal(nil, nonce, []byte(plaintext), nil)
+	ct := aead.Seal(nil, nonce, []byte(plaintext), nil) // #nosec G407 -- the first nonce byte is pinned on purpose, the rest is random
 	legacy := base64.StdEncoding.EncodeToString(append(nonce, ct...))
 
 	got, err := enc.Decrypt(legacy)
