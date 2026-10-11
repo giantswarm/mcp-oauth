@@ -1,8 +1,7 @@
 package server
 
 // Reproduction of the refresh-token rotation race described in
-// giantswarm/giantswarm#37164 (root cause 2) and the bumblebee-plans
-// mcp-oauth-rotation-race PRD.
+// giantswarm/giantswarm#37164 (root cause 2).
 //
 // Scenario: one user, two MCP sessions (same OAuth client). Both sessions'
 // provider-token copies hold the SAME single-use dex refresh token — exactly
