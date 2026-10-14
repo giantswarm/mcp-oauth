@@ -9,6 +9,9 @@ import (
 	"testing"
 
 	"golang.org/x/oauth2"
+
+	"github.com/giantswarm/mcp-oauth/providers"
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 )
 
 func TestIsTransientProviderError(t *testing.T) {
@@ -29,6 +32,11 @@ func TestIsTransientProviderError(t *testing.T) {
 		{"timeout", fmt.Errorf("gave up waiting for in-flight provider refresh: %w", context.DeadlineExceeded), true},
 		{"connection refused", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}, true},
 		{"no refresh token", errors.New("shared provider token for user has no refresh token"), false},
+		{"userinfo 503", &providers.UserInfoStatusError{StatusCode: http.StatusServiceUnavailable}, true},
+		{"userinfo 429", &providers.UserInfoStatusError{StatusCode: http.StatusTooManyRequests}, true},
+		{"userinfo 401", &providers.UserInfoStatusError{StatusCode: http.StatusUnauthorized}, false},
+		{"discovery 502", fmt.Errorf("OIDC discovery failed: %w", &oidc.DiscoveryStatusError{StatusCode: http.StatusBadGateway}), true},
+		{"discovery 404", fmt.Errorf("OIDC discovery failed: %w", &oidc.DiscoveryStatusError{StatusCode: http.StatusNotFound}), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

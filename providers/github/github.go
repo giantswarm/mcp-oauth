@@ -307,7 +307,7 @@ func (p *Provider) fetchUserInfo(ctx context.Context, accessToken string) (*prov
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("user info request failed with status %d", resp.StatusCode)
+		return nil, &providers.UserInfoStatusError{StatusCode: resp.StatusCode}
 	}
 
 	// Parse GitHub's user response

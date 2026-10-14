@@ -274,6 +274,60 @@ func TestValidateToken_MetadataBackendFailureIsUnavailable(t *testing.T) {
 	}
 }
 
+// TestValidateToken_ProviderUnavailableIsUnavailable: a userinfo answer the
+// identity provider did not serve (5xx) rejected nothing, so the bearer is
+// answered 503 temporarily_unavailable with Retry-After, never 401
+// invalid_token, while a userinfo rejection (401) stays 401.
+func TestValidateToken_ProviderUnavailableIsUnavailable(t *testing.T) {
+	tests := []struct {
+		name     string
+		status   int
+		wantCode int
+		wantErr  string
+	}{
+		{"userinfo 503", http.StatusServiceUnavailable, http.StatusServiceUnavailable, constants.ErrorCodeTemporarilyUnavailable},
+		{"userinfo 401", http.StatusUnauthorized, http.StatusUnauthorized, constants.ErrorCodeInvalidToken},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := memory.New()
+			t.Cleanup(store.Stop)
+			provider := mock.NewProvider()
+			provider.ValidateTokenFunc = func(context.Context, string) (*providers.UserInfo, error) {
+				return nil, &providers.UserInfoStatusError{StatusCode: tt.status}
+			}
+			srv, err := server.New(provider, store, store, store, &server.Config{Issuer: testIssuer}, slog.New(slog.DiscardHandler))
+			if err != nil {
+				t.Fatalf("server.New: %v", err)
+			}
+			h := New(srv, slog.New(slog.DiscardHandler))
+
+			req := httptest.NewRequest(http.MethodGet, "/test", nil)
+			req.Header.Set("Authorization", "Bearer opaque-access-token")
+			w := httptest.NewRecorder()
+			served := false
+			h.ValidateToken(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { served = true })).ServeHTTP(w, req)
+			if w.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d (body %s)", w.Code, tt.wantCode, w.Body.String())
+			}
+			if served {
+				t.Error("the protected handler ran although the bearer was not validated")
+			}
+			if !strings.Contains(w.Body.String(), tt.wantErr) {
+				t.Errorf("body = %s, want %s", w.Body.String(), tt.wantErr)
+			}
+			if tt.wantCode == http.StatusServiceUnavailable {
+				if got := w.Header().Get("Retry-After"); got != "5" {
+					t.Errorf("Retry-After = %q, want %q", got, "5")
+				}
+				if got := w.Header().Get("WWW-Authenticate"); got != "" {
+					t.Errorf("WWW-Authenticate = %q, want none on a 503", got)
+				}
+			}
+		})
+	}
+}
+
 func TestTokenSourceForLog(t *testing.T) {
 	cases := map[string]struct {
 		in   *providers.UserInfo

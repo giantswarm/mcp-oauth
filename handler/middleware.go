@@ -70,14 +70,19 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 // authenticateBearer validates the bearer and loads its stored metadata (one
 // lookup, shared by DPoP binding, scope validation and the session ID). ok is
 // false when the response has been written: 401 invalid_token for a rejected
-// bearer, or 503 temporarily_unavailable when the token store did not answer
-// on either step — a store outage is not a rejected bearer, and a 401 would
-// make the client discard its token and start a new authorization.
+// bearer, or 503 temporarily_unavailable when the token store (on either
+// step) or the identity provider did not answer — an outage is not a
+// rejected bearer, and a 401 would make the client discard its token and
+// start a new authorization.
 func (h *Handler) authenticateBearer(w http.ResponseWriter, r *http.Request, accessToken, clientIP string, startTime time.Time) (*providers.UserInfo, *storage.TokenMetadata, bool) {
 	userInfo, err := h.server.ValidateToken(r.Context(), accessToken)
 	if err != nil {
 		if errors.Is(err, server.ErrStorageUnavailable) {
 			h.writeStorageUnavailable(w, r, endpointValidateToken, r.Method, nil, startTime, err)
+			return nil, nil, false
+		}
+		if errors.Is(err, server.ErrProviderUnavailable) {
+			h.writeProviderUnavailable(w, r, endpointValidateToken, r.Method, nil, startTime, err)
 			return nil, nil, false
 		}
 		// The server's audit event names the rejection reason; the error
