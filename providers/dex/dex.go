@@ -587,7 +587,7 @@ func (p *Provider) ValidateToken(ctx context.Context, accessToken string) (*prov
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("userinfo request failed with status %d", resp.StatusCode)
+		return nil, &providers.UserInfoStatusError{StatusCode: resp.StatusCode}
 	}
 
 	// Parse Dex's user info response

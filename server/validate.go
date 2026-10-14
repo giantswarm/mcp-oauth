@@ -303,11 +303,12 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 // limiting should be done at the HTTP layer with IP address, not here
 // with the token.
 //
-// Error responses: an error matching ErrStorageUnavailable (errors.Is)
-// means the token store did not answer, so the token was neither validated
-// nor rejected; callers answer it as 503 temporarily_unavailable with a
-// Retry-After header and never as 401, which clients read as a dead token
-// (the handler package's ValidateToken middleware does this). For every
+// Error responses: an error matching ErrStorageUnavailable or
+// ErrProviderUnavailable (errors.Is) means the token store or the identity
+// provider did not answer, so the token was neither validated nor rejected;
+// callers answer it as 503 temporarily_unavailable with a Retry-After header
+// and never as 401, which clients read as a dead token (the handler
+// package's ValidateToken middleware does this). For every
 // other error callers SHOULD respond with a single 401 form
 // regardless of the returned error class. The error message distinguishes
 // expired / revoked / audience-mismatch / family-revoked / unknown for
@@ -373,6 +374,11 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 	// Validate with provider (userinfo endpoint)
 	userInfo, err := s.provider.ValidateToken(ctx, tokenForProviderValidation)
 	if err != nil {
+		if isTransientProviderError(err) {
+			// The provider did not answer, so it rejected nothing: a 401
+			// here would make the client discard a live token.
+			return nil, s.providerUnavailable(ctx, "token validation", "", "", err)
+		}
 		s.Auditor.LogAuthFailure(ctx, "", "", "", err.Error())
 		return nil, err
 	}
