@@ -7,39 +7,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-10-14
+
 ### Added
 
 - `providers.UserInfoStatusError`, the error the Dex, Google and GitHub providers' `ValidateToken` return for a non-200 userinfo answer, carrying the status code. The GitHub message now reads `userinfo request failed with status <n>` like the others.
+
+### Fixed
+
+- A bearer whose validation the identity provider did not serve -- its userinfo or discovery endpoint answered 5xx or 429, timed out or refused the connection -- is answered `503 temporarily_unavailable` with `Retry-After` instead of `401 invalid_token`. The provider rejected nothing, and a 401 made the client discard a live token (an MCP client read the OAuth error body as an empty tool answer). `server.ValidateToken` returns `ErrProviderUnavailable` for it, audited as `provider_unavailable`; a userinfo rejection (401 and the other 4xx) stays a 401.
+
+## [1.7.0] - 2026-10-02
+
+### Added
+
 - `dex.NewProvider` waits for a Dex that does not answer OIDC discovery yet instead of failing on the first attempt: on a 5xx or 429, a refused or reset connection, or a DNS or request timeout it retries with a backoff doubling from 250 ms to 10 s, logging each attempt, for up to `dex.Config.DiscoveryTimeout` (default `dex.DefaultDiscoveryTimeout`, 5 minutes). Another status, a host that does not exist (NXDOMAIN), a TLS failure, an SSRF refusal or an invalid document still fails at once; after the timeout the error names the last failure and the number of attempts. A consumer that starts while Dex is being rescheduled no longer crash-loops. One that builds the provider before serving its health endpoints needs a startup probe longer than the timeout.
 - `oidc.DiscoveryStatusError`, the error `DiscoveryClient.Discover` returns for a non-200 answer, carrying the status code. Its message is unchanged.
+
+## [1.6.0] - 2026-10-02
+
+### Added
+
 - `server.Config.AllowPrivateIPClientMetadataHosts`: the CIMD private-IP allowance for the listed hostnames only, like `TrustedIssuer.AllowPrivateIPJWKSHosts`. A CIMD client on a listed private hostname is fetched; every other host keeps the SSRF guard at validation and connection time. The startup `WARN` lists the hosts. `AllowPrivateIPClientMetadata` keeps lifting the guard for every host.
 - `server.Config.ClientMetadataRootCAs`: the CA pool the CIMD fetch verifies the metadata host's certificate against, for clients served under an internal CA. nil keeps the system pool. Until now the CIMD fetch always used the system pool, so such a client failed with an x509 error even with the private-IP guard lifted.
 
+### Fixed
+
+- The CIMD fetch dials the addresses its connection-time SSRF check validated instead of resolving the host a second time, closing the window in which a DNS answer changing between the check and the dial could reach a private address.
+
+## [1.5.0] - 2026-10-01
+
+### Added
+
 - `server.Config.ForwardedSessionIdentity` (`OAUTH_FORWARDED_SESSION_IDENTITY`): `principal` derives the `ext-` session of a validated bearer without a refresh-token family (forwarded ID token, trusted-issuer token, self-issued exchange JWT) from `iss`, `sub`, `azp` (or the `aud` set) and the `act` chain instead of the token bytes, domain-separated and keyed with `SessionIDHMACKey` as before. A refreshed on-behalf-of token for the same person, client and actors then keeps its session, so a resource server no longer rebuilds its per-session state on every refresh; another person, client or actor chain is another session. The default `bearer` keeps the current derivation; the token-exchange rate-limit and audit key stays bearer-derived. `docs/security.md` describes the trade-off.
 - `oidc.UnmarshalUnverifiedClaims`, the typed counterpart of `ParseUnverifiedClaims`.
-- `instrumentation.Config.MeterProvider`: the application hands the library the OpenTelemetry meter provider it already runs (typically `otel.GetMeterProvider()`), and the `oauth.*`, `storage.*` and `security.*` series are recorded through it and appear on the application's own metrics endpoint. Until now the library's only export path was the exporter `MetricsExporter` built -- for `prometheus` a collector on the default registerer, which an application serving a registry of its own never gathers, so its OAuth server ran with every metric silently dropped. Mutually exclusive with `MetricsExporter`; `PrometheusExporter()` returns nil; the application owns export and shutdown.
-- `oidc.NewDefaultDialHTTPClient(timeout, rootCAs)`, the client for calls to an operator-configured provider endpoint (OIDC discovery, token endpoint). Standard dialer, cross-host redirects refused, proxy environment honoured, and the endpoint's certificate verified against `rootCAs` (nil uses the system pool). It applies no SSRF dial guard, so use `NewSSRFSafeHTTPClient` whenever the target URL can come from a token or a request.
-- `oidc.DefaultExpectContinueTimeout`, the bound the shared transport applies to a 100-continue response.
-- `dex.Config.AudienceResolver`, an optional `func() []string` that reports the Dex cross-client audiences to request. The provider calls it per authorization request and merges one `audience:server:client_id:` scope per audience into both `DefaultScopes()` and `AuthorizationURL()`, so an audience the caller learns about after `NewProvider` reaches the next login. Nil keeps the previous behaviour. Duplicates are dropped, invalid audiences are skipped and logged once each, and the merged set stays within `oidc.MaxScopeCount`.
-- `oidc.MaxScopeCount` and `oidc.MaxScopeLength`, the bounds `oidc.ValidateScopes` already applied.
-- `valkey.Config.OperationTimeout`, a per-operation deadline the Valkey store layers on the caller's context for every call, default `storage.DefaultOperationTimeout` (3 s). The same value bounds the client's TCP dial and per-connection write/response wait, so a Valkey endpoint that is down, unreachable or not answering fails an operation within that budget. The context-less `GetTokenMetadata` read runs under the deadline alone.
-- `storage.IsTransientError`, the classification every request path uses: a store error that is none of the sentinels (not found, expired, code reuse, revoked family, IP limit, rejected credentials) means the record's state is unknown.
-- `storage.ErrInvalidClientCredentials`, returned by every `ClientStore.ValidateClientSecret` for an unknown client or a wrong secret (the message is unchanged).
-- `server.ErrStorageUnavailable`, wrapped around any transient storage failure met on the token endpoint's grant paths, and `oauth.ErrTemporarilyUnavailable` / `temporarily_unavailable`, the HTTP 503 answer for it.
-- `storage.operation.total{result="timeout"}`: a Valkey operation that ran out of time is recorded apart from other errors.
-- `storage/mock.FaultyStore`, a fault-injecting wrapper around the memory store for tests that drive a storage outage against a real server. It gates the reads of bearer validation as well: `get_token`, `get_provider_token_ref`.
-- `Server.TokenMetadata`, the stored metadata of an issued access token (nil for a token the store has no record of or a store that keeps none), `server.ErrStorageUnavailable` when the store did not answer. The bearer middleware, the RFC 8707 audience check and introspection read metadata through it.
+
+## [1.4.13] - 2026-09-29
+
+### Fixed
+
+- A refresh grant whose provider-token refresh meets an identity provider that does not answer (a 5xx or 429 response, a timeout, a connection failure) is answered as `503 temporarily_unavailable` with `Retry-After`, as the new `server.ErrProviderUnavailable`, and audited with the reason `provider_unavailable`. It was answered as `400 invalid_grant`, so a client dropped a valid session and made the person sign in again whenever the provider restarted. The refresh token is not consumed, so the retry succeeds once the provider answers. A provider that rejects the grant still yields `invalid_grant`, and so does the legacy storage layout, which has consumed the refresh token before the provider call.
+
+## [1.4.12] - 2026-09-29
+
+### Fixed
+
+- Valkey store: the user+client bulk-revocation index no longer grows with every token an active user was issued, and no longer holds forwarded id_tokens as raw JWTs. It is now the sorted set `{prefix}userclientz:{uid}:{cid}`, scored by member expiry and pruned on every add; an id_token is stored as its digest, whose metadata bulk revocation still deletes, and `GetTokensByUserClient` leaves it out. The previous `{prefix}userclient:` SET is still read and deleted by revocation until it expires.
+
+## [1.4.11] - 2026-09-28
+
+### Fixed
+
+- A token the encryption key cannot decrypt, typically one written before the key was rotated, is answered as `400 invalid_grant` on the refresh grant and as an invalid bearer on validation, so the client asks the person to sign in again. It was answered as `503 temporarily_unavailable`, so the client retried for ever and the person could not sign in until the record expired. The Valkey store reports it as the new `storage.ErrTokenUndecryptable`, which `storage.IsTransientError` does not count as transient. The refresh grant audits it with the reason `token_undecryptable`, and validation logs it at warning level, so a server that runs with a different key than the one the tokens were written with is visible. In the unified layout the refresh token is not consumed and its family is not revoked. In the legacy layout the first request does not trigger reuse detection, but the consume has deleted the record, so a client that presents the same refresh token again still does.
+
+## [1.4.10] - 2026-09-28
 
 ### Changed
 
 - A token exchange answered by something other than an OAuth JSON document, typically a proxy or ingress in front of the token endpoint, now fails with the status, the content type and the start of the body, an HTML page named by its `<title>` and anything else cut to 200 bytes (`token exchange failed with status 401 (content type "text/html", not an OAuth error response): HTML page "401 Authorization Required"`), instead of the whole page; a success status whose body is not JSON names its content type and page title and never quotes the body.
 
-- **BREAKING.** `oidc.NewSSRFSafeHTTPClient` takes a `rootCAs *x509.CertPool` second parameter, matching `NewPrivateIPAllowedHTTPClient` and `NewHostScopedPrivateIPHTTPClient`. Pass `nil` for the previous behaviour.
-- Every HTTP client in `providers/oidc` and `providers/dex` is built by one internal constructor, which states the dial guard, the redirect guard and the proxy setting per posture. The transport tuning has a single definition, so a setting can no longer drift on one client only. Two effects on existing clients: HTTP/2 is attempted where the server offers it (`ForceAttemptHTTP2`), and `ExpectContinueTimeout` is bounded.
-- The Dex client on the default (non-permissive) dial posture is now built by `oidc.NewDefaultDialHTTPClient` instead of `&http.Client{Timeout: ...}`. It keeps the standard dialer and the proxy environment variables, and it gains the tuned dial, TLS-handshake, response-header and idle-connection timeouts the other clients already had, plus the cross-host redirect guard. A Dex discovery or token-endpoint redirect to a different host or port is now refused.
-- **BREAKING.** `TokenRefreshHandler` no longer fires from the token-validation path when the token store does not implement `storage.TokenMetadataGetter`. Such a store previously received the event with an empty `userID` and `familyID`. `WithTokenRefreshHandler` logs a startup warning for that store shape.
+## [1.4.9] - 2026-09-26
+
+### Fixed
+
+- `valkey.New` waits for a Valkey that is still starting instead of failing at once: connection refused or reset, a name not resolvable yet, a dial timeout and LOADING are retried with a backoff doubling from 250 ms to 5 s, each attempt logged, for up to the new `valkey.Config.StartupTimeout` (default `valkey.DefaultStartupTimeout`, 60 s; `OAUTH_VALKEY_STARTUP_TIMEOUT` in `oauthconfig`). A server restarted together with its Valkey, as in a credential rotation, now starts without crash-looping. A wrong password, a TLS failure or an invalid address still fails at once, and a Valkey that stays unreachable fails start-up with the last connection error once the timeout has passed.
+
+## [1.4.1] - 2026-09-14
+
+### Added
+
+- `storage/mock.FaultyStore`, a fault-injecting wrapper around the memory store for tests that drive a storage outage against a real server. It gates the reads of bearer validation as well: `get_token`, `get_provider_token_ref`.
+- `Server.TokenMetadata`, the stored metadata of an issued access token (nil for a token the store has no record of or a store that keeps none), `server.ErrStorageUnavailable` when the store did not answer. The bearer middleware, the RFC 8707 audience check and introspection read metadata through it.
+
+### Changed
+
 - **BREAKING.** `Server.IntrospectToken` returns `(map[string]any, error)`. The error is `server.ErrStorageUnavailable` when the token store did not answer; every other outcome is still the RFC 7662 payload with a nil error.
 - Bearer validation answers a storage failure with **HTTP 503 `temporarily_unavailable`** and a `Retry-After` header, never as `401 invalid_token`. `handler.ValidateToken` (the middleware in front of MCP endpoints and `/userinfo`) maps `server.ErrStorageUnavailable` before the 401 path, for the reads the server's validation depends on — a self-issued JWT's revocation list and family record, an opaque token's provider token and audience metadata — and for its own read of the token's metadata, so scopes and the session ID cannot silently change for the outage's duration. That read now happens only for a token this server issued (opaque or self-issued JWT); a forwarded ID token or a trusted-issuer JWT is never in the store and is served through the outage without a store round trip. `Server.ValidateToken` classifies a provider-token or metadata read that fails for a non-sentinel reason as `ErrStorageUnavailable` instead of falling through to the provider's userinfo check, which rejected the issued token; a miss keeps its behaviour. `/introspect` answers the same failure with 503 instead of `{"active": false}`. Previously a token store outage on the MCP request path was answered as `401 invalid_token`, which clients read as an invalid or expired access token and answer by restarting their authorization flow. The 503 counts under the endpoint's HTTP metric (`validate_token`, `introspect`).
+
+## [1.4.0] - 2026-09-14
+
+### Added
+
+- `instrumentation.Config.MeterProvider`: the application hands the library the OpenTelemetry meter provider it already runs (typically `otel.GetMeterProvider()`), and the `oauth.*`, `storage.*` and `security.*` series are recorded through it and appear on the application's own metrics endpoint. Until now the library's only export path was the exporter `MetricsExporter` built -- for `prometheus` a collector on the default registerer, which an application serving a registry of its own never gathers, so its OAuth server ran with every metric silently dropped. Mutually exclusive with `MetricsExporter`; `PrometheusExporter()` returns nil; the application owns export and shutdown.
+
+## [1.3.23] - 2026-09-14
+
+### Added
+
+- `valkey.Config.OperationTimeout`, a per-operation deadline the Valkey store layers on the caller's context for every call, default `storage.DefaultOperationTimeout` (3 s). The same value bounds the client's TCP dial and per-connection write/response wait, so a Valkey endpoint that is down, unreachable or not answering fails an operation within that budget. The context-less `GetTokenMetadata` read runs under the deadline alone.
+- `storage.IsTransientError`, the classification every request path uses: a store error that is none of the sentinels (not found, expired, code reuse, revoked family, IP limit, rejected credentials) means the record's state is unknown.
+- `storage.ErrInvalidClientCredentials`, returned by every `ClientStore.ValidateClientSecret` for an unknown client or a wrong secret (the message is unchanged).
+- `server.ErrStorageUnavailable`, wrapped around any transient storage failure met on the token endpoint's grant paths, and `oauth.ErrTemporarilyUnavailable` / `temporarily_unavailable`, the HTTP 503 answer for it.
+- `storage.operation.total{result="timeout"}`: a Valkey operation that ran out of time is recorded apart from other errors.
+
+### Changed
+
 - The token endpoint answers a storage failure with **HTTP 503 `temporarily_unavailable`** and a `Retry-After` header on every grant — refresh token, authorization code, token exchange (self-issued and brokered) — and on the client authentication that precedes them. Clients retry the same request; the presented refresh token, its family and the authorization code are untouched. Previously such a failure was answered as `400 invalid_grant`, which clients read as a dead token and answer by discarding it and forcing a new sign-in. The audit event keeps the reason `transient_storage_error` and now names the failed operation. The failure counts as `oauth.token_endpoint.failures.total{error_code="temporarily_unavailable"}`.
 - `Server.GetClient` and `Server.ValidateClientCredentials` return `server.ErrStorageUnavailable` when the client store did not answer; `Server.ValidateClientCredentials` returns `storage.ErrInvalidClientCredentials` for a rejection.
 - The Valkey store's `ValidateClientSecret` reports a client lookup that failed because Valkey did not answer as that failure, not as rejected credentials. The bcrypt comparison still runs first, so timing stays uniform.
@@ -48,20 +110,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A bearer whose validation the identity provider did not serve -- its userinfo or discovery endpoint answered 5xx or 429, timed out or refused the connection -- is answered `503 temporarily_unavailable` with `Retry-After` instead of `401 invalid_token`. The provider rejected nothing, and a 401 made the client discard a live token (an MCP client read the OAuth error body as an empty tool answer). `server.ValidateToken` returns `ErrProviderUnavailable` for it, audited as `provider_unavailable`; a userinfo rejection (401 and the other 4xx) stays a 401.
-- The CIMD fetch dials the addresses its connection-time SSRF check validated instead of resolving the host a second time, closing the window in which a DNS answer changing between the check and the dial could reach a private address.
-- A refresh grant whose provider-token refresh meets an identity provider that does not answer (a 5xx or 429 response, a timeout, a connection failure) is answered as `503 temporarily_unavailable` with `Retry-After`, as the new `server.ErrProviderUnavailable`, and audited with the reason `provider_unavailable`. It was answered as `400 invalid_grant`, so a client dropped a valid session and made the person sign in again whenever the provider restarted. The refresh token is not consumed, so the retry succeeds once the provider answers. A provider that rejects the grant still yields `invalid_grant`, and so does the legacy storage layout, which has consumed the refresh token before the provider call.
-- Valkey store: the user+client bulk-revocation index no longer grows with every token an active user was issued, and no longer holds forwarded id_tokens as raw JWTs. It is now the sorted set `{prefix}userclientz:{uid}:{cid}`, scored by member expiry and pruned on every add; an id_token is stored as its digest, whose metadata bulk revocation still deletes, and `GetTokensByUserClient` leaves it out. The previous `{prefix}userclient:` SET is still read and deleted by revocation until it expires.
-- A token the encryption key cannot decrypt, typically one written before the key was rotated, is answered as `400 invalid_grant` on the refresh grant and as an invalid bearer on validation, so the client asks the person to sign in again. It was answered as `503 temporarily_unavailable`, so the client retried for ever and the person could not sign in until the record expired. The Valkey store reports it as the new `storage.ErrTokenUndecryptable`, which `storage.IsTransientError` does not count as transient. The refresh grant audits it with the reason `token_undecryptable`, and validation logs it at warning level, so a server that runs with a different key than the one the tokens were written with is visible. In the unified layout the refresh token is not consumed and its family is not revoked. In the legacy layout the first request does not trigger reuse detection, but the consume has deleted the record, so a client that presents the same refresh token again still does.
-- `valkey.New` waits for a Valkey that is still starting instead of failing at once: connection refused or reset, a name not resolvable yet, a dial timeout and LOADING are retried with a backoff doubling from 250 ms to 5 s, each attempt logged, for up to the new `valkey.Config.StartupTimeout` (default `valkey.DefaultStartupTimeout`, 60 s; `OAUTH_VALKEY_STARTUP_TIMEOUT` in `oauthconfig`). A server restarted together with its Valkey, as in a credential rotation, now starts without crash-looping. A wrong password, a TLS failure or an invalid address still fails at once, and a Valkey that stays unreachable fails start-up with the last connection error once the timeout has passed.
+- The token endpoint no longer blocks for as long as the Valkey store is unreachable. Store calls ran on the request context with no deadline of their own, and valkey-go retries read commands with backoff for as long as that context lives, so a refresh grant hung until Valkey answered or the client gave up (26.7 s and 29.9 s at the edge during a two-minute outage). The read of the refresh token's metadata ran on a background context and could not be cancelled at all. Every operation now fails within `valkey.Config.OperationTimeout`.
+
+## [1.3.6] - 2026-08-27
+
+### Fixed
 
 - Family-wide revocation now reaches every member of a refresh-token family, including members issued before a rotation that used a shorter refresh-token TTL. The family set's TTL was reset to each new member's horizon, which dropped earlier members from the set, so `RevokeRefreshTokenFamily` could not mark the family revoked and every replay re-ran the full reuse response, `RevokeAllTokensForUserClient` included. The set now carries the same atomic, extend-only TTL as the user+client set, so a failed TTL call can no longer leave it unbounded either.
 - `RevokeRefreshTokenFamily` now holds the family set for `RevokedFamilyRetentionDays`, the window it already applies to each member's family metadata. The set expired first, so `GetRefreshTokenFamilyByID` stopped returning the `Revoked=true` record, `GetActiveRefreshTokenByFamily` returned `ErrRefreshTokenFamilyNotFound` instead of `ErrRefreshTokenFamilyRevoked`, and self-issued JWT validation admitted access tokens of a revoked family.
 - A revoked refresh-token family stays revoked when its members disagree. `GetRefreshTokenFamilyByID` and `GetActiveRefreshTokenByFamily` answered from the first member they reached, so a single non-revoked member reported the whole family as live and handed its token back as the active one. Two states leave such a member behind: a rotation that races `RevokeRefreshTokenFamily`, and a member whose revoked write fails. Both reads now answer revoked as soon as any member is revoked, in the Valkey store and the in-memory store alike, since only family-wide revocation ever sets the flag.
-- The Valkey store connects to RESP2-only servers. It sets `DisableCache` on the valkey-go client, so the client no longer sends `CLIENT TRACKING` at connect and no longer fails with `ErrNoCache` on a server that rejects it. No read path used the client-side cache.
+
+## [1.3.5] - 2026-08-27
+
+### Changed
+
+- **BREAKING.** `TokenRefreshHandler` no longer fires from the token-validation path when the token store does not implement `storage.TokenMetadataGetter`. Such a store previously received the event with an empty `userID` and `familyID`. `WithTokenRefreshHandler` logs a startup warning for that store shape.
+
+### Fixed
+
 - `TokenRefreshHandler` no longer fires with an empty `userID` or `familyID`. On a token-metadata miss the validation path drops the event and audits it as `token_refresh_handler_skipped`; a metadata read error is logged at warning level. `Server.RefreshSessionProvider` now fails with the new `server.ErrRefreshTokenFamilyNoUserID` when the family record carries no user ID.
-- The token endpoint no longer blocks for as long as the Valkey store is unreachable. Store calls ran on the request context with no deadline of their own, and valkey-go retries read commands with backoff for as long as that context lives, so a refresh grant hung until Valkey answered or the client gave up (26.7 s and 29.9 s at the edge during a two-minute outage). The read of the refresh token's metadata ran on a background context and could not be cancelled at all. Every operation now fails within `valkey.Config.OperationTimeout`.
+
+## [1.3.4] - 2026-08-26
+
+### Fixed
+
+- The Valkey store connects to RESP2-only servers. It sets `DisableCache` on the valkey-go client, so the client no longer sends `CLIENT TRACKING` at connect and no longer fails with `ErrNoCache` on a server that rejects it. No read path used the client-side cache.
+
+## [1.3.3] - 2026-08-26
+
+### Added
+
+- `oidc.NewDefaultDialHTTPClient(timeout, rootCAs)`, the client for calls to an operator-configured provider endpoint (OIDC discovery, token endpoint). Standard dialer, cross-host redirects refused, proxy environment honoured, and the endpoint's certificate verified against `rootCAs` (nil uses the system pool). It applies no SSRF dial guard, so use `NewSSRFSafeHTTPClient` whenever the target URL can come from a token or a request.
+- `oidc.DefaultExpectContinueTimeout`, the bound the shared transport applies to a 100-continue response.
+
+### Changed
+
+- **BREAKING.** `oidc.NewSSRFSafeHTTPClient` takes a `rootCAs *x509.CertPool` second parameter, matching `NewPrivateIPAllowedHTTPClient` and `NewHostScopedPrivateIPHTTPClient`. Pass `nil` for the previous behaviour.
+- Every HTTP client in `providers/oidc` and `providers/dex` is built by one internal constructor, which states the dial guard, the redirect guard and the proxy setting per posture. The transport tuning has a single definition, so a setting can no longer drift on one client only. Two effects on existing clients: HTTP/2 is attempted where the server offers it (`ForceAttemptHTTP2`), and `ExpectContinueTimeout` is bounded.
+- The Dex client on the default (non-permissive) dial posture is now built by `oidc.NewDefaultDialHTTPClient` instead of `&http.Client{Timeout: ...}`. It keeps the standard dialer and the proxy environment variables, and it gains the tuned dial, TLS-handshake, response-header and idle-connection timeouts the other clients already had, plus the cross-host redirect guard. A Dex discovery or token-endpoint redirect to a different host or port is now refused.
+
+### Fixed
+
 - Every `RootCAs` field now applies whether or not the private-IP flags are set. `oidc.JWKSClientOptions.RootCAs`, `oidc.TokenExchangeClientOptions.RootCAs`, `server.TrustedIssuer.RootCAs` and `dex.Config.RootCAs` were dropped on the SSRF-safe dial posture, so an IdP whose host resolves to a public address but presents an internal-CA certificate failed TLS with no way to fix it short of relaxing the SSRF guard. A `server.TrustedIssuer` that sets only `RootCAs` now gets its own JWKS client instead of the shared system-pool one.
+
+## [1.3.0] - 2026-08-24
+
+### Added
+
+- `dex.Config.AudienceResolver`, an optional `func() []string` that reports the Dex cross-client audiences to request. The provider calls it per authorization request and merges one `audience:server:client_id:` scope per audience into both `DefaultScopes()` and `AuthorizationURL()`, so an audience the caller learns about after `NewProvider` reaches the next login. Nil keeps the previous behaviour. Duplicates are dropped, invalid audiences are skipped and logged once each, and the merged set stays within `oidc.MaxScopeCount`.
+- `oidc.MaxScopeCount` and `oidc.MaxScopeLength`, the bounds `oidc.ValidateScopes` already applied.
 
 ## [1.1.0] - 2026-07-16
 
