@@ -196,6 +196,7 @@ var (
 	_ storage.Combined                        = (*Store)(nil)
 	_ storage.RefreshTokenFamilyStore         = (*Store)(nil)
 	_ storage.TokenRevocationStore            = (*Store)(nil)
+	_ storage.TokenFamilyRevocationStore      = (*Store)(nil)
 	_ storage.TokenMetadataStore              = (*Store)(nil)
 	_ storage.RevokedTokenStore               = (*Store)(nil)
 	_ storage.ActiveRefreshTokenByFamilyStore = (*Store)(nil)

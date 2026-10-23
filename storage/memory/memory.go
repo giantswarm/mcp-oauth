@@ -123,6 +123,7 @@ var (
 	_ storage.Combined                        = (*Store)(nil)
 	_ storage.RefreshTokenFamilyStore         = (*Store)(nil)
 	_ storage.TokenRevocationStore            = (*Store)(nil)
+	_ storage.TokenFamilyRevocationStore      = (*Store)(nil)
 	_ storage.TokenMetadataStore              = (*Store)(nil)
 	_ storage.RevokedTokenStore               = (*Store)(nil)
 	_ storage.RefreshTokenFamilyByIDStore     = (*Store)(nil)
@@ -1383,6 +1384,39 @@ func (s *Store) RevokeAllTokensForUserClient(_ context.Context, userID, clientID
 			"client_id", clientID,
 			"tokens_revoked", revokedCount,
 			"reason", "authorization_code_reuse_detected")
+	}
+
+	return revokedCount, nil
+}
+
+// RevokeTokensForFamily revokes one refresh-token family and deletes every
+// token issued to userID+clientID under it, leaving the user's other families
+// intact. Implements storage.TokenFamilyRevocationStore.
+func (s *Store) RevokeTokensForFamily(_ context.Context, userID, clientID, familyID string) (int, error) {
+	if userID == "" || clientID == "" || familyID == "" {
+		return 0, fmt.Errorf("userID, clientID and familyID cannot be empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	revokedCount := s.revokeFamily(familyID, time.Now(), userID, clientID)
+	for tokenID, metadata := range s.tokenMetadata {
+		if metadata.UserID != userID || metadata.ClientID != clientID || metadata.FamilyID != familyID {
+			continue
+		}
+		delete(s.tokens, tokenID)
+		delete(s.tokenMetadata, tokenID)
+		s.deleteProviderTokenRefLocked(tokenID)
+		revokedCount++
+	}
+
+	if revokedCount > 0 {
+		s.logger.Warn("Revoked refresh token family and its tokens",
+			"user_id", userID,
+			"client_id", clientID,
+			"family_id", helpers.SafeTruncate(familyID, tokenIDLogLength),
+			"tokens_revoked", revokedCount)
 	}
 
 	return revokedCount, nil

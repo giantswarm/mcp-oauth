@@ -463,6 +463,22 @@ type TokenRevocationStore interface {
 	GetTokensByUserClient(ctx context.Context, userID, clientID string) ([]string, error)
 }
 
+// TokenFamilyRevocationStore revokes one refresh-token family together with
+// every token issued under it, leaving the user's other families intact.
+// Refresh-token reuse detection uses it so that one client's refresh race
+// signs out that session only, not every session of the user.
+//
+// This is optional: a store without it gets the family's refresh tokens
+// revoked through RefreshTokenFamilyStore, while its opaque access tokens live
+// until they expire. Memory and Valkey both implement it.
+type TokenFamilyRevocationStore interface {
+	// RevokeTokensForFamily revokes the family (as RevokeRefreshTokenFamily)
+	// and deletes every access, refresh and id_token issued to userID+clientID
+	// under familyID, with its metadata and user+client index entry. Returns
+	// the number of tokens deleted.
+	RevokeTokensForFamily(ctx context.Context, userID, clientID, familyID string) (int, error)
+}
+
 // ClientStore defines the interface for managing OAuth client registrations.
 // All methods accept context.Context for tracing and cancellation.
 type ClientStore interface {

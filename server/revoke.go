@@ -165,7 +165,8 @@ func (s *Server) revokeTokenFamilyIfNeeded(ctx context.Context, family *storage.
 }
 
 // RevokeAllTokensForUserClient revokes all tokens (access + refresh) for a specific user+client combination.
-// This is called when authorization code or refresh token reuse is detected (OAuth 2.1 security requirement).
+// This is called when authorization code reuse is detected (OAuth 2.1 security requirement); refresh token
+// reuse revokes only the reused family (revokeReusedFamily).
 // It provides defense against token theft by invalidating all tokens when an attack is detected.
 //
 // SECURITY: This function revokes tokens at BOTH the provider (Google/GitHub) and locally.

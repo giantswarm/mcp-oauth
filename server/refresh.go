@@ -45,26 +45,85 @@ func (s *Server) handleRefreshTokenReuseDetection(ctx context.Context, refreshTo
 			"user_id", family.UserID, paramClientID, clientID, logKeyFamilyID, helpers.SafeTruncate(family.FamilyID, 8))
 	}
 
-	// Revoke entire token family
-	if err := familyStore.RevokeRefreshTokenFamily(ctx, family.FamilyID); err != nil {
-		s.Logger.Error("Failed to revoke token family", logKeyError, err)
-	}
-
-	// Revoke all tokens for this user+client
-	if err := s.RevokeAllTokensForUserClient(ctx, family.UserID, family.ClientID); err != nil {
-		s.Logger.Error("Failed to revoke user tokens", logKeyError, err)
-	}
+	s.revokeReusedFamily(ctx, family, familyStore)
 
 	s.Auditor.LogEvent(ctx, security.Event{
 		Type: security.EventRefreshTokenReuseDetected, UserID: family.UserID, ClientID: clientID,
 		Details: map[string]any{
 			logKeySeverity: severityCritical, logKeyFamilyID: family.FamilyID, "generation": family.Generation,
-			logKeyAction: "family_and_tokens_revoked",
+			logKeyAction: "family_revoked",
 		},
 	})
 	s.Auditor.LogTokenReuse(ctx, family.UserID, clientID)
 
 	return errInvalidGrant
+}
+
+// revokeReusedFamily revokes the token family a reused refresh token belongs
+// to — its refresh, access and id_tokens — and nothing else of the user. A
+// reuse proves only that this family's lineage leaked or raced (two processes
+// of one client sharing a refresh token), so the user's other families, on
+// this client or any other, stay signed in.
+//
+// The upstream grant follows the same line. In the legacy layout every token
+// holds its own copy of its family's provider grant, and those copies are
+// revoked at the provider. In the unified layout the provider grant is the
+// user's ONE shared entry that every other family refreshes through; a client
+// only ever holds mcp-oauth tokens, so the reused family never exposed it, and
+// revoking it would sign the user out of every client — it is kept.
+//
+// Local revocation never depends on the provider: the family is revoked even
+// when the provider cannot be reached.
+func (s *Server) revokeReusedFamily(ctx context.Context, family *storage.RefreshTokenFamilyMetadata, familyStore storage.RefreshTokenFamilyStore) {
+	tokens := s.familyTokens(ctx, family)
+
+	if _, unified := s.userProviderTokenStore(); !unified && len(tokens) > 0 {
+		if _, failed, total := s.revokeTokensAtProvider(ctx, tokens, family.UserID, family.ClientID); failed > 0 {
+			s.Logger.Error("Failed to revoke reused token family at provider",
+				"user_id", family.UserID, paramClientID, family.ClientID,
+				logKeyFamilyID, helpers.SafeTruncate(family.FamilyID, 8), "failed", failed, "total", total)
+		}
+	}
+
+	if fs, ok := s.tokenStore.(storage.TokenFamilyRevocationStore); ok {
+		if _, err := fs.RevokeTokensForFamily(ctx, family.UserID, family.ClientID, family.FamilyID); err != nil {
+			s.Logger.Error("Failed to revoke token family", logKeyError, err)
+		}
+	} else if err := familyStore.RevokeRefreshTokenFamily(ctx, family.FamilyID); err != nil {
+		s.Logger.Error("Failed to revoke token family", logKeyError, err)
+	}
+
+	for _, tokenID := range tokens {
+		s.unregisterTokenPairIfPresent(tokenID)
+	}
+
+	if s.sessionRevocationHandler != nil {
+		s.sessionRevocationHandler(ctx, family.UserID, family.FamilyID)
+	}
+}
+
+// familyTokens returns the access and refresh tokens issued under family,
+// read from the user+client index and each token's metadata. It returns nil
+// when the store can neither list nor describe tokens.
+func (s *Server) familyTokens(ctx context.Context, family *storage.RefreshTokenFamilyMetadata) []string {
+	lister, canList := s.tokenStore.(storage.TokenRevocationStore)
+	metaGetter, canDescribe := s.tokenStore.(storage.TokenMetadataGetter)
+	if !canList || !canDescribe {
+		return nil
+	}
+	tokenIDs, err := lister.GetTokensByUserClient(ctx, family.UserID, family.ClientID)
+	if err != nil {
+		s.Logger.Warn("Could not list the reused token family's tokens", logKeyError, err)
+		return nil
+	}
+	tokens := make([]string, 0, len(tokenIDs))
+	for _, tokenID := range tokenIDs {
+		meta, err := metaGetter.GetTokenMetadata(tokenID)
+		if err == nil && meta != nil && meta.FamilyID == family.FamilyID && meta.TokenType != "id" {
+			tokens = append(tokens, tokenID)
+		}
+	}
+	return tokens
 }
 
 // handleSharedProviderTokenError classifies a failure to read the user's
@@ -74,20 +133,19 @@ func (s *Server) handleRefreshTokenReuseDetection(ctx context.Context, refreshTo
 // A missing or expired shared entry is NOT refresh-token reuse: the refresh
 // token record itself is present and unconsumed, so routing this through
 // handleRefreshTokenError would trip reuse detection against a live family
-// and revoke every session of the user (RevokeRefreshTokenFamily +
-// RevokeAllTokensForUserClient + critical theft audit) over a benign storage
-// miss — an evicted providertoken:<user> key, TTL collapse, or a deploy
-// without a token flush; the exact false positive giantswarm/giantswarm#37164
-// is about. The reuse-nuke path also deletes the shared entry deliberately,
-// so a nuked user's surviving sessions land here by design. The user simply
-// has to log in again: return invalid_grant with a non-theft audit trail.
+// and revoke that session (family revocation + critical theft audit) over a
+// benign storage miss — an evicted providertoken:<user> key, TTL collapse, or
+// a deploy without a token flush; the exact false positive
+// giantswarm/giantswarm#37164 is about. Authorization-code reuse
+// (RevokeAllTokensForUserClient) also deletes the shared entry deliberately,
+// so that user's surviving sessions land here by design. The user simply has
+// to log in again: return invalid_grant with a non-theft audit trail.
 //
 // The presented refresh token is deliberately NOT consumed here: "record
 // deleted + family alive and non-revoked" is exactly the fresh-reuse
 // signature, so consuming it would send a client that retries the same token
 // after the invalid_grant straight into handleRefreshTokenReuseDetection —
-// family revoke + RevokeAllTokensForUserClient + critical theft audit —
-// recreating the false-alarm class this path exists to remove. Left
+// family revoke + critical theft audit — recreating the false-alarm class this path exists to remove. Left
 // un-consumed, a retry idempotently re-enters this same benign invalid_grant
 // path (one cheap extra read), and a single re-login repairs all of the
 // user's sessions.
