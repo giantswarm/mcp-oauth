@@ -773,6 +773,93 @@ func (s *Store) RevokeAllTokensForUserClient(ctx context.Context, userID, client
 	return revokedCount, nil
 }
 
+// RevokeTokensForFamily revokes one refresh-token family and deletes every
+// token issued to userID+clientID under it, leaving the user's other families
+// intact. Implements storage.TokenFamilyRevocationStore.
+//
+// The family's members are picked from the user+client index by their token
+// metadata BEFORE the family is revoked, because revoking deletes the refresh
+// tokens' metadata the match reads.
+func (s *Store) RevokeTokensForFamily(ctx context.Context, userID, clientID, familyID string) (count int, err error) {
+	op := s.startTracedOp(ctx, "revoke_tokens_for_family")
+	defer op.end(&err)
+
+	if err = s.validateRevocationParams(userID, clientID); err != nil {
+		return 0, err
+	}
+	if familyID == "" {
+		return 0, fmt.Errorf("familyID cannot be empty")
+	}
+
+	members, err := s.getTokensForUserClient(op.ctx, userID, clientID)
+	if err != nil {
+		return 0, err
+	}
+	familyMembers := make([]string, 0, len(members))
+	for _, member := range members {
+		if s.memberFamilyID(op.ctx, member) == familyID {
+			familyMembers = append(familyMembers, member)
+		}
+	}
+
+	if err = s.RevokeRefreshTokenFamily(op.ctx, familyID); err != nil {
+		return 0, err
+	}
+	for _, member := range familyMembers {
+		s.deleteTokenAndMetadata(op.ctx, member)
+	}
+	s.removeUserClientMembers(op.ctx, userID, clientID, familyMembers)
+
+	if len(familyMembers) > 0 {
+		s.logger.Warn("Revoked refresh token family and its tokens",
+			"user_id", userID,
+			"client_id", clientID,
+			"family_id", safeTruncate(familyID, tokenIDLogLength),
+			"tokens_revoked", len(familyMembers))
+	}
+
+	return len(familyMembers), nil
+}
+
+// memberFamilyID returns the family ID in a user+client member's token
+// metadata, or "" when it has none or cannot be read. An unreadable member is
+// logged: it stays alive until it expires.
+func (s *Store) memberFamilyID(ctx context.Context, member string) string {
+	key := s.tokenMetaKey(member)
+	if digest, ok := strings.CutPrefix(member, digestMemberPrefix); ok {
+		key = s.keyOf("meta", digest)
+	}
+	data, err := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).ToString()
+	if err != nil {
+		if !isNilError(err) {
+			s.logger.Warn("memberFamilyID: storage error, token may be missed during family revocation",
+				"token_prefix", safeTruncate(member, tokenIDLogLength), "error", err)
+		}
+		return ""
+	}
+	var j tokenMetadataJSON
+	if err := json.Unmarshal([]byte(data), &j); err != nil {
+		return ""
+	}
+	return j.FamilyID
+}
+
+// removeUserClientMembers removes members from the user+client index in every
+// layout.
+func (s *Store) removeUserClientMembers(ctx context.Context, userID, clientID string, members []string) {
+	if len(members) == 0 {
+		return
+	}
+	errs := []error{s.client.Do(ctx, s.client.B().Zrem().Key(s.userClientKey(userID, clientID)).Member(members...).Build()).Error()}
+	for _, key := range []string{s.setUserClientKey(userID, clientID), s.legacyUserClientKey(userID, clientID)} {
+		errs = append(errs, s.client.Do(ctx, s.client.B().Srem().Key(key).Member(members...).Build()).Error())
+	}
+	if err := errors.Join(errs...); err != nil {
+		s.logger.Warn("Failed to remove family members from user+client set",
+			"user_id", userID, "client_id", clientID, "error", err)
+	}
+}
+
 // validateRevocationParams validates the user and client IDs for revocation.
 func (s *Store) validateRevocationParams(userID, clientID string) error {
 	if userID == "" || clientID == "" {
