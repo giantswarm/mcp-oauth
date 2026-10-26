@@ -78,6 +78,9 @@ func applyTimeDefaults(config *Config) {
 	if config.TokenRefreshThreshold == 0 {
 		config.TokenRefreshThreshold = 300 // 5 minutes
 	}
+	if config.TokenValidationTimeout <= 0 {
+		config.TokenValidationTimeout = DefaultTokenValidationTimeout
+	}
 	if config.ProviderTokenTTL <= 0 {
 		config.ProviderTokenTTL = DefaultProviderTokenTTL // 24 hours - for SSO token forwarding
 	}

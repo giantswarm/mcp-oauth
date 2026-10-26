@@ -42,10 +42,12 @@ func (s *Server) validateIntrospectionAllowlistRegistered(ctx context.Context) e
 // The cross-client gate trusts that identifier as-is; passing an attacker-
 // supplied or unauthenticated value defeats the gate entirely.
 //
-// The error is ErrStorageUnavailable when the token store did not answer:
-// the token is then neither active nor inactive, and the endpoint answers
-// 503 temporarily_unavailable rather than {"active": false}, which a
-// resource server reads as a dead token. No other error is returned.
+// The error is ErrStorageUnavailable when the token store did not answer, or
+// ErrProviderUnavailable when the identity provider did not answer the
+// opaque token's validation: the token is then neither active nor inactive,
+// and the endpoint answers 503 temporarily_unavailable rather than
+// {"active": false}, which a resource server reads as a dead token. No other
+// error is returned.
 func (s *Server) IntrospectToken(ctx context.Context, accessToken, requestingClient string) (map[string]any, error) {
 	if s.Config.IsJWTAccessTokenFormat() && s.looksLikeSelfIssuedJWT(accessToken) {
 		return s.introspectSelfIssuedJWT(ctx, accessToken, requestingClient)
@@ -189,7 +191,7 @@ func (s *Server) introspectOpaqueToken(ctx context.Context, accessToken, request
 	}
 
 	userInfo, err := s.ValidateToken(ctx, accessToken)
-	if errors.Is(err, ErrStorageUnavailable) {
+	if errors.Is(err, ErrStorageUnavailable) || errors.Is(err, ErrProviderUnavailable) {
 		return nil, err
 	}
 	if err != nil || userInfo == nil {

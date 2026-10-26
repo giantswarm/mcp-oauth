@@ -107,7 +107,7 @@ func (s *Server) RefreshSessionProvider(ctx context.Context, familyID string) (*
 	}
 
 	if s.tokenRefreshHandler != nil && ExtractIDToken(newToken) != "" {
-		s.tokenRefreshHandler(ctx, family.UserID, familyID, newToken)
+		s.tokenRefreshHandler(context.WithoutCancel(ctx), family.UserID, familyID, newToken)
 	}
 
 	return newToken, nil

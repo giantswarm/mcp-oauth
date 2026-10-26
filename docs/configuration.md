@@ -251,9 +251,22 @@ config := &server.Config{
 **How it works:**
 1. During validation, if token expires within `TokenRefreshThreshold`
 2. AND the token has a refresh token
-3. Server attempts to refresh it with the provider
-4. On success: Updated token saved, validation continues
-5. On failure: Graceful fallback to normal validation
+3. Server refreshes it with the provider in the background; validation continues with the stored token, which is still valid
+4. On success: Updated token saved and `TokenRefreshHandler` fired
+5. On failure: Logged and audited; validation is unaffected
+
+### Validation Deadline
+
+Bearer validation (the `handler.ValidateToken` middleware, `/userinfo` and `/introspect`) runs under one deadline that covers every call it makes to an identity provider: userinfo and discovery, the JWKS fetch for a forwarded ID token or a trusted-issuer JWT, and the provider-token refresh a stored token past expiry needs. The proactive refresh of a token near expiry runs in the background and does not count against it.
+
+```go
+config := &server.Config{
+    // Default: server.DefaultTokenValidationTimeout (5s). Zero or negative selects the default.
+    TokenValidationTimeout: 3 * time.Second,
+}
+```
+
+A provider that does not answer within it, or answers 5xx or 429, has rejected nothing, so the bearer is answered `503 temporarily_unavailable` with `Retry-After: 5` (see [Behaviour During a Storage Outage](#behaviour-during-a-storage-outage) for the response shape) instead of `401 invalid_token`. Keep the deadline below the request timeout of the clients in front of the server so they see the 503 and back off. A provider-token refresh that starts during validation finishes in the background after the deadline and stores its result, so a provider that rotates refresh tokens never loses a rotation. Sign-in, the token endpoint and revocation keep the provider's own request timeout.
 
 ### Token Lifetimes
 
@@ -403,7 +416,7 @@ The handler always receives a non-empty `userID` and `familyID`. The validation 
 
 ### Synchronous Execution
 
-All three handlers run in the request goroutine. To avoid increasing response latency:
+All three handlers run in the request goroutine, except `TokenRefreshHandler` after a proactive refresh, which runs in that refresh's background goroutine. `TokenRefreshHandler` receives a context carrying the request's values without its cancellation or deadline. To avoid increasing response latency:
 
 ```go
 oauth.WithTokenRefreshHandler(func(ctx context.Context, userID, familyID string, newToken *oauth2.Token) {

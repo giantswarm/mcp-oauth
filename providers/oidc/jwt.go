@@ -45,6 +45,17 @@ type JWKSClient struct {
 	lastRefetch    sync.Map // jwksURI -> time.Time
 }
 
+// JWKSStatusError is returned when the JWKS endpoint answers with a status
+// other than 200 OK. Match it with errors.As to tell an unavailable IdP (5xx,
+// 429) from a rejected request.
+type JWKSStatusError struct {
+	StatusCode int
+}
+
+func (e *JWKSStatusError) Error() string {
+	return fmt.Sprintf("JWKS fetch failed with status %d", e.StatusCode)
+}
+
 // cachedJWKS holds a JWKS with its fetch timestamp.
 type cachedJWKS struct {
 	keys      *jose.JSONWebKeySet
@@ -289,7 +300,7 @@ func (c *JWKSClient) fetchJWKS(ctx context.Context, jwksURI string, forceRefresh
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("JWKS fetch failed with status %d", resp.StatusCode)
+		return nil, &JWKSStatusError{StatusCode: resp.StatusCode}
 	}
 
 	limitedBody := http.MaxBytesReader(nil, resp.Body, maxJWKSDocumentSize)

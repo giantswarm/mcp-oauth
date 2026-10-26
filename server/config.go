@@ -246,6 +246,19 @@ type Config struct {
 	// Default: 300 seconds (5 minutes)
 	TokenRefreshThreshold int64 // seconds, default: 300
 
+	// TokenValidationTimeout bounds one bearer validation (Server.ValidateToken,
+	// used by the handler's ValidateToken middleware and by introspection),
+	// including every identity-provider call it makes: userinfo, discovery,
+	// JWKS, and the provider-token refresh a stored token past expiry needs.
+	// The near-expiry (proactive) refresh runs in the background and does not
+	// count against it. A provider that does not answer within it yields
+	// ErrProviderUnavailable, answered as 503 temporarily_unavailable with
+	// Retry-After, so the answer reaches clients whose own timeout is shorter
+	// than the provider's request timeout. Sign-in, the token endpoint and
+	// revocation keep the provider's own request timeout.
+	// Zero or negative selects DefaultTokenValidationTimeout.
+	TokenValidationTimeout time.Duration // default: 5s
+
 	// ProviderRevocationTimeout is the timeout PER TOKEN for revoking tokens at the provider (Google/GitHub/etc)
 	// during security events (code reuse, token reuse detection).
 	// This prevents blocking indefinitely if the provider is slow or unreachable.

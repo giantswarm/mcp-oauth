@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -398,14 +399,10 @@ func TestServer_ValidateToken_ProactiveRefresh(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Track refresh calls (per-test variables avoid test pollution)
-			var refreshCalled bool
-			var refreshCalledWith string
-
-			// Configure provider refresh function
+			// The proactive refresh runs in the background of the validation.
+			refreshCalls := make(chan string, 1)
 			provider.RefreshTokenFunc = func(_ context.Context, refreshToken string) (*oauth2.Token, error) {
-				refreshCalled = true
-				refreshCalledWith = refreshToken
+				refreshCalls <- refreshToken
 				return &oauth2.Token{
 					AccessToken:  "new-access-token",
 					RefreshToken: "new-refresh-token",
@@ -444,14 +441,16 @@ func TestServer_ValidateToken_ProactiveRefresh(t *testing.T) {
 				return
 			}
 
-			// Check if refresh was called as expected
-			if refreshCalled != tt.wantRefreshCalled {
-				t.Errorf("RefreshToken called = %v, want %v", refreshCalled, tt.wantRefreshCalled)
-			}
-
-			// If refresh was expected, verify it was called with correct refresh token
-			if tt.wantRefreshCalled && refreshCalledWith != tt.refreshTokenValue {
-				t.Errorf("RefreshToken called with %q, want %q", refreshCalledWith, tt.refreshTokenValue)
+			if tt.wantRefreshCalled {
+				select {
+				case got := <-refreshCalls:
+					require.Equal(t, tt.refreshTokenValue, got)
+				case <-time.After(5 * time.Second):
+					t.Fatal("RefreshToken was not called")
+				}
+			} else {
+				require.Never(t, func() bool { return len(refreshCalls) > 0 }, 100*time.Millisecond, 10*time.Millisecond,
+					"RefreshToken must not be called")
 			}
 
 			// Verify user info was returned
@@ -467,21 +466,14 @@ func TestServer_ValidateToken_ProactiveRefresh(t *testing.T) {
 			// If refresh was called, verify the new token was written back
 			// to the user's shared provider entry
 			if tt.expectNewToken {
+				require.Eventually(t, func() bool {
+					savedToken, err := store.GetUserProviderToken(ctx, "upt-"+tt.accessToken)
+					return err == nil && savedToken.AccessToken == "new-access-token"
+				}, 5*time.Second, 10*time.Millisecond, "the refreshed token must be written back")
 				savedToken, err := store.GetUserProviderToken(ctx, "upt-"+tt.accessToken)
-				if err != nil {
-					t.Errorf("Failed to get saved token: %v", err)
-				} else {
-					if savedToken.AccessToken != "new-access-token" {
-						t.Errorf("Saved token AccessToken = %q, want %q", savedToken.AccessToken, "new-access-token")
-					}
-					if savedToken.RefreshToken != "new-refresh-token" {
-						t.Errorf("Saved token RefreshToken = %q, want %q", savedToken.RefreshToken, "new-refresh-token")
-					}
-					// Verify new expiry is later than old expiry
-					if !savedToken.Expiry.After(tt.tokenExpiry) {
-						t.Errorf("New token expiry %v should be after old expiry %v", savedToken.Expiry, tt.tokenExpiry)
-					}
-				}
+				require.NoError(t, err)
+				require.Equal(t, "new-refresh-token", savedToken.RefreshToken)
+				require.True(t, savedToken.Expiry.After(tt.tokenExpiry), "new expiry %v must be after old expiry %v", savedToken.Expiry, tt.tokenExpiry)
 			}
 		})
 	}
@@ -600,10 +592,10 @@ func TestServer_ValidateToken_ProactiveRefresh_CustomThreshold(t *testing.T) {
 			// Set custom threshold
 			srv.Config.TokenRefreshThreshold = tt.refreshThreshold
 
-			// Track refresh calls
-			refreshCalled := false
+			// The proactive refresh runs in the background of the validation.
+			var refreshCalled atomic.Bool
 			provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
-				refreshCalled = true
+				refreshCalled.Store(true)
 				return &oauth2.Token{
 					AccessToken:  "new-token",
 					RefreshToken: "new-refresh",
@@ -638,10 +630,12 @@ func TestServer_ValidateToken_ProactiveRefresh_CustomThreshold(t *testing.T) {
 				t.Errorf("ValidateToken() error = %v", err)
 			}
 
-			// Check if refresh was called as expected
-			if refreshCalled != tt.wantRefreshCalled {
-				t.Errorf("RefreshToken called = %v, want %v (threshold=%ds, expiry=%v)",
-					refreshCalled, tt.wantRefreshCalled, tt.refreshThreshold, tt.tokenExpiry)
+			if tt.wantRefreshCalled {
+				require.Eventually(t, refreshCalled.Load, 5*time.Second, 10*time.Millisecond,
+					"RefreshToken was not called (threshold=%ds, expiry=%v)", tt.refreshThreshold, tt.tokenExpiry)
+			} else {
+				require.Never(t, refreshCalled.Load, 100*time.Millisecond, 10*time.Millisecond,
+					"RefreshToken must not be called (threshold=%ds, expiry=%v)", tt.refreshThreshold, tt.tokenExpiry)
 			}
 		})
 	}

@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -326,6 +327,47 @@ func TestValidateToken_ProviderUnavailableIsUnavailable(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestValidateToken_ProviderTimeoutIsUnavailable: an identity provider that
+// never answers is answered 503 temporarily_unavailable with Retry-After once
+// Config.TokenValidationTimeout has passed.
+func TestValidateToken_ProviderTimeoutIsUnavailable(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := memory.New()
+		t.Cleanup(store.Stop)
+		provider := mock.NewProvider()
+		provider.ValidateTokenFunc = func(ctx context.Context, _ string) (*providers.UserInfo, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		srv, err := server.New(provider, store, store, store, &server.Config{
+			Issuer:                 testIssuer,
+			TokenValidationTimeout: 2 * time.Second,
+		}, slog.New(slog.DiscardHandler))
+		if err != nil {
+			t.Fatalf("server.New: %v", err)
+		}
+		h := New(srv, slog.New(slog.DiscardHandler))
+
+		req := httptest.NewRequest(http.MethodGet, "/test", nil)
+		req.Header.Set("Authorization", "Bearer opaque-access-token")
+		w := httptest.NewRecorder()
+		start := time.Now()
+		h.ValidateToken(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Error("the protected handler ran although the bearer was not validated")
+		})).ServeHTTP(w, req)
+
+		if elapsed := time.Since(start); elapsed != 2*time.Second {
+			t.Errorf("answered after %v, want 2s", elapsed)
+		}
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want %d (body %s)", w.Code, http.StatusServiceUnavailable, w.Body.String())
+		}
+		if got := w.Header().Get("Retry-After"); got != "5" {
+			t.Errorf("Retry-After = %q, want %q", got, "5")
+		}
+	})
 }
 
 func TestTokenSourceForLog(t *testing.T) {

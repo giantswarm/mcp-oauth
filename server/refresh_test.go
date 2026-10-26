@@ -1598,12 +1598,13 @@ func TestServer_TokenRefreshHandler_CalledOnProactiveRefresh(t *testing.T) {
 
 	srv.Config.TokenRefreshThreshold = 300 // 5 minutes
 
-	var handlerUserID, handlerFamilyID string
-	var handlerToken *oauth2.Token
+	type handlerCall struct {
+		userID, familyID string
+		token            *oauth2.Token
+	}
+	calls := make(chan handlerCall, 1)
 	srv.tokenRefreshHandler = func(_ context.Context, userID, familyID string, token *oauth2.Token) {
-		handlerUserID = userID
-		handlerFamilyID = familyID
-		handlerToken = token
+		calls <- handlerCall{userID, familyID, token}
 	}
 
 	provider.RefreshTokenFunc = func(_ context.Context, _ string) (*oauth2.Token, error) {
@@ -1643,17 +1644,22 @@ func TestServer_TokenRefreshHandler_CalledOnProactiveRefresh(t *testing.T) {
 		t.Fatalf("ValidateToken() error = %v", err)
 	}
 
-	if handlerToken == nil {
+	// The proactive refresh, and so the handler, runs in the background of
+	// the validation.
+	var call handlerCall
+	select {
+	case call = <-calls:
+	case <-time.After(5 * time.Second):
 		t.Fatal("TokenRefreshHandler was not called during proactive refresh")
 	}
-	if handlerUserID != testMockUserID {
-		t.Errorf("handler userID = %q, want %q", handlerUserID, testMockUserID)
+	if call.userID != testMockUserID {
+		t.Errorf("handler userID = %q, want %q", call.userID, testMockUserID)
 	}
-	if handlerFamilyID != "test-family-id" {
-		t.Errorf("handler familyID = %q, want %q", handlerFamilyID, "test-family-id")
+	if call.familyID != "test-family-id" {
+		t.Errorf("handler familyID = %q, want %q", call.familyID, "test-family-id")
 	}
-	if handlerToken.AccessToken != "refreshed-provider-access" {
-		t.Errorf("handler token AccessToken = %q, want %q", handlerToken.AccessToken, "refreshed-provider-access")
+	if call.token.AccessToken != "refreshed-provider-access" {
+		t.Errorf("handler token AccessToken = %q, want %q", call.token.AccessToken, "refreshed-provider-access")
 	}
 }
 

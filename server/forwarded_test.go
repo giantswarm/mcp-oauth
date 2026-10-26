@@ -81,9 +81,10 @@ func newForwardedTokenHarness(t *testing.T, opts ...func(*Config)) *forwardedTok
 	t.Cleanup(func() { store.Stop() })
 
 	cfg := &Config{
-		Issuer:             issuer,
-		TrustedAudiences:   []string{audience},
-		AllowPrivateIPJWKS: true,
+		Issuer:                 issuer,
+		TrustedAudiences:       []string{audience},
+		AllowPrivateIPJWKS:     true,
+		TokenValidationTimeout: DefaultTokenValidationTimeout,
 	}
 	for _, opt := range opts {
 		opt(cfg)

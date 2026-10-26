@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
@@ -176,4 +177,27 @@ func TestFireTokenRefreshHandler_StoreWithoutMetadataGetter(t *testing.T) {
 	srv.fireTokenRefreshHandler(t.Context(), "at-no-metadata-getter", &oauth2.Token{AccessToken: "provider-access"})
 
 	require.False(t, fired)
+}
+
+// TestFireTokenRefreshHandler_DetachedContext: the handler gets a context that
+// neither the triggering validation's deadline nor its cancellation ends.
+func TestFireTokenRefreshHandler_DetachedContext(t *testing.T) {
+	const accessToken = "at-detached"
+
+	var handlerCtx context.Context
+	srv, store, _ := setupFlowTestServer(t, WithTokenRefreshHandler(
+		func(ctx context.Context, _, _ string, _ *oauth2.Token) { handlerCtx = ctx }))
+	require.NoError(t, store.SaveTokenMetadata(t.Context(), accessToken, storage.TokenMetadata{
+		UserID: "user-1", ClientID: "client-1", FamilyID: "family-1",
+	}))
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Nanosecond)
+	<-ctx.Done()
+	defer cancel()
+	srv.fireTokenRefreshHandler(ctx, accessToken, &oauth2.Token{AccessToken: "provider-access"})
+
+	require.NotNil(t, handlerCtx)
+	require.NoError(t, handlerCtx.Err())
+	_, hasDeadline := handlerCtx.Deadline()
+	require.False(t, hasDeadline)
 }

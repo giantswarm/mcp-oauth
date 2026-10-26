@@ -12,6 +12,8 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/internal/constants"
+	"github.com/giantswarm/mcp-oauth/providers"
+	"github.com/giantswarm/mcp-oauth/server"
 )
 
 // providerRefreshFailures are the provider answers a refresh grant meets when
@@ -92,4 +94,37 @@ func TestServeToken_RefreshGrant_ProviderRejects(t *testing.T) {
 	require.Equal(t, constants.ErrorCodeInvalidGrant, body["error"])
 	require.Empty(t, w.Header().Get("Retry-After"))
 	require.Contains(t, e.logs.String(), "provider_refresh_failed")
+}
+
+// TestServeTokenIntrospection_ProviderUnavailable: introspecting an opaque
+// token whose userinfo check the provider did not serve is 503
+// temporarily_unavailable, not {"active": false}; the same token introspects
+// active once the provider answers again.
+func TestServeTokenIntrospection_ProviderUnavailable(t *testing.T) {
+	e := newOutageEnvWithFormat(t, server.AccessTokenFormatOpaque)
+	at := e.login(t).AccessToken
+
+	var down atomic.Bool
+	down.Store(true)
+	e.provider.ValidateTokenFunc = func(context.Context, string) (*providers.UserInfo, error) {
+		if down.Load() {
+			return nil, &providers.UserInfoStatusError{StatusCode: http.StatusServiceUnavailable}
+		}
+		return &providers.UserInfo{ID: "user-1", Email: "user@example.com"}, nil
+	}
+
+	w := e.postIntrospect(at)
+	require.Equal(t, http.StatusServiceUnavailable, w.Code, "body: %s", w.Body.String())
+	var errBody map[string]string
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &errBody))
+	require.Equal(t, constants.ErrorCodeTemporarilyUnavailable, errBody["error"])
+	require.Equal(t, "5", w.Header().Get("Retry-After"))
+	require.NotContains(t, w.Body.String(), `"active"`, "an outage is not an inactive token")
+
+	down.Store(false)
+	w = e.postIntrospect(at)
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.Equal(t, true, body["active"], "the token must introspect active once the provider answers")
 }
