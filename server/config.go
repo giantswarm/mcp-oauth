@@ -249,8 +249,9 @@ type Config struct {
 	// TokenValidationTimeout bounds one bearer validation (Server.ValidateToken,
 	// used by the handler's ValidateToken middleware and by introspection),
 	// including every identity-provider call it makes: userinfo, discovery,
-	// JWKS, and the provider-token refresh a stored token near or past expiry
-	// needs. A provider that does not answer within it yields
+	// JWKS, and the provider-token refresh a stored token past expiry needs.
+	// The near-expiry (proactive) refresh runs in the background and does not
+	// count against it. A provider that does not answer within it yields
 	// ErrProviderUnavailable, answered as 503 temporarily_unavailable with
 	// Retry-After, so the answer reaches clients whose own timeout is shorter
 	// than the provider's request timeout. Sign-in, the token endpoint and

@@ -112,11 +112,39 @@ func TestValidateToken_ExpiredTokenRefreshTimeout(t *testing.T) {
 
 				// The detached refresh keeps running past the caller's
 				// deadline; let it end before the bubble closes.
-				time.Sleep(providerRefreshWaitTimeout)
+				time.Sleep(2 * providerRefreshWaitTimeout)
 				synctest.Wait()
 			})
 		})
 	}
+}
+
+// TestValidateToken_ProactiveRefreshDoesNotDelayValidation: a provider token
+// near expiry is still valid, so a provider that does not answer its refresh
+// neither delays nor fails the validation; the refresh runs in the background.
+func TestValidateToken_ProactiveRefreshDoesNotDelayValidation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		mem := memory.New()
+		srv := newValidationTimeoutServer(t, mem, mem, 2*time.Second)
+		srv.provider.(*mock.Provider).ValidateTokenFunc = func(context.Context, string) (*providers.UserInfo, error) {
+			return &providers.UserInfo{ID: "user-1"}, nil
+		}
+		seedProviderToken(t, mem, "issued-access-token", "user-1", &oauth2.Token{
+			AccessToken: "dex-at", RefreshToken: "dex-rt", Expiry: time.Now().Add(time.Minute),
+		})
+
+		start := time.Now()
+		userInfo, err := srv.ValidateToken(t.Context(), "issued-access-token")
+		require.NoError(t, err)
+		require.Equal(t, "user-1", userInfo.ID)
+		require.Zero(t, time.Since(start))
+
+		// A refresh run that ends at the same instant as its waiter's
+		// deadline is retried once; let both runs end before the bubble
+		// closes.
+		time.Sleep(2 * providerRefreshWaitTimeout)
+		synctest.Wait()
+	})
 }
 
 // TestValidateToken_ExpiredTokenRefreshClassification: a refresh the

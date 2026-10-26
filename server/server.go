@@ -49,18 +49,19 @@ type SessionCreationHandler func(ctx context.Context, userID, familyID string, t
 // operations, it should derive a new context with its own deadline.
 type SessionRevocationHandler func(ctx context.Context, userID, familyID string)
 
-// TokenRefreshHandler is called synchronously after a provider token is
-// refreshed, either proactively (near-expiry) or reactively (expired token
-// during validation). Consumers can use this to update downstream caches
-// (e.g., ID token caches for SSO forwarding) without a separate polling layer.
+// TokenRefreshHandler is called after a provider token is refreshed, either
+// proactively (near-expiry, in the background of the validation that saw it)
+// or reactively (expired token during validation, before the validation
+// returns). Consumers can use this to update downstream caches (e.g., ID token
+// caches for SSO forwarding) without a separate polling layer.
 //
-// The provided context is the HTTP request context that triggered the refresh;
-// on the validation path it carries the Config.TokenValidationTimeout deadline.
-// If the handler performs slow operations, it should derive a new context with
-// its own deadline.
+// The provided context carries the values of the request that triggered the
+// refresh but neither its cancellation nor its deadline. If the handler
+// performs slow operations, it should derive a new context with its own
+// deadline.
 //
 // Parameters:
-//   - ctx: the HTTP request context that triggered the refresh
+//   - ctx: the triggering request's values, without cancellation or deadline
 //   - userID: the authenticated user's identifier
 //   - familyID: the token family ID (session ID); empty if the store does not support families
 //   - newToken: the freshly obtained provider token (contains id_token in Extra for OIDC flows)

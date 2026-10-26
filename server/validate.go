@@ -45,15 +45,6 @@ func checkTypeHeader(tokenString string, accepted []string) error {
 // above a healthy identity provider's userinfo or JWKS latency.
 const DefaultTokenValidationTimeout = 5 * time.Second
 
-// tokenValidationTimeout returns Config.TokenValidationTimeout, falling back
-// to the default for a Config that skipped applySecureDefaults.
-func (s *Server) tokenValidationTimeout() time.Duration {
-	if s.Config.TokenValidationTimeout > 0 {
-		return s.Config.TokenValidationTimeout
-	}
-	return DefaultTokenValidationTimeout
-}
-
 // supportedAccessTokenAlgs lists the asymmetric signing algorithms accepted
 // for JWT access tokens. HMAC and "none" are absent by design (RFC 9068 §4
 // alg confusion mitigations).
@@ -218,7 +209,7 @@ func (s *Server) fireTokenRefreshHandler(ctx context.Context, accessToken string
 		return
 	}
 
-	s.tokenRefreshHandler(ctx, userID, familyID, newProviderToken)
+	s.tokenRefreshHandler(context.WithoutCancel(ctx), userID, familyID, newProviderToken)
 }
 
 // resolveProviderToken returns the provider token backing the given issued
@@ -249,7 +240,8 @@ func (s *Server) shouldProactivelyRefresh(token *oauth2.Token) bool {
 }
 
 // attemptProactiveRefresh attempts to refresh a token that is near expiry.
-// This is a graceful operation - failures are logged but don't affect the validation flow.
+// It runs detached from the validation that triggered it; failures are logged
+// and audited only. Its wait is bounded by providerRefreshWaitTimeout.
 func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string, storedToken *oauth2.Token) {
 	refreshThreshold := time.Duration(s.Config.TokenRefreshThreshold) * time.Second
 	timeUntilExpiry := time.Until(storedToken.Expiry)
@@ -349,7 +341,7 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 // (opaque, SSO, self-issued JWT). Use the returned error for logging,
 // not for setting the response body.
 func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
-	ctx, cancel := context.WithTimeout(ctx, s.tokenValidationTimeout())
+	ctx, cancel := context.WithTimeout(ctx, s.Config.TokenValidationTimeout)
 	defer cancel()
 
 	// PRIORITY 1: Self-issued JWT (RFC 9068, AccessTokenFormatJWT mode).
@@ -538,9 +530,11 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 		return nil, err
 	}
 
-	// PROACTIVE REFRESH: Check if token is near expiry and should be refreshed
+	// PROACTIVE REFRESH: the stored token is still valid and is what the
+	// provider check below presents, so the refresh runs in the background
+	// instead of spending the validation deadline.
 	if s.shouldProactivelyRefresh(storedToken) {
-		s.attemptProactiveRefresh(ctx, accessToken, storedToken)
+		go s.attemptProactiveRefresh(context.WithoutCancel(ctx), accessToken, storedToken)
 	}
 
 	return storedToken, nil

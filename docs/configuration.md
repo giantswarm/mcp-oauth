@@ -251,13 +251,13 @@ config := &server.Config{
 **How it works:**
 1. During validation, if token expires within `TokenRefreshThreshold`
 2. AND the token has a refresh token
-3. Server attempts to refresh it with the provider
-4. On success: Updated token saved, validation continues
-5. On failure: Graceful fallback to normal validation
+3. Server refreshes it with the provider in the background; validation continues with the stored token, which is still valid
+4. On success: Updated token saved and `TokenRefreshHandler` fired
+5. On failure: Logged and audited; validation is unaffected
 
 ### Validation Deadline
 
-Bearer validation (the `handler.ValidateToken` middleware, `/userinfo` and `/introspect`) runs under one deadline that covers every call it makes to an identity provider: userinfo and discovery, the JWKS fetch for a forwarded ID token or a trusted-issuer JWT, and the provider-token refresh a stored token near or past expiry needs.
+Bearer validation (the `handler.ValidateToken` middleware, `/userinfo` and `/introspect`) runs under one deadline that covers every call it makes to an identity provider: userinfo and discovery, the JWKS fetch for a forwarded ID token or a trusted-issuer JWT, and the provider-token refresh a stored token past expiry needs. The proactive refresh of a token near expiry runs in the background and does not count against it.
 
 ```go
 config := &server.Config{
@@ -412,7 +412,7 @@ The handler always receives a non-empty `userID` and `familyID`. The validation 
 
 ### Synchronous Execution
 
-All three handlers run in the request goroutine. To avoid increasing response latency:
+All three handlers run in the request goroutine, except `TokenRefreshHandler` after a proactive refresh, which runs in that refresh's background goroutine. `TokenRefreshHandler` receives a context carrying the request's values without its cancellation or deadline. To avoid increasing response latency:
 
 ```go
 oauth.WithTokenRefreshHandler(func(ctx context.Context, userID, familyID string, newToken *oauth2.Token) {
