@@ -709,18 +709,41 @@ func TestFlowStore_AuthorizationCodeKeptPastExpiry(t *testing.T) {
 		ExpiresAt: time.Now().Add(time.Second),
 	}
 	require.NoError(t, s.SaveAuthorizationCode(t.Context(), code))
-	want := time.Second + security.DefaultClockSkewGracePeriod + storage.AuthorizationCodeRetention
+	unused := time.Second + security.DefaultClockSkewGracePeriod
 	ttl := codeKeyPTTL(t, s, code.Code)
-	require.Greater(t, ttl, want-time.Second, "kept for the retention past expiry and grace")
-	require.LessOrEqual(t, ttl, want)
+	require.Greater(t, ttl, unused-time.Second, "an unused code is kept through its grace")
+	require.LessOrEqual(t, ttl, unused)
 
 	_, err := s.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code.Code)
 	require.NoError(t, err)
-	require.Greater(t, codeKeyPTTL(t, s, code.Code), want-time.Second, "marking the code used keeps its TTL")
+	used := unused + storage.AuthorizationCodeRetention
+	ttl = codeKeyPTTL(t, s, code.Code)
+	require.Greater(t, ttl, used-time.Second, "a used code is kept for the retention past expiry and grace")
+	require.LessOrEqual(t, ttl, used)
 
 	got, err := s.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code.Code)
 	require.ErrorIs(t, err, storage.ErrAuthorizationCodeUsed)
 	require.NotNil(t, got)
+}
+
+func TestFlowStore_AtomicCheckAndMarkAuthCodeUsed_KeepsPersistentKey(t *testing.T) {
+	s := testStore(t)
+
+	const code = "ac-persistent"
+	j := authorizationCodeJSON{
+		Code:      code,
+		ClientID:  "client-1",
+		UserID:    testUserID,
+		CreatedAt: time.Now().Unix(),
+		ExpiresAt: time.Now().Add(time.Minute).Unix(),
+	}
+	data, err := json.Marshal(j)
+	require.NoError(t, err)
+	require.NoError(t, s.client.Do(t.Context(), s.client.B().Set().Key(s.codeKey(code)).Value(string(data)).Build()).Error())
+
+	_, err = s.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code)
+	require.NoError(t, err)
+	require.Equal(t, -time.Millisecond, codeKeyPTTL(t, s, code), "a key without expiry keeps none")
 }
 
 // TestFlowStore_AtomicCheckAndMarkAuthCodeUsed_MalformedSuccessJSON exercises

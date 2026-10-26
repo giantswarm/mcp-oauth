@@ -165,9 +165,9 @@ func (s *Store) SaveAuthorizationCode(ctx context.Context, code *storage.Authori
 	if calculateTTL(code.ExpiresAt) <= 0 {
 		return fmt.Errorf("authorization code already expired")
 	}
-	// The key outlives ExpiresAt by the clock-skew grace and the retention of
-	// storage.FlowStore; marking the code used keeps this TTL.
-	ttl := calculateTTL(code.ExpiresAt.Add(security.DefaultClockSkewGracePeriod + storage.AuthorizationCodeRetention))
+	// The key outlives ExpiresAt by the grace AuthorizationCode.HasExpired
+	// allows, so a code still valid within it is found.
+	ttl := calculateTTL(code.ExpiresAt.Add(security.DefaultClockSkewGracePeriod))
 
 	key := s.codeKey(code.Code)
 
@@ -239,6 +239,7 @@ func (s *Store) AtomicCheckAndMarkAuthCodeUsed(ctx context.Context, code string)
 			Arg(
 				strconv.FormatInt(time.Now().Unix(), 10),
 				strconv.FormatInt(int64(security.DefaultClockSkewGracePeriod/time.Second), 10),
+				strconv.FormatInt(storage.AuthorizationCodeRetention.Milliseconds(), 10),
 			).
 			Build(),
 	).ToString()

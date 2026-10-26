@@ -1208,12 +1208,16 @@ func (s *Store) cleanupExpiredAuthStates() int {
 	return cleaned
 }
 
-// cleanupExpiredAuthCodes removes authorization codes whose retention past
-// expiry has passed.
+// cleanupExpiredAuthCodes removes expired authorization codes, keeping a used
+// one for storage.AuthorizationCodeRetention past its expiry.
 func (s *Store) cleanupExpiredAuthCodes() int {
 	cleaned := 0
 	for code, authCode := range s.authCodes {
-		if security.IsTokenExpiredWithGracePeriod(authCode.ExpiresAt, security.DefaultClockSkewGracePeriod+storage.AuthorizationCodeRetention) {
+		grace := security.DefaultClockSkewGracePeriod
+		if authCode.Used {
+			grace += storage.AuthorizationCodeRetention
+		}
+		if security.IsTokenExpiredWithGracePeriod(authCode.ExpiresAt, grace) {
 			delete(s.authCodes, code)
 			cleaned++
 		}

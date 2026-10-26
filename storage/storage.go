@@ -126,7 +126,7 @@ var (
 const DefaultOperationTimeout = 3 * time.Second
 
 // AuthorizationCodeRetention is how long a store keeps an authorization code
-// past its expiry and clock-skew grace. Until then a second presentation of a
+// it marked used past the code's expiry and clock-skew grace. Until then a second presentation of a
 // used code is detected as a reuse and revokes the tokens the code produced
 // (OAuth 2.1 §4.1.2), and an exchange that marked its code used in the code's
 // last moment still finds it when it reads it back after storing its tokens.
@@ -578,11 +578,12 @@ type FlowStore interface {
 	//   stored code, whether or not the code has expired since
 	// - Code expired (and not used)
 	//
-	// A store keeps a code for [AuthorizationCodeRetention] past its expiry,
-	// counting the clock-skew grace of AuthorizationCode.HasExpired, and
-	// removes it earlier only on DeleteAuthorizationCode. The exchange reads
-	// the code back after storing its tokens and refuses them if the code is
-	// gone, so a code that vanished on its own would refuse a valid exchange.
+	// A store keeps a code it marked used for [AuthorizationCodeRetention]
+	// past its expiry, counting the clock-skew grace of
+	// AuthorizationCode.HasExpired, and removes it earlier only on
+	// DeleteAuthorizationCode. The exchange reads the code back after storing
+	// its tokens and refuses them if the code is gone, so a used code that
+	// vanished on its own would refuse a valid exchange.
 	// SECURITY: This operation MUST be atomic to prevent concurrent code exchange attacks.
 	AtomicCheckAndMarkAuthCodeUsed(ctx context.Context, code string) (*AuthorizationCode, error)
 

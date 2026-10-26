@@ -1173,21 +1173,31 @@ func TestStore_AuthorizationCodeRetention(t *testing.T) {
 		store := New(WithCleanupInterval(time.Hour))
 		t.Cleanup(store.Stop)
 
-		code := testutil.GenerateTestAuthorizationCode()
-		code.ExpiresAt = time.Now().Add(time.Minute)
-		require.NoError(t, store.SaveAuthorizationCode(t.Context(), code))
+		used := testutil.GenerateTestAuthorizationCode()
+		used.ExpiresAt = time.Now().Add(time.Minute)
+		require.NoError(t, store.SaveAuthorizationCode(t.Context(), used))
+		unused := testutil.GenerateTestAuthorizationCode()
+		unused.ExpiresAt = used.ExpiresAt
+		require.NoError(t, store.SaveAuthorizationCode(t.Context(), unused))
+
+		// Marked used in the code's last second.
+		time.Sleep(time.Minute - time.Second)
+		_, err := store.AtomicCheckAndMarkAuthCodeUsed(t.Context(), used.Code)
+		require.NoError(t, err)
 
 		// Expired with grace, one second before the retention ends.
-		time.Sleep(time.Minute + security.DefaultClockSkewGracePeriod + storage.AuthorizationCodeRetention - time.Second)
+		time.Sleep(security.DefaultClockSkewGracePeriod + storage.AuthorizationCodeRetention)
 		store.cleanup()
 
-		_, err := store.GetAuthorizationCode(t.Context(), code.Code)
-		require.ErrorIs(t, err, storage.ErrTokenExpired, "a code is kept through its retention")
+		_, err = store.GetAuthorizationCode(t.Context(), used.Code)
+		require.ErrorIs(t, err, storage.ErrTokenExpired, "a used code is kept through its retention")
+		_, err = store.GetAuthorizationCode(t.Context(), unused.Code)
+		require.ErrorIs(t, err, storage.ErrAuthorizationCodeNotFound, "an unused code is cleaned up at expiry")
 
 		time.Sleep(2 * time.Second)
 		store.cleanup()
 
-		_, err = store.GetAuthorizationCode(t.Context(), code.Code)
+		_, err = store.GetAuthorizationCode(t.Context(), used.Code)
 		require.ErrorIs(t, err, storage.ErrAuthorizationCodeNotFound)
 	})
 }

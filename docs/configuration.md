@@ -333,7 +333,7 @@ The in-memory store performs no I/O and never blocks, so it needs no deadline.
 
 ### Authorization Code Retention
 
-A store keeps an authorization code for `storage.AuthorizationCodeRetention` (10 minutes) past its expiry and the 5 s clock-skew grace. Until then a second presentation of a used code is answered as a reuse and revokes the tokens the code produced (OAuth 2.1 §4.1.2), and an exchange that marked its code used in the code's last second still finds it when it reads it back after storing its tokens. An expired code is refused either way.
+A store keeps an authorization code it marked used for `storage.AuthorizationCodeRetention` (10 minutes) past its expiry and the 5 s clock-skew grace; an unused code is removed at expiry. Until then a second presentation of the used code is answered as a reuse and revokes the tokens the code produced (OAuth 2.1 §4.1.2), and an exchange that marked its code used in the code's last second still finds it when it reads it back after storing its tokens.
 
 ### Behaviour During a Storage Outage
 

@@ -782,6 +782,7 @@ func (s *Store) legacyFamilyKey(familyID string) string { return s.keyOf("family
 // KEYS[1] = code key (e.g., "mcp:code:abc123")
 // ARGV[1] = current Unix timestamp in seconds (for expiry check)
 // ARGV[2] = clock-skew grace in seconds added to code.expires_at
+// ARGV[3] = used-code retention in milliseconds
 //
 // Returns:
 //   - Original JSON data if code was unused and successfully marked as used
@@ -789,6 +790,10 @@ func (s *Store) legacyFamilyKey(familyID string) string { return s.keyOf("family
 //   - "ALREADY_USED:<json>" if code was already used, expired or not (returns
 //     original data for forensics)
 //   - "EXPIRED" if the unused code has expired (ARGV[1] > code.expires_at + ARGV[2])
+//
+// The key of an unused code expires at code.expires_at plus the grace (see
+// SaveAuthorizationCode); marking it used extends it by the retention. A key
+// without expiry keeps none.
 //
 // Edge cases:
 //   - If cjson.decode fails, Lua will raise an error (handled by caller)
@@ -810,9 +815,13 @@ if expiresAt and now > expiresAt + tonumber(ARGV[2]) then
     return 'EXPIRED'
 end
 
--- Mark as used and save
 code.used = true
-redis.call('SET', KEYS[1], cjson.encode(code), 'KEEPTTL')
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl < 0 then
+    redis.call('SET', KEYS[1], cjson.encode(code), 'KEEPTTL')
+else
+    redis.call('SET', KEYS[1], cjson.encode(code), 'PX', ttl + tonumber(ARGV[3]))
+end
 
 return data
 `
