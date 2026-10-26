@@ -331,19 +331,9 @@ store, err := valkey.New(valkey.Config{
 
 The in-memory store performs no I/O and never blocks, so it needs no deadline.
 
-### Used Authorization Codes
+### Authorization Code Retention
 
-A store keeps an authorization code its exchange marked used for a retention period past the code's expiry (plus the 5 s clock-skew grace). Until then a second presentation of the code is answered as a reuse and revokes the tokens the code produced (OAuth 2.1 §4.1.2). The exchange also reads its code back once its tokens are stored and refuses them if the code is gone, so the retention has to be longer than the longest token request: a code can be marked used in its last second.
-
-```go
-store, err := valkey.New(valkey.Config{
-    Address: "valkey.example.com:6379",
-    // Default: storage.DefaultUsedAuthorizationCodeRetention (10m). Negative values are rejected.
-    UsedAuthorizationCodeRetention: 15 * time.Minute,
-})
-
-memStore := memory.New(memory.WithUsedAuthorizationCodeRetention(15 * time.Minute))
-```
+A store keeps an authorization code for `storage.AuthorizationCodeRetention` (10 minutes) past its expiry and the 5 s clock-skew grace. Until then a second presentation of a used code is answered as a reuse and revokes the tokens the code produced (OAuth 2.1 §4.1.2), and an exchange that marked its code used in the code's last second still finds it when it reads it back after storing its tokens. An expired code is refused either way.
 
 ### Behaviour During a Storage Outage
 

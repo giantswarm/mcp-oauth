@@ -697,86 +697,30 @@ func codeKeyPTTL(t *testing.T, s *Store, code string) time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
-func TestFlowStore_SaveAuthorizationCode_TTLCoversClockSkewGrace(t *testing.T) {
+func TestFlowStore_AuthorizationCodeKeptPastExpiry(t *testing.T) {
 	s := testStore(t)
 
+	// Marked used in the code's last second.
 	code := &storage.AuthorizationCode{
-		Code:      "ac-save-ttl",
+		Code:      "ac-retain",
 		ClientID:  "client-1",
 		UserID:    testUserID,
 		CreatedAt: time.Now(),
-		ExpiresAt: time.Now().Add(time.Minute),
+		ExpiresAt: time.Now().Add(time.Second),
 	}
 	require.NoError(t, s.SaveAuthorizationCode(t.Context(), code))
-
+	want := time.Second + security.DefaultClockSkewGracePeriod + storage.AuthorizationCodeRetention
 	ttl := codeKeyPTTL(t, s, code.Code)
-	require.Greater(t, ttl, time.Minute+security.DefaultClockSkewGracePeriod-time.Second)
-	require.LessOrEqual(t, ttl, time.Minute+security.DefaultClockSkewGracePeriod)
-}
+	require.Greater(t, ttl, want-time.Second, "kept for the retention past expiry and grace")
+	require.LessOrEqual(t, ttl, want)
 
-func TestFlowStore_AtomicCheckAndMarkAuthCodeUsed_RetainsUsedCode(t *testing.T) {
-	tests := []struct {
-		name      string
-		expiresIn time.Duration
-		retention time.Duration
-	}{
-		{name: "marked in the code's last second", expiresIn: time.Second, retention: storage.DefaultUsedAuthorizationCodeRetention},
-		{name: "configured retention", expiresIn: 5 * time.Minute, retention: time.Second},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := testStore(t)
-			s.usedCodeRetention = tt.retention
-
-			code := &storage.AuthorizationCode{
-				Code:      "ac-retain",
-				ClientID:  "client-1",
-				UserID:    testUserID,
-				CreatedAt: time.Now(),
-				ExpiresAt: time.Now().Add(tt.expiresIn),
-			}
-			require.NoError(t, s.SaveAuthorizationCode(t.Context(), code))
-			_, err := s.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code.Code)
-			require.NoError(t, err)
-
-			want := tt.expiresIn + security.DefaultClockSkewGracePeriod + tt.retention
-			ttl := codeKeyPTTL(t, s, code.Code)
-			require.Greater(t, ttl, want-time.Second, "kept for the retention past expiry and grace")
-			require.LessOrEqual(t, ttl, want)
-
-			got, err := s.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code.Code)
-			require.ErrorIs(t, err, storage.ErrAuthorizationCodeUsed)
-			require.NotNil(t, got)
-		})
-	}
-}
-
-func TestFlowStore_AtomicCheckAndMarkAuthCodeUsed_KeepsPersistentKey(t *testing.T) {
-	s := testStore(t)
-
-	const code = "ac-persistent"
-	j := authorizationCodeJSON{
-		Code:      code,
-		ClientID:  "client-1",
-		UserID:    testUserID,
-		CreatedAt: time.Now().Unix(),
-		ExpiresAt: time.Now().Add(time.Minute).Unix(),
-	}
-	data, err := json.Marshal(j)
+	_, err := s.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code.Code)
 	require.NoError(t, err)
-	require.NoError(t, s.client.Do(t.Context(), s.client.B().Set().Key(s.codeKey(code)).Value(string(data)).Build()).Error())
+	require.Greater(t, codeKeyPTTL(t, s, code.Code), want-time.Second, "marking the code used keeps its TTL")
 
-	_, err = s.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code)
-	require.NoError(t, err)
-	require.Equal(t, -time.Millisecond, codeKeyPTTL(t, s, code), "a key without expiry keeps none")
-}
-
-func TestNew_UsedAuthorizationCodeRetention(t *testing.T) {
-	_, err := New(Config{Address: "127.0.0.1:1", UsedAuthorizationCodeRetention: -time.Second, StartupTimeout: testStartupTimeout})
-	require.ErrorContains(t, err, "UsedAuthorizationCodeRetention")
-
-	s := testStore(t)
-	require.Equal(t, storage.DefaultUsedAuthorizationCodeRetention, s.usedCodeRetention)
+	got, err := s.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code.Code)
+	require.ErrorIs(t, err, storage.ErrAuthorizationCodeUsed)
+	require.NotNil(t, got)
 }
 
 // TestFlowStore_AtomicCheckAndMarkAuthCodeUsed_MalformedSuccessJSON exercises

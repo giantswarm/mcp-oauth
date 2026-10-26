@@ -85,9 +85,6 @@ type Store struct {
 	// Flow storage
 	authStates map[string]*storage.AuthorizationState
 	authCodes  map[string]*storage.AuthorizationCode
-	// usedCodeRetainUntil holds, for each code marked used, the time before
-	// which cleanup keeps it.
-	usedCodeRetainUntil map[string]time.Time
 
 	// Security
 	encryptor *security.Encryptor // Token encryption at rest (optional)
@@ -107,7 +104,6 @@ type Store struct {
 	// Cleanup
 	cleanupInterval            time.Duration
 	revokedFamilyRetentionDays int64 // configurable retention period for revoked families
-	usedCodeRetention          time.Duration
 	stopCleanup                chan struct{}
 	logger                     *slog.Logger
 
@@ -173,18 +169,6 @@ func WithRevokedFamilyRetentionDays(days int64) Option {
 	return func(s *Store) { s.revokedFamilyRetentionDays = days }
 }
 
-// WithUsedAuthorizationCodeRetention sets how long a used code is kept past
-// its expiry; see [storage.DefaultUsedAuthorizationCodeRetention], the
-// default. Values ≤ 0 select the default.
-func WithUsedAuthorizationCodeRetention(d time.Duration) Option {
-	return func(s *Store) {
-		if d <= 0 {
-			d = storage.DefaultUsedAuthorizationCodeRetention
-		}
-		s.usedCodeRetention = d
-	}
-}
-
 // New creates a new in-memory store. All dependencies (encryptor,
 // instrumentation, logger) are supplied at construction via options and are
 // immutable afterward.
@@ -204,10 +188,8 @@ func New(opts ...Option) *Store {
 		clientsPerIP:               make(map[string]int),
 		authStates:                 make(map[string]*storage.AuthorizationState),
 		authCodes:                  make(map[string]*storage.AuthorizationCode),
-		usedCodeRetainUntil:        make(map[string]time.Time),
 		cleanupInterval:            time.Minute,
 		revokedFamilyRetentionDays: 90,
-		usedCodeRetention:          storage.DefaultUsedAuthorizationCodeRetention,
 		stopCleanup:                make(chan struct{}),
 		logger:                     slog.Default(),
 	}
@@ -1086,7 +1068,6 @@ func (s *Store) SaveAuthorizationCode(ctx context.Context, code *storage.Authori
 	defer s.mu.Unlock()
 
 	s.authCodes[code.Code] = code
-	delete(s.usedCodeRetainUntil, code.Code)
 	s.logger.Debug("Saved authorization code", "code_prefix", helpers.SafeTruncate(code.Code, tokenIDLogLength))
 	return nil
 }
@@ -1151,7 +1132,6 @@ func (s *Store) AtomicCheckAndMarkAuthCodeUsed(_ context.Context, code string) (
 
 	// Mark as used atomically
 	authCode.Used = true
-	s.usedCodeRetainUntil[code] = authCode.ExpiresAt.Add(security.DefaultClockSkewGracePeriod + s.usedCodeRetention)
 	s.logger.Debug("Marked authorization code as used",
 		"code_prefix", helpers.SafeTruncate(code, tokenIDLogLength))
 
@@ -1165,7 +1145,6 @@ func (s *Store) DeleteAuthorizationCode(_ context.Context, code string) error {
 	defer s.mu.Unlock()
 
 	delete(s.authCodes, code)
-	delete(s.usedCodeRetainUntil, code)
 	s.logger.Debug("Deleted authorization code")
 	return nil
 }
@@ -1229,21 +1208,15 @@ func (s *Store) cleanupExpiredAuthStates() int {
 	return cleaned
 }
 
-// cleanupExpiredAuthCodes removes expired authorization codes, keeping a used
-// one until its retention has passed as well.
+// cleanupExpiredAuthCodes removes authorization codes whose retention past
+// expiry has passed.
 func (s *Store) cleanupExpiredAuthCodes() int {
 	cleaned := 0
-	now := time.Now()
 	for code, authCode := range s.authCodes {
-		if !authCode.HasExpired() {
-			continue
+		if security.IsTokenExpiredWithGracePeriod(authCode.ExpiresAt, security.DefaultClockSkewGracePeriod+storage.AuthorizationCodeRetention) {
+			delete(s.authCodes, code)
+			cleaned++
 		}
-		if retainUntil, used := s.usedCodeRetainUntil[code]; used && now.Before(retainUntil) {
-			continue
-		}
-		delete(s.authCodes, code)
-		delete(s.usedCodeRetainUntil, code)
-		cleaned++
 	}
 	return cleaned
 }

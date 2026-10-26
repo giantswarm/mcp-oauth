@@ -1168,72 +1168,28 @@ func TestStore_AtomicCheckAndMarkAuthCodeUsed_UsedAfterExpiry(t *testing.T) {
 	})
 }
 
-func TestStore_UsedAuthorizationCodeRetention(t *testing.T) {
-	tests := []struct {
-		name      string
-		opts      []Option
-		retention time.Duration
-	}{
-		{name: "default", retention: storage.DefaultUsedAuthorizationCodeRetention},
-		{name: "configured", opts: []Option{WithUsedAuthorizationCodeRetention(30 * time.Minute)}, retention: 30 * time.Minute},
-		{name: "non-positive selects default", opts: []Option{WithUsedAuthorizationCodeRetention(-time.Second)}, retention: storage.DefaultUsedAuthorizationCodeRetention},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				store := New(append([]Option{WithCleanupInterval(time.Hour)}, tt.opts...)...)
-				t.Cleanup(store.Stop)
+func TestStore_AuthorizationCodeRetention(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := New(WithCleanupInterval(time.Hour))
+		t.Cleanup(store.Stop)
 
-				used := testutil.GenerateTestAuthorizationCode()
-				used.ExpiresAt = time.Now().Add(time.Minute)
-				require.NoError(t, store.SaveAuthorizationCode(t.Context(), used))
-				unused := testutil.GenerateTestAuthorizationCode()
-				unused.ExpiresAt = used.ExpiresAt
-				require.NoError(t, store.SaveAuthorizationCode(t.Context(), unused))
+		code := testutil.GenerateTestAuthorizationCode()
+		code.ExpiresAt = time.Now().Add(time.Minute)
+		require.NoError(t, store.SaveAuthorizationCode(t.Context(), code))
 
-				// Marked used in the code's last second.
-				time.Sleep(time.Minute - time.Second)
-				_, err := store.AtomicCheckAndMarkAuthCodeUsed(t.Context(), used.Code)
-				require.NoError(t, err)
+		// Expired with grace, one second before the retention ends.
+		time.Sleep(time.Minute + security.DefaultClockSkewGracePeriod + storage.AuthorizationCodeRetention - time.Second)
+		store.cleanup()
 
-				// Expired with grace, one second before the retention ends.
-				time.Sleep(time.Second + security.DefaultClockSkewGracePeriod + tt.retention - time.Second)
-				store.cleanup()
+		_, err := store.GetAuthorizationCode(t.Context(), code.Code)
+		require.ErrorIs(t, err, storage.ErrTokenExpired, "a code is kept through its retention")
 
-				_, err = store.GetAuthorizationCode(t.Context(), used.Code)
-				require.ErrorIs(t, err, storage.ErrTokenExpired, "a used code is kept through its retention")
-				_, err = store.GetAuthorizationCode(t.Context(), unused.Code)
-				require.ErrorIs(t, err, storage.ErrAuthorizationCodeNotFound, "an unused code is cleaned up at expiry")
+		time.Sleep(2 * time.Second)
+		store.cleanup()
 
-				time.Sleep(2 * time.Second)
-				store.cleanup()
-
-				_, err = store.GetAuthorizationCode(t.Context(), used.Code)
-				require.ErrorIs(t, err, storage.ErrAuthorizationCodeNotFound)
-				store.mu.Lock()
-				require.Empty(t, store.usedCodeRetainUntil)
-				store.mu.Unlock()
-			})
-		})
-	}
-}
-
-func TestStore_DeleteAuthorizationCode_DropsRetention(t *testing.T) {
-	store := New(WithCleanupInterval(time.Hour))
-	t.Cleanup(store.Stop)
-
-	code := testutil.GenerateTestAuthorizationCode()
-	require.NoError(t, store.SaveAuthorizationCode(t.Context(), code))
-	_, err := store.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code.Code)
-	require.NoError(t, err)
-
-	require.NoError(t, store.DeleteAuthorizationCode(t.Context(), code.Code))
-
-	_, err = store.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code.Code)
-	require.ErrorIs(t, err, storage.ErrAuthorizationCodeNotFound)
-	store.mu.Lock()
-	require.Empty(t, store.usedCodeRetainUntil)
-	store.mu.Unlock()
+		_, err = store.GetAuthorizationCode(t.Context(), code.Code)
+		require.ErrorIs(t, err, storage.ErrAuthorizationCodeNotFound)
+	})
 }
 
 func TestStore_AtomicCheckAndMarkAuthCodeUsed_Concurrent(t *testing.T) {

@@ -159,11 +159,6 @@ type Config struct {
 	// return an error.
 	OperationTimeout time.Duration
 
-	// UsedAuthorizationCodeRetention is how long a used code is kept past its
-	// expiry; see [storage.DefaultUsedAuthorizationCodeRetention], the default
-	// selected by zero. A negative value causes [New] to return an error.
-	UsedAuthorizationCodeRetention time.Duration
-
 	// StartupTimeout bounds how long [New] waits for Valkey to accept
 	// connections, retrying with backoff while it is still starting (connection
 	// refused or reset, DNS not resolvable yet, dial timeout, LOADING). Errors
@@ -183,7 +178,6 @@ type Store struct {
 	refreshTokenTTL            time.Duration
 	maxTokenDataSize           int
 	operationTimeout           time.Duration
-	usedCodeRetention          time.Duration
 
 	// encryptor provides optional token encryption at rest; immutable after New.
 	encryptor *security.Encryptor
@@ -249,17 +243,20 @@ func New(cfg Config, opts ...Option) (*Store, error) {
 		return nil, fmt.Errorf("MaxTokenDataSize=%d out of range [%d,%d]", maxTokenDataSize, MinMaxTokenDataSize, MaxMaxTokenDataSize)
 	}
 
-	operationTimeout, err := durationOrDefault("OperationTimeout", cfg.OperationTimeout, storage.DefaultOperationTimeout)
-	if err != nil {
-		return nil, err
+	operationTimeout := cfg.OperationTimeout
+	if operationTimeout == 0 {
+		operationTimeout = storage.DefaultOperationTimeout
 	}
-	usedCodeRetention, err := durationOrDefault("UsedAuthorizationCodeRetention", cfg.UsedAuthorizationCodeRetention, storage.DefaultUsedAuthorizationCodeRetention)
-	if err != nil {
-		return nil, err
+	if operationTimeout < 0 {
+		return nil, fmt.Errorf("OperationTimeout=%v must not be negative", cfg.OperationTimeout)
 	}
-	startupTimeout, err := durationOrDefault("StartupTimeout", cfg.StartupTimeout, DefaultStartupTimeout)
-	if err != nil {
-		return nil, err
+
+	startupTimeout := cfg.StartupTimeout
+	if startupTimeout == 0 {
+		startupTimeout = DefaultStartupTimeout
+	}
+	if startupTimeout < 0 {
+		return nil, fmt.Errorf("StartupTimeout=%v must not be negative", cfg.StartupTimeout)
 	}
 
 	client, err := connect(buildClientOpts(cfg, operationTimeout), startupTimeout, logger)
@@ -275,7 +272,6 @@ func New(cfg Config, opts ...Option) (*Store, error) {
 		refreshTokenTTL:            refreshTokenTTL,
 		maxTokenDataSize:           maxTokenDataSize,
 		operationTimeout:           operationTimeout,
-		usedCodeRetention:          usedCodeRetention,
 	}
 
 	for _, opt := range opts {
@@ -286,18 +282,6 @@ func New(cfg Config, opts ...Option) (*Store, error) {
 
 	logger.Debug("storage connected", "store", s)
 	return s, nil
-}
-
-// durationOrDefault returns d, or def when d is zero; a negative d is an error
-// naming the Config field.
-func durationOrDefault(field string, d, def time.Duration) (time.Duration, error) {
-	switch {
-	case d < 0:
-		return 0, fmt.Errorf("%s=%v must not be negative", field, d)
-	case d == 0:
-		return def, nil
-	}
-	return d, nil
 }
 
 // Close closes the Valkey client connection.
@@ -798,7 +782,6 @@ func (s *Store) legacyFamilyKey(familyID string) string { return s.keyOf("family
 // KEYS[1] = code key (e.g., "mcp:code:abc123")
 // ARGV[1] = current Unix timestamp in seconds (for expiry check)
 // ARGV[2] = clock-skew grace in seconds added to code.expires_at
-// ARGV[3] = used-code retention in milliseconds
 //
 // Returns:
 //   - Original JSON data if code was unused and successfully marked as used
@@ -806,11 +789,6 @@ func (s *Store) legacyFamilyKey(familyID string) string { return s.keyOf("family
 //   - "ALREADY_USED:<json>" if code was already used, expired or not (returns
 //     original data for forensics)
 //   - "EXPIRED" if the unused code has expired (ARGV[1] > code.expires_at + ARGV[2])
-//
-// The key of an unused code expires at code.expires_at plus the grace (see
-// SaveAuthorizationCode); marking it used extends it by the retention, so the
-// exchange's read-back still finds it and a reuse after expiry is still
-// detected. A key without expiry keeps none.
 //
 // Edge cases:
 //   - If cjson.decode fails, Lua will raise an error (handled by caller)
@@ -832,13 +810,9 @@ if expiresAt and now > expiresAt + tonumber(ARGV[2]) then
     return 'EXPIRED'
 end
 
+-- Mark as used and save
 code.used = true
-local ttl = redis.call('PTTL', KEYS[1])
-if ttl < 0 then
-    redis.call('SET', KEYS[1], cjson.encode(code), 'KEEPTTL')
-else
-    redis.call('SET', KEYS[1], cjson.encode(code), 'PX', ttl + tonumber(ARGV[3]))
-end
+redis.call('SET', KEYS[1], cjson.encode(code), 'KEEPTTL')
 
 return data
 `
