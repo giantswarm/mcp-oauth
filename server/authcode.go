@@ -118,6 +118,11 @@ func (s *Server) handleCodeReuseDetection(ctx context.Context, authCode *storage
 		span.SetStatus(codes.Error, "authorization code reuse detected")
 	}
 
+	// Deleting the code before revoking its tokens is what lets an exchange of
+	// the code still in flight see this reuse: see refuseIfCodeReused.
+	if err := s.flowStore.DeleteAuthorizationCode(ctx, code); err != nil {
+		s.Logger.Error("Failed to delete reused authorization code", logKeyError, err)
+	}
 	action := s.revokeReusedCode(ctx, authCode, code)
 
 	// Rate limit logging to prevent DoS via log flooding
@@ -140,8 +145,25 @@ func (s *Server) handleCodeReuseDetection(ctx context.Context, authCode *storage
 		s.Auditor.LogAuthFailure(ctx, authCode.UserID, presentedClientID, "", "authorization_code_reuse")
 	}
 
-	_ = s.flowStore.DeleteAuthorizationCode(ctx, code)
 	return errInvalidGrant
+}
+
+// refuseIfCodeReused reads code back once its exchange has stored the tokens.
+// A reuse deletes the code before it revokes the code's tokens, and the
+// exchange stores its tokens before this read, so whichever runs second sees
+// the other: a reuse that raced the exchange either revoked these tokens or is
+// seen here, and the exchange then revokes them itself and is refused. A code
+// that cannot be read back is treated the same way, failing closed.
+func (s *Server) refuseIfCodeReused(ctx context.Context, authCode *storage.AuthorizationCode, clientID, code string) error {
+	_, err := s.flowStore.GetAuthorizationCode(ctx, code)
+	if err == nil || errors.Is(err, storage.ErrTokenExpired) {
+		return nil
+	}
+	s.revokeReusedCode(ctx, authCode, code)
+	if errors.Is(err, storage.ErrAuthorizationCodeNotFound) {
+		return s.logAuthCodeValidationFailure(ctx, "authorization_code_reused_during_exchange", clientID, authCode.UserID, helpers.SafeTruncate(code, 8))
+	}
+	return s.storageUnavailable(ctx, "check authorization code after exchange", clientID, authCode.UserID, err)
 }
 
 // codeFamilyID is the ID of the token family an exchange of code starts. It is
@@ -994,6 +1016,10 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 	}
 
 	s.trackRefreshTokenFamily(ctx, tokenResponse.RefreshToken, authCode.UserID, clientID, familyID)
+
+	if err := s.refuseIfCodeReused(ctx, authCode, clientID, code); err != nil {
+		return nil, "", err
+	}
 
 	if s.sessionCreationHandler != nil && familyID != "" {
 		s.sessionCreationHandler(ctx, authCode.UserID, familyID, tokenResponse)

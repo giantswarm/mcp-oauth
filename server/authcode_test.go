@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1832,38 +1833,63 @@ func TestServer_ConcurrentAuthorizationCodeReuse(t *testing.T) {
 		}()
 	}
 
-	// Collect results
+	// At most one exchange is granted, and since the code was used more than
+	// once, no token issued based on it outlives the race (OAuth 2.1 4.1.3).
 	successCount := 0
-	failCount := 0
-	var successfulToken *oauth2.Token
 	for range numConcurrent {
 		res := <-results
 		if res.success {
 			successCount++
-			successfulToken = res.token
-		} else {
-			failCount++
-			// Verify error is generic
-			if !strings.Contains(res.err.Error(), "invalid") {
-				t.Errorf("Error should contain 'invalid', got: %v", res.err)
-			}
+			continue
+		}
+		if !strings.Contains(res.err.Error(), "invalid") {
+			t.Errorf("Error should contain 'invalid', got: %v", res.err)
 		}
 	}
+	require.LessOrEqual(t, successCount, 1, "SECURITY FAILURE: the code was exchanged more than once")
+	tokens, err := store.GetTokensByUserClient(ctx, testMockUserID, clientID)
+	require.NoError(t, err)
+	require.Empty(t, tokens, "a token issued based on the reused code is still live")
+}
 
-	// CRITICAL: Exactly ONE attempt should succeed (atomic operation)
-	if successCount != 1 {
-		t.Errorf("SECURITY FAILURE: Expected exactly 1 success, got %d", successCount)
-	}
-	if failCount != numConcurrent-1 {
-		t.Errorf("Expected %d failures, got %d", numConcurrent-1, failCount)
-	}
+// reuseDuringExchangeStore presents the code again while the first exchange
+// is storing its tokens, before the token family is stored.
+type reuseDuringExchangeStore struct {
+	*memory.Store
+	reuse func()
+	once  sync.Once
+}
 
-	// The one successful token should be valid
-	if successCount == 1 && successfulToken == nil {
-		t.Error("Successful exchange should return a token")
+func (r *reuseDuringExchangeStore) SaveTokenMetadata(ctx context.Context, tokenID string, metadata storage.TokenMetadata) error {
+	if err := r.Store.SaveTokenMetadata(ctx, tokenID, metadata); err != nil {
+		return err
 	}
+	r.once.Do(r.reuse)
+	return nil
+}
 
-	t.Logf("Concurrent auth code test passed: 1 succeeded, %d correctly failed", failCount)
+// SECURITY: a reuse that arrives while the first exchange is still storing
+// its tokens cannot revoke the tokens stored after it; the exchange sees the
+// reuse once its tokens are stored, revokes them and is refused.
+func TestServer_AuthorizationCodeReuseDuringExchangeRevokesItsTokens(t *testing.T) {
+	const redirect = "https://example.com/callback"
+	srv, store, _ := setupFlowTestServer(t)
+	client, _, err := srv.RegisterClient(t.Context(), "Test Client", ClientTypePublic, "",
+		[]string{redirect}, []string{"openid"}, "192.168.1.100", 10)
+	require.NoError(t, err)
+	code, verifier := issueTestCode(t, srv, store, client.ClientID, redirect)
+	var reuseErr error
+	srv.tokenStore = &reuseDuringExchangeStore{Store: store, reuse: func() {
+		_, _, reuseErr = srv.ExchangeAuthorizationCode(t.Context(), code, client.ClientID, redirect, "", verifier, "")
+	}}
+
+	_, _, err = srv.ExchangeAuthorizationCode(t.Context(), code, client.ClientID, redirect, "", verifier, "")
+
+	require.ErrorIs(t, reuseErr, errInvalidGrant)
+	require.ErrorIs(t, err, errInvalidGrant)
+	tokens, err := store.GetTokensByUserClient(t.Context(), testMockUserID, client.ClientID)
+	require.NoError(t, err)
+	require.Empty(t, tokens, "a token the racing exchange stored is still live")
 }
 
 // TestServer_AuthorizationCodeReuseRevokesTokens tests that when an authorization code is reused,
