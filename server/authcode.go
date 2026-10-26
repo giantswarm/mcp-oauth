@@ -491,6 +491,7 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 		if err != nil {
 			return nil, "", err
 		}
+		s.logIdentityCodeEvent(ctx, security.EventIdentityCodeIssued, authCodeObj)
 		return authCodeObj, clientState, nil
 	}
 
@@ -943,6 +944,11 @@ func (s *Server) extendTokenExpiryForStorage(token *oauth2.Token) *oauth2.Token 
 
 // createAndSaveAuthorizationCode creates and saves an authorization code.
 func (s *Server) createAndSaveAuthorizationCode(ctx context.Context, authState *storage.AuthorizationState, userInfo *providers.UserInfo, providerToken *oauth2.Token) (*storage.AuthorizationCode, error) {
+	ttl := time.Duration(s.Config.AuthorizationCodeTTL) * time.Second
+	if authState.IdentityOnly {
+		ttl = min(ttl, identityCodeTTL)
+	}
+	now := time.Now()
 	authCodeObj := &storage.AuthorizationCode{
 		Code:                generateRandomToken(),
 		ClientID:            authState.ClientID,
@@ -955,8 +961,8 @@ func (s *Server) createAndSaveAuthorizationCode(ctx context.Context, authState *
 		UserID:              userInfo.ID,
 		ProviderToken:       providerToken,
 		IdentityOnly:        authState.IdentityOnly,
-		CreatedAt:           time.Now(),
-		ExpiresAt:           time.Now().Add(time.Duration(s.Config.AuthorizationCodeTTL) * time.Second),
+		CreatedAt:           now,
+		ExpiresAt:           now.Add(ttl),
 		Used:                false,
 	}
 

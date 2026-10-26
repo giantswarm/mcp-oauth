@@ -5,12 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -165,6 +167,45 @@ func TestIdentityFlow_ReusedCodeRevokesNothing(t *testing.T) {
 	require.NoError(t, err, "the person's token at the client is not revoked")
 	require.True(t, containsAuthFailure(logs.String(), "identity_code_not_exchangeable"), logs.String())
 	require.NotContains(t, logs.String(), "authorization_code_reuse")
+}
+
+func TestIdentityFlow_IssueAndRedeemAreAudited(t *testing.T) {
+	srv, store, flow := setupIdentityTestServer(t)
+	logger, logs := captureLogger()
+	srv.Auditor = security.NewAuditor(logger, true)
+
+	code := flow.signIn(t, srv, store)
+	require.True(t, containsAuditEvent(logs.String(), security.EventIdentityCodeIssued), logs.String())
+
+	_, err := srv.RedeemIdentityCode(t.Context(), code, flow.returnURL, flow.verifier)
+
+	require.NoError(t, err)
+	require.True(t, containsAuditEvent(logs.String(), security.EventIdentityCodeRedeemed), logs.String())
+	require.Contains(t, logs.String(), helpers.HashForLogging(testMockUserID))
+	require.Equal(t, 2, strings.Count(logs.String(), "return_url:"+testIdentityReturnURL), logs.String())
+}
+
+func TestIdentityFlow_CodeLifetime(t *testing.T) {
+	tests := []struct {
+		name                 string
+		authorizationCodeTTL int64
+		want                 time.Duration
+	}{
+		{name: "identity code TTL", authorizationCodeTTL: 600, want: identityCodeTTL},
+		{name: "capped by AuthorizationCodeTTL", authorizationCodeTTL: 30, want: 30 * time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, store, flow := setupIdentityTestServer(t)
+			srv.Config.AuthorizationCodeTTL = tt.authorizationCodeTTL
+			code := flow.signIn(t, srv, store)
+
+			authCode, err := store.GetAuthorizationCode(t.Context(), code)
+
+			require.NoError(t, err)
+			require.Equal(t, tt.want, authCode.ExpiresAt.Sub(authCode.CreatedAt))
+		})
+	}
 }
 
 // A client's authorization code is not an identity code.

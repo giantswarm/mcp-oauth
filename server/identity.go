@@ -9,12 +9,17 @@ import (
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/providers"
+	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
 // identityScope is the scope an identity flow records; the provider is asked
 // for its identifying scopes only (AuthorizationURLOptions.IdentityOnly).
 const identityScope = "openid"
+
+// identityCodeTTL bounds an identity code's lifetime (or AuthorizationCodeTTL
+// when shorter): the return URL redeems it as soon as the browser lands.
+const identityCodeTTL = 60 * time.Second
 
 // ErrInvalidIdentityCode is returned by RedeemIdentityCode for a code that is
 // unknown, expired, already used, not an identity code, bound to another
@@ -104,6 +109,7 @@ func (s *Server) RedeemIdentityCode(ctx context.Context, code string, returnURL 
 	if err := s.validatePKCEWithAudit(ctx, authCode, "", codeVerifier, nil); err != nil {
 		return "", ErrInvalidIdentityCode
 	}
+	s.logIdentityCodeEvent(ctx, security.EventIdentityCodeRedeemed, authCode)
 	return authCode.UserID, nil
 }
 
@@ -121,6 +127,18 @@ func (s *Server) onIssuerOrigin(u *url.URL) error {
 		return fmt.Errorf("return URL must be on the issuer's origin %s://%s", issuer.Scheme, issuer.Host)
 	}
 	return nil
+}
+
+// logIdentityCodeEvent records the subject and the return URL the identity
+// is reported to.
+func (s *Server) logIdentityCodeEvent(ctx context.Context, eventType string, authCode *storage.AuthorizationCode) {
+	if s.Auditor != nil {
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type:    eventType,
+			UserID:  authCode.UserID,
+			Details: map[string]any{"return_url": authCode.RedirectURI},
+		})
+	}
 }
 
 func (s *Server) logIdentityRedeemFailure(ctx context.Context, reason, code string) {
