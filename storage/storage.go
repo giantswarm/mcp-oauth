@@ -125,6 +125,15 @@ var (
 // the contract holds there without a timer.
 const DefaultOperationTimeout = 3 * time.Second
 
+// DefaultUsedAuthorizationCodeRetention is how long a store keeps a used
+// authorization code past the code's expiry, unless configured otherwise: how
+// long after expiry a second presentation of the code is still detected as a
+// reuse and revokes the tokens the code produced (OAuth 2.1 §4.1.2). It must
+// exceed the longest a token exchange can run, since the exchange reads its
+// code back once its tokens are stored and a code can be marked used in its
+// last moment.
+const DefaultUsedAuthorizationCodeRetention = 10 * time.Minute
+
 // IsNotFoundError checks if an error indicates a "not found" condition.
 // This is useful for distinguishing between missing resources (which may indicate
 // security issues like token reuse) and transient errors (which should not).
@@ -566,8 +575,17 @@ type FlowStore interface {
 	// This prevents race conditions in authorization code reuse detection.
 	// Returns the auth code if successful, or an error if:
 	// - Code not found
-	// - Code expired
-	// - Code already used (reuse detected)
+	// - Code already used (reuse detected): ErrAuthorizationCodeUsed with the
+	//   stored code, whether or not the code has expired since
+	// - Code expired (and not used)
+	//
+	// A code marked used stays stored for the store's used-code retention
+	// ([DefaultUsedAuthorizationCodeRetention] unless configured) past its
+	// expiry, counting the clock-skew grace of AuthorizationCode.HasExpired,
+	// and is removed earlier only by DeleteAuthorizationCode. The exchange
+	// reads the code back after storing its tokens and refuses them if the
+	// code is gone, so a used code that vanished on its own would refuse a
+	// valid exchange.
 	// SECURITY: This operation MUST be atomic to prevent concurrent code exchange attacks.
 	AtomicCheckAndMarkAuthCodeUsed(ctx context.Context, code string) (*AuthorizationCode, error)
 

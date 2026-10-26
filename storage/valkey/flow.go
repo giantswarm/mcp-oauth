@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
@@ -160,17 +162,18 @@ func (s *Store) SaveAuthorizationCode(ctx context.Context, code *storage.Authori
 		return fmt.Errorf("failed to marshal authorization code: %w", err)
 	}
 
-	// Calculate TTL
-	ttl := calculateTTL(code.ExpiresAt)
-	if ttl <= 0 {
+	if calculateTTL(code.ExpiresAt) <= 0 {
 		return fmt.Errorf("authorization code already expired")
 	}
+	// The key outlives ExpiresAt by the grace AuthorizationCode.HasExpired
+	// allows, so a code still valid within it is found.
+	ttl := calculateTTL(code.ExpiresAt.Add(security.DefaultClockSkewGracePeriod))
 
 	key := s.codeKey(code.Code)
 
 	if err = s.client.Do(
 		op.ctx,
-		s.client.B().Set().Key(key).Value(string(data)).Ex(ttl).Build(),
+		s.client.B().Set().Key(key).Value(string(data)).Px(ttl).Build(),
 	).Error(); err != nil {
 		return fmt.Errorf("failed to save authorization code: %w", err)
 	}
@@ -233,7 +236,11 @@ func (s *Store) AtomicCheckAndMarkAuthCodeUsed(ctx context.Context, code string)
 		s.client.B().Eval().Script(luaAtomicCheckAndMarkCodeUsed).
 			Numkeys(1).
 			Key(key).
-			Arg(fmt.Sprintf("%d", time.Now().Unix())).
+			Arg(
+				strconv.FormatInt(time.Now().Unix(), 10),
+				strconv.FormatInt(int64(security.DefaultClockSkewGracePeriod/time.Second), 10),
+				strconv.FormatInt(s.usedCodeRetention.Milliseconds(), 10),
+			).
 			Build(),
 	).ToString()
 	if err != nil {
