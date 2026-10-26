@@ -214,3 +214,35 @@ func TestValidateToken_ForwardedIDTokenJWKSUnavailable(t *testing.T) {
 	require.ErrorIs(t, err, ErrProviderUnavailable)
 	require.Zero(t, userinfoCalls.Load())
 }
+
+// TestIntrospectToken_ProviderUnavailable: introspecting an opaque token whose
+// userinfo check the provider did not serve is ErrProviderUnavailable, not
+// {"active": false}; a provider rejection stays inactive.
+func TestIntrospectToken_ProviderUnavailable(t *testing.T) {
+	tests := []struct {
+		name            string
+		status          int
+		wantUnavailable bool
+	}{
+		{"userinfo 503", http.StatusServiceUnavailable, true},
+		{"userinfo 401", http.StatusUnauthorized, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFaultyFixture(t, AccessTokenFormatOpaque)
+			at := f.login(t).AccessToken
+			f.provider.ValidateTokenFunc = func(context.Context, string) (*providers.UserInfo, error) {
+				return nil, &providers.UserInfoStatusError{StatusCode: tt.status}
+			}
+
+			response, err := f.srv.IntrospectToken(t.Context(), at, f.clientID)
+			if tt.wantUnavailable {
+				require.ErrorIs(t, err, ErrProviderUnavailable)
+				require.Nil(t, response)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, false, response[fieldActive])
+		})
+	}
+}

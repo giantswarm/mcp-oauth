@@ -196,11 +196,15 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 
 	response, err := h.server.IntrospectToken(r.Context(), token, clientID)
 	if err != nil {
-		// The store did not answer, so the token is neither active nor
-		// inactive; {"active": false} would tell the resource server the
-		// token is dead.
+		// The store or the identity provider did not answer, so the token
+		// is neither active nor inactive; {"active": false} would tell the
+		// resource server the token is dead.
 		if errors.Is(err, server.ErrStorageUnavailable) {
 			h.writeStorageUnavailable(w, r, endpointIntrospect, http.MethodPost, span, startTime, err)
+			return
+		}
+		if errors.Is(err, server.ErrProviderUnavailable) {
+			h.writeProviderUnavailable(w, r, endpointIntrospect, http.MethodPost, span, startTime, err)
 			return
 		}
 		h.failRequest(w, r, span, endpointIntrospect, http.MethodPost, http.StatusInternalServerError,
