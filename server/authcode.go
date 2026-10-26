@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/url"
@@ -100,8 +102,11 @@ func (s *Server) validateScopesForAuthFlow(ctx context.Context, clientID, scope 
 }
 
 // handleCodeReuseDetection handles authorization code reuse security event.
-// It revokes the tokens of the client the code was issued to, the ones the
-// code could have produced, whichever client presents it (OAuth 2.1 4.1.2).
+// It revokes the tokens issued based on the code (OAuth 2.1 4.1.2), whichever
+// client presents it: the token family the code's exchange started, as
+// refresh-token reuse does, so the person's other sessions at the client stay
+// signed in. When that family cannot be found it revokes every token of the
+// person at the client the code was issued to.
 func (s *Server) handleCodeReuseDetection(ctx context.Context, authCode *storage.AuthorizationCode, presentedClientID, code string, span trace.Span) error {
 	// Record code reuse detection metric
 	if s.Instrumentation != nil {
@@ -116,15 +121,19 @@ func (s *Server) handleCodeReuseDetection(ctx context.Context, authCode *storage
 		span.SetStatus(codes.Error, "authorization code reuse detected")
 	}
 
-	// Rate limit logging to prevent DoS via log flooding
-	if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(authCode.UserID+":"+authCode.ClientID) {
-		s.Logger.Error("Authorization code reuse detected - revoking all tokens",
-			"user_id", authCode.UserID, paramClientID, authCode.ClientID,
-			"presented_client_id", presentedClientID, logKeyOAuthSpec, oauthSpecSection412)
+	action := "all_tokens_revoked"
+	if family, familyStore := s.reusedCodeFamily(ctx, authCode, code); family != nil {
+		action = "token_family_revoked"
+		s.revokeReusedFamily(ctx, family, familyStore)
+	} else if err := s.RevokeAllTokensForUserClient(ctx, authCode.UserID, authCode.ClientID); err != nil {
+		s.Logger.Error("Failed to revoke tokens after code reuse detection", logKeyError, err)
 	}
 
-	if err := s.RevokeAllTokensForUserClient(ctx, authCode.UserID, authCode.ClientID); err != nil {
-		s.Logger.Error("Failed to revoke tokens after code reuse detection", logKeyError, err)
+	// Rate limit logging to prevent DoS via log flooding
+	if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(authCode.UserID+":"+authCode.ClientID) {
+		s.Logger.Error("Authorization code reuse detected",
+			"user_id", authCode.UserID, paramClientID, authCode.ClientID,
+			"presented_client_id", presentedClientID, logKeyAction, action, logKeyOAuthSpec, oauthSpecSection412)
 	}
 
 	if s.Auditor != nil {
@@ -133,7 +142,7 @@ func (s *Server) handleCodeReuseDetection(ctx context.Context, authCode *storage
 			UserID:   authCode.UserID,
 			ClientID: authCode.ClientID,
 			Details: map[string]any{
-				logKeySeverity: severityCritical, logKeyAction: "all_tokens_revoked", logKeyOAuthSpec: oauthSpecSection412,
+				logKeySeverity: severityCritical, logKeyAction: action, logKeyOAuthSpec: oauthSpecSection412,
 				"presented_client_id": presentedClientID,
 			},
 		})
@@ -142,6 +151,31 @@ func (s *Server) handleCodeReuseDetection(ctx context.Context, authCode *storage
 
 	_ = s.flowStore.DeleteAuthorizationCode(ctx, code)
 	return errInvalidGrant
+}
+
+// codeFamilyID is the ID of the token family an exchange of code starts. It is
+// derived from the code so that a reuse of the code finds the family without
+// the used code recording it.
+func codeFamilyID(code string) string {
+	sum := sha256.Sum256([]byte("mcp-oauth/code-family:" + code))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// reusedCodeFamily returns the token family the exchange of authCode started.
+// It returns nil when the store does not look families up by ID, or when no
+// family of the code's user and client is stored under that ID: no exchange
+// of the code has stored one yet.
+func (s *Server) reusedCodeFamily(ctx context.Context, authCode *storage.AuthorizationCode, code string) (*storage.RefreshTokenFamilyMetadata, storage.RefreshTokenFamilyStore) {
+	familyStore, tracked := s.tokenStore.(storage.RefreshTokenFamilyStore)
+	byID, indexed := s.tokenStore.(storage.RefreshTokenFamilyByIDStore)
+	if !tracked || !indexed {
+		return nil, nil
+	}
+	family, err := byID.GetRefreshTokenFamilyByID(ctx, codeFamilyID(code))
+	if err != nil || family == nil || family.UserID != authCode.UserID || family.ClientID != authCode.ClientID {
+		return nil, nil
+	}
+	return family, familyStore
 }
 
 // validatePublicClientPKCE validates that public clients use PKCE
@@ -892,10 +926,6 @@ func (s *Server) extendTokenExpiryForStorage(token *oauth2.Token) *oauth2.Token 
 
 // createAndSaveAuthorizationCode creates and saves an authorization code.
 func (s *Server) createAndSaveAuthorizationCode(ctx context.Context, authState *storage.AuthorizationState, userInfo *providers.UserInfo, providerToken *oauth2.Token) (*storage.AuthorizationCode, error) {
-	ttl := time.Duration(s.Config.AuthorizationCodeTTL) * time.Second
-	if authState.IdentityOnly {
-		ttl = min(ttl, identityCodeTTL)
-	}
 	authCodeObj := &storage.AuthorizationCode{
 		Code:                generateRandomToken(),
 		ClientID:            authState.ClientID,
@@ -909,7 +939,7 @@ func (s *Server) createAndSaveAuthorizationCode(ctx context.Context, authState *
 		ProviderToken:       providerToken,
 		IdentityOnly:        authState.IdentityOnly,
 		CreatedAt:           time.Now(),
-		ExpiresAt:           time.Now().Add(ttl),
+		ExpiresAt:           time.Now().Add(time.Duration(s.Config.AuthorizationCodeTTL) * time.Second),
 		Used:                false,
 	}
 
@@ -951,7 +981,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 	// Pre-generate familyID so metadata can reference it before the family is persisted
 	var familyID string
 	if _, ok := s.tokenStore.(storage.RefreshTokenFamilyStore); ok {
-		familyID = generateRandomToken()
+		familyID = codeFamilyID(code)
 	}
 
 	tokenResponse, err := s.generateAndStoreTokens(ctx, authCode, clientID, familyID, dpopJKT)
