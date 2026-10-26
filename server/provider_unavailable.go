@@ -16,8 +16,9 @@ import (
 
 // ErrProviderUnavailable marks a refresh grant or a token validation that
 // failed because the upstream identity provider did not answer the
-// provider-token refresh or its discovery or userinfo endpoint: it returned a
-// 5xx or 429, the call timed out, or the connection failed. The provider did
+// provider-token refresh or its discovery, userinfo or JWKS endpoint: it
+// returned a 5xx or 429, the call timed out (Config.TokenValidationTimeout
+// bounds a whole bearer validation), or the connection failed. The provider did
 // not reject the grant or the bearer and the refresh token was not consumed,
 // so the client must retry the same request. HTTP handlers answer it as 503
 // temporarily_unavailable with a Retry-After header, never as invalid_grant
@@ -29,8 +30,8 @@ var ErrProviderUnavailable = errors.New("identity provider temporarily unavailab
 
 // isTransientProviderError reports whether a provider error means the
 // provider did not answer rather than rejected the grant or the bearer: an
-// OAuth error response, a discovery or a userinfo answer with status 5xx or
-// 429, a timeout or cancellation, or a network error. Any other status
+// OAuth error response, a discovery, userinfo or JWKS answer with status 5xx
+// or 429, a timeout or cancellation, or a network error. Any other status
 // (invalid_grant, a userinfo 401 and the other 4xx rejections) is permanent.
 func isTransientProviderError(err error) bool {
 	var retrieveErr *oauth2.RetrieveError
@@ -44,6 +45,10 @@ func isTransientProviderError(err error) bool {
 	var discoveryErr *oidc.DiscoveryStatusError
 	if errors.As(err, &discoveryErr) {
 		return isTransientStatus(discoveryErr.StatusCode)
+	}
+	var jwksErr *oidc.JWKSStatusError
+	if errors.As(err, &jwksErr) {
+		return isTransientStatus(jwksErr.StatusCode)
 	}
 	if isContextError(err) {
 		return true

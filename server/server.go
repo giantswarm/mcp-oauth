@@ -54,7 +54,8 @@ type SessionRevocationHandler func(ctx context.Context, userID, familyID string)
 // during validation). Consumers can use this to update downstream caches
 // (e.g., ID token caches for SSO forwarding) without a separate polling layer.
 //
-// The provided context is the HTTP request context that triggered the refresh.
+// The provided context is the HTTP request context that triggered the refresh;
+// on the validation path it carries the Config.TokenValidationTimeout deadline.
 // If the handler performs slow operations, it should derive a new context with
 // its own deadline.
 //

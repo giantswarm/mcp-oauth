@@ -39,6 +39,21 @@ func checkTypeHeader(tokenString string, accepted []string) error {
 	return fmt.Errorf("typ header is %q, accepted %q (RFC 9068 §4 unless overridden per issuer)", typ, accepted)
 }
 
+// DefaultTokenValidationTimeout is the Config.TokenValidationTimeout default:
+// well inside common client request timeouts, so a provider outage reaches the
+// client as 503 with Retry-After instead of a client-side timeout, and far
+// above a healthy identity provider's userinfo or JWKS latency.
+const DefaultTokenValidationTimeout = 5 * time.Second
+
+// tokenValidationTimeout returns Config.TokenValidationTimeout, falling back
+// to the default for a Config that skipped applySecureDefaults.
+func (s *Server) tokenValidationTimeout() time.Duration {
+	if s.Config.TokenValidationTimeout > 0 {
+		return s.Config.TokenValidationTimeout
+	}
+	return DefaultTokenValidationTimeout
+}
+
 // supportedAccessTokenAlgs lists the asymmetric signing algorithms accepted
 // for JWT access tokens. HMAC and "none" are absent by design (RFC 9068 §4
 // alg confusion mitigations).
@@ -112,22 +127,36 @@ func (s *Server) updateProviderTokenMappings(ctx context.Context, accessToken st
 //
 // Legacy layout: a direct provider refresh, coalesced per access token so
 // concurrent validations of the same token hit the provider once, followed by
-// a write-back to the token copies.
+// a write-back to the token copies. The refresh and its write-back are
+// detached from the caller and bounded by providerRefreshWaitTimeout: a
+// provider that rotates refresh tokens must never have its rotation dropped
+// because the caller stopped waiting. The caller waits under its own ctx.
 func (s *Server) refreshProviderDuringValidation(ctx context.Context, accessToken string, storedToken *oauth2.Token) (*oauth2.Token, error) {
 	if upts, unified := s.userProviderTokenStore(); unified {
 		return s.coordinatedRefreshByIssuedToken(ctx, upts, accessToken, storedToken)
 	}
 
-	result, err, _ := s.refreshGroup.Do(accessToken, func() (interface{}, error) {
-		return s.provider.RefreshToken(context.WithoutCancel(ctx), storedToken.RefreshToken)
+	ch := s.refreshGroup.DoChan(accessToken, func() (any, error) {
+		refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), providerRefreshWaitTimeout)
+		defer cancel()
+		newProviderToken, err := s.provider.RefreshToken(refreshCtx, storedToken.RefreshToken)
+		if err != nil {
+			return nil, err
+		}
+		newProviderToken = preserveRefreshToken(newProviderToken, storedToken.RefreshToken)
+		s.updateProviderTokenMappings(refreshCtx, accessToken, newProviderToken)
+		return newProviderToken, nil
 	})
-	if err != nil {
-		return nil, err
-	}
 
-	newProviderToken := preserveRefreshToken(result.(*oauth2.Token), storedToken.RefreshToken)
-	s.updateProviderTokenMappings(ctx, accessToken, newProviderToken)
-	return newProviderToken, nil
+	select {
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		return res.Val.(*oauth2.Token), nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("gave up waiting for in-flight provider refresh: %w", ctx.Err())
+	}
 }
 
 // fireTokenRefreshHandler invokes the registered TokenRefreshHandler (if any)
@@ -303,9 +332,12 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 // limiting should be done at the HTTP layer with IP address, not here
 // with the token.
 //
+// The whole call runs under Config.TokenValidationTimeout, layered on ctx.
+//
 // Error responses: an error matching ErrStorageUnavailable or
 // ErrProviderUnavailable (errors.Is) means the token store or the identity
-// provider did not answer, so the token was neither validated nor rejected;
+// provider did not answer (within the validation timeout or at all), so the
+// token was neither validated nor rejected;
 // callers answer it as 503 temporarily_unavailable with a Retry-After header
 // and never as 401, which clients read as a dead token (the handler
 // package's ValidateToken middleware does this). For every
@@ -317,6 +349,9 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 // (opaque, SSO, self-issued JWT). Use the returned error for logging,
 // not for setting the response body.
 func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.tokenValidationTimeout())
+	defer cancel()
+
 	// PRIORITY 1: Self-issued JWT (RFC 9068, AccessTokenFormatJWT mode).
 	// We peek at the unverified iss claim to decide whether to take this
 	// branch — the verified parse below re-checks signature, typ, iss,
@@ -342,23 +377,8 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 	// Must run BEFORE the opaque path, as ID tokens cannot be validated via
 	// the upstream provider's userinfo endpoint.
 	if len(s.Config.TrustedAudiences) > 0 && oidc.IsJWT(accessToken) {
-		userInfo, err := s.validateForwardedIDToken(ctx, accessToken)
-		if err != nil {
-			// A non-nil error here means the token carried a trusted audience
-			// (it was meant to be an SSO-forwarded ID token) but validation
-			// then failed — e.g. a JWKS fetch/TLS error or a bad signature.
-			// That is a real misconfiguration, not the benign "not an SSO
-			// token" case (which returns nil, nil and is silent), so surface
-			// it at WARN. No token material is logged (only an 8-char suffix
-			// for correlation).
-			s.Logger.Warn("Forwarded ID token validation failed, falling back to userinfo",
-				logKeyError, err.Error(),
-				"token_suffix", helpers.TokenSuffix(accessToken, 8))
-		} else if userInfo != nil {
-			s.Logger.Debug("Forwarded ID token validated via JWKS",
-				"user_id", userInfo.ID,
-				"token_suffix", helpers.TokenSuffix(accessToken, 8))
-			return userInfo, nil
+		if userInfo, err := s.validateForwardedIDTokenBranch(ctx, accessToken); userInfo != nil || err != nil {
+			return userInfo, err
 		}
 	}
 
@@ -393,6 +413,77 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 	}
 
 	return userInfo, nil
+}
+
+// validateForwardedIDTokenBranch runs the forwarded-ID-token step of
+// ValidateToken. Returns (nil, nil) when the caller falls through to the
+// opaque path.
+func (s *Server) validateForwardedIDTokenBranch(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+	userInfo, err := s.validateForwardedIDToken(ctx, accessToken)
+	if err != nil && isTransientProviderError(err) {
+		// The provider's discovery or JWKS endpoint did not answer, so
+		// the token was not rejected. The userinfo fallback cannot
+		// validate an ID token and would only wait on the same provider.
+		return nil, s.providerUnavailable(ctx, "forwarded ID token validation", "", "", err)
+	}
+	if err != nil {
+		// A non-nil error here means the token carried a trusted audience
+		// (it was meant to be an SSO-forwarded ID token) but validation
+		// then failed — e.g. a TLS error or a bad signature. That is a real
+		// misconfiguration, not the benign "not an SSO token" case (which
+		// returns nil, nil and is silent), so surface it at WARN. No token
+		// material is logged (only an 8-char suffix for correlation).
+		s.Logger.Warn("Forwarded ID token validation failed, falling back to userinfo",
+			logKeyError, err.Error(),
+			"token_suffix", helpers.TokenSuffix(accessToken, 8))
+		return nil, nil
+	}
+	if userInfo != nil {
+		s.Logger.Debug("Forwarded ID token validated via JWKS",
+			"user_id", userInfo.ID,
+			"token_suffix", helpers.TokenSuffix(accessToken, 8))
+	}
+	return userInfo, nil
+}
+
+// refreshExpiredProviderToken refreshes a stored provider token past expiry
+// during validation — coordinated through the per-user single-flight lock
+// (unified layout, cross-pod) or the per-access-token singleflight (legacy
+// layout). Either way at most one refresh reaches the provider; the rest
+// adopt its result.
+func (s *Server) refreshExpiredProviderToken(ctx context.Context, accessToken string, storedToken *oauth2.Token) (*oauth2.Token, error) {
+	newProviderToken, err := s.refreshProviderDuringValidation(ctx, accessToken, storedToken)
+	if err != nil {
+		if errors.Is(err, ErrStorageUnavailable) {
+			// Classified, logged and audited where the store call failed;
+			// the same refresh can succeed once the store answers, so this
+			// is not an expired token.
+			return nil, err
+		}
+		if isTransientProviderError(err) {
+			// The provider did not answer the refresh (or not within the
+			// validation timeout), so it rejected nothing: a 401 here would
+			// make the client discard a live token.
+			return nil, s.providerUnavailable(ctx, "provider token refresh during validation", "", "", err)
+		}
+		s.Logger.Debug("Token expired locally and refresh failed",
+			"expiry", storedToken.Expiry,
+			"grace_period_seconds", s.Config.ClockSkewGracePeriod,
+			"refresh_error", err,
+			"token_suffix", helpers.TokenSuffix(accessToken, 8))
+
+		s.Auditor.LogAuthFailure(ctx, "", "", "", "token_expired_locally")
+
+		return nil, fmt.Errorf("access token expired (local validation, refresh failed: %w)", err)
+	}
+
+	s.fireTokenRefreshHandler(ctx, accessToken, newProviderToken)
+
+	s.Logger.Debug("Expired provider token refreshed during validation",
+		"old_expiry", storedToken.Expiry,
+		"new_expiry", newProviderToken.Expiry,
+		"token_suffix", helpers.TokenSuffix(accessToken, 8))
+	return newProviderToken, nil
 }
 
 // validateStoredToken checks if a stored token exists and validates it locally.
@@ -431,36 +522,11 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 			return nil, fmt.Errorf("access token expired (local validation)")
 		}
 
-		// Refresh the expired provider token — coordinated through the
-		// per-user single-flight lock (unified layout, cross-pod) or the
-		// per-access-token singleflight (legacy layout). Either way at most
-		// one refresh reaches the provider; the rest adopt its result.
-		newProviderToken, err := s.refreshProviderDuringValidation(ctx, accessToken, storedToken)
+		refreshed, err := s.refreshExpiredProviderToken(ctx, accessToken, storedToken)
 		if err != nil {
-			if errors.Is(err, ErrStorageUnavailable) {
-				// Classified, logged and audited where the store call
-				// failed; the same refresh can succeed once the store
-				// answers, so this is not an expired token.
-				return nil, err
-			}
-			s.Logger.Debug("Token expired locally and refresh failed",
-				"expiry", storedToken.Expiry,
-				"grace_period_seconds", s.Config.ClockSkewGracePeriod,
-				"refresh_error", err,
-				"token_suffix", helpers.TokenSuffix(accessToken, 8))
-
-			s.Auditor.LogAuthFailure(ctx, "", "", "", "token_expired_locally")
-
-			return nil, fmt.Errorf("access token expired (local validation, refresh failed: %w)", err)
+			return nil, err
 		}
-
-		s.fireTokenRefreshHandler(ctx, accessToken, newProviderToken)
-
-		s.Logger.Debug("Expired provider token refreshed during validation",
-			"old_expiry", storedToken.Expiry,
-			"new_expiry", newProviderToken.Expiry,
-			"token_suffix", helpers.TokenSuffix(accessToken, 8))
-		storedToken = newProviderToken
+		storedToken = refreshed
 	}
 
 	s.Logger.Debug("Token passed local expiry validation",
@@ -582,6 +648,11 @@ func (s *Server) validateTrustedIssuerJWT(ctx context.Context, accessToken strin
 	identity, err := s.trustedIssuerValidator.Validate(ctx, accessToken, []string{s.Config.GetResourceIdentifier()})
 	if errors.Is(err, ErrIssuerNotTrusted) {
 		return nil, nil
+	}
+	if err != nil && isTransientProviderError(err) {
+		// The issuer's JWKS endpoint did not answer: the token was not
+		// rejected.
+		return nil, s.providerUnavailable(ctx, "trusted issuer JWT validation", "", "", err)
 	}
 	if err != nil {
 		s.Auditor.LogAuthFailure(ctx, "", "", "", "trusted_issuer_jwt_invalid")

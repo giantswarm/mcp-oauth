@@ -255,6 +255,19 @@ config := &server.Config{
 4. On success: Updated token saved, validation continues
 5. On failure: Graceful fallback to normal validation
 
+### Validation Deadline
+
+Bearer validation (the `handler.ValidateToken` middleware, `/userinfo` and `/introspect`) runs under one deadline that covers every call it makes to an identity provider: userinfo and discovery, the JWKS fetch for a forwarded ID token or a trusted-issuer JWT, and the provider-token refresh a stored token near or past expiry needs.
+
+```go
+config := &server.Config{
+    // Default: server.DefaultTokenValidationTimeout (5s). Zero or negative selects the default.
+    TokenValidationTimeout: 3 * time.Second,
+}
+```
+
+A provider that does not answer within it, or answers 5xx or 429, has rejected nothing, so the bearer is answered `503 temporarily_unavailable` with `Retry-After: 5` (see [Behaviour During a Storage Outage](#behaviour-during-a-storage-outage) for the response shape) instead of `401 invalid_token`. Keep the deadline below the request timeout of the clients in front of the server so they see the 503 and back off. A provider-token refresh that starts during validation finishes in the background after the deadline and stores its result, so a provider that rotates refresh tokens never loses a rotation. Sign-in, the token endpoint and revocation keep the provider's own request timeout.
+
 ### Token Lifetimes
 
 Token lifetimes are typically controlled by the identity provider. For server-issued tokens:

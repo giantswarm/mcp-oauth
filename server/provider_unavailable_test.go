@@ -37,6 +37,8 @@ func TestIsTransientProviderError(t *testing.T) {
 		{"userinfo 401", &providers.UserInfoStatusError{StatusCode: http.StatusUnauthorized}, false},
 		{"discovery 502", fmt.Errorf("OIDC discovery failed: %w", &oidc.DiscoveryStatusError{StatusCode: http.StatusBadGateway}), true},
 		{"discovery 404", fmt.Errorf("OIDC discovery failed: %w", &oidc.DiscoveryStatusError{StatusCode: http.StatusNotFound}), false},
+		{"jwks 503", fmt.Errorf("failed to fetch JWKS: %w", &oidc.JWKSStatusError{StatusCode: http.StatusServiceUnavailable}), true},
+		{"jwks 404", fmt.Errorf("failed to fetch JWKS: %w", &oidc.JWKSStatusError{StatusCode: http.StatusNotFound}), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
