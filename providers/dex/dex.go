@@ -524,6 +524,9 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	// The defaults come from effectiveScopes, not from the Scopes field, so an
 	// audience that Config.AudienceResolver reports after startup is merged too.
 	scopesToUse := providers.FilterScopes(scopes, p.effectiveScopes(), isDexSupportedScope)
+	if authOpts != nil && authOpts.IdentityOnly {
+		scopesToUse = []string{scopeOpenID}
+	}
 
 	// Create a config with the determined scopes
 	config := *p.Config

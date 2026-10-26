@@ -640,9 +640,13 @@ type AuthorizationState struct {
 	// Server-to-Provider PKCE verifier (OAuth 2.1)
 	ProviderCodeVerifier string
 	// Nonce is the OIDC nonce forwarded to the upstream IdP. Empty for non-OIDC flows.
-	Nonce     string
-	CreatedAt time.Time
-	ExpiresAt time.Time
+	Nonce string
+	// IdentityOnly marks a flow started by Server.StartIdentityFlow: its
+	// callback stores no provider token and issues a code only
+	// Server.RedeemIdentityCode accepts.
+	IdentityOnly bool
+	CreatedAt    time.Time
+	ExpiresAt    time.Time
 }
 
 // HasExpired reports whether the authorization state has expired (with default clock-skew grace).
@@ -664,9 +668,12 @@ type AuthorizationCode struct {
 	CodeChallengeMethod string
 	UserID              string
 	ProviderToken       *oauth2.Token // Now uses oauth2.Token directly
-	CreatedAt           time.Time
-	ExpiresAt           time.Time
-	Used                bool
+	// IdentityOnly marks a code of an identity flow: it carries no provider
+	// token and is never exchanged for tokens.
+	IdentityOnly bool
+	CreatedAt    time.Time
+	ExpiresAt    time.Time
+	Used         bool
 }
 
 // HasExpired reports whether the authorization code has expired (with default clock-skew grace).

@@ -430,6 +430,17 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 		return nil, "", fmt.Errorf("failed to get user info: %w", err)
 	}
 
+	if authState.IdentityOnly {
+		if userInfo.ID == "" {
+			return nil, "", fmt.Errorf("provider did not supply a subject claim")
+		}
+		authCodeObj, err := s.createAndSaveAuthorizationCode(ctx, authState, userInfo, nil)
+		if err != nil {
+			return nil, "", err
+		}
+		return authCodeObj, clientState, nil
+	}
+
 	if err := s.saveUserInfoAndToken(ctx, userInfo, providerToken); err != nil {
 		return nil, "", fmt.Errorf("failed to persist provider token: %w", err)
 	}
@@ -890,6 +901,7 @@ func (s *Server) createAndSaveAuthorizationCode(ctx context.Context, authState *
 		CodeChallengeMethod: authState.CodeChallengeMethod,
 		UserID:              userInfo.ID,
 		ProviderToken:       providerToken,
+		IdentityOnly:        authState.IdentityOnly,
 		CreatedAt:           time.Now(),
 		ExpiresAt:           time.Now().Add(time.Duration(s.Config.AuthorizationCodeTTL) * time.Second),
 		Used:                false,
@@ -1012,6 +1024,9 @@ func (s *Server) validateAuthorizationCode(ctx context.Context, code, clientID, 
 
 // validateCodeParameters validates basic authorization code parameters.
 func (s *Server) validateCodeParameters(ctx context.Context, authCode *storage.AuthorizationCode, clientID, redirectURI, code string) error {
+	if authCode.IdentityOnly {
+		return s.logAuthCodeValidationFailure(ctx, "identity_code_not_exchangeable", clientID, "", helpers.SafeTruncate(code, 8))
+	}
 	if authCode.ClientID != clientID {
 		return s.logAuthCodeValidationFailure(ctx, "client_id_mismatch", clientID, "", helpers.SafeTruncate(code, 8))
 	}

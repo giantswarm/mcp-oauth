@@ -239,6 +239,15 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 
 	// SECURITY: Create a deep copy of scopes to prevent potential race conditions
 	scopesToUse := providers.CopyScopes(scopes, p.Scopes)
+	if authOpts != nil && authOpts.IdentityOnly {
+		// The public profile identifies the user. ValidateToken still checks
+		// organization membership, which /user/orgs only reports in full
+		// with read:org.
+		scopesToUse = nil
+		if len(p.allowedOrganizations) > 0 {
+			scopesToUse = []string{"read:org"}
+		}
+	}
 
 	// Create a config with the determined scopes
 	config := *p.Config

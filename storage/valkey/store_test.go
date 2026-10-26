@@ -2423,3 +2423,36 @@ func TestBuildClientOptsMinimal(t *testing.T) {
 	require.Equal(t, storage.DefaultOperationTimeout, opts.Dialer.Timeout)
 	require.Equal(t, storage.DefaultOperationTimeout, opts.ConnWriteTimeout)
 }
+
+// The identity-flow mark survives Valkey on both the state and the code: a
+// code read back without it would be exchangeable for tokens.
+func TestFlowStore_IdentityOnlyRoundTrip(t *testing.T) {
+	s := testStore(t)
+
+	state := &storage.AuthorizationState{
+		StateID:       "identity-state",
+		RedirectURI:   "https://example.com/return",
+		Scope:         "openid",
+		ProviderState: "identity-provider-state",
+		IdentityOnly:  true,
+		CreatedAt:     time.Now(),
+		ExpiresAt:     time.Now().Add(10 * time.Minute),
+	}
+	require.NoError(t, s.SaveAuthorizationState(t.Context(), state))
+	gotState, err := s.GetAuthorizationStateByProviderState(t.Context(), state.ProviderState)
+	require.NoError(t, err)
+	require.True(t, gotState.IdentityOnly)
+
+	code := &storage.AuthorizationCode{
+		Code:         "identity-code",
+		RedirectURI:  "https://example.com/return",
+		UserID:       testUserID,
+		IdentityOnly: true,
+		CreatedAt:    time.Now(),
+		ExpiresAt:    time.Now().Add(5 * time.Minute),
+	}
+	require.NoError(t, s.SaveAuthorizationCode(t.Context(), code))
+	gotCode, err := s.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code.Code)
+	require.NoError(t, err)
+	require.True(t, gotCode.IdentityOnly)
+}

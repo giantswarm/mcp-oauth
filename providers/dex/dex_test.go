@@ -8,11 +8,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
+	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
 )
 
@@ -1074,5 +1076,29 @@ func TestAllowPrivateIP_IPLiteralStillRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid issuer URL") {
 		t.Errorf("NewProvider() error = %v, want error containing 'invalid issuer URL'", err)
+	}
+}
+
+// An identity-only sign-in asks Dex for openid alone: offline_access would
+// make Dex issue a refresh token and delete the user's previous one for
+// this client, the one their sessions refresh with.
+func TestAuthorizationURL_IdentityOnly(t *testing.T) {
+	server := setupMockDexServer(t)
+	defer server.Close()
+	cfg := testConfig(server)
+	cfg.AudienceResolver = func() []string { return []string{"backend"} }
+	provider, err := NewProvider(cfg)
+	if err != nil {
+		t.Fatalf("NewProvider() failed: %v", err)
+	}
+
+	authURL := provider.AuthorizationURL("state123", "challenge", "S256", []string{"openid"}, &providers.AuthorizationURLOptions{IdentityOnly: true})
+
+	parsed, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("url.Parse() failed: %v", err)
+	}
+	if got := parsed.Query().Get("scope"); got != "openid" {
+		t.Errorf("scope = %q, want %q", got, "openid")
 	}
 }
