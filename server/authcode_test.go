@@ -2058,6 +2058,29 @@ func TestServer_AuthorizationCodeReuseRevokesTheIssuingClient(t *testing.T) {
 	require.NoError(t, err, "the presenting client's token is not revoked")
 }
 
+// undecodableReusedCodeStore reports every code as used without returning it,
+// as the Valkey store does for a used code it cannot decode.
+type undecodableReusedCodeStore struct {
+	*memory.Store
+}
+
+func (undecodableReusedCodeStore) AtomicCheckAndMarkAuthCodeUsed(context.Context, string) (*storage.AuthorizationCode, error) {
+	return nil, fmt.Errorf("%w: failed to parse reused code", storage.ErrAuthorizationCodeUsed)
+}
+
+func TestServer_UndecodableReusedCodeIsRefused(t *testing.T) {
+	const redirect = "https://example.com/callback"
+	srv, store, _ := setupFlowTestServer(t)
+	srv.flowStore = undecodableReusedCodeStore{store}
+	client, _, err := srv.RegisterClient(t.Context(), "Test Client", ClientTypePublic, "",
+		[]string{redirect}, []string{"openid"}, "192.168.1.100", 10)
+	require.NoError(t, err)
+
+	_, _, err = srv.ExchangeAuthorizationCode(t.Context(), "used-code", client.ClientID, redirect, "", "verifier", "")
+
+	require.ErrorIs(t, err, errInvalidGrant)
+}
+
 // TestServer_AuthorizationCodeReuseRevokesMultipleTokens tests that code reuse revokes
 // all tokens including those from previous refresh operations
 func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
