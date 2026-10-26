@@ -443,39 +443,62 @@ func (s *Server) validateForwardedIDTokenBranch(ctx context.Context, accessToken
 // (unified layout, cross-pod) or the per-access-token singleflight (legacy
 // layout). Either way at most one refresh reaches the provider; the rest
 // adopt its result.
+//
+// The refresh and its TokenRefreshHandler dispatch run detached from ctx and
+// bounded by providerRefreshWaitTimeout; the caller waits under its own ctx.
+// A validation that stops waiting at its deadline therefore neither aborts
+// the refresh nor drops the handler event for accessToken.
 func (s *Server) refreshExpiredProviderToken(ctx context.Context, accessToken string, storedToken *oauth2.Token) (*oauth2.Token, error) {
-	newProviderToken, err := s.refreshProviderDuringValidation(ctx, accessToken, storedToken)
-	if err != nil {
-		if errors.Is(err, ErrStorageUnavailable) {
+	type refreshResult struct {
+		token *oauth2.Token
+		err   error
+	}
+	done := make(chan refreshResult, 1)
+	go func() {
+		refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), providerRefreshWaitTimeout)
+		defer cancel()
+		newProviderToken, err := s.refreshProviderDuringValidation(refreshCtx, accessToken, storedToken)
+		if err == nil {
+			s.fireTokenRefreshHandler(refreshCtx, accessToken, newProviderToken)
+		}
+		done <- refreshResult{newProviderToken, err}
+	}()
+
+	var res refreshResult
+	select {
+	case res = <-done:
+	case <-ctx.Done():
+		res.err = fmt.Errorf("gave up waiting for provider token refresh: %w", ctx.Err())
+	}
+	if res.err != nil {
+		if errors.Is(res.err, ErrStorageUnavailable) {
 			// Classified, logged and audited where the store call failed;
 			// the same refresh can succeed once the store answers, so this
 			// is not an expired token.
-			return nil, err
+			return nil, res.err
 		}
-		if isTransientProviderError(err) {
+		if isTransientProviderError(res.err) {
 			// The provider did not answer the refresh (or not within the
 			// validation timeout), so it rejected nothing: a 401 here would
 			// make the client discard a live token.
-			return nil, s.providerUnavailable(ctx, "provider token refresh during validation", "", "", err)
+			return nil, s.providerUnavailable(ctx, "provider token refresh during validation", "", "", res.err)
 		}
 		s.Logger.Debug("Token expired locally and refresh failed",
 			"expiry", storedToken.Expiry,
 			"grace_period_seconds", s.Config.ClockSkewGracePeriod,
-			"refresh_error", err,
+			"refresh_error", res.err,
 			"token_suffix", helpers.TokenSuffix(accessToken, 8))
 
 		s.Auditor.LogAuthFailure(ctx, "", "", "", "token_expired_locally")
 
-		return nil, fmt.Errorf("access token expired (local validation, refresh failed: %w)", err)
+		return nil, fmt.Errorf("access token expired (local validation, refresh failed: %w)", res.err)
 	}
-
-	s.fireTokenRefreshHandler(ctx, accessToken, newProviderToken)
 
 	s.Logger.Debug("Expired provider token refreshed during validation",
 		"old_expiry", storedToken.Expiry,
-		"new_expiry", newProviderToken.Expiry,
+		"new_expiry", res.token.Expiry,
 		"token_suffix", helpers.TokenSuffix(accessToken, 8))
-	return newProviderToken, nil
+	return res.token, nil
 }
 
 // validateStoredToken checks if a stored token exists and validates it locally.

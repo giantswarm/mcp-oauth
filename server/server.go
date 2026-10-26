@@ -52,7 +52,7 @@ type SessionRevocationHandler func(ctx context.Context, userID, familyID string)
 // TokenRefreshHandler is called after a provider token is refreshed, either
 // proactively (near-expiry, in the background of the validation that saw it)
 // or reactively (expired token during validation, before the validation
-// returns). Consumers can use this to update downstream caches (e.g., ID token
+// returns, or after it when the validation stopped waiting at its deadline). Consumers can use this to update downstream caches (e.g., ID token
 // caches for SSO forwarding) without a separate polling layer.
 //
 // The provided context carries the values of the request that triggered the

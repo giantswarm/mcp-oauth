@@ -147,6 +147,58 @@ func TestValidateToken_ProactiveRefreshDoesNotDelayValidation(t *testing.T) {
 	})
 }
 
+// TestValidateToken_ExpiredTokenRefreshAfterDeadlineFiresHandler: a refresh
+// that answers after the validation gave up is stored and still reaches
+// TokenRefreshHandler, once, in both storage layouts.
+func TestValidateToken_ExpiredTokenRefreshAfterDeadlineFiresHandler(t *testing.T) {
+	tests := []struct {
+		name string
+		seed func(t *testing.T, mem *memory.Store, expired *oauth2.Token) storage.TokenStore
+	}{
+		{"unified layout", func(t *testing.T, mem *memory.Store, expired *oauth2.Token) storage.TokenStore {
+			seedProviderToken(t, mem, "issued-access-token", "user-1", expired)
+			return mem
+		}},
+		{"legacy layout", func(t *testing.T, mem *memory.Store, expired *oauth2.Token) storage.TokenStore {
+			require.NoError(t, mem.SaveToken(t.Context(), "issued-access-token", expired))
+			return legacyLayoutStore{
+				Combined: mem, RefreshTokenFamilyStore: mem, TokenRevocationStore: mem,
+				TokenFamilyRevocationStore: mem, TokenMetadataStore: mem, TokenMetadataGetter: mem,
+			}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				mem := memory.New()
+				srv := newValidationTimeoutServer(t, mem, tt.seed(t, mem, &oauth2.Token{
+					AccessToken: "dex-at", RefreshToken: "dex-rt", Expiry: time.Now().Add(-time.Hour),
+				}), 2*time.Second)
+				require.NoError(t, mem.SaveTokenMetadata(t.Context(), "issued-access-token", storage.TokenMetadata{
+					UserID: "user-1", ClientID: "client-1", FamilyID: "family-1",
+				}))
+				srv.provider.(*mock.Provider).RefreshTokenFunc = func(context.Context, string) (*oauth2.Token, error) {
+					time.Sleep(3 * time.Second)
+					return &oauth2.Token{AccessToken: "dex-at-2", RefreshToken: "dex-rt-2", Expiry: time.Now().Add(time.Hour)}, nil
+				}
+				families := make(chan string, 2)
+				srv.tokenRefreshHandler = func(_ context.Context, _, familyID string, _ *oauth2.Token) {
+					families <- familyID
+				}
+
+				_, err := srv.ValidateToken(t.Context(), "issued-access-token")
+				require.ErrorIs(t, err, ErrProviderUnavailable)
+				require.Empty(t, families)
+
+				time.Sleep(2 * providerRefreshWaitTimeout)
+				synctest.Wait()
+				require.Len(t, families, 1)
+				require.Equal(t, "family-1", <-families)
+			})
+		})
+	}
+}
+
 // TestValidateToken_ExpiredTokenRefreshClassification: a refresh the
 // provider did not serve is ErrProviderUnavailable; a refresh it rejected
 // keeps the bearer rejected.
