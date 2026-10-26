@@ -99,9 +99,10 @@ func (s *Server) validateScopesForAuthFlow(ctx context.Context, clientID, scope 
 	return nil
 }
 
-// handleCodeReuseDetection handles authorization code reuse security event
-// Revokes all tokens and logs the security event per OAuth 2.1 requirements
-func (s *Server) handleCodeReuseDetection(ctx context.Context, authCode *storage.AuthorizationCode, clientID, code string, span trace.Span) error {
+// handleCodeReuseDetection handles authorization code reuse security event.
+// It revokes the tokens of the client the code was issued to, the ones the
+// code could have produced, whichever client presents it (OAuth 2.1 4.1.2).
+func (s *Server) handleCodeReuseDetection(ctx context.Context, authCode *storage.AuthorizationCode, presentedClientID, code string, span trace.Span) error {
 	// Record code reuse detection metric
 	if s.Instrumentation != nil {
 		s.Instrumentation.Metrics().RecordCodeReuseDetected(ctx)
@@ -116,13 +117,13 @@ func (s *Server) handleCodeReuseDetection(ctx context.Context, authCode *storage
 	}
 
 	// Rate limit logging to prevent DoS via log flooding
-	if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(authCode.UserID+":"+clientID) {
+	if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(authCode.UserID+":"+authCode.ClientID) {
 		s.Logger.Error("Authorization code reuse detected - revoking all tokens",
-			"user_id", authCode.UserID, paramClientID, clientID, logKeyOAuthSpec, oauthSpecSection412)
+			"user_id", authCode.UserID, paramClientID, authCode.ClientID,
+			"presented_client_id", presentedClientID, logKeyOAuthSpec, oauthSpecSection412)
 	}
 
-	// Revoke all tokens for this user+client (OAuth 2.1 requirement)
-	if err := s.RevokeAllTokensForUserClient(ctx, authCode.UserID, clientID); err != nil {
+	if err := s.RevokeAllTokensForUserClient(ctx, authCode.UserID, authCode.ClientID); err != nil {
 		s.Logger.Error("Failed to revoke tokens after code reuse detection", logKeyError, err)
 	}
 
@@ -130,12 +131,13 @@ func (s *Server) handleCodeReuseDetection(ctx context.Context, authCode *storage
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type:     security.EventAuthorizationCodeReuseDetected,
 			UserID:   authCode.UserID,
-			ClientID: clientID,
+			ClientID: authCode.ClientID,
 			Details: map[string]any{
 				logKeySeverity: severityCritical, logKeyAction: "all_tokens_revoked", logKeyOAuthSpec: oauthSpecSection412,
+				"presented_client_id": presentedClientID,
 			},
 		})
-		s.Auditor.LogAuthFailure(ctx, authCode.UserID, clientID, "", "authorization_code_reuse")
+		s.Auditor.LogAuthFailure(ctx, authCode.UserID, presentedClientID, "", "authorization_code_reuse")
 	}
 
 	_ = s.flowStore.DeleteAuthorizationCode(ctx, code)
@@ -998,10 +1000,12 @@ func (s *Server) validateAuthorizationCode(ctx context.Context, code, clientID, 
 
 	authCode, err := s.flowStore.AtomicCheckAndMarkAuthCodeUsed(ctx, code)
 	if err != nil {
-		if storage.IsCodeReuseError(err) {
-			// An identity code grants nothing, so its reuse has no tokens to
-			// revoke; revoking would let its holder end anyone's sessions.
-			if authCode != nil && authCode.IdentityOnly {
+		// A store that cannot decode the used code returns none; that is
+		// refused below as an invalid code.
+		if storage.IsCodeReuseError(err) && authCode != nil {
+			// An identity code is issued to no client, so its reuse has no
+			// tokens to revoke.
+			if authCode.IdentityOnly {
 				return nil, s.logAuthCodeValidationFailure(ctx, "identity_code_not_exchangeable", clientID, "", helpers.SafeTruncate(code, 8))
 			}
 			return nil, s.handleCodeReuseDetection(ctx, authCode, clientID, code, span)

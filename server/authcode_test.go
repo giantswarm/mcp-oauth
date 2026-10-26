@@ -2012,6 +2012,52 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 	}
 }
 
+// SECURITY: a reused code revokes the tokens of the client it was issued to,
+// whichever client presents it. Revoking at the presenting client would let a
+// holder of a used code spare the tokens it produced and end the person's
+// sessions at any other client.
+func TestServer_AuthorizationCodeReuseRevokesTheIssuingClient(t *testing.T) {
+	const redirect = "https://example.com/callback"
+	srv, store, _ := setupFlowTestServer(t)
+	register := func(name string) string {
+		client, _, err := srv.RegisterClient(t.Context(), name, ClientTypePublic, "",
+			[]string{redirect}, []string{"openid"}, "192.168.1.100", 10)
+		require.NoError(t, err)
+		return client.ClientID
+	}
+	issuing, presenting := register("Issuing Client"), register("Presenting Client")
+
+	verifier := testutil.GenerateRandomString(testPKCEVerifierLength)
+	hash := sha256.Sum256([]byte(verifier))
+	clientState := testutil.GenerateRandomString(43)
+	_, err := srv.StartAuthorizationFlow(t.Context(), issuing, mustParseURL(t, redirect), "openid", "",
+		base64.RawURLEncoding.EncodeToString(hash[:]), PKCEMethodS256, clientState, nil)
+	require.NoError(t, err)
+	authState, err := store.GetAuthorizationState(t.Context(), clientState)
+	require.NoError(t, err)
+	authCode, _, err := srv.HandleProviderCallback(t.Context(), authState.ProviderState, "provider-code")
+	require.NoError(t, err)
+	_, _, err = srv.ExchangeAuthorizationCode(t.Context(), authCode.Code, issuing, redirect, "", verifier, "")
+	require.NoError(t, err)
+
+	const presentingToken = "presenting-client-access-token"
+	require.NoError(t, store.SaveToken(t.Context(), presentingToken, &oauth2.Token{
+		AccessToken: presentingToken, TokenType: "Bearer", Expiry: time.Now().Add(time.Hour),
+	}))
+	require.NoError(t, store.SaveTokenMetadata(t.Context(), presentingToken, storage.TokenMetadata{
+		UserID: testMockUserID, ClientID: presenting, TokenType: "access",
+	}))
+
+	_, _, err = srv.ExchangeAuthorizationCode(t.Context(), authCode.Code, presenting, redirect, "", verifier, "")
+
+	require.ErrorIs(t, err, errInvalidGrant)
+	tokens, err := store.GetTokensByUserClient(t.Context(), testMockUserID, issuing)
+	require.NoError(t, err)
+	require.Empty(t, tokens, "the tokens the code produced are revoked")
+	_, err = store.GetToken(t.Context(), presentingToken)
+	require.NoError(t, err, "the presenting client's token is not revoked")
+}
+
 // TestServer_AuthorizationCodeReuseRevokesMultipleTokens tests that code reuse revokes
 // all tokens including those from previous refresh operations
 func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
