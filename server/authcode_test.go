@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1832,38 +1833,63 @@ func TestServer_ConcurrentAuthorizationCodeReuse(t *testing.T) {
 		}()
 	}
 
-	// Collect results
+	// At most one exchange is granted, and since the code was used more than
+	// once, no token issued based on it outlives the race (OAuth 2.1 4.1.3).
 	successCount := 0
-	failCount := 0
-	var successfulToken *oauth2.Token
 	for range numConcurrent {
 		res := <-results
 		if res.success {
 			successCount++
-			successfulToken = res.token
-		} else {
-			failCount++
-			// Verify error is generic
-			if !strings.Contains(res.err.Error(), "invalid") {
-				t.Errorf("Error should contain 'invalid', got: %v", res.err)
-			}
+			continue
+		}
+		if !strings.Contains(res.err.Error(), "invalid") {
+			t.Errorf("Error should contain 'invalid', got: %v", res.err)
 		}
 	}
+	require.LessOrEqual(t, successCount, 1, "SECURITY FAILURE: the code was exchanged more than once")
+	tokens, err := store.GetTokensByUserClient(ctx, testMockUserID, clientID)
+	require.NoError(t, err)
+	require.Empty(t, tokens, "a token issued based on the reused code is still live")
+}
 
-	// CRITICAL: Exactly ONE attempt should succeed (atomic operation)
-	if successCount != 1 {
-		t.Errorf("SECURITY FAILURE: Expected exactly 1 success, got %d", successCount)
-	}
-	if failCount != numConcurrent-1 {
-		t.Errorf("Expected %d failures, got %d", numConcurrent-1, failCount)
-	}
+// reuseDuringExchangeStore presents the code again while the first exchange
+// is storing its tokens, before the token family is stored.
+type reuseDuringExchangeStore struct {
+	*memory.Store
+	reuse func()
+	once  sync.Once
+}
 
-	// The one successful token should be valid
-	if successCount == 1 && successfulToken == nil {
-		t.Error("Successful exchange should return a token")
+func (r *reuseDuringExchangeStore) SaveTokenMetadata(ctx context.Context, tokenID string, metadata storage.TokenMetadata) error {
+	if err := r.Store.SaveTokenMetadata(ctx, tokenID, metadata); err != nil {
+		return err
 	}
+	r.once.Do(r.reuse)
+	return nil
+}
 
-	t.Logf("Concurrent auth code test passed: 1 succeeded, %d correctly failed", failCount)
+// SECURITY: a reuse that arrives while the first exchange is still storing
+// its tokens cannot revoke the tokens stored after it; the exchange sees the
+// reuse once its tokens are stored, revokes them and is refused.
+func TestServer_AuthorizationCodeReuseDuringExchangeRevokesItsTokens(t *testing.T) {
+	const redirect = "https://example.com/callback"
+	srv, store, _ := setupFlowTestServer(t)
+	client, _, err := srv.RegisterClient(t.Context(), "Test Client", ClientTypePublic, "",
+		[]string{redirect}, []string{"openid"}, "192.168.1.100", 10)
+	require.NoError(t, err)
+	code, verifier := issueTestCode(t, srv, store, client.ClientID, redirect)
+	var reuseErr error
+	srv.tokenStore = &reuseDuringExchangeStore{Store: store, reuse: func() {
+		_, _, reuseErr = srv.ExchangeAuthorizationCode(t.Context(), code, client.ClientID, redirect, "", verifier, "")
+	}}
+
+	_, _, err = srv.ExchangeAuthorizationCode(t.Context(), code, client.ClientID, redirect, "", verifier, "")
+
+	require.ErrorIs(t, reuseErr, errInvalidGrant)
+	require.ErrorIs(t, err, errInvalidGrant)
+	tokens, err := store.GetTokensByUserClient(t.Context(), testMockUserID, client.ClientID)
+	require.NoError(t, err)
+	require.Empty(t, tokens, "a token the racing exchange stored is still live")
 }
 
 // TestServer_AuthorizationCodeReuseRevokesTokens tests that when an authorization code is reused,
@@ -2010,6 +2036,181 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 	if _, err := store.GetRefreshTokenInfo(ctx, refreshToken1); err == nil {
 		t.Error("Refresh token should have been revoked")
 	}
+}
+
+// SECURITY: a reused code revokes the tokens of the client it was issued to,
+// whichever client presents it. Revoking at the presenting client would let a
+// holder of a used code spare the tokens it produced and end the person's
+// sessions at any other client.
+func TestServer_AuthorizationCodeReuseRevokesTheIssuingClient(t *testing.T) {
+	const redirect = "https://example.com/callback"
+	srv, store, _ := setupFlowTestServer(t)
+	register := func(name string) string {
+		client, _, err := srv.RegisterClient(t.Context(), name, ClientTypePublic, "",
+			[]string{redirect}, []string{"openid"}, "192.168.1.100", 10)
+		require.NoError(t, err)
+		return client.ClientID
+	}
+	issuing, presenting := register("Issuing Client"), register("Presenting Client")
+	code, verifier := issueTestCode(t, srv, store, issuing, redirect)
+	_, _, err := srv.ExchangeAuthorizationCode(t.Context(), code, issuing, redirect, "", verifier, "")
+	require.NoError(t, err)
+
+	const presentingToken = "presenting-client-access-token"
+	require.NoError(t, store.SaveToken(t.Context(), presentingToken, &oauth2.Token{
+		AccessToken: presentingToken, TokenType: "Bearer", Expiry: time.Now().Add(time.Hour),
+	}))
+	require.NoError(t, store.SaveTokenMetadata(t.Context(), presentingToken, storage.TokenMetadata{
+		UserID: testMockUserID, ClientID: presenting, TokenType: "access",
+	}))
+
+	_, _, err = srv.ExchangeAuthorizationCode(t.Context(), code, presenting, redirect, "", verifier, "")
+
+	require.ErrorIs(t, err, errInvalidGrant)
+	tokens, err := store.GetTokensByUserClient(t.Context(), testMockUserID, issuing)
+	require.NoError(t, err)
+	require.Empty(t, tokens, "the tokens the code produced are revoked")
+	_, err = store.GetToken(t.Context(), presentingToken)
+	require.NoError(t, err, "the presenting client's token is not revoked")
+}
+
+// issueTestCode runs an authorization flow for clientID up to the code and
+// returns the code with its PKCE verifier.
+func issueTestCode(t *testing.T, srv *Server, store *memory.Store, clientID, redirect string) (code, verifier string) {
+	t.Helper()
+	verifier = testutil.GenerateRandomString(testPKCEVerifierLength)
+	hash := sha256.Sum256([]byte(verifier))
+	clientState := testutil.GenerateRandomString(43)
+	_, err := srv.StartAuthorizationFlow(t.Context(), clientID, mustParseURL(t, redirect), "openid", "",
+		base64.RawURLEncoding.EncodeToString(hash[:]), PKCEMethodS256, clientState, nil)
+	require.NoError(t, err)
+	authState, err := store.GetAuthorizationState(t.Context(), clientState)
+	require.NoError(t, err)
+	authCode, _, err := srv.HandleProviderCallback(t.Context(), authState.ProviderState, "provider-code")
+	require.NoError(t, err)
+	return authCode.Code, verifier
+}
+
+// SECURITY: a reused code revokes the session its exchange started; the
+// person's other session at the same client stays signed in.
+func TestServer_AuthorizationCodeReuseRevokesTheCodesFamilyOnly(t *testing.T) {
+	const redirect = "https://example.com/callback"
+	srv, store, _ := setupFlowTestServer(t)
+	var revokedFamilies []string
+	srv.sessionRevocationHandler = func(_ context.Context, _, familyID string) {
+		revokedFamilies = append(revokedFamilies, familyID)
+	}
+	client, _, err := srv.RegisterClient(t.Context(), "Test Client", ClientTypePublic, "",
+		[]string{redirect}, []string{"openid"}, "192.168.1.100", 10)
+	require.NoError(t, err)
+	reusedCode, reusedVerifier := issueTestCode(t, srv, store, client.ClientID, redirect)
+	reused, _, err := srv.ExchangeAuthorizationCode(t.Context(), reusedCode, client.ClientID, redirect, "", reusedVerifier, "")
+	require.NoError(t, err)
+	otherCode, otherVerifier := issueTestCode(t, srv, store, client.ClientID, redirect)
+	other, _, err := srv.ExchangeAuthorizationCode(t.Context(), otherCode, client.ClientID, redirect, "", otherVerifier, "")
+	require.NoError(t, err)
+
+	_, _, err = srv.ExchangeAuthorizationCode(t.Context(), reusedCode, client.ClientID, redirect, "", reusedVerifier, "")
+
+	require.ErrorIs(t, err, errInvalidGrant)
+	_, err = store.GetRefreshTokenInfo(t.Context(), reused.RefreshToken)
+	require.Error(t, err, "the reused code's refresh token is revoked")
+	_, err = store.GetTokenMetadata(reused.AccessToken)
+	require.Error(t, err, "the reused code's access token is revoked")
+	_, err = store.GetRefreshTokenInfo(t.Context(), other.RefreshToken)
+	require.NoError(t, err, "the other session's refresh token is kept")
+	_, err = store.GetTokenMetadata(other.AccessToken)
+	require.NoError(t, err, "the other session's access token is kept")
+	require.Equal(t, []string{codeFamilyID(reusedCode)}, revokedFamilies)
+}
+
+// SECURITY: a reused code whose family is not stored -- here its first
+// exchange was refused -- revokes only the tokens that carry the code's
+// family ID. A holder of a leaked code who burns it with a wrong verifier
+// must not end the person's other sessions at the client.
+func TestServer_AuthorizationCodeReuseWithoutFamilyRevokesItsTokensOnly(t *testing.T) {
+	const redirect = "https://example.com/callback"
+	srv, store, _ := setupFlowTestServer(t)
+	client, _, err := srv.RegisterClient(t.Context(), "Test Client", ClientTypePublic, "",
+		[]string{redirect}, []string{"openid"}, "192.168.1.100", 10)
+	require.NoError(t, err)
+	code, verifier := issueTestCode(t, srv, store, client.ClientID, redirect)
+	seed := func(accessToken, familyID string) {
+		require.NoError(t, store.SaveToken(t.Context(), accessToken, &oauth2.Token{
+			AccessToken: accessToken, TokenType: "Bearer", Expiry: time.Now().Add(time.Hour),
+		}))
+		require.NoError(t, store.SaveTokenMetadata(t.Context(), accessToken, storage.TokenMetadata{
+			UserID: testMockUserID, ClientID: client.ClientID, TokenType: "access", FamilyID: familyID,
+		}))
+	}
+	const codesToken, otherToken = "codes-access-token", "other-session-access-token"
+	seed(codesToken, codeFamilyID(code))
+	seed(otherToken, "other-family")
+	_, _, err = srv.ExchangeAuthorizationCode(t.Context(), code, client.ClientID, redirect, "", "wrong-verifier", "")
+	require.Error(t, err)
+
+	_, _, err = srv.ExchangeAuthorizationCode(t.Context(), code, client.ClientID, redirect, "", verifier, "")
+
+	require.ErrorIs(t, err, errInvalidGrant)
+	_, err = store.GetToken(t.Context(), codesToken)
+	require.Error(t, err, "a token stored under the code's family is revoked")
+	_, err = store.GetToken(t.Context(), otherToken)
+	require.NoError(t, err, "the person's other session at the client is kept")
+}
+
+// familylessTokenStore is a token store that tracks no refresh-token families.
+type familylessTokenStore struct {
+	storage.TokenStore
+	storage.TokenRevocationStore
+	storage.TokenMetadataStore
+}
+
+// SECURITY: a token store that tracks no families cannot tell the code's
+// tokens apart, so a reused code revokes every token of the person at the
+// client the code was issued to.
+func TestServer_AuthorizationCodeReuseWithoutFamilyStoreRevokesTheClient(t *testing.T) {
+	const redirect = "https://example.com/callback"
+	srv, store, _ := setupFlowTestServer(t)
+	srv.tokenStore = familylessTokenStore{store, store, store}
+	client, _, err := srv.RegisterClient(t.Context(), "Test Client", ClientTypePublic, "",
+		[]string{redirect}, []string{"openid"}, "192.168.1.100", 10)
+	require.NoError(t, err)
+	code, verifier := issueTestCode(t, srv, store, client.ClientID, redirect)
+	_, _, err = srv.ExchangeAuthorizationCode(t.Context(), code, client.ClientID, redirect, "", verifier, "")
+	require.NoError(t, err)
+	tokens, err := store.GetTokensByUserClient(t.Context(), testMockUserID, client.ClientID)
+	require.NoError(t, err)
+	require.NotEmpty(t, tokens)
+
+	_, _, err = srv.ExchangeAuthorizationCode(t.Context(), code, client.ClientID, redirect, "", verifier, "")
+
+	require.ErrorIs(t, err, errInvalidGrant)
+	tokens, err = store.GetTokensByUserClient(t.Context(), testMockUserID, client.ClientID)
+	require.NoError(t, err)
+	require.Empty(t, tokens)
+}
+
+// undecodableReusedCodeStore reports every code as used without returning it,
+// as the Valkey store does for a used code it cannot decode.
+type undecodableReusedCodeStore struct {
+	*memory.Store
+}
+
+func (undecodableReusedCodeStore) AtomicCheckAndMarkAuthCodeUsed(context.Context, string) (*storage.AuthorizationCode, error) {
+	return nil, fmt.Errorf("%w: failed to parse reused code", storage.ErrAuthorizationCodeUsed)
+}
+
+func TestServer_UndecodableReusedCodeIsRefused(t *testing.T) {
+	const redirect = "https://example.com/callback"
+	srv, store, _ := setupFlowTestServer(t)
+	srv.flowStore = undecodableReusedCodeStore{store}
+	client, _, err := srv.RegisterClient(t.Context(), "Test Client", ClientTypePublic, "",
+		[]string{redirect}, []string{"openid"}, "192.168.1.100", 10)
+	require.NoError(t, err)
+
+	_, _, err = srv.ExchangeAuthorizationCode(t.Context(), "used-code", client.ClientID, redirect, "", "verifier", "")
+
+	require.ErrorIs(t, err, errInvalidGrant)
 }
 
 // TestServer_AuthorizationCodeReuseRevokesMultipleTokens tests that code reuse revokes

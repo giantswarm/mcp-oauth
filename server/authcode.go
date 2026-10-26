@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/url"
@@ -99,9 +101,10 @@ func (s *Server) validateScopesForAuthFlow(ctx context.Context, clientID, scope 
 	return nil
 }
 
-// handleCodeReuseDetection handles authorization code reuse security event
-// Revokes all tokens and logs the security event per OAuth 2.1 requirements
-func (s *Server) handleCodeReuseDetection(ctx context.Context, authCode *storage.AuthorizationCode, clientID, code string, span trace.Span) error {
+// handleCodeReuseDetection handles authorization code reuse security event.
+// It revokes the tokens issued based on the code (OAuth 2.1 4.1.2), whichever
+// client presents it; see revokeReusedCode.
+func (s *Server) handleCodeReuseDetection(ctx context.Context, authCode *storage.AuthorizationCode, presentedClientID, code string, span trace.Span) error {
 	// Record code reuse detection metric
 	if s.Instrumentation != nil {
 		s.Instrumentation.Metrics().RecordCodeReuseDetected(ctx)
@@ -115,31 +118,81 @@ func (s *Server) handleCodeReuseDetection(ctx context.Context, authCode *storage
 		span.SetStatus(codes.Error, "authorization code reuse detected")
 	}
 
-	// Rate limit logging to prevent DoS via log flooding
-	if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(authCode.UserID+":"+clientID) {
-		s.Logger.Error("Authorization code reuse detected - revoking all tokens",
-			"user_id", authCode.UserID, paramClientID, clientID, logKeyOAuthSpec, oauthSpecSection412)
+	// Deleting the code before revoking its tokens is what lets an exchange of
+	// the code still in flight see this reuse: see refuseIfCodeReused.
+	if err := s.flowStore.DeleteAuthorizationCode(ctx, code); err != nil {
+		s.Logger.Error("Failed to delete reused authorization code", logKeyError, err)
 	}
+	action := s.revokeReusedCode(ctx, authCode, code)
 
-	// Revoke all tokens for this user+client (OAuth 2.1 requirement)
-	if err := s.RevokeAllTokensForUserClient(ctx, authCode.UserID, clientID); err != nil {
-		s.Logger.Error("Failed to revoke tokens after code reuse detection", logKeyError, err)
+	// Rate limit logging to prevent DoS via log flooding
+	if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(authCode.UserID+":"+authCode.ClientID) {
+		s.Logger.Error("Authorization code reuse detected",
+			"user_id", authCode.UserID, paramClientID, authCode.ClientID,
+			"presented_client_id", presentedClientID, logKeyAction, action, logKeyOAuthSpec, oauthSpecSection412)
 	}
 
 	if s.Auditor != nil {
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type:     security.EventAuthorizationCodeReuseDetected,
 			UserID:   authCode.UserID,
-			ClientID: clientID,
+			ClientID: authCode.ClientID,
 			Details: map[string]any{
-				logKeySeverity: severityCritical, logKeyAction: "all_tokens_revoked", logKeyOAuthSpec: oauthSpecSection412,
+				logKeySeverity: severityCritical, logKeyAction: action, logKeyOAuthSpec: oauthSpecSection412,
+				"presented_client_id": presentedClientID,
 			},
 		})
-		s.Auditor.LogAuthFailure(ctx, authCode.UserID, clientID, "", "authorization_code_reuse")
+		s.Auditor.LogAuthFailure(ctx, authCode.UserID, presentedClientID, "", "authorization_code_reuse")
 	}
 
-	_ = s.flowStore.DeleteAuthorizationCode(ctx, code)
 	return errInvalidGrant
+}
+
+// refuseIfCodeReused reads code back once its exchange has stored the tokens.
+// A reuse deletes the code before it revokes the code's tokens, and the
+// exchange stores its tokens before this read, so whichever runs second sees
+// the other: a reuse that raced the exchange either revoked these tokens or is
+// seen here, and the exchange then revokes them itself and is refused. A code
+// that cannot be read back is treated the same way, failing closed.
+func (s *Server) refuseIfCodeReused(ctx context.Context, authCode *storage.AuthorizationCode, clientID, code string) error {
+	_, err := s.flowStore.GetAuthorizationCode(ctx, code)
+	if err == nil || errors.Is(err, storage.ErrTokenExpired) {
+		return nil
+	}
+	s.revokeReusedCode(ctx, authCode, code)
+	if errors.Is(err, storage.ErrAuthorizationCodeNotFound) {
+		return s.logAuthCodeValidationFailure(ctx, "authorization_code_reused_during_exchange", clientID, authCode.UserID, helpers.SafeTruncate(code, 8))
+	}
+	return s.storageUnavailable(ctx, "check authorization code after exchange", clientID, authCode.UserID, err)
+}
+
+// codeFamilyID is the ID of the token family an exchange of code starts. It is
+// derived from the code so that a reuse of the code finds the family without
+// the used code recording it.
+func codeFamilyID(code string) string {
+	sum := sha256.Sum256([]byte("mcp-oauth/code-family:" + code))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// revokeReusedCode revokes the token family the exchange of a reused code
+// started, as refresh-token reuse does, so the person's other sessions stay
+// signed in, and returns the audited action. The family is named by the code,
+// so it is revoked whether or not the exchange stored it: an exchange that was
+// refused issued nothing, and one that has not finished has its tokens so far
+// revoked. A store that cannot revoke a family's access tokens has every token
+// of the person at the client the code was issued to revoked.
+func (s *Server) revokeReusedCode(ctx context.Context, authCode *storage.AuthorizationCode, code string) string {
+	familyStore, tracked := s.tokenStore.(storage.RefreshTokenFamilyStore)
+	if _, revocable := s.tokenStore.(storage.TokenFamilyRevocationStore); tracked && revocable {
+		s.revokeReusedFamily(ctx, &storage.RefreshTokenFamilyMetadata{
+			FamilyID: codeFamilyID(code), UserID: authCode.UserID, ClientID: authCode.ClientID,
+		}, familyStore)
+		return actionFamilyRevoked
+	}
+	if err := s.RevokeAllTokensForUserClient(ctx, authCode.UserID, authCode.ClientID); err != nil {
+		s.Logger.Error("Failed to revoke tokens after code reuse detection", logKeyError, err)
+	}
+	return "all_tokens_revoked"
 }
 
 // validatePublicClientPKCE validates that public clients use PKCE
@@ -945,7 +998,7 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 	// Pre-generate familyID so metadata can reference it before the family is persisted
 	var familyID string
 	if _, ok := s.tokenStore.(storage.RefreshTokenFamilyStore); ok {
-		familyID = generateRandomToken()
+		familyID = codeFamilyID(code)
 	}
 
 	tokenResponse, err := s.generateAndStoreTokens(ctx, authCode, clientID, familyID, dpopJKT)
@@ -954,6 +1007,10 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 	}
 
 	s.trackRefreshTokenFamily(ctx, tokenResponse.RefreshToken, authCode.UserID, clientID, familyID)
+
+	if err := s.refuseIfCodeReused(ctx, authCode, clientID, code); err != nil {
+		return nil, "", err
+	}
 
 	if s.sessionCreationHandler != nil && familyID != "" {
 		s.sessionCreationHandler(ctx, authCode.UserID, familyID, tokenResponse)
@@ -993,8 +1050,15 @@ func (s *Server) validateAuthorizationCode(ctx context.Context, code, clientID, 
 	}
 
 	authCode, err := s.flowStore.AtomicCheckAndMarkAuthCodeUsed(ctx, code)
+	// An identity code is issued to no client and grants nothing: it is
+	// refused used or not, and its reuse has no tokens to revoke.
+	if authCode != nil && authCode.IdentityOnly {
+		return nil, s.logAuthCodeValidationFailure(ctx, "identity_code_not_exchangeable", clientID, "", helpers.SafeTruncate(code, 8))
+	}
 	if err != nil {
-		if storage.IsCodeReuseError(err) {
+		// A store that cannot decode the used code returns none; that is
+		// refused below as an invalid code.
+		if storage.IsCodeReuseError(err) && authCode != nil {
 			return nil, s.handleCodeReuseDetection(ctx, authCode, clientID, code, span)
 		}
 		if storage.IsTransientError(err) {
@@ -1024,9 +1088,6 @@ func (s *Server) validateAuthorizationCode(ctx context.Context, code, clientID, 
 
 // validateCodeParameters validates basic authorization code parameters.
 func (s *Server) validateCodeParameters(ctx context.Context, authCode *storage.AuthorizationCode, clientID, redirectURI, code string) error {
-	if authCode.IdentityOnly {
-		return s.logAuthCodeValidationFailure(ctx, "identity_code_not_exchangeable", clientID, "", helpers.SafeTruncate(code, 8))
-	}
 	if authCode.ClientID != clientID {
 		return s.logAuthCodeValidationFailure(ctx, "client_id_mismatch", clientID, "", helpers.SafeTruncate(code, 8))
 	}
