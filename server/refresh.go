@@ -54,7 +54,10 @@ func (s *Server) handleRefreshTokenReuseDetection(ctx context.Context, refreshTo
 			logKeyAction: actionFamilyRevoked,
 		},
 	})
-	s.Auditor.LogTokenReuse(ctx, family.UserID, clientID)
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type: security.EventTokenReuseDetected, UserID: family.UserID, ClientID: clientID,
+		Details: map[string]any{logKeySeverity: severityCritical, logKeyAction: actionFamilyRevoked},
+	})
 
 	return errInvalidGrant
 }

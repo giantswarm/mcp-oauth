@@ -203,6 +203,10 @@ func (a *Auditor) LogInvalidPKCE(ctx context.Context, clientID, ipAddress, reaso
 }
 
 // LogTokenReuse logs when refresh token reuse is detected (security event)
+//
+// Deprecated: it records the action all_tokens_revoked and no client, while
+// the server revokes only the reused token family. Log an
+// [EventTokenReuseDetected] event with [Auditor.LogEvent] instead.
 func (a *Auditor) LogTokenReuse(ctx context.Context, userID, ipAddress string) {
 	a.LogEvent(ctx, Event{
 		Type:      EventTokenReuseDetected,

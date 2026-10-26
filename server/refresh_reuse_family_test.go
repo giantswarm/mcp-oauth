@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/providers/mock"
+	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
@@ -169,4 +171,32 @@ func TestRefreshTokenReuse_LegacyLayoutRevokesFamilyGrantOnly(t *testing.T) {
 	require.NotContains(t, revocations.list(), "dex-rt-login-2", "the other family's Dex grant must be kept")
 	_, err = srv.RefreshAccessToken(ctx, rtB, f.clientID)
 	require.NoError(t, err, "the user's other family must stay valid")
+}
+
+// SECURITY: the token_reuse_detected event that alerts are set on reports
+// the family revocation that happened, at the client that presented the token.
+func TestRefreshTokenReuse_AuditsTheFamilyRevocation(t *testing.T) {
+	ctx := context.Background()
+	srv, store, dex, clientID := setupRaceServer(t)
+	logger, logs := captureLogger()
+	srv.Auditor = security.NewAuditor(logger, true)
+	rt := loginRaceSession(t, srv, store, dex, clientID)
+	_, err := srv.RefreshAccessToken(ctx, rt, clientID)
+	require.NoError(t, err)
+	logs.Reset()
+
+	_, err = srv.RefreshAccessToken(ctx, rt, clientID)
+
+	require.ErrorIs(t, err, errInvalidGrant)
+	var event string
+	for line := range strings.Lines(logs.String()) {
+		if strings.Contains(line, "event_type="+security.EventTokenReuseDetected) {
+			event = line
+		}
+	}
+	require.NotEmpty(t, event, logs.String())
+	require.Contains(t, event, "action:family_revoked")
+	require.Contains(t, event, "audit.client_id="+clientID)
+	require.Contains(t, event, `audit.ip_address=""`, "the client is not reported as the IP address")
+	require.NotContains(t, event, "all_tokens_revoked")
 }
