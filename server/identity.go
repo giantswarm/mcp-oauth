@@ -100,29 +100,11 @@ func (s *Server) RedeemIdentityCode(ctx context.Context, code string, returnURL 
 	case authCode.CodeChallenge == "":
 		s.logIdentityRedeemFailure(ctx, "missing_code_challenge", code)
 		return "", ErrInvalidIdentityCode
-	case authCode.UserID == "":
-		s.logIdentityRedeemFailure(ctx, "missing_subject", code)
-		return "", ErrInvalidIdentityCode
 	}
 	if err := s.validatePKCEWithAudit(ctx, authCode, "", codeVerifier, nil); err != nil {
 		return "", ErrInvalidIdentityCode
 	}
 	return authCode.UserID, nil
-}
-
-// issueIdentityCode issues the code of an identity flow's provider callback:
-// bound to the flow's return URL and PKCE challenge, carrying the subject and
-// no provider token.
-func (s *Server) issueIdentityCode(ctx context.Context, authState *storage.AuthorizationState, userInfo *providers.UserInfo) (*storage.AuthorizationCode, error) {
-	if userInfo.ID == "" {
-		return nil, fmt.Errorf("provider did not supply a subject claim")
-	}
-	authCode, err := s.createAndSaveAuthorizationCode(ctx, authState, userInfo, nil)
-	if err != nil {
-		return nil, err
-	}
-	s.Logger.Debug("Identity established", "user_id", userInfo.ID)
-	return authCode, nil
 }
 
 // onIssuerOrigin reports whether u is an absolute URL on the issuer's

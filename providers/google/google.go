@@ -58,7 +58,7 @@ func NewProvider(cfg *Config) (*Provider, error) {
 	// Default scopes if none provided
 	scopes := cfg.Scopes
 	if len(scopes) == 0 {
-		scopes = []string{"openid", "email", "profile"}
+		scopes = []string{scopeOpenID, "email", "profile"}
 	}
 
 	// Set request timeout (default: 30 seconds)
@@ -105,6 +105,8 @@ func (p *Provider) DefaultScopes() []string {
 	return providers.CloneScopes(p.Scopes)
 }
 
+const scopeOpenID = "openid"
+
 // isGoogleSupportedScope returns true if the scope is recognized by Google's OAuth endpoints.
 // Supported scopes:
 //   - "openid", "email", "profile": Standard OIDC scopes
@@ -116,7 +118,7 @@ func (p *Provider) DefaultScopes() []string {
 //   - Any other non-Google scopes (e.g., "claudeai", custom provider scopes)
 func isGoogleSupportedScope(scope string) bool {
 	switch scope {
-	case "openid", "email", "profile":
+	case scopeOpenID, "email", "profile":
 		return true
 	default:
 		return strings.HasPrefix(scope, "https://www.googleapis.com/")
@@ -161,7 +163,7 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	config := *p.Config
 	config.Scopes = providers.FilterScopes(scopes, p.Scopes, isGoogleSupportedScope)
 	if identityOnly {
-		config.Scopes = []string{"openid"}
+		config.Scopes = []string{scopeOpenID}
 	}
 	return config.AuthCodeURL(state, opts...)
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/providers"
+	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
@@ -124,11 +125,14 @@ func TestIdentityFlow_RedeemRefusals(t *testing.T) {
 // SECURITY: an identity code must never become tokens, whoever presents it.
 func TestIdentityFlow_CodeIsNotExchangeable(t *testing.T) {
 	srv, store, flow := setupIdentityTestServer(t)
+	logger, logs := captureLogger()
+	srv.Auditor = security.NewAuditor(logger, true)
 	code := flow.signIn(t, srv, store)
 
 	_, _, err := srv.ExchangeAuthorizationCode(t.Context(), code, "", testIdentityReturnURL, "", flow.verifier, "")
 
 	require.Error(t, err)
+	require.True(t, containsAuthFailure(logs.String(), "identity_code_not_exchangeable"), logs.String())
 }
 
 // A client's authorization code is not an identity code.

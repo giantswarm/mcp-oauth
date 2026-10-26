@@ -1124,3 +1124,28 @@ func TestProvider_AuthorizationURL_IdentityOnly(t *testing.T) {
 		t.Errorf("scope = %q, want none", got)
 	}
 }
+
+// With an organization restriction, an identity-only sign-in asks for read:org
+// alone: without it /user/orgs omits private memberships and ValidateToken
+// refuses members.
+func TestProvider_AuthorizationURL_IdentityOnlyWithAllowedOrganizations(t *testing.T) {
+	provider, err := NewProvider(&Config{
+		ClientID:             testClientID,
+		ClientSecret:         testClientSecret,
+		RedirectURL:          testCallbackURL,
+		AllowedOrganizations: []string{"giantswarm"},
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+
+	authURL := provider.AuthorizationURL("state", "challenge", "S256", []string{"openid"}, &providers.AuthorizationURLOptions{IdentityOnly: true})
+
+	parsed, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+	if got := parsed.Query().Get("scope"); got != "read:org" {
+		t.Errorf("scope = %q, want %q", got, "read:org")
+	}
+}

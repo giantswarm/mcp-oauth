@@ -548,7 +548,8 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	// for CSRF protection. RFC 9207: include `iss` so clients talking to multiple
 	// authorization servers can detect mix-up attacks. authCode.RedirectURI was
 	// allowlist-validated against client.RedirectURIs at authorization time and
-	// re-validated by ValidateRedirectURIAtAuthorizationTime; we parse it here to
+	// re-validated by ValidateRedirectURIAtAuthorizationTime, or, for an identity
+	// flow, confined to the issuer's origin by StartIdentityFlow; we parse it here to
 	// build the response URL through url.Values rather than string concatenation.
 	parsedRedirect, err := url.Parse(authCode.RedirectURI)
 	if err != nil {
@@ -580,7 +581,8 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	// #nosec G710 -- redirectURL is built from authCode.RedirectURI, which was
 	// allowlist-validated against client.RedirectURIs and re-validated by
 	// ValidateRedirectURIAtAuthorizationTime when the authorization state was
-	// persisted. Not an open redirect.
+	// persisted, or confined to the issuer's origin by StartIdentityFlow. Not an
+	// open redirect.
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 

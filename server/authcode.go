@@ -431,7 +431,10 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 	}
 
 	if authState.IdentityOnly {
-		authCodeObj, err := s.issueIdentityCode(ctx, authState, userInfo)
+		if userInfo.ID == "" {
+			return nil, "", fmt.Errorf("provider did not supply a subject claim")
+		}
+		authCodeObj, err := s.createAndSaveAuthorizationCode(ctx, authState, userInfo, nil)
 		if err != nil {
 			return nil, "", err
 		}
