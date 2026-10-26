@@ -139,13 +139,17 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 		)
 	}
 
+	identityOnly := authOpts != nil && authOpts.IdentityOnly
+
 	// Request offline access to get refresh token
-	opts = append(opts, oauth2.AccessTypeOffline)
+	if !identityOnly {
+		opts = append(opts, oauth2.AccessTypeOffline)
+	}
 
 	// Force consent screen if configured (default: true)
 	// This ensures Google always returns a refresh token, not just on first consent.
 	// Note: If authOpts.Prompt is set, it overrides this setting
-	if p.forceConsent && (authOpts == nil || authOpts.Prompt == "") {
+	if p.forceConsent && !identityOnly && (authOpts == nil || authOpts.Prompt == "") {
 		opts = append(opts, oauth2.ApprovalForce)
 	}
 
@@ -156,6 +160,9 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	// preserving mandatory openid scopes via CopyScopes.
 	config := *p.Config
 	config.Scopes = providers.FilterScopes(scopes, p.Scopes, isGoogleSupportedScope)
+	if identityOnly {
+		config.Scopes = []string{"openid"}
+	}
 	return config.AuthCodeURL(state, opts...)
 }
 

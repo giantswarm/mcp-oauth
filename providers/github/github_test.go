@@ -1100,3 +1100,27 @@ func TestProvider_ImplementsInterface(t *testing.T) {
 		t.Errorf("Name() = %q, want %q", p.Name(), "github")
 	}
 }
+
+// An identity-only sign-in asks GitHub for no scope: the public profile
+// identifies the user.
+func TestProvider_AuthorizationURL_IdentityOnly(t *testing.T) {
+	provider, err := NewProvider(&Config{
+		ClientID:     testClientID,
+		ClientSecret: testClientSecret,
+		RedirectURL:  testCallbackURL,
+		Scopes:       []string{"user:email", "read:user"},
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+
+	authURL := provider.AuthorizationURL("state", "challenge", "S256", []string{"openid"}, &providers.AuthorizationURLOptions{IdentityOnly: true})
+
+	parsed, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+	if got := parsed.Query().Get("scope"); got != "" {
+		t.Errorf("scope = %q, want none", got)
+	}
+}

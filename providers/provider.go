@@ -51,6 +51,13 @@ type AuthorizationURLOptions struct {
 	// Extra allows setting additional custom parameters not covered above.
 	// These are added as query parameters to the authorization URL.
 	Extra map[string]string
+
+	// IdentityOnly asks for the scopes that identify the user and nothing
+	// else: none of the provider's default scopes and no offline access, so
+	// the provider issues no refresh token. Dex keeps one refresh token per
+	// user and client and deletes the previous one when it issues another,
+	// so a sign-in that only learns who the user is must not ask for one.
+	IdentityOnly bool
 }
 
 // Provider defines the interface for OAuth identity providers.

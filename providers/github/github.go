@@ -239,6 +239,10 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 
 	// SECURITY: Create a deep copy of scopes to prevent potential race conditions
 	scopesToUse := providers.CopyScopes(scopes, p.Scopes)
+	if authOpts != nil && authOpts.IdentityOnly {
+		// No scope: the authenticated user's public profile identifies them.
+		scopesToUse = nil
+	}
 
 	// Create a config with the determined scopes
 	config := *p.Config

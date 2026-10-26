@@ -1072,3 +1072,34 @@ func (h *healthCheckTransport) RoundTrip(req *http.Request) (*http.Response, err
 	}
 	return http.DefaultTransport.RoundTrip(req)
 }
+
+// An identity-only sign-in asks Google for openid alone, without offline
+// access or a forced consent screen.
+func TestProvider_AuthorizationURL_IdentityOnly(t *testing.T) {
+	provider, err := NewProvider(&Config{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		RedirectURL:  "https://example.com/callback",
+		Scopes:       []string{"openid", "email", "profile"},
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+
+	authURL := provider.AuthorizationURL("state", "challenge", "S256", []string{"openid"}, &providers.AuthorizationURLOptions{IdentityOnly: true})
+
+	parsed, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+	query := parsed.Query()
+	if got := query.Get("scope"); got != "openid" {
+		t.Errorf("scope = %q, want %q", got, "openid")
+	}
+	if query.Has("access_type") {
+		t.Errorf("access_type = %q, want none", query.Get("access_type"))
+	}
+	if query.Has("prompt") {
+		t.Errorf("prompt = %q, want none", query.Get("prompt"))
+	}
+}

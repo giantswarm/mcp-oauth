@@ -1017,6 +1017,7 @@ type authorizationCodeJSON struct {
 	CodeChallengeMethod string             `json:"code_challenge_method,omitempty"`
 	UserID              string             `json:"user_id"`
 	ProviderToken       *serializableToken `json:"provider_token,omitempty"`
+	IdentityOnly        bool               `json:"identity_only,omitempty"`
 	CreatedAt           int64              `json:"created_at"`
 	ExpiresAt           int64              `json:"expires_at"`
 	Used                bool               `json:"used"`
@@ -1033,6 +1034,7 @@ func toAuthorizationCodeJSON(code *storage.AuthorizationCode) *authorizationCode
 		CodeChallenge:       code.CodeChallenge,
 		CodeChallengeMethod: code.CodeChallengeMethod,
 		UserID:              code.UserID,
+		IdentityOnly:        code.IdentityOnly,
 		CreatedAt:           code.CreatedAt.Unix(),
 		ExpiresAt:           code.ExpiresAt.Unix(),
 		Used:                code.Used,
@@ -1062,6 +1064,7 @@ func fromAuthorizationCodeJSON(j *authorizationCodeJSON) *storage.AuthorizationC
 		CodeChallenge:       j.CodeChallenge,
 		CodeChallengeMethod: j.CodeChallengeMethod,
 		UserID:              j.UserID,
+		IdentityOnly:        j.IdentityOnly,
 		CreatedAt:           time.Unix(j.CreatedAt, 0),
 		ExpiresAt:           time.Unix(j.ExpiresAt, 0),
 		Used:                j.Used,
@@ -1088,6 +1091,7 @@ type authorizationStateJSON struct {
 	ProviderState        string `json:"provider_state"`
 	ProviderCodeVerifier string `json:"provider_code_verifier,omitempty"`
 	Nonce                string `json:"nonce,omitempty"`
+	IdentityOnly         bool   `json:"identity_only,omitempty"`
 	CreatedAt            int64  `json:"created_at"`
 	ExpiresAt            int64  `json:"expires_at"`
 }
@@ -1105,6 +1109,7 @@ func toAuthorizationStateJSON(state *storage.AuthorizationState) *authorizationS
 		ProviderState:        state.ProviderState,
 		ProviderCodeVerifier: state.ProviderCodeVerifier,
 		Nonce:                state.Nonce,
+		IdentityOnly:         state.IdentityOnly,
 		CreatedAt:            state.CreatedAt.Unix(),
 		ExpiresAt:            state.ExpiresAt.Unix(),
 	}
@@ -1126,6 +1131,7 @@ func fromAuthorizationStateJSON(j *authorizationStateJSON) *storage.Authorizatio
 		ProviderState:        j.ProviderState,
 		ProviderCodeVerifier: j.ProviderCodeVerifier,
 		Nonce:                j.Nonce,
+		IdentityOnly:         j.IdentityOnly,
 		CreatedAt:            time.Unix(j.CreatedAt, 0),
 		ExpiresAt:            time.Unix(j.ExpiresAt, 0),
 	}
