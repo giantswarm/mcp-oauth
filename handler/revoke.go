@@ -196,19 +196,7 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 
 	response, err := h.server.IntrospectToken(r.Context(), token, clientID)
 	if err != nil {
-		// The store or the identity provider did not answer, so the token
-		// is neither active nor inactive; {"active": false} would tell the
-		// resource server the token is dead.
-		if errors.Is(err, server.ErrStorageUnavailable) {
-			h.writeStorageUnavailable(w, r, endpointIntrospect, http.MethodPost, span, startTime, err)
-			return
-		}
-		if errors.Is(err, server.ErrProviderUnavailable) {
-			h.writeProviderUnavailable(w, r, endpointIntrospect, http.MethodPost, span, startTime, err)
-			return
-		}
-		h.failRequest(w, r, span, endpointIntrospect, http.MethodPost, http.StatusInternalServerError,
-			constants.ErrorCodeServerError, "Token introspection failed", startTime)
+		h.writeIntrospectionError(w, r, span, startTime, err)
 		return
 	}
 	if active, _ := response["active"].(bool); !active {
@@ -221,6 +209,22 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 	h.writeJSON(w, response)
 	h.recordHTTPMetrics(r.Context(), endpointIntrospect, http.MethodPost, http.StatusOK, startTime)
 	instrumentation.SetSpanSuccess(span)
+}
+
+// writeIntrospectionError answers an IntrospectToken error. A store or an
+// identity provider that did not answer leaves the token neither active nor
+// inactive, so it is 503 temporarily_unavailable: {"active": false} would
+// tell the resource server the token is dead.
+func (h *Handler) writeIntrospectionError(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, err error) {
+	switch {
+	case errors.Is(err, server.ErrStorageUnavailable):
+		h.writeStorageUnavailable(w, r, endpointIntrospect, http.MethodPost, span, startTime, err)
+	case errors.Is(err, server.ErrProviderUnavailable):
+		h.writeProviderUnavailable(w, r, endpointIntrospect, http.MethodPost, span, startTime, err)
+	default:
+		h.failRequest(w, r, span, endpointIntrospect, http.MethodPost, http.StatusInternalServerError,
+			constants.ErrorCodeServerError, "Token introspection failed", startTime)
+	}
 }
 
 // authenticateIntrospectionClient validates client credentials for token introspection.
