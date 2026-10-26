@@ -176,26 +176,17 @@ func codeFamilyID(code string) string {
 
 // revokeReusedCode revokes the token family the exchange of a reused code
 // started, as refresh-token reuse does, so the person's other sessions stay
-// signed in, and returns the audited action. A family that is not stored
-// means the exchange was refused, so it issued nothing, or has not finished;
-// the tokens it stored so far carry the family ID and are revoked. A store
-// that does not revoke by family has every token of the person at the client
-// the code was issued to revoked.
+// signed in, and returns the audited action. The family is named by the code,
+// so it is revoked whether or not the exchange stored it: an exchange that was
+// refused issued nothing, and one that has not finished has its tokens so far
+// revoked. A store that cannot revoke a family's access tokens has every token
+// of the person at the client the code was issued to revoked.
 func (s *Server) revokeReusedCode(ctx context.Context, authCode *storage.AuthorizationCode, code string) string {
-	familyID := codeFamilyID(code)
 	familyStore, tracked := s.tokenStore.(storage.RefreshTokenFamilyStore)
-	familyRevoker, revocable := s.tokenStore.(storage.TokenFamilyRevocationStore)
-	if byID, indexed := s.tokenStore.(storage.RefreshTokenFamilyByIDStore); tracked && indexed {
-		family, err := byID.GetRefreshTokenFamilyByID(ctx, familyID)
-		if err == nil && family != nil && family.UserID == authCode.UserID && family.ClientID == authCode.ClientID {
-			s.revokeReusedFamily(ctx, family, familyStore)
-			return actionFamilyRevoked
-		}
-	}
-	if tracked && revocable {
-		if _, err := familyRevoker.RevokeTokensForFamily(ctx, authCode.UserID, authCode.ClientID, familyID); err != nil {
-			s.Logger.Error("Failed to revoke token family after code reuse detection", logKeyError, err)
-		}
+	if _, revocable := s.tokenStore.(storage.TokenFamilyRevocationStore); tracked && revocable {
+		s.revokeReusedFamily(ctx, &storage.RefreshTokenFamilyMetadata{
+			FamilyID: codeFamilyID(code), UserID: authCode.UserID, ClientID: authCode.ClientID,
+		}, familyStore)
 		return actionFamilyRevoked
 	}
 	if err := s.RevokeAllTokensForUserClient(ctx, authCode.UserID, authCode.ClientID); err != nil {
