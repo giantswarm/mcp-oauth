@@ -32,10 +32,6 @@ const (
 	// EventAuthorizationCodeReuseDetected is logged when an authorization code is reused (attack)
 	EventAuthorizationCodeReuseDetected = "authorization_code_reuse_detected"
 
-	// EventIdentityCodeRedeemed is logged when Server.RedeemIdentityCode
-	// accepts an identity code and returns its subject
-	EventIdentityCodeRedeemed = "identity_code_redeemed"
-
 	// Client registration events
 
 	// EventClientRegistered is logged when a new OAuth client is registered
