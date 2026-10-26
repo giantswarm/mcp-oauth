@@ -6,13 +6,16 @@ import (
 	"encoding/base64"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
+	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
@@ -133,6 +136,60 @@ func TestIdentityFlow_CodeIsNotExchangeable(t *testing.T) {
 
 	require.Error(t, err)
 	require.True(t, containsAuthFailure(logs.String(), "identity_code_not_exchangeable"), logs.String())
+}
+
+// SECURITY: a reused identity code grants nothing, so it revokes nothing.
+// Its holder must not be able to end the person's sessions at a client.
+func TestIdentityFlow_ReusedCodeRevokesNothing(t *testing.T) {
+	const clientRedirect = "https://example.com/callback"
+	srv, store, flow := setupIdentityTestServer(t)
+	logger, logs := captureLogger()
+	srv.Auditor = security.NewAuditor(logger, true)
+	client, _, err := srv.RegisterClient(t.Context(), "Test Client", ClientTypePublic, "",
+		[]string{clientRedirect}, []string{"openid"}, "192.168.1.100", 10)
+	require.NoError(t, err)
+	const accessToken = "seeded-access-token"
+	require.NoError(t, store.SaveToken(t.Context(), accessToken, &oauth2.Token{
+		AccessToken: accessToken, TokenType: "Bearer", Expiry: time.Now().Add(time.Hour),
+	}))
+	require.NoError(t, store.SaveTokenMetadata(t.Context(), accessToken, storage.TokenMetadata{
+		UserID: testMockUserID, ClientID: client.ClientID, TokenType: "access",
+	}))
+	code := flow.signIn(t, srv, store)
+	_, err = store.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code)
+	require.NoError(t, err)
+
+	_, _, err = srv.ExchangeAuthorizationCode(t.Context(), code, client.ClientID, clientRedirect, "", flow.verifier, "")
+
+	require.Error(t, err)
+	_, err = store.GetToken(t.Context(), accessToken)
+	require.NoError(t, err, "the person's token at the client is not revoked")
+	require.True(t, containsAuthFailure(logs.String(), "identity_code_not_exchangeable"), logs.String())
+	require.NotContains(t, logs.String(), "authorization_code_reuse")
+}
+
+func TestIdentityFlow_RedeemIsAudited(t *testing.T) {
+	srv, store, flow := setupIdentityTestServer(t)
+	logger, logs := captureLogger()
+	srv.Auditor = security.NewAuditor(logger, true)
+	code := flow.signIn(t, srv, store)
+
+	_, err := srv.RedeemIdentityCode(t.Context(), code, flow.returnURL, flow.verifier)
+
+	require.NoError(t, err)
+	require.True(t, containsAuditEvent(logs.String(), security.EventIdentityCodeRedeemed), logs.String())
+	require.Contains(t, logs.String(), helpers.HashForLogging(testMockUserID))
+}
+
+func TestIdentityFlow_CodeLifetime(t *testing.T) {
+	srv, store, flow := setupIdentityTestServer(t)
+	before := time.Now()
+	code := flow.signIn(t, srv, store)
+
+	authCode, err := store.GetAuthorizationCode(t.Context(), code)
+
+	require.NoError(t, err)
+	require.WithinDuration(t, before.Add(identityCodeTTL), authCode.ExpiresAt, 5*time.Second)
 }
 
 // A client's authorization code is not an identity code.

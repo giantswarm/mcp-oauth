@@ -9,12 +9,17 @@ import (
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/providers"
+	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
 // identityScope is the scope an identity flow records; the provider is asked
 // for its identifying scopes only (AuthorizationURLOptions.IdentityOnly).
 const identityScope = "openid"
+
+// identityCodeTTL bounds an identity code's lifetime (or AuthorizationCodeTTL
+// when shorter): the return URL redeems it as soon as the browser lands.
+const identityCodeTTL = 60 * time.Second
 
 // ErrInvalidIdentityCode is returned by RedeemIdentityCode for a code that is
 // unknown, expired, already used, not an identity code, bound to another
@@ -103,6 +108,12 @@ func (s *Server) RedeemIdentityCode(ctx context.Context, code string, returnURL 
 	}
 	if err := s.validatePKCEWithAudit(ctx, authCode, "", codeVerifier, nil); err != nil {
 		return "", ErrInvalidIdentityCode
+	}
+	if s.Auditor != nil {
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type:   security.EventIdentityCodeRedeemed,
+			UserID: authCode.UserID,
+		})
 	}
 	return authCode.UserID, nil
 }

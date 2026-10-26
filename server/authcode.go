@@ -890,6 +890,10 @@ func (s *Server) extendTokenExpiryForStorage(token *oauth2.Token) *oauth2.Token 
 
 // createAndSaveAuthorizationCode creates and saves an authorization code.
 func (s *Server) createAndSaveAuthorizationCode(ctx context.Context, authState *storage.AuthorizationState, userInfo *providers.UserInfo, providerToken *oauth2.Token) (*storage.AuthorizationCode, error) {
+	ttl := time.Duration(s.Config.AuthorizationCodeTTL) * time.Second
+	if authState.IdentityOnly {
+		ttl = min(ttl, identityCodeTTL)
+	}
 	authCodeObj := &storage.AuthorizationCode{
 		Code:                generateRandomToken(),
 		ClientID:            authState.ClientID,
@@ -903,7 +907,7 @@ func (s *Server) createAndSaveAuthorizationCode(ctx context.Context, authState *
 		ProviderToken:       providerToken,
 		IdentityOnly:        authState.IdentityOnly,
 		CreatedAt:           time.Now(),
-		ExpiresAt:           time.Now().Add(time.Duration(s.Config.AuthorizationCodeTTL) * time.Second),
+		ExpiresAt:           time.Now().Add(ttl),
 		Used:                false,
 	}
 
@@ -995,6 +999,11 @@ func (s *Server) validateAuthorizationCode(ctx context.Context, code, clientID, 
 	authCode, err := s.flowStore.AtomicCheckAndMarkAuthCodeUsed(ctx, code)
 	if err != nil {
 		if storage.IsCodeReuseError(err) {
+			// An identity code grants nothing, so its reuse has no tokens to
+			// revoke; revoking would let its holder end anyone's sessions.
+			if authCode != nil && authCode.IdentityOnly {
+				return nil, s.logAuthCodeValidationFailure(ctx, "identity_code_not_exchangeable", clientID, "", helpers.SafeTruncate(code, 8))
+			}
 			return nil, s.handleCodeReuseDetection(ctx, authCode, clientID, code, span)
 		}
 		if storage.IsTransientError(err) {
