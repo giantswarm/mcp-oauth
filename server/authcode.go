@@ -999,15 +999,15 @@ func (s *Server) validateAuthorizationCode(ctx context.Context, code, clientID, 
 	}
 
 	authCode, err := s.flowStore.AtomicCheckAndMarkAuthCodeUsed(ctx, code)
+	// An identity code is issued to no client and grants nothing: it is
+	// refused used or not, and its reuse has no tokens to revoke.
+	if authCode != nil && authCode.IdentityOnly {
+		return nil, s.logAuthCodeValidationFailure(ctx, "identity_code_not_exchangeable", clientID, "", helpers.SafeTruncate(code, 8))
+	}
 	if err != nil {
 		// A store that cannot decode the used code returns none; that is
 		// refused below as an invalid code.
 		if storage.IsCodeReuseError(err) && authCode != nil {
-			// An identity code is issued to no client, so its reuse has no
-			// tokens to revoke.
-			if authCode.IdentityOnly {
-				return nil, s.logAuthCodeValidationFailure(ctx, "identity_code_not_exchangeable", clientID, "", helpers.SafeTruncate(code, 8))
-			}
 			return nil, s.handleCodeReuseDetection(ctx, authCode, clientID, code, span)
 		}
 		if storage.IsTransientError(err) {
@@ -1037,9 +1037,6 @@ func (s *Server) validateAuthorizationCode(ctx context.Context, code, clientID, 
 
 // validateCodeParameters validates basic authorization code parameters.
 func (s *Server) validateCodeParameters(ctx context.Context, authCode *storage.AuthorizationCode, clientID, redirectURI, code string) error {
-	if authCode.IdentityOnly {
-		return s.logAuthCodeValidationFailure(ctx, "identity_code_not_exchangeable", clientID, "", helpers.SafeTruncate(code, 8))
-	}
 	if authCode.ClientID != clientID {
 		return s.logAuthCodeValidationFailure(ctx, "client_id_mismatch", clientID, "", helpers.SafeTruncate(code, 8))
 	}

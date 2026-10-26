@@ -156,8 +156,8 @@ func TestIdentityFlow_ReusedCodeRevokesNothing(t *testing.T) {
 		UserID: testMockUserID, ClientID: client.ClientID, TokenType: "access",
 	}))
 	code := flow.signIn(t, srv, store)
-	_, err = store.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code)
-	require.NoError(t, err)
+	_, _, err = srv.ExchangeAuthorizationCode(t.Context(), code, client.ClientID, clientRedirect, "", flow.verifier, "")
+	require.Error(t, err)
 
 	_, _, err = srv.ExchangeAuthorizationCode(t.Context(), code, client.ClientID, clientRedirect, "", flow.verifier, "")
 
