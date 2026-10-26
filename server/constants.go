@@ -20,6 +20,10 @@ const (
 	severityCritical = "critical"
 )
 
+// actionFamilyRevoked is the audited action of a refresh-token or
+// authorization-code reuse that revoked one token family.
+const actionFamilyRevoked = "family_revoked"
+
 // exchangeBrokered marks audit events emitted by the brokered token-exchange
 // path (details key "exchange").
 const exchangeBrokered = "brokered"

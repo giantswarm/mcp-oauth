@@ -2099,29 +2099,69 @@ func TestServer_AuthorizationCodeReuseRevokesTheCodesFamilyOnly(t *testing.T) {
 }
 
 // SECURITY: a reused code whose family is not stored -- here its first
-// exchange was refused -- revokes every token of the person at the client.
-func TestServer_AuthorizationCodeReuseWithoutFamilyRevokesTheClient(t *testing.T) {
+// exchange was refused -- revokes only the tokens that carry the code's
+// family ID. A holder of a leaked code who burns it with a wrong verifier
+// must not end the person's other sessions at the client.
+func TestServer_AuthorizationCodeReuseWithoutFamilyRevokesItsTokensOnly(t *testing.T) {
 	const redirect = "https://example.com/callback"
 	srv, store, _ := setupFlowTestServer(t)
 	client, _, err := srv.RegisterClient(t.Context(), "Test Client", ClientTypePublic, "",
 		[]string{redirect}, []string{"openid"}, "192.168.1.100", 10)
 	require.NoError(t, err)
-	const accessToken = "seeded-access-token"
-	require.NoError(t, store.SaveToken(t.Context(), accessToken, &oauth2.Token{
-		AccessToken: accessToken, TokenType: "Bearer", Expiry: time.Now().Add(time.Hour),
-	}))
-	require.NoError(t, store.SaveTokenMetadata(t.Context(), accessToken, storage.TokenMetadata{
-		UserID: testMockUserID, ClientID: client.ClientID, TokenType: "access",
-	}))
 	code, verifier := issueTestCode(t, srv, store, client.ClientID, redirect)
+	seed := func(accessToken, familyID string) {
+		require.NoError(t, store.SaveToken(t.Context(), accessToken, &oauth2.Token{
+			AccessToken: accessToken, TokenType: "Bearer", Expiry: time.Now().Add(time.Hour),
+		}))
+		require.NoError(t, store.SaveTokenMetadata(t.Context(), accessToken, storage.TokenMetadata{
+			UserID: testMockUserID, ClientID: client.ClientID, TokenType: "access", FamilyID: familyID,
+		}))
+	}
+	const codesToken, otherToken = "codes-access-token", "other-session-access-token"
+	seed(codesToken, codeFamilyID(code))
+	seed(otherToken, "other-family")
 	_, _, err = srv.ExchangeAuthorizationCode(t.Context(), code, client.ClientID, redirect, "", "wrong-verifier", "")
 	require.Error(t, err)
 
 	_, _, err = srv.ExchangeAuthorizationCode(t.Context(), code, client.ClientID, redirect, "", verifier, "")
 
 	require.ErrorIs(t, err, errInvalidGrant)
-	_, err = store.GetToken(t.Context(), accessToken)
-	require.Error(t, err, "the person's token at the client is revoked")
+	_, err = store.GetToken(t.Context(), codesToken)
+	require.Error(t, err, "a token stored under the code's family is revoked")
+	_, err = store.GetToken(t.Context(), otherToken)
+	require.NoError(t, err, "the person's other session at the client is kept")
+}
+
+// familylessTokenStore is a token store that tracks no refresh-token families.
+type familylessTokenStore struct {
+	storage.TokenStore
+	storage.TokenRevocationStore
+	storage.TokenMetadataStore
+}
+
+// SECURITY: a token store that tracks no families cannot tell the code's
+// tokens apart, so a reused code revokes every token of the person at the
+// client the code was issued to.
+func TestServer_AuthorizationCodeReuseWithoutFamilyStoreRevokesTheClient(t *testing.T) {
+	const redirect = "https://example.com/callback"
+	srv, store, _ := setupFlowTestServer(t)
+	srv.tokenStore = familylessTokenStore{store, store, store}
+	client, _, err := srv.RegisterClient(t.Context(), "Test Client", ClientTypePublic, "",
+		[]string{redirect}, []string{"openid"}, "192.168.1.100", 10)
+	require.NoError(t, err)
+	code, verifier := issueTestCode(t, srv, store, client.ClientID, redirect)
+	_, _, err = srv.ExchangeAuthorizationCode(t.Context(), code, client.ClientID, redirect, "", verifier, "")
+	require.NoError(t, err)
+	tokens, err := store.GetTokensByUserClient(t.Context(), testMockUserID, client.ClientID)
+	require.NoError(t, err)
+	require.NotEmpty(t, tokens)
+
+	_, _, err = srv.ExchangeAuthorizationCode(t.Context(), code, client.ClientID, redirect, "", verifier, "")
+
+	require.ErrorIs(t, err, errInvalidGrant)
+	tokens, err = store.GetTokensByUserClient(t.Context(), testMockUserID, client.ClientID)
+	require.NoError(t, err)
+	require.Empty(t, tokens)
 }
 
 // undecodableReusedCodeStore reports every code as used without returning it,

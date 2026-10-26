@@ -710,7 +710,7 @@ Set up alerts for:
   "level": "error",
   "event_type": "authorization_code_reuse_detected",
   "severity": "critical",
-  "action": "all_tokens_revoked",
+  "action": "family_revoked",
   "user_id": "user@example.com",
   "client_id": "abc123"
 }

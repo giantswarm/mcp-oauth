@@ -51,7 +51,7 @@ func (s *Server) handleRefreshTokenReuseDetection(ctx context.Context, refreshTo
 		Type: security.EventRefreshTokenReuseDetected, UserID: family.UserID, ClientID: clientID,
 		Details: map[string]any{
 			logKeySeverity: severityCritical, logKeyFamilyID: family.FamilyID, "generation": family.Generation,
-			logKeyAction: "family_revoked",
+			logKeyAction: actionFamilyRevoked,
 		},
 	})
 	s.Auditor.LogTokenReuse(ctx, family.UserID, clientID)

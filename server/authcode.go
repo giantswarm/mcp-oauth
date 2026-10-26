@@ -103,10 +103,7 @@ func (s *Server) validateScopesForAuthFlow(ctx context.Context, clientID, scope 
 
 // handleCodeReuseDetection handles authorization code reuse security event.
 // It revokes the tokens issued based on the code (OAuth 2.1 4.1.2), whichever
-// client presents it: the token family the code's exchange started, as
-// refresh-token reuse does, so the person's other sessions at the client stay
-// signed in. When that family cannot be found it revokes every token of the
-// person at the client the code was issued to.
+// client presents it; see revokeReusedCode.
 func (s *Server) handleCodeReuseDetection(ctx context.Context, authCode *storage.AuthorizationCode, presentedClientID, code string, span trace.Span) error {
 	// Record code reuse detection metric
 	if s.Instrumentation != nil {
@@ -121,13 +118,7 @@ func (s *Server) handleCodeReuseDetection(ctx context.Context, authCode *storage
 		span.SetStatus(codes.Error, "authorization code reuse detected")
 	}
 
-	action := "all_tokens_revoked"
-	if family, familyStore := s.reusedCodeFamily(ctx, authCode, code); family != nil {
-		action = "token_family_revoked"
-		s.revokeReusedFamily(ctx, family, familyStore)
-	} else if err := s.RevokeAllTokensForUserClient(ctx, authCode.UserID, authCode.ClientID); err != nil {
-		s.Logger.Error("Failed to revoke tokens after code reuse detection", logKeyError, err)
-	}
+	action := s.revokeReusedCode(ctx, authCode, code)
 
 	// Rate limit logging to prevent DoS via log flooding
 	if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(authCode.UserID+":"+authCode.ClientID) {
@@ -161,21 +152,34 @@ func codeFamilyID(code string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
-// reusedCodeFamily returns the token family the exchange of authCode started.
-// It returns nil when the store does not look families up by ID, or when no
-// family of the code's user and client is stored under that ID: no exchange
-// of the code has stored one yet.
-func (s *Server) reusedCodeFamily(ctx context.Context, authCode *storage.AuthorizationCode, code string) (*storage.RefreshTokenFamilyMetadata, storage.RefreshTokenFamilyStore) {
+// revokeReusedCode revokes the token family the exchange of a reused code
+// started, as refresh-token reuse does, so the person's other sessions stay
+// signed in, and returns the audited action. A family that is not stored
+// means the exchange was refused, so it issued nothing, or has not finished;
+// the tokens it stored so far carry the family ID and are revoked. A store
+// that does not revoke by family has every token of the person at the client
+// the code was issued to revoked.
+func (s *Server) revokeReusedCode(ctx context.Context, authCode *storage.AuthorizationCode, code string) string {
+	familyID := codeFamilyID(code)
 	familyStore, tracked := s.tokenStore.(storage.RefreshTokenFamilyStore)
-	byID, indexed := s.tokenStore.(storage.RefreshTokenFamilyByIDStore)
-	if !tracked || !indexed {
-		return nil, nil
+	familyRevoker, revocable := s.tokenStore.(storage.TokenFamilyRevocationStore)
+	if byID, indexed := s.tokenStore.(storage.RefreshTokenFamilyByIDStore); tracked && indexed {
+		family, err := byID.GetRefreshTokenFamilyByID(ctx, familyID)
+		if err == nil && family != nil && family.UserID == authCode.UserID && family.ClientID == authCode.ClientID {
+			s.revokeReusedFamily(ctx, family, familyStore)
+			return actionFamilyRevoked
+		}
 	}
-	family, err := byID.GetRefreshTokenFamilyByID(ctx, codeFamilyID(code))
-	if err != nil || family == nil || family.UserID != authCode.UserID || family.ClientID != authCode.ClientID {
-		return nil, nil
+	if tracked && revocable {
+		if _, err := familyRevoker.RevokeTokensForFamily(ctx, authCode.UserID, authCode.ClientID, familyID); err != nil {
+			s.Logger.Error("Failed to revoke token family after code reuse detection", logKeyError, err)
+		}
+		return actionFamilyRevoked
 	}
-	return family, familyStore
+	if err := s.RevokeAllTokensForUserClient(ctx, authCode.UserID, authCode.ClientID); err != nil {
+		s.Logger.Error("Failed to revoke tokens after code reuse detection", logKeyError, err)
+	}
+	return "all_tokens_revoked"
 }
 
 // validatePublicClientPKCE validates that public clients use PKCE
