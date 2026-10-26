@@ -606,6 +606,49 @@ func TestFlowStore_AtomicCheckAndMarkAuthCodeUsed_Table(t *testing.T) {
 			wantSentinel: storage.ErrTokenExpired,
 		},
 		{
+			name: "used code past expiry returns reuse sentinel",
+			prepare: func(t *testing.T, s *Store) string {
+				code := "ac-used-expired"
+				j := authorizationCodeJSON{
+					Code:      code,
+					ClientID:  "client-1",
+					UserID:    testUserID,
+					CreatedAt: time.Now().Add(-10 * time.Minute).Unix(),
+					ExpiresAt: time.Now().Add(-1 * time.Minute).Unix(),
+					Used:      true,
+				}
+				data, err := json.Marshal(j)
+				require.NoError(t, err)
+				require.NoError(t, s.client.Do(
+					t.Context(),
+					s.client.B().Set().Key(s.codeKey(code)).Value(string(data)).Ex(time.Hour).Build(),
+				).Error())
+				return code
+			},
+			wantSentinel: storage.ErrAuthorizationCodeUsed,
+			wantUsedFlag: true,
+		},
+		{
+			name: "code within the clock-skew grace succeeds",
+			prepare: func(t *testing.T, s *Store) string {
+				code := "ac-grace"
+				j := authorizationCodeJSON{
+					Code:      code,
+					ClientID:  "client-1",
+					UserID:    testUserID,
+					CreatedAt: time.Now().Add(-10 * time.Minute).Unix(),
+					ExpiresAt: time.Now().Add(-2 * time.Second).Unix(),
+				}
+				data, err := json.Marshal(j)
+				require.NoError(t, err)
+				require.NoError(t, s.client.Do(
+					t.Context(),
+					s.client.B().Set().Key(s.codeKey(code)).Value(string(data)).Ex(time.Hour).Build(),
+				).Error())
+				return code
+			},
+		},
+		{
 			name: "already-used code with malformed body still surfaces reuse sentinel",
 			prepare: func(t *testing.T, s *Store) string {
 				// Lua's cjson tolerates a string expires_at; Go's json.Unmarshal
@@ -645,6 +688,62 @@ func TestFlowStore_AtomicCheckAndMarkAuthCodeUsed_Table(t *testing.T) {
 			}
 		})
 	}
+}
+
+func codeKeyPTTL(t *testing.T, s *Store, code string) time.Duration {
+	t.Helper()
+	ms, err := s.client.Do(t.Context(), s.client.B().Pttl().Key(s.codeKey(code)).Build()).AsInt64()
+	require.NoError(t, err)
+	return time.Duration(ms) * time.Millisecond
+}
+
+func TestFlowStore_AuthorizationCodeKeptPastExpiry(t *testing.T) {
+	s := testStore(t)
+
+	// Marked used in the code's last second.
+	code := &storage.AuthorizationCode{
+		Code:      "ac-retain",
+		ClientID:  "client-1",
+		UserID:    testUserID,
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(time.Second),
+	}
+	require.NoError(t, s.SaveAuthorizationCode(t.Context(), code))
+	unused := time.Second + security.DefaultClockSkewGracePeriod
+	ttl := codeKeyPTTL(t, s, code.Code)
+	require.Greater(t, ttl, unused-time.Second, "an unused code is kept through its grace")
+	require.LessOrEqual(t, ttl, unused)
+
+	_, err := s.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code.Code)
+	require.NoError(t, err)
+	used := unused + storage.AuthorizationCodeRetention
+	ttl = codeKeyPTTL(t, s, code.Code)
+	require.Greater(t, ttl, used-time.Second, "a used code is kept for the retention past expiry and grace")
+	require.LessOrEqual(t, ttl, used)
+
+	got, err := s.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code.Code)
+	require.ErrorIs(t, err, storage.ErrAuthorizationCodeUsed)
+	require.NotNil(t, got)
+}
+
+func TestFlowStore_AtomicCheckAndMarkAuthCodeUsed_KeepsPersistentKey(t *testing.T) {
+	s := testStore(t)
+
+	const code = "ac-persistent"
+	j := authorizationCodeJSON{
+		Code:      code,
+		ClientID:  "client-1",
+		UserID:    testUserID,
+		CreatedAt: time.Now().Unix(),
+		ExpiresAt: time.Now().Add(time.Minute).Unix(),
+	}
+	data, err := json.Marshal(j)
+	require.NoError(t, err)
+	require.NoError(t, s.client.Do(t.Context(), s.client.B().Set().Key(s.codeKey(code)).Value(string(data)).Build()).Error())
+
+	_, err = s.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code)
+	require.NoError(t, err)
+	require.Equal(t, -time.Millisecond, codeKeyPTTL(t, s, code), "a key without expiry keeps none")
 }
 
 // TestFlowStore_AtomicCheckAndMarkAuthCodeUsed_MalformedSuccessJSON exercises
@@ -1015,7 +1114,7 @@ func TestClientStore_CheckIPLimit(t *testing.T) {
 	}
 
 	// Track some clients
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		_ = s.TrackClientIP(ctx, "", "192.168.1.2")
 	}
 
@@ -1026,7 +1125,7 @@ func TestClientStore_CheckIPLimit(t *testing.T) {
 	}
 
 	// Track more to exceed limit
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		_ = s.TrackClientIP(ctx, "", "192.168.1.2")
 	}
 
@@ -1264,7 +1363,7 @@ func TestFlowStore_AuthorizationCode_PreservesProviderTokenExtraField(t *testing
 	// The id_token is the critical field that was being lost in issue #158
 	idToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test-id-token-for-issue-158.signature" //nolint:gosec // test value
 	grantedScope := "openid email profile"
-	providerToken := baseProviderToken.WithExtra(map[string]interface{}{
+	providerToken := baseProviderToken.WithExtra(map[string]any{
 		"id_token": idToken,
 		"scope":    grantedScope,
 	})
@@ -1350,7 +1449,7 @@ func TestFlowStore_AtomicCheckAndMarkAuthCodeUsed_PreservesProviderTokenExtraFie
 		Expiry:       time.Now().Add(time.Hour),
 	}
 	idToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.atomic-test-id-token.signature" //nolint:gosec // test value
-	providerToken := baseProviderToken.WithExtra(map[string]interface{}{
+	providerToken := baseProviderToken.WithExtra(map[string]any{
 		"id_token": idToken,
 	})
 
@@ -1870,7 +1969,7 @@ func TestTokenStore_Encryption_PreservesExtraField(t *testing.T) {
 	}
 	idToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test-id-token-payload.signature" //nolint:gosec // test value, not a real credential
 	grantedScope := "openid email profile"
-	tokenWithExtra := baseToken.WithExtra(map[string]interface{}{
+	tokenWithExtra := baseToken.WithExtra(map[string]any{
 		"id_token": idToken,
 		"scope":    grantedScope,
 	})
@@ -1928,7 +2027,7 @@ func TestTokenStore_WithoutEncryption_PreservesExtraField(t *testing.T) {
 		Expiry:       time.Now().Add(time.Hour),
 	}
 	idToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test-id-token.sig" //nolint:gosec // test value, not a real credential
-	tokenWithExtra := baseToken.WithExtra(map[string]interface{}{
+	tokenWithExtra := baseToken.WithExtra(map[string]any{
 		"id_token": idToken,
 	})
 
@@ -1979,7 +2078,7 @@ func TestTokenStore_Encryption_IDTokenIsEncrypted(t *testing.T) {
 		Expiry:       time.Now().Add(time.Hour),
 	}
 	idToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.contains-pii-email-name.signature" //nolint:gosec // test value
-	tokenWithExtra := baseToken.WithExtra(map[string]interface{}{
+	tokenWithExtra := baseToken.WithExtra(map[string]any{
 		"id_token": idToken,
 		"scope":    "openid email",
 	})
@@ -2041,7 +2140,7 @@ func TestFlowStore_AtomicCheckAndMarkAuthCodeUsed_Concurrent(t *testing.T) {
 	// Start all goroutines simultaneously
 	start := make(chan struct{})
 
-	for i := 0; i < numGoroutines; i++ {
+	for range numGoroutines {
 		go func() {
 			<-start // Wait for signal
 			_, err := s.AtomicCheckAndMarkAuthCodeUsed(ctx, "concurrent-code-1")
@@ -2061,7 +2160,7 @@ func TestFlowStore_AtomicCheckAndMarkAuthCodeUsed_Concurrent(t *testing.T) {
 	reuses := 0
 	timeout := time.After(5 * time.Second)
 
-	for i := 0; i < numGoroutines; i++ {
+	for range numGoroutines {
 		select {
 		case <-successCount:
 			successes++
@@ -2208,7 +2307,7 @@ func TestValidation_GenericErrorMessages(t *testing.T) {
 
 	// Test that CheckIPLimit returns generic error when limit exceeded
 	// First, set up an IP that has exceeded the limit
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		_ = s.TrackClientIP(ctx, "", "192.168.99.99")
 	}
 
@@ -2306,7 +2405,7 @@ func TestStore_CountKeysByPattern(t *testing.T) {
 	ctx := context.Background()
 
 	// Add some clients
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		client := &storage.Client{
 			ClientID:     fmt.Sprintf("count-client-%d", i),
 			ClientType:   "public",

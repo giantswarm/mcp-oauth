@@ -354,8 +354,7 @@ func dialAndPing(opts valkeygo.ClientOption) (valkeygo.Client, error) {
 // dataset. Server replies (WRONGPASS, NOAUTH, ...), TLS failures and invalid
 // addresses are final.
 func isStartupRetryable(err error) bool {
-	var valkeyErr *valkeygo.ValkeyError
-	if errors.As(err, &valkeyErr) {
+	if valkeyErr, ok := errors.AsType[*valkeygo.ValkeyError](err); ok {
 		return valkeyErr.IsLoading() || valkeyErr.IsTryAgain() || valkeyErr.IsClusterDown()
 	}
 	var addrErr *net.AddrError
@@ -782,16 +781,22 @@ func (s *Store) legacyFamilyKey(familyID string) string { return s.keyOf("family
 //
 // KEYS[1] = code key (e.g., "mcp:code:abc123")
 // ARGV[1] = current Unix timestamp in seconds (for expiry check)
+// ARGV[2] = clock-skew grace in seconds added to code.expires_at
+// ARGV[3] = used-code retention in milliseconds
 //
 // Returns:
 //   - Original JSON data if code was unused and successfully marked as used
 //   - "NOT_FOUND" if the key doesn't exist in Valkey
-//   - "EXPIRED" if the code has expired (ARGV[1] > code.expires_at)
-//   - "ALREADY_USED:<json>" if code was already used (returns original data for forensics)
+//   - "ALREADY_USED:<json>" if code was already used, expired or not (returns
+//     original data for forensics)
+//   - "EXPIRED" if the unused code has expired (ARGV[1] > code.expires_at + ARGV[2])
+//
+// The key of an unused code expires at code.expires_at plus the grace (see
+// SaveAuthorizationCode); marking it used extends it by the retention. A key
+// without expiry keeps none.
 //
 // Edge cases:
 //   - If cjson.decode fails, Lua will raise an error (handled by caller)
-//   - Clock skew: caller should account for clock differences between servers
 const luaAtomicCheckAndMarkCodeUsed = `
 local data = redis.call('GET', KEYS[1])
 if not data then
@@ -800,21 +805,23 @@ end
 
 local code = cjson.decode(data)
 
--- Check if expired
-local now = tonumber(ARGV[1])
-local expiresAt = tonumber(code.expires_at)
-if expiresAt and now > expiresAt then
-    return 'EXPIRED'
-end
-
--- Check if already used
 if code.used then
     return 'ALREADY_USED:' .. data
 end
 
--- Mark as used and save
+local now = tonumber(ARGV[1])
+local expiresAt = tonumber(code.expires_at)
+if expiresAt and now > expiresAt + tonumber(ARGV[2]) then
+    return 'EXPIRED'
+end
+
 code.used = true
-redis.call('SET', KEYS[1], cjson.encode(code), 'KEEPTTL')
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl < 0 then
+    redis.call('SET', KEYS[1], cjson.encode(code), 'KEEPTTL')
+else
+    redis.call('SET', KEYS[1], cjson.encode(code), 'PX', ttl + tonumber(ARGV[3]))
+end
 
 return data
 `

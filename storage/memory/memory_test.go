@@ -803,7 +803,7 @@ func TestStore_CheckIPLimit(t *testing.T) {
 	}
 
 	// Register clients for this IP
-	for i := 0; i < maxClients; i++ {
+	for range maxClients {
 		_ = store.TrackClientIP(ctx, "", ip)
 	}
 
@@ -828,7 +828,7 @@ func TestStore_CheckIPLimit_GenericError(t *testing.T) {
 	maxClients := 3
 
 	// Exceed the limit.
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		_ = store.TrackClientIP(ctx, "", ip)
 	}
 
@@ -1147,6 +1147,61 @@ func TestStore_AtomicCheckAndMarkAuthCodeUsed_Expired(t *testing.T) {
 	})
 }
 
+func TestStore_AtomicCheckAndMarkAuthCodeUsed_UsedAfterExpiry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := New(WithCleanupInterval(time.Hour))
+		t.Cleanup(store.Stop)
+
+		code := testutil.GenerateTestAuthorizationCode()
+		code.ExpiresAt = time.Now().Add(time.Minute)
+		require.NoError(t, store.SaveAuthorizationCode(t.Context(), code))
+		_, err := store.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code.Code)
+		require.NoError(t, err)
+
+		time.Sleep(2 * time.Minute)
+		store.cleanup()
+
+		got, err := store.AtomicCheckAndMarkAuthCodeUsed(t.Context(), code.Code)
+		require.ErrorIs(t, err, storage.ErrAuthorizationCodeUsed)
+		require.NotNil(t, got)
+		require.Equal(t, code.UserID, got.UserID)
+	})
+}
+
+func TestStore_AuthorizationCodeRetention(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := New(WithCleanupInterval(time.Hour))
+		t.Cleanup(store.Stop)
+
+		used := testutil.GenerateTestAuthorizationCode()
+		used.ExpiresAt = time.Now().Add(time.Minute)
+		require.NoError(t, store.SaveAuthorizationCode(t.Context(), used))
+		unused := testutil.GenerateTestAuthorizationCode()
+		unused.ExpiresAt = used.ExpiresAt
+		require.NoError(t, store.SaveAuthorizationCode(t.Context(), unused))
+
+		// Marked used in the code's last second.
+		time.Sleep(time.Minute - time.Second)
+		_, err := store.AtomicCheckAndMarkAuthCodeUsed(t.Context(), used.Code)
+		require.NoError(t, err)
+
+		// Expired with grace, one second before the retention ends.
+		time.Sleep(security.DefaultClockSkewGracePeriod + storage.AuthorizationCodeRetention)
+		store.cleanup()
+
+		_, err = store.GetAuthorizationCode(t.Context(), used.Code)
+		require.ErrorIs(t, err, storage.ErrTokenExpired, "a used code is kept through its retention")
+		_, err = store.GetAuthorizationCode(t.Context(), unused.Code)
+		require.ErrorIs(t, err, storage.ErrAuthorizationCodeNotFound, "an unused code is cleaned up at expiry")
+
+		time.Sleep(2 * time.Second)
+		store.cleanup()
+
+		_, err = store.GetAuthorizationCode(t.Context(), used.Code)
+		require.ErrorIs(t, err, storage.ErrAuthorizationCodeNotFound)
+	})
+}
+
 func TestStore_AtomicCheckAndMarkAuthCodeUsed_Concurrent(t *testing.T) {
 	const n = 100
 
@@ -1363,7 +1418,7 @@ func TestStore_TokenEncryption_PreservesExtraField(t *testing.T) {
 	baseToken := testutil.GenerateTestToken()
 	idToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test-id-token-payload.signature" //nolint:gosec // test value, not a real credential
 	grantedScope := "openid email profile"
-	tokenWithExtra := baseToken.WithExtra(map[string]interface{}{
+	tokenWithExtra := baseToken.WithExtra(map[string]any{
 		"id_token": idToken,
 		"scope":    grantedScope,
 	})
@@ -1417,7 +1472,7 @@ func TestStore_TokenWithoutEncryption_PreservesExtraField(t *testing.T) {
 	// Create token with Extra fields
 	baseToken := testutil.GenerateTestToken()
 	idToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test-id-token.sig" //nolint:gosec // test value, not a real credential
-	tokenWithExtra := baseToken.WithExtra(map[string]interface{}{
+	tokenWithExtra := baseToken.WithExtra(map[string]any{
 		"id_token": idToken,
 	})
 
@@ -1468,7 +1523,7 @@ func TestExtractTokenExtra(t *testing.T) {
 			name: "token with id_token returns map with id_token",
 			token: (&oauth2.Token{
 				AccessToken: "access",
-			}).WithExtra(map[string]interface{}{
+			}).WithExtra(map[string]any{
 				"id_token": "test-id-token",
 			}),
 			wantNil:  false,
@@ -1478,7 +1533,7 @@ func TestExtractTokenExtra(t *testing.T) {
 			name: "token with scope returns map with scope",
 			token: (&oauth2.Token{
 				AccessToken: "access",
-			}).WithExtra(map[string]interface{}{
+			}).WithExtra(map[string]any{
 				"scope": "openid email",
 			}),
 			wantNil:  false,
@@ -1488,7 +1543,7 @@ func TestExtractTokenExtra(t *testing.T) {
 			name: "token with multiple extra fields",
 			token: (&oauth2.Token{
 				AccessToken: "access",
-			}).WithExtra(map[string]interface{}{
+			}).WithExtra(map[string]any{
 				"id_token": "test-id-token",
 				"scope":    "openid email",
 			}),
@@ -1499,7 +1554,7 @@ func TestExtractTokenExtra(t *testing.T) {
 			name: "unknown extra fields are ignored",
 			token: (&oauth2.Token{
 				AccessToken: "access",
-			}).WithExtra(map[string]interface{}{
+			}).WithExtra(map[string]any{
 				"unknown_field": "value",
 			}),
 			wantNil: true, // unknown fields are not extracted
@@ -1542,7 +1597,7 @@ func TestEncryptDecryptExtraFields(t *testing.T) {
 
 	tests := []struct {
 		name  string
-		extra map[string]interface{}
+		extra map[string]any
 	}{
 		{
 			name:  "nil extra returns nil",
@@ -1550,19 +1605,19 @@ func TestEncryptDecryptExtraFields(t *testing.T) {
 		},
 		{
 			name: "id_token is encrypted",
-			extra: map[string]interface{}{
+			extra: map[string]any{
 				"id_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test.sig",
 			},
 		},
 		{
 			name: "scope is not encrypted (not sensitive)",
-			extra: map[string]interface{}{
+			extra: map[string]any{
 				"scope": "openid email profile",
 			},
 		},
 		{
 			name: "mixed fields - only id_token encrypted",
-			extra: map[string]interface{}{
+			extra: map[string]any{
 				"id_token":   "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test.sig",
 				"scope":      "openid email",
 				"expires_in": float64(3600),
@@ -1636,7 +1691,7 @@ func TestEncryptExtraFields_DisabledEncryptor(t *testing.T) {
 		t.Fatalf("NewEncryptor(nil) error = %v", err)
 	}
 
-	extra := map[string]interface{}{
+	extra := map[string]any{
 		"id_token": "test-id-token",
 		"scope":    "openid",
 	}
@@ -1672,7 +1727,7 @@ func TestStore_TokenEncryption_IDTokenIsEncrypted(t *testing.T) {
 	// Create token with id_token
 	baseToken := testutil.GenerateTestToken()
 	idToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.contains-pii-email-name.signature" //nolint:gosec // test value
-	tokenWithExtra := baseToken.WithExtra(map[string]interface{}{
+	tokenWithExtra := baseToken.WithExtra(map[string]any{
 		"id_token": idToken,
 		"scope":    "openid email",
 	})
@@ -1735,7 +1790,7 @@ func TestStore_ConcurrentTokenAccess(t *testing.T) {
 	done := make(chan bool, numGoroutines)
 
 	// Concurrent writes
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		go func(_ int) {
 			token := testutil.GenerateTestToken()
 			userID := testutil.GenerateRandomString(16)
@@ -1747,7 +1802,7 @@ func TestStore_ConcurrentTokenAccess(t *testing.T) {
 	}
 
 	// Wait for all goroutines
-	for i := 0; i < numGoroutines; i++ {
+	for range numGoroutines {
 		<-done
 	}
 }
@@ -1761,7 +1816,7 @@ func TestStore_ConcurrentClientAccess(t *testing.T) {
 	done := make(chan bool, numGoroutines)
 
 	// Concurrent writes
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		go func(_ int) {
 			client := testutil.GenerateTestClient()
 			client.ClientID = testutil.GenerateRandomString(16)
@@ -1773,7 +1828,7 @@ func TestStore_ConcurrentClientAccess(t *testing.T) {
 	}
 
 	// Wait for all goroutines
-	for i := 0; i < numGoroutines; i++ {
+	for range numGoroutines {
 		<-done
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -247,17 +248,17 @@ func TestStartAuthorizationFlow_OIDCParameterForwarding(t *testing.T) {
 		{
 			name: "max_age for session freshness",
 			authOpts: &providers.AuthorizationURLOptions{
-				MaxAge: testutil.IntPtr(3600),
+				MaxAge: new(3600),
 			},
-			wantMaxAge:  testutil.IntPtr(3600),
+			wantMaxAge:  new(3600),
 			description: "Require re-auth if session is older than 1 hour",
 		},
 		{
 			name: "max_age=0 equivalent to prompt=login",
 			authOpts: &providers.AuthorizationURLOptions{
-				MaxAge: testutil.IntPtr(0),
+				MaxAge: new(0),
 			},
-			wantMaxAge:  testutil.IntPtr(0),
+			wantMaxAge:  new(0),
 			description: "max_age=0 forces immediate re-authentication",
 		},
 		{
@@ -274,13 +275,13 @@ func TestStartAuthorizationFlow_OIDCParameterForwarding(t *testing.T) {
 				Prompt:      "none",
 				LoginHint:   "user@example.com",
 				IDTokenHint: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test.signature",
-				MaxAge:      testutil.IntPtr(7200),
+				MaxAge:      new(7200),
 				ACRValues:   "urn:mace:incommon:iap:silver",
 			},
 			wantPrompt:      "none",
 			wantLoginHint:   "user@example.com",
 			wantIDTokenHint: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test.signature",
-			wantMaxAge:      testutil.IntPtr(7200),
+			wantMaxAge:      new(7200),
 			wantACRValues:   "urn:mace:incommon:iap:silver",
 			description:     "Full silent re-authentication with all hints",
 		},
@@ -1890,6 +1891,58 @@ func TestServer_AuthorizationCodeReuseDuringExchangeRevokesItsTokens(t *testing.
 	tokens, err := store.GetTokensByUserClient(t.Context(), testMockUserID, client.ClientID)
 	require.NoError(t, err)
 	require.Empty(t, tokens, "a token the racing exchange stored is still live")
+}
+
+// A code exchanged in its last second whose expiry passes, and the store's
+// cleanup runs, before the exchange reads it back is not a reuse.
+func TestServer_AuthorizationCodeExchangedAtExpirySucceeds(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const redirect = "https://example.com/callback"
+		srv, store, _ := setupFlowTestServer(t)
+		// The resolver's state must not be shared across synctest bubbles.
+		srv.Config.DNSValidation = false
+		client, _, err := srv.RegisterClient(t.Context(), "Test Client", ClientTypePublic, "",
+			[]string{redirect}, []string{"openid"}, "192.168.1.100", 10)
+		require.NoError(t, err)
+		code, verifier := issueTestCode(t, srv, store, client.ClientID, redirect)
+		srv.tokenStore = &reuseDuringExchangeStore{Store: store, reuse: func() {
+			// Past expiry, grace and the next cleanup tick.
+			time.Sleep(time.Duration(srv.Config.AuthorizationCodeTTL)*time.Second + time.Minute)
+		}}
+
+		time.Sleep(time.Duration(srv.Config.AuthorizationCodeTTL)*time.Second - time.Second)
+		tokens, _, err := srv.ExchangeAuthorizationCode(t.Context(), code, client.ClientID, redirect, "", verifier, "")
+
+		require.NoError(t, err)
+		_, err = store.GetRefreshTokenInfo(t.Context(), tokens.RefreshToken)
+		require.NoError(t, err, "the exchange's tokens are kept")
+	})
+}
+
+// SECURITY: a used code presented after it expires is still a reuse and
+// revokes the tokens it produced (OAuth 2.1 §4.1.2).
+func TestServer_AuthorizationCodeReuseAfterExpiryRevokesTokens(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const redirect = "https://example.com/callback"
+		srv, store, _ := setupFlowTestServer(t)
+		// The resolver's state must not be shared across synctest bubbles.
+		srv.Config.DNSValidation = false
+		client, _, err := srv.RegisterClient(t.Context(), "Test Client", ClientTypePublic, "",
+			[]string{redirect}, []string{"openid"}, "192.168.1.100", 10)
+		require.NoError(t, err)
+		code, verifier := issueTestCode(t, srv, store, client.ClientID, redirect)
+		tokens, _, err := srv.ExchangeAuthorizationCode(t.Context(), code, client.ClientID, redirect, "", verifier, "")
+		require.NoError(t, err)
+
+		time.Sleep(time.Duration(srv.Config.AuthorizationCodeTTL)*time.Second + 2*time.Minute)
+		_, _, err = srv.ExchangeAuthorizationCode(t.Context(), code, client.ClientID, redirect, "", verifier, "")
+
+		require.ErrorIs(t, err, errInvalidGrant)
+		_, err = store.GetRefreshTokenInfo(t.Context(), tokens.RefreshToken)
+		require.Error(t, err, "the reused code's refresh token is revoked")
+		_, err = store.GetTokenMetadata(tokens.AccessToken)
+		require.Error(t, err, "the reused code's access token is revoked")
+	})
 }
 
 // TestServer_AuthorizationCodeReuseRevokesTokens tests that when an authorization code is reused,

@@ -1117,17 +1117,17 @@ func (s *Store) AtomicCheckAndMarkAuthCodeUsed(_ context.Context, code string) (
 		return nil, storage.ErrAuthorizationCodeNotFound
 	}
 
+	// ATOMIC check-and-set: Only one thread can pass this check.
+	// SECURITY: a used code is a reuse whatever its expiry (OAuth 2.1
+	// §4.1.2); the caller needs userID/clientID to revoke its tokens.
+	if authCode.Used {
+		return authCode, storage.ErrAuthorizationCodeUsed
+	}
+
 	// Check if expired with clock skew grace period
 	if authCode.HasExpired() {
 		// Expired - return nil to prevent information leakage
 		return nil, fmt.Errorf("%w: authorization code expired", storage.ErrTokenExpired)
-	}
-
-	// ATOMIC check-and-set: Only one thread can pass this check
-	if authCode.Used {
-		// SECURITY: Code already used - return authCode to enable reuse detection
-		// The caller needs userID/clientID for token revocation
-		return authCode, storage.ErrAuthorizationCodeUsed
 	}
 
 	// Mark as used atomically
@@ -1208,11 +1208,16 @@ func (s *Store) cleanupExpiredAuthStates() int {
 	return cleaned
 }
 
-// cleanupExpiredAuthCodes removes expired authorization codes
+// cleanupExpiredAuthCodes removes expired authorization codes, keeping a used
+// one for storage.AuthorizationCodeRetention past its expiry.
 func (s *Store) cleanupExpiredAuthCodes() int {
 	cleaned := 0
 	for code, authCode := range s.authCodes {
-		if authCode.HasExpired() {
+		grace := security.DefaultClockSkewGracePeriod
+		if authCode.Used {
+			grace += storage.AuthorizationCodeRetention
+		}
+		if security.IsTokenExpiredWithGracePeriod(authCode.ExpiresAt, grace) {
 			delete(s.authCodes, code)
 			cleaned++
 		}
