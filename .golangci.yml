@@ -16,6 +16,8 @@ linters:
     - gocyclo
     - gocognit
     - dupl
+    - gosec
+    - goconst
   settings:
     gocyclo:
       min-complexity: 16
