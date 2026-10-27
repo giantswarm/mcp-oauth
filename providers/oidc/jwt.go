@@ -484,6 +484,12 @@ type IDTokenClaims struct {
 // signing key after the JWKS was cached).
 var ErrKeyNotFound = errors.New("key not found in JWKS")
 
+// ErrRestrictedAddress is returned (wrapped) when the SSRF guard refuses to
+// dial a host because it resolves to a private, loopback, link-local or
+// otherwise restricted address. The refusal is a policy decision, not a
+// failure to reach the host, so retrying the same request cannot succeed.
+var ErrRestrictedAddress = errors.New("host resolves to a restricted address")
+
 // ErrIssuerMismatch is returned (wrapped) when a JWT's iss claim does not match
 // the expected issuer.
 var ErrIssuerMismatch = errors.New("issuer mismatch")

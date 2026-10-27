@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `oidc.ErrRestrictedAddress`, wrapped by the SSRF guard's refusal to dial a host that resolves to a private, loopback, link-local or otherwise restricted address.
 - `security.Auditor.LogEvent` fills an empty `Event.RequestID` from the context (`security.GetRequestID`), so every audit event emitted under `security.RequestIDMiddleware` carries `request_id`.
 - `forwarded_id_token_accepted` audit events carry `session_id` in their details, the `ext-<hex>` value `AcceptForwardedIDToken` and `AcceptTrustedIssuerToken` return and `SessionIDForBearer` derives, on the forwarded ID token and trusted-issuer paths of both those methods and `ValidateToken`.
 - `server.Config.TokenValidationTimeout`, one deadline over a bearer validation (`Server.ValidateToken`, used by `handler.ValidateToken` and introspection) and every identity-provider call it makes, default `server.DefaultTokenValidationTimeout` (5 s). Sign-in, the token endpoint and revocation keep the provider's own request timeout.
@@ -59,6 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A bearer whose JWKS, discovery or userinfo host resolves to a restricted address is refused with 401 `invalid_token`, not answered 503 `temporarily_unavailable`: the SSRF guard's refusal is permanent, so a retry cannot succeed.
 - An authorization code exchanged in its last moments is no longer refused as a reuse when it expires before the exchange reads it back: the exchange revoked its own tokens, answered `invalid_grant` and audited `authorization_code_reused_during_exchange`. The Valkey store set the code key's TTL to the code's expiry, and the memory store's cleanup deleted codes at expiry. Both stores now keep a used code for `storage.AuthorizationCodeRetention` past its expiry.
 - A used authorization code presented after it expires is detected as a reuse and revokes the tokens the code produced (OAuth 2.1 §4.1.2). Both stores checked expiry before the used flag and answered it as an expired code, leaving the tokens live.
 - The Valkey store accepts an authorization code for the same 5 s clock-skew grace past its expiry as the memory store. Its expiry check had no grace, and the code key expired at the code's expiry, truncated to the second.
