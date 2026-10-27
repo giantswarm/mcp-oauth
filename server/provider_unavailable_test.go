@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"testing"
 
 	"golang.org/x/oauth2"
@@ -31,6 +32,7 @@ func TestIsTransientProviderError(t *testing.T) {
 		{"retrieve error without response", &oauth2.RetrieveError{}, false},
 		{"timeout", fmt.Errorf("gave up waiting for in-flight provider refresh: %w", context.DeadlineExceeded), true},
 		{"connection refused", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}, true},
+		{"jwks host resolves to a restricted address", fmt.Errorf("failed to fetch JWKS: %w", &url.Error{Op: "Get", URL: "https://idp.example/keys", Err: &net.OpError{Op: "dial", Net: "tcp", Err: fmt.Errorf("%w: %q resolved to 127.0.0.1", oidc.ErrRestrictedAddress, "idp.example")}}), false},
 		{"no refresh token", errors.New("shared provider token for user has no refresh token"), false},
 		{"userinfo 503", &providers.UserInfoStatusError{StatusCode: http.StatusServiceUnavailable}, true},
 		{"userinfo 429", &providers.UserInfoStatusError{StatusCode: http.StatusTooManyRequests}, true},

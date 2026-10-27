@@ -32,8 +32,13 @@ var ErrProviderUnavailable = errors.New("identity provider temporarily unavailab
 // provider did not answer rather than rejected the grant or the bearer: an
 // OAuth error response, a discovery, userinfo or JWKS answer with status 5xx
 // or 429, a timeout or cancellation, or a network error. Any other status
-// (invalid_grant, a userinfo 401 and the other 4xx rejections) is permanent.
+// (invalid_grant, a userinfo 401 and the other 4xx rejections) is permanent,
+// and so is the SSRF guard's refusal to dial a restricted address, which
+// reaches here as a network error.
 func isTransientProviderError(err error) bool {
+	if errors.Is(err, oidc.ErrRestrictedAddress) {
+		return false
+	}
 	var retrieveErr *oauth2.RetrieveError
 	if errors.As(err, &retrieveErr) {
 		return retrieveErr.Response != nil && isTransientStatus(retrieveErr.Response.StatusCode)
