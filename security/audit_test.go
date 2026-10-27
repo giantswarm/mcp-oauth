@@ -364,6 +364,50 @@ func TestAuditor_LogEvent_EmitsAuditGroup(t *testing.T) {
 	require.Equal(t, "value", details["key"])
 }
 
+func TestAuditor_LogEvent_RequestIDFromContext(t *testing.T) {
+	tests := []struct {
+		name  string
+		ctx   context.Context
+		event Event
+		want  string
+	}{
+		{
+			name:  "taken from context",
+			ctx:   WithRequestID(t.Context(), "req-from-ctx"),
+			event: Event{Type: "test_event"},
+			want:  "req-from-ctx",
+		},
+		{
+			name:  "explicit value wins",
+			ctx:   WithRequestID(t.Context(), "req-from-ctx"),
+			event: Event{Type: "test_event", RequestID: "req-explicit"},
+			want:  "req-explicit",
+		},
+		{
+			name:  "empty without one",
+			ctx:   t.Context(),
+			event: Event{Type: "test_event"},
+			want:  "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			auditor := NewAuditor(slog.New(slog.NewJSONHandler(&buf, nil)), true)
+
+			auditor.LogEvent(tt.ctx, tt.event)
+
+			var payload struct {
+				Audit struct {
+					RequestID string `json:"request_id"`
+				} `json:"audit"`
+			}
+			require.NoError(t, json.Unmarshal(buf.Bytes(), &payload))
+			require.Equal(t, tt.want, payload.Audit.RequestID)
+		})
+	}
+}
+
 func TestAuditor_WithPIIRedaction(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))

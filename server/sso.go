@@ -113,7 +113,7 @@ func (s *Server) validateForwardedIDToken(ctx context.Context, tokenString strin
 	if jwksProvider, ok := s.provider.(providers.JWKSProvider); ok {
 		validatedIssuer = jwksProvider.IssuerURL()
 	}
-	s.logForwardedIDTokenAccepted(ctx, tokenString, matchedAudience, validatedIssuer, userInfo)
+	s.logForwardedIDTokenAccepted(ctx, tokenString, s.deriveForwardedSessionID(tokenString), matchedAudience, validatedIssuer, userInfo)
 
 	return userInfo, nil
 }
@@ -173,7 +173,7 @@ func (s *Server) idTokenClaimsToUserInfo(claims *oidc.IDTokenClaims) *providers.
 }
 
 // logForwardedIDTokenAccepted logs a security event when a forwarded ID token is accepted.
-func (s *Server) logForwardedIDTokenAccepted(ctx context.Context, tokenString, matchedAudience, validatedIssuer string, userInfo *providers.UserInfo) {
+func (s *Server) logForwardedIDTokenAccepted(ctx context.Context, tokenString, sessionID, matchedAudience, validatedIssuer string, userInfo *providers.UserInfo) {
 	s.Logger.Debug("Forwarded ID token accepted via TrustedAudiences (SSO)",
 		"user_id", userInfo.ID,
 		claimEmail, userInfo.Email,
@@ -187,6 +187,7 @@ func (s *Server) logForwardedIDTokenAccepted(ctx context.Context, tokenString, m
 		logKeyValidationMethod: "jwks",
 		"sso_token_forwarded":  true,
 		"issuer_validated":     validatedIssuer != "",
+		logKeySessionID:        sessionID,
 	}
 	if validatedIssuer != "" {
 		details["validated_issuer"] = validatedIssuer

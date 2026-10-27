@@ -69,6 +69,9 @@ type Event struct {
 // trace-aware handlers use it to attach trace/span IDs to the record.
 // Callers handling an HTTP request should pass r.Context(); background
 // emissions should pass [context.Background].
+//
+// An empty event.RequestID is taken from ctx ([GetRequestID]), so every event
+// emitted under [RequestIDMiddleware] carries the request's ID.
 func (a *Auditor) LogEvent(ctx context.Context, event Event) {
 	if !a.enabled {
 		recordAuditDrop(ctx, "disabled")
@@ -76,6 +79,9 @@ func (a *Auditor) LogEvent(ctx context.Context, event Event) {
 	}
 
 	event.Timestamp = time.Now()
+	if event.RequestID == "" {
+		event.RequestID = GetRequestID(ctx)
+	}
 
 	clientIDKey, clientIDValue := "client_id", event.ClientID
 	ipKey, ipValue := "ip_address", event.IPAddress

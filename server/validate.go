@@ -688,13 +688,13 @@ func (s *Server) validateTrustedIssuerJWT(ctx context.Context, accessToken strin
 	userInfo := s.idTokenClaimsToUserInfo(identity.Claims)
 	userInfo.Issuer = identity.Issuer
 	userInfo.TokenSource = providers.TokenSourceTrustedIssuer
-	s.logTrustedIssuerJWTAccepted(ctx, accessToken, identity.Issuer, userInfo)
+	s.logTrustedIssuerJWTAccepted(ctx, accessToken, s.deriveForwardedSessionID(accessToken), identity.Issuer, userInfo)
 	return userInfo, nil
 }
 
 // logTrustedIssuerJWTAccepted records a successful Bearer validation against
 // a WithTrustedIssuers entry.
-func (s *Server) logTrustedIssuerJWTAccepted(ctx context.Context, accessToken, issuer string, userInfo *providers.UserInfo) {
+func (s *Server) logTrustedIssuerJWTAccepted(ctx context.Context, accessToken, sessionID, issuer string, userInfo *providers.UserInfo) {
 	s.Logger.Debug("Trusted-issuer JWT accepted",
 		"issuer", issuer,
 		"user_id", userInfo.ID,
@@ -707,6 +707,7 @@ func (s *Server) logTrustedIssuerJWTAccepted(ctx context.Context, accessToken, i
 			logKeyValidationMethod: "trusted_issuer_jwks",
 			"trusted_issuer":       issuer,
 			claimEmail:             userInfo.Email,
+			logKeySessionID:        sessionID,
 		},
 	})
 }
