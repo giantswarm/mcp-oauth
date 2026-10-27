@@ -40,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `OIDCValidator.Validate` refuses a trusted-issuer token whose `TrustedIssuer.SubjectClaim` is `email` unless the token asserts `email_verified: true`, with `server.ErrSubjectEmailUnverified`. The mapped email becomes the `sub` of every token issued from that identity, so the same gate the self-issued exchange applies to the subject's email now holds at acceptance.
+
 - A token exchange answered by something other than an OAuth JSON document, typically a proxy or ingress in front of the token endpoint, now fails with the status, the content type and the start of the body, an HTML page named by its `<title>` and anything else cut to 200 bytes (`token exchange failed with status 401 (content type "text/html", not an OAuth error response): HTML page "401 Authorization Required"`), instead of the whole page; a success status whose body is not JSON names its content type and page title and never quotes the body.
 
 - **BREAKING.** `oidc.NewSSRFSafeHTTPClient` takes a `rootCAs *x509.CertPool` second parameter, matching `NewPrivateIPAllowedHTTPClient` and `NewHostScopedPrivateIPHTTPClient`. Pass `nil` for the previous behaviour.
