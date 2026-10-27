@@ -250,6 +250,13 @@ func (v *OIDCValidator) BearerTypHeaders(issuer string) []string {
 	return []string{rfc9068TokenType}
 }
 
+// ErrSubjectEmailUnverified is returned by Validate when a trusted issuer maps
+// the subject from the email claim and the token does not assert
+// email_verified: true. That email becomes the sub every token issued from the
+// identity carries and every resource server authorizes on, so an unproven
+// one is refused.
+var ErrSubjectEmailUnverified = errors.New("subjectClaim email: email_verified is not true")
+
 // Validate verifies a JWT against the configured trusted issuers. The
 // unverified iss claim routes to the matching TrustedIssuer entry; the
 // signature, audience, and AllowedClaims checks that follow are the
@@ -301,6 +308,9 @@ func (v *OIDCValidator) Validate(ctx context.Context, tokenString string, defaul
 			return nil, fmt.Errorf("subjectClaim %q: not present as a non-empty string", ti.SubjectClaim)
 		}
 		subject = mapped
+	}
+	if ti.SubjectClaim == claimEmail && !claims.EmailVerified {
+		return nil, ErrSubjectEmailUnverified
 	}
 
 	return &SubjectIdentity{

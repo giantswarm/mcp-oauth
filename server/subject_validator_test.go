@@ -429,9 +429,43 @@ func TestOIDCValidator_SubjectClaim(t *testing.T) {
 		}}, jwksClient)
 		require.NoError(t, err)
 
-		identity, err := v.Validate(t.Context(), makeToken(t, map[string]any{"email": email}), nil)
+		identity, err := v.Validate(t.Context(), makeToken(t, map[string]any{"email": email, "email_verified": true}), nil)
 		require.NoError(t, err)
 		require.Equal(t, email, identity.Subject)
+	})
+
+	t.Run("email subject without email_verified is rejected", func(t *testing.T) {
+		v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
+			Issuer:           testIssuer,
+			JwksURL:          jwksURL,
+			AllowedAudiences: []string{testAudience},
+			SubjectClaim:     "email",
+		}}, jwksClient)
+		require.NoError(t, err)
+
+		for name, extra := range map[string]map[string]any{
+			"absent": {"email": email},
+			"false":  {"email": email, "email_verified": false},
+		} {
+			t.Run(name, func(t *testing.T) {
+				_, err := v.Validate(t.Context(), makeToken(t, extra), nil)
+				require.ErrorIs(t, err, ErrSubjectEmailUnverified)
+			})
+		}
+	})
+
+	t.Run("another subject claim does not need email_verified", func(t *testing.T) {
+		v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
+			Issuer:           testIssuer,
+			JwksURL:          jwksURL,
+			AllowedAudiences: []string{testAudience},
+			SubjectClaim:     "custom_sub",
+		}}, jwksClient)
+		require.NoError(t, err)
+
+		identity, err := v.Validate(t.Context(), makeToken(t, map[string]any{"custom_sub": "alice", "email": email}), nil)
+		require.NoError(t, err)
+		require.Equal(t, "alice", identity.Subject)
 	})
 
 	t.Run("unset keeps the sub claim", func(t *testing.T) {
