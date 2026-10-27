@@ -198,7 +198,7 @@ func (s *Server) AcceptForwardedIDToken(ctx context.Context, bearerToken string)
 		ExpiresAt: expiresAt,
 	}
 
-	s.logForwardedIDTokenAccepted(ctx, bearerToken, matchedAudience, expectedIssuer, userInfo)
+	s.logForwardedIDTokenAccepted(ctx, bearerToken, acceptance.SessionID, matchedAudience, expectedIssuer, userInfo)
 	s.recordForwardedIDTokenAccepted(ctx, providerName, claims.Issuer, matchedAudience, instrumentation.ForwardedIDTokenResultOK)
 
 	return acceptance, nil
@@ -268,7 +268,7 @@ func (s *Server) AcceptTrustedIssuerToken(ctx context.Context, bearerToken strin
 		ExpiresAt: expiresAt,
 	}
 
-	s.logTrustedIssuerJWTAccepted(ctx, bearerToken, identity.Issuer, userInfo)
+	s.logTrustedIssuerJWTAccepted(ctx, bearerToken, acceptance.SessionID, identity.Issuer, userInfo)
 	s.recordForwardedIDTokenAccepted(ctx, identity.Issuer, identity.Issuer, resourceID, instrumentation.ForwardedIDTokenResultOK)
 
 	return acceptance, nil

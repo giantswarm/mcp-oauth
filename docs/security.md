@@ -798,17 +798,19 @@ oauth:
 
 ### Audit Events
 
-When a forwarded ID token is validated via JWKS, `EventForwardedIDTokenAccepted` is logged:
+When a forwarded ID token is validated via JWKS, `EventForwardedIDTokenAccepted` is logged. `session_id` is the `ext-<hex>` value `AcceptForwardedIDToken` returns; `request_id` is the one `security.RequestIDMiddleware` put on the request context (empty without it):
 
 ```json
 {
   "event_type": "forwarded_id_token_accepted",
-  "user_id": "user@example.com",
+  "user_id_hash": "a1b2c3d4...",
+  "request_id": "Qm9vdHN0cmFwUmVxdWVzdA",
   "details": {
     "matched_audience": "muster-client",
     "email": "user@example.com",
     "validation_method": "jwks",
-    "sso_token_forwarded": true
+    "sso_token_forwarded": true,
+    "session_id": "ext-0123456789abcdef"
   }
 }
 ```
