@@ -60,10 +60,11 @@ type AuthorizationURLOptions struct {
 	IdentityOnly bool
 
 	// ConnectorID names the Dex connector to sign in with instead of the
-	// provider's configured one. Dex encodes the connector in the subject it
-	// issues, so a sign-in that must yield a known subject has to use that
-	// subject's connector. Providers without connectors ignore it, and the
-	// Dex provider ignores a value oidc.ValidateConnectorID refuses.
+	// provider's configured one; it takes precedence over a connector_id in
+	// Extra. Dex encodes the connector in the subject it issues, so a sign-in
+	// that must yield a known subject has to use that subject's connector.
+	// Providers without connectors ignore it. The caller validates it
+	// (oidc.ValidateConnectorID), as Server.StartIdentityFlow does.
 	ConnectorID string
 }
 

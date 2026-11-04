@@ -28,16 +28,22 @@ const identityCodeTTL = 60 * time.Second
 var ErrInvalidIdentityCode = errors.New("invalid identity code")
 
 // IdentityFlowOption adjusts the provider sign-in of StartIdentityFlow.
-type IdentityFlowOption func(*providers.AuthorizationURLOptions)
+type IdentityFlowOption func(*identityFlowConfig)
+
+// identityFlowConfig is what an IdentityFlowOption may set. It holds no
+// provider option that could turn the flow into one that grants something.
+type identityFlowConfig struct {
+	connectorID string
+}
 
 // WithIdentityConnector sends the identity sign-in to the given Dex connector
 // instead of the provider's configured one. Dex encodes the connector in the
-// subject, so a caller that compares the result with a subject it already
-// holds passes that subject's connector. Providers without connectors ignore
-// it.
+// subject (dex.ConnectorFromSubject), so a caller that compares the result
+// with a subject it already holds passes that subject's connector. Providers
+// without connectors ignore it.
 func WithIdentityConnector(connectorID string) IdentityFlowOption {
-	return func(o *providers.AuthorizationURLOptions) {
-		o.ConnectorID = connectorID
+	return func(c *identityFlowConfig) {
+		c.connectorID = connectorID
 	}
 }
 
@@ -53,15 +59,18 @@ func WithIdentityConnector(connectorID string) IdentityFlowOption {
 // flow cannot report an identity to another site. codeChallenge is an S256
 // PKCE challenge whose verifier the caller keeps for RedeemIdentityCode.
 func (s *Server) StartIdentityFlow(ctx context.Context, returnURL *url.URL, codeChallenge, clientState string, opts ...IdentityFlowOption) (string, error) {
-	identityOpts := &providers.AuthorizationURLOptions{IdentityOnly: true}
+	var cfg identityFlowConfig
 	for _, opt := range opts {
-		opt(identityOpts)
+		if opt != nil {
+			opt(&cfg)
+		}
 	}
-	if identityOpts.ConnectorID != "" {
-		if err := oidc.ValidateConnectorID(identityOpts.ConnectorID); err != nil {
+	if cfg.connectorID != "" {
+		if err := oidc.ValidateConnectorID(cfg.connectorID); err != nil {
 			return "", fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
 		}
 	}
+	identityOpts := &providers.AuthorizationURLOptions{IdentityOnly: true, ConnectorID: cfg.connectorID}
 	if clientState == "" {
 		return "", fmt.Errorf("%s: state is required", ErrorCodeInvalidRequest)
 	}

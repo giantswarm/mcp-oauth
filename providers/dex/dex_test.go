@@ -1105,7 +1105,7 @@ func TestAuthorizationURL_IdentityOnly(t *testing.T) {
 
 // AuthorizationURLOptions.ConnectorID signs in with another connector than
 // the configured one, so a person is sent to the login method their session
-// came from.
+// came from. No Extra parameter overrides it.
 func TestAuthorizationURL_ConnectorOverride(t *testing.T) {
 	server := setupMockDexServer(t)
 	defer server.Close()
@@ -1117,16 +1117,20 @@ func TestAuthorizationURL_ConnectorOverride(t *testing.T) {
 	}
 
 	for name, tc := range map[string]struct {
-		override string
-		want     string
+		opts *providers.AuthorizationURLOptions
+		want string
 	}{
-		"override wins":                {override: "azure-ad", want: "azure-ad"},
-		"no override keeps configured": {override: "", want: "github"},
-		"invalid override is ignored":  {override: "bad connector&x=y", want: "github"},
+		"override wins":                {opts: &providers.AuthorizationURLOptions{IdentityOnly: true, ConnectorID: "azure-ad"}, want: "azure-ad"},
+		"no override keeps configured": {opts: &providers.AuthorizationURLOptions{IdentityOnly: true}, want: "github"},
+		"override beats Extra": {opts: &providers.AuthorizationURLOptions{
+			ConnectorID: "azure-ad", Extra: map[string]string{"connector_id": "ldap"},
+		}, want: "azure-ad"},
+		"Extra still overrides the configured connector": {opts: &providers.AuthorizationURLOptions{
+			Extra: map[string]string{"connector_id": "ldap"},
+		}, want: "ldap"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			authURL := provider.AuthorizationURL("state123", "challenge", "S256", []string{"openid"},
-				&providers.AuthorizationURLOptions{IdentityOnly: true, ConnectorID: tc.override})
+			authURL := provider.AuthorizationURL("state123", "challenge", "S256", []string{"openid"}, tc.opts)
 
 			parsed, err := url.Parse(authURL)
 			if err != nil {
