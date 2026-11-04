@@ -1102,3 +1102,39 @@ func TestAuthorizationURL_IdentityOnly(t *testing.T) {
 		t.Errorf("scope = %q, want %q", got, "openid")
 	}
 }
+
+// AuthorizationURLOptions.ConnectorID signs in with another connector than
+// the configured one, so a person is sent to the login method their session
+// came from.
+func TestAuthorizationURL_ConnectorOverride(t *testing.T) {
+	server := setupMockDexServer(t)
+	defer server.Close()
+	provider, err := NewProvider(testConfig(server, func(cfg *Config) {
+		cfg.ConnectorID = "github"
+	}))
+	if err != nil {
+		t.Fatalf("NewProvider() failed: %v", err)
+	}
+
+	for name, tc := range map[string]struct {
+		override string
+		want     string
+	}{
+		"override wins":                {override: "azure-ad", want: "azure-ad"},
+		"no override keeps configured": {override: "", want: "github"},
+		"invalid override is ignored":  {override: "bad connector&x=y", want: "github"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			authURL := provider.AuthorizationURL("state123", "challenge", "S256", []string{"openid"},
+				&providers.AuthorizationURLOptions{IdentityOnly: true, ConnectorID: tc.override})
+
+			parsed, err := url.Parse(authURL)
+			if err != nil {
+				t.Fatalf("url.Parse() failed: %v", err)
+			}
+			if got := parsed.Query()["connector_id"]; len(got) != 1 || got[0] != tc.want {
+				t.Errorf("connector_id = %q, want [%q]", got, tc.want)
+			}
+		})
+	}
+}

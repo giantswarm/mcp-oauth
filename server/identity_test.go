@@ -260,3 +260,24 @@ func TestStartIdentityFlow_Refusals(t *testing.T) {
 		})
 	}
 }
+
+// WithIdentityConnector sends the sign-in to the connector a known subject
+// was issued for.
+func TestStartIdentityFlow_WithIdentityConnector(t *testing.T) {
+	srv, _, flow := setupIdentityTestServer(t)
+
+	_, err := srv.StartIdentityFlow(t.Context(), flow.returnURL, flow.challenge(), flow.clientState, WithIdentityConnector("azure-ad"))
+
+	require.NoError(t, err)
+	require.Equal(t, "azure-ad", flow.options.ConnectorID)
+	require.True(t, flow.options.IdentityOnly)
+}
+
+func TestStartIdentityFlow_RefusesAnInvalidConnector(t *testing.T) {
+	srv, _, flow := setupIdentityTestServer(t)
+
+	_, err := srv.StartIdentityFlow(t.Context(), flow.returnURL, flow.challenge(), flow.clientState, WithIdentityConnector("bad connector&x=y"))
+
+	require.ErrorContains(t, err, ErrorCodeInvalidRequest)
+	require.Nil(t, flow.options, "the provider is not asked for a URL")
+}

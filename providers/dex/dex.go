@@ -511,8 +511,8 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 
 	// Add connector_id parameter if configured (Dex-specific feature)
 	// This bypasses the Dex connector selection screen
-	if p.connectorID != "" {
-		authCodeOpts = append(authCodeOpts, oauth2.SetAuthURLParam("connector_id", p.connectorID))
+	if connectorID := p.authorizationConnector(authOpts); connectorID != "" {
+		authCodeOpts = append(authCodeOpts, oauth2.SetAuthURLParam("connector_id", connectorID))
 	}
 
 	// Apply optional OIDC parameters (Dex supports standard OIDC params)
@@ -532,6 +532,18 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	config := *p.Config
 	config.Scopes = scopesToUse
 	return config.AuthCodeURL(state, authCodeOpts...)
+}
+
+// authorizationConnector returns the connector an authorization request signs
+// in with: the request's ConnectorID when valid, else the configured one.
+func (p *Provider) authorizationConnector(authOpts *providers.AuthorizationURLOptions) string {
+	if authOpts != nil && authOpts.ConnectorID != "" {
+		if err := oidc.ValidateConnectorID(authOpts.ConnectorID); err == nil {
+			return authOpts.ConnectorID
+		}
+		p.logger.Warn("Ignoring an invalid connector_id override, using the configured connector")
+	}
+	return p.connectorID
 }
 
 // ensureOpenIDScope guarantees that "openid" is present in the scope list.

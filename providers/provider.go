@@ -58,6 +58,13 @@ type AuthorizationURLOptions struct {
 	// user and client and deletes the previous one when it issues another,
 	// so a sign-in that only learns who the user is must not ask for one.
 	IdentityOnly bool
+
+	// ConnectorID names the Dex connector to sign in with instead of the
+	// provider's configured one. Dex encodes the connector in the subject it
+	// issues, so a sign-in that must yield a known subject has to use that
+	// subject's connector. Providers without connectors ignore it, and the
+	// Dex provider ignores a value oidc.ValidateConnectorID refuses.
+	ConnectorID string
 }
 
 // Provider defines the interface for OAuth identity providers.
