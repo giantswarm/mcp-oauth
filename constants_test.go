@@ -49,6 +49,7 @@ func TestIntegerConstants(t *testing.T) {
 		{"AccessTokenLength", AccessTokenLength, 48},
 		{"RefreshTokenLength", RefreshTokenLength, 48},
 		{"StateTokenLength", StateTokenLength, 32},
+		{"MinStateLength", MinStateLength, 22},
 	}
 
 	for _, tt := range tests {
