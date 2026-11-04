@@ -518,6 +518,12 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	// Apply optional OIDC parameters (Dex supports standard OIDC params)
 	authCodeOpts = append(authCodeOpts, providers.ApplyAuthorizationURLOptions(authOpts)...)
 
+	// A requested connector comes last, so no Extra parameter overrides it.
+	// Its caller validates it (Server.StartIdentityFlow).
+	if authOpts != nil && authOpts.ConnectorID != "" {
+		authCodeOpts = append(authCodeOpts, oauth2.SetAuthURLParam("connector_id", authOpts.ConnectorID))
+	}
+
 	// FilterScopes drops scopes Dex would reject ("Unrecognized scope(s)"),
 	// deep-copies the input, and force-merges mandatory scopes (openid,
 	// audience:server:client_id:*) from defaults via CopyScopes internally.

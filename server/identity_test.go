@@ -230,7 +230,7 @@ func TestIdentityFlow_RedeemRefusesAnAuthorizationCode(t *testing.T) {
 }
 
 func TestStartIdentityFlow_Refusals(t *testing.T) {
-	srv, _, _ := setupFlowTestServer(t)
+	srv, store, _ := setupFlowTestServer(t)
 	flow := newIdentityFlow(t)
 
 	for name, start := range map[string]func() error{
@@ -254,9 +254,43 @@ func TestStartIdentityFlow_Refusals(t *testing.T) {
 			_, err := srv.StartIdentityFlow(t.Context(), flow.returnURL, flow.challenge(), "")
 			return err
 		},
+		"connector with characters Dex IDs do not have": func() error {
+			_, err := srv.StartIdentityFlow(t.Context(), flow.returnURL, flow.challenge(), flow.clientState, WithIdentityConnector("bad connector&x=y"))
+			return err
+		},
+		"connector over 64 characters": func() error {
+			_, err := srv.StartIdentityFlow(t.Context(), flow.returnURL, flow.challenge(), flow.clientState, WithIdentityConnector(strings.Repeat("a", 65)))
+			return err
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			require.Error(t, start())
+			require.ErrorContains(t, start(), ErrorCodeInvalidRequest)
+			_, err := store.GetAuthorizationState(t.Context(), flow.clientState)
+			require.Error(t, err, "a refused flow stores no state")
 		})
 	}
+}
+
+// WithIdentityConnector sends the sign-in to the connector a known subject
+// was issued for; the flow stays identity-only.
+func TestStartIdentityFlow_WithIdentityConnector(t *testing.T) {
+	srv, _, flow := setupIdentityTestServer(t)
+
+	_, err := srv.StartIdentityFlow(t.Context(), flow.returnURL, flow.challenge(), flow.clientState, WithIdentityConnector("azure-ad"))
+
+	require.NoError(t, err)
+	require.Equal(t, "azure-ad", flow.options.ConnectorID)
+	require.True(t, flow.options.IdentityOnly)
+}
+
+// A nil option, such as one a caller sets only when it knows a connector, is
+// skipped.
+func TestStartIdentityFlow_SkipsANilOption(t *testing.T) {
+	srv, _, flow := setupIdentityTestServer(t)
+	var opt IdentityFlowOption
+
+	_, err := srv.StartIdentityFlow(t.Context(), flow.returnURL, flow.challenge(), flow.clientState, opt)
+
+	require.NoError(t, err)
+	require.Empty(t, flow.options.ConnectorID)
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/providers"
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
@@ -26,6 +27,26 @@ const identityCodeTTL = 60 * time.Second
 // return URL, or presented with the wrong PKCE verifier.
 var ErrInvalidIdentityCode = errors.New("invalid identity code")
 
+// IdentityFlowOption adjusts the provider sign-in of StartIdentityFlow.
+type IdentityFlowOption func(*identityFlowConfig)
+
+// identityFlowConfig is what an IdentityFlowOption may set. It holds no
+// provider option that could turn the flow into one that grants something.
+type identityFlowConfig struct {
+	connectorID string
+}
+
+// WithIdentityConnector sends the identity sign-in to the given Dex connector
+// instead of the provider's configured one. Dex encodes the connector in the
+// subject (dex.ConnectorFromSubject), so a caller that compares the result
+// with a subject it already holds passes that subject's connector. Providers
+// without connectors ignore it.
+func WithIdentityConnector(connectorID string) IdentityFlowOption {
+	return func(c *identityFlowConfig) {
+		c.connectorID = connectorID
+	}
+}
+
 // StartIdentityFlow starts a sign-in at the provider that only establishes
 // who the person in the browser is. Unlike StartAuthorizationFlow it grants
 // nothing: the provider callback stores no provider token, runs no
@@ -37,7 +58,19 @@ var ErrInvalidIdentityCode = errors.New("invalid identity code")
 // client's redirect URI does. returnURL must be on the issuer's origin, so the
 // flow cannot report an identity to another site. codeChallenge is an S256
 // PKCE challenge whose verifier the caller keeps for RedeemIdentityCode.
-func (s *Server) StartIdentityFlow(ctx context.Context, returnURL *url.URL, codeChallenge, clientState string) (string, error) {
+func (s *Server) StartIdentityFlow(ctx context.Context, returnURL *url.URL, codeChallenge, clientState string, opts ...IdentityFlowOption) (string, error) {
+	var cfg identityFlowConfig
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	if cfg.connectorID != "" {
+		if err := oidc.ValidateConnectorID(cfg.connectorID); err != nil {
+			return "", fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
+		}
+	}
+	identityOpts := &providers.AuthorizationURLOptions{IdentityOnly: true, ConnectorID: cfg.connectorID}
 	if clientState == "" {
 		return "", fmt.Errorf("%s: state is required", ErrorCodeInvalidRequest)
 	}
@@ -56,7 +89,7 @@ func (s *Server) StartIdentityFlow(ctx context.Context, returnURL *url.URL, code
 
 	providerState := generateRandomToken()
 	providerCodeChallenge, providerCodeVerifier := generatePKCEPair()
-	nonce, authOpts := s.resolveAuthorizationNonce("", identityScope, &providers.AuthorizationURLOptions{IdentityOnly: true})
+	nonce, authOpts := s.resolveAuthorizationNonce("", identityScope, identityOpts)
 
 	now := time.Now()
 	authState := &storage.AuthorizationState{
