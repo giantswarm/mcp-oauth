@@ -63,6 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An authorization request whose `state` is 22 or 23 characters long is accepted instead of refused as `invalid_request`. The default and floor of `server.Config.MinStateLength` (and `MinStateLength`) are now 22 instead of 24: 16 random bytes, the 128 bits OAuth 2.1 recommends, encode to 22 characters of unpadded base64url, the state the OpenAI Codex CLI sends. A configured value of 22 or 23 is now kept instead of raised to 24.
 - A bearer whose JWKS, discovery or userinfo host resolves to a restricted address is refused with 401 `invalid_token`, not answered 503 `temporarily_unavailable`: the SSRF guard's refusal is permanent, so a retry cannot succeed.
 - An authorization code exchanged in its last moments is no longer refused as a reuse when it expires before the exchange reads it back: the exchange revoked its own tokens, answered `invalid_grant` and audited `authorization_code_reused_during_exchange`. The Valkey store set the code key's TTL to the code's expiry, and the memory store's cleanup deleted codes at expiry. Both stores now keep a used code for `storage.AuthorizationCodeRetention` past its expiry.
 - A used authorization code presented after it expires is detected as a reuse and revokes the tokens the code produced (OAuth 2.1 §4.1.2). Both stores checked expiry before the used flag and answered it as an expired code, leaving the tokens live.

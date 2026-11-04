@@ -161,6 +161,39 @@ func TestApplySecurityDefaults(t *testing.T) {
 	}
 }
 
+func TestApplySecurityDefaults_MinStateLength(t *testing.T) {
+	tests := []struct {
+		name        string
+		configured  int
+		want        int
+		wantWarning bool
+	}{
+		{name: "unset gets the default", configured: 0, want: 22},
+		{name: "below the floor is raised to it", configured: 16, want: 22, wantWarning: true},
+		{name: "just below the floor is raised to it", configured: 21, want: 22, wantWarning: true},
+		{name: "the floor itself is kept", configured: 22, want: 22},
+		{name: "above the floor is kept", configured: 32, want: 32},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, nil))
+			config := &Config{MinStateLength: tt.configured}
+
+			applySecurityDefaults(config, logger)
+
+			if config.MinStateLength != tt.want {
+				t.Errorf("MinStateLength = %d, want %d", config.MinStateLength, tt.want)
+			}
+			gotWarning := strings.Contains(buf.String(), "MinStateLength below recommended minimum")
+			if gotWarning != tt.wantWarning {
+				t.Errorf("floor warning logged = %v, want %v; log: %s", gotWarning, tt.wantWarning, buf.String())
+			}
+		})
+	}
+}
+
 func TestLogSecurityWarnings(t *testing.T) {
 	tests := []struct {
 		name                string

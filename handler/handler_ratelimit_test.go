@@ -20,7 +20,7 @@ import (
 
 // testStateMinLen is a state value at MinStateLength so the authorize handler
 // passes input validation and reaches the rate-limit gate.
-const testStateMinLen = "abcdefghijklmnopqrstuvwx" // 24 chars, == MinStateLength
+const testStateMinLen = "abcdefghijklmnopqrstuv" // 22 chars, == MinStateLength
 
 // newOAuthTestServer returns a baseline test server with default config.
 // The caller wires whatever rate limiter the test needs (or leaves them

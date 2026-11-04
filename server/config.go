@@ -449,8 +449,8 @@ type Config struct {
 	// MinStateLength is the minimum length for state parameters to prevent
 	// timing attacks and ensure sufficient entropy for CSRF protection.
 	// OAuth 2.1 recommends at least 128 bits (16 bytes) of entropy.
-	// Default: 24 characters (144 bits of entropy)
-	MinStateLength int // default: 24
+	// Default and floor: 22 characters (16 random bytes, 128 bits, in unpadded base64url)
+	MinStateLength int // default: 22
 
 	// MaxStateLength caps the `state` parameter length to prevent audit-log
 	// inflation / DoS via oversized state values.

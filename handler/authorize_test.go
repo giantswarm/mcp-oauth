@@ -831,14 +831,14 @@ func TestHandler_ServeAuthorization_StateLength(t *testing.T) {
 			wantErrorParam: constants.ErrorCodeInvalidRequest,
 		},
 		{
-			name:           "state too short (23 chars, just under minimum)",
-			state:          "01234567890123456789012",
+			name:           "state too short (21 chars, just under minimum)",
+			state:          "012345678901234567890",
 			wantStatus:     http.StatusFound,
 			wantErrorParam: constants.ErrorCodeInvalidRequest,
 		},
 		{
-			name:       "state exactly minimum length (24 chars)",
-			state:      "012345678901234567890123",
+			name:       "state exactly minimum length (22 chars)",
+			state:      "0123456789012345678901",
 			wantStatus: http.StatusFound,
 		},
 		{
@@ -888,13 +888,13 @@ func TestHandler_ServeCallback_StateLength(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 		},
 		{
-			name:       "state too short (23 chars)",
-			state:      "01234567890123456789012",
+			name:       "state too short (21 chars)",
+			state:      "012345678901234567890",
 			wantStatus: http.StatusBadRequest,
 		},
 		{
-			name:       "state exactly minimum length (24 chars) - will fail with invalid state since not in storage",
-			state:      "012345678901234567890123",
+			name:       "state exactly minimum length (22 chars) - will fail with invalid state since not in storage",
+			state:      "0123456789012345678901",
 			wantStatus: http.StatusInternalServerError, // Will fail at state lookup, but passed length validation
 		},
 	}
