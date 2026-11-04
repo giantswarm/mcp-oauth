@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 )
 
 // applySecurityDefaults sets secure defaults for security-related configuration.
@@ -28,7 +30,7 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 		config.RequirePKCE = true
 	}
 	if config.MinStateLength == 0 {
-		config.MinStateLength = 22 // OAuth 2.1: 128+ bits entropy recommended, 22 base64url chars = 128 bits
+		config.MinStateLength = constants.MinStateLength
 	}
 	if config.MaxStateLength == 0 {
 		config.MaxStateLength = 512 // accommodates common JWT-encoded-state payloads (~256-380 chars)
@@ -71,17 +73,13 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 	// Apply DNS validation timeout defaults and bounds
 	applyDNSTimeoutDefaults(config, logger)
 
-	// SECURITY: Enforce absolute minimum state length to ensure CSRF protection entropy
-	// OAuth 2.1 recommends at least 128 bits (16 bytes) of entropy
-	// 22 characters is 16 random bytes (128 bits) in unpadded base64url, the
-	// shortest state a client meeting that recommendation sends.
-	const absoluteMinStateLength = 22
-	if config.MinStateLength < absoluteMinStateLength {
+	// SECURITY: Enforce the minimum state length (see constants.MinStateLength).
+	if config.MinStateLength < constants.MinStateLength {
 		logger.Warn("SECURITY WARNING: MinStateLength below recommended minimum, enforcing floor",
 			"configured", config.MinStateLength,
-			"enforced_minimum", absoluteMinStateLength,
+			"enforced_minimum", constants.MinStateLength,
 			"risk", "reduced CSRF protection entropy")
-		config.MinStateLength = absoluteMinStateLength
+		config.MinStateLength = constants.MinStateLength
 	}
 
 	// Log warnings for insecure settings (whether explicitly set or not)

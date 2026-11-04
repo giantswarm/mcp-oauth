@@ -71,6 +71,8 @@ AllowNoStateParameter bool // default: false
 **Security Controls:**
 - Required by default (`AllowNoStateParameter=false`)
 - Minimum length enforcement (32 characters = 192 bits entropy)
+
+> **Note:** This describes the library at the time of the assessment. The `MinStateLength` default and floor have since been lowered, to 24 and then to 22 characters (16 random bytes, 128 bits, in unpadded base64url). See `CHANGELOG.md`.
 - Constant-time comparison using `crypto/subtle.ConstantTimeCompare`
 
 ### 1.3 Token Security

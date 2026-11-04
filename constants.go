@@ -1,6 +1,10 @@
 package oauth
 
-import "time"
+import (
+	"time"
+
+	"github.com/giantswarm/mcp-oauth/internal/constants"
+)
 
 // OAuth token and code timeouts
 const (
@@ -70,12 +74,10 @@ const (
 	// StateTokenLength is the length of generated state parameters
 	StateTokenLength = 32
 
-	// MinStateLength is the minimum length for state parameters to prevent
-	// timing attacks and ensure sufficient entropy for CSRF protection.
-	// OAuth 2.1 recommends at least 128 bits (16 bytes) of entropy.
-	// 22 characters is 16 random bytes (128 bits) in unpadded base64url.
-	// This value is used as the default for server.Config.MinStateLength.
-	MinStateLength = 22
+	// MinStateLength is the default and floor of server.Config.MinStateLength:
+	// the length of 16 random bytes, the 128 bits OAuth 2.1 recommends, in
+	// unpadded base64url. The check counts characters and cannot measure entropy.
+	MinStateLength = constants.MinStateLength
 
 	// MaxStateLength caps the `state` parameter length to prevent audit-log
 	// inflation / DoS via oversized state values; 512 characters accommodates

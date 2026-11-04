@@ -49,6 +49,11 @@ const (
 	PKCEMethodPlain       = "plain"
 )
 
+// MinStateLength is the default and floor of server.Config.MinStateLength:
+// the length of 16 random bytes, the 128 bits OAuth 2.1 recommends, in
+// unpadded base64url. The check counts characters and cannot measure entropy.
+const MinStateLength = 22
+
 // Resource parameter validation (RFC 8707).
 const MaxResourceLength = 2048
 
