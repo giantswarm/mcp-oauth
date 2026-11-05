@@ -174,7 +174,7 @@ const (
 	// explicitly. Its audience is the broker/STS, not the downstream resource
 	// server, so it must be impersonated or exchanged rather than passed
 	// through. Use UserInfo.Issuer to identify the originating issuer. When the
-	// token carries an RFC 8693 §4.4 act claim it is a delegated human identity
+	// token carries an RFC 8693 §4.1 act claim it is a delegated human identity
 	// (on-behalf-of); IsOBO() reports that case.
 	TokenSourceTrustedIssuer TokenSource = "trusted-issuer"
 )
@@ -235,17 +235,17 @@ type UserInfo struct {
 	// to an impersonation path rather than bearer passthrough.
 	Issuer string
 
-	// ActorIssuer is the iss field from the RFC 8693 §4.4 act claim. Non-empty
+	// ActorIssuer is the iss field from the RFC 8693 §4.1 act claim. Non-empty
 	// only when the token was minted via a delegated token exchange with a
 	// validated actor_token. Use IsOBO() as a presence check.
 	ActorIssuer string
 
-	// ActorSubject is the sub field from the RFC 8693 §4.4 act claim. Non-empty
+	// ActorSubject is the sub field from the RFC 8693 §4.1 act claim. Non-empty
 	// only when the token was minted via a delegated token exchange with a
 	// validated actor_token. Use IsOBO() as a presence check.
 	ActorSubject string
 
-	// ActorChain is the full RFC 8693 §4.4 delegation chain decoded from the
+	// ActorChain is the full RFC 8693 §4.1 delegation chain decoded from the
 	// act claim, ordered outermost (most recent actor) first; ActorIssuer and
 	// ActorSubject mirror its first element. Empty for tokens without
 	// delegation. Only the first element, the current actor, may be used for
@@ -320,7 +320,7 @@ func (u *UserInfo) IsExternalIssuer() bool {
 }
 
 // IsOBO returns true if this user is a delegated human identity: an
-// external-issuer Bearer JWT carrying an RFC 8693 §4.4 act claim. UserInfo.ID
+// external-issuer Bearer JWT carrying an RFC 8693 §4.1 act claim. UserInfo.ID
 // is the human subject; ActorSubject/ActorIssuer/ActorChain identify the
 // acting party.
 //

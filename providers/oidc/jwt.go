@@ -483,8 +483,9 @@ type IDTokenClaims struct {
 }
 
 // ScopeClaim is a scope claim. It is encoded as the space-delimited string
-// RFC 8693 §4.2 defines and also decodes a JSON array of strings; any other
-// JSON type fails to decode, so a token carrying one is refused.
+// RFC 8693 §4.2 defines. It also decodes a JSON array of strings, which some
+// issuers emit; any other JSON type fails to decode, so a token carrying one
+// is refused.
 type ScopeClaim []string
 
 // MarshalJSON encodes the scopes as one space-delimited string.

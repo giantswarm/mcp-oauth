@@ -291,8 +291,15 @@ func userInfoFromJWTClaims(claims map[string]any) *providers.UserInfo {
 	if v, ok := claims["name"].(string); ok {
 		info.Name = v
 	}
-	if v, ok := claims["scope"].(string); ok {
+	switch v := claims["scope"].(type) {
+	case string:
 		info.Scopes = strings.Fields(v)
+	case []any:
+		for _, e := range v {
+			if scope, ok := e.(string); ok {
+				info.Scopes = append(info.Scopes, scope)
+			}
+		}
 	}
 	switch g := claims["groups"].(type) {
 	case []string:

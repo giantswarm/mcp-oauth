@@ -91,10 +91,15 @@ server.TrustedIssuer{
     JwksURL:          "https://dex.example.com/keys",
     AllowedAudiences: []string{"muster"},
     Actors: &server.ActorPolicy{
-        Issuers: []string{"https://idp.agents.example.internal"},
+        Issuers: []string{"https://idp.agents.example.internal", "https://kubernetes.default.svc"},
+        Subjects: map[string]string{
+            "https://kubernetes.default.svc": "system:serviceaccount:muster:*",
+        },
     },
 }
 ```
+
+`Subjects` maps a listed issuer to a pattern, in `AllowedClaims` syntax, that the current actor's `sub` must match. An issuer without an entry accepts any `sub`, so an issuer shared by many workloads, such as a cluster's ServiceAccount issuer, needs one. `NewOIDCValidator` refuses a pattern for an issuer not in `Issuers` and a malformed pattern.
 
 `Actors: &server.ActorPolicy{}` refuses every token from the issuer that carries `act`. With `Actors` unset, `act` is accepted unchecked. A refusal wraps `server.ErrActorNotTrusted`.
 
@@ -140,7 +145,7 @@ Self-issued exchange policy:
 
 ## Issued token
 
-The issued access token contains an `act` claim per RFC 8693 §4.4:
+The issued access token contains an `act` claim per RFC 8693 §4.1:
 
 ```json
 {

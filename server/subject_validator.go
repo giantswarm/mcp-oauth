@@ -27,9 +27,10 @@ type SubjectTokenValidator interface {
 // trusts them as exchange subjects without a self-referential trustedIssuers
 // entry. This is what lets a multi-hop A2A delegation re-exchange an OBO token
 // that already carries an act chain to nest the next actor beneath it (RFC 8693
-// §4.4): only a self-issued token carries act, since external issuers (Dex,
-// Kubernetes) do not emit it. Any other token is delegated to next (the
-// trusted-issuer validator), preserving external-issuer behaviour.
+// §4.1). A trusted issuer's token may carry act too (a Dex delegated token);
+// TrustedIssuer.Actors bounds it there, and the exchange nests either chain
+// the same way. Any other token is delegated to next (the trusted-issuer
+// validator), preserving external-issuer behaviour.
 type selfIssuedSubjectValidator struct {
 	srv  *Server
 	next SubjectTokenValidator
@@ -183,21 +184,42 @@ type TrustedIssuer struct {
 	// Actors restricts which acting parties this issuer may name in the act
 	// claim (RFC 8693 §4.1). Nil leaves act unchecked. When set, a token
 	// carrying act is accepted only if the iss of its outermost act, the
-	// current actor, is listed in Actors.Issuers; an empty list refuses every
+	// current actor, is listed in Actors.Issuers and its sub matches
+	// Actors.Subjects for that issuer, if any; an empty list refuses every
 	// token carrying act. Nested actors are informational (RFC 8693 §4.1) and
 	// not checked.
 	Actors *ActorPolicy
 }
 
-// ActorPolicy lists the issuers a trusted issuer may name as the current
-// actor of a delegated token.
+// ActorPolicy lists the acting parties a trusted issuer may name as the
+// current actor of a delegated token.
 type ActorPolicy struct {
+	// Issuers lists the accepted iss values of the current actor.
 	Issuers []string
+	// Subjects maps an issuer of Issuers to a glob pattern (AllowedClaims
+	// syntax, '*' spans '/') the current actor's sub must match. An issuer
+	// without an entry accepts any sub, so a broad issuer such as a
+	// Kubernetes cluster's ServiceAccount issuer needs one.
+	Subjects map[string]string
+}
+
+// validate refuses a Subjects entry for an issuer not in Issuers, which could
+// never apply, and a malformed pattern.
+func (p *ActorPolicy) validate() error {
+	for iss, pattern := range p.Subjects {
+		if !slices.Contains(p.Issuers, iss) {
+			return fmt.Errorf("actor subject pattern for %q: issuer not in Issuers", iss)
+		}
+		if _, err := path.Match(pattern, ""); err != nil {
+			return fmt.Errorf("actor subject pattern for %q: invalid pattern %q: %w", iss, pattern, err)
+		}
+	}
+	return nil
 }
 
 // ErrActorNotTrusted is returned by Validate when a token's act claim names a
-// current actor whose issuer the trusted issuer's ActorPolicy does not list.
-var ErrActorNotTrusted = errors.New("act claim names an actor issuer that is not trusted")
+// current actor the trusted issuer's ActorPolicy does not accept.
+var ErrActorNotTrusted = errors.New("act claim names an actor that is not trusted")
 
 // OIDCValidator validates JWTs from statically configured trusted issuers.
 // The unverified iss claim routes the token to its TrustedIssuer entry;
@@ -252,6 +274,11 @@ func newOIDCValidatorWithClients(issuers []TrustedIssuer, safeClient *oidc.JWKSC
 		}
 		if ti.JwksURL == "" {
 			return nil, fmt.Errorf("trusted issuer %q must have a non-empty JwksURL", ti.Issuer)
+		}
+		if ti.Actors != nil {
+			if err := ti.Actors.validate(); err != nil {
+				return nil, fmt.Errorf("trusted issuer %q: %w", ti.Issuer, err)
+			}
 		}
 		m[ti.Issuer] = ti
 	}
@@ -355,7 +382,12 @@ func checkActor(policy *ActorPolicy, act *oidc.ActorClaim) error {
 		return nil
 	}
 	if act.Issuer == "" || !slices.Contains(policy.Issuers, act.Issuer) {
-		return fmt.Errorf("%w: %q", ErrActorNotTrusted, act.Issuer)
+		return fmt.Errorf("%w: issuer %q", ErrActorNotTrusted, act.Issuer)
+	}
+	if pattern, ok := policy.Subjects[act.Issuer]; ok {
+		if err := matchClaimPattern(pattern, act.Subject); err != nil {
+			return fmt.Errorf("%w: subject: %w", ErrActorNotTrusted, err)
+		}
 	}
 	return nil
 }

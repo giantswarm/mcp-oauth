@@ -75,7 +75,7 @@ type AccessTokenClaims struct {
 	// RefreshTokenFamilyStore.
 	FamilyID string
 
-	// Act carries the RFC 8693 §4.4 actor claim. Non-nil only for token-exchange
+	// Act carries the RFC 8693 §4.1 actor claim. Non-nil only for token-exchange
 	// issued tokens.
 	Act *Actor
 
@@ -92,7 +92,7 @@ type AccessTokenClaims struct {
 	Extra map[string]any
 }
 
-// Actor is the RFC 8693 §4.4 act claim: the acting party in a delegation chain.
+// Actor is the RFC 8693 §4.1 act claim: the acting party in a delegation chain.
 // Act nests the prior actor so a multi-hop A2A chain (human → agentA → agentB)
 // is preserved: the outermost Act is the most recent actor, Act.Act the one
 // before it. Nil at the end of the chain.

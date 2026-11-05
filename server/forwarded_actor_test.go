@@ -7,6 +7,7 @@ import (
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
+	"github.com/giantswarm/mcp-oauth/security"
 )
 
 // withProviderActorPolicy makes the harness provider's issuer a trusted issuer
@@ -75,11 +76,14 @@ func TestAcceptForwardedIDToken_ActorPolicy(t *testing.T) {
 func TestValidateForwardedIDTokenBranch_ActorRefusalIsFinal(t *testing.T) {
 	h := newForwardedTokenHarness(t)
 	h.withProviderActorPolicy(t, &ActorPolicy{Issuers: []string{"https://actors.example"}})
+	logger, logBuf := captureLogger()
+	h.srv.Auditor = security.NewAuditor(logger, true)
 
 	userInfo, err := h.srv.validateForwardedIDTokenBranch(t.Context(),
 		h.signDelegatedToken(t, &oidc.ActorClaim{Issuer: "https://other.example", Subject: "x"}, nil))
 	require.ErrorIs(t, err, ErrActorNotTrusted)
 	require.Nil(t, userInfo)
+	require.True(t, containsAuthFailure(logBuf.String(), "forwarded_id_token_actor_not_trusted"), "audit log: %s", logBuf.String())
 }
 
 func TestAcceptForwardedIDToken_Scopes(t *testing.T) {
@@ -92,6 +96,9 @@ func TestAcceptForwardedIDToken_Scopes(t *testing.T) {
 
 func TestUserInfoFromJWTClaims_Scopes(t *testing.T) {
 	info := userInfoFromJWTClaims(map[string]any{claimSub: "user", "scope": "openid tools:read"})
+	require.Equal(t, []string{"openid", "tools:read"}, info.Scopes)
+
+	info = userInfoFromJWTClaims(map[string]any{claimSub: "user", "scope": []any{"openid", "tools:read"}})
 	require.Equal(t, []string{"openid", "tools:read"}, info.Scopes)
 
 	info = userInfoFromJWTClaims(map[string]any{claimSub: "user"})

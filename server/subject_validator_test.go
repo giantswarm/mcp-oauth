@@ -683,6 +683,10 @@ func TestOIDCValidator_ActorPolicy(t *testing.T) {
 		{name: "act without iss", policy: &ActorPolicy{Issuers: []string{"https://actors.example"}}, act: map[string]any{"sub": "workload-1"}, wantErr: true},
 		{name: "only the current actor is checked", policy: &ActorPolicy{Issuers: []string{"https://cluster.example"}}, act: nested},
 		{name: "a listed prior actor does not admit the current one", policy: &ActorPolicy{Issuers: []string{"https://actors.example"}}, act: nested, wantErr: true},
+		{name: "subject matches the issuer's pattern", policy: &ActorPolicy{Issuers: []string{"https://cluster.example"}, Subjects: map[string]string{"https://cluster.example": "system:serviceaccount:apps:*"}}, act: nested},
+		{name: "subject outside the issuer's pattern", policy: &ActorPolicy{Issuers: []string{"https://cluster.example"}, Subjects: map[string]string{"https://cluster.example": "system:serviceaccount:muster:muster"}}, act: nested, wantErr: true},
+		{name: "act without sub under a subject pattern", policy: &ActorPolicy{Issuers: []string{"https://actors.example"}, Subjects: map[string]string{"https://actors.example": "workload-*"}}, act: map[string]any{"iss": "https://actors.example"}, wantErr: true},
+		{name: "issuer without a pattern accepts any subject", policy: &ActorPolicy{Issuers: []string{"https://actors.example", "https://cluster.example"}, Subjects: map[string]string{"https://cluster.example": "system:serviceaccount:muster:muster"}}, act: map[string]any{"iss": "https://actors.example", "sub": "anything"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -700,6 +704,32 @@ func TestOIDCValidator_ActorPolicy(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
+		})
+	}
+}
+
+func TestNewOIDCValidator_ActorPolicyConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		policy  *ActorPolicy
+		wantErr string
+	}{
+		{name: "pattern for a listed issuer", policy: &ActorPolicy{Issuers: []string{"https://actors.example"}, Subjects: map[string]string{"https://actors.example": "workload-*"}}},
+		{name: "pattern for an unlisted issuer", policy: &ActorPolicy{Issuers: []string{"https://actors.example"}, Subjects: map[string]string{"https://other.example": "*"}}, wantErr: "issuer not in Issuers"},
+		{name: "malformed pattern", policy: &ActorPolicy{Issuers: []string{"https://actors.example"}, Subjects: map[string]string{"https://actors.example": "workload-["}}, wantErr: "invalid pattern"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewOIDCValidator([]TrustedIssuer{{
+				Issuer:  testIssuer,
+				JwksURL: "https://issuer.example/keys",
+				Actors:  tc.policy,
+			}})
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tc.wantErr)
 		})
 	}
 }
