@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `server.TrustedIssuer.Actors` (`server.ActorPolicy`) restricts the `act` claim (RFC 8693 §4.1) of a trusted issuer's tokens: when set, a token carrying `act` is accepted only if the `iss` of its outermost `act`, the current actor, is in `Actors.Issuers`, and an empty list refuses every token carrying `act`. Nested actors are not checked. A refusal wraps `server.ErrActorNotTrusted`. Nil leaves `act` unchecked, as before.
+- `oidc.TokenExchangeRequest.ActorToken` and `ActorTokenType`, sent as the RFC 8693 `actor_token` and `actor_token_type` parameters. They must be set together.
 - `server.WithIdentityConnector`, an option of `Server.StartIdentityFlow` that sends the identity sign-in to the given Dex connector instead of the configured `dex.Config.ConnectorID`. Dex encodes the connector in the subject it issues, so a caller comparing the result with a subject it already holds (one issued through another connector of the same Dex) passes that subject's connector, read with the new `dex.ConnectorFromSubject`; with the configured one the person signs in through a different login method and the subjects never match. `StartIdentityFlow` refuses a connector `oidc.ValidateConnectorID` rejects before storing any state, and skips a nil option. An `IdentityFlowOption` sets the connector only, so it cannot make the flow ask for more than the identifying scopes. The connector is carried as the new `providers.AuthorizationURLOptions.ConnectorID`, which the Dex provider uses in place of its configured connector, also over a `connector_id` in `Extra`; other providers ignore it.
 - `oidc.ErrRestrictedAddress`, wrapped by the SSRF guard's refusal to dial a host that resolves to a private, loopback, link-local or otherwise restricted address.
 - `security.Auditor.LogEvent` fills an empty `Event.RequestID` from the context (`security.GetRequestID`), so every audit event emitted under `security.RequestIDMiddleware` carries `request_id`.
@@ -40,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `storage.AuthorizationCodeRetention` (10 minutes): how long a store keeps an authorization code it marked used past its expiry and clock-skew grace. The `storage.FlowStore` contract now states it: a store removes a code earlier only on `DeleteAuthorizationCode`, and answers a used code with `ErrAuthorizationCodeUsed` whether or not it has expired.
 
 ### Changed
+
+- `oidc.TokenExchangeRequest.ConnectorID` is optional. When empty, no `connector_id` is sent, for a subject token the remote Dex issued itself and verifies with its own keys.
 
 - `OIDCValidator.Validate` refuses a trusted-issuer token whose `TrustedIssuer.SubjectClaim` is `email` unless the token asserts `email_verified: true`, with `server.ErrSubjectEmailUnverified`. The mapped email becomes the `sub` of every token issued from that identity, so the same gate the self-issued exchange applies to the subject's email now holds at acceptance.
 

@@ -635,3 +635,68 @@ func TestNewOIDCValidator_AllowPrivateIPJWKSHosts_CreatesIssuerClient(t *testing
 	require.NotNil(t, withBoth.issuerClients[testIssuer])
 	require.NotSame(t, withBoth.issuerClients["https://other.example.com"], withBoth.issuerClients[testIssuer])
 }
+
+func TestOIDCValidator_ActorPolicy(t *testing.T) {
+	key := newTestECKey(t)
+	const kid = "test-key-1"
+	jwksURL, jwksClient := serveStaticJWKS(t, key, kid)
+
+	signingKey := jose.SigningKey{Algorithm: jose.ES256, Key: jose.JSONWebKey{Key: key, KeyID: kid, Algorithm: string(jose.ES256), Use: "sig"}}
+	opts := &jose.SignerOptions{}
+	opts.WithType("JWT")
+	opts.WithHeader(jose.HeaderKey("kid"), kid)
+	signer, err := jose.NewSigner(signingKey, opts)
+	require.NoError(t, err)
+	tokenWith := func(t *testing.T, act map[string]any) string {
+		t.Helper()
+		builder := josejwt.Signed(signer).Claims(josejwt.Claims{
+			Issuer:   testIssuer,
+			Subject:  testSubject,
+			Audience: josejwt.Audience{testAudience},
+			Expiry:   josejwt.NewNumericDate(time.Now().Add(time.Hour)),
+			IssuedAt: josejwt.NewNumericDate(time.Now()),
+		})
+		if act != nil {
+			builder = builder.Claims(map[string]any{"act": act})
+		}
+		token, err := builder.Serialize()
+		require.NoError(t, err)
+		return token
+	}
+	nested := map[string]any{"iss": "https://cluster.example", "sub": "system:serviceaccount:apps:relay",
+		"act": map[string]any{"iss": "https://actors.example", "sub": "workload-1"}}
+
+	tests := []struct {
+		name    string
+		policy  *ActorPolicy
+		act     map[string]any
+		wantErr bool
+	}{
+		{name: "no policy accepts act", policy: nil, act: map[string]any{"iss": "https://anyone.example", "sub": "x"}},
+		{name: "policy accepts a token without act", policy: &ActorPolicy{}},
+		{name: "listed actor issuer", policy: &ActorPolicy{Issuers: []string{"https://actors.example"}}, act: map[string]any{"iss": "https://actors.example", "sub": "workload-1"}},
+		{name: "unlisted actor issuer", policy: &ActorPolicy{Issuers: []string{"https://actors.example"}}, act: map[string]any{"iss": "https://other.example", "sub": "x"}, wantErr: true},
+		{name: "empty list refuses act", policy: &ActorPolicy{}, act: map[string]any{"iss": "https://actors.example", "sub": "workload-1"}, wantErr: true},
+		{name: "act without iss", policy: &ActorPolicy{Issuers: []string{"https://actors.example"}}, act: map[string]any{"sub": "workload-1"}, wantErr: true},
+		{name: "only the current actor is checked", policy: &ActorPolicy{Issuers: []string{"https://cluster.example"}}, act: nested},
+		{name: "a listed prior actor does not admit the current one", policy: &ActorPolicy{Issuers: []string{"https://actors.example"}}, act: nested, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
+				Issuer:           testIssuer,
+				JwksURL:          jwksURL,
+				AllowedAudiences: []string{testAudience},
+				Actors:           tc.policy,
+			}}, jwksClient)
+			require.NoError(t, err)
+
+			_, err = v.Validate(t.Context(), tokenWith(t, tc.act), nil)
+			if tc.wantErr {
+				require.ErrorIs(t, err, ErrActorNotTrusted)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}

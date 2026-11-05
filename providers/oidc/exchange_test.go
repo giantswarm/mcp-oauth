@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewTokenExchangeClient(t *testing.T) {
@@ -334,18 +336,16 @@ func TestTokenExchangeClient_Exchange(t *testing.T) {
 		}
 	})
 
-	t.Run("missing connector ID", func(t *testing.T) {
+	t.Run("actor token without type", func(t *testing.T) {
 		client := NewTokenExchangeClient(nil)
 		_, err := client.Exchange(context.Background(), TokenExchangeRequest{
 			TokenEndpoint: "https://example.com/token",
 			SubjectToken:  "test-token",
+			ActorToken:    "actor-token",
 		})
 
-		if err == nil {
-			t.Error("Exchange() should return error for missing connector ID")
-		}
-		if !strings.Contains(err.Error(), "connector ID is required") {
-			t.Errorf("error should mention connector ID, got: %v", err)
+		if err == nil || !strings.Contains(err.Error(), "actor token and actor token type must be set together") {
+			t.Errorf("expected an error naming the actor token pair, got: %v", err)
 		}
 	})
 
@@ -758,4 +758,34 @@ func TestValidateResourceParameter(t *testing.T) {
 			t.Errorf("Empty resource should be allowed: %v", err)
 		}
 	})
+}
+
+// A delegation request to an IdP that issued the subject token itself sends
+// the RFC 8693 actor parameters and no connector_id.
+func TestTokenExchangeClient_ExchangeDelegation(t *testing.T) {
+	var form url.Values
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		form = r.PostForm
+		w.Header().Set("Content-Type", "application/json")
+		require.NoError(t, json.NewEncoder(w).Encode(TokenExchangeResponse{AccessToken: "delegated", IssuedTokenType: TokenTypeAccessToken, TokenType: "Bearer"}))
+	}))
+	defer server.Close()
+
+	client := newTestTokenExchangeClient(server.Client())
+	resp, err := client.Exchange(t.Context(), TokenExchangeRequest{
+		TokenEndpoint:      server.URL,
+		SubjectToken:       "subject",
+		SubjectTokenType:   TokenTypeAccessToken,
+		ActorToken:         "actor",
+		ActorTokenType:     TokenTypeJWT,
+		Audience:           "backend",
+		RequestedTokenType: TokenTypeAccessToken,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "delegated", resp.AccessToken)
+	require.Equal(t, "actor", form.Get("actor_token"))
+	require.Equal(t, TokenTypeJWT, form.Get("actor_token_type"))
+	require.Equal(t, "backend", form.Get("audience"))
+	require.NotContains(t, form, "connector_id")
 }

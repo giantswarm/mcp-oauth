@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
@@ -179,7 +180,24 @@ type TrustedIssuer struct {
 	// typ header at all, so use [""] to accept them. Signature, audience,
 	// and claim checks still apply unchanged.
 	AcceptedTypHeaders []string
+	// Actors restricts which acting parties this issuer may name in the act
+	// claim (RFC 8693 §4.1). Nil leaves act unchecked. When set, a token
+	// carrying act is accepted only if the iss of its outermost act, the
+	// current actor, is listed in Actors.Issuers; an empty list refuses every
+	// token carrying act. Nested actors are informational (RFC 8693 §4.1) and
+	// not checked.
+	Actors *ActorPolicy
 }
+
+// ActorPolicy lists the issuers a trusted issuer may name as the current
+// actor of a delegated token.
+type ActorPolicy struct {
+	Issuers []string
+}
+
+// ErrActorNotTrusted is returned by Validate when a token's act claim names a
+// current actor whose issuer the trusted issuer's ActorPolicy does not list.
+var ErrActorNotTrusted = errors.New("act claim names an actor issuer that is not trusted")
 
 // OIDCValidator validates JWTs from statically configured trusted issuers.
 // The unverified iss claim routes the token to its TrustedIssuer entry;
@@ -298,6 +316,9 @@ func (v *OIDCValidator) Validate(ctx context.Context, tokenString string, defaul
 	if err := checkAllowedClaims(ti.AllowedClaims, rawClaims); err != nil {
 		return nil, err
 	}
+	if err := checkActor(ti.Actors, claims.Act); err != nil {
+		return nil, err
+	}
 
 	// rawClaims is authentic here: ValidateIDToken verified the signature over
 	// the same token, so reading an additional claim from it is sound.
@@ -320,6 +341,17 @@ func (v *OIDCValidator) Validate(ctx context.Context, tokenString string, defaul
 		Claims:          claims,
 		ConfirmationJKT: confirmationJKTFromClaims(rawClaims),
 	}, nil
+}
+
+// checkActor applies a trusted issuer's ActorPolicy to a verified act claim.
+func checkActor(policy *ActorPolicy, act *oidc.ActorClaim) error {
+	if policy == nil || act == nil {
+		return nil
+	}
+	if act.Issuer == "" || !slices.Contains(policy.Issuers, act.Issuer) {
+		return fmt.Errorf("%w: %q", ErrActorNotTrusted, act.Issuer)
+	}
+	return nil
 }
 
 // checkAllowedClaims verifies that every claim in allowed is present in raw and

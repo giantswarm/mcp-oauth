@@ -81,6 +81,23 @@ Multiple entries in `AllowedClaims` are ANDed: all must match.
 
 K8s SA and GHA tokens both use `subject_token_type=urn:ietf:params:oauth:token-type:jwt`.
 
+### Restricting the acting party (Actors)
+
+A delegated token names its acting party in the `act` claim (RFC 8693 §4.1). `Actors` limits which issuers a trusted issuer may name as the current actor, the outermost `act`. Nested `act` entries are earlier actors, informational only, and are not checked. A token without `act` is unaffected.
+
+```go
+server.TrustedIssuer{
+    Issuer:           "https://dex.example.com",
+    JwksURL:          "https://dex.example.com/keys",
+    AllowedAudiences: []string{"muster"},
+    Actors: &server.ActorPolicy{
+        Issuers: []string{"https://idp.agents.example.internal"},
+    },
+}
+```
+
+`Actors: &server.ActorPolicy{}` refuses every token from the issuer that carries `act`. With `Actors` unset, `act` is accepted unchecked. A refusal wraps `server.ErrActorNotTrusted`.
+
 ### Custom validators
 
 Implement `server.SubjectTokenValidator` and register it for a specific URN:
