@@ -427,14 +427,14 @@ func GetAudienceFromClaims(claims map[string]any) []string {
 	return nil
 }
 
-// ActorClaim is the RFC 8693 §4.4 act claim decoded from an OIDC token or
+// ActorClaim is the RFC 8693 §4.1 act claim decoded from an OIDC token or
 // mcp-oauth-minted access token. It identifies the acting party in a
 // delegation chain: Issuer and Subject correspond to the agent service account
 // that obtained the token on behalf of the human subject.
 //
-// Act carries the next hop further from the subject (RFC 8693 §4.4 nested act):
-// in a multi-hop A2A chain human → agentA → agentB, a token minted for the
-// second hop has Act = agentB and Act.Act = agentA. Nil at the end of the chain.
+// Act carries the prior actor (RFC 8693 §4.1 nested act): in a multi-hop A2A
+// chain human → agentA → agentB, a token minted for the second hop has
+// Act = agentB and Act.Act = agentA. Nil at the end of the chain.
 type ActorClaim struct {
 	Issuer  string      `json:"iss,omitempty"`
 	Subject string      `json:"sub,omitempty"`
@@ -443,8 +443,9 @@ type ActorClaim struct {
 
 // Chain flattens a nested act claim into a slice ordered from the outermost
 // (most recent) actor to the innermost, each element stripped of its own nested
-// Act. Returns nil for a nil receiver. Resource servers authorizing a multi-hop
-// delegation match any element rather than only the leaf.
+// Act. Returns nil for a nil receiver. Only the first element, the current
+// actor, may be used for access control; the others are prior actors and are
+// informational only (RFC 8693 §4.1).
 func (c *ActorClaim) Chain() []ActorClaim {
 	var chain []ActorClaim
 	for a := c; a != nil; a = a.Act {
@@ -473,9 +474,37 @@ type IDTokenClaims struct {
 	// via ValidateNonceClaim; this struct does not enforce equality.
 	Nonce string `json:"nonce,omitempty"`
 
-	// Act is the RFC 8693 §4.4 delegation claim. Non-nil only in tokens that
+	// Act is the RFC 8693 §4.1 delegation claim. Non-nil only in tokens that
 	// were minted via a token-exchange with a validated actor_token.
 	Act *ActorClaim `json:"act,omitempty"`
+
+	// Scope is the scope claim (RFC 8693 §4.2, RFC 9068 §2.2.3).
+	Scope ScopeClaim `json:"scope,omitempty"`
+}
+
+// ScopeClaim is a scope claim. It is encoded as the space-delimited string
+// RFC 8693 §4.2 defines and also decodes a JSON array of strings; any other
+// JSON type fails to decode, so a token carrying one is refused.
+type ScopeClaim []string
+
+// MarshalJSON encodes the scopes as one space-delimited string.
+func (s ScopeClaim) MarshalJSON() ([]byte, error) {
+	return json.Marshal(strings.Join(s, " "))
+}
+
+// UnmarshalJSON decodes a space-delimited string or an array of strings.
+func (s *ScopeClaim) UnmarshalJSON(data []byte) error {
+	var joined string
+	if err := json.Unmarshal(data, &joined); err == nil {
+		*s = strings.Fields(joined)
+		return nil
+	}
+	var list []string
+	if err := json.Unmarshal(data, &list); err != nil {
+		return fmt.Errorf("scope claim: want a string or an array of strings: %w", err)
+	}
+	*s = list
+	return nil
 }
 
 // ErrKeyNotFound is returned (wrapped) when a JWT's kid header does not match

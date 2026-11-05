@@ -98,6 +98,8 @@ server.TrustedIssuer{
 
 `Actors: &server.ActorPolicy{}` refuses every token from the issuer that carries `act`. With `Actors` unset, `act` is accepted unchecked. A refusal wraps `server.ErrActorNotTrusted`.
 
+The policy also applies to forwarded ID tokens (`TrustedAudiences`) from the provider's issuer when that issuer has a `TrustedIssuer` entry. The accepted token's `scope` claim is available as `UserInfo.Scopes`.
+
 ### Custom validators
 
 Implement `server.SubjectTokenValidator` and register it for a specific URN:

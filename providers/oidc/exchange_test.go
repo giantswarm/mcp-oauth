@@ -349,6 +349,27 @@ func TestTokenExchangeClient_Exchange(t *testing.T) {
 		}
 	})
 
+	t.Run("actor token type without token", func(t *testing.T) {
+		client := NewTokenExchangeClient(nil)
+		_, err := client.Exchange(t.Context(), TokenExchangeRequest{
+			TokenEndpoint:  "https://example.com/token",
+			SubjectToken:   "test-token",
+			ActorTokenType: TokenTypeJWT,
+		})
+		require.ErrorContains(t, err, "actor token and actor token type must be set together")
+	})
+
+	t.Run("actor token too long", func(t *testing.T) {
+		client := NewTokenExchangeClient(nil)
+		_, err := client.Exchange(t.Context(), TokenExchangeRequest{
+			TokenEndpoint:  "https://example.com/token",
+			SubjectToken:   "test-token",
+			ActorToken:     strings.Repeat("a", maxSubjectTokenLength+1),
+			ActorTokenType: TokenTypeJWT,
+		})
+		require.ErrorContains(t, err, "actor token exceeds maximum length")
+	})
+
 	t.Run("invalid connector ID", func(t *testing.T) {
 		client := NewTokenExchangeClient(nil)
 		_, err := client.Exchange(context.Background(), TokenExchangeRequest{
@@ -763,12 +784,15 @@ func TestValidateResourceParameter(t *testing.T) {
 // A delegation request to an IdP that issued the subject token itself sends
 // the RFC 8693 actor parameters and no connector_id.
 func TestTokenExchangeClient_ExchangeDelegation(t *testing.T) {
-	var form url.Values
+	var (
+		form     url.Values
+		parseErr error
+	)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.NoError(t, r.ParseForm())
+		parseErr = r.ParseForm()
 		form = r.PostForm
 		w.Header().Set("Content-Type", "application/json")
-		require.NoError(t, json.NewEncoder(w).Encode(TokenExchangeResponse{AccessToken: "delegated", IssuedTokenType: TokenTypeAccessToken, TokenType: "Bearer"}))
+		_ = json.NewEncoder(w).Encode(TokenExchangeResponse{AccessToken: "delegated", IssuedTokenType: TokenTypeAccessToken, TokenType: "Bearer"})
 	}))
 	defer server.Close()
 
@@ -783,6 +807,7 @@ func TestTokenExchangeClient_ExchangeDelegation(t *testing.T) {
 		RequestedTokenType: TokenTypeAccessToken,
 	})
 	require.NoError(t, err)
+	require.NoError(t, parseErr)
 	require.Equal(t, "delegated", resp.AccessToken)
 	require.Equal(t, "actor", form.Get("actor_token"))
 	require.Equal(t, TokenTypeJWT, form.Get("actor_token_type"))

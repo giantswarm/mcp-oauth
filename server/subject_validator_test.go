@@ -663,8 +663,11 @@ func TestOIDCValidator_ActorPolicy(t *testing.T) {
 		require.NoError(t, err)
 		return token
 	}
-	nested := map[string]any{"iss": "https://cluster.example", "sub": "system:serviceaccount:apps:relay",
-		"act": map[string]any{"iss": "https://actors.example", "sub": "workload-1"}}
+	nested := map[string]any{
+		"iss": "https://cluster.example",
+		"sub": "system:serviceaccount:apps:relay",
+		"act": map[string]any{"iss": "https://actors.example", "sub": "workload-1"},
+	}
 
 	tests := []struct {
 		name    string

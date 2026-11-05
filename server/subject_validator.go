@@ -343,6 +343,12 @@ func (v *OIDCValidator) Validate(ctx context.Context, tokenString string, defaul
 	}, nil
 }
 
+// actorPolicy returns the ActorPolicy of the trusted issuer iss, nil when iss
+// is not a trusted issuer or has none.
+func (v *OIDCValidator) actorPolicy(iss string) *ActorPolicy {
+	return v.issuers[iss].Actors
+}
+
 // checkActor applies a trusted issuer's ActorPolicy to a verified act claim.
 func checkActor(policy *ActorPolicy, act *oidc.ActorClaim) error {
 	if policy == nil || act == nil {

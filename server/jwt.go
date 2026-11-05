@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -289,6 +290,9 @@ func userInfoFromJWTClaims(claims map[string]any) *providers.UserInfo {
 	}
 	if v, ok := claims["name"].(string); ok {
 		info.Name = v
+	}
+	if v, ok := claims["scope"].(string); ok {
+		info.Scopes = strings.Fields(v)
 	}
 	switch g := claims["groups"].(type) {
 	case []string:

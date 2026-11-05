@@ -248,10 +248,16 @@ type UserInfo struct {
 	// ActorChain is the full RFC 8693 §4.4 delegation chain decoded from the
 	// act claim, ordered outermost (most recent actor) first; ActorIssuer and
 	// ActorSubject mirror its first element. Empty for tokens without
-	// delegation. Resource servers authorizing a multi-hop A2A call (human →
-	// agentA → agentB → backend) walk this slice to match any actor in the
-	// chain rather than only the leaf.
+	// delegation. Only the first element, the current actor, may be used for
+	// access control; the others are prior actors, informational only
+	// (RFC 8693 §4.1).
 	ActorChain []oidc.ActorClaim
+
+	// Scopes is the scope claim of a JWT bearer (RFC 8693 §4.2, RFC 9068
+	// §2.2.3): set for TokenSourceJWT, TokenSourceTrustedIssuer and
+	// TokenSourceSSO, empty for opaque tokens and when the token carries no
+	// scope claim.
+	Scopes []string
 }
 
 // IsSSO returns true if this user was authenticated via SSO token forwarding.

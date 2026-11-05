@@ -418,6 +418,12 @@ func (s *Server) validateForwardedIDTokenBranch(ctx context.Context, accessToken
 		// validate an ID token and would only wait on the same provider.
 		return nil, s.providerUnavailable(ctx, "forwarded ID token validation", "", "", err)
 	}
+	if errors.Is(err, ErrActorNotTrusted) {
+		// A verified token refused by policy: the userinfo fallback would
+		// accept it without its act claim.
+		s.Auditor.LogAuthFailure(ctx, "", "", "", "forwarded_id_token_actor_not_trusted")
+		return nil, fmt.Errorf("forwarded ID token: %w", err)
+	}
 	if err != nil {
 		// A non-nil error here means the token carried a trusted audience
 		// (it was meant to be an SSO-forwarded ID token) but validation

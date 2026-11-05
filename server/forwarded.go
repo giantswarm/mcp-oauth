@@ -425,6 +425,8 @@ func classifyForwardedTokenError(err error) instrumentation.ForwardedIDTokenResu
 		return instrumentation.ForwardedIDTokenResultExpired
 	case errors.Is(err, oidc.ErrTokenNotValidYet):
 		return instrumentation.ForwardedIDTokenResultNotYetValid
+	case errors.Is(err, ErrActorNotTrusted):
+		return instrumentation.ForwardedIDTokenResultActorNotTrusted
 	default:
 		return instrumentation.ForwardedIDTokenResultSigInvalid
 	}
