@@ -825,12 +825,13 @@ func TestTokenExchangeClient_ExchangeError(t *testing.T) {
 		body        string
 		wantCode    string
 		wantDesc    string
+		wantURI     string
 		wantMessage string
 	}{
 		{
 			name: "OAuth error with description", status: http.StatusBadRequest, contentType: "application/json",
 			body:     `{"error":"invalid_target","error_description":"audience not allowed","error_uri":"https://example.com/e"}`,
-			wantCode: "invalid_target", wantDesc: "audience not allowed",
+			wantCode: "invalid_target", wantDesc: "audience not allowed", wantURI: "https://example.com/e",
 			wantMessage: "token exchange failed: invalid_target - audience not allowed",
 		},
 		{
@@ -842,6 +843,11 @@ func TestTokenExchangeClient_ExchangeError(t *testing.T) {
 			name: "not an OAuth error", status: http.StatusBadGateway, contentType: "text/html",
 			body:        "<html><title>502 Bad Gateway</title></html>",
 			wantMessage: `token exchange failed with status 502 (content type "text/html", not an OAuth error response): HTML page "502 Bad Gateway"`,
+		},
+		{
+			name: "proxy JSON error page on a 5xx", status: http.StatusBadGateway, contentType: "application/json",
+			body:     `{"status":502,"error":"Bad Gateway","path":"/token"}`,
+			wantCode: "Bad Gateway", wantMessage: "token exchange failed: Bad Gateway",
 		},
 	}
 	for _, tc := range tests {
@@ -862,6 +868,8 @@ func TestTokenExchangeClient_ExchangeError(t *testing.T) {
 			require.Equal(t, tc.status, exchangeErr.StatusCode)
 			require.Equal(t, tc.wantCode, exchangeErr.Code)
 			require.Equal(t, tc.wantDesc, exchangeErr.Description)
+			require.Equal(t, tc.wantURI, exchangeErr.URI)
+			require.Equal(t, tc.contentType, exchangeErr.ContentType)
 			require.Equal(t, tc.wantCode != "", exchangeErr.IsOAuthError())
 			require.Equal(t, tc.wantMessage, err.Error())
 		})

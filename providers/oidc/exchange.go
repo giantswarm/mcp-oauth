@@ -500,7 +500,10 @@ func (c *TokenExchangeClient) parseErrorResponse(statusCode int, contentType str
 // error response (RFC 6749 §5.2, used by RFC 8693 §2.2.2), or an answer that
 // is not one, such as a proxy's HTML page. Callers branch on Code, the
 // machine-readable error code; Description is human-readable text and not a
-// contract.
+// contract. Decide whether to retry from StatusCode first: Code is filled from
+// any JSON body with a string "error" member, so a 5xx answer can carry one,
+// either the authorization server's own (Dex answers server_error with a 5xx)
+// or a proxy's JSON error page (Spring Boot answers {"error":"Bad Gateway"}).
 type TokenExchangeError struct {
 	// StatusCode is the HTTP status of the answer.
 	StatusCode int
@@ -509,7 +512,7 @@ type TokenExchangeError struct {
 	// Code is the OAuth error code (invalid_request, invalid_client,
 	// invalid_grant, unauthorized_client, unsupported_grant_type,
 	// invalid_scope, invalid_target, ...). Empty when the answer was not an
-	// OAuth error response.
+	// OAuth error response. It can be set on a 5xx answer; see StatusCode.
 	Code string
 	// Description is the error_description, if any.
 	Description string
@@ -519,7 +522,9 @@ type TokenExchangeError struct {
 	body string
 }
 
-// IsOAuthError reports whether the answer was an OAuth error response.
+// IsOAuthError reports whether the answer carried an OAuth error code. On a
+// 5xx answer that code may come from a proxy rather than the authorization
+// server, so it does not mean the authorization server refused the request.
 func (e *TokenExchangeError) IsOAuthError() bool {
 	return e.Code != ""
 }
