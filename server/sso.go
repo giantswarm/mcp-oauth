@@ -23,10 +23,8 @@ import (
 // 4. Extract user info from validated claims
 // 5. Return validation failures; unmatched tokens proceed to issued-token lookup
 
-// validateAndParseForwardedIDToken validates a JWT ID token from a trusted upstream
-// service and returns its verified claims. This is the shared core used by both the
-// validateForwardedIDToken branch of ValidateToken and the direct
-// AcceptForwardedIDToken entry point.
+// validateAndParseForwardedIDToken verifies a JWT ID token whose audience
+// matches Config.TrustedAudiences and returns its claims.
 //
 // Validation steps:
 // 1. Parse the JWT claims without verification to check audience
@@ -34,8 +32,7 @@ import (
 // 3. If matched, validate the JWT signature using the provider's JWKS
 // 4. Return the verified claims
 //
-// Returns (nil, "", nil) if the token doesn't match any trusted audience, so
-// ValidateToken can consult its issued-token mappings.
+// Returns (nil, "", nil) if the token doesn't match any trusted audience.
 // Returns (nil, "", error) if the token matches but validation fails.
 // Returns (claims, matchedAudience, nil) if validation succeeds.
 func (s *Server) validateAndParseForwardedIDToken(ctx context.Context, tokenString string) (*oidc.IDTokenClaims, string, error) {
@@ -105,9 +102,8 @@ func (s *Server) validateAndParseForwardedIDToken(ctx context.Context, tokenStri
 	return idTokenClaims, matchedAudience, nil
 }
 
-// validateForwardedIDToken is the forwarded-token branch of ValidateToken.
-// It returns (nil, nil) when the token doesn't carry a trusted audience, so
-// the caller can consult its issued-token mappings.
+// validateForwardedIDToken returns verified user information for a forwarded
+// token, or (nil, nil) when no trusted audience matches.
 func (s *Server) validateForwardedIDToken(ctx context.Context, tokenString string) (*providers.UserInfo, error) {
 	claims, matchedAudience, err := s.validateAndParseForwardedIDToken(ctx, tokenString)
 	if err != nil {

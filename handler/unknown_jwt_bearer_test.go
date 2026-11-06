@@ -22,14 +22,14 @@ func serveBearer(t *testing.T, h *Handler, bearer string) (*httptest.ResponseRec
 	t.Helper()
 	called := false
 	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true })
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set("Authorization", "Bearer "+bearer)
-	w := httptest.NewRecorder()
-	h.ValidateToken(next).ServeHTTP(w, req)
-	return w, called
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test", nil)
+	request.Header.Set("Authorization", "Bearer "+bearer)
+	response := httptest.NewRecorder()
+	h.ValidateToken(next).ServeHTTP(response, request)
+	return response, called
 }
 
-func TestHandler_ValidateToken_ReturnedIDTokenOfDPoPPairNeedsProof(t *testing.T) {
+func TestHandler_ValidateToken_ReturnedIDTokenMetadataDoesNotAuthorize(t *testing.T) {
 	store := memory.New()
 	t.Cleanup(store.Stop)
 	srv, err := server.New(mock.NewProvider(), store, store, store, &server.Config{
@@ -38,27 +38,33 @@ func TestHandler_ValidateToken_ReturnedIDTokenOfDPoPPairNeedsProof(t *testing.T)
 	require.NoError(t, err)
 	h := New(srv, nil)
 
-	idToken := unsignedJWT(`{"sub":"mock-user-123"}`)
 	require.NoError(t, store.SaveRefreshTokenWithFamily(t.Context(), "refresh-1", "mock-user-123", "client-1", "family-dpop", 0, time.Now().Add(time.Hour)))
-	require.NoError(t, store.SaveTokenMetadata(t.Context(), idToken, storage.TokenMetadata{
-		UserID:    "mock-user-123",
-		ClientID:  "client-1",
-		TokenType: "id",
-		FamilyID:  "family-dpop",
-		JKT:       "pair-jkt",
-	}))
+	for _, test := range []struct {
+		name    string
+		payload string
+		jkt     string
+	}{
+		{"bearer", `{"sub":"mock-user-123"}`, ""},
+		{"DPoP pair", `{"sub":"mock-user-123"}`, "pair-jkt"},
+		{"expired ID token", `{"sub":"mock-user-123","exp":1}`, ""},
+		{"another resource", `{"sub":"mock-user-123","aud":"other-resource"}`, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			idToken := unsignedJWT(test.payload)
+			require.NoError(t, store.SaveTokenMetadata(t.Context(), idToken, storage.TokenMetadata{
+				UserID: "mock-user-123", ClientID: "client-1", TokenType: "id",
+				FamilyID: "family-dpop", JKT: test.jkt, ExpiresAt: time.Now().Add(time.Hour),
+			}))
 
-	w, called := serveBearer(t, h, idToken)
+			response, called := serveBearer(t, h, idToken)
 
-	require.Equal(t, http.StatusUnauthorized, w.Code)
-	require.Contains(t, w.Body.String(), "DPoP")
-	require.False(t, called)
+			require.Equal(t, http.StatusUnauthorized, response.Code)
+			require.Contains(t, response.Body.String(), "Token validation failed")
+			require.False(t, called)
+		})
+	}
 }
 
-// TestHandler_ValidateToken_ForwardedIDTokenOfDPoPPairStaysBearer: the same
-// id_token forwarded and accepted as an SSO token (TrustedAudiences) is not
-// held to the pair's DPoP binding, so a service it was forwarded to can
-// present it back without the pair's key.
 func TestHandler_ValidateToken_ForwardedIDTokenOfDPoPPairStaysBearer(t *testing.T) {
 	h, token, _ := newForwardedTokenHandler(t, slog.LevelInfo)
 	metadataStore, ok := h.server.TokenStore().(storage.TokenMetadataStore)

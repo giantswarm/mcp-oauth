@@ -1518,7 +1518,7 @@ func TestHandler_ValidateToken_SessionIDFromContext_WithoutFamilyID(t *testing.T
 	}
 }
 
-func TestHandler_ValidateToken_IDTokenBearer_ResolvesFamilySession(t *testing.T) {
+func TestHandler_ValidateToken_SessionRequiresIssuedTokenMapping(t *testing.T) {
 	store := memory.New()
 	t.Cleanup(store.Stop)
 	provider := mock.NewProvider()
@@ -1550,7 +1550,7 @@ func TestHandler_ValidateToken_IDTokenBearer_ResolvesFamilySession(t *testing.T)
 		}))
 	}
 
-	sessionFor := func(bearer string) string {
+	sessionFor := func(bearer string, expectedStatus int) string {
 		var capturedSessionID string
 		nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 			capturedSessionID, _ = SessionIDFromContext(r.Context())
@@ -1559,12 +1559,12 @@ func TestHandler_ValidateToken_IDTokenBearer_ResolvesFamilySession(t *testing.T)
 		request.Header.Set("Authorization", "Bearer "+bearer)
 		response := httptest.NewRecorder()
 		handler.ValidateToken(nextHandler).ServeHTTP(response, request)
-		require.Equal(t, http.StatusOK, response.Code)
+		require.Equal(t, expectedStatus, response.Code)
 		return capturedSessionID
 	}
 
-	require.Equal(t, familyID, sessionFor(accessToken))
-	require.Equal(t, familyID, sessionFor(idToken))
+	require.Equal(t, familyID, sessionFor(accessToken, http.StatusOK))
+	require.Empty(t, sessionFor(idToken, http.StatusUnauthorized))
 }
 
 func TestHandler_ValidateToken_ForwardedIDToken_UsesBearerSession(t *testing.T) {
@@ -1642,7 +1642,6 @@ func TestHandler_ValidateToken_PrincipalSessionIdentity(t *testing.T) {
 	require.Equal(t, familyID, sessionFor(family))
 }
 
-// Returned ID-token metadata binds a session but cannot replace provider validation.
 func TestHandler_ValidateToken_IDTokenMetadata_DoesNotGrantAuth(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()

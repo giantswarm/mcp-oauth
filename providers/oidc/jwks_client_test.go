@@ -743,9 +743,6 @@ func TestValidateIDToken_RefetchOnUnknownKid(t *testing.T) {
 	})
 }
 
-// TestValidateIDToken_ConcurrentUnknownKidWaitsForRefetch: a token with the
-// rotated kid that arrives while another validation's refetch is in flight is
-// validated against the refetched set, not refused.
 func TestValidateIDToken_ConcurrentUnknownKidWaitsForRefetch(t *testing.T) {
 	oldKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)

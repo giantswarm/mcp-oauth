@@ -627,7 +627,7 @@ When `TrustedAudiences` is configured, the token validation follows a prioritize
 2. **JWKS Validation**: If the provider supports JWKS, validate the JWT signature using the provider's JWKS endpoint
 3. **Audience Check**: Verify the JWT's `aud` claim matches one of the `TrustedAudiences`
 4. **Claims Extraction**: Extract user info directly from JWT claims (sub, email, name, groups, etc.)
-5. **Rejection**: A JWKS validation failure in step 2 is final (audit `forwarded_id_token_invalid`). An otherwise unknown compact JWT, signed or encrypted, reaches userinfo only when stored metadata identifies the exact upstream id_token returned with a token pair, before its expiry and while its refresh-token family is known and active. This exception requires `storage.RefreshTokenFamilyByIDStore`; missing or revoked families are refused (audit `id_token_family_revoked`). Other unknown JWTs are refused with `server.ErrUnknownJWTBearer` (audit `unknown_jwt_bearer`). This validation is unconditional. Opaque bearers and tokens resolved through the server's issued-token mappings retain their userinfo path.
+5. **Rejection**: A JWKS validation failure in step 2 is final (audit `forwarded_id_token_invalid`). A compact JWT, signed or encrypted, that no validation path accepts and that has no issued-token mapping is refused with `server.ErrUnknownJWTBearer` (audit `unknown_jwt_bearer`). Stored ID-token metadata does not authorize a bearer or bind it to a token pair's DPoP key. This validation is unconditional. Opaque bearers and tokens resolved through the server's issued-token mappings retain their userinfo path.
 
 This approach is critical for ID token forwarding scenarios. Many Identity Providers (IdPs) reject ID tokens when passed to their userinfo endpoint, as userinfo expects access tokens. By validating JWTs via JWKS first, the library can correctly handle forwarded ID tokens.
 
@@ -686,7 +686,7 @@ Providers without JWKS support validate opaque bearers and stored provider crede
 
 ### Direct Acceptance: `Server.AcceptForwardedIDToken`
 
-`Server.ValidateToken` checks forwarded JWTs through JWKS when their audience matches `TrustedAudiences`; a validation failure is final. Other JWTs must resolve through an issued-token mapping or match the exact returned ID token of a known active session. Configure the intended SSO audiences before upgrading, or use the server's OAuth-issued tokens. `Server.AcceptForwardedIDToken` accepts only verified forwarded tokens and does not consult stored credentials.
+`Server.ValidateToken` checks forwarded JWTs through JWKS when their audience matches `TrustedAudiences`; a validation failure is final. Other JWTs must resolve through an issued-token mapping. Use the server's OAuth-issued access tokens for local requests; configure `AccessTokenFormatJWT` when a client needs a JWT with the session's audience, scopes and DPoP binding. An upstream ID token may be shared across sessions and does not inherit those properties from its stored metadata. Configure the intended SSO audiences for forwarded ID tokens. `Server.AcceptForwardedIDToken` accepts only verified forwarded tokens and does not consult stored credentials.
 
 Use it when an upstream intermediary (aggregator, bridge, sidecar) already holds a valid ID token from the trusted IdP and presents it as the Bearer credential. See [silent-authentication.md](./silent-authentication.md) for the full usage guide; this section covers the security properties and operator-facing configuration.
 
