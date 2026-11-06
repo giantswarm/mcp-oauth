@@ -297,6 +297,13 @@ func logRedirectURISecurityStatus(config *Config, logger *slog.Logger) {
 			"recommendation", "Only enable for internal/VPN deployments with proper network controls",
 			"learn_more", "https://owasp.org/www-community/attacks/Server_Side_Request_Forgery")
 	}
+	if len(config.AllowPrivateIPRedirectURIHosts) > 0 {
+		logger.Warn("SECURITY WARNING: AllowPrivateIPRedirectURIHosts is set",
+			"hosts", config.AllowPrivateIPRedirectURIHosts,
+			"risk", "redirect URIs on these hosts may resolve to private IP ranges",
+			"recommendation", "List only hosts that serve a known client's callback",
+			"cwe", "CWE-918")
+	}
 	if config.AllowLinkLocalRedirectURIs {
 		logger.Warn("SECURITY WARNING: Link-local redirect URIs are ALLOWED",
 			"risk", "SSRF to cloud metadata services (169.254.169.254 - AWS/GCP/Azure)",

@@ -435,25 +435,46 @@ The following security controls are **automatically enabled**:
 | `DNSValidationStrict` | `true` | Fail-closed on DNS failures |
 | `ValidateRedirectURIAtAuthorization` | `true` | Re-validate at authorization time (TOCTOU protection) |
 | `AllowLocalhostRedirectURIs` | `false` | Loopback blocked by default (set to `true` for native apps) |
-| `AllowPrivateIPRedirectURIs` | `false` | RFC 1918 private IPs blocked |
+| `AllowPrivateIPRedirectURIs` | `false` | RFC 1918 private IPv4 and RFC 4193 IPv6 unique-local IPs blocked |
+| `AllowPrivateIPRedirectURIHosts` | empty | Hostnames whose redirect URIs may resolve to RFC 1918 private IPv4 or RFC 4193 IPv6 unique-local IPs; every other host keeps the private-IP guard |
 | `AllowLinkLocalRedirectURIs` | `false` | 169.254.x.x/fe80:: blocked (cloud SSRF) |
 
 **Note for Native/CLI App Support:** If your OAuth server needs to support native applications (desktop apps, CLI tools), you must set `AllowLocalhostRedirectURIs: true` per [RFC 8252 Section 7.3](https://datatracker.ietf.org/doc/html/rfc8252#section-7.3). This allows HTTP on loopback addresses (`localhost`, `127.x.x.x`, `::1`) which is required for native app OAuth flows.
 
 ### Escape Hatches for Less Strict Validation
 
-If you need to reduce security for specific use cases, use the `Allow*` flags:
+If you need to reduce security for specific use cases, configure only the exception you need. The following examples are alternatives.
+
+For native applications, allow loopback callbacks:
 
 ```go
 config := &server.Config{
     // Native app support (RFC 8252) - allows HTTP on localhost/loopback
     AllowLocalhostRedirectURIs: true,
+}
+```
 
-    // Internal/VPN deployments - allows RFC 1918 private IPs
+For known callbacks on private hostnames, list those hostnames. This allows RFC 1918 private IPv4 and RFC 4193 IPv6 unique-local addresses for listed hosts only. Literal private IP redirect URIs and link-local addresses remain blocked.
+
+```go
+config := &server.Config{
+    AllowPrivateIPRedirectURIHosts: []string{"gateway.internal.example.com"},
+}
+```
+
+For internal/VPN deployments that require private addresses for every host, use the global exception. `AllowPrivateIPRedirectURIs: true` overrides the hostname list, including when both are set:
+
+```go
+config := &server.Config{
     // WARNING: Enables SSRF to internal networks
     AllowPrivateIPRedirectURIs: true,
+}
+```
 
-    // Rarely needed - allows link-local addresses
+For deployments that require link-local callbacks, enable that exception separately:
+
+```go
+config := &server.Config{
     // WARNING: Enables SSRF to cloud metadata services (169.254.169.254)
     AllowLinkLocalRedirectURIs: true,
 }
