@@ -221,6 +221,10 @@ func (p *ActorPolicy) validate() error {
 // current actor the trusted issuer's ActorPolicy does not accept.
 var ErrActorNotTrusted = errors.New("act claim names an actor that is not trusted")
 
+// auditReasonTrustedIssuerActorNotTrusted is the audit reason of a bearer
+// refused with ErrActorNotTrusted.
+const auditReasonTrustedIssuerActorNotTrusted = "trusted_issuer_actor_not_trusted"
+
 // OIDCValidator validates JWTs from statically configured trusted issuers.
 // The unverified iss claim routes the token to its TrustedIssuer entry;
 // signature, audience, and AllowedClaims checks against that entry are

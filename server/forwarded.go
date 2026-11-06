@@ -239,6 +239,10 @@ func (s *Server) AcceptTrustedIssuerToken(ctx context.Context, bearerToken strin
 	if errors.Is(err, ErrIssuerNotTrusted) {
 		return nil, ErrIssuerNotTrusted
 	}
+	if errors.Is(err, ErrActorNotTrusted) {
+		s.Auditor.LogAuthFailure(ctx, "", "", "", auditReasonTrustedIssuerActorNotTrusted)
+		return nil, fmt.Errorf("trusted issuer token validation failed: %w", err)
+	}
 	if err != nil {
 		s.Auditor.LogAuthFailure(ctx, "", "", "", "trusted_issuer_token_invalid")
 		return nil, fmt.Errorf("trusted issuer token validation failed: %w", err)

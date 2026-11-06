@@ -1,11 +1,14 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
+	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
 )
@@ -70,20 +73,49 @@ func TestAcceptForwardedIDToken_ActorPolicy(t *testing.T) {
 	}
 }
 
-// A forwarded token refused by the actor policy is rejected outright, never
-// handed to the provider's userinfo endpoint, which would accept it without
-// its act claim.
-func TestValidateForwardedIDTokenBranch_ActorRefusalIsFinal(t *testing.T) {
-	h := newForwardedTokenHarness(t)
-	h.withProviderActorPolicy(t, &ActorPolicy{Issuers: []string{"https://actors.example"}})
-	logger, logBuf := captureLogger()
-	h.srv.Auditor = security.NewAuditor(logger, true)
+// A token from an issuer that is both the provider and a trusted issuer, with
+// an act the policy refuses, is rejected with its own audit reason and never
+// reaches the provider's userinfo endpoint, which would accept it without its
+// act claim.
+func TestTrustedIssuerBearer_ActorRefusal(t *testing.T) {
+	unlisted := &oidc.ActorClaim{Issuer: "https://other.example", Subject: "x"}
 
-	userInfo, err := h.srv.validateForwardedIDTokenBranch(t.Context(),
-		h.signDelegatedToken(t, &oidc.ActorClaim{Issuer: "https://other.example", Subject: "x"}, nil))
-	require.ErrorIs(t, err, ErrActorNotTrusted)
-	require.Nil(t, userInfo)
-	require.True(t, containsAuthFailure(logBuf.String(), "forwarded_id_token_actor_not_trusted"), "audit log: %s", logBuf.String())
+	tests := []struct {
+		name     string
+		validate func(h *forwardedTokenHarness, token string) error
+	}{
+		{name: "ValidateToken", validate: func(h *forwardedTokenHarness, token string) error {
+			_, err := h.srv.ValidateToken(t.Context(), token)
+			return err
+		}},
+		{name: "AcceptTrustedIssuerToken", validate: func(h *forwardedTokenHarness, token string) error {
+			_, err := h.srv.AcceptTrustedIssuerToken(t.Context(), token)
+			return err
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newForwardedTokenHarness(t)
+			v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
+				Issuer:           h.issuer,
+				JwksURL:          h.jwksServer.URL,
+				AllowedAudiences: []string{h.audience},
+				Actors:           &ActorPolicy{Issuers: []string{"https://actors.example"}},
+			}}, h.srv.jwksClient)
+			require.NoError(t, err)
+			h.srv.trustedIssuerValidator = v
+			h.provider.ValidateTokenFunc = func(context.Context, string) (*providers.UserInfo, error) {
+				t.Error("provider userinfo reached")
+				return nil, errors.New("unexpected userinfo call")
+			}
+			logger, logBuf := captureLogger()
+			h.srv.Auditor = security.NewAuditor(logger, true)
+
+			err = tc.validate(h, h.signDelegatedToken(t, unlisted, nil))
+			require.ErrorIs(t, err, ErrActorNotTrusted)
+			require.True(t, containsAuthFailure(logBuf.String(), auditReasonTrustedIssuerActorNotTrusted), "audit log: %s", logBuf.String())
+		})
+	}
 }
 
 func TestAcceptForwardedIDToken_Scopes(t *testing.T) {
@@ -95,12 +127,31 @@ func TestAcceptForwardedIDToken_Scopes(t *testing.T) {
 }
 
 func TestUserInfoFromJWTClaims_Scopes(t *testing.T) {
-	info := userInfoFromJWTClaims(map[string]any{claimSub: "user", "scope": "openid tools:read"})
-	require.Equal(t, []string{"openid", "tools:read"}, info.Scopes)
-
-	info = userInfoFromJWTClaims(map[string]any{claimSub: "user", "scope": []any{"openid", "tools:read"}})
-	require.Equal(t, []string{"openid", "tools:read"}, info.Scopes)
-
-	info = userInfoFromJWTClaims(map[string]any{claimSub: "user"})
-	require.Empty(t, info.Scopes)
+	tests := []struct {
+		name    string
+		scope   any
+		want    []string
+		wantErr bool
+	}{
+		{name: "space-delimited string", scope: "openid tools:read", want: []string{"openid", "tools:read"}},
+		{name: "array of strings", scope: []any{"openid", "tools:read"}, want: []string{"openid", "tools:read"}},
+		{name: "absent"},
+		{name: "number refused", scope: 42.0, wantErr: true},
+		{name: "array with a number refused", scope: []any{"openid", 1.0}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			claims := map[string]any{claimSub: "user"}
+			if tc.scope != nil {
+				claims["scope"] = tc.scope
+			}
+			info, err := userInfoFromJWTClaims(claims)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.want, info.Scopes)
+		})
+	}
 }

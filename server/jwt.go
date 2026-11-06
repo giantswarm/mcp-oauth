@@ -2,9 +2,9 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -97,7 +97,10 @@ func (s *Server) validateSelfIssuedJWT(ctx context.Context, tokenString string) 
 		return nil, nil, err
 	}
 
-	userInfo := userInfoFromJWTClaims(claims)
+	userInfo, err := userInfoFromJWTClaims(claims)
+	if err != nil {
+		return nil, nil, err
+	}
 	s.logSelfIssuedJWTAccepted(ctx, tokenString, userInfo, jti)
 	return userInfo, claims, nil
 }
@@ -275,7 +278,7 @@ func audiencesFromClaim(v any) []string {
 // userInfoFromJWTClaims reconstructs UserInfo from validated JWT claims.
 // TokenSource is set to TokenSourceJWT so downstream consumers can dispatch
 // correctly (no TokenStore lookup will succeed for a JWT bearer).
-func userInfoFromJWTClaims(claims map[string]any) *providers.UserInfo {
+func userInfoFromJWTClaims(claims map[string]any) (*providers.UserInfo, error) {
 	info := &providers.UserInfo{
 		TokenSource: providers.TokenSourceJWT,
 	}
@@ -291,15 +294,16 @@ func userInfoFromJWTClaims(claims map[string]any) *providers.UserInfo {
 	if v, ok := claims["name"].(string); ok {
 		info.Name = v
 	}
-	switch v := claims["scope"].(type) {
-	case string:
-		info.Scopes = strings.Fields(v)
-	case []any:
-		for _, e := range v {
-			if scope, ok := e.(string); ok {
-				info.Scopes = append(info.Scopes, scope)
-			}
+	if raw, ok := claims["scope"]; ok {
+		encoded, err := json.Marshal(raw)
+		if err != nil {
+			return nil, fmt.Errorf("scope claim: %w", err)
 		}
+		var scopes oidc.ScopeClaim
+		if err := json.Unmarshal(encoded, &scopes); err != nil {
+			return nil, err
+		}
+		info.Scopes = scopes
 	}
 	switch g := claims["groups"].(type) {
 	case []string:
@@ -311,7 +315,7 @@ func userInfoFromJWTClaims(claims map[string]any) *providers.UserInfo {
 			}
 		}
 	}
-	return info
+	return info, nil
 }
 
 // logSelfIssuedJWTAccepted records a success event for audit trails. The

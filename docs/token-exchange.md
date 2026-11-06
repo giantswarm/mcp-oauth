@@ -37,7 +37,7 @@ srv, _ := oauth.NewServer(
 
 `WithTrustedIssuers` registers an `OIDCValidator` for `id_token`, `access_token`, and `jwt` subject token types **and** as a Bearer validator on `ValidateToken`. A peer-issued JWT presented at `/mcp` is accepted when its `iss` matches a configured entry; the audience is checked against the entry's `AllowedAudiences` (or the server's `ResourceIdentifier` when empty), and RFC 9068 §4 requires the `typ: at+jwt` header on this path. The `Issuer` and `JwksURL` are independent — set `JwksURL` explicitly when the issuer's discovery document is unavailable or its JWKS is hosted separately.
 
-`AllowedScopes` caps the scopes the server will include in the issued token for this issuer. `nil` means no restriction.
+`AllowedScopes` caps the scopes the server will include in the issued token for this issuer. `nil` means no restriction. A subject token's own `scope` claim, when present, narrows the grant further: an exchange never issues a scope the subject token does not carry.
 
 ### Restricting which tokens are accepted (AllowedClaims)
 
@@ -101,7 +101,7 @@ server.TrustedIssuer{
 
 `Subjects` maps a listed issuer to a pattern, in `AllowedClaims` syntax, that the current actor's `sub` must match. An issuer without an entry accepts any `sub`, so an issuer shared by many workloads, such as a cluster's ServiceAccount issuer, needs one. `NewOIDCValidator` refuses a pattern for an issuer not in `Issuers` and a malformed pattern.
 
-`Actors: &server.ActorPolicy{}` refuses every token from the issuer that carries `act`. With `Actors` unset, `act` is accepted unchecked. A refusal wraps `server.ErrActorNotTrusted`.
+`Actors: &server.ActorPolicy{}` refuses every token from the issuer that carries `act`. With `Actors` unset, `act` is accepted unchecked. A refusal wraps `server.ErrActorNotTrusted`; on a bearer it is audited with reason `trusted_issuer_actor_not_trusted`.
 
 The policy also applies to forwarded ID tokens (`TrustedAudiences`) from the provider's issuer when that issuer has a `TrustedIssuer` entry. The accepted token's `scope` claim is available as `UserInfo.Scopes`.
 
@@ -135,7 +135,7 @@ grant_type=urn:ietf:params:oauth:grant-type:token-exchange
 
 Optional parameters:
 - `resource` (RFC 8707): target resource server URI to bind the issued token's `aud`. When omitted, `aud` defaults to the server's own `ResourceIdentifier`.
-- `scope`: requested scope subset; intersected with the issuer's `AllowedScopes`.
+- `scope`: requested scope subset; intersected with the issuer's `AllowedScopes` and with the subject token's `scope` claim when it has one.
 - `DPoP` header: if present, the issued token is DPoP-bound (see [DPoP guide](./dpop.md)).
 
 Self-issued exchange policy:

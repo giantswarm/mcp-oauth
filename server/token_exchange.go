@@ -109,7 +109,9 @@ type SelfIssuedExchangeRequest struct {
 // against the registered SubjectTokenValidator, then issues a JWT access token
 // this server signs. req.Resource becomes the aud claim, defaulting to the
 // server's own resource identifier when empty. req.Scope is intersected against
-// the per-issuer AllowedScopes envelope from TrustedIssuer configuration.
+// the per-issuer AllowedScopes envelope from TrustedIssuer configuration and
+// against the subject token's own scope claim, when it carries one, so an
+// exchange never widens a delegated token's scope (RFC 8693 §5).
 // req.DPoPJKT, when non-empty, is written into the cnf.jkt claim (RFC 9449 §6.1).
 //
 // When an actor token is present it is validated against the server's trusted
@@ -165,7 +167,7 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 		return nil, err
 	}
 
-	grantedScope := grantedExchangeScope(req.Scope, identity.AllowedScopes)
+	grantedScope := grantedExchangeScope(req.Scope, exchangeScopeEnvelope(identity))
 
 	now := time.Now().UTC()
 	ttl := time.Duration(s.Config.AccessTokenTTL) * time.Second
@@ -574,17 +576,40 @@ func (e *TokenExchangeUnsupportedTypeError) Role() string {
 	return e.role
 }
 
+// exchangeScopeEnvelope returns the scopes an exchange of identity may grant:
+// the issuer's AllowedScopes, narrowed to the subject token's scope claim when
+// the token carries one. Nil means no restriction; an empty non-nil slice
+// grants nothing.
+func exchangeScopeEnvelope(identity *SubjectIdentity) []string {
+	var envelope []string
+	if len(identity.AllowedScopes) > 0 {
+		envelope = identity.AllowedScopes
+	}
+	if identity.Claims == nil || identity.Claims.Scope == nil {
+		return envelope
+	}
+	subjectScopes := []string(identity.Claims.Scope)
+	if envelope == nil {
+		return subjectScopes
+	}
+	narrowed := intersectScopes(envelope, subjectScopes)
+	if narrowed == nil {
+		return []string{}
+	}
+	return narrowed
+}
+
 // grantedExchangeScope computes the scope for a token-exchange response.
-// When allowedScopes is nil there is no per-issuer restriction.
-// When scope is empty all allowed scopes are granted.
-// Otherwise the result is the intersection.
-func grantedExchangeScope(requestedScope string, allowedScopes []string) string {
-	if len(allowedScopes) == 0 {
+// When envelope is nil there is no restriction and the requested scope is
+// granted. When scope is empty the whole envelope is granted. Otherwise the
+// result is the intersection.
+func grantedExchangeScope(requestedScope string, envelope []string) string {
+	if envelope == nil {
 		return requestedScope
 	}
 	if requestedScope == "" {
-		return strings.Join(allowedScopes, " ")
+		return strings.Join(envelope, " ")
 	}
-	granted := intersectScopes(strings.Fields(requestedScope), allowedScopes)
+	granted := intersectScopes(strings.Fields(requestedScope), envelope)
 	return strings.Join(granted, " ")
 }
