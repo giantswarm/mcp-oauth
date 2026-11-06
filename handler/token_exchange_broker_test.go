@@ -67,6 +67,9 @@ func setupBrokeredExchangeHandler(t *testing.T, exchanger server.Exchanger, allo
 	validator := &fakeSubjectValidator{identity: server.SubjectIdentity{
 		Subject: "user@example.com",
 		Issuer:  "https://dex.example.com",
+		Claims: &oidc.IDTokenClaims{Claims: jwt.Claims{
+			Issuer: "https://dex.example.com", Subject: "user@example.com", Audience: jwt.Audience{"broker-client"},
+		}},
 	}}
 
 	srvOpts := []server.Option{
@@ -87,6 +90,9 @@ func setupBrokeredExchangeHandler(t *testing.T, exchanger server.Exchanger, allo
 	if len(allowedAudiences) > 0 {
 		srv.Config.TokenExchangeClientAudiences = map[string][]string{
 			client.ClientID: allowedAudiences,
+		}
+		srv.Config.TokenExchangeClientSubjectPolicies = map[string][]server.BrokerSubjectPolicy{
+			client.ClientID: {{Issuer: "https://dex.example.com", Audiences: []string{"broker-client"}}},
 		}
 	}
 
@@ -124,16 +130,21 @@ func TestHandleBrokeredTokenExchange_ClientSubjectPolicy(t *testing.T) {
 		issuer   string
 		audience string
 		status   int
+		noPolicy bool
 	}{
 		{name: "intended subject", issuer: "https://dex.example.com", audience: "agent-manager", status: http.StatusOK},
 		{name: "another recipient", issuer: "https://dex.example.com", audience: "model-manager", status: http.StatusBadRequest},
 		{name: "another identity issuer", issuer: "https://other.example.com", audience: "agent-manager", status: http.StatusBadRequest},
+		{name: "missing policy", issuer: "https://dex.example.com", audience: "agent-manager", status: http.StatusBadRequest, noPolicy: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			exchanger := &stubExchanger{result: happyDownstreamResult()}
 			harness := setupBrokeredExchangeHandler(t, exchanger, []string{"gaggle"}, "confidential")
 			harness.srv.Config.TokenExchangeClientSubjectPolicies = map[string][]server.BrokerSubjectPolicy{
 				harness.clientID: {{Issuer: "https://dex.example.com", Audiences: []string{"agent-manager"}}},
+			}
+			if test.noPolicy {
+				harness.srv.Config.TokenExchangeClientSubjectPolicies = nil
 			}
 			harness.validator.identity.Issuer = test.issuer
 			harness.validator.identity.Claims = &oidc.IDTokenClaims{Claims: jwt.Claims{Issuer: test.issuer, Subject: "same-person", Audience: jwt.Audience{test.audience}}}
@@ -148,7 +159,7 @@ func TestHandleBrokeredTokenExchange_ClientSubjectPolicy(t *testing.T) {
 			}
 			var body map[string]any
 			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
-			require.Equal(t, "invalid_grant", body["error"])
+			require.Equal(t, constants.ErrorCodeInvalidRequest, body["error"])
 			require.Nil(t, exchanger.gotReq)
 			require.NotContains(t, response.Body.String(), "downstream-mc-token")
 			require.NotContains(t, harness.logs.String(), "subject-id-token")
@@ -327,7 +338,7 @@ func TestHandleBrokeredTokenExchange_ActorTokenForwarded(t *testing.T) {
 	// Use distinct identities for subject and actor so the self-delegation short-circuit
 	// does not trigger and the actor is forwarded with an act claim.
 	h.validator.byToken = map[string]*server.SubjectIdentity{
-		"subject-id-token": {Subject: "user@example.com", Issuer: "https://dex.example.com"},
+		"subject-id-token": &h.validator.identity,
 		"actor-jwt":        {Subject: "agent@example.com", Issuer: "https://dex.example.com"},
 	}
 

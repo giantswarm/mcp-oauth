@@ -150,7 +150,7 @@ func (s *Server) BrokeredExchange(ctx context.Context, req BrokeredExchangeReque
 	}
 	if !s.brokerSubjectAllowed(req.ClientID, identity) {
 		s.auditExchangeFailure(ctx, req.ClientID, req.Audience, sessionID, "token_exchange_subject_not_allowed", nil)
-		return nil, errors.New("subject is not authorized for this broker client")
+		return nil, ErrBrokerSubjectNotAllowed
 	}
 
 	actor, err := s.resolveExchangeActor(ctx, req.Actor, identity, auditCtx)

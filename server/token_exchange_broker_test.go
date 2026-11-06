@@ -9,9 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/mcp-oauth/providers/mock"
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
@@ -75,10 +77,18 @@ func newBrokerTestServer(t *testing.T, exchanger Exchanger, allowlist map[string
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	cfg := &Config{
-		Issuer:                       "https://broker.example.com",
-		DisableNonceEchoRequirement:  true,
-		TokenExchangeClientAudiences: allowlist,
+	configuration := &Config{
+		Issuer:                             "https://broker.example.com",
+		DisableNonceEchoRequirement:        true,
+		TokenExchangeClientAudiences:       allowlist,
+		TokenExchangeClientSubjectPolicies: make(map[string][]BrokerSubjectPolicy),
+	}
+	for clientID, audiences := range allowlist {
+		if len(audiences) > 0 {
+			configuration.TokenExchangeClientSubjectPolicies[clientID] = []BrokerSubjectPolicy{
+				{Issuer: "https://dex.example.com", Audiences: []string{"broker-client"}},
+			}
+		}
 	}
 
 	opts := []Option{WithAuditor(security.NewAuditor(logger, true))}
@@ -89,16 +99,23 @@ func newBrokerTestServer(t *testing.T, exchanger Exchanger, allowlist map[string
 		opts = append(opts, WithSubjectTokenValidator(SubjectTokenTypeIDToken, validator))
 	}
 
-	srv, err := New(mock.NewProvider(), store, store, store, cfg, logger, opts...)
+	srv, err := New(mock.NewProvider(), store, store, store, configuration, logger, opts...)
 	require.NoError(t, err)
 	return srv, &buf
 }
 
 func happyBrokerValidator() SubjectTokenValidator {
-	return &stubSubjectValidator{identity: SubjectIdentity{
-		Subject: brokerTestUserSub,
-		Issuer:  "https://dex.example.com",
-	}}
+	return &stubSubjectValidator{identity: *brokerTestIdentity(brokerTestUserSub, "https://dex.example.com")}
+}
+
+func brokerTestIdentity(subject, issuer string) *SubjectIdentity {
+	return &SubjectIdentity{
+		Subject: subject,
+		Issuer:  issuer,
+		Claims: &oidc.IDTokenClaims{Claims: jwt.Claims{
+			Subject: subject, Issuer: issuer, Audience: jwt.Audience{"broker-client"},
+		}},
+	}
 }
 
 func auditDetails(t *testing.T, buf *bytes.Buffer, eventType string) map[string]any {
@@ -319,7 +336,7 @@ func TestBrokeredExchange_ActorPresent(t *testing.T) {
 		byToken: map[string]*SubjectIdentity{
 			"actor-jwt": &actorIdentity,
 		},
-		defaultIdentity: &SubjectIdentity{Subject: brokerTestUserSub, Issuer: "https://dex.example.com"},
+		defaultIdentity: brokerTestIdentity(brokerTestUserSub, "https://dex.example.com"),
 	}
 	ex := &stubExchanger{result: &ExchangerResult{
 		AccessToken: "downstream-token",
@@ -377,7 +394,7 @@ func TestBrokeredExchange_ActorUntrustedIssuer(t *testing.T) {
 		byErr: map[string]error{
 			"actor-jwt": untrustedErr,
 		},
-		defaultIdentity: &SubjectIdentity{Subject: brokerTestUserSub, Issuer: "https://dex.example.com"},
+		defaultIdentity: brokerTestIdentity(brokerTestUserSub, "https://dex.example.com"),
 	}
 	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "downstream-token"}}
 	srv, buf := newBrokerTestServer(t, ex,
@@ -429,16 +446,19 @@ func TestBrokeredExchange_SelfDelegationIsNoOp(t *testing.T) {
 	// actor is silently dropped: the exchange proceeds with no act claim.
 	const sub = "service-a"
 	const iss = "https://idp.example.com"
-	identity := SubjectIdentity{Subject: sub, Issuer: iss}
+	identity := brokerTestIdentity(sub, iss)
 	validator := &stubTokenValidator{
 		byToken: map[string]*SubjectIdentity{
-			"actor-jwt":   &identity,
-			"subject-jwt": &identity,
+			"actor-jwt":   identity,
+			"subject-jwt": identity,
 		},
 	}
 	ex := &stubExchanger{result: &ExchangerResult{AccessToken: "downstream-token", ExpiresAt: time.Now().Add(time.Minute)}}
 	srv, _ := newBrokerTestServer(t, ex,
 		map[string][]string{"backstage": {"gaggle"}}, validator)
+	srv.Config.TokenExchangeClientSubjectPolicies["backstage"] = []BrokerSubjectPolicy{
+		{Issuer: iss, Audiences: []string{"broker-client"}},
+	}
 
 	tok, err := srv.BrokeredExchange(t.Context(), BrokeredExchangeRequest{
 		SubjectExchange: SubjectExchange{Subject: TypedToken{Token: "subject-jwt", Type: SubjectTokenTypeIDToken}, Actor: TypedToken{Token: "actor-jwt", Type: SubjectTokenTypeIDToken}},

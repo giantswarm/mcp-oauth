@@ -216,6 +216,12 @@ srv, _ := server.New(provider, store, store, store,
         TokenExchangeClientAudiences: map[string][]string{
             "backstage-backend-client-id": {"gaggle", "gauss"},
         },
+        TokenExchangeClientSubjectPolicies: map[string][]server.BrokerSubjectPolicy{
+            "backstage-backend-client-id": {{
+                Issuer: "https://dex.example.com",
+                Audiences: []string{"backstage-backend-client-id"},
+            }},
+        },
     },
     logger,
     server.WithTrustedIssuers([]server.TrustedIssuer{ /* subject-token issuers */ }),
@@ -227,9 +233,15 @@ Return an error wrapping `server.ErrInvalidTarget` from `Exchange` to signal an 
 
 ### Policy enforced by the broker path
 
+Client authentication identifies the backend making the exchange request. The
+subject policy identifies which user tokens it may exchange. The backend's
+client ID and the subject token's audience need not be the same. A single broker
+client still needs a subject policy when global trusted-issuer rules also accept
+tokens for other applications or MCP/SSO flows.
+
 - **Client authentication is mandatory** and only confidential clients are accepted — the allowlist is keyed by client ID, which is spoofable for public clients (`unauthorized_client` otherwise).
 - **Per-client audience allowlist**: `Config.TokenExchangeClientAudiences`; a client requesting an audience outside its list gets `invalid_target`. Without `WithExchanger`, every audience request gets `invalid_target`.
-- **Per-client subject policy**: `Config.TokenExchangeClientSubjectPolicies` optionally restricts the verified subject's identity issuer and token audience for each confidential client. A policy matches an issuer and at least one audience from that issuer's configured list. It narrows global trusted-issuer validation; it never admits an otherwise invalid token. Configured clients without a matching pair receive `invalid_grant` before the downstream exchanger runs. Clients absent from the map retain global trusted-issuer validation. This policy neither changes the downstream token's audience nor narrows its permissions. Actor validation remains governed by the configured trusted-issuer actor policy.
+- **Per-client subject policy**: `Config.TokenExchangeClientSubjectPolicies` restricts the verified subject's identity issuer and token audience for every confidential broker client. Every client with a non-empty `TokenExchangeClientAudiences` entry must have a non-empty subject policy, or startup fails. A policy matches an issuer and at least one audience from that issuer's configured list. It narrows global trusted-issuer validation; it never admits an otherwise invalid token. Missing policies and subjects without a matching pair receive `invalid_request` before the downstream exchanger runs (RFC 8693 §2.2.2). This policy neither changes the downstream token's audience nor narrows its permissions. Actor validation remains governed by the configured trusted-issuer actor policy.
 - **No refresh tokens** are issued; `expires_in` is bounded by the downstream token's expiry and clients are expected to re-exchange.
 - **DPoP is rejected** on this path (`invalid_request`) — the downstream issuer never saw the proof, so the binding would be a lie.
 - **Audit**: success and failure events carry the client ID, subject, requested audience, granted scope, and the deterministic cross-hop session ID (`ext-<hex>`, same derivation as forwarded-token acceptance, keyed by `Config.SessionIDHMACKey`) so broker audit lines correlate with downstream MCP server audit lines for the same token.
@@ -252,6 +264,14 @@ TokenExchangeClientSubjectPolicies: map[string][]server.BrokerSubjectPolicy{
 The host still authorizes the target's grant ownership and actor policy before
 releasing a downstream credential. Configuring this policy does not establish
 that two identities from different issuers own the same grant.
+
+When upgrading an existing broker, add a `TokenExchangeClientSubjectPolicies`
+entry for each client with allowed output audiences. Set each policy's issuer
+and audiences to the claims of the subject tokens that client is authorized to
+present, and keep those tokens within the global trusted-issuer rules. There is
+no feature flag or fallback to shared subject rules for clients missing a policy.
+In-process callers can identify policy refusals with
+`errors.Is(err, server.ErrBrokerSubjectNotAllowed)`.
 
 ### Client request
 

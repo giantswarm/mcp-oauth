@@ -1,10 +1,15 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 )
+
+// ErrBrokerSubjectNotAllowed means the verified subject does not match the
+// broker client's issuer/audience policy (RFC 8693 §2.2.2 invalid_request).
+var ErrBrokerSubjectNotAllowed = errors.New("subject is not authorized for this broker client")
 
 // BrokerSubjectPolicy binds an identity issuer and its accepted subject-token
 // audiences to a confidential broker client. Global token validation still applies.
@@ -20,12 +25,14 @@ func (p BrokerSubjectPolicy) valid() bool {
 }
 
 func (c *Config) validateBrokerSubjectPolicies() error {
+	for clientID, audiences := range c.TokenExchangeClientAudiences {
+		if len(audiences) > 0 && len(c.TokenExchangeClientSubjectPolicies[clientID]) == 0 {
+			return fmt.Errorf("TokenExchangeClientSubjectPolicies: client %q needs a subject policy", clientID)
+		}
+	}
 	for clientID, policies := range c.TokenExchangeClientSubjectPolicies {
 		if strings.TrimSpace(clientID) == "" || len(c.TokenExchangeClientAudiences[clientID]) == 0 {
 			return fmt.Errorf("TokenExchangeClientSubjectPolicies: client %q needs an output audience allowlist", clientID)
-		}
-		if len(policies) == 0 {
-			return fmt.Errorf("TokenExchangeClientSubjectPolicies: client %q needs a subject policy", clientID)
 		}
 		for _, policy := range policies {
 			if !policy.valid() {
@@ -37,10 +44,7 @@ func (c *Config) validateBrokerSubjectPolicies() error {
 }
 
 func (s *Server) brokerSubjectAllowed(clientID string, identity *SubjectIdentity) bool {
-	policies, restricted := s.Config.TokenExchangeClientSubjectPolicies[clientID]
-	if !restricted {
-		return true
-	}
+	policies := s.Config.TokenExchangeClientSubjectPolicies[clientID]
 	if identity == nil || identity.Claims == nil {
 		return false
 	}

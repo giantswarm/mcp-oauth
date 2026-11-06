@@ -120,8 +120,7 @@ func (h *Handler) handleBrokeredTokenExchange(
 		}
 		instrumentation.RecordError(span, err)
 		instrumentation.SetSpanError(span, "client authentication failed")
-		var oauthErr *oauth.Error
-		if errors.As(err, &oauthErr) {
+		if oauthErr, ok := errors.AsType[*oauth.Error](err); ok {
 			h.recordTokenFailure(r.Context(), server.GrantTypeTokenExchange, oauthErr.Code)
 			h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, oauthErr.Status, startTime)
 			h.writeError(w, oauthErr.Code, oauthErr.Description, oauthErr.Status)
@@ -196,6 +195,12 @@ func (h *Handler) handleBrokeredTokenExchangeError(
 	switch {
 	case errors.Is(err, server.ErrExchangeRateLimited):
 		h.writeExchangeRateLimited(w, r, startTime, span)
+	case errors.Is(err, server.ErrBrokerSubjectNotAllowed):
+		h.recordTokenFailure(r.Context(), server.GrantTypeTokenExchange, constants.ErrorCodeInvalidRequest)
+		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "subject rejected by broker client policy")
+		h.writeError(w, constants.ErrorCodeInvalidRequest,
+			"subject token invalid or rejected", http.StatusBadRequest)
 	case errors.Is(err, server.ErrInvalidTarget):
 		h.logger.Debug("brokered token exchange: invalid target",
 			"client_id", clientID, "audience", audience, "ip", clientIP)
@@ -269,8 +274,7 @@ func (h *Handler) handleTokenExchangeError(
 			"the requested scope cannot be granted", http.StatusBadRequest)
 		return
 	}
-	var unsupported *server.TokenExchangeUnsupportedTypeError
-	if errors.As(err, &unsupported) {
+	if unsupported, ok := errors.AsType[*server.TokenExchangeUnsupportedTypeError](err); ok {
 		h.logger.Debug("token exchange: unsupported subject_token_type",
 			"type", unsupported.TokenType(), "ip", clientIP)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)

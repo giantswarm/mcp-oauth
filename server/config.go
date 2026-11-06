@@ -839,7 +839,8 @@ type Config struct {
 
 	// TokenExchangeClientSubjectPolicies restricts validated broker subjects per
 	// authenticated client. A configured client must match an issuer/audience
-	// pair; an absent client keeps the shared trusted-issuer rules.
+	// pair. Every client with a non-empty TokenExchangeClientAudiences entry
+	// must have a non-empty policy; missing policies fail startup and exchange.
 	TokenExchangeClientSubjectPolicies map[string][]BrokerSubjectPolicy
 
 	// TokenExchangeAllowedResources caps the RFC 8707 resource values that the
