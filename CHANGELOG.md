@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking**: `Server.ValidateToken` rejects an unstored JWT claiming the configured provider's issuer when none of its audiences matches `TrustedAudiences`, including when that list is empty. The bearer is not sent to provider userinfo. Opaque tokens and stored tokens retain their validation paths.
 - **Breaking**: an ID token, trusted-issuer token or self-issued JWT access token whose `scope` claim is not a string is refused.
 - **Breaking**: `Server.SelfIssuedExchange` narrows the granted scope to the subject token's `scope` claim when it carries one, on top of `TrustedIssuer.AllowedScopes`, so an exchange never grants a scope the subject token lacks. RFC 8693 §5 suggests `scope` to limit delegated rights; the narrowing is this library's policy, matching Dex's delegated exchange.
 - **Breaking**: `Server.SelfIssuedExchange` fails with the new `server.ErrInvalidScope`, answered `invalid_scope` (RFC 6749 §5.2) at the token endpoint and audited as `token_exchange_scope_not_granted`, when `AllowedScopes` or the subject token's `scope` claim leave no requested scope to grant. It used to issue a token without a `scope` claim, which a re-exchange through another actor then read as unrestricted.
