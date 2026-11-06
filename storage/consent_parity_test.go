@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/stretchr/testify/require"
+
+	"github.com/giantswarm/mcp-oauth/storage"
 )
 
 func TestConsentStoreBackendParity(t *testing.T) {

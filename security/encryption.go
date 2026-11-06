@@ -179,9 +179,7 @@ func (e *Encryptor) Encrypt(plaintext string) (out string, err error) {
 		return "", fmt.Errorf("failed to generate nonce: %w", err)
 	}
 
-	// envelope: 0x01 || kid || nonce || ct
-	envelope := make([]byte, 0, 2+aead.NonceSize()+len(plaintext)+aead.Overhead())
-	envelope = append(envelope, envelopeV1Tag, kid)
+	envelope := []byte{envelopeV1Tag, kid}
 	envelope = append(envelope, nonce...)
 	envelope = aead.Seal(envelope, nonce, []byte(plaintext), nil)
 	return base64.StdEncoding.EncodeToString(envelope), nil

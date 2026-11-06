@@ -66,7 +66,8 @@ func (s *Store) SavePendingConsent(ctx context.Context, browserID, consentID str
 }
 
 const consumePendingConsent = `
-local value = redis.call('GETDEL', KEYS[1])
+local value = redis.call('GET', KEYS[1])
+redis.call('DEL', KEYS[1])
 redis.call('ZREM', KEYS[2], KEYS[1])
 return value
 `
@@ -85,7 +86,11 @@ func (s *Store) ConsumePendingConsent(ctx context.Context, browserID, consentID 
 func (s *Store) ConsumeAuthorizationState(ctx context.Context, providerState string) (result *storage.AuthorizationState, err error) {
 	op := s.startTracedOp(ctx, "consume_authorization_state")
 	defer op.end(&err)
-	stateID, err := s.client.Do(op.ctx, s.client.B().Getdel().Key(s.providerStateKey(providerState)).Build()).ToString()
+	stateID, err := s.client.Do(op.ctx, s.client.B().Eval().Script(`
+local value = redis.call('GET', KEYS[1])
+redis.call('DEL', KEYS[1])
+return value
+`).Numkeys(1).Key(s.providerStateKey(providerState)).Build()).ToString()
 	if isNilError(err) {
 		return nil, storage.ErrAuthorizationStateNotFound
 	}

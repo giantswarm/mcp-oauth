@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -20,7 +22,6 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 	"github.com/giantswarm/mcp-oauth/storage/valkey"
-	"github.com/stretchr/testify/require"
 )
 
 func TestConsent_HTTPAcrossReplicasWithAutomaticKeys(t *testing.T) {

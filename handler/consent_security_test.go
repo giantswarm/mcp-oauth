@@ -12,14 +12,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/oauth2"
+
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/google"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/storage"
-	"github.com/stretchr/testify/require"
-	"go.opentelemetry.io/otel/trace"
-	"golang.org/x/oauth2"
 )
 
 func TestConsent_CallbackBoundToApprovingBrowser(t *testing.T) {
