@@ -134,10 +134,9 @@ func TestUserInfoFromJWTClaims_Scopes(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "space-delimited string", scope: "openid tools:read", want: []string{"openid", "tools:read"}},
-		{name: "array of strings", scope: []any{"openid", "tools:read"}, want: []string{"openid", "tools:read"}},
 		{name: "absent"},
 		{name: "number refused", scope: 42.0, wantErr: true},
-		{name: "array with a number refused", scope: []any{"openid", 1.0}, wantErr: true},
+		{name: "array of strings refused", scope: []any{"openid", "tools:read"}, wantErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

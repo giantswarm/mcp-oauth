@@ -93,7 +93,9 @@ func (s *Server) validateAndParseForwardedIDToken(ctx context.Context, tokenStri
 	}
 
 	// The provider's issuer may also be a trusted issuer; its ActorPolicy
-	// holds on this path too.
+	// holds on this path too. Within ValidateToken a refused act never gets
+	// here (the trusted-issuer branch rejects it first), so this check is what
+	// guards direct AcceptForwardedIDToken callers.
 	if s.trustedIssuerValidator != nil {
 		if err := checkActor(s.trustedIssuerValidator.actorPolicy(idTokenClaims.Issuer), idTokenClaims.Act); err != nil {
 			return nil, "", err

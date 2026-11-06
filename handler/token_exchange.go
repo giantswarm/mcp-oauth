@@ -260,6 +260,15 @@ func (h *Handler) handleTokenExchangeError(
 			"the requested resource cannot be served", http.StatusBadRequest)
 		return
 	}
+	if errors.Is(err, server.ErrInvalidScope) {
+		h.logger.Debug("token exchange: invalid scope", "ip", clientIP)
+		h.recordTokenFailure(r.Context(), server.GrantTypeTokenExchange, constants.ErrorCodeInvalidScope)
+		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "invalid scope")
+		h.writeError(w, constants.ErrorCodeInvalidScope,
+			"the requested scope cannot be granted", http.StatusBadRequest)
+		return
+	}
 	var unsupported *server.TokenExchangeUnsupportedTypeError
 	if errors.As(err, &unsupported) {
 		h.logger.Debug("token exchange: unsupported subject_token_type",

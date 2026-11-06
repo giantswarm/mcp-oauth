@@ -222,6 +222,12 @@ func (c *Cache) evictLRU() {
 // The userID MUST come from validated, trusted claims (e.g. the "sub" claim after
 // JWT signature verification), not from raw user input. Untrusted values can cause
 // cache poisoning.
+//
+// The key does not cover the actor, audience or scope of an RFC 8693
+// delegation request (oidc.TokenExchangeRequest.ActorToken). Tokens issued for
+// one sub with different actors, audiences or scopes are different tokens, so
+// a caller caching delegated exchanges passes a userID that already separates
+// them, for example one scoped to the delegated session and target.
 func GenerateCacheKey(tokenEndpoint, connectorID, userID string) string {
 	// Null-byte separator prevents collisions like ("a:b","c") vs ("a","b:c").
 	data := tokenEndpoint + "\x00" + connectorID + "\x00" + userID

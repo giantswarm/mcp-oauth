@@ -395,3 +395,19 @@ func TestHandleTokenExchangeError_UnsupportedSubjectTokenType(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	require.Equal(t, constants.ErrorCodeUnsupportedGrantType, body["error"])
 }
+
+func TestHandleTokenExchangeError_InvalidScope(t *testing.T) {
+	h, _ := setupTokenExchangeHandler(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/token", nil)
+	r, _, end := h.startHandlerSpan(req, "test")
+	defer end()
+	w := httptest.NewRecorder()
+
+	h.handleTokenExchangeError(w, r, fmt.Errorf("wrapped: %w", server.ErrInvalidScope), "1.1.1.1", time.Time{}, nil)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	var body map[string]string
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.Equal(t, constants.ErrorCodeInvalidScope, body["error"])
+}
