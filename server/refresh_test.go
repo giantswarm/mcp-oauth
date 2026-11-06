@@ -1635,7 +1635,7 @@ func TestServer_TokenRefreshHandler_CalledOnProactiveRefresh(t *testing.T) {
 	seedProviderToken(t, store, accessToken, testMockUserID, nearExpiryToken)
 
 	// Save token metadata so the handler can retrieve userID/familyID
-	if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: testMockUserID, ClientID: "test-client", TokenType: "access", Audience: "", FamilyID: "test-family-id", Scopes: nil}); err != nil {
+	if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: testMockUserID, ClientID: "test-client", TokenType: "access", Audience: srv.Config.GetResourceIdentifier(), FamilyID: "test-family-id", Scopes: nil}); err != nil {
 		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
 
@@ -1702,7 +1702,7 @@ func TestServer_TokenRefreshHandler_CalledOnExpiredTokenRefresh(t *testing.T) {
 	}
 	seedProviderToken(t, store, accessToken, testMockUserID, expiredToken)
 
-	if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: testMockUserID, ClientID: "test-client", TokenType: "access", Audience: "", FamilyID: "expired-family-id", Scopes: nil}); err != nil {
+	if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: testMockUserID, ClientID: "test-client", TokenType: "access", Audience: srv.Config.GetResourceIdentifier(), FamilyID: "expired-family-id", Scopes: nil}); err != nil {
 		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
 

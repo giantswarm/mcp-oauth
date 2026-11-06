@@ -375,12 +375,12 @@ func TestValidateTokenWithScopeValidation(t *testing.T) {
 				AccessToken: accessToken,
 				Expiry:      time.Now().Add(1 * time.Hour),
 			}
-			if err := store.SaveToken(context.Background(), accessToken, providerToken); err != nil {
+			if err := saveTestAccessToken(t.Context(), store, accessToken, providerToken, "https://example.com"); err != nil {
 				t.Fatalf("Failed to save token: %v", err)
 			}
 
 			// Store token metadata with scopes
-			if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: userID, ClientID: "test_client", TokenType: "access", Audience: "", Scopes: tt.tokenScopes}); err != nil {
+			if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: userID, ClientID: "test_client", TokenType: "access", Audience: "https://example.com", Scopes: tt.tokenScopes}); err != nil {
 				t.Fatalf("Failed to save token metadata: %v", err)
 			}
 
@@ -473,7 +473,7 @@ func TestValidateTokenWithoutScopeMetadata(t *testing.T) {
 		AccessToken: accessToken,
 		Expiry:      time.Now().Add(1 * time.Hour),
 	}
-	if err := store.SaveToken(context.Background(), accessToken, providerToken); err != nil {
+	if err := saveTestAccessToken(t.Context(), store, accessToken, providerToken, "https://example.com"); err != nil {
 		t.Fatalf("Failed to save token: %v", err)
 	}
 
@@ -779,12 +779,12 @@ func TestValidateTokenScopesLongPathSanitization(t *testing.T) {
 		AccessToken: accessToken,
 		Expiry:      time.Now().Add(1 * time.Hour),
 	}
-	if err := store.SaveToken(context.Background(), accessToken, providerToken); err != nil {
+	if err := saveTestAccessToken(t.Context(), store, accessToken, providerToken, "https://example.com"); err != nil {
 		t.Fatalf("Failed to save token: %v", err)
 	}
 
 	// Store token metadata with insufficient scopes
-	if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: userID, ClientID: "test_client", TokenType: "access", Audience: "", Scopes: []string{"files:write"}}); err != nil {
+	if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: userID, ClientID: "test_client", TokenType: "access", Audience: "https://example.com", Scopes: []string{"files:write"}}); err != nil {
 		t.Fatalf("Failed to save token metadata: %v", err)
 	}
 
@@ -1034,11 +1034,11 @@ func TestHideEndpointPathInErrors(t *testing.T) {
 				AccessToken: accessToken,
 				Expiry:      time.Now().Add(1 * time.Hour),
 			}
-			if err := store.SaveToken(context.Background(), accessToken, providerToken); err != nil {
+			if err := saveTestAccessToken(t.Context(), store, accessToken, providerToken, "https://example.com"); err != nil {
 				t.Fatalf("Failed to save token: %v", err)
 			}
 
-			if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: userID, ClientID: "test_client", TokenType: "access", Audience: "", Scopes: []string{}}); err != nil {
+			if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: userID, ClientID: "test_client", TokenType: "access", Audience: "https://example.com", Scopes: []string{}}); err != nil {
 				t.Fatalf("Failed to save token metadata: %v", err)
 			}
 

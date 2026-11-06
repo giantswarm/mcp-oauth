@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -14,7 +15,6 @@ import (
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/providers"
-	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
@@ -44,6 +44,16 @@ func checkTypeHeader(tokenString string, accepted []string) error {
 // client as 503 with Retry-After instead of a client-side timeout, and far
 // above a healthy identity provider's userinfo or JWKS latency.
 const DefaultTokenValidationTimeout = 5 * time.Second
+
+// ErrUnknownJWTBearer is returned by [Server.ValidateToken] for a compact JWT
+// bearer that no configured validation path accepts. Callers respond with 401.
+var ErrUnknownJWTBearer = errors.New("JWT bearer is not accepted by any validation path")
+
+var errInvalidAccessToken = errors.New("bearer is not an issued access token")
+
+const (
+	auditReasonUnknownJWTBearer = "unknown_jwt_bearer" // #nosec G101 -- audit reason, not a credential
+)
 
 // supportedAccessTokenAlgs lists the asymmetric signing algorithms accepted
 // for JWT access tokens. HMAC and "none" are absent by design (RFC 9068 §4
@@ -305,25 +315,19 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 //     boundary checks (signature, typ, exp, aud, jti, family).
 //  2. Trusted-issuer JWT (when WithTrustedIssuers is configured AND the
 //     bearer's iss matches a configured entry). Signature verified via the
-//     entry's JWKS; aud checked against the entry's AllowedAudiences
-//     (defaulting to Config.GetResourceIdentifier when empty); typ header
+//     entry's JWKS; aud must include Config.GetResourceIdentifier and satisfy
+//     the entry's AllowedAudiences when configured; typ header
 //     checked against the entry's AcceptedTypHeaders (default RFC 9068 §4
 //     at+jwt). A non-matching iss returns ErrIssuerNotTrusted
-//     and falls through to subsequent branches; a typ failure on a token
-//     whose aud is in Config.TrustedAudiences falls through to the
-//     forwarded-ID-token branch (it is an ID token, not an access token);
-//     any other validation failure is a hard rejection.
-//  3. Forwarded ID token (when the bearer is a JWT whose aud matches
-//     Config.TrustedAudiences). Verified via the upstream provider's JWKS
-//     for SSO token forwarding.
-//  4. Stored token or provider bearer (TokenStore lookup, then provider
-//     userinfo). An unstored JWT claiming the provider's issuer must match
-//     Config.TrustedAudiences before it can reach userinfo.
+//     and falls through to subsequent branches. Any other validation failure
+//     is a hard rejection.
+//  3. Stored access token (TokenStore lookup and access-token metadata,
+//     then provider userinfo with the mapped provider access token). Unknown
+//     bearers, refresh tokens and ID-token metadata cannot authorize requests.
 //
-// Steps 1, 2, and 3 are opt-in (AccessTokenFormatJWT, WithTrustedIssuers,
-// TrustedAudiences respectively); step 4 is always available. Rate
-// limiting should be done at the HTTP layer with IP address, not here
-// with the token.
+// Steps 1 and 2 are opt-in (AccessTokenFormatJWT and WithTrustedIssuers);
+// step 3 is always available. TrustedAudiences does not authorize resource
+// bearers. Rate limiting belongs at the HTTP layer using the IP address.
 //
 // The whole call runs under Config.TokenValidationTimeout, layered on ctx.
 //
@@ -366,29 +370,16 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 		return userInfo, err
 	}
 
-	// PRIORITY 3: Forwarded ID token (JWT) from a trusted upstream service.
-	// Must run BEFORE the opaque path, as ID tokens cannot be validated via
-	// the upstream provider's userinfo endpoint.
-	if len(s.Config.TrustedAudiences) > 0 && oidc.IsJWT(accessToken) {
-		if userInfo, err := s.validateForwardedIDTokenBranch(ctx, accessToken); userInfo != nil || err != nil {
-			return userInfo, err
-		}
-	}
-
-	// PRIORITY 4: Stored token or upstream bearer (TokenStore + provider userinfo).
+	// Provider credentials are usable only through a local access-token mapping.
 	storedToken, err := s.validateStoredToken(ctx, accessToken)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.validateProviderTokenAudience(ctx, accessToken, storedToken); err != nil {
-		return nil, err
+	if storedToken == nil {
+		return nil, s.rejectUnknownBearer(ctx, accessToken)
 	}
 
-	// Determine which token to use for provider validation
-	tokenForProviderValidation := s.selectTokenForProviderValidation(accessToken, storedToken)
-
-	// Validate with provider (userinfo endpoint)
-	userInfo, err := s.provider.ValidateToken(ctx, tokenForProviderValidation)
+	userInfo, err := s.provider.ValidateToken(ctx, storedToken.AccessToken)
 	if err != nil {
 		if isTransientProviderError(err) {
 			// The provider did not answer, so it rejected nothing: a 401
@@ -411,61 +402,20 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 	return userInfo, nil
 }
 
-// validateProviderTokenAudience uses unverified claims only to reject an
-// unstored bearer. Userinfo cannot establish a JWT's intended audience.
-func (s *Server) validateProviderTokenAudience(ctx context.Context, accessToken string, storedToken *oauth2.Token) error {
-	if storedToken != nil {
-		return nil
-	}
-	jwksProvider, ok := s.provider.(providers.JWKSProvider)
-	if !ok {
-		return nil
-	}
-	providerIssuer := jwksProvider.IssuerURL()
-	if providerIssuer == "" {
-		return nil
-	}
-	claims, err := oidc.ParseUnverifiedClaims(accessToken)
-	if err != nil {
-		return nil
-	}
-	issuer, _ := claims["iss"].(string)
-	if issuer != providerIssuer || s.findMatchingTrustedAudience(oidc.GetAudienceFromClaims(claims)) != "" {
-		return nil
-	}
-	s.Auditor.LogAuthFailure(ctx, "", "", "", "provider_token_audience_mismatch")
-	return errors.New("provider JWT audience mismatch")
+// isCompactJOSE classifies compact JWS and JWE shapes for rejection, including
+// empty segments in unsecured JWTs (RFC 7519 §6) and malformed serializations.
+func isCompactJOSE(token string) bool {
+	separators := strings.Count(token, ".")
+	return separators == 2 || separators == 4
 }
 
-// validateForwardedIDTokenBranch runs the forwarded-ID-token step of
-// ValidateToken. Returns (nil, nil) when the caller falls through to the
-// opaque path.
-func (s *Server) validateForwardedIDTokenBranch(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
-	userInfo, err := s.validateForwardedIDToken(ctx, accessToken)
-	if err != nil && isTransientProviderError(err) {
-		// The provider's discovery or JWKS endpoint did not answer, so
-		// the token was not rejected. The userinfo fallback cannot
-		// validate an ID token and would only wait on the same provider.
-		return nil, s.providerUnavailable(ctx, "forwarded ID token validation", "", "", err)
+func (s *Server) rejectUnknownBearer(ctx context.Context, bearer string) error {
+	if isCompactJOSE(bearer) {
+		s.Auditor.LogAuthFailure(ctx, "", "", "", auditReasonUnknownJWTBearer)
+		return ErrUnknownJWTBearer
 	}
-	if err != nil {
-		// A non-nil error here means the token carried a trusted audience
-		// (it was meant to be an SSO-forwarded ID token) but validation
-		// then failed — e.g. a TLS error or a bad signature. That is a real
-		// misconfiguration, not the benign "not an SSO token" case (which
-		// returns nil, nil and is silent), so surface it at WARN. No token
-		// material is logged (only an 8-char suffix for correlation).
-		s.Logger.Warn("Forwarded ID token validation failed, falling back to userinfo",
-			logKeyError, err.Error(),
-			"token_suffix", helpers.TokenSuffix(accessToken, 8))
-		return nil, nil
-	}
-	if userInfo != nil {
-		s.Logger.Debug("Forwarded ID token validated via JWKS",
-			"user_id", userInfo.ID,
-			"token_suffix", helpers.TokenSuffix(accessToken, 8))
-	}
-	return userInfo, nil
+	s.Auditor.LogAuthFailure(ctx, "", "", "", "unknown_bearer")
+	return errInvalidAccessToken
 }
 
 // refreshExpiredProviderToken refreshes a stored provider token past expiry
@@ -544,14 +494,22 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 			// token.
 			return nil, s.storageUnavailable(ctx, "read provider token", "", "", err)
 		}
-		if errors.Is(err, storage.ErrTokenUndecryptable) {
-			// Not an outage, but the sign of an encryption key that differs
-			// from the one the token was written with. Nothing derived from
-			// the bearer is logged.
-			s.Logger.Warn("Stored provider token cannot be decrypted - falling back to provider validation")
-		}
-		// Token not found in store - will fall back to provider validation
 		return nil, nil
+	}
+	metadata, err := s.TokenMetadata(ctx, accessToken)
+	if err != nil {
+		return nil, err
+	}
+	if storedToken == nil || storedToken.AccessToken == "" || metadata == nil || metadata.TokenType != "access" || metadata.Audience == "" {
+		s.Auditor.LogAuthFailure(ctx, "", "", "", "invalid_access_token_metadata")
+		return nil, errInvalidAccessToken
+	}
+	if !metadata.ExpiresAt.IsZero() && security.IsTokenExpiredWithGracePeriod(metadata.ExpiresAt, time.Duration(s.Config.ClockSkewGracePeriod)*time.Second) {
+		s.Auditor.LogAuthFailure(ctx, "", "", "", "access_token_expired")
+		return nil, fmt.Errorf("access token expired: %w", errInvalidAccessToken)
+	}
+	if err := s.validateTokenAudience(ctx, accessToken, metadata); err != nil {
+		return nil, err
 	}
 
 	// Token found - validate expiry with grace period for clock skew
@@ -578,11 +536,6 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 		"expiry", storedToken.Expiry,
 		"grace_period_seconds", s.Config.ClockSkewGracePeriod)
 
-	// RFC 8707: Validate audience binding
-	if err := s.validateTokenAudience(ctx, accessToken); err != nil {
-		return nil, err
-	}
-
 	// PROACTIVE REFRESH: the stored token is still valid and is what the
 	// provider check below presents, so the refresh runs in the background
 	// instead of spending the validation deadline.
@@ -597,8 +550,8 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 // accessToken: audience, scopes, client and refresh-token family. It is nil
 // when the token store keeps no metadata (it does not implement
 // storage.TokenMetadataGetter) or has no record for the token; every bearer
-// that ValidateToken accepts by signature alone — a forwarded ID token, a
-// trusted-issuer JWT, a self-issued exchange JWT — is in that second group,
+// that ValidateToken accepts by signature alone, such as a trusted-issuer JWT
+// or a self-issued exchange JWT, can be in that second group,
 // so nil is an expected answer, not a fault. A store that does not answer is
 // ErrStorageUnavailable: a caller must not proceed as if the token had no
 // metadata, or its scopes and session identity would silently change for the
@@ -619,18 +572,8 @@ func (s *Server) TokenMetadata(ctx context.Context, accessToken string) (*storag
 }
 
 // validateTokenAudience validates RFC 8707 audience binding for the token.
-// It checks if the token's audience matches this server's ResourceIdentifier or
-// any of the TrustedAudiences configured for SSO token forwarding. A store
-// that does not answer is ErrStorageUnavailable, never a pass.
-func (s *Server) validateTokenAudience(ctx context.Context, accessToken string) error {
-	metadata, err := s.TokenMetadata(ctx, accessToken)
-	if err != nil {
-		return err
-	}
-	if metadata == nil || metadata.Audience == "" {
-		return nil
-	}
-
+// The token's audience must match this server's ResourceIdentifier.
+func (s *Server) validateTokenAudience(ctx context.Context, accessToken string, metadata *storage.TokenMetadata) error {
 	expectedAudience := s.Config.GetResourceIdentifier()
 	normalizedAudience := helpers.NormalizeURL(metadata.Audience)
 	normalizedExpected := helpers.NormalizeURL(expectedAudience)
@@ -643,33 +586,9 @@ func (s *Server) validateTokenAudience(ctx context.Context, accessToken string) 
 		return nil
 	}
 
-	// Check if audience matches any of the TrustedAudiences (SSO token forwarding)
-	if s.isTrustedAudience(metadata.Audience) {
-		s.logCrossClientTokenAccepted(ctx, accessToken, metadata)
-		return nil
-	}
-
 	// Audience mismatch - log and return error
 	s.logAudienceMismatch(ctx, accessToken, metadata, expectedAudience)
 	return fmt.Errorf("token not intended for this resource server (RFC 8707 audience mismatch)")
-}
-
-// isTrustedAudience checks if the given audience is in the TrustedAudiences list.
-// This enables SSO scenarios where tokens issued to trusted upstream services are accepted.
-// Uses helpers.MatchAudienceSecure for consistent URL normalization and constant-time comparison.
-func (s *Server) isTrustedAudience(audience string) bool {
-	return helpers.MatchAudienceSecure(audience, s.Config.TrustedAudiences) != ""
-}
-
-// hasTrustedAudience reports whether any of the token's audiences is in the
-// TrustedAudiences list.
-func (s *Server) hasTrustedAudience(audiences []string) bool {
-	for _, aud := range audiences {
-		if s.isTrustedAudience(aud) {
-			return true
-		}
-	}
-	return false
 }
 
 // validateTrustedIssuerJWT runs the WithTrustedIssuers Bearer branch of
@@ -679,15 +598,6 @@ func (s *Server) hasTrustedAudience(audiences []string) bool {
 // returns the error). The typ header enforcement (per-issuer
 // AcceptedTypHeaders, default RFC 9068 at+jwt) runs only after the JWS
 // signature has been verified by Validate.
-//
-// A token that fails only the typ check but carries an audience listed in
-// Config.TrustedAudiences is not an access token at all — it is an ID
-// token forwarded by a trusted upstream service (SSO token forwarding).
-// Hard-rejecting it here would shadow the forwarded-ID-token branch
-// whenever the upstream issuer is also configured as a trusted issuer
-// (e.g. for RFC 8693 subject-token validation). Such tokens fall through
-// instead; the forwarded-ID-token branch re-validates them independently
-// against the server's own provider JWKS.
 func (s *Server) validateTrustedIssuerJWT(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
 	if s.trustedIssuerValidator == nil {
 		return nil, nil
@@ -710,14 +620,12 @@ func (s *Server) validateTrustedIssuerJWT(ctx context.Context, accessToken strin
 		return nil, fmt.Errorf("trusted issuer JWT validation failed: %w", err)
 	}
 	if err := checkTypeHeader(accessToken, s.trustedIssuerValidator.BearerTypHeaders(identity.Issuer)); err != nil {
-		if identity.Claims != nil && s.hasTrustedAudience(identity.Claims.Audience) {
-			s.Logger.Debug("Trusted-issuer JWT failed typ check but carries a trusted audience, deferring to forwarded ID token validation",
-				"issuer", identity.Issuer,
-				"token_suffix", helpers.TokenSuffix(accessToken, 8))
-			return nil, nil
-		}
 		s.Auditor.LogAuthFailure(ctx, identity.Subject, "", "", "trusted_issuer_typ_invalid")
 		return nil, fmt.Errorf("trusted issuer JWT: %w", err)
+	}
+	if identity.Claims == nil || helpers.FindMatchingAudience(identity.Claims.Audience, []string{s.Config.GetResourceIdentifier()}) == "" {
+		s.Auditor.LogAuthFailure(ctx, identity.Subject, "", "", "trusted_issuer_audience_invalid")
+		return nil, errors.New("trusted issuer JWT is not intended for this resource server")
 	}
 	userInfo := s.idTokenClaimsToUserInfo(identity.Claims)
 	userInfo.Issuer = identity.Issuer
@@ -746,28 +654,6 @@ func (s *Server) logTrustedIssuerJWTAccepted(ctx context.Context, accessToken, s
 	})
 }
 
-// logCrossClientTokenAccepted logs when a token is accepted via TrustedAudiences.
-// This audit event helps track SSO token usage patterns for security monitoring.
-func (s *Server) logCrossClientTokenAccepted(ctx context.Context, accessToken string, metadata *storage.TokenMetadata) {
-	s.Logger.Debug("Token accepted via TrustedAudiences (SSO token forwarding)",
-		"token_audience", metadata.Audience,
-		"user_id", metadata.UserID,
-		paramClientID, metadata.ClientID,
-		"token_suffix", helpers.TokenSuffix(accessToken, 8))
-
-	s.Auditor.LogEvent(ctx, security.Event{
-		Type:     security.EventCrossClientTokenAccepted,
-		UserID:   metadata.UserID,
-		ClientID: metadata.ClientID,
-		Details: map[string]any{
-			"original_audience":   metadata.Audience,
-			"server_identifier":   s.Config.GetResourceIdentifier(),
-			"trusted_via":         "TrustedAudiences",
-			"sso_token_forwarded": true,
-		},
-	})
-}
-
 // logAudienceMismatch logs an audience mismatch security event.
 func (s *Server) logAudienceMismatch(ctx context.Context, accessToken string, metadata *storage.TokenMetadata, expectedAudience string) {
 	if s.SecurityEventRateLimiter == nil || s.SecurityEventRateLimiter.Allow(metadata.UserID+":"+metadata.ClientID+":audience_mismatch") {
@@ -791,12 +677,4 @@ func (s *Server) logAudienceMismatch(ctx context.Context, accessToken string, me
 		},
 	})
 	s.Auditor.LogAuthFailure(ctx, metadata.UserID, metadata.ClientID, "", "audience_mismatch")
-}
-
-// selectTokenForProviderValidation determines which token to use for provider validation.
-func (s *Server) selectTokenForProviderValidation(accessToken string, storedToken *oauth2.Token) string {
-	if storedToken != nil && storedToken.AccessToken != "" {
-		return storedToken.AccessToken
-	}
-	return accessToken
 }

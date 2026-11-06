@@ -62,6 +62,7 @@ func TestValidateToken_ProviderTimeout(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				mem := memory.New()
 				srv := newValidationTimeoutServer(t, mem, mem, tt.timeout)
+				seedProviderToken(t, mem, "opaque-access-token", "user-1", testProviderToken())
 
 				start := time.Now()
 				_, err := srv.ValidateToken(t.Context(), "opaque-access-token")
@@ -92,6 +93,9 @@ func TestValidateToken_ExpiredTokenRefreshTimeout(t *testing.T) {
 		}},
 		{"legacy layout", func(t *testing.T, mem *memory.Store) storage.TokenStore {
 			require.NoError(t, mem.SaveToken(t.Context(), "issued-access-token", expired))
+			require.NoError(t, mem.SaveTokenMetadata(t.Context(), "issued-access-token", storage.TokenMetadata{
+				UserID: "user-1", ClientID: "client-1", TokenType: "access", Audience: "https://auth.example.com",
+			}))
 			return legacyLayoutStore{
 				Combined: mem, RefreshTokenFamilyStore: mem, TokenRevocationStore: mem,
 				TokenFamilyRevocationStore: mem, TokenMetadataStore: mem, TokenMetadataGetter: mem,
@@ -175,7 +179,7 @@ func TestValidateToken_ExpiredTokenRefreshAfterDeadlineFiresHandler(t *testing.T
 					AccessToken: "dex-at", RefreshToken: "dex-rt", Expiry: time.Now().Add(-time.Hour),
 				}), 2*time.Second)
 				require.NoError(t, mem.SaveTokenMetadata(t.Context(), "issued-access-token", storage.TokenMetadata{
-					UserID: "user-1", ClientID: "client-1", FamilyID: "family-1",
+					UserID: "user-1", ClientID: "client-1", FamilyID: "family-1", TokenType: "access", Audience: srv.Config.GetResourceIdentifier(),
 				}))
 				srv.provider.(*mock.Provider).RefreshTokenFunc = func(context.Context, string) (*oauth2.Token, error) {
 					time.Sleep(3 * time.Second)
@@ -269,7 +273,7 @@ func TestValidateToken_TrustedIssuerJWKSUnavailable(t *testing.T) {
 // TestValidateToken_ForwardedIDTokenJWKSUnavailable: a forwarded ID token
 // whose provider JWKS endpoint does not answer is ErrProviderUnavailable,
 // without a userinfo fallback that cannot validate an ID token.
-func TestValidateToken_ForwardedIDTokenJWKSUnavailable(t *testing.T) {
+func TestAcceptForwardedIDToken_JWKSUnavailable(t *testing.T) {
 	h := newForwardedTokenHarness(t)
 	jwksURL, jwksClient := unavailableJWKS(t)
 	h.provider.JWKSURIFunc = func(context.Context) (string, error) { return jwksURL, nil }
@@ -290,8 +294,9 @@ func TestValidateToken_ForwardedIDTokenJWKSUnavailable(t *testing.T) {
 		Expiry:   josejwt.NewNumericDate(now.Add(time.Hour)),
 	})
 
-	_, err := h.srv.ValidateToken(t.Context(), token)
-	require.ErrorIs(t, err, ErrProviderUnavailable)
+	_, err := h.srv.AcceptForwardedIDToken(t.Context(), token)
+	require.Error(t, err)
+	require.True(t, isTransientProviderError(err))
 	require.Zero(t, userinfoCalls.Load())
 }
 

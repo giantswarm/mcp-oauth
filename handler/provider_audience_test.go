@@ -54,7 +54,7 @@ func TestValidateToken_ProviderAudienceMismatchHTTP(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, refused.Code)
 	require.Equal(t, unknown.Body.String(), refused.Body.String())
 	require.Equal(t, unknown.Header().Get("WWW-Authenticate"), refused.Header().Get("WWW-Authenticate"))
-	require.Contains(t, environment.logs.String(), "provider_token_audience_mismatch")
+	require.Contains(t, environment.logs.String(), "unknown_jwt_bearer")
 
 	environment.faulty.Fail(storagemock.OnOperation("get_provider_token_ref", storagemock.ConnectionRefused))
 	unavailable := request(accessToken)

@@ -3,6 +3,7 @@ package mock
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"sync"
 	"time"
@@ -19,6 +20,8 @@ type TokenStore struct {
 	tokens                 map[string]*oauth2.Token
 	userInfo               map[string]*storage.UserInfo
 	refreshTokens          map[string]refreshTokenInfo
+	tokenMetadata          map[string]storage.TokenMetadata
+	providerRefreshLocks   map[string]providerRefreshLock
 	SaveTokenFunc          func(ctx context.Context, userID string, token *oauth2.Token) error
 	GetTokenFunc           func(ctx context.Context, userID string) (*oauth2.Token, error)
 	DeleteTokenFunc        func(ctx context.Context, userID string) error
@@ -37,17 +40,61 @@ type refreshTokenInfo struct {
 	expiresAt time.Time
 }
 
+type providerRefreshLock struct {
+	value     string
+	expiresAt time.Time
+}
+
 // NewTokenStore creates a new mock token store
 func NewTokenStore() *TokenStore {
 	m := &TokenStore{
-		tokens:        make(map[string]*oauth2.Token),
-		userInfo:      make(map[string]*storage.UserInfo),
-		refreshTokens: make(map[string]refreshTokenInfo),
-		CallCounts:    make(map[string]int),
+		tokens:               make(map[string]*oauth2.Token),
+		userInfo:             make(map[string]*storage.UserInfo),
+		refreshTokens:        make(map[string]refreshTokenInfo),
+		tokenMetadata:        make(map[string]storage.TokenMetadata),
+		providerRefreshLocks: make(map[string]providerRefreshLock),
+		CallCounts:           make(map[string]int),
 	}
 
 	m.initDefaultFuncs()
 	return m
+}
+
+func (m *TokenStore) SaveTokenMetadata(_ context.Context, tokenID string, metadata storage.TokenMetadata) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tokenMetadata[tokenID] = metadata
+	return nil
+}
+
+func (m *TokenStore) GetTokenMetadata(tokenID string) (*storage.TokenMetadata, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	metadata, exists := m.tokenMetadata[tokenID]
+	if !exists {
+		return nil, storage.ErrTokenNotFound
+	}
+	return &metadata, nil
+}
+
+func (m *TokenStore) AcquireProviderRefreshLock(_ context.Context, userID string, ttl time.Duration) (string, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if current, exists := m.providerRefreshLocks[userID]; exists && time.Now().Before(current.expiresAt) {
+		return "", false, nil
+	}
+	value := rand.Text()
+	m.providerRefreshLocks[userID] = providerRefreshLock{value: value, expiresAt: time.Now().Add(ttl)}
+	return value, true, nil
+}
+
+func (m *TokenStore) ReleaseProviderRefreshLock(_ context.Context, userID, value string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if current, exists := m.providerRefreshLocks[userID]; exists && current.value == value {
+		delete(m.providerRefreshLocks, userID)
+	}
+	return nil
 }
 
 // initDefaultFuncs initializes the default function implementations for TokenStore.
@@ -84,6 +131,7 @@ func (m *TokenStore) defaultDeleteToken(_ context.Context, userID string) error 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.tokens, userID)
+	delete(m.tokenMetadata, userID)
 	return nil
 }
 
@@ -155,8 +203,12 @@ func (m *TokenStore) defaultAtomicGetAndDelete(_ context.Context, refreshToken s
 	// Atomic delete
 	delete(m.refreshTokens, refreshToken)
 	delete(m.tokens, refreshToken)
-
-	return info.userID, info.clientID, token, nil
+	clientID := info.clientID
+	if metadata, exists := m.tokenMetadata[refreshToken]; exists {
+		clientID = metadata.ClientID
+	}
+	delete(m.tokenMetadata, refreshToken)
+	return info.userID, clientID, token, nil
 }
 
 // SaveToken saves a token for a user

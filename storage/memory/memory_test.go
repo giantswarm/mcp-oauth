@@ -1189,8 +1189,9 @@ func TestStore_AuthorizationCodeRetention(t *testing.T) {
 		time.Sleep(security.DefaultClockSkewGracePeriod + storage.AuthorizationCodeRetention)
 		store.cleanup()
 
-		_, err = store.GetAuthorizationCode(t.Context(), used.Code)
-		require.ErrorIs(t, err, storage.ErrTokenExpired, "a used code is kept through its retention")
+		retainedCode, err := store.GetAuthorizationCode(t.Context(), used.Code)
+		require.NoError(t, err)
+		require.True(t, retainedCode.Used, "a used code is readable through its retention")
 		_, err = store.GetAuthorizationCode(t.Context(), unused.Code)
 		require.ErrorIs(t, err, storage.ErrAuthorizationCodeNotFound, "an unused code is cleaned up at expiry")
 

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -274,6 +275,17 @@ func validateServerDependencies(provider providers.Provider, tokenStore storage.
 	if tokenStore == nil {
 		return fmt.Errorf("token store is required")
 	}
+	if _, ok := tokenStore.(storage.TokenMetadataStore); !ok {
+		return errors.New("token store must implement storage.TokenMetadataStore")
+	}
+	if _, ok := tokenStore.(storage.TokenMetadataGetter); !ok {
+		return errors.New("token store must implement storage.TokenMetadataGetter")
+	}
+	if _, unified := tokenStore.(storage.UserProviderTokenStore); !unified {
+		if _, coordinated := tokenStore.(storage.ProviderRefreshLockStore); !coordinated {
+			return errors.New("legacy token stores must implement storage.ProviderRefreshLockStore")
+		}
+	}
 	if clientStore == nil {
 		return fmt.Errorf("client store is required")
 	}
@@ -411,56 +423,56 @@ func (s *Server) DPoPNonceProvider() DPoPNonceProvider {
 	return s.dpopNonceProvider
 }
 
-// saveTokenMetadata writes token metadata to the configured store. Backends
-// that do not implement storage.TokenMetadataStore are silently skipped —
-// metadata is observability scaffolding (audit, scope validation, family
-// bookkeeping) and a missing implementation reduces observability rather
-// than breaking the OAuth flow. Callers are responsible for setting
-// metadata.IssuedAt and metadata.ExpiresAt.
-func (s *Server) saveTokenMetadata(ctx context.Context, tokenID string, metadata storage.TokenMetadata) {
+// saveTokenMetadata writes the token's role, audience, scopes and session
+// attributes. Stored bearer validation requires readable access-token metadata.
+// Callers are responsible for setting metadata.IssuedAt and metadata.ExpiresAt.
+func (s *Server) saveTokenMetadata(ctx context.Context, tokenID string, metadata storage.TokenMetadata) error {
 	store, ok := s.tokenStore.(storage.TokenMetadataStore)
 	if !ok {
-		return
+		return errors.New("token store does not support token metadata writes")
 	}
 	if err := store.SaveTokenMetadata(ctx, tokenID, metadata); err != nil {
-		s.Logger.Warn("Failed to save token metadata", logKeyError, err)
+		return s.storageUnavailable(ctx, "save token metadata", metadata.ClientID, metadata.UserID, err)
 	}
+	return nil
 }
 
 // saveTokenPairMetadata saves metadata for an AT/RT pair. base.ExpiresAt is the access-token expiry;
 // refreshExpiresAt is used for the refresh token.
-func (s *Server) saveTokenPairMetadata(ctx context.Context, accessToken, refreshToken string, base storage.TokenMetadata, refreshExpiresAt time.Time) {
+func (s *Server) saveTokenPairMetadata(ctx context.Context, accessToken, refreshToken string, base storage.TokenMetadata, refreshExpiresAt time.Time) error {
+	if base.Audience == "" {
+		base.Audience = s.Config.GetResourceIdentifier()
+	}
 	at := base
 	at.TokenType = "access"
-	s.saveTokenMetadata(ctx, accessToken, at)
+	if err := s.saveTokenMetadata(ctx, accessToken, at); err != nil {
+		return err
+	}
 
 	rt := base
 	rt.TokenType = "refresh"
 	rt.ExpiresAt = refreshExpiresAt
-	s.saveTokenMetadata(ctx, refreshToken, rt)
+	return s.saveTokenMetadata(ctx, refreshToken, rt)
 }
 
-// saveIDTokenMetadata saves metadata keyed by the upstream id_token returned
-// alongside a minted access/refresh pair, so a bearer equal to the id_token
-// resolves the same FamilyID-derived session as its sibling access token.
+// saveIDTokenMetadata records session attributes for the upstream id_token
+// returned alongside a minted access/refresh pair.
 // Expiry follows the id_token's own exp claim when that is in the future;
-// otherwise base.ExpiresAt (the access-token expiry) is kept. JKT is cleared:
-// DPoP binding covers the minted access token, not the upstream id_token.
+// otherwise base.ExpiresAt (the access-token expiry) is kept for retention.
+// This metadata does not authorize the token. JKT is empty because the
+// upstream ID token can be shared across pairs with different DPoP keys.
 func (s *Server) saveIDTokenMetadata(ctx context.Context, idToken string, base storage.TokenMetadata) {
 	metadata := base
 	metadata.TokenType = "id"
 	metadata.JKT = ""
-	// Adopt the id_token's own exp only when it is in the future. A missing,
-	// unreadable, or already-past exp (upstream clock skew, or a short-lived
-	// id_token plus latency) keeps base.ExpiresAt — the sibling access-token
-	// expiry, always a server-computed future instant. This is the first
-	// metadata write whose expiry comes from an externally-supplied value, and
-	// a non-future ExpiresAt would otherwise persist as an unbounded key in the
-	// Valkey backend (calculateTTL <= 0 falls through to a plain SET).
+	// A non-future expiry produces an unbounded Valkey key. Metadata retention
+	// uses the access-token expiry when the ID token has no future exp claim.
 	if exp := unverifiedJWTExpiry(idToken); exp.After(time.Now()) {
 		metadata.ExpiresAt = exp
 	}
-	s.saveTokenMetadata(ctx, idToken, metadata)
+	if err := s.saveTokenMetadata(ctx, idToken, metadata); err != nil {
+		s.Logger.Warn("Failed to save ID token metadata", logKeyError, err)
+	}
 }
 
 // unverifiedJWTExpiry reads a JWT's exp claim without verifying the signature.

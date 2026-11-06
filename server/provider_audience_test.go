@@ -37,10 +37,10 @@ func TestValidateToken_RejectsProviderJWTAudienceMismatch(t *testing.T) {
 	}
 
 	userInfo, err := harness.srv.ValidateToken(t.Context(), accessToken)
-	require.ErrorContains(t, err, "audience mismatch")
+	require.ErrorIs(t, err, ErrUnknownJWTBearer)
 	require.Nil(t, userInfo)
 	require.Zero(t, userinfoCalls, "a foreign-audience bearer must not be sent to userinfo")
-	require.Contains(t, logs.String(), `"reason":"provider_token_audience_mismatch"`)
+	require.Contains(t, logs.String(), `"reason":"unknown_jwt_bearer"`)
 	require.NotContains(t, logs.String(), accessToken)
 }
 
@@ -67,13 +67,13 @@ func TestValidateToken_ProviderJWTAudienceRequired(t *testing.T) {
 			}
 
 			userInfo, err := harness.srv.ValidateToken(t.Context(), harness.signToken(t, claims))
-			require.ErrorContains(t, err, "audience mismatch")
+			require.ErrorIs(t, err, ErrUnknownJWTBearer)
 			require.Nil(t, userInfo)
 		})
 	}
 }
 
-func TestValidateToken_AcceptsTrustedProviderJWT(t *testing.T) {
+func TestValidateToken_RejectsTrustedProviderIDToken(t *testing.T) {
 	harness := newForwardedTokenHarness(t)
 	claims := harness.validClaims()
 	claims.Audience = josejwt.Audience{"another-backend", harness.audience}
@@ -83,9 +83,11 @@ func TestValidateToken_AcceptsTrustedProviderJWT(t *testing.T) {
 	}
 
 	userInfo, err := harness.srv.ValidateToken(t.Context(), harness.signToken(t, claims))
+	require.ErrorIs(t, err, ErrUnknownJWTBearer)
+	require.Nil(t, userInfo)
+	acceptance, err := harness.srv.AcceptForwardedIDToken(t.Context(), harness.signToken(t, claims))
 	require.NoError(t, err)
-	require.Equal(t, "user-subject-123", userInfo.ID)
-	require.Equal(t, providers.TokenSourceSSO, userInfo.TokenSource)
+	require.Equal(t, "user-subject-123", acceptance.UserInfo.ID)
 }
 
 func TestValidateToken_ProviderAudiencePreservesStoredTokens(t *testing.T) {
@@ -101,7 +103,7 @@ func TestValidateToken_ProviderAudiencePreservesStoredTokens(t *testing.T) {
 			seedProviderToken(t, harness.srv.tokenStore.(storage.UserProviderTokenStore), accessToken, "user-subject-123", &oauth2.Token{
 				AccessToken: "stored-provider-token",
 				Expiry:      time.Now().Add(time.Hour),
-			})
+			}, harness.srv.Config.GetResourceIdentifier())
 			harness.provider.ValidateTokenFunc = func(_ context.Context, bearer string) (*providers.UserInfo, error) {
 				require.Equal(t, "stored-provider-token", bearer)
 				return &providers.UserInfo{ID: "user-subject-123"}, nil
@@ -115,7 +117,7 @@ func TestValidateToken_ProviderAudiencePreservesStoredTokens(t *testing.T) {
 	}
 }
 
-func TestValidateToken_ProviderAudiencePreservesOtherBearers(t *testing.T) {
+func TestValidateToken_ProviderIssuerDoesNotControlBearerRejection(t *testing.T) {
 	for _, test := range []struct {
 		name           string
 		issuer         string
@@ -141,9 +143,9 @@ func TestValidateToken_ProviderAudiencePreservesOtherBearers(t *testing.T) {
 			}
 
 			userInfo, err := harness.srv.ValidateToken(t.Context(), accessToken)
-			require.NoError(t, err)
-			require.Equal(t, "user-subject-123", userInfo.ID)
-			require.Equal(t, providers.TokenSourceOAuth, userInfo.TokenSource)
+			require.Error(t, err)
+			require.Nil(t, userInfo)
+			require.Zero(t, harness.provider.GetCallCount("ValidateToken"))
 		})
 	}
 }

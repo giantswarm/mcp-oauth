@@ -1012,11 +1012,20 @@ func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, 
 		return nil, "", err
 	}
 
-	s.trackRefreshTokenFamily(ctx, tokenResponse.RefreshToken, authCode.UserID, clientID, familyID)
-
-	if err := s.refuseIfCodeReused(ctx, authCode, clientID, code); err != nil {
+	if err := s.trackRefreshTokenFamily(ctx, tokenResponse.RefreshToken, authCode.UserID, clientID, familyID); err != nil {
+		s.discardTokenPair(ctx, tokenResponse.AccessToken, tokenResponse.RefreshToken)
 		return nil, "", err
 	}
+	if err := s.claimAuthorizationCode(ctx, code, clientID, span); err != nil {
+		s.discardTokenPair(ctx, tokenResponse.AccessToken, tokenResponse.RefreshToken)
+		return nil, "", err
+	}
+
+	if err := s.refuseIfCodeReused(ctx, authCode, clientID, code); err != nil {
+		s.discardTokenPair(ctx, tokenResponse.AccessToken, tokenResponse.RefreshToken)
+		return nil, "", err
+	}
+	s.registerTokenPair(tokenResponse.AccessToken, tokenResponse.RefreshToken)
 
 	if s.sessionCreationHandler != nil && familyID != "" {
 		s.sessionCreationHandler(ctx, authCode.UserID, familyID, tokenResponse)
@@ -1040,25 +1049,46 @@ func (s *Server) startExchangeSpan(ctx context.Context, clientID string) (contex
 	return ctx, span
 }
 
-// validateAuthorizationCode performs all authorization code validations.
-//
-// The client record is read before the code is marked used, so a client store
-// that stops answering fails the exchange with the code still unused and the
-// client's retry exchanges it normally. Only the storage outage is acted on at
-// that point: an unknown client is reported after the code has been marked
-// used and its binding checked, so a code presented by the wrong client keeps
-// burning the code and keeps its client_id_mismatch audit trail. A flow store
-// that does not answer on the mark likewise yields ErrStorageUnavailable.
+// validateAuthorizationCode reads and validates a code without consuming a
+// valid grant. Invalid parameter attempts consume the code to prevent guessing.
 func (s *Server) validateAuthorizationCode(ctx context.Context, code, clientID, redirectURI, resource, codeVerifier string, span trace.Span) (*storage.AuthorizationCode, error) {
 	client, clientErr := s.GetClient(ctx, clientID)
 	if errors.Is(clientErr, ErrStorageUnavailable) {
 		return nil, clientErr
 	}
 
-	authCode, err := s.flowStore.AtomicCheckAndMarkAuthCodeUsed(ctx, code)
+	authCode, err := s.authorizationCodeForExchange(ctx, code, clientID, span)
+	if err != nil {
+		return nil, err
+	}
+	valid := false
+	defer func() {
+		if !valid {
+			_ = s.claimAuthorizationCode(ctx, code, clientID, span)
+		}
+	}()
+	if err := s.validateCodeParameters(ctx, authCode, clientID, redirectURI, code); err != nil {
+		return nil, err
+	}
+	if err := s.validateResourceConsistency(ctx, resource, authCode, clientID, code); err != nil {
+		return nil, err
+	}
+	if clientErr != nil {
+		return nil, s.logAuthCodeValidationFailure(ctx, "client_not_found", clientID, "", helpers.SafeTruncate(code, 8))
+	}
+	if err := s.validateScopesAndPKCE(ctx, authCode, client, clientID, code, codeVerifier, span); err != nil {
+		return nil, err
+	}
+	valid = true
+	return authCode, nil
+}
+
+func (s *Server) authorizationCodeForExchange(ctx context.Context, code, clientID string, span trace.Span) (*storage.AuthorizationCode, error) {
+	authCode, err := s.flowStore.GetAuthorizationCode(ctx, code)
 	// An identity code is issued to no client and grants nothing: it is
 	// refused used or not, and its reuse has no tokens to revoke.
 	if authCode != nil && authCode.IdentityOnly {
+		_, _ = s.flowStore.AtomicCheckAndMarkAuthCodeUsed(ctx, code)
 		return nil, s.logAuthCodeValidationFailure(ctx, "identity_code_not_exchangeable", clientID, "", helpers.SafeTruncate(code, 8))
 	}
 	if err != nil {
@@ -1072,24 +1102,28 @@ func (s *Server) validateAuthorizationCode(ctx context.Context, code, clientID, 
 		}
 		return nil, s.logAuthCodeValidationFailure(ctx, "invalid_authorization_code: "+err.Error(), clientID, "", helpers.SafeTruncate(code, 8))
 	}
-
-	if err := s.validateCodeParameters(ctx, authCode, clientID, redirectURI, code); err != nil {
-		return nil, err
+	if authCode.Used {
+		if err := s.claimAuthorizationCode(ctx, code, clientID, span); err != nil {
+			return nil, err
+		}
+		return nil, errInvalidGrant
 	}
-
-	if err := s.validateResourceConsistency(ctx, resource, authCode, clientID, code); err != nil {
-		return nil, err
-	}
-
-	if clientErr != nil {
-		return nil, s.logAuthCodeValidationFailure(ctx, "client_not_found", clientID, "", helpers.SafeTruncate(code, 8))
-	}
-
-	if err := s.validateScopesAndPKCE(ctx, authCode, client, clientID, code, codeVerifier, span); err != nil {
-		return nil, err
-	}
-
 	return authCode, nil
+}
+
+// claimAuthorizationCode is the atomic gate after all required token writes.
+func (s *Server) claimAuthorizationCode(ctx context.Context, code, clientID string, span trace.Span) error {
+	authCode, err := s.flowStore.AtomicCheckAndMarkAuthCodeUsed(ctx, code)
+	if err == nil {
+		return nil
+	}
+	if storage.IsCodeReuseError(err) && authCode != nil {
+		return s.handleCodeReuseDetection(ctx, authCode, clientID, code, span)
+	}
+	if storage.IsTransientError(err) {
+		return s.storageUnavailable(ctx, "consume authorization code", clientID, "", err)
+	}
+	return errInvalidGrant
 }
 
 // validateCodeParameters validates basic authorization code parameters.
@@ -1156,6 +1190,12 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 		return nil, fmt.Errorf("issue access token: %w", err)
 	}
 	refreshToken := generateRandomToken()
+	persisted := false
+	defer func() {
+		if !persisted {
+			s.discardTokenPair(ctx, accessToken, refreshToken)
+		}
+	}()
 
 	tokenResponse := &oauth2.Token{
 		AccessToken:  accessToken,
@@ -1180,24 +1220,9 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 	// captured ProviderToken is NOT written back, since a concurrent session
 	// may have rotated the shared entry after this code was minted and a
 	// write-back would clobber the fresh credential with a stale one.
-	if upts, unified := s.userProviderTokenStore(); unified {
-		if err := upts.SaveProviderTokenRef(ctx, accessToken, authCode.UserID, refreshExpiry); err != nil {
-			s.Logger.Warn("Failed to save access token provider reference", logKeyError, err)
-		}
-		if err := upts.SaveProviderTokenRef(ctx, refreshToken, authCode.UserID, refreshExpiry); err != nil {
-			s.Logger.Warn("Failed to save refresh token provider reference", logKeyError, err)
-		}
-	} else {
-		if err := s.tokenStore.SaveToken(ctx, accessToken, authCode.ProviderToken); err != nil {
-			s.Logger.Warn("Failed to save access token mapping", logKeyError, err)
-		}
-		if err := s.tokenStore.SaveToken(ctx, refreshToken, authCode.ProviderToken); err != nil {
-			s.Logger.Warn("Failed to save refresh token", logKeyError, err)
-		}
+	if err := s.storeRefreshedProviderToken(ctx, authCode.UserID, accessToken, refreshToken, authCode.ProviderToken, refreshExpiry); err != nil {
+		return nil, err
 	}
-
-	// Track AT -> RT pairing for refresh-time updates
-	s.registerTokenPair(accessToken, refreshToken)
 
 	baseMetadata := storage.TokenMetadata{
 		UserID:    authCode.UserID,
@@ -1209,11 +1234,14 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 		Scopes:    tokenScopes,
 		JKT:       dpopJKT,
 	}
-	s.saveTokenPairMetadata(ctx, accessToken, refreshToken, baseMetadata, refreshExpiry)
+	if err := s.saveTokenPairMetadata(ctx, accessToken, refreshToken, baseMetadata, refreshExpiry); err != nil {
+		return nil, err
+	}
 	if idToken != "" {
 		s.saveIDTokenMetadata(ctx, idToken, baseMetadata)
 	}
 
+	persisted = true
 	return tokenResponse, nil
 }
 
@@ -1287,7 +1315,7 @@ func (s *Server) fillUserInfoClaims(ctx context.Context, userID string, c *Acces
 
 // trackRefreshTokenFamily tracks the refresh token with family support if available.
 // If familyID is provided it is used; otherwise a new one is generated.
-func (s *Server) trackRefreshTokenFamily(ctx context.Context, refreshToken, userID, clientID, familyID string) {
+func (s *Server) trackRefreshTokenFamily(ctx context.Context, refreshToken, userID, clientID, familyID string) error {
 	refreshTokenExpiry := s.refreshTokenExpiry(time.Now())
 
 	if familyStore, ok := s.tokenStore.(storage.RefreshTokenFamilyStore); ok {
@@ -1295,16 +1323,17 @@ func (s *Server) trackRefreshTokenFamily(ctx context.Context, refreshToken, user
 			familyID = generateRandomToken()
 		}
 		if err := familyStore.SaveRefreshTokenWithFamily(ctx, refreshToken, userID, clientID, familyID, 0, refreshTokenExpiry); err != nil {
-			s.Logger.Warn("Failed to track refresh token with family", logKeyError, err)
+			return s.storageUnavailable(ctx, "save refresh token family", clientID, userID, err)
 		} else {
 			s.Logger.Debug("Created new refresh token family", "user_id", userID, logKeyFamilyID, helpers.SafeTruncate(familyID, 8))
 		}
-		return
+		return nil
 	}
 
 	if err := s.tokenStore.SaveRefreshToken(ctx, refreshToken, userID, refreshTokenExpiry); err != nil {
-		s.Logger.Warn("Failed to track refresh token", logKeyError, err)
+		return s.storageUnavailable(ctx, "save refresh token", clientID, userID, err)
 	}
+	return nil
 }
 
 // recordExchangeSuccess records success in the tracing span.

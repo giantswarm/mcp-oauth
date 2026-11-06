@@ -499,6 +499,8 @@ func TestProviderRefresh_CancelledLeader_DoesNotPoisonSiblings(t *testing.T) {
 type unlockedStore struct {
 	storage.Combined
 	storage.UserProviderTokenStore
+	storage.TokenMetadataStore
+	storage.TokenMetadataGetter
 }
 
 // TestProviderRefresh_SamePodCoalescing_WithoutRefreshLock: N concurrent
@@ -508,7 +510,7 @@ type unlockedStore struct {
 func TestProviderRefresh_SamePodCoalescing_WithoutRefreshLock(t *testing.T) {
 	mem := memory.New(memory.WithCleanupInterval(time.Hour))
 	t.Cleanup(mem.Stop)
-	store := &unlockedStore{Combined: mem, UserProviderTokenStore: mem}
+	store := &unlockedStore{Combined: mem, UserProviderTokenStore: mem, TokenMetadataStore: mem, TokenMetadataGetter: mem}
 	ctx := context.Background()
 
 	var mu sync.Mutex

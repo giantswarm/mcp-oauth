@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	josejwt "github.com/go-jose/go-jose/v4/jwt"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 )
@@ -35,14 +36,17 @@ type JWKSClient struct {
 	allowPrivateIP      bool     // When true, SSRF protection is disabled for private IdP deployments
 	allowPrivateIPHosts []string // When set, private IPs allowed only for these hostnames
 
-	// refetchBackoff bounds unknown-kid-triggered refetches (0 uses
-	// DefaultJWKSRefetchBackoff). refetchMu makes the per-URI "has the backoff
-	// window elapsed?" check-and-record atomic so concurrent validations of
-	// tokens carrying the same new kid trigger at most one network refetch;
-	// lastRefetch records the last refetch attempt time per jwksURI.
+	// refetchGroup coalesces unknown-kid fetches per URI. refetchBackoff
+	// bounds sequential attempts (0 uses DefaultJWKSRefetchBackoff), with
+	// lastRefetch recording the last attempt time per URI.
 	refetchBackoff time.Duration
-	refetchMu      sync.Mutex
-	lastRefetch    sync.Map // jwksURI -> time.Time
+	refetchGroup   singleflight.Group
+	lastRefetch    sync.Map // jwksURI -> jwksRefetchAttempt
+}
+
+type jwksRefetchAttempt struct {
+	attemptedAt time.Time
+	err         error
 }
 
 // JWKSStatusError is returned when the JWKS endpoint answers with a status
@@ -325,39 +329,47 @@ func (c *JWKSClient) fetchJWKS(ctx context.Context, jwksURI string, forceRefresh
 	return &jwks, nil
 }
 
-// refetchForUnknownKid forces a single bounded JWKS refetch after a token
-// presented a kid absent from the cached set — the issuer has likely rotated
-// its signing key. The refetch is rate-limited to one network fetch per
-// refetchBackoff per URI (negative caching), so a flood of tokens carrying
-// genuinely bogus kids cannot hammer the issuer's JWKS endpoint. Returns the
-// refreshed key set and true on a successful refetch; returns false when the
-// backoff window has not elapsed or the refetch failed, in which case the
-// caller rejects with the original unknown-kid error.
-func (c *JWKSClient) refetchForUnknownKid(ctx context.Context, jwksURI string) (*jose.JSONWebKeySet, bool) {
+// refetchForUnknownKid coalesces refetches per URI and bounds them by
+// DefaultHTTPTimeout, independently of individual callers' cancellation.
+// Sequential attempts obey refetchBackoff; callers in that window receive
+// the freshest cached set, or nil when no fresh set exists. A failed fetch's
+// error persists through backoff so an outage remains a retryable error.
+func (c *JWKSClient) refetchForUnknownKid(ctx context.Context, jwksURI string) (*jose.JSONWebKeySet, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	backoff := c.refetchBackoff
 	if backoff <= 0 {
 		backoff = DefaultJWKSRefetchBackoff
 	}
 
-	// Record the attempt under the lock before fetching so a concurrent
-	// validation of another token with the same new kid sees the window as
-	// open and skips its own refetch.
-	c.refetchMu.Lock()
-	if last, ok := c.lastRefetch.Load(jwksURI); ok {
-		if lt, ok := last.(time.Time); ok && c.timeProvider.Since(lt) < backoff {
-			c.refetchMu.Unlock()
-			return nil, false
+	result := c.refetchGroup.DoChan(jwksURI, func() (any, error) {
+		if last, ok := c.lastRefetch.Load(jwksURI); ok {
+			if lastAttempt, ok := last.(jwksRefetchAttempt); ok && c.timeProvider.Since(lastAttempt.attemptedAt) < backoff {
+				keys, _ := c.cachedFresh(jwksURI)
+				return keys, lastAttempt.err
+			}
 		}
-	}
-	c.lastRefetch.Store(jwksURI, c.timeProvider.Now())
-	c.refetchMu.Unlock()
+		attemptedAt := c.timeProvider.Now()
 
-	jwks, err := c.fetchJWKS(ctx, jwksURI, true)
-	if err != nil {
-		c.logger.Warn("JWKS refetch after unknown kid failed", "uri", jwksURI, "error", err)
-		return nil, false
+		fetchContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), DefaultHTTPTimeout)
+		defer cancel()
+		keys, err := c.fetchJWKS(fetchContext, jwksURI, true)
+		c.lastRefetch.Store(jwksURI, jwksRefetchAttempt{attemptedAt: attemptedAt, err: err})
+		if err != nil {
+			c.logger.Warn("JWKS refetch after unknown kid failed", "uri", jwksURI, "error", err)
+		}
+		return keys, err
+	})
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case completed := <-result:
+		if completed.Err != nil {
+			return nil, completed.Err
+		}
+		return completed.Val.(*jose.JSONWebKeySet), nil
 	}
-	return jwks, true
 }
 
 // IsJWT checks if a token string looks like a JWT (has 3 parts separated by dots).
@@ -571,7 +583,11 @@ func ValidateIDToken(ctx context.Context, tokenString string, jwksClient *JWKSCl
 		// absent from the cached set, but the issuer is now serving it. Force a
 		// bounded refetch and retry once before rejecting, so a single rotation
 		// doesn't fail every token until the process restarts.
-		if refreshed, ok := jwksClient.refetchForUnknownKid(ctx, jwksURI); ok {
+		refreshed, refreshError := jwksClient.refetchForUnknownKid(ctx, jwksURI)
+		if refreshError != nil {
+			return nil, fmt.Errorf("failed to refetch JWKS: %w", refreshError)
+		}
+		if refreshed != nil {
 			claims, err = parseAndValidateToken(tokenString, refreshed)
 		}
 	}

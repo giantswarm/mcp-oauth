@@ -175,9 +175,7 @@ func (s *Server) AcceptForwardedIDToken(ctx context.Context, bearerToken string)
 		return nil, err
 	}
 	if claims == nil {
-		// No trusted audience matched — the caller asked us to accept a forwarded
-		// token, so an audience mismatch is a hard error here (unlike the
-		// ValidateToken fast-path which falls back to userinfo).
+		// Direct forwarded-token acceptance never consults stored credentials.
 		s.recordForwardedIDTokenAccepted(ctx, providerName, expectedIssuer, "", instrumentation.ForwardedIDTokenResultAudMismatch)
 		return nil, ErrTrustedAudienceMismatch
 	}

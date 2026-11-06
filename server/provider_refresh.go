@@ -147,7 +147,15 @@ func (s *Server) refreshUserProviderToken(ctx context.Context, userID string, ob
 	if !unified {
 		return nil, fmt.Errorf("coordinated provider refresh requires a storage.UserProviderTokenStore backend")
 	}
+	return s.refreshProviderTokenEntry(ctx, upts, userID, observed)
+}
 
+type providerTokenEntryStore interface {
+	GetUserProviderToken(context.Context, string) (*oauth2.Token, error)
+	SaveUserProviderToken(context.Context, string, *oauth2.Token) error
+}
+
+func (s *Server) refreshProviderTokenEntry(ctx context.Context, upts providerTokenEntryStore, userID string, observed *oauth2.Token) (*oauth2.Token, error) {
 	// Bound this caller's total wait — the winner's provider call and any
 	// loser's wait for the winner's write-back, across singleflight re-joins.
 	ctx, cancel := context.WithTimeout(ctx, providerRefreshWaitTimeout)
@@ -197,7 +205,7 @@ func (s *Server) refreshUserProviderToken(ctx context.Context, userID string, ob
 // Backends without storage.ProviderRefreshLockStore fall back to an
 // uncoordinated refresh + write-back (pre-coordination behavior) — still
 // deduplicated within the process by the singleflight above.
-func (s *Server) coordinateProviderRefresh(ctx context.Context, upts storage.UserProviderTokenStore, userID string, observed *oauth2.Token) (*oauth2.Token, error) {
+func (s *Server) coordinateProviderRefresh(ctx context.Context, upts providerTokenEntryStore, userID string, observed *oauth2.Token) (*oauth2.Token, error) {
 	locker, coordinated := s.providerRefreshLocker()
 	if !coordinated {
 		s.Logger.Debug("Storage backend has no provider refresh lock, refreshing uncoordinated", "user_id", userID)
@@ -235,7 +243,7 @@ func (s *Server) coordinateProviderRefresh(ctx context.Context, upts storage.Use
 // back) and guarantees the lock is released on every path (owner-only,
 // detached from ctx cancellation); a crashed holder is covered by the lock
 // TTL.
-func (s *Server) refreshSharedProviderTokenLocked(ctx context.Context, upts storage.UserProviderTokenStore, locker storage.ProviderRefreshLockStore, userID, lockValue string, observed *oauth2.Token) (*oauth2.Token, error) {
+func (s *Server) refreshSharedProviderTokenLocked(ctx context.Context, upts providerTokenEntryStore, locker storage.ProviderRefreshLockStore, userID, lockValue string, observed *oauth2.Token) (*oauth2.Token, error) {
 	defer func() {
 		if err := locker.ReleaseProviderRefreshLock(context.WithoutCancel(ctx), userID, lockValue); err != nil {
 			s.Logger.Warn("Failed to release provider refresh lock", "user_id", userID, logKeyError, err)
@@ -250,7 +258,7 @@ func (s *Server) refreshSharedProviderTokenLocked(ctx context.Context, upts stor
 // every sibling session sees it. It runs under the per-user lock via
 // refreshSharedProviderTokenLocked, or bare as the uncoordinated fallback for
 // backends without a refresh lock.
-func (s *Server) refreshSharedProviderToken(ctx context.Context, upts storage.UserProviderTokenStore, userID string, observed *oauth2.Token) (*oauth2.Token, error) {
+func (s *Server) refreshSharedProviderToken(ctx context.Context, upts providerTokenEntryStore, userID string, observed *oauth2.Token) (*oauth2.Token, error) {
 	shared, err := upts.GetUserProviderToken(ctx, userID)
 	if storage.IsTransientError(err) {
 		return nil, s.storageUnavailable(ctx, "read shared provider token", "", userID, err)
@@ -278,7 +286,7 @@ func (s *Server) refreshSharedProviderToken(ctx context.Context, upts storage.Us
 // sibling session would be stranded on the burned single-use refresh token.
 // The detached work is re-bounded by the provider-refresh timeout so it can
 // neither run unbounded nor outlive the refresh lock's TTL.
-func (s *Server) refreshAndStoreSharedProviderToken(ctx context.Context, upts storage.UserProviderTokenStore, userID string, shared *oauth2.Token) (*oauth2.Token, error) {
+func (s *Server) refreshAndStoreSharedProviderToken(ctx context.Context, upts providerTokenEntryStore, userID string, shared *oauth2.Token) (*oauth2.Token, error) {
 	if shared.RefreshToken == "" {
 		return nil, fmt.Errorf("shared provider token for user has no refresh token")
 	}
@@ -297,7 +305,7 @@ func (s *Server) refreshAndStoreSharedProviderToken(ctx context.Context, upts st
 	newToken = preserveRefreshToken(newToken, shared.RefreshToken)
 
 	if err := upts.SaveUserProviderToken(ctx, userID, newToken); err != nil {
-		return nil, fmt.Errorf("failed to write refreshed provider token to the shared entry: %w", err)
+		return nil, s.storageUnavailable(ctx, "save refreshed provider token", "", userID, err)
 	}
 
 	s.Logger.Debug("Provider token refreshed and written to shared entry",

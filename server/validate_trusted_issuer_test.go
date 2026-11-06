@@ -10,6 +10,7 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	josejwt "github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
@@ -157,13 +158,48 @@ func TestValidateToken_TrustedIssuer_RejectsWrongAudience(t *testing.T) {
 	require.Contains(t, err.Error(), "trusted issuer JWT validation failed")
 }
 
+func TestValidateToken_TrustedIssuer_ExchangeAudienceDoesNotAuthorizeResource(t *testing.T) {
+	key := newTestECKey(t)
+	const keyID = "resource-audience-key"
+	jwksURL, jwksClient := serveStaticJWKS(t, key, keyID)
+	srv, _, _ := setupFlowTestServer(t)
+	const exchangeAudience = "exchange-client"
+	srv.Config.TrustedAudiences = []string{exchangeAudience}
+	validator, err := newOIDCValidatorWithClient([]TrustedIssuer{{
+		Issuer: testIssuer, JwksURL: jwksURL,
+		AllowedAudiences: []string{exchangeAudience, srv.Config.GetResourceIdentifier()},
+	}}, jwksClient)
+	require.NoError(t, err)
+	srv.trustedIssuerValidator = validator
+	for _, resourceAudience := range []bool{false, true} {
+		audiences := josejwt.Audience{exchangeAudience}
+		if resourceAudience {
+			audiences = append(audiences, srv.Config.GetResourceIdentifier())
+		}
+		bearer := signSubjectTokenWithType(t, key, keyID, rfc9068TokenType, josejwt.Claims{
+			Issuer: testIssuer, Subject: testSubject, Audience: audiences,
+			Expiry: josejwt.NewNumericDate(time.Now().Add(time.Hour)),
+		})
+		_, err := validator.Validate(t.Context(), bearer, nil)
+		require.NoError(t, err, "the token remains valid as an exchange subject")
+		userInfo, err := srv.ValidateToken(t.Context(), bearer)
+		if resourceAudience {
+			require.NoError(t, err)
+			require.Equal(t, testSubject, userInfo.ID)
+		} else {
+			require.ErrorContains(t, err, "not intended for this resource")
+			require.Nil(t, userInfo)
+		}
+	}
+}
+
 // TestValidateToken_TrustedIssuer_IDTokenFallsThroughToForwarded covers the
 // gazelle-style deployment where the server's main OIDC provider is ALSO
 // configured as a trusted issuer (for RFC 8693 subject-token validation).
 // A forwarded ID token (typ != at+jwt) from that issuer whose aud is in
 // TrustedAudiences must not be hard-rejected by the trusted-issuer branch;
 // it falls through to the forwarded-ID-token branch and is accepted there.
-func TestValidateToken_TrustedIssuer_IDTokenFallsThroughToForwarded(t *testing.T) {
+func TestValidateToken_TrustedIssuer_RejectsIDTokenWithTrustedAudience(t *testing.T) {
 	h := newForwardedTokenHarness(t)
 
 	tiJWKSClient := oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
@@ -178,24 +214,20 @@ func TestValidateToken_TrustedIssuer_IDTokenFallsThroughToForwarded(t *testing.T
 	require.NoError(t, err)
 	h.srv.trustedIssuerValidator = v
 
-	// signToken signs with typ "JWT" — an ID token, not an RFC 9068 access
-	// token. aud is in TrustedAudiences, so the trusted-issuer branch must
-	// defer instead of hard-rejecting on the typ check.
-	tok := h.signToken(t, h.validClaims())
+	bearer := h.signToken(t, h.validClaims())
 
-	userInfo, err := h.srv.ValidateToken(context.Background(), tok)
-	require.NoError(t, err)
-	require.NotNil(t, userInfo)
-	require.Equal(t, "user-subject-123", userInfo.ID)
-	require.Equal(t, providers.TokenSourceSSO, userInfo.TokenSource)
+	userInfo, err := h.srv.ValidateToken(t.Context(), bearer)
+	require.ErrorContains(t, err, "typ header")
+	require.Nil(t, userInfo)
 }
 
-func TestValidateToken_TrustedIssuer_UnknownIssFallsThroughToOpaque(t *testing.T) {
+func TestValidateToken_TrustedIssuer_UnknownIssuerRequiresIssuedMapping(t *testing.T) {
 	key := newTestECKey(t)
 	const kid = "ti-kid"
 	jwksURL, jwksClient := serveStaticJWKS(t, key, kid)
 
-	srv, _, provider := setupFlowTestServer(t)
+	srv, store, provider := setupFlowTestServer(t)
+	seedProviderToken(t, store, "opaque-bearer", "opaque-user", &oauth2.Token{AccessToken: "opaque-bearer", Expiry: time.Now().Add(time.Hour)})
 
 	v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
 		Issuer:           testIssuer,

@@ -21,12 +21,10 @@ import (
 // 2. Parse claims without verification to check audience
 // 3. If audience matches, validate JWT signature using provider's JWKS
 // 4. Extract user info from validated claims
-// 5. Fall back to userinfo endpoint if JWT validation fails
+// 5. Return the verified identity or a validation error
 
-// validateAndParseForwardedIDToken validates a JWT ID token from a trusted upstream
-// service and returns its verified claims. This is the shared core used by both the
-// fallback-style validateForwardedIDToken (ValidateToken fast-path) and the direct
-// AcceptForwardedIDToken entry point.
+// validateAndParseForwardedIDToken verifies a JWT ID token whose audience
+// matches Config.TrustedAudiences and returns its claims.
 //
 // Validation steps:
 // 1. Parse the JWT claims without verification to check audience
@@ -34,8 +32,7 @@ import (
 // 3. If matched, validate the JWT signature using the provider's JWKS
 // 4. Return the verified claims
 //
-// Returns (nil, "", nil) if the token doesn't match any trusted audience — callers
-// that want fallback semantics (the ValidateToken fast-path) treat this as "not for us."
+// Returns (nil, "", nil) if the token doesn't match any trusted audience.
 // Returns (nil, "", error) if the token matches but validation fails.
 // Returns (claims, matchedAudience, nil) if validation succeeds.
 func (s *Server) validateAndParseForwardedIDToken(ctx context.Context, tokenString string) (*oidc.IDTokenClaims, string, error) {
@@ -92,10 +89,7 @@ func (s *Server) validateAndParseForwardedIDToken(ctx context.Context, tokenStri
 		return nil, "", fmt.Errorf("ID token validation returned nil claims")
 	}
 
-	// The provider's issuer may also be a trusted issuer; its ActorPolicy
-	// holds on this path too. Within ValidateToken a refused act never gets
-	// here (the trusted-issuer branch rejects it first), so this check is what
-	// guards direct AcceptForwardedIDToken callers.
+	// Identity acceptance enforces the matched issuer's actor policy.
 	if s.trustedIssuerValidator != nil {
 		if err := checkActor(s.trustedIssuerValidator.actorPolicy(idTokenClaims.Issuer), idTokenClaims.Act); err != nil {
 			return nil, "", err
@@ -103,29 +97,6 @@ func (s *Server) validateAndParseForwardedIDToken(ctx context.Context, tokenStri
 	}
 
 	return idTokenClaims, matchedAudience, nil
-}
-
-// validateForwardedIDToken is the fallback-style wrapper used by the ValidateToken
-// fast-path. It returns (nil, nil) when the token doesn't carry a trusted audience
-// so the caller falls back to the normal userinfo flow.
-func (s *Server) validateForwardedIDToken(ctx context.Context, tokenString string) (*providers.UserInfo, error) {
-	claims, matchedAudience, err := s.validateAndParseForwardedIDToken(ctx, tokenString)
-	if err != nil {
-		return nil, err
-	}
-	if claims == nil {
-		return nil, nil
-	}
-
-	userInfo := s.idTokenClaimsToUserInfo(claims)
-
-	var validatedIssuer string
-	if jwksProvider, ok := s.provider.(providers.JWKSProvider); ok {
-		validatedIssuer = jwksProvider.IssuerURL()
-	}
-	s.logForwardedIDTokenAccepted(ctx, tokenString, s.deriveForwardedSessionID(tokenString), matchedAudience, validatedIssuer, userInfo)
-
-	return userInfo, nil
 }
 
 // findMatchingTrustedAudience checks if any of the token's audiences match our trusted audiences.

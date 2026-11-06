@@ -123,7 +123,7 @@ func setupUserInfoTest(t *testing.T, scopes []string) (*Handler, *memory.Store, 
 	require.NoError(t, err)
 
 	const accessToken = "userinfo-access-token"
-	require.NoError(t, store.SaveToken(context.Background(), accessToken, &oauth2.Token{
+	require.NoError(t, saveTestAccessToken(t.Context(), store, accessToken, &oauth2.Token{
 		AccessToken: accessToken,
 		Expiry:      time.Now().Add(time.Hour),
 	}))
@@ -132,6 +132,7 @@ func setupUserInfoTest(t *testing.T, scopes []string) (*Handler, *memory.Store, 
 		ClientID:  "test-client",
 		TokenType: "access",
 		Scopes:    scopes,
+		Audience:  testIssuer,
 	}))
 
 	return New(srv, nil), store, accessToken
@@ -294,7 +295,7 @@ func seedOpaqueIntrospectionToken(t *testing.T, store *memory.Store, accessToken
 		TokenType:   "Bearer",
 		Expiry:      expiresAt,
 	}
-	if err := store.SaveToken(ctx, accessToken, providerToken); err != nil {
+	if err := saveTestAccessToken(ctx, store, accessToken, providerToken); err != nil {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
 	if err := store.SaveTokenMetadata(ctx, accessToken, storage.TokenMetadata{

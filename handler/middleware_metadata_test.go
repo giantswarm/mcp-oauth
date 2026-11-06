@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	josejwt "github.com/go-jose/go-jose/v4/jwt"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/internal/constants"
@@ -39,6 +40,14 @@ const (
 // at the given level shared by the Server and the Handler. It returns the
 // handler, a valid forwarded ID token, and the log buffer.
 func newForwardedTokenHandler(t *testing.T, level slog.Level) (*Handler, string, *bytes.Buffer) {
+	return newExternalTokenHandler(t, level, false)
+}
+
+func newTrustedIssuerTokenHandler(t *testing.T, level slog.Level) (*Handler, string, *bytes.Buffer) {
+	return newExternalTokenHandler(t, level, true)
+}
+
+func newExternalTokenHandler(t *testing.T, level slog.Level, accessToken bool) (*Handler, string, *bytes.Buffer) {
 	t.Helper()
 
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -63,6 +72,7 @@ func newForwardedTokenHandler(t *testing.T, level slog.Level) (*Handler, string,
 	const (
 		issuer   = "https://auth.test.example"
 		audience = "forwarded-audience"
+		resource = "https://resource.test.example"
 	)
 	provider := mock.NewProvider()
 	provider.JWKSURIFunc = func(context.Context) (string, error) { return jwksServer.URL, nil }
@@ -76,10 +86,14 @@ func newForwardedTokenHandler(t *testing.T, level slog.Level) (*Handler, string,
 
 	srv, err := server.New(provider, store, store, store, &server.Config{
 		Issuer:             issuer,
+		ResourceIdentifier: resource,
 		TrustedAudiences:   []string{audience},
 		AllowPrivateIPJWKS: true,
 		JWKSRootCAs:        rootCAs,
-	}, logger)
+	}, logger, server.WithTrustedIssuers([]server.TrustedIssuer{{
+		Issuer: issuer, JwksURL: jwksServer.URL, AllowPrivateIPJWKS: true, RootCAs: rootCAs,
+		AllowedAudiences: []string{resource, audience},
+	}}))
 	if err != nil {
 		t.Fatalf("server.New: %v", err)
 	}
@@ -87,6 +101,11 @@ func newForwardedTokenHandler(t *testing.T, level slog.Level) (*Handler, string,
 	now := time.Now()
 	signingKey := jose.SigningKey{Algorithm: jose.RS256, Key: jose.JSONWebKey{Key: privateKey, KeyID: keyID, Algorithm: "RS256", Use: "sig"}}
 	opts := (&jose.SignerOptions{}).WithType("JWT")
+	tokenAudience := audience
+	if accessToken {
+		opts = opts.WithType("at+jwt")
+		tokenAudience = resource
+	}
 	opts.WithHeader(jose.HeaderKey("kid"), keyID)
 	signer, err := jose.NewSigner(signingKey, opts)
 	if err != nil {
@@ -96,7 +115,7 @@ func newForwardedTokenHandler(t *testing.T, level slog.Level) (*Handler, string,
 		Claims: josejwt.Claims{
 			Subject:  "user-subject-123",
 			Issuer:   issuer,
-			Audience: josejwt.Audience{audience},
+			Audience: josejwt.Audience{tokenAudience},
 			IssuedAt: josejwt.NewNumericDate(now),
 			Expiry:   josejwt.NewNumericDate(now.Add(time.Hour)),
 		},
@@ -155,16 +174,16 @@ func serveForwardedToken(t *testing.T, h *Handler, token string) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d (body %s)", w.Code, http.StatusOK, w.Body.String())
 	}
-	if got == nil || got.ID != "user-subject-123" || got.TokenSource != providers.TokenSourceSSO {
+	if got == nil || got.ID != "user-subject-123" || got.TokenSource != providers.TokenSourceTrustedIssuer {
 		t.Fatalf("inner handler saw %+v, want the SSO-forwarded user", got)
 	}
 }
 
 // TestValidateToken_ForwardedToken_MetadataMissIsSilentAtInfo pins the
-// resource-server contract: a forwarded ID token has no stored metadata, and
+// resource-server contract: an external access token has no stored metadata, and
 // that miss must not surface at INFO or above on every request.
 func TestValidateToken_ForwardedToken_MetadataMissIsSilentAtInfo(t *testing.T) {
-	h, token, buf := newForwardedTokenHandler(t, slog.LevelInfo)
+	h, token, buf := newTrustedIssuerTokenHandler(t, slog.LevelInfo)
 
 	for range 3 {
 		serveForwardedToken(t, h, token)
@@ -185,7 +204,7 @@ func TestValidateToken_ForwardedToken_MetadataMissIsSilentAtInfo(t *testing.T) {
 // diagnosable: at DEBUG the middleware names the validation path that accepted
 // the bearer, and never logs token material.
 func TestValidateToken_ForwardedToken_MetadataMissLoggedAtDebug(t *testing.T) {
-	h, token, buf := newForwardedTokenHandler(t, slog.LevelDebug)
+	h, token, buf := newTrustedIssuerTokenHandler(t, slog.LevelDebug)
 
 	serveForwardedToken(t, h, token)
 
@@ -197,8 +216,8 @@ func TestValidateToken_ForwardedToken_MetadataMissLoggedAtDebug(t *testing.T) {
 	if e["level"] != "DEBUG" {
 		t.Errorf("level = %v, want DEBUG", e["level"])
 	}
-	if e["token_source"] != string(providers.TokenSourceSSO) {
-		t.Errorf("token_source = %v, want %q", e["token_source"], providers.TokenSourceSSO)
+	if e["token_source"] != string(providers.TokenSourceTrustedIssuer) {
+		t.Errorf("token_source = %v, want %q", e["token_source"], providers.TokenSourceTrustedIssuer)
 	}
 	if _, has := e["token_suffix"]; has {
 		t.Error("the metadata-miss line must not carry token material (CodeQL go/clear-text-logging)")
@@ -241,7 +260,7 @@ func TestValidateToken_MetadataBackendFailureIsUnavailable(t *testing.T) {
 	h := New(srv, logger)
 
 	const accessToken = "opaque-access-token"
-	if err := inner.SaveToken(t.Context(), accessToken, &oauth2.Token{AccessToken: "provider-access", Expiry: time.Now().Add(time.Hour)}); err != nil {
+	if err := saveTestAccessToken(t.Context(), inner, accessToken, &oauth2.Token{AccessToken: "provider-access", Expiry: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatalf("SaveToken: %v", err)
 	}
 
@@ -293,6 +312,7 @@ func TestValidateToken_ProviderUnavailableIsUnavailable(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := memory.New()
 			t.Cleanup(store.Stop)
+			require.NoError(t, saveTestAccessToken(t.Context(), store, "opaque-access-token", &oauth2.Token{AccessToken: "provider-access", Expiry: time.Now().Add(time.Hour)}))
 			provider := mock.NewProvider()
 			provider.ValidateTokenFunc = func(context.Context, string) (*providers.UserInfo, error) {
 				return nil, &providers.UserInfoStatusError{StatusCode: tt.status}
@@ -336,6 +356,7 @@ func TestValidateToken_ProviderTimeoutIsUnavailable(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		store := memory.New()
 		t.Cleanup(store.Stop)
+		require.NoError(t, saveTestAccessToken(t.Context(), store, "opaque-access-token", &oauth2.Token{AccessToken: "provider-access", Expiry: time.Now().Add(time.Hour)}))
 		provider := mock.NewProvider()
 		provider.ValidateTokenFunc = func(ctx context.Context, _ string) (*providers.UserInfo, error) {
 			<-ctx.Done()

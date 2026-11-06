@@ -208,7 +208,7 @@ func (s *Store) GetAuthorizationCode(ctx context.Context, code string) (result *
 	authCode := fromAuthorizationCodeJSON(&j)
 
 	// Check if expired (TTL should handle this, but double-check)
-	if authCode.HasExpired() {
+	if authCode.HasExpired() && !authCode.Used {
 		return nil, fmt.Errorf("%w: authorization code expired", storage.ErrTokenExpired)
 	}
 

@@ -476,7 +476,7 @@ authURL := provider.AuthorizationURL(state, challenge, "S256", scopes, &provider
 
 ## Accepting a Forwarded ID Token Directly
 
-Silent authentication is one half of the "upstream-IdP pass-through" story. The other half is the case where a trusted intermediary (an aggregator, a gateway, an AgentCore Runtime bridge) already holds a valid ID token from the upstream IdP and presents it as the Bearer credential to this server. `Server.AcceptForwardedIDToken` is the library entry point for that case.
+`Server.AcceptForwardedIDToken` verifies an upstream ID token for explicit identity workflows. Its result establishes identity; it does not authorize MCP resource requests. Resource authentication through `Server.ValidateToken` requires an access token bound to the resource.
 
 Unlike the auth-code flow, this path never touches the authorization_code grant — there is no family, no refresh token, no `SessionCreationHandler` firing, and no entry created in `TokenStore`. It is a pure validation function that returns the verified claims plus a deterministic session identifier.
 
@@ -484,11 +484,10 @@ Unlike the auth-code flow, this path never touches the authorization_code grant 
 
 Use `AcceptForwardedIDToken` when:
 
-- An upstream intermediary (muster, a bridge, a sidecar) receives an MCP request with a Bearer token it obtained from the same IdP this server trusts.
-- The intermediary wants to hand the token directly to this server rather than translate it into a server-issued access token.
-- This server needs to attribute the request to the original end user (per-user RBAC, audit) without running its own auth-code flow.
+- An identity workflow holds an ID token from the configured IdP.
+- The workflow needs verified identity claims and a deterministic identifier for audit correlation.
 
-The classic deployment is the Bedrock AgentCore Runtime bridge: user authenticates to Dex, gets an ID token, presents it to the bridge, bridge forwards it unchanged to an MCP server configured with Dex's audience in `Config.TrustedAudiences`.
+For delegation from an aggregator or bridge, use the existing [RFC 8693 token exchange](./token-exchange.md) support to obtain an access token for the downstream resource. Adding the aggregator's client ID to `TrustedAudiences` does not make its ID tokens resource access tokens.
 
 ### Preconditions
 
@@ -518,12 +517,13 @@ if err != nil {
 ### What it does NOT do
 
 - **Does not fire `SessionCreationHandler`.** That handler is gated on `RefreshTokenFamilyStore` and the authorization-code family lifecycle. Forwarded tokens have neither. Callers that want a "first time we've seen this session" hook should build that on top with their own seen-set keyed on `acc.SessionID` and TTL bounded by `acc.ExpiresAt`.
-- **Does not mirror the token into `TokenStore`.** `TokenStore.SaveToken` is keyed by userID; two concurrent bridged sessions for the same user would overwrite each other. Aggregators that need to retrieve the forwarded token later (for example, to attach it to downstream MCP calls) must store it in their own structure.
-- **Does not refresh expired tokens.** When the JWT expires, validation fails and the caller must propagate 401 so the MCP client re-authenticates against the upstream IdP.
+- **Does not mirror the token into `TokenStore`.** Identity acceptance creates no resource-token mapping.
+- **Does not refresh expired tokens.** The caller must obtain a fresh identity assertion when it expires.
+- **Does not authorize resource requests.** Use an access token bound to the resource, including through RFC 8693 exchange.
 
 ### Aggregator fan-out
 
-When the caller is itself an aggregator (muster fanning out to mcp-prometheus, mcp-kubernetes, mcp-opsgenie) and forwards the same token to every downstream, each downstream independently calls `AcceptForwardedIDToken` and derives the **same** `SessionID`. That gives cross-hop audit-log correlation without coordination — see the session-ID section in [security.md](./security.md) for the correlation property, the `Config.SessionIDHMACKey` escape hatch for multi-tenant isolation, and the operator caveat around key agreement.
+Identity validation of the same token derives the same `SessionID` under the configured identity policy. See [security.md](./security.md) for audit correlation and `Config.SessionIDHMACKey`. Resource fan-out requires a resource-bound access token for each downstream; use token exchange rather than forwarding the ID token as a resource bearer.
 
 ## References
 

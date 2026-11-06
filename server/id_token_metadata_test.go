@@ -45,6 +45,11 @@ func makeIDTokenWithExpiry(t *testing.T, subject string, expiresAt time.Time) st
 // the token response together with the registered client ID.
 func mintTokensWithIDToken(t *testing.T, srv *Server, store *memory.Store, provider *mock.Provider, idToken string) (*oauth2.Token, string) {
 	t.Helper()
+	return mintTokensWithIDTokenAndDPoP(t, srv, store, provider, idToken, "")
+}
+
+func mintTokensWithIDTokenAndDPoP(t *testing.T, srv *Server, store *memory.Store, provider *mock.Provider, idToken, dpopJKT string) (*oauth2.Token, string) {
+	t.Helper()
 	ctx := t.Context()
 
 	provider.ExchangeCodeFunc = func(_ context.Context, _ string, _ string) (*oauth2.Token, error) {
@@ -84,7 +89,7 @@ func mintTokensWithIDToken(t *testing.T, srv *Server, store *memory.Store, provi
 	authCode, _, err := srv.HandleProviderCallback(ctx, authState.ProviderState, "code-"+testutil.GenerateRandomString(10))
 	require.NoError(t, err)
 
-	token, _, err := srv.ExchangeAuthorizationCode(ctx, authCode.Code, client.ClientID, "https://example.com/callback", "", codeVerifier, "")
+	token, _, err := srv.ExchangeAuthorizationCode(ctx, authCode.Code, client.ClientID, "https://example.com/callback", "", codeVerifier, dpopJKT)
 	require.NoError(t, err)
 
 	return token, client.ClientID
