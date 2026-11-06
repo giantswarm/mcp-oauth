@@ -482,10 +482,9 @@ type IDTokenClaims struct {
 	Scope ScopeClaim `json:"scope,omitempty"`
 }
 
-// ScopeClaim is a scope claim. It is encoded as the space-delimited string
-// RFC 8693 §4.2 defines. It also decodes a JSON array of strings, which some
-// issuers emit; any other JSON type fails to decode, so a token carrying one
-// is refused.
+// ScopeClaim is a scope claim, the space-delimited JSON string RFC 8693 §4.2
+// defines. Any other JSON type fails to decode, so a token carrying one is
+// refused.
 type ScopeClaim []string
 
 // MarshalJSON encodes the scopes as one space-delimited string.
@@ -493,18 +492,13 @@ func (s ScopeClaim) MarshalJSON() ([]byte, error) {
 	return json.Marshal(strings.Join(s, " "))
 }
 
-// UnmarshalJSON decodes a space-delimited string or an array of strings.
+// UnmarshalJSON decodes a space-delimited string.
 func (s *ScopeClaim) UnmarshalJSON(data []byte) error {
 	var joined string
-	if err := json.Unmarshal(data, &joined); err == nil {
-		*s = strings.Fields(joined)
-		return nil
+	if err := json.Unmarshal(data, &joined); err != nil {
+		return fmt.Errorf("scope claim: want a space-delimited string: %w", err)
 	}
-	var list []string
-	if err := json.Unmarshal(data, &list); err != nil {
-		return fmt.Errorf("scope claim: want a string or an array of strings: %w", err)
-	}
-	*s = list
+	*s = strings.Fields(joined)
 	return nil
 }
 

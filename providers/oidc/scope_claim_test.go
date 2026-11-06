@@ -15,11 +15,10 @@ func TestScopeClaim_UnmarshalJSON(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "space-delimited string", payload: `{"scope":"tools:read  tools:write"}`, want: ScopeClaim{"tools:read", "tools:write"}},
-		{name: "array of strings", payload: `{"scope":["tools:read","tools:write"]}`, want: ScopeClaim{"tools:read", "tools:write"}},
 		{name: "empty string", payload: `{"scope":""}`, want: ScopeClaim{}},
 		{name: "absent", payload: `{}`},
 		{name: "number refused", payload: `{"scope":42}`, wantErr: true},
-		{name: "array of numbers refused", payload: `{"scope":[1]}`, wantErr: true},
+		{name: "array of strings refused", payload: `{"scope":["tools:read","tools:write"]}`, wantErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -144,10 +144,8 @@ func TestSelfIssuedExchange_ScopeIntersection(t *testing.T) {
 	})
 
 	t.Run("requested scope outside allowed", func(t *testing.T) {
-		result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{Subject: TypedToken{Token: makeToken(), Type: SubjectTokenTypeIDToken}, Resource: "https://api.example.com", Scope: "admin"}})
-		require.NoError(t, err)
-		// intersection of [admin] ∩ [read write] = empty
-		require.Equal(t, "", result.Scope)
+		_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{Subject: TypedToken{Token: makeToken(), Type: SubjectTokenTypeIDToken}, Resource: "https://api.example.com", Scope: "admin"}})
+		require.ErrorIs(t, err, ErrInvalidScope)
 	})
 }
 
@@ -842,8 +840,9 @@ func TestSelfIssuedExchange_RateLimited(t *testing.T) {
 	require.ErrorIs(t, err, ErrExchangeRateLimited, "second issuance in the same session must be rate-limited")
 }
 
-// An exchange never grants a scope the subject token does not carry (RFC 8693
-// §5): the subject's scope claim narrows both the request and AllowedScopes.
+// An exchange never grants a scope the subject token does not carry: the
+// subject's scope claim narrows both the request and AllowedScopes, and a
+// bounded grant that comes out empty is refused.
 func TestSelfIssuedExchange_SubjectScopeCapsGrant(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -851,13 +850,17 @@ func TestSelfIssuedExchange_SubjectScopeCapsGrant(t *testing.T) {
 		allowedScopes []string
 		requested     string
 		want          string
+		wantErr       bool
 	}{
 		{name: "no scope claim, no restriction", requested: "read write", want: "read write"},
 		{name: "request narrowed to subject scope", subjectScope: oidc.ScopeClaim{"read"}, requested: "read write", want: "read"},
 		{name: "empty request gets subject scope", subjectScope: oidc.ScopeClaim{"read"}, want: "read"},
 		{name: "subject scope and AllowedScopes intersect", subjectScope: oidc.ScopeClaim{"read", "admin"}, allowedScopes: []string{"read", "write"}, want: "read"},
-		{name: "disjoint subject scope and AllowedScopes grant nothing", subjectScope: oidc.ScopeClaim{"admin"}, allowedScopes: []string{"read"}, want: ""},
-		{name: "empty scope claim grants nothing", subjectScope: oidc.ScopeClaim{}, requested: "read", want: ""},
+		{name: "disjoint subject scope and AllowedScopes refused", subjectScope: oidc.ScopeClaim{"admin"}, allowedScopes: []string{"read"}, wantErr: true},
+		{name: "request outside subject scope refused", subjectScope: oidc.ScopeClaim{"read"}, requested: "admin", wantErr: true},
+		{name: "empty scope claim refused", subjectScope: oidc.ScopeClaim{}, requested: "read", wantErr: true},
+		{name: "empty scope claim and empty request refused", subjectScope: oidc.ScopeClaim{}, wantErr: true},
+		{name: "no bound and empty request", want: ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -877,8 +880,48 @@ func TestSelfIssuedExchange_SubjectScopeCapsGrant(t *testing.T) {
 				Subject: TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 				Scope:   tc.requested,
 			}})
+			if tc.wantErr {
+				require.ErrorIs(t, err, ErrInvalidScope)
+				return
+			}
 			require.NoError(t, err)
 			require.Equal(t, tc.want, result.Scope)
 		})
 	}
+}
+
+// A first hop whose bounds leave nothing to grant is refused, so no unscoped
+// token exists that a second actor could re-exchange for any scope.
+func TestSelfIssuedExchange_EmptyGrantCannotBeWidenedByReexchange(t *testing.T) {
+	srv, _ := newActorExchangeServer(t)
+	external := &stubTokenValidator{byToken: map[string]*SubjectIdentity{
+		"sub-tok":   {Subject: testSubject, Issuer: testIssuer, AllowedScopes: []string{"read"}, Claims: &oidc.IDTokenClaims{Scope: oidc.ScopeClaim{"read", "admin"}}},
+		"act-tok":   {Subject: actorTestSub, Issuer: actorIssuerURL},
+		"act-tok-2": {Subject: "agentB", Issuer: actorIssuerURL},
+	}}
+	srv.subjectValidators = map[string]SubjectTokenValidator{
+		SubjectTokenTypeIDToken:     external,
+		SubjectTokenTypeAccessToken: &selfIssuedSubjectValidator{srv: srv, next: external},
+	}
+
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+		Subject: TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
+		Actor:   TypedToken{Token: "act-tok", Type: SubjectTokenTypeIDToken},
+		Scope:   "admin",
+	}})
+	require.ErrorIs(t, err, ErrInvalidScope)
+
+	first, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+		Subject: TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
+		Actor:   TypedToken{Token: "act-tok", Type: SubjectTokenTypeIDToken},
+	}})
+	require.NoError(t, err)
+	require.Equal(t, "read", first.Scope)
+
+	_, err = srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+		Subject: TypedToken{Token: first.AccessToken, Type: SubjectTokenTypeAccessToken},
+		Actor:   TypedToken{Token: "act-tok-2", Type: SubjectTokenTypeIDToken},
+		Scope:   "admin",
+	}})
+	require.ErrorIs(t, err, ErrInvalidScope, "the second hop is bounded by the first hop's scope claim")
 }

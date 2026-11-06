@@ -37,7 +37,7 @@ srv, _ := oauth.NewServer(
 
 `WithTrustedIssuers` registers an `OIDCValidator` for `id_token`, `access_token`, and `jwt` subject token types **and** as a Bearer validator on `ValidateToken`. A peer-issued JWT presented at `/mcp` is accepted when its `iss` matches a configured entry; the audience is checked against the entry's `AllowedAudiences` (or the server's `ResourceIdentifier` when empty), and RFC 9068 §4 requires the `typ: at+jwt` header on this path. The `Issuer` and `JwksURL` are independent — set `JwksURL` explicitly when the issuer's discovery document is unavailable or its JWKS is hosted separately.
 
-`AllowedScopes` caps the scopes the server will include in the issued token for this issuer. `nil` means no restriction. A subject token's own `scope` claim, when present, narrows the grant further: an exchange never issues a scope the subject token does not carry.
+`AllowedScopes` caps the scopes the server will include in the issued token for this issuer. `nil` means no restriction. A subject token's own `scope` claim, when present, narrows the grant further: an exchange never issues a scope the subject token does not carry. When these bounds leave nothing to grant, the exchange fails with `invalid_scope` rather than issuing an unscoped token.
 
 ### Restricting which tokens are accepted (AllowedClaims)
 
@@ -135,7 +135,7 @@ grant_type=urn:ietf:params:oauth:grant-type:token-exchange
 
 Optional parameters:
 - `resource` (RFC 8707): target resource server URI to bind the issued token's `aud`. When omitted, `aud` defaults to the server's own `ResourceIdentifier`.
-- `scope`: requested scope subset; intersected with the issuer's `AllowedScopes` and with the subject token's `scope` claim when it has one.
+- `scope`: requested scope subset; intersected with the issuer's `AllowedScopes` and with the subject token's `scope` claim when it has one; an empty intersection is refused with `invalid_scope`.
 - `DPoP` header: if present, the issued token is DPoP-bound (see [DPoP guide](./dpop.md)).
 
 Self-issued exchange policy:

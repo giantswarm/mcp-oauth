@@ -23,6 +23,12 @@ const GrantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
 // token only to add an actor (a delegation hop, bounded by maxActorChainDepth).
 var ErrSelfRenewalDenied = errors.New("self-issued token cannot be re-exchanged without an actor")
 
+// ErrInvalidScope is returned by SelfIssuedExchange when the subject's scope
+// bounds (TrustedIssuer.AllowedScopes and the subject token's scope claim) leave
+// no requested scope to grant. The token endpoint answers invalid_scope (RFC
+// 6749 §5.2).
+var ErrInvalidScope = errors.New("requested scope cannot be granted")
+
 // ErrUnverifiedSubjectEmail is returned by SelfIssuedExchange when the validated
 // subject asserts an email claim without email_verified being true. The issued
 // token would carry that email as an identity claim which downstream resource
@@ -111,7 +117,10 @@ type SelfIssuedExchangeRequest struct {
 // server's own resource identifier when empty. req.Scope is intersected against
 // the per-issuer AllowedScopes envelope from TrustedIssuer configuration and
 // against the subject token's own scope claim, when it carries one, so an
-// exchange never widens a delegated token's scope (RFC 8693 §5).
+// exchange never grants a scope the subject token lacks. When either bound is
+// set and nothing remains, the exchange fails with ErrInvalidScope instead of
+// issuing a token without a scope claim, which a later re-exchange would read
+// as unrestricted.
 // req.DPoPJKT, when non-empty, is written into the cnf.jkt claim (RFC 9449 §6.1).
 //
 // When an actor token is present it is validated against the server's trusted
@@ -167,7 +176,10 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 		return nil, err
 	}
 
-	grantedScope := grantedExchangeScope(req.Scope, exchangeScopeEnvelope(identity))
+	grantedScope, err := s.grantExchangeScope(ctx, req.Scope, identity, sessionID)
+	if err != nil {
+		return nil, err
+	}
 
 	now := time.Now().UTC()
 	ttl := time.Duration(s.Config.AccessTokenTTL) * time.Second
@@ -579,7 +591,7 @@ func (e *TokenExchangeUnsupportedTypeError) Role() string {
 // exchangeScopeEnvelope returns the scopes an exchange of identity may grant:
 // the issuer's AllowedScopes, narrowed to the subject token's scope claim when
 // the token carries one. Nil means no restriction; an empty non-nil slice
-// grants nothing.
+// leaves nothing to grant.
 func exchangeScopeEnvelope(identity *SubjectIdentity) []string {
 	var envelope []string
 	if len(identity.AllowedScopes) > 0 {
@@ -602,14 +614,38 @@ func exchangeScopeEnvelope(identity *SubjectIdentity) []string {
 // grantedExchangeScope computes the scope for a token-exchange response.
 // When envelope is nil there is no restriction and the requested scope is
 // granted. When scope is empty the whole envelope is granted. Otherwise the
-// result is the intersection.
-func grantedExchangeScope(requestedScope string, envelope []string) string {
+// result is the intersection. A bounded grant that comes out empty fails with
+// ErrInvalidScope: the issued token would carry no scope claim, and a
+// re-exchange of it would then be unbounded.
+func grantedExchangeScope(requestedScope string, envelope []string) (string, error) {
 	if envelope == nil {
-		return requestedScope
+		return requestedScope, nil
 	}
-	if requestedScope == "" {
-		return strings.Join(envelope, " ")
+	granted := envelope
+	if requestedScope != "" {
+		granted = intersectScopes(strings.Fields(requestedScope), envelope)
 	}
-	granted := intersectScopes(strings.Fields(requestedScope), envelope)
-	return strings.Join(granted, " ")
+	if len(granted) == 0 {
+		return "", ErrInvalidScope
+	}
+	return strings.Join(granted, " "), nil
+}
+
+// grantExchangeScope applies grantedExchangeScope to identity and audits a
+// refusal.
+func (s *Server) grantExchangeScope(ctx context.Context, requestedScope string, identity *SubjectIdentity, sessionID string) (string, error) {
+	granted, err := grantedExchangeScope(requestedScope, exchangeScopeEnvelope(identity))
+	if err != nil {
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type:   security.EventAuthFailure,
+			UserID: identity.Subject,
+			Details: map[string]any{
+				logKeyReason:    "token_exchange_scope_not_granted",
+				paramGrantType:  GrantTypeTokenExchange,
+				logKeySessionID: sessionID,
+			},
+		})
+		return "", err
+	}
+	return granted, nil
 }
