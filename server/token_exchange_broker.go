@@ -55,7 +55,7 @@ type ExchangerRequest struct {
 	// ActorTokenType is the RFC 8693 token-type URN of ActorToken.
 	// Empty when ActorToken is empty.
 	ActorTokenType string
-	// Actor is the verified identity of the acting party (RFC 8693 §4.4
+	// Actor is the verified identity of the acting party (RFC 8693 §4.1
 	// delegation chain). Nil when no actor_token was presented.
 	Actor *SubjectIdentity
 }
@@ -107,7 +107,7 @@ type BrokeredExchangeRequest struct {
 
 // BrokeredExchange implements the RFC 8693 flow where the resulting token is
 // issued by a downstream issuer reached through the configured Exchanger. The
-// subject token (and, when present, the actor token for the §4.4 delegation
+// subject token (and, when present, the actor token for the §4.1 delegation
 // chain) are validated against the server's trusted issuers before the Exchanger
 // is invoked; the verified actor identity is forwarded to it.
 //

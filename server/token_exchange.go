@@ -80,7 +80,7 @@ type TypedToken struct {
 type SubjectExchange struct {
 	// Subject is the RFC 8693 subject_token being exchanged.
 	Subject TypedToken
-	// Actor is the RFC 8693 §4.4 actor_token. Its zero value means no delegation.
+	// Actor is the RFC 8693 §2.1 actor_token. Its zero value means no delegation.
 	Actor TypedToken
 	// Resource is the RFC 8707 target URI. On SelfIssuedExchange it becomes the
 	// issued token's aud, defaulting to the server's resource identifier when
@@ -109,13 +109,15 @@ type SelfIssuedExchangeRequest struct {
 // against the registered SubjectTokenValidator, then issues a JWT access token
 // this server signs. req.Resource becomes the aud claim, defaulting to the
 // server's own resource identifier when empty. req.Scope is intersected against
-// the per-issuer AllowedScopes envelope from TrustedIssuer configuration.
+// the per-issuer AllowedScopes envelope from TrustedIssuer configuration and
+// against the subject token's own scope claim, when it carries one, so an
+// exchange never widens a delegated token's scope (RFC 8693 §5).
 // req.DPoPJKT, when non-empty, is written into the cnf.jkt claim (RFC 9449 §6.1).
 //
 // When an actor token is present it is validated against the server's trusted
 // issuers and written as the act claim; any act chain already on the subject
 // token is nested beneath it so a multi-hop delegation chain is preserved (RFC
-// 8693 §4.4). A chain deeper than the bound is rejected.
+// 8693 §4.1). A chain deeper than the bound is rejected.
 //
 // req.Options identity fields are emitted as standard JWT claims; email,
 // email_verified, name and groups default from the validated subject when Options
@@ -165,7 +167,7 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 		return nil, err
 	}
 
-	grantedScope := grantedExchangeScope(req.Scope, identity.AllowedScopes)
+	grantedScope := grantedExchangeScope(req.Scope, exchangeScopeEnvelope(identity))
 
 	now := time.Now().UTC()
 	ttl := time.Duration(s.Config.AccessTokenTTL) * time.Second
@@ -238,7 +240,7 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 // self-renewal and subject-email gates, and returns the act chain to embed in
 // the issued token. The returned chain is nil when the exchange adds no
 // delegation hop. Any act chain already on the subject token is nested beneath
-// the new actor so a multi-hop delegation chain is preserved (RFC 8693 §4.4).
+// the new actor so a multi-hop delegation chain is preserved (RFC 8693 §4.1).
 func (s *Server) resolveSelfIssuedActorChain(ctx context.Context, req SelfIssuedExchangeRequest, identity *SubjectIdentity, sessionID string) (*Actor, error) {
 	actor, err := s.resolveExchangeActor(ctx, req.Actor, identity, nil)
 	if err != nil {
@@ -396,7 +398,7 @@ func (s *Server) exchangeSessionRateLimited(ctx context.Context, sessionID strin
 	return true
 }
 
-// maxActorChainDepth bounds RFC 8693 §4.4 act nesting in an issued token. A chain
+// maxActorChainDepth bounds RFC 8693 §4.1 act nesting in an issued token. A chain
 // deeper than this is rejected fail-closed: real A2A topologies are shallow, and
 // unbounded nesting is an abuse vector (token-size blowup and parser pressure on
 // every downstream that validates the token).
@@ -574,17 +576,40 @@ func (e *TokenExchangeUnsupportedTypeError) Role() string {
 	return e.role
 }
 
+// exchangeScopeEnvelope returns the scopes an exchange of identity may grant:
+// the issuer's AllowedScopes, narrowed to the subject token's scope claim when
+// the token carries one. Nil means no restriction; an empty non-nil slice
+// grants nothing.
+func exchangeScopeEnvelope(identity *SubjectIdentity) []string {
+	var envelope []string
+	if len(identity.AllowedScopes) > 0 {
+		envelope = identity.AllowedScopes
+	}
+	if identity.Claims == nil || identity.Claims.Scope == nil {
+		return envelope
+	}
+	subjectScopes := []string(identity.Claims.Scope)
+	if envelope == nil {
+		return subjectScopes
+	}
+	narrowed := intersectScopes(envelope, subjectScopes)
+	if narrowed == nil {
+		return []string{}
+	}
+	return narrowed
+}
+
 // grantedExchangeScope computes the scope for a token-exchange response.
-// When allowedScopes is nil there is no per-issuer restriction.
-// When scope is empty all allowed scopes are granted.
-// Otherwise the result is the intersection.
-func grantedExchangeScope(requestedScope string, allowedScopes []string) string {
-	if len(allowedScopes) == 0 {
+// When envelope is nil there is no restriction and the requested scope is
+// granted. When scope is empty the whole envelope is granted. Otherwise the
+// result is the intersection.
+func grantedExchangeScope(requestedScope string, envelope []string) string {
+	if envelope == nil {
 		return requestedScope
 	}
 	if requestedScope == "" {
-		return strings.Join(allowedScopes, " ")
+		return strings.Join(envelope, " ")
 	}
-	granted := intersectScopes(strings.Fields(requestedScope), allowedScopes)
+	granted := intersectScopes(strings.Fields(requestedScope), envelope)
 	return strings.Join(granted, " ")
 }

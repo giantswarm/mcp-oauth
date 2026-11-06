@@ -136,10 +136,20 @@ type TokenExchangeRequest struct {
 	// Defaults to TokenTypeIDToken if not specified.
 	SubjectTokenType string
 
-	// ConnectorID is the connector ID on the remote IdP that validates this token.
-	// For Dex, this is passed via the "connector_id" parameter.
-	// Required.
+	// ConnectorID is the connector ID on the remote IdP that validates this
+	// token, sent as Dex's "connector_id" extension parameter. Optional: leave
+	// it empty for a subject token the remote IdP issued itself, which Dex
+	// verifies with its own keys.
 	ConnectorID string
+
+	// ActorToken is a token representing the acting party (RFC 8693 §2.1).
+	// Optional; when set the request asks for delegation and the issued token
+	// names the actor in its act claim (RFC 8693 §4.1).
+	ActorToken string
+
+	// ActorTokenType is the type of ActorToken. Required when ActorToken is
+	// set and must be empty otherwise (RFC 8693 §2.1).
+	ActorTokenType string
 
 	// Scope is the requested scope for the new token (optional).
 	Scope string
@@ -359,13 +369,16 @@ func (c *TokenExchangeClient) validateRequest(req *TokenExchangeRequest) error {
 	if len(req.SubjectToken) > maxSubjectTokenLength {
 		return fmt.Errorf("subject token exceeds maximum length of %d bytes", maxSubjectTokenLength)
 	}
-	if req.ConnectorID == "" {
-		return fmt.Errorf("connector ID is required")
+	if req.ConnectorID != "" {
+		if err := ValidateConnectorID(req.ConnectorID); err != nil {
+			return fmt.Errorf("invalid connector ID: %w", err)
+		}
 	}
-
-	// Validate connector ID format
-	if err := ValidateConnectorID(req.ConnectorID); err != nil {
-		return fmt.Errorf("invalid connector ID: %w", err)
+	if (req.ActorToken == "") != (req.ActorTokenType == "") {
+		return fmt.Errorf("actor token and actor token type must be set together")
+	}
+	if len(req.ActorToken) > maxSubjectTokenLength {
+		return fmt.Errorf("actor token exceeds maximum length of %d bytes", maxSubjectTokenLength)
 	}
 
 	// Validate Resource parameter if provided (RFC 8693 Section 2.1)
@@ -442,7 +455,13 @@ func (c *TokenExchangeClient) buildFormData(req *TokenExchangeRequest) url.Value
 	form.Set("grant_type", GrantTypeTokenExchange)
 	form.Set("subject_token", req.SubjectToken)
 	form.Set("subject_token_type", req.SubjectTokenType)
-	form.Set("connector_id", req.ConnectorID) // Dex-specific parameter
+	if req.ConnectorID != "" {
+		form.Set("connector_id", req.ConnectorID) // Dex extension parameter
+	}
+	if req.ActorToken != "" {
+		form.Set("actor_token", req.ActorToken)
+		form.Set("actor_token_type", req.ActorTokenType)
+	}
 
 	if req.Scope != "" {
 		form.Set("scope", req.Scope)

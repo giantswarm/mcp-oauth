@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/mcp-oauth/providers/mock"
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
@@ -839,4 +840,45 @@ func TestSelfIssuedExchange_RateLimited(t *testing.T) {
 
 	_, err = srv.SelfIssuedExchange(t.Context(), req)
 	require.ErrorIs(t, err, ErrExchangeRateLimited, "second issuance in the same session must be rate-limited")
+}
+
+// An exchange never grants a scope the subject token does not carry (RFC 8693
+// §5): the subject's scope claim narrows both the request and AllowedScopes.
+func TestSelfIssuedExchange_SubjectScopeCapsGrant(t *testing.T) {
+	tests := []struct {
+		name          string
+		subjectScope  oidc.ScopeClaim
+		allowedScopes []string
+		requested     string
+		want          string
+	}{
+		{name: "no scope claim, no restriction", requested: "read write", want: "read write"},
+		{name: "request narrowed to subject scope", subjectScope: oidc.ScopeClaim{"read"}, requested: "read write", want: "read"},
+		{name: "empty request gets subject scope", subjectScope: oidc.ScopeClaim{"read"}, want: "read"},
+		{name: "subject scope and AllowedScopes intersect", subjectScope: oidc.ScopeClaim{"read", "admin"}, allowedScopes: []string{"read", "write"}, want: "read"},
+		{name: "disjoint subject scope and AllowedScopes grant nothing", subjectScope: oidc.ScopeClaim{"admin"}, allowedScopes: []string{"read"}, want: ""},
+		{name: "empty scope claim grants nothing", subjectScope: oidc.ScopeClaim{}, requested: "read", want: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := newActorExchangeServer(t)
+			srv.subjectValidators = map[string]SubjectTokenValidator{
+				SubjectTokenTypeIDToken: &stubTokenValidator{byToken: map[string]*SubjectIdentity{
+					"sub-tok": {
+						Subject:       testSubject,
+						Issuer:        testIssuer,
+						AllowedScopes: tc.allowedScopes,
+						Claims:        &oidc.IDTokenClaims{Scope: tc.subjectScope},
+					},
+				}},
+			}
+
+			result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+				Subject: TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
+				Scope:   tc.requested,
+			}})
+			require.NoError(t, err)
+			require.Equal(t, tc.want, result.Scope)
+		})
+	}
 }

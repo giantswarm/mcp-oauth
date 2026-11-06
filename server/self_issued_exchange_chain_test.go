@@ -27,7 +27,7 @@ func parseIssuedClaims(t *testing.T, token string, pub any) rfc9068Claims {
 }
 
 // TestSelfIssuedExchange_NestsPriorActorChain asserts a delegated exchange nests
-// the actor already on the subject token (RFC 8693 §4.4) beneath the new actor,
+// the actor already on the subject token (RFC 8693 §4.1) beneath the new actor,
 // so a multi-hop A2A chain is preserved rather than overwritten.
 func TestSelfIssuedExchange_NestsPriorActorChain(t *testing.T) {
 	srv, signingKey := newActorExchangeServer(t)

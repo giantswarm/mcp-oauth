@@ -130,7 +130,7 @@ instrumentation.Config{
 | `oauth.code.reuse_detected` | - | Authorization code reuse attempts |
 | `oauth.token.reuse_detected` | - | Refresh token reuse attempts |
 | `oauth.refresh_token.legacy_rejected` | - | Legacy refresh tokens rejected for missing client binding (OAuth 2.1) |
-| `oauth.forwarded_id_token.accepted_total` | `issuer`, `audience`, `result` | Forwarded ID token acceptance attempts; `result` is a bounded enum (`ok`, `aud_mismatch`, `iss_mismatch`, `sig_invalid`, `expired`, `not_yet_valid`, `no_jwks`, `parse_error`) |
+| `oauth.forwarded_id_token.accepted_total` | `issuer`, `audience`, `result` | Forwarded ID token acceptance attempts; `result` is a bounded enum (`ok`, `aud_mismatch`, `iss_mismatch`, `sig_invalid`, `expired`, `not_yet_valid`, `no_jwks`, `parse_error`, `actor_not_trusted`) |
 | `oauth.redirect_uri.security_rejected` | `category`, `stage` | Redirect URI security validation failures (SSRF/XSS protection) |
 
 ### Audit and Encryption

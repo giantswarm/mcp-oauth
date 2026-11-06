@@ -671,6 +671,10 @@ func (s *Server) validateTrustedIssuerJWT(ctx context.Context, accessToken strin
 		// rejected.
 		return nil, s.providerUnavailable(ctx, "trusted issuer JWT validation", "", "", err)
 	}
+	if errors.Is(err, ErrActorNotTrusted) {
+		s.Auditor.LogAuthFailure(ctx, "", "", "", auditReasonTrustedIssuerActorNotTrusted)
+		return nil, fmt.Errorf("trusted issuer JWT validation failed: %w", err)
+	}
 	if err != nil {
 		s.Auditor.LogAuthFailure(ctx, "", "", "", "trusted_issuer_jwt_invalid")
 		return nil, fmt.Errorf("trusted issuer JWT validation failed: %w", err)

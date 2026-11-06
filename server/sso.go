@@ -92,6 +92,14 @@ func (s *Server) validateAndParseForwardedIDToken(ctx context.Context, tokenStri
 		return nil, "", fmt.Errorf("ID token validation returned nil claims")
 	}
 
+	// The provider's issuer may also be a trusted issuer; its ActorPolicy
+	// holds on this path too.
+	if s.trustedIssuerValidator != nil {
+		if err := checkActor(s.trustedIssuerValidator.actorPolicy(idTokenClaims.Issuer), idTokenClaims.Act); err != nil {
+			return nil, "", err
+		}
+	}
+
 	return idTokenClaims, matchedAudience, nil
 }
 
@@ -148,9 +156,8 @@ func (s *Server) getJWKSClient() *oidc.JWKSClient {
 
 // idTokenClaimsToUserInfo converts validated ID token claims to UserInfo.
 // Sets TokenSource to TokenSourceSSO since this is called for SSO-forwarded tokens.
-// ActorIssuer/ActorSubject are populated from claims.Act when the token carries
-// an RFC 8693 §4.4 delegation claim (mcp-oauth-issued OBO tokens only; ordinary
-// SSO ID tokens never carry act).
+// ActorIssuer, ActorSubject and ActorChain are populated from claims.Act when
+// the token carries an RFC 8693 §4.1 act claim.
 func (s *Server) idTokenClaimsToUserInfo(claims *oidc.IDTokenClaims) *providers.UserInfo {
 	info := &providers.UserInfo{
 		ID:            claims.Subject,
@@ -162,6 +169,7 @@ func (s *Server) idTokenClaimsToUserInfo(claims *oidc.IDTokenClaims) *providers.
 		Picture:       claims.Picture,
 		Locale:        claims.Locale,
 		Groups:        claims.Groups,
+		Scopes:        claims.Scope,
 		TokenSource:   providers.TokenSourceSSO,
 	}
 	if claims.Act != nil {
