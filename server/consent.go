@@ -67,9 +67,7 @@ var ErrClientNotVerified = errors.New("client could not be verified")
 
 // ConsentKey identifies the person's approval of this request. Two requests
 // share a key when they come from the same client, go to the same registered
-// redirect URI and ask for the same scopes and resource. The port of a
-// loopback redirect URI is left out because native apps bind a new port on
-// every run.
+// redirect URI and ask for the same scopes and resource.
 func (r *AuthorizationRequest) ConsentKey() string {
 	scopes := helpers.SplitScopes(r.Scope)
 	slices.Sort(scopes)
@@ -79,11 +77,17 @@ func (r *AuthorizationRequest) ConsentKey() string {
 	upstreamScopes := slices.Clone(r.UpstreamScopes)
 	slices.Sort(upstreamScopes)
 	upstreamScopes = slices.Compact(upstreamScopes)
-	for _, part := range []string{"mcp-oauth consent v2", r.ClientID, redirectURIWithoutLoopbackPort(r.RedirectURI), strings.Join(scopes, " "), strings.Join(upstreamScopes, " "), r.Resource} {
+	for _, part := range []string{"mcp-oauth consent v2", r.ClientID, r.RedirectURI, strings.Join(scopes, " "), strings.Join(upstreamScopes, " "), r.Resource} {
 		h.Write([]byte(part))
 		h.Write([]byte{0})
 	}
 	return base64.RawURLEncoding.EncodeToString(h.Sum(nil)[:16])
+}
+
+// CanRememberConsent requires an HTTPS callback whose ownership is not
+// shared by local applications claiming the same public client identifier.
+func (r *AuthorizationRequest) CanRememberConsent() bool {
+	return validateTrustedRedirectURI(r.RedirectURI) == nil
 }
 
 func (s *Server) initializeConsentCookieKey(ctx context.Context) error {
@@ -134,20 +138,6 @@ func (s *Server) RequiresConsent(clientID, redirectURI string) bool {
 		}
 	}
 	return true
-}
-
-// redirectURIWithoutLoopbackPort returns uri with the port removed when the
-// host is a loopback address, and uri unchanged otherwise.
-func redirectURIWithoutLoopbackPort(uri string) string {
-	parsed, err := url.Parse(uri)
-	if err != nil || !isLoopbackAddress(parsed.Hostname()) || parsed.Port() == "" {
-		return uri
-	}
-	parsed.Host = parsed.Hostname()
-	if strings.Contains(parsed.Host, ":") {
-		parsed.Host = "[" + parsed.Host + "]"
-	}
-	return parsed.String()
 }
 
 // validateTrustedClients refuses a trust list that could extend trust beyond
@@ -201,7 +191,8 @@ func validateTrustedRedirectURI(uri string) error {
 	if host == "" || strings.Contains(host, "*") {
 		return fmt.Errorf("must name a single host")
 	}
-	if ip := net.ParseIP(host); isLoopbackAddress(host) || ip != nil && ip.IsUnspecified() {
+	hostname := strings.TrimSuffix(strings.ToLower(host), ".")
+	if ip := net.ParseIP(hostname); isLoopbackAddress(hostname) || strings.HasSuffix(hostname, ".localhost") || ip != nil && ip.IsUnspecified() {
 		return fmt.Errorf("must not be a loopback address: loopback clients always see the consent page")
 	}
 	if u.User != nil || u.Fragment != "" {

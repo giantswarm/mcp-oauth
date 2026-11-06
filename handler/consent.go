@@ -240,7 +240,7 @@ func (h *Handler) consentNeeded(r *http.Request, authorizationRequest *server.Au
 	if !h.server.RequiresConsent(authorizationRequest.ClientID, authorizationRequest.RedirectURI) {
 		return false
 	}
-	return promptIncludes(authorizationRequest, "consent") || !h.consent.isApproved(r, authorizationRequest.ConsentKey(), time.Now())
+	return !authorizationRequest.CanRememberConsent() || promptIncludes(authorizationRequest, "consent") || !h.consent.isApproved(r, authorizationRequest.ConsentKey(), time.Now())
 }
 
 // showConsentPage stores the request and renders the consent page.
@@ -412,7 +412,7 @@ func (h *Handler) finishBrowserAuthorization(w http.ResponseWriter, r *http.Requ
 		h.failRequest(w, r, span, endpointCallback, r.Method, http.StatusInternalServerError, constants.ErrorCodeServerError, "Authorization failed", startTime)
 		return
 	}
-	if request != nil && h.server.RequiresConsent(request.ClientID, request.RedirectURI) {
+	if request != nil && request.CanRememberConsent() && h.server.RequiresConsent(request.ClientID, request.RedirectURI) {
 		if err := h.consent.remember(w, r, request.ConsentKey(), time.Now(), result.Subject); err != nil {
 			h.logger.Warn("Consent approval could not be remembered", paramError, err)
 		}

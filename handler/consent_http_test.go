@@ -150,4 +150,22 @@ func runConsentHTTP(t *testing.T, stores []storage.Combined, prefix string) {
 	require.NoError(t, err)
 	require.NoError(t, response.Body.Close())
 	require.Equal(t, http.StatusFound, response.StatusCode, "the second replica must remember the authenticated subject's consent")
+	for range storage.MaxPendingConsentsPerBrowser + 1 {
+		response, err = httpClient.Get(issuer + flow.authorizeTarget(consentTestRedirect, testutil.GenerateRandomString(43), nil))
+		require.NoError(t, err)
+		require.NoError(t, response.Body.Close())
+		require.Equal(t, http.StatusFound, response.StatusCode)
+		upstream, err := url.Parse(response.Header.Get("Location"))
+		require.NoError(t, err)
+		callback := issuer + "/oauth/callback?state=" + upstream.Query().Get("state") + "&error=access_denied"
+		response, err = httpClient.Get(callback)
+		require.NoError(t, err)
+		require.NoError(t, response.Body.Close())
+		require.Equal(t, http.StatusBadRequest, response.StatusCode)
+		for _, cookie := range jar.Cookies(mustParseURL(t, issuer)) {
+			require.NotEqual(t, handlers[0].consent.flowName(upstream.Query().Get("state")), cookie.Name)
+		}
+		_, err = stores[1].GetAuthorizationStateByProviderState(t.Context(), upstream.Query().Get("state"))
+		require.ErrorIs(t, err, storage.ErrAuthorizationStateNotFound)
+	}
 }

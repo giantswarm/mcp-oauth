@@ -30,6 +30,8 @@ func TestValidateTrustedClients(t *testing.T) {
 		{name: "http redirect URI", clients: []TrustedClient{{ClientID: ok.ClientID, RedirectURIs: []string{"http://claude.ai/cb"}}}, wantErr: "https"},
 		{name: "custom scheme redirect URI", clients: []TrustedClient{{ClientID: ok.ClientID, RedirectURIs: []string{"cursor://callback"}}}, wantErr: "https"},
 		{name: "localhost redirect URI", clients: []TrustedClient{{ClientID: ok.ClientID, RedirectURIs: []string{"https://localhost:3000/callback"}}}, wantErr: "loopback"},
+		{name: "localhost redirect URI with trailing dot", clients: []TrustedClient{{ClientID: ok.ClientID, RedirectURIs: []string{"https://LOCALHOST.:3000/callback"}}}, wantErr: "loopback"},
+		{name: "localhost subdomain redirect URI", clients: []TrustedClient{{ClientID: ok.ClientID, RedirectURIs: []string{"https://app.localhost/callback"}}}, wantErr: "loopback"},
 		{name: "IPv4 loopback redirect URI", clients: []TrustedClient{{ClientID: ok.ClientID, RedirectURIs: []string{"https://127.0.0.2/callback"}}}, wantErr: "loopback"},
 		{name: "IPv6 loopback redirect URI", clients: []TrustedClient{{ClientID: ok.ClientID, RedirectURIs: []string{"https://[::1]/callback"}}}, wantErr: "loopback"},
 		{name: "unspecified redirect URI", clients: []TrustedClient{{ClientID: ok.ClientID, RedirectURIs: []string{"https://0.0.0.0/callback"}}}, wantErr: "loopback"},
@@ -91,29 +93,51 @@ func TestAuthorizationRequest_ConsentKey(t *testing.T) {
 	key := base.ConsentKey()
 
 	same := map[string]AuthorizationRequest{
-		"loopback port":   {ClientID: "c", RedirectURI: "http://127.0.0.1:50002/cb", Scope: "openid email", Resource: "https://mcp.example.com"},
 		"scope order":     {ClientID: "c", RedirectURI: "http://127.0.0.1:50001/cb", Scope: "email openid", Resource: "https://mcp.example.com"},
 		"duplicate scope": {ClientID: "c", RedirectURI: "http://127.0.0.1:50001/cb", Scope: "openid email openid", Resource: "https://mcp.example.com"},
 		"state differs":   {ClientID: "c", RedirectURI: "http://127.0.0.1:50001/cb", Scope: "openid email", Resource: "https://mcp.example.com", State: "x"},
 	}
-	for name, req := range same {
-		require.Equal(t, key, req.ConsentKey(), name)
+	for name, request := range same {
+		require.Equal(t, key, request.ConsentKey(), name)
 	}
 
 	different := map[string]AuthorizationRequest{
+		"loopback port":  {ClientID: "c", RedirectURI: "http://127.0.0.1:50002/cb", Scope: "openid email", Resource: "https://mcp.example.com"},
 		"client":         {ClientID: "d", RedirectURI: "http://127.0.0.1:50001/cb", Scope: "openid email", Resource: "https://mcp.example.com"},
 		"redirect path":  {ClientID: "c", RedirectURI: "http://127.0.0.1:50001/other", Scope: "openid email", Resource: "https://mcp.example.com"},
 		"broader scopes": {ClientID: "c", RedirectURI: "http://127.0.0.1:50001/cb", Scope: "openid email groups", Resource: "https://mcp.example.com"},
 		"resource":       {ClientID: "c", RedirectURI: "http://127.0.0.1:50001/cb", Scope: "openid email", Resource: "https://other.example.com"},
 		"field boundary": {ClientID: "c\x00http://127.0.0.1/cb", RedirectURI: "", Scope: "openid email", Resource: "https://mcp.example.com"},
 	}
-	for name, req := range different {
-		require.NotEqual(t, key, req.ConsentKey(), name)
+	for name, request := range different {
+		require.NotEqual(t, key, request.ConsentKey(), name)
 	}
 
 	https := AuthorizationRequest{ClientID: "c", RedirectURI: "https://example.com:8443/cb"}
 	httpsOtherPort := AuthorizationRequest{ClientID: "c", RedirectURI: "https://example.com:9443/cb"}
-	require.NotEqual(t, https.ConsentKey(), httpsOtherPort.ConsentKey(), "only loopback ports are ignored")
+	require.NotEqual(t, https.ConsentKey(), httpsOtherPort.ConsentKey())
+}
+
+func TestAuthorizationRequest_CanRememberConsent(t *testing.T) {
+	for redirectURI, expected := range map[string]bool{
+		"https://example.com/callback":        true,
+		"https://example.com:8443/callback":   true,
+		"http://example.com/callback":         false,
+		"http://127.0.0.1:50001/callback":     false,
+		"https://127.0.0.2/callback":          false,
+		"https://[::1]/callback":              false,
+		"https://[::ffff:127.0.0.1]/callback": false,
+		"https://LOCALHOST./callback":         false,
+		"https://app.localhost/callback":      false,
+		"cursor://callback":                   false,
+		"/callback":                           false,
+		"://":                                 false,
+	} {
+		t.Run(redirectURI, func(t *testing.T) {
+			request := AuthorizationRequest{RedirectURI: redirectURI}
+			require.Equal(t, expected, request.CanRememberConsent())
+		})
+	}
 }
 
 func TestIsPrivateIP_SpecialPurposeRanges(t *testing.T) {

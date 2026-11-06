@@ -163,6 +163,86 @@ func TestConsent_ProviderFailureDoesNotRememberApproval(t *testing.T) {
 	require.Nil(t, flow.jar[flow.h.consent.approvedName()])
 }
 
+func TestConsent_TerminalCallbacksReleaseBrowserSlots(t *testing.T) {
+	for _, failure := range []string{"provider error", "exchange", "nonce", "userinfo", "empty subject"} {
+		t.Run(failure, func(t *testing.T) {
+			provider := mock.NewProvider()
+			switch failure {
+			case "exchange":
+				provider.ExchangeCodeFunc = func(context.Context, string, string) (*oauth2.Token, error) {
+					return nil, errors.New("exchange refused")
+				}
+			case "userinfo":
+				provider.ValidateTokenFunc = func(context.Context, string) (*providers.UserInfo, error) {
+					return nil, errors.New("userinfo refused")
+				}
+			case "empty subject":
+				provider.ValidateTokenFunc = func(context.Context, string) (*providers.UserInfo, error) {
+					return &providers.UserInfo{}, nil
+				}
+			}
+			flow := newConsentFlowWithProvider(t, provider, nil)
+			if failure == "nonce" {
+				flow.h.server.Config.RequireNonceEcho = true
+			}
+			for range storage.MaxPendingConsentsPerBrowser + 1 {
+				state := testutil.GenerateRandomString(43)
+				page := flow.get(flow.authorizeTarget(consentTestRedirect, state, nil))
+				approved := flow.post(consentID(t, page), consentDecisionApprove, nil)
+				requireProviderRedirect(t, approved)
+				upstream, err := url.Parse(approved.Header().Get("Location"))
+				require.NoError(t, err)
+				providerState := upstream.Query().Get("state")
+				callbackURL := "/oauth/callback?state=" + providerState + "&code=provider-code"
+				expectedStatus := http.StatusInternalServerError
+				if failure == "provider error" {
+					callbackURL = "/oauth/callback?state=" + providerState + "&error=access_denied"
+					expectedStatus = http.StatusBadRequest
+				}
+				response := flow.get(callbackURL)
+				require.Equal(t, expectedStatus, response.Code)
+				require.Nil(t, flow.jar[flow.h.consent.flowName(providerState)])
+				_, err = flow.store.GetAuthorizationStateByProviderState(t.Context(), providerState)
+				require.ErrorIs(t, err, storage.ErrAuthorizationStateNotFound)
+				require.Nil(t, flow.jar[flow.h.consent.approvedName()])
+			}
+			if failure == "provider error" {
+				require.Zero(t, provider.CallCounts["ExchangeCode"])
+			}
+		})
+	}
+}
+
+func TestConsent_ProviderErrorRequiresBrowserBinding(t *testing.T) {
+	provider := mock.NewProvider()
+	flow := newConsentFlowWithProvider(t, provider, nil)
+	page := flow.get(flow.authorizeTarget(consentTestRedirect, testutil.GenerateRandomString(43), nil))
+	approved := flow.post(consentID(t, page), consentDecisionApprove, nil)
+	upstream, err := url.Parse(approved.Header().Get("Location"))
+	require.NoError(t, err)
+	state := upstream.Query().Get("state")
+	callbackURL := "/oauth/callback?state=" + state + "&error=access_denied"
+	for _, binding := range []string{"", "another-browser"} {
+		request := httptest.NewRequest(http.MethodGet, callbackURL, nil)
+		if binding != "" {
+			request.AddCookie(flow.h.consent.cookie(flow.h.consent.flowName(state), binding, time.Minute))
+		}
+		response := httptest.NewRecorder()
+		flow.h.ServeCallback(response, request)
+		require.Equal(t, http.StatusBadRequest, response.Code)
+		require.Contains(t, response.Body.String(), "invalid_request")
+		require.Empty(t, response.Result().Cookies())
+		_, err := flow.store.GetAuthorizationStateByProviderState(t.Context(), state)
+		require.NoError(t, err)
+	}
+	response := flow.get(callbackURL)
+	require.Contains(t, response.Body.String(), "access_denied")
+	require.Nil(t, flow.jar[flow.h.consent.flowName(state)])
+	replay := flow.get(callbackURL)
+	require.Contains(t, replay.Body.String(), "invalid_request")
+	require.Zero(t, provider.CallCounts["ExchangeCode"])
+}
+
 func TestConsent_EffectiveScopesAreDisplayedAndFrozen(t *testing.T) {
 	provider, err := google.NewProvider(&google.Config{ClientID: "test-client", ClientSecret: "test-secret", RedirectURL: testIssuer + "/oauth/callback", Scopes: []string{"openid", "email"}})
 	require.NoError(t, err)

@@ -224,7 +224,7 @@ func TestConsent_ChangedRedirectURIAsksAgain(t *testing.T) {
 	requireConsentPage(t, f.get(f.authorizeTarget(second, testutil.GenerateRandomString(43), nil)))
 }
 
-func TestConsent_LoopbackPortDoesNotAskAgainAndWarns(t *testing.T) {
+func TestConsent_LoopbackAlwaysRequiresConsent(t *testing.T) {
 	f := newConsentFlow(t, func(c *server.Config) { c.AllowLocalhostRedirectURIs = true }, "http://127.0.0.1/callback")
 
 	page := f.get(f.authorizeTarget("http://127.0.0.1:50001/callback", testutil.GenerateRandomString(43), nil))
@@ -234,7 +234,21 @@ func TestConsent_LoopbackPortDoesNotAskAgainAndWarns(t *testing.T) {
 	requireProviderRedirect(t, approved)
 	require.Equal(t, http.StatusFound, f.callback(approved).Code)
 
-	requireProviderRedirect(t, f.get(f.authorizeTarget("http://127.0.0.1:50002/callback", testutil.GenerateRandomString(43), nil)))
+	require.Nil(t, f.jar[f.h.consent.approvedName()])
+	for _, redirectURI := range []string{"http://127.0.0.1:50001/callback", "http://127.0.0.1:50002/callback"} {
+		request, err := f.h.server.PrepareAuthorization(t.Context(), f.client, mustParseURL(t, redirectURI), "openid email", "", "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", "S256", testutil.GenerateRandomString(43), nil)
+		require.NoError(t, err)
+		remembered := httptest.NewRecorder()
+		require.NoError(t, f.h.consent.remember(remembered, httptest.NewRequest(http.MethodGet, "/", nil), request.ConsentKey(), time.Now(), "prior-subject"))
+		for _, cookie := range remembered.Result().Cookies() {
+			f.jar[cookie.Name] = cookie
+		}
+		requireConsentPage(t, f.get(f.authorizeTarget(redirectURI, testutil.GenerateRandomString(43), nil)))
+		silent := f.get(f.authorizeTarget(redirectURI, testutil.GenerateRandomString(43), url.Values{"prompt": {"none"}}))
+		require.Equal(t, http.StatusBadRequest, silent.Code)
+		require.Contains(t, silent.Body.String(), "consent_required")
+		require.Empty(t, silent.Header().Get("Location"))
+	}
 }
 
 func TestConsent_NoWarningWithAPublicRedirectURI(t *testing.T) {
@@ -550,5 +564,20 @@ func TestConsent_PendingExpires(t *testing.T) {
 		id := consentID(t, page)
 		time.Sleep(consentPendingTTL + time.Second)
 		require.Equal(t, http.StatusBadRequest, flow.post(id, consentDecisionApprove, nil).Code)
+	})
+}
+
+func TestConsent_ExpiredCallbackReleasesCookie(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		flow := newConsentFlow(t, nil)
+		page := flow.get(flow.authorizeTarget(consentTestRedirect, testutil.GenerateRandomString(43), nil))
+		approved := flow.post(consentID(t, page), consentDecisionApprove, nil)
+		upstream, err := url.Parse(approved.Header().Get("Location"))
+		require.NoError(t, err)
+		state := upstream.Query().Get("state")
+		time.Sleep(time.Duration(flow.h.server.Config.AuthorizationCodeTTL+flow.h.server.Config.ClockSkewGracePeriod+1) * time.Second)
+		response := flow.callback(approved)
+		require.Equal(t, http.StatusBadRequest, response.Code)
+		require.Nil(t, flow.jar[flow.h.consent.flowName(state)])
 	})
 }

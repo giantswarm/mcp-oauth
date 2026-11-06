@@ -581,11 +581,21 @@ func hashBrowserBinding(binding string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
+// CompleteBrowserAuthorization returns a non-nil result once the callback's
+// state is consumed, including on provider failure, so the caller can retire
+// the browser binding. Only a nil error permits issuing an authorization code.
 func (s *Server) CompleteBrowserAuthorization(ctx context.Context, providerState, code, binding string) (*AuthorizationResult, error) {
 	return s.completeProviderCallback(ctx, providerState, code, binding, true)
 }
 
-func (s *Server) completeProviderCallback(ctx context.Context, providerState, code, binding string, browser bool) (*AuthorizationResult, error) {
+// CancelBrowserAuthorization consumes a browser-bound provider error callback
+// without exchanging a code or issuing downstream credentials.
+func (s *Server) CancelBrowserAuthorization(ctx context.Context, providerState, binding string) error {
+	_, err := s.consumeProviderCallback(ctx, providerState, binding, true)
+	return err
+}
+
+func (s *Server) consumeProviderCallback(ctx context.Context, providerState, binding string, browser bool) (*storage.AuthorizationState, error) {
 	authState, err := s.validateAndRetrieveAuthState(ctx, providerState)
 	if err != nil {
 		return nil, err
@@ -603,26 +613,39 @@ func (s *Server) completeProviderCallback(ctx context.Context, providerState, co
 	if err != nil {
 		return nil, err
 	}
-	providerToken, err := s.exchangeCodeWithProvider(ctx, code, authState.ProviderCodeVerifier, authState, providerState)
+	return authState, nil
+}
+
+func (s *Server) completeProviderCallback(ctx context.Context, providerState, code, binding string, browser bool) (*AuthorizationResult, error) {
+	authState, err := s.consumeProviderCallback(ctx, providerState, binding, browser)
 	if err != nil {
 		return nil, err
 	}
+	result := &AuthorizationResult{State: authState}
+	providerToken, err := s.exchangeCodeWithProvider(ctx, code, authState.ProviderCodeVerifier, authState, providerState)
+	if err != nil {
+		return result, err
+	}
 	if err := s.validateUpstreamIDTokenNonce(ctx, authState, providerToken); err != nil {
-		return nil, err
+		return result, err
 	}
 	userInfo, err := s.provider.ValidateToken(ctx, providerToken.AccessToken)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get user info: %w", err)
+		return result, fmt.Errorf("failed to get user info: %w", err)
 	}
 	if userInfo.ID == "" {
-		return nil, fmt.Errorf("provider did not supply a subject claim")
+		return result, fmt.Errorf("provider did not supply a subject claim")
 	}
 	issuer := providers.IssuerOf(s.provider)
 	if issuer == "" {
 		issuer = s.provider.Name()
 	}
 	subject := hashBrowserBinding(issuer + "\x00" + userInfo.ID)
-	return &AuthorizationResult{State: authState, User: userInfo, Token: providerToken, TokenExtra: storage.ExtractTokenExtra(providerToken), Subject: subject}, nil
+	result.User = userInfo
+	result.Token = providerToken
+	result.TokenExtra = storage.ExtractTokenExtra(providerToken)
+	result.Subject = subject
+	return result, nil
 }
 
 var ErrBrowserBinding = errors.New("authorization callback does not match this browser")
