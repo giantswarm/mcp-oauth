@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	josejwt "github.com/go-jose/go-jose/v4/jwt"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/internal/constants"
@@ -241,7 +242,7 @@ func TestValidateToken_MetadataBackendFailureIsUnavailable(t *testing.T) {
 	h := New(srv, logger)
 
 	const accessToken = "opaque-access-token"
-	if err := inner.SaveToken(t.Context(), accessToken, &oauth2.Token{AccessToken: "provider-access", Expiry: time.Now().Add(time.Hour)}); err != nil {
+	if err := saveTestAccessToken(t.Context(), inner, accessToken, &oauth2.Token{AccessToken: "provider-access", Expiry: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatalf("SaveToken: %v", err)
 	}
 
@@ -293,6 +294,7 @@ func TestValidateToken_ProviderUnavailableIsUnavailable(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := memory.New()
 			t.Cleanup(store.Stop)
+			require.NoError(t, saveTestAccessToken(t.Context(), store, "opaque-access-token", &oauth2.Token{AccessToken: "provider-access", Expiry: time.Now().Add(time.Hour)}))
 			provider := mock.NewProvider()
 			provider.ValidateTokenFunc = func(context.Context, string) (*providers.UserInfo, error) {
 				return nil, &providers.UserInfoStatusError{StatusCode: tt.status}
@@ -336,6 +338,7 @@ func TestValidateToken_ProviderTimeoutIsUnavailable(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		store := memory.New()
 		t.Cleanup(store.Stop)
+		require.NoError(t, saveTestAccessToken(t.Context(), store, "opaque-access-token", &oauth2.Token{AccessToken: "provider-access", Expiry: time.Now().Add(time.Hour)}))
 		provider := mock.NewProvider()
 		provider.ValidateTokenFunc = func(ctx context.Context, _ string) (*providers.UserInfo, error) {
 			<-ctx.Done()

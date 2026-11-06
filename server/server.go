@@ -411,12 +411,9 @@ func (s *Server) DPoPNonceProvider() DPoPNonceProvider {
 	return s.dpopNonceProvider
 }
 
-// saveTokenMetadata writes token metadata to the configured store. Backends
-// that do not implement storage.TokenMetadataStore are silently skipped —
-// metadata is observability scaffolding (audit, scope validation, family
-// bookkeeping) and a missing implementation reduces observability rather
-// than breaking the OAuth flow. Callers are responsible for setting
-// metadata.IssuedAt and metadata.ExpiresAt.
+// saveTokenMetadata writes the token's role, audience, scopes and session
+// attributes. Stored bearer validation requires readable access-token metadata.
+// Callers are responsible for setting metadata.IssuedAt and metadata.ExpiresAt.
 func (s *Server) saveTokenMetadata(ctx context.Context, tokenID string, metadata storage.TokenMetadata) {
 	store, ok := s.tokenStore.(storage.TokenMetadataStore)
 	if !ok {
@@ -430,6 +427,9 @@ func (s *Server) saveTokenMetadata(ctx context.Context, tokenID string, metadata
 // saveTokenPairMetadata saves metadata for an AT/RT pair. base.ExpiresAt is the access-token expiry;
 // refreshExpiresAt is used for the refresh token.
 func (s *Server) saveTokenPairMetadata(ctx context.Context, accessToken, refreshToken string, base storage.TokenMetadata, refreshExpiresAt time.Time) {
+	if base.Audience == "" {
+		base.Audience = s.Config.GetResourceIdentifier()
+	}
 	at := base
 	at.TokenType = "access"
 	s.saveTokenMetadata(ctx, accessToken, at)

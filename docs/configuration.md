@@ -350,6 +350,8 @@ A store keeps an authorization code it marked used for `storage.AuthorizationCod
 
 ### Behaviour During a Storage Outage
 
+Stored bearer validation requires an access-token provider mapping and readable metadata with `TokenType: "access"` and an explicit resource audience. Custom stores must implement `storage.TokenMetadataStore` and `storage.TokenMetadataGetter`; both in-tree stores do. An absent mapping, absent metadata or audience, or a different token type is a 401 rejection without a provider call. Metadata alone cannot authenticate a bearer. Provider-token refresh does not extend a recorded local access-token expiry.
+
 A store call that fails for a reason other than one of the storage sentinels (record not found, expired, authorization code already used, revoked family, rejected client credentials) means the record's state is unknown. Every request path that depends on such a call answers the failure with:
 
 | | |

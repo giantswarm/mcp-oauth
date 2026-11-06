@@ -1429,14 +1429,14 @@ func TestHandler_ValidateToken_SessionIDFromContext_WithFamilyID(t *testing.T) {
 	familyID := "family-session-abc"
 
 	ctx := t.Context()
-	if err := store.SaveToken(ctx, accessToken, &oauth2.Token{
+	if err := saveTestAccessToken(ctx, store, accessToken, &oauth2.Token{
 		AccessToken: "provider-access",
 		Expiry:      time.Now().Add(time.Hour),
 	}); err != nil {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
 
-	if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: "mock-user-123", ClientID: "client-1", TokenType: "access", Audience: "", FamilyID: familyID, Scopes: nil}); err != nil {
+	if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: "mock-user-123", ClientID: "client-1", TokenType: "access", Audience: testIssuer, FamilyID: familyID, Scopes: nil}); err != nil {
 		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
 
@@ -1483,7 +1483,7 @@ func TestHandler_ValidateToken_SessionIDFromContext_WithoutFamilyID(t *testing.T
 	accessToken := "session-test-no-family"
 
 	ctx := t.Context()
-	if err := store.SaveToken(ctx, accessToken, &oauth2.Token{
+	if err := saveTestAccessToken(ctx, store, accessToken, &oauth2.Token{
 		AccessToken: "provider-access",
 		Expiry:      time.Now().Add(time.Hour),
 	}); err != nil {
@@ -1545,6 +1545,7 @@ func TestHandler_ValidateToken_SessionRequiresIssuedTokenMapping(t *testing.T) {
 			UserID:    "mock-user-123",
 			ClientID:  "client-1",
 			TokenType: tokenType,
+			Audience:  testIssuer,
 			FamilyID:  familyID,
 			ExpiresAt: providerToken.Expiry,
 		}))
@@ -1614,12 +1615,16 @@ func TestHandler_ValidateToken_PrincipalSessionIdentity(t *testing.T) {
 	require.NoError(t, store.SaveUserProviderToken(ctx, "mock-user-123", providerToken))
 	for _, bearer := range []string{first, refreshed, otherActor, family} {
 		require.NoError(t, store.SaveProviderTokenRef(ctx, bearer, "mock-user-123", providerToken.Expiry))
+		require.NoError(t, store.SaveTokenMetadata(ctx, bearer, storage.TokenMetadata{
+			UserID: "mock-user-123", ClientID: "client-1", TokenType: "access", ExpiresAt: providerToken.Expiry, Audience: testIssuer,
+		}))
 	}
 	require.NoError(t, store.SaveTokenMetadata(ctx, family, storage.TokenMetadata{
 		UserID:    "mock-user-123",
 		ClientID:  "client-1",
 		TokenType: "access",
 		FamilyID:  familyID,
+		Audience:  testIssuer,
 	}))
 
 	sessionFor := func(bearer string) string {
@@ -1695,14 +1700,14 @@ func TestHandler_ValidateToken_UserInfoAndSessionIDCoexist(t *testing.T) {
 	familyID := "family-coexist-xyz"
 
 	ctx := t.Context()
-	if err := store.SaveToken(ctx, accessToken, &oauth2.Token{
+	if err := saveTestAccessToken(ctx, store, accessToken, &oauth2.Token{
 		AccessToken: "provider-access",
 		Expiry:      time.Now().Add(time.Hour),
 	}); err != nil {
 		t.Fatalf("SaveToken() error = %v", err)
 	}
 
-	if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: "mock-user-123", ClientID: "client-1", TokenType: "access", Audience: "", FamilyID: familyID, Scopes: nil}); err != nil {
+	if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: "mock-user-123", ClientID: "client-1", TokenType: "access", Audience: testIssuer, FamilyID: familyID, Scopes: nil}); err != nil {
 		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
 
@@ -1779,7 +1784,7 @@ func setupDPoPTestHandler(t *testing.T, accessToken, jkt string) (*Handler, *mem
 	}
 
 	ctx := t.Context()
-	if err := store.SaveToken(ctx, accessToken, &oauth2.Token{
+	if err := saveTestAccessToken(ctx, store, accessToken, &oauth2.Token{
 		AccessToken: "provider-at",
 		Expiry:      time.Now().Add(time.Hour),
 	}); err != nil {
@@ -1790,6 +1795,7 @@ func setupDPoPTestHandler(t *testing.T, accessToken, jkt string) (*Handler, *mem
 		ClientID:  "client-1",
 		TokenType: "access",
 		JKT:       jkt,
+		Audience:  testIssuer,
 	}); err != nil {
 		t.Fatalf("SaveTokenMetadata: %v", err)
 	}

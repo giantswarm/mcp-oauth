@@ -31,6 +31,7 @@ func TestServer_ValidateToken(t *testing.T) {
 		}
 		return nil, context.DeadlineExceeded
 	}
+	seedProviderToken(t, store, "valid-token", testUserID, &oauth2.Token{AccessToken: "valid-token", Expiry: time.Now().Add(time.Hour)})
 
 	tests := []struct {
 		name        string
@@ -97,11 +98,11 @@ func TestServer_ValidateToken_LocalExpiry(t *testing.T) {
 		wantErrMsg     string
 	}{
 		{
-			name:           "token not in storage - proceed to provider",
+			name:           "token not in storage is rejected",
 			accessToken:    "not-stored-token",
 			saveToken:      false,
 			clockSkewGrace: 5,
-			wantErr:        false,
+			wantErr:        true,
 		},
 		{
 			name:           "token valid - not expired",
@@ -301,19 +302,14 @@ func TestServer_ValidateToken_ClockSkewScenarios(t *testing.T) {
 		}
 	})
 
-	t.Run("token not in local storage - provider validation proceeds", func(t *testing.T) {
+	t.Run("token not in local storage is rejected", func(t *testing.T) {
 		accessToken := "only-at-provider-token"
 
-		// Don't save to local storage - simulating token from different instance
-		// Provider will validate it successfully
-
-		userInfo, err := srv.ValidateToken(context.Background(), accessToken)
-		if err != nil {
-			t.Errorf("ValidateToken() unexpected error = %v (token not in storage should proceed to provider)", err)
-		}
-		if userInfo == nil {
-			t.Fatal("ValidateToken() returned nil userInfo")
-		}
+		calls := provider.GetCallCount("ValidateToken")
+		userInfo, err := srv.ValidateToken(t.Context(), accessToken)
+		require.ErrorIs(t, err, errInvalidAccessToken)
+		require.Nil(t, userInfo)
+		require.Equal(t, calls, provider.GetCallCount("ValidateToken"))
 	})
 }
 

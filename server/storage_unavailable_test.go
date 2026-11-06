@@ -269,10 +269,6 @@ func TestRefreshAccessToken_UndecryptableLegacyRecord(t *testing.T) {
 	require.True(t, containsAuthFailure(logs.String(), "token_undecryptable"), "log:\n%s", logs.String())
 }
 
-// TestValidateToken_UndecryptableRecordIsNotAnOutage: an opaque bearer whose
-// provider token cannot be decrypted is not answered as a storage outage: it
-// falls back to the provider's check, which rejects it, and the key mismatch
-// is logged.
 func TestValidateToken_UndecryptableRecordIsNotAnOutage(t *testing.T) {
 	f := newFaultyFixture(t, AccessTokenFormatOpaque)
 	at := f.login(t).AccessToken
@@ -285,10 +281,10 @@ func TestValidateToken_UndecryptableRecordIsNotAnOutage(t *testing.T) {
 
 	f.faulty.Fail(storagemock.OnOperation("get_user_provider_token", undecryptable))
 	_, err := f.srv.ValidateToken(context.Background(), at)
-	require.ErrorContains(t, err, errUnknownToken.Error())
+	require.ErrorIs(t, err, errInvalidAccessToken)
 	require.NotErrorIs(t, err, ErrStorageUnavailable)
-	require.Equal(t, providerCalls+1, f.provider.GetCallCount("ValidateToken"), "falls back to the provider's check")
-	require.Contains(t, logs.String(), "Stored provider token cannot be decrypted")
+	require.Equal(t, providerCalls, f.provider.GetCallCount("ValidateToken"))
+	require.Contains(t, logs.String(), "unknown_bearer")
 }
 
 // TestExchangeAuthorizationCode_StorageUnavailable: the code grant fails as
@@ -447,10 +443,6 @@ func TestValidateToken_StorageUnavailable(t *testing.T) {
 	}
 }
 
-// TestValidateToken_StoreMissIsNotAnOutage: with the store answering, an
-// unknown bearer keeps its rejection in both formats, and an unknown opaque
-// token still falls through to the provider's userinfo check as before — a
-// miss is a sentinel, not a transient failure.
 func TestValidateToken_StoreMissIsNotAnOutage(t *testing.T) {
 	t.Run("jwt", func(t *testing.T) {
 		f := newFaultyFixture(t, AccessTokenFormatJWT)
@@ -469,7 +461,7 @@ func TestValidateToken_StoreMissIsNotAnOutage(t *testing.T) {
 		_, err := f.srv.ValidateToken(context.Background(), "no-such-token")
 		require.Error(t, err)
 		require.NotErrorIs(t, err, ErrStorageUnavailable)
-		require.Equal(t, providerCalls+1, f.provider.GetCallCount("ValidateToken"), "a store miss still falls through to the provider")
+		require.Equal(t, providerCalls, f.provider.GetCallCount("ValidateToken"))
 	})
 }
 

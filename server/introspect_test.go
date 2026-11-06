@@ -254,6 +254,7 @@ func TestServer_IntrospectToken_OpaquePath_OwnerSeesExpAndIat(t *testing.T) {
 	require.NoError(t, err)
 
 	const accessToken = "opaque-owner-token" //nolint:gosec
+	seedProviderToken(t, store, accessToken, "user-1", testProviderToken())
 	issuedAt := time.Now().Truncate(time.Second)
 	expiresAt := issuedAt.Add(time.Hour)
 
@@ -302,6 +303,7 @@ func TestServer_IntrospectToken_OpaquePath_ZeroExpiresAt_OmitsExp(t *testing.T) 
 	require.NoError(t, err)
 
 	const accessToken = "opaque-no-exp-token" //nolint:gosec
+	seedProviderToken(t, store, accessToken, "user-1", testProviderToken())
 	require.NoError(t, store.SaveToken(ctx, accessToken, &oauth2.Token{AccessToken: accessToken}))
 	require.NoError(t, store.SaveTokenMetadata(ctx, accessToken, storage.TokenMetadata{
 		UserID:    "user-1",
@@ -351,6 +353,7 @@ func TestServer_IntrospectToken_OpaquePath_ExtraClaimsForwarded(t *testing.T) {
 	require.NoError(t, err)
 
 	const accessToken = "opaque-extra-token" //nolint:gosec // G101 false positive — test fixture label
+	seedProviderToken(t, store, accessToken, "user-1", testProviderToken())
 	require.NoError(t, store.SaveTokenMetadata(ctx, accessToken, storage.TokenMetadata{
 		UserID:    "user-1",
 		ClientID:  owner.ClientID,
@@ -389,6 +392,7 @@ func TestServer_IntrospectToken_OpaquePath_NilExtraClaimsOK(t *testing.T) {
 	require.NoError(t, err)
 
 	const accessToken = "opaque-nil-extra-token" //nolint:gosec // G101 false positive — test fixture label
+	seedProviderToken(t, store, accessToken, "user-1", testProviderToken())
 	require.NoError(t, store.SaveTokenMetadata(ctx, accessToken, storage.TokenMetadata{
 		UserID:    "user-1",
 		ClientID:  owner.ClientID,

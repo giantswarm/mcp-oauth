@@ -50,6 +50,8 @@ const DefaultTokenValidationTimeout = 5 * time.Second
 // bearer that no configured validation path accepts. Callers respond with 401.
 var ErrUnknownJWTBearer = errors.New("JWT bearer is not accepted by any validation path")
 
+var errInvalidAccessToken = errors.New("bearer is not an issued access token")
+
 const (
 	auditReasonUnknownJWTBearer        = "unknown_jwt_bearer" // #nosec G101 -- audit reason, not a credential
 	auditReasonForwardedIDTokenInvalid = "forwarded_id_token_invalid"
@@ -326,10 +328,9 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 //  3. Forwarded ID token (when the bearer is a JWT whose aud matches
 //     Config.TrustedAudiences). Verified via the upstream provider's JWKS
 //     for SSO token forwarding. A validation failure is final.
-//  4. Stored token or provider bearer (TokenStore lookup, then provider
-//     userinfo). A compact JWT without an issued-token mapping is refused.
-//     Returned ID-token metadata is not an issued-token mapping. Opaque
-//     bearers retain their userinfo validation path.
+//  4. Stored access token (TokenStore lookup and access-token metadata,
+//     then provider userinfo with the mapped provider access token). Unknown
+//     bearers, refresh tokens and ID-token metadata cannot authorize requests.
 //
 // Steps 1, 2, and 3 are opt-in (AccessTokenFormatJWT, WithTrustedIssuers,
 // TrustedAudiences respectively); step 4 is always available. Rate
@@ -386,21 +387,16 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 		}
 	}
 
-	// PRIORITY 4: Stored token or upstream bearer (TokenStore + provider userinfo).
+	// Provider credentials are usable only through a local access-token mapping.
 	storedToken, err := s.validateStoredToken(ctx, accessToken)
 	if err != nil {
 		return nil, err
 	}
-	if storedToken == nil && isCompactJOSE(accessToken) {
-		s.Auditor.LogAuthFailure(ctx, "", "", "", auditReasonUnknownJWTBearer)
-		return nil, ErrUnknownJWTBearer
+	if storedToken == nil {
+		return nil, s.rejectUnknownBearer(ctx, accessToken)
 	}
 
-	// Determine which token to use for provider validation
-	tokenForProviderValidation := s.selectTokenForProviderValidation(accessToken, storedToken)
-
-	// Validate with provider (userinfo endpoint)
-	userInfo, err := s.provider.ValidateToken(ctx, tokenForProviderValidation)
+	userInfo, err := s.provider.ValidateToken(ctx, storedToken.AccessToken)
 	if err != nil {
 		if isTransientProviderError(err) {
 			// The provider did not answer, so it rejected nothing: a 401
@@ -423,15 +419,20 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 	return userInfo, nil
 }
 
-// isCompactJOSE reports whether a bearer has the shape of a compact JWS (three
-// parts) or compact JWE (five parts, RFC 7516 §7.1; the encrypted key part is
-// empty for direct encryption).
+// isCompactJOSE classifies compact JWS and JWE shapes for rejection, including
+// empty segments in unsecured JWTs (RFC 7519 §6) and malformed serializations.
 func isCompactJOSE(token string) bool {
-	if oidc.IsJWT(token) {
-		return true
+	separators := strings.Count(token, ".")
+	return separators == 2 || separators == 4
+}
+
+func (s *Server) rejectUnknownBearer(ctx context.Context, bearer string) error {
+	if isCompactJOSE(bearer) {
+		s.Auditor.LogAuthFailure(ctx, "", "", "", auditReasonUnknownJWTBearer)
+		return ErrUnknownJWTBearer
 	}
-	parts := strings.Split(token, ".")
-	return len(parts) == 5 && parts[0] != "" && parts[2] != "" && parts[3] != "" && parts[4] != ""
+	s.Auditor.LogAuthFailure(ctx, "", "", "", "unknown_bearer")
+	return errInvalidAccessToken
 }
 
 // validateForwardedIDTokenBranch runs the forwarded-ID-token step of
@@ -533,14 +534,22 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 			// token.
 			return nil, s.storageUnavailable(ctx, "read provider token", "", "", err)
 		}
-		if errors.Is(err, storage.ErrTokenUndecryptable) {
-			// Not an outage, but the sign of an encryption key that differs
-			// from the one the token was written with. Nothing derived from
-			// the bearer is logged.
-			s.Logger.Warn("Stored provider token cannot be decrypted - falling back to provider validation")
-		}
-		// Token not found in store - will fall back to provider validation
 		return nil, nil
+	}
+	metadata, err := s.TokenMetadata(ctx, accessToken)
+	if err != nil {
+		return nil, err
+	}
+	if storedToken == nil || storedToken.AccessToken == "" || metadata == nil || metadata.TokenType != "access" || metadata.Audience == "" {
+		s.Auditor.LogAuthFailure(ctx, "", "", "", "invalid_access_token_metadata")
+		return nil, errInvalidAccessToken
+	}
+	if !metadata.ExpiresAt.IsZero() && security.IsTokenExpiredWithGracePeriod(metadata.ExpiresAt, time.Duration(s.Config.ClockSkewGracePeriod)*time.Second) {
+		s.Auditor.LogAuthFailure(ctx, "", "", "", "access_token_expired")
+		return nil, fmt.Errorf("access token expired: %w", errInvalidAccessToken)
+	}
+	if err := s.validateTokenAudience(ctx, accessToken, metadata); err != nil {
+		return nil, err
 	}
 
 	// Token found - validate expiry with grace period for clock skew
@@ -566,11 +575,6 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 	s.Logger.Debug("Token passed local expiry validation",
 		"expiry", storedToken.Expiry,
 		"grace_period_seconds", s.Config.ClockSkewGracePeriod)
-
-	// RFC 8707: Validate audience binding
-	if err := s.validateTokenAudience(ctx, accessToken); err != nil {
-		return nil, err
-	}
 
 	// PROACTIVE REFRESH: the stored token is still valid and is what the
 	// provider check below presents, so the refresh runs in the background
@@ -609,14 +613,9 @@ func (s *Server) TokenMetadata(ctx context.Context, accessToken string) (*storag
 
 // validateTokenAudience validates RFC 8707 audience binding for the token.
 // It checks if the token's audience matches this server's ResourceIdentifier or
-// any of the TrustedAudiences configured for SSO token forwarding. A store
-// that does not answer is ErrStorageUnavailable, never a pass.
-func (s *Server) validateTokenAudience(ctx context.Context, accessToken string) error {
-	metadata, err := s.TokenMetadata(ctx, accessToken)
-	if err != nil {
-		return err
-	}
-	if metadata == nil || metadata.Audience == "" {
+// any of the TrustedAudiences configured for SSO token forwarding.
+func (s *Server) validateTokenAudience(ctx context.Context, accessToken string, metadata *storage.TokenMetadata) error {
+	if metadata.Audience == "" {
 		return nil
 	}
 
@@ -780,12 +779,4 @@ func (s *Server) logAudienceMismatch(ctx context.Context, accessToken string, me
 		},
 	})
 	s.Auditor.LogAuthFailure(ctx, metadata.UserID, metadata.ClientID, "", "audience_mismatch")
-}
-
-// selectTokenForProviderValidation determines which token to use for provider validation.
-func (s *Server) selectTokenForProviderValidation(accessToken string, storedToken *oauth2.Token) string {
-	if storedToken != nil && storedToken.AccessToken != "" {
-		return storedToken.AccessToken
-	}
-	return accessToken
 }

@@ -185,14 +185,14 @@ func TestValidateToken_InvalidForwardedIDToken(t *testing.T) {
 	require.Equal(t, auditReasonForwardedIDTokenInvalid, line.Details["reason"])
 }
 
-func TestValidateToken_OpaqueBearerUnchanged(t *testing.T) {
+func TestValidateToken_UnknownOpaqueBearerRejected(t *testing.T) {
 	h := newForwardedTokenHarness(t)
 	userinfoAcceptsAnything(h)
 	calls := h.provider.GetCallCount("ValidateToken")
 
 	userInfo, err := h.srv.ValidateToken(t.Context(), "opaque-provider-token")
 
-	require.NoError(t, err)
-	require.Equal(t, "user-subject-123", userInfo.ID)
-	require.Equal(t, calls+1, h.provider.GetCallCount("ValidateToken"))
+	require.ErrorIs(t, err, errInvalidAccessToken)
+	require.Nil(t, userInfo)
+	require.Equal(t, calls, h.provider.GetCallCount("ValidateToken"))
 }

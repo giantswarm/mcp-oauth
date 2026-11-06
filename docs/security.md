@@ -627,7 +627,9 @@ When `TrustedAudiences` is configured, the token validation follows a prioritize
 2. **JWKS Validation**: If the provider supports JWKS, validate the JWT signature using the provider's JWKS endpoint
 3. **Audience Check**: Verify the JWT's `aud` claim matches one of the `TrustedAudiences`
 4. **Claims Extraction**: Extract user info directly from JWT claims (sub, email, name, groups, etc.)
-5. **Rejection**: A JWKS validation failure in step 2 is final (audit `forwarded_id_token_invalid`). A compact JWT, signed or encrypted, that no validation path accepts and that has no issued-token mapping is refused with `server.ErrUnknownJWTBearer` (audit `unknown_jwt_bearer`). Stored ID-token metadata does not authorize a bearer or bind it to a token pair's DPoP key. This validation is unconditional. Opaque bearers and tokens resolved through the server's issued-token mappings retain their userinfo path.
+5. **Stored Access Token**: Other bearers require a local provider-token mapping and metadata with `TokenType: "access"`. The server checks the recorded access-token expiry and audience before refreshing or validating the mapped provider access token through userinfo. An unknown opaque bearer is refused (audit `unknown_bearer`); an unknown compact JWT, including an unsecured JWT with an empty signature, is refused with `server.ErrUnknownJWTBearer` (audit `unknown_jwt_bearer`). A JWKS validation failure in step 2 is final (audit `forwarded_id_token_invalid`). Refresh tokens cannot serve as resource bearers. Stored ID-token metadata does not authorize a bearer or bind it to a token pair's DPoP key.
+
+When a client omits the `resource` parameter, access and refresh metadata default to `Config.GetResourceIdentifier()`. Custom stores must implement both `storage.TokenMetadataStore` and `storage.TokenMetadataGetter` for stored bearer validation. Missing metadata or audience, a token type other than `access`, and an empty mapped provider access token are rejections. A transient store failure remains a retryable 503. Use the `access_token` returned by the local OAuth token endpoint; provider userinfo success alone does not establish that an upstream token was issued for this resource.
 
 This approach is critical for ID token forwarding scenarios. Many Identity Providers (IdPs) reject ID tokens when passed to their userinfo endpoint, as userinfo expects access tokens. By validating JWTs via JWKS first, the library can correctly handle forwarded ID tokens.
 
@@ -658,7 +660,7 @@ For JWT validation to work, the provider must implement the `JWKSProvider` inter
 | Dex      | Yes          | Discovers JWKS URI via OIDC discovery |
 | GitHub   | No           | GitHub OAuth Apps don't use OIDC/JWT |
 
-Providers without JWKS support validate opaque bearers and stored provider credentials through userinfo. They refuse unknown JWT bearers.
+Providers without JWKS support validate local access tokens through their stored provider credentials and userinfo. They refuse unknown bearers in every format.
 
 ### Security Model
 

@@ -217,7 +217,9 @@ func TestValidateTokenAudience_WithTrustedAudiences(t *testing.T) {
 			}
 
 			// Validate the token
-			err := srv.validateTokenAudience(context.Background(), accessToken)
+			metadata, err := srv.TokenMetadata(t.Context(), accessToken)
+			require.NoError(t, err)
+			err = srv.validateTokenAudience(t.Context(), accessToken, metadata)
 
 			if tt.expectError && err == nil {
 				t.Error("validateTokenAudience() expected error, got nil")
@@ -457,7 +459,9 @@ func TestTrustedAudiences_BackwardCompatibility(t *testing.T) {
 	if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: "user", ClientID: "client", TokenType: "access", Audience: "https://mcp.example.com"}); err != nil {
 		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
-	if err := srv.validateTokenAudience(context.Background(), accessToken); err != nil {
+	metadata, err := srv.TokenMetadata(t.Context(), accessToken)
+	require.NoError(t, err)
+	if err := srv.validateTokenAudience(t.Context(), accessToken, metadata); err != nil {
 		t.Errorf("Expected token with server's own audience to be accepted, got error: %v", err)
 	}
 
@@ -465,7 +469,9 @@ func TestTrustedAudiences_BackwardCompatibility(t *testing.T) {
 	if err := store.SaveTokenMetadata(context.Background(), accessToken, storage.TokenMetadata{UserID: "user", ClientID: "client", TokenType: "access", Audience: "muster-client"}); err != nil {
 		t.Fatalf("SaveTokenMetadata() error = %v", err)
 	}
-	if err := srv.validateTokenAudience(context.Background(), accessToken); err == nil {
+	metadata, err = srv.TokenMetadata(t.Context(), accessToken)
+	require.NoError(t, err)
+	if err := srv.validateTokenAudience(t.Context(), accessToken, metadata); err == nil {
 		t.Error("Expected token with different audience to be rejected")
 	}
 }
@@ -575,6 +581,7 @@ func TestValidateToken_JWTBeforeUserinfo(t *testing.T) {
 	t.Run("opaque token calls userinfo", func(t *testing.T) {
 		h := newForwardedTokenHarness(t)
 		userinfoAcceptsAnything(h)
+		seedProviderToken(t, h.srv.tokenStore.(storage.UserProviderTokenStore), "opaque-access-token-not-jwt", "user-subject-123", testProviderToken(), h.srv.Config.GetResourceIdentifier())
 		userInfo, err := h.srv.ValidateToken(t.Context(), "opaque-access-token-not-jwt")
 		require.NoError(t, err)
 		require.Equal(t, providers.TokenSourceOAuth, userInfo.TokenSource)
@@ -955,6 +962,7 @@ func TestValidateToken_TokenSource_OAuth(t *testing.T) {
 	// Opaque token validated via userinfo endpoint should have TokenSourceOAuth
 	t.Run("opaque token has TokenSourceOAuth", func(t *testing.T) {
 		opaqueToken := "opaque-access-token-12345" //nolint:gosec // G101: Test data, not a real credential
+		seedProviderToken(t, store, opaqueToken, "mock-user-123", testProviderToken(), srv.Config.GetResourceIdentifier())
 
 		userInfo, err := srv.ValidateToken(ctx, opaqueToken)
 		if err != nil {

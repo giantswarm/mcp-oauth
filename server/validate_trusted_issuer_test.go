@@ -10,6 +10,7 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	josejwt "github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
@@ -190,12 +191,13 @@ func TestValidateToken_TrustedIssuer_IDTokenFallsThroughToForwarded(t *testing.T
 	require.Equal(t, providers.TokenSourceSSO, userInfo.TokenSource)
 }
 
-func TestValidateToken_TrustedIssuer_UnknownIssFallsThroughToOpaque(t *testing.T) {
+func TestValidateToken_TrustedIssuer_UnknownIssuerRequiresIssuedMapping(t *testing.T) {
 	key := newTestECKey(t)
 	const kid = "ti-kid"
 	jwksURL, jwksClient := serveStaticJWKS(t, key, kid)
 
-	srv, _, provider := setupFlowTestServer(t)
+	srv, store, provider := setupFlowTestServer(t)
+	seedProviderToken(t, store, "opaque-bearer", "opaque-user", &oauth2.Token{AccessToken: "opaque-bearer", Expiry: time.Now().Add(time.Hour)})
 
 	v, err := newOIDCValidatorWithClient([]TrustedIssuer{{
 		Issuer:           testIssuer,

@@ -237,11 +237,13 @@ type TokenStore interface {
 // bookkeeping (OAuth 2.1 reuse detection). The whole metadata payload
 // travels in a single TokenMetadata struct so adding a new field is a
 // single-place change rather than a new interface.
+// Stored bearer validation requires both TokenMetadataStore and
+// TokenMetadataGetter to distinguish access tokens from refresh tokens.
 //
 // Revocation does not flow through this interface — opaque tokens are
 // revoked via TokenStore.DeleteToken and self-issued JWTs via
 // RevokedTokenStore.RevokeJTI. TokenMetadata is the read-side payload
-// for scope validation and audit.
+// for bearer-role checks, audience and scope validation, and audit.
 type TokenMetadataStore interface {
 	// SaveTokenMetadata persists metadata for the given tokenID.
 	// Callers are responsible for setting IssuedAt and ExpiresAt;
@@ -250,7 +252,8 @@ type TokenMetadataStore interface {
 }
 
 // TokenMetadataGetter provides read access to token metadata.
-// This is used for scope validation and token introspection.
+// Stored bearer validation requires TokenType "access" in addition to the
+// provider-token mapping. This interface also supports scopes and introspection.
 type TokenMetadataGetter interface {
 	GetTokenMetadata(tokenID string) (*TokenMetadata, error)
 }
