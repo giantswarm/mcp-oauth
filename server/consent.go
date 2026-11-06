@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
@@ -9,9 +10,12 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/providers"
+	"github.com/giantswarm/mcp-oauth/security"
+	"github.com/giantswarm/mcp-oauth/storage"
 )
 
 // TrustedClient is a client the operator approved in advance. An
@@ -39,15 +43,18 @@ type AuthorizationRequest struct {
 	CodeChallenge       string                             `json:"code_challenge,omitempty"`
 	CodeChallengeMethod string                             `json:"code_challenge_method,omitempty"`
 	Options             *providers.AuthorizationURLOptions `json:"options,omitempty"`
+	UpstreamScopes      []string                           `json:"upstream_scopes,omitempty"`
+	BrowserBinding      string                             `json:"browser_binding,omitempty"`
+	ConsentApproved     bool                               `json:"consent_approved,omitempty"`
 
 	// ClientName is the name the client gives itself. It is chosen by the
 	// client, so it is shown as a claim, never as the client's identity.
-	ClientName string `json:"-"`
+	ClientName string `json:"client_name,omitempty"`
 
 	// LoopbackOnly reports that every redirect URI of the client is a
 	// loopback address, so any program on the person's computer can claim
 	// to be this client.
-	LoopbackOnly bool `json:"-"`
+	LoopbackOnly bool `json:"loopback_only,omitempty"`
 
 	// checked is set only by PrepareAuthorization, so a request built or
 	// decoded elsewhere is checked again before its flow starts.
@@ -69,11 +76,52 @@ func (r *AuthorizationRequest) ConsentKey() string {
 	scopes = slices.Compact(scopes)
 
 	h := sha256.New()
-	for _, part := range []string{"mcp-oauth consent v1", r.ClientID, redirectURIWithoutLoopbackPort(r.RedirectURI), strings.Join(scopes, " "), r.Resource} {
+	upstreamScopes := slices.Clone(r.UpstreamScopes)
+	slices.Sort(upstreamScopes)
+	upstreamScopes = slices.Compact(upstreamScopes)
+	for _, part := range []string{"mcp-oauth consent v2", r.ClientID, redirectURIWithoutLoopbackPort(r.RedirectURI), strings.Join(scopes, " "), strings.Join(upstreamScopes, " "), r.Resource} {
 		h.Write([]byte(part))
 		h.Write([]byte{0})
 	}
 	return base64.RawURLEncoding.EncodeToString(h.Sum(nil)[:16])
+}
+
+func (s *Server) initializeConsentCookieKey(ctx context.Context) error {
+	if len(s.Config.ConsentCookieKey) != 0 {
+		return nil
+	}
+	var key []byte
+	var err error
+	if store, ok := s.flowStore.(storage.ConsentStore); ok {
+		key, err = store.ConsentCookieKey(ctx, s.Config.Issuer)
+	} else {
+		key, err = security.GenerateKey()
+		s.Logger.Warn("Flow store does not implement storage.ConsentStore; browser consent is unavailable")
+	}
+	if err != nil {
+		return fmt.Errorf("initialize consent cookie key: %w", err)
+	}
+	if _, err := security.NewEncryptor(key); err != nil || len(key) != 32 {
+		return fmt.Errorf("invalid store consent cookie key")
+	}
+	s.Config.ConsentCookieKey = key
+	return nil
+}
+
+func (s *Server) SavePendingConsent(ctx context.Context, browserID, consentID string, data []byte, expiresAt time.Time) error {
+	store, ok := s.flowStore.(storage.ConsentStore)
+	if !ok {
+		return fmt.Errorf("flow store does not implement storage.ConsentStore")
+	}
+	return store.SavePendingConsent(ctx, browserID, consentID, data, expiresAt)
+}
+
+func (s *Server) ConsumePendingConsent(ctx context.Context, browserID, consentID string) ([]byte, error) {
+	store, ok := s.flowStore.(storage.ConsentStore)
+	if !ok {
+		return nil, fmt.Errorf("flow store does not implement storage.ConsentStore")
+	}
+	return store.ConsumePendingConsent(ctx, browserID, consentID)
 }
 
 // RequiresConsent reports whether the person has to approve the request

@@ -23,6 +23,7 @@ import (
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/server"
+	"github.com/giantswarm/mcp-oauth/storage"
 )
 
 // Context keys for interstitial page custom handlers.
@@ -440,7 +441,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		attribute.String(instrumentation.AttrScope, scope),
 	)
 
-	req, err := h.server.PrepareAuthorization(r.Context(), clientID, canonicalRedirectURI, scope, resource, codeChallenge, codeChallengeMethod, state, authOpts)
+	authorizationRequest, err := h.server.PrepareAuthorization(r.Context(), clientID, canonicalRedirectURI, scope, resource, codeChallenge, codeChallengeMethod, state, authOpts)
 	if err != nil {
 		h.logger.Error("Failed to start authorization flow", paramError, err)
 		instrumentation.RecordError(span, err)
@@ -455,37 +456,60 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.consentNeeded(r, req) {
-		if promptIncludes(req, "none") {
+	if h.consentNeeded(r, authorizationRequest) {
+		if promptIncludes(authorizationRequest, "none") {
 			h.failRequest(w, r, span, endpointAuthorize, http.MethodGet, http.StatusBadRequest, constants.ErrorCodeConsentRequired, "this client needs your consent; sign in without prompt=none", startTime)
 			return
 		}
-		h.showConsentPage(w, r, span, startTime, req)
+		h.showConsentPage(w, r, span, startTime, authorizationRequest)
 		return
 	}
 
-	h.redirectToProvider(w, r, span, startTime, http.MethodGet, req, redirectErrors)
+	h.redirectToProvider(w, r, span, startTime, http.MethodGet, authorizationRequest, redirectErrors)
 }
 
-// redirectToProvider starts the upstream flow for req and redirects the
+// redirectToProvider starts the upstream flow for the request and redirects the
 // browser to the upstream identity provider. redirectErrors selects whether a
 // failure is redirected to the client's redirect URI.
-func (h *Handler) redirectToProvider(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, method string, req *server.AuthorizationRequest, redirectErrors bool) {
-	redirectURI, _ := url.Parse(req.RedirectURI)
+func (h *Handler) redirectToProvider(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, method string, authorizationRequest *server.AuthorizationRequest, redirectErrors bool) {
+	flowCount := 0
+	for _, cookie := range r.Cookies() {
+		if strings.HasPrefix(cookie.Name, h.consent.name("mcp_oauth_flow")+"_") {
+			flowCount++
+		}
+	}
+	if flowCount >= storage.MaxPendingConsentsPerBrowser {
+		h.failRequest(w, r, span, endpointAuthorize, method, http.StatusTooManyRequests, constants.ErrorCodeInvalidRequest, "too many pending sign-ins", startTime)
+		return
+	}
+	binding := newConsentID()
+	authorizationRequest.BrowserBinding = binding
+	redirectURI, _ := url.Parse(authorizationRequest.RedirectURI)
 	fail := func(spanError string) {
 		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
 			method:      method,
 			redirectURI: redirectURI,
 			redirect:    redirectErrors,
-			state:       req.State,
+			state:       authorizationRequest.State,
 			code:        constants.ErrorCodeServerError,
 			description: "Failed to start authorization flow",
 			spanError:   spanError,
 		})
 	}
 
-	authURL, err := h.server.BeginAuthorization(r.Context(), req)
+	authURL, err := h.server.BeginAuthorization(r.Context(), authorizationRequest)
 	if err != nil {
+		if errors.Is(err, server.ErrAuthorizationPermissionsChanged) {
+			if promptIncludes(authorizationRequest, "none") {
+				h.failRequest(w, r, span, endpointAuthorize, method, http.StatusBadRequest, constants.ErrorCodeConsentRequired, "permissions changed; sign in without prompt=none", startTime)
+				return
+			}
+			updated, prepareErr := h.server.PrepareAuthorization(r.Context(), authorizationRequest.ClientID, redirectURI, authorizationRequest.Scope, authorizationRequest.Resource, authorizationRequest.CodeChallenge, authorizationRequest.CodeChallengeMethod, authorizationRequest.State, authorizationRequest.Options)
+			if prepareErr == nil {
+				h.showConsentPage(w, r, span, startTime, updated)
+				return
+			}
+		}
 		h.logger.Error("Failed to start authorization flow", paramError, err)
 		instrumentation.RecordError(span, err)
 		fail("authorization flow failed")
@@ -493,7 +517,7 @@ func (h *Handler) redirectToProvider(w http.ResponseWriter, r *http.Request, spa
 	}
 
 	// Record authorization started metric
-	h.recordAuthorizationStarted(r.Context(), req.ClientID)
+	h.recordAuthorizationStarted(r.Context(), authorizationRequest.ClientID)
 
 	// Parse and validate scheme before redirecting. authURL is built by the
 	// configured provider's AuthorizationURL(); the parse + scheme check is
@@ -504,6 +528,12 @@ func (h *Handler) redirectToProvider(w http.ResponseWriter, r *http.Request, spa
 		fail("invalid authorization URL")
 		return
 	}
+	providerState := parsedAuthURL.Query().Get("state")
+	if providerState == "" {
+		fail("provider state is missing")
+		return
+	}
+	http.SetCookie(w, h.consent.cookie(h.consent.flowName(providerState), binding, consentPendingTTL))
 
 	h.recordHTTPMetrics(r.Context(), endpointAuthorize, method, http.StatusFound, startTime)
 	instrumentation.SetSpanSuccess(span)
@@ -583,10 +613,21 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Handle callback (state here is the provider state, not client state)
-	// Server also validates state length for defense in depth
-	authCode, clientState, err := h.server.HandleProviderCallback(r.Context(), state, code)
+	h.completeBrowserCallback(w, r, span, startTime, state, code)
+}
+
+func (h *Handler) completeBrowserCallback(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, state, code string) {
+	clientIP := h.clientIP(r)
+	binding := ""
+	if cookie, cookieErr := r.Cookie(h.consent.flowName(state)); cookieErr == nil {
+		binding = cookie.Value
+	}
+	result, err := h.server.CompleteBrowserAuthorization(r.Context(), state, code, binding)
 	if err != nil {
+		if errors.Is(err, server.ErrBrowserBinding) || storage.IsNotFoundError(err) {
+			h.failRequest(w, r, span, endpointCallback, http.MethodGet, http.StatusBadRequest, constants.ErrorCodeInvalidRequest, "authorization callback does not match this browser or has expired", startTime)
+			return
+		}
 		h.logger.Error("Failed to handle callback", "ip", clientIP, paramError, err)
 		h.recordHTTPMetrics(r.Context(), endpointCallback, http.MethodGet, http.StatusInternalServerError, startTime)
 		h.recordCallbackProcessed(r.Context(), "", false)
@@ -595,6 +636,29 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, constants.ErrorCodeServerError, "Authorization failed", http.StatusInternalServerError)
 		return
 	}
+	h.consent.clear(w, h.consent.flowName(state))
+	if result.State.IdentityOnly {
+		h.finishBrowserAuthorization(w, r, span, startTime, nil, result)
+		return
+	}
+	request, err := h.requestForResult(r, result)
+	if err != nil {
+		h.failRequest(w, r, span, endpointCallback, http.MethodGet, http.StatusBadRequest, constants.ErrorCodeInvalidRequest, "authorization request is no longer valid", startTime)
+		return
+	}
+	if h.server.RequiresConsent(request.ClientID, request.RedirectURI) && !result.State.ConsentApproved && !h.consent.approvedForSubject(r, request.ConsentKey(), result.Subject) {
+		if promptIncludes(request, "none") {
+			h.failRequest(w, r, span, endpointCallback, http.MethodGet, http.StatusBadRequest, constants.ErrorCodeConsentRequired, "this account needs your consent", startTime)
+			return
+		}
+		h.showPendingConsent(w, r, span, startTime, request, result)
+		return
+	}
+	h.finishBrowserAuthorization(w, r, span, startTime, request, result)
+}
+
+func (h *Handler) redirectAuthorizationCode(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, authCode *storage.AuthorizationCode, clientState string) {
+	clientIP := h.clientIP(r)
 
 	// Record successful callback
 	h.recordCallbackProcessed(r.Context(), authCode.ClientID, true)

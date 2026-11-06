@@ -54,6 +54,9 @@ func ApplyAuthorizationURLOptions(opts *AuthorizationURLOptions) []oauth2.AuthCo
 	for k, v := range opts.Extra {
 		result = append(result, oauth2.SetAuthURLParam(k, v))
 	}
+	if opts.ResolvedScopes != nil {
+		result = append(result, oauth2.SetAuthURLParam("scope", strings.Join(opts.ResolvedScopes, " ")))
+	}
 	return result
 }
 

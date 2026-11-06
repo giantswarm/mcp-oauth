@@ -23,8 +23,10 @@ import (
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
+	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/server"
+	"github.com/giantswarm/mcp-oauth/storage"
 )
 
 const (
@@ -46,7 +48,7 @@ const (
 	maxConsentFormBytes = 4096
 
 	consentPurposePending  = "pending"
-	consentPurposeApproved = "approved"
+	consentPurposeApproved = "approved_v2"
 
 	consentDecisionApprove = "approve"
 	consentDecisionDeny    = "deny"
@@ -60,14 +62,12 @@ var consentPageTemplate string
 
 var consentPageTmpl = template.Must(template.New("consent").Parse(consentPageTemplate))
 
-// consentCookies seals the consent state the browser carries: the pending
-// request between the consent page and the person's answer, and the
-// approvals the person gave. Both are encrypted and authenticated with the
-// server's ConsentCookieKey, so the browser can neither read nor forge them.
+// consentCookies authenticates remembered grants and encrypts server-side
+// pending requests. Browser binding cookies contain opaque random secrets.
 type consentCookies struct {
 	encryptor *security.Encryptor
 
-	// secure is false only for a plain-http localhost issuer, where browsers
+	// secure is false only for a plain-http issuer, where browsers
 	// and HTTP clients drop Secure cookies.
 	secure bool
 
@@ -80,6 +80,7 @@ type pendingConsent struct {
 	ID      string                       `json:"id"`
 	Expiry  int64                        `json:"exp"`
 	Request *server.AuthorizationRequest `json:"req"`
+	Result  *server.AuthorizationResult  `json:"result,omitempty"`
 }
 
 type approvedConsents struct {
@@ -88,12 +89,13 @@ type approvedConsents struct {
 }
 
 type approvedConsent struct {
-	Key    string `json:"k"`
-	Expiry int64  `json:"x"`
+	Key     string `json:"k"`
+	Subject string `json:"s"`
+	Expiry  int64  `json:"x"`
 }
 
-func newConsentCookies(cfg *server.Config) *consentCookies {
-	key := cfg.ConsentCookieKey
+func newConsentCookies(configuration *server.Config) *consentCookies {
+	key := configuration.ConsentCookieKey
 	if len(key) == 0 {
 		key, _ = security.GenerateKey()
 	}
@@ -101,8 +103,8 @@ func newConsentCookies(cfg *server.Config) *consentCookies {
 	if err != nil || !encryptor.IsEnabled() {
 		encryptor = nil
 	}
-	issuer, _ := url.Parse(cfg.Issuer)
-	sum := sha256.Sum256([]byte(cfg.Issuer))
+	issuer, _ := url.Parse(configuration.Issuer)
+	sum := sha256.Sum256([]byte(configuration.Issuer))
 	return &consentCookies{
 		encryptor: encryptor,
 		secure:    issuer == nil || issuer.Scheme != oauth.SchemeHTTP,
@@ -117,8 +119,13 @@ func (c *consentCookies) name(base string) string {
 	return base + "_" + c.suffix
 }
 
-func (c *consentCookies) pendingName(id string) string {
-	return c.name("mcp_oauth_consent_req") + "_" + id
+func (c *consentCookies) pendingName() string {
+	return c.name("mcp_oauth_consent_req")
+}
+
+func (c *consentCookies) flowName(state string) string {
+	sum := sha256.Sum256([]byte(state))
+	return c.name("mcp_oauth_flow") + "_" + hex.EncodeToString(sum[:8])
 }
 
 func (c *consentCookies) approvedName() string {
@@ -126,7 +133,7 @@ func (c *consentCookies) approvedName() string {
 }
 
 func (c *consentCookies) cookie(name, value string, maxAge time.Duration) *http.Cookie {
-	return &http.Cookie{ //nolint:gosec // Secure is off only for a plain-http localhost issuer
+	return &http.Cookie{ //nolint:gosec // Secure is off only for a plain-http issuer
 		Name:     name,
 		Value:    value,
 		Path:     "/",
@@ -190,16 +197,20 @@ func (c *consentCookies) approved(r *http.Request, now time.Time) []approvedCons
 
 func (c *consentCookies) isApproved(r *http.Request, key string, now time.Time) bool {
 	return slices.ContainsFunc(c.approved(r, now), func(e approvedConsent) bool {
-		return e.Key == key
+		return e.Key == key && e.Subject != ""
 	})
 }
 
+func (c *consentCookies) approvedForSubject(r *http.Request, key, subject string) bool {
+	return slices.ContainsFunc(c.approved(r, time.Now()), func(e approvedConsent) bool { return e.Key == key && e.Subject == subject && subject != "" })
+}
+
 // remember adds key to the person's approvals.
-func (c *consentCookies) remember(w http.ResponseWriter, r *http.Request, key string, now time.Time) error {
+func (c *consentCookies) remember(w http.ResponseWriter, r *http.Request, key string, now time.Time, subject string) error {
 	entries := slices.DeleteFunc(c.approved(r, now), func(e approvedConsent) bool {
-		return e.Key == key
+		return e.Key == key && e.Subject == subject
 	})
-	entries = append(entries, approvedConsent{Key: key, Expiry: now.Add(consentRememberTTL).Unix()})
+	entries = append(entries, approvedConsent{Key: key, Subject: subject, Expiry: now.Add(consentRememberTTL).Unix()})
 	if len(entries) > maxRememberedConsents {
 		entries = entries[len(entries)-maxRememberedConsents:]
 	}
@@ -217,50 +228,120 @@ func newConsentID() string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-// promptIncludes reports whether the OIDC prompt of req lists value.
-func promptIncludes(req *server.AuthorizationRequest, value string) bool {
-	return req.Options != nil && slices.Contains(strings.Fields(req.Options.Prompt), value)
+// promptIncludes reports whether the request's OIDC prompt lists value.
+func promptIncludes(authorizationRequest *server.AuthorizationRequest, value string) bool {
+	return authorizationRequest.Options != nil && slices.Contains(strings.Fields(authorizationRequest.Options.Prompt), value)
 }
 
 // consentNeeded reports whether the person has to answer the consent page for
-// req: the client is not trusted for its redirect URI, and the person has not
+// the request: the client is not trusted for its redirect URI, and the person has not
 // approved this request before or the client asks for consent again.
-func (h *Handler) consentNeeded(r *http.Request, req *server.AuthorizationRequest) bool {
-	if !h.server.RequiresConsent(req.ClientID, req.RedirectURI) {
+func (h *Handler) consentNeeded(r *http.Request, authorizationRequest *server.AuthorizationRequest) bool {
+	if !h.server.RequiresConsent(authorizationRequest.ClientID, authorizationRequest.RedirectURI) {
 		return false
 	}
-	return promptIncludes(req, "consent") || !h.consent.isApproved(r, req.ConsentKey(), time.Now())
+	return promptIncludes(authorizationRequest, "consent") || !h.consent.isApproved(r, authorizationRequest.ConsentKey(), time.Now())
 }
 
-// showConsentPage stores req in a pending cookie and renders the consent page.
-func (h *Handler) showConsentPage(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, req *server.AuthorizationRequest) {
+// showConsentPage stores the request and renders the consent page.
+func (h *Handler) showConsentPage(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, authorizationRequest *server.AuthorizationRequest) {
+	h.showPendingConsent(w, r, span, startTime, authorizationRequest, nil)
+}
+
+func browserID(binding string) string {
+	sum := sha256.Sum256([]byte(binding))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+func (h *Handler) showPendingConsent(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, authorizationRequest *server.AuthorizationRequest, result *server.AuthorizationResult) {
 	id := newConsentID()
-	value, err := h.consent.seal(pendingConsent{
+	binding := ""
+	if cookie, err := r.Cookie(h.consent.pendingName()); err == nil && consentIDPattern.MatchString(cookie.Value) {
+		binding = cookie.Value
+	}
+	if binding == "" {
+		binding = newConsentID()
+	}
+	pending := pendingConsent{
 		Purpose: consentPurposePending,
 		ID:      id,
 		Expiry:  time.Now().Add(consentPendingTTL).Unix(),
-		Request: req,
-	})
+		Request: authorizationRequest,
+		Result:  result,
+	}
+	err := h.storePendingConsent(r, binding, pending)
 	if err != nil {
-		h.logger.Warn("Authorization request cannot be held for consent", "client_id", req.ClientID, paramError, err)
-		h.failRequest(w, r, span, endpointAuthorize, http.MethodGet, http.StatusBadRequest, constants.ErrorCodeInvalidRequest, "authorization request is too large", startTime)
+		h.logger.Warn("Authorization request cannot be held for consent", "client_id", authorizationRequest.ClientID, paramError, err)
+		if errors.Is(err, storage.ErrPendingConsentLimit) {
+			h.failRequest(w, r, span, endpointAuthorize, r.Method, http.StatusTooManyRequests, constants.ErrorCodeInvalidRequest, "too many pending sign-ins", startTime)
+			return
+		}
+		h.failRequest(w, r, span, endpointAuthorize, r.Method, http.StatusServiceUnavailable, constants.ErrorCodeTemporarilyUnavailable, "consent is temporarily unavailable", startTime)
 		return
 	}
 
 	var buf bytes.Buffer
-	if err := consentPageTmpl.Execute(&buf, h.consentPageData(r, req, id)); err != nil {
+	data := h.consentPageData(r, authorizationRequest, id)
+	if result != nil {
+		data.Account = result.User.Email
+		if data.Account == "" {
+			data.Account = result.User.ID
+		}
+	}
+	if err := consentPageTmpl.Execute(&buf, data); err != nil {
 		h.logger.Error("Failed to render consent page", paramError, err)
 		h.failRequest(w, r, span, endpointAuthorize, http.MethodGet, http.StatusInternalServerError, constants.ErrorCodeServerError, "Failed to render consent page", startTime)
 		return
 	}
 
-	h.auditConsent(r, security.EventClientConsentShown, req)
-	http.SetCookie(w, h.consent.cookie(h.consent.pendingName(id), value, consentPendingTTL))
+	h.auditConsent(r, security.EventClientConsentShown, authorizationRequest)
+	http.SetCookie(w, h.consent.cookie(h.consent.pendingName(), binding, consentPendingTTL))
 	security.SetConsentPageSecurityHeaders(w, h.server.Config.Issuer)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusOK, startTime)
 	instrumentation.SetSpanSuccess(span)
 	_, _ = buf.WriteTo(w)
+}
+
+func (h *Handler) storePendingConsent(r *http.Request, binding string, pending pendingConsent) error {
+	plaintext, err := json.Marshal(pending)
+	if err != nil {
+		return err
+	}
+	if len(plaintext) > storage.MaxPendingConsentSize/2 {
+		return errors.New("pending consent is too large")
+	}
+	if h.consent.encryptor == nil {
+		return errors.New("consent key is unavailable")
+	}
+	sealed, err := h.consent.encryptor.Encrypt(string(plaintext))
+	if err != nil {
+		return err
+	}
+	return h.server.SavePendingConsent(r.Context(), browserID(binding), pending.ID, []byte(sealed), time.Unix(pending.Expiry, 0))
+}
+
+func (h *Handler) consumePendingConsent(r *http.Request, id string) (*pendingConsent, error) {
+	cookie, err := r.Cookie(h.consent.pendingName())
+	if err != nil || !consentIDPattern.MatchString(cookie.Value) {
+		return nil, storage.ErrPendingConsentNotFound
+	}
+	sealed, err := h.server.ConsumePendingConsent(r.Context(), browserID(cookie.Value), id)
+	if err != nil {
+		return nil, err
+	}
+	plaintext, err := h.consent.encryptor.Decrypt(string(sealed))
+	if err != nil {
+		return nil, storage.ErrPendingConsentNotFound
+	}
+	var pending pendingConsent
+	if err := json.Unmarshal([]byte(plaintext), &pending); err != nil {
+		return nil, storage.ErrPendingConsentNotFound
+	}
+	if pending.Purpose != consentPurposePending || pending.ID != id || pending.Request == nil || pending.Expiry <= time.Now().Unix() {
+		return nil, storage.ErrPendingConsentNotFound
+	}
+	return &pending, nil
 }
 
 // serveConsentDecision handles the person's answer to the consent page.
@@ -284,40 +365,72 @@ func (h *Handler) serveConsentDecision(w http.ResponseWriter, r *http.Request, s
 		return
 	}
 
-	name := h.consent.pendingName(id)
-	var pending pendingConsent
-	err := h.consent.open(r, name, &pending)
-	h.consent.clear(w, name)
-	if err != nil || pending.Purpose != consentPurposePending || pending.ID != id || pending.Request == nil || pending.Expiry <= time.Now().Unix() {
+	pending, err := h.consumePendingConsent(r, id)
+	if err != nil {
+		if storage.IsTransientError(err) {
+			h.failRequest(w, r, span, endpointAuthorize, http.MethodPost, http.StatusServiceUnavailable, constants.ErrorCodeTemporarilyUnavailable, "consent is temporarily unavailable", startTime)
+			return
+		}
 		h.failRequest(w, r, span, endpointAuthorize, http.MethodPost, http.StatusBadRequest, constants.ErrorCodeInvalidRequest, "the consent page expired or was already answered; start signing in again", startTime)
 		return
 	}
-	req := pending.Request
+	authorizationRequest := pending.Request
 
 	if decision == consentDecisionDeny {
-		h.auditConsent(r, security.EventClientConsentDenied, req)
-		h.serveConsentDenied(w, r, span, startTime, req)
+		h.auditConsent(r, security.EventClientConsentDenied, authorizationRequest)
+		h.serveConsentDenied(w, r, span, startTime, authorizationRequest)
 		return
 	}
 
-	h.auditConsent(r, security.EventClientConsentApproved, req)
-	if err := h.consent.remember(w, r, req.ConsentKey(), time.Now()); err != nil {
-		h.logger.Warn("Consent approval could not be remembered", "client_id", req.ClientID, paramError, err)
+	h.auditConsent(r, security.EventClientConsentApproved, authorizationRequest)
+	if pending.Result != nil {
+		h.finishBrowserAuthorization(w, r, span, startTime, authorizationRequest, pending.Result)
+		return
 	}
-	h.redirectToProvider(w, r, span, startTime, http.MethodPost, req, false)
+	authorizationRequest.ConsentApproved = true
+	h.redirectToProvider(w, r, span, startTime, http.MethodPost, authorizationRequest, false)
+}
+
+func (h *Handler) requestForResult(r *http.Request, result *server.AuthorizationResult) (*server.AuthorizationRequest, error) {
+	state := result.State
+	redirect, err := url.Parse(state.RedirectURI)
+	if err != nil {
+		return nil, err
+	}
+	request, err := h.server.PrepareAuthorization(r.Context(), state.ClientID, redirect, state.Scope, state.Resource, state.CodeChallenge, state.CodeChallengeMethod, state.OriginalClientState, &providers.AuthorizationURLOptions{Prompt: state.Prompt})
+	if err != nil {
+		return nil, err
+	}
+	request.UpstreamScopes = slices.Clone(state.UpstreamScopes)
+	return request, nil
+}
+
+func (h *Handler) finishBrowserAuthorization(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, request *server.AuthorizationRequest, result *server.AuthorizationResult) {
+	code, state, err := h.server.IssueAuthorizationCode(r.Context(), result)
+	if err != nil {
+		h.logger.Error("Authorization code issuance failed", paramError, err)
+		h.failRequest(w, r, span, endpointCallback, r.Method, http.StatusInternalServerError, constants.ErrorCodeServerError, "Authorization failed", startTime)
+		return
+	}
+	if request != nil && h.server.RequiresConsent(request.ClientID, request.RedirectURI) {
+		if err := h.consent.remember(w, r, request.ConsentKey(), time.Now(), result.Subject); err != nil {
+			h.logger.Warn("Consent approval could not be remembered", paramError, err)
+		}
+	}
+	h.redirectAuthorizationCode(w, r, span, startTime, code, state)
 }
 
 // serveConsentDenied tells the person access was denied. The client is not
 // trusted, so the browser is not sent to its redirect URI automatically; the
 // page links there with access_denied so the client can stop waiting.
-func (h *Handler) serveConsentDenied(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, req *server.AuthorizationRequest) {
-	target, err := url.Parse(req.RedirectURI)
+func (h *Handler) serveConsentDenied(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, authorizationRequest *server.AuthorizationRequest) {
+	target, err := url.Parse(authorizationRequest.RedirectURI)
 	data := consentDeniedData{consentBranding: h.consentBranding()}
 	if err == nil {
 		q := target.Query()
 		q.Set(paramError, constants.ErrorCodeAccessDenied)
-		if req.State != "" {
-			q.Set("state", req.State)
+		if authorizationRequest.State != "" {
+			q.Set("state", authorizationRequest.State)
 		}
 		q.Set("iss", h.server.Config.Issuer)
 		target.RawQuery = q.Encode()
@@ -338,20 +451,21 @@ func (h *Handler) serveConsentDenied(w http.ResponseWriter, r *http.Request, spa
 	_, _ = buf.WriteTo(w)
 }
 
-func (h *Handler) auditConsent(r *http.Request, eventType string, req *server.AuthorizationRequest) {
+func (h *Handler) auditConsent(r *http.Request, eventType string, authorizationRequest *server.AuthorizationRequest) {
 	if h.server.Auditor == nil {
 		return
 	}
 	h.server.Auditor.LogEvent(r.Context(), security.Event{
 		Type:      eventType,
-		ClientID:  req.ClientID,
+		ClientID:  authorizationRequest.ClientID,
 		IPAddress: h.clientIP(r),
 		UserAgent: r.UserAgent(),
 		Details: map[string]any{
-			"redirect_uri":  req.RedirectURI,
-			"scope":         req.Scope,
-			"resource":      req.Resource,
-			"loopback_only": req.LoopbackOnly,
+			"redirect_uri":    authorizationRequest.RedirectURI,
+			"upstream_scopes": slices.Clone(authorizationRequest.UpstreamScopes),
+			"scope":           authorizationRequest.Scope,
+			"resource":        authorizationRequest.Resource,
+			"loopback_only":   authorizationRequest.LoopbackOnly,
 		},
 	})
 }
@@ -376,6 +490,8 @@ type consentPageData struct {
 	LoopbackOnly bool
 	ConsentID    string
 	Action       string
+	Account      string
+	MCPScopes    []string
 }
 
 type consentDeniedData struct {
@@ -403,27 +519,28 @@ func (h *Handler) consentBranding() consentBranding {
 	}
 }
 
-func (h *Handler) consentPageData(r *http.Request, req *server.AuthorizationRequest, id string) consentPageData {
+func (h *Handler) consentPageData(r *http.Request, authorizationRequest *server.AuthorizationRequest, id string) consentPageData {
 	data := consentPageData{
 		consentBranding: h.consentBranding(),
-		ClientName:      req.ClientName,
-		RedirectURI:     req.RedirectURI,
-		Scopes:          helpers.SplitScopes(req.Scope),
-		Resource:        req.Resource,
-		LoopbackOnly:    req.LoopbackOnly,
+		ClientName:      authorizationRequest.ClientName,
+		RedirectURI:     authorizationRequest.RedirectURI,
+		Scopes:          slices.Clone(authorizationRequest.UpstreamScopes),
+		MCPScopes:       helpers.SplitScopes(authorizationRequest.Scope),
+		Resource:        authorizationRequest.Resource,
+		LoopbackOnly:    authorizationRequest.LoopbackOnly,
 		ConsentID:       id,
-		Action:          r.URL.Path,
+		Action:          h.server.Config.AuthorizationEndpoint(),
 	}
 	if issuer, err := url.Parse(h.server.Config.Issuer); err == nil {
 		data.IssuerHost = issuer.Host
 	}
-	if redirect, err := url.Parse(req.RedirectURI); err == nil {
+	if redirect, err := url.Parse(authorizationRequest.RedirectURI); err == nil {
 		data.RedirectHost = redirect.Host
 		if data.RedirectHost == "" {
 			data.RedirectHost = redirect.Scheme + ":"
 		}
 	}
-	if clientURL, err := url.Parse(req.ClientID); err == nil && clientURL.Scheme == oauth.SchemeHTTPS && clientURL.Host != "" {
+	if clientURL, err := url.Parse(authorizationRequest.ClientID); err == nil && clientURL.Scheme == oauth.SchemeHTTPS && clientURL.Host != "" {
 		data.ClientHost = clientURL.Host
 	}
 	return data

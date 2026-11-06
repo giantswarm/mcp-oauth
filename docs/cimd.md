@@ -242,10 +242,18 @@ A Client ID Metadata Document only proves that its URL serves it: anyone can pub
 
 - the host of the `client_id` URL, and the `client_name` the document declares, labelled as the client's own claim;
 - where the sign-in will be sent: the redirect URI, its host in large type;
-- the scopes and the resource;
+- the effective upstream permissions, the MCP scopes and the resource;
 - a warning when every redirect URI is a loopback address, since any program on the computer can then claim to be the client.
 
-The person answers with a same-origin POST. Nothing is stored, and no upstream flow starts, before an approval. An approval is remembered in the browser for 30 days, per client, registered redirect URI (the loopback port is ignored), scope set and resource. The cookies are encrypted with `ConsentCookieKey`; set the same key on every replica.
+The person answers with a same-origin POST. A short-lived pending request is encrypted in the flow store and consumed atomically; no upstream authorization state exists before approval. Each browser can have eight pending requests. The form posts to the public authorization endpoint, including an issuer path prefix when present.
+
+The upstream redirect sets a transaction-specific browser cookie. The callback must match that cookie before the provider code is exchanged, and the stored authorization state is consumed once across replicas. A callback from another browser cannot use the approval.
+
+An approval is remembered for 30 days only after the upstream identity is verified. It is bound to the upstream issuer and subject, client, registered redirect URI (the loopback port is ignored), MCP and upstream scope sets, and resource. If the upstream account changes, that account must approve before a client code is issued. Changes to upstream permissions require fresh consent; the provider receives the exact permission set displayed on the page.
+
+Consent is enabled by default, with no feature flag. The memory and Valkey stores select a shared, issuer-specific key automatically. If storage encryption is configured, HKDF derives the consent key from that existing key. Otherwise the store keeps a generated key; Valkey replicas use the same persisted value. The existing flow-store configuration is sufficient, so consumers using these stores need only a normal dependency and application upgrade. `ConsentCookieKey` and `OAUTH_CONSENT_COOKIE_KEY` are optional overrides, not rollout prerequisites.
+
+Custom flow stores must implement `storage.ConsentStore` and `storage.AuthorizationStateConsumer` before mounting the browser authorization handler. Unsupported stores fail closed. `Server.CompleteBrowserAuthorization` verifies the browser and upstream identity without issuing a code; `Server.IssueAuthorizationCode` finishes a consented result. `StartAuthorizationFlow` and `HandleProviderCallback` remain available to integrations that implement their own consent and browser binding.
 
 A denial never redirects the browser: the page links back to the client with `error=access_denied`. For a client that is not trusted, request errors are answered with JSON 400 instead of a redirect, and `prompt=none` without an approval gets `consent_required`.
 
@@ -258,11 +266,14 @@ config := &server.Config{
         ClientID:     "https://claude.ai/oauth/mcp-oauth-client-metadata",
         RedirectURIs: []string{"https://claude.ai/api/mcp/auth_callback"},
     }},
-    ConsentCookieKey: consentKey, // 32 bytes, shared by all replicas
 }
 ```
 
-A trusted entry covers only the redirect URIs it lists, so a change to the client's document cannot extend it. Loopback redirect URIs cannot be listed: native apps always see the page, once per browser per 30 days.
+A trusted entry covers only the redirect URIs it lists, so a change to the client's document cannot extend it. Loopback redirect URIs cannot be listed: native apps see the page for each account and permission set not yet approved in that browser.
+
+HTTP clients implementing a browser flow must keep one cookie jar through the consent GET, approval POST and provider callback. A test or automation that expects the first GET to redirect immediately must submit the form. Existing bearer-token, refresh-token and token-exchange traffic does not enter this handler and needs no new flag or trust entry.
+
+Custom providers that transform requested scopes implement `providers.AuthorizationScopeResolver`. `AuthorizationURLOptions.ResolvedScopes` carries the approved snapshot into the upstream URL; providers must not widen it after consent.
 
 ### Client Identity Validation
 

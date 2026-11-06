@@ -1087,20 +1087,24 @@ func fromAuthorizationCodeJSON(j *authorizationCodeJSON) *storage.AuthorizationC
 
 // authorizationStateJSON is the JSON representation of an authorization state
 type authorizationStateJSON struct {
-	StateID              string `json:"state_id"`
-	OriginalClientState  string `json:"original_client_state,omitempty"`
-	ClientID             string `json:"client_id"`
-	RedirectURI          string `json:"redirect_uri"`
-	Scope                string `json:"scope"`
-	Resource             string `json:"resource,omitempty"`
-	CodeChallenge        string `json:"code_challenge,omitempty"`
-	CodeChallengeMethod  string `json:"code_challenge_method,omitempty"`
-	ProviderState        string `json:"provider_state"`
-	ProviderCodeVerifier string `json:"provider_code_verifier,omitempty"`
-	Nonce                string `json:"nonce,omitempty"`
-	IdentityOnly         bool   `json:"identity_only,omitempty"`
-	CreatedAt            int64  `json:"created_at"`
-	ExpiresAt            int64  `json:"expires_at"`
+	StateID              string   `json:"state_id"`
+	OriginalClientState  string   `json:"original_client_state,omitempty"`
+	ClientID             string   `json:"client_id"`
+	RedirectURI          string   `json:"redirect_uri"`
+	Scope                string   `json:"scope"`
+	Resource             string   `json:"resource,omitempty"`
+	CodeChallenge        string   `json:"code_challenge,omitempty"`
+	CodeChallengeMethod  string   `json:"code_challenge_method,omitempty"`
+	ProviderState        string   `json:"provider_state"`
+	ProviderCodeVerifier string   `json:"provider_code_verifier,omitempty"`
+	BrowserBinding       string   `json:"browser_binding,omitempty"`
+	ConsentApproved      bool     `json:"consent_approved,omitempty"`
+	UpstreamScopes       []string `json:"upstream_scopes,omitempty"`
+	Prompt               string   `json:"prompt,omitempty"`
+	Nonce                string   `json:"nonce,omitempty"`
+	IdentityOnly         bool     `json:"identity_only,omitempty"`
+	CreatedAt            int64    `json:"created_at"`
+	ExpiresAt            int64    `json:"expires_at"`
 }
 
 func toAuthorizationStateJSON(state *storage.AuthorizationState) *authorizationStateJSON {
@@ -1115,6 +1119,10 @@ func toAuthorizationStateJSON(state *storage.AuthorizationState) *authorizationS
 		CodeChallengeMethod:  state.CodeChallengeMethod,
 		ProviderState:        state.ProviderState,
 		ProviderCodeVerifier: state.ProviderCodeVerifier,
+		BrowserBinding:       state.BrowserBinding,
+		ConsentApproved:      state.ConsentApproved,
+		UpstreamScopes:       state.UpstreamScopes,
+		Prompt:               state.Prompt,
 		Nonce:                state.Nonce,
 		IdentityOnly:         state.IdentityOnly,
 		CreatedAt:            state.CreatedAt.Unix(),
@@ -1137,6 +1145,10 @@ func fromAuthorizationStateJSON(j *authorizationStateJSON) *storage.Authorizatio
 		CodeChallengeMethod:  j.CodeChallengeMethod,
 		ProviderState:        j.ProviderState,
 		ProviderCodeVerifier: j.ProviderCodeVerifier,
+		BrowserBinding:       j.BrowserBinding,
+		ConsentApproved:      j.ConsentApproved,
+		UpstreamScopes:       j.UpstreamScopes,
+		Prompt:               j.Prompt,
 		Nonce:                j.Nonce,
 		IdentityOnly:         j.IdentityOnly,
 		CreatedAt:            time.Unix(j.CreatedAt, 0),

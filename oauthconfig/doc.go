@@ -32,7 +32,7 @@
 //   - OAUTH_TRUSTED_CLIENTS                   — JSON array of {"client_id", "redirect_uris"}
 //     objects; populates server.Config.TrustedClients (clients that skip the consent page)
 //   - OAUTH_CONSENT_COOKIE_KEY                — 32-byte AES-GCM key for the consent cookies,
-//     base64 or hex; the same on every replica (see server.Config.ConsentCookieKey)
+//     base64 or hex; optional override of the store's automatic issuer-specific key
 //
 // Defaults are not applied in this package. [FromEnv] only populates the
 // fields it reads; server.New runs applyDefaults afterwards and is the single

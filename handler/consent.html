@@ -15,6 +15,7 @@
         to access <span class="host">{{.IssuerHost}}</span> as you?
     </h1>
     {{if .ClientName}}<p class="muted">It calls itself “{{.ClientName}}”. The client chooses this name itself.</p>{{end}}
+    {{if .Account}}<p>Signed in as <strong>{{.Account}}</strong>. This account has not approved this client.</p>{{end}}
 
     <section>
         <h2>Your sign-in will be sent to</h2>
@@ -31,11 +32,13 @@
 
     {{if or .Scopes .Resource}}
     <section>
-        <h2>Access requested</h2>
+        <h2>Permissions requested from your identity provider</h2>
         {{if .Scopes}}<ul>{{range .Scopes}}<li><code>{{.}}</code></li>{{end}}</ul>{{end}}
         {{if .Resource}}<p class="muted">For <code>{{.Resource}}</code></p>{{end}}
     </section>
     {{end}}
+
+    {{if .MCPScopes}}<section><h2>MCP access requested</h2><ul>{{range .MCPScopes}}<li><code>{{.}}</code></li>{{end}}</ul></section>{{end}}
 
     <p>Allow only if you started this sign-in and recognise <strong>{{.RedirectHost}}</strong>.</p>
 

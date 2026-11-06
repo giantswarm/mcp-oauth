@@ -921,13 +921,11 @@ type Config struct {
 	// Default: empty (every client gets the consent page)
 	TrustedClients []TrustedClient
 
-	// ConsentCookieKey is the 32-byte AES-256-GCM key that encrypts the consent
-	// cookies: the pending authorization request between the consent page and
-	// the person's answer, and the remembered approvals. Every replica behind
-	// one issuer needs the same key, otherwise an answer that reaches another
-	// replica is refused.
-	//
-	// Default: a random key per process, with a warning at startup.
+	// ConsentCookieKey optionally overrides the 32-byte AES-256-GCM key for
+	// remembered grants and pending consent payloads. Replicas of one issuer
+	// must use the same key. The memory and Valkey stores derive it from their
+	// encryption key with HKDF; without encryption they keep a generated key
+	// in the shared store. No additional configuration is required.
 	ConsentCookieKey []byte
 
 	// ClientMetadataFetchTimeout is the timeout for fetching client metadata from URL-based client_ids

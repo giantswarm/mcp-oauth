@@ -238,21 +238,28 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	}
 
 	// SECURITY: Create a deep copy of scopes to prevent potential race conditions
-	scopesToUse := providers.CopyScopes(scopes, p.Scopes)
-	if authOpts != nil && authOpts.IdentityOnly {
-		// The public profile identifies the user. ValidateToken still checks
-		// organization membership, which /user/orgs only reports in full
-		// with read:org.
-		scopesToUse = nil
-		if len(p.allowedOrganizations) > 0 {
-			scopesToUse = []string{"read:org"}
-		}
-	}
+	scopesToUse := p.AuthorizationScopes(scopes, authOpts)
 
 	// Create a config with the determined scopes
 	config := *p.Config
 	config.Scopes = scopesToUse
+	if authOpts != nil && authOpts.ResolvedScopes != nil {
+		opts = append(opts, oauth2.SetAuthURLParam("scope", strings.Join(scopesToUse, " ")))
+	}
 	return config.AuthCodeURL(state, opts...)
+}
+
+func (p *Provider) AuthorizationScopes(scopes []string, opts *providers.AuthorizationURLOptions) []string {
+	if opts != nil && opts.IdentityOnly {
+		if len(p.allowedOrganizations) > 0 {
+			return []string{"read:org"}
+		}
+		return []string{}
+	}
+	if opts != nil && opts.ResolvedScopes != nil {
+		return providers.CloneScopes(opts.ResolvedScopes)
+	}
+	return providers.CopyScopes(scopes, p.Scopes)
 }
 
 // ExchangeCode exchanges an authorization code for tokens with optional PKCE verification.

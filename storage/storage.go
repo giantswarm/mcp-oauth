@@ -138,6 +138,7 @@ const AuthorizationCodeRetention = 10 * time.Minute
 // security issues like token reuse) and transient errors (which should not).
 func IsNotFoundError(err error) bool {
 	return errors.Is(err, ErrTokenNotFound) ||
+		errors.Is(err, ErrPendingConsentNotFound) ||
 		errors.Is(err, ErrClientNotFound) ||
 		errors.Is(err, ErrAuthorizationCodeNotFound) ||
 		errors.Is(err, ErrAuthorizationStateNotFound) ||
@@ -655,6 +656,10 @@ type AuthorizationState struct {
 	ProviderState string
 	// Server-to-Provider PKCE verifier (OAuth 2.1)
 	ProviderCodeVerifier string
+	BrowserBinding       string
+	ConsentApproved      bool
+	UpstreamScopes       []string
+	Prompt               string
 	// Nonce is the OIDC nonce forwarded to the upstream IdP. Empty for non-OIDC flows.
 	Nonce string
 	// IdentityOnly marks a flow started by Server.StartIdentityFlow: its

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -9,12 +10,14 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
+	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/server"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
@@ -34,14 +37,19 @@ type consentFlow struct {
 
 func newConsentFlow(t *testing.T, configure func(*server.Config), redirectURIs ...string) *consentFlow {
 	t.Helper()
+	return newConsentFlowWithProvider(t, mock.NewProvider(), configure, redirectURIs...)
+}
+
+func newConsentFlowWithProvider(t *testing.T, provider providers.Provider, configure func(*server.Config), redirectURIs ...string) *consentFlow {
+	t.Helper()
 	store := memory.New()
-	t.Cleanup(store.Stop)
 	cfg := &server.Config{Issuer: testIssuer, DisableNonceEchoRequirement: true}
 	if configure != nil {
 		configure(cfg)
 	}
-	srv, err := server.New(mock.NewProvider(), store, store, store, cfg, nil)
+	srv, err := server.New(provider, store, store, store, cfg, nil)
 	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, srv.Shutdown(context.WithoutCancel(t.Context()))) })
 	h := New(srv, nil)
 
 	if len(redirectURIs) == 0 {
@@ -74,7 +82,11 @@ func (f *consentFlow) do(req *http.Request) *httptest.ResponseRecorder {
 		req.AddCookie(c)
 	}
 	w := httptest.NewRecorder()
-	f.h.ServeAuthorization(w, req)
+	if req.URL.Path == "/oauth/callback" {
+		f.h.ServeCallback(w, req)
+	} else {
+		f.h.ServeAuthorization(w, req)
+	}
 	for _, c := range w.Result().Cookies() {
 		if c.MaxAge < 0 {
 			delete(f.jar, c.Name)
@@ -83,6 +95,13 @@ func (f *consentFlow) do(req *http.Request) *httptest.ResponseRecorder {
 		f.jar[c.Name] = c
 	}
 	return w
+}
+
+func (f *consentFlow) callback(redirect *httptest.ResponseRecorder) *httptest.ResponseRecorder {
+	f.t.Helper()
+	provider, err := url.Parse(redirect.Header().Get("Location"))
+	require.NoError(f.t, err)
+	return f.do(httptest.NewRequest(http.MethodGet, "/oauth/callback?state="+provider.Query().Get("state")+"&code=provider-code", nil))
 }
 
 func (f *consentFlow) get(target string) *httptest.ResponseRecorder {
@@ -170,10 +189,7 @@ func TestConsent_ApproveThenCodeAndRemembered(t *testing.T) {
 	approved := f.post(consentID(t, page), consentDecisionApprove, http.Header{"Sec-Fetch-Site": {"same-origin"}})
 	requireProviderRedirect(t, approved)
 
-	authState, err := f.store.GetAuthorizationState(t.Context(), state)
-	require.NoError(t, err)
-	cb := httptest.NewRecorder()
-	f.h.ServeCallback(cb, httptest.NewRequest(http.MethodGet, "/oauth/callback?state="+authState.ProviderState+"&code=provider-code", nil))
+	cb := f.callback(approved)
 	require.Equal(t, http.StatusFound, cb.Code, "body: %s", cb.Body.String())
 	location, err := url.Parse(cb.Header().Get("Location"))
 	require.NoError(t, err)
@@ -214,7 +230,9 @@ func TestConsent_LoopbackPortDoesNotAskAgainAndWarns(t *testing.T) {
 	page := f.get(f.authorizeTarget("http://127.0.0.1:50001/callback", testutil.GenerateRandomString(43), nil))
 	requireConsentPage(t, page)
 	require.Contains(t, page.Body.String(), "This client runs on your computer")
-	requireProviderRedirect(t, f.post(consentID(t, page), consentDecisionApprove, nil))
+	approved := f.post(consentID(t, page), consentDecisionApprove, nil)
+	requireProviderRedirect(t, approved)
+	require.Equal(t, http.StatusFound, f.callback(approved).Code)
 
 	requireProviderRedirect(t, f.get(f.authorizeTarget("http://127.0.0.1:50002/callback", testutil.GenerateRandomString(43), nil)))
 }
@@ -273,20 +291,7 @@ func TestConsent_AnswerRefused(t *testing.T) {
 		{
 			name: "tampered pending cookie",
 			prepare: func(f *consentFlow, id string) (string, http.Header) {
-				f.setCookie(f.h.consent.pendingName(id), tamper(f.jar[f.h.consent.pendingName(id)].Value))
-				return id, nil
-			},
-			wantStatus: http.StatusBadRequest,
-		},
-		{
-			name: "expired pending request",
-			prepare: func(f *consentFlow, id string) (string, http.Header) {
-				var pending pendingConsent
-				require.NoError(f.t, f.h.consent.open(cookieRequest(f.jar), f.h.consent.pendingName(id), &pending))
-				pending.Expiry = time.Now().Add(-time.Second).Unix()
-				value, err := f.h.consent.seal(pending)
-				require.NoError(f.t, err)
-				f.setCookie(f.h.consent.pendingName(id), value)
+				f.setCookie(f.h.consent.pendingName(), tamper(f.jar[f.h.consent.pendingName()].Value))
 				return id, nil
 			},
 			wantStatus: http.StatusBadRequest,
@@ -355,7 +360,9 @@ func TestConsent_PromptNoneNeedsConsent(t *testing.T) {
 	require.Contains(t, w.Body.String(), constants.ErrorCodeConsentRequired)
 
 	page := f.get(f.authorizeTarget(consentTestRedirect, testutil.GenerateRandomString(43), nil))
-	requireProviderRedirect(t, f.post(consentID(t, page), consentDecisionApprove, nil))
+	approved := f.post(consentID(t, page), consentDecisionApprove, nil)
+	requireProviderRedirect(t, approved)
+	require.Equal(t, http.StatusFound, f.callback(approved).Code)
 	requireProviderRedirect(t, f.get(f.authorizeTarget(consentTestRedirect, testutil.GenerateRandomString(43), url.Values{"prompt": {"none"}})))
 }
 
@@ -394,7 +401,9 @@ func TestConsent_ApprovedCookieIgnoredWhenInvalid(t *testing.T) {
 			f := newConsentFlow(t, nil)
 			target := f.authorizeTarget(consentTestRedirect, testutil.GenerateRandomString(43), nil)
 			page := f.get(target)
-			requireProviderRedirect(t, f.post(consentID(t, page), consentDecisionApprove, nil))
+			approved := f.post(consentID(t, page), consentDecisionApprove, nil)
+			requireProviderRedirect(t, approved)
+			require.Equal(t, http.StatusFound, f.callback(approved).Code)
 
 			req, err := f.h.server.PrepareAuthorization(t.Context(), f.client, mustParseURL(t, consentTestRedirect), "openid email", "", "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", "S256", testutil.GenerateRandomString(43), nil)
 			require.NoError(t, err)
@@ -411,7 +420,7 @@ func TestConsent_RememberKeepsNewest(t *testing.T) {
 	jar := map[string]*http.Cookie{}
 	for i := range maxRememberedConsents + 4 {
 		w := httptest.NewRecorder()
-		require.NoError(t, c.remember(w, cookieRequest(jar), strings.Repeat("k", 21)+string(rune('a'+i)), now))
+		require.NoError(t, c.remember(w, cookieRequest(jar), strings.Repeat("k", 21)+string(rune('a'+i)), now, strings.Repeat("s", 43)))
 		for _, set := range w.Result().Cookies() {
 			jar[set.Name] = set
 		}
@@ -494,6 +503,7 @@ func TestConsent_RealHTTPClientWithCookieJar(t *testing.T) {
 			require.NoError(t, err)
 			h := New(srv, nil)
 			mux.HandleFunc("/oauth/authorize", h.ServeAuthorization)
+			mux.HandleFunc("/oauth/callback", h.ServeCallback)
 			client, _, err := srv.RegisterClient(t.Context(), "cli", "public", "none", []string{consentTestRedirect}, nil, "203.0.113.1", 10)
 			require.NoError(t, err)
 
@@ -518,6 +528,12 @@ func TestConsent_RealHTTPClientWithCookieJar(t *testing.T) {
 			require.NoError(t, resp.Body.Close())
 			require.Equal(t, http.StatusFound, resp.StatusCode)
 			require.NotContains(t, resp.Header.Get("Location"), "example.com/callback")
+			provider, err := url.Parse(resp.Header.Get("Location"))
+			require.NoError(t, err)
+			resp, err = httpClient.Get(ts.URL + "/oauth/callback?state=" + provider.Query().Get("state") + "&code=provider-code")
+			require.NoError(t, err)
+			require.NoError(t, resp.Body.Close())
+			require.Equal(t, http.StatusFound, resp.StatusCode)
 
 			resp, err = httpClient.Get(ts.URL + f.authorizeTarget(consentTestRedirect, testutil.GenerateRandomString(43), nil))
 			require.NoError(t, err)
@@ -525,4 +541,14 @@ func TestConsent_RealHTTPClientWithCookieJar(t *testing.T) {
 			require.Equal(t, http.StatusFound, resp.StatusCode, "the approval must be remembered by the jar")
 		})
 	}
+}
+
+func TestConsent_PendingExpires(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		flow := newConsentFlow(t, nil)
+		page := flow.get(flow.authorizeTarget(consentTestRedirect, testutil.GenerateRandomString(43), nil))
+		id := consentID(t, page)
+		time.Sleep(consentPendingTTL + time.Second)
+		require.Equal(t, http.StatusBadRequest, flow.post(id, consentDecisionApprove, nil).Code)
+	})
 }

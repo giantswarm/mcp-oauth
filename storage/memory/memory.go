@@ -83,8 +83,10 @@ type Store struct {
 	clientsPerIP map[string]int // IP address -> client count (for DoS protection)
 
 	// Flow storage
-	authStates map[string]*storage.AuthorizationState
-	authCodes  map[string]*storage.AuthorizationCode
+	authStates        map[string]*storage.AuthorizationState
+	authCodes         map[string]*storage.AuthorizationCode
+	pendingConsents   map[string]pendingConsent
+	consentCookieKeys map[string][]byte
 
 	// Security
 	encryptor *security.Encryptor // Token encryption at rest (optional)
@@ -1296,6 +1298,7 @@ func (s *Store) cleanup() {
 
 	cleaned := s.cleanupExpiredTokens()
 	cleaned += s.cleanupExpiredAuthStates()
+	cleaned += s.cleanupExpiredConsents()
 	cleaned += s.cleanupExpiredAuthCodes()
 	cleaned += s.cleanupExpiredRefreshTokens()
 	cleaned += s.cleanupRevokedFamilies()

@@ -186,17 +186,6 @@ func New(
 		return nil, fmt.Errorf("invalid server config: %w", err)
 	}
 
-	if len(config.ConsentCookieKey) == 0 {
-		key, err := security.GenerateKey()
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate consent cookie key: %w", err)
-		}
-		config.ConsentCookieKey = key
-		logger.Warn("ConsentCookieKey is not set: using a random key for this process",
-			"risk", "with more than one replica, a consent answer that reaches another replica is refused, and approvals are forgotten on restart",
-			"fix", "set ConsentCookieKey to the same 32-byte key on every replica")
-	}
-
 	if err := srv.validateIntrospectionAllowlistRegistered(cleanupCtx); err != nil {
 		return nil, fmt.Errorf("invalid server config: %w", err)
 	}
@@ -213,6 +202,10 @@ func New(
 
 	for _, opt := range opts {
 		opt(srv)
+	}
+	if err := srv.initializeConsentCookieKey(cleanupCtx); err != nil {
+		cleanupCancel()
+		return nil, err
 	}
 
 	srv.registerSelfIssuedSubjectValidator()

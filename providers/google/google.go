@@ -161,11 +161,18 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	// Drop scopes Google would reject (e.g. Dex audience scopes) while
 	// preserving mandatory openid scopes via CopyScopes.
 	config := *p.Config
-	config.Scopes = providers.FilterScopes(scopes, p.Scopes, isGoogleSupportedScope)
-	if identityOnly {
-		config.Scopes = []string{scopeOpenID}
-	}
+	config.Scopes = p.AuthorizationScopes(scopes, authOpts)
 	return config.AuthCodeURL(state, opts...)
+}
+
+func (p *Provider) AuthorizationScopes(scopes []string, opts *providers.AuthorizationURLOptions) []string {
+	if opts != nil && opts.IdentityOnly {
+		return []string{scopeOpenID}
+	}
+	if opts != nil && opts.ResolvedScopes != nil {
+		return providers.CloneScopes(opts.ResolvedScopes)
+	}
+	return providers.FilterScopes(scopes, p.Scopes, isGoogleSupportedScope)
 }
 
 // ExchangeCode exchanges an authorization code for tokens with optional PKCE verification.

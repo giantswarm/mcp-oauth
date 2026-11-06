@@ -16,6 +16,9 @@ import (
 //
 // See: https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest
 type AuthorizationURLOptions struct {
+	// ResolvedScopes is the upstream permission set already shown for consent.
+	// Nil asks the provider to resolve its configured defaults.
+	ResolvedScopes []string
 	// Prompt controls the authentication UX behavior.
 	// Common values:
 	//   - "none": Silent authentication - no UI displayed. Returns error if login/consent required.
@@ -66,6 +69,11 @@ type AuthorizationURLOptions struct {
 	// Providers without connectors ignore it. The caller validates it
 	// (oidc.ValidateConnectorID), as Server.StartIdentityFlow does.
 	ConnectorID string
+}
+
+// AuthorizationScopeResolver exposes the exact scope set a provider requests.
+type AuthorizationScopeResolver interface {
+	AuthorizationScopes(scopes []string, opts *AuthorizationURLOptions) []string
 }
 
 // Provider defines the interface for OAuth identity providers.
