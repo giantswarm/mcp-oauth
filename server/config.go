@@ -837,6 +837,11 @@ type Config struct {
 	// Default: nil (no client may request any audience).
 	TokenExchangeClientAudiences map[string][]string
 
+	// TokenExchangeClientSubjectPolicies restricts validated broker subjects per
+	// authenticated client. A configured client must match an issuer/audience
+	// pair; an absent client keeps the shared trusted-issuer rules.
+	TokenExchangeClientSubjectPolicies map[string][]BrokerSubjectPolicy
+
 	// TokenExchangeAllowedResources caps the RFC 8707 resource values that the
 	// self-issued RFC 8693 flow (Server.SelfIssuedExchange) will mint a token
 	// for. When non-empty, a request whose resource is not in this list is
@@ -1220,6 +1225,9 @@ func (c *Config) Validate() error {
 	}
 
 	if err := c.validateIntrospectionResourceServers(); err != nil {
+		return err
+	}
+	if err := c.validateBrokerSubjectPolicies(); err != nil {
 		return err
 	}
 

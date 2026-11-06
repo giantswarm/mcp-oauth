@@ -11,10 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/server"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
@@ -113,6 +115,44 @@ func happyDownstreamResult() *server.ExchangerResult {
 		AccessToken: "downstream-mc-token",
 		ExpiresAt:   time.Now().Add(15 * time.Minute),
 		Scope:       "openid groups",
+	}
+}
+
+func TestHandleBrokeredTokenExchange_ClientSubjectPolicy(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		issuer   string
+		audience string
+		status   int
+	}{
+		{name: "intended subject", issuer: "https://dex.example.com", audience: "agent-manager", status: http.StatusOK},
+		{name: "another recipient", issuer: "https://dex.example.com", audience: "model-manager", status: http.StatusBadRequest},
+		{name: "another identity issuer", issuer: "https://other.example.com", audience: "agent-manager", status: http.StatusBadRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			exchanger := &stubExchanger{result: happyDownstreamResult()}
+			harness := setupBrokeredExchangeHandler(t, exchanger, []string{"gaggle"}, "confidential")
+			harness.srv.Config.TokenExchangeClientSubjectPolicies = map[string][]server.BrokerSubjectPolicy{
+				harness.clientID: {{Issuer: "https://dex.example.com", Audiences: []string{"agent-manager"}}},
+			}
+			harness.validator.identity.Issuer = test.issuer
+			harness.validator.identity.Claims = &oidc.IDTokenClaims{Claims: jwt.Claims{Issuer: test.issuer, Subject: "same-person", Audience: jwt.Audience{test.audience}}}
+			request := newTokenExchangeRequest(brokeredExchangeForm())
+			request.SetBasicAuth(harness.clientID, harness.clientSecret)
+			response := httptest.NewRecorder()
+			harness.handler.ServeToken(response, request)
+			require.Equal(t, test.status, response.Code, response.Body.String())
+			if test.status == http.StatusOK {
+				require.NotNil(t, exchanger.gotReq)
+				return
+			}
+			var body map[string]any
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+			require.Equal(t, "invalid_grant", body["error"])
+			require.Nil(t, exchanger.gotReq)
+			require.NotContains(t, response.Body.String(), "downstream-mc-token")
+			require.NotContains(t, harness.logs.String(), "subject-id-token")
+		})
 	}
 }
 
