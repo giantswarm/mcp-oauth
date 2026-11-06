@@ -9,7 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/giantswarm/mcp-oauth/oauthconfig"
+	"github.com/giantswarm/mcp-oauth/server"
 )
 
 // validKeyB64 is a 32-byte key encoded as base64, the shape
@@ -52,6 +55,9 @@ func setRequired(t *testing.T, issuer string) {
 		"OAUTH_ENCRYPTION_KEY_FILE",
 		"OAUTH_SESSION_ID_HMAC_KEY",
 		"OAUTH_SESSION_ID_HMAC_KEY_FILE",
+		"OAUTH_TRUSTED_CLIENTS",
+		"OAUTH_CONSENT_COOKIE_KEY",
+		"OAUTH_CONSENT_COOKIE_KEY_FILE",
 		"OAUTH_TRUSTED_AUDIENCES",
 		"OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS",
 		"OAUTH_TRUSTED_REDIRECT_SCHEMES",
@@ -511,5 +517,37 @@ func TestFromEnv_EmptyTrustedRedirectSchemesOmitted(t *testing.T) {
 	}
 	if len(cfg.TrustedPublicRegistrationSchemes) != 0 {
 		t.Errorf("TrustedPublicRegistrationSchemes = %v, want empty (whitespace-only entries dropped)", cfg.TrustedPublicRegistrationSchemes)
+	}
+}
+
+func TestFromEnv_Consent(t *testing.T) {
+	setRequired(t, "https://auth.example.com")
+	t.Setenv("OAUTH_TRUSTED_CLIENTS", `[{"client_id":"https://claude.ai/oauth/mcp-oauth-client-metadata","redirect_uris":["https://claude.ai/api/mcp/auth_callback"]}]`)
+	t.Setenv("OAUTH_CONSENT_COOKIE_KEY_FILE", writeSecretFile(t, validKeyB64))
+
+	cfg, err := oauthconfig.FromEnv()
+
+	require.NoError(t, err)
+	require.Equal(t, []server.TrustedClient{{
+		ClientID:     "https://claude.ai/oauth/mcp-oauth-client-metadata",
+		RedirectURIs: []string{"https://claude.ai/api/mcp/auth_callback"},
+	}}, cfg.TrustedClients)
+	require.Equal(t, []byte("0123456789abcdef0123456789abcdef"), cfg.ConsentCookieKey)
+}
+
+func TestFromEnv_ConsentInvalid(t *testing.T) {
+	for name, env := range map[string]map[string]string{
+		"trusted clients not JSON":  {"OAUTH_TRUSTED_CLIENTS": "https://claude.ai/x"},
+		"trusted clients bad field": {"OAUTH_TRUSTED_CLIENTS": `[{"client_id":"a","redirect_uri":"https://x"}]`},
+		"consent key wrong length":  {"OAUTH_CONSENT_COOKIE_KEY": "c2hvcnQ="},
+	} {
+		t.Run(name, func(t *testing.T) {
+			setRequired(t, "https://auth.example.com")
+			for k, v := range env {
+				t.Setenv(k, v)
+			}
+			_, err := oauthconfig.FromEnv()
+			require.Error(t, err)
+		})
 	}
 }

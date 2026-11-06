@@ -12,11 +12,14 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"code.dny.dev/ssrf"
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -96,14 +99,20 @@ func isURLClientID(clientID string) bool {
 	return true
 }
 
-// isPrivateIP checks if an IP address is in a private/internal range
-// Used for SSRF protection per draft-ietf-oauth-client-id-metadata-document-00 Section 6
-// Covers IPv4, IPv6, and IPv4-mapped IPv6 addresses
-//
-// This delegates to the shared helpers.IsPrivateOrInternal for DRY.
-// The utility checks for loopback, link-local, private, and unspecified addresses.
+// metadataFetchGuard refuses every address that is not globally reachable:
+// the IANA special-purpose IPv4 ranges, everything outside the IPv6 global
+// unicast range, and the special-purpose ranges inside it. The port is not
+// restricted: a metadata URL may name any https port of a public host.
+var metadataFetchGuard = ssrf.New(ssrf.WithAnyPort())
+
+// isPrivateIP reports whether ip is an address a metadata fetch must not
+// reach. An IPv4 address in IPv6 form is checked as IPv4.
 func isPrivateIP(ip net.IP) bool {
-	return helpers.IsPrivateOrInternal(ip)
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return true
+	}
+	return metadataFetchGuard.SafeAddr(addr.Unmap()) != nil
 }
 
 // validateAndSanitizeMetadataURL performs SSRF protection checks and returns a sanitized URL
@@ -558,13 +567,7 @@ func hasLocalhostRedirectURIsOnly(redirectURIs []string) bool {
 
 	for _, uri := range redirectURIs {
 		u, err := url.Parse(uri)
-		if err != nil {
-			continue
-		}
-
-		hostname := u.Hostname() // Hostname() strips port and brackets from IPv6
-		// Check if hostname is NOT localhost (including IPv6 loopback)
-		if hostname != localhostHostname && hostname != localhostIPv4Loopback && hostname != localhostIPv6Loopback {
+		if err != nil || !isLoopbackAddress(u.Hostname()) {
 			return false
 		}
 	}

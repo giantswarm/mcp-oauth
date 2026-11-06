@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- `/oauth/authorize` shows a consent page before the upstream identity provider for every client that is not in `server.Config.TrustedClients` for the requested redirect URI: Client ID Metadata Document clients and dynamically registered clients, including those registered with the registration access token. The page names the client's host (or the redirect host) and its self-declared `client_name`, the redirect URI with its host, the scopes and the resource, and warns when every redirect URI of the client is a loopback address. No authorization state is stored and no upstream flow starts until the person approves with a same-origin POST. An approval is remembered for 30 days in an encrypted browser cookie, per client, registered redirect URI (loopback port ignored), scope set and resource; `prompt=consent` asks again.
+- For a client that is not trusted, `/oauth/authorize` errors and a denial are no longer redirected to the client's redirect URI: errors are answered with JSON 400, and the denial page links to the redirect URI with `error=access_denied`, `state` and `iss`. `prompt=none` without a remembered approval is answered with `consent_required` (400).
+- The Client ID Metadata Document fetch refuses every address that is not globally reachable (`code.dny.dev/ssrf`): the IANA special-purpose IPv4 ranges, among them `100.64.0.0/10`, `198.18.0.0/15` and the documentation ranges, and every IPv6 address outside `2000::/3` or in a special-purpose range inside it, at validation and connection time. An IPv4 address in IPv6 form is checked as IPv4. `AllowPrivateIPClientMetadata` and `AllowPrivateIPClientMetadataHosts` keep lifting the guard.
+- `/oauth/authorize` answers a client that cannot be found or whose metadata document cannot be fetched with `invalid_client` and the fixed description `client could not be verified`, and a redirect URI that is not registered with `redirect_uri is not registered for this client`. The cause is logged only.
+
+### Added
+
+- `server.Config.TrustedClients` (`server.TrustedClient`, `OAUTH_TRUSTED_CLIENTS` as a JSON array): clients whose requests to the listed redirect URIs skip the consent page. Entries are exact; a redirect URI must be https on a non-loopback host, and a metadata document URL must have a path. `server.New` refuses an invalid entry.
+- `server.Config.ConsentCookieKey` (`OAUTH_CONSENT_COOKIE_KEY`, `_FILE`): the 32-byte AES-256-GCM key of the consent cookies, the same on every replica. Unset, `server.New` generates one per process and logs a warning.
+- `Server.PrepareAuthorization`, `Server.RequiresConsent` and `Server.BeginAuthorization` (`server.AuthorizationRequest`): the checks of `StartAuthorizationFlow` without side effects, the trust decision, and the start of the upstream flow. `StartAuthorizationFlow` is unchanged and does not ask for consent.
+- `server.ErrClientNotVerified`, wrapped by `ValidateRedirectURIForAuthorization` when the client cannot be found or its metadata document cannot be fetched and validated.
+- `security.EventClientConsentShown`, `EventClientConsentApproved` and `EventClientConsentDenied` audit events, with the client ID, redirect URI, scope, resource and `loopback_only`.
+- `security.SetConsentPageSecurityHeaders`.
+
+### Changed
+
+- **Breaking**: `handler.ServeAuthorization` answers a GET from a client that is not trusted, and not yet approved in the browser, with the consent page (200) instead of a redirect, and accepts the page's POST. A client or test that follows `/oauth/authorize` without a browser must submit the page, or the client must be listed in `TrustedClients`. A gateway in front of `/oauth/authorize` must let POST through.
+- The consent cookies are `__Host-` prefixed and `Secure`, except for a plain-http issuer, which gets unprefixed cookies without `Secure`.
+
 ### Added
 
 - `server.Config.AllowPrivateIPRedirectURIHosts` lists the hostnames whose redirect URIs may resolve to RFC 1918 private IPv4 or RFC 4193 IPv6 unique-local addresses, at registration and at authorization, while every other host keeps the DNS rebinding guard; the redirect-URI counterpart of `AllowPrivateIPClientMetadataHosts`. Entries match the hostname exactly. A literal IP redirect URI is not matched, and link-local addresses stay behind `AllowLinkLocalRedirectURIs`. Setting it logs a startup security warning. `AllowPrivateIPRedirectURIs` still lifts the guard for every host ([#669](https://github.com/giantswarm/mcp-oauth/issues/669)).

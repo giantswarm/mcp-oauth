@@ -100,6 +100,7 @@ func registerMinimalClient(t *testing.T, h *Handler) string {
 		10,
 	)
 	require.NoError(t, err)
+	trustClient(h.server, client.ClientID)
 	return client.ClientID
 }
 

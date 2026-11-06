@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -54,6 +55,9 @@ type Handler struct {
 	server *server.Server
 	logger *slog.Logger
 	tracer trace.Tracer // OpenTelemetry tracer for HTTP layer
+
+	consent     *consentCookies
+	crossOrigin *http.CrossOriginProtection
 }
 
 // NewHandler creates a new HTTP handler
@@ -68,6 +72,13 @@ func New(server *server.Server, logger *slog.Logger) *Handler {
 	}
 
 	h.tracer = server.Instrumentation.Tracer("http")
+	h.consent = newConsentCookies(server.Config)
+	h.crossOrigin = http.NewCrossOriginProtection()
+	if issuer, err := url.Parse(server.Config.Issuer); err == nil && issuer.Host != "" {
+		if err := h.crossOrigin.AddTrustedOrigin(issuer.Scheme + "://" + issuer.Host); err != nil {
+			logger.Warn("Issuer origin not added to the consent form's trusted origins", "error", err)
+		}
+	}
 
 	return h
 }

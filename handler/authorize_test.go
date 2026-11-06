@@ -72,6 +72,7 @@ func TestHandler_ServeAuthorization_CompleteFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterClient() error = %v", err)
 	}
+	trustClient(handler.server, client.ClientID)
 
 	// Generate valid PKCE challenge
 	verifier := testutil.GenerateRandomString(50)
@@ -334,6 +335,7 @@ func TestHandler_ServeAuthorization_OIDCParameterForwarding(t *testing.T) {
 			if err != nil {
 				t.Fatalf("RegisterClient() error = %v", err)
 			}
+			trustClient(srv, client.ClientID)
 
 			// Generate valid PKCE challenge
 			verifier := testutil.GenerateRandomString(50)
@@ -811,6 +813,7 @@ func TestHandler_ServeAuthorization_StateLength(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterClient() error = %v", err)
 	}
+	trustClient(handler.server, client.ClientID)
 
 	tests := []struct {
 		name           string
@@ -933,6 +936,7 @@ func TestHandler_ServeAuthorization_ShortStateWithAllowNoState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterClient() error = %v", err)
 	}
+	trustClient(handler.server, client.ClientID)
 
 	tests := []struct {
 		name       string
@@ -990,6 +994,7 @@ func TestHandler_ServeAuthorization_NoResponseType_Rejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterClient() error = %v", err)
 	}
+	trustClient(handler.server, client.ClientID)
 
 	validState := testutil.GenerateRandomString(43)
 
@@ -1043,6 +1048,7 @@ func TestHandler_ServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *tes
 	if err != nil {
 		t.Fatalf("RegisterClient() error = %v", err)
 	}
+	trustClient(handler.server, client.ClientID)
 
 	tests := []struct {
 		name      string

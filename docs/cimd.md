@@ -214,7 +214,9 @@ Redirect URIs follow OAuth 2.1 security requirements:
 
 5. **Server caches metadata** for future requests (respecting TTL and Cache-Control)
 
-6. **OAuth flow continues** as normal (consent screen shows `client_name`)
+6. **Server asks the person for consent** unless the client is in `TrustedClients` for this redirect URI (see [Consent](#consent))
+
+7. **OAuth flow continues** with the upstream identity provider
 
 ## Security
 
@@ -226,13 +228,41 @@ The server implements multiple layers of SSRF (Server-Side Request Forgery) prot
 
 1. **HTTPS Only**: Only HTTPS URLs are accepted as client IDs
 2. **DNS Validation at Connection Time**: IP addresses are validated when connecting, preventing DNS rebinding attacks
-3. **Blocked IP Ranges**:
-   - Loopback addresses (`127.0.0.0/8`, `::1`)
-   - Private networks (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`)
-   - Link-local addresses (`169.254.0.0/16`, `fe80::/10`)
-   - Cloud metadata services (e.g., `169.254.169.254`)
+3. **Only globally reachable addresses** ([`code.dny.dev/ssrf`](https://pkg.go.dev/code.dny.dev/ssrf)):
+   - Every IANA special-purpose IPv4 range: loopback, private, link-local (cloud metadata), shared address space (`100.64.0.0/10`), benchmarking, documentation, multicast and reserved
+   - IPv6 only inside `2000::/3`, without the special-purpose ranges in it (6to4, Teredo, documentation)
+   - An IPv4 address in IPv6 form is checked as IPv4
+   - `AllowPrivateIPClientMetadata` (every host) and `AllowPrivateIPClientMetadataHosts` (listed hostnames) lift the guard
 
 4. **No Redirects**: HTTP redirects are not followed
+
+### Consent
+
+A Client ID Metadata Document only proves that its URL serves it: anyone can publish one that lists their own redirect URI. Before the upstream identity provider, `/oauth/authorize` therefore shows a consent page for every client that is not trusted, the same page dynamically registered clients get. It shows:
+
+- the host of the `client_id` URL, and the `client_name` the document declares, labelled as the client's own claim;
+- where the sign-in will be sent: the redirect URI, its host in large type;
+- the scopes and the resource;
+- a warning when every redirect URI is a loopback address, since any program on the computer can then claim to be the client.
+
+The person answers with a same-origin POST. Nothing is stored, and no upstream flow starts, before an approval. An approval is remembered in the browser for 30 days, per client, registered redirect URI (the loopback port is ignored), scope set and resource. The cookies are encrypted with `ConsentCookieKey`; set the same key on every replica.
+
+A denial never redirects the browser: the page links back to the client with `error=access_denied`. For a client that is not trusted, request errors are answered with JSON 400 instead of a redirect, and `prompt=none` without an approval gets `consent_required`.
+
+Operators list the clients they know with their exact redirect URIs:
+
+```go
+config := &server.Config{
+    EnableClientIDMetadataDocuments: true,
+    TrustedClients: []server.TrustedClient{{
+        ClientID:     "https://claude.ai/oauth/mcp-oauth-client-metadata",
+        RedirectURIs: []string{"https://claude.ai/api/mcp/auth_callback"},
+    }},
+    ConsentCookieKey: consentKey, // 32 bytes, shared by all replicas
+}
+```
+
+A trusted entry covers only the redirect URIs it lists, so a change to the client's document cannot extend it. Loopback redirect URIs cannot be listed: native apps always see the page, once per browser per 30 days.
 
 ### Client Identity Validation
 

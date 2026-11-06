@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -313,15 +314,30 @@ func (h *Handler) buildInterstitialData(redirectURL, appName string, branding *s
 	return data
 }
 
-// ServeAuthorization handles OAuth authorization requests
+// ServeAuthorization handles OAuth authorization requests (GET) and the
+// person's answer to the consent page (POST).
+//
+// A GET from a client that is not trusted for its redirect URI, and that the
+// person has not approved before, gets the consent page instead of a redirect
+// to the upstream identity provider. Errors for such a client are answered
+// directly instead of being redirected to its redirect URI.
 func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 
 	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.authorization")
 	defer endSpan()
 
-	if r.Method != http.MethodGet {
-		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusMethodNotAllowed, startTime)
+	switch r.Method {
+	case http.MethodGet:
+	case http.MethodPost:
+		if _, ok := h.gateIPRateLimit(w, r, span, endpointAuthorize, http.MethodPost, startTime); !ok {
+			return
+		}
+		h.serveConsentDecision(w, r, span, startTime)
+		return
+	default:
+		h.recordHTTPMetrics(r.Context(), endpointAuthorize, r.Method, http.StatusMethodNotAllowed, startTime)
+		w.Header().Set("Allow", "GET, POST")
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -364,12 +380,19 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	// returned is the redirect target.
 	canonicalRedirectURI, err := h.server.ValidateRedirectURIForAuthorization(r.Context(), clientID, redirectURI)
 	if err != nil {
+		// The cause stays in the log: it can describe the network the
+		// server fetched a client metadata document from.
 		h.logger.Info("Authorization request rejected: invalid client or redirect_uri", "client_id", clientID, paramError, err)
 		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "invalid client or redirect_uri")
-		h.writeError(w, constants.ErrorCodeInvalidRequest, err.Error(), http.StatusBadRequest)
+		if errors.Is(err, server.ErrClientNotVerified) {
+			h.writeError(w, constants.ErrorCodeInvalidClient, "client could not be verified", http.StatusBadRequest)
+			return
+		}
+		h.writeError(w, constants.ErrorCodeInvalidRequest, "redirect_uri is not registered for this client", http.StatusBadRequest)
 		return
 	}
+	redirectErrors := !h.server.RequiresConsent(clientID, canonicalRedirectURI.String())
 
 	// State-too-long is handled inline rather than via checkAuthorizationStateParam:
 	// an oversized state cannot be safely echoed back in a redirect URL, so the
@@ -386,6 +409,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	if rejection := h.checkAuthorizationStateParam(state, clientID); rejection != nil {
 		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
 			redirectURI: canonicalRedirectURI,
+			redirect:    redirectErrors,
 			state:       state,
 			code:        constants.ErrorCodeInvalidRequest,
 			description: rejection.description,
@@ -398,6 +422,7 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		h.logger.Info("Authorization request rejected: unsupported response_type", "response_type", responseType, "client_id", clientID)
 		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
 			redirectURI: canonicalRedirectURI,
+			redirect:    redirectErrors,
 			state:       state,
 			code:        constants.ErrorCodeUnsupportedResponseType,
 			description: fmt.Sprintf("response_type must be one of [%s]", strings.Join(oauth.DefaultResponseTypes, ", ")),
@@ -415,12 +440,13 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		attribute.String(instrumentation.AttrScope, scope),
 	)
 
-	authURL, err := h.server.StartAuthorizationFlow(r.Context(), clientID, canonicalRedirectURI, scope, resource, codeChallenge, codeChallengeMethod, state, authOpts)
+	req, err := h.server.PrepareAuthorization(r.Context(), clientID, canonicalRedirectURI, scope, resource, codeChallenge, codeChallengeMethod, state, authOpts)
 	if err != nil {
 		h.logger.Error("Failed to start authorization flow", paramError, err)
 		instrumentation.RecordError(span, err)
 		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
 			redirectURI: canonicalRedirectURI,
+			redirect:    redirectErrors,
 			state:       state,
 			code:        constants.ErrorCodeServerError,
 			description: "Failed to start authorization flow",
@@ -429,8 +455,45 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.consentNeeded(r, req) {
+		if promptIncludes(req, "none") {
+			h.failRequest(w, r, span, endpointAuthorize, http.MethodGet, http.StatusBadRequest, constants.ErrorCodeConsentRequired, "this client needs your consent; sign in without prompt=none", startTime)
+			return
+		}
+		h.showConsentPage(w, r, span, startTime, req)
+		return
+	}
+
+	h.redirectToProvider(w, r, span, startTime, http.MethodGet, req, redirectErrors)
+}
+
+// redirectToProvider starts the upstream flow for req and redirects the
+// browser to the upstream identity provider. redirectErrors selects whether a
+// failure is redirected to the client's redirect URI.
+func (h *Handler) redirectToProvider(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, method string, req *server.AuthorizationRequest, redirectErrors bool) {
+	redirectURI, _ := url.Parse(req.RedirectURI)
+	fail := func(spanError string) {
+		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
+			method:      method,
+			redirectURI: redirectURI,
+			redirect:    redirectErrors,
+			state:       req.State,
+			code:        constants.ErrorCodeServerError,
+			description: "Failed to start authorization flow",
+			spanError:   spanError,
+		})
+	}
+
+	authURL, err := h.server.BeginAuthorization(r.Context(), req)
+	if err != nil {
+		h.logger.Error("Failed to start authorization flow", paramError, err)
+		instrumentation.RecordError(span, err)
+		fail("authorization flow failed")
+		return
+	}
+
 	// Record authorization started metric
-	h.recordAuthorizationStarted(r.Context(), clientID)
+	h.recordAuthorizationStarted(r.Context(), req.ClientID)
 
 	// Parse and validate scheme before redirecting. authURL is built by the
 	// configured provider's AuthorizationURL(); the parse + scheme check is
@@ -438,17 +501,11 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	parsedAuthURL, err := url.Parse(authURL)
 	if err != nil || (parsedAuthURL.Scheme != oauth.SchemeHTTPS && parsedAuthURL.Scheme != oauth.SchemeHTTP) {
 		h.logger.Error("Provider returned invalid authorization URL", paramError, err)
-		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
-			redirectURI: canonicalRedirectURI,
-			state:       state,
-			code:        constants.ErrorCodeServerError,
-			description: "Failed to start authorization flow",
-			spanError:   "invalid authorization URL",
-		})
+		fail("invalid authorization URL")
 		return
 	}
 
-	h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusFound, startTime)
+	h.recordHTTPMetrics(r.Context(), endpointAuthorize, method, http.StatusFound, startTime)
 	instrumentation.SetSpanSuccess(span)
 
 	// #nosec G710 -- authURL is built by the configured provider's
@@ -591,7 +648,9 @@ func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 // allowlisted target from ValidateRedirectURIForAuthorization. spanError is
 // the short reason recorded on the tracing span.
 type authorizationError struct {
+	method      string
 	redirectURI *url.URL
+	redirect    bool
 	state       string
 	code        string
 	description string
@@ -599,10 +658,10 @@ type authorizationError struct {
 }
 
 // respondAuthorizationError redirects (302) to redirectURI with
-// error / error_description / state per RFC 6749 §4.1.2.1. When redirectURI
-// is nil or uses a custom scheme admitted by Config.AllowedCustomSchemes
-// (RFC 8252 native apps), it falls back to JSON 400 because the spec only
-// requires redirect for http(s) targets.
+// error / error_description / state per RFC 6749 §4.1.2.1 when e.redirect is
+// set, that is when the client is trusted for that redirect URI. Otherwise,
+// and when redirectURI is nil or uses a custom scheme admitted by
+// Config.AllowedCustomSchemes, it answers with JSON 400.
 func (h *Handler) respondAuthorizationError(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, e authorizationError) {
 	instrumentation.SetSpanError(span, e.spanError)
 	instrumentation.SetSpanAttributes(
@@ -610,9 +669,13 @@ func (h *Handler) respondAuthorizationError(w http.ResponseWriter, r *http.Reque
 		attribute.String(instrumentation.AttrError, e.code),
 		attribute.String(instrumentation.AttrErrorDescription, e.description),
 	)
+	method := e.method
+	if method == "" {
+		method = http.MethodGet
+	}
 
-	if e.redirectURI == nil || (e.redirectURI.Scheme != oauth.SchemeHTTPS && e.redirectURI.Scheme != oauth.SchemeHTTP) {
-		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusBadRequest, startTime)
+	if !e.redirect || e.redirectURI == nil || (e.redirectURI.Scheme != oauth.SchemeHTTPS && e.redirectURI.Scheme != oauth.SchemeHTTP) {
+		h.recordHTTPMetrics(r.Context(), endpointAuthorize, method, http.StatusBadRequest, startTime)
 		h.writeError(w, e.code, e.description, http.StatusBadRequest)
 		return
 	}
@@ -626,7 +689,7 @@ func (h *Handler) respondAuthorizationError(w http.ResponseWriter, r *http.Reque
 	}
 	redirect.RawQuery = q.Encode()
 
-	h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusFound, startTime)
+	h.recordHTTPMetrics(r.Context(), endpointAuthorize, method, http.StatusFound, startTime)
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	http.Redirect(w, r, redirect.String(), http.StatusFound)
 }

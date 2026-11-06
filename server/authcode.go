@@ -281,7 +281,7 @@ func (s *Server) ValidateRedirectURIForAuthorization(ctx context.Context, client
 	client, err := s.getOrFetchClient(ctx, clientID)
 	if err != nil {
 		s.logAuthFailure(ctx, "", clientID, ErrorCodeInvalidClient)
-		return nil, fmt.Errorf("%s: %w", ErrorCodeInvalidClient, err)
+		return nil, fmt.Errorf("%s: %w: %w", ErrorCodeInvalidClient, ErrClientNotVerified, err)
 	}
 	canonical, err := s.resolveRegisteredRedirectURI(client, redirectURI)
 	if err != nil {
@@ -295,69 +295,122 @@ func (s *Server) ValidateRedirectURIForAuthorization(ctx context.Context, client
 	return parsed, nil
 }
 
-// StartAuthorizationFlow starts a new OAuth authorization flow.
-// redirectURI must be a canonical, registered URI obtained from [ValidateRedirectURIForAuthorization].
-// This function re-runs the registered-URI check as defense-in-depth but the canonical value is what
-// is stored in the authorization state and used as the redirect target.
+// StartAuthorizationFlow checks an authorization request and starts the
+// upstream flow for it. It does not ask the person for consent: a caller
+// serving a browser uses [Server.PrepareAuthorization],
+// [Server.RequiresConsent] and [Server.BeginAuthorization] instead, as
+// handler.ServeAuthorization does.
+//
+// redirectURI must be a canonical, registered URI obtained from [ValidateRedirectURIForAuthorization];
+// it is checked again and is the redirect target stored in the authorization state.
 // clientState is the state parameter from the client (REQUIRED for CSRF protection).
 // resource is the target resource server identifier per RFC 8707 (optional for backward compatibility).
 // authOpts contains optional OIDC parameters (prompt, login_hint, id_token_hint) for upstream IdP forwarding.
 func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID string, redirectURI *url.URL, scope, resource, codeChallenge, codeChallengeMethod, clientState string, authOpts *providers.AuthorizationURLOptions) (string, error) {
+	req, err := s.PrepareAuthorization(ctx, clientID, redirectURI, scope, resource, codeChallenge, codeChallengeMethod, clientState, authOpts)
+	if err != nil {
+		return "", err
+	}
+	return s.beginAuthorization(ctx, req)
+}
+
+// PrepareAuthorization runs every check of an authorization request and
+// returns it with its scopes resolved. It stores nothing, so a request the
+// person has not approved leaves no state behind. The parameters are those of
+// [Server.StartAuthorizationFlow].
+func (s *Server) PrepareAuthorization(ctx context.Context, clientID string, redirectURI *url.URL, scope, resource, codeChallenge, codeChallengeMethod, clientState string, authOpts *providers.AuthorizationURLOptions) (*AuthorizationRequest, error) {
 	// CRITICAL SECURITY: Validate state parameter from client for CSRF protection
 	if err := s.validateClientStateParameter(clientState); err != nil {
 		s.logAuthFailure(ctx, "", clientID, "invalid_state_parameter")
-		return "", fmt.Errorf("oauth security bcp violation: %w", err)
+		return nil, fmt.Errorf("oauth security bcp violation: %w", err)
 	}
 
-	// Generate server-side state if client didn't provide one
-	trackingState := clientState
-	if trackingState == "" {
-		trackingState = generateRandomToken()
-		s.Logger.Debug("Generated server-side state for client without state parameter", paramClientID, clientID)
-	}
-
-	// Validate PKCE parameters
 	if err := s.validatePKCEForAuthFlow(ctx, clientID, codeChallenge, codeChallengeMethod); err != nil {
-		return "", err
+		return nil, err
 	}
 
-	// Validate client - use getOrFetchClient to support URL-based client IDs (CIMD)
-	client, err := s.getOrFetchClient(ctx, clientID)
+	client, err := s.checkClientRedirectURI(ctx, clientID, redirectURI.String())
 	if err != nil {
-		s.logAuthFailure(ctx, "", clientID, ErrorCodeInvalidClient)
-		return "", fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
-	}
-
-	redirectURIStr := redirectURI.String()
-
-	// Validate redirect URI
-	if err := s.validateRedirectURI(client, redirectURIStr); err != nil {
-		s.logAuthFailure(ctx, "", clientID, ErrorCodeInvalidRedirectURI)
-		return "", fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
-	}
-
-	// SECURITY: Authorization-time redirect URI validation (TOCTOU protection)
-	if err := s.ValidateRedirectURIAtAuthorizationTime(ctx, redirectURIStr); err != nil {
-		s.logAuthFailure(ctx, "", clientID, "redirect_uri_security_violation")
-		s.Logger.Warn("Redirect URI failed authorization-time security validation",
-			paramClientID, clientID, "redirect_uri", sanitizeURIForLogging(redirectURIStr), logKeyError, err.Error())
-		return "", fmt.Errorf("%s: redirect URI failed security validation", ErrorCodeInvalidRequest)
+		return nil, err
 	}
 
 	// Resolve scopes - use provider defaults if client didn't provide any
 	scope = s.resolveScopes(ctx, scope, client)
 
-	// Validate scope length, scopes, and client authorization
 	if err := s.validateScopesForAuthFlow(ctx, clientID, scope, client.Scopes); err != nil {
-		return "", err
+		return nil, err
 	}
 
 	// RFC 8707: Validate resource parameter if provided
 	if resource != "" {
 		if err := s.validateResourceParameter(resource); err != nil {
 			s.logAuthFailure(ctx, "", clientID, fmt.Sprintf("invalid_resource: %v", err))
-			return "", fmt.Errorf("%s: resource parameter is invalid: %w", ErrorCodeInvalidRequest, err)
+			return nil, fmt.Errorf("%s: resource parameter is invalid: %w", ErrorCodeInvalidRequest, err)
 		}
+	}
+
+	return &AuthorizationRequest{
+		ClientID:            clientID,
+		RedirectURI:         redirectURI.String(),
+		Scope:               scope,
+		Resource:            resource,
+		State:               clientState,
+		CodeChallenge:       codeChallenge,
+		CodeChallengeMethod: codeChallengeMethod,
+		Options:             authOpts,
+		ClientName:          client.ClientName,
+		LoopbackOnly:        hasLocalhostRedirectURIsOnly(client.RedirectURIs),
+		checked:             true,
+	}, nil
+}
+
+// BeginAuthorization starts the upstream flow for a request prepared by
+// [Server.PrepareAuthorization]: it stores the authorization state and returns
+// the upstream authorization URL. A request that did not come from
+// PrepareAuthorization, such as one decoded from a cookie, has its client and
+// redirect URI checked again, since the client's registration may have changed.
+func (s *Server) BeginAuthorization(ctx context.Context, req *AuthorizationRequest) (string, error) {
+	if !req.checked {
+		if _, err := s.checkClientRedirectURI(ctx, req.ClientID, req.RedirectURI); err != nil {
+			return "", err
+		}
+	}
+	return s.beginAuthorization(ctx, req)
+}
+
+// checkClientRedirectURI returns the client after checking that redirectURI is
+// registered for it and passes the authorization-time security check.
+func (s *Server) checkClientRedirectURI(ctx context.Context, clientID, redirectURI string) (*storage.Client, error) {
+	// Validate client - use getOrFetchClient to support URL-based client IDs (CIMD)
+	client, err := s.getOrFetchClient(ctx, clientID)
+	if err != nil {
+		s.logAuthFailure(ctx, "", clientID, ErrorCodeInvalidClient)
+		return nil, fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
+	}
+
+	if err := s.validateRedirectURI(client, redirectURI); err != nil {
+		s.logAuthFailure(ctx, "", clientID, ErrorCodeInvalidRedirectURI)
+		return nil, fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
+	}
+
+	// SECURITY: Authorization-time redirect URI validation (TOCTOU protection)
+	if err := s.ValidateRedirectURIAtAuthorizationTime(ctx, redirectURI); err != nil {
+		s.logAuthFailure(ctx, "", clientID, "redirect_uri_security_violation")
+		s.Logger.Warn("Redirect URI failed authorization-time security validation",
+			paramClientID, clientID, "redirect_uri", sanitizeURIForLogging(redirectURI), logKeyError, err.Error())
+		return nil, fmt.Errorf("%s: redirect URI failed security validation", ErrorCodeInvalidRequest)
+	}
+	return client, nil
+}
+
+// beginAuthorization stores the authorization state for a checked request and
+// returns the upstream authorization URL.
+func (s *Server) beginAuthorization(ctx context.Context, req *AuthorizationRequest) (string, error) {
+	// Generate server-side state if client didn't provide one
+	trackingState := req.State
+	if trackingState == "" {
+		trackingState = generateRandomToken()
+		s.Logger.Debug("Generated server-side state for client without state parameter", paramClientID, req.ClientID)
 	}
 
 	// Generate provider state (different from client state for defense in depth)
@@ -366,21 +419,21 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID string, re
 	// Generate PKCE for server-to-provider leg (OAuth 2.1)
 	providerCodeChallenge, providerCodeVerifier := generatePKCEPair()
 
-	effectiveNonce, authOpts := s.resolveAuthorizationNonce(clientID, scope, authOpts)
+	effectiveNonce, authOpts := s.resolveAuthorizationNonce(req.ClientID, req.Scope, req.Options)
 
-	s.logAuthorizationFlowStarted(ctx, clientID, redirectURIStr, scope, codeChallengeMethod, resource, authOpts)
+	s.logAuthorizationFlowStarted(ctx, req.ClientID, req.RedirectURI, req.Scope, req.CodeChallengeMethod, req.Resource, authOpts)
 
 	// Save authorization state with both client and server PKCE parameters and resource binding
 	// Use trackingState (which may be server-generated if client didn't provide state)
 	authState := &storage.AuthorizationState{
 		StateID:              trackingState,
-		OriginalClientState:  clientState, // Empty if client didn't provide state
-		ClientID:             clientID,
-		RedirectURI:          redirectURIStr,
-		Scope:                scope,
-		Resource:             resource, // RFC 8707: Bind authorization to target resource server
-		CodeChallenge:        codeChallenge,
-		CodeChallengeMethod:  codeChallengeMethod,
+		OriginalClientState:  req.State, // Empty if client didn't provide state
+		ClientID:             req.ClientID,
+		RedirectURI:          req.RedirectURI,
+		Scope:                req.Scope,
+		Resource:             req.Resource, // RFC 8707: Bind authorization to target resource server
+		CodeChallenge:        req.CodeChallenge,
+		CodeChallengeMethod:  req.CodeChallengeMethod,
 		ProviderState:        providerState,
 		ProviderCodeVerifier: providerCodeVerifier,
 		Nonce:                effectiveNonce,
@@ -393,11 +446,9 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID string, re
 
 	// Parse scopes to pass to provider
 	// If client didn't request scopes, pass empty slice and provider will use its defaults
-	requestedScopes := helpers.SplitScopes(scope)
+	requestedScopes := helpers.SplitScopes(req.Scope)
 
-	authURL := s.provider.AuthorizationURL(providerState, providerCodeChallenge, "S256", requestedScopes, authOpts)
-
-	return authURL, nil
+	return s.provider.AuthorizationURL(providerState, providerCodeChallenge, "S256", requestedScopes, authOpts), nil
 }
 
 // minClientNonceLength is the lower bound on client-supplied nonce *length*.
