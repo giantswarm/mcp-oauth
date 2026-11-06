@@ -570,7 +570,9 @@ type FlowStore interface {
 	// SaveAuthorizationCode saves an issued authorization code
 	SaveAuthorizationCode(ctx context.Context, code *AuthorizationCode) error
 
-	// GetAuthorizationCode retrieves an authorization code
+	// GetAuthorizationCode retrieves a code without consuming it. Used codes
+	// remain readable during AuthorizationCodeRetention, including after expiry,
+	// so callers can detect reuse before preparing another token pair.
 	GetAuthorizationCode(ctx context.Context, code string) (*AuthorizationCode, error)
 
 	// AtomicCheckAndMarkAuthCodeUsed atomically checks if a code is unused and marks it as used.

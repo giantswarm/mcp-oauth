@@ -273,7 +273,7 @@ func TestValidateToken_TrustedIssuerJWKSUnavailable(t *testing.T) {
 // TestValidateToken_ForwardedIDTokenJWKSUnavailable: a forwarded ID token
 // whose provider JWKS endpoint does not answer is ErrProviderUnavailable,
 // without a userinfo fallback that cannot validate an ID token.
-func TestValidateToken_ForwardedIDTokenJWKSUnavailable(t *testing.T) {
+func TestAcceptForwardedIDToken_JWKSUnavailable(t *testing.T) {
 	h := newForwardedTokenHarness(t)
 	jwksURL, jwksClient := unavailableJWKS(t)
 	h.provider.JWKSURIFunc = func(context.Context) (string, error) { return jwksURL, nil }
@@ -294,8 +294,9 @@ func TestValidateToken_ForwardedIDTokenJWKSUnavailable(t *testing.T) {
 		Expiry:   josejwt.NewNumericDate(now.Add(time.Hour)),
 	})
 
-	_, err := h.srv.ValidateToken(t.Context(), token)
-	require.ErrorIs(t, err, ErrProviderUnavailable)
+	_, err := h.srv.AcceptForwardedIDToken(t.Context(), token)
+	require.Error(t, err)
+	require.True(t, isTransientProviderError(err))
 	require.Zero(t, userinfoCalls.Load())
 }
 

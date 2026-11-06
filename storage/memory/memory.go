@@ -1088,7 +1088,7 @@ func (s *Store) GetAuthorizationCode(_ context.Context, code string) (*storage.A
 	}
 
 	// Check if expired with clock skew grace period
-	if authCode.HasExpired() {
+	if authCode.HasExpired() && !authCode.Used {
 		return nil, fmt.Errorf("%w: authorization code expired", storage.ErrTokenExpired)
 	}
 

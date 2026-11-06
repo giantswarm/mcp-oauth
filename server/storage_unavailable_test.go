@@ -227,6 +227,16 @@ func TestRefreshAccessToken_UndecryptableSharedEntry(t *testing.T) {
 type legacyUndecryptableStore struct {
 	storage.Combined
 	storage.RefreshTokenFamilyStore
+	storage.TokenMetadataStore
+	storage.TokenMetadataGetter
+	storage.ProviderRefreshLockStore
+}
+
+func (store legacyUndecryptableStore) GetToken(ctx context.Context, tokenID string) (*oauth2.Token, error) {
+	if _, err := store.GetRefreshTokenInfo(ctx, tokenID); err == nil {
+		return nil, undecryptable(ctx, "get_token")
+	}
+	return store.Combined.GetToken(ctx, tokenID)
 }
 
 func (legacyUndecryptableStore) AtomicGetAndDeleteRefreshToken(ctx context.Context, _ string) (string, string, *oauth2.Token, error) {
@@ -239,7 +249,7 @@ func (legacyUndecryptableStore) AtomicGetAndDeleteRefreshToken(ctx context.Conte
 func TestRefreshAccessToken_UndecryptableLegacyRecord(t *testing.T) {
 	mem := memory.New()
 	t.Cleanup(mem.Stop)
-	store := legacyUndecryptableStore{Combined: mem, RefreshTokenFamilyStore: mem}
+	store := legacyUndecryptableStore{Combined: mem, RefreshTokenFamilyStore: mem, TokenMetadataStore: mem, TokenMetadataGetter: mem, ProviderRefreshLockStore: mem}
 	srv, err := New(mock.NewProvider(), store, store, store, &Config{
 		Issuer:                      "https://auth.example.com",
 		SupportedScopes:             []string{"openid", "email"},

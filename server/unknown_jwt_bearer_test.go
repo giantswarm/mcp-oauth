@@ -159,15 +159,15 @@ func TestValidateToken_RefusesJWTWithOtherMetadata(t *testing.T) {
 	require.ErrorIs(t, err, ErrUnknownJWTBearer)
 }
 
-func TestValidateToken_KeepsTrustedAudienceForwarding(t *testing.T) {
+func TestValidateToken_RejectsTrustedAudienceIDToken(t *testing.T) {
 	h := newForwardedTokenHarness(t)
 	userinfoAcceptsAnything(h)
 	calls := h.provider.GetCallCount("ValidateToken")
 
 	userInfo, err := h.srv.ValidateToken(t.Context(), h.signToken(t, h.validClaims()))
 
-	require.NoError(t, err)
-	require.Equal(t, providers.TokenSourceSSO, userInfo.TokenSource)
+	require.ErrorIs(t, err, ErrUnknownJWTBearer)
+	require.Nil(t, userInfo)
 	require.Equal(t, calls, h.provider.GetCallCount("ValidateToken"))
 }
 
@@ -179,10 +179,10 @@ func TestValidateToken_InvalidForwardedIDToken(t *testing.T) {
 
 	_, err := h.srv.ValidateToken(t.Context(), expiredForwardedToken(t, h))
 
-	require.ErrorContains(t, err, "forwarded ID token validation failed")
+	require.ErrorIs(t, err, ErrUnknownJWTBearer)
 	require.Equal(t, calls, h.provider.GetCallCount("ValidateToken"))
 	line := onlyAuditLine(t, audit, string(security.EventAuthFailure))
-	require.Equal(t, auditReasonForwardedIDTokenInvalid, line.Details["reason"])
+	require.Equal(t, auditReasonUnknownJWTBearer, line.Details["reason"])
 }
 
 func TestValidateToken_UnknownOpaqueBearerRejected(t *testing.T) {

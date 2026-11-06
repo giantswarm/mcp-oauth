@@ -1850,23 +1850,28 @@ func TestServer_ConcurrentAuthorizationCodeReuse(t *testing.T) {
 	require.LessOrEqual(t, successCount, 1, "SECURITY FAILURE: the code was exchanged more than once")
 	tokens, err := store.GetTokensByUserClient(ctx, testMockUserID, clientID)
 	require.NoError(t, err)
-	require.Empty(t, tokens, "a token issued based on the reused code is still live")
+	for _, tokenID := range tokens {
+		_, err := srv.ValidateToken(t.Context(), tokenID)
+		require.Error(t, err, "a token issued based on the reused code is still live")
+		_, err = store.GetRefreshTokenInfo(t.Context(), tokenID)
+		require.Error(t, err)
+	}
 }
 
-// reuseDuringExchangeStore presents the code again while the first exchange
-// is storing its tokens, before the token family is stored.
+// reuseDuringExchangeStore runs a hook after a successful atomic code claim.
 type reuseDuringExchangeStore struct {
 	*memory.Store
 	reuse func()
 	once  sync.Once
 }
 
-func (r *reuseDuringExchangeStore) SaveTokenMetadata(ctx context.Context, tokenID string, metadata storage.TokenMetadata) error {
-	if err := r.Store.SaveTokenMetadata(ctx, tokenID, metadata); err != nil {
-		return err
+func (r *reuseDuringExchangeStore) AtomicCheckAndMarkAuthCodeUsed(ctx context.Context, code string) (*storage.AuthorizationCode, error) {
+	authCode, err := r.Store.AtomicCheckAndMarkAuthCodeUsed(ctx, code)
+	if err != nil {
+		return authCode, err
 	}
 	r.once.Do(r.reuse)
-	return nil
+	return authCode, nil
 }
 
 // SECURITY: a reuse that arrives while the first exchange is still storing
@@ -1883,6 +1888,7 @@ func TestServer_AuthorizationCodeReuseDuringExchangeRevokesItsTokens(t *testing.
 	srv.tokenStore = &reuseDuringExchangeStore{Store: store, reuse: func() {
 		_, _, reuseErr = srv.ExchangeAuthorizationCode(t.Context(), code, client.ClientID, redirect, "", verifier, "")
 	}}
+	srv.flowStore = srv.tokenStore.(*reuseDuringExchangeStore)
 
 	_, _, err = srv.ExchangeAuthorizationCode(t.Context(), code, client.ClientID, redirect, "", verifier, "")
 
@@ -1909,6 +1915,7 @@ func TestServer_AuthorizationCodeExchangedAtExpirySucceeds(t *testing.T) {
 			// Past expiry, grace and the next cleanup tick.
 			time.Sleep(time.Duration(srv.Config.AuthorizationCodeTTL)*time.Second + time.Minute)
 		}}
+		srv.flowStore = srv.tokenStore.(*reuseDuringExchangeStore)
 
 		time.Sleep(time.Duration(srv.Config.AuthorizationCodeTTL)*time.Second - time.Second)
 		tokens, _, err := srv.ExchangeAuthorizationCode(t.Context(), code, client.ClientID, redirect, "", verifier, "")

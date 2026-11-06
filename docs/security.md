@@ -607,31 +607,31 @@ For maximum security, keep DNS validation enabled (`DNSValidation=true`, `DNSVal
 
 ## SSO Token Forwarding
 
-The `TrustedAudiences` feature enables Single Sign-On (SSO) scenarios where tokens issued to a trusted upstream service can be accepted by downstream MCP servers.
+`TrustedAudiences` configures explicit ID-token identity validation through `Server.AcceptForwardedIDToken`. It does not authorize MCP resource requests or expand accepted access-token audiences.
 
 ### Use Case: MCP Aggregator Architecture
 
 In architectures with an MCP aggregator (like muster) that proxies requests to downstream MCP servers:
 
 1. Users authenticate to the aggregator once
-2. The aggregator receives tokens with its own `client_id` as the audience
-3. Downstream servers accept these forwarded tokens via `TrustedAudiences`
+2. The aggregator uses RFC 8693 token exchange to obtain an access token for each downstream resource
+3. Each downstream server validates its own resource audience and the access-token profile
 
-Without this feature, each downstream MCP server would require its own separate OAuth flow.
+See [token exchange](./token-exchange.md) for the existing exchange flows. An ID token addressed to the aggregator is an authentication assertion for that client; its signature does not grant access to another resource.
 
 ### Token Validation Flow
 
-When `TrustedAudiences` is configured, the token validation follows a prioritized approach:
+`Server.ValidateToken` accepts resource access tokens through these paths:
 
-1. **JWT Detection**: Check if the Bearer token is a JWT (three dot-separated parts)
-2. **JWKS Validation**: If the provider supports JWKS, validate the JWT signature using the provider's JWKS endpoint
-3. **Audience Check**: Verify the JWT's `aud` claim matches one of the `TrustedAudiences`
-4. **Claims Extraction**: Extract user info directly from JWT claims (sub, email, name, groups, etc.)
-5. **Stored Access Token**: Other bearers require a local provider-token mapping and metadata with `TokenType: "access"`. The server checks the recorded access-token expiry and audience before refreshing or validating the mapped provider access token through userinfo. An unknown opaque bearer is refused (audit `unknown_bearer`); an unknown compact JWT, including an unsecured JWT with an empty signature, is refused with `server.ErrUnknownJWTBearer` (audit `unknown_jwt_bearer`). A JWKS validation failure in step 2 is final (audit `forwarded_id_token_invalid`). Refresh tokens cannot serve as resource bearers. Stored ID-token metadata does not authorize a bearer or bind it to a token pair's DPoP key.
+1. **Self-issued JWT**: Verify signature, access-token type, issuer, expiry, resource audience, revocation, and token family.
+2. **Trusted-issuer access token**: Verify the configured issuer's signature, claims, and token profile. The token must include this server's resource identifier in its audience, even when the issuer's `AllowedAudiences` includes other targets for token exchange.
+3. **Stored access token**: Require a local provider-token mapping and metadata with `TokenType: "access"`. Check local expiry and the resource audience before refreshing or validating the mapped provider credential through userinfo.
+
+Unknown opaque bearers are refused (audit `unknown_bearer`). Unknown compact JWTs, including unsecured JWTs with empty signatures, return `server.ErrUnknownJWTBearer` (audit `unknown_jwt_bearer`). Refresh tokens and upstream ID tokens cannot serve as resource bearers. Stored ID-token metadata cannot authorize a request or bind it to a token pair's DPoP key.
 
 When a client omits the `resource` parameter, access and refresh metadata default to `Config.GetResourceIdentifier()`. Custom stores must implement both `storage.TokenMetadataStore` and `storage.TokenMetadataGetter` for stored bearer validation. Missing metadata or audience, a token type other than `access`, and an empty mapped provider access token are rejections. A transient store failure remains a retryable 503. Use the `access_token` returned by the local OAuth token endpoint; provider userinfo success alone does not establish that an upstream token was issued for this resource.
 
-This approach is critical for ID token forwarding scenarios. Many Identity Providers (IdPs) reject ID tokens when passed to their userinfo endpoint, as userinfo expects access tokens. By validating JWTs via JWKS first, the library can correctly handle forwarded ID tokens.
+The constructor requires both metadata interfaces. Legacy stores without `UserProviderTokenStore` also need `ProviderRefreshLockStore` so concurrent servers coordinate provider refresh before consuming the grant. Authorization-code and refresh grants persist required token mappings, metadata, and refresh-family records before consuming their grants. A failed required write returns a storage error, discards staged credentials, and leaves the grant available for retry. ID-token metadata is optional bookkeeping and does not gate grant success.
 
 ### Configuration
 
@@ -640,7 +640,7 @@ config := &server.Config{
     Issuer:             "https://auth.example.com",
     ResourceIdentifier: "https://mcp-kubernetes.example.com",
 
-    // Accept tokens issued to the muster aggregator
+    // Audiences accepted only for explicit ID-token identity validation.
     TrustedAudiences: []string{
         "muster-client",
         "my-other-aggregator-client",
@@ -669,8 +669,8 @@ Providers without JWKS support validate local access tokens through their stored
 | **JWKS Validation** | JWTs are validated via cryptographic signature verification |
 | **Explicit Trust** | Each trusted audience must be explicitly configured |
 | **Same Issuer** | Tokens are only accepted if from the configured IdP |
-| **Own Identifier** | Server's own `ResourceIdentifier` is always implicitly trusted |
-| **Audit Logging** | `EventForwardedIDTokenAccepted` and `EventCrossClientTokenAccepted` logged |
+| **Resource Requests** | Access tokens must include this server's `ResourceIdentifier`; `TrustedAudiences` does not authorize resource bearers |
+| **Audit Logging** | `EventForwardedIDTokenAccepted` records explicit ID-token identity acceptance |
 | **SSRF Protection** | JWKS URIs are validated to block private IPs, loopback, and link-local addresses |
 | **DNS Rebinding Protection** | Resolved IPs are validated at connection time to prevent DNS rebinding attacks |
 | **Memory Limits** | Response body limited to 1MB, max 100 keys per JWKS |
@@ -682,15 +682,15 @@ Providers without JWKS support validate local access tokens through their stored
 
 1. **Minimize Trust**: Only add audiences you explicitly trust
 2. **Same IdP**: All trusted audiences should use the same Identity Provider
-3. **Monitor Logs**: Watch for `forwarded_id_token_accepted` and `cross_client_token_accepted` audit events
+3. **Monitor Logs**: Watch for `forwarded_id_token_accepted` identity-validation events and resource authentication failures
 4. **Validate Scopes**: Use `EndpointScopeRequirements` for fine-grained access control
 5. **JWKS Caching**: The default 1-hour cache TTL balances performance with key rotation freshness
 
 ### Direct Acceptance: `Server.AcceptForwardedIDToken`
 
-`Server.ValidateToken` checks forwarded JWTs through JWKS when their audience matches `TrustedAudiences`; a validation failure is final. Other JWTs must resolve through an issued-token mapping. Use the server's OAuth-issued access tokens for local requests; configure `AccessTokenFormatJWT` when a client needs a JWT with the session's audience, scopes and DPoP binding. An upstream ID token may be shared across sessions and does not inherit those properties from its stored metadata. Configure the intended SSO audiences for forwarded ID tokens. `Server.AcceptForwardedIDToken` accepts only verified forwarded tokens and does not consult stored credentials.
+`Server.AcceptForwardedIDToken` verifies an ID token for an explicit identity workflow. It does not authorize a resource request. Use OAuth-issued access tokens for resource requests, including `AccessTokenFormatJWT` when consumers need a JWT, and RFC 8693 exchange for delegation. An upstream ID token can be shared across sessions and does not inherit their audience, scopes, or DPoP binding from stored metadata.
 
-Use it when an upstream intermediary (aggregator, bridge, sidecar) already holds a valid ID token from the trusted IdP and presents it as the Bearer credential. See [silent-authentication.md](./silent-authentication.md) for the full usage guide; this section covers the security properties and operator-facing configuration.
+Use it when an identity workflow needs verified claims from a trusted IdP. See [silent-authentication.md](./silent-authentication.md) for the usage guide.
 
 #### Session-ID correlation property
 
@@ -834,22 +834,6 @@ When a forwarded ID token is validated via JWKS, `EventForwardedIDTokenAccepted`
     "validation_method": "jwks",
     "sso_token_forwarded": true,
     "session_id": "ext-0123456789abcdef"
-  }
-}
-```
-
-When a token is accepted via `TrustedAudiences`, the `EventCrossClientTokenAccepted` event is logged:
-
-```json
-{
-  "event_type": "cross_client_token_accepted",
-  "user_id_hash": "a1b2c3d4...",
-  "client_id": "original-client",
-  "details": {
-    "original_audience": "muster-client",
-    "server_identifier": "https://mcp-kubernetes.example.com",
-    "trusted_via": "TrustedAudiences",
-    "sso_token_forwarded": true
   }
 }
 ```

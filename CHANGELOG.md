@@ -52,6 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking**: resource bearer validation requires this server's resource audience for stored, self-issued JWT, and trusted-issuer access tokens. `TrustedAudiences` only configures explicit `AcceptForwardedIDToken` identity validation. Use RFC 8693 token exchange for downstream delegation.
+- Token grants persist required mappings, access/refresh metadata, and refresh-family records before consuming authorization codes or rotating refresh tokens. Required write failures return a storage error and leave the grant available for retry. Server construction requires both token metadata interfaces and `ProviderRefreshLockStore` for legacy stores without `UserProviderTokenStore`.
 - **Breaking**: an ID token, trusted-issuer token or self-issued JWT access token whose `scope` claim is not a string is refused.
 - **Breaking**: `Server.SelfIssuedExchange` narrows the granted scope to the subject token's `scope` claim when it carries one, on top of `TrustedIssuer.AllowedScopes`, so an exchange never grants a scope the subject token lacks. RFC 8693 §5 suggests `scope` to limit delegated rights; the narrowing is this library's policy, matching Dex's delegated exchange.
 - **Breaking**: `Server.SelfIssuedExchange` fails with the new `server.ErrInvalidScope`, answered `invalid_scope` (RFC 6749 §5.2) at the token endpoint and audited as `token_exchange_scope_not_granted`, when `AllowedScopes` or the subject token's `scope` claim leave no requested scope to grant. It used to issue a token without a `scope` claim, which a re-exchange through another actor then read as unrestricted.

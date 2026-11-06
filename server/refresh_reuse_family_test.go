@@ -114,6 +114,7 @@ type legacyLayoutStore struct {
 	storage.TokenFamilyRevocationStore
 	storage.TokenMetadataStore
 	storage.TokenMetadataGetter
+	storage.ProviderRefreshLockStore
 }
 
 // TestRefreshTokenReuse_LegacyLayoutRevokesFamilyGrantOnly: in the legacy
@@ -127,6 +128,7 @@ func TestRefreshTokenReuse_LegacyLayoutRevokesFamilyGrantOnly(t *testing.T) {
 	store := legacyLayoutStore{
 		Combined: mem, RefreshTokenFamilyStore: mem, TokenRevocationStore: mem,
 		TokenFamilyRevocationStore: mem, TokenMetadataStore: mem, TokenMetadataGetter: mem,
+		ProviderRefreshLockStore: mem,
 	}
 	provider := mock.NewProvider()
 	revocations := &providerRevocations{}

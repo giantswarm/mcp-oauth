@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -274,6 +275,17 @@ func validateServerDependencies(provider providers.Provider, tokenStore storage.
 	if tokenStore == nil {
 		return fmt.Errorf("token store is required")
 	}
+	if _, ok := tokenStore.(storage.TokenMetadataStore); !ok {
+		return errors.New("token store must implement storage.TokenMetadataStore")
+	}
+	if _, ok := tokenStore.(storage.TokenMetadataGetter); !ok {
+		return errors.New("token store must implement storage.TokenMetadataGetter")
+	}
+	if _, unified := tokenStore.(storage.UserProviderTokenStore); !unified {
+		if _, coordinated := tokenStore.(storage.ProviderRefreshLockStore); !coordinated {
+			return errors.New("legacy token stores must implement storage.ProviderRefreshLockStore")
+		}
+	}
 	if clientStore == nil {
 		return fmt.Errorf("client store is required")
 	}
@@ -414,30 +426,33 @@ func (s *Server) DPoPNonceProvider() DPoPNonceProvider {
 // saveTokenMetadata writes the token's role, audience, scopes and session
 // attributes. Stored bearer validation requires readable access-token metadata.
 // Callers are responsible for setting metadata.IssuedAt and metadata.ExpiresAt.
-func (s *Server) saveTokenMetadata(ctx context.Context, tokenID string, metadata storage.TokenMetadata) {
+func (s *Server) saveTokenMetadata(ctx context.Context, tokenID string, metadata storage.TokenMetadata) error {
 	store, ok := s.tokenStore.(storage.TokenMetadataStore)
 	if !ok {
-		return
+		return errors.New("token store does not support token metadata writes")
 	}
 	if err := store.SaveTokenMetadata(ctx, tokenID, metadata); err != nil {
-		s.Logger.Warn("Failed to save token metadata", logKeyError, err)
+		return s.storageUnavailable(ctx, "save token metadata", metadata.ClientID, metadata.UserID, err)
 	}
+	return nil
 }
 
 // saveTokenPairMetadata saves metadata for an AT/RT pair. base.ExpiresAt is the access-token expiry;
 // refreshExpiresAt is used for the refresh token.
-func (s *Server) saveTokenPairMetadata(ctx context.Context, accessToken, refreshToken string, base storage.TokenMetadata, refreshExpiresAt time.Time) {
+func (s *Server) saveTokenPairMetadata(ctx context.Context, accessToken, refreshToken string, base storage.TokenMetadata, refreshExpiresAt time.Time) error {
 	if base.Audience == "" {
 		base.Audience = s.Config.GetResourceIdentifier()
 	}
 	at := base
 	at.TokenType = "access"
-	s.saveTokenMetadata(ctx, accessToken, at)
+	if err := s.saveTokenMetadata(ctx, accessToken, at); err != nil {
+		return err
+	}
 
 	rt := base
 	rt.TokenType = "refresh"
 	rt.ExpiresAt = refreshExpiresAt
-	s.saveTokenMetadata(ctx, refreshToken, rt)
+	return s.saveTokenMetadata(ctx, refreshToken, rt)
 }
 
 // saveIDTokenMetadata records session attributes for the upstream id_token
@@ -455,7 +470,9 @@ func (s *Server) saveIDTokenMetadata(ctx context.Context, idToken string, base s
 	if exp := unverifiedJWTExpiry(idToken); exp.After(time.Now()) {
 		metadata.ExpiresAt = exp
 	}
-	s.saveTokenMetadata(ctx, idToken, metadata)
+	if err := s.saveTokenMetadata(ctx, idToken, metadata); err != nil {
+		s.Logger.Warn("Failed to save ID token metadata", logKeyError, err)
+	}
 }
 
 // unverifiedJWTExpiry reads a JWT's exp claim without verifying the signature.

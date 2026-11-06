@@ -103,22 +103,8 @@ func WithTokenRefreshHandler(handler TokenRefreshHandler) Option {
 	}
 }
 
-// WithTrustedIssuers registers external JWT issuers whose tokens this server
-// accepts. The same validator is consulted in two places:
-//
-//   - RFC 8693 token exchange: subject_token of type id_token, access_token,
-//     or jwt is routed to the matching issuer entry.
-//   - ValidateToken: a Bearer JWT at /mcp is accepted when its iss matches
-//     a configured entry. Signature is verified via the entry's JWKS; aud
-//     is checked against AllowedAudiences (defaulting to the server's
-//     ResourceIdentifier when empty); the typ header is checked against
-//     AcceptedTypHeaders (default RFC 9068 typ=at+jwt).
-//
-// WithTrustedAudiences sets additional OAuth client IDs whose tokens are
-// accepted by ValidateToken, alongside the server's own ResourceIdentifier.
-// This covers SSO token forwarding: an aggregator (e.g. muster) issues tokens
-// with its own client_id as audience; adding that client_id here lets downstream
-// servers accept forwarded tokens without a separate auth flow.
+// WithTrustedAudiences sets the client IDs accepted by AcceptForwardedIDToken
+// for identity validation. It does not authorize resource requests.
 //
 // Equivalent to setting Config.TrustedAudiences; provided as a functional
 // option for symmetry with WithTrustedIssuers. If both are used, the option
@@ -134,8 +120,9 @@ func WithTrustedAudiences(audiences []string) Option {
 	}
 }
 
-// Use TrustedIssuer.AllowedClaims to constrain accepted subjects per issuer.
-// Empty list is a no-op.
+// WithTrustedIssuers configures JWT validation for token exchange and resource
+// access. Resource bearers must satisfy both resource audience and typ checks;
+// exchange subjects use the issuer's AllowedAudiences and AllowedClaims.
 func WithTrustedIssuers(issuers []TrustedIssuer) Option {
 	return func(s *Server) {
 		if len(issuers) == 0 {

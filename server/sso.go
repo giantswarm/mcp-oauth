@@ -21,7 +21,7 @@ import (
 // 2. Parse claims without verification to check audience
 // 3. If audience matches, validate JWT signature using provider's JWKS
 // 4. Extract user info from validated claims
-// 5. Return validation failures; unmatched tokens proceed to issued-token lookup
+// 5. Return the verified identity or a validation error
 
 // validateAndParseForwardedIDToken verifies a JWT ID token whose audience
 // matches Config.TrustedAudiences and returns its claims.
@@ -89,10 +89,7 @@ func (s *Server) validateAndParseForwardedIDToken(ctx context.Context, tokenStri
 		return nil, "", fmt.Errorf("ID token validation returned nil claims")
 	}
 
-	// The provider's issuer may also be a trusted issuer; its ActorPolicy
-	// holds on this path too. Within ValidateToken a refused act never gets
-	// here (the trusted-issuer branch rejects it first), so this check is what
-	// guards direct AcceptForwardedIDToken callers.
+	// Identity acceptance enforces the matched issuer's actor policy.
 	if s.trustedIssuerValidator != nil {
 		if err := checkActor(s.trustedIssuerValidator.actorPolicy(idTokenClaims.Issuer), idTokenClaims.Act); err != nil {
 			return nil, "", err
@@ -100,28 +97,6 @@ func (s *Server) validateAndParseForwardedIDToken(ctx context.Context, tokenStri
 	}
 
 	return idTokenClaims, matchedAudience, nil
-}
-
-// validateForwardedIDToken returns verified user information for a forwarded
-// token, or (nil, nil) when no trusted audience matches.
-func (s *Server) validateForwardedIDToken(ctx context.Context, tokenString string) (*providers.UserInfo, error) {
-	claims, matchedAudience, err := s.validateAndParseForwardedIDToken(ctx, tokenString)
-	if err != nil {
-		return nil, err
-	}
-	if claims == nil {
-		return nil, nil
-	}
-
-	userInfo := s.idTokenClaimsToUserInfo(claims)
-
-	var validatedIssuer string
-	if jwksProvider, ok := s.provider.(providers.JWKSProvider); ok {
-		validatedIssuer = jwksProvider.IssuerURL()
-	}
-	s.logForwardedIDTokenAccepted(ctx, tokenString, s.deriveForwardedSessionID(tokenString), matchedAudience, validatedIssuer, userInfo)
-
-	return userInfo, nil
 }
 
 // findMatchingTrustedAudience checks if any of the token's audiences match our trusted audiences.

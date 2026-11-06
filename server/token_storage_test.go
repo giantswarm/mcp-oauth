@@ -21,6 +21,9 @@ import (
 // classifies each failure (fatal vs best-effort).
 type failingTokenStore struct {
 	storage.TokenStore
+	storage.TokenMetadataStore
+	storage.TokenMetadataGetter
+	storage.ProviderRefreshLockStore
 	saveTokenByIDErr       error
 	saveTokenByEmailErr    error
 	saveUserInfoByIDErr    error
@@ -92,7 +95,7 @@ func TestSaveUserInfoAndToken_IDPathFailureIsFatal(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			mem := memory.New()
 			t.Cleanup(func() { mem.Stop() })
-			fts := &failingTokenStore{TokenStore: mem}
+			fts := &failingTokenStore{TokenStore: mem, TokenMetadataStore: mem, TokenMetadataGetter: mem, ProviderRefreshLockStore: mem}
 			tc.setup(fts)
 
 			logger, auditBuf := captureLogger()
@@ -143,7 +146,7 @@ func TestSaveUserInfoAndToken_EmailPathFailureIsBestEffort(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			mem := memory.New()
 			t.Cleanup(func() { mem.Stop() })
-			fts := &failingTokenStore{TokenStore: mem}
+			fts := &failingTokenStore{TokenStore: mem, TokenMetadataStore: mem, TokenMetadataGetter: mem, ProviderRefreshLockStore: mem}
 			tc.setup(fts)
 
 			logger, auditBuf := captureLogger()

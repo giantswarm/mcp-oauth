@@ -65,8 +65,8 @@ func TestHandler_ValidateToken_ReturnedIDTokenMetadataDoesNotAuthorize(t *testin
 	}
 }
 
-func TestHandler_ValidateToken_ForwardedIDTokenOfDPoPPairStaysBearer(t *testing.T) {
-	h, token, _ := newForwardedTokenHandler(t, slog.LevelInfo)
+func TestHandler_ValidateToken_TrustedIssuerTokenDoesNotInheritStoredBinding(t *testing.T) {
+	h, token, _ := newTrustedIssuerTokenHandler(t, slog.LevelInfo)
 	metadataStore, ok := h.server.TokenStore().(storage.TokenMetadataStore)
 	require.True(t, ok)
 	require.NoError(t, metadataStore.SaveTokenMetadata(t.Context(), token, storage.TokenMetadata{

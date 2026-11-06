@@ -9,9 +9,18 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
+	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
+
+func (s *Server) validateForwardedIDToken(ctx context.Context, token string) (*providers.UserInfo, error) {
+	acceptance, err := s.AcceptForwardedIDToken(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	return acceptance.UserInfo, nil
+}
 
 // seedProviderToken stores a provider token for an issued token the way the
 // unified layout does (storage.UserProviderTokenStore): the token is written

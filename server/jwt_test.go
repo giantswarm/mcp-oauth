@@ -118,7 +118,7 @@ func TestValidateToken_SelfIssuedJWT_AudienceMismatch(t *testing.T) {
 	require.Contains(t, err.Error(), "audience")
 }
 
-func TestValidateToken_SelfIssuedJWT_AudienceMatchesTrusted(t *testing.T) {
+func TestValidateToken_SelfIssuedJWT_RejectsTrustedAudienceWithoutResource(t *testing.T) {
 	srv, _, _ := setupJWTFlowTestServer(t)
 	srv.Config.TrustedAudiences = []string{"trusted-aggregator"}
 
@@ -130,9 +130,9 @@ func TestValidateToken_SelfIssuedJWT_AudienceMatchesTrusted(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	userInfo, err := srv.ValidateToken(context.Background(), tok)
-	require.NoError(t, err)
-	require.Equal(t, "user-1", userInfo.ID)
+	userInfo, err := srv.ValidateToken(t.Context(), tok)
+	require.ErrorContains(t, err, "audience mismatch")
+	require.Nil(t, userInfo)
 }
 
 func TestValidateToken_SelfIssuedJWT_Expired(t *testing.T) {
@@ -426,14 +426,10 @@ func TestValidateToken_SelfIssuedJWT_WrongKidRejected(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestValidateToken_SelfIssuedJWT_MultiAudienceWithTrustedMatchAccepted(t *testing.T) {
+func TestValidateToken_SelfIssuedJWT_MultiAudienceRequiresResource(t *testing.T) {
 	srv, _, _ := setupJWTFlowTestServer(t)
 	srv.Config.TrustedAudiences = []string{"trusted-aggregator"}
 
-	// Forge a JWT with the configured signing key but an array aud where
-	// only the second value matches TrustedAudiences. Pre-fix this would
-	// fail because checkJWTAudience only compared audiences[0] against the
-	// trusted list. With the multi-audience helper it must accept.
 	now := time.Now().UTC()
 	mapClaims := map[string]any{
 		"iss":       srv.Config.Issuer,
@@ -446,7 +442,12 @@ func TestValidateToken_SelfIssuedJWT_MultiAudienceWithTrustedMatchAccepted(t *te
 	}
 	signed := signForgeToken(t, jose.RS256, srv.Config.AccessTokenSigningKey, srv.Config.AccessTokenSigningKeyID, rfc9068TokenType, mapClaims)
 
-	userInfo, err := srv.ValidateToken(context.Background(), signed)
+	userInfo, err := srv.ValidateToken(t.Context(), signed)
+	require.ErrorContains(t, err, "audience mismatch")
+	require.Nil(t, userInfo)
+	mapClaims["aud"] = []string{"unrelated", srv.Config.GetResourceIdentifier()}
+	signed = signForgeToken(t, jose.RS256, srv.Config.AccessTokenSigningKey, srv.Config.AccessTokenSigningKeyID, rfc9068TokenType, mapClaims)
+	userInfo, err = srv.ValidateToken(t.Context(), signed)
 	require.NoError(t, err)
 	require.Equal(t, "user-multi-aud", userInfo.ID)
 }

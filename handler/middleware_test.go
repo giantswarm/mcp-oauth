@@ -1568,7 +1568,7 @@ func TestHandler_ValidateToken_SessionRequiresIssuedTokenMapping(t *testing.T) {
 	require.Empty(t, sessionFor(idToken, http.StatusUnauthorized))
 }
 
-func TestHandler_ValidateToken_ForwardedIDToken_UsesBearerSession(t *testing.T) {
+func TestHandler_ValidateToken_ForwardedIDTokenRejected(t *testing.T) {
 	handler, foreignIDToken, _ := newForwardedTokenHandler(t, slog.LevelInfo)
 
 	var capturedSessionID string
@@ -1580,9 +1580,8 @@ func TestHandler_ValidateToken_ForwardedIDToken_UsesBearerSession(t *testing.T) 
 	response := httptest.NewRecorder()
 	handler.ValidateToken(nextHandler).ServeHTTP(response, request)
 
-	require.Equal(t, http.StatusOK, response.Code)
-	require.Equal(t, handler.server.SessionIDForBearer(foreignIDToken), capturedSessionID)
-	require.True(t, strings.HasPrefix(capturedSessionID, "ext-"))
+	require.Equal(t, http.StatusUnauthorized, response.Code)
+	require.Empty(t, capturedSessionID)
 }
 
 // TestHandler_ValidateToken_PrincipalSessionIdentity pins the middleware

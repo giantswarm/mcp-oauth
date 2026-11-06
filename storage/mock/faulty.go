@@ -110,6 +110,48 @@ func (f *FaultyStore) GetToken(ctx context.Context, accessToken string) (*oauth2
 	return f.Store.GetToken(ctx, accessToken)
 }
 
+func (f *FaultyStore) SaveToken(ctx context.Context, tokenID string, providerToken *oauth2.Token) error {
+	if err := f.gate(ctx, "save_token"); err != nil {
+		return err
+	}
+	return f.Store.SaveToken(ctx, tokenID, providerToken)
+}
+
+func (f *FaultyStore) SaveTokenMetadata(ctx context.Context, tokenID string, metadata storage.TokenMetadata) error {
+	if err := f.gate(ctx, "save_token_metadata"); err != nil {
+		return err
+	}
+	return f.Store.SaveTokenMetadata(ctx, tokenID, metadata)
+}
+
+func (f *FaultyStore) SaveProviderTokenRef(ctx context.Context, tokenID, userID string, expiresAt time.Time) error {
+	if err := f.gate(ctx, "save_provider_token_ref"); err != nil {
+		return err
+	}
+	return f.Store.SaveProviderTokenRef(ctx, tokenID, userID, expiresAt)
+}
+
+func (f *FaultyStore) SaveRefreshTokenWithFamily(ctx context.Context, refreshToken, userID, clientID, familyID string, generation int, expiresAt time.Time) error {
+	if err := f.gate(ctx, "save_refresh_token_with_family"); err != nil {
+		return err
+	}
+	return f.Store.SaveRefreshTokenWithFamily(ctx, refreshToken, userID, clientID, familyID, generation, expiresAt)
+}
+
+func (f *FaultyStore) SaveRefreshToken(ctx context.Context, refreshToken, userID string, expiresAt time.Time) error {
+	if err := f.gate(ctx, "save_refresh_token"); err != nil {
+		return err
+	}
+	return f.Store.SaveRefreshToken(ctx, refreshToken, userID, expiresAt)
+}
+
+func (f *FaultyStore) GetAuthorizationCode(ctx context.Context, code string) (*storage.AuthorizationCode, error) {
+	if err := f.gate(ctx, "get_authorization_code"); err != nil {
+		return nil, err
+	}
+	return f.Store.GetAuthorizationCode(ctx, code)
+}
+
 // GetProviderTokenRef gates storage.UserProviderTokenStore.GetProviderTokenRef,
 // the unified layout's resolution of an issued token to its user.
 func (f *FaultyStore) GetProviderTokenRef(ctx context.Context, tokenID string) (string, error) {

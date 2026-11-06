@@ -171,17 +171,14 @@ func (s *Server) checkJWTExpiration(ctx context.Context, claims map[string]any, 
 	return nil
 }
 
-// checkJWTAudience enforces RFC 8707 audience binding. The token's aud
-// claim must equal the server's ResourceIdentifier OR appear in
-// TrustedAudiences. Multi-valued aud (RFC 7519 §4.1.3) is handled via
-// helpers.FindMatchingAudience, matching the SSO-forwarded-ID-token path.
+// checkJWTAudience requires the resource identifier in the token's aud claim.
 func (s *Server) checkJWTAudience(ctx context.Context, claims map[string]any, tokenString string) error {
 	audiences := audiencesFromClaim(claims["aud"])
 	if len(audiences) == 0 {
 		s.logSelfIssuedJWTAuthFailure(ctx, "missing_aud", tokenString)
 		return fmt.Errorf("token missing audience claim")
 	}
-	if helpers.AudienceMatchesResourceOrTrusted(audiences, s.Config.GetResourceIdentifier(), s.Config.TrustedAudiences) {
+	if helpers.FindMatchingAudience(audiences, []string{s.Config.GetResourceIdentifier()}) != "" {
 		return nil
 	}
 	s.logSelfIssuedJWTAuthFailure(ctx, "audience_mismatch", tokenString)

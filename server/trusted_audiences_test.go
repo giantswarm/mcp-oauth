@@ -28,94 +28,6 @@ import (
 //nolint:gosec // G101: Test JWT structure, not a credential
 const testJWTWithMusterClientAudience = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJtdXN0ZXItY2xpZW50Iiwic3ViIjoidXNlcjEyMyJ9.ZmFrZS1zaWduYXR1cmUtYnl0ZXMtZm9yLXRlc3Rpbmctb25seQ"
 
-// TestIsTrustedAudience tests the isTrustedAudience helper function.
-func TestIsTrustedAudience(t *testing.T) {
-	tests := []struct {
-		name             string
-		trustedAudiences []string
-		audience         string
-		expectedTrusted  bool
-	}{
-		{
-			name:             "empty trusted audiences",
-			trustedAudiences: nil,
-			audience:         "muster-client",
-			expectedTrusted:  false,
-		},
-		{
-			name:             "empty audience list",
-			trustedAudiences: []string{},
-			audience:         "muster-client",
-			expectedTrusted:  false,
-		},
-		{
-			name:             "exact match - client ID",
-			trustedAudiences: []string{"muster-client", "aggregator-client"},
-			audience:         "muster-client",
-			expectedTrusted:  true,
-		},
-		{
-			name:             "exact match - second entry",
-			trustedAudiences: []string{"muster-client", "aggregator-client"},
-			audience:         "aggregator-client",
-			expectedTrusted:  true,
-		},
-		{
-			name:             "no match",
-			trustedAudiences: []string{"muster-client", "aggregator-client"},
-			audience:         "unknown-client",
-			expectedTrusted:  false,
-		},
-		{
-			name:             "URL audience - exact match",
-			trustedAudiences: []string{"https://muster.example.com"},
-			audience:         "https://muster.example.com",
-			expectedTrusted:  true,
-		},
-		{
-			name:             "URL audience - with trailing slash normalization",
-			trustedAudiences: []string{"https://muster.example.com/"},
-			audience:         "https://muster.example.com",
-			expectedTrusted:  true,
-		},
-		{
-			name:             "case sensitive match",
-			trustedAudiences: []string{"Muster-Client"},
-			audience:         "muster-client",
-			expectedTrusted:  false, // Should not match - case sensitive
-		},
-		{
-			name:             "mixed client IDs and URLs",
-			trustedAudiences: []string{"muster-client", "https://aggregator.example.com"},
-			audience:         "https://aggregator.example.com",
-			expectedTrusted:  true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			store := memory.New()
-			t.Cleanup(func() { store.Stop() })
-
-			config := &Config{
-				Issuer:           "https://auth.example.com",
-				TrustedAudiences: tt.trustedAudiences,
-			}
-
-			srv := &Server{
-				Config:          config,
-				Instrumentation: testInstrumentation(t),
-				Auditor:         testAuditor(),
-			}
-
-			got := srv.isTrustedAudience(tt.audience)
-			if got != tt.expectedTrusted {
-				t.Errorf("isTrustedAudience() = %v, want %v", got, tt.expectedTrusted)
-			}
-		})
-	}
-}
-
 // TestValidateTokenAudience_WithTrustedAudiences tests audience validation with TrustedAudiences.
 func TestValidateTokenAudience_WithTrustedAudiences(t *testing.T) {
 	tests := []struct {
@@ -135,20 +47,20 @@ func TestValidateTokenAudience_WithTrustedAudiences(t *testing.T) {
 			expectCrossClient: false,
 		},
 		{
-			name:              "match trusted audience",
+			name:              "trusted audience is not the resource",
 			serverIdentifier:  "https://mcp.example.com",
 			trustedAudiences:  []string{"muster-client"},
 			tokenAudience:     "muster-client",
-			expectError:       false,
-			expectCrossClient: true,
+			expectError:       true,
+			expectCrossClient: false,
 		},
 		{
-			name:              "match second trusted audience",
+			name:              "second trusted audience is not the resource",
 			serverIdentifier:  "https://mcp.example.com",
 			trustedAudiences:  []string{"muster-client", "aggregator-client"},
 			tokenAudience:     "aggregator-client",
-			expectError:       false,
-			expectCrossClient: true,
+			expectError:       true,
+			expectCrossClient: false,
 		},
 		{
 			name:              "no match - untrusted audience",
@@ -171,8 +83,8 @@ func TestValidateTokenAudience_WithTrustedAudiences(t *testing.T) {
 			serverIdentifier:  "https://mcp.example.com",
 			trustedAudiences:  []string{"https://muster.example.com"},
 			tokenAudience:     "https://muster.example.com",
-			expectError:       false,
-			expectCrossClient: true,
+			expectError:       true,
+			expectCrossClient: false,
 		},
 	}
 
@@ -341,85 +253,6 @@ func TestValidateTrustedAudiences(t *testing.T) {
 	}
 }
 
-// TestLogCrossClientTokenAccepted tests the audit logging for cross-client token acceptance.
-func TestLogCrossClientTokenAccepted(t *testing.T) {
-	var logBuffer bytes.Buffer
-	// Use LevelDebug to capture debug logs
-	logger := slog.New(slog.NewTextHandler(&logBuffer, &slog.HandlerOptions{Level: slog.LevelDebug}))
-
-	auditor := security.NewAuditor(logger, true)
-
-	config := &Config{
-		Issuer:             "https://auth.example.com",
-		ResourceIdentifier: "https://mcp.example.com",
-		TrustedAudiences:   []string{"muster-client"},
-	}
-
-	srv := &Server{
-		Config:          config,
-		Auditor:         auditor,
-		Logger:          logger,
-		Instrumentation: testInstrumentation(t),
-	}
-
-	metadata := &storage.TokenMetadata{
-		UserID:   "test-user",
-		ClientID: "test-client",
-		Audience: "muster-client",
-	}
-
-	srv.logCrossClientTokenAccepted(context.Background(), "test-token-12345678", metadata) //nolint:staticcheck // Testing the cross-client logging path
-
-	// Verify log output
-	logOutput := logBuffer.String()
-	if !strings.Contains(logOutput, "Token accepted via TrustedAudiences") {
-		t.Errorf("Expected log to contain 'Token accepted via TrustedAudiences', got: %s", logOutput)
-	}
-	if !strings.Contains(logOutput, "muster-client") {
-		t.Errorf("Expected log to contain 'muster-client', got: %s", logOutput)
-	}
-
-	// Verify audit event was logged
-	if !strings.Contains(logOutput, security.EventCrossClientTokenAccepted) {
-		t.Error("Expected log to contain EventCrossClientTokenAccepted")
-	}
-	if !strings.Contains(logOutput, "test-client") {
-		t.Error("Expected log to contain client_id 'test-client'")
-	}
-}
-
-// TestTrustedAudiences_ConstantTimeComparison verifies that audience matching uses
-// constant-time comparison to prevent timing attacks.
-func TestTrustedAudiences_ConstantTimeComparison(t *testing.T) {
-	// This test verifies that the isTrustedAudience function works correctly
-	// with audiences of different lengths (which could leak timing info if not
-	// using constant-time comparison properly).
-	store := memory.New()
-	t.Cleanup(func() { store.Stop() })
-
-	config := &Config{
-		Issuer:           "https://auth.example.com",
-		TrustedAudiences: []string{"short", "very-long-audience-string-that-takes-longer-to-compare"},
-	}
-
-	srv := &Server{
-		Config:          config,
-		Instrumentation: testInstrumentation(t),
-		Auditor:         testAuditor(),
-	}
-
-	// These should both use the same code path with constant-time comparison
-	if !srv.isTrustedAudience("short") {
-		t.Error("Expected 'short' to be trusted")
-	}
-	if !srv.isTrustedAudience("very-long-audience-string-that-takes-longer-to-compare") {
-		t.Error("Expected long audience to be trusted")
-	}
-	if srv.isTrustedAudience("shor") { // Almost matches "short"
-		t.Error("Expected 'shor' NOT to be trusted")
-	}
-}
-
 // TestTrustedAudiences_BackwardCompatibility tests that empty TrustedAudiences
 // maintains backward compatibility (only server's own identifier is accepted).
 func TestTrustedAudiences_BackwardCompatibility(t *testing.T) {
@@ -501,7 +334,7 @@ func TestTrustedAudiences_URLNormalization(t *testing.T) {
 		t.Logf("NormalizeURL('...com/') = %q, NormalizeURL('...com') = %q",
 			normalizedWithSlash, normalizedWithoutSlash)
 		// Test that the actual function works correctly
-		if srv.isTrustedAudience("https://muster.example.com") {
+		if srv.findMatchingTrustedAudience([]string{"https://muster.example.com"}) != "" {
 			t.Log("URL normalization is working correctly")
 		}
 	}
@@ -587,15 +420,15 @@ func TestValidateToken_JWTBeforeUserinfo(t *testing.T) {
 		require.Equal(t, providers.TokenSourceOAuth, userInfo.TokenSource)
 	})
 
-	t.Run("trusted JWT succeeds without userinfo", func(t *testing.T) {
+	t.Run("trusted ID token is refused without userinfo", func(t *testing.T) {
 		h := newForwardedTokenHarness(t)
 		h.provider.ValidateTokenFunc = func(context.Context, string) (*providers.UserInfo, error) {
 			t.Error("a forwarded JWT must not reach userinfo")
 			return nil, ErrUnknownJWTBearer
 		}
 		userInfo, err := h.srv.ValidateToken(t.Context(), h.signToken(t, h.validClaims()))
-		require.NoError(t, err)
-		require.Equal(t, providers.TokenSourceSSO, userInfo.TokenSource)
+		require.ErrorIs(t, err, ErrUnknownJWTBearer)
+		require.Nil(t, userInfo)
 	})
 
 	t.Run("malformed JWT is refused without userinfo", func(t *testing.T) {
@@ -648,7 +481,7 @@ func TestValidateToken_IssuerValidation(t *testing.T) {
 		}
 
 		// Use test JWT with valid structure but invalid signature
-		_, _ = srv.ValidateToken(context.Background(), testJWTWithMusterClientAudience)
+		_, _ = srv.AcceptForwardedIDToken(t.Context(), testJWTWithMusterClientAudience)
 
 		// Verify IssuerURL was called during validation
 		if !issuerCalled {
@@ -672,7 +505,7 @@ func TestValidateToken_IssuerValidation(t *testing.T) {
 		}
 
 		// Use test JWT with valid structure but invalid signature
-		_, _ = srv.ValidateToken(context.Background(), testJWTWithMusterClientAudience)
+		_, _ = srv.AcceptForwardedIDToken(t.Context(), testJWTWithMusterClientAudience)
 
 		// Verify JWKSURI was called
 		if mockProvider.GetCallCount("JWKSURI") == 0 {

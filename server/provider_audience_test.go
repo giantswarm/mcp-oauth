@@ -73,7 +73,7 @@ func TestValidateToken_ProviderJWTAudienceRequired(t *testing.T) {
 	}
 }
 
-func TestValidateToken_AcceptsTrustedProviderJWT(t *testing.T) {
+func TestValidateToken_RejectsTrustedProviderIDToken(t *testing.T) {
 	harness := newForwardedTokenHarness(t)
 	claims := harness.validClaims()
 	claims.Audience = josejwt.Audience{"another-backend", harness.audience}
@@ -83,9 +83,11 @@ func TestValidateToken_AcceptsTrustedProviderJWT(t *testing.T) {
 	}
 
 	userInfo, err := harness.srv.ValidateToken(t.Context(), harness.signToken(t, claims))
+	require.ErrorIs(t, err, ErrUnknownJWTBearer)
+	require.Nil(t, userInfo)
+	acceptance, err := harness.srv.AcceptForwardedIDToken(t.Context(), harness.signToken(t, claims))
 	require.NoError(t, err)
-	require.Equal(t, "user-subject-123", userInfo.ID)
-	require.Equal(t, providers.TokenSourceSSO, userInfo.TokenSource)
+	require.Equal(t, "user-subject-123", acceptance.UserInfo.ID)
 }
 
 func TestValidateToken_ProviderAudiencePreservesStoredTokens(t *testing.T) {
