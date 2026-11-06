@@ -484,15 +484,61 @@ func (c *TokenExchangeClient) buildFormData(req *TokenExchangeRequest) url.Value
 // token endpoint, is described by its status, content type and the start of
 // its body (an HTML page by its title), so the failure names what answered.
 func (c *TokenExchangeClient) parseErrorResponse(statusCode int, contentType string, body []byte) error {
+	exchangeErr := &TokenExchangeError{StatusCode: statusCode, ContentType: contentType}
 	var oauthErr TokenExchangeErrorResponse
 	if err := json.Unmarshal(body, &oauthErr); err == nil && oauthErr.Error != "" {
-		if oauthErr.ErrorDescription != "" {
-			return fmt.Errorf("token exchange failed: %s - %s", oauthErr.Error, oauthErr.ErrorDescription)
-		}
-		return fmt.Errorf("token exchange failed: %s", oauthErr.Error)
+		exchangeErr.Code = oauthErr.Error
+		exchangeErr.Description = oauthErr.ErrorDescription
+		exchangeErr.URI = oauthErr.ErrorURI
+		return exchangeErr
 	}
-	return fmt.Errorf("token exchange failed with status %d (content type %q, not an OAuth error response): %s",
-		statusCode, contentType, bodySnippet(body))
+	exchangeErr.body = bodySnippet(body)
+	return exchangeErr
+}
+
+// TokenExchangeError is a token endpoint's refusal of an exchange: an OAuth
+// error response (RFC 6749 §5.2, used by RFC 8693 §2.2.2), or an answer that
+// is not one, such as a proxy's HTML page. Callers branch on Code, the
+// machine-readable error code; Description is human-readable text and not a
+// contract. Decide whether to retry from StatusCode first: Code is filled from
+// any JSON body with a string "error" member, so a 5xx answer can carry one,
+// either the authorization server's own (Dex answers server_error with a 5xx)
+// or a proxy's JSON error page (Spring Boot answers {"error":"Bad Gateway"}).
+type TokenExchangeError struct {
+	// StatusCode is the HTTP status of the answer.
+	StatusCode int
+	// ContentType is the answer's Content-Type header.
+	ContentType string
+	// Code is the OAuth error code (invalid_request, invalid_client,
+	// invalid_grant, unauthorized_client, unsupported_grant_type,
+	// invalid_scope, invalid_target, ...). Empty when the answer was not an
+	// OAuth error response. It can be set on a 5xx answer; see StatusCode.
+	Code string
+	// Description is the error_description, if any.
+	Description string
+	// URI is the error_uri, if any.
+	URI string
+
+	body string
+}
+
+// IsOAuthError reports whether the answer carried an OAuth error code. On a
+// 5xx answer that code may come from a proxy rather than the authorization
+// server, so it does not mean the authorization server refused the request.
+func (e *TokenExchangeError) IsOAuthError() bool {
+	return e.Code != ""
+}
+
+func (e *TokenExchangeError) Error() string {
+	switch {
+	case e.Code != "" && e.Description != "":
+		return fmt.Sprintf("token exchange failed: %s - %s", e.Code, e.Description)
+	case e.Code != "":
+		return fmt.Sprintf("token exchange failed: %s", e.Code)
+	default:
+		return fmt.Sprintf("token exchange failed with status %d (content type %q, not an OAuth error response): %s",
+			e.StatusCode, e.ContentType, e.body)
+	}
 }
 
 var (

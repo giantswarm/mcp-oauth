@@ -814,3 +814,64 @@ func TestTokenExchangeClient_ExchangeDelegation(t *testing.T) {
 	require.Equal(t, "backend", form.Get("audience"))
 	require.NotContains(t, form, "connector_id")
 }
+
+// A refused exchange returns its OAuth error fields (RFC 6749 §5.2) as a
+// TokenExchangeError, so callers branch on the code rather than the text.
+func TestTokenExchangeClient_ExchangeError(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      int
+		contentType string
+		body        string
+		wantCode    string
+		wantDesc    string
+		wantURI     string
+		wantMessage string
+	}{
+		{
+			name: "OAuth error with description", status: http.StatusBadRequest, contentType: "application/json",
+			body:     `{"error":"invalid_target","error_description":"audience not allowed","error_uri":"https://example.com/e"}`,
+			wantCode: "invalid_target", wantDesc: "audience not allowed", wantURI: "https://example.com/e",
+			wantMessage: "token exchange failed: invalid_target - audience not allowed",
+		},
+		{
+			name: "OAuth error without description", status: http.StatusUnauthorized, contentType: "application/json",
+			body: `{"error":"invalid_client"}`, wantCode: "invalid_client",
+			wantMessage: "token exchange failed: invalid_client",
+		},
+		{
+			name: "not an OAuth error", status: http.StatusBadGateway, contentType: "text/html",
+			body:        "<html><title>502 Bad Gateway</title></html>",
+			wantMessage: `token exchange failed with status 502 (content type "text/html", not an OAuth error response): HTML page "502 Bad Gateway"`,
+		},
+		{
+			name: "proxy JSON error page on a 5xx", status: http.StatusBadGateway, contentType: "application/json",
+			body:     `{"status":502,"error":"Bad Gateway","path":"/token"}`,
+			wantCode: "Bad Gateway", wantMessage: "token exchange failed: Bad Gateway",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", tc.contentType)
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			_, err := newTestTokenExchangeClient(server.Client()).Exchange(t.Context(), TokenExchangeRequest{
+				TokenEndpoint: server.URL,
+				SubjectToken:  "subject",
+			})
+			var exchangeErr *TokenExchangeError
+			require.ErrorAs(t, err, &exchangeErr)
+			require.Equal(t, tc.status, exchangeErr.StatusCode)
+			require.Equal(t, tc.wantCode, exchangeErr.Code)
+			require.Equal(t, tc.wantDesc, exchangeErr.Description)
+			require.Equal(t, tc.wantURI, exchangeErr.URI)
+			require.Equal(t, tc.contentType, exchangeErr.ContentType)
+			require.Equal(t, tc.wantCode != "", exchangeErr.IsOAuthError())
+			require.Equal(t, tc.wantMessage, err.Error())
+		})
+	}
+}
