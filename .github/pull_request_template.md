@@ -56,7 +56,6 @@ Related to #
 - [ ] Updated README.md
 - [ ] Updated godoc comments
 - [ ] Updated examples
-- [ ] Updated CHANGELOG.md
 - [ ] No documentation changes needed
 
 ## Breaking Changes
