@@ -204,6 +204,10 @@ func New(
 	for _, opt := range opts {
 		opt(srv)
 	}
+	if err := srv.initializeConsentCookieKey(cleanupCtx); err != nil {
+		cleanupCancel()
+		return nil, err
+	}
 
 	srv.registerSelfIssuedSubjectValidator()
 

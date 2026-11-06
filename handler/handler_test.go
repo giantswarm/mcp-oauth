@@ -320,3 +320,12 @@ func mustParseURL(t *testing.T, s string) *url.URL {
 	}
 	return u
 }
+
+// trustClient lists clientID as trusted for https://example.com/callback, so
+// its authorization requests skip the consent page.
+func trustClient(srv *server.Server, clientID string) {
+	srv.Config.TrustedClients = append(srv.Config.TrustedClients, server.TrustedClient{
+		ClientID:     clientID,
+		RedirectURIs: []string{"https://example.com/callback"},
+	})
+}

@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -281,7 +283,7 @@ func (s *Server) ValidateRedirectURIForAuthorization(ctx context.Context, client
 	client, err := s.getOrFetchClient(ctx, clientID)
 	if err != nil {
 		s.logAuthFailure(ctx, "", clientID, ErrorCodeInvalidClient)
-		return nil, fmt.Errorf("%s: %w", ErrorCodeInvalidClient, err)
+		return nil, fmt.Errorf("%s: %w: %w", ErrorCodeInvalidClient, ErrClientNotVerified, err)
 	}
 	canonical, err := s.resolveRegisteredRedirectURI(client, redirectURI)
 	if err != nil {
@@ -295,69 +297,155 @@ func (s *Server) ValidateRedirectURIForAuthorization(ctx context.Context, client
 	return parsed, nil
 }
 
-// StartAuthorizationFlow starts a new OAuth authorization flow.
-// redirectURI must be a canonical, registered URI obtained from [ValidateRedirectURIForAuthorization].
-// This function re-runs the registered-URI check as defense-in-depth but the canonical value is what
-// is stored in the authorization state and used as the redirect target.
+// StartAuthorizationFlow checks an authorization request and starts the
+// upstream flow for it. It does not ask the person for consent: a caller
+// serving a browser uses [Server.PrepareAuthorization],
+// [Server.RequiresConsent] and [Server.BeginAuthorization] instead, as
+// handler.ServeAuthorization does.
+//
+// redirectURI must be a canonical, registered URI obtained from [ValidateRedirectURIForAuthorization];
+// it is checked again and is the redirect target stored in the authorization state.
 // clientState is the state parameter from the client (REQUIRED for CSRF protection).
 // resource is the target resource server identifier per RFC 8707 (optional for backward compatibility).
 // authOpts contains optional OIDC parameters (prompt, login_hint, id_token_hint) for upstream IdP forwarding.
 func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID string, redirectURI *url.URL, scope, resource, codeChallenge, codeChallengeMethod, clientState string, authOpts *providers.AuthorizationURLOptions) (string, error) {
+	authorizationRequest, err := s.PrepareAuthorization(ctx, clientID, redirectURI, scope, resource, codeChallenge, codeChallengeMethod, clientState, authOpts)
+	if err != nil {
+		return "", err
+	}
+	return s.beginAuthorization(ctx, authorizationRequest)
+}
+
+// PrepareAuthorization runs every check of an authorization request and
+// returns it with its scopes resolved. It stores nothing, so a request the
+// person has not approved leaves no state behind. The parameters are those of
+// [Server.StartAuthorizationFlow].
+func (s *Server) PrepareAuthorization(ctx context.Context, clientID string, redirectURI *url.URL, scope, resource, codeChallenge, codeChallengeMethod, clientState string, authOpts *providers.AuthorizationURLOptions) (*AuthorizationRequest, error) {
 	// CRITICAL SECURITY: Validate state parameter from client for CSRF protection
 	if err := s.validateClientStateParameter(clientState); err != nil {
 		s.logAuthFailure(ctx, "", clientID, "invalid_state_parameter")
-		return "", fmt.Errorf("oauth security bcp violation: %w", err)
+		return nil, fmt.Errorf("oauth security bcp violation: %w", err)
 	}
 
-	// Generate server-side state if client didn't provide one
-	trackingState := clientState
-	if trackingState == "" {
-		trackingState = generateRandomToken()
-		s.Logger.Debug("Generated server-side state for client without state parameter", paramClientID, clientID)
-	}
-
-	// Validate PKCE parameters
 	if err := s.validatePKCEForAuthFlow(ctx, clientID, codeChallenge, codeChallengeMethod); err != nil {
-		return "", err
+		return nil, err
 	}
 
-	// Validate client - use getOrFetchClient to support URL-based client IDs (CIMD)
-	client, err := s.getOrFetchClient(ctx, clientID)
+	client, err := s.checkClientRedirectURI(ctx, clientID, redirectURI.String())
 	if err != nil {
-		s.logAuthFailure(ctx, "", clientID, ErrorCodeInvalidClient)
-		return "", fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
-	}
-
-	redirectURIStr := redirectURI.String()
-
-	// Validate redirect URI
-	if err := s.validateRedirectURI(client, redirectURIStr); err != nil {
-		s.logAuthFailure(ctx, "", clientID, ErrorCodeInvalidRedirectURI)
-		return "", fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
-	}
-
-	// SECURITY: Authorization-time redirect URI validation (TOCTOU protection)
-	if err := s.ValidateRedirectURIAtAuthorizationTime(ctx, redirectURIStr); err != nil {
-		s.logAuthFailure(ctx, "", clientID, "redirect_uri_security_violation")
-		s.Logger.Warn("Redirect URI failed authorization-time security validation",
-			paramClientID, clientID, "redirect_uri", sanitizeURIForLogging(redirectURIStr), logKeyError, err.Error())
-		return "", fmt.Errorf("%s: redirect URI failed security validation", ErrorCodeInvalidRequest)
+		return nil, err
 	}
 
 	// Resolve scopes - use provider defaults if client didn't provide any
 	scope = s.resolveScopes(ctx, scope, client)
 
-	// Validate scope length, scopes, and client authorization
 	if err := s.validateScopesForAuthFlow(ctx, clientID, scope, client.Scopes); err != nil {
-		return "", err
+		return nil, err
 	}
 
 	// RFC 8707: Validate resource parameter if provided
 	if resource != "" {
 		if err := s.validateResourceParameter(resource); err != nil {
 			s.logAuthFailure(ctx, "", clientID, fmt.Sprintf("invalid_resource: %v", err))
-			return "", fmt.Errorf("%s: resource parameter is invalid: %w", ErrorCodeInvalidRequest, err)
+			return nil, fmt.Errorf("%s: resource parameter is invalid: %w", ErrorCodeInvalidRequest, err)
 		}
+	}
+
+	return &AuthorizationRequest{
+		ClientID:            clientID,
+		RedirectURI:         redirectURI.String(),
+		Scope:               scope,
+		Resource:            resource,
+		State:               clientState,
+		CodeChallenge:       codeChallenge,
+		CodeChallengeMethod: codeChallengeMethod,
+		Options:             authOpts,
+		UpstreamScopes:      s.authorizationScopes(scope, authOpts),
+		ClientName:          client.ClientName,
+		LoopbackOnly:        hasLocalhostRedirectURIsOnly(client.RedirectURIs),
+		checked:             true,
+	}, nil
+}
+
+// BeginAuthorization starts the upstream flow for a request prepared by
+// [Server.PrepareAuthorization]: it stores the authorization state and returns
+// the upstream authorization URL. A request that did not come from
+// PrepareAuthorization, such as one decoded from storage, has its client and
+// redirect URI checked again, since the client's registration may have changed.
+func (s *Server) BeginAuthorization(ctx context.Context, authorizationRequest *AuthorizationRequest) (string, error) {
+	if authorizationRequest.BrowserBinding != "" {
+		if _, ok := s.flowStore.(storage.AuthorizationStateConsumer); !ok {
+			return "", fmt.Errorf("flow store does not support atomic browser callbacks")
+		}
+	}
+	if !authorizationRequest.checked {
+		client, err := s.checkClientRedirectURI(ctx, authorizationRequest.ClientID, authorizationRequest.RedirectURI)
+		if err != nil {
+			return "", err
+		}
+		if err := s.validateScopesForAuthFlow(ctx, authorizationRequest.ClientID, authorizationRequest.Scope, client.Scopes); err != nil {
+			return "", err
+		}
+	}
+	if !sameScopes(authorizationRequest.UpstreamScopes, s.authorizationScopes(authorizationRequest.Scope, authorizationRequest.Options)) {
+		return "", ErrAuthorizationPermissionsChanged
+	}
+	return s.beginAuthorization(ctx, authorizationRequest)
+}
+
+func (s *Server) authorizationScopes(scope string, options *providers.AuthorizationURLOptions) []string {
+	requested := helpers.SplitScopes(scope)
+	if resolver, ok := s.provider.(providers.AuthorizationScopeResolver); ok {
+		return resolver.AuthorizationScopes(requested, options)
+	}
+	if len(requested) == 0 {
+		return s.provider.DefaultScopes()
+	}
+	return requested
+}
+
+func sameScopes(left, right []string) bool {
+	left, right = slices.Clone(left), slices.Clone(right)
+	slices.Sort(left)
+	slices.Sort(right)
+	return slices.Equal(slices.Compact(left), slices.Compact(right))
+}
+
+var ErrAuthorizationPermissionsChanged = errors.New("upstream permissions changed; consent is required again")
+
+// checkClientRedirectURI returns the client after checking that redirectURI is
+// registered for it and passes the authorization-time security check.
+func (s *Server) checkClientRedirectURI(ctx context.Context, clientID, redirectURI string) (*storage.Client, error) {
+	// Validate client - use getOrFetchClient to support URL-based client IDs (CIMD)
+	client, err := s.getOrFetchClient(ctx, clientID)
+	if err != nil {
+		s.logAuthFailure(ctx, "", clientID, ErrorCodeInvalidClient)
+		return nil, fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
+	}
+
+	if err := s.validateRedirectURI(client, redirectURI); err != nil {
+		s.logAuthFailure(ctx, "", clientID, ErrorCodeInvalidRedirectURI)
+		return nil, fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
+	}
+
+	// SECURITY: Authorization-time redirect URI validation (TOCTOU protection)
+	if err := s.ValidateRedirectURIAtAuthorizationTime(ctx, redirectURI); err != nil {
+		s.logAuthFailure(ctx, "", clientID, "redirect_uri_security_violation")
+		s.Logger.Warn("Redirect URI failed authorization-time security validation",
+			paramClientID, clientID, "redirect_uri", sanitizeURIForLogging(redirectURI), logKeyError, err.Error())
+		return nil, fmt.Errorf("%s: redirect URI failed security validation", ErrorCodeInvalidRequest)
+	}
+	return client, nil
+}
+
+// beginAuthorization stores the authorization state for a checked request and
+// returns the upstream authorization URL.
+func (s *Server) beginAuthorization(ctx context.Context, authorizationRequest *AuthorizationRequest) (string, error) {
+	// Generate server-side state if client didn't provide one
+	trackingState := authorizationRequest.State
+	if trackingState == "" {
+		trackingState = generateRandomToken()
+		s.Logger.Debug("Generated server-side state for client without state parameter", paramClientID, authorizationRequest.ClientID)
 	}
 
 	// Generate provider state (different from client state for defense in depth)
@@ -366,23 +454,36 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID string, re
 	// Generate PKCE for server-to-provider leg (OAuth 2.1)
 	providerCodeChallenge, providerCodeVerifier := generatePKCEPair()
 
-	effectiveNonce, authOpts := s.resolveAuthorizationNonce(clientID, scope, authOpts)
+	effectiveNonce, authOpts := s.resolveAuthorizationNonce(authorizationRequest.ClientID, strings.Join(authorizationRequest.UpstreamScopes, " "), authorizationRequest.Options)
+	if authOpts == nil {
+		authOpts = &providers.AuthorizationURLOptions{}
+	} else {
+		copied := *authOpts
+		authOpts = &copied
+	}
+	if authorizationRequest.UpstreamScopes != nil {
+		authOpts.ResolvedScopes = slices.Clone(authorizationRequest.UpstreamScopes)
+	}
 
-	s.logAuthorizationFlowStarted(ctx, clientID, redirectURIStr, scope, codeChallengeMethod, resource, authOpts)
+	s.logAuthorizationFlowStarted(ctx, authorizationRequest.ClientID, authorizationRequest.RedirectURI, authorizationRequest.Scope, authorizationRequest.CodeChallengeMethod, authorizationRequest.Resource, authOpts)
 
 	// Save authorization state with both client and server PKCE parameters and resource binding
 	// Use trackingState (which may be server-generated if client didn't provide state)
 	authState := &storage.AuthorizationState{
 		StateID:              trackingState,
-		OriginalClientState:  clientState, // Empty if client didn't provide state
-		ClientID:             clientID,
-		RedirectURI:          redirectURIStr,
-		Scope:                scope,
-		Resource:             resource, // RFC 8707: Bind authorization to target resource server
-		CodeChallenge:        codeChallenge,
-		CodeChallengeMethod:  codeChallengeMethod,
+		OriginalClientState:  authorizationRequest.State, // Empty if client didn't provide state
+		ClientID:             authorizationRequest.ClientID,
+		RedirectURI:          authorizationRequest.RedirectURI,
+		Scope:                authorizationRequest.Scope,
+		Resource:             authorizationRequest.Resource, // RFC 8707: Bind authorization to target resource server
+		CodeChallenge:        authorizationRequest.CodeChallenge,
+		CodeChallengeMethod:  authorizationRequest.CodeChallengeMethod,
 		ProviderState:        providerState,
 		ProviderCodeVerifier: providerCodeVerifier,
+		BrowserBinding:       hashBrowserBinding(authorizationRequest.BrowserBinding),
+		ConsentApproved:      authorizationRequest.ConsentApproved,
+		UpstreamScopes:       slices.Clone(authorizationRequest.UpstreamScopes),
+		Prompt:               authOpts.Prompt,
 		Nonce:                effectiveNonce,
 		CreatedAt:            time.Now(),
 		ExpiresAt:            time.Now().Add(time.Duration(s.Config.AuthorizationCodeTTL) * time.Second),
@@ -393,11 +494,9 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID string, re
 
 	// Parse scopes to pass to provider
 	// If client didn't request scopes, pass empty slice and provider will use its defaults
-	requestedScopes := helpers.SplitScopes(scope)
+	requestedScopes := helpers.SplitScopes(authorizationRequest.Scope)
 
-	authURL := s.provider.AuthorizationURL(providerState, providerCodeChallenge, "S256", requestedScopes, authOpts)
-
-	return authURL, nil
+	return s.provider.AuthorizationURL(providerState, providerCodeChallenge, "S256", requestedScopes, authOpts), nil
 }
 
 // minClientNonceLength is the lower bound on client-supplied nonce *length*.
@@ -457,31 +556,107 @@ func (s *Server) resolveAuthorizationNonce(clientID, scope string, authOpts *pro
 // Returns: (authorizationCode, clientState, error)
 // clientState is the original state parameter from the client for CSRF validation
 func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code string) (*storage.AuthorizationCode, string, error) {
+	result, err := s.completeProviderCallback(ctx, providerState, code, "", false)
+	if err != nil {
+		return nil, "", err
+	}
+	return s.IssueAuthorizationCode(ctx, result)
+}
+
+// AuthorizationResult holds the validated upstream identity until this user's
+// consent permits issuing a downstream authorization code.
+type AuthorizationResult struct {
+	State      *storage.AuthorizationState
+	User       *providers.UserInfo
+	Token      *oauth2.Token
+	TokenExtra map[string]any
+	Subject    string
+}
+
+func hashBrowserBinding(binding string) string {
+	if binding == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(binding))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// CompleteBrowserAuthorization returns a non-nil result once the callback's
+// state is consumed, including on provider failure, so the caller can retire
+// the browser binding. Only a nil error permits issuing an authorization code.
+func (s *Server) CompleteBrowserAuthorization(ctx context.Context, providerState, code, binding string) (*AuthorizationResult, error) {
+	return s.completeProviderCallback(ctx, providerState, code, binding, true)
+}
+
+// CancelBrowserAuthorization consumes a browser-bound provider error callback
+// without exchanging a code or issuing downstream credentials.
+func (s *Server) CancelBrowserAuthorization(ctx context.Context, providerState, binding string) error {
+	_, err := s.consumeProviderCallback(ctx, providerState, binding, true)
+	return err
+}
+
+func (s *Server) consumeProviderCallback(ctx context.Context, providerState, binding string, browser bool) (*storage.AuthorizationState, error) {
 	authState, err := s.validateAndRetrieveAuthState(ctx, providerState)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-
-	// Save values before deletion
-	clientState := authState.OriginalClientState
-	providerVerifier := authState.ProviderCodeVerifier
-
-	// Delete authorization state (one-time use)
-	_ = s.flowStore.DeleteAuthorizationState(ctx, providerState)
-
-	providerToken, err := s.exchangeCodeWithProvider(ctx, code, providerVerifier, authState, providerState)
+	if browser && !authState.IdentityOnly && (binding == "" || authState.BrowserBinding == "" || subtle.ConstantTimeCompare([]byte(authState.BrowserBinding), []byte(hashBrowserBinding(binding))) != 1) {
+		return nil, ErrBrowserBinding
+	}
+	if consumer, ok := s.flowStore.(storage.AuthorizationStateConsumer); ok {
+		authState, err = consumer.ConsumeAuthorizationState(ctx, providerState)
+	} else if browser && !authState.IdentityOnly {
+		return nil, fmt.Errorf("flow store does not support atomic browser callbacks")
+	} else {
+		err = s.flowStore.DeleteAuthorizationState(ctx, providerState)
+	}
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
+	return authState, nil
+}
 
+func (s *Server) completeProviderCallback(ctx context.Context, providerState, code, binding string, browser bool) (*AuthorizationResult, error) {
+	authState, err := s.consumeProviderCallback(ctx, providerState, binding, browser)
+	if err != nil {
+		return nil, err
+	}
+	result := &AuthorizationResult{State: authState}
+	providerToken, err := s.exchangeCodeWithProvider(ctx, code, authState.ProviderCodeVerifier, authState, providerState)
+	if err != nil {
+		return result, err
+	}
 	if err := s.validateUpstreamIDTokenNonce(ctx, authState, providerToken); err != nil {
-		return nil, "", err
+		return result, err
 	}
-
 	userInfo, err := s.provider.ValidateToken(ctx, providerToken.AccessToken)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to get user info: %w", err)
+		return result, fmt.Errorf("failed to get user info: %w", err)
 	}
+	if userInfo.ID == "" {
+		return result, fmt.Errorf("provider did not supply a subject claim")
+	}
+	issuer := providers.IssuerOf(s.provider)
+	if issuer == "" {
+		issuer = s.provider.Name()
+	}
+	subject := hashBrowserBinding(issuer + "\x00" + userInfo.ID)
+	result.User = userInfo
+	result.Token = providerToken
+	result.TokenExtra = storage.ExtractTokenExtra(providerToken)
+	result.Subject = subject
+	return result, nil
+}
+
+var ErrBrowserBinding = errors.New("authorization callback does not match this browser")
+
+func (s *Server) IssueAuthorizationCode(ctx context.Context, result *AuthorizationResult) (*storage.AuthorizationCode, string, error) {
+	if result == nil || result.State == nil || result.User == nil || result.Token == nil {
+		return nil, "", fmt.Errorf("invalid authorization result")
+	}
+	authState, userInfo := result.State, result.User
+	clientState := authState.OriginalClientState
+	providerToken := result.Token.WithExtra(result.TokenExtra)
 
 	if authState.IdentityOnly {
 		if userInfo.ID == "" {
@@ -493,6 +668,13 @@ func (s *Server) HandleProviderCallback(ctx context.Context, providerState, code
 		}
 		s.logIdentityCodeEvent(ctx, security.EventIdentityCodeIssued, authCodeObj)
 		return authCodeObj, clientState, nil
+	}
+	client, err := s.checkClientRedirectURI(ctx, authState.ClientID, authState.RedirectURI)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := s.validateScopesForAuthFlow(ctx, authState.ClientID, authState.Scope, client.Scopes); err != nil {
+		return nil, "", err
 	}
 
 	if err := s.saveUserInfoAndToken(ctx, userInfo, providerToken); err != nil {

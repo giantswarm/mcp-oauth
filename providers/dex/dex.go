@@ -529,15 +529,22 @@ func (p *Provider) AuthorizationURL(state string, codeChallenge string, codeChal
 	// audience:server:client_id:*) from defaults via CopyScopes internally.
 	// The defaults come from effectiveScopes, not from the Scopes field, so an
 	// audience that Config.AudienceResolver reports after startup is merged too.
-	scopesToUse := providers.FilterScopes(scopes, p.effectiveScopes(), isDexSupportedScope)
-	if authOpts != nil && authOpts.IdentityOnly {
-		scopesToUse = []string{scopeOpenID}
-	}
+	scopesToUse := p.AuthorizationScopes(scopes, authOpts)
 
 	// Create a config with the determined scopes
 	config := *p.Config
 	config.Scopes = scopesToUse
 	return config.AuthCodeURL(state, authCodeOpts...)
+}
+
+func (p *Provider) AuthorizationScopes(scopes []string, opts *providers.AuthorizationURLOptions) []string {
+	if opts != nil && opts.IdentityOnly {
+		return []string{scopeOpenID}
+	}
+	if opts != nil && opts.ResolvedScopes != nil {
+		return providers.CloneScopes(opts.ResolvedScopes)
+	}
+	return providers.FilterScopes(scopes, p.effectiveScopes(), isDexSupportedScope)
 }
 
 // ensureOpenIDScope guarantees that "openid" is present in the scope list.

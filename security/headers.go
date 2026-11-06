@@ -109,3 +109,12 @@ func SetInterstitialSecurityHeaders(w http.ResponseWriter, serverURL string) {
 	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, private")
 	w.Header().Set("Pragma", "no-cache")
 }
+
+// SetConsentPageSecurityHeaders sets the headers of the consent page: no
+// script, no framing, inline styles and https or data images for branding.
+// The CSP has no form-action directive because browsers apply it to the
+// redirect that follows the form submission, which goes to another origin.
+func SetConsentPageSecurityHeaders(w http.ResponseWriter, serverURL string) {
+	SetSecurityHeaders(w, serverURL)
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src https: data:; frame-ancestors 'none'; base-uri 'none'")
+}

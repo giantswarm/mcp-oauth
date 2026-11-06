@@ -5,6 +5,7 @@ go 1.26.0
 toolchain go1.27.3
 
 require (
+	code.dny.dev/ssrf v0.3.0
 	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/prometheus/client_golang v1.25.0
 	github.com/stretchr/testify v1.12.1

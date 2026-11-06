@@ -3,7 +3,9 @@ package security
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -115,8 +117,9 @@ func (r *singleKeyRing) AEAD(kid byte) (cipher.AEAD, error) {
 // Encryptor handles token encryption at rest using AES-256-GCM. Emits v1
 // envelopes; decrypts v0 (legacy) and v1.
 type Encryptor struct {
-	ring    KeyRing
-	enabled bool
+	ring        KeyRing
+	enabled     bool
+	consentRoot []byte
 }
 
 // NewEncryptor creates a new encryptor.
@@ -140,7 +143,20 @@ func NewEncryptor(key []byte) (*Encryptor, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Encryptor{ring: ring, enabled: true}, nil
+	consentRoot, err := hkdf.Key(sha256.New, key, nil, "mcp-oauth consent root v1", 32)
+	if err != nil {
+		return nil, fmt.Errorf("derive consent root: %w", err)
+	}
+	return &Encryptor{ring: ring, enabled: true, consentRoot: consentRoot}, nil
+}
+
+// ConsentCookieKey derives an issuer-specific key without exposing the token
+// encryption key. Key rings without derivation material return no key.
+func (e *Encryptor) ConsentCookieKey(issuer string) ([]byte, error) {
+	if e == nil || len(e.consentRoot) == 0 {
+		return nil, nil
+	}
+	return hkdf.Key(sha256.New, e.consentRoot, []byte(issuer), "mcp-oauth consent cookies v1", 32)
 }
 
 // Encrypt encrypts plaintext using AES-256-GCM. The output is a base64-encoded
@@ -163,9 +179,7 @@ func (e *Encryptor) Encrypt(plaintext string) (out string, err error) {
 		return "", fmt.Errorf("failed to generate nonce: %w", err)
 	}
 
-	// envelope: 0x01 || kid || nonce || ct
-	envelope := make([]byte, 0, 2+aead.NonceSize()+len(plaintext)+aead.Overhead())
-	envelope = append(envelope, envelopeV1Tag, kid)
+	envelope := []byte{envelopeV1Tag, kid}
 	envelope = append(envelope, nonce...)
 	envelope = aead.Seal(envelope, nonce, []byte(plaintext), nil)
 	return base64.StdEncoding.EncodeToString(envelope), nil

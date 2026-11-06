@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer">
+    <title>Allow access to {{.IssuerHost}}?</title>
+    {{template "style" .}}
+</head>
+<body>
+<main class="container">
+    {{if .LogoURL}}<img src="{{.LogoURL}}" alt="{{.LogoAlt}}" class="logo">{{end}}
+    <h1>
+        Allow <span class="host">{{if .ClientHost}}{{.ClientHost}}{{else}}{{.RedirectHost}}{{end}}</span>
+        to access <span class="host">{{.IssuerHost}}</span> as you?
+    </h1>
+    {{if .ClientName}}<p class="muted">It calls itself “{{.ClientName}}”. The client chooses this name itself.</p>{{end}}
+    {{if .Account}}<p>Signed in as <strong>{{.Account}}</strong>. This account has not approved this client.</p>{{end}}
+
+    <section>
+        <h2>Your sign-in will be sent to</h2>
+        <p class="target">{{.RedirectHost}}</p>
+        <p class="muted uri">{{.RedirectURI}}</p>
+    </section>
+
+    {{if .LoopbackOnly}}
+    <section class="warning" role="alert">
+        <h2>This client runs on your computer</h2>
+        <p>Any program on this computer can use this client's name. Allow only if you started this sign-in yourself, just now.</p>
+    </section>
+    {{end}}
+
+    {{if or .Scopes .Resource}}
+    <section>
+        <h2>Permissions requested from your identity provider</h2>
+        {{if .Scopes}}<ul>{{range .Scopes}}<li><code>{{.}}</code></li>{{end}}</ul>{{end}}
+        {{if .Resource}}<p class="muted">For <code>{{.Resource}}</code></p>{{end}}
+    </section>
+    {{end}}
+
+    {{if .MCPScopes}}<section><h2>MCP access requested</h2><ul>{{range .MCPScopes}}<li><code>{{.}}</code></li>{{end}}</ul></section>{{end}}
+
+    <p>Allow only if you started this sign-in and recognise <strong>{{.RedirectHost}}</strong>.</p>
+
+    <form method="post" action="{{.Action}}">
+        <input type="hidden" name="consent_id" value="{{.ConsentID}}">
+        <div class="actions">
+            <button type="submit" name="decision" value="deny" class="secondary">Deny</button>
+            <button type="submit" name="decision" value="approve" class="primary">Allow</button>
+        </div>
+    </form>
+</main>
+</body>
+</html>
+{{define "denied"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer">
+    <title>Access denied</title>
+    {{template "style" .}}
+</head>
+<body>
+<main class="container">
+    {{if .LogoURL}}<img src="{{.LogoURL}}" alt="{{.LogoAlt}}" class="logo">{{end}}
+    <h1>Access denied</h1>
+    <p>The client did not get access. You can close this window.</p>
+    {{if .ReturnURL}}<p class="muted">If the client is still waiting, you can <a href="{{.ReturnURL}}">tell {{.ReturnHost}} that you denied access</a>.</p>{{end}}
+</main>
+</body>
+</html>
+{{end}}
+{{define "style"}}<style>
+        :root {
+            --primary-color: {{if .PrimaryColor}}{{.PrimaryColor}}{{else}}#007a4d{{end}};
+            --bg-gradient: {{if .BackgroundGradient}}{{.BackgroundGradient}}{{else}}linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%){{end}};
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: var(--bg-gradient);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            line-height: 1.5;
+        }
+        .container { padding: 2rem 1rem; max-width: 520px; width: 100%; }
+        .logo { max-height: 64px; max-width: 200px; margin: 0 auto 1.5rem; display: block; }
+        h1 { font-size: 1.5rem; font-weight: 600; margin-bottom: 0.75rem; overflow-wrap: anywhere; }
+        h2 { font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: rgba(255, 255, 255, 0.8); margin-bottom: 0.25rem; }
+        section { margin: 1.25rem 0; }
+        p { margin-bottom: 0.75rem; overflow-wrap: anywhere; }
+        .host { color: #fff; text-decoration: underline; text-underline-offset: 0.2em; }
+        .target { font-size: 1.75rem; font-weight: 700; margin-bottom: 0.25rem; overflow-wrap: anywhere; }
+        .muted { color: rgba(255, 255, 255, 0.8); font-size: 0.9375rem; }
+        .uri { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8125rem; }
+        ul { list-style: none; display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem; }
+        code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: rgba(255, 255, 255, 0.12); padding: 0.125rem 0.375rem; border-radius: 4px; }
+        .warning { background: rgba(255, 193, 7, 0.15); border: 1px solid #ffc107; border-radius: 8px; padding: 0.75rem 1rem; }
+        .warning h2 { color: #ffd54f; }
+        .actions { display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 1.5rem; }
+        button { font: inherit; font-weight: 600; padding: 0.75rem 1.5rem; border-radius: 8px; cursor: pointer; min-width: 7rem; }
+        button:focus-visible, a:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+        .primary { background: var(--primary-color); color: #fff; border: 1px solid var(--primary-color); }
+        .secondary { background: transparent; color: #fff; border: 1px solid rgba(255, 255, 255, 0.6); }
+        a { color: #fff; }
+        {{.CustomCSS}}
+    </style>{{end}}

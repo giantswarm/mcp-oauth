@@ -29,6 +29,10 @@
 //   - OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS     (default false) — RFC 8252 native-app loopback support
 //   - OAUTH_TRUSTED_REDIRECT_SCHEMES          — comma-separated URI schemes (e.g. "cursor,vscode")
 //     populates server.Config.TrustedPublicRegistrationSchemes
+//   - OAUTH_TRUSTED_CLIENTS                   — JSON array of {"client_id", "redirect_uris"}
+//     objects; populates server.Config.TrustedClients (clients that skip the consent page)
+//   - OAUTH_CONSENT_COOKIE_KEY                — 32-byte AES-GCM key for the consent cookies,
+//     base64 or hex; optional override of the store's automatic issuer-specific key
 //
 // Defaults are not applied in this package. [FromEnv] only populates the
 // fields it reads; server.New runs applyDefaults afterwards and is the single
@@ -45,6 +49,7 @@
 //   - OAUTH_REGISTRATION_ACCESS_TOKEN_FILE
 //   - OAUTH_ENCRYPTION_KEY_FILE
 //   - OAUTH_SESSION_ID_HMAC_KEY_FILE
+//   - OAUTH_CONSENT_COOKIE_KEY_FILE
 //
 // OAUTH_TRUSTED_AUDIENCES deliberately has NO _FILE variant — audience
 // identifiers are not secrets. The asymmetry is intentional; the list lives in

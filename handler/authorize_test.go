@@ -53,7 +53,7 @@ func TestHandler_ServeAuthorization_MissingParams(t *testing.T) {
 }
 
 func TestHandler_ServeAuthorization_CompleteFlow(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
@@ -72,6 +72,7 @@ func TestHandler_ServeAuthorization_CompleteFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterClient() error = %v", err)
 	}
+	trustClient(handler.server, client.ClientID)
 
 	// Generate valid PKCE challenge
 	verifier := testutil.GenerateRandomString(50)
@@ -106,7 +107,7 @@ func TestHandler_ServeAuthorization_CompleteFlow(t *testing.T) {
 }
 
 func TestHandler_ServeAuthorization_NonceTooLong(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
@@ -157,7 +158,7 @@ func TestHandler_ServeAuthorization_NonceTooLong(t *testing.T) {
 // requirements (max_age), and authentication context (acr_values).
 // See: OpenID Connect Core 1.0 Section 3.1.2.1
 func TestHandler_ServeAuthorization_OIDCParameterForwarding(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	tests := []struct {
 		name            string
@@ -334,6 +335,7 @@ func TestHandler_ServeAuthorization_OIDCParameterForwarding(t *testing.T) {
 			if err != nil {
 				t.Fatalf("RegisterClient() error = %v", err)
 			}
+			trustClient(srv, client.ClientID)
 
 			// Generate valid PKCE challenge
 			verifier := testutil.GenerateRandomString(50)
@@ -652,7 +654,7 @@ func TestValidatePrompt(t *testing.T) {
 }
 
 func TestHandler_ServeCallback(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
@@ -678,7 +680,7 @@ func TestHandler_ServeCallback(t *testing.T) {
 
 	// State must be at least 32 characters for security
 	clientState := testutil.GenerateRandomString(43)
-	authURL, err := handler.server.StartAuthorizationFlow(
+	authURL, err := startBoundAuthorization(handler.server,
 		ctx,
 		client.ClientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -710,7 +712,7 @@ func TestHandler_ServeCallback(t *testing.T) {
 		nil)
 	w := httptest.NewRecorder()
 
-	handler.ServeCallback(w, req)
+	serveBoundCallback(handler, w, req)
 
 	// Should redirect to client with authorization code
 	if w.Code != http.StatusFound && w.Code != http.StatusSeeOther {
@@ -747,11 +749,10 @@ func TestHandler_ServeCallback_InvalidState(t *testing.T) {
 		nil)
 	w := httptest.NewRecorder()
 
-	handler.ServeCallback(w, req)
+	serveBoundCallback(handler, w, req)
 
-	// Handler returns 500 for invalid state (internal error)
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
 }
 
@@ -782,7 +783,7 @@ func TestHandler_ServeCallback_MissingParams(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
 			w := httptest.NewRecorder()
 
-			handler.ServeCallback(w, req)
+			serveBoundCallback(handler, w, req)
 
 			if w.Code != http.StatusBadRequest {
 				t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
@@ -792,7 +793,7 @@ func TestHandler_ServeCallback_MissingParams(t *testing.T) {
 }
 
 func TestHandler_ServeAuthorization_StateLength(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
@@ -811,6 +812,7 @@ func TestHandler_ServeAuthorization_StateLength(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterClient() error = %v", err)
 	}
+	trustClient(handler.server, client.ClientID)
 
 	tests := []struct {
 		name           string
@@ -895,7 +897,7 @@ func TestHandler_ServeCallback_StateLength(t *testing.T) {
 		{
 			name:       "state exactly minimum length (22 chars) - will fail with invalid state since not in storage",
 			state:      "0123456789012345678901",
-			wantStatus: http.StatusInternalServerError, // Will fail at state lookup, but passed length validation
+			wantStatus: http.StatusBadRequest,
 		},
 	}
 
@@ -905,7 +907,7 @@ func TestHandler_ServeCallback_StateLength(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, url, nil)
 			w := httptest.NewRecorder()
 
-			handler.ServeCallback(w, req)
+			serveBoundCallback(handler, w, req)
 
 			if w.Code != tt.wantStatus {
 				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
@@ -915,7 +917,7 @@ func TestHandler_ServeCallback_StateLength(t *testing.T) {
 }
 
 func TestHandler_ServeAuthorization_ShortStateWithAllowNoState(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	handler, store := setupTestHandlerWithAllowNoState(t)
 	defer store.Stop()
@@ -933,6 +935,7 @@ func TestHandler_ServeAuthorization_ShortStateWithAllowNoState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterClient() error = %v", err)
 	}
+	trustClient(handler.server, client.ClientID)
 
 	tests := []struct {
 		name       string
@@ -973,7 +976,7 @@ func TestHandler_ServeAuthorization_ShortStateWithAllowNoState(t *testing.T) {
 }
 
 func TestHandler_ServeAuthorization_NoResponseType_Rejected(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
@@ -990,6 +993,7 @@ func TestHandler_ServeAuthorization_NoResponseType_Rejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterClient() error = %v", err)
 	}
+	trustClient(handler.server, client.ClientID)
 
 	validState := testutil.GenerateRandomString(43)
 
@@ -1026,7 +1030,7 @@ func TestHandler_ServeAuthorization_NoResponseType_Rejected(t *testing.T) {
 }
 
 func TestHandler_ServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
@@ -1043,6 +1047,7 @@ func TestHandler_ServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *tes
 	if err != nil {
 		t.Fatalf("RegisterClient() error = %v", err)
 	}
+	trustClient(handler.server, client.ClientID)
 
 	tests := []struct {
 		name      string
@@ -1157,7 +1162,7 @@ func TestHandler_ServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *tes
 // 302 redirect; respondAuthorizationError must fall back to JSON 400 for
 // those clients rather than attempt a Location redirect.
 func TestHandler_ServeAuthorization_CustomSchemeRedirectURI_FallsBackToJSON(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
@@ -1229,7 +1234,7 @@ func TestHandler_ServeCallback_ShortProviderStateAlwaysRejected(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, url, nil)
 			w := httptest.NewRecorder()
 
-			handler.ServeCallback(w, req)
+			serveBoundCallback(handler, w, req)
 
 			if w.Code != http.StatusBadRequest {
 				t.Errorf("short provider state should be rejected at validation layer, got status %d, want %d", w.Code, http.StatusBadRequest)
@@ -1471,7 +1476,7 @@ func TestGetAppNameFromScheme(t *testing.T) {
 // TestHandler_ServeCallback_CustomURLScheme tests that custom URL schemes
 // receive an interstitial page instead of a direct redirect
 func TestHandler_ServeCallback_CustomURLScheme(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
@@ -1497,7 +1502,7 @@ func TestHandler_ServeCallback_CustomURLScheme(t *testing.T) {
 
 	// State must be at least 32 characters for security
 	clientState := testutil.GenerateRandomString(43)
-	_, err = handler.server.StartAuthorizationFlow(
+	_, err = startBoundAuthorization(handler.server,
 		ctx,
 		client.ClientID,
 		mustParseURL(t, "cursor://oauth/callback"),
@@ -1524,7 +1529,7 @@ func TestHandler_ServeCallback_CustomURLScheme(t *testing.T) {
 		nil)
 	w := httptest.NewRecorder()
 
-	handler.ServeCallback(w, req)
+	serveBoundCallback(handler, w, req)
 
 	// Should return HTML interstitial, NOT a redirect
 	if w.Code != http.StatusOK {
@@ -1586,7 +1591,7 @@ func TestHandler_ServeCallback_CustomURLScheme(t *testing.T) {
 // TestHandler_ServeCallback_HTTPScheme tests that HTTP/HTTPS schemes
 // still use direct redirects (not interstitial)
 func TestHandler_ServeCallback_HTTPScheme(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
@@ -1611,7 +1616,7 @@ func TestHandler_ServeCallback_HTTPScheme(t *testing.T) {
 	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	clientState := testutil.GenerateRandomString(43)
-	_, err = handler.server.StartAuthorizationFlow(
+	_, err = startBoundAuthorization(handler.server,
 		ctx,
 		client.ClientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -1637,7 +1642,7 @@ func TestHandler_ServeCallback_HTTPScheme(t *testing.T) {
 		nil)
 	w := httptest.NewRecorder()
 
-	handler.ServeCallback(w, req)
+	serveBoundCallback(handler, w, req)
 
 	// Should redirect, NOT return HTML interstitial
 	if w.Code != http.StatusFound && w.Code != http.StatusSeeOther {
@@ -1664,7 +1669,7 @@ func TestHandler_ServeCallback_HTTPScheme(t *testing.T) {
 
 // TestHandler_ServeCallback_VSCodeScheme tests VS Code custom scheme handling
 func TestHandler_ServeCallback_VSCodeScheme(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
@@ -1688,7 +1693,7 @@ func TestHandler_ServeCallback_VSCodeScheme(t *testing.T) {
 	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
 	clientState := testutil.GenerateRandomString(43)
 
-	_, err = handler.server.StartAuthorizationFlow(
+	_, err = startBoundAuthorization(handler.server,
 		ctx,
 		client.ClientID,
 		mustParseURL(t, "vscode://example.extension/callback"),
@@ -1713,7 +1718,7 @@ func TestHandler_ServeCallback_VSCodeScheme(t *testing.T) {
 		nil)
 	w := httptest.NewRecorder()
 
-	handler.ServeCallback(w, req)
+	serveBoundCallback(handler, w, req)
 
 	// Should return interstitial
 	if w.Code != http.StatusOK {
@@ -2009,7 +2014,7 @@ func TestHandler_ServeSuccessInterstitial_CustomHandler(t *testing.T) {
 
 // TestInterstitialContextHelpers tests the context helper functions
 func TestInterstitialContextHelpers(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Test with empty context
 	if got := InterstitialRedirectURL(ctx); got != "" {
@@ -2033,7 +2038,7 @@ func TestInterstitialContextHelpers(t *testing.T) {
 
 // TestHandler_ServeCallback_CustomURLScheme_WithBranding tests callback with branding
 func TestHandler_ServeCallback_CustomURLScheme_WithBranding(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := memory.New()
 	defer store.Stop()
 
@@ -2078,7 +2083,7 @@ func TestHandler_ServeCallback_CustomURLScheme_WithBranding(t *testing.T) {
 	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
 	clientState := testutil.GenerateRandomString(43)
 
-	_, err = srv.StartAuthorizationFlow(
+	_, err = startBoundAuthorization(srv,
 		ctx,
 		client.ClientID,
 		mustParseURL(t, "cursor://oauth/callback"),
@@ -2103,7 +2108,7 @@ func TestHandler_ServeCallback_CustomURLScheme_WithBranding(t *testing.T) {
 		nil)
 	w := httptest.NewRecorder()
 
-	handler.ServeCallback(w, req)
+	serveBoundCallback(handler, w, req)
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d for custom URL scheme with branding", w.Code, http.StatusOK)
@@ -2169,4 +2174,21 @@ func TestHandler_ServeSuccessInterstitial_AppNamePlaceholder(t *testing.T) {
 	if !strings.Contains(body, "Open Cursor") {
 		t.Error("Response should contain 'Open Cursor' (AppName replaced in button)")
 	}
+}
+
+const callbackTestBinding = "browser-binding-12345678901234567890"
+
+func startBoundAuthorization(authorizationServer *server.Server, ctx context.Context, clientID string, redirectURI *url.URL, scope, resource, challenge, method, state string, options *providers.AuthorizationURLOptions) (string, error) {
+	request, err := authorizationServer.PrepareAuthorization(ctx, clientID, redirectURI, scope, resource, challenge, method, state, options)
+	if err != nil {
+		return "", err
+	}
+	request.BrowserBinding = callbackTestBinding
+	request.ConsentApproved = true
+	return authorizationServer.BeginAuthorization(ctx, request)
+}
+
+func serveBoundCallback(handler *Handler, response *httptest.ResponseRecorder, request *http.Request) {
+	request.AddCookie(handler.consent.cookie(handler.consent.flowName(request.URL.Query().Get("state")), callbackTestBinding, consentPendingTTL))
+	handler.ServeCallback(response, request)
 }

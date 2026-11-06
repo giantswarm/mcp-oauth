@@ -26,6 +26,15 @@ const (
 	// EventAuthorizationFlowStarted is logged when an authorization flow is initiated
 	EventAuthorizationFlowStarted = "authorization_flow_started"
 
+	// EventClientConsentShown is logged when the consent page is shown for a client
+	EventClientConsentShown = "client_consent_shown"
+
+	// EventClientConsentApproved is logged when the person approves a client on the consent page
+	EventClientConsentApproved = "client_consent_approved"
+
+	// EventClientConsentDenied is logged when the person denies a client on the consent page
+	EventClientConsentDenied = "client_consent_denied"
+
 	// EventAuthorizationCodeIssued is logged when an authorization code is issued
 	EventAuthorizationCodeIssued = "authorization_code_issued"
 

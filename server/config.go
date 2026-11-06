@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/giantswarm/mcp-oauth/security"
 )
 
 // ErrMissingIssuer is returned by Config.Validate when Config.Issuer is empty (RFC 8414 §2).
@@ -890,6 +892,22 @@ type Config struct {
 	// Default: false (disabled for backward compatibility)
 	EnableClientIDMetadataDocuments bool
 
+	// TrustedClients lists the clients whose authorization requests skip the
+	// consent page, each with the exact https redirect URIs it may use. Every
+	// other client, whether a Client ID Metadata Document URL or dynamically
+	// registered, gets the consent page before the upstream identity provider.
+	// Loopback redirect URIs cannot be listed. New refuses an invalid entry.
+	//
+	// Default: empty (every client gets the consent page)
+	TrustedClients []TrustedClient
+
+	// ConsentCookieKey optionally overrides the 32-byte AES-256-GCM key for
+	// remembered grants and pending consent payloads. Replicas of one issuer
+	// must use the same key. The memory and Valkey stores derive it from their
+	// encryption key with HKDF; without encryption they keep a generated key
+	// in the shared store. No additional configuration is required.
+	ConsentCookieKey []byte
+
 	// ClientMetadataFetchTimeout is the timeout for fetching client metadata from URL-based client_ids
 	// This prevents indefinite blocking if a metadata URL is slow or unresponsive
 	// Default: 10 seconds
@@ -1201,6 +1219,16 @@ func (c *Config) Validate() error {
 
 	if err := c.validateIntrospectionResourceServers(); err != nil {
 		return err
+	}
+
+	if err := validateTrustedClients(c.TrustedClients); err != nil {
+		return err
+	}
+
+	if len(c.ConsentCookieKey) > 0 {
+		if _, err := security.NewEncryptor(c.ConsentCookieKey); err != nil {
+			return fmt.Errorf("ConsentCookieKey: %w", err)
+		}
 	}
 
 	switch c.ForwardedSessionIdentity {

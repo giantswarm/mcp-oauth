@@ -1,6 +1,7 @@
 package oauthconfig
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -93,6 +94,10 @@ func FromEnvWithPrefix(prefix string) (*server.Config, error) {
 		return nil, err
 	}
 
+	if err := loadConsentFromEnv(prefix, cfg); err != nil {
+		return nil, err
+	}
+
 	cfg.AllowLocalhostRedirectURIs, err = optionalBool(prefix+"ALLOW_LOCALHOST_REDIRECT_URIS", false)
 	if err != nil {
 		return nil, err
@@ -114,6 +119,33 @@ func loadTrustedAllowlistsFromEnv(prefix string, cfg *server.Config) error {
 }
 
 // loadCSVIfSet writes splitAndTrim(value, ",") into dst when the named env var is set.
+// loadConsentFromEnv reads TRUSTED_CLIENTS, a JSON array of
+// {"client_id": ..., "redirect_uris": [...]} objects, and CONSENT_COOKIE_KEY
+// (or CONSENT_COOKIE_KEY_FILE), a 32-byte key in base64 or hex.
+func loadConsentFromEnv(prefix string, cfg *server.Config) error {
+	if raw := os.Getenv(prefix + "TRUSTED_CLIENTS"); raw != "" {
+		dec := json.NewDecoder(strings.NewReader(raw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&cfg.TrustedClients); err != nil {
+			return fmt.Errorf("%sTRUSTED_CLIENTS: %w", prefix, err)
+		}
+	}
+
+	raw, err := optionalSecret(prefix + "CONSENT_COOKIE_KEY")
+	if err != nil {
+		return err
+	}
+	if raw == "" {
+		return nil
+	}
+	key, err := decodeSymmetricKey(raw)
+	if err != nil {
+		return fmt.Errorf("%sCONSENT_COOKIE_KEY: %w", prefix, err)
+	}
+	cfg.ConsentCookieKey = key
+	return nil
+}
+
 func loadCSVIfSet(name string, dst *[]string) {
 	if raw := os.Getenv(name); raw != "" {
 		*dst = splitAndTrim(raw, ",")
