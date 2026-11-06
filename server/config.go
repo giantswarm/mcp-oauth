@@ -597,7 +597,8 @@ type Config struct {
 	AllowLocalhostRedirectURIs bool
 
 	// AllowPrivateIPRedirectURIs allows redirect URIs that resolve to private IP addresses
-	// (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 per RFC 1918).
+	// (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 per RFC 1918,
+	// and IPv6 unique-local fc00::/7 per RFC 4193).
 	// WARNING: Enables SSRF attacks to internal networks if not properly secured.
 	// Only enable for internal/VPN deployments where clients legitimately use private IPs.
 	// Default: false (blocked for security)
@@ -606,8 +607,9 @@ type Config struct {
 	AllowPrivateIPRedirectURIs bool
 
 	// AllowPrivateIPRedirectURIHosts lists the hostnames whose redirect URIs
-	// may resolve to private IP addresses (RFC 1918). Every other host keeps the
-	// DNS rebinding guard, at registration and, with
+	// may resolve to private IPv4 addresses (RFC 1918) or IPv6 unique-local
+	// addresses (RFC 4193). Every other host keeps the DNS rebinding guard,
+	// at registration and, with
 	// ValidateRedirectURIAtAuthorization, at authorization. Entries match the
 	// redirect URI's hostname exactly (no port, no wildcard), like
 	// AllowPrivateIPClientMetadataHosts. A literal IP redirect URI is not
