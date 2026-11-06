@@ -436,6 +436,7 @@ The following security controls are **automatically enabled**:
 | `ValidateRedirectURIAtAuthorization` | `true` | Re-validate at authorization time (TOCTOU protection) |
 | `AllowLocalhostRedirectURIs` | `false` | Loopback blocked by default (set to `true` for native apps) |
 | `AllowPrivateIPRedirectURIs` | `false` | RFC 1918 private IPs blocked |
+| `AllowPrivateIPRedirectURIHosts` | empty | Hostnames whose redirect URIs may resolve to RFC 1918 IPs; every other host stays blocked |
 | `AllowLinkLocalRedirectURIs` | `false` | 169.254.x.x/fe80:: blocked (cloud SSRF) |
 
 **Note for Native/CLI App Support:** If your OAuth server needs to support native applications (desktop apps, CLI tools), you must set `AllowLocalhostRedirectURIs: true` per [RFC 8252 Section 7.3](https://datatracker.ietf.org/doc/html/rfc8252#section-7.3). This allows HTTP on loopback addresses (`localhost`, `127.x.x.x`, `::1`) which is required for native app OAuth flows.
@@ -449,7 +450,11 @@ config := &server.Config{
     // Native app support (RFC 8252) - allows HTTP on localhost/loopback
     AllowLocalhostRedirectURIs: true,
 
-    // Internal/VPN deployments - allows RFC 1918 private IPs
+    // A known client's callback on a private hostname - allows RFC 1918
+    // private IPs for the listed hostnames only (exact match, no port)
+    AllowPrivateIPRedirectURIHosts: []string{"gateway.internal.example.com"},
+
+    // Internal/VPN deployments - allows RFC 1918 private IPs for every host
     // WARNING: Enables SSRF to internal networks
     AllowPrivateIPRedirectURIs: true,
 

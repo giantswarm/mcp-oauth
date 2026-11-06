@@ -953,6 +953,58 @@ func TestDNSValidationWithMockResolver(t *testing.T) {
 		}
 	})
 
+	t.Run("DNS resolves to private IP - allowed for a listed host only", func(t *testing.T) {
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: true,
+			allowLocalhost: true,
+			dnsValidation:  true,
+		})
+		server.Config.AllowPrivateIPRedirectURIHosts = []string{"gateway.internal.example.com"}
+		resolver := newMockDNSResolver()
+		resolver.setResult("gateway.internal.example.com", net.ParseIP("10.96.0.10"))
+		resolver.setResult("other.internal.example.com", net.ParseIP("10.96.0.11"))
+		server.Config.DNSResolver = resolver.resolver()
+
+		if err := server.ValidateRedirectURIForRegistration(ctx, "https://gateway.internal.example.com/callback"); err != nil {
+			t.Errorf("Expected no error for a listed host, got %v", err)
+		}
+		err := server.ValidateRedirectURIForRegistration(ctx, "https://other.internal.example.com/callback")
+		if GetRedirectURIErrorCategory(err) != RedirectURIErrorCategoryDNSPrivateIP {
+			t.Errorf("Expected category %s for an unlisted host, got %v", RedirectURIErrorCategoryDNSPrivateIP, err)
+		}
+	})
+
+	t.Run("listed host does not lift the link-local guard", func(t *testing.T) {
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: true,
+			allowLocalhost: true,
+			dnsValidation:  true,
+		})
+		server.Config.AllowPrivateIPRedirectURIHosts = []string{"metadata.internal.example.com"}
+		resolver := newMockDNSResolver()
+		resolver.setResult("metadata.internal.example.com", net.ParseIP("169.254.169.254"))
+		server.Config.DNSResolver = resolver.resolver()
+
+		err := server.ValidateRedirectURIForRegistration(ctx, "https://metadata.internal.example.com/callback")
+		if GetRedirectURIErrorCategory(err) != RedirectURIErrorCategoryDNSLinkLocal {
+			t.Errorf("Expected category %s, got %v", RedirectURIErrorCategoryDNSLinkLocal, err)
+		}
+	})
+
+	t.Run("listed host does not cover a literal private IP", func(t *testing.T) {
+		server := newTestServerWithSecurityConfig(testSecurityConfig{
+			productionMode: true,
+			allowLocalhost: true,
+			dnsValidation:  true,
+		})
+		server.Config.AllowPrivateIPRedirectURIHosts = []string{"10.0.0.5"}
+
+		err := server.ValidateRedirectURIForRegistration(ctx, "https://10.0.0.5/callback")
+		if GetRedirectURIErrorCategory(err) != RedirectURIErrorCategoryPrivateIP {
+			t.Errorf("Expected category %s, got %v", RedirectURIErrorCategoryPrivateIP, err)
+		}
+	})
+
 	t.Run("DNS resolves to link-local IP - blocked", func(t *testing.T) {
 		server := newTestServerWithSecurityConfig(testSecurityConfig{
 			productionMode: true,

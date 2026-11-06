@@ -601,7 +601,26 @@ type Config struct {
 	// WARNING: Enables SSRF attacks to internal networks if not properly secured.
 	// Only enable for internal/VPN deployments where clients legitimately use private IPs.
 	// Default: false (blocked for security)
+	//
+	// Prefer AllowPrivateIPRedirectURIHosts when only known hosts are private.
 	AllowPrivateIPRedirectURIs bool
+
+	// AllowPrivateIPRedirectURIHosts lists the hostnames whose redirect URIs
+	// may resolve to private IP addresses (RFC 1918). Every other host keeps the
+	// DNS rebinding guard, at registration and, with
+	// ValidateRedirectURIAtAuthorization, at authorization. Entries match the
+	// redirect URI's hostname exactly (no port, no wildcard), like
+	// AllowPrivateIPClientMetadataHosts. A literal IP redirect URI is not
+	// matched, and link-local addresses stay governed by
+	// AllowLinkLocalRedirectURIs.
+	//
+	// Use it instead of AllowPrivateIPRedirectURIs when a known client's
+	// callback lives on a private hostname (an internal load balancer, a
+	// cluster-internal DNS rewrite). AllowPrivateIPRedirectURIs=true still lifts
+	// the guard for every host.
+	//
+	// Default: empty (blocked for every host)
+	AllowPrivateIPRedirectURIHosts []string
 
 	// AllowLinkLocalRedirectURIs allows link-local addresses (169.254.0.0/16, fe80::/10).
 	// WARNING: Could enable access to cloud metadata services (SSRF to 169.254.169.254).

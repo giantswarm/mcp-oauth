@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
@@ -307,10 +308,9 @@ func (s *Server) validateHostnameWithDNS(ctx context.Context, hostname, rawURI s
 		return nil
 	}
 
-	// Check each resolved IP
+	allowPrivate := s.Config.AllowPrivateIPRedirectURIs || slices.Contains(s.Config.AllowPrivateIPRedirectURIHosts, hostname)
 	for _, ip := range ips {
-		// Check for private IPs
-		if ip.IsPrivate() && !s.Config.AllowPrivateIPRedirectURIs {
+		if ip.IsPrivate() && !allowPrivate {
 			return newRedirectURISecurityError(
 				RedirectURIErrorCategoryDNSPrivateIP,
 				rawURI,
