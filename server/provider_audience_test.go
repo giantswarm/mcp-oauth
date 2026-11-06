@@ -37,10 +37,10 @@ func TestValidateToken_RejectsProviderJWTAudienceMismatch(t *testing.T) {
 	}
 
 	userInfo, err := harness.srv.ValidateToken(t.Context(), accessToken)
-	require.ErrorContains(t, err, "audience mismatch")
+	require.ErrorIs(t, err, ErrUnknownJWTBearer)
 	require.Nil(t, userInfo)
 	require.Zero(t, userinfoCalls, "a foreign-audience bearer must not be sent to userinfo")
-	require.Contains(t, logs.String(), `"reason":"provider_token_audience_mismatch"`)
+	require.Contains(t, logs.String(), `"reason":"unknown_jwt_bearer"`)
 	require.NotContains(t, logs.String(), accessToken)
 }
 
@@ -67,7 +67,7 @@ func TestValidateToken_ProviderJWTAudienceRequired(t *testing.T) {
 			}
 
 			userInfo, err := harness.srv.ValidateToken(t.Context(), harness.signToken(t, claims))
-			require.ErrorContains(t, err, "audience mismatch")
+			require.ErrorIs(t, err, ErrUnknownJWTBearer)
 			require.Nil(t, userInfo)
 		})
 	}
@@ -115,7 +115,7 @@ func TestValidateToken_ProviderAudiencePreservesStoredTokens(t *testing.T) {
 	}
 }
 
-func TestValidateToken_ProviderAudiencePreservesOtherBearers(t *testing.T) {
+func TestValidateToken_ProviderIssuerDoesNotControlBearerRejection(t *testing.T) {
 	for _, test := range []struct {
 		name           string
 		issuer         string
@@ -141,6 +141,11 @@ func TestValidateToken_ProviderAudiencePreservesOtherBearers(t *testing.T) {
 			}
 
 			userInfo, err := harness.srv.ValidateToken(t.Context(), accessToken)
+			if test.issuer != "" {
+				require.ErrorIs(t, err, ErrUnknownJWTBearer)
+				require.Nil(t, userInfo)
+				return
+			}
 			require.NoError(t, err)
 			require.Equal(t, "user-subject-123", userInfo.ID)
 			require.Equal(t, providers.TokenSourceOAuth, userInfo.TokenSource)

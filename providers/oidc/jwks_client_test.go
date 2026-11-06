@@ -743,6 +743,65 @@ func TestValidateIDToken_RefetchOnUnknownKid(t *testing.T) {
 	})
 }
 
+// TestValidateIDToken_ConcurrentUnknownKidWaitsForRefetch: a token with the
+// rotated kid that arrives while another validation's refetch is in flight is
+// validated against the refetched set, not refused.
+func TestValidateIDToken_ConcurrentUnknownKidWaitsForRefetch(t *testing.T) {
+	oldKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	newKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	oldJWKS := publicJWKS(t, oldKey, "RS256", "old-kid")
+	newJWKS := publicJWKS(t, newKey, "RS256", "new-kid")
+
+	fetchStarted := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	jwksServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		once.Do(func() { close(fetchStarted) })
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(newJWKS)
+	}))
+	defer jwksServer.Close()
+
+	client := &JWKSClient{
+		httpClient:     jwksServer.Client(),
+		cacheTTL:       time.Hour,
+		timeProvider:   realTime{},
+		logger:         slog.Default(),
+		allowPrivateIP: true,
+		refetchBackoff: time.Minute,
+	}
+	client.cache.Store(jwksServer.URL, &cachedJWKS{keys: &oldJWKS, fetchedAt: time.Now()})
+
+	token := signTestToken(t, newKey, jose.RS256, "new-kid", IDTokenClaims{
+		Claims: josejwt.Claims{
+			Subject:  "rotated-user",
+			Issuer:   "https://auth.example.com",
+			Audience: josejwt.Audience{"client-a"},
+			Expiry:   josejwt.NewNumericDate(time.Now().Add(time.Hour)),
+			IssuedAt: josejwt.NewNumericDate(time.Now()),
+		},
+	})
+	validate := func() error {
+		_, err := ValidateIDToken(t.Context(), token, client, jwksServer.URL,
+			"https://auth.example.com", []string{"client-a"})
+		return err
+	}
+
+	first := make(chan error, 1)
+	go func() { first <- validate() }()
+	<-fetchStarted
+
+	second := make(chan error, 1)
+	go func() { second <- validate() }()
+	close(release)
+
+	require.NoError(t, <-first)
+	require.NoError(t, <-second)
+}
+
 func TestFetchJWKS(t *testing.T) {
 	privateKey, _ := rsa.GenerateKey(rand.Reader, 2048)
 	testJWKS := publicJWKS(t, privateKey, "RS256", "test-key")

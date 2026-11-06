@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
@@ -570,79 +571,35 @@ func TestFindMatchingTrustedAudience(t *testing.T) {
 	}
 }
 
-// TestValidateToken_JWTBeforeUserinfo verifies that JWT validation is attempted
-// before calling the userinfo endpoint when TrustedAudiences is configured.
-// This is the core fix for issue #173.
 func TestValidateToken_JWTBeforeUserinfo(t *testing.T) {
-	// This test verifies the order of operations:
-	// 1. If TrustedAudiences is configured and token looks like a JWT
-	// 2. Attempt JWKS-based validation FIRST
-	// 3. Only fall back to userinfo if JWT validation fails or doesn't match
-
-	store := memory.New()
-	t.Cleanup(func() { store.Stop() })
-
-	var logBuffer bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuffer, &slog.HandlerOptions{Level: slog.LevelDebug}))
-
-	config := &Config{
-		Issuer:             "https://auth.example.com",
-		ResourceIdentifier: "https://mcp.example.com",
-		TrustedAudiences:   []string{"muster-client"},
-	}
-
-	// Use the existing mock provider from providers/mock package
-	mockProvider := mock.NewProvider()
-
-	srv := &Server{
-		Config:          config,
-		tokenStore:      store,
-		flowStore:       store,
-		provider:        mockProvider,
-		Logger:          logger,
-		Instrumentation: testInstrumentation(t),
-		Auditor:         testAuditor(),
-	}
-
-	// Test with an opaque token (not a JWT) - should call userinfo
 	t.Run("opaque token calls userinfo", func(t *testing.T) {
-		mockProvider.ResetCallCounts()
-
-		// This is an opaque access token (not a JWT)
-		opaqueToken := "opaque-access-token-not-jwt" //nolint:gosec // G101: Test data, not a real credential
-
-		_, _ = srv.ValidateToken(context.Background(), opaqueToken)
-
-		if mockProvider.GetCallCount("ValidateToken") == 0 {
-			t.Error("Expected ValidateToken (userinfo) to be called for opaque token")
-		}
+		h := newForwardedTokenHarness(t)
+		userinfoAcceptsAnything(h)
+		userInfo, err := h.srv.ValidateToken(t.Context(), "opaque-access-token-not-jwt")
+		require.NoError(t, err)
+		require.Equal(t, providers.TokenSourceOAuth, userInfo.TokenSource)
 	})
 
-	// Test with a JWT-like token - should attempt JWKS validation first
-	t.Run("jwt token attempts jwks first", func(t *testing.T) {
-		mockProvider.ResetCallCounts()
-		logBuffer.Reset()
-
-		// This looks like a JWT (3 parts separated by dots)
-		jwtToken := "header.payload.signature" //nolint:gosec // G101: Test JWT structure, not a real token
-
-		_, _ = srv.ValidateToken(context.Background(), jwtToken)
-
-		// Verify JWT path was attempted by checking logs
-		// The JWT path should be tried first when TrustedAudiences is configured
-		logOutput := logBuffer.String()
-		jwtPathAttempted := strings.Contains(logOutput, "Forwarded ID token validation failed") ||
-			strings.Contains(logOutput, "JWT audience matches TrustedAudiences")
-
-		if !jwtPathAttempted {
-			t.Error("Expected JWT validation path to be attempted before userinfo")
+	t.Run("trusted JWT succeeds without userinfo", func(t *testing.T) {
+		h := newForwardedTokenHarness(t)
+		h.provider.ValidateTokenFunc = func(context.Context, string) (*providers.UserInfo, error) {
+			t.Error("a forwarded JWT must not reach userinfo")
+			return nil, ErrUnknownJWTBearer
 		}
+		userInfo, err := h.srv.ValidateToken(t.Context(), h.signToken(t, h.validClaims()))
+		require.NoError(t, err)
+		require.Equal(t, providers.TokenSourceSSO, userInfo.TokenSource)
+	})
 
-		// The provider's ValidateToken should still be called as fallback
-		// because the JWT validation will fail (no real JWKS)
-		if mockProvider.GetCallCount("ValidateToken") == 0 {
-			t.Error("Expected fallback to userinfo after JWT validation failure")
+	t.Run("malformed JWT is refused without userinfo", func(t *testing.T) {
+		h := newForwardedTokenHarness(t)
+		h.provider.ValidateTokenFunc = func(context.Context, string) (*providers.UserInfo, error) {
+			t.Error("a malformed JWT must not reach userinfo")
+			return nil, ErrUnknownJWTBearer
 		}
+		userInfo, err := h.srv.ValidateToken(t.Context(), "header.payload.signature")
+		require.ErrorIs(t, err, ErrUnknownJWTBearer)
+		require.Nil(t, userInfo)
 	})
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -44,6 +45,17 @@ func checkTypeHeader(tokenString string, accepted []string) error {
 // client as 503 with Retry-After instead of a client-side timeout, and far
 // above a healthy identity provider's userinfo or JWKS latency.
 const DefaultTokenValidationTimeout = 5 * time.Second
+
+// ErrUnknownJWTBearer is returned by [Server.ValidateToken] for a JWT bearer
+// that no validation path accepts, including a returned ID token whose
+// stored session is absent or inactive. Callers respond with 401.
+var ErrUnknownJWTBearer = errors.New("JWT bearer is not accepted by any validation path")
+
+const (
+	auditReasonUnknownJWTBearer        = "unknown_jwt_bearer" // #nosec G101 -- audit reason, not a credential
+	auditReasonForwardedIDTokenInvalid = "forwarded_id_token_invalid"
+	auditReasonIDTokenFamilyRevoked    = "id_token_family_revoked"
+)
 
 // supportedAccessTokenAlgs lists the asymmetric signing algorithms accepted
 // for JWT access tokens. HMAC and "none" are absent by design (RFC 9068 §4
@@ -315,10 +327,12 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 //     any other validation failure is a hard rejection.
 //  3. Forwarded ID token (when the bearer is a JWT whose aud matches
 //     Config.TrustedAudiences). Verified via the upstream provider's JWKS
-//     for SSO token forwarding.
+//     for SSO token forwarding. A validation failure is final.
 //  4. Stored token or provider bearer (TokenStore lookup, then provider
-//     userinfo). An unstored JWT claiming the provider's issuer must match
-//     Config.TrustedAudiences before it can reach userinfo.
+//     userinfo). An otherwise unknown JWT reaches userinfo only when it is
+//     the exact id_token this server returned with a token pair, before its
+//     expiry and while its stored refresh-token family is known and active.
+//     Opaque bearers retain their userinfo validation path.
 //
 // Steps 1, 2, and 3 are opt-in (AccessTokenFormatJWT, WithTrustedIssuers,
 // TrustedAudiences respectively); step 4 is always available. Rate
@@ -376,11 +390,8 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 	}
 
 	// PRIORITY 4: Stored token or upstream bearer (TokenStore + provider userinfo).
-	storedToken, err := s.validateStoredToken(ctx, accessToken)
+	storedToken, err := s.storedTokenOrReturnedIDToken(ctx, accessToken)
 	if err != nil {
-		return nil, err
-	}
-	if err := s.validateProviderTokenAudience(ctx, accessToken, storedToken); err != nil {
 		return nil, err
 	}
 
@@ -411,30 +422,76 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 	return userInfo, nil
 }
 
-// validateProviderTokenAudience uses unverified claims only to reject an
-// unstored bearer. Userinfo cannot establish a JWT's intended audience.
-func (s *Server) validateProviderTokenAudience(ctx context.Context, accessToken string, storedToken *oauth2.Token) error {
-	if storedToken != nil {
-		return nil
+// storedTokenOrReturnedIDToken permits only issued-token mappings and exact
+// returned ID tokens to use the provider's userinfo endpoint for a JWT.
+func (s *Server) storedTokenOrReturnedIDToken(ctx context.Context, accessToken string) (*oauth2.Token, error) {
+	storedToken, err := s.validateStoredToken(ctx, accessToken)
+	if err != nil || storedToken != nil {
+		return storedToken, err
 	}
-	jwksProvider, ok := s.provider.(providers.JWKSProvider)
-	if !ok {
-		return nil
+	if isCompactJOSE(accessToken) {
+		return nil, s.requireReturnedIDToken(ctx, accessToken)
 	}
-	providerIssuer := jwksProvider.IssuerURL()
-	if providerIssuer == "" {
-		return nil
-	}
-	claims, err := oidc.ParseUnverifiedClaims(accessToken)
+	return nil, nil
+}
+
+// requireReturnedIDToken passes a JWT bearer that reached the token-store
+// lookup unknown only when it is the upstream id_token this server returned
+// next to a token pair, until its ExpiresAt and while the pair's refresh-token
+// family is known and not revoked. Any other such bearer is refused with
+// [ErrUnknownJWTBearer] before it reaches the provider's userinfo endpoint.
+func (s *Server) requireReturnedIDToken(ctx context.Context, accessToken string) error {
+	metadata, err := s.TokenMetadata(ctx, accessToken)
 	if err != nil {
-		return nil
+		return err
 	}
-	issuer, _ := claims["iss"].(string)
-	if issuer != providerIssuer || s.findMatchingTrustedAudience(oidc.GetAudienceFromClaims(claims)) != "" {
-		return nil
+	if metadata == nil || metadata.TokenType != "id" ||
+		(!metadata.ExpiresAt.IsZero() && !time.Now().Before(metadata.ExpiresAt)) {
+		s.Logger.Debug("Refused a JWT bearer no validation path accepts")
+		s.Auditor.LogAuthFailure(ctx, "", "", "", auditReasonUnknownJWTBearer)
+		return ErrUnknownJWTBearer
 	}
-	s.Auditor.LogAuthFailure(ctx, "", "", "", "provider_token_audience_mismatch")
-	return errors.New("provider JWT audience mismatch")
+	active, err := s.returnedIDTokenFamilyActive(ctx, metadata.FamilyID)
+	if err != nil {
+		return err
+	}
+	if !active {
+		s.Auditor.LogAuthFailure(ctx, metadata.UserID, metadata.ClientID, "", auditReasonIDTokenFamilyRevoked)
+		return fmt.Errorf("%w: its token family is not active", ErrUnknownJWTBearer)
+	}
+	return nil
+}
+
+// returnedIDTokenFamilyActive requires a known live family: a missing record
+// cannot distinguish an expired revocation tombstone from a live session.
+// A store that does not answer is ErrStorageUnavailable.
+func (s *Server) returnedIDTokenFamilyActive(ctx context.Context, familyID string) (bool, error) {
+	if familyID == "" {
+		return false, nil
+	}
+	indexed, ok := s.tokenStore.(storage.RefreshTokenFamilyByIDStore)
+	if !ok {
+		return false, nil
+	}
+	family, err := indexed.GetRefreshTokenFamilyByID(ctx, familyID)
+	if errors.Is(err, storage.ErrRefreshTokenFamilyNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, s.storageUnavailable(ctx, "check token family revocation", "", "", err)
+	}
+	return family != nil && !family.Revoked, nil
+}
+
+// isCompactJOSE reports whether a bearer has the shape of a compact JWS (three
+// parts) or compact JWE (five parts, RFC 7516 §7.1; the encrypted key part is
+// empty for direct encryption).
+func isCompactJOSE(token string) bool {
+	if oidc.IsJWT(token) {
+		return true
+	}
+	parts := strings.Split(token, ".")
+	return len(parts) == 5 && parts[0] != "" && parts[2] != "" && parts[3] != "" && parts[4] != ""
 }
 
 // validateForwardedIDTokenBranch runs the forwarded-ID-token step of
@@ -448,17 +505,13 @@ func (s *Server) validateForwardedIDTokenBranch(ctx context.Context, accessToken
 		// validate an ID token and would only wait on the same provider.
 		return nil, s.providerUnavailable(ctx, "forwarded ID token validation", "", "", err)
 	}
-	if err != nil {
-		// A non-nil error here means the token carried a trusted audience
-		// (it was meant to be an SSO-forwarded ID token) but validation
-		// then failed — e.g. a TLS error or a bad signature. That is a real
-		// misconfiguration, not the benign "not an SSO token" case (which
-		// returns nil, nil and is silent), so surface it at WARN. No token
-		// material is logged (only an 8-char suffix for correlation).
-		s.Logger.Warn("Forwarded ID token validation failed, falling back to userinfo",
-			logKeyError, err.Error(),
-			"token_suffix", helpers.TokenSuffix(accessToken, 8))
-		return nil, nil
+	if err != nil && !errors.Is(err, errForwardedTokenParseFailed) {
+		// The token carried a trusted audience, so it was meant to be an
+		// SSO-forwarded ID token, and its JWKS validation is the decision:
+		// userinfo would accept it without the audience, signature-key or
+		// expiry checks that just failed.
+		s.Auditor.LogAuthFailure(ctx, "", "", "", auditReasonForwardedIDTokenInvalid)
+		return nil, fmt.Errorf("forwarded ID token validation failed: %w", err)
 	}
 	if userInfo != nil {
 		s.Logger.Debug("Forwarded ID token validated via JWKS",

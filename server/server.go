@@ -444,12 +444,14 @@ func (s *Server) saveTokenPairMetadata(ctx context.Context, accessToken, refresh
 // alongside a minted access/refresh pair, so a bearer equal to the id_token
 // resolves the same FamilyID-derived session as its sibling access token.
 // Expiry follows the id_token's own exp claim when that is in the future;
-// otherwise base.ExpiresAt (the access-token expiry) is kept. JKT is cleared:
-// DPoP binding covers the minted access token, not the upstream id_token.
+// otherwise base.ExpiresAt (the access-token expiry) is kept. JKT is the
+// pair's: a bearer equal to the id_token that reaches the stored-token path
+// needs the same DPoP proof as its access token. The handler reads stored
+// metadata only for tokens this server issued, so the id_token forwarded and
+// accepted as an SSO token (TrustedAudiences) stays a plain bearer.
 func (s *Server) saveIDTokenMetadata(ctx context.Context, idToken string, base storage.TokenMetadata) {
 	metadata := base
 	metadata.TokenType = "id"
-	metadata.JKT = ""
 	// Adopt the id_token's own exp only when it is in the future. A missing,
 	// unreadable, or already-past exp (upstream clock skew, or a short-lived
 	// id_token plus latency) keeps base.ExpiresAt — the sibling access-token

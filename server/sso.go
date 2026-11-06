@@ -21,11 +21,11 @@ import (
 // 2. Parse claims without verification to check audience
 // 3. If audience matches, validate JWT signature using provider's JWKS
 // 4. Extract user info from validated claims
-// 5. Fall back to userinfo endpoint if JWT validation fails
+// 5. Return validation failures; unmatched tokens proceed to issued-token lookup
 
 // validateAndParseForwardedIDToken validates a JWT ID token from a trusted upstream
 // service and returns its verified claims. This is the shared core used by both the
-// fallback-style validateForwardedIDToken (ValidateToken fast-path) and the direct
+// validateForwardedIDToken branch of ValidateToken and the direct
 // AcceptForwardedIDToken entry point.
 //
 // Validation steps:
@@ -34,8 +34,8 @@ import (
 // 3. If matched, validate the JWT signature using the provider's JWKS
 // 4. Return the verified claims
 //
-// Returns (nil, "", nil) if the token doesn't match any trusted audience — callers
-// that want fallback semantics (the ValidateToken fast-path) treat this as "not for us."
+// Returns (nil, "", nil) if the token doesn't match any trusted audience, so
+// ValidateToken can consult its issued-token mappings.
 // Returns (nil, "", error) if the token matches but validation fails.
 // Returns (claims, matchedAudience, nil) if validation succeeds.
 func (s *Server) validateAndParseForwardedIDToken(ctx context.Context, tokenString string) (*oidc.IDTokenClaims, string, error) {
@@ -105,9 +105,9 @@ func (s *Server) validateAndParseForwardedIDToken(ctx context.Context, tokenStri
 	return idTokenClaims, matchedAudience, nil
 }
 
-// validateForwardedIDToken is the fallback-style wrapper used by the ValidateToken
-// fast-path. It returns (nil, nil) when the token doesn't carry a trusted audience
-// so the caller falls back to the normal userinfo flow.
+// validateForwardedIDToken is the forwarded-token branch of ValidateToken.
+// It returns (nil, nil) when the token doesn't carry a trusted audience, so
+// the caller can consult its issued-token mappings.
 func (s *Server) validateForwardedIDToken(ctx context.Context, tokenString string) (*providers.UserInfo, error) {
 	claims, matchedAudience, err := s.validateAndParseForwardedIDToken(ctx, tokenString)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1519,7 +1520,7 @@ func TestHandler_ValidateToken_SessionIDFromContext_WithoutFamilyID(t *testing.T
 
 func TestHandler_ValidateToken_IDTokenBearer_ResolvesFamilySession(t *testing.T) {
 	store := memory.New()
-	defer store.Stop()
+	t.Cleanup(store.Stop)
 	provider := mock.NewProvider()
 
 	srv, err := server.New(provider, store, store, store, &server.Config{Issuer: testIssuer}, nil)
@@ -1536,13 +1537,16 @@ func TestHandler_ValidateToken_IDTokenBearer_ResolvesFamilySession(t *testing.T)
 		AccessToken: "provider-access",
 		Expiry:      time.Now().Add(time.Hour),
 	}
+	require.NoError(t, store.SaveUserProviderToken(ctx, "mock-user-123", providerToken))
+	require.NoError(t, store.SaveProviderTokenRef(ctx, accessToken, "mock-user-123", providerToken.Expiry))
+	require.NoError(t, store.SaveRefreshTokenWithFamily(ctx, "session-test-refresh", "mock-user-123", "client-1", familyID, 0, providerToken.Expiry))
 	for bearer, tokenType := range map[string]string{accessToken: "access", idToken: "id"} {
-		require.NoError(t, store.SaveToken(ctx, bearer, providerToken))
 		require.NoError(t, store.SaveTokenMetadata(ctx, bearer, storage.TokenMetadata{
 			UserID:    "mock-user-123",
 			ClientID:  "client-1",
 			TokenType: tokenType,
 			FamilyID:  familyID,
+			ExpiresAt: providerToken.Expiry,
 		}))
 	}
 
@@ -1551,11 +1555,11 @@ func TestHandler_ValidateToken_IDTokenBearer_ResolvesFamilySession(t *testing.T)
 		nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 			capturedSessionID, _ = SessionIDFromContext(r.Context())
 		})
-		req := httptest.NewRequest(http.MethodGet, "/test", nil)
-		req.Header.Set("Authorization", "Bearer "+bearer)
-		w := httptest.NewRecorder()
-		handler.ValidateToken(nextHandler).ServeHTTP(w, req)
-		require.Equal(t, http.StatusOK, w.Code)
+		request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test", nil)
+		request.Header.Set("Authorization", "Bearer "+bearer)
+		response := httptest.NewRecorder()
+		handler.ValidateToken(nextHandler).ServeHTTP(response, request)
+		require.Equal(t, http.StatusOK, response.Code)
 		return capturedSessionID
 	}
 
@@ -1563,37 +1567,20 @@ func TestHandler_ValidateToken_IDTokenBearer_ResolvesFamilySession(t *testing.T)
 	require.Equal(t, familyID, sessionFor(idToken))
 }
 
-func TestHandler_ValidateToken_UnissuedIDToken_FallsBackToBearerSession(t *testing.T) {
-	store := memory.New()
-	defer store.Stop()
-	provider := mock.NewProvider()
-
-	srv, err := server.New(provider, store, store, store, &server.Config{Issuer: testIssuer}, nil)
-	require.NoError(t, err)
-
-	handler := New(srv, nil)
-
-	// A JWT-shaped bearer this server never issued: no token metadata exists,
-	// only the trusted-issuer/forwarded validation path.
-	foreignIDToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJmb3JlaWduLXVzZXIifQ.sig" //nolint:gosec // test value
-
-	ctx := t.Context()
-	require.NoError(t, store.SaveToken(ctx, foreignIDToken, &oauth2.Token{
-		AccessToken: "provider-access",
-		Expiry:      time.Now().Add(time.Hour),
-	}))
+func TestHandler_ValidateToken_ForwardedIDToken_UsesBearerSession(t *testing.T) {
+	handler, foreignIDToken, _ := newForwardedTokenHandler(t, slog.LevelInfo)
 
 	var capturedSessionID string
 	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		capturedSessionID, _ = SessionIDFromContext(r.Context())
 	})
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set("Authorization", "Bearer "+foreignIDToken)
-	w := httptest.NewRecorder()
-	handler.ValidateToken(nextHandler).ServeHTTP(w, req)
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test", nil)
+	request.Header.Set("Authorization", "Bearer "+foreignIDToken)
+	response := httptest.NewRecorder()
+	handler.ValidateToken(nextHandler).ServeHTTP(response, request)
 
-	require.Equal(t, http.StatusOK, w.Code)
-	require.Equal(t, srv.SessionIDForBearer(foreignIDToken), capturedSessionID)
+	require.Equal(t, http.StatusOK, response.Code)
+	require.Equal(t, handler.server.SessionIDForBearer(foreignIDToken), capturedSessionID)
 	require.True(t, strings.HasPrefix(capturedSessionID, "ext-"))
 }
 
@@ -1602,7 +1589,7 @@ func TestHandler_ValidateToken_UnissuedIDToken_FallsBackToBearerSession(t *testi
 // family share a session, and a family-backed bearer keeps its family ID.
 func TestHandler_ValidateToken_PrincipalSessionIdentity(t *testing.T) {
 	store := memory.New()
-	defer store.Stop()
+	t.Cleanup(store.Stop)
 	provider := mock.NewProvider()
 
 	srv, err := server.New(provider, store, store, store, &server.Config{
@@ -1624,8 +1611,9 @@ func TestHandler_ValidateToken_PrincipalSessionIdentity(t *testing.T) {
 
 	ctx := t.Context()
 	providerToken := &oauth2.Token{AccessToken: "provider-access", Expiry: time.Now().Add(time.Hour)}
+	require.NoError(t, store.SaveUserProviderToken(ctx, "mock-user-123", providerToken))
 	for _, bearer := range []string{first, refreshed, otherActor, family} {
-		require.NoError(t, store.SaveToken(ctx, bearer, providerToken))
+		require.NoError(t, store.SaveProviderTokenRef(ctx, bearer, "mock-user-123", providerToken.Expiry))
 	}
 	require.NoError(t, store.SaveTokenMetadata(ctx, family, storage.TokenMetadata{
 		UserID:    "mock-user-123",
@@ -1639,11 +1627,11 @@ func TestHandler_ValidateToken_PrincipalSessionIdentity(t *testing.T) {
 		nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 			capturedSessionID, _ = SessionIDFromContext(r.Context())
 		})
-		req := httptest.NewRequest(http.MethodGet, "/test", nil)
-		req.Header.Set("Authorization", "Bearer "+bearer)
-		w := httptest.NewRecorder()
-		handler.ValidateToken(nextHandler).ServeHTTP(w, req)
-		require.Equal(t, http.StatusOK, w.Code)
+		request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test", nil)
+		request.Header.Set("Authorization", "Bearer "+bearer)
+		response := httptest.NewRecorder()
+		handler.ValidateToken(nextHandler).ServeHTTP(response, request)
+		require.Equal(t, http.StatusOK, response.Code)
 		return capturedSessionID
 	}
 
@@ -1654,18 +1642,7 @@ func TestHandler_ValidateToken_PrincipalSessionIdentity(t *testing.T) {
 	require.Equal(t, familyID, sessionFor(family))
 }
 
-// TestHandler_ValidateToken_IDTokenMetadata_DoesNotGrantAuth pins the
-// load-bearing invariant behind accepting an id_token as a session bearer:
-// token metadata is NEVER an authentication grant. A bearer must still be
-// authenticated by the provider (or JWKS on the forwarded/trusted-issuer
-// paths); the id_token metadata only pins which FamilyID-derived session the
-// already-authenticated bearer belongs to.
-//
-// The provider is set to reject any unknown bearer — exactly as dex's userinfo
-// endpoint rejects an id_token presented as an access token. Without that
-// override the assertion would be vacuous: mock.NewProvider's default
-// ValidateTokenFunc authenticates every string, so a green test would prove
-// nothing about metadata.
+// Returned ID-token metadata binds a session but cannot replace provider validation.
 func TestHandler_ValidateToken_IDTokenMetadata_DoesNotGrantAuth(t *testing.T) {
 	store := memory.New()
 	defer store.Stop()
@@ -1678,15 +1655,14 @@ func TestHandler_ValidateToken_IDTokenMetadata_DoesNotGrantAuth(t *testing.T) {
 	require.NoError(t, err)
 	handler := New(srv, nil)
 
-	// id_token metadata exists (as saveIDTokenMetadata would write it) but the
-	// token is NOT registered via SaveToken and cannot pass forwarded-token
-	// JWKS validation. Metadata must not, by itself, authenticate the bearer.
 	idToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJtb2NrLXVzZXItMTIzIn0.sig" //nolint:gosec // test value
+	require.NoError(t, store.SaveRefreshTokenWithFamily(t.Context(), "metadata-only-refresh", "mock-user-123", "client-1", "family-abc", 0, time.Now().Add(time.Hour)))
 	require.NoError(t, store.SaveTokenMetadata(t.Context(), idToken, storage.TokenMetadata{
 		UserID:    "mock-user-123",
 		ClientID:  "client-1",
 		TokenType: "id",
 		FamilyID:  "family-abc",
+		ExpiresAt: time.Now().Add(time.Hour),
 	}))
 
 	nextCalled := false
