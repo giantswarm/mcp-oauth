@@ -316,8 +316,9 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 //  3. Forwarded ID token (when the bearer is a JWT whose aud matches
 //     Config.TrustedAudiences). Verified via the upstream provider's JWKS
 //     for SSO token forwarding.
-//  4. Opaque token (TokenStore lookup, then provider userinfo). The
-//     catch-all for non-JWT bearers.
+//  4. Stored token or provider bearer (TokenStore lookup, then provider
+//     userinfo). An unstored JWT claiming the provider's issuer must match
+//     Config.TrustedAudiences before it can reach userinfo.
 //
 // Steps 1, 2, and 3 are opt-in (AccessTokenFormatJWT, WithTrustedIssuers,
 // TrustedAudiences respectively); step 4 is always available. Rate
@@ -374,9 +375,12 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 		}
 	}
 
-	// PRIORITY 4: Opaque token (TokenStore + upstream provider userinfo).
+	// PRIORITY 4: Stored token or upstream bearer (TokenStore + provider userinfo).
 	storedToken, err := s.validateStoredToken(ctx, accessToken)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.validateProviderTokenAudience(ctx, accessToken, storedToken); err != nil {
 		return nil, err
 	}
 
@@ -405,6 +409,32 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 	}
 
 	return userInfo, nil
+}
+
+// validateProviderTokenAudience uses unverified claims only to reject an
+// unstored bearer. Userinfo cannot establish a JWT's intended audience.
+func (s *Server) validateProviderTokenAudience(ctx context.Context, accessToken string, storedToken *oauth2.Token) error {
+	if storedToken != nil {
+		return nil
+	}
+	jwksProvider, ok := s.provider.(providers.JWKSProvider)
+	if !ok {
+		return nil
+	}
+	providerIssuer := jwksProvider.IssuerURL()
+	if providerIssuer == "" {
+		return nil
+	}
+	claims, err := oidc.ParseUnverifiedClaims(accessToken)
+	if err != nil {
+		return nil
+	}
+	issuer, _ := claims["iss"].(string)
+	if issuer != providerIssuer || s.findMatchingTrustedAudience(oidc.GetAudienceFromClaims(claims)) != "" {
+		return nil
+	}
+	s.Auditor.LogAuthFailure(ctx, "", "", "", "provider_token_audience_mismatch")
+	return errors.New("provider JWT audience mismatch")
 }
 
 // validateForwardedIDTokenBranch runs the forwarded-ID-token step of
