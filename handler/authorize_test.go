@@ -1158,10 +1158,7 @@ func TestHandler_ServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *tes
 	})
 }
 
-// Native-app custom-scheme redirect URIs (RFC 8252 §7.1) cannot carry an HTTP
-// 302 redirect; respondAuthorizationError must fall back to JSON 400 for
-// those clients rather than attempt a Location redirect.
-func TestHandler_ServeAuthorization_CustomSchemeRedirectURI_FallsBackToJSON(t *testing.T) {
+func TestHandler_ServeAuthorization_ValidatedCustomSchemeReceivesError(t *testing.T) {
 	ctx := t.Context()
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
@@ -1195,19 +1192,12 @@ func TestHandler_ServeAuthorization_CustomSchemeRedirectURI_FallsBackToJSON(t *t
 	w := httptest.NewRecorder()
 	handler.ServeAuthorization(w, req)
 
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d (custom-scheme redirect_uri must JSON-error)", w.Code, http.StatusBadRequest)
-	}
-	if loc := w.Header().Get("Location"); loc != "" {
-		t.Errorf("Location header set to %q; custom-scheme redirect must not 302", loc)
-	}
-	var body map[string]string
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("response body is not JSON: %v", err)
-	}
-	if body["error"] != constants.ErrorCodeUnsupportedResponseType {
-		t.Errorf("error = %q, want %q", body["error"], constants.ErrorCodeUnsupportedResponseType)
-	}
+	require.Equal(t, http.StatusFound, w.Code)
+	target := mustParseURL(t, w.Header().Get("Location"))
+	require.Equal(t, "myapp", target.Scheme)
+	require.Equal(t, "callback", target.Host)
+	require.Equal(t, constants.ErrorCodeUnsupportedResponseType, target.Query().Get("error"))
+	require.Equal(t, validState, target.Query().Get("state"))
 }
 
 func TestHandler_ServeCallback_ShortProviderStateAlwaysRejected(t *testing.T) {

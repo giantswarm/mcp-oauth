@@ -393,7 +393,6 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, constants.ErrorCodeInvalidRequest, "redirect_uri is not registered for this client", http.StatusBadRequest)
 		return
 	}
-	redirectErrors := !h.server.RequiresConsent(clientID, canonicalRedirectURI.String())
 
 	// State-too-long is handled inline rather than via checkAuthorizationStateParam:
 	// an oversized state cannot be safely echoed back in a redirect URL, so the
@@ -410,7 +409,6 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	if rejection := h.checkAuthorizationStateParam(state, clientID); rejection != nil {
 		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
 			redirectURI: canonicalRedirectURI,
-			redirect:    redirectErrors,
 			state:       state,
 			code:        constants.ErrorCodeInvalidRequest,
 			description: rejection.description,
@@ -423,7 +421,6 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		h.logger.Info("Authorization request rejected: unsupported response_type", "response_type", responseType, "client_id", clientID)
 		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
 			redirectURI: canonicalRedirectURI,
-			redirect:    redirectErrors,
 			state:       state,
 			code:        constants.ErrorCodeUnsupportedResponseType,
 			description: fmt.Sprintf("response_type must be one of [%s]", strings.Join(oauth.DefaultResponseTypes, ", ")),
@@ -447,7 +444,6 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		instrumentation.RecordError(span, err)
 		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
 			redirectURI: canonicalRedirectURI,
-			redirect:    redirectErrors,
 			state:       state,
 			code:        constants.ErrorCodeServerError,
 			description: "Failed to start authorization flow",
@@ -458,20 +454,19 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 
 	if h.consentNeeded(r, authorizationRequest) {
 		if promptIncludes(authorizationRequest, "none") {
-			h.failRequest(w, r, span, endpointAuthorize, http.MethodGet, http.StatusBadRequest, constants.ErrorCodeConsentRequired, "this client needs your consent; sign in without prompt=none", startTime)
+			h.respondConsentError(w, r, span, startTime, authorizationRequest, constants.ErrorCodeConsentRequired, "this client needs your consent; sign in without prompt=none")
 			return
 		}
 		h.showConsentPage(w, r, span, startTime, authorizationRequest)
 		return
 	}
 
-	h.redirectToProvider(w, r, span, startTime, http.MethodGet, authorizationRequest, redirectErrors)
+	h.redirectToProvider(w, r, span, startTime, http.MethodGet, authorizationRequest)
 }
 
 // redirectToProvider starts the upstream flow for the request and redirects the
-// browser to the upstream identity provider. redirectErrors selects whether a
-// failure is redirected to the client's redirect URI.
-func (h *Handler) redirectToProvider(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, method string, authorizationRequest *server.AuthorizationRequest, redirectErrors bool) {
+// browser to the upstream identity provider.
+func (h *Handler) redirectToProvider(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, method string, authorizationRequest *server.AuthorizationRequest) {
 	flowCount := 0
 	for _, cookie := range r.Cookies() {
 		if strings.HasPrefix(cookie.Name, h.consent.name("mcp_oauth_flow")+"_") {
@@ -489,7 +484,6 @@ func (h *Handler) redirectToProvider(w http.ResponseWriter, r *http.Request, spa
 		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
 			method:      method,
 			redirectURI: redirectURI,
-			redirect:    redirectErrors,
 			state:       authorizationRequest.State,
 			code:        constants.ErrorCodeServerError,
 			description: "Failed to start authorization flow",
@@ -538,7 +532,7 @@ func (h *Handler) redirectToProvider(w http.ResponseWriter, r *http.Request, spa
 
 func (h *Handler) refreshConsent(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, request *server.AuthorizationRequest) bool {
 	if promptIncludes(request, "none") {
-		h.failRequest(w, r, span, endpointAuthorize, r.Method, http.StatusBadRequest, constants.ErrorCodeConsentRequired, "permissions changed; sign in without prompt=none", startTime)
+		h.respondConsentError(w, r, span, startTime, request, constants.ErrorCodeConsentRequired, "permissions changed; sign in without prompt=none")
 		return true
 	}
 	redirectURI, err := url.Parse(request.RedirectURI)
@@ -676,7 +670,7 @@ func (h *Handler) completeBrowserCallback(w http.ResponseWriter, r *http.Request
 	}
 	if h.server.RequiresConsent(request.ClientID, request.RedirectURI) && !result.State.ConsentApproved && (!request.CanRememberConsent() || !h.consent.approvedForSubject(r, request.ConsentKey(), result.Subject)) {
 		if promptIncludes(request, "none") {
-			h.failRequest(w, r, span, endpointCallback, http.MethodGet, http.StatusBadRequest, constants.ErrorCodeConsentRequired, "this account needs your consent", startTime)
+			h.respondConsentError(w, r, span, startTime, request, constants.ErrorCodeConsentRequired, "this account needs your consent")
 			return
 		}
 		h.showPendingConsent(w, r, span, startTime, request, result)
@@ -742,7 +736,6 @@ func (h *Handler) redirectAuthorizationCode(w http.ResponseWriter, r *http.Reque
 type authorizationError struct {
 	method      string
 	redirectURI *url.URL
-	redirect    bool
 	state       string
 	code        string
 	description string
@@ -750,10 +743,8 @@ type authorizationError struct {
 }
 
 // respondAuthorizationError redirects (302) to redirectURI with
-// error / error_description / state per RFC 6749 §4.1.2.1 when e.redirect is
-// set, that is when the client is trusted for that redirect URI. Otherwise,
-// and when redirectURI is nil or uses a custom scheme admitted by
-// Config.AllowedCustomSchemes, it answers with JSON 400.
+// error / error_description / state per RFC 6749 §4.1.2.1 when the client's
+// redirect URI has been validated. Without a validated URI it answers JSON 400.
 func (h *Handler) respondAuthorizationError(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, e authorizationError) {
 	instrumentation.SetSpanError(span, e.spanError)
 	instrumentation.SetSpanAttributes(
@@ -766,7 +757,7 @@ func (h *Handler) respondAuthorizationError(w http.ResponseWriter, r *http.Reque
 		method = http.MethodGet
 	}
 
-	if !e.redirect || e.redirectURI == nil || (e.redirectURI.Scheme != oauth.SchemeHTTPS && e.redirectURI.Scheme != oauth.SchemeHTTP) {
+	if e.redirectURI == nil {
 		h.recordHTTPMetrics(r.Context(), endpointAuthorize, method, http.StatusBadRequest, startTime)
 		h.writeError(w, e.code, e.description, http.StatusBadRequest)
 		return
@@ -776,6 +767,7 @@ func (h *Handler) respondAuthorizationError(w http.ResponseWriter, r *http.Reque
 	q := redirect.Query()
 	q.Set(paramError, e.code)
 	q.Set(paramErrorDescription, e.description)
+	q.Set("iss", h.server.Config.Issuer)
 	if e.state != "" {
 		q.Set("state", e.state)
 	}

@@ -245,9 +245,9 @@ func TestConsent_LoopbackAlwaysRequiresConsent(t *testing.T) {
 		}
 		requireConsentPage(t, f.get(f.authorizeTarget(redirectURI, testutil.GenerateRandomString(43), nil)))
 		silent := f.get(f.authorizeTarget(redirectURI, testutil.GenerateRandomString(43), url.Values{"prompt": {"none"}}))
-		require.Equal(t, http.StatusBadRequest, silent.Code)
-		require.Contains(t, silent.Body.String(), "consent_required")
-		require.Empty(t, silent.Header().Get("Location"))
+		require.Equal(t, http.StatusFound, silent.Code)
+		silentTarget := mustParseURL(t, silent.Header().Get("Location"))
+		require.Equal(t, "consent_required", silentTarget.Query().Get("error"))
 	}
 }
 
@@ -334,21 +334,29 @@ func TestConsent_Deny(t *testing.T) {
 
 	w := f.post(consentID(t, page), consentDecisionDeny, nil)
 
-	require.Equal(t, http.StatusOK, w.Code)
-	require.Empty(t, w.Header().Get("Location"), "a denial never redirects automatically")
-	m := regexp.MustCompile(`href="([^"]+)"`).FindStringSubmatch(w.Body.String())
-	require.Len(t, m, 2)
-	link, err := url.Parse(strings.ReplaceAll(m[1], "&amp;", "&"))
+	require.Equal(t, http.StatusFound, w.Code)
+	link, err := url.Parse(w.Header().Get("Location"))
 	require.NoError(t, err)
 	require.Equal(t, "example.com", link.Host)
 	require.Equal(t, constants.ErrorCodeAccessDenied, link.Query().Get("error"))
 	require.Equal(t, state, link.Query().Get("state"))
 	require.Equal(t, testIssuer, link.Query().Get("iss"))
+	require.Empty(t, link.Query().Get("code"))
+	require.Equal(t, http.StatusBadRequest, f.post(consentID(t, page), consentDecisionDeny, nil).Code)
 
 	requireConsentPage(t, f.get(f.authorizeTarget(consentTestRedirect, testutil.GenerateRandomString(43), nil)))
 }
 
-func TestConsent_UntrustedErrorsAreNotRedirected(t *testing.T) {
+func TestConsent_DenialRevalidatesClient(t *testing.T) {
+	f := newConsentFlow(t, nil)
+	page := f.get(f.authorizeTarget(consentTestRedirect, testutil.GenerateRandomString(43), nil))
+	require.NoError(t, f.store.DeleteClient(t.Context(), f.client))
+	denied := f.post(consentID(t, page), consentDecisionDeny, nil)
+	require.Equal(t, http.StatusBadRequest, denied.Code)
+	require.Empty(t, denied.Header().Get("Location"))
+}
+
+func TestConsent_ValidatedClientErrorsAreRedirected(t *testing.T) {
 	f := newConsentFlow(t, nil)
 
 	for name, extra := range map[string]url.Values{
@@ -359,8 +367,12 @@ func TestConsent_UntrustedErrorsAreNotRedirected(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := f.get(f.authorizeTarget(consentTestRedirect, testutil.GenerateRandomString(43), extra))
-			require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
-			require.Empty(t, w.Header().Get("Location"))
+			require.Equal(t, http.StatusFound, w.Code, "body: %s", w.Body.String())
+			target := mustParseURL(t, w.Header().Get("Location"))
+			require.Equal(t, "example.com", target.Host)
+			require.NotEmpty(t, target.Query().Get("error"))
+			require.Equal(t, testIssuer, target.Query().Get("iss"))
+			require.Empty(t, target.Query().Get("code"))
 		})
 	}
 }
@@ -370,8 +382,9 @@ func TestConsent_PromptNoneNeedsConsent(t *testing.T) {
 
 	w := f.get(f.authorizeTarget(consentTestRedirect, testutil.GenerateRandomString(43), url.Values{"prompt": {"none"}}))
 
-	require.Equal(t, http.StatusBadRequest, w.Code)
-	require.Contains(t, w.Body.String(), constants.ErrorCodeConsentRequired)
+	require.Equal(t, http.StatusFound, w.Code)
+	target := mustParseURL(t, w.Header().Get("Location"))
+	require.Equal(t, constants.ErrorCodeConsentRequired, target.Query().Get("error"))
 
 	page := f.get(f.authorizeTarget(consentTestRedirect, testutil.GenerateRandomString(43), nil))
 	approved := f.post(consentID(t, page), consentDecisionApprove, nil)
