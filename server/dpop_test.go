@@ -60,6 +60,22 @@ func TestValidateDPoPProof_Valid(t *testing.T) {
 	require.Equal(t, dpopJKTFor(t, key), got.JKT)
 }
 
+func TestValidateDPoPProof_RejectsJSONSerialization(t *testing.T) {
+	key := newDPoPKey(t)
+	now := time.Now().UTC()
+	proof := signDPoPProof(t, key, map[string]any{
+		"jti": "json-serialization",
+		"htm": "POST",
+		"htu": "https://auth.example.com/oauth/token",
+		"iat": now.Unix(),
+	})
+	signed, err := jose.ParseSignedCompact(proof, []jose.SignatureAlgorithm{jose.ES256})
+	require.NoError(t, err)
+
+	_, err = ValidateDPoPProof(t.Context(), signed.FullSerialize(), "POST", "https://auth.example.com/oauth/token", "", NewMemoryDPoPReplayCache(), nil, now)
+	require.ErrorContains(t, err, "dpop: parse proof")
+}
+
 func TestValidateDPoPProof_WrongMethod(t *testing.T) {
 	key := newDPoPKey(t)
 	cache := NewMemoryDPoPReplayCache()
