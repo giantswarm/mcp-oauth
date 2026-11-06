@@ -499,16 +499,8 @@ func (h *Handler) redirectToProvider(w http.ResponseWriter, r *http.Request, spa
 
 	authURL, err := h.server.BeginAuthorization(r.Context(), authorizationRequest)
 	if err != nil {
-		if errors.Is(err, server.ErrAuthorizationPermissionsChanged) {
-			if promptIncludes(authorizationRequest, "none") {
-				h.failRequest(w, r, span, endpointAuthorize, method, http.StatusBadRequest, constants.ErrorCodeConsentRequired, "permissions changed; sign in without prompt=none", startTime)
-				return
-			}
-			updated, prepareErr := h.server.PrepareAuthorization(r.Context(), authorizationRequest.ClientID, redirectURI, authorizationRequest.Scope, authorizationRequest.Resource, authorizationRequest.CodeChallenge, authorizationRequest.CodeChallengeMethod, authorizationRequest.State, authorizationRequest.Options)
-			if prepareErr == nil {
-				h.showConsentPage(w, r, span, startTime, updated)
-				return
-			}
+		if errors.Is(err, server.ErrAuthorizationPermissionsChanged) && h.refreshConsent(w, r, span, startTime, authorizationRequest) {
+			return
 		}
 		h.logger.Error("Failed to start authorization flow", paramError, err)
 		instrumentation.RecordError(span, err)
@@ -542,6 +534,23 @@ func (h *Handler) redirectToProvider(w http.ResponseWriter, r *http.Request, spa
 	// AuthorizationURL() (server-controlled host) and re-validated above to be
 	// http/https. Not user-controllable; not an open redirect.
 	http.Redirect(w, r, parsedAuthURL.String(), http.StatusFound)
+}
+
+func (h *Handler) refreshConsent(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, request *server.AuthorizationRequest) bool {
+	if promptIncludes(request, "none") {
+		h.failRequest(w, r, span, endpointAuthorize, r.Method, http.StatusBadRequest, constants.ErrorCodeConsentRequired, "permissions changed; sign in without prompt=none", startTime)
+		return true
+	}
+	redirectURI, err := url.Parse(request.RedirectURI)
+	if err != nil {
+		return false
+	}
+	updated, err := h.server.PrepareAuthorization(r.Context(), request.ClientID, redirectURI, request.Scope, request.Resource, request.CodeChallenge, request.CodeChallengeMethod, request.State, request.Options)
+	if err != nil {
+		return false
+	}
+	h.showConsentPage(w, r, span, startTime, updated)
+	return true
 }
 
 // ServeCallback handles the OAuth provider callback
