@@ -86,7 +86,7 @@ func ValidateDPoPProof(ctx context.Context, proof, method, uri, accessToken stri
 
 // parseDPoPJWS parses the JWS, validates the header, and verifies the signature.
 func parseDPoPJWS(proof string) (*jose.JSONWebKey, dpopRawClaims, error) {
-	jws, err := jose.ParseSigned(proof, []jose.SignatureAlgorithm{
+	jws, err := jose.ParseSignedCompact(proof, []jose.SignatureAlgorithm{
 		jose.RS256, jose.RS384, jose.RS512,
 		jose.ES256, jose.ES384, jose.ES512,
 		jose.PS256, jose.PS384, jose.PS512,
