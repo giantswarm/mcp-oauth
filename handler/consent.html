@@ -52,25 +52,6 @@
 </main>
 </body>
 </html>
-{{define "denied"}}<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="referrer" content="no-referrer">
-    <title>Access denied</title>
-    {{template "style" .}}
-</head>
-<body>
-<main class="container">
-    {{if .LogoURL}}<img src="{{.LogoURL}}" alt="{{.LogoAlt}}" class="logo">{{end}}
-    <h1>Access denied</h1>
-    <p>The client did not get access. You can close this window.</p>
-    {{if .ReturnURL}}<p class="muted">If the client is still waiting, you can <a href="{{.ReturnURL}}">tell {{.ReturnHost}} that you denied access</a>.</p>{{end}}
-</main>
-</body>
-</html>
-{{end}}
 {{define "style"}}<style>
         :root {
             --primary-color: {{if .PrimaryColor}}{{.PrimaryColor}}{{else}}#007a4d{{end}};

@@ -255,7 +255,7 @@ Consent is enabled by default, with no feature flag. The memory and Valkey store
 
 Custom flow stores must implement `storage.ConsentStore` and `storage.AuthorizationStateConsumer` before mounting the browser authorization handler. Unsupported stores fail closed. `Server.CompleteBrowserAuthorization` verifies the browser and upstream identity without issuing a code; a non-nil result means the callback state has been consumed, including on provider failure, and the caller must retire its browser binding. Only a nil error permits `Server.IssueAuthorizationCode` to finish a consented result. `Server.CancelBrowserAuthorization` validates and consumes a provider error callback without exchanging a code. `StartAuthorizationFlow` and `HandleProviderCallback` remain available to integrations that implement their own consent and browser binding.
 
-A denial never redirects the browser: the page links back to the client with `error=access_denied`. For a client that is not trusted, request errors are answered with JSON 400 instead of a redirect, and `prompt=none` without an approval gets `consent_required`.
+A denial returns `error=access_denied` to the validated client callback with the original `state` and the issuer. `prompt=none` without approval returns `consent_required` through the same OAuth error response. Invalid clients and unregistered redirect URIs receive a local error without a redirect.
 
 Operators list the clients they know with their exact redirect URIs:
 

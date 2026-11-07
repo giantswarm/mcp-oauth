@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/oauth2"
 
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/google"
@@ -133,8 +134,10 @@ func TestConsent_AccountSwitchRequiresFreshApproval(t *testing.T) {
 			require.ErrorIs(t, err, storage.ErrUserInfoNotFound)
 			answer := flow.post(consentID(t, confirmation), decision, nil)
 			if decision == consentDecisionDeny {
-				require.Equal(t, http.StatusOK, answer.Code)
-				require.Empty(t, answer.Header().Get("Location"))
+				require.Equal(t, http.StatusFound, answer.Code)
+				target := mustParseURL(t, answer.Header().Get("Location"))
+				require.Equal(t, constants.ErrorCodeAccessDenied, target.Query().Get("error"))
+				require.Empty(t, target.Query().Get("code"))
 				return
 			}
 			require.Equal(t, http.StatusFound, answer.Code)
@@ -288,9 +291,10 @@ func TestConsent_ChangedPermissionsWithPromptNoneReturnsError(t *testing.T) {
 	provider.Scopes = append(provider.Scopes, "profile")
 	response := httptest.NewRecorder()
 	httpRequest := httptest.NewRequest(http.MethodGet, "/oauth/authorize", nil)
-	flow.h.redirectToProvider(response, httpRequest, trace.SpanFromContext(t.Context()), time.Now(), http.MethodGet, request, false)
-	require.Equal(t, http.StatusBadRequest, response.Code)
-	require.Contains(t, response.Body.String(), "consent_required")
-	require.Empty(t, response.Header().Get("Location"))
+	flow.h.redirectToProvider(response, httpRequest, trace.SpanFromContext(t.Context()), time.Now(), http.MethodGet, request)
+	require.Equal(t, http.StatusFound, response.Code)
+	target := mustParseURL(t, response.Header().Get("Location"))
+	require.Equal(t, constants.ErrorCodeConsentRequired, target.Query().Get("error"))
+	require.Equal(t, request.State, target.Query().Get("state"))
 	require.NotContains(t, response.Body.String(), "<form")
 }

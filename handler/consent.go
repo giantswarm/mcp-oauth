@@ -388,7 +388,7 @@ func (h *Handler) serveConsentDecision(w http.ResponseWriter, r *http.Request, s
 		return
 	}
 	authorizationRequest.ConsentApproved = true
-	h.redirectToProvider(w, r, span, startTime, http.MethodPost, authorizationRequest, false)
+	h.redirectToProvider(w, r, span, startTime, http.MethodPost, authorizationRequest)
 }
 
 func (h *Handler) requestForResult(r *http.Request, result *server.AuthorizationResult) (*server.AuthorizationRequest, error) {
@@ -420,35 +420,20 @@ func (h *Handler) finishBrowserAuthorization(w http.ResponseWriter, r *http.Requ
 	h.redirectAuthorizationCode(w, r, span, startTime, code, state)
 }
 
-// serveConsentDenied tells the person access was denied. The client is not
-// trusted, so the browser is not sent to its redirect URI automatically; the
-// page links there with access_denied so the client can stop waiting.
 func (h *Handler) serveConsentDenied(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, authorizationRequest *server.AuthorizationRequest) {
-	target, err := url.Parse(authorizationRequest.RedirectURI)
-	data := consentDeniedData{consentBranding: h.consentBranding()}
-	if err == nil {
-		q := target.Query()
-		q.Set(paramError, constants.ErrorCodeAccessDenied)
-		if authorizationRequest.State != "" {
-			q.Set("state", authorizationRequest.State)
-		}
-		q.Set("iss", h.server.Config.Issuer)
-		target.RawQuery = q.Encode()
-		data.ReturnURL = template.URL(target.String()) //nolint:gosec // registered redirect URI of the client, checked when the request was prepared
-		data.ReturnHost = target.Host
-	}
+	h.respondConsentError(w, r, span, startTime, authorizationRequest, constants.ErrorCodeAccessDenied, "the resource owner denied access")
+}
 
-	var buf bytes.Buffer
-	if err := consentPageTmpl.ExecuteTemplate(&buf, "denied", data); err != nil {
-		h.logger.Error("Failed to render consent denied page", paramError, err)
-		h.failRequest(w, r, span, endpointAuthorize, http.MethodPost, http.StatusInternalServerError, constants.ErrorCodeServerError, "access denied", startTime)
+func (h *Handler) respondConsentError(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, request *server.AuthorizationRequest, code, description string) {
+	redirect, err := h.server.ValidateRedirectURIForAuthorization(r.Context(), request.ClientID, request.RedirectURI)
+	if err != nil {
+		h.failRequest(w, r, span, endpointAuthorize, r.Method, http.StatusBadRequest, constants.ErrorCodeInvalidRequest, "client or redirect URI is no longer valid", startTime)
 		return
 	}
-	security.SetConsentPageSecurityHeaders(w, h.server.Config.Issuer)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodPost, http.StatusOK, startTime)
-	instrumentation.SetSpanSuccess(span)
-	_, _ = buf.WriteTo(w)
+	h.respondAuthorizationError(w, r, span, startTime, authorizationError{
+		method: r.Method, redirectURI: redirect,
+		state: request.State, code: code, description: description, spanError: code,
+	})
 }
 
 func (h *Handler) auditConsent(r *http.Request, eventType string, authorizationRequest *server.AuthorizationRequest) {
@@ -492,12 +477,6 @@ type consentPageData struct {
 	Action       string
 	Account      string
 	MCPScopes    []string
-}
-
-type consentDeniedData struct {
-	consentBranding
-	ReturnURL  template.URL
-	ReturnHost string
 }
 
 func (h *Handler) consentBranding() consentBranding {
