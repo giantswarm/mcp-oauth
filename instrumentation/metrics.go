@@ -208,7 +208,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 	m.TokenReuseDetected = b.counter(securityMeter, "oauth.token.reuse_detected", "Number of token reuse attempts detected", "{attempt}")
 	m.RedirectURISecurityRejected = b.counter(securityMeter, "oauth.redirect_uri.security_rejected", "Number of redirect URI validation failures (SSRF/XSS protection)", "{rejection}")
 	m.LegacyRefreshTokenRejected = b.counter(securityMeter, "oauth.refresh_token.legacy_rejected", "Number of legacy refresh tokens rejected due to missing client binding (OAuth 2.1 compliance)", "{token}")
-	m.ForwardedIDTokenAccepted = b.counter(securityMeter, "oauth.forwarded_id_token.accepted_total", "Number of forwarded ID token acceptance attempts (labels: issuer, audience, result — result is a bounded enum: ok|aud_mismatch|iss_mismatch|sig_invalid|expired|not_yet_valid|no_jwks|parse_error|actor_not_trusted|sender_constrained)", "{attempt}")
+	m.ForwardedIDTokenAccepted = b.counter(securityMeter, "oauth.forwarded_id_token.accepted_total", "Number of forwarded ID token acceptance attempts (labels: issuer, audience, result — result is a bounded enum: ok|aud_mismatch|iss_mismatch|sig_invalid|expired|not_yet_valid|no_jwks|parse_error|actor_not_trusted)", "{attempt}")
 	m.ProviderTokenStorageFailed = b.counter(securityMeter, "oauth.provider_token.storage_failed", "Provider token (or UserInfo) persistence failures keyed by reason (missing_subject, save_user_info_by_id, save_token_by_id, save_user_info_by_email, save_token_by_email)", "{failure}")
 
 	// Storage Metrics
@@ -372,16 +372,15 @@ func (m *Metrics) RecordProviderTokenStorageFailed(ctx context.Context, reason s
 type ForwardedIDTokenResult string
 
 const (
-	ForwardedIDTokenResultOK                ForwardedIDTokenResult = "ok"
-	ForwardedIDTokenResultAudMismatch       ForwardedIDTokenResult = "aud_mismatch"
-	ForwardedIDTokenResultIssMismatch       ForwardedIDTokenResult = "iss_mismatch"
-	ForwardedIDTokenResultSigInvalid        ForwardedIDTokenResult = "sig_invalid"
-	ForwardedIDTokenResultExpired           ForwardedIDTokenResult = "expired"
-	ForwardedIDTokenResultNotYetValid       ForwardedIDTokenResult = "not_yet_valid"
-	ForwardedIDTokenResultNoJWKS            ForwardedIDTokenResult = "no_jwks"
-	ForwardedIDTokenResultParseError        ForwardedIDTokenResult = "parse_error"
-	ForwardedIDTokenResultActorNotTrusted   ForwardedIDTokenResult = "actor_not_trusted"
-	ForwardedIDTokenResultSenderConstrained ForwardedIDTokenResult = "sender_constrained"
+	ForwardedIDTokenResultOK              ForwardedIDTokenResult = "ok"
+	ForwardedIDTokenResultAudMismatch     ForwardedIDTokenResult = "aud_mismatch"
+	ForwardedIDTokenResultIssMismatch     ForwardedIDTokenResult = "iss_mismatch"
+	ForwardedIDTokenResultSigInvalid      ForwardedIDTokenResult = "sig_invalid"
+	ForwardedIDTokenResultExpired         ForwardedIDTokenResult = "expired"
+	ForwardedIDTokenResultNotYetValid     ForwardedIDTokenResult = "not_yet_valid"
+	ForwardedIDTokenResultNoJWKS          ForwardedIDTokenResult = "no_jwks"
+	ForwardedIDTokenResultParseError      ForwardedIDTokenResult = "parse_error"
+	ForwardedIDTokenResultActorNotTrusted ForwardedIDTokenResult = "actor_not_trusted"
 )
 
 // RecordForwardedIDTokenAccepted records a forwarded ID token acceptance attempt.

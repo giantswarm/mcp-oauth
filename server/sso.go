@@ -102,16 +102,25 @@ func (s *Server) validateAndParseForwardedIDToken(ctx context.Context, tokenStri
 }
 
 // validateForwardedIDTokenBearer accepts an upstream ID token as a
-// ValidateToken bearer. Returns (nil, nil) when the token names no
-// TrustedAudiences entry or does not parse, so the caller falls through.
-//
-// act and cnf are refused: this path checks no acting party, and a
-// sender-constrained token's proof of possession is not verified by
-// ValidateToken callers outside the handler middleware.
+// ValidateToken bearer. Returns (nil, nil) when the token does not parse,
+// names no TrustedAudiences entry, or carries act or cnf, so the caller falls
+// through: a delegated token is left to the trusted issuer's actor policy,
+// and a sender-constrained one to the branches whose DPoP binding the handler
+// middleware enforces.
 func (s *Server) validateForwardedIDTokenBearer(ctx context.Context, bearer string) (*providers.UserInfo, error) {
+	rawClaims, err := oidc.ParseUnverifiedClaims(bearer)
+	if err != nil {
+		return nil, nil
+	}
+	if _, delegated := rawClaims["act"]; delegated {
+		return nil, nil
+	}
+	if _, bound := rawClaims["cnf"]; bound {
+		return nil, nil
+	}
+
 	providerName := s.provider.Name()
 	expectedIssuer := providers.IssuerOf(s.provider)
-
 	claims, matchedAudience, err := s.validateAndParseForwardedIDToken(ctx, bearer)
 	switch {
 	case err == nil && claims == nil, errors.Is(err, errForwardedTokenParseFailed):
@@ -119,16 +128,9 @@ func (s *Server) validateForwardedIDTokenBearer(ctx context.Context, bearer stri
 	case err != nil && isTransientProviderError(err):
 		return nil, s.providerUnavailable(ctx, "forwarded ID token validation", "", "", err)
 	case err != nil:
-		return nil, s.refuseForwardedIDToken(ctx, providerName, expectedIssuer, classifyForwardedTokenError(err), err)
-	case claims.Act != nil:
-		return nil, s.refuseForwardedIDToken(ctx, providerName, expectedIssuer, instrumentation.ForwardedIDTokenResultActorNotTrusted, ErrActorNotTrusted)
-	}
-	rawClaims, err := oidc.ParseUnverifiedClaims(bearer)
-	if err != nil {
-		return nil, s.refuseForwardedIDToken(ctx, providerName, expectedIssuer, instrumentation.ForwardedIDTokenResultParseError, err)
-	}
-	if _, bound := rawClaims["cnf"]; bound {
-		return nil, s.refuseForwardedIDToken(ctx, providerName, expectedIssuer, instrumentation.ForwardedIDTokenResultSenderConstrained, errForwardedTokenSenderConstrained)
+		s.Auditor.LogAuthFailure(ctx, "", "", "", auditReasonForwardedIDTokenInvalid)
+		s.recordForwardedIDTokenAccepted(ctx, providerName, expectedIssuer, "", classifyForwardedTokenError(err))
+		return nil, fmt.Errorf("forwarded ID token refused: %w", err)
 	}
 
 	userInfo := s.idTokenClaimsToUserInfo(claims)
@@ -137,15 +139,7 @@ func (s *Server) validateForwardedIDTokenBearer(ctx context.Context, bearer stri
 	return userInfo, nil
 }
 
-var errForwardedTokenSenderConstrained = errors.New("forwarded ID token carries cnf")
-
 const auditReasonForwardedIDTokenInvalid = "forwarded_id_token_invalid"
-
-func (s *Server) refuseForwardedIDToken(ctx context.Context, providerName, issuer string, result instrumentation.ForwardedIDTokenResult, cause error) error {
-	s.Auditor.LogAuthFailure(ctx, "", "", "", auditReasonForwardedIDTokenInvalid)
-	s.recordForwardedIDTokenAccepted(ctx, providerName, issuer, "", result)
-	return fmt.Errorf("forwarded ID token refused: %w", cause)
-}
 
 // findMatchingTrustedAudience checks if any of the token's audiences match our trusted audiences.
 // Uses the shared helpers.FindMatchingAudience for consistent URL normalization

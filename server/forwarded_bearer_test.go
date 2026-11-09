@@ -10,6 +10,11 @@ import (
 	josejwt "github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/require"
 
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
+	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -26,6 +31,39 @@ func userinfoMustNotBeCalled(t *testing.T, h *forwardedTokenHarness) {
 	}
 }
 
+// collectForwardedIDTokenResults replaces the server's instrumentation with
+// one backed by a manual reader and returns a function collecting the result
+// labels recorded on oauth.forwarded_id_token.accepted_total.
+func collectForwardedIDTokenResults(t *testing.T, srv *Server) func() []string {
+	t.Helper()
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	inst, err := instrumentation.New(instrumentation.Config{Enabled: true, MeterProvider: provider})
+	require.NoError(t, err)
+	srv.Instrumentation = inst
+
+	return func() []string {
+		var rm metricdata.ResourceMetrics
+		require.NoError(t, reader.Collect(t.Context(), &rm))
+		var results []string
+		for _, sm := range rm.ScopeMetrics {
+			for _, m := range sm.Metrics {
+				if m.Name != "oauth.forwarded_id_token.accepted_total" {
+					continue
+				}
+				sum, ok := m.Data.(metricdata.Sum[int64])
+				require.True(t, ok, "unexpected data type %T", m.Data)
+				for _, dp := range sum.DataPoints {
+					result, _ := dp.Attributes.Value(attribute.Key("result"))
+					results = append(results, result.AsString())
+				}
+			}
+		}
+		return results
+	}
+}
+
 type senderConstrainedClaims struct {
 	oidc.IDTokenClaims
 	Cnf map[string]string `json:"cnf"`
@@ -35,6 +73,7 @@ func TestValidateToken_ForwardedIDTokenAccepted(t *testing.T) {
 	h := newForwardedTokenHarness(t)
 	userinfoMustNotBeCalled(t, h)
 	audit := captureAudit(h.srv)
+	results := collectForwardedIDTokenResults(t, h.srv)
 	bearer := h.signToken(t, h.validClaims())
 
 	userInfo, err := h.srv.ValidateToken(t.Context(), bearer)
@@ -46,28 +85,31 @@ func TestValidateToken_ForwardedIDTokenAccepted(t *testing.T) {
 	line := onlyAuditLine(t, audit, security.EventForwardedIDTokenAccepted)
 	require.Equal(t, h.audience, line.Details["matched_audience"])
 	require.Equal(t, h.srv.SessionIDForBearer(bearer), line.Details["session_id"])
+	require.Equal(t, []string{string(instrumentation.ForwardedIDTokenResultOK)}, results())
 }
 
 func TestValidateToken_ForwardedIDTokenRefused(t *testing.T) {
 	tests := []struct {
-		name      string
-		bearer    func(t *testing.T, h *forwardedTokenHarness) string
-		wantErr   error
-		wantAudit string
+		name        string
+		bearer      func(t *testing.T, h *forwardedTokenHarness) string
+		wantErr     error
+		wantAudit   string
+		wantResults []string
 	}{
 		{
-			name:      "expired",
-			bearer:    expiredForwardedToken,
-			wantErr:   oidc.ErrTokenExpired,
-			wantAudit: auditReasonForwardedIDTokenInvalid,
+			name:        "expired",
+			bearer:      expiredForwardedToken,
+			wantErr:     oidc.ErrTokenExpired,
+			wantAudit:   auditReasonForwardedIDTokenInvalid,
+			wantResults: []string{string(instrumentation.ForwardedIDTokenResultExpired)},
 		},
 		{
 			name: "carries act",
 			bearer: func(t *testing.T, h *forwardedTokenHarness) string {
 				return h.signDelegatedToken(t, &oidc.ActorClaim{Issuer: "https://actors.example", Subject: "workload-1"}, nil)
 			},
-			wantErr:   ErrActorNotTrusted,
-			wantAudit: auditReasonForwardedIDTokenInvalid,
+			wantErr:   ErrUnknownJWTBearer,
+			wantAudit: auditReasonUnknownJWTBearer,
 		},
 		{
 			name: "carries cnf",
@@ -77,8 +119,8 @@ func TestValidateToken_ForwardedIDTokenRefused(t *testing.T) {
 					Cnf:           map[string]string{"jkt": "bound-key"},
 				})
 			},
-			wantErr:   errForwardedTokenSenderConstrained,
-			wantAudit: auditReasonForwardedIDTokenInvalid,
+			wantErr:   ErrUnknownJWTBearer,
+			wantAudit: auditReasonUnknownJWTBearer,
 		},
 		{
 			name:      "audience not trusted",
@@ -92,6 +134,7 @@ func TestValidateToken_ForwardedIDTokenRefused(t *testing.T) {
 			h := newForwardedTokenHarness(t)
 			userinfoMustNotBeCalled(t, h)
 			audit := captureAudit(h.srv)
+			results := collectForwardedIDTokenResults(t, h.srv)
 
 			userInfo, err := h.srv.ValidateToken(t.Context(), tc.bearer(t, h))
 
@@ -99,6 +142,7 @@ func TestValidateToken_ForwardedIDTokenRefused(t *testing.T) {
 			require.Nil(t, userInfo)
 			line := onlyAuditLine(t, audit, string(security.EventAuthFailure))
 			require.Equal(t, tc.wantAudit, line.Details["reason"])
+			require.Equal(t, tc.wantResults, results())
 		})
 	}
 }
@@ -116,24 +160,46 @@ func TestValidateToken_ForwardedIDTokenJWKSOutage(t *testing.T) {
 	require.Nil(t, userInfo)
 }
 
-// The provider's issuer is also a trusted issuer (for RFC 8693 subject
-// tokens); its ID token fails the at+jwt check and is accepted as a
-// forwarded identity.
-func TestValidateToken_TrustedIssuer_IDTokenWithTrustedAudienceIsForwarded(t *testing.T) {
-	h := newForwardedTokenHarness(t)
-	userinfoMustNotBeCalled(t, h)
+// trustProviderIssuer configures the provider's issuer as a trusted issuer
+// whose entry accepts the provider's ID tokens: their aud and their JWT typ.
+func trustProviderIssuer(t *testing.T, h *forwardedTokenHarness) {
+	t.Helper()
 	validator, err := newOIDCValidatorWithClient([]TrustedIssuer{{
-		Issuer:           h.issuer,
-		JwksURL:          h.jwksServer.URL,
-		AllowedAudiences: []string{h.audience},
+		Issuer:             h.issuer,
+		JwksURL:            h.jwksServer.URL,
+		AllowedAudiences:   []string{h.audience},
+		AcceptedTypHeaders: []string{"JWT"},
 	}}, h.srv.jwksClient)
 	require.NoError(t, err)
 	h.srv.trustedIssuerValidator = validator
+}
+
+func TestValidateToken_TrustedIssuer_IDTokenWithTrustedAudienceIsForwarded(t *testing.T) {
+	h := newForwardedTokenHarness(t)
+	userinfoMustNotBeCalled(t, h)
+	trustProviderIssuer(t, h)
+	results := collectForwardedIDTokenResults(t, h.srv)
 
 	userInfo, err := h.srv.ValidateToken(t.Context(), h.signToken(t, h.validClaims()))
 
 	require.NoError(t, err)
 	require.Equal(t, providers.TokenSourceSSO, userInfo.TokenSource)
+	require.Equal(t, []string{string(instrumentation.ForwardedIDTokenResultOK)}, results())
+}
+
+func TestValidateToken_TrustedIssuer_DelegatedIDTokenGoesToTrustedIssuer(t *testing.T) {
+	h := newForwardedTokenHarness(t)
+	userinfoMustNotBeCalled(t, h)
+	trustProviderIssuer(t, h)
+	results := collectForwardedIDTokenResults(t, h.srv)
+	bearer := h.signDelegatedToken(t, &oidc.ActorClaim{Issuer: "https://actors.example", Subject: "workload-1"}, nil)
+
+	userInfo, err := h.srv.ValidateToken(t.Context(), bearer)
+
+	require.NoError(t, err)
+	require.Equal(t, providers.TokenSourceTrustedIssuer, userInfo.TokenSource)
+	require.Equal(t, "workload-1", userInfo.ActorSubject)
+	require.Empty(t, results())
 }
 
 func TestValidateToken_TrustedIssuer_AllowedAudienceAuthorizes(t *testing.T) {

@@ -802,9 +802,10 @@ type Config struct {
 	// TrustedAudiences lists the client IDs whose upstream ID tokens are
 	// accepted as forwarded identities: by AcceptForwardedIDToken, and by
 	// ValidateToken unless RequireResourceAccessTokens is set. A forwarded
-	// token must be signed by the provider's issuer and carry neither act nor
-	// cnf. Each acceptance is audited as EventForwardedIDTokenAccepted and
-	// counted in oauth.forwarded_id_token.accepted_total. Default: nil.
+	// token must be signed by the provider's issuer. ValidateToken leaves a
+	// token carrying act or cnf to WithTrustedIssuers. Each acceptance is
+	// audited as EventForwardedIDTokenAccepted and counted in
+	// oauth.forwarded_id_token.accepted_total. Default: nil.
 	TrustedAudiences []string
 
 	// RequireResourceAccessTokens restricts ValidateToken to access tokens

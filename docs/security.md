@@ -624,11 +624,11 @@ A forwarded ID token is accepted by every downstream that trusts the aggregator'
 `Server.ValidateToken` accepts resource access tokens through these paths:
 
 1. **Self-issued JWT**: Verify signature, access-token type, issuer, expiry, resource audience, revocation, and token family.
-2. **Trusted-issuer JWT**: Verify the configured issuer's signature, claims, and `AcceptedTypHeaders`. The audience must match the entry's `AllowedAudiences` (this server's resource identifier when empty). Under `RequireResourceAccessTokens` it must also include this server's resource identifier. A token that fails the typ check but names a `TrustedAudiences` client continues to step 3, unless `RequireResourceAccessTokens` is set.
-3. **Forwarded ID token** (skipped under `RequireResourceAccessTokens`): the audience must match `TrustedAudiences`; signature, issuer and expiry are verified against the provider's JWKS. A token carrying `act` (delegation) or `cnf` (sender-constrained) is refused with audit `forwarded_id_token_invalid`. A JWKS outage is a retryable 503.
+2. **Forwarded ID token** (skipped under `RequireResourceAccessTokens`): the audience must match `TrustedAudiences`; signature, issuer and expiry are verified against the provider's JWKS, and any failure is a rejection (audit `forwarded_id_token_invalid`). A JWKS outage is a retryable 503. A token carrying `act` (delegation) or `cnf` (sender-constrained) is not taken here: it continues to step 3, where the trusted issuer's actor policy applies and the handler middleware enforces the DPoP binding. This step runs first so that an ID token issued to a trusted client is the caller's identity (`TokenSourceSSO`) even when its issuer is also a trusted issuer.
+3. **Trusted-issuer JWT**: Verify the configured issuer's signature, claims, and `AcceptedTypHeaders`. The audience must match the entry's `AllowedAudiences` (this server's resource identifier when empty). Under `RequireResourceAccessTokens` it must also include this server's resource identifier.
 4. **Stored access token**: Require a local provider-token mapping and metadata with `TokenType: "access"`. Check local expiry and the resource audience before refreshing or validating the mapped provider credential through userinfo.
 
-Unknown opaque bearers are refused (audit `unknown_bearer`). Unknown compact JWTs, including unsecured JWTs with empty signatures, return `server.ErrUnknownJWTBearer` (audit `unknown_jwt_bearer`). Refresh tokens cannot serve as resource bearers, and an upstream ID token only through step 3. Stored ID-token metadata cannot authorize a request or bind it to a token pair's DPoP key.
+Unknown opaque bearers are refused (audit `unknown_bearer`). Unknown compact JWTs, including unsecured JWTs with empty signatures, return `server.ErrUnknownJWTBearer` (audit `unknown_jwt_bearer`). Refresh tokens cannot serve as resource bearers, and an upstream ID token only through step 2. Stored ID-token metadata cannot authorize a request or bind it to a token pair's DPoP key.
 
 When a client omits the `resource` parameter, access and refresh metadata default to `Config.GetResourceIdentifier()`. Custom stores must implement both `storage.TokenMetadataStore` and `storage.TokenMetadataGetter` for stored bearer validation. Missing metadata or audience, a token type other than `access`, and an empty mapped provider access token are rejections. A transient store failure remains a retryable 503. Use the `access_token` returned by the local OAuth token endpoint; provider userinfo success alone does not establish that an upstream token was issued for this resource.
 
@@ -671,7 +671,7 @@ Providers without JWKS support validate local access tokens through their stored
 | **Explicit Trust** | Each trusted audience must be explicitly configured |
 | **Same Issuer** | Tokens are only accepted if from the configured IdP |
 | **Resource Requests** | Forwarded ID tokens are accepted for `TrustedAudiences` unless `RequireResourceAccessTokens` is set, which requires access tokens naming this server's `ResourceIdentifier` |
-| **No Delegation or Binding** | A forwarded ID token carrying `act` or `cnf` is refused |
+| **No Delegation or Binding** | A token carrying `act` or `cnf` is never accepted as a forwarded ID token |
 | **Audit Logging** | `EventForwardedIDTokenAccepted` records each accepted forwarded ID token |
 | **SSRF Protection** | JWKS URIs are validated to block private IPs, loopback, and link-local addresses |
 | **DNS Rebinding Protection** | Resolved IPs are validated at connection time to prevent DNS rebinding attacks |
