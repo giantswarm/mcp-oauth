@@ -416,6 +416,8 @@ func TestClassifyForwardedTokenError(t *testing.T) {
 		{"issuer", issuerWrapped, instrumentation.ForwardedIDTokenResultIssMismatch},
 		{"expired", expiredWrapped, instrumentation.ForwardedIDTokenResultExpired},
 		{"nbf", nbfWrapped, instrumentation.ForwardedIDTokenResultNotYetValid},
+		{"jwks fetch", fmt.Errorf("ID token signature validation failed: %w: %w", oidc.ErrJWKSFetchFailed, &oidc.JWKSStatusError{StatusCode: http.StatusNotFound}), instrumentation.ForwardedIDTokenResultNoJWKS},
+		{"no jwks uri", fmt.Errorf("%w: failed to get JWKS URI: boom", errForwardedTokenNoJWKS), instrumentation.ForwardedIDTokenResultNoJWKS},
 		{"default", errors.New("some other failure"), instrumentation.ForwardedIDTokenResultSigInvalid},
 	}
 	for _, tc := range cases {

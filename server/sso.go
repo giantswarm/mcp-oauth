@@ -60,12 +60,12 @@ func (s *Server) validateAndParseForwardedIDToken(ctx context.Context, tokenStri
 	if !ok {
 		s.Logger.Warn("Provider does not support JWKS validation, cannot validate forwarded ID token",
 			logKeyProvider, s.provider.Name())
-		return nil, "", fmt.Errorf("provider %s does not support JWKS validation", s.provider.Name())
+		return nil, "", fmt.Errorf("%w: provider %s does not support JWKS validation", errForwardedTokenNoJWKS, s.provider.Name())
 	}
 
 	jwksURI, err := jwksProvider.JWKSURI(ctx)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to get JWKS URI: %w", err)
+		return nil, "", fmt.Errorf("%w: failed to get JWKS URI: %w", errForwardedTokenNoJWKS, err)
 	}
 
 	expectedIssuer := jwksProvider.IssuerURL()

@@ -292,3 +292,18 @@ func TestValidateToken_ForwardedIDTokenRefusalLogsTheCause(t *testing.T) {
 	require.Contains(t, records[0]["error"], oidc.ErrTokenExpired.Error())
 	requireNoTokenMaterial(t, logs, bearer)
 }
+
+func TestValidateToken_ForwardedIDTokenWithBlockedJWKSIsNoJWKS(t *testing.T) {
+	h := newForwardedTokenHarness(t)
+	h.srv.jwksClient = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{Logger: h.srv.Logger})
+	userinfoMustNotBeCalled(t, h)
+	_, warnings := captureWarnings(t, h.srv)
+
+	_, err := h.srv.ValidateToken(t.Context(), h.signToken(t, h.validClaims()))
+
+	require.ErrorIs(t, err, oidc.ErrJWKSFetchFailed)
+	require.Equal(t, instrumentation.ForwardedIDTokenResultNoJWKS, classifyForwardedTokenError(err))
+	records := warnings("Forwarded ID token refused")
+	require.Len(t, records, 1)
+	require.Contains(t, records[0]["error"], "JWKS URI must not point to loopback addresses")
+}

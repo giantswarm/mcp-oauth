@@ -29,6 +29,11 @@ var ErrTrustedAudienceMismatch = errors.New("forwarded ID token audience does no
 // validation failures without a second parse.
 var errForwardedTokenParseFailed = errors.New("forwarded ID token parse failed")
 
+// errForwardedTokenNoJWKS wraps the failures that leave no key set to verify
+// a forwarded ID token against, so [classifyForwardedTokenError] reports
+// no_jwks instead of sig_invalid.
+var errForwardedTokenNoJWKS = errors.New("no JWKS to verify the forwarded ID token")
+
 // Session-ID derivation: the library publishes a stable format for
 // ForwardedIDTokenAcceptance.SessionID so downstream servers receiving the
 // same token derive the same ID (cross-hop audit correlation). To keep the
@@ -421,6 +426,8 @@ func classifyForwardedTokenError(err error) instrumentation.ForwardedIDTokenResu
 		return instrumentation.ForwardedIDTokenResultOK
 	case errors.Is(err, errForwardedTokenParseFailed):
 		return instrumentation.ForwardedIDTokenResultParseError
+	case errors.Is(err, errForwardedTokenNoJWKS), errors.Is(err, oidc.ErrJWKSFetchFailed):
+		return instrumentation.ForwardedIDTokenResultNoJWKS
 	case errors.Is(err, oidc.ErrIssuerMismatch):
 		return instrumentation.ForwardedIDTokenResultIssMismatch
 	case errors.Is(err, oidc.ErrTokenExpired):
