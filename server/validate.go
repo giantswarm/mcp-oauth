@@ -435,15 +435,15 @@ func (s *Server) rejectUnknownBearer(ctx context.Context, bearer string) error {
 	return errInvalidAccessToken
 }
 
-// logUnknownJWTBearer names, from the unverified claims, the issuer and
-// audience of a refused JWT next to the configured TrustedAudiences, so an
-// operator can tell a token issued to an untrusted client from a forgery.
-// The values are informational only and never reach the response.
+// logUnknownJWTBearer logs the iss and aud a refused JWT asserts next to the
+// configured TrustedAudiences, so an operator can see which client an ID
+// token was issued to. The claims are unverified, so the caller controls
+// them; they never reach the response or a decision.
 func (s *Server) logUnknownJWTBearer(bearer string) {
 	attrs := []any{"trusted_audiences", s.Config.TrustedAudiences}
 	if claims, err := oidc.ParseUnverifiedClaims(bearer); err == nil {
 		issuer, _ := claims["iss"].(string)
-		attrs = append(attrs, "iss", issuer, "aud", oidc.GetAudienceFromClaims(claims))
+		attrs = append(attrs, "token_issuer", issuer, "token_audience", oidc.GetAudienceFromClaims(claims))
 	}
 	s.Logger.Warn("JWT bearer refused: not issued by this server, a trusted issuer, or for a trusted audience", attrs...)
 }
