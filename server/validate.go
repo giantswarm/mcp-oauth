@@ -440,7 +440,7 @@ func (s *Server) rejectUnknownBearer(ctx context.Context, bearer string) error {
 // operator can tell a token issued to an untrusted client from a forgery.
 // The values are informational only and never reach the response.
 func (s *Server) logUnknownJWTBearer(bearer string) {
-	attrs := []any{"trusted_audiences", s.Config.TrustedAudiences, "token_suffix", helpers.TokenSuffix(bearer, 8)}
+	attrs := []any{"trusted_audiences", s.Config.TrustedAudiences}
 	if claims, err := oidc.ParseUnverifiedClaims(bearer); err == nil {
 		issuer, _ := claims["iss"].(string)
 		attrs = append(attrs, "iss", issuer, "aud", oidc.GetAudienceFromClaims(claims))

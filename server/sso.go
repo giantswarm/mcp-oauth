@@ -129,9 +129,7 @@ func (s *Server) validateForwardedIDTokenBearer(ctx context.Context, bearer stri
 		return nil, s.providerUnavailable(ctx, "forwarded ID token validation", "", "", err)
 	case err != nil:
 		s.Auditor.LogAuthFailure(ctx, "", "", "", auditReasonForwardedIDTokenInvalid)
-		s.Logger.Warn("Forwarded ID token refused",
-			logKeyError, err.Error(),
-			"token_suffix", helpers.TokenSuffix(bearer, 8))
+		s.Logger.Warn("Forwarded ID token refused", logKeyError, err.Error())
 		s.recordForwardedIDTokenAccepted(ctx, providerName, expectedIssuer, "", classifyForwardedTokenError(err))
 		return nil, fmt.Errorf("forwarded ID token refused: %w", err)
 	}
