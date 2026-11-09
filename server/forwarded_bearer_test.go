@@ -1,9 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -223,4 +227,132 @@ func TestValidateToken_TrustedIssuer_AllowedAudienceAuthorizes(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, testSubject, userInfo.ID)
 	require.Equal(t, providers.TokenSourceTrustedIssuer, userInfo.TokenSource)
+}
+
+// captureWarnings routes the server's logger to a buffer and returns the
+// buffer and a function decoding the WARN records with the given message.
+func captureWarnings(t *testing.T, srv *Server) (*bytes.Buffer, func(msg string) []map[string]any) {
+	t.Helper()
+	var buf bytes.Buffer
+	srv.Logger = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	return &buf, func(msg string) []map[string]any {
+		var records []map[string]any
+		for line := range bytes.SplitSeq(buf.Bytes(), []byte("\n")) {
+			if len(line) == 0 {
+				continue
+			}
+			var record map[string]any
+			require.NoError(t, json.Unmarshal(line, &record))
+			if record["msg"] == msg {
+				records = append(records, record)
+			}
+		}
+		return records
+	}
+}
+
+// requireNoTokenMaterial fails when the log holds any eight-byte fragment of
+// the bearer's signature.
+func requireNoTokenMaterial(t *testing.T, logs *bytes.Buffer, bearer string) {
+	t.Helper()
+	signature := bearer[strings.LastIndex(bearer, ".")+1:]
+	for i := 0; i+8 <= len(signature); i++ {
+		require.NotContains(t, logs.String(), signature[i:i+8])
+	}
+}
+
+func TestValidateToken_UnknownJWTBearerLogsItsAudience(t *testing.T) {
+	h := newForwardedTokenHarness(t)
+	userinfoMustNotBeCalled(t, h)
+	logs, warnings := captureWarnings(t, h.srv)
+	bearer := tokenForAnotherClient(t, h)
+
+	_, err := h.srv.ValidateToken(t.Context(), bearer)
+
+	require.ErrorIs(t, err, ErrUnknownJWTBearer)
+	records := warnings("Unknown JWT bearer refused")
+	require.Len(t, records, 1)
+	require.Equal(t, h.issuer, records[0]["token_issuer"])
+	require.Equal(t, []any{"another-client"}, records[0]["token_audience"])
+	require.Equal(t, []any{h.audience}, records[0]["trusted_audiences"])
+	requireNoTokenMaterial(t, logs, bearer)
+}
+
+func TestValidateToken_UnknownJWTBearerLogIsBounded(t *testing.T) {
+	h := newForwardedTokenHarness(t)
+	userinfoMustNotBeCalled(t, h)
+	_, warnings := captureWarnings(t, h.srv)
+	claims := h.validClaims()
+	long := strings.Repeat("a", 4*maxLoggedValueBytes)
+	claims.Issuer = long
+	claims.Audience = josejwt.Audience{long, "b", "c", "d", "e", "f"}
+
+	_, err := h.srv.ValidateToken(t.Context(), h.signToken(t, claims))
+
+	require.ErrorIs(t, err, ErrUnknownJWTBearer)
+	records := warnings("Unknown JWT bearer refused")
+	require.Len(t, records, 1)
+	require.Equal(t, long[:maxLoggedValueBytes], records[0]["token_issuer"])
+	require.Equal(t, []any{long[:maxLoggedValueBytes], "b", "c", "d"}, records[0]["token_audience"])
+}
+
+func TestValidateToken_UnknownJWTBearerUnderResourceAccessTokensOmitsTrustedAudiences(t *testing.T) {
+	h := newForwardedTokenHarness(t, requireResourceAccessTokens)
+	userinfoMustNotBeCalled(t, h)
+	_, warnings := captureWarnings(t, h.srv)
+
+	_, err := h.srv.ValidateToken(t.Context(), h.signToken(t, h.validClaims()))
+
+	require.ErrorIs(t, err, ErrUnknownJWTBearer)
+	records := warnings("Unknown JWT bearer refused")
+	require.Len(t, records, 1)
+	require.Equal(t, []any{h.audience}, records[0]["token_audience"])
+	require.NotContains(t, records[0], "trusted_audiences")
+}
+
+func TestValidateToken_ForwardedIDTokenRefusalLogsTheCause(t *testing.T) {
+	h := newForwardedTokenHarness(t)
+	userinfoMustNotBeCalled(t, h)
+	logs, warnings := captureWarnings(t, h.srv)
+	bearer := expiredForwardedToken(t, h)
+
+	_, err := h.srv.ValidateToken(t.Context(), bearer)
+
+	require.ErrorIs(t, err, oidc.ErrTokenExpired)
+	records := warnings("Forwarded ID token refused")
+	require.Len(t, records, 1)
+	require.Contains(t, records[0]["error"], oidc.ErrTokenExpired.Error())
+	requireNoTokenMaterial(t, logs, bearer)
+}
+
+func TestValidateToken_ForwardedIDTokenRefusalLogIsBounded(t *testing.T) {
+	h := newForwardedTokenHarness(t)
+	userinfoMustNotBeCalled(t, h)
+	_, warnings := captureWarnings(t, h.srv)
+	claims := h.validClaims()
+	claims.Issuer = strings.Repeat("a", 4*maxLoggedErrorBytes)
+
+	_, err := h.srv.ValidateToken(t.Context(), h.signToken(t, claims))
+
+	require.ErrorIs(t, err, oidc.ErrIssuerMismatch)
+	require.Greater(t, len(err.Error()), maxLoggedErrorBytes)
+	records := warnings("Forwarded ID token refused")
+	require.Len(t, records, 1)
+	cause := strings.TrimPrefix(err.Error(), "forwarded ID token refused: ")
+	require.Equal(t, cause[:maxLoggedErrorBytes], records[0]["error"])
+}
+
+func TestValidateToken_ForwardedIDTokenWithBlockedJWKSIsNoJWKS(t *testing.T) {
+	h := newForwardedTokenHarness(t)
+	h.srv.jwksClient = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{Logger: h.srv.Logger})
+	userinfoMustNotBeCalled(t, h)
+	_, warnings := captureWarnings(t, h.srv)
+
+	_, err := h.srv.ValidateToken(t.Context(), h.signToken(t, h.validClaims()))
+
+	require.ErrorIs(t, err, oidc.ErrJWKSFetchFailed)
+	require.Equal(t, instrumentation.ForwardedIDTokenResultNoJWKS, classifyForwardedTokenError(err))
+	records := warnings("Forwarded ID token refused")
+	require.Len(t, records, 1)
+	require.Contains(t, records[0]["error"], "JWKS URI must not point to loopback addresses")
 }

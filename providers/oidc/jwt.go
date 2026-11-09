@@ -526,6 +526,13 @@ var ErrKeyNotFound = errors.New("key not found in JWKS")
 // failure to reach the host, so retrying the same request cannot succeed.
 var ErrRestrictedAddress = errors.New("host resolves to a restricted address")
 
+// ErrJWKSFetchFailed is returned (wrapped) by ValidateIDToken when the JWKS
+// to verify the token against could not be fetched, either at first or on the
+// refetch for a kid the cached set lacks. The wrapped cause tells a transient
+// failure (JWKSStatusError 5xx, a network error) from a permanent one
+// (ErrRestrictedAddress, a 4xx, an invalid JWKS URI).
+var ErrJWKSFetchFailed = errors.New("failed to fetch JWKS")
+
 // ErrIssuerMismatch is returned (wrapped) when a JWT's iss claim does not match
 // the expected issuer.
 var ErrIssuerMismatch = errors.New("issuer mismatch")
@@ -574,7 +581,7 @@ func ValidateNonceClaim(claimNonce, expectedNonce string) error {
 func ValidateIDToken(ctx context.Context, tokenString string, jwksClient *JWKSClient, jwksURI, expectedIssuer string, trustedAudiences []string) (*IDTokenClaims, error) {
 	jwks, err := jwksClient.FetchJWKS(ctx, jwksURI)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch JWKS: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrJWKSFetchFailed, err)
 	}
 
 	claims, err := parseAndValidateToken(tokenString, jwks)
@@ -585,7 +592,7 @@ func ValidateIDToken(ctx context.Context, tokenString string, jwksClient *JWKSCl
 		// doesn't fail every token until the process restarts.
 		refreshed, refreshError := jwksClient.refetchForUnknownKid(ctx, jwksURI)
 		if refreshError != nil {
-			return nil, fmt.Errorf("failed to refetch JWKS: %w", refreshError)
+			return nil, fmt.Errorf("%w on refetch for an unknown kid: %w", ErrJWKSFetchFailed, refreshError)
 		}
 		if refreshed != nil {
 			claims, err = parseAndValidateToken(tokenString, refreshed)

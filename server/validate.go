@@ -428,10 +428,49 @@ func isCompactJOSE(token string) bool {
 func (s *Server) rejectUnknownBearer(ctx context.Context, bearer string) error {
 	if isCompactJOSE(bearer) {
 		s.Auditor.LogAuthFailure(ctx, "", "", "", auditReasonUnknownJWTBearer)
+		s.logUnknownJWTBearer(bearer)
 		return ErrUnknownJWTBearer
 	}
 	s.Auditor.LogAuthFailure(ctx, "", "", "", "unknown_bearer")
 	return errInvalidAccessToken
+}
+
+// These bound the caller-controlled values a refusal log line carries: an
+// unauthenticated bearer header can hold up to http.DefaultMaxHeaderBytes of
+// claims. An error keeps more, since its cause is at the end of the chain.
+const (
+	maxLoggedValueBytes = 256
+	maxLoggedAudiences  = 4
+	maxLoggedErrorBytes = 1024
+)
+
+// logUnknownJWTBearer logs the iss and aud a refused JWT asserts, next to
+// the configured TrustedAudiences when the forwarded-ID-token path is on,
+// so an operator can see which client an ID token was issued to. The claims
+// are unverified, so the caller controls them; they never reach the
+// response or a decision.
+func (s *Server) logUnknownJWTBearer(bearer string) {
+	var attrs []any
+	if !s.Config.RequireResourceAccessTokens {
+		attrs = append(attrs, "trusted_audiences", s.Config.TrustedAudiences)
+	}
+	if claims, err := oidc.ParseUnverifiedClaims(bearer); err == nil {
+		issuer, _ := claims["iss"].(string)
+		attrs = append(attrs,
+			"token_issuer", helpers.SafeTruncate(issuer, maxLoggedValueBytes),
+			"token_audience", truncatedForLog(oidc.GetAudienceFromClaims(claims)))
+	}
+	s.Logger.Warn("Unknown JWT bearer refused", attrs...)
+}
+
+// truncatedForLog keeps the first maxLoggedAudiences values, each cut to
+// maxLoggedValueBytes.
+func truncatedForLog(values []string) []string {
+	kept := make([]string, min(len(values), maxLoggedAudiences))
+	for i := range kept {
+		kept[i] = helpers.SafeTruncate(values[i], maxLoggedValueBytes)
+	}
+	return kept
 }
 
 // refreshExpiredProviderToken refreshes a stored provider token past expiry

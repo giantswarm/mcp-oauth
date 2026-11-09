@@ -58,14 +58,12 @@ func (s *Server) validateAndParseForwardedIDToken(ctx context.Context, tokenStri
 
 	jwksProvider, ok := s.provider.(providers.JWKSProvider)
 	if !ok {
-		s.Logger.Warn("Provider does not support JWKS validation, cannot validate forwarded ID token",
-			logKeyProvider, s.provider.Name())
-		return nil, "", fmt.Errorf("provider %s does not support JWKS validation", s.provider.Name())
+		return nil, "", fmt.Errorf("%w: provider %s does not support JWKS validation", errForwardedTokenNoJWKS, s.provider.Name())
 	}
 
 	jwksURI, err := jwksProvider.JWKSURI(ctx)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to get JWKS URI: %w", err)
+		return nil, "", fmt.Errorf("%w: failed to get JWKS URI: %w", errForwardedTokenNoJWKS, err)
 	}
 
 	expectedIssuer := jwksProvider.IssuerURL()
@@ -84,7 +82,7 @@ func (s *Server) validateAndParseForwardedIDToken(ctx context.Context, tokenStri
 		s.Config.TrustedAudiences,
 	)
 	if err != nil {
-		return nil, "", fmt.Errorf("ID token signature validation failed: %w", err)
+		return nil, "", fmt.Errorf("ID token validation failed: %w", err)
 	}
 
 	if idTokenClaims == nil {
@@ -129,6 +127,7 @@ func (s *Server) validateForwardedIDTokenBearer(ctx context.Context, bearer stri
 		return nil, s.providerUnavailable(ctx, "forwarded ID token validation", "", "", err)
 	case err != nil:
 		s.Auditor.LogAuthFailure(ctx, "", "", "", auditReasonForwardedIDTokenInvalid)
+		s.Logger.Warn("Forwarded ID token refused", logKeyError, helpers.SafeTruncate(err.Error(), maxLoggedErrorBytes))
 		s.recordForwardedIDTokenAccepted(ctx, providerName, expectedIssuer, "", classifyForwardedTokenError(err))
 		return nil, fmt.Errorf("forwarded ID token refused: %w", err)
 	}
