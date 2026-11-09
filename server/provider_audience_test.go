@@ -73,8 +73,8 @@ func TestValidateToken_ProviderJWTAudienceRequired(t *testing.T) {
 	}
 }
 
-func TestValidateToken_RejectsTrustedProviderIDToken(t *testing.T) {
-	harness := newForwardedTokenHarness(t)
+func TestValidateToken_StrictRejectsTrustedProviderIDToken(t *testing.T) {
+	harness := newForwardedTokenHarness(t, requireResourceAccessTokens)
 	claims := harness.validClaims()
 	claims.Audience = josejwt.Audience{"another-backend", harness.audience}
 	harness.provider.ValidateTokenFunc = func(context.Context, string) (*providers.UserInfo, error) {
