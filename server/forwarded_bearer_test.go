@@ -325,6 +325,23 @@ func TestValidateToken_ForwardedIDTokenRefusalLogsTheCause(t *testing.T) {
 	requireNoTokenMaterial(t, logs, bearer)
 }
 
+func TestValidateToken_ForwardedIDTokenRefusalLogIsBounded(t *testing.T) {
+	h := newForwardedTokenHarness(t)
+	userinfoMustNotBeCalled(t, h)
+	_, warnings := captureWarnings(t, h.srv)
+	claims := h.validClaims()
+	claims.Issuer = strings.Repeat("a", 4*maxLoggedErrorBytes)
+
+	_, err := h.srv.ValidateToken(t.Context(), h.signToken(t, claims))
+
+	require.ErrorIs(t, err, oidc.ErrIssuerMismatch)
+	require.Greater(t, len(err.Error()), maxLoggedErrorBytes)
+	records := warnings("Forwarded ID token refused")
+	require.Len(t, records, 1)
+	cause := strings.TrimPrefix(err.Error(), "forwarded ID token refused: ")
+	require.Equal(t, cause[:maxLoggedErrorBytes], records[0]["error"])
+}
+
 func TestValidateToken_ForwardedIDTokenWithBlockedJWKSIsNoJWKS(t *testing.T) {
 	h := newForwardedTokenHarness(t)
 	h.srv.jwksClient = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{Logger: h.srv.Logger})
