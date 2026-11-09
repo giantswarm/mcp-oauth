@@ -15,6 +15,7 @@ import (
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/providers"
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
@@ -313,21 +314,26 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 //     verification against the configured public key. No provider
 //     round-trip. See [Server.validateSelfIssuedJWT] for the security
 //     boundary checks (signature, typ, exp, aud, jti, family).
-//  2. Trusted-issuer JWT (when WithTrustedIssuers is configured AND the
+//  2. Forwarded upstream ID token (when the bearer's aud matches
+//     Config.TrustedAudiences, it carries neither act nor cnf, and
+//     RequireResourceAccessTokens is unset). Signature, iss and exp
+//     verified against the provider's JWKS; any failure is a hard rejection.
+//  3. Trusted-issuer JWT (when WithTrustedIssuers is configured AND the
 //     bearer's iss matches a configured entry). Signature verified via the
-//     entry's JWKS; aud must include Config.GetResourceIdentifier and satisfy
-//     the entry's AllowedAudiences when configured; typ header
-//     checked against the entry's AcceptedTypHeaders (default RFC 9068 §4
-//     at+jwt). A non-matching iss returns ErrIssuerNotTrusted
-//     and falls through to subsequent branches. Any other validation failure
-//     is a hard rejection.
-//  3. Stored access token (TokenStore lookup and access-token metadata,
+//     entry's JWKS; aud checked against the entry's AllowedAudiences
+//     (defaulting to Config.GetResourceIdentifier when empty), and must also
+//     include Config.GetResourceIdentifier under
+//     Config.RequireResourceAccessTokens; typ header checked against the
+//     entry's AcceptedTypHeaders (default RFC 9068 §4 at+jwt). A
+//     non-matching iss falls through. Any other validation failure is a
+//     hard rejection.
+//  4. Stored access token (TokenStore lookup and access-token metadata,
 //     then provider userinfo with the mapped provider access token). Unknown
 //     bearers, refresh tokens and ID-token metadata cannot authorize requests.
 //
-// Steps 1 and 2 are opt-in (AccessTokenFormatJWT and WithTrustedIssuers);
-// step 3 is always available. TrustedAudiences does not authorize resource
-// bearers. Rate limiting belongs at the HTTP layer using the IP address.
+// Steps 1, 2 and 3 are opt-in (AccessTokenFormatJWT, TrustedAudiences and
+// WithTrustedIssuers); step 4 is always available. Rate limiting belongs at
+// the HTTP layer using the IP address.
 //
 // The whole call runs under Config.TokenValidationTimeout, layered on ctx.
 //
@@ -365,7 +371,17 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 		return userInfo, err
 	}
 
-	// PRIORITY 2: Trusted-issuer JWT (WithTrustedIssuers).
+	// PRIORITY 2: Forwarded upstream ID token (TrustedAudiences). It runs
+	// before the trusted issuers so that an ID token issued to a trusted
+	// client is the caller's identity even when its issuer is also a trusted
+	// issuer.
+	if !s.Config.RequireResourceAccessTokens && len(s.Config.TrustedAudiences) > 0 && oidc.IsJWT(accessToken) {
+		if userInfo, err := s.validateForwardedIDTokenBearer(ctx, accessToken); userInfo != nil || err != nil {
+			return userInfo, err
+		}
+	}
+
+	// PRIORITY 3: Trusted-issuer JWT (WithTrustedIssuers).
 	if userInfo, err := s.validateTrustedIssuerJWT(ctx, accessToken); userInfo != nil || err != nil {
 		return userInfo, err
 	}
@@ -623,7 +639,7 @@ func (s *Server) validateTrustedIssuerJWT(ctx context.Context, accessToken strin
 		s.Auditor.LogAuthFailure(ctx, identity.Subject, "", "", "trusted_issuer_typ_invalid")
 		return nil, fmt.Errorf("trusted issuer JWT: %w", err)
 	}
-	if identity.Claims == nil || helpers.FindMatchingAudience(identity.Claims.Audience, []string{s.Config.GetResourceIdentifier()}) == "" {
+	if identity.Claims == nil || (s.Config.RequireResourceAccessTokens && helpers.FindMatchingAudience(identity.Claims.Audience, []string{s.Config.GetResourceIdentifier()}) == "") {
 		s.Auditor.LogAuthFailure(ctx, identity.Subject, "", "", "trusted_issuer_audience_invalid")
 		return nil, errors.New("trusted issuer JWT is not intended for this resource server")
 	}

@@ -1568,20 +1568,31 @@ func TestHandler_ValidateToken_SessionRequiresIssuedTokenMapping(t *testing.T) {
 	require.Empty(t, sessionFor(idToken, http.StatusUnauthorized))
 }
 
-func TestHandler_ValidateToken_ForwardedIDTokenRejected(t *testing.T) {
-	handler, foreignIDToken, _ := newForwardedTokenHandler(t, slog.LevelInfo)
+func TestHandler_ValidateToken_ForwardedIDToken(t *testing.T) {
+	for _, strict := range []bool{false, true} {
+		t.Run(fmt.Sprintf("RequireResourceAccessTokens=%t", strict), func(t *testing.T) {
+			handler, forwardedIDToken, _ := newForwardedTokenHandler(t, slog.LevelInfo)
+			handler.server.Config.RequireResourceAccessTokens = strict
 
-	var capturedSessionID string
-	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		capturedSessionID, _ = SessionIDFromContext(r.Context())
-	})
-	request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test", nil)
-	request.Header.Set("Authorization", "Bearer "+foreignIDToken)
-	response := httptest.NewRecorder()
-	handler.ValidateToken(nextHandler).ServeHTTP(response, request)
+			var capturedSessionID string
+			nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				capturedSessionID, _ = SessionIDFromContext(r.Context())
+			})
+			request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test", nil)
+			request.Header.Set("Authorization", "Bearer "+forwardedIDToken)
+			response := httptest.NewRecorder()
+			handler.ValidateToken(nextHandler).ServeHTTP(response, request)
 
-	require.Equal(t, http.StatusUnauthorized, response.Code)
-	require.Empty(t, capturedSessionID)
+			if strict {
+				require.Equal(t, http.StatusUnauthorized, response.Code)
+				require.Empty(t, capturedSessionID)
+				return
+			}
+			require.Equal(t, http.StatusOK, response.Code)
+			require.Equal(t, handler.server.SessionIDForBearer(forwardedIDToken), capturedSessionID)
+			require.True(t, strings.HasPrefix(capturedSessionID, "ext-"))
+		})
+	}
 }
 
 // TestHandler_ValidateToken_PrincipalSessionIdentity pins the middleware

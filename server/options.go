@@ -103,8 +103,8 @@ func WithTokenRefreshHandler(handler TokenRefreshHandler) Option {
 	}
 }
 
-// WithTrustedAudiences sets the client IDs accepted by AcceptForwardedIDToken
-// for identity validation. It does not authorize resource requests.
+// WithTrustedAudiences sets the client IDs whose upstream ID tokens are
+// accepted as forwarded identities (see Config.TrustedAudiences).
 //
 // Equivalent to setting Config.TrustedAudiences; provided as a functional
 // option for symmetry with WithTrustedIssuers. If both are used, the option
@@ -121,8 +121,9 @@ func WithTrustedAudiences(audiences []string) Option {
 }
 
 // WithTrustedIssuers configures JWT validation for token exchange and resource
-// access. Resource bearers must satisfy both resource audience and typ checks;
-// exchange subjects use the issuer's AllowedAudiences and AllowedClaims.
+// access. Both check the issuer's AllowedAudiences and AllowedClaims; resource
+// bearers also pass the typ check, and must name the resource identifier in aud
+// under Config.RequireResourceAccessTokens.
 func WithTrustedIssuers(issuers []TrustedIssuer) Option {
 	return func(s *Server) {
 		if len(issuers) == 0 {

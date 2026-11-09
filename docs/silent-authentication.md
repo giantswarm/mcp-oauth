@@ -476,7 +476,7 @@ authURL := provider.AuthorizationURL(state, challenge, "S256", scopes, &provider
 
 ## Accepting a Forwarded ID Token Directly
 
-`Server.AcceptForwardedIDToken` verifies an upstream ID token for explicit identity workflows. Its result establishes identity; it does not authorize MCP resource requests. Resource authentication through `Server.ValidateToken` requires an access token bound to the resource.
+`Server.AcceptForwardedIDToken` verifies an upstream ID token presented by a trusted intermediary. `Server.ValidateToken` accepts the same tokens as bearers unless `Config.RequireResourceAccessTokens` is set.
 
 Unlike the auth-code flow, this path never touches the authorization_code grant — there is no family, no refresh token, no `SessionCreationHandler` firing, and no entry created in `TokenStore`. It is a pure validation function that returns the verified claims plus a deterministic session identifier.
 
@@ -487,7 +487,7 @@ Use `AcceptForwardedIDToken` when:
 - An identity workflow holds an ID token from the configured IdP.
 - The workflow needs verified identity claims and a deterministic identifier for audit correlation.
 
-For delegation from an aggregator or bridge, use the existing [RFC 8693 token exchange](./token-exchange.md) support to obtain an access token for the downstream resource. Adding the aggregator's client ID to `TrustedAudiences` does not make its ID tokens resource access tokens.
+A forwarded ID token is accepted by every server that trusts its audience. Where the IdP supports it, prefer [RFC 8693 token exchange](./token-exchange.md) for a per-resource access token, and set `RequireResourceAccessTokens` on the downstream.
 
 ### Preconditions
 
@@ -519,7 +519,6 @@ if err != nil {
 - **Does not fire `SessionCreationHandler`.** That handler is gated on `RefreshTokenFamilyStore` and the authorization-code family lifecycle. Forwarded tokens have neither. Callers that want a "first time we've seen this session" hook should build that on top with their own seen-set keyed on `acc.SessionID` and TTL bounded by `acc.ExpiresAt`.
 - **Does not mirror the token into `TokenStore`.** Identity acceptance creates no resource-token mapping.
 - **Does not refresh expired tokens.** The caller must obtain a fresh identity assertion when it expires.
-- **Does not authorize resource requests.** Use an access token bound to the resource, including through RFC 8693 exchange.
 
 ### Aggregator fan-out
 

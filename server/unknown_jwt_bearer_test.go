@@ -159,8 +159,8 @@ func TestValidateToken_RefusesJWTWithOtherMetadata(t *testing.T) {
 	require.ErrorIs(t, err, ErrUnknownJWTBearer)
 }
 
-func TestValidateToken_RejectsTrustedAudienceIDToken(t *testing.T) {
-	h := newForwardedTokenHarness(t)
+func TestValidateToken_StrictRejectsTrustedAudienceIDToken(t *testing.T) {
+	h := newForwardedTokenHarness(t, requireResourceAccessTokens)
 	userinfoAcceptsAnything(h)
 	calls := h.provider.GetCallCount("ValidateToken")
 
@@ -171,8 +171,8 @@ func TestValidateToken_RejectsTrustedAudienceIDToken(t *testing.T) {
 	require.Equal(t, calls, h.provider.GetCallCount("ValidateToken"))
 }
 
-func TestValidateToken_InvalidForwardedIDToken(t *testing.T) {
-	h := newForwardedTokenHarness(t)
+func TestValidateToken_StrictInvalidForwardedIDToken(t *testing.T) {
+	h := newForwardedTokenHarness(t, requireResourceAccessTokens)
 	userinfoAcceptsAnything(h)
 	audit := captureAudit(h.srv)
 	calls := h.provider.GetCallCount("ValidateToken")

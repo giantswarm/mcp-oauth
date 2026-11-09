@@ -420,8 +420,19 @@ func TestValidateToken_JWTBeforeUserinfo(t *testing.T) {
 		require.Equal(t, providers.TokenSourceOAuth, userInfo.TokenSource)
 	})
 
-	t.Run("trusted ID token is refused without userinfo", func(t *testing.T) {
+	t.Run("trusted ID token is accepted through JWKS without userinfo", func(t *testing.T) {
 		h := newForwardedTokenHarness(t)
+		h.provider.ValidateTokenFunc = func(context.Context, string) (*providers.UserInfo, error) {
+			t.Error("a forwarded JWT must not reach userinfo")
+			return nil, ErrUnknownJWTBearer
+		}
+		userInfo, err := h.srv.ValidateToken(t.Context(), h.signToken(t, h.validClaims()))
+		require.NoError(t, err)
+		require.Equal(t, providers.TokenSourceSSO, userInfo.TokenSource)
+	})
+
+	t.Run("strict policy refuses a trusted ID token without userinfo", func(t *testing.T) {
+		h := newForwardedTokenHarness(t, requireResourceAccessTokens)
 		h.provider.ValidateTokenFunc = func(context.Context, string) (*providers.UserInfo, error) {
 			t.Error("a forwarded JWT must not reach userinfo")
 			return nil, ErrUnknownJWTBearer

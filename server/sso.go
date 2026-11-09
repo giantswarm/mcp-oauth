@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
@@ -98,6 +100,46 @@ func (s *Server) validateAndParseForwardedIDToken(ctx context.Context, tokenStri
 
 	return idTokenClaims, matchedAudience, nil
 }
+
+// validateForwardedIDTokenBearer accepts an upstream ID token as a
+// ValidateToken bearer. Returns (nil, nil) when the token does not parse,
+// names no TrustedAudiences entry, or carries act or cnf, so the caller falls
+// through: a delegated token is left to the trusted issuer's actor policy,
+// and a sender-constrained one to the branches whose DPoP binding the handler
+// middleware enforces.
+func (s *Server) validateForwardedIDTokenBearer(ctx context.Context, bearer string) (*providers.UserInfo, error) {
+	rawClaims, err := oidc.ParseUnverifiedClaims(bearer)
+	if err != nil {
+		return nil, nil
+	}
+	if _, delegated := rawClaims["act"]; delegated {
+		return nil, nil
+	}
+	if _, bound := rawClaims["cnf"]; bound {
+		return nil, nil
+	}
+
+	providerName := s.provider.Name()
+	expectedIssuer := providers.IssuerOf(s.provider)
+	claims, matchedAudience, err := s.validateAndParseForwardedIDToken(ctx, bearer)
+	switch {
+	case err == nil && claims == nil, errors.Is(err, errForwardedTokenParseFailed):
+		return nil, nil
+	case err != nil && isTransientProviderError(err):
+		return nil, s.providerUnavailable(ctx, "forwarded ID token validation", "", "", err)
+	case err != nil:
+		s.Auditor.LogAuthFailure(ctx, "", "", "", auditReasonForwardedIDTokenInvalid)
+		s.recordForwardedIDTokenAccepted(ctx, providerName, expectedIssuer, "", classifyForwardedTokenError(err))
+		return nil, fmt.Errorf("forwarded ID token refused: %w", err)
+	}
+
+	userInfo := s.idTokenClaimsToUserInfo(claims)
+	s.logForwardedIDTokenAccepted(ctx, bearer, s.deriveForwardedSessionID(bearer), matchedAudience, expectedIssuer, userInfo)
+	s.recordForwardedIDTokenAccepted(ctx, providerName, claims.Issuer, matchedAudience, instrumentation.ForwardedIDTokenResultOK)
+	return userInfo, nil
+}
+
+const auditReasonForwardedIDTokenInvalid = "forwarded_id_token_invalid"
 
 // findMatchingTrustedAudience checks if any of the token's audiences match our trusted audiences.
 // Uses the shared helpers.FindMatchingAudience for consistent URL normalization

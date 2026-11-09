@@ -158,11 +158,12 @@ func TestValidateToken_TrustedIssuer_RejectsWrongAudience(t *testing.T) {
 	require.Contains(t, err.Error(), "trusted issuer JWT validation failed")
 }
 
-func TestValidateToken_TrustedIssuer_ExchangeAudienceDoesNotAuthorizeResource(t *testing.T) {
+func TestValidateToken_TrustedIssuer_StrictExchangeAudienceDoesNotAuthorizeResource(t *testing.T) {
 	key := newTestECKey(t)
 	const keyID = "resource-audience-key"
 	jwksURL, jwksClient := serveStaticJWKS(t, key, keyID)
 	srv, _, _ := setupFlowTestServer(t)
+	srv.Config.RequireResourceAccessTokens = true
 	const exchangeAudience = "exchange-client"
 	srv.Config.TrustedAudiences = []string{exchangeAudience}
 	validator, err := newOIDCValidatorWithClient([]TrustedIssuer{{
@@ -193,14 +194,10 @@ func TestValidateToken_TrustedIssuer_ExchangeAudienceDoesNotAuthorizeResource(t 
 	}
 }
 
-// TestValidateToken_TrustedIssuer_IDTokenFallsThroughToForwarded covers the
-// gazelle-style deployment where the server's main OIDC provider is ALSO
-// configured as a trusted issuer (for RFC 8693 subject-token validation).
-// A forwarded ID token (typ != at+jwt) from that issuer whose aud is in
-// TrustedAudiences must not be hard-rejected by the trusted-issuer branch;
-// it falls through to the forwarded-ID-token branch and is accepted there.
-func TestValidateToken_TrustedIssuer_RejectsIDTokenWithTrustedAudience(t *testing.T) {
-	h := newForwardedTokenHarness(t)
+// The provider's issuer is also a trusted issuer (for RFC 8693 subject
+// tokens). Under the strict policy its ID token fails the typ check.
+func TestValidateToken_TrustedIssuer_StrictRejectsIDTokenWithTrustedAudience(t *testing.T) {
+	h := newForwardedTokenHarness(t, requireResourceAccessTokens)
 
 	tiJWKSClient := oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
 		HTTPClient:     h.jwksServer.Client(),

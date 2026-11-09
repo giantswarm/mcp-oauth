@@ -799,11 +799,21 @@ type Config struct {
 	// Security: This prevents token theft and replay attacks to different resource servers
 	ResourceIdentifier string
 
-	// TrustedAudiences lists client IDs accepted by AcceptForwardedIDToken for
-	// identity validation. It does not expand resource bearer audiences. Resource
-	// requests require an access token bound to ResourceIdentifier; delegation
-	// uses RFC 8693 token exchange. Default: nil.
+	// TrustedAudiences lists the client IDs whose upstream ID tokens are
+	// accepted as forwarded identities: by AcceptForwardedIDToken, and by
+	// ValidateToken unless RequireResourceAccessTokens is set. A forwarded
+	// token must be signed by the provider's issuer. ValidateToken leaves a
+	// token carrying act or cnf to WithTrustedIssuers. Each acceptance is
+	// audited as EventForwardedIDTokenAccepted and counted in
+	// oauth.forwarded_id_token.accepted_total. Default: nil.
 	TrustedAudiences []string
+
+	// RequireResourceAccessTokens restricts ValidateToken to access tokens
+	// bound to ResourceIdentifier: forwarded ID tokens are refused and a
+	// trusted-issuer bearer must name ResourceIdentifier in aud in addition to
+	// the entry's AllowedAudiences. Delegation then uses RFC 8693 token
+	// exchange. Default: false.
+	RequireResourceAccessTokens bool
 
 	// TokenExchangeClientAudiences is the per-client allowlist for the
 	// brokered RFC 8693 token-exchange flow. Keys are client IDs; values are
