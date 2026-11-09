@@ -428,10 +428,24 @@ func isCompactJOSE(token string) bool {
 func (s *Server) rejectUnknownBearer(ctx context.Context, bearer string) error {
 	if isCompactJOSE(bearer) {
 		s.Auditor.LogAuthFailure(ctx, "", "", "", auditReasonUnknownJWTBearer)
+		s.logUnknownJWTBearer(bearer)
 		return ErrUnknownJWTBearer
 	}
 	s.Auditor.LogAuthFailure(ctx, "", "", "", "unknown_bearer")
 	return errInvalidAccessToken
+}
+
+// logUnknownJWTBearer names, from the unverified claims, the issuer and
+// audience of a refused JWT next to the configured TrustedAudiences, so an
+// operator can tell a token issued to an untrusted client from a forgery.
+// The values are informational only and never reach the response.
+func (s *Server) logUnknownJWTBearer(bearer string) {
+	attrs := []any{"trusted_audiences", s.Config.TrustedAudiences, "token_suffix", helpers.TokenSuffix(bearer, 8)}
+	if claims, err := oidc.ParseUnverifiedClaims(bearer); err == nil {
+		issuer, _ := claims["iss"].(string)
+		attrs = append(attrs, "iss", issuer, "aud", oidc.GetAudienceFromClaims(claims))
+	}
+	s.Logger.Warn("JWT bearer refused: not issued by this server, a trusted issuer, or for a trusted audience", attrs...)
 }
 
 // refreshExpiredProviderToken refreshes a stored provider token past expiry

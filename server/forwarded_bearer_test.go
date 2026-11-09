@@ -1,7 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -223,4 +226,55 @@ func TestValidateToken_TrustedIssuer_AllowedAudienceAuthorizes(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, testSubject, userInfo.ID)
 	require.Equal(t, providers.TokenSourceTrustedIssuer, userInfo.TokenSource)
+}
+
+// captureWarnings routes the server's logger to a buffer and returns a
+// function decoding the WARN records with the given message.
+func captureWarnings(t *testing.T, srv *Server) func(msg string) []map[string]any {
+	t.Helper()
+	var buf bytes.Buffer
+	srv.Logger = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	return func(msg string) []map[string]any {
+		var records []map[string]any
+		for line := range bytes.SplitSeq(buf.Bytes(), []byte("\n")) {
+			if len(line) == 0 {
+				continue
+			}
+			var record map[string]any
+			require.NoError(t, json.Unmarshal(line, &record))
+			if record["msg"] == msg {
+				records = append(records, record)
+			}
+		}
+		return records
+	}
+}
+
+func TestValidateToken_UnknownJWTBearerLogsItsAudience(t *testing.T) {
+	h := newForwardedTokenHarness(t)
+	userinfoMustNotBeCalled(t, h)
+	warnings := captureWarnings(t, h.srv)
+
+	_, err := h.srv.ValidateToken(t.Context(), tokenForAnotherClient(t, h))
+
+	require.ErrorIs(t, err, ErrUnknownJWTBearer)
+	records := warnings("JWT bearer refused: not issued by this server, a trusted issuer, or for a trusted audience")
+	require.Len(t, records, 1)
+	require.Equal(t, h.issuer, records[0]["iss"])
+	require.NotContains(t, records[0]["aud"], h.audience)
+	require.NotEmpty(t, records[0]["aud"])
+	require.Equal(t, []any{h.audience}, records[0]["trusted_audiences"])
+}
+
+func TestValidateToken_ForwardedIDTokenRefusalLogsTheCause(t *testing.T) {
+	h := newForwardedTokenHarness(t)
+	userinfoMustNotBeCalled(t, h)
+	warnings := captureWarnings(t, h.srv)
+
+	_, err := h.srv.ValidateToken(t.Context(), expiredForwardedToken(t, h))
+
+	require.ErrorIs(t, err, oidc.ErrTokenExpired)
+	records := warnings("Forwarded ID token refused")
+	require.Len(t, records, 1)
+	require.Contains(t, records[0]["error"], oidc.ErrTokenExpired.Error())
 }
