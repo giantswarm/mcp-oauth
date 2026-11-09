@@ -270,12 +270,44 @@ func TestValidateToken_UnknownJWTBearerLogsItsAudience(t *testing.T) {
 	_, err := h.srv.ValidateToken(t.Context(), bearer)
 
 	require.ErrorIs(t, err, ErrUnknownJWTBearer)
-	records := warnings("JWT bearer refused: not issued by this server, a trusted issuer, or for a trusted audience")
+	records := warnings("Unknown JWT bearer refused")
 	require.Len(t, records, 1)
 	require.Equal(t, h.issuer, records[0]["token_issuer"])
 	require.Equal(t, []any{"another-client"}, records[0]["token_audience"])
 	require.Equal(t, []any{h.audience}, records[0]["trusted_audiences"])
 	requireNoTokenMaterial(t, logs, bearer)
+}
+
+func TestValidateToken_UnknownJWTBearerLogIsBounded(t *testing.T) {
+	h := newForwardedTokenHarness(t)
+	userinfoMustNotBeCalled(t, h)
+	_, warnings := captureWarnings(t, h.srv)
+	claims := h.validClaims()
+	long := strings.Repeat("a", 4*maxLoggedValueBytes)
+	claims.Issuer = long
+	claims.Audience = josejwt.Audience{long, "b", "c", "d", "e", "f"}
+
+	_, err := h.srv.ValidateToken(t.Context(), h.signToken(t, claims))
+
+	require.ErrorIs(t, err, ErrUnknownJWTBearer)
+	records := warnings("Unknown JWT bearer refused")
+	require.Len(t, records, 1)
+	require.Equal(t, long[:maxLoggedValueBytes], records[0]["token_issuer"])
+	require.Equal(t, []any{long[:maxLoggedValueBytes], "b", "c", "d"}, records[0]["token_audience"])
+}
+
+func TestValidateToken_UnknownJWTBearerUnderResourceAccessTokensOmitsTrustedAudiences(t *testing.T) {
+	h := newForwardedTokenHarness(t, requireResourceAccessTokens)
+	userinfoMustNotBeCalled(t, h)
+	_, warnings := captureWarnings(t, h.srv)
+
+	_, err := h.srv.ValidateToken(t.Context(), h.signToken(t, h.validClaims()))
+
+	require.ErrorIs(t, err, ErrUnknownJWTBearer)
+	records := warnings("Unknown JWT bearer refused")
+	require.Len(t, records, 1)
+	require.Equal(t, []any{h.audience}, records[0]["token_audience"])
+	require.NotContains(t, records[0], "trusted_audiences")
 }
 
 func TestValidateToken_ForwardedIDTokenRefusalLogsTheCause(t *testing.T) {

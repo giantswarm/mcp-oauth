@@ -527,9 +527,10 @@ var ErrKeyNotFound = errors.New("key not found in JWKS")
 var ErrRestrictedAddress = errors.New("host resolves to a restricted address")
 
 // ErrJWKSFetchFailed is returned (wrapped) by ValidateIDToken when the JWKS
-// to verify the token against could not be fetched. The token itself was not
-// examined. The wrapped cause tells a transient failure (JWKSStatusError 5xx,
-// a network error) from a permanent one (ErrRestrictedAddress, a 4xx).
+// to verify the token against could not be fetched, either at first or on the
+// refetch for a kid the cached set lacks. The wrapped cause tells a transient
+// failure (JWKSStatusError 5xx, a network error) from a permanent one
+// (ErrRestrictedAddress, a 4xx, an invalid JWKS URI).
 var ErrJWKSFetchFailed = errors.New("failed to fetch JWKS")
 
 // ErrIssuerMismatch is returned (wrapped) when a JWT's iss claim does not match

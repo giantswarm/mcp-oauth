@@ -402,9 +402,9 @@ func TestAcceptForwardedIDToken_EmptyBearer(t *testing.T) {
 func TestClassifyForwardedTokenError(t *testing.T) {
 	// Wrap errForwardedTokenParseFailed the same way validateAndParseForwardedIDToken does.
 	parseWrapped := fmt.Errorf("%w: junk", errForwardedTokenParseFailed)
-	issuerWrapped := fmt.Errorf("ID token signature validation failed: %w: got \"x\", expected \"y\"", oidc.ErrIssuerMismatch)
-	expiredWrapped := fmt.Errorf("ID token signature validation failed: %w", oidc.ErrTokenExpired)
-	nbfWrapped := fmt.Errorf("ID token signature validation failed: %w", oidc.ErrTokenNotValidYet)
+	issuerWrapped := fmt.Errorf("ID token validation failed: %w: got \"x\", expected \"y\"", oidc.ErrIssuerMismatch)
+	expiredWrapped := fmt.Errorf("ID token validation failed: %w", oidc.ErrTokenExpired)
+	nbfWrapped := fmt.Errorf("ID token validation failed: %w", oidc.ErrTokenNotValidYet)
 
 	cases := []struct {
 		name string
@@ -416,7 +416,7 @@ func TestClassifyForwardedTokenError(t *testing.T) {
 		{"issuer", issuerWrapped, instrumentation.ForwardedIDTokenResultIssMismatch},
 		{"expired", expiredWrapped, instrumentation.ForwardedIDTokenResultExpired},
 		{"nbf", nbfWrapped, instrumentation.ForwardedIDTokenResultNotYetValid},
-		{"jwks fetch", fmt.Errorf("ID token signature validation failed: %w: %w", oidc.ErrJWKSFetchFailed, &oidc.JWKSStatusError{StatusCode: http.StatusNotFound}), instrumentation.ForwardedIDTokenResultNoJWKS},
+		{"jwks fetch", fmt.Errorf("ID token validation failed: %w: %w", oidc.ErrJWKSFetchFailed, &oidc.JWKSStatusError{StatusCode: http.StatusNotFound}), instrumentation.ForwardedIDTokenResultNoJWKS},
 		{"no jwks uri", fmt.Errorf("%w: failed to get JWKS URI: boom", errForwardedTokenNoJWKS), instrumentation.ForwardedIDTokenResultNoJWKS},
 		{"default", errors.New("some other failure"), instrumentation.ForwardedIDTokenResultSigInvalid},
 	}
