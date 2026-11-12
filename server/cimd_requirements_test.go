@@ -15,12 +15,15 @@ import (
 func TestFetchClientMetadataRequiredFieldsHTTP(t *testing.T) {
 	for _, testCase := range []struct {
 		name     string
+		path     string
 		field    string
 		value    any
 		remove   bool
 		expected string
 	}{
 		{name: "valid public client"},
+		{name: "escaped path", path: "/client%2Fmetadata.json"},
+		{name: "escaped path with lowercase hex", path: "/client%2fmetadata.json"},
 		{name: "default public authentication", field: "token_endpoint_auth_method", remove: true},
 		{name: "missing name", field: "client_name", remove: true, expected: "client_name is required"},
 		{name: "empty name", field: "client_name", value: "", expected: "client_name is required"},
@@ -37,7 +40,7 @@ func TestFetchClientMetadataRequiredFieldsHTTP(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			transport := newTLSServerWithFreshCert(t, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				document := map[string]any{
-					"client_id":                  "https://" + request.Host + request.URL.Path,
+					"client_id":                  "https://" + request.Host + request.URL.EscapedPath(),
 					"client_name":                "Example client",
 					"redirect_uris":              []string{"https://app.example.com/callback"},
 					"token_endpoint_auth_method": "none",
@@ -64,7 +67,12 @@ func TestFetchClientMetadataRequiredFieldsHTTP(t *testing.T) {
 				Instrumentation: testInstrumentation(t),
 				Auditor:         testAuditor(),
 			}
-			metadata, _, err := authorizationServer.fetchClientMetadata(t.Context(), transport.URL+"/client.json")
+			metadataPath := testCase.path
+			if metadataPath == "" {
+				metadataPath = "/client.json"
+			}
+			clientID := transport.URL + metadataPath
+			metadata, _, err := authorizationServer.fetchClientMetadata(t.Context(), clientID)
 			if testCase.expected != "" {
 				require.ErrorContains(t, err, testCase.expected)
 				require.Nil(t, metadata)
@@ -72,6 +80,7 @@ func TestFetchClientMetadataRequiredFieldsHTTP(t *testing.T) {
 			}
 			require.NoError(t, err)
 			require.Equal(t, "Example client", metadata.ClientName)
+			require.Equal(t, clientID, metadata.ClientID)
 			require.Equal(t, "none", metadata.TokenEndpointAuthMethod)
 		})
 	}
@@ -94,11 +103,4 @@ func TestClientMetadataIdentifierRequirements(t *testing.T) {
 			require.True(t, isURLClientID(identifier))
 		})
 	}
-}
-
-func TestClientMetadataURLPreservesEscapedPath(t *testing.T) {
-	identifier := "https://127.0.0.1/client%2Fmetadata.json"
-	actual, err := validateAndSanitizeMetadataURL(identifier, false, []string{"127.0.0.1"})
-	require.NoError(t, err)
-	require.Equal(t, identifier, actual)
 }
