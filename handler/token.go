@@ -278,7 +278,7 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 // If error is returned, the HTTP response has already been written; a client
 // store that did not answer is written as 503 temporarily_unavailable.
 func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.ResponseWriter, r *http.Request, clientID, clientIP string, startTime time.Time, span trace.Span) (string, bool, error) {
-	basicClientID, basicClientSecret := h.parseBasicAuth(r)
+	basicClientID, _ := h.parseBasicAuth(r)
 
 	if h.rejectBasicFormClientIDMismatch(w, r, basicClientID, clientID, clientIP, endpointToken, grantTypeRefreshToken, span, startTime) {
 		return "", false, fmt.Errorf("client_id mismatch between Basic Authorization header and form parameter")
@@ -286,7 +286,7 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 
 	// Case 1: Basic Auth credentials provided - validate them
 	if basicClientID != "" {
-		return h.authenticateRefreshBasicClient(ctx, w, r, basicClientID, basicClientSecret, clientIP, startTime, span)
+		return h.authenticateRefreshBasicClient(ctx, w, r, basicClientID, clientIP, startTime, span)
 	}
 
 	// Case 2: No Basic Auth - check if client_id was provided
@@ -304,8 +304,8 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 // authenticateRefreshBasicClient validates Basic Authorization credentials on
 // the refresh grant. Returns (clientID, true, nil) on success; on failure the
 // response has been written.
-func (h *Handler) authenticateRefreshBasicClient(ctx context.Context, w http.ResponseWriter, r *http.Request, clientID, clientSecret, clientIP string, startTime time.Time, span trace.Span) (string, bool, error) {
-	err := h.validateBasicClientSecret(ctx, r, clientID, clientSecret)
+func (h *Handler) authenticateRefreshBasicClient(ctx context.Context, w http.ResponseWriter, r *http.Request, clientID, clientIP string, startTime time.Time, span trace.Span) (string, bool, error) {
+	err := h.validateBasicClientSecret(ctx, r, clientID)
 	if err == nil {
 		return clientID, true, nil
 	}
@@ -401,20 +401,19 @@ func formDecode(value string) string {
 	return decoded
 }
 
-// validateBasicClientSecret checks the secret parseBasicAuth decoded and,
-// when the server refuses it, the secret as the Basic header carries it: a
-// client that does not form-encode its credentials sends a secret holding '+'
-// or '%' unchanged, and decoding alters it.
-func (h *Handler) validateBasicClientSecret(ctx context.Context, r *http.Request, clientID, secret string) error {
-	err := h.server.ValidateClientCredentials(ctx, clientID, secret)
-	if !errors.Is(err, storage.ErrInvalidClientCredentials) {
+// validateBasicClientSecret checks clientID against the secret of the Basic
+// Authorization header, form-decoded as parseBasicAuth decodes it. When that
+// is refused and decoding altered the secret, the secret as sent is checked
+// too: a client that does not form-encode its credentials sends a secret
+// holding '+' or '%' unchanged.
+func (h *Handler) validateBasicClientSecret(ctx context.Context, r *http.Request, clientID string) error {
+	_, sent, _ := r.BasicAuth()
+	decoded := formDecode(sent)
+	err := h.server.ValidateClientCredentials(ctx, clientID, decoded)
+	if decoded == sent || !errors.Is(err, storage.ErrInvalidClientCredentials) {
 		return err
 	}
-	_, raw, ok := r.BasicAuth()
-	if !ok || raw == secret {
-		return err
-	}
-	if err := h.server.ValidateClientCredentials(ctx, clientID, raw); err != nil {
+	if err := h.server.ValidateClientCredentials(ctx, clientID, sent); err != nil {
 		return err
 	}
 	h.logger.Info("Client authenticated with Basic credentials that are not form-encoded", "client_id", clientID)
@@ -507,7 +506,7 @@ func (h *Handler) validateConfidentialClient(r *http.Request, client *storage.Cl
 		return oauth.ErrInvalidClient("Client authentication required")
 	}
 
-	if err := h.validateBasicClientSecret(ctx, r, client.ClientID, secret); err != nil {
+	if err := h.validateBasicClientSecret(ctx, r, client.ClientID); err != nil {
 		if errors.Is(err, server.ErrStorageUnavailable) {
 			return err
 		}

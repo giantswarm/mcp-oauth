@@ -24,7 +24,7 @@ import (
 // return immediately. RFC 7009 allows unauthenticated revocation for public
 // clients, so a missing Basic header is not itself an error.
 func (h *Handler) authenticateRevocationClient(w http.ResponseWriter, r *http.Request, formClientID, clientIP string, startTime time.Time, span trace.Span) (string, bool, bool) {
-	basicClientID, basicClientSecret := h.parseBasicAuth(r)
+	basicClientID, _ := h.parseBasicAuth(r)
 
 	if h.rejectBasicFormClientIDMismatch(w, r, basicClientID, formClientID, clientIP, endpointRevoke, "", span, startTime) {
 		return "", false, false
@@ -34,7 +34,7 @@ func (h *Handler) authenticateRevocationClient(w http.ResponseWriter, r *http.Re
 		return formClientID, false, true
 	}
 
-	if err := h.validateBasicClientSecret(r.Context(), r, basicClientID, basicClientSecret); err != nil {
+	if err := h.validateBasicClientSecret(r.Context(), r, basicClientID); err != nil {
 		h.logger.Warn("Client authentication failed for revocation", "client_id", basicClientID, "ip", clientIP)
 		h.server.Auditor.LogAuthFailure(r.Context(), "", basicClientID, clientIP, "revocation_auth_failed")
 		h.recordHTTPMetrics(r.Context(), endpointRevoke, http.MethodPost, http.StatusUnauthorized, startTime)
@@ -231,10 +231,10 @@ func (h *Handler) writeIntrospectionError(w http.ResponseWriter, r *http.Request
 // Returns the client ID on success, or an error if authentication fails.
 func (h *Handler) authenticateIntrospectionClient(r *http.Request, clientIP string) (string, error) {
 	ctx := r.Context()
-	authClientID, authClientSecret := h.parseBasicAuth(r)
+	authClientID, _ := h.parseBasicAuth(r)
 
 	if authClientID != "" {
-		if err := h.validateBasicClientSecret(ctx, r, authClientID, authClientSecret); err != nil {
+		if err := h.validateBasicClientSecret(ctx, r, authClientID); err != nil {
 			h.logger.Warn("Client authentication failed for introspection", "client_id", authClientID, "ip", clientIP)
 			h.server.Auditor.LogAuthFailure(ctx, "", authClientID, clientIP, "introspection_auth_failed")
 			return "", fmt.Errorf("client authentication failed")
