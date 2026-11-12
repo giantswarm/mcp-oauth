@@ -34,7 +34,7 @@ func (h *Handler) authenticateRevocationClient(w http.ResponseWriter, r *http.Re
 		return formClientID, false, true
 	}
 
-	if err := h.server.ValidateClientCredentials(r.Context(), basicClientID, basicClientSecret); err != nil {
+	if err := h.validateBasicClientSecret(r.Context(), r, basicClientID, basicClientSecret); err != nil {
 		h.logger.Warn("Client authentication failed for revocation", "client_id", basicClientID, "ip", clientIP)
 		h.server.Auditor.LogAuthFailure(r.Context(), "", basicClientID, clientIP, "revocation_auth_failed")
 		h.recordHTTPMetrics(r.Context(), endpointRevoke, http.MethodPost, http.StatusUnauthorized, startTime)
@@ -234,7 +234,7 @@ func (h *Handler) authenticateIntrospectionClient(r *http.Request, clientIP stri
 	authClientID, authClientSecret := h.parseBasicAuth(r)
 
 	if authClientID != "" {
-		if err := h.server.ValidateClientCredentials(ctx, authClientID, authClientSecret); err != nil {
+		if err := h.validateBasicClientSecret(ctx, r, authClientID, authClientSecret); err != nil {
 			h.logger.Warn("Client authentication failed for introspection", "client_id", authClientID, "ip", clientIP)
 			h.server.Auditor.LogAuthFailure(ctx, "", authClientID, clientIP, "introspection_auth_failed")
 			return "", fmt.Errorf("client authentication failed")

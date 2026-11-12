@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -304,7 +305,7 @@ func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.Res
 // the refresh grant. Returns (clientID, true, nil) on success; on failure the
 // response has been written.
 func (h *Handler) authenticateRefreshBasicClient(ctx context.Context, w http.ResponseWriter, r *http.Request, clientID, clientSecret, clientIP string, startTime time.Time, span trace.Span) (string, bool, error) {
-	err := h.server.ValidateClientCredentials(ctx, clientID, clientSecret)
+	err := h.validateBasicClientSecret(ctx, r, clientID, clientSecret)
 	if err == nil {
 		return clientID, true, nil
 	}
@@ -380,12 +381,44 @@ func (h *Handler) authenticateRefreshPublicClient(ctx context.Context, w http.Re
 // payload, missing colon) returns empty strings so the caller routes the
 // request to the unauthenticated path rather than treating garbage as a
 // silent client_id.
+//
+// RFC 6749 §2.3.1 has clients form-encode the client ID and secret before
+// Basic encoding them, so both are form-decoded; a value that does not decode
+// is kept as sent.
 func (h *Handler) parseBasicAuth(r *http.Request) (username, password string) {
 	username, password, ok := r.BasicAuth()
 	if !ok {
 		return "", ""
 	}
-	return username, password
+	return formDecode(username), formDecode(password)
+}
+
+func formDecode(value string) string {
+	decoded, err := url.QueryUnescape(value)
+	if err != nil {
+		return value
+	}
+	return decoded
+}
+
+// validateBasicClientSecret checks the secret parseBasicAuth decoded and,
+// when the server refuses it, the secret as the Basic header carries it: a
+// client that does not form-encode its credentials sends a secret holding '+'
+// or '%' unchanged, and decoding alters it.
+func (h *Handler) validateBasicClientSecret(ctx context.Context, r *http.Request, clientID, secret string) error {
+	err := h.server.ValidateClientCredentials(ctx, clientID, secret)
+	if !errors.Is(err, storage.ErrInvalidClientCredentials) {
+		return err
+	}
+	_, raw, ok := r.BasicAuth()
+	if !ok || raw == secret {
+		return err
+	}
+	if err := h.server.ValidateClientCredentials(ctx, clientID, raw); err != nil {
+		return err
+	}
+	h.logger.Info("Client authenticated with Basic credentials that are not form-encoded", "client_id", clientID)
+	return nil
 }
 
 // rejectBasicFormClientIDMismatch enforces RFC 6749 §2.3.1: when both a Basic
@@ -455,7 +488,7 @@ func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string)
 		return nil, oauth.ErrInvalidClient("Client authentication failed")
 	}
 
-	if err := h.validateConfidentialClient(r.Context(), client, authClientSecret, clientIP); err != nil {
+	if err := h.validateConfidentialClient(r, client, authClientSecret, clientIP); err != nil {
 		return nil, err
 	}
 
@@ -463,7 +496,8 @@ func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string)
 }
 
 // validateConfidentialClient validates credentials for confidential clients.
-func (h *Handler) validateConfidentialClient(ctx context.Context, client *storage.Client, secret, clientIP string) error {
+func (h *Handler) validateConfidentialClient(r *http.Request, client *storage.Client, secret, clientIP string) error {
+	ctx := r.Context()
 	if !client.IsConfidential() {
 		return nil
 	}
@@ -473,7 +507,7 @@ func (h *Handler) validateConfidentialClient(ctx context.Context, client *storag
 		return oauth.ErrInvalidClient("Client authentication required")
 	}
 
-	if err := h.server.ValidateClientCredentials(ctx, client.ClientID, secret); err != nil {
+	if err := h.validateBasicClientSecret(ctx, r, client.ClientID, secret); err != nil {
 		if errors.Is(err, server.ErrStorageUnavailable) {
 			return err
 		}

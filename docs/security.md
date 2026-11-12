@@ -920,6 +920,10 @@ SECURITY WARNING: Plain PKCE method is ALLOWED
 
 **Always investigate and address security warnings before production deployment.**
 
+### Basic credentials that are not form-encoded
+
+RFC 6749 §2.3.1 has a client form-encode its client ID and secret before Basic encoding them, so `/token`, `/revoke` and `/introspect` form-decode both. A client that sends its secret unencoded still authenticates: when the decoded secret is refused, the secret as sent is checked, and a match logs `Client authenticated with Basic credentials that are not form-encoded` with the `client_id` (never the secret). That log names the clients to fix.
+
 ## OAuth 2.1 Compliance
 
 This library implements OAuth 2.1 security best practices:
