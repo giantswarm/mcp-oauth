@@ -48,7 +48,7 @@ func TestIsURLClientID(t *testing.T) {
 		{
 			name:     "HTTPS URL without path",
 			clientID: "https://example.com",
-			want:     true,
+			want:     false,
 		},
 		{
 			name:     "HTTPS URL with port",

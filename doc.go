@@ -1,6 +1,7 @@
 // Package oauth provides an OAuth 2.1 / OIDC authorization server library
-// intended to back an MCP server, aligned with the MCP 2025-11-25 OAuth
-// profile. It implements the Protected-Resource role (token validation +
+// intended to back an MCP server. Authorization support and open conformance
+// gaps for MCP 2026-07-28 are documented in docs/mcp-2026-07-28.md.
+// It implements the Protected-Resource role (token validation +
 // metadata) and the Authorization-Server role (authorize / token / revoke /
 // introspect / register / userinfo / discovery endpoints).
 //
