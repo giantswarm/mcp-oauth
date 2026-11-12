@@ -275,7 +275,7 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 // Per OAuth 2.1 Section 6, confidential clients MUST authenticate on refresh.
 // Returns (clientID, clientAuthenticated, error).
 // If error is returned, the HTTP response has already been written; a client
-// store that did not answer is written as 503 temporarily_unavailable.
+// store that did not answer is written as 503.
 func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.ResponseWriter, r *http.Request, clientID, clientIP string, startTime time.Time, span trace.Span) (string, bool, error) {
 	basicClientID, basicClientSecret := h.parseBasicAuth(r)
 

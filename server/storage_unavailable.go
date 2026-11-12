@@ -13,7 +13,7 @@ import (
 // reply within its per-operation deadline (see storage.DefaultOperationTimeout).
 // The presented grant was neither validated nor rejected and nothing was
 // consumed, rotated or revoked, so the client must retry the same request.
-// HTTP handlers answer it as 503 temporarily_unavailable with a Retry-After
+// HTTP handlers answer it as 503 with a Retry-After
 // header — never as invalid_grant, which clients read as "the token is dead"
 // and answer by discarding the token and forcing a new sign-in.
 //

@@ -85,7 +85,7 @@ type ExchangerResult struct {
 // Returning an error wrapping ErrInvalidTarget signals that the audience is
 // unknown to the host. An error wrapping ErrProviderUnavailable signals that an
 // issuer the exchange depends on did not answer; the client gets 503
-// temporarily_unavailable with Retry-After and retries the same request. Any
+// with Retry-After and retries the same request. Any
 // other error is reported to the client as a generic invalid_grant without
 // leaking detail.
 type Exchanger interface {
@@ -189,9 +189,16 @@ func (s *Server) dispatchDownstreamExchange(
 		Actor:            actorIdentity,
 	})
 	if err != nil {
-		s.Logger.Debug("brokered token exchange: downstream exchange failed",
-			paramClientID, clientID, paramAudience, audience, logKeyError, err)
-		s.auditExchangeFailure(ctx, clientID, audience, sessionID, "token_exchange_downstream_failed", map[string]any{
+		reason := "token_exchange_downstream_failed"
+		if errors.Is(err, ErrProviderUnavailable) {
+			reason = auditReasonProviderUnavailable
+			s.Logger.Warn("Identity provider temporarily unavailable during brokered token exchange",
+				paramClientID, clientID, paramAudience, audience, logKeyError, err.Error())
+		} else {
+			s.Logger.Debug("brokered token exchange: downstream exchange failed",
+				paramClientID, clientID, paramAudience, audience, logKeyError, err)
+		}
+		s.auditExchangeFailure(ctx, clientID, audience, sessionID, reason, map[string]any{
 			claimSub:    identity.Subject,
 			logKeyError: err.Error(),
 		})

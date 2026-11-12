@@ -330,8 +330,7 @@ func TestHandleBrokeredTokenExchange_ProviderUnavailable(t *testing.T) {
 			w := httptest.NewRecorder()
 			h.handler.ServeToken(w, req)
 
-			requireOAuthError(t, w, http.StatusServiceUnavailable, constants.ErrorCodeTemporarilyUnavailable)
-			require.NotEmpty(t, w.Header().Get("Retry-After"))
+			requireUnavailableResponse(t, w)
 		})
 	}
 }

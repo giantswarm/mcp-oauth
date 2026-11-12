@@ -21,7 +21,7 @@ import (
 // bounds a whole bearer validation), or the connection failed. The provider did
 // not reject the grant or the bearer and the refresh token was not consumed,
 // so the client must retry the same request. HTTP handlers answer it as 503
-// temporarily_unavailable with a Retry-After header, never as invalid_grant
+// with a Retry-After header and no OAuth error code, never as invalid_grant
 // or 401 invalid_token, which clients read as "the token is dead" and answer
 // by discarding the token and forcing a new sign-in.
 //
@@ -31,6 +31,10 @@ import (
 //
 // Match it with errors.Is; it wraps the provider's error.
 var ErrProviderUnavailable = errors.New("identity provider temporarily unavailable")
+
+// auditReasonProviderUnavailable is the audit reason of a request failed with
+// ErrProviderUnavailable.
+const auditReasonProviderUnavailable = "provider_unavailable"
 
 // isTransientProviderError reports whether a provider error means the
 // provider did not answer rather than rejected the grant or the bearer: an
@@ -82,7 +86,7 @@ func (s *Server) providerUnavailable(ctx context.Context, op, userID, clientID s
 
 	s.Auditor.LogEvent(ctx, security.Event{
 		Type: security.EventAuthFailure, UserID: userID, ClientID: clientID,
-		Details: map[string]any{logKeyReason: "provider_unavailable"},
+		Details: map[string]any{logKeyReason: auditReasonProviderUnavailable},
 	})
 	if errors.Is(err, ErrProviderUnavailable) {
 		return fmt.Errorf("%s: %w", op, err)

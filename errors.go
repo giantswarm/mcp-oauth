@@ -102,10 +102,10 @@ var (
 		return NewError(constants.ErrorCodeInvalidRedirectURI, desc, http.StatusBadRequest)
 	}
 
-	// ErrTemporarilyUnavailable indicates the server cannot handle the request
-	// right now — its token store did not answer — and the client should retry
-	// the same request later. Answered with HTTP 503 and a Retry-After header;
-	// it never means the presented grant is invalid.
+	// ErrTemporarilyUnavailable is the authorization-endpoint error of RFC 6749
+	// §4.1.2.1: the server cannot handle the request right now and the client
+	// should retry it later. It never means the presented grant is invalid.
+	// RFC 6749 §5.2 defines no such code for the token endpoint.
 	ErrTemporarilyUnavailable = func(desc string) *Error {
 		return NewError(constants.ErrorCodeTemporarilyUnavailable, desc, http.StatusServiceUnavailable)
 	}

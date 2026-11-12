@@ -213,7 +213,7 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 
 // writeIntrospectionError answers an IntrospectToken error. A store or an
 // identity provider that did not answer leaves the token neither active nor
-// inactive, so it is 503 temporarily_unavailable: {"active": false} would
+// inactive, so it is 503: {"active": false} would
 // tell the resource server the token is dead.
 func (h *Handler) writeIntrospectionError(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, err error) {
 	switch {
