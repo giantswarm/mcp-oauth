@@ -275,7 +275,7 @@ func (s *Server) ValidateClientCredentials(ctx context.Context, clientID, client
 // come from the metadata fetch and are returned unchanged.
 func (s *Server) GetClient(ctx context.Context, clientID string) (*storage.Client, error) {
 	client, err := s.getOrFetchClient(ctx, clientID)
-	if err != nil && !isURLClientID(clientID) && storage.IsTransientError(err) {
+	if err != nil && !isClientIDMetadataDocumentURL(clientID) && storage.IsTransientError(err) {
 		return nil, s.storageUnavailable(ctx, "load client", clientID, "", err)
 	}
 	return client, err

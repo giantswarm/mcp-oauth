@@ -48,13 +48,13 @@ type ClientMetadata struct {
 	JWKSURI                 string   `json:"jwks_uri,omitempty"`
 }
 
-// isURLClientID checks if a client_id is a URL-formatted identifier
+// isClientIDMetadataDocumentURL reports whether clientID satisfies the CIMD identifier restrictions.
 // Per draft-ietf-oauth-client-id-metadata-document-00:
 // - MUST be an HTTPS URL
 // - MUST have a hostname
 // - MUST contain a path without single-dot or double-dot segments
 // - MUST NOT contain userinfo, query parameters, or fragments (security hardening)
-func isURLClientID(clientID string) bool {
+func isClientIDMetadataDocumentURL(clientID string) bool {
 	// Empty strings are not URLs
 	if clientID == "" {
 		return false
@@ -88,9 +88,8 @@ func isURLClientID(clientID string) bool {
 		return false
 	}
 
-	// SECURITY: Reject URLs with fragments
-	// Prevents fragment-based attacks like: https://example.com#../../etc/passwd
-	if u.Fragment != "" {
+	// A literal '#' introduces a fragment even when its value is empty.
+	if strings.Contains(clientID, "#") {
 		return false
 	}
 
@@ -139,7 +138,7 @@ func validateAndSanitizeMetadataURL(clientID string, allowPrivateIP bool, allowe
 	if u.Scheme != SchemeHTTPS {
 		return "", fmt.Errorf("client_id metadata URL must use HTTPS, got: %s", u.Scheme)
 	}
-	if !isURLClientID(clientID) {
+	if !isClientIDMetadataDocumentURL(clientID) {
 		return "", fmt.Errorf("client_id metadata URL must contain a path without dot segments and must not contain userinfo, a query, or a fragment")
 	}
 

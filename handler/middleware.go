@@ -299,7 +299,7 @@ func (h *Handler) writeInsufficientScopeError(w http.ResponseWriter, requiredSco
 //	       error="invalid_token",
 //	       error_description="Token has expired"
 func (h *Handler) formatWWWAuthenticate(scope, errCode, errorDesc string) string {
-	scope = strings.Join(resourceScopes(strings.Split(scope, " ")), " ")
+	scope = strings.Join(scopesWithoutOfflineAccess(strings.Split(scope, " ")), " ")
 
 	// Build the challenge parameters (excluding the Bearer scheme)
 	var params []string
@@ -740,7 +740,7 @@ func (h *Handler) getChallengeScopes(r *http.Request) string {
 }
 
 // offline_access controls refresh-token issuance rather than resource access.
-func resourceScopes(scopes []string) []string {
+func scopesWithoutOfflineAccess(scopes []string) []string {
 	return slices.DeleteFunc(slices.Clone(scopes), func(scope string) bool {
 		return scope == "offline_access"
 	})

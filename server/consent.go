@@ -164,7 +164,7 @@ func validateTrustedClient(client TrustedClient) error {
 	}
 	if strings.HasPrefix(client.ClientID, SchemeHTTPS+"://") {
 		u, err := url.Parse(client.ClientID)
-		if err != nil || !isURLClientID(client.ClientID) || u.Path == "" || u.Path == "/" || strings.Contains(u.Host, "*") {
+		if err != nil || !isClientIDMetadataDocumentURL(client.ClientID) || u.Path == "" || u.Path == "/" || strings.Contains(u.Host, "*") {
 			return fmt.Errorf("client_id %q is not a client ID metadata document URL with a path", client.ClientID)
 		}
 	}

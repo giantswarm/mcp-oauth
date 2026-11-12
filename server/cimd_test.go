@@ -18,8 +18,7 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage/mock"
 )
 
-// TestIsURLClientID tests URL client ID detection
-func TestIsURLClientID(t *testing.T) {
+func TestIsClientIDMetadataDocumentURL(t *testing.T) {
 	tests := []struct {
 		name     string
 		clientID string
@@ -97,9 +96,9 @@ func TestIsURLClientID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isURLClientID(tt.clientID)
+			got := isClientIDMetadataDocumentURL(tt.clientID)
 			if got != tt.want {
-				t.Errorf("isURLClientID(%q) = %v, want %v", tt.clientID, got, tt.want)
+				t.Errorf("isClientIDMetadataDocumentURL(%q) = %v, want %v", tt.clientID, got, tt.want)
 			}
 		})
 	}
