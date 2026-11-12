@@ -462,7 +462,8 @@ func actorChainDepth(a *Actor) int {
 
 // validateExchangeSubjectToken validates the RFC 8693 subject token and returns
 // the verified identity. Audit failure events use the "subject" role; reasons
-// are subject_token_validation_failed and unsupported_subject_token_type.
+// are subject_token_validation_failed and unsupported_subject_token_type, or
+// provider_unavailable when the issuer did not answer.
 // defaultAudiences is forwarded to Validate and applies only when the matched
 // issuer entry has no AllowedAudiences; the subject token is not broker-bound, so
 // callers pass nil. extra is merged into every failure audit event; pass brokered
@@ -473,7 +474,8 @@ func (s *Server) validateExchangeSubjectToken(ctx context.Context, subject Typed
 
 // validateExchangeActorToken validates the RFC 8693 actor token and returns
 // the verified actor identity. Audit failure events use the "actor" role;
-// reasons are actor_token_validation_failed and unsupported_actor_token_type.
+// reasons are actor_token_validation_failed and unsupported_actor_token_type,
+// or provider_unavailable when the issuer did not answer.
 // The broker's own issuer is passed as the default audience so actor tokens
 // from issuers with no AllowedAudiences configured are still bound to this
 // broker and cannot be replayed from a different audience context.
@@ -548,6 +550,11 @@ func (s *Server) validateExchangeToken(ctx context.Context, token TypedToken, ro
 	}
 
 	identity, err := v.Validate(ctx, token.Token, defaultAudiences)
+	if err != nil && (errors.Is(err, ErrProviderUnavailable) || isTransientProviderError(err)) {
+		// The issuer did not answer: the token was not rejected.
+		clientID, _ := extra[paramClientID].(string)
+		return nil, s.providerUnavailable(ctx, role+" token validation", "", clientID, err)
+	}
 	if err != nil {
 		s.Logger.Debug("token exchange: "+role+" token validation failed",
 			typeKey, token.Type, logKeyError, err)

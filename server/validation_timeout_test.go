@@ -17,6 +17,7 @@ import (
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
+	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
@@ -268,6 +269,61 @@ func TestValidateToken_TrustedIssuerJWKSUnavailable(t *testing.T) {
 
 	_, err = srv.ValidateToken(t.Context(), token)
 	require.ErrorIs(t, err, ErrProviderUnavailable)
+}
+
+// TestTokenExchange_TrustedIssuerJWKSUnavailable: a subject or actor token of
+// a trusted issuer whose JWKS endpoint does not answer fails the exchange as
+// ErrProviderUnavailable, audited as provider_unavailable rather than as a
+// rejected token, and the Exchanger is not called.
+func TestTokenExchange_TrustedIssuerJWKSUnavailable(t *testing.T) {
+	const (
+		issuer   = "https://kubernetes.default.svc.cluster.local"
+		clientID = "gaggle"
+		audience = "downstream-api"
+	)
+	jwksURL, jwksClient := unavailableJWKS(t)
+	trustedIssuerValidator, err := newOIDCValidatorWithClient([]TrustedIssuer{{
+		Issuer:             issuer,
+		JwksURL:            jwksURL,
+		AllowPrivateIPJWKS: true,
+		AcceptedTypHeaders: []string{""},
+	}}, jwksClient)
+	require.NoError(t, err)
+	trustedIssuerToken := signSubjectTokenWithType(t, newTestECKey(t), "sa-key", "",
+		saTokenClaims(issuer, "system:serviceaccount:ns:svc", "https://broker.example.com"))
+
+	tests := []struct {
+		name    string
+		request SubjectExchange
+	}{
+		{"subject", SubjectExchange{
+			Subject: TypedToken{Token: trustedIssuerToken, Type: SubjectTokenTypeJWT},
+		}},
+		{"actor", SubjectExchange{
+			Subject: TypedToken{Token: "user-token", Type: SubjectTokenTypeIDToken},
+			Actor:   TypedToken{Token: trustedIssuerToken, Type: SubjectTokenTypeJWT},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exchanger := &stubExchanger{result: &ExchangerResult{AccessToken: "downstream", ExpiresAt: time.Now().Add(time.Minute)}}
+			srv, auditLog := newBrokerTestServer(t, exchanger, map[string][]string{clientID: {audience}},
+				&stubTokenValidator{byToken: map[string]*SubjectIdentity{
+					"user-token": {Subject: "user-1", Issuer: "https://dex.example.com"},
+				}})
+			srv.subjectValidators[SubjectTokenTypeJWT] = trustedIssuerValidator
+
+			_, err := srv.BrokeredExchange(t.Context(), BrokeredExchangeRequest{
+				SubjectExchange: tt.request, ClientID: clientID, Audience: audience,
+			})
+			require.ErrorIs(t, err, ErrProviderUnavailable)
+			require.Nil(t, exchanger.gotReq)
+
+			details := auditDetails(t, auditLog, security.EventAuthFailure)
+			require.Equal(t, "provider_unavailable", details[logKeyReason])
+			require.Equal(t, clientID, details["__client_id"])
+		})
+	}
 }
 
 // TestValidateToken_ForwardedIDTokenJWKSUnavailable: a forwarded ID token

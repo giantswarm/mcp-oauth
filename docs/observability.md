@@ -119,7 +119,7 @@ instrumentation.Config{
 | `oauth.token.refreshed` | `client_id`, `rotated` | Tokens refreshed |
 | `oauth.token.revoked` | `client_id` | Tokens revoked |
 | `oauth.client.registered` | `client_type` | Clients registered |
-| `oauth.token_endpoint.failures.total` | `grant_type`, `error_code` | Token-endpoint failures broken down by `error_code` (`invalid_request`, `invalid_client`, `invalid_grant`, `unauthorized_client`, `unsupported_grant_type`, `invalid_scope`, `server_error`, `temporarily_unavailable` for a token store that did not answer). Cardinality budget: ~8 × ~8 series. |
+| `oauth.token_endpoint.failures.total` | `grant_type`, `error_code` | Token-endpoint failures broken down by `error_code` (`invalid_request`, `invalid_client`, `invalid_grant`, `unauthorized_client`, `unsupported_grant_type`, `invalid_scope`, `server_error`, `temporarily_unavailable` for a token store or identity provider that did not answer). Cardinality budget: ~8 × ~8 series. |
 
 ### Security
 

@@ -25,9 +25,9 @@ import (
 // or 401 invalid_token, which clients read as "the token is dead" and answer
 // by discarding the token and forcing a new sign-in.
 //
-// An Exchanger or a SubjectTokenValidator returns an error wrapping it when an
-// issuer it depends on did not answer, and the token-exchange grant answers it
-// the same way.
+// The token-exchange grant answers it the same way: a subject or actor token
+// whose issuer did not answer, and an Exchanger or a SubjectTokenValidator
+// that returns an error wrapping it.
 //
 // Match it with errors.Is; it wraps the provider's error.
 var ErrProviderUnavailable = errors.New("identity provider temporarily unavailable")
@@ -84,5 +84,8 @@ func (s *Server) providerUnavailable(ctx context.Context, op, userID, clientID s
 		Type: security.EventAuthFailure, UserID: userID, ClientID: clientID,
 		Details: map[string]any{logKeyReason: "provider_unavailable"},
 	})
+	if errors.Is(err, ErrProviderUnavailable) {
+		return fmt.Errorf("%s: %w", op, err)
+	}
 	return fmt.Errorf("%w: %s: %w", ErrProviderUnavailable, op, err)
 }
