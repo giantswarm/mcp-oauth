@@ -1,6 +1,6 @@
 # Client ID Metadata Documents (CIMD)
 
-This guide explains Client ID Metadata Documents (CIMD), a feature from the MCP 2025-11-25 specification that allows clients to use HTTPS URLs as client identifiers with dynamic metadata discovery.
+Client ID Metadata Documents (CIMD) let clients use HTTPS URLs as client identifiers with dynamic metadata discovery. MCP 2026-07-28 recommends CIMD and retains Dynamic Client Registration for compatibility. See the [authorization audit](./mcp-2026-07-28.md) for outstanding conformance gaps.
 
 ## Contents
 
@@ -44,7 +44,7 @@ CIMD may not be appropriate for:
 
 - **High-security environments** requiring vetted client registration
 - **Clients that cannot host HTTPS content** (embedded systems, offline apps)
-- **Scenarios requiring client secrets** (CIMD clients are always public)
+- **Scenarios requiring client secrets** (this library supports public CIMD clients with `token_endpoint_auth_method: "none"`)
 
 ## Configuration
 
@@ -140,16 +140,18 @@ The metadata document is a JSON file hosted at the client's URL. The `client_id`
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `client_id` | Yes | MUST exactly match the document URL |
+| `client_id` | Yes | MUST exactly match the HTTPS document URL, including escaped path components; a path is required and dot segments are prohibited |
 | `redirect_uris` | Yes | Array of allowed redirect URIs |
-| `client_name` | No | Human-readable client name (displayed on consent screen) |
+| `client_name` | Yes | Non-empty human-readable client name (displayed on consent screen) |
 | `client_uri` | No | URL of the client's homepage |
 | `logo_uri` | No | URL to the client's logo |
 | `grant_types` | No | Defaults to `["authorization_code"]` |
 | `response_types` | No | Defaults to `["code"]` |
-| `token_endpoint_auth_method` | No | Defaults to `"none"` (public client) |
+| `token_endpoint_auth_method` | No | Defaults to `"none"` (public client); other methods are not supported |
 | `scope` | No | Space-delimited scopes the client may request |
 | `contacts` | No | Contact email addresses |
+
+Documents containing `client_secret` or `client_secret_expires_at` are rejected, including when their values are `null`. A public metadata document cannot establish a shared secret. Asymmetric client authentication is optional in the CIMD specification and is not implemented by this library.
 
 ### Redirect URI Rules
 
@@ -157,7 +159,7 @@ Redirect URIs follow OAuth 2.1 security requirements:
 
 - **HTTPS required** for non-localhost URIs
 - **HTTP allowed only for localhost** (`localhost`, `127.0.0.1`, `::1`)
-- **Custom schemes allowed** (e.g., `myapp://callback`) for native applications
+- **Custom schemes are rejected for CIMD callbacks**; HTTPS and HTTP loopback callbacks are supported. The separate DCR/native OAuth custom-scheme support does not change these CIMD rules.
 
 ## How It Works
 

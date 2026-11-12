@@ -48,13 +48,13 @@ type ClientMetadata struct {
 	JWKSURI                 string   `json:"jwks_uri,omitempty"`
 }
 
-// isURLClientID checks if a client_id is a URL-formatted identifier
+// isClientIDMetadataDocumentURL reports whether clientID satisfies the CIMD identifier restrictions.
 // Per draft-ietf-oauth-client-id-metadata-document-00:
 // - MUST be an HTTPS URL
 // - MUST have a hostname
-// - Path component is optional (spec says "typically" has one, but not required)
+// - MUST contain a path without single-dot or double-dot segments
 // - MUST NOT contain userinfo, query parameters, or fragments (security hardening)
-func isURLClientID(clientID string) bool {
+func isClientIDMetadataDocumentURL(clientID string) bool {
 	// Empty strings are not URLs
 	if clientID == "" {
 		return false
@@ -88,14 +88,19 @@ func isURLClientID(clientID string) bool {
 		return false
 	}
 
-	// SECURITY: Reject URLs with fragments
-	// Prevents fragment-based attacks like: https://example.com#../../etc/passwd
-	if u.Fragment != "" {
+	// A literal '#' introduces a fragment even when its value is empty.
+	if strings.Contains(clientID, "#") {
 		return false
 	}
 
-	// SHOULD have a path component (but not strictly required)
-	// We'll be lenient here - the spec says client IDs "typically" have paths
+	if u.Path == "" {
+		return false
+	}
+	for segment := range strings.SplitSeq(u.Path, "/") {
+		if segment == "." || segment == ".." {
+			return false
+		}
+	}
 	return true
 }
 
@@ -133,6 +138,9 @@ func validateAndSanitizeMetadataURL(clientID string, allowPrivateIP bool, allowe
 	if u.Scheme != SchemeHTTPS {
 		return "", fmt.Errorf("client_id metadata URL must use HTTPS, got: %s", u.Scheme)
 	}
+	if !isClientIDMetadataDocumentURL(clientID) {
+		return "", fmt.Errorf("client_id metadata URL must contain a path without dot segments and must not contain userinfo, a query, or a fragment")
+	}
 
 	// Extract hostname for IP validation
 	hostname := u.Hostname()
@@ -157,9 +165,10 @@ func validateAndSanitizeMetadataURL(clientID string, allowPrivateIP bool, allowe
 
 	// Reconstruct URL from validated components to break taint flow
 	sanitized := &url.URL{
-		Scheme: u.Scheme,
-		Host:   u.Host,
-		Path:   u.Path,
+		Scheme:  u.Scheme,
+		Host:    u.Host,
+		Path:    u.Path,
+		RawPath: u.RawPath,
 	}
 	return sanitized.String(), nil
 }
@@ -326,18 +335,27 @@ func (s *Server) processMetadataResponse(ctx context.Context, resp *http.Respons
 		return nil, 0, err
 	}
 
-	var metadata ClientMetadata
-	if err := json.Unmarshal(bodyBytes, &metadata); err != nil {
+	var document struct {
+		ClientMetadata
+		ClientSecret          json.RawMessage `json:"client_secret"`
+		ClientSecretExpiresAt json.RawMessage `json:"client_secret_expires_at"`
+	}
+	if err := json.Unmarshal(bodyBytes, &document); err != nil {
 		s.recordCIMDFetchMetric(ctx, logKeyError, fetchStart)
 		return nil, 0, fmt.Errorf("failed to parse metadata JSON: %w", err)
 	}
+	if len(document.ClientSecret) > 0 || len(document.ClientSecretExpiresAt) > 0 {
+		s.recordCIMDFetchMetric(ctx, logKeyError, fetchStart)
+		return nil, 0, fmt.Errorf("client metadata must not contain client_secret or client_secret_expires_at")
+	}
+	metadata := &document.ClientMetadata
 
-	if err := s.validateFetchedClientMetadata(ctx, &metadata, clientID); err != nil {
+	if err := s.validateFetchedClientMetadata(ctx, metadata, clientID); err != nil {
 		s.recordCIMDFetchMetric(ctx, logKeyError, fetchStart)
 		return nil, 0, err
 	}
 
-	setClientMetadataDefaults(&metadata)
+	setClientMetadataDefaults(metadata)
 
 	suggestedTTL := parseSuggestedTTL(resp, clientID, s.Logger)
 
@@ -356,7 +374,7 @@ func (s *Server) processMetadataResponse(ctx context.Context, resp *http.Respons
 		"size_bytes", len(bodyBytes),
 		"cache_ttl", suggestedTTL)
 
-	return &metadata, suggestedTTL, nil
+	return metadata, suggestedTTL, nil
 }
 
 // parseSuggestedTTL extracts the suggested cache TTL from Cache-Control headers.
@@ -450,6 +468,12 @@ func (s *Server) validateFetchedClientMetadata(ctx context.Context, metadata *Cl
 	// Validate redirect URIs
 	if err := validateClientMetadataRedirectURIs(metadata.RedirectURIs); err != nil {
 		return err
+	}
+	if strings.TrimSpace(metadata.ClientName) == "" {
+		return fmt.Errorf("client_name is required in client metadata")
+	}
+	if metadata.TokenEndpointAuthMethod != "" && metadata.TokenEndpointAuthMethod != TokenEndpointAuthMethodNone {
+		return fmt.Errorf("client metadata token_endpoint_auth_method must be none; other authentication methods are not supported")
 	}
 
 	// Validate client_name to prevent stored XSS and log injection (defense-in-depth)

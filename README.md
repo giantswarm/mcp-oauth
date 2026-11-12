@@ -6,8 +6,9 @@ A **provider-agnostic** OAuth 2.1 Authorization Server library for [Model Contex
 
 | Specification Version | Support Status | Documentation |
 |-----------------------|----------------|---------------|
-| [2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization) | Full Support | [Migration Guide](./docs/mcp-2025-11-25.md) |
-| 2025-06-18 (previous) | Full Support | Backward compatible |
+| [2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization) | Audited; open conformance gaps | [Authorization audit](./docs/mcp-2026-07-28.md) |
+| [2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization) | Implemented; see audit for shared gaps | [Migration Guide](./docs/mcp-2025-11-25.md) |
+| 2025-06-18 (previous) | Backward compatible; see audit for shared gaps | |
 
 ## Key Features
 
