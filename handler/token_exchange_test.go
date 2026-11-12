@@ -411,3 +411,14 @@ func TestHandleTokenExchangeError_InvalidScope(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	require.Equal(t, constants.ErrorCodeInvalidScope, body["error"])
 }
+
+func TestHandleTokenExchangeGrant_ProviderUnavailable(t *testing.T) {
+	validator := &fakeSubjectValidator{err: fmt.Errorf("jwks: %w", server.ErrProviderUnavailable)}
+	h, _ := setupTokenExchangeHandler(t, withSubjectValidator(validator))
+
+	w := httptest.NewRecorder()
+	h.ServeToken(w, newTokenExchangeRequest(happyExchangeForm()))
+
+	requireOAuthError(t, w, http.StatusServiceUnavailable, constants.ErrorCodeTemporarilyUnavailable)
+	require.NotEmpty(t, w.Header().Get("Retry-After"))
+}

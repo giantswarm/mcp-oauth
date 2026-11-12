@@ -25,6 +25,10 @@ import (
 // or 401 invalid_token, which clients read as "the token is dead" and answer
 // by discarding the token and forcing a new sign-in.
 //
+// An Exchanger or a SubjectTokenValidator returns an error wrapping it when an
+// issuer it depends on did not answer, and the token-exchange grant answers it
+// the same way.
+//
 // Match it with errors.Is; it wraps the provider's error.
 var ErrProviderUnavailable = errors.New("identity provider temporarily unavailable")
 

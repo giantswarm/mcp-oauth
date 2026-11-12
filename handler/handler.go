@@ -328,8 +328,8 @@ func (h *Handler) writeProviderUnavailable(w http.ResponseWriter, r *http.Reques
 		"identity provider", "The server could not reach the identity provider; retry the same request")
 }
 
-// writeTokenProviderUnavailable answers a refresh grant whose provider-token
-// refresh the identity provider did not answer (server.ErrProviderUnavailable).
+// writeTokenProviderUnavailable answers a token-endpoint grant the identity
+// provider did not serve (server.ErrProviderUnavailable).
 func (h *Handler) writeTokenProviderUnavailable(w http.ResponseWriter, r *http.Request, grantType string, span trace.Span, startTime time.Time, err error) {
 	h.recordTokenFailure(r.Context(), grantType, constants.ErrorCodeTemporarilyUnavailable)
 	h.writeProviderUnavailable(w, r, endpointToken, http.MethodPost, span, startTime, err)

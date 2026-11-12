@@ -83,8 +83,11 @@ type ExchangerResult struct {
 // audience→issuer mapping.
 //
 // Returning an error wrapping ErrInvalidTarget signals that the audience is
-// unknown to the host; any other error is reported to the client as a
-// generic invalid_grant without leaking detail.
+// unknown to the host. An error wrapping ErrProviderUnavailable signals that an
+// issuer the exchange depends on did not answer; the client gets 503
+// temporarily_unavailable with Retry-After and retries the same request. Any
+// other error is reported to the client as a generic invalid_grant without
+// leaking detail.
 type Exchanger interface {
 	Exchange(ctx context.Context, req *ExchangerRequest) (*ExchangerResult, error)
 }
