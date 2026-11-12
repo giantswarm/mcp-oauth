@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -305,4 +306,31 @@ func TestHandleBrokeredTokenExchange_ActorTokenForwarded(t *testing.T) {
 	require.Equal(t, server.SubjectTokenTypeIDToken, ex.gotReq.ActorTokenType)
 	require.NotNil(t, ex.gotReq.Actor)
 	require.Equal(t, "agent@example.com", ex.gotReq.Actor.Subject)
+}
+
+func TestHandleBrokeredTokenExchange_ProviderUnavailable(t *testing.T) {
+	unavailable := fmt.Errorf("dex: %w", server.ErrProviderUnavailable)
+
+	cases := []struct {
+		name         string
+		exchangerErr error
+		validatorErr error
+	}{
+		{name: "exchanger", exchangerErr: unavailable},
+		{name: "subject validator", validatorErr: unavailable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ex := &stubExchanger{result: happyDownstreamResult(), err: tc.exchangerErr}
+			h := setupBrokeredExchangeHandler(t, ex, []string{"gaggle"}, "confidential")
+			h.validator.err = tc.validatorErr
+
+			req := newTokenExchangeRequest(brokeredExchangeForm())
+			req.SetBasicAuth(h.clientID, h.clientSecret)
+			w := httptest.NewRecorder()
+			h.handler.ServeToken(w, req)
+
+			requireUnavailableResponse(t, w)
+		})
+	}
 }

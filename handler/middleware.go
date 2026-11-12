@@ -70,7 +70,7 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 // authenticateBearer validates the bearer and loads its stored metadata (one
 // lookup, shared by DPoP binding, scope validation and the session ID). ok is
 // false when the response has been written: 401 invalid_token for a rejected
-// bearer, or 503 temporarily_unavailable when the token store (on either
+// bearer, or 503 when the token store (on either
 // step) or the identity provider did not answer — an outage is not a
 // rejected bearer, and a 401 would make the client discard its token and
 // start a new authorization.

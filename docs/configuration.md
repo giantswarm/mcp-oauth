@@ -266,7 +266,7 @@ config := &server.Config{
 }
 ```
 
-A provider that does not answer within it, or answers 5xx or 429, has rejected nothing, so the bearer is answered `503 temporarily_unavailable` with `Retry-After: 5` (see [Behaviour During a Storage Outage](#behaviour-during-a-storage-outage) for the response shape) instead of `401 invalid_token`. Keep the deadline below the request timeout of the clients in front of the server so they see the 503 and back off. A provider-token refresh that starts during validation finishes in the background after the deadline and stores its result, so a provider that rotates refresh tokens never loses a rotation. Sign-in, the token endpoint and revocation keep the provider's own request timeout.
+A provider that does not answer within it, or answers 5xx or 429, has rejected nothing, so the bearer is answered `503 Service Unavailable` with `Retry-After: 5` (see [Behaviour During a Storage Outage](#behaviour-during-a-storage-outage) for the response shape) instead of `401 invalid_token`. Keep the deadline below the request timeout of the clients in front of the server so they see the 503 and back off. A provider-token refresh that starts during validation finishes in the background after the deadline and stores its result, so a provider that rotates refresh tokens never loses a rotation. Sign-in, the token endpoint and revocation keep the provider's own request timeout.
 
 ### Token Lifetimes
 
@@ -359,10 +359,10 @@ A store call that fails for a reason other than one of the storage sentinels (re
 | | |
 |---|---|
 | Status | `503 Service Unavailable` |
-| Body | `{"error": "temporarily_unavailable", "error_description": "..."}` |
+| Body | a plain-text description (`Content-Type: text/plain`), not an OAuth error response |
 | Header | `Retry-After: 5` |
 
-The response carries no `WWW-Authenticate` challenge: it is not a rejection. The paths, and what a storage failure is never answered as on each:
+The response carries no `WWW-Authenticate` challenge and no OAuth `error` code: it is not a rejection. RFC 6749 §5.2 and RFC 6750 §3.1 define no error code for an outage (`temporarily_unavailable` is registered for the authorization endpoint only, RFC 6749 §4.1.2.1), so the status and `Retry-After` carry it, as RFC 7009 §2.2.1 does for revocation. A client retries on the 503 status, not on a body field. The paths, and what a storage failure is never answered as on each:
 
 | Path | Store reads that gate it | Never answered as |
 |---|---|---|

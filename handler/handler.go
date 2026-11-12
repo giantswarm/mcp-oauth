@@ -26,7 +26,7 @@ const (
 	defaultRetryAfterSeconds = 60 // Retry-After fallback for limiters with no defined rate/window
 
 	// storageUnavailableRetryAfterSeconds is the Retry-After hint on a 503
-	// temporarily_unavailable answer: the store just missed a deadline of a
+	// answer: the store just missed a deadline of a
 	// few seconds, so a retry a few seconds later has a fair chance of
 	// meeting a recovered backend without hammering one that is still down.
 	storageUnavailableRetryAfterSeconds = 5
@@ -288,8 +288,7 @@ func (h *Handler) writeError(w http.ResponseWriter, code, description string, st
 
 // writeStorageUnavailable answers a request that could not be processed
 // because the token store did not answer (server.ErrStorageUnavailable): 503
-// temporarily_unavailable with a Retry-After header and no WWW-Authenticate
-// challenge. The presented grant or bearer was neither validated nor
+// with a Retry-After header and no WWW-Authenticate challenge. The presented grant or bearer was neither validated nor
 // rejected and nothing was consumed, so the client retries the same request;
 // it must not read the answer as a dead token. endpoint and method label the
 // HTTP metric; span may be nil (the bearer middleware runs without one). The
@@ -303,14 +302,19 @@ func (h *Handler) writeStorageUnavailable(w http.ResponseWriter, r *http.Request
 }
 
 // writeTemporarilyUnavailable answers a request whose dependency (what) did
-// not answer as 503 temporarily_unavailable with a Retry-After header.
+// not answer as 503 with a Retry-After header and a plain-text description.
+// The body carries no OAuth error code: RFC 6749 §5.2 and RFC 6750 §3.1 define
+// none for an outage (temporarily_unavailable is an authorization-endpoint
+// code, §4.1.2.1), and RFC 7009 §2.2.1 answers one with the status and
+// Retry-After alone.
 func (h *Handler) writeTemporarilyUnavailable(w http.ResponseWriter, r *http.Request, endpoint, method string, span trace.Span, startTime time.Time, err error, what, description string) {
 	h.logger.Warn("Request failed: "+what+" temporarily unavailable", "endpoint", endpoint, "ip", h.clientIP(r))
 	h.recordHTTPMetrics(r.Context(), endpoint, method, http.StatusServiceUnavailable, startTime)
 	instrumentation.RecordError(span, err)
 	instrumentation.SetSpanError(span, what+" unavailable")
+	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	w.Header().Set("Retry-After", strconv.Itoa(storageUnavailableRetryAfterSeconds))
-	h.writeError(w, constants.ErrorCodeTemporarilyUnavailable, description, http.StatusServiceUnavailable)
+	http.Error(w, description, http.StatusServiceUnavailable)
 }
 
 // writeTokenStorageUnavailable is writeStorageUnavailable for a token-endpoint
@@ -328,8 +332,8 @@ func (h *Handler) writeProviderUnavailable(w http.ResponseWriter, r *http.Reques
 		"identity provider", "The server could not reach the identity provider; retry the same request")
 }
 
-// writeTokenProviderUnavailable answers a refresh grant whose provider-token
-// refresh the identity provider did not answer (server.ErrProviderUnavailable).
+// writeTokenProviderUnavailable answers a token-endpoint grant the identity
+// provider did not serve (server.ErrProviderUnavailable).
 func (h *Handler) writeTokenProviderUnavailable(w http.ResponseWriter, r *http.Request, grantType string, span trace.Span, startTime time.Time, err error) {
 	h.recordTokenFailure(r.Context(), grantType, constants.ErrorCodeTemporarilyUnavailable)
 	h.writeProviderUnavailable(w, r, endpointToken, http.MethodPost, span, startTime, err)

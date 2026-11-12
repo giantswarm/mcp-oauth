@@ -190,6 +190,10 @@ func (h *Handler) handleBrokeredTokenExchangeError(
 		h.writeTokenStorageUnavailable(w, r, server.GrantTypeTokenExchange, span, startTime, err)
 		return
 	}
+	if errors.Is(err, server.ErrProviderUnavailable) {
+		h.writeTokenProviderUnavailable(w, r, server.GrantTypeTokenExchange, span, startTime, err)
+		return
+	}
 	instrumentation.RecordError(span, err)
 
 	var unsupported *server.TokenExchangeUnsupportedTypeError
@@ -245,6 +249,10 @@ func (h *Handler) handleTokenExchangeError(
 ) {
 	if errors.Is(err, server.ErrStorageUnavailable) {
 		h.writeTokenStorageUnavailable(w, r, server.GrantTypeTokenExchange, span, startTime, err)
+		return
+	}
+	if errors.Is(err, server.ErrProviderUnavailable) {
+		h.writeTokenProviderUnavailable(w, r, server.GrantTypeTokenExchange, span, startTime, err)
 		return
 	}
 	if errors.Is(err, server.ErrExchangeRateLimited) {
