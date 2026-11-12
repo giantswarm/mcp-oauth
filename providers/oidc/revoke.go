@@ -27,23 +27,24 @@ func RevokeAtEndpoint(ctx context.Context, httpClient *http.Client, endpoint, to
 	form := url.Values{}
 	form.Set("token", token)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return fmt.Errorf("failed to create revoke request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if clientID != "" {
-		req.SetBasicAuth(clientID, clientSecret)
+		// RFC 6749 §2.3.1 requires form encoding each Basic credential component.
+		request.SetBasicAuth(url.QueryEscape(clientID), url.QueryEscape(clientSecret))
 	}
 
-	resp, err := httpClient.Do(req)
+	response, err := httpClient.Do(request)
 	if err != nil {
 		return fmt.Errorf("failed to revoke token: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { _ = response.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("token revocation failed with status %d", resp.StatusCode)
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("token revocation failed with status %d", response.StatusCode)
 	}
 	return nil
 }
