@@ -441,3 +441,39 @@ A previous fetch attempt failed and is cached.
 
 - [MCP Specification 2025-11-25](https://spec.modelcontextprotocol.io/specification/2025-11-25/)
 - [draft-ietf-oauth-client-id-metadata-document-00](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/)
+
+## Offline metadata
+
+For an installation that cannot reach a client's metadata host, supply a
+reviewed copy of that public client's document in `Config.StaticClientMetadata`:
+
+```go
+config := &server.Config{
+    Issuer: "https://auth.example.com",
+    EnableClientIDMetadataDocuments: true,
+    AllowLocalhostRedirectURIs: true,
+    RequirePKCE: true,
+    StaticClientMetadata: []server.ClientMetadata{{
+        ClientID: "https://client.example.com/cli.json",
+        ClientName: "Example CLI",
+        RedirectURIs: []string{"http://localhost:3000/callback"},
+        GrantTypes: []string{"authorization_code", "refresh_token"},
+        TokenEndpointAuthMethod: "none",
+        Scope: "openid profile email offline_access",
+    }},
+}
+```
+
+Only an exact client ID match uses the configured document. It needs no DNS or
+HTTP access, survives cache expiry, and is snapshotted at startup. Unlisted
+clients keep the normal CIMD fetch and SSRF protections. Invalid documents,
+duplicate IDs and configuration with CIMD disabled fail startup. Only public
+clients (`token_endpoint_auth_method: none`) are supported.
+
+This is an operator trust decision: review each document's identifier,
+callbacks and scopes before adding it. Update or remove a document by changing
+the configuration and restarting the server; the library never refreshes a
+pinned document from the internet. Local metadata does not grant a sign-in,
+skip consent, open dynamic registration, or relax redirect matching, PKCE,
+resource or scope validation. A native client's loopback callback still requires
+`AllowLocalhostRedirectURIs`; RFC 8252 port matching continues to apply.

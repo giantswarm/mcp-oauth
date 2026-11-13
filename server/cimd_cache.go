@@ -379,6 +379,10 @@ func (s *Server) getOrFetchClient(ctx context.Context, clientID string) (*storag
 		return nil, fmt.Errorf("URL-based client_id not supported: client_id_metadata_documents feature is disabled")
 	}
 
+	if client, ok := s.staticClients[clientID]; ok {
+		return cloneStaticClient(client), nil
+	}
+
 	if client, ok := s.tryGetCachedClient(ctx, clientID); ok {
 		return client, nil
 	}
