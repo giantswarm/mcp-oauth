@@ -62,8 +62,10 @@ func TestStaticClientMetadataOfflineAndImmutable(t *testing.T) {
 		StaticClientMetadata: []ClientMetadata{metadata},
 	}
 	store := memory.New()
-	defer store.Stop()
 	srv, err := NewWithCombined(mock.NewProvider(), store, cfg, nil)
+	if err != nil {
+		store.Stop()
+	}
 	require.NoError(t, err)
 	defer func() { require.NoError(t, srv.Shutdown(context.Background())) }()
 
@@ -117,8 +119,10 @@ func TestStaticClientMetadataExactMatchAndFetchFallback(t *testing.T) {
 		StaticClientMetadata:         []ClientMetadata{metadata},
 	}
 	store := memory.New()
-	defer store.Stop()
 	srv, err := NewWithCombined(mock.NewProvider(), store, cfg, nil)
+	if err != nil {
+		store.Stop()
+	}
 	require.NoError(t, err)
 	defer func() { require.NoError(t, srv.Shutdown(context.Background())) }()
 	_, err = srv.GetClient(t.Context(), metadata.ClientID)
