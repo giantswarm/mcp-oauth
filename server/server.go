@@ -85,6 +85,7 @@ type Server struct {
 	ClientRegistrationRateLimiter *security.ClientRegistrationRateLimiter // Time-windowed rate limiter for client registrations
 	Instrumentation               *instrumentation.Instrumentation        // OpenTelemetry instrumentation
 	tracer                        trace.Tracer                            // OpenTelemetry tracer for server operations
+	staticClients                 map[string]*storage.Client              // Immutable operator-pinned CIMD documents
 	metadataCache                 *clientMetadataCache                    // Cache for URL-based client metadata (MCP 2025-11-25)
 	metadataFetchGroup            singleflight.Group                      // Deduplicates concurrent metadata fetches (DoS protection)
 	metadataFetchRateLimiter      *security.RateLimiter                   // Per-domain rate limiter for metadata fetches
@@ -195,6 +196,7 @@ func New(
 		return nil, err
 	}
 
+	srv.staticClients = buildStaticClients(config.StaticClientMetadata)
 	srv.attachRevokedTokenStore(tokenStore)
 
 	srv.initializeMetadataSupport()

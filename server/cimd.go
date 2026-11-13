@@ -465,7 +465,11 @@ func (s *Server) validateFetchedClientMetadata(ctx context.Context, metadata *Cl
 			metadata.ClientID, expectedClientID)
 	}
 
-	// Validate redirect URIs
+	return validateClientMetadata(metadata)
+}
+
+// validateClientMetadata checks both fetched and operator-pinned documents.
+func validateClientMetadata(metadata *ClientMetadata) error {
 	if err := validateClientMetadataRedirectURIs(metadata.RedirectURIs); err != nil {
 		return err
 	}
@@ -475,14 +479,9 @@ func (s *Server) validateFetchedClientMetadata(ctx context.Context, metadata *Cl
 	if metadata.TokenEndpointAuthMethod != "" && metadata.TokenEndpointAuthMethod != TokenEndpointAuthMethodNone {
 		return fmt.Errorf("client metadata token_endpoint_auth_method must be none; other authentication methods are not supported")
 	}
-
-	// Validate client_name to prevent stored XSS and log injection (defense-in-depth)
 	if err := helpers.ValidateClientName(metadata.ClientName); err != nil {
-		s.Logger.Warn("Invalid client_name in fetched metadata",
-			paramClientID, expectedClientID, logKeyError, err)
 		return fmt.Errorf("invalid client metadata: %w", err)
 	}
-
 	return nil
 }
 
