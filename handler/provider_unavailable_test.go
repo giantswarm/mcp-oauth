@@ -42,7 +42,7 @@ func (e *outageEnv) loginWithStaleProviderToken(t *testing.T) string {
 
 // TestServeToken_RefreshGrant_ProviderUnavailable: a refresh grant whose
 // provider-token refresh meets a provider 5xx, 429 or timeout answers 503
-// temporarily_unavailable with Retry-After, and the same refresh token
+// with Retry-After, and the same refresh token
 // refreshes once the provider answers again.
 func TestServeToken_RefreshGrant_ProviderUnavailable(t *testing.T) {
 	for _, failure := range providerRefreshFailures {
@@ -63,11 +63,7 @@ func TestServeToken_RefreshGrant_ProviderUnavailable(t *testing.T) {
 			}
 
 			w := e.postToken(e.refreshForm(rt))
-			require.Equal(t, http.StatusServiceUnavailable, w.Code, "body: %s", w.Body.String())
-			var body map[string]string
-			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-			require.Equal(t, constants.ErrorCodeTemporarilyUnavailable, body["error"])
-			require.Equal(t, "5", w.Header().Get("Retry-After"))
+			requireUnavailableResponse(t, w)
 			require.Contains(t, e.logs.String(), "provider_unavailable", "the transient failure is audited as such")
 			require.NotContains(t, e.logs.String(), "provider_refresh_failed")
 
@@ -98,7 +94,7 @@ func TestServeToken_RefreshGrant_ProviderRejects(t *testing.T) {
 
 // TestServeTokenIntrospection_ProviderUnavailable: introspecting an opaque
 // token whose userinfo check the provider did not serve is 503
-// temporarily_unavailable, not {"active": false}; the same token introspects
+// not {"active": false}; the same token introspects
 // active once the provider answers again.
 func TestServeTokenIntrospection_ProviderUnavailable(t *testing.T) {
 	e := newOutageEnvWithFormat(t, server.AccessTokenFormatOpaque)
@@ -114,11 +110,7 @@ func TestServeTokenIntrospection_ProviderUnavailable(t *testing.T) {
 	}
 
 	w := e.postIntrospect(at)
-	require.Equal(t, http.StatusServiceUnavailable, w.Code, "body: %s", w.Body.String())
-	var errBody map[string]string
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &errBody))
-	require.Equal(t, constants.ErrorCodeTemporarilyUnavailable, errBody["error"])
-	require.Equal(t, "5", w.Header().Get("Retry-After"))
+	requireUnavailableResponse(t, w)
 	require.NotContains(t, w.Body.String(), `"active"`, "an outage is not an inactive token")
 
 	down.Store(false)

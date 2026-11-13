@@ -27,12 +27,8 @@ func TestTokenGrant_MetadataWriteFailureHTTP(t *testing.T) {
 				}
 				environment.faulty.Fail(storagemock.OnOperation("save_token_metadata", storagemock.ConnectionRefused))
 				response := environment.postToken(form)
-				require.Equal(t, http.StatusServiceUnavailable, response.Code)
-				require.NotEmpty(t, response.Header().Get("Retry-After"))
-				var failure map[string]any
-				require.NoError(t, json.Unmarshal(response.Body.Bytes(), &failure))
-				require.Equal(t, "temporarily_unavailable", failure["error"])
-				require.NotContains(t, failure, "access_token")
+				requireUnavailableResponse(t, response)
+				require.NotContains(t, response.Body.String(), "access_token")
 				environment.faulty.Heal()
 				response = environment.postToken(form)
 				require.Equal(t, http.StatusOK, response.Code)

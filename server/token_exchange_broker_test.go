@@ -282,6 +282,27 @@ func TestBrokeredExchange_DownstreamFailure(t *testing.T) {
 	require.Equal(t, "token_exchange_downstream_failed", details["reason"])
 }
 
+// TestBrokeredExchange_DownstreamProviderUnavailable: an Exchanger whose
+// issuer did not answer is audited as provider_unavailable, with the brokered
+// flow context, not as a downstream rejection.
+func TestBrokeredExchange_DownstreamProviderUnavailable(t *testing.T) {
+	ex := &stubExchanger{err: fmt.Errorf("dex: %w", ErrProviderUnavailable)}
+	srv, buf := newBrokerTestServer(t, ex,
+		map[string][]string{"backstage": {"gaggle"}}, happyBrokerValidator())
+
+	_, err := srv.BrokeredExchange(t.Context(), BrokeredExchangeRequest{
+		SubjectExchange: SubjectExchange{Subject: TypedToken{Token: "subject-jwt", Type: SubjectTokenTypeIDToken}},
+		ClientID:        "backstage",
+		Audience:        "gaggle",
+	})
+	require.ErrorIs(t, err, ErrProviderUnavailable)
+
+	details := auditDetails(t, buf, security.EventAuthFailure)
+	require.Equal(t, "provider_unavailable", details["reason"])
+	require.Equal(t, "gaggle", details["audience"])
+	require.Equal(t, "backstage", details["__client_id"])
+}
+
 func TestBrokeredExchange_DownstreamInvalidTarget(t *testing.T) {
 	ex := &stubExchanger{err: fmt.Errorf("%w: unmapped audience", ErrInvalidTarget)}
 	srv, _ := newBrokerTestServer(t, ex,

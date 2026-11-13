@@ -296,7 +296,7 @@ result, err, _ := s.metadataFetchGroup.Do(clientID, func() {
 #### URL Structure Validation
 
 ```go
-func isURLClientID(clientID string) bool {
+func isClientIDMetadataDocumentURL(clientID string) bool {
     // MUST be HTTPS only
     if u.Scheme != "https" { return false }
 
@@ -306,8 +306,8 @@ func isURLClientID(clientID string) bool {
     // SECURITY: Reject query parameters (injection prevention)
     if u.RawQuery != "" { return false }
 
-    // SECURITY: Reject fragments (path traversal prevention)
-    if u.Fragment != "" { return false }
+    // Fragment components are prohibited, including empty ones.
+    if strings.Contains(clientID, "#") { return false }
 }
 ```
 

@@ -371,7 +371,7 @@ func (s *Server) checkMetadataFetchRateLimit(ctx context.Context, clientID strin
 //   - Negative caching: prevents rapid retries of known-bad client IDs (cache poisoning mitigation)
 //   - Audit logging: all cache hits and fetches are logged for security monitoring
 func (s *Server) getOrFetchClient(ctx context.Context, clientID string) (*storage.Client, error) {
-	if !isURLClientID(clientID) {
+	if !isClientIDMetadataDocumentURL(clientID) {
 		return s.clientStore.GetClient(ctx, clientID)
 	}
 

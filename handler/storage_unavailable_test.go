@@ -185,26 +185,30 @@ var outageFaults = []struct {
 	{"connection refused", storagemock.ConnectionRefused},
 }
 
-// requireTemporarilyUnavailable asserts the 503 contract: the error code, the
-// Retry-After hint, no trace of invalid_grant or invalid_token, no
-// WWW-Authenticate challenge, and the audit reason.
-func requireTemporarilyUnavailable(t *testing.T, e *outageEnv, w *httptest.ResponseRecorder, elapsed time.Duration) {
+// requireUnavailableResponse asserts the wire shape of an outage: 503 with
+// Retry-After, no WWW-Authenticate challenge and a plain-text body that is not
+// an OAuth error response, so no client reads it as a rejected grant or bearer.
+func requireUnavailableResponse(t *testing.T, w *httptest.ResponseRecorder) {
 	t.Helper()
 	require.Equal(t, http.StatusServiceUnavailable, w.Code, "body: %s", w.Body.String())
-	var body map[string]string
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-	require.Equal(t, constants.ErrorCodeTemporarilyUnavailable, body["error"])
-	require.NotContains(t, w.Body.String(), constants.ErrorCodeInvalidGrant)
-	require.NotContains(t, w.Body.String(), constants.ErrorCodeInvalidToken)
-	require.Empty(t, w.Header().Get("WWW-Authenticate"), "a 503 is not a challenge")
 	require.Equal(t, "5", w.Header().Get("Retry-After"))
+	require.Empty(t, w.Header().Get("WWW-Authenticate"), "a 503 is not a challenge")
+	require.True(t, strings.HasPrefix(w.Header().Get("Content-Type"), "text/plain"), "Content-Type: %s", w.Header().Get("Content-Type"))
+	require.NotContains(t, w.Body.String(), `"error"`)
+}
+
+// requireTemporarilyUnavailable asserts the 503 contract within the deadline
+// and the audit reason.
+func requireTemporarilyUnavailable(t *testing.T, e *outageEnv, w *httptest.ResponseRecorder, elapsed time.Duration) {
+	t.Helper()
+	requireUnavailableResponse(t, w)
 	require.Less(t, elapsed, outageOpTimeout+outageSlack, "the request must end at the operation deadline, took %v", elapsed)
 	require.Contains(t, e.logs.String(), "transient_storage_error", "the outage is audited")
 }
 
 // TestServeToken_RefreshGrant_StorageUnavailable: a refresh grant met by a
 // store that hangs or refuses connections — on the client-secret check or on
-// the token lookup — answers 503 temporarily_unavailable within the deadline;
+// the token lookup — answers 503 within the deadline;
 // the refresh token stays valid and refreshes once the store is back.
 func TestServeToken_RefreshGrant_StorageUnavailable(t *testing.T) {
 	for _, fault := range outageFaults {
@@ -319,7 +323,7 @@ func (e *outageEnv) postIntrospect(token string) *httptest.ResponseRecorder {
 // store that hangs or refuses connections on any read validation depends on
 // — the JWT's revocation-list and family checks, the opaque token's
 // provider-token and audience reads, and the middleware's own metadata read
-// — answers 503 temporarily_unavailable with Retry-After within the
+// — answers 503 with Retry-After within the
 // deadline, carries no invalid_token challenge, never reaches the protected
 // handler, and lets the same bearer through with the same identity and
 // session once the store is back.
@@ -374,7 +378,7 @@ func TestValidateTokenMiddleware_RejectionsStay401(t *testing.T) {
 }
 
 // TestServeTokenIntrospection_StorageUnavailable: introspection met by a
-// store that does not answer is 503 temporarily_unavailable, not
+// store that does not answer is 503, not
 // {"active": false}; the same token introspects active once the store is
 // back.
 func TestServeTokenIntrospection_StorageUnavailable(t *testing.T) {

@@ -113,6 +113,8 @@ Implement `server.SubjectTokenValidator` and register it for a specific URN:
 server.WithSubjectTokenValidator("urn:example:custom-token-type", myValidator)
 ```
 
+Return an error wrapping `server.ErrProviderUnavailable` from `Validate` when an issuer the validator depends on did not answer. A trusted issuer whose JWKS endpoint answers 5xx or 429, times out or cannot be reached is classified the same way. The token endpoint answers either as `503 Service Unavailable` with `Retry-After`, and the audit log records reason `provider_unavailable`, so the client retries the same request instead of discarding the subject token.
+
 ## Token type URNs
 
 | `subject_token_type` | Validator | Notes |
@@ -223,7 +225,7 @@ srv, _ := server.New(provider, store, store, store,
 )
 ```
 
-Return an error wrapping `server.ErrInvalidTarget` from `Exchange` to signal an audience the host cannot map; the client receives `invalid_target`.
+Return an error wrapping `server.ErrInvalidTarget` from `Exchange` to signal an audience the host cannot map; the client receives `invalid_target`. Return an error wrapping `server.ErrProviderUnavailable` when the downstream issuer did not answer; the client receives `503 Service Unavailable` with `Retry-After` and retries the same request.
 
 ### Policy enforced by the broker path
 

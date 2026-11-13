@@ -45,7 +45,7 @@ func (s *Server) validateIntrospectionAllowlistRegistered(ctx context.Context) e
 // The error is ErrStorageUnavailable when the token store did not answer, or
 // ErrProviderUnavailable when the identity provider did not answer the
 // opaque token's validation: the token is then neither active nor inactive,
-// and the endpoint answers 503 temporarily_unavailable rather than
+// and the endpoint answers 503 rather than
 // {"active": false}, which a resource server reads as a dead token. No other
 // error is returned.
 func (s *Server) IntrospectToken(ctx context.Context, accessToken, requestingClient string) (map[string]any, error) {

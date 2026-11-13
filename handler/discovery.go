@@ -155,8 +155,8 @@ func (h *Handler) buildProtectedResourceMetadata(resourcePath string, pathConfig
 	}
 
 	// Include scopes_supported if configured (MCP 2025-11-25)
-	if len(scopesSupported) > 0 {
-		metadata["scopes_supported"] = scopesSupported
+	if scopes := scopesWithoutOfflineAccess(scopesSupported); len(scopes) > 0 {
+		metadata["scopes_supported"] = scopes
 	}
 
 	return metadata

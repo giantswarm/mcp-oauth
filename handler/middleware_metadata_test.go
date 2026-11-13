@@ -243,7 +243,7 @@ func (s *failingMetadataStore) GetTokenMetadata(string) (*storage.TokenMetadata,
 
 // TestValidateToken_MetadataBackendFailureIsUnavailable guards the other half
 // of the contract: a transient failure of the metadata read is a storage
-// outage — 503 temporarily_unavailable with Retry-After, logged at WARN with
+// outage — 503 with Retry-After, logged at WARN with
 // the failed operation, and the protected handler does not run — so the DEBUG
 // downgrade applies only to the documented not-found signal.
 func TestValidateToken_MetadataBackendFailureIsUnavailable(t *testing.T) {
@@ -278,9 +278,7 @@ func TestValidateToken_MetadataBackendFailureIsUnavailable(t *testing.T) {
 	if got := w.Header().Get("Retry-After"); got != "5" {
 		t.Errorf("Retry-After = %q, want %q", got, "5")
 	}
-	if !strings.Contains(w.Body.String(), constants.ErrorCodeTemporarilyUnavailable) || strings.Contains(w.Body.String(), constants.ErrorCodeInvalidToken) {
-		t.Errorf("body = %s, want %s and no %s", w.Body.String(), constants.ErrorCodeTemporarilyUnavailable, constants.ErrorCodeInvalidToken)
-	}
+	requireUnavailableResponse(t, w)
 
 	e, found := findLogEntry(logEntries(t, &buf), msgStorageUnavailable)
 	if !found {
@@ -296,7 +294,7 @@ func TestValidateToken_MetadataBackendFailureIsUnavailable(t *testing.T) {
 
 // TestValidateToken_ProviderUnavailableIsUnavailable: a userinfo answer the
 // identity provider did not serve (5xx) rejected nothing, so the bearer is
-// answered 503 temporarily_unavailable with Retry-After, never 401
+// answered 503 with Retry-After, never 401
 // invalid_token, while a userinfo rejection (401) stays 401.
 func TestValidateToken_ProviderUnavailableIsUnavailable(t *testing.T) {
 	tests := []struct {
@@ -305,7 +303,7 @@ func TestValidateToken_ProviderUnavailableIsUnavailable(t *testing.T) {
 		wantCode int
 		wantErr  string
 	}{
-		{"userinfo 503", http.StatusServiceUnavailable, http.StatusServiceUnavailable, constants.ErrorCodeTemporarilyUnavailable},
+		{"userinfo 503", http.StatusServiceUnavailable, http.StatusServiceUnavailable, ""},
 		{"userinfo 401", http.StatusUnauthorized, http.StatusUnauthorized, constants.ErrorCodeInvalidToken},
 	}
 	for _, tt := range tests {
@@ -334,23 +332,17 @@ func TestValidateToken_ProviderUnavailableIsUnavailable(t *testing.T) {
 			if served {
 				t.Error("the protected handler ran although the bearer was not validated")
 			}
-			if !strings.Contains(w.Body.String(), tt.wantErr) {
-				t.Errorf("body = %s, want %s", w.Body.String(), tt.wantErr)
-			}
 			if tt.wantCode == http.StatusServiceUnavailable {
-				if got := w.Header().Get("Retry-After"); got != "5" {
-					t.Errorf("Retry-After = %q, want %q", got, "5")
-				}
-				if got := w.Header().Get("WWW-Authenticate"); got != "" {
-					t.Errorf("WWW-Authenticate = %q, want none on a 503", got)
-				}
+				requireUnavailableResponse(t, w)
+			} else if !strings.Contains(w.Body.String(), tt.wantErr) {
+				t.Errorf("body = %s, want %s", w.Body.String(), tt.wantErr)
 			}
 		})
 	}
 }
 
 // TestValidateToken_ProviderTimeoutIsUnavailable: an identity provider that
-// never answers is answered 503 temporarily_unavailable with Retry-After once
+// never answers is answered 503 with Retry-After once
 // Config.TokenValidationTimeout has passed.
 func TestValidateToken_ProviderTimeoutIsUnavailable(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {

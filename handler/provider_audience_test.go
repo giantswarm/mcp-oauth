@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -58,12 +57,7 @@ func TestValidateToken_ProviderAudienceMismatchHTTP(t *testing.T) {
 
 	environment.faulty.Fail(storagemock.OnOperation("get_provider_token_ref", storagemock.ConnectionRefused))
 	unavailable := request(accessToken)
-	require.Equal(t, http.StatusServiceUnavailable, unavailable.Code)
-	var body map[string]string
-	require.NoError(t, json.Unmarshal(unavailable.Body.Bytes(), &body))
-	require.Equal(t, "temporarily_unavailable", body["error"])
-	require.NotEmpty(t, unavailable.Header().Get("Retry-After"))
-	require.Empty(t, unavailable.Header().Get("WWW-Authenticate"))
+	requireUnavailableResponse(t, unavailable)
 
 	environment.faulty.Heal()
 	require.Equal(t, http.StatusUnauthorized, request(accessToken).Code)

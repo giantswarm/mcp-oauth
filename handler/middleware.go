@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -70,7 +71,7 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 // authenticateBearer validates the bearer and loads its stored metadata (one
 // lookup, shared by DPoP binding, scope validation and the session ID). ok is
 // false when the response has been written: 401 invalid_token for a rejected
-// bearer, or 503 temporarily_unavailable when the token store (on either
+// bearer, or 503 when the token store (on either
 // step) or the identity provider did not answer — an outage is not a
 // rejected bearer, and a 401 would make the client discard its token and
 // start a new authorization.
@@ -298,6 +299,8 @@ func (h *Handler) writeInsufficientScopeError(w http.ResponseWriter, requiredSco
 //	       error="invalid_token",
 //	       error_description="Token has expired"
 func (h *Handler) formatWWWAuthenticate(scope, errCode, errorDesc string) string {
+	scope = strings.Join(scopesWithoutOfflineAccess(strings.Split(scope, " ")), " ")
+
 	// Build the challenge parameters (excluding the Bearer scheme)
 	var params []string
 
@@ -734,6 +737,13 @@ func (h *Handler) getChallengeScopes(r *http.Request) string {
 	// Priority 3: No scope guidance available
 	// WWW-Authenticate header won't include a scope parameter
 	return ""
+}
+
+// offline_access controls refresh-token issuance rather than resource access.
+func scopesWithoutOfflineAccess(scopes []string) []string {
+	return slices.DeleteFunc(slices.Clone(scopes), func(scope string) bool {
+		return scope == "offline_access"
+	})
 }
 
 // setCORSHeaders sets CORS headers if configured and the origin is allowed.

@@ -341,7 +341,7 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 // ErrProviderUnavailable (errors.Is) means the token store or the identity
 // provider did not answer (within the validation timeout or at all), so the
 // token was neither validated nor rejected;
-// callers answer it as 503 temporarily_unavailable with a Retry-After header
+// callers answer it as 503 with a Retry-After header
 // and never as 401, which clients read as a dead token (the handler
 // package's ValidateToken middleware does this). For every
 // other error callers SHOULD respond with a single 401 form
