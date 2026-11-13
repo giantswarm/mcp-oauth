@@ -1,0 +1,66 @@
+name: mcp-conformance
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The suite publishes no release with the authorization-server scenarios;
+  # pin a commit of github.com/modelcontextprotocol/conformance and bump it
+  # deliberately.
+  CONFORMANCE_REF: 96a6f9478b7f2e125cf0360a213383cf57533893
+
+jobs:
+  authorization-server:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out the MCP conformance suite
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: modelcontextprotocol/conformance
+          ref: ${{ env.CONFORMANCE_REF }}
+          path: .conformance
+          persist-credentials: false
+      - name: Set up Go environment
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: Build the conformance suite
+        working-directory: .conformance
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+      # The authorization-code scenario needs a person to sign in at the
+      # upstream provider, so CI runs the scenarios that need no sign-in.
+      - name: Start the MCP example server
+        env:
+          GOOGLE_CLIENT_ID: conformance
+          GOOGLE_CLIENT_SECRET: conformance
+        run: |
+          go build -o ./mcp-example ./examples/mcp-2025-11-25
+          ./mcp-example &
+          timeout 30 bash -c 'until curl -s -o /dev/null http://localhost:8080/.well-known/oauth-authorization-server; do sleep 0.5; done'
+      - name: Run the authorization server metadata scenario
+        run: |
+          node .conformance/dist/index.js authorization \
+            --url http://localhost:8080 \
+            --scenario authorization-server-metadata-endpoint
