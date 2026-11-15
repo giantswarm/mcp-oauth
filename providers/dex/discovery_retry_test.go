@@ -3,6 +3,7 @@ package dex
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -28,11 +29,27 @@ func flakyDiscoveryServer(t *testing.T, failures int64, status int) (*httptest.S
 
 	var calls atomic.Int64
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/.well-known/openid-configuration" && calls.Add(1) <= failures {
+		if r.URL.Path != "/.well-known/openid-configuration" {
+			dex.Config.Handler.ServeHTTP(w, r)
+			return
+		}
+		if calls.Add(1) <= failures {
 			w.WriteHeader(status)
 			return
 		}
-		dex.Config.Handler.ServeHTTP(w, r)
+		// Serve Dex's document under this server's URL, the issuer the
+		// provider discovers.
+		rec := httptest.NewRecorder()
+		dex.Config.Handler.ServeHTTP(rec, r)
+		var doc map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+			t.Errorf("decode mock Dex discovery document: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		doc["issuer"] = "https://" + r.Host
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(doc)
 	}))
 	t.Cleanup(server.Close)
 	return server, &calls
