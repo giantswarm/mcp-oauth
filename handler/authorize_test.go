@@ -653,6 +653,44 @@ func TestValidatePrompt(t *testing.T) {
 	}
 }
 
+// OAuth 2.1 §4.1.2 returns state only when the client sent it.
+func TestHandler_ServeCallback_ClientStateEchoedOnlyWhenSent(t *testing.T) {
+	for _, clientState := range []string{"", "x"} {
+		t.Run("state="+clientState, func(t *testing.T) {
+			ctx := t.Context()
+			handler, store := setupTestHandler(t)
+			defer store.Stop()
+
+			client, _, err := handler.server.RegisterClient(ctx, "Test Client", "confidential", "",
+				[]string{"https://example.com/callback"}, []string{"openid", "email"}, "192.168.1.100", 10)
+			require.NoError(t, err)
+
+			verifier := testutil.GenerateRandomString(50)
+			hash := sha256.Sum256([]byte(verifier))
+			challenge := base64.RawURLEncoding.EncodeToString(hash[:])
+			authURL, err := startBoundAuthorization(handler.server, ctx, client.ClientID,
+				mustParseURL(t, "https://example.com/callback"), "openid email", "", challenge, "S256", clientState, nil)
+			require.NoError(t, err)
+
+			req := httptest.NewRequest(http.MethodGet,
+				"/oauth/callback?state="+providerStateOf(t, authURL)+"&code=provider-auth-code", nil)
+			w := httptest.NewRecorder()
+			serveBoundCallback(handler, w, req)
+
+			require.Equal(t, http.StatusFound, w.Code)
+			location, err := url.Parse(w.Header().Get("Location"))
+			require.NoError(t, err)
+			query := location.Query()
+			require.NotEmpty(t, query.Get("code"))
+			if clientState == "" {
+				require.False(t, query.Has("state"), "redirect %s carries a state the client never sent", location)
+				return
+			}
+			require.Equal(t, clientState, query.Get("state"))
+		})
+	}
+}
+
 func TestHandler_ServeCallback(t *testing.T) {
 	ctx := t.Context()
 	handler, store := setupTestHandler(t)

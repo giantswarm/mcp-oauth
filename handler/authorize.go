@@ -689,7 +689,9 @@ func (h *Handler) redirectAuthorizationCode(w http.ResponseWriter, r *http.Reque
 	}
 	q := parsedRedirect.Query()
 	q.Set("code", authCode.Code)
-	q.Set("state", clientState)
+	if clientState != "" {
+		q.Set("state", clientState)
+	}
 	q.Set("iss", h.server.Config.Issuer)
 	parsedRedirect.RawQuery = q.Encode()
 	redirectURL := parsedRedirect.String()
