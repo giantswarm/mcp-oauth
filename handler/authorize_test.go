@@ -701,7 +701,7 @@ func TestHandler_ServeCallback(t *testing.T) {
 	}
 
 	// Get auth state to find provider state
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, authURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -814,60 +814,45 @@ func TestHandler_ServeAuthorization_StateLength(t *testing.T) {
 	}
 	trustClient(handler.server, client.ClientID)
 
+	maxLength := handler.server.Config.MaxStateLength
 	tests := []struct {
-		name           string
-		state          string
-		wantStatus     int
-		wantErrorParam string // empty when the request is expected to succeed
+		name  string
+		state string
 	}{
-		{
-			name:           "state too short (1 char)",
-			state:          "x",
-			wantStatus:     http.StatusFound,
-			wantErrorParam: constants.ErrorCodeInvalidRequest,
-		},
-		{
-			name:           "state too short (10 chars)",
-			state:          "0123456789",
-			wantStatus:     http.StatusFound,
-			wantErrorParam: constants.ErrorCodeInvalidRequest,
-		},
-		{
-			name:           "state too short (21 chars, just under minimum)",
-			state:          "012345678901234567890",
-			wantStatus:     http.StatusFound,
-			wantErrorParam: constants.ErrorCodeInvalidRequest,
-		},
-		{
-			name:       "state exactly minimum length (22 chars)",
-			state:      "0123456789012345678901",
-			wantStatus: http.StatusFound,
-		},
-		{
-			name:       "state above minimum length (64 chars)",
-			state:      "0123456789012345678901234567890123456789012345678901234567890123",
-			wantStatus: http.StatusFound,
-		},
+		{name: "absent", state: ""},
+		{name: "one character", state: "x"},
+		{name: "21 characters", state: "012345678901234567890"},
+		{name: "at the maximum length", state: strings.Repeat("s", maxLength)},
 	}
-
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			url := fmt.Sprintf("/authorize?client_id=%s&redirect_uri=https://example.com/callback&response_type=code&scope=openid&state=%s&code_challenge=test-challenge&code_challenge_method=S256",
-				client.ClientID, tt.state)
-			req := httptest.NewRequest(http.MethodGet, url, nil)
+		t.Run(tt.name+" is accepted", func(t *testing.T) {
 			w := httptest.NewRecorder()
-
-			handler.ServeAuthorization(w, req)
-
-			if w.Code != tt.wantStatus {
-				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
-			}
-
-			if tt.wantErrorParam != "" {
-				assertAuthorizationErrorRedirect(t, w, "https://example.com/callback", tt.wantErrorParam, "state parameter", tt.state)
-			}
+			handler.ServeAuthorization(w, httptest.NewRequest(http.MethodGet, stateLengthAuthorizeTarget(client.ClientID, tt.state), nil))
+			requireProviderRedirect(t, w)
 		})
 	}
+
+	t.Run("over the maximum length is refused without a redirect", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		handler.ServeAuthorization(w, httptest.NewRequest(http.MethodGet, stateLengthAuthorizeTarget(client.ClientID, strings.Repeat("s", maxLength+1)), nil))
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		require.Empty(t, w.Header().Get("Location"))
+	})
+}
+
+func stateLengthAuthorizeTarget(clientID, state string) string {
+	query := url.Values{
+		"client_id":             {clientID},
+		"redirect_uri":          {"https://example.com/callback"},
+		"response_type":         {"code"},
+		"scope":                 {"openid"},
+		"code_challenge":        {"test-challenge"},
+		"code_challenge_method": {"S256"},
+	}
+	if state != "" {
+		query.Set("state", state)
+	}
+	return "/authorize?" + query.Encode()
 }
 
 func TestHandler_ServeCallback_StateLength(t *testing.T) {
@@ -908,65 +893,6 @@ func TestHandler_ServeCallback_StateLength(t *testing.T) {
 			w := httptest.NewRecorder()
 
 			serveBoundCallback(handler, w, req)
-
-			if w.Code != tt.wantStatus {
-				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
-			}
-		})
-	}
-}
-
-func TestHandler_ServeAuthorization_ShortStateWithAllowNoState(t *testing.T) {
-	ctx := t.Context()
-
-	handler, store := setupTestHandlerWithAllowNoState(t)
-	defer store.Stop()
-
-	client, _, err := handler.server.RegisterClient(
-		ctx,
-		"Test Client",
-		"confidential",
-		"",
-		[]string{"https://example.com/callback"},
-		[]string{"openid", "email"},
-		"192.168.1.100",
-		10,
-	)
-	if err != nil {
-		t.Fatalf("RegisterClient() error = %v", err)
-	}
-	trustClient(handler.server, client.ClientID)
-
-	tests := []struct {
-		name       string
-		state      string
-		wantStatus int
-	}{
-		{
-			name:       "short state (1 char) accepted with AllowNoStateParameter=true",
-			state:      "x",
-			wantStatus: http.StatusFound,
-		},
-		{
-			name:       "short state (10 chars) accepted with AllowNoStateParameter=true",
-			state:      "0123456789",
-			wantStatus: http.StatusFound,
-		},
-		{
-			name:       "empty state accepted with AllowNoStateParameter=true",
-			state:      "",
-			wantStatus: http.StatusFound,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			url := fmt.Sprintf("/authorize?client_id=%s&redirect_uri=https://example.com/callback&response_type=code&scope=openid&state=%s&code_challenge=test-challenge&code_challenge_method=S256",
-				client.ClientID, tt.state)
-			req := httptest.NewRequest(http.MethodGet, url, nil)
-			w := httptest.NewRecorder()
-
-			handler.ServeAuthorization(w, req)
 
 			if w.Code != tt.wantStatus {
 				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
@@ -1029,7 +955,7 @@ func TestHandler_ServeAuthorization_NoResponseType_Rejected(t *testing.T) {
 	}
 }
 
-func TestHandler_ServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *testing.T) {
+func TestHandler_ServeAuthorization_ErrorRedirectEchoesClientState(t *testing.T) {
 	ctx := t.Context()
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
@@ -1055,12 +981,12 @@ func TestHandler_ServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *tes
 		wantState string // empty when the client did not send a state parameter
 	}{
 		{
-			name:      "state missing",
+			name:      "error redirect without a client state carries none",
 			state:     "",
 			wantState: "",
 		},
 		{
-			name:      "state too short",
+			name:      "error redirect echoes a short client state",
 			state:     "short",
 			wantState: "short",
 		},
@@ -1070,7 +996,7 @@ func TestHandler_ServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *tes
 		t.Run(tt.name, func(t *testing.T) {
 			reqURL := "/authorize?client_id=" + client.ClientID +
 				"&redirect_uri=https://example.com/callback" +
-				"&response_type=code" +
+				"&response_type=token" +
 				"&scope=openid" +
 				"&code_challenge=test-challenge" +
 				"&code_challenge_method=S256"
@@ -1082,7 +1008,7 @@ func TestHandler_ServeAuthorization_InvalidRequest_RedirectsToRedirectURI(t *tes
 			w := httptest.NewRecorder()
 			handler.ServeAuthorization(w, req)
 
-			assertAuthorizationErrorRedirect(t, w, "https://example.com/callback", constants.ErrorCodeInvalidRequest, "state parameter", tt.wantState)
+			assertAuthorizationErrorRedirect(t, w, "https://example.com/callback", constants.ErrorCodeUnsupportedResponseType, "response_type", tt.wantState)
 		})
 	}
 
@@ -1201,7 +1127,7 @@ func TestHandler_ServeAuthorization_ValidatedCustomSchemeReceivesError(t *testin
 }
 
 func TestHandler_ServeCallback_ShortProviderStateAlwaysRejected(t *testing.T) {
-	handler, store := setupTestHandlerWithAllowNoState(t)
+	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
 	tests := []struct {
@@ -1209,11 +1135,11 @@ func TestHandler_ServeCallback_ShortProviderStateAlwaysRejected(t *testing.T) {
 		state string
 	}{
 		{
-			name:  "short provider state (1 char) rejected even with AllowNoStateParameter=true",
+			name:  "short provider state (1 char) rejected",
 			state: "x",
 		},
 		{
-			name:  "short provider state (10 chars) rejected even with AllowNoStateParameter=true",
+			name:  "short provider state (10 chars) rejected",
 			state: "0123456789",
 		},
 	}
@@ -1492,7 +1418,7 @@ func TestHandler_ServeCallback_CustomURLScheme(t *testing.T) {
 
 	// State must be at least 32 characters for security
 	clientState := testutil.GenerateRandomString(43)
-	_, err = startBoundAuthorization(handler.server,
+	flowURL, err := startBoundAuthorization(handler.server,
 		ctx,
 		client.ClientID,
 		mustParseURL(t, "cursor://oauth/callback"),
@@ -1508,7 +1434,7 @@ func TestHandler_ServeCallback_CustomURLScheme(t *testing.T) {
 	}
 
 	// Get auth state to find provider state
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -1606,7 +1532,7 @@ func TestHandler_ServeCallback_HTTPScheme(t *testing.T) {
 	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	clientState := testutil.GenerateRandomString(43)
-	_, err = startBoundAuthorization(handler.server,
+	flowURL, err := startBoundAuthorization(handler.server,
 		ctx,
 		client.ClientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -1621,7 +1547,7 @@ func TestHandler_ServeCallback_HTTPScheme(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -1683,7 +1609,7 @@ func TestHandler_ServeCallback_VSCodeScheme(t *testing.T) {
 	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
 	clientState := testutil.GenerateRandomString(43)
 
-	_, err = startBoundAuthorization(handler.server,
+	flowURL, err := startBoundAuthorization(handler.server,
 		ctx,
 		client.ClientID,
 		mustParseURL(t, "vscode://example.extension/callback"),
@@ -1698,7 +1624,7 @@ func TestHandler_ServeCallback_VSCodeScheme(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -2073,7 +1999,7 @@ func TestHandler_ServeCallback_CustomURLScheme_WithBranding(t *testing.T) {
 	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
 	clientState := testutil.GenerateRandomString(43)
 
-	_, err = startBoundAuthorization(srv,
+	flowURL, err := startBoundAuthorization(srv,
 		ctx,
 		client.ClientID,
 		mustParseURL(t, "cursor://oauth/callback"),
@@ -2088,7 +2014,7 @@ func TestHandler_ServeCallback_CustomURLScheme_WithBranding(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}

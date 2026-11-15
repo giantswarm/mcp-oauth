@@ -115,10 +115,10 @@ func (e *outageEnv) issueCode(t *testing.T) (code, verifier string) {
 	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
 	clientState := strings.Repeat("s", 43)
 
-	_, err := e.handler.server.StartAuthorizationFlow(ctx, e.clientID, mustParse(t, "https://example.com/callback"),
+	flowURL, err := e.handler.server.StartAuthorizationFlow(ctx, e.clientID, mustParse(t, "https://example.com/callback"),
 		"openid email", "", challenge, server.PKCEMethodS256, clientState, nil)
 	require.NoError(t, err)
-	authState, err := e.store.GetAuthorizationState(ctx, clientState)
+	authState, err := e.store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	require.NoError(t, err)
 	authCode, _, err := e.handler.server.HandleProviderCallback(ctx, authState.ProviderState, "provider-code")
 	require.NoError(t, err)

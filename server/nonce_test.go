@@ -119,7 +119,7 @@ func (f *nonceFlowFixture) startOIDCFlow(t *testing.T) (providerState, expectedN
 	clientState := testutil.GenerateRandomString(43)
 
 	ctx := context.Background()
-	_, err := f.srv.StartAuthorizationFlow(
+	flowURL, err := f.srv.StartAuthorizationFlow(
 		ctx,
 		f.clientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -132,7 +132,7 @@ func (f *nonceFlowFixture) startOIDCFlow(t *testing.T) (providerState, expectedN
 	)
 	require.NoError(t, err)
 
-	authState, err := f.store.GetAuthorizationState(ctx, clientState)
+	authState, err := f.store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	require.NoError(t, err)
 	require.NotEmpty(t, authState.Nonce, "OIDC flow must persist a nonce")
 
@@ -148,7 +148,7 @@ func (f *nonceFlowFixture) startNonOIDCFlow(t *testing.T) string {
 	clientState := testutil.GenerateRandomString(43)
 
 	ctx := context.Background()
-	_, err := f.srv.StartAuthorizationFlow(
+	flowURL, err := f.srv.StartAuthorizationFlow(
 		ctx,
 		f.clientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -161,7 +161,7 @@ func (f *nonceFlowFixture) startNonOIDCFlow(t *testing.T) string {
 	)
 	require.NoError(t, err)
 
-	authState, err := f.store.GetAuthorizationState(ctx, clientState)
+	authState, err := f.store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	require.NoError(t, err)
 	require.Empty(t, authState.Nonce, "non-OIDC flow must not bind a nonce")
 
@@ -297,7 +297,7 @@ func TestNonce_ClientNonceTooShort_ReplacedAndWarned(t *testing.T) {
 	clientState := testutil.GenerateRandomString(43)
 
 	const shortNonce = "ten-chars1" // < minClientNonceLength
-	_, err := fix.srv.StartAuthorizationFlow(
+	flowURL, err := fix.srv.StartAuthorizationFlow(
 		context.Background(),
 		fix.clientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -310,7 +310,7 @@ func TestNonce_ClientNonceTooShort_ReplacedAndWarned(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	authState, err := fix.store.GetAuthorizationState(context.Background(), clientState)
+	authState, err := fix.store.GetAuthorizationStateByProviderState(context.Background(), providerStateOf(t, flowURL))
 	require.NoError(t, err)
 	require.NotEqual(t, shortNonce, authState.Nonce,
 		"server must substitute a client nonce below minClientNonceLength")
@@ -396,7 +396,7 @@ func TestNonce_ForwardedToProviderURL(t *testing.T) {
 	require.True(t, strings.Contains(authURL, "nonce="),
 		"upstream authorization URL must carry a nonce parameter: %s", authURL)
 
-	authState, err := fix.store.GetAuthorizationState(context.Background(), clientState)
+	authState, err := fix.store.GetAuthorizationStateByProviderState(context.Background(), providerStateOf(t, authURL))
 	require.NoError(t, err)
 	require.NotEmpty(t, authState.Nonce)
 	require.Contains(t, authURL, "nonce="+authState.Nonce)
@@ -413,7 +413,7 @@ func TestNonce_ClientSuppliedPassesThrough(t *testing.T) {
 	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
 	clientState := testutil.GenerateRandomString(43)
 
-	_, err := fix.srv.StartAuthorizationFlow(
+	flowURL, err := fix.srv.StartAuthorizationFlow(
 		context.Background(),
 		fix.clientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -426,7 +426,7 @@ func TestNonce_ClientSuppliedPassesThrough(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	authState, err := fix.store.GetAuthorizationState(context.Background(), clientState)
+	authState, err := fix.store.GetAuthorizationStateByProviderState(context.Background(), providerStateOf(t, flowURL))
 	require.NoError(t, err)
 	require.Equal(t, clientNonce, authState.Nonce)
 }

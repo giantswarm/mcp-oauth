@@ -48,10 +48,10 @@ func (f *identityFlow) challenge() string {
 // signIn runs an identity flow up to the code the return URL receives.
 func (f *identityFlow) signIn(t *testing.T, srv *Server, store *memory.Store) string {
 	t.Helper()
-	_, err := srv.StartIdentityFlow(t.Context(), f.returnURL, f.challenge(), f.clientState)
+	flowURL, err := srv.StartIdentityFlow(t.Context(), f.returnURL, f.challenge(), f.clientState)
 	require.NoError(t, err)
 
-	authState, err := store.GetAuthorizationState(t.Context(), f.clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(t.Context(), providerStateOf(t, flowURL))
 	require.NoError(t, err)
 	require.True(t, authState.IdentityOnly)
 
@@ -216,10 +216,10 @@ func TestIdentityFlow_RedeemRefusesAnAuthorizationCode(t *testing.T) {
 		[]string{clientRedirect}, []string{"openid"}, "192.168.1.100", 10)
 	require.NoError(t, err)
 	flow := newIdentityFlow(t)
-	_, err = srv.StartAuthorizationFlow(t.Context(), client.ClientID, mustParseURL(t, clientRedirect), "openid", "",
+	flowURL, err := srv.StartAuthorizationFlow(t.Context(), client.ClientID, mustParseURL(t, clientRedirect), "openid", "",
 		flow.challenge(), PKCEMethodS256, flow.clientState, nil)
 	require.NoError(t, err)
-	authState, err := store.GetAuthorizationState(t.Context(), flow.clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(t.Context(), providerStateOf(t, flowURL))
 	require.NoError(t, err)
 	code, _, err := srv.HandleProviderCallback(t.Context(), authState.ProviderState, "provider-code")
 	require.NoError(t, err)
@@ -230,7 +230,7 @@ func TestIdentityFlow_RedeemRefusesAnAuthorizationCode(t *testing.T) {
 }
 
 func TestStartIdentityFlow_Refusals(t *testing.T) {
-	srv, store, _ := setupFlowTestServer(t)
+	srv, _, provider := setupFlowTestServer(t)
 	flow := newIdentityFlow(t)
 
 	for name, start := range map[string]func() error{
@@ -264,9 +264,9 @@ func TestStartIdentityFlow_Refusals(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			before := provider.GetCallCount("AuthorizationURL")
 			require.ErrorContains(t, start(), ErrorCodeInvalidRequest)
-			_, err := store.GetAuthorizationState(t.Context(), flow.clientState)
-			require.Error(t, err, "a refused flow stores no state")
+			require.Equal(t, before, provider.GetCallCount("AuthorizationURL"), "a refused flow never reaches the provider")
 		})
 	}
 }

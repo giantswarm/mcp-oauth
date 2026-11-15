@@ -93,7 +93,7 @@ func (s *Server) StartIdentityFlow(ctx context.Context, returnURL *url.URL, code
 
 	now := time.Now()
 	authState := &storage.AuthorizationState{
-		StateID:              clientState,
+		StateID:              generateRandomToken(),
 		OriginalClientState:  clientState,
 		RedirectURI:          returnURL.String(),
 		Scope:                identityScope,

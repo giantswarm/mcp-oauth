@@ -17,7 +17,7 @@ import (
 // ============================================================
 
 // SaveAuthorizationState saves the state of an ongoing authorization flow
-// Stores by both client state (StateID) and provider state (ProviderState) for dual lookup
+// Stores by both StateID and ProviderState for dual lookup
 func (s *Store) SaveAuthorizationState(ctx context.Context, state *storage.AuthorizationState) (err error) {
 	op := s.startTracedOp(ctx, "save_authorization_state")
 	defer op.end(&err)
@@ -64,7 +64,7 @@ func (s *Store) SaveAuthorizationState(ctx context.Context, state *storage.Autho
 	return nil
 }
 
-// GetAuthorizationState retrieves an authorization state by client state
+// GetAuthorizationState retrieves an authorization state by StateID
 func (s *Store) GetAuthorizationState(ctx context.Context, stateID string) (result *storage.AuthorizationState, err error) {
 	op := s.startTracedOp(ctx, "get_authorization_state")
 	defer op.end(&err)
@@ -116,7 +116,7 @@ func (s *Store) GetAuthorizationStateByProviderState(ctx context.Context, provid
 }
 
 // DeleteAuthorizationState removes an authorization state
-// Removes both client state and provider state entries
+// Removes both the StateID and the ProviderState entries
 func (s *Store) DeleteAuthorizationState(ctx context.Context, stateID string) (err error) {
 	op := s.startTracedOp(ctx, "delete_authorization_state")
 	defer op.end(&err)

@@ -143,14 +143,14 @@ func requireProviderRedirect(t *testing.T, w *httptest.ResponseRecorder) {
 }
 
 func TestConsent_UntrustedClientGetsPageAndNoState(t *testing.T) {
-	f := newConsentFlow(t, nil)
+	provider := mock.NewProvider()
+	f := newConsentFlowWithProvider(t, provider, nil)
 	state := testutil.GenerateRandomString(43)
 
 	w := f.get(f.authorizeTarget(consentTestRedirect, state, nil))
 
 	requireConsentPage(t, w)
-	_, err := f.store.GetAuthorizationState(t.Context(), state)
-	require.Error(t, err, "no authorization state may exist before the person approves")
+	require.Zero(t, provider.GetCallCount("AuthorizationURL"), "no authorization may begin before the person approves")
 
 	body := w.Body.String()
 	require.Contains(t, body, "example.com", "redirect host must be shown")
@@ -361,7 +361,6 @@ func TestConsent_ValidatedClientErrorsAreRedirected(t *testing.T) {
 
 	for name, extra := range map[string]url.Values{
 		"unsupported response_type": {"response_type": {"token"}},
-		"short state":               {"state": {"short"}},
 		"unsupported PKCE method":   {"code_challenge_method": {"plain"}},
 		"silent sign-in":            {"prompt": {"none"}},
 	} {

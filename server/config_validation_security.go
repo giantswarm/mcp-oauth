@@ -216,9 +216,7 @@ func logCoreSecurityWarnings(config *Config, logger *slog.Logger) {
 			"recommendation", "Set AllowPublicClientRegistration=false and use RegistrationAccessToken")
 	}
 	if config.AllowNoStateParameter {
-		logger.Warn("SECURITY WARNING: State parameter is NOT REQUIRED",
-			"risk", "CSRF attacks possible without state parameter",
-			"recommendation", "Set AllowNoStateParameter=false unless required for client compatibility")
+		logger.Warn("AllowNoStateParameter is deprecated and has no effect: the client's state parameter is optional (OAuth 2.1 section 4.1.1)")
 	}
 	if !config.AllowPublicClientRegistration && config.RegistrationAccessToken == "" {
 		logger.Warn("CONFIGURATION WARNING: RegistrationAccessToken not configured",

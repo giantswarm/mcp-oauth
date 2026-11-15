@@ -969,7 +969,7 @@ func (s *Store) ListClients(_ context.Context) ([]*storage.Client, error) {
 // ============================================================
 
 // SaveAuthorizationState saves the state of an ongoing authorization flow
-// Stores by both client state (StateID) and provider state (ProviderState) for dual lookup
+// Stores by both StateID and ProviderState for dual lookup
 func (s *Store) SaveAuthorizationState(_ context.Context, state *storage.AuthorizationState) error {
 	if state == nil || state.StateID == "" {
 		return fmt.Errorf(storage.ErrMsgInvalidAuthorizationState)
@@ -982,7 +982,6 @@ func (s *Store) SaveAuthorizationState(_ context.Context, state *storage.Authori
 	defer s.mu.Unlock()
 
 	// Store by both StateID and ProviderState for dual lookup
-	// StateID is used when validating client requests
 	// ProviderState is used when validating provider callbacks
 	s.authStates[state.StateID] = state
 	s.authStates[state.ProviderState] = state
@@ -990,7 +989,7 @@ func (s *Store) SaveAuthorizationState(_ context.Context, state *storage.Authori
 	return nil
 }
 
-// GetAuthorizationState retrieves an authorization state by client state
+// GetAuthorizationState retrieves an authorization state by StateID
 func (s *Store) GetAuthorizationState(_ context.Context, stateID string) (*storage.AuthorizationState, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1028,7 +1027,7 @@ func (s *Store) GetAuthorizationStateByProviderState(_ context.Context, provider
 }
 
 // DeleteAuthorizationState removes an authorization state
-// Removes both client state and provider state entries
+// Removes both the StateID and the ProviderState entries
 func (s *Store) DeleteAuthorizationState(_ context.Context, stateID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1036,7 +1035,7 @@ func (s *Store) DeleteAuthorizationState(_ context.Context, stateID string) erro
 	// Get the state first to find both keys
 	state, ok := s.authStates[stateID]
 	if ok {
-		// Delete both the client state and provider state entries
+		// Delete both the StateID and the ProviderState entries
 		delete(s.authStates, state.StateID)
 		delete(s.authStates, state.ProviderState)
 		s.logger.Debug("Deleted authorization state (both entries)", "state_id", state.StateID)

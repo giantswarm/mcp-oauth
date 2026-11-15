@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"net/url"
 	"testing"
 	"time"
 
@@ -51,4 +52,15 @@ func testInstrumentation(t testing.TB) *instrumentation.Instrumentation {
 
 func testAuditor() *security.Auditor {
 	return security.NewAuditor(nil, false)
+}
+
+// providerStateOf returns the state this server sent upstream in authURL, the
+// key of the pending authorization at the provider callback.
+func providerStateOf(t *testing.T, authURL string) string {
+	t.Helper()
+	parsed, err := url.Parse(authURL)
+	require.NoError(t, err)
+	state := parsed.Query().Get("state")
+	require.NotEmpty(t, state, "authorization URL carries no state: %s", authURL)
+	return state
 }

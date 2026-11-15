@@ -114,20 +114,17 @@ The implementation uses **dual-layer state protection** for defense-in-depth:
 
 ### Client State (Layer 1)
 
-```go
-// Provided by MCP client
-clientState := request.State
+The client's `state` is OPTIONAL and opaque to this server (OAuth 2.1
+§4.1.1). The server only bounds its length (`MaxStateLength`) and returns it
+unchanged in the redirect. The client compares it; PKCE, which the server
+enforces on every authorization request, provides the same CSRF protection
+(OAuth 2.1 §7.10). It never keys stored state: each flow is stored under a
+server-generated `StateID`, so clients sending equal or short values cannot
+collide.
 
-// Requirements:
-// - Minimum 16 characters (configurable)
-// - Cryptographically random
-// - Single-use (deleted after validation)
-// - Validated with constant-time comparison
-```
+**Purpose**: Lets the MCP client detect CSRF on its own redirect
 
-**Purpose**: Protects MCP client against CSRF attacks
-
-**Validation**: `server/validation.go` - `validateClientStateParameter()`
+**Validation**: `server/validation.go` - `validateClientStateParameter()` (length only)
 
 ### Provider State (Layer 2)
 
@@ -149,7 +146,7 @@ providerState := generateRandomToken() // 43 characters, 256 bits entropy
 ### Why Two State Parameters?
 
 1. **Different threat models**: Client-side CSRF vs. server-side callback injection
-2. **Independent validation**: Client and server validate their respective states
+2. **Independent validation**: The client validates its own state; the server validates the provider state
 3. **Defense-in-depth**: Compromise of one doesn't compromise the other
 4. **Clear separation**: Client state for client, server state for provider
 
